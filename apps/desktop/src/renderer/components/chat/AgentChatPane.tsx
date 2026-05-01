@@ -2437,10 +2437,11 @@ export function AgentChatPane({
         droid: status.providerConnections?.droid ?? null,
       });
       const available = deriveConfiguredModelIds(status, { includeDroid: true });
-      setAvailableModelIds(available);
+      const orderedAvailable = orderModelIds(available);
+      setAvailableModelIds(orderedAvailable);
       const cursorReady = status.availableProviders?.cursor === true
         || status.providerConnections?.cursor?.runtimeAvailable === true;
-      if (!cursorReady) return available;
+      if (!cursorReady) return orderedAvailable;
 
       let cursorModels: Awaited<ReturnType<typeof getAgentChatModelsCached>>;
       try {
@@ -2450,10 +2451,10 @@ export function AgentChatPane({
           activateRuntime: true,
         });
       } catch {
-        return available;
+        return orderedAvailable;
       }
       if (!cursorModels.length) {
-        const withoutCursor = orderModelIds(available.filter((id) => !isCursorModelId(id)));
+        const withoutCursor = orderedAvailable.filter((id) => !isCursorModelId(id));
         setAvailableModelIds(withoutCursor);
         return withoutCursor;
       }

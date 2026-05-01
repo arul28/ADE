@@ -60,10 +60,12 @@ let legacyStorePath: string | null = null;
 let cache: StoredKeys | null = null;
 let decryptionFailed = false;
 let macosKeychainError: string | null = null;
+let missingMacosKeychainProviders = new Set<string>();
 
 export function __setSafeStorageForTests(next: SafeStorage | null): void {
   safeStorage = next;
   cache = null;
+  missingMacosKeychainProviders = new Set<string>();
 }
 
 function isSecureStorageAvailable(): boolean {
@@ -238,15 +240,6 @@ function tryWriteMacosKeychainProviderIndex(providers: Iterable<string>): void {
   }
 }
 
-function knownProviderCandidates(extraProviders?: Iterable<string>): string[] {
-  const providers = new Set<string>(Object.keys(ENV_KEY_PROVIDERS));
-  for (const provider of extraProviders ?? []) {
-    const normalized = provider.trim().toLowerCase();
-    if (normalized.length) providers.add(normalized);
-  }
-  return Array.from(providers).sort();
-}
-
 function readMacosKeychainStore(providerCandidates: Iterable<string>): StoredKeys {
   const out: StoredKeys = {};
   if (!isMacosKeychainAvailable()) return out;
@@ -328,12 +321,15 @@ function ensureStore(): StoredKeys {
     }
 
     const index = readMacosKeychainProviderIndex();
-    const keychainProviders = knownProviderCandidates(index.exists ? index.providers : [
-      ...index.providers,
-      ...Object.keys(encryptedStore),
-    ]);
-    const keychainStore = readMacosKeychainStore(keychainProviders);
-    cache = index.exists ? keychainStore : { ...encryptedStore, ...keychainStore };
+    if (index.exists) {
+      cache = readMacosKeychainStore(index.providers);
+      return cache;
+    }
+
+    // Without an index, avoid probing every known provider synchronously on the
+    // Electron main thread. The old encrypted store remains the migration
+    // source of truth; direct Keychain reads happen on-demand by provider.
+    cache = encryptedStore;
     return cache;
   }
 
@@ -363,6 +359,7 @@ export function initApiKeyStore(projectRoot: string): void {
   cache = null;
   decryptionFailed = false;
   macosKeychainError = null;
+  missingMacosKeychainProviders = new Set<string>();
 }
 
 export function getApiKeyStoreStatus(): ApiKeyStoreStatus {
@@ -400,6 +397,7 @@ export function storeApiKey(provider: string, key: string): void {
   if (isMacosKeychainAvailable()) {
     writeMacosKeychainSecret(normalizedProvider, normalizedKey);
     store[normalizedProvider] = normalizedKey;
+    missingMacosKeychainProviders.delete(normalizedProvider);
     const index = readMacosKeychainProviderIndex();
     tryWriteMacosKeychainProviderIndex(new Set([...index.providers, normalizedProvider]));
     return;
@@ -415,6 +413,16 @@ export function getApiKey(provider: string): string | null {
   const store = ensureStore();
   const stored = store[normalizedProvider];
   if (stored) return stored;
+  if (isMacosKeychainAvailable() && !missingMacosKeychainProviders.has(normalizedProvider)) {
+    const keychainValue = readMacosKeychainSecret(normalizedProvider);
+    if (keychainValue) {
+      store[normalizedProvider] = keychainValue;
+      const index = readMacosKeychainProviderIndex();
+      tryWriteMacosKeychainProviderIndex(new Set([...index.providers, normalizedProvider]));
+      return keychainValue;
+    }
+    missingMacosKeychainProviders.add(normalizedProvider);
+  }
   const envVar = ENV_KEY_PROVIDERS[normalizedProvider];
   if (envVar) {
     const envValue = (process.env[envVar] ?? "").trim();
@@ -430,6 +438,7 @@ export function deleteApiKey(provider: string): void {
   if (isMacosKeychainAvailable()) {
     deleteMacosKeychainSecret(normalizedProvider);
     delete store[normalizedProvider];
+    missingMacosKeychainProviders.add(normalizedProvider);
     const index = readMacosKeychainProviderIndex();
     tryWriteMacosKeychainProviderIndex(index.providers.filter((entry) => entry !== normalizedProvider));
     return;

@@ -3307,13 +3307,12 @@ describe("createAgentChatService", () => {
     await service.sendMessage({
       sessionId: session.id,
       text: "/review",
-    });
+    }, { awaitDispatch: true });
 
     await vi.waitFor(() => {
       expect(mockState.codexRequestPayloads.some((payload) => payload.method === "review/start")).toBe(true);
     });
     expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(false);
-    await new Promise((resolve) => setTimeout(resolve, 20));
     expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
   });
 

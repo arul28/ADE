@@ -1425,10 +1425,16 @@ function resolveCodexReasoningEffortForRuntime(
   fallback?: string | null,
   descriptor?: ModelDescriptor | null,
 ): string {
+  const descriptorDefault =
+    validateReasoningEffortForDescriptor("codex", DEFAULT_REASONING_EFFORT, descriptor)
+    ?? descriptor?.reasoningTiers
+      ?.map((tier) => validateReasoningEffort("codex", tier))
+      .find((tier): tier is string => Boolean(tier))
+    ?? DEFAULT_REASONING_EFFORT;
   return (
     validateReasoningEffortForDescriptor("codex", normalizeReasoningEffort(primary), descriptor)
     ?? validateReasoningEffortForDescriptor("codex", normalizeReasoningEffort(fallback), descriptor)
-    ?? DEFAULT_REASONING_EFFORT
+    ?? descriptorDefault
   );
 }
 
@@ -1880,11 +1886,9 @@ function isCursorRuntimeAuthError(error: unknown): boolean {
   const statusCode = readErrorStatusCode(error);
   if (statusCode === 401 || statusCode === 403) return true;
   const message = readErrorMessage(error).toLowerCase();
-  return message.includes("authentication")
-    || message.includes("unauthorized")
-    || message.includes("forbidden")
-    || message.includes("invalid api key")
-    || message.includes("api key");
+  if (/\b(authentication|unauthorized|forbidden)\b/i.test(message)) return true;
+  return /\bapi[- ]?key\b/i.test(message)
+    && /\b(invalid|missing|required|revoked|expired|rejected|unauthorized|forbidden|not provided|not found)\b/i.test(message);
 }
 
 function hasCustomChatSessionTitle(title: string | null | undefined, provider: AgentChatProvider): boolean {
@@ -10780,11 +10784,12 @@ export function createAgentChatService(args: {
     runtime: CodexRuntime,
     codexPolicy: CodexPolicy,
   ): Promise<void> => {
-    const reasoningEffort = validateReasoningEffortForDescriptor(
-      "codex",
-      normalizeReasoningEffort(managed.session.reasoningEffort),
-      resolveSessionModelDescriptor(managed.session),
-    ) ?? DEFAULT_REASONING_EFFORT;
+    const descriptor = resolveSessionModelDescriptor(managed.session);
+    const reasoningEffort = resolveCodexReasoningEffortForRuntime(
+      managed.session.reasoningEffort,
+      null,
+      descriptor,
+    );
     managed.session.reasoningEffort = reasoningEffort;
     const startResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/start", {
       model: managed.session.model,

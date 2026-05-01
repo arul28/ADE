@@ -327,9 +327,9 @@ function warmCursorModelsFromSdk(apiKey?: string | null): void {
 
 export async function probeCursorSdkModelDiscovery(
   apiKey?: string | null,
-  options?: { timeoutMs?: number },
+  options?: { timeoutMs?: number; allowCached?: boolean },
 ): Promise<CursorSdkModelDiscoveryResult> {
-  const cachedRows = getCachedCursorSdkModels(apiKey);
+  const cachedRows = options?.allowCached === true ? getCachedCursorSdkModels(apiKey) : null;
   if (cachedRows) {
     return {
       rows: cachedRows,
@@ -368,7 +368,7 @@ export async function probeCursorSdkModelDiscovery(
 
 export async function listCursorModelsFromSdk(
   apiKey?: string | null,
-  options?: { timeoutMs?: number },
+  options?: { timeoutMs?: number; allowCached?: boolean },
 ): Promise<CursorCliModelRow[]> {
   return (await probeCursorSdkModelDiscovery(apiKey, options)).rows;
 }

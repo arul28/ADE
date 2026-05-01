@@ -169,6 +169,24 @@ describe("parseCursorCliModelsStdout", () => {
     expect(descriptors).toEqual([]);
   });
 
+  it("does not reuse cached Cursor SDK rows for explicit probe verification", async () => {
+    cursorModelsListMock.mockResolvedValueOnce([{ id: "cached-model", name: "Cached Model" }]);
+    await expect(probeCursorSdkModelDiscovery("crsr_test", { timeoutMs: 1_000 })).resolves.toMatchObject({
+      rows: [{ id: "cached-model" }],
+      failureKind: null,
+    });
+
+    cursorModelsListMock.mockRejectedValue(new Error("AuthenticationError (status=401, endpoint=GET /v1/models)"));
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 401 })));
+
+    const freshProbe = await probeCursorSdkModelDiscovery("crsr_test", { timeoutMs: 1_000 });
+    expect(freshProbe).toMatchObject({
+      rows: [],
+      failureKind: "auth",
+    });
+    expect(freshProbe.fromCache).toBeUndefined();
+  });
+
   it("suppresses fallback rows after a warm auth failure", async () => {
     cursorModelsListMock.mockRejectedValue(new Error("AuthenticationError (status=401, endpoint=GET /v1/models)"));
     const fetchMock = vi.fn(async () => ({ ok: false, status: 401 }));

@@ -64,13 +64,11 @@ function parseArgs(argv) {
     maxPerProvider: Number.POSITIVE_INFINITY,
     maxReasoningPerModel: Number.POSITIVE_INFINITY,
     maxCases: Number.POSITIVE_INFINITY,
-    cdpPort: Number.parseInt(
-      process.env.ADE_MODEL_AUDIT_CDP_PORT
-        || process.env.ADE_ELECTRON_REMOTE_DEBUGGING_PORT
-        || process.env.ADE_APP_CONTROL_CDP_PORT
-        || "9222",
-      10,
-    ),
+    cdpPort: parseFirstValidPort([
+      process.env.ADE_MODEL_AUDIT_CDP_PORT,
+      process.env.ADE_ELECTRON_REMOTE_DEBUGGING_PORT,
+      process.env.ADE_APP_CONTROL_CDP_PORT,
+    ]),
     startDev: false,
     projectRoot: repoRoot,
     laneId: null,
@@ -212,8 +210,8 @@ function parseArgs(argv) {
   options.resolvedSource = options.source === "auto"
     ? options.mode === "smoke" ? "chat-models" : "registry"
     : options.source;
-  if (options.mode === "smoke" && !Number.isFinite(options.cdpPort)) {
-    throw new Error("Smoke mode requires a valid CDP port.");
+  if ((options.mode === "smoke" || options.resolvedSource === "chat-models") && !Number.isFinite(options.cdpPort)) {
+    throw new Error("A valid CDP port is required for smoke mode or chat-models source.");
   }
   if (options.send && options.mode !== "smoke") {
     throw new Error("--send is only valid with --mode=smoke.");
@@ -233,6 +231,18 @@ function parsePort(value, label) {
   const parsed = parsePositiveInteger(value, label);
   if (parsed > 65535) throw new Error(`${label} must be <= 65535.`);
   return parsed;
+}
+
+function parseFirstValidPort(values, fallback = 9222) {
+  for (const value of values) {
+    if (value == null || String(value).trim() === "") continue;
+    try {
+      return parsePort(value, "CDP port");
+    } catch {
+      // Try the next configured source.
+    }
+  }
+  return fallback;
 }
 
 function parseProviders(values) {
@@ -292,12 +302,13 @@ function buildDescriptorIndexes(registry) {
   const byId = new Map();
   const byProviderModelId = new Map();
   for (const descriptor of registry.MODEL_REGISTRY ?? []) {
-    byId.set(descriptor.id, descriptor);
-    byId.set(descriptor.shortId, descriptor);
-    for (const alias of descriptor.aliases ?? []) {
-      byId.set(alias, descriptor);
-    }
     const provider = registry.resolveProviderGroupForModel(descriptor);
+    byId.set(descriptor.id, descriptor);
+    byId.set(`${provider}:${descriptor.id}`, descriptor);
+    if (descriptor.shortId) byId.set(`${provider}:${descriptor.shortId}`, descriptor);
+    for (const alias of descriptor.aliases ?? []) {
+      byId.set(`${provider}:${alias}`, descriptor);
+    }
     byProviderModelId.set(`${provider}:${descriptor.providerModelId}`, descriptor);
     byProviderModelId.set(`${provider}:${descriptor.id}`, descriptor);
   }
@@ -327,16 +338,23 @@ function modelFromDescriptor(registry, descriptor, advertisedProvider, source) {
 }
 
 function matchDescriptor(registry, indexes, provider, row) {
+  const belongsToProvider = (descriptor) =>
+    registry.resolveProviderGroupForModel(descriptor) === provider;
+
   const candidates = [
     row?.modelId,
     row?.id,
   ].filter((value) => typeof value === "string" && value.trim().length > 0);
   for (const candidate of candidates) {
     const normalized = candidate.trim();
-    const descriptor = indexes.byId.get(normalized)
-      ?? registry.resolveModelDescriptorForProvider?.(normalized, provider)
-      ?? registry.getModelById?.(normalized);
-    if (descriptor) return descriptor;
+    const scoped = indexes.byId.get(`${provider}:${normalized}`);
+    if (scoped && belongsToProvider(scoped)) return scoped;
+
+    const providerScoped = registry.resolveModelDescriptorForProvider?.(normalized, provider);
+    if (providerScoped && belongsToProvider(providerScoped)) return providerScoped;
+
+    const byId = indexes.byId.get(normalized) ?? registry.getModelById?.(normalized);
+    if (byId && belongsToProvider(byId)) return byId;
   }
   if (typeof row?.id === "string") {
     const descriptor = indexes.byProviderModelId.get(`${provider}:${row.id.trim()}`);

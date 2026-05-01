@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 const ADE_HOOK_SCRIPT_NAME = "ade-tool-gate.cjs";
+const ADE_HOOK_WINDOWS_COMMAND_NAME = "ade-tool-gate.cmd";
 
 type CursorHooksConfig = {
   version?: unknown;
@@ -32,16 +33,30 @@ function windowsCmdQuote(value: string): string {
   return `"${value}"`;
 }
 
+function windowsBatchQuote(value: string): string {
+  if (/[\0\r\n"]/.test(value)) {
+    throw new Error("Cursor hook command paths cannot contain control characters or double quotes.");
+  }
+  return `"${value.replace(/%/g, "%%")}"`;
+}
+
 function commandPathQuote(value: string): string {
   return process.platform === "win32" ? windowsCmdQuote(value) : shellQuote(value);
 }
 
-function buildHookCommand(nodePath: string | undefined, scriptPath: string): string {
+function buildHookCommand(
+  nodePath: string | undefined,
+  scriptPath: string,
+  windowsCommandPath?: string,
+): string {
   const explicitNode = nodePath?.trim();
   if (explicitNode) return `${commandPathQuote(explicitNode)} ${commandPathQuote(scriptPath)}`;
   if (process.versions.electron) {
     if (process.platform === "win32") {
-      return `set ELECTRON_RUN_AS_NODE=1&& ${windowsCmdQuote(process.execPath)} ${windowsCmdQuote(scriptPath)}`;
+      if (!windowsCommandPath) {
+        throw new Error("Cursor hook command script is required for packaged Electron on Windows.");
+      }
+      return `cmd /d /c ${windowsCmdQuote(windowsCommandPath)}`;
     }
     return `ELECTRON_RUN_AS_NODE=1 ${shellQuote(process.execPath)} ${shellQuote(scriptPath)}`;
   }
@@ -87,6 +102,10 @@ function isAdeHookEntry(value: unknown): boolean {
 
 export function cursorSdkHookScriptPath(userHomeDir: string): string {
   return path.join(userHomeDir, ".cursor", "hooks", ADE_HOOK_SCRIPT_NAME);
+}
+
+export function cursorSdkHookWindowsCommandPath(userHomeDir: string): string {
+  return path.join(userHomeDir, ".cursor", "hooks", ADE_HOOK_WINDOWS_COMMAND_NAME);
 }
 
 export function cursorSdkHooksJsonPath(userHomeDir: string): string {
@@ -210,8 +229,9 @@ async function main() {
 }
 
 main().catch((error) => {
+  const socketPath = parseArg("--socket") || process.env.ADE_CURSOR_SDK_SOCKET || "";
   const adeSession = process.env.ADE_CURSOR_SDK_SESSION_ID || process.env.ADE_CURSOR_SDK_LANE_ROOT;
-  if (!adeSession && !process.env.ADE_CURSOR_SDK_SOCKET) {
+  if (!socketPath && !adeSession) {
     allow();
     return;
   }
@@ -221,6 +241,22 @@ main().catch((error) => {
   fs.writeFileSync(scriptPath, source, { mode: 0o755 });
 }
 
+export function writeCursorSdkHookWindowsCommandScript(args: {
+  commandPath: string;
+  electronPath: string;
+  scriptPath: string;
+}): void {
+  ensureDir(path.dirname(args.commandPath));
+  const source = [
+    "@echo off",
+    "set ELECTRON_RUN_AS_NODE=1",
+    `${windowsBatchQuote(args.electronPath)} ${windowsBatchQuote(args.scriptPath)}`,
+    "exit /b %ERRORLEVEL%",
+    "",
+  ].join("\r\n");
+  fs.writeFileSync(args.commandPath, source, { mode: 0o755 });
+}
+
 export const __buildCursorSdkHookCommandForTests = buildHookCommand;
 
 export function ensureCursorSdkUserHook(args: {
@@ -228,17 +264,25 @@ export function ensureCursorSdkUserHook(args: {
   nodePath?: string;
 }): { hooksPath: string; scriptPath: string; command: string; changed: boolean } {
   const scriptPath = cursorSdkHookScriptPath(args.userHomeDir);
+  const windowsCommandPath = cursorSdkHookWindowsCommandPath(args.userHomeDir);
   const hooksPath = cursorSdkHooksJsonPath(args.userHomeDir);
   writeCursorSdkHookBridgeScript(scriptPath);
+  if (!args.nodePath?.trim() && process.versions.electron && process.platform === "win32") {
+    writeCursorSdkHookWindowsCommandScript({
+      commandPath: windowsCommandPath,
+      electronPath: process.execPath,
+      scriptPath,
+    });
+  }
 
   const config = readHooksFile(hooksPath);
   const hooks = readObject(config.hooks) ?? {};
   const existingPreToolUse = Array.isArray(hooks.preToolUse) ? hooks.preToolUse : [];
-  const command = buildHookCommand(args.nodePath, scriptPath);
+  const command = buildHookCommand(args.nodePath, scriptPath, windowsCommandPath);
   const adeEntry = { command, failClosed: true };
   const nextPreToolUse = [
-    ...existingPreToolUse.filter((entry) => !isAdeHookEntry(entry)),
     adeEntry,
+    ...existingPreToolUse.filter((entry) => !isAdeHookEntry(entry)),
   ];
   const nextConfig: CursorHooksConfig = {
     ...config,

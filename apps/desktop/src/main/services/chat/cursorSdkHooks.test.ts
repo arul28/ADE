@@ -7,8 +7,10 @@ import { describe, expect, it } from "vitest";
 import {
   __buildCursorSdkHookCommandForTests,
   cursorSdkHookScriptPath,
+  cursorSdkHookWindowsCommandPath,
   cursorSdkHooksJsonPath,
   ensureCursorSdkUserHook,
+  writeCursorSdkHookWindowsCommandScript,
 } from "./cursorSdkHooks";
 
 function tempHome(): string {
@@ -45,9 +47,9 @@ describe("Cursor SDK hook installation", () => {
       expect(config.version).toBe(2);
       expect(config.hooks.postToolUse).toEqual([{ command: "node post-hook.cjs" }]);
       expect(config.hooks.preToolUse).toHaveLength(2);
-      expect(config.hooks.preToolUse[0]).toEqual({ command: "node existing-hook.cjs", failClosed: false });
-      expect(config.hooks.preToolUse[1].command).toContain("ade-tool-gate.cjs");
-      expect(config.hooks.preToolUse[1].failClosed).toBe(true);
+      expect(config.hooks.preToolUse[0].command).toContain("ade-tool-gate.cjs");
+      expect(config.hooks.preToolUse[0].failClosed).toBe(true);
+      expect(config.hooks.preToolUse[1]).toEqual({ command: "node existing-hook.cjs", failClosed: false });
       expect(fs.existsSync(cursorSdkHookScriptPath(home))).toBe(true);
 
       const second = ensureCursorSdkUserHook({
@@ -93,6 +95,31 @@ describe("Cursor SDK hook installation", () => {
           ADE_CURSOR_SDK_SOCKET: path.join(home, "missing.sock"),
           ADE_CURSOR_SDK_SESSION_ID: "session-1",
           ADE_CURSOR_SDK_LANE_ROOT: "/tmp/lane",
+        },
+        encoding: "utf8",
+      });
+      const decision = JSON.parse(stdout);
+      expect(decision.permission).toBe("deny");
+      expect(decision.user_message).toContain("ENOENT");
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when a hook is launched with an explicit socket argument", () => {
+    const home = tempHome();
+    try {
+      ensureCursorSdkUserHook({ userHomeDir: home });
+      const stdout = execFileSync(process.execPath, [
+        cursorSdkHookScriptPath(home),
+        "--socket",
+        path.join(home, "missing.sock"),
+      ], {
+        input: "{}",
+        env: {
+          PATH: process.env.PATH ?? "",
+          HOME: home,
+          USERPROFILE: home,
         },
         encoding: "utf8",
       });
@@ -164,7 +191,7 @@ describe("Cursor SDK hook installation", () => {
     }
   });
 
-  it("uses a direct cmd set prefix for packaged Electron hooks on Windows", () => {
+  it("uses a cmd wrapper for packaged Electron hooks on Windows", () => {
     const originalPlatform = process.platform;
     const originalElectron = process.versions.electron;
     Object.defineProperty(process, "platform", { value: "win32", configurable: true });
@@ -173,11 +200,9 @@ describe("Cursor SDK hook installation", () => {
       const command = __buildCursorSdkHookCommandForTests(
         undefined,
         String.raw`C:\Users\Ada Lovelace\.cursor\hooks\ade-tool-gate.cjs`,
+        String.raw`C:\Users\Ada Lovelace\.cursor\hooks\ade-tool-gate.cmd`,
       );
-      expect(command).toBe(
-        `set ELECTRON_RUN_AS_NODE=1&& "${process.execPath}" "C:\\Users\\Ada Lovelace\\.cursor\\hooks\\ade-tool-gate.cjs"`,
-      );
-      expect(command).not.toContain("cmd /d /s /c");
+      expect(command).toBe(`cmd /d /c "C:\\Users\\Ada Lovelace\\.cursor\\hooks\\ade-tool-gate.cmd"`);
     } finally {
       Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
       if (originalElectron === undefined) {
@@ -185,6 +210,23 @@ describe("Cursor SDK hook installation", () => {
       } else {
         Object.defineProperty(process.versions, "electron", { value: originalElectron, configurable: true });
       }
+    }
+  });
+
+  it("writes the Windows Electron command wrapper with escaped batch percent signs", () => {
+    const home = tempHome();
+    try {
+      const commandPath = cursorSdkHookWindowsCommandPath(home);
+      writeCursorSdkHookWindowsCommandScript({
+        commandPath,
+        electronPath: String.raw`C:\Users\Ada%20\AppData\Local\ADE.exe`,
+        scriptPath: String.raw`C:\Users\Ada%20\.cursor\hooks\ade-tool-gate.cjs`,
+      });
+      expect(fs.readFileSync(commandPath, "utf8")).toContain(
+        String.raw`"C:\Users\Ada%%20\AppData\Local\ADE.exe" "C:\Users\Ada%%20\.cursor\hooks\ade-tool-gate.cjs"`,
+      );
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
     }
   });
 });

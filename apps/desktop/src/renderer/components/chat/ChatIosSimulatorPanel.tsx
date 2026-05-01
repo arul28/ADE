@@ -1364,7 +1364,7 @@ export function ChatIosSimulatorPanel({
     }
     if (!nextStatus.streamUrl) {
       setStreamStatus(nextStatus);
-      if (nextStatus.degradationReason || nextStatus.fallbackReason || !nextStatus.running) {
+      if (nextStatus.degradationReason || nextStatus.fallbackReason || nextStatus.lastError) {
         const detail = nextStatus.degradationReason ?? nextStatus.fallbackReason ?? nextStatus.lastError ?? LIVE_RECONNECT_MESSAGE;
         setLiveVisual((current) => current?.kind === "mjpeg"
           ? { ...current, status: "reconnecting", url: null, error: detail }

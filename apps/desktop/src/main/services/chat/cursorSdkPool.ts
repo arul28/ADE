@@ -66,7 +66,13 @@ export type CursorSdkPooled = {
 };
 
 let cursorSdkGenCounter = 0;
-const pools = new Map<string, { ref: number; generation: number; pooled: CursorSdkPooled }>();
+const pools = new Map<string, {
+  ref: number;
+  generation: number;
+  pooled: CursorSdkPooled;
+  stateRoot: string;
+  cleanupStateRoot: boolean;
+}>();
 const pendingInits = new Map<string, Promise<CursorSdkPooled>>();
 
 function hashKey(value: string): string {
@@ -184,6 +190,7 @@ export async function acquireCursorSdkConnection(args: {
   agentName?: string | null;
   sessionId: string;
   policy: CursorSdkPermissionPolicy;
+  cleanupStateRoot?: boolean;
   logger?: Logger;
 }): Promise<{ pooled: CursorSdkPooled; generation: number }> {
   const existing = pools.get(args.poolKey);
@@ -191,7 +198,10 @@ export async function acquireCursorSdkConnection(args: {
     existing.ref += 1;
     return { pooled: existing.pooled, generation: existing.generation };
   }
-  if (existing) pools.delete(args.poolKey);
+  if (existing) {
+    pools.delete(args.poolKey);
+    cleanupCursorSdkStateRoot(existing);
+  }
 
   let initOwner = false;
   let init = pendingInits.get(args.poolKey);
@@ -396,7 +406,10 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
     }
     pending.clear();
     for (const [poolKey, entry] of pools) {
-      if (entry.pooled === pooled) pools.delete(poolKey);
+      if (entry.pooled === pooled) {
+        pools.delete(poolKey);
+        cleanupCursorSdkStateRoot(entry);
+      }
     }
   });
 
@@ -419,12 +432,30 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
     // If init fails, the worker child is still alive — dispose it so we don't
     // leak a fork()'d process per failed connection attempt.
     pooled.dispose();
+    if (args.cleanupStateRoot) {
+      cleanupCursorSdkStateRoot({ stateRoot: paths.stateRoot, cleanupStateRoot: true });
+    }
     throw error;
   }
   pooled.agentId = result.agentId;
   const generation = ++cursorSdkGenCounter;
-  pools.set(args.poolKey, { ref: 1, generation, pooled });
+  pools.set(args.poolKey, {
+    ref: 1,
+    generation,
+    pooled,
+    stateRoot: paths.stateRoot,
+    cleanupStateRoot: args.cleanupStateRoot === true,
+  });
   return pooled;
+}
+
+function cleanupCursorSdkStateRoot(entry: { stateRoot: string; cleanupStateRoot: boolean }): void {
+  if (!entry.cleanupStateRoot) return;
+  try {
+    fs.rmSync(entry.stateRoot, { recursive: true, force: true });
+  } catch {
+    // Best effort: stale one-shot SDK state should never break request cleanup.
+  }
 }
 
 export function releaseCursorSdkConnection(poolKey: string, generation?: number): void {
@@ -436,6 +467,7 @@ export function releaseCursorSdkConnection(poolKey: string, generation?: number)
   if (entry.ref <= 0) {
     entry.pooled.dispose();
     pools.delete(poolKey);
+    cleanupCursorSdkStateRoot(entry);
   }
 }
 
@@ -456,6 +488,7 @@ export async function runCursorSdkCatalogRequest<T = unknown>(
     modelSdkId: "default",
     apiKey: args.apiKey,
     sessionId: "catalog",
+    cleanupStateRoot: true,
     policy: {
       chatMode: "agent",
       approvalPolicy: "never",
@@ -505,6 +538,7 @@ export async function runCursorSdkCloudRequest<T = unknown>(
     modelSdkId: "default",
     apiKey: args.apiKey,
     sessionId: "cloud-oneshot",
+    cleanupStateRoot: true,
     policy: {
       chatMode: "agent",
       approvalPolicy: "never",

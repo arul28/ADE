@@ -44,6 +44,13 @@ function securityArg(args: string[], flag: string): string {
   return index >= 0 ? args[index + 1] ?? "" : "";
 }
 
+function securityAccountsFor(command: string): string[] {
+  return spawnSyncMock.mock.calls
+    .map((call) => (call[1] as string[]).map(String))
+    .filter((args) => args[0] === command)
+    .map((args) => securityArg(args, "-a"));
+}
+
 function installSecurityMock(
   keychain: Map<string, string>,
   options: { failProviderIndexWrites?: boolean } = {},
@@ -151,6 +158,21 @@ describe("apiKeyStore", () => {
     expect(store.getApiKeyStoreStatus().macosKeychainError).toContain("provider index write failed");
   });
 
+  it("clears provider index write errors after a later successful Keychain write", async () => {
+    installSecurityMock(keychain, { failProviderIndexWrites: true });
+    const store = await loadStoreModule();
+    store.initApiKeyStore(tempRoot);
+
+    store.storeApiKey("cursor", "crsr_test_key");
+    expect(store.getApiKeyStoreStatus().macosKeychainError).toContain("provider index write failed");
+
+    installSecurityMock(keychain);
+    store.storeApiKey("openai", "openai_test_key");
+
+    expect(store.getApiKey("openai")).toBe("openai_test_key");
+    expect(store.getApiKeyStoreStatus().macosKeychainError).toBeNull();
+  });
+
   it("removes a deleted Keychain key from memory when the provider index write fails", async () => {
     keychain.set("__ade_provider_index__", JSON.stringify(["cursor"]));
     keychain.set("cursor", "crsr_test_key");
@@ -220,5 +242,38 @@ describe("apiKeyStore", () => {
       macosKeychainAvailable: true,
       decryptionFailed: true,
     });
+  });
+
+  it("uses the Keychain provider index instead of probing every known provider on cold load", async () => {
+    keychain.set("__ade_provider_index__", JSON.stringify(["cursor"]));
+    keychain.set("cursor", "crsr_keychain_key");
+
+    const store = await loadStoreModule();
+    store.initApiKeyStore(tempRoot);
+
+    expect(store.getApiKey("cursor")).toBe("crsr_keychain_key");
+    expect(store.listStoredProviders()).toEqual(["cursor"]);
+    expect(securityAccountsFor("find-generic-password")).toEqual([
+      "__ade_provider_index__",
+      "__ade_provider_index__",
+      "cursor",
+    ]);
+  });
+
+  it("reads an unindexed Keychain provider on demand without scanning unrelated providers", async () => {
+    keychain.set("cursor", "crsr_unindexed_key");
+
+    const store = await loadStoreModule();
+    store.initApiKeyStore(tempRoot);
+
+    expect(store.getApiKey("cursor")).toBe("crsr_unindexed_key");
+    expect(store.listStoredProviders()).toEqual(["cursor"]);
+    expect(securityAccountsFor("find-generic-password")).toEqual([
+      "__ade_provider_index__",
+      "__ade_provider_index__",
+      "cursor",
+      "__ade_provider_index__",
+    ]);
+    expect(securityAccountsFor("add-generic-password")).toContain("__ade_provider_index__");
   });
 });

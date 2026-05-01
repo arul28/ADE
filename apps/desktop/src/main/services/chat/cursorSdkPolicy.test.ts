@@ -142,6 +142,22 @@ describe("Cursor SDK policy", () => {
     }
   });
 
+  it("denies shell path escapes when hook payload input is a raw string", () => {
+    const policy = resolveCursorSdkPolicy({ cursorModeId: "full-auto" });
+    const laneRoot = "/tmp/ade-lane";
+    const request = summarizeCursorHook({
+      toolName: "shell",
+      toolInput: "cd /etc && cat /etc/passwd",
+    }, laneRoot);
+
+    expect(evaluateCursorSdkHook({
+      request,
+      policy,
+      laneRoot,
+    })).toBe("deny");
+    expect(request.reason).toContain("/etc");
+  });
+
   it("denies shell cwd escapes even when the command text is otherwise safe", () => {
     const policy = resolveCursorSdkPolicy({ cursorModeId: "full-auto" });
     const laneRoot = "/tmp/ade-lane";

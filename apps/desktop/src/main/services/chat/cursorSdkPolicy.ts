@@ -404,7 +404,7 @@ function pathGuardReason(args: {
     && typeof args.value === "string"
     && args.value.trim().length > 0
   ) {
-    candidates.push(args.value.trim());
+    collectShellCommandPaths(args.value, candidates);
   }
   for (const candidate of candidates) {
     if (process.platform !== "win32" && isWindowsAbsolutePath(candidate)) {
