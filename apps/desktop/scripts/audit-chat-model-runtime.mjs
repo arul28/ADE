@@ -861,8 +861,8 @@ function verifySessionFields(label, session, expected, issues) {
   if (actualModel !== expected.model) {
     issues.push(`${label}.model ${actualModel ?? "null"} != ${expected.model}`);
   }
-  if (expected.modelId && actualModelId !== expected.modelId) {
-    issues.push(`${label}.modelId ${actualModelId ?? "null"} != ${expected.modelId}`);
+  if (actualModelId !== (expected.modelId ?? null)) {
+    issues.push(`${label}.modelId ${actualModelId ?? "null"} != ${expected.modelId ?? "null"}`);
   }
   if (actualReasoning !== (expected.reasoningEffort ?? null)) {
     issues.push(`${label}.reasoningEffort ${actualReasoning ?? "null"} != ${expected.reasoningEffort ?? "null"}`);
@@ -998,9 +998,9 @@ function summarizeModels(models) {
   return Object.fromEntries(byProvider.entries());
 }
 
-function printHumanSummary({ options, models, cases, results }) {
+function printHumanSummary({ options, models, cases, results, ok }) {
   const failed = results.filter((result) => !result.ok);
-  process.stdout.write(`chat model runtime audit: ${failed.length ? "failed" : "ok"}\n`);
+  process.stdout.write(`chat model runtime audit: ${ok ? "ok" : "failed"}\n`);
   process.stdout.write(`mode=${options.mode} source=${options.resolvedSource} providers=${options.providers.join(",")}\n`);
   process.stdout.write(`models=${models.length} cases=${cases.length}\n`);
   for (const [provider, summary] of Object.entries(summarizeModels(models))) {
@@ -1094,7 +1094,7 @@ async function main() {
     if (options.json) {
       printJson(payload);
     } else {
-      printHumanSummary({ options, models, cases, results });
+      printHumanSummary({ options, models, cases, results, ok });
     }
     if (!ok) process.exitCode = 1;
   } finally {

@@ -249,12 +249,16 @@ async function fetchCursorModelsFromSdk(
   generation: number,
   timeoutMs: number,
 ): Promise<CursorCliModelRow[]> {
+  let sdkSucceeded = false;
   const rows = await withTimeout((async () => {
     let sdkError: unknown = null;
     try {
       const { Cursor } = await import("@cursor/sdk");
       const sdkRows = normalizeSdkModelRows(await Cursor.models.list({ apiKey }));
-      if (sdkRows.length) return sdkRows;
+      if (sdkRows.length) {
+        sdkSucceeded = true;
+        return sdkRows;
+      }
     } catch (error) {
       sdkError = error;
     }
@@ -277,10 +281,12 @@ async function fetchCursorModelsFromSdk(
   if (rows.length && generation === sdkCacheGeneration) {
     sdkCached = { at: Date.now(), keyHash, models: rows };
   }
-  if (rows.length && sdkLastFailure?.keyHash === keyHash) {
+  if (sdkSucceeded && rows.length && sdkLastFailure?.keyHash === keyHash) {
     sdkLastFailure = null;
   }
-  recordCursorModelDiscoverySuccess(rows);
+  if (sdkSucceeded) {
+    recordCursorModelDiscoverySuccess(rows);
+  }
   return rows;
 }
 

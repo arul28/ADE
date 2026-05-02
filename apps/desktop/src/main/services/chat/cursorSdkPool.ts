@@ -70,7 +70,9 @@ const pools = new Map<string, {
   ref: number;
   generation: number;
   pooled: CursorSdkPooled;
+  cacheRoot: string;
   stateRoot: string;
+  socketPath: string;
   cleanupStateRoot: boolean;
 }>();
 const pendingInits = new Map<string, Promise<CursorSdkPooled>>();
@@ -200,7 +202,7 @@ export async function acquireCursorSdkConnection(args: {
   }
   if (existing) {
     pools.delete(args.poolKey);
-    cleanupCursorSdkStateRoot(existing);
+    cleanupCursorSdkRuntimePaths(existing);
   }
 
   let initOwner = false;
@@ -408,7 +410,7 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
     for (const [poolKey, entry] of pools) {
       if (entry.pooled === pooled) {
         pools.delete(poolKey);
-        cleanupCursorSdkStateRoot(entry);
+        cleanupCursorSdkRuntimePaths(entry);
       }
     }
   });
@@ -433,7 +435,12 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
     // leak a fork()'d process per failed connection attempt.
     pooled.dispose();
     if (args.cleanupStateRoot) {
-      cleanupCursorSdkStateRoot({ stateRoot: paths.stateRoot, cleanupStateRoot: true });
+      cleanupCursorSdkRuntimePaths({
+        cacheRoot: paths.cacheRoot,
+        stateRoot: paths.stateRoot,
+        socketPath: paths.socketPath,
+        cleanupStateRoot: true,
+      });
     }
     throw error;
   }
@@ -443,18 +450,32 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
     ref: 1,
     generation,
     pooled,
+    cacheRoot: paths.cacheRoot,
     stateRoot: paths.stateRoot,
+    socketPath: paths.socketPath,
     cleanupStateRoot: args.cleanupStateRoot === true,
   });
   return pooled;
 }
 
-function cleanupCursorSdkStateRoot(entry: { stateRoot: string; cleanupStateRoot: boolean }): void {
+function cleanupCursorSdkRuntimePaths(entry: {
+  cacheRoot?: string;
+  stateRoot: string;
+  socketPath?: string;
+  cleanupStateRoot: boolean;
+}): void {
   if (!entry.cleanupStateRoot) return;
-  try {
-    fs.rmSync(entry.stateRoot, { recursive: true, force: true });
-  } catch {
-    // Best effort: stale one-shot SDK state should never break request cleanup.
+  const targets = new Set<string>();
+  targets.add(entry.cacheRoot ?? entry.stateRoot);
+  if (process.platform !== "win32" && entry.socketPath) {
+    targets.add(path.dirname(entry.socketPath));
+  }
+  for (const target of targets) {
+    try {
+      fs.rmSync(target, { recursive: true, force: true });
+    } catch {
+      // Best effort: stale one-shot SDK state should never break request cleanup.
+    }
   }
 }
 
@@ -467,7 +488,7 @@ export function releaseCursorSdkConnection(poolKey: string, generation?: number)
   if (entry.ref <= 0) {
     entry.pooled.dispose();
     pools.delete(poolKey);
-    cleanupCursorSdkStateRoot(entry);
+    cleanupCursorSdkRuntimePaths(entry);
   }
 }
 

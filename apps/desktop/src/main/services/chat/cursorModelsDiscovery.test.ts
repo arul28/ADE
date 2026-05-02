@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const cursorModelsListMock = vi.hoisted(() => vi.fn());
+const reportProviderRuntimeAuthFailureMock = vi.hoisted(() => vi.fn());
+const reportProviderRuntimeReadyMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@cursor/sdk", () => ({
   Cursor: {
@@ -8,6 +10,11 @@ vi.mock("@cursor/sdk", () => ({
       list: (...args: unknown[]) => cursorModelsListMock(...args),
     },
   },
+}));
+
+vi.mock("../ai/providerRuntimeHealth", () => ({
+  reportProviderRuntimeAuthFailure: (...args: unknown[]) => reportProviderRuntimeAuthFailureMock(...args),
+  reportProviderRuntimeReady: (...args: unknown[]) => reportProviderRuntimeReadyMock(...args),
 }));
 
 import {
@@ -20,6 +27,8 @@ import {
 
 beforeEach(() => {
   cursorModelsListMock.mockReset();
+  reportProviderRuntimeAuthFailureMock.mockReset();
+  reportProviderRuntimeReadyMock.mockReset();
   clearCursorCliModelsCache();
   vi.useRealTimers();
 });
@@ -119,6 +128,7 @@ describe("parseCursorCliModelsStdout", () => {
       "cursor/composer-2",
     ]);
     expect(cursorModelsListMock).toHaveBeenCalledWith({ apiKey: "crsr_test" });
+    expect(reportProviderRuntimeReadyMock).toHaveBeenCalledWith("cursor");
   });
 
   it("falls back to Cursor's official models API when SDK model listing fails", async () => {
@@ -146,6 +156,7 @@ describe("parseCursorCliModelsStdout", () => {
         }),
       }),
     );
+    expect(reportProviderRuntimeReadyMock).not.toHaveBeenCalled();
   });
 
   it("uses only conservative fallback rows when Cursor model APIs cannot enumerate", async () => {

@@ -463,7 +463,6 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
       invalidateAiDiscoveryCache();
       setVerificationByProvider((prev) => ({ ...prev, [provider]: result }));
       setNotice(result.ok ? `${provider} connection verified.` : `${provider} verification failed.`);
-      setVerifyingProvider(null);
       await refreshStatus({ force: true, refreshOpenCodeInventory: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -493,7 +492,6 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
       invalidateAiDiscoveryCache();
       setVerificationByProvider((prev) => ({ ...prev, cursor: result }));
       setNotice(result.ok ? "Cursor connection verified." : "Cursor verification failed.");
-      setVerifyingProvider(null);
       await refreshStatus({ force: true, refreshOpenCodeInventory: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
