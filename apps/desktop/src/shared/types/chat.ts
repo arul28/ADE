@@ -652,6 +652,42 @@ export type AgentChatModelInfo = {
   color?: string;
 };
 
+export type AgentChatModelCatalogModel = AgentChatModelInfo & {
+  /** Canonical ADE registry id used for update/create calls. */
+  id: ModelId;
+  /** Provider/runtime model ref ADE sends under the hood. */
+  runtimeModelId: string;
+  provider: AgentChatProvider;
+  providerKey: string;
+  groupKey: AgentChatProvider;
+  isAvailable: boolean;
+};
+
+export type AgentChatModelCatalogSubsection = {
+  key: string;
+  label: string;
+  models: AgentChatModelCatalogModel[];
+};
+
+export type AgentChatModelCatalogProvider = {
+  key: string;
+  displayName: string;
+  badgeColor: string;
+  modelCount: number;
+  subsections: AgentChatModelCatalogSubsection[];
+};
+
+export type AgentChatModelCatalogGroup = {
+  key: AgentChatProvider;
+  displayName: string;
+  providers: AgentChatModelCatalogProvider[];
+};
+
+export type AgentChatModelCatalog = {
+  groups: AgentChatModelCatalogGroup[];
+  fetchedAt: string;
+};
+
 export type AgentChatCreateArgs = {
   laneId: string;
   provider: AgentChatProvider;

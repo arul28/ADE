@@ -19,6 +19,7 @@ import type {
 type PendingRpc = {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
+  type: CursorSdkWorkerRequest["type"];
 };
 
 export type CursorSdkRuntimeMeta = {
@@ -65,7 +66,15 @@ export type CursorSdkPooled = {
 };
 
 let cursorSdkGenCounter = 0;
-const pools = new Map<string, { ref: number; generation: number; pooled: CursorSdkPooled }>();
+const pools = new Map<string, {
+  ref: number;
+  generation: number;
+  pooled: CursorSdkPooled;
+  cacheRoot: string;
+  stateRoot: string;
+  socketPath: string;
+  cleanupStateRoot: boolean;
+}>();
 const pendingInits = new Map<string, Promise<CursorSdkPooled>>();
 
 function hashKey(value: string): string {
@@ -84,11 +93,12 @@ function resolveWorkerPath(): string {
 }
 
 function socketPathFor(poolKey: string): string {
-  const name = `ade-cursor-sdk-${hashKey(poolKey)}.sock`;
+  const name = hashKey(poolKey);
   if (process.platform === "win32") {
-    return `\\\\.\\pipe\\${name}`;
+    return `\\\\.\\pipe\\ade-cursor-sdk-${name}`;
   }
-  return path.join(os.tmpdir(), name);
+  const userPart = typeof process.getuid === "function" ? String(process.getuid()) : hashKey(os.homedir());
+  return path.join(os.tmpdir(), `ade-cursor-sdk-${userPart}`, name, "hook.sock");
 }
 
 function sanitizeEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
@@ -98,16 +108,77 @@ function sanitizeEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return env;
 }
 
+function ensurePrivateDirectory(dir: string): void {
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  let fd: number | null = null;
+  try {
+    // Older Node/platform pairs can omit these open flags; fstat below still
+    // verifies the directory shape when the constants are unavailable.
+    fd = fs.openSync(
+      dir,
+      fs.constants.O_RDONLY
+        | (fs.constants.O_DIRECTORY ?? 0)
+        | (fs.constants.O_NOFOLLOW ?? 0),
+    );
+    const stat = fs.fstatSync(fd);
+    if (!stat.isDirectory()) {
+      throw new Error(`Cursor SDK socket directory is not a private directory: ${dir}`);
+    }
+    if (typeof process.getuid === "function" && stat.uid !== process.getuid()) {
+      throw new Error(`Cursor SDK socket directory is not owned by the current user: ${dir}`);
+    }
+    fs.fchmodSync(fd, 0o700);
+  } finally {
+    if (fd !== null) fs.closeSync(fd);
+  }
+}
+
+function ensurePrivateSocketPath(socketPath: string): void {
+  if (process.platform === "win32") return;
+  const rootDir = path.dirname(path.dirname(socketPath));
+  const socketDir = path.dirname(socketPath);
+  ensurePrivateDirectory(rootDir);
+  ensurePrivateDirectory(socketDir);
+}
+
+export function resolveCursorSdkUserHome(env: NodeJS.ProcessEnv = process.env): string {
+  const preferred = process.platform === "win32"
+    ? env.USERPROFILE?.trim() || env.HOME?.trim()
+    : env.HOME?.trim() || env.USERPROFILE?.trim();
+  return preferred || os.homedir();
+}
+
 export function buildCursorSdkPaths(args: {
   projectRoot: string;
   poolKey: string;
-}): { homeDir: string; stateRoot: string; socketPath: string } {
+  userHomeDir?: string;
+}): { userHomeDir: string; cacheRoot: string; stateRoot: string; socketPath: string } {
   const keyHash = hashKey(args.poolKey);
   const cacheRoot = path.join(args.projectRoot, ".ade", "cache", "cursor-sdk", keyHash);
   return {
-    homeDir: path.join(cacheRoot, "home"),
+    userHomeDir: args.userHomeDir?.trim() || resolveCursorSdkUserHome(),
+    cacheRoot,
     stateRoot: path.join(cacheRoot, "state"),
     socketPath: socketPathFor(args.poolKey),
+  };
+}
+
+export function buildCursorSdkWorkerEnv(args: {
+  baseEnv?: NodeJS.ProcessEnv;
+  userHomeDir: string;
+  stateRoot: string;
+  socketPath: string;
+  workspacePath: string;
+  sessionId: string;
+}): NodeJS.ProcessEnv {
+  return {
+    ...sanitizeEnv(args.baseEnv ?? process.env),
+    HOME: args.userHomeDir,
+    USERPROFILE: args.userHomeDir,
+    ADE_CURSOR_SDK_SOCKET: args.socketPath,
+    ADE_CURSOR_SDK_LANE_ROOT: args.workspacePath,
+    ADE_CURSOR_SDK_SESSION_ID: args.sessionId,
+    ADE_CURSOR_SDK_STATE_ROOT: args.stateRoot,
   };
 }
 
@@ -121,6 +192,7 @@ export async function acquireCursorSdkConnection(args: {
   agentName?: string | null;
   sessionId: string;
   policy: CursorSdkPermissionPolicy;
+  cleanupStateRoot?: boolean;
   logger?: Logger;
 }): Promise<{ pooled: CursorSdkPooled; generation: number }> {
   const existing = pools.get(args.poolKey);
@@ -128,7 +200,10 @@ export async function acquireCursorSdkConnection(args: {
     existing.ref += 1;
     return { pooled: existing.pooled, generation: existing.generation };
   }
-  if (existing) pools.delete(args.poolKey);
+  if (existing) {
+    pools.delete(args.poolKey);
+    cleanupCursorSdkRuntimePaths(existing);
+  }
 
   let initOwner = false;
   let init = pendingInits.get(args.poolKey);
@@ -154,16 +229,18 @@ export async function acquireCursorSdkConnection(args: {
 async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSdkConnection>[0]): Promise<CursorSdkPooled> {
   const workerPath = resolveWorkerPath();
   const paths = buildCursorSdkPaths({ projectRoot: args.projectRoot, poolKey: args.poolKey });
-  fs.mkdirSync(paths.homeDir, { recursive: true });
   fs.mkdirSync(paths.stateRoot, { recursive: true });
+  ensurePrivateSocketPath(paths.socketPath);
 
   const child = fork(workerPath, [], {
     cwd: args.workspacePath,
-    env: {
-      ...sanitizeEnv(process.env),
-      HOME: paths.homeDir,
-      USERPROFILE: paths.homeDir,
-    },
+    env: buildCursorSdkWorkerEnv({
+      userHomeDir: paths.userHomeDir,
+      stateRoot: paths.stateRoot,
+      socketPath: paths.socketPath,
+      workspacePath: args.workspacePath,
+      sessionId: args.sessionId,
+    }),
     stdio: ["ignore", "pipe", "pipe", "ipc"],
     execArgv: [],
   });
@@ -197,6 +274,7 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
         pending.set(requestId, {
           resolve: (value) => resolve(value as T),
           reject,
+          type,
         });
         child.send?.({ type, requestId, payload } as CursorSdkWorkerRequest);
       });
@@ -226,7 +304,7 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
       if (!waiter) return;
       pending.delete(message.requestId);
       if (message.ok) waiter.resolve(message.result);
-      else waiter.reject(new Error(message.error));
+      else waiter.reject(new Error(`Cursor SDK ${waiter.type} failed: ${message.error || "unknown error"}`));
       return;
     }
     if (message.type === "ready") {
@@ -330,14 +408,17 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
     }
     pending.clear();
     for (const [poolKey, entry] of pools) {
-      if (entry.pooled === pooled) pools.delete(poolKey);
+      if (entry.pooled === pooled) {
+        pools.delete(poolKey);
+        cleanupCursorSdkRuntimePaths(entry);
+      }
     }
   });
 
   const initPayload: CursorSdkWorkerInit = {
     sessionId: args.sessionId,
     laneRoot: args.workspacePath,
-    homeDir: paths.homeDir,
+    userHomeDir: paths.userHomeDir,
     stateRoot: paths.stateRoot,
     socketPath: paths.socketPath,
     modelSdkId: args.modelSdkId,
@@ -353,12 +434,49 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
     // If init fails, the worker child is still alive — dispose it so we don't
     // leak a fork()'d process per failed connection attempt.
     pooled.dispose();
+    if (args.cleanupStateRoot) {
+      cleanupCursorSdkRuntimePaths({
+        cacheRoot: paths.cacheRoot,
+        stateRoot: paths.stateRoot,
+        socketPath: paths.socketPath,
+        cleanupStateRoot: true,
+      });
+    }
     throw error;
   }
   pooled.agentId = result.agentId;
   const generation = ++cursorSdkGenCounter;
-  pools.set(args.poolKey, { ref: 1, generation, pooled });
+  pools.set(args.poolKey, {
+    ref: 1,
+    generation,
+    pooled,
+    cacheRoot: paths.cacheRoot,
+    stateRoot: paths.stateRoot,
+    socketPath: paths.socketPath,
+    cleanupStateRoot: args.cleanupStateRoot === true,
+  });
   return pooled;
+}
+
+function cleanupCursorSdkRuntimePaths(entry: {
+  cacheRoot?: string;
+  stateRoot: string;
+  socketPath?: string;
+  cleanupStateRoot: boolean;
+}): void {
+  if (!entry.cleanupStateRoot) return;
+  const targets = new Set<string>();
+  targets.add(entry.cacheRoot ?? entry.stateRoot);
+  if (process.platform !== "win32" && entry.socketPath) {
+    targets.add(path.dirname(entry.socketPath));
+  }
+  for (const target of targets) {
+    try {
+      fs.rmSync(target, { recursive: true, force: true });
+    } catch {
+      // Best effort: stale one-shot SDK state should never break request cleanup.
+    }
+  }
 }
 
 export function releaseCursorSdkConnection(poolKey: string, generation?: number): void {
@@ -370,6 +488,7 @@ export function releaseCursorSdkConnection(poolKey: string, generation?: number)
   if (entry.ref <= 0) {
     entry.pooled.dispose();
     pools.delete(poolKey);
+    cleanupCursorSdkRuntimePaths(entry);
   }
 }
 
@@ -390,6 +509,7 @@ export async function runCursorSdkCatalogRequest<T = unknown>(
     modelSdkId: "default",
     apiKey: args.apiKey,
     sessionId: "catalog",
+    cleanupStateRoot: true,
     policy: {
       chatMode: "agent",
       approvalPolicy: "never",
@@ -439,6 +559,7 @@ export async function runCursorSdkCloudRequest<T = unknown>(
     modelSdkId: "default",
     apiKey: args.apiKey,
     sessionId: "cloud-oneshot",
+    cleanupStateRoot: true,
     policy: {
       chatMode: "agent",
       approvalPolicy: "never",

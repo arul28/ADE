@@ -302,6 +302,8 @@ async function validatePackagedRuntime(appPath, description) {
   const adeCliPath = path.join(resourcesPath, "ade-cli", "cli.cjs");
   const adeCliBinPath = path.join(resourcesPath, "ade-cli", "bin", "ade");
   const adeCliInstallerPath = path.join(resourcesPath, "ade-cli", "install-path.sh");
+  const iosSimHelperRoot = path.join(resourcesPath, "native", "ios-sim-helpers");
+  const iosSimHelperBuildScript = path.join(iosSimHelperRoot, "build.sh");
   const nodeModulesPath = path.join(unpackedPath, "node_modules");
   const nodePtyModulePath = path.join(nodeModulesPath, "node-pty");
   const smokeScriptPath = path.join(unpackedPath, "dist", "main", "packagedRuntimeSmoke.cjs");
@@ -313,8 +315,13 @@ async function validatePackagedRuntime(appPath, description) {
   await assertPathExists(adeCliPath, "bundled ADE CLI entry");
   await assertPathExists(adeCliBinPath, "bundled ADE CLI wrapper");
   await assertPathExists(adeCliInstallerPath, "bundled ADE CLI PATH installer");
+  await assertPathExists(iosSimHelperBuildScript, "bundled iOS simulator helper build script");
+  await assertPathExists(path.join(iosSimHelperRoot, "sim-capture.swift"), "bundled iOS simulator capture helper source");
+  await assertPathExists(path.join(iosSimHelperRoot, "sim-input.m"), "bundled iOS simulator input helper source");
+  await assertPathMissing(path.join(iosSimHelperRoot, "build"), "bundled iOS simulator helper build cache");
   await assertExecutable(adeCliBinPath, "bundled ADE CLI wrapper");
   await assertExecutable(adeCliInstallerPath, "bundled ADE CLI PATH installer");
+  await assertExecutable(iosSimHelperBuildScript, "bundled iOS simulator helper build script");
   await assertPathExists(nodePtyModulePath, "unpacked node-pty module");
   await assertPathExists(smokeScriptPath, "unpacked packaged runtime smoke script");
   await validatePackageHygiene(appPath, description);

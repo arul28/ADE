@@ -1,6 +1,7 @@
 /** Shared session/terminal utilities for the renderer. */
 
 import type { AgentChatProvider, AgentChatSession, TerminalSessionSummary, TerminalToolType } from "../../shared/types";
+import { isProviderSlashCommandInput } from "../../shared/chatSlashCommands";
 
 /** Returns true if the tool type represents an AI chat session. */
 export function isChatToolType(toolType: string | null | undefined): boolean {
@@ -171,6 +172,7 @@ export function isLowSignalSessionLabel(raw: string | null | undefined): boolean
     .toLowerCase();
 
   if (!collapsed.length) return true;
+  if (isProviderSlashCommandInput(normalized)) return true;
   if (/\b(error|exception|apicall|traceback|stack\s*trace)\b/i.test(collapsed)) return true;
   if (/^(session closed|chat completed)\b/u.test(collapsed)) return true;
 

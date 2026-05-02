@@ -478,7 +478,7 @@ struct WorkChatSessionView: View {
             Task { @MainActor in
               modelUpdateInFlight = true
               defer { modelUpdateInFlight = false }
-              let wasCurrentModel = option.id == currentModelId
+              let wasCurrentModel = workModelIdsEquivalent(option.id, currentModelId)
               if !wasCurrentModel {
                 await onSelectModel(option.id)
               }

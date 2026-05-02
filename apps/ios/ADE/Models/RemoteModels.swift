@@ -1850,7 +1850,7 @@ struct AgentChatTranscriptResponse: Codable, Equatable {
   var totalEntries: Int
 }
 
-struct AgentChatModelReasoningEffort: Codable, Equatable, Identifiable {
+struct AgentChatModelReasoningEffort: Codable, Equatable, Hashable, Identifiable {
   var id: String { effort }
   var effort: String
   var description: String
@@ -1868,6 +1868,53 @@ struct AgentChatModelInfo: Codable, Equatable, Identifiable {
   var supportsReasoning: Bool?
   var supportsTools: Bool?
   var color: String?
+}
+
+struct AgentChatModelCatalogModel: Codable, Equatable, Identifiable {
+  var id: String
+  var runtimeModelId: String
+  var provider: String
+  var providerKey: String
+  var groupKey: String
+  var displayName: String
+  var description: String?
+  var isDefault: Bool
+  var reasoningEfforts: [AgentChatModelReasoningEffort]?
+  var maxThinkingTokens: Int?
+  var modelId: String?
+  var family: String?
+  var supportsReasoning: Bool?
+  var supportsTools: Bool?
+  var color: String?
+  var isAvailable: Bool
+}
+
+struct AgentChatModelCatalogSubsection: Codable, Equatable, Identifiable {
+  var id: String { key }
+  var key: String
+  var label: String
+  var models: [AgentChatModelCatalogModel]
+}
+
+struct AgentChatModelCatalogProvider: Codable, Equatable, Identifiable {
+  var id: String { key }
+  var key: String
+  var displayName: String
+  var badgeColor: String
+  var modelCount: Int
+  var subsections: [AgentChatModelCatalogSubsection]
+}
+
+struct AgentChatModelCatalogGroup: Codable, Equatable, Identifiable {
+  var id: String { key }
+  var key: String
+  var displayName: String
+  var providers: [AgentChatModelCatalogProvider]
+}
+
+struct AgentChatModelCatalog: Codable, Equatable {
+  var groups: [AgentChatModelCatalogGroup]
+  var fetchedAt: String
 }
 
 struct LaneListSnapshot: Codable, Identifiable, Equatable {

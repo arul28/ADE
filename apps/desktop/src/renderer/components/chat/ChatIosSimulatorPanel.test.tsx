@@ -335,6 +335,55 @@ describe("ChatIosSimulatorPanel", () => {
     expect(api.startStream).toHaveBeenLastCalledWith({ deviceUdid: device.udid, backend: "auto" });
   });
 
+  it("does not stop a service-managed fallback while it is switching backends", async () => {
+    const { api, emit } = installIosSimulatorApi();
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(api.startStream).toHaveBeenCalledTimes(1), { timeout: 3_000 });
+    const stopCallsBeforeFallback = api.stopStream.mock.calls.length;
+
+    act(() => {
+      emit({
+        type: "stream-error",
+        status: streamStatus({
+          running: false,
+          backend: "idb-mjpeg",
+          streamUrl: null,
+          lastError: "idb MJPEG produced no frames; falling back to simulator screenshots.",
+          fallbackReason: "Using simctl-screenshot-poll fallback because idb MJPEG produced no frames.",
+          degradationReason: "idb MJPEG produced no frames; falling back to simulator screenshots.",
+        }),
+      });
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 700));
+
+    expect(api.stopStream).toHaveBeenCalledTimes(stopCallsBeforeFallback);
+    expect(api.startStream).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      emit({
+        type: "stream-started",
+        status: streamStatus({
+          backend: "simctl-screenshot-poll",
+          streamUrl: "http://127.0.0.1:5678/ios-simulator/stream.mjpg",
+          fallbackReason: "Using simctl-screenshot-poll fallback because idb MJPEG produced no frames.",
+          degradationReason: "idb MJPEG produced no frames; falling back to simulator screenshots.",
+        }),
+      });
+    });
+
+    await waitFor(() => expect(api.startStream).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText(/Live stream failed/)).toBeNull();
+  });
+
   it("forces the idb fallback after repeated native stream failures", async () => {
     const { api, emit } = installIosSimulatorApi({ autoBackend: "iosurface-indigo" });
 

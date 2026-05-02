@@ -130,6 +130,22 @@ describe("openCodeRuntime", () => {
     expect(mockState.sharedLease.close).toHaveBeenCalledWith("handle_close");
   });
 
+  it("omits the session title when ADE wants OpenCode to auto-name", async () => {
+    await startOpenCodeSession({
+      directory: "/repo",
+      title: null,
+      leaseKind: "shared",
+      projectConfig: { ai: {} },
+      ownerKind: "chat",
+      ownerId: "chat-1",
+      ownerKey: "chat:chat-1",
+    });
+
+    expect(mockState.createSession).toHaveBeenCalledWith(expect.objectContaining({
+      body: {},
+    }));
+  });
+
   it("applies no scoped tool selection to one-shot prompts", async () => {
     const result = await runOpenCodeTextPrompt({
       directory: "/repo",

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BUILD_ROOT="$SCRIPT_DIR/build"
+BUILD_ROOT="${ADE_IOS_SIM_HELPER_BUILD_ROOT:-"$SCRIPT_DIR/build"}"
 PRINT_JSON=0
 SMOKE=0
 
@@ -80,6 +80,15 @@ if [[ ! -x "$CAPTURE" || ! -x "$INPUT" ]]; then
     -framework CoreGraphics \
     "$SCRIPT_DIR/sim-input.m" \
     -o "$INPUT"
+fi
+
+if command -v codesign >/dev/null 2>&1; then
+  if ! codesign --force --sign - "$CAPTURE" >/dev/null 2>&1; then
+    echo "warning: failed to ad-hoc sign $CAPTURE" >&2
+  fi
+  if ! codesign --force --sign - "$INPUT" >/dev/null 2>&1; then
+    echo "warning: failed to ad-hoc sign $INPUT" >&2
+  fi
 fi
 
 if [[ "$SMOKE" == "1" ]]; then

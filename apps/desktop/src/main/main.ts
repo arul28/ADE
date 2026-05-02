@@ -4692,7 +4692,11 @@ app.whenReady().then(async () => {
 
   try {
     const { recoverManagedOpenCodeOrphans } = require("./services/opencode/openCodeServerManager");
-    await recoverManagedOpenCodeOrphans({ force: true, logger: getActiveContext().logger });
+    void recoverManagedOpenCodeOrphans({ force: true, logger: getActiveContext().logger }).catch((error: unknown) => {
+      getActiveContext().logger.warn("opencode.orphan_recovery_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
   } catch (error) {
     getActiveContext().logger.warn("opencode.orphan_recovery_failed", {
       error: error instanceof Error ? error.message : String(error),

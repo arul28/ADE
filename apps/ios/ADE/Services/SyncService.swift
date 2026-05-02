@@ -668,6 +668,12 @@ final class SyncService: ObservableObject {
   private let chatModelsCacheTTL: TimeInterval = 300
   private var chatModelsCache: [String: ChatModelsCacheEntry] = [:]
   private var chatModelsInFlight: [String: Task<[AgentChatModelInfo], Error>] = [:]
+  private struct ChatModelCatalogCacheEntry {
+    var catalog: AgentChatModelCatalog
+    var fetchedAt: Date
+  }
+  private var chatModelCatalogCache: [String: ChatModelCatalogCacheEntry] = [:]
+  private var chatModelCatalogInFlight: [String: Task<AgentChatModelCatalog, Error>] = [:]
 
   private let legacyDraftKey = "ade.sync.connectionDraft"
   private let profileKey = "ade.sync.hostProfile"
@@ -3244,6 +3250,7 @@ final class SyncService: ObservableObject {
   func rebaseContinueGit(laneId: String) async throws { _ = try await sendCommand(action: "git.rebaseContinue", args: ["laneId": laneId]) }
   func rebaseAbortGit(laneId: String) async throws { _ = try await sendCommand(action: "git.rebaseAbort", args: ["laneId": laneId]) }
 
+  @MainActor
   func listChatModels(provider: String) async throws -> [AgentChatModelInfo] {
     let normalizedProvider = provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     let cacheKey = chatModelsCacheKey(provider: normalizedProvider)
@@ -3277,6 +3284,52 @@ final class SyncService: ObservableObject {
       chatModelsInFlight[cacheKey] = nil
       if let cached = chatModelsCache[cacheKey] {
         return cached.models
+      }
+      throw error
+    }
+  }
+
+  @MainActor
+  func cachedChatModelCatalog() -> AgentChatModelCatalog? {
+    let cacheKey = chatModelsCacheKey(provider: "catalog")
+    guard let cached = chatModelCatalogCache[cacheKey] else { return nil }
+    guard Date().timeIntervalSince(cached.fetchedAt) < chatModelsCacheTTL else { return nil }
+    return cached.catalog
+  }
+
+  @MainActor
+  func getChatModelCatalog() async throws -> AgentChatModelCatalog {
+    let cacheKey = chatModelsCacheKey(provider: "catalog")
+    let now = Date()
+
+    if let cached = chatModelCatalogCache[cacheKey],
+       now.timeIntervalSince(cached.fetchedAt) < chatModelsCacheTTL {
+      return cached.catalog
+    }
+
+    if let task = chatModelCatalogInFlight[cacheKey] {
+      return try await task.value
+    }
+
+    let task = Task { @MainActor [weak self] in
+      guard let self else { throw CancellationError() }
+      return try await self.sendDecodableCommand(
+        action: "chat.modelCatalog",
+        args: [:],
+        as: AgentChatModelCatalog.self
+      )
+    }
+    chatModelCatalogInFlight[cacheKey] = task
+
+    do {
+      let catalog = try await task.value
+      chatModelCatalogCache[cacheKey] = ChatModelCatalogCacheEntry(catalog: catalog, fetchedAt: now)
+      chatModelCatalogInFlight[cacheKey] = nil
+      return catalog
+    } catch {
+      chatModelCatalogInFlight[cacheKey] = nil
+      if let cached = chatModelCatalogCache[cacheKey] {
+        return cached.catalog
       }
       throw error
     }

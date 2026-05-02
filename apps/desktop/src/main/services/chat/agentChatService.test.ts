@@ -35,6 +35,7 @@ const mockState = vi.hoisted(() => ({
     waiters: Array<() => void>;
     aborted: boolean;
   }>(),
+  openCodeTitleForNextPrompt: null as string | null,
   droidSessionCounter: 0,
   codexRequestPayloads: [] as Array<Record<string, unknown>>,
   codexResponseOverrides: new Map<string, Record<string, unknown> | ((payload: Record<string, unknown>) => Record<string, unknown>)>(),
@@ -51,6 +52,7 @@ const mockState = vi.hoisted(() => ({
   droidAcquireCalls: [] as Array<Record<string, unknown>>,
   droidNewSessionCalls: [] as Array<Record<string, unknown>>,
   droidPromptCalls: [] as Array<Record<string, unknown>>,
+  droidPooled: null as any,
   emitCodexPayload(payload: Record<string, unknown>) {
     mockState.codexLineHandler?.(JSON.stringify(payload));
   },
@@ -206,6 +208,18 @@ vi.mock("../opencode/openCodeRuntime", () => ({
       session: {
         promptAsync: vi.fn(async () => {
           void (async () => {
+            if (mockState.openCodeTitleForNextPrompt) {
+              pushEvent({
+                type: "session.updated",
+                properties: {
+                  info: {
+                    id: sessionId,
+                    title: mockState.openCodeTitleForNextPrompt,
+                  },
+                },
+              });
+              mockState.openCodeTitleForNextPrompt = null;
+            }
             const result = streamText({} as any) as {
               fullStream?: AsyncIterable<Record<string, unknown>>;
             };
@@ -453,6 +467,9 @@ vi.mock("./cursorSdkPool", () => ({
         }
         if (type === "cloud.send.stream") {
           mockState.cursorSdkCloudRequests.push({ type, payload: (payload as Record<string, unknown>) ?? {} });
+          if (mockState.cursorSdkCloudResponses.has(type)) {
+            return mockState.cursorSdkCloudResponses.get(type);
+          }
           return {
             agentId: "cloud-agent-1",
             runId: "cloud-run-1",
@@ -462,6 +479,9 @@ vi.mock("./cursorSdkPool", () => ({
         }
         if (type === "cloud.followup") {
           mockState.cursorSdkCloudRequests.push({ type, payload: (payload as Record<string, unknown>) ?? {} });
+          if (mockState.cursorSdkCloudResponses.has(type)) {
+            return mockState.cursorSdkCloudResponses.get(type);
+          }
           return {
             agentId: (payload as Record<string, unknown>)?.agentId ?? "cloud-agent-1",
             runId: "cloud-run-2",
@@ -489,6 +509,7 @@ vi.mock("./cursorSdkPool", () => ({
     return { generation: 1, pooled };
   }),
   releaseCursorSdkConnection: vi.fn(),
+  resolveCursorSdkUserHome: vi.fn(() => "/Users/admin"),
   runCursorSdkCatalogRequest: vi.fn(async () => []),
   runCursorSdkCloudRequest: vi.fn(async (args: { type: string; payload: Record<string, unknown> }) => {
     mockState.cursorSdkCloudRequests.push({ type: args.type, payload: args.payload });
@@ -502,43 +523,45 @@ vi.mock("./cursorSdkPool", () => ({
 vi.mock("./droidAcpPool", () => ({
   acquireDroidAcpConnection: vi.fn(async (args: Record<string, unknown>) => {
     mockState.droidAcquireCalls.push(args);
+    const pooled = {
+      connection: {
+        newSession: vi.fn(async (params: Record<string, unknown>) => {
+          mockState.droidNewSessionCalls.push(params);
+          mockState.droidSessionCounter += 1;
+          return {
+            sessionId: `droid-acp-session-${mockState.droidSessionCounter}`,
+            models: { currentModelId: "claude-sonnet-4-5-20250929" },
+            configOptions: [],
+          };
+        }),
+        prompt: vi.fn(async (params: Record<string, unknown>) => {
+          mockState.droidPromptCalls.push(params);
+          return {
+            stopReason: "end_turn",
+            usage: { inputTokens: 3, outputTokens: 5 },
+          };
+        }),
+        cancel: vi.fn(),
+        unstable_closeSession: vi.fn(),
+      },
+      bridge: {
+        onPermission: null,
+        onSessionUpdate: null,
+        getRootPath: () => "",
+        getDirtyFileText: null,
+        onTerminalOutputDelta: null,
+        flushTerminalOutput: null,
+        onTerminalDisposed: null,
+      },
+      terminals: new Map(),
+      terminalWorkLogBindings: new Map(),
+      terminalOutputTimers: new Map(),
+      dispose: vi.fn(),
+    };
+    mockState.droidPooled = pooled;
     return {
       generation: 1,
-      pooled: {
-        connection: {
-          newSession: vi.fn(async (params: Record<string, unknown>) => {
-            mockState.droidNewSessionCalls.push(params);
-            mockState.droidSessionCounter += 1;
-            return {
-              sessionId: `droid-acp-session-${mockState.droidSessionCounter}`,
-              models: { currentModelId: "claude-sonnet-4-5-20250929" },
-              configOptions: [],
-            };
-          }),
-          prompt: vi.fn(async (params: Record<string, unknown>) => {
-            mockState.droidPromptCalls.push(params);
-            return {
-              stopReason: "end_turn",
-              usage: { inputTokens: 3, outputTokens: 5 },
-            };
-          }),
-          cancel: vi.fn(),
-          unstable_closeSession: vi.fn(),
-        },
-        bridge: {
-          onPermission: null,
-          onSessionUpdate: null,
-          getRootPath: () => "",
-          getDirtyFileText: null,
-          onTerminalOutputDelta: null,
-          flushTerminalOutput: null,
-          onTerminalDisposed: null,
-        },
-        terminals: new Map(),
-        terminalWorkLogBindings: new Map(),
-        terminalOutputTimers: new Map(),
-        dispose: vi.fn(),
-      },
+      pooled,
     };
   }),
   releaseDroidAcpConnection: vi.fn(),
@@ -885,6 +908,12 @@ async function waitForEvent<T extends AgentChatEventEnvelope>(
   throw new Error("Timed out waiting for agent chat event.");
 }
 
+async function waitForSessionTitle(sessionService: ReturnType<typeof createMockSessionService>, sessionId: string, title: string): Promise<void> {
+  await vi.waitFor(() => {
+    expect(sessionService.get(sessionId)?.title).toBe(title);
+  }, { timeout: 1_000 });
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -904,6 +933,7 @@ beforeEach(() => {
   mockState.codexTurnCounter = 0;
   mockState.openCodeSessionCounter = 0;
   mockState.openCodeSessions.clear();
+  mockState.openCodeTitleForNextPrompt = null;
   mockState.droidSessionCounter = 0;
   mockState.codexRequestPayloads = [];
   mockState.codexResponseOverrides.clear();
@@ -920,6 +950,9 @@ beforeEach(() => {
   mockState.droidAcquireCalls = [];
   mockState.droidNewSessionCalls = [];
   mockState.droidPromptCalls = [];
+  mockState.droidPooled = null;
+  vi.mocked(startOpenCodeSession).mockClear();
+  vi.mocked(buildOpenCodePromptParts).mockClear();
   vi.mocked(acquireCursorSdkConnection).mockClear();
   vi.mocked(acquireDroidAcpConnection).mockClear();
   vi.mocked(streamText).mockReset();
@@ -3260,8 +3293,11 @@ describe("createAgentChatService", () => {
     const promptsDir = path.join(tmpRoot, ".codex", "prompts");
     fs.mkdirSync(promptsDir, { recursive: true });
     fs.writeFileSync(path.join(promptsDir, "review.md"), "This project prompt must not replace built-in review.");
+    vi.mocked(detectAllAuth).mockResolvedValue([
+      { type: "cli-subscription", cli: "claude", authenticated: true },
+    ] as any);
 
-    const { service } = createService();
+    const { service, aiIntegrationService } = createService();
     const session = await service.createSession({
       laneId: "lane-1",
       provider: "codex",
@@ -3271,12 +3307,109 @@ describe("createAgentChatService", () => {
     await service.sendMessage({
       sessionId: session.id,
       text: "/review",
-    });
+    }, { awaitDispatch: true });
 
     await vi.waitFor(() => {
       expect(mockState.codexRequestPayloads.some((payload) => payload.method === "review/start")).toBe(true);
     });
     expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(false);
+    expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+  });
+
+  describe("runtime-native chat titles", () => {
+    it("adopts Codex app-server thread names from lifecycle responses", async () => {
+      mockState.codexResponseOverrides.set("thread/start", () => ({
+        thread: { id: "thread-runtime-title", name: "Runtime Naming Investigation" },
+      }));
+      const { service, sessionService } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({ sessionId: session.id, text: "Check session names." });
+
+      await waitForSessionTitle(sessionService, session.id, "Runtime Naming Investigation");
+      expect(sessionService.get(session.id)?.manuallyNamed).toBe(false);
+    });
+
+    it("adopts Codex thread/name/updated notifications without overwriting manual names", async () => {
+      const { service, sessionService } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({ sessionId: session.id, text: "Name this from runtime." });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "thread/name/updated",
+        params: { threadId: "thread-1", threadName: "Captured Runtime Title" },
+      });
+      await waitForSessionTitle(sessionService, session.id, "Captured Runtime Title");
+
+      await service.updateSession({ sessionId: session.id, title: "Manual Title", manuallyNamed: true });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "thread/name/updated",
+        params: { threadId: "thread-1", name: "Should Not Win" },
+      });
+      await waitForSessionTitle(sessionService, session.id, "Manual Title");
+    });
+
+    it("lets OpenCode session.updated titles beat ADE AI fallback", async () => {
+      streamText.mockReturnValue({
+        fullStream: (async function* () {
+          yield { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } };
+        })(),
+      });
+      mockState.openCodeTitleForNextPrompt = "OpenCode Native Title";
+      const { service, sessionService, aiIntegrationService } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/anthropic/claude-sonnet-4-6",
+      });
+
+      await service.sendMessage({ sessionId: session.id, text: "Use runtime title." }, { awaitDispatch: true });
+
+      await waitForSessionTitle(sessionService, session.id, "OpenCode Native Title");
+      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+      expect(vi.mocked(startOpenCodeSession).mock.calls.at(-1)?.[0]).toEqual(
+        expect.objectContaining({ title: null }),
+      );
+    });
+
+    it("adopts Droid ACP session_info_update titles", async () => {
+      const { service, sessionService } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "droid",
+        model: "custom:claude-sonnet-4-6-thinking-32000",
+        modelId: "droid/custom:claude-sonnet-4-6-thinking-32000",
+      });
+
+      await service.sendMessage({ sessionId: session.id, text: "Use ACP title." }, { awaitDispatch: true });
+      await vi.waitFor(() => {
+        expect(typeof mockState.droidPooled.bridge.onSessionUpdate).toBe("function");
+      }, { timeout: 1_000 });
+      mockState.droidPooled.bridge.onSessionUpdate?.({
+        sessionId: "droid-acp-session-1",
+        update: {
+          sessionUpdate: "session_info_update",
+          title: "Droid Native Title",
+        },
+      });
+
+      await waitForSessionTitle(sessionService, session.id, "Droid Native Title");
+    });
   });
 
   // --------------------------------------------------------------------------
@@ -5456,7 +5589,7 @@ describe("createAgentChatService", () => {
         | { mode?: unknown; settings?: { model?: unknown; reasoning_effort?: unknown; developer_instructions?: unknown } }
         | undefined;
 
-      expect(params?.approvalPolicy).toBe("unlessTrusted");
+      expect(params?.approvalPolicy).toBe("untrusted");
       expect(params?.sandboxPolicy?.type).toBe("readOnly");
       expect(params?.effort).toBe("medium");
       expect(collaborationMode?.mode).toBe("plan");
@@ -5509,7 +5642,7 @@ describe("createAgentChatService", () => {
       } | undefined;
       const collaborationMode = params?.collaborationMode as { mode?: unknown } | undefined;
 
-      expect(params?.approvalPolicy).toBe("onRequest");
+      expect(params?.approvalPolicy).toBe("on-request");
       expect(params?.sandboxPolicy?.type).toBe("workspaceWrite");
       expect(params?.effort).toBe("medium");
       expect(collaborationMode?.mode).toBe("default");
@@ -5573,7 +5706,7 @@ describe("createAgentChatService", () => {
         reasoningEffort?: unknown;
       } | undefined;
       expect(params?.approvalPolicy).toBe("never");
-      expect(params?.sandbox).toBe("dangerFullAccess");
+      expect(params?.sandbox).toBe("danger-full-access");
       expect(params?.reasoningEffort).toBe("medium");
 
       const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
@@ -5587,7 +5720,87 @@ describe("createAgentChatService", () => {
       expect(turnStartParams?.effort).toBe("medium");
     });
 
-    it("persists the runtime-confirmed Codex reasoning effort while applying effective thread policy", async () => {
+    it("serializes every Codex permission mode to the app-server wire shapes", async () => {
+      vi.mocked(mapPermissionToCodex).mockImplementation((mode) => {
+        if (mode === "full-auto") return { approvalPolicy: "never", sandbox: "danger-full-access" };
+        if (mode === "edit") return { approvalPolicy: "untrusted", sandbox: "workspace-write" };
+        if (mode === "default") return { approvalPolicy: "on-request", sandbox: "workspace-write" };
+        if (mode === "config-toml") return null;
+        return { approvalPolicy: "on-request", sandbox: "read-only" };
+      });
+
+      const cases = [
+        {
+          mode: "plan" as const,
+          approvalPolicy: "on-request",
+          lifecycleSandbox: "read-only",
+          turnSandboxType: "readOnly",
+        },
+        {
+          mode: "default" as const,
+          approvalPolicy: "on-request",
+          lifecycleSandbox: "workspace-write",
+          turnSandboxType: "workspaceWrite",
+        },
+        {
+          mode: "edit" as const,
+          approvalPolicy: "untrusted",
+          lifecycleSandbox: "workspace-write",
+          turnSandboxType: "workspaceWrite",
+        },
+        {
+          mode: "full-auto" as const,
+          approvalPolicy: "never",
+          lifecycleSandbox: "danger-full-access",
+          turnSandboxType: "dangerFullAccess",
+        },
+        {
+          mode: "config-toml" as const,
+          approvalPolicy: undefined,
+          lifecycleSandbox: undefined,
+          turnSandboxType: undefined,
+        },
+      ];
+
+      for (const scenario of cases) {
+        mockState.codexRequestPayloads = [];
+        const { service } = createService();
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.5",
+          permissionMode: scenario.mode,
+        });
+
+        await service.sendMessage({
+          sessionId: session.id,
+          text: `Probe ${scenario.mode} permissions.`,
+        });
+
+        await vi.waitFor(() => {
+          expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start")).toBe(true);
+          expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+        });
+
+        const threadStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/start");
+        const threadParams = threadStartRequest?.params as {
+          approvalPolicy?: unknown;
+          sandbox?: unknown;
+        } | undefined;
+        expect(threadParams?.approvalPolicy).toBe(scenario.approvalPolicy);
+        expect(threadParams?.sandbox).toBe(scenario.lifecycleSandbox);
+
+        const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
+        const turnParams = turnStartRequest?.params as {
+          approvalPolicy?: unknown;
+          sandboxPolicy?: { type?: unknown };
+        } | undefined;
+        expect(turnParams?.approvalPolicy).toBe(scenario.approvalPolicy);
+        expect(turnParams?.sandboxPolicy?.type).toBe(scenario.turnSandboxType);
+      }
+    });
+
+    it("persists the runtime-effective Codex reasoning effort while applying effective thread policy", async () => {
       mockState.codexResponseOverrides.set("thread/start", () => ({
         thread: { id: "thread-effective-start" },
         approvalPolicy: "onFailure",
@@ -5627,7 +5840,7 @@ describe("createAgentChatService", () => {
         sandboxPolicy?: { type?: unknown };
         effort?: unknown;
       } | undefined;
-      expect(turnStartParams?.approvalPolicy).toBe("onFailure");
+      expect(turnStartParams?.approvalPolicy).toBe("on-failure");
       expect(turnStartParams?.sandboxPolicy?.type).toBe("workspaceWrite");
       expect(turnStartParams?.effort).toBe("high");
 
@@ -5709,7 +5922,7 @@ describe("createAgentChatService", () => {
         reasoningEffort?: unknown;
       } | undefined;
       expect(params?.approvalPolicy).toBe("never");
-      expect(params?.sandbox).toBe("dangerFullAccess");
+      expect(params?.sandbox).toBe("danger-full-access");
       expect(params?.reasoningEffort).toBe("medium");
 
       const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
@@ -5723,6 +5936,112 @@ describe("createAgentChatService", () => {
       expect(turnStartParams?.sandboxPolicy?.type).toBe("dangerFullAccess");
       expect(turnStartParams?.collaborationMode?.mode).toBe("default");
       expect(turnStartParams?.effort).toBe("medium");
+    });
+
+    it("uses each updated Codex reasoning effort on the next post-turn send", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+
+      const completeLatestTurn = async (): Promise<void> => {
+        mockState.emitCodexPayload({
+          jsonrpc: "2.0",
+          method: "turn/completed",
+          params: {
+            turn: {
+              id: `turn-${mockState.codexTurnCounter}`,
+              status: "completed",
+            },
+          },
+        });
+        await vi.waitFor(async () => {
+          expect((await service.getSessionSummary(session.id))?.status).toBe("idle");
+        });
+      };
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Initial turn.",
+      });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+      await completeLatestTurn();
+
+      for (const effort of ["low", "medium", "high", "xhigh"]) {
+        await service.updateSession({
+          sessionId: session.id,
+          reasoningEffort: effort,
+        });
+        mockState.codexRequestPayloads = [];
+
+        await service.sendMessage({
+          sessionId: session.id,
+          text: `Use ${effort} reasoning now.`,
+        });
+
+        await vi.waitFor(() => {
+          expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+        });
+        const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
+        expect((turnStartRequest?.params as { effort?: unknown } | undefined)?.effort).toBe(effort);
+        await completeLatestTurn();
+      }
+    });
+
+    it("applies Codex reasoning effort changes made during an active turn to the next turn", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        reasoningEffort: "low",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Start with low reasoning.",
+      });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+
+      const firstTurnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
+      expect((firstTurnStartRequest?.params as { effort?: unknown } | undefined)?.effort).toBe("low");
+
+      await service.updateSession({
+        sessionId: session.id,
+        reasoningEffort: "xhigh",
+      });
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: {
+          turn: {
+            id: `turn-${mockState.codexTurnCounter}`,
+            status: "completed",
+          },
+        },
+      });
+      await vi.waitFor(async () => {
+        expect((await service.getSessionSummary(session.id))?.status).toBe("idle");
+      });
+
+      mockState.codexRequestPayloads = [];
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Now use the updated reasoning.",
+      });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+      const secondTurnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
+      expect((secondTurnStartRequest?.params as { effort?: unknown } | undefined)?.effort).toBe("xhigh");
     });
 
     it("re-resumes Codex threads when switching from config-toml to full-auto flags", async () => {
@@ -5788,7 +6107,7 @@ describe("createAgentChatService", () => {
       const resumeRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/resume");
       const resumeParams = resumeRequest?.params as { approvalPolicy?: unknown; sandbox?: unknown } | undefined;
       expect(resumeParams?.approvalPolicy).toBe("never");
-      expect(resumeParams?.sandbox).toBe("dangerFullAccess");
+      expect(resumeParams?.sandbox).toBe("danger-full-access");
     });
 
     it("does not auto-upgrade default Codex chats into plan mode", async () => {
@@ -5865,7 +6184,7 @@ describe("createAgentChatService", () => {
       expect(sessionService.reopen).toHaveBeenCalledWith(session.id);
     });
 
-    it("persists runtime-confirmed Codex reasoning effort while applying effective policy on resume", async () => {
+    it("keeps runtime-effective Codex reasoning effort while applying effective policy on resume", async () => {
       mockState.codexResponseOverrides.set("thread/resume", () => ({
         thread: { id: "thread-effective-resume" },
         approvalPolicy: "onFailure",
@@ -9276,6 +9595,51 @@ describe("createAgentChatService", () => {
     )).toBe(false);
   });
 
+  it("does not pass ADE default titles as Cursor SDK agent names", async () => {
+    process.env.CURSOR_API_KEY = "cursor-test-key";
+    const { service } = createService();
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "cursor",
+      model: "composer-2",
+      modelId: "cursor/composer-2",
+    });
+
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "Run locally.",
+    }, { awaitDispatch: true });
+
+    expect(mockState.cursorSdkAcquireCalls.at(-1)).toEqual(
+      expect.objectContaining({ agentName: null }),
+    );
+  });
+
+  it("passes only manual titles as Cursor SDK agent names", async () => {
+    process.env.CURSOR_API_KEY = "cursor-test-key";
+    const { service } = createService();
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "cursor",
+      model: "composer-2",
+      modelId: "cursor/composer-2",
+    });
+    await service.updateSession({
+      sessionId: session.id,
+      title: "Manual Cursor Title",
+      manuallyNamed: true,
+    });
+
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "Run locally.",
+    }, { awaitDispatch: true });
+
+    expect(mockState.cursorSdkAcquireCalls.at(-1)).toEqual(
+      expect.objectContaining({ agentName: "Manual Cursor Title" }),
+    );
+  });
+
   it("buffers streamed Cursor SDK control blocks before rendering ADE plan UI", async () => {
     process.env.CURSOR_API_KEY = "cursor-test-key";
     const events: AgentChatEventEnvelope[] = [];
@@ -9981,6 +10345,46 @@ describe("createAgentChatService", () => {
       expect(refreshed?.cursorCloudAgentId).toBe("cloud-agent-1");
       expect(refreshed?.cursorRuntime).toBe("cloud");
       expect(refreshed?.cursorPromotedTurnId).toBeTruthy();
+    });
+
+    it("adopts Cursor Cloud auto-generated agent names and omits ADE defaults", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      mockState.cursorSdkCloudResponses.set("cloud.send.stream", {
+        agentId: "cloud-agent-1",
+        runId: "cloud-run-1",
+        status: "finished",
+        result: { status: "finished" },
+        agentName: "Cursor Cloud Native Title",
+      });
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, sessionService } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Let Cursor Cloud name this.",
+        runtime: "cloud",
+        cloudOverrides: { repoUrl: "https://github.com/example/repo.git" },
+      } as any, { awaitDispatch: true });
+
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & { event: Extract<AgentChatEventEnvelope["event"], { type: "done" }> } =>
+          event.event.type === "done" && event.sessionId === session.id,
+      );
+      await waitForSessionTitle(sessionService, session.id, "Cursor Cloud Native Title");
+
+      const sent = mockState.cursorSdkCloudRequests.find((r) => r.type === "cloud.send.stream");
+      expect(sent?.payload.agentName).toBeUndefined();
+      expect(sessionService.get(session.id)?.manuallyNamed).toBe(false);
     });
 
     it("uses cloud.followup with the durable agentId on subsequent cloud sends", async () => {

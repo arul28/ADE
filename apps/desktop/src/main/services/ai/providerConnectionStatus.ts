@@ -38,6 +38,7 @@ export async function buildProviderConnections(
   ]);
   const claudeRuntimeHealth = getProviderRuntimeHealth("claude");
   const codexRuntimeHealth = getProviderRuntimeHealth("codex");
+  const cursorRuntimeHealth = getProviderRuntimeHealth("cursor");
 
   const deriveProviderFlags = (
     cli: CliAuthStatus | null,
@@ -93,6 +94,7 @@ export async function buildProviderConnections(
     if (!health) return;
     if (health.state === "auth-failed" || health.state === "runtime-failed") {
       status.runtimeAvailable = false;
+      status.usageAvailable = false;
       status.blocker = health.message
         ?? (health.state === "auth-failed"
           ? `${status.provider} runtime was detected, but ADE chat reported that login is still required.`
@@ -100,6 +102,7 @@ export async function buildProviderConnections(
     } else if (health.state === "ready") {
       status.runtimeAvailable = true;
       status.authAvailable = true;
+      if (status.provider === "cursor") status.usageAvailable = true;
       status.blocker = null;
     }
   }
@@ -224,7 +227,7 @@ export async function buildProviderConnections(
     ],
     blocker: cursorBlocker,
   };
-  // Cursor has no runtime-health probe yet.
+  applyRuntimeHealth(cursor, cursorRuntimeHealth);
 
   const droidCli = cliStatuses.find((entry) => entry.cli === "droid") ?? null;
   const factoryEnvAuth = Boolean(process.env.FACTORY_API_KEY?.trim());

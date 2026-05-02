@@ -333,8 +333,8 @@ describe("thinkingLevelToReasoningEffort", () => {
     expect(thinkingLevelToReasoningEffort("minimal")).toBe("low");
   });
 
-  it("maps 'max' to 'high'", () => {
-    expect(thinkingLevelToReasoningEffort("max")).toBe("high");
+  it("maps 'max' to 'max'", () => {
+    expect(thinkingLevelToReasoningEffort("max")).toBe("max");
   });
 
   it("returns 'low' for null", () => {

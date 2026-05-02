@@ -1739,6 +1739,8 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   });
   register("chat.models", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").getAvailableModels(parseChatModelsArgs(payload)));
+  register("chat.modelCatalog", { viewerAllowed: true }, async () =>
+    requireService(args.agentChatService, "Agent chat service not available.").getModelCatalog());
 
   register("cto.getRoster", { viewerAllowed: true }, async () => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");

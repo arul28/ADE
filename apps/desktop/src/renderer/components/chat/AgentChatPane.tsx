@@ -2397,6 +2397,24 @@ export function AgentChatPane({
   });
 
   const refreshAvailableModels = useCallback(async () => {
+    const orderModelIds = (ids: Iterable<string>): string[] => {
+      const available = new Set(ids);
+      const ordered = MODEL_REGISTRY
+        .filter((model) => !model.deprecated && available.has(model.id))
+        .map((model) => model.id);
+      const extra = [...available].filter((modelId) => !ordered.includes(modelId));
+      extra.sort((left, right) => {
+        const leftLabel = getModelById(left)?.displayName ?? left;
+        const rightLabel = getModelById(right)?.displayName ?? right;
+        return leftLabel.localeCompare(rightLabel, undefined, { sensitivity: "base" });
+      });
+      return [...ordered, ...extra];
+    };
+    const isCursorModelId = (id: string): boolean => (
+      id.startsWith("cursor/")
+      || getModelById(id)?.family === "cursor"
+    );
+
     const selectedModelProvider = modelId.trim()
       ? resolveChatRuntimeProvider(getModelById(modelId))
       : null;
@@ -2419,8 +2437,36 @@ export function AgentChatPane({
         droid: status.providerConnections?.droid ?? null,
       });
       const available = deriveConfiguredModelIds(status, { includeDroid: true });
-      setAvailableModelIds(available);
-      return available;
+      const orderedAvailable = orderModelIds(available);
+      setAvailableModelIds(orderedAvailable);
+      const cursorReady = status.availableProviders?.cursor === true
+        || status.providerConnections?.cursor?.runtimeAvailable === true;
+      if (!cursorReady) return orderedAvailable;
+
+      let cursorModels: Awaited<ReturnType<typeof getAgentChatModelsCached>>;
+      try {
+        cursorModels = await getAgentChatModelsCached({
+          projectRoot,
+          provider: "cursor",
+          activateRuntime: true,
+        });
+      } catch {
+        return orderedAvailable;
+      }
+      if (!cursorModels.length) {
+        const withoutCursor = orderedAvailable.filter((id) => !isCursorModelId(id));
+        setAvailableModelIds(withoutCursor);
+        return withoutCursor;
+      }
+
+      const merged = new Set<string>(available);
+      for (const model of cursorModels) {
+        const resolved = resolveCliRegistryModelId("cursor", model.id);
+        if (resolved) merged.add(resolved);
+      }
+      const withCursor = orderModelIds(merged);
+      setAvailableModelIds(withCursor);
+      return withCursor;
     } catch {
       setAiStatus(null);
       setProviderConnections(null);
@@ -2431,7 +2477,7 @@ export function AgentChatPane({
       const [codexModels, claudeModels, cursorModels, droidModels, openCodeModels] = await Promise.all([
         getAgentChatModelsCached({ projectRoot, provider: "codex" }).catch(() => []),
         getAgentChatModelsCached({ projectRoot, provider: "claude" }).catch(() => []),
-        getAgentChatModelsCached({ projectRoot, provider: "cursor" }).catch(() => []),
+        getAgentChatModelsCached({ projectRoot, provider: "cursor", activateRuntime: true }).catch(() => []),
         getAgentChatModelsCached({ projectRoot, provider: "droid" }).catch(() => []),
         getAgentChatModelsCached({
           projectRoot,
@@ -2466,16 +2512,7 @@ export function AgentChatPane({
         }
       }
 
-      const ordered = MODEL_REGISTRY
-        .filter((model) => !model.deprecated && available.has(model.id))
-        .map((model) => model.id);
-      const extra = [...available].filter((modelId) => !ordered.includes(modelId));
-      extra.sort((left, right) => {
-        const leftLabel = getModelById(left)?.displayName ?? left;
-        const rightLabel = getModelById(right)?.displayName ?? right;
-        return leftLabel.localeCompare(rightLabel, undefined, { sensitivity: "base" });
-      });
-      const allAvailable = [...ordered, ...extra];
+      const allAvailable = orderModelIds(available);
       setAvailableModelIds(allAvailable);
       return allAvailable;
     } catch {

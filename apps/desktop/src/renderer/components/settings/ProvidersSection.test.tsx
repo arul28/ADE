@@ -6,6 +6,36 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProvidersSection } from "./ProvidersSection";
 import type { AgentChatEventEnvelope, AiSettingsStatus } from "../../../shared/types";
 
+vi.mock("@lobehub/icons", () => {
+  const brand = () => {
+    const Component = () => null;
+    Object.assign(Component, {
+      Avatar: () => null,
+      Color: () => null,
+      Combine: () => null,
+      Text: () => null,
+      colorPrimary: "#888",
+      title: "stub",
+    });
+    return Component;
+  };
+  return {
+    Anthropic: brand(),
+    Claude: brand(),
+    Codex: brand(),
+    Cursor: brand(),
+    Gemini: brand(),
+    Google: brand(),
+    Grok: brand(),
+    Groq: brand(),
+    Kimi: brand(),
+    OpenAI: brand(),
+    OpenCode: brand(),
+    OpenRouter: brand(),
+    XAI: brand(),
+  };
+});
+
 function buildStatus(
   claudeRuntimeAvailable: boolean,
   localModels: string[] = [],
@@ -301,5 +331,33 @@ describe("ProvidersSection", () => {
     });
     expect(await screen.findByText("Cursor connection verified.")).toBeTruthy();
     expect(screen.getAllByText("Connected").length).toBeGreaterThan(0);
+  });
+
+  it("forces a provider status refresh after verifying a stored Cursor API key", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, []));
+    const listApiKeysMock = window.ade.ai.listApiKeys as ReturnType<typeof vi.fn>;
+    listApiKeysMock.mockReset();
+    listApiKeysMock.mockResolvedValue(["cursor"]);
+
+    render(<ProvidersSection />);
+
+    await waitFor(() => {
+      expect(window.ade.ai.getStatus).toHaveBeenCalledTimes(1);
+      expect(window.ade.ai.listApiKeys).toHaveBeenCalledTimes(1);
+    });
+
+    await act(async () => {
+      screen.getByLabelText("Verify Cursor API key").click();
+    });
+
+    await waitFor(() => {
+      expect(window.ade.ai.verifyApiKey).toHaveBeenCalledWith("cursor");
+      expect(window.ade.ai.getStatus).toHaveBeenCalledWith({
+        force: true,
+        refreshOpenCodeInventory: true,
+      });
+    });
   });
 });

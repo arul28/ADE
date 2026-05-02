@@ -16,7 +16,7 @@ machinery layered on top.
 | `apps/desktop/src/main/services/chat/claudeSlashCommandDiscovery.ts` | Discovers per-project (`.claude/commands/**`) and per-user (`~/.claude/commands/**`) slash commands, including `.md` command files and `.skill` user-invocable skills, parsing YAML frontmatter for description and argument hints. Consumed by `agentChatService` to enrich the `chat.slashCommands` response so the composer's picker lists local Claude commands alongside SDK-provided ones. |
 | `apps/desktop/src/main/services/chat/chatTextBatching.ts` | Batches streaming assistant text fragments (100 ms) before emission to reduce renderer re-renders. |
 | `apps/desktop/src/main/services/chat/sessionRecovery.ts` | Version-2 persisted-state reconstruction when sessions resume from disk. |
-| `apps/desktop/src/main/services/chat/cursorSdkPool.ts` | Cursor SDK adapter: spawns and pools `cursorSdkWorker.ts` Node workers per session, sends turns, brokers permission/hook callbacks, maps SDK events to chat events, and handles teardown. Replaces the older `cursorAcpPool.ts`. |
+| `apps/desktop/src/main/services/chat/cursorSdkPool.ts` | Cursor SDK adapter: spawns and pools `cursorSdkWorker.ts` Node workers per session, sends turns, brokers permission/hook callbacks, maps SDK events to chat events, and handles teardown. |
 | `apps/desktop/src/main/services/chat/cursorSdkWorker.ts` | Node worker that hosts the official `@cursor/sdk` and bridges it to the main process via the JSON line protocol in `cursorSdkProtocol.ts`. |
 | `apps/desktop/src/main/services/chat/cursorSdkProtocol.ts` | Shared types for the worker IPC: chat mode, approval policy, sandbox mode, hook decisions, hook requests, and `CursorSdkWorkerInit` boot envelope. |
 | `apps/desktop/src/main/services/chat/cursorSdkPolicy.ts` | Maps ADE permission modes onto Cursor SDK chat mode + approval policy + sandbox mode (`ade` / `cursor-native` / `off`); decides which tool calls auto-approve and which require a user prompt. |
@@ -47,10 +47,8 @@ machinery layered on top.
   defined in `cursorSdkProtocol.ts`; permissions, hooks, and the system
   prompt are assembled by `cursorSdkPolicy.ts` and
   `cursorSdkSystemPrompt.ts`, and SDK events are translated into
-  ADE chat events by `cursorSdkEventMapper.ts`. The earlier ACP-based
-  Cursor adapter (`cursorAcpPool.ts` / `cursorAcpEventMapper.ts` /
-  `cursorAcpConfigState.ts`) and the `cursorAgentExecutable.ts` CLI
-  resolver were removed when the SDK landed.
+  ADE chat events by `cursorSdkEventMapper.ts`. Cursor is SDK-backed here;
+  ACP is only used by providers that still expose an ACP host, such as Droid.
 - **Lane-scoped.** Every session carries `laneId`; lane context (branch,
   worktree path) is injected into the system prompt, and working-directory
   resolution runs through `resolveLaneLaunchContext`.

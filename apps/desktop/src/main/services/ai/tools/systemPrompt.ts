@@ -12,7 +12,7 @@ type HarnessPermissionMode = "plan" | "edit" | "full-auto";
 export type AdeRuntimeKind =
   | "claude-agent-sdk-v2"
   | "codex-cli"
-  | "cursor-acp"
+  | "cursor-sdk"
   | "droid-acp"
   | "opencode";
 
@@ -29,10 +29,10 @@ function describeRuntime(runtime: AdeRuntimeKind): string[] {
         "**Runtime:** ADE Work chat wrapping the Codex CLI as a subprocess. Your turns are driven through the Codex agent loop, but the orchestration host is ADE — slash commands, attachments, and lane scoping come from ADE.",
         "**Wake-up semantics:** No autonomous wake from ADE. If you need to wait, prefer `sleep ... && <one-shot command>` so the shell holds the wait without burning model tokens, then resume reasoning when the command produces output.",
       ];
-    case "cursor-acp":
+    case "cursor-sdk":
       return [
-        "**Runtime:** ADE Work chat wrapping the Cursor agent via ACP (Agent Client Protocol).",
-        "**Wake-up semantics:** Each turn is a discrete ACP `prompt` request. There is no autonomous wake; if you need to wait, use a shell `sleep` and surface results in the next user turn.",
+        "**Runtime:** ADE Work chat hosted on the Cursor SDK (`@cursor/sdk`).",
+        "**Wake-up semantics:** Each turn is driven by ADE through the SDK agent run. There is no autonomous wake; if you need to wait, use a shell `sleep` and surface results in the next user turn.",
       ];
     case "droid-acp":
       return [

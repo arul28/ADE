@@ -1192,6 +1192,9 @@ export type AiSettingsStatus = {
   opencodeProviders?: Array<{ id: string; name: string; connected: boolean; modelCount: number }>;
   apiKeyStore?: {
     secureStorageAvailable: boolean;
+    macosKeychainAvailable?: boolean;
+    macosKeychainService?: string | null;
+    macosKeychainError?: string | null;
     legacyPlaintextDetected: boolean;
     decryptionFailed: boolean;
     encryptedStorePath?: string | null;

@@ -75,6 +75,7 @@ const IOS_REMOTE_COMMAND_ACTIONS = [
   "git.rebaseContinue",
   "git.rebaseAbort",
   "chat.models",
+  "chat.modelCatalog",
   "chat.listSessions",
   "chat.create",
   "chat.getSummary",
@@ -418,6 +419,7 @@ function createMockAgentChatService() {
     updateSession: vi.fn().mockResolvedValue(undefined),
     dispose: vi.fn().mockResolvedValue(undefined),
     getAvailableModels: vi.fn().mockResolvedValue([{ id: "model-1", modelId: "m1" }]),
+    getModelCatalog: vi.fn().mockResolvedValue({ groups: [], fetchedAt: "2026-01-01T00:00:00.000Z" }),
     ensureIdentitySession: vi.fn().mockResolvedValue({
       id: "chat-identity-1",
       laneId: "lane-1",
@@ -1539,6 +1541,12 @@ describe("createSyncRemoteCommandService", () => {
     it("chat.models returns available models for a provider", async () => {
       await service.execute(makePayload("chat.models", { provider: "codex" }));
       expect(agentChatService.getAvailableModels).toHaveBeenCalledWith({ provider: "codex" });
+    });
+
+    it("chat.modelCatalog returns the canonical model catalog", async () => {
+      const result = await service.execute(makePayload("chat.modelCatalog", {}));
+      expect(agentChatService.getModelCatalog).toHaveBeenCalled();
+      expect(result).toEqual({ groups: [], fetchedAt: "2026-01-01T00:00:00.000Z" });
     });
 
     it("chat commands throw when agentChatService is not available", async () => {

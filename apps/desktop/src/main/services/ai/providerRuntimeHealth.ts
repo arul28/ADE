@@ -1,15 +1,16 @@
 import { nowIso } from "../shared/utils";
 
 export type ProviderRuntimeHealthState = "ready" | "auth-failed" | "runtime-failed";
+export type ProviderRuntimeHealthProvider = "claude" | "codex" | "cursor";
 
 export type ProviderRuntimeHealth = {
-  provider: "claude" | "codex";
+  provider: ProviderRuntimeHealthProvider;
   state: ProviderRuntimeHealthState;
   message: string | null;
   checkedAt: string;
 };
 
-const providerHealth = new Map<"claude" | "codex", ProviderRuntimeHealth>();
+const providerHealth = new Map<ProviderRuntimeHealthProvider, ProviderRuntimeHealth>();
 let providerHealthVersion = 0;
 
 function setProviderRuntimeHealth(next: ProviderRuntimeHealth): void {
@@ -29,7 +30,7 @@ function setProviderRuntimeHealth(next: ProviderRuntimeHealth): void {
   providerHealthVersion += 1;
 }
 
-export function reportProviderRuntimeReady(provider: "claude" | "codex"): void {
+export function reportProviderRuntimeReady(provider: ProviderRuntimeHealthProvider): void {
   setProviderRuntimeHealth({
     provider,
     state: "ready",
@@ -39,7 +40,7 @@ export function reportProviderRuntimeReady(provider: "claude" | "codex"): void {
 }
 
 export function reportProviderRuntimeAuthFailure(
-  provider: "claude" | "codex",
+  provider: ProviderRuntimeHealthProvider,
   message: string,
 ): void {
   setProviderRuntimeHealth({
@@ -51,7 +52,7 @@ export function reportProviderRuntimeAuthFailure(
 }
 
 export function reportProviderRuntimeFailure(
-  provider: "claude" | "codex",
+  provider: ProviderRuntimeHealthProvider,
   message: string,
 ): void {
   setProviderRuntimeHealth({
@@ -63,7 +64,7 @@ export function reportProviderRuntimeFailure(
 }
 
 export function getProviderRuntimeHealth(
-  provider: "claude" | "codex",
+  provider: ProviderRuntimeHealthProvider,
 ): ProviderRuntimeHealth | null {
   return providerHealth.get(provider) ?? null;
 }
@@ -72,7 +73,7 @@ export function getProviderRuntimeHealthVersion(): number {
   return providerHealthVersion;
 }
 
-export function resetProviderRuntimeHealth(provider?: "claude" | "codex"): void {
+export function resetProviderRuntimeHealth(provider?: ProviderRuntimeHealthProvider): void {
   if (provider) {
     if (!providerHealth.has(provider)) return;
     providerHealth.delete(provider);

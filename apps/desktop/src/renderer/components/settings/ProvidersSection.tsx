@@ -380,7 +380,13 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
     if (status?.apiKeyStore?.legacyPlaintextDetected) {
       return "Legacy plaintext API keys were detected in .ade/secrets/api-keys.json. ADE now uses encrypted safeStorage, and plaintext keys are no longer loaded. Re-enter any keys you still need.";
     }
+    if (status?.apiKeyStore?.macosKeychainError) {
+      return status.apiKeyStore.macosKeychainError;
+    }
     if (status?.apiKeyStore?.decryptionFailed) {
+      if (status.apiKeyStore.macosKeychainAvailable) {
+        return "An older encrypted API key file could not be decrypted from this app identity. New keys are stored in macOS Keychain; re-enter any missing keys.";
+      }
       return "Encrypted API keys exist but could not be decrypted on this machine. Re-enter the affected keys to continue using them.";
     }
     if (status?.apiKeyStore?.secureStorageAvailable === false) {
@@ -446,12 +452,18 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
     setError(null);
     setNotice(null);
     setVerifyingProvider(provider);
+    setVerificationByProvider((prev) => {
+      const next = { ...prev };
+      delete next[provider];
+      return next;
+    });
     try {
+      invalidateAiDiscoveryCache();
       const result = await window.ade.ai.verifyApiKey(provider);
+      invalidateAiDiscoveryCache();
       setVerificationByProvider((prev) => ({ ...prev, [provider]: result }));
       setNotice(result.ok ? `${provider} connection verified.` : `${provider} verification failed.`);
-      setVerifyingProvider(null);
-      await refreshStatus();
+      await refreshStatus({ force: true, refreshOpenCodeInventory: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -466,15 +478,20 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
     setError(null);
     setNotice(null);
     setVerifyingProvider("cursor");
+    setVerificationByProvider((prev) => {
+      const next = { ...prev };
+      delete next.cursor;
+      return next;
+    });
     try {
       await window.ade.ai.storeApiKey("cursor", trimmed);
       invalidateAiDiscoveryCache();
       setStoredProviders((prev) => Array.from(new Set([...prev, "cursor"])));
       cancelEditing();
       const result = await window.ade.ai.verifyApiKey("cursor");
+      invalidateAiDiscoveryCache();
       setVerificationByProvider((prev) => ({ ...prev, cursor: result }));
       setNotice(result.ok ? "Cursor connection verified." : "Cursor verification failed.");
-      setVerifyingProvider(null);
       await refreshStatus({ force: true, refreshOpenCodeInventory: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

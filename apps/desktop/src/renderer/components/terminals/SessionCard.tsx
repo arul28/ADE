@@ -118,10 +118,9 @@ export const SessionCard = React.memo(function SessionCard({
               />
               <span
                 className={cn(
-                  "min-w-0 flex-1 truncate text-fg/90",
+                  "min-w-0 flex-1 truncate font-semibold text-fg/90",
                   compact ? "text-[10px]" : "text-[11px]",
                 )}
-                style={{ fontWeight: isHighlighted ? 600 : 400 }}
               >
                 {primaryText}
               </span>

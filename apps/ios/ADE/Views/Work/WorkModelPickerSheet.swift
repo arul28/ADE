@@ -160,57 +160,67 @@ struct WorkModelPickerSheet: View {
   @MainActor
   private func syncSelectionStateToCatalog() {
     guard !catalog.isEmpty else { return }
+    if let location = catalogLocation(for: currentModelId) {
+      activeGroup = location.groupKey
+      activeProvider = location.providerKey
+      return
+    }
+
+    let targetGroupKey = workModelCatalogGroupKey(for: currentModelId, currentProvider: currentProvider)
     if activeGroup.isEmpty || !catalog.contains(where: { $0.key == activeGroup }) {
-      let targetGroupKey = workModelCatalogGroupKey(for: currentModelId, currentProvider: currentProvider)
       activeGroup = catalog.first(where: { $0.key == targetGroupKey })?.key
         ?? catalog.first?.key
         ?? ""
     }
-    if activeProvider.isEmpty || activeProviderBlock == nil {
-      if let block = activeGroupBlock {
-        activeProvider = preferredProviderKey(in: block)
-      }
+    if activeProvider.isEmpty || activeProviderBlock == nil, let block = activeGroupBlock {
+      activeProvider = preferredProviderKey(in: block)
     }
   }
 
   @MainActor
   private func loadLiveCatalog() async {
     isLoadingCatalog = true
-    usingCuratedFallback = false
-    liveCatalog = nil
-
-    let providers = ["claude", "codex", "cursor", "droid", "opencode"]
-    var availableModelsByProvider: [String: [AgentChatModelInfo]] = [:]
-    var successCount = 0
-
-    for provider in providers {
-      do {
-        let models = try await syncService.listChatModels(provider: provider)
-        availableModelsByProvider[provider] = models
-        successCount += 1
-      } catch {
-        availableModelsByProvider[provider] = []
-      }
-    }
-
-    guard !Task.isCancelled else { return }
-
-    if successCount == 0 {
-      usingCuratedFallback = true
-      liveCatalog = nil
+    defer {
       isLoadingCatalog = false
       syncSelectionStateToCatalog()
-      return
+    }
+    usingCuratedFallback = false
+
+    if liveCatalog == nil, let cached = syncService.cachedChatModelCatalog() {
+      liveCatalog = workModelCatalogGroups(
+        hostCatalog: cached,
+        currentModelId: currentModelId,
+        currentProvider: currentProvider
+      )
+      syncSelectionStateToCatalog()
     }
 
-    liveCatalog = workModelCatalogGroups(
-      availableModelsByProvider: availableModelsByProvider,
-      currentModelId: currentModelId,
-      currentProvider: currentProvider
-    )
-    usingCuratedFallback = false
-    isLoadingCatalog = false
-    syncSelectionStateToCatalog()
+    do {
+      let hostCatalog = try await syncService.getChatModelCatalog()
+      guard !Task.isCancelled else { return }
+      liveCatalog = workModelCatalogGroups(
+        hostCatalog: hostCatalog,
+        currentModelId: currentModelId,
+        currentProvider: currentProvider
+      )
+      usingCuratedFallback = false
+    } catch {
+      guard !Task.isCancelled else { return }
+      if liveCatalog == nil {
+        usingCuratedFallback = true
+      }
+    }
+  }
+
+  private func catalogLocation(for modelId: String) -> (groupKey: String, providerKey: String)? {
+    for group in catalog {
+      for provider in group.providers {
+        if provider.models.contains(where: { workModelIdsEquivalent($0.id, modelId) }) {
+          return (group.key, provider.key)
+        }
+      }
+    }
+    return nil
   }
 
   private func preferredProviderKey(in block: WorkModelCatalogGroup) -> String {
@@ -255,25 +265,12 @@ struct WorkModelPickerSheet: View {
   }
 
   private func supportedReasoningTiers(for model: WorkModelOption) -> [String] {
-    if let tiers = ADEColor.reasoningTiers(for: model.id), !tiers.isEmpty {
-      return tiers
+    var seen = Set<String>()
+    return model.reasoningEfforts.compactMap { effort in
+      let tier = effort.effort.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+      guard !tier.isEmpty, seen.insert(tier).inserted else { return nil }
+      return tier
     }
-    let lower = model.id.lowercased()
-    if lower.contains("opus") {
-      return lower.contains("1m") || lower.contains("[1m]")
-        ? ["low", "medium", "high", "xhigh", "max"]
-        : ["low", "medium", "high", "max"]
-    }
-    if lower.contains("sonnet") || lower.contains("thinking") {
-      return ["low", "medium", "high"]
-    }
-    if lower.contains("gpt-5.4-mini") {
-      return ["low", "medium", "high", "xhigh"]
-    }
-    if lower.contains("gpt-5") {
-      return ["low", "medium", "high", "xhigh"]
-    }
-    return []
   }
 
   private func reasoningLabel(for tier: String) -> String {

@@ -3225,13 +3225,35 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.aiStoreApiKey, async (_event, arg: { provider: string; key: string }): Promise<void> => {
+    const ctx = getCtx();
     const { storeApiKey } = await import("../ai/apiKeyStore");
     storeApiKey(arg.provider, arg.key);
+    try {
+      // The key store mutation already succeeded; invalidation is a freshness
+      // step so settings save/delete should not fail if a runtime cache is gone.
+      ctx.aiIntegrationService.invalidateProviderReadinessCaches();
+    } catch (error) {
+      ctx.logger.warn("ai.api_key_cache_invalidation_failed", {
+        provider: arg.provider,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   });
 
   ipcMain.handle(IPC.aiDeleteApiKey, async (_event, arg: { provider: string }): Promise<void> => {
+    const ctx = getCtx();
     const { deleteApiKey } = await import("../ai/apiKeyStore");
     deleteApiKey(arg.provider);
+    try {
+      // The key store mutation already succeeded; invalidation is a freshness
+      // step so settings save/delete should not fail if a runtime cache is gone.
+      ctx.aiIntegrationService.invalidateProviderReadinessCaches();
+    } catch (error) {
+      ctx.logger.warn("ai.api_key_cache_invalidation_failed", {
+        provider: arg.provider,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   });
 
   ipcMain.handle(IPC.aiListApiKeys, async (): Promise<string[]> => {
@@ -5458,7 +5480,7 @@ export function registerIpc({
         });
       }
     }
-    return {
+    return ctx.ptyService.enrichSessions([session])[0] ?? {
       ...session,
       runtimeState: ctx.ptyService.getRuntimeState(session.id, session.status)
     };

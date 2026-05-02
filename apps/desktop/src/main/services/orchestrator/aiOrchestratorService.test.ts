@@ -2148,13 +2148,16 @@ describe("aiOrchestratorService", () => {
       expect(targetCompleted!.state).toBe("completed");
       expect(targetCompleted!.completedAt).toBeTruthy();
     } finally {
-      fixture.aiOrchestratorService.dispose();
+      fixture.dispose();
     }
   });
 
   it("pushes terminal sub-agent completion summaries to the parent attempt thread", async () => {
-    const fixture = await createFixture();
+    const injectMessageSpy = vi.spyOn(CoordinatorAgent.prototype, "injectMessage").mockImplementation(() => {});
+    const injectEventSpy = vi.spyOn(CoordinatorAgent.prototype, "injectEvent").mockImplementation(() => {});
+    let fixture: Awaited<ReturnType<typeof createFixture>> | null = null;
     try {
+      fixture = await createFixture();
       const mission = fixture.missionService.create({
         prompt: "Validate sub-agent completion rollups.",
         laneId: fixture.laneId
@@ -2254,7 +2257,9 @@ describe("aiOrchestratorService", () => {
       );
       expect(rollups).toHaveLength(1);
     } finally {
-      fixture.dispose();
+      fixture?.dispose();
+      injectEventSpy.mockRestore();
+      injectMessageSpy.mockRestore();
     }
   });
 

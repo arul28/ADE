@@ -114,14 +114,15 @@ called from a non-darwin host.
    - `iosurface-indigo` (`live-start`/`auto` preferred path) — ADE
      lazily compiles `apps/desktop/native/ios-sim-helpers/sim-capture.swift`
      and `sim-input.m` for the selected full Xcode, caches them under
-     `native/ios-sim-helpers/build/<xcode-version>-<hash>/`, reads
+     `native/ios-sim-helpers/build/<xcode-version>-<hash>/` in source
+     checkouts or the user's ADE cache in packaged builds, reads
      length-prefixed JPEG IOSurface frames from the helper, and bridges
      them into the same localhost multipart MJPEG endpoint used by every
      caller. Requires macOS, full Xcode 17.x or 26.x, `swiftc`, and
-     `clang`; CLT-only machines fall back cleanly. ADE currently gates this
-     path off in packaged builds until helper signing/notarization is cleared,
-     and new Xcode majors should be added only after helper compile/smoke and
-     real simulator validation.
+     `clang`; CLT-only machines fall back cleanly. Packaged ADE builds ship
+     the helper sources as app resources and keep generated helper binaries
+     outside the signed `.app` bundle. New Xcode majors should be added only
+     after helper compile/smoke and real simulator validation.
    - `idb-h264-ffmpeg-mjpeg` (recovery-only) — exact-screen stream
      through `idb video-stream --format h264` transcoded to MJPEG via
      `ffmpeg`. The renderer reads the MJPEG endpoint with `fetch` +

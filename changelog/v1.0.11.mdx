@@ -7,7 +7,7 @@ Largest release to date — 102 commits across 12 merged PRs.
 
 ## Added
 
-- **Cursor ACP provider** — Cursor is now a first-class Agent Control Protocol provider with connection pooling, event mapping, config state tracking, model discovery, and provider logo. Model picker shows all registered models (greyed out when provider is unconfigured)
+- **Cursor provider** — Cursor is now a first-class chat provider with connection pooling, event mapping, config state tracking, model discovery, and provider logo. Model picker shows all registered models (greyed out when provider is unconfigured). This older transport has since been replaced by the Cursor SDK path.
 - **PR convergence runtime** — New `issueInventoryService` scans PRs for review comments, CI failures, and merge conflicts to build an actionable issue inventory. "Path to Merge" tab made permanent in PR detail view with `PrConvergencePanel` (round timeline, issue cards, resolution status, pipeline controls) and `PrPipelineSettings` for configuring max rounds and auto-resolve policies
 - **CTO convergence tools** — Five new operator tools: `readConvergenceRuntime`, `updateConvergenceRuntime`, `startConvergenceRound`, `stopConvergenceRound`, `readInventorySummary`
 - **Agent session binding** — Chat sessions are now bound to the selected lane's worktree directory with the binding persisted across restarts. ADE launch directive injected into initial turns so agents know which lane/worktree they operate in
@@ -28,7 +28,7 @@ Largest release to date — 102 commits across 12 merged PRs.
 ## Changed
 
 - **UI overhaul** — Redesigned chat composer footer, message list, session cards, and session list pane. Reordered tab navigation to prioritize Work and Lanes tabs. Work log blocks show only the latest tool call by default (expandable "Show N more")
-- **Agent chat service** — Expanded by +3,848 lines with Cursor ACP, unified ADE CLI bridging, convergence runtime, approval/elicitation flows, and initial turn activity centralization
+- **Agent chat service** — Expanded by +3,848 lines with Cursor chat support, unified ADE CLI bridging, convergence runtime, approval/elicitation flows, and initial turn activity centralization
 - **Rebase flow** — Runtime lifecycle cleanup on worktree switch, `getRebaseNeed` throws on lookup errors (instead of returning null), rebase attention states preserved across emits
 - **Lane import logic** — Detects and reuses existing local branches, only creates tracking branches when needed, attempts parent lane detection via merge-base
 - **PR service** — Expanded with retarget error tracking, auto-rebase land support, and convergence state management

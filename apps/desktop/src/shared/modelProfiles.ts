@@ -287,7 +287,6 @@ export function modelConfigToServiceModel(config: ModelConfig): string {
 /** Convert ThinkingLevel to reasoning effort string for AI service */
 export function thinkingLevelToReasoningEffort(level?: ThinkingLevel | null): string {
   if (!level || level === "none" || level === "minimal") return "low";
-  if (level === "max") return "high";
   return level;
 }
 
