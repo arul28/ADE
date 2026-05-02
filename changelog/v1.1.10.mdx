@@ -1,0 +1,52 @@
+---
+title: "v1.1.10"
+description: "Release notes for ADE v1.1.10 - May 2, 2026"
+---
+
+v1.1.10 ships three commits since v1.1.9: stronger Cursor SDK model handling, a shared desktop-to-mobile model catalog, tighter iOS Simulator packaging and stream behavior, and an `asc`-backed internal TestFlight build path. The iOS companion ships in **TestFlight build 1** of 1.1.10.
+
+---
+
+## Desktop
+
+<Tabs>
+  <Tab title="Chat and providers">
+    Chat setup gets a more explicit Cursor SDK path, clearer provider status, and one shared model catalog for desktop and mobile clients.
+
+    - **Cursor API key handling.** ADE now stores provider API keys through the platform credential path, verifies Cursor keys through model discovery, and clears stale readiness state when credentials change.
+    - **Shared model catalog.** Desktop exposes a structured `chat.modelCatalog` response and moves provider grouping into shared catalog code so renderer, remote commands, and mobile model pickers use the same provider families.
+    - **Cursor SDK runtime cleanup.** Cursor SDK sessions use private socket paths, extracted hook management, and cleanup for one-shot catalog or cloud requests so temporary runtime state does not accumulate between probes.
+    - **Provider status copy.** Connection states now distinguish missing keys, unavailable credential storage, SDK initialization failures, and cached discovery results more directly.
+  </Tab>
+
+  <Tab title="Runtime and simulator">
+    The release hardens packaged desktop behavior around simulator helpers, artifact validation, and run-tab state.
+
+    - **iOS Simulator helpers.** Packaged builds resolve native simulator helper caches more reliably, keep stream fallback state ordered, and preserve the intended IOSurface path for packaged desktop sessions.
+    - **Release artifact checks.** Desktop packaging now audits macOS runtime artifacts more explicitly and validates universal app payload files during the release pipeline.
+    - **Run session titles.** Generated terminal titles are sanitized before display so live run sessions keep cleaner names and status details.
+    - **Internal TestFlight automation.** A self-hosted Mac workflow and `asc` script can bump, archive, upload, and distribute internal iOS builds from CI.
+  </Tab>
+</Tabs>
+
+---
+
+## iOS
+
+<Tabs>
+  <Tab title="Model picker">
+    The mobile companion now builds its Work chat model choices from the desktop catalog instead of carrying a separate view of provider families.
+
+    - **Desktop-backed catalog.** `SyncService` can request `chat.modelCatalog`, cache the response per host, deduplicate in-flight requests, and fall back predictably when the desktop catalog is unavailable.
+    - **Provider grouping.** `WorkModelCatalog` maps the shared desktop catalog into the mobile model picker, including current Claude, Codex, Cursor, and related provider groupings.
+    - **Model picker sheet.** `WorkModelPickerSheet` uses the refreshed catalog data so model choices line up with the connected desktop app.
+  </Tab>
+
+  <Tab title="Work chat">
+    Work chat keeps the new catalog state visible while staying compatible with the current desktop sync protocol.
+
+    - **New chat flow.** `WorkNewChatSheet` refreshes model selection behavior for new sessions and keeps the selected model aligned with the catalog returned by the desktop host.
+    - **Session state.** `WorkChatSessionView` and related remote model types handle the updated model identifiers and display labels from the shared catalog.
+    - **TestFlight build.** The 1.1.10 mobile build is cut as a new TestFlight train and will be distributed to all non-empty internal tester groups.
+  </Tab>
+</Tabs>
