@@ -220,7 +220,15 @@ func buildWorkTimeline(
   })
 
   entries.append(contentsOf: visibleLocalEchoMessages.enumerated().map { index, echo in
-    let message = WorkChatMessage(id: echo.id, role: "user", markdown: echo.text, timestamp: echo.timestamp, turnId: nil, itemId: nil)
+    let message = WorkChatMessage(
+      id: echo.id,
+      role: "user",
+      markdown: echo.text,
+      timestamp: echo.timestamp,
+      turnId: nil,
+      itemId: nil,
+      deliveryState: echo.deliveryState
+    )
     return WorkTimelineEntry(id: "echo-\(echo.id)", timestamp: echo.timestamp, rank: 3_000 + index, payload: .message(message))
   })
 
@@ -793,18 +801,12 @@ private func eventCard(for envelope: WorkChatEnvelope) -> WorkEventCardModel? {
         bullets: [],
         metadata: []
       )
-    case .webSearch(let query, let action, let status, _, _):
-      return WorkEventCardModel(
-        id: envelope.id,
-        kind: "webSearch",
-        title: "Web search",
-        icon: "globe",
-        tint: status == .failed ? .danger : status == .completed ? .success : .warning,
-        timestamp: envelope.timestamp,
-        body: query,
-        bullets: action.map { [$0] } ?? [],
-        metadata: [status.rawValue.capitalized]
-      )
+    case .webSearch:
+      // Web searches now surface as `WorkToolCardModel` entries built in
+      // `buildWorkToolCards`, so they cluster into the `Tool calls` panel
+      // alongside Read/Bash/etc. instead of leaking out as standalone event
+      // cards that break the surrounding tool group.
+      return nil
     case .planText(let text, _):
       return WorkEventCardModel(
         id: envelope.id,

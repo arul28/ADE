@@ -1676,7 +1676,10 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     return summarizeChatSessionForRemote(agentChatService, session);
   });
   register("chat.send", { viewerAllowed: true, queueable: true }, async (payload) => {
-    await requireService(args.agentChatService, "Agent chat service not available.").sendMessage(parseAgentChatSendArgs(payload));
+    await requireService(args.agentChatService, "Agent chat service not available.").sendMessage(
+      parseAgentChatSendArgs(payload),
+      { awaitDispatch: true },
+    );
     return { ok: true };
   });
   register("chat.interrupt", { viewerAllowed: true, queueable: false }, async (payload) => {

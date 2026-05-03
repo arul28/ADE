@@ -29,6 +29,9 @@ struct WorkChatSessionView: View {
   @State var timelineRebuildTask: Task<Void, Never>?
   @State var timelineRebuildGeneration = 0
   let isLive: Bool
+  let canComposeMessages: Bool
+  let canSendMessages: Bool
+  let sendWillQueue: Bool
   let transitionNamespace: Namespace.ID?
   let onOpenLane: (() -> Void)?
   let onSend: @MainActor (String) async -> Bool
@@ -124,28 +127,62 @@ struct WorkChatSessionView: View {
     // Typing stays available so users can draft while disconnected or while
     // a turn is running. Only Send is gated via `canSend`; the feedback line
     // below the composer explains why send is disabled.
-    isLive
+    canComposeMessages
   }
 
   var canSend: Bool {
-    // Match desktop: a chat accepts messages as long as the app is live. A
-    // completed turn (`sessionStatus == "ended"`) just means the previous
-    // round finished — the user's next message starts a new turn. Only
-    // client-side archive and disconnected state should gate Send.
-    isLive && !sending
+    // Existing chats accept messages while live, and can still accept them
+    // during reconnects when desktop advertised chat.send as queueable.
+    canSendMessages && !sending
   }
 
   var composerFeedback: String? {
-    if !isLive {
-      return "Reconnect to send messages."
-    }
     if sending {
-      return "Sending message to host..."
+      return sendWillQueue ? "Queueing message for desktop..." : "Sending message to host..."
+    }
+    if sendWillQueue {
+      return "Desktop is reconnecting. Send will queue until it is back."
+    }
+    if !canSendMessages {
+      return "Reconnect to send messages."
     }
     if sessionStatus == "awaiting-input" {
       return "Answer the waiting prompt above, or send extra context."
     }
     return nil
+  }
+
+  var transcriptIndicatesActiveTurn: Bool {
+    var activeTurnIds = Set<String>()
+    var bootstrapStartOpen = false
+    for envelope in transcript {
+      switch envelope.event {
+      case .status(let turnStatus, _, let turnId):
+        switch turnStatus.lowercased() {
+        case "started", "active", "running", "inprogress", "in_progress", "in-progress":
+          if let turnId, !turnId.isEmpty {
+            activeTurnIds.insert(turnId)
+            bootstrapStartOpen = false
+          } else {
+            bootstrapStartOpen = true
+          }
+        case "completed", "failed", "interrupted", "cancelled", "canceled", "ended":
+          if let turnId, !turnId.isEmpty {
+            activeTurnIds.remove(turnId)
+          } else {
+            bootstrapStartOpen = false
+          }
+        default:
+          break
+        }
+      case .done(_, _, _, let turnId, _, _):
+        activeTurnIds.remove(turnId)
+        bootstrapStartOpen = false
+      default:
+        break
+      }
+    }
+    return bootstrapStartOpen || !activeTurnIds.isEmpty
   }
 
   @ViewBuilder
@@ -224,7 +261,7 @@ struct WorkChatSessionView: View {
   var streamingStatusSection: some View {
     WorkActivityIndicator(
       transcript: transcript,
-      isStreaming: sessionStatus == "active" && isLive
+      isStreaming: (sessionStatus == "active" && isLive) || transcriptIndicatesActiveTurn
     )
   }
 

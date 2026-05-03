@@ -43,6 +43,18 @@ describe("buildCodingAgentSystemPrompt", () => {
     expect(result).toContain("use exitPlanMode to request implementation approval");
   });
 
+  it("keeps Codex plan context aligned with native app-server plan mode", () => {
+    const result = buildCodingAgentSystemPrompt({
+      cwd: "/x",
+      permissionMode: "plan",
+      runtime: "codex-cli",
+    });
+
+    expect(result).toContain("Native Codex Plan Mode controls planning and approval");
+    expect(result).toContain("proposed-plan mechanism");
+    expect(result).toContain("Do not use TodoWrite, update_plan, or exitPlanMode");
+  });
+
   it("includes full-auto permission description", () => {
     const result = buildCodingAgentSystemPrompt({ cwd: "/x", permissionMode: "full-auto" });
     expect(result).toContain("Autonomous mode");

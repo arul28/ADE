@@ -129,10 +129,6 @@ struct LanesTabView: View {
             openLanesTray
               .transition(.move(edge: .top).combined(with: .opacity))
           }
-          if !visibleSuggestions.isEmpty || !visibleAutoRebaseAttention.isEmpty {
-            attentionSection
-              .transition(.move(edge: .top).combined(with: .opacity))
-          }
           laneList
         }
         .padding(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))

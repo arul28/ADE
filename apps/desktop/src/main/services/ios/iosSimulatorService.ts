@@ -341,6 +341,23 @@ export function normalizeIosSimulatorPointForIndigo(
   };
 }
 
+export function iosurfaceInputPointPayload(
+  point: { x: number; y: number },
+  screen: Pick<IosInspectableScreen, "width" | "height">,
+): { x: number; y: number; width: number; height: number } {
+  const x = Number(point.x);
+  const y = Number(point.y);
+  const width = Number(screen.width);
+  const height = Number(screen.height);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) {
+    throw new Error("Simulator point coordinates are required for Indigo input.");
+  }
+  if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0) {
+    throw new Error("Simulator screen metrics are required for Indigo input.");
+  }
+  return { x, y, width, height };
+}
+
 export function iosurfaceInputScreenFromSnapshot(
   screen: IosInspectableScreen,
   shot: Pick<IosSimulatorScreenshot, "width" | "height">,
@@ -4425,8 +4442,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const y = normalizeCoordinate(point.y, "y");
     return enqueueControl("tap", async () => {
       await runWithInputFallback("tap", async () => {
-        const normalized = normalizeIosSimulatorPointForIndigo({ x, y }, screenMetricsForIndigoInput(deviceUdid));
-        await sendIosurfaceInputCommand(deviceUdid, { type: "tap", x: normalized.x, y: normalized.y, hold: IOSURFACE_TAP_HOLD_MS });
+        const pointPayload = iosurfaceInputPointPayload({ x, y }, screenMetricsForIndigoInput(deviceUdid));
+        await sendIosurfaceInputCommand(deviceUdid, { type: "tap", ...pointPayload, hold: IOSURFACE_TAP_HOLD_MS });
       }, () => runIdbTap(deviceUdid, x, y));
       return { ok: true };
     });
@@ -4453,14 +4470,16 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       if (deltaValue != null && (!Number.isFinite(deltaValue) || deltaValue <= 0)) throw new Error("delta must be a positive number.");
       await runWithInputFallback("drag", async () => {
         const metrics = screenMetricsForIndigoInput(deviceUdid);
-        const start = normalizeIosSimulatorPointForIndigo({ x: startX, y: startY }, metrics);
-        const end = normalizeIosSimulatorPointForIndigo({ x: endX, y: endY }, metrics);
+        const start = iosurfaceInputPointPayload({ x: startX, y: startY }, metrics);
+        const end = iosurfaceInputPointPayload({ x: endX, y: endY }, metrics);
         await sendIosurfaceInputCommand(deviceUdid, {
           type: "swipe",
           startX: start.x,
           startY: start.y,
           endX: end.x,
           endY: end.y,
+          width: start.width,
+          height: start.height,
           durationMs: durationMs ?? 180,
         });
       }, () => runIdbSwipe(deviceUdid, {

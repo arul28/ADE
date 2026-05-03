@@ -146,11 +146,16 @@ export function buildCodingAgentSystemPrompt(args: {
       ? `Available tools: ${toolNames.join(", ")}.`
       : "Use the available tools deliberately and only when they move the task forward.",
     ...(guardedLocalReadOnly
-      ? [
-          "Plan mode is read-only. Do not attempt editFile, writeFile, bash, or other mutating actions.",
-          "Inspect only the concrete files needed to form a plan. Do not keep broad-searching once you have enough context.",
-          "When the plan is clear, write or update a short TodoWrite plan, ask one clarifying question if needed, then use exitPlanMode to request implementation approval.",
-        ]
+      ? runtime === "codex-cli"
+        ? [
+            "Native Codex Plan Mode controls planning and approval. Preserve that built-in flow: stay read-only, use request_user_input for important clarifications when needed, and publish the final plan through Codex's proposed-plan mechanism.",
+            "Do not use TodoWrite, update_plan, or exitPlanMode as the plan-approval path in native Codex Plan Mode.",
+          ]
+        : [
+            "Plan mode is read-only. Do not attempt editFile, writeFile, bash, or other mutating actions.",
+            "Inspect only the concrete files needed to form a plan. Do not keep broad-searching once you have enough context.",
+            "When the plan is clear, write or update a short TodoWrite plan, ask one clarifying question if needed, then use exitPlanMode to request implementation approval.",
+          ]
       : [
           "Prefer the smallest search/list/read pass before editing so you operate on the right files the first time.",
           "Batch related discovery work only when the runtime can use it without repeating the same scope.",

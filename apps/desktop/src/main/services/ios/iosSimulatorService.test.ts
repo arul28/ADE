@@ -12,6 +12,7 @@ import {
   detectIosurfaceIndigoCapability,
   IosSimulatorOwnedBySessionError,
   iosurfaceInputScreenFromSnapshot,
+  iosurfaceInputPointPayload,
   normalizeIosSimulatorPointForIndigo,
   parseXcodePreviewWindows,
   resolveIosSimulatorStreamBackend,
@@ -496,6 +497,18 @@ describe("iosSimulatorService Simulator.app launch visibility", () => {
     expect(normalizeIosSimulatorPointForIndigo({ x: 201, y: 830 }, inputScreen)).toEqual({
       x: 0.5,
       y: 830 / 874,
+    });
+  });
+
+  it("builds point-space Indigo input payloads with screen dimensions", () => {
+    expect(iosurfaceInputPointPayload(
+      { x: 201, y: 830 },
+      { width: 402, height: 874 },
+    )).toEqual({
+      x: 201,
+      y: 830,
+      width: 402,
+      height: 874,
     });
   });
 });

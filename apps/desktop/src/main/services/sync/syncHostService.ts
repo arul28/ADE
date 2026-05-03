@@ -99,6 +99,8 @@ import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
 import { createSyncRemoteCommandService } from "./syncRemoteCommandService";
 const execFileAsync = promisify(execFile);
 const DEFAULT_SYNC_HEARTBEAT_INTERVAL_MS = 30_000;
+const DEFAULT_SYNC_HEARTBEAT_MISS_LIMIT = 2;
+const MOBILE_SYNC_HEARTBEAT_MISS_LIMIT = 6;
 const DEFAULT_SYNC_POLL_INTERVAL_MS = 400;
 const DEFAULT_BRAIN_STATUS_INTERVAL_MS = 5_000;
 const DEFAULT_TERMINAL_SNAPSHOT_BYTES = 220_000;
@@ -413,6 +415,12 @@ function toSyncPeerConnectionState(peer: PeerState, currentServerDbVersion: numb
     isBrain: false,
     isAuthenticated: peer.authenticated,
   };
+}
+
+export function syncHeartbeatMissLimitForPeerMetadata(metadata: Pick<SyncPeerMetadata, "platform" | "deviceType"> | null | undefined): number {
+  return metadata?.platform === "iOS" || metadata?.deviceType === "phone"
+    ? MOBILE_SYNC_HEARTBEAT_MISS_LIMIT
+    : DEFAULT_SYNC_HEARTBEAT_MISS_LIMIT;
 }
 
 function parseHelloPayload(payload: unknown): SyncHelloPayload | null {
@@ -1003,7 +1011,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       }
       if (peer.awaitingHeartbeatAt) {
         peer.missedHeartbeatCount += 1;
-        if (peer.missedHeartbeatCount >= 2) {
+        if (peer.missedHeartbeatCount >= syncHeartbeatMissLimitForPeerMetadata(peer.metadata)) {
           try {
             peer.ws.close(4001, "Heartbeat timed out");
           } catch {

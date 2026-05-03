@@ -161,6 +161,13 @@ pair. Turns use the Codex-native `effort` key
 (`turn/start({ threadId, input, effort? })`) instead of the lifecycle
 `reasoningEffort` name.
 
+Codex plan mode uses the native app-server planning flow. ADE passes its
+runtime guidance as an ordinary system-context input item and keeps
+`collaborationMode.settings.developer_instructions` null, then turns
+completed Codex `plan` items (including `<proposed_plan>` wrappers) into
+ADE plan-approval requests. Accepting that request moves the session to
+edit/default mode and starts the implementation turn.
+
 Default Codex chats map to the "Default permissions" preset
 (`workspace-write` + `on-request`). The older implicit fallback that
 mapped CLI `edit` mode to `untrusted` was removed so the first-turn

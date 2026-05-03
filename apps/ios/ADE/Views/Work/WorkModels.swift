@@ -41,6 +41,7 @@ struct WorkLocalEchoMessage: Identifiable, Equatable {
   let id = UUID().uuidString
   let text: String
   let timestamp: String
+  var deliveryState: String? = nil
 }
 
 struct WorkPendingApprovalModel: Identifiable, Equatable {

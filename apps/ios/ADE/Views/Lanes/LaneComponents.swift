@@ -355,6 +355,85 @@ struct LaneListRow: View, Equatable {
   }
 }
 
+// MARK: - Inline rebase warning (rendered inside lane cards)
+
+enum LaneCardRebaseWarningPresentation: Equatable {
+  case suggestion(behindCount: Int, hasPr: Bool)
+  case autoRebase(state: String, message: String?)
+
+  var icon: String {
+    switch self {
+    case .suggestion: return "arrow.triangle.2.circlepath"
+    case .autoRebase(let state, _):
+      return state == "rebaseConflict" ? "exclamationmark.triangle.fill" : "exclamationmark.arrow.triangle.2.circlepath"
+    }
+  }
+
+  var tint: Color {
+    switch self {
+    case .suggestion: return ADEColor.warning
+    case .autoRebase(let state, _):
+      return (state == "rebaseConflict" || state == "rebaseFailed") ? ADEColor.danger : ADEColor.warning
+    }
+  }
+
+  var title: String {
+    switch self {
+    case .suggestion: return "Rebase suggested"
+    case .autoRebase(let state, _):
+      switch state {
+      case "rebaseConflict": return "Auto-rebase conflict"
+      case "rebaseFailed": return "Auto-rebase failed"
+      default: return "Auto-rebase needs attention"
+      }
+    }
+  }
+
+  var detail: String? {
+    switch self {
+    case .suggestion(let behindCount, let hasPr):
+      let noun = behindCount == 1 ? "commit" : "commits"
+      let base = "\(behindCount) \(noun) behind"
+      return hasPr ? "\(base) · PR open" : base
+    case .autoRebase(_, let message):
+      return message
+    }
+  }
+}
+
+struct LaneCardRebaseWarning: View {
+  let presentation: LaneCardRebaseWarningPresentation
+
+  var body: some View {
+    HStack(alignment: .center, spacing: 8) {
+      Image(systemName: presentation.icon)
+        .font(.system(size: 11, weight: .semibold))
+        .foregroundStyle(presentation.tint)
+      VStack(alignment: .leading, spacing: 1) {
+        Text(presentation.title)
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+        if let detail = presentation.detail, !detail.isEmpty {
+          Text(detail)
+            .font(.caption2)
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(2)
+        }
+      }
+      Spacer(minLength: 0)
+    }
+    .padding(.vertical, 8)
+    .padding(.horizontal, 10)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(presentation.tint.opacity(0.10), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 10, style: .continuous)
+        .stroke(presentation.tint.opacity(0.28), lineWidth: 0.5)
+    )
+  }
+}
+
 // MARK: - Stack card
 
 struct LaneStackCard: View, Equatable {
@@ -451,6 +530,10 @@ struct LaneStackCard: View, Equatable {
           .foregroundStyle(ADEColor.textMuted)
           .lineLimit(1)
       }
+
+      if let warning = rebaseWarning {
+        LaneCardRebaseWarning(presentation: warning)
+      }
     }
     .padding(14)
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -468,6 +551,16 @@ struct LaneStackCard: View, Equatable {
 
   private var isPrimary: Bool {
     snapshot.lane.laneType == "primary"
+  }
+
+  private var rebaseWarning: LaneCardRebaseWarningPresentation? {
+    if let suggestion = snapshot.rebaseSuggestion, suggestion.dismissedAt == nil {
+      return .suggestion(behindCount: suggestion.behindCount, hasPr: suggestion.hasPr)
+    }
+    if let status = snapshot.autoRebaseStatus, status.state != "autoRebased" {
+      return .autoRebase(state: status.state, message: status.message)
+    }
+    return nil
   }
 
   private var cardBackgroundTint: Color {

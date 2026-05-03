@@ -8,9 +8,11 @@ streaming and touch input on macOS.
   `[u32 big-endian length][jpeg bytes]` frames to stdout. It accepts `--fps`
   and `--quality` so ADE can cap renderer load without changing callers.
 - `sim-input.m` opens SimulatorKit's private Indigo HID client and accepts
-  newline-delimited JSON input commands on stdin. Touch input is sent through
-  Indigo; unsupported keyboard/text operations are reported as typed failures so
-  ADE can fall back to idb for that method.
+  newline-delimited JSON input commands on stdin. Touch input uses point-space
+  coordinates and screen dimensions, with the Xcode 26 9-argument Indigo mouse
+  event path when available and the legacy 5-argument path on older supported
+  Xcode versions; unsupported keyboard/text operations are reported as typed
+  failures so ADE can fall back to idb for that method.
 - `build.sh` compiles both helpers lazily into `build/xcode-<version>-<hash>/`.
   Set `ADE_IOS_SIM_HELPER_BUILD_ROOT` to place that cache somewhere else;
   packaged ADE builds use this to keep generated binaries outside the signed

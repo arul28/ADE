@@ -4303,6 +4303,76 @@ describe("createAgentChatService", () => {
       ]));
     });
 
+    it("emits immediate startup activity for Codex before turn/start resolves", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      mockState.delayedCodexMethods.add("turn/start");
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => {
+          events.push(event);
+        },
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      const sendPromise = service.sendMessage({
+        sessionId: session.id,
+        text: "Resolve the PR comments.",
+      }, { awaitDispatch: true });
+      let sendResolved = false;
+      void sendPromise.then(() => {
+        sendResolved = true;
+      });
+
+      const startedEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "status" }>;
+        } =>
+          event.event.type === "status"
+          && event.event.turnStatus === "started"
+          && !("turnId" in event.event),
+      );
+      const startupActivity = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "activity" }>;
+        } =>
+          event.event.type === "activity"
+          && !("turnId" in event.event)
+          && (event.event.activity === "thinking" || event.event.activity === "working"),
+      );
+
+      expect(startedEvent.event.turnStatus).toBe("started");
+      expect(startupActivity.event.detail).toBeTruthy();
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+      await Promise.resolve();
+      expect(sendResolved).toBe(false);
+      const noTurnStartedCount = events.filter((event) =>
+        event.event.type === "status"
+        && event.event.turnStatus === "started"
+        && !("turnId" in event.event)
+      ).length;
+      expect(noTurnStartedCount).toBe(1);
+
+      mockState.flushCodexResponses();
+      await sendPromise;
+      expect(sendResolved).toBe(true);
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status"
+          && event.event.turnStatus === "started"
+          && "turnId" in event.event
+          && event.event.turnId === "turn-1",
+      );
+    });
+
     it("ignores unsolicited Codex turn notifications when no turn is active", async () => {
       const events: Array<{ type: string; turnId?: string; text?: string }> = [];
       const { service } = createService({
@@ -5583,11 +5653,13 @@ describe("createAgentChatService", () => {
         approvalPolicy?: unknown;
         sandboxPolicy?: { type?: unknown; networkAccess?: unknown; access?: { type?: unknown } };
         effort?: unknown;
+        input?: Array<{ type?: unknown; text?: unknown }>;
         collaborationMode?: Record<string, unknown>;
       } | undefined;
       const collaborationMode = params?.collaborationMode as
         | { mode?: unknown; settings?: { model?: unknown; reasoning_effort?: unknown; developer_instructions?: unknown } }
         | undefined;
+      const textInputs = (params?.input ?? []).filter((item) => item.type === "text");
 
       expect(params?.approvalPolicy).toBe("untrusted");
       expect(params?.sandboxPolicy?.type).toBe("readOnly");
@@ -5595,7 +5667,11 @@ describe("createAgentChatService", () => {
       expect(collaborationMode?.mode).toBe("plan");
       expect(collaborationMode?.settings?.model).toBe("gpt-5.4");
       expect(collaborationMode?.settings?.reasoning_effort).toBe("medium");
-      expect(collaborationMode?.settings?.developer_instructions).toBe("system prompt");
+      expect(collaborationMode?.settings?.developer_instructions).toBeNull();
+      expect(textInputs.at(-2)?.text).toContain("System context (ADE runtime guidance");
+      expect(textInputs.at(-2)?.text).toContain("system prompt");
+      expect(textInputs.at(-1)?.text).toContain("User request:");
+      expect(textInputs.at(-1)?.text).toContain("Ask one planning question before coding.");
       expect(vi.mocked(buildCodingAgentSystemPrompt)).toHaveBeenCalledWith(
         expect.objectContaining({
           cwd: expect.stringContaining(path.basename(tmpRoot)),
@@ -5604,6 +5680,95 @@ describe("createAgentChatService", () => {
           interactive: true,
         }),
       );
+    });
+
+    it("turns native Codex plan items into an implementation approval request", async () => {
+      vi.mocked(mapPermissionToCodex).mockImplementation((mode) => {
+        if (mode === "edit") return { approvalPolicy: "untrusted", sandbox: "workspace-write" };
+        if (mode === "full-auto") return { approvalPolicy: "never", sandbox: "danger-full-access" };
+        if (mode === "config-toml") return null;
+        return { approvalPolicy: "on-request", sandbox: "read-only" };
+      });
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        codexApprovalPolicy: "untrusted",
+        codexSandbox: "read-only",
+        codexConfigSource: "flags",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Plan the fix before coding.",
+      }, { awaitDispatch: true });
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/completed",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "codex-plan-1",
+            type: "plan",
+            text: "<proposed_plan>\n## Summary\n- Inspect the app-server wiring.\n- Patch the native plan handoff.\n</proposed_plan>",
+          },
+        },
+      });
+
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "plan_text" }>;
+        } =>
+          event.event.type === "plan_text"
+          && event.event.itemId === "codex-plan-1"
+          && event.event.text.includes("Inspect the app-server wiring"),
+      );
+      const approvalEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } =>
+          event.event.type === "approval_request"
+          && ((event.event.detail as { request?: { kind?: string } } | undefined)?.request?.kind === "plan_approval"),
+      );
+      const request = (approvalEvent.event.detail as { request?: { description?: string } } | undefined)?.request;
+
+      expect(request?.description).toContain("## Summary");
+      expect(request?.description).toContain("Patch the native plan handoff");
+      expect(request?.description).not.toContain("<proposed_plan>");
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: {
+          turn: {
+            id: "turn-1",
+            status: "completed",
+          },
+        },
+      });
+      await vi.waitFor(async () => {
+        expect((await service.getSessionSummary(session.id))?.status).toBe("idle");
+      });
+
+      const turnStartCountBeforeApproval = mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start").length;
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId: approvalEvent.event.itemId,
+        decision: "accept",
+      });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start").length)
+          .toBeGreaterThan(turnStartCountBeforeApproval);
+      });
+      expect((await service.getSessionSummary(session.id))?.permissionMode).toBe("edit");
     });
 
     it("sends Codex default collaboration mode on turn start outside plan mode", async () => {
@@ -5640,12 +5805,15 @@ describe("createAgentChatService", () => {
         effort?: unknown;
         collaborationMode?: Record<string, unknown>;
       } | undefined;
-      const collaborationMode = params?.collaborationMode as { mode?: unknown } | undefined;
+      const collaborationMode = params?.collaborationMode as
+        | { mode?: unknown; settings?: { developer_instructions?: unknown } }
+        | undefined;
 
       expect(params?.approvalPolicy).toBe("on-request");
       expect(params?.sandboxPolicy?.type).toBe("workspaceWrite");
       expect(params?.effort).toBe("medium");
       expect(collaborationMode?.mode).toBe("default");
+      expect(collaborationMode?.settings?.developer_instructions).toBeNull();
     });
 
     it("preserves Codex edit sessions as untrusted workspace-write", async () => {

@@ -36,6 +36,11 @@ enum RemoteConnectionState: String {
   }
 }
 
+enum SyncChatMessageDelivery: Equatable {
+  case sent
+  case queued
+}
+
 func unwrapSyncCommandResponse(_ raw: Any) throws -> Any {
   guard let response = raw as? [String: Any], let ok = response["ok"] as? Bool else {
     return raw
@@ -412,6 +417,40 @@ private func syncIsMessageTooLongError(_ error: Error) -> Bool {
   return message.contains("message too long")
 }
 
+func syncConnectionStateAfterTransportFailure(error: Error, fallback: RemoteConnectionState) -> RemoteConnectionState {
+  syncIsMessageTooLongError(error) ? .error : fallback
+}
+
+func syncShouldPublishForegroundReconnectStarted(
+  allowAutoReconnect: Bool,
+  autoReconnectPausedByUser: Bool,
+  hasToken: Bool,
+  connectionState: RemoteConnectionState,
+  automaticAddresses: [String]
+) -> Bool {
+  guard allowAutoReconnect, !autoReconnectPausedByUser, hasToken else { return false }
+  guard connectionState == .disconnected || connectionState == .error else { return false }
+  return !automaticAddresses.isEmpty
+}
+
+func syncClientHeartbeatIntervalNanoseconds(serverIntervalMs rawValue: Any?) -> UInt64 {
+  let parsedMs: Double? = {
+    if let number = rawValue as? NSNumber {
+      return number.doubleValue
+    }
+    if let value = rawValue as? Double {
+      return value
+    }
+    if let value = rawValue as? Int {
+      return Double(value)
+    }
+    return nil
+  }()
+  let serverMs = min(120_000, max(5_000, parsedMs ?? 30_000))
+  let clientMs = min(25_000, max(5_000, serverMs / 2))
+  return UInt64(clientMs) * 1_000_000
+}
+
 func syncShouldRoamToTailnet(
   currentAddress: String?,
   hasTailnetRoute: Bool,
@@ -739,6 +778,7 @@ final class SyncService: ObservableObject {
   private let syncDateFormatter = ISO8601DateFormatter()
   private let compressionThresholdBytes = 4 * 1024
   private var relayTask: Task<Void, Never>?
+  private var clientHeartbeatTask: Task<Void, Never>?
   private var hydrationTask: Task<Void, Never>?
   private var reconnectTask: Task<Void, Never>?
   private var networkPathReconnectTask: Task<Void, Never>?
@@ -1455,6 +1495,7 @@ final class SyncService: ObservableObject {
   deinit {
     databaseRevisionDebounceTask?.cancel()
     relayTask?.cancel()
+    clientHeartbeatTask?.cancel()
     hydrationTask?.cancel()
     projectSelectionTask?.cancel()
     reconnectTask?.cancel()
@@ -1983,6 +2024,18 @@ final class SyncService: ObservableObject {
       return
     }
 
+    if let profile = loadProfile() {
+      let shouldPublishReconnectStart = syncShouldPublishForegroundReconnectStarted(
+        allowAutoReconnect: allowAutoReconnect,
+        autoReconnectPausedByUser: autoReconnectPausedByUser,
+        hasToken: tokenForProfile(profile) != nil,
+        connectionState: connectionState,
+        automaticAddresses: automaticReconnectAddresses(for: profile)
+      )
+      if shouldPublishReconnectStart {
+        publishReconnectStarted(profile: profile)
+      }
+    }
     await reconnectIfPossible()
   }
 
@@ -3440,8 +3493,13 @@ final class SyncService: ObservableObject {
     return response.entries
   }
 
-  func sendChatMessage(sessionId: String, text: String) async throws {
-    _ = try await sendCommand(action: "chat.send", args: ["sessionId": sessionId, "text": text])
+  @discardableResult
+  func sendChatMessage(sessionId: String, text: String) async throws -> SyncChatMessageDelivery {
+    let response = try await sendCommand(action: "chat.send", args: ["sessionId": sessionId, "text": text])
+    if let response = response as? [String: Any], response["queued"] as? Bool == true {
+      return .queued
+    }
+    return .sent
   }
 
   func interruptChatSession(sessionId: String) async throws {
@@ -4378,6 +4436,10 @@ final class SyncService: ObservableObject {
     commandDescriptor(for: action) != nil
   }
 
+  func isRemoteActionQueueable(_ action: String) -> Bool {
+    commandPolicy(for: action)?.queueable == true
+  }
+
   private func normalizeOpenLaneId(_ laneId: String) -> String? {
     let normalized = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
     return normalized.isEmpty ? nil : normalized
@@ -5283,6 +5345,10 @@ final class SyncService: ObservableObject {
       pendingOutboundChangeset = nil
       clearPendingOutboundChangesetForActiveProject()
     }
+    startClientHeartbeatTask(
+      intervalNanoseconds: syncClientHeartbeatIntervalNanoseconds(serverIntervalMs: payload["heartbeatIntervalMs"]),
+      for: connectionGeneration
+    )
     startRelayLoop()
     startInitialHydrationTask(for: connectionGeneration)
     restoreChatEventSubscriptions()
@@ -5342,7 +5408,7 @@ final class SyncService: ObservableObject {
             self.handleTransportFailure(
               failure,
               phase: .disconnected,
-              connectionState: .disconnected,
+              connectionState: .connecting,
               reconnectDelayNanoseconds: reconnectDelay
             )
           }
@@ -5371,7 +5437,7 @@ final class SyncService: ObservableObject {
     teardownSocket(reason: friendlyError.localizedDescription)
     markConnectionLoadStrained()
     lastError = friendlyError.localizedDescription
-    connectionState = syncIsMessageTooLongError(error) ? .error : .disconnected
+    connectionState = syncConnectionStateAfterTransportFailure(error: error, fallback: .disconnected)
     setDomainStatus(SyncDomain.allCases, phase: .failed, error: friendlyError.localizedDescription)
     failPendingRequests(with: friendlyError)
     if syncIsMessageTooLongError(error) {
@@ -5418,7 +5484,17 @@ final class SyncService: ObservableObject {
     case "pairing_result":
       resolve(requestId: requestId, result: .success(payload))
     case "changeset_batch":
-      let batch = try decode(payload, as: SyncChangesetBatchPayload.self)
+      var batchPayload = payload
+      if let requestId = requestId?.trimmingCharacters(in: .whitespacesAndNewlines),
+         !requestId.isEmpty,
+         var payloadObject = payload as? [String: Any] {
+        let payloadBatchId = (payloadObject["batchId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if payloadBatchId.isEmpty {
+          payloadObject["batchId"] = requestId
+          batchPayload = payloadObject
+        }
+      }
+      let batch = try decode(batchPayload, as: SyncChangesetBatchPayload.self)
       do {
         let result = try database.applyChanges(batch.changes)
         latestRemoteDbVersion = max(latestRemoteDbVersion, batch.toDbVersion, result.dbVersion)
@@ -5441,7 +5517,8 @@ final class SyncService: ObservableObject {
           appliedCount: 0,
           error: error
         )
-        throw error
+        lastError = SyncUserFacingError.message(for: error)
+        resolve(requestId: requestId, result: .success(payload))
       }
     case "changeset_ack":
       let ack = try decode(payload, as: SyncChangesetAckPayload.self)
@@ -5510,6 +5587,22 @@ final class SyncService: ObservableObject {
       while !Task.isCancelled {
         try? await Task.sleep(nanoseconds: 400_000_000)
         sendLocalChanges()
+      }
+    }
+  }
+
+  private func startClientHeartbeatTask(intervalNanoseconds: UInt64, for connectionGeneration: UInt64) {
+    clientHeartbeatTask?.cancel()
+    clientHeartbeatTask = Task { @MainActor [weak self] in
+      while !Task.isCancelled {
+        try? await Task.sleep(nanoseconds: intervalNanoseconds)
+        guard let self, !Task.isCancelled else { return }
+        guard self.isCurrentConnectionGeneration(connectionGeneration), self.canSendLiveRequests() else { return }
+        self.sendEnvelope(type: "heartbeat", requestId: nil, payload: [
+          "kind": "ping",
+          "sentAt": ISO8601DateFormatter().string(from: Date()),
+          "dbVersion": self.database.currentDbVersion(),
+        ])
       }
     }
   }
@@ -5697,12 +5790,11 @@ final class SyncService: ObservableObject {
     let sendSocket = socket
     guard let payloadData = try? adeJSONData(withJSONObject: payload) else { return }
 
-    let envelope: [String: Any]
+    var envelope: [String: Any]
     if payloadData.count >= compressionThresholdBytes {
       envelope = [
         "version": 1,
         "type": type,
-        "requestId": requestId as Any,
         "compression": "gzip",
         "payloadEncoding": "base64",
         "payload": gzip(payloadData).base64EncodedString(),
@@ -5712,11 +5804,13 @@ final class SyncService: ObservableObject {
       envelope = [
         "version": 1,
         "type": type,
-        "requestId": requestId as Any,
         "compression": "none",
         "payloadEncoding": "json",
         "payload": payload,
       ]
+    }
+    if let requestId, !requestId.isEmpty {
+      envelope["requestId"] = requestId
     }
 
     guard let data = try? adeJSONData(withJSONObject: envelope),
@@ -5777,6 +5871,8 @@ final class SyncService: ObservableObject {
   private func teardownSocket(closeCode: URLSessionWebSocketTask.CloseCode = .goingAway, reason: String? = nil) {
     relayTask?.cancel()
     relayTask = nil
+    clientHeartbeatTask?.cancel()
+    clientHeartbeatTask = nil
     hydrationTask?.cancel()
     hydrationTask = nil
     lanePresenceHeartbeatTask?.cancel()
@@ -5812,14 +5908,15 @@ final class SyncService: ObservableObject {
     teardownSocket(reason: friendlyError.localizedDescription)
     markConnectionLoadStrained()
     lastError = friendlyError.localizedDescription
-    self.connectionState = connectionState
-    if phase == .failed {
+    let fatalTransportFailure = syncIsMessageTooLongError(error)
+    self.connectionState = syncConnectionStateAfterTransportFailure(error: error, fallback: connectionState)
+    if phase == .failed || fatalTransportFailure {
       setDomainStatus(SyncDomain.allCases, phase: .failed, error: friendlyError.localizedDescription)
     } else {
       setDomainStatus(SyncDomain.allCases, phase: .disconnected)
     }
     failPendingRequests(with: friendlyError)
-    if syncIsMessageTooLongError(error) {
+    if fatalTransportFailure {
       allowAutoReconnect = false
       setAutoReconnectPausedByUser(true)
       cancelReconnectLoop()

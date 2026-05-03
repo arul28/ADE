@@ -7,6 +7,22 @@ enum WorkSessionNavigationChrome {
   case embedded
 }
 
+func workChatCanSendMessages(
+  isLive: Bool,
+  hostReachable: Bool,
+  chatSendQueueable: Bool
+) -> Bool {
+  isLive && (hostReachable || chatSendQueueable)
+}
+
+func workChatSendWillQueueMessage(
+  isLive: Bool,
+  hostReachable: Bool,
+  chatSendQueueable: Bool
+) -> Bool {
+  isLive && !hostReachable && chatSendQueueable
+}
+
 struct WorkSessionDestinationView: View {
   @EnvironmentObject var syncService: SyncService
 
@@ -60,6 +76,26 @@ struct WorkSessionDestinationView: View {
   /// for sessions the parent considers ended/archived.
   var isLiveAndReachable: Bool {
     isLive && hostReachable
+  }
+
+  var canComposeChatMessages: Bool {
+    session != nil || initialSession != nil
+  }
+
+  var canSendChatMessages: Bool {
+    workChatCanSendMessages(
+      isLive: isLive,
+      hostReachable: hostReachable,
+      chatSendQueueable: syncService.isRemoteActionQueueable("chat.send")
+    )
+  }
+
+  var sendWillQueueChatMessage: Bool {
+    workChatSendWillQueueMessage(
+      isLive: isLive,
+      hostReachable: hostReachable,
+      chatSendQueueable: syncService.isRemoteActionQueueable("chat.send")
+    )
   }
 
   /// Trailing nav-bar control scoped to the session's lane. The visible branch
@@ -162,6 +198,9 @@ struct WorkSessionDestinationView: View {
           sending: $sending,
           errorMessage: $errorMessage,
           isLive: isLiveAndReachable,
+          canComposeMessages: canComposeChatMessages,
+          canSendMessages: canSendChatMessages,
+          sendWillQueue: sendWillQueueChatMessage,
           transitionNamespace: transitionNamespace,
           onOpenLane: showsLaneActions ? openSessionLane : nil,
           onSend: sendMessage,
@@ -386,14 +425,25 @@ struct WorkSessionDestinationView: View {
     }) {
       echo = existingEcho
     } else {
-      let nextEcho = WorkLocalEchoMessage(text: prompt, timestamp: workDateFormatter.string(from: Date()))
+      let nextEcho = WorkLocalEchoMessage(
+        text: prompt,
+        timestamp: workDateFormatter.string(from: Date()),
+        deliveryState: sendWillQueueChatMessage ? "queued" : "sending"
+      )
       localEchoMessages.append(nextEcho)
       echo = nextEcho
     }
+    updateLocalEchoDeliveryState(echoId: echo.id, deliveryState: sendWillQueueChatMessage ? "queued" : "sending")
     sending = true
     do {
-      try await syncService.sendChatMessage(sessionId: sessionId, text: prompt)
-      await refreshChatStateAfterAction(forceRemote: true)
+      let delivery = try await syncService.sendChatMessage(sessionId: sessionId, text: prompt)
+      switch delivery {
+      case .queued:
+        updateLocalEchoDeliveryState(echoId: echo.id, deliveryState: "queued")
+      case .sent:
+        updateLocalEchoDeliveryState(echoId: echo.id, deliveryState: nil)
+        await refreshChatStateAfterAction(forceRemote: true)
+      }
       errorMessage = nil
     } catch {
       ADEHaptics.error()
@@ -410,7 +460,11 @@ struct WorkSessionDestinationView: View {
     let promptKey = "\(sessionId)|\(prompt)"
     guard stagedOpeningPromptKey != promptKey else { return }
     stagedOpeningPromptKey = promptKey
-    localEchoMessages.append(WorkLocalEchoMessage(text: prompt, timestamp: workDateFormatter.string(from: Date())))
+    localEchoMessages.append(WorkLocalEchoMessage(
+      text: prompt,
+      timestamp: workDateFormatter.string(from: Date()),
+      deliveryState: sendWillQueueChatMessage ? "queued" : "sending"
+    ))
   }
 
   @MainActor
@@ -439,6 +493,12 @@ struct WorkSessionDestinationView: View {
         return false
       })
     }
+  }
+
+  @MainActor
+  func updateLocalEchoDeliveryState(echoId: String, deliveryState: String?) {
+    guard let index = localEchoMessages.firstIndex(where: { $0.id == echoId }) else { return }
+    localEchoMessages[index].deliveryState = deliveryState
   }
 
   @MainActor

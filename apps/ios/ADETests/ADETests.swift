@@ -452,6 +452,87 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
+  func testSyncAutomaticReconnectWaitsForLiveLanDiscoveryWithoutTailnet() {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    let profile = HostConnectionProfile(
+      hostIdentity: "host-1",
+      hostName: "Mac Studio",
+      port: 8787,
+      authKind: "paired",
+      pairedDeviceId: "phone-1",
+      lastRemoteDbVersion: 0,
+      lastHostDeviceId: "host-1",
+      lastSuccessfulAddress: "192.168.1.8",
+      savedAddressCandidates: ["192.168.1.8"],
+      discoveredLanAddresses: ["192.168.1.8"],
+      tailscaleAddress: nil
+    )
+
+    XCTAssertEqual(service.automaticReconnectAddressesForTesting(profile), [])
+  }
+
+  func testSyncForegroundReconnectStartRequiresAutomaticRoute() {
+    XCTAssertTrue(
+      syncShouldPublishForegroundReconnectStarted(
+        allowAutoReconnect: true,
+        autoReconnectPausedByUser: false,
+        hasToken: true,
+        connectionState: .disconnected,
+        automaticAddresses: ["100.75.20.63"]
+      )
+    )
+    XCTAssertFalse(
+      syncShouldPublishForegroundReconnectStarted(
+        allowAutoReconnect: true,
+        autoReconnectPausedByUser: false,
+        hasToken: true,
+        connectionState: .disconnected,
+        automaticAddresses: []
+      )
+    )
+    XCTAssertFalse(
+      syncShouldPublishForegroundReconnectStarted(
+        allowAutoReconnect: true,
+        autoReconnectPausedByUser: false,
+        hasToken: true,
+        connectionState: .connected,
+        automaticAddresses: ["100.75.20.63"]
+      )
+    )
+  }
+
+  func testSyncMessageTooLongTransportFailureForcesErrorState() {
+    let fatalError = NSError(
+      domain: "ADE",
+      code: 1,
+      userInfo: [NSLocalizedDescriptionKey: "WebSocket message too long."]
+    )
+    let transientError = NSError(
+      domain: "ADE",
+      code: 2,
+      userInfo: [NSLocalizedDescriptionKey: "The host stopped responding. Reconnecting now."]
+    )
+
+    XCTAssertEqual(syncConnectionStateAfterTransportFailure(error: fatalError, fallback: .connecting), .error)
+    XCTAssertEqual(syncConnectionStateAfterTransportFailure(error: transientError, fallback: .connecting), .connecting)
+  }
+
+  func testSyncClientHeartbeatUsesHalfServerIntervalWithBounds() {
+    XCTAssertEqual(
+      syncClientHeartbeatIntervalNanoseconds(serverIntervalMs: 30_000),
+      15_000_000_000
+    )
+    XCTAssertEqual(
+      syncClientHeartbeatIntervalNanoseconds(serverIntervalMs: 4_000),
+      5_000_000_000
+    )
+    XCTAssertEqual(
+      syncClientHeartbeatIntervalNanoseconds(serverIntervalMs: 120_000),
+      25_000_000_000
+    )
+  }
+
+  @MainActor
   func testSyncPlaintextWebSocketAllowlistIncludesTrustedTailscaleRoutesOnly() {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
 
@@ -3008,6 +3089,40 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
+  func testRemoteCommandPolicyQueuesChatSendWhenOffline() async throws {
+    let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
+    let pendingOperationsKey = "ade.sync.pendingOperations"
+    UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
+    UserDefaults.standard.removeObject(forKey: pendingOperationsKey)
+    defer {
+      UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
+      UserDefaults.standard.removeObject(forKey: pendingOperationsKey)
+    }
+
+    let descriptors = [
+      SyncRemoteCommandDescriptor(
+        action: "chat.send",
+        policy: SyncRemoteCommandPolicy(viewerAllowed: true, requiresApproval: nil, localOnly: nil, queueable: true)
+      ),
+    ]
+    UserDefaults.standard.set(try JSONEncoder().encode(descriptors), forKey: remoteCommandDescriptorsKey)
+
+    let database = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { database.close() }
+    let service = SyncService(database: database)
+    service.disconnect()
+
+    let delivery = try await service.sendChatMessage(sessionId: "chat-1", text: "keep this draft moving")
+
+    XCTAssertEqual(delivery, .queued)
+    let queued = service.pendingOperationsForTesting()
+    XCTAssertEqual(service.pendingOperationCount, 1)
+    XCTAssertEqual(queued.count, 1)
+    XCTAssertEqual(queued.first?.kind, "command")
+    XCTAssertEqual(queued.first?.action, "chat.send")
+  }
+
+  @MainActor
   func testFireAndForgetRemoteCommandQueuesWithStableCommandIdWhenOffline() async throws {
     let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
     let pendingOperationsKey = "ade.sync.pendingOperations"
@@ -3422,6 +3537,44 @@ final class ADETests: XCTestCase {
         connectionState: .connected,
         laneStatus: SyncDomainStatus(phase: .ready, lastError: nil, lastHydratedAt: nil),
         hasCachedTargets: false
+      )
+    )
+  }
+
+  func testWorkChatQueuedSendRequiresLiveSession() {
+    XCTAssertTrue(
+      workChatCanSendMessages(
+        isLive: true,
+        hostReachable: false,
+        chatSendQueueable: true
+      )
+    )
+    XCTAssertTrue(
+      workChatSendWillQueueMessage(
+        isLive: true,
+        hostReachable: false,
+        chatSendQueueable: true
+      )
+    )
+    XCTAssertFalse(
+      workChatCanSendMessages(
+        isLive: false,
+        hostReachable: false,
+        chatSendQueueable: true
+      )
+    )
+    XCTAssertFalse(
+      workChatSendWillQueueMessage(
+        isLive: false,
+        hostReachable: false,
+        chatSendQueueable: true
+      )
+    )
+    XCTAssertTrue(
+      workChatCanSendMessages(
+        isLive: true,
+        hostReachable: true,
+        chatSendQueueable: false
       )
     )
   }
@@ -5369,6 +5522,32 @@ final class ADETests: XCTestCase {
     }
 
     XCTAssertEqual(userMessages, [prompt, "Still waiting for host acknowledgement"])
+  }
+
+  func testWorkTimelineCarriesQueuedLocalEchoDeliveryState() {
+    let timeline = buildWorkTimeline(
+      transcript: [],
+      fallbackEntries: [],
+      toolCards: [],
+      commandCards: [],
+      fileChangeCards: [],
+      eventCards: [],
+      artifacts: [],
+      localEchoMessages: [
+        WorkLocalEchoMessage(
+          text: "Send once the desktop is back",
+          timestamp: "2026-03-25T00:00:03.000Z",
+          deliveryState: "queued"
+        ),
+      ]
+    )
+    let message = timeline.compactMap { entry -> WorkChatMessage? in
+      guard case .message(let message) = entry.payload else { return nil }
+      return message
+    }.first
+
+    XCTAssertEqual(message?.markdown, "Send once the desktop is back")
+    XCTAssertEqual(message?.deliveryState, "queued")
   }
 
   func testWorkTurnSeparatorsUsePerTurnModelAfterModelSwitch() {

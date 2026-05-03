@@ -333,18 +333,20 @@ protocol versions.
 invalid_hello`. `SyncPairingResultPayload.error.code` is one of
 `invalid_pin | pin_not_set | pairing_failed`.
 
-Heartbeat interval is 30 seconds; a peer only gets closed after
-**two** consecutive missed heartbeats (the host increments
-`missedHeartbeatCount` on the first miss rather than disconnecting
-immediately). Reconnection resumes from the last-known `db_version`
-so no changesets are lost.
+Heartbeat interval is 30 seconds. Desktop peers close after **two**
+consecutive missed heartbeats, while mobile peers get a wider grace
+window because iOS can briefly suspend foreground networking during app
+and route transitions. Reconnection resumes from the last-known
+`db_version` so no changesets are lost.
 
-`changeset_batch` envelopes carry a `batchId`; the receiver replies
-with a `changeset_ack` once `applyChanges` commits (or with an error
-code on failure). The host keeps the batch in `pendingChangesetBatch`
-until the ack lands, retransmitting on timeout so a dropped wifi blip
-cannot lose a batch. `pendingChangesetPeerCount` is surfaced through
-`brain_status` for diagnostics.
+`changeset_batch` envelopes carry a `batchId`; legacy batches without
+one are decoded with a deterministic fallback so older desktops can
+still sync. The receiver replies with a `changeset_ack` once
+`applyChanges` commits (or with an error code on failure). The host and
+phone keep outbound batches pending until the ack lands, retransmitting
+on timeout so a dropped wifi blip cannot lose a batch.
+`pendingChangesetPeerCount` is surfaced through `brain_status` for
+diagnostics.
 
 Mobile-originated `command` envelopes are deduplicated through a
 short-lived `mobileCommandResultCache` (TTL 30 minutes, 512 entries)
@@ -483,7 +485,8 @@ current branch modifications to `syncRemoteCommandService.ts`.
   wire format is identical; cr-sqlite feature parity is **not**
   guaranteed — any desktop-only cr-sqlite feature that ADE grows to
   depend on must also be implementable in SQL triggers on iOS.
-- **Controller command queues replay on reconnect.** If the user
-  fires a `chat.send` while disconnected, the iOS app stores the
-  command locally with a "pending sync" indicator and replays on
-  reconnect. Do not assume synchronous semantics from the phone side.
+- **Controller command queues replay on reconnect.** If the host
+  advertises `chat.send` as queueable and the user sends while the
+  desktop is reconnecting, the iOS app stores the command locally with
+  a queued delivery state and replays on reconnect. Do not assume
+  synchronous semantics from the phone side.

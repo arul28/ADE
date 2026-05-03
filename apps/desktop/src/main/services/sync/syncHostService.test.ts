@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import { openKvDb } from "../state/kvDb";
 import { isCrsqliteAvailable } from "../state/crsqliteExtension";
-import { createSyncHostService } from "./syncHostService";
+import { createSyncHostService, syncHeartbeatMissLimitForPeerMetadata } from "./syncHostService";
 import type { SyncPinStore } from "./syncPinStore";
 import { encodeSyncEnvelope, parseSyncEnvelope } from "./syncProtocol";
 import type { ParsedSyncEnvelope } from "./syncProtocol";
@@ -290,6 +290,15 @@ afterEach(async () => {
 });
 
 describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
+  it("allows a wider heartbeat grace window for mobile peers", () => {
+    expect(syncHeartbeatMissLimitForPeerMetadata({ platform: "iOS", deviceType: "phone" })).toBeGreaterThan(
+      syncHeartbeatMissLimitForPeerMetadata({ platform: "macOS", deviceType: "desktop" }),
+    );
+    expect(syncHeartbeatMissLimitForPeerMetadata({ platform: "unknown", deviceType: "phone" })).toBeGreaterThan(
+      syncHeartbeatMissLimitForPeerMetadata(null),
+    );
+  });
+
   it("retries tailnet discovery after a serve failure only when forced", async () => {
     const previousEnv = {
       ADE_TAILSCALE_CLI: process.env.ADE_TAILSCALE_CLI,

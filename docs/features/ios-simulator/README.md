@@ -121,8 +121,11 @@ called from a non-darwin host.
      caller. Requires macOS, full Xcode 17.x or 26.x, `swiftc`, and
      `clang`; CLT-only machines fall back cleanly. Packaged ADE builds ship
      the helper sources as app resources and keep generated helper binaries
-     outside the signed `.app` bundle. New Xcode majors should be added only
-     after helper compile/smoke and real simulator validation.
+     outside the signed `.app` bundle. The input helper sends point-space
+     touch coordinates with screen dimensions; Xcode 26 uses the modern
+     9-argument Indigo mouse message path, while older supported Xcodes keep
+     the legacy 5-argument path. New Xcode majors should be added only after
+     helper compile/smoke and real simulator validation.
    - `idb-h264-ffmpeg-mjpeg` (recovery-only) — exact-screen stream
      through `idb video-stream --format h264` transcoded to MJPEG via
      `ffmpeg`. The renderer reads the MJPEG endpoint with `fetch` +
@@ -173,6 +176,9 @@ called from a non-darwin host.
    route through an input backend abstraction. Indigo touch input is
    preferred whenever IOSurface capability is available, including
    explicit non-IOSurface capture modes, and idb remains the fallback.
+   The service sends raw simulator points plus screen metrics to the
+   helper, so tap and drag math stays aligned with ADEInspector and
+   screenshot coordinates instead of normalizing early in TypeScript.
    If Indigo input fails twice in 60 s, ADE sticks to idb for the rest
    of that session and emits a status event with the reason. Text/key
    input currently falls back to idb because the helper only implements

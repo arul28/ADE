@@ -3,60 +3,60 @@ import SwiftUI
 struct LaneDetailRebaseBanner: View {
   let behindCount: Int
   let parentLabel: String?
+  let hasPr: Bool
   let canRunLiveActions: Bool
-  let onRebase: () -> Void
-  let onDefer: () -> Void
+  let onViewRebase: () -> Void
   let onDismiss: () -> Void
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
       HStack(alignment: .center, spacing: 10) {
-        Image(systemName: "exclamationmark.arrow.triangle.2.circlepath")
-          .font(.system(size: 15, weight: .semibold))
+        Image(systemName: "arrow.triangle.2.circlepath")
+          .font(.system(size: 13, weight: .semibold))
           .foregroundStyle(ADEColor.warning)
-          .frame(width: 28, height: 28)
-          .background(ADEColor.warning.opacity(0.16), in: Circle())
+        Text("REBASE SUGGESTED")
+          .font(.caption.weight(.semibold))
+          .tracking(0.6)
+          .foregroundStyle(ADEColor.textMuted)
+        Spacer(minLength: 4)
+        LaneTypeBadge(text: "1 LANE", tint: ADEColor.warning)
+      }
 
-        VStack(alignment: .leading, spacing: 2) {
-          Text("Rebase suggested")
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(ADEColor.textPrimary)
-          Text(headline)
-            .font(.caption)
-            .foregroundStyle(ADEColor.textSecondary)
+      VStack(alignment: .leading, spacing: 6) {
+        HStack(spacing: 6) {
+          if hasPr {
+            LaneTypeBadge(text: "PR", tint: ADEColor.accent)
+          }
+          LaneTypeBadge(text: "\(behindCount) BEHIND", tint: ADEColor.warning)
         }
 
-        Spacer(minLength: 4)
+        Text(bodyCopy)
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+          .fixedSize(horizontal: false, vertical: true)
       }
 
       HStack(spacing: 8) {
-        Button(action: onRebase) {
-          HStack(spacing: 6) {
-            Image(systemName: "arrow.triangle.branch")
-              .font(.system(size: 12, weight: .semibold))
-            Text("Rebase")
-              .font(.subheadline.weight(.semibold))
-          }
-          .foregroundStyle(ADEColor.textPrimary)
-          .padding(EdgeInsets(top: 9, leading: 14, bottom: 9, trailing: 14))
-          .background(ADEColor.warning.opacity(0.24), in: Capsule())
-          .overlay(Capsule().stroke(ADEColor.warning.opacity(0.5), lineWidth: 0.6))
+        Button(action: onViewRebase) {
+          Text("View in Rebase/Merge tab")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+            .padding(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
+            .background(ADEColor.warning.opacity(0.24), in: Capsule())
+            .overlay(Capsule().stroke(ADEColor.warning.opacity(0.5), lineWidth: 0.6))
         }
         .buttonStyle(.plain)
         .disabled(!canRunLiveActions)
         .opacity(canRunLiveActions ? 1.0 : 0.55)
 
-        Button("Defer", action: onDefer)
-          .buttonStyle(.plain)
-          .font(.caption.weight(.medium))
-          .foregroundStyle(ADEColor.textSecondary)
-          .padding(EdgeInsets(top: 8, leading: 10, bottom: 8, trailing: 10))
-
-        Button("Dismiss", action: onDismiss)
-          .buttonStyle(.plain)
-          .font(.caption.weight(.medium))
-          .foregroundStyle(ADEColor.textMuted)
-          .padding(EdgeInsets(top: 8, leading: 10, bottom: 8, trailing: 10))
+        Button(action: onDismiss) {
+          Text("Dismiss")
+            .font(.caption.weight(.medium))
+            .foregroundStyle(ADEColor.textSecondary)
+            .padding(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
+            .overlay(Capsule().stroke(ADEColor.border.opacity(0.4), lineWidth: 0.6))
+        }
+        .buttonStyle(.plain)
 
         Spacer(minLength: 0)
       }
@@ -69,14 +69,11 @@ struct LaneDetailRebaseBanner: View {
         .stroke(ADEColor.warning.opacity(0.28), lineWidth: 0.8)
     )
     .accessibilityElement(children: .combine)
-    .accessibilityLabel("Rebase suggested. \(headline)")
+    .accessibilityLabel("Rebase suggested. \(bodyCopy)")
   }
 
-  private var headline: String {
-    let noun = behindCount == 1 ? "commit" : "commits"
-    if let parentLabel, !parentLabel.isEmpty {
-      return "Behind \(parentLabel) by \(behindCount) \(noun)"
-    }
-    return "Behind parent by \(behindCount) \(noun)"
+  private var bodyCopy: String {
+    let base = parentLabel.flatMap { $0.isEmpty ? nil : $0 } ?? "parent branch"
+    return "Rebase this lane onto \(base) to pick up new commits."
   }
 }

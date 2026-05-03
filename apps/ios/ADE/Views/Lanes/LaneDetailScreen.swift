@@ -307,20 +307,6 @@ struct LaneDetailScreen: View {
   }
 
   @MainActor
-  func handleRebaseSuggestionDefer() {
-    Task {
-      do {
-        try await syncService.deferRebaseSuggestion(laneId: laneId)
-        rebaseSuggestionDismissed = true
-        await onRefreshRoot()
-      } catch {
-        ADEHaptics.error()
-        errorMessage = error.localizedDescription
-      }
-    }
-  }
-
-  @MainActor
   func handleRebaseSuggestionDismiss() {
     Task {
       do {
