@@ -87,6 +87,25 @@ Renderer surfaces:
   entry surface with `PaneTilingLayout` (sessions list + work view).
   Owns the multi-select state (`selectedSessionIds`, shift/ctrl anchor,
   bulk close and bulk delete handlers) that the sidebar forwards into.
+  Also owns the right-edge `WorkSidebar` toggle and resizer: when the
+  sidebar is open and the view mode is not `grid`, the work view area
+  shares its row with `WorkSidebar` via a flex container with a
+  draggable column separator.
+- `apps/desktop/src/renderer/components/terminals/WorkSidebar.tsx` —
+  right-edge sidebar tied to the active lane (and active Work session
+  when present). Tabbed into `git` (lane git actions + selection-driven
+  diff), `files` (mounts `FilesPage` in `embedded` mode with the lane
+  worktree pre-selected), `ios` (mounts `ChatIosSimulatorPanel` against
+  the active lane), and `app-control` (mounts `ChatAppControlPanel`).
+  When the active Work session is a chat (`isChatToolType`), the
+  sidebar can attach iOS / App Control selections, draft text, and
+  file refs to that chat by dispatching the
+  `ade:agent-chat:add-attachment` / `add-ios-context` /
+  `add-app-control-context` / `insert-draft` window events the
+  matching `AgentChatPane` listens to. Non-chat sessions disable
+  attachment with a banner; lane mismatches between the Work lane and
+  an existing App Control / iOS Simulator session also disable
+  attachment with a warning.
 - `apps/desktop/src/renderer/components/terminals/SessionListPane.tsx` —
   sidebar list with three organization modes (lane / status / time),
   sticky group headers, search/filter. Renders a bulk action bar at the
@@ -300,9 +319,13 @@ See `apps/desktop/src/shared/types/sessions.ts` for the full shape.
   the lane worktree. Bypass it and you risk launching a session in the
   wrong worktree. See [runtime-isolation.md](./runtime-isolation.md).
 - **Work view state persistence** — the Work tab persists per-project
-  UI state (open items, filters, collapsed groups, focus-hidden flag)
-  to `localStorage` under `ade.workViewState.v1`. Lane-scoped state
-  uses a composite `projectRoot::laneId` key.
+  UI state (open items, filters, collapsed groups, focus-hidden flag,
+  right `WorkSidebar` open/tab/width) to `localStorage` under
+  `ade.workViewState.v1`. The sidebar fields are
+  `workSidebarOpen: boolean`, `workSidebarTab: "git" | "files" | "ios"
+  | "app-control"`, and `workSidebarWidthPct: number` (clamped to
+  26–55). Lane-scoped state uses a composite `projectRoot::laneId`
+  key.
 
 ## IPC surface summary
 

@@ -12,7 +12,6 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { CommandPalette } from "./CommandPalette";
 import { TabNav } from "./TabNav";
 import { TopBar } from "./TopBar";
-import { RightEdgeFloatingPane } from "./RightEdgeFloatingPane";
 import {
   getPrToastHeadline,
   getPrToastMeta,
@@ -1103,8 +1102,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               children
             )}
           </div>
-          <RightEdgeFloatingPane />
-
           {staleCliNotice || prToasts.length > 0 ? (
             <div className="pointer-events-none absolute bottom-2 right-2 z-[95] flex w-[min(380px,calc(100vw-20px))] flex-col gap-1.5">
               {staleCliNotice ? (

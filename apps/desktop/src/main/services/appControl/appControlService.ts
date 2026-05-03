@@ -1311,11 +1311,18 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
     const target = pickCdpTarget(await listCdpTargets(cdpPort));
     if (!target?.webSocketDebuggerUrl) throw new Error(`No debuggable renderer target was found on CDP port ${cdpPort}.`);
     cdpAttachmentEpoch += 1;
+    const laneId = await args.resolveLaneId?.({
+      projectRoot,
+      cwd: projectRoot,
+      laneId: connectArgs.laneId ?? null,
+      chatSessionId: connectArgs.chatSessionId ?? null,
+    }) ?? connectArgs.laneId ?? null;
     activeSession = {
       id: randomUUID(),
       appKind: "electron",
       label: connectArgs.label?.trim() || target.title || `Electron app on ${cdpPort}`,
       projectRoot,
+      laneId,
       cwd: null,
       command: null,
       pid: null,
@@ -1357,13 +1364,14 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
       chatSessionId: launchArgs.chatSessionId ?? null,
     });
     if (!laneId) {
-      throw new Error("App Control could not resolve a lane for the chat terminal. Open a chat in a lane or pass laneId.");
+      throw new Error("App Control could not resolve a lane for the terminal. Select a lane or pass laneId.");
     }
     const session: AppControlSession = {
       id: randomUUID(),
       appKind: "electron",
       label: resolved.label,
       projectRoot,
+      laneId,
       cwd: resolved.cwd,
       command: resolved.commandForDisplay,
       pid: null,

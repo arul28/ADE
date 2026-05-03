@@ -526,12 +526,19 @@ function FilePreviewSurface({ tab }: { tab: OpenTab }) {
   );
 }
 
-export function FilesPage() {
+export function FilesPage({
+  preferredLaneId = null,
+  embedded = false,
+}: {
+  preferredLaneId?: string | null;
+  embedded?: boolean;
+} = {}) {
   const navigate = useNavigate();
   const location = useLocation();
-  const selectedLaneId = useAppStore((s) => s.selectedLaneId);
+  const selectedLaneIdFromStore = useAppStore((s) => s.selectedLaneId);
   const lanes = useAppStore((s) => s.lanes);
   const projectRootPath = useAppStore((s) => s.project?.rootPath ?? "__unknown_project__");
+  const selectedLaneId = preferredLaneId ?? selectedLaneIdFromStore;
   const sessionKey = filesSessionKey(projectRootPath, selectedLaneId);
   const initialSession = getFilesPageSession(sessionKey);
 
@@ -1277,7 +1284,10 @@ export function FilesPage() {
             setActiveTabPath(null);
             setSelectedNodePath(null);
           }
-          return items[0]?.id ?? "";
+          const preferredWorkspace = selectedLaneId
+            ? items.find((workspace) => workspace.laneId === selectedLaneId)
+            : null;
+          return preferredWorkspace?.id ?? items[0]?.id ?? "";
         });
       })
       .catch((err) => {
@@ -1287,7 +1297,7 @@ export function FilesPage() {
         });
         setError(err instanceof Error ? err.message : String(err));
       });
-  }, []);
+  }, [selectedLaneId]);
 
   useEffect(() => {
     if (!workspaceId) return;
@@ -2270,7 +2280,10 @@ export function FilesPage() {
   }, [paneConfigs]);
 
   return (
-    <div className="relative flex h-full min-h-0 flex-col" style={{ background: COLORS.pageBg }}>
+    <div
+      className={cn("relative flex h-full min-h-0 flex-col", embedded && "ade-files-page-embedded")}
+      style={{ background: COLORS.pageBg }}
+    >
       {/* Header bar */}
       <div style={{ padding: "0 24px", height: 64, display: "flex", alignItems: "center", gap: 20, background: "transparent", borderBottom: `1px solid ${COLORS.border}` }} data-tour="files.header">
         {/* Numbered title group */}

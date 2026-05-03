@@ -199,6 +199,7 @@ describe("iosSimulatorService single-owner lock contract", () => {
       appBundlePath: null,
       targetId: null,
       projectRoot: "/tmp",
+      laneId: "lane-1",
       chatSessionId: "chat-A",
       mode: "snapshot" as const,
       bridgeUrl: null,

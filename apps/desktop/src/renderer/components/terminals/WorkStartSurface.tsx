@@ -161,6 +161,7 @@ export function WorkStartSurface({
               laneId={selectedLaneId}
               laneLabel={selectedLane?.name ?? selectedLaneId}
               hideSessionTabs
+              hideLaneToolDrawers
               forceDraftMode
               embeddedWorkLayout
               onSessionCreated={onOpenChatSession}

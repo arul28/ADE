@@ -43,6 +43,7 @@ const activeStatus: IosSimulatorStatus = {
     appBundlePath: null,
     targetId: "target-1",
     projectRoot: "/tmp/project",
+    laneId: "lane-1",
     chatSessionId: "chat-1",
     mode: "live",
     bridgeUrl: null,

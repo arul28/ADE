@@ -72,6 +72,7 @@ function SessionSurface({
         laneLabel={session.laneName}
         lockSessionId={session.id}
         hideSessionTabs
+        hideLaneToolDrawers
         onSessionCreated={onOpenChatSession}
         layoutVariant={layoutVariant}
         isTileActive={isActive}
@@ -352,6 +353,38 @@ function WorkPaneEmbeddedChromeLeading({ chrome }: { chrome: FloatingPaneEmbedde
   );
 }
 
+function WorkSidebarToggle({
+  open,
+  onToggle,
+}: {
+  open: boolean;
+  onToggle?: () => void;
+}) {
+  if (!onToggle) return null;
+  return (
+    <SmartTooltip
+      content={{
+        label: open ? "Hide Work sidebar" : "Show Work sidebar",
+        description: "Show Git, Files, iOS Simulator, and App Control for the active lane.",
+      }}
+    >
+      <button
+        type="button"
+        className={cn(
+          "ade-shell-control inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md",
+          open && "ade-work-tab-active",
+        )}
+        data-variant="ghost"
+        onClick={onToggle}
+        aria-label={open ? "Hide Work sidebar" : "Show Work sidebar"}
+        aria-pressed={open}
+      >
+        <SidebarSimple size={13} weight={open ? "fill" : "regular"} />
+      </button>
+    </SmartTooltip>
+  );
+}
+
 export function WorkViewArea({
   gridLayoutId,
   lanes,
@@ -377,6 +410,8 @@ export function WorkViewArea({
   sessionsPaneListCount = 0,
   sessionsPaneRunningCount = 0,
   sessionsListLoading = false,
+  workSidebarOpen = false,
+  onToggleWorkSidebar,
 }: {
   gridLayoutId: string;
   lanes: LaneSummary[];
@@ -411,6 +446,8 @@ export function WorkViewArea({
   sessionsPaneListCount?: number;
   sessionsPaneRunningCount?: number;
   sessionsListLoading?: boolean;
+  workSidebarOpen?: boolean;
+  onToggleWorkSidebar?: () => void;
 }) {
   const expandSessionsProps: SessionsPaneExpandAffordanceProps = {
     show: Boolean(sessionsPaneCollapsed && onExpandSessionsPane),
@@ -649,6 +686,7 @@ export function WorkViewArea({
           <div className="shrink-0">
             <ViewModeToggle viewMode={viewMode} setViewMode={setViewMode} />
           </div>
+          <WorkSidebarToggle open={workSidebarOpen} onToggle={onToggleWorkSidebar} />
           <div className="ade-work-tab-strip-scroll min-h-0 min-w-0 flex-1 overflow-x-auto overflow-y-hidden">
             <div className="flex w-max min-w-0 flex-nowrap items-center gap-0">
             {visibleSessions.map((session) => {
@@ -766,6 +804,7 @@ export function WorkViewArea({
         <div className="shrink-0">
           <ViewModeToggle viewMode={viewMode} setViewMode={setViewMode} />
         </div>
+        <WorkSidebarToggle open={workSidebarOpen} onToggle={onToggleWorkSidebar} />
         <div className="ade-work-tab-strip-scroll min-w-0 flex-1 self-stretch overflow-x-auto overflow-y-hidden">
           <div className="flex h-full min-w-0 w-max flex-nowrap items-center gap-1.5">
             {resolvedTabGroups.map((group) => {

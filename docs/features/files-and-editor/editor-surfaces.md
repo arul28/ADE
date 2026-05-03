@@ -7,7 +7,9 @@ for edit, diff, and conflict modes.
 
 Path: `apps/desktop/src/renderer/components/files/FilesPage.tsx`
 
-A single large component (~2,570 lines) that owns:
+A single large component (~2,570 lines), parameterized by optional
+`preferredLaneId` (selects a lane worktree as the default workspace)
+and `embedded` (compact chrome for the Work sidebar mount). It owns:
 
 - workspace selection (dropdown synced to `laneService` workspaces)
 - file explorer tree with lazy loading, context menu, and drag/drop
@@ -195,12 +197,17 @@ Panel overlay with:
 - the search uses `files.searchText({ workspaceId, query, limit: 500,
   includeIgnored: false })`
 
-## Floating workspace
+## Embedded Files in the Work sidebar
 
-`FloatingFilesWorkspace.tsx` is a lighter, modal-style file browser
-used from the Lanes tab and some side panels. It shares the same IPC
-calls but omits the conflict and diff modes. It is not an independent
-code path — `FilesPage.tsx` stays the source of truth for mode logic.
+`FilesPage` accepts `preferredLaneId` and `embedded` props so it can be
+mounted as the `files` tab of the Work right-edge sidebar
+(`apps/desktop/src/renderer/components/terminals/WorkSidebar.tsx`).
+When `preferredLaneId` is set, the workspace selector pre-selects the
+matching lane worktree on first load and on every change to the prop;
+when `embedded` is true the page applies the `ade-files-page-embedded`
+chrome so the tree, tab bar, and editor pack into a narrow column. All
+IPC calls and modes are identical to the standalone Files tab — there
+is no separate code path for the embedded view.
 
 ## Keyboard shortcuts
 

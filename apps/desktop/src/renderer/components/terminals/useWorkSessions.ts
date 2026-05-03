@@ -5,6 +5,7 @@ import {
   useAppStore,
   type WorkDraftKind,
   type WorkProjectViewState,
+  type WorkSidebarTab,
   type WorkSessionListOrganization,
   type WorkStatusFilter,
   type WorkViewMode,
@@ -34,6 +35,9 @@ const DEFAULT_PROJECT_WORK_STATE: WorkProjectViewState = {
   workCollapsedSectionIds: [],
   workCollapsedTabGroupIds: [],
   workFocusSessionsHidden: false,
+  workSidebarOpen: false,
+  workSidebarTab: "git",
+  workSidebarWidthPct: 36,
 };
 
 type WorkTabGroupKind = "lane" | "status" | "time";
@@ -325,6 +329,9 @@ export function useWorkSessions() {
   const workCollapsedTabGroupIds = projectViewState.workCollapsedTabGroupIds ?? [];
   const workCollapsedSectionIds = projectViewState.workCollapsedSectionIds ?? [];
   const workFocusSessionsHidden = projectViewState.workFocusSessionsHidden ?? false;
+  const workSidebarOpen = projectViewState.workSidebarOpen ?? false;
+  const workSidebarTab = projectViewState.workSidebarTab ?? "git";
+  const workSidebarWidthPct = projectViewState.workSidebarWidthPct ?? 36;
   const sessionsById = useMemo(() => {
     const map = new Map<string, TerminalSessionSummary>();
     for (const session of sessions) map.set(session.id, session);
@@ -420,6 +427,27 @@ export function useWorkSessions() {
   const setWorkFocusSessionsHidden = useCallback(
     (hidden: boolean) => {
       setProjectViewState({ workFocusSessionsHidden: hidden });
+    },
+    [setProjectViewState],
+  );
+
+  const setWorkSidebarOpen = useCallback(
+    (open: boolean) => {
+      setProjectViewState({ workSidebarOpen: open });
+    },
+    [setProjectViewState],
+  );
+
+  const setWorkSidebarTab = useCallback(
+    (tab: WorkSidebarTab) => {
+      setProjectViewState({ workSidebarTab: tab, workSidebarOpen: true });
+    },
+    [setProjectViewState],
+  );
+
+  const setWorkSidebarWidthPct = useCallback(
+    (widthPct: number) => {
+      setProjectViewState({ workSidebarWidthPct: Math.max(26, Math.min(55, widthPct)) });
     },
     [setProjectViewState],
   );
@@ -1108,6 +1136,12 @@ export function useWorkSessions() {
 
     workFocusSessionsHidden,
     setWorkFocusSessionsHidden,
+    workSidebarOpen,
+    setWorkSidebarOpen,
+    workSidebarTab,
+    setWorkSidebarTab,
+    workSidebarWidthPct,
+    setWorkSidebarWidthPct,
 
     selectedSessionId,
     setSelectedSessionId,

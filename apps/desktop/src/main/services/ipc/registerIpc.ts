@@ -2251,6 +2251,8 @@ export function registerIpc({
     if (appKind !== undefined) args.appKind = appKind;
     const projectRoot = optionalAppControlString(record, "projectRoot", channel, 4096);
     if (projectRoot !== undefined) args.projectRoot = projectRoot;
+    const laneId = optionalAppControlString(record, "laneId", channel, 512);
+    if (laneId !== undefined) args.laneId = laneId;
     const label = optionalAppControlString(record, "label", channel, 256);
     if (label !== undefined) args.label = label;
     const chatSessionId = optionalAppControlString(record, "chatSessionId", channel, 128);

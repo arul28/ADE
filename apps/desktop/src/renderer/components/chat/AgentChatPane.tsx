@@ -1319,6 +1319,7 @@ export function AgentChatPane({
   hideSessionTabs = false,
   hideNativeControls = false,
   hideWorkspaceChrome = false,
+  hideLaneToolDrawers = false,
   forceNewSession = false,
   forceDraftMode = false,
   availableModelIdsOverride,
@@ -1342,6 +1343,8 @@ export function AgentChatPane({
   hideSessionTabs?: boolean;
   hideNativeControls?: boolean;
   hideWorkspaceChrome?: boolean;
+  /** Work owns these lane-scoped drawers; proof remains chat-scoped here. */
+  hideLaneToolDrawers?: boolean;
   forceNewSession?: boolean;
   forceDraftMode?: boolean;
   availableModelIdsOverride?: string[];
@@ -1610,6 +1613,9 @@ export function AgentChatPane({
     () => (selectedSessionId ? sessions.find((session) => session.sessionId === selectedSessionId) ?? null : null),
     [sessions, selectedSessionId]
   );
+  const effectiveIosSimulatorOpen = !hideLaneToolDrawers && iosSimulatorOpen;
+  const effectiveAppControlOpen = !hideLaneToolDrawers && appControlOpen;
+  const laneToolsVisible = Boolean(showWorkspaceChrome && !hideLaneToolDrawers && laneId);
   const laneDisplayLabel = useMemo(() => {
     const normalized = laneLabel?.trim();
     return normalized?.length ? normalized : laneId;
@@ -1621,7 +1627,7 @@ export function AgentChatPane({
   useEffect(() => {
     const api = window.ade?.iosSimulator;
     if (!api?.getStatus) return;
-    if (!iosSimulatorOpen || !isTileActive) return;
+    if (!effectiveIosSimulatorOpen || !isTileActive) return;
     let cancelled = false;
     void api.getStatus()
       .then((status) => {
@@ -1635,7 +1641,7 @@ export function AgentChatPane({
     return () => {
       cancelled = true;
     };
-  }, [iosSimulatorOpen, isTileActive]);
+  }, [effectiveIosSimulatorOpen, isTileActive]);
 
   useEffect(() => {
     const api = window.ade?.appControl;
@@ -1714,6 +1720,7 @@ export function AgentChatPane({
     });
     setPromptSuggestion(null);
   }, [selectedSessionId]);
+
   const iosSimulatorProjectRoot = useMemo(() => {
     const scopedLaneId = selectedSession?.laneId ?? laneId;
     if (!scopedLaneId) return projectRoot;
@@ -3382,6 +3389,112 @@ export function AgentChatPane({
     });
   }, []);
 
+  const addIosElementContext = useCallback((item: IosElementContextItem) => {
+    const nextSurface = iosContextSurface(item);
+    const replacedAttachmentPaths = iosElementContextItems
+      .filter((entry) => iosContextSurface(entry) !== nextSurface)
+      .map(getIosContextAttachmentPath)
+      .filter((path): path is string => Boolean(path));
+    const latestAttachment = latestAttachmentRef.current;
+    const attachmentPath = item.screenshotDataUrl
+      && latestAttachment?.type === "image"
+      && Date.now() - latestAttachment.addedAt < 10_000
+      && !linkedIosAttachmentPathsRef.current.has(latestAttachment.path)
+        ? latestAttachment.path
+        : null;
+    const instanceId = createIosContextInstanceId(item);
+    if (attachmentPath) {
+      linkedIosAttachmentPathsRef.current.add(attachmentPath);
+    }
+    for (const path of replacedAttachmentPaths) {
+      linkedIosAttachmentPathsRef.current.delete(path);
+    }
+    if (replacedAttachmentPaths.length) {
+      const replaced = new Set(replacedAttachmentPaths);
+      setAttachments((current) => current.filter((entry) => !replaced.has(entry.path)));
+    }
+    setIosElementContextItems((current) => [
+      {
+        ...item,
+        id: instanceId,
+        metadata: {
+          ...item.metadata,
+          originalElementId: item.metadata.originalElementId ?? item.id,
+          contextInstanceId: instanceId,
+          ...(attachmentPath ? { attachmentPath } : {}),
+        },
+      },
+      ...current.filter((entry) => iosContextSurface(entry) === nextSurface),
+    ]);
+  }, [iosElementContextItems]);
+
+  const addAppControlContext = useCallback((item: AppControlContextItem) => {
+    const latestAttachment = latestAttachmentRef.current;
+    const attachmentPath = item.screenshotDataUrl
+      && latestAttachment?.type === "image"
+      && Date.now() - latestAttachment.addedAt < 10_000
+      && !linkedAppControlAttachmentPathsRef.current.has(latestAttachment.path)
+        ? latestAttachment.path
+        : getAppControlContextAttachmentPath(item);
+    const instanceId = createAppControlContextInstanceId(item);
+    if (attachmentPath) {
+      linkedAppControlAttachmentPathsRef.current.add(attachmentPath);
+    }
+    setAppControlContextItems((current) => [
+      {
+        ...item,
+        id: instanceId,
+        metadata: {
+          ...item.metadata,
+          originalElementId: item.metadata.originalElementId ?? item.id,
+          contextInstanceId: instanceId,
+          ...(attachmentPath ? { attachmentPath } : {}),
+        },
+      },
+      ...current.slice(0, 4),
+    ]);
+  }, []);
+
+  useEffect(() => {
+    const matchesThisChat = (sessionId: unknown): boolean => (
+      typeof sessionId === "string" && sessionId === selectedSessionIdRef.current
+    );
+
+    const onAddAttachment = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: unknown; attachment?: unknown }>).detail;
+      if (!matchesThisChat(detail?.sessionId)) return;
+      const attachment = detail.attachment as AgentChatFileRef | undefined;
+      if (!attachment?.path) return;
+      addAttachment(attachment);
+    };
+    const onInsertDraft = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: unknown; text?: unknown }>).detail;
+      if (!matchesThisChat(detail?.sessionId) || typeof detail.text !== "string") return;
+      insertComposerDraft(detail.text);
+    };
+    const onAddIosContext = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: unknown; item?: unknown }>).detail;
+      if (!matchesThisChat(detail?.sessionId) || !detail.item) return;
+      addIosElementContext(detail.item as IosElementContextItem);
+    };
+    const onAddAppControlContext = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: unknown; item?: unknown }>).detail;
+      if (!matchesThisChat(detail?.sessionId) || !detail.item) return;
+      addAppControlContext(detail.item as AppControlContextItem);
+    };
+
+    window.addEventListener("ade:agent-chat:add-attachment", onAddAttachment);
+    window.addEventListener("ade:agent-chat:insert-draft", onInsertDraft);
+    window.addEventListener("ade:agent-chat:add-ios-context", onAddIosContext);
+    window.addEventListener("ade:agent-chat:add-app-control-context", onAddAppControlContext);
+    return () => {
+      window.removeEventListener("ade:agent-chat:add-attachment", onAddAttachment);
+      window.removeEventListener("ade:agent-chat:insert-draft", onInsertDraft);
+      window.removeEventListener("ade:agent-chat:add-ios-context", onAddIosContext);
+      window.removeEventListener("ade:agent-chat:add-app-control-context", onAddAppControlContext);
+    };
+  }, [addAppControlContext, addAttachment, addIosElementContext, insertComposerDraft]);
+
   const removeAttachment = useCallback((attachmentPath: string) => {
     linkedIosAttachmentPathsRef.current.delete(attachmentPath);
     linkedAppControlAttachmentPathsRef.current.delete(attachmentPath);
@@ -4410,47 +4523,11 @@ export function AgentChatPane({
       <div className="min-h-0 flex-1 overflow-auto px-4 py-3">
         <ChatIosSimulatorPanel
           sessionId={selectedSessionId}
+          laneId={selectedSession?.laneId ?? laneId}
           projectRoot={iosSimulatorProjectRoot}
           onAddAttachment={addAttachment}
           onInsertDraft={insertComposerDraft}
-          onAddContext={(item) => {
-            const nextSurface = iosContextSurface(item);
-            const replacedAttachmentPaths = iosElementContextItems
-              .filter((entry) => iosContextSurface(entry) !== nextSurface)
-              .map(getIosContextAttachmentPath)
-              .filter((path): path is string => Boolean(path));
-            const latestAttachment = latestAttachmentRef.current;
-            const attachmentPath = item.screenshotDataUrl
-              && latestAttachment?.type === "image"
-              && Date.now() - latestAttachment.addedAt < 10_000
-              && !linkedIosAttachmentPathsRef.current.has(latestAttachment.path)
-                ? latestAttachment.path
-                : null;
-            const instanceId = createIosContextInstanceId(item);
-            if (attachmentPath) {
-              linkedIosAttachmentPathsRef.current.add(attachmentPath);
-            }
-            for (const path of replacedAttachmentPaths) {
-              linkedIosAttachmentPathsRef.current.delete(path);
-            }
-            if (replacedAttachmentPaths.length) {
-              const replaced = new Set(replacedAttachmentPaths);
-              setAttachments((current) => current.filter((entry) => !replaced.has(entry.path)));
-            }
-            setIosElementContextItems((current) => [
-              {
-                ...item,
-                id: instanceId,
-                metadata: {
-                  ...item.metadata,
-                  originalElementId: item.metadata.originalElementId ?? item.id,
-                  contextInstanceId: instanceId,
-                  ...(attachmentPath ? { attachmentPath } : {}),
-                },
-              },
-              ...current.filter((entry) => iosContextSurface(entry) === nextSurface),
-            ]);
-          }}
+          onAddContext={addIosElementContext}
         />
       </div>
     </>
@@ -4479,32 +4556,7 @@ export function AgentChatPane({
             setTerminalDrawerOpen(true);
             setTerminalRevealRequest({ ...terminal, nonce: Date.now() });
           }}
-          onAddContext={(item) => {
-            const latestAttachment = latestAttachmentRef.current;
-            const attachmentPath = item.screenshotDataUrl
-              && latestAttachment?.type === "image"
-              && Date.now() - latestAttachment.addedAt < 10_000
-              && !linkedAppControlAttachmentPathsRef.current.has(latestAttachment.path)
-                ? latestAttachment.path
-                : getAppControlContextAttachmentPath(item);
-            const instanceId = createAppControlContextInstanceId(item);
-            if (attachmentPath) {
-              linkedAppControlAttachmentPathsRef.current.add(attachmentPath);
-            }
-            setAppControlContextItems((current) => [
-              {
-                ...item,
-                id: instanceId,
-                metadata: {
-                  ...item.metadata,
-                  originalElementId: item.metadata.originalElementId ?? item.id,
-                  contextInstanceId: instanceId,
-                  ...(attachmentPath ? { attachmentPath } : {}),
-                },
-              },
-              ...current.slice(0, 4),
-            ]);
-          }}
+          onAddContext={addAppControlContext}
         />
       </div>
     </>
@@ -4525,7 +4577,7 @@ export function AgentChatPane({
         {showWorkspaceChrome && laneId ? <ChatGitToolbar laneId={laneId} /> : null}
 
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
-          {showWorkspaceChrome && laneId && iosSimulatorAvailable ? (
+          {laneToolsVisible && iosSimulatorAvailable ? (
             <SmartTooltip
               content={{
                 label: iosSimulatorOpen ? "Close iOS simulator" : "Open iOS simulator",
@@ -4566,7 +4618,7 @@ export function AgentChatPane({
               </button>
             </SmartTooltip>
           ) : null}
-          {showWorkspaceChrome && laneId && appControlAvailable ? (
+          {laneToolsVisible && appControlAvailable ? (
             <SmartTooltip
               content={{
                 label: appControlOpen ? "Close App Control" : "Open App Control",
@@ -5139,7 +5191,7 @@ export function AgentChatPane({
             showParallelChatToggle={Boolean(
               embeddedWorkLayout && forceDraft && !lockSessionId && !initialSessionId && selectedSessionId == null,
             )}
-            showIosSimulatorToggle={Boolean(showWorkspaceChrome && laneId && iosSimulatorAvailable)}
+            showIosSimulatorToggle={laneToolsVisible && iosSimulatorAvailable}
             iosSimulatorOpen={iosSimulatorOpen}
             onToggleIosSimulator={() => {
               setIosSimulatorOpen((current) => {
@@ -5152,7 +5204,7 @@ export function AgentChatPane({
                 return next;
               });
             }}
-            showAppControlToggle={Boolean(showWorkspaceChrome && laneId && appControlAvailable)}
+            showAppControlToggle={laneToolsVisible && appControlAvailable}
             appControlOpen={appControlOpen}
             onToggleAppControl={() => {
               setAppControlOpen((current) => {
@@ -5297,7 +5349,7 @@ export function AgentChatPane({
   // True when a non-proof companion panel is open. These panels (iOS simulator,
   // App Control) host their own input affordances, so the empty-state layout
   // shrinks the hero and moves the composer below.
-  const appPanelOpen = iosSimulatorOpen || appControlOpen;
+  const appPanelOpen = effectiveIosSimulatorOpen || effectiveAppControlOpen;
   const rightPaneOpen = proofDrawerOpen || appPanelOpen;
   const supportsSplit = layoutVariant !== "grid-tile";
   const splitChatColStyle: React.CSSProperties | undefined =
@@ -5485,8 +5537,8 @@ export function AgentChatPane({
 
                   {rightPaneDivider}
                   {proofDrawerOpen ? renderRightPane(proofPanelContent) : null}
-                  {iosSimulatorOpen ? renderRightPane(iosSimulatorPanelContent) : null}
-                  {appControlOpen ? renderRightPane(appControlPanelContent) : null}
+                  {effectiveIosSimulatorOpen ? renderRightPane(iosSimulatorPanelContent) : null}
+                  {effectiveAppControlOpen ? renderRightPane(appControlPanelContent) : null}
                   {cursorCloudPaneOpen && cursorCloudAvailable ? renderRightPane(cursorCloudPanelContent) : null}
                 </motion.div>
               ) : (
@@ -5581,8 +5633,8 @@ export function AgentChatPane({
                     ) : null}
                   </div>
                   {rightPaneDivider}
-                  {iosSimulatorOpen ? renderRightPane(iosSimulatorPanelContent) : null}
-                  {appControlOpen ? renderRightPane(appControlPanelContent) : null}
+                  {effectiveIosSimulatorOpen ? renderRightPane(iosSimulatorPanelContent) : null}
+                  {effectiveAppControlOpen ? renderRightPane(appControlPanelContent) : null}
                   {cursorCloudPaneOpen && cursorCloudAvailable ? renderRightPane(cursorCloudPanelContent) : null}
                 </motion.div>
               )}

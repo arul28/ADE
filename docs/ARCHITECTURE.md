@@ -505,7 +505,7 @@ Electron renderer runtime does **not** wrap the app in `React.StrictMode`. Brows
 `apps/desktop/src/renderer/state/appStore.ts` (~868 lines) — Zustand store holding project, lanes, selected lane, theme, provider mode, keybindings, per-project work-view state. Patterns:
 
 - Narrow selectors on components to minimize re-renders.
-- Per-project work-view state keyed by project root (`WorkProjectViewState`).
+- Per-project work-view state keyed by project root (`WorkProjectViewState`). Includes the right-edge Work sidebar fields `workSidebarOpen`, `workSidebarTab` (`"git" | "files" | "ios" | "app-control"`), and `workSidebarWidthPct` (clamped 26–55) — persisted alongside the rest of the work-view state under `ade.workViewState.v1`.
 - Store-owned event subscriptions for high-frequency streams (e.g., missions).
 - `projectRevision` is a monotonically incrementing counter bumped inside `setProject` whenever the active project root actually changes. Long-lived renderer-side caches (most notably the module-level xterm runtime cache in `TerminalView.tsx`) subscribe to it and tear down any entries whose `projectRoot`/`projectRevision` no longer match, so PTYs never bleed between projects. All project-transition paths (`refreshProject`, `openRepo`, `switchProjectToPath`, `closeProject`) go through `setProject` to keep the counter honest.
 

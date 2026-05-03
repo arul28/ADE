@@ -61,6 +61,7 @@ const PREVIEW_AGENT_HELP_OPTIONS: Array<{
 
 type ChatIosSimulatorPanelProps = {
   sessionId: string | null;
+  laneId?: string | null;
   projectRoot: string | null;
   onAddContext: (item: IosElementContextItem) => void;
   onAddAttachment?: (attachment: AgentChatFileRef) => void;
@@ -873,6 +874,7 @@ async function cropPreviewAreaDataUrl(
 
 export function ChatIosSimulatorPanel({
   sessionId,
+  laneId = null,
   projectRoot,
   onAddContext,
   onAddAttachment,
@@ -1973,6 +1975,7 @@ export function ChatIosSimulatorPanel({
       const session = await window.ade.iosSimulator.launch({
         deviceUdid: selectedDeviceUdid,
         projectRoot,
+        laneId,
         targetId: activeTarget?.id ?? selectedTargetId,
         chatSessionId: sessionId,
         build: true,
@@ -1999,7 +2002,7 @@ export function ChatIosSimulatorPanel({
       setLaunchBusy(false);
       setBusy(false);
     }
-  }, [activeTarget?.id, projectRoot, refreshSnapshot, refreshStatus, selectedDeviceUdid, selectedTargetId, sessionId]);
+  }, [activeTarget?.id, laneId, projectRoot, refreshSnapshot, refreshStatus, selectedDeviceUdid, selectedTargetId, sessionId]);
 
   useEffect(() => {
     launchRef.current = launch;

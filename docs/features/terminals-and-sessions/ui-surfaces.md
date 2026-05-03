@@ -9,7 +9,11 @@ noted otherwise.
 Top-level page for the Work tab. Wraps two panes with `PaneTilingLayout`:
 
 - `sessions` pane (default 24%, min 15%) → `SessionListPane`
-- `view` pane (default 76%, min 40%) → `WorkViewArea`
+- `view` pane (default 76%, min 40%) → `WorkViewArea` plus the right-edge
+  `WorkSidebar` when `workSidebarOpen` is true and `viewMode !== "grid"`.
+  The view + sidebar share the row via a flex container with a draggable
+  column separator; the sidebar width is persisted as
+  `workSidebarWidthPct` (clamped 26–55%).
 
 Pulls all session state through `useWorkSessions()` and renders two
 globally-positioned overlays:
@@ -256,6 +260,54 @@ logic on the wrapper without subscribing through drag handlers.
 their own tile chrome classes (e.g. `ade-work-glass-tile`) alongside
 the floating-pane defaults.
 
+## Right-edge Work sidebar: `WorkSidebar.tsx`
+
+A persistent right-edge pane that follows the active lane (and active
+Work session when one is selected). It is rendered next to
+`WorkViewArea` whenever `workSidebarOpen` is true and the view mode is
+not `grid` — the grid layout owns the full row, so the sidebar is
+suppressed there. `TerminalsPage` wraps the view + sidebar in a flex
+container with a 5 px draggable column separator; the sidebar width is
+persisted as `workSidebarWidthPct` (26–55%).
+
+Tabs:
+
+- `git` — `LaneGitActionsPane` on top, `LaneDiffPane` underneath
+  whenever a file or commit is selected. The two share the row via
+  the same min-height-aware flex layout as the lane detail view.
+- `files` — `FilesPage` mounted with `preferredLaneId={laneId}` and
+  `embedded={true}`. The embedded flag enables the
+  `ade-files-page-embedded` chrome so the file tree fits a narrow
+  column.
+- `ios` — `ChatIosSimulatorPanel` for the active lane (no chat scope).
+- `app-control` — `ChatAppControlPanel` for the active lane.
+
+When the active Work session is a chat, the sidebar attaches selections
+to that chat by dispatching window events (`ade:agent-chat:add-attachment`,
+`add-ios-context`, `add-app-control-context`, `insert-draft`) carrying
+the chat session id; the corresponding `AgentChatPane` listens for the
+matching session id and feeds the payload into the same handlers that
+the in-pane drawers use. The sidebar also owns its own
+`AppControlSession` / `IosSimulatorSession` subscriptions so it can
+detect lane mismatches (e.g. App Control was launched from a different
+lane) and disable attachment with a warning banner; the existing tool
+session can still be controlled, but it will not feed context into the
+mismatched lane's chat until the user re-launches.
+
+Toggling and tab selection go through `useWorkSessions` setters
+(`setWorkSidebarOpen`, `setWorkSidebarTab`, `setWorkSidebarWidthPct`).
+`setWorkSidebarTab` also opens the sidebar so clicking a tab from a
+closed state acts as a one-click reveal. The toggle button itself
+lives in the `WorkViewArea` tab-strip header (`WorkSidebarToggle`,
+`SidebarSimple` glyph) so users can flip the sidebar on/off without
+reaching across the screen.
+
+Drawers in `AgentChatPane` accept `hideLaneToolDrawers={true}` when the
+pane is mounted as a Work tile (`SessionSurface`), so the chat header
+no longer shows the iOS / App Control toggles inside Work — those
+drawers now live on the lane-scoped `WorkSidebar`. Proof remains
+chat-scoped and stays on the chat header.
+
 ## Terminal renderer: `TerminalView.tsx`
 
 Thin wrapper over xterm.js + `FitAddon`. Caches `Terminal` instances in
@@ -380,7 +432,9 @@ A single hook that owns a lot of state:
 
 The hook exposes `openSessionTab`, `focusSession`, `selectLane`,
 `upsertOptimisticChatSession` (so new chats appear in the tab strip
-before the IPC round-trip completes), and `refresh`. The
+before the IPC round-trip completes), `refresh`, and the right-sidebar
+setters `setWorkSidebarOpen`, `setWorkSidebarTab` (also forces the
+sidebar open), and `setWorkSidebarWidthPct` (clamped 26–55%). The
 `launchPtySession({ laneId, profile, command?, args?, startupCommand?,
 title?, tracked? })` helper (and its lane-scoped twin in
 `useLaneWorkSessions`) builds a default launch payload with

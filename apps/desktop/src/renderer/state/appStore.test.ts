@@ -495,6 +495,24 @@ describe("appStore", () => {
       const state = useAppStore.getState().getWorkViewState("/project/c");
       expect(state.laneFilter).toBe("my-lane");
     });
+
+    it("defaults work sidebar state to closed/git/36% and persists overrides", () => {
+      const fresh = useAppStore.getState().getWorkViewState("/project/sidebar");
+      expect(fresh.workSidebarOpen).toBe(false);
+      expect(fresh.workSidebarTab).toBe("git");
+      expect(fresh.workSidebarWidthPct).toBe(36);
+
+      useAppStore.getState().setWorkViewState("/project/sidebar", {
+        workSidebarOpen: true,
+        workSidebarTab: "ios",
+        workSidebarWidthPct: 48,
+      });
+      const updated = useAppStore.getState().getWorkViewState("/project/sidebar");
+      expect(updated.workSidebarOpen).toBe(true);
+      expect(updated.workSidebarTab).toBe("ios");
+      expect(updated.workSidebarWidthPct).toBe(48);
+      expect(updated.viewMode).toBe("tabs");
+    });
   });
 
   // ─────────────────────────────────────────────────────────────

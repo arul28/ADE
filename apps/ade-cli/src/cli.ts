@@ -392,6 +392,7 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
     --project, --xcodeproj <p>  Xcode project path.
     --scheme <name>             Xcode scheme.
     --project-root <path>       ADE project root.
+    --lane, --lane-id <id>      Lane to bind this simulator session to.
     --chat-session <id>         Owner chat session for the single-owner lock.
     --no-build                  Skip xcodebuild.
     --mode snapshot|live        Inspector launch mode; default live.
@@ -2284,6 +2285,7 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
       steps: [actionStep("result", "ios_simulator", "launch", collectGenericObjectArgs(args, {
         deviceUdid: readValue(args, ["--device", "--udid"]),
         projectRoot: readValue(args, ["--project-root", "--root"]),
+        laneId: readValue(args, ["--lane", "--lane-id"]),
         targetId: readValue(args, ["--target", "--target-id"]),
         bundleId: readValue(args, ["--bundle-id", "--bundle"]),
         appBundlePath: readValue(args, ["--app-bundle", "--app"]),
@@ -2496,6 +2498,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
     return { kind: "execute", label: "App Control connect", steps: [actionStep("result", "app_control", "connect", collectGenericObjectArgs(args, {
       appKind: readValue(args, ["--kind", "--app-kind"]) ?? "electron",
       projectRoot: readValue(args, ["--project-root", "--root"]),
+      laneId: readValue(args, ["--lane", "--lane-id"]),
       cdpPort: readNumberOption(args, ["--cdp-port", "--port"]) ?? Number(numericPositionals()[0]),
       label: readValue(args, ["--label", "--name"]),
       chatSessionId: readValue(args, ["--chat-session", "--session"]) ?? process.env.ADE_CHAT_SESSION_ID,

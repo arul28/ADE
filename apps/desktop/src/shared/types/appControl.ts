@@ -43,6 +43,7 @@ export type AppControlLaunchArgs = {
 export type AppControlConnectArgs = {
   appKind?: AppControlAppKind | null;
   projectRoot?: string | null;
+  laneId?: string | null;
   cdpPort: number;
   label?: string | null;
   chatSessionId?: string | null;
@@ -54,6 +55,7 @@ export type AppControlSession = {
   appKind: AppControlAppKind;
   label: string;
   projectRoot: string | null;
+  laneId: string | null;
   cwd: string | null;
   command: string | null;
   pid: number | null;

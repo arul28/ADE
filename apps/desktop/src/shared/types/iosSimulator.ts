@@ -59,6 +59,7 @@ export type IosSimulatorListLaunchTargetsArgs = {
 export type IosSimulatorLaunchArgs = {
   deviceUdid?: string | null;
   projectRoot?: string | null;
+  laneId?: string | null;
   targetId?: string | null;
   bundleId?: string | null;
   appBundlePath?: string | null;
@@ -82,6 +83,7 @@ export type IosSimulatorSession = {
   appBundlePath: string | null;
   targetId: string | null;
   projectRoot: string | null;
+  laneId: string | null;
   chatSessionId: string | null;
   mode: IosSimulatorLaunchMode;
   keepSimulatorInBackground?: boolean | null;
