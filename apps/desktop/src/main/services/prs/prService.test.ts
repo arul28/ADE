@@ -262,7 +262,7 @@ describe("prService.getForLane", () => {
     expect(service.getForLane(lane.id)?.githubPrNumber).toBe(92);
   });
 
-  it("falls back to the newest active PR while the lane branch is unavailable", () => {
+  it("returns null for branch-less lanes so a stray PR row never claims an unbranched lane", () => {
     const lane = makeFakeLane({
       branchRef: null,
     });
@@ -274,10 +274,10 @@ describe("prService.getForLane", () => {
       }),
     ]);
 
-    expect(service.getForLane(lane.id)?.githubPrNumber).toBe(93);
+    expect(service.getForLane(lane.id)).toBeNull();
   });
 
-  it("ignores terminal PR rows when resolving the current lane PR", () => {
+  it("surfaces a merged PR row when it still matches the current lane branch", () => {
     const lane = makeFakeLane({
       branchRef: "refs/heads/current-feature",
     });
@@ -286,6 +286,21 @@ describe("prService.getForLane", () => {
         lane_id: lane.id,
         state: "merged",
         head_branch: "current-feature",
+      }),
+    ]);
+
+    expect(service.getForLane(lane.id)?.state).toBe("merged");
+  });
+
+  it("ignores terminal PR rows whose head branch no longer matches the lane branch", () => {
+    const lane = makeFakeLane({
+      branchRef: "refs/heads/current-feature",
+    });
+    const service = buildGetForLaneService(lane, [
+      makePrRow({
+        lane_id: lane.id,
+        state: "merged",
+        head_branch: "old-feature",
       }),
     ]);
 

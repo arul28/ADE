@@ -8,6 +8,8 @@ import {
   ArrowsClockwise,
   Eye,
   ArrowSquareOut,
+  CaretDown,
+  CaretRight,
   Trash,
   ArrowUp,
   Play,
@@ -21,6 +23,7 @@ import {
   outlineButton,
   primaryButton,
 } from "../../lanes/laneDesignTokens";
+import { formatTimeAgoCompact } from "./prFormatters";
 import { PrPipelineSettings } from "./PrPipelineSettings";
 
 // ---------------------------------------------------------------------------
@@ -33,6 +36,8 @@ export type IssueItemState = "new" | "in_progress" | "fixed" | "dismissed" | "es
 
 export type IssueInventoryItem = {
   id: string;
+  type?: "review_thread" | "check_failure" | "issue_comment";
+  externalId?: string;
   state: IssueItemState;
   severity: IssueItemSeverity;
   headline: string;
@@ -42,6 +47,11 @@ export type IssueInventoryItem = {
   dismissReason: string | null;
   agentSessionId: string | null;
   url?: string | null;
+  body?: string | null;
+  author?: string | null;
+  threadCommentCount?: number | null;
+  threadLatestCommentAuthor?: string | null;
+  threadLatestCommentAt?: string | null;
 };
 
 export type ConvergenceStatus = {
@@ -414,12 +424,16 @@ function SourceTag({ source }: { source: IssueItemSource }) {
 function IssueRow({
   item,
   showAgent,
+  expanded,
+  onToggleExpanded,
   onDismiss,
   onEscalate,
   onOpenSource,
 }: {
   item: IssueInventoryItem;
   showAgent?: boolean;
+  expanded?: boolean;
+  onToggleExpanded?: (itemId: string) => void;
   onDismiss?: (itemId: string) => void;
   onEscalate?: (itemId: string) => void;
   onOpenSource?: (item: IssueInventoryItem) => void;
@@ -428,12 +442,19 @@ function IssueRow({
   if (item.filePath) {
     location = item.line != null ? `${item.filePath}:${item.line}` : item.filePath;
   }
+  const body = (item.body ?? "").trim();
+  const hasDetails = body.length > 0 || Boolean(item.author) || Boolean(item.threadCommentCount) || Boolean(location);
+  const detailAuthor = item.threadLatestCommentAuthor ?? item.author ?? null;
+  const detailCommentCount = item.threadCommentCount ?? null;
+  const detailUpdatedAt = item.threadLatestCommentAt
+    ? formatTimeAgoCompact(item.threadLatestCommentAt)
+    : null;
 
   return (
     <div
       style={{
         display: "flex",
-        alignItems: "center",
+        alignItems: "flex-start",
         gap: 10,
         padding: "9px 12px",
         borderRadius: 8,
@@ -442,6 +463,30 @@ function IssueRow({
         animation: "convergeFadeIn 0.25s ease-out",
       }}
     >
+      {onToggleExpanded && hasDetails ? (
+        <button
+          type="button"
+          title={expanded ? "Collapse full comment context" : "Expand full comment context"}
+          aria-label={expanded ? "Collapse comment context" : "Expand comment context"}
+          onClick={() => onToggleExpanded(item.id)}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 22,
+            height: 22,
+            borderRadius: 4,
+            border: `1px solid ${COLORS.border}`,
+            background: "rgba(255,255,255,0.03)",
+            cursor: "pointer",
+            color: COLORS.textMuted,
+            padding: 0,
+            flexShrink: 0,
+          }}
+        >
+          {expanded ? <CaretDown size={12} weight="bold" /> : <CaretRight size={12} weight="bold" />}
+        </button>
+      ) : null}
       <SeverityBadge severity={item.severity} />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div
@@ -450,9 +495,11 @@ function IssueRow({
             fontSize: 12,
             fontWeight: 600,
             color: COLORS.textPrimary,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
+            overflow: expanded ? "visible" : "hidden",
+            textOverflow: expanded ? "clip" : "ellipsis",
+            whiteSpace: expanded ? "normal" : "nowrap",
+            overflowWrap: "anywhere",
+            lineHeight: 1.45,
           }}
         >
           {item.headline}
@@ -470,6 +517,55 @@ function IssueRow({
             }}
           >
             {location}
+          </div>
+        ) : null}
+        {expanded ? (
+          <div
+            style={{
+              marginTop: 8,
+              padding: "8px 10px",
+              borderRadius: 6,
+              border: `1px solid ${COLORS.border}`,
+              background: "rgba(0,0,0,0.16)",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                flexWrap: "wrap",
+                marginBottom: body ? 6 : 0,
+                fontFamily: MONO_FONT,
+                fontSize: 10,
+                color: COLORS.textMuted,
+              }}
+            >
+              {detailAuthor ? (
+                <span>
+                  {detailAuthor}
+                  {detailUpdatedAt ? ` (updated ${detailUpdatedAt})` : ""}
+                </span>
+              ) : null}
+              {detailCommentCount != null ? (
+                <span>{detailCommentCount} {detailCommentCount === 1 ? "comment" : "comments"}</span>
+              ) : null}
+              {location ? <span>{location}</span> : null}
+            </div>
+            {body ? (
+              <div
+                style={{
+                  fontFamily: SANS_FONT,
+                  fontSize: 11,
+                  lineHeight: 1.6,
+                  color: COLORS.textSecondary,
+                  whiteSpace: "pre-wrap",
+                  overflowWrap: "anywhere",
+                }}
+              >
+                {body}
+              </div>
+            ) : null}
           </div>
         ) : null}
       </div>
@@ -521,7 +617,8 @@ function IssueRow({
       {onDismiss && item.state !== "fixed" && item.state !== "dismissed" ? (
         <button
           type="button"
-          title="Dismiss"
+          title="Ignore comment"
+          aria-label="Ignore comment"
           onClick={() => onDismiss(item.id)}
           style={{
             display: "inline-flex",
@@ -723,6 +820,7 @@ function CheckRow({ check }: { check: PrCheck }) {
 function WaitingIndicator({
   waitState,
   convergence,
+  showRoundLabels,
   onViewSession,
   onResumePause,
   onDismissPause,
@@ -731,6 +829,7 @@ function WaitingIndicator({
 }: {
   waitState: AutoConvergeWaitState;
   convergence: ConvergenceStatus;
+  showRoundLabels: boolean;
   onViewSession?: (sessionId: string) => void;
   onResumePause?: () => void;
   onDismissPause?: () => void;
@@ -765,6 +864,9 @@ function WaitingIndicator({
   };
 
   if (waitState.phase === "agent_running") {
+    const label = showRoundLabels
+      ? `Agent working on round ${Math.max(1, convergence.currentRound)}...`
+      : "Agent working on Path to Merge...";
     return (
       <div
         style={{
@@ -780,7 +882,7 @@ function WaitingIndicator({
             weight="bold"
             style={{ animation: "convergeSpin 1s linear infinite", flexShrink: 0 }}
           />
-          <span>Agent working on round {convergence.currentRound + 1}...</span>
+          <span>{label}</span>
         </div>
         {onViewSession && (
           <button
@@ -872,6 +974,9 @@ function WaitingIndicator({
   }
 
   if (waitState.phase === "ready") {
+    const label = showRoundLabels
+      ? `Ready to launch round ${Math.min(convergence.maxRounds, convergence.currentRound + 1)}`
+      : "Ready to launch another Path to Merge run";
     return (
       <div
         style={{
@@ -891,7 +996,7 @@ function WaitingIndicator({
               flexShrink: 0,
             }}
           />
-          <span>Ready to launch round {convergence.currentRound + 1}</span>
+          <span>{label}</span>
         </div>
       </div>
     );
@@ -1039,6 +1144,8 @@ export function PrConvergencePanel({
 }: PrConvergencePanelProps) {
   const [additionalInstructions, setAdditionalInstructions] = React.useState("");
   const [mode, setMode] = React.useState<"manual" | "auto-converge">(autoConverge ? "auto-converge" : "manual");
+  const [expandedIssueIds, setExpandedIssueIds] = React.useState<Set<string>>(() => new Set());
+  const [showIgnoredItems, setShowIgnoredItems] = React.useState(false);
 
   React.useEffect(() => {
     ensureKeyframes();
@@ -1062,6 +1169,9 @@ export function PrConvergencePanel({
   }
 
   const reviewCommentItems = [...grouped.escalated, ...grouped.new, ...grouped.in_progress, ...grouped.fixed, ...grouped.dismissed];
+  const visibleReviewCommentItems = showIgnoredItems
+    ? reviewCommentItems
+    : reviewCommentItems.filter((item) => item.state !== "dismissed");
   const failingChecks = checks.filter((c) => c.conclusion === "failure");
   const runningChecks = checks.filter((c) => c.status === "in_progress");
   const queuedChecks = checks.filter((c) => c.status === "queued");
@@ -1089,6 +1199,15 @@ export function PrConvergencePanel({
     : null;
 
   const isEmpty = items.length === 0 && checks.length === 0;
+  const showAutoConvergeControls = mode === "auto-converge" || autoConverge;
+  const toggleIssueExpanded = React.useCallback((itemId: string) => {
+    setExpandedIssueIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(itemId)) next.delete(itemId);
+      else next.add(itemId);
+      return next;
+    });
+  }, []);
 
   if (terminalState) {
     return (
@@ -1106,14 +1225,43 @@ export function PrConvergencePanel({
             </div>
           </div>
         </div>
-        {items.length > 0 ? (
+        {visibleReviewCommentItems.length > 0 || grouped.dismissed.length > 0 ? (
           <div style={{ border: `1px solid ${COLORS.border}`, borderRadius: 10, overflow: "hidden", background: "rgba(255,255,255,0.015)" }}>
-            <div style={{ padding: "10px 14px", borderBottom: `1px solid ${COLORS.border}`, fontFamily: SANS_FONT, fontSize: 11, fontWeight: 700, color: COLORS.textPrimary, textTransform: "uppercase", letterSpacing: "0.05em" }}>
-              Historical review inventory
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "10px 14px", borderBottom: `1px solid ${COLORS.border}` }}>
+              <div style={{ fontFamily: SANS_FONT, fontSize: 11, fontWeight: 700, color: COLORS.textPrimary, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                Historical review inventory
+              </div>
+              {grouped.dismissed.length > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => setShowIgnoredItems((value) => !value)}
+                  style={{
+                    height: 24,
+                    padding: "0 8px",
+                    borderRadius: 6,
+                    border: `1px solid ${COLORS.border}`,
+                    background: showIgnoredItems ? "rgba(255,255,255,0.06)" : "rgba(255,255,255,0.02)",
+                    cursor: "pointer",
+                    color: showIgnoredItems ? COLORS.textSecondary : COLORS.textMuted,
+                    fontFamily: SANS_FONT,
+                    fontSize: 10,
+                    fontWeight: 600,
+                    flexShrink: 0,
+                  }}
+                >
+                  {showIgnoredItems ? "Hide ignored" : `Show ignored (${grouped.dismissed.length})`}
+                </button>
+              ) : null}
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: 8 }}>
-              {items.map((item) => (
-                <IssueRow key={item.id} item={item} onOpenSource={onOpenSource} />
+              {visibleReviewCommentItems.map((item) => (
+                <IssueRow
+                  key={item.id}
+                  item={item}
+                  expanded={expandedIssueIds.has(item.id)}
+                  onToggleExpanded={toggleIssueExpanded}
+                  onOpenSource={onOpenSource}
+                />
               ))}
             </div>
           </div>
@@ -1313,11 +1461,33 @@ export function PrConvergencePanel({
                       <ArrowsClockwise size={11} />
                     </button>
                   ) : null}
+                  {grouped.dismissed.length > 0 ? (
+                    <button
+                      type="button"
+                      onClick={() => setShowIgnoredItems((value) => !value)}
+                      style={{
+                        height: 24,
+                        padding: "0 8px",
+                        borderRadius: 6,
+                        border: `1px solid ${COLORS.border}`,
+                        background: showIgnoredItems ? "rgba(255,255,255,0.06)" : "rgba(255,255,255,0.02)",
+                        cursor: "pointer",
+                        color: showIgnoredItems ? COLORS.textSecondary : COLORS.textMuted,
+                        fontFamily: SANS_FONT,
+                        fontSize: 10,
+                        fontWeight: 600,
+                        flexShrink: 0,
+                      }}
+                    >
+                      {showIgnoredItems ? "Hide ignored" : `Show ignored (${grouped.dismissed.length})`}
+                    </button>
+                  ) : null}
                 </div>
                 <div style={{ flex: 1, overflow: "auto", padding: "8px" }}>
-                  {reviewCommentItems.length > 0 ? (
+                  {visibleReviewCommentItems.length > 0 ? (
                     <>
                       {STATE_ORDER.map((state) => {
+                        if (state === "dismissed" && !showIgnoredItems) return null;
                         const stateItems = grouped[state];
                         if (stateItems.length === 0) return null;
                         const meta = STATE_META[state];
@@ -1375,7 +1545,9 @@ export function PrConvergencePanel({
                                     key={item.id}
                                     item={item}
                                     showAgent={state === "in_progress"}
-                                    onDismiss={(id) => onMarkDismissed([id], "Dismissed from UI")}
+                                    expanded={expandedIssueIds.has(item.id)}
+                                    onToggleExpanded={toggleIssueExpanded}
+                                    onDismiss={(id) => onMarkDismissed([id], "Ignored from Path to Merge")}
                                     onEscalate={(id) => onMarkEscalated([id])}
                                     onOpenSource={onOpenSource}
                                   />
@@ -1396,7 +1568,9 @@ export function PrConvergencePanel({
                           lineHeight: 1.6,
                         }}
                       >
-                        No issues have been inventoried yet. Run the first round to discover issues from review comments.
+                        {reviewCommentItems.length > 0
+                          ? "Ignored comments are hidden."
+                          : "No issues have been inventoried yet. Run the first round to discover issues from review comments."}
                       </span>
                     </div>
                   )}
@@ -1580,15 +1754,16 @@ export function PrConvergencePanel({
       </div>
 
       {/* ---- Waiting indicator ---- */}
-      {(mode === "auto-converge" || waitState.phase !== "idle") && (
+      {(showAutoConvergeControls || waitState.phase !== "idle") && (
         <WaitingIndicator
           waitState={waitState}
           convergence={convergence}
+          showRoundLabels={showAutoConvergeControls}
           onViewSession={onViewAgentSession}
           onResumePause={onResumePause}
           onDismissPause={onDismissPause}
           onDismissMerged={onDismissMerged}
-          onStop={onStopAutoConverge}
+          onStop={showAutoConvergeControls ? onStopAutoConverge : undefined}
         />
       )}
 
@@ -1607,7 +1782,7 @@ export function PrConvergencePanel({
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          {(mode === "auto-converge" || waitState.phase !== "idle") && (
+          {showAutoConvergeControls && (
             <button
               type="button"
               onClick={onStopAutoConverge}

@@ -76,6 +76,10 @@ struct WorkChatSessionView: View {
     pendingInputs.first
   }
 
+  var hasPendingInputGate: Bool {
+    !pendingInputs.isEmpty || sessionStatus == "awaiting-input"
+  }
+
   var toolCards: [WorkToolCardModel] {
     timelineSnapshot.toolCards
   }
@@ -125,15 +129,16 @@ struct WorkChatSessionView: View {
 
   var canCompose: Bool {
     // Typing stays available so users can draft while disconnected or while
-    // a turn is running. Only Send is gated via `canSend`; the feedback line
-    // below the composer explains why send is disabled.
-    canComposeMessages
+    // a turn is running, except when a blocking pending-input card is open —
+    // those replies must go through the structured card the runtime is awaiting.
+    canComposeMessages && !hasPendingInputGate
   }
 
   var canSend: Bool {
     // Existing chats accept messages while live, and can still accept them
-    // during reconnects when desktop advertised chat.send as queueable.
-    canSendMessages && !sending
+    // during reconnects when desktop advertised chat.send as queueable. Pending
+    // input is gated separately so the host receives a structured answer.
+    canSendMessages && !sending && !hasPendingInputGate
   }
 
   var composerFeedback: String? {
@@ -146,8 +151,8 @@ struct WorkChatSessionView: View {
     if !canSendMessages {
       return "Reconnect to send messages."
     }
-    if sessionStatus == "awaiting-input" {
-      return "Answer the waiting prompt above, or send extra context."
+    if hasPendingInputGate || sessionStatus == "awaiting-input" {
+      return "Answer the waiting prompt above, or decline it before sending another message."
     }
     return nil
   }
@@ -336,6 +341,7 @@ struct WorkChatSessionView: View {
         chatSummary: chatSummary,
         queuedSteerCount: pendingSteers.count,
         pendingInputCount: pendingInputs.count,
+        awaitingInputGate: hasPendingInputGate,
         canCompose: canCompose,
         canSend: canSend,
         sending: sending,
@@ -549,6 +555,7 @@ private struct WorkChatComposerCard: View {
   let chatSummary: AgentChatSessionSummary?
   let queuedSteerCount: Int
   let pendingInputCount: Int
+  let awaitingInputGate: Bool
   let canCompose: Bool
   let canSend: Bool
   let sending: Bool
@@ -570,10 +577,11 @@ private struct WorkChatComposerCard: View {
   let onSent: () -> Void
 
   var body: some View {
-      WorkChatComposerDraftInput(
-        chatSummary: chatSummary,
-        queuedSteerCount: queuedSteerCount,
+    WorkChatComposerDraftInput(
+      chatSummary: chatSummary,
+      queuedSteerCount: queuedSteerCount,
       pendingInputCount: pendingInputCount,
+      awaitingInputGate: awaitingInputGate,
       canCompose: canCompose,
       canSend: canSend,
       sending: sending,
@@ -584,13 +592,13 @@ private struct WorkChatComposerCard: View {
       onSelectRuntimeMode: onSelectRuntimeMode,
       onSelectEffort: onSelectEffort,
       artifactCount: artifactCount,
-        latestArtifact: latestArtifact,
-        artifactRefreshInFlight: artifactRefreshInFlight,
-        artifactRefreshError: artifactRefreshError,
-        onOpenProof: onOpenProof,
-        onSend: onSend,
-        onSent: onSent
-      )
+      latestArtifact: latestArtifact,
+      artifactRefreshInFlight: artifactRefreshInFlight,
+      artifactRefreshError: artifactRefreshError,
+      onOpenProof: onOpenProof,
+      onSend: onSend,
+      onSent: onSent
+    )
     .padding(.horizontal, 14)
     .padding(.vertical, 14)
     .background(composerSurface)
@@ -623,6 +631,7 @@ private struct WorkChatComposerDraftInput: View {
   let chatSummary: AgentChatSessionSummary?
   let queuedSteerCount: Int
   let pendingInputCount: Int
+  let awaitingInputGate: Bool
   let canCompose: Bool
   let canSend: Bool
   let sending: Bool
@@ -656,7 +665,8 @@ private struct WorkChatComposerDraftInput: View {
     VStack(alignment: .leading, spacing: 12) {
       WorkChatComposerTextField(
         draftState: draftState,
-        canCompose: canCompose
+        canCompose: canCompose,
+        placeholder: awaitingInputGate ? "Answer the prompt above…" : "Type to vibecode…"
       )
 
       HStack(alignment: .center, spacing: 8) {
@@ -765,10 +775,11 @@ private final class WorkChatComposerDraftState: ObservableObject {
 private struct WorkChatComposerTextField: View {
   @ObservedObject var draftState: WorkChatComposerDraftState
   let canCompose: Bool
+  let placeholder: String
   @FocusState private var composerFocused: Bool
 
   var body: some View {
-    TextField("Type to vibecode…", text: $draftState.text, axis: .vertical)
+    TextField(placeholder, text: $draftState.text, axis: .vertical)
       .textFieldStyle(.plain)
       .lineLimit(1...6)
       .font(.body)

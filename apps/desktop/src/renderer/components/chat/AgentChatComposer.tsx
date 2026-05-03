@@ -728,8 +728,16 @@ export function AgentChatComposer({
   // when the real paste event lands after the 80ms fallback has already fired.
   const clipboardImagePasteFallbackAttachedRef = useRef(false);
   const useRichComposer = iosElementContextItems.length > 0 || appControlContextItems.length > 0;
-  const canAttach = !parallelChatMode || attachments.length < PARALLEL_CHAT_MAX_ATTACHMENTS;
-  const attachBlockedReason = parallelChatMode && attachments.length >= PARALLEL_CHAT_MAX_ATTACHMENTS
+  const composerInputLocked = Boolean(pendingInput?.blocking);
+  const composerInputLockMessage = pendingInput?.kind === "question" || pendingInput?.kind === "structured_question"
+    ? "Answer the question card above, or decline it."
+    : pendingInput
+      ? "Resolve the pending request above before sending another message."
+      : null;
+  const canAttach = !composerInputLocked && (!parallelChatMode || attachments.length < PARALLEL_CHAT_MAX_ATTACHMENTS);
+  const attachBlockedReason = composerInputLocked
+    ? composerInputLockMessage ?? "Resolve the pending request before adding attachments."
+    : parallelChatMode && attachments.length >= PARALLEL_CHAT_MAX_ATTACHMENTS
     ? `Maximum ${PARALLEL_CHAT_MAX_ATTACHMENTS} attachments for parallel launch`
     : null;
 
@@ -760,6 +768,17 @@ export function AgentChatComposer({
       }
     };
   }, []);
+  useEffect(() => {
+    if (!composerInputLocked) return;
+    setAttachmentPickerOpen(false);
+    setCommandMenuTrigger(null);
+    setDragActive(false);
+    if (clipboardImagePasteFallbackTimerRef.current != null) {
+      window.clearTimeout(clipboardImagePasteFallbackTimerRef.current);
+      clipboardImagePasteFallbackTimerRef.current = null;
+    }
+    clipboardImagePasteFallbackAttachedRef.current = false;
+  }, [composerInputLocked]);
   useLayoutEffect(() => {
     resizeTextarea();
   }, [draft, resizeTextarea]);
@@ -1774,6 +1793,13 @@ export function AgentChatComposer({
   /* ── Keyboard handler for composer input ── */
   const handleKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
     const commandModified = event.metaKey || event.ctrlKey;
+    if (composerInputLocked) {
+      if (event.key === "Escape" && pendingInput) {
+        event.preventDefault();
+        onApproval("cancel");
+      }
+      return;
+    }
     if (isMacPasteShortcut(event)) {
       const handledPasteGeneration = clipboardImagePasteHandledRef.current;
       if (clipboardImagePasteFallbackTimerRef.current != null) {
@@ -1891,6 +1917,10 @@ export function AgentChatComposer({
   };
 
   const handleCommandMenuSelect = useCallback((item: ChatCommandMenuItem) => {
+    if (composerInputLocked) {
+      setCommandMenuTrigger(null);
+      return;
+    }
     if (item.type === "file" && commandMenuTrigger) {
       if (!canAttach) {
         setAttachError(attachBlockedReason ?? "Attachments are unavailable right now.");
@@ -1917,7 +1947,7 @@ export function AgentChatComposer({
       }
     }
     setCommandMenuTrigger(null);
-  }, [attachBlockedReason, canAttach, commandMenuTrigger, draft, effectiveSlashCommands, handleSlashSelect, insertTextIntoRichEditor, onDraftChange, onAddAttachment, setRichEditorText, useRichComposer]);
+  }, [attachBlockedReason, canAttach, commandMenuTrigger, composerInputLocked, draft, effectiveSlashCommands, handleSlashSelect, insertTextIntoRichEditor, onDraftChange, onAddAttachment, setRichEditorText, useRichComposer]);
 
   const handleRichEditorInput = useCallback(() => {
     const editor = richEditorRef.current;
@@ -1953,12 +1983,7 @@ export function AgentChatComposer({
   }, [captureRichSelection, getRichCursorTextOffset, onDraftChange, serializeRichEditor]);
 
   const submitComposerDraft = useCallback(() => {
-    const isQuestionPending = pendingInput && (pendingInput.kind === "question" || pendingInput.kind === "structured_question");
-    if (isQuestionPending) {
-      const answer = draft.trim();
-      if (!answer.length && !pendingInput.canProceedWithoutAnswer) return;
-      onApproval("accept", answer || null);
-      onDraftChange("");
+    if (pendingInput?.blocking) {
       return;
     }
     if (parallelChatMode) {
@@ -1988,7 +2013,7 @@ export function AgentChatComposer({
     }
     if (busy || !modelId || (!draft.trim().length && !iosElementContextItems.length && !appControlContextItems.length)) return;
     onSubmit();
-  }, [appControlContextItems.length, attachments, busy, cursorCloudAvailable, cursorCloudCanLaunch, cursorCloudLaunchModeOpen, draft, iosElementContextItems.length, modelId, onApproval, onDraftChange, onSubmit, onSubmitToCloud, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length]);
+  }, [appControlContextItems.length, attachments, busy, cursorCloudAvailable, cursorCloudCanLaunch, cursorCloudLaunchModeOpen, draft, iosElementContextItems.length, modelId, onDraftChange, onSubmit, onSubmitToCloud, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length]);
 
   const pendingQuestionCount = getPendingInputQuestionCount(pendingInput);
   const showPendingInputOptionsHint = hasPendingInputOptions(pendingInput);
@@ -2032,9 +2057,10 @@ export function AgentChatComposer({
   const hasIosElementContext = iosElementContextItems.length > 0;
   const hasAppControlContext = appControlContextItems.length > 0;
   const singleReady = !parallelChatMode && Boolean(modelId) && (draft.trim().length > 0 || hasIosElementContext || hasAppControlContext);
-  const sendEnabled = !busy && !parallelLaunchBusy && (parallelReady || singleReady);
+  const sendEnabled = !busy && !parallelLaunchBusy && !composerInputLocked && (parallelReady || singleReady);
 
   function sendButtonTitle(): string {
+    if (composerInputLocked) return composerInputLockMessage ?? "Resolve the pending request before sending.";
     if (parallelChatMode) {
       if (parallelModelSlots.length < 2) return "Add at least two models";
       if (draft.trim().length === 0 && attachments.length === 0) return "Add a message or at least one attachment";
@@ -2105,7 +2131,7 @@ export function AgentChatComposer({
                 <span className="font-mono text-[length:calc(var(--chat-font-size)*10/14)] uppercase tracking-[0.14em] text-amber-200/60">
                   {showPendingInputOptionsHint
                     ? "Answer in the inline question card, or pick an option there."
-                    : "Answer in the inline question card, or type below."}
+                    : "Answer in the inline question card, or decline."}
                 </span>
                 <button
                   type="button"
@@ -2582,7 +2608,9 @@ export function AgentChatComposer({
               <button
                 type="button"
                 className="inline-flex h-8 min-w-8 items-center justify-center rounded-lg px-1.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-medium text-muted-fg/35 transition-colors hover:bg-violet-500/[0.06] hover:text-violet-300/60"
+                disabled={composerInputLocked}
                 onClick={() => {
+                  if (composerInputLocked) return;
                   const richEl = richEditorRef.current;
                   const el = textareaRef.current;
                   const currentDraft = useRichComposer ? serializeRichEditor() : el?.value ?? "";
@@ -2708,7 +2736,7 @@ export function AgentChatComposer({
                     </button>
                   </SmartTooltip>
                 ) : null}
-                {draft.trim().length > 0 ? (
+                {draft.trim().length > 0 && !composerInputLocked ? (
                   <SmartTooltip content={{ label: "Send steer message", description: "Queue this message for the running chat after the current turn finishes." }}>
                     <button
                       type="button"
@@ -2863,19 +2891,19 @@ export function AgentChatComposer({
             <div className="relative">
               {!draft.trim().length && !iosElementContextItems.length && !appControlContextItems.length ? (
                 <div className="pointer-events-none absolute left-4 top-2.5 font-sans text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-muted-fg/30">
-                  {turnActive ? "Steer the active turn..." : (messagePlaceholder ?? "Type to vibecode...")}
+                  {composerInputLockMessage ?? (turnActive ? "Steer the active turn..." : (messagePlaceholder ?? "Type to vibecode..."))}
                 </div>
               ) : null}
               <div
                 ref={richEditorRef}
-                contentEditable={!parallelLaunchBusy}
+                contentEditable={!parallelLaunchBusy && !composerInputLocked}
                 role="textbox"
                 aria-multiline="true"
                 suppressContentEditableWarning
                 className={cn(
                   "block max-h-[200px] min-h-[2.6rem] w-full overflow-auto whitespace-pre-wrap break-words bg-transparent px-4 py-2.5 font-sans text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-fg/88 outline-none transition-colors",
                   dragActive ? "opacity-30" : "",
-                  parallelLaunchBusy ? "cursor-not-allowed opacity-50" : "",
+                  parallelLaunchBusy || composerInputLocked ? "cursor-not-allowed opacity-50" : "",
                 )}
                 data-chat-layout-variant={layoutVariant}
                 onInput={handleRichEditorInput}
@@ -2956,7 +2984,7 @@ export function AgentChatComposer({
               onSelect={(event) => {
                 lastPlainSelectionRef.current = event.currentTarget.selectionStart ?? event.currentTarget.value.length;
               }}
-              disabled={parallelLaunchBusy}
+              disabled={parallelLaunchBusy || composerInputLocked}
               autoComplete="on"
               autoCorrect="on"
               autoCapitalize="sentences"
@@ -2964,10 +2992,10 @@ export function AgentChatComposer({
               className={cn(
                 "block w-full resize-none bg-transparent px-4 py-2.5 text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-fg/88 outline-none transition-colors placeholder:text-muted-fg/30",
                 dragActive ? "opacity-30" : "",
-                parallelLaunchBusy ? "cursor-not-allowed opacity-50" : "",
+                parallelLaunchBusy || composerInputLocked ? "cursor-not-allowed opacity-50" : "",
               )}
               data-chat-layout-variant={layoutVariant}
-              placeholder={turnActive ? "Steer the active turn..." : (promptSuggestion ? "" : (messagePlaceholder ?? "Type to vibecode..."))}
+              placeholder={composerInputLockMessage ?? (turnActive ? "Steer the active turn..." : (promptSuggestion ? "" : (messagePlaceholder ?? "Type to vibecode...")))}
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
             />
@@ -3120,4 +3148,3 @@ function CursorCloudActionMenu({
     </div>
   );
 }
-

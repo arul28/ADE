@@ -9670,6 +9670,56 @@ describe("createAgentChatService", () => {
     expect(readPersistedChatState(session.id).awaitingInput).toBeUndefined();
   });
 
+  it("rejects normal chat sends while a pending input request is waiting", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+
+    const requestPromise = service.requestChatInput({
+      chatSessionId: session.id,
+      title: "Pending question",
+      body: "Which path should we take?",
+      questions: [{
+        id: "answer",
+        header: "Question 1",
+        question: "Which path should we take?",
+        allowsFreeform: true,
+      }],
+    });
+
+    const approvalEvent = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+      } => {
+        const detail = event.event.type === "approval_request"
+          ? (event.event.detail as { request?: { title?: string } } | undefined)
+          : undefined;
+        return event.event.type === "approval_request" && detail?.request?.title === "Pending question";
+      },
+    );
+
+    await expect(service.sendMessage({
+      sessionId: session.id,
+      text: "Treat this as the answer even though it came through chat.send.",
+    })).rejects.toThrow("Answer or decline the pending request before sending another message.");
+
+    await service.respondToInput({
+      sessionId: session.id,
+      itemId: approvalEvent.event.itemId,
+      decision: "decline",
+    });
+
+    await expect(requestPromise).resolves.toMatchObject({ decision: "decline" });
+  });
+
   it("maps freeform replies to the single pending question when only one answer is needed", async () => {
     const events: AgentChatEventEnvelope[] = [];
     const { service } = createService({
