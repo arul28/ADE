@@ -7,11 +7,13 @@ import {
   CircleNotch,
   GitBranch,
   GithubLogo,
+  MagicWand,
   Sparkle,
   Trash,
   Warning,
 } from "@phosphor-icons/react";
 import type {
+  ConvergenceRuntimeState,
   LandResult,
   LaneSummary,
   MergeMethod,
@@ -26,6 +28,7 @@ import type {
 import { getModelById } from "../../../../shared/modelRegistry";
 import { EmptyState } from "../../ui/EmptyState";
 import { PaneTilingLayout, type PaneConfig } from "../../ui/PaneTilingLayout";
+import { SmartTooltip } from "../../ui/SmartTooltip";
 import { usePrs } from "../state/PrsContext";
 import { LaneAccentDot } from "../../lanes/LaneAccentDot";
 import { PR_TAB_TILING_TREE } from "../shared/tilingConstants";
@@ -38,6 +41,10 @@ import {
   findQueueMemberSelection,
   getQueueWorkflowBucket,
 } from "./queueWorkflowModel";
+import {
+  QueueAutomateMergingModal,
+  type QueueAutomateMergingMember,
+} from "./QueueAutomateMergingModal";
 
 type QueueMember = {
   prId: string;
@@ -389,6 +396,8 @@ export function QueueTab({
   const [showAiRebaseControls, setShowAiRebaseControls] = React.useState(false);
   const [rebaseSummary, setRebaseSummary] = React.useState<BatchRebaseSummary | null>(null);
   const [queueActionBusy, setQueueActionBusy] = React.useState<"resume" | "pause" | "cancel" | null>(null);
+  const [automateModalOpen, setAutomateModalOpen] = React.useState(false);
+  const [convergenceByPrId, setConvergenceByPrId] = React.useState<Record<string, ConvergenceRuntimeState | null>>({});
 
   React.useEffect(() => {
     setArchiveOnLand(Boolean(selectedGroup?.landingState?.config.archiveLane));
@@ -432,6 +441,49 @@ export function QueueTab({
     const entries = selectedGroup?.landingState?.entries ?? [];
     return new Map(entries.map((entry) => [entry.prId, entry] as const));
   }, [selectedGroup?.landingState?.entries]);
+
+  // Poll the per-PR convergence runtime so the queue list can show "Iteration N/Max",
+  // pause reasons, and the force-finalize bonus iteration badge inline. Only members
+  // of the currently-selected queue are polled to avoid unnecessary IPC chatter.
+  const memberPrIdsKey = React.useMemo(
+    () => (selectedGroup?.members ?? []).map((m) => m.prId).sort().join("|"),
+    [selectedGroup?.members],
+  );
+  React.useEffect(() => {
+    // memberPrIdsKey is a sorted-joined string and is the only identity-stable
+    // signal for the member set; depending on `selectedGroup?.members` would
+    // re-arm this effect on every queue-state poll because the parent rebuilds
+    // the array reference each time. The effect already reads the current
+    // members through the closure, so re-running on identity churn buys
+    // nothing.
+    const memberIds = memberPrIdsKey ? memberPrIdsKey.split("|") : [];
+    if (memberIds.length === 0) {
+      setConvergenceByPrId({});
+      return;
+    }
+    let cancelled = false;
+    const fetchAll = async () => {
+      const next: Record<string, ConvergenceRuntimeState | null> = {};
+      await Promise.all(
+        memberIds.map(async (prId) => {
+          try {
+            next[prId] = await window.ade.prs.convergenceStateGet(prId);
+          } catch {
+            next[prId] = null;
+          }
+        }),
+      );
+      if (!cancelled) setConvergenceByPrId(next);
+    };
+    void fetchAll();
+    const interval = setInterval(() => {
+      if (!cancelled) void fetchAll();
+    }, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [memberPrIdsKey]);
 
   const visibleRebaseNeeds = React.useMemo(
     () => rebaseNeeds.filter((need) => need.kind === "lane_base" && need.behindBy > 0),
@@ -781,7 +833,19 @@ export function QueueTab({
           >
             <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
               <div>
-                <div style={{ fontSize: 18, fontWeight: 700, color: "#FAFAFA" }}>{queueGroupLabel(selectedGroup)}</div>
+                <SmartTooltip
+                  forceEnabled
+                  side="bottom"
+                  content={{
+                    label: "Stacked queue",
+                    description:
+                      "Each PR in this queue is stacked on the previous one — reviewers see only that PR's changes. Once a PR lands, the next entry's base drops back to the queue target.",
+                  }}
+                >
+                  <div style={{ fontSize: 18, fontWeight: 700, color: "#FAFAFA", borderBottom: "1px dotted rgba(250,250,250,0.18)", display: "inline-block", paddingBottom: 1, cursor: "help" }}>
+                    {queueGroupLabel(selectedGroup)}
+                  </div>
+                </SmartTooltip>
                 <div className="font-mono" style={{ fontSize: 11, color: "#71717A", marginTop: 4 }}>
                   target {selectedGroup.targetBranch ?? "main"} · {selectedGroup.members.length} lanes · {queueStats.landed} landed / {queueStats.pending} pending / {queueStats.failed} blocked
                 </div>
@@ -866,9 +930,82 @@ export function QueueTab({
                               {laneColorById.get(member.laneId) ? <LaneAccentDot lane={{ color: laneColorById.get(member.laneId)! }} size={7} /> : null}
                               {member.laneName}
                             </span>
-                            <MiniBadge label={status.label} theme={status.theme} />
+                            <SmartTooltip
+                              forceEnabled
+                              side="top"
+                              content={{
+                                label: "Queue landing state",
+                                description:
+                                  "Where the queue's immediate-land path has this entry. Independent of any per-PR Path to Merge automation.",
+                              }}
+                            >
+                              <span style={{ display: "inline-flex" }}>
+                                <MiniBadge label={status.label} theme={status.theme} />
+                              </span>
+                            </SmartTooltip>
                             {marker ? <MiniBadge label={marker.label} theme={marker.theme} /> : null}
                             {rebaseNeed ? <MiniBadge label={`${rebaseNeed.behindBy} behind`} theme={THEME_BLUE} /> : null}
+                            {(() => {
+                              const conv = convergenceByPrId[member.prId] ?? null;
+                              if (!conv || !conv.autoConvergeEnabled) return null;
+                              const runtimeStatus = conv.status;
+                              const isActive =
+                                runtimeStatus === "launching" ||
+                                runtimeStatus === "running" ||
+                                runtimeStatus === "polling" ||
+                                runtimeStatus === "paused" ||
+                                runtimeStatus === "converged";
+                              if (!isActive) return null;
+                              const round = conv.currentRound;
+                              const isForceFinalize = conv.pauseReason === "force-finalize";
+                              if (isForceFinalize) {
+                                return (
+                                  <SmartTooltip
+                                    forceEnabled
+                                    side="top"
+                                    content={{
+                                      label: "Force-finalize next",
+                                      description:
+                                        "The hard cap was reached. The orchestrator will run one bonus iteration that lands the merge — guarded by your settings if you chose conditional.",
+                                    }}
+                                  >
+                                    <span style={{ display: "inline-flex" }}>
+                                      <MiniBadge label="Force-finalize next" theme={THEME_AMBER} />
+                                    </span>
+                                  </SmartTooltip>
+                                );
+                              }
+                              const waitLabel =
+                                conv.pollerStatus === "waiting_for_checks"
+                                  ? "waiting for CI"
+                                  : conv.pollerStatus === "waiting_for_comments"
+                                    ? "waiting for review"
+                                    : conv.pauseReason
+                                      ? `paused: ${conv.pauseReason}`
+                                      : runtimeStatus === "polling"
+                                        ? "polling"
+                                        : runtimeStatus === "paused"
+                                          ? "paused"
+                                          : "running";
+                              const label = round > 0
+                                ? `PtM iter ${pad2(round)} · ${waitLabel}`
+                                : `PtM · ${waitLabel}`;
+                              return (
+                                <SmartTooltip
+                                  forceEnabled
+                                  side="top"
+                                  content={{
+                                    label: "Path to Merge active",
+                                    description:
+                                      "An automation is driving this PR through fix-and-poll iterations. Tap the PR to see its full panel and stop it if needed.",
+                                  }}
+                                >
+                                  <span style={{ display: "inline-flex" }}>
+                                    <MiniBadge label={label} theme={runtimeStatus === "paused" ? THEME_AMBER : THEME_BLUE} />
+                                  </span>
+                                </SmartTooltip>
+                              );
+                            })()}
                           </div>
                           <div className="font-mono" style={{ fontSize: 11, color: "#71717A", marginTop: 4 }}>
                             {member.pr?.githubPrNumber != null ? `#${member.pr.githubPrNumber}` : "No PR"} · {member.pr?.title ?? "PR metadata unavailable"}
@@ -1186,6 +1323,35 @@ export function QueueTab({
                       {queueActionBusy === "cancel" ? "Canceling..." : "Cancel queue"}
                     </button>
                   ) : null}
+                  <SmartTooltip
+                    forceEnabled
+                    side="top"
+                    content={{
+                      label: "Automate Merging",
+                      description:
+                        "Drive each PR through Path to Merge until it lands. Configurable per stack.",
+                    }}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setAutomateModalOpen(true)}
+                      className={BADGE_CLASS}
+                      style={{
+                        fontSize: 10,
+                        color: "#0F0D14",
+                        background: "linear-gradient(135deg, #C4B5FD, #A78BFA)",
+                        border: "none",
+                        padding: "8px 12px",
+                        cursor: "pointer",
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 6,
+                      }}
+                    >
+                      <MagicWand size={12} weight="duotone" />
+                      Automate Merging
+                    </button>
+                  </SmartTooltip>
                 </div>
               </div>
             </div>
@@ -1589,12 +1755,51 @@ export function QueueTab({
     },
   };
 
+  // Members eligible for the Automate Merging modal: every member that hasn't
+  // already landed/skipped, in queue order. Skipping landed entries keeps the
+  // sequence focused on what's left to ship.
+  const automateMembers: QueueAutomateMergingMember[] = React.useMemo(() => {
+    if (!selectedGroup) return [];
+    return selectedGroup.members
+      .filter((member) => {
+        const entry = queueEntryByPrId.get(member.prId) ?? null;
+        if (entry && (entry.state === "landed" || entry.state === "skipped")) return false;
+        if (member.pr?.state === "merged" || member.pr?.state === "closed") return false;
+        return true;
+      })
+      .map((member) => ({
+        prId: member.prId,
+        prNumber: member.pr?.githubPrNumber ?? null,
+        laneId: member.laneId,
+        laneName: member.laneName,
+        laneColor: laneColorById.get(member.laneId) ?? null,
+        position: member.position,
+      }));
+  }, [laneColorById, queueEntryByPrId, selectedGroup]);
+
   return (
-    <PaneTilingLayout
-      layoutId="prs:queue:v1"
-      tree={PR_TAB_TILING_TREE}
-      panes={paneConfigs}
-      className="flex-1 min-h-0"
-    />
+    <>
+      <PaneTilingLayout
+        layoutId="prs:queue:v1"
+        tree={PR_TAB_TILING_TREE}
+        panes={paneConfigs}
+        className="flex-1 min-h-0"
+      />
+      {selectedGroup ? (
+        <QueueAutomateMergingModal
+          open={automateModalOpen}
+          queueLabel={queueGroupLabel(selectedGroup)}
+          queueTargetBranch={selectedGroup.targetBranch ?? "main"}
+          members={automateMembers}
+          modelId={resolverModel}
+          reasoningEffort={resolverReasoningLevel}
+          permissionMode={resolverPermissionMode}
+          onModelChange={setResolverModel}
+          onReasoningEffortChange={(value) => setResolverReasoningLevel(value || "medium")}
+          onPermissionModeChange={(mode) => setResolverPermissionMode(mode)}
+          onClose={() => setAutomateModalOpen(false)}
+        />
+      ) : null}
+    </>
   );
 }

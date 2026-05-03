@@ -1,9 +1,13 @@
 import { randomUUID } from "node:crypto";
 import type { AdeDb } from "../state/kvDb";
 import type {
+  AutoConflictAgentProvider,
+  AutoConflictAgentSettings,
+  ConflictStrategy,
   ConvergenceRoundStat,
   ConvergenceStatus,
   ConvergenceRuntimeState,
+  ForceFinalizeMode,
   IssueInventoryItem,
   IssueInventorySnapshot,
   IssueInventoryState,
@@ -13,7 +17,17 @@ import type {
   PrComment,
   PrReviewThread,
 } from "../../../shared/types";
-import { DEFAULT_CONVERGENCE_RUNTIME_STATE, DEFAULT_PIPELINE_SETTINGS } from "../../../shared/types";
+import {
+  DEFAULT_AUTO_CONFLICT_AGENT_SETTINGS,
+  DEFAULT_CONVERGENCE_RUNTIME_STATE,
+  DEFAULT_PIPELINE_SETTINGS,
+  conflictStrategyFromLegacyRebasePolicy,
+  legacyRebasePolicyFromConflictStrategy,
+} from "../../../shared/types";
+
+const CONFLICT_STRATEGY_VALUES = new Set<ConflictStrategy>(["pause", "rebase", "merge", "auto"]);
+const FORCE_FINALIZE_MODE_VALUES = new Set<ForceFinalizeMode>(["off", "unconditional", "conditional"]);
+const AUTO_AGENT_PROVIDER_VALUES = new Set<AutoConflictAgentProvider>(["claude", "codex"]);
 import { isNoisyIssueComment, looksLikeResolutionAck } from "./resolverUtils";
 import { nowIso } from "../shared/utils";
 
@@ -449,13 +463,60 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
       merge_method: string;
       max_rounds: number;
       on_rebase_needed: string;
-    }>("select auto_merge, merge_method, max_rounds, on_rebase_needed from pr_pipeline_settings where pr_id = ?", [prId]);
-    if (!row) return { ...DEFAULT_PIPELINE_SETTINGS };
+      conflict_strategy: string | null;
+      force_finalize_mode: string | null;
+      force_finalize_require_no_ci_failures: number | null;
+      early_merge_on_green: number | null;
+      auto_agent_provider: string | null;
+      auto_agent_model: string | null;
+      auto_agent_reasoning_effort: string | null;
+      auto_agent_permission_mode: string | null;
+      auto_agent_confidence_threshold: number | null;
+    }>(
+      `select auto_merge, merge_method, max_rounds, on_rebase_needed,
+              conflict_strategy, force_finalize_mode,
+              force_finalize_require_no_ci_failures, early_merge_on_green,
+              auto_agent_provider, auto_agent_model, auto_agent_reasoning_effort,
+              auto_agent_permission_mode, auto_agent_confidence_threshold
+       from pr_pipeline_settings where pr_id = ?`,
+      [prId],
+    );
+    if (!row) return { ...DEFAULT_PIPELINE_SETTINGS, autoAgentSettings: { ...DEFAULT_AUTO_CONFLICT_AGENT_SETTINGS } };
+
+    const onRebaseNeeded = row.on_rebase_needed as PipelineSettings["onRebaseNeeded"];
+    const rawConflictStrategy = row.conflict_strategy;
+    const conflictStrategy: ConflictStrategy = rawConflictStrategy && CONFLICT_STRATEGY_VALUES.has(rawConflictStrategy as ConflictStrategy)
+      ? (rawConflictStrategy as ConflictStrategy)
+      : conflictStrategyFromLegacyRebasePolicy(onRebaseNeeded);
+
+    const rawForceFinalize = row.force_finalize_mode;
+    const forceFinalizeMode: ForceFinalizeMode = rawForceFinalize && FORCE_FINALIZE_MODE_VALUES.has(rawForceFinalize as ForceFinalizeMode)
+      ? (rawForceFinalize as ForceFinalizeMode)
+      : DEFAULT_PIPELINE_SETTINGS.forceFinalizeMode;
+
+    const rawProvider = row.auto_agent_provider;
+    const provider: AutoConflictAgentProvider | null = rawProvider && AUTO_AGENT_PROVIDER_VALUES.has(rawProvider as AutoConflictAgentProvider)
+      ? (rawProvider as AutoConflictAgentProvider)
+      : null;
+
+    const autoAgentSettings: AutoConflictAgentSettings = {
+      provider,
+      model: row.auto_agent_model,
+      reasoningEffort: row.auto_agent_reasoning_effort,
+      permissionMode: row.auto_agent_permission_mode as AutoConflictAgentSettings["permissionMode"],
+      confidenceThreshold: row.auto_agent_confidence_threshold,
+    };
+
     return {
       autoMerge: row.auto_merge === 1,
       mergeMethod: row.merge_method as PipelineSettings["mergeMethod"],
       maxRounds: row.max_rounds,
-      onRebaseNeeded: row.on_rebase_needed as PipelineSettings["onRebaseNeeded"],
+      onRebaseNeeded,
+      conflictStrategy,
+      autoAgentSettings,
+      forceFinalizeMode,
+      forceFinalizeRequireNoCiFailures: (row.force_finalize_require_no_ci_failures ?? 1) === 1,
+      earlyMergeOnGreen: (row.early_merge_on_green ?? 1) === 1,
     };
   }
 
@@ -930,18 +991,60 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
 
     savePipelineSettings(prId: string, settings: Partial<PipelineSettings>): void {
       const current = readPipelineSettings(prId);
-      const merged = { ...current, ...settings };
+      const merged: PipelineSettings = {
+        ...current,
+        ...settings,
+        autoAgentSettings: settings.autoAgentSettings
+          ? { ...current.autoAgentSettings, ...settings.autoAgentSettings }
+          : current.autoAgentSettings,
+      };
+      // Keep the legacy `onRebaseNeeded` column in sync with the authoritative
+      // `conflictStrategy` so older readers (and the iOS sync layer) see a
+      // coherent value.
+      merged.onRebaseNeeded = legacyRebasePolicyFromConflictStrategy(merged.conflictStrategy);
       const now = nowIso();
       db.run(
-        `insert into pr_pipeline_settings (pr_id, auto_merge, merge_method, max_rounds, on_rebase_needed, updated_at)
-         values (?, ?, ?, ?, ?, ?)
+        `insert into pr_pipeline_settings (
+           pr_id, auto_merge, merge_method, max_rounds, on_rebase_needed,
+           conflict_strategy, force_finalize_mode,
+           force_finalize_require_no_ci_failures, early_merge_on_green,
+           auto_agent_provider, auto_agent_model, auto_agent_reasoning_effort,
+           auto_agent_permission_mode, auto_agent_confidence_threshold,
+           updated_at
+         )
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          on conflict(pr_id) do update set
            auto_merge = excluded.auto_merge,
            merge_method = excluded.merge_method,
            max_rounds = excluded.max_rounds,
            on_rebase_needed = excluded.on_rebase_needed,
+           conflict_strategy = excluded.conflict_strategy,
+           force_finalize_mode = excluded.force_finalize_mode,
+           force_finalize_require_no_ci_failures = excluded.force_finalize_require_no_ci_failures,
+           early_merge_on_green = excluded.early_merge_on_green,
+           auto_agent_provider = excluded.auto_agent_provider,
+           auto_agent_model = excluded.auto_agent_model,
+           auto_agent_reasoning_effort = excluded.auto_agent_reasoning_effort,
+           auto_agent_permission_mode = excluded.auto_agent_permission_mode,
+           auto_agent_confidence_threshold = excluded.auto_agent_confidence_threshold,
            updated_at = excluded.updated_at`,
-        [prId, merged.autoMerge ? 1 : 0, merged.mergeMethod, merged.maxRounds, merged.onRebaseNeeded, now],
+        [
+          prId,
+          merged.autoMerge ? 1 : 0,
+          merged.mergeMethod,
+          merged.maxRounds,
+          merged.onRebaseNeeded,
+          merged.conflictStrategy,
+          merged.forceFinalizeMode,
+          merged.forceFinalizeRequireNoCiFailures ? 1 : 0,
+          merged.earlyMergeOnGreen ? 1 : 0,
+          merged.autoAgentSettings.provider,
+          merged.autoAgentSettings.model,
+          merged.autoAgentSettings.reasoningEffort,
+          merged.autoAgentSettings.permissionMode,
+          merged.autoAgentSettings.confidenceThreshold,
+          now,
+        ],
       );
     },
 

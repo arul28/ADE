@@ -3095,13 +3095,30 @@ export function createPrService({
       [groupId, projectId, args.queueName ?? null, args.autoRebase ? 1 : 0, args.ciGating ? 1 : 0, args.targetBranch, now]
     );
 
-    // Queue PRs all target the same branch (no chaining)
+    // Graphite-style chain bases: PR_0 targets args.targetBranch; PR_N targets
+    // PR_(N-1)'s branch so each PR's GitHub diff shows only its own changes.
+    // We honor the caller-provided lane order. If a pair isn't actually parent->child
+    // we still chain them (the queue is a single review unit) but warn since the
+    // resulting diffs won't be clean per-PR.
+    let previousBranch: string | null = null;
+    let previousLaneId: string | null = null;
     for (let i = 0; i < args.laneIds.length; i++) {
       const laneId = args.laneIds[i]!;
       const lane = laneMap.get(laneId);
       if (!lane) {
         errors.push({ laneId, error: `Lane not found: ${laneId}` });
         continue;
+      }
+
+      const baseBranch = previousBranch ?? args.targetBranch;
+      if (previousLaneId && lane.parentLaneId !== previousLaneId) {
+        logger.warn("prs.queue_chain_unrelated_lanes", {
+          groupId,
+          position: i,
+          laneId,
+          previousLaneId,
+          baseBranch
+        });
       }
 
       const title = args.titles?.[laneId] ?? lane.name;
@@ -3111,7 +3128,7 @@ export function createPrService({
           title,
           body: "",
           draft: Boolean(args.draft),
-          baseBranch: args.targetBranch,
+          baseBranch,
           allowDirtyWorktree: true
         });
         prs.push(pr);
@@ -3121,6 +3138,9 @@ export function createPrService({
           `insert into pr_group_members(id, group_id, pr_id, lane_id, position, role) values (?, ?, ?, ?, ?, 'source')`,
           [memberId, groupId, pr.id, laneId, i]
         );
+
+        previousBranch = branchNameFromRef(lane.branchRef);
+        previousLaneId = laneId;
       } catch (error) {
         errors.push({ laneId, error: error instanceof Error ? error.message : String(error) });
         continue;
@@ -5362,6 +5382,16 @@ export function createPrService({
 
     async landStack(args: LandStackArgs): Promise<LandResult[]> {
       return await landStack(args);
+    },
+
+    /**
+     * Retarget a PR's GitHub base branch. Used by the stacked-queue land loop
+     * after a parent PR merges, to drop the next PR's base from the parent's
+     * branch to the queue's target branch (typically `main`) so it can land
+     * cleanly on top.
+     */
+    async retargetBase(prId: string, baseBranch: string): Promise<void> {
+      await retargetBase(prId, baseBranch);
     },
 
     async openInGitHub(prId: string): Promise<void> {
