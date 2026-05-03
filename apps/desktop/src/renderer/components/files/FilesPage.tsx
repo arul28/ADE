@@ -166,6 +166,15 @@ function filesSessionKey(projectRoot: string, laneId: string | null): string {
   return `${projectRoot}::${laneId ?? "__primary__"}`;
 }
 
+function defaultFilesWorkspaceId(workspaces: FilesWorkspace[], preferredLaneId: string | null): string {
+  if (preferredLaneId) {
+    const laneWorkspace = workspaces.find((workspace) => workspace.kind !== "primary" && workspace.laneId === preferredLaneId)
+      ?? workspaces.find((workspace) => workspace.laneId === preferredLaneId);
+    if (laneWorkspace) return laneWorkspace.id;
+  }
+  return workspaces[0]?.id ?? "";
+}
+
 function touchFilesPageSession(sessionKey: string): void {
   const existingIndex = filesPageSessionLru.indexOf(sessionKey);
   if (existingIndex >= 0) {
@@ -1284,10 +1293,7 @@ export function FilesPage({
             setActiveTabPath(null);
             setSelectedNodePath(null);
           }
-          const preferredWorkspace = selectedLaneId
-            ? items.find((workspace) => workspace.laneId === selectedLaneId)
-            : null;
-          return preferredWorkspace?.id ?? items[0]?.id ?? "";
+          return defaultFilesWorkspaceId(items, selectedLaneId);
         });
       })
       .catch((err) => {
@@ -1298,6 +1304,12 @@ export function FilesPage({
         setError(err instanceof Error ? err.message : String(err));
       });
   }, [selectedLaneId]);
+
+  useEffect(() => {
+    if (workspaceId || !workspaces.length) return;
+    const nextWorkspaceId = defaultFilesWorkspaceId(workspaces, selectedLaneId);
+    if (nextWorkspaceId) setWorkspaceId(nextWorkspaceId);
+  }, [selectedLaneId, workspaceId, workspaces]);
 
   useEffect(() => {
     if (!workspaceId) return;

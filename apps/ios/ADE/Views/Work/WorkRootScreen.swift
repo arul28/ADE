@@ -42,9 +42,9 @@ struct WorkRootScreen: View {
   @State var sessionPresentationRebuildGeneration = 0
   @State var errorMessage: String?
   @State var path = NavigationPath()
-  @State var searchText = ""
-  @State var selectedLaneId = "all"
-  @State var selectedStatus: WorkSessionStatusFilter = .all
+  @AppStorage("ade.work.searchText") var searchText = ""
+  @AppStorage("ade.work.laneFilter") var selectedLaneId = "all"
+  @AppStorage("ade.work.statusFilter") private var selectedStatusRawValue = WorkSessionStatusFilter.all.rawValue
   @State var renameTarget: TerminalSessionSummary?
   @State var renameText = ""
   @State var endTarget: TerminalSessionSummary?
@@ -66,6 +66,11 @@ struct WorkRootScreen: View {
   @AppStorage("ade.work.sessionOrganization") var sessionOrganizationRaw = WorkSessionOrganization.byLane.rawValue
   @AppStorage("ade.work.collapsedSectionIds") var collapsedSectionIdsStorage = ""
   @State var filterPanelOpen = false
+
+  var selectedStatus: WorkSessionStatusFilter {
+    get { WorkSessionStatusFilter(rawValue: selectedStatusRawValue) ?? .all }
+    nonmutating set { selectedStatusRawValue = newValue.rawValue }
+  }
 
   var workStatus: SyncDomainStatus {
     syncService.status(for: .work)
@@ -138,6 +143,13 @@ struct WorkRootScreen: View {
     Binding(
       get: { WorkSessionOrganization(rawValue: sessionOrganizationRaw) ?? .byStatus },
       set: { sessionOrganizationRaw = $0.rawValue }
+    )
+  }
+
+  var selectedStatusBinding: Binding<WorkSessionStatusFilter> {
+    Binding(
+      get: { selectedStatus },
+      set: { selectedStatus = $0 }
     )
   }
 
@@ -227,7 +239,7 @@ struct WorkRootScreen: View {
           WorkFiltersSection(
             searchText: $searchText,
             selectedLaneId: $selectedLaneId,
-            selectedStatus: $selectedStatus,
+            selectedStatus: selectedStatusBinding,
             organization: sessionOrganizationBinding,
             filterOpen: $filterPanelOpen,
             lanes: lanes,
@@ -356,17 +368,7 @@ struct WorkRootScreen: View {
                       proxy.scrollTo(target.id, anchor: .top)
                     }
                   } else {
-                    withAnimation(.snappy) {
-                      selectedStatus = .all
-                      selectedLaneId = "all"
-                      searchText = ""
-                    }
-                    Task { @MainActor in
-                      await Task.yield()
-                      withAnimation(.snappy) {
-                        proxy.scrollTo(target.id, anchor: .top)
-                      }
-                    }
+                    openSession(target)
                   }
                 }
               )
@@ -482,8 +484,6 @@ struct WorkRootScreen: View {
             optimisticSessions[sessionId] = makeOptimisticSession(for: summary)
             chatSummaries[sessionId] = summary
             syncService.cacheChatSummary(summary)
-            selectedStatus = .all
-            selectedLaneId = summary.laneId
             selectedSessionTransitionId = nil
             // Replace the new-chat page with the live session view so hitting
             // Back goes to the sidebar, not to an empty "Start a new chat"

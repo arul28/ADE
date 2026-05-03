@@ -658,6 +658,12 @@ import type {
   AppControlStopArgs,
   AppControlTarget,
   AppControlTypeTextArgs,
+  BuiltInBrowserBoundsArgs,
+  BuiltInBrowserEventPayload,
+  BuiltInBrowserNavigateArgs,
+  BuiltInBrowserScreenshot,
+  BuiltInBrowserSelectResult,
+  BuiltInBrowserStatus,
   ChatTerminalActiveForChatArgs,
   ChatTerminalListArgs,
   ChatTerminalReadArgs,
@@ -875,6 +881,11 @@ const appControlStatusCache = createShortIpcCache<AppControlStatus>(
   1_000,
 );
 
+const builtInBrowserStatusCache = createShortIpcCache<BuiltInBrowserStatus>(
+  () => ipcRenderer.invoke(IPC.builtInBrowserGetStatus),
+  500,
+);
+
 const computerUseOwnerSnapshotCache = createKeyedShortIpcCache<ComputerUseOwnerSnapshot>(
   (key) => ipcRenderer.invoke(
     IPC.computerUseGetOwnerSnapshot,
@@ -992,6 +1003,10 @@ const iosSimulatorEventFanout = createIpcEventFanout<IosSimulatorEventPayload>(
 const appControlEventFanout = createIpcEventFanout<AppControlEventPayload>(
   IPC.appControlEvent,
   () => appControlStatusCache.clear(),
+);
+const builtInBrowserEventFanout = createIpcEventFanout<BuiltInBrowserEventPayload>(
+  IPC.builtInBrowserEvent,
+  () => builtInBrowserStatusCache.clear(),
 );
 const ptyDataEventFanout = createIpcEventFanout<PtyDataEvent>(IPC.ptyData);
 const ptyExitEventFanout = createIpcEventFanout<PtyExitEvent>(IPC.ptyExit);
@@ -2436,6 +2451,33 @@ contextBridge.exposeInMainWorld("ade", {
     attachToTarget: async (args: { targetId: string }): Promise<AppControlSession> =>
       clearAround(() => appControlStatusCache.clear(), () => ipcRenderer.invoke(IPC.appControlAttachToTarget, args)),
     onEvent: appControlEventFanout,
+  },
+  builtInBrowser: {
+    getStatus: async (): Promise<BuiltInBrowserStatus> =>
+      builtInBrowserStatusCache.get(),
+    setBounds: async (args: BuiltInBrowserBoundsArgs): Promise<BuiltInBrowserStatus> =>
+      clearAround(() => builtInBrowserStatusCache.clear(), () => ipcRenderer.invoke(IPC.builtInBrowserSetBounds, args)),
+    navigate: async (args: BuiltInBrowserNavigateArgs): Promise<BuiltInBrowserStatus> =>
+      clearAround(() => builtInBrowserStatusCache.clear(), () => ipcRenderer.invoke(IPC.builtInBrowserNavigate, args)),
+    reload: async (): Promise<BuiltInBrowserStatus> =>
+      clearAround(() => builtInBrowserStatusCache.clear(), () => ipcRenderer.invoke(IPC.builtInBrowserReload)),
+    goBack: async (): Promise<BuiltInBrowserStatus> =>
+      clearAround(() => builtInBrowserStatusCache.clear(), () => ipcRenderer.invoke(IPC.builtInBrowserGoBack)),
+    goForward: async (): Promise<BuiltInBrowserStatus> =>
+      clearAround(() => builtInBrowserStatusCache.clear(), () => ipcRenderer.invoke(IPC.builtInBrowserGoForward)),
+    stop: async (): Promise<BuiltInBrowserStatus> =>
+      clearAround(() => builtInBrowserStatusCache.clear(), () => ipcRenderer.invoke(IPC.builtInBrowserStop)),
+    startInspect: async (): Promise<BuiltInBrowserStatus> =>
+      clearAround(() => builtInBrowserStatusCache.clear(), () => ipcRenderer.invoke(IPC.builtInBrowserStartInspect)),
+    stopInspect: async (): Promise<BuiltInBrowserStatus> =>
+      clearAround(() => builtInBrowserStatusCache.clear(), () => ipcRenderer.invoke(IPC.builtInBrowserStopInspect)),
+    captureScreenshot: async (): Promise<BuiltInBrowserScreenshot> =>
+      ipcRenderer.invoke(IPC.builtInBrowserCaptureScreenshot),
+    selectCurrent: async (): Promise<BuiltInBrowserSelectResult> =>
+      ipcRenderer.invoke(IPC.builtInBrowserSelectCurrent),
+    clearSelection: async (): Promise<{ ok: true }> =>
+      clearAround(() => builtInBrowserStatusCache.clear(), () => ipcRenderer.invoke(IPC.builtInBrowserClearSelection)),
+    onEvent: builtInBrowserEventFanout,
   },
   terminal: {
     list: async (args: ChatTerminalListArgs = {}): Promise<ChatTerminalSession[]> =>

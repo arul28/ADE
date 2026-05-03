@@ -653,6 +653,12 @@ import type {
   AppControlStopArgs,
   AppControlTarget,
   AppControlTypeTextArgs,
+  BuiltInBrowserBoundsArgs,
+  BuiltInBrowserEventPayload,
+  BuiltInBrowserNavigateArgs,
+  BuiltInBrowserScreenshot,
+  BuiltInBrowserSelectResult,
+  BuiltInBrowserStatus,
   ChatTerminalActiveForChatArgs,
   ChatTerminalListArgs,
   ChatTerminalReadArgs,
@@ -1375,6 +1381,21 @@ declare global {
         listTargets: () => Promise<AppControlTarget[]>;
         attachToTarget: (args: { targetId: string }) => Promise<AppControlSession>;
         onEvent: (cb: (ev: AppControlEventPayload) => void) => () => void;
+      };
+      builtInBrowser: {
+        getStatus: () => Promise<BuiltInBrowserStatus>;
+        setBounds: (args: BuiltInBrowserBoundsArgs) => Promise<BuiltInBrowserStatus>;
+        navigate: (args: BuiltInBrowserNavigateArgs) => Promise<BuiltInBrowserStatus>;
+        reload: () => Promise<BuiltInBrowserStatus>;
+        goBack: () => Promise<BuiltInBrowserStatus>;
+        goForward: () => Promise<BuiltInBrowserStatus>;
+        stop: () => Promise<BuiltInBrowserStatus>;
+        startInspect: () => Promise<BuiltInBrowserStatus>;
+        stopInspect: () => Promise<BuiltInBrowserStatus>;
+        captureScreenshot: () => Promise<BuiltInBrowserScreenshot>;
+        selectCurrent: () => Promise<BuiltInBrowserSelectResult>;
+        clearSelection: () => Promise<{ ok: true }>;
+        onEvent: (cb: (ev: BuiltInBrowserEventPayload) => void) => () => void;
       };
       terminal: {
         list: (args?: ChatTerminalListArgs) => Promise<ChatTerminalSession[]>;

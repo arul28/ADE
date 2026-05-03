@@ -11,6 +11,11 @@ const selectLaneSpy = vi.fn();
 const setWorkViewStateSpy = vi.fn();
 const navigateSpy = vi.fn();
 let fakeAppStoreState: Record<string, unknown>;
+const routerLocation = {
+  pathname: "/work",
+  search: "",
+  hash: "",
+};
 
 function resetFakeAppStoreState() {
   fakeAppStoreState = {
@@ -22,6 +27,9 @@ function resetFakeAppStoreState() {
     workViewByProject: {},
     setWorkViewState: setWorkViewStateSpy,
   };
+  routerLocation.pathname = "/work";
+  routerLocation.search = "";
+  routerLocation.hash = "";
 }
 
 // ---------------------------------------------------------------------------
@@ -76,6 +84,7 @@ vi.mock("../../lib/sessions", () => ({
 
 vi.mock("react-router-dom", () => ({
   useNavigate: vi.fn(() => navigateSpy),
+  useLocation: vi.fn(() => routerLocation),
   useSearchParams: useSearchParamsMock,
 }));
 
@@ -111,6 +120,32 @@ function installWindowAde() {
       resume: vi.fn().mockResolvedValue(undefined),
       dispose: vi.fn().mockResolvedValue(undefined),
     },
+  };
+}
+
+function makeSession(id: string, laneId: string, overrides: Record<string, unknown> = {}) {
+  return {
+    id,
+    laneId,
+    laneName: laneId,
+    ptyId: null,
+    tracked: true,
+    pinned: false,
+    goal: null,
+    toolType: "claude-chat" as const,
+    title: id,
+    status: "running" as const,
+    startedAt: "2026-04-01T12:00:00.000Z",
+    endedAt: null,
+    exitCode: null,
+    transcriptPath: "",
+    headShaStart: null,
+    headShaEnd: null,
+    lastOutputPreview: null,
+    summary: null,
+    runtimeState: "running" as const,
+    resumeCommand: null,
+    ...overrides,
   };
 }
 
@@ -240,6 +275,119 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       viewMode: "tabs",
       draftKind: "chat",
     });
+  });
+
+  it("setActiveItemId selects the active tab lane in tab mode", async () => {
+    const sessionA = makeSession("session-a", "lane-a");
+    const sessionB = makeSession("session-b", "lane-b");
+    const workState = {
+      openItemIds: ["session-a", "session-b"],
+      activeItemId: "session-a",
+      selectedItemId: "session-a",
+      viewMode: "tabs" as const,
+      draftKind: "chat" as const,
+      laneFilter: "all",
+      statusFilter: "all" as const,
+      search: "",
+      sessionListOrganization: "by-lane" as const,
+      workCollapsedLaneIds: [] as string[],
+      workCollapsedTabGroupIds: [] as string[],
+      workFocusSessionsHidden: false,
+    };
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      lanes: [
+        { id: "lane-a", name: "Lane A" },
+        { id: "lane-b", name: "Lane B" },
+      ],
+      workViewByProject: { "/fake/project": workState },
+    };
+    listSessionsCachedMock.mockResolvedValue([sessionA, sessionB]);
+
+    const { result } = renderHook(() => useWorkSessions());
+
+    await waitFor(() => {
+      expect(result.current.sessions).toHaveLength(2);
+    });
+
+    selectLaneSpy.mockClear();
+    act(() => {
+      result.current.setActiveItemId("session-b");
+    });
+
+    expect(selectLaneSpy).toHaveBeenCalledWith("lane-b");
+  });
+
+  it("syncs a restored active Work tab lane after sessions load", async () => {
+    const sessionA = makeSession("session-a", "lane-a");
+    const workState = {
+      openItemIds: ["session-a"],
+      activeItemId: "session-a",
+      selectedItemId: "session-a",
+      viewMode: "tabs" as const,
+      draftKind: "chat" as const,
+      laneFilter: "all",
+      statusFilter: "all" as const,
+      search: "",
+      sessionListOrganization: "by-lane" as const,
+      workCollapsedLaneIds: [] as string[],
+      workCollapsedTabGroupIds: [] as string[],
+      workFocusSessionsHidden: false,
+    };
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      lanes: [{ id: "lane-a", name: "Lane A" }],
+      workViewByProject: { "/fake/project": workState },
+    };
+    listSessionsCachedMock.mockResolvedValue([sessionA]);
+
+    const { result } = renderHook(() => useWorkSessions());
+
+    await waitFor(() => {
+      expect(result.current.sessions).toHaveLength(1);
+      expect(selectLaneSpy).toHaveBeenCalledWith("lane-a");
+    });
+  });
+
+  it("setActiveItemId leaves the selected lane alone in grid mode", async () => {
+    const sessionA = makeSession("session-a", "lane-a");
+    const sessionB = makeSession("session-b", "lane-b");
+    const workState = {
+      openItemIds: ["session-a", "session-b"],
+      activeItemId: "session-a",
+      selectedItemId: "session-a",
+      viewMode: "grid" as const,
+      draftKind: "chat" as const,
+      laneFilter: "all",
+      statusFilter: "all" as const,
+      search: "",
+      sessionListOrganization: "by-lane" as const,
+      workCollapsedLaneIds: [] as string[],
+      workCollapsedTabGroupIds: [] as string[],
+      workFocusSessionsHidden: false,
+    };
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      lanes: [
+        { id: "lane-a", name: "Lane A" },
+        { id: "lane-b", name: "Lane B" },
+      ],
+      workViewByProject: { "/fake/project": workState },
+    };
+    listSessionsCachedMock.mockResolvedValue([sessionA, sessionB]);
+
+    const { result } = renderHook(() => useWorkSessions());
+
+    await waitFor(() => {
+      expect(result.current.sessions).toHaveLength(2);
+    });
+
+    selectLaneSpy.mockClear();
+    act(() => {
+      result.current.setActiveItemId("session-b");
+    });
+
+    expect(selectLaneSpy).not.toHaveBeenCalled();
   });
 
   it("resumeSession keeps the Work view active and reuses the existing tracked session id", async () => {
@@ -455,6 +603,86 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
 
     // The stale session never existed, so focusSession must not fire for it.
     expect(focusSessionSpy).not.toHaveBeenCalledWith("missing-session");
+    expect(navigateSpy).toHaveBeenCalledWith("/work?sessionId=missing-session", { replace: true });
+  });
+
+  it("does not reapply the same URL filters after the Work route is parked on another ADE tab", async () => {
+    const session = {
+      id: "session-2",
+      laneId: "lane-1",
+      laneName: "Lane 1",
+      ptyId: null,
+      tracked: true,
+      pinned: false,
+      goal: null,
+      toolType: "claude-chat" as const,
+      title: "Claude Chat",
+      status: "running" as const,
+      startedAt: "2026-04-01T12:00:00.000Z",
+      endedAt: null,
+      exitCode: null,
+      transcriptPath: "",
+      headShaStart: null,
+      headShaEnd: null,
+      lastOutputPreview: null,
+      summary: null,
+      runtimeState: "idle" as const,
+      resumeCommand: null,
+    };
+    const deepLinkParams = new URLSearchParams("laneId=lane-1&status=running&sessionId=missing-session");
+    let currentSearchParams = deepLinkParams;
+    useSearchParamsMock.mockImplementation(() => [currentSearchParams, vi.fn()]);
+    listSessionsCachedMock.mockResolvedValue([session]);
+
+    const workState = {
+      openItemIds: [] as string[],
+      activeItemId: null as string | null,
+      selectedItemId: null as string | null,
+      viewMode: "tabs" as const,
+      draftKind: "chat" as const,
+      laneFilter: "all",
+      statusFilter: "all" as "all" | "running" | "ended",
+      search: "",
+      sessionListOrganization: "by-lane" as const,
+      workCollapsedLaneIds: [] as string[],
+      workCollapsedTabGroupIds: [] as string[],
+      workFocusSessionsHidden: false,
+    };
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      lanes: [{ id: "lane-1", name: "Lane 1" }],
+      workViewByProject: {
+        "/fake/project": workState,
+      },
+    };
+    setWorkViewStateSpy.mockImplementation((_projectRoot: string, next: any) => {
+      const resolved = typeof next === "function" ? next(workState) : { ...workState, ...next };
+      Object.assign(workState, resolved);
+    });
+
+    const { rerender } = renderHook(() => useWorkSessions());
+
+    await waitFor(() => {
+      expect(workState.laneFilter).toBe("lane-1");
+      expect(workState.statusFilter).toBe("running");
+    });
+
+    workState.laneFilter = "all";
+    workState.statusFilter = "ended";
+    routerLocation.pathname = "/files";
+    currentSearchParams = new URLSearchParams("tab=preview");
+    act(() => {
+      rerender();
+    });
+
+    routerLocation.pathname = "/work";
+    currentSearchParams = deepLinkParams;
+    act(() => {
+      rerender();
+    });
+
+    expect(workState.laneFilter).toBe("all");
+    expect(workState.statusFilter).toBe("ended");
   });
 
   it("does not keep reapplying a partially applied URL status while lanes are loading", async () => {
@@ -542,6 +770,67 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       expect(workState.laneFilter).toBe("lane-1");
     });
     expect(workState.statusFilter).toBe("completed");
+  });
+
+  it("filters the Work list by the stored status filter", async () => {
+    const runningSession = {
+      id: "session-running",
+      laneId: "lane-1",
+      laneName: "Lane 1",
+      ptyId: null,
+      tracked: true,
+      pinned: false,
+      goal: null,
+      toolType: "shell" as const,
+      title: "Running shell",
+      status: "running" as const,
+      startedAt: "2026-04-01T12:00:00.000Z",
+      endedAt: null,
+      exitCode: null,
+      transcriptPath: "",
+      headShaStart: null,
+      headShaEnd: null,
+      lastOutputPreview: null,
+      summary: null,
+      runtimeState: "running" as const,
+      resumeCommand: null,
+    };
+    const endedSession = {
+      ...runningSession,
+      id: "session-ended",
+      title: "Ended shell",
+      status: "completed" as const,
+      runtimeState: "exited" as const,
+      endedAt: "2026-04-01T12:30:00.000Z",
+      exitCode: 0,
+    };
+    listSessionsCachedMock.mockResolvedValue([runningSession, endedSession]);
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      workViewByProject: {
+        "/fake/project": {
+          openItemIds: [],
+          activeItemId: null,
+          selectedItemId: null,
+          viewMode: "tabs",
+          draftKind: "chat",
+          laneFilter: "all",
+          statusFilter: "running",
+          search: "",
+          sessionListOrganization: "by-lane",
+          workCollapsedLaneIds: [],
+          workCollapsedTabGroupIds: [],
+          workFocusSessionsHidden: false,
+        },
+      },
+    };
+
+    const { result } = renderHook(() => useWorkSessions());
+
+    await waitFor(() => {
+      expect(result.current.filtered.map((session) => session.id)).toEqual(["session-running"]);
+    });
+    expect(result.current.endedFiltered).toEqual([]);
   });
 
   it("reapplies the same stale-session URL filters after navigating to a valid session and back", async () => {

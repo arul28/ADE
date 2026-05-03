@@ -4,6 +4,7 @@ import {
   DeviceMobile,
   FolderOpen,
   GitBranch,
+  Globe,
   WarningCircle,
   X,
 } from "@phosphor-icons/react";
@@ -21,6 +22,7 @@ import type {
 import type { WorkSidebarTab } from "../../state/appStore";
 import { formatToolTypeLabel } from "../../lib/sessions";
 import { ChatAppControlPanel } from "../chat/ChatAppControlPanel";
+import { ChatBuiltInBrowserPanel } from "../chat/ChatBuiltInBrowserPanel";
 import { ChatIosSimulatorPanel } from "../chat/ChatIosSimulatorPanel";
 import { FilesPage } from "../files/FilesPage";
 import { LaneDiffPane } from "../lanes/LaneDiffPane";
@@ -32,11 +34,14 @@ const WORK_SIDEBAR_TABS: Array<{
   id: WorkSidebarTab;
   label: string;
   Icon: typeof GitBranch;
+  /** Tabs that don't need a lane (e.g. global browser) — stay enabled even when no lane is active. */
+  global?: boolean;
 }> = [
   { id: "git", label: "Git", Icon: GitBranch },
   { id: "files", label: "Files", Icon: FolderOpen },
   { id: "ios", label: "iOS Sim", Icon: DeviceMobile },
   { id: "app-control", label: "App Control", Icon: Desktop },
+  { id: "browser", label: "Browser", Icon: Globe, global: true },
 ];
 
 const NOT_CHAT_ERROR = "Context attachment only works in ADE chat sessions.";
@@ -177,6 +182,24 @@ export function WorkSidebar({
   }, [dispatchToChat]);
 
   const content = useMemo(() => {
+    if (tab === "browser") {
+      return (
+        <div className="flex h-full min-h-0 flex-col">
+          {contextDisabledReason ? <WarningBanner message={contextDisabledReason} /> : null}
+          <div className="min-h-0 flex-1 overflow-hidden">
+            <ChatBuiltInBrowserPanel
+              sessionId={attachChatSessionId}
+              onAddAttachment={canAttachToChat ? addAttachment : undefined}
+              onAddContext={(item) => {
+                window.dispatchEvent(new CustomEvent("ade:built-in-browser-context", { detail: item }));
+              }}
+              onInsertDraft={canAttachToChat ? insertDraft : undefined}
+            />
+          </div>
+        </div>
+      );
+    }
+
     if (!laneId) {
       return (
         <div className="flex h-full items-center justify-center px-4 text-center text-[12px] text-muted-fg">
@@ -265,6 +288,7 @@ export function WorkSidebar({
     addAppControlContext,
     addAttachment,
     addIosContext,
+    attachChatSessionId,
     canAttachToChat,
     contextDisabledReason,
     insertDraft,

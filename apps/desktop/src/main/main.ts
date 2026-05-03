@@ -138,6 +138,7 @@ import { transitionMissionStatus } from "./services/orchestrator/missionLifecycl
 import { createComputerUseArtifactBrokerService } from "./services/computerUse/computerUseArtifactBrokerService";
 import { createIosSimulatorService } from "./services/ios/iosSimulatorService";
 import { createAppControlService } from "./services/appControl/appControlService";
+import { createBuiltInBrowserService } from "./services/builtInBrowser/builtInBrowserService";
 import { createSyncService } from "./services/sync/syncService";
 import { ApnsService, ApnsKeyStore } from "./services/notifications/apnsService";
 import {
@@ -899,6 +900,11 @@ app.whenReady().then(async () => {
       }
     }
   };
+
+  const builtInBrowserService = createBuiltInBrowserService({
+    getLogger: () => getActiveContext().logger,
+    onEvent: (payload) => broadcast(IPC.builtInBrowserEvent, payload),
+  });
 
   const loadPty = () => {
     // node-pty is a native dependency; keep the require inside the main process runtime.
@@ -4574,6 +4580,11 @@ app.whenReady().then(async () => {
       } catch {
         // ignore
       }
+      try {
+        builtInBrowserService.dispose();
+      } catch {
+        // ignore
+      }
       setActiveProject(null);
       dormantContext = createDormantProjectContext(previousRoot);
 
@@ -4724,6 +4735,7 @@ app.whenReady().then(async () => {
     closeCurrentProject,
     closeProjectByPath,
     globalStatePath,
+    builtInBrowserService,
   });
 
   // Dogfood and other explicit ADE_PROJECT_ROOT launches need the project
@@ -4738,17 +4750,19 @@ app.whenReady().then(async () => {
     }
   }
 
-  await createWindow({
+  const initialWindow = await createWindow({
     logger: getActiveContext().logger,
     onCloseRequested: handleMainWindowCloseRequested,
   });
+  builtInBrowserService.attachToWindow(initialWindow);
 
   app.on("activate", async () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      await createWindow({
+      const activatedWindow = await createWindow({
         logger: getActiveContext().logger,
         onCloseRequested: handleMainWindowCloseRequested,
       });
+      builtInBrowserService.attachToWindow(activatedWindow);
     }
   });
 

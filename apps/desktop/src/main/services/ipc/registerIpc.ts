@@ -51,6 +51,8 @@ import type {
   AppControlSnapshotArgs,
   AppControlStopArgs,
   AppControlTypeTextArgs,
+  BuiltInBrowserBoundsArgs,
+  BuiltInBrowserNavigateArgs,
   ReviewListRunsArgs,
   ReviewRun,
   ReviewRunDetail,
@@ -584,6 +586,7 @@ import type { createComputerUseArtifactBrokerService } from "../computerUse/comp
 import { buildComputerUseOwnerSnapshot } from "../computerUse/controlPlane";
 import type { createIosSimulatorService } from "../ios/iosSimulatorService";
 import type { createAppControlService } from "../appControl/appControlService";
+import type { createBuiltInBrowserService } from "../builtInBrowser/builtInBrowserService";
 import { readGlobalState, writeGlobalState, reorderRecentProjects } from "../state/globalState";
 import type { createKeybindingsService } from "../keybindings/keybindingsService";
 import type { createAgentToolsService } from "../agentTools/agentToolsService";
@@ -1671,7 +1674,8 @@ export function registerIpc({
   switchProjectFromDialog,
   closeCurrentProject,
   closeProjectByPath,
-  globalStatePath
+  globalStatePath,
+  builtInBrowserService,
 }: {
   getCtx: () => AppContext;
   getSyncService?: () => ReturnType<typeof createSyncService> | null | undefined;
@@ -1680,11 +1684,13 @@ export function registerIpc({
   closeCurrentProject: () => Promise<void>;
   closeProjectByPath: (projectRoot: string) => Promise<void>;
   globalStatePath: string;
+  builtInBrowserService?: ReturnType<typeof createBuiltInBrowserService> | null;
 }) {
   const watcherCleanupBoundSenders = new Set<number>();
   let linearOAuthService: LinearOAuthService | null = null;
   let linearOAuthServiceAdeDir: string | null = null;
   const appControlRateBuckets = new Map<string, { windowStartMs: number; count: number }>();
+  const builtInBrowserRateBuckets = new Map<string, { windowStartMs: number; count: number }>();
 
   const getOptionalSyncService = (): ReturnType<typeof createSyncService> | null => {
     if (getSyncService) return getSyncService() ?? null;
@@ -1866,6 +1872,11 @@ export function registerIpc({
       case IPC.appControlStop:
       case IPC.appControlClick:
       case IPC.appControlTypeText:
+      case IPC.builtInBrowserNavigate:
+      case IPC.builtInBrowserReload:
+      case IPC.builtInBrowserStartInspect:
+      case IPC.builtInBrowserStopInspect:
+      case IPC.builtInBrowserCaptureScreenshot:
         return 60_000;
       default:
         return 30_000;
@@ -2044,6 +2055,13 @@ export function registerIpc({
     return service;
   };
 
+  const ensureBuiltInBrowser = (): ReturnType<typeof createBuiltInBrowserService> => {
+    if (!builtInBrowserService) {
+      throw new Error("Built-in browser service is not available.");
+    }
+    return builtInBrowserService;
+  };
+
   const isTrustedAppControlRendererUrl = (rawUrl: string | null | undefined): boolean => {
     if (!rawUrl) return false;
     try {
@@ -2109,6 +2127,110 @@ export function registerIpc({
   ): void => {
     assertTrustedAppControlSender(event, channel);
     assertAppControlRateLimit(event, channel, limit);
+  };
+
+  const assertBuiltInBrowserRateLimit = (
+    event: IpcMainInvokeEvent,
+    channel: string,
+    limit: { windowMs: number; max: number },
+  ): void => {
+    const now = Date.now();
+    const key = `${event.sender.id}:${channel}`;
+    for (const [k, v] of builtInBrowserRateBuckets) {
+      if (now - v.windowStartMs > limit.windowMs) {
+        builtInBrowserRateBuckets.delete(k);
+      }
+    }
+    const bucket = builtInBrowserRateBuckets.get(key);
+    if (!bucket || now - bucket.windowStartMs > limit.windowMs) {
+      builtInBrowserRateBuckets.set(key, { windowStartMs: now, count: 1 });
+      return;
+    }
+    if (bucket.count >= limit.max) {
+      const win = BrowserWindow.fromWebContents(event.sender);
+      getCtx().logger.warn("ipc.built_in_browser.rate_limited", {
+        channel,
+        windowId: win?.id ?? null,
+        count: bucket.count,
+        windowMs: limit.windowMs,
+      });
+      throw new Error("Too many browser requests. Try again shortly.");
+    }
+    bucket.count += 1;
+  };
+
+  const guardBuiltInBrowserIpc = (
+    event: IpcMainInvokeEvent,
+    channel: string,
+    limit: { windowMs: number; max: number } = { windowMs: 10_000, max: 60 },
+  ): void => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const senderUrl = event.senderFrame?.url || event.sender.getURL();
+    if (!win || win.isDestroyed() || !isTrustedAppControlRendererUrl(senderUrl)) {
+      getCtx().logger.warn("ipc.built_in_browser.untrusted_sender", {
+        channel,
+        windowId: win?.id ?? null,
+        senderUrl: senderUrl || null,
+      });
+      throw new Error("Built-in browser is only available to the ADE renderer.");
+    }
+    assertBuiltInBrowserRateLimit(event, channel, limit);
+  };
+
+  const invalidBuiltInBrowserArg = (channel: string, reason: string): never => {
+    getCtx().logger.warn("ipc.built_in_browser.invalid_args", { channel, reason });
+    throw new Error(`Invalid built-in browser payload: ${reason}`);
+  };
+
+  const builtInBrowserRecord = (value: unknown, channel: string, required = false): Record<string, unknown> => {
+    if (value == null) {
+      if (required) invalidBuiltInBrowserArg(channel, "payload object is required");
+      return {};
+    }
+    if (!isRecord(value)) invalidBuiltInBrowserArg(channel, "payload must be an object");
+    return value as Record<string, unknown>;
+  };
+
+  const builtInBrowserNumber = (
+    record: Record<string, unknown>,
+    field: string,
+    channel: string,
+    options: { min?: number; max?: number } = {},
+  ): number => {
+    const value = record[field];
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      invalidBuiltInBrowserArg(channel, `${field} must be a finite number`);
+    }
+    const numberValue = value as number;
+    if (options.min != null && numberValue < options.min) invalidBuiltInBrowserArg(channel, `${field} is below the minimum`);
+    if (options.max != null && numberValue > options.max) invalidBuiltInBrowserArg(channel, `${field} is above the maximum`);
+    return numberValue;
+  };
+
+  const parseBuiltInBrowserBoundsArgs = (value: unknown, channel: string): BuiltInBrowserBoundsArgs => {
+    const record = builtInBrowserRecord(value, channel, true);
+    const visibleValue = record.visible;
+    if (typeof visibleValue !== "boolean") invalidBuiltInBrowserArg(channel, "visible must be a boolean");
+    return {
+      x: builtInBrowserNumber(record, "x", channel, { min: 0, max: 100_000 }),
+      y: builtInBrowserNumber(record, "y", channel, { min: 0, max: 100_000 }),
+      width: builtInBrowserNumber(record, "width", channel, { min: 0, max: 100_000 }),
+      height: builtInBrowserNumber(record, "height", channel, { min: 0, max: 100_000 }),
+      visible: visibleValue as boolean,
+    };
+  };
+
+  const parseBuiltInBrowserNavigateArgs = (value: unknown, channel: string): BuiltInBrowserNavigateArgs => {
+    const record = builtInBrowserRecord(value, channel, true);
+    const urlValue = record.url;
+    if (typeof urlValue !== "string" || !urlValue.trim()) {
+      invalidBuiltInBrowserArg(channel, "url must be a non-empty string");
+    }
+    const url = urlValue as string;
+    if (url.length > 4096 || url.includes("\0")) {
+      invalidBuiltInBrowserArg(channel, "url is invalid");
+    }
+    return { url };
   };
 
   const invalidAppControlArg = (channel: string, reason: string): never => {
@@ -6254,6 +6376,66 @@ export function registerIpc({
       windowsVirtualKeyCode: numberField("windowsVirtualKeyCode"),
       nativeVirtualKeyCode: numberField("nativeVirtualKeyCode"),
     });
+  });
+
+  ipcMain.handle(IPC.builtInBrowserGetStatus, async (event) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserGetStatus, { windowMs: 10_000, max: 120 });
+    return ensureBuiltInBrowser().getStatus();
+  });
+
+  ipcMain.handle(IPC.builtInBrowserSetBounds, async (event, arg) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserSetBounds, { windowMs: 10_000, max: 900 });
+    return ensureBuiltInBrowser().setBounds(parseBuiltInBrowserBoundsArgs(arg, IPC.builtInBrowserSetBounds));
+  });
+
+  ipcMain.handle(IPC.builtInBrowserNavigate, async (event, arg) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserNavigate, { windowMs: 60_000, max: 40 });
+    return ensureBuiltInBrowser().navigate(parseBuiltInBrowserNavigateArgs(arg, IPC.builtInBrowserNavigate));
+  });
+
+  ipcMain.handle(IPC.builtInBrowserReload, async (event) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserReload, { windowMs: 10_000, max: 60 });
+    return ensureBuiltInBrowser().reload();
+  });
+
+  ipcMain.handle(IPC.builtInBrowserGoBack, async (event) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserGoBack, { windowMs: 10_000, max: 80 });
+    return ensureBuiltInBrowser().goBack();
+  });
+
+  ipcMain.handle(IPC.builtInBrowserGoForward, async (event) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserGoForward, { windowMs: 10_000, max: 80 });
+    return ensureBuiltInBrowser().goForward();
+  });
+
+  ipcMain.handle(IPC.builtInBrowserStop, async (event) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserStop, { windowMs: 10_000, max: 80 });
+    return ensureBuiltInBrowser().stop();
+  });
+
+  ipcMain.handle(IPC.builtInBrowserStartInspect, async (event) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserStartInspect, { windowMs: 10_000, max: 40 });
+    return ensureBuiltInBrowser().startInspect();
+  });
+
+  ipcMain.handle(IPC.builtInBrowserStopInspect, async (event) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserStopInspect, { windowMs: 10_000, max: 80 });
+    return ensureBuiltInBrowser().stopInspect();
+  });
+
+  ipcMain.handle(IPC.builtInBrowserCaptureScreenshot, async (event) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserCaptureScreenshot, { windowMs: 10_000, max: 30 });
+    return ensureBuiltInBrowser().captureScreenshot();
+  });
+
+  ipcMain.handle(IPC.builtInBrowserSelectCurrent, async (event) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserSelectCurrent, { windowMs: 10_000, max: 80 });
+    return ensureBuiltInBrowser().selectCurrent();
+  });
+
+  ipcMain.handle(IPC.builtInBrowserClearSelection, async (event) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserClearSelection, { windowMs: 10_000, max: 80 });
+    return ensureBuiltInBrowser().clearSelection();
   });
 
   ipcMain.handle(IPC.ptyCreate, async (_event, arg: PtyCreateArgs): Promise<PtyCreateResult> => {

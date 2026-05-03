@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import type { AgentChatSession, LaneSummary, TerminalSessionSummary, TerminalToolType } from "../../../shared/types";
 import {
   useAppStore,
@@ -271,6 +271,7 @@ type QueuedRefresh = {
 
 export function useWorkSessions() {
   const navigate = useNavigate();
+  const location = useLocation();
   const [searchParams] = useSearchParams();
   const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
   const lanes = useAppStore((s) => s.lanes);
@@ -293,6 +294,7 @@ export function useWorkSessions() {
   const partiallyAppliedUrlFilterKeyRef = useRef<string | null>(null);
   const hasLoadedOnceRef = useRef(false);
   const projectRootRef = useRef<string | null>(projectRoot);
+  const isWorkRoute = location.pathname === "/work" || location.pathname.startsWith("/work/");
 
   useEffect(() => {
     projectRootRef.current = projectRoot;
@@ -338,11 +340,26 @@ export function useWorkSessions() {
     return map;
   }, [sessions]);
 
+  const selectLaneForActiveTab = useCallback(
+    (sessionId: string | null) => {
+      if (!sessionId || viewMode === "grid") return;
+      const session = sessionsById.get(sessionId);
+      if (!session) return;
+      selectLane(session.laneId);
+    },
+    [selectLane, sessionsById, viewMode],
+  );
+
   const openSessions = useMemo(() => {
     return openItemIds
       .map((id) => sessionsById.get(id))
       .filter((session): session is TerminalSessionSummary => session != null);
   }, [openItemIds, sessionsById]);
+
+  useEffect(() => {
+    if (!isWorkRoute) return;
+    selectLaneForActiveTab(activeItemId);
+  }, [activeItemId, isWorkRoute, selectLaneForActiveTab]);
 
   const tabGroupModel = useMemo(
     () => buildWorkTabGroupModel({
@@ -459,8 +476,27 @@ export function useWorkSessions() {
     [setProjectViewState],
   );
 
+  const stripUrlFilterParams = useCallback(() => {
+    if (!isWorkRoute) return;
+    const nextParams = new URLSearchParams(searchParams);
+    let changed = false;
+    for (const key of ["laneId", "lane", "status"]) {
+      if (nextParams.has(key)) {
+        nextParams.delete(key);
+        changed = true;
+      }
+    }
+    if (!changed) return;
+    const nextSearch = nextParams.toString();
+    navigate(
+      `${location.pathname}${nextSearch ? `?${nextSearch}` : ""}${location.hash ?? ""}`,
+      { replace: true },
+    );
+  }, [isWorkRoute, location.hash, location.pathname, navigate, searchParams]);
+
   const setSelectedSessionId = useCallback(
     (sessionId: string | null) => {
+      selectLaneForActiveTab(sessionId);
       setProjectViewState((prev) => {
         const nextOpen =
           sessionId && !prev.openItemIds.includes(sessionId)
@@ -474,11 +510,12 @@ export function useWorkSessions() {
         };
       });
     },
-    [setProjectViewState],
+    [selectLaneForActiveTab, setProjectViewState],
   );
 
   const setActiveItemId = useCallback(
     (sessionId: string | null) => {
+      selectLaneForActiveTab(sessionId);
       setProjectViewState((prev) => {
         if (!sessionId) {
           return {
@@ -498,11 +535,12 @@ export function useWorkSessions() {
         };
       });
     },
-    [setProjectViewState],
+    [selectLaneForActiveTab, setProjectViewState],
   );
 
   const openSessionTab = useCallback(
     (sessionId: string) => {
+      selectLaneForActiveTab(sessionId);
       setProjectViewState((prev) => {
         const nextOpen = prev.openItemIds.includes(sessionId)
           ? prev.openItemIds
@@ -515,7 +553,7 @@ export function useWorkSessions() {
         };
       });
     },
-    [setProjectViewState],
+    [selectLaneForActiveTab, setProjectViewState],
   );
 
   const closeTab = useCallback(
@@ -640,6 +678,7 @@ export function useWorkSessions() {
   }, [sessions]);
 
   useEffect(() => {
+    if (!isWorkRoute) return;
     const sessionParam = (searchParams.get("sessionId") ?? "").trim();
     const laneParam = (searchParams.get("laneId") ?? searchParams.get("lane") ?? "").trim();
     const statusParam = (searchParams.get("status") ?? "").trim();
@@ -650,8 +689,9 @@ export function useWorkSessions() {
     if (sessionParam) {
       const sessionExists = sessions.some((s) => s.id === sessionParam);
       if (sessionExists) {
-        appliedUrlFilterKeyRef.current = null;
+        appliedUrlFilterKeyRef.current = `${sessionParam}|${laneParam}|${statusParam}`;
         partiallyAppliedUrlFilterKeyRef.current = null;
+        stripUrlFilterParams();
         return;
       }
       if (!hasLoadedOnceRef.current) return;
@@ -660,12 +700,16 @@ export function useWorkSessions() {
     // session-list refreshes (which add sessions to our deps) don't stomp
     // on a user's manually-changed lane/status filters.
     const urlKey = `${sessionParam}|${laneParam}|${statusParam}`;
-    if (appliedUrlFilterKeyRef.current === urlKey) return;
+    if (appliedUrlFilterKeyRef.current === urlKey) {
+      stripUrlFilterParams();
+      return;
+    }
     const laneExists = laneParam && lanes.some((lane) => lane.id === laneParam);
     const status = mapUrlStatusFilter(statusParam);
     if (!laneExists && !status) {
       appliedUrlFilterKeyRef.current = null;
       partiallyAppliedUrlFilterKeyRef.current = null;
+      if (laneParam || statusParam) stripUrlFilterParams();
       return;
     }
     // When the URL specifies a laneId but lanes haven't populated yet (e.g. on
@@ -690,7 +734,8 @@ export function useWorkSessions() {
       laneFilter: laneExists ? laneParam : prev.laneFilter,
       statusFilter: status && !wasPartiallyApplied ? status : prev.statusFilter,
     }));
-  }, [lanes, sessions, searchParams, setProjectViewState]);
+    if (laneDeterminable) stripUrlFilterParams();
+  }, [isWorkRoute, lanes, searchParams, sessions, setProjectViewState, stripUrlFilterParams]);
 
   // Migrate legacy org modes to supported modes
   useEffect(() => {
@@ -811,6 +856,15 @@ export function useWorkSessions() {
     const needle = q.trim().toLowerCase();
     return sessions.filter((session) => {
       if (filterLaneId !== "all" && session.laneId !== filterLaneId) return false;
+      if (filterStatus !== "all") {
+        const bucket = sessionStatusBucket({
+          status: session.status,
+          lastOutputPreview: session.lastOutputPreview,
+          runtimeState: session.runtimeState,
+          toolType: session.toolType,
+        });
+        if (bucket !== filterStatus) return false;
+      }
       if (!needle) return true;
 
       if (needle.startsWith("lane:")) {
@@ -837,7 +891,7 @@ export function useWorkSessions() {
         (session.resumeCommand ?? "").toLowerCase().includes(needle)
       );
     });
-  }, [sessions, filterLaneId, q]);
+  }, [sessions, filterLaneId, filterStatus, q]);
 
   const { runningFiltered, awaitingInputFiltered, endedFiltered } = useMemo(() => {
     const running: TerminalSessionSummary[] = [];
