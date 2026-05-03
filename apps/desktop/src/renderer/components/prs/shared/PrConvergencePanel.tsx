@@ -23,6 +23,7 @@ import {
   outlineButton,
   primaryButton,
 } from "../../lanes/laneDesignTokens";
+import { formatTimeAgoCompact } from "./prFormatters";
 import { PrPipelineSettings } from "./PrPipelineSettings";
 
 // ---------------------------------------------------------------------------
@@ -445,6 +446,9 @@ function IssueRow({
   const hasDetails = body.length > 0 || Boolean(item.author) || Boolean(item.threadCommentCount) || Boolean(location);
   const detailAuthor = item.threadLatestCommentAuthor ?? item.author ?? null;
   const detailCommentCount = item.threadCommentCount ?? null;
+  const detailUpdatedAt = item.threadLatestCommentAt
+    ? formatTimeAgoCompact(item.threadLatestCommentAt)
+    : null;
 
   return (
     <div
@@ -537,7 +541,12 @@ function IssueRow({
                 color: COLORS.textMuted,
               }}
             >
-              {detailAuthor ? <span>{detailAuthor}</span> : null}
+              {detailAuthor ? (
+                <span>
+                  {detailAuthor}
+                  {detailUpdatedAt ? ` (updated ${detailUpdatedAt})` : ""}
+                </span>
+              ) : null}
               {detailCommentCount != null ? (
                 <span>{detailCommentCount} {detailCommentCount === 1 ? "comment" : "comments"}</span>
               ) : null}
@@ -966,7 +975,7 @@ function WaitingIndicator({
 
   if (waitState.phase === "ready") {
     const label = showRoundLabels
-      ? `Ready to launch round ${convergence.currentRound + 1}`
+      ? `Ready to launch round ${Math.min(convergence.maxRounds, convergence.currentRound + 1)}`
       : "Ready to launch another Path to Merge run";
     return (
       <div
@@ -1216,13 +1225,13 @@ export function PrConvergencePanel({
             </div>
           </div>
         </div>
-        {items.length > 0 ? (
+        {visibleReviewCommentItems.length > 0 ? (
           <div style={{ border: `1px solid ${COLORS.border}`, borderRadius: 10, overflow: "hidden", background: "rgba(255,255,255,0.015)" }}>
             <div style={{ padding: "10px 14px", borderBottom: `1px solid ${COLORS.border}`, fontFamily: SANS_FONT, fontSize: 11, fontWeight: 700, color: COLORS.textPrimary, textTransform: "uppercase", letterSpacing: "0.05em" }}>
               Historical review inventory
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: 8 }}>
-              {items.map((item) => (
+              {visibleReviewCommentItems.map((item) => (
                 <IssueRow
                   key={item.id}
                   item={item}

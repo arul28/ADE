@@ -577,9 +577,9 @@ private struct WorkChatComposerCard: View {
   let onSent: () -> Void
 
   var body: some View {
-      WorkChatComposerDraftInput(
-        chatSummary: chatSummary,
-        queuedSteerCount: queuedSteerCount,
+    WorkChatComposerDraftInput(
+      chatSummary: chatSummary,
+      queuedSteerCount: queuedSteerCount,
       pendingInputCount: pendingInputCount,
       awaitingInputGate: awaitingInputGate,
       canCompose: canCompose,
@@ -592,13 +592,13 @@ private struct WorkChatComposerCard: View {
       onSelectRuntimeMode: onSelectRuntimeMode,
       onSelectEffort: onSelectEffort,
       artifactCount: artifactCount,
-        latestArtifact: latestArtifact,
-        artifactRefreshInFlight: artifactRefreshInFlight,
-        artifactRefreshError: artifactRefreshError,
-        onOpenProof: onOpenProof,
-        onSend: onSend,
-        onSent: onSent
-      )
+      latestArtifact: latestArtifact,
+      artifactRefreshInFlight: artifactRefreshInFlight,
+      artifactRefreshError: artifactRefreshError,
+      onOpenProof: onOpenProof,
+      onSend: onSend,
+      onSent: onSent
+    )
     .padding(.horizontal, 14)
     .padding(.vertical, 14)
     .background(composerSurface)

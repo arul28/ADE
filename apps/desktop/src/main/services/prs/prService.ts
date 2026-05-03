@@ -887,7 +887,7 @@ export function createPrService({
     );
     const lane = getLanePrLookupRow(laneId);
     if (!lane || lane.archived_at) return rows[0] ?? null;
-    return rows.find((row) => rowMatchesCurrentLaneBranch(row, lane)) ?? rows[0] ?? null;
+    return rows.find((row) => isActivePrState(row.state) && rowMatchesLaneBranchForDisplay(row, lane)) ?? rows[0] ?? null;
   };
 
   const getLanePrLookupRow = (laneId: string): LanePrLookupRow | null =>
@@ -901,11 +901,6 @@ export function createPrService({
       `,
       [laneId, projectId],
     );
-
-  const rowMatchesCurrentLaneBranch = (row: PullRequestRow, lane: LanePrLookupRow): boolean => {
-    if (!isActivePrState(row.state)) return false;
-    return rowMatchesLaneBranchForDisplay(row, lane);
-  };
 
   const rowMatchesLaneBranchForDisplay = (row: PullRequestRow, lane: LanePrLookupRow): boolean => {
     const laneBranch = normalizeBranchName(branchNameFromRef(lane.branch_ref ?? ""));
@@ -963,7 +958,7 @@ export function createPrService({
     const laneBranch = normalizeBranchName(branchNameFromRef(lane.branch_ref ?? ""));
     if (!laneBranch) return rows[0] ?? null;
 
-    return rows.find((row) => rowMatchesCurrentLaneBranch(row, lane)) ?? null;
+    return rows.find((row) => isActivePrState(row.state) && rowMatchesLaneBranchForDisplay(row, lane)) ?? null;
   };
 
   const getRowForLaneBranch = (laneId: string, headBranch: string): PullRequestRow | null => {

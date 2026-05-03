@@ -3721,6 +3721,7 @@ export function AgentChatPane({
       setError("Answer or decline the pending request before sending another message.");
       return;
     }
+    setPromptSuggestion(null);
 
     const isParallelLaunch =
       !lockSessionId
@@ -5094,7 +5095,6 @@ export function AgentChatPane({
             onDraftChange={updateComposerDraft}
             onClearDraft={() => updateComposerDraft("")}
             onSubmit={() => {
-              setPromptSuggestion(null);
               void submit();
             }}
             onInterrupt={() => {

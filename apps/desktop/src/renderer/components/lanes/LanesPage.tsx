@@ -173,7 +173,7 @@ function parseLaneIdsParam(value: string | null): string[] {
 }
 
 function normalizeLanePrBranch(ref: string | null | undefined): string {
-  return branchNameFromLaneRef(ref).trim().toLowerCase();
+  return branchNameFromLaneRef(ref).trim();
 }
 
 function prStateRank(state: PrSummary["state"]): number {
@@ -337,6 +337,7 @@ export function LanesPage() {
   const [managedLaneIds, setManagedLaneIds] = useState<string[]>([]);
   const [conflictChipsByLane, setConflictChipsByLane] = useState<Record<string, ConflictChip[]>>({});
   const chipTimersRef = useRef<Map<string, number>>(new Map());
+  const lanePrTagsRequestRef = useRef(0);
   const hasActiveLaneRuntimeRef = useRef(false);
   const [autoRebaseEnabled, setAutoRebaseEnabled] = useState(false);
   const [rebaseSuggestionError, setRebaseSuggestionError] = useState<string | null>(null);
@@ -667,10 +668,16 @@ export function LanesPage() {
   }, []);
 
   const refreshLanePrTags = useCallback(async () => {
+    const requestId = ++lanePrTagsRequestRef.current;
+    const startedRoot = useAppStore.getState().project?.rootPath ?? null;
     try {
       const prs = await window.ade.prs.listAll();
+      if (requestId !== lanePrTagsRequestRef.current) return;
+      if ((useAppStore.getState().project?.rootPath ?? null) !== startedRoot) return;
       setLanePrTags(prs);
     } catch {
+      if (requestId !== lanePrTagsRequestRef.current) return;
+      if ((useAppStore.getState().project?.rootPath ?? null) !== startedRoot) return;
       setLanePrTags([]);
     }
   }, []);
@@ -805,13 +812,17 @@ export function LanesPage() {
 
   useEffect(() => {
     if (!project?.rootPath) {
+      lanePrTagsRequestRef.current += 1;
       setLanePrTags([]);
       return;
     }
     const timer = window.setTimeout(() => {
       void refreshLanePrTags();
     }, 160);
-    return () => window.clearTimeout(timer);
+    return () => {
+      lanePrTagsRequestRef.current += 1;
+      window.clearTimeout(timer);
+    };
   }, [refreshLanePrTags, project?.rootPath]);
 
   useEffect(() => {
