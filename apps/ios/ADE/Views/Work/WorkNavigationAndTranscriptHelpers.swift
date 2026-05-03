@@ -724,6 +724,25 @@ func buildWorkToolCards(
         argsText: existing?.argsText,
         resultText: nonEmpty(resultText)
       )
+    case .webSearch(let query, let action, let status, let itemId, _):
+      // Web searches are tool calls — render them as tool cards so they're
+      // absorbed into the same `Tool calls` cluster as Read/Bash/etc. on the
+      // timeline, mirroring the desktop `work_log_group` behavior. Without
+      // this they fall through to `eventCard(for:)` and break tool clusters
+      // by appearing as standalone rows outside the group.
+      let existing = cards[itemId]
+      if existing == nil {
+        orderedIds.append(itemId)
+      }
+      cards[itemId] = WorkToolCardModel(
+        id: itemId,
+        toolName: "web_search",
+        status: status,
+        startedAt: existing?.startedAt ?? envelope.timestamp,
+        completedAt: status == .running ? nil : envelope.timestamp,
+        argsText: nonEmpty(query),
+        resultText: action.flatMap(nonEmpty) ?? existing?.resultText
+      )
     default:
       continue
     }

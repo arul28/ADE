@@ -299,7 +299,9 @@ can be sensitive.
 - **Chat sub-protocol** pairs with `chat.create` / `chat.send` +
   `chat_subscribe`. Same pattern: create / send the message through
   a command, subscribe to the transcript stream for incremental
-  events.
+  events. `chat.send` waits for the host-side dispatch acknowledgement
+  before returning `ok`, so the phone does not clear its local echo
+  while the desktop is still preparing the turn.
 - **File access sub-protocol** (`file_request` / `file_response`) is
   a separate envelope from remote commands; it handles large binary
   payloads and streaming reads outside the command surface to avoid

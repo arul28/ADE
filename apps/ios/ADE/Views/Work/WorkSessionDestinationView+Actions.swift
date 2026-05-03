@@ -8,16 +8,27 @@ extension WorkSessionDestinationView {
     guard !sending else { return false }
     let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !text.isEmpty else { return false }
+    guard canSendChatMessages else { return false }
 
-    let echo = WorkLocalEchoMessage(text: text, timestamp: workDateFormatter.string(from: Date()))
+    let echo = WorkLocalEchoMessage(
+      text: text,
+      timestamp: workDateFormatter.string(from: Date()),
+      deliveryState: sendWillQueueChatMessage ? "queued" : "sending"
+    )
     let echoId = echo.id
     localEchoMessages.append(echo)
     sending = true
     defer { sending = false }
     do {
-      try await syncService.sendChatMessage(sessionId: sessionId, text: text)
-      await refreshChatStateAfterAction(forceRemote: true)
-      reconcileLocalEchoMessages()
+      let delivery = try await syncService.sendChatMessage(sessionId: sessionId, text: text)
+      switch delivery {
+      case .queued:
+        updateLocalEchoDeliveryState(echoId: echoId, deliveryState: "queued")
+      case .sent:
+        updateLocalEchoDeliveryState(echoId: echoId, deliveryState: nil)
+        await refreshChatStateAfterAction(forceRemote: true)
+        reconcileLocalEchoMessages()
+      }
       errorMessage = nil
       return true
     } catch {

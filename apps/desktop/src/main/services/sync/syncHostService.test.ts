@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import { openKvDb } from "../state/kvDb";
 import { isCrsqliteAvailable } from "../state/crsqliteExtension";
-import { createSyncHostService } from "./syncHostService";
+import { createSyncHostService, syncHeartbeatMissLimitForPeerMetadata } from "./syncHostService";
 import type { SyncPinStore } from "./syncPinStore";
 import { encodeSyncEnvelope, parseSyncEnvelope } from "./syncProtocol";
 import type { ParsedSyncEnvelope } from "./syncProtocol";
@@ -287,6 +287,15 @@ afterEach(async () => {
     if (dispose) await dispose();
   }
   execFileMock.mockReset();
+});
+
+it("allows a wider heartbeat grace window for mobile peers", () => {
+  expect(syncHeartbeatMissLimitForPeerMetadata({ platform: "iOS", deviceType: "phone" })).toBeGreaterThan(
+    syncHeartbeatMissLimitForPeerMetadata({ platform: "macOS", deviceType: "desktop" }),
+  );
+  expect(syncHeartbeatMissLimitForPeerMetadata({ platform: "unknown", deviceType: "phone" })).toBeGreaterThan(
+    syncHeartbeatMissLimitForPeerMetadata(null),
+  );
 });
 
 describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {

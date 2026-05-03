@@ -1,6 +1,7 @@
 #import <CoreGraphics/CoreGraphics.h>
 #import <Foundation/Foundation.h>
 #import <dlfcn.h>
+#import <math.h>
 #import <mach/mach_time.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
@@ -75,15 +76,40 @@ typedef struct {
 #define ButtonEventTargetHardware 0x33
 #define ButtonEventTypeDown 0x1
 #define ButtonEventTypeUp 0x2
+#define TouchDigitizerTarget 0x32
+#define MouseEventDown 0x1
+#define MouseEventUp 0x2
+#define MouseEventDragged 0x6
+#define MouseDirectionDown 0x1
+#define MouseDirectionMove 0x0
+#define MouseDirectionUp 0x2
 
 typedef IndigoMessage *(*IndigoButtonFn)(int keyCode, int op, int target);
-typedef IndigoMessage *(*IndigoMouseFn)(CGPoint *point0, CGPoint *point1, int target, int eventType, BOOL extra);
+typedef IndigoMessage *(*IndigoMouse5Fn)(CGPoint *point0, CGPoint *point1, int target, int eventType, BOOL extra);
+typedef IndigoMessage *(*IndigoMouse9Fn)(
+  CGPoint *point0,
+  CGPoint *point1,
+  unsigned int target,
+  unsigned int eventType,
+  unsigned int direction,
+  double unused1,
+  double unused2,
+  double widthPoints,
+  double heightPoints
+);
+typedef IndigoMessage *(*IndigoServiceFn)(void);
 
 static NSString *gDeviceUdid = nil;
 static id gHidClient = nil;
 static IndigoButtonFn gButtonFn = NULL;
-static IndigoMouseFn gMouseFn = NULL;
+static IndigoMouse5Fn gMouse5Fn = NULL;
+static IndigoMouse9Fn gMouse9Fn = NULL;
+static IndigoServiceFn gCreatePointerServiceFn = NULL;
+static IndigoServiceFn gCreateMouseServiceFn = NULL;
+static BOOL gUseModernMousePath = NO;
 static dispatch_queue_t gSendQueue;
+
+static BOOL sendIndigo(IndigoMessage *message, NSString **errorOut);
 
 static void elog(NSString *fmt, ...) {
   va_list args;
@@ -174,6 +200,26 @@ static id bootedDevice(id deviceSet) {
   return nil;
 }
 
+static NSInteger selectedXcodeMajor(void) {
+  NSTask *task = [NSTask new];
+  task.launchPath = @"/usr/bin/xcodebuild";
+  task.arguments = @[@"-version"];
+  NSPipe *pipe = [NSPipe pipe];
+  task.standardOutput = pipe;
+  @try {
+    [task launch];
+    [task waitUntilExit];
+  } @catch (id ignored) {
+    return 0;
+  }
+  NSString *raw = [[NSString alloc] initWithData:pipe.fileHandleForReading.readDataToEndOfFile encoding:NSUTF8StringEncoding];
+  NSArray<NSString *> *parts = [raw componentsSeparatedByCharactersInSet:[[NSCharacterSet decimalDigitCharacterSet] invertedSet]];
+  for (NSString *part in parts) {
+    if (part.length > 0) return part.integerValue;
+  }
+  return 0;
+}
+
 static BOOL loadIndigoSymbolsOnly(void) {
   if (!dlopen("/Library/Developer/PrivateFrameworks/CoreSimulator.framework/CoreSimulator", RTLD_NOW)) {
     elog(@"[sim-input] FAIL dlopen CoreSimulator: %s", dlerror());
@@ -186,12 +232,32 @@ static BOOL loadIndigoSymbolsOnly(void) {
     return NO;
   }
   gButtonFn = (IndigoButtonFn)dlsym(kit, "IndigoHIDMessageForButton");
-  gMouseFn = (IndigoMouseFn)dlsym(kit, "IndigoHIDMessageForMouseNSEvent");
-  if (!gButtonFn || !gMouseFn) {
-    elog(@"[sim-input] FAIL Indigo dlsym button=%p mouse=%p", gButtonFn, gMouseFn);
+  void *mouseSymbol = dlsym(kit, "IndigoHIDMessageForMouseNSEvent");
+  gMouse5Fn = (IndigoMouse5Fn)mouseSymbol;
+  gMouse9Fn = (IndigoMouse9Fn)mouseSymbol;
+  gCreatePointerServiceFn = (IndigoServiceFn)dlsym(kit, "IndigoHIDMessageToCreatePointerService");
+  gCreateMouseServiceFn = (IndigoServiceFn)dlsym(kit, "IndigoHIDMessageToCreateMouseService");
+  gUseModernMousePath = selectedXcodeMajor() >= 26;
+  if (!gButtonFn || !mouseSymbol) {
+    elog(@"[sim-input] FAIL Indigo dlsym button=%p mouse=%p", gButtonFn, mouseSymbol);
     return NO;
   }
   return YES;
+}
+
+static void warmIndigoService(IndigoServiceFn serviceFn, NSString *name) {
+  if (!serviceFn) return;
+  NSString *error = nil;
+  IndigoMessage *message = serviceFn();
+  if (!message) {
+    elog(@"[sim-input] %@ warmup returned NULL", name);
+    return;
+  }
+  if (!sendIndigo(message, &error)) {
+    elog(@"[sim-input] %@ warmup failed: %@", name, error ?: @"unknown error");
+    return;
+  }
+  usleep(20000);
 }
 
 static BOOL ensureHID(void) {
@@ -223,6 +289,8 @@ static BOOL ensureHID(void) {
   }
   gHidClient = client;
   gSendQueue = dispatch_queue_create("app.ade.ios-sim.input", DISPATCH_QUEUE_SERIAL);
+  warmIndigoService(gCreatePointerServiceFn, @"pointer service");
+  warmIndigoService(gCreateMouseServiceFn, @"mouse service");
   elog(@"[sim-input] HID client ready dev=%@ udid=%@", [device valueForKey:@"name"], deviceUDID(device));
   return YES;
 }
@@ -256,10 +324,43 @@ static BOOL sendIndigo(IndigoMessage *message, NSString **errorOut) {
   return YES;
 }
 
-static BOOL sendTouch(double xRatio, double yRatio, BOOL down, NSString **errorOut) {
+static double positiveOrDefault(id value, double fallback) {
+  double parsed = [value respondsToSelector:@selector(doubleValue)] ? [value doubleValue] : fallback;
+  return isfinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+static double clampUnit(double value) {
+  if (!isfinite(value)) return 0;
+  if (value < 0) return 0;
+  if (value > 1) return 1;
+  return value;
+}
+
+static BOOL sendModernTouch(double x, double y, double width, double height, unsigned int eventType, unsigned int direction, NSString **errorOut) {
+  if (!gMouse9Fn) {
+    if (errorOut) *errorOut = @"Modern Indigo mouse event builder is not available.";
+    return NO;
+  }
+  CGPoint point = CGPointMake(clampUnit(x / width), clampUnit(y / height));
+  IndigoMessage *message = gMouse9Fn(&point, NULL, TouchDigitizerTarget, eventType, direction, 1.0, 1.0, width, height);
+  if (!message) {
+    if (errorOut) *errorOut = @"Indigo mouse event builder returned NULL.";
+    elog(@"[sim-input] %@", errorOut ? *errorOut : @"MouseFn returned NULL");
+    return NO;
+  }
+  return sendIndigo(message, errorOut);
+}
+
+static BOOL sendLegacyTouch(double x, double y, double width, double height, unsigned int eventType, NSString **errorOut) {
+  if (!gMouse5Fn) {
+    if (errorOut) *errorOut = @"Legacy Indigo mouse event builder is not available.";
+    return NO;
+  }
+  double xRatio = clampUnit(x / width);
+  double yRatio = clampUnit(y / height);
   CGPoint point = CGPointMake(xRatio, yRatio);
-  int eventType = down ? ButtonEventTypeDown : ButtonEventTypeUp;
-  IndigoMessage *seed = gMouseFn(&point, NULL, 0x32, eventType, NO);
+  int legacyEventType = eventType == MouseEventUp ? ButtonEventTypeUp : ButtonEventTypeDown;
+  IndigoMessage *seed = gMouse5Fn(&point, NULL, TouchDigitizerTarget, legacyEventType, NO);
   if (!seed) {
     if (errorOut) *errorOut = @"Indigo mouse event builder returned NULL.";
     elog(@"[sim-input] %@", errorOut ? *errorOut : @"MouseFn returned NULL");
@@ -285,6 +386,13 @@ static BOOL sendTouch(double xRatio, double yRatio, BOOL down, NSString **errorO
   return sendIndigo(message, errorOut);
 }
 
+static BOOL sendTouch(double x, double y, double width, double height, unsigned int eventType, unsigned int direction, NSString **errorOut) {
+  if (gUseModernMousePath) {
+    return sendModernTouch(x, y, width, height, eventType, direction, errorOut);
+  }
+  return sendLegacyTouch(x, y, width, height, eventType, errorOut);
+}
+
 static BOOL sendButton(NSString *name, BOOL down, NSString **errorOut) {
   int source = ButtonEventSourceHomeButton;
   if ([name isEqualToString:@"home"]) source = ButtonEventSourceHomeButton;
@@ -307,17 +415,28 @@ static BOOL processEvent(NSDictionary *event, NSString **errorOut) {
     return NO;
   }
   NSString *type = event[@"type"];
+  double width = positiveOrDefault(event[@"width"], 1);
+  double height = positiveOrDefault(event[@"height"], 1);
   if ([type isEqualToString:@"touch"]) {
     NSString *phase = event[@"phase"] ?: @"down";
-    return sendTouch([event[@"x"] doubleValue], [event[@"y"] doubleValue], ![phase isEqualToString:@"up"], errorOut);
+    unsigned int eventType = MouseEventDown;
+    unsigned int direction = MouseDirectionDown;
+    if ([phase isEqualToString:@"move"]) {
+      eventType = MouseEventDragged;
+      direction = MouseDirectionMove;
+    } else if ([phase isEqualToString:@"up"]) {
+      eventType = MouseEventUp;
+      direction = MouseDirectionUp;
+    }
+    return sendTouch([event[@"x"] doubleValue], [event[@"y"] doubleValue], width, height, eventType, direction, errorOut);
   }
   if ([type isEqualToString:@"tap"]) {
     double x = [event[@"x"] doubleValue];
     double y = [event[@"y"] doubleValue];
     int hold = event[@"hold"] ? [event[@"hold"] intValue] : 45;
-    if (!sendTouch(x, y, YES, errorOut)) return NO;
+    if (!sendTouch(x, y, width, height, MouseEventDown, MouseDirectionDown, errorOut)) return NO;
     usleep((useconds_t)(MAX(0, hold) * 1000));
-    return sendTouch(x, y, NO, errorOut);
+    return sendTouch(x, y, width, height, MouseEventUp, MouseDirectionUp, errorOut);
   }
   if ([type isEqualToString:@"swipe"]) {
     double startX = [event[@"startX"] doubleValue];
@@ -326,13 +445,21 @@ static BOOL processEvent(NSDictionary *event, NSString **errorOut) {
     double endY = [event[@"endY"] doubleValue];
     int durationMs = event[@"durationMs"] ? [event[@"durationMs"] intValue] : 180;
     int steps = MAX(4, MIN(30, durationMs / 16));
-    if (!sendTouch(startX, startY, YES, errorOut)) return NO;
+    if (!sendTouch(startX, startY, width, height, MouseEventDown, MouseDirectionDown, errorOut)) return NO;
     for (int i = 1; i < steps; i++) {
       double progress = (double)i / (double)steps;
-      if (!sendTouch(startX + ((endX - startX) * progress), startY + ((endY - startY) * progress), YES, errorOut)) return NO;
+      if (!sendTouch(
+        startX + ((endX - startX) * progress),
+        startY + ((endY - startY) * progress),
+        width,
+        height,
+        MouseEventDragged,
+        MouseDirectionMove,
+        errorOut
+      )) return NO;
       usleep((useconds_t)(MAX(1, durationMs / steps) * 1000));
     }
-    return sendTouch(endX, endY, NO, errorOut);
+    return sendTouch(endX, endY, width, height, MouseEventUp, MouseDirectionUp, errorOut);
   }
   if ([type isEqualToString:@"button"]) {
     NSString *phase = event[@"phase"] ?: @"down";

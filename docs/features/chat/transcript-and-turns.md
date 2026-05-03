@@ -88,7 +88,7 @@ Two helpers summarise a parsed stream:
 | `turn_diff_summary` | Git-level before/after SHA + per-file stats for a completed turn. |
 | `delegation_state` | Mission orchestrator delegation contract updates. |
 | `context_compact` | Emitted before the provider compacts context (manual or auto). |
-| `web_search` | Web-search tool lifecycle. |
+| `web_search` | Web-search tool lifecycle; renderers group these with other tool calls instead of showing them as standalone event cards. |
 | `auto_approval_review` | When auto-approval policy kicks in, this event carries the review text. |
 | `prompt_suggestion` | Suggested follow-up prompts for the user. |
 

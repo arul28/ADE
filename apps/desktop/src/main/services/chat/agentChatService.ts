@@ -394,6 +394,7 @@ type CodexRuntime = {
   commandOutputByItemId: Map<string, string>;
   fileDeltaByItemId: Map<string, string>;
   fileChangesByItemId: Map<string, Array<{ path: string; kind: "create" | "modify" | "delete" }>>;
+  planTextByItemId: Map<string, string>;
   activeSubagents: Map<string, { taskId: string; description: string; background: boolean }>;
   interruptedTurnIds: Set<string>;
   ignoredTurnIds: Set<string>;
@@ -1130,6 +1131,7 @@ type PreparedSendMessage = {
   turnId?: string;
   optimisticCursorTurnStart?: boolean;
   optimisticAcpTurnStart?: boolean;
+  optimisticCodexTurnStart?: boolean;
   runtime?: AgentChatRuntime;
   cloudOverrides?: AgentChatCloudOverrides;
 };
@@ -2902,13 +2904,27 @@ function buildCodexDeveloperInstructions(args: {
   });
 }
 
+function buildCodexAdeContextInput(args: {
+  laneWorktreePath: string;
+  session: Pick<AgentChatSession, "permissionMode" | "interactionMode">;
+  collaborationMode: "default" | "plan";
+}): Record<string, unknown> {
+  return {
+    type: "text",
+    text: [
+      "System context (ADE runtime guidance, do not echo verbatim):",
+      buildCodexDeveloperInstructions(args),
+    ].join("\n\n"),
+    text_elements: [],
+  };
+}
+
 function buildCodexCollaborationMode(
   session: Pick<
     AgentChatSession,
     "provider" | "permissionMode" | "interactionMode" | "model" | "reasoningEffort" | "codexConfigSource"
   >,
   supportedModes: Set<string> | null,
-  laneWorktreePath: string,
 ): CodexCollaborationModePayload | null {
   if (session.provider !== "codex") return null;
   if (resolveSessionCodexConfigSource(session) === "config-toml") return null;
@@ -2927,11 +2943,7 @@ function buildCodexCollaborationMode(
     settings: {
       model: session.model,
       reasoning_effort: session.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
-      developer_instructions: buildCodexDeveloperInstructions({
-        laneWorktreePath,
-        session,
-        collaborationMode: mode,
-      }),
+      developer_instructions: null,
     },
   };
 }
@@ -7298,6 +7310,7 @@ export function createAgentChatService(args: {
       laneDirectiveKey?: string | null;
       providerSlashCommand?: boolean;
       forceClaudeUserMessage?: boolean;
+      optimisticCodexTurnStart?: boolean;
       onDispatched?: () => void;
     },
   ): Promise<void> => {
@@ -7318,19 +7331,28 @@ export function createAgentChatService(args: {
       _rootPath: managed.laneWorktreePath,
     }));
     const displayText = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
+    let onDispatched = args.onDispatched;
+    const markDispatched = () => {
+      if (!onDispatched) return;
+      const callback = onDispatched;
+      onDispatched = undefined;
+      callback();
+    };
     setSessionActive(managed);
-    emitPreparedUserMessage(managed, {
-      text: displayText,
-      attachments,
-      laneDirectiveKey: args.laneDirectiveKey,
-      onDispatched: args.onDispatched,
-    });
-    emitChatEvent(managed, { type: "status", turnStatus: "started" });
-    captureTurnBeforeSha(managed);
-    emitChatEvent(managed, {
-      type: "activity",
-      ...initialTurnActivity(managed.session),
-    });
+    if (!args.optimisticCodexTurnStart) {
+      emitPreparedUserMessage(managed, {
+        text: displayText,
+        attachments,
+        laneDirectiveKey: args.laneDirectiveKey,
+        onDispatched: markDispatched,
+      });
+      emitChatEvent(managed, { type: "status", turnStatus: "started" });
+      captureTurnBeforeSha(managed);
+      emitChatEvent(managed, {
+        type: "activity",
+        ...initialTurnActivity(managed.session),
+      });
+    }
     const providerSlashCommand = args.providerSlashCommand === true;
     const autoMemoryPlan = providerSlashCommand
       ? null
@@ -7350,6 +7372,7 @@ export function createAgentChatService(args: {
         runtime.awaitingTurnStart = false;
         throw error;
       }
+      markDispatched();
       persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
       const reviewTurnId = typeof reviewResult.turn?.id === "string" ? reviewResult.turn.id : null;
       if (reviewTurnId) {
@@ -7380,21 +7403,6 @@ export function createAgentChatService(args: {
         text_elements: [],
       });
     }
-    input.push({
-      type: "text",
-      text: args.promptText,
-      text_elements: []
-    });
-
-    for (const attachment of resolvedAttachments) {
-      const stagedPath = stageAttachmentForCodexInput(attachment);
-      if (attachment.type === "image") {
-        input.push({ type: "localImage", path: stagedPath });
-        continue;
-      }
-      const name = path.basename(attachment.path) || attachment.path;
-      input.push({ type: "mention", name, path: stagedPath });
-    }
 
     if (autoMemoryNotice) {
       emitChatEvent(managed, {
@@ -7411,7 +7419,6 @@ export function createAgentChatService(args: {
     const collaborationMode = buildCodexCollaborationMode(
       managed.session,
       runtime.collaborationModes,
-      managed.laneWorktreePath,
     );
     if (
       requestedCollaborationMode === "plan"
@@ -7426,6 +7433,28 @@ export function createAgentChatService(args: {
       runtime.planModeFallbackNotified = true;
     } else if (collaborationMode?.mode === "plan") {
       runtime.planModeFallbackNotified = false;
+    }
+    if (collaborationMode) {
+      input.push(buildCodexAdeContextInput({
+        laneWorktreePath: managed.laneWorktreePath,
+        session: managed.session,
+        collaborationMode: collaborationMode.mode,
+      }));
+    }
+    input.push({
+      type: "text",
+      text: args.promptText,
+      text_elements: []
+    });
+
+    for (const attachment of resolvedAttachments) {
+      const stagedPath = stageAttachmentForCodexInput(attachment);
+      if (attachment.type === "image") {
+        input.push({ type: "localImage", path: stagedPath });
+        continue;
+      }
+      const name = path.basename(attachment.path) || attachment.path;
+      input.push({ type: "mention", name, path: stagedPath });
     }
     managed.runtime.awaitingTurnStart = true;
     let result: { turn?: { id?: string } };
@@ -7442,6 +7471,7 @@ export function createAgentChatService(args: {
       managed.runtime.awaitingTurnStart = false;
       throw error;
     }
+    markDispatched();
     persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
 
     const turnId = typeof result?.turn?.id === "string" ? result.turn.id : null;
@@ -9568,6 +9598,78 @@ export function createAgentChatService(args: {
     return true;
   };
 
+  const normalizeCodexPlanText = (value: unknown): string | null => {
+    if (typeof value !== "string") return null;
+    const trimmed = value.trim();
+    if (!trimmed.length) return null;
+    const proposedPlanMatch = trimmed.match(/<proposed_plan>\s*([\s\S]*?)\s*<\/proposed_plan>/i);
+    const planText = (proposedPlanMatch?.[1] ?? trimmed).trim();
+    return planText.length ? planText : null;
+  };
+
+  const readCodexPlanTextFromItem = (item: Record<string, unknown>): string | null =>
+    normalizeCodexPlanText(item.text)
+    ?? normalizeCodexPlanText(item.planText)
+    ?? normalizeCodexPlanText(item.markdown)
+    ?? normalizeCodexPlanText(item.content)
+    ?? normalizeCodexPlanText(item.description);
+
+  const emitCodexPlanTextApproval = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    text: unknown,
+    turnId: string | undefined,
+  ): boolean => {
+    const planText = normalizeCodexPlanText(text);
+    if (!planText) return false;
+    if (managed.session.permissionMode !== "plan") return true;
+
+    const hasExistingApproval = [...runtime.approvals.values()].some((pending) =>
+      pending.kind === "plan_approval"
+      && (
+        (turnId && (pending.request?.turnId ?? null) === turnId)
+        || pending.request?.description === planText
+      ),
+    );
+    if (hasExistingApproval) return true;
+
+    const planApprovalItemId = randomUUID();
+    const request: PendingInputRequest = {
+      requestId: planApprovalItemId,
+      itemId: planApprovalItemId,
+      source: "codex",
+      kind: "plan_approval",
+      title: "Plan Ready for Review",
+      description: planText,
+      questions: [{
+        id: "plan_decision",
+        header: "Implementation Plan",
+        question: planText,
+        options: [
+          { label: "Approve & Implement", value: "approve", recommended: true },
+          { label: "Reject & Revise", value: "reject" },
+        ],
+        allowsFreeform: true,
+      }],
+      allowsFreeform: true,
+      blocking: true,
+      canProceedWithoutAnswer: false,
+      providerMetadata: { tool: "codexPlanApproval" },
+      turnId: turnId ?? runtime.activeTurnId ?? null,
+    };
+    runtime.approvals.set(planApprovalItemId, {
+      requestId: planApprovalItemId,
+      kind: "plan_approval",
+      request,
+    });
+    emitPendingInputRequest(managed, request, {
+      kind: "tool_call",
+      description: "Plan ready for approval",
+      detail: { planContent: planText },
+    });
+    return true;
+  };
+
   /**
    * Resolve any plan-approval follow-ups that were staged during a planning
    * turn. Runs once turn/completed has cleared activeTurnId so the
@@ -9659,6 +9761,26 @@ export function createAgentChatService(args: {
           trigger: "auto",
           turnId,
         });
+      }
+      return;
+    }
+
+    if (itemType === "plan") {
+      if (eventKind === "completed") {
+        const hadStreamingText = runtime.planTextByItemId.has(itemId);
+        const planText = readCodexPlanTextFromItem(item) ?? runtime.planTextByItemId.get(itemId) ?? null;
+        if (planText) {
+          if (!hadStreamingText) {
+            emitChatEvent(managed, {
+              type: "plan_text",
+              text: planText,
+              turnId,
+              itemId,
+            });
+          }
+          emitCodexPlanTextApproval(managed, runtime, planText, turnId);
+        }
+        runtime.planTextByItemId.delete(itemId);
       }
       return;
     }
@@ -10092,15 +10214,30 @@ export function createAgentChatService(args: {
       runtime.startedTurnId = null;
       runtime.ignoredTurnIds.delete(turnId);
       resetAssistantMessageStream(managed);
+      const status = mapCodexTurnStatus(turn?.status);
+      if (status === "completed") {
+        for (const [planItemId, planText] of runtime.planTextByItemId) {
+          emitCodexPlanTextApproval(
+            managed,
+            runtime,
+            planText,
+            runtime.itemTurnIdByItemId.get(planItemId) ?? turnId,
+          );
+        }
+      }
+      runtime.planTextByItemId.clear();
       runtime.itemTurnIdByItemId.clear();
       runtime.agentMessageScopeByTurn.clear();
       runtime.agentMessageTextByTurn.clear();
       runtime.recentNotificationKeys.clear();
-      const status = mapCodexTurnStatus(turn?.status);
       const usage = normalizeUsagePayload(turn?.usage ?? turn?.totalUsage);
       markSessionIdleWithFreshCache(managed);
       drainPendingPlanFollowups(managed, runtime);
-      runtime.approvals.clear();
+      for (const [approvalId, pending] of runtime.approvals) {
+        if (pending.kind !== "plan_approval") {
+          runtime.approvals.delete(approvalId);
+        }
+      }
 
       if (status === "failed" && turn?.error?.message) {
         emitChatEvent(managed, {
@@ -10332,6 +10469,7 @@ export function createAgentChatService(args: {
       runtime.commandOutputByItemId.clear();
       runtime.fileDeltaByItemId.clear();
       runtime.fileChangesByItemId.clear();
+      runtime.planTextByItemId.clear();
       runtime.agentMessageScopeByTurn.clear();
       runtime.agentMessageTextByTurn.clear();
       runtime.recentNotificationKeys.clear();
@@ -10437,13 +10575,22 @@ export function createAgentChatService(args: {
     }
 
     if (method === "item/plan/delta") {
+      const explicitItemId = typeof params.itemId === "string" && params.itemId.trim().length
+        ? params.itemId
+        : null;
+      const fallbackTurnId = turnIdFromParams ?? runtime.activeTurnId ?? runtime.startedTurnId ?? "unknown-turn";
+      const itemId = explicitItemId ?? `codex-plan:${managed.session.id}:${fallbackTurnId}`;
       const delta = String((params.delta as string | undefined) ?? "");
       if (!delta.length) return;
+      const turnId = turnIdFromParams ?? runtime.itemTurnIdByItemId.get(itemId) ?? runtime.activeTurnId ?? runtime.startedTurnId ?? undefined;
+      const next = `${runtime.planTextByItemId.get(itemId) ?? ""}${delta}`;
+      runtime.planTextByItemId.set(itemId, next);
+      evictOldestEntries(runtime.planTextByItemId, MAX_SESSION_MAP_ENTRIES);
       emitChatEvent(managed, {
         type: "plan_text",
         text: delta,
-        turnId: typeof params.turnId === "string" ? params.turnId : undefined,
-        itemId: typeof params.itemId === "string" ? params.itemId : undefined,
+        turnId,
+        itemId,
       });
       return;
     }
@@ -10545,6 +10692,7 @@ export function createAgentChatService(args: {
       commandOutputByItemId: new Map<string, string>(),
       fileDeltaByItemId: new Map<string, string>(),
       fileChangesByItemId: new Map<string, Array<{ path: string; kind: "create" | "modify" | "delete" }>>(),
+      planTextByItemId: new Map<string, string>(),
       activeSubagents: new Map<string, { taskId: string; description: string; background: boolean }>(),
       interruptedTurnIds: new Set<string>(),
       ignoredTurnIds: new Set<string>(),
@@ -15088,6 +15236,7 @@ export function createAgentChatService(args: {
       turnId,
       optimisticCursorTurnStart,
       optimisticAcpTurnStart,
+      optimisticCodexTurnStart,
     } = prepared;
 
     // OpenCode runtime dispatch
@@ -15295,6 +15444,7 @@ export function createAgentChatService(args: {
         resolvedAttachments,
         laneDirectiveKey,
         providerSlashCommand,
+        optimisticCodexTurnStart,
         onDispatched,
       });
       return;
@@ -15374,6 +15524,23 @@ export function createAgentChatService(args: {
       // runCursorTurn after the SDK prompt has been initiated, so the
       // caller's awaitDispatch promise resolves only once the backend has
       // acknowledged the prompt.
+    }
+
+    if (prepared.managed.session.provider === "codex") {
+      prepared.optimisticCodexTurnStart = true;
+      emitPreparedUserMessage(prepared.managed, {
+        text: prepared.visibleText,
+        attachments: prepared.attachments,
+        laneDirectiveKey: prepared.laneDirectiveKey,
+      });
+      emitChatEvent(prepared.managed, { type: "status", turnStatus: "started" });
+      captureTurnBeforeSha(prepared.managed);
+      emitChatEvent(prepared.managed, {
+        type: "activity",
+        ...initialTurnActivity(prepared.managed.session),
+      });
+      setSessionActive(prepared.managed);
+      persistChatState(prepared.managed);
     }
 
     logger.info("agent_chat.turn_dispatch_ack", {
@@ -16502,6 +16669,7 @@ export function createAgentChatService(args: {
         if (approved) {
           managed.session.permissionMode = "edit";
           applyLegacyPermissionModeToNativeControls(managed.session, "edit");
+          managed.session.interactionMode = "default";
           runtime.threadResumed = false;
           persistChatState(managed);
         }

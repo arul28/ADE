@@ -1254,6 +1254,8 @@ describe("createSyncRemoteCommandService", () => {
       expect(agentChatService.sendMessage).toHaveBeenCalledWith({
         sessionId: "sess-1",
         text: "hello",
+      }, {
+        awaitDispatch: true,
       });
       expect(result).toEqual({ ok: true });
     });
@@ -1399,6 +1401,8 @@ describe("createSyncRemoteCommandService", () => {
             { path: "a", type: "image" },
             { path: "b", type: "file" },
           ],
+        }, {
+          awaitDispatch: true,
         });
       });
 
@@ -1465,6 +1469,8 @@ describe("createSyncRemoteCommandService", () => {
           reasoningEffort: "high",
           executionMode: "autonomous",
           interactionMode: "chat",
+        }, {
+          awaitDispatch: true,
         });
       });
 

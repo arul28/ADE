@@ -17,6 +17,7 @@ func buildWorkChatTimelineSnapshot(
   let commandCards = buildWorkCommandCards(from: transcript)
   let fileChangeCards = buildWorkFileChangeCards(from: transcript)
   let subagentSnapshots = buildWorkSubagentSnapshots(from: transcript)
+  let transcriptIndicatesActiveTurn = workTranscriptIndicatesActiveTurn(transcript)
   let timeline = buildWorkTimeline(
     transcript: transcript,
     fallbackEntries: fallbackEntries,
@@ -37,8 +38,42 @@ func buildWorkChatTimelineSnapshot(
     commandCards: commandCards,
     fileChangeCards: fileChangeCards,
     subagentSnapshots: subagentSnapshots,
+    transcriptIndicatesActiveTurn: transcriptIndicatesActiveTurn,
     timeline: timeline
   )
+}
+
+func workTranscriptIndicatesActiveTurn(_ transcript: [WorkChatEnvelope]) -> Bool {
+  var activeTurnIds = Set<String>()
+  var bootstrapStartOpen = false
+  for envelope in transcript {
+    switch envelope.event {
+    case .status(let turnStatus, _, let turnId):
+      switch turnStatus.lowercased() {
+      case "started", "active", "running", "inprogress", "in_progress", "in-progress":
+        if let turnId, !turnId.isEmpty {
+          activeTurnIds.insert(turnId)
+          bootstrapStartOpen = false
+        } else {
+          bootstrapStartOpen = true
+        }
+      case "completed", "failed", "interrupted", "cancelled", "canceled", "ended":
+        if let turnId, !turnId.isEmpty {
+          activeTurnIds.remove(turnId)
+        } else {
+          bootstrapStartOpen = false
+        }
+      default:
+        break
+      }
+    case .done(_, _, _, let turnId, _, _):
+      activeTurnIds.remove(turnId)
+      bootstrapStartOpen = false
+    default:
+      break
+    }
+  }
+  return bootstrapStartOpen || !activeTurnIds.isEmpty
 }
 
 /// Collapse `subagent_*` events into one snapshot per taskId. Preserves host
@@ -220,7 +255,15 @@ func buildWorkTimeline(
   })
 
   entries.append(contentsOf: visibleLocalEchoMessages.enumerated().map { index, echo in
-    let message = WorkChatMessage(id: echo.id, role: "user", markdown: echo.text, timestamp: echo.timestamp, turnId: nil, itemId: nil)
+    let message = WorkChatMessage(
+      id: echo.id,
+      role: "user",
+      markdown: echo.text,
+      timestamp: echo.timestamp,
+      turnId: nil,
+      itemId: nil,
+      deliveryState: echo.deliveryState
+    )
     return WorkTimelineEntry(id: "echo-\(echo.id)", timestamp: echo.timestamp, rank: 3_000 + index, payload: .message(message))
   })
 
@@ -793,18 +836,12 @@ private func eventCard(for envelope: WorkChatEnvelope) -> WorkEventCardModel? {
         bullets: [],
         metadata: []
       )
-    case .webSearch(let query, let action, let status, _, _):
-      return WorkEventCardModel(
-        id: envelope.id,
-        kind: "webSearch",
-        title: "Web search",
-        icon: "globe",
-        tint: status == .failed ? .danger : status == .completed ? .success : .warning,
-        timestamp: envelope.timestamp,
-        body: query,
-        bullets: action.map { [$0] } ?? [],
-        metadata: [status.rawValue.capitalized]
-      )
+    case .webSearch:
+      // Web searches now surface as `WorkToolCardModel` entries built in
+      // `buildWorkToolCards`, so they cluster into the `Tool calls` panel
+      // alongside Read/Bash/etc. instead of leaking out as standalone event
+      // cards that break the surrounding tool group.
+      return nil
     case .planText(let text, _):
       return WorkEventCardModel(
         id: envelope.id,

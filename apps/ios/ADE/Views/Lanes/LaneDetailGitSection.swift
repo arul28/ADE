@@ -139,11 +139,11 @@ extension LaneDetailScreen {
       LaneDetailRebaseBanner(
         behindCount: suggestion.behindCount,
         parentLabel: detail.lane.baseRef,
+        hasPr: suggestion.hasPr,
         canRunLiveActions: canRunLiveActions,
-        onRebase: {
+        onViewRebase: {
           requestGitConfirmation(.rebaseLane)
         },
-        onDefer: handleRebaseSuggestionDefer,
         onDismiss: handleRebaseSuggestionDismiss
       )
     }
