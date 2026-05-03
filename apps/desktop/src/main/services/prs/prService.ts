@@ -904,7 +904,10 @@ export function createPrService({
 
   const rowMatchesCurrentLaneBranch = (row: PullRequestRow, lane: LanePrLookupRow): boolean => {
     if (!isActivePrState(row.state)) return false;
+    return rowMatchesLaneBranchForDisplay(row, lane);
+  };
 
+  const rowMatchesLaneBranchForDisplay = (row: PullRequestRow, lane: LanePrLookupRow): boolean => {
     const laneBranch = normalizeBranchName(branchNameFromRef(lane.branch_ref ?? ""));
     const prHeadBranch = normalizeBranchName(row.head_branch);
     if (!laneBranch || !prHeadBranch || laneBranch !== prHeadBranch) return false;
@@ -915,6 +918,30 @@ export function createPrService({
     }
 
     return true;
+  };
+
+  const getDisplayRowForCurrentLaneBranch = (laneId: string): PullRequestRow | null => {
+    const lane = getLanePrLookupRow(laneId);
+    if (!lane || lane.archived_at) return null;
+
+    const rows = db.all<PullRequestRow>(
+      `
+        select ${PR_COLUMNS}
+          from pull_requests
+         where lane_id = ?
+           and project_id = ?
+         order by
+           case when state in ('open', 'draft') then 0 when state = 'merged' then 1 else 2 end,
+           updated_at desc,
+           created_at desc
+      `,
+      [laneId, projectId],
+    );
+
+    const laneBranch = normalizeBranchName(branchNameFromRef(lane.branch_ref ?? ""));
+    if (!laneBranch) return rows[0] ?? null;
+
+    return rows.find((row) => rowMatchesLaneBranchForDisplay(row, lane)) ?? null;
   };
 
   const getActiveRowForCurrentLaneBranch = (laneId: string): PullRequestRow | null => {
@@ -5214,7 +5241,7 @@ export function createPrService({
     },
 
     getForLane(laneId: string): PrSummary | null {
-      const row = getActiveRowForCurrentLaneBranch(laneId);
+      const row = getDisplayRowForCurrentLaneBranch(laneId);
       return row ? rowToSummary(row) : null;
     },
 

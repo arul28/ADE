@@ -303,8 +303,44 @@ describe("AgentChatComposer", () => {
       },
     });
 
-    expect(screen.getByText("Answer in the inline question card, or type below.")).toBeTruthy();
+    expect(screen.getByText("Answer in the inline question card, or decline.")).toBeTruthy();
     expect(screen.queryByText("Answer in the inline question card, or pick an option there.")).toBeNull();
+  });
+
+  it("locks the prompt box while a pending question is waiting", () => {
+    const props = renderComposer({
+      pendingInput: {
+        requestId: "req-lock",
+        itemId: "item-lock",
+        source: "claude",
+        kind: "question",
+        title: "Input needed",
+        description: "What should we do next?",
+        questions: [{
+          id: "answer",
+          header: "Question 1",
+          question: "What should we do next?",
+          allowsFreeform: true,
+        }],
+        allowsFreeform: true,
+        blocking: true,
+        canProceedWithoutAnswer: false,
+        turnId: null,
+      },
+    });
+
+    const textbox = screen.getByRole("textbox") as HTMLTextAreaElement;
+    expect(textbox.disabled).toBe(true);
+    expect(textbox.placeholder).toBe("Answer the question card above, or decline it.");
+    expect(screen.queryByLabelText("Send steer message")).toBeNull();
+    expect((screen.getByLabelText("Open attachment picker") as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByLabelText("Upload file from disk") as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByLabelText("Open command picker") as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.keyDown(textbox, { key: "Enter" });
+
+    expect(props.onApproval).not.toHaveBeenCalled();
+    expect(props.onSubmit).not.toHaveBeenCalled();
   });
 
   it("keeps the option hint when a pending question includes selectable options", () => {

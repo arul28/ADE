@@ -11,6 +11,7 @@ import type {
   LaneSummary,
   PrActivityEvent,
   PrAiResolutionEventPayload,
+  PrActionRun,
   PrCheck,
   PrConvergenceState,
   PrConvergenceStatePatch,
@@ -47,6 +48,21 @@ import { PrDetailPane } from "./PrDetailPane";
 
 function makeCheck(overrides: Partial<PrCheck> = {}): PrCheck {
   return { name: "ci / unit", status: "completed", conclusion: "failure", detailsUrl: null, startedAt: null, completedAt: null, ...overrides };
+}
+
+function makeActionRun(overrides: Partial<PrActionRun> = {}): PrActionRun {
+  return {
+    id: 25203344014,
+    name: "Path Filtered CI on PR",
+    status: "completed",
+    conclusion: "success",
+    headSha: "a886859",
+    htmlUrl: "https://github.com/arul28/Versic/actions/runs/25203344014",
+    createdAt: "2026-05-01T05:15:24.000Z",
+    updatedAt: "2026-05-01T05:24:41.000Z",
+    jobs: [],
+    ...overrides,
+  };
 }
 
 function makeThread(overrides: Partial<PrReviewThread> = {}): PrReviewThread {
@@ -223,6 +239,7 @@ function makeInventoryItem(overrides: Partial<IssueInventoryItem> = {}): IssueIn
 function renderPane(args: {
   checks: PrCheck[];
   freshChecks?: PrCheck[];
+  actionRuns?: PrActionRun[];
   reviewThreads: PrReviewThread[];
   lanes?: LaneSummary[];
   laneStatusOverrides?: Partial<LaneSummary["status"]>;
@@ -360,7 +377,7 @@ function renderPane(args: {
           linkedIssues: [],
         }),
         getFiles: vi.fn().mockResolvedValue([]),
-        getActionRuns: vi.fn().mockResolvedValue([]),
+        getActionRuns: vi.fn().mockResolvedValue(args.actionRuns ?? []),
         getActivity: vi.fn().mockResolvedValue(args.activity ?? []),
         getReviewThreads,
         issueInventorySync,
@@ -503,6 +520,65 @@ describe("PrDetailPane issue resolver CTA", () => {
       expect(screen.getByText("Some checks failing")).toBeTruthy();
       expect(screen.getByText("1/3 checks passing, 1 still running")).toBeTruthy();
       expect(screen.getAllByLabelText("CI running").length).toBeGreaterThan(0);
+    });
+  });
+
+  it("does not count GitHub Actions jobs twice when check-runs mirror workflow jobs", async () => {
+    const user = userEvent.setup();
+    renderPane({
+      checks: [
+        makeCheck({
+          name: "Fast Checks (Lint, Type, Unit)",
+          conclusion: "success",
+          detailsUrl: "https://github.com/arul28/Versic/actions/runs/25203344014/job/73898654393",
+        }),
+        makeCheck({
+          name: "Coverage Report",
+          conclusion: "success",
+          detailsUrl: "https://github.com/arul28/Versic/actions/runs/25203344014/job/73898654402",
+        }),
+        makeCheck({
+          name: "Greptile Review",
+          conclusion: "success",
+          detailsUrl: "https://greptile.com/",
+        }),
+      ],
+      actionRuns: [
+        makeActionRun({
+          jobs: [
+            {
+              id: 73898654393,
+              name: "Fast Checks (Lint, Type, Unit)",
+              status: "completed",
+              conclusion: "success",
+              startedAt: null,
+              completedAt: null,
+              steps: [],
+            },
+            {
+              id: 73898654402,
+              name: "Coverage Report",
+              status: "completed",
+              conclusion: "success",
+              startedAt: null,
+              completedAt: null,
+              steps: [],
+            },
+          ],
+        }),
+      ],
+      reviewThreads: [],
+    });
+
+    await user.click(screen.getByRole("button", { name: /ci \/ checks/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Path Filtered CI on PR / Fast Checks (Lint, Type, Unit)")).toBeTruthy();
+      expect(screen.getByText("Path Filtered CI on PR / Coverage Report")).toBeTruthy();
+      expect(screen.getByText("Greptile Review")).toBeTruthy();
+      expect(screen.getByText("All 3 checks passing")).toBeTruthy();
+      expect(screen.queryByText("Fast Checks (Lint, Type, Unit)")).toBeNull();
+      expect(screen.queryByText("Coverage Report")).toBeNull();
     });
   });
 

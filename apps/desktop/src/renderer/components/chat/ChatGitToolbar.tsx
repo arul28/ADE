@@ -22,6 +22,7 @@ import {
 } from "../lanes/LaneGitActionsPane";
 import { LaneAccentDot } from "../lanes/LaneAccentDot";
 import { useAppStore } from "../../state/appStore";
+import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -243,15 +244,16 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
 
   const prBadge = useMemo(() => {
     if (!linkedPr) return null;
+    const label = formatPrBadgeLabel(linkedPr);
     return (
       <button
         type="button"
         className={cn(btnBase, "gap-1.5")}
         onClick={handlePr}
-        title={`${linkedPr.title} — ${linkedPr.state}`}
+        title={`${label}: ${linkedPr.title}`}
       >
         <span className={cn("inline-block h-1.5 w-1.5 rounded-full", prStateDot(linkedPr.state))} />
-        <span>#{linkedPr.githubPrNumber}</span>
+        <span>{label}</span>
         {checksIcon(linkedPr.checksStatus)}
       </button>
     );

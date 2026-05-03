@@ -161,12 +161,23 @@ and a footer that contains the composer.
   hidden for non-Claude providers (Codex, OpenCode, Cursor) which only
   support post-turn delivery.
 - **Question answering.** When a question-type pending input is active,
-  pressing Enter submits the draft text as the answer via
-  `onApproval("accept", answer)` rather than sending a new message.
+  the user answers (or declines) it through the inline question card.
   Multi-select questions render a toggle list plus a preview pane
   (sanitised via `ReactMarkdown` + `rehype-raw` + `rehype-sanitize` +
   `remark-gfm`). The per-question draft state (`QuestionDraft`) tracks
   `text`, `selectedValues`, and `activePreviewValue` independently.
+- **Composer lock while pending input is unresolved.** When
+  `pendingInput.blocking` is set, the composer hard-locks: the textarea
+  / rich editor are disabled, attachment, slash-command, and edit
+  affordances are gated, the placeholder switches to a "resolve the
+  pending request above" hint, and Enter is a no-op (Escape cancels
+  the request). The same gate runs server-side: `agentChatService`
+  refuses `sendMessage`, queued steers, and `dispatchSteer` while a
+  live pending input exists, throwing
+  `"Answer or decline the pending request before sending another
+  message."`. `AgentChatPane.submit` mirrors the message into the
+  composer's error banner so a fast double-Enter doesn't silently
+  drop the second send.
 
 ### Layout variants
 
