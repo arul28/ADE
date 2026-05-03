@@ -399,6 +399,44 @@ enum LaneCardRebaseWarningPresentation: Equatable {
       return message
     }
   }
+
+  var accessibilitySummary: String {
+    [title, detail].compactMap { part in
+      guard let part, !part.isEmpty else { return nil }
+      return part
+    }.joined(separator: ". ")
+  }
+}
+
+func laneCardRebaseWarningPresentation(for snapshot: LaneListSnapshot) -> LaneCardRebaseWarningPresentation? {
+  if let status = snapshot.autoRebaseStatus, status.state != "autoRebased" {
+    return .autoRebase(state: status.state, message: status.message)
+  }
+  if let suggestion = snapshot.rebaseSuggestion, suggestion.dismissedAt == nil {
+    return .suggestion(behindCount: suggestion.behindCount, hasPr: suggestion.hasPr)
+  }
+  return nil
+}
+
+func laneStackCardAccessibilityLabel(
+  snapshot: LaneListSnapshot,
+  isPinned: Bool,
+  isOpen: Bool,
+  rebaseWarning: LaneCardRebaseWarningPresentation?
+) -> String {
+  var parts = [snapshot.lane.name, snapshot.lane.branchRef]
+  if snapshot.lane.laneType == "primary" { parts.append("primary") }
+  if snapshot.lane.archivedAt != nil { parts.append("archived") }
+  if snapshot.runtime.bucket == "running" { parts.append("running") }
+  if snapshot.runtime.bucket == "awaiting-input" { parts.append("awaiting input") }
+  if snapshot.lane.status.dirty { parts.append("dirty") }
+  if isPinned { parts.append("pinned") }
+  if isOpen { parts.append("open") }
+  if snapshot.lane.status.ahead > 0 { parts.append("\(snapshot.lane.status.ahead) ahead") }
+  if snapshot.lane.status.behind > 0 { parts.append("\(snapshot.lane.status.behind) behind") }
+  if snapshot.runtime.sessionCount > 0 { parts.append("\(snapshot.runtime.sessionCount) sessions") }
+  if let warning = rebaseWarning { parts.append(warning.accessibilitySummary) }
+  return parts.joined(separator: ", ")
 }
 
 struct LaneCardRebaseWarning: View {
@@ -431,6 +469,8 @@ struct LaneCardRebaseWarning: View {
       RoundedRectangle(cornerRadius: 10, style: .continuous)
         .stroke(presentation.tint.opacity(0.28), lineWidth: 0.5)
     )
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(presentation.accessibilitySummary)
   }
 }
 
@@ -554,13 +594,7 @@ struct LaneStackCard: View, Equatable {
   }
 
   private var rebaseWarning: LaneCardRebaseWarningPresentation? {
-    if let suggestion = snapshot.rebaseSuggestion, suggestion.dismissedAt == nil {
-      return .suggestion(behindCount: suggestion.behindCount, hasPr: suggestion.hasPr)
-    }
-    if let status = snapshot.autoRebaseStatus, status.state != "autoRebased" {
-      return .autoRebase(state: status.state, message: status.message)
-    }
-    return nil
+    laneCardRebaseWarningPresentation(for: snapshot)
   }
 
   private var cardBackgroundTint: Color {
@@ -585,17 +619,11 @@ struct LaneStackCard: View, Equatable {
   }
 
   private var stackCardAccessibilityLabel: String {
-    var parts = [snapshot.lane.name, snapshot.lane.branchRef]
-    if snapshot.lane.laneType == "primary" { parts.append("primary") }
-    if snapshot.lane.archivedAt != nil { parts.append("archived") }
-    if snapshot.runtime.bucket == "running" { parts.append("running") }
-    if snapshot.runtime.bucket == "awaiting-input" { parts.append("awaiting input") }
-    if snapshot.lane.status.dirty { parts.append("dirty") }
-    if isPinned { parts.append("pinned") }
-    if isOpen { parts.append("open") }
-    if snapshot.lane.status.ahead > 0 { parts.append("\(snapshot.lane.status.ahead) ahead") }
-    if snapshot.lane.status.behind > 0 { parts.append("\(snapshot.lane.status.behind) behind") }
-    if snapshot.runtime.sessionCount > 0 { parts.append("\(snapshot.runtime.sessionCount) sessions") }
-    return parts.joined(separator: ", ")
+    laneStackCardAccessibilityLabel(
+      snapshot: snapshot,
+      isPinned: isPinned,
+      isOpen: isOpen,
+      rebaseWarning: rebaseWarning
+    )
   }
 }

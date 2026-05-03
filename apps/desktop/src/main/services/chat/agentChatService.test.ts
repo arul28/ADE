@@ -5771,6 +5771,137 @@ describe("createAgentChatService", () => {
       expect((await service.getSessionSummary(session.id))?.permissionMode).toBe("edit");
     });
 
+    it("keeps native Codex plan deltas under a stable fallback item id", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        codexApprovalPolicy: "untrusted",
+        codexSandbox: "read-only",
+        codexConfigSource: "flags",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Plan with streaming deltas.",
+      }, { awaitDispatch: true });
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/plan/delta",
+        params: {
+          turnId: "turn-1",
+          delta: "1. Inspect the service\n",
+        },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/plan/delta",
+        params: {
+          turnId: "turn-1",
+          delta: "2. Patch the handoff",
+        },
+      });
+
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "plan_text" }>;
+        } =>
+          event.event.type === "plan_text"
+          && event.event.itemId === `codex-plan:${session.id}:turn-1`
+          && event.event.text.includes("Patch the handoff"),
+      );
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: {
+          turn: {
+            id: "turn-1",
+            status: "completed",
+          },
+        },
+      });
+
+      const approvalEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } =>
+          event.event.type === "approval_request"
+          && ((event.event.detail as { request?: { kind?: string } } | undefined)?.request?.kind === "plan_approval"),
+      );
+      const request = (approvalEvent.event.detail as { request?: { description?: string } } | undefined)?.request;
+      expect(request?.description).toContain("1. Inspect the service");
+      expect(request?.description).toContain("2. Patch the handoff");
+    });
+
+    it("does not request native Codex plan approval after a failed turn", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        codexApprovalPolicy: "untrusted",
+        codexSandbox: "read-only",
+        codexConfigSource: "flags",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Plan but fail.",
+      }, { awaitDispatch: true });
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/plan/delta",
+        params: {
+          turnId: "turn-1",
+          itemId: "codex-plan-failed",
+          delta: "1. This should not be approvable.",
+        },
+      });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "plan_text" }>;
+        } => event.event.type === "plan_text" && event.event.itemId === "codex-plan-failed",
+      );
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: {
+          turn: {
+            id: "turn-1",
+            status: "failed",
+            error: { message: "Plan mode crashed" },
+          },
+        },
+      });
+
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "status" }>;
+        } => event.event.type === "status" && event.event.turnStatus === "failed",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(events.some((event) =>
+        event.event.type === "approval_request"
+        && ((event.event.detail as { request?: { kind?: string } } | undefined)?.request?.kind === "plan_approval")
+      )).toBe(false);
+    });
+
     it("sends Codex default collaboration mode on turn start outside plan mode", async () => {
       const { service } = createService();
       const session = await service.createSession({

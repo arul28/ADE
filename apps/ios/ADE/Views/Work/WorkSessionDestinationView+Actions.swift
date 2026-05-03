@@ -8,6 +8,7 @@ extension WorkSessionDestinationView {
     guard !sending else { return false }
     let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !text.isEmpty else { return false }
+    guard canSendChatMessages else { return false }
 
     let echo = WorkLocalEchoMessage(
       text: text,

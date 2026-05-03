@@ -10214,20 +10214,22 @@ export function createAgentChatService(args: {
       runtime.startedTurnId = null;
       runtime.ignoredTurnIds.delete(turnId);
       resetAssistantMessageStream(managed);
-      for (const [planItemId, planText] of runtime.planTextByItemId) {
-        emitCodexPlanTextApproval(
-          managed,
-          runtime,
-          planText,
-          runtime.itemTurnIdByItemId.get(planItemId) ?? turnId,
-        );
+      const status = mapCodexTurnStatus(turn?.status);
+      if (status === "completed") {
+        for (const [planItemId, planText] of runtime.planTextByItemId) {
+          emitCodexPlanTextApproval(
+            managed,
+            runtime,
+            planText,
+            runtime.itemTurnIdByItemId.get(planItemId) ?? turnId,
+          );
+        }
       }
       runtime.planTextByItemId.clear();
       runtime.itemTurnIdByItemId.clear();
       runtime.agentMessageScopeByTurn.clear();
       runtime.agentMessageTextByTurn.clear();
       runtime.recentNotificationKeys.clear();
-      const status = mapCodexTurnStatus(turn?.status);
       const usage = normalizeUsagePayload(turn?.usage ?? turn?.totalUsage);
       markSessionIdleWithFreshCache(managed);
       drainPendingPlanFollowups(managed, runtime);
@@ -10573,10 +10575,14 @@ export function createAgentChatService(args: {
     }
 
     if (method === "item/plan/delta") {
-      const itemId = String((params.itemId as string | undefined) ?? randomUUID());
+      const explicitItemId = typeof params.itemId === "string" && params.itemId.trim().length
+        ? params.itemId
+        : null;
+      const fallbackTurnId = turnIdFromParams ?? runtime.activeTurnId ?? runtime.startedTurnId ?? "unknown-turn";
+      const itemId = explicitItemId ?? `codex-plan:${managed.session.id}:${fallbackTurnId}`;
       const delta = String((params.delta as string | undefined) ?? "");
       if (!delta.length) return;
-      const turnId = turnIdFromParams ?? runtime.itemTurnIdByItemId.get(itemId) ?? runtime.activeTurnId ?? undefined;
+      const turnId = turnIdFromParams ?? runtime.itemTurnIdByItemId.get(itemId) ?? runtime.activeTurnId ?? runtime.startedTurnId ?? undefined;
       const next = `${runtime.planTextByItemId.get(itemId) ?? ""}${delta}`;
       runtime.planTextByItemId.set(itemId, next);
       evictOldestEntries(runtime.planTextByItemId, MAX_SESSION_MAP_ENTRIES);

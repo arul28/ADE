@@ -3410,6 +3410,91 @@ final class ADETests: XCTestCase {
     )
   }
 
+  func testLaneCardRebaseWarningPrefersAutoRebaseStatusOverSuggestion() {
+    var snapshot = makeLaneListSnapshot(
+      id: "lane-rebase",
+      name: "iOS simulator",
+      laneType: "worktree",
+      baseRef: "main",
+      branchRef: "ade/ios-sim",
+      worktreePath: "/project/.ade/worktrees/ios-sim",
+      description: nil,
+      status: LaneStatus(dirty: false, ahead: 0, behind: 2, remoteBehind: 0, rebaseInProgress: false),
+      runtime: LaneRuntimeSummary(bucket: "ended", runningCount: 0, awaitingInputCount: 0, endedCount: 1, sessionCount: 1),
+      createdAt: "2026-03-20T00:00:00.000Z",
+      archivedAt: nil
+    )
+    snapshot.rebaseSuggestion = RebaseSuggestion(
+      laneId: "lane-rebase",
+      parentLaneId: "lane-main",
+      parentHeadSha: "parent-sha",
+      behindCount: 2,
+      lastSuggestedAt: "2026-03-20T00:01:00.000Z",
+      deferredUntil: nil,
+      dismissedAt: nil,
+      hasPr: true
+    )
+    snapshot.autoRebaseStatus = AutoRebaseLaneStatus(
+      laneId: "lane-rebase",
+      parentLaneId: "lane-main",
+      parentHeadSha: "parent-sha",
+      state: "rebaseConflict",
+      updatedAt: "2026-03-20T00:02:00.000Z",
+      conflictCount: 3,
+      message: "Resolve conflicts in the Rebase/Merge tab."
+    )
+
+    let warning = laneCardRebaseWarningPresentation(for: snapshot)
+
+    XCTAssertEqual(warning, .autoRebase(state: "rebaseConflict", message: "Resolve conflicts in the Rebase/Merge tab."))
+    XCTAssertEqual(warning?.accessibilitySummary, "Auto-rebase conflict. Resolve conflicts in the Rebase/Merge tab.")
+  }
+
+  func testLaneStackCardAccessibilityLabelIncludesRebaseWarningSummary() {
+    var snapshot = makeLaneListSnapshot(
+      id: "lane-warning",
+      name: "Sync polish",
+      laneType: "worktree",
+      baseRef: "main",
+      branchRef: "ade/sync-polish",
+      worktreePath: "/project/.ade/worktrees/sync-polish",
+      description: nil,
+      status: LaneStatus(dirty: false, ahead: 1, behind: 4, remoteBehind: 0, rebaseInProgress: false),
+      runtime: LaneRuntimeSummary(bucket: "ended", runningCount: 0, awaitingInputCount: 0, endedCount: 1, sessionCount: 1),
+      createdAt: "2026-03-20T00:00:00.000Z",
+      archivedAt: nil
+    )
+    snapshot.rebaseSuggestion = RebaseSuggestion(
+      laneId: "lane-warning",
+      parentLaneId: "lane-main",
+      parentHeadSha: "parent-sha",
+      behindCount: 4,
+      lastSuggestedAt: "2026-03-20T00:01:00.000Z",
+      deferredUntil: nil,
+      dismissedAt: nil,
+      hasPr: true
+    )
+    let warning = laneCardRebaseWarningPresentation(for: snapshot)
+
+    let label = laneStackCardAccessibilityLabel(
+      snapshot: snapshot,
+      isPinned: false,
+      isOpen: true,
+      rebaseWarning: warning
+    )
+
+    XCTAssertTrue(label.contains("Rebase suggested"))
+    XCTAssertTrue(label.contains("4 commits behind"))
+    XCTAssertTrue(label.contains("PR open"))
+  }
+
+  func testLaneDetailRebaseBannerAccessibilityLabelIncludesVisibleBadges() {
+    XCTAssertEqual(
+      laneDetailRebaseBannerAccessibilityLabel(behindCount: 1, parentLabel: "main", hasPr: true),
+      "Rebase suggested. 1 commit behind. PR open. Rebase this lane onto main to pick up new commits."
+    )
+  }
+
   func testLaneRootEmptyStateGuidesUnpairedUsersWhenNoCacheExists() {
     let emptyState = laneRootEmptyState(
       connectionState: .disconnected,
@@ -5664,6 +5749,37 @@ final class ADETests: XCTestCase {
 
     XCTAssertEqual(cards.map(\.kind), ["status"])
     XCTAssertEqual(cards.first?.body, "Tool call failed")
+  }
+
+  func testWorkTimelineSnapshotCachesTranscriptActiveTurnState() {
+    let started = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-03-25T00:00:00.000Z",
+      sequence: 0,
+      event: .status(turnStatus: "started", message: nil, turnId: "turn-1")
+    )
+    let completed = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-03-25T00:00:01.000Z",
+      sequence: 1,
+      event: .status(turnStatus: "completed", message: nil, turnId: "turn-1")
+    )
+
+    let activeSnapshot = buildWorkChatTimelineSnapshot(
+      transcript: [started],
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: []
+    )
+    let completedSnapshot = buildWorkChatTimelineSnapshot(
+      transcript: [started, completed],
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: []
+    )
+
+    XCTAssertTrue(activeSnapshot.transcriptIndicatesActiveTurn)
+    XCTAssertFalse(completedSnapshot.transcriptIndicatesActiveTurn)
   }
 
   func testWorkSessionEmptyStateMessagingExplainsSearchAndArchiveFallbacks() {

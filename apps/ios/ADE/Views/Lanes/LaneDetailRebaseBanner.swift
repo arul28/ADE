@@ -69,11 +69,29 @@ struct LaneDetailRebaseBanner: View {
         .stroke(ADEColor.warning.opacity(0.28), lineWidth: 0.8)
     )
     .accessibilityElement(children: .combine)
-    .accessibilityLabel("Rebase suggested. \(bodyCopy)")
+    .accessibilityLabel(accessibilityLabel)
   }
 
   private var bodyCopy: String {
     let base = parentLabel.flatMap { $0.isEmpty ? nil : $0 } ?? "parent branch"
     return "Rebase this lane onto \(base) to pick up new commits."
   }
+
+  private var accessibilityLabel: String {
+    laneDetailRebaseBannerAccessibilityLabel(behindCount: behindCount, parentLabel: parentLabel, hasPr: hasPr)
+  }
+}
+
+func laneDetailRebaseBannerAccessibilityLabel(behindCount: Int, parentLabel: String?, hasPr: Bool) -> String {
+  let noun = behindCount == 1 ? "commit" : "commits"
+  let base = parentLabel.flatMap { $0.isEmpty ? nil : $0 } ?? "parent branch"
+  var parts = [
+    "Rebase suggested",
+    "\(behindCount) \(noun) behind",
+  ]
+  if hasPr {
+    parts.append("PR open")
+  }
+  parts.append("Rebase this lane onto \(base) to pick up new commits.")
+  return parts.joined(separator: ". ")
 }

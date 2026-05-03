@@ -17,6 +17,7 @@ func buildWorkChatTimelineSnapshot(
   let commandCards = buildWorkCommandCards(from: transcript)
   let fileChangeCards = buildWorkFileChangeCards(from: transcript)
   let subagentSnapshots = buildWorkSubagentSnapshots(from: transcript)
+  let transcriptIndicatesActiveTurn = workTranscriptIndicatesActiveTurn(transcript)
   let timeline = buildWorkTimeline(
     transcript: transcript,
     fallbackEntries: fallbackEntries,
@@ -37,8 +38,42 @@ func buildWorkChatTimelineSnapshot(
     commandCards: commandCards,
     fileChangeCards: fileChangeCards,
     subagentSnapshots: subagentSnapshots,
+    transcriptIndicatesActiveTurn: transcriptIndicatesActiveTurn,
     timeline: timeline
   )
+}
+
+func workTranscriptIndicatesActiveTurn(_ transcript: [WorkChatEnvelope]) -> Bool {
+  var activeTurnIds = Set<String>()
+  var bootstrapStartOpen = false
+  for envelope in transcript {
+    switch envelope.event {
+    case .status(let turnStatus, _, let turnId):
+      switch turnStatus.lowercased() {
+      case "started", "active", "running", "inprogress", "in_progress", "in-progress":
+        if let turnId, !turnId.isEmpty {
+          activeTurnIds.insert(turnId)
+          bootstrapStartOpen = false
+        } else {
+          bootstrapStartOpen = true
+        }
+      case "completed", "failed", "interrupted", "cancelled", "canceled", "ended":
+        if let turnId, !turnId.isEmpty {
+          activeTurnIds.remove(turnId)
+        } else {
+          bootstrapStartOpen = false
+        }
+      default:
+        break
+      }
+    case .done(_, _, _, let turnId, _, _):
+      activeTurnIds.remove(turnId)
+      bootstrapStartOpen = false
+    default:
+      break
+    }
+  }
+  return bootstrapStartOpen || !activeTurnIds.isEmpty
 }
 
 /// Collapse `subagent_*` events into one snapshot per taskId. Preserves host

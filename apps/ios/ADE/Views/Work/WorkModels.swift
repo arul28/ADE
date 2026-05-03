@@ -273,6 +273,7 @@ struct WorkChatTimelineSnapshot: Equatable {
   var commandCards: [WorkCommandCardModel]
   var fileChangeCards: [WorkFileChangeCardModel]
   var subagentSnapshots: [WorkSubagentSnapshot]
+  var transcriptIndicatesActiveTurn: Bool
   var timeline: [WorkTimelineEntry]
 
   static let empty = WorkChatTimelineSnapshot(
@@ -283,6 +284,7 @@ struct WorkChatTimelineSnapshot: Equatable {
     commandCards: [],
     fileChangeCards: [],
     subagentSnapshots: [],
+    transcriptIndicatesActiveTurn: false,
     timeline: []
   )
 }

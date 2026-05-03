@@ -152,39 +152,6 @@ struct WorkChatSessionView: View {
     return nil
   }
 
-  var transcriptIndicatesActiveTurn: Bool {
-    var activeTurnIds = Set<String>()
-    var bootstrapStartOpen = false
-    for envelope in transcript {
-      switch envelope.event {
-      case .status(let turnStatus, _, let turnId):
-        switch turnStatus.lowercased() {
-        case "started", "active", "running", "inprogress", "in_progress", "in-progress":
-          if let turnId, !turnId.isEmpty {
-            activeTurnIds.insert(turnId)
-            bootstrapStartOpen = false
-          } else {
-            bootstrapStartOpen = true
-          }
-        case "completed", "failed", "interrupted", "cancelled", "canceled", "ended":
-          if let turnId, !turnId.isEmpty {
-            activeTurnIds.remove(turnId)
-          } else {
-            bootstrapStartOpen = false
-          }
-        default:
-          break
-        }
-      case .done(_, _, _, let turnId, _, _):
-        activeTurnIds.remove(turnId)
-        bootstrapStartOpen = false
-      default:
-        break
-      }
-    }
-    return bootstrapStartOpen || !activeTurnIds.isEmpty
-  }
-
   @ViewBuilder
   var sessionOverviewSection: some View {
     // When live, approval_request cards (tool approval gates) render at the
@@ -261,7 +228,7 @@ struct WorkChatSessionView: View {
   var streamingStatusSection: some View {
     WorkActivityIndicator(
       transcript: transcript,
-      isStreaming: (sessionStatus == "active" && isLive) || transcriptIndicatesActiveTurn
+      isStreaming: (sessionStatus == "active" && isLive) || timelineSnapshot.transcriptIndicatesActiveTurn
     )
   }
 

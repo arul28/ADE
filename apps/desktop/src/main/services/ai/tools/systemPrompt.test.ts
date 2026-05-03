@@ -55,6 +55,19 @@ describe("buildCodingAgentSystemPrompt", () => {
     expect(result).toContain("Do not use TodoWrite, update_plan, or exitPlanMode");
   });
 
+  it("does not tell non-interactive Codex plan sessions to ask blocking questions", () => {
+    const result = buildCodingAgentSystemPrompt({
+      cwd: "/x",
+      permissionMode: "plan",
+      runtime: "codex-cli",
+      interactive: false,
+    });
+
+    expect(result).toContain("Native Codex Plan Mode controls planning and approval");
+    expect(result).toContain("make the safest reasonable assumptions");
+    expect(result).not.toContain("use request_user_input");
+  });
+
   it("includes full-auto permission description", () => {
     const result = buildCodingAgentSystemPrompt({ cwd: "/x", permissionMode: "full-auto" });
     expect(result).toContain("Autonomous mode");
