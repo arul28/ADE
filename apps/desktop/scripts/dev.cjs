@@ -260,10 +260,12 @@ async function main() {
   const electronEnv = { VITE_DEV_SERVER_URL: devServerUrl };
   const launchElectron = () => {
     const electronArgs = ["electron", `--remote-debugging-port=${remoteDebugPort}`];
+    // Electron treats the first non-switch argument as the app path. Keep "."
+    // before paired macOS process flags so their value is not parsed as the app.
+    electronArgs.push(".");
     if (process.platform === "darwin") {
       electronArgs.push("-ApplePersistenceIgnoreState", "YES");
     }
-    electronArgs.push(".");
     const child = spawnProcess("electron", npxCommand, electronArgs, electronEnv);
     electron = child;
     children.add(child);

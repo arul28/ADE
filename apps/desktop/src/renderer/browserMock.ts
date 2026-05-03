@@ -2638,6 +2638,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       openExternal: resolvedArg(undefined),
       revealPath: resolvedArg(undefined),
       writeClipboardText: resolvedArg(undefined),
+      hasClipboardImage: resolved(false),
       readClipboardImage: resolved(null),
       getImageDataUrl: resolvedArg({ dataUrl: "" }),
       writeClipboardImage: resolvedArg(undefined),

@@ -683,6 +683,7 @@ declare global {
         revealPath: (path: string) => Promise<void>;
         openPath: (path: string) => Promise<void>;
         writeClipboardText: (text: string) => Promise<void>;
+        hasClipboardImage: () => Promise<boolean>;
         readClipboardImage: () => Promise<{ data: string; filename: string; mimeType: string } | null>;
         getImageDataUrl: (path: string) => Promise<{ dataUrl: string }>;
         writeClipboardImage: (path: string) => Promise<void>;

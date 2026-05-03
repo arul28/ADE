@@ -96,6 +96,7 @@ const MIN_HOST_HEIGHT_PX = 48;
 const INVALID_FIT_RETRY_MS = 90;
 const RENDERER_RESET_COOLDOWN_MS = 250;
 const TERMINAL_RENDERER_STORAGE_KEY = "ade.terminalRenderer";
+const TERMINAL_CTRL_V = "\x16";
 const runtimeCache = new Map<string, CachedRuntime>();
 let parkedRoot: HTMLDivElement | null = null;
 
@@ -358,6 +359,23 @@ function setRuntimeInteractionState(runtime: CachedRuntime, active: boolean) {
 
 function setRuntimeVisibilityState(runtime: CachedRuntime, visible: boolean) {
   runtime.visible = visible;
+}
+
+function writePtyInput(runtime: CachedRuntime, data: string) {
+  if (!data || runtime.disposed) return;
+  window.ade.pty.write({ ptyId: runtime.ptyId, data }).catch(() => {});
+}
+
+async function pasteNativeClipboardImageShortcut(runtime: CachedRuntime): Promise<boolean> {
+  if (runtime.disposed) return false;
+  try {
+    const hasImage = await window.ade.app.hasClipboardImage();
+    if (!hasImage || runtime.disposed) return false;
+    writePtyInput(runtime, TERMINAL_CTRL_V);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function teardownRuntime(runtime: CachedRuntime) {
@@ -875,8 +893,10 @@ function createRuntime(args: {
     lastPasteEventAt = Date.now();
     const text = ev.clipboardData?.getData("text/plain") ?? ev.clipboardData?.getData("text");
     if (text && !runtime.disposed) {
-      window.ade.pty.write({ ptyId: runtime.ptyId, data: text }).catch(() => {});
+      writePtyInput(runtime, text);
+      return;
     }
+    void pasteNativeClipboardImageShortcut(runtime);
   }, true);
 
   term.attachCustomKeyEventHandler((ev) => {
@@ -896,11 +916,20 @@ function createRuntime(args: {
       const before = lastPasteEventAt;
       setTimeout(() => {
         if (lastPasteEventAt !== before || runtime.disposed) return;
-        navigator.clipboard.readText().then((text) => {
+        const readText = navigator.clipboard?.readText;
+        if (typeof readText !== "function") {
+          void pasteNativeClipboardImageShortcut(runtime);
+          return;
+        }
+        readText.call(navigator.clipboard).then((text) => {
           if (text && !runtime.disposed) {
-            window.ade.pty.write({ ptyId: runtime.ptyId, data: text }).catch(() => {});
+            writePtyInput(runtime, text);
+            return;
           }
-        }).catch(() => {});
+          void pasteNativeClipboardImageShortcut(runtime);
+        }).catch(() => {
+          void pasteNativeClipboardImageShortcut(runtime);
+        });
       }, 120);
       return false;
     }
@@ -917,27 +946,27 @@ function createRuntime(args: {
     // Shift+Enter should insert a newline in tools like Claude/Codex prompts.
     if (ev.shiftKey && ev.key === "Enter") {
       ev.preventDefault();
-      window.ade.pty.write({ ptyId: runtime.ptyId, data: "\n" }).catch(() => {});
+      writePtyInput(runtime, "\n");
       return false;
     }
 
     if (isMac && ev.altKey && ev.key === "Backspace") {
       ev.preventDefault();
-      window.ade.pty.write({ ptyId: runtime.ptyId, data: "\x1b\x7f" }).catch(() => {});
+      writePtyInput(runtime, "\x1b\x7f");
       return false;
     }
 
     if (isMac && ev.metaKey && ev.key === "Backspace") {
       ev.preventDefault();
       // Ctrl+U: kill to beginning of line
-      window.ade.pty.write({ ptyId: runtime.ptyId, data: "\x15" }).catch(() => {});
+      writePtyInput(runtime, "\x15");
       return false;
     }
 
     // Ctrl+Backspace: delete word backward (same as Ctrl+W)
     if (ev.ctrlKey && ev.key === "Backspace") {
       ev.preventDefault();
-      window.ade.pty.write({ ptyId: runtime.ptyId, data: "\x17" }).catch(() => {});
+      writePtyInput(runtime, "\x17");
       return false;
     }
 
@@ -958,7 +987,7 @@ function createRuntime(args: {
         const merged = inputBuf.join("");
         inputBuf = [];
         if (merged && !runtime.disposed) {
-          window.ade.pty.write({ ptyId: runtime.ptyId, data: merged }).catch(() => {});
+          writePtyInput(runtime, merged);
         }
       });
     }

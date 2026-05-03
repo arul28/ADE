@@ -2717,6 +2717,10 @@ export function registerIpc({
     clipboard.writeText(text);
   });
 
+  ipcMain.handle(IPC.appHasClipboardImage, async (): Promise<boolean> => {
+    return !clipboard.readImage().isEmpty();
+  });
+
   ipcMain.handle(IPC.appReadClipboardImage, async (): Promise<{ data: string; filename: string; mimeType: string } | null> => {
     const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
     const image = clipboard.readImage();

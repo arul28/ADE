@@ -7,6 +7,7 @@ export const IPC = {
   appRevealPath: "ade.app.revealPath",
   appOpenPath: "ade.app.openPath",
   appWriteClipboardText: "ade.app.writeClipboardText",
+  appHasClipboardImage: "ade.app.hasClipboardImage",
   appReadClipboardImage: "ade.app.readClipboardImage",
   appGetImageDataUrl: "ade.app.getImageDataUrl",
   appWriteClipboardImage: "ade.app.writeClipboardImage",

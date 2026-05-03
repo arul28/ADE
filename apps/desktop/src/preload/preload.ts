@@ -1021,6 +1021,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.appOpenPath, { path }),
     writeClipboardText: async (text: string): Promise<void> =>
       ipcRenderer.invoke(IPC.appWriteClipboardText, { text }),
+    hasClipboardImage: async (): Promise<boolean> =>
+      ipcRenderer.invoke(IPC.appHasClipboardImage),
     readClipboardImage: async (): Promise<{ data: string; filename: string; mimeType: string } | null> =>
       ipcRenderer.invoke(IPC.appReadClipboardImage),
     getImageDataUrl: async (path: string): Promise<{ dataUrl: string }> =>

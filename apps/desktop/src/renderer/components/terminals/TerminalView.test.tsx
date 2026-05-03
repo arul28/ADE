@@ -151,6 +151,9 @@ import { WORK_SURFACE_REVEALED_EVENT } from "./workSurfaceVisibility";
 
 function installWindowAde() {
   (window as any).ade = {
+    app: {
+      hasClipboardImage: vi.fn().mockResolvedValue(false),
+    },
     pty: {
       resize: vi.fn().mockResolvedValue(undefined),
       write: vi.fn().mockResolvedValue(undefined),
@@ -183,6 +186,27 @@ async function flushAnimationFrame() {
   await act(async () => {
     await vi.advanceTimersByTimeAsync(0);
   });
+}
+
+async function flushPromises() {
+  await act(async () => {
+    await Promise.resolve();
+  });
+}
+
+function createPasteEvent(text: string): Event {
+  const event = new Event("paste", { bubbles: true, cancelable: true });
+  Object.defineProperty(event, "clipboardData", {
+    configurable: true,
+    value: {
+      files: [],
+      items: [],
+      getData: vi.fn((type: string) => (
+        type === "text/plain" || type === "text" ? text : ""
+      )),
+    },
+  });
+  return event;
 }
 
 function triggerResizeObserver() {
@@ -523,6 +547,162 @@ describe("TerminalView", () => {
     expect(terminal?.options.fontSize).toBe(14);
     expect(terminal?.options.lineHeight).toBe(1.3);
     expect(terminal?.options.scrollback).toBe(20_000);
+  });
+
+  it("writes text paste contents directly to the PTY", async () => {
+    render(<TerminalView ptyId="pty-text-paste" sessionId="session-text-paste" isActive />);
+    await flushAllTimers();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      element: HTMLElement | null;
+    } | undefined;
+    expect(terminal?.element).toBeTruthy();
+
+    const ptyWrite = window.ade.pty.write as unknown as ReturnType<typeof vi.fn>;
+    const hasClipboardImage = window.ade.app.hasClipboardImage as unknown as ReturnType<typeof vi.fn>;
+    ptyWrite.mockClear();
+    hasClipboardImage.mockClear();
+
+    const event = createPasteEvent("hello from clipboard");
+    terminal!.element!.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(ptyWrite).toHaveBeenCalledWith({
+      ptyId: "pty-text-paste",
+      data: "hello from clipboard",
+    });
+    expect(hasClipboardImage).not.toHaveBeenCalled();
+  });
+
+  it("maps macOS Cmd+V with an image-only clipboard to Ctrl+V terminal input", async () => {
+    const platformDescriptor = Object.getOwnPropertyDescriptor(window.navigator, "platform");
+    const originalPlatform = window.navigator.platform;
+    try {
+      Object.defineProperty(window.navigator, "platform", {
+        configurable: true,
+        value: "MacIntel",
+      });
+      (window.ade.app.hasClipboardImage as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(true);
+
+      render(<TerminalView ptyId="pty-image-paste" sessionId="session-image-paste" isActive />);
+      await flushAllTimers();
+
+      const terminal = mockState.terminalInstances.at(-1) as {
+        attachCustomKeyEventHandler: ReturnType<typeof vi.fn>;
+        element: HTMLElement | null;
+      } | undefined;
+      expect(terminal?.element).toBeTruthy();
+      const keyHandler = terminal?.attachCustomKeyEventHandler.mock.calls.at(-1)?.[0] as ((ev: KeyboardEvent) => boolean) | undefined;
+      expect(keyHandler).toBeTruthy();
+
+      const ptyWrite = window.ade.pty.write as unknown as ReturnType<typeof vi.fn>;
+      ptyWrite.mockClear();
+
+      const handled = keyHandler!({
+        type: "keydown",
+        key: "v",
+        metaKey: true,
+        ctrlKey: false,
+        altKey: false,
+        shiftKey: false,
+        preventDefault: vi.fn(),
+      } as unknown as KeyboardEvent);
+      expect(handled).toBe(false);
+
+      const event = createPasteEvent("");
+      terminal!.element!.dispatchEvent(event);
+      await flushPromises();
+
+      expect(event.defaultPrevented).toBe(true);
+      expect(window.ade.app.hasClipboardImage).toHaveBeenCalledTimes(1);
+      expect(ptyWrite).toHaveBeenCalledWith({
+        ptyId: "pty-image-paste",
+        data: "\x16",
+      });
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(130);
+      });
+      expect(ptyWrite).toHaveBeenCalledTimes(1);
+    } finally {
+      if (platformDescriptor) {
+        Object.defineProperty(window.navigator, "platform", platformDescriptor);
+      } else {
+        Object.defineProperty(window.navigator, "platform", {
+          configurable: true,
+          value: originalPlatform,
+        });
+      }
+    }
+  });
+
+  it("falls back to native image paste when macOS Cmd+V does not fire a paste event", async () => {
+    const platformDescriptor = Object.getOwnPropertyDescriptor(window.navigator, "platform");
+    const clipboardDescriptor = Object.getOwnPropertyDescriptor(window.navigator, "clipboard");
+    const originalPlatform = window.navigator.platform;
+    try {
+      Object.defineProperty(window.navigator, "platform", {
+        configurable: true,
+        value: "MacIntel",
+      });
+      Object.defineProperty(window.navigator, "clipboard", {
+        configurable: true,
+        value: {
+          readText: vi.fn().mockResolvedValue(""),
+          writeText: vi.fn().mockResolvedValue(undefined),
+        },
+      });
+      (window.ade.app.hasClipboardImage as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(true);
+
+      render(<TerminalView ptyId="pty-image-fallback" sessionId="session-image-fallback" isActive />);
+      await flushAllTimers();
+
+      const terminal = mockState.terminalInstances.at(-1) as {
+        attachCustomKeyEventHandler: ReturnType<typeof vi.fn>;
+      } | undefined;
+      const keyHandler = terminal?.attachCustomKeyEventHandler.mock.calls.at(-1)?.[0] as ((ev: KeyboardEvent) => boolean) | undefined;
+      expect(keyHandler).toBeTruthy();
+
+      const ptyWrite = window.ade.pty.write as unknown as ReturnType<typeof vi.fn>;
+      ptyWrite.mockClear();
+
+      const handled = keyHandler!({
+        type: "keydown",
+        key: "v",
+        metaKey: true,
+        ctrlKey: false,
+        altKey: false,
+        shiftKey: false,
+        preventDefault: vi.fn(),
+      } as unknown as KeyboardEvent);
+      expect(handled).toBe(false);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(130);
+      });
+      await flushPromises();
+
+      expect(window.navigator.clipboard.readText).toHaveBeenCalledTimes(1);
+      expect(window.ade.app.hasClipboardImage).toHaveBeenCalledTimes(1);
+      expect(ptyWrite).toHaveBeenCalledWith({
+        ptyId: "pty-image-fallback",
+        data: "\x16",
+      });
+    } finally {
+      if (platformDescriptor) {
+        Object.defineProperty(window.navigator, "platform", platformDescriptor);
+      } else {
+        Object.defineProperty(window.navigator, "platform", {
+          configurable: true,
+          value: originalPlatform,
+        });
+      }
+      if (clipboardDescriptor) {
+        Object.defineProperty(window.navigator, "clipboard", clipboardDescriptor);
+      } else {
+        Reflect.deleteProperty(window.navigator, "clipboard");
+      }
+    }
   });
 
   it("keeps live parked runtimes available so switching away does not discard TUI state", async () => {
