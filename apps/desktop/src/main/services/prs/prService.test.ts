@@ -262,7 +262,7 @@ describe("prService.getForLane", () => {
     expect(service.getForLane(lane.id)?.githubPrNumber).toBe(92);
   });
 
-  it("falls back to the newest active PR while the lane branch is unavailable", () => {
+  it("returns null for branch-less lanes so a stray PR row never claims an unbranched lane", () => {
     const lane = makeFakeLane({
       branchRef: null,
     });
@@ -274,7 +274,7 @@ describe("prService.getForLane", () => {
       }),
     ]);
 
-    expect(service.getForLane(lane.id)?.githubPrNumber).toBe(93);
+    expect(service.getForLane(lane.id)).toBeNull();
   });
 
   it("surfaces a merged PR row when it still matches the current lane branch", () => {

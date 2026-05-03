@@ -3714,12 +3714,13 @@ export function AgentChatPane({
 
   const submit = useCallback(async () => {
     if (submitInFlightRef.current || busy || parallelLaunchBusy) return;
-    if (
-      selectedSessionId
-      && ((pendingInputsBySession[selectedSessionId]?.length ?? 0) > 0 || selectedSession?.awaitingInput === true)
-    ) {
-      setError("Answer or decline the pending request before sending another message.");
-      return;
+    if (selectedSessionId) {
+      const sessionPending = pendingInputsBySession[selectedSessionId] ?? [];
+      const hasBlockingPending = sessionPending.some((entry) => entry.request.blocking);
+      if (hasBlockingPending || selectedSession?.awaitingInput === true) {
+        setError("Answer or decline the pending request before sending another message.");
+        return;
+      }
     }
     setPromptSuggestion(null);
 

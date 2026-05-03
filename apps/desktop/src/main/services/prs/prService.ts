@@ -934,7 +934,7 @@ export function createPrService({
     );
 
     const laneBranch = normalizeBranchName(branchNameFromRef(lane.branch_ref ?? ""));
-    if (!laneBranch) return rows[0] ?? null;
+    if (!laneBranch) return null;
 
     return rows.find((row) => rowMatchesLaneBranchForDisplay(row, lane)) ?? null;
   };
@@ -956,7 +956,7 @@ export function createPrService({
     );
 
     const laneBranch = normalizeBranchName(branchNameFromRef(lane.branch_ref ?? ""));
-    if (!laneBranch) return rows[0] ?? null;
+    if (!laneBranch) return null;
 
     return rows.find((row) => isActivePrState(row.state) && rowMatchesLaneBranchForDisplay(row, lane)) ?? null;
   };
