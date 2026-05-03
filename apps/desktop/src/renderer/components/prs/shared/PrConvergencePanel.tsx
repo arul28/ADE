@@ -1225,10 +1225,33 @@ export function PrConvergencePanel({
             </div>
           </div>
         </div>
-        {visibleReviewCommentItems.length > 0 ? (
+        {visibleReviewCommentItems.length > 0 || grouped.dismissed.length > 0 ? (
           <div style={{ border: `1px solid ${COLORS.border}`, borderRadius: 10, overflow: "hidden", background: "rgba(255,255,255,0.015)" }}>
-            <div style={{ padding: "10px 14px", borderBottom: `1px solid ${COLORS.border}`, fontFamily: SANS_FONT, fontSize: 11, fontWeight: 700, color: COLORS.textPrimary, textTransform: "uppercase", letterSpacing: "0.05em" }}>
-              Historical review inventory
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "10px 14px", borderBottom: `1px solid ${COLORS.border}` }}>
+              <div style={{ fontFamily: SANS_FONT, fontSize: 11, fontWeight: 700, color: COLORS.textPrimary, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                Historical review inventory
+              </div>
+              {grouped.dismissed.length > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => setShowIgnoredItems((value) => !value)}
+                  style={{
+                    height: 24,
+                    padding: "0 8px",
+                    borderRadius: 6,
+                    border: `1px solid ${COLORS.border}`,
+                    background: showIgnoredItems ? "rgba(255,255,255,0.06)" : "rgba(255,255,255,0.02)",
+                    cursor: "pointer",
+                    color: showIgnoredItems ? COLORS.textSecondary : COLORS.textMuted,
+                    fontFamily: SANS_FONT,
+                    fontSize: 10,
+                    fontWeight: 600,
+                    flexShrink: 0,
+                  }}
+                >
+                  {showIgnoredItems ? "Hide ignored" : `Show ignored (${grouped.dismissed.length})`}
+                </button>
+              ) : null}
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: 8 }}>
               {visibleReviewCommentItems.map((item) => (
