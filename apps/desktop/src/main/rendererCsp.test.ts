@@ -13,4 +13,10 @@ describe("buildRendererCspPolicy", () => {
 
     expect(policy).toContain("connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:* https:");
   });
+
+  it("frames built-in browser content from local servers and about:blank in packaged builds", () => {
+    const policy = buildRendererCspPolicy(false);
+
+    expect(policy).toContain("frame-src 'self' file: app: http://localhost:* http://127.0.0.1:* about:");
+  });
 });
