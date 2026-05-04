@@ -1740,6 +1740,21 @@ export function registerIpc({
     return service;
   };
 
+  // Backend services use Error.code for known failures (e.g.
+  // "github_not_connected", "remote_already_exists"). Electron IPC strips
+  // custom properties from thrown errors, so we re-throw with the code
+  // prepended to the message. Renderer matches on the prefix.
+  const surfaceCodedError = (error: unknown): never => {
+    if (error instanceof Error) {
+      const code = (error as Error & { code?: unknown }).code;
+      if (typeof code === "string" && code.length > 0 && !error.message.startsWith(`${code}:`)) {
+        const wrapped = new Error(`${code}: ${error.message}`);
+        throw wrapped;
+      }
+    }
+    throw error;
+  };
+
   const getLinearOAuthBridge = (ctx: AppContext): LinearOAuthService => {
     if (!ctx.linearCredentialService) {
       throw new Error("Linear credential service is not available.");
@@ -3322,7 +3337,11 @@ export function registerIpc({
       if (!name) throw new Error("Project name is required.");
       if (!parentDir) throw new Error("Parent directory is required.");
       const ctx = getCtx();
-      return await ctx.projectScaffoldService.createLocalProject({ name, parentDir });
+      try {
+        return await ctx.projectScaffoldService.createLocalProject({ name, parentDir });
+      } catch (error) {
+        return surfaceCodedError(error);
+      }
     },
   );
 
@@ -3335,11 +3354,15 @@ export function registerIpc({
       if (!url) throw new Error("Repository URL is required.");
       if (!parentDir) throw new Error("Parent directory is required.");
       const ctx = getCtx();
-      return await ctx.projectScaffoldService.cloneRepository({
-        url,
-        parentDir,
-        ...(name ? { name } : {}),
-      });
+      try {
+        return await ctx.projectScaffoldService.cloneRepository({
+          url,
+          parentDir,
+          ...(name ? { name } : {}),
+        });
+      } catch (error) {
+        return surfaceCodedError(error);
+      }
     },
   );
 
@@ -7202,21 +7225,6 @@ export function registerIpc({
       since: arg?.since,
     });
   });
-
-  // Backend services use Error.code for known failures (e.g.
-  // "github_not_connected", "remote_already_exists"). Electron IPC strips
-  // custom properties from thrown errors, so we re-throw with the code
-  // prepended to the message. Renderer matches on the prefix.
-  const surfaceCodedError = (error: unknown): never => {
-    if (error instanceof Error) {
-      const code = (error as Error & { code?: unknown }).code;
-      if (typeof code === "string" && code.length > 0 && !error.message.startsWith(`${code}:`)) {
-        const wrapped = new Error(`${code}: ${error.message}`);
-        throw wrapped;
-      }
-    }
-    throw error;
-  };
 
   ipcMain.handle(
     IPC.githubListMyRepos,

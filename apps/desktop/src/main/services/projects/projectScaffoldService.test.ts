@@ -331,7 +331,11 @@ describe("cloneRepository", () => {
 
     expect(result.rootPath).toBe(path.join(parentDir, "Hello-World"));
     const cloneCall = runGitMock.mock.calls.find((c) => (c[0] as string[])[0] === "clone");
-    expect(cloneCall?.[0]).toEqual(["clone", "https://github.com/octocat/Hello-World", path.join(parentDir, "Hello-World")]);
+    const args = cloneCall?.[0] as string[];
+    expect(args.slice(-2)).toEqual([
+      "https://github.com/octocat/Hello-World",
+      path.join(parentDir, "Hello-World"),
+    ]);
   });
 
   it("uses the explicit name override when provided", async () => {
@@ -383,6 +387,61 @@ describe("cloneRepository", () => {
     await expect(
       service.cloneRepository({ url: "https://github.com/octocat/Hello-World", parentDir }),
     ).rejects.toThrow(/repository not found/i);
+  });
+
+  it("injects the stored GitHub token via http.extraheader so private clones succeed without a credential helper", async () => {
+    runGitMock.mockResolvedValue(gitOk());
+    const parentDir = makeTempDir("ade-scaffold-clone-auth-");
+    const service = createProjectScaffoldService({
+      logger: makeLogger(),
+      githubService: makeGithubServiceStub({
+        getTokenOrThrow: vi.fn(() => "ghp_secret_token"),
+      }),
+    });
+
+    await service.cloneRepository({
+      url: "https://github.com/octocat/Hello-World",
+      parentDir,
+    });
+
+    const cloneCall = runGitMock.mock.calls.find((c) => (c[0] as string[])[0] === "clone");
+    expect(cloneCall).toBeDefined();
+    const args = cloneCall?.[0] as string[];
+    const expectedBasic = Buffer.from("x-access-token:ghp_secret_token", "utf8").toString("base64");
+    expect(args).toEqual([
+      "clone",
+      "-c",
+      `http.https://github.com/.extraheader=AUTHORIZATION: basic ${expectedBasic}`,
+      "https://github.com/octocat/Hello-World",
+      path.join(parentDir, "Hello-World"),
+    ]);
+  });
+
+  it("falls back to a plain clone (no extraheader) when no token is stored", async () => {
+    runGitMock.mockResolvedValue(gitOk());
+    const parentDir = makeTempDir("ade-scaffold-clone-no-token-");
+    const service = createProjectScaffoldService({
+      logger: makeLogger(),
+      githubService: makeGithubServiceStub({
+        getTokenOrThrow: vi.fn(() => {
+          throw new Error("GitHub token missing. Set it in Settings.");
+        }),
+      }),
+    });
+
+    await service.cloneRepository({
+      url: "https://github.com/octocat/Hello-World",
+      parentDir,
+    });
+
+    const cloneCall = runGitMock.mock.calls.find((c) => (c[0] as string[])[0] === "clone");
+    const args = cloneCall?.[0] as string[];
+    expect(args).toEqual([
+      "clone",
+      "https://github.com/octocat/Hello-World",
+      path.join(parentDir, "Hello-World"),
+    ]);
+    expect(args.some((a) => a.includes("extraheader"))).toBe(false);
   });
 
   it("rolls back a partial clone directory so retry isn't blocked by target_exists", async () => {

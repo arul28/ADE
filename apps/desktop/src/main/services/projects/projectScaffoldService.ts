@@ -210,8 +210,29 @@ export function createProjectScaffoldService({
     // created ourselves.
     const preexistedRoot = fs.existsSync(rootPath);
 
+    // Inject the stored GitHub token via http.extraheader so private-repo
+    // clones work in environments without a system credential helper. Using
+    // the basic-auth shape (x-access-token:<token>) is the GitHub-recommended
+    // form and avoids leaking the token via the URL in process listings.
+    let storedToken: string | null = null;
     try {
-      const cloneRes = await runGit(["clone", url, rootPath], {
+      storedToken = githubService.getTokenOrThrow();
+    } catch {
+      storedToken = null;
+    }
+
+    const cloneArgs: string[] = ["clone"];
+    if (storedToken) {
+      const basic = Buffer.from(`x-access-token:${storedToken}`, "utf8").toString("base64");
+      cloneArgs.push(
+        "-c",
+        `http.https://github.com/.extraheader=AUTHORIZATION: basic ${basic}`,
+      );
+    }
+    cloneArgs.push(url, rootPath);
+
+    try {
+      const cloneRes = await runGit(cloneArgs, {
         cwd: parentDir,
         timeoutMs: 5 * 60_000,
       });

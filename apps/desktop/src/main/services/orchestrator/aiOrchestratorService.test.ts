@@ -3241,6 +3241,26 @@ describe("aiOrchestratorService", () => {
       const readyStep = graph.steps.find((s) => s.status === "ready");
       if (!readyStep) throw new Error("Expected a ready step");
 
+      // Install the gated reconcile patch BEFORE creating the tracked-session
+      // row that triggers reconciliation. The aiOrchestratorService runs a
+      // periodic interval sweep (HEALTH_SWEEP_INTERVAL_MS=30s) that can fire
+      // between DB setup and patching; if it does, it would consume the
+      // running attempt via the unpatched reconcile and the test's
+      // "overlap-owner" sweep would then find nothing to reconcile, leaving
+      // firstReconcileEntered unresolved.
+      const originalReconcile = fixture.orchestratorService.onTrackedSessionEnded.bind(fixture.orchestratorService);
+      let reconcileCalls = 0;
+      let resolveFirstReconcile!: () => void;
+      const firstReconcileEntered = new Promise<void>((resolve) => {
+        resolveFirstReconcile = resolve;
+      });
+      fixture.orchestratorService.onTrackedSessionEnded = (async (args: any) => {
+        reconcileCalls += 1;
+        if (reconcileCalls === 1) resolveFirstReconcile();
+        await firstSweepGate;
+        return await originalReconcile(args);
+      }) as typeof fixture.orchestratorService.onTrackedSessionEnded;
+
       const attempt = await fixture.orchestratorService.startAttempt({
         runId,
         stepId: readyStep.id,
@@ -3273,19 +3293,6 @@ describe("aiOrchestratorService", () => {
           "2000-01-01T00:00:00.000Z",
         ]
       );
-
-      const originalReconcile = fixture.orchestratorService.onTrackedSessionEnded.bind(fixture.orchestratorService);
-      let reconcileCalls = 0;
-      let resolveFirstReconcile!: () => void;
-      const firstReconcileEntered = new Promise<void>((resolve) => {
-        resolveFirstReconcile = resolve;
-      });
-      fixture.orchestratorService.onTrackedSessionEnded = (async (args: any) => {
-        reconcileCalls += 1;
-        if (reconcileCalls === 1) resolveFirstReconcile();
-        await firstSweepGate;
-        return await originalReconcile(args);
-      }) as typeof fixture.orchestratorService.onTrackedSessionEnded;
 
       const firstSweep = fixture.aiOrchestratorService.runHealthSweep("overlap-owner");
       // Wait deterministically for the gated reconcile to enter, with a hard
