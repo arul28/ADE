@@ -1446,6 +1446,32 @@ function migrate(db: MigrationDb) {
   try { db.run("alter table queue_landing_state add column wait_reason text"); } catch {}
   try { db.run("alter table queue_landing_state add column updated_at text"); } catch {}
 
+  // One-shot wipe of legacy queue_landing_state on upgrade to the stacked-PR
+  // queue overhaul. The new queue creates PRs with chain bases (PR_N's base =
+  // previous lane's branch) instead of all-into-main, so any in-flight queue
+  // from the old code path would be misinterpreted by the new landing loop.
+  // Wiping rather than migrating is a deliberate choice — the user accepts
+  // losing in-flight queues in exchange for not maintaining a translation
+  // layer for every legacy field shape.
+  const QUEUE_OVERHAUL_WIPE_MARKER = "queue_landing_state.wiped_for_stacked_overhaul.v1";
+  try {
+    const row = db.get<{ value: string }>(
+      "select value from kv where key = ?",
+      [QUEUE_OVERHAUL_WIPE_MARKER],
+    );
+    if (!row) {
+      db.run("delete from queue_landing_state");
+      db.run(
+        "insert into kv (key, value) values (?, ?) on conflict(key) do update set value = excluded.value",
+        [QUEUE_OVERHAUL_WIPE_MARKER, new Date().toISOString()],
+      );
+    }
+  } catch {
+    // Table may not exist on a brand-new DB; initialization will create both
+    // tables and the next startup will record the marker. Skipping the wipe
+    // on a fresh DB is correct (nothing to wipe).
+  }
+
   // Rebase dismiss/defer persistence
   db.run(`
     create table if not exists rebase_dismissed (
@@ -3329,7 +3355,10 @@ function migrate(db: MigrationDb) {
   try { db.run("alter table pr_issue_inventory add column thread_latest_comment_source text"); } catch {}
   db.run("create index if not exists idx_inventory_pr_state on pr_issue_inventory(pr_id, state)");
 
-  // PR pipeline settings: per-PR auto-converge / auto-merge configuration
+  // PR pipeline settings: per-PR auto-converge / auto-merge configuration.
+  // Newer fields (conflict_strategy, force_finalize_*, early_merge_on_green,
+  // auto_agent_*) are added via try-catch ALTER below so existing DBs upgrade
+  // in place. The legacy `on_rebase_needed` column is retained for back-compat.
   db.run(`
     create table if not exists pr_pipeline_settings (
       pr_id text primary key,
@@ -3341,6 +3370,15 @@ function migrate(db: MigrationDb) {
       foreign key(pr_id) references pull_requests(id) on delete cascade
     )
   `);
+  try { db.run("alter table pr_pipeline_settings add column conflict_strategy text not null default 'pause'"); } catch {}
+  try { db.run("alter table pr_pipeline_settings add column force_finalize_mode text not null default 'off'"); } catch {}
+  try { db.run("alter table pr_pipeline_settings add column force_finalize_require_no_ci_failures integer not null default 1"); } catch {}
+  try { db.run("alter table pr_pipeline_settings add column early_merge_on_green integer not null default 1"); } catch {}
+  try { db.run("alter table pr_pipeline_settings add column auto_agent_provider text"); } catch {}
+  try { db.run("alter table pr_pipeline_settings add column auto_agent_model text"); } catch {}
+  try { db.run("alter table pr_pipeline_settings add column auto_agent_reasoning_effort text"); } catch {}
+  try { db.run("alter table pr_pipeline_settings add column auto_agent_permission_mode text"); } catch {}
+  try { db.run("alter table pr_pipeline_settings add column auto_agent_confidence_threshold real"); } catch {}
 
   db.run(`
     create table if not exists pr_convergence_state (
@@ -3363,6 +3401,10 @@ function migrate(db: MigrationDb) {
       foreign key(pr_id) references pull_requests(id) on delete cascade
     )
   `);
+  // PtM-specific run args (modelId, reasoning, scope, additionalInstructions)
+  // serialized as JSON. Persisted so resumeFromPersistedState can re-dispatch
+  // the fix agent after a desktop restart instead of pausing on missing modelId.
+  try { db.run("alter table pr_convergence_state add column ptm_args_json text"); } catch {}
 }
 
 function loadCrsqlite(db: DatabaseSyncType, extensionPath: string): void {

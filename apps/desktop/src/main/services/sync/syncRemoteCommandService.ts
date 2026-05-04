@@ -131,6 +131,7 @@ import type { createProcessService } from "../processes/processService";
 import type { Logger } from "../logging/logger";
 import type { createPrService } from "../prs/prService";
 import type { createIssueInventoryService } from "../prs/issueInventoryService";
+import type { PathToMergeOrchestrator } from "../prs/pathToMergeOrchestrator";
 import type { createQueueLandingService } from "../prs/queueLandingService";
 import type { createPtyService } from "../pty/ptyService";
 import type { createSessionService } from "../sessions/sessionService";
@@ -139,6 +140,13 @@ type SyncRemoteCommandServiceArgs = {
   laneService: ReturnType<typeof createLaneService>;
   prService: ReturnType<typeof createPrService>;
   issueInventoryService?: ReturnType<typeof createIssueInventoryService> | null;
+  /**
+   * Optional Path-to-Merge orchestrator. When present, iOS callers can start
+   * and stop the convergence loop via the `prs.pathToMerge.start` /
+   * `prs.pathToMerge.stop` sync commands. Optional so older builds (without
+   * the orchestrator wired) keep compiling and degrade gracefully on iOS.
+   */
+  pathToMergeOrchestrator?: PathToMergeOrchestrator | null;
   queueLandingService?: ReturnType<typeof createQueueLandingService> | null;
   ptyService: ReturnType<typeof createPtyService>;
   sessionService: ReturnType<typeof createSessionService>;
@@ -2230,6 +2238,36 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     if (!args.issueInventoryService) throw new Error("Issue inventory is not available.");
     args.issueInventoryService.deletePipelineSettings(parseIssueInventoryPrArgs(payload, "prs.pipelineSettings.delete").prId);
     return { ok: true };
+  });
+  register("prs.pathToMerge.start", { viewerAllowed: true, queueable: true }, async (payload) => {
+    if (!args.pathToMergeOrchestrator) {
+      throw new Error("Path to Merge orchestrator is not available in this build.");
+    }
+    const { prId } = parseIssueInventoryPrArgs(payload, "prs.pathToMerge.start");
+    const modelId = typeof payload?.modelId === "string" ? payload.modelId : null;
+    const reasoning = typeof payload?.reasoning === "string" ? payload.reasoning : null;
+    const additionalInstructions = typeof payload?.additionalInstructions === "string"
+      ? payload.additionalInstructions
+      : null;
+    const rawScope = payload?.scope;
+    const scope = rawScope === "checks" || rawScope === "comments" || rawScope === "both"
+      ? rawScope
+      : undefined;
+    return args.pathToMergeOrchestrator.startPathToMerge({
+      prId,
+      modelId,
+      reasoning,
+      scope,
+      additionalInstructions,
+    });
+  });
+  register("prs.pathToMerge.stop", { viewerAllowed: true, queueable: true }, async (payload) => {
+    if (!args.pathToMergeOrchestrator) {
+      throw new Error("Path to Merge orchestrator is not available in this build.");
+    }
+    const { prId } = parseIssueInventoryPrArgs(payload, "prs.pathToMerge.stop");
+    const reason = typeof payload?.reason === "string" ? payload.reason : null;
+    return args.pathToMergeOrchestrator.stopPathToMerge({ prId, reason });
   });
   register("prs.getMobileSnapshot", { viewerAllowed: true }, async () => args.prService.getMobileSnapshot());
 

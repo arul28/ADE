@@ -198,6 +198,7 @@ describe("queueLandingService", () => {
           mergeConflicts: false,
           behindBaseBy: 0,
         }),
+        retargetBase: async () => {},
       },
       laneService: {
         list: async () => [{ id: "lane-main", branchRef: "main", baseRef: "main" }],
@@ -323,6 +324,7 @@ describe("queueLandingService", () => {
           mergeConflicts: false,
           behindBaseBy: 0,
         }),
+        retargetBase: async () => {},
       },
       laneService: {
         list: async () => [{ id: "lane-main", branchRef: "main", baseRef: "main" }],
@@ -408,6 +410,7 @@ describe("queueLandingService", () => {
           mergeConflicts: false,
           behindBaseBy: 0,
         }),
+        retargetBase: async () => {},
       },
       laneService: {
         list: async () => [{ id: "lane-main", branchRef: "main", baseRef: "main" }],
@@ -451,6 +454,7 @@ describe("queueLandingService", () => {
           mergeConflicts: false,
           behindBaseBy: 0,
         }),
+        retargetBase: async () => {},
       },
       laneService: {
         list: async () => [{ id: "lane-main", branchRef: "main", baseRef: "main" }],
@@ -532,6 +536,7 @@ describe("queueLandingService", () => {
           mergeConflicts: false,
           behindBaseBy: 0,
         }),
+        retargetBase: async () => {},
       },
       laneService: {
         list: async () => [{ id: "lane-main", branchRef: "main", baseRef: "main" }],

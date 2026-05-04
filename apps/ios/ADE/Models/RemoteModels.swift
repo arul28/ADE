@@ -3060,11 +3060,76 @@ struct PrWorkflowCard: Codable, Identifiable, Equatable {
   }
 }
 
+/// Tunables used by the conflict-resolver agent when
+/// ``PipelineSettings.conflictStrategy`` is `auto`. Mirrors desktop's
+/// `AutoConflictAgentSettings`. All fields are optional so older payloads
+/// that don't carry them still decode cleanly.
+struct AutoConflictAgentSettings: Codable, Equatable {
+  var provider: String?
+  var model: String?
+  var reasoningEffort: String?
+  var permissionMode: String?
+  var confidenceThreshold: Double?
+}
+
+/// Stack-wide pipeline settings for a PR's path-to-merge convergence loop.
+///
+/// The five fields originally exposed on iOS (`autoMerge`, `mergeMethod`,
+/// `maxRounds`, `onRebaseNeeded`) are still required for back-compat with
+/// older sync payloads. The newer fields added by the Path-to-Merge feature
+/// (`conflictStrategy`, `autoAgentSettings`, `forceFinalizeMode`,
+/// `forceFinalizeRequireNoCiFailures`, `earlyMergeOnGreen`) are optional —
+/// when missing, a synthesized value is filled in from `onRebaseNeeded` so
+/// existing read paths keep working.
 struct PipelineSettings: Codable, Equatable {
   var autoMerge: Bool
   var mergeMethod: String
   var maxRounds: Int
   var onRebaseNeeded: String
+  var conflictStrategy: String?
+  var autoAgentSettings: AutoConflictAgentSettings?
+  var forceFinalizeMode: String?
+  var forceFinalizeRequireNoCiFailures: Bool?
+  var earlyMergeOnGreen: Bool?
+
+  init(
+    autoMerge: Bool,
+    mergeMethod: String,
+    maxRounds: Int,
+    onRebaseNeeded: String,
+    conflictStrategy: String? = nil,
+    autoAgentSettings: AutoConflictAgentSettings? = nil,
+    forceFinalizeMode: String? = nil,
+    forceFinalizeRequireNoCiFailures: Bool? = nil,
+    earlyMergeOnGreen: Bool? = nil
+  ) {
+    self.autoMerge = autoMerge
+    self.mergeMethod = mergeMethod
+    self.maxRounds = maxRounds
+    self.onRebaseNeeded = onRebaseNeeded
+    self.conflictStrategy = conflictStrategy
+    self.autoAgentSettings = autoAgentSettings
+    self.forceFinalizeMode = forceFinalizeMode
+    self.forceFinalizeRequireNoCiFailures = forceFinalizeRequireNoCiFailures
+    self.earlyMergeOnGreen = earlyMergeOnGreen
+  }
+}
+
+/// Result envelope returned by `prs.pathToMerge.start`. `runtime` mirrors the
+/// updated convergence runtime row that the host just wrote, so callers can
+/// refresh local UI without an extra round-trip.
+struct StartPathToMergeResult: Codable, Equatable {
+  var prId: String
+  var scheduled: Bool
+  var runtime: ConvergenceRuntimeState
+}
+
+/// Result envelope returned by `prs.pathToMerge.stop`. `runtime` may be `nil`
+/// when no runtime row existed for the PR (already-stopped no-op).
+struct StopPathToMergeResult: Codable, Equatable {
+  var prId: String
+  var stopped: Bool
+  var runtime: ConvergenceRuntimeState?
 }
 
 struct ConvergenceRoundStat: Codable, Identifiable, Equatable {
