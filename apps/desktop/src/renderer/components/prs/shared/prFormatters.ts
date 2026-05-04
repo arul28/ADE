@@ -7,21 +7,14 @@ import type { PrState } from "../../../../shared/types";
 
 /** State-aware compact PR badge text for dense toolbars and lane tabs. */
 export function formatPrBadgeLabel(pr: { state: PrState; githubPrNumber: number }): string {
-  const prefix = prBadgePrefix(pr.state);
+  const prefix = pr.state === "merged"
+    ? "MERGED"
+    : pr.state === "closed"
+      ? "CLOSED"
+      : pr.state === "draft"
+        ? "DRAFT"
+        : "PR";
   return `${prefix} #${pr.githubPrNumber}`;
-}
-
-function prBadgePrefix(state: PrState): string {
-  switch (state) {
-    case "merged":
-      return "MERGED";
-    case "closed":
-      return "CLOSED";
-    case "draft":
-      return "DRAFT";
-    default:
-      return "PR";
-  }
 }
 
 /** Relative "time ago" label: "just now", "3m ago", "2h ago", "5d ago", or a short date. */

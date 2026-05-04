@@ -29,7 +29,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { getDefaultModelDescriptor } from "../shared/modelRegistry";
-import { DEFAULT_PIPELINE_SETTINGS } from "../shared/types";
 
 const noop = () => () => {};
 const resolved =
@@ -4434,7 +4433,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       }),
       land: resolvedArg({ success: true, prNumber: 142, sha: "abc123" }),
       landStack: resolvedArg([]),
-      retargetBase: resolvedArg(undefined),
       openInGitHub: resolvedArg(undefined),
       createQueue: resolvedArg({}),
       createIntegration: resolvedArg({}),
@@ -4575,44 +4573,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       },
       convergenceStateDelete: async (prId: string) => {
         delete MOCK_CONVERGENCE_RUNTIME[prId];
-      },
-      pathToMergeStart: async (args: { prId: string }) => {
-        const runtime =
-          MOCK_CONVERGENCE_RUNTIME[args.prId] ??
-          createDefaultConvergenceRuntime(args.prId);
-        runtime.autoConvergeEnabled = true;
-        runtime.status = "running";
-        runtime.pollerStatus = "scheduled";
-        runtime.pauseReason = null;
-        runtime.errorMessage = null;
-        runtime.lastStartedAt = new Date().toISOString();
-        MOCK_CONVERGENCE_RUNTIME[args.prId] = runtime;
-        return { prId: args.prId, scheduled: true, runtime: { ...runtime } };
-      },
-      pathToMergeStop: async (args: { prId: string; reason?: string | null }) => {
-        const runtime = MOCK_CONVERGENCE_RUNTIME[args.prId] ?? null;
-        if (runtime) {
-          runtime.autoConvergeEnabled = false;
-          runtime.status = "stopped";
-          runtime.pollerStatus = "stopped";
-          runtime.pauseReason = args.reason ?? null;
-          runtime.lastStoppedAt = new Date().toISOString();
-        }
-        return {
-          prId: args.prId,
-          stopped: true,
-          runtime: runtime ? { ...runtime } : null,
-        };
-      },
-      pipelineSettingsGet: async (_prId: string) => DEFAULT_PIPELINE_SETTINGS,
-      pipelineSettingsSave: async (
-        _prId: string,
-        _settings: Record<string, unknown>,
-      ) => {
-        // No-op in browser mock — settings persistence is server-side.
-      },
-      pipelineSettingsDelete: async (_prId: string) => {
-        // No-op in browser mock.
       },
       rebaseResolutionStart: async () => ({
         sessionId: "mock-rebase-session",
