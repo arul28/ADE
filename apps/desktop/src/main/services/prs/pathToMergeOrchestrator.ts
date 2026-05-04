@@ -13,10 +13,10 @@
  *   - a merge ladder that tries the configured method, then `--admin`, then
  *     `--auto`.
  *
- * Persistence happens through the existing `pr_convergence_state` table via
- * `issueInventoryService` — no schema changes. The orchestrator runs ON TOP
- * of the existing manual entry points (`startPullRequestConvergenceRound`)
- * and dispatches each fix iteration via `launchPrIssueResolutionChat`.
+ * Persistence happens through the existing `pr_convergence_state` runtime row
+ * via `issueInventoryService`. The orchestrator runs ON TOP of the existing
+ * manual entry points (`startPullRequestConvergenceRound`) and dispatches each
+ * fix iteration via `launchPrIssueResolutionChat`.
  *
  * Simplifications vs `/shipLane`:
  *   - The shipLane reference relies on Claude Code's TeamCreate primitive to
@@ -30,25 +30,35 @@
  */
 
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import type { Logger } from "../logging/logger";
 import { runGit } from "../git/git";
 import { launchPrIssueResolutionChat } from "./prIssueResolver";
 import { nowIso, getErrorMessage } from "../shared/utils";
+import { defaultPrIssueResolutionScope, getPrIssueResolutionAvailability } from "../../../shared/prIssueResolution";
 import type { createIssueInventoryService } from "./issueInventoryService";
 import type { createPrService } from "./prService";
 import type { createLaneService } from "../lanes/laneService";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { createSessionService } from "../sessions/sessionService";
 import type { createConflictService } from "../conflicts/conflictService";
+import type { LaneWorktreeLockService } from "../lanes/laneWorktreeLockService";
+import { LaneWorktreeLockedError } from "../lanes/laneWorktreeLockService";
 import type {
+  AtCapPolicy,
   AutoConflictAgentSettings,
   ConflictStrategy,
   ConvergenceRuntimeState,
-  ForceFinalizeMode,
+  LaneWorktreeLockBlocker,
   MergeMethod,
+  PathToMergeStartResult,
+  PathToMergeStopResult,
   PipelineSettings,
   PrCheck,
   PrIssueResolutionScope,
+  PrAgentPermissionMode,
+  PrReview,
+  PrReviewThread,
   PrSummary,
 } from "../../../shared/types";
 
@@ -90,6 +100,7 @@ export type PathToMergeDeps = {
   sessionService: Pick<ReturnType<typeof createSessionService>, "updateMeta">;
   issueInventoryService: ReturnType<typeof createIssueInventoryService>;
   conflictService: Pick<ReturnType<typeof createConflictService>, "runExternalResolver">;
+  laneWorktreeLockService: LaneWorktreeLockService;
   defaultModelId: string | null;
   defaultReasoningEffort: string | null;
 };
@@ -100,23 +111,17 @@ export type StartPathToMergeArgs = {
   modelId?: string | null;
   /** Optional override for reasoning effort passed to the fix agent. */
   reasoning?: string | null;
+  /** Optional permission preset passed to the fix agent. */
+  permissionMode?: PrAgentPermissionMode | null;
   /** Scope passed to `launchPrIssueResolutionChat` per iteration. */
   scope?: PrIssueResolutionScope;
   /** Optional extra instructions appended to each iteration prompt. */
   additionalInstructions?: string | null;
 };
 
-export type StartPathToMergeResult = {
-  prId: string;
-  scheduled: boolean;
-  runtime: ConvergenceRuntimeState;
-};
+export type StartPathToMergeResult = PathToMergeStartResult;
 
-export type StopPathToMergeResult = {
-  prId: string;
-  stopped: boolean;
-  runtime: ConvergenceRuntimeState | null;
-};
+export type StopPathToMergeResult = PathToMergeStopResult;
 
 export type PathToMergeOrchestrator = {
   startPathToMerge: (args: StartPathToMergeArgs) => Promise<StartPathToMergeResult>;
@@ -160,6 +165,167 @@ type IterationContext = {
   pipelineSettings: PipelineSettings;
   runtime: ConvergenceRuntimeState;
 };
+
+/**
+ * Mutable per-PR scratchpad the orchestrator carries between iterations.
+ * Persistence is intentionally minimal — these counters reset on restart so
+ * the at-cap policy errs on the side of doing one extra retry rather than
+ * silently giving up.
+ *
+ * Exported for unit testing of {@link decideAtCapAction}.
+ */
+export type InProcessState = {
+  forceFinalizeUsed: boolean;
+  runArgs: StartPathToMergeArgs;
+  /** When the wait_for_ci timer started; null until we enter that path. */
+  waitForCiStartedAt: string | null;
+  /** Bonus iterations consumed under ci_retry_once / ci_retry_loop. */
+  ciRetryAttemptsUsed: number;
+  /** Consecutive missing/error summaries observed for the same active session. */
+  sessionMissingPolls: number;
+  /** Session id the missing-summary counter currently applies to. */
+  sessionMissingSessionId: string | null;
+  /** PR head SHA captured when the last fix agent was dispatched. */
+  lastDispatchHeadSha: string | null;
+  /** Durable lane/worktree lock token held by this PtM run. */
+  laneWorktreeLockToken: string | null;
+};
+
+export function makeInProcessState(runArgs: StartPathToMergeArgs): InProcessState {
+  return {
+    forceFinalizeUsed: false,
+    runArgs,
+    waitForCiStartedAt: null,
+    ciRetryAttemptsUsed: 0,
+    sessionMissingPolls: 0,
+    sessionMissingSessionId: null,
+    lastDispatchHeadSha: null,
+    laneWorktreeLockToken: null,
+  };
+}
+
+function makeInProcessStateFromRuntime(
+  runArgs: StartPathToMergeArgs,
+  runtime: ConvergenceRuntimeState,
+): InProcessState {
+  return {
+    ...makeInProcessState(runArgs),
+    forceFinalizeUsed: runtime.forceFinalizeUsed,
+    waitForCiStartedAt: runtime.waitForCiStartedAt,
+    ciRetryAttemptsUsed: runtime.ciRetryAttemptsUsed,
+    lastDispatchHeadSha: runtime.lastDispatchHeadSha,
+    laneWorktreeLockToken: null,
+  };
+}
+
+function hashPauseReason(reason: string): string {
+  return createHash("sha256").update(reason).digest("hex");
+}
+
+/**
+ * What {@link decideAtCapAction} returned for the current iteration.
+ *   - `stop`        : pause the loop, no more action.
+ *   - `wait`        : reschedule a poll; CI hasn't settled yet.
+ *   - `merge_now`   : skip fix dispatch; run the merge ladder right away.
+ *   - `dispatch_ci` : run one bonus CI-only fix iteration, then re-enter.
+ */
+export type AtCapDecision =
+  | { kind: "stop"; reason: string }
+  | { kind: "wait"; phase: PhaseDelayKind; reason: string }
+  | { kind: "merge_now"; reason: string }
+  | { kind: "dispatch_ci"; reason: string };
+
+/**
+ * Decide what the convergence loop should do when it has consumed
+ * `pipelineSettings.maxRounds` iterations without converging.
+ *
+ * Pure with respect to its inputs, except that it mutates `inProc` to bump
+ * counters / stamp timestamps used by subsequent calls.
+ */
+export function decideAtCapAction(
+  ctx: IterationContext,
+  checks: PrCheck[],
+  inProc: InProcessState,
+  now: () => number = Date.now,
+): AtCapDecision {
+  const policy = ctx.pipelineSettings.atCapPolicy;
+  const ciFailing =
+    ctx.pr.checksStatus === "failing" || checks.some((c) => c.conclusion === "failure");
+  const ciPending = !ciFailing && ctx.pr.checksStatus !== "passing";
+  const ciPassing = ctx.pr.checksStatus === "passing" && !ciFailing;
+  const clearCiWait = () => {
+    inProc.waitForCiStartedAt = null;
+  };
+  const waitForCiOrStop = (policy: Extract<AtCapPolicy, "wait_for_ci" | "ci_retry_once" | "ci_retry_loop">, reason: string): AtCapDecision => {
+    if (!inProc.waitForCiStartedAt) {
+      inProc.waitForCiStartedAt = new Date(now()).toISOString();
+    }
+    const elapsedMs = now() - new Date(inProc.waitForCiStartedAt).getTime();
+    const timeoutMs = Math.max(1, ctx.pipelineSettings.atCapWaitMinutes) * 60_000;
+    if (elapsedMs > timeoutMs) {
+      return { kind: "stop", reason: `${policy}: timed out waiting for CI to settle.` };
+    }
+    return { kind: "wait", phase: "warming", reason };
+  };
+
+  switch (policy) {
+    case "stop":
+      return { kind: "stop", reason: "Iteration cap reached (policy: stop)." };
+
+    case "wait_for_ci": {
+      if (ciPassing) {
+        clearCiWait();
+        return { kind: "merge_now", reason: "wait_for_ci: CI is green, attempting merge." };
+      }
+      if (ciFailing) {
+        clearCiWait();
+        return { kind: "stop", reason: "wait_for_ci: CI is failing; not auto-merging." };
+      }
+      return waitForCiOrStop("wait_for_ci", "wait_for_ci: CI still pending.");
+    }
+
+    case "ci_retry_once": {
+      if (ciPassing) {
+        clearCiWait();
+        return { kind: "merge_now", reason: "ci_retry_once: CI already green." };
+      }
+      if (inProc.ciRetryAttemptsUsed >= 1) {
+        clearCiWait();
+        return { kind: "stop", reason: "ci_retry_once: bonus iteration didn't make CI green." };
+      }
+      if (ciPending) {
+        return waitForCiOrStop("ci_retry_once", "ci_retry_once: waiting for CI to finish before retry.");
+      }
+      clearCiWait();
+      inProc.ciRetryAttemptsUsed = 1;
+      return { kind: "dispatch_ci", reason: "ci_retry_once: dispatching bonus CI-only iteration." };
+    }
+
+    case "ci_retry_loop": {
+      if (ciPassing) {
+        clearCiWait();
+        return { kind: "merge_now", reason: "ci_retry_loop: CI is green, attempting merge." };
+      }
+      const max = Math.max(1, ctx.pipelineSettings.atCapCiRetryMax);
+      if (inProc.ciRetryAttemptsUsed >= max) {
+        clearCiWait();
+        return { kind: "stop", reason: `ci_retry_loop: ${max} bonus iterations exhausted.` };
+      }
+      if (ciPending) {
+        return waitForCiOrStop("ci_retry_loop", "ci_retry_loop: waiting for CI to settle before next retry.");
+      }
+      clearCiWait();
+      inProc.ciRetryAttemptsUsed += 1;
+      return {
+        kind: "dispatch_ci",
+        reason: `ci_retry_loop: dispatching bonus CI iteration ${inProc.ciRetryAttemptsUsed}/${max}.`,
+      };
+    }
+
+    case "force_merge":
+      return { kind: "merge_now", reason: "force_merge: bypassing CI and review." };
+  }
+}
 
 function resolveMergeMethod(settings: PipelineSettings): MergeMethod {
   // `repo_default` has no in-process source-of-truth for the repo's default
@@ -212,7 +378,16 @@ async function runGh(args: string[], opts: { cwd: string; timeoutMs?: number }):
 // ---------------------------------------------------------------------------
 
 export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMergeOrchestrator {
-  const { logger, issueInventoryService, prService, laneService, agentChatService, sessionService, conflictService } = deps;
+  const {
+    logger,
+    issueInventoryService,
+    prService,
+    laneService,
+    agentChatService,
+    sessionService,
+    conflictService,
+    laneWorktreeLockService,
+  } = deps;
 
   /**
    * Map prId → in-flight `setTimeout` handle. Used so we can cancel a
@@ -225,8 +400,8 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
    * Prevents double-scheduling when external callers also poke the loop.
    */
   const iterationInFlight = new Map<string, boolean>();
-  /** Per-PR state we don't want to round-trip through the DB. */
-  const inProcessState = new Map<string, { forceFinalizeUsed: boolean; runArgs: StartPathToMergeArgs }>();
+  const inProcessState = new Map<string, InProcessState>();
+  const makeInProcess = makeInProcessState;
 
   let disposed = false;
 
@@ -256,6 +431,93 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
     timersByPrId.set(prId, handle);
   }
 
+  function ptmOwnerLabel(pr: Pick<PrSummary, "githubPrNumber" | "title">): string {
+    const title = pr.title?.trim();
+    return `Path to Merge for PR #${pr.githubPrNumber}${title ? ` (${title})` : ""}`;
+  }
+
+  function acquirePtmLock(pr: PrSummary, token?: string | null): { token: string } {
+    const lane = laneService.getLaneBaseAndBranch(pr.laneId);
+    const acquired = laneWorktreeLockService.acquire({
+      laneId: pr.laneId,
+      worktreePath: lane.worktreePath,
+      ownerKind: "path_to_merge",
+      ownerPrId: pr.id,
+      ownerLabel: ptmOwnerLabel(pr),
+      token,
+    });
+    return { token: acquired.token };
+  }
+
+  function releasePtmLock(prId: string, token?: string | null): void {
+    try {
+      if (token?.trim()) {
+        laneWorktreeLockService.release({ token });
+      } else {
+        laneWorktreeLockService.release({ ownerKind: "path_to_merge", ownerPrId: prId });
+      }
+    } catch (err) {
+      logger.warn("ptm.lock_release_failed", { prId, error: getErrorMessage(err) });
+    }
+  }
+
+  function releaseLoopLock(prId: string): void {
+    const inProc = inProcessState.get(prId) ?? null;
+    inProcessState.delete(prId);
+    releasePtmLock(prId, inProc?.laneWorktreeLockToken ?? null);
+  }
+
+  function blockStartOnLock(prId: string, blocker: LaneWorktreeLockBlocker): StartPathToMergeResult {
+    const runtime = issueInventoryService.saveConvergenceRuntime(prId, {
+      autoConvergeEnabled: false,
+      status: "paused",
+      pollerStatus: "paused",
+      activeSessionId: null,
+      activeLaneId: null,
+      activeHref: null,
+      pauseReason: blocker.message,
+      errorMessage: null,
+      lastPausedAt: nowIso(),
+    });
+    return { prId, scheduled: false, runtime, blockedBy: blocker };
+  }
+
+  function ensurePtmLockForIteration(pr: PrSummary, inProc: InProcessState): LaneWorktreeLockBlocker | null {
+    try {
+      const acquired = acquirePtmLock(pr, inProc.laneWorktreeLockToken);
+      inProc.laneWorktreeLockToken = acquired.token;
+      inProcessState.set(pr.id, inProc);
+      return null;
+    } catch (err) {
+      if (err instanceof LaneWorktreeLockedError) return err.blocker;
+      throw err;
+    }
+  }
+
+  async function resolveDispatchScope(
+    prId: string,
+    requestedScope: PrIssueResolutionScope,
+    options: { allowFallback: boolean } = { allowFallback: true },
+  ): Promise<PrIssueResolutionScope | null> {
+    const [checks, reviewThreads] = await Promise.all([
+      prService.getChecks(prId),
+      prService.getReviewThreads(prId),
+    ]);
+    const availability = getPrIssueResolutionAvailability(checks, reviewThreads);
+    if (requestedScope === "both") {
+      return defaultPrIssueResolutionScope(availability);
+    }
+    if (requestedScope === "checks") {
+      if (availability.hasActionableChecks) return "checks";
+      return options.allowFallback ? defaultPrIssueResolutionScope(availability) : null;
+    }
+    if (requestedScope === "comments") {
+      if (availability.hasActionableComments) return "comments";
+      return options.allowFallback ? defaultPrIssueResolutionScope(availability) : null;
+    }
+    return defaultPrIssueResolutionScope(availability);
+  }
+
   // -------------------------------------------------------------------------
   // Public entry points
   // -------------------------------------------------------------------------
@@ -264,7 +526,32 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
     const prId = args.prId.trim();
     if (!prId) throw new Error("prId is required");
 
-    inProcessState.set(prId, { forceFinalizeUsed: false, runArgs: args });
+    const inProc = makeInProcess(args);
+    const pr = prService.listAll().find((entry) => entry.id === prId) ?? null;
+    if (pr) {
+      try {
+        inProc.laneWorktreeLockToken = acquirePtmLock(pr).token;
+      } catch (err) {
+        if (err instanceof LaneWorktreeLockedError) {
+          logger.info("ptm.start_blocked_by_lane_lock", { prId, blocker: err.blocker.message });
+          return blockStartOnLock(prId, err.blocker);
+        }
+        throw err;
+      }
+    }
+
+    inProcessState.set(prId, inProc);
+
+    // Persist run args before saving the launch runtime. The runtime exposes a
+    // derived `pathToMergeActive` flag from this blob so renderers can avoid
+    // starting their legacy auto-converge poller for main-owned PtM work.
+    issueInventoryService.savePathToMergeArgs(prId, {
+      modelId: args.modelId ?? null,
+      reasoning: args.reasoning ?? null,
+      permissionMode: args.permissionMode ?? null,
+      scope: args.scope ?? "both",
+      additionalInstructions: args.additionalInstructions ?? null,
+    });
 
     const runtime = issueInventoryService.saveConvergenceRuntime(prId, {
       autoConvergeEnabled: true,
@@ -272,16 +559,13 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
       pollerStatus: "scheduled",
       pauseReason: null,
       errorMessage: null,
+      forceFinalizeUsed: false,
+      ciRetryAttemptsUsed: 0,
+      waitForCiStartedAt: null,
+      lastDispatchHeadSha: null,
+      pauseRepeatCount: 0,
+      lastPauseReasonHash: null,
       lastStartedAt: nowIso(),
-    });
-
-    // Persist run args so a desktop restart can resume with the same modelId
-    // and reasoning instead of pausing on "No modelId available".
-    issueInventoryService.savePathToMergeArgs(prId, {
-      modelId: args.modelId ?? null,
-      reasoning: args.reasoning ?? null,
-      scope: args.scope ?? "both",
-      additionalInstructions: args.additionalInstructions ?? null,
     });
 
     // Kick the loop immediately rather than waiting for a phase delay —
@@ -301,6 +585,7 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
     if (!prId) throw new Error("prId is required");
 
     clearTimer(prId);
+    const inProc = inProcessState.get(prId) ?? null;
     inProcessState.delete(prId);
 
     const current = issueInventoryService.getConvergenceRuntime(prId);
@@ -311,18 +596,24 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
       } catch (err) {
         logger.warn("ptm.interrupt_failed", { prId, sessionId: activeSessionId, error: getErrorMessage(err) });
       }
+      issueInventoryService.resetSentToAgent(prId, { sessionId: activeSessionId });
     }
 
+    issueInventoryService.savePathToMergeArgs(prId, null);
     const runtime = issueInventoryService.saveConvergenceRuntime(prId, {
       autoConvergeEnabled: false,
       status: "stopped",
       pollerStatus: "stopped",
       activeSessionId: null,
+      activeLaneId: null,
+      activeHref: null,
       pauseReason: args.reason?.trim() || null,
       errorMessage: null,
+      waitForCiStartedAt: null,
+      lastDispatchHeadSha: null,
       lastStoppedAt: nowIso(),
     });
-    issueInventoryService.savePathToMergeArgs(prId, null);
+    releasePtmLock(prId, inProc?.laneWorktreeLockToken ?? null);
 
     return { prId, stopped: true, runtime };
   }
@@ -341,23 +632,44 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
       // Rehydrate the original startPathToMerge args (modelId, reasoning,
       // scope, additionalInstructions) from the side-channel column.
       const persistedArgs = issueInventoryService.getPathToMergeArgs(pr.id);
+      const persistedModelId = typeof persistedArgs?.modelId === "string" ? persistedArgs.modelId.trim() : "";
+      // Stale-flag recovery: in older builds the renderer could persist
+      // `autoConvergeEnabled: true` without ever calling pathToMergeStart, so
+      // resume would wake an empty loop that could only ever fail with
+      // "No modelId available". Treat that case as a stale flag — clear it
+      // instead of warming a doomed wake-up.
+      if (!persistedModelId && !deps.defaultModelId?.trim()) {
+        logger.info("ptm.resume_clearing_stale_flag", { prId: pr.id });
+        issueInventoryService.saveConvergenceRuntime(pr.id, {
+          autoConvergeEnabled: false,
+          pollerStatus: "stopped",
+          pauseReason: null,
+          errorMessage: null,
+          lastStoppedAt: nowIso(),
+        });
+        issueInventoryService.savePathToMergeArgs(pr.id, null);
+        continue;
+      }
       const runArgs: StartPathToMergeArgs = {
         prId: pr.id,
-        modelId: typeof persistedArgs?.modelId === "string" ? persistedArgs.modelId : null,
+        modelId: persistedModelId || null,
         reasoning: typeof persistedArgs?.reasoning === "string" ? persistedArgs.reasoning : null,
+        permissionMode: typeof persistedArgs?.permissionMode === "string"
+          ? persistedArgs.permissionMode as PrAgentPermissionMode
+          : null,
         scope: (persistedArgs?.scope as PrIssueResolutionScope | undefined) ?? "both",
         additionalInstructions: typeof persistedArgs?.additionalInstructions === "string"
           ? persistedArgs.additionalInstructions
           : null,
       };
-      // forceFinalizeUsed is reconstructed from `pauseReason === 'force-finalize'`,
-      // which Step 4 writes BEFORE launching the bonus iteration — that signal is
-      // reliable across restarts (the heuristic `currentRound > maxRounds` is
-      // not, because currentRound doesn't bump when no `new` items exist).
-      inProcessState.set(pr.id, {
-        forceFinalizeUsed: runtime.pauseReason === "force-finalize",
-        runArgs,
-      });
+      const inProc = makeInProcessStateFromRuntime(runArgs, runtime);
+      const blocker = ensurePtmLockForIteration(pr, inProc);
+      if (blocker) {
+        logger.info("ptm.resume_blocked_by_lane_lock", { prId: pr.id, blocker: blocker.message });
+        blockStartOnLock(pr.id, blocker);
+        continue;
+      }
+      inProcessState.set(pr.id, inProc);
       schedule(pr.id, "warming");
     }
   }
@@ -384,13 +696,45 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
     return { pr, pipelineSettings, runtime };
   }
 
+  function persistInProcessState(prId: string, inProc: InProcessState): void {
+    inProcessState.set(prId, inProc);
+    issueInventoryService.saveConvergenceRuntime(prId, {
+      forceFinalizeUsed: inProc.forceFinalizeUsed,
+      ciRetryAttemptsUsed: inProc.ciRetryAttemptsUsed,
+      waitForCiStartedAt: inProc.waitForCiStartedAt,
+      lastDispatchHeadSha: inProc.lastDispatchHeadSha,
+    });
+  }
+
+  function isAutoConvergeStillEnabled(prId: string): boolean {
+    return issueInventoryService.getConvergenceRuntime(prId).autoConvergeEnabled;
+  }
+
+  async function readCurrentHeadSha(prId: string): Promise<string | null> {
+    try {
+      const commits = await prService.getCommits(prId);
+      return commits.at(-1)?.sha?.trim() || null;
+    } catch (err) {
+      logger.debug("ptm.head_sha_lookup_failed", { prId, error: getErrorMessage(err) });
+      return null;
+    }
+  }
+
   function pauseLoop(prId: string, reason: string, errorMessage?: string | null): ConvergenceRuntimeState {
     clearTimer(prId);
+    releaseLoopLock(prId);
+    const current = issueInventoryService.getConvergenceRuntime(prId);
+    const reasonHash = hashPauseReason(reason);
+    const pauseRepeatCount = current.lastPauseReasonHash === reasonHash
+      ? current.pauseRepeatCount + 1
+      : 1;
     return issueInventoryService.saveConvergenceRuntime(prId, {
       status: "paused",
       pollerStatus: "paused",
       pauseReason: reason,
       errorMessage: errorMessage ?? null,
+      pauseRepeatCount,
+      lastPauseReasonHash: reasonHash,
       lastPausedAt: nowIso(),
       autoConvergeEnabled: false,
     });
@@ -398,6 +742,7 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
 
   function failLoop(prId: string, errorMessage: string): ConvergenceRuntimeState {
     clearTimer(prId);
+    releaseLoopLock(prId);
     return issueInventoryService.saveConvergenceRuntime(prId, {
       status: "failed",
       pollerStatus: "stopped",
@@ -512,7 +857,8 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
         // here).
         originSurface: "rebase",
         originLabel: `path-to-merge:${kind}:pr=${pr.githubPrNumber}`,
-      });
+        laneWorktreeLockToken: inProcessState.get(pr.id)?.laneWorktreeLockToken ?? null,
+      } as Parameters<typeof conflictService.runExternalResolver>[0] & { laneWorktreeLockToken?: string | null });
       if (result.status === "completed") {
         return { kind: "ok" };
       }
@@ -534,6 +880,79 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
     | { kind: "blocked"; error: string }
     | { kind: "failed"; error: string };
 
+  function hasActionableReviewThread(thread: PrReviewThread): boolean {
+    return !thread.isResolved && !thread.isOutdated;
+  }
+
+  function hasBlockingCommentedReview(review: PrReview): boolean {
+    return review.state === "commented" && Boolean(review.body?.trim());
+  }
+
+  async function getMergeReadinessBlocker(
+    ctx: IterationContext,
+    opts: { allowForceMerge?: boolean } = {},
+  ): Promise<string | null> {
+    if (opts.allowForceMerge) return null;
+
+    if (ctx.pr.checksStatus !== "passing") {
+      return `Auto-merge blocked because CI is ${ctx.pr.checksStatus}.`;
+    }
+    if (ctx.pr.reviewStatus === "changes_requested") {
+      return "Auto-merge blocked because a review requested changes.";
+    }
+    if (ctx.pr.reviewStatus === "requested") {
+      return "Auto-merge blocked because a requested review is still pending.";
+    }
+
+    try {
+      const [checks, reviewThreads, reviews] = await Promise.all([
+        prService.getChecks(ctx.pr.id),
+        prService.getReviewThreads(ctx.pr.id),
+        prService.getReviews(ctx.pr.id),
+      ]);
+
+      if (checks.length === 0) {
+        return "Auto-merge blocked because no CI checks were found on the PR head.";
+      }
+      const failingChecks = checks.filter((check) =>
+        check.conclusion === "failure" ||
+        check.conclusion === "cancelled",
+      );
+      if (failingChecks.length > 0) {
+        return `Auto-merge blocked because ${failingChecks.length} CI check${failingChecks.length === 1 ? "" : "s"} failed.`;
+      }
+      const pendingChecks = checks.filter((check) => check.status !== "completed");
+      if (pendingChecks.length > 0) {
+        return `Auto-merge blocked because ${pendingChecks.length} CI check${pendingChecks.length === 1 ? "" : "s"} are still running.`;
+      }
+      const passingChecks = checks.filter((check) =>
+        check.status === "completed" &&
+        (check.conclusion === "success" || check.conclusion === "neutral" || check.conclusion === "skipped"),
+      );
+      if (passingChecks.length === 0) {
+        return "Auto-merge blocked because no completed successful CI checks were found.";
+      }
+
+      const unresolvedThreads = reviewThreads.filter(hasActionableReviewThread);
+      if (unresolvedThreads.length > 0) {
+        return `Auto-merge blocked because ${unresolvedThreads.length} review thread${unresolvedThreads.length === 1 ? "" : "s"} are unresolved.`;
+      }
+      if (reviews.some((review) => review.state === "changes_requested")) {
+        return "Auto-merge blocked because a review requested changes.";
+      }
+      const commentedReviews = reviews.filter(hasBlockingCommentedReview);
+      if (commentedReviews.length > 0) {
+        const reviewers = Array.from(new Set(commentedReviews.map((review) => review.reviewer).filter(Boolean))).slice(0, 3);
+        const suffix = reviewers.length ? ` (${reviewers.join(", ")})` : "";
+        return `Auto-merge blocked because ${commentedReviews.length} commented review${commentedReviews.length === 1 ? "" : "s"} still need operator review${suffix}.`;
+      }
+    } catch (err) {
+      return `Auto-merge blocked because merge readiness could not be verified: ${getErrorMessage(err)}`;
+    }
+
+    return null;
+  }
+
   /**
    * 1. Try the configured merge method via existing `prService.land()` (REST).
    * 2. On policy block, retry with `gh pr merge --admin`.
@@ -545,9 +964,17 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
    * we run `prService.runPostMergeCleanup` after success so branch deletion,
    * child-lane rebase advance, and cache refresh all still happen.
    */
-  async function runMergeLadder(ctx: IterationContext): Promise<MergeLadderResult> {
+  async function runMergeLadder(
+    ctx: IterationContext,
+    opts: { allowForceMerge?: boolean } = {},
+  ): Promise<MergeLadderResult> {
     const { pr, pipelineSettings } = ctx;
     const method = resolveMergeMethod(pipelineSettings);
+    const readinessBlocker = await getMergeReadinessBlocker(ctx, opts);
+    if (readinessBlocker) {
+      logger.warn("ptm.merge_ladder_blocked_readiness", { prId: pr.id, reason: readinessBlocker });
+      return { kind: "blocked", error: readinessBlocker };
+    }
 
     logger.info("ptm.merge_ladder_start", { prId: pr.id, method });
 
@@ -625,36 +1052,7 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
     };
   }
 
-  // -------------------------------------------------------------------------
-  // Force-finalize predicate (shipLane.md lines 183-198)
-  // -------------------------------------------------------------------------
-
-  type ForceFinalizeDecision =
-    | { kind: "skip"; reason: string }
-    | { kind: "run"; ignoreReview: boolean; ignoreCi: boolean };
-
-  function decideForceFinalize(
-    ctx: IterationContext,
-    checks: PrCheck[],
-  ): ForceFinalizeDecision {
-    const mode: ForceFinalizeMode = ctx.pipelineSettings.forceFinalizeMode;
-    if (mode === "off") {
-      return { kind: "skip", reason: "force-finalize disabled (off)" };
-    }
-    if (mode === "conditional") {
-      const requireNoCi = ctx.pipelineSettings.forceFinalizeRequireNoCiFailures;
-      const ciFailing = ctx.pr.checksStatus === "failing"
-        || checks.some((c) => c.conclusion === "failure");
-      if (requireNoCi && ciFailing) {
-        return { kind: "skip", reason: "conditional force-finalize blocked (CI failing)" };
-      }
-    }
-    // mode === "unconditional" or conditional-passed:
-    //   - skip review-comment fixes (shipLane line 189)
-    //   - only run CI fixes (line 190); if CI is already green, skip dispatch
-    //     and go straight to merge ladder
-    return { kind: "run", ignoreReview: true, ignoreCi: false };
-  }
+  // decideAtCapAction is exported at module scope (above) for testability.
 
   // -------------------------------------------------------------------------
   // The iteration body
@@ -686,6 +1084,7 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
       return;
     }
     if (ctx.pr.state === "merged") {
+      releaseLoopLock(prId);
       issueInventoryService.saveConvergenceRuntime(prId, {
         status: "merged",
         pollerStatus: "stopped",
@@ -701,6 +1100,22 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
       return;
     }
 
+    const inProc = inProcessState.get(prId)
+      ?? makeInProcessStateFromRuntime({ prId, scope: "both" as PrIssueResolutionScope }, ctx.runtime);
+    const lockBlocker = ensurePtmLockForIteration(ctx.pr, inProc);
+    if (lockBlocker) {
+      clearTimer(prId);
+      issueInventoryService.saveConvergenceRuntime(prId, {
+        autoConvergeEnabled: false,
+        status: "paused",
+        pollerStatus: "paused",
+        pauseReason: lockBlocker.message,
+        errorMessage: null,
+        lastPausedAt: nowIso(),
+      });
+      return;
+    }
+
     issueInventoryService.saveConvergenceRuntime(prId, {
       status: "running",
       pollerStatus: "polling",
@@ -713,6 +1128,10 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
       await prService.refresh({ prId });
     } catch (err) {
       logger.warn("ptm.refresh_failed", { prId, error: getErrorMessage(err) });
+    }
+    if (!isAutoConvergeStillEnabled(prId)) {
+      clearTimer(prId);
+      return;
     }
 
     // Reload after refresh.
@@ -731,6 +1150,7 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
       } catch (err) {
         logger.warn("ptm.post_merge_cleanup_on_observation_failed", { prId, error: getErrorMessage(err) });
       }
+      releaseLoopLock(prId);
       issueInventoryService.saveConvergenceRuntime(prId, {
         status: "merged",
         pollerStatus: "stopped",
@@ -755,10 +1175,18 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
       // Fall through; treat as "unknown" → safest is to run the base sync.
       behindBaseBy = 1;
     }
+    if (!isAutoConvergeStillEnabled(prId)) {
+      clearTimer(prId);
+      return;
+    }
 
     // ---- Step 1: base-advance conflict check (only when actually behind) ----
     if (behindBaseBy > 0) {
       const baseSync = await applyConflictStrategy(fresh, "base_advance");
+      if (!isAutoConvergeStillEnabled(prId)) {
+        clearTimer(prId);
+        return;
+      }
       if (baseSync.kind === "paused") {
         pauseLoop(prId, baseSync.reason);
         return;
@@ -805,7 +1233,12 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
           return;
         }
         const ladder = await runMergeLadder(fresh);
+        if (!isAutoConvergeStillEnabled(prId)) {
+          clearTimer(prId);
+          return;
+        }
         if (ladder.kind === "merged") {
+          releaseLoopLock(prId);
           issueInventoryService.saveConvergenceRuntime(prId, {
             status: "merged",
             pollerStatus: "stopped",
@@ -823,6 +1256,10 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
         if (ladder.kind === "conflict") {
           // Apply merge-time conflict strategy and retry on next wake.
           const conflictRes = await applyConflictStrategy(fresh, "merge_time");
+          if (!isAutoConvergeStillEnabled(prId)) {
+            clearTimer(prId);
+            return;
+          }
           if (conflictRes.kind === "paused") {
             pauseLoop(prId, conflictRes.reason);
             return;
@@ -857,39 +1294,60 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
       return;
     }
 
-    // ---- Step 4: hard cap + force-finalize logic ----
+    // ---- Step 4: hard cap + at-cap policy logic ----
     const maxRounds = fresh.pipelineSettings.maxRounds;
     const completedRounds = fresh.runtime.currentRound;
-    const inProc = inProcessState.get(prId) ?? { forceFinalizeUsed: false, runArgs: { prId, scope: "both" as PrIssueResolutionScope } };
+    inProcessState.set(prId, inProc);
 
-    let isForceFinalizeIteration = false;
+    let isAtCapDispatchCi = false;
+    let isAtCapMergeNow = false;
     if (completedRounds >= maxRounds) {
       if (inProc.forceFinalizeUsed) {
-        // Bonus iteration already consumed; nothing left to try.
-        pauseLoop(prId, "Hard cap reached (force-finalize already attempted).");
+        // Bonus merge ladder already attempted; nothing left to try.
+        pauseLoop(prId, "Hard cap reached (at-cap action already attempted).");
         return;
       }
-      // Need to fetch checks for the conditional predicate.
       let checks: PrCheck[] = [];
       try {
         checks = await prService.getChecks(prId);
       } catch (err) {
-        logger.warn("ptm.force_finalize_checks_fetch_failed", { prId, error: getErrorMessage(err) });
+        logger.warn("ptm.at_cap_checks_fetch_failed", { prId, error: getErrorMessage(err) });
       }
-      const decision = decideForceFinalize(fresh, checks);
-      if (decision.kind === "skip") {
+      if (!isAutoConvergeStillEnabled(prId)) {
+        clearTimer(prId);
+        return;
+      }
+      const decision = decideAtCapAction(fresh, checks, inProc);
+      persistInProcessState(prId, inProc);
+      logger.info("ptm.at_cap_decision", { prId, policy: fresh.pipelineSettings.atCapPolicy, decisionKind: decision.kind, reason: decision.reason });
+      if (decision.kind === "stop") {
         pauseLoop(prId, `Hard cap reached: ${decision.reason}`);
         return;
       }
-      isForceFinalizeIteration = true;
-      issueInventoryService.saveConvergenceRuntime(prId, {
-        pauseReason: "force-finalize",
-      });
+      if (decision.kind === "wait") {
+        // Wait but do NOT write `pauseReason` — the loop is still alive.
+        // QueueTab/PrDetailPane render any non-null pauseReason as "paused:
+        // <reason>" regardless of runtime status, so a wait reason would lie
+        // about the loop being paused when it's actually polling.
+        issueInventoryService.saveConvergenceRuntime(prId, {
+          pollerStatus: "waiting_for_checks",
+        });
+        schedule(prId, decision.phase);
+        return;
+      }
+      if (decision.kind === "dispatch_ci") {
+        isAtCapDispatchCi = true;
+        issueInventoryService.saveConvergenceRuntime(prId, {
+          pauseReason: "force-finalize",
+        });
+      } else {
+        // decision.kind === "merge_now"
+        isAtCapMergeNow = true;
+      }
     }
 
-    // ---- Step 5: dispatch fix agent (or skip if force-finalize + green) ----
-    const ciIsGreen = fresh.pr.checksStatus === "passing";
-    const shouldSkipFixDispatch = isForceFinalizeIteration && ciIsGreen;
+    // ---- Step 5: dispatch fix agent (or skip if at-cap merge_now) ----
+    const shouldSkipFixDispatch = isAtCapMergeNow;
 
     if (!shouldSkipFixDispatch) {
       // Busy-guard: if a fix agent is still running from a previous iteration,
@@ -898,35 +1356,146 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
       const priorSessionId = fresh.runtime.activeSessionId?.trim() ?? null;
       if (priorSessionId) {
         let priorActive = false;
+        let priorSessionFinished = false;
+        let priorMissing = false;
         try {
           const summary = await agentChatService.getSessionSummary(priorSessionId);
-          // Defensively treat absent summary as "alive" so we never double-
-          // dispatch on a transient lookup error. `active` = a turn is in
-          // flight; `idle` + awaitingInput = session waiting on a user reply.
+          if (!isAutoConvergeStillEnabled(prId)) {
+            clearTimer(prId);
+            return;
+          }
           if (summary == null) {
+            priorMissing = true;
             priorActive = true;
           } else if (summary.status === "active") {
             priorActive = true;
           } else if (summary.status === "idle" && summary.awaitingInput === true) {
             priorActive = true;
+          } else {
+            priorSessionFinished = true;
+          }
+          if (summary != null) {
+            inProc.sessionMissingPolls = 0;
+            inProc.sessionMissingSessionId = null;
+            persistInProcessState(prId, inProc);
           }
         } catch (err) {
           logger.warn("ptm.session_alive_check_failed", { prId, sessionId: priorSessionId, error: getErrorMessage(err) });
+          if (!isAutoConvergeStillEnabled(prId)) {
+            clearTimer(prId);
+            return;
+          }
+          priorMissing = true;
           priorActive = true;
+        }
+        if (priorMissing) {
+          if (inProc.sessionMissingSessionId !== priorSessionId) {
+            inProc.sessionMissingSessionId = priorSessionId;
+            inProc.sessionMissingPolls = 0;
+          }
+          inProc.sessionMissingPolls += 1;
+          persistInProcessState(prId, inProc);
+          if (inProc.sessionMissingPolls >= 2) {
+            logger.warn("ptm.session_missing_giving_up", { prId, sessionId: priorSessionId, missingPolls: inProc.sessionMissingPolls });
+            inProc.sessionMissingPolls = 0;
+            inProc.sessionMissingSessionId = null;
+            issueInventoryService.saveConvergenceRuntime(prId, {
+              activeSessionId: null,
+              activeLaneId: null,
+              activeHref: null,
+            });
+            persistInProcessState(prId, inProc);
+            priorActive = false;
+            priorSessionFinished = false;
+          }
         }
         if (priorActive) {
           logger.info("ptm.fix_agent_still_running_skipping_dispatch", { prId, sessionId: priorSessionId });
           schedule(prId, "warming");
           return;
         }
+        if (priorSessionFinished && inProc.lastDispatchHeadSha) {
+          const currentHeadSha = await readCurrentHeadSha(prId);
+          if (!isAutoConvergeStillEnabled(prId)) {
+            clearTimer(prId);
+            return;
+          }
+          if (currentHeadSha && currentHeadSha === inProc.lastDispatchHeadSha) {
+            inProc.lastDispatchHeadSha = null;
+            persistInProcessState(prId, inProc);
+            pauseLoop(prId, "Fix agent finished without pushing commits - manual intervention needed.");
+            return;
+          }
+          if (currentHeadSha && currentHeadSha !== inProc.lastDispatchHeadSha) {
+            inProc.lastDispatchHeadSha = null;
+            persistInProcessState(prId, inProc);
+          }
+        }
       }
 
-      let scope: PrIssueResolutionScope;
-      if (isForceFinalizeIteration) {
+      const convergenceStatus = issueInventoryService.getConvergenceStatus(prId);
+      if (convergenceStatus.totalNew === 0) {
+        if (!fresh.pipelineSettings.autoMerge) {
+          parkConverged("Inventory clean; nothing to dispatch.");
+          return;
+        }
+        const ladder = await runMergeLadder(fresh);
+        if (!isAutoConvergeStillEnabled(prId)) {
+          clearTimer(prId);
+          return;
+        }
+        if (ladder.kind === "merged") {
+          releaseLoopLock(prId);
+          issueInventoryService.saveConvergenceRuntime(prId, {
+            status: "merged",
+            pollerStatus: "stopped",
+            autoConvergeEnabled: false,
+            errorMessage: null,
+            pauseReason: null,
+          });
+          clearTimer(prId);
+          return;
+        }
+        if (ladder.kind === "auto_armed") {
+          parkAutoArmed();
+          return;
+        }
+        if (ladder.kind === "conflict") {
+          const conflictRes = await applyConflictStrategy(fresh, "merge_time");
+          if (!isAutoConvergeStillEnabled(prId)) {
+            clearTimer(prId);
+            return;
+          }
+          if (conflictRes.kind === "paused") {
+            pauseLoop(prId, conflictRes.reason);
+            return;
+          }
+          if (conflictRes.kind === "failed") {
+            pauseLoop(prId, "Clean-inventory merge-time conflict resolution failed.", conflictRes.error);
+            return;
+          }
+          schedule(prId, "justPushed");
+          return;
+        }
+        if (ladder.kind === "blocked") {
+          parkConverged(`Inventory clean; merge ladder is blocked: ${ladder.error}`);
+          return;
+        }
+        pauseLoop(prId, "Clean-inventory merge ladder failed.", ladder.error);
+        return;
+      }
+
+      let requestedScope: PrIssueResolutionScope;
+      if (isAtCapDispatchCi) {
         // shipLane line 189: ignore review, only run CI fixes.
-        scope = "checks";
+        requestedScope = "checks";
       } else {
-        scope = inProc.runArgs.scope ?? "both";
+        requestedScope = inProc.runArgs.scope ?? "both";
+      }
+      const scope = await resolveDispatchScope(prId, requestedScope, { allowFallback: !isAtCapDispatchCi });
+      if (!scope) {
+        parkConverged("Inventory clean; no currently actionable CI or review issues remain.");
+        return;
       }
 
       const modelId = inProc.runArgs.modelId?.trim() || deps.defaultModelId?.trim() || null;
@@ -936,6 +1505,11 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
       }
 
       try {
+        const dispatchHeadSha = await readCurrentHeadSha(prId);
+        if (!isAutoConvergeStillEnabled(prId)) {
+          clearTimer(prId);
+          return;
+        }
         const launch = await launchPrIssueResolutionChat(
           {
             prService,
@@ -950,22 +1524,32 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
             },
             sessionService,
             issueInventoryService,
+            laneWorktreeLockService,
           },
           {
             prId,
             scope,
             modelId,
             reasoning: inProc.runArgs.reasoning ?? deps.defaultReasoningEffort ?? null,
+            permissionMode: inProc.runArgs.permissionMode ?? undefined,
             additionalInstructions: inProc.runArgs.additionalInstructions ?? null,
-          },
+            laneWorktreeLockToken: inProc.laneWorktreeLockToken,
+          } as Parameters<typeof launchPrIssueResolutionChat>[1] & { laneWorktreeLockToken?: string | null },
         );
+        if (!isAutoConvergeStillEnabled(prId)) {
+          clearTimer(prId);
+          issueInventoryService.resetSentToAgent(prId, { sessionId: launch.sessionId });
+          return;
+        }
 
         // NOTE: forceFinalizeUsed is intentionally NOT set here. The bonus
-        // iteration is consumed by the merge-ladder attempt in Step 6, not by
-        // a fix dispatch — otherwise force-finalize would degrade to "one
-        // extra fix iteration, then pause" and never actually retry the
-        // merge once the agent's fix turned CI green.
-        inProcessState.set(prId, inProc);
+        // merge ladder is consumed in Step 6, not by a fix dispatch —
+        // otherwise the at-cap CI-retry policies would degrade to "one extra
+        // fix iteration, then pause" and never actually retry the merge once
+        // the agent's fix turned CI green. The at-cap policy decider gates
+        // further retries via inProc.ciRetryAttemptsUsed.
+        inProc.lastDispatchHeadSha = dispatchHeadSha;
+        persistInProcessState(prId, inProc);
 
         const status = issueInventoryService.getConvergenceStatus(prId);
         issueInventoryService.saveConvergenceRuntime(prId, {
@@ -975,7 +1559,7 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
           activeSessionId: launch.sessionId,
           activeLaneId: launch.laneId,
           activeHref: launch.href,
-          pauseReason: isForceFinalizeIteration ? "force-finalize" : null,
+          pauseReason: isAtCapDispatchCi ? "force-finalize" : null,
           errorMessage: null,
         });
 
@@ -988,22 +1572,29 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
       }
     }
 
-    // ---- Step 6: force-finalize green-path → straight to merge ladder ----
-    if (isForceFinalizeIteration) {
+    // ---- Step 6: at-cap merge_now path → straight to merge ladder ----
+    if (isAtCapMergeNow) {
       if (!fresh.pipelineSettings.autoMerge) {
-        // User opted into force-finalize but not auto-merge: park instead of land.
+        // User opted into an at-cap policy but not auto-merge: park instead of land.
         inProc.forceFinalizeUsed = true;
-        inProcessState.set(prId, inProc);
-        parkConverged("Force-finalize complete with green CI; pipelineSettings.autoMerge is false, click merge when ready.");
+        persistInProcessState(prId, inProc);
+        parkConverged("At-cap policy decided to merge but autoMerge is off; click merge when ready.");
         return;
       }
 
       // Consume the bonus only when we actually attempt the merge ladder.
       inProc.forceFinalizeUsed = true;
-      inProcessState.set(prId, inProc);
+      persistInProcessState(prId, inProc);
 
-      const ladder = await runMergeLadder(fresh);
+      const ladder = await runMergeLadder(fresh, {
+        allowForceMerge: fresh.pipelineSettings.atCapPolicy === "force_merge",
+      });
+      if (!isAutoConvergeStillEnabled(prId)) {
+        clearTimer(prId);
+        return;
+      }
       if (ladder.kind === "merged") {
+        releaseLoopLock(prId);
         issueInventoryService.saveConvergenceRuntime(prId, {
           status: "merged",
           pollerStatus: "stopped",
@@ -1020,22 +1611,26 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
       }
       if (ladder.kind === "conflict") {
         const conflictRes = await applyConflictStrategy(fresh, "merge_time");
+        if (!isAutoConvergeStillEnabled(prId)) {
+          clearTimer(prId);
+          return;
+        }
         if (conflictRes.kind === "paused") {
           pauseLoop(prId, conflictRes.reason);
           return;
         }
         if (conflictRes.kind === "failed") {
-          pauseLoop(prId, "Force-finalize merge-time conflict resolution failed.", conflictRes.error);
+          pauseLoop(prId, "At-cap merge-time conflict resolution failed.", conflictRes.error);
           return;
         }
         schedule(prId, "justPushed");
         return;
       }
       if (ladder.kind === "blocked") {
-        failLoop(prId, `Force-finalize merge ladder blocked: ${ladder.error}`);
+        failLoop(prId, `At-cap merge ladder blocked: ${ladder.error}`);
         return;
       }
-      failLoop(prId, `Force-finalize merge ladder failed: ${ladder.error}`);
+      failLoop(prId, `At-cap merge ladder failed: ${ladder.error}`);
       return;
     }
 

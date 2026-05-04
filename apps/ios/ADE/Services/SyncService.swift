@@ -3931,7 +3931,20 @@ final class SyncService: ObservableObject {
     if let settings = try await getPipelineSettings(prId: prId) {
       return settings
     }
-    return PipelineSettings(autoMerge: false, mergeMethod: "repo_default", maxRounds: 5, onRebaseNeeded: "pause")
+    return PipelineSettings(
+      autoMerge: false,
+      mergeMethod: "repo_default",
+      maxRounds: 5,
+      onRebaseNeeded: "pause",
+      conflictStrategy: "pause",
+      forceFinalizeMode: "off",
+      forceFinalizeRequireNoCiFailures: true,
+      atCapPolicy: "stop",
+      atCapWaitMinutes: 30,
+      atCapCiRetryMax: 3,
+      forceMergeRequiresConfirmation: true,
+      earlyMergeOnGreen: true
+    )
   }
 
   func savePipelineSettings(prId: String, autoMerge: Bool? = nil, mergeMethod: String? = nil, maxRounds: Int? = nil, onRebaseNeeded: String? = nil) async throws {
@@ -3944,14 +3957,32 @@ final class SyncService: ObservableObject {
   }
 
   func savePipelineSettings(prId: String, settings: PipelineSettings) async throws {
+    var payload: [String: Any] = [
+      "autoMerge": settings.autoMerge,
+      "mergeMethod": settings.mergeMethod,
+      "maxRounds": settings.maxRounds,
+      "onRebaseNeeded": settings.onRebaseNeeded,
+    ]
+    if let conflictStrategy = settings.conflictStrategy { payload["conflictStrategy"] = conflictStrategy }
+    if let autoAgentSettings = settings.autoAgentSettings {
+      var autoAgentPayload: [String: Any] = [:]
+      if let provider = autoAgentSettings.provider { autoAgentPayload["provider"] = provider }
+      if let model = autoAgentSettings.model { autoAgentPayload["model"] = model }
+      if let reasoningEffort = autoAgentSettings.reasoningEffort { autoAgentPayload["reasoningEffort"] = reasoningEffort }
+      if let permissionMode = autoAgentSettings.permissionMode { autoAgentPayload["permissionMode"] = permissionMode }
+      if let confidenceThreshold = autoAgentSettings.confidenceThreshold { autoAgentPayload["confidenceThreshold"] = confidenceThreshold }
+      payload["autoAgentSettings"] = autoAgentPayload
+    }
+    if let forceFinalizeMode = settings.forceFinalizeMode { payload["forceFinalizeMode"] = forceFinalizeMode }
+    if let forceFinalizeRequireNoCiFailures = settings.forceFinalizeRequireNoCiFailures { payload["forceFinalizeRequireNoCiFailures"] = forceFinalizeRequireNoCiFailures }
+    if let atCapPolicy = settings.atCapPolicy { payload["atCapPolicy"] = atCapPolicy }
+    if let atCapWaitMinutes = settings.atCapWaitMinutes { payload["atCapWaitMinutes"] = atCapWaitMinutes }
+    if let atCapCiRetryMax = settings.atCapCiRetryMax { payload["atCapCiRetryMax"] = atCapCiRetryMax }
+    if let forceMergeRequiresConfirmation = settings.forceMergeRequiresConfirmation { payload["forceMergeRequiresConfirmation"] = forceMergeRequiresConfirmation }
+    if let earlyMergeOnGreen = settings.earlyMergeOnGreen { payload["earlyMergeOnGreen"] = earlyMergeOnGreen }
     _ = try await sendCommand(action: "prs.pipelineSettings.save", args: [
       "prId": prId,
-      "settings": [
-        "autoMerge": settings.autoMerge,
-        "mergeMethod": settings.mergeMethod,
-        "maxRounds": settings.maxRounds,
-        "onRebaseNeeded": settings.onRebaseNeeded,
-      ],
+      "settings": payload,
     ])
   }
 

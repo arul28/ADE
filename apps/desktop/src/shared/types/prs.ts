@@ -9,6 +9,7 @@ import type {
   ConflictRiskLevel,
   ExternalConflictResolverProvider,
 } from "./conflicts";
+import type { AgentChatPermissionMode } from "./chat";
 import type { GitHubRepoRef } from "./git";
 import type { RebaseTargetCommit } from "./lanes";
 
@@ -569,6 +570,7 @@ export type StartIntegrationResolutionResult = {
 };
 
 export type AiPermissionMode = "read_only" | "guarded_edit" | "full_edit";
+export type PrAgentPermissionMode = AiPermissionMode | AgentChatPermissionMode;
 
 export type PrAiResolutionContext = {
   sourceTab: "rebase" | "normal" | "integration" | "queue" | "conflicts";
@@ -590,7 +592,7 @@ export type PrAiResolutionSessionInfo = {
   model: string | null;
   modelId: string | null;
   reasoning: string | null;
-  permissionMode: AiPermissionMode | null;
+  permissionMode: PrAgentPermissionMode | null;
   context: PrAiResolutionContext;
   status: PrAiResolutionSessionStatus;
 };
@@ -599,7 +601,7 @@ export type PrAiResolutionStartArgs = {
   context: PrAiResolutionContext;
   model: string;
   reasoning?: string | null;
-  permissionMode?: AiPermissionMode;
+  permissionMode?: PrAgentPermissionMode;
   /** Appended to the generated resolver prompt (integration, merge conflicts, etc.). */
   additionalInstructions?: string | null;
 };
@@ -642,7 +644,7 @@ export type PrIssueResolutionStartArgs = {
   scope: PrIssueResolutionScope;
   modelId: string;
   reasoning?: string | null;
-  permissionMode?: AiPermissionMode;
+  permissionMode?: PrAgentPermissionMode;
   additionalInstructions?: string | null;
 };
 
@@ -663,7 +665,7 @@ export type RebaseResolutionStartArgs = {
   laneId: string;
   modelId: string;
   reasoning?: string | null;
-  permissionMode?: AiPermissionMode;
+  permissionMode?: PrAgentPermissionMode;
   forcePushAfterRebase?: boolean;
 };
 
@@ -1186,6 +1188,32 @@ export type AiReviewSummary = {
 /** Merge method for the auto-merge pipeline — extends MergeMethod with repo_default. */
 export type PipelineMergeMethod = MergeMethod | "repo_default";
 
+export type LaneWorktreeLockOwnerKind =
+  | "path_to_merge"
+  | "pr_issue_resolution"
+  | "conflict_resolution"
+  | "integration_resolution"
+  | "git_mutation";
+
+export type LaneWorktreeLockInfo = {
+  worktreeKey: string;
+  worktreePath: string;
+  laneId: string;
+  ownerKind: LaneWorktreeLockOwnerKind;
+  ownerPrId: string | null;
+  ownerSessionId: string | null;
+  ownerProposalId: string | null;
+  ownerLabel: string;
+  createdAt: string;
+  heartbeatAt: string;
+  expiresAt: string;
+};
+
+export type LaneWorktreeLockBlocker = {
+  message: string;
+  lock: LaneWorktreeLockInfo;
+};
+
 /**
  * Legacy two-option rebase policy. Retained for back-compat reads from older
  * `pr_pipeline_settings` rows; new writes use {@link ConflictStrategy}.
@@ -1205,15 +1233,41 @@ export type RebasePolicy = "pause" | "auto_rebase";
 export type ConflictStrategy = "pause" | "rebase" | "merge" | "auto";
 
 /**
- * Behavior of the bonus iteration that runs after `hardCapIterations` normal
- * iterations have failed to land the PR. Mirrors `/shipLane`'s force-finalize.
- *
- * - `off`           — never force-merge; if hard cap hits, fail the convergence
- * - `unconditional` — always force-merge once cap is hit, ignoring review/CI
- * - `conditional`   — force-merge only if extra predicates pass (see
- *                     {@link PipelineSettings.forceFinalizeRequireNoCiFailures})
+ * @deprecated Replaced by {@link AtCapPolicy}. Kept for legacy reads only.
  */
 export type ForceFinalizeMode = "off" | "unconditional" | "conditional";
+
+/**
+ * What the convergence loop does when it hits {@link PipelineSettings.maxRounds}
+ * without the PR being mergeable yet.
+ *
+ * - `stop`           — pause and wait for the user to decide.
+ * - `wait_for_ci`    — stop iterating but keep polling CI for up to
+ *                      {@link PipelineSettings.atCapWaitMinutes}; merge if it
+ *                      goes green within that window, else pause.
+ * - `ci_retry_once`  — dispatch one more fix iteration scoped to CI failures
+ *                      only; merge if CI is green afterward, else pause.
+ * - `ci_retry_loop`  — dispatch up to {@link PipelineSettings.atCapCiRetryMax}
+ *                      additional CI-only iterations; merge as soon as CI goes
+ *                      green; pause if exhausted.
+ * - `force_merge`    — skip retries and run the merge ladder immediately
+ *                      (rest → admin → auto), ignoring CI / review.
+ *
+ * Migration from the legacy {@link ForceFinalizeMode}: `off → stop`,
+ * `conditional → ci_retry_once`, `unconditional → force_merge`.
+ */
+export type AtCapPolicy =
+  | "stop"
+  | "wait_for_ci"
+  | "ci_retry_once"
+  | "ci_retry_loop"
+  | "force_merge";
+
+export function atCapPolicyFromLegacy(mode: ForceFinalizeMode): AtCapPolicy {
+  if (mode === "off") return "stop";
+  if (mode === "unconditional") return "force_merge";
+  return "ci_retry_once";
+}
 
 /**
  * Provider used by the {@link ConflictStrategy} `auto` agent and (legacy) by
@@ -1230,7 +1284,7 @@ export type AutoConflictAgentSettings = {
   /** Reasoning token budget hint (provider-specific string). */
   reasoningEffort: string | null;
   /** Permission mode the resolver chat runs under. */
-  permissionMode: ConflictResolverPermissionMode | null;
+  permissionMode: PrAgentPermissionMode | null;
   /** Minimum confidence (0–1) the resolver must report before its fix is accepted. `null` = accept all. */
   confidenceThreshold: number | null;
 };
@@ -1259,14 +1313,28 @@ export type PipelineSettings = {
   conflictStrategy: ConflictStrategy;
   /** Tunables used when {@link conflictStrategy} is `auto`. */
   autoAgentSettings: AutoConflictAgentSettings;
-  /** Whether the loop runs a bonus force-finalize iteration after the hard cap. */
+  /** @deprecated Mirror of {@link atCapPolicy} for legacy callers. New code reads `atCapPolicy`. */
   forceFinalizeMode: ForceFinalizeMode;
-  /**
-   * When {@link forceFinalizeMode} is `conditional`, the bonus iteration only
-   * fires if no required CI checks are currently failing. Other future
-   * predicates can be added alongside this flag.
-   */
+  /** @deprecated Folded into the `ci_retry_once` semantics of {@link atCapPolicy}. */
   forceFinalizeRequireNoCiFailures: boolean;
+  /** What the loop does when it hits {@link maxRounds} without converging. */
+  atCapPolicy: AtCapPolicy;
+  /**
+   * When {@link atCapPolicy} is `wait_for_ci`, how long (in minutes) to keep
+   * polling CI before pausing. Default 30. Ignored for other policies.
+   */
+  atCapWaitMinutes: number;
+  /**
+   * When {@link atCapPolicy} is `ci_retry_loop`, the maximum number of bonus
+   * CI-only iterations the loop will dispatch. Default 3. Ignored for other
+   * policies.
+   */
+  atCapCiRetryMax: number;
+  /**
+   * If true, switching {@link atCapPolicy} to `force_merge` requires explicit
+   * UI confirmation each time it's enabled. Default true.
+   */
+  forceMergeRequiresConfirmation: boolean;
   /**
    * If true (default), every iteration first checks whether checks are green
    * and reviews are clean — if so, the merge ladder runs immediately instead
@@ -1284,6 +1352,10 @@ export const DEFAULT_PIPELINE_SETTINGS: PipelineSettings = {
   autoAgentSettings: { ...DEFAULT_AUTO_CONFLICT_AGENT_SETTINGS },
   forceFinalizeMode: "off",
   forceFinalizeRequireNoCiFailures: true,
+  atCapPolicy: "stop",
+  atCapWaitMinutes: 30,
+  atCapCiRetryMax: 3,
+  forceMergeRequiresConfirmation: true,
   earlyMergeOnGreen: true,
 };
 
@@ -1333,6 +1405,8 @@ export type ConvergencePollerStatus =
 export type ConvergenceRuntimeState = {
   prId: string;
   autoConvergeEnabled: boolean;
+  /** True when the native Path to Merge orchestrator owns this runtime. */
+  pathToMergeActive: boolean;
   status: ConvergenceRuntimeStatus;
   pollerStatus: ConvergencePollerStatus;
   currentRound: number;
@@ -1341,6 +1415,12 @@ export type ConvergenceRuntimeState = {
   activeHref: string | null;
   pauseReason: string | null;
   errorMessage: string | null;
+  forceFinalizeUsed: boolean;
+  ciRetryAttemptsUsed: number;
+  waitForCiStartedAt: string | null;
+  lastDispatchHeadSha: string | null;
+  pauseRepeatCount: number;
+  lastPauseReasonHash: string | null;
   lastStartedAt: string | null;
   lastPolledAt: string | null;
   lastPausedAt: string | null;
@@ -1350,7 +1430,20 @@ export type ConvergenceRuntimeState = {
 };
 
 export type PrConvergenceState = ConvergenceRuntimeState;
-export type PrConvergenceStatePatch = Partial<Omit<ConvergenceRuntimeState, "prId" | "createdAt" | "updatedAt">>;
+export type PrConvergenceStatePatch = Partial<Omit<ConvergenceRuntimeState, "prId" | "pathToMergeActive" | "createdAt" | "updatedAt">>;
+
+export type PathToMergeStartResult = {
+  prId: string;
+  scheduled: boolean;
+  runtime: ConvergenceRuntimeState;
+  blockedBy?: LaneWorktreeLockBlocker | null;
+};
+
+export type PathToMergeStopResult = {
+  prId: string;
+  stopped: boolean;
+  runtime: ConvergenceRuntimeState | null;
+};
 
 // --------------------------------
 // Issue Inventory (PR Convergence Loop)
@@ -1410,6 +1503,7 @@ export type ConvergenceStatus = {
 
 export const DEFAULT_CONVERGENCE_RUNTIME_STATE: Omit<ConvergenceRuntimeState, "prId"> = {
   autoConvergeEnabled: false,
+  pathToMergeActive: false,
   status: "idle",
   pollerStatus: "idle",
   currentRound: 0,
@@ -1418,6 +1512,12 @@ export const DEFAULT_CONVERGENCE_RUNTIME_STATE: Omit<ConvergenceRuntimeState, "p
   activeHref: null,
   pauseReason: null,
   errorMessage: null,
+  forceFinalizeUsed: false,
+  ciRetryAttemptsUsed: 0,
+  waitForCiStartedAt: null,
+  lastDispatchHeadSha: null,
+  pauseRepeatCount: 0,
+  lastPauseReasonHash: null,
   lastStartedAt: null,
   lastPolledAt: null,
   lastPausedAt: null,
@@ -1591,7 +1691,7 @@ export type LaunchPrIssueResolutionFromThreadArgs = {
   commentId?: string | null;
   modelId?: string | null;
   reasoning?: string | null;
-  permissionMode?: AiPermissionMode;
+  permissionMode?: PrAgentPermissionMode;
   additionalInstructions?: string | null;
   fileContext?: {
     path: string | null;

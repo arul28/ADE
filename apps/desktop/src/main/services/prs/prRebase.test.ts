@@ -4,10 +4,11 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type {
   AgentChatPermissionMode,
-  AiPermissionMode,
   LaneSummary,
+  PrAgentPermissionMode,
   RebaseNeed,
 } from "../../../shared/types";
+import type * as ResolverUtilsModule from "./resolverUtils";
 
 // ---------------------------------------------------------------------------
 // Module mocks
@@ -20,12 +21,16 @@ vi.mock("./resolverUtils", () => ({
   mapPermissionMode: (mode: string | undefined) => {
     if (mode === "full_edit") return "full-auto";
     if (mode === "read_only") return "plan";
+    if (mode === "guarded_edit") return "edit";
+    if (mode === "default" || mode === "plan" || mode === "edit" || mode === "full-auto" || mode === "config-toml") return mode;
     return "edit";
   },
   mapPermissionModeForModelFamily: (mode: string | undefined, family: string | undefined) => {
     if (family === "openai" && mode === "guarded_edit") return "default";
     if (mode === "full_edit") return "full-auto";
     if (mode === "read_only") return "plan";
+    if (mode === "guarded_edit") return "edit";
+    if (mode === "default" || mode === "plan" || mode === "edit" || mode === "full-auto" || mode === "config-toml") return mode;
     return "edit";
   },
   readRecentCommits: vi.fn(async (_worktreePath: string, _count?: number, ref?: string) => {
@@ -61,15 +66,15 @@ const mockRunGit = vi.mocked(runGit);
 describe("resolverUtils (real module)", () => {
   // Lazy-loaded handles to the real module so the prRebaseResolver mock above
   // does not interfere.
-  let mapPermissionMode: (mode: AiPermissionMode | undefined) => AgentChatPermissionMode;
+  let mapPermissionMode: (mode: PrAgentPermissionMode | undefined) => AgentChatPermissionMode;
   let mapPermissionModeForModelFamily: (
-    mode: AiPermissionMode | undefined,
+    mode: PrAgentPermissionMode | undefined,
     family: string | undefined,
   ) => AgentChatPermissionMode;
   let readRecentCommits: (worktreePath: string, count?: number, ref?: string) => Promise<Array<{ sha: string; subject: string }>>;
 
   beforeAll(async () => {
-    const real = await vi.importActual<typeof import("./resolverUtils")>("./resolverUtils");
+    const real = await vi.importActual<typeof ResolverUtilsModule>("./resolverUtils");
     mapPermissionMode = real.mapPermissionMode;
     mapPermissionModeForModelFamily = real.mapPermissionModeForModelFamily;
     readRecentCommits = real.readRecentCommits;
@@ -88,6 +93,11 @@ describe("resolverUtils (real module)", () => {
       expect(mapPermissionMode("guarded_edit")).toBe("edit");
     });
 
+    it("passes through chat runtime permission modes", () => {
+      expect(mapPermissionMode("default")).toBe("default");
+      expect(mapPermissionMode("config-toml")).toBe("config-toml");
+    });
+
     it("maps undefined to edit", () => {
       expect(mapPermissionMode(undefined)).toBe("edit");
     });
@@ -104,6 +114,10 @@ describe("resolverUtils (real module)", () => {
 
     it("keeps guarded_edit as edit for non-OpenAI models", () => {
       expect(mapPermissionModeForModelFamily("guarded_edit", "anthropic")).toBe("edit");
+    });
+
+    it("keeps chat runtime default as default for Claude models", () => {
+      expect(mapPermissionModeForModelFamily("default", "anthropic")).toBe("default");
     });
   });
 

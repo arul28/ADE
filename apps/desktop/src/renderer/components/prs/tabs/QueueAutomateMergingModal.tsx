@@ -1,10 +1,10 @@
 import React from "react";
 import { CheckCircle, CircleNotch, MagicWand, Warning, X } from "@phosphor-icons/react";
 import type {
-  AiPermissionMode,
   ConvergenceRuntimeStatus,
   PipelineSettings,
   PrConvergenceState,
+  PrAgentPermissionMode,
 } from "../../../../shared/types";
 import { DEFAULT_PIPELINE_SETTINGS } from "../../../../shared/types";
 import { COLORS, MONO_FONT, SANS_FONT, outlineButton, primaryButton } from "../../lanes/laneDesignTokens";
@@ -32,10 +32,10 @@ export type QueueAutomateMergingModalProps = {
   members: QueueAutomateMergingMember[];
   modelId: string;
   reasoningEffort: string;
-  permissionMode: AiPermissionMode;
+  permissionMode: PrAgentPermissionMode;
   onModelChange: (modelId: string) => void;
   onReasoningEffortChange: (value: string) => void;
-  onPermissionModeChange: (mode: AiPermissionMode) => void;
+  onPermissionModeChange: (mode: PrAgentPermissionMode) => void;
   onClose: () => void;
 };
 
@@ -279,11 +279,18 @@ export function QueueAutomateMergingModal({
       // 3. Start Path to Merge for this PR.
       updateStatus(member.prId, { kind: "starting" });
       try {
-        await window.ade.prs.pathToMergeStart({
+        const startResult = await window.ade.prs.pathToMergeStart({
           prId: member.prId,
           modelId,
           reasoning: reasoningEffort,
+          permissionMode,
         });
+        if (!startResult.scheduled) {
+          const message = startResult.blockedBy?.message ?? "Path to Merge is blocked by another lane task.";
+          updateStatus(member.prId, { kind: "failed", error: message });
+          setSequence({ kind: "halted", failedIndex: idx, error: message });
+          return;
+        }
       } catch (err) {
         const message = formatError(err);
         updateStatus(member.prId, { kind: "failed", error: message });
@@ -306,7 +313,7 @@ export function QueueAutomateMergingModal({
     }
 
     setSequence({ kind: "complete" });
-  }, [members, modelId, pipelineSettings, pollUntilTerminal, queueTargetBranch, reasoningEffort, updateStatus]);
+  }, [members, modelId, permissionMode, pipelineSettings, pollUntilTerminal, queueTargetBranch, reasoningEffort, updateStatus]);
 
   const handleStart = React.useCallback(() => {
     void runAutomation();

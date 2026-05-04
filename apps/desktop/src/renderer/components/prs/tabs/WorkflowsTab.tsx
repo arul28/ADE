@@ -27,6 +27,7 @@ import { rebaseNeedItemKey } from "../shared/rebaseNeedUtils";
 import { filterRebaseAttentionStatuses } from "../shared/rebaseAttentionUtils";
 import { usePrs } from "../state/PrsContext";
 import { getQueueWorkflowBucket } from "./queueWorkflowModel";
+import { useAppStore } from "../../../state/appStore";
 
 const CATEGORY_THEMES = {
   integration: { color: "#8B5CF6", bg: "rgba(139, 92, 246, 0.08)", border: "rgba(139, 92, 246, 0.20)", bgSubtle: "rgba(139, 92, 246, 0.04)" },
@@ -36,6 +37,45 @@ const CATEGORY_THEMES = {
 
 export type WorkflowCategory = "integration" | "queue" | "rebase";
 type WorkflowView = "active" | "history";
+const WORKFLOWS_VIEW_STORAGE_KEY = "ade:prs:workflows:view";
+const WORKFLOWS_CACHE_TTL_MS = 120_000;
+const WORKFLOWS_CACHE_DISABLED = import.meta.env.MODE === "test";
+
+type WorkflowsWarmCache = {
+  view: WorkflowView;
+  integrationWorkflows: IntegrationProposal[];
+  cachedAt: number;
+};
+
+const workflowsWarmCacheByProject = new Map<string, WorkflowsWarmCache>();
+
+function workflowsCacheKey(projectRoot?: string | null): string {
+  const root = projectRoot?.trim();
+  return root || "__default_project__";
+}
+
+function workflowsViewStorageKey(projectRoot?: string | null): string {
+  const root = projectRoot?.trim();
+  return root ? `${WORKFLOWS_VIEW_STORAGE_KEY}:${root}` : WORKFLOWS_VIEW_STORAGE_KEY;
+}
+
+function readWorkflowView(projectRoot?: string | null): WorkflowView {
+  try {
+    const value = window.localStorage.getItem(workflowsViewStorageKey(projectRoot));
+    if (value === "active" || value === "history") return value;
+  } catch {
+    /* ignore */
+  }
+  return "active";
+}
+
+function writeWorkflowView(projectRoot: string | null, view: WorkflowView): void {
+  try {
+    window.localStorage.setItem(workflowsViewStorageKey(projectRoot), view);
+  } catch {
+    /* ignore */
+  }
+}
 
 type WorkflowsTabProps = {
   activeCategory: WorkflowCategory;
@@ -633,27 +673,63 @@ export function WorkflowsTab({
   } = usePrs();
 
   const navigate = useNavigate();
-  const [view, setView] = React.useState<WorkflowView>("active");
-  const [integrationWorkflows, setIntegrationWorkflows] = React.useState<IntegrationProposal[]>([]);
-  const [loading, setLoading] = React.useState(true);
+  const projectRoot = useAppStore((state) => state.project?.rootPath ?? null);
+  const cacheKey = workflowsCacheKey(projectRoot);
+  const warmCache = !WORKFLOWS_CACHE_DISABLED ? workflowsWarmCacheByProject.get(cacheKey) ?? null : null;
+  const [view, setViewRaw] = React.useState<WorkflowView>(() => warmCache?.view ?? readWorkflowView(projectRoot));
+  const [integrationWorkflows, setIntegrationWorkflows] = React.useState<IntegrationProposal[]>(
+    () => warmCache?.integrationWorkflows ?? [],
+  );
+  const [loading, setLoading] = React.useState(() => !warmCache);
   const [error, setError] = React.useState<string | null>(null);
+  const workflowsLoadedRef = React.useRef(Boolean(warmCache));
 
-  const loadWorkflows = React.useCallback(async () => {
-    setLoading(true);
+  const setView = React.useCallback((next: WorkflowView) => {
+    setViewRaw(next);
+    writeWorkflowView(projectRoot, next);
+  }, [projectRoot]);
+
+  React.useEffect(() => {
+    const cached = !WORKFLOWS_CACHE_DISABLED ? workflowsWarmCacheByProject.get(workflowsCacheKey(projectRoot)) ?? null : null;
+    setViewRaw(cached?.view ?? readWorkflowView(projectRoot));
+  }, [projectRoot]);
+
+  const loadWorkflows = React.useCallback(async (options?: { silent?: boolean; skipFreshCache?: boolean }) => {
+    const cached = !WORKFLOWS_CACHE_DISABLED ? workflowsWarmCacheByProject.get(cacheKey) ?? null : null;
+    if (
+      options?.skipFreshCache
+      && cached
+      && Date.now() - cached.cachedAt < WORKFLOWS_CACHE_TTL_MS
+    ) {
+      setLoading(false);
+      return;
+    }
+    if (!options?.silent) setLoading(true);
     setError(null);
     try {
       const next = await window.ade.prs.listIntegrationWorkflows({ view: "all" });
+      workflowsLoadedRef.current = true;
       setIntegrationWorkflows(next);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [cacheKey]);
 
   React.useEffect(() => {
-    void loadWorkflows();
-  }, [loadWorkflows]);
+    void loadWorkflows({ silent: Boolean(warmCache), skipFreshCache: true });
+  }, [loadWorkflows, warmCache]);
+
+  React.useEffect(() => {
+    if (WORKFLOWS_CACHE_DISABLED) return;
+    if (!workflowsLoadedRef.current && integrationWorkflows.length === 0) return;
+    workflowsWarmCacheByProject.set(cacheKey, {
+      view,
+      integrationWorkflows,
+      cachedAt: Date.now(),
+    });
+  }, [cacheKey, integrationWorkflows, view]);
 
   const refreshWorkflows = React.useCallback(async () => {
     await Promise.all([
@@ -708,7 +784,7 @@ export function WorkflowsTab({
     if (historyAttentionLaneIds.has(selectedRebaseItemId) && view !== "history") {
       setView("history");
     }
-  }, [activeCategory, rebaseAttentionByView.active, rebaseAttentionByView.history, rebaseByView.active, rebaseByView.history, selectedRebaseItemId, view]);
+  }, [activeCategory, rebaseAttentionByView.active, rebaseAttentionByView.history, rebaseByView.active, rebaseByView.history, selectedRebaseItemId, setView, view]);
 
   const counts = {
     integration: integrationByView[view].length,

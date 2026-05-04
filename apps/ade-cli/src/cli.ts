@@ -1386,6 +1386,11 @@ function readPipelineSettingsPatch(args: string[]): JsonObject {
       );
     }
     patch.forceFinalizeMode = forceFinalize;
+    patch.atCapPolicy = forceFinalize === "off"
+      ? "stop"
+      : forceFinalize === "unconditional"
+        ? "force_merge"
+        : "ci_retry_once";
   }
 
   const requireNoCi = readFlag(args, ["--force-finalize-require-no-ci"]);
@@ -1398,6 +1403,45 @@ function readPipelineSettingsPatch(args: string[]): JsonObject {
   const earlyMergeOff = readFlag(args, ["--no-early-merge-on-green"]);
   if (earlyMergeOn || earlyMergeOff) {
     patch.earlyMergeOnGreen = earlyMergeOn && !earlyMergeOff;
+  }
+
+  const atCapPolicy = readValue(args, ["--at-cap-policy"]);
+  if (atCapPolicy) {
+    if (
+      atCapPolicy !== "stop"
+      && atCapPolicy !== "wait_for_ci"
+      && atCapPolicy !== "ci_retry_once"
+      && atCapPolicy !== "ci_retry_loop"
+      && atCapPolicy !== "force_merge"
+    ) {
+      throw new CliUsageError(
+        "--at-cap-policy must be one of stop, wait_for_ci, ci_retry_once, ci_retry_loop, or force_merge.",
+      );
+    }
+    patch.atCapPolicy = atCapPolicy;
+    patch.forceFinalizeMode = atCapPolicy === "stop"
+      ? "off"
+      : atCapPolicy === "force_merge"
+        ? "unconditional"
+        : "conditional";
+  }
+
+  const atCapWaitMinutes = readIntOption(args, ["--at-cap-wait-minutes"]);
+  if (atCapWaitMinutes != null) {
+    if (atCapWaitMinutes < 1) throw new CliUsageError("--at-cap-wait-minutes must be at least 1.");
+    patch.atCapWaitMinutes = atCapWaitMinutes;
+  }
+
+  const atCapCiRetryMax = readIntOption(args, ["--at-cap-ci-retry-max"]);
+  if (atCapCiRetryMax != null) {
+    if (atCapCiRetryMax < 1) throw new CliUsageError("--at-cap-ci-retry-max must be at least 1.");
+    patch.atCapCiRetryMax = atCapCiRetryMax;
+  }
+
+  const forceMergeConfirm = readFlag(args, ["--force-merge-requires-confirmation"]);
+  const noForceMergeConfirm = readFlag(args, ["--no-force-merge-requires-confirmation"]);
+  if (forceMergeConfirm || noForceMergeConfirm) {
+    patch.forceMergeRequiresConfirmation = forceMergeConfirm && !noForceMergeConfirm;
   }
 
   return patch;
@@ -2228,8 +2272,11 @@ function buildChatPlan(args: string[]): CliPlan {
   const sessionId = readValue(args, ["--session", "--session-id"]) ?? (sub !== "create" && sub !== "list" ? firstPositional(args) : null);
   const withSession = (base: JsonObject = {}) => collectGenericObjectArgs(args, { ...base, ...(sessionId ? { sessionId } : {}) });
   if (sub === "list" || sub === "ls") return { kind: "execute", label: "chat list", steps: [actionStep("result", "chat", "listSessions", collectGenericObjectArgs(args))] };
-  if (sub === "show" || sub === "status") return { kind: "execute", label: "chat status", steps: [actionStep("result", "chat", "getSessionSummary", withSession())] };
-  if (sub === "create" || sub === "spawn") return { kind: "execute", label: "chat create", steps: [actionStep("result", "chat", "createSession", collectGenericObjectArgs(args, { laneId: readLaneId(args), provider: readValue(args, ["--provider"]), modelId: readValue(args, ["--model", "--model-id"]), permissionMode: readValue(args, ["--permission-mode", "--permissions"]), droidPermissionMode: readValue(args, ["--droid-permission-mode", "--droid-autonomy", "--autonomy"]), surface: readValue(args, ["--surface"]) ?? "work" }))] };
+  if (sub === "show" || sub === "status") return { kind: "execute", label: "chat status", steps: [actionArgsListStep("result", "chat", "getSessionSummary", [requireValue(sessionId, "sessionId")])] };
+  if (sub === "create" || sub === "spawn") {
+    const modelArg = readValue(args, ["--model", "--model-id"]);
+    return { kind: "execute", label: "chat create", steps: [actionStep("result", "chat", "createSession", collectGenericObjectArgs(args, { laneId: readLaneId(args), provider: readValue(args, ["--provider"]), model: modelArg, modelId: modelArg, permissionMode: readValue(args, ["--permission-mode", "--permissions"]), droidPermissionMode: readValue(args, ["--droid-permission-mode", "--droid-autonomy", "--autonomy"]), title: readValue(args, ["--title"]), surface: readValue(args, ["--surface"]) ?? "work" }))] };
+  }
   if (sub === "send") return { kind: "execute", label: "chat send", steps: [actionStep("result", "chat", "sendMessage", withSession({ sessionId: requireValue(sessionId, "sessionId"), text: requireValue(readValue(args, ["--text", "--message"]) ?? args.join(" "), "message text") }))] };
   if (sub === "interrupt") return { kind: "execute", label: "chat interrupt", steps: [actionStep("result", "chat", "interrupt", withSession({ sessionId: requireValue(sessionId, "sessionId") }))] };
   if (sub === "resume") return { kind: "execute", label: "chat resume", steps: [actionStep("result", "chat", "resumeSession", withSession())] };

@@ -318,6 +318,13 @@ struct PrDetailView: View {
           onSetPipelineMergeMethod: setPipelineMergeMethod,
           onSetPipelineMaxRounds: setPipelineMaxRounds,
           onSetPipelineRebasePolicy: setPipelineRebasePolicy,
+          onSetPipelineConflictStrategy: setPipelineConflictStrategy,
+          onSetAtCapPolicy: setPipelineAtCapPolicy,
+          onSetAtCapWaitMinutes: setPipelineAtCapWaitMinutes,
+          onSetAtCapCiRetryMax: setPipelineAtCapCiRetryMax,
+          onSetForceMergeRequiresConfirmation: setPipelineForceMergeRequiresConfirmation,
+          onSetForceFinalizeRequireNoCiFailures: setPipelineForceFinalizeRequireNoCiFailures,
+          onSetEarlyMergeOnGreen: setPipelineEarlyMergeOnGreen,
           onCopyPrompt: copyConvergencePrompt,
           onLaunchAiResolver: { aiResolverSheetPresented = true },
           onStopAiResolver: stopAiResolver,
@@ -1035,6 +1042,10 @@ struct PrDetailView: View {
       do {
         let result = try await syncService.startPathToMerge(prId: prId)
         applyConvergenceRuntime(result.runtime)
+        if !result.scheduled {
+          errorMessage = result.blockedBy?.message ?? "Path to Merge is blocked by another lane task."
+          return
+        }
         actionMessage = "Path to Merge started."
       } catch {
         errorMessage = error.localizedDescription
@@ -1131,44 +1142,113 @@ struct PrDetailView: View {
     }
   }
 
-  private func toggleAutoMerge() {
-    let next = !(pipelineSettings?.autoMerge ?? false)
-    runPrAction(next ? "Enabling auto-merge" : "Disabling auto-merge") {
-      try await syncService.savePipelineSettings(prId: prId, autoMerge: next)
+  private func defaultPipelineSettings() -> PipelineSettings {
+    PipelineSettings(
+      autoMerge: false,
+      mergeMethod: "repo_default",
+      maxRounds: 5,
+      onRebaseNeeded: "pause",
+      conflictStrategy: "pause",
+      forceFinalizeMode: "off",
+      forceFinalizeRequireNoCiFailures: true,
+      atCapPolicy: "stop",
+      atCapWaitMinutes: 30,
+      atCapCiRetryMax: 3,
+      forceMergeRequiresConfirmation: true,
+      earlyMergeOnGreen: true
+    )
+  }
+
+  private func updatePipelineSettings(_ label: String, mutate: @escaping (inout PipelineSettings) -> Void) {
+    runPrAction(label) {
+      var next: PipelineSettings
+      if let current = pipelineSettings {
+        next = current
+      } else if let fetched = try? await syncService.fetchPipelineSettings(prId: prId) {
+        next = fetched
+      } else {
+        next = defaultPipelineSettings()
+      }
+      mutate(&next)
+      try await syncService.savePipelineSettings(prId: prId, settings: next)
       let settings = try await syncService.fetchPipelineSettings(prId: prId)
       await MainActor.run {
         pipelineSettings = settings
       }
+    }
+  }
+
+  private func toggleAutoMerge() {
+    let next = !(pipelineSettings?.autoMerge ?? false)
+    updatePipelineSettings(next ? "Enabling auto-merge" : "Disabling auto-merge") { settings in
+      settings.autoMerge = next
     }
   }
 
   private func setPipelineMergeMethod(_ method: String) {
-    runPrAction("Updating merge method") {
-      try await syncService.savePipelineSettings(prId: prId, mergeMethod: method)
-      let settings = try await syncService.fetchPipelineSettings(prId: prId)
-      await MainActor.run {
-        pipelineSettings = settings
-      }
+    updatePipelineSettings("Updating merge method") { settings in
+      settings.mergeMethod = method
     }
   }
 
   private func setPipelineMaxRounds(_ maxRounds: Int) {
-    runPrAction("Updating max rounds") {
-      try await syncService.savePipelineSettings(prId: prId, maxRounds: maxRounds)
-      let settings = try await syncService.fetchPipelineSettings(prId: prId)
-      await MainActor.run {
-        pipelineSettings = settings
-      }
+    updatePipelineSettings("Updating max rounds") { settings in
+      settings.maxRounds = maxRounds
     }
   }
 
   private func setPipelineRebasePolicy(_ policy: String) {
-    runPrAction("Updating rebase policy") {
-      try await syncService.savePipelineSettings(prId: prId, onRebaseNeeded: policy)
-      let settings = try await syncService.fetchPipelineSettings(prId: prId)
-      await MainActor.run {
-        pipelineSettings = settings
+    updatePipelineSettings("Updating rebase policy") { settings in
+      settings.onRebaseNeeded = policy
+      settings.conflictStrategy = policy == "auto_rebase" ? "rebase" : "pause"
+    }
+  }
+
+  private func setPipelineConflictStrategy(_ strategy: String) {
+    updatePipelineSettings("Updating conflict strategy") { settings in
+      settings.conflictStrategy = strategy
+      settings.onRebaseNeeded = strategy == "rebase" ? "auto_rebase" : "pause"
+    }
+  }
+
+  private func setPipelineAtCapPolicy(_ policy: String) {
+    updatePipelineSettings("Updating at-cap policy") { settings in
+      settings.atCapPolicy = policy
+      if policy == "force_merge" {
+        settings.forceFinalizeMode = "force_merge"
+      } else if settings.forceFinalizeMode == "force_merge" {
+        settings.forceFinalizeMode = "off"
       }
+    }
+  }
+
+  private func setPipelineAtCapWaitMinutes(_ minutes: Int) {
+    updatePipelineSettings("Updating at-cap wait") { settings in
+      settings.atCapWaitMinutes = max(1, min(180, minutes))
+    }
+  }
+
+  private func setPipelineAtCapCiRetryMax(_ maxRetries: Int) {
+    updatePipelineSettings("Updating CI retry max") { settings in
+      settings.atCapCiRetryMax = max(1, min(10, maxRetries))
+    }
+  }
+
+  private func setPipelineForceMergeRequiresConfirmation(_ requiresConfirmation: Bool) {
+    updatePipelineSettings("Updating force-merge confirmation") { settings in
+      settings.forceMergeRequiresConfirmation = requiresConfirmation
+    }
+  }
+
+  private func setPipelineForceFinalizeRequireNoCiFailures(_ requiresCleanCi: Bool) {
+    updatePipelineSettings("Updating force-merge CI guard") { settings in
+      settings.forceFinalizeRequireNoCiFailures = requiresCleanCi
+    }
+  }
+
+  private func setPipelineEarlyMergeOnGreen(_ enabled: Bool) {
+    updatePipelineSettings("Updating early merge") { settings in
+      settings.earlyMergeOnGreen = enabled
     }
   }
 

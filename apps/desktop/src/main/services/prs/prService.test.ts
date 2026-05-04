@@ -67,6 +67,7 @@ function makeMockDb() {
 
 const LANE_ID = "lane-42";
 const REPO = { owner: "test-owner", name: "test-repo" };
+const GITHUB_SNAPSHOT_TTL_MS_FOR_TEST = 120_000;
 
 function makeFakeLane(overrides?: Partial<Record<string, unknown>>) {
   return {
@@ -117,6 +118,31 @@ function makePrRow(overrides?: Partial<Record<string, unknown>>) {
   };
 }
 
+function makeGitHubPull(overrides?: Partial<Record<string, unknown>>) {
+  return {
+    node_id: "PR_node_1",
+    number: 1,
+    html_url: "https://github.com/test-owner/test-repo/pull/1",
+    title: "Cached PR",
+    state: "open",
+    draft: false,
+    base: {
+      ref: "main",
+      repo: {
+        owner: { login: REPO.owner },
+        name: REPO.name,
+      },
+    },
+    head: { ref: "feature/cached" },
+    user: { login: "octocat", type: "User" },
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    labels: [],
+    comments: 0,
+    ...overrides,
+  };
+}
+
 function makeGithubService(overrides?: Record<string, unknown>) {
   return {
     getRepoOrThrow: vi.fn(async () => REPO),
@@ -141,6 +167,12 @@ function makeOperationService() {
     start: vi.fn(() => ({ operationId: "op-1" })),
     finish: vi.fn(),
   } as any;
+}
+
+async function flushMicrotasks(times = 10): Promise<void> {
+  for (let i = 0; i < times; i += 1) {
+    await Promise.resolve();
+  }
 }
 
 function makeProjectConfigService() {
@@ -323,6 +355,54 @@ describe("prService.getForLane", () => {
     ]);
 
     expect(service.getForLane(lane.id)?.githubPrNumber).toBe(91);
+  });
+});
+
+describe("prService.getGithubSnapshot", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns stale cached data immediately while revalidating in the background", async () => {
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-01-01T00:00:00Z"));
+    let resolveRevalidation!: (value: unknown) => void;
+    const revalidationStarted = new Promise<unknown>((resolve) => {
+      resolveRevalidation = resolve;
+    });
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => ({
+        tokenStored: true,
+        repo: REPO,
+        userLogin: "octocat",
+      })),
+      apiRequest: vi.fn()
+        .mockResolvedValueOnce({ data: [makeGitHubPull({ title: "Cached PR" })] })
+        .mockResolvedValueOnce({ data: { items: [] } })
+        .mockImplementationOnce(() => revalidationStarted)
+        .mockResolvedValueOnce({ data: { items: [] } }),
+    });
+    const { service } = buildService({ githubService, laneService: makeLaneService([]) });
+
+    try {
+      const first = await service.getGithubSnapshot();
+      expect(first.repoPullRequests[0]?.title).toBe("Cached PR");
+      expect(githubService.apiRequest).toHaveBeenCalledTimes(2);
+
+      nowSpy.mockReturnValue(Date.parse("2026-01-01T00:00:00Z") + GITHUB_SNAPSHOT_TTL_MS_FOR_TEST + 1);
+      const stale = await service.getGithubSnapshot();
+      expect(stale.repoPullRequests[0]?.title).toBe("Cached PR");
+      await flushMicrotasks();
+      expect(githubService.apiRequest).toHaveBeenCalledTimes(3);
+
+      resolveRevalidation({ data: [makeGitHubPull({ title: "Fresh PR", updated_at: "2026-01-01T00:05:00Z" })] });
+      await flushMicrotasks();
+
+      const fresh = await service.getGithubSnapshot();
+      expect(fresh.repoPullRequests[0]?.title).toBe("Fresh PR");
+      expect(githubService.apiRequest).toHaveBeenCalledTimes(4);
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 });
 

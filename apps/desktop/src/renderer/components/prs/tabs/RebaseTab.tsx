@@ -1,6 +1,6 @@
 import React from "react";
 import { ArrowsDownUp, Clock, CheckCircle, Warning, Sparkle, Eye, XCircle, GitCommit, FileText, CaretDown, CaretRight, ArrowRight, CircleNotch } from "@phosphor-icons/react";
-import type { AiPermissionMode, AutoRebaseLaneStatus, GitCommitSummary, LaneSummary, RebaseNeed, RebaseRun, RebaseScope } from "../../../../shared/types";
+import type { AutoRebaseLaneStatus, GitCommitSummary, LaneSummary, PrAgentPermissionMode, RebaseNeed, RebaseRun, RebaseScope } from "../../../../shared/types";
 import { Button } from "../../ui/Button";
 import { EmptyState } from "../../ui/EmptyState";
 import { cn } from "../../ui/cn";
@@ -31,9 +31,9 @@ type RebaseTabProps = {
   onSelectItem: (id: string | null) => void;
   resolverModel: string;
   resolverReasoningLevel: string;
-  resolverPermissionMode: AiPermissionMode;
+  resolverPermissionMode: PrAgentPermissionMode;
   onResolverChange: (model: string, level: string) => void;
-  onResolverPermissionChange: (mode: AiPermissionMode) => void;
+  onResolverPermissionChange: (mode: PrAgentPermissionMode) => void;
   onRefresh: () => Promise<void>;
   onNavigate: (path: string) => void;
 };

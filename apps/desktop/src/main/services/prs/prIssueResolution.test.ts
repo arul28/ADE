@@ -140,6 +140,12 @@ function makeRuntimeRow(overrides: Record<string, unknown> = {}) {
     active_href: "/work?laneId=lane-1&sessionId=session-1",
     pause_reason: null,
     error_message: null,
+    force_finalize_used: 0,
+    ci_retry_attempts_used: 0,
+    wait_for_ci_started_at: null,
+    last_dispatch_head_sha: null,
+    pause_repeat_count: 0,
+    last_pause_reason_hash: null,
     last_started_at: "2026-03-23T12:00:00.000Z",
     last_polled_at: "2026-03-23T12:01:00.000Z",
     last_paused_at: null,
@@ -1098,6 +1104,34 @@ describe("issueInventoryService", () => {
     });
   });
 
+  describe("resetSentToAgent", () => {
+    it("returns sent items to new and rolls back the aborted round for a session", () => {
+      const db = makeMockDb();
+      db.get
+        .mockReturnValueOnce({ count: 2 })
+        .mockReturnValueOnce({ max_round: 1 });
+      const service = createIssueInventoryService({ db });
+
+      service.resetSentToAgent(PR_ID, { sessionId: "session-99" });
+
+      expect(db.run).toHaveBeenCalledTimes(2);
+      expect(db.run.mock.calls[0][0]).toContain("round = case when round > 0 then round - 1 else 0 end");
+      expect(db.run.mock.calls[0][1]).toEqual(expect.arrayContaining([PR_ID, "session-99"]));
+      expect(db.run.mock.calls[1][0]).toContain("current_round = min(current_round, ?)");
+      expect(db.run.mock.calls[1][1]).toEqual(expect.arrayContaining([1, PR_ID]));
+    });
+
+    it("does not clamp runtime round when no sent items match", () => {
+      const db = makeMockDb();
+      db.get.mockReturnValueOnce({ count: 0 });
+      const service = createIssueInventoryService({ db });
+
+      service.resetSentToAgent(PR_ID, { sessionId: "missing-session" });
+
+      expect(db.run).not.toHaveBeenCalled();
+    });
+  });
+
   describe("markFixed", () => {
     it("updates items to fixed state", () => {
       const db = makeMockDb();
@@ -1327,6 +1361,12 @@ describe("issueInventoryService", () => {
             auto_converge_enabled: 0,
             status: "polling",
             poller_status: "waiting_for_checks",
+            force_finalize_used: 1,
+            ci_retry_attempts_used: 2,
+            wait_for_ci_started_at: "2026-03-23T12:02:00.000Z",
+            last_dispatch_head_sha: "abc123",
+            pause_repeat_count: 3,
+            last_pause_reason_hash: "hash-1",
           });
         }
         return null;
@@ -1340,7 +1380,57 @@ describe("issueInventoryService", () => {
         autoConvergeEnabled: false,
         status: "polling",
         pollerStatus: "waiting_for_checks",
+        forceFinalizeUsed: true,
+        ciRetryAttemptsUsed: 2,
+        waitForCiStartedAt: "2026-03-23T12:02:00.000Z",
+        lastDispatchHeadSha: "abc123",
+        pauseRepeatCount: 3,
+        lastPauseReasonHash: "hash-1",
       }));
+    });
+
+    it("derives Path to Merge ownership from persisted run args", () => {
+      const db = makeMockDb();
+      db.get.mockImplementation((sql: string) => {
+        if (sql.includes("select ptm_args_json")) {
+          return { ptm_args_json: "{\"modelId\":\"openai/gpt-5.4\"}" };
+        }
+        if (sql.includes("from pr_convergence_state")) {
+          return makeRuntimeRow({
+            auto_converge_enabled: 1,
+            status: "polling",
+            poller_status: "waiting_for_checks",
+          });
+        }
+        return null;
+      });
+
+      const service = createIssueInventoryService({ db });
+      const runtime = service.getConvergenceRuntime(PR_ID);
+
+      expect(runtime.pathToMergeActive).toBe(true);
+    });
+
+    it("does not treat stopped Path to Merge args as active ownership", () => {
+      const db = makeMockDb();
+      db.get.mockImplementation((sql: string) => {
+        if (sql.includes("select ptm_args_json")) {
+          return { ptm_args_json: "{\"modelId\":\"openai/gpt-5.4\"}" };
+        }
+        if (sql.includes("from pr_convergence_state")) {
+          return makeRuntimeRow({
+            auto_converge_enabled: 0,
+            status: "paused",
+            poller_status: "paused",
+          });
+        }
+        return null;
+      });
+
+      const service = createIssueInventoryService({ db });
+      const runtime = service.getConvergenceRuntime(PR_ID);
+
+      expect(runtime.pathToMergeActive).toBe(false);
     });
 
     it("upserts convergence runtime state", () => {
@@ -1358,6 +1448,12 @@ describe("issueInventoryService", () => {
         activeHref: "/work?laneId=lane-9&sessionId=session-9",
         pauseReason: null,
         errorMessage: null,
+        forceFinalizeUsed: true,
+        ciRetryAttemptsUsed: 2,
+        waitForCiStartedAt: "2026-03-23T12:02:00.000Z",
+        lastDispatchHeadSha: "abc123",
+        pauseRepeatCount: 3,
+        lastPauseReasonHash: "hash-1",
       });
 
       expect(runtime.prId).toBe(PR_ID);
@@ -1373,6 +1469,12 @@ describe("issueInventoryService", () => {
       expect(params[3]).toBe("scheduled");
       expect(params[4]).toBe(3);
       expect(params[5]).toBe("session-9");
+      expect(params[10]).toBe(1);
+      expect(params[11]).toBe(2);
+      expect(params[12]).toBe("2026-03-23T12:02:00.000Z");
+      expect(params[13]).toBe("abc123");
+      expect(params[14]).toBe(3);
+      expect(params[15]).toBe("hash-1");
     });
 
     it("reconciles active convergence sessions when a tracked chat exits", () => {
@@ -1448,6 +1550,10 @@ describe("issueInventoryService", () => {
         },
         forceFinalizeMode: "off",
         forceFinalizeRequireNoCiFailures: true,
+        atCapPolicy: "stop",
+        atCapWaitMinutes: 30,
+        atCapCiRetryMax: 3,
+        forceMergeRequiresConfirmation: true,
         earlyMergeOnGreen: true,
       });
     });
@@ -1488,6 +1594,11 @@ describe("issueInventoryService", () => {
         },
         forceFinalizeMode: "conditional",
         forceFinalizeRequireNoCiFailures: true,
+        // Legacy row had no at_cap_policy column; we derive from forceFinalizeMode.
+        atCapPolicy: "ci_retry_once",
+        atCapWaitMinutes: 30,
+        atCapCiRetryMax: 3,
+        forceMergeRequiresConfirmation: true,
         earlyMergeOnGreen: false,
       });
     });
@@ -2032,6 +2143,22 @@ describe("issueInventoryService", () => {
       ).toThrow(/Invalid currentRound/);
     });
 
+    it("rejects malformed durable runtime counters", () => {
+      const db = makeMockDb();
+      db.get.mockReturnValue(null);
+
+      const service = createIssueInventoryService({ db });
+      expect(() =>
+        service.saveConvergenceRuntime(PR_ID, { ciRetryAttemptsUsed: -1 }),
+      ).toThrow(/Invalid ciRetryAttemptsUsed/);
+      expect(() =>
+        service.saveConvergenceRuntime(PR_ID, { pauseRepeatCount: 1.5 }),
+      ).toThrow(/Invalid pauseRepeatCount/);
+      expect(() =>
+        service.saveConvergenceRuntime(PR_ID, { forceFinalizeUsed: "yes" as any }),
+      ).toThrow(/Invalid forceFinalizeUsed/);
+    });
+
     it("accepts valid runtime state fields", () => {
       const db = makeMockDb();
       db.get.mockReturnValue(null);
@@ -2042,6 +2169,12 @@ describe("issueInventoryService", () => {
           status: "running",
           pollerStatus: "polling",
           currentRound: 3,
+          forceFinalizeUsed: true,
+          ciRetryAttemptsUsed: 1,
+          waitForCiStartedAt: "2026-03-23T12:02:00.000Z",
+          lastDispatchHeadSha: "abc123",
+          pauseRepeatCount: 2,
+          lastPauseReasonHash: "hash-1",
         }),
       ).not.toThrow();
     });

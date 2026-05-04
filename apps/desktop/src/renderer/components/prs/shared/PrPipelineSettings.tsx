@@ -1,14 +1,15 @@
 import React from "react";
 import type {
-  AiPermissionMode,
+  AtCapPolicy,
   AutoConflictAgentProvider,
   AutoConflictAgentSettings,
-  ConflictResolverPermissionMode,
   ConflictStrategy,
   ForceFinalizeMode,
   PipelineMergeMethod,
   PipelineSettings,
+  PrAgentPermissionMode,
 } from "../../../../shared/types";
+import { getModelById } from "../../../../shared/modelRegistry";
 import { COLORS, MONO_FONT, SANS_FONT } from "../../lanes/laneDesignTokens";
 import { PrResolverLaunchControls } from "./PrResolverLaunchControls";
 import { SmartTooltip, type SmartTooltipContent } from "../../ui/SmartTooltip";
@@ -23,10 +24,10 @@ export type PrPipelineSettingsProps = {
   showAutoConvergeSettings?: boolean;
   modelId: string;
   reasoningEffort: string;
-  permissionMode: AiPermissionMode;
+  permissionMode: PrAgentPermissionMode;
   onModelChange: (modelId: string) => void;
   onReasoningEffortChange: (value: string) => void;
-  onPermissionModeChange: (mode: AiPermissionMode) => void;
+  onPermissionModeChange: (mode: PrAgentPermissionMode) => void;
   disabled?: boolean;
 };
 
@@ -34,11 +35,13 @@ export type PrPipelineSettingsProps = {
 // Constants
 // ---------------------------------------------------------------------------
 
+// Order matters: history-preserving methods first, squash last (it rewrites
+// SHAs and breaks future stacked branches with add/add conflicts).
 const MERGE_METHOD_OPTIONS: Array<{ value: PipelineMergeMethod; label: string }> = [
   { value: "repo_default", label: "Repo default" },
   { value: "merge", label: "Merge commit" },
-  { value: "squash", label: "Squash and merge" },
   { value: "rebase", label: "Rebase and merge" },
+  { value: "squash", label: "Squash and merge (rewrites history)" },
 ];
 
 type ConflictStrategyOption = {
@@ -81,97 +84,90 @@ const CONFLICT_STRATEGY_OPTIONS: ConflictStrategyOption[] = [
     tooltip: {
       label: "Agent-resolved conflicts",
       description:
-        "An agent picks rebase vs merge and resolves any conflict markers itself. Configure the agent in the section below.",
+        "An agent picks rebase vs merge and resolves any conflict markers itself. Configure the resolver agent below.",
     },
   },
 ];
 
-type ForceFinalizeOption = {
-  value: ForceFinalizeMode;
+type AtCapPolicyOption = {
+  value: AtCapPolicy;
   label: string;
+  description: string;
   tooltip: SmartTooltipContent;
 };
 
-const FORCE_FINALIZE_OPTIONS: ForceFinalizeOption[] = [
+const AT_CAP_POLICY_OPTIONS: AtCapPolicyOption[] = [
   {
-    value: "off",
-    label: "Don't force-merge",
+    value: "stop",
+    label: "Stop and wait for me",
+    description: "Pause the loop. The PR stays as-is.",
     tooltip: {
-      label: "Force-finalize off",
+      label: "Stop at iteration cap",
       description:
-        "If iterations run out without converging, stop and leave the PR alone. Safest — you'll come back and finish by hand.",
+        "Don't try anything more — leave the PR for you to finish by hand. Safest option.",
     },
   },
   {
-    value: "unconditional",
-    label: "Force-merge once iterations are exhausted",
+    value: "wait_for_ci",
+    label: "Wait for CI to finish, then merge if green",
+    description:
+      "Stop running the agent. Keep polling CI for up to the wait window; merge if it goes green, otherwise stop.",
     tooltip: {
-      label: "Always force-finalize",
+      label: "Wait for CI",
       description:
-        "After the last iteration, run one more pass that lands the merge no matter what.",
-      warning: "Bypasses unresolved review comments and ignores most checks.",
+        "If iterations exhausted but CI is still running, sit and watch CI. If it goes green within the wait window, merge. If it fails or times out, pause.",
     },
   },
   {
-    value: "conditional",
-    label: "Force-merge only if conditions hold",
+    value: "ci_retry_once",
+    label: "One more CI-only iteration, then merge if green",
+    description:
+      "Run the agent one extra time targeting CI failures only. Merge if CI is green afterward; otherwise stop.",
     tooltip: {
-      label: "Conditional force-finalize",
+      label: "One CI retry",
       description:
-        "Run the bonus merge pass only when guardrails below pass — e.g. no CI checks are currently failing.",
-    },
-  },
-];
-
-const AUTO_AGENT_PROVIDER_OPTIONS: Array<{ value: string; label: string }> = [
-  { value: "__inherit", label: "Inherit default" },
-  { value: "claude", label: "Claude" },
-  { value: "codex", label: "Codex" },
-];
-
-const AUTO_AGENT_REASONING_OPTIONS: Array<{ value: string; label: string }> = [
-  { value: "__unspecified", label: "Unspecified" },
-  { value: "low", label: "Low" },
-  { value: "medium", label: "Medium" },
-  { value: "high", label: "High" },
-];
-
-const AUTO_AGENT_PERMISSION_OPTIONS: Array<{
-  value: ConflictResolverPermissionMode;
-  label: string;
-  tooltip: SmartTooltipContent;
-}> = [
-  {
-    value: "read_only",
-    label: "Read only",
-    tooltip: {
-      label: "Read-only resolver",
-      description:
-        "The agent can plan but not write to disk. Use when you want to inspect what it would do without touching files.",
+        "Skip review comments and dispatch one bonus agent iteration scoped to CI fixes. If CI ends up green after that round, attempt the merge ladder. If it doesn't, pause.",
     },
   },
   {
-    value: "guarded_edit",
-    label: "Guarded edit",
+    value: "ci_retry_loop",
+    label: "Keep iterating on CI failures (bounded)",
+    description:
+      "Keep dispatching CI-only fix iterations until CI is green or the retry budget is used up.",
     tooltip: {
-      label: "Guarded edits",
+      label: "Bounded CI retry loop",
       description:
-        "The agent edits files but is restricted from destructive shell commands. Sensible default for most repos.",
+        "Like the one-shot CI retry, but allow up to N bonus iterations (configured below). No more iterations on review comments — purely fixing CI. Merge as soon as CI goes green.",
     },
   },
   {
-    value: "full_edit",
-    label: "Full edit",
+    value: "force_merge",
+    label: "Force-merge regardless (dangerous)",
+    description:
+      "Skip retries. Run the merge ladder immediately, ignoring CI and review.",
     tooltip: {
-      label: "Full edit access",
+      label: "Force-merge",
       description:
-        "Unrestricted edits and shell access. Fastest at resolving messy conflicts; most risky if the agent misjudges.",
+        "Bypass CI status and unresolved review comments. Uses gh's --admin merge if the normal merge is blocked. Reserved for emergencies.",
+      warning: "Use with care — lands the PR even if CI is red or reviewers haven't signed off.",
     },
   },
 ];
 
 const ACCENT_GREEN = "#22C55E";
 const WARNING_AMBER = "#F59E0B";
+
+// Map a chosen modelId to the autoAgentSettings.provider value the orchestrator
+// requires (pathToMergeOrchestrator.ts:495–498 fails if provider is null when
+// strategy is "auto"). Mirrors the legacy mapping at prs.ts:876.
+function deriveAutoAgentProvider(modelId: string): AutoConflictAgentProvider | null {
+  if (!modelId) return null;
+  const descriptor = getModelById(modelId);
+  if (!descriptor) return null;
+  if (descriptor.family === "anthropic") return "claude";
+  if (descriptor.family === "openai") return "codex";
+  return null;
+}
 
 // ---------------------------------------------------------------------------
 // Keyframes
@@ -205,6 +201,38 @@ function ensureKeyframes() {
     input.pipeline-number::-webkit-inner-spin-button,
     input.pipeline-number::-webkit-outer-spin-button {
       opacity: 1;
+    }
+    input.pipeline-slider {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 100%;
+      height: 4px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.08);
+      outline: none;
+      cursor: pointer;
+    }
+    input.pipeline-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 14px;
+      height: 14px;
+      border-radius: 999px;
+      background: #FAFAFA;
+      border: 2px solid color-mix(in srgb, var(--color-accent) 70%, transparent);
+      box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+      cursor: pointer;
+      transition: transform 0.12s ease;
+    }
+    input.pipeline-slider::-webkit-slider-thumb:hover {
+      transform: scale(1.15);
+    }
+    input.pipeline-slider:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+    input.pipeline-slider:disabled::-webkit-slider-thumb {
+      cursor: not-allowed;
     }
   `;
   document.head.appendChild(style);
@@ -387,7 +415,7 @@ function StyledSelect({
         transition: "all 0.15s ease",
         minWidth: 0,
         flex: 1,
-        maxWidth: 220,
+        maxWidth: 240,
       }}
     >
       {options.map((opt) => (
@@ -574,14 +602,14 @@ export function PrPipelineSettings({
     maxRounds,
     conflictStrategy,
     autoAgentSettings,
-    forceFinalizeMode,
-    forceFinalizeRequireNoCiFailures,
-    earlyMergeOnGreen,
+    atCapPolicy,
+    atCapWaitMinutes,
+    atCapCiRetryMax,
+    forceMergeRequiresConfirmation,
   } = settings;
 
-  const mergeDisabled = disabled || !autoMerge;
   const showsForcePushWarning = conflictStrategy === "rebase" || conflictStrategy === "auto";
-  const autoAgentDisabled = disabled || conflictStrategy !== "auto";
+  const showsSquashWarning = mergeMethod === "squash";
 
   const updateAutoAgent = (partial: Partial<AutoConflictAgentSettings>) => {
     onSettingsChange({
@@ -589,492 +617,454 @@ export function PrPipelineSettings({
     });
   };
 
+  // When the user picks a model in the resolver section, also derive and
+  // persist the provider — the orchestrator rejects strategy="auto" with a
+  // null provider (pathToMergeOrchestrator.ts:495–498).
+  const handleResolverModelChange = (nextModelId: string) => {
+    updateAutoAgent({
+      model: nextModelId || null,
+      provider: deriveAutoAgentProvider(nextModelId),
+    });
+  };
+
+  const handleConflictStrategyChange = (next: ConflictStrategy) => {
+    if (next !== "auto") {
+      onSettingsChange({ conflictStrategy: next });
+      return;
+    }
+
+    const fallbackModel = autoAgentSettings.model || modelId || null;
+    onSettingsChange({
+      conflictStrategy: next,
+      autoAgentSettings: {
+        ...autoAgentSettings,
+        model: fallbackModel,
+        provider: autoAgentSettings.provider ?? deriveAutoAgentProvider(fallbackModel ?? ""),
+        reasoningEffort: autoAgentSettings.reasoningEffort || reasoningEffort || null,
+        permissionMode: autoAgentSettings.permissionMode ?? permissionMode,
+      },
+    });
+  };
+
+  React.useEffect(() => {
+    if (conflictStrategy !== "auto") return;
+    const fallbackModel = autoAgentSettings.model || modelId || null;
+    const fallbackProvider = autoAgentSettings.provider ?? deriveAutoAgentProvider(fallbackModel ?? "");
+    const patch: Partial<AutoConflictAgentSettings> = {};
+    if (!autoAgentSettings.model && fallbackModel) patch.model = fallbackModel;
+    if (!autoAgentSettings.provider && fallbackProvider) patch.provider = fallbackProvider;
+    if (!autoAgentSettings.reasoningEffort && reasoningEffort) patch.reasoningEffort = reasoningEffort;
+    if (!autoAgentSettings.permissionMode) patch.permissionMode = permissionMode;
+    if (Object.keys(patch).length === 0) return;
+    onSettingsChange({
+      autoAgentSettings: { ...autoAgentSettings, ...patch },
+    });
+  }, [
+    autoAgentSettings,
+    conflictStrategy,
+    modelId,
+    onSettingsChange,
+    permissionMode,
+    reasoningEffort,
+  ]);
+
+  // Master "Auto-merge this PR" toggle is on iff both fields are on. Treat
+  // earlyMergeOnGreen as an implicit corollary of autoMerge — the UI no longer
+  // exposes it as a separate switch.
+  const handleAutoMergeToggle = (on: boolean) => {
+    onSettingsChange({
+      autoMerge: on,
+      earlyMergeOnGreen: on,
+      // When turning auto-merge off, reset the at-cap policy to "stop" so it
+      // re-arms safely next time the user opts in.
+      ...(on ? {} : { atCapPolicy: "stop" as AtCapPolicy, forceFinalizeMode: "off" as ForceFinalizeMode }),
+    });
+  };
+
+  // Keep the legacy forceFinalizeMode in sync so older callers that read it
+  // (sync layer, queue runtime back-compat) see a coherent state. The
+  // orchestrator itself reads `atCapPolicy` directly.
+  const policyToLegacyForceFinalize = (policy: AtCapPolicy): ForceFinalizeMode => {
+    if (policy === "stop") return "off";
+    if (policy === "force_merge") return "unconditional";
+    return "conditional";
+  };
+
+  const handleAtCapPolicyChange = (next: AtCapPolicy) => {
+    if (next === "force_merge" && forceMergeRequiresConfirmation && atCapPolicy !== "force_merge") {
+      const ok = typeof window !== "undefined"
+        ? window.confirm(
+            "Force-merge will land this PR even if CI is failing or reviews are unresolved. Continue?",
+          )
+        : true;
+      if (!ok) return;
+    }
+    onSettingsChange({
+      atCapPolicy: next,
+      forceFinalizeMode: policyToLegacyForceFinalize(next),
+      // Mirror the conditional guardrail for legacy readers when retry policies
+      // are picked.
+      ...(next === "ci_retry_once" || next === "ci_retry_loop"
+        ? { forceFinalizeRequireNoCiFailures: true }
+        : {}),
+    });
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-      {/* --- Auto-converge-only settings (hidden in manual mode) --- */}
+      {/* ── Model & Permissions (always visible, top of panel) ── */}
+      <SettingCard>
+        <SectionDivider label="Model & permissions" />
+        <PrResolverLaunchControls
+          modelId={modelId}
+          reasoningEffort={reasoningEffort}
+          permissionMode={permissionMode}
+          onModelChange={onModelChange}
+          onReasoningEffortChange={onReasoningEffortChange}
+          onPermissionModeChange={onPermissionModeChange}
+          disabled={disabled}
+        />
+      </SettingCard>
+
       {showAutoConvergeSettings && (
-      <>
-      {/* ── Auto-merge card ── */}
-      <SettingCard>
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 12,
-          }}
-        >
-          <div style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0 }}>
-            <FieldLabel
-              text="Auto-merge when ready"
-              tooltip={{
-                label: "Auto-merge",
-                description:
-                  "Once iterations finish (or early-merge fires), land the PR on GitHub without waiting for you to click merge.",
-              }}
-            />
-            <span
-              style={{
-                fontFamily: SANS_FONT,
-                fontSize: 11,
-                color: COLORS.textMuted,
-                lineHeight: 1.4,
-              }}
-            >
-              Merge automatically as soon as convergence is satisfied.
-            </span>
-          </div>
-          <ToggleSwitch
-            checked={autoMerge}
-            onChange={(v) => onSettingsChange({ autoMerge: v })}
-            disabled={disabled}
-            ariaLabel="Auto-merge"
-          />
-        </div>
-
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 12,
-            marginTop: 10,
-            paddingTop: 10,
-            borderTop: `1px solid ${COLORS.border}`,
-          }}
-        >
-          <FieldLabel
-            text="Merge method"
-            tooltip={{
-              label: "Merge method",
-              description:
-                "How GitHub combines the PR — repo default uses whatever the repository allows. Only applies when auto-merge is on.",
-            }}
-            disabled={mergeDisabled}
-          />
-          <StyledSelect
-            value={mergeMethod}
-            onChange={(v) => onSettingsChange({ mergeMethod: v as PipelineMergeMethod })}
-            options={MERGE_METHOD_OPTIONS}
-            disabled={mergeDisabled}
-            ariaLabel="Merge method"
-          />
-        </div>
-      </SettingCard>
-
-      {/* ── Conflict strategy + auto-agent ── */}
-      <SettingCard>
-        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-          <FieldLabel
-            text="When the base branch advances or a merge conflict appears"
-            tooltip={{
-              label: "Conflict strategy",
-              description:
-                "How the convergence loop reacts when the base moves or a conflict surfaces between iterations.",
-            }}
-          />
-          <span
-            style={{
-              fontFamily: SANS_FONT,
-              fontSize: 11,
-              color: COLORS.textMuted,
-              lineHeight: 1.4,
-            }}
-          >
-            Pick one. Hover any option for details.
-          </span>
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 3, marginTop: 8 }}>
-          {CONFLICT_STRATEGY_OPTIONS.map((opt) => (
-            <RadioRow
-              key={opt.value}
-              value={opt.value}
-              selected={conflictStrategy === opt.value}
-              onSelect={(v) => onSettingsChange({ conflictStrategy: v })}
-              label={opt.label}
-              tooltip={opt.tooltip}
-              disabled={disabled}
-            />
-          ))}
-        </div>
-
-        {showsForcePushWarning ? (
-          <div
-            style={{
-              marginTop: 8,
-              padding: "7px 10px",
-              borderRadius: 6,
-              background: "rgba(245,158,11,0.08)",
-              border: `1px solid rgba(245,158,11,0.25)`,
-              color: WARNING_AMBER,
-              fontFamily: SANS_FONT,
-              fontSize: 11,
-              lineHeight: 1.4,
-            }}
-          >
-            Selected strategies may force-push your branch.
-          </div>
-        ) : null}
-
-        {/* Auto-agent sub-section — visually muted when not in `auto` */}
-        <div style={{ marginTop: 12 }}>
-          <SectionDivider label="Auto-agent settings" />
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              gap: 8,
-              opacity: autoAgentDisabled ? 0.55 : 1,
-              transition: "opacity 0.2s ease",
-              pointerEvents: autoAgentDisabled ? "none" : "auto",
-            }}
-          >
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 10,
-              }}
-            >
-              <FieldLabel
-                text="Provider"
-                tooltip={{
-                  label: "Resolver provider",
-                  description:
-                    "Which agent runtime resolves the conflict. Inherit-default falls back to your project-wide resolver provider.",
-                }}
-                disabled={autoAgentDisabled}
-              />
-              <StyledSelect
-                value={autoAgentSettings.provider ?? "__inherit"}
-                onChange={(v) =>
-                  updateAutoAgent({
-                    provider: v === "__inherit" ? null : (v as AutoConflictAgentProvider),
-                  })
-                }
-                options={AUTO_AGENT_PROVIDER_OPTIONS}
-                disabled={autoAgentDisabled}
-                ariaLabel="Auto-agent provider"
-              />
-            </div>
-
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 10,
-              }}
-            >
-              <FieldLabel
-                text="Model"
-                tooltip={{
-                  label: "Resolver model",
-                  description:
-                    "Override the model the resolver uses (e.g. anthropic/claude-3-5-sonnet). Leave blank to use the provider's default.",
-                }}
-                disabled={autoAgentDisabled}
-              />
-              <input
-                type="text"
-                aria-label="Auto-agent model"
-                value={autoAgentSettings.model ?? ""}
-                placeholder="Provider default"
-                onChange={(e) => {
-                  const next = e.target.value.trim();
-                  updateAutoAgent({ model: next === "" ? null : next });
-                }}
-                disabled={autoAgentDisabled}
-                style={{
-                  fontFamily: MONO_FONT,
-                  fontSize: 11,
-                  color: autoAgentDisabled ? COLORS.textDim : COLORS.textPrimary,
-                  background: "rgba(255,255,255,0.03)",
-                  border: `1px solid ${COLORS.border}`,
-                  borderRadius: 6,
-                  padding: "5px 8px",
-                  width: 220,
-                  outline: "none",
-                  opacity: autoAgentDisabled ? 0.45 : 1,
-                }}
-              />
-            </div>
-
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 10,
-              }}
-            >
-              <FieldLabel
-                text="Reasoning effort"
-                tooltip={{
-                  label: "Reasoning effort",
-                  description:
-                    "How hard the model thinks before answering. Higher costs more tokens — useful for gnarly conflicts, overkill for trivial ones.",
-                }}
-                disabled={autoAgentDisabled}
-              />
-              <StyledSelect
-                value={autoAgentSettings.reasoningEffort ?? "__unspecified"}
-                onChange={(v) =>
-                  updateAutoAgent({ reasoningEffort: v === "__unspecified" ? null : v })
-                }
-                options={AUTO_AGENT_REASONING_OPTIONS}
-                disabled={autoAgentDisabled}
-                ariaLabel="Auto-agent reasoning effort"
-              />
-            </div>
-
-            <div
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                gap: 6,
-              }}
-            >
-              <FieldLabel
-                text="Permission mode"
-                tooltip={{
-                  label: "Resolver permissions",
-                  description:
-                    "How much access the resolver agent has. Lower trust = safer but may stall on tricky conflicts that need shell or write access.",
-                }}
-                disabled={autoAgentDisabled}
-              />
-              <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                {AUTO_AGENT_PERMISSION_OPTIONS.map((opt) => (
-                  <RadioRow
-                    key={opt.value}
-                    value={opt.value}
-                    selected={autoAgentSettings.permissionMode === opt.value}
-                    onSelect={(v) => updateAutoAgent({ permissionMode: v })}
-                    label={opt.label}
-                    tooltip={opt.tooltip}
-                    disabled={autoAgentDisabled}
-                  />
-                ))}
-              </div>
-            </div>
-
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 10,
-              }}
-            >
-              <FieldLabel
-                text="Confidence threshold"
-                tooltip={{
-                  label: "Confidence threshold",
-                  description:
-                    "Minimum confidence (0–1) the resolver must report before its fix is accepted. Leave blank to accept any fix the agent produces.",
-                }}
-                disabled={autoAgentDisabled}
-              />
-              <NumericInput
-                value={autoAgentSettings.confidenceThreshold}
-                min={0}
-                max={1}
-                step={0.05}
-                onChange={(v) => updateAutoAgent({ confidenceThreshold: v })}
-                disabled={autoAgentDisabled}
-                ariaLabel="Confidence threshold"
-                width={80}
-              />
-            </div>
-          </div>
-        </div>
-      </SettingCard>
-
-      {/* ── Iteration cap ── */}
-      <SettingCard>
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 12,
-          }}
-        >
-          <div style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0 }}>
-            <FieldLabel
-              text="Iterations before stopping"
-              tooltip={{
-                label: "Hard cap on iterations",
-                description:
-                  "Maximum normal fix-and-poll iterations before the loop gives up — or runs the optional force-finalize bonus iteration below.",
-              }}
-            />
-            <span
-              style={{
-                fontFamily: SANS_FONT,
-                fontSize: 11,
-                color: COLORS.textMuted,
-                lineHeight: 1.4,
-              }}
-            >
-              1–20 iterations. Lower is safer; higher is more persistent.
-            </span>
-          </div>
-          <NumericInput
-            value={maxRounds}
-            min={1}
-            max={20}
-            step={1}
-            onChange={(v) => {
-              if (v == null) return;
-              onSettingsChange({ maxRounds: v });
-            }}
-            disabled={disabled}
-            ariaLabel="Iterations before stopping"
-            width={70}
-          />
-        </div>
-      </SettingCard>
-
-      {/* ── Force-finalize ── */}
-      <SettingCard>
-        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-          <FieldLabel
-            text="If iterations run out without converging"
-            tooltip={{
-              label: "Force-finalize policy",
-              description:
-                "Decides whether the loop runs one final, more aggressive merge attempt after the iteration cap is hit.",
-            }}
-          />
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 3, marginTop: 8 }}>
-          {FORCE_FINALIZE_OPTIONS.map((opt) => (
-            <RadioRow
-              key={opt.value}
-              value={opt.value}
-              selected={forceFinalizeMode === opt.value}
-              onSelect={(v) => onSettingsChange({ forceFinalizeMode: v })}
-              label={opt.label}
-              tooltip={opt.tooltip}
-              disabled={disabled}
-              accent={opt.value === "unconditional" ? WARNING_AMBER : undefined}
-            />
-          ))}
-        </div>
-
-        {forceFinalizeMode === "conditional" ? (
-          <div
-            style={{
-              marginTop: 8,
-              padding: "8px 10px",
-              borderRadius: 6,
-              background: "rgba(255,255,255,0.02)",
-              border: `1px solid ${COLORS.border}`,
-            }}
-          >
-            <SmartTooltip
-              forceEnabled
-              side="top"
-              wrapperStyle={{ width: "100%" }}
-              content={{
-                label: "No-failing-CI guardrail",
-                description:
-                  "Block the bonus force-merge if any required check is currently red. Recommended — keeps you from landing a known-broken PR.",
-              }}
-            >
-              <label
+        <>
+          {/* ── Iteration cap ── */}
+          <SettingCard>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <div
                 style={{
                   display: "flex",
                   alignItems: "center",
-                  gap: 9,
-                  cursor: disabled ? "not-allowed" : "pointer",
+                  justifyContent: "space-between",
+                  gap: 12,
                 }}
               >
-                <input
-                  type="checkbox"
-                  checked={forceFinalizeRequireNoCiFailures}
-                  disabled={disabled}
-                  onChange={(e) =>
-                    onSettingsChange({ forceFinalizeRequireNoCiFailures: e.target.checked })
-                  }
+                <FieldLabel
+                  text="Max number of iterations"
+                  tooltip={{
+                    label: "Iteration cap",
+                    description:
+                      "Maximum fix-and-poll iterations before the loop gives up — or runs the at-cap policy below if auto-merge is on.",
+                  }}
+                />
+                <span
                   style={{
-                    width: 14,
-                    height: 14,
-                    accentColor: COLORS.accent,
-                    cursor: disabled ? "not-allowed" : "pointer",
+                    fontFamily: MONO_FONT,
+                    fontSize: 12,
+                    fontWeight: 700,
+                    color: disabled ? COLORS.textDim : COLORS.textPrimary,
+                    background: "rgba(255,255,255,0.04)",
+                    border: `1px solid ${COLORS.border}`,
+                    borderRadius: 6,
+                    padding: "3px 10px",
+                    minWidth: 32,
+                    textAlign: "center",
+                  }}
+                >
+                  {maxRounds}
+                </span>
+              </div>
+              <input
+                type="range"
+                className="pipeline-slider"
+                aria-label="Max number of iterations"
+                min={1}
+                max={20}
+                step={1}
+                value={maxRounds}
+                onChange={(e) => {
+                  const next = Number(e.target.value);
+                  if (Number.isNaN(next)) return;
+                  onSettingsChange({ maxRounds: next });
+                }}
+                disabled={disabled}
+              />
+              <span
+                style={{
+                  fontFamily: SANS_FONT,
+                  fontSize: 11,
+                  color: COLORS.textMuted,
+                  lineHeight: 1.4,
+                }}
+              >
+                1–20 iterations. Lower is safer; higher is more persistent.
+              </span>
+            </div>
+          </SettingCard>
+
+          {/* ── Auto-merge master + at-cap policy ── */}
+          <SettingCard>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 12,
+              }}
+            >
+              <div style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0 }}>
+                <FieldLabel
+                  text="Auto-merge this PR"
+                  tooltip={{
+                    label: "Auto-merge",
+                    description:
+                      "When on, the loop lands the PR the moment checks are green and reviews are clean — mid-loop or after iterations finish.",
                   }}
                 />
                 <span
                   style={{
                     fontFamily: SANS_FONT,
-                    fontSize: 12,
-                    fontWeight: 500,
-                    color: disabled ? COLORS.textDim : COLORS.textPrimary,
+                    fontSize: 11,
+                    color: COLORS.textMuted,
+                    lineHeight: 1.4,
                   }}
                 >
-                  Only force-merge if no CI checks are failing
+                  Land it the moment checks are green and reviews are clean.
                 </span>
-              </label>
-            </SmartTooltip>
-          </div>
-        ) : null}
-      </SettingCard>
+              </div>
+              <ToggleSwitch
+                checked={autoMerge}
+                onChange={handleAutoMergeToggle}
+                disabled={disabled}
+                ariaLabel="Auto-merge this PR"
+              />
+            </div>
 
-      {/* ── Early merge on green ── */}
-      <SettingCard>
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 12,
-          }}
-        >
-          <div style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0 }}>
-            <FieldLabel
-              text="Merge as soon as checks pass and reviews are clean"
-              tooltip={{
-                label: "Early merge on green",
-                description:
-                  "Skip queued fix iterations whenever the PR is already mergeable. Fast path — useful when reviewers approve mid-loop.",
-              }}
-            />
-            <span
-              style={{
-                fontFamily: SANS_FONT,
-                fontSize: 11,
-                color: COLORS.textMuted,
-                lineHeight: 1.4,
-              }}
-            >
-              Don't wait for the iteration cap when the PR is already ready.
-            </span>
-          </div>
-          <ToggleSwitch
-            checked={earlyMergeOnGreen}
-            onChange={(v) => onSettingsChange({ earlyMergeOnGreen: v })}
-            disabled={disabled}
-            ariaLabel="Early merge on green"
-          />
-        </div>
-      </SettingCard>
-      </>
+            {autoMerge ? (
+              <>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 12,
+                    marginTop: 10,
+                    paddingTop: 10,
+                    borderTop: `1px solid ${COLORS.border}`,
+                  }}
+                >
+                  <FieldLabel
+                    text="Merge method"
+                    tooltip={{
+                      label: "Merge method",
+                      description:
+                        "How GitHub combines the PR. 'Repo default' uses whatever the repository allows.",
+                    }}
+                  />
+                  <StyledSelect
+                    value={mergeMethod}
+                    onChange={(v) => onSettingsChange({ mergeMethod: v as PipelineMergeMethod })}
+                    options={MERGE_METHOD_OPTIONS}
+                    disabled={disabled}
+                    ariaLabel="Merge method"
+                  />
+                </div>
+
+                {showsSquashWarning ? (
+                  <div
+                    style={{
+                      marginTop: 8,
+                      padding: "7px 10px",
+                      borderRadius: 6,
+                      background: "rgba(245,158,11,0.08)",
+                      border: `1px solid rgba(245,158,11,0.25)`,
+                      color: WARNING_AMBER,
+                      fontFamily: SANS_FONT,
+                      fontSize: 11,
+                      lineHeight: 1.45,
+                    }}
+                  >
+                    Squash rewrites the PR's commits into a new SHA on the base
+                    branch. Branches cut from a squash-merged PR will hit add/add
+                    conflicts on their next merge — prefer "Merge commit" or
+                    "Rebase and merge" if you stack work.
+                  </div>
+                ) : null}
+
+                <div style={{ marginTop: 12 }}>
+                  <SectionDivider label="If iterations run out before it's mergeable" />
+                  <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                    {AT_CAP_POLICY_OPTIONS.map((opt) => (
+                      <div key={opt.value} style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+                        <RadioRow
+                          value={opt.value}
+                          selected={atCapPolicy === opt.value}
+                          onSelect={(v) => handleAtCapPolicyChange(v)}
+                          label={opt.label}
+                          tooltip={opt.tooltip}
+                          disabled={disabled}
+                          accent={opt.value === "force_merge" ? WARNING_AMBER : undefined}
+                        />
+                        {atCapPolicy === opt.value ? (
+                          <div
+                            style={{
+                              fontFamily: SANS_FONT,
+                              fontSize: 11,
+                              color: COLORS.textMuted,
+                              lineHeight: 1.45,
+                              padding: "0 9px 6px 35px",
+                            }}
+                          >
+                            {opt.description}
+                          </div>
+                        ) : null}
+                        {atCapPolicy === opt.value && opt.value === "wait_for_ci" ? (
+                          <div
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "space-between",
+                              gap: 12,
+                              margin: "2px 0 8px 35px",
+                              padding: "8px 10px",
+                              borderRadius: 6,
+                              border: `1px solid ${COLORS.border}`,
+                              background: "rgba(255,255,255,0.02)",
+                            }}
+                          >
+                            <FieldLabel
+                              text="Wait window (minutes)"
+                              tooltip={{
+                                label: "Wait window",
+                                description:
+                                  "How long to keep polling CI before giving up and pausing. CI flakes that take longer than this will cause a pause; raise this for slow pipelines.",
+                              }}
+                            />
+                            <NumericInput
+                              value={atCapWaitMinutes}
+                              min={1}
+                              max={240}
+                              step={5}
+                              onChange={(v) => {
+                                if (v == null) return;
+                                onSettingsChange({ atCapWaitMinutes: v });
+                              }}
+                              disabled={disabled}
+                              ariaLabel="Wait window minutes"
+                              width={70}
+                            />
+                          </div>
+                        ) : null}
+                        {atCapPolicy === opt.value && opt.value === "ci_retry_loop" ? (
+                          <div
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "space-between",
+                              gap: 12,
+                              margin: "2px 0 8px 35px",
+                              padding: "8px 10px",
+                              borderRadius: 6,
+                              border: `1px solid ${COLORS.border}`,
+                              background: "rgba(255,255,255,0.02)",
+                            }}
+                          >
+                            <FieldLabel
+                              text="Max bonus iterations"
+                              tooltip={{
+                                label: "Max bonus iterations",
+                                description:
+                                  "Cap on how many CI-only fix iterations the loop can run after the main iteration cap is exhausted. Each iteration dispatches the agent again with scope limited to CI failures.",
+                              }}
+                            />
+                            <NumericInput
+                              value={atCapCiRetryMax}
+                              min={1}
+                              max={10}
+                              step={1}
+                              onChange={(v) => {
+                                if (v == null) return;
+                                onSettingsChange({ atCapCiRetryMax: v });
+                              }}
+                              disabled={disabled}
+                              ariaLabel="Max bonus CI retries"
+                              width={70}
+                            />
+                          </div>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </>
+            ) : null}
+          </SettingCard>
+
+          {/* ── Conflict handling ── */}
+          <SettingCard>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <FieldLabel
+                text="When the base branch advances or a merge conflict appears"
+                tooltip={{
+                  label: "Conflict strategy",
+                  description:
+                    "How the convergence loop reacts when the base moves or a conflict surfaces between iterations.",
+                }}
+              />
+              <span
+                style={{
+                  fontFamily: SANS_FONT,
+                  fontSize: 11,
+                  color: COLORS.textMuted,
+                  lineHeight: 1.4,
+                }}
+              >
+                Pick one. Hover any option for details.
+              </span>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 3, marginTop: 8 }}>
+              {CONFLICT_STRATEGY_OPTIONS.map((opt) => (
+                <RadioRow
+                  key={opt.value}
+                  value={opt.value}
+                  selected={conflictStrategy === opt.value}
+                  onSelect={(v) => handleConflictStrategyChange(v)}
+                  label={opt.label}
+                  tooltip={opt.tooltip}
+                  disabled={disabled}
+                />
+              ))}
+            </div>
+
+            {showsForcePushWarning ? (
+              <div
+                style={{
+                  marginTop: 8,
+                  padding: "7px 10px",
+                  borderRadius: 6,
+                  background: "rgba(245,158,11,0.08)",
+                  border: `1px solid rgba(245,158,11,0.25)`,
+                  color: WARNING_AMBER,
+                  fontFamily: SANS_FONT,
+                  fontSize: 11,
+                  lineHeight: 1.4,
+                }}
+              >
+                Selected strategies may force-push your branch.
+              </div>
+            ) : null}
+
+            {conflictStrategy === "auto" ? (
+              <div style={{ marginTop: 12 }}>
+                <SectionDivider label="Resolver agent" />
+                <PrResolverLaunchControls
+                  modelId={autoAgentSettings.model || modelId}
+                  reasoningEffort={autoAgentSettings.reasoningEffort || reasoningEffort}
+                  permissionMode={autoAgentSettings.permissionMode ?? permissionMode}
+                  onModelChange={handleResolverModelChange}
+                  onReasoningEffortChange={(effort) =>
+                    updateAutoAgent({ reasoningEffort: effort || null })
+                  }
+                  onPermissionModeChange={(mode) =>
+                    updateAutoAgent({ permissionMode: mode })
+                  }
+                  disabled={disabled}
+                />
+              </div>
+            ) : null}
+          </SettingCard>
+        </>
       )}
-
-      {/* Model & Permissions sub-section (resolver launch controls — kept as-is) */}
-      <SectionDivider label="Model & Permissions" />
-      <PrResolverLaunchControls
-        modelId={modelId}
-        reasoningEffort={reasoningEffort}
-        permissionMode={permissionMode}
-        onModelChange={onModelChange}
-        onReasoningEffortChange={onReasoningEffortChange}
-        onPermissionModeChange={onPermissionModeChange}
-        disabled={disabled}
-      />
     </div>
   );
 }

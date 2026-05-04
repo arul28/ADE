@@ -206,6 +206,27 @@ describe("AgentChatMessageList transcript rendering", () => {
     });
   });
 
+  it("keeps compact display text while exposing the full user prompt", async () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "user_message",
+          text: "Full handoff prompt with all implementation details.",
+          displayText: "Pearl UI audit handoff",
+        },
+      },
+    ]);
+
+    await waitFor(() => {
+      expect(screen.getByText("Pearl UI audit handoff")).toBeTruthy();
+      expect(screen.getByText("Full prompt")).toBeTruthy();
+    });
+    fireEvent.click(screen.getByText("Full prompt"));
+    expect(screen.getByText("Full handoff prompt with all implementation details.")).toBeTruthy();
+  });
+
   it("shows attachment and simulator send confirmations for delivered user messages with context", async () => {
     renderMessageList([
       {

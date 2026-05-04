@@ -76,6 +76,10 @@ const defaultPipelineSettings: PipelineSettings = {
   },
   forceFinalizeMode: "off",
   forceFinalizeRequireNoCiFailures: true,
+  atCapPolicy: "stop",
+  atCapWaitMinutes: 30,
+  atCapCiRetryMax: 3,
+  forceMergeRequiresConfirmation: true,
   earlyMergeOnGreen: true,
 };
 
@@ -142,6 +146,39 @@ describe("PrConvergencePanel", () => {
     expect(props.onRunNextRound).toHaveBeenCalledWith("focus on review threads");
   });
 
+  it("does not start Path to Merge just by selecting auto-converge mode", async () => {
+    const user = userEvent.setup();
+    const props = renderPanel({
+      items: [makeItem()],
+      checks: [makeCheck({ conclusion: "success" })],
+    });
+
+    await user.click(screen.getByRole("button", { name: "Auto-Converge" }));
+
+    expect(props.onAutoConvergeChange).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Start Path to Merge" })).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "Start Path to Merge" }));
+    expect(props.onAutoConvergeChange).toHaveBeenCalledWith(true);
+  });
+
+  it("does not show stale round progress when auto-converge mode is selected but stopped", async () => {
+    const user = userEvent.setup();
+    renderPanel({
+      items: [makeItem()],
+      convergence: makeConvergence({ state: "stalled", currentRound: 2 }),
+      waitState: { phase: "idle" },
+      autoConverge: false,
+      pathToMergeActive: false,
+    });
+
+    await user.click(screen.getByRole("button", { name: "Auto-Converge" }));
+
+    expect(screen.queryByText("Round 2 of 5")).toBeNull();
+    expect(screen.queryByText("Stalled")).toBeNull();
+    expect(screen.getByRole("button", { name: "Start Path to Merge" })).toBeTruthy();
+  });
+
   it("copies the prompt with additional instructions", async () => {
     const user = userEvent.setup();
     const props = renderPanel({
@@ -169,6 +206,33 @@ describe("PrConvergencePanel", () => {
 
     await user.click(screen.getAllByRole("button", { name: /View Session/i })[0]!);
     expect(props.onViewAgentSession).toHaveBeenCalledWith("session-123");
+  });
+
+  it("describes empty CI wait state without a 0 of 0 counter", () => {
+    renderPanel({
+      autoConverge: true,
+      pathToMergeActive: true,
+      items: [makeItem()],
+      convergence: makeConvergence({ state: "converging", currentRound: 1 }),
+      waitState: { phase: "waiting_checks", pendingCount: 0, totalCount: 0 },
+    });
+
+    expect(screen.getByText("Waiting for CI status to update")).toBeTruthy();
+    expect(screen.queryByText(/0 of 0 CI checks/i)).toBeNull();
+    expect(screen.getAllByRole("button", { name: "Stop Path to Merge" }).length).toBeGreaterThan(0);
+  });
+
+  it("shows a stuck-loop pause message after repeated identical pauses", () => {
+    renderPanel({
+      autoConverge: true,
+      items: [makeItem()],
+      convergence: makeConvergence({ state: "converging", currentRound: 2 }),
+      waitState: { phase: "paused", reason: "Base sync failed.", repeatCount: 3 },
+    });
+
+    expect(screen.getByText(/Stuck on the same failure: Base sync failed./)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /resume/i })).toBeNull();
+    expect(screen.getByRole("button", { name: /dismiss/i })).toBeTruthy();
   });
 
   it("does not describe a manual agent run as the next round", () => {

@@ -1,30 +1,128 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
-import { getModelById } from "../../../../shared/modelRegistry";
-import type { AiPermissionMode, AgentChatPermissionMode } from "../../../../shared/types";
+import {
+  getModelById,
+  resolveProviderGroupForModel,
+  type ModelDescriptor,
+  type ModelProviderGroup,
+} from "../../../../shared/modelRegistry";
+import type { AiPermissionMode, AgentChatPermissionMode, PrAgentPermissionMode } from "../../../../shared/types";
 import { deriveConfiguredModelIds } from "../../../lib/modelOptions";
 import { ProviderModelSelector } from "../../shared/ProviderModelSelector";
 import { cn } from "../../ui/cn";
 import { getPermissionOptions, safetyColors } from "../../shared/permissionOptions";
 
-type PrResolverLaunchControlsProps = {
+type PrResolverLaunchControlsBaseProps = {
   modelId: string;
   reasoningEffort: string;
-  permissionMode: AiPermissionMode;
   onModelChange: (modelId: string) => void;
   onReasoningEffortChange: (value: string) => void;
-  onPermissionModeChange: (mode: AiPermissionMode) => void;
   disabled?: boolean;
   permissionLocked?: boolean;
   className?: string;
 };
 
-function fromAgentPermissionMode(mode: AgentChatPermissionMode, family: string): AiPermissionMode | null {
-  if (family === "openai" && mode === "default") return "guarded_edit";
-  if (mode === "full-auto") return "full_edit";
-  if (mode === "edit") return "guarded_edit";
+type PrResolverLaunchControlsProps = PrResolverLaunchControlsBaseProps & (
+  | {
+      permissionValueMode?: "chat";
+      permissionMode: PrAgentPermissionMode;
+      onPermissionModeChange: (mode: PrAgentPermissionMode) => void;
+    }
+  | {
+      permissionValueMode: "legacy";
+      permissionMode: AiPermissionMode;
+      onPermissionModeChange: (mode: AiPermissionMode) => void;
+    }
+);
+
+function selectReasoningEffortForModel(descriptor: ModelDescriptor | undefined, current: string): string {
+  const tiers = descriptor?.reasoningTiers ?? [];
+  if (!tiers.length) return "";
+  if (current && tiers.includes(current)) return current;
+  return tiers.includes("medium") ? "medium" : tiers[0]!;
+}
+
+function permissionOptionsForModel(descriptor: ModelDescriptor | undefined, valueMode: "chat" | "legacy" = "chat") {
+  const family = descriptor?.family ?? "opencode";
+  const providerGroup = descriptor ? resolveProviderGroupForModel(descriptor) : "opencode";
+  const options = getPermissionOptions({
+    family,
+    isCliWrapped: descriptor?.isCliWrapped ?? false,
+  });
+
+  if (providerGroup === "codex") {
+    return options.filter((option) =>
+      option.value === "default" ||
+      option.value === "plan" ||
+      option.value === "full-auto" ||
+      (valueMode === "chat" && option.value === "config-toml"),
+    );
+  }
+  if (providerGroup === "claude") {
+    return options.filter((option) =>
+      (valueMode === "chat" && option.value === "default") ||
+      option.value === "edit" ||
+      option.value === "plan" ||
+      option.value === "full-auto",
+    );
+  }
+  return options.filter((option) =>
+    option.value === "default" ||
+    option.value === "edit" ||
+    option.value === "plan" ||
+    option.value === "full-auto",
+  );
+}
+
+function defaultPermissionForProvider(providerGroup: ModelProviderGroup): AgentChatPermissionMode {
+  if (providerGroup === "opencode" || providerGroup === "droid") return "edit";
+  return "default";
+}
+
+function normalizePermissionModeForModel(
+  mode: PrAgentPermissionMode,
+  descriptor: ModelDescriptor | undefined,
+  valueMode: "chat" | "legacy" = "chat",
+): AgentChatPermissionMode {
+  const providerGroup = descriptor ? resolveProviderGroupForModel(descriptor) : "opencode";
+  const options = permissionOptionsForModel(descriptor, valueMode).map((option) => option.value);
+  let candidate: AgentChatPermissionMode;
+
+  switch (mode) {
+    case "read_only":
+      candidate = "plan";
+      break;
+    case "guarded_edit":
+      candidate = providerGroup === "codex" ? "default" : "edit";
+      break;
+    case "full_edit":
+      candidate = "full-auto";
+      break;
+    default:
+      candidate = mode;
+      break;
+  }
+
+  if (options.includes(candidate)) return candidate;
+  const defaultMode = defaultPermissionForProvider(providerGroup);
+  return options.includes(defaultMode) ? defaultMode : (options[0] ?? "plan");
+}
+
+function toLegacyPermissionMode(mode: AgentChatPermissionMode, providerGroup: ModelProviderGroup): AiPermissionMode {
   if (mode === "plan") return "read_only";
-  return null;
+  if (mode === "full-auto") return "full_edit";
+  if (providerGroup === "codex" && mode === "default") return "guarded_edit";
+  return "guarded_edit";
+}
+
+function labelForPermissionOption(value: AgentChatPermissionMode, label: string, providerGroup: ModelProviderGroup): string {
+  if (providerGroup === "claude") {
+    if (value === "default") return "Ask permissions";
+    if (value === "edit") return "Accept edits";
+    if (value === "plan") return "Plan";
+    if (value === "full-auto") return "Bypass";
+  }
+  return label;
 }
 
 export function PrResolverLaunchControls({
@@ -37,6 +135,7 @@ export function PrResolverLaunchControls({
   disabled = false,
   permissionLocked = false,
   className,
+  permissionValueMode = "chat",
 }: PrResolverLaunchControlsProps) {
   const navigate = useNavigate();
   const [availableModelIds, setAvailableModelIds] = React.useState<string[]>([]);
@@ -57,22 +156,39 @@ export function PrResolverLaunchControls({
   }, []);
 
   const descriptor = getModelById(modelId);
-  const family = descriptor?.family ?? "openai";
-  const permissionOptions = getPermissionOptions({
-    family,
-    isCliWrapped: descriptor?.isCliWrapped ?? true,
-  }).filter((option) => {
-    if ((descriptor?.isCliWrapped ?? true) && family === "openai") {
-      return option.value === "default" || option.value === "plan" || option.value === "full-auto";
+  const providerGroup = descriptor ? resolveProviderGroupForModel(descriptor) : "opencode";
+  const permissionOptions = permissionOptionsForModel(descriptor, permissionValueMode);
+  const activePermissionMode = normalizePermissionModeForModel(permissionMode, descriptor, permissionValueMode);
+
+  const emitPermissionMode = React.useCallback((nextAgentMode: AgentChatPermissionMode) => {
+    const nextMode = permissionValueMode === "legacy"
+      ? toLegacyPermissionMode(nextAgentMode, providerGroup)
+      : nextAgentMode;
+    onPermissionModeChange(nextMode as AiPermissionMode & PrAgentPermissionMode);
+  }, [onPermissionModeChange, permissionValueMode, providerGroup]);
+
+  const handleModelChange = React.useCallback((nextModelId: string) => {
+    const nextDescriptor = getModelById(nextModelId);
+    const nextReasoning = selectReasoningEffortForModel(nextDescriptor, reasoningEffort);
+    const nextAgentPermission = normalizePermissionModeForModel(permissionMode, nextDescriptor, permissionValueMode);
+    const nextPermission = permissionValueMode === "legacy"
+      ? toLegacyPermissionMode(nextAgentPermission, nextDescriptor ? resolveProviderGroupForModel(nextDescriptor) : "opencode")
+      : nextAgentPermission;
+
+    onModelChange(nextModelId);
+    if (nextReasoning !== reasoningEffort) {
+      onReasoningEffortChange(nextReasoning);
     }
-    return option.value === "plan" || option.value === "edit" || option.value === "full-auto";
-  });
+    if (nextPermission !== permissionMode) {
+      onPermissionModeChange(nextPermission as AiPermissionMode & PrAgentPermissionMode);
+    }
+  }, [onModelChange, onPermissionModeChange, onReasoningEffortChange, permissionMode, permissionValueMode, reasoningEffort]);
 
   return (
     <div className={cn("flex flex-wrap items-center gap-3", className)}>
       <ProviderModelSelector
         value={modelId}
-        onChange={onModelChange}
+        onChange={handleModelChange}
         availableModelIds={availableModelIds}
         disabled={disabled}
         showReasoning
@@ -82,10 +198,8 @@ export function PrResolverLaunchControls({
       />
       <div className="flex items-center gap-px border border-border/10 bg-surface-recessed/40">
         {permissionOptions.map((option) => {
-          const mapped = fromAgentPermissionMode(option.value, family);
-          if (!mapped) return null;
           const colors = safetyColors(option.safety);
-          const active = permissionMode === mapped;
+          const active = activePermissionMode === option.value;
           return (
             <button
               key={option.value}
@@ -96,10 +210,10 @@ export function PrResolverLaunchControls({
                 permissionLocked || disabled ? "cursor-not-allowed opacity-50" : "",
               )}
               disabled={disabled || permissionLocked}
-              onClick={() => onPermissionModeChange(mapped)}
+              onClick={() => emitPermissionMode(option.value)}
               title={permissionLocked ? "Permission is fixed for the current resolver session." : option.shortDesc}
             >
-              {option.label}
+              {labelForPermissionOption(option.value, option.label, providerGroup)}
             </button>
           );
         })}

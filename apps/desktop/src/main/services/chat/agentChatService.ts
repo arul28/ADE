@@ -288,6 +288,7 @@ type JsonRpcEnvelope = {
 type PersistedRecentConversationEntry = {
   role: "user" | "assistant";
   text: string;
+  displayText?: string;
   turnId?: string;
 };
 
@@ -1041,6 +1042,7 @@ type ManagedChatSession = {
   recentConversationEntries: Array<{
     role: "user" | "assistant";
     text: string;
+    displayText?: string;
     turnId?: string;
   }>;
   continuitySummary: string | null;
@@ -1067,6 +1069,7 @@ type ManagedChatSession = {
 type AgentChatTranscriptEntry = {
   role: "user" | "assistant";
   text: string;
+  displayText?: string;
   timestamp: string;
   turnId?: string;
 };
@@ -1121,6 +1124,7 @@ const CORE_NATIVE_SESSION_TOOL_NAMES = [
 type PreparedSendMessage = {
   sessionId: string;
   managed: ManagedChatSession;
+  submittedText: string;
   promptText: string;
   visibleText: string;
   attachments: AgentChatFileRef[];
@@ -4643,9 +4647,13 @@ export function createAgentChatService(args: {
         if (entry.event.type === "user_message") {
           const text = entry.event.text.trim();
           if (!text.length) continue;
+          const displayText = typeof entry.event.displayText === "string" && entry.event.displayText.trim().length > 0
+            ? entry.event.displayText.trim()
+            : undefined;
           entries.push({
             role: "user",
             text,
+            ...(displayText ? { displayText } : {}),
             timestamp: entry.timestamp,
             turnId: entry.event.turnId,
           });
@@ -4711,6 +4719,7 @@ export function createAgentChatService(args: {
       : managed.recentConversationEntries.map((entry) => ({
           role: entry.role,
           text: entry.text.trim(),
+          ...(entry.displayText?.trim() ? { displayText: entry.displayText.trim() } : {}),
           timestamp: managed.session.lastActivityAt,
           turnId: entry.turnId,
         })).filter((entry) => entry.text.length > 0);
@@ -5072,6 +5081,9 @@ export function createAgentChatService(args: {
     if (!text.length) return;
 
     const role = event.type === "user_message" ? "user" : "assistant";
+    const displayText = event.type === "user_message" && event.displayText?.trim()
+      ? event.displayText.trim()
+      : undefined;
     const turnId = "turnId" in event ? event.turnId : undefined;
     const lastEntry = managed.recentConversationEntries[managed.recentConversationEntries.length - 1];
     if (role === "assistant" && lastEntry?.role === "assistant" && lastEntry.turnId === turnId) {
@@ -5079,7 +5091,7 @@ export function createAgentChatService(args: {
       return;
     }
 
-    managed.recentConversationEntries.push({ role, text, turnId });
+    managed.recentConversationEntries.push({ role, text, ...(displayText ? { displayText } : {}), turnId });
     if (managed.recentConversationEntries.length > MAX_RECENT_CONVERSATION_ENTRIES) {
       managed.recentConversationEntries.splice(
         0,
@@ -6144,6 +6156,7 @@ export function createAgentChatService(args: {
             recentConversationEntries: managed.recentConversationEntries.map((entry) => ({
               role: entry.role,
               text: entry.text,
+              ...(entry.displayText ? { displayText: entry.displayText } : {}),
               ...(entry.turnId ? { turnId: entry.turnId } : {}),
             })),
           }
@@ -6232,6 +6245,14 @@ export function createAgentChatService(args: {
               const text = (entry as { text?: unknown }).text;
               return (role === "user" || role === "assistant") && typeof text === "string" && text.trim().length > 0;
             })
+            .map((entry) => ({
+              role: entry.role,
+              text: entry.text,
+              ...(typeof entry.displayText === "string" && entry.displayText.trim().length
+                ? { displayText: entry.displayText.trim() }
+                : {}),
+              ...(entry.turnId ? { turnId: entry.turnId } : {}),
+            }))
             .slice(-12)
         : undefined;
       const sdkSessionId = typeof record.sdkSessionId === "string" && record.sdkSessionId.trim().length ? record.sdkSessionId.trim() : undefined;
@@ -7254,6 +7275,7 @@ export function createAgentChatService(args: {
       recentConversationEntries: persisted?.recentConversationEntries?.map((entry) => ({
         role: entry.role,
         text: entry.text,
+        ...(entry.displayText ? { displayText: entry.displayText } : {}),
         ...(entry.turnId ? { turnId: entry.turnId } : {}),
       })) ?? [],
       localPendingInputs: new Map(),
@@ -7274,6 +7296,7 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     args: {
       text: string;
+      displayText?: string;
       attachments: AgentChatFileRef[];
       turnId?: string;
       laneDirectiveKey?: string | null;
@@ -7283,6 +7306,9 @@ export function createAgentChatService(args: {
     emitChatEvent(managed, {
       type: "user_message",
       text: args.text,
+      ...(args.displayText?.trim() && args.displayText.trim() !== args.text.trim()
+        ? { displayText: args.displayText.trim() }
+        : {}),
       attachments: args.attachments,
       ...(args.turnId ? { turnId: args.turnId } : {}),
     });
@@ -7307,6 +7333,7 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     args: {
       promptText: string;
+      userText?: string;
       displayText?: string;
       attachments?: AgentChatFileRef[];
       resolvedAttachments?: ResolvedAgentChatFileRef[];
@@ -7334,6 +7361,7 @@ export function createAgentChatService(args: {
       _rootPath: managed.laneWorktreePath,
     }));
     const displayText = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
+    const userText = args.userText?.trim().length ? args.userText.trim() : displayText;
     let onDispatched = args.onDispatched;
     const markDispatched = () => {
       if (!onDispatched) return;
@@ -7344,7 +7372,8 @@ export function createAgentChatService(args: {
     setSessionActive(managed);
     if (!args.optimisticCodexTurnStart) {
       emitPreparedUserMessage(managed, {
-        text: displayText,
+        text: userText,
+        displayText,
         attachments,
         laneDirectiveKey: args.laneDirectiveKey,
         onDispatched: markDispatched,
@@ -7359,7 +7388,7 @@ export function createAgentChatService(args: {
     const providerSlashCommand = args.providerSlashCommand === true;
     const autoMemoryPlan = providerSlashCommand
       ? null
-      : await buildAutoMemoryTurnPlan(managed, displayText, attachments);
+      : await buildAutoMemoryTurnPlan(managed, userText, attachments);
     const autoMemoryNotice = autoMemoryPlan ? buildAutoMemorySystemNotice(autoMemoryPlan) : null;
 
     // Intercept /review command — route to review/start RPC instead of turn/start
@@ -7572,6 +7601,7 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     args: {
       promptText: string;
+      userText?: string;
       displayText?: string;
       attachments?: AgentChatFileRef[];
       resolvedAttachments?: ResolvedAgentChatFileRef[];
@@ -7606,8 +7636,10 @@ export function createAgentChatService(args: {
       _rootPath: managed.laneWorktreePath,
     }));
     const displayText = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
+    const userText = args.userText?.trim().length ? args.userText.trim() : displayText;
     emitPreparedUserMessage(managed, {
-      text: displayText,
+      text: userText,
+      displayText,
       attachments,
       turnId,
       laneDirectiveKey: args.laneDirectiveKey,
@@ -7753,10 +7785,9 @@ export function createAgentChatService(args: {
 
     try {
       const providerSlashCommand = args.providerSlashCommand === true;
-      const autoMemoryPrompt = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
       const autoMemoryPlan = providerSlashCommand
         ? null
-        : await buildAutoMemoryTurnPlan(managed, autoMemoryPrompt, attachments);
+        : await buildAutoMemoryTurnPlan(managed, userText, attachments);
       const autoMemoryNotice = autoMemoryPlan ? buildAutoMemorySystemNotice(autoMemoryPlan) : null;
       runtime.turnMemoryPolicyState = {
         classification: autoMemoryPlan?.classification ?? "none",
@@ -8665,6 +8696,7 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     args: {
       promptText: string;
+      userText?: string;
       displayText?: string;
       attachments?: AgentChatFileRef[];
       resolvedAttachments?: ResolvedAgentChatFileRef[];
@@ -8700,8 +8732,10 @@ export function createAgentChatService(args: {
       _rootPath: managed.laneWorktreePath,
     }));
     const displayText = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
+    const userText = args.userText?.trim().length ? args.userText.trim() : displayText;
     emitPreparedUserMessage(managed, {
-      text: displayText,
+      text: userText,
+      displayText,
       attachments,
       turnId,
       laneDirectiveKey: args.laneDirectiveKey,
@@ -8738,10 +8772,9 @@ export function createAgentChatService(args: {
 
     try {
       const providerSlashCommand = args.providerSlashCommand === true;
-      const autoMemoryPrompt = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
       const autoMemoryPlan = providerSlashCommand
         ? null
-        : await buildAutoMemoryTurnPlan(managed, autoMemoryPrompt, attachments);
+        : await buildAutoMemoryTurnPlan(managed, userText, attachments);
       const autoMemoryNotice = autoMemoryPlan ? buildAutoMemorySystemNotice(autoMemoryPlan) : null;
       if (autoMemoryNotice) {
         emitChatEvent(managed, {
@@ -11856,6 +11889,7 @@ export function createAgentChatService(args: {
     provider,
     model,
     modelId,
+    title,
     sessionProfile,
     reasoningEffort,
     interactionMode: requestedInteractionMode,
@@ -11887,7 +11921,16 @@ export function createAgentChatService(args: {
 
     fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
 
-    const normalizedInputModel = model.trim()
+    const rawModel = typeof model === "string" ? model : "";
+    const rawModelId = typeof modelId === "string" ? modelId.trim() : "";
+    const requestedModelDescriptor = rawModelId ? getModelById(rawModelId) ?? resolveModelAlias(rawModelId) : undefined;
+    const modelFromModelId = requestedModelDescriptor
+      ? requestedModelDescriptor.isCliWrapped
+        ? requestedModelDescriptor.providerModelId
+        : requestedModelDescriptor.id
+      : rawModelId;
+    const normalizedInputModel = rawModel.trim()
+      || modelFromModelId
       || (provider === "codex"
         ? DEFAULT_CODEX_MODEL
         : provider === "claude"
@@ -11896,9 +11939,7 @@ export function createAgentChatService(args: {
             ? DEFAULT_CURSOR_MODEL
             : provider === "droid"
               ? DEFAULT_DROID_MODEL
-            : "");
-    // Resolve modelId from registry if provided
-    const requestedModelDescriptor = modelId ? getModelById(modelId) ?? resolveModelAlias(modelId) : undefined;
+              : "");
     const resolvedModelId = requestedModelDescriptor?.id
       ?? resolveModelIdFromStoredValue(normalizedInputModel, provider);
 
@@ -12037,17 +12078,23 @@ export function createAgentChatService(args: {
       };
     })();
 
+    const normalizedTitle = typeof title === "string" ? title.trim() : "";
+    const initialTitle = normalizedTitle || defaultChatSessionTitle(effectiveProvider);
+
     sessionService.create({
       sessionId,
       laneId,
       ptyId: null,
       tracked: true,
-      title: defaultChatSessionTitle(effectiveProvider),
+      title: initialTitle,
       startedAt,
       transcriptPath,
       toolType: toolTypeFromProvider(effectiveProvider),
       resumeCommand: resumeCommandForProvider(effectiveProvider, sessionId)
     });
+    if (normalizedTitle.length > 0) {
+      sessionService.updateMeta({ sessionId, title: initialTitle, manuallyNamed: true });
+    }
 
     const managed: ManagedChatSession = {
       session: {
@@ -12090,7 +12137,7 @@ export function createAgentChatService(args: {
       autoTitleStage: "none",
       autoTitleInFlight: false,
       runtimeTitleAdopted: false,
-      manuallyNamed: false,
+      manuallyNamed: normalizedTitle.length > 0,
       summaryInFlight: false,
       continuitySummary: null,
       continuitySummaryUpdatedAt: null,
@@ -12408,6 +12455,7 @@ export function createAgentChatService(args: {
     return {
       sessionId,
       managed,
+      submittedText: trimmed,
       promptText,
       visibleText,
       attachments: publicAttachments,
@@ -13868,6 +13916,7 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     args: {
       promptText: string;
+      userText?: string;
       displayText: string;
       attachments: AgentChatFileRef[];
       resolvedAttachments: ResolvedAgentChatFileRef[];
@@ -13891,9 +13940,11 @@ export function createAgentChatService(args: {
     setSessionActive(managed);
 
     const displayText = args.displayText.trim().length ? args.displayText.trim() : args.promptText;
+    const userText = args.userText?.trim().length ? args.userText.trim() : displayText;
     if (!args.optimisticCursorTurnStart) {
       emitPreparedUserMessage(managed, {
-        text: displayText,
+        text: userText,
+        displayText,
         attachments: args.attachments,
         turnId,
         laneDirectiveKey: args.laneDirectiveKey,
@@ -13910,7 +13961,7 @@ export function createAgentChatService(args: {
 
     let shouldDeliverQueuedSteer = false;
     try {
-      const autoMemoryPlan = await buildAutoMemoryTurnPlan(managed, displayText, args.attachments);
+      const autoMemoryPlan = await buildAutoMemoryTurnPlan(managed, userText, args.attachments);
       const autoMemoryNotice = buildAutoMemorySystemNotice(autoMemoryPlan);
       if (autoMemoryNotice) {
         emitChatEvent(managed, {
@@ -14223,6 +14274,7 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     args: {
       promptText: string;
+      userText?: string;
       displayText: string;
       attachments: AgentChatFileRef[];
       resolvedAttachments: ResolvedAgentChatFileRef[];
@@ -14252,9 +14304,11 @@ export function createAgentChatService(args: {
     setSessionActive(managed);
 
     const displayText = args.displayText.trim().length ? args.displayText.trim() : args.promptText;
+    const userText = args.userText?.trim().length ? args.userText.trim() : displayText;
     if (!args.optimisticCursorTurnStart) {
       emitPreparedUserMessage(managed, {
-        text: displayText,
+        text: userText,
+        displayText,
         attachments: args.attachments,
         turnId,
         laneDirectiveKey: args.laneDirectiveKey,
@@ -14950,6 +15004,7 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     args: {
       promptText: string;
+      userText?: string;
       displayText: string;
       attachments: AgentChatFileRef[];
       resolvedAttachments: ResolvedAgentChatFileRef[];
@@ -14991,9 +15046,11 @@ export function createAgentChatService(args: {
     setSessionActive(managed);
 
     const displayText = args.displayText.trim().length ? args.displayText.trim() : args.promptText;
+    const userText = args.userText?.trim().length ? args.userText.trim() : displayText;
     if (!args.optimisticDroidTurnStart) {
       emitPreparedUserMessage(managed, {
-        text: displayText,
+        text: userText,
+        displayText,
         attachments: args.attachments,
         turnId,
         laneDirectiveKey: args.laneDirectiveKey,
@@ -15011,7 +15068,7 @@ export function createAgentChatService(args: {
     const turnStartedAt = Date.now();
     let shouldDeliverQueuedSteer = false;
     try {
-      const autoMemoryPlan = await buildAutoMemoryTurnPlan(managed, displayText, args.attachments);
+      const autoMemoryPlan = await buildAutoMemoryTurnPlan(managed, userText, args.attachments);
       const autoMemoryNotice = buildAutoMemorySystemNotice(autoMemoryPlan);
       if (autoMemoryNotice) {
         emitChatEvent(managed, {
@@ -15230,6 +15287,7 @@ export function createAgentChatService(args: {
     const {
       sessionId,
       managed,
+      submittedText,
       promptText,
       visibleText,
       attachments,
@@ -15270,6 +15328,7 @@ export function createAgentChatService(args: {
       }
       await runTurn(managed, {
         promptText,
+        userText: submittedText,
         displayText: visibleText,
         attachments,
         resolvedAttachments,
@@ -15295,6 +15354,7 @@ export function createAgentChatService(args: {
       if (effectiveRuntime === "cloud") {
         await runCursorCloudTurn(managed, {
           promptText,
+          userText: submittedText,
           displayText: visibleText,
           attachments,
           resolvedAttachments,
@@ -15308,6 +15368,7 @@ export function createAgentChatService(args: {
       }
       await runCursorTurn(managed, {
         promptText,
+        userText: submittedText,
         displayText: visibleText,
         attachments,
         resolvedAttachments,
@@ -15328,6 +15389,7 @@ export function createAgentChatService(args: {
       managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
       await runDroidTurn(managed, {
         promptText,
+        userText: submittedText,
         displayText: visibleText,
         attachments,
         resolvedAttachments,
@@ -15445,6 +15507,7 @@ export function createAgentChatService(args: {
 
       await sendCodexMessage(managed, {
         promptText,
+        userText: submittedText,
         displayText: visibleText,
         attachments,
         resolvedAttachments,
@@ -15468,6 +15531,7 @@ export function createAgentChatService(args: {
     ensureClaudeSessionRuntime(managed);
     await runClaudeTurn(managed, {
       promptText,
+      userText: submittedText,
       displayText: visibleText,
       attachments,
       resolvedAttachments,
@@ -15513,7 +15577,8 @@ export function createAgentChatService(args: {
       }
       emitChatEvent(prepared.managed, {
         type: "user_message",
-        text: prepared.visibleText,
+        text: prepared.submittedText,
+        ...(prepared.visibleText !== prepared.submittedText ? { displayText: prepared.visibleText } : {}),
         attachments: prepared.attachments,
         turnId,
       });
@@ -15535,7 +15600,8 @@ export function createAgentChatService(args: {
     if (prepared.managed.session.provider === "codex") {
       prepared.optimisticCodexTurnStart = true;
       emitPreparedUserMessage(prepared.managed, {
-        text: prepared.visibleText,
+        text: prepared.submittedText,
+        displayText: prepared.visibleText,
         attachments: prepared.attachments,
         laneDirectiveKey: prepared.laneDirectiveKey,
       });

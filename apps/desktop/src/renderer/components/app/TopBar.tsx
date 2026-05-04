@@ -134,18 +134,22 @@ function ProjectTabIcon({
       return;
     }
 
+    const delayMs = isCurrent ? 100 : 750;
     let cancelled = false;
-    window.ade.project.resolveIcon(rootPath).then((nextIcon) => {
-      if (cancelled) return;
-      setProjectIconCache(rootPath, nextIcon);
-      setIcon(nextIcon);
-    }).catch(() => {
-      if (!cancelled) setIcon(null);
-    });
+    const timer = window.setTimeout(() => {
+      window.ade.project.resolveIcon(rootPath).then((nextIcon) => {
+        if (cancelled) return;
+        setProjectIconCache(rootPath, nextIcon);
+        setIcon(nextIcon);
+      }).catch(() => {
+        if (!cancelled) setIcon(null);
+      });
+    }, delayMs);
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
-  }, [disabled, rootPath]);
+  }, [disabled, isCurrent, rootPath]);
 
   const fallbackIcon = (
     <Folder
@@ -391,6 +395,13 @@ export function TopBar() {
 
   useEffect(() => {
     let cancelled = false;
+    if (!project?.rootPath) {
+      setSyncSnapshot(null);
+      setPhoneSyncOpen(false);
+      return () => {
+        cancelled = true;
+      };
+    }
     const refreshSyncStatus = () => {
       void window.ade.sync.getStatus({ includeTransferReadiness: false }).then((snapshot) => {
         if (!cancelled) setSyncSnapshot(snapshot);

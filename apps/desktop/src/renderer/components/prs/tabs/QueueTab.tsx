@@ -14,9 +14,11 @@ import {
 } from "@phosphor-icons/react";
 import type {
   ConvergenceRuntimeState,
+  ConflictResolverPermissionMode,
   LandResult,
   LaneSummary,
   MergeMethod,
+  PrAgentPermissionMode,
   PrMergeContext,
   PrStatus,
   PrSummary,
@@ -273,6 +275,12 @@ function providerForModel(modelId: string): "codex" | "claude" {
   const descriptor = getModelById(modelId);
   if (descriptor?.family === "anthropic" || descriptor?.cliCommand === "claude") return "claude";
   return "codex";
+}
+
+function toQueueAutomationPermissionMode(mode: PrAgentPermissionMode): ConflictResolverPermissionMode {
+  if (mode === "read_only" || mode === "plan") return "read_only";
+  if (mode === "full_edit" || mode === "full-auto") return "full_edit";
+  return "guarded_edit";
 }
 
 function MiniBadge({
@@ -616,7 +624,7 @@ export function QueueTab({
           ciGating: Boolean(selectedGroup.landingState.config.ciGating),
           resolverModel,
           reasoningEffort: resolverReasoningLevel,
-          permissionMode: resolverPermissionMode,
+          permissionMode: toQueueAutomationPermissionMode(resolverPermissionMode),
         });
       }
       await onRefresh();

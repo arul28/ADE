@@ -1,14 +1,36 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { launchPrIssueResolutionChat } from "./prIssueResolver";
 import {
   PHASE_DELAY_SECONDS,
   createPathToMergeOrchestrator,
+  decideAtCapAction,
+  makeInProcessState,
+  type InProcessState,
   type PathToMergeDeps,
 } from "./pathToMergeOrchestrator";
+import { LaneWorktreeLockedError, formatLaneWorktreeLockBlocker } from "../lanes/laneWorktreeLockService";
 import type {
+  AtCapPolicy,
   ConvergenceRuntimeState,
+  LaneWorktreeLockInfo,
+  LaneWorktreeLockOwnerKind,
+  PipelineSettings,
+  PrCheck,
+  PrReview,
+  PrReviewThread,
   PrSummary,
 } from "../../../shared/types";
 import { DEFAULT_CONVERGENCE_RUNTIME_STATE, DEFAULT_PIPELINE_SETTINGS } from "../../../shared/types/prs";
+
+vi.mock("./prIssueResolver", () => ({
+  launchPrIssueResolutionChat: vi.fn(async () => ({
+    sessionId: "sess-launched",
+    laneId: "lane-1",
+    href: "/work?laneId=lane-1&sessionId=sess-launched",
+  })),
+}));
+
+const launchPrIssueResolutionChatMock = vi.mocked(launchPrIssueResolutionChat);
 
 // ---------------------------------------------------------------------------
 // Test scaffolding — fake all deps. The orchestrator's public surface is just
@@ -67,21 +89,182 @@ function buildPrSummary(overrides: Partial<PrSummary> = {}): PrSummary {
   } as PrSummary;
 }
 
+function makeCheck(overrides: Partial<PrCheck> = {}): PrCheck {
+  return {
+    name: "ci / unit",
+    status: "completed",
+    conclusion: "failure",
+    detailsUrl: null,
+    startedAt: null,
+    completedAt: null,
+    ...overrides,
+  };
+}
+
+function makeReviewThread(overrides: Partial<PrReviewThread> = {}): PrReviewThread {
+  return {
+    id: "thread-1",
+    isResolved: false,
+    isOutdated: false,
+    path: "src/prs.ts",
+    line: 1,
+    originalLine: 1,
+    startLine: null,
+    originalStartLine: null,
+    diffSide: "RIGHT",
+    url: null,
+    createdAt: null,
+    updatedAt: null,
+    comments: [],
+    ...overrides,
+  };
+}
+
+function makeReview(overrides: Partial<PrReview> = {}): PrReview {
+  return {
+    reviewer: "coderabbitai",
+    reviewerAvatarUrl: null,
+    state: "commented",
+    body: "Actionable comments posted: 1",
+    submittedAt: "2026-05-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+async function flushIteration(): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+function makeLaneWorktreeLockService() {
+  let counter = 0;
+  const locksByWorktree = new Map<string, LaneWorktreeLockInfo & { token: string }>();
+
+  const acquire = vi.fn((args: {
+    laneId: string;
+    worktreePath: string;
+    ownerKind: LaneWorktreeLockOwnerKind;
+    ownerLabel: string;
+    ownerPrId?: string | null;
+    ownerSessionId?: string | null;
+    ownerProposalId?: string | null;
+    token?: string | null;
+  }) => {
+    const worktreeKey = args.worktreePath;
+    const existing = locksByWorktree.get(worktreeKey) ?? null;
+    const ownerMatches = existing
+      && existing.ownerKind === args.ownerKind
+      && existing.ownerPrId === (args.ownerPrId ?? null)
+      && existing.ownerProposalId === (args.ownerProposalId ?? null)
+      && (!args.ownerSessionId || existing.ownerSessionId === args.ownerSessionId)
+      && (!args.token || existing.token === args.token);
+    if (existing && !ownerMatches) {
+      throw new LaneWorktreeLockedError(formatLaneWorktreeLockBlocker(existing));
+    }
+    const token = existing?.token ?? args.token?.trim() ?? `lock-${++counter}`;
+    const now = "2026-05-01T00:00:00.000Z";
+    const lock = {
+      worktreeKey,
+      worktreePath: args.worktreePath,
+      laneId: args.laneId,
+      ownerKind: args.ownerKind,
+      ownerPrId: args.ownerPrId ?? null,
+      ownerSessionId: args.ownerSessionId ?? null,
+      ownerProposalId: args.ownerProposalId ?? null,
+      ownerLabel: args.ownerLabel,
+      token,
+      createdAt: existing?.createdAt ?? now,
+      heartbeatAt: now,
+      expiresAt: "2026-05-01T00:45:00.000Z",
+    };
+    locksByWorktree.set(worktreeKey, lock);
+    return { token, lock };
+  });
+  const heartbeat = vi.fn((token: string) => {
+    const lock = [...locksByWorktree.values()].find((entry) => entry.token === token) ?? null;
+    return lock;
+  });
+  const attachSession = vi.fn((token: string, sessionId: string) => {
+    const lock = [...locksByWorktree.values()].find((entry) => entry.token === token) ?? null;
+    if (lock) lock.ownerSessionId = sessionId;
+    return lock;
+  });
+  const release = vi.fn((args: {
+    token?: string | null;
+    ownerKind?: LaneWorktreeLockOwnerKind;
+    ownerPrId?: string | null;
+    ownerSessionId?: string | null;
+    ownerProposalId?: string | null;
+  }) => {
+    for (const [key, lock] of locksByWorktree.entries()) {
+      if (args.token?.trim() && lock.token === args.token.trim()) {
+        locksByWorktree.delete(key);
+      } else if (
+        (!args.ownerKind || lock.ownerKind === args.ownerKind)
+        && (args.ownerPrId === undefined || lock.ownerPrId === (args.ownerPrId ?? null))
+        && (args.ownerSessionId === undefined || lock.ownerSessionId === (args.ownerSessionId ?? null))
+        && (args.ownerProposalId === undefined || lock.ownerProposalId === (args.ownerProposalId ?? null))
+      ) {
+        locksByWorktree.delete(key);
+      }
+    }
+    return 1;
+  });
+  return {
+    acquire,
+    heartbeat,
+    attachSession,
+    release,
+    sweepExpired: vi.fn(() => 0),
+    getActiveForLane: vi.fn((laneId: string) =>
+      [...locksByWorktree.values()].filter((entry) => entry.laneId === laneId),
+    ),
+    locksByWorktree,
+  };
+}
+
 function buildDeps(initial?: {
   runtimeByPrId?: Map<string, ConvergenceRuntimeState>;
   ptmArgsByPrId?: Map<string, Record<string, unknown> | null>;
   prs?: PrSummary[];
+  pipelineSettings?: Partial<PipelineSettings>;
+  convergenceStatus?: Partial<ReturnType<PathToMergeDeps["issueInventoryService"]["getConvergenceStatus"]>>;
+  getSessionSummary?: PathToMergeDeps["agentChatService"]["getSessionSummary"];
+  refresh?: PathToMergeDeps["prService"]["refresh"];
+  getStatus?: PathToMergeDeps["prService"]["getStatus"];
+  getChecks?: PathToMergeDeps["prService"]["getChecks"];
+  getReviewThreads?: PathToMergeDeps["prService"]["getReviewThreads"];
+  getReviews?: PathToMergeDeps["prService"]["getReviews"];
+  getCommits?: PathToMergeDeps["prService"]["getCommits"];
+  land?: PathToMergeDeps["prService"]["land"];
+  laneWorktreeLockService?: ReturnType<typeof makeLaneWorktreeLockService>;
 }): {
   deps: PathToMergeDeps;
   runtimeByPrId: Map<string, ConvergenceRuntimeState>;
   ptmArgsByPrId: Map<string, Record<string, unknown> | null>;
   interrupt: ReturnType<typeof vi.fn>;
+  resetSentToAgent: ReturnType<typeof vi.fn>;
+  land: PathToMergeDeps["prService"]["land"];
+  laneWorktreeLockService: ReturnType<typeof makeLaneWorktreeLockService>;
 } {
   const runtimeByPrId = initial?.runtimeByPrId ?? new Map<string, ConvergenceRuntimeState>();
   const ptmArgsByPrId = initial?.ptmArgsByPrId ?? new Map<string, Record<string, unknown> | null>();
   const prs = initial?.prs ?? [];
+  const prById = (prId: string) => prs.find((pr) => pr.id === prId) ?? prs[0] ?? null;
 
   const interrupt = vi.fn(async (_args: { sessionId: string }) => undefined);
+  const resetSentToAgent = vi.fn();
+  const laneWorktreeLockService = initial?.laneWorktreeLockService ?? makeLaneWorktreeLockService();
+  const land = initial?.land ?? vi.fn(async () => ({
+    prId: "pr-1",
+    prNumber: 1,
+    success: false,
+    mergeCommitSha: null,
+    branchDeleted: false,
+    laneArchived: false,
+    error: "test",
+  }));
 
   const logger = {
     debug: () => {},
@@ -96,10 +279,25 @@ function buildDeps(initial?: {
       listAll: () => prs,
       // Iterations call refresh/getStatus/getChecks/land/runPostMergeCleanup,
       // but with `prs = []` the iteration aborts before reaching them.
-      refresh: async () => undefined,
-      getStatus: async () => ({ behindBaseBy: 0 }),
-      getChecks: async () => [],
-      land: async () => ({ success: false, error: "test" }),
+      refresh: initial?.refresh ?? (async () => undefined),
+      getStatus: initial?.getStatus ?? (async () => ({ behindBaseBy: 0 })),
+      getChecks: initial?.getChecks ?? (async (prId: string) => {
+        const pr = prById(prId);
+        if (pr?.checksStatus === "passing") return [makeCheck({ conclusion: "success" })];
+        if (pr?.checksStatus === "pending") return [makeCheck({ status: "in_progress", conclusion: null })];
+        if (pr?.checksStatus === "failing") return [makeCheck()];
+        return [];
+      }),
+      getReviewThreads: initial?.getReviewThreads ?? (async (prId: string) => {
+        const pr = prById(prId);
+        return pr?.reviewStatus === "changes_requested" ? [makeReviewThread()] : [];
+      }),
+      getReviews: initial?.getReviews ?? (async (prId: string) => {
+        const pr = prById(prId);
+        return pr?.reviewStatus === "changes_requested" ? [makeReview({ state: "changes_requested", body: "Please fix this." })] : [];
+      }),
+      getCommits: initial?.getCommits ?? (async () => []),
+      land,
       runPostMergeCleanup: async () => undefined,
     } as unknown as PathToMergeDeps["prService"],
     laneService: {
@@ -111,7 +309,7 @@ function buildDeps(initial?: {
       sendMessage: async () => undefined,
       previewSessionToolNames: async () => [],
       interrupt,
-      getSessionSummary: async () => null,
+      getSessionSummary: initial?.getSessionSummary ?? (async () => null),
     } as unknown as PathToMergeDeps["agentChatService"],
     sessionService: {
       updateMeta: async () => undefined,
@@ -119,16 +317,25 @@ function buildDeps(initial?: {
     issueInventoryService: {
       saveConvergenceRuntime: (prId: string, patch: Partial<ConvergenceRuntimeState>) => {
         const prev = runtimeByPrId.get(prId) ?? buildRuntime(prId);
-        const next: ConvergenceRuntimeState = { ...prev, ...patch, prId };
+        const next: ConvergenceRuntimeState = {
+          ...prev,
+          ...patch,
+          prId,
+          pathToMergeActive: ptmArgsByPrId.get(prId) != null,
+        };
         runtimeByPrId.set(prId, next);
         return next;
       },
-      getConvergenceRuntime: (prId: string) => runtimeByPrId.get(prId) ?? buildRuntime(prId),
+      getConvergenceRuntime: (prId: string) => ({
+        ...(runtimeByPrId.get(prId) ?? buildRuntime(prId)),
+        pathToMergeActive: ptmArgsByPrId.get(prId) != null,
+      }),
       savePathToMergeArgs: (prId: string, args: Record<string, unknown> | null) => {
         ptmArgsByPrId.set(prId, args);
       },
       getPathToMergeArgs: (prId: string) => ptmArgsByPrId.get(prId) ?? null,
-      getPipelineSettings: () => ({ ...DEFAULT_PIPELINE_SETTINGS }),
+      resetSentToAgent,
+      getPipelineSettings: () => ({ ...DEFAULT_PIPELINE_SETTINGS, ...initial?.pipelineSettings }),
       getConvergenceStatus: () => ({
         currentRound: 0,
         maxRounds: 5,
@@ -140,21 +347,32 @@ function buildDeps(initial?: {
         totalSentToAgent: 0,
         isConverging: false,
         canAutoAdvance: false,
+        ...initial?.convergenceStatus,
       }),
     } as unknown as PathToMergeDeps["issueInventoryService"],
     conflictService: {
       runExternalResolver: async () => ({ status: "completed" }),
     } as unknown as PathToMergeDeps["conflictService"],
+    laneWorktreeLockService: laneWorktreeLockService as unknown as PathToMergeDeps["laneWorktreeLockService"],
     defaultModelId: null,
     defaultReasoningEffort: null,
   };
 
-  return { deps, runtimeByPrId, ptmArgsByPrId, interrupt };
+  return { deps, runtimeByPrId, ptmArgsByPrId, interrupt, resetSentToAgent, land, laneWorktreeLockService };
 }
 
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+beforeEach(() => {
+  launchPrIssueResolutionChatMock.mockClear();
+  launchPrIssueResolutionChatMock.mockResolvedValue({
+    sessionId: "sess-launched",
+    laneId: "lane-1",
+    href: "/work?laneId=lane-1&sessionId=sess-launched",
+  });
+});
 
 describe("PHASE_DELAY_SECONDS", () => {
   it("matches the shipLane.md §5.3 phase-delay contract exactly", () => {
@@ -187,6 +405,7 @@ describe("createPathToMergeOrchestrator.startPathToMerge", () => {
         prId: "pr-1",
         modelId: "claude-opus",
         reasoning: "high",
+        permissionMode: "default",
         scope: "checks",
         additionalInstructions: "be thorough",
       });
@@ -194,6 +413,7 @@ describe("createPathToMergeOrchestrator.startPathToMerge", () => {
       expect(result.scheduled).toBe(true);
       expect(result.prId).toBe("pr-1");
       expect(result.runtime.autoConvergeEnabled).toBe(true);
+      expect(result.runtime.pathToMergeActive).toBe(true);
       expect(result.runtime.status).toBe("launching");
       expect(result.runtime.pollerStatus).toBe("scheduled");
 
@@ -207,9 +427,37 @@ describe("createPathToMergeOrchestrator.startPathToMerge", () => {
       expect(ptmArgsByPrId.get("pr-1")).toEqual({
         modelId: "claude-opus",
         reasoning: "high",
+        permissionMode: "default",
         scope: "checks",
         additionalInstructions: "be thorough",
       });
+    } finally {
+      orchestrator.dispose();
+    }
+  });
+
+  it("blocks a second PR that shares the same lane worktree until the first PtM lock is released", async () => {
+    const sharedLockService = makeLaneWorktreeLockService();
+    const prOne = buildPrSummary({ id: "pr-1", laneId: "lane-1", githubPrNumber: 1, title: "First" });
+    const prTwo = buildPrSummary({ id: "pr-2", laneId: "lane-1", githubPrNumber: 2, title: "Second" });
+    const { deps } = buildDeps({
+      prs: [prOne, prTwo],
+      laneWorktreeLockService: sharedLockService,
+    });
+    const orchestrator = createPathToMergeOrchestrator(deps);
+    try {
+      const first = await orchestrator.startPathToMerge({ prId: "pr-1", modelId: "model-a" });
+      const second = await orchestrator.startPathToMerge({ prId: "pr-2", modelId: "model-a" });
+
+      expect(first.scheduled).toBe(true);
+      expect(second.scheduled).toBe(false);
+      expect(second.blockedBy?.message).toContain("Path to Merge for PR #1");
+      expect(second.runtime.status).toBe("paused");
+      expect(second.runtime.autoConvergeEnabled).toBe(false);
+
+      await orchestrator.stopPathToMerge({ prId: "pr-1", reason: "test release" });
+      const retry = await orchestrator.startPathToMerge({ prId: "pr-2", modelId: "model-a" });
+      expect(retry.scheduled).toBe(true);
     } finally {
       orchestrator.dispose();
     }
@@ -240,7 +488,7 @@ describe("createPathToMergeOrchestrator.stopPathToMerge", () => {
     const ptmArgsByPrId = new Map<string, Record<string, unknown> | null>([
       ["pr-1", { modelId: "claude-opus", reasoning: null, scope: "both", additionalInstructions: null }],
     ]);
-    const { deps, interrupt } = buildDeps({ runtimeByPrId, ptmArgsByPrId });
+    const { deps, interrupt, resetSentToAgent } = buildDeps({ runtimeByPrId, ptmArgsByPrId });
     const orchestrator = createPathToMergeOrchestrator(deps);
     try {
       const result = await orchestrator.stopPathToMerge({ prId: "pr-1", reason: "operator paused" });
@@ -248,6 +496,7 @@ describe("createPathToMergeOrchestrator.stopPathToMerge", () => {
       expect(result.stopped).toBe(true);
       expect(interrupt).toHaveBeenCalledTimes(1);
       expect(interrupt).toHaveBeenCalledWith({ sessionId: "sess-active" });
+      expect(resetSentToAgent).toHaveBeenCalledWith("pr-1", { sessionId: "sess-active" });
 
       const persisted = runtimeByPrId.get("pr-1");
       expect(persisted?.autoConvergeEnabled).toBe(false);
@@ -360,7 +609,7 @@ describe("createPathToMergeOrchestrator.resumeFromPersistedState", () => {
       })],
     ]);
     const ptmArgsByPrId = new Map<string, Record<string, unknown> | null>([
-      ["pr-1", { modelId: "claude-opus", reasoning: "high", scope: "checks", additionalInstructions: "x" }],
+      ["pr-1", { modelId: "claude-opus", reasoning: "high", permissionMode: "default", scope: "checks", additionalInstructions: "x" }],
     ]);
     const { deps } = buildDeps({
       runtimeByPrId,
@@ -380,6 +629,478 @@ describe("createPathToMergeOrchestrator.resumeFromPersistedState", () => {
     } finally {
       orchestrator.dispose();
     }
+  });
+});
+
+describe("createPathToMergeOrchestrator.runIteration", () => {
+  it("parks a clean inventory without dispatching a fix agent when auto-merge is off", async () => {
+    const runtimeByPrId = new Map<string, ConvergenceRuntimeState>();
+    const { deps } = buildDeps({
+      runtimeByPrId,
+      prs: [buildPrSummary({ checksStatus: "failing", reviewStatus: "changes_requested" })],
+      pipelineSettings: { earlyMergeOnGreen: false, autoMerge: false },
+      convergenceStatus: { totalNew: 0 },
+    });
+    const orchestrator = createPathToMergeOrchestrator(deps);
+    try {
+      await orchestrator.startPathToMerge({ prId: "pr-1", modelId: "openai/gpt-5.4" });
+      await flushIteration();
+
+      expect(launchPrIssueResolutionChatMock).not.toHaveBeenCalled();
+      expect(runtimeByPrId.get("pr-1")).toMatchObject({
+        status: "converged",
+        pollerStatus: "waiting_for_comments",
+        pauseReason: "Inventory clean; nothing to dispatch.",
+      });
+    } finally {
+      orchestrator.dispose();
+    }
+  });
+
+  it("runs the merge ladder for a merge-ready clean inventory when auto-merge is on", async () => {
+    const runtimeByPrId = new Map<string, ConvergenceRuntimeState>();
+    const land = vi.fn(async () => ({
+      prId: "pr-1",
+      prNumber: 1,
+      success: true as const,
+      mergeCommitSha: "merge-sha",
+      branchDeleted: false,
+      laneArchived: false,
+      error: null,
+    }));
+    const { deps } = buildDeps({
+      runtimeByPrId,
+      prs: [buildPrSummary({ checksStatus: "passing", reviewStatus: "approved" })],
+      pipelineSettings: { earlyMergeOnGreen: false, autoMerge: true },
+      convergenceStatus: { totalNew: 0 },
+      land,
+    });
+    const orchestrator = createPathToMergeOrchestrator(deps);
+    try {
+      await orchestrator.startPathToMerge({ prId: "pr-1", modelId: "openai/gpt-5.4" });
+      await flushIteration();
+
+      expect(launchPrIssueResolutionChatMock).not.toHaveBeenCalled();
+      expect(land).toHaveBeenCalledWith({ prId: "pr-1", method: "squash", archiveLane: false });
+      expect(runtimeByPrId.get("pr-1")).toMatchObject({
+        status: "merged",
+        pollerStatus: "stopped",
+        autoConvergeEnabled: false,
+      });
+    } finally {
+      orchestrator.dispose();
+    }
+  });
+
+  it("blocks auto-merge for clean inventory when commented reviews still need review", async () => {
+    const runtimeByPrId = new Map<string, ConvergenceRuntimeState>();
+    const land = vi.fn(async () => ({
+      prId: "pr-1",
+      prNumber: 1,
+      success: true as const,
+      mergeCommitSha: "merge-sha",
+      branchDeleted: false,
+      laneArchived: false,
+      error: null,
+    }));
+    const { deps } = buildDeps({
+      runtimeByPrId,
+      prs: [buildPrSummary({ checksStatus: "passing", reviewStatus: "none" })],
+      pipelineSettings: { earlyMergeOnGreen: false, autoMerge: true },
+      convergenceStatus: { totalNew: 0 },
+      getReviews: async () => [makeReview()],
+      land,
+    });
+    const orchestrator = createPathToMergeOrchestrator(deps);
+    try {
+      await orchestrator.startPathToMerge({ prId: "pr-1", modelId: "openai/gpt-5.4" });
+      await flushIteration();
+
+      expect(launchPrIssueResolutionChatMock).not.toHaveBeenCalled();
+      expect(land).not.toHaveBeenCalled();
+      expect(runtimeByPrId.get("pr-1")).toMatchObject({
+        status: "converged",
+        pollerStatus: "waiting_for_comments",
+        pauseReason: expect.stringContaining("commented review"),
+      });
+    } finally {
+      orchestrator.dispose();
+    }
+  });
+
+  it("narrows the default both scope to review comments when CI is already green", async () => {
+    const runtimeByPrId = new Map<string, ConvergenceRuntimeState>();
+    const { deps } = buildDeps({
+      runtimeByPrId,
+      prs: [buildPrSummary({ checksStatus: "passing", reviewStatus: "none" })],
+      pipelineSettings: { earlyMergeOnGreen: false, autoMerge: false },
+      convergenceStatus: { totalNew: 1 },
+      getChecks: async () => [
+        {
+          name: "ci / unit",
+          status: "completed",
+          conclusion: "success",
+          detailsUrl: null,
+          startedAt: null,
+          completedAt: null,
+        },
+      ],
+      getReviewThreads: async () => [
+        {
+          id: "thread-1",
+          isResolved: false,
+          isOutdated: false,
+          path: "src/prs.ts",
+          line: 1,
+          originalLine: 1,
+          startLine: null,
+          originalStartLine: null,
+          diffSide: "RIGHT",
+          url: null,
+          createdAt: null,
+          updatedAt: null,
+          comments: [],
+        } as Awaited<ReturnType<PathToMergeDeps["prService"]["getReviewThreads"]>>[number],
+      ],
+    });
+    const orchestrator = createPathToMergeOrchestrator(deps);
+    try {
+      await orchestrator.startPathToMerge({
+        prId: "pr-1",
+        modelId: "openai/gpt-5.4",
+        permissionMode: "config-toml",
+      });
+      await flushIteration();
+
+      expect(launchPrIssueResolutionChatMock).toHaveBeenCalledTimes(1);
+      expect(launchPrIssueResolutionChatMock.mock.calls[0]?.[1]).toEqual(expect.objectContaining({
+        prId: "pr-1",
+        scope: "comments",
+        permissionMode: "config-toml",
+      }));
+    } finally {
+      orchestrator.dispose();
+    }
+  });
+
+  it("gives up on a missing active session after two polls and dispatches a fresh agent", async () => {
+    vi.useFakeTimers();
+    const runtimeByPrId = new Map<string, ConvergenceRuntimeState>();
+    const { deps } = buildDeps({
+      runtimeByPrId,
+      prs: [buildPrSummary({ checksStatus: "failing", reviewStatus: "changes_requested" })],
+      pipelineSettings: { earlyMergeOnGreen: false },
+      convergenceStatus: { totalNew: 1 },
+      getSessionSummary: async () => null,
+    });
+    const orchestrator = createPathToMergeOrchestrator(deps);
+    try {
+      await orchestrator.startPathToMerge({ prId: "pr-1", modelId: "openai/gpt-5.4" });
+      runtimeByPrId.set("pr-1", {
+        ...runtimeByPrId.get("pr-1")!,
+        activeSessionId: "missing-session",
+        activeLaneId: "lane-1",
+        activeHref: "/work?laneId=lane-1&sessionId=missing-session",
+      });
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(launchPrIssueResolutionChatMock).not.toHaveBeenCalled();
+      expect(runtimeByPrId.get("pr-1")?.activeSessionId).toBe("missing-session");
+
+      await vi.advanceTimersByTimeAsync(PHASE_DELAY_SECONDS.warming * 1000);
+      expect(launchPrIssueResolutionChatMock).toHaveBeenCalledTimes(1);
+      expect(runtimeByPrId.get("pr-1")).toMatchObject({
+        activeSessionId: "sess-launched",
+        pollerStatus: "waiting_for_comments",
+      });
+    } finally {
+      orchestrator.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it("pauses when a completed fix agent did not push a new head SHA", async () => {
+    vi.useFakeTimers();
+    const runtimeByPrId = new Map<string, ConvergenceRuntimeState>([
+      ["pr-1", buildRuntime("pr-1", {
+        autoConvergeEnabled: true,
+        status: "running",
+        pollerStatus: "polling",
+        activeSessionId: "sess-1",
+        lastDispatchHeadSha: "sha-1",
+      })],
+    ]);
+    const ptmArgsByPrId = new Map<string, Record<string, unknown> | null>([
+      ["pr-1", { modelId: "openai/gpt-5.4", reasoning: null, permissionMode: "default", scope: "both", additionalInstructions: null }],
+    ]);
+    const { deps } = buildDeps({
+      runtimeByPrId,
+      ptmArgsByPrId,
+      prs: [buildPrSummary({ checksStatus: "failing", reviewStatus: "changes_requested" })],
+      pipelineSettings: { earlyMergeOnGreen: false },
+      convergenceStatus: { totalNew: 1 },
+      getCommits: async () => [{
+        sha: "sha-1",
+        shortSha: "sha-1",
+        message: "before",
+        author: { login: null, name: "Test", email: null },
+        committedDate: "2026-05-01T00:00:00.000Z",
+      }],
+      getSessionSummary: async () => ({ status: "idle", awaitingInput: false }) as Awaited<ReturnType<PathToMergeDeps["agentChatService"]["getSessionSummary"]>>,
+    });
+    const orchestrator = createPathToMergeOrchestrator(deps);
+    try {
+      orchestrator.resumeFromPersistedState();
+      await vi.advanceTimersByTimeAsync(PHASE_DELAY_SECONDS.warming * 1000);
+
+      expect(launchPrIssueResolutionChatMock).not.toHaveBeenCalled();
+      expect(runtimeByPrId.get("pr-1")).toMatchObject({
+        status: "paused",
+        autoConvergeEnabled: false,
+        pauseReason: "Fix agent finished without pushing commits - manual intervention needed.",
+      });
+    } finally {
+      orchestrator.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not overwrite a stopped runtime after fix-agent launch resolves", async () => {
+    let resolveLaunch!: (value: Awaited<ReturnType<typeof launchPrIssueResolutionChat>>) => void;
+    launchPrIssueResolutionChatMock.mockReturnValueOnce(new Promise((resolve) => {
+      resolveLaunch = resolve;
+    }));
+    const runtimeByPrId = new Map<string, ConvergenceRuntimeState>();
+    const built = buildDeps({
+      runtimeByPrId,
+      prs: [buildPrSummary({ checksStatus: "failing", reviewStatus: "changes_requested" })],
+      pipelineSettings: { earlyMergeOnGreen: false },
+      convergenceStatus: { totalNew: 1 },
+    });
+    const { deps, resetSentToAgent } = built;
+    const orchestrator = createPathToMergeOrchestrator(deps);
+    try {
+      await orchestrator.startPathToMerge({ prId: "pr-1", modelId: "openai/gpt-5.4" });
+      await flushIteration();
+      expect(launchPrIssueResolutionChatMock).toHaveBeenCalledTimes(1);
+
+      await orchestrator.stopPathToMerge({ prId: "pr-1", reason: "operator stop" });
+      resolveLaunch({ sessionId: "sess-late", laneId: "lane-1", href: "/late" });
+      await flushIteration();
+
+      expect(runtimeByPrId.get("pr-1")).toMatchObject({
+        status: "stopped",
+        pollerStatus: "stopped",
+        autoConvergeEnabled: false,
+        activeSessionId: null,
+        pauseReason: "operator stop",
+      });
+      expect(resetSentToAgent).toHaveBeenCalledWith("pr-1", { sessionId: "sess-late" });
+    } finally {
+      orchestrator.dispose();
+    }
+  });
+
+  it("does not overwrite a stopped runtime after the merge ladder resolves", async () => {
+    let resolveLand!: (value: Awaited<ReturnType<PathToMergeDeps["prService"]["land"]>>) => void;
+    const land = vi.fn(() => new Promise<Awaited<ReturnType<PathToMergeDeps["prService"]["land"]>>>((resolve) => {
+      resolveLand = resolve;
+    }));
+    const runtimeByPrId = new Map<string, ConvergenceRuntimeState>();
+    const { deps } = buildDeps({
+      runtimeByPrId,
+      prs: [buildPrSummary({ checksStatus: "passing", reviewStatus: "approved" })],
+      pipelineSettings: { earlyMergeOnGreen: false, autoMerge: true },
+      convergenceStatus: { totalNew: 0 },
+      land: land as unknown as PathToMergeDeps["prService"]["land"],
+    });
+    const orchestrator = createPathToMergeOrchestrator(deps);
+    try {
+      await orchestrator.startPathToMerge({ prId: "pr-1", modelId: "openai/gpt-5.4" });
+      await flushIteration();
+      expect(land).toHaveBeenCalledTimes(1);
+
+      await orchestrator.stopPathToMerge({ prId: "pr-1", reason: "operator stop" });
+      resolveLand({
+        prId: "pr-1",
+        prNumber: 1,
+        success: true,
+        mergeCommitSha: "merge-sha",
+        branchDeleted: false,
+        laneArchived: false,
+        error: null,
+      });
+      await flushIteration();
+
+      expect(runtimeByPrId.get("pr-1")).toMatchObject({
+        status: "stopped",
+        pollerStatus: "stopped",
+        autoConvergeEnabled: false,
+        pauseReason: "operator stop",
+      });
+    } finally {
+      orchestrator.dispose();
+    }
+  });
+});
+
+describe("decideAtCapAction", () => {
+  function buildCtx(
+    policy: AtCapPolicy,
+    pipelineOverrides: Partial<PipelineSettings> = {},
+    prOverrides: Partial<PrSummary> = {},
+  ) {
+    return {
+      pr: buildPrSummary(prOverrides),
+      pipelineSettings: { ...DEFAULT_PIPELINE_SETTINGS, atCapPolicy: policy, ...pipelineOverrides },
+      runtime: buildRuntime("pr-1", { currentRound: 5 }),
+    };
+  }
+  function buildInProc(overrides: Partial<InProcessState> = {}): InProcessState {
+    return { ...makeInProcessState({ prId: "pr-1", scope: "both" }), ...overrides };
+  }
+
+  it("policy=stop pauses immediately regardless of CI state", () => {
+    const ctx = buildCtx("stop", {}, { checksStatus: "passing" });
+    const decision = decideAtCapAction(ctx, [], buildInProc());
+    expect(decision.kind).toBe("stop");
+  });
+
+  describe("policy=wait_for_ci", () => {
+    it("schedules a wait when CI is still pending and stamps the wait-start timestamp", () => {
+      const ctx = buildCtx("wait_for_ci", { atCapWaitMinutes: 30 }, { checksStatus: "pending" });
+      const inProc = buildInProc();
+      const decision = decideAtCapAction(ctx, [], inProc, () => 1_000_000);
+      expect(decision.kind).toBe("wait");
+      expect((decision as { kind: "wait"; phase: string }).phase).toBe("warming");
+      expect(inProc.waitForCiStartedAt).toBeTruthy();
+    });
+
+    it("merges immediately when CI is passing", () => {
+      const ctx = buildCtx("wait_for_ci", {}, { checksStatus: "passing" });
+      const decision = decideAtCapAction(ctx, [], buildInProc());
+      expect(decision.kind).toBe("merge_now");
+    });
+
+    it("stops when CI is failing", () => {
+      const ctx = buildCtx("wait_for_ci", {}, { checksStatus: "failing" });
+      const decision = decideAtCapAction(ctx, [], buildInProc());
+      expect(decision.kind).toBe("stop");
+    });
+
+    it("stops once the wait window elapses past atCapWaitMinutes", () => {
+      const start = 1_000_000;
+      const ctx = buildCtx("wait_for_ci", { atCapWaitMinutes: 5 }, { checksStatus: "pending" });
+      const inProc = buildInProc({ waitForCiStartedAt: new Date(start).toISOString() });
+      // Advance the clock 6 minutes — past the 5-minute window.
+      const now = () => start + 6 * 60_000;
+      const decision = decideAtCapAction(ctx, [], inProc, now);
+      expect(decision.kind).toBe("stop");
+      expect((decision as { kind: "stop"; reason: string }).reason).toMatch(/timed out/);
+    });
+  });
+
+  describe("policy=ci_retry_once", () => {
+    it("merges immediately when CI is already green", () => {
+      const ctx = buildCtx("ci_retry_once", {}, { checksStatus: "passing" });
+      const decision = decideAtCapAction(ctx, [], buildInProc());
+      expect(decision.kind).toBe("merge_now");
+    });
+
+    it("dispatches a bonus CI iteration the first time CI is failing", () => {
+      const ctx = buildCtx("ci_retry_once", {}, { checksStatus: "failing" });
+      const inProc = buildInProc();
+      const decision = decideAtCapAction(ctx, [], inProc);
+      expect(decision.kind).toBe("dispatch_ci");
+      expect(inProc.ciRetryAttemptsUsed).toBe(1);
+    });
+
+    it("stops on the second visit if the bonus iteration didn't fix CI", () => {
+      const ctx = buildCtx("ci_retry_once", {}, { checksStatus: "failing" });
+      const inProc = buildInProc({ ciRetryAttemptsUsed: 1 });
+      const decision = decideAtCapAction(ctx, [], inProc);
+      expect(decision.kind).toBe("stop");
+    });
+
+    it("waits when CI is mid-run rather than dispatching a redundant retry", () => {
+      const ctx = buildCtx("ci_retry_once", {}, { checksStatus: "pending" });
+      const inProc = buildInProc();
+      const decision = decideAtCapAction(ctx, [], inProc, () => 1_000_000);
+      expect(decision.kind).toBe("wait");
+      expect(inProc.waitForCiStartedAt).toBeTruthy();
+    });
+
+    it("stops when pending CI exceeds the shared wait window", () => {
+      const start = 1_000_000;
+      const ctx = buildCtx("ci_retry_once", { atCapWaitMinutes: 5 }, { checksStatus: "pending" });
+      const inProc = buildInProc({ waitForCiStartedAt: new Date(start).toISOString() });
+      const decision = decideAtCapAction(ctx, [], inProc, () => start + 6 * 60_000);
+      expect(decision.kind).toBe("stop");
+      expect((decision as { kind: "stop"; reason: string }).reason).toMatch(/ci_retry_once: timed out/);
+    });
+  });
+
+  describe("policy=ci_retry_loop", () => {
+    it("merges as soon as a retry round turns CI green", () => {
+      const ctx = buildCtx("ci_retry_loop", { atCapCiRetryMax: 3 }, { checksStatus: "passing" });
+      const inProc = buildInProc({ ciRetryAttemptsUsed: 1 });
+      const decision = decideAtCapAction(ctx, [], inProc);
+      expect(decision.kind).toBe("merge_now");
+    });
+
+    it("dispatches further CI iterations until the retry budget is hit", () => {
+      const ctx = buildCtx("ci_retry_loop", { atCapCiRetryMax: 3 }, { checksStatus: "failing" });
+      const inProc = buildInProc();
+      // First two failures → dispatch (1, 2)
+      expect(decideAtCapAction(ctx, [], inProc).kind).toBe("dispatch_ci");
+      expect(inProc.ciRetryAttemptsUsed).toBe(1);
+      expect(decideAtCapAction(ctx, [], inProc).kind).toBe("dispatch_ci");
+      expect(inProc.ciRetryAttemptsUsed).toBe(2);
+      // Third attempt → dispatch (3)
+      expect(decideAtCapAction(ctx, [], inProc).kind).toBe("dispatch_ci");
+      expect(inProc.ciRetryAttemptsUsed).toBe(3);
+      // Budget exhausted → stop
+      expect(decideAtCapAction(ctx, [], inProc).kind).toBe("stop");
+    });
+
+    it("clamps a non-positive atCapCiRetryMax up to 1 instead of immediately stopping", () => {
+      const ctx = buildCtx("ci_retry_loop", { atCapCiRetryMax: 0 }, { checksStatus: "failing" });
+      const inProc = buildInProc();
+      // 0 → clamped to 1, so a single retry is allowed before stop.
+      expect(decideAtCapAction(ctx, [], inProc).kind).toBe("dispatch_ci");
+      expect(decideAtCapAction(ctx, [], inProc).kind).toBe("stop");
+    });
+
+    it("waits when CI is pending and stamps the shared wait window", () => {
+      const ctx = buildCtx("ci_retry_loop", { atCapCiRetryMax: 3 }, { checksStatus: "pending" });
+      const inProc = buildInProc();
+      const decision = decideAtCapAction(ctx, [], inProc, () => 1_000_000);
+      expect(decision.kind).toBe("wait");
+      expect(inProc.waitForCiStartedAt).toBeTruthy();
+    });
+
+    it("stops when pending CI exceeds the shared wait window", () => {
+      const start = 1_000_000;
+      const ctx = buildCtx("ci_retry_loop", { atCapWaitMinutes: 5, atCapCiRetryMax: 3 }, { checksStatus: "pending" });
+      const inProc = buildInProc({ waitForCiStartedAt: new Date(start).toISOString() });
+      const decision = decideAtCapAction(ctx, [], inProc, () => start + 6 * 60_000);
+      expect(decision.kind).toBe("stop");
+      expect((decision as { kind: "stop"; reason: string }).reason).toMatch(/ci_retry_loop: timed out/);
+    });
+  });
+
+  it("policy=force_merge skips retries and goes straight to merge_now", () => {
+    const ctx = buildCtx("force_merge", {}, { checksStatus: "failing" });
+    const decision = decideAtCapAction(ctx, [], buildInProc());
+    expect(decision.kind).toBe("merge_now");
+  });
+
+  it("treats a passing pr.checksStatus with a failed individual check as failing", () => {
+    const failedCheck: Partial<PrCheck> = { conclusion: "failure" };
+    const ctx = buildCtx("ci_retry_once", {}, { checksStatus: "passing" });
+    const decision = decideAtCapAction(ctx, [failedCheck as PrCheck], buildInProc());
+    // pr.checksStatus says passing but a check is failed → dispatch a retry.
+    expect(decision.kind).toBe("dispatch_ci");
   });
 });
 

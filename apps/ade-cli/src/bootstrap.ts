@@ -90,6 +90,7 @@ import {
   getAdeActionDomainServices,
   isAllowedAdeAction,
 } from "../../desktop/src/main/services/adeActions/registry";
+import type { LaneWorktreeLockService } from "../../desktop/src/main/services/lanes/laneWorktreeLockService";
 import { createHeadlessLinearServices } from "./headlessLinearServices";
 import { createEventBuffer, type BufferedEvent, type EventBuffer } from "./eventBuffer";
 
@@ -127,6 +128,7 @@ export type AdeRuntime = {
   devToolsService?: ReturnType<typeof createDevToolsService> | null;
   onboardingService?: ReturnType<typeof createOnboardingService> | null;
   laneService: ReturnType<typeof createLaneService>;
+  laneWorktreeLockService?: LaneWorktreeLockService | null;
   laneEnvironmentService?: ReturnType<typeof createLaneEnvironmentService> | null;
   laneTemplateService?: ReturnType<typeof createLaneTemplateService> | null;
   portAllocationService?: ReturnType<typeof createPortAllocationService> | null;

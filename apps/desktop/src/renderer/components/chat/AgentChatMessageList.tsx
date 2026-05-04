@@ -1938,6 +1938,22 @@ function renderEvent(
             <MessageCopyButton value={event.text} />
           </div>
           {(() => {
+            const displayText = event.displayText?.trim();
+            if (displayText && displayText !== event.text.trim()) {
+              return (
+                <div className="space-y-2 text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.7] text-white">
+                  <div className="whitespace-pre-wrap break-words font-medium">{displayText}</div>
+                  <details className="group min-w-0">
+                    <summary className="cursor-pointer font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-medium text-white/70 transition-colors hover:text-white">
+                      Full prompt
+                    </summary>
+                    <div className="mt-2 whitespace-pre-wrap break-words text-white/90">
+                      {event.text}
+                    </div>
+                  </details>
+                </div>
+              );
+            }
             const parsed = parseLeadingIosContextChips(event.text);
             if (!parsed.chips.length) {
               return (

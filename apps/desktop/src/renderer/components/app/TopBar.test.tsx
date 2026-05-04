@@ -148,13 +148,16 @@ describe("TopBar", () => {
     }
   });
 
-  it("polls phone sync before a project is open", async () => {
+  it("does not poll phone sync before a project is open", async () => {
     useAppStore.setState({ project: null } as any);
 
     render(<TopBar />);
 
-    expect(await screen.findByText("1 phone connected")).toBeTruthy();
-    expect(globalThis.window.ade.sync.getStatus).toHaveBeenCalledWith({ includeTransferReadiness: false });
+    await waitFor(() => {
+      expect(globalThis.window.ade.project.listRecent).toHaveBeenCalled();
+    });
+    expect(screen.queryByText("1 phone connected")).toBeNull();
+    expect(globalThis.window.ade.sync.getStatus).not.toHaveBeenCalled();
   });
 
   it("opens the phone sync drawer from the host status control", async () => {

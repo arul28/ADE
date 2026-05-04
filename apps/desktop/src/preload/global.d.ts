@@ -375,6 +375,9 @@ import type {
   IssueInventorySnapshot,
   PrConvergenceState,
   PrConvergenceStatePatch,
+  PrAgentPermissionMode,
+  PathToMergeStartResult,
+  PathToMergeStopResult,
   ConvergenceStatus,
   PipelineSettings,
   UpdateIntegrationProposalArgs,
@@ -1724,13 +1727,14 @@ declare global {
           prId: string;
           modelId?: string | null;
           reasoning?: string | null;
+          permissionMode?: PrAgentPermissionMode | null;
           scope?: "checks" | "comments" | "both";
           additionalInstructions?: string | null;
-        }) => Promise<{ prId: string; scheduled: boolean; runtime: PrConvergenceState }>;
+        }) => Promise<PathToMergeStartResult>;
         pathToMergeStop: (args: {
           prId: string;
           reason?: string | null;
-        }) => Promise<{ prId: string; stopped: boolean; runtime: PrConvergenceState | null }>;
+        }) => Promise<PathToMergeStopResult>;
         pipelineSettingsGet: (prId: string) => Promise<PipelineSettings>;
         pipelineSettingsSave: (
           prId: string,

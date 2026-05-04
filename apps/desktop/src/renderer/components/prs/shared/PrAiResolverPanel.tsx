@@ -1,7 +1,7 @@
 import React from "react";
 import { CaretDown, CaretRight, CircleNotch, Sparkle, X } from "@phosphor-icons/react";
 import type {
-  AiPermissionMode,
+  PrAgentPermissionMode,
   PrAiResolutionContext,
   PrAiResolutionEventPayload,
   PrAiResolutionSessionInfo,
@@ -27,9 +27,9 @@ type PrAiResolverPanelProps = {
   context: PrAiResolutionContext | null;
   modelId: string;
   reasoningEffort: string;
-  permissionMode: AiPermissionMode;
+  permissionMode: PrAgentPermissionMode;
   onModelChange: (modelId: string, reasoningEffort: string) => void;
-  onPermissionModeChange: (mode: AiPermissionMode) => void;
+  onPermissionModeChange: (mode: PrAgentPermissionMode) => void;
   onStarted?: (result: PrAiResolutionStartResult) => void;
   onCompleted?: (result: PrAiResolverCompletion) => void;
   onDismiss?: () => void;
@@ -57,7 +57,7 @@ function buildSessionInfo(args: {
   provider: "codex" | "claude";
   model: string;
   reasoning: string | null;
-  permissionMode: AiPermissionMode;
+  permissionMode: PrAgentPermissionMode;
   status: PrAiResolutionSessionInfo["status"];
 }): PrAiResolutionSessionInfo {
   const normalizedContext = {

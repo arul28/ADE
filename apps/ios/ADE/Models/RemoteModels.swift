@@ -3078,7 +3078,8 @@ struct AutoConflictAgentSettings: Codable, Equatable {
 /// `maxRounds`, `onRebaseNeeded`) are still required for back-compat with
 /// older sync payloads. The newer fields added by the Path-to-Merge feature
 /// (`conflictStrategy`, `autoAgentSettings`, `forceFinalizeMode`,
-/// `forceFinalizeRequireNoCiFailures`, `earlyMergeOnGreen`) are optional —
+/// `forceFinalizeRequireNoCiFailures`, at-cap policy fields,
+/// `earlyMergeOnGreen`) are optional —
 /// when missing, a synthesized value is filled in from `onRebaseNeeded` so
 /// existing read paths keep working.
 struct PipelineSettings: Codable, Equatable {
@@ -3090,6 +3091,10 @@ struct PipelineSettings: Codable, Equatable {
   var autoAgentSettings: AutoConflictAgentSettings?
   var forceFinalizeMode: String?
   var forceFinalizeRequireNoCiFailures: Bool?
+  var atCapPolicy: String?
+  var atCapWaitMinutes: Int?
+  var atCapCiRetryMax: Int?
+  var forceMergeRequiresConfirmation: Bool?
   var earlyMergeOnGreen: Bool?
 
   init(
@@ -3101,6 +3106,10 @@ struct PipelineSettings: Codable, Equatable {
     autoAgentSettings: AutoConflictAgentSettings? = nil,
     forceFinalizeMode: String? = nil,
     forceFinalizeRequireNoCiFailures: Bool? = nil,
+    atCapPolicy: String? = nil,
+    atCapWaitMinutes: Int? = nil,
+    atCapCiRetryMax: Int? = nil,
+    forceMergeRequiresConfirmation: Bool? = nil,
     earlyMergeOnGreen: Bool? = nil
   ) {
     self.autoMerge = autoMerge
@@ -3111,8 +3120,31 @@ struct PipelineSettings: Codable, Equatable {
     self.autoAgentSettings = autoAgentSettings
     self.forceFinalizeMode = forceFinalizeMode
     self.forceFinalizeRequireNoCiFailures = forceFinalizeRequireNoCiFailures
+    self.atCapPolicy = atCapPolicy
+    self.atCapWaitMinutes = atCapWaitMinutes
+    self.atCapCiRetryMax = atCapCiRetryMax
+    self.forceMergeRequiresConfirmation = forceMergeRequiresConfirmation
     self.earlyMergeOnGreen = earlyMergeOnGreen
   }
+}
+
+struct LaneWorktreeLockInfo: Codable, Equatable {
+  var worktreeKey: String
+  var worktreePath: String
+  var laneId: String
+  var ownerKind: String
+  var ownerPrId: String?
+  var ownerSessionId: String?
+  var ownerProposalId: String?
+  var ownerLabel: String
+  var createdAt: String
+  var heartbeatAt: String
+  var expiresAt: String
+}
+
+struct LaneWorktreeLockBlocker: Codable, Equatable {
+  var message: String
+  var lock: LaneWorktreeLockInfo
 }
 
 /// Result envelope returned by `prs.pathToMerge.start`. `runtime` mirrors the
@@ -3122,6 +3154,7 @@ struct StartPathToMergeResult: Codable, Equatable {
   var prId: String
   var scheduled: Bool
   var runtime: ConvergenceRuntimeState
+  var blockedBy: LaneWorktreeLockBlocker?
 }
 
 /// Result envelope returned by `prs.pathToMerge.stop`. `runtime` may be `nil`
@@ -3164,6 +3197,12 @@ struct ConvergenceRuntimeState: Codable, Equatable {
   var activeHref: String?
   var pauseReason: String?
   var errorMessage: String?
+  var forceFinalizeUsed: Bool?
+  var ciRetryAttemptsUsed: Int?
+  var waitForCiStartedAt: String?
+  var lastDispatchHeadSha: String?
+  var pauseRepeatCount: Int?
+  var lastPauseReasonHash: String?
   var lastStartedAt: String?
   var lastPolledAt: String?
   var lastPausedAt: String?

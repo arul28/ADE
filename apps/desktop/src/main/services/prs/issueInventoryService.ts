@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AdeDb } from "../state/kvDb";
 import type {
+  AtCapPolicy,
   AutoConflictAgentProvider,
   AutoConflictAgentSettings,
   ConflictStrategy,
@@ -21,12 +22,20 @@ import {
   DEFAULT_AUTO_CONFLICT_AGENT_SETTINGS,
   DEFAULT_CONVERGENCE_RUNTIME_STATE,
   DEFAULT_PIPELINE_SETTINGS,
+  atCapPolicyFromLegacy,
   conflictStrategyFromLegacyRebasePolicy,
   legacyRebasePolicyFromConflictStrategy,
 } from "../../../shared/types";
 
 const CONFLICT_STRATEGY_VALUES = new Set<ConflictStrategy>(["pause", "rebase", "merge", "auto"]);
 const FORCE_FINALIZE_MODE_VALUES = new Set<ForceFinalizeMode>(["off", "unconditional", "conditional"]);
+const AT_CAP_POLICY_VALUES = new Set<AtCapPolicy>([
+  "stop",
+  "wait_for_ci",
+  "ci_retry_once",
+  "ci_retry_loop",
+  "force_merge",
+]);
 const AUTO_AGENT_PROVIDER_VALUES = new Set<AutoConflictAgentProvider>(["claude", "codex"]);
 import { isNoisyIssueComment, looksLikeResolutionAck } from "./resolverUtils";
 import { nowIso } from "../shared/utils";
@@ -282,6 +291,12 @@ type ConvergenceRuntimeRow = {
   active_href: string | null;
   pause_reason: string | null;
   error_message: string | null;
+  force_finalize_used: number | null;
+  ci_retry_attempts_used: number | null;
+  wait_for_ci_started_at: string | null;
+  last_dispatch_head_sha: string | null;
+  pause_repeat_count: number | null;
+  last_pause_reason_hash: string | null;
   last_started_at: string | null;
   last_polled_at: string | null;
   last_paused_at: string | null;
@@ -309,6 +324,9 @@ function validateConvergenceRuntimeState(state: Partial<ConvergenceRuntimeState>
   if (state.autoConvergeEnabled !== undefined && typeof state.autoConvergeEnabled !== "boolean") {
     throw new Error(`Invalid autoConvergeEnabled: expected a boolean, got ${JSON.stringify(state.autoConvergeEnabled)}`);
   }
+  if (state.pathToMergeActive !== undefined && typeof state.pathToMergeActive !== "boolean") {
+    throw new Error(`Invalid pathToMergeActive: expected a boolean, got ${JSON.stringify(state.pathToMergeActive)}`);
+  }
   if (state.status !== undefined) {
     if (typeof state.status !== "string" || !CONVERGENCE_RUNTIME_STATUS_VALUES.has(state.status as ConvergenceRuntimeState["status"])) {
       throw new Error(`Invalid convergence runtime status: ${JSON.stringify(state.status)}`);
@@ -327,12 +345,25 @@ function validateConvergenceRuntimeState(state: Partial<ConvergenceRuntimeState>
       throw new Error(`Invalid currentRound: expected a non-negative integer, got ${state.currentRound}`);
     }
   }
+  if (state.forceFinalizeUsed !== undefined && typeof state.forceFinalizeUsed !== "boolean") {
+    throw new Error(`Invalid forceFinalizeUsed: expected a boolean, got ${JSON.stringify(state.forceFinalizeUsed)}`);
+  }
+  for (const field of ["ciRetryAttemptsUsed", "pauseRepeatCount"] as const) {
+    const value = state[field];
+    if (value === undefined) continue;
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || !Number.isInteger(value)) {
+      throw new Error(`Invalid ${field}: expected a non-negative integer, got ${JSON.stringify(value)}`);
+    }
+  }
   for (const field of [
     "activeSessionId",
     "activeLaneId",
     "activeHref",
     "pauseReason",
     "errorMessage",
+    "waitForCiStartedAt",
+    "lastDispatchHeadSha",
+    "lastPauseReasonHash",
     "lastStartedAt",
     "lastPolledAt",
     "lastPausedAt",
@@ -361,6 +392,7 @@ function sanitizeConvergenceRuntimeState(
   return {
     prId,
     autoConvergeEnabled: state.autoConvergeEnabled,
+    pathToMergeActive: state.pathToMergeActive,
     status: state.status,
     pollerStatus: state.pollerStatus,
     currentRound: state.currentRound,
@@ -369,6 +401,12 @@ function sanitizeConvergenceRuntimeState(
     activeHref: trimOrNull(state.activeHref),
     pauseReason: trimOrNull(state.pauseReason),
     errorMessage: trimOrNull(state.errorMessage),
+    forceFinalizeUsed: state.forceFinalizeUsed,
+    ciRetryAttemptsUsed: Math.max(0, Math.floor(state.ciRetryAttemptsUsed)),
+    waitForCiStartedAt: trimOrNull(state.waitForCiStartedAt),
+    lastDispatchHeadSha: trimOrNull(state.lastDispatchHeadSha),
+    pauseRepeatCount: Math.max(0, Math.floor(state.pauseRepeatCount)),
+    lastPauseReasonHash: trimOrNull(state.lastPauseReasonHash),
     lastStartedAt: trimOrNull(state.lastStartedAt),
     lastPolledAt: trimOrNull(state.lastPolledAt),
     lastPausedAt: trimOrNull(state.lastPausedAt),
@@ -382,6 +420,7 @@ function rowToConvergenceRuntime(row: ConvergenceRuntimeRow): ConvergenceRuntime
   return sanitizeConvergenceRuntimeState(row.pr_id, {
     prId: row.pr_id,
     autoConvergeEnabled: row.auto_converge_enabled === 1,
+    pathToMergeActive: false,
     status: row.status as ConvergenceRuntimeState["status"],
     pollerStatus: row.poller_status as ConvergenceRuntimeState["pollerStatus"],
     currentRound: row.current_round,
@@ -390,6 +429,12 @@ function rowToConvergenceRuntime(row: ConvergenceRuntimeRow): ConvergenceRuntime
     activeHref: row.active_href,
     pauseReason: row.pause_reason,
     errorMessage: row.error_message,
+    forceFinalizeUsed: row.force_finalize_used === 1,
+    ciRetryAttemptsUsed: row.ci_retry_attempts_used ?? 0,
+    waitForCiStartedAt: row.wait_for_ci_started_at,
+    lastDispatchHeadSha: row.last_dispatch_head_sha,
+    pauseRepeatCount: row.pause_repeat_count ?? 0,
+    lastPauseReasonHash: row.last_pause_reason_hash,
     lastStartedAt: row.last_started_at,
     lastPolledAt: row.last_polled_at,
     lastPausedAt: row.last_paused_at,
@@ -424,6 +469,47 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
       [prId],
     );
     return row?.max_round ?? 0;
+  }
+
+  function countSentToAgentItems(prId: string, sessionId: string | null): number {
+    const row = sessionId
+      ? db.get<{ count: number }>(
+        "select count(*) as count from pr_issue_inventory where pr_id = ? and state = 'sent_to_agent' and agent_session_id = ?",
+        [prId, sessionId],
+      )
+      : db.get<{ count: number }>(
+        "select count(*) as count from pr_issue_inventory where pr_id = ? and state = 'sent_to_agent'",
+        [prId],
+      );
+    return row?.count ?? 0;
+  }
+
+  function clampRuntimeRoundToInventory(prId: string, now: string): void {
+    db.run(
+      "update pr_convergence_state set current_round = min(current_round, ?), updated_at = ? where pr_id = ?",
+      [getMaxItemRound(prId), now, prId],
+    );
+  }
+
+  function hasPathToMergeArgs(prId: string): boolean {
+    const row = db.get<{ ptm_args_json: string | null }>(
+      "select ptm_args_json from pr_convergence_state where pr_id = ?",
+      [prId],
+    );
+    return typeof row?.ptm_args_json === "string" && row.ptm_args_json.trim().length > 0;
+  }
+
+  function attachPathToMergeOwnership(runtime: ConvergenceRuntimeState): ConvergenceRuntimeState {
+    const liveNativeRuntime = runtime.autoConvergeEnabled
+      && runtime.status !== "cancelled"
+      && runtime.status !== "failed"
+      && runtime.status !== "merged"
+      && runtime.status !== "stopped"
+      && runtime.pollerStatus !== "stopped";
+    return {
+      ...runtime,
+      pathToMergeActive: liveNativeRuntime && hasPathToMergeArgs(runtime.prId),
+    };
   }
 
   /**
@@ -467,6 +553,10 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
       force_finalize_mode: string | null;
       force_finalize_require_no_ci_failures: number | null;
       early_merge_on_green: number | null;
+      at_cap_policy: string | null;
+      at_cap_wait_minutes: number | null;
+      at_cap_ci_retry_max: number | null;
+      force_merge_requires_confirmation: number | null;
       auto_agent_provider: string | null;
       auto_agent_model: string | null;
       auto_agent_reasoning_effort: string | null;
@@ -476,6 +566,8 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
       `select auto_merge, merge_method, max_rounds, on_rebase_needed,
               conflict_strategy, force_finalize_mode,
               force_finalize_require_no_ci_failures, early_merge_on_green,
+              at_cap_policy, at_cap_wait_minutes, at_cap_ci_retry_max,
+              force_merge_requires_confirmation,
               auto_agent_provider, auto_agent_model, auto_agent_reasoning_effort,
               auto_agent_permission_mode, auto_agent_confidence_threshold
        from pr_pipeline_settings where pr_id = ?`,
@@ -493,6 +585,18 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
     const forceFinalizeMode: ForceFinalizeMode = rawForceFinalize && FORCE_FINALIZE_MODE_VALUES.has(rawForceFinalize as ForceFinalizeMode)
       ? (rawForceFinalize as ForceFinalizeMode)
       : DEFAULT_PIPELINE_SETTINGS.forceFinalizeMode;
+
+    // Prefer the new at_cap_policy column when present; otherwise derive from
+    // the legacy force_finalize_mode so older rows keep working.
+    const rawAtCap = row.at_cap_policy;
+    const atCapPolicy: AtCapPolicy = rawAtCap && AT_CAP_POLICY_VALUES.has(rawAtCap as AtCapPolicy)
+      ? (rawAtCap as AtCapPolicy)
+      : atCapPolicyFromLegacy(forceFinalizeMode);
+    const atCapWaitMinutes = row.at_cap_wait_minutes ?? DEFAULT_PIPELINE_SETTINGS.atCapWaitMinutes;
+    const atCapCiRetryMax = row.at_cap_ci_retry_max ?? DEFAULT_PIPELINE_SETTINGS.atCapCiRetryMax;
+    const forceMergeRequiresConfirmation = row.force_merge_requires_confirmation == null
+      ? DEFAULT_PIPELINE_SETTINGS.forceMergeRequiresConfirmation
+      : row.force_merge_requires_confirmation === 1;
 
     const rawProvider = row.auto_agent_provider;
     const provider: AutoConflictAgentProvider | null = rawProvider && AUTO_AGENT_PROVIDER_VALUES.has(rawProvider as AutoConflictAgentProvider)
@@ -516,6 +620,10 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
       autoAgentSettings,
       forceFinalizeMode,
       forceFinalizeRequireNoCiFailures: (row.force_finalize_require_no_ci_failures ?? 1) === 1,
+      atCapPolicy,
+      atCapWaitMinutes,
+      atCapCiRetryMax,
+      forceMergeRequiresConfirmation,
       earlyMergeOnGreen: (row.early_merge_on_green ?? 1) === 1,
     };
   }
@@ -664,9 +772,12 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
     db.run(
       `insert into pr_convergence_state
          (pr_id, auto_converge_enabled, status, poller_status, current_round, active_session_id,
-          active_lane_id, active_href, pause_reason, error_message, last_started_at, last_polled_at,
-          last_paused_at, last_stopped_at, created_at, updated_at)
-       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          active_lane_id, active_href, pause_reason, error_message,
+          force_finalize_used, ci_retry_attempts_used, wait_for_ci_started_at,
+          last_dispatch_head_sha, pause_repeat_count, last_pause_reason_hash,
+          last_started_at, last_polled_at, last_paused_at, last_stopped_at,
+          created_at, updated_at)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        on conflict(pr_id) do update set
          auto_converge_enabled = excluded.auto_converge_enabled,
          status = excluded.status,
@@ -677,6 +788,12 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
          active_href = excluded.active_href,
          pause_reason = excluded.pause_reason,
          error_message = excluded.error_message,
+         force_finalize_used = excluded.force_finalize_used,
+         ci_retry_attempts_used = excluded.ci_retry_attempts_used,
+         wait_for_ci_started_at = excluded.wait_for_ci_started_at,
+         last_dispatch_head_sha = excluded.last_dispatch_head_sha,
+         pause_repeat_count = excluded.pause_repeat_count,
+         last_pause_reason_hash = excluded.last_pause_reason_hash,
          last_started_at = excluded.last_started_at,
          last_polled_at = excluded.last_polled_at,
          last_paused_at = excluded.last_paused_at,
@@ -693,6 +810,12 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
         merged.activeHref,
         merged.pauseReason,
         merged.errorMessage,
+        merged.forceFinalizeUsed ? 1 : 0,
+        merged.ciRetryAttemptsUsed,
+        merged.waitForCiStartedAt,
+        merged.lastDispatchHeadSha,
+        merged.pauseRepeatCount,
+        merged.lastPauseReasonHash,
         merged.lastStartedAt,
         merged.lastPolledAt,
         merged.lastPausedAt,
@@ -702,13 +825,13 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
       ],
     );
 
-    return merged;
+    return attachPathToMergeOwnership(merged);
   }
 
   function readConvergenceRuntime(prId: string): ConvergenceRuntimeState {
     const row = getConvergenceRuntimeRow(prId);
     const persisted = row ? rowToConvergenceRuntime(row) : buildDefaultRuntimeState(prId);
-    return computeEffectiveRuntime(persisted);
+    return attachPathToMergeOwnership(computeEffectiveRuntime(persisted));
   }
 
   function buildSnapshot(prId: string): IssueInventorySnapshot {
@@ -898,6 +1021,35 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
       }
     },
 
+    resetSentToAgent(prId: string, options?: { sessionId?: string | null }): void {
+      const sessionId = options?.sessionId?.trim() || null;
+      const now = nowIso();
+      if (countSentToAgentItems(prId, sessionId) === 0) return;
+      if (sessionId) {
+        db.run(
+          `update pr_issue_inventory
+           set state = 'new',
+               round = case when round > 0 then round - 1 else 0 end,
+               agent_session_id = null,
+               updated_at = ?
+           where pr_id = ? and state = 'sent_to_agent' and agent_session_id = ?`,
+          [now, prId, sessionId],
+        );
+        clampRuntimeRoundToInventory(prId, now);
+        return;
+      }
+      db.run(
+        `update pr_issue_inventory
+         set state = 'new',
+             round = case when round > 0 then round - 1 else 0 end,
+             agent_session_id = null,
+             updated_at = ?
+         where pr_id = ? and state = 'sent_to_agent'`,
+        [now, prId],
+      );
+      clampRuntimeRoundToInventory(prId, now);
+    },
+
     markFixed(prId: string, itemIds: string[]): void {
       const now = nowIso();
       for (const id of itemIds) {
@@ -1039,11 +1191,13 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
            pr_id, auto_merge, merge_method, max_rounds, on_rebase_needed,
            conflict_strategy, force_finalize_mode,
            force_finalize_require_no_ci_failures, early_merge_on_green,
+           at_cap_policy, at_cap_wait_minutes, at_cap_ci_retry_max,
+           force_merge_requires_confirmation,
            auto_agent_provider, auto_agent_model, auto_agent_reasoning_effort,
            auto_agent_permission_mode, auto_agent_confidence_threshold,
            updated_at
          )
-         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          on conflict(pr_id) do update set
            auto_merge = excluded.auto_merge,
            merge_method = excluded.merge_method,
@@ -1053,6 +1207,10 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
            force_finalize_mode = excluded.force_finalize_mode,
            force_finalize_require_no_ci_failures = excluded.force_finalize_require_no_ci_failures,
            early_merge_on_green = excluded.early_merge_on_green,
+           at_cap_policy = excluded.at_cap_policy,
+           at_cap_wait_minutes = excluded.at_cap_wait_minutes,
+           at_cap_ci_retry_max = excluded.at_cap_ci_retry_max,
+           force_merge_requires_confirmation = excluded.force_merge_requires_confirmation,
            auto_agent_provider = excluded.auto_agent_provider,
            auto_agent_model = excluded.auto_agent_model,
            auto_agent_reasoning_effort = excluded.auto_agent_reasoning_effort,
@@ -1069,6 +1227,10 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
           merged.forceFinalizeMode,
           merged.forceFinalizeRequireNoCiFailures ? 1 : 0,
           merged.earlyMergeOnGreen ? 1 : 0,
+          merged.atCapPolicy,
+          merged.atCapWaitMinutes,
+          merged.atCapCiRetryMax,
+          merged.forceMergeRequiresConfirmation ? 1 : 0,
           merged.autoAgentSettings.provider,
           merged.autoAgentSettings.model,
           merged.autoAgentSettings.reasoningEffort,

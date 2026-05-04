@@ -252,6 +252,9 @@ import type {
   IssueInventorySnapshot,
   PrConvergenceState,
   PrConvergenceStatePatch,
+  PrAgentPermissionMode,
+  PathToMergeStartResult,
+  PathToMergeStopResult,
   ConvergenceStatus,
   PipelineSettings,
   UpdateIntegrationProposalArgs,
@@ -3087,14 +3090,15 @@ contextBridge.exposeInMainWorld("ade", {
       prId: string;
       modelId?: string | null;
       reasoning?: string | null;
+      permissionMode?: PrAgentPermissionMode | null;
       scope?: "checks" | "comments" | "both";
       additionalInstructions?: string | null;
-    }): Promise<{ prId: string; scheduled: boolean; runtime: PrConvergenceState }> =>
+    }): Promise<PathToMergeStartResult> =>
       ipcRenderer.invoke(IPC.prsPathToMergeStart, args),
     pathToMergeStop: async (args: {
       prId: string;
       reason?: string | null;
-    }): Promise<{ prId: string; stopped: boolean; runtime: PrConvergenceState | null }> =>
+    }): Promise<PathToMergeStopResult> =>
       ipcRenderer.invoke(IPC.prsPathToMergeStop, args),
     pipelineSettingsGet: async (prId: string): Promise<PipelineSettings> =>
       ipcRenderer.invoke(IPC.prsPipelineSettingsGet, { prId }),

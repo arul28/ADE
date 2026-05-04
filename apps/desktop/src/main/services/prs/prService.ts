@@ -40,6 +40,7 @@ import type {
   LandStackArgs,
   LandStackEnhancedArgs,
   LaneSummary,
+  LaneWorktreeLockOwnerKind,
   ListIntegrationWorkflowsArgs,
   LinkPrToLaneArgs,
   PrCheck,
@@ -127,6 +128,7 @@ import type { createProjectConfigService } from "../config/projectConfigService"
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createConflictService } from "../conflicts/conflictService";
 import type { createAgentChatService } from "../chat/agentChatService";
+import type { LaneWorktreeLockService } from "../lanes/laneWorktreeLockService";
 import { runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
 import { extractFirstJsonObject } from "../ai/utils";
 import { buildIntegrationPreflight } from "./integrationPlanning";
@@ -763,6 +765,7 @@ export function createPrService({
   aiIntegrationService,
   projectConfigService,
   conflictService,
+  laneWorktreeLockService,
   autoRebaseService,
   rebaseSuggestionService,
   openExternal,
@@ -778,6 +781,7 @@ export function createPrService({
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   conflictService?: ReturnType<typeof createConflictService>;
+  laneWorktreeLockService?: LaneWorktreeLockService | null;
   autoRebaseService?: ReturnType<typeof createAutoRebaseService> | null;
   rebaseSuggestionService?: ReturnType<typeof createRebaseSuggestionService> | null;
   openExternal: (url: string) => Promise<void>;
@@ -787,6 +791,29 @@ export function createPrService({
     github_url, github_node_id, title, state, base_branch, head_branch,
     checks_status, review_status, additions, deletions, last_synced_at,
     created_at, updated_at, creation_strategy`;
+
+  const acquireLaneMutationLock = (args: {
+    lane: LaneSummary;
+    ownerKind: LaneWorktreeLockOwnerKind;
+    ownerLabel: string;
+    ownerProposalId?: string | null;
+    ownerPrId?: string | null;
+  }): string | null => {
+    if (!laneWorktreeLockService) return null;
+    return laneWorktreeLockService.acquire({
+      laneId: args.lane.id,
+      worktreePath: args.lane.worktreePath,
+      ownerKind: args.ownerKind,
+      ownerLabel: args.ownerLabel,
+      ownerProposalId: args.ownerProposalId ?? null,
+      ownerPrId: args.ownerPrId ?? null,
+    }).token;
+  };
+
+  const releaseLaneMutationLock = (token: string | null): void => {
+    if (!token || !laneWorktreeLockService) return;
+    laneWorktreeLockService.release({ token });
+  };
 
   const getRowById = (prId: string): PullRequestRow | null =>
     db.get<PullRequestRow>(
@@ -3269,6 +3296,7 @@ export function createPrService({
     let groupInserted = false;
     let integrationLane: LaneSummary | null = null;
     let createdNewIntegrationLane = false;
+    let integrationLockToken: string | null = null;
 
     try {
       db.run(
@@ -3288,6 +3316,13 @@ export function createPrService({
         });
         createdNewIntegrationLane = true;
       }
+
+      integrationLockToken = acquireLaneMutationLock({
+        lane: integrationLane,
+        ownerKind: "integration_resolution",
+        ownerProposalId: groupId,
+        ownerLabel: `Create integration PR in lane ${integrationLane.name}`,
+      });
 
       const mergeResults: Array<{ laneId: string; success: boolean; error?: string }> = [];
 
@@ -3377,6 +3412,8 @@ export function createPrService({
         }
       }
       throw error;
+    } finally {
+      releaseLaneMutationLock(integrationLockToken);
     }
   };
 
@@ -3417,6 +3454,7 @@ export function createPrService({
     const laneMap = new Map(lanes.map((lane) => [lane.id, lane]));
     const sourceLaneNames = preflight.uniqueSourceLaneIds.map((laneId) => laneMap.get(laneId)?.name ?? laneId);
     let integrationLane: LaneSummary | null = null;
+    let integrationLockToken: string | null = null;
     try {
       integrationLane = await laneService.createChild({
         parentLaneId: preflight.baseLane.id,
@@ -3424,6 +3462,11 @@ export function createPrService({
         description: args.description?.trim() || `Integration lane for merging: ${sourceLaneNames.join(", ")}`,
         missionId: args.missionId ?? null,
         laneRole: args.laneRole ?? "integration",
+      });
+      integrationLockToken = acquireLaneMutationLock({
+        lane: integrationLane,
+        ownerKind: "integration_resolution",
+        ownerLabel: `Prepare integration lane ${integrationLane.name}`,
       });
 
       const mergeResults: Array<{ laneId: string; success: boolean; error?: string }> = [];
@@ -3462,6 +3505,8 @@ export function createPrService({
         }
       }
       throw error;
+    } finally {
+      releaseLaneMutationLock(integrationLockToken);
     }
   };
 
@@ -4244,6 +4289,12 @@ export function createPrService({
       [groupId, projectId, now]
     );
 
+    const integrationLockToken = acquireLaneMutationLock({
+      lane: integrationLane,
+      ownerKind: "integration_resolution",
+      ownerProposalId: groupId,
+      ownerLabel: `Create integration PR from lane ${integrationLane.name}`,
+    });
     try {
       const pr = await createFromLane({
         laneId: integrationLane.id,
@@ -4279,6 +4330,8 @@ export function createPrService({
       db.run("delete from pr_group_members where group_id = ?", [groupId]);
       db.run("delete from pr_groups where id = ? and project_id = ?", [groupId, projectId]);
       throw error;
+    } finally {
+      releaseLaneMutationLock(integrationLockToken);
     }
   };
 
@@ -4532,27 +4585,47 @@ export function createPrService({
 
   const getGithubSnapshot = async (options?: { force?: boolean }): Promise<GitHubPrSnapshot> => {
     const force = options?.force === true;
-    if (!force && cachedGithubSnapshot && Date.now() - cachedGithubSnapshotAt < GITHUB_SNAPSHOT_TTL_MS) {
+    const startSnapshotRequest = (allowStaleOnError: boolean): Promise<GitHubPrSnapshot> => {
+      const staleFallback = cachedGithubSnapshot;
+      const request = getGithubSnapshotUncached()
+        .then((snapshot) => {
+          cachedGithubSnapshot = snapshot;
+          cachedGithubSnapshotAt = Date.now();
+          return snapshot;
+        })
+        .catch((error) => {
+          if (allowStaleOnError && staleFallback) {
+            logger.warn("prs.github_snapshot_refresh_failed_stale_returned", {
+              error: error instanceof Error ? error.message : String(error),
+            });
+            return staleFallback;
+          }
+          throw error;
+        })
+        .finally(() => {
+          if (githubSnapshotInFlight === request) {
+            githubSnapshotInFlight = null;
+          }
+        });
+      githubSnapshotInFlight = request;
+      return request;
+    };
+
+    if (!force && cachedGithubSnapshot) {
+      const ageMs = Date.now() - cachedGithubSnapshotAt;
+      if (ageMs < GITHUB_SNAPSHOT_TTL_MS) {
+        return cachedGithubSnapshot;
+      }
+      if (!githubSnapshotInFlight) {
+        void startSnapshotRequest(true).catch(() => {});
+      }
       return cachedGithubSnapshot;
     }
     if (!force && githubSnapshotInFlight) {
       return githubSnapshotInFlight;
     }
 
-    const request = getGithubSnapshotUncached()
-      .then((snapshot) => {
-        cachedGithubSnapshot = snapshot;
-        cachedGithubSnapshotAt = Date.now();
-        return snapshot;
-      })
-      .finally(() => {
-        if (githubSnapshotInFlight === request) {
-          githubSnapshotInFlight = null;
-        }
-      });
-
-    githubSnapshotInFlight = request;
-    return request;
+    return startSnapshotRequest(false);
   };
 
   const landQueueNext = async (args: LandQueueNextArgs): Promise<LandResult> => {
@@ -5033,6 +5106,13 @@ export function createPrService({
       });
     }
 
+    const integrationLockToken = acquireLaneMutationLock({
+      lane: integrationLane,
+      ownerKind: "integration_resolution",
+      ownerProposalId: args.proposalId,
+      ownerLabel: `Prepare integration lane ${integrationLane.name}`,
+    });
+    try {
     const mergedCleanLanes: string[] = [];
     const conflictingLanes: string[] = [];
 
@@ -5087,6 +5167,9 @@ export function createPrService({
     );
 
     return { integrationLaneId: integrationLane.id, mergedCleanLanes, conflictingLanes };
+    } finally {
+      releaseLaneMutationLock(integrationLockToken);
+    }
   };
 
   // B2: Start integration resolution — attempt merge, detect conflicts, return result for orchestrator
@@ -5111,6 +5194,13 @@ export function createPrService({
     const sourceLane = allLanes.find((l) => l.id === args.laneId);
     if (!sourceLane) throw new Error(`Source lane not found: ${args.laneId}`);
 
+    const integrationLockToken = acquireLaneMutationLock({
+      lane: integrationLane,
+      ownerKind: "integration_resolution",
+      ownerProposalId: args.proposalId,
+      ownerLabel: `Resolve integration conflicts in lane ${integrationLane.name}`,
+    });
+    try {
     // Attempt merge
     const sourceBranch = branchNameFromRef(sourceLane.branchRef);
     const mergeRes = await runGit(
@@ -5177,6 +5267,9 @@ export function createPrService({
     });
 
     return { conflictFiles, integrationLaneId, mergedClean: false };
+    } finally {
+      releaseLaneMutationLock(integrationLockToken);
+    }
   };
 
   // B3: Mark resolution worker active — called by orchestrator after spawning a worker

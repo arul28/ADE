@@ -1155,6 +1155,34 @@ describe("createAgentChatService", () => {
       expect(session.status).toBe("idle");
     });
 
+    it("derives the runtime model from modelId when raw action callers omit model", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: undefined,
+        modelId: "anthropic/claude-sonnet-4-6",
+      } as any);
+
+      expect(session.provider).toBe("claude");
+      expect(session.modelId).toBe("anthropic/claude-sonnet-4-6");
+      expect(session.model).toBe("sonnet");
+    });
+
+    it("honors an explicit initial chat title", async () => {
+      const { service, sessionService } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        title: "  Pearl UI Audit  ",
+      });
+
+      expect(sessionService.get(session.id)?.title).toBe("Pearl UI Audit");
+      expect(sessionService.get(session.id)?.manuallyNamed).toBe(true);
+    });
+
     it("appends ADE tooling guidance to Claude SDK sessions", async () => {
       vi.mocked(unstable_v2_createSession).mockReturnValue({
         send: vi.fn(),
@@ -5294,6 +5322,39 @@ describe("createAgentChatService", () => {
       await expect(
         service.getChatTranscript({ sessionId: "nonexistent-id" }),
       ).rejects.toThrow(/not found/i);
+    });
+
+    it("keeps displayText as metadata while preserving the full user prompt", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Full handoff prompt with all implementation details.",
+        displayText: "Pearl UI audit handoff",
+      });
+
+      const envelope = await waitForEvent(events, (event): event is AgentChatEventEnvelope => event.event.type === "user_message");
+      expect(envelope.event).toMatchObject({
+        type: "user_message",
+        text: "Full handoff prompt with all implementation details.",
+        displayText: "Pearl UI audit handoff",
+      });
+
+      vi.mocked(parseAgentChatTranscript).mockReturnValue([envelope]);
+      const transcript = await service.getChatTranscript({ sessionId: session.id });
+      expect(transcript.entries[0]).toMatchObject({
+        role: "user",
+        text: "Full handoff prompt with all implementation details.",
+        displayText: "Pearl UI audit handoff",
+      });
     });
   });
 

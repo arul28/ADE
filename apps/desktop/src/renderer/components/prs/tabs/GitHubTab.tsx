@@ -15,6 +15,9 @@ import { usePrs } from "../state/PrsContext";
 import type { PrDetailRouteTab } from "../prsRouteState";
 
 const VIRTUALIZE_AT = 50;
+const GITHUB_TAB_REVISIT_CACHE_TTL_MS = 60_000;
+const GITHUB_TAB_SNAPSHOT_FRESH_MS = 30_000;
+const GITHUB_TAB_CACHE_DISABLED = import.meta.env.MODE === "test";
 
 type GitHubTabProps = {
   lanes: LaneSummary[];
@@ -30,6 +33,27 @@ type GitHubTabProps = {
 
 type GitHubFilter = "open" | "closed" | "merged" | "all";
 type ScopeFilter = "all" | "ade" | "external";
+
+type GitHubTabWarmCache = {
+  snapshot: GitHubPrSnapshot | null;
+  filter: GitHubFilter;
+  selectedItemId: string | null;
+  scopeFilter: ScopeFilter;
+  searchQuery: string;
+  cachedAt: number;
+};
+
+let githubTabWarmCache: GitHubTabWarmCache | null = null;
+
+function readGitHubTabWarmCache(): GitHubTabWarmCache | null {
+  if (GITHUB_TAB_CACHE_DISABLED) return null;
+  return githubTabWarmCache;
+}
+
+function writeGitHubTabWarmCache(cache: GitHubTabWarmCache): void {
+  if (GITHUB_TAB_CACHE_DISABLED) return;
+  githubTabWarmCache = cache;
+}
 
 function matchesFilter(item: GitHubPrListItem, filter: GitHubFilter): boolean {
   if (filter === "all") return true;
@@ -378,26 +402,36 @@ export function GitHubTab({
     detailReviews,
     detailComments,
     detailBusy,
+    loading: prsContextLoading,
+    setViewerLogin: setContextViewerLogin,
   } = usePrs();
 
-  const [snapshot, setSnapshot] = React.useState<GitHubPrSnapshot | null>(null);
-  const [loading, setLoading] = React.useState(true);
+  const initialWarmCacheRef = React.useRef<GitHubTabWarmCache | null>(readGitHubTabWarmCache());
+  const [snapshot, setSnapshot] = React.useState<GitHubPrSnapshot | null>(
+    () => initialWarmCacheRef.current?.snapshot ?? null,
+  );
+  const [loading, setLoading] = React.useState(() => !initialWarmCacheRef.current?.snapshot);
   const [error, setError] = React.useState<string | null>(null);
-  const [filter, setFilter] = React.useState<GitHubFilter>("open");
-  const [selectedItemId, setSelectedItemId] = React.useState<string | null>(null);
-  const [scopeFilter, setScopeFilter] = React.useState<ScopeFilter>("all");
+  const [filter, setFilter] = React.useState<GitHubFilter>(() => initialWarmCacheRef.current?.filter ?? "open");
+  const [selectedItemId, setSelectedItemId] = React.useState<string | null>(
+    () => initialWarmCacheRef.current?.selectedItemId ?? null,
+  );
+  const [scopeFilter, setScopeFilter] = React.useState<ScopeFilter>(
+    () => initialWarmCacheRef.current?.scopeFilter ?? "all",
+  );
   const [linkLaneId, setLinkLaneId] = React.useState("");
   const [linkingItemId, setLinkingItemId] = React.useState<string | null>(null);
   const [syncing, setSyncing] = React.useState(false);
-  const [searchQuery, setSearchQuery] = React.useState("");
+  const [searchQuery, setSearchQuery] = React.useState(() => initialWarmCacheRef.current?.searchQuery ?? "");
   const lastHandledSelectedPrIdRef = React.useRef<string | null | undefined>(undefined);
   const pendingSelectedItemIdRef = React.useRef<string | null>(null);
   const snapshotRef = React.useRef<GitHubPrSnapshot | null>(null);
-  const hasInitializedSelectionRef = React.useRef(false);
+  const hasInitializedSelectionRef = React.useRef(Boolean(initialWarmCacheRef.current?.selectedItemId));
   const lastPrFingerprintRef = React.useRef<string>("");
   const hotRefreshUntilRef = React.useRef(0);
   const hotRefreshTimerRef = React.useRef<number | null>(null);
   const inFlightSnapshotRef = React.useRef<Promise<GitHubPrSnapshot> | null>(null);
+  const lastSnapshotLoadedAtRef = React.useRef(initialWarmCacheRef.current?.cachedAt ?? 0);
   const listRef = React.useRef<HTMLDivElement | null>(null);
   snapshotRef.current = snapshot;
 
@@ -419,6 +453,10 @@ export function GitHubTab({
     const pending = window.ade.prs.getGitHubSnapshot({ force: options?.force === true })
       .then((next) => {
         setSnapshot(next);
+        lastSnapshotLoadedAtRef.current = Date.now();
+        if (next.viewerLogin) {
+          setContextViewerLogin?.(next.viewerLogin);
+        }
         return next;
       })
       .catch((err) => {
@@ -433,7 +471,13 @@ export function GitHubTab({
       });
     inFlightSnapshotRef.current = pending;
     return pending;
-  }, []);
+  }, [setContextViewerLogin]);
+
+  React.useEffect(() => {
+    if (snapshot?.viewerLogin) {
+      setContextViewerLogin?.(snapshot.viewerLogin);
+    }
+  }, [setContextViewerLogin, snapshot?.viewerLogin]);
 
   const startHotRefreshWindow = React.useCallback(() => {
     const now = Date.now();
@@ -460,7 +504,13 @@ export function GitHubTab({
   }, [loadSnapshot]);
 
   React.useEffect(() => {
-    void loadSnapshot();
+    const warmCache = initialWarmCacheRef.current;
+    const hasFreshWarmSnapshot =
+      Boolean(warmCache?.snapshot)
+      && Date.now() - (warmCache?.cachedAt ?? 0) < GITHUB_TAB_REVISIT_CACHE_TTL_MS;
+    if (!hasFreshWarmSnapshot) {
+      void loadSnapshot({ silent: snapshotRef.current != null });
+    }
     return () => {
       if (hotRefreshTimerRef.current != null) {
         window.clearTimeout(hotRefreshTimerRef.current);
@@ -471,6 +521,18 @@ export function GitHubTab({
   }, [loadSnapshot]);
 
   React.useEffect(() => {
+    writeGitHubTabWarmCache({
+      snapshot,
+      filter,
+      selectedItemId,
+      scopeFilter,
+      searchQuery,
+      cachedAt: Date.now(),
+    });
+  }, [filter, scopeFilter, searchQuery, selectedItemId, snapshot]);
+
+  React.useEffect(() => {
+    if (prsContextLoading && prs.length === 0) return;
     const nextFingerprint = JSON.stringify(
       prs
         .map((pr) => [
@@ -490,9 +552,10 @@ export function GitHubTab({
     }
     if (lastPrFingerprintRef.current === nextFingerprint) return;
     lastPrFingerprintRef.current = nextFingerprint;
+    if (Date.now() - lastSnapshotLoadedAtRef.current < GITHUB_TAB_SNAPSHOT_FRESH_MS) return;
     startHotRefreshWindow();
     void loadSnapshot({ force: true, silent: true });
-  }, [loadSnapshot, prs, startHotRefreshWindow]);
+  }, [loadSnapshot, prs, prsContextLoading, startHotRefreshWindow]);
 
   const matchesSearch = React.useCallback((item: GitHubPrListItem) => {
     if (!searchQuery.trim()) return true;
@@ -560,7 +623,7 @@ export function GitHubTab({
     }
     setSelectedItemId(linkedItem.id);
     hasInitializedSelectionRef.current = true;
-  }, [snapshot, selectedPrId, filter]);
+  }, [allItems, snapshot, selectedPrId, filter]);
 
   React.useEffect(() => {
     if (!snapshot) return;

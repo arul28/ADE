@@ -13,7 +13,7 @@ import type {
   ConflictEventPayload,
   ConflictExternalResolverContextGap,
   ConflictResolverOriginSurface,
-  ConflictResolverPermissionMode,
+  PrAgentPermissionMode,
   ConflictResolverPostActionState,
   ConflictExternalResolverRunStatus,
   ConflictExternalResolverRunSummary,
@@ -73,6 +73,7 @@ import type { createOperationService } from "../history/operationService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createSessionService } from "../sessions/sessionService";
+import type { LaneWorktreeLockService } from "../lanes/laneWorktreeLockService";
 import { normalizeConflictType, runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
 import { redactSecretsDeep } from "../../utils/redaction";
 import { extractFirstJsonObject } from "../ai/utils";
@@ -134,7 +135,7 @@ type ExternalResolverRunRecord = {
   scenario: ResolverSessionScenario;
   model: string | null;
   reasoningEffort: string | null;
-  permissionMode: ConflictResolverPermissionMode | null;
+  permissionMode: PrAgentPermissionMode | null;
   originSurface: ConflictResolverOriginSurface;
   originMissionId: string | null;
   originRunId: string | null;
@@ -607,6 +608,7 @@ export function createConflictService({
   aiIntegrationService,
   operationService,
   sessionService,
+  laneWorktreeLockService,
   conflictPacksDir,
   onEvent
 }: {
@@ -619,6 +621,7 @@ export function createConflictService({
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService>;
   operationService?: ReturnType<typeof createOperationService>;
   sessionService?: ReturnType<typeof createSessionService>;
+  laneWorktreeLockService?: LaneWorktreeLockService | null;
   conflictPacksDir?: string;
   onEvent?: (event: ConflictEventPayload) => void;
 }) {
@@ -3427,7 +3430,12 @@ export function createConflictService({
     }
   };
 
+  type InternalRunExternalConflictResolverArgs = RunExternalConflictResolverArgs & {
+    laneWorktreeLockToken?: string | null;
+  };
+
   const runExternalResolver = async (args: RunExternalConflictResolverArgs): Promise<ConflictExternalResolverRunSummary> => {
+    const internalArgs = args as InternalRunExternalConflictResolverArgs;
     const targetLaneId = args.targetLaneId.trim();
     const sourceLaneIds = uniqueSorted((args.sourceLaneIds ?? []).map((value) => value.trim()).filter(Boolean));
     if (!targetLaneId) throw new Error("targetLaneId is required");
@@ -3449,6 +3457,27 @@ export function createConflictService({
     const cwdLane = laneByIdMap.get(cwdLaneId) ?? (integrationLane && integrationLane.id === cwdLaneId ? integrationLane : null);
     if (!cwdLane) throw new Error(`Execution lane not found: ${cwdLaneId}`);
 
+    const sharedLockToken = internalArgs.laneWorktreeLockToken?.trim() || null;
+    let ownedLockToken: string | null = null;
+    if (laneWorktreeLockService) {
+      if (sharedLockToken) {
+        const lock = laneWorktreeLockService.heartbeat(sharedLockToken);
+        if (!lock) {
+          throw new Error("Path to Merge lane lock expired before launching conflict resolution.");
+        }
+      } else {
+        const acquired = laneWorktreeLockService.acquire({
+          laneId: cwdLane.id,
+          worktreePath: cwdLane.worktreePath,
+          ownerKind: "conflict_resolution",
+          ownerProposalId: args.originRunId ?? `${targetLaneId}:${sourceLaneIds.join(",")}`,
+          ownerLabel: args.originLabel?.trim() || `Conflict resolution on lane ${cwdLane.name}`,
+        });
+        ownedLockToken = acquired.token;
+      }
+    }
+
+    try {
     const scenario: ResolverSessionScenario = sourceLaneIds.length > 1 ? "integration-merge" : "single-merge";
     const prepared = await prepareResolverSession({
       provider: args.provider,
@@ -3598,6 +3627,11 @@ export function createConflictService({
     };
     writeExternalRunRecord(runRecord);
     return toRunSummary(runRecord);
+    } finally {
+      if (ownedLockToken && laneWorktreeLockService) {
+        laneWorktreeLockService.release({ token: ownedLockToken });
+      }
+    }
   };
 
   const listExternalResolverRuns = (args: ListExternalConflictResolverRunsArgs = {}): ConflictExternalResolverRunSummary[] => {
@@ -3628,6 +3662,16 @@ export function createConflictService({
 
     const laneId = run.cwdLaneId;
     const lane = laneService.getLaneBaseAndBranch(laneId);
+    const lockToken = laneWorktreeLockService
+      ? laneWorktreeLockService.acquire({
+          laneId,
+          worktreePath: lane.worktreePath,
+          ownerKind: "conflict_resolution",
+          ownerProposalId: runId,
+          ownerLabel: `Commit conflict resolver run ${runId.slice(0, 8)} on lane ${laneId}`,
+        }).token
+      : null;
+    try {
     const patchBody = fs.readFileSync(run.patchPath, "utf8");
     const touchedPaths = extractCommitPathsFromUnifiedDiff(patchBody);
     if (!touchedPaths.length) throw new Error("Resolver patch has no changed paths.");
@@ -3660,6 +3704,11 @@ export function createConflictService({
       message: commitMessage,
       committedPaths: normalizedPaths
     };
+    } finally {
+      if (lockToken && laneWorktreeLockService) {
+        laneWorktreeLockService.release({ token: lockToken });
+      }
+    }
   };
 
   const applyProposal = async (args: ApplyConflictProposalArgs): Promise<ConflictProposal> => {

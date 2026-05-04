@@ -140,6 +140,7 @@ export type AgentChatEvent =
   | {
       type: "user_message";
       text: string;
+      displayText?: string;
       attachments?: AgentChatFileRef[];
       turnId?: string;
       steerId?: string;
@@ -603,6 +604,7 @@ export type AgentChatSessionSummary = {
 export type AgentChatTranscriptEntry = {
   role: "user" | "assistant";
   text: string;
+  displayText?: string;
   timestamp: string;
   turnId?: string;
 };
@@ -693,6 +695,7 @@ export type AgentChatCreateArgs = {
   provider: AgentChatProvider;
   model: string;
   modelId?: ModelId;
+  title?: string | null;
   sessionProfile?: AgentChatSessionProfile;
   reasoningEffort?: string | null;
   permissionMode?: AgentChatPermissionMode;
@@ -709,6 +712,7 @@ export type AgentChatCreateArgs = {
   surface?: AgentChatSurface;
   automationId?: string | null;
   automationRunId?: string | null;
+  openInUi?: boolean;
   requestedCwd?: string;
 };
 

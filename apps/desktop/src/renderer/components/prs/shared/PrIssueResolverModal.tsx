@@ -1,6 +1,6 @@
 import React from "react";
 import { CheckCircle, ChatText, CopySimple, Play, Warning, X } from "@phosphor-icons/react";
-import type { AiPermissionMode, PrCheck, PrIssueResolutionScope, PrReviewThread } from "../../../../shared/types";
+import type { PrAgentPermissionMode, PrCheck, PrIssueResolutionScope, PrReviewThread } from "../../../../shared/types";
 import type { PrIssueResolutionAvailability } from "../../../../shared/prIssueResolution";
 import { defaultPrIssueResolutionScope } from "../../../../shared/prIssueResolution";
 import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, outlineButton, primaryButton } from "../../lanes/laneDesignTokens";
@@ -15,7 +15,7 @@ type PrIssueResolverModalProps = {
   reviewThreads: PrReviewThread[];
   modelId: string;
   reasoningEffort: string;
-  permissionMode: AiPermissionMode;
+  permissionMode: PrAgentPermissionMode;
   busy: boolean;
   copyBusy: boolean;
   copyNotice: string | null;
@@ -23,7 +23,7 @@ type PrIssueResolverModalProps = {
   onOpenChange: (open: boolean) => void;
   onModelChange: (modelId: string) => void;
   onReasoningEffortChange: (value: string) => void;
-  onPermissionModeChange: (mode: AiPermissionMode) => void;
+  onPermissionModeChange: (mode: PrAgentPermissionMode) => void;
   onLaunch: (args: { scope: PrIssueResolutionScope; additionalInstructions: string }) => Promise<void>;
   onCopyPrompt: (args: { scope: PrIssueResolutionScope; additionalInstructions: string }) => Promise<void>;
 };

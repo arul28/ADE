@@ -3379,6 +3379,10 @@ function migrate(db: MigrationDb) {
   try { db.run("alter table pr_pipeline_settings add column auto_agent_reasoning_effort text"); } catch {}
   try { db.run("alter table pr_pipeline_settings add column auto_agent_permission_mode text"); } catch {}
   try { db.run("alter table pr_pipeline_settings add column auto_agent_confidence_threshold real"); } catch {}
+  try { db.run("alter table pr_pipeline_settings add column at_cap_policy text"); } catch {}
+  try { db.run("alter table pr_pipeline_settings add column at_cap_wait_minutes integer"); } catch {}
+  try { db.run("alter table pr_pipeline_settings add column at_cap_ci_retry_max integer"); } catch {}
+  try { db.run("alter table pr_pipeline_settings add column force_merge_requires_confirmation integer"); } catch {}
 
   db.run(`
     create table if not exists pr_convergence_state (
@@ -3405,6 +3409,44 @@ function migrate(db: MigrationDb) {
   // serialized as JSON. Persisted so resumeFromPersistedState can re-dispatch
   // the fix agent after a desktop restart instead of pausing on missing modelId.
   try { db.run("alter table pr_convergence_state add column ptm_args_json text"); } catch {}
+  try { db.run("alter table pr_convergence_state add column force_finalize_used integer not null default 0"); } catch {}
+  try { db.run("alter table pr_convergence_state add column ci_retry_attempts_used integer not null default 0"); } catch {}
+  try { db.run("alter table pr_convergence_state add column wait_for_ci_started_at text"); } catch {}
+  try { db.run("alter table pr_convergence_state add column last_dispatch_head_sha text"); } catch {}
+  try { db.run("alter table pr_convergence_state add column pause_repeat_count integer not null default 0"); } catch {}
+  try { db.run("alter table pr_convergence_state add column last_pause_reason_hash text"); } catch {}
+
+  // Machine-local runtime guard for PR automation. This table intentionally
+  // has no PRIMARY KEY so cr-sqlite does not register it as a CRR table.
+  db.run(`
+    create table if not exists lane_worktree_locks (
+      worktree_key text not null unique,
+      worktree_path text not null,
+      lane_id text not null,
+      owner_kind text not null,
+      owner_pr_id text,
+      owner_session_id text,
+      owner_proposal_id text,
+      owner_label text not null,
+      token text not null,
+      created_at text not null,
+      heartbeat_at text not null,
+      expires_at text not null
+    )
+  `);
+  db.run("delete from lane_worktree_locks where worktree_key is null or trim(worktree_key) = ''");
+  db.run(`
+    delete from lane_worktree_locks
+    where rowid not in (
+      select max(rowid)
+      from lane_worktree_locks
+      group by worktree_key
+    )
+  `);
+  db.run("create unique index if not exists idx_lane_worktree_locks_worktree_key_unique on lane_worktree_locks(worktree_key)");
+  db.run("create index if not exists idx_lane_worktree_locks_lane on lane_worktree_locks(lane_id)");
+  db.run("create index if not exists idx_lane_worktree_locks_session on lane_worktree_locks(owner_session_id)");
+  db.run("create index if not exists idx_lane_worktree_locks_expires on lane_worktree_locks(expires_at)");
 }
 
 function loadCrsqlite(db: DatabaseSyncType, extensionPath: string): void {

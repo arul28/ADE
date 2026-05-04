@@ -1189,6 +1189,59 @@ function parsePipelineSettingsPatch(value: Record<string, unknown>): { prId: str
   if (onRebaseNeeded === "pause" || onRebaseNeeded === "auto_rebase") {
     patch.onRebaseNeeded = onRebaseNeeded;
   }
+  const conflictStrategy = asTrimmedString(settings.conflictStrategy);
+  if (conflictStrategy && ["pause", "rebase", "merge", "auto"].includes(conflictStrategy)) {
+    patch.conflictStrategy = conflictStrategy as PipelineSettings["conflictStrategy"];
+  }
+  const forceFinalizeMode = asTrimmedString(settings.forceFinalizeMode);
+  if (forceFinalizeMode && ["off", "conditional", "unconditional"].includes(forceFinalizeMode)) {
+    patch.forceFinalizeMode = forceFinalizeMode as PipelineSettings["forceFinalizeMode"];
+  }
+  if (typeof settings.forceFinalizeRequireNoCiFailures === "boolean") {
+    patch.forceFinalizeRequireNoCiFailures = settings.forceFinalizeRequireNoCiFailures;
+  }
+  if (typeof settings.earlyMergeOnGreen === "boolean") {
+    patch.earlyMergeOnGreen = settings.earlyMergeOnGreen;
+  }
+  const atCapPolicy = asTrimmedString(settings.atCapPolicy);
+  if (atCapPolicy && ["stop", "wait_for_ci", "ci_retry_once", "ci_retry_loop", "force_merge"].includes(atCapPolicy)) {
+    patch.atCapPolicy = atCapPolicy as PipelineSettings["atCapPolicy"];
+  }
+  const atCapWaitMinutes = asOptionalNumber(settings.atCapWaitMinutes);
+  if (atCapWaitMinutes != null && atCapWaitMinutes >= 1) patch.atCapWaitMinutes = Math.floor(atCapWaitMinutes);
+  const atCapCiRetryMax = asOptionalNumber(settings.atCapCiRetryMax);
+  if (atCapCiRetryMax != null && atCapCiRetryMax >= 1) patch.atCapCiRetryMax = Math.floor(atCapCiRetryMax);
+  if (typeof settings.forceMergeRequiresConfirmation === "boolean") {
+    patch.forceMergeRequiresConfirmation = settings.forceMergeRequiresConfirmation;
+  }
+  if (isRecord(settings.autoAgentSettings)) {
+    const autoAgentSettings: Partial<PipelineSettings["autoAgentSettings"]> = {};
+    const provider = settings.autoAgentSettings.provider;
+    if (provider === null || provider === "claude" || provider === "codex") autoAgentSettings.provider = provider;
+    for (const key of ["model", "reasoningEffort"] as const) {
+      const value = settings.autoAgentSettings[key];
+      if (value === null || typeof value === "string") autoAgentSettings[key] = value;
+    }
+    const permissionMode = settings.autoAgentSettings.permissionMode;
+    if (
+      permissionMode === null ||
+      permissionMode === "read_only" ||
+      permissionMode === "guarded_edit" ||
+      permissionMode === "full_edit" ||
+      permissionMode === "default" ||
+      permissionMode === "plan" ||
+      permissionMode === "edit" ||
+      permissionMode === "full-auto" ||
+      permissionMode === "config-toml"
+    ) {
+      autoAgentSettings.permissionMode = permissionMode;
+    }
+    const confidenceThreshold = asOptionalNumber(settings.autoAgentSettings.confidenceThreshold);
+    if (settings.autoAgentSettings.confidenceThreshold === null || (confidenceThreshold != null && confidenceThreshold >= 0 && confidenceThreshold <= 1)) {
+      autoAgentSettings.confidenceThreshold = settings.autoAgentSettings.confidenceThreshold === null ? null : confidenceThreshold;
+    }
+    if (Object.keys(autoAgentSettings).length > 0) patch.autoAgentSettings = autoAgentSettings as PipelineSettings["autoAgentSettings"];
+  }
   return {
     prId: requirePrId(value, "prs.pipelineSettings.save"),
     settings: patch,
@@ -1207,7 +1260,25 @@ function parseConvergenceStatePatch(value: Record<string, unknown>): { prId: str
   if (pollerStatus && pollerStatuses.has(pollerStatus)) patch.pollerStatus = pollerStatus as ConvergenceRuntimeState["pollerStatus"];
   const currentRound = asOptionalNumber(raw.currentRound);
   if (currentRound != null && currentRound >= 0) patch.currentRound = Math.floor(currentRound);
-  for (const key of ["activeSessionId", "activeLaneId", "activeHref", "pauseReason", "errorMessage", "lastStartedAt", "lastPolledAt", "lastPausedAt", "lastStoppedAt"] as const) {
+  if (typeof raw.forceFinalizeUsed === "boolean") patch.forceFinalizeUsed = raw.forceFinalizeUsed;
+  const ciRetryAttemptsUsed = asOptionalNumber(raw.ciRetryAttemptsUsed);
+  if (ciRetryAttemptsUsed != null && ciRetryAttemptsUsed >= 0) patch.ciRetryAttemptsUsed = Math.floor(ciRetryAttemptsUsed);
+  const pauseRepeatCount = asOptionalNumber(raw.pauseRepeatCount);
+  if (pauseRepeatCount != null && pauseRepeatCount >= 0) patch.pauseRepeatCount = Math.floor(pauseRepeatCount);
+  for (const key of [
+    "activeSessionId",
+    "activeLaneId",
+    "activeHref",
+    "pauseReason",
+    "errorMessage",
+    "waitForCiStartedAt",
+    "lastDispatchHeadSha",
+    "lastPauseReasonHash",
+    "lastStartedAt",
+    "lastPolledAt",
+    "lastPausedAt",
+    "lastStoppedAt",
+  ] as const) {
     const next = raw[key];
     if (next === null || typeof next === "string") {
       (patch as Record<string, unknown>)[key] = next;

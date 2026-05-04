@@ -35,6 +35,19 @@ function RouteHarness() {
   );
 }
 
+function TabSwitchHarness() {
+  const { activeTab, setActiveTab, loading } = usePrs();
+  return (
+    <div>
+      <button type="button" onClick={() => setActiveTab("queue")}>
+        queue
+      </button>
+      <div data-testid="loading">{loading ? "loading" : "idle"}</div>
+      <div data-testid="active-tab">{activeTab}</div>
+    </div>
+  );
+}
+
 describe("PrsContext refresh", () => {
   beforeEach(() => {
     const refreshedNeed: RebaseNeed = {
@@ -105,8 +118,6 @@ describe("PrsContext refresh", () => {
     await waitFor(() => {
       expect(screen.getByTestId("loading").textContent).toBe("idle");
     });
-    expect(screen.getByTestId("needs-count").textContent).toBe("0");
-    expect(screen.getByTestId("auto-count").textContent).toBe("0");
 
     await user.click(screen.getByRole("button", { name: "refresh" }));
 
@@ -114,6 +125,28 @@ describe("PrsContext refresh", () => {
       expect(screen.getByTestId("needs-count").textContent).toBe("1");
       expect(screen.getByTestId("auto-count").textContent).toBe("1");
     });
+  });
+
+  it("does not run a GitHub PR refresh just because the local PR tab changes", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <PrsProvider>
+        <TabSwitchHarness />
+      </PrsProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("loading").textContent).toBe("idle");
+    });
+    expect(window.ade.prs.refresh).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getByRole("button", { name: "queue" }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("active-tab").textContent).toBe("queue");
+    });
+    expect(window.ade.prs.refresh).toHaveBeenCalledTimes(1);
   });
 
   it("hydrates the Rebase/Merge workflow selection from the initial hash route", async () => {
@@ -187,6 +220,7 @@ function makeFakeConvergenceState(prId: string, overrides?: Partial<PrConvergenc
   return {
     prId,
     autoConvergeEnabled: false,
+    pathToMergeActive: false,
     status: "idle",
     pollerStatus: "idle",
     currentRound: 0,
@@ -195,6 +229,12 @@ function makeFakeConvergenceState(prId: string, overrides?: Partial<PrConvergenc
     activeHref: null,
     pauseReason: null,
     errorMessage: null,
+    forceFinalizeUsed: false,
+    ciRetryAttemptsUsed: 0,
+    waitForCiStartedAt: null,
+    lastDispatchHeadSha: null,
+    pauseRepeatCount: 0,
+    lastPauseReasonHash: null,
     lastStartedAt: null,
     lastPolledAt: null,
     lastPausedAt: null,

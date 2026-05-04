@@ -3,7 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import type { GitConflictState } from "./git";
-import type { AiPermissionMode, RebaseNeed } from "./prs";
+import type { PrAgentPermissionMode, RebaseNeed } from "./prs";
 
 export type ConflictStatusValue =
   | "merge-ready"
@@ -201,7 +201,7 @@ export type ConflictExternalResolverRunSummary = {
   scenario: ResolverSessionScenario;
   model: string | null;
   reasoningEffort: string | null;
-  permissionMode: ConflictResolverPermissionMode | null;
+  permissionMode: PrAgentPermissionMode | null;
   command: string[];
   originSurface: ConflictResolverOriginSurface;
   originMissionId: string | null;
@@ -225,7 +225,7 @@ export type RunExternalConflictResolverArgs = {
   integrationLaneName?: string;
   model?: string | null;
   reasoningEffort?: string | null;
-  permissionMode?: ConflictResolverPermissionMode | null;
+  permissionMode?: PrAgentPermissionMode | null;
   originSurface?: ConflictResolverOriginSurface;
   originMissionId?: string | null;
   originRunId?: string | null;
@@ -403,7 +403,7 @@ export type PrepareResolverSessionArgs = {
   scenario?: ResolverSessionScenario;
   model?: string | null;
   reasoningEffort?: string | null;
-  permissionMode?: ConflictResolverPermissionMode | null;
+  permissionMode?: PrAgentPermissionMode | null;
   originSurface?: ConflictResolverOriginSurface;
   originMissionId?: string | null;
   originRunId?: string | null;
@@ -486,7 +486,7 @@ export type RebaseLaneArgs = {
   provider?: "codex" | "claude";
   modelId?: string | null;
   reasoningEffort?: string | null;
-  permissionMode?: AiPermissionMode;
+  permissionMode?: PrAgentPermissionMode;
   autoApplyThreshold?: number;
 };
 

@@ -194,6 +194,7 @@ function makeConvergenceState(overrides: Partial<PrConvergenceState> = {}): PrCo
   return {
     prId: "pr-80",
     autoConvergeEnabled: false,
+    pathToMergeActive: false,
     status: "idle",
     pollerStatus: "idle",
     currentRound: 0,
@@ -202,6 +203,12 @@ function makeConvergenceState(overrides: Partial<PrConvergenceState> = {}): PrCo
     activeHref: null,
     pauseReason: null,
     errorMessage: null,
+    forceFinalizeUsed: false,
+    ciRetryAttemptsUsed: 0,
+    waitForCiStartedAt: null,
+    lastDispatchHeadSha: null,
+    pauseRepeatCount: 0,
+    lastPauseReasonHash: null,
     lastStartedAt: null,
     lastPolledAt: null,
     lastPausedAt: null,
@@ -345,12 +352,35 @@ function renderPane(args: {
       : makeConvergenceState(patch);
     return currentConvergence;
   });
+  const pathToMergeStart = vi.fn().mockImplementation(async ({ prId }: { prId: string }) => {
+    currentConvergence = makeConvergenceState({
+      prId,
+      autoConvergeEnabled: true,
+      pathToMergeActive: true,
+      status: "launching",
+      pollerStatus: "scheduled",
+      lastStartedAt: new Date().toISOString(),
+    });
+    return { prId, scheduled: true, runtime: currentConvergence };
+  });
+  const pathToMergeStop = vi.fn().mockImplementation(async ({ prId, reason }: { prId: string; reason?: string | null }) => {
+    currentConvergence = makeConvergenceState({
+      prId,
+      autoConvergeEnabled: false,
+      status: "stopped",
+      pollerStatus: "stopped",
+      pauseReason: reason ?? null,
+      lastStoppedAt: new Date().toISOString(),
+    });
+    return { prId, stopped: true, runtime: currentConvergence };
+  });
   const resetConvergenceState = vi.fn().mockImplementation(async () => {
     currentConvergence = null;
     return undefined;
   });
   mockUsePrs.mockReturnValue({
     convergenceStatesByPrId: currentConvergence ? { "pr-80": currentConvergence } : {},
+    detailReviewThreads: args.reviewThreads,
     loadConvergenceState,
     saveConvergenceState,
     resetConvergenceState,
@@ -397,6 +427,10 @@ function renderPane(args: {
           },
           forceFinalizeMode: "off",
           forceFinalizeRequireNoCiFailures: true,
+          atCapPolicy: "stop",
+          atCapWaitMinutes: 30,
+          atCapCiRetryMax: 3,
+          forceMergeRequiresConfirmation: true,
           earlyMergeOnGreen: true,
         }),
         getChecks,
@@ -408,6 +442,8 @@ function renderPane(args: {
         loadConvergenceState,
         saveConvergenceState,
         resetConvergenceState,
+        pathToMergeStart,
+        pathToMergeStop,
         land,
         openInGitHub: vi.fn().mockResolvedValue(undefined),
       },
@@ -450,6 +486,8 @@ function renderPane(args: {
     loadConvergenceState,
     saveConvergenceState,
     resetConvergenceState,
+    pathToMergeStart,
+    pathToMergeStop,
     writeClipboardText,
     land,
     onRefresh,
@@ -476,6 +514,7 @@ describe("PrDetailPane issue resolver CTA", () => {
   beforeEach(() => {
     mockUsePrs.mockReturnValue({
       convergenceStatesByPrId: {},
+      detailReviewThreads: [],
       loadConvergenceState: vi.fn(),
       saveConvergenceState: vi.fn(),
       resetConvergenceState: vi.fn(),
@@ -730,6 +769,71 @@ describe("PrDetailPane issue resolver CTA", () => {
     }));
   });
 
+  it("rolls back the auto-converge toggle when path-to-merge start fails", async () => {
+    const user = userEvent.setup();
+    const { pathToMergeStart, pathToMergeStop, saveConvergenceState } = renderPane({
+      checks: [makeCheck()],
+      reviewThreads: [],
+      inventorySnapshot: {
+        items: [makeInventoryItem()],
+        convergence: { currentRound: 0, maxRounds: 5, totalNew: 1, totalSentToAgent: 0, isConverging: false },
+      },
+    });
+    pathToMergeStart.mockRejectedValueOnce(new Error("orchestrator unavailable"));
+
+    await user.click(screen.getByRole("button", { name: /path to merge/i }));
+    await user.click(await screen.findByRole("button", { name: /auto-converge/i }));
+    expect(pathToMergeStart).not.toHaveBeenCalled();
+    await user.click(await screen.findByRole("button", { name: /start path to merge/i }));
+
+    await waitFor(() => {
+      expect(pathToMergeStart).toHaveBeenCalledWith({
+        prId: "pr-80",
+        scope: "checks",
+        modelId: "openai/gpt-5.4",
+        reasoning: "high",
+        permissionMode: "guarded_edit",
+      });
+      expect(pathToMergeStop).toHaveBeenCalledWith({
+        prId: "pr-80",
+        reason: "start failed: orchestrator unavailable",
+      });
+      expect(saveConvergenceState).not.toHaveBeenCalledWith("pr-80", { autoConvergeEnabled: false });
+      expect(screen.getByText(/failed to start auto-converge: orchestrator unavailable/i)).toBeTruthy();
+    });
+    expect(saveConvergenceState).not.toHaveBeenCalledWith("pr-80", expect.objectContaining({
+      autoConvergeEnabled: true,
+    }));
+  });
+
+  it("starts native Path to Merge with the currently actionable review-comment scope", async () => {
+    const user = userEvent.setup();
+    const { pathToMergeStart } = renderPane({
+      checks: [makeCheck({ conclusion: "success" })],
+      reviewThreads: [makeThread()],
+      statusOverrides: { checksStatus: "passing" },
+      inventorySnapshot: {
+        items: [makeInventoryItem({ type: "review_thread" })],
+        convergence: { currentRound: 0, maxRounds: 5, totalNew: 1, totalSentToAgent: 0, isConverging: false },
+      },
+    });
+
+    await user.click(screen.getByRole("button", { name: /path to merge/i }));
+    await user.click(await screen.findByRole("button", { name: /auto-converge/i }));
+    expect(pathToMergeStart).not.toHaveBeenCalled();
+    await user.click(await screen.findByRole("button", { name: /start path to merge/i }));
+
+    await waitFor(() => {
+      expect(pathToMergeStart).toHaveBeenCalledWith({
+        prId: "pr-80",
+        scope: "comments",
+        modelId: "openai/gpt-5.4",
+        reasoning: "high",
+        permissionMode: "guarded_edit",
+      });
+    });
+  });
+
   it("restores a persisted convergence session on mount and remounts with the exact session URL", async () => {
     const user = userEvent.setup();
     const onNavigate = vi.fn();
@@ -897,6 +1001,47 @@ describe("PrDetailPane issue resolver CTA", () => {
     });
   });
 
+  it("does not start the legacy renderer poller while native Path to Merge owns the runtime", async () => {
+    const convergenceState = makeConvergenceState({
+      autoConvergeEnabled: true,
+      pathToMergeActive: true,
+      status: "polling",
+      pollerStatus: "waiting_for_checks",
+      currentRound: 2,
+      activeSessionId: null,
+    });
+
+    const {
+      loadConvergenceState,
+      getChecks,
+      getStatus,
+      issueInventorySync,
+    } = renderPane({
+      checks: [makeCheck({ status: "in_progress", conclusion: null })],
+      reviewThreads: [],
+      convergenceState,
+      inventorySnapshot: {
+        items: [makeInventoryItem()],
+        convergence: { currentRound: 2, maxRounds: 5, totalNew: 1, totalSentToAgent: 0, isConverging: true },
+      },
+    });
+
+    await waitFor(() => {
+      expect(loadConvergenceState).toHaveBeenCalledWith("pr-80", { force: true });
+    });
+
+    getChecks.mockClear();
+    getStatus.mockClear();
+    issueInventorySync.mockClear();
+    await React.act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 20));
+    });
+
+    expect(getChecks).not.toHaveBeenCalled();
+    expect(getStatus).not.toHaveBeenCalled();
+    expect(issueInventorySync).not.toHaveBeenCalled();
+  });
+
   it("refreshes stale convergence checks when opening the path to merge tab", async () => {
     const user = userEvent.setup();
     renderPane({
@@ -1057,22 +1202,20 @@ describe("PrDetailPane issue resolver CTA", () => {
     });
   });
 
-  it("reloads review threads when opening the resolver", async () => {
+  it("loads review threads when opening the resolver", async () => {
     const user = userEvent.setup();
     const { getReviewThreads } = renderPane({
       checks: [makeCheck()],
       reviewThreads: [],
     });
 
-    await waitFor(() => {
-      expect(getReviewThreads).toHaveBeenCalledTimes(1);
-    });
+    expect(getReviewThreads).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole("button", { name: /ci \/ checks/i }));
     await user.click(await screen.findByRole("button", { name: /resolve issues with agent/i }));
 
     await waitFor(() => {
-      expect(getReviewThreads).toHaveBeenCalledTimes(2);
+      expect(getReviewThreads).toHaveBeenCalledTimes(1);
     });
   });
 
