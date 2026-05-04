@@ -54,12 +54,13 @@ Renderer:
 - `apps/desktop/src/renderer/components/files/FilesPage.tsx` — entire
   Files tab in a single ~2,570-line component. File explorer, Monaco
   editor host, tab bar, diff mode, conflict mode, quick open, text
-  search, workspace switcher, trust warnings.
+  search, workspace switcher, trust warnings. Accepts optional
+  `preferredLaneId` and `embedded` props so the same component can be
+  mounted inside the Work right-edge sidebar against the active lane;
+  in `embedded` mode the page renders a compact header (only the
+  workspace selector and read-only badge) so it fits a narrow column.
 - `apps/desktop/src/renderer/components/files/FilesPage.test.tsx` —
   renderer tests.
-- `apps/desktop/src/renderer/components/app/FloatingFilesWorkspace.tsx`
-  — an alternative lightweight floating view used from the Lanes tab
-  and side panels.
 - `apps/ios/ADE/Views/Files/FilesRootScreen.swift` — mobile Files
   root with workspace picker, quick-open and text-search cards, capped
   visible result lists (first 40) with refine-search copy when more

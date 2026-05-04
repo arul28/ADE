@@ -21,6 +21,9 @@ const EMPTY_WORK_STATE: WorkProjectViewState = {
   workCollapsedSectionIds: [],
   workCollapsedTabGroupIds: [],
   workFocusSessionsHidden: false,
+  workSidebarOpen: false,
+  workSidebarTab: "git",
+  workSidebarWidthPct: 36,
 };
 
 function arraysEqual(a: string[], b: string[]): boolean {

@@ -47,7 +47,7 @@ import type {
 import { getModelById, resolveModelDescriptor, type ModelDescriptor } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
 import { formatTime } from "../../lib/format";
-import { openExternalUrl } from "../../lib/openExternal";
+import { openExternalUrl, openUrlInAdeBrowser } from "../../lib/openExternal";
 import { isPathEqualOrDescendant, isWindowsAbsolutePath, normalizePath } from "../../lib/pathUtils";
 import { describeToolIdentifier, replaceInternalToolNames } from "./toolPresentation";
 import { chatChipToneClass } from "./chatSurfaceTheme";
@@ -920,6 +920,10 @@ const MarkdownBlock = React.memo(function MarkdownBlock({
                 href={href}
                 target="_blank"
                 rel="noreferrer"
+                onClick={(event) => {
+                  event.preventDefault();
+                  openUrlInAdeBrowser(href);
+                }}
                 className={
                   neu
                     ? "text-white/85 underline decoration-white/28 underline-offset-2 transition-colors hover:text-white hover:decoration-white/45"
@@ -2804,7 +2808,7 @@ function renderEvent(
         {event.prUrl ? (
           <button
             type="button"
-            onClick={() => openExternalUrl(event.prUrl!)}
+            onClick={() => openUrlInAdeBrowser(event.prUrl!)}
             className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-violet-200/70 hover:text-violet-100"
           >
             PR

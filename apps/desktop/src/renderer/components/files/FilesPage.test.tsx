@@ -692,6 +692,45 @@ describe("FilesPage", () => {
     });
   });
 
+  it("opens the selected Work lane workspace by default", async () => {
+    const laneId = "lane-work-chat";
+    useAppStore.setState({
+      selectedLaneId: laneId,
+      lanes: [{ id: laneId, name: "Work chat lane", branchRef: "refs/heads/feat/work-chat" }] as any,
+    });
+    vi.mocked(window.ade.files.listWorkspaces).mockResolvedValue([
+      {
+        id: "primary",
+        kind: "primary",
+        laneId: null,
+        name: "ADE",
+        branchRef: "refs/heads/main",
+        rootPath: projectRoot,
+        isReadOnlyByDefault: false,
+      },
+      {
+        id: "lane-ws",
+        kind: "worktree",
+        laneId,
+        name: "Work chat lane",
+        branchRef: "refs/heads/feat/work-chat",
+        rootPath: `${projectRoot}/.ade/worktrees/work-chat`,
+        isReadOnlyByDefault: false,
+      },
+    ]);
+
+    renderFilesPage();
+
+    await waitFor(() => {
+      expect((screen.getByRole("combobox") as HTMLSelectElement).value).toBe("lane-ws");
+    });
+    await waitFor(() => {
+      expect(window.ade.files.listTree).toHaveBeenCalledWith(expect.objectContaining({
+        workspaceId: "lane-ws",
+      }));
+    });
+  });
+
   it("View lane opens /lanes with no query for primary workspace", async () => {
     renderFilesPage({ preferPrimaryWorkspace: true });
 

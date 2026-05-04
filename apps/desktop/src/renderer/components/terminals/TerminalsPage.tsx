@@ -1,16 +1,19 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SidebarSimple } from "@phosphor-icons/react";
 import { PaneTilingLayout, type PaneConfig, type PaneSplit } from "../ui/PaneTilingLayout";
 import { useWorkSessions } from "./useWorkSessions";
 import { SessionListPane } from "./SessionListPane";
 import { WorkViewArea } from "./WorkViewArea";
+import { WorkSidebar } from "./WorkSidebar";
 import { SessionContextMenu, type SessionContextMenuState } from "./SessionContextMenu";
 import { SessionInfoPopover, type InfoPopoverState } from "./SessionInfoPopover";
 import type { AgentChatSession, TerminalSessionSummary } from "../../../shared/types";
-import { isChatToolType } from "../../lib/sessions";
+import { formatToolTypeLabel, isChatToolType } from "../../lib/sessions";
 import { sortLanesForTabs } from "../lanes/laneUtils";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
 import { formatSessionBundleMarkdown, triggerBrowserDownload } from "../../lib/transcriptExport";
+import { useAppStore } from "../../state/appStore";
+import { ADE_OPEN_BUILT_IN_BROWSER_EVENT } from "../../lib/openExternal";
 
 const TERMINALS_TILING_TREE: PaneSplit = {
   type: "split",
@@ -21,8 +24,16 @@ const TERMINALS_TILING_TREE: PaneSplit = {
   ],
 };
 
+const MIN_WORK_SIDEBAR_WIDTH_PCT = 26;
+const MAX_WORK_SIDEBAR_WIDTH_PCT = 55;
+
+function clampWorkSidebarWidthPct(widthPct: number): number {
+  return Math.max(MIN_WORK_SIDEBAR_WIDTH_PCT, Math.min(MAX_WORK_SIDEBAR_WIDTH_PCT, widthPct));
+}
+
 export function TerminalsPage() {
   const work = useWorkSessions();
+  const selectedLaneId = useAppStore((s) => s.selectedLaneId);
   const sortedLanes = useMemo(() => sortLanesForTabs(work.lanes), [work.lanes]);
 
   const [contextMenu, setContextMenu] = useState<SessionContextMenuState>(null);
@@ -31,6 +42,8 @@ export function TerminalsPage() {
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
   const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(new Set());
   const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
+  const workContentPaneRef = useRef<HTMLDivElement | null>(null);
+  const workSidebarPaneRef = useRef<HTMLDivElement | null>(null);
 
   const selectableSessions = useMemo(
     () => [...work.runningFiltered, ...work.awaitingInputFiltered, ...work.endedFiltered],
@@ -382,6 +395,97 @@ export function TerminalsPage() {
     [work],
   );
 
+  const activeWorkSession = useMemo(
+    () => (work.activeItemId ? work.sessions.find((session) => session.id === work.activeItemId) ?? null : null),
+    [work.activeItemId, work.sessions],
+  );
+
+  const activeLaneId = useMemo(() => {
+    if (activeWorkSession?.laneId) return activeWorkSession.laneId;
+    if (selectedLaneId && sortedLanes.some((lane) => lane.id === selectedLaneId)) return selectedLaneId;
+    return sortedLanes.find((lane) => lane.laneType === "primary")?.id ?? sortedLanes[0]?.id ?? null;
+  }, [activeWorkSession?.laneId, selectedLaneId, sortedLanes]);
+
+  const activeIsChat = Boolean(activeWorkSession && isChatToolType(activeWorkSession.toolType));
+  const attachChatSessionId = activeIsChat ? activeWorkSession!.id : null;
+  let attachDisabledReason: string | null;
+  if (!activeWorkSession) {
+    attachDisabledReason = "Start an ADE chat before attaching iOS Simulator or App Control context.";
+  } else if (!activeIsChat) {
+    attachDisabledReason = `Context attachment only works in ADE chat sessions. This ${formatToolTypeLabel(activeWorkSession.toolType)} session can still use the lane tools, but selections are not attached to chat.`;
+  } else {
+    attachDisabledReason = null;
+  }
+
+  const workSidebarVisible = work.workSidebarOpen && work.viewMode !== "grid";
+  const { setViewMode, setWorkSidebarTab } = work;
+  useEffect(() => {
+    const openBrowserSidebar = () => {
+      setViewMode("tabs");
+      setWorkSidebarTab("browser");
+    };
+    window.addEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, openBrowserSidebar);
+    return () => window.removeEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, openBrowserSidebar);
+  }, [setViewMode, setWorkSidebarTab]);
+
+  const expandSessionsPane = useCallback(() => {
+    work.setWorkFocusSessionsHidden(false);
+  }, [work]);
+  const toggleWorkSidebar = useCallback(() => {
+    work.setWorkSidebarOpen(!work.workSidebarOpen);
+  }, [work]);
+  const closeWorkSidebar = useCallback(() => {
+    work.setWorkSidebarOpen(false);
+  }, [work]);
+  const handleWorkSidebarResizeMouseDown = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const container = event.currentTarget.parentElement;
+    if (!container) return;
+    const totalWidth = container.getBoundingClientRect().width;
+    if (totalWidth <= 0) return;
+    const startX = event.clientX;
+    const startWidthPct = work.workSidebarWidthPct;
+    let pendingWidthPct = clampWorkSidebarWidthPct(startWidthPct);
+    let animationFrame: number | null = null;
+    const applyWidth = (widthPct: number) => {
+      const nextWidthPct = clampWorkSidebarWidthPct(widthPct);
+      pendingWidthPct = nextWidthPct;
+      const contentPane = workContentPaneRef.current;
+      const sidebarPane = workSidebarPaneRef.current;
+      if (contentPane) contentPane.style.flexGrow = `${100 - nextWidthPct}`;
+      if (sidebarPane) sidebarPane.style.flexGrow = `${nextWidthPct}`;
+    };
+    const scheduleWidth = (widthPct: number) => {
+      pendingWidthPct = clampWorkSidebarWidthPct(widthPct);
+      if (animationFrame != null) return;
+      animationFrame = window.requestAnimationFrame(() => {
+        animationFrame = null;
+        applyWidth(pendingWidthPct);
+      });
+    };
+    const onMove = (moveEvent: MouseEvent) => {
+      const deltaPct = ((startX - moveEvent.clientX) / totalWidth) * 100;
+      scheduleWidth(startWidthPct + deltaPct);
+    };
+    const onUp = () => {
+      if (animationFrame != null) {
+        window.cancelAnimationFrame(animationFrame);
+        animationFrame = null;
+      }
+      applyWidth(pendingWidthPct);
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      work.setWorkSidebarWidthPct(pendingWidthPct);
+    };
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    applyWidth(startWidthPct);
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, [work]);
+
   const workViewArea = useMemo(
     () => (
       <WorkViewArea
@@ -405,10 +509,12 @@ export function TerminalsPage() {
         onContextMenu={handleContextMenu}
         onResumeSession={handleResumeSession}
         sessionsPaneCollapsed={work.workFocusSessionsHidden}
-        onExpandSessionsPane={() => work.setWorkFocusSessionsHidden(false)}
+        onExpandSessionsPane={expandSessionsPane}
         sessionsPaneListCount={work.filtered.length}
         sessionsPaneRunningCount={work.runningSessions.length}
         sessionsListLoading={work.loading}
+        workSidebarOpen={work.workSidebarOpen}
+        onToggleWorkSidebar={toggleWorkSidebar}
       />
     ),
     [
@@ -431,9 +537,67 @@ export function TerminalsPage() {
       work.filtered.length,
       work.runningSessions.length,
       work.loading,
+      work.workFocusSessionsHidden,
+      work.workSidebarOpen,
+      expandSessionsPane,
+      toggleWorkSidebar,
       handleOpenChatSession,
       handleResumeSession,
       handleContextMenu,
+    ],
+  );
+
+  const workViewWithSidebar = useMemo(
+    () => (
+      <div className="flex h-full min-h-0 min-w-0 overflow-hidden">
+        <div
+          ref={workContentPaneRef}
+          className="min-h-0 min-w-0 flex-1 basis-0 overflow-hidden"
+          style={workSidebarVisible ? { flexGrow: 100 - work.workSidebarWidthPct } : undefined}
+        >
+          {workViewArea}
+        </div>
+        {workSidebarVisible ? (
+          <>
+            <div
+              role="separator"
+              aria-orientation="vertical"
+              onMouseDown={handleWorkSidebarResizeMouseDown}
+              className="relative w-[5px] shrink-0 cursor-col-resize bg-white/[0.06] transition-colors hover:bg-[var(--color-accent)]/25 active:bg-[var(--color-accent)]/40"
+            />
+            <div
+              ref={workSidebarPaneRef}
+              className="min-h-0 min-w-[280px] basis-0 overflow-hidden"
+              style={{ flexGrow: work.workSidebarWidthPct, maxWidth: "55%" }}
+            >
+              <WorkSidebar
+                laneId={activeLaneId}
+                lanes={sortedLanes}
+                activeSession={activeWorkSession}
+                tab={work.workSidebarTab}
+                onTabChange={work.setWorkSidebarTab}
+                onClose={closeWorkSidebar}
+                attachChatSessionId={attachChatSessionId}
+                attachDisabledReason={attachDisabledReason}
+              />
+            </div>
+          </>
+        ) : null}
+      </div>
+    ),
+    [
+      activeLaneId,
+      activeWorkSession,
+      attachChatSessionId,
+      attachDisabledReason,
+      handleWorkSidebarResizeMouseDown,
+      closeWorkSidebar,
+      sortedLanes,
+      work.setWorkSidebarTab,
+      work.workSidebarTab,
+      work.workSidebarWidthPct,
+      workSidebarVisible,
+      workViewArea,
     ],
   );
 
@@ -527,7 +691,7 @@ export function TerminalsPage() {
         // tour anchor: wraps the view area so the Work tour can target it.
         children: (
           <div className="h-full min-h-0" data-tour="work.viewArea">
-            {workViewArea}
+            {workViewWithSidebar}
           </div>
         ),
       },
@@ -547,7 +711,7 @@ export function TerminalsPage() {
       handleInfoClick,
       handleContextMenu,
       sessionsHeaderActions,
-      workViewArea,
+      workViewWithSidebar,
     ],
   );
 
@@ -564,7 +728,7 @@ export function TerminalsPage() {
       ) : null}
       {work.workFocusSessionsHidden ? (
         <div className="min-h-0 flex-1 overflow-hidden" data-tour="work.viewArea">
-          {workViewArea}
+          {workViewWithSidebar}
         </div>
       ) : (
         <PaneTilingLayout

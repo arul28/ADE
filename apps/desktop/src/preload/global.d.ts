@@ -653,6 +653,16 @@ import type {
   AppControlStopArgs,
   AppControlTarget,
   AppControlTypeTextArgs,
+  BuiltInBrowserAttachWebviewArgs,
+  BuiltInBrowserBoundsArgs,
+  BuiltInBrowserCreateTabArgs,
+  BuiltInBrowserEventPayload,
+  BuiltInBrowserNavigateArgs,
+  BuiltInBrowserScreenshot,
+  BuiltInBrowserSelectPointArgs,
+  BuiltInBrowserSelectResult,
+  BuiltInBrowserStatus,
+  BuiltInBrowserTabArgs,
   ChatTerminalActiveForChatArgs,
   ChatTerminalListArgs,
   ChatTerminalReadArgs,
@@ -1375,6 +1385,26 @@ declare global {
         listTargets: () => Promise<AppControlTarget[]>;
         attachToTarget: (args: { targetId: string }) => Promise<AppControlSession>;
         onEvent: (cb: (ev: AppControlEventPayload) => void) => () => void;
+      };
+      builtInBrowser: {
+        getStatus: () => Promise<BuiltInBrowserStatus>;
+        setBounds: (args: BuiltInBrowserBoundsArgs) => Promise<BuiltInBrowserStatus>;
+        attachWebview: (args: BuiltInBrowserAttachWebviewArgs) => Promise<BuiltInBrowserStatus>;
+        navigate: (args: BuiltInBrowserNavigateArgs) => Promise<BuiltInBrowserStatus>;
+        createTab: (args?: BuiltInBrowserCreateTabArgs) => Promise<BuiltInBrowserStatus>;
+        switchTab: (args: BuiltInBrowserTabArgs) => Promise<BuiltInBrowserStatus>;
+        closeTab: (args: BuiltInBrowserTabArgs) => Promise<BuiltInBrowserStatus>;
+        reload: () => Promise<BuiltInBrowserStatus>;
+        goBack: () => Promise<BuiltInBrowserStatus>;
+        goForward: () => Promise<BuiltInBrowserStatus>;
+        stop: () => Promise<BuiltInBrowserStatus>;
+        startInspect: () => Promise<BuiltInBrowserStatus>;
+        stopInspect: () => Promise<BuiltInBrowserStatus>;
+        captureScreenshot: () => Promise<BuiltInBrowserScreenshot>;
+        selectPoint: (args: BuiltInBrowserSelectPointArgs) => Promise<BuiltInBrowserSelectResult>;
+        selectCurrent: () => Promise<BuiltInBrowserSelectResult>;
+        clearSelection: () => Promise<{ ok: true }>;
+        onEvent: (cb: (ev: BuiltInBrowserEventPayload) => void) => () => void;
       };
       terminal: {
         list: (args?: ChatTerminalListArgs) => Promise<ChatTerminalSession[]>;

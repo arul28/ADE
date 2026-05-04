@@ -29,7 +29,7 @@ type ChatAppControlPanelProps = {
   sessionId: string | null;
   laneId: string | null;
   projectRoot: string | null;
-  onAddContext: (item: AppControlContextItem) => void;
+  onAddContext?: (item: AppControlContextItem) => void;
   onAddAttachment?: (attachment: AgentChatFileRef) => void;
   onInsertDraft?: (text: string) => void;
   onShowTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
@@ -48,8 +48,12 @@ type PanelUiState = {
 
 const appControlPanelUiStateByKey = new Map<string, PanelUiState>();
 
-function panelUiStateKey(sessionId: string | null | undefined, projectRoot: string | null | undefined): string {
-  return sessionId ? `chat:${sessionId}` : `project:${projectRoot ?? "unknown"}`;
+function panelUiStateKey(
+  sessionId: string | null | undefined,
+  projectRoot: string | null | undefined,
+  laneId: string | null | undefined,
+): string {
+  return sessionId ? `chat:${sessionId}` : `lane:${laneId ?? "project"}:${projectRoot ?? "unknown"}`;
 }
 
 function readPanelUiState(key: string): PanelUiState {
@@ -208,7 +212,7 @@ function statusInfo(session: AppControlSession | null): StatusInfo {
           tone: "error",
         };
       }
-      return { label: "Running", detail: `${session.label} is running${suffix ? ` · ${suffix}` : " in the chat terminal"}`, tone: "warn" };
+      return { label: "Running", detail: `${session.label} is running${suffix ? ` · ${suffix}` : " in the terminal"}`, tone: "warn" };
     case "stopping":
       return { label: "Stopping", detail: `${session.label} is stopping`, tone: "warn" };
     case "exited":
@@ -248,7 +252,7 @@ export function ChatAppControlPanel({
   onShowTerminal,
 }: ChatAppControlPanelProps) {
   const imageRef = useRef<HTMLImageElement | null>(null);
-  const uiStateKey = panelUiStateKey(sessionId, projectRoot);
+  const uiStateKey = panelUiStateKey(sessionId, projectRoot, laneId);
   const initialUiState = readPanelUiState(uiStateKey);
   const [status, setStatus] = useState<AppControlStatus | null>(null);
   const [launchCommand, setLaunchCommand] = useState(initialUiState.launchCommand);
@@ -611,7 +615,7 @@ export function ChatAppControlPanel({
           const cdpHint = launched.cdpPort
             ? ` Waiting for CDP on 127.0.0.1:${launched.cdpPort}. ADE forwards debug flags for common npm/pnpm/yarn/bun and direct Electron launches. If it stays blank, quit any old app instance or wire ADE_APP_CONTROL_DEBUG_FLAGS into the launcher.`
             : "";
-          setMessage({ tone: "info", text: `Started ${launched.label} in the chat terminal.${cdpHint}` });
+          setMessage({ tone: "info", text: `Started ${launched.label} in the terminal.${cdpHint}` });
         }
       }),
     [laneId, launchCommand, launchCwd, onShowTerminal, projectRoot, refreshSnapshot, runBusy, sessionId],
@@ -650,6 +654,7 @@ export function ChatAppControlPanel({
         if (!Number.isFinite(port) || port <= 0) throw new Error("Enter a valid CDP port.");
         const connected = await window.ade.appControl.connect({
           projectRoot,
+          laneId,
           cdpPort: port,
           chatSessionId: sessionId,
           force: true,
@@ -660,7 +665,7 @@ export function ChatAppControlPanel({
         await refreshSnapshot();
         setMessage({ tone: "info", text: `Connected to ${connected.label}.` });
       }),
-    [cdpPort, projectRoot, refreshSnapshot, runBusy, sessionId],
+    [cdpPort, laneId, projectRoot, refreshSnapshot, runBusy, sessionId],
   );
 
   const stopSession = useCallback(
@@ -685,6 +690,9 @@ export function ChatAppControlPanel({
       }
       if (screenshotBlank) {
         throw new Error("The renderer is attached but the screenshot is blank. Open the app window or menu bar item, then refresh the snapshot before attaching context.");
+      }
+      if (!onAddContext) {
+        throw new Error("Chat attachments are not available in this panel.");
       }
       const result = await window.ade.appControl.selectPoint({
         projectRoot,
@@ -932,7 +940,7 @@ export function ChatAppControlPanel({
             disabled={Boolean(busy) || !canLaunch}
             onClick={launchSelected}
             className="inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-md border border-sky-400/25 bg-sky-500/15 px-3 text-[11px] font-medium text-sky-50/90 transition-colors hover:bg-sky-500/22 disabled:cursor-not-allowed disabled:opacity-45"
-            title="Launch command in the chat terminal"
+            title="Launch command in the terminal"
             aria-label="Launch App Control command"
           >
             {busy === "launch" ? <SpinnerGap size={13} className="animate-spin" /> : <Play size={12} weight="fill" />}

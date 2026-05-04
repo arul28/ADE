@@ -138,6 +138,7 @@ import { transitionMissionStatus } from "./services/orchestrator/missionLifecycl
 import { createComputerUseArtifactBrokerService } from "./services/computerUse/computerUseArtifactBrokerService";
 import { createIosSimulatorService } from "./services/ios/iosSimulatorService";
 import { createAppControlService } from "./services/appControl/appControlService";
+import { createBuiltInBrowserService } from "./services/builtInBrowser/builtInBrowserService";
 import { createSyncService } from "./services/sync/syncService";
 import { ApnsService, ApnsKeyStore } from "./services/notifications/apnsService";
 import {
@@ -152,6 +153,7 @@ import { cleanupStaleTempArtifacts } from "./services/runtime/tempCleanupService
 import type { Logger } from "./services/logging/logger";
 
 const AUTO_UPDATER_CACHE_DIR_NAME = "ade-desktop-updater";
+const ADE_BROWSER_WEBVIEW_PARTITION = "persist:ade-browser";
 
 function resolveAutoUpdaterCacheDir(): string {
   const homeDir = os.homedir();
@@ -365,6 +367,25 @@ function getRendererUrl(): string {
   return pathToFileURL(path.join(__dirname, "../renderer/index.html")).toString();
 }
 
+function isAllowedAdeBrowserWebviewSource(rawSrc: string): boolean {
+  const src = rawSrc.trim();
+  if (!src || src === "about:blank") return true;
+  return isAllowedAdeBrowserWebviewNavigation(src);
+}
+
+// Stricter check used for post-attach navigation: rejects empty/about:blank/file:/data:/blob:
+// so a compromised renderer can't attach a blank webview and then loadURL anywhere.
+function isAllowedAdeBrowserWebviewNavigation(rawUrl: string): boolean {
+  const url = rawUrl.trim();
+  if (!url) return false;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 async function createWindow(args: {
   logger?: Logger;
   onCloseRequested?: (win: BrowserWindow, event: Electron.Event) => void;
@@ -398,7 +419,41 @@ async function createWindow(args: {
       preload: path.join(__dirname, "../preload/preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
+      webviewTag: true,
     },
+  });
+
+  win.webContents.on("will-attach-webview", (event, webPreferences, params) => {
+    const src = typeof params.src === "string" ? params.src : "";
+    if (!isAllowedAdeBrowserWebviewSource(src)) {
+      event.preventDefault();
+      args.logger?.warn("window.webview_blocked", { src });
+      return;
+    }
+    delete webPreferences.preload;
+    delete (webPreferences as Record<string, unknown>).preloadURL;
+    webPreferences.partition = ADE_BROWSER_WEBVIEW_PARTITION;
+    webPreferences.nodeIntegration = false;
+    webPreferences.contextIsolation = true;
+    webPreferences.sandbox = true;
+    webPreferences.webSecurity = true;
+  });
+
+  // Enforce the same allowlist on post-attach navigation. about:blank/empty src is
+  // allowed at attach time (the built-in browser legitimately creates blank tabs),
+  // but a compromised renderer must not be able to loadURL to a non-allowlisted URL
+  // afterward. The setWindowOpenHandler('deny') below also blocks new windows from
+  // the attached webview.
+  win.webContents.on("did-attach-webview", (_event, attachedWc) => {
+    attachedWc.setWindowOpenHandler(() => ({ action: "deny" }));
+    attachedWc.on("will-navigate", (navEvent, url) => {
+      // Allow same-page navigations to about:blank only as the initial state; any
+      // explicit navigation must go through the http/https allowlist.
+      if (!isAllowedAdeBrowserWebviewNavigation(url)) {
+        navEvent.preventDefault();
+        args.logger?.warn("window.webview_navigation_blocked", { url });
+      }
+    });
   });
 
   // Set macOS Dock icon
@@ -424,7 +479,7 @@ async function createWindow(args: {
     `base-uri 'self'`,
     `form-action 'self'`,
     `object-src 'none'`,
-    `frame-src 'none'`,
+    `frame-src ${cspSources}${cspLocalSources} about:`,
     `script-src ${cspSources} 'unsafe-inline'`,
     `style-src ${cspSources} 'unsafe-inline'`,
     `img-src ${cspImageSources} ade-artifact: data: blob:`,
@@ -899,6 +954,11 @@ app.whenReady().then(async () => {
       }
     }
   };
+
+  const builtInBrowserService = createBuiltInBrowserService({
+    getLogger: () => getActiveContext().logger,
+    onEvent: (payload) => broadcast(IPC.builtInBrowserEvent, payload),
+  });
 
   const loadPty = () => {
     // node-pty is a native dependency; keep the require inside the main process runtime.
@@ -3412,6 +3472,7 @@ app.whenReady().then(async () => {
       computerUseArtifactBrokerService,
       iosSimulatorService,
       appControlService,
+      builtInBrowserService,
       orchestratorService,
       aiOrchestratorService,
       missionBudgetService,
@@ -3577,6 +3638,7 @@ app.whenReady().then(async () => {
         computerUseArtifactBrokerService,
         iosSimulatorService,
         appControlService,
+        builtInBrowserService,
         automationService,
         automationPlannerService,
         githubService,
@@ -3733,6 +3795,7 @@ app.whenReady().then(async () => {
       computerUseArtifactBrokerService: null,
       iosSimulatorService: null,
       appControlService: null,
+      builtInBrowserService: null,
       githubService: null,
       feedbackReporterService: null,
       prService: null,
@@ -4574,6 +4637,11 @@ app.whenReady().then(async () => {
       } catch {
         // ignore
       }
+      try {
+        builtInBrowserService.dispose();
+      } catch {
+        // ignore
+      }
       setActiveProject(null);
       dormantContext = createDormantProjectContext(previousRoot);
 
@@ -4724,6 +4792,7 @@ app.whenReady().then(async () => {
     closeCurrentProject,
     closeProjectByPath,
     globalStatePath,
+    builtInBrowserService,
   });
 
   // Dogfood and other explicit ADE_PROJECT_ROOT launches need the project
@@ -4738,17 +4807,19 @@ app.whenReady().then(async () => {
     }
   }
 
-  await createWindow({
+  const initialWindow = await createWindow({
     logger: getActiveContext().logger,
     onCloseRequested: handleMainWindowCloseRequested,
   });
+  builtInBrowserService.attachToWindow(initialWindow);
 
   app.on("activate", async () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      await createWindow({
+      const activatedWindow = await createWindow({
         logger: getActiveContext().logger,
         onCloseRequested: handleMainWindowCloseRequested,
       });
+      builtInBrowserService.attachToWindow(activatedWindow);
     }
   });
 

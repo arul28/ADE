@@ -110,6 +110,18 @@ describe("SessionListPane", () => {
     expect(screen.getByText("Mobile Tool Streaming UI")).toBeTruthy();
   });
 
+  it("lets the user set the status filter from the filter panel", () => {
+    const setFilterStatus = vi.fn();
+    const view = renderPane({ setFilterStatus });
+    const filterButton = view.container.querySelector('button[data-tour="work.laneFilter"]');
+    expect(filterButton).toBeTruthy();
+
+    fireEvent.click(filterButton!);
+    fireEvent.click(within(view.container).getByRole("button", { name: "Running" }));
+
+    expect(setFilterStatus).toHaveBeenCalledWith("running");
+  });
+
   it("bolds only the session name in sidebar cards", () => {
     const session = makeSession({
       id: "session-style",

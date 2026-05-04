@@ -27,6 +27,7 @@ import {
   type ChatSurfaceProfile,
   type ChatSurfacePresentation,
   type AgentChatSessionSummary,
+  type BuiltInBrowserContextItem,
   type ComputerUseOwnerSnapshot,
   type AppControlContextItem,
   type IosElementContextItem,
@@ -102,6 +103,25 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function asRecordArray(value: unknown): Array<Record<string, unknown>> {
   return Array.isArray(value) ? value.map(asRecord).filter((item): item is Record<string, unknown> => Boolean(item)) : [];
+}
+
+function stringOrNull(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length ? value.trim() : null;
+}
+
+function numberOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function frameFromUnknown(value: unknown): BuiltInBrowserContextItem["frame"] | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  const x = numberOrNull(record.x);
+  const y = numberOrNull(record.y);
+  const width = numberOrNull(record.width);
+  const height = numberOrNull(record.height);
+  if (x == null || y == null || width == null || height == null) return null;
+  return { x, y, width, height };
 }
 
 function iosContextLabel(item: IosElementContextItem): string {
@@ -304,6 +324,134 @@ function formatAppControlContextForPrompt(items: AppControlContextItem[]): strin
     "App Control visual inspect context attached by the user.",
     "Each packet came from a developer-owned app session, usually Electron launched or connected through ADE CLI with a local CDP port. Image attachments/crops are visual evidence for the same packet and use screenshot pixel coordinates.",
     "Use exactSource when sourceConfidence is exact. Treat sourceCandidates as ranked guesses from DOM text/test ids/selectors and source search, not proof. Prefer the screenshot, DOM selector, nearbyElements, console/browser context, and exact source when available.",
+    ...rows,
+    "",
+  ].join("\n");
+}
+
+function normalizeBuiltInBrowserContextItem(value: unknown): BuiltInBrowserContextItem | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  const metadata = asRecord(record.metadata) ?? {};
+  const pixelFrameCandidate = frameFromUnknown(record.pixelFrame);
+  const frame = frameFromUnknown(record.frame) ?? pixelFrameCandidate ?? frameFromUnknown(record.bounds) ?? {
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
+  };
+  const pixelFrame = pixelFrameCandidate ?? frame;
+  const componentId = stringOrNull(record.componentId)
+    ?? stringOrNull(metadata.selector)
+    ?? stringOrNull(metadata.testId)
+    ?? stringOrNull(metadata.tagName)
+    ?? "browser-element";
+  const kind = stringOrNull(record.kind) === "built_in_browser_capture" ? "built_in_browser_capture" : "built_in_browser_element";
+  return {
+    kind,
+    id: stringOrNull(record.id) ?? `built-in-browser:${Date.now().toString(36)}`,
+    provider: "cdp",
+    componentId,
+    url: stringOrNull(record.url),
+    title: stringOrNull(record.title),
+    sourceFile: stringOrNull(record.sourceFile),
+    sourceLine: numberOrNull(record.sourceLine),
+    frame,
+    pixelFrame,
+    metadata,
+    screenshotDataUrl: stringOrNull(record.screenshotDataUrl) ?? stringOrNull(record.dataUrl),
+    selectedAt: stringOrNull(record.selectedAt) ?? new Date().toISOString(),
+  };
+}
+
+function builtInBrowserContextLabel(item: BuiltInBrowserContextItem): string {
+  const metadata = item.metadata ?? {};
+  if (item.kind === "built_in_browser_capture") {
+    const selectedElement = asRecord(metadata.selectedElement);
+    const selectedLabel = stringOrNull(selectedElement?.label);
+    return selectedLabel ? `Browser capture: ${selectedLabel}` : "Browser screenshot capture";
+  }
+  for (const value of [
+    metadata.label,
+    metadata.text,
+    metadata.value,
+    item.componentId,
+    metadata.selector,
+    metadata.role,
+    metadata.tagName,
+  ]) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return "Browser element";
+}
+
+function formatBuiltInBrowserContextChipsForDisplay(items: BuiltInBrowserContextItem[]): string {
+  if (!items.length) return "";
+  return items.map((item) => `\`${builtInBrowserContextLabel(item)}\``).join(" ");
+}
+
+function getBuiltInBrowserContextAttachmentPath(item: BuiltInBrowserContextItem): string | null {
+  const value = item.metadata?.attachmentPath;
+  return typeof value === "string" && value.length ? value : null;
+}
+
+function createBuiltInBrowserContextInstanceId(item: BuiltInBrowserContextItem): string {
+  const suffix = typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  return `${item.id}::${suffix}`;
+}
+
+function stripDataUrlPrefix(dataUrl: string): string {
+  const comma = dataUrl.indexOf(",");
+  return comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
+}
+
+function formatBuiltInBrowserContextForPrompt(items: BuiltInBrowserContextItem[]): string {
+  if (!items.length) return "";
+  const rows = items.map((item, index) => {
+    const metadata = item.metadata ?? {};
+    const frame = item.frame
+      ? `x=${item.frame.x}, y=${item.frame.y}, w=${item.frame.width}, h=${item.frame.height}`
+      : "unknown frame";
+    const attachmentPath = getBuiltInBrowserContextAttachmentPath(item);
+    const packet = {
+      contextId: item.id,
+      provider: item.provider,
+      visualAttachmentPath: attachmentPath,
+      selectedAt: item.selectedAt,
+      url: item.url ?? metadata.url ?? null,
+      title: item.title ?? metadata.title ?? null,
+      selectedElement: metadata.selectedElement ?? {
+        componentId: item.componentId,
+        label: metadata.label,
+        value: metadata.value,
+        role: metadata.role,
+        tagName: metadata.tagName,
+        selector: metadata.selector,
+        testId: metadata.testId,
+        screenshotFrame: frame,
+      },
+      attributes: metadata.attributes,
+      href: metadata.href,
+      inputType: metadata.inputType,
+      disabled: metadata.disabled,
+      checked: metadata.checked,
+      viewport: metadata.viewport,
+      scroll: metadata.scroll,
+      captureFrame: metadata.captureFrame,
+      crop: metadata.crop,
+      centerPoint: metadata.centerPoint,
+      source: metadata.source,
+      sourceConfidence: metadata.sourceConfidence,
+      selectionExplanation: metadata.selectionExplanation,
+    };
+    return `${index + 1}. ${builtInBrowserContextLabel(item)} (global browser, frame=${frame})\nPacket:\n${JSON.stringify(packet, null, 2)}`;
+  });
+  return [
+    "Built-in browser visual and DOM context attached by the user.",
+    "Each packet came from ADE's global built-in browser, which is not lane-scoped. Image attachments/crops are visual evidence for the same page area and use browser viewport coordinates.",
+    "Use selectors, ARIA labels, attributes, text, URL/title, and the screenshot together. Do not assume the selected page belongs to the current lane unless the URL or user message says so.",
     ...rows,
     "",
   ].join("\n");
@@ -1319,6 +1467,7 @@ export function AgentChatPane({
   hideSessionTabs = false,
   hideNativeControls = false,
   hideWorkspaceChrome = false,
+  hideLaneToolDrawers = false,
   forceNewSession = false,
   forceDraftMode = false,
   availableModelIdsOverride,
@@ -1342,6 +1491,8 @@ export function AgentChatPane({
   hideSessionTabs?: boolean;
   hideNativeControls?: boolean;
   hideWorkspaceChrome?: boolean;
+  /** Work owns these lane-scoped drawers; proof remains chat-scoped here. */
+  hideLaneToolDrawers?: boolean;
   forceNewSession?: boolean;
   forceDraftMode?: boolean;
   availableModelIdsOverride?: string[];
@@ -1482,9 +1633,11 @@ export function AgentChatPane({
   );
   const [appControlAvailable, setAppControlAvailable] = useState(false);
   const [appControlContextItems, setAppControlContextItems] = useState<AppControlContextItem[]>([]);
+  const [builtInBrowserContextItems, setBuiltInBrowserContextItems] = useState<BuiltInBrowserContextItem[]>([]);
   const latestAttachmentRef = useRef<{ path: string; type: AgentChatFileRef["type"]; addedAt: number } | null>(null);
   const linkedIosAttachmentPathsRef = useRef<Set<string>>(new Set());
   const linkedAppControlAttachmentPathsRef = useRef<Set<string>>(new Set());
+  const linkedBuiltInBrowserAttachmentPathsRef = useRef<Set<string>>(new Set());
   const [terminalDrawerOpen, setTerminalDrawerOpen] = useState(
     () => readChatCompanionUiState(initialCompanionStateKey).terminalDrawerOpen,
   );
@@ -1610,6 +1763,9 @@ export function AgentChatPane({
     () => (selectedSessionId ? sessions.find((session) => session.sessionId === selectedSessionId) ?? null : null),
     [sessions, selectedSessionId]
   );
+  const effectiveIosSimulatorOpen = !hideLaneToolDrawers && iosSimulatorOpen;
+  const effectiveAppControlOpen = !hideLaneToolDrawers && appControlOpen;
+  const laneToolsVisible = Boolean(showWorkspaceChrome && !hideLaneToolDrawers && laneId);
   const laneDisplayLabel = useMemo(() => {
     const normalized = laneLabel?.trim();
     return normalized?.length ? normalized : laneId;
@@ -1621,7 +1777,7 @@ export function AgentChatPane({
   useEffect(() => {
     const api = window.ade?.iosSimulator;
     if (!api?.getStatus) return;
-    if (!iosSimulatorOpen || !isTileActive) return;
+    if (!effectiveIosSimulatorOpen || !isTileActive) return;
     let cancelled = false;
     void api.getStatus()
       .then((status) => {
@@ -1635,7 +1791,7 @@ export function AgentChatPane({
     return () => {
       cancelled = true;
     };
-  }, [iosSimulatorOpen, isTileActive]);
+  }, [effectiveIosSimulatorOpen, isTileActive]);
 
   useEffect(() => {
     const api = window.ade?.appControl;
@@ -1701,6 +1857,18 @@ export function AgentChatPane({
       setAttachments((current) => current.filter((entry) => entry.path !== linkedAttachmentPath));
     }
   }, []);
+  const removeBuiltInBrowserContext = useCallback((id: string) => {
+    let linkedAttachmentPath: string | null = null;
+    setBuiltInBrowserContextItems((current) => {
+      const item = current.find((entry) => entry.id === id);
+      linkedAttachmentPath = item ? getBuiltInBrowserContextAttachmentPath(item) : null;
+      return current.filter((entry) => entry.id !== id);
+    });
+    if (linkedAttachmentPath) {
+      linkedBuiltInBrowserAttachmentPathsRef.current.delete(linkedAttachmentPath);
+      setAttachments((current) => current.filter((entry) => entry.path !== linkedAttachmentPath));
+    }
+  }, []);
   const updateComposerDraft = useCallback((value: string) => {
     setDraft(value);
     draftsPerSessionRef.current.set(selectedSessionId, value);
@@ -1714,6 +1882,7 @@ export function AgentChatPane({
     });
     setPromptSuggestion(null);
   }, [selectedSessionId]);
+
   const iosSimulatorProjectRoot = useMemo(() => {
     const scopedLaneId = selectedSession?.laneId ?? laneId;
     if (!scopedLaneId) return projectRoot;
@@ -3382,12 +3551,164 @@ export function AgentChatPane({
     });
   }, []);
 
+  const addIosElementContext = useCallback((item: IosElementContextItem) => {
+    const nextSurface = iosContextSurface(item);
+    const replacedAttachmentPaths = iosElementContextItems
+      .filter((entry) => iosContextSurface(entry) !== nextSurface)
+      .map(getIosContextAttachmentPath)
+      .filter((path): path is string => Boolean(path));
+    const latestAttachment = latestAttachmentRef.current;
+    const attachmentPath = item.screenshotDataUrl
+      && latestAttachment?.type === "image"
+      && Date.now() - latestAttachment.addedAt < 10_000
+      && !linkedIosAttachmentPathsRef.current.has(latestAttachment.path)
+        ? latestAttachment.path
+        : null;
+    const instanceId = createIosContextInstanceId(item);
+    if (attachmentPath) {
+      linkedIosAttachmentPathsRef.current.add(attachmentPath);
+    }
+    for (const path of replacedAttachmentPaths) {
+      linkedIosAttachmentPathsRef.current.delete(path);
+    }
+    if (replacedAttachmentPaths.length) {
+      const replaced = new Set(replacedAttachmentPaths);
+      setAttachments((current) => current.filter((entry) => !replaced.has(entry.path)));
+    }
+    setIosElementContextItems((current) => [
+      {
+        ...item,
+        id: instanceId,
+        metadata: {
+          ...item.metadata,
+          originalElementId: item.metadata.originalElementId ?? item.id,
+          contextInstanceId: instanceId,
+          ...(attachmentPath ? { attachmentPath } : {}),
+        },
+      },
+      ...current.filter((entry) => iosContextSurface(entry) === nextSurface),
+    ]);
+  }, [iosElementContextItems]);
+
+  const addAppControlContext = useCallback((item: AppControlContextItem) => {
+    const latestAttachment = latestAttachmentRef.current;
+    const attachmentPath = item.screenshotDataUrl
+      && latestAttachment?.type === "image"
+      && Date.now() - latestAttachment.addedAt < 10_000
+      && !linkedAppControlAttachmentPathsRef.current.has(latestAttachment.path)
+        ? latestAttachment.path
+        : getAppControlContextAttachmentPath(item);
+    const instanceId = createAppControlContextInstanceId(item);
+    if (attachmentPath) {
+      linkedAppControlAttachmentPathsRef.current.add(attachmentPath);
+    }
+    setAppControlContextItems((current) => [
+      {
+        ...item,
+        id: instanceId,
+        metadata: {
+          ...item.metadata,
+          originalElementId: item.metadata.originalElementId ?? item.id,
+          contextInstanceId: instanceId,
+          ...(attachmentPath ? { attachmentPath } : {}),
+        },
+      },
+      ...current.slice(0, 4),
+    ]);
+  }, []);
+
+  const addBuiltInBrowserContext = useCallback(async (rawItem: unknown) => {
+    const item = normalizeBuiltInBrowserContextItem(rawItem);
+    if (!item) return;
+    let attachmentPath = getBuiltInBrowserContextAttachmentPath(item);
+    if (item.screenshotDataUrl && !attachmentPath) {
+      try {
+        const saved = await window.ade.agentChat.saveTempAttachment({
+          data: stripDataUrlPrefix(item.screenshotDataUrl),
+          filename: "built-in-browser-selection.png",
+        });
+        attachmentPath = saved.path;
+        addAttachment({ path: saved.path, type: inferAttachmentType(saved.path, "image/png") });
+      } catch (error) {
+        setError(error instanceof Error ? error.message : String(error));
+      }
+    }
+
+    const instanceId = createBuiltInBrowserContextInstanceId(item);
+    if (attachmentPath) {
+      linkedBuiltInBrowserAttachmentPathsRef.current.add(attachmentPath);
+    }
+    setBuiltInBrowserContextItems((current) => [
+      {
+        ...item,
+        id: instanceId,
+        metadata: {
+          ...item.metadata,
+          originalElementId: item.metadata.originalElementId ?? item.id,
+          contextInstanceId: instanceId,
+          ...(selectedSessionId ? { chatSessionId: selectedSessionId } : {}),
+          ...(attachmentPath ? { attachmentPath } : {}),
+        },
+      },
+      ...current.slice(0, 4),
+    ]);
+  }, [addAttachment, selectedSessionId]);
+
+  useEffect(() => {
+    const matchesThisChat = (sessionId: unknown): boolean => (
+      typeof sessionId === "string" && sessionId === selectedSessionIdRef.current
+    );
+
+    const onAddAttachment = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: unknown; attachment?: unknown }>).detail;
+      if (!matchesThisChat(detail?.sessionId)) return;
+      const attachment = detail.attachment as AgentChatFileRef | undefined;
+      if (!attachment?.path) return;
+      addAttachment(attachment);
+    };
+    const onInsertDraft = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: unknown; text?: unknown }>).detail;
+      if (!matchesThisChat(detail?.sessionId) || typeof detail.text !== "string") return;
+      insertComposerDraft(detail.text);
+    };
+    const onAddIosContext = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: unknown; item?: unknown }>).detail;
+      if (!matchesThisChat(detail?.sessionId) || !detail.item) return;
+      addIosElementContext(detail.item as IosElementContextItem);
+    };
+    const onAddAppControlContext = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: unknown; item?: unknown }>).detail;
+      if (!matchesThisChat(detail?.sessionId) || !detail.item) return;
+      addAppControlContext(detail.item as AppControlContextItem);
+    };
+    const onAddBuiltInBrowserContext = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: unknown; item?: unknown }>).detail;
+      if (!matchesThisChat(detail?.sessionId) || !detail.item) return;
+      void addBuiltInBrowserContext(detail.item);
+    };
+
+    window.addEventListener("ade:agent-chat:add-attachment", onAddAttachment);
+    window.addEventListener("ade:agent-chat:insert-draft", onInsertDraft);
+    window.addEventListener("ade:agent-chat:add-ios-context", onAddIosContext);
+    window.addEventListener("ade:agent-chat:add-app-control-context", onAddAppControlContext);
+    window.addEventListener("ade:agent-chat:add-builtin-browser-context", onAddBuiltInBrowserContext);
+    return () => {
+      window.removeEventListener("ade:agent-chat:add-attachment", onAddAttachment);
+      window.removeEventListener("ade:agent-chat:insert-draft", onInsertDraft);
+      window.removeEventListener("ade:agent-chat:add-ios-context", onAddIosContext);
+      window.removeEventListener("ade:agent-chat:add-app-control-context", onAddAppControlContext);
+      window.removeEventListener("ade:agent-chat:add-builtin-browser-context", onAddBuiltInBrowserContext);
+    };
+  }, [addAppControlContext, addAttachment, addBuiltInBrowserContext, addIosElementContext, insertComposerDraft]);
+
   const removeAttachment = useCallback((attachmentPath: string) => {
     linkedIosAttachmentPathsRef.current.delete(attachmentPath);
     linkedAppControlAttachmentPathsRef.current.delete(attachmentPath);
+    linkedBuiltInBrowserAttachmentPathsRef.current.delete(attachmentPath);
     setAttachments((prev) => prev.filter((entry) => entry.path !== attachmentPath));
     setIosElementContextItems((prev) => prev.filter((entry) => getIosContextAttachmentPath(entry) !== attachmentPath));
     setAppControlContextItems((prev) => prev.filter((entry) => getAppControlContextAttachmentPath(entry) !== attachmentPath));
+    setBuiltInBrowserContextItems((prev) => prev.filter((entry) => getBuiltInBrowserContextAttachmentPath(entry) !== attachmentPath));
   }, []);
 
   const currentNativeControls = useMemo<NativeControlState>(() => ({
@@ -3928,12 +4249,15 @@ export function AgentChatPane({
     const text = draft.trim();
     const iosContextSnapshot = [...iosElementContextItems];
     const appControlContextSnapshot = [...appControlContextItems];
+    const builtInBrowserContextSnapshot = [...builtInBrowserContextItems];
     const iosContextPrefix = formatIosElementContextForPrompt(iosContextSnapshot);
     const appControlContextPrefix = formatAppControlContextForPrompt(appControlContextSnapshot);
+    const builtInBrowserContextPrefix = formatBuiltInBrowserContextForPrompt(builtInBrowserContextSnapshot);
     const iosContextDisplayChips = formatIosElementContextChipsForDisplay(iosContextSnapshot);
     const appControlContextDisplayChips = formatAppControlContextChipsForDisplay(appControlContextSnapshot);
-    const visualContextPrefix = [iosContextPrefix, appControlContextPrefix].filter(Boolean).join("\n");
-    const visualContextDisplayChips = [iosContextDisplayChips, appControlContextDisplayChips].filter(Boolean).join(" ");
+    const builtInBrowserContextDisplayChips = formatBuiltInBrowserContextChipsForDisplay(builtInBrowserContextSnapshot);
+    const visualContextPrefix = [iosContextPrefix, appControlContextPrefix, builtInBrowserContextPrefix].filter(Boolean).join("\n");
+    const visualContextDisplayChips = [iosContextDisplayChips, appControlContextDisplayChips, builtInBrowserContextDisplayChips].filter(Boolean).join(" ");
     if ((!text.length && !visualContextPrefix.length) || !laneId) return;
     const pendingNativeControlUpdate = pendingNativeControlUpdateRef.current;
     if (selectedSessionId && pendingNativeControlUpdate?.sessionId === selectedSessionId) {
@@ -4056,12 +4380,14 @@ export function AgentChatPane({
       }
       setIosElementContextItems([]);
       setAppControlContextItems([]);
+      setBuiltInBrowserContextItems([]);
     } catch (submitError) {
       const message = submitError instanceof Error ? submitError.message : String(submitError);
       setDraft((current) => (current.trim().length ? current : draftSnapshot));
       setAttachments((current) => (current.length ? current : attachmentsSnapshot));
       setIosElementContextItems((current) => (current.length ? current : iosContextSnapshot));
       setAppControlContextItems((current) => (current.length ? current : appControlContextSnapshot));
+      setBuiltInBrowserContextItems((current) => (current.length ? current : builtInBrowserContextSnapshot));
       setOptimisticOutgoingMessage(null);
       setError(message);
       if (
@@ -4115,6 +4441,7 @@ export function AgentChatPane({
     setLaneWorkViewState,
     iosElementContextItems,
     appControlContextItems,
+    builtInBrowserContextItems,
   ]);
 
   const interrupt = useCallback(async () => {
@@ -4410,47 +4737,11 @@ export function AgentChatPane({
       <div className="min-h-0 flex-1 overflow-auto px-4 py-3">
         <ChatIosSimulatorPanel
           sessionId={selectedSessionId}
+          laneId={selectedSession?.laneId ?? laneId}
           projectRoot={iosSimulatorProjectRoot}
           onAddAttachment={addAttachment}
           onInsertDraft={insertComposerDraft}
-          onAddContext={(item) => {
-            const nextSurface = iosContextSurface(item);
-            const replacedAttachmentPaths = iosElementContextItems
-              .filter((entry) => iosContextSurface(entry) !== nextSurface)
-              .map(getIosContextAttachmentPath)
-              .filter((path): path is string => Boolean(path));
-            const latestAttachment = latestAttachmentRef.current;
-            const attachmentPath = item.screenshotDataUrl
-              && latestAttachment?.type === "image"
-              && Date.now() - latestAttachment.addedAt < 10_000
-              && !linkedIosAttachmentPathsRef.current.has(latestAttachment.path)
-                ? latestAttachment.path
-                : null;
-            const instanceId = createIosContextInstanceId(item);
-            if (attachmentPath) {
-              linkedIosAttachmentPathsRef.current.add(attachmentPath);
-            }
-            for (const path of replacedAttachmentPaths) {
-              linkedIosAttachmentPathsRef.current.delete(path);
-            }
-            if (replacedAttachmentPaths.length) {
-              const replaced = new Set(replacedAttachmentPaths);
-              setAttachments((current) => current.filter((entry) => !replaced.has(entry.path)));
-            }
-            setIosElementContextItems((current) => [
-              {
-                ...item,
-                id: instanceId,
-                metadata: {
-                  ...item.metadata,
-                  originalElementId: item.metadata.originalElementId ?? item.id,
-                  contextInstanceId: instanceId,
-                  ...(attachmentPath ? { attachmentPath } : {}),
-                },
-              },
-              ...current.filter((entry) => iosContextSurface(entry) === nextSurface),
-            ]);
-          }}
+          onAddContext={addIosElementContext}
         />
       </div>
     </>
@@ -4479,32 +4770,7 @@ export function AgentChatPane({
             setTerminalDrawerOpen(true);
             setTerminalRevealRequest({ ...terminal, nonce: Date.now() });
           }}
-          onAddContext={(item) => {
-            const latestAttachment = latestAttachmentRef.current;
-            const attachmentPath = item.screenshotDataUrl
-              && latestAttachment?.type === "image"
-              && Date.now() - latestAttachment.addedAt < 10_000
-              && !linkedAppControlAttachmentPathsRef.current.has(latestAttachment.path)
-                ? latestAttachment.path
-                : getAppControlContextAttachmentPath(item);
-            const instanceId = createAppControlContextInstanceId(item);
-            if (attachmentPath) {
-              linkedAppControlAttachmentPathsRef.current.add(attachmentPath);
-            }
-            setAppControlContextItems((current) => [
-              {
-                ...item,
-                id: instanceId,
-                metadata: {
-                  ...item.metadata,
-                  originalElementId: item.metadata.originalElementId ?? item.id,
-                  contextInstanceId: instanceId,
-                  ...(attachmentPath ? { attachmentPath } : {}),
-                },
-              },
-              ...current.slice(0, 4),
-            ]);
-          }}
+          onAddContext={addAppControlContext}
         />
       </div>
     </>
@@ -4525,7 +4791,7 @@ export function AgentChatPane({
         {showWorkspaceChrome && laneId ? <ChatGitToolbar laneId={laneId} /> : null}
 
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
-          {showWorkspaceChrome && laneId && iosSimulatorAvailable ? (
+          {laneToolsVisible && iosSimulatorAvailable ? (
             <SmartTooltip
               content={{
                 label: iosSimulatorOpen ? "Close iOS simulator" : "Open iOS simulator",
@@ -4566,7 +4832,7 @@ export function AgentChatPane({
               </button>
             </SmartTooltip>
           ) : null}
-          {showWorkspaceChrome && laneId && appControlAvailable ? (
+          {laneToolsVisible && appControlAvailable ? (
             <SmartTooltip
               content={{
                 label: appControlOpen ? "Close App Control" : "Open App Control",
@@ -4986,6 +5252,7 @@ export function AgentChatPane({
             computerUseSnapshot={computerUseSnapshot}
             iosElementContextItems={iosElementContextItems}
             appControlContextItems={appControlContextItems}
+            builtInBrowserContextItems={builtInBrowserContextItems}
             executionModeOptions={launchModeEditable ? executionModeOptions : []}
             modelSelectionLocked={modelSelectionLocked || sessionMutationKind === "model" || turnActive}
             permissionModeLocked={permissionModeLocked || identitySessionSettingsBusy}
@@ -5013,6 +5280,7 @@ export function AgentChatPane({
             onComputerUsePolicyChange={handleComputerUsePolicyChange}
             onRemoveIosElementContext={removeIosElementContext}
             onRemoveAppControlContext={removeAppControlContext}
+            onRemoveBuiltInBrowserContext={removeBuiltInBrowserContext}
             onOpenAiSettings={openAiProvidersSettings}
             onModelChange={(nextModelId) => {
               if (selectedSessionModelId && effectiveAvailableModelIds.length && !effectiveAvailableModelIds.includes(nextModelId)) {
@@ -5139,7 +5407,7 @@ export function AgentChatPane({
             showParallelChatToggle={Boolean(
               embeddedWorkLayout && forceDraft && !lockSessionId && !initialSessionId && selectedSessionId == null,
             )}
-            showIosSimulatorToggle={Boolean(showWorkspaceChrome && laneId && iosSimulatorAvailable)}
+            showIosSimulatorToggle={laneToolsVisible && iosSimulatorAvailable}
             iosSimulatorOpen={iosSimulatorOpen}
             onToggleIosSimulator={() => {
               setIosSimulatorOpen((current) => {
@@ -5152,7 +5420,7 @@ export function AgentChatPane({
                 return next;
               });
             }}
-            showAppControlToggle={Boolean(showWorkspaceChrome && laneId && appControlAvailable)}
+            showAppControlToggle={laneToolsVisible && appControlAvailable}
             appControlOpen={appControlOpen}
             onToggleAppControl={() => {
               setAppControlOpen((current) => {
@@ -5297,7 +5565,7 @@ export function AgentChatPane({
   // True when a non-proof companion panel is open. These panels (iOS simulator,
   // App Control) host their own input affordances, so the empty-state layout
   // shrinks the hero and moves the composer below.
-  const appPanelOpen = iosSimulatorOpen || appControlOpen;
+  const appPanelOpen = effectiveIosSimulatorOpen || effectiveAppControlOpen;
   const rightPaneOpen = proofDrawerOpen || appPanelOpen;
   const supportsSplit = layoutVariant !== "grid-tile";
   const splitChatColStyle: React.CSSProperties | undefined =
@@ -5485,8 +5753,8 @@ export function AgentChatPane({
 
                   {rightPaneDivider}
                   {proofDrawerOpen ? renderRightPane(proofPanelContent) : null}
-                  {iosSimulatorOpen ? renderRightPane(iosSimulatorPanelContent) : null}
-                  {appControlOpen ? renderRightPane(appControlPanelContent) : null}
+                  {effectiveIosSimulatorOpen ? renderRightPane(iosSimulatorPanelContent) : null}
+                  {effectiveAppControlOpen ? renderRightPane(appControlPanelContent) : null}
                   {cursorCloudPaneOpen && cursorCloudAvailable ? renderRightPane(cursorCloudPanelContent) : null}
                 </motion.div>
               ) : (
@@ -5581,8 +5849,8 @@ export function AgentChatPane({
                     ) : null}
                   </div>
                   {rightPaneDivider}
-                  {iosSimulatorOpen ? renderRightPane(iosSimulatorPanelContent) : null}
-                  {appControlOpen ? renderRightPane(appControlPanelContent) : null}
+                  {effectiveIosSimulatorOpen ? renderRightPane(iosSimulatorPanelContent) : null}
+                  {effectiveAppControlOpen ? renderRightPane(appControlPanelContent) : null}
                   {cursorCloudPaneOpen && cursorCloudAvailable ? renderRightPane(cursorCloudPanelContent) : null}
                 </motion.div>
               )}

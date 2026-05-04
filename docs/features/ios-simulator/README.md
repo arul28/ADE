@@ -22,7 +22,7 @@ called from a non-darwin host.
 |---|---|
 | `apps/desktop/src/main/services/ios/iosSimulatorService.ts` | The whole feature backend: tool-readiness probes (xcrun, xcodebuild, IOSurface/Indigo helpers, idb, idb_companion, ffmpeg), simctl device + app discovery, build/install/launch with progress events (with hardened `simctl bootstatus` and `simctl install` timeouts), screenshot + ADEInspector + accessibility hit-test, streaming backends (`iosurface-indigo`, `idb-mjpeg`, `idb-h264-ffmpeg-mjpeg`, `simctl-screenshot-poll`, `simulator-window-capture`) with `auto` resolution and runtime fallback when a backend produces no frames, tap/drag/swipe/type through Indigo with idb fallback, single-owner session locking, Preview Lab integration via Xcode MCP, and selection emission. Exports `__testSetIosSimulatorProcessHooks`, `detectIosurfaceIndigoCapability`, `resolveIosSimulatorStreamBackend`, and `shouldOpenSimulatorAppForLaunch` for the unit tests. |
 | `apps/desktop/src/main/services/ios/iosSimulatorService.test.ts` | Service unit tests covering backend resolution, launch foreground/background flag, and timeout-mapped error messages via the `__testSetIosSimulatorProcessHooks` injector. |
-| `apps/desktop/src/shared/types/iosSimulator.ts` | All cross-process types: `IosSimulatorStatus`, `IosSimulatorDevice`, `IosSimulatorLaunchTarget`, `IosSimulatorSession`, `IosSimulatorLaunchProgress`, `IosSimulatorStreamStatus`, `IosSimulatorStreamBackend` (`iosurface-indigo` \| `simctl-screenshot-poll` \| `idb-mjpeg` \| `idb-h264-ffmpeg-mjpeg` \| `simulator-window-capture`), `IosSimulatorWindowSource`, `IosSimulatorWindowState` + `IosSimulatorWindowIssue` (`not-running` \| `hidden` \| `minimized` \| `no-window` \| `unknown`), `IosScreenSnapshot`, `IosScreenElement`, `IosInspectorSnapshot`, `IosInspectableElement`, `IosElementContextItem`, `IosSimulatorEventPayload`, plus the `IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE` error sentinel. |
+| `apps/desktop/src/shared/types/iosSimulator.ts` | All cross-process types: `IosSimulatorStatus`, `IosSimulatorDevice`, `IosSimulatorLaunchTarget`, `IosSimulatorLaunchArgs` (carries optional `laneId`), `IosSimulatorSession` (carries the resolved `laneId` alongside `projectRoot` so the Work sidebar can detect lane mismatches), `IosSimulatorLaunchProgress`, `IosSimulatorStreamStatus`, `IosSimulatorStreamBackend` (`iosurface-indigo` \| `simctl-screenshot-poll` \| `idb-mjpeg` \| `idb-h264-ffmpeg-mjpeg` \| `simulator-window-capture`), `IosSimulatorWindowSource`, `IosSimulatorWindowState` + `IosSimulatorWindowIssue` (`not-running` \| `hidden` \| `minimized` \| `no-window` \| `unknown`), `IosScreenSnapshot`, `IosScreenElement`, `IosInspectorSnapshot`, `IosInspectableElement`, `IosElementContextItem`, `IosSimulatorEventPayload`, plus the `IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE` error sentinel. |
 | `apps/desktop/src/shared/ipc.ts` | `IPC.iosSimulator*` channel constants (one per service method, plus `iosSimulatorGetWindowState`, `iosSimulatorListWindowSources`, and the single push channel `ade.iosSimulator.event`). |
 | `apps/desktop/src/main/services/ipc/registerIpc.ts` | `ade.iosSimulator.*` invoke handlers, the chat-session-aware arg validator (`incomingChatSessionId` must match the active drawer owner), the `ade.iosSimulator.event` push relay, and the macOS Simulator-window plumbing: `getSimulatorWindowState` (osascript probe of `process "Simulator"` for visibility / window count / minimized count), `prepareSimulatorWindowForCapture` (open `-g`, unminimize, park under the left side of the ADE BrowserWindow), and `followSimulatorWindowUnderAde` (re-park on `move`/`resize`, cleared on shutdown). |
 | `apps/desktop/src/main/services/adeActions/registry.ts` | Maps the service onto the `ios_simulator` action namespace consumed by the ADE CLI / agent tools (`getStatus`, `listDevices`, `listLaunchTargets`, `launch`, `shutdown`, `screenshot`, `getScreenSnapshot`, `getInspectorSnapshot`, `inspectPoint`, `getPreviewCapability`, `listPreviewTargets`, `renderPreview`, `openPreviewWorkspace`, `startStream`, `stopStream`, `getStreamStatus`, `tap`, `typeText`, `drag`, `swipe`, `selectPoint`). |
@@ -287,10 +287,26 @@ capture-only verbs work in headless mode too.
 
 ## Renderer integration
 
-`AgentChatPane` polls `getStatus()` once on mount and on
-`session-started/-released/-updated/launch-progress` events. When
-`status.supported` is true, the header renders a `DeviceMobile` toggle
-that mounts `ChatIosSimulatorPanel` in place of the work-log panel.
+`ChatIosSimulatorPanel` has two mount points:
+
+- `AgentChatPane` polls `getStatus()` once on mount and on
+  `session-started/-released/-updated/launch-progress` events. When
+  `status.supported` is true, the header renders a `DeviceMobile` toggle
+  that mounts the panel in place of the work-log panel. When the chat
+  is mounted as a Work tile (`hideLaneToolDrawers={true}`) the toggle
+  is suppressed; the Work sidebar owns the drawer at lane scope and
+  pipes selections back through the `ade:agent-chat:add-ios-context`
+  window event.
+- `apps/desktop/src/renderer/components/terminals/WorkSidebar.tsx`
+  mounts the panel under its `ios` tab against the active lane (no
+  chat scope, `sessionId={null}`, `laneId` set). The sidebar runs its
+  own `IosSimulatorSession` subscription and, when the active session
+  was launched from a different lane, shows a `WarningBanner` ("The iOS
+  Simulator session was launched from a different lane…"); the user can
+  still inspect and control the simulator, but selections will not
+  attach to the active lane's chat until the simulator is relaunched
+  against the matching lane.
+
 The panel:
 
 - Renders a tool-readiness checklist when any required tool is missing,

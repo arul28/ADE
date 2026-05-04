@@ -3275,6 +3275,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         appBundlePath: appBundle,
         targetId: target.target.id,
         projectRoot,
+        laneId: launchArgs.laneId ?? null,
         chatSessionId: launchArgs.chatSessionId ?? null,
         mode: normalizeLaunchMode(launchArgs.mode),
         keepSimulatorInBackground: launchArgs.keepSimulatorInBackground ?? true,

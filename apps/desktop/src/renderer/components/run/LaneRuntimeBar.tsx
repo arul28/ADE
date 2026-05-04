@@ -10,6 +10,7 @@ import type {
   ProxyStatus,
 } from "../../../shared/types";
 import { isActiveProcessStatus } from "./processUtils";
+import { openUrlInAdeBrowser } from "../../lib/openExternal";
 
 type LaneRuntimeBarProps = {
   laneId: string | null;
@@ -302,7 +303,7 @@ export function LaneRuntimeBar({ laneId, onOpenPreviewRouting }: LaneRuntimeBarP
           <>
             <button
               type="button"
-              onClick={() => void window.ade.app.openExternal(preview.previewUrl)}
+              onClick={() => openUrlInAdeBrowser(preview.previewUrl)}
               aria-label={`Open preview ${preview.hostname}`}
               style={outlineButton({ height: 22, fontSize: 9, padding: "0 8px" })}
             >

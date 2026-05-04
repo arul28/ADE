@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { At, CaretDown, Check, CloudArrowUp, Desktop, DeviceMobile, Image, Paperclip, PencilSimple, Square, X, PaperPlaneTilt, SquareSplitHorizontal, Plus, Trash, Lightning, ArrowBendDownRight } from "@phosphor-icons/react";
+import { At, CaretDown, Check, CloudArrowUp, Desktop, DeviceMobile, Globe, Image, Paperclip, PencilSimple, Square, X, PaperPlaneTilt, SquareSplitHorizontal, Plus, Trash, Lightning, ArrowBendDownRight } from "@phosphor-icons/react";
 import { BorderBeam } from "border-beam";
 import {
   inferAttachmentType,
@@ -21,6 +21,7 @@ import {
   type ComputerUseOwnerSnapshot,
   type ChatSurfaceMode,
   type AppControlContextItem,
+  type BuiltInBrowserContextItem,
   type IosElementContextItem,
   type PendingInputRequest,
 } from "../../../shared/types";
@@ -138,6 +139,40 @@ function appControlContextRoleHint(item: AppControlContextItem): string | null {
 }
 
 function appControlContextFrameHint(item: AppControlContextItem): string | null {
+  if (!item.frame) return null;
+  return `${Math.round(item.frame.width)}×${Math.round(item.frame.height)} @ ${Math.round(item.frame.x)},${Math.round(item.frame.y)}`;
+}
+
+function builtInBrowserContextDisplayLabel(item: BuiltInBrowserContextItem): string {
+  const metadata = item.metadata ?? {};
+  for (const value of [metadata.label, metadata.text, metadata.value, item.componentId, metadata.selector, metadata.role, metadata.tagName]) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return "Browser element";
+}
+
+function builtInBrowserContextSourceDescription(item: BuiltInBrowserContextItem): string {
+  const url = typeof item.url === "string" && item.url.trim()
+    ? item.url
+    : typeof item.metadata.url === "string" ? item.metadata.url : null;
+  if (!url) return "Global browser";
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname || "Global browser";
+  } catch {
+    return url;
+  }
+}
+
+function builtInBrowserContextRoleHint(item: BuiltInBrowserContextItem): string | null {
+  const metadata = item.metadata ?? {};
+  const role = typeof metadata.role === "string" ? metadata.role.trim() : null;
+  if (role) return role;
+  const tag = typeof metadata.tagName === "string" ? metadata.tagName.trim() : null;
+  return tag ? tag.toLowerCase() : null;
+}
+
+function builtInBrowserContextFrameHint(item: BuiltInBrowserContextItem): string | null {
   if (!item.frame) return null;
   return `${Math.round(item.frame.width)}×${Math.round(item.frame.height)} @ ${Math.round(item.frame.x)},${Math.round(item.frame.y)}`;
 }
@@ -505,6 +540,7 @@ export function AgentChatComposer({
   computerUseSnapshot,
   iosElementContextItems = [],
   appControlContextItems = [],
+  builtInBrowserContextItems = [],
   executionModeOptions = [],
   modelSelectionLocked = false,
   permissionModeLocked = false,
@@ -534,6 +570,7 @@ export function AgentChatComposer({
   onCursorConfigChange,
   onRemoveIosElementContext,
   onRemoveAppControlContext,
+  onRemoveBuiltInBrowserContext,
   onClearEvents,
   promptSuggestion,
   chatHasMessages = false,
@@ -607,6 +644,7 @@ export function AgentChatComposer({
   computerUseSnapshot?: ComputerUseOwnerSnapshot | null;
   iosElementContextItems?: IosElementContextItem[];
   appControlContextItems?: AppControlContextItem[];
+  builtInBrowserContextItems?: BuiltInBrowserContextItem[];
   executionModeOptions?: ExecutionModeOption[];
   modelSelectionLocked?: boolean;
   permissionModeLocked?: boolean;
@@ -641,6 +679,7 @@ export function AgentChatComposer({
   onComputerUsePolicyChange?: (policy: unknown) => void;
   onRemoveIosElementContext?: (id: string) => void;
   onRemoveAppControlContext?: (id: string) => void;
+  onRemoveBuiltInBrowserContext?: (id: string) => void;
   onClearEvents?: () => void;
   promptSuggestion?: string | null;
   chatHasMessages?: boolean;
@@ -700,6 +739,7 @@ export function AgentChatComposer({
   const [attachError, setAttachError] = useState<string | null>(null);
   const [selectedIosContextId, setSelectedIosContextId] = useState<string | null>(null);
   const [selectedAppControlContextId, setSelectedAppControlContextId] = useState<string | null>(null);
+  const [selectedBuiltInBrowserContextId, setSelectedBuiltInBrowserContextId] = useState<string | null>(null);
 
   const [hoveredClaudeMode, setHoveredClaudeMode] = useState<AgentChatClaudePermissionMode | null>(null);
   const [hoveredCodexPreset, setHoveredCodexPreset] = useState<Exclude<CodexPermissionPreset, "custom"> | null>(null);
@@ -727,7 +767,7 @@ export function AgentChatComposer({
   // image. handlePaste consults this to avoid attaching the same image twice
   // when the real paste event lands after the 80ms fallback has already fired.
   const clipboardImagePasteFallbackAttachedRef = useRef(false);
-  const useRichComposer = iosElementContextItems.length > 0 || appControlContextItems.length > 0;
+  const useRichComposer = iosElementContextItems.length > 0 || appControlContextItems.length > 0 || builtInBrowserContextItems.length > 0;
   const composerInputLocked = Boolean(pendingInput?.blocking);
   const composerInputLockMessage = pendingInput?.kind === "question" || pendingInput?.kind === "structured_question"
     ? "Answer the question card above, or decline it."
@@ -931,7 +971,7 @@ export function AgentChatComposer({
         return;
       }
       if (!(node instanceof HTMLElement)) return;
-      if (node.dataset.iosContextId || node.dataset.appControlContextId) {
+      if (node.dataset.iosContextId || node.dataset.appControlContextId || node.dataset.builtInBrowserContextId) {
         parts.push(" ");
         return;
       }
@@ -977,7 +1017,7 @@ export function AgentChatComposer({
         offset += node.textContent?.length ?? 0;
         return;
       }
-      if (node instanceof HTMLElement && (node.dataset.iosContextId || node.dataset.appControlContextId)) return;
+      if (node instanceof HTMLElement && (node.dataset.iosContextId || node.dataset.appControlContextId || node.dataset.builtInBrowserContextId)) return;
       node.childNodes.forEach(visit);
     };
     editor.childNodes.forEach(visit);
@@ -1079,6 +1119,31 @@ export function AgentChatComposer({
     return chip;
   }, []);
 
+  const createBuiltInBrowserContextChipNode = useCallback((item: BuiltInBrowserContextItem): HTMLElement => {
+    const chip = document.createElement("span");
+    chip.contentEditable = "false";
+    chip.dataset.builtInBrowserContextId = item.id;
+    chip.className = "mx-0.5 inline-flex max-w-[260px] translate-y-[1px] items-center gap-1.5 rounded-md border border-teal-300/22 bg-teal-500/12 px-2 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-5 text-teal-50/85 align-baseline";
+    chip.title = `${builtInBrowserContextDisplayLabel(item)} - ${builtInBrowserContextSourceDescription(item)}`;
+
+    const label = document.createElement("span");
+    label.className = "max-w-[150px] truncate";
+    label.textContent = builtInBrowserContextDisplayLabel(item);
+    chip.appendChild(label);
+
+    const source = document.createElement("span");
+    source.className = "max-w-[90px] truncate text-teal-100/45";
+    source.textContent = builtInBrowserContextSourceDescription(item);
+    chip.appendChild(source);
+
+    const remove = document.createElement("span");
+    remove.className = "rounded px-0.5 text-teal-100/45";
+    remove.textContent = "x";
+    remove.dataset.builtInBrowserRemove = "true";
+    chip.appendChild(remove);
+    return chip;
+  }, []);
+
   useLayoutEffect(() => {
     const editor = richEditorRef.current;
     if (!useRichComposer || !editor) {
@@ -1145,11 +1210,27 @@ export function AgentChatComposer({
       existingAppControlIds.add(item.id);
     }
 
+    const builtInBrowserIds = new Set(builtInBrowserContextItems.map((item) => item.id));
+    editor.querySelectorAll<HTMLElement>("[data-built-in-browser-context-id]").forEach((node) => {
+      const id = node.dataset.builtInBrowserContextId;
+      if (!id || !builtInBrowserIds.has(id)) node.remove();
+    });
+    const existingBuiltInBrowserIds = new Set(
+      Array.from(editor.querySelectorAll<HTMLElement>("[data-built-in-browser-context-id]"))
+        .map((node) => node.dataset.builtInBrowserContextId)
+        .filter(Boolean),
+    );
+    for (const item of builtInBrowserContextItems) {
+      if (existingBuiltInBrowserIds.has(item.id)) continue;
+      insertChipFragment(createBuiltInBrowserContextChipNode(item));
+      existingBuiltInBrowserIds.add(item.id);
+    }
+
     const next = serializeRichEditor();
     if (next === lastSerializedDraftRef.current) return;
     lastSerializedDraftRef.current = next;
     onDraftChange(next);
-  }, [appControlContextItems, createAppControlContextChipNode, createIosContextChipNode, draft, insertNodeAtTextOffset, iosElementContextItems, onDraftChange, serializeRichEditor, useRichComposer]);
+  }, [appControlContextItems, builtInBrowserContextItems, createAppControlContextChipNode, createBuiltInBrowserContextChipNode, createIosContextChipNode, draft, insertNodeAtTextOffset, iosElementContextItems, onDraftChange, serializeRichEditor, useRichComposer]);
 
   const handleSlashSelect = useCallback((cmd: SlashCommandEntry) => {
     // Local-only commands handled client-side
@@ -1998,6 +2079,10 @@ export function AgentChatComposer({
     // Cloud submit only fires when the chat is fresh enough to launch a new cloud run. Once any
     // turns have been exchanged the inline launch strip is unavailable, so this branch is gated
     // on `cursorCloudCanLaunch` to defend against a stale `cursorCloudLaunchModeOpen=true`.
+    const hasContextSelection =
+      iosElementContextItems.length > 0
+      || appControlContextItems.length > 0
+      || builtInBrowserContextItems.length > 0;
     if (
       cursorCloudAvailable
       && cursorCloudCanLaunch
@@ -2005,20 +2090,21 @@ export function AgentChatComposer({
       && onSubmitToCloud
     ) {
       const trimmed = draft.trim();
-      if (!trimmed.length) return;
+      if (!trimmed.length && !hasContextSelection) return;
       void Promise.resolve(onSubmitToCloud(trimmed)).then((ok) => {
         if (ok) onDraftChange("");
       });
       return;
     }
-    if (busy || !modelId || (!draft.trim().length && !iosElementContextItems.length && !appControlContextItems.length)) return;
+    if (busy || !modelId || (!draft.trim().length && !hasContextSelection)) return;
     onSubmit();
-  }, [appControlContextItems.length, attachments, busy, cursorCloudAvailable, cursorCloudCanLaunch, cursorCloudLaunchModeOpen, draft, iosElementContextItems.length, modelId, onDraftChange, onSubmit, onSubmitToCloud, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length]);
+  }, [appControlContextItems.length, attachments, builtInBrowserContextItems.length, busy, cursorCloudAvailable, cursorCloudCanLaunch, cursorCloudLaunchModeOpen, draft, iosElementContextItems.length, modelId, onDraftChange, onSubmit, onSubmitToCloud, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length]);
 
   const pendingQuestionCount = getPendingInputQuestionCount(pendingInput);
   const showPendingInputOptionsHint = hasPendingInputOptions(pendingInput);
   const selectedIosContext = iosElementContextItems.find((item) => item.id === selectedIosContextId) ?? null;
   const selectedAppControlContext = appControlContextItems.find((item) => item.id === selectedAppControlContextId) ?? null;
+  const selectedBuiltInBrowserContext = builtInBrowserContextItems.find((item) => item.id === selectedBuiltInBrowserContextId) ?? null;
   const selectedIosCandidates = selectedIosContext
     ? iosMetadataArray(selectedIosContext.metadata.sourceCandidates ?? selectedIosContext.metadata.sourceMatches).slice(0, 3)
     : [];
@@ -2044,6 +2130,11 @@ export function AgentChatComposer({
     if (appControlContextItems.some((item) => item.id === selectedAppControlContextId)) return;
     setSelectedAppControlContextId(null);
   }, [appControlContextItems, selectedAppControlContextId]);
+  useEffect(() => {
+    if (!selectedBuiltInBrowserContextId) return;
+    if (builtInBrowserContextItems.some((item) => item.id === selectedBuiltInBrowserContextId)) return;
+    setSelectedBuiltInBrowserContextId(null);
+  }, [builtInBrowserContextItems, selectedBuiltInBrowserContextId]);
 
   const composerBeamActive = isActive && layoutVariant !== "grid-tile" && !iosSimulatorOpen && (turnActive || !chatHasMessages);
   const composerBeamVariant = turnActive ? "ocean" : "colorful";
@@ -2056,7 +2147,8 @@ export function AgentChatComposer({
     && (draft.trim().length > 0 || attachments.length > 0);
   const hasIosElementContext = iosElementContextItems.length > 0;
   const hasAppControlContext = appControlContextItems.length > 0;
-  const singleReady = !parallelChatMode && Boolean(modelId) && (draft.trim().length > 0 || hasIosElementContext || hasAppControlContext);
+  const hasBuiltInBrowserContext = builtInBrowserContextItems.length > 0;
+  const singleReady = !parallelChatMode && Boolean(modelId) && (draft.trim().length > 0 || hasIosElementContext || hasAppControlContext || hasBuiltInBrowserContext);
   const sendEnabled = !busy && !parallelLaunchBusy && !composerInputLocked && (parallelReady || singleReady);
 
   function sendButtonTitle(): string {
@@ -2069,6 +2161,7 @@ export function AgentChatComposer({
     if (!modelId) return "Select a model first";
     if (!draft.trim().length && hasAppControlContext) return "Send selected App Control context";
     if (!draft.trim().length && hasIosElementContext) return "Send selected iOS context";
+    if (!draft.trim().length && hasBuiltInBrowserContext) return "Send selected browser context";
     return "Send";
   }
 
@@ -2147,8 +2240,56 @@ export function AgentChatComposer({
         )
       ) : undefined}
       trays={
-        attachments.length || attachError || selectedIosContext || selectedAppControlContext ? (
+        attachments.length || attachError || selectedIosContext || selectedAppControlContext || selectedBuiltInBrowserContext ? (
           <div className="space-y-2 px-1 py-2">
+            {selectedBuiltInBrowserContext ? (
+              <div className="relative mx-3 grid grid-cols-[72px_minmax(0,1fr)] gap-2 rounded-md border border-teal-300/12 bg-black/20 p-2 pr-6">
+                <button
+                  type="button"
+                  aria-label="Dismiss preview"
+                  className="absolute right-1.5 top-1.5 rounded p-0.5 text-teal-100/40 transition-colors hover:text-teal-50/85"
+                  onClick={() => setSelectedBuiltInBrowserContextId(null)}
+                >
+                  <X size={10} weight="bold" />
+                </button>
+                {selectedBuiltInBrowserContext.screenshotDataUrl ? (
+                  <img
+                    src={selectedBuiltInBrowserContext.screenshotDataUrl}
+                    alt=""
+                    className="h-16 w-16 rounded border border-white/[0.06] object-cover"
+                  />
+                ) : (
+                  <div className="flex h-16 w-16 items-center justify-center rounded border border-white/[0.06] bg-white/[0.03] text-teal-100/35">
+                    <Globe size={20} weight="regular" />
+                  </div>
+                )}
+                <div className="min-w-0 space-y-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/70">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <span className="shrink-0 rounded border border-teal-300/22 bg-teal-500/8 px-1 py-px font-mono text-[length:calc(var(--chat-font-size)*8/14)] uppercase text-teal-100/75">
+                      Browser
+                    </span>
+                    <span className="truncate text-teal-50/85">{builtInBrowserContextDisplayLabel(selectedBuiltInBrowserContext)}</span>
+                    {builtInBrowserContextRoleHint(selectedBuiltInBrowserContext) ? (
+                      <span className="shrink-0 rounded bg-white/[0.04] px-1 py-px font-mono text-[length:calc(var(--chat-font-size)*8/14)] uppercase text-muted-fg/55">
+                        {builtInBrowserContextRoleHint(selectedBuiltInBrowserContext)}
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="truncate">{builtInBrowserContextSourceDescription(selectedBuiltInBrowserContext)}</div>
+                  {selectedBuiltInBrowserContext.url ? (
+                    <div className="truncate text-teal-100/45">{selectedBuiltInBrowserContext.url}</div>
+                  ) : null}
+                  {typeof selectedBuiltInBrowserContext.metadata.selector === "string" ? (
+                    <div className="truncate font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-teal-50/55">
+                      {selectedBuiltInBrowserContext.metadata.selector}
+                    </div>
+                  ) : null}
+                  {builtInBrowserContextFrameHint(selectedBuiltInBrowserContext) ? (
+                    <div className="text-muted-fg/45">{builtInBrowserContextFrameHint(selectedBuiltInBrowserContext)}</div>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
             {selectedAppControlContext ? (
               <div className="relative mx-3 grid grid-cols-[72px_minmax(0,1fr)] gap-2 rounded-md border border-sky-300/12 bg-black/20 p-2 pr-6">
                 <button
@@ -2736,7 +2877,7 @@ export function AgentChatComposer({
                     </button>
                   </SmartTooltip>
                 ) : null}
-                {draft.trim().length > 0 && !composerInputLocked ? (
+                {(draft.trim().length > 0 || hasIosElementContext || hasAppControlContext || hasBuiltInBrowserContext) && !composerInputLocked ? (
                   <SmartTooltip content={{ label: "Send steer message", description: "Queue this message for the running chat after the current turn finishes." }}>
                     <button
                       type="button"
@@ -2889,7 +3030,7 @@ export function AgentChatComposer({
           />
           {useRichComposer ? (
             <div className="relative">
-              {!draft.trim().length && !iosElementContextItems.length && !appControlContextItems.length ? (
+              {!draft.trim().length && !iosElementContextItems.length && !appControlContextItems.length && !builtInBrowserContextItems.length ? (
                 <div className="pointer-events-none absolute left-4 top-2.5 font-sans text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-muted-fg/30">
                   {composerInputLockMessage ?? (turnActive ? "Steer the active turn..." : (messagePlaceholder ?? "Type to vibecode..."))}
                 </div>
@@ -2924,6 +3065,7 @@ export function AgentChatComposer({
                     }
                     setSelectedIosContextId((current) => current === iosChip.dataset.iosContextId ? null : iosChip.dataset.iosContextId ?? null);
                     setSelectedAppControlContextId(null);
+                    setSelectedBuiltInBrowserContextId(null);
                     return;
                   }
                   const appControlChip = target?.closest?.("[data-app-control-context-id]") as HTMLElement | null;
@@ -2938,6 +3080,22 @@ export function AgentChatComposer({
                       current === appControlChip.dataset.appControlContextId ? null : appControlChip.dataset.appControlContextId ?? null,
                     );
                     setSelectedIosContextId(null);
+                    setSelectedBuiltInBrowserContextId(null);
+                    return;
+                  }
+                  const builtInBrowserChip = target?.closest?.("[data-built-in-browser-context-id]") as HTMLElement | null;
+                  if (builtInBrowserChip?.dataset.builtInBrowserContextId) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    if (target?.dataset.builtInBrowserRemove === "true") {
+                      onRemoveBuiltInBrowserContext?.(builtInBrowserChip.dataset.builtInBrowserContextId);
+                      return;
+                    }
+                    setSelectedBuiltInBrowserContextId((current) =>
+                      current === builtInBrowserChip.dataset.builtInBrowserContextId ? null : builtInBrowserChip.dataset.builtInBrowserContextId ?? null,
+                    );
+                    setSelectedIosContextId(null);
+                    setSelectedAppControlContextId(null);
                   }
                 }}
               />

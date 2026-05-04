@@ -12,6 +12,13 @@ import { cn } from "../ui/cn";
 import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
 import { laneSurfaceTint } from "../lanes/laneDesignTokens";
 
+const STATUS_FILTER_OPTIONS: Array<{ value: WorkStatusFilter; label: string; description: string }> = [
+  { value: "all", label: "All", description: "Show sessions in every state." },
+  { value: "running", label: "Running", description: "Show live sessions that are still working." },
+  { value: "awaiting-input", label: "Awaiting", description: "Show sessions waiting for a response or approval." },
+  { value: "ended", label: "Ended", description: "Show sessions that have finished." },
+];
+
 function bucketByTime(sessions: TerminalSessionSummary[]) {
   const now = new Date();
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
@@ -146,8 +153,8 @@ export const SessionListPane = React.memo(function SessionListPane({
   loading: _loading,
   filterLaneId,
   setFilterLaneId,
-  filterStatus: _filterStatus,
-  setFilterStatus: _setFilterStatus,
+  filterStatus,
+  setFilterStatus,
   q,
   setQ,
   selectedSessionId,
@@ -625,6 +632,29 @@ export const SessionListPane = React.memo(function SessionListPane({
         {/* Expandable filter panel */}
         {filterOpen ? (
           <div className="ade-chat-drawer-glass space-y-1.5 p-2">
+            <div className="flex items-center gap-1">
+              <span className="text-[9px] font-medium text-muted-fg/50 uppercase tracking-wider shrink-0 w-10">Status</span>
+              <div className="flex items-center gap-0.5 flex-1">
+                {STATUS_FILTER_OPTIONS.map((opt) => (
+                  <SmartTooltip
+                    key={opt.value}
+                    content={{ label: opt.label, description: opt.description }}
+                  >
+                    <button
+                      type="button"
+                      className="ade-chat-drawer-row flex-1 rounded-md px-2 py-1 text-[10px] font-medium"
+                      data-active={filterStatus === opt.value ? "true" : undefined}
+                      style={{
+                        color: filterStatus === opt.value ? "var(--color-fg)" : "var(--color-muted-fg)",
+                      }}
+                      onClick={() => setFilterStatus(opt.value)}
+                    >
+                      {opt.label}
+                    </button>
+                  </SmartTooltip>
+                ))}
+              </div>
+            </div>
             <div className="flex items-center gap-1">
               <span className="text-[9px] font-medium text-muted-fg/50 uppercase tracking-wider shrink-0 w-10">Group</span>
               <div className="flex items-center gap-0.5 flex-1">

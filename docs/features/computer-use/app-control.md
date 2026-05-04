@@ -20,7 +20,7 @@ App Control is intentionally a *bridge*. Other automation stacks — Playwright,
 ### Shared types
 
 - `apps/desktop/src/shared/types/appControl.ts` — the type contract:
-  - identity: `AppControlAppKind`, `AppControlProvider` (`cdp` | `os-accessibility` | `computer-use` | `external`), `AppControlSession` (status: `starting` | `running` | `connected` | `stopping` | `exited` | `stopped` | `failed`).
+  - identity: `AppControlAppKind`, `AppControlProvider` (`cdp` | `os-accessibility` | `computer-use` | `external`), `AppControlSession` (status: `starting` | `running` | `connected` | `stopping` | `exited` | `stopped` | `failed`). Sessions carry both `projectRoot` and `laneId` so the renderer can detect when an active App Control session is attached to a different lane than the active Work / chat lane and surface a mismatch warning. `AppControlConnectArgs` accepts an optional `laneId`; `connect()` resolves the final lane id through the same `resolveLaneId` strategy as `launch()` and `launchInTerminal()` (caller-supplied id wins; otherwise `chatSessionId` resolves it).
   - capture: `AppControlScreenshot`, `AppControlScreen`, `AppControlElement`, `AppControlFrame`, `AppControlSnapshot`, `AppControlSnapshotProvider`, `AppControlScreencastFrame`.
   - context: `AppControlContextItem` (`kind: "app_control_element"`), `AppControlSourceMatch`, `AppControlInspectResult`, `AppControlSelectResult`.
   - inputs: `AppControlLaunchArgs`, `AppControlConnectArgs`, `AppControlStopArgs`, `AppControlClickArgs`, `AppControlTypeTextArgs`, `AppControlInspectPointArgs`.
@@ -58,11 +58,17 @@ The companion **chat terminal** surface lives at `ade.terminal.*` and shares the
 
 ### Renderer
 
-- `apps/desktop/src/renderer/components/chat/ChatAppControlPanel.tsx` — the in-chat panel. Two modes:
+- `apps/desktop/src/renderer/components/chat/ChatAppControlPanel.tsx` — the App Control panel. Two mount points:
+  - Under `AgentChatPane`'s in-chat drawer (chat-scoped, `sessionId` set, persisted under `sessionStorage["ade.chat.appControlPanel.chat:<sessionId>"]`).
+  - Inside the Work right-edge sidebar's `app-control` tab (`apps/desktop/src/renderer/components/terminals/WorkSidebar.tsx`, lane-scoped, `sessionId={null}` + `laneId` set, persisted under `sessionStorage["ade.chat.appControlPanel.lane:<laneId>:<projectRoot>"]`).
+
+  Two modes:
   - **Control** — shows live screencast frames, Run-tab style launch/connect controls, click/type input, and quick actions for `terminal write` (answer a prompt) and `terminal signal` (interrupt).
   - **Inspect** — overlays a hit-test crosshair on the screenshot. Hovering inspects an element via `inspectPoint`; clicking commits via `selectPoint`, producing an `AppControlContextItem` that the chat composer attaches as a context chip plus an attachment.
-  Persists per-chat UI state (mode, launch command, cwd, CDP port) under `sessionStorage["ade.chat.appControlPanel.<key>"]`.
-- `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx` mounts the panel, owns `appControlContextItems`, and renders App Control chips alongside file attachments. The pane polls `ade.appControl.getStatus` to gate the header toggle on platform support.
+
+  Connect / launch calls forward the resolved `laneId` so the resulting `AppControlSession` records its launching lane.
+- `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx` mounts the chat-scoped panel, owns `appControlContextItems`, and renders App Control chips alongside file attachments. The pane polls `ade.appControl.getStatus` to gate the header toggle on platform support. When mounted as a Work tile (`hideLaneToolDrawers={true}`) the in-chat App Control drawer toggle is suppressed because the Work sidebar owns that drawer at lane scope; selections from the sidebar still flow into the chat composer through the `ade:agent-chat:add-app-control-context` window event.
+- `apps/desktop/src/renderer/components/terminals/WorkSidebar.tsx` mounts the lane-scoped panel under the `app-control` tab and runs its own `AppControlSession` subscription. When the active session's `laneId` differs from the sidebar's active lane it shows a `WarningBanner` ("App Control is attached to a different lane…"); the user can still control the existing session, but selections will not attach to the active lane's chat until the tool session is relaunched against the matching lane.
 - `apps/desktop/src/renderer/components/chat/ChatTerminalDrawer.tsx` reads `AppControlSession` to decorate the App Control launch terminal tab with a status tone (`active` / `warn` / `error`).
 
 ### ADE CLI

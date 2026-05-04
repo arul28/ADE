@@ -4,6 +4,7 @@ import { HighlightedCode } from "./CodeHighlighter";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
+import { openUrlInAdeBrowser } from "../../lib/openExternal";
 
 export const SAFE_PREVIEW_SCHEMA = {
   ...defaultSchema,
@@ -148,7 +149,16 @@ export function buildChatMarkdownComponents(tone: Tone = "sky", overrides: Overr
     strong: ({ children }) => <strong className="font-semibold text-fg">{children}</strong>,
     em: ({ children }) => <em className="italic">{children}</em>,
     a: ({ children, href }) => (
-      <a href={href} target="_blank" rel="noopener noreferrer" className={accent.link}>
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className={accent.link}
+        onClick={(event) => {
+          event.preventDefault();
+          openUrlInAdeBrowser(href);
+        }}
+      >
         {children}
       </a>
     ),

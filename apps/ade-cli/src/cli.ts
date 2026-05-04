@@ -69,6 +69,7 @@ type FormatterId =
   | "app-control-status"
   | "app-control-snapshot"
   | "app-control-selection"
+  | "browser-status"
   | "terminal-list"
   | "terminal-read"
   | "actions-list"
@@ -287,6 +288,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade proof status | list | screenshot | record Manage proof and computer-use artifacts
     $ ade ios-sim devices | apps | launch | tap   Control iOS Simulator apps, capture, and input
     $ ade app-control launch | snapshot | click   Inspect and drive Electron apps
+    $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade memory add | search | pin                 Use ADE memory
     $ ade settings action <method>                  Call project config actions
     $ ade actions list | run | status               Escape hatch for every ADE service action
@@ -315,6 +317,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade ios-sim apps --text
     $ ade ios-sim launch --target <id> --text
     $ ade app-control launch --command "pnpm dev" --text
+    $ ade --socket browser open http://localhost:5173 --new-tab --text
     $ ade terminal read --chat-session <id> --text
 
   Generic ADE action JSON contract:
@@ -392,6 +395,7 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
     --project, --xcodeproj <p>  Xcode project path.
     --scheme <name>             Xcode scheme.
     --project-root <path>       ADE project root.
+    --lane, --lane-id <id>      Lane to bind this simulator session to.
     --chat-session <id>         Owner chat session for the single-owner lock.
     --no-build                  Skip xcodebuild.
     --mode snapshot|live        Inspector launch mode; default live.
@@ -895,6 +899,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade app-control launch --command "pnpm dev" --cwd apps/desktop --text
     $ ade app-control launch --command "/path/script.sh {ADE_APP_CONTROL_DEBUG_FLAGS}"
     $ ade app-control connect --cdp-port 9222      Attach to an already-running app
+    $ ade app-control targets --text               List debuggable CDP targets
+    $ ade app-control attach-target --target <id>  Attach to one renderer target
     $ ade app-control logs --text                  Read the active App Control launch terminal
     $ ade app-control terminal write --data "y\\n" Answer a prompt in that terminal
     $ ade app-control stop --text                  Signal the App Control terminal session
@@ -910,7 +916,45 @@ const HELP_BY_COMMAND: Record<string, string> = {
 
   Input:
     $ ade app-control click 120 420                Click screenshot coordinates
+    $ ade app-control scroll --x 120 --y 420 --delta-y 600
+    $ ade app-control key --key Enter
     $ ade app-control type "hello" --text          Type text into the focused element
+`,
+  browser: `${ADE_BANNER}
+  ADE browser
+
+  Browser commands control ADE's global built-in browser pane. Use desktop
+  socket mode so CLI calls, chat link clicks, terminal localhost links, and the
+  Work sidebar all share the same browser tabs. The browser is global, not
+  lane-scoped.
+
+  Tabs and navigation:
+    $ ade --socket browser status --text           Show active tab and tab list
+    $ ade --socket browser open https://example.com --text
+    $ ade --socket browser open localhost:5173 --new-tab --text
+    $ ade --socket browser new-tab --url https://example.com
+    $ ade --socket browser switch --tab <tab-id>
+    $ ade --socket browser close --tab <tab-id>
+    $ ade --socket browser actions --text          List built_in_browser actions
+
+  Page controls:
+    $ ade --socket browser reload
+    $ ade --socket browser back
+    $ ade --socket browser forward
+    $ ade --socket browser stop
+
+  Capture and context:
+    $ ade --socket browser screenshot --text       Capture the active browser tab
+    $ ade --socket browser select --x 120 --y 420  Attach DOM context at a viewport point
+    $ ade --socket browser inspect-start           Start DOM inspect mode
+    $ ade --socket browser inspect-stop            Stop DOM inspect mode
+    $ ade --socket browser select-current --text   Return the selected DOM item
+    $ ade --socket browser clear-selection
+
+  Flags:
+    --url <url>          URL for open/new-tab. Bare localhost gets http://.
+    --new-tab           Open navigation in a new tab instead of active tab.
+    --tab, --tab-id <id> Target tab for switch/close/open.
 `,
   tests: `${ADE_BANNER}
   Tests
@@ -2284,6 +2328,7 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
       steps: [actionStep("result", "ios_simulator", "launch", collectGenericObjectArgs(args, {
         deviceUdid: readValue(args, ["--device", "--udid"]),
         projectRoot: readValue(args, ["--project-root", "--root"]),
+        laneId: readValue(args, ["--lane", "--lane-id"]),
         targetId: readValue(args, ["--target", "--target-id"]),
         bundleId: readValue(args, ["--bundle-id", "--bundle"]),
         appBundlePath: readValue(args, ["--app-bundle", "--app"]),
@@ -2496,11 +2541,19 @@ function buildAppControlPlan(args: string[]): CliPlan {
     return { kind: "execute", label: "App Control connect", steps: [actionStep("result", "app_control", "connect", collectGenericObjectArgs(args, {
       appKind: readValue(args, ["--kind", "--app-kind"]) ?? "electron",
       projectRoot: readValue(args, ["--project-root", "--root"]),
+      laneId: readValue(args, ["--lane", "--lane-id"]),
       cdpPort: readNumberOption(args, ["--cdp-port", "--port"]) ?? Number(numericPositionals()[0]),
       label: readValue(args, ["--label", "--name"]),
       chatSessionId: readValue(args, ["--chat-session", "--session"]) ?? process.env.ADE_CHAT_SESSION_ID,
       force: readFlag(args, ["--force", "-f"]) ? true : undefined,
     }))] };
+  }
+  if (sub === "targets" || sub === "list-targets") {
+    return { kind: "execute", label: "App Control targets", steps: [actionStep("result", "app_control", "listTargets", collectGenericObjectArgs(args))] };
+  }
+  if (sub === "attach-target" || sub === "target") {
+    const targetId = requireValue(readValue(args, ["--target", "--target-id"]) ?? firstPositional(args), "targetId");
+    return { kind: "execute", label: "App Control attach target", steps: [actionArgsListStep("result", "app_control", "attachToTarget", [targetId])] };
   }
   if (sub === "stop" || sub === "shutdown" || sub === "teardown" || sub === "close") {
     return { kind: "execute", label: "App Control stop", steps: [actionStep("result", "app_control", "stop", collectGenericObjectArgs(args, { force: readFlag(args, ["--force", "-f"]) ? true : undefined }))] };
@@ -2532,6 +2585,25 @@ function buildAppControlPlan(args: string[]): CliPlan {
       y: readCoordinate("--y", 1),
     }))] };
   }
+  if (sub === "scroll" || sub === "wheel") {
+    return { kind: "execute", label: "App Control scroll", steps: [actionStep("result", "app_control", "scroll", collectGenericObjectArgs(args, {
+      x: readCoordinate("--x", 0),
+      y: readCoordinate("--y", 1),
+      deltaX: readNumberOption(args, ["--delta-x", "--dx"]) ?? 0,
+      deltaY: readNumberOption(args, ["--delta-y", "--dy"]) ?? 0,
+      scale: readNumberOption(args, ["--scale"]),
+    }))] };
+  }
+  if (sub === "key" || sub === "dispatch-key") {
+    const key = readValue(args, ["--key"]) ?? firstPositional(args);
+    return { kind: "execute", label: "App Control key", steps: [actionStep("result", "app_control", "dispatchKey", collectGenericObjectArgs(args, {
+      type: readValue(args, ["--event-type", "--type"]) ?? "keyDown",
+      key: requireValue(key, "key"),
+      code: readValue(args, ["--code"]),
+      text: readValue(args, ["--text"]),
+      modifiers: readNumberOption(args, ["--modifiers"]),
+    }))] };
+  }
   if (sub === "type" || sub === "text") {
     return { kind: "execute", label: "App Control type", steps: [actionStep("result", "app_control", "typeText", collectGenericObjectArgs(args, {
       text: requireValue(
@@ -2543,6 +2615,65 @@ function buildAppControlPlan(args: string[]): CliPlan {
     }))] };
   }
   return { kind: "execute", label: `app-control ${sub}`, steps: [actionStep("result", "app_control", sub, collectGenericObjectArgs(args))] };
+}
+
+function buildBrowserPlan(args: string[]): CliPlan {
+  const sub = firstPositional(args) ?? "status";
+  if (sub === "help") return { kind: "help", text: HELP_BY_COMMAND.browser };
+  if (sub === "actions") return { kind: "execute", label: "browser actions", steps: [listActionsStep("actions", "built_in_browser")] };
+  if (sub === "status" || sub === "tabs" || sub === "list") {
+    return { kind: "execute", label: "browser status", steps: [actionStep("result", "built_in_browser", "getStatus", collectGenericObjectArgs(args))] };
+  }
+  if (sub === "open" || sub === "navigate" || sub === "go") {
+    const explicitUrl = readValue(args, ["--url"]);
+    const tabId = readValue(args, ["--tab", "--tab-id"]);
+    const newTab = readFlag(args, ["--new-tab"]);
+    const url = explicitUrl ?? args.filter((arg) => arg !== "--active-tab").join(" ");
+    if (!url.trim()) throw new CliUsageError("browser open requires a URL.");
+    return { kind: "execute", label: "browser open", steps: [actionStep("result", "built_in_browser", "navigate", collectGenericObjectArgs(args, {
+      url,
+      tabId,
+      newTab: newTab ? true : undefined,
+    }))] };
+  }
+  if (sub === "new-tab" || sub === "tab" || sub === "new") {
+    const background = readFlag(args, ["--background"]);
+    const url = readValue(args, ["--url"]) ?? (args.length ? args.join(" ") : undefined);
+    return { kind: "execute", label: "browser new tab", steps: [actionStep("result", "built_in_browser", "createTab", collectGenericObjectArgs(args, {
+      url,
+      activate: background ? false : undefined,
+    }))] };
+  }
+  if (sub === "switch" || sub === "activate") {
+    return { kind: "execute", label: "browser switch", steps: [actionStep("result", "built_in_browser", "switchTab", collectGenericObjectArgs(args, {
+      tabId: requireValue(readValue(args, ["--tab", "--tab-id"]) ?? firstPositional(args), "tabId"),
+    }))] };
+  }
+  if (sub === "close" || sub === "close-tab") {
+    return { kind: "execute", label: "browser close", steps: [actionStep("result", "built_in_browser", "closeTab", collectGenericObjectArgs(args, {
+      tabId: requireValue(readValue(args, ["--tab", "--tab-id"]) ?? firstPositional(args), "tabId"),
+    }))] };
+  }
+  if (sub === "reload" || sub === "refresh") return { kind: "execute", label: "browser reload", steps: [actionStep("result", "built_in_browser", "reload", collectGenericObjectArgs(args))] };
+  if (sub === "back") return { kind: "execute", label: "browser back", steps: [actionStep("result", "built_in_browser", "goBack", collectGenericObjectArgs(args))] };
+  if (sub === "forward") return { kind: "execute", label: "browser forward", steps: [actionStep("result", "built_in_browser", "goForward", collectGenericObjectArgs(args))] };
+  if (sub === "stop") return { kind: "execute", label: "browser stop", steps: [actionStep("result", "built_in_browser", "stop", collectGenericObjectArgs(args))] };
+  if (sub === "screenshot" || sub === "capture") return { kind: "execute", label: "browser screenshot", steps: [actionStep("result", "built_in_browser", "captureScreenshot", collectGenericObjectArgs(args))] };
+  if (sub === "select" || sub === "select-point" || sub === "point") {
+    const x = readNumberOption(args, ["--x"]);
+    const y = readNumberOption(args, ["--y"]);
+    if (x == null || y == null) throw new CliUsageError("browser select requires --x and --y.");
+    return { kind: "execute", label: "browser selection", steps: [actionStep("result", "built_in_browser", "selectPoint", collectGenericObjectArgs(args, {
+      x,
+      y,
+      includeScreenshot: readFlag(args, ["--no-screenshot"]) ? false : undefined,
+    }))] };
+  }
+  if (sub === "inspect-start" || sub === "start-inspect" || sub === "inspect") return { kind: "execute", label: "browser inspect start", steps: [actionStep("result", "built_in_browser", "startInspect", collectGenericObjectArgs(args))] };
+  if (sub === "inspect-stop" || sub === "stop-inspect") return { kind: "execute", label: "browser inspect stop", steps: [actionStep("result", "built_in_browser", "stopInspect", collectGenericObjectArgs(args))] };
+  if (sub === "select-current" || sub === "selection" || sub === "selected") return { kind: "execute", label: "browser selection", steps: [actionStep("result", "built_in_browser", "selectCurrent", collectGenericObjectArgs(args))] };
+  if (sub === "clear-selection" || sub === "clear") return { kind: "execute", label: "browser clear selection", steps: [actionStep("result", "built_in_browser", "clearSelection", collectGenericObjectArgs(args))] };
+  return { kind: "execute", label: `browser ${sub}`, steps: [actionStep("result", "built_in_browser", sub, collectGenericObjectArgs(args))] };
 }
 
 function buildMemoryPlan(args: string[]): CliPlan {
@@ -3017,6 +3148,9 @@ function buildCliPlan(command: string[]): CliPlan {
     app: "app-control",
     apps: "app-control",
     electron: "app-control",
+    "ade-browser": "browser",
+    "built-in-browser": "browser",
+    "builtin-browser": "browser",
     setting: "settings",
     config: "settings",
     action: "actions",
@@ -3104,6 +3238,7 @@ function buildCliPlan(command: string[]): CliPlan {
   }
   if (primary === "ios-sim" || primary === "ios" || primary === "simulator") return buildIosSimulatorPlan(args);
   if (primary === "app-control" || primary === "app" || primary === "apps" || primary === "electron") return buildAppControlPlan(args);
+  if (primary === "browser" || primary === "ade-browser" || primary === "built-in-browser" || primary === "builtin-browser") return buildBrowserPlan(args);
   if (primary === "memory") return buildMemoryPlan(args);
   if (primary === "settings" || primary === "config" || primary === "setting") return buildSettingsPlan(args);
   if (primary === "actions" || primary === "action") return buildActionsPlan(args);
@@ -4243,6 +4378,37 @@ function formatAppControlStatus(value: unknown): string {
   ].join("\n");
 }
 
+function formatBrowserStatus(value: unknown): string {
+  const status = isRecord(value) ? value : {};
+  const tabs = Array.isArray(status.tabs) ? status.tabs.filter(isRecord) : [];
+  const activeTabId = asString(status.activeTabId);
+  return [
+    renderKeyValues("ADE browser", [
+      ["visible", status.visible],
+      ["attached", status.attached],
+      ["active tab", activeTabId],
+      ["url", status.url],
+      ["title", status.title],
+      ["loading", status.isLoading ?? status.loading],
+      ["back", status.canGoBack],
+      ["forward", status.canGoForward],
+      ["inspecting", status.isInspecting ?? status.inspecting],
+      ["selection", status.hasSelection],
+    ]),
+    "",
+    renderTable(
+      ["active", "tab", "title", "url"],
+      tabs.map((tab) => [
+        asString(tab.id) === activeTabId ? "*" : "",
+        tab.id,
+        tab.title,
+        tab.url,
+      ]),
+      "Browser tabs\n(no browser tabs)",
+    ),
+  ].join("\n");
+}
+
 function formatAppControlSnapshot(value: unknown): string {
   const snapshot = isRecord(value) ? value : {};
   const screenshot = isRecord(snapshot.screenshot) ? snapshot.screenshot : snapshot;
@@ -4440,6 +4606,8 @@ function formatTextOutput(value: unknown, formatter: FormatterId | undefined): s
       return formatAppControlSnapshot(value);
     case "app-control-selection":
       return formatAppControlSelection(value);
+    case "browser-status":
+      return formatBrowserStatus(value);
     case "terminal-list":
       return formatTerminalList(value);
     case "terminal-read":
@@ -4485,6 +4653,7 @@ function inferFormatter(plan: CliPlan & { kind: "execute" }): FormatterId | unde
   if (label === "app control status" || label === "app control launch" || label === "app control connect" || label === "app control stop") return "app-control-status";
   if (label === "app control snapshot" || label === "app control screenshot") return "app-control-snapshot";
   if (label === "app control select" || label === "app control inspect point") return "app-control-selection";
+  if (label === "browser status" || label === "browser open" || label === "browser new tab" || label === "browser switch" || label === "browser close") return "browser-status";
   if (label === "terminal list" || label === "terminal active") return "terminal-list";
   if (label === "terminal read") return "terminal-read";
   if (label === "actions list") return "actions-list";

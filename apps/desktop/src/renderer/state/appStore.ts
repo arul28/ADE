@@ -112,6 +112,7 @@ function normalizeChatShellGeometry(value: unknown): ChatShellGeometry {
 }
 export type TerminalAttentionIndicator = "none" | "running-active" | "running-needs-attention";
 export type WorkViewMode = "tabs" | "grid";
+export type WorkSidebarTab = "git" | "files" | "ios" | "app-control" | "browser";
 export type WorkStatusFilter = "all" | "running" | "awaiting-input" | "ended";
 export type WorkDraftKind = "chat" | "cli" | "shell";
 /** How sessions are grouped in the Work sidebar list. */
@@ -138,6 +139,10 @@ export type WorkProjectViewState = {
   workCollapsedSectionIds: string[];
   /** When true, sessions sidebar is hidden for a full-width content area (persisted per project). */
   workFocusSessionsHidden: boolean;
+  /** Global Work right sidebar state; content follows the active lane/session. */
+  workSidebarOpen: boolean;
+  workSidebarTab: WorkSidebarTab;
+  workSidebarWidthPct: number;
 };
 export type TerminalAttentionSnapshot = {
   runningCount: number;
@@ -179,6 +184,9 @@ function createDefaultWorkProjectViewState(): WorkProjectViewState {
     workCollapsedTabGroupIds: [],
     workCollapsedSectionIds: [],
     workFocusSessionsHidden: false,
+    workSidebarOpen: false,
+    workSidebarTab: "git",
+    workSidebarWidthPct: 36,
   };
 }
 
@@ -193,6 +201,17 @@ function normalizeStringArray(value: unknown): string[] {
 function normalizeOptionalString(value: unknown): string | null {
   const normalized = typeof value === "string" ? value.trim() : "";
   return normalized.length > 0 ? normalized : null;
+}
+
+function normalizeWorkSidebarTab(value: unknown): WorkSidebarTab {
+  if (value === "files" || value === "ios" || value === "app-control" || value === "browser") return value;
+  return "git";
+}
+
+function normalizeWorkSidebarWidthPct(value: unknown): number {
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n)) return 36;
+  return Math.max(26, Math.min(55, n));
 }
 
 function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
@@ -225,6 +244,9 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
     workCollapsedTabGroupIds: normalizeStringArray(candidate.workCollapsedTabGroupIds),
     workCollapsedSectionIds: normalizeStringArray(candidate.workCollapsedSectionIds),
     workFocusSessionsHidden: candidate.workFocusSessionsHidden === true,
+    workSidebarOpen: candidate.workSidebarOpen === true,
+    workSidebarTab: normalizeWorkSidebarTab(candidate.workSidebarTab),
+    workSidebarWidthPct: normalizeWorkSidebarWidthPct(candidate.workSidebarWidthPct),
   };
 }
 
