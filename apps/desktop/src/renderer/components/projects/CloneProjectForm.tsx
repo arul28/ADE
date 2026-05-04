@@ -37,8 +37,32 @@ export type CloneProjectFormProps = {
 
 type Tab = "url" | "my-repos";
 
-const URL_PATTERN = /^(https?:\/\/[^\s]+|git@[^\s:]+:[^\s]+|ssh:\/\/[^\s]+)$/i;
 const SLUG_PATTERN = /([^/:]+?)(?:\.git)?$/;
+
+// Mirrors the backend `parseGitHubRepoFromRemoteUrl` accepted shapes so the
+// UI surfaces a friendly hint before the IPC call would reject with
+// `invalid_github_url`.
+function isGitHubRepoUrl(raw: string): boolean {
+  const trimmed = raw.trim();
+  if (!trimmed) return false;
+  const sshScp = trimmed.match(/^git@github\.com:(.+)$/i);
+  if (sshScp) {
+    const slug = sshScp[1]!.replace(/\.git$/i, "").trim();
+    const [owner, name] = slug.split("/");
+    return Boolean(owner && name);
+  }
+  if (/^(https?|ssh):\/\//i.test(trimmed)) {
+    try {
+      const url = new URL(trimmed);
+      if (!/github\.com$/i.test(url.hostname)) return false;
+      const parts = url.pathname.replace(/^\/+/, "").replace(/\.git$/i, "").split("/");
+      return Boolean(parts[0]?.trim() && parts[1]?.trim());
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
 
 const inputStyle: CSSProperties = {
   height: 36,
@@ -209,7 +233,7 @@ function UrlTab({
 
   const trimmedUrl = url.trim();
   const trimmedName = name.trim();
-  const urlValid = trimmedUrl.length > 0 && URL_PATTERN.test(trimmedUrl);
+  const urlValid = isGitHubRepoUrl(trimmedUrl);
   const previewPath = useMemo(
     () => (parentDir && trimmedName ? joinPath(parentDir, trimmedName) : ""),
     [parentDir, trimmedName],
@@ -293,7 +317,9 @@ function UrlTab({
           disabled={pending}
         />
         {url.length > 0 && !urlValid ? (
-          <InlineHint tone="danger">URL must look like https://, git@…:…, or ssh://…</InlineHint>
+          <InlineHint tone="danger">
+            Enter a GitHub URL like https://github.com/owner/repo or git@github.com:owner/repo.git
+          </InlineHint>
         ) : null}
       </Field>
 

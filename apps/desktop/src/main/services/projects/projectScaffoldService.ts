@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -69,6 +70,14 @@ function isGitIdentityError(stderr: string): boolean {
   );
 }
 
+function codedError(message: string, code: string): Error & { code: string } {
+  return Object.assign(new Error(message), { code });
+}
+
+function hashToken(token: string): string {
+  return crypto.createHash("sha256").update(token).digest("hex").slice(0, 16);
+}
+
 export function createProjectScaffoldService({
   logger,
   githubService,
@@ -76,7 +85,7 @@ export function createProjectScaffoldService({
   logger: Logger;
   githubService: GithubService;
 }) {
-  let cachedRepos: { tokenPrefix: string; expiresAt: number; repos: MyGitHubRepoSummary[] } | null = null;
+  let cachedRepos: { tokenHash: string; expiresAt: number; repos: MyGitHubRepoSummary[] } | null = null;
 
   const createLocalProject = async (input: CreateProjectInput): Promise<CreateProjectResult> => {
     const name = validateProjectName(input.name);
@@ -88,7 +97,7 @@ export function createProjectScaffoldService({
     const rootPath = path.join(parentDir, name);
 
     if (fs.existsSync(rootPath) && isDirectoryNonEmpty(rootPath)) {
-      throw new Error("target_exists");
+      throw codedError("A folder already exists at that path.", "target_exists");
     }
 
     fs.mkdirSync(rootPath, { recursive: true });
@@ -154,11 +163,11 @@ export function createProjectScaffoldService({
   const cloneRepository = async (input: CloneProjectInput): Promise<CloneProjectResult> => {
     const url = (input.url ?? "").trim();
     if (!url) {
-      throw new Error("invalid_github_url");
+      throw codedError("Enter a GitHub repository URL.", "invalid_github_url");
     }
     const repoRef = githubService.parseGitHubRepoFromRemoteUrl(url);
     if (!repoRef) {
-      throw new Error("invalid_github_url");
+      throw codedError("Only GitHub repository URLs are supported.", "invalid_github_url");
     }
 
     const parentDir = (input.parentDir ?? "").trim();
@@ -171,7 +180,7 @@ export function createProjectScaffoldService({
     const rootPath = path.join(parentDir, name);
 
     if (fs.existsSync(rootPath) && isDirectoryNonEmpty(rootPath)) {
-      throw new Error("target_exists");
+      throw codedError("A folder already exists at that path.", "target_exists");
     }
 
     fs.mkdirSync(parentDir, { recursive: true });
@@ -198,10 +207,10 @@ export function createProjectScaffoldService({
       throw wrapped;
     }
 
-    const tokenPrefix = token.slice(0, 8);
+    const tokenHash = hashToken(token);
     const now = Date.now();
     let repos: MyGitHubRepoSummary[];
-    if (cachedRepos && cachedRepos.tokenPrefix === tokenPrefix && cachedRepos.expiresAt > now) {
+    if (cachedRepos && cachedRepos.tokenHash === tokenHash && cachedRepos.expiresAt > now) {
       repos = cachedRepos.repos;
     } else {
       const collected: MyGitHubRepoSummary[] = [];
@@ -241,7 +250,7 @@ export function createProjectScaffoldService({
         if (items.length < perPage) break;
       }
       repos = collected;
-      cachedRepos = { tokenPrefix, expiresAt: now + REPO_LIST_CACHE_TTL_MS, repos };
+      cachedRepos = { tokenHash, expiresAt: now + REPO_LIST_CACHE_TTL_MS, repos };
     }
 
     const search = (input.search ?? "").trim().toLowerCase();

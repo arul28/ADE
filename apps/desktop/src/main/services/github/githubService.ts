@@ -692,11 +692,24 @@ export function createGithubService({
       isPrivate: args.isPrivate,
     });
 
+    // After createRepository succeeds, the GitHub repo exists. If we then
+    // fail to add the local origin or push to it, we must remove the local
+    // origin we may have added so that a retry isn't blocked by the
+    // remote_already_exists guard at the top of this function.
+    const cleanupLocalOrigin = async (): Promise<void> => {
+      try {
+        await runGit(["remote", "remove", "origin"], { cwd: projectRoot, timeoutMs: 8_000 });
+      } catch {
+        // best-effort
+      }
+    };
+
     const remoteAddRes = await runGit(["remote", "add", "origin", created.cloneUrl], {
       cwd: projectRoot,
       timeoutMs: 8_000,
     });
     if (remoteAddRes.exitCode !== 0) {
+      await cleanupLocalOrigin();
       throw new Error(`Failed to add origin remote: ${remoteAddRes.stderr.trim() || `exit ${remoteAddRes.exitCode}`}`);
     }
 
@@ -705,6 +718,7 @@ export function createGithubService({
     if (headRes.exitCode === 0) {
       const pushRes = await runGit(["push", "-u", "origin", "HEAD"], { cwd: projectRoot, timeoutMs: 5 * 60_000 });
       if (pushRes.exitCode !== 0) {
+        await cleanupLocalOrigin();
         throw new Error(`Failed to push to origin: ${pushRes.stderr.trim() || `exit ${pushRes.exitCode}`}`);
       }
       resultState = "pushed";

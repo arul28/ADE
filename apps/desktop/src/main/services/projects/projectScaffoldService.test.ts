@@ -206,9 +206,14 @@ describe("createLocalProject", () => {
       githubService: makeGithubServiceStub(),
     });
 
-    await expect(
-      service.createLocalProject({ name: "collision", parentDir }),
-    ).rejects.toThrow("target_exists");
+    let caught: any;
+    try {
+      await service.createLocalProject({ name: "collision", parentDir });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught.code).toBe("target_exists");
   });
 
   it("allows reusing an empty existing directory as the target", async () => {
@@ -242,9 +247,14 @@ describe("cloneRepository", () => {
       }),
     });
 
-    await expect(
-      service.cloneRepository({ url: "https://gitlab.com/foo/bar.git", parentDir }),
-    ).rejects.toThrow("invalid_github_url");
+    let caught: any;
+    try {
+      await service.cloneRepository({ url: "https://gitlab.com/foo/bar.git", parentDir });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught.code).toBe("invalid_github_url");
   });
 
   it("rejects empty URLs", async () => {
@@ -254,9 +264,14 @@ describe("cloneRepository", () => {
       githubService: makeGithubServiceStub(),
     });
 
-    await expect(
-      service.cloneRepository({ url: "", parentDir }),
-    ).rejects.toThrow("invalid_github_url");
+    let caught: any;
+    try {
+      await service.cloneRepository({ url: "", parentDir });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught.code).toBe("invalid_github_url");
   });
 
   it("invokes git clone with the URL and target path, deriving name from the URL", async () => {
@@ -305,9 +320,14 @@ describe("cloneRepository", () => {
       githubService: makeGithubServiceStub(),
     });
 
-    await expect(
-      service.cloneRepository({ url: "https://github.com/octocat/Hello-World", parentDir }),
-    ).rejects.toThrow("target_exists");
+    let caught: any;
+    try {
+      await service.cloneRepository({ url: "https://github.com/octocat/Hello-World", parentDir });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught.code).toBe("target_exists");
   });
 
   it("surfaces git clone failures with stderr", async () => {
@@ -434,6 +454,40 @@ describe("listMyGitHubRepos", () => {
     await service.listMyGitHubRepos({});
 
     expect(apiRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it("invalidates the cache when the token changes (fine-grained PATs share the same prefix)", async () => {
+    const apiRequest = vi
+      .fn()
+      .mockResolvedValueOnce({
+        data: [
+          { owner: { login: "alice" }, name: "first", full_name: "alice/first", private: false, pushed_at: null, default_branch: "main", html_url: "", clone_url: "", ssh_url: "" },
+        ],
+        response: null,
+      })
+      .mockResolvedValueOnce({
+        data: [
+          { owner: { login: "bob" }, name: "second", full_name: "bob/second", private: false, pushed_at: null, default_branch: "main", html_url: "", clone_url: "", ssh_url: "" },
+        ],
+        response: null,
+      });
+
+    const getTokenOrThrow = vi
+      .fn<[], string>()
+      .mockReturnValueOnce("github_pat_AAAAAAAA_one")
+      .mockReturnValueOnce("github_pat_BBBBBBBB_two");
+
+    const service = createProjectScaffoldService({
+      logger: makeLogger(),
+      githubService: makeGithubServiceStub({ apiRequest, getTokenOrThrow }),
+    });
+
+    const first = await service.listMyGitHubRepos({});
+    const second = await service.listMyGitHubRepos({});
+
+    expect(apiRequest).toHaveBeenCalledTimes(2);
+    expect(first.repos.map((r) => r.fullName)).toEqual(["alice/first"]);
+    expect(second.repos.map((r) => r.fullName)).toEqual(["bob/second"]);
   });
 
   it("stops paginating after 5 pages even if every page is full", async () => {

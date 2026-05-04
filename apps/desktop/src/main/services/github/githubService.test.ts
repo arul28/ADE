@@ -760,7 +760,8 @@ describe("githubService.publishCurrentProject", () => {
       .mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "" })
       .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" })
       .mockResolvedValueOnce({ exitCode: 0, stdout: "abc\n", stderr: "" })
-      .mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "Authentication failed" });
+      .mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "Authentication failed" })
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" }); // best-effort remote remove
 
     mockFetch.mockResolvedValueOnce(
       jsonResponse(201, {
@@ -774,5 +775,53 @@ describe("githubService.publishCurrentProject", () => {
     await expect(
       makeService().publishCurrentProject({ name: "proj", isPrivate: true }),
     ).rejects.toThrow(/authentication failed/i);
+  });
+
+  it("removes the local origin when push fails so retry isn't blocked by remote_already_exists", async () => {
+    runGitMock
+      .mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "" }) // get-url origin
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" }) // remote add origin
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "abc\n", stderr: "" }) // rev-parse HEAD
+      .mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "fatal: auth" }) // push fails
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" }); // remote remove origin
+
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse(201, {
+        clone_url: "https://github.com/alice/proj.git",
+        ssh_url: "git@github.com:alice/proj.git",
+        html_url: "https://github.com/alice/proj",
+        default_branch: "main",
+      }),
+    );
+
+    await expect(
+      makeService().publishCurrentProject({ name: "proj", isPrivate: true }),
+    ).rejects.toThrow();
+
+    const gitCalls = runGitMock.mock.calls.map((c) => c[0]);
+    expect(gitCalls).toContainEqual(["remote", "remove", "origin"]);
+  });
+
+  it("removes the local origin when remote add fails after createRepository succeeded", async () => {
+    runGitMock
+      .mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "" }) // get-url origin
+      .mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "fatal: cannot lock" }) // remote add fails
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" }); // remote remove origin
+
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse(201, {
+        clone_url: "https://github.com/alice/proj.git",
+        ssh_url: "git@github.com:alice/proj.git",
+        html_url: "https://github.com/alice/proj",
+        default_branch: "main",
+      }),
+    );
+
+    await expect(
+      makeService().publishCurrentProject({ name: "proj", isPrivate: true }),
+    ).rejects.toThrow(/Failed to add origin remote/);
+
+    const gitCalls = runGitMock.mock.calls.map((c) => c[0]);
+    expect(gitCalls).toContainEqual(["remote", "remove", "origin"]);
   });
 });
