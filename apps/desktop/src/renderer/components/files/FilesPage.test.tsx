@@ -406,6 +406,29 @@ describe("FilesPage", () => {
     expect(screen.queryByTestId("mock-monaco-editor")).toBeNull();
   });
 
+  it("does not start Monaco for omitted oversized file payloads", async () => {
+    fileReadOverrides["dist/large.bundle.js"] = {
+      content: "",
+      encoding: "utf-8",
+      size: 1024 * 1024 + 1,
+      languageId: "javascript",
+      isBinary: true,
+      previewKind: "binary",
+      mimeType: null,
+      contentOmitted: true,
+      omittedReason: "too_large",
+    };
+
+    renderFilesPage({
+      openFilePath: "dist/large.bundle.js",
+      preferPrimaryWorkspace: true,
+    });
+
+    expect(await screen.findByText(/PREVIEW UNAVAILABLE/i)).toBeTruthy();
+    expect(screen.getByText(/too large to display inline/i)).toBeTruthy();
+    expect(screen.queryByTestId("mock-monaco-editor")).toBeNull();
+  });
+
   it("remaps clean open tabs when files are renamed", async () => {
     renderFilesPage({
       openFilePath: "src/index.ts",

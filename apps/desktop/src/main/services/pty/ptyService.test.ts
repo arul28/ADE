@@ -1750,6 +1750,39 @@ describe("ptyService", () => {
         vi.useRealTimers();
       }
     });
+
+    it("stops scanning output for a late-printed resume command after 60 seconds and ignores matches in stale buffers", async () => {
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(new Date("2026-04-29T00:00:00.000Z"));
+        mocks.defaultResumeCommandForTool.mockReturnValue("claude --resume" as any);
+        const { service, mockPty, sessionService } = createHarness();
+        const { sessionId } = await service.create({
+          laneId: "lane-1",
+          title: "Claude CLI",
+          cols: 80,
+          rows: 24,
+          toolType: "claude",
+        });
+
+        mockPty._emitter.emit("data", "boot output\n");
+        expect(mocks.extractResumeCommandFromOutput).toHaveBeenCalled();
+        mocks.extractResumeCommandFromOutput.mockClear();
+        (sessionService.setResumeCommand as ReturnType<typeof vi.fn>).mockClear();
+
+        vi.setSystemTime(new Date("2026-04-29T00:01:00.500Z"));
+        mocks.extractResumeCommandFromOutput.mockReturnValue("claude --resume claude-late-session" as any);
+        mockPty._emitter.emit("data", "claude --resume claude-late-session\n");
+
+        expect(mocks.extractResumeCommandFromOutput).not.toHaveBeenCalled();
+        expect(sessionService.setResumeCommand).not.toHaveBeenCalledWith(
+          sessionId,
+          "claude --resume claude-late-session",
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   describe("ensureResumeTargets", () => {

@@ -31,6 +31,7 @@ import {
   type ComputerUseOwnerSnapshot,
   type AppControlContextItem,
   type IosElementContextItem,
+  type IosSimulatorDrawerMode,
   type AiSettingsStatus,
   type TerminalToolType,
 } from "../../../shared/types";
@@ -1620,6 +1621,7 @@ export function AgentChatPane({
   const [iosSimulatorOpen, setIosSimulatorOpen] = useState(
     () => readChatCompanionUiState(initialCompanionStateKey).iosSimulatorOpen,
   );
+  const [iosSimulatorDrawerModeRequest, setIosSimulatorDrawerModeRequest] = useState<{ mode: IosSimulatorDrawerMode; nonce: number } | null>(null);
   const [iosSimulatorAvailable, setIosSimulatorAvailable] = useState(isLikelyMacRenderer);
   const [cursorCloudPaneOpen, setCursorCloudPaneOpen] = useState(false);
   const [cursorCloudLaunchModeOpen, setCursorCloudLaunchModeOpen] = useState(false);
@@ -3159,6 +3161,39 @@ export function AgentChatPane({
   useEffect(() => {
     selectedSessionIdRef.current = selectedSessionId;
   }, [selectedSessionId]);
+
+  useEffect(() => {
+    const api = window.ade?.iosSimulator;
+    if (!api?.onEvent || hideLaneToolDrawers) return undefined;
+    return api.onEvent((event) => {
+      if (event.type !== "drawer-open-requested") return;
+      const eventChatSessionId = typeof event.chatSessionId === "string" && event.chatSessionId.trim().length
+        ? event.chatSessionId.trim()
+        : null;
+      const eventLaneId = typeof event.laneId === "string" && event.laneId.trim().length
+        ? event.laneId.trim()
+        : null;
+      if (eventChatSessionId && eventChatSessionId !== selectedSessionIdRef.current) return;
+      if (eventLaneId && laneId && eventLaneId !== laneId) return;
+      if (!eventChatSessionId && !eventLaneId && !isTileActive) return;
+      setIosSimulatorAvailable(true);
+      setProofDrawerOpen(false);
+      setAppControlOpen(false);
+      setCursorCloudPaneOpen(false);
+      setIosSimulatorOpen(true);
+      setIosSimulatorDrawerModeRequest({ mode: event.mode, nonce: Date.now() });
+    });
+  }, [hideLaneToolDrawers, isTileActive, laneId]);
+
+  useEffect(() => {
+    if (!iosSimulatorOpen && iosSimulatorDrawerModeRequest) {
+      setIosSimulatorDrawerModeRequest(null);
+    }
+  }, [iosSimulatorOpen, iosSimulatorDrawerModeRequest]);
+
+  useEffect(() => {
+    setIosSimulatorDrawerModeRequest(null);
+  }, [selectedSessionId, laneId]);
 
   useEffect(() => {
     const next = new Set<string>();
@@ -4742,6 +4777,7 @@ export function AgentChatPane({
           onAddAttachment={addAttachment}
           onInsertDraft={insertComposerDraft}
           onAddContext={addIosElementContext}
+          drawerModeRequest={iosSimulatorDrawerModeRequest}
         />
       </div>
     </>

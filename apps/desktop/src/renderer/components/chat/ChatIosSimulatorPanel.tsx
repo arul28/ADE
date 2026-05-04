@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type PointerEvent } from "react";
-import { ArrowClockwise, ArrowSquareOut, BracketsCurly, CheckCircle, Circle, Copy, CursorClick, Desktop, DeviceMobile, FileCode, ImageSquare, Lightning, Lock, Play, Power, Selection, SpinnerGap, TextT, WarningCircle, Wrench } from "@phosphor-icons/react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent, type PointerEvent } from "react";
+import { ArrowClockwise, ArrowSquareOut, ArrowsInSimple, ArrowsOutSimple, BracketsCurly, CheckCircle, Circle, Copy, CursorClick, Desktop, DeviceMobile, FileCode, ImageSquare, Lightning, Lock, MagnifyingGlassMinus, MagnifyingGlassPlus, Play, Power, Selection, SpinnerGap, TextT, WarningCircle, Wrench } from "@phosphor-icons/react";
 import type {
   AgentChatFileRef,
   IosElementContextItem,
@@ -11,6 +11,7 @@ import type {
   IosSimulatorDevice,
   IosSimulatorLaunchProgress,
   IosSimulatorLaunchTarget,
+  IosSimulatorDrawerMode,
   IosSimulatorStreamStatus,
   IosSimulatorStatus,
   IosSimulatorToolStatus,
@@ -66,6 +67,7 @@ type ChatIosSimulatorPanelProps = {
   onAddContext?: (item: IosElementContextItem) => void;
   onAddAttachment?: (attachment: AgentChatFileRef) => void;
   onInsertDraft?: (text: string) => void;
+  drawerModeRequest?: { mode: IosSimulatorDrawerMode; nonce: number } | null;
 };
 
 type RenderedMediaBounds = {
@@ -155,9 +157,13 @@ type ToolDescriptor = {
 const LIVE_STREAM_FALLBACK_WINDOW_MS = 30_000;
 const LIVE_STREAM_FAILURES_BEFORE_FALLBACK = 2;
 const LIVE_STREAM_FAILURE_RESET_AFTER_MS = 10_000;
+const LIVE_MANAGED_FALLBACK_WATCHDOG_MS = 2_500;
 const LIVE_CANVAS_MAX_DEVICE_PIXEL_RATIO = 2;
 const LIVE_RECONNECT_MESSAGE = "Live simulator stream paused. Reconnecting...";
 const LIVE_FALLBACK_MESSAGE = "Live stream had trouble reconnecting. Switching to a fallback view...";
+const MEDIA_ZOOM_MIN = 1;
+const MEDIA_ZOOM_MAX = 2;
+const MEDIA_ZOOM_STEP = 0.25;
 
 const TOOL_DESCRIPTORS: Record<ToolKey, ToolDescriptor> = {
   xcrun: {
@@ -879,6 +885,7 @@ export function ChatIosSimulatorPanel({
   onAddContext,
   onAddAttachment,
   onInsertDraft,
+  drawerModeRequest,
 }: ChatIosSimulatorPanelProps) {
   const [status, setStatus] = useState<IosSimulatorStatus | null>(null);
   const [devices, setDevices] = useState<IosSimulatorDevice[]>([]);
@@ -913,6 +920,8 @@ export function ChatIosSimulatorPanel({
   const [previewRefreshing, setPreviewRefreshing] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [typedText, setTypedText] = useState("");
+  const [mediaExpanded, setMediaExpanded] = useState(false);
+  const [mediaZoom, setMediaZoom] = useState(MEDIA_ZOOM_MIN);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -940,6 +949,14 @@ export function ChatIosSimulatorPanel({
     return status?.activeDevice ?? devices[0] ?? null;
   }, [devices, selectedDeviceUdid, status?.activeDevice]);
   const activeSession = status?.activeSession ?? null;
+  const discoveredDeviceBackedStreamActive = Boolean(
+    activeDevice
+    && !activeSession
+    && streamStatus?.running
+    && streamStatus.streamUrl
+    && streamStatus.deviceUdid === activeDevice.udid
+    && streamStatus.backend !== "simulator-window-capture",
+  );
   const simulatorWindowModeEnabled = Boolean(activeSession?.id && simulatorWindowSessionId === activeSession.id);
 
   const visibleLaunchTargets = useMemo(() => {
@@ -1012,6 +1029,13 @@ export function ChatIosSimulatorPanel({
       ? previewCaptureFrame(simulatorCaptureSelection, mediaWidth, mediaHeight)
       : null
   ), [mediaHeight, mediaWidth, simulatorCaptureSelection]);
+  const mediaZoomStyle: CSSProperties | undefined = mediaZoom > MEDIA_ZOOM_MIN
+    ? {
+        width: `${Math.round(mediaZoom * 100)}%`,
+        height: `${Math.round(mediaZoom * 100)}%`,
+      }
+    : undefined;
+  const mediaZoomLabel = `${Math.round(mediaZoom * 100)}%`;
 
   const toolByName = useMemo(() => new Map((status?.tools ?? []).map((tool) => [tool.name, tool])), [status?.tools]);
   const iosurfaceInputAvailable = toolByName.get("iosurface_indigo")?.available ?? false;
@@ -1138,18 +1162,66 @@ export function ChatIosSimulatorPanel({
       : "Switching back to the headless simulator stream...");
   }, [activeSession, ownedByOtherChat, simulatorWindowSessionId]);
 
+  const changeMediaZoom = useCallback((delta: number) => {
+    setMediaZoom((current) => {
+      const next = Math.round((current + delta) / MEDIA_ZOOM_STEP) * MEDIA_ZOOM_STEP;
+      return Math.max(MEDIA_ZOOM_MIN, Math.min(MEDIA_ZOOM_MAX, Number(next.toFixed(2))));
+    });
+  }, []);
+
+  const resetMediaZoom = useCallback(() => {
+    setMediaZoom(MEDIA_ZOOM_MIN);
+  }, []);
+
   const launchRef = useRef<(() => Promise<void>) | null>(null);
 
+  useEffect(() => {
+    if (!drawerModeRequest) return;
+    setMode(drawerModeRequest.mode);
+  }, [drawerModeRequest]);
+
+  const syncExistingStreamStatus = useCallback((nextStreamStatus: IosSimulatorStreamStatus | null) => {
+    if (!nextStreamStatus) return;
+    setStreamStatus(nextStreamStatus);
+    if (nextStreamStatus.backend) lastResolvedStreamBackendRef.current = nextStreamStatus.backend;
+    if (!nextStreamStatus.running || !nextStreamStatus.streamUrl) return;
+    setLiveVisual((current) => {
+      const status = nextStreamStatus.lastFrameAt
+        ? "active"
+        : current?.kind === "mjpeg" && current.status === "reconnecting"
+          ? "reconnecting"
+          : "starting";
+      if (current?.kind === "mjpeg" && current.url === nextStreamStatus.streamUrl) {
+        return {
+          ...current,
+          status,
+          error: null,
+        };
+      }
+      if (current?.kind === "window") return current;
+      return {
+        kind: "mjpeg",
+        status,
+        url: nextStreamStatus.streamUrl,
+        width: current?.kind === "mjpeg" ? current.width : null,
+        height: current?.kind === "mjpeg" ? current.height : null,
+        error: null,
+      };
+    });
+  }, []);
+
   const refreshStatus = useCallback(async () => {
-    const [nextStatus, nextDevices] = await Promise.all([
+    const [nextStatus, nextDevices, nextStreamStatus] = await Promise.all([
       window.ade.iosSimulator.getStatus(),
       window.ade.iosSimulator.listDevices(),
+      window.ade.iosSimulator.getStreamStatus().catch(() => null),
     ]);
     setStatus(nextStatus);
     setDevices(nextDevices);
+    syncExistingStreamStatus(nextStreamStatus);
     const nextDeviceUdid = nextStatus.activeDevice?.udid ?? nextDevices[0]?.udid ?? null;
     setSelectedDeviceUdid((current) => current ?? nextDeviceUdid);
-  }, []);
+  }, [syncExistingStreamStatus]);
 
   const shutdownSimulator = useCallback(async (force = false) => {
     try {
@@ -1396,6 +1468,26 @@ export function ChatIosSimulatorPanel({
     }));
   }, [refreshStatus, startWindowCaptureVisual]);
 
+  const retryAdeStream = useCallback(() => {
+    if (!activeDevice || !activeSession || activeSession.deviceUdid !== activeDevice.udid || ownedByOtherChat) return;
+    liveDeviceStreamFailureTimestampsRef.current = [];
+    setSimulatorWindowSessionId(null);
+    setMessage("Retrying ADE simulator stream...");
+    void (async () => {
+      try {
+        stopRendererLiveVisual({ preserveVisual: true });
+        await window.ade.iosSimulator.stopStream().catch(() => {});
+        await startDeviceBackedLiveVisual(activeDevice, { backend: "auto", preserveVisual: true });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setLiveVisual((current) => current?.kind === "mjpeg"
+          ? { ...current, status: "error", url: null, error: message }
+          : current);
+        setMessage(`ADE simulator stream failed. ${message}`);
+      }
+    })();
+  }, [activeDevice, activeSession, ownedByOtherChat, startDeviceBackedLiveVisual, stopRendererLiveVisual]);
+
   useEffect(() => {
     const video = videoRef.current;
     const stream = liveStreamRef.current;
@@ -1456,13 +1548,13 @@ export function ChatIosSimulatorPanel({
 
   const chooseDeviceBackedFallbackBackend = useCallback((
     currentBackend: IosSimulatorStreamStatus["backend"],
-  ): DeviceBackedStreamRequestBackend | null => {
+  ): NonNullable<IosSimulatorStreamStatus["backend"]> | null => {
     if (currentBackend === "iosurface-indigo") return idbInputAvailable ? "idb-mjpeg" : "simctl-screenshot-poll";
     if (currentBackend === "idb-mjpeg" || currentBackend === "idb-h264-ffmpeg-mjpeg") return "simctl-screenshot-poll";
     return null;
   }, [idbInputAvailable]);
 
-  const scheduleDeviceBackedStreamRestart = useCallback((reason: string) => {
+  const scheduleDeviceBackedStreamRestart = useCallback((reason: string, options: { forceFallback?: boolean } = {}) => {
     if (
       mode !== "interact"
       || !activeDevice
@@ -1482,10 +1574,10 @@ export function ChatIosSimulatorPanel({
     ];
     liveDeviceStreamFailureTimestampsRef.current = recentFailures;
     const currentBackend = streamStatus?.backend ?? lastResolvedStreamBackendRef.current;
-    const fallbackBackend = recentFailures.length >= LIVE_STREAM_FAILURES_BEFORE_FALLBACK
+    const fallbackBackend = options.forceFallback || recentFailures.length >= LIVE_STREAM_FAILURES_BEFORE_FALLBACK
       ? chooseDeviceBackedFallbackBackend(currentBackend)
       : null;
-    const restartBackend = fallbackBackend ?? "auto";
+    const restartBackend: DeviceBackedStreamRequestBackend = fallbackBackend ?? "auto";
     const reconnectMessage = fallbackBackend ? LIVE_FALLBACK_MESSAGE : LIVE_RECONNECT_MESSAGE;
     setMessage(reconnectMessage);
     setLiveVisual((current) => current?.kind === "mjpeg"
@@ -1493,7 +1585,9 @@ export function ChatIosSimulatorPanel({
           ...current,
           status: "reconnecting",
           url: null,
-          error: fallbackBackend ? `${reason} Trying a fallback view now.` : null,
+          error: fallbackBackend
+            ? `${reason} Trying ${streamBackendLabel(fallbackBackend)} now.`
+            : reason,
         }
       : current);
     liveRestartTimerRef.current = window.setTimeout(() => {
@@ -1779,6 +1873,33 @@ export function ChatIosSimulatorPanel({
     if (
       mode !== "interact"
       || liveVisualKind !== "mjpeg"
+      || !streamStatus?.lastError
+      || streamStatus.running
+      || streamStatus.streamUrl
+      || (!streamStatus.degradationReason && !streamStatus.fallbackReason)
+    ) {
+      return;
+    }
+    const reason = streamStatus.degradationReason ?? streamStatus.fallbackReason ?? streamStatus.lastError;
+    const timer = window.setTimeout(() => {
+      scheduleDeviceBackedStreamRestart(`Fallback stream did not recover. ${reason}`, { forceFallback: true });
+    }, LIVE_MANAGED_FALLBACK_WATCHDOG_MS);
+    return () => window.clearTimeout(timer);
+  }, [
+    liveVisualKind,
+    mode,
+    scheduleDeviceBackedStreamRestart,
+    streamStatus?.degradationReason,
+    streamStatus?.fallbackReason,
+    streamStatus?.lastError,
+    streamStatus?.running,
+    streamStatus?.streamUrl,
+  ]);
+
+  useEffect(() => {
+    if (
+      mode !== "interact"
+      || liveVisualKind !== "mjpeg"
       || !streamStatus?.running
       || streamStatus.backend === "simulator-window-capture"
     ) {
@@ -1850,13 +1971,23 @@ export function ChatIosSimulatorPanel({
   }, [activeDevice, activeSession, mode, refreshSnapshot, status?.supported]);
 
   useEffect(() => {
-    if (
-      mode !== "interact"
-      || !activeDevice
-      || !status?.supported
-      || !activeSession
-      || activeSession.deviceUdid !== activeDevice.udid
-    ) {
+    if (mode !== "interact") {
+      liveDeviceStreamFailureTimestampsRef.current = [];
+      lastResolvedStreamBackendRef.current = null;
+      stopRendererLiveVisual();
+      void window.ade.iosSimulator.stopStream().catch(() => {});
+      return;
+    }
+    if (!status) return;
+    if (!activeDevice || !status.supported) {
+      liveDeviceStreamFailureTimestampsRef.current = [];
+      lastResolvedStreamBackendRef.current = null;
+      stopRendererLiveVisual();
+      void window.ade.iosSimulator.stopStream().catch(() => {});
+      return;
+    }
+    if (!activeSession || activeSession.deviceUdid !== activeDevice.udid) {
+      if (discoveredDeviceBackedStreamActive) return;
       liveDeviceStreamFailureTimestampsRef.current = [];
       lastResolvedStreamBackendRef.current = null;
       stopRendererLiveVisual();
@@ -1872,6 +2003,7 @@ export function ChatIosSimulatorPanel({
         lastResolvedStreamBackendRef.current = null;
         stopRendererLiveVisual();
         if (useSimulatorWindow) {
+          await window.ade.iosSimulator.stopStream().catch(() => {});
           await startWindowCaptureVisual(device);
         } else {
           await startDeviceBackedLiveVisual(device);
@@ -1900,9 +2032,8 @@ export function ChatIosSimulatorPanel({
       liveDeviceStreamFailureTimestampsRef.current = [];
       lastResolvedStreamBackendRef.current = null;
       stopRendererLiveVisual();
-      void window.ade.iosSimulator.stopStream().catch(() => {});
     };
-  }, [activeDevice, activeSession, mode, simulatorWindowModeEnabled, startDeviceBackedLiveVisual, startWindowCaptureVisual, status?.supported, stopRendererLiveVisual]);
+  }, [activeDevice, activeSession, discoveredDeviceBackedStreamActive, mode, simulatorWindowModeEnabled, startDeviceBackedLiveVisual, startWindowCaptureVisual, status, stopRendererLiveVisual]);
 
   useEffect(() => {
     if (mode !== "interact" || liveVisualKind !== "window" || !activeSession) {
@@ -2085,6 +2216,11 @@ export function ChatIosSimulatorPanel({
     if (!image) return;
     setBounds(measureObjectContain(image, mediaWidth, mediaHeight));
   }, [mediaHeight, mediaWidth]);
+
+  useEffect(() => {
+    if (mode !== "inspect") return;
+    updateInspectBounds();
+  }, [mediaZoom, mode, updateInspectBounds]);
 
   const handleInspectPointerMove = useCallback((event: PointerEvent<HTMLDivElement>) => {
     if (simulatorCaptureActive) return;
@@ -2754,6 +2890,13 @@ export function ChatIosSimulatorPanel({
   const canShowSnapshot = mode === "inspect" && Boolean(snapshotImage);
   const hasActiveSession = Boolean(activeSession);
   const interactionDisabled = ownedByOtherChat || showSetupChecklist;
+  const canRetryDeviceBackedStream = mode === "interact"
+    && liveVisualKind === "mjpeg"
+    && hasActiveSession
+    && !ownedByOtherChat
+    && Boolean(activeDevice);
+  const showStreamRecoveryActions = canRetryDeviceBackedStream
+    && (liveVisual?.status === "reconnecting" || liveVisual?.status === "error");
   const inspectOverlayElements = useMemo(
     () => (snapshot ? visibleInspectElements(snapshot, selectedElement, hoveredElement) : []),
     [hoveredElement, selectedElement, snapshot],
@@ -2771,6 +2914,93 @@ export function ChatIosSimulatorPanel({
   } else {
     projectWindowValue = "not connected";
   }
+  const mediaSurfaceLabel = activeSurface === "preview" ? "preview" : "simulator";
+  const mediaViewToolbar = (
+    <div
+      className="pointer-events-auto absolute bottom-3 right-3 z-20 flex max-w-[calc(100%-1.5rem)] flex-wrap items-center justify-end gap-1 rounded-md border border-white/[0.08] bg-black/62 p-1 shadow-lg backdrop-blur"
+      onPointerDown={(event) => event.stopPropagation()}
+      onPointerUp={(event) => event.stopPropagation()}
+    >
+      {showStreamRecoveryActions ? (
+        <>
+          <button
+            type="button"
+            className="inline-flex h-7 items-center gap-1 rounded px-2 font-sans text-[10px] font-medium text-cyan-50/88 transition-colors hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-45"
+            onClick={(event) => {
+              event.stopPropagation();
+              retryAdeStream();
+            }}
+            disabled={!canRetryDeviceBackedStream}
+          >
+            <ArrowClockwise size={11} />
+            ADE stream
+          </button>
+          <button
+            type="button"
+            className="inline-flex h-7 items-center gap-1 rounded px-2 font-sans text-[10px] font-medium text-cyan-50/88 transition-colors hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-45"
+            onClick={(event) => {
+              event.stopPropagation();
+              if (!simulatorWindowModeEnabled) toggleSimulatorWindowMode();
+            }}
+            disabled={!activeSession || ownedByOtherChat || simulatorWindowModeEnabled}
+          >
+            <Desktop size={11} />
+            iOS window
+          </button>
+        </>
+      ) : null}
+      <button
+        type="button"
+        className="inline-flex h-7 w-7 items-center justify-center rounded text-muted-fg/68 transition-colors hover:bg-white/[0.06] hover:text-fg/90"
+        onClick={(event) => {
+          event.stopPropagation();
+          setMediaExpanded((current) => !current);
+        }}
+        aria-label={mediaExpanded ? `Exit expanded ${mediaSurfaceLabel} view` : `Expand ${mediaSurfaceLabel} view`}
+        title={mediaExpanded ? `Exit expanded ${mediaSurfaceLabel} view` : `Expand ${mediaSurfaceLabel} view`}
+      >
+        {mediaExpanded ? <ArrowsInSimple size={13} /> : <ArrowsOutSimple size={13} />}
+      </button>
+      <button
+        type="button"
+        className="inline-flex h-7 w-7 items-center justify-center rounded text-muted-fg/68 transition-colors hover:bg-white/[0.06] hover:text-fg/90 disabled:cursor-not-allowed disabled:opacity-35"
+        onClick={(event) => {
+          event.stopPropagation();
+          changeMediaZoom(-MEDIA_ZOOM_STEP);
+        }}
+        disabled={mediaZoom <= MEDIA_ZOOM_MIN}
+        aria-label={`Zoom out ${mediaSurfaceLabel} view`}
+        title={`Zoom out ${mediaSurfaceLabel} view`}
+      >
+        <MagnifyingGlassMinus size={13} />
+      </button>
+      <button
+        type="button"
+        className="inline-flex h-7 min-w-10 items-center justify-center rounded px-1 font-mono text-[10px] font-medium text-muted-fg/72 transition-colors hover:bg-white/[0.06] hover:text-fg/90"
+        onClick={(event) => {
+          event.stopPropagation();
+          resetMediaZoom();
+        }}
+        aria-label={`Reset ${mediaSurfaceLabel} zoom`}
+        title={`Reset ${mediaSurfaceLabel} zoom`}
+      >
+        {mediaZoomLabel}
+      </button>
+      <button
+        type="button"
+        className="inline-flex h-7 w-7 items-center justify-center rounded text-muted-fg/68 transition-colors hover:bg-white/[0.06] hover:text-fg/90 disabled:cursor-not-allowed disabled:opacity-35"
+        onClick={(event) => {
+          event.stopPropagation();
+          changeMediaZoom(MEDIA_ZOOM_STEP);
+        }}
+        disabled={mediaZoom >= MEDIA_ZOOM_MAX}
+        aria-label={`Zoom in ${mediaSurfaceLabel} view`}
+        title={`Zoom in ${mediaSurfaceLabel} view`}
+      >
+        <MagnifyingGlassPlus size={13} />
+      </button>
+    </div>
+  );
 
   const handleStopSimulator = useCallback(() => {
     if (typeof window === "undefined") return;
@@ -2780,8 +3010,8 @@ export function ChatIosSimulatorPanel({
   }, [shutdownSimulator]);
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-2">
-      <div className="space-y-2 shrink-0">
+    <div className={cn("flex h-full min-h-0 flex-col", mediaExpanded ? "gap-0" : "gap-2")}>
+      <div className={cn("space-y-2 shrink-0", mediaExpanded ? "hidden" : null)}>
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-white/[0.07] bg-white/[0.025] px-2 py-1.5">
           <div className="flex rounded-md border border-white/[0.07] bg-black/15 p-0.5">
             <button
@@ -3012,7 +3242,7 @@ export function ChatIosSimulatorPanel({
         ) : null}
       </div>
 
-      {ownedByOtherChat ? (
+      {!mediaExpanded && ownedByOtherChat ? (
         <div className="shrink-0 rounded-md border border-amber-400/20 bg-amber-500/8 px-3 py-2.5">
           <div className="flex items-start gap-2">
             <Lock size={14} weight="fill" className="mt-0.5 shrink-0 text-amber-200/80" />
@@ -3036,7 +3266,7 @@ export function ChatIosSimulatorPanel({
         </div>
       ) : null}
 
-      {showBestPerformanceChecklist ? (
+      {!mediaExpanded && showBestPerformanceChecklist ? (
         <details className="group shrink-0 rounded-md border border-white/[0.07] bg-white/[0.02] px-2.5 py-1.5 font-sans text-[10px] text-muted-fg/60">
           <summary className="flex cursor-pointer list-none items-center gap-2 outline-none [&::-webkit-details-marker]:hidden">
             <Lightning size={12} className={bestPerformanceReady ? "text-emerald-200/75" : "text-amber-200/75"} />
@@ -3168,24 +3398,28 @@ export function ChatIosSimulatorPanel({
                 onPointerUp={finishPreviewCapture}
                 onPointerCancel={cancelPreviewCapture}
               >
-                <img
-                  ref={imageRef}
-                  src={previewImage.dataUrl}
-                  alt={previewImage.alt}
-                  className="h-full w-full object-contain"
-                  draggable={false}
-                />
-                {previewCaptureActive && previewCaptureSelection && activePreviewCaptureFrame ? (
-                  <div
-                    className="pointer-events-none absolute rounded-[3px] border border-cyan-200/75 bg-cyan-300/12 shadow-[0_0_0_9999px_rgba(0,0,0,0.28)]"
-                    style={{
-                      left: previewCaptureSelection.bounds.left + (activePreviewCaptureFrame.x * previewCaptureSelection.bounds.scaleX),
-                      top: previewCaptureSelection.bounds.top + (activePreviewCaptureFrame.y * previewCaptureSelection.bounds.scaleY),
-                      width: Math.max(1, activePreviewCaptureFrame.width * previewCaptureSelection.bounds.scaleX),
-                      height: Math.max(1, activePreviewCaptureFrame.height * previewCaptureSelection.bounds.scaleY),
-                    }}
-                  />
-                ) : null}
+                <div className={cn("absolute inset-0", mediaZoom > MEDIA_ZOOM_MIN ? "overflow-auto" : "overflow-hidden")}>
+                  <div className="relative h-full w-full" style={mediaZoomStyle}>
+                    <img
+                      ref={imageRef}
+                      src={previewImage.dataUrl}
+                      alt={previewImage.alt}
+                      className="h-full w-full object-contain"
+                      draggable={false}
+                    />
+                    {previewCaptureActive && previewCaptureSelection && activePreviewCaptureFrame ? (
+                      <div
+                        className="pointer-events-none absolute rounded-[3px] border border-cyan-200/75 bg-cyan-300/12 shadow-[0_0_0_9999px_rgba(0,0,0,0.28)]"
+                        style={{
+                          left: previewCaptureSelection.bounds.left + (activePreviewCaptureFrame.x * previewCaptureSelection.bounds.scaleX),
+                          top: previewCaptureSelection.bounds.top + (activePreviewCaptureFrame.y * previewCaptureSelection.bounds.scaleY),
+                          width: Math.max(1, activePreviewCaptureFrame.width * previewCaptureSelection.bounds.scaleX),
+                          height: Math.max(1, activePreviewCaptureFrame.height * previewCaptureSelection.bounds.scaleY),
+                        }}
+                      />
+                    ) : null}
+                  </div>
+                </div>
                 {previewRefreshing ? (
                   <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/25 text-violet-50/75">
                     <div className="flex items-center gap-2 rounded-md border border-white/[0.07] bg-black/55 px-3 py-2 font-sans text-[11px]">
@@ -3295,6 +3529,7 @@ export function ChatIosSimulatorPanel({
                 </details>
               </div>
             )}
+            {mediaViewToolbar}
           </div>
         ) : showLaunchProgress ? (
           <div className="flex h-full min-h-[300px] flex-col justify-center gap-3 px-5 py-4">
@@ -3377,38 +3612,25 @@ export function ChatIosSimulatorPanel({
               <BracketsCurly size={11} />
               Open in preview
             </button>
-            {liveVisual.kind === "window" ? (
-              <video
-                ref={videoRef}
-                className="h-full w-full object-contain"
-                muted
-                playsInline
-              />
-            ) : liveVisual.url ? (
-              <>
-                <canvas
-                  ref={canvasRef}
-                  className="h-full w-full object-contain"
-                  aria-label="iOS Simulator live stream"
-                />
-                {liveVisualOverlayTitle ? (
-                  <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/24 px-4 text-muted-fg/70">
-                    <div className="flex max-w-[280px] items-center gap-2 rounded-md border border-white/[0.08] bg-black/65 px-3 py-2 shadow-lg backdrop-blur">
-                      {liveVisual.status === "error" ? (
-                        <WarningCircle size={15} className="shrink-0 text-amber-200/80" />
-                      ) : (
-                        <SpinnerGap size={15} className="shrink-0 animate-spin text-cyan-100/80" />
-                      )}
-                      <div className="min-w-0">
-                        <div className="font-sans text-[11px] font-medium text-fg/78">{liveVisualOverlayTitle}</div>
-                        {liveVisualOverlayDetail ? (
-                          <div className="mt-0.5 line-clamp-2 font-sans text-[10px] leading-4 text-muted-fg/60">{liveVisualOverlayDetail}</div>
-                        ) : null}
-                      </div>
-                    </div>
-                  </div>
-                ) : null}
-              </>
+            {liveVisual.kind === "window" || liveVisual.url ? (
+              <div className={cn("absolute inset-0", mediaZoom > MEDIA_ZOOM_MIN ? "overflow-auto" : "overflow-hidden")}>
+                <div className="relative h-full w-full" style={mediaZoomStyle}>
+                  {liveVisual.kind === "window" ? (
+                    <video
+                      ref={videoRef}
+                      className="h-full w-full object-contain"
+                      muted
+                      playsInline
+                    />
+                  ) : (
+                    <canvas
+                      ref={canvasRef}
+                      className="h-full w-full object-contain"
+                      aria-label="iOS Simulator live stream"
+                    />
+                  )}
+                </div>
+              </div>
             ) : (
               <div className="flex h-full min-h-[300px] items-center justify-center px-4 text-muted-fg/55">
                 <div className="flex items-center gap-2 rounded-md border border-white/[0.07] bg-black/35 px-3 py-2">
@@ -3417,6 +3639,24 @@ export function ChatIosSimulatorPanel({
                 </div>
               </div>
             )}
+            {liveVisualOverlayTitle ? (
+              <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-black/24 px-4 text-muted-fg/70">
+                <div className="flex max-w-[280px] items-center gap-2 rounded-md border border-white/[0.08] bg-black/65 px-3 py-2 shadow-lg backdrop-blur">
+                  {liveVisual.status === "error" ? (
+                    <WarningCircle size={15} className="shrink-0 text-amber-200/80" />
+                  ) : (
+                    <SpinnerGap size={15} className="shrink-0 animate-spin text-cyan-100/80" />
+                  )}
+                  <div className="min-w-0">
+                    <div className="font-sans text-[11px] font-medium text-fg/78">{liveVisualOverlayTitle}</div>
+                    {liveVisualOverlayDetail ? (
+                      <div className="mt-0.5 line-clamp-2 font-sans text-[10px] leading-4 text-muted-fg/60">{liveVisualOverlayDetail}</div>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+            ) : null}
+            {mediaViewToolbar}
           </div>
         ) : mode === "inspect" && snapshotRefreshing && !snapshotImage ? (
           <div className="flex h-full min-h-[300px] flex-col items-center justify-center gap-2 text-muted-fg/45">
@@ -3432,14 +3672,6 @@ export function ChatIosSimulatorPanel({
             onPointerUp={simulatorCaptureActive ? finishSimulatorCapture : undefined}
             onPointerCancel={simulatorCaptureActive ? cancelSimulatorCapture : undefined}
           >
-            <img
-              ref={imageRef}
-              src={snapshotImage.dataUrl}
-              alt={snapshotImage.alt}
-              className="h-full w-full object-contain"
-              draggable={false}
-              onLoad={updateInspectBounds}
-            />
             <div
               className="pointer-events-auto absolute left-3 top-3 z-10 flex flex-col items-start gap-1.5"
               onPointerDown={(event) => event.stopPropagation()}
@@ -3520,56 +3752,68 @@ export function ChatIosSimulatorPanel({
               <BracketsCurly size={11} />
               Open in preview
             </button>
-            {mode === "inspect" && bounds && snapshot ? inspectOverlayElements.map((element, index) => {
-              const frame = clampFrame(
-                element.pixelFrame,
-                snapshot.screenshot.width ?? snapshot.screen.width,
-                snapshot.screenshot.height ?? snapshot.screen.height,
-              );
-              const isHovered = hoveredElement?.id === element.id;
-              const isSelected = selectedElement?.id === element.id;
-              return (
-                <div
-                  key={inspectOverlayKeys[index] ?? `${element.id}:${index}`}
-                  className={cn(
-                    "pointer-events-none absolute rounded-[3px] border",
-                    isHovered || isSelected ? sourceTone(element.source) : "border-cyan-200/22 bg-cyan-400/[0.03]",
-                  )}
-                  style={{
-                    left: bounds.left + (frame.x * bounds.scaleX),
-                    top: bounds.top + (frame.y * bounds.scaleY),
-                    width: Math.max(2, frame.width * bounds.scaleX),
-                    height: Math.max(2, frame.height * bounds.scaleY),
-                  }}
+            <div className={cn("absolute inset-0", mediaZoom > MEDIA_ZOOM_MIN ? "overflow-auto" : "overflow-hidden")}>
+              <div className="relative h-full w-full" style={mediaZoomStyle}>
+                <img
+                  ref={imageRef}
+                  src={snapshotImage.dataUrl}
+                  alt={snapshotImage.alt}
+                  className="h-full w-full object-contain"
+                  draggable={false}
+                  onLoad={updateInspectBounds}
                 />
-              );
-            }) : null}
-            {mode === "inspect" && simulatorCaptureActive && simulatorCaptureSelection && activeSimulatorCaptureFrame ? (
-              <div
-                className="pointer-events-none absolute rounded-[3px] border border-amber-200/80 bg-amber-300/12 shadow-[0_0_0_9999px_rgba(0,0,0,0.26)]"
-                style={{
-                  left: simulatorCaptureSelection.bounds.left + (activeSimulatorCaptureFrame.x * simulatorCaptureSelection.bounds.scaleX),
-                  top: simulatorCaptureSelection.bounds.top + (activeSimulatorCaptureFrame.y * simulatorCaptureSelection.bounds.scaleY),
-                  width: Math.max(1, activeSimulatorCaptureFrame.width * simulatorCaptureSelection.bounds.scaleX),
-                  height: Math.max(1, activeSimulatorCaptureFrame.height * simulatorCaptureSelection.bounds.scaleY),
-                }}
-              />
-            ) : null}
-            {mode === "inspect" && bounds && hoveredElement ? (
-              <div
-                className={cn(
-                  "pointer-events-none absolute max-w-[260px] rounded-md border px-2 py-1 font-sans text-[10px] shadow-lg",
-                  sourceTone(hoveredElement.source),
-                )}
-                style={{
-                  left: Math.min(bounds.left + bounds.width - 180, bounds.left + (hoveredElement.pixelFrame.x * bounds.scaleX)),
-                  top: Math.max(4, bounds.top + (hoveredElement.pixelFrame.y * bounds.scaleY) - 30),
-                }}
-              >
-                <span className="font-medium">{elementLabel(hoveredElement)}</span>
-                <span className="ml-1 opacity-65">{hoverSource}</span>
+                {mode === "inspect" && bounds && snapshot ? inspectOverlayElements.map((element, index) => {
+                  const frame = clampFrame(
+                    element.pixelFrame,
+                    snapshot.screenshot.width ?? snapshot.screen.width,
+                    snapshot.screenshot.height ?? snapshot.screen.height,
+                  );
+                  const isHovered = hoveredElement?.id === element.id;
+                  const isSelected = selectedElement?.id === element.id;
+                  return (
+                    <div
+                      key={inspectOverlayKeys[index] ?? `${element.id}:${index}`}
+                      className={cn(
+                        "pointer-events-none absolute rounded-[3px] border",
+                        isHovered || isSelected ? sourceTone(element.source) : "border-cyan-200/22 bg-cyan-400/[0.03]",
+                      )}
+                      style={{
+                        left: bounds.left + (frame.x * bounds.scaleX),
+                        top: bounds.top + (frame.y * bounds.scaleY),
+                        width: Math.max(2, frame.width * bounds.scaleX),
+                        height: Math.max(2, frame.height * bounds.scaleY),
+                      }}
+                    />
+                  );
+                }) : null}
+                {mode === "inspect" && simulatorCaptureActive && simulatorCaptureSelection && activeSimulatorCaptureFrame ? (
+                  <div
+                    className="pointer-events-none absolute rounded-[3px] border border-amber-200/80 bg-amber-300/12 shadow-[0_0_0_9999px_rgba(0,0,0,0.26)]"
+                    style={{
+                      left: simulatorCaptureSelection.bounds.left + (activeSimulatorCaptureFrame.x * simulatorCaptureSelection.bounds.scaleX),
+                      top: simulatorCaptureSelection.bounds.top + (activeSimulatorCaptureFrame.y * simulatorCaptureSelection.bounds.scaleY),
+                      width: Math.max(1, activeSimulatorCaptureFrame.width * simulatorCaptureSelection.bounds.scaleX),
+                      height: Math.max(1, activeSimulatorCaptureFrame.height * simulatorCaptureSelection.bounds.scaleY),
+                    }}
+                  />
+                ) : null}
+                {mode === "inspect" && bounds && hoveredElement ? (
+                  <div
+                    className={cn(
+                      "pointer-events-none absolute max-w-[260px] rounded-md border px-2 py-1 font-sans text-[10px] shadow-lg",
+                      sourceTone(hoveredElement.source),
+                    )}
+                    style={{
+                      left: Math.min(bounds.left + bounds.width - 180, bounds.left + (hoveredElement.pixelFrame.x * bounds.scaleX)),
+                      top: Math.max(4, bounds.top + (hoveredElement.pixelFrame.y * bounds.scaleY) - 30),
+                    }}
+                  >
+                    <span className="font-medium">{elementLabel(hoveredElement)}</span>
+                    <span className="ml-1 opacity-65">{hoverSource}</span>
+                  </div>
+                ) : null}
               </div>
-            ) : null}
+            </div>
             {snapshotRefreshing ? (
               <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/20 text-cyan-50/70">
                 <div className="flex items-center gap-2 rounded-md border border-white/[0.07] bg-black/55 px-3 py-2 font-sans text-[11px]">
@@ -3578,6 +3822,7 @@ export function ChatIosSimulatorPanel({
                 </div>
               </div>
             ) : null}
+            {mediaViewToolbar}
           </div>
         ) : (
           <div className="flex h-full min-h-[300px] flex-col items-center justify-center gap-2 px-6 text-center text-muted-fg/55">
@@ -3598,7 +3843,7 @@ export function ChatIosSimulatorPanel({
         )}
       </div>
 
-      <div className="shrink-0 space-y-2">
+      {!mediaExpanded ? <div className="shrink-0 space-y-2">
         {mode === "interact" && !ownedByOtherChat && !showSetupChecklist ? (
           <div className="flex items-center gap-2">
             <TextT size={14} className="text-muted-fg/45" />
@@ -3636,7 +3881,7 @@ export function ChatIosSimulatorPanel({
             Install a supported full Xcode for native touch input, or idb + idb_companion for fallback tap, drag, and text.
           </div>
         ) : null}
-      </div>
+      </div> : null}
     </div>
   );
 }

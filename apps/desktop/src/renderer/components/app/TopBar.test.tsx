@@ -204,4 +204,17 @@ describe("TopBar", () => {
 
     expect(await screen.findByText("1 phone connected")).toBeTruthy();
   });
+
+  it("shows project icon replacement errors", async () => {
+    globalThis.window.ade.project.chooseIcon = vi.fn(async () => {
+      throw new Error("Failed to set project icon: Project icon must be 1 MB or smaller.");
+    }) as any;
+
+    render(<TopBar />);
+
+    fireEvent.click(await screen.findByLabelText("Project icon"));
+    fireEvent.click(await screen.findByText("Replace"));
+
+    expect((await screen.findByRole("alert")).textContent).toContain("Project icon must be 1 MB or smaller.");
+  });
 });

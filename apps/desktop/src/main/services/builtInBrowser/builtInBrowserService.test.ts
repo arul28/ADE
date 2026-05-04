@@ -2,8 +2,107 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { BuiltInBrowserEventPayload } from "../../../shared/types";
 import { createBuiltInBrowserService } from "./builtInBrowserService";
 
+const fakes = vi.hoisted(() => {
+  type DebuggerHandler = (...args: unknown[]) => void;
+
+  class FakeDebugger {
+    attached = false;
+    sendCommandImpl: (method: string, params?: Record<string, unknown>) => Promise<unknown> = async () => ({});
+    sendCommand(method: string, params?: Record<string, unknown>): Promise<unknown> {
+      return this.sendCommandImpl(method, params);
+    }
+    private listeners: Record<string, DebuggerHandler[]> = {};
+    attach = (): void => {
+      this.attached = true;
+    };
+    detach = (): void => {
+      this.attached = false;
+    };
+    isAttached = (): boolean => this.attached;
+    on = (event: string, fn: DebuggerHandler): void => {
+      (this.listeners[event] ??= []).push(fn);
+    };
+    off = (event: string, fn: DebuggerHandler): void => {
+      const list = this.listeners[event];
+      if (!list) return;
+      const idx = list.indexOf(fn);
+      if (idx >= 0) list.splice(idx, 1);
+    };
+  }
+
+  class FakeWebContents {
+    id = Math.floor(Math.random() * 1_000_000);
+    debugger = new FakeDebugger();
+    loadURL = async (_url: string): Promise<void> => undefined;
+    reload = (): void => undefined;
+    goBack = (): void => undefined;
+    goForward = (): void => undefined;
+    stop = (): void => undefined;
+    isLoading = (): boolean => false;
+    canGoBack = (): boolean => false;
+    canGoForward = (): boolean => false;
+    isDestroyed = (): boolean => false;
+    getURL = (): string => "";
+    getTitle = (): string => "";
+    setAudioMuted = (_muted: boolean): void => undefined;
+    setWindowOpenHandler = (_handler: unknown): void => undefined;
+    on = (_event: string, _fn: (...args: unknown[]) => void): void => undefined;
+  }
+
+  class FakeWebContentsView {
+    webContents = new FakeWebContents();
+    setBackgroundColor = (_color: string): void => undefined;
+    setBounds = (_rect: unknown): void => undefined;
+    setVisible = (_visible: boolean): void => undefined;
+  }
+
+  // Track the most recently constructed FakeDebugger so tests can wire sendCommand impls.
+  const debuggerInstances: FakeDebugger[] = [];
+  const OriginalFakeDebugger = FakeDebugger;
+  class TrackedFakeDebugger extends OriginalFakeDebugger {
+    constructor() {
+      super();
+      debuggerInstances.push(this);
+    }
+  }
+  // Replace FakeWebContents.debugger with the tracked variant.
+  class TrackedFakeWebContents extends FakeWebContents {
+    constructor() {
+      super();
+      this.debugger = new TrackedFakeDebugger();
+    }
+  }
+  class TrackedFakeWebContentsView extends FakeWebContentsView {
+    constructor() {
+      super();
+      this.webContents = new TrackedFakeWebContents();
+    }
+  }
+
+  let activeImpl: (method: string, params?: Record<string, unknown>) => Promise<unknown> = async () => ({});
+  // Override sendCommand on the prototype to delegate to the shared activeImpl, so future
+  // instances pick it up automatically without per-instance patching races.
+  OriginalFakeDebugger.prototype.sendCommand = function (method: string, params?: Record<string, unknown>) {
+    return activeImpl(method, params);
+  };
+
+  return {
+    WebContentsView: TrackedFakeWebContentsView,
+    debuggerInstances,
+    setSendCommand: (impl: (method: string, params?: Record<string, unknown>) => Promise<unknown>) => {
+      activeImpl = impl;
+    },
+    resetSendCommand: () => {
+      activeImpl = async () => ({});
+    },
+    clearDebuggerInstances: () => {
+      debuggerInstances.length = 0;
+    },
+  };
+});
+
 vi.mock("electron", () => ({
-  WebContentsView: class {},
+  WebContentsView: fakes.WebContentsView,
   nativeImage: { createFromDataURL: () => ({ getSize: () => ({ width: 0, height: 0 }) }) },
   session: { fromPartition: () => ({ setPermissionCheckHandler: () => {}, setPermissionRequestHandler: () => {} }) },
   webContents: { fromId: () => null },
@@ -107,5 +206,79 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
     await expect(service.selectPoint({ x: 10, y: 10 })).rejects.toThrow(/no active browser tab/i);
     expect(service.getStatus().tabs).toEqual([]);
+  });
+});
+
+describe("createBuiltInBrowserService — switchTab and navigate inspect/selection invariants", () => {
+  let collector: ReturnType<typeof captureStatusEvents>;
+
+  beforeEach(() => {
+    collector = captureStatusEvents();
+    fakes.resetSendCommand();
+    fakes.clearDebuggerInstances();
+  });
+
+  it("switchTab to the currently active tab does not clear an existing selection", async () => {
+    fakes.setSendCommand(async (method) => {
+      switch (method) {
+        case "DOM.getNodeForLocation":
+          return { backendNodeId: 42 };
+        case "DOM.resolveNode":
+          return { object: { objectId: "obj-1" } };
+        case "Runtime.callFunctionOn":
+          return {
+            result: {
+              value: {
+                tagName: "div",
+                selector: "div#root",
+                testId: null,
+                frame: { x: 0, y: 0, width: 10, height: 10 },
+                pixelRatio: 1,
+                url: "http://example.test/",
+                title: "test",
+                metadata: { viewport: { width: 100, height: 100 } },
+              },
+            },
+          };
+        default:
+          return {};
+      }
+    });
+
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    await service.navigate({ url: "https://example.test", newTab: true });
+    const activeTabId = service.getStatus().activeTabId;
+    expect(activeTabId).toBeTruthy();
+
+    const result = await service.selectPoint({ x: 5, y: 5, includeScreenshot: false });
+    expect(result.item).not.toBeNull();
+    expect(service.getStatus().hasSelection).toBe(true);
+
+    const eventsBefore = collector.events.length;
+    if (!activeTabId) throw new Error("missing activeTabId");
+    await service.switchTab({ tabId: activeTabId });
+
+    expect(service.getStatus().hasSelection).toBe(true);
+    const newClearEvents = collector.events
+      .slice(eventsBefore)
+      .filter((e) => e.type === "selection-cleared");
+    expect(newClearEvents).toHaveLength(0);
+  });
+
+  it("navigate to a URL on the active tab stops inspect mode (CDP overlay desync fix)", async () => {
+    fakes.setSendCommand(async () => ({}));
+
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    await service.navigate({ url: "https://example.test", newTab: true });
+
+    await service.startInspect();
+    expect(service.getStatus().isInspecting).toBe(true);
+
+    const activeTabId = service.getStatus().activeTabId;
+    if (!activeTabId) throw new Error("missing activeTabId");
+
+    await service.navigate({ url: "https://example.test/two", tabId: activeTabId });
+
+    expect(service.getStatus().isInspecting).toBe(false);
   });
 });

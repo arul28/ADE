@@ -28,6 +28,8 @@ export type FileTreeNode = {
   children?: FileTreeNode[];
   changeStatus?: FileTreeChangeStatus;
   size?: number;
+  // Set on a directory node when its children list was truncated at MAX_TREE_CHILDREN_PER_DIRECTORY.
+  childrenTruncated?: boolean;
 };
 
 export type FilesListTreeArgs = {
@@ -48,6 +50,8 @@ export type FileContent = {
   previewKind?: FilePreviewKind;
   mimeType?: string | null;
   dataUrl?: string;
+  contentOmitted?: boolean;
+  omittedReason?: "too_large" | "unsupported_binary";
 };
 
 export type FilesReadFileArgs = {

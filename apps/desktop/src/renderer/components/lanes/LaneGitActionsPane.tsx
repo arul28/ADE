@@ -46,6 +46,7 @@ type CommitMessageAiState = {
 type ResponsiveMode = "narrow" | "medium" | "wide";
 
 const AUTO_GENERATE_COMMIT_ACTION = "generate commit message";
+const MAX_RENDERED_CHANGE_ROWS_PER_SECTION = 300;
 type LaneGitActionRuntimeState = {
   version: number;
   busyAction: string | null;
@@ -524,6 +525,18 @@ export function LaneGitActionsPane({
   const stagedCount = changes.staged.length;
   const hasStaged = stagedCount > 0;
   const hasUnstaged = changes.unstaged.length > 0;
+  const [showAllStagedChanges, setShowAllStagedChanges] = useState(false);
+  const [showAllUnstagedChanges, setShowAllUnstagedChanges] = useState(false);
+  const visibleStagedChanges = useMemo(
+    () => (showAllStagedChanges ? changes.staged : changes.staged.slice(0, MAX_RENDERED_CHANGE_ROWS_PER_SECTION)),
+    [changes.staged, showAllStagedChanges],
+  );
+  const visibleUnstagedChanges = useMemo(
+    () => (showAllUnstagedChanges ? changes.unstaged : changes.unstaged.slice(0, MAX_RENDERED_CHANGE_ROWS_PER_SECTION)),
+    [changes.unstaged, showAllUnstagedChanges],
+  );
+  const hiddenStagedChangeCount = Math.max(0, changes.staged.length - visibleStagedChanges.length);
+  const hiddenUnstagedChangeCount = Math.max(0, changes.unstaged.length - visibleUnstagedChanges.length);
   const responsiveMode = getResponsiveMode(paneWidth);
   const maxVisibleStashes = responsiveMode === "wide" ? 2 : 3;
   const actionGridColumns =
@@ -2497,13 +2510,37 @@ export function LaneGitActionsPane({
               {changes.staged.length > 0 ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
                   <div style={{ padding: "0 8px 4px", ...LABEL_STYLE }}>STAGED ({changes.staged.length})</div>
-                  {changes.staged.map((file) => renderFileRow(file, "staged"))}
+                  {visibleStagedChanges.map((file) => renderFileRow(file, "staged"))}
+                  {hiddenStagedChangeCount > 0 ? (
+                    <div style={{ padding: "6px 8px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textDim, display: "flex", alignItems: "center", gap: 8 }}>
+                      <span>Showing first {MAX_RENDERED_CHANGE_ROWS_PER_SECTION} of {changes.staged.length} staged files.</span>
+                      <button
+                        type="button"
+                        onClick={() => setShowAllStagedChanges(true)}
+                        style={{ color: COLORS.accent, fontSize: 11, fontFamily: MONO_FONT, cursor: "pointer" }}
+                      >
+                        Show all
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
               {changes.unstaged.length > 0 ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
                   <div style={{ padding: "0 8px 4px", ...LABEL_STYLE }}>UNSTAGED ({changes.unstaged.length})</div>
-                  {changes.unstaged.map((file) => renderFileRow(file, "unstaged"))}
+                  {visibleUnstagedChanges.map((file) => renderFileRow(file, "unstaged"))}
+                  {hiddenUnstagedChangeCount > 0 ? (
+                    <div style={{ padding: "6px 8px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textDim, display: "flex", alignItems: "center", gap: 8 }}>
+                      <span>Showing first {MAX_RENDERED_CHANGE_ROWS_PER_SECTION} of {changes.unstaged.length} unstaged files.</span>
+                      <button
+                        type="button"
+                        onClick={() => setShowAllUnstagedChanges(true)}
+                        style={{ color: COLORS.accent, fontSize: 11, fontFamily: MONO_FONT, cursor: "pointer" }}
+                      >
+                        Show all
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
               {changes.staged.length === 0 && changes.unstaged.length === 0 ? (

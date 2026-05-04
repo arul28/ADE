@@ -3790,12 +3790,24 @@ export function shouldAttemptDesktopSocketConnection(socketPath: string): boolea
 }
 
 async function initializeConnection(connection: CliConnection, options: GlobalOptions): Promise<void> {
+  const envChatSessionId = asString(process.env.ADE_CHAT_SESSION_ID);
+  const envMissionId = asString(process.env.ADE_MISSION_ID);
+  const envRunId = asString(process.env.ADE_RUN_ID);
+  const envStepId = asString(process.env.ADE_STEP_ID);
+  const envAttemptId = asString(process.env.ADE_ATTEMPT_ID);
+  const envOwnerId = asString(process.env.ADE_OWNER_ID);
   await connection.request("ade/initialize", {
     protocolVersion: PROTOCOL_VERSION,
     clientInfo: { name: "ade-cli", version: VERSION },
     identity: {
-      callerId: "ade-cli",
+      callerId: envChatSessionId ?? envAttemptId ?? "ade-cli",
       role: options.role,
+      ...(envChatSessionId ? { chatSessionId: envChatSessionId } : {}),
+      ...(envMissionId ? { missionId: envMissionId } : {}),
+      ...(envRunId ? { runId: envRunId } : {}),
+      ...(envStepId ? { stepId: envStepId } : {}),
+      ...(envAttemptId ? { attemptId: envAttemptId } : {}),
+      ...(envOwnerId ? { ownerId: envOwnerId } : {}),
       computerUsePolicy: {
         mode: "auto",
         allowLocalFallback: options.role !== "external",

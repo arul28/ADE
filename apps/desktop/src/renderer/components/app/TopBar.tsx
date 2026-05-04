@@ -69,6 +69,15 @@ function syncDotClass(snapshot: SyncRoleSnapshot): string {
   return "ade-status-dot-warning";
 }
 
+function projectIconErrorMessage(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  const cleaned = raw
+    .replace(/^Error invoking remote method '[^']+':\s*/i, "")
+    .replace(/^Error:\s*/i, "")
+    .trim();
+  return cleaned || "Failed to update project icon.";
+}
+
 function deriveSyncLabel(snapshot: SyncRoleSnapshot | null): string | null {
   if (!snapshot) return null;
   if (snapshot.client.state === "error") return "Phone sync error";
@@ -108,6 +117,7 @@ function ProjectTabIcon({
   const [iconDialogOpen, setIconDialogOpen] = useState(false);
   const [choosing, setChoosing] = useState(false);
   const [removing, setRemoving] = useState(false);
+  const [iconError, setIconError] = useState<string | null>(null);
 
   useEffect(() => {
     setFailed(false);
@@ -166,16 +176,22 @@ function ProjectTabIcon({
   const handleChooseIcon = useCallback(async () => {
     if (disabled || choosing) return;
     setChoosing(true);
+    setIconError(null);
     try {
       const nextIcon = await window.ade.project.chooseIcon(rootPath);
       if (nextIcon) {
         setProjectIconCache(rootPath, nextIcon);
         setFailed(false);
         setIcon(nextIcon);
-        setIconDialogOpen(false);
+        if (nextIcon.dataUrl) {
+          setIconDialogOpen(false);
+        } else {
+          setIconError("ADE saved the path, but the image could not be rendered as a project icon.");
+        }
       }
-    } catch {
-      // Keep the current icon; the dialog path is best-effort UI chrome.
+    } catch (error) {
+      // Keep the current icon while surfacing why replacement failed.
+      setIconError(projectIconErrorMessage(error));
     } finally {
       setChoosing(false);
     }
@@ -184,14 +200,16 @@ function ProjectTabIcon({
   const handleRemoveIcon = useCallback(async () => {
     if (disabled || removing) return;
     setRemoving(true);
+    setIconError(null);
     try {
       const nextIcon = await window.ade.project.removeIcon(rootPath);
       setProjectIconCache(rootPath, nextIcon);
       setFailed(false);
       setIcon(nextIcon);
       setIconDialogOpen(false);
-    } catch {
-      // Keep the current icon.
+    } catch (error) {
+      // Keep the current icon while surfacing why removal failed.
+      setIconError(projectIconErrorMessage(error));
     } finally {
       setRemoving(false);
     }
@@ -200,7 +218,13 @@ function ProjectTabIcon({
   if (disabled) return iconNode;
 
   return (
-    <Dialog.Root open={iconDialogOpen} onOpenChange={setIconDialogOpen}>
+    <Dialog.Root
+      open={iconDialogOpen}
+      onOpenChange={(open) => {
+        setIconDialogOpen(open);
+        if (!open) setIconError(null);
+      }}
+    >
       <Dialog.Trigger asChild>
         <button
           type="button"
@@ -256,6 +280,15 @@ function ProjectTabIcon({
               <Folder size={52} className="text-muted-fg" />
             )}
           </div>
+
+          {iconError ? (
+            <div
+              role="alert"
+              className="mt-3 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs leading-5 text-red-200"
+            >
+              {iconError}
+            </div>
+          ) : null}
 
           <div className="mt-4 flex items-center justify-end gap-2">
             <button

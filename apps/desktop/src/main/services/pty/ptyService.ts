@@ -327,6 +327,7 @@ function inferSessionCwdFromTranscriptPath(transcriptPath: string | null | undef
 const MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
 const TRANSCRIPT_LIMIT_NOTICE = "\n[ADE] transcript limit reached (8MB). Further output omitted.\n";
 const RESUME_TARGET_MISSING_COOLDOWN_MS = 10 * 60_000;
+const RESUME_SCAN_WINDOW_MS = 60_000;
 
 export function createPtyService({
   projectRoot,
@@ -1806,7 +1807,15 @@ export function createPtyService({
           );
         }
 
-        if (!entry.resumeCommand || entry.resumeCommandIsFallback) {
+        // Resume-command scanning runs an ANSI strip + 2 regex passes over a
+        // 12KB rolling buffer on every output chunk. Claude/codex print the
+        // resume command near startup, so cap the window — long-running
+        // sessions otherwise pay this cost forever. Storage-based backfill
+        // (tryBackfillResumeTarget) covers sessions that never print one.
+        if (
+          (!entry.resumeCommand || entry.resumeCommandIsFallback)
+          && Date.now() - entry.createdAt < RESUME_SCAN_WINDOW_MS
+        ) {
           entry.resumeScanBuffer = `${entry.resumeScanBuffer}${data}`.slice(-12_000);
           const detected = extractResumeCommandFromOutput(entry.resumeScanBuffer, entry.toolTypeHint);
           if (detected && detected !== entry.resumeCommand) {
@@ -1814,6 +1823,8 @@ export function createPtyService({
             entry.resumeCommandIsFallback = false;
             sessionService.setResumeCommand(sessionId, detected);
           }
+        } else if (entry.resumeScanBuffer.length > 0) {
+          entry.resumeScanBuffer = "";
         }
 
         // Accumulate initial output for session title generation

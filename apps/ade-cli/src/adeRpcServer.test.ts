@@ -3012,6 +3012,33 @@ describe("adeRpcServer", () => {
     });
   });
 
+  it("uses initialized chat session identity when the server process has no ADE_CHAT_SESSION_ID", async () => {
+    await withEnv({ ADE_CHAT_SESSION_ID: undefined, ADE_DEFAULT_ROLE: "agent" }, async () => {
+      const fixture = createRuntime();
+      fixture.runtime.agentChatService.requestChatInput = vi.fn(async () => ({
+        decision: "decline",
+        answers: {},
+        responseText: null,
+      }));
+      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+      await initialize(handler, {
+        callerId: "chat-session-identity",
+        role: "agent",
+        chatSessionId: "chat-session-identity",
+      });
+      const response = await callTool(handler, "ask_user", {
+        title: "Pick a flow",
+        body: "Which part should we test first?",
+      });
+
+      expect(response?.isError).toBeUndefined();
+      expect(fixture.runtime.agentChatService.requestChatInput).toHaveBeenCalledWith(expect.objectContaining({
+        chatSessionId: "chat-session-identity",
+      }));
+    });
+  });
+
   it("returns explicit timed_out semantics for standalone ask_user when the user does not answer in time", async () => {
     await withEnv({ ADE_CHAT_SESSION_ID: "chat-session-env" }, async () => {
       const fixture = createRuntime();

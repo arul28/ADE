@@ -7,6 +7,20 @@ const MAX_INDEXED_FILES = 25_000;
 const MAX_TEXT_FILE_BYTES = 1_000_000;
 const MAX_TOTAL_CONTENT_BYTES = 80 * 1024 * 1024;
 const YIELD_EVERY_FILES = 120;
+const VOLATILE_ADE_PREFIXES = [
+  ".ade/artifacts/",
+  ".ade/cache/",
+  ".ade/secrets/",
+  ".ade/transcripts/",
+  ".ade/worktrees/",
+];
+const VOLATILE_ADE_FILES = new Set([
+  ".ade/ade.db",
+  ".ade/ade.db-shm",
+  ".ade/ade.db-wal",
+  ".ade/ade.sock",
+  ".ade/local.secret.yaml",
+]);
 
 type IndexedFile = {
   path: string;
@@ -27,7 +41,13 @@ type WorkspaceIndex = {
   builtAt: string | null;
 };
 
+function isVolatileAdeRuntimePath(relPath: string): boolean {
+  return VOLATILE_ADE_FILES.has(relPath)
+    || VOLATILE_ADE_PREFIXES.some((prefix) => relPath === prefix.slice(0, -1) || relPath.startsWith(prefix));
+}
+
 function shouldSkipPathPrefix(relPath: string, includeIgnored: boolean): boolean {
+  if (isVolatileAdeRuntimePath(relPath)) return true;
   if (includeIgnored) return false;
   return relPath === ".ade" || relPath.startsWith(".ade/");
 }
@@ -141,7 +161,7 @@ export function createFileSearchIndexService() {
     });
   };
 
-  const shouldSkipDirectoryName = (name: string, includeIgnored: boolean): boolean => {
+  const shouldSkipDirectoryName = (name: string): boolean => {
     if (name === ".git") return true;
     if (name === "node_modules") return true;
     return false;
@@ -171,7 +191,7 @@ export function createFileSearchIndexService() {
         const relPath = normalizeRelative(path.join(relDir, entry.name));
         if (!relPath) continue;
         if (shouldSkipPathPrefix(relPath, index.includeIgnored)) continue;
-        if (entry.isDirectory() && shouldSkipDirectoryName(entry.name, index.includeIgnored)) continue;
+        if (entry.isDirectory() && shouldSkipDirectoryName(entry.name)) continue;
         if (await opts.shouldIgnore(relPath, index.includeIgnored)) continue;
 
         if (entry.isDirectory()) {

@@ -40,6 +40,7 @@ const STATUS_BADGE_BY_STATUS: Record<string, { label: string; classes: string }>
   C: { label: "C", classes: "bg-purple-500/15 text-purple-400/70" },
 };
 const STATUS_BADGE_DEFAULT = { label: "M", classes: "bg-sky-500/15 text-sky-400/70" };
+const MAX_DIFF_CACHE_ENTRIES = 24;
 
 function statusBadge(status: TurnDiffFile["status"]) {
   const { label, classes } = STATUS_BADGE_BY_STATUS[status] ?? STATUS_BADGE_DEFAULT;
@@ -89,6 +90,16 @@ function aggregateFiles(summaries: TurnDiffSummary[]): AggregatedFile[] {
 
 function getDiffCacheKey(args: AgentChatGetTurnFileDiffArgs) {
   return [args.sessionId, args.beforeSha, args.afterSha, args.filePath].join("\u0000");
+}
+
+function rememberCachedDiff(cache: Map<string, FileDiff>, cacheKey: string, diff: FileDiff): void {
+  cache.delete(cacheKey);
+  cache.set(cacheKey, diff);
+  while (cache.size > MAX_DIFF_CACHE_ENTRIES) {
+    const oldestKey = cache.keys().next().value;
+    if (!oldestKey) break;
+    cache.delete(oldestKey);
+  }
 }
 
 /* ── Diff pane ── */
@@ -149,7 +160,7 @@ export const ChatFileChangesPanel = React.memo(function ChatFileChangesPanel({
   const [expanded, setExpanded] = useState(false);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [loadingPath, setLoadingPath] = useState<string | null>(null);
-  const diffCache = useRef<Record<string, FileDiff>>({});
+  const diffCache = useRef<Map<string, FileDiff>>(new Map());
   const latestDiffRequestKey = useRef<string | null>(null);
   const [activeDiff, setActiveDiff] = useState<FileDiff | null>(null);
   const [activeDiffLoadState, setActiveDiffLoadState] = useState<DiffLoadState>("idle");
@@ -175,8 +186,9 @@ export const ChatFileChangesPanel = React.memo(function ChatFileChangesPanel({
 
       latestDiffRequestKey.current = cacheKey;
 
-      const cachedDiff = diffCache.current[cacheKey];
+      const cachedDiff = diffCache.current.get(cacheKey);
       if (cachedDiff) {
+        rememberCachedDiff(diffCache.current, cacheKey, cachedDiff);
         setActiveDiff(cachedDiff);
         setActiveDiffLoadState("loaded");
         setLoadingPath(null);
@@ -195,7 +207,7 @@ export const ChatFileChangesPanel = React.memo(function ChatFileChangesPanel({
           setActiveDiffLoadState("missing");
           return;
         }
-        diffCache.current[cacheKey] = diff;
+        rememberCachedDiff(diffCache.current, cacheKey, diff);
         setActiveDiff(diff);
         setActiveDiffLoadState("loaded");
       } catch (err) {

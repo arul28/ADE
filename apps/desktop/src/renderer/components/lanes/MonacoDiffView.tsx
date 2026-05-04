@@ -68,10 +68,11 @@ export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; edi
     const modelsRef = useRef<{ original: import("monaco-editor").editor.ITextModel; modified: import("monaco-editor").editor.ITextModel } | null>(
       null
     );
-    const modelIdentityRef = useRef<string | null>(null);
+    const editableRef = useRef(editable);
     const [ready, setReady] = useState(false);
     const [failed, setFailed] = useState(false);
     const monacoTheme = theme === "light" ? "vs" : "vs-dark";
+    const monacoThemeRef = useRef(monacoTheme);
 
     useImperativeHandle(ref, () => ({
       getModifiedValue: () => diffEditorRef.current?.getModel()?.modified.getValue() ?? null,
@@ -86,6 +87,14 @@ export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; edi
     }));
 
     useEffect(() => {
+      editableRef.current = editable;
+    }, [editable]);
+
+    useEffect(() => {
+      monacoThemeRef.current = monacoTheme;
+    }, [monacoTheme]);
+
+    useEffect(() => {
       let cancelled = false;
       loadMonaco()
         .then((monaco) => {
@@ -93,7 +102,7 @@ export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; edi
           if (!containerRef.current) return;
 
           const editor = monaco.editor.createDiffEditor(containerRef.current, {
-            readOnly: !editable,
+            readOnly: !editableRef.current,
             automaticLayout: true,
             renderSideBySide: true,
             minimap: { enabled: false },
@@ -102,7 +111,7 @@ export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; edi
             fontSize: 13,
             lineHeight: 18,
             scrollBeyondLastLine: false,
-            theme: monacoTheme
+            theme: monacoThemeRef.current
           });
 
           diffEditorRef.current = editor;
@@ -117,7 +126,6 @@ export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; edi
         cancelled = true;
         disposeDiffModels(diffEditorRef.current, modelsRef.current);
         modelsRef.current = null;
-        modelIdentityRef.current = null;
         try {
           diffEditorRef.current?.dispose();
         } catch {
@@ -134,11 +142,9 @@ export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; edi
           if (cancelled) return;
           const editor = diffEditorRef.current;
           if (!editor) return;
-
-          const identity = `${diff.path}::${diff.language ?? ""}::${diff.original.text ?? ""}::${diff.modified.text ?? ""}`;
-          if (modelIdentityRef.current === identity) {
-            editor.getModifiedEditor().updateOptions({ readOnly: !editable });
-            editor.getOriginalEditor().updateOptions({ readOnly: true });
+          if (diff.isBinary) {
+            disposeDiffModels(editor, modelsRef.current);
+            modelsRef.current = null;
             return;
           }
 
@@ -148,9 +154,8 @@ export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; edi
           const original = monaco.editor.createModel(diff.original.text ?? "", lang);
           const modified = monaco.editor.createModel(diff.modified.text ?? "", lang);
           modelsRef.current = { original, modified };
-          modelIdentityRef.current = identity;
           editor.setModel({ original, modified });
-          editor.getModifiedEditor().updateOptions({ readOnly: !editable });
+          editor.getModifiedEditor().updateOptions({ readOnly: !editableRef.current });
           editor.getOriginalEditor().updateOptions({ readOnly: true });
         })
         .catch(() => {
@@ -160,7 +165,14 @@ export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; edi
       return () => {
         cancelled = true;
       };
-    }, [diff, editable]);
+    }, [diff, ready]);
+
+    useEffect(() => {
+      const editor = diffEditorRef.current;
+      if (!editor) return;
+      editor.getModifiedEditor().updateOptions({ readOnly: !editable });
+      editor.getOriginalEditor().updateOptions({ readOnly: true });
+    }, [editable]);
 
     useEffect(() => {
       let cancelled = false;
@@ -179,13 +191,18 @@ export const MonacoDiffView = forwardRef<MonacoDiffHandle, { diff: FileDiff; edi
 
     return (
       <div className={cn("relative h-full w-full overflow-hidden rounded-lg border border-border bg-card/60", className)}>
-        <div ref={containerRef} className={cn("h-full w-full", failed && "hidden")} />
-        {!ready && !failed ? (
+        <div ref={containerRef} className={cn("h-full w-full", (failed || diff.isBinary) && "hidden")} />
+        {diff.isBinary ? (
+          <div className="flex h-full w-full items-center justify-center p-4 text-xs text-muted-fg">
+            Binary diff preview unavailable.
+          </div>
+        ) : null}
+        {!ready && !failed && !diff.isBinary ? (
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-4 text-sm text-muted-fg">
             Loading diff editor…
           </div>
         ) : null}
-        {failed ? (
+        {failed && !diff.isBinary ? (
           <div className="h-full w-full overflow-auto p-3 text-xs">
             <div className="mb-2 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-amber-900">
               Monaco failed to load in dev mode. Showing plain-text diff fallback.

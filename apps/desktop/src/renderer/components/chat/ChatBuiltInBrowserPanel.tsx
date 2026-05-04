@@ -1035,9 +1035,10 @@ export function ChatBuiltInBrowserPanel({
     }
   }, [browserTabs.length]);
 
+  const hasStatus = status != null;
   useEffect(() => {
     const api = getBrowserApi();
-    if (!apiAvailable || !api || !status) return;
+    if (!apiAvailable || !api || !hasStatus) return;
     // Consume the pending-navigation flag as soon as the panel has an API and
     // status, regardless of whether the default-tab branch ends up running.
     // Otherwise a fast status update with browserTabs.length > 0 on first
@@ -1075,7 +1076,7 @@ export function ChatBuiltInBrowserPanel({
         setMessage({ tone: "error", text: errorMessage(error) });
       }
     })();
-  }, [apiAvailable, applyStatus, browserTabs.length, navigateRendererWebview, status]);
+  }, [apiAvailable, applyStatus, browserTabs.length, navigateRendererWebview, hasStatus]);
 
   const handleNavigate = useCallback(
     (event?: FormEvent<HTMLFormElement>) => {

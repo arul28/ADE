@@ -54,14 +54,14 @@ type OpenTab = {
   isBinary: boolean;
   previewKind?: FilePreviewKind;
   mimeType?: string | null;
-  dataUrl?: string;
   size?: number;
+  contentOmitted?: boolean;
+  omittedReason?: FileContent["omittedReason"];
 };
 
 type FilePreviewLike = {
   isBinary: boolean;
   previewKind?: FilePreviewKind;
-  dataUrl?: string;
   mimeType?: string | null;
   size?: number;
 };
@@ -69,7 +69,7 @@ type FilePreviewLike = {
 function getFilePreviewKind(file: FilePreviewLike | null | undefined): FilePreviewKind {
   if (!file) return "text";
   if (file.previewKind) return file.previewKind;
-  if (file.dataUrl) return "image";
+  if (file.mimeType?.startsWith("image/") && file.isBinary) return "image";
   return file.isBinary ? "binary" : "text";
 }
 
@@ -93,8 +93,9 @@ function openTabFromFileContent(filePath: string, loaded: FileContent): OpenTab 
     isBinary: loaded.isBinary,
     previewKind: getFilePreviewKind(loaded),
     mimeType: loaded.mimeType ?? null,
-    dataUrl: loaded.dataUrl,
     size: loaded.size,
+    contentOmitted: loaded.contentOmitted,
+    omittedReason: loaded.omittedReason,
   };
 }
 
@@ -159,6 +160,8 @@ type FilesPageSessionState = {
 const filesPageSessionByScope = new Map<string, FilesPageSessionState>();
 const filesPageSessionLru: string[] = [];
 const MAX_FILES_PAGE_CACHED_SCOPES = 8;
+const MAX_CACHED_CLEAN_TAB_CHARS = 256 * 1024;
+const MAX_CACHED_DIRTY_TAB_CHARS = 8 * 1024 * 1024;
 const MAX_QUEUED_TREE_PARENT_REFRESHES = 24;
 const FILES_WATCH_START_DELAY_MS = import.meta.env.MODE === "test" || (window as any).__adeBrowserMock ? 0 : 2_000;
 
@@ -191,6 +194,17 @@ function getFilesPageSession(sessionKey: string): FilesPageSessionState | undefi
 
 function filesPageSessionHasUnsavedTabs(session: FilesPageSessionState | undefined): boolean {
   return session?.openTabs.some((tab) => tab.content !== tab.savedContent) ?? false;
+}
+
+function cacheableSessionTabs(openTabs: OpenTab[]): OpenTab[] {
+  return openTabs
+    .filter((tab) => {
+      if (tab.content !== tab.savedContent) {
+        return tab.content.length <= MAX_CACHED_DIRTY_TAB_CHARS;
+      }
+      return isTextTab(tab) && tab.content.length <= MAX_CACHED_CLEAN_TAB_CHARS;
+    })
+    .map((tab) => ({ ...tab }));
 }
 
 function hasFilesPageSessionForWorkspaceRoot(workspaceRootPath: string, excludeSessionKey?: string): boolean {
@@ -236,13 +250,15 @@ function snapshotFilesPageSessionState(args: {
   searchQuery: string;
   editorTheme: EditorThemeMode;
 }): FilesPageSessionState {
+  const openTabs = cacheableSessionTabs(args.openTabs);
+  const activeTabPath = openTabs.some((tab) => tab.path === args.activeTabPath) ? args.activeTabPath : (openTabs.at(-1)?.path ?? null);
   return {
     workspaceId: args.workspaceId,
     workspaceRootPath: args.workspaceRootPath,
     allowPrimaryEdit: args.allowPrimaryEdit,
     selectedNodePath: args.selectedNodePath,
-    openTabs: args.openTabs,
-    activeTabPath: args.activeTabPath,
+    openTabs,
+    activeTabPath,
     mode: args.mode,
     searchQuery: args.searchQuery,
     editorTheme: args.editorTheme,
@@ -481,18 +497,21 @@ function FilePreviewSurface({ tab }: { tab: OpenTab }) {
   const previewKind = getFilePreviewKind(tab);
   const sizeLabel = formatFileSize(tab.size);
   const details = [tab.mimeType, sizeLabel].filter(Boolean).join(" · ");
+  const imageSrc = previewKind === "image" && tab.mimeType && tab.content
+    ? `data:${tab.mimeType};base64,${tab.content}`
+    : null;
   const [imageFailed, setImageFailed] = React.useState(false);
 
   useEffect(() => {
     setImageFailed(false);
-  }, [tab.dataUrl]);
+  }, [imageSrc]);
 
-  if (previewKind === "image" && tab.dataUrl && !imageFailed) {
+  if (imageSrc && !imageFailed) {
     return (
       <div className="flex h-full min-h-0 flex-col" style={{ background: COLORS.recessedBg }}>
         <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-6">
           <img
-            src={tab.dataUrl}
+            src={imageSrc}
             alt={tab.path}
             className="max-h-full max-w-full object-contain"
             style={{ imageRendering: "auto" }}
@@ -508,9 +527,11 @@ function FilePreviewSurface({ tab }: { tab: OpenTab }) {
   }
 
   const title = previewKind === "image" ? "Image preview unavailable" : "Preview unavailable";
-  const body = previewKind === "image"
-    ? "This image could not be decoded for inline preview."
-    : "This file type cannot be displayed inline.";
+  const body = tab.contentOmitted && tab.omittedReason === "too_large"
+    ? "This file is too large to display inline."
+    : previewKind === "image"
+      ? "This image could not be decoded for inline preview."
+      : "This file type cannot be displayed inline.";
 
   return (
     <div className="flex h-full items-center justify-center" style={{ background: COLORS.recessedBg }}>
@@ -1062,8 +1083,9 @@ export function FilesPage({
             tab.isBinary === loaded.isBinary &&
             getFilePreviewKind(tab) === getFilePreviewKind(loaded) &&
             tab.mimeType === (loaded.mimeType ?? null) &&
-            tab.dataUrl === loaded.dataUrl &&
-            tab.size === loaded.size
+            tab.size === loaded.size &&
+            tab.contentOmitted === loaded.contentOmitted &&
+            tab.omittedReason === loaded.omittedReason
           ) {
             return tab;
           }
@@ -1588,9 +1610,20 @@ export function FilesPage({
       return;
     }
     if (!showQuickOpen) return;
-    window.ade.files.quickOpen({ workspaceId, query: quickOpen, limit: 80, includeIgnored: true })
-      .then(setQuickOpenResults)
-      .catch(() => setQuickOpenResults([]));
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      window.ade.files.quickOpen({ workspaceId, query: quickOpen, limit: 80, includeIgnored: true })
+        .then((results) => {
+          if (!cancelled) setQuickOpenResults(results);
+        })
+        .catch(() => {
+          if (!cancelled) setQuickOpenResults([]);
+        });
+    }, 120);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
   }, [quickOpen, workspaceId, showQuickOpen]);
 
   useEffect(() => {
