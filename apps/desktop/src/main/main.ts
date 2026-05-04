@@ -454,7 +454,7 @@ async function createWindow(args: {
     `base-uri 'self'`,
     `form-action 'self'`,
     `object-src 'none'`,
-    `frame-src ${cspSources}${cspLocalSources} https: about:`,
+    `frame-src ${cspSources}${cspLocalSources} about:`,
     `script-src ${cspSources} 'unsafe-inline'`,
     `style-src ${cspSources} 'unsafe-inline'`,
     `img-src ${cspImageSources} ade-artifact: data: blob:`,

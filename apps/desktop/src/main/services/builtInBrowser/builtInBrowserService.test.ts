@@ -94,4 +94,18 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(status.tabs).toEqual([]);
     expect(status.attached).toBe(false);
   });
+
+  it("captureScreenshot rejects when no tab is active instead of silently spawning one", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    await expect(service.captureScreenshot()).rejects.toThrow(/no active browser tab/i);
+    // No tab should have been created as a side effect.
+    expect(service.getStatus().tabs).toEqual([]);
+    expect(service.getStatus().activeTabId).toBeNull();
+  });
+
+  it("selectPoint rejects when no tab is active instead of silently spawning one", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    await expect(service.selectPoint({ x: 10, y: 10 })).rejects.toThrow(/no active browser tab/i);
+    expect(service.getStatus().tabs).toEqual([]);
+  });
 });

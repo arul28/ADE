@@ -91,6 +91,7 @@ export function createBuiltInBrowserService(args: {
   let debuggerAttachedForInspect = false;
   let debuggerMessageListener: DebuggerMessageListener | null = null;
   let debuggerDetachListener: DebuggerDetachListener | null = null;
+  let inspectListenerWebContents: WebContents | null = null;
   let lastSelectedItem: BuiltInBrowserContextItem | null = null;
   let handlingInspectNode = false;
   let browserSessionConfigured = false;
@@ -441,13 +442,13 @@ export function createBuiltInBrowserService(args: {
 
   async function navigate(input: BuiltInBrowserNavigateArgs): Promise<BuiltInBrowserStatus> {
     const targetUrl = normalizeBrowserUrl(input.url);
+    if (input.newTab && tabs.length >= MAX_BROWSER_TABS) {
+      throw new Error(`ADE browser is limited to ${MAX_BROWSER_TABS} tabs. Close a tab before opening another.`);
+    }
     const switchingTabs = input.newTab || (input.tabId && input.tabId !== activeTabId);
     if (switchingTabs) {
       await stopInspectQuietly("built_in_browser.navigate_stop_inspect_failed");
       clearSelectionInternal();
-    }
-    if (input.newTab && tabs.length >= MAX_BROWSER_TABS) {
-      throw new Error(`ADE browser is limited to ${MAX_BROWSER_TABS} tabs. Close a tab before opening another.`);
     }
     let tab = input.newTab ? createTabState() : null;
     if (tab) {
@@ -468,13 +469,13 @@ export function createBuiltInBrowserService(args: {
   }
 
   async function createTab(input: BuiltInBrowserCreateTabArgs = {}): Promise<BuiltInBrowserStatus> {
+    if (tabs.length >= MAX_BROWSER_TABS) {
+      throw new Error(`ADE browser is limited to ${MAX_BROWSER_TABS} tabs. Close a tab before opening another.`);
+    }
     const willActivate = input.activate !== false || !activeTabId;
     if (willActivate) {
       await stopInspectQuietly("built_in_browser.create_tab_stop_inspect_failed");
       clearSelectionInternal();
-    }
-    if (tabs.length >= MAX_BROWSER_TABS) {
-      throw new Error(`ADE browser is limited to ${MAX_BROWSER_TABS} tabs. Close a tab before opening another.`);
     }
     const tab = createTabState();
     tabs = [...tabs, tab];
@@ -618,7 +619,10 @@ export function createBuiltInBrowserService(args: {
   }
 
   async function captureScreenshot(): Promise<BuiltInBrowserScreenshot> {
-    const wc = ensureActiveTab().webContents;
+    const wc = currentWebContents();
+    if (!wc) {
+      throw new Error("No active browser tab. Open a tab before capturing a screenshot.");
+    }
     attachViewsToCurrentWindow();
     try {
       return await capturePageScreenshot(wc);
@@ -631,7 +635,10 @@ export function createBuiltInBrowserService(args: {
   }
 
   async function selectPoint(input: BuiltInBrowserSelectPointArgs): Promise<BuiltInBrowserSelectResult> {
-    const wc = ensureActiveTab().webContents;
+    const wc = currentWebContents();
+    if (!wc) {
+      throw new Error("No active browser tab. Open a tab before selecting a point.");
+    }
     const x = normalizeDimension(input.x);
     const y = normalizeDimension(input.y);
     const attachedHere = await ensureDebuggerAttached(wc, "screenshot");
@@ -711,6 +718,9 @@ export function createBuiltInBrowserService(args: {
   }
 
   const attachDebuggerListeners = (wc: WebContents): void => {
+    if (inspectListenerWebContents && inspectListenerWebContents !== wc) {
+      detachDebuggerListeners(inspectListenerWebContents);
+    }
     if (debuggerMessageListener || debuggerDetachListener) return;
     debuggerMessageListener = (_event, method, params) => {
       if (method !== "Overlay.inspectNodeRequested") return;
@@ -724,20 +734,34 @@ export function createBuiltInBrowserService(args: {
       debuggerAttachedForInspect = false;
       debuggerMessageListener = null;
       debuggerDetachListener = null;
+      inspectListenerWebContents = null;
       emitStatus();
     };
     wc.debugger.on("message", debuggerMessageListener);
     wc.debugger.on("detach", debuggerDetachListener);
+    inspectListenerWebContents = wc;
   };
 
   const detachDebuggerListeners = (wc: WebContents): void => {
+    const target = !wc.isDestroyed() ? wc : null;
     if (debuggerMessageListener) {
-      wc.debugger.off("message", debuggerMessageListener);
+      try {
+        target?.debugger.off("message", debuggerMessageListener);
+      } catch {
+        // ignore listener detach races
+      }
       debuggerMessageListener = null;
     }
     if (debuggerDetachListener) {
-      wc.debugger.off("detach", debuggerDetachListener);
+      try {
+        target?.debugger.off("detach", debuggerDetachListener);
+      } catch {
+        // ignore listener detach races
+      }
       debuggerDetachListener = null;
+    }
+    if (inspectListenerWebContents === wc) {
+      inspectListenerWebContents = null;
     }
   };
 
@@ -791,7 +815,6 @@ export function createBuiltInBrowserService(args: {
       const item = createContextItem(wc, metadata, screenshotDataUrl);
       lastSelectedItem = item;
       emit({ type: "selection", item });
-      await stopInspect();
     } finally {
       if (inspecting) {
         await stopInspect().catch((error) => {
@@ -1198,7 +1221,12 @@ function() {
     || element.getAttribute("data-test-id")
     || element.getAttribute("data-cy")
     || null;
-  const value = "value" in element ? String(element.value).slice(0, 300) : null;
+  const isPasswordInput = element.tagName === "INPUT"
+    && typeof element.type === "string"
+    && element.type.toLowerCase() === "password";
+  const value = isPasswordInput
+    ? null
+    : "value" in element ? String(element.value).slice(0, 300) : null;
   return {
     tagName: element.tagName ? element.tagName.toLowerCase() : null,
     role: element.getAttribute("role"),

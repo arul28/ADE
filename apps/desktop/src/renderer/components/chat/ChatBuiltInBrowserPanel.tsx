@@ -17,6 +17,7 @@ import {
 } from "@phosphor-icons/react";
 import type { AgentChatFileRef } from "../../../shared/types";
 import { inferAttachmentType } from "../../../shared/types";
+import type { BuiltInBrowserTab } from "../../../shared/types/builtInBrowser";
 import { cn } from "../ui/cn";
 
 type BrowserFrame = {
@@ -78,15 +79,6 @@ type BuiltInBrowserScreenshot = {
   item?: BuiltInBrowserContextItem | null;
   contextItem?: BuiltInBrowserContextItem | null;
   [key: string]: unknown;
-};
-
-type BuiltInBrowserTab = {
-  id: string;
-  url: string | null;
-  title: string | null;
-  loading: boolean;
-  canGoBack: boolean;
-  canGoForward: boolean;
 };
 
 type BuiltInBrowserStatus = {
@@ -227,13 +219,27 @@ function stripDataUrlPrefix(dataUrl: string): string {
   return comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
 }
 
-function normalizeUrlForNavigation(value: string): string {
+const UNSUPPORTED_NAVIGATION_SCHEME_RE = /^(about|blob|data|devtools|file):/i;
+
+type NormalizedNavigationUrl =
+  | { ok: true; url: string }
+  | { ok: false; reason: string };
+
+function normalizeUrlForNavigation(value: string): NormalizedNavigationUrl {
   const trimmed = value.trim();
-  if (!trimmed) return trimmed;
-  if (/^(about|blob|data|devtools|file|https?):/i.test(trimmed)) return trimmed;
-  if (/^(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:\/|$)/i.test(trimmed)) return `http://${trimmed}`;
-  if (/^[^\s/]+\.[^\s]+/.test(trimmed)) return `https://${trimmed}`;
-  return `https://www.google.com/search?q=${encodeURIComponent(trimmed)}`;
+  if (!trimmed) return { ok: true, url: trimmed };
+  if (UNSUPPORTED_NAVIGATION_SCHEME_RE.test(trimmed)) {
+    return {
+      ok: false,
+      reason: "Unsupported URL — the built-in browser only opens http(s) URLs.",
+    };
+  }
+  if (/^https?:/i.test(trimmed)) return { ok: true, url: trimmed };
+  if (/^(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:\/|$)/i.test(trimmed)) {
+    return { ok: true, url: `http://${trimmed}` };
+  }
+  if (/^[^\s/]+\.[^\s]+/.test(trimmed)) return { ok: true, url: `https://${trimmed}` };
+  return { ok: true, url: `https://www.google.com/search?q=${encodeURIComponent(trimmed)}` };
 }
 
 function normalizeFrame(value: unknown): BrowserFrame | null {
@@ -323,7 +329,7 @@ function normalizeTab(value: unknown): BuiltInBrowserTab | null {
     id,
     url: stringField(value.url),
     title: stringField(value.title),
-    loading: booleanField(value.loading, booleanField(value.isLoading, false)),
+    isLoading: booleanField(value.isLoading, false),
     canGoBack: booleanField(value.canGoBack, false),
     canGoForward: booleanField(value.canGoForward, false),
   };
@@ -359,7 +365,7 @@ function normalizeStatus(value: unknown, previous: BuiltInBrowserStatus | null):
     title: stringField(value.title) ?? activeTab?.title ?? previous?.title ?? null,
     canGoBack: booleanField(value.canGoBack, activeTab?.canGoBack ?? previous?.canGoBack ?? false),
     canGoForward: booleanField(value.canGoForward, activeTab?.canGoForward ?? previous?.canGoForward ?? false),
-    loading: booleanField(value.loading, booleanField(value.isLoading, activeTab?.loading ?? previous?.loading ?? false)),
+    loading: booleanField(value.loading, booleanField(value.isLoading, activeTab?.isLoading ?? previous?.loading ?? false)),
     inspecting: booleanField(value.inspecting, booleanField(value.isInspecting, previous?.inspecting ?? false)),
     selectedItem:
       normalizeContextItem(value.selectedItem, previous)
@@ -613,6 +619,10 @@ export function ChatBuiltInBrowserPanel({
   useEffect(() => {
     statusRef.current = status;
   }, [status]);
+
+  useEffect(() => {
+    autoAttachedContextIdsRef.current = new Set();
+  }, [status?.url, status?.activeTabId]);
 
   useEffect(() => {
     selectedItemRef.current = selectedItem;
@@ -1054,7 +1064,12 @@ export function ChatBuiltInBrowserPanel({
   const handleNavigate = useCallback(
     (event?: FormEvent<HTMLFormElement>) => {
       event?.preventDefault();
-      const nextUrl = normalizeUrlForNavigation(urlInput);
+      const normalized = normalizeUrlForNavigation(urlInput);
+      if (!normalized.ok) {
+        setMessage({ tone: "error", text: normalized.reason });
+        return;
+      }
+      const nextUrl = normalized.url;
       if (!nextUrl) return;
       void runBusy("navigate", async () => {
         if (captureModeRef.current) restoreLiveBrowserView();
@@ -1442,7 +1457,7 @@ export function ChatBuiltInBrowserPanel({
                   className="inline-flex min-w-0 flex-1 items-center gap-1.5 text-left"
                   aria-current={active ? "page" : undefined}
                 >
-                  <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", tab.loading ? "animate-pulse bg-amber-300" : active ? "bg-sky-300" : "bg-muted-fg/35")} />
+                  <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", tab.isLoading ? "animate-pulse bg-amber-300" : active ? "bg-sky-300" : "bg-muted-fg/35")} />
                   <span className="min-w-0 truncate">{label}</span>
                 </button>
                 <button

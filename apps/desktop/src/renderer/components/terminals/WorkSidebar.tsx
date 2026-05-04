@@ -54,8 +54,10 @@ function dispatchAgentChatEvent<T>(eventName: string, sessionId: string, key: st
 }
 
 function hideBuiltInBrowserView(): void {
-  void window.ade.builtInBrowser.stopInspect().catch(() => {});
-  void window.ade.builtInBrowser.setBounds({
+  const browser = window.ade?.builtInBrowser;
+  if (!browser) return;
+  void browser.stopInspect().catch(() => {});
+  void browser.setBounds({
     x: 0,
     y: 0,
     width: 0,
@@ -111,10 +113,14 @@ export function WorkSidebar({
     setSelectedCommit(null);
   }, [laneId]);
 
+  const previousBrowserTabRef = useRef(tab === "browser");
   useEffect(() => {
-    if (tab !== "browser") hideBuiltInBrowserView();
+    const wasBrowser = previousBrowserTabRef.current;
+    const isBrowser = tab === "browser";
+    if (wasBrowser && !isBrowser) hideBuiltInBrowserView();
+    previousBrowserTabRef.current = isBrowser;
     return () => {
-      hideBuiltInBrowserView();
+      if (previousBrowserTabRef.current) hideBuiltInBrowserView();
     };
   }, [tab]);
 
@@ -348,7 +354,7 @@ export function WorkSidebar({
                     active ? "ade-work-tab-active text-fg" : "text-muted-fg",
                   )}
                   onClick={() => {
-                    if (id !== "browser") hideBuiltInBrowserView();
+                    if (tab === "browser" && id !== "browser") hideBuiltInBrowserView();
                     onTabChange(id);
                   }}
                   aria-pressed={active}
@@ -365,7 +371,7 @@ export function WorkSidebar({
           className="ade-shell-control inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md"
           data-variant="ghost"
           onClick={() => {
-            hideBuiltInBrowserView();
+            if (tab === "browser") hideBuiltInBrowserView();
             onClose();
           }}
           title="Close Work sidebar"
