@@ -1037,12 +1037,19 @@ export function ChatBuiltInBrowserPanel({
 
   useEffect(() => {
     const api = getBrowserApi();
-    if (!apiAvailable || !api || !status || browserTabs.length > 0 || defaultBrowserOpenedRef.current) return;
+    if (!apiAvailable || !api || !status) return;
+    // Consume the pending-navigation flag as soon as the panel has an API and
+    // status, regardless of whether the default-tab branch ends up running.
+    // Otherwise a fast status update with browserTabs.length > 0 on first
+    // render strands a stale `true` flag, which suppresses the default tab on
+    // a later panel reopen with no tabs.
+    const hadPendingNavigation = consumePendingBuiltInBrowserNavigation();
+    if (browserTabs.length > 0 || defaultBrowserOpenedRef.current) return;
     // If a link-click in the renderer kicked off an openInAdeBrowser navigation
     // that's still in flight (panel mounted via the open-built-in-browser event,
     // but the navigate IPC has not landed in status yet), suppress the default
     // Google tab so we don't end up with two tabs.
-    if (consumePendingBuiltInBrowserNavigation()) {
+    if (hadPendingNavigation) {
       defaultBrowserOpenedRef.current = true;
       return;
     }
