@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Terminal } from "@xterm/xterm";
+import { Terminal, type ILink, type ILinkProvider } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { cn } from "../ui/cn";
@@ -11,6 +11,7 @@ import {
   type ThemeId,
 } from "../../state/appStore";
 import { WORK_SURFACE_REVEALED_EVENT } from "./workSurfaceVisibility";
+import { openUrlInAdeBrowser } from "../../lib/openExternal";
 
 type XtermTheme = NonNullable<ConstructorParameters<typeof Terminal>[0]>["theme"];
 type TerminalRendererMode = "webgl" | "dom";
@@ -73,6 +74,7 @@ type CachedRuntime = {
   ptyDataUnsub: (() => void) | null;
   ptyExitUnsub: (() => void) | null;
   termDataSub: { dispose: () => void } | null;
+  linkProviderSub: { dispose: () => void } | null;
   rendererInitStarted: boolean;
   inputEnabled: boolean;
   active: boolean;
@@ -97,6 +99,7 @@ const INVALID_FIT_RETRY_MS = 90;
 const RENDERER_RESET_COOLDOWN_MS = 250;
 const TERMINAL_RENDERER_STORAGE_KEY = "ade.terminalRenderer";
 const TERMINAL_CTRL_V = "\x16";
+const TERMINAL_LINK_PATTERN = /(?:https?:\/\/[^\s<>"'`]+|(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:\/[^\s<>"'`]*)?)/gi;
 const runtimeCache = new Map<string, CachedRuntime>();
 let parkedRoot: HTMLDivElement | null = null;
 
@@ -143,6 +146,46 @@ function cloneHealth(health: TerminalHealthCounters): TerminalHealthCounters {
     rendererFallbacks: health.rendererFallbacks,
     droppedChunks: health.droppedChunks,
     fitRecoveries: health.fitRecoveries
+  };
+}
+
+function cleanTerminalLinkText(raw: string): string {
+  return raw.replace(/[),.;:!?]+$/g, "");
+}
+
+function createTerminalLinkProvider(term: Terminal): ILinkProvider {
+  return {
+    provideLinks(bufferLineNumber: number, callback: (links: ILink[] | undefined) => void) {
+      const lineIndex = Math.max(0, bufferLineNumber - 1);
+      const line = term.buffer.active.getLine(lineIndex) ?? term.buffer.active.getLine(bufferLineNumber);
+      if (!line) {
+        callback(undefined);
+        return;
+      }
+      const lineText = line.translateToString(false);
+      TERMINAL_LINK_PATTERN.lastIndex = 0;
+      const links: ILink[] = [];
+      let match: RegExpExecArray | null;
+      while ((match = TERMINAL_LINK_PATTERN.exec(lineText))) {
+        const text = cleanTerminalLinkText(match[0]);
+        if (!text.length) continue;
+        const startX = match.index + 1;
+        const endX = startX + text.length;
+        links.push({
+          text,
+          range: {
+            start: { x: startX, y: lineIndex + 1 },
+            end: { x: endX, y: lineIndex + 1 },
+          },
+          decorations: { underline: true, pointerCursor: true },
+          activate(event: MouseEvent) {
+            event.preventDefault();
+            openUrlInAdeBrowser(text);
+          },
+        });
+      }
+      callback(links.length ? links : undefined);
+    },
   };
 }
 
@@ -402,6 +445,11 @@ function teardownRuntime(runtime: CachedRuntime) {
   }
   try {
     runtime.termDataSub?.dispose();
+  } catch {
+    // ignore
+  }
+  try {
+    runtime.linkProviderSub?.dispose();
   } catch {
     // ignore
   }
@@ -833,6 +881,9 @@ function createRuntime(args: {
 
   const fit = new FitAddon();
   term.loadAddon(fit);
+  const linkProviderSub = typeof term.registerLinkProvider === "function"
+    ? term.registerLinkProvider(createTerminalLinkProvider(term))
+    : null;
 
   const runtime: CachedRuntime = {
     key: args.sessionId,
@@ -874,6 +925,7 @@ function createRuntime(args: {
     ptyDataUnsub: null,
     ptyExitUnsub: null,
     termDataSub: null,
+    linkProviderSub,
     rendererInitStarted: false,
     inputEnabled: true,
     active: true,

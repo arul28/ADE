@@ -63,7 +63,7 @@ type ChatIosSimulatorPanelProps = {
   sessionId: string | null;
   laneId?: string | null;
   projectRoot: string | null;
-  onAddContext: (item: IosElementContextItem) => void;
+  onAddContext?: (item: IosElementContextItem) => void;
   onAddAttachment?: (attachment: AgentChatFileRef) => void;
   onInsertDraft?: (text: string) => void;
 };
@@ -1675,6 +1675,7 @@ export function ChatIosSimulatorPanel({
         }
         const itemSessionId = typeof event.item.metadata.chatSessionId === "string" ? event.item.metadata.chatSessionId : null;
         if (itemSessionId && sessionId && itemSessionId !== sessionId) return;
+        if (!onAddContext) return;
         onAddContext(event.item);
         setMessage(`Added ${event.item.componentId} from ADE CLI selection.`);
         return;
@@ -2115,6 +2116,10 @@ export function ChatIosSimulatorPanel({
   }, [onAddAttachment, snapshot]);
 
   const selectElementAt = useCallback(async (x: number, y: number, element: IosScreenElement | null) => {
+    if (!onAddContext) {
+      setMessage("Chat attachments are not available in this panel.");
+      return;
+    }
     setBusy(true);
     try {
       suppressNextSelectionEventRef.current = true;
@@ -2215,6 +2220,7 @@ export function ChatIosSimulatorPanel({
 
   const addSimulatorCaptureContext = useCallback(async (frame: PreviewCrop["frame"]) => {
     if (!snapshot?.screenshot.dataUrl) return;
+    if (!onAddContext) return;
     const capture = await attachSimulatorCapture(frame).catch(() => null);
     const captureFrame = capture?.frame ?? frame;
     const overlappingElements = snapshot.elements
@@ -2387,6 +2393,7 @@ export function ChatIosSimulatorPanel({
 
   const addPreviewCaptureContext = useCallback(async (frame: PreviewCrop["frame"]) => {
     if (!previewImage || !selectedPreviewTarget || !previewResult?.dataUrl) return;
+    if (!onAddContext) return;
     const capture = await attachPreviewCapture(frame).catch(() => null);
     const captureFrame = capture?.frame ?? frame;
     onAddContext({

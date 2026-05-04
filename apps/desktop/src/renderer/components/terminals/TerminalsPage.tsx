@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SidebarSimple } from "@phosphor-icons/react";
 import { PaneTilingLayout, type PaneConfig, type PaneSplit } from "../ui/PaneTilingLayout";
 import { useWorkSessions } from "./useWorkSessions";
@@ -13,6 +13,7 @@ import { sortLanesForTabs } from "../lanes/laneUtils";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
 import { formatSessionBundleMarkdown, triggerBrowserDownload } from "../../lib/transcriptExport";
 import { useAppStore } from "../../state/appStore";
+import { ADE_OPEN_BUILT_IN_BROWSER_EVENT } from "../../lib/openExternal";
 
 const TERMINALS_TILING_TREE: PaneSplit = {
   type: "split",
@@ -22,6 +23,13 @@ const TERMINALS_TILING_TREE: PaneSplit = {
     { node: { type: "pane", id: "view" }, defaultSize: 76, minSize: 40 },
   ],
 };
+
+const MIN_WORK_SIDEBAR_WIDTH_PCT = 26;
+const MAX_WORK_SIDEBAR_WIDTH_PCT = 55;
+
+function clampWorkSidebarWidthPct(widthPct: number): number {
+  return Math.max(MIN_WORK_SIDEBAR_WIDTH_PCT, Math.min(MAX_WORK_SIDEBAR_WIDTH_PCT, widthPct));
+}
 
 export function TerminalsPage() {
   const work = useWorkSessions();
@@ -34,6 +42,8 @@ export function TerminalsPage() {
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
   const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(new Set());
   const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
+  const workContentPaneRef = useRef<HTMLDivElement | null>(null);
+  const workSidebarPaneRef = useRef<HTMLDivElement | null>(null);
 
   const selectableSessions = useMemo(
     () => [...work.runningFiltered, ...work.awaitingInputFiltered, ...work.endedFiltered],
@@ -408,6 +418,16 @@ export function TerminalsPage() {
   }
 
   const workSidebarVisible = work.workSidebarOpen && work.viewMode !== "grid";
+  const { setViewMode, setWorkSidebarTab } = work;
+  useEffect(() => {
+    const openBrowserSidebar = () => {
+      setViewMode("tabs");
+      setWorkSidebarTab("browser");
+    };
+    window.addEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, openBrowserSidebar);
+    return () => window.removeEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, openBrowserSidebar);
+  }, [setViewMode, setWorkSidebarTab]);
+
   const expandSessionsPane = useCallback(() => {
     work.setWorkFocusSessionsHidden(false);
   }, [work]);
@@ -425,18 +445,43 @@ export function TerminalsPage() {
     if (totalWidth <= 0) return;
     const startX = event.clientX;
     const startWidthPct = work.workSidebarWidthPct;
+    let pendingWidthPct = clampWorkSidebarWidthPct(startWidthPct);
+    let animationFrame: number | null = null;
+    const applyWidth = (widthPct: number) => {
+      const nextWidthPct = clampWorkSidebarWidthPct(widthPct);
+      pendingWidthPct = nextWidthPct;
+      const contentPane = workContentPaneRef.current;
+      const sidebarPane = workSidebarPaneRef.current;
+      if (contentPane) contentPane.style.flexGrow = `${100 - nextWidthPct}`;
+      if (sidebarPane) sidebarPane.style.flexGrow = `${nextWidthPct}`;
+    };
+    const scheduleWidth = (widthPct: number) => {
+      pendingWidthPct = clampWorkSidebarWidthPct(widthPct);
+      if (animationFrame != null) return;
+      animationFrame = window.requestAnimationFrame(() => {
+        animationFrame = null;
+        applyWidth(pendingWidthPct);
+      });
+    };
     const onMove = (moveEvent: MouseEvent) => {
       const deltaPct = ((startX - moveEvent.clientX) / totalWidth) * 100;
-      work.setWorkSidebarWidthPct(startWidthPct + deltaPct);
+      scheduleWidth(startWidthPct + deltaPct);
     };
     const onUp = () => {
+      if (animationFrame != null) {
+        window.cancelAnimationFrame(animationFrame);
+        animationFrame = null;
+      }
+      applyWidth(pendingWidthPct);
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
+      work.setWorkSidebarWidthPct(pendingWidthPct);
     };
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
+    applyWidth(startWidthPct);
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
   }, [work]);
@@ -506,6 +551,7 @@ export function TerminalsPage() {
     () => (
       <div className="flex h-full min-h-0 min-w-0 overflow-hidden">
         <div
+          ref={workContentPaneRef}
           className="min-h-0 min-w-0 flex-1 basis-0 overflow-hidden"
           style={workSidebarVisible ? { flexGrow: 100 - work.workSidebarWidthPct } : undefined}
         >
@@ -520,6 +566,7 @@ export function TerminalsPage() {
               className="relative w-[5px] shrink-0 cursor-col-resize bg-white/[0.06] transition-colors hover:bg-[var(--color-accent)]/25 active:bg-[var(--color-accent)]/40"
             />
             <div
+              ref={workSidebarPaneRef}
               className="min-h-0 min-w-[280px] basis-0 overflow-hidden"
               style={{ flexGrow: work.workSidebarWidthPct, maxWidth: "55%" }}
             >

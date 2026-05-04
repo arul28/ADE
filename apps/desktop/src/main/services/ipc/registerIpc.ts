@@ -51,8 +51,12 @@ import type {
   AppControlSnapshotArgs,
   AppControlStopArgs,
   AppControlTypeTextArgs,
+  BuiltInBrowserAttachWebviewArgs,
   BuiltInBrowserBoundsArgs,
+  BuiltInBrowserCreateTabArgs,
   BuiltInBrowserNavigateArgs,
+  BuiltInBrowserSelectPointArgs,
+  BuiltInBrowserTabArgs,
   ReviewListRunsArgs,
   ReviewRun,
   ReviewRunDetail,
@@ -677,6 +681,7 @@ export type AppContext = {
   computerUseArtifactBrokerService: ReturnType<typeof createComputerUseArtifactBrokerService>;
   iosSimulatorService?: ReturnType<typeof createIosSimulatorService> | null;
   appControlService?: ReturnType<typeof createAppControlService> | null;
+  builtInBrowserService?: ReturnType<typeof createBuiltInBrowserService> | null;
   githubService: ReturnType<typeof createGithubService>;
   prService: ReturnType<typeof createPrService>;
   prPollingService: ReturnType<typeof createPrPollingService>;
@@ -1873,10 +1878,12 @@ export function registerIpc({
       case IPC.appControlClick:
       case IPC.appControlTypeText:
       case IPC.builtInBrowserNavigate:
+      case IPC.builtInBrowserCreateTab:
       case IPC.builtInBrowserReload:
       case IPC.builtInBrowserStartInspect:
       case IPC.builtInBrowserStopInspect:
       case IPC.builtInBrowserCaptureScreenshot:
+      case IPC.builtInBrowserSelectPoint:
         return 60_000;
       default:
         return 30_000;
@@ -2220,6 +2227,14 @@ export function registerIpc({
     };
   };
 
+  const parseBuiltInBrowserAttachWebviewArgs = (value: unknown, channel: string): BuiltInBrowserAttachWebviewArgs => {
+    const record = builtInBrowserRecord(value, channel, true);
+    const webContentsId = builtInBrowserNumber(record, "webContentsId", channel, { min: 1, max: Number.MAX_SAFE_INTEGER });
+    const tabId = optionalBuiltInBrowserString(record, "tabId", channel, 128);
+    if (!tabId) invalidBuiltInBrowserArg(channel, "tabId must be a non-empty string");
+    return { tabId, webContentsId };
+  };
+
   const parseBuiltInBrowserNavigateArgs = (value: unknown, channel: string): BuiltInBrowserNavigateArgs => {
     const record = builtInBrowserRecord(value, channel, true);
     const urlValue = record.url;
@@ -2230,7 +2245,48 @@ export function registerIpc({
     if (url.length > 4096 || url.includes("\0")) {
       invalidBuiltInBrowserArg(channel, "url is invalid");
     }
-    return { url };
+    const tabId = optionalBuiltInBrowserString(record, "tabId", channel, 128);
+    const newTab = record.newTab === true ? true : undefined;
+    return { url, tabId, newTab };
+  };
+
+  function optionalBuiltInBrowserString(
+    record: Record<string, unknown>,
+    field: string,
+    channel: string,
+    maxLength: number,
+  ): string | null | undefined {
+    const value = record[field];
+    if (value == null) return undefined;
+    if (typeof value !== "string") return invalidBuiltInBrowserArg(channel, `${field} must be a string`);
+    const trimmed = value.trim();
+    if (!trimmed.length) return null;
+    if (trimmed.length > maxLength || trimmed.includes("\0")) return invalidBuiltInBrowserArg(channel, `${field} is invalid`);
+    return trimmed;
+  }
+
+  const parseBuiltInBrowserTabArgs = (value: unknown, channel: string): BuiltInBrowserTabArgs => {
+    const record = builtInBrowserRecord(value, channel, true);
+    const tabId = optionalBuiltInBrowserString(record, "tabId", channel, 128);
+    if (!tabId) invalidBuiltInBrowserArg(channel, "tabId must be a non-empty string");
+    return { tabId };
+  };
+
+  const parseBuiltInBrowserCreateTabArgs = (value: unknown, channel: string): BuiltInBrowserCreateTabArgs => {
+    const record = builtInBrowserRecord(value, channel, false);
+    const url = optionalBuiltInBrowserString(record, "url", channel, 4096);
+    const activate = record.activate === false ? false : undefined;
+    return { url, activate };
+  };
+
+  const parseBuiltInBrowserSelectPointArgs = (value: unknown, channel: string): BuiltInBrowserSelectPointArgs => {
+    const record = builtInBrowserRecord(value, channel, true);
+    const includeScreenshot = record.includeScreenshot === false ? false : undefined;
+    return {
+      x: builtInBrowserNumber(record, "x", channel, { min: 0, max: 100_000 }),
+      y: builtInBrowserNumber(record, "y", channel, { min: 0, max: 100_000 }),
+      includeScreenshot,
+    };
   };
 
   const invalidAppControlArg = (channel: string, reason: string): never => {
@@ -6388,9 +6444,29 @@ export function registerIpc({
     return ensureBuiltInBrowser().setBounds(parseBuiltInBrowserBoundsArgs(arg, IPC.builtInBrowserSetBounds));
   });
 
+  ipcMain.handle(IPC.builtInBrowserAttachWebview, async (event, arg) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserAttachWebview, { windowMs: 10_000, max: 120 });
+    return ensureBuiltInBrowser().attachWebview(parseBuiltInBrowserAttachWebviewArgs(arg, IPC.builtInBrowserAttachWebview));
+  });
+
   ipcMain.handle(IPC.builtInBrowserNavigate, async (event, arg) => {
     guardBuiltInBrowserIpc(event, IPC.builtInBrowserNavigate, { windowMs: 60_000, max: 40 });
     return ensureBuiltInBrowser().navigate(parseBuiltInBrowserNavigateArgs(arg, IPC.builtInBrowserNavigate));
+  });
+
+  ipcMain.handle(IPC.builtInBrowserCreateTab, async (event, arg) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserCreateTab, { windowMs: 60_000, max: 40 });
+    return ensureBuiltInBrowser().createTab(parseBuiltInBrowserCreateTabArgs(arg, IPC.builtInBrowserCreateTab));
+  });
+
+  ipcMain.handle(IPC.builtInBrowserSwitchTab, async (event, arg) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserSwitchTab, { windowMs: 10_000, max: 120 });
+    return ensureBuiltInBrowser().switchTab(parseBuiltInBrowserTabArgs(arg, IPC.builtInBrowserSwitchTab));
+  });
+
+  ipcMain.handle(IPC.builtInBrowserCloseTab, async (event, arg) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserCloseTab, { windowMs: 10_000, max: 80 });
+    return ensureBuiltInBrowser().closeTab(parseBuiltInBrowserTabArgs(arg, IPC.builtInBrowserCloseTab));
   });
 
   ipcMain.handle(IPC.builtInBrowserReload, async (event) => {
@@ -6426,6 +6502,11 @@ export function registerIpc({
   ipcMain.handle(IPC.builtInBrowserCaptureScreenshot, async (event) => {
     guardBuiltInBrowserIpc(event, IPC.builtInBrowserCaptureScreenshot, { windowMs: 10_000, max: 30 });
     return ensureBuiltInBrowser().captureScreenshot();
+  });
+
+  ipcMain.handle(IPC.builtInBrowserSelectPoint, async (event, arg) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserSelectPoint, { windowMs: 10_000, max: 80 });
+    return ensureBuiltInBrowser().selectPoint(parseBuiltInBrowserSelectPointArgs(arg, IPC.builtInBrowserSelectPoint));
   });
 
   ipcMain.handle(IPC.builtInBrowserSelectCurrent, async (event) => {

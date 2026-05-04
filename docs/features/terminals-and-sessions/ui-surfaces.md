@@ -276,18 +276,30 @@ Tabs:
   whenever a file or commit is selected. The two share the row via
   the same min-height-aware flex layout as the lane detail view.
 - `files` — `FilesPage` mounted with `preferredLaneId={laneId}` and
-  `embedded={true}`. The embedded flag enables the
-  `ade-files-page-embedded` chrome so the file tree fits a narrow
-  column.
+  `embedded={true}`. The `embedded` prop drops the desktop title block,
+  the `View lane` button, the editor theme toggle, the `Open In` menu,
+  and the file count, and shrinks the workspace selector so the file
+  tree fits a narrow column.
 - `ios` — `ChatIosSimulatorPanel` for the active lane (no chat scope).
 - `app-control` — `ChatAppControlPanel` for the active lane.
+- `browser` — `ChatBuiltInBrowserPanel` over the shared
+  `WebContentsView`-backed built-in browser. Unlike the other tabs the
+  browser is not lane-scoped (one browser instance per app), but it
+  flows selections back to the active chat through the same dispatch
+  path. Switching off the tab and closing the sidebar both run
+  `hideBuiltInBrowserView()`, which calls
+  `window.ade.builtInBrowser.stopInspect()` and zeros the bounds with
+  `visible: false` so the underlying `WebContentsView` is detached
+  from the layout (otherwise it would float over neighbouring panes
+  because `WebContentsView` paints above DOM siblings).
 
 When the active Work session is a chat, the sidebar attaches selections
 to that chat by dispatching window events (`ade:agent-chat:add-attachment`,
-`add-ios-context`, `add-app-control-context`, `insert-draft`) carrying
-the chat session id; the corresponding `AgentChatPane` listens for the
-matching session id and feeds the payload into the same handlers that
-the in-pane drawers use. The sidebar also owns its own
+`add-ios-context`, `add-app-control-context`,
+`add-builtin-browser-context`, `insert-draft`) carrying the chat
+session id; the corresponding `AgentChatPane` listens for the matching
+session id and feeds the payload into the same handlers that the
+in-pane drawers use. The sidebar also owns its own
 `AppControlSession` / `IosSimulatorSession` subscriptions so it can
 detect lane mismatches (e.g. App Control was launched from a different
 lane) and disable attachment with a warning banner; the existing tool

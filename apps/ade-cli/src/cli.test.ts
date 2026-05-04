@@ -493,13 +493,24 @@ describe("ADE CLI", () => {
   });
 
   it("defaults workspaceRoot to CLI projectRoot when only --project-root is set", () => {
-    const roots = resolveRoots({
-      ...baseResolveOpts(),
-      projectRoot: "/cli/project-root",
-      workspaceRoot: null,
-    });
-    expect(roots.projectRoot).toBe("/cli/project-root");
-    expect(roots.workspaceRoot).toBe("/cli/project-root");
+    const prevProject = process.env.ADE_PROJECT_ROOT;
+    const prevWorkspace = process.env.ADE_WORKSPACE_ROOT;
+    try {
+      delete process.env.ADE_PROJECT_ROOT;
+      delete process.env.ADE_WORKSPACE_ROOT;
+      const roots = resolveRoots({
+        ...baseResolveOpts(),
+        projectRoot: "/cli/project-root",
+        workspaceRoot: null,
+      });
+      expect(roots.projectRoot).toBe("/cli/project-root");
+      expect(roots.workspaceRoot).toBe("/cli/project-root");
+    } finally {
+      if (prevProject === undefined) delete process.env.ADE_PROJECT_ROOT;
+      else process.env.ADE_PROJECT_ROOT = prevProject;
+      if (prevWorkspace === undefined) delete process.env.ADE_WORKSPACE_ROOT;
+      else process.env.ADE_WORKSPACE_ROOT = prevWorkspace;
+    }
   });
 
   it("still honors ADE_WORKSPACE_ROOT when both project and workspace overrides exist", () => {
@@ -1453,6 +1464,73 @@ describe("ADE CLI", () => {
     if (type.kind !== "execute") return;
     expect(type.steps[0]?.params).toMatchObject({
       arguments: { domain: "app_control", action: "typeText", args: { text: "hello" } },
+    });
+
+    const scroll = buildCliPlan(["app-control", "scroll", "--x", "120", "--y", "420", "--delta-y", "600"]);
+    expect(scroll.kind).toBe("execute");
+    if (scroll.kind !== "execute") return;
+    expect(scroll.steps[0]?.params).toMatchObject({
+      arguments: { domain: "app_control", action: "scroll", args: { x: 120, y: 420, deltaY: 600 } },
+    });
+
+    const attachTarget = buildCliPlan(["app-control", "attach-target", "--target", "target-1"]);
+    expect(attachTarget.kind).toBe("execute");
+    if (attachTarget.kind !== "execute") return;
+    expect(attachTarget.steps[0]?.params).toMatchObject({
+      arguments: { domain: "app_control", action: "attachToTarget", argsList: ["target-1"] },
+    });
+  });
+
+  it("browser commands map to built-in browser actions", () => {
+    const open = buildCliPlan(["browser", "open", "localhost:5173", "--new-tab"]);
+    expect(open.kind).toBe("execute");
+    if (open.kind !== "execute") return;
+    expect(open.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "built_in_browser",
+        action: "navigate",
+        args: { url: "localhost:5173", newTab: true },
+      },
+    });
+
+    const targetedOpen = buildCliPlan(["browser", "open", "https://example.com", "--tab", "tab-1"]);
+    expect(targetedOpen.kind).toBe("execute");
+    if (targetedOpen.kind !== "execute") return;
+    expect(targetedOpen.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "built_in_browser",
+        action: "navigate",
+        args: { url: "https://example.com", tabId: "tab-1" },
+      },
+    });
+
+    const backgroundTab = buildCliPlan(["browser", "new-tab", "https://example.com", "--background"]);
+    expect(backgroundTab.kind).toBe("execute");
+    if (backgroundTab.kind !== "execute") return;
+    expect(backgroundTab.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "built_in_browser",
+        action: "createTab",
+        args: { url: "https://example.com", activate: false },
+      },
+    });
+
+    const switchTab = buildCliPlan(["browser", "switch", "--tab", "tab-1"]);
+    expect(switchTab.kind).toBe("execute");
+    if (switchTab.kind !== "execute") return;
+    expect(switchTab.steps[0]?.params).toMatchObject({
+      arguments: { domain: "built_in_browser", action: "switchTab", args: { tabId: "tab-1" } },
+    });
+
+    const selectPoint = buildCliPlan(["browser", "select", "--x", "120", "--y", "420", "--no-screenshot"]);
+    expect(selectPoint.kind).toBe("execute");
+    if (selectPoint.kind !== "execute") return;
+    expect(selectPoint.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "built_in_browser",
+        action: "selectPoint",
+        args: { x: 120, y: 420, includeScreenshot: false },
+      },
     });
   });
 

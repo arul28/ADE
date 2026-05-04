@@ -29,7 +29,7 @@ type ChatAppControlPanelProps = {
   sessionId: string | null;
   laneId: string | null;
   projectRoot: string | null;
-  onAddContext: (item: AppControlContextItem) => void;
+  onAddContext?: (item: AppControlContextItem) => void;
   onAddAttachment?: (attachment: AgentChatFileRef) => void;
   onInsertDraft?: (text: string) => void;
   onShowTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
@@ -690,6 +690,9 @@ export function ChatAppControlPanel({
       }
       if (screenshotBlank) {
         throw new Error("The renderer is attached but the screenshot is blank. Open the app window or menu bar item, then refresh the snapshot before attaching context.");
+      }
+      if (!onAddContext) {
+        throw new Error("Chat attachments are not available in this panel.");
       }
       const result = await window.ade.appControl.selectPoint({
         projectRoot,

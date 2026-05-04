@@ -1,15 +1,20 @@
-import { WebContentsView, nativeImage, session } from "electron";
+import { WebContentsView, nativeImage, session, webContents as electronWebContents } from "electron";
 import type { BrowserWindow, WebContents } from "electron";
 import { randomUUID } from "node:crypto";
 import type {
   BuiltInBrowserBoundsArgs,
+  BuiltInBrowserAttachWebviewArgs,
   BuiltInBrowserContextItem,
+  BuiltInBrowserCreateTabArgs,
   BuiltInBrowserEventPayload,
   BuiltInBrowserFrame,
   BuiltInBrowserNavigateArgs,
   BuiltInBrowserScreenshot,
+  BuiltInBrowserSelectPointArgs,
   BuiltInBrowserSelectResult,
   BuiltInBrowserStatus,
+  BuiltInBrowserTab,
+  BuiltInBrowserTabArgs,
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 
@@ -17,6 +22,7 @@ const BROWSER_PARTITION: BuiltInBrowserStatus["partition"] = "persist:ade-browse
 const SCREENSHOT_TIMEOUT_MS = 3_000;
 const ELEMENT_SCREENSHOT_TIMEOUT_MS = 2_000;
 const DEBUGGER_TIMEOUT_MS = 3_000;
+const MAX_BROWSER_TABS = 10;
 
 type DebuggerMessageListener = (
   event: Electron.Event,
@@ -60,13 +66,25 @@ type CdpScreenshotResponse = {
   data?: string;
 };
 
+type CdpGetNodeForLocationResponse = {
+  backendNodeId?: number;
+};
+
+type BrowserTabState = {
+  id: string;
+  view: WebContentsView | null;
+  webContents: WebContents;
+  ownsWebContents: boolean;
+};
+
 export function createBuiltInBrowserService(args: {
   getLogger?: () => Logger;
   onEvent?: ((payload: BuiltInBrowserEventPayload) => void) | null;
 }) {
   let win: BrowserWindow | null = null;
   let winClosedListener: (() => void) | null = null;
-  let view: WebContentsView | null = null;
+  let tabs: BrowserTabState[] = [];
+  let activeTabId: string | null = null;
   let bounds: BuiltInBrowserFrame = { x: 0, y: 0, width: 0, height: 0 };
   let visible = false;
   let inspecting = false;
@@ -76,6 +94,8 @@ export function createBuiltInBrowserService(args: {
   let lastSelectedItem: BuiltInBrowserContextItem | null = null;
   let handlingInspectNode = false;
   let browserSessionConfigured = false;
+  let lastEmittedStatusKey: string | null = null;
+  const configuredWebContents = new WeakSet<WebContents>();
 
   const logger = (): Logger | null => {
     try {
@@ -96,7 +116,16 @@ export function createBuiltInBrowserService(args: {
   };
 
   const emitStatus = (): void => {
-    emit({ type: "status", status: getStatus() });
+    const status = getStatus();
+    let key: string | null = null;
+    try {
+      key = JSON.stringify(status);
+    } catch {
+      key = null;
+    }
+    if (key !== null && key === lastEmittedStatusKey) return;
+    lastEmittedStatusKey = key;
+    emit({ type: "status", status });
   };
 
   const emitError = (error: unknown): void => {
@@ -105,37 +134,59 @@ export function createBuiltInBrowserService(args: {
     emit({ type: "error", message, occurredAt: new Date().toISOString() });
   };
 
-  const currentWebContents = (): WebContents | null => {
-    const wc = view?.webContents ?? null;
-    if (!wc || wc.isDestroyed()) return null;
-    return wc;
+  const stopInspectQuietly = async (logKey: string): Promise<void> => {
+    try {
+      await stopInspect();
+    } catch (error) {
+      logger()?.debug(logKey, {
+        err: error instanceof Error ? error.message : String(error),
+      });
+    }
   };
 
-  const ensureView = (): WebContentsView => {
-    if (view && !view.webContents.isDestroyed()) return view;
+  const removeTabViewsFromWindow = (): void => {
+    if (!win || win.isDestroyed()) return;
+    for (const tab of tabs) {
+      if (!tab.view) continue;
+      try {
+        win.contentView.removeChildView(tab.view);
+      } catch {
+        // ignore stale view/window links
+      }
+    }
+  };
 
-    inspecting = false;
-    debuggerAttachedForInspect = false;
-    debuggerMessageListener = null;
-    debuggerDetachListener = null;
-    configureBrowserSession();
+  const pruneDestroyedTabs = (): void => {
+    const nextTabs = tabs.filter((tab) => !tab.webContents.isDestroyed());
+    if (nextTabs.length !== tabs.length) {
+      tabs = nextTabs;
+    }
+    if (activeTabId && !tabs.some((tab) => tab.id === activeTabId)) {
+      activeTabId = tabs[0]?.id ?? null;
+      clearSelectionInternal();
+    }
+  };
 
-    const nextView = new WebContentsView({
-      webPreferences: {
-        partition: BROWSER_PARTITION,
-        nodeIntegration: false,
-        contextIsolation: true,
-        sandbox: true,
-        webSecurity: true,
-      },
-    });
-    nextView.setBackgroundColor("#ffffff");
-    nextView.setBounds(toElectronRect(bounds));
-    nextView.setVisible(visible);
+  const activeTab = (): BrowserTabState | null => {
+    pruneDestroyedTabs();
+    const tab = tabs.find((entry) => entry.id === activeTabId) ?? tabs[0] ?? null;
+    if (!tab || tab.webContents.isDestroyed()) return null;
+    return tab;
+  };
 
-    const wc = nextView.webContents;
+  const currentWebContents = (): WebContents | null => activeTab()?.webContents ?? null;
+
+  const clearSelectionInternal = (): void => {
+    if (!lastSelectedItem) return;
+    lastSelectedItem = null;
+    emit({ type: "selection-cleared", item: null, clearedAt: new Date().toISOString() });
+  };
+
+  const configureBrowserWebContents = (wc: WebContents): void => {
+    if (configuredWebContents.has(wc)) return;
+    configuredWebContents.add(wc);
     wc.setWindowOpenHandler(({ url }) => {
-      void navigate({ url }).catch(emitError);
+      void navigate({ url, newTab: true }).catch(emitError);
       return { action: "deny" };
     });
     wc.on("will-navigate", (event, url) => {
@@ -145,8 +196,14 @@ export function createBuiltInBrowserService(args: {
     });
     wc.on("did-start-loading", emitStatus);
     wc.on("did-stop-loading", emitStatus);
-    wc.on("did-navigate", emitStatus);
-    wc.on("did-navigate-in-page", emitStatus);
+    wc.on("did-navigate", () => {
+      clearSelectionInternal();
+      emitStatus();
+    });
+    wc.on("did-navigate-in-page", () => {
+      clearSelectionInternal();
+      emitStatus();
+    });
     wc.on("page-title-updated", emitStatus);
     wc.on("render-process-gone", (_event, details) => {
       logger()?.warn("built_in_browser.render_process_gone", {
@@ -165,19 +222,73 @@ export function createBuiltInBrowserService(args: {
       emitError(new Error(errorDescription || `Browser load failed with code ${errorCode}`));
       emitStatus();
     });
-
-    view = nextView;
-    attachViewToCurrentWindow();
-    return nextView;
   };
 
-  const attachViewToCurrentWindow = (): void => {
-    if (!view || !win || win.isDestroyed()) return;
-    if (!win.contentView.children.includes(view)) {
-      win.contentView.addChildView(view);
+  const createTabState = (): BrowserTabState => {
+    configureBrowserSession();
+
+    const nextView = new WebContentsView({
+      webPreferences: {
+        partition: BROWSER_PARTITION,
+        nodeIntegration: false,
+        contextIsolation: true,
+        sandbox: true,
+        webSecurity: true,
+        backgroundThrottling: true,
+      },
+    });
+    nextView.setBackgroundColor("#111827");
+    nextView.setBounds(toElectronRect(bounds));
+    nextView.setVisible(false);
+
+    const wc = nextView.webContents;
+    configureBrowserWebContents(wc);
+    return {
+      id: `tab-${randomUUID()}`,
+      view: nextView,
+      webContents: wc,
+      ownsWebContents: true,
+    };
+  };
+
+  const ensureActiveTab = (): BrowserTabState => {
+    const existing = activeTab();
+    if (existing) return existing;
+    const tab = createTabState();
+    tabs = [...tabs, tab];
+    activeTabId = tab.id;
+    attachViewsToCurrentWindow();
+    emitStatus();
+    return tab;
+  };
+
+  const attachViewsToCurrentWindow = (): void => {
+    if (!win || win.isDestroyed()) return;
+    const electronRect = toElectronRect(bounds);
+    for (const tab of tabs) {
+      if (tab.webContents.isDestroyed()) continue;
+      if (!tab.view) {
+        applyTabLifecycle(tab, tab.id === activeTabId);
+        continue;
+      }
+      if (!win.contentView.children.includes(tab.view)) {
+        win.contentView.addChildView(tab.view);
+      }
+      const isActive = tab.id === activeTabId;
+      if (isActive) tab.view.setBounds(electronRect);
+      tab.view.setVisible(visible && isActive);
+      applyTabLifecycle(tab, isActive);
     }
-    view.setBounds(toElectronRect(bounds));
-    view.setVisible(visible);
+  };
+
+  const applyTabLifecycle = (tab: BrowserTabState, active: boolean): void => {
+    const wc = tab.webContents;
+    if (wc.isDestroyed()) return;
+    try {
+      wc.setAudioMuted(!active);
+    } catch {
+      // ignore optional platform support differences
+    }
   };
 
   const configureBrowserSession = (): void => {
@@ -205,13 +316,7 @@ export function createBuiltInBrowserService(args: {
       win.removeListener("closed", winClosedListener);
       winClosedListener = null;
     }
-    if (view && win && !win.isDestroyed()) {
-      try {
-        win.contentView.removeChildView(view);
-      } catch {
-        // ignore stale view/window links
-      }
-    }
+    removeTabViewsFromWindow();
 
     win = nextWin;
     winClosedListener = () => {
@@ -220,17 +325,29 @@ export function createBuiltInBrowserService(args: {
       emitStatus();
     };
     win.once("closed", winClosedListener);
-    attachViewToCurrentWindow();
+    attachViewsToCurrentWindow();
     emitStatus();
   };
 
   function getStatus(): BuiltInBrowserStatus {
-    const wc = currentWebContents();
+    pruneDestroyedTabs();
+    const currentTab = activeTab();
+    const wc = currentTab?.webContents ?? null;
+    const tabSnapshots = tabs
+      .filter((tab) => !tab.webContents.isDestroyed())
+      .map(tabStatus);
     return {
-      attached: Boolean(win && !win.isDestroyed() && view && win.contentView.children.includes(view)),
+      attached: Boolean(
+        win
+        && !win.isDestroyed()
+        && currentTab
+        && (!currentTab.view || win.contentView.children.includes(currentTab.view))
+      ),
       partition: BROWSER_PARTITION,
       visible,
       bounds,
+      activeTabId: currentTab?.id ?? null,
+      tabs: tabSnapshots,
       url: wc ? emptyToNull(wc.getURL()) : null,
       title: wc ? emptyToNull(wc.getTitle()) : null,
       isLoading: wc?.isLoading() ?? false,
@@ -242,63 +359,214 @@ export function createBuiltInBrowserService(args: {
   }
 
   async function setBounds(nextBounds: BuiltInBrowserBoundsArgs): Promise<BuiltInBrowserStatus> {
-    bounds = {
+    const normalized: BuiltInBrowserFrame = {
       x: normalizeDimension(nextBounds.x),
       y: normalizeDimension(nextBounds.y),
       width: normalizeDimension(nextBounds.width),
       height: normalizeDimension(nextBounds.height),
     };
-    visible = nextBounds.visible && bounds.width > 0 && bounds.height > 0;
-    if (visible || view) {
-      const browserView = ensureView();
-      browserView.setBounds(toElectronRect(bounds));
-      browserView.setVisible(visible);
-      attachViewToCurrentWindow();
+    const nextVisible = nextBounds.visible && normalized.width > 0 && normalized.height > 0;
+    const unchanged = (
+      normalized.x === bounds.x
+      && normalized.y === bounds.y
+      && normalized.width === bounds.width
+      && normalized.height === bounds.height
+      && nextVisible === visible
+    );
+    if (unchanged) return getStatus();
+    bounds = normalized;
+    visible = nextVisible;
+    if (visible || tabs.length) {
+      if (visible) ensureActiveTab();
+      attachViewsToCurrentWindow();
     }
+    emitStatus();
+    return getStatus();
+  }
+
+  async function attachWebview(input: BuiltInBrowserAttachWebviewArgs): Promise<BuiltInBrowserStatus> {
+    const tabId = input.tabId?.trim();
+    if (!tabId) throw new Error("Browser tab id is required.");
+    const tab = tabs.find((entry) => entry.id === tabId);
+    if (!tab) throw new Error(`Browser tab not found: ${tabId}`);
+
+    const nextWebContents = electronWebContents.fromId(input.webContentsId);
+    if (!nextWebContents || nextWebContents.isDestroyed()) {
+      throw new Error("Browser webview is not available.");
+    }
+
+    configureBrowserSession();
+    configureBrowserWebContents(nextWebContents);
+
+    if (tab.webContents.id === nextWebContents.id && !tab.ownsWebContents && !tab.view) {
+      attachViewsToCurrentWindow();
+      emitStatus();
+      return getStatus();
+    }
+
+    if (tab.id === activeTabId) {
+      await stopInspectQuietly("built_in_browser.attach_webview_stop_inspect_failed");
+    }
+
+    const previousView = tab.view;
+    const previousWebContents = tab.webContents;
+    const previousOwned = tab.ownsWebContents;
+
+    if (previousView && win && !win.isDestroyed()) {
+      try {
+        win.contentView.removeChildView(previousView);
+      } catch {
+        // ignore stale view/window links
+      }
+    }
+
+    tab.view = null;
+    tab.webContents = nextWebContents;
+    tab.ownsWebContents = false;
+    if (!activeTabId) activeTabId = tab.id;
+
+    if (previousOwned && previousWebContents.id !== nextWebContents.id && !previousWebContents.isDestroyed()) {
+      try {
+        previousWebContents.close();
+      } catch {
+        // ignore shutdown races
+      }
+    }
+
+    clearSelectionInternal();
+    attachViewsToCurrentWindow();
     emitStatus();
     return getStatus();
   }
 
   async function navigate(input: BuiltInBrowserNavigateArgs): Promise<BuiltInBrowserStatus> {
     const targetUrl = normalizeBrowserUrl(input.url);
-    const wc = ensureView().webContents;
-    attachViewToCurrentWindow();
+    const switchingTabs = input.newTab || (input.tabId && input.tabId !== activeTabId);
+    if (switchingTabs) {
+      await stopInspectQuietly("built_in_browser.navigate_stop_inspect_failed");
+      clearSelectionInternal();
+    }
+    if (input.newTab && tabs.length >= MAX_BROWSER_TABS) {
+      throw new Error(`ADE browser is limited to ${MAX_BROWSER_TABS} tabs. Close a tab before opening another.`);
+    }
+    let tab = input.newTab ? createTabState() : null;
+    if (tab) {
+      tabs = [...tabs, tab];
+      activeTabId = tab.id;
+    } else if (input.tabId) {
+      tab = tabs.find((entry) => entry.id === input.tabId) ?? null;
+      if (!tab) throw new Error(`Browser tab not found: ${input.tabId}`);
+      activeTabId = tab.id;
+    } else {
+      tab = ensureActiveTab();
+    }
+    const wc = tab.webContents;
+    attachViewsToCurrentWindow();
     await wc.loadURL(targetUrl);
     emitStatus();
     return getStatus();
   }
 
+  async function createTab(input: BuiltInBrowserCreateTabArgs = {}): Promise<BuiltInBrowserStatus> {
+    const willActivate = input.activate !== false || !activeTabId;
+    if (willActivate) {
+      await stopInspectQuietly("built_in_browser.create_tab_stop_inspect_failed");
+      clearSelectionInternal();
+    }
+    if (tabs.length >= MAX_BROWSER_TABS) {
+      throw new Error(`ADE browser is limited to ${MAX_BROWSER_TABS} tabs. Close a tab before opening another.`);
+    }
+    const tab = createTabState();
+    tabs = [...tabs, tab];
+    if (willActivate) activeTabId = tab.id;
+    attachViewsToCurrentWindow();
+    if (input.url) {
+      await tab.webContents.loadURL(normalizeBrowserUrl(input.url));
+    }
+    emitStatus();
+    return getStatus();
+  }
+
+  async function switchTab(input: BuiltInBrowserTabArgs): Promise<BuiltInBrowserStatus> {
+    const tabId = input.tabId?.trim();
+    if (!tabId) throw new Error("Browser tab id is required.");
+    const tab = tabs.find((entry) => entry.id === tabId);
+    if (!tab) throw new Error(`Browser tab not found: ${tabId}`);
+    if (tab.id !== activeTabId) {
+      await stopInspectQuietly("built_in_browser.switch_tab_stop_inspect_failed");
+    }
+    activeTabId = tab.id;
+    clearSelectionInternal();
+    attachViewsToCurrentWindow();
+    emitStatus();
+    return getStatus();
+  }
+
+  async function closeTab(input: BuiltInBrowserTabArgs): Promise<BuiltInBrowserStatus> {
+    const tabId = input.tabId?.trim();
+    if (!tabId) throw new Error("Browser tab id is required.");
+    const index = tabs.findIndex((entry) => entry.id === tabId);
+    if (index < 0) throw new Error(`Browser tab not found: ${tabId}`);
+    if (tabId === activeTabId) {
+      await stopInspectQuietly("built_in_browser.close_tab_stop_inspect_failed");
+    }
+    const [removed] = tabs.splice(index, 1);
+    if (removed) {
+      if (removed.view && win && !win.isDestroyed()) {
+        try {
+          win.contentView.removeChildView(removed.view);
+        } catch {
+          // ignore stale view/window links
+        }
+      }
+      if (removed.ownsWebContents) {
+        try {
+          removed.webContents.close();
+        } catch {
+          // ignore shutdown races
+        }
+      }
+    }
+    if (activeTabId === tabId) {
+      activeTabId = tabs[Math.max(0, index - 1)]?.id ?? tabs[0]?.id ?? null;
+      clearSelectionInternal();
+    }
+    attachViewsToCurrentWindow();
+    emitStatus();
+    return getStatus();
+  }
+
   async function reload(): Promise<BuiltInBrowserStatus> {
-    const wc = ensureView().webContents;
+    const wc = ensureActiveTab().webContents;
     wc.reload();
     emitStatus();
     return getStatus();
   }
 
   async function goBack(): Promise<BuiltInBrowserStatus> {
-    const wc = ensureView().webContents;
+    const wc = ensureActiveTab().webContents;
     if (wc.canGoBack()) wc.goBack();
     emitStatus();
     return getStatus();
   }
 
   async function goForward(): Promise<BuiltInBrowserStatus> {
-    const wc = ensureView().webContents;
+    const wc = ensureActiveTab().webContents;
     if (wc.canGoForward()) wc.goForward();
     emitStatus();
     return getStatus();
   }
 
   async function stop(): Promise<BuiltInBrowserStatus> {
-    const wc = ensureView().webContents;
+    const wc = ensureActiveTab().webContents;
     if (wc.isLoading()) wc.stop();
     emitStatus();
     return getStatus();
   }
 
   async function startInspect(): Promise<BuiltInBrowserStatus> {
-    const wc = ensureView().webContents;
-    attachViewToCurrentWindow();
+    const wc = ensureActiveTab().webContents;
+    attachViewsToCurrentWindow();
     attachDebuggerListeners(wc);
     try {
       await ensureDebuggerAttached(wc, "inspect");
@@ -350,8 +618,8 @@ export function createBuiltInBrowserService(args: {
   }
 
   async function captureScreenshot(): Promise<BuiltInBrowserScreenshot> {
-    const wc = ensureView().webContents;
-    attachViewToCurrentWindow();
+    const wc = ensureActiveTab().webContents;
+    attachViewsToCurrentWindow();
     try {
       return await capturePageScreenshot(wc);
     } catch (error) {
@@ -359,6 +627,48 @@ export function createBuiltInBrowserService(args: {
         err: error instanceof Error ? error.message : String(error),
       });
       return captureCdpScreenshot(wc);
+    }
+  }
+
+  async function selectPoint(input: BuiltInBrowserSelectPointArgs): Promise<BuiltInBrowserSelectResult> {
+    const wc = ensureActiveTab().webContents;
+    const x = normalizeDimension(input.x);
+    const y = normalizeDimension(input.y);
+    const attachedHere = await ensureDebuggerAttached(wc, "screenshot");
+    try {
+      await sendDebuggerCommand(wc, "DOM.enable");
+      await sendDebuggerCommand(wc, "Runtime.enable");
+      const result = await sendDebuggerCommand<CdpGetNodeForLocationResponse>(wc, "DOM.getNodeForLocation", {
+        x,
+        y,
+        includeUserAgentShadowDOM: true,
+        ignorePointerEventsNone: true,
+      });
+      if (!result.backendNodeId) {
+        return { item: null };
+      }
+      const metadata = await readNodeMetadata(wc, result.backendNodeId);
+      const screenshotDataUrl = input.includeScreenshot === false
+        ? null
+        : await captureElementScreenshot(wc, metadata.frame, metadata.viewport).catch((error) => {
+            logger()?.debug("built_in_browser.point_element_screenshot_failed", {
+              err: error instanceof Error ? error.message : String(error),
+            });
+            return null;
+          });
+      const item = createContextItem(wc, metadata, screenshotDataUrl);
+      lastSelectedItem = item;
+      emit({ type: "selection", item });
+      emitStatus();
+      return { item };
+    } finally {
+      if (attachedHere && !inspecting) {
+        try {
+          wc.debugger.detach();
+        } catch {
+          // ignore debugger detach races
+        }
+      }
     }
   }
 
@@ -370,8 +680,11 @@ export function createBuiltInBrowserService(args: {
   }
 
   async function clearSelection(): Promise<{ ok: true }> {
-    lastSelectedItem = null;
-    emit({ type: "selection-cleared", item: null, clearedAt: new Date().toISOString() });
+    if (lastSelectedItem) {
+      clearSelectionInternal();
+    } else {
+      emit({ type: "selection-cleared", item: null, clearedAt: new Date().toISOString() });
+    }
     emitStatus();
     return { ok: true };
   }
@@ -382,20 +695,19 @@ export function createBuiltInBrowserService(args: {
       win.removeListener("closed", winClosedListener);
       winClosedListener = null;
     }
-    if (view && win && !win.isDestroyed()) {
-      try {
-        win.contentView.removeChildView(view);
-      } catch {
-        // ignore stale view/window links
+    removeTabViewsFromWindow();
+    for (const tab of tabs) {
+      if (tab.ownsWebContents) {
+        try {
+          tab.webContents.close();
+        } catch {
+          // ignore shutdown races
+        }
       }
     }
-    try {
-      view?.webContents.close();
-    } catch {
-      // ignore shutdown races
-    }
     win = null;
-    view = null;
+    tabs = [];
+    activeTabId = null;
   }
 
   const attachDebuggerListeners = (wc: WebContents): void => {
@@ -476,22 +788,7 @@ export function createBuiltInBrowserService(args: {
         });
         return null;
       });
-      const selectedAt = new Date().toISOString();
-      const item: BuiltInBrowserContextItem = {
-        kind: "built_in_browser_element",
-        id: `built-in-browser:${randomUUID()}`,
-        provider: "cdp",
-        componentId: buildComponentId(metadata),
-        url: metadata.url ?? emptyToNull(wc.getURL()),
-        title: metadata.title ?? emptyToNull(wc.getTitle()),
-        sourceFile: null,
-        sourceLine: null,
-        frame: metadata.frame,
-        pixelFrame: scaleFrame(metadata.frame, metadata.pixelRatio),
-        metadata: metadata.metadata,
-        screenshotDataUrl,
-        selectedAt,
-      };
+      const item = createContextItem(wc, metadata, screenshotDataUrl);
       lastSelectedItem = item;
       emit({ type: "selection", item });
       await stopInspect();
@@ -506,6 +803,26 @@ export function createBuiltInBrowserService(args: {
       handlingInspectNode = false;
     }
   };
+
+  const createContextItem = (
+    wc: WebContents,
+    metadata: NodeMetadata,
+    screenshotDataUrl: string | null,
+  ): BuiltInBrowserContextItem => ({
+    kind: "built_in_browser_element",
+    id: `built-in-browser:${randomUUID()}`,
+    provider: "cdp",
+    componentId: buildComponentId(metadata),
+    url: metadata.url ?? emptyToNull(wc.getURL()),
+    title: metadata.title ?? emptyToNull(wc.getTitle()),
+    sourceFile: null,
+    sourceLine: null,
+    frame: metadata.frame,
+    pixelFrame: scaleFrame(metadata.frame, metadata.pixelRatio),
+    metadata: metadata.metadata,
+    screenshotDataUrl,
+    selectedAt: new Date().toISOString(),
+  });
 
   const readNodeMetadata = async (
     wc: WebContents,
@@ -609,7 +926,11 @@ export function createBuiltInBrowserService(args: {
     attachToWindow,
     getStatus,
     setBounds,
+    attachWebview,
     navigate,
+    createTab,
+    switchTab,
+    closeTab,
     reload,
     goBack,
     goForward,
@@ -617,11 +938,14 @@ export function createBuiltInBrowserService(args: {
     startInspect,
     stopInspect,
     captureScreenshot,
+    selectPoint,
     selectCurrent,
     clearSelection,
     dispose,
   };
 }
+
+export type BuiltInBrowserService = ReturnType<typeof createBuiltInBrowserService>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -630,6 +954,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function emptyToNull(value: string): string | null {
   const trimmed = value.trim();
   return trimmed.length ? trimmed : null;
+}
+
+function tabStatus(tab: BrowserTabState): BuiltInBrowserTab {
+  const wc = tab.webContents;
+  return {
+    id: tab.id,
+    url: wc.isDestroyed() ? null : emptyToNull(wc.getURL()),
+    title: wc.isDestroyed() ? null : emptyToNull(wc.getTitle()),
+    isLoading: wc.isDestroyed() ? false : wc.isLoading(),
+    canGoBack: wc.isDestroyed() ? false : wc.canGoBack(),
+    canGoForward: wc.isDestroyed() ? false : wc.canGoForward(),
+  };
 }
 
 function normalizeDimension(value: number): number {
@@ -643,11 +979,14 @@ function normalizeBrowserUrl(rawUrl: string): string {
 
   const localhostLike = /^(localhost|127(?:\.\d{1,3}){3}|\[::1\])(?::|\/|$)/i.test(trimmed);
   const hasScheme = /^[a-zA-Z][a-zA-Z\d+.-]*:/.test(trimmed);
-  const candidate = localhostLike
-    ? `http://${trimmed}`
-    : hasScheme
-      ? trimmed
-      : `https://${trimmed}`;
+  let candidate: string;
+  if (localhostLike) {
+    candidate = `http://${trimmed}`;
+  } else if (hasScheme) {
+    candidate = trimmed;
+  } else {
+    candidate = `https://${trimmed}`;
+  }
 
   const parsed = new URL(candidate);
   if (parsed.protocol === "about:") {

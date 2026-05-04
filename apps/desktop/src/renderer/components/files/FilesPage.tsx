@@ -1303,7 +1303,17 @@ export function FilesPage({
         });
         setError(err instanceof Error ? err.message : String(err));
       });
-  }, [selectedLaneId]);
+    // Workspaces are listed once on mount; lane changes are reconciled by the effect below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Reconcile the active workspace when the preferred lane changes (without refetching).
+  useEffect(() => {
+    if (!preferredLaneId || !workspaces.length) return;
+    const nextWorkspaceId = defaultFilesWorkspaceId(workspaces, selectedLaneId);
+    if (!nextWorkspaceId) return;
+    setWorkspaceId((current) => (current === nextWorkspaceId ? current : nextWorkspaceId));
+  }, [preferredLaneId, selectedLaneId, workspaces]);
 
   useEffect(() => {
     if (workspaceId || !workspaces.length) return;
@@ -2297,26 +2307,44 @@ export function FilesPage({
       style={{ background: COLORS.pageBg }}
     >
       {/* Header bar */}
-      <div style={{ padding: "0 24px", height: 64, display: "flex", alignItems: "center", gap: 20, background: "transparent", borderBottom: `1px solid ${COLORS.border}` }} data-tour="files.header">
+      <div
+        style={{
+          padding: embedded ? "0 8px" : "0 24px",
+          height: embedded ? 36 : 64,
+          display: "flex",
+          alignItems: "center",
+          gap: embedded ? 6 : 20,
+          background: "transparent",
+          borderBottom: `1px solid ${COLORS.border}`,
+        }}
+        data-tour="files.header"
+      >
         {/* Numbered title group */}
-        <div className="flex items-center gap-2 shrink-0">
-          <span style={{ fontFamily: MONO_FONT, fontSize: 10, fontWeight: 700, letterSpacing: "1px", color: COLORS.accent }}>03</span>
-          <FolderOpen size={18} weight="fill" style={{ color: COLORS.accent }} />
-          <span style={{ fontFamily: SANS_FONT, fontSize: 20, fontWeight: 700, color: COLORS.textPrimary }}>FILES</span>
-          <span style={inlineBadge(COLORS.accent, { fontSize: 9 })}>{workspaces.length} WS</span>
-        </div>
+        {embedded ? null : (
+          <div className="flex items-center gap-2 shrink-0">
+            <span style={{ fontFamily: MONO_FONT, fontSize: 10, fontWeight: 700, letterSpacing: "1px", color: COLORS.accent }}>03</span>
+            <FolderOpen size={18} weight="fill" style={{ color: COLORS.accent }} />
+            <span style={{ fontFamily: SANS_FONT, fontSize: 20, fontWeight: 700, color: COLORS.textPrimary }}>FILES</span>
+            <span style={inlineBadge(COLORS.accent, { fontSize: 9 })}>{workspaces.length} WS</span>
+          </div>
+        )}
 
         {/* Workspace selector */}
-        <div className="flex items-center gap-1" data-tour="files.workspaceSelector">
+        <div className="flex min-w-0 items-center gap-1" data-tour="files.workspaceSelector">
           <select
             value={workspaceId}
             title={activeWorkspaceSelectTitle}
             onChange={(e) => switchWorkspace(e.target.value)}
             style={{
-              height: 32, padding: "0 12px", fontSize: 12, fontFamily: MONO_FONT, fontWeight: 600,
+              height: embedded ? 24 : 32,
+              padding: embedded ? "0 8px" : "0 12px",
+              fontSize: embedded ? 11 : 12,
+              fontFamily: MONO_FONT, fontWeight: 600,
               color: COLORS.success, background: COLORS.recessedBg, borderRadius: 8,
               border: `1px solid ${COLORS.outlineBorder}`, cursor: "pointer", outline: "none",
-              maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+              minWidth: 0,
+              maxWidth: embedded ? "100%" : 280,
+              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
             }}
             onFocus={(e) => { e.currentTarget.style.borderColor = COLORS.accent; }}
             onBlur={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; }}
@@ -2327,37 +2355,41 @@ export function FilesPage({
               </option>
             ))}
           </select>
-          <HelpChip termId="worktree" side="bottom" />
-          <SmartTooltip
-            content={
-              activeWorkspace?.laneId
-                ? {
-                    label: "View lane",
-                    description: "Open Lanes with this workspace's lane selected in single-lane focus.",
-                  }
-                : {
-                    label: "Lanes",
-                    description: "Open the Lanes tab to browse and manage workspace lanes.",
-                  }
-            }
-          >
-            <button
-              type="button"
-              style={outlineButton({ height: 28, padding: "0 10px", fontSize: 9 })}
-              onClick={() => {
-                const laneId = activeWorkspace?.laneId;
-                if (laneId) {
-                  navigate(`/lanes?laneId=${encodeURIComponent(laneId)}&focus=single`);
-                } else {
-                  navigate("/lanes");
+          {embedded ? null : (
+            <>
+              <HelpChip termId="worktree" side="bottom" />
+              <SmartTooltip
+                content={
+                  activeWorkspace?.laneId
+                    ? {
+                        label: "View lane",
+                        description: "Open Lanes with this workspace's lane selected in single-lane focus.",
+                      }
+                    : {
+                        label: "Lanes",
+                        description: "Open the Lanes tab to browse and manage workspace lanes.",
+                      }
                 }
-              }}
-              onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.accent; e.currentTarget.style.color = COLORS.accent; }}
-              onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
-            >
-              View lane
-            </button>
-          </SmartTooltip>
+              >
+                <button
+                  type="button"
+                  style={outlineButton({ height: 28, padding: "0 10px", fontSize: 9 })}
+                  onClick={() => {
+                    const laneId = activeWorkspace?.laneId;
+                    if (laneId) {
+                      navigate(`/lanes?laneId=${encodeURIComponent(laneId)}&focus=single`);
+                    } else {
+                      navigate("/lanes");
+                    }
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.accent; e.currentTarget.style.color = COLORS.accent; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
+                >
+                  View lane
+                </button>
+              </SmartTooltip>
+            </>
+          )}
         </div>
 
         {/* Read-only badge */}
@@ -2368,7 +2400,7 @@ export function FilesPage({
         ) : null}
 
         {/* Trust / edit toggle */}
-        {activeWorkspace?.isReadOnlyByDefault ? (
+        {!embedded && activeWorkspace?.isReadOnlyByDefault ? (
           <SmartTooltip content={{ label: allowPrimaryEdit ? "Disable Edits" : "Trust & Edit", description: allowPrimaryEdit ? "Lock the editor to prevent changes to the primary workspace." : "Unlock the editor to make changes directly on the primary workspace.", warning: allowPrimaryEdit ? undefined : "You will be editing the primary workspace directly" }}>
             <button
               type="button"
@@ -2385,6 +2417,8 @@ export function FilesPage({
         {/* Spacer */}
         <div style={{ flex: 1, height: 1 }} />
 
+        {embedded ? null : (
+        <>
         <SmartTooltip content={{ label: "Toggle Theme", description: "Switch the editor between light and dark theme." }}>
           <button
             type="button"
@@ -2459,6 +2493,8 @@ export function FilesPage({
         <span style={{ fontFamily: MONO_FONT, fontSize: 10, fontWeight: 700, letterSpacing: "1px", color: COLORS.textMuted, textTransform: "uppercase", whiteSpace: "nowrap" }}>
           {openTabs.length} OPEN
         </span>
+        </>
+        )}
       </div>
 
       {/* Warning banners */}

@@ -204,10 +204,12 @@ mounted as the `files` tab of the Work right-edge sidebar
 (`apps/desktop/src/renderer/components/terminals/WorkSidebar.tsx`).
 When `preferredLaneId` is set, the workspace selector pre-selects the
 matching lane worktree on first load and on every change to the prop;
-when `embedded` is true the page applies the `ade-files-page-embedded`
-chrome so the tree, tab bar, and editor pack into a narrow column. All
-IPC calls and modes are identical to the standalone Files tab — there
-is no separate code path for the embedded view.
+when `embedded` is true the header collapses to just the workspace
+selector and read-only badge (the title block, `View lane` button,
+editor theme toggle, `Open In` menu, and file count are hidden) so the
+tree, tab bar, and editor pack into a narrow column. All IPC calls and
+modes are identical to the standalone Files tab — there is no separate
+code path for the embedded view.
 
 ## Keyboard shortcuts
 

@@ -12,11 +12,11 @@ import { cn } from "../ui/cn";
 import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
 import { laneSurfaceTint } from "../lanes/laneDesignTokens";
 
-const STATUS_FILTER_OPTIONS: Array<{ value: WorkStatusFilter; label: string }> = [
-  { value: "all", label: "All" },
-  { value: "running", label: "Running" },
-  { value: "awaiting-input", label: "Awaiting" },
-  { value: "ended", label: "Ended" },
+const STATUS_FILTER_OPTIONS: Array<{ value: WorkStatusFilter; label: string; description: string }> = [
+  { value: "all", label: "All", description: "Show sessions in every state." },
+  { value: "running", label: "Running", description: "Show live sessions that are still working." },
+  { value: "awaiting-input", label: "Awaiting", description: "Show sessions waiting for a response or approval." },
+  { value: "ended", label: "Ended", description: "Show sessions that have finished." },
 ];
 
 function bucketByTime(sessions: TerminalSessionSummary[]) {
@@ -638,17 +638,7 @@ export const SessionListPane = React.memo(function SessionListPane({
                 {STATUS_FILTER_OPTIONS.map((opt) => (
                   <SmartTooltip
                     key={opt.value}
-                    content={{
-                      label: opt.label,
-                      description:
-                        opt.value === "all"
-                          ? "Show sessions in every state."
-                          : opt.value === "running"
-                            ? "Show live sessions that are still working."
-                            : opt.value === "awaiting-input"
-                              ? "Show sessions waiting for a response or approval."
-                              : "Show sessions that have finished.",
-                    }}
+                    content={{ label: opt.label, description: opt.description }}
                   >
                     <button
                       type="button"

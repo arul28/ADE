@@ -53,6 +53,7 @@ export const ADE_ACTION_DOMAIN_NAMES = [
   "computer_use_artifacts",
   "ios_simulator",
   "app_control",
+  "built_in_browser",
   "automations",
   "issue",
 ] as const;
@@ -344,7 +345,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   graph_state: ["get", "set"],
   computer_use_artifacts: ["ingest", "listArtifacts"],
   ios_simulator: ["getStatus", "listDevices", "listLaunchTargets", "launch", "shutdown", "screenshot", "getScreenSnapshot", "getInspectorSnapshot", "inspectPoint", "getPreviewCapability", "listPreviewTargets", "renderPreview", "openPreviewWorkspace", "startStream", "stopStream", "getStreamStatus", "tap", "typeText", "drag", "swipe", "selectPoint"],
-  app_control: ["getStatus", "launch", "launchInTerminal", "connect", "stop", "screenshot", "getSnapshot", "inspectPoint", "selectPoint", "click", "typeText", "readTerminal", "writeTerminal", "signalTerminal"],
+  app_control: ["getStatus", "launch", "launchInTerminal", "connect", "stop", "screenshot", "getSnapshot", "inspectPoint", "selectPoint", "click", "typeText", "scroll", "dispatchKey", "listTargets", "attachToTarget", "readTerminal", "writeTerminal", "signalTerminal"],
+  built_in_browser: ["getStatus", "setBounds", "navigate", "createTab", "switchTab", "closeTab", "reload", "goBack", "goForward", "stop", "startInspect", "stopInspect", "captureScreenshot", "selectPoint", "selectCurrent", "clearSelection"],
   automations: [
     "list",
     "get",
@@ -635,6 +637,7 @@ export function getAdeActionDomainServices(
     computer_use_artifacts: toService(runtime.computerUseArtifactBrokerService),
     ios_simulator: toService(runtime.iosSimulatorService),
     app_control: toService(runtime.appControlService),
+    built_in_browser: toService(runtime.builtInBrowserService),
     automations: toService(buildAutomationsDomainService(runtime)),
     issue: toService(buildIssueDomainService(runtime)),
   };

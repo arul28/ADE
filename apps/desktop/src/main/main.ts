@@ -153,6 +153,7 @@ import { cleanupStaleTempArtifacts } from "./services/runtime/tempCleanupService
 import type { Logger } from "./services/logging/logger";
 
 const AUTO_UPDATER_CACHE_DIR_NAME = "ade-desktop-updater";
+const ADE_BROWSER_WEBVIEW_PARTITION = "persist:ade-browser";
 
 function resolveAutoUpdaterCacheDir(): string {
   const homeDir = os.homedir();
@@ -366,6 +367,17 @@ function getRendererUrl(): string {
   return pathToFileURL(path.join(__dirname, "../renderer/index.html")).toString();
 }
 
+function isAllowedAdeBrowserWebviewSource(rawSrc: string): boolean {
+  const src = rawSrc.trim();
+  if (!src || src === "about:blank") return true;
+  try {
+    const parsed = new URL(src);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 async function createWindow(args: {
   logger?: Logger;
   onCloseRequested?: (win: BrowserWindow, event: Electron.Event) => void;
@@ -399,7 +411,24 @@ async function createWindow(args: {
       preload: path.join(__dirname, "../preload/preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
+      webviewTag: true,
     },
+  });
+
+  win.webContents.on("will-attach-webview", (event, webPreferences, params) => {
+    const src = typeof params.src === "string" ? params.src : "";
+    if (!isAllowedAdeBrowserWebviewSource(src)) {
+      event.preventDefault();
+      args.logger?.warn("window.webview_blocked", { src });
+      return;
+    }
+    delete webPreferences.preload;
+    delete (webPreferences as Record<string, unknown>).preloadURL;
+    webPreferences.partition = ADE_BROWSER_WEBVIEW_PARTITION;
+    webPreferences.nodeIntegration = false;
+    webPreferences.contextIsolation = true;
+    webPreferences.sandbox = true;
+    webPreferences.webSecurity = true;
   });
 
   // Set macOS Dock icon
@@ -425,7 +454,7 @@ async function createWindow(args: {
     `base-uri 'self'`,
     `form-action 'self'`,
     `object-src 'none'`,
-    `frame-src 'none'`,
+    `frame-src ${cspSources}${cspLocalSources} https: about:`,
     `script-src ${cspSources} 'unsafe-inline'`,
     `style-src ${cspSources} 'unsafe-inline'`,
     `img-src ${cspImageSources} ade-artifact: data: blob:`,
@@ -3418,6 +3447,7 @@ app.whenReady().then(async () => {
       computerUseArtifactBrokerService,
       iosSimulatorService,
       appControlService,
+      builtInBrowserService,
       orchestratorService,
       aiOrchestratorService,
       missionBudgetService,
@@ -3583,6 +3613,7 @@ app.whenReady().then(async () => {
         computerUseArtifactBrokerService,
         iosSimulatorService,
         appControlService,
+        builtInBrowserService,
         automationService,
         automationPlannerService,
         githubService,
@@ -3739,6 +3770,7 @@ app.whenReady().then(async () => {
       computerUseArtifactBrokerService: null,
       iosSimulatorService: null,
       appControlService: null,
+      builtInBrowserService: null,
       githubService: null,
       feedbackReporterService: null,
       prService: null,

@@ -287,10 +287,26 @@ capture-only verbs work in headless mode too.
 
 ## Renderer integration
 
-`AgentChatPane` polls `getStatus()` once on mount and on
-`session-started/-released/-updated/launch-progress` events. When
-`status.supported` is true, the header renders a `DeviceMobile` toggle
-that mounts `ChatIosSimulatorPanel` in place of the work-log panel.
+`ChatIosSimulatorPanel` has two mount points:
+
+- `AgentChatPane` polls `getStatus()` once on mount and on
+  `session-started/-released/-updated/launch-progress` events. When
+  `status.supported` is true, the header renders a `DeviceMobile` toggle
+  that mounts the panel in place of the work-log panel. When the chat
+  is mounted as a Work tile (`hideLaneToolDrawers={true}`) the toggle
+  is suppressed; the Work sidebar owns the drawer at lane scope and
+  pipes selections back through the `ade:agent-chat:add-ios-context`
+  window event.
+- `apps/desktop/src/renderer/components/terminals/WorkSidebar.tsx`
+  mounts the panel under its `ios` tab against the active lane (no
+  chat scope, `sessionId={null}`, `laneId` set). The sidebar runs its
+  own `IosSimulatorSession` subscription and, when the active session
+  was launched from a different lane, shows a `WarningBanner` ("The iOS
+  Simulator session was launched from a different lane…"); the user can
+  still inspect and control the simulator, but selections will not
+  attach to the active lane's chat until the simulator is relaunched
+  against the matching lane.
+
 The panel:
 
 - Renders a tool-readiness checklist when any required tool is missing,

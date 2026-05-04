@@ -97,10 +97,6 @@ const LAST_MODEL_ID_KEY = "ade.chat.lastModelId";
 const LAST_REASONING_KEY_PREFIX = "ade.chat.lastReasoningEffort";
 export const DEFAULT_PARALLEL_ATTACHMENT_REQUEST = "Please review the attached files.";
 
-const BUILT_IN_BROWSER_CONTEXT_EVENT = "ade:built-in-browser-context";
-const BUILT_IN_BROWSER_ATTACHMENT_EVENT = "ade:built-in-browser-attachment";
-const BUILT_IN_BROWSER_DRAFT_EVENT = "ade:built-in-browser-draft";
-
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
@@ -337,20 +333,22 @@ function normalizeBuiltInBrowserContextItem(value: unknown): BuiltInBrowserConte
   const record = asRecord(value);
   if (!record) return null;
   const metadata = asRecord(record.metadata) ?? {};
-  const frame = frameFromUnknown(record.frame) ?? frameFromUnknown(record.pixelFrame) ?? frameFromUnknown(record.bounds) ?? {
+  const pixelFrameCandidate = frameFromUnknown(record.pixelFrame);
+  const frame = frameFromUnknown(record.frame) ?? pixelFrameCandidate ?? frameFromUnknown(record.bounds) ?? {
     x: 0,
     y: 0,
     width: 0,
     height: 0,
   };
-  const pixelFrame = frameFromUnknown(record.pixelFrame) ?? frame;
+  const pixelFrame = pixelFrameCandidate ?? frame;
   const componentId = stringOrNull(record.componentId)
     ?? stringOrNull(metadata.selector)
     ?? stringOrNull(metadata.testId)
     ?? stringOrNull(metadata.tagName)
     ?? "browser-element";
+  const kind = stringOrNull(record.kind) === "built_in_browser_capture" ? "built_in_browser_capture" : "built_in_browser_element";
   return {
-    kind: "built_in_browser_element",
+    kind,
     id: stringOrNull(record.id) ?? `built-in-browser:${Date.now().toString(36)}`,
     provider: "cdp",
     componentId,
@@ -368,6 +366,11 @@ function normalizeBuiltInBrowserContextItem(value: unknown): BuiltInBrowserConte
 
 function builtInBrowserContextLabel(item: BuiltInBrowserContextItem): string {
   const metadata = item.metadata ?? {};
+  if (item.kind === "built_in_browser_capture") {
+    const selectedElement = asRecord(metadata.selectedElement);
+    const selectedLabel = stringOrNull(selectedElement?.label);
+    return selectedLabel ? `Browser capture: ${selectedLabel}` : "Browser screenshot capture";
+  }
   for (const value of [
     metadata.label,
     metadata.text,
@@ -436,12 +439,18 @@ function formatBuiltInBrowserContextForPrompt(items: BuiltInBrowserContextItem[]
       checked: metadata.checked,
       viewport: metadata.viewport,
       scroll: metadata.scroll,
+      captureFrame: metadata.captureFrame,
+      crop: metadata.crop,
+      centerPoint: metadata.centerPoint,
+      source: metadata.source,
+      sourceConfidence: metadata.sourceConfidence,
+      selectionExplanation: metadata.selectionExplanation,
     };
     return `${index + 1}. ${builtInBrowserContextLabel(item)} (global browser, frame=${frame})\nPacket:\n${JSON.stringify(packet, null, 2)}`;
   });
   return [
-    "Built-in browser DOM inspect context attached by the user.",
-    "Each packet came from ADE's global built-in browser, which is not lane-scoped. Image attachments/crops are visual evidence for the same DOM selection and use browser viewport coordinates.",
+    "Built-in browser visual and DOM context attached by the user.",
+    "Each packet came from ADE's global built-in browser, which is not lane-scoped. Image attachments/crops are visual evidence for the same page area and use browser viewport coordinates.",
     "Use selectors, ARIA labels, attributes, text, URL/title, and the screenshot together. Do not assume the selected page belongs to the current lane unless the URL or user message says so.",
     ...rows,
     "",
@@ -3672,48 +3681,25 @@ export function AgentChatPane({
       if (!matchesThisChat(detail?.sessionId) || !detail.item) return;
       addAppControlContext(detail.item as AppControlContextItem);
     };
+    const onAddBuiltInBrowserContext = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: unknown; item?: unknown }>).detail;
+      if (!matchesThisChat(detail?.sessionId) || !detail.item) return;
+      void addBuiltInBrowserContext(detail.item);
+    };
 
     window.addEventListener("ade:agent-chat:add-attachment", onAddAttachment);
     window.addEventListener("ade:agent-chat:insert-draft", onInsertDraft);
     window.addEventListener("ade:agent-chat:add-ios-context", onAddIosContext);
     window.addEventListener("ade:agent-chat:add-app-control-context", onAddAppControlContext);
+    window.addEventListener("ade:agent-chat:add-builtin-browser-context", onAddBuiltInBrowserContext);
     return () => {
       window.removeEventListener("ade:agent-chat:add-attachment", onAddAttachment);
       window.removeEventListener("ade:agent-chat:insert-draft", onInsertDraft);
       window.removeEventListener("ade:agent-chat:add-ios-context", onAddIosContext);
       window.removeEventListener("ade:agent-chat:add-app-control-context", onAddAppControlContext);
+      window.removeEventListener("ade:agent-chat:add-builtin-browser-context", onAddBuiltInBrowserContext);
     };
-  }, [addAppControlContext, addAttachment, addIosElementContext, insertComposerDraft]);
-
-  useEffect(() => {
-    if (!isTileActive) return undefined;
-    const handleAttachment = (event: Event) => {
-      const detail = (event as CustomEvent<AgentChatFileRef>).detail;
-      if (!detail || typeof detail.path !== "string" || !detail.path.length) return;
-      addAttachment({
-        path: detail.path,
-        type: detail.type === "image" || detail.type === "file"
-          ? detail.type
-          : inferAttachmentType(detail.path),
-      });
-    };
-    const handleContext = (event: Event) => {
-      void addBuiltInBrowserContext((event as CustomEvent<unknown>).detail);
-    };
-    const handleDraft = (event: Event) => {
-      const detail = (event as CustomEvent<unknown>).detail;
-      const text = typeof detail === "string" ? detail : stringOrNull(asRecord(detail)?.text);
-      if (text) insertComposerDraft(text);
-    };
-    window.addEventListener(BUILT_IN_BROWSER_ATTACHMENT_EVENT, handleAttachment);
-    window.addEventListener(BUILT_IN_BROWSER_CONTEXT_EVENT, handleContext);
-    window.addEventListener(BUILT_IN_BROWSER_DRAFT_EVENT, handleDraft);
-    return () => {
-      window.removeEventListener(BUILT_IN_BROWSER_ATTACHMENT_EVENT, handleAttachment);
-      window.removeEventListener(BUILT_IN_BROWSER_CONTEXT_EVENT, handleContext);
-      window.removeEventListener(BUILT_IN_BROWSER_DRAFT_EVENT, handleDraft);
-    };
-  }, [addAttachment, addBuiltInBrowserContext, insertComposerDraft, isTileActive]);
+  }, [addAppControlContext, addAttachment, addBuiltInBrowserContext, addIosElementContext, insertComposerDraft]);
 
   const removeAttachment = useCallback((attachmentPath: string) => {
     linkedIosAttachmentPathsRef.current.delete(attachmentPath);

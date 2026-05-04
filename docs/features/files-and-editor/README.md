@@ -57,8 +57,8 @@ Renderer:
   search, workspace switcher, trust warnings. Accepts optional
   `preferredLaneId` and `embedded` props so the same component can be
   mounted inside the Work right-edge sidebar against the active lane;
-  in `embedded` mode the page picks up the `ade-files-page-embedded`
-  chrome so it fits a narrow column.
+  in `embedded` mode the page renders a compact header (only the
+  workspace selector and read-only badge) so it fits a narrow column.
 - `apps/desktop/src/renderer/components/files/FilesPage.test.tsx` —
   renderer tests.
 - `apps/ios/ADE/Views/Files/FilesRootScreen.swift` — mobile Files

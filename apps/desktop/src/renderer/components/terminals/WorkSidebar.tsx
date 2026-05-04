@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Desktop,
   DeviceMobile,
@@ -34,14 +34,12 @@ const WORK_SIDEBAR_TABS: Array<{
   id: WorkSidebarTab;
   label: string;
   Icon: typeof GitBranch;
-  /** Tabs that don't need a lane (e.g. global browser) — stay enabled even when no lane is active. */
-  global?: boolean;
 }> = [
   { id: "git", label: "Git", Icon: GitBranch },
   { id: "files", label: "Files", Icon: FolderOpen },
   { id: "ios", label: "iOS Sim", Icon: DeviceMobile },
   { id: "app-control", label: "App Control", Icon: Desktop },
-  { id: "browser", label: "Browser", Icon: Globe, global: true },
+  { id: "browser", label: "Browser", Icon: Globe },
 ];
 
 const NOT_CHAT_ERROR = "Context attachment only works in ADE chat sessions.";
@@ -53,6 +51,17 @@ function dispatchAgentChatEvent<T>(eventName: string, sessionId: string, key: st
       [key]: value,
     },
   }));
+}
+
+function hideBuiltInBrowserView(): void {
+  void window.ade.builtInBrowser.stopInspect().catch(() => {});
+  void window.ade.builtInBrowser.setBounds({
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
+    visible: false,
+  }).catch(() => {});
 }
 
 function WarningBanner({ message }: { message: string }) {
@@ -101,6 +110,13 @@ export function WorkSidebar({
     setSelectedMode(null);
     setSelectedCommit(null);
   }, [laneId]);
+
+  useEffect(() => {
+    if (tab !== "browser") hideBuiltInBrowserView();
+    return () => {
+      hideBuiltInBrowserView();
+    };
+  }, [tab]);
 
   useEffect(() => {
     if (tab !== "app-control") return undefined;
@@ -161,12 +177,16 @@ export function WorkSidebar({
   const contextDisabledReason = resolveLaneMismatchReason() ?? attachDisabledReason;
   const canAttachToChat = Boolean(attachChatSessionId && !contextDisabledReason);
 
+  const dispatchTargetRef = useRef({ attachChatSessionId, contextDisabledReason });
+  dispatchTargetRef.current = { attachChatSessionId, contextDisabledReason };
+
   const dispatchToChat = useCallback(<T,>(eventName: string, key: string, value: T, fallbackError: string) => {
-    if (!attachChatSessionId || contextDisabledReason) {
-      throw new Error(contextDisabledReason ?? fallbackError);
+    const { attachChatSessionId: targetSessionId, contextDisabledReason: targetReason } = dispatchTargetRef.current;
+    if (!targetSessionId || targetReason) {
+      throw new Error(targetReason ?? fallbackError);
     }
-    dispatchAgentChatEvent(eventName, attachChatSessionId, key, value);
-  }, [attachChatSessionId, contextDisabledReason]);
+    dispatchAgentChatEvent(eventName, targetSessionId, key, value);
+  }, []);
 
   const addAttachment = useCallback((attachment: AgentChatFileRef) => {
     dispatchToChat("ade:agent-chat:add-attachment", "attachment", attachment, NOT_CHAT_ERROR);
@@ -176,6 +196,9 @@ export function WorkSidebar({
   }, [dispatchToChat]);
   const addAppControlContext = useCallback((item: AppControlContextItem) => {
     dispatchToChat("ade:agent-chat:add-app-control-context", "item", item, NOT_CHAT_ERROR);
+  }, [dispatchToChat]);
+  const addBuiltInBrowserContext = useCallback((item: unknown) => {
+    dispatchToChat("ade:agent-chat:add-builtin-browser-context", "item", item, NOT_CHAT_ERROR);
   }, [dispatchToChat]);
   const insertDraft = useCallback((text: string) => {
     dispatchToChat("ade:agent-chat:insert-draft", "text", text, "Draft insertion only works in ADE chat sessions.");
@@ -190,9 +213,7 @@ export function WorkSidebar({
             <ChatBuiltInBrowserPanel
               sessionId={attachChatSessionId}
               onAddAttachment={canAttachToChat ? addAttachment : undefined}
-              onAddContext={(item) => {
-                window.dispatchEvent(new CustomEvent("ade:built-in-browser-context", { detail: item }));
-              }}
+              onAddContext={canAttachToChat ? addBuiltInBrowserContext : undefined}
               onInsertDraft={canAttachToChat ? insertDraft : undefined}
             />
           </div>
@@ -265,7 +286,7 @@ export function WorkSidebar({
         laneId={laneId}
         projectRoot={laneRoot}
         onAddAttachment={canAttachToChat ? addAttachment : undefined}
-        onAddContext={addIosContext}
+        onAddContext={canAttachToChat ? addIosContext : undefined}
         onInsertDraft={canAttachToChat ? insertDraft : undefined}
       />
     ) : (
@@ -274,7 +295,7 @@ export function WorkSidebar({
         laneId={laneId}
         projectRoot={laneRoot}
         onAddAttachment={canAttachToChat ? addAttachment : undefined}
-        onAddContext={addAppControlContext}
+        onAddContext={canAttachToChat ? addAppControlContext : undefined}
         onInsertDraft={canAttachToChat ? insertDraft : undefined}
       />
     );
@@ -287,6 +308,7 @@ export function WorkSidebar({
   }, [
     addAppControlContext,
     addAttachment,
+    addBuiltInBrowserContext,
     addIosContext,
     attachChatSessionId,
     canAttachToChat,
@@ -325,7 +347,10 @@ export function WorkSidebar({
                     "inline-flex h-7 min-w-0 shrink-0 cursor-pointer items-center gap-1.5 rounded-full border-none bg-transparent px-2 text-[10px] font-medium transition-all",
                     active ? "ade-work-tab-active text-fg" : "text-muted-fg",
                   )}
-                  onClick={() => onTabChange(id)}
+                  onClick={() => {
+                    if (id !== "browser") hideBuiltInBrowserView();
+                    onTabChange(id);
+                  }}
                   aria-pressed={active}
                 >
                   <Icon size={12} weight={active ? "fill" : "regular"} className="shrink-0" />
@@ -339,7 +364,10 @@ export function WorkSidebar({
           type="button"
           className="ade-shell-control inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md"
           data-variant="ghost"
-          onClick={onClose}
+          onClick={() => {
+            hideBuiltInBrowserView();
+            onClose();
+          }}
           title="Close Work sidebar"
           aria-label="Close Work sidebar"
         >

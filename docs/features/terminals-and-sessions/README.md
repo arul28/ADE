@@ -96,16 +96,24 @@ Renderer surfaces:
   when present). Tabbed into `git` (lane git actions + selection-driven
   diff), `files` (mounts `FilesPage` in `embedded` mode with the lane
   worktree pre-selected), `ios` (mounts `ChatIosSimulatorPanel` against
-  the active lane), and `app-control` (mounts `ChatAppControlPanel`).
-  When the active Work session is a chat (`isChatToolType`), the
-  sidebar can attach iOS / App Control selections, draft text, and
-  file refs to that chat by dispatching the
+  the active lane), `app-control` (mounts `ChatAppControlPanel`), and
+  `browser` (mounts `ChatBuiltInBrowserPanel` over the shared
+  `WebContentsView`-backed built-in browser; the sidebar hides the
+  browser viewport whenever the user switches off the tab or closes
+  the sidebar by setting bounds to `{ x: 0, y: 0, width: 0, height: 0,
+  visible: false }` and stopping any inspect mode). The browser tab is
+  not lane-scoped — the built-in browser is a single shared instance
+  across the app — but it still flows selections to the active chat
+  through the same dispatch path as the other tool tabs. When the
+  active Work session is a chat (`isChatToolType`), the sidebar can
+  attach iOS / App Control / browser selections, draft text, and file
+  refs to that chat by dispatching the
   `ade:agent-chat:add-attachment` / `add-ios-context` /
-  `add-app-control-context` / `insert-draft` window events the
-  matching `AgentChatPane` listens to. Non-chat sessions disable
-  attachment with a banner; lane mismatches between the Work lane and
-  an existing App Control / iOS Simulator session also disable
-  attachment with a warning.
+  `add-app-control-context` / `add-builtin-browser-context` /
+  `insert-draft` window events the matching `AgentChatPane` listens to.
+  Non-chat sessions disable attachment with a banner; lane mismatches
+  between the Work lane and an existing App Control / iOS Simulator
+  session also disable attachment with a warning.
 - `apps/desktop/src/renderer/components/terminals/SessionListPane.tsx` —
   sidebar list with three organization modes (lane / status / time),
   sticky group headers, search/filter. Renders a bulk action bar at the
@@ -323,9 +331,9 @@ See `apps/desktop/src/shared/types/sessions.ts` for the full shape.
   right `WorkSidebar` open/tab/width) to `localStorage` under
   `ade.workViewState.v1`. The sidebar fields are
   `workSidebarOpen: boolean`, `workSidebarTab: "git" | "files" | "ios"
-  | "app-control"`, and `workSidebarWidthPct: number` (clamped to
-  26–55). Lane-scoped state uses a composite `projectRoot::laneId`
-  key.
+  | "app-control" | "browser"`, and `workSidebarWidthPct: number`
+  (clamped to 26–55). Lane-scoped state uses a composite
+  `projectRoot::laneId` key.
 
 ## IPC surface summary
 

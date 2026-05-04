@@ -77,6 +77,7 @@ import {
   createAppControlService,
   type AppControlService,
 } from "../../desktop/src/main/services/appControl/appControlService";
+import type { BuiltInBrowserService } from "../../desktop/src/main/services/builtInBrowser/builtInBrowserService";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
 import {
   createAutomationService,
@@ -173,6 +174,7 @@ export type AdeRuntime = {
   computerUseArtifactBrokerService: ComputerUseArtifactBrokerService;
   iosSimulatorService?: IosSimulatorService | null;
   appControlService?: AppControlService | null;
+  builtInBrowserService?: BuiltInBrowserService | null;
   orchestratorService: ReturnType<typeof createOrchestratorService>;
   aiOrchestratorService: ReturnType<typeof createAiOrchestratorService>;
   missionBudgetService?: ReturnType<typeof createMissionBudgetService> | null;

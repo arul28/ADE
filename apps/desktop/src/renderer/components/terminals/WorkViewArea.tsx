@@ -353,6 +353,29 @@ function WorkPaneEmbeddedChromeLeading({ chrome }: { chrome: FloatingPaneEmbedde
   );
 }
 
+function AdeToolsPaneGlyph({ open }: { open: boolean }) {
+  return (
+    <span className="relative block h-4 w-[18px]" aria-hidden="true">
+      <span
+        className={cn(
+          "absolute left-0 top-0.5 h-3.5 w-[17px] rounded-[5px] border transition-colors",
+          open
+            ? "border-sky-300/45 bg-sky-300/[0.09]"
+            : "border-white/20 bg-white/[0.035]",
+        )}
+      />
+      <span
+        className={cn(
+          "absolute right-[2px] top-[3px] h-2.5 w-[5px] rounded-[3px] transition-colors",
+          open ? "bg-sky-200/85 shadow-[0_0_10px_rgba(125,211,252,0.28)]" : "bg-muted-fg/55",
+        )}
+      />
+      <span className={cn("absolute left-[3px] top-[5px] h-[2px] w-[7px] rounded-full", open ? "bg-sky-100/80" : "bg-current/65")} />
+      <span className={cn("absolute left-[3px] top-[9px] h-[2px] w-[5px] rounded-full", open ? "bg-sky-100/45" : "bg-current/35")} />
+    </span>
+  );
+}
+
 function WorkSidebarToggle({
   open,
   onToggle,
@@ -364,22 +387,23 @@ function WorkSidebarToggle({
   return (
     <SmartTooltip
       content={{
-        label: open ? "Hide Work sidebar" : "Show Work sidebar",
-        description: "Show Git, Files, iOS Simulator, and App Control for the active lane.",
+        label: open ? "Hide ADE tools pane" : "Open ADE tools pane",
+        description: "Keep Git, Files, iOS Simulator, App Control, and Browser context beside this chat.",
       }}
     >
       <button
         type="button"
         className={cn(
-          "ade-shell-control inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md",
+          "ade-shell-control inline-flex h-7 w-9 shrink-0 items-center justify-center rounded-full border border-white/[0.08]",
+          "bg-white/[0.035] text-muted-fg/75 transition-colors hover:bg-white/[0.07] hover:text-fg/90",
           open && "ade-work-tab-active",
         )}
         data-variant="ghost"
         onClick={onToggle}
-        aria-label={open ? "Hide Work sidebar" : "Show Work sidebar"}
+        aria-label={open ? "Hide ADE tools pane" : "Open ADE tools pane"}
         aria-pressed={open}
       >
-        <SidebarSimple size={13} weight={open ? "fill" : "regular"} />
+        <AdeToolsPaneGlyph open={open} />
       </button>
     </SmartTooltip>
   );
@@ -585,6 +609,9 @@ export function WorkViewArea({
           {visibleSessions.length > 1 ? (
             <ArrangeMenu preset={tilingPreset} onSelect={applyTilingPreset} />
           ) : null}
+          <div className="ml-auto shrink-0">
+            <WorkSidebarToggle open={workSidebarOpen} onToggle={onToggleWorkSidebar} />
+          </div>
         </div>
 
         {visibleSessions.length === 0 ? (
@@ -686,7 +713,6 @@ export function WorkViewArea({
           <div className="shrink-0">
             <ViewModeToggle viewMode={viewMode} setViewMode={setViewMode} />
           </div>
-          <WorkSidebarToggle open={workSidebarOpen} onToggle={onToggleWorkSidebar} />
           <div className="ade-work-tab-strip-scroll min-h-0 min-w-0 flex-1 overflow-x-auto overflow-y-hidden">
             <div className="flex w-max min-w-0 flex-nowrap items-center gap-0">
             {visibleSessions.map((session) => {
@@ -782,6 +808,7 @@ export function WorkViewArea({
             </SmartTooltip>
             </div>
           </div>
+          <WorkSidebarToggle open={workSidebarOpen} onToggle={onToggleWorkSidebar} />
         </div>
 
         {tabBody}
@@ -804,7 +831,6 @@ export function WorkViewArea({
         <div className="shrink-0">
           <ViewModeToggle viewMode={viewMode} setViewMode={setViewMode} />
         </div>
-        <WorkSidebarToggle open={workSidebarOpen} onToggle={onToggleWorkSidebar} />
         <div className="ade-work-tab-strip-scroll min-w-0 flex-1 self-stretch overflow-x-auto overflow-y-hidden">
           <div className="flex h-full min-w-0 w-max flex-nowrap items-center gap-1.5">
             {resolvedTabGroups.map((group) => {
@@ -979,6 +1005,7 @@ export function WorkViewArea({
             </SmartTooltip>
           </div>
         </div>
+        <WorkSidebarToggle open={workSidebarOpen} onToggle={onToggleWorkSidebar} />
       </div>
 
       {tabBody}

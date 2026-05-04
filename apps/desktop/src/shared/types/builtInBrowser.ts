@@ -11,8 +11,24 @@ export type BuiltInBrowserBoundsArgs = BuiltInBrowserFrame & {
   visible: boolean;
 };
 
+export type BuiltInBrowserAttachWebviewArgs = {
+  tabId?: string | null;
+  webContentsId: number;
+};
+
 export type BuiltInBrowserNavigateArgs = {
   url: string;
+  tabId?: string | null;
+  newTab?: boolean;
+};
+
+export type BuiltInBrowserTab = {
+  id: string;
+  url: string | null;
+  title: string | null;
+  isLoading: boolean;
+  canGoBack: boolean;
+  canGoForward: boolean;
 };
 
 export type BuiltInBrowserStatus = {
@@ -20,6 +36,8 @@ export type BuiltInBrowserStatus = {
   partition: "persist:ade-browser";
   visible: boolean;
   bounds: BuiltInBrowserFrame;
+  activeTabId: string | null;
+  tabs: BuiltInBrowserTab[];
   url: string | null;
   title: string | null;
   isLoading: boolean;
@@ -27,6 +45,21 @@ export type BuiltInBrowserStatus = {
   canGoForward: boolean;
   isInspecting: boolean;
   hasSelection: boolean;
+};
+
+export type BuiltInBrowserTabArgs = {
+  tabId?: string | null;
+};
+
+export type BuiltInBrowserCreateTabArgs = {
+  url?: string | null;
+  activate?: boolean;
+};
+
+export type BuiltInBrowserSelectPointArgs = {
+  x: number;
+  y: number;
+  includeScreenshot?: boolean;
 };
 
 export type BuiltInBrowserScreenshot = {
@@ -37,7 +70,7 @@ export type BuiltInBrowserScreenshot = {
 };
 
 export type BuiltInBrowserContextItem = {
-  kind: "built_in_browser_element";
+  kind: "built_in_browser_element" | "built_in_browser_capture";
   id: string;
   provider: BuiltInBrowserProvider;
   componentId: string;
