@@ -35,9 +35,6 @@ struct PrDetailView: View {
   @State private var aiResolution: AiResolutionState?
   @State private var isAiResolverBusy: Bool = false
   @State private var aiResolverSheetPresented: Bool = false
-  /// True while a `prs.pathToMerge.start` or `prs.pathToMerge.stop` round-trip
-  /// is in flight. Used to disable the convergence toggle and show a spinner.
-  @State private var isPathToMergeBusy: Bool = false
 
   private var prsStatus: SyncDomainStatus {
     syncService.status(for: .prs)
@@ -320,10 +317,7 @@ struct PrDetailView: View {
           onSetPipelineRebasePolicy: setPipelineRebasePolicy,
           onCopyPrompt: copyConvergencePrompt,
           onLaunchAiResolver: { aiResolverSheetPresented = true },
-          onStopAiResolver: stopAiResolver,
-          isPathToMergeBusy: isPathToMergeBusy,
-          onStartPathToMerge: startPathToMerge,
-          onStopPathToMerge: stopPathToMerge
+          onStopAiResolver: stopAiResolver
         )
         .prListRow()
       case .files:
@@ -1021,57 +1015,6 @@ struct PrDetailView: View {
         errorMessage = error.localizedDescription
       }
     }
-  }
-
-  /// Kick the desktop's Path-to-Merge convergence loop on this PR. The host
-  /// returns the updated runtime row, which we splice into the local issue
-  /// inventory snapshot so the convergence panel reflects the new state
-  /// without waiting for the next sync push.
-  private func startPathToMerge() {
-    guard !isPathToMergeBusy else { return }
-    Task { @MainActor in
-      isPathToMergeBusy = true
-      defer { isPathToMergeBusy = false }
-      do {
-        let result = try await syncService.startPathToMerge(prId: prId)
-        applyConvergenceRuntime(result.runtime)
-        actionMessage = "Path to Merge started."
-      } catch {
-        errorMessage = error.localizedDescription
-      }
-    }
-  }
-
-  /// Stop the convergence loop. Mirrors {@link startPathToMerge} but updates
-  /// the runtime to the host-returned snapshot (when present) so the UI
-  /// reflects the canonical post-stop state, including any pause reason.
-  private func stopPathToMerge() {
-    guard !isPathToMergeBusy else { return }
-    Task { @MainActor in
-      isPathToMergeBusy = true
-      defer { isPathToMergeBusy = false }
-      do {
-        let result = try await syncService.stopPathToMerge(prId: prId, reason: "Stopped from iOS.")
-        if let runtime = result.runtime {
-          applyConvergenceRuntime(runtime)
-        }
-        actionMessage = "Path to Merge stopped."
-      } catch {
-        errorMessage = error.localizedDescription
-      }
-    }
-  }
-
-  /// Replace the runtime row inside `issueInventory` (if any) with `next`.
-  /// Used by the start/stop handlers so the mode toggle flips immediately.
-  private func applyConvergenceRuntime(_ next: ConvergenceRuntimeState) {
-    guard let current = issueInventory else { return }
-    issueInventory = IssueInventorySnapshot(
-      prId: current.prId,
-      items: current.items,
-      convergence: current.convergence,
-      runtime: next
-    )
   }
 
   private func refreshAiSummary() {

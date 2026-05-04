@@ -587,7 +587,6 @@ import type { createPrService } from "../prs/prService";
 import type { createPrPollingService } from "../prs/prPollingService";
 import type { createQueueLandingService } from "../prs/queueLandingService";
 import type { createIssueInventoryService } from "../prs/issueInventoryService";
-import type { PathToMergeOrchestrator } from "../prs/pathToMergeOrchestrator";
 import type { createPrSummaryService } from "../prs/prSummaryService";
 import type { createReviewService } from "../review/reviewService";
 import type { createAgentChatService } from "../chat/agentChatService";
@@ -692,7 +691,6 @@ export type AppContext = {
   prPollingService: ReturnType<typeof createPrPollingService>;
   queueLandingService: ReturnType<typeof createQueueLandingService>;
   issueInventoryService: ReturnType<typeof createIssueInventoryService>;
-  pathToMergeOrchestrator?: PathToMergeOrchestrator | null;
   prSummaryService: ReturnType<typeof createPrSummaryService>;
   reviewService: ReturnType<typeof createReviewService>;
   jobEngine: ReturnType<typeof createJobEngine>;
@@ -7276,11 +7274,6 @@ export function registerIpc({
     return await ctx.prService.landStack(arg);
   });
 
-  ipcMain.handle(IPC.prsRetargetBase, async (_event, arg: { prId: string; baseBranch: string }): Promise<void> => {
-    const ctx = getCtx();
-    return await ctx.prService.retargetBase(arg.prId, arg.baseBranch);
-  });
-
   ipcMain.handle(IPC.prsOpenInGitHub, async (_event, arg: { prId: string }): Promise<void> => {
     const ctx = getCtx();
     return await ctx.prService.openInGitHub(arg.prId);
@@ -7875,49 +7868,6 @@ export function registerIpc({
   });
   ipcMain.handle(IPC.prsConvergenceStateDelete, (_e, args: { prId: string }): void =>
     getCtx().issueInventoryService.resetConvergenceRuntime(args.prId));
-
-  ipcMain.handle(
-    IPC.prsPathToMergeStart,
-    async (_e, args: {
-      prId: string;
-      modelId?: string | null;
-      reasoning?: string | null;
-      scope?: "checks" | "comments" | "both";
-      additionalInstructions?: string | null;
-    }) => {
-      const orchestrator = getCtx().pathToMergeOrchestrator;
-      if (!orchestrator) {
-        throw new Error("Path to Merge orchestrator is not available in this build.");
-      }
-      const prId = typeof args?.prId === "string" ? args.prId.trim() : "";
-      if (!prId) throw new Error("prId is required");
-      return await orchestrator.startPathToMerge({
-        prId,
-        modelId: typeof args?.modelId === "string" ? args.modelId : null,
-        reasoning: typeof args?.reasoning === "string" ? args.reasoning : null,
-        scope: args?.scope === "checks" || args?.scope === "comments" || args?.scope === "both"
-          ? args.scope
-          : undefined,
-        additionalInstructions: typeof args?.additionalInstructions === "string" ? args.additionalInstructions : null,
-      });
-    },
-  );
-
-  ipcMain.handle(
-    IPC.prsPathToMergeStop,
-    async (_e, args: { prId: string; reason?: string | null }) => {
-      const orchestrator = getCtx().pathToMergeOrchestrator;
-      if (!orchestrator) {
-        throw new Error("Path to Merge orchestrator is not available in this build.");
-      }
-      const prId = typeof args?.prId === "string" ? args.prId.trim() : "";
-      if (!prId) throw new Error("prId is required");
-      return await orchestrator.stopPathToMerge({
-        prId,
-        reason: typeof args?.reason === "string" ? args.reason : null,
-      });
-    },
-  );
 
   ipcMain.handle(IPC.prsPipelineSettingsGet, (_e, args: { prId: string }): PipelineSettings =>
     getCtx().issueInventoryService.getPipelineSettings(args.prId));

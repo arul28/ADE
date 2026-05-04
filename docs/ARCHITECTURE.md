@@ -364,10 +364,7 @@ ade.files.*                  # file tree, read, write, search, watch
 ade.pty.*                    # PTY spawn/write/kill, data/exit events
 ade.git.*                    # stage/commit/push/sync/revert/cherry-pick/stash
 ade.github.*                 # PR list, review, merge, checks
-ade.prs.*                    # stacked PR queue, integration, issue inventory,
-                             # Path-to-Merge orchestrator (ade.prs.pathToMerge.start /
-                             # ade.prs.pathToMerge.stop) and ade.prs.retargetBase used
-                             # by the queue Automate Merging modal
+ade.prs.*                    # stacked PR queue, integration, issue inventory
 ade.conflicts.*              # risk matrix, simulation, proposals
 ade.memory.*                 # memory CRUD, search, health, embeddings
 ade.missions.* / ade.orchestrator.*

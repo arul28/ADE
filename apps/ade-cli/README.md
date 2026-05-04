@@ -62,8 +62,6 @@ ade git user-identity --lane lane-id --text
 ade prs create --lane lane-id --base main --title "Fix checkout flow"
 ade prs list-open --text
 ade prs path-to-merge --pr pr-id --model gpt-5.5 --max-rounds 3 --no-auto-merge
-ade prs path-to-merge --pr pr-id --model gpt-5.5 --conflict-strategy auto --force-finalize conditional
-ade prs pipeline pr-id save --conflict-strategy rebase --no-early-merge-on-green
 ade run defs --text
 ade run start web --lane lane-id
 ade shell start --lane lane-id -- npm test
@@ -82,25 +80,6 @@ ade cursor cloud me
 ```
 
 Use typed commands first. They validate common arguments and provide stable JSON fields or readable text summaries. Use `ade help <command> <subcommand>` for exact flags, `ade actions list --text` to discover the full service-backed action catalog, and `ade actions run <domain.action>` only when there is no typed command for the workflow yet.
-
-The `prs path-to-merge` and `prs pipeline save` commands persist a partial `PipelineSettings` patch via `issue_inventory.savePipelineSettings` before launching the resolver. The Path to Merge orchestrator reads these from saved settings, so the same flags work either way:
-
-| Flag | PipelineSettings field | Values |
-| --- | --- | --- |
-| `--max-rounds <n>` (alias `--rounds`) | `maxRounds` | positive integer |
-| `--auto-merge` / `--no-auto-merge` | `autoMerge` | boolean |
-| `--merge-method <m>` | `mergeMethod` | `repo_default` \| `merge` \| `squash` \| `rebase` |
-| `--conflict-strategy <s>` | `conflictStrategy` | `pause` \| `rebase` \| `merge` \| `auto` |
-| `--force-finalize <m>` | `forceFinalizeMode` | `off` \| `conditional` \| `unconditional` |
-| `--force-finalize-require-no-ci` / `--force-finalize-allow-ci` | `forceFinalizeRequireNoCiFailures` | boolean |
-| `--early-merge-on-green` / `--no-early-merge-on-green` | `earlyMergeOnGreen` | boolean |
-
-To set fields without a dedicated flag (for example `autoAgentSettings`), call the action directly:
-
-```bash
-ade actions run issue_inventory.savePipelineSettings --args-list-json \
-  '["pr-1",{"autoAgentSettings":{"provider":"claude","model":"sonnet","reasoningEffort":"high","permissionMode":"guarded_edit","confidenceThreshold":0.7}}]'
-```
 
 Output modes are explicit:
 

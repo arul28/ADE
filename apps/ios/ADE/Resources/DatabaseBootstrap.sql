@@ -708,10 +708,6 @@ alter table queue_landing_state add column wait_reason text;
 
 alter table queue_landing_state add column updated_at text;
 
-delete from queue_landing_state;
-
-insert into kv (key, value) values (?, ?) on conflict(key) do update set value = excluded.value;
-
 create table if not exists rebase_dismissed (
       lane_id text not null,
       project_id text not null,
@@ -2585,24 +2581,6 @@ create table if not exists pr_pipeline_settings (
       foreign key(pr_id) references pull_requests(id) on delete cascade
     );
 
-alter table pr_pipeline_settings add column conflict_strategy text not null default 'pause';
-
-alter table pr_pipeline_settings add column force_finalize_mode text not null default 'off';
-
-alter table pr_pipeline_settings add column force_finalize_require_no_ci_failures integer not null default 1;
-
-alter table pr_pipeline_settings add column early_merge_on_green integer not null default 1;
-
-alter table pr_pipeline_settings add column auto_agent_provider text;
-
-alter table pr_pipeline_settings add column auto_agent_model text;
-
-alter table pr_pipeline_settings add column auto_agent_reasoning_effort text;
-
-alter table pr_pipeline_settings add column auto_agent_permission_mode text;
-
-alter table pr_pipeline_settings add column auto_agent_confidence_threshold real;
-
 create table if not exists pr_convergence_state (
       pr_id text primary key,
       auto_converge_enabled integer not null default 0,
@@ -2622,5 +2600,3 @@ create table if not exists pr_convergence_state (
       updated_at text not null,
       foreign key(pr_id) references pull_requests(id) on delete cascade
     );
-
-alter table pr_convergence_state add column ptm_args_json text;

@@ -1438,17 +1438,6 @@ describe("issueInventoryService", () => {
         mergeMethod: "repo_default",
         maxRounds: 5,
         onRebaseNeeded: "pause",
-        conflictStrategy: "pause",
-        autoAgentSettings: {
-          provider: null,
-          model: null,
-          reasoningEffort: null,
-          permissionMode: null,
-          confidenceThreshold: null,
-        },
-        forceFinalizeMode: "off",
-        forceFinalizeRequireNoCiFailures: true,
-        earlyMergeOnGreen: true,
       });
     });
 
@@ -1459,15 +1448,6 @@ describe("issueInventoryService", () => {
         merge_method: "squash",
         max_rounds: 3,
         on_rebase_needed: "auto_rebase",
-        conflict_strategy: "rebase",
-        force_finalize_mode: "conditional",
-        force_finalize_require_no_ci_failures: 1,
-        early_merge_on_green: 0,
-        auto_agent_provider: "claude",
-        auto_agent_model: "anthropic/claude-3-5-sonnet",
-        auto_agent_reasoning_effort: "medium",
-        auto_agent_permission_mode: "guarded_edit",
-        auto_agent_confidence_threshold: 0.75,
       });
 
       const service = createIssueInventoryService({ db });
@@ -1478,17 +1458,6 @@ describe("issueInventoryService", () => {
         mergeMethod: "squash",
         maxRounds: 3,
         onRebaseNeeded: "auto_rebase",
-        conflictStrategy: "rebase",
-        autoAgentSettings: {
-          provider: "claude",
-          model: "anthropic/claude-3-5-sonnet",
-          reasoningEffort: "medium",
-          permissionMode: "guarded_edit",
-          confidenceThreshold: 0.75,
-        },
-        forceFinalizeMode: "conditional",
-        forceFinalizeRequireNoCiFailures: true,
-        earlyMergeOnGreen: false,
       });
     });
   });

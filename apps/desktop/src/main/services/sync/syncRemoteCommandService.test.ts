@@ -143,8 +143,6 @@ const IOS_REMOTE_COMMAND_ACTIONS = [
   "prs.pipelineSettings.get",
   "prs.pipelineSettings.save",
   "prs.pipelineSettings.delete",
-  "prs.pathToMerge.start",
-  "prs.pathToMerge.stop",
 ] satisfies SyncRemoteCommandAction[];
 
 const IOS_FILE_REQUEST_ACTIONS = [

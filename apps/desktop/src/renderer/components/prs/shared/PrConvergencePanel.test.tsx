@@ -66,17 +66,6 @@ const defaultPipelineSettings: PipelineSettings = {
   mergeMethod: "repo_default",
   maxRounds: 5,
   onRebaseNeeded: "pause",
-  conflictStrategy: "pause",
-  autoAgentSettings: {
-    provider: null,
-    model: null,
-    reasoningEffort: null,
-    permissionMode: null,
-    confidenceThreshold: null,
-  },
-  forceFinalizeMode: "off",
-  forceFinalizeRequireNoCiFailures: true,
-  earlyMergeOnGreen: true,
 };
 
 function renderPanel(overrides: Partial<PrConvergencePanelProps> = {}) {

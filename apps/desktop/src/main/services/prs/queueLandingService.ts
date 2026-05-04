@@ -14,8 +14,6 @@ import type {
   ResumeQueueAutomationArgs,
   StartQueueAutomationArgs,
 } from "../../../shared/types";
-import { DEFAULT_PIPELINE_SETTINGS, pipelineFromLegacyQueueConfig } from "../../../shared/types";
-import type { PipelineSettings } from "../../../shared/types";
 import type { AdeDb } from "../state/kvDb";
 import type { Logger } from "../logging/logger";
 import type { createConflictService } from "../conflicts/conflictService";
@@ -54,25 +52,17 @@ type QueueGroupRow = {
 const DEFAULT_QUEUE_CONFIG: QueueAutomationConfig = {
   method: "squash",
   archiveLane: false,
-  ciGating: true,
-  pipeline: {
-    ...DEFAULT_PIPELINE_SETTINGS,
-    autoAgentSettings: {
-      ...DEFAULT_PIPELINE_SETTINGS.autoAgentSettings,
-      permissionMode: "guarded_edit",
-    },
-  },
-  originSurface: "manual",
-  originMissionId: null,
-  originRunId: null,
-  originLabel: null,
-  // Legacy mirrors (retained for back-compat with iOS sync, RPC, older UI).
   autoResolve: false,
+  ciGating: true,
   resolverProvider: null,
   resolverModel: null,
   reasoningEffort: null,
   permissionMode: "guarded_edit",
   confidenceThreshold: null,
+  originSurface: "manual",
+  originMissionId: null,
+  originRunId: null,
+  originLabel: null,
 };
 
 function parseEntries(raw: string): QueueLandingEntry[] {
@@ -142,7 +132,6 @@ export function createQueueLandingService({
     }>;
     listGroupPrs: (groupId: string) => Promise<PrSummary[]>;
     getStatus: (prId: string) => Promise<PrStatus>;
-    retargetBase: (prId: string, baseBranch: string) => Promise<void>;
   };
   laneService: Pick<ReturnType<typeof createLaneService>, "list" | "getLaneBaseAndBranch">;
   conflictService?: Pick<ReturnType<typeof createConflictService>, "runExternalResolver"> | null;
@@ -289,49 +278,12 @@ export function createQueueLandingService({
     emitQueueState(state.groupId, state.state, state.currentPosition);
   };
 
-  const mergePipelineSettings = (
-    base: PipelineSettings,
-    override: PipelineSettings | undefined,
-  ): PipelineSettings => {
-    if (!override) return base;
-    return {
-      ...base,
-      ...override,
-      autoAgentSettings: {
-        ...base.autoAgentSettings,
-        ...override.autoAgentSettings,
-      },
-    };
-  };
-
   const resolveQueueConfig = (
     args: StartQueueAutomationArgs | ResumeQueueAutomationArgs,
     existing?: QueueLandingState | null,
     group?: QueueGroupRow | null,
   ): QueueAutomationConfig => {
     const prior = existing?.config ?? DEFAULT_QUEUE_CONFIG;
-    // Pipeline resolution: explicit args win over prior over default. When no
-    // args.pipeline is given but the caller passed only the legacy mirror
-    // fields (autoResolve / resolverProvider / etc.), synthesize a pipeline
-    // from those so the new fields stay in sync with the legacy ones.
-    const hasLegacyAutoResolveArgs =
-      args.autoResolve !== undefined
-      || args.resolverProvider !== undefined
-      || args.resolverModel !== undefined
-      || args.reasoningEffort !== undefined
-      || args.permissionMode !== undefined
-      || args.confidenceThreshold !== undefined;
-    const argsPipeline: PipelineSettings | undefined =
-      args.pipeline ?? (hasLegacyAutoResolveArgs ? pipelineFromLegacyQueueConfig({
-        autoResolve: args.autoResolve,
-        resolverProvider: args.resolverProvider,
-        resolverModel: args.resolverModel,
-        reasoningEffort: args.reasoningEffort,
-        permissionMode: args.permissionMode,
-        confidenceThreshold: args.confidenceThreshold,
-      }) : undefined);
-    const basePipeline = mergePipelineSettings(DEFAULT_QUEUE_CONFIG.pipeline, prior.pipeline);
-    const pipeline = mergePipelineSettings(basePipeline, argsPipeline);
     return {
       ...DEFAULT_QUEUE_CONFIG,
       ...prior,
@@ -339,7 +291,6 @@ export function createQueueLandingService({
       archiveLane: args.archiveLane ?? prior.archiveLane ?? false,
       autoResolve: args.autoResolve ?? prior.autoResolve ?? false,
       ciGating: args.ciGating ?? prior.ciGating ?? Boolean(group?.ci_gating),
-      pipeline,
       resolverProvider: args.resolverProvider ?? prior.resolverProvider ?? null,
       resolverModel: args.resolverModel ?? prior.resolverModel ?? null,
       reasoningEffort: args.reasoningEffort ?? prior.reasoningEffort ?? null,
@@ -451,42 +402,6 @@ export function createQueueLandingService({
     state.waitReason = null;
     persistAndEmitState(state);
     emitQueueStep(state.groupId, entry.prId, "landed", index);
-  };
-
-  /**
-   * After a stacked PR lands, the next PR in the queue still has its base
-   * pointing at the just-merged PR's branch (that's how we created it in
-   * `createQueuePrs`). Drop its base onto the queue's `targetBranch` so the
-   * next land is a clean main-merge instead of trying to merge a deleted ref.
-   *
-   * Idempotent: if the base is already `targetBranch`, GitHub's API treats it
-   * as a no-op. Failures here don't fail the queue — the next iteration's
-   * land attempt will surface any base mismatch as a real merge error.
-   */
-  const retargetNextEntryIfNeeded = async (
-    state: QueueLandingState,
-    landedIndex: number,
-  ): Promise<void> => {
-    const targetBranch = state.targetBranch;
-    if (!targetBranch) return;
-    const next = state.entries[landedIndex + 1];
-    if (!next) return;
-    if (next.state === "landed" || next.state === "skipped") return;
-    try {
-      await prService.retargetBase(next.prId, targetBranch);
-      logger.debug("queue_landing.retargeted_next_base", {
-        queueId: state.queueId,
-        nextPrId: next.prId,
-        baseBranch: targetBranch,
-      });
-    } catch (error) {
-      logger.warn("queue_landing.retarget_next_base_failed", {
-        queueId: state.queueId,
-        nextPrId: next.prId,
-        baseBranch: targetBranch,
-        error: getErrorMessage(error),
-      });
-    }
   };
 
   const pauseWithReason = (
@@ -747,7 +662,6 @@ export function createQueueLandingService({
             }
             if (!guardTransition(entry, "landed", { queueId })) return;
             markEntryLanded(state, entry, index, retried.mergeCommitSha);
-            await retargetNextEntryIfNeeded(state, index);
             continue;
           }
 
@@ -765,7 +679,6 @@ export function createQueueLandingService({
 
           if (!guardTransition(entry, "landed", { queueId })) return;
           markEntryLanded(state, entry, index, landResult.mergeCommitSha);
-          await retargetNextEntryIfNeeded(state, index);
         } catch (error) {
           const message = getErrorMessage(error);
           failEntry(state, entry, "manual", message);
