@@ -721,6 +721,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade prs comments <pr> --text                  Show unresolved review work
     $ ade prs inventory <pr>                        Refresh ADE issue inventory
     $ ade prs path-to-merge <pr> --model <model> --max-rounds 3 --no-auto-merge
+    $ ade prs path-to-merge <pr> --model <model> --conflict-strategy auto --force-finalize conditional
+    $ ade prs path-to-merge <pr> --model <model> --no-early-merge-on-green
+    $ ade prs pipeline <pr> save --conflict-strategy rebase --early-merge-on-green
     $ ade prs resolve-thread <pr> --thread <id>     Resolve a review thread
     $ ade prs labels set <pr> ready-to-merge        Replace labels
     $ ade prs reviewers request <pr> alice bob      Request reviewers
@@ -1288,6 +1291,72 @@ function maybePut(target: JsonObject, key: string, value: unknown): void {
   if (value !== undefined && value !== null && value !== "") {
     target[key] = value;
   }
+}
+
+/**
+ * Parse the PR pipeline-settings flags shared by `prs path-to-merge` and
+ * `prs pipeline` subcommands. Returns a partial `PipelineSettings` patch
+ * suitable for `issue_inventory.savePipelineSettings`. Only fields the user
+ * explicitly passed are included so the patch never clobbers other settings.
+ *
+ * The orchestrator reads these from saved settings (not StartPathToMergeArgs),
+ * so the path-to-merge command must save them before launching the loop.
+ */
+function readPipelineSettingsPatch(args: string[]): JsonObject {
+  const patch: JsonObject = {};
+
+  const maxRounds = readIntOption(args, ["--max-rounds", "--rounds"]);
+  if (maxRounds != null) patch.maxRounds = maxRounds;
+
+  const autoMerge = readFlag(args, ["--auto-merge"]);
+  const noAutoMerge = readFlag(args, ["--no-auto-merge"]);
+  if (autoMerge || noAutoMerge) patch.autoMerge = autoMerge && !noAutoMerge;
+
+  const mergeMethod = readValue(args, ["--merge-method"]);
+  if (mergeMethod) patch.mergeMethod = mergeMethod;
+
+  const conflictStrategy = readValue(args, ["--conflict-strategy"]);
+  if (conflictStrategy) {
+    if (
+      conflictStrategy !== "pause"
+      && conflictStrategy !== "rebase"
+      && conflictStrategy !== "merge"
+      && conflictStrategy !== "auto"
+    ) {
+      throw new CliUsageError(
+        "--conflict-strategy must be one of pause, rebase, merge, or auto.",
+      );
+    }
+    patch.conflictStrategy = conflictStrategy;
+  }
+
+  const forceFinalize = readValue(args, ["--force-finalize"]);
+  if (forceFinalize) {
+    if (
+      forceFinalize !== "off"
+      && forceFinalize !== "conditional"
+      && forceFinalize !== "unconditional"
+    ) {
+      throw new CliUsageError(
+        "--force-finalize must be one of off, conditional, or unconditional.",
+      );
+    }
+    patch.forceFinalizeMode = forceFinalize;
+  }
+
+  const requireNoCi = readFlag(args, ["--force-finalize-require-no-ci"]);
+  const allowCi = readFlag(args, ["--force-finalize-allow-ci"]);
+  if (requireNoCi || allowCi) {
+    patch.forceFinalizeRequireNoCiFailures = requireNoCi && !allowCi;
+  }
+
+  const earlyMergeOn = readFlag(args, ["--early-merge-on-green"]);
+  const earlyMergeOff = readFlag(args, ["--no-early-merge-on-green"]);
+  if (earlyMergeOn || earlyMergeOff) {
+    patch.earlyMergeOnGreen = earlyMergeOn && !earlyMergeOff;
+  }
+
+  return patch;
 }
 
 function parseCliArgs(argv: string[]): ParsedCli {
@@ -1863,19 +1932,16 @@ function buildPrPlan(args: string[]): CliPlan {
     maybePut(input, "reasoning", readValue(args, ["--reasoning"]));
     maybePut(input, "permissionMode", readValue(args, ["--permission-mode", "--permissions"]));
     maybePut(input, "additionalInstructions", readValue(args, ["--instructions", "--additional-instructions"]));
-    const maxRounds = readIntOption(args, ["--max-rounds", "--rounds"]);
-    const autoMerge = readFlag(args, ["--auto-merge"]);
-    const noAutoMerge = readFlag(args, ["--no-auto-merge"]);
-    const mergeMethod = readValue(args, ["--merge-method"]);
+    // Path to Merge orchestrator reads conflictStrategy / forceFinalizeMode /
+    // earlyMergeOnGreen / autoMerge / maxRounds / mergeMethod from saved
+    // PipelineSettings, not from the launch args. Persist any user-supplied
+    // overrides before the resolver step so the loop picks them up.
+    const pipelinePatch = readPipelineSettingsPatch(args);
     const steps: InvocationStep[] = [];
-    if (maxRounds != null || autoMerge || noAutoMerge || mergeMethod) {
+    if (Object.keys(pipelinePatch).length > 0) {
       steps.push(actionArgsListStep("pipelineSettings", "issue_inventory", "savePipelineSettings", [
         id,
-        {
-          ...(maxRounds != null ? { maxRounds } : {}),
-          ...(autoMerge || noAutoMerge ? { autoMerge: autoMerge && !noAutoMerge } : {}),
-          ...(mergeMethod ? { mergeMethod } : {}),
-        },
+        pipelinePatch,
       ]));
     }
     steps.push(actionCallStep("result", mode === "preview" ? "pr_preview_issue_resolution_prompt" : "pr_start_issue_resolution", collectGenericObjectArgs(args, input)));
@@ -1887,12 +1953,7 @@ function buildPrPlan(args: string[]): CliPlan {
     const id = requireValue(prId ?? firstPositional(args), "prId");
     if (mode === "get") return { kind: "execute", label: "PR pipeline", steps: [actionArgsListStep("result", "issue_inventory", "getPipelineSettings", [id])] };
     if (mode === "delete") return { kind: "execute", label: "PR pipeline delete", steps: [actionArgsListStep("result", "issue_inventory", "deletePipelineSettings", [id])] };
-    const maxRounds = readIntOption(args, ["--max-rounds", "--rounds"]);
-    const mergeMethod = readValue(args, ["--merge-method"]);
-    const settings = collectGenericObjectArgs(args, {
-      ...(maxRounds != null ? { maxRounds } : {}),
-      ...(mergeMethod ? { mergeMethod } : {}),
-    });
+    const settings = collectGenericObjectArgs(args, readPipelineSettingsPatch(args));
     return { kind: "execute", label: "PR pipeline save", steps: [actionArgsListStep("result", "issue_inventory", "savePipelineSettings", [id, settings])] };
   }
 

@@ -74,6 +74,7 @@ import type { createRebaseSuggestionService } from "../lanes/rebaseSuggestionSer
 import type { createProcessService } from "../processes/processService";
 import type { createPtyService } from "../pty/ptyService";
 import type { createIssueInventoryService } from "../prs/issueInventoryService";
+import type { PathToMergeOrchestrator } from "../prs/pathToMergeOrchestrator";
 import type { createPrService } from "../prs/prService";
 import type { createQueueLandingService } from "../prs/queueLandingService";
 import type { createSessionService } from "../sessions/sessionService";
@@ -285,6 +286,8 @@ type SyncHostServiceArgs = {
   conflictService?: ReturnType<typeof createConflictService>;
   prService: ReturnType<typeof createPrService>;
   issueInventoryService?: ReturnType<typeof createIssueInventoryService> | null;
+  /** Optional Path-to-Merge orchestrator (forwarded to remote command service). */
+  pathToMergeOrchestrator?: PathToMergeOrchestrator | null;
   queueLandingService?: ReturnType<typeof createQueueLandingService> | null;
   sessionService: ReturnType<typeof createSessionService>;
   ptyService: ReturnType<typeof createPtyService>;
@@ -528,6 +531,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     getLinearIssueTracker: args.getLinearIssueTracker,
     getLinearSyncService: args.getLinearSyncService,
     issueInventoryService: args.issueInventoryService,
+    pathToMergeOrchestrator: args.pathToMergeOrchestrator,
     queueLandingService: args.queueLandingService,
     projectConfigService: args.projectConfigService,
     processService: args.processService,

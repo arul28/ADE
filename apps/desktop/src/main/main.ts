@@ -2815,6 +2815,7 @@ app.whenReady().then(async () => {
       conflictService,
       prService,
       issueInventoryService,
+      pathToMergeOrchestrator,
       queueLandingService,
       sessionService,
       ptyService,

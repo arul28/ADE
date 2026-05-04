@@ -3968,6 +3968,57 @@ final class SyncService: ObservableObject {
     _ = try await sendCommand(action: "prs.pipelineSettings.delete", args: ["prId": prId])
   }
 
+  /// Start the desktop's Path-to-Merge convergence loop for ``prId``. The host
+  /// schedules the first iteration (or a noop refresh if it's already
+  /// running) and returns the persisted runtime row, which the caller can use
+  /// to refresh its local convergence panel without a follow-up fetch.
+  ///
+  /// - Parameters:
+  ///   - prId: PR identifier from the desktop catalog.
+  ///   - modelId: optional model id forwarded to the fix agent. `nil` keeps
+  ///     the host's default.
+  ///   - reasoning: optional reasoning-effort hint for providers that accept
+  ///     one (e.g. Anthropic's "extended", OpenAI's "high").
+  ///   - scope: which input the iteration's fix agent should consider —
+  ///     `"checks"`, `"comments"`, or `"both"`. `nil` defers to the host
+  ///     default.
+  ///   - additionalInstructions: free-form text appended to each iteration
+  ///     prompt.
+  @discardableResult
+  func startPathToMerge(
+    prId: String,
+    modelId: String? = nil,
+    reasoning: String? = nil,
+    scope: String? = nil,
+    additionalInstructions: String? = nil
+  ) async throws -> StartPathToMergeResult {
+    var payload: [String: Any] = ["prId": prId]
+    if let modelId, !modelId.isEmpty { payload["modelId"] = modelId }
+    if let reasoning, !reasoning.isEmpty { payload["reasoning"] = reasoning }
+    if let scope, !scope.isEmpty { payload["scope"] = scope }
+    if let additionalInstructions, !additionalInstructions.isEmpty {
+      payload["additionalInstructions"] = additionalInstructions
+    }
+    return try await sendDecodableCommand(
+      action: "prs.pathToMerge.start",
+      args: payload,
+      as: StartPathToMergeResult.self
+    )
+  }
+
+  /// Stop a running Path-to-Merge loop for ``prId``. ``reason`` is recorded on
+  /// the runtime row so the convergence panel can surface why the loop ended.
+  @discardableResult
+  func stopPathToMerge(prId: String, reason: String? = nil) async throws -> StopPathToMergeResult {
+    var payload: [String: Any] = ["prId": prId]
+    if let reason, !reason.isEmpty { payload["reason"] = reason }
+    return try await sendDecodableCommand(
+      action: "prs.pathToMerge.stop",
+      args: payload,
+      as: StopPathToMergeResult.self
+    )
+  }
+
   @discardableResult
   func createQueuePrs(
     laneIds: [String],

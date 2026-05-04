@@ -343,11 +343,12 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
       const persistedArgs = issueInventoryService.getPathToMergeArgs(pr.id);
       const runArgs: StartPathToMergeArgs = {
         prId: pr.id,
-        modelId: typeof persistedArgs?.modelId === "string" ? persistedArgs.modelId as string : null,
-        reasoning: typeof persistedArgs?.reasoning === "string" ? persistedArgs.reasoning as string : null,
+        modelId: typeof persistedArgs?.modelId === "string" ? persistedArgs.modelId : null,
+        reasoning: typeof persistedArgs?.reasoning === "string" ? persistedArgs.reasoning : null,
         scope: (persistedArgs?.scope as PrIssueResolutionScope | undefined) ?? "both",
         additionalInstructions: typeof persistedArgs?.additionalInstructions === "string"
-          ? persistedArgs.additionalInstructions as string : null,
+          ? persistedArgs.additionalInstructions
+          : null,
       };
       // forceFinalizeUsed is reconstructed from `pauseReason === 'force-finalize'`,
       // which Step 4 writes BEFORE launching the bonus iteration — that signal is
@@ -374,14 +375,6 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
   // -------------------------------------------------------------------------
   // Helpers
   // -------------------------------------------------------------------------
-
-  function readMaxRoundsForPr(prId: string): number {
-    try {
-      return issueInventoryService.getPipelineSettings(prId).maxRounds;
-    } catch {
-      return 5;
-    }
-  }
 
   function loadIterationContext(prId: string): IterationContext | null {
     const pr = prService.listAll().find((entry) => entry.id === prId) ?? null;
@@ -830,8 +823,14 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
         if (ladder.kind === "conflict") {
           // Apply merge-time conflict strategy and retry on next wake.
           const conflictRes = await applyConflictStrategy(fresh, "merge_time");
-          if (conflictRes.kind === "paused") return void pauseLoop(prId, conflictRes.reason);
-          if (conflictRes.kind === "failed") return void pauseLoop(prId, "Merge-time conflict resolution failed.", conflictRes.error);
+          if (conflictRes.kind === "paused") {
+            pauseLoop(prId, conflictRes.reason);
+            return;
+          }
+          if (conflictRes.kind === "failed") {
+            pauseLoop(prId, "Merge-time conflict resolution failed.", conflictRes.error);
+            return;
+          }
           schedule(prId, "justPushed");
           return;
         }
@@ -901,12 +900,16 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
         let priorActive = false;
         try {
           const summary = await agentChatService.getSessionSummary(priorSessionId);
-          // `active` = a turn is in flight; `idle` = session exists but waiting; we
-          // also defensively treat absent summary as "alive" so we never double-
-          // dispatch on a transient lookup error.
-          priorActive = summary == null
-            ? true
-            : summary.status === "active" || summary.status === "idle" && summary.awaitingInput === true;
+          // Defensively treat absent summary as "alive" so we never double-
+          // dispatch on a transient lookup error. `active` = a turn is in
+          // flight; `idle` + awaitingInput = session waiting on a user reply.
+          if (summary == null) {
+            priorActive = true;
+          } else if (summary.status === "active") {
+            priorActive = true;
+          } else if (summary.status === "idle" && summary.awaitingInput === true) {
+            priorActive = true;
+          }
         } catch (err) {
           logger.warn("ptm.session_alive_check_failed", { prId, sessionId: priorSessionId, error: getErrorMessage(err) });
           priorActive = true;
@@ -1017,8 +1020,14 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
       }
       if (ladder.kind === "conflict") {
         const conflictRes = await applyConflictStrategy(fresh, "merge_time");
-        if (conflictRes.kind === "paused") return void pauseLoop(prId, conflictRes.reason);
-        if (conflictRes.kind === "failed") return void pauseLoop(prId, "Force-finalize merge-time conflict resolution failed.", conflictRes.error);
+        if (conflictRes.kind === "paused") {
+          pauseLoop(prId, conflictRes.reason);
+          return;
+        }
+        if (conflictRes.kind === "failed") {
+          pauseLoop(prId, "Force-finalize merge-time conflict resolution failed.", conflictRes.error);
+          return;
+        }
         schedule(prId, "justPushed");
         return;
       }

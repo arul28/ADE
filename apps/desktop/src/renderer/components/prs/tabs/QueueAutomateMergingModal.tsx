@@ -323,6 +323,7 @@ export function QueueAutomateMergingModal({
   const activeIndex = sequence.kind === "running" ? sequence.activeIndex : -1;
   const haltedError = sequence.kind === "halted" ? sequence.error : null;
   const haltedIndex = sequence.kind === "halted" ? sequence.failedIndex : -1;
+  const startDisabled = isRunning || members.length === 0 || sequence.kind === "complete";
 
   return (
     <div
@@ -464,6 +465,15 @@ export function QueueAutomateMergingModal({
                 const badge = statusBadgeColor(status);
                 const isActive = idx === activeIndex && isRunning;
                 const wasHalted = idx === haltedIndex;
+                let rowBackground = "transparent";
+                let rowBorderColor = "transparent";
+                if (isActive) {
+                  rowBackground = "color-mix(in srgb, var(--color-info) 8%, transparent)";
+                  rowBorderColor = "color-mix(in srgb, var(--color-info) 32%, transparent)";
+                } else if (wasHalted) {
+                  rowBackground = "color-mix(in srgb, var(--color-error) 8%, transparent)";
+                  rowBorderColor = "color-mix(in srgb, var(--color-error) 32%, transparent)";
+                }
                 return (
                   <div
                     key={member.prId}
@@ -473,18 +483,8 @@ export function QueueAutomateMergingModal({
                       gap: 10,
                       padding: "8px 10px",
                       borderRadius: 6,
-                      background: isActive
-                        ? "color-mix(in srgb, var(--color-info) 8%, transparent)"
-                        : wasHalted
-                          ? "color-mix(in srgb, var(--color-error) 8%, transparent)"
-                          : "transparent",
-                      border: `1px solid ${
-                        isActive
-                          ? "color-mix(in srgb, var(--color-info) 32%, transparent)"
-                          : wasHalted
-                            ? "color-mix(in srgb, var(--color-error) 32%, transparent)"
-                            : "transparent"
-                      }`,
+                      background: rowBackground,
+                      border: `1px solid ${rowBorderColor}`,
                     }}
                   >
                     <span
@@ -695,10 +695,10 @@ export function QueueAutomateMergingModal({
             <button
               type="button"
               onClick={handleStart}
-              disabled={isRunning || members.length === 0 || sequence.kind === "complete"}
+              disabled={startDisabled}
               style={primaryButton({
-                opacity: isRunning || members.length === 0 || sequence.kind === "complete" ? 0.55 : 1,
-                cursor: isRunning || members.length === 0 || sequence.kind === "complete" ? "not-allowed" : "pointer",
+                opacity: startDisabled ? 0.55 : 1,
+                cursor: startDisabled ? "not-allowed" : "pointer",
               })}
             >
               {isRunning ? (

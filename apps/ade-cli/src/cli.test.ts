@@ -233,6 +233,72 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("forwards new pipeline-settings flags through Path to Merge", () => {
+    const plan = buildCliPlan([
+      "prs",
+      "path-to-merge",
+      "pr-2",
+      "--model",
+      "gpt-5.4",
+      "--conflict-strategy",
+      "auto",
+      "--force-finalize",
+      "conditional",
+      "--no-early-merge-on-green",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps).toHaveLength(2);
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "issue_inventory",
+        action: "savePipelineSettings",
+        argsList: [
+          "pr-2",
+          {
+            conflictStrategy: "auto",
+            forceFinalizeMode: "conditional",
+            earlyMergeOnGreen: false,
+          },
+        ],
+      },
+    });
+    expect(plan.steps[1]?.params).toEqual({
+      name: "pr_start_issue_resolution",
+      arguments: {
+        prId: "pr-2",
+        scope: "both",
+        modelId: "gpt-5.4",
+      },
+    });
+  });
+
+  it("rejects invalid pipeline-settings enum values", () => {
+    expect(() =>
+      buildCliPlan([
+        "prs",
+        "path-to-merge",
+        "pr-3",
+        "--model",
+        "gpt-5.4",
+        "--conflict-strategy",
+        "wat",
+      ]),
+    ).toThrow(/--conflict-strategy must be one of/);
+    expect(() =>
+      buildCliPlan([
+        "prs",
+        "path-to-merge",
+        "pr-3",
+        "--model",
+        "gpt-5.4",
+        "--force-finalize",
+        "always",
+      ]),
+    ).toThrow(/--force-finalize must be one of/);
+  });
+
   it("validates required arguments before service execution", () => {
     expect(() => buildCliPlan(["lanes", "create"])).toThrow(/name is required/);
     expect(() => buildCliPlan(["lanes", "child", "--name", "child"])).toThrow(/parent lane is required/);

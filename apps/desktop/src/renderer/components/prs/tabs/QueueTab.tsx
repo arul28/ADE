@@ -107,6 +107,15 @@ function pad2(value: number): string {
   return String(value).padStart(2, "0");
 }
 
+function describeConvergenceWaitState(conv: ConvergenceRuntimeState): string {
+  if (conv.pollerStatus === "waiting_for_checks") return "waiting for CI";
+  if (conv.pollerStatus === "waiting_for_comments") return "waiting for review";
+  if (conv.pauseReason) return `paused: ${conv.pauseReason}`;
+  if (conv.status === "polling") return "polling";
+  if (conv.status === "paused") return "paused";
+  return "running";
+}
+
 function queueGroupLabel(group: QueueGroup): string {
   return group.name?.trim() || `Queue ${group.groupId.slice(0, 8)}`;
 }
@@ -975,18 +984,7 @@ export function QueueTab({
                                   </SmartTooltip>
                                 );
                               }
-                              const waitLabel =
-                                conv.pollerStatus === "waiting_for_checks"
-                                  ? "waiting for CI"
-                                  : conv.pollerStatus === "waiting_for_comments"
-                                    ? "waiting for review"
-                                    : conv.pauseReason
-                                      ? `paused: ${conv.pauseReason}`
-                                      : runtimeStatus === "polling"
-                                        ? "polling"
-                                        : runtimeStatus === "paused"
-                                          ? "paused"
-                                          : "running";
+                              const waitLabel = describeConvergenceWaitState(conv);
                               const label = round > 0
                                 ? `PtM iter ${pad2(round)} · ${waitLabel}`
                                 : `PtM · ${waitLabel}`;
