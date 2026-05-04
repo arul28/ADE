@@ -56,7 +56,14 @@ export function LaneDiffPane({
   const [commitDiff, setCommitDiff] = useState<FileDiff | null>(null);
   const [commitDiffFailed, setCommitDiffFailed] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
-  const visibleCommitFiles = useMemo(() => commitFiles.slice(0, MAX_COMMIT_FILE_ROWS), [commitFiles]);
+  const [showAllCommitFiles, setShowAllCommitFiles] = useState(false);
+  useEffect(() => {
+    setShowAllCommitFiles(false);
+  }, [selectedCommit?.sha]);
+  const visibleCommitFiles = useMemo(
+    () => (showAllCommitFiles ? commitFiles : commitFiles.slice(0, MAX_COMMIT_FILE_ROWS)),
+    [commitFiles, showAllCommitFiles],
+  );
   const hiddenCommitFileCount = Math.max(0, commitFiles.length - visibleCommitFiles.length);
 
   const refreshWorkingDiff = React.useCallback(() => {
@@ -67,13 +74,12 @@ export function LaneDiffPane({
       return Promise.resolve();
     }
 
-    setDiff(null);
-    setDiffFailed(false);
     return window.ade.diff
       .getFile({ laneId, path: selectedPath, mode: selectedFileMode })
       .then((value) => {
         if (workingDiffRequestSeq.current !== requestId) return;
         setDiff(value);
+        setDiffFailed(false);
       })
       .catch(() => {
         if (workingDiffRequestSeq.current !== requestId) return;
@@ -273,8 +279,15 @@ export function LaneDiffPane({
                     </div>
                   )}
                   {hiddenCommitFileCount > 0 ? (
-                    <div style={{ padding: "8px", fontSize: 11, color: COLORS.textDim, fontFamily: MONO_FONT }}>
-                      Showing first {MAX_COMMIT_FILE_ROWS} of {commitFiles.length} files.
+                    <div style={{ padding: "8px", fontSize: 11, color: COLORS.textDim, fontFamily: MONO_FONT, display: "flex", alignItems: "center", gap: 8 }}>
+                      <span>Showing first {MAX_COMMIT_FILE_ROWS} of {commitFiles.length} files.</span>
+                      <button
+                        type="button"
+                        onClick={() => setShowAllCommitFiles(true)}
+                        style={{ color: COLORS.accent, fontSize: 11, fontFamily: MONO_FONT, cursor: "pointer" }}
+                      >
+                        Show all
+                      </button>
                     </div>
                   ) : null}
                 </div>

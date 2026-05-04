@@ -48,6 +48,7 @@ export function CommitTimeline({
   const [error, setError] = React.useState<string | null>(null);
   const [limit, setLimit] = React.useState(40);
   const metaByShaRef = React.useRef<Map<string, CommitMeta>>(new Map());
+  const inFlightMetaRef = React.useRef<Set<string>>(new Set());
   const [hoveredSha, setHoveredSha] = React.useState<string | null>(null);
   const [tooltipPos, setTooltipPos] = React.useState<{ x: number; y: number } | null>(null);
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
@@ -71,6 +72,7 @@ export function CommitTimeline({
 
   React.useEffect(() => {
     metaByShaRef.current = new Map();
+    inFlightMetaRef.current = new Set();
     setHoveredSha(null);
     setTooltipPos(null);
     setLimit(40);
@@ -100,7 +102,8 @@ export function CommitTimeline({
   const ensureMeta = React.useCallback(
     async (sha: string) => {
       if (!laneId) return;
-      if (metaByShaRef.current.has(sha)) return;
+      if (metaByShaRef.current.has(sha) || inFlightMetaRef.current.has(sha)) return;
+      inFlightMetaRef.current.add(sha);
       try {
         const messageRaw = await window.ade.git.getCommitMessage({ laneId, commitSha: sha }).catch(() => "");
         const message = messageRaw.trim().length ? messageRaw.trim() : null;
@@ -108,6 +111,8 @@ export function CommitTimeline({
         setHoveredSha((prev) => (prev === sha ? sha : prev));
       } catch {
         metaByShaRef.current.set(sha, { fileCount: null, message: null, loadedAt: new Date().toISOString() });
+      } finally {
+        inFlightMetaRef.current.delete(sha);
       }
     },
     [laneId]

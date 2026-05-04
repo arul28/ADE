@@ -294,6 +294,9 @@ function ensureSafePath(
   opts: { allowMissing?: boolean } = {},
 ): { absPath: string; normalizedRel: string } {
   const normalizedRel = normalizeRelative(relPath);
+  if (isVolatileAdeRuntimePath(normalizedRel)) {
+    throw new Error("Refusing to access ADE runtime paths");
+  }
   const joinedPath = path.normalize(path.join(rootPath, normalizedRel));
   let absPath: string;
   try {
@@ -312,6 +315,9 @@ function ensureSafePath(
 
 function assertMutablePathAllowed(rootPath: string, relPath: string): string {
   const normalizedRel = normalizeRelative(relPath);
+  if (isVolatileAdeRuntimePath(normalizedRel)) {
+    throw new Error("Refusing to mutate ADE runtime paths");
+  }
   const candidatePath = path.join(rootPath, normalizedRel);
   if (containsDotGit(candidatePath)) {
     throw new Error("Refusing to access .git internals");
@@ -521,7 +527,7 @@ export function createFileService({
     depth: number;
     includeIgnored: boolean;
     statusSnapshot: GitStatusSnapshot;
-  }): Promise<FileTreeNode[]> => {
+  }): Promise<{ children: FileTreeNode[]; truncated: boolean }> => {
     const { absPath: dirPath } = ensureSafePath(rootPath, parentPath);
     const entries = fs.readdirSync(dirPath, { withFileTypes: true });
     const entryPaths = entries.map((entry) => normalizeRelative(path.join(parentPath, entry.name)));
@@ -533,8 +539,12 @@ export function createFileService({
     });
 
     const out: FileTreeNode[] = [];
+    let truncated = false;
     for (const entry of entries) {
-      if (out.length >= MAX_TREE_CHILDREN_PER_DIRECTORY) break;
+      if (out.length >= MAX_TREE_CHILDREN_PER_DIRECTORY) {
+        truncated = true;
+        break;
+      }
       const rel = normalizeRelative(path.join(parentPath, entry.name));
       if (isVolatileAdeRuntimePath(rel)) continue;
       if (await isIgnoredPath(rootPath, rel, includeIgnored)) continue;
@@ -553,13 +563,15 @@ export function createFileService({
         }
 
         if (depth > 1) {
-          node.children = await listTreeNode({
+          const sub = await listTreeNode({
             rootPath,
             parentPath: rel,
             depth: depth - 1,
             includeIgnored,
             statusSnapshot
           });
+          node.children = sub.children;
+          if (sub.truncated) node.childrenTruncated = true;
           if (!node.changeStatus && node.children.some((child) => child.changeStatus)) {
             node.changeStatus = "M";
           }
@@ -568,7 +580,7 @@ export function createFileService({
 
       out.push(node);
     }
-    return out;
+    return { children: out, truncated };
   };
 
   return {
@@ -594,13 +606,14 @@ export function createFileService({
       const depth = Number.isFinite(args.depth) ? Math.max(1, Math.min(8, Math.floor(args.depth ?? 1))) : 1;
       const parentPath = normalizeRelative(args.parentPath ?? "");
       const statusSnapshot = await getGitStatusSnapshot(workspace.rootPath);
-      return await listTreeNode({
+      const result = await listTreeNode({
         rootPath: workspace.rootPath,
         parentPath,
         depth,
         includeIgnored: Boolean(args.includeIgnored),
         statusSnapshot
       });
+      return result.children;
     },
 
     readFile(args: FilesReadFileArgs): FileContent {

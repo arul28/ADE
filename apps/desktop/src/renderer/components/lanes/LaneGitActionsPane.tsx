@@ -525,13 +525,15 @@ export function LaneGitActionsPane({
   const stagedCount = changes.staged.length;
   const hasStaged = stagedCount > 0;
   const hasUnstaged = changes.unstaged.length > 0;
+  const [showAllStagedChanges, setShowAllStagedChanges] = useState(false);
+  const [showAllUnstagedChanges, setShowAllUnstagedChanges] = useState(false);
   const visibleStagedChanges = useMemo(
-    () => changes.staged.slice(0, MAX_RENDERED_CHANGE_ROWS_PER_SECTION),
-    [changes.staged],
+    () => (showAllStagedChanges ? changes.staged : changes.staged.slice(0, MAX_RENDERED_CHANGE_ROWS_PER_SECTION)),
+    [changes.staged, showAllStagedChanges],
   );
   const visibleUnstagedChanges = useMemo(
-    () => changes.unstaged.slice(0, MAX_RENDERED_CHANGE_ROWS_PER_SECTION),
-    [changes.unstaged],
+    () => (showAllUnstagedChanges ? changes.unstaged : changes.unstaged.slice(0, MAX_RENDERED_CHANGE_ROWS_PER_SECTION)),
+    [changes.unstaged, showAllUnstagedChanges],
   );
   const hiddenStagedChangeCount = Math.max(0, changes.staged.length - visibleStagedChanges.length);
   const hiddenUnstagedChangeCount = Math.max(0, changes.unstaged.length - visibleUnstagedChanges.length);
@@ -2510,8 +2512,15 @@ export function LaneGitActionsPane({
                   <div style={{ padding: "0 8px 4px", ...LABEL_STYLE }}>STAGED ({changes.staged.length})</div>
                   {visibleStagedChanges.map((file) => renderFileRow(file, "staged"))}
                   {hiddenStagedChangeCount > 0 ? (
-                    <div style={{ padding: "6px 8px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textDim }}>
-                      Showing first {MAX_RENDERED_CHANGE_ROWS_PER_SECTION} of {changes.staged.length} staged files.
+                    <div style={{ padding: "6px 8px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textDim, display: "flex", alignItems: "center", gap: 8 }}>
+                      <span>Showing first {MAX_RENDERED_CHANGE_ROWS_PER_SECTION} of {changes.staged.length} staged files.</span>
+                      <button
+                        type="button"
+                        onClick={() => setShowAllStagedChanges(true)}
+                        style={{ color: COLORS.accent, fontSize: 11, fontFamily: MONO_FONT, cursor: "pointer" }}
+                      >
+                        Show all
+                      </button>
                     </div>
                   ) : null}
                 </div>
@@ -2521,8 +2530,15 @@ export function LaneGitActionsPane({
                   <div style={{ padding: "0 8px 4px", ...LABEL_STYLE }}>UNSTAGED ({changes.unstaged.length})</div>
                   {visibleUnstagedChanges.map((file) => renderFileRow(file, "unstaged"))}
                   {hiddenUnstagedChangeCount > 0 ? (
-                    <div style={{ padding: "6px 8px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textDim }}>
-                      Showing first {MAX_RENDERED_CHANGE_ROWS_PER_SECTION} of {changes.unstaged.length} unstaged files.
+                    <div style={{ padding: "6px 8px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textDim, display: "flex", alignItems: "center", gap: 8 }}>
+                      <span>Showing first {MAX_RENDERED_CHANGE_ROWS_PER_SECTION} of {changes.unstaged.length} unstaged files.</span>
+                      <button
+                        type="button"
+                        onClick={() => setShowAllUnstagedChanges(true)}
+                        style={{ color: COLORS.accent, fontSize: 11, fontFamily: MONO_FONT, cursor: "pointer" }}
+                      >
+                        Show all
+                      </button>
                     </div>
                   ) : null}
                 </div>

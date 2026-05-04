@@ -139,7 +139,8 @@ const CTO_MEMORY_OPERATING_MODEL = [
   "- Distill important session context before compaction removes detail, but persist only durable insights.",
 ].join("\n");
 
-const CTO_ENVIRONMENT_KNOWLEDGE = [
+function buildCtoEnvironmentKnowledge(): string {
+  return [
   "# ADE Architecture & Concepts",
   "",
   "## Core Concepts",
@@ -286,7 +287,8 @@ const CTO_ENVIRONMENT_KNOWLEDGE = [
   "  'Archive a lane' → archiveLane({ laneId }).",
   "  'Show me recent commits' → gitListRecentCommits.",
   "  'Create a PR for this lane' → createPrFromLane({ laneId, title, body }).",
-].join("\n");
+  ].join("\n");
+}
 
 // Keep in sync with ctoOperatorTools.ts tool registrations
 const CTO_CAPABILITY_MANIFEST = [
@@ -1289,7 +1291,7 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     sections.push("- Memory write policy: use memoryUpdateCore for standing brief changes, use memoryAdd for durable reusable lessons, and skip ephemeral status notes.");
     sections.push("");
     sections.push("ADE Operational Knowledge");
-    sections.push(CTO_ENVIRONMENT_KNOWLEDGE);
+    sections.push(buildCtoEnvironmentKnowledge());
     sections.push("");
     sections.push("CTO Identity");
     sections.push(`- Name: ${snapshot.identity.name}`);
@@ -1402,7 +1404,7 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
       {
         id: "knowledge",
         title: "ADE environment knowledge",
-        content: CTO_ENVIRONMENT_KNOWLEDGE,
+        content: buildCtoEnvironmentKnowledge(),
       },
       {
         id: "capabilities",

@@ -3177,10 +3177,23 @@ export function AgentChatPane({
       if (eventLaneId && laneId && eventLaneId !== laneId) return;
       if (!eventChatSessionId && !eventLaneId && !isTileActive) return;
       setIosSimulatorAvailable(true);
+      setProofDrawerOpen(false);
+      setAppControlOpen(false);
+      setCursorCloudPaneOpen(false);
       setIosSimulatorOpen(true);
       setIosSimulatorDrawerModeRequest({ mode: event.mode, nonce: Date.now() });
     });
   }, [hideLaneToolDrawers, isTileActive, laneId]);
+
+  useEffect(() => {
+    if (!iosSimulatorOpen && iosSimulatorDrawerModeRequest) {
+      setIosSimulatorDrawerModeRequest(null);
+    }
+  }, [iosSimulatorOpen, iosSimulatorDrawerModeRequest]);
+
+  useEffect(() => {
+    setIosSimulatorDrawerModeRequest(null);
+  }, [selectedSessionId, laneId]);
 
   useEffect(() => {
     const next = new Set<string>();

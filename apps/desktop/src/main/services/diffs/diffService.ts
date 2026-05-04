@@ -4,8 +4,12 @@ import type { createLaneService } from "../lanes/laneService";
 import { runGit } from "../git/git";
 import type { DiffChanges, DiffMode, FileDiff, FileChange } from "../../../shared/types";
 
-const MAX_DIFF_SIDE_TEXT_BYTES = 192 * 1024;
-const DIFF_TRUNCATION_NOTICE = "\n\n[Preview truncated. Open the file externally or in Files for the full content.]\n";
+export const MAX_DIFF_SIDE_TEXT_BYTES = 192 * 1024;
+export const DIFF_TRUNCATION_NOTICE = "\n\n[Preview truncated. Open the file externally or in Files for the full content.]\n";
+
+export function appendDiffTruncationNotice(text: string): string {
+  return `${text.replace(/\s*$/, "")}${DIFF_TRUNCATION_NOTICE}`;
+}
 
 function parseStatusKind(code: string): FileChange["kind"] {
   if (code === "??") return "untracked";
@@ -29,10 +33,6 @@ function detectBinary(buf: Buffer): boolean {
   return buf.includes(0);
 }
 
-function appendTruncationNotice(text: string): string {
-  return `${text.replace(/\s*$/, "")}${DIFF_TRUNCATION_NOTICE}`;
-}
-
 function readTextFileSafe(absPath: string, maxBytes: number): {
   exists: boolean;
   text: string;
@@ -52,7 +52,7 @@ function readTextFileSafe(absPath: string, maxBytes: number): {
       if (detectBinary(buf)) return { exists: true, text: "", isBinary: true };
       const text = buf.toString("utf8");
       const isTruncated = size > maxBytes;
-      return { exists: true, text: isTruncated ? appendTruncationNotice(text) : text, isTruncated, size };
+      return { exists: true, text: isTruncated ? appendDiffTruncationNotice(text) : text, isTruncated, size };
     } finally {
       fs.closeSync(fd);
     }
@@ -77,7 +77,7 @@ async function gitShowText(
   if (buf.length > maxBytes) {
     return {
       exists: true,
-      text: appendTruncationNotice(buf.subarray(0, maxBytes).toString("utf8")),
+      text: appendDiffTruncationNotice(buf.subarray(0, maxBytes).toString("utf8")),
       isTruncated: true,
       size: buf.length,
     };

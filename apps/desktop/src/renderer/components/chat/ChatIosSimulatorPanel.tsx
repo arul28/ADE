@@ -2003,6 +2003,7 @@ export function ChatIosSimulatorPanel({
         lastResolvedStreamBackendRef.current = null;
         stopRendererLiveVisual();
         if (useSimulatorWindow) {
+          await window.ade.iosSimulator.stopStream().catch(() => {});
           await startWindowCaptureVisual(device);
         } else {
           await startDeviceBackedLiveVisual(device);
@@ -2031,7 +2032,6 @@ export function ChatIosSimulatorPanel({
       liveDeviceStreamFailureTimestampsRef.current = [];
       lastResolvedStreamBackendRef.current = null;
       stopRendererLiveVisual();
-      void window.ade.iosSimulator.stopStream().catch(() => {});
     };
   }, [activeDevice, activeSession, discoveredDeviceBackedStreamActive, mode, simulatorWindowModeEnabled, startDeviceBackedLiveVisual, startWindowCaptureVisual, status, stopRendererLiveVisual]);
 

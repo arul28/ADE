@@ -568,7 +568,11 @@ import type { createAutoRebaseService } from "../lanes/autoRebaseService";
 import type { createSessionService } from "../sessions/sessionService";
 import type { SessionDeltaService } from "../sessions/sessionDeltaService";
 import type { createPtyService } from "../pty/ptyService";
-import type { createDiffService } from "../diffs/diffService";
+import {
+  type createDiffService,
+  MAX_DIFF_SIDE_TEXT_BYTES,
+  appendDiffTruncationNotice,
+} from "../diffs/diffService";
 import type { createFileService } from "../files/fileService";
 import { mergeAiConfig, type createProjectConfigService } from "../config/projectConfigService";
 import type { createProcessService } from "../processes/processService";
@@ -5896,20 +5900,20 @@ export function registerIpc({
     const cwd = ctx.project?.rootPath;
     if (!cwd) throw new Error("No project root");
     const lang = arg.filePath.split(".").pop() ?? undefined;
-    const maxSideBytes = 192 * 1024;
+    const maxSideBytes = MAX_DIFF_SIDE_TEXT_BYTES;
     const readSide = async (spec: string): Promise<{ exists: boolean; text: string; isTruncated?: boolean; isBinary?: boolean }> => {
       const result = await runGit(["show", spec], {
         cwd,
         timeoutMs: 10_000,
         maxOutputBytes: maxSideBytes + 64 * 1024,
-      }).catch(() => ({ stdout: "", exitCode: 1 }));
+      });
       if (result.exitCode !== 0) return { exists: false, text: "" };
       const buf = Buffer.from(result.stdout, "utf8");
       if (buf.includes(0)) return { exists: true, text: "", isBinary: true };
       if (buf.length <= maxSideBytes) return { exists: true, text: result.stdout };
       return {
         exists: true,
-        text: `${buf.subarray(0, maxSideBytes).toString("utf8").replace(/\s*$/, "")}\n\n[Preview truncated.]\n`,
+        text: appendDiffTruncationNotice(buf.subarray(0, maxSideBytes).toString("utf8")),
         isTruncated: true,
       };
     };

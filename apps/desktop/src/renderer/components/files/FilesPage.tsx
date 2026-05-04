@@ -161,6 +161,7 @@ const filesPageSessionByScope = new Map<string, FilesPageSessionState>();
 const filesPageSessionLru: string[] = [];
 const MAX_FILES_PAGE_CACHED_SCOPES = 8;
 const MAX_CACHED_CLEAN_TAB_CHARS = 256 * 1024;
+const MAX_CACHED_DIRTY_TAB_CHARS = 8 * 1024 * 1024;
 const MAX_QUEUED_TREE_PARENT_REFRESHES = 24;
 const FILES_WATCH_START_DELAY_MS = import.meta.env.MODE === "test" || (window as any).__adeBrowserMock ? 0 : 2_000;
 
@@ -198,7 +199,9 @@ function filesPageSessionHasUnsavedTabs(session: FilesPageSessionState | undefin
 function cacheableSessionTabs(openTabs: OpenTab[]): OpenTab[] {
   return openTabs
     .filter((tab) => {
-      if (tab.content !== tab.savedContent) return true;
+      if (tab.content !== tab.savedContent) {
+        return tab.content.length <= MAX_CACHED_DIRTY_TAB_CHARS;
+      }
       return isTextTab(tab) && tab.content.length <= MAX_CACHED_CLEAN_TAB_CHARS;
     })
     .map((tab) => ({ ...tab }));

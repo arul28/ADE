@@ -664,6 +664,7 @@ export function setProjectIconOverrideFromSelection(projectRoot: string, iconPat
   }
 
   const data = fs.readFileSync(selectedPath);
+  // TOCTOU safety net: file may have grown between assertUsableProjectIconFile's stat and this read.
   if (data.length > ICON_MAX_BYTES) {
     throw new Error("Project icon must be 1 MB or smaller.");
   }

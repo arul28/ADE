@@ -2808,7 +2808,6 @@ app.whenReady().then(async () => {
         return result;
       },
       selectPoint: async (arg: Parameters<typeof iosSimulatorService.selectPoint>[0]) => {
-        requestIosSimulatorDrawerOpen("selectPoint", arg);
         const result = await iosSimulatorService.selectPoint(arg);
         requestIosSimulatorDrawerOpen("selectPoint", arg, result);
         return result;
