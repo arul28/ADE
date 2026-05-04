@@ -902,6 +902,11 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
     return review.state === "commented" && Boolean(review.body?.trim());
   }
 
+  function isPermanentCleanInventoryBlocker(ctx: IterationContext, error: string): boolean {
+    if (ctx.pr.checksStatus !== "passing") return true;
+    return /\bCI\b|no completed successful CI checks|no CI checks/i.test(error);
+  }
+
   function latestReviewByReviewer(reviews: PrReview[]): PrReview[] {
     const latestByReviewer = new Map<string, PrReview>();
     const anonymousReviews: PrReview[] = [];
@@ -1512,6 +1517,10 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
           return;
         }
         if (ladder.kind === "blocked") {
+          if (isPermanentCleanInventoryBlocker(fresh, ladder.error)) {
+            pauseLoop(prId, "Clean inventory cannot auto-merge.", ladder.error);
+            return;
+          }
           parkConverged(`Inventory clean; merge ladder is blocked: ${ladder.error}`);
           return;
         }

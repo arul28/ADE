@@ -692,6 +692,44 @@ describe("createPathToMergeOrchestrator.runIteration", () => {
     }
   });
 
+  it("pauses instead of rescheduling when clean inventory cannot ever satisfy CI readiness", async () => {
+    const runtimeByPrId = new Map<string, ConvergenceRuntimeState>();
+    const land = vi.fn(async () => ({
+      prId: "pr-1",
+      prNumber: 1,
+      success: true as const,
+      mergeCommitSha: "merge-sha",
+      branchDeleted: false,
+      laneArchived: false,
+      error: null,
+    }));
+    const { deps } = buildDeps({
+      runtimeByPrId,
+      prs: [buildPrSummary({ checksStatus: "none", reviewStatus: "none" })],
+      pipelineSettings: { earlyMergeOnGreen: false, autoMerge: true },
+      convergenceStatus: { totalNew: 0 },
+      getChecks: async () => [],
+      land,
+    });
+    const orchestrator = createPathToMergeOrchestrator(deps);
+    try {
+      await orchestrator.startPathToMerge({ prId: "pr-1", modelId: "openai/gpt-5.4" });
+      await flushIteration();
+
+      expect(launchPrIssueResolutionChatMock).not.toHaveBeenCalled();
+      expect(land).not.toHaveBeenCalled();
+      expect(runtimeByPrId.get("pr-1")).toMatchObject({
+        status: "paused",
+        pollerStatus: "paused",
+        autoConvergeEnabled: false,
+        pauseReason: "Clean inventory cannot auto-merge.",
+        errorMessage: "Auto-merge blocked because CI is none.",
+      });
+    } finally {
+      orchestrator.dispose();
+    }
+  });
+
   it("blocks auto-merge for clean inventory when commented reviews still need review", async () => {
     const runtimeByPrId = new Map<string, ConvergenceRuntimeState>();
     const land = vi.fn(async () => ({
