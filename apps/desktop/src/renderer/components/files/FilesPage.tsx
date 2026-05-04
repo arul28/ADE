@@ -1312,7 +1312,17 @@ export function FilesPage({
     if (!preferredLaneId || !workspaces.length) return;
     const nextWorkspaceId = defaultFilesWorkspaceId(workspaces, selectedLaneId);
     if (!nextWorkspaceId) return;
-    setWorkspaceId((current) => (current === nextWorkspaceId ? current : nextWorkspaceId));
+    setWorkspaceId((current) => {
+      if (current === nextWorkspaceId) return current;
+      // Tabs from the previous workspace would target the wrong filesystem. Clear them
+      // here to mirror what `switchWorkspace` does when the user changes workspace manually.
+      if (current) {
+        setOpenTabs([]);
+        setActiveTabPath(null);
+        setSelectedNodePath(null);
+      }
+      return nextWorkspaceId;
+    });
   }, [preferredLaneId, selectedLaneId, workspaces]);
 
   useEffect(() => {

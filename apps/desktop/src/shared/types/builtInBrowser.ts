@@ -12,7 +12,7 @@ export type BuiltInBrowserBoundsArgs = BuiltInBrowserFrame & {
 };
 
 export type BuiltInBrowserAttachWebviewArgs = {
-  tabId?: string | null;
+  tabId: string;
   webContentsId: number;
 };
 
@@ -48,7 +48,7 @@ export type BuiltInBrowserStatus = {
 };
 
 export type BuiltInBrowserTabArgs = {
-  tabId?: string | null;
+  tabId: string;
 };
 
 export type BuiltInBrowserCreateTabArgs = {

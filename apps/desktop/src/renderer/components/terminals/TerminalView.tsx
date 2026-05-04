@@ -157,7 +157,7 @@ function createTerminalLinkProvider(term: Terminal): ILinkProvider {
   return {
     provideLinks(bufferLineNumber: number, callback: (links: ILink[] | undefined) => void) {
       const lineIndex = Math.max(0, bufferLineNumber - 1);
-      const line = term.buffer.active.getLine(lineIndex) ?? term.buffer.active.getLine(bufferLineNumber);
+      const line = term.buffer.active.getLine(lineIndex);
       if (!line) {
         callback(undefined);
         return;

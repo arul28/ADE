@@ -464,7 +464,10 @@ export function useWorkSessions() {
 
   const setWorkSidebarWidthPct = useCallback(
     (widthPct: number) => {
-      setProjectViewState({ workSidebarWidthPct: Math.max(26, Math.min(55, widthPct)) });
+      // Mirror normalizeWorkSidebarWidthPct: a non-finite drag value would otherwise poison
+      // the persisted layout — fall back to the default rather than persisting NaN/Infinity.
+      const safeWidth = Number.isFinite(widthPct) ? widthPct : 36;
+      setProjectViewState({ workSidebarWidthPct: Math.max(26, Math.min(55, safeWidth)) });
     },
     [setProjectViewState],
   );

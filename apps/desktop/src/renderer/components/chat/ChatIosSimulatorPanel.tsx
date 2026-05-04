@@ -2220,7 +2220,10 @@ export function ChatIosSimulatorPanel({
 
   const addSimulatorCaptureContext = useCallback(async (frame: PreviewCrop["frame"]) => {
     if (!snapshot?.screenshot.dataUrl) return;
-    if (!onAddContext) return;
+    if (!onAddContext) {
+      setMessage("Chat attachments are not available in this panel.");
+      return;
+    }
     const capture = await attachSimulatorCapture(frame).catch(() => null);
     const captureFrame = capture?.frame ?? frame;
     const overlappingElements = snapshot.elements
@@ -2393,7 +2396,10 @@ export function ChatIosSimulatorPanel({
 
   const addPreviewCaptureContext = useCallback(async (frame: PreviewCrop["frame"]) => {
     if (!previewImage || !selectedPreviewTarget || !previewResult?.dataUrl) return;
-    if (!onAddContext) return;
+    if (!onAddContext) {
+      setMessage("Chat attachments are not available in this panel.");
+      return;
+    }
     const capture = await attachPreviewCapture(frame).catch(() => null);
     const captureFrame = capture?.frame ?? frame;
     onAddContext({

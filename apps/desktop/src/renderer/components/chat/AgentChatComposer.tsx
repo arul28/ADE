@@ -2079,6 +2079,10 @@ export function AgentChatComposer({
     // Cloud submit only fires when the chat is fresh enough to launch a new cloud run. Once any
     // turns have been exchanged the inline launch strip is unavailable, so this branch is gated
     // on `cursorCloudCanLaunch` to defend against a stale `cursorCloudLaunchModeOpen=true`.
+    const hasContextSelection =
+      iosElementContextItems.length > 0
+      || appControlContextItems.length > 0
+      || builtInBrowserContextItems.length > 0;
     if (
       cursorCloudAvailable
       && cursorCloudCanLaunch
@@ -2086,13 +2090,13 @@ export function AgentChatComposer({
       && onSubmitToCloud
     ) {
       const trimmed = draft.trim();
-      if (!trimmed.length) return;
+      if (!trimmed.length && !hasContextSelection) return;
       void Promise.resolve(onSubmitToCloud(trimmed)).then((ok) => {
         if (ok) onDraftChange("");
       });
       return;
     }
-    if (busy || !modelId || (!draft.trim().length && !iosElementContextItems.length && !appControlContextItems.length && !builtInBrowserContextItems.length)) return;
+    if (busy || !modelId || (!draft.trim().length && !hasContextSelection)) return;
     onSubmit();
   }, [appControlContextItems.length, attachments, builtInBrowserContextItems.length, busy, cursorCloudAvailable, cursorCloudCanLaunch, cursorCloudLaunchModeOpen, draft, iosElementContextItems.length, modelId, onDraftChange, onSubmit, onSubmitToCloud, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length]);
 
@@ -2873,7 +2877,7 @@ export function AgentChatComposer({
                     </button>
                   </SmartTooltip>
                 ) : null}
-                {draft.trim().length > 0 && !composerInputLocked ? (
+                {(draft.trim().length > 0 || hasIosElementContext || hasAppControlContext || hasBuiltInBrowserContext) && !composerInputLocked ? (
                   <SmartTooltip content={{ label: "Send steer message", description: "Queue this message for the running chat after the current turn finishes." }}>
                     <button
                       type="button"

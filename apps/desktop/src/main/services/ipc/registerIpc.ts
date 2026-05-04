@@ -2231,7 +2231,7 @@ export function registerIpc({
     const record = builtInBrowserRecord(value, channel, true);
     const webContentsId = builtInBrowserNumber(record, "webContentsId", channel, { min: 1, max: Number.MAX_SAFE_INTEGER });
     const tabId = optionalBuiltInBrowserString(record, "tabId", channel, 128);
-    if (!tabId) invalidBuiltInBrowserArg(channel, "tabId must be a non-empty string");
+    if (!tabId) return invalidBuiltInBrowserArg(channel, "tabId must be a non-empty string");
     return { tabId, webContentsId };
   };
 
@@ -2268,7 +2268,7 @@ export function registerIpc({
   const parseBuiltInBrowserTabArgs = (value: unknown, channel: string): BuiltInBrowserTabArgs => {
     const record = builtInBrowserRecord(value, channel, true);
     const tabId = optionalBuiltInBrowserString(record, "tabId", channel, 128);
-    if (!tabId) invalidBuiltInBrowserArg(channel, "tabId must be a non-empty string");
+    if (!tabId) return invalidBuiltInBrowserArg(channel, "tabId must be a non-empty string");
     return { tabId };
   };
 

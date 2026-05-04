@@ -472,6 +472,8 @@ export function createBuiltInBrowserService(args: {
     if (tabs.length >= MAX_BROWSER_TABS) {
       throw new Error(`ADE browser is limited to ${MAX_BROWSER_TABS} tabs. Close a tab before opening another.`);
     }
+    // Normalize URL up front so we don't leave an orphan tab on invalid input.
+    const normalizedUrl = input.url ? normalizeBrowserUrl(input.url) : null;
     const willActivate = input.activate !== false || !activeTabId;
     if (willActivate) {
       await stopInspectQuietly("built_in_browser.create_tab_stop_inspect_failed");
@@ -481,8 +483,8 @@ export function createBuiltInBrowserService(args: {
     tabs = [...tabs, tab];
     if (willActivate) activeTabId = tab.id;
     attachViewsToCurrentWindow();
-    if (input.url) {
-      await tab.webContents.loadURL(normalizeBrowserUrl(input.url));
+    if (normalizedUrl) {
+      await tab.webContents.loadURL(normalizedUrl);
     }
     emitStatus();
     return getStatus();
