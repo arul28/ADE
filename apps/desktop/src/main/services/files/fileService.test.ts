@@ -235,6 +235,37 @@ describe("fileService", () => {
     }
   });
 
+  it("keeps generated output directories out of the file search index", async () => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-generated-search-"));
+    const { execSync } = await import("node:child_process");
+    execSync("git init", { cwd: rootPath, stdio: "ignore" });
+    const laneService = createLaneServiceStub(rootPath);
+    const service = createFileService({ laneService });
+
+    try {
+      fs.mkdirSync(path.join(rootPath, "src"), { recursive: true });
+      fs.mkdirSync(path.join(rootPath, "dist"), { recursive: true });
+      fs.writeFileSync(path.join(rootPath, "src", "index.ts"), "needle source\n", "utf8");
+      fs.writeFileSync(path.join(rootPath, "dist", "bundle.js"), "needle bundled output\n", "utf8");
+
+      const quickOpen = await service.quickOpen({
+        workspaceId: "workspace-1",
+        query: "bundle",
+        includeIgnored: true,
+      });
+      const search = await service.searchText({
+        workspaceId: "workspace-1",
+        query: "needle",
+        includeIgnored: true,
+      });
+
+      expect(quickOpen).toEqual([]);
+      expect(search.map((item) => item.path)).toEqual(["src/index.ts"]);
+    } finally {
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
   it("lists only the requested tree depth without extra file metadata", async () => {
     const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-tree-"));
     const { execSync } = await import("node:child_process");

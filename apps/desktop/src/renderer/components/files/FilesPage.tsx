@@ -33,6 +33,7 @@ import type {
   FilesQuickOpenItem,
   FilesSearchTextMatch,
   FilesWorkspace,
+  FileDiff,
   GitCommitSummary,
   LaneSummary,
 } from "../../../shared/types";
@@ -454,6 +455,12 @@ function getFileIcon(fileName: string): { icon: React.ComponentType<any>; color:
     return { icon: FileSpreadsheet, color: FILE_ICON_COLORS.spreadsheet };
   }
   return { icon: FileText, color: FILE_ICON_COLORS.default };
+}
+
+function fileDiffHasRenderableChanges(diff: FileDiff): boolean {
+  if (diff.original.exists !== diff.modified.exists) return true;
+  if (diff.isBinary) return true;
+  return diff.original.text !== diff.modified.text;
 }
 
 function changeStatusColor(changeStatus: FileTreeNode["changeStatus"]): string {
@@ -2873,7 +2880,15 @@ function FilesDiffPanel({
       </div>
 
       {error ? <div style={{ padding: 12, fontFamily: MONO_FONT, fontSize: 11, color: COLORS.danger }}>{error}</div> : null}
-      <div className="min-h-0 flex-1">{diff ? <MonacoDiffView ref={diffViewRef} diff={diff} className="h-full" theme={theme} /> : null}</div>
+      <div className="min-h-0 flex-1">
+        {diff && fileDiffHasRenderableChanges(diff) ? (
+          <MonacoDiffView ref={diffViewRef} diff={diff} className="h-full" theme={theme} />
+        ) : diff ? (
+          <div className="flex h-full items-center justify-center px-4 text-xs" style={{ color: COLORS.textMuted }}>
+            No changes for this file.
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }

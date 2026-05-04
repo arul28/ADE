@@ -2136,7 +2136,8 @@ export function AgentChatComposer({
     setSelectedBuiltInBrowserContextId(null);
   }, [builtInBrowserContextItems, selectedBuiltInBrowserContextId]);
 
-  const composerBeamActive = isActive && layoutVariant !== "grid-tile" && !iosSimulatorOpen && (turnActive || !chatHasMessages);
+  // Idle composer motion keeps the GPU busy; reserve the beam for active turns.
+  const composerBeamActive = isActive && layoutVariant !== "grid-tile" && !iosSimulatorOpen && turnActive;
   const composerBeamVariant = turnActive ? "ocean" : "colorful";
   const composerBeamDuration = turnActive ? 20 : 5;
   const composerBeamStrength = turnActive ? 0.26 : 0.44;

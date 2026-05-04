@@ -280,6 +280,16 @@ describe("FilesPage", () => {
         stageFile: vi.fn(async () => undefined),
         unstageFile: vi.fn(async () => undefined),
         discardFile: vi.fn(async () => undefined),
+        listRecentCommits: vi.fn(async () => []),
+      },
+      diff: {
+        getFile: vi.fn(async ({ path, mode }: { path: string; mode: string }) => ({
+          path,
+          mode,
+          original: { exists: true, text: fileContents[path] ?? "" },
+          modified: { exists: true, text: fileContents[path] ?? "" },
+          language: path.endsWith(".ts") ? "typescript" : "markdown",
+        })),
       },
       app: {
         openPathInEditor: vi.fn(async () => undefined),

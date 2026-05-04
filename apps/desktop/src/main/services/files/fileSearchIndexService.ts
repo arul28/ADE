@@ -21,6 +21,17 @@ const VOLATILE_ADE_FILES = new Set([
   ".ade/ade.sock",
   ".ade/local.secret.yaml",
 ]);
+const ALWAYS_SKIPPED_DIRECTORY_NAMES = new Set([
+  ".git",
+  ".next",
+  ".nuxt",
+  ".svelte-kit",
+  ".turbo",
+  ".vite",
+  "coverage",
+  "dist",
+  "node_modules",
+]);
 
 type IndexedFile = {
   path: string;
@@ -39,6 +50,11 @@ type WorkspaceIndex = {
   totalContentBytes: number;
   buildingPromise: Promise<void> | null;
   builtAt: string | null;
+};
+
+type IgnoreOptions = {
+  shouldIgnore: (relPath: string, includeIgnored: boolean) => Promise<boolean>;
+  primeIgnoreCache?: (relPaths: string[], includeIgnored: boolean) => Promise<void>;
 };
 
 function isVolatileAdeRuntimePath(relPath: string): boolean {
@@ -161,15 +177,9 @@ export function createFileSearchIndexService() {
     });
   };
 
-  const shouldSkipDirectoryName = (name: string): boolean => {
-    if (name === ".git") return true;
-    if (name === "node_modules") return true;
-    return false;
-  };
+  const shouldSkipDirectoryName = (name: string): boolean => ALWAYS_SKIPPED_DIRECTORY_NAMES.has(name);
 
-  const buildWorkspace = async (index: WorkspaceIndex, opts: {
-    shouldIgnore: (relPath: string, includeIgnored: boolean) => Promise<boolean>;
-  }): Promise<void> => {
+  const buildWorkspace = async (index: WorkspaceIndex, opts: IgnoreOptions): Promise<void> => {
     index.files.clear();
     index.totalContentBytes = 0;
 
@@ -187,8 +197,13 @@ export function createFileSearchIndexService() {
         continue;
       }
 
-      for (const entry of entries) {
-        const relPath = normalizeRelative(path.join(relDir, entry.name));
+      const candidates = entries
+        .map((entry) => ({ entry, relPath: normalizeRelative(path.join(relDir, entry.name)) }))
+        .filter((candidate) => Boolean(candidate.relPath));
+
+      await opts.primeIgnoreCache?.(candidates.map((candidate) => candidate.relPath), index.includeIgnored);
+
+      for (const { entry, relPath } of candidates) {
         if (!relPath) continue;
         if (shouldSkipPathPrefix(relPath, index.includeIgnored)) continue;
         if (entry.isDirectory() && shouldSkipDirectoryName(entry.name)) continue;
@@ -215,9 +230,8 @@ export function createFileSearchIndexService() {
     index.builtAt = new Date().toISOString();
   };
 
-  const ensureBuilt = async (workspaceId: string, rootPath: string, opts: {
+  const ensureBuilt = async (workspaceId: string, rootPath: string, opts: IgnoreOptions & {
     includeIgnored: boolean;
-    shouldIgnore: (relPath: string, includeIgnored: boolean) => Promise<boolean>;
   }): Promise<WorkspaceIndex> => {
     const index = getOrCreateWorkspaceIndex(workspaceId, rootPath, opts.includeIgnored);
     if (index.files.size > 0 || index.builtAt) return index;
@@ -239,10 +253,12 @@ export function createFileSearchIndexService() {
       rootPath: string;
       includeIgnored: boolean;
       shouldIgnore: (relPath: string, includeIgnored: boolean) => Promise<boolean>;
+      primeIgnoreCache?: (relPaths: string[], includeIgnored: boolean) => Promise<void>;
     }): Promise<void> {
       await ensureBuilt(args.workspaceId, args.rootPath, {
         includeIgnored: args.includeIgnored,
-        shouldIgnore: args.shouldIgnore
+        shouldIgnore: args.shouldIgnore,
+        primeIgnoreCache: args.primeIgnoreCache
       });
     },
 
@@ -253,10 +269,12 @@ export function createFileSearchIndexService() {
       limit: number;
       includeIgnored: boolean;
       shouldIgnore: (relPath: string, includeIgnored: boolean) => Promise<boolean>;
+      primeIgnoreCache?: (relPaths: string[], includeIgnored: boolean) => Promise<void>;
     }): Promise<FilesQuickOpenItem[]> {
       const index = await ensureBuilt(args.workspaceId, args.rootPath, {
         includeIgnored: args.includeIgnored,
-        shouldIgnore: args.shouldIgnore
+        shouldIgnore: args.shouldIgnore,
+        primeIgnoreCache: args.primeIgnoreCache
       });
 
       const scored: FilesQuickOpenItem[] = [];
@@ -276,10 +294,12 @@ export function createFileSearchIndexService() {
       limit: number;
       includeIgnored: boolean;
       shouldIgnore: (relPath: string, includeIgnored: boolean) => Promise<boolean>;
+      primeIgnoreCache?: (relPaths: string[], includeIgnored: boolean) => Promise<void>;
     }): Promise<FilesSearchTextMatch[]> {
       const index = await ensureBuilt(args.workspaceId, args.rootPath, {
         includeIgnored: args.includeIgnored,
-        shouldIgnore: args.shouldIgnore
+        shouldIgnore: args.shouldIgnore,
+        primeIgnoreCache: args.primeIgnoreCache
       });
 
       const out: FilesSearchTextMatch[] = [];

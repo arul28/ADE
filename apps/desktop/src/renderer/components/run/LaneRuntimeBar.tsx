@@ -22,6 +22,9 @@ const dividerStyle = {
   paddingRight: 16,
 };
 
+const RUNTIME_BAR_PASSIVE_REFRESH_MS = 10_000;
+const RUNTIME_BAR_HEALTH_REFRESH_MS = 30_000;
+
 export function LaneRuntimeBar({ laneId, onOpenPreviewRouting }: LaneRuntimeBarProps) {
   const [health, setHealth] = useState<LaneHealthCheck | null>(null);
   const [preview, setPreview] = useState<LanePreviewInfo | null>(null);
@@ -84,13 +87,19 @@ export function LaneRuntimeBar({ laneId, onOpenPreviewRouting }: LaneRuntimeBarP
       return;
     }
     let cancelled = false;
+    let lastHealthRefreshAt = 0;
     const runRefresh = (runHealthCheck: boolean) => {
       if (cancelled) return;
+      if (document.visibilityState !== "visible") return;
+      if (runHealthCheck) lastHealthRefreshAt = Date.now();
       refreshRuntimeState(laneId, { runHealthCheck });
     };
     runRefresh(false);
     const deferredTimer = window.setTimeout(() => runRefresh(true), 160);
-    const refreshInterval = window.setInterval(() => runRefresh(true), 2500);
+    const refreshInterval = window.setInterval(() => {
+      const shouldRunHealthCheck = Date.now() - lastHealthRefreshAt >= RUNTIME_BAR_HEALTH_REFRESH_MS;
+      runRefresh(shouldRunHealthCheck);
+    }, RUNTIME_BAR_PASSIVE_REFRESH_MS);
 
     return () => {
       cancelled = true;

@@ -426,6 +426,8 @@ export function createFileService({
 
   const shouldIgnoreForRoot = (rootPath: string) =>
     (relPath: string, includeIgnored: boolean) => isIgnoredPath(rootPath, relPath, includeIgnored);
+  const primeIgnoreCacheForRoot = (rootPath: string) =>
+    (relPaths: string[], includeIgnored: boolean) => primeIgnoreCache(rootPath, relPaths, includeIgnored);
 
   const emitLaneMutation = (workspaceId: string, reason: string) => {
     if (!onLaneWorktreeMutation) return;
@@ -838,7 +840,8 @@ export function createFileService({
         query,
         limit,
         includeIgnored: Boolean(args.includeIgnored),
-        shouldIgnore: shouldIgnoreForRoot(workspace.rootPath)
+        shouldIgnore: shouldIgnoreForRoot(workspace.rootPath),
+        primeIgnoreCache: primeIgnoreCacheForRoot(workspace.rootPath)
       });
     },
 
@@ -853,7 +856,8 @@ export function createFileService({
         query,
         limit,
         includeIgnored: Boolean(args.includeIgnored),
-        shouldIgnore: shouldIgnoreForRoot(workspace.rootPath)
+        shouldIgnore: shouldIgnoreForRoot(workspace.rootPath),
+        primeIgnoreCache: primeIgnoreCacheForRoot(workspace.rootPath)
       });
     },
 
