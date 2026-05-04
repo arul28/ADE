@@ -23,6 +23,31 @@ import type { PrSummary } from "../../../shared/types";
 
 type SurfaceMode = "github" | "workflows";
 
+const LAST_WORKFLOW_TAB_KEY = "ade:prs:lastWorkflowTab";
+
+function scopedLastWorkflowTabKey(projectRoot?: string | null): string {
+  const root = projectRoot?.trim();
+  return root ? `${LAST_WORKFLOW_TAB_KEY}:${root}` : LAST_WORKFLOW_TAB_KEY;
+}
+
+function readLastWorkflowTab(projectRoot?: string | null): WorkflowCategory {
+  try {
+    const value = window.localStorage.getItem(scopedLastWorkflowTabKey(projectRoot));
+    if (value === "integration" || value === "queue" || value === "rebase") return value;
+  } catch {
+    /* ignore */
+  }
+  return "integration";
+}
+
+function writeLastWorkflowTab(projectRoot: string | null, tab: WorkflowCategory): void {
+  try {
+    window.localStorage.setItem(scopedLastWorkflowTabKey(projectRoot), tab);
+  } catch {
+    /* ignore */
+  }
+}
+
 function PRsPageInner() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -47,7 +72,7 @@ function PRsPageInner() {
   } = usePrs();
 
   const [createPrOpen, setCreatePrOpen] = React.useState(false);
-  const [lastWorkflowTab, setLastWorkflowTab] = React.useState<WorkflowCategory>("integration");
+  const [lastWorkflowTab, setLastWorkflowTab] = React.useState<WorkflowCategory>(() => readLastWorkflowTab(projectRoot));
   const [integrationRefreshNonce, setIntegrationRefreshNonce] = React.useState(0);
   const [selectedDetailTab, setSelectedDetailTab] = React.useState<PrDetailRouteTab | null>(() => {
     try {
@@ -64,8 +89,15 @@ function PRsPageInner() {
   React.useEffect(() => {
     if (activeTab !== "normal") {
       setLastWorkflowTab(activeTab);
+      writeLastWorkflowTab(projectRoot, activeTab);
     }
-  }, [activeTab]);
+  }, [activeTab, projectRoot]);
+
+  React.useEffect(() => {
+    if (activeTab === "normal") {
+      setLastWorkflowTab(readLastWorkflowTab(projectRoot));
+    }
+  }, [activeTab, projectRoot]);
 
   const handleRefresh = React.useCallback(async () => {
     await Promise.all([

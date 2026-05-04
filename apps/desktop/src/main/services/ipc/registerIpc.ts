@@ -155,7 +155,7 @@ import type {
   PrAiResolutionContext,
   PrAiResolutionSessionInfo,
   PrAiResolutionSessionStatus,
-  AiPermissionMode,
+  PrAgentPermissionMode,
   PrIssueResolutionPromptPreviewArgs,
   PrIssueResolutionPromptPreviewResult,
   PrIssueResolutionStartArgs,
@@ -565,6 +565,7 @@ import type { createOAuthRedirectService } from "../lanes/oauthRedirectService";
 import type { createRuntimeDiagnosticsService } from "../lanes/runtimeDiagnosticsService";
 import type { createRebaseSuggestionService } from "../lanes/rebaseSuggestionService";
 import type { createAutoRebaseService } from "../lanes/autoRebaseService";
+import type { LaneWorktreeLockService } from "../lanes/laneWorktreeLockService";
 import type { createSessionService } from "../sessions/sessionService";
 import type { SessionDeltaService } from "../sessions/sessionDeltaService";
 import type { createPtyService } from "../pty/ptyService";
@@ -587,6 +588,7 @@ import type { createPrService } from "../prs/prService";
 import type { createPrPollingService } from "../prs/prPollingService";
 import type { createQueueLandingService } from "../prs/queueLandingService";
 import type { createIssueInventoryService } from "../prs/issueInventoryService";
+import type { PathToMergeOrchestrator } from "../prs/pathToMergeOrchestrator";
 import type { createPrSummaryService } from "../prs/prSummaryService";
 import type { createReviewService } from "../review/reviewService";
 import type { createAgentChatService } from "../chat/agentChatService";
@@ -665,6 +667,7 @@ export type AppContext = {
   devToolsService: ReturnType<typeof createDevToolsService>;
   onboardingService: ReturnType<typeof createOnboardingService>;
   laneService: ReturnType<typeof createLaneService>;
+  laneWorktreeLockService?: LaneWorktreeLockService | null;
   laneEnvironmentService: ReturnType<typeof createLaneEnvironmentService> | null;
   laneTemplateService: ReturnType<typeof createLaneTemplateService> | null;
   portAllocationService: ReturnType<typeof createPortAllocationService> | null;
@@ -691,6 +694,7 @@ export type AppContext = {
   prPollingService: ReturnType<typeof createPrPollingService>;
   queueLandingService: ReturnType<typeof createQueueLandingService>;
   issueInventoryService: ReturnType<typeof createIssueInventoryService>;
+  pathToMergeOrchestrator?: PathToMergeOrchestrator | null;
   prSummaryService: ReturnType<typeof createPrSummaryService>;
   reviewService: ReturnType<typeof createReviewService>;
   jobEngine: ReturnType<typeof createJobEngine>;
@@ -1540,19 +1544,20 @@ export function collectPrAiSourceLaneIds(context: PrAiResolutionContext): string
   return Array.from(sourceLaneIds);
 }
 
-function mapPrAiPermissionMode(mode: AiPermissionMode): AgentChatPermissionMode {
+function mapPrAiPermissionMode(mode: PrAgentPermissionMode): AgentChatPermissionMode {
   if (mode === "full_edit") return "full-auto";
   if (mode === "guarded_edit") return "edit";
-  return "plan";
+  if (mode === "read_only") return "plan";
+  return mode;
 }
 
 /**
- * Map an AiPermissionMode to provider-native permission fields for AgentChatCreateArgs.
+ * Map a PR resolver permission mode to provider-native permission fields for AgentChatCreateArgs.
  */
 function mapPrAiPermissionModeToNativeFields(
-  mode: AiPermissionMode,
+  mode: PrAgentPermissionMode,
   provider: string,
-): Partial<Pick<AgentChatCreateArgs, "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "opencodePermissionMode" | "droidPermissionMode" | "cursorModeId">> {
+): Partial<Pick<AgentChatCreateArgs, "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "cursorModeId">> {
   const legacy = mapPrAiPermissionMode(mode);
   if (provider === "claude") {
     const map: Record<string, AgentChatClaudePermissionMode> = {
@@ -1564,9 +1569,16 @@ function mapPrAiPermissionModeToNativeFields(
     return { claudePermissionMode: map[legacy] ?? "default" };
   }
   if (provider === "codex") {
-    if (legacy === "full-auto") return { codexApprovalPolicy: "never", codexSandbox: "danger-full-access" };
-    if (legacy === "edit") return { codexApprovalPolicy: "on-request", codexSandbox: "workspace-write" };
-    return { codexApprovalPolicy: "on-request", codexSandbox: "read-only" };
+    if (legacy === "config-toml") {
+      return {
+        codexApprovalPolicy: "on-request",
+        codexSandbox: "workspace-write",
+        codexConfigSource: "config-toml",
+      };
+    }
+    if (legacy === "full-auto") return { codexApprovalPolicy: "never", codexSandbox: "danger-full-access", codexConfigSource: "flags" };
+    if (legacy === "edit" || legacy === "default") return { codexApprovalPolicy: "on-request", codexSandbox: "workspace-write", codexConfigSource: "flags" };
+    return { codexApprovalPolicy: "on-request", codexSandbox: "read-only", codexConfigSource: "flags" };
   }
   if (provider === "droid") {
     if (legacy === "full-auto") return { droidPermissionMode: "auto-high" };
@@ -1587,37 +1599,39 @@ function mapPrAiPermissionModeToNativeFields(
 }
 
 function deriveAiPermissionModeFromSummary(
-  summary: Pick<AgentChatSessionSummary, "provider" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "opencodePermissionMode" | "droidPermissionMode" | "cursorModeId"> | null | undefined,
-): AiPermissionMode | null {
+  summary: Pick<AgentChatSessionSummary, "provider" | "permissionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "cursorModeId"> | null | undefined,
+): PrAgentPermissionMode | null {
   if (!summary) return null;
+  if (summary.permissionMode) return summary.permissionMode;
   if (summary.provider === "claude") {
-    if (summary.claudePermissionMode === "bypassPermissions") return "full_edit";
-    if (summary.claudePermissionMode === "acceptEdits") return "guarded_edit";
-    if (summary.claudePermissionMode === "plan") return "read_only";
-    if (summary.claudePermissionMode === "default") return "read_only";
+    if (summary.claudePermissionMode === "bypassPermissions") return "full-auto";
+    if (summary.claudePermissionMode === "acceptEdits") return "edit";
+    if (summary.claudePermissionMode === "plan") return "plan";
+    if (summary.claudePermissionMode === "default") return "default";
     return null;
   }
   if (summary.provider === "codex") {
-    if (summary.codexApprovalPolicy === "never" && summary.codexSandbox === "danger-full-access") return "full_edit";
-    if (summary.codexSandbox === "workspace-write") return "guarded_edit";
-    if (summary.codexSandbox === "read-only") return "read_only";
+    if (summary.codexConfigSource === "config-toml") return "config-toml";
+    if (summary.codexApprovalPolicy === "never" && summary.codexSandbox === "danger-full-access") return "full-auto";
+    if (summary.codexSandbox === "workspace-write") return "default";
+    if (summary.codexSandbox === "read-only") return "plan";
     return null;
   }
   if (summary.provider === "droid") {
-    if (summary.droidPermissionMode === "auto-high") return "full_edit";
-    if (summary.droidPermissionMode === "auto-low" || summary.droidPermissionMode === "auto-medium") return "guarded_edit";
-    if (summary.droidPermissionMode === "read-only") return "read_only";
+    if (summary.droidPermissionMode === "auto-high") return "full-auto";
+    if (summary.droidPermissionMode === "auto-low" || summary.droidPermissionMode === "auto-medium") return "edit";
+    if (summary.droidPermissionMode === "read-only") return "plan";
     return null;
   }
   if (summary.provider === "cursor") {
-    if (summary.cursorModeId === "full-auto") return "full_edit";
-    if (summary.cursorModeId === "agent") return "guarded_edit";
-    if (summary.cursorModeId === "ask" || summary.cursorModeId === "plan") return "read_only";
+    if (summary.cursorModeId === "full-auto") return "full-auto";
+    if (summary.cursorModeId === "agent") return "edit";
+    if (summary.cursorModeId === "ask" || summary.cursorModeId === "plan") return "plan";
     return null;
   }
-  if (summary.opencodePermissionMode === "full-auto") return "full_edit";
-  if (summary.opencodePermissionMode === "edit") return "guarded_edit";
-  if (summary.opencodePermissionMode === "plan") return "read_only";
+  if (summary.opencodePermissionMode === "full-auto") return "full-auto";
+  if (summary.opencodePermissionMode === "edit") return "edit";
+  if (summary.opencodePermissionMode === "plan") return "plan";
   return null;
 }
 
@@ -2596,7 +2610,7 @@ export function registerIpc({
     context: PrAiResolutionContext;
     modelId: string;
     reasoning: string | null;
-    permissionMode: AiPermissionMode;
+    permissionMode: PrAgentPermissionMode;
     pollTimer: ReturnType<typeof setInterval> | null;
     finalizing: boolean;
   };
@@ -2678,7 +2692,7 @@ export function registerIpc({
     model: string | null;
     modelId: string | null;
     reasoning: string | null;
-    permissionMode: AiPermissionMode | null;
+    permissionMode: PrAgentPermissionMode | null;
     status: PrAiResolutionSessionStatus;
   }): PrAiResolutionSessionInfo => ({
     contextKey: args.contextKey,
@@ -7274,6 +7288,11 @@ export function registerIpc({
     return await ctx.prService.landStack(arg);
   });
 
+  ipcMain.handle(IPC.prsRetargetBase, async (_event, arg: { prId: string; baseBranch: string }): Promise<void> => {
+    const ctx = getCtx();
+    return await ctx.prService.retargetBase(arg.prId, arg.baseBranch);
+  });
+
   ipcMain.handle(IPC.prsOpenInGitHub, async (_event, arg: { prId: string }): Promise<void> => {
     const ctx = getCtx();
     return await ctx.prService.openInGitHub(arg.prId);
@@ -7431,7 +7450,7 @@ export function registerIpc({
     const model = typeof arg?.model === "string" ? arg.model.trim() : "";
     const targetLaneId = typeof context.targetLaneId === "string" ? context.targetLaneId.trim() : "";
     const sourceLaneIds = collectPrAiSourceLaneIds(context);
-    const permissionMode: AiPermissionMode = arg?.permissionMode ?? "guarded_edit";
+    const permissionMode: PrAgentPermissionMode = arg?.permissionMode ?? "default";
     const reasoning = typeof arg?.reasoning === "string" && arg.reasoning.trim().length > 0
       ? arg.reasoning.trim()
       : null;
@@ -7656,6 +7675,7 @@ export function registerIpc({
         agentChatService: ctx.agentChatService,
         sessionService: ctx.sessionService,
         issueInventoryService: ctx.issueInventoryService,
+        laneWorktreeLockService: ctx.laneWorktreeLockService,
       },
       arg,
     );
@@ -7696,6 +7716,7 @@ export function registerIpc({
         agentChatService: ctx.agentChatService,
         sessionService: ctx.sessionService,
         issueInventoryService: ctx.issueInventoryService,
+        laneWorktreeLockService: ctx.laneWorktreeLockService,
       },
       arg,
     );
@@ -7757,6 +7778,7 @@ export function registerIpc({
           agentChatService: ctx.agentChatService,
           sessionService: ctx.sessionService,
           issueInventoryService: ctx.issueInventoryService,
+          laneWorktreeLockService: ctx.laneWorktreeLockService,
         },
         {
           prId: arg.prId,
@@ -7868,6 +7890,53 @@ export function registerIpc({
   });
   ipcMain.handle(IPC.prsConvergenceStateDelete, (_e, args: { prId: string }): void =>
     getCtx().issueInventoryService.resetConvergenceRuntime(args.prId));
+
+  ipcMain.handle(
+    IPC.prsPathToMergeStart,
+    async (_e, args: {
+      prId: string;
+      modelId?: string | null;
+      reasoning?: string | null;
+      permissionMode?: string | null;
+      scope?: "checks" | "comments" | "both";
+      additionalInstructions?: string | null;
+    }) => {
+      const orchestrator = getCtx().pathToMergeOrchestrator;
+      if (!orchestrator) {
+        throw new Error("Path to Merge orchestrator is not available in this build.");
+      }
+      const prId = typeof args?.prId === "string" ? args.prId.trim() : "";
+      if (!prId) throw new Error("prId is required");
+      return await orchestrator.startPathToMerge({
+        prId,
+        modelId: typeof args?.modelId === "string" ? args.modelId : null,
+        reasoning: typeof args?.reasoning === "string" ? args.reasoning : null,
+        permissionMode: typeof args?.permissionMode === "string"
+          ? args.permissionMode as PrAgentPermissionMode
+          : null,
+        scope: args?.scope === "checks" || args?.scope === "comments" || args?.scope === "both"
+          ? args.scope
+          : undefined,
+        additionalInstructions: typeof args?.additionalInstructions === "string" ? args.additionalInstructions : null,
+      });
+    },
+  );
+
+  ipcMain.handle(
+    IPC.prsPathToMergeStop,
+    async (_e, args: { prId: string; reason?: string | null }) => {
+      const orchestrator = getCtx().pathToMergeOrchestrator;
+      if (!orchestrator) {
+        throw new Error("Path to Merge orchestrator is not available in this build.");
+      }
+      const prId = typeof args?.prId === "string" ? args.prId.trim() : "";
+      if (!prId) throw new Error("prId is required");
+      return await orchestrator.stopPathToMerge({
+        prId,
+        reason: typeof args?.reason === "string" ? args.reason : null,
+      });
+    },
+  );
 
   ipcMain.handle(IPC.prsPipelineSettingsGet, (_e, args: { prId: string }): PipelineSettings =>
     getCtx().issueInventoryService.getPipelineSettings(args.prId));

@@ -40,6 +40,7 @@ import type {
   LandStackArgs,
   LandStackEnhancedArgs,
   LaneSummary,
+  LaneWorktreeLockOwnerKind,
   ListIntegrationWorkflowsArgs,
   LinkPrToLaneArgs,
   PrCheck,
@@ -127,6 +128,7 @@ import type { createProjectConfigService } from "../config/projectConfigService"
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createConflictService } from "../conflicts/conflictService";
 import type { createAgentChatService } from "../chat/agentChatService";
+import type { LaneWorktreeLockService } from "../lanes/laneWorktreeLockService";
 import { runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
 import { extractFirstJsonObject } from "../ai/utils";
 import { buildIntegrationPreflight } from "./integrationPlanning";
@@ -763,6 +765,7 @@ export function createPrService({
   aiIntegrationService,
   projectConfigService,
   conflictService,
+  laneWorktreeLockService,
   autoRebaseService,
   rebaseSuggestionService,
   openExternal,
@@ -778,6 +781,7 @@ export function createPrService({
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   conflictService?: ReturnType<typeof createConflictService>;
+  laneWorktreeLockService?: LaneWorktreeLockService | null;
   autoRebaseService?: ReturnType<typeof createAutoRebaseService> | null;
   rebaseSuggestionService?: ReturnType<typeof createRebaseSuggestionService> | null;
   openExternal: (url: string) => Promise<void>;
@@ -787,6 +791,29 @@ export function createPrService({
     github_url, github_node_id, title, state, base_branch, head_branch,
     checks_status, review_status, additions, deletions, last_synced_at,
     created_at, updated_at, creation_strategy`;
+
+  const acquireLaneMutationLock = (args: {
+    lane: LaneSummary;
+    ownerKind: LaneWorktreeLockOwnerKind;
+    ownerLabel: string;
+    ownerProposalId?: string | null;
+    ownerPrId?: string | null;
+  }): string | null => {
+    if (!laneWorktreeLockService) return null;
+    return laneWorktreeLockService.acquire({
+      laneId: args.lane.id,
+      worktreePath: args.lane.worktreePath,
+      ownerKind: args.ownerKind,
+      ownerLabel: args.ownerLabel,
+      ownerProposalId: args.ownerProposalId ?? null,
+      ownerPrId: args.ownerPrId ?? null,
+    }).token;
+  };
+
+  const releaseLaneMutationLock = (token: string | null): void => {
+    if (!token || !laneWorktreeLockService) return;
+    laneWorktreeLockService.release({ token });
+  };
 
   const getRowById = (prId: string): PullRequestRow | null =>
     db.get<PullRequestRow>(
@@ -2850,6 +2877,177 @@ export function createPrService({
     return result;
   };
 
+  /**
+   * Post-merge bookkeeping that runs after a successful merge — regardless of
+   * whether the merge happened via REST (`land`) or the gh CLI rungs of the
+   * Path-to-Merge merge ladder.
+   *
+   * Idempotent: every step (group cleanup, branch deletion, lane archive,
+   * cache refresh) is wrapped in try/catch and tolerant of being called twice
+   * for the same PR.
+   */
+  const runPostMergeCleanup = async (args: {
+    prId: string;
+    mergeCommitSha: string | null;
+    archiveLane: boolean;
+    operationId?: string | null;
+  }): Promise<{
+    branchDeleted: boolean;
+    laneArchived: boolean;
+    childAutoRebaseBlockedCleanup: boolean;
+  }> => {
+    const row = getRow(args.prId);
+    if (!row) {
+      logger.warn("prs.post_merge_cleanup_pr_missing", { prId: args.prId });
+      return { branchDeleted: false, laneArchived: false, childAutoRebaseBlockedCleanup: false };
+    }
+    const repo: GitHubRepoRef = { owner: row.repo_owner, name: row.repo_name };
+    const headBranch = row.head_branch;
+    let branchDeleted = false;
+    let laneArchived = false;
+    let childAutoRebaseBlockedCleanup = false;
+
+    try {
+      try {
+        db.run("delete from pr_group_members where pr_id = ?", [row.id]);
+      } catch (groupErr) {
+        logger.warn("prs.group_membership_cleanup_failed", { prId: row.id, error: getErrorMessage(groupErr) });
+      }
+
+      await fetchRemoteTrackingBranch({
+        projectRoot,
+        targetBranch: row.base_branch,
+      }).catch((error) => {
+        logger.warn("prs.fetch_base_branch_failed", {
+          prId: row.id,
+          baseBranch: row.base_branch,
+          error: getErrorMessage(error),
+        });
+      });
+      try {
+        laneService.invalidateCache?.();
+      } catch (cacheError) {
+        logger.warn("prs.lane_cache_invalidation_failed", {
+          prId: row.id,
+          error: getErrorMessage(cacheError),
+        });
+      }
+
+      const childAdvanceResult = await advanceChildLanesAfterLand({
+        landedLaneId: row.lane_id,
+        landedLaneName: row.title?.trim() || row.head_branch,
+      }).catch((error) => {
+        logger.warn("prs.child_auto_rebase_failed", {
+          prId: row.id,
+          laneId: row.lane_id,
+          error: getErrorMessage(error),
+        });
+        return {
+          updatedLaneIds: [],
+          failedLaneIds: [],
+          blockCleanup: true,
+        };
+      });
+      childAutoRebaseBlockedCleanup = childAdvanceResult.blockCleanup;
+
+      if (!childAutoRebaseBlockedCleanup) {
+        try {
+          await githubService.apiRequest({
+            method: "DELETE",
+            path: `/repos/${repo.owner}/${repo.name}/git/refs/heads/${headBranch}`
+          });
+          branchDeleted = true;
+        } catch (error) {
+          // 404-tolerant: if the branch was already deleted (e.g. by gh pr
+          // merge --delete-branch on a previous attempt), treat as success.
+          const msg = getErrorMessage(error);
+          if (msg.includes("404") || msg.toLowerCase().includes("not found")) {
+            branchDeleted = true;
+          } else {
+            logger.warn("prs.delete_branch_failed", { prId: row.id, headBranch, error: msg });
+          }
+        }
+
+        if (args.archiveLane) {
+          try {
+            await laneService.archive({ laneId: row.lane_id });
+            laneArchived = true;
+          } catch (archiveErr) {
+            logger.warn("prs.lane_archive_failed", { prId: row.id, laneId: row.lane_id, error: getErrorMessage(archiveErr) });
+          }
+        }
+      } else {
+        logger.warn("prs.post_merge_cleanup_blocked", {
+          prId: row.id,
+          laneId: row.lane_id,
+          failedLaneIds: childAdvanceResult.failedLaneIds,
+        });
+      }
+
+      if (args.operationId) {
+        try {
+          operationService.finish({
+            operationId: args.operationId,
+            status: "succeeded",
+            metadataPatch: {
+              mergeCommitSha: args.mergeCommitSha,
+              branchDeleted,
+              laneArchived,
+              childAutoRebaseBlockedCleanup,
+              autoRebasedChildLaneIds: childAdvanceResult.updatedLaneIds,
+              failedAutoRebaseChildLaneIds: childAdvanceResult.failedLaneIds,
+            }
+          });
+        } catch { /* already finished -- ignore */ }
+      }
+
+      markHotRefresh([row.id]);
+      await refreshOne(row.id).catch(() => {});
+      await conflictService?.scanRebaseNeeds().catch((error) => {
+        logger.warn("prs.refresh_rebase_needs_failed", {
+          prId: row.id,
+          error: getErrorMessage(error),
+        });
+      });
+      await rebaseSuggestionService?.refresh().catch((error) => {
+        logger.warn("prs.refresh_rebase_suggestions_failed", {
+          prId: row.id,
+          error: getErrorMessage(error),
+        });
+      });
+      await autoRebaseService?.refreshActiveRebaseNeeds("merge_completed").catch((error) => {
+        logger.warn("prs.refresh_auto_rebase_failed", {
+          prId: row.id,
+          error: getErrorMessage(error),
+        });
+      });
+    } catch (cleanupError) {
+      const cleanupMsg = getErrorMessage(cleanupError);
+      logger.error("prs.post_merge_cleanup_failed", {
+        prId: row.id,
+        mergeCommitSha: args.mergeCommitSha,
+        error: cleanupMsg,
+      });
+      if (args.operationId) {
+        try {
+          operationService.finish({
+            operationId: args.operationId,
+            status: "succeeded",
+            metadataPatch: {
+              mergeCommitSha: args.mergeCommitSha,
+              branchDeleted,
+              laneArchived,
+              childAutoRebaseBlockedCleanup,
+              cleanupError: cleanupMsg,
+            }
+          });
+        } catch { /* already finished -- ignore */ }
+      }
+    }
+
+    return { branchDeleted, laneArchived, childAutoRebaseBlockedCleanup };
+  };
+
   const land = async (args: LandPrArgs): Promise<LandResult> => {
     const row = getRow(args.prId);
     if (!row) throw new Error(`PR not found: ${args.prId}`);
@@ -2876,147 +3074,20 @@ export function createPrService({
 
       const mergeCommitSha = asString(merge.data?.sha) || null;
 
-      // --- Post-merge cleanup: failures here must not mask a successful merge ---
-      const headBranch = row.head_branch;
-      let branchDeleted = false;
-      let laneArchived = false;
-      let childAutoRebaseBlockedCleanup = false;
-
-      try {
-        // Remove PR from any group membership before archiving (lane archive blocks if still in a group)
-        try {
-          db.run("delete from pr_group_members where pr_id = ?", [row.id]);
-        } catch (groupErr) {
-          logger.warn("prs.group_membership_cleanup_failed", { prId: row.id, error: getErrorMessage(groupErr) });
-        }
-
-        await fetchRemoteTrackingBranch({
-          projectRoot,
-          targetBranch: row.base_branch,
-        }).catch((error) => {
-          logger.warn("prs.fetch_base_branch_failed", {
-            prId: row.id,
-            baseBranch: row.base_branch,
-            error: getErrorMessage(error),
-          });
-        });
-        try {
-          laneService.invalidateCache?.();
-        } catch (cacheError) {
-          logger.warn("prs.lane_cache_invalidation_failed", {
-            prId: row.id,
-            error: getErrorMessage(cacheError),
-          });
-        }
-
-        const childAdvanceResult = await advanceChildLanesAfterLand({
-          landedLaneId: row.lane_id,
-          landedLaneName: row.title?.trim() || row.head_branch,
-        }).catch((error) => {
-          logger.warn("prs.child_auto_rebase_failed", {
-            prId: row.id,
-            laneId: row.lane_id,
-            error: getErrorMessage(error),
-          });
-          return {
-            updatedLaneIds: [],
-            failedLaneIds: [],
-            blockCleanup: true,
-          };
-        });
-        childAutoRebaseBlockedCleanup = childAdvanceResult.blockCleanup;
-
-        if (!childAutoRebaseBlockedCleanup) {
-          try {
-            await githubService.apiRequest({
-              method: "DELETE",
-              path: `/repos/${repo.owner}/${repo.name}/git/refs/heads/${headBranch}`
-            });
-            branchDeleted = true;
-          } catch (error) {
-            logger.warn("prs.delete_branch_failed", { prId: row.id, headBranch, error: getErrorMessage(error) });
-          }
-
-          if (args.archiveLane) {
-            try {
-              await laneService.archive({ laneId: row.lane_id });
-              laneArchived = true;
-            } catch (archiveErr) {
-              logger.warn("prs.lane_archive_failed", { prId: row.id, laneId: row.lane_id, error: getErrorMessage(archiveErr) });
-            }
-          }
-        } else {
-          logger.warn("prs.post_merge_cleanup_blocked", {
-            prId: row.id,
-            laneId: row.lane_id,
-            failedLaneIds: childAdvanceResult.failedLaneIds,
-          });
-        }
-
-        operationService.finish({
-          operationId: op.operationId,
-          status: "succeeded",
-          metadataPatch: {
-            mergeCommitSha,
-            branchDeleted,
-            laneArchived,
-            childAutoRebaseBlockedCleanup,
-            autoRebasedChildLaneIds: childAdvanceResult.updatedLaneIds,
-            failedAutoRebaseChildLaneIds: childAdvanceResult.failedLaneIds,
-          }
-        });
-
-        markHotRefresh([row.id]);
-        await refreshOne(row.id).catch(() => {});
-        await conflictService?.scanRebaseNeeds().catch((error) => {
-          logger.warn("prs.refresh_rebase_needs_failed", {
-            prId: row.id,
-            error: getErrorMessage(error),
-          });
-        });
-        await rebaseSuggestionService?.refresh().catch((error) => {
-          logger.warn("prs.refresh_rebase_suggestions_failed", {
-            prId: row.id,
-            error: getErrorMessage(error),
-          });
-        });
-        await autoRebaseService?.refreshActiveRebaseNeeds("merge_completed").catch((error) => {
-          logger.warn("prs.refresh_auto_rebase_failed", {
-            prId: row.id,
-            error: getErrorMessage(error),
-          });
-        });
-      } catch (cleanupError) {
-        // The merge itself succeeded -- cleanup failure must not mask that.
-        const cleanupMsg = getErrorMessage(cleanupError);
-        logger.error("prs.post_merge_cleanup_failed", {
-          prId: row.id,
-          mergeCommitSha,
-          error: cleanupMsg,
-        });
-        // Best-effort: mark the operation as succeeded even if cleanup threw
-        try {
-          operationService.finish({
-            operationId: op.operationId,
-            status: "succeeded",
-            metadataPatch: {
-              mergeCommitSha,
-              branchDeleted,
-              laneArchived,
-              childAutoRebaseBlockedCleanup,
-              cleanupError: cleanupMsg,
-            }
-          });
-        } catch { /* already finished or double-finish -- ignore */ }
-      }
+      const cleanup = await runPostMergeCleanup({
+        prId: row.id,
+        mergeCommitSha,
+        archiveLane: Boolean(args.archiveLane),
+        operationId: op.operationId,
+      });
 
       return {
         prId: row.id,
         prNumber: Number(row.github_pr_number),
         success: true,
         mergeCommitSha,
-        branchDeleted,
-        laneArchived,
+        branchDeleted: cleanup.branchDeleted,
+        laneArchived: cleanup.laneArchived,
         error: null
       };
     } catch (error) {
@@ -3117,13 +3188,34 @@ export function createPrService({
       [groupId, projectId, args.queueName ?? null, args.autoRebase ? 1 : 0, args.ciGating ? 1 : 0, args.targetBranch, now]
     );
 
-    // Queue PRs all target the same branch (no chaining)
+    // Graphite-style chain bases: PR_0 targets args.targetBranch; PR_N targets
+    // PR_(N-1)'s branch so each PR's GitHub diff shows only its own changes.
+    // We honor the caller-provided lane order. If a pair isn't actually parent->child
+    // we still chain them (the queue is a single review unit) but warn since the
+    // resulting diffs won't be clean per-PR.
+    let previousBranch: string | null = null;
+    let previousLaneId: string | null = null;
     for (let i = 0; i < args.laneIds.length; i++) {
       const laneId = args.laneIds[i]!;
       const lane = laneMap.get(laneId);
       if (!lane) {
         errors.push({ laneId, error: `Lane not found: ${laneId}` });
+        // Reset chain pointers so the next PR doesn't silently chain across the
+        // missing lane and end up with a polluted diff against the wrong base.
+        previousBranch = null;
+        previousLaneId = null;
         continue;
+      }
+
+      const baseBranch = previousBranch ?? args.targetBranch;
+      if (previousLaneId && lane.parentLaneId !== previousLaneId) {
+        logger.warn("prs.queue_chain_unrelated_lanes", {
+          groupId,
+          position: i,
+          laneId,
+          previousLaneId,
+          baseBranch
+        });
       }
 
       const title = args.titles?.[laneId] ?? lane.name;
@@ -3133,7 +3225,7 @@ export function createPrService({
           title,
           body: "",
           draft: Boolean(args.draft),
-          baseBranch: args.targetBranch,
+          baseBranch,
           allowDirtyWorktree: true
         });
         prs.push(pr);
@@ -3143,8 +3235,15 @@ export function createPrService({
           `insert into pr_group_members(id, group_id, pr_id, lane_id, position, role) values (?, ?, ?, ?, ?, 'source')`,
           [memberId, groupId, pr.id, laneId, i]
         );
+
+        previousBranch = branchNameFromRef(lane.branchRef);
+        previousLaneId = laneId;
       } catch (error) {
         errors.push({ laneId, error: error instanceof Error ? error.message : String(error) });
+        // Same reasoning as the missing-lane branch: don't chain the next PR
+        // onto a lane whose PR creation just failed.
+        previousBranch = null;
+        previousLaneId = null;
         continue;
       }
     }
@@ -3197,6 +3296,7 @@ export function createPrService({
     let groupInserted = false;
     let integrationLane: LaneSummary | null = null;
     let createdNewIntegrationLane = false;
+    let integrationLockToken: string | null = null;
 
     try {
       db.run(
@@ -3216,6 +3316,13 @@ export function createPrService({
         });
         createdNewIntegrationLane = true;
       }
+
+      integrationLockToken = acquireLaneMutationLock({
+        lane: integrationLane,
+        ownerKind: "integration_resolution",
+        ownerProposalId: groupId,
+        ownerLabel: `Create integration PR in lane ${integrationLane.name}`,
+      });
 
       const mergeResults: Array<{ laneId: string; success: boolean; error?: string }> = [];
 
@@ -3305,6 +3412,8 @@ export function createPrService({
         }
       }
       throw error;
+    } finally {
+      releaseLaneMutationLock(integrationLockToken);
     }
   };
 
@@ -3345,6 +3454,7 @@ export function createPrService({
     const laneMap = new Map(lanes.map((lane) => [lane.id, lane]));
     const sourceLaneNames = preflight.uniqueSourceLaneIds.map((laneId) => laneMap.get(laneId)?.name ?? laneId);
     let integrationLane: LaneSummary | null = null;
+    let integrationLockToken: string | null = null;
     try {
       integrationLane = await laneService.createChild({
         parentLaneId: preflight.baseLane.id,
@@ -3352,6 +3462,11 @@ export function createPrService({
         description: args.description?.trim() || `Integration lane for merging: ${sourceLaneNames.join(", ")}`,
         missionId: args.missionId ?? null,
         laneRole: args.laneRole ?? "integration",
+      });
+      integrationLockToken = acquireLaneMutationLock({
+        lane: integrationLane,
+        ownerKind: "integration_resolution",
+        ownerLabel: `Prepare integration lane ${integrationLane.name}`,
       });
 
       const mergeResults: Array<{ laneId: string; success: boolean; error?: string }> = [];
@@ -3390,6 +3505,8 @@ export function createPrService({
         }
       }
       throw error;
+    } finally {
+      releaseLaneMutationLock(integrationLockToken);
     }
   };
 
@@ -4172,6 +4289,12 @@ export function createPrService({
       [groupId, projectId, now]
     );
 
+    const integrationLockToken = acquireLaneMutationLock({
+      lane: integrationLane,
+      ownerKind: "integration_resolution",
+      ownerProposalId: groupId,
+      ownerLabel: `Create integration PR from lane ${integrationLane.name}`,
+    });
     try {
       const pr = await createFromLane({
         laneId: integrationLane.id,
@@ -4207,6 +4330,8 @@ export function createPrService({
       db.run("delete from pr_group_members where group_id = ?", [groupId]);
       db.run("delete from pr_groups where id = ? and project_id = ?", [groupId, projectId]);
       throw error;
+    } finally {
+      releaseLaneMutationLock(integrationLockToken);
     }
   };
 
@@ -4460,27 +4585,47 @@ export function createPrService({
 
   const getGithubSnapshot = async (options?: { force?: boolean }): Promise<GitHubPrSnapshot> => {
     const force = options?.force === true;
-    if (!force && cachedGithubSnapshot && Date.now() - cachedGithubSnapshotAt < GITHUB_SNAPSHOT_TTL_MS) {
+    const startSnapshotRequest = (allowStaleOnError: boolean): Promise<GitHubPrSnapshot> => {
+      const staleFallback = cachedGithubSnapshot;
+      const request = getGithubSnapshotUncached()
+        .then((snapshot) => {
+          cachedGithubSnapshot = snapshot;
+          cachedGithubSnapshotAt = Date.now();
+          return snapshot;
+        })
+        .catch((error) => {
+          if (allowStaleOnError && staleFallback) {
+            logger.warn("prs.github_snapshot_refresh_failed_stale_returned", {
+              error: error instanceof Error ? error.message : String(error),
+            });
+            return staleFallback;
+          }
+          throw error;
+        })
+        .finally(() => {
+          if (githubSnapshotInFlight === request) {
+            githubSnapshotInFlight = null;
+          }
+        });
+      githubSnapshotInFlight = request;
+      return request;
+    };
+
+    if (!force && cachedGithubSnapshot) {
+      const ageMs = Date.now() - cachedGithubSnapshotAt;
+      if (ageMs < GITHUB_SNAPSHOT_TTL_MS) {
+        return cachedGithubSnapshot;
+      }
+      if (!githubSnapshotInFlight) {
+        void startSnapshotRequest(true).catch(() => {});
+      }
       return cachedGithubSnapshot;
     }
     if (!force && githubSnapshotInFlight) {
       return githubSnapshotInFlight;
     }
 
-    const request = getGithubSnapshotUncached()
-      .then((snapshot) => {
-        cachedGithubSnapshot = snapshot;
-        cachedGithubSnapshotAt = Date.now();
-        return snapshot;
-      })
-      .finally(() => {
-        if (githubSnapshotInFlight === request) {
-          githubSnapshotInFlight = null;
-        }
-      });
-
-    githubSnapshotInFlight = request;
-    return request;
+    return startSnapshotRequest(false);
   };
 
   const landQueueNext = async (args: LandQueueNextArgs): Promise<LandResult> => {
@@ -4961,6 +5106,13 @@ export function createPrService({
       });
     }
 
+    const integrationLockToken = acquireLaneMutationLock({
+      lane: integrationLane,
+      ownerKind: "integration_resolution",
+      ownerProposalId: args.proposalId,
+      ownerLabel: `Prepare integration lane ${integrationLane.name}`,
+    });
+    try {
     const mergedCleanLanes: string[] = [];
     const conflictingLanes: string[] = [];
 
@@ -5015,6 +5167,9 @@ export function createPrService({
     );
 
     return { integrationLaneId: integrationLane.id, mergedCleanLanes, conflictingLanes };
+    } finally {
+      releaseLaneMutationLock(integrationLockToken);
+    }
   };
 
   // B2: Start integration resolution — attempt merge, detect conflicts, return result for orchestrator
@@ -5039,6 +5194,13 @@ export function createPrService({
     const sourceLane = allLanes.find((l) => l.id === args.laneId);
     if (!sourceLane) throw new Error(`Source lane not found: ${args.laneId}`);
 
+    const integrationLockToken = acquireLaneMutationLock({
+      lane: integrationLane,
+      ownerKind: "integration_resolution",
+      ownerProposalId: args.proposalId,
+      ownerLabel: `Resolve integration conflicts in lane ${integrationLane.name}`,
+    });
+    try {
     // Attempt merge
     const sourceBranch = branchNameFromRef(sourceLane.branchRef);
     const mergeRes = await runGit(
@@ -5105,6 +5267,9 @@ export function createPrService({
     });
 
     return { conflictFiles, integrationLaneId, mergedClean: false };
+    } finally {
+      releaseLaneMutationLock(integrationLockToken);
+    }
   };
 
   // B3: Mark resolution worker active — called by orchestrator after spawning a worker
@@ -5382,8 +5547,36 @@ export function createPrService({
       return await land(args);
     },
 
+    /**
+     * Run only the post-merge bookkeeping (branch deletion, child-lane rebase
+     * advance, group cleanup, cache refresh). Used by the Path-to-Merge merge
+     * ladder when a `gh pr merge --admin` rung lands the PR outside of `land`.
+     */
+    async runPostMergeCleanup(args: { prId: string; mergeCommitSha?: string | null; archiveLane?: boolean }): Promise<{
+      branchDeleted: boolean;
+      laneArchived: boolean;
+      childAutoRebaseBlockedCleanup: boolean;
+    }> {
+      return await runPostMergeCleanup({
+        prId: args.prId,
+        mergeCommitSha: args.mergeCommitSha ?? null,
+        archiveLane: Boolean(args.archiveLane),
+        operationId: null,
+      });
+    },
+
     async landStack(args: LandStackArgs): Promise<LandResult[]> {
       return await landStack(args);
+    },
+
+    /**
+     * Retarget a PR's GitHub base branch. Used by the stacked-queue land loop
+     * after a parent PR merges, to drop the next PR's base from the parent's
+     * branch to the queue's target branch (typically `main`) so it can land
+     * cleanly on top.
+     */
+    async retargetBase(prId: string, baseBranch: string): Promise<void> {
+      await retargetBase(prId, baseBranch);
     },
 
     async openInGitHub(prId: string): Promise<void> {

@@ -22,6 +22,7 @@ import type { createLaneService } from "../lanes/laneService";
 import type { createPrService } from "./prService";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { createSessionService } from "../sessions/sessionService";
+import type { LaneWorktreeLockService } from "../lanes/laneWorktreeLockService";
 import { computeConvergenceStatus, type createIssueInventoryService } from "./issueInventoryService";
 import { isNoisyIssueComment, mapPermissionModeForModelFamily, readRecentCommits } from "./resolverUtils";
 
@@ -80,6 +81,11 @@ export type PrIssueResolutionLaunchDeps = {
   agentChatService: Pick<ReturnType<typeof createAgentChatService>, "createSession" | "sendMessage" | "previewSessionToolNames">;
   sessionService: Pick<ReturnType<typeof createSessionService>, "updateMeta">;
   issueInventoryService: ReturnType<typeof createIssueInventoryService>;
+  laneWorktreeLockService?: LaneWorktreeLockService | null;
+};
+
+type InternalPrIssueResolutionStartArgs = PrIssueResolutionStartArgs & {
+  laneWorktreeLockToken?: string | null;
 };
 
 type PreparedIssueResolutionPrompt = {
@@ -691,6 +697,7 @@ export async function launchPrIssueResolutionChat(
   deps: PrIssueResolutionLaunchDeps,
   args: PrIssueResolutionStartArgs,
 ): Promise<PrIssueResolutionStartResult> {
+  const internalArgs = args as InternalPrIssueResolutionStartArgs;
   const descriptor = getModelById(args.modelId);
   if (!descriptor) {
     throw new Error(`Unknown model '${args.modelId}'.`);
@@ -713,47 +720,79 @@ export async function launchPrIssueResolutionChat(
     }
   }
 
-  const session = await deps.agentChatService.createSession({
-    laneId: prepared.lane.id,
-    provider,
-    model,
-    modelId: descriptor.id,
-    ...(reasoningEffort ? { reasoningEffort } : {}),
-    permissionMode: mapPermissionModeForModelFamily(args.permissionMode, descriptor.family),
-    surface: "work",
-    sessionProfile: "workflow",
-  });
-
-  deps.sessionService.updateMeta({ sessionId: session.id, title: prepared.title });
-
-  await deps.agentChatService.sendMessage({
-    sessionId: session.id,
-    text: prepared.prompt,
-    displayText: prepared.title,
-    ...(reasoningEffort ? { reasoningEffort } : {}),
-    ...(prepared.runtimeCapabilities.executionMode ? { executionMode: prepared.runtimeCapabilities.executionMode } : {}),
-  });
-
-  // Mark inventory items as sent to agent for this round (non-fatal — session is already live)
-  if (prepared.inventoryNewItems?.length && prepared.roundNumber != null) {
-    try {
-      deps.issueInventoryService.markSentToAgent(
-        prepared.pr.id,
-        prepared.inventoryNewItems.map((item) => item.id),
-        session.id,
-        prepared.roundNumber,
-      );
-    } catch (err) {
-      console.warn(
-        `[prIssueResolver] Failed to mark ${prepared.inventoryNewItems.length} inventory items as sent to agent for PR ${prepared.pr.id} round ${prepared.roundNumber}:`,
-        err,
-      );
+  const sharedLockToken = internalArgs.laneWorktreeLockToken?.trim() || null;
+  let ownedLockToken: string | null = null;
+  if (deps.laneWorktreeLockService) {
+    if (sharedLockToken) {
+      const lock = deps.laneWorktreeLockService.heartbeat(sharedLockToken);
+      if (!lock) {
+        throw new Error("Path to Merge lane lock expired before launching the fix agent.");
+      }
+    } else {
+      const acquired = deps.laneWorktreeLockService.acquire({
+        laneId: prepared.lane.id,
+        worktreePath: prepared.lane.worktreePath,
+        ownerKind: "pr_issue_resolution",
+        ownerPrId: prepared.pr.id,
+        ownerLabel: prepared.title,
+      });
+      ownedLockToken = acquired.token;
     }
   }
 
-  return {
-    sessionId: session.id,
-    laneId: prepared.lane.id,
-    href: `/work?laneId=${encodeURIComponent(prepared.lane.id)}&sessionId=${encodeURIComponent(session.id)}`,
-  };
+  try {
+    const session = await deps.agentChatService.createSession({
+      laneId: prepared.lane.id,
+      provider,
+      model,
+      modelId: descriptor.id,
+      ...(reasoningEffort ? { reasoningEffort } : {}),
+      permissionMode: mapPermissionModeForModelFamily(args.permissionMode, descriptor.family),
+      surface: "work",
+      sessionProfile: "workflow",
+    });
+
+    const lockTokenToAttach = ownedLockToken ?? sharedLockToken;
+    if (lockTokenToAttach && deps.laneWorktreeLockService) {
+      deps.laneWorktreeLockService.attachSession(lockTokenToAttach, session.id);
+    }
+
+    deps.sessionService.updateMeta({ sessionId: session.id, title: prepared.title });
+
+    await deps.agentChatService.sendMessage({
+      sessionId: session.id,
+      text: prepared.prompt,
+      displayText: prepared.title,
+      ...(reasoningEffort ? { reasoningEffort } : {}),
+      ...(prepared.runtimeCapabilities.executionMode ? { executionMode: prepared.runtimeCapabilities.executionMode } : {}),
+    });
+
+    // Mark inventory items as sent to agent for this round (non-fatal — session is already live)
+    if (prepared.inventoryNewItems?.length && prepared.roundNumber != null) {
+      try {
+        deps.issueInventoryService.markSentToAgent(
+          prepared.pr.id,
+          prepared.inventoryNewItems.map((item) => item.id),
+          session.id,
+          prepared.roundNumber,
+        );
+      } catch (err) {
+        console.warn(
+          `[prIssueResolver] Failed to mark ${prepared.inventoryNewItems.length} inventory items as sent to agent for PR ${prepared.pr.id} round ${prepared.roundNumber}:`,
+          err,
+        );
+      }
+    }
+
+    return {
+      sessionId: session.id,
+      laneId: prepared.lane.id,
+      href: `/work?laneId=${encodeURIComponent(prepared.lane.id)}&sessionId=${encodeURIComponent(session.id)}`,
+    };
+  } catch (error) {
+    if (ownedLockToken && deps.laneWorktreeLockService) {
+      deps.laneWorktreeLockService.release({ token: ownedLockToken });
+    }
+    throw error;
+  }
 }

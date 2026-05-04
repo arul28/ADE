@@ -375,6 +375,9 @@ import type {
   IssueInventorySnapshot,
   PrConvergenceState,
   PrConvergenceStatePatch,
+  PrAgentPermissionMode,
+  PathToMergeStartResult,
+  PathToMergeStopResult,
   ConvergenceStatus,
   PipelineSettings,
   UpdateIntegrationProposalArgs,
@@ -1589,6 +1592,7 @@ declare global {
         ) => Promise<{ title: string; body: string }>;
         land: (args: LandPrArgs) => Promise<LandResult>;
         landStack: (args: LandStackArgs) => Promise<LandResult[]>;
+        retargetBase: (args: { prId: string; baseBranch: string }) => Promise<void>;
         openInGitHub: (prId: string) => Promise<void>;
         createQueue: (
           args: CreateQueuePrsArgs,
@@ -1719,6 +1723,18 @@ declare global {
           state: PrConvergenceStatePatch,
         ) => Promise<PrConvergenceState>;
         convergenceStateDelete: (prId: string) => Promise<void>;
+        pathToMergeStart: (args: {
+          prId: string;
+          modelId?: string | null;
+          reasoning?: string | null;
+          permissionMode?: PrAgentPermissionMode | null;
+          scope?: "checks" | "comments" | "both";
+          additionalInstructions?: string | null;
+        }) => Promise<PathToMergeStartResult>;
+        pathToMergeStop: (args: {
+          prId: string;
+          reason?: string | null;
+        }) => Promise<PathToMergeStopResult>;
         pipelineSettingsGet: (prId: string) => Promise<PipelineSettings>;
         pipelineSettingsSave: (
           prId: string,

@@ -725,6 +725,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade prs comments <pr> --text                  Show unresolved review work
     $ ade prs inventory <pr>                        Refresh ADE issue inventory
     $ ade prs path-to-merge <pr> --model <model> --max-rounds 3 --no-auto-merge
+    $ ade prs path-to-merge <pr> --model <model> --conflict-strategy auto --force-finalize conditional
+    $ ade prs path-to-merge <pr> --model <model> --no-early-merge-on-green
+    $ ade prs pipeline <pr> save --conflict-strategy rebase --early-merge-on-green
     $ ade prs resolve-thread <pr> --thread <id>     Resolve a review thread
     $ ade prs labels set <pr> ready-to-merge        Replace labels
     $ ade prs reviewers request <pr> alice bob      Request reviewers
@@ -1334,6 +1337,116 @@ function maybePut(target: JsonObject, key: string, value: unknown): void {
   }
 }
 
+/**
+ * Parse the PR pipeline-settings flags shared by `prs path-to-merge` and
+ * `prs pipeline` subcommands. Returns a partial `PipelineSettings` patch
+ * suitable for `issue_inventory.savePipelineSettings`. Only fields the user
+ * explicitly passed are included so the patch never clobbers other settings.
+ *
+ * The orchestrator reads these from saved settings (not StartPathToMergeArgs),
+ * so the path-to-merge command must save them before launching the loop.
+ */
+function readPipelineSettingsPatch(args: string[]): JsonObject {
+  const patch: JsonObject = {};
+
+  const maxRounds = readIntOption(args, ["--max-rounds", "--rounds"]);
+  if (maxRounds != null) patch.maxRounds = maxRounds;
+
+  const autoMerge = readFlag(args, ["--auto-merge"]);
+  const noAutoMerge = readFlag(args, ["--no-auto-merge"]);
+  if (autoMerge || noAutoMerge) patch.autoMerge = autoMerge && !noAutoMerge;
+
+  const mergeMethod = readValue(args, ["--merge-method"]);
+  if (mergeMethod) patch.mergeMethod = mergeMethod;
+
+  const conflictStrategy = readValue(args, ["--conflict-strategy"]);
+  if (conflictStrategy) {
+    if (
+      conflictStrategy !== "pause"
+      && conflictStrategy !== "rebase"
+      && conflictStrategy !== "merge"
+      && conflictStrategy !== "auto"
+    ) {
+      throw new CliUsageError(
+        "--conflict-strategy must be one of pause, rebase, merge, or auto.",
+      );
+    }
+    patch.conflictStrategy = conflictStrategy;
+  }
+
+  const forceFinalize = readValue(args, ["--force-finalize"]);
+  if (forceFinalize) {
+    if (
+      forceFinalize !== "off"
+      && forceFinalize !== "conditional"
+      && forceFinalize !== "unconditional"
+    ) {
+      throw new CliUsageError(
+        "--force-finalize must be one of off, conditional, or unconditional.",
+      );
+    }
+    patch.forceFinalizeMode = forceFinalize;
+    patch.atCapPolicy = forceFinalize === "off"
+      ? "stop"
+      : forceFinalize === "unconditional"
+        ? "force_merge"
+        : "ci_retry_once";
+  }
+
+  const requireNoCi = readFlag(args, ["--force-finalize-require-no-ci"]);
+  const allowCi = readFlag(args, ["--force-finalize-allow-ci"]);
+  if (requireNoCi || allowCi) {
+    patch.forceFinalizeRequireNoCiFailures = requireNoCi && !allowCi;
+  }
+
+  const earlyMergeOn = readFlag(args, ["--early-merge-on-green"]);
+  const earlyMergeOff = readFlag(args, ["--no-early-merge-on-green"]);
+  if (earlyMergeOn || earlyMergeOff) {
+    patch.earlyMergeOnGreen = earlyMergeOn && !earlyMergeOff;
+  }
+
+  const atCapPolicy = readValue(args, ["--at-cap-policy"]);
+  if (atCapPolicy) {
+    if (
+      atCapPolicy !== "stop"
+      && atCapPolicy !== "wait_for_ci"
+      && atCapPolicy !== "ci_retry_once"
+      && atCapPolicy !== "ci_retry_loop"
+      && atCapPolicy !== "force_merge"
+    ) {
+      throw new CliUsageError(
+        "--at-cap-policy must be one of stop, wait_for_ci, ci_retry_once, ci_retry_loop, or force_merge.",
+      );
+    }
+    patch.atCapPolicy = atCapPolicy;
+    patch.forceFinalizeMode = atCapPolicy === "stop"
+      ? "off"
+      : atCapPolicy === "force_merge"
+        ? "unconditional"
+        : "conditional";
+  }
+
+  const atCapWaitMinutes = readIntOption(args, ["--at-cap-wait-minutes"]);
+  if (atCapWaitMinutes != null) {
+    if (atCapWaitMinutes < 1) throw new CliUsageError("--at-cap-wait-minutes must be at least 1.");
+    patch.atCapWaitMinutes = atCapWaitMinutes;
+  }
+
+  const atCapCiRetryMax = readIntOption(args, ["--at-cap-ci-retry-max"]);
+  if (atCapCiRetryMax != null) {
+    if (atCapCiRetryMax < 1) throw new CliUsageError("--at-cap-ci-retry-max must be at least 1.");
+    patch.atCapCiRetryMax = atCapCiRetryMax;
+  }
+
+  const forceMergeConfirm = readFlag(args, ["--force-merge-requires-confirmation"]);
+  const noForceMergeConfirm = readFlag(args, ["--no-force-merge-requires-confirmation"]);
+  if (forceMergeConfirm || noForceMergeConfirm) {
+    patch.forceMergeRequiresConfirmation = forceMergeConfirm && !noForceMergeConfirm;
+  }
+
+  return patch;
+}
+
 function parseCliArgs(argv: string[]): ParsedCli {
   const command: string[] = [];
   const options: GlobalOptions = {
@@ -1907,19 +2020,16 @@ function buildPrPlan(args: string[]): CliPlan {
     maybePut(input, "reasoning", readValue(args, ["--reasoning"]));
     maybePut(input, "permissionMode", readValue(args, ["--permission-mode", "--permissions"]));
     maybePut(input, "additionalInstructions", readValue(args, ["--instructions", "--additional-instructions"]));
-    const maxRounds = readIntOption(args, ["--max-rounds", "--rounds"]);
-    const autoMerge = readFlag(args, ["--auto-merge"]);
-    const noAutoMerge = readFlag(args, ["--no-auto-merge"]);
-    const mergeMethod = readValue(args, ["--merge-method"]);
+    // Path to Merge orchestrator reads conflictStrategy / forceFinalizeMode /
+    // earlyMergeOnGreen / autoMerge / maxRounds / mergeMethod from saved
+    // PipelineSettings, not from the launch args. Persist any user-supplied
+    // overrides before the resolver step so the loop picks them up.
+    const pipelinePatch = readPipelineSettingsPatch(args);
     const steps: InvocationStep[] = [];
-    if (maxRounds != null || autoMerge || noAutoMerge || mergeMethod) {
+    if (Object.keys(pipelinePatch).length > 0) {
       steps.push(actionArgsListStep("pipelineSettings", "issue_inventory", "savePipelineSettings", [
         id,
-        {
-          ...(maxRounds != null ? { maxRounds } : {}),
-          ...(autoMerge || noAutoMerge ? { autoMerge: autoMerge && !noAutoMerge } : {}),
-          ...(mergeMethod ? { mergeMethod } : {}),
-        },
+        pipelinePatch,
       ]));
     }
     steps.push(actionCallStep("result", mode === "preview" ? "pr_preview_issue_resolution_prompt" : "pr_start_issue_resolution", collectGenericObjectArgs(args, input)));
@@ -1931,12 +2041,7 @@ function buildPrPlan(args: string[]): CliPlan {
     const id = requireValue(prId ?? firstPositional(args), "prId");
     if (mode === "get") return { kind: "execute", label: "PR pipeline", steps: [actionArgsListStep("result", "issue_inventory", "getPipelineSettings", [id])] };
     if (mode === "delete") return { kind: "execute", label: "PR pipeline delete", steps: [actionArgsListStep("result", "issue_inventory", "deletePipelineSettings", [id])] };
-    const maxRounds = readIntOption(args, ["--max-rounds", "--rounds"]);
-    const mergeMethod = readValue(args, ["--merge-method"]);
-    const settings = collectGenericObjectArgs(args, {
-      ...(maxRounds != null ? { maxRounds } : {}),
-      ...(mergeMethod ? { mergeMethod } : {}),
-    });
+    const settings = collectGenericObjectArgs(args, readPipelineSettingsPatch(args));
     return { kind: "execute", label: "PR pipeline save", steps: [actionArgsListStep("result", "issue_inventory", "savePipelineSettings", [id, settings])] };
   }
 
@@ -2167,8 +2272,11 @@ function buildChatPlan(args: string[]): CliPlan {
   const sessionId = readValue(args, ["--session", "--session-id"]) ?? (sub !== "create" && sub !== "list" ? firstPositional(args) : null);
   const withSession = (base: JsonObject = {}) => collectGenericObjectArgs(args, { ...base, ...(sessionId ? { sessionId } : {}) });
   if (sub === "list" || sub === "ls") return { kind: "execute", label: "chat list", steps: [actionStep("result", "chat", "listSessions", collectGenericObjectArgs(args))] };
-  if (sub === "show" || sub === "status") return { kind: "execute", label: "chat status", steps: [actionStep("result", "chat", "getSessionSummary", withSession())] };
-  if (sub === "create" || sub === "spawn") return { kind: "execute", label: "chat create", steps: [actionStep("result", "chat", "createSession", collectGenericObjectArgs(args, { laneId: readLaneId(args), provider: readValue(args, ["--provider"]), modelId: readValue(args, ["--model", "--model-id"]), permissionMode: readValue(args, ["--permission-mode", "--permissions"]), droidPermissionMode: readValue(args, ["--droid-permission-mode", "--droid-autonomy", "--autonomy"]), surface: readValue(args, ["--surface"]) ?? "work" }))] };
+  if (sub === "show" || sub === "status") return { kind: "execute", label: "chat status", steps: [actionArgsListStep("result", "chat", "getSessionSummary", [requireValue(sessionId, "sessionId")])] };
+  if (sub === "create" || sub === "spawn") {
+    const modelArg = readValue(args, ["--model", "--model-id"]);
+    return { kind: "execute", label: "chat create", steps: [actionStep("result", "chat", "createSession", collectGenericObjectArgs(args, { laneId: readLaneId(args), provider: readValue(args, ["--provider"]), model: modelArg, modelId: modelArg, permissionMode: readValue(args, ["--permission-mode", "--permissions"]), droidPermissionMode: readValue(args, ["--droid-permission-mode", "--droid-autonomy", "--autonomy"]), title: readValue(args, ["--title"]), surface: readValue(args, ["--surface"]) ?? "work" }))] };
+  }
   if (sub === "send") return { kind: "execute", label: "chat send", steps: [actionStep("result", "chat", "sendMessage", withSession({ sessionId: requireValue(sessionId, "sessionId"), text: requireValue(readValue(args, ["--text", "--message"]) ?? args.join(" "), "message text") }))] };
   if (sub === "interrupt") return { kind: "execute", label: "chat interrupt", steps: [actionStep("result", "chat", "interrupt", withSession({ sessionId: requireValue(sessionId, "sessionId") }))] };
   if (sub === "resume") return { kind: "execute", label: "chat resume", steps: [actionStep("result", "chat", "resumeSession", withSession())] };

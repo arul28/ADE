@@ -113,6 +113,8 @@ describe("GitHubTab", () => {
       detailReviews: [],
       detailComments: [],
       detailBusy: false,
+      loading: false,
+      setViewerLogin: vi.fn(),
     });
 
     Object.assign(window, {
@@ -178,6 +180,27 @@ describe("GitHubTab", () => {
     expect(onOpenQueueView).toHaveBeenCalledWith("queue-group-1");
   });
 
+  it("shares the snapshot viewer login with PR context", async () => {
+    const setViewerLogin = vi.fn();
+    mockUsePrs.mockReturnValue({
+      prs: [],
+      mergeContextByPrId: {},
+      detailStatus: null,
+      detailChecks: [],
+      detailReviews: [],
+      detailComments: [],
+      detailBusy: false,
+      loading: false,
+      setViewerLogin,
+    });
+
+    renderTab();
+
+    await waitFor(() => {
+      expect(setViewerLogin).toHaveBeenCalledWith("octocat");
+    });
+  });
+
   it("passes queue context into the normal PR detail pane", async () => {
     renderTab({ selectedPrId: "pr-queue" });
 
@@ -192,6 +215,115 @@ describe("GitHubTab", () => {
     await waitFor(() => {
       expect(screen.getAllByLabelText("CI running").length).toBeGreaterThan(0);
     });
+  });
+
+  it("does not force-refresh the GitHub snapshot when linked PRs hydrate after mount", async () => {
+    const emptyContext = {
+      prs: [],
+      mergeContextByPrId: {},
+      detailStatus: null,
+      detailChecks: [],
+      detailReviews: [],
+      detailComments: [],
+      detailBusy: false,
+      loading: true,
+    };
+    const loadedContext = {
+      ...emptyContext,
+      prs: [
+        { id: "pr-open", checksStatus: "pending", reviewStatus: "requested", additions: 12, deletions: 3 },
+      ],
+      loading: false,
+    };
+    mockUsePrs.mockReturnValue(emptyContext);
+    const { rerender } = render(
+      <MemoryRouter>
+        <GitHubTab
+          lanes={[] satisfies LaneSummary[]}
+          mergeMethod={"squash" satisfies MergeMethod}
+          selectedPrId={null}
+          onSelectPr={vi.fn()}
+          onRefreshAll={vi.fn().mockResolvedValue(undefined)}
+        />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: false });
+    });
+
+    mockUsePrs.mockReturnValue(loadedContext);
+    rerender(
+      <MemoryRouter>
+        <GitHubTab
+          lanes={[] satisfies LaneSummary[]}
+          mergeMethod={"squash" satisfies MergeMethod}
+          selectedPrId={null}
+          onSelectPr={vi.fn()}
+          onRefreshAll={vi.fn().mockResolvedValue(undefined)}
+        />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Open PR")).not.toBeNull();
+    });
+    expect(window.ade.prs.getGitHubSnapshot).not.toHaveBeenCalledWith({ force: true });
+  });
+
+  it("does not force-refresh the GitHub snapshot immediately after a fresh snapshot load", async () => {
+    const loadedContext = {
+      prs: [
+        { id: "pr-open", checksStatus: "pending", reviewStatus: "requested", additions: 12, deletions: 3, updatedAt: "2026-03-13T11:30:00.000Z" },
+      ],
+      mergeContextByPrId: {},
+      detailStatus: null,
+      detailChecks: [],
+      detailReviews: [],
+      detailComments: [],
+      detailBusy: false,
+      loading: false,
+      setViewerLogin: vi.fn(),
+    };
+    mockUsePrs.mockReturnValue(loadedContext);
+    const { rerender } = render(
+      <MemoryRouter>
+        <GitHubTab
+          lanes={[] satisfies LaneSummary[]}
+          mergeMethod={"squash" satisfies MergeMethod}
+          selectedPrId={null}
+          onSelectPr={vi.fn()}
+          onRefreshAll={vi.fn().mockResolvedValue(undefined)}
+        />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: false });
+    });
+
+    mockUsePrs.mockReturnValue({
+      ...loadedContext,
+      prs: [
+        { ...loadedContext.prs[0]!, updatedAt: "2026-03-13T11:31:00.000Z" },
+      ],
+    });
+    rerender(
+      <MemoryRouter>
+        <GitHubTab
+          lanes={[] satisfies LaneSummary[]}
+          mergeMethod={"squash" satisfies MergeMethod}
+          selectedPrId={null}
+          onSelectPr={vi.fn()}
+          onRefreshAll={vi.fn().mockResolvedValue(undefined)}
+        />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Open PR")).not.toBeNull();
+    });
+    expect(window.ade.prs.getGitHubSnapshot).not.toHaveBeenCalledWith({ force: true });
   });
 
   it("filters by ADE scope showing only linked PRs", async () => {

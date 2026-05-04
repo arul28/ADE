@@ -17,6 +17,7 @@ import {
 import { createLaneService, type LaneDeleteTeardownDeps } from "./services/lanes/laneService";
 import { createLaneEnvironmentService } from "./services/lanes/laneEnvironmentService";
 import { createLaneTemplateService } from "./services/lanes/laneTemplateService";
+import { createLaneWorktreeLockService } from "./services/lanes/laneWorktreeLockService";
 import { createPortAllocationService } from "./services/lanes/portAllocationService";
 import { createLaneProxyService } from "./services/lanes/laneProxyService";
 import { createOAuthRedirectService } from "./services/lanes/oauthRedirectService";
@@ -44,6 +45,7 @@ import { createPrService } from "./services/prs/prService";
 import { createPrPollingService } from "./services/prs/prPollingService";
 import { createQueueLandingService } from "./services/prs/queueLandingService";
 import { createIssueInventoryService } from "./services/prs/issueInventoryService";
+import { createPathToMergeOrchestrator } from "./services/prs/pathToMergeOrchestrator";
 import { createPrSummaryService } from "./services/prs/prSummaryService";
 import {
   detectDefaultBaseRef,
@@ -1482,6 +1484,12 @@ app.whenReady().then(async () => {
       laneService.ensurePrimaryLane(),
     );
 
+    const laneWorktreeLockService = createLaneWorktreeLockService({
+      db,
+      logger,
+    });
+    laneWorktreeLockService.sweepExpired();
+
     const laneEnvironmentService = createLaneEnvironmentService({
       projectRoot,
       adeDir: adePaths.adeDir,
@@ -1676,6 +1684,7 @@ app.whenReady().then(async () => {
       operationService,
       aiIntegrationService,
       sessionService,
+      laneWorktreeLockService,
       conflictPacksDir: path.join(adePaths.packsDir, "conflicts"),
       onEvent: (event) => {
         emitProjectEvent(projectRoot, IPC.conflictsEvent, event);
@@ -1719,6 +1728,7 @@ app.whenReady().then(async () => {
       aiIntegrationService,
       projectConfigService,
       conflictService,
+      laneWorktreeLockService,
       autoRebaseService,
       rebaseSuggestionService,
       onHotRefreshChanged: () => {
@@ -1959,6 +1969,16 @@ app.whenReady().then(async () => {
     }) => {
       jobEngine?.onSessionEnded({ laneId, sessionId });
       automationService?.onSessionEnded({ laneId, sessionId });
+      try {
+        laneWorktreeLockService.release({ ownerKind: "pr_issue_resolution", ownerSessionId: sessionId });
+        laneWorktreeLockService.release({ ownerKind: "conflict_resolution", ownerSessionId: sessionId });
+      } catch (error) {
+        logger.warn("main.lane_worktree_session_lock_release_failed", {
+          laneId,
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
       try {
         issueInventoryService.reconcileConvergenceSessionExit(sessionId, {
           exitCode,
@@ -2423,6 +2443,28 @@ app.whenReady().then(async () => {
 
     // Wire agentChatService into prService for integration resolution
     prService.setAgentChatService(agentChatService);
+
+    const pathToMergeOrchestrator = createPathToMergeOrchestrator({
+      logger,
+      prService,
+      laneService,
+      agentChatService,
+      sessionService,
+      issueInventoryService,
+      conflictService,
+      laneWorktreeLockService,
+      defaultModelId: null,
+      defaultReasoningEffort: null,
+    });
+    setImmediate(() => {
+      try {
+        pathToMergeOrchestrator.resumeFromPersistedState();
+      } catch (err) {
+        logger.warn("path_to_merge.resume_failed", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    });
 
     const gitService = createGitOperationsService({
       laneService,
@@ -2925,6 +2967,7 @@ app.whenReady().then(async () => {
       conflictService,
       prService,
       issueInventoryService,
+      pathToMergeOrchestrator,
       queueLandingService,
       sessionService,
       ptyService,
@@ -3498,6 +3541,7 @@ app.whenReady().then(async () => {
       devToolsService,
       onboardingService,
       laneService,
+      laneWorktreeLockService,
       laneEnvironmentService,
       laneTemplateService,
       portAllocationService,
@@ -3738,6 +3782,7 @@ app.whenReady().then(async () => {
       devToolsService,
       onboardingService,
       laneService,
+      laneWorktreeLockService,
       laneEnvironmentService,
       laneTemplateService,
       portAllocationService,
@@ -3763,6 +3808,7 @@ app.whenReady().then(async () => {
       appControlService,
       queueLandingService,
       issueInventoryService,
+      pathToMergeOrchestrator,
       prSummaryService,
       reviewService,
       jobEngine,
@@ -3851,6 +3897,7 @@ app.whenReady().then(async () => {
       devToolsService: null,
       onboardingService: null,
       laneService: null,
+      laneWorktreeLockService: null,
       laneEnvironmentService: null,
       laneTemplateService: null,
       rebaseSuggestionService: null,
@@ -3874,6 +3921,7 @@ app.whenReady().then(async () => {
       prPollingService: null,
       queueLandingService: null,
       issueInventoryService: null,
+      pathToMergeOrchestrator: null,
       prSummaryService: null,
       reviewService: null,
       jobEngine: null,
@@ -3964,6 +4012,11 @@ app.whenReady().then(async () => {
     }
     try {
       ctx.prPollingService.dispose();
+    } catch {
+      // ignore
+    }
+    try {
+      ctx.pathToMergeOrchestrator?.dispose();
     } catch {
       // ignore
     }

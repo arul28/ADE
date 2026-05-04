@@ -15,7 +15,7 @@ import {
   Play,
   Stop,
 } from "@phosphor-icons/react";
-import type { AiPermissionMode, PipelineSettings, PrCheck } from "../../../../shared/types";
+import type { PipelineSettings, PrAgentPermissionMode, PrCheck } from "../../../../shared/types";
 import {
   COLORS,
   MONO_FONT,
@@ -66,7 +66,7 @@ export type AutoConvergeWaitState =
   | { phase: "waiting_checks"; pendingCount: number; totalCount: number }
   | { phase: "waiting_comments"; stablePollCount: number }
   | { phase: "ready" }
-  | { phase: "paused"; reason: string }
+  | { phase: "paused"; reason: string; repeatCount?: number }
   | { phase: "complete" }
   | { phase: "merged" };
 
@@ -80,16 +80,17 @@ export type PrConvergencePanelProps = {
   checks: PrCheck[];
   modelId: string;
   reasoningEffort: string;
-  permissionMode: AiPermissionMode;
+  permissionMode: PrAgentPermissionMode;
   busy: boolean;
   autoConverge: boolean;
+  pathToMergeActive?: boolean;
   pipelineSettings: PipelineSettings;
   waitState: AutoConvergeWaitState;
   terminalState?: "merged" | "closed" | null;
   onPipelineSettingsChange: (settings: Partial<PipelineSettings>) => void;
   onModelChange: (modelId: string) => void;
   onReasoningEffortChange: (value: string) => void;
-  onPermissionModeChange: (mode: AiPermissionMode) => void;
+  onPermissionModeChange: (mode: PrAgentPermissionMode) => void;
   onRunNextRound: (additionalInstructions: string) => Promise<void>;
   onAutoConvergeChange: (enabled: boolean) => void;
   onCopyPrompt: (additionalInstructions: string) => Promise<void>;
@@ -826,6 +827,7 @@ function WaitingIndicator({
   onDismissPause,
   onDismissMerged,
   onStop,
+  stopLabel = "Stop",
 }: {
   waitState: AutoConvergeWaitState;
   convergence: ConvergenceStatus;
@@ -835,6 +837,7 @@ function WaitingIndicator({
   onDismissPause?: () => void;
   onDismissMerged?: () => void;
   onStop?: () => void;
+  stopLabel?: string;
 }) {
   if (waitState.phase === "idle") return null;
 
@@ -908,6 +911,11 @@ function WaitingIndicator({
   }
 
   if (waitState.phase === "waiting_checks") {
+    const checksLabel = waitState.totalCount > 0 && waitState.pendingCount > 0
+      ? `Waiting for ${waitState.pendingCount} of ${waitState.totalCount} CI checks to complete`
+      : waitState.totalCount > 0
+        ? "CI checks are complete; waiting for PR status to update"
+        : "Waiting for CI status to update";
     return (
       <div
         style={{
@@ -923,13 +931,11 @@ function WaitingIndicator({
             weight="bold"
             style={{ animation: "convergeSpin 1s linear infinite", flexShrink: 0 }}
           />
-          <span>
-            Waiting for {waitState.pendingCount} of {waitState.totalCount} CI checks to complete
-          </span>
+          <span>{checksLabel}</span>
         </div>
         {onStop && (
           <button type="button" onClick={onStop} style={stopLink}>
-            Stop
+            {stopLabel}
           </button>
         )}
       </div>
@@ -966,7 +972,7 @@ function WaitingIndicator({
         </div>
         {onStop && (
           <button type="button" onClick={onStop} style={stopLink}>
-            Stop
+            {stopLabel}
           </button>
         )}
       </div>
@@ -1003,6 +1009,7 @@ function WaitingIndicator({
   }
 
   if (waitState.phase === "paused") {
+    const isRepeatedPause = (waitState.repeatCount ?? 0) >= 3;
     return (
       <div
         style={{
@@ -1014,10 +1021,14 @@ function WaitingIndicator({
       >
         <div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0 }}>
           <Warning size={16} weight="fill" style={{ flexShrink: 0 }} />
-          <span>Paused: {waitState.reason}</span>
+          <span>
+            {isRepeatedPause
+              ? `Stuck on the same failure: ${waitState.reason}. Fix the blocker before resuming.`
+              : `Paused: ${waitState.reason}`}
+          </span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
-          {onResumePause && (
+          {onResumePause && !isRepeatedPause && (
             <button
               type="button"
               onClick={onResumePause}
@@ -1122,6 +1133,7 @@ export function PrConvergencePanel({
   permissionMode,
   busy,
   autoConverge,
+  pathToMergeActive = false,
   pipelineSettings,
   waitState,
   terminalState = null,
@@ -1153,7 +1165,6 @@ export function PrConvergencePanel({
 
   React.useEffect(() => {
     if (autoConverge && mode !== "auto-converge") setMode("auto-converge");
-    if (!autoConverge && mode === "auto-converge") setMode("manual");
   }, [autoConverge, mode]);
 
   // Group items by state
@@ -1176,6 +1187,15 @@ export function PrConvergencePanel({
   const runningChecks = checks.filter((c) => c.status === "in_progress");
   const queuedChecks = checks.filter((c) => c.status === "queued");
   const checksStillRunning = queuedChecks.length > 0 || runningChecks.length > 0;
+  const displayedWaitState = React.useMemo<AutoConvergeWaitState>(() => {
+    if (waitState.phase !== "waiting_checks") return waitState;
+    if (waitState.totalCount > 0 || checks.length === 0) return waitState;
+    return {
+      ...waitState,
+      pendingCount: queuedChecks.length + runningChecks.length,
+      totalCount: checks.length,
+    };
+  }, [checks.length, queuedChecks.length, runningChecks.length, waitState]);
   const allChecksPassing = checks.length > 0 && checks.every((c) => c.conclusion === "success" || c.conclusion === "neutral" || c.conclusion === "skipped");
   const passingChecks = checks.filter((c) => c.conclusion === "success");
   const otherChecks = checks.filter(
@@ -1185,21 +1205,49 @@ export function PrConvergencePanel({
 
   const hasNewItems = grouped.new.length > 0;
   const atMaxRounds = convergence.currentRound >= convergence.maxRounds;
-  const hasActiveWaitState = waitState.phase === "agent_running" || waitState.phase === "waiting_checks" || waitState.phase === "waiting_comments" || waitState.phase === "paused";
-  const canRunNext = hasNewItems && !atMaxRounds && !busy && !checksStillRunning && !hasActiveWaitState;
+  const hasActiveWaitState = displayedWaitState.phase === "agent_running" || displayedWaitState.phase === "waiting_checks" || displayedWaitState.phase === "waiting_comments" || displayedWaitState.phase === "paused";
+  const canRunManualRound = hasNewItems && !atMaxRounds && !busy && !checksStillRunning && !hasActiveWaitState;
+  const canStartPathToMerge = !autoConverge && !pathToMergeActive && !busy && !atMaxRounds && !hasActiveWaitState && (hasNewItems || checksStillRunning || failingChecks.length > 0);
+  const canRunNext = mode === "auto-converge" ? canStartPathToMerge : canRunManualRound;
 
-  const launchDisabledReason = !hasNewItems ? "No new issues to resolve"
+  const launchDisabledReason = mode === "auto-converge"
+    ? autoConverge || pathToMergeActive ? "Path to Merge is already running"
+      : busy ? "Agent is currently running"
+      : atMaxRounds ? "Maximum rounds reached"
+      : hasActiveWaitState ? "Path to Merge is already waiting"
+      : !hasNewItems && !checksStillRunning && failingChecks.length === 0 ? "No actionable issues to resolve"
+      : null
+    : !hasNewItems ? "No new issues to resolve"
     : atMaxRounds ? "Maximum rounds reached"
     : busy ? "Agent is currently running"
-    : waitState.phase === "agent_running" ? "A convergence session is already running"
-    : waitState.phase === "waiting_checks" ? "Waiting for CI checks to finish"
-    : waitState.phase === "waiting_comments" ? "Waiting for review comments to settle"
-    : waitState.phase === "paused" ? "Convergence session is paused"
+    : displayedWaitState.phase === "agent_running" ? "A convergence session is already running"
+    : displayedWaitState.phase === "waiting_checks" ? "Waiting for CI checks to finish"
+    : displayedWaitState.phase === "waiting_comments" ? "Waiting for review comments to settle"
+    : displayedWaitState.phase === "paused" ? "Convergence session is paused"
     : checksStillRunning ? "CI checks are still running"
     : null;
 
   const isEmpty = items.length === 0 && checks.length === 0;
   const showAutoConvergeControls = mode === "auto-converge" || autoConverge;
+  // The Stop Auto-Converge button needs both: (a) auto-converge selected, and
+  // (b) something actually in flight. `convergence.currentRound` is 1-indexed
+  // and starts at 1 before any dispatch, so we can't use it as an "activity"
+  // signal — only `busy` and the active wait phases mean real work is happening.
+  const isConvergenceTerminal =
+    displayedWaitState.phase === "complete" || displayedWaitState.phase === "merged";
+  const isConvergenceActive =
+    showAutoConvergeControls &&
+    !isConvergenceTerminal &&
+    (busy ||
+      displayedWaitState.phase === "agent_running" ||
+      displayedWaitState.phase === "waiting_checks" ||
+      displayedWaitState.phase === "waiting_comments" ||
+      displayedWaitState.phase === "paused");
+  const showAutoConvergeProgress =
+    mode === "auto-converge" &&
+    convergence.state !== "not_started" &&
+    (autoConverge || pathToMergeActive || isConvergenceActive);
+  const stopAutomationLabel = pathToMergeActive ? "Stop Path to Merge" : "Stop Auto-Converge";
   const toggleIssueExpanded = React.useCallback((itemId: string) => {
     setExpandedIssueIds((prev) => {
       const next = new Set(prev);
@@ -1309,8 +1357,11 @@ export function PrConvergencePanel({
                 key={m}
                 type="button"
                 onClick={() => {
+                  if (m === mode) return;
                   setMode(m);
-                  onAutoConvergeChange(m === "auto-converge");
+                  if (m === "manual" && autoConverge) {
+                    onAutoConvergeChange(false);
+                  }
                 }}
                 style={{
                   fontFamily: SANS_FONT,
@@ -1331,8 +1382,10 @@ export function PrConvergencePanel({
           })}
         </div>
 
-        {/* Right: Round indicator + status pill (auto-converge only) */}
-        {mode === "auto-converge" && (
+        {/* Right: Round indicator + status pill (auto-converge only, and
+            only once the loop has actually started — currentRound is 1-indexed
+            from the start, so we gate on the convergence state instead). */}
+        {showAutoConvergeProgress && (
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <RoundIndicator current={convergence.currentRound} max={pipelineSettings.maxRounds} />
             <ConvergenceStatusPill status={convergence.state} />
@@ -1754,16 +1807,17 @@ export function PrConvergencePanel({
       </div>
 
       {/* ---- Waiting indicator ---- */}
-      {(showAutoConvergeControls || waitState.phase !== "idle") && (
+      {(showAutoConvergeControls || displayedWaitState.phase !== "idle") && (
         <WaitingIndicator
-          waitState={waitState}
+          waitState={displayedWaitState}
           convergence={convergence}
           showRoundLabels={showAutoConvergeControls}
           onViewSession={onViewAgentSession}
           onResumePause={onResumePause}
           onDismissPause={onDismissPause}
           onDismissMerged={onDismissMerged}
-          onStop={showAutoConvergeControls ? onStopAutoConverge : undefined}
+          onStop={isConvergenceActive ? onStopAutoConverge : undefined}
+          stopLabel={pathToMergeActive ? "Stop Path to Merge" : "Stop"}
         />
       )}
 
@@ -1782,7 +1836,7 @@ export function PrConvergencePanel({
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          {showAutoConvergeControls && (
+          {isConvergenceActive && (
             <button
               type="button"
               onClick={onStopAutoConverge}
@@ -1804,7 +1858,7 @@ export function PrConvergencePanel({
               }}
             >
               <Stop size={13} weight="fill" />
-              Stop Auto-Converge
+              {stopAutomationLabel}
             </button>
           )}
           {autoConverge && (
@@ -1842,10 +1896,10 @@ export function PrConvergencePanel({
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginLeft: "auto" }}>
-          {waitState.phase === "agent_running" && onViewAgentSession && (
+          {displayedWaitState.phase === "agent_running" && onViewAgentSession && (
             <button
               type="button"
-              onClick={() => onViewAgentSession(waitState.sessionId)}
+              onClick={() => onViewAgentSession(displayedWaitState.sessionId)}
               style={outlineButton({
                 height: 34,
                 padding: "0 12px",
@@ -1877,7 +1931,13 @@ export function PrConvergencePanel({
             type="button"
             disabled={!canRunNext}
             title={launchDisabledReason ?? undefined}
-            onClick={() => void onRunNextRound(additionalInstructions)}
+            onClick={() => {
+              if (mode === "auto-converge") {
+                void onAutoConvergeChange(true);
+              } else {
+                void onRunNextRound(additionalInstructions);
+              }
+            }}
             style={primaryButton({
               height: 34,
               padding: "0 16px",
@@ -1894,7 +1954,7 @@ export function PrConvergencePanel({
               <ArrowsClockwise size={13} weight="bold" />
             )}
             <span style={{ fontFamily: SANS_FONT, fontSize: 11 }}>
-              {busy ? "Running..." : mode === "auto-converge" ? `Start Round ${convergence.currentRound + 1}` : "Launch Agent"}
+              {busy || autoConverge || pathToMergeActive ? "Running..." : mode === "auto-converge" ? "Start Path to Merge" : "Launch Agent"}
             </span>
           </button>
         </div>

@@ -189,6 +189,78 @@ describe("ADE CLI", () => {
     );
   });
 
+  it("builds chat create with both model and modelId plus generic args", () => {
+    const plan = buildCliPlan([
+      "chat",
+      "create",
+      "--lane",
+      "lane-1",
+      "--provider",
+      "claude",
+      "--model",
+      "anthropic/claude-opus-4-7-1m",
+      "--permissions",
+      "full-auto",
+      "--arg",
+      "reasoningEffort=xhigh",
+      "--arg",
+      "openInUi=true",
+    ]);
+
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "chat",
+        action: "createSession",
+        args: {
+          laneId: "lane-1",
+          provider: "claude",
+          model: "anthropic/claude-opus-4-7-1m",
+          modelId: "anthropic/claude-opus-4-7-1m",
+          permissionMode: "full-auto",
+          droidPermissionMode: null,
+          title: null,
+          surface: "work",
+          reasoningEffort: "xhigh",
+          openInUi: true,
+        },
+      },
+    });
+  });
+
+  it("builds chat show/status as positional session summary calls", () => {
+    const show = buildCliPlan(["chat", "show", "chat-1"]);
+    expect(show.kind).toBe("execute");
+    if (show.kind !== "execute") return;
+    expect(show.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "chat",
+        action: "getSessionSummary",
+        argsList: ["chat-1"],
+      },
+    });
+
+    const status = buildCliPlan(["chat", "status", "--session-id", "chat-2"]);
+    expect(status.kind).toBe("execute");
+    if (status.kind !== "execute") return;
+    expect(status.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "chat",
+        action: "getSessionSummary",
+        argsList: ["chat-2"],
+      },
+    });
+  });
+
+  it("requires a chat session id for chat show", () => {
+    expect(() => buildCliPlan(["chat", "show"])).toThrow(/sessionId is required/);
+  });
+
   it("rejects prototype-sensitive generic ADE action arg paths", () => {
     expect(({} as Record<string, unknown>).polluted).toBeUndefined();
 
@@ -231,6 +303,105 @@ describe("ADE CLI", () => {
         modelId: "gpt-5.4",
       },
     });
+  });
+
+  it("forwards new pipeline-settings flags through Path to Merge", () => {
+    const plan = buildCliPlan([
+      "prs",
+      "path-to-merge",
+      "pr-2",
+      "--model",
+      "gpt-5.4",
+      "--conflict-strategy",
+      "auto",
+      "--force-finalize",
+      "conditional",
+      "--at-cap-policy",
+      "ci_retry_loop",
+      "--at-cap-wait-minutes",
+      "12",
+      "--at-cap-ci-retry-max",
+      "4",
+      "--no-force-merge-requires-confirmation",
+      "--no-early-merge-on-green",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps).toHaveLength(2);
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "issue_inventory",
+        action: "savePipelineSettings",
+        argsList: [
+          "pr-2",
+          {
+            conflictStrategy: "auto",
+            forceFinalizeMode: "conditional",
+            atCapPolicy: "ci_retry_loop",
+            atCapWaitMinutes: 12,
+            atCapCiRetryMax: 4,
+            forceMergeRequiresConfirmation: false,
+            earlyMergeOnGreen: false,
+          },
+        ],
+      },
+    });
+    expect(plan.steps[1]?.params).toEqual({
+      name: "pr_start_issue_resolution",
+      arguments: {
+        prId: "pr-2",
+        scope: "both",
+        modelId: "gpt-5.4",
+      },
+    });
+  });
+
+  it("rejects invalid pipeline-settings enum values", () => {
+    expect(() =>
+      buildCliPlan([
+        "prs",
+        "path-to-merge",
+        "pr-3",
+        "--model",
+        "gpt-5.4",
+        "--conflict-strategy",
+        "wat",
+      ]),
+    ).toThrow(/--conflict-strategy must be one of/);
+    expect(() =>
+      buildCliPlan([
+        "prs",
+        "path-to-merge",
+        "pr-3",
+        "--model",
+        "gpt-5.4",
+        "--force-finalize",
+        "always",
+      ]),
+    ).toThrow(/--force-finalize must be one of/);
+    expect(() =>
+      buildCliPlan([
+        "prs",
+        "path-to-merge",
+        "pr-3",
+        "--model",
+        "gpt-5.4",
+        "--at-cap-policy",
+        "forever",
+      ]),
+    ).toThrow(/--at-cap-policy must be one of/);
+    expect(() =>
+      buildCliPlan([
+        "prs",
+        "path-to-merge",
+        "pr-3",
+        "--model",
+        "gpt-5.4",
+        "--at-cap-wait-minutes",
+        "0",
+      ]),
+    ).toThrow(/--at-cap-wait-minutes must be at least 1/);
   });
 
   it("validates required arguments before service execution", () => {

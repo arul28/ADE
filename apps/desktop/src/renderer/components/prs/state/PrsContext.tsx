@@ -7,7 +7,6 @@ import React, {
   useMemo,
 } from "react";
 import type {
-  AiPermissionMode,
   PrConvergenceState,
   PrAiResolutionContext,
   PrAiResolutionSessionInfo,
@@ -29,13 +28,14 @@ import type {
   PrReviewThread,
   PrDeployment,
   PrAiSummary,
+  PrAgentPermissionMode,
 } from "../../../../shared/types";
 import type { PrTimelineFilters } from "../shared/PrTimeline";
-import { DEFAULT_PR_TIMELINE_FILTERS } from "../shared/PrTimeline";
 import { buildPrAiResolutionContextKey } from "../../../../shared/types";
-import { getModelById } from "../../../../shared/modelRegistry";
+import { getModelById, resolveProviderGroupForModel, type ModelProviderGroup } from "../../../../shared/modelRegistry";
 import { parsePrsRouteState, resolvePrsActiveTab } from "../prsRouteState";
 import { resolveRouteRebaseSelection } from "../shared/rebaseNeedUtils";
+import { useAppStore } from "../../../state/appStore";
 
 type PrTab = "normal" | "queue" | "integration" | "rebase";
 
@@ -86,7 +86,7 @@ type PrsState = {
   // Resolver preferences
   resolverModel: string;
   resolverReasoningLevel: string;
-  resolverPermissionMode: AiPermissionMode;
+  resolverPermissionMode: PrAgentPermissionMode;
   resolverSessionsByContextKey: Record<string, PrAiResolutionSessionInfo>;
 
   // Timeline + rails (PRs tab redesign)
@@ -104,7 +104,7 @@ type PrsContextValue = PrsState & {
   setMergeMethod: (method: MergeMethod) => void;
   setResolverModel: (model: string) => void;
   setResolverReasoningLevel: (level: string) => void;
-  setResolverPermissionMode: (mode: AiPermissionMode, modelId?: string) => void;
+  setResolverPermissionMode: (mode: PrAgentPermissionMode, modelId?: string) => void;
   upsertResolverSession: (session: PrAiResolutionSessionInfo) => void;
   clearResolverSession: (context: PrAiResolutionContext) => void;
   setInlineTerminal: (terminal: InlineTerminalState) => void;
@@ -118,6 +118,7 @@ type PrsContextValue = PrsState & {
   setTimelineFilters: (prId: string, filters: PrTimelineFilters) => void;
   setAiSummaryDismissed: (prId: string, dismissed: boolean) => void;
   regeneratePrAiSummary: (prId: string) => Promise<void>;
+  setViewerLogin: (login: string | null) => void;
 };
 
 const PrsContext = createContext<PrsContextValue | null>(null);
@@ -128,6 +129,49 @@ const LS_PERMISSION_KEY = "ade:prs:resolverPermissions";
 const LS_TIMELINE_RAILS_KEY = "ade:prs:timelineRailsEnabled";
 const LS_DISMISSED_SUMMARIES_KEY = "ade:prs:dismissedAiSummaries";
 const LS_TIMELINE_FILTERS_KEY = "ade:prs:timelineFiltersByPrId";
+const PRS_CONTEXT_CACHE_TTL_MS = 120_000;
+const PRS_DETAIL_CACHE_TTL_MS = 60_000;
+const PRS_CONTEXT_DEFAULT_CACHE_KEY = "__default_project__";
+const PRS_CONTEXT_CACHE_DISABLED = import.meta.env.MODE === "test";
+
+type PrsContextWarmCache = {
+  activeTab: PrTab;
+  prs: PrWithConflicts[];
+  lanes: LaneSummary[];
+  mergeContextByPrId: Record<string, PrMergeContext>;
+  selectedPrId: string | null;
+  selectedQueueGroupId: string | null;
+  selectedRebaseItemId: string | null;
+  mergeMethod: MergeMethod;
+  detailStatus: PrStatus | null;
+  detailChecks: PrCheck[];
+  detailReviews: PrReview[];
+  detailComments: PrComment[];
+  detailReviewThreads: PrReviewThread[];
+  detailDeployments: PrDeployment[];
+  detailAiSummary: PrAiSummary | null;
+  rebaseNeeds: RebaseNeed[];
+  autoRebaseStatuses: AutoRebaseLaneStatus[];
+  queueStates: Record<string, QueueLandingState>;
+  inlineTerminal: InlineTerminalState;
+  convergenceStatesByPrId: Record<string, PrConvergenceState>;
+  resolverSessionsByContextKey: Record<string, PrAiResolutionSessionInfo>;
+  viewerLogin: string | null;
+  cachedAt: number;
+  dataLoadedAt: number;
+};
+
+const prsContextWarmCacheByProject = new Map<string, PrsContextWarmCache>();
+
+function prsContextCacheKey(projectRoot?: string | null): string {
+  const normalized = projectRoot?.trim();
+  return normalized || PRS_CONTEXT_DEFAULT_CACHE_KEY;
+}
+
+function readPrsContextWarmCache(projectRoot?: string | null): PrsContextWarmCache | null {
+  if (PRS_CONTEXT_CACHE_DISABLED) return null;
+  return prsContextWarmCacheByProject.get(prsContextCacheKey(projectRoot)) ?? null;
+}
 
 function readBoolLs(key: string, fallback: boolean): boolean {
   try {
@@ -158,18 +202,28 @@ function writeJsonLs(key: string, value: unknown): void {
   }
 }
 
-type ResolverPermissionPreferences = {
-  claude: AiPermissionMode;
-  codex: AiPermissionMode;
-};
+type ResolverPermissionFamily = Extract<ModelProviderGroup, "claude" | "codex" | "opencode" | "cursor" | "droid">;
+type ResolverPermissionPreferences = Record<ResolverPermissionFamily, PrAgentPermissionMode>;
 
 const DEFAULT_RESOLVER_PERMISSIONS: ResolverPermissionPreferences = {
-  claude: "guarded_edit",
-  codex: "full_edit",
+  claude: "default",
+  codex: "default",
+  opencode: "edit",
+  cursor: "default",
+  droid: "edit",
 };
 
-function normalizeResolverPermissionMode(value: unknown): AiPermissionMode | null {
-  if (value === "read_only" || value === "guarded_edit" || value === "full_edit") return value;
+function normalizeResolverPermissionMode(value: unknown): PrAgentPermissionMode | null {
+  if (
+    value === "read_only" ||
+    value === "guarded_edit" ||
+    value === "full_edit" ||
+    value === "default" ||
+    value === "plan" ||
+    value === "edit" ||
+    value === "full-auto" ||
+    value === "config-toml"
+  ) return value;
   return null;
 }
 
@@ -181,15 +235,18 @@ function readPersistedResolverPermissions(): ResolverPermissionPreferences {
     return {
       claude: normalizeResolverPermissionMode(parsed?.claude) ?? DEFAULT_RESOLVER_PERMISSIONS.claude,
       codex: normalizeResolverPermissionMode(parsed?.codex) ?? DEFAULT_RESOLVER_PERMISSIONS.codex,
+      opencode: normalizeResolverPermissionMode(parsed?.opencode) ?? DEFAULT_RESOLVER_PERMISSIONS.opencode,
+      cursor: normalizeResolverPermissionMode(parsed?.cursor) ?? DEFAULT_RESOLVER_PERMISSIONS.cursor,
+      droid: normalizeResolverPermissionMode(parsed?.droid) ?? DEFAULT_RESOLVER_PERMISSIONS.droid,
     };
   } catch {
     return DEFAULT_RESOLVER_PERMISSIONS;
   }
 }
 
-function resolvePermissionFamilyForModel(modelId: string): keyof ResolverPermissionPreferences {
+function resolvePermissionFamilyForModel(modelId: string): ResolverPermissionFamily {
   const descriptor = getModelById(modelId);
-  return descriptor?.family === "anthropic" ? "claude" : "codex";
+  return descriptor ? resolveProviderGroupForModel(descriptor) : "opencode";
 }
 
 function readPersistedModel(): string {
@@ -212,7 +269,7 @@ function readPersistedReasoningLevel(): string {
   return "medium";
 }
 
-function readInitialRouteState(): {
+function readInitialRouteState(fallback?: PrsContextWarmCache | null): {
   activeTab: PrTab;
   selectedPrId: string | null;
   selectedQueueGroupId: string | null;
@@ -223,6 +280,22 @@ function readInitialRouteState(): {
       search: window.location.search,
       hash: window.location.hash,
     });
+    const hasExplicitRouteState = Boolean(
+      route.tab
+      || route.workflowTab
+      || route.prId
+      || route.queueGroupId
+      || route.laneId
+      || route.detailTab
+    );
+    if (!hasExplicitRouteState && fallback) {
+      return {
+        activeTab: fallback.activeTab,
+        selectedPrId: fallback.selectedPrId,
+        selectedQueueGroupId: fallback.selectedQueueGroupId,
+        selectedRebaseItemId: fallback.selectedRebaseItemId,
+      };
+    }
     const resolved = resolvePrsActiveTab(route);
     const activeTab: PrTab = resolved.isWorkflowRoute
       ? (resolved.effectiveWorkflow ?? "integration")
@@ -290,32 +363,64 @@ function diffPrIds(prev: PrWithConflicts[], next: PrWithConflicts[]): string[] {
 }
 
 export function PrsProvider({ children }: { children: React.ReactNode }) {
+  const projectRoot = useAppStore((state) => state.project?.rootPath ?? null);
+  const cacheKey = prsContextCacheKey(projectRoot);
+  const warmCache = useMemo(() => readPrsContextWarmCache(projectRoot), [projectRoot]);
+  const warmCacheHydratedAtRef = React.useRef(warmCache?.dataLoadedAt ?? warmCache?.cachedAt ?? 0);
+
   // Compute initial route state exactly once per provider mount. Reading
   // window.location + running parsePrsRouteState/resolvePrsActiveTab on every
-  // render would be wasteful; useMemo with empty deps captures it once so all
-  // four useState calls below share a single computation.
-  const initialRouteState = useMemo(() => readInitialRouteState(), []);
+  // render would be wasteful; the warm-cache dependency is stable for the mount
+  // and lets plain /prs restores resume the last in-memory PR surface.
+  const initialRouteState = useMemo(() => readInitialRouteState(warmCache), [warmCache]);
   const [activeTab, setActiveTab] = useState<PrTab>(initialRouteState.activeTab);
-  const [prs, setPrs] = useState<PrWithConflicts[]>([]);
-  const [lanes, setLanes] = useState<LaneSummary[]>([]);
-  const [mergeContextByPrId, setMergeContextByPrId] = useState<Record<string, PrMergeContext>>({});
+  const activeTabRef = React.useRef<PrTab>(initialRouteState.activeTab);
+  React.useEffect(() => {
+    activeTabRef.current = activeTab;
+  }, [activeTab]);
+  const [prs, setPrs] = useState<PrWithConflicts[]>(() => warmCache?.prs ?? []);
+  const [lanes, setLanes] = useState<LaneSummary[]>(() => warmCache?.lanes ?? []);
+  const [mergeContextByPrId, setMergeContextByPrId] = useState<Record<string, PrMergeContext>>(
+    () => warmCache?.mergeContextByPrId ?? {},
+  );
   const [selectedPrId, setSelectedPrId] = useState<string | null>(initialRouteState.selectedPrId);
   const [selectedQueueGroupId, setSelectedQueueGroupId] = useState<string | null>(initialRouteState.selectedQueueGroupId);
   const [selectedRebaseItemId, setSelectedRebaseItemId] = useState<string | null>(initialRouteState.selectedRebaseItemId);
-  const [mergeMethod, setMergeMethod] = useState<MergeMethod>("squash");
-  const [loading, setLoading] = useState(true);
+  const [mergeMethod, setMergeMethod] = useState<MergeMethod>(() => warmCache?.mergeMethod ?? "squash");
+  const [loading, setLoading] = useState(!warmCache);
   const [error, setError] = useState<string | null>(null);
 
   // Detail state
-  const [detailStatus, setDetailStatus] = useState<PrStatus | null>(null);
-  const [detailChecks, setDetailChecks] = useState<PrCheck[]>([]);
-  const [detailReviews, setDetailReviews] = useState<PrReview[]>([]);
-  const [detailComments, setDetailComments] = useState<PrComment[]>([]);
-  const [detailReviewThreads, setDetailReviewThreads] = useState<PrReviewThread[]>([]);
-  const [detailDeployments, setDetailDeployments] = useState<PrDeployment[]>([]);
-  const [detailAiSummary, setDetailAiSummary] = useState<PrAiSummary | null>(null);
+  const [detailStatus, setDetailStatus] = useState<PrStatus | null>(() => warmCache?.detailStatus ?? null);
+  const [detailChecks, setDetailChecks] = useState<PrCheck[]>(() => warmCache?.detailChecks ?? []);
+  const [detailReviews, setDetailReviews] = useState<PrReview[]>(() => warmCache?.detailReviews ?? []);
+  const [detailComments, setDetailComments] = useState<PrComment[]>(() => warmCache?.detailComments ?? []);
+  const [detailReviewThreads, setDetailReviewThreads] = useState<PrReviewThread[]>(
+    () => warmCache?.detailReviewThreads ?? [],
+  );
+  const [detailDeployments, setDetailDeployments] = useState<PrDeployment[]>(() => warmCache?.detailDeployments ?? []);
+  const [detailAiSummary, setDetailAiSummary] = useState<PrAiSummary | null>(() => warmCache?.detailAiSummary ?? null);
   const [detailBusy, setDetailBusy] = useState(false);
-  const [viewerLogin, setViewerLogin] = useState<string | null>(null);
+  const [viewerLogin, setViewerLogin] = useState<string | null>(() => warmCache?.viewerLogin ?? null);
+  const detailCacheHasDataRef = React.useRef(false);
+  React.useEffect(() => {
+    detailCacheHasDataRef.current =
+      detailStatus !== null
+      || detailChecks.length > 0
+      || detailReviews.length > 0
+      || detailComments.length > 0
+      || detailReviewThreads.length > 0
+      || detailDeployments.length > 0
+      || detailAiSummary !== null;
+  }, [
+    detailAiSummary,
+    detailChecks.length,
+    detailComments.length,
+    detailDeployments.length,
+    detailReviewThreads.length,
+    detailReviews.length,
+    detailStatus,
+  ]);
 
   // Timeline + rails (new)
   const [prsTimelineRailsEnabled, setPrsTimelineRailsEnabledRaw] = useState<boolean>(
@@ -369,22 +474,30 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   // Rebase state
-  const [rebaseNeeds, setRebaseNeeds] = useState<RebaseNeed[]>([]);
-  const [autoRebaseStatuses, setAutoRebaseStatuses] = useState<AutoRebaseLaneStatus[]>([]);
+  const [rebaseNeeds, setRebaseNeeds] = useState<RebaseNeed[]>(() => warmCache?.rebaseNeeds ?? []);
+  const [autoRebaseStatuses, setAutoRebaseStatuses] = useState<AutoRebaseLaneStatus[]>(
+    () => warmCache?.autoRebaseStatuses ?? [],
+  );
   const rebaseNeedsRef = React.useRef<RebaseNeed[]>([]);
   const autoRebaseStatusesRef = React.useRef<AutoRebaseLaneStatus[]>([]);
   React.useEffect(() => { rebaseNeedsRef.current = rebaseNeeds; }, [rebaseNeeds]);
   React.useEffect(() => { autoRebaseStatusesRef.current = autoRebaseStatuses; }, [autoRebaseStatuses]);
 
   // Queue state
-  const [queueStates, setQueueStates] = useState<Record<string, QueueLandingState>>({});
+  const [queueStates, setQueueStates] = useState<Record<string, QueueLandingState>>(
+    () => warmCache?.queueStates ?? {},
+  );
 
   // Inline terminal
-  const [inlineTerminal, setInlineTerminal] = useState<InlineTerminalState>(null);
+  const [inlineTerminal, setInlineTerminal] = useState<InlineTerminalState>(() => warmCache?.inlineTerminal ?? null);
 
   // Persisted convergence runtime cache
-  const [convergenceStatesByPrId, setConvergenceStatesByPrId] = useState<Record<string, PrConvergenceState>>({});
-  const convergenceStatesByPrIdRef = React.useRef<Record<string, PrConvergenceState>>({});
+  const [convergenceStatesByPrId, setConvergenceStatesByPrId] = useState<Record<string, PrConvergenceState>>(
+    () => warmCache?.convergenceStatesByPrId ?? {},
+  );
+  const convergenceStatesByPrIdRef = React.useRef<Record<string, PrConvergenceState>>(
+    warmCache?.convergenceStatesByPrId ?? {},
+  );
   React.useEffect(() => {
     convergenceStatesByPrIdRef.current = convergenceStatesByPrId;
   }, [convergenceStatesByPrId]);
@@ -393,7 +506,9 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
   const [resolverModel, setResolverModelRaw] = useState<string>(readPersistedModel);
   const [resolverReasoningLevel, setResolverReasoningLevelRaw] = useState<string>(readPersistedReasoningLevel);
   const [resolverPermissions, setResolverPermissions] = useState<ResolverPermissionPreferences>(readPersistedResolverPermissions);
-  const [resolverSessionsByContextKey, setResolverSessionsByContextKey] = useState<Record<string, PrAiResolutionSessionInfo>>({});
+  const [resolverSessionsByContextKey, setResolverSessionsByContextKey] = useState<Record<string, PrAiResolutionSessionInfo>>(
+    () => warmCache?.resolverSessionsByContextKey ?? {},
+  );
 
   const setResolverModel = useCallback((model: string) => {
     setResolverModelRaw(model);
@@ -404,7 +519,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  const setResolverPermissionMode = useCallback((mode: AiPermissionMode, modelId = resolverModel) => {
+  const setResolverPermissionMode = useCallback((mode: PrAgentPermissionMode, modelId = resolverModel) => {
     const family = resolvePermissionFamilyForModel(modelId);
     setResolverPermissions((prev) => {
       const next = { ...prev, [family]: mode };
@@ -494,15 +609,18 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
   // Concurrency guard for refresh
   const refreshInFlight = React.useRef(false);
   const refreshPending = React.useRef(false);
-  const prsRef = React.useRef<PrWithConflicts[]>([]);
-  const mergeContextByPrIdRef = React.useRef<Record<string, PrMergeContext>>({});
+  const prsRef = React.useRef<PrWithConflicts[]>(warmCache?.prs ?? []);
+  const mergeContextByPrIdRef = React.useRef<Record<string, PrMergeContext>>(warmCache?.mergeContextByPrId ?? {});
   React.useEffect(() => { prsRef.current = prs; }, [prs]);
   React.useEffect(() => { mergeContextByPrIdRef.current = mergeContextByPrId; }, [mergeContextByPrId]);
 
   // Refs for detail polling
-  const selectedPrIdRef = React.useRef<string | null>(null);
+  const selectedPrIdRef = React.useRef<string | null>(initialRouteState.selectedPrId);
   React.useEffect(() => { selectedPrIdRef.current = selectedPrId; }, [selectedPrId]);
   const detailFetchInProgress = React.useRef(false);
+  const detailLoadedAtByPrIdRef = React.useRef<Record<string, number>>(
+    warmCache?.selectedPrId ? { [warmCache.selectedPrId]: warmCache.cachedAt } : {},
+  );
 
   const refreshMergeContexts = useCallback(async (prIds: string[]) => {
     const uniquePrIds = [...new Set(prIds.map((id) => String(id ?? "").trim()).filter(Boolean))];
@@ -531,7 +649,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   // Track whether the initial data load has completed
-  const initialLoadDone = React.useRef(false);
+  const initialLoadDone = React.useRef(Boolean(warmCache));
 
   const refreshQueueStates = useCallback(async (groupIds: string[]) => {
     const uniqueGroupIds = [...new Set(groupIds.map((groupId) => String(groupId ?? "").trim()).filter(Boolean))];
@@ -554,9 +672,78 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
   // If a refresh is requested while one is already in flight, we set a
   // pending flag so that once the current flight completes it immediately
   // kicks off another refresh instead of silently dropping the request.
-  const refresh = useCallback(async () => {
+  const applyLocalPrState = useCallback(async () => {
+    const shouldLoadWorkflowState = activeTabRef.current !== "normal";
+    const [prList, laneList, queueStateList, refreshedRebaseNeeds, refreshedAutoRebaseStatuses] = await Promise.all([
+      window.ade.prs.listWithConflicts(),
+      window.ade.lanes.list({ includeStatus: true }),
+      shouldLoadWorkflowState
+        ? window.ade.prs.listQueueStates({ includeCompleted: true, limit: 50 })
+        : Promise.resolve([] as QueueLandingState[]),
+      window.ade.rebase.scanNeeds().catch((err) => {
+        console.warn("[PrsContext] Failed to refresh rebase needs:", err);
+        return rebaseNeedsRef.current;
+      }),
+      window.ade.lanes.listAutoRebaseStatuses().catch((err) => {
+        console.warn("[PrsContext] Failed to refresh auto-rebase statuses:", err);
+        return autoRebaseStatusesRef.current;
+      }),
+    ]);
+    const changedPrIds = diffPrIds(prsRef.current, prList);
+
+    // Stable-reference updates: only replace state when data actually changed
+    // to avoid unnecessary re-render cascades in child components.
+    setPrs((prev) => (jsonEqual(prev, prList) ? prev : prList));
+    setLanes((prev) => (jsonEqual(prev, laneList) ? prev : laneList));
+    setRebaseNeeds((prev) => (jsonEqual(prev, refreshedRebaseNeeds) ? prev : refreshedRebaseNeeds));
+    setAutoRebaseStatuses((prev) => (jsonEqual(prev, refreshedAutoRebaseStatuses) ? prev : refreshedAutoRebaseStatuses));
+    if (shouldLoadWorkflowState) {
+      setQueueStates((prev) => {
+        const next = Object.fromEntries(queueStateList.map((state) => [state.groupId, state] as const));
+        return jsonEqual(prev, next) ? prev : next;
+      });
+    }
+    prsRef.current = prList;
+
+    // Clear selectedPrId if the PR no longer exists
+    setSelectedPrId((prev) => {
+      if (prev && !prList.some((pr) => pr.id === prev)) return null;
+      return prev;
+    });
+
+    const allowedPrIds = new Set(prList.map((pr) => pr.id));
+    setMergeContextByPrId((prev) => pruneByAllowedIds(prev, allowedPrIds));
+    setConvergenceStatesByPrId((prev) => pruneByAllowedIds(prev, allowedPrIds));
+
+    if (changedPrIds.length > 0) {
+      void refreshMergeContexts(changedPrIds);
+      const affectedQueueGroupIds = new Set<string>();
+      for (const prId of changedPrIds) {
+        const context = mergeContextByPrIdRef.current[prId];
+        if (context?.groupType === "queue" && context.groupId) {
+          affectedQueueGroupIds.add(context.groupId);
+        }
+      }
+      void refreshQueueStates([...affectedQueueGroupIds]);
+    }
+  }, [refreshMergeContexts, refreshQueueStates]);
+
+  const refreshCore = useCallback(async (options: {
+    skipFreshWarmCache?: boolean;
+    githubRefreshMode?: "await" | "background";
+  } = {}) => {
     if (refreshInFlight.current) {
       refreshPending.current = true;
+      return;
+    }
+    const warmCacheAgeMs = Date.now() - warmCacheHydratedAtRef.current;
+    if (
+      options.skipFreshWarmCache
+      && initialLoadDone.current
+      && warmCacheHydratedAtRef.current > 0
+      && warmCacheAgeMs < PRS_CONTEXT_CACHE_TTL_MS
+    ) {
+      setLoading(false);
       return;
     }
     refreshInFlight.current = true;
@@ -567,63 +754,21 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     if (isInitial) setLoading(true);
     setError(null);
     try {
-      await window.ade.prs.refresh().catch(() => {});
-      const shouldLoadWorkflowState = activeTab !== "normal";
-      const [prList, laneList, queueStateList, refreshedRebaseNeeds, refreshedAutoRebaseStatuses] = await Promise.all([
-        window.ade.prs.listWithConflicts(),
-        window.ade.lanes.list({ includeStatus: true }),
-        shouldLoadWorkflowState
-          ? window.ade.prs.listQueueStates({ includeCompleted: true, limit: 50 })
-          : Promise.resolve([] as QueueLandingState[]),
-        window.ade.rebase.scanNeeds().catch((err) => {
-          console.warn("[PrsContext] Failed to refresh rebase needs:", err);
-          return rebaseNeedsRef.current;
-        }),
-        window.ade.lanes.listAutoRebaseStatuses().catch((err) => {
-          console.warn("[PrsContext] Failed to refresh auto-rebase statuses:", err);
-          return autoRebaseStatusesRef.current;
-        }),
-      ]);
-      const changedPrIds = diffPrIds(prsRef.current, prList);
-
-      // Stable-reference updates: only replace state when data actually changed
-      // to avoid unnecessary re-render cascades in child components.
-      setPrs((prev) => (jsonEqual(prev, prList) ? prev : prList));
-      setLanes((prev) => (jsonEqual(prev, laneList) ? prev : laneList));
-      setRebaseNeeds((prev) => (jsonEqual(prev, refreshedRebaseNeeds) ? prev : refreshedRebaseNeeds));
-      setAutoRebaseStatuses((prev) => (jsonEqual(prev, refreshedAutoRebaseStatuses) ? prev : refreshedAutoRebaseStatuses));
-      setQueueStates((prev) => {
-        const next = Object.fromEntries(queueStateList.map((state) => [state.groupId, state] as const));
-        return jsonEqual(prev, next) ? prev : next;
-      });
-      prsRef.current = prList;
-
-      // Clear selectedPrId if the PR no longer exists
-      setSelectedPrId((prev) => {
-        if (prev && !prList.some((pr) => pr.id === prev)) return null;
-        return prev;
-      });
-
-      const allowedPrIds = new Set(prList.map((pr) => pr.id));
-      setMergeContextByPrId((prev) => pruneByAllowedIds(prev, allowedPrIds));
-      setConvergenceStatesByPrId((prev) => pruneByAllowedIds(prev, allowedPrIds));
-
-      if (changedPrIds.length > 0) {
-        void refreshMergeContexts(changedPrIds);
-        const affectedQueueGroupIds = new Set<string>();
-        for (const prId of changedPrIds) {
-          const context = mergeContextByPrIdRef.current[prId];
-          if (context?.groupType === "queue" && context.groupId) {
-            affectedQueueGroupIds.add(context.groupId);
-          }
-        }
-        void refreshQueueStates([...affectedQueueGroupIds]);
+      if (options.githubRefreshMode === "await") {
+        await window.ade.prs.refresh().catch(() => {});
       }
-
-      // NOTE: Rebase needs and auto-rebase statuses are already fetched in the
-      // Promise.all batch above (refreshedRebaseNeeds / refreshedAutoRebaseStatuses)
-      // and applied via setRebaseNeeds / setAutoRebaseStatuses, so no additional
-      // fire-and-forget fetch is needed here.
+      await applyLocalPrState();
+      warmCacheHydratedAtRef.current = Date.now();
+      if (options.githubRefreshMode === "background") {
+        void window.ade.prs.refresh()
+          .then(() => applyLocalPrState())
+          .then(() => {
+            warmCacheHydratedAtRef.current = Date.now();
+          })
+          .catch((err) => {
+            console.warn("[PrsContext] Background PR refresh failed:", err);
+          });
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -634,32 +779,19 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       // If another refresh was requested while we were in flight, run it now.
       if (refreshPending.current) {
         refreshPending.current = false;
-        void refresh();
+        void refreshCore({ githubRefreshMode: "await" });
       }
     }
-  }, [activeTab, refreshMergeContexts, refreshQueueStates]);
+  }, [applyLocalPrState]);
+
+  const refresh = useCallback(async () => {
+    await refreshCore({ githubRefreshMode: "await" });
+  }, [refreshCore]);
 
   // Initial load
   useEffect(() => {
-    refresh();
-  }, [refresh]);
-
-  // Resolve viewer login once from the GitHub snapshot (best-effort).
-  useEffect(() => {
-    let cancelled = false;
-    const fetchSnap = window.ade?.prs?.getGitHubSnapshot;
-    if (typeof fetchSnap !== "function") return;
-    fetchSnap()
-      .then((snap) => {
-        if (!cancelled && snap?.viewerLogin) setViewerLogin(snap.viewerLogin);
-      })
-      .catch(() => {
-        /* non-fatal */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    void refreshCore({ skipFreshWarmCache: true, githubRefreshMode: "background" });
+  }, [refreshCore]);
 
   // Silently refresh detail data for the given PR (no loading state).
   // Returns early if a fetch is already in progress or the PR is no longer selected.
@@ -717,6 +849,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
         } else {
           console.warn("[PrsContext] Failed to refresh PR comments:", commentsResult.reason);
         }
+        detailLoadedAtByPrIdRef.current[prId] = Date.now();
       })
       .finally(() => {
         detailFetchInProgress.current = false;
@@ -758,6 +891,22 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
 
     let cancelled = false;
     const prId = selectedPrId;
+    const cachedDetailAgeMs = Date.now() - (detailLoadedAtByPrIdRef.current[prId] ?? 0);
+    const hasFreshDetailCache =
+      cachedDetailAgeMs >= 0
+      && cachedDetailAgeMs < PRS_DETAIL_CACHE_TTL_MS
+      && detailCacheHasDataRef.current;
+    if (hasFreshDetailCache) {
+      const intervalId = window.setInterval(() => {
+        refreshDetailSilently(prId);
+      }, 60_000);
+      return () => {
+        cancelled = true;
+        window.clearInterval(intervalId);
+        rateLimitedUntilRef.current = 0;
+      };
+    }
+
     setDetailBusy(true);
     detailFetchInProgress.current = true;
 
@@ -811,6 +960,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
           console.warn("[PrsContext] Failed to load PR comments:", commentsResult.reason);
           setDetailComments([]);
         }
+        detailLoadedAtByPrIdRef.current[prId] = Date.now();
       })
       .finally(() => {
         detailFetchInProgress.current = false;
@@ -888,6 +1038,25 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     if (prIds.length === 0) return;
     void refreshMergeContexts(prIds);
   }, [activeTab, prs, refreshMergeContexts]);
+
+  useEffect(() => {
+    if (activeTab === "normal") return;
+    let cancelled = false;
+    window.ade.prs.listQueueStates({ includeCompleted: true, limit: 50 })
+      .then((states) => {
+        if (cancelled) return;
+        setQueueStates((prev) => {
+          const next = Object.fromEntries(states.map((state) => [state.groupId, state] as const));
+          return jsonEqual(prev, next) ? prev : next;
+        });
+      })
+      .catch((err) => {
+        console.warn("[PrsContext] Failed to load workflow queue states:", err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab]);
 
   // Subscribe to PR events
   useEffect(() => {
@@ -989,6 +1158,62 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     return unsub;
   }, []);
 
+  useEffect(() => {
+    if (PRS_CONTEXT_CACHE_DISABLED) return;
+    if (!initialLoadDone.current && prs.length === 0 && lanes.length === 0) return;
+    const cachedAt = Date.now();
+    prsContextWarmCacheByProject.set(cacheKey, {
+      activeTab,
+      prs,
+      lanes,
+      mergeContextByPrId,
+      selectedPrId,
+      selectedQueueGroupId,
+      selectedRebaseItemId,
+      mergeMethod,
+      detailStatus,
+      detailChecks,
+      detailReviews,
+      detailComments,
+      detailReviewThreads,
+      detailDeployments,
+      detailAiSummary,
+      rebaseNeeds,
+      autoRebaseStatuses,
+      queueStates,
+      inlineTerminal,
+      convergenceStatesByPrId,
+      resolverSessionsByContextKey,
+      viewerLogin,
+      cachedAt,
+      dataLoadedAt: warmCacheHydratedAtRef.current,
+    });
+  }, [
+    activeTab,
+    autoRebaseStatuses,
+    cacheKey,
+    convergenceStatesByPrId,
+    detailAiSummary,
+    detailChecks,
+    detailComments,
+    detailDeployments,
+    detailReviewThreads,
+    detailReviews,
+    detailStatus,
+    inlineTerminal,
+    lanes,
+    mergeContextByPrId,
+    mergeMethod,
+    prs,
+    queueStates,
+    rebaseNeeds,
+    resolverSessionsByContextKey,
+    selectedPrId,
+    selectedQueueGroupId,
+    selectedRebaseItemId,
+    viewerLogin,
+  ]);
+
   const value = useMemo<PrsContextValue>(
     () => ({
       activeTab,
@@ -1041,9 +1266,10 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       setTimelineFilters,
       setAiSummaryDismissed,
       regeneratePrAiSummary,
+      setViewerLogin,
     }),
     // Note: setActiveTab, setSelectedPrId, setSelectedQueueGroupId, setSelectedRebaseItemId,
-    // setMergeMethod, and setInlineTerminal are intentionally excluded from this dependency
+    // setMergeMethod, setInlineTerminal, and setViewerLogin are intentionally excluded from this dependency
     // array because they are useState setters which are guaranteed to be referentially stable
     // across re-renders per the React useState contract. Resolver preference setters are
     // included because they are useCallback wrappers (not raw setters).

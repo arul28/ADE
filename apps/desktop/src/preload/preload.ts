@@ -252,6 +252,9 @@ import type {
   IssueInventorySnapshot,
   PrConvergenceState,
   PrConvergenceStatePatch,
+  PrAgentPermissionMode,
+  PathToMergeStartResult,
+  PathToMergeStopResult,
   ConvergenceStatus,
   PipelineSettings,
   UpdateIntegrationProposalArgs,
@@ -2887,6 +2890,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.prsLand, args),
     landStack: async (args: LandStackArgs): Promise<LandResult[]> =>
       ipcRenderer.invoke(IPC.prsLandStack, args),
+    retargetBase: async (args: { prId: string; baseBranch: string }): Promise<void> =>
+      ipcRenderer.invoke(IPC.prsRetargetBase, args),
     openInGitHub: async (prId: string): Promise<void> =>
       ipcRenderer.invoke(IPC.prsOpenInGitHub, { prId }),
     createQueue: (args: CreateQueuePrsArgs): Promise<CreateQueuePrsResult> =>
@@ -3081,6 +3086,20 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.prsConvergenceStateSave, { prId, state }),
     convergenceStateDelete: async (prId: string): Promise<void> =>
       ipcRenderer.invoke(IPC.prsConvergenceStateDelete, { prId }),
+    pathToMergeStart: async (args: {
+      prId: string;
+      modelId?: string | null;
+      reasoning?: string | null;
+      permissionMode?: PrAgentPermissionMode | null;
+      scope?: "checks" | "comments" | "both";
+      additionalInstructions?: string | null;
+    }): Promise<PathToMergeStartResult> =>
+      ipcRenderer.invoke(IPC.prsPathToMergeStart, args),
+    pathToMergeStop: async (args: {
+      prId: string;
+      reason?: string | null;
+    }): Promise<PathToMergeStopResult> =>
+      ipcRenderer.invoke(IPC.prsPathToMergeStop, args),
     pipelineSettingsGet: async (prId: string): Promise<PipelineSettings> =>
       ipcRenderer.invoke(IPC.prsPipelineSettingsGet, { prId }),
     pipelineSettingsSave: async (

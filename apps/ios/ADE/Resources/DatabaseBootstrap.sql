@@ -708,6 +708,8 @@ alter table queue_landing_state add column wait_reason text;
 
 alter table queue_landing_state add column updated_at text;
 
+delete from queue_landing_state;
+
 create table if not exists rebase_dismissed (
       lane_id text not null,
       project_id text not null,
@@ -2581,6 +2583,32 @@ create table if not exists pr_pipeline_settings (
       foreign key(pr_id) references pull_requests(id) on delete cascade
     );
 
+alter table pr_pipeline_settings add column conflict_strategy text not null default 'pause';
+
+alter table pr_pipeline_settings add column force_finalize_mode text not null default 'off';
+
+alter table pr_pipeline_settings add column force_finalize_require_no_ci_failures integer not null default 1;
+
+alter table pr_pipeline_settings add column early_merge_on_green integer not null default 1;
+
+alter table pr_pipeline_settings add column auto_agent_provider text;
+
+alter table pr_pipeline_settings add column auto_agent_model text;
+
+alter table pr_pipeline_settings add column auto_agent_reasoning_effort text;
+
+alter table pr_pipeline_settings add column auto_agent_permission_mode text;
+
+alter table pr_pipeline_settings add column auto_agent_confidence_threshold real;
+
+alter table pr_pipeline_settings add column at_cap_policy text;
+
+alter table pr_pipeline_settings add column at_cap_wait_minutes integer;
+
+alter table pr_pipeline_settings add column at_cap_ci_retry_max integer;
+
+alter table pr_pipeline_settings add column force_merge_requires_confirmation integer;
+
 create table if not exists pr_convergence_state (
       pr_id text primary key,
       auto_converge_enabled integer not null default 0,
@@ -2600,3 +2628,49 @@ create table if not exists pr_convergence_state (
       updated_at text not null,
       foreign key(pr_id) references pull_requests(id) on delete cascade
     );
+
+alter table pr_convergence_state add column ptm_args_json text;
+
+alter table pr_convergence_state add column force_finalize_used integer not null default 0;
+
+alter table pr_convergence_state add column ci_retry_attempts_used integer not null default 0;
+
+alter table pr_convergence_state add column wait_for_ci_started_at text;
+
+alter table pr_convergence_state add column last_dispatch_head_sha text;
+
+alter table pr_convergence_state add column pause_repeat_count integer not null default 0;
+
+alter table pr_convergence_state add column last_pause_reason_hash text;
+
+create table if not exists lane_worktree_locks (
+      worktree_key text not null unique,
+      worktree_path text not null,
+      lane_id text not null,
+      owner_kind text not null,
+      owner_pr_id text,
+      owner_session_id text,
+      owner_proposal_id text,
+      owner_label text not null,
+      token text not null,
+      created_at text not null,
+      heartbeat_at text not null,
+      expires_at text not null
+    );
+
+delete from lane_worktree_locks where worktree_key is null or trim(worktree_key) = '';
+
+delete from lane_worktree_locks
+    where rowid not in (
+      select max(rowid)
+      from lane_worktree_locks
+      group by worktree_key
+    );
+
+create unique index if not exists idx_lane_worktree_locks_worktree_key_unique on lane_worktree_locks(worktree_key);
+
+create index if not exists idx_lane_worktree_locks_lane on lane_worktree_locks(lane_id);
+
+create index if not exists idx_lane_worktree_locks_session on lane_worktree_locks(owner_session_id);
+
+create index if not exists idx_lane_worktree_locks_expires on lane_worktree_locks(expires_at);

@@ -1,4 +1,4 @@
-import type { AgentChatPermissionMode, AiPermissionMode, PrComment } from "../../../shared/types";
+import type { AgentChatPermissionMode, PrAgentPermissionMode, PrComment } from "../../../shared/types";
 import { runGit } from "../git/git";
 
 // ---------------------------------------------------------------------------
@@ -69,14 +69,24 @@ export function looksLikeResolutionAck(body: string | null | undefined): boolean
  * Map ADE's permission mode to the agent chat permission mode.
  * Shared by both the issue resolver and rebase resolver.
  */
-export function mapPermissionMode(mode: AiPermissionMode | undefined): AgentChatPermissionMode {
+export function mapPermissionMode(mode: PrAgentPermissionMode | undefined): AgentChatPermissionMode {
   if (mode === "full_edit") return "full-auto";
   if (mode === "read_only") return "plan";
+  if (mode === "guarded_edit") return "edit";
+  if (
+    mode === "default" ||
+    mode === "plan" ||
+    mode === "edit" ||
+    mode === "full-auto" ||
+    mode === "config-toml"
+  ) {
+    return mode;
+  }
   return "edit";
 }
 
 export function mapPermissionModeForModelFamily(
-  mode: AiPermissionMode | undefined,
+  mode: PrAgentPermissionMode | undefined,
   family: string | undefined,
 ): AgentChatPermissionMode {
   if (family === "openai" && mode === "guarded_edit") return "default";

@@ -9,6 +9,7 @@ import type {
   ConflictRiskLevel,
   ExternalConflictResolverProvider,
 } from "./conflicts";
+import type { AgentChatPermissionMode } from "./chat";
 import type { GitHubRepoRef } from "./git";
 import type { RebaseTargetCommit } from "./lanes";
 
@@ -569,6 +570,7 @@ export type StartIntegrationResolutionResult = {
 };
 
 export type AiPermissionMode = "read_only" | "guarded_edit" | "full_edit";
+export type PrAgentPermissionMode = AiPermissionMode | AgentChatPermissionMode;
 
 export type PrAiResolutionContext = {
   sourceTab: "rebase" | "normal" | "integration" | "queue" | "conflicts";
@@ -590,7 +592,7 @@ export type PrAiResolutionSessionInfo = {
   model: string | null;
   modelId: string | null;
   reasoning: string | null;
-  permissionMode: AiPermissionMode | null;
+  permissionMode: PrAgentPermissionMode | null;
   context: PrAiResolutionContext;
   status: PrAiResolutionSessionStatus;
 };
@@ -599,7 +601,7 @@ export type PrAiResolutionStartArgs = {
   context: PrAiResolutionContext;
   model: string;
   reasoning?: string | null;
-  permissionMode?: AiPermissionMode;
+  permissionMode?: PrAgentPermissionMode;
   /** Appended to the generated resolver prompt (integration, merge conflicts, etc.). */
   additionalInstructions?: string | null;
 };
@@ -642,7 +644,7 @@ export type PrIssueResolutionStartArgs = {
   scope: PrIssueResolutionScope;
   modelId: string;
   reasoning?: string | null;
-  permissionMode?: AiPermissionMode;
+  permissionMode?: PrAgentPermissionMode;
   additionalInstructions?: string | null;
 };
 
@@ -663,7 +665,7 @@ export type RebaseResolutionStartArgs = {
   laneId: string;
   modelId: string;
   reasoning?: string | null;
-  permissionMode?: AiPermissionMode;
+  permissionMode?: PrAgentPermissionMode;
   forcePushAfterRebase?: boolean;
 };
 
@@ -770,55 +772,122 @@ export type QueueWaitReason =
   | "manual"
   | "canceled";
 
+/**
+ * Stack-wide config that the new Queue applies to every PR in the stack via
+ * the convergence engine.
+ *
+ * The legacy fields (`autoResolve`, `resolverProvider`, `resolverModel`,
+ * `reasoningEffort`, `permissionMode`, `confidenceThreshold`) are retained as
+ * deprecated mirrors so existing call sites (iOS sync, RPC layer, older UI)
+ * keep compiling while consumers migrate. The new authoritative source is the
+ * embedded {@link PipelineSettings} on `pipeline`. A queue with
+ * `pipeline.conflictStrategy === "auto"` reproduces the legacy auto-resolve
+ * behavior — plus the full PtM loop on each PR.
+ */
 export type QueueAutomationConfig = {
   method: MergeMethod;
   archiveLane: boolean;
-  autoResolve: boolean;
+  /** Whether to pause the stack land when CI is failing or reviews are pending. */
   ciGating: boolean;
-  resolverProvider: ExternalConflictResolverProvider | null;
-  resolverModel: string | null;
-  reasoningEffort: string | null;
-  permissionMode: ConflictResolverPermissionMode | null;
-  confidenceThreshold: number | null;
+  /** Stack-wide PtM/convergence settings applied to every queued PR. */
+  pipeline: PipelineSettings;
+  /** Origin surface (telemetry/attribution) for the auto-resolver agent. */
   originSurface: ConflictResolverOriginSurface;
   originMissionId: string | null;
   originRunId: string | null;
   originLabel: string | null;
+  /** @deprecated Mirrors `pipeline.conflictStrategy === "auto"`. */
+  autoResolve: boolean;
+  /** @deprecated Mirrors `pipeline.autoAgentSettings.provider`. */
+  resolverProvider: ExternalConflictResolverProvider | null;
+  /** @deprecated Mirrors `pipeline.autoAgentSettings.model`. */
+  resolverModel: string | null;
+  /** @deprecated Mirrors `pipeline.autoAgentSettings.reasoningEffort`. */
+  reasoningEffort: string | null;
+  /** @deprecated Mirrors `pipeline.autoAgentSettings.permissionMode`. */
+  permissionMode: ConflictResolverPermissionMode | null;
+  /** @deprecated Mirrors `pipeline.autoAgentSettings.confidenceThreshold`. */
+  confidenceThreshold: number | null;
 };
 
 export type StartQueueAutomationArgs = {
   groupId: string;
   method: MergeMethod;
   archiveLane?: boolean;
-  autoResolve?: boolean;
   ciGating?: boolean;
-  resolverProvider?: ExternalConflictResolverProvider | null;
-  resolverModel?: string | null;
-  reasoningEffort?: string | null;
-  permissionMode?: ConflictResolverPermissionMode | null;
-  confidenceThreshold?: number | null;
+  pipeline?: PipelineSettings;
   originSurface?: ConflictResolverOriginSurface;
   originMissionId?: string | null;
   originRunId?: string | null;
   originLabel?: string | null;
+  /** @deprecated Use `pipeline.conflictStrategy = "auto"` instead. */
+  autoResolve?: boolean;
+  /** @deprecated Use `pipeline.autoAgentSettings.provider`. */
+  resolverProvider?: ExternalConflictResolverProvider | null;
+  /** @deprecated Use `pipeline.autoAgentSettings.model`. */
+  resolverModel?: string | null;
+  /** @deprecated Use `pipeline.autoAgentSettings.reasoningEffort`. */
+  reasoningEffort?: string | null;
+  /** @deprecated Use `pipeline.autoAgentSettings.permissionMode`. */
+  permissionMode?: ConflictResolverPermissionMode | null;
+  /** @deprecated Use `pipeline.autoAgentSettings.confidenceThreshold`. */
+  confidenceThreshold?: number | null;
 };
 
 export type ResumeQueueAutomationArgs = {
   queueId: string;
   method?: MergeMethod;
   archiveLane?: boolean;
-  autoResolve?: boolean;
   ciGating?: boolean;
-  resolverProvider?: ExternalConflictResolverProvider | null;
-  resolverModel?: string | null;
-  reasoningEffort?: string | null;
-  permissionMode?: ConflictResolverPermissionMode | null;
-  confidenceThreshold?: number | null;
+  pipeline?: PipelineSettings;
   originSurface?: ConflictResolverOriginSurface;
   originMissionId?: string | null;
   originRunId?: string | null;
   originLabel?: string | null;
+  /** @deprecated Use `pipeline.conflictStrategy = "auto"` instead. */
+  autoResolve?: boolean;
+  /** @deprecated Use `pipeline.autoAgentSettings.provider`. */
+  resolverProvider?: ExternalConflictResolverProvider | null;
+  /** @deprecated Use `pipeline.autoAgentSettings.model`. */
+  resolverModel?: string | null;
+  /** @deprecated Use `pipeline.autoAgentSettings.reasoningEffort`. */
+  reasoningEffort?: string | null;
+  /** @deprecated Use `pipeline.autoAgentSettings.permissionMode`. */
+  permissionMode?: ConflictResolverPermissionMode | null;
+  /** @deprecated Use `pipeline.autoAgentSettings.confidenceThreshold`. */
+  confidenceThreshold?: number | null;
 };
+
+/**
+ * Builds a {@link PipelineSettings} from the legacy auto-resolve fields on
+ * a {@link QueueAutomationConfig} (or its Args variants). Used by the runtime
+ * when an older caller hasn't supplied an explicit `pipeline`.
+ */
+export function pipelineFromLegacyQueueConfig(
+  legacy: Partial<{
+    autoResolve: boolean | null | undefined;
+    resolverProvider: ExternalConflictResolverProvider | null | undefined;
+    resolverModel: string | null | undefined;
+    reasoningEffort: string | null | undefined;
+    permissionMode: ConflictResolverPermissionMode | null | undefined;
+    confidenceThreshold: number | null | undefined;
+  }>,
+): PipelineSettings {
+  const isAuto = legacy.autoResolve === true;
+  const provider = legacy.resolverProvider ?? null;
+  const agentProvider: AutoConflictAgentProvider | null = provider === "claude" || provider === "codex" ? provider : null;
+  return {
+    ...DEFAULT_PIPELINE_SETTINGS,
+    conflictStrategy: isAuto ? "auto" : "pause",
+    autoAgentSettings: {
+      provider: agentProvider,
+      model: legacy.resolverModel ?? null,
+      reasoningEffort: legacy.reasoningEffort ?? null,
+      permissionMode: legacy.permissionMode ?? null,
+      confidenceThreshold: legacy.confidenceThreshold ?? null,
+    },
+  };
+}
 
 export type PauseQueueAutomationArgs = {
   queueId: string;
@@ -832,8 +901,11 @@ export type LandQueueNextArgs = {
   groupId: string;
   method: MergeMethod;
   archiveLane?: boolean;
-  autoResolve?: boolean;
-  confidenceThreshold?: number;
+  /**
+   * Optional one-shot pipeline override for the single PR being landed. When
+   * omitted, the queue's stack-wide pipeline config is used.
+   */
+  pipeline?: PipelineSettings;
 };
 
 export type ReorderQueuePrsArgs = {
@@ -1116,13 +1188,159 @@ export type AiReviewSummary = {
 /** Merge method for the auto-merge pipeline — extends MergeMethod with repo_default. */
 export type PipelineMergeMethod = MergeMethod | "repo_default";
 
+export type LaneWorktreeLockOwnerKind =
+  | "path_to_merge"
+  | "pr_issue_resolution"
+  | "conflict_resolution"
+  | "integration_resolution"
+  | "git_mutation";
+
+export type LaneWorktreeLockInfo = {
+  worktreeKey: string;
+  worktreePath: string;
+  laneId: string;
+  ownerKind: LaneWorktreeLockOwnerKind;
+  ownerPrId: string | null;
+  ownerSessionId: string | null;
+  ownerProposalId: string | null;
+  ownerLabel: string;
+  createdAt: string;
+  heartbeatAt: string;
+  expiresAt: string;
+};
+
+export type LaneWorktreeLockBlocker = {
+  message: string;
+  lock: LaneWorktreeLockInfo;
+};
+
+/**
+ * Legacy two-option rebase policy. Retained for back-compat reads from older
+ * `pr_pipeline_settings` rows; new writes use {@link ConflictStrategy}.
+ */
 export type RebasePolicy = "pause" | "auto_rebase";
 
+/**
+ * What the convergence loop does when the PR's base branch advances or a merge
+ * conflict surfaces.
+ *
+ * - `pause`  — stop the loop and surface the conflict to the operator
+ * - `rebase` — `git rebase origin/<base>`, force-push with `--force-with-lease`
+ * - `merge`  — merge `origin/<base>` into the PR branch, push the merge commit
+ * - `auto`   — let the conflict-resolver agent decide rebase vs merge based on
+ *              context, then resolve any resulting conflict markers itself
+ */
+export type ConflictStrategy = "pause" | "rebase" | "merge" | "auto";
+
+/**
+ * @deprecated Replaced by {@link AtCapPolicy}. Kept for legacy reads only.
+ */
+export type ForceFinalizeMode = "off" | "unconditional" | "conditional";
+
+/**
+ * What the convergence loop does when it hits {@link PipelineSettings.maxRounds}
+ * without the PR being mergeable yet.
+ *
+ * - `stop`           — pause and wait for the user to decide.
+ * - `wait_for_ci`    — stop iterating but keep polling CI for up to
+ *                      {@link PipelineSettings.atCapWaitMinutes}; merge if it
+ *                      goes green within that window, else pause.
+ * - `ci_retry_once`  — dispatch one more fix iteration scoped to CI failures
+ *                      only; merge if CI is green afterward, else pause.
+ * - `ci_retry_loop`  — dispatch up to {@link PipelineSettings.atCapCiRetryMax}
+ *                      additional CI-only iterations; merge as soon as CI goes
+ *                      green; pause if exhausted.
+ * - `force_merge`    — skip retries and run the merge ladder immediately
+ *                      (rest → admin → auto), ignoring CI / review.
+ *
+ * Migration from the legacy {@link ForceFinalizeMode}: `off → stop`,
+ * `conditional → ci_retry_once`, `unconditional → force_merge`.
+ */
+export type AtCapPolicy =
+  | "stop"
+  | "wait_for_ci"
+  | "ci_retry_once"
+  | "ci_retry_loop"
+  | "force_merge";
+
+export function atCapPolicyFromLegacy(mode: ForceFinalizeMode): AtCapPolicy {
+  if (mode === "off") return "stop";
+  if (mode === "unconditional") return "force_merge";
+  return "ci_retry_once";
+}
+
+/**
+ * Provider used by the {@link ConflictStrategy} `auto` agent and (legacy) by
+ * the queue's standalone `autoResolve` flow. Mirrors
+ * {@link ExternalConflictResolverProvider} but lives on PipelineSettings so
+ * each PR's convergence can target its own provider.
+ */
+export type AutoConflictAgentProvider = "claude" | "codex";
+
+export type AutoConflictAgentSettings = {
+  provider: AutoConflictAgentProvider | null;
+  /** Fully-qualified model id (e.g. `anthropic/claude-3-5-sonnet`). `null` = provider default. */
+  model: string | null;
+  /** Reasoning token budget hint (provider-specific string). */
+  reasoningEffort: string | null;
+  /** Permission mode the resolver chat runs under. */
+  permissionMode: PrAgentPermissionMode | null;
+  /** Minimum confidence (0–1) the resolver must report before its fix is accepted. `null` = accept all. */
+  confidenceThreshold: number | null;
+};
+
+export const DEFAULT_AUTO_CONFLICT_AGENT_SETTINGS: AutoConflictAgentSettings = {
+  provider: null,
+  model: null,
+  reasoningEffort: null,
+  permissionMode: null,
+  confidenceThreshold: null,
+};
+
 export type PipelineSettings = {
+  /** When true, PtM merges the PR as soon as it converges (or hits the early-green gate). */
   autoMerge: boolean;
   mergeMethod: PipelineMergeMethod;
+  /**
+   * Hard cap on normal iterations before the loop either gives up or runs the
+   * force-finalize bonus iteration (per {@link forceFinalizeMode}). Same as the
+   * legacy `maxRounds` semantically — kept under that name for back-compat.
+   */
   maxRounds: number;
+  /** @deprecated Read-only mirror of the legacy two-option rebase policy. New code reads `conflictStrategy`. */
   onRebaseNeeded: RebasePolicy;
+  /** Strategy for both base-advance sync (between iterations) and merge-time conflicts. */
+  conflictStrategy: ConflictStrategy;
+  /** Tunables used when {@link conflictStrategy} is `auto`. */
+  autoAgentSettings: AutoConflictAgentSettings;
+  /** @deprecated Mirror of {@link atCapPolicy} for legacy callers. New code reads `atCapPolicy`. */
+  forceFinalizeMode: ForceFinalizeMode;
+  /** @deprecated Folded into the `ci_retry_once` semantics of {@link atCapPolicy}. */
+  forceFinalizeRequireNoCiFailures: boolean;
+  /** What the loop does when it hits {@link maxRounds} without converging. */
+  atCapPolicy: AtCapPolicy;
+  /**
+   * When {@link atCapPolicy} is `wait_for_ci`, how long (in minutes) to keep
+   * polling CI before pausing. Default 30. Ignored for other policies.
+   */
+  atCapWaitMinutes: number;
+  /**
+   * When {@link atCapPolicy} is `ci_retry_loop`, the maximum number of bonus
+   * CI-only iterations the loop will dispatch. Default 3. Ignored for other
+   * policies.
+   */
+  atCapCiRetryMax: number;
+  /**
+   * If true, switching {@link atCapPolicy} to `force_merge` requires explicit
+   * UI confirmation each time it's enabled. Default true.
+   */
+  forceMergeRequiresConfirmation: boolean;
+  /**
+   * If true (default), every iteration first checks whether checks are green
+   * and reviews are clean — if so, the merge ladder runs immediately instead
+   * of dispatching another fix round.
+   */
+  earlyMergeOnGreen: boolean;
 };
 
 export const DEFAULT_PIPELINE_SETTINGS: PipelineSettings = {
@@ -1130,7 +1348,34 @@ export const DEFAULT_PIPELINE_SETTINGS: PipelineSettings = {
   mergeMethod: "repo_default",
   maxRounds: 5,
   onRebaseNeeded: "pause",
+  conflictStrategy: "pause",
+  autoAgentSettings: { ...DEFAULT_AUTO_CONFLICT_AGENT_SETTINGS },
+  forceFinalizeMode: "off",
+  forceFinalizeRequireNoCiFailures: true,
+  atCapPolicy: "stop",
+  atCapWaitMinutes: 30,
+  atCapCiRetryMax: 3,
+  forceMergeRequiresConfirmation: true,
+  earlyMergeOnGreen: true,
 };
+
+/**
+ * Maps the legacy {@link RebasePolicy} (`pause` | `auto_rebase`) to the new
+ * 4-option {@link ConflictStrategy}. Used when reading older settings rows.
+ */
+export function conflictStrategyFromLegacyRebasePolicy(policy: RebasePolicy): ConflictStrategy {
+  return policy === "auto_rebase" ? "rebase" : "pause";
+}
+
+/**
+ * Inverse of {@link conflictStrategyFromLegacyRebasePolicy}: lossy projection
+ * of the new strategy onto the legacy two-option field, so old code paths that
+ * still read `onRebaseNeeded` keep working. `merge` and `auto` both project to
+ * `auto_rebase` because they imply automatic conflict handling.
+ */
+export function legacyRebasePolicyFromConflictStrategy(strategy: ConflictStrategy): RebasePolicy {
+  return strategy === "pause" ? "pause" : "auto_rebase";
+}
 
 // --------------------------------
 // PR Convergence Runtime State
@@ -1160,6 +1405,8 @@ export type ConvergencePollerStatus =
 export type ConvergenceRuntimeState = {
   prId: string;
   autoConvergeEnabled: boolean;
+  /** True when the native Path to Merge orchestrator owns this runtime. */
+  pathToMergeActive: boolean;
   status: ConvergenceRuntimeStatus;
   pollerStatus: ConvergencePollerStatus;
   currentRound: number;
@@ -1168,6 +1415,12 @@ export type ConvergenceRuntimeState = {
   activeHref: string | null;
   pauseReason: string | null;
   errorMessage: string | null;
+  forceFinalizeUsed: boolean;
+  ciRetryAttemptsUsed: number;
+  waitForCiStartedAt: string | null;
+  lastDispatchHeadSha: string | null;
+  pauseRepeatCount: number;
+  lastPauseReasonHash: string | null;
   lastStartedAt: string | null;
   lastPolledAt: string | null;
   lastPausedAt: string | null;
@@ -1177,7 +1430,20 @@ export type ConvergenceRuntimeState = {
 };
 
 export type PrConvergenceState = ConvergenceRuntimeState;
-export type PrConvergenceStatePatch = Partial<Omit<ConvergenceRuntimeState, "prId" | "createdAt" | "updatedAt">>;
+export type PrConvergenceStatePatch = Partial<Omit<ConvergenceRuntimeState, "prId" | "pathToMergeActive" | "createdAt" | "updatedAt">>;
+
+export type PathToMergeStartResult = {
+  prId: string;
+  scheduled: boolean;
+  runtime: ConvergenceRuntimeState;
+  blockedBy?: LaneWorktreeLockBlocker | null;
+};
+
+export type PathToMergeStopResult = {
+  prId: string;
+  stopped: boolean;
+  runtime: ConvergenceRuntimeState | null;
+};
 
 // --------------------------------
 // Issue Inventory (PR Convergence Loop)
@@ -1237,6 +1503,7 @@ export type ConvergenceStatus = {
 
 export const DEFAULT_CONVERGENCE_RUNTIME_STATE: Omit<ConvergenceRuntimeState, "prId"> = {
   autoConvergeEnabled: false,
+  pathToMergeActive: false,
   status: "idle",
   pollerStatus: "idle",
   currentRound: 0,
@@ -1245,6 +1512,12 @@ export const DEFAULT_CONVERGENCE_RUNTIME_STATE: Omit<ConvergenceRuntimeState, "p
   activeHref: null,
   pauseReason: null,
   errorMessage: null,
+  forceFinalizeUsed: false,
+  ciRetryAttemptsUsed: 0,
+  waitForCiStartedAt: null,
+  lastDispatchHeadSha: null,
+  pauseRepeatCount: 0,
+  lastPauseReasonHash: null,
   lastStartedAt: null,
   lastPolledAt: null,
   lastPausedAt: null,
@@ -1418,7 +1691,7 @@ export type LaunchPrIssueResolutionFromThreadArgs = {
   commentId?: string | null;
   modelId?: string | null;
   reasoning?: string | null;
-  permissionMode?: AiPermissionMode;
+  permissionMode?: PrAgentPermissionMode;
   additionalInstructions?: string | null;
   fileContext?: {
     path: string | null;

@@ -21,6 +21,7 @@ import { fadeScale } from "../../lib/motion";
 import { PROJECT_BROWSER_CLOSE_EVENT } from "../../lib/projectBrowserEvents";
 import { useAppStore } from "../../state/appStore";
 import { cn } from "../ui/cn";
+import { readStoredPrsRoute } from "../prs/prsRouteState";
 
 export type CommandPaletteIntent = "default" | "project-browse";
 
@@ -219,7 +220,7 @@ export function CommandPalette({
       { id: "go-files", title: "Go to Files", shortcut: "G F", group: "Navigation", run: () => navigate("/files") },
       { id: "go-work", title: "Go to Work", shortcut: "G T", group: "Navigation", run: () => navigate("/work") },
       { id: "go-graph", title: "Go to Graph", shortcut: "G G", group: "Navigation", run: () => navigate("/graph") },
-      { id: "go-prs", title: "Go to PRs", shortcut: "G R", group: "Navigation", run: () => navigate("/prs") },
+      { id: "go-prs", title: "Go to PRs", shortcut: "G R", group: "Navigation", run: () => navigate(readStoredPrsRoute(project?.rootPath) ?? "/prs") },
       { id: "go-history", title: "Go to History", shortcut: "G H", group: "Navigation", run: () => navigate("/history") },
       { id: "go-missions", title: "Go to Missions", shortcut: "G M", group: "Navigation", run: () => navigate("/missions") },
       { id: "go-automations", title: "Go to Automations", hint: "Automation rules and agent workflows", group: "Navigation", run: () => navigate("/automations") },
@@ -318,7 +319,7 @@ export function CommandPalette({
     }
 
     return next;
-  }, [hasActiveProject, lanes, navigate, selectLane, selectedLaneId, startProjectBrowse]);
+  }, [hasActiveProject, lanes, navigate, project?.rootPath, selectLane, selectedLaneId, startProjectBrowse]);
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();

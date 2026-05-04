@@ -553,11 +553,24 @@ struct PrPathToMergeTab: View {
   let onSetPipelineMergeMethod: (String) -> Void
   let onSetPipelineMaxRounds: (Int) -> Void
   let onSetPipelineRebasePolicy: (String) -> Void
+  let onSetPipelineConflictStrategy: (String) -> Void
+  let onSetAtCapPolicy: (String) -> Void
+  let onSetAtCapWaitMinutes: (Int) -> Void
+  let onSetAtCapCiRetryMax: (Int) -> Void
+  let onSetForceMergeRequiresConfirmation: (Bool) -> Void
+  let onSetForceFinalizeRequireNoCiFailures: (Bool) -> Void
+  let onSetEarlyMergeOnGreen: (Bool) -> Void
   let onCopyPrompt: () -> Void
   let onLaunchAiResolver: () -> Void
   let onStopAiResolver: () -> Void
+  /// True while a `prs.pathToMerge.start` or `prs.pathToMerge.stop` round-trip
+  /// is in flight. Prevents double-taps on the convergence toggle.
+  let isPathToMergeBusy: Bool
+  let onStartPathToMerge: () -> Void
+  let onStopPathToMerge: () -> Void
 
   @State private var pipelineExpanded = false
+  @State private var confirmForceMergeAtCap = false
 
   init(
     pr: PullRequestListItem,
@@ -583,9 +596,19 @@ struct PrPathToMergeTab: View {
     onSetPipelineMergeMethod: @escaping (String) -> Void,
     onSetPipelineMaxRounds: @escaping (Int) -> Void,
     onSetPipelineRebasePolicy: @escaping (String) -> Void,
+    onSetPipelineConflictStrategy: @escaping (String) -> Void = { _ in },
+    onSetAtCapPolicy: @escaping (String) -> Void = { _ in },
+    onSetAtCapWaitMinutes: @escaping (Int) -> Void = { _ in },
+    onSetAtCapCiRetryMax: @escaping (Int) -> Void = { _ in },
+    onSetForceMergeRequiresConfirmation: @escaping (Bool) -> Void = { _ in },
+    onSetForceFinalizeRequireNoCiFailures: @escaping (Bool) -> Void = { _ in },
+    onSetEarlyMergeOnGreen: @escaping (Bool) -> Void = { _ in },
     onCopyPrompt: @escaping () -> Void = {},
     onLaunchAiResolver: @escaping () -> Void = {},
-    onStopAiResolver: @escaping () -> Void = {}
+    onStopAiResolver: @escaping () -> Void = {},
+    isPathToMergeBusy: Bool = false,
+    onStartPathToMerge: @escaping () -> Void = {},
+    onStopPathToMerge: @escaping () -> Void = {}
   ) {
     self.pr = pr
     self.snapshot = snapshot
@@ -610,9 +633,19 @@ struct PrPathToMergeTab: View {
     self.onSetPipelineMergeMethod = onSetPipelineMergeMethod
     self.onSetPipelineMaxRounds = onSetPipelineMaxRounds
     self.onSetPipelineRebasePolicy = onSetPipelineRebasePolicy
+    self.onSetPipelineConflictStrategy = onSetPipelineConflictStrategy
+    self.onSetAtCapPolicy = onSetAtCapPolicy
+    self.onSetAtCapWaitMinutes = onSetAtCapWaitMinutes
+    self.onSetAtCapCiRetryMax = onSetAtCapCiRetryMax
+    self.onSetForceMergeRequiresConfirmation = onSetForceMergeRequiresConfirmation
+    self.onSetForceFinalizeRequireNoCiFailures = onSetForceFinalizeRequireNoCiFailures
+    self.onSetEarlyMergeOnGreen = onSetEarlyMergeOnGreen
     self.onCopyPrompt = onCopyPrompt
     self.onLaunchAiResolver = onLaunchAiResolver
     self.onStopAiResolver = onStopAiResolver
+    self.isPathToMergeBusy = isPathToMergeBusy
+    self.onStartPathToMerge = onStartPathToMerge
+    self.onStopPathToMerge = onStopPathToMerge
   }
 
   private var unresolvedThreadCount: Int {
@@ -620,7 +653,48 @@ struct PrPathToMergeTab: View {
   }
 
   private var resolvedPipelineSettings: PipelineSettings {
-    pipelineSettings ?? PipelineSettings(autoMerge: false, mergeMethod: "repo_default", maxRounds: 5, onRebaseNeeded: "pause")
+    pipelineSettings ?? PipelineSettings(
+      autoMerge: false,
+      mergeMethod: "repo_default",
+      maxRounds: 5,
+      onRebaseNeeded: "pause",
+      conflictStrategy: "pause",
+      forceFinalizeMode: "off",
+      forceFinalizeRequireNoCiFailures: true,
+      atCapPolicy: "stop",
+      atCapWaitMinutes: 30,
+      atCapCiRetryMax: 3,
+      forceMergeRequiresConfirmation: true,
+      earlyMergeOnGreen: true
+    )
+  }
+
+  private var resolvedConflictStrategy: String {
+    resolvedPipelineSettings.conflictStrategy ?? (resolvedPipelineSettings.onRebaseNeeded == "auto_rebase" ? "rebase" : "pause")
+  }
+
+  private var resolvedAtCapPolicy: String {
+    resolvedPipelineSettings.atCapPolicy ?? "stop"
+  }
+
+  private var resolvedAtCapWaitMinutes: Int {
+    resolvedPipelineSettings.atCapWaitMinutes ?? 30
+  }
+
+  private var resolvedAtCapCiRetryMax: Int {
+    resolvedPipelineSettings.atCapCiRetryMax ?? 3
+  }
+
+  private var resolvedForceMergeRequiresConfirmation: Bool {
+    resolvedPipelineSettings.forceMergeRequiresConfirmation ?? true
+  }
+
+  private var resolvedForceFinalizeRequireNoCiFailures: Bool {
+    resolvedPipelineSettings.forceFinalizeRequireNoCiFailures ?? true
+  }
+
+  private var resolvedEarlyMergeOnGreen: Bool {
+    resolvedPipelineSettings.earlyMergeOnGreen ?? true
   }
 
   private var failedChecks: [PrCheck] {
@@ -689,53 +763,127 @@ struct PrPathToMergeTab: View {
 
   // MARK: - Mode strip (Manual / Auto-Converge)
 
-  /// Read-only mirror of the desktop's mode toggle. The host doesn't expose a
-  /// mobile setter for `auto_converge_enabled`, so we surface state without
-  /// trying to write it. Round + status pill appear when in auto mode, exactly
-  /// like desktop.
+  /// Interactive mode toggle paired with a Start/Stop control. The two pills
+  /// are now real buttons — tapping `Auto-Converge` issues `prs.pathToMerge.start`,
+  /// tapping `Manual` issues `prs.pathToMerge.stop`. Round + status pill appear
+  /// when in auto mode, mirroring desktop's PtM panel.
+  ///
+  /// Accessibility:
+  /// - Each pill carries a descriptive `accessibilityLabel` and an
+  ///   `accessibilityValue` of "selected" / "not selected".
+  /// - The hit target is `44 × 44` pt minimum via `.contentShape` + frame.
+  /// - When `!isLive` or `isPathToMergeBusy`, the strip dims and taps are
+  ///   ignored; the second row surfaces a contextual reason.
   @ViewBuilder
   private var modeStrip: some View {
     let convergence = issueInventory?.convergence
     let runtimeStatus = issueInventory?.runtime.status.replacingOccurrences(of: "_", with: " ") ?? "idle"
-    HStack(spacing: 8) {
-      HStack(spacing: 0) {
-        modePill(label: "Manual", isActive: !isAutoConverge)
-        modePill(label: "Auto-Converge", isActive: isAutoConverge)
+    let canToggle = isLive && !isPathToMergeBusy
+    VStack(alignment: .leading, spacing: 8) {
+      HStack(spacing: 8) {
+        HStack(spacing: 0) {
+          modePillButton(
+            label: "Manual",
+            isActive: !isAutoConverge,
+            accessibilityHint: "Stop path-to-merge convergence and switch to manual mode."
+          ) {
+            guard canToggle, isAutoConverge else { return }
+            ADEHaptics.light()
+            onStopPathToMerge()
+          }
+          modePillButton(
+            label: "Auto-Converge",
+            isActive: isAutoConverge,
+            accessibilityHint: "Start path-to-merge convergence on this pull request."
+          ) {
+            guard canToggle, !isAutoConverge else { return }
+            ADEHaptics.success()
+            onStartPathToMerge()
+          }
+        }
+        .padding(2)
+        .background(
+          RoundedRectangle(cornerRadius: 9, style: .continuous)
+            .fill(Color.white.opacity(0.04))
+        )
+        .overlay(
+          RoundedRectangle(cornerRadius: 9, style: .continuous)
+            .strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5)
+        )
+        .opacity(canToggle ? 1 : 0.55)
+
+        Spacer(minLength: 6)
+
+        if isPathToMergeBusy {
+          ProgressView().controlSize(.mini).tint(ADEColor.textSecondary)
+        } else if isAutoConverge, let convergence {
+          Text("Round \(convergence.currentRound)/\(convergence.maxRounds)")
+            .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+            .foregroundStyle(ADEColor.textSecondary)
+            .accessibilityLabel("Convergence round \(convergence.currentRound) of \(convergence.maxRounds).")
+          ConvergenceStatusPill(status: runtimeStatus)
+        }
       }
-      .padding(2)
-      .background(
-        RoundedRectangle(cornerRadius: 9, style: .continuous)
-          .fill(Color.white.opacity(0.04))
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: 9, style: .continuous)
-          .strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5)
-      )
 
-      Spacer(minLength: 6)
-
-      if isAutoConverge, let convergence {
-        Text("Round \(convergence.currentRound)/\(convergence.maxRounds)")
-          .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
-          .foregroundStyle(ADEColor.textSecondary)
-        ConvergenceStatusPill(status: runtimeStatus)
+      if let footnote = autoConvergeFootnote {
+        Text(footnote)
+          .font(.footnote)
+          .foregroundStyle(ADEColor.textMuted)
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityLabel(footnote)
       }
     }
   }
 
-  private func modePill(label: String, isActive: Bool) -> some View {
-    Text(label)
-      .font(.system(size: 10.5, weight: isActive ? .bold : .medium))
-      .tracking(0.4)
-      .foregroundStyle(isActive ? Color(red: 0x10/255, green: 0x0D/255, blue: 0x14/255) : ADEColor.textSecondary)
-      .padding(.horizontal, 12)
-      .padding(.vertical, 6)
-      .background {
-        if isActive {
-          RoundedRectangle(cornerRadius: 7, style: .continuous)
-            .fill(ADEColor.tintPRs)
+  /// Optional one-line explanation rendered below the mode strip. Surfaces
+  /// pause/error reasons or the offline-disabled state so users understand
+  /// why a tap had no effect.
+  private var autoConvergeFootnote: String? {
+    if !isLive {
+      return "Reconnect to control Path to Merge."
+    }
+    if isPathToMergeBusy {
+      return isAutoConverge ? "Stopping convergence…" : "Starting convergence…"
+    }
+    let runtime = issueInventory?.runtime
+    if let reason = runtime?.pauseReason, !reason.isEmpty {
+      return "Paused: \(reason)"
+    }
+    if let err = runtime?.errorMessage, !err.isEmpty {
+      return err
+    }
+    return nil
+  }
+
+  /// Tap-target wrapper for the mode toggle pills. Plain Button keeps the
+  /// custom shape but supplies VoiceOver semantics + 44pt hit area.
+  private func modePillButton(
+    label: String,
+    isActive: Bool,
+    accessibilityHint: String,
+    action: @escaping () -> Void
+  ) -> some View {
+    Button(action: action) {
+      Text(label)
+        .font(.system(size: 10.5, weight: isActive ? .bold : .medium))
+        .tracking(0.4)
+        .foregroundStyle(isActive ? Color(red: 0x10/255, green: 0x0D/255, blue: 0x14/255) : ADEColor.textSecondary)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .frame(minHeight: 32)
+        .background {
+          if isActive {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+              .fill(ADEColor.tintPRs)
+          }
         }
-      }
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .frame(minWidth: 44, minHeight: 44, alignment: .center)
+    .accessibilityLabel("\(label) mode")
+    .accessibilityValue(isActive ? "selected" : "not selected")
+    .accessibilityHint(accessibilityHint)
   }
 
   // MARK: - Counter strip (NEW / FIXED / DISMISSED / ESCALATED)
@@ -882,8 +1030,9 @@ struct PrPathToMergeTab: View {
   private var pipelineSummaryLine: String {
     let s = resolvedPipelineSettings
     let method = pipelineMergeMethodLabel(s.mergeMethod).lowercased()
-    let policy = pipelineRebasePolicyLabel(s.onRebaseNeeded).lowercased()
-    return "\(method) · max \(s.maxRounds) · \(policy)"
+    let conflict = pipelineConflictStrategyLabel(resolvedConflictStrategy).lowercased()
+    let atCap = pipelineAtCapPolicyLabel(resolvedAtCapPolicy).lowercased()
+    return "\(method) · max \(s.maxRounds) · \(conflict) · \(atCap)"
   }
 
   // MARK: - Compact rebase card
@@ -903,7 +1052,7 @@ struct PrPathToMergeTab: View {
           .font(.system(size: 12, weight: .semibold))
           .foregroundStyle(ADEColor.textPrimary)
         Spacer(minLength: 0)
-        Text(resolvedPipelineSettings.onRebaseNeeded == "auto_rebase" ? "auto-rebase" : "paused")
+        Text(pipelineConflictStrategyLabel(resolvedConflictStrategy).lowercased())
           .font(.system(size: 10, design: .monospaced))
           .foregroundStyle(ADEColor.textMuted)
       } else {
@@ -1138,16 +1287,18 @@ struct PrPathToMergeTab: View {
       Divider().overlay(ADEColor.textMuted.opacity(0.15))
 
       HStack(spacing: 10) {
-        Text("Rebase policy")
+        Text("Conflict strategy")
           .font(.system(size: 13, weight: .medium))
           .foregroundStyle(ADEColor.textPrimary)
         Spacer(minLength: 0)
         Menu {
-          Button("Pause") { onSetPipelineRebasePolicy("pause") }
-          Button("Auto-rebase") { onSetPipelineRebasePolicy("auto_rebase") }
+          Button("Pause") { onSetPipelineConflictStrategy("pause") }
+          Button("Rebase") { onSetPipelineConflictStrategy("rebase") }
+          Button("Merge commit") { onSetPipelineConflictStrategy("merge") }
+          Button("Auto agent") { onSetPipelineConflictStrategy("auto") }
         } label: {
           HStack(spacing: 4) {
-            Text(pipelineRebasePolicyLabel(settings.onRebaseNeeded).lowercased())
+            Text(pipelineConflictStrategyLabel(resolvedConflictStrategy).lowercased())
               .font(.system(size: 12, design: .monospaced))
               .foregroundStyle(ADEColor.textSecondary)
             Image(systemName: "chevron.up.chevron.down")
@@ -1158,6 +1309,183 @@ struct PrPathToMergeTab: View {
         .disabled(!isLive)
       }
       .padding(.vertical, 10)
+
+      Divider().overlay(ADEColor.textMuted.opacity(0.15))
+
+      HStack(spacing: 10) {
+        Text("Early merge on green")
+          .font(.system(size: 13, weight: .medium))
+          .foregroundStyle(ADEColor.textPrimary)
+        Spacer(minLength: 0)
+        Toggle("", isOn: Binding(
+          get: { resolvedEarlyMergeOnGreen },
+          set: { onSetEarlyMergeOnGreen($0) }
+        ))
+        .labelsHidden()
+        .tint(PrGlassPalette.purpleDeep)
+        .disabled(!isLive)
+      }
+      .padding(.vertical, 10)
+
+      Divider().overlay(ADEColor.textMuted.opacity(0.15))
+
+      HStack(spacing: 10) {
+        Text("At-cap policy")
+          .font(.system(size: 13, weight: .medium))
+          .foregroundStyle(ADEColor.textPrimary)
+        Spacer(minLength: 0)
+        Menu {
+          Button("Stop") { onSetAtCapPolicy("stop") }
+          Button("Wait for CI") { onSetAtCapPolicy("wait_for_ci") }
+          Button("Retry CI fixes") { onSetAtCapPolicy("ci_retry_loop") }
+          Button("Force merge") {
+            if resolvedForceMergeRequiresConfirmation {
+              confirmForceMergeAtCap = true
+            } else {
+              onSetAtCapPolicy("force_merge")
+            }
+          }
+        } label: {
+          HStack(spacing: 4) {
+            Text(pipelineAtCapPolicyLabel(resolvedAtCapPolicy).lowercased())
+              .font(.system(size: 12, design: .monospaced))
+              .foregroundStyle(ADEColor.textSecondary)
+            Image(systemName: "chevron.up.chevron.down")
+              .font(.system(size: 9, weight: .semibold))
+              .foregroundStyle(ADEColor.textMuted)
+          }
+        }
+        .disabled(!isLive)
+      }
+      .padding(.vertical, 10)
+
+      if resolvedAtCapPolicy == "wait_for_ci" {
+        Divider().overlay(ADEColor.textMuted.opacity(0.15))
+        HStack(spacing: 10) {
+          Text("At-cap wait")
+            .font(.system(size: 13, weight: .medium))
+            .foregroundStyle(ADEColor.textPrimary)
+          Spacer(minLength: 0)
+          HStack(spacing: 10) {
+            Button {
+              onSetAtCapWaitMinutes(max(1, resolvedAtCapWaitMinutes - 5))
+            } label: {
+              Image(systemName: "minus")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(ADEColor.textSecondary)
+                .frame(width: 22, height: 22)
+                .background(Color.white.opacity(0.05), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!isLive || resolvedAtCapWaitMinutes <= 1)
+
+            Text("\(resolvedAtCapWaitMinutes)m")
+              .font(.system(size: 12.5, weight: .semibold, design: .monospaced))
+              .foregroundStyle(ADEColor.textPrimary)
+              .frame(minWidth: 42)
+
+            Button {
+              onSetAtCapWaitMinutes(min(180, resolvedAtCapWaitMinutes + 5))
+            } label: {
+              Image(systemName: "plus")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(ADEColor.textSecondary)
+                .frame(width: 22, height: 22)
+                .background(Color.white.opacity(0.05), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!isLive || resolvedAtCapWaitMinutes >= 180)
+          }
+        }
+        .padding(.vertical, 10)
+      }
+
+      if resolvedAtCapPolicy == "ci_retry_loop" {
+        Divider().overlay(ADEColor.textMuted.opacity(0.15))
+        HStack(spacing: 10) {
+          Text("CI retry max")
+            .font(.system(size: 13, weight: .medium))
+            .foregroundStyle(ADEColor.textPrimary)
+          Spacer(minLength: 0)
+          HStack(spacing: 10) {
+            Button {
+              onSetAtCapCiRetryMax(max(1, resolvedAtCapCiRetryMax - 1))
+            } label: {
+              Image(systemName: "minus")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(ADEColor.textSecondary)
+                .frame(width: 22, height: 22)
+                .background(Color.white.opacity(0.05), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!isLive || resolvedAtCapCiRetryMax <= 1)
+
+            Text("\(resolvedAtCapCiRetryMax)")
+              .font(.system(size: 12.5, weight: .semibold, design: .monospaced))
+              .foregroundStyle(ADEColor.textPrimary)
+              .frame(minWidth: 18)
+
+            Button {
+              onSetAtCapCiRetryMax(min(10, resolvedAtCapCiRetryMax + 1))
+            } label: {
+              Image(systemName: "plus")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(ADEColor.textSecondary)
+                .frame(width: 22, height: 22)
+                .background(Color.white.opacity(0.05), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!isLive || resolvedAtCapCiRetryMax >= 10)
+          }
+        }
+        .padding(.vertical, 10)
+      }
+
+      Divider().overlay(ADEColor.textMuted.opacity(0.15))
+
+      HStack(spacing: 10) {
+        Text("Confirm force merge")
+          .font(.system(size: 13, weight: .medium))
+          .foregroundStyle(ADEColor.textPrimary)
+        Spacer(minLength: 0)
+        Toggle("", isOn: Binding(
+          get: { resolvedForceMergeRequiresConfirmation },
+          set: { onSetForceMergeRequiresConfirmation($0) }
+        ))
+        .labelsHidden()
+        .tint(PrGlassPalette.purpleDeep)
+        .disabled(!isLive)
+      }
+      .padding(.vertical, 10)
+
+      Divider().overlay(ADEColor.textMuted.opacity(0.15))
+
+      HStack(spacing: 10) {
+        Text("Require clean CI")
+          .font(.system(size: 13, weight: .medium))
+          .foregroundStyle(ADEColor.textPrimary)
+        Spacer(minLength: 0)
+        Toggle("", isOn: Binding(
+          get: { resolvedForceFinalizeRequireNoCiFailures },
+          set: { onSetForceFinalizeRequireNoCiFailures($0) }
+        ))
+        .labelsHidden()
+        .tint(PrGlassPalette.purpleDeep)
+        .disabled(!isLive)
+      }
+      .padding(.vertical, 10)
+    }
+    .confirmationDialog(
+      "Enable force merge at cap?",
+      isPresented: $confirmForceMergeAtCap,
+      titleVisibility: .visible
+    ) {
+      Button("Enable force merge", role: .destructive) {
+        onSetAtCapPolicy("force_merge")
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text("Path to Merge may attempt the merge ladder after the retry cap is reached.")
     }
   }
 }
@@ -1406,6 +1734,26 @@ private func pipelineRebasePolicyLabel(_ policy: String) -> String {
   switch policy {
   case "auto_rebase": return "Auto-rebase"
   case "pause": return "Pause"
+  default: return policy.replacingOccurrences(of: "_", with: " ")
+  }
+}
+
+private func pipelineConflictStrategyLabel(_ strategy: String) -> String {
+  switch strategy {
+  case "pause": return "Pause"
+  case "rebase": return "Rebase"
+  case "merge": return "Merge commit"
+  case "auto": return "Auto agent"
+  default: return strategy.replacingOccurrences(of: "_", with: " ")
+  }
+}
+
+private func pipelineAtCapPolicyLabel(_ policy: String) -> String {
+  switch policy {
+  case "stop": return "Stop"
+  case "wait_for_ci": return "Wait for CI"
+  case "ci_retry_loop": return "Retry CI fixes"
+  case "force_merge": return "Force merge"
   default: return policy.replacingOccurrences(of: "_", with: " ")
   }
 }

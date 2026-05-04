@@ -211,6 +211,29 @@ function pendingHeaderLabel(kind: PendingInputRequest["kind"], questionCount: nu
   return "Input needed";
 }
 
+function getComposerInputLockMessage(pendingInput: PendingInputRequest | null | undefined): string | null {
+  if (!pendingInput) return null;
+  if (pendingInput.kind === "question" || pendingInput.kind === "structured_question") {
+    return "Answer the question card above, or decline it.";
+  }
+  return "Resolve the pending request above before sending another message.";
+}
+
+function getAttachBlockedReason(args: {
+  composerInputLocked: boolean;
+  composerInputLockMessage: string | null;
+  parallelChatMode: boolean;
+  attachmentCount: number;
+}): string | null {
+  if (args.composerInputLocked) {
+    return args.composerInputLockMessage ?? "Resolve the pending request before adding attachments.";
+  }
+  if (args.parallelChatMode && args.attachmentCount >= PARALLEL_CHAT_MAX_ATTACHMENTS) {
+    return `Maximum ${PARALLEL_CHAT_MAX_ATTACHMENTS} attachments for parallel launch`;
+  }
+  return null;
+}
+
 function iosSourceResolutionLabel(resolution: string): string {
   switch (resolution) {
     case "ade-inspector":
@@ -769,17 +792,14 @@ export function AgentChatComposer({
   const clipboardImagePasteFallbackAttachedRef = useRef(false);
   const useRichComposer = iosElementContextItems.length > 0 || appControlContextItems.length > 0 || builtInBrowserContextItems.length > 0;
   const composerInputLocked = Boolean(pendingInput?.blocking);
-  const composerInputLockMessage = pendingInput?.kind === "question" || pendingInput?.kind === "structured_question"
-    ? "Answer the question card above, or decline it."
-    : pendingInput
-      ? "Resolve the pending request above before sending another message."
-      : null;
+  const composerInputLockMessage = getComposerInputLockMessage(pendingInput);
   const canAttach = !composerInputLocked && (!parallelChatMode || attachments.length < PARALLEL_CHAT_MAX_ATTACHMENTS);
-  const attachBlockedReason = composerInputLocked
-    ? composerInputLockMessage ?? "Resolve the pending request before adding attachments."
-    : parallelChatMode && attachments.length >= PARALLEL_CHAT_MAX_ATTACHMENTS
-    ? `Maximum ${PARALLEL_CHAT_MAX_ATTACHMENTS} attachments for parallel launch`
-    : null;
+  const attachBlockedReason = getAttachBlockedReason({
+    composerInputLocked,
+    composerInputLockMessage,
+    parallelChatMode,
+    attachmentCount: attachments.length,
+  });
 
   const resizeTextarea = useCallback(() => {
     if (useRichComposer) return;

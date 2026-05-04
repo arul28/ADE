@@ -73,7 +73,11 @@ function extractRunStatements(body, { firstOnly = false } = {}) {
     }
     const { token, end } = readStringToken(body, cursor);
     const sql = Function(`return ${token}`)();
-    statements.push(String(sql));
+    let next = end;
+    while (/\s/.test(body[next] ?? "")) next += 1;
+    if (body[next] === ")") {
+      statements.push(String(sql));
+    }
     index = end;
     if (firstOnly) break;
   }
