@@ -32,7 +32,7 @@ Renderer components:
 
 | File | Responsibility |
 |------|---------------|
-| `renderer/components/lanes/LanesPage.tsx` | 3-pane cockpit, tab management, dialog coordination |
+| `renderer/components/lanes/LanesPage.tsx` | 3-pane cockpit, tab management, dialog coordination. Each lane row in the lane list optionally renders a state-aware PR tag (`PR #N` / `DRAFT #N` / `MERGED #N` / `CLOSED #N`) when the lane's current branch matches an existing PR; the row uses `selectLanePrTag` (open/draft → merged → closed, then most recent) and falls back through the same branch-equality rules as `prService.getDisplayRowForCurrentLaneBranch`, so the badge stays attached to the lane even after the PR merges. |
 | `renderer/components/lanes/laneUtils.ts` | Pure lane list/filter helpers plus default pane trees, including the work-focused tiling tree used by parallel chat launch deep links. |
 | `renderer/components/lanes/laneColorPalette.ts` | Curated 12-swatch lane color palette (`LANE_COLOR_PALETTE`) plus helpers (`getLaneAccent`, `colorsInUse`, `nextAvailableColor`, `laneColorName`). The first 8 hexes form `LANE_FALLBACK_COLORS`, the legacy index-based fallback used for lanes that don't have an explicit color assigned. |
 | `renderer/components/lanes/LaneAccentDot.tsx` | Tiny accent dot used everywhere a lane is mentioned (lane list, tabs, PR rows, AppShell PR toasts). Resolves color via `getLaneAccent` so a lane without an explicit color falls back to a deterministic fallback hex. |

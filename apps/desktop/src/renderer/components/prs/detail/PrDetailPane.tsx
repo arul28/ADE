@@ -1071,21 +1071,47 @@ export function PrDetailPane({
     }
   }, [activeTab, refreshDetailSurface]);
 
+  const formatReviewThreadContext = React.useCallback((threadId: string): string | null => {
+    const thread = reviewThreads.find((entry) => `thread:${entry.id}` === threadId || entry.id === threadId);
+    if (!thread) return null;
+    const parts = thread.comments.map((comment, index) => {
+      const author = comment.author || "unknown";
+      const body = (comment.body ?? "").trim() || "(empty comment)";
+      const label = thread.comments.length > 1
+        ? `${author} (${index + 1}/${thread.comments.length})`
+        : author;
+      return `${label}:\n${body}`;
+    });
+    return parts.length > 0 ? parts.join("\n\n") : null;
+  }, [reviewThreads]);
+
   const mapInventoryItems = React.useCallback((snapshot: IssueInventorySnapshot | null): PanelIssueItem[] => {
     if (!snapshot) return [];
-    return snapshot.items.map((item) => ({
-      id: item.id,
-      state: item.state === "sent_to_agent" ? "in_progress" : item.state,
-      severity: item.severity ?? "minor",
-      headline: item.headline,
-      filePath: item.filePath,
-      line: item.line,
-      source: item.source === "unknown" ? "human" : item.source,
-      dismissReason: item.dismissReason,
-      agentSessionId: item.agentSessionId,
-      url: item.url,
-    })) as PanelIssueItem[];
-  }, []);
+    return snapshot.items.map((item) => {
+      const fullThreadContext = item.type === "review_thread"
+        ? formatReviewThreadContext(item.externalId)
+        : null;
+      return {
+        id: item.id,
+        type: item.type,
+        externalId: item.externalId,
+        state: item.state === "sent_to_agent" ? "in_progress" : item.state,
+        severity: item.severity ?? "minor",
+        headline: item.headline,
+        filePath: item.filePath,
+        line: item.line,
+        source: item.source === "unknown" ? "human" : item.source,
+        dismissReason: item.dismissReason,
+        agentSessionId: item.agentSessionId,
+        url: item.url,
+        body: fullThreadContext ?? item.body,
+        author: item.author,
+        threadCommentCount: item.threadCommentCount ?? null,
+        threadLatestCommentAuthor: item.threadLatestCommentAuthor ?? null,
+        threadLatestCommentAt: item.threadLatestCommentAt ?? null,
+      };
+    }) as PanelIssueItem[];
+  }, [formatReviewThreadContext]);
 
   const handleOpenInventorySource = React.useCallback((item: PanelIssueItem) => {
     if (!item.url) return;
@@ -3371,9 +3397,36 @@ type UnifiedCheckItem = {
   workflowName?: string;
 };
 
+function normalizeCheckName(value: string): string {
+  return value.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function normalizeCheckComposite(workflowName: string, jobName: string): string {
+  return `${normalizeCheckName(workflowName)}/${normalizeCheckName(jobName)}`;
+}
+
+function extractActionsJobId(detailsUrl: string | null | undefined): string | null {
+  const match = (detailsUrl ?? "").match(/\/actions\/runs\/\d+\/job\/(\d+)(?:[/?#]|$)/);
+  return match?.[1] ?? null;
+}
+
+function isActionsRunUrl(detailsUrl: string | null | undefined): boolean {
+  return /\/actions\/runs\/\d+(?:[/?#]|\/|$)/.test(detailsUrl ?? "");
+}
+
+function buildActionsJobDetailsUrl(runUrl: string, jobId: number): string | null {
+  const trimmed = runUrl.trim();
+  if (!trimmed) return null;
+  if (jobId > 0 && /\/actions\/runs\/\d+(?:[/?#]|$)/.test(trimmed)) {
+    return `${trimmed.replace(/\/$/, "")}/job/${jobId}`;
+  }
+  return trimmed;
+}
+
 function buildUnifiedChecks(checks: PrCheck[], actionRuns: PrActionRun[]): UnifiedCheckItem[] {
   const items: UnifiedCheckItem[] = [];
   const coveredNames = new Set<string>();
+  const coveredActionJobIds = new Set<string>();
 
   // Collapse reruns: for each workflow name, keep only the newest run
   // (multiple runs with the same name are reruns of the same workflow)
@@ -3386,18 +3439,34 @@ function buildUnifiedChecks(checks: PrCheck[], actionRuns: PrActionRun[]): Unifi
   }
   const dedupedRuns = Array.from(latestRunByWorkflow.values());
 
+  const actionJobNameCounts = new Map<string, number>();
+  for (const run of dedupedRuns) {
+    for (const job of run.jobs) {
+      const normalizedName = normalizeCheckName(job.name);
+      if (!normalizedName) continue;
+      actionJobNameCounts.set(normalizedName, (actionJobNameCounts.get(normalizedName) ?? 0) + 1);
+    }
+  }
+  const uniqueActionJobNames = new Set(
+    Array.from(actionJobNameCounts.entries())
+      .filter(([, count]) => count === 1)
+      .map(([name]) => name),
+  );
+
   // First: add all jobs from the latest action runs (these have the most detail)
   for (const run of dedupedRuns) {
     for (const job of run.jobs) {
       // Build the canonical name to match against checks API
       const canonicalName = `${run.name} / ${job.name}`;
-      coveredNames.add(canonicalName.toLowerCase());
+      coveredNames.add(normalizeCheckName(canonicalName));
       // Use composite key to avoid collisions across workflows (e.g. two workflows both having a "build" job)
-      coveredNames.add(`${run.name}/${job.name}`.toLowerCase());
+      coveredNames.add(normalizeCheckComposite(run.name, job.name));
+      if (job.id > 0) coveredActionJobIds.add(String(job.id));
 
       const duration = job.startedAt && job.completedAt
         ? Math.round((new Date(job.completedAt).getTime() - new Date(job.startedAt).getTime()) / 1000)
         : null;
+      const detailsUrl = buildActionsJobDetailsUrl(run.htmlUrl, job.id);
 
       items.push({
         id: `job-${job.id}`,
@@ -3406,7 +3475,7 @@ function buildUnifiedChecks(checks: PrCheck[], actionRuns: PrActionRun[]): Unifi
         status: job.status,
         conclusion: job.conclusion,
         duration,
-        detailsUrl: run.htmlUrl,
+        detailsUrl,
         source: "actions_job",
         steps: job.steps,
         workflowName: run.name,
@@ -3416,16 +3485,23 @@ function buildUnifiedChecks(checks: PrCheck[], actionRuns: PrActionRun[]): Unifi
 
   // Second: add checks that aren't covered by action run jobs (third-party checks)
   for (const check of checks) {
-    const lowerName = check.name.toLowerCase();
+    const lowerName = normalizeCheckName(check.name);
+    const actionsJobId = extractActionsJobId(check.detailsUrl);
+    if (actionsJobId && coveredActionJobIds.has(actionsJobId)) continue;
     // Skip if this check is already covered by an action run job
     if (coveredNames.has(lowerName)) continue;
+    // GitHub Actions check-runs often expose only the job name, while the
+    // workflow-runs API gives us "{workflow} / {job}". When the job name is
+    // unique, treat the check-run as the same Actions job instead of adding it
+    // as a second CI item.
+    if (isActionsRunUrl(check.detailsUrl) && uniqueActionJobNames.has(lowerName)) continue;
     // Also check if the check name matches "{workflow} / {job}" pattern
     const slashIdx = check.name.indexOf("/");
     if (slashIdx > 0) {
-      const workflowPart = check.name.slice(0, slashIdx).trim().toLowerCase();
-      const jobPart = check.name.slice(slashIdx + 1).trim().toLowerCase();
+      const workflowPart = check.name.slice(0, slashIdx).trim();
+      const jobPart = check.name.slice(slashIdx + 1).trim();
       // Use composite key to match against workflow/job keys stored above
-      if (coveredNames.has(`${workflowPart}/${jobPart}`)) continue;
+      if (coveredNames.has(normalizeCheckComposite(workflowPart, jobPart))) continue;
     }
 
     const duration = check.startedAt && check.completedAt

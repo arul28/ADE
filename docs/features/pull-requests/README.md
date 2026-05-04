@@ -18,7 +18,7 @@ Main-process services (`apps/desktop/src/main/services/prs/`):
 
 | File | Responsibility |
 |------|---------------|
-| `prService.ts` | PR CRUD, GitHub sync, merge context, draft descriptions, check/review/comment hydration, commit snapshots (`getCommits`), integration proposals, merge-into-existing-lane adoption, merge bypass, post-merge cleanup, standalone PR branch cleanup (`cleanupBranch`), deployment listing, review-thread reply/resolve/react mutations for the timeline, the aggregate `getMobileSnapshot` that powers the iOS PRs tab, and `listOpenPullRequests` — a paginated `/repos/{owner}/{name}/pulls?state=open` fetch returning `BranchPullRequest[]` for the lane-creation branch picker. |
+| `prService.ts` | PR CRUD, GitHub sync, merge context, draft descriptions, check/review/comment hydration, commit snapshots (`getCommits`), integration proposals, merge-into-existing-lane adoption, merge bypass, post-merge cleanup, standalone PR branch cleanup (`cleanupBranch`), deployment listing, review-thread reply/resolve/react mutations for the timeline, the aggregate `getMobileSnapshot` that powers the iOS PRs tab, and `listOpenPullRequests` — a paginated `/repos/{owner}/{name}/pulls?state=open` fetch returning `BranchPullRequest[]` for the lane-creation branch picker. `getForLane(laneId)` resolves through `getDisplayRowForCurrentLaneBranch`: it returns the most recently updated PR whose head branch matches the lane's current branch ref, ranked open/draft → merged → closed, so a freshly merged PR still shows in lane-scoped UI instead of disappearing the moment GitHub flips the state. |
 | `prService.mobileSnapshot.test.ts` | Coverage for the mobile snapshot builder: stack chaining, capability gates, per-lane create eligibility, workflow-card aggregation |
 | `prService.mergeInto.test.ts` | Coverage for integration proposals that preview or adopt an existing merge target lane, including dirty-worktree handling and drift metadata. |
 | `prPollingService.ts` | 60 s polling loop, fingerprint-based change detection, notification emission. Writes `last_polled_at` per PR so callers can run delta polls on the next tick |
@@ -26,7 +26,7 @@ Main-process services (`apps/desktop/src/main/services/prs/`):
 | `queueLandingService.ts` | Merge queue state machine (`ALLOWED_TRANSITIONS`), landing loop, auto-resolve on conflicts |
 | `integrationPlanning.ts` | `buildIntegrationPreflight` — validates source lanes for an integration proposal |
 | `integrationValidation.ts` | `parseGitStatusPorcelain`, `hasMergeConflictMarkers` — shared helpers for integration flows |
-| `issueInventoryService.ts` | Typed issue inventory, per-round convergence status, participant classification, thread re-open logic |
+| `issueInventoryService.ts` | Typed issue inventory, per-round convergence status, participant classification, thread re-open logic. `IssueInventoryItem` carries `type` (`review_thread | check_failure | issue_comment`), `externalId`, `body`, `author`, and `threadCommentCount` / `threadLatestCommentAuthor` / `threadLatestCommentAt` so `PrConvergencePanel` can render expandable rows with the full comment context inline. |
 | `prIssueResolver.ts` | Builds issue-resolution prompts for the agent, launches chat session |
 | `prRebaseResolver.ts` | Builds rebase-resolution prompts, launches chat session |
 | `resolverUtils.ts` | Shared permission-mode mapping, recent commit reading, comment noise filter, and the `looksLikeResolutionAck` heuristic that flags resolved-looking replies on unresolved review threads |
@@ -54,7 +54,7 @@ Renderer components (`apps/desktop/src/renderer/components/prs/`):
 | `shared/PrAiSummaryCard.tsx` | AI summary card above the timeline; dismissible per PR (state in `PrsContext.dismissedAiSummaries`), with a "Regenerate" action wired to `prSummaryService.regenerateSummary` |
 | `shared/PrReviewThreadCard.tsx`, `shared/PrBotReviewCard.tsx` | Rich thread cards for the timeline (bot-review collapse, reply box, resolve/react actions) |
 | `shared/PrDeploymentCard.tsx` | Deployment row used in the status rail and on the timeline |
-| `shared/PrConvergencePanel.tsx` | Auto-converge slide-over panel with issue inventory, agent session embed, pipeline settings |
+| `shared/PrConvergencePanel.tsx` | Auto-converge slide-over panel with issue inventory, agent session embed, pipeline settings. Each issue row is expandable (caret toggles full comment body, author, and thread comment count); a "show ignored" toggle un-hides previously dismissed items. The dismiss button is labelled "Ignore comment" so users understand it removes the item from the round without resolving the thread. The waiting-state copy hides the round number when the panel runs in non-round-aware contexts (`showRoundLabels = false`). |
 | `shared/PrIssueResolverModal.tsx` | Launch issue resolution (checks/comments/both scopes) |
 | `shared/PrAiResolverPanel.tsx` | AI resolver launch controls in Rebase/Integration flows, including additional-instructions passthrough |
 | `shared/PrPipelineSettings.tsx` | Auto-converge pipeline settings per PR |
@@ -64,6 +64,7 @@ Renderer components (`apps/desktop/src/renderer/components/prs/`):
 | `shared/rebaseNeedUtils.ts` | Rebase need dedup, route selection, upstream rebase chain |
 | `shared/rebaseAttentionUtils.ts` | Auto-rebase attention items for the Rebase tab |
 | `shared/lanePrWarnings.ts` | Pre-submit lane-health warnings |
+| `shared/prFormatters.ts` | Formatting helpers shared across PR surfaces. `formatPrBadgeLabel(pr)` returns a state-aware compact badge (`PR #123`, `DRAFT #123`, `MERGED #123`, `CLOSED #123`) used by the chat git toolbar and the lane list PR tag so closed/merged PRs aren't visually identical to open ones. |
 | `shared/laneBranchTargets.ts` | Target branch resolution for PR creation |
 | `ConflictFilePreview.tsx` | File-level conflict marker preview |
 | `PrRebaseBanner.tsx` | Rebase banner on a PR |

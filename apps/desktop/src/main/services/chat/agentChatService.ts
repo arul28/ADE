@@ -855,9 +855,12 @@ function normalizeCodexAssistantDelta(
   return args.delta;
 }
 
+const PENDING_INPUT_SEND_BLOCKED_MESSAGE = "Answer or decline the pending request before sending another message.";
+
 function validateSessionReadyForTurn(managed: ManagedChatSession): { ready: true } | { ready: false; reason: string } {
   if (managed.closed) return { ready: false, reason: "Session is disposed" };
   if (!managed.runtime) return { ready: false, reason: "No runtime initialized" };
+  if (hasLivePendingInput(managed)) return { ready: false, reason: PENDING_INPUT_SEND_BLOCKED_MESSAGE };
   const rt = managed.runtime;
   if ((rt.kind === "opencode" || rt.kind === "claude" || rt.kind === "cursor" || rt.kind === "droid") && rt.busy) {
     return { ready: false, reason: "Turn already active" };
@@ -12266,6 +12269,9 @@ export function createAgentChatService(args: {
     const visibleText = displayText?.trim().length ? displayText.trim() : trimmed;
 
     const managed = ensureManagedSession(sessionId);
+    if (hasLivePendingInput(managed)) {
+      throw new Error(PENDING_INPUT_SEND_BLOCKED_MESSAGE);
+    }
     const executionContext = refreshManagedLaneLaunchContext(managed);
     const publicAttachments = attachments.map((attachment) => ({
       ...attachment,
@@ -15573,6 +15579,9 @@ export function createAgentChatService(args: {
     }
 
     const managed = ensureManagedSession(sessionId);
+    if (hasLivePendingInput(managed)) {
+      throw new Error(PENDING_INPUT_SEND_BLOCKED_MESSAGE);
+    }
 
     // OpenCode runtime steer
     if (managed.runtime?.kind === "opencode") {
@@ -15855,6 +15864,9 @@ export function createAgentChatService(args: {
     const managed = ensureManagedSession(sessionId);
     if (managed.session.provider === "codex") {
       throw new Error("dispatchSteer is not supported on Codex sessions.");
+    }
+    if (hasLivePendingInput(managed)) {
+      throw new Error(PENDING_INPUT_SEND_BLOCKED_MESSAGE);
     }
     const runtime = managed.runtime;
     if (!runtime) return { dispatchedAt: null };

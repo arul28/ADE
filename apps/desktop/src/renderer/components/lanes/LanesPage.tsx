@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { useClickOutside } from "../../hooks/useClickOutside";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { Group, Panel } from "react-resizable-panels";
-import { Check, CaretDown, FileCode, GitBranch, House, Stack, Link, ArrowsOutSimple, ArrowsInSimple, PushPin, Plus, MagnifyingGlass, Terminal, X, ArrowSquareOut, Info, ArrowCounterClockwise, UsersThree } from "@phosphor-icons/react";
+import { Check, CaretDown, FileCode, GitBranch, GitPullRequest, House, Stack, Link, ArrowsOutSimple, ArrowsInSimple, PushPin, Plus, MagnifyingGlass, Terminal, X, ArrowSquareOut, Info, ArrowCounterClockwise, UsersThree } from "@phosphor-icons/react";
 import { useAppStore, type LaneInspectorTab } from "../../state/appStore";
 import { buildIntegrationSourcesByLaneId } from "../../lib/integrationLanes";
 import { EmptyState } from "../ui/EmptyState";
@@ -46,8 +46,10 @@ import {
   type LaneBranchOption
 } from "./laneUtils";
 import { buildPrsRouteSearch } from "../prs/prsRouteState";
+import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
 import { getProjectConfigCached } from "../../lib/projectConfigCache";
 import { logRendererDebugEvent } from "../../lib/debugLog";
+import { branchNameFromLaneRef } from "../../../shared/laneBaseResolution";
 import type {
   BranchPullRequest,
   ConflictChip,
@@ -58,6 +60,7 @@ import type {
   LaneBranchActiveWorkItem,
   LaneListSnapshot,
   LaneSummary,
+  PrSummary,
   RebaseRun,
   RebaseScope,
   IntegrationProposal,
@@ -167,6 +170,55 @@ function parseLaneIdsParam(value: string | null): string[] {
     .split(",")
     .map((entry) => entry.trim())
     .filter(Boolean);
+}
+
+function normalizeLanePrBranch(ref: string | null | undefined): string {
+  return branchNameFromLaneRef(ref).trim();
+}
+
+function prStateRank(state: PrSummary["state"]): number {
+  if (state === "open" || state === "draft") return 0;
+  if (state === "merged") return 1;
+  return 2;
+}
+
+function compareLanePrTags(a: PrSummary, b: PrSummary): number {
+  const byState = prStateRank(a.state) - prStateRank(b.state);
+  if (byState !== 0) return byState;
+  const aUpdated = Date.parse(a.updatedAt);
+  const bUpdated = Date.parse(b.updatedAt);
+  if (!Number.isNaN(aUpdated) && !Number.isNaN(bUpdated) && aUpdated !== bUpdated) {
+    return bUpdated - aUpdated;
+  }
+  return b.githubPrNumber - a.githubPrNumber;
+}
+
+function lanePrTagColor(state: PrSummary["state"]): string {
+  if (state === "merged") return COLORS.success;
+  if (state === "closed") return COLORS.danger;
+  if (state === "draft") return COLORS.warning;
+  return COLORS.accent;
+}
+
+export function lanePrMatchesCurrentBranch(
+  lane: Pick<LaneSummary, "id" | "laneType" | "branchRef" | "baseRef">,
+  pr: Pick<PrSummary, "laneId" | "headBranch">,
+): boolean {
+  if (pr.laneId !== lane.id) return false;
+  const laneBranch = normalizeLanePrBranch(lane.branchRef);
+  const prHeadBranch = normalizeLanePrBranch(pr.headBranch);
+  if (!laneBranch || !prHeadBranch || laneBranch !== prHeadBranch) return false;
+  if (lane.laneType === "primary") {
+    const baseBranch = normalizeLanePrBranch(lane.baseRef);
+    if (laneBranch && baseBranch && laneBranch === baseBranch) return false;
+  }
+  return true;
+}
+
+export function selectLanePrTag(lane: Pick<LaneSummary, "id" | "laneType" | "branchRef" | "baseRef">, prs: PrSummary[]): PrSummary | null {
+  return prs
+    .filter((pr) => lanePrMatchesCurrentBranch(lane, pr))
+    .sort(compareLanePrTags)[0] ?? null;
 }
 
 export function resolveLaneIdsDeepLinkSelection(args: {
@@ -285,6 +337,7 @@ export function LanesPage() {
   const [managedLaneIds, setManagedLaneIds] = useState<string[]>([]);
   const [conflictChipsByLane, setConflictChipsByLane] = useState<Record<string, ConflictChip[]>>({});
   const chipTimersRef = useRef<Map<string, number>>(new Map());
+  const lanePrTagsRequestRef = useRef(0);
   const hasActiveLaneRuntimeRef = useRef(false);
   const [autoRebaseEnabled, setAutoRebaseEnabled] = useState(false);
   const [rebaseSuggestionError, setRebaseSuggestionError] = useState<string | null>(null);
@@ -325,6 +378,7 @@ export function LanesPage() {
   const [expandedLaneId, setExpandedLaneId] = useState<string | null>(null);
   const [expandedGitActionsLaneId, setExpandedGitActionsLaneId] = useState<string | null>(null);
   const [integrationProposals, setIntegrationProposals] = useState<IntegrationProposal[]>([]);
+  const [lanePrTags, setLanePrTags] = useState<PrSummary[]>([]);
   const laneSnapshots = useAppStore((s) => s.laneSnapshots);
   const consumedLaneIdsDeepLinkSignatureRef = useRef<string | null>(null);
 
@@ -360,6 +414,14 @@ export function LanesPage() {
     () => buildIntegrationSourcesByLaneId(integrationProposals, lanesById),
     [integrationProposals, lanesById],
   );
+  const lanePrByLaneId = useMemo(() => {
+    const map = new Map<string, PrSummary>();
+    for (const lane of sortedLanes) {
+      const pr = selectLanePrTag(lane, lanePrTags);
+      if (pr) map.set(lane.id, pr);
+    }
+    return map;
+  }, [sortedLanes, lanePrTags]);
 
   const laneRuntimeById = useMemo(() => {
     const summaryByLane = new Map<string, LaneListSnapshot["runtime"]>();
@@ -605,6 +667,21 @@ export function LanesPage() {
     }
   }, []);
 
+  const refreshLanePrTags = useCallback(async () => {
+    const requestId = ++lanePrTagsRequestRef.current;
+    const startedRoot = useAppStore.getState().project?.rootPath ?? null;
+    try {
+      const prs = await window.ade.prs.listAll();
+      if (requestId !== lanePrTagsRequestRef.current) return;
+      if ((useAppStore.getState().project?.rootPath ?? null) !== startedRoot) return;
+      setLanePrTags(prs);
+    } catch {
+      if (requestId !== lanePrTagsRequestRef.current) return;
+      if ((useAppStore.getState().project?.rootPath ?? null) !== startedRoot) return;
+      setLanePrTags([]);
+    }
+  }, []);
+
   const pushConflictChips = useCallback((chips: ConflictChip[]) => {
     if (chips.length === 0) return;
     setConflictChipsByLane((prev) => {
@@ -732,6 +809,31 @@ export function LanesPage() {
     }, 140);
     return () => window.clearTimeout(timer);
   }, [refreshIntegrationProposals, project?.rootPath]);
+
+  useEffect(() => {
+    if (!project?.rootPath) {
+      lanePrTagsRequestRef.current += 1;
+      setLanePrTags([]);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void refreshLanePrTags();
+    }, 160);
+    return () => {
+      lanePrTagsRequestRef.current += 1;
+      window.clearTimeout(timer);
+    };
+  }, [refreshLanePrTags, project?.rootPath]);
+
+  useEffect(() => {
+    return window.ade.prs.onEvent((event) => {
+      if (event.type === "prs-updated") {
+        setLanePrTags(event.prs);
+      } else if (event.type === "pr-notification") {
+        void refreshLanePrTags();
+      }
+    });
+  }, [refreshLanePrTags]);
 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -2550,6 +2652,7 @@ export function LanesPage() {
           const autoRebaseStatus = laneSnapshot?.autoRebaseStatus ?? null;
           const devicesOpen = lane.devicesOpen ?? [];
           const tabNumber = String(index + 1).padStart(2, "0");
+          const lanePr = lanePrByLaneId.get(lane.id) ?? null;
 
           return (
             <div
@@ -2637,6 +2740,32 @@ export function LanesPage() {
 	                fontWeight: isSelected ? 600 : 500,
 	                color: isSelected ? COLORS.textPrimary : COLORS.textMuted,
 	              }}>{lane.name}</span>
+              {lanePr ? (
+                <button
+                  type="button"
+                  className="shrink-0"
+                  style={{
+                    ...inlineBadge(lanePrTagColor(lanePr.state), { fontSize: 9 }),
+                    gap: 4,
+                    cursor: "pointer",
+                    borderRadius: 6,
+                  }}
+                  title={`${formatPrBadgeLabel(lanePr)}: ${lanePr.title}`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    navigate(`/prs${buildPrsRouteSearch({
+                      activeTab: "normal",
+                      selectedPrId: lanePr.id,
+                      selectedQueueGroupId: null,
+                      selectedRebaseItemId: null,
+                    })}`);
+                  }}
+                  onMouseDown={(event) => event.stopPropagation()}
+                >
+                  <GitPullRequest size={10} weight="bold" />
+                  {formatPrBadgeLabel(lanePr)}
+                </button>
+              ) : null}
 	              {devicesOpen.length > 0 ? (
 	                <span
 	                  style={{

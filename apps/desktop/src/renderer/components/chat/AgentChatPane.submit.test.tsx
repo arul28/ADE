@@ -9,6 +9,7 @@ import type {
   AgentChatParallelLaunchState,
   AgentChatSession,
   AgentChatSessionSummary,
+  PrSummary,
 } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
 import { invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
@@ -39,6 +40,31 @@ function buildSession(sessionId: string, overrides: Partial<AgentChatSessionSumm
     reasoningEffort: "xhigh",
     executionMode: "focused",
     interactionMode: null,
+    ...overrides,
+  };
+}
+
+function buildPrSummary(overrides: Partial<PrSummary> = {}): PrSummary {
+  return {
+    id: "pr-1",
+    laneId: "lane-1",
+    projectId: "project-1",
+    repoOwner: "arul28",
+    repoName: "ADE",
+    githubPrNumber: 224,
+    githubUrl: "https://github.com/arul28/ADE/pull/224",
+    githubNodeId: "PR_node224",
+    title: "Show merged PR state",
+    state: "open",
+    baseBranch: "main",
+    headBranch: "feature/pr-state",
+    checksStatus: "passing",
+    reviewStatus: "approved",
+    additions: 1,
+    deletions: 1,
+    lastSyncedAt: null,
+    createdAt: "2026-05-01T00:00:00.000Z",
+    updatedAt: "2026-05-01T00:00:00.000Z",
     ...overrides,
   };
 }
@@ -99,6 +125,7 @@ function installAdeMocks(options?: {
   sessions?: AgentChatSessionSummary[];
   includeClaudeModel?: boolean;
   parallelLaunchState?: AgentChatParallelLaunchState | null;
+  linkedPr?: PrSummary | null;
 }) {
   const send = options?.sendError
     ? vi.fn().mockRejectedValue(options.sendError)
@@ -198,7 +225,7 @@ function installAdeMocks(options?: {
       getChanges: vi.fn().mockResolvedValue({ staged: [], unstaged: [] }),
     },
     prs: {
-      getForLane: vi.fn().mockResolvedValue(null),
+      getForLane: vi.fn().mockResolvedValue(options?.linkedPr ?? null),
     },
     pty: {
       onExit: vi.fn().mockImplementation(() => () => undefined),
@@ -383,6 +410,28 @@ describe("AgentChatPane submit recovery", () => {
     expect(await screen.findByLabelText("Waiting for your input")).toBeTruthy();
   });
 
+  it("blocks the composer prompt while a pending input request is active", async () => {
+    const session = buildSession("session-1");
+    const { send, steer } = installAdeMocks({
+      transcript: buildPendingInputTranscript(session.sessionId),
+    });
+
+    renderPane(session);
+
+    expect(await screen.findByText("Answer in the inline question card, or decline.")).toBeTruthy();
+    const textbox = screen.getByPlaceholderText("Answer the question card above, or decline it.") as HTMLTextAreaElement;
+
+    expect(textbox.disabled).toBe(true);
+    expect(textbox.placeholder).toBe("Answer the question card above, or decline it.");
+
+    fireEvent.keyDown(textbox, { key: "Enter" });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(send).not.toHaveBeenCalled();
+    expect(steer).not.toHaveBeenCalled();
+    expect(window.ade.agentChat.respondToInput).not.toHaveBeenCalled();
+  });
+
   it("falls back to the session summary when a chat is awaiting input", async () => {
     const session = buildSession("session-1", {
       status: "active",
@@ -396,6 +445,26 @@ describe("AgentChatPane submit recovery", () => {
 
     expect(await screen.findByLabelText("Waiting for your input")).toBeTruthy();
     expect(screen.queryByLabelText("Agent working")).toBeNull();
+  });
+
+  it("blocks submit when the session summary is awaiting input before the pending card loads", async () => {
+    const session = buildSession("session-1", {
+      status: "active",
+      awaitingInput: true,
+    });
+    const { send, steer } = installAdeMocks({
+      sessions: [session],
+    });
+
+    renderPane(session);
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "This should wait." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+
+    expect(await screen.findByText("Answer or decline the pending request before sending another message.")).toBeTruthy();
+    expect(send).not.toHaveBeenCalled();
+    expect(steer).not.toHaveBeenCalled();
   });
 
   it("does not keep showing a working indicator when the session summary is idle", async () => {
@@ -1277,6 +1346,28 @@ describe("AgentChatPane submit recovery", () => {
     // The git toolbar renders commit/push buttons when laneId is present
     expect(await screen.findByText("Stage & Commit")).toBeTruthy();
     expect(screen.getByText("Push")).toBeTruthy();
+  });
+
+  it("labels a merged linked PR in the git toolbar", async () => {
+    const session = buildSession("session-1");
+    installAdeMocks({
+      sessions: [session],
+      linkedPr: buildPrSummary({ state: "merged" }),
+    });
+
+    render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId={session.laneId}
+          laneLabel="feature/auth"
+          lockSessionId={session.sessionId}
+          hideSessionTabs
+          initialSessionSummary={session}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("MERGED #224")).toBeTruthy();
   });
 
   it("does not render the git toolbar when laneId is null", async () => {

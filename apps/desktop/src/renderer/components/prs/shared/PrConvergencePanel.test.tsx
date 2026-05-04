@@ -164,11 +164,67 @@ describe("PrConvergencePanel", () => {
       waitState: { phase: "agent_running", sessionId: "session-123" },
     });
 
-    expect(screen.getByText("Agent working on round 2...")).toBeTruthy();
+    expect(screen.getByText("Agent working on round 1...")).toBeTruthy();
     expect(screen.getByTestId("pipeline-settings").textContent).toContain("auto-converge-settings");
 
     await user.click(screen.getAllByRole("button", { name: /View Session/i })[0]!);
     expect(props.onViewAgentSession).toHaveBeenCalledWith("session-123");
+  });
+
+  it("does not describe a manual agent run as the next round", () => {
+    renderPanel({
+      items: [makeItem()],
+      convergence: makeConvergence({ state: "converging", currentRound: 1 }),
+      waitState: { phase: "agent_running", sessionId: "session-123" },
+    });
+
+    expect(screen.getByText("Agent working on Path to Merge...")).toBeTruthy();
+    expect(screen.queryByText("Agent working on round 1...")).toBeNull();
+    expect(screen.queryByText("Agent working on round 2...")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Stop Auto-Converge" })).toBeNull();
+  });
+
+  it("expands a review item to show the full stored comment context", async () => {
+    const user = userEvent.setup();
+    renderPanel({
+      items: [
+        makeItem({
+          body: "The compact headline is not enough.\nPlease include this second line too.",
+          author: "reviewer",
+          threadCommentCount: 2,
+        }),
+      ],
+    });
+
+    expect(screen.queryByText(/Please include this second line too/i)).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Expand comment context" }));
+
+    expect(screen.getByText(/Please include this second line too/i)).toBeTruthy();
+    expect(screen.getByText("reviewer")).toBeTruthy();
+    expect(screen.getByText("2 comments")).toBeTruthy();
+  });
+
+  it("hides ignored review items until the ignored section is shown", async () => {
+    const user = userEvent.setup();
+    renderPanel({
+      items: [
+        makeItem({
+          id: "ignored-1",
+          state: "dismissed",
+          headline: "Ignore this historical thread",
+          dismissReason: "Ignored from Path to Merge",
+        }),
+      ],
+    });
+
+    expect(screen.queryByText("Ignore this historical thread")).toBeNull();
+    expect(screen.getByText("Ignored comments are hidden.")).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "Show ignored (1)" }));
+
+    expect(screen.getByText("Ignore this historical thread")).toBeTruthy();
+    expect(screen.getByText("Ignored from Path to Merge")).toBeTruthy();
   });
 
   it("allows dismissing and escalating unresolved review items", async () => {
@@ -179,8 +235,8 @@ describe("PrConvergencePanel", () => {
       ],
     });
 
-    await user.click(screen.getByTitle("Dismiss"));
-    expect(props.onMarkDismissed).toHaveBeenCalledWith(["issue-1"], "Dismissed from UI");
+    await user.click(screen.getByRole("button", { name: "Ignore comment" }));
+    expect(props.onMarkDismissed).toHaveBeenCalledWith(["issue-1"], "Ignored from Path to Merge");
 
     await user.click(screen.getByTitle("Escalate"));
     expect(props.onMarkEscalated).toHaveBeenCalledWith(["issue-1"]);
