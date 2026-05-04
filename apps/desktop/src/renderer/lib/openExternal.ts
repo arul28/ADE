@@ -4,6 +4,24 @@ export type OpenBuiltInBrowserDetail = {
   url: string;
 };
 
+// Coordination flag used by ChatBuiltInBrowserPanel to suppress the empty-state
+// default-tab creation when a link-click navigation is racing the panel mount.
+// Set synchronously here BEFORE the navigate IPC fires, then consumed (cleared)
+// by the panel's default-tab effect on the next render. Without this, the panel
+// can mount, observe getStatus() returning tabs: [], and create a Google tab
+// before the link-click's navigate IPC arrives — yielding two tabs.
+let pendingBuiltInBrowserNavigation = false;
+
+export function markPendingBuiltInBrowserNavigation(): void {
+  pendingBuiltInBrowserNavigation = true;
+}
+
+export function consumePendingBuiltInBrowserNavigation(): boolean {
+  if (!pendingBuiltInBrowserNavigation) return false;
+  pendingBuiltInBrowserNavigation = false;
+  return true;
+}
+
 export function normalizeBrowserUrlInput(url: string | undefined | null): string | null {
   const trimmed = (url ?? "").trim();
   if (!trimmed) return null;
@@ -36,14 +54,25 @@ export function openUrlInAdeBrowser(url: string | undefined | null): void {
     return;
   }
 
+  // Mark the navigation as pending BEFORE dispatching the event so the panel —
+  // which the event causes to mount via TerminalsPage — sees the flag in its
+  // first default-tab effect and skips creating a Google tab.
+  markPendingBuiltInBrowserNavigation();
   window.dispatchEvent(new CustomEvent<OpenBuiltInBrowserDetail>(ADE_OPEN_BUILT_IN_BROWSER_EVENT, {
     detail: { url: normalized },
   }));
   const browser = window.ade?.builtInBrowser;
   if (browser) {
-    void browser.navigate({ url: normalized, newTab: true }).catch(() => openExternalUrl(normalized));
+    void browser.navigate({ url: normalized, newTab: true }).catch(() => {
+      // Navigation failed: clear the flag so a subsequent panel open can still
+      // surface the default tab.
+      consumePendingBuiltInBrowserNavigation();
+      openExternalUrl(normalized);
+    });
     return;
   }
+  // No bridge — clear the flag we just set since no IPC navigation will arrive.
+  consumePendingBuiltInBrowserNavigation();
   openExternalUrl(normalized);
 }
 

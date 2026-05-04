@@ -538,35 +538,50 @@ export function createBuiltInBrowserService(args: {
   }
 
   async function reload(): Promise<BuiltInBrowserStatus> {
-    const wc = ensureActiveTab().webContents;
+    const wc = currentWebContents();
+    if (!wc) {
+      throw new Error("No active browser tab. Open a tab before reloading.");
+    }
     wc.reload();
     emitStatus();
     return getStatus();
   }
 
   async function goBack(): Promise<BuiltInBrowserStatus> {
-    const wc = ensureActiveTab().webContents;
+    const wc = currentWebContents();
+    if (!wc) {
+      throw new Error("No active browser tab. Open a tab before navigating back.");
+    }
     if (wc.canGoBack()) wc.goBack();
     emitStatus();
     return getStatus();
   }
 
   async function goForward(): Promise<BuiltInBrowserStatus> {
-    const wc = ensureActiveTab().webContents;
+    const wc = currentWebContents();
+    if (!wc) {
+      throw new Error("No active browser tab. Open a tab before navigating forward.");
+    }
     if (wc.canGoForward()) wc.goForward();
     emitStatus();
     return getStatus();
   }
 
   async function stop(): Promise<BuiltInBrowserStatus> {
-    const wc = ensureActiveTab().webContents;
+    const wc = currentWebContents();
+    if (!wc) {
+      throw new Error("No active browser tab. Open a tab before stopping a load.");
+    }
     if (wc.isLoading()) wc.stop();
     emitStatus();
     return getStatus();
   }
 
   async function startInspect(): Promise<BuiltInBrowserStatus> {
-    const wc = ensureActiveTab().webContents;
+    const wc = currentWebContents();
+    if (!wc) {
+      throw new Error("No active browser tab. Open a tab before starting inspect.");
+    }
     attachViewsToCurrentWindow();
     attachDebuggerListeners(wc);
     try {
@@ -697,6 +712,19 @@ export function createBuiltInBrowserService(args: {
   }
 
   function dispose(): void {
+    // Clear inspecting flags up front so any in-flight debugger callbacks that fire
+    // during teardown don't act on torn-down state. stopInspect() is async, but the
+    // synchronous flag flip here protects the message listener (handleInspectNodeRequested
+    // bails when inspecting is false) and the detach handler.
+    inspecting = false;
+    debuggerAttachedForInspect = false;
+    if (inspectListenerWebContents && !inspectListenerWebContents.isDestroyed()) {
+      detachDebuggerListeners(inspectListenerWebContents);
+    } else {
+      debuggerMessageListener = null;
+      debuggerDetachListener = null;
+      inspectListenerWebContents = null;
+    }
     void stopInspect().catch(() => {});
     if (win && winClosedListener) {
       win.removeListener("closed", winClosedListener);

@@ -18,6 +18,7 @@ import {
 import type { AgentChatFileRef } from "../../../shared/types";
 import { inferAttachmentType } from "../../../shared/types";
 import type { BuiltInBrowserTab } from "../../../shared/types/builtInBrowser";
+import { consumePendingBuiltInBrowserNavigation } from "../../lib/openExternal";
 import { cn } from "../ui/cn";
 
 type BrowserFrame = {
@@ -1037,6 +1038,14 @@ export function ChatBuiltInBrowserPanel({
   useEffect(() => {
     const api = getBrowserApi();
     if (!apiAvailable || !api || !status || browserTabs.length > 0 || defaultBrowserOpenedRef.current) return;
+    // If a link-click in the renderer kicked off an openInAdeBrowser navigation
+    // that's still in flight (panel mounted via the open-built-in-browser event,
+    // but the navigate IPC has not landed in status yet), suppress the default
+    // Google tab so we don't end up with two tabs.
+    if (consumePendingBuiltInBrowserNavigation()) {
+      defaultBrowserOpenedRef.current = true;
+      return;
+    }
     defaultBrowserOpenedRef.current = true;
     void (async () => {
       try {
