@@ -231,6 +231,48 @@ describe("createLocalProject", () => {
       service.createLocalProject({ name: "empty-target", parentDir }),
     ).resolves.toEqual({ rootPath: empty });
   });
+
+  it("rolls back the created directory when a step after mkdir fails", async () => {
+    // init ok, then `git add .` fails after README/.gitignore are written.
+    runGitMock
+      .mockResolvedValueOnce(gitOk())
+      .mockResolvedValueOnce(gitFail("fatal: not a git repository", 128));
+
+    const parentDir = makeTempDir("ade-scaffold-rollback-");
+    const service = createProjectScaffoldService({
+      logger: makeLogger(),
+      githubService: makeGithubServiceStub(),
+    });
+
+    const rootPath = path.join(parentDir, "doomed");
+    await expect(
+      service.createLocalProject({ name: "doomed", parentDir }),
+    ).rejects.toThrow();
+
+    // The directory we created must be gone so a retry isn't blocked by target_exists.
+    expect(fs.existsSync(rootPath)).toBe(false);
+  });
+
+  it("does not roll back a pre-existing empty directory on failure", async () => {
+    runGitMock
+      .mockResolvedValueOnce(gitOk())
+      .mockResolvedValueOnce(gitFail("boom", 128));
+
+    const parentDir = makeTempDir("ade-scaffold-rollback-preexist-");
+    const rootPath = path.join(parentDir, "user-made");
+    fs.mkdirSync(rootPath);
+
+    const service = createProjectScaffoldService({
+      logger: makeLogger(),
+      githubService: makeGithubServiceStub(),
+    });
+
+    await expect(
+      service.createLocalProject({ name: "user-made", parentDir }),
+    ).rejects.toThrow();
+
+    expect(fs.existsSync(rootPath)).toBe(true);
+  });
 });
 
 describe("cloneRepository", () => {
@@ -341,6 +383,29 @@ describe("cloneRepository", () => {
     await expect(
       service.cloneRepository({ url: "https://github.com/octocat/Hello-World", parentDir }),
     ).rejects.toThrow(/repository not found/i);
+  });
+
+  it("rolls back a partial clone directory so retry isn't blocked by target_exists", async () => {
+    const parentDir = makeTempDir("ade-scaffold-clone-rollback-");
+    const rootPath = path.join(parentDir, "Hello-World");
+
+    // Simulate `git clone` partially populating the dir then failing.
+    runGitMock.mockImplementationOnce(async () => {
+      fs.mkdirSync(rootPath);
+      fs.writeFileSync(path.join(rootPath, "partial"), "x");
+      return gitFail("fatal: authentication failed");
+    });
+
+    const service = createProjectScaffoldService({
+      logger: makeLogger(),
+      githubService: makeGithubServiceStub(),
+    });
+
+    await expect(
+      service.cloneRepository({ url: "https://github.com/octocat/Hello-World", parentDir }),
+    ).rejects.toThrow();
+
+    expect(fs.existsSync(rootPath)).toBe(false);
   });
 });
 

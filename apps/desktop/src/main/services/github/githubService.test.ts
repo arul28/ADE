@@ -570,6 +570,46 @@ describe("githubService.getStatus", () => {
     expect(status.repoAccessOk).toBeNull();
     expect(status.repoAccessError).toBeNull();
   });
+
+  it("reports hasOrigin=true with repo=null when origin is non-GitHub (GitLab/Bitbucket)", async () => {
+    runGitMock.mockResolvedValueOnce({
+      exitCode: 0,
+      stdout: "git@gitlab.com:acme/internal.git\n",
+      stderr: "",
+    });
+    process.env.GITHUB_TOKEN = "ghp_classic";
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse(200, { login: "alice" }, { "x-oauth-scopes": "repo, workflow" }),
+    );
+
+    const status = await makeService().getStatus();
+
+    expect(status.repo).toBeNull();
+    expect(status.hasOrigin).toBe(true);
+  });
+
+  it("reports hasOrigin=false when no origin remote is configured", async () => {
+    runGitMock.mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "fatal: no origin" });
+
+    const status = await makeService().getStatus();
+
+    expect(status.repo).toBeNull();
+    expect(status.hasOrigin).toBe(false);
+  });
+
+  it("reports hasOrigin=true with repo populated for GitHub origin", async () => {
+    stubOriginRemote();
+    process.env.GITHUB_TOKEN = "ghp_classic";
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse(200, { login: "alice" }, { "x-oauth-scopes": "repo, workflow" }),
+    );
+    mockFetch.mockResolvedValueOnce(jsonResponse(200, { full_name: "acme/ade" }));
+
+    const status = await makeService().getStatus();
+
+    expect(status.repo).toEqual({ owner: "acme", name: "ade" });
+    expect(status.hasOrigin).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -823,5 +863,69 @@ describe("githubService.publishCurrentProject", () => {
 
     const gitCalls = runGitMock.mock.calls.map((c) => c[0]);
     expect(gitCalls).toContainEqual(["remote", "remove", "origin"]);
+  });
+
+  it("recovers from 'name already exists' by reusing an empty existing repo", async () => {
+    runGitMock
+      .mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "" }) // get-url origin
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" }) // remote add origin
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "abc\n", stderr: "" }) // rev-parse HEAD
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" }); // push
+
+    // 1) createRepository → 422 already exists
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse(422, {
+        message: "Repository creation failed",
+        errors: [{ message: "name already exists on this account" }],
+      }),
+    );
+    // 2) validateToken /user → returns owner login
+    mockFetch.mockResolvedValueOnce(jsonResponse(200, { login: "alice" }));
+    // 3) getRepository /repos/alice/proj → empty repo
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse(200, {
+        clone_url: "https://github.com/alice/proj.git",
+        ssh_url: "git@github.com:alice/proj.git",
+        html_url: "https://github.com/alice/proj",
+        default_branch: "main",
+        size: 0,
+      }),
+    );
+
+    const result = await makeService().publishCurrentProject({
+      name: "proj",
+      isPrivate: true,
+    });
+
+    expect(result).toEqual({ state: "pushed", htmlUrl: "https://github.com/alice/proj" });
+  });
+
+  it("throws repo_name_taken when the existing repo has commits", async () => {
+    runGitMock.mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "" }); // get-url origin
+
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse(422, {
+        message: "Repository creation failed",
+        errors: [{ message: "name already exists on this account" }],
+      }),
+    );
+    mockFetch.mockResolvedValueOnce(jsonResponse(200, { login: "alice" }));
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse(200, {
+        clone_url: "https://github.com/alice/proj.git",
+        html_url: "https://github.com/alice/proj",
+        default_branch: "main",
+        size: 1234,
+      }),
+    );
+
+    let caught: any;
+    try {
+      await makeService().publishCurrentProject({ name: "proj", isPrivate: true });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught.code).toBe("repo_name_taken");
   });
 });

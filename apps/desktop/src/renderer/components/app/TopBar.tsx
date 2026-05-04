@@ -356,15 +356,22 @@ export function TopBar() {
     Boolean(project?.rootPath);
 
   const projectRootForRemote = workspaceProjectOpen ? project?.rootPath ?? null : null;
-  const { hasRemote, refresh: refreshRemote } = useGithubProjectRemote(projectRootForRemote);
+  const { hasGitHubRemote, hasOrigin, refresh: refreshRemote } =
+    useGithubProjectRemote(projectRootForRemote);
   const publishDefaultName = useMemo(() => {
     const root = project?.rootPath;
     if (!root) return "";
     const segments = root.split(/[\\/]/).filter(Boolean);
     return segments[segments.length - 1] ?? "";
   }, [project?.rootPath]);
+  // Hide the Publish CTA when ANY origin remote is configured — including
+  // non-GitHub origins, which would cause publishCurrentProject to throw
+  // remote_already_exists.
   const showPublishPill =
-    workspaceProjectOpen && Boolean(project?.rootPath) && hasRemote === false;
+    workspaceProjectOpen &&
+    Boolean(project?.rootPath) &&
+    hasGitHubRemote === false &&
+    hasOrigin === false;
 
   const applyZoom = useCallback((pct: number) => {
     const clamped = Math.max(MIN_ZOOM_LEVEL, Math.min(MAX_ZOOM_LEVEL, pct));

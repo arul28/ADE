@@ -100,64 +100,83 @@ export function createProjectScaffoldService({
       throw codedError("A folder already exists at that path.", "target_exists");
     }
 
+    // Track whether WE created the dir so failures only roll back our own work.
+    // Without this, a partial scaffold (init + README written, then `git add`
+    // fails) leaves a non-empty dir that the `target_exists` guard rejects on
+    // retry, permanently blocking the user.
+    const preexisted = fs.existsSync(rootPath);
     fs.mkdirSync(rootPath, { recursive: true });
 
-    const initRes = await runGit(["init", "--initial-branch=main"], { cwd: rootPath, timeoutMs: 15_000 });
-    if (initRes.exitCode !== 0) {
-      const fallbackInit = await runGit(["init"], { cwd: rootPath, timeoutMs: 15_000 });
-      if (fallbackInit.exitCode !== 0) {
-        throw new Error(`git init failed: ${fallbackInit.stderr.trim() || `exit ${fallbackInit.exitCode}`}`);
-      }
-      const symbolicRef = await runGit(["symbolic-ref", "HEAD", "refs/heads/main"], {
-        cwd: rootPath,
-        timeoutMs: 5_000,
-      });
-      if (symbolicRef.exitCode !== 0) {
-        logger.warn("project_scaffold.symbolic_ref_failed", {
-          rootPath,
-          stderr: symbolicRef.stderr.trim(),
+    try {
+      const initRes = await runGit(["init", "--initial-branch=main"], { cwd: rootPath, timeoutMs: 15_000 });
+      if (initRes.exitCode !== 0) {
+        const fallbackInit = await runGit(["init"], { cwd: rootPath, timeoutMs: 15_000 });
+        if (fallbackInit.exitCode !== 0) {
+          throw new Error(`git init failed: ${fallbackInit.stderr.trim() || `exit ${fallbackInit.exitCode}`}`);
+        }
+        const symbolicRef = await runGit(["symbolic-ref", "HEAD", "refs/heads/main"], {
+          cwd: rootPath,
+          timeoutMs: 5_000,
         });
-      }
-    }
-
-    fs.writeFileSync(path.join(rootPath, "README.md"), `# ${name}\n`, "utf8");
-    fs.writeFileSync(path.join(rootPath, ".gitignore"), GITIGNORE_CONTENT, "utf8");
-
-    const addRes = await runGit(["add", "."], { cwd: rootPath, timeoutMs: 15_000 });
-    if (addRes.exitCode !== 0) {
-      throw new Error(`git add failed: ${addRes.stderr.trim() || `exit ${addRes.exitCode}`}`);
-    }
-
-    const commitRes = await runGit(["commit", "-m", "Initial commit"], { cwd: rootPath, timeoutMs: 15_000 });
-    if (commitRes.exitCode !== 0) {
-      if (isGitIdentityError(commitRes.stderr)) {
-        const retry = await runGit(
-          ["commit", "-m", "Initial commit", "--author=ADE <ade@local>"],
-          {
-            cwd: rootPath,
-            timeoutMs: 15_000,
-            env: {
-              ...process.env,
-              GIT_COMMITTER_NAME: "ADE",
-              GIT_COMMITTER_EMAIL: "ade@local",
-            },
-          },
-        );
-        if (retry.exitCode !== 0) {
-          logger.warn("project_scaffold.initial_commit_retry_failed", {
+        if (symbolicRef.exitCode !== 0) {
+          logger.warn("project_scaffold.symbolic_ref_failed", {
             rootPath,
-            stderr: retry.stderr.trim(),
+            stderr: symbolicRef.stderr.trim(),
           });
         }
-      } else {
-        logger.warn("project_scaffold.initial_commit_failed", {
-          rootPath,
-          stderr: commitRes.stderr.trim(),
-        });
       }
-    }
 
-    return { rootPath };
+      fs.writeFileSync(path.join(rootPath, "README.md"), `# ${name}\n`, "utf8");
+      fs.writeFileSync(path.join(rootPath, ".gitignore"), GITIGNORE_CONTENT, "utf8");
+
+      const addRes = await runGit(["add", "."], { cwd: rootPath, timeoutMs: 15_000 });
+      if (addRes.exitCode !== 0) {
+        throw new Error(`git add failed: ${addRes.stderr.trim() || `exit ${addRes.exitCode}`}`);
+      }
+
+      const commitRes = await runGit(["commit", "-m", "Initial commit"], { cwd: rootPath, timeoutMs: 15_000 });
+      if (commitRes.exitCode !== 0) {
+        if (isGitIdentityError(commitRes.stderr)) {
+          const retry = await runGit(
+            ["commit", "-m", "Initial commit", "--author=ADE <ade@local>"],
+            {
+              cwd: rootPath,
+              timeoutMs: 15_000,
+              env: {
+                ...process.env,
+                GIT_COMMITTER_NAME: "ADE",
+                GIT_COMMITTER_EMAIL: "ade@local",
+              },
+            },
+          );
+          if (retry.exitCode !== 0) {
+            logger.warn("project_scaffold.initial_commit_retry_failed", {
+              rootPath,
+              stderr: retry.stderr.trim(),
+            });
+          }
+        } else {
+          logger.warn("project_scaffold.initial_commit_failed", {
+            rootPath,
+            stderr: commitRes.stderr.trim(),
+          });
+        }
+      }
+
+      return { rootPath };
+    } catch (err) {
+      if (!preexisted) {
+        try {
+          fs.rmSync(rootPath, { recursive: true, force: true });
+        } catch (cleanupErr) {
+          logger.warn("project_scaffold.create_rollback_failed", {
+            rootPath,
+            error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
+          });
+        }
+      }
+      throw err;
+    }
   };
 
   const cloneRepository = async (input: CloneProjectInput): Promise<CloneProjectResult> => {
@@ -185,15 +204,35 @@ export function createProjectScaffoldService({
 
     fs.mkdirSync(parentDir, { recursive: true });
 
-    const cloneRes = await runGit(["clone", url, rootPath], {
-      cwd: parentDir,
-      timeoutMs: 5 * 60_000,
-    });
-    if (cloneRes.exitCode !== 0) {
-      throw new Error(cloneRes.stderr.trim() || `git clone failed (exit ${cloneRes.exitCode})`);
-    }
+    // `git clone` may create rootPath and partially populate it before failing
+    // (auth prompt aborted, network drop, signature check). Without rollback,
+    // the partial dir trips `target_exists` on retry. Only clean up dirs we
+    // created ourselves.
+    const preexistedRoot = fs.existsSync(rootPath);
 
-    return { rootPath };
+    try {
+      const cloneRes = await runGit(["clone", url, rootPath], {
+        cwd: parentDir,
+        timeoutMs: 5 * 60_000,
+      });
+      if (cloneRes.exitCode !== 0) {
+        throw new Error(cloneRes.stderr.trim() || `git clone failed (exit ${cloneRes.exitCode})`);
+      }
+
+      return { rootPath };
+    } catch (err) {
+      if (!preexistedRoot) {
+        try {
+          fs.rmSync(rootPath, { recursive: true, force: true });
+        } catch (cleanupErr) {
+          logger.warn("project_scaffold.clone_rollback_failed", {
+            rootPath,
+            error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
+          });
+        }
+      }
+      throw err;
+    }
   };
 
   const listMyGitHubRepos = async (input: ListMyGitHubReposInput): Promise<ListMyGitHubReposResult> => {

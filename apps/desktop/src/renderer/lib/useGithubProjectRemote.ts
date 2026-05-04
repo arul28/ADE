@@ -2,7 +2,13 @@ import { useCallback, useEffect, useState } from "react";
 
 export type UseGithubProjectRemoteResult = {
   loading: boolean;
-  hasRemote: boolean | null;
+  // True when a GitHub origin is configured (status.repo != null).
+  hasGitHubRemote: boolean | null;
+  // True when the project has ANY origin remote — including non-GitHub
+  // (GitLab/Bitbucket). Used to hide the Publish CTA when an origin already
+  // exists but we just can't parse it as GitHub; otherwise the publish flow
+  // throws remote_already_exists from the server.
+  hasOrigin: boolean | null;
   refresh: () => void;
 };
 
@@ -10,7 +16,8 @@ export function useGithubProjectRemote(
   projectRoot: string | null,
 ): UseGithubProjectRemoteResult {
   const [loading, setLoading] = useState<boolean>(Boolean(projectRoot));
-  const [hasRemote, setHasRemote] = useState<boolean | null>(null);
+  const [hasGitHubRemote, setHasGitHubRemote] = useState<boolean | null>(null);
+  const [hasOrigin, setHasOrigin] = useState<boolean | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
 
   const refresh = useCallback(() => {
@@ -20,7 +27,8 @@ export function useGithubProjectRemote(
   useEffect(() => {
     if (!projectRoot) {
       setLoading(false);
-      setHasRemote(null);
+      setHasGitHubRemote(null);
+      setHasOrigin(null);
       return;
     }
     let cancelled = false;
@@ -29,13 +37,15 @@ export function useGithubProjectRemote(
       .getStatus({ forceRefresh: refreshKey > 0 })
       .then((status) => {
         if (cancelled) return;
-        setHasRemote(status.repo != null);
+        setHasGitHubRemote(status.repo != null);
+        setHasOrigin(Boolean(status.hasOrigin));
       })
       .catch(() => {
         if (cancelled) return;
         // On status failure we treat the remote as unknown (null) so the pill
         // doesn't flash for projects we couldn't probe.
-        setHasRemote(null);
+        setHasGitHubRemote(null);
+        setHasOrigin(null);
       })
       .finally(() => {
         if (cancelled) return;
@@ -51,10 +61,11 @@ export function useGithubProjectRemote(
   useEffect(() => {
     if (!projectRoot) return;
     const unsubscribe = window.ade.github.onStatusChanged((status) => {
-      setHasRemote(status.repo != null);
+      setHasGitHubRemote(status.repo != null);
+      setHasOrigin(Boolean(status.hasOrigin));
     });
     return unsubscribe;
   }, [projectRoot]);
 
-  return { loading, hasRemote, refresh };
+  return { loading, hasGitHubRemote, hasOrigin, refresh };
 }

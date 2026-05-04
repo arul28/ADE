@@ -248,6 +248,10 @@ export type GitHubStatus = {
   storageScope: "app";
   tokenType?: "classic" | "fine-grained" | "unknown";
   repo: GitHubRepoRef | null;
+  // True when the project has any `origin` remote, even non-GitHub. Distinct
+  // from `repo != null`, which is only true for GitHub origins. The Publish
+  // CTA must hide for non-GitHub origins or it dead-ends in remote_already_exists.
+  hasOrigin: boolean;
   userLogin: string | null;
   scopes: string[];
   checkedAt: string | null;
