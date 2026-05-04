@@ -482,15 +482,16 @@ export function useWorkSessions() {
   const stripUrlFilterParams = useCallback(() => {
     if (!isWorkRoute) return;
     const nextParams = new URLSearchParams(searchParams);
-    let changed = false;
     for (const key of ["laneId", "lane", "status"]) {
-      if (nextParams.has(key)) {
-        nextParams.delete(key);
-        changed = true;
-      }
+      nextParams.delete(key);
     }
-    if (!changed) return;
+    // Use URLSearchParams.toString() as the stable comparison anchor: if stripping
+    // the filter keys yields the same query string, no-op. This makes the effect
+    // self-stabilizing — even if `searchParams` re-references on every render,
+    // navigate() only fires when there's an actual URL change.
+    const currentSearch = searchParams.toString();
     const nextSearch = nextParams.toString();
+    if (currentSearch === nextSearch) return;
     navigate(
       `${location.pathname}${nextSearch ? `?${nextSearch}` : ""}${location.hash ?? ""}`,
       { replace: true },

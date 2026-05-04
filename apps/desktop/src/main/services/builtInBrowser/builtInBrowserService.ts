@@ -445,6 +445,13 @@ export function createBuiltInBrowserService(args: {
     if (input.newTab && tabs.length >= MAX_BROWSER_TABS) {
       throw new Error(`ADE browser is limited to ${MAX_BROWSER_TABS} tabs. Close a tab before opening another.`);
     }
+    // Validate tabId BEFORE any side effects (stopInspect/clearSelection) so an invalid id
+    // doesn't leave the service with cleared inspect/selection state.
+    let existingTab: BrowserTabState | null = null;
+    if (!input.newTab && input.tabId) {
+      existingTab = tabs.find((entry) => entry.id === input.tabId) ?? null;
+      if (!existingTab) throw new Error(`Browser tab not found: ${input.tabId}`);
+    }
     const switchingTabs = input.newTab || (input.tabId && input.tabId !== activeTabId);
     if (switchingTabs) {
       await stopInspectQuietly("built_in_browser.navigate_stop_inspect_failed");
@@ -454,9 +461,8 @@ export function createBuiltInBrowserService(args: {
     if (tab) {
       tabs = [...tabs, tab];
       activeTabId = tab.id;
-    } else if (input.tabId) {
-      tab = tabs.find((entry) => entry.id === input.tabId) ?? null;
-      if (!tab) throw new Error(`Browser tab not found: ${input.tabId}`);
+    } else if (existingTab) {
+      tab = existingTab;
       activeTabId = tab.id;
     } else {
       tab = ensureActiveTab();

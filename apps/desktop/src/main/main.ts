@@ -370,8 +370,16 @@ function getRendererUrl(): string {
 function isAllowedAdeBrowserWebviewSource(rawSrc: string): boolean {
   const src = rawSrc.trim();
   if (!src || src === "about:blank") return true;
+  return isAllowedAdeBrowserWebviewNavigation(src);
+}
+
+// Stricter check used for post-attach navigation: rejects empty/about:blank/file:/data:/blob:
+// so a compromised renderer can't attach a blank webview and then loadURL anywhere.
+function isAllowedAdeBrowserWebviewNavigation(rawUrl: string): boolean {
+  const url = rawUrl.trim();
+  if (!url) return false;
   try {
-    const parsed = new URL(src);
+    const parsed = new URL(url);
     return parsed.protocol === "http:" || parsed.protocol === "https:";
   } catch {
     return false;
@@ -429,6 +437,23 @@ async function createWindow(args: {
     webPreferences.contextIsolation = true;
     webPreferences.sandbox = true;
     webPreferences.webSecurity = true;
+  });
+
+  // Enforce the same allowlist on post-attach navigation. about:blank/empty src is
+  // allowed at attach time (the built-in browser legitimately creates blank tabs),
+  // but a compromised renderer must not be able to loadURL to a non-allowlisted URL
+  // afterward. The setWindowOpenHandler('deny') below also blocks new windows from
+  // the attached webview.
+  win.webContents.on("did-attach-webview", (_event, attachedWc) => {
+    attachedWc.setWindowOpenHandler(() => ({ action: "deny" }));
+    attachedWc.on("will-navigate", (navEvent, url) => {
+      // Allow same-page navigations to about:blank only as the initial state; any
+      // explicit navigation must go through the http/https allowlist.
+      if (!isAllowedAdeBrowserWebviewNavigation(url)) {
+        navEvent.preventDefault();
+        args.logger?.warn("window.webview_navigation_blocked", { url });
+      }
+    });
   });
 
   // Set macOS Dock icon
