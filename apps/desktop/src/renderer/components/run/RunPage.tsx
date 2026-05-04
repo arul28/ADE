@@ -278,7 +278,7 @@ function WelcomeScreen() {
 
       <button
         type="button"
-        data-tour="project.welcomeOpenButton"
+        data-tour="project.welcomeAddButton"
         onClick={() => setProjectBrowserOpen(true)}
         style={{
           ...primaryButton({ height: 48, padding: "0 32px", fontSize: 14 }),
@@ -296,8 +296,8 @@ function WelcomeScreen() {
           event.currentTarget.style.boxShadow = `0 4px 20px color-mix(in srgb, var(--color-accent) 40%, transparent)`;
         }}
       >
-        <FolderOpen size={20} weight="regular" />
-        OPEN PROJECT
+        <Plus size={20} weight="bold" />
+        ADD PROJECT
       </button>
 
       {realProjects.length > 0 ? (
@@ -379,7 +379,7 @@ function WelcomeScreen() {
         </div>
       ) : null}
 
-      <CommandPalette open={projectBrowserOpen} onOpenChange={setProjectBrowserOpen} intent="project-browse" />
+      <CommandPalette open={projectBrowserOpen} onOpenChange={setProjectBrowserOpen} intent="project-add" />
     </div>
   );
 }

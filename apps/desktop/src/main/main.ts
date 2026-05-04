@@ -40,6 +40,7 @@ import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "./s
 import { createAgentChatService } from "./services/chat/agentChatService";
 import { shutdownAcpCliConnections } from "./services/chat/acpCliPool";
 import { createGithubService } from "./services/github/githubService";
+import { createProjectScaffoldService } from "./services/projects/projectScaffoldService";
 import { createFeedbackReporterService } from "./services/feedback/feedbackReporterService";
 import { createPrService } from "./services/prs/prService";
 import { createPrPollingService } from "./services/prs/prPollingService";
@@ -1664,6 +1665,11 @@ app.whenReady().then(async () => {
       logger,
       projectRoot,
       appDataDir: app.getPath("userData"),
+    });
+
+    const projectScaffoldService = createProjectScaffoldService({
+      logger,
+      githubService,
     });
 
     const feedbackReporterService = createFeedbackReporterService({
@@ -3800,6 +3806,7 @@ app.whenReady().then(async () => {
       conflictService,
       aiIntegrationService,
       githubService,
+      projectScaffoldService,
       feedbackReporterService,
       prService,
       prPollingService,
@@ -3876,6 +3883,19 @@ app.whenReady().then(async () => {
     const logger = createFileLogger(
       path.join(app.getPath("userData"), "ade-idle.jsonl"),
     );
+    // Welcome-screen IPCs (project create/clone, listMyRepos) need scaffold +
+    // github services even before a project is opened. Build minimal versions
+    // here that share the user-data token store. detectRepo / publishCurrent
+    // require an active project and will throw clearly when called dormant.
+    const dormantGithubService = createGithubService({
+      logger,
+      projectRoot: normalizedRoot,
+      appDataDir: app.getPath("userData"),
+    });
+    const dormantProjectScaffoldService = createProjectScaffoldService({
+      logger,
+      githubService: dormantGithubService,
+    });
     return {
       db: null,
       logger,
@@ -3915,7 +3935,8 @@ app.whenReady().then(async () => {
       iosSimulatorService: null,
       appControlService: null,
       builtInBrowserService: null,
-      githubService: null,
+      githubService: dormantGithubService,
+      projectScaffoldService: dormantProjectScaffoldService,
       feedbackReporterService: null,
       prService: null,
       prPollingService: null,

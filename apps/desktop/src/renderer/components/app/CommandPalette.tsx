@@ -3,6 +3,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
+  ArrowLeft,
   ArrowRight,
   CircleNotch,
   Clock,
@@ -12,6 +13,7 @@ import {
   MagnifyingGlass,
   Stack,
   Warning,
+  X,
 } from "@phosphor-icons/react";
 import { motion, AnimatePresence } from "motion/react";
 import { useNavigate } from "react-router-dom";
@@ -22,8 +24,25 @@ import { PROJECT_BROWSER_CLOSE_EVENT } from "../../lib/projectBrowserEvents";
 import { useAppStore } from "../../state/appStore";
 import { cn } from "../ui/cn";
 import { readStoredPrsRoute } from "../prs/prsRouteState";
+import { AddProjectChooser } from "../projects/AddProjectChooser";
+import { CloneProjectForm } from "../projects/CloneProjectForm";
+import { CreateProjectForm } from "../projects/CreateProjectForm";
+import { ProjectActionSuccess } from "../projects/ProjectActionSuccess";
 
-export type CommandPaletteIntent = "default" | "project-browse";
+export type CommandPaletteIntent =
+  | "default"
+  | "project-browse"
+  | "project-add"
+  | "project-create"
+  | "project-clone";
+
+type CommandPaletteMode = CommandPaletteIntent | "project-success";
+
+type ProjectActionOutcome = {
+  verb: "Created" | "Cloned";
+  displayName: string;
+  rootPath: string;
+};
 
 type Command = {
   id: string;
@@ -143,7 +162,8 @@ export function CommandPalette({
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
   const hasActiveProject = Boolean(project?.rootPath);
 
-  const [mode, setMode] = useState<CommandPaletteIntent>("default");
+  const [mode, setMode] = useState<CommandPaletteMode>("default");
+  const [actionOutcome, setActionOutcome] = useState<ProjectActionOutcome | null>(null);
   const [q, setQ] = useState("");
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [browseInput, setBrowseInput] = useState(defaultBrowseInput(project?.rootPath));
@@ -173,6 +193,22 @@ export function CommandPalette({
     setBrowseSelectedIdx(0);
   }, [project?.rootPath]);
 
+  const startProjectAdd = useCallback(() => {
+    setMode("project-add");
+    setQ("");
+    setActionOutcome(null);
+  }, []);
+
+  const startProjectCreate = useCallback(() => {
+    setMode("project-create");
+    setActionOutcome(null);
+  }, []);
+
+  const startProjectClone = useCallback(() => {
+    setMode("project-clone");
+    setActionOutcome(null);
+  }, []);
+
   useEffect(() => {
     if (!open) {
       setMode("default");
@@ -182,6 +218,7 @@ export function CommandPalette({
       setBrowseLoading(false);
       setOpenProjectPending(false);
       setSystemPickerPending(false);
+      setActionOutcome(null);
       return;
     }
 
@@ -190,11 +227,26 @@ export function CommandPalette({
       return;
     }
 
+    if (intent === "project-add") {
+      startProjectAdd();
+      return;
+    }
+
+    if (intent === "project-create") {
+      startProjectCreate();
+      return;
+    }
+
+    if (intent === "project-clone") {
+      startProjectClone();
+      return;
+    }
+
     setMode("default");
     setQ("");
     setSelectedIdx(0);
     setBrowseError(null);
-  }, [intent, open, startProjectBrowse]);
+  }, [intent, open, startProjectAdd, startProjectBrowse, startProjectClone, startProjectCreate]);
 
   useEffect(() => {
     if (!open || mode !== "project-browse") return;
@@ -214,6 +266,22 @@ export function CommandPalette({
         group: "Projects",
         closeOnRun: false,
         run: startProjectBrowse,
+      },
+      {
+        id: "project-create",
+        title: "Create new project",
+        hint: "New folder, git init, ready to go",
+        group: "Projects",
+        closeOnRun: false,
+        run: startProjectCreate,
+      },
+      {
+        id: "project-clone",
+        title: "Clone from GitHub",
+        hint: "Paste a URL or pick from your repos",
+        group: "Projects",
+        closeOnRun: false,
+        run: startProjectClone,
       },
       { id: "go-project", title: "Go to Run", shortcut: "G 1", group: "Navigation", run: () => navigate("/project") },
       { id: "go-lanes", title: "Go to Lanes", shortcut: "G L", group: "Navigation", run: () => navigate("/lanes") },
@@ -315,11 +383,28 @@ export function CommandPalette({
     ];
 
     if (!hasActiveProject) {
-      return next.filter((command) => command.id === "project-browse" || command.id === "go-project" || command.id === "ping");
+      return next.filter(
+        (command) =>
+          command.id === "project-browse" ||
+          command.id === "project-create" ||
+          command.id === "project-clone" ||
+          command.id === "go-project" ||
+          command.id === "ping",
+      );
     }
 
     return next;
-  }, [hasActiveProject, lanes, navigate, project?.rootPath, selectLane, selectedLaneId, startProjectBrowse]);
+  }, [
+    hasActiveProject,
+    lanes,
+    navigate,
+    project?.rootPath,
+    selectLane,
+    selectedLaneId,
+    startProjectBrowse,
+    startProjectClone,
+    startProjectCreate,
+  ]);
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -700,14 +785,71 @@ export function CommandPalette({
   );
 
   const isBrowsing = mode === "project-browse";
-  const resultHeightClass = isBrowsing ? "h-[620px] max-h-[86vh]" : "max-h-[400px]";
-  const widthClass = isBrowsing ? "w-[1080px]" : "w-[680px]";
+  const isAddFlow =
+    mode === "project-add" ||
+    mode === "project-create" ||
+    mode === "project-clone" ||
+    mode === "project-success";
+  const isWideAddFlow = mode === "project-clone";
+  const resultHeightClass = isBrowsing
+    ? "h-[620px] max-h-[86vh]"
+    : isAddFlow
+    ? "max-h-[86vh]"
+    : "max-h-[400px]";
+  const widthClass = isBrowsing
+    ? "w-[1080px]"
+    : isWideAddFlow
+    ? "w-[820px]"
+    : isAddFlow
+    ? "w-[640px]"
+    : "w-[680px]";
   const positionClass = isBrowsing
     ? "fixed inset-0 z-[130] m-auto"
+    : isAddFlow
+    ? "fixed inset-0 z-[130] m-auto h-fit"
     : "fixed left-1/2 top-[12%] z-[130] -translate-x-1/2";
   const inputPlaceholder = isBrowsing
     ? "Paste a path, type to filter, or drop a folder anywhere…"
     : "Search commands...";
+
+  const handleProjectActionSuccess = useCallback(
+    (verb: "Created" | "Cloned", result: { rootPath: string; displayName: string }) => {
+      setActionOutcome({ verb, displayName: result.displayName, rootPath: result.rootPath });
+      setMode("project-success");
+    },
+    [],
+  );
+
+  const handleSuccessOpen = useCallback(async () => {
+    if (!actionOutcome) {
+      onOpenChange(false);
+      return;
+    }
+    try {
+      await switchProjectToPath(actionOutcome.rootPath);
+    } catch (error) {
+      console.error("Failed to open new project", error);
+    }
+    onOpenChange(false);
+  }, [actionOutcome, onOpenChange, switchProjectToPath]);
+
+  const handleSuccessStay = useCallback(() => {
+    onOpenChange(false);
+  }, [onOpenChange]);
+
+  const addFlowTitle =
+    mode === "project-add"
+      ? "Add a project"
+      : mode === "project-create"
+      ? "Create a new project"
+      : mode === "project-clone"
+      ? "Clone from GitHub"
+      : actionOutcome
+      ? `${actionOutcome.verb}!`
+      : "";
+
+  const showAddFlowBack =
+    mode === "project-create" || mode === "project-clone" || mode === "project-success";
 
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -784,48 +926,131 @@ export function CommandPalette({
                   />
                 )}
                 <Dialog.Title className="sr-only">
-                  {mode === "project-browse" ? "Project browser" : "Command palette"}
+                  {mode === "project-browse"
+                    ? "Project browser"
+                    : isAddFlow
+                    ? addFlowTitle
+                    : "Command palette"}
                 </Dialog.Title>
                 <Dialog.Description className="sr-only">
                   {mode === "project-browse"
                     ? "Browse folders in ADE and open a Git repository without leaving the app."
+                    : isAddFlow
+                    ? "Open, create, or clone a project."
                     : "Search ADE commands and jump to actions quickly."}
                 </Dialog.Description>
 
-                <div
-                  className="relative flex items-center gap-3 border-b px-4"
-                  style={{
-                    background: "color-mix(in srgb, var(--color-surface-recessed) 92%, rgba(167,139,250,0.08))",
-                    borderColor: "color-mix(in srgb, var(--color-accent) 14%, var(--color-border))",
-                  }}
-                >
-                  <MagnifyingGlass size={18} weight="regular" className="shrink-0 text-[var(--color-muted-fg)]" />
-                  <input
-                    data-tour={isBrowsing ? "project.browserInput" : undefined}
-                    value={isBrowsing ? browseInput : q}
-                    onChange={(event) => {
-                      if (isBrowsing) {
-                        setBrowseInput(event.target.value);
-                        setBrowseSelectedIdx(0);
-                        return;
-                      }
-                      setQ(event.target.value);
-                      setSelectedIdx(0);
+                {isAddFlow ? (
+                  <div
+                    className="relative flex items-center gap-3 border-b px-4 py-3"
+                    style={{
+                      background:
+                        "color-mix(in srgb, var(--color-surface-recessed) 92%, rgba(167,139,250,0.08))",
+                      borderColor:
+                        "color-mix(in srgb, var(--color-accent) 14%, var(--color-border))",
                     }}
-                    onKeyDown={isBrowsing ? handleBrowseKeyDown : handleDefaultKeyDown}
-                    placeholder={inputPlaceholder}
-                    className={cn(
-                      "h-[56px] w-full bg-transparent text-[15px] text-[var(--color-fg)] outline-none placeholder:text-[var(--color-muted-fg)]",
-                      !isBrowsing && "font-mono"
+                  >
+                    {showAddFlowBack ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActionOutcome(null);
+                          setMode("project-add");
+                        }}
+                        className="inline-flex h-8 items-center justify-center gap-1.5 rounded-md border border-transparent px-2 text-xs font-medium text-[var(--color-muted-fg)] transition-colors hover:border-[var(--color-border)] hover:bg-[var(--color-muted)] hover:text-[var(--color-fg)]"
+                        aria-label="Back to chooser"
+                      >
+                        <ArrowLeft size={14} weight="regular" />
+                        Back
+                      </button>
+                    ) : (
+                      <span className="inline-flex h-8 w-8" aria-hidden />
                     )}
-                    autoFocus
-                  />
-                  <span className="hidden shrink-0 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1 text-[10px] font-mono text-[var(--color-muted-fg)] sm:inline-flex">
-                    ESC
-                  </span>
-                </div>
+                    <h2 className="flex-1 truncate text-center text-sm font-semibold tracking-wide text-[var(--color-fg)]">
+                      {addFlowTitle}
+                    </h2>
+                    <Dialog.Close asChild>
+                      <button
+                        type="button"
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-transparent text-[var(--color-muted-fg)] transition-colors hover:border-[var(--color-border)] hover:bg-[var(--color-muted)] hover:text-[var(--color-fg)]"
+                        aria-label="Close"
+                      >
+                        <X size={14} weight="bold" />
+                      </button>
+                    </Dialog.Close>
+                  </div>
+                ) : (
+                  <div
+                    className="relative flex items-center gap-3 border-b px-4"
+                    style={{
+                      background: "color-mix(in srgb, var(--color-surface-recessed) 92%, rgba(167,139,250,0.08))",
+                      borderColor: "color-mix(in srgb, var(--color-accent) 14%, var(--color-border))",
+                    }}
+                  >
+                    <MagnifyingGlass size={18} weight="regular" className="shrink-0 text-[var(--color-muted-fg)]" />
+                    <input
+                      data-tour={isBrowsing ? "project.browserInput" : undefined}
+                      value={isBrowsing ? browseInput : q}
+                      onChange={(event) => {
+                        if (isBrowsing) {
+                          setBrowseInput(event.target.value);
+                          setBrowseSelectedIdx(0);
+                          return;
+                        }
+                        setQ(event.target.value);
+                        setSelectedIdx(0);
+                      }}
+                      onKeyDown={isBrowsing ? handleBrowseKeyDown : handleDefaultKeyDown}
+                      placeholder={inputPlaceholder}
+                      className={cn(
+                        "h-[56px] w-full bg-transparent text-[15px] text-[var(--color-fg)] outline-none placeholder:text-[var(--color-muted-fg)]",
+                        !isBrowsing && "font-mono"
+                      )}
+                      autoFocus
+                    />
+                    <span className="hidden shrink-0 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1 text-[10px] font-mono text-[var(--color-muted-fg)] sm:inline-flex">
+                      ESC
+                    </span>
+                  </div>
+                )}
 
-                {isBrowsing ? (
+                {isAddFlow ? (
+                  <div className="flex-1 overflow-auto p-6">
+                    {mode === "project-add" ? (
+                      <AddProjectChooser
+                        onChoose={(choice) => {
+                          if (choice === "open") {
+                            startProjectBrowse();
+                          } else if (choice === "create") {
+                            startProjectCreate();
+                          } else {
+                            startProjectClone();
+                          }
+                        }}
+                      />
+                    ) : mode === "project-create" ? (
+                      <CreateProjectForm
+                        onCancel={() => setMode("project-add")}
+                        onCreated={(result) => handleProjectActionSuccess("Created", result)}
+                      />
+                    ) : mode === "project-clone" ? (
+                      <CloneProjectForm
+                        onCancel={() => setMode("project-add")}
+                        onCloned={(result) => handleProjectActionSuccess("Cloned", result)}
+                      />
+                    ) : mode === "project-success" && actionOutcome ? (
+                      <ProjectActionSuccess
+                        verb={actionOutcome.verb}
+                        displayName={actionOutcome.displayName}
+                        rootPath={actionOutcome.rootPath}
+                        onStay={handleSuccessStay}
+                        onOpen={() => {
+                          void handleSuccessOpen();
+                        }}
+                      />
+                    ) : null}
+                  </div>
+                ) : isBrowsing ? (
                   <>
                     <div className="grid min-h-0 flex-1 grid-cols-[420px_minmax(0,1fr)]">
                       <div

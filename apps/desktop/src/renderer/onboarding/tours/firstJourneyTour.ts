@@ -93,7 +93,7 @@ function isProjectBrowserOpenSync(): boolean {
 
 function isWelcomeProjectScreenVisible(): boolean {
   if (typeof document === "undefined") return false;
-  return document.querySelector('[data-tour="project.welcomeOpenButton"]') != null;
+  return document.querySelector('[data-tour="project.welcomeAddButton"]') != null;
 }
 
 function requestFocusedLaneLayout(): void {
@@ -178,16 +178,16 @@ const act0ProjectChoice: TourStep = {
 
 const act0OpenProject: TourStep = {
   id: "act0.openProject",
-  target: '[data-tour="project.welcomeOpenButton"]',
+  target: '[data-tour="project.welcomeAddButton"]',
   title: "Open a project",
   body: "Pick a folder of code to work on. ADE works with any Git repository — that just means a folder you've put under version control. Open a recent one, or click **Open Project** to browse to a different folder.",
   placement: "right",
-  waitForSelector: '[data-tour="project.welcomeOpenButton"]',
+  waitForSelector: '[data-tour="project.welcomeAddButton"]',
   advanceWhenSelector: '[data-tour="project.browser"]',
   awaitingActionLabel: "Waiting for project",
   exitOnOutsideInteraction: true,
   allowedInteractionSelectors: [
-    '[data-tour="project.welcomeOpenButton"]',
+    '[data-tour="project.welcomeAddButton"]',
     '[data-tour="project.recentProject"]',
   ],
   docUrl: docs.welcome,

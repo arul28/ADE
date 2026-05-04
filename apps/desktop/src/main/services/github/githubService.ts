@@ -17,7 +17,7 @@ function detectGitHubTokenType(token: string): GitHubStatus["tokenType"] {
   return "unknown";
 }
 
-function parseGitHubRepoFromRemoteUrl(remoteUrlRaw: string): GitHubRepoRef | null {
+export function parseGitHubRepoFromRemoteUrl(remoteUrlRaw: string): GitHubRepoRef | null {
   const remoteUrl = remoteUrlRaw.trim();
   if (!remoteUrl) return null;
 
@@ -48,7 +48,7 @@ function parseGitHubRepoFromRemoteUrl(remoteUrlRaw: string): GitHubRepoRef | nul
   return null;
 }
 
-function parseNextLink(linkHeader: string | null): string | null {
+export function parseNextLink(linkHeader: string | null): string | null {
   if (!linkHeader) return null;
   for (const part of linkHeader.split(",")) {
     const match = part.match(/<([^>]+)>;\s*rel="([^"]+)"/);
@@ -180,6 +180,18 @@ export function createGithubService({
     const res = await runGit(["remote", "get-url", "origin"], { cwd: projectRoot, timeoutMs: 8000 });
     if (res.exitCode !== 0) return null;
     return parseGitHubRepoFromRemoteUrl(res.stdout);
+  };
+
+  // Returns `{ repo, hasOrigin }` in one git invocation. `hasOrigin` is true
+  // for ANY `origin` remote (GitLab/Bitbucket/etc.), while `repo` is populated
+  // only when origin parses as GitHub. Callers use `hasOrigin` to hide the
+  // Publish-to-GitHub CTA on projects with non-GitHub remotes.
+  const detectOrigin = async (): Promise<{ repo: GitHubRepoRef | null; hasOrigin: boolean }> => {
+    const res = await runGit(["remote", "get-url", "origin"], { cwd: projectRoot, timeoutMs: 8000 });
+    if (res.exitCode !== 0) return { repo: null, hasOrigin: false };
+    const url = res.stdout.trim();
+    if (!url) return { repo: null, hasOrigin: false };
+    return { repo: parseGitHubRepoFromRemoteUrl(url), hasOrigin: true };
   };
 
   const validateToken = async (token: string): Promise<{ userLogin: string | null; scopes: string[]; tokenType: GitHubStatus["tokenType"] }> => {
@@ -399,7 +411,7 @@ export function createGithubService({
       cachedAt = 0;
     }
     const token = readStoredToken();
-    const repo = await detectRepo().catch(() => null);
+    const { repo, hasOrigin } = await detectOrigin().catch(() => ({ repo: null, hasOrigin: false }));
     if (!token) {
       cachedStatus = {
         tokenStored: false,
@@ -407,6 +419,7 @@ export function createGithubService({
         storageScope: "app",
         tokenType: "unknown",
         repo,
+        hasOrigin,
         userLogin: null,
         scopes: [],
         checkedAt: null,
@@ -435,7 +448,7 @@ export function createGithubService({
         repo,
         repoAccessOk,
       });
-      return { ...cachedStatus, repo, repoAccessOk, repoAccessError, connected };
+      return { ...cachedStatus, repo, hasOrigin, repoAccessOk, repoAccessError, connected };
     }
 
     try {
@@ -468,6 +481,7 @@ export function createGithubService({
         storageScope: "app",
         tokenType: validated.tokenType,
         repo,
+        hasOrigin,
         userLogin: validated.userLogin,
         scopes: validated.scopes,
         checkedAt: nowIso(),
@@ -485,6 +499,7 @@ export function createGithubService({
         storageScope: "app",
         tokenType: detectGitHubTokenType(token),
         repo,
+        hasOrigin,
         userLogin: null,
         scopes: [],
         checkedAt: nowIso(),
@@ -644,6 +659,149 @@ export function createGithubService({
     return data ?? null;
   };
 
+  const createRepository = async (args: {
+    name: string;
+    description?: string;
+    isPrivate: boolean;
+  }): Promise<{ cloneUrl: string; sshUrl: string; htmlUrl: string; defaultBranch: string }> => {
+    const body: Record<string, unknown> = {
+      name: args.name,
+      private: args.isPrivate,
+      auto_init: false,
+    };
+    if (args.description != null && args.description.trim().length > 0) {
+      body.description = args.description.trim();
+    }
+    const { data } = await apiRequest<Record<string, unknown>>({
+      method: "POST",
+      path: "/user/repos",
+      body,
+    });
+    return {
+      cloneUrl: asString(data.clone_url),
+      sshUrl: asString(data.ssh_url),
+      htmlUrl: asString(data.html_url),
+      defaultBranch: asString(data.default_branch) || "main",
+    };
+  };
+
+  const getRepository = async (
+    owner: string,
+    name: string,
+  ): Promise<{
+    cloneUrl: string;
+    sshUrl: string;
+    htmlUrl: string;
+    defaultBranch: string;
+    size: number;
+  }> => {
+    const { data } = await apiRequest<Record<string, unknown>>({
+      method: "GET",
+      path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`,
+    });
+    return {
+      cloneUrl: asString(data.clone_url),
+      sshUrl: asString(data.ssh_url),
+      htmlUrl: asString(data.html_url),
+      defaultBranch: asString(data.default_branch) || "main",
+      size: typeof data.size === "number" ? data.size : 0,
+    };
+  };
+
+  const publishCurrentProject = async (
+    args: { name: string; description?: string; isPrivate: boolean },
+  ): Promise<{ state: "pushed" | "remote_added"; htmlUrl: string }> => {
+    const token = readStoredToken();
+    if (!token) {
+      const err = new Error("GitHub is not connected. Add a token in Settings.") as Error & { code?: string };
+      err.code = "github_not_connected";
+      throw err;
+    }
+
+    const existingRemote = await runGit(["remote", "get-url", "origin"], { cwd: projectRoot, timeoutMs: 8_000 });
+    if (existingRemote.exitCode === 0 && existingRemote.stdout.trim().length > 0) {
+      const err = new Error("This project already has a GitHub remote named 'origin'.") as Error & { code?: string };
+      err.code = "remote_already_exists";
+      throw err;
+    }
+
+    // If a previous publish attempt created the GitHub repo but then failed
+    // before push (auth/network), `createRepository` will 422 with "name
+    // already exists". Recover by GETting the existing repo and reusing its
+    // cloneUrl — but only when it's empty (size=0), so we never overwrite
+    // an unrelated user repo with the same name.
+    let created: { cloneUrl: string; sshUrl: string; htmlUrl: string; defaultBranch: string };
+    try {
+      created = await createRepository({
+        name: args.name,
+        description: args.description,
+        isPrivate: args.isPrivate,
+      });
+    } catch (createErr) {
+      const message = createErr instanceof Error ? createErr.message : String(createErr);
+      const isNameTaken = /already exists/i.test(message);
+      if (!isNameTaken) throw createErr;
+
+      const validated = await validateToken(token).catch(() => ({ userLogin: null as string | null }));
+      const owner = validated.userLogin;
+      if (!owner) throw createErr;
+
+      const existing = await getRepository(owner, args.name);
+      if (existing.size > 0) {
+        const taken = new Error(
+          `A GitHub repo named '${args.name}' already exists on your account and contains commits. Pick a different name.`,
+        ) as Error & { code?: string };
+        taken.code = "repo_name_taken";
+        throw taken;
+      }
+      created = {
+        cloneUrl: existing.cloneUrl,
+        sshUrl: existing.sshUrl,
+        htmlUrl: existing.htmlUrl,
+        defaultBranch: existing.defaultBranch,
+      };
+    }
+
+    // After createRepository succeeds, the GitHub repo exists. If we then
+    // fail to add the local origin or push to it, we must remove the local
+    // origin we may have added so that a retry isn't blocked by the
+    // remote_already_exists guard at the top of this function.
+    const cleanupLocalOrigin = async (): Promise<void> => {
+      try {
+        await runGit(["remote", "remove", "origin"], { cwd: projectRoot, timeoutMs: 8_000 });
+      } catch {
+        // best-effort
+      }
+    };
+
+    const remoteAddRes = await runGit(["remote", "add", "origin", created.cloneUrl], {
+      cwd: projectRoot,
+      timeoutMs: 8_000,
+    });
+    if (remoteAddRes.exitCode !== 0) {
+      await cleanupLocalOrigin();
+      throw new Error(`Failed to add origin remote: ${remoteAddRes.stderr.trim() || `exit ${remoteAddRes.exitCode}`}`);
+    }
+
+    const headRes = await runGit(["rev-parse", "--verify", "HEAD"], { cwd: projectRoot, timeoutMs: 5_000 });
+    let resultState: "pushed" | "remote_added";
+    if (headRes.exitCode === 0) {
+      const pushRes = await runGit(["push", "-u", "origin", "HEAD"], { cwd: projectRoot, timeoutMs: 5 * 60_000 });
+      if (pushRes.exitCode !== 0) {
+        await cleanupLocalOrigin();
+        throw new Error(`Failed to push to origin: ${pushRes.stderr.trim() || `exit ${pushRes.exitCode}`}`);
+      }
+      resultState = "pushed";
+    } else {
+      resultState = "remote_added";
+    }
+
+    cachedStatus = null;
+    cachedAt = 0;
+
+    return { state: resultState, htmlUrl: created.htmlUrl };
+  };
+
   return {
     getStatus,
 
@@ -675,6 +833,13 @@ export function createGithubService({
 
     detectRepo,
     apiRequest,
+    parseNextLink,
+    parseGitHubRepoFromRemoteUrl,
+
+    // Repo creation + publish
+    createRepository,
+    getRepository,
+    publishCurrentProject,
 
     // Polling/picker read helpers
     listRepoLabels,

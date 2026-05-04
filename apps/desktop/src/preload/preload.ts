@@ -342,6 +342,14 @@ import type {
   ProjectConfigTrust,
   ProjectConfigValidationResult,
   ProjectInfo,
+  CreateProjectInput,
+  CreateProjectResult,
+  CloneProjectInput,
+  CloneProjectResult,
+  ListMyGitHubReposInput,
+  ListMyGitHubReposResult,
+  PublishProjectInput,
+  PublishProjectResult,
   RecentProjectSummary,
   PtyCreateArgs,
   PtyCreateResult,
@@ -1109,6 +1117,12 @@ contextBridge.exposeInMainWorld("ade", {
       orderedPaths: string[],
     ): Promise<RecentProjectSummary[]> =>
       ipcRenderer.invoke(IPC.projectReorderRecent, { orderedPaths }),
+    createLocal: async (input: CreateProjectInput): Promise<CreateProjectResult> =>
+      ipcRenderer.invoke(IPC.projectCreateLocal, input),
+    clone: async (input: CloneProjectInput): Promise<CloneProjectResult> =>
+      ipcRenderer.invoke(IPC.projectClone, input),
+    getDefaultParentDir: async (): Promise<string> =>
+      ipcRenderer.invoke(IPC.projectGetDefaultParentDir),
     getSnapshot: async (): Promise<AdeProjectSnapshot> =>
       ipcRenderer.invoke(IPC.projectStateGetSnapshot),
     initializeOrRepair: async (): Promise<AdeCleanupResult> =>
@@ -2845,6 +2859,10 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.githubListRepoLabels, args),
     listRepoCollaborators: async (args: { owner: string; name: string }): Promise<Array<{ login: string; avatarUrl?: string }>> =>
       ipcRenderer.invoke(IPC.githubListRepoCollaborators, args),
+    listMyRepos: async (input: ListMyGitHubReposInput = {}): Promise<ListMyGitHubReposResult> =>
+      ipcRenderer.invoke(IPC.githubListMyRepos, input),
+    publishCurrentProject: async (input: PublishProjectInput): Promise<PublishProjectResult> =>
+      clearAround(() => githubStatusCache.clear(), () => ipcRenderer.invoke(IPC.githubPublishCurrentProject, input)),
     onStatusChanged: (cb: (status: GitHubStatus) => void): (() => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: GitHubStatus) => {
         githubStatusCache.clear();

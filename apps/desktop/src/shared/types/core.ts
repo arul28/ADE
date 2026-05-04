@@ -111,6 +111,56 @@ export type RecentProjectSummary = {
   laneCount?: number;
 };
 
+export type CreateProjectInput = {
+  name: string;
+  parentDir: string;
+};
+
+export type CreateProjectResult = {
+  rootPath: string;
+};
+
+export type CloneProjectInput = {
+  url: string;
+  parentDir: string;
+  name?: string;
+};
+
+export type CloneProjectResult = {
+  rootPath: string;
+};
+
+export type MyGitHubRepoSummary = {
+  owner: string;
+  name: string;
+  fullName: string;
+  isPrivate: boolean;
+  pushedAt: string | null;
+  defaultBranch: string;
+  htmlUrl: string;
+  cloneUrl: string;
+  sshUrl: string;
+};
+
+export type ListMyGitHubReposInput = {
+  search?: string;
+};
+
+export type ListMyGitHubReposResult = {
+  repos: MyGitHubRepoSummary[];
+};
+
+export type PublishProjectInput = {
+  name: string;
+  description?: string;
+  isPrivate: boolean;
+};
+
+export type PublishProjectResult = {
+  state: "pushed" | "remote_added";
+  htmlUrl: string;
+};
+
 export type ProjectIcon = {
   dataUrl: string | null;
   sourcePath: string | null;

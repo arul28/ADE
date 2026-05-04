@@ -31,6 +31,7 @@
   - `npm --prefix apps/ade-cli run test`
   - `npm --prefix apps/ade-cli run build`
 - Run the smallest relevant subset first when iterating, then finish with the broader checks that cover the touched surfaces.
+- If even running the full desktop test suit, u ahve to shard like ci
 
 ## Terminology
 

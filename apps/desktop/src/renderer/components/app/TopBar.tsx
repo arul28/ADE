@@ -1,9 +1,10 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
-import { ChatCircleDots, CircleNotch, DeviceMobile, Folder, FolderOpen, Plus, Minus, Trash, X } from "@phosphor-icons/react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChatCircleDots, CircleNotch, DeviceMobile, Folder, FolderOpen, Plus, Minus, Trash, UploadSimple, X } from "@phosphor-icons/react";
 import * as Dialog from "@radix-ui/react-dialog";
 
 import { useAppStore } from "../../state/appStore";
 import { isRunOwnedSession } from "../../lib/sessions";
+import { useGithubProjectRemote } from "../../lib/useGithubProjectRemote";
 import {
   ZOOM_LEVEL_KEY,
   MIN_ZOOM_LEVEL,
@@ -12,10 +13,12 @@ import {
   getStoredZoomLevel,
 } from "../../lib/zoom";
 import { cn } from "../ui/cn";
+import { SmartTooltip } from "../ui/SmartTooltip";
 import type { ProcessRuntime, ProjectIcon, RecentProjectSummary, SyncRoleSnapshot } from "../../../shared/types";
 import { AutoUpdateControl } from "./AutoUpdateControl";
 import { FeedbackReporterModal } from "./FeedbackReporterModal";
 import { HelpMenu } from "../onboarding/HelpMenu";
+import { PublishToGitHubDialog } from "../projects/PublishToGitHubDialog";
 import { SyncDevicesSection } from "../settings/SyncDevicesSection";
 
 const RUNNING_LANE_PROCESS_STATES: ProcessRuntime["status"][] = ["starting", "running", "degraded"];
@@ -340,6 +343,7 @@ export function TopBar() {
   const [syncSnapshot, setSyncSnapshot] = useState<SyncRoleSnapshot | null>(null);
   const [phoneSyncOpen, setPhoneSyncOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [publishOpen, setPublishOpen] = useState(false);
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [dropIdx, setDropIdx] = useState<number | null>(null);
   const phoneSyncPanelRef = useRef<HTMLDivElement | null>(null);
@@ -350,6 +354,24 @@ export function TopBar() {
     showWelcome !== true &&
     isNewTabOpen !== true &&
     Boolean(project?.rootPath);
+
+  const projectRootForRemote = workspaceProjectOpen ? project?.rootPath ?? null : null;
+  const { hasGitHubRemote, hasOrigin, refresh: refreshRemote } =
+    useGithubProjectRemote(projectRootForRemote);
+  const publishDefaultName = useMemo(() => {
+    const root = project?.rootPath;
+    if (!root) return "";
+    const segments = root.split(/[\\/]/).filter(Boolean);
+    return segments[segments.length - 1] ?? "";
+  }, [project?.rootPath]);
+  // Hide the Publish CTA when ANY origin remote is configured — including
+  // non-GitHub origins, which would cause publishCurrentProject to throw
+  // remote_already_exists.
+  const showPublishPill =
+    workspaceProjectOpen &&
+    Boolean(project?.rootPath) &&
+    hasGitHubRemote === false &&
+    hasOrigin === false;
 
   const applyZoom = useCallback((pct: number) => {
     const clamped = Math.max(MIN_ZOOM_LEVEL, Math.min(MAX_ZOOM_LEVEL, pct));
@@ -845,6 +867,41 @@ export function TopBar() {
         </button>
       </div>
 
+      {showPublishPill ? (
+        <SmartTooltip
+          content={{
+            label: "Publish to GitHub",
+            description:
+              "Create a GitHub repository for this project and push the current branch.",
+          }}
+          wrapperStyle={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+        >
+          <button
+            type="button"
+            aria-label="Publish to GitHub"
+            onClick={() => setPublishOpen(true)}
+            disabled={isProjectBusy}
+            className="shrink-0 inline-flex items-center gap-1.5 rounded-md px-2 py-1 transition-colors duration-150"
+            style={{
+              fontFamily: "var(--font-mono)",
+              fontSize: 10,
+              fontWeight: 600,
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+              color: "var(--color-accent)",
+              background: "color-mix(in srgb, var(--color-accent) 18%, transparent)",
+              border: "1px solid color-mix(in srgb, var(--color-accent) 36%, transparent)",
+              borderRadius: 6,
+              cursor: isProjectBusy ? "not-allowed" : "pointer",
+              opacity: isProjectBusy ? 0.55 : 1,
+            }}
+          >
+            <UploadSimple size={11} weight="bold" />
+            Publish
+          </button>
+        </SmartTooltip>
+      ) : null}
+
       {projectTransitionLabel ? (
         <div
           className={cn(
@@ -968,6 +1025,15 @@ export function TopBar() {
       </button>
 
       <FeedbackReporterModal open={feedbackOpen} onOpenChange={setFeedbackOpen} />
+
+      <PublishToGitHubDialog
+        open={publishOpen}
+        onOpenChange={setPublishOpen}
+        defaultRepoName={publishDefaultName}
+        onPublished={() => {
+          refreshRemote();
+        }}
+      />
 
       {/* Zoom controls */}
       <div

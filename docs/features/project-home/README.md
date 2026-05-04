@@ -71,6 +71,21 @@ Main process (the substrate):
   `limit` with 500 max), and resolves any exact-directory match up to
   an openable repo root via `resolveRepoRoot()`. Windows-style paths
   are rejected on non-Windows hosts.
+- `apps/desktop/src/main/services/projects/projectScaffoldService.ts`
+  — backs the "Add project → Create" and "Add project → Clone" flows.
+  `createLocalProject({ name, parentDir })` makes a new directory, runs
+  `git init --initial-branch=main` (with a `git init` + `symbolic-ref`
+  fallback for older git), writes a starter `README.md` + `.gitignore`,
+  and creates an "Initial commit" (retried with an `ADE <ade@local>`
+  author when the user has no git identity configured).
+  `cloneRepository({ url, parentDir, name })` validates the URL via
+  `parseGitHubRepoFromRemoteUrl`, ensures the target is empty, and
+  shells out to `git clone`. `listMyGitHubRepos({ search })` paginates
+  `/user/repos` (up to 5 pages of 100, sorted by `pushed`) and caches
+  the result for 60s keyed by token prefix; `search` is a
+  case-insensitive `fullName` substring filter applied to the cached
+  list. `getDefaultParentDir(recentProjects)` returns the parent of
+  the most recent project's `rootPath`, falling back to `~/Projects`.
 - `apps/desktop/src/main/services/projects/projectDetailService.ts` —
   produces the palette's preview pane: branch name, dirty-file count,
   ahead/behind counts, last commit (subject / ISO date / short sha),
@@ -152,8 +167,8 @@ Rendered by `RunPage` when `useAppStore((s) => s.showWelcome)` is true
 a prior session. Shows:
 
 - ADE logo with a subtle pulse-glow
-- "OPEN PROJECT" primary button → opens the Command Palette in
-  `intent="project-browse"` mode (see the next subsection)
+- "ADD PROJECT" primary button → opens the Command Palette in
+  `intent="project-add"` mode (see the next subsection)
 - recent projects list from `window.ade.project.listRecent()`, with
   display name, host path, lane count, and last-opened timestamp
 
@@ -161,19 +176,33 @@ Clicking a recent project calls `appStore.switchProjectToPath(path)`
 which goes through the project open flow
 (`adeProjectService.openProject`).
 
-### Command Palette project browser
+### Command Palette project flows
 
 The Command Palette (`renderer/components/app/CommandPalette.tsx`) is a
-dual-mode Radix dialog. In default mode it fuzzy-filters navigation /
-action commands; in `intent="project-browse"` mode it becomes a
-keyboard-first project opener. The palette mounts from two places:
+multi-mode Radix dialog. In default mode it fuzzy-filters navigation /
+action commands; with an `intent` it switches into a focused project
+flow without closing. The supported intents are:
+
+- `default` — fuzzy command list
+- `project-browse` — keyboard-first opener for an existing folder
+- `project-add` — three-tile chooser (Open / Create / Clone) via
+  `AddProjectChooser`
+- `project-create` — `CreateProjectForm` (new directory + git init)
+- `project-clone` — `CloneProjectForm` (URL tab + "My repos" tab)
+
+The palette mounts from two places:
 
 - **`AppShell`** — global ⌘K shortcut opens the palette in default
-  mode. The "Open project" / "Open another project" command switches
-  it into `project-browse` mode without closing.
-- **`WelcomeScreen` in `RunPage`** — the "OPEN PROJECT" button mounts
-  a dedicated palette instance with `intent="project-browse"` so the
-  empty-project state skips straight to the browser.
+  mode. The "Open project", "Create new project", and "Clone from
+  GitHub" commands swap modes without closing the dialog.
+- **`WelcomeScreen` in `RunPage`** — the "ADD PROJECT" button mounts
+  a dedicated palette instance with `intent="project-add"` so the
+  empty-project state lands on the chooser.
+
+After a successful create/clone, the palette flips to a
+`ProjectActionSuccess` panel offering "Open it now" (calls
+`switchProjectToPath`) or "Stay here". The Back button on every form
+returns to the chooser.
 
 Project-browse behavior:
 
@@ -196,6 +225,47 @@ Project-browse behavior:
    folder's absolute path and then opens it.
 6. A "Choose folder…" escape hatch falls through to the OS directory
    picker via `window.ade.project.chooseDirectory`.
+
+### Add Project flows
+
+The "Add project" forms live in
+`apps/desktop/src/renderer/components/projects/`:
+
+- `AddProjectChooser.tsx` — three large tiles (Open / Create / Clone)
+  with icon, headline, tagline, and a soft hue-tinted hover state.
+- `CreateProjectForm.tsx` — local-only flow: validates the project
+  name, debounces an existence check via `browseDirectories`, fetches
+  `getDefaultParentDir()` for the parent suggestion, and calls
+  `window.ade.project.createLocal({ name, parentDir })`.
+- `CloneProjectForm.tsx` — two tabs sharing a common parent-directory
+  picker. The **URL** tab pastes any `https://` / `git@…:…` /
+  `ssh://…` URL, derives the folder name on blur, and clones via
+  `window.ade.project.clone({ url, parentDir, name })`. The **My
+  repos** tab calls `window.ade.github.listMyRepos({ search })` (which
+  returns connected-only repos sorted by `pushedAt`); each row
+  expands inline into a parent-directory + folder-name editor and
+  uses the repo's `cloneUrl` for the clone. If the GitHub token is
+  missing, an inline `ConnectGithubPrompt` accepts a PAT and saves it
+  through `window.ade.github.setToken` before re-querying.
+- `ProjectActionSuccess.tsx` — shared success panel after create or
+  clone, offering "Open it now" or "Stay here".
+
+The TopBar exposes a `Publish` pill when a project has no `origin`
+remote. `useGithubProjectRemote(projectRoot)`
+(`renderer/lib/useGithubProjectRemote.ts`) reads
+`window.ade.github.getStatus({ forceRefresh })`, treats
+`status.repo == null` as "no remote", and listens to
+`onStatusChanged` so the pill disappears as soon as the project gets
+an origin. The pill opens `PublishToGitHubDialog`
+(`renderer/components/projects/PublishToGitHubDialog.tsx`), which
+collects a repo name + description + visibility, calls
+`window.ade.github.publishCurrentProject(...)`, and surfaces backend
+codes (`github_not_connected`, `remote_already_exists`) inline. The
+backend (`githubService.publishCurrentProject`) creates the repo via
+`POST /user/repos`, runs `git remote add origin`, then
+`git push -u origin HEAD` if there's a commit to push (otherwise it
+returns `state: "remote_added"` so the user can publish their first
+commit later).
 
 ### Per-lane runtime dashboard
 
