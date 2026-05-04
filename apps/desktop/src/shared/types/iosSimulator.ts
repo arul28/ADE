@@ -391,7 +391,16 @@ export type IosSimulatorSelectResult = {
   source: "ade-inspector" | "accessibility" | "coordinate-fallback";
 };
 
+export type IosSimulatorDrawerMode = "interact" | "inspect" | "preview";
+
 export type IosSimulatorEventPayload =
+  | {
+    type: "drawer-open-requested";
+    action: string;
+    mode: IosSimulatorDrawerMode;
+    chatSessionId?: string | null;
+    laneId?: string | null;
+  }
   | { type: "session-started"; session: IosSimulatorSession }
   | { type: "session-updated"; session: IosSimulatorSession | null }
   | { type: "session-released"; previousSession: IosSimulatorSession | null }

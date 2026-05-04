@@ -198,15 +198,18 @@ For deeper detail on the watcher + trust boundary, see
 
 ## Gotchas
 
-- The file tree is always listed with `includeIgnored: true` in the
-  renderer, so dotfiles and `node_modules` show up by default. Pair
-  callers that pass `includeIgnored: false` (search indexing,
-  watcher default mode) with the corresponding start/stop pair — the
-  watcher refcounts are per-mode.
-- `fileService.readFile` has a 5 MB read cap
-  (`MAX_EDITOR_READ_BYTES`). Files over the cap return a truncated
-  `FileContent` with the binary flag set; Monaco will render a warning
-  instead of the content.
+- The file tree is listed with `includeIgnored: true` in the renderer,
+  so dotfiles show up by default, but volatile ADE runtime paths such
+  as `.ade/worktrees/`, `.ade/cache/`, transcripts, secrets, and the
+  SQLite DB are still filtered out. Pair callers that pass
+  `includeIgnored: false` (search indexing, watcher default mode) with
+  the corresponding start/stop pair — the watcher refcounts are
+  per-mode.
+- `fileService.readFile` sends inline text previews up to 1 MB, inline
+  image previews up to 1 MB, and small unsupported binary payloads up
+  to 256 KB. Larger files return metadata-only `FileContent` with
+  `contentOmitted`, so Monaco is not mounted for payloads that would
+  spike renderer memory.
 - `writeTextAtomic` creates a temp file in the target's directory. If
   the directory has no write permission, the operation throws, which
   surfaces as an IPC rejection at the editor tab.

@@ -4,6 +4,9 @@ import type { createLaneService } from "../lanes/laneService";
 import { runGit } from "../git/git";
 import type { DiffChanges, DiffMode, FileDiff, FileChange } from "../../../shared/types";
 
+const MAX_DIFF_SIDE_TEXT_BYTES = 192 * 1024;
+const DIFF_TRUNCATION_NOTICE = "\n\n[Preview truncated. Open the file externally or in Files for the full content.]\n";
+
 function parseStatusKind(code: string): FileChange["kind"] {
   if (code === "??") return "untracked";
   const c = code.replace(/[^A-Z]/g, "");
@@ -26,7 +29,17 @@ function detectBinary(buf: Buffer): boolean {
   return buf.includes(0);
 }
 
-function readTextFileSafe(absPath: string, maxBytes: number): { exists: boolean; text: string; isBinary?: boolean } {
+function appendTruncationNotice(text: string): string {
+  return `${text.replace(/\s*$/, "")}${DIFF_TRUNCATION_NOTICE}`;
+}
+
+function readTextFileSafe(absPath: string, maxBytes: number): {
+  exists: boolean;
+  text: string;
+  isBinary?: boolean;
+  isTruncated?: boolean;
+  size?: number;
+} {
   try {
     const stat = fs.statSync(absPath);
     if (!stat.isFile()) return { exists: false, text: "" };
@@ -38,8 +51,8 @@ function readTextFileSafe(absPath: string, maxBytes: number): { exists: boolean;
       fs.readSync(fd, buf, 0, buf.length, 0);
       if (detectBinary(buf)) return { exists: true, text: "", isBinary: true };
       const text = buf.toString("utf8");
-      // If truncated, keep the visible prefix; UI can show a warning.
-      return { exists: true, text };
+      const isTruncated = size > maxBytes;
+      return { exists: true, text: isTruncated ? appendTruncationNotice(text) : text, isTruncated, size };
     } finally {
       fs.closeSync(fd);
     }
@@ -52,7 +65,7 @@ async function gitShowText(
   cwd: string,
   spec: string,
   maxBytes: number
-): Promise<{ exists: boolean; text: string; isBinary?: boolean }> {
+): Promise<{ exists: boolean; text: string; isBinary?: boolean; isTruncated?: boolean; size?: number }> {
   const res = await runGit(["show", spec], {
     cwd,
     timeoutMs: 10_000,
@@ -61,13 +74,18 @@ async function gitShowText(
   if (res.exitCode !== 0) return { exists: false, text: "" };
   const buf = Buffer.from(res.stdout, "utf8");
   if (detectBinary(buf)) return { exists: true, text: "", isBinary: true };
-  if (buf.length > maxBytes) return { exists: true, text: buf.subarray(0, maxBytes).toString("utf8") };
-  return { exists: true, text: res.stdout };
+  if (buf.length > maxBytes) {
+    return {
+      exists: true,
+      text: appendTruncationNotice(buf.subarray(0, maxBytes).toString("utf8")),
+      isTruncated: true,
+      size: buf.length,
+    };
+  }
+  return { exists: true, text: res.stdout, size: buf.length };
 }
 
 export function createDiffService({ laneService }: { laneService: ReturnType<typeof createLaneService> }) {
-  const MAX_TEXT_BYTES = 512 * 1024;
-
   return {
     async getChanges(laneId: string): Promise<DiffChanges> {
       const { worktreePath } = laneService.getLaneBaseAndBranch(laneId);
@@ -115,14 +133,14 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
       const abs = path.join(worktreePath, filePath);
 
       if (mode === "staged") {
-        const head = await gitShowText(worktreePath, `HEAD:${filePath}`, MAX_TEXT_BYTES);
-        const idx = await gitShowText(worktreePath, `:${filePath}`, MAX_TEXT_BYTES);
+        const head = await gitShowText(worktreePath, `HEAD:${filePath}`, MAX_DIFF_SIDE_TEXT_BYTES);
+        const idx = await gitShowText(worktreePath, `:${filePath}`, MAX_DIFF_SIDE_TEXT_BYTES);
         const isBinary = Boolean(head.isBinary || idx.isBinary);
         return {
           path: filePath,
           mode,
-          original: { exists: head.exists, text: head.text },
-          modified: { exists: idx.exists, text: idx.text },
+          original: { exists: head.exists, text: head.text, size: head.size, isTruncated: head.isTruncated },
+          modified: { exists: idx.exists, text: idx.text, size: idx.size, isTruncated: idx.isTruncated },
           ...(isBinary ? { isBinary: true } : {})
         };
       }
@@ -139,39 +157,39 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
           const parentSha = parentsRes.exitCode === 0 ? parentsRes.stdout.trim().split(" ").slice(1)[0] : undefined;
           const parentRef = parentSha?.trim() ? parentSha.trim() : null;
 
-          const parentSide = parentRef ? await gitShowText(worktreePath, `${parentRef}:${filePath}`, MAX_TEXT_BYTES) : { exists: false, text: "" };
-          const commitSide = await gitShowText(worktreePath, `${ref}:${filePath}`, MAX_TEXT_BYTES);
+          const parentSide = parentRef ? await gitShowText(worktreePath, `${parentRef}:${filePath}`, MAX_DIFF_SIDE_TEXT_BYTES) : { exists: false, text: "" };
+          const commitSide = await gitShowText(worktreePath, `${ref}:${filePath}`, MAX_DIFF_SIDE_TEXT_BYTES);
           const isBinary = Boolean(parentSide.isBinary || commitSide.isBinary);
           return {
             path: filePath,
             mode,
-            original: { exists: parentSide.exists, text: parentSide.text },
-            modified: { exists: commitSide.exists, text: commitSide.text },
+            original: { exists: parentSide.exists, text: parentSide.text, size: parentSide.size, isTruncated: parentSide.isTruncated },
+            modified: { exists: commitSide.exists, text: commitSide.text, size: commitSide.size, isTruncated: commitSide.isTruncated },
             ...(isBinary ? { isBinary: true } : {})
           };
         }
 
-        const commitSide = await gitShowText(worktreePath, `${ref}:${filePath}`, MAX_TEXT_BYTES);
-        const wt = readTextFileSafe(abs, MAX_TEXT_BYTES);
+        const commitSide = await gitShowText(worktreePath, `${ref}:${filePath}`, MAX_DIFF_SIDE_TEXT_BYTES);
+        const wt = readTextFileSafe(abs, MAX_DIFF_SIDE_TEXT_BYTES);
         const isBinary = Boolean(commitSide.isBinary || wt.isBinary);
         return {
           path: filePath,
           mode,
-          original: { exists: commitSide.exists, text: commitSide.text },
-          modified: { exists: wt.exists, text: wt.text },
+          original: { exists: commitSide.exists, text: commitSide.text, size: commitSide.size, isTruncated: commitSide.isTruncated },
+          modified: { exists: wt.exists, text: wt.text, size: wt.size, isTruncated: wt.isTruncated },
           ...(isBinary ? { isBinary: true } : {})
         };
       }
 
       // Unstaged: index -> working tree
-      const idx = await gitShowText(worktreePath, `:${filePath}`, MAX_TEXT_BYTES);
-      const wt = readTextFileSafe(abs, MAX_TEXT_BYTES);
+      const idx = await gitShowText(worktreePath, `:${filePath}`, MAX_DIFF_SIDE_TEXT_BYTES);
+      const wt = readTextFileSafe(abs, MAX_DIFF_SIDE_TEXT_BYTES);
       const isBinary = Boolean(idx.isBinary || wt.isBinary);
       return {
         path: filePath,
         mode,
-        original: { exists: idx.exists, text: idx.text },
-        modified: { exists: wt.exists, text: wt.text },
+        original: { exists: idx.exists, text: idx.text, size: idx.size, isTruncated: idx.isTruncated },
+        modified: { exists: wt.exists, text: wt.text, size: wt.size, isTruncated: wt.isTruncated },
         ...(isBinary ? { isBinary: true } : {})
       };
     }

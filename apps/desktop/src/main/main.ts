@@ -61,6 +61,7 @@ import type { PortLease, ProjectInfo, SyncMobileProjectSummary, SyncProjectConne
 import type { AutomationTriggerType } from "../shared/types/config";
 import type { AutomationTriggerLinearIssueContext } from "../shared/types/automations";
 import type { LinearIngressEventRecord } from "../shared/types/linearSync";
+import type { IosSimulatorDrawerMode } from "../shared/types/iosSimulator";
 import type { AppContext } from "./services/ipc/registerIpc";
 import fs from "node:fs";
 import net from "node:net";
@@ -118,6 +119,7 @@ import { createWorkerAdapterRuntimeService } from "./services/cto/workerAdapterR
 import { createWorkerTaskSessionService } from "./services/cto/workerTaskSessionService";
 import { createWorkerHeartbeatService } from "./services/cto/workerHeartbeatService";
 import { createLinearCredentialService } from "./services/cto/linearCredentialService";
+import { buildRendererCspPolicy } from "./rendererCsp";
 import { createLinearClient } from "./services/cto/linearClient";
 import { createLinearIssueTracker } from "./services/cto/linearIssueTracker";
 import { createLinearTemplateService } from "./services/cto/linearTemplateService";
@@ -468,26 +470,7 @@ async function createWindow(args: {
 
   // Set CSP dynamically so it works with both http:// (dev) and file:// (production).
   const isDevMode = !!process.env.VITE_DEV_SERVER_URL;
-  const cspSources = isDevMode
-    ? "'self' http://localhost:* http://127.0.0.1:*"
-    : "'self' file: app:";
-  const cspWsSources = isDevMode ? " ws://localhost:* ws://127.0.0.1:*" : "";
-  const cspLocalSources = " http://localhost:* http://127.0.0.1:*";
-  const cspImageSources = `${cspSources}${cspLocalSources} https://avatars.githubusercontent.com https://*.githubusercontent.com https://github.githubassets.com https://opengraph.githubassets.com https://github.com https://vercel.com https://*.vercel.com https://img.shields.io https://*.s3.amazonaws.com`;
-  const cspPolicy = [
-    `default-src ${cspSources}`,
-    `base-uri 'self'`,
-    `form-action 'self'`,
-    `object-src 'none'`,
-    `frame-src ${cspSources}${cspLocalSources} about:`,
-    `script-src ${cspSources} 'unsafe-inline'`,
-    `style-src ${cspSources} 'unsafe-inline'`,
-    `img-src ${cspImageSources} ade-artifact: data: blob:`,
-    `media-src ${cspSources}${cspLocalSources} ade-artifact: blob: data:`,
-    `font-src ${cspSources} data:`,
-    `connect-src ${cspSources}${cspWsSources} https:`,
-    `worker-src 'self' blob:`,
-  ].join("; ");
+  const cspPolicy = buildRendererCspPolicy(isDevMode);
 
   win.webContents.session.webRequest.onHeadersReceived((details, callback) => {
     callback({
@@ -2767,6 +2750,95 @@ app.whenReady().then(async () => {
       onEvent: (payload) =>
         emitProjectEvent(projectRoot, IPC.iosSimulatorEvent, payload),
     });
+    const iosSimulatorDrawerActionModes: Partial<Record<string, IosSimulatorDrawerMode>> = {
+      inspectPoint: "inspect",
+      launch: "interact",
+      openPreviewWorkspace: "preview",
+      renderPreview: "preview",
+      selectPoint: "inspect",
+      startStream: "interact",
+      tap: "interact",
+      typeText: "interact",
+      drag: "interact",
+      swipe: "interact",
+    };
+    const requestIosSimulatorDrawerOpen = (
+      action: keyof typeof iosSimulatorDrawerActionModes,
+      rawArgs: unknown,
+      result?: unknown,
+    ): void => {
+      const mode = iosSimulatorDrawerActionModes[action];
+      if (!mode) return;
+      const argRecord = rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs)
+        ? rawArgs as Record<string, unknown>
+        : null;
+      const resultRecord = result && typeof result === "object" && !Array.isArray(result)
+        ? result as Record<string, unknown>
+        : null;
+      const chatSessionId = readString(argRecord, "chatSessionId") ?? readString(resultRecord, "chatSessionId") ?? null;
+      const laneId = readString(argRecord, "laneId") ?? readString(resultRecord, "laneId") ?? null;
+      emitProjectEvent(projectRoot, IPC.iosSimulatorEvent, {
+        type: "drawer-open-requested",
+        action,
+        mode,
+        chatSessionId,
+        laneId,
+      });
+    };
+    const iosSimulatorRpcService = {
+      ...iosSimulatorService,
+      inspectPoint: async (arg: Parameters<typeof iosSimulatorService.inspectPoint>[0]) => {
+        const result = await iosSimulatorService.inspectPoint(arg);
+        requestIosSimulatorDrawerOpen("inspectPoint", arg, result);
+        return result;
+      },
+      launch: async (arg?: Parameters<typeof iosSimulatorService.launch>[0]) => {
+        const result = await iosSimulatorService.launch(arg);
+        requestIosSimulatorDrawerOpen("launch", arg, result);
+        return result;
+      },
+      openPreviewWorkspace: async (arg?: Parameters<typeof iosSimulatorService.openPreviewWorkspace>[0]) => {
+        const result = await iosSimulatorService.openPreviewWorkspace(arg);
+        requestIosSimulatorDrawerOpen("openPreviewWorkspace", arg, result);
+        return result;
+      },
+      renderPreview: async (arg: Parameters<typeof iosSimulatorService.renderPreview>[0]) => {
+        const result = await iosSimulatorService.renderPreview(arg);
+        requestIosSimulatorDrawerOpen("renderPreview", arg, result);
+        return result;
+      },
+      selectPoint: async (arg: Parameters<typeof iosSimulatorService.selectPoint>[0]) => {
+        requestIosSimulatorDrawerOpen("selectPoint", arg);
+        const result = await iosSimulatorService.selectPoint(arg);
+        requestIosSimulatorDrawerOpen("selectPoint", arg, result);
+        return result;
+      },
+      startStream: async (arg?: Parameters<typeof iosSimulatorService.startStream>[0]) => {
+        const result = await iosSimulatorService.startStream(arg);
+        requestIosSimulatorDrawerOpen("startStream", arg, result);
+        return result;
+      },
+      tap: async (arg: Parameters<typeof iosSimulatorService.tap>[0]) => {
+        const result = await iosSimulatorService.tap(arg);
+        requestIosSimulatorDrawerOpen("tap", arg, result);
+        return result;
+      },
+      typeText: async (arg: Parameters<typeof iosSimulatorService.typeText>[0]) => {
+        const result = await iosSimulatorService.typeText(arg);
+        requestIosSimulatorDrawerOpen("typeText", arg, result);
+        return result;
+      },
+      drag: async (arg: Parameters<typeof iosSimulatorService.drag>[0]) => {
+        const result = await iosSimulatorService.drag(arg);
+        requestIosSimulatorDrawerOpen("drag", arg, result);
+        return result;
+      },
+      swipe: async (arg: Parameters<typeof iosSimulatorService.swipe>[0]) => {
+        const result = await iosSimulatorService.swipe(arg);
+        requestIosSimulatorDrawerOpen("swipe", arg, result);
+        return result;
+      },
+    };
     const appControlService = createAppControlService({
       projectRoot,
       logger,
@@ -3470,7 +3542,7 @@ app.whenReady().then(async () => {
       automationService,
       automationPlannerService,
       computerUseArtifactBrokerService,
-      iosSimulatorService,
+      iosSimulatorService: iosSimulatorRpcService,
       appControlService,
       builtInBrowserService,
       orchestratorService,

@@ -207,7 +207,7 @@ All registered in `registerIpc.ts`:
 |---|---|
 | `ade.files.listWorkspaces` | calls `laneService.getFilesWorkspaces`, sorts primary first |
 | `ade.files.listTree` | resolves workspace, optionally lazy per `parentPath`/`depth`, returns `FileTreeNode[]` |
-| `ade.files.readFile` | atomic read up to `MAX_EDITOR_READ_BYTES = 5 MB`, detects binary, picks `languageId` |
+| `ade.files.readFile` | bounded preview read: inline text/image up to 1 MB, small unsupported binaries up to 256 KB, metadata-only `contentOmitted` response above those caps |
 | `ade.files.writeTextAtomic` | temp file + rename |
 | `ade.files.writeText` | plain write |
 | `ade.files.createFile` | throws if exists, otherwise writes empty or provided content |

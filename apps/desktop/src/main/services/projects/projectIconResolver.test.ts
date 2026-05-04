@@ -3,7 +3,13 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { removeProjectIconOverride, resolveProjectIcon, resolveProjectIconPath, setProjectIconOverride } from "./projectIconResolver";
+import {
+  removeProjectIconOverride,
+  resolveProjectIcon,
+  resolveProjectIconPath,
+  setProjectIconOverride,
+  setProjectIconOverrideFromSelection,
+} from "./projectIconResolver";
 
 function makeProjectRoot(): string {
   // Resolve through realpath so the assertions still hold on platforms
@@ -43,6 +49,56 @@ describe("projectIconResolver", () => {
     expect(resolveProjectIconPath(root)).toBe(iconPath);
   });
 
+  it("detects iOS app icons from asset catalogs", () => {
+    const root = makeProjectRoot();
+    writeFile(root, "apps/ios/ADE/Assets.xcassets/AppIcon.appiconset/Contents.json", JSON.stringify({
+      images: [
+        { filename: "Icon-App-20x20@2x.png", idiom: "iphone", size: "20x20", scale: "2x" },
+        { filename: "Icon-App-1024x1024@1x.png", idiom: "ios-marketing", size: "1024x1024", scale: "1x" },
+      ],
+      info: { author: "xcode", version: 1 },
+    }));
+    writeFile(root, "apps/ios/ADE/Assets.xcassets/AppIcon.appiconset/Icon-App-20x20@2x.png", Buffer.from("small"));
+    const iconPath = writeFile(root, "apps/ios/ADE/Assets.xcassets/AppIcon.appiconset/Icon-App-1024x1024@1x.png", Buffer.from("large"));
+
+    expect(resolveProjectIconPath(root)).toBe(iconPath);
+  });
+
+  it("detects iOS asset catalogs nested below an app folder", () => {
+    const root = makeProjectRoot();
+    writeFile(root, "apps/mobile/ios/MyApp/Assets.xcassets/AppIcon.appiconset/Contents.json", JSON.stringify({
+      images: [{ filename: "AppIcon-1024.png", idiom: "ios-marketing", size: "1024x1024", scale: "1x" }],
+      info: { author: "xcode", version: 1 },
+    }));
+    const iconPath = writeFile(root, "apps/mobile/ios/MyApp/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png", Buffer.from("large"));
+
+    expect(resolveProjectIconPath(root)).toBe(iconPath);
+  });
+
+  it("falls back to a renderable iOS brand image when the app icon is too large", () => {
+    const root = makeProjectRoot();
+    writeFile(root, "apps/ios/ADE/Assets.xcassets/AppIcon.appiconset/Contents.json", JSON.stringify({
+      images: [{ filename: "icon.png", idiom: "universal", size: "1024x1024" }],
+      info: { author: "xcode", version: 1 },
+    }));
+    writeFile(root, "apps/ios/ADE/Assets.xcassets/AppIcon.appiconset/icon.png", Buffer.alloc(1024 * 1024 + 1));
+    writeFile(root, "apps/ios/ADE/Assets.xcassets/BrandMark.imageset/Contents.json", JSON.stringify({
+      images: [{ filename: "logo.png", idiom: "universal", scale: "1x" }],
+      info: { author: "xcode", version: 1 },
+    }));
+    const brandPath = writeFile(root, "apps/ios/ADE/Assets.xcassets/BrandMark.imageset/logo.png", Buffer.from("brand"));
+
+    expect(resolveProjectIconPath(root)).toBe(brandPath);
+  });
+
+  it("skips overlarge source-linked icons during auto-detection", () => {
+    const root = makeProjectRoot();
+    writeFile(root, "index.html", '<link rel="icon" href="/brand/logo.png">');
+    writeFile(root, "public/brand/logo.png", Buffer.alloc(1024 * 1024 + 1));
+
+    expect(resolveProjectIconPath(root)).toBeNull();
+  });
+
   it("uses a tracked project icon override before auto-detection", () => {
     const root = makeProjectRoot();
     writeFile(root, "apps/web/app/icon.png", Buffer.from("auto"));
@@ -60,6 +116,25 @@ describe("projectIconResolver", () => {
 
     expect(icon.sourcePath).toBe(iconPath);
     expect(fs.readFileSync(path.join(root, ".ade", "ade.yaml"), "utf8")).toContain("iconPath: assets/icon.svg");
+  });
+
+  it("imports selected icons from outside the project root", () => {
+    const root = makeProjectRoot();
+    const outside = makeProjectRoot();
+    const iconPath = writeFile(outside, "brand.png", Buffer.from("png"));
+
+    const icon = setProjectIconOverrideFromSelection(root, iconPath);
+
+    expect(icon.sourcePath).toContain(path.join(root, ".ade", "project-icons"));
+    expect(fs.existsSync(icon.sourcePath ?? "")).toBe(true);
+    expect(fs.readFileSync(path.join(root, ".ade", "ade.yaml"), "utf8")).toMatch(/iconPath: \.ade\/project-icons\/brand-[a-f0-9]{12}\.png/);
+  });
+
+  it("rejects selected icons that are too large to render", () => {
+    const root = makeProjectRoot();
+    const iconPath = writeFile(root, "assets/icon.png", Buffer.alloc(1024 * 1024 + 1));
+
+    expect(() => setProjectIconOverride(root, iconPath)).toThrow("Project icon must be 1 MB or smaller.");
   });
 
   it("can explicitly disable automatic icon detection", () => {

@@ -162,6 +162,8 @@ export type GetFileDiffArgs = {
 export type DiffSide = {
   exists: boolean;
   text: string;
+  size?: number;
+  isTruncated?: boolean;
 };
 
 export type FileDiff = {

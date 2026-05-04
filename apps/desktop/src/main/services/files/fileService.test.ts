@@ -72,8 +72,47 @@ describe("fileService", () => {
         isBinary: true,
         previewKind: "image",
         mimeType: "image/png",
-        dataUrl: `data:image/png;base64,${pngBytes.toString("base64")}`,
       });
+      expect(result.dataUrl).toBeUndefined();
+    } finally {
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
+  it("omits oversized text and image payloads instead of sending them to the renderer", () => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-large-"));
+    const laneService = createLaneServiceStub(rootPath);
+    const service = createFileService({ laneService });
+
+    try {
+      fs.writeFileSync(path.join(rootPath, "huge.ts"), "x".repeat(1024 * 1024 + 1), "utf8");
+      fs.writeFileSync(path.join(rootPath, "huge.png"), Buffer.alloc(1024 * 1024 + 1, 1));
+
+      const text = service.readFile({ workspaceId: "workspace-1", path: "huge.ts" });
+      const image = service.readFile({ workspaceId: "workspace-1", path: "huge.png" });
+
+      expect(text).toMatchObject({
+        content: "",
+        encoding: "utf-8",
+        size: 1024 * 1024 + 1,
+        languageId: "typescript",
+        isBinary: true,
+        previewKind: "binary",
+        contentOmitted: true,
+        omittedReason: "too_large",
+      });
+      expect(image).toMatchObject({
+        content: "",
+        encoding: "base64",
+        size: 1024 * 1024 + 1,
+        languageId: "image",
+        isBinary: true,
+        previewKind: "binary",
+        mimeType: "image/png",
+        contentOmitted: true,
+        omittedReason: "too_large",
+      });
+      expect(image.dataUrl).toBeUndefined();
     } finally {
       fs.rmSync(rootPath, { recursive: true, force: true });
     }
@@ -100,7 +139,7 @@ describe("fileService", () => {
         languageId: "plaintext",
         isBinary: true,
         previewKind: "binary",
-        mimeType: null,
+        mimeType: "application/octet-stream",
       });
       expect(result.dataUrl).toBeUndefined();
     } finally {
@@ -146,6 +185,51 @@ describe("fileService", () => {
       expect(quickOpenIgnored.map((item) => item.path)).toContain(".ade/notes/project.md");
       expect(searchDefault).toEqual([]);
       expect(searchIgnored.map((item) => item.path)).toContain(".ade/notes/project.md");
+    } finally {
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps useful dotfiles searchable while skipping volatile ADE runtime paths", async () => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-volatile-"));
+    const { execSync } = await import("node:child_process");
+    execSync("git init", { cwd: rootPath, stdio: "ignore" });
+    const laneService = createLaneServiceStub(rootPath);
+    const service = createFileService({ laneService });
+
+    try {
+      fs.mkdirSync(path.join(rootPath, ".ade", "notes"), { recursive: true });
+      fs.mkdirSync(path.join(rootPath, ".ade", "worktrees", "lane-a"), { recursive: true });
+      fs.mkdirSync(path.join(rootPath, ".ade", "cache"), { recursive: true });
+      fs.writeFileSync(path.join(rootPath, ".ade", "notes", "project.md"), "keep searchable\n", "utf8");
+      fs.writeFileSync(path.join(rootPath, ".ade", "worktrees", "lane-a", "ghost.ts"), "hidden worktree payload\n", "utf8");
+      fs.writeFileSync(path.join(rootPath, ".ade", "cache", "scratch.log"), "hidden cache payload\n", "utf8");
+
+      const quickOpen = await service.quickOpen({
+        workspaceId: "workspace-1",
+        query: "ghost",
+        includeIgnored: true,
+      });
+      const search = await service.searchText({
+        workspaceId: "workspace-1",
+        query: "payload",
+        includeIgnored: true,
+      });
+      const notes = await service.searchText({
+        workspaceId: "workspace-1",
+        query: "searchable",
+        includeIgnored: true,
+      });
+      const adeChildren = await service.listTree({
+        workspaceId: "workspace-1",
+        parentPath: ".ade",
+        includeIgnored: true,
+      });
+
+      expect(quickOpen).toEqual([]);
+      expect(search).toEqual([]);
+      expect(notes.map((item) => item.path)).toEqual([".ade/notes/project.md"]);
+      expect(adeChildren.map((node) => node.path)).toEqual([".ade/notes"]);
     } finally {
       fs.rmSync(rootPath, { recursive: true, force: true });
     }

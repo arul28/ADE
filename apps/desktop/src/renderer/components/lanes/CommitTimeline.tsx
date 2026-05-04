@@ -102,12 +102,9 @@ export function CommitTimeline({
       if (!laneId) return;
       if (metaByShaRef.current.has(sha)) return;
       try {
-        const [files, messageRaw] = await Promise.all([
-          window.ade.git.listCommitFiles({ laneId, commitSha: sha }),
-          window.ade.git.getCommitMessage({ laneId, commitSha: sha }).catch(() => "")
-        ]);
+        const messageRaw = await window.ade.git.getCommitMessage({ laneId, commitSha: sha }).catch(() => "");
         const message = messageRaw.trim().length ? messageRaw.trim() : null;
-        metaByShaRef.current.set(sha, { fileCount: files.length, message, loadedAt: new Date().toISOString() });
+        metaByShaRef.current.set(sha, { fileCount: null, message, loadedAt: new Date().toISOString() });
         setHoveredSha((prev) => (prev === sha ? sha : prev));
       } catch {
         metaByShaRef.current.set(sha, { fileCount: null, message: null, loadedAt: new Date().toISOString() });

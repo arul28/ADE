@@ -14,6 +14,7 @@ import type {
 } from "../../../shared/types";
 import { ADE_CLI_INLINE_GUIDANCE } from "../../../shared/adeCliGuidance";
 import { getCtoPersonalityPreset } from "../../../shared/ctoPersonalityPresets";
+import { getDefaultModelDescriptor, listModelDescriptorsForProvider, type ModelProviderGroup } from "../../../shared/modelRegistry";
 import type { createMemoryService, Memory, MemoryCategory } from "../memory/memoryService";
 import type { AdeDb } from "../state/kvDb";
 import { nowIso, parseIsoToEpoch, safeJsonParse, uniqueStrings, writeTextAtomic } from "../shared/utils";
@@ -65,6 +66,37 @@ const DURABLE_MEMORY_CATEGORY_ORDER: MemoryCategory[] = [
   "fact",
 ];
 
+const CTO_MODEL_PROVIDER_GROUPS: ModelProviderGroup[] = ["claude", "codex", "cursor", "droid", "opencode"];
+
+function buildCtoModelSelectionKnowledge(): string[] {
+  const providerLines = CTO_MODEL_PROVIDER_GROUPS.map((provider) => {
+    const defaultModel = getDefaultModelDescriptor(provider);
+    const models = listModelDescriptorsForProvider(provider)
+      .filter((model) => !model.deprecated)
+      .slice(0, 6);
+    const modelText = models.length
+      ? models.map((model) => {
+          const suffixes = [
+            model.shortId ? `shortId: ${model.shortId}` : null,
+            model.id === defaultModel?.id ? "default" : null,
+          ].filter(Boolean).join(", ");
+          return suffixes ? `${model.id} (${suffixes})` : model.id;
+        }).join("; ")
+      : "runtime-discovered only";
+    return `  ${provider}: ${modelText}`;
+  });
+  return [
+    "## Model Selection",
+    "",
+    "ADE's model registry is the source of truth for model IDs, short IDs, defaults, and provider routing. Current registered provider groups:",
+    ...providerLines,
+    "  Local models: Ollama and LM Studio models are discovered at runtime; use their full resolved modelId when spawning chats/workers.",
+    "  Reasoning effort: use the model's supported reasoning tiers when available. Do not invent tiers for a model that does not advertise them.",
+    "  IMPORTANT: When the user says 'use opus', 'use sonnet', 'use gpt-5.5', or another short name, resolve it to the current full modelId from ADE's registry before calling spawnChat or worker tools. Never pass only the shortId, and never silently fall back to a default when the user specified a model.",
+    "",
+  ];
+}
+
 const IMMUTABLE_CTO_DOCTRINE = [
   "You are the CTO for the current project inside ADE.",
   "ADE (Autonomous Development Environment) is a local-first Electron desktop app that wraps your entire development workflow: git branching via lanes, AI chat sessions, terminal shells, PR management, mission orchestration, worker agents, conflict resolution, test execution, Linear integration, and more.",
@@ -86,7 +118,8 @@ const IMMUTABLE_CTO_DOCTRINE = [
   "- All ADE internals are fair game. The user can request any action: launching chats, opening terminals, running CLI tools, spawning agents, managing lanes, etc. Never refuse an action that ADE supports.",
   "- When the user asks about something you can look up (lane status, PR checks, test results), call the tool first and report facts. Do not guess.",
   "- When you are unsure which tool to use, consult the capability manifest in your system prompt before asking the user.",
-  `- ${ADE_CLI_INLINE_GUIDANCE}`,
+  "ADE CLI operating guidance:",
+  ADE_CLI_INLINE_GUIDANCE,
 ].join("\n");
 
 const CTO_MEMORY_OPERATING_MODEL = [
@@ -160,15 +193,7 @@ const CTO_ENVIRONMENT_KNOWLEDGE = [
   "  /settings — App settings: AI providers, GitHub token, Linear integration, keybindings, usage budgets, and external connectors.",
   "  When an action should be opened in ADE, return a navigation suggestion. Never silently switch tabs.",
   "",
-  "## Model Selection",
-  "",
-  "ADE supports multiple AI providers and models. When spawning chats or configuring workers, use the correct modelId:",
-  "  Anthropic models (via Claude CLI): anthropic/claude-opus-4-7 (shortId: opus), anthropic/claude-sonnet-4-6 (shortId: sonnet), anthropic/claude-haiku-4-5 (shortId: haiku).",
-  "  OpenAI models (via Codex CLI): openai/gpt-5.5 (shortId: gpt-5.5), openai/gpt-5.4, openai/gpt-5.4-mini, openai/gpt-5.3-codex.",
-  "  Local models: ollama/llama-3.3, lmstudio/* (discovered at runtime).",
-  "  Reasoning effort (for supported models): low, medium, high, max (opus), xhigh (openai).",
-  "  IMPORTANT: When the user says 'use opus' → modelId: 'anthropic/claude-opus-4-7'. 'Use sonnet' → 'anthropic/claude-sonnet-4-6'. 'Use gpt-5.5' → 'openai/gpt-5.5'. Always pass the full modelId, never just the shortId, to spawnChat and other tools.",
-  "",
+  ...buildCtoModelSelectionKnowledge(),
   "## Critical Distinctions",
   "",
   "Chats vs Terminals — both are valid, match the user's intent:",
@@ -178,7 +203,7 @@ const CTO_ENVIRONMENT_KNOWLEDGE = [
   "  - Example: 'Launch a chat with opus' → spawnChat({ modelId: 'anthropic/claude-opus-4-7', ... }). 'Open a terminal' → createTerminal. 'Run npm test' → createTerminal({ startupCommand: 'npm test' }).",
   "",
   "Tool calling convention:",
-  `  - ${ADE_CLI_INLINE_GUIDANCE}`,
+  ADE_CLI_INLINE_GUIDANCE,
   "  - If a tool from the manifest below is not in your immediate tool list, use the closest ADE CLI command or report the missing capability clearly.",
   "",
   "## PR Lifecycle in ADE",

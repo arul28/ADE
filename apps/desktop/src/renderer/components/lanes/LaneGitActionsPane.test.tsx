@@ -323,6 +323,23 @@ describe("LaneGitActionsPane rescue action", () => {
     });
   });
 
+  it("bounds rendered change rows for large file lists", async () => {
+    mockChangesByLaneId["lane-1"] = {
+      staged: [],
+      unstaged: Array.from({ length: 305 }, (_, index) => ({
+        path: `src/generated/file-${index}.ts`,
+        kind: "modified" as const,
+      })),
+    };
+
+    renderPane();
+
+    expect(await screen.findByText("UNSTAGED (305)")).toBeTruthy();
+    expect(screen.getByText("src/generated/file-0.ts")).toBeTruthy();
+    expect(screen.getByText("Showing first 300 of 305 unstaged files.")).toBeTruthy();
+    expect(screen.queryByText("src/generated/file-300.ts")).toBeNull();
+  });
+
   it("disables the rescue button during an in-progress merge or rebase", async () => {
     mockConflictState = {
       laneId: "lane-1",

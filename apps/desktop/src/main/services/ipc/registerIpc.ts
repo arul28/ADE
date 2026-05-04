@@ -14,7 +14,7 @@ import { launchPrIssueResolutionChat, previewPrIssueResolutionPrompt } from "../
 import { launchRebaseResolutionChat } from "../prs/prRebaseResolver";
 import { browseProjectDirectories } from "../projects/projectBrowserService";
 import { getProjectDetail } from "../projects/projectDetailService";
-import { removeProjectIconOverride, resolveProjectIcon, setProjectIconOverride } from "../projects/projectIconResolver";
+import { removeProjectIconOverride, resolveProjectIcon, setProjectIconOverrideFromSelection } from "../projects/projectIconResolver";
 import { runGit } from "../git/git";
 import type { AdeCleanupResult, AdeProjectSnapshot, IosSimulatorWindowState } from "../../../shared/types";
 import { toRecentProjectSummary } from "../projects/recentProjectSummary";
@@ -3227,12 +3227,10 @@ export function registerIpc({
       const selectedPath = result.filePaths[0];
       if (!selectedPath) return null;
       try {
-        return setProjectIconOverride(validatedRoot, selectedPath);
+        return setProjectIconOverrideFromSelection(validatedRoot, selectedPath);
       } catch (error) {
-        // setProjectIconOverride throws when the picked file is outside the
-        // project root or has an unsupported extension. Surface the message
-        // so the renderer can display a meaningful error instead of a
-        // silently rejected promise.
+        // Surface validation/import failures so the renderer can display a
+        // meaningful error instead of a silently rejected promise.
         const message = error instanceof Error ? error.message : String(error);
         throw new Error(`Failed to set project icon: ${message}`);
       }
@@ -5898,14 +5896,32 @@ export function registerIpc({
     const cwd = ctx.project?.rootPath;
     if (!cwd) throw new Error("No project root");
     const lang = arg.filePath.split(".").pop() ?? undefined;
-    const origResult = await runGit(["show", `${arg.beforeSha}:${arg.filePath}`], { cwd, timeoutMs: 10_000 }).catch(() => ({ stdout: "", exitCode: 1 }));
-    const modResult = await runGit(["show", `${arg.afterSha}:${arg.filePath}`], { cwd, timeoutMs: 10_000 }).catch(() => ({ stdout: "", exitCode: 1 }));
+    const maxSideBytes = 192 * 1024;
+    const readSide = async (spec: string): Promise<{ exists: boolean; text: string; isTruncated?: boolean; isBinary?: boolean }> => {
+      const result = await runGit(["show", spec], {
+        cwd,
+        timeoutMs: 10_000,
+        maxOutputBytes: maxSideBytes + 64 * 1024,
+      }).catch(() => ({ stdout: "", exitCode: 1 }));
+      if (result.exitCode !== 0) return { exists: false, text: "" };
+      const buf = Buffer.from(result.stdout, "utf8");
+      if (buf.includes(0)) return { exists: true, text: "", isBinary: true };
+      if (buf.length <= maxSideBytes) return { exists: true, text: result.stdout };
+      return {
+        exists: true,
+        text: `${buf.subarray(0, maxSideBytes).toString("utf8").replace(/\s*$/, "")}\n\n[Preview truncated.]\n`,
+        isTruncated: true,
+      };
+    };
+    const origResult = await readSide(`${arg.beforeSha}:${arg.filePath}`);
+    const modResult = await readSide(`${arg.afterSha}:${arg.filePath}`);
     return {
       path: arg.filePath,
       mode: "commit",
       language: lang,
-      original: { text: origResult.exitCode === 0 ? origResult.stdout : null },
-      modified: { text: modResult.exitCode === 0 ? modResult.stdout : null },
+      original: origResult,
+      modified: modResult,
+      ...(origResult.isBinary || modResult.isBinary ? { isBinary: true } : {}),
     };
   });
 
@@ -6566,13 +6582,22 @@ export function registerIpc({
 
   ipcMain.handle(IPC.diffGetFile, async (_event, arg: GetFileDiffArgs) => {
     const ctx = getCtx();
-    return await ctx.diffService.getFileDiff({
-      laneId: arg.laneId,
-      filePath: arg.path,
-      mode: arg.mode,
-      compareRef: arg.compareRef,
-      compareTo: arg.compareTo
-    });
+    return await withIpcTiming(
+      ctx,
+      "diff.getFile",
+      async () => await ctx.diffService.getFileDiff({
+        laneId: arg.laneId,
+        filePath: arg.path,
+        mode: arg.mode,
+        compareRef: arg.compareRef,
+        compareTo: arg.compareTo
+      }),
+      {
+        laneId: arg.laneId,
+        mode: arg.mode,
+        pathLength: arg.path.length,
+      }
+    );
   });
 
   ipcMain.handle(IPC.filesWriteTextAtomic, async (_event, arg: WriteTextAtomicArgs): Promise<void> => {
@@ -6601,7 +6626,15 @@ export function registerIpc({
 
   ipcMain.handle(IPC.filesReadFile, async (_event, arg: FilesReadFileArgs): Promise<FileContent> => {
     const ctx = getCtx();
-    return ctx.fileService.readFile(arg);
+    return await withIpcTiming(
+      ctx,
+      "files.readFile",
+      async () => ctx.fileService.readFile(arg),
+      {
+        workspaceId: arg.workspaceId,
+        pathLength: arg.path.length,
+      }
+    );
   });
 
   ipcMain.handle(IPC.filesWriteText, async (_event, arg: FilesWriteTextArgs): Promise<void> => {

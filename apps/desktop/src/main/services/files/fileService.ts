@@ -35,8 +35,25 @@ import {
 import { createFileWatcherService } from "./fileWatcherService";
 import { createFileSearchIndexService } from "./fileSearchIndexService";
 
-const MAX_EDITOR_READ_BYTES = 5 * 1024 * 1024;
+const MAX_EDITOR_TEXT_READ_BYTES = 1024 * 1024;
+const MAX_INLINE_IMAGE_PREVIEW_BYTES = 1024 * 1024;
+const MAX_INLINE_BINARY_BYTES = 256 * 1024;
+const MAX_TREE_CHILDREN_PER_DIRECTORY = 1_000;
 const GIT_STATUS_CACHE_TTL_MS = 5_000;
+const VOLATILE_ADE_PREFIXES = [
+  ".ade/artifacts/",
+  ".ade/cache/",
+  ".ade/secrets/",
+  ".ade/transcripts/",
+  ".ade/worktrees/",
+];
+const VOLATILE_ADE_FILES = new Set([
+  ".ade/ade.db",
+  ".ade/ade.db-shm",
+  ".ade/ade.db-wal",
+  ".ade/ade.sock",
+  ".ade/local.secret.yaml",
+]);
 const TEXT_EXTENSIONS = new Set([
   ".bash",
   ".c",
@@ -175,6 +192,42 @@ function isAlwaysIgnoredPath(normalized: string): boolean {
   );
 }
 
+function isVolatileAdeRuntimePath(normalized: string): boolean {
+  return VOLATILE_ADE_FILES.has(normalized)
+    || VOLATILE_ADE_PREFIXES.some((prefix) => normalized === prefix.slice(0, -1) || normalized.startsWith(prefix));
+}
+
+function readFilePrefix(absPath: string, maxBytes: number): Buffer {
+  const fd = fs.openSync(absPath, "r");
+  try {
+    const buf = Buffer.alloc(maxBytes);
+    const bytesRead = fs.readSync(fd, buf, 0, buf.length, 0);
+    return bytesRead === buf.length ? buf : buf.subarray(0, bytesRead);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function omittedFileContent(args: {
+  relPath: string;
+  size: number;
+  encoding: "utf-8" | "base64";
+  mimeType?: string | null;
+  reason: FileContent["omittedReason"];
+}): FileContent {
+  return {
+    content: "",
+    encoding: args.encoding,
+    size: args.size,
+    languageId: languageIdFromPath(args.relPath),
+    isBinary: true,
+    previewKind: "binary",
+    mimeType: args.mimeType ?? null,
+    contentOmitted: true,
+    omittedReason: args.reason,
+  };
+}
+
 async function runGitCheckIgnoreBatch(args: { cwd: string; paths: string[]; timeoutMs?: number }): Promise<Set<string>> {
   if (args.paths.length === 0) return new Set<string>();
   const timeoutMs = args.timeoutMs ?? 7_000;
@@ -270,13 +323,25 @@ function isWorkspaceRootRelativePath(normalizedRel: string): boolean {
   return normalizedRel === "" || normalizedRel === ".";
 }
 
-function inferDirectoryStatus(statusMap: Map<string, FileTreeChangeStatus>, relPath: string): FileTreeChangeStatus {
-  const prefix = `${normalizeRelative(relPath)}/`;
-  for (const [filePath, status] of statusMap) {
+type GitStatusSnapshot = {
+  fileStatus: Map<string, FileTreeChangeStatus>;
+  changedDirectories: Set<string>;
+};
+
+function buildGitStatusSnapshot(fileStatus: Map<string, FileTreeChangeStatus>): GitStatusSnapshot {
+  const changedDirectories = new Set<string>();
+  for (const [filePath, status] of fileStatus) {
     if (!status) continue;
-    if (filePath.startsWith(prefix)) return "M";
+    const segments = normalizeRelative(filePath).split("/").filter(Boolean);
+    for (let i = 1; i < segments.length; i++) {
+      changedDirectories.add(segments.slice(0, i).join("/"));
+    }
   }
-  return null;
+  return { fileStatus, changedDirectories };
+}
+
+function inferDirectoryStatus(statusSnapshot: GitStatusSnapshot, relPath: string): FileTreeChangeStatus {
+  return statusSnapshot.changedDirectories.has(normalizeRelative(relPath)) ? "M" : null;
 }
 
 export function createFileService({
@@ -290,7 +355,7 @@ export function createFileService({
   const indexService = createFileSearchIndexService();
   const ignoreCache = new Map<string, boolean>();
   const ignoredPrefixCache = new Set<string>();
-  const gitStatusCache = new Map<string, { fetchedAt: number; map: Map<string, FileTreeChangeStatus> }>();
+  const gitStatusCache = new Map<string, { fetchedAt: number; snapshot: GitStatusSnapshot }>();
 
   const clearIgnoreCacheForRoot = (rootPath: string): void => {
     const prefix = `${rootPath}::`;
@@ -322,6 +387,7 @@ export function createFileService({
       const normalized = normalizeRelative(relPath);
       if (!normalized || seen.has(normalized)) continue;
       seen.add(normalized);
+      if (isVolatileAdeRuntimePath(normalized)) continue;
       if (isAlwaysIgnoredPath(normalized)) continue;
 
       const segments = normalized.split("/");
@@ -384,16 +450,16 @@ export function createFileService({
     }));
   };
 
-  const getGitStatusMap = async (rootPath: string): Promise<Map<string, FileTreeChangeStatus>> => {
+  const getGitStatusSnapshot = async (rootPath: string): Promise<GitStatusSnapshot> => {
     const cached = gitStatusCache.get(rootPath);
     const now = Date.now();
     if (cached && now - cached.fetchedAt <= GIT_STATUS_CACHE_TTL_MS) {
-      return cached.map;
+      return cached.snapshot;
     }
 
     const res = await runGit(["status", "--porcelain=v1"], { cwd: rootPath, timeoutMs: 10_000 });
     const out = new Map<string, FileTreeChangeStatus>();
-    if (res.exitCode !== 0) return out;
+    if (res.exitCode !== 0) return buildGitStatusSnapshot(out);
     const lines = res.stdout.split("\n").map((line) => line.trimEnd()).filter(Boolean);
     for (const line of lines) {
       const code = line.slice(0, 2);
@@ -414,14 +480,16 @@ export function createFileService({
       else if (combined.length) out.set(normalized, "M");
       else out.set(normalized, null);
     }
-    gitStatusCache.set(rootPath, { fetchedAt: now, map: out });
-    return out;
+    const snapshot = buildGitStatusSnapshot(out);
+    gitStatusCache.set(rootPath, { fetchedAt: now, snapshot });
+    return snapshot;
   };
 
   const isIgnoredPath = async (rootPath: string, relPath: string, includeIgnored: boolean): Promise<boolean> => {
-    if (includeIgnored) return false;
     const normalized = normalizeRelative(relPath);
     if (!normalized) return false;
+    if (isVolatileAdeRuntimePath(normalized)) return true;
+    if (includeIgnored) return false;
     if (isAlwaysIgnoredPath(normalized)) return true;
 
     const keyPrefix = `${rootPath}::`;
@@ -446,13 +514,13 @@ export function createFileService({
     parentPath,
     depth,
     includeIgnored,
-    statusMap
+    statusSnapshot
   }: {
     rootPath: string;
     parentPath: string;
     depth: number;
     includeIgnored: boolean;
-    statusMap: Map<string, FileTreeChangeStatus>;
+    statusSnapshot: GitStatusSnapshot;
   }): Promise<FileTreeNode[]> => {
     const { absPath: dirPath } = ensureSafePath(rootPath, parentPath);
     const entries = fs.readdirSync(dirPath, { withFileTypes: true });
@@ -466,7 +534,9 @@ export function createFileService({
 
     const out: FileTreeNode[] = [];
     for (const entry of entries) {
+      if (out.length >= MAX_TREE_CHILDREN_PER_DIRECTORY) break;
       const rel = normalizeRelative(path.join(parentPath, entry.name));
+      if (isVolatileAdeRuntimePath(rel)) continue;
       if (await isIgnoredPath(rootPath, rel, includeIgnored)) continue;
       if (entry.name === ".git") continue;
 
@@ -474,12 +544,12 @@ export function createFileService({
         name: entry.name,
         path: rel,
         type: entry.isDirectory() ? "directory" : "file",
-        changeStatus: statusMap.get(rel) ?? null
+        changeStatus: statusSnapshot.fileStatus.get(rel) ?? null
       };
 
       if (entry.isDirectory()) {
         if (!node.changeStatus) {
-          node.changeStatus = inferDirectoryStatus(statusMap, rel);
+          node.changeStatus = inferDirectoryStatus(statusSnapshot, rel);
         }
 
         if (depth > 1) {
@@ -488,7 +558,7 @@ export function createFileService({
             parentPath: rel,
             depth: depth - 1,
             includeIgnored,
-            statusMap
+            statusSnapshot
           });
           if (!node.changeStatus && node.children.some((child) => child.changeStatus)) {
             node.changeStatus = "M";
@@ -523,13 +593,13 @@ export function createFileService({
       const workspace = resolveWorkspace(args.workspaceId);
       const depth = Number.isFinite(args.depth) ? Math.max(1, Math.min(8, Math.floor(args.depth ?? 1))) : 1;
       const parentPath = normalizeRelative(args.parentPath ?? "");
-      const statusMap = await getGitStatusMap(workspace.rootPath);
+      const statusSnapshot = await getGitStatusSnapshot(workspace.rootPath);
       return await listTreeNode({
         rootPath: workspace.rootPath,
         parentPath,
         depth,
         includeIgnored: Boolean(args.includeIgnored),
-        statusMap
+        statusSnapshot
       });
     },
 
@@ -540,14 +610,18 @@ export function createFileService({
       if (!stat.isFile()) {
         throw new Error("Path is not a file.");
       }
-      if (stat.size > MAX_EDITOR_READ_BYTES) {
-        throw new Error(
-          `Refusing to open files larger than ${Math.round(MAX_EDITOR_READ_BYTES / (1024 * 1024))}MB in the editor.`
-        );
-      }
-      const buf = fs.readFileSync(absPath);
       const imageMimeType = inferImageMimeType(normalizedRel);
       if (imageMimeType) {
+        if (stat.size > MAX_INLINE_IMAGE_PREVIEW_BYTES) {
+          return omittedFileContent({
+            relPath: normalizedRel,
+            size: stat.size,
+            encoding: "base64",
+            mimeType: imageMimeType,
+            reason: "too_large",
+          });
+        }
+        const buf = fs.readFileSync(absPath);
         const base64 = buf.toString("base64");
         return {
           content: base64,
@@ -557,17 +631,48 @@ export function createFileService({
           isBinary: true,
           previewKind: "image",
           mimeType: imageMimeType,
-          dataUrl: `data:${imageMimeType};base64,${base64}`,
         };
       }
-      const isBinary = looksLikeBinary(buf, normalizedRel);
+      const sample = readFilePrefix(absPath, Math.min(stat.size, 8192));
+      const isBinary = looksLikeBinary(sample, normalizedRel);
+      if (isBinary) {
+        if (stat.size > MAX_INLINE_BINARY_BYTES) {
+          return omittedFileContent({
+            relPath: normalizedRel,
+            size: stat.size,
+            encoding: "base64",
+            mimeType: "application/octet-stream",
+            reason: "unsupported_binary",
+          });
+        }
+        const buf = fs.readFileSync(absPath);
+        return {
+          content: buf.toString("base64"),
+          encoding: "base64",
+          size: stat.size,
+          languageId: languageIdFromPath(normalizedRel),
+          isBinary: true,
+          previewKind: "binary",
+          mimeType: "application/octet-stream",
+        };
+      }
+      if (stat.size > MAX_EDITOR_TEXT_READ_BYTES) {
+        return omittedFileContent({
+          relPath: normalizedRel,
+          size: stat.size,
+          encoding: "utf-8",
+          mimeType: null,
+          reason: "too_large",
+        });
+      }
+      const buf = fs.readFileSync(absPath);
       return {
-        content: isBinary ? buf.toString("base64") : buf.toString("utf8"),
-        encoding: isBinary ? "base64" : "utf-8",
+        content: buf.toString("utf8"),
+        encoding: "utf-8",
         size: stat.size,
         languageId: languageIdFromPath(normalizedRel),
-        isBinary,
-        previewKind: isBinary ? "binary" : "text",
+        isBinary: false,
+        previewKind: "text",
         mimeType: null,
       };
     },

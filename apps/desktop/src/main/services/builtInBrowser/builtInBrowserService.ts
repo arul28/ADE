@@ -453,8 +453,8 @@ export function createBuiltInBrowserService(args: {
       if (!existingTab) throw new Error(`Browser tab not found: ${input.tabId}`);
     }
     const switchingTabs = input.newTab || (input.tabId && input.tabId !== activeTabId);
+    await stopInspectQuietly("built_in_browser.navigate_stop_inspect_failed");
     if (switchingTabs) {
-      await stopInspectQuietly("built_in_browser.navigate_stop_inspect_failed");
       clearSelectionInternal();
     }
     let tab = input.newTab ? createTabState() : null;
@@ -501,11 +501,14 @@ export function createBuiltInBrowserService(args: {
     if (!tabId) throw new Error("Browser tab id is required.");
     const tab = tabs.find((entry) => entry.id === tabId);
     if (!tab) throw new Error(`Browser tab not found: ${tabId}`);
-    if (tab.id !== activeTabId) {
+    const wasDifferentTab = tab.id !== activeTabId;
+    if (wasDifferentTab) {
       await stopInspectQuietly("built_in_browser.switch_tab_stop_inspect_failed");
     }
     activeTabId = tab.id;
-    clearSelectionInternal();
+    if (wasDifferentTab) {
+      clearSelectionInternal();
+    }
     attachViewsToCurrentWindow();
     emitStatus();
     return getStatus();

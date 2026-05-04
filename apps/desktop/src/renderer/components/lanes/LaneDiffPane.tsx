@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { FolderOpen, FloppyDisk } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import { Group, Panel } from "react-resizable-panels";
@@ -12,6 +12,8 @@ import { COLORS, LABEL_STYLE, MONO_FONT, inlineBadge, outlineButton } from "./la
 function normalizePath(pathValue: string): string {
   return pathValue.replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, "");
 }
+
+const MAX_COMMIT_FILE_ROWS = 500;
 
 function DiffFailedRetry({ onRetry }: { onRetry: () => void }) {
   return (
@@ -43,6 +45,9 @@ export function LaneDiffPane({
 }) {
   const navigate = useNavigate();
   const diffRef = useRef<MonacoDiffHandle | null>(null);
+  const workingDiffRequestSeq = useRef(0);
+  const commitFilesRequestSeq = useRef(0);
+  const commitDiffRequestSeq = useRef(0);
 
   const [diff, setDiff] = useState<FileDiff | null>(null);
   const [diffFailed, setDiffFailed] = useState(false);
@@ -51,32 +56,35 @@ export function LaneDiffPane({
   const [commitDiff, setCommitDiff] = useState<FileDiff | null>(null);
   const [commitDiffFailed, setCommitDiffFailed] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  const visibleCommitFiles = useMemo(() => commitFiles.slice(0, MAX_COMMIT_FILE_ROWS), [commitFiles]);
+  const hiddenCommitFileCount = Math.max(0, commitFiles.length - visibleCommitFiles.length);
 
   const refreshWorkingDiff = React.useCallback(() => {
+    const requestId = ++workingDiffRequestSeq.current;
     if (!laneId || !selectedPath || !selectedFileMode) {
       setDiff(null);
       setDiffFailed(false);
       return Promise.resolve();
     }
 
+    setDiff(null);
     setDiffFailed(false);
     return window.ade.diff
       .getFile({ laneId, path: selectedPath, mode: selectedFileMode })
       .then((value) => {
+        if (workingDiffRequestSeq.current !== requestId) return;
         setDiff(value);
       })
       .catch(() => {
+        if (workingDiffRequestSeq.current !== requestId) return;
         setDiff(null);
         setDiffFailed(true);
       });
   }, [laneId, selectedPath, selectedFileMode]);
 
   useEffect(() => {
-    setDiff(null);
-    setDiffFailed(false);
-    if (!laneId || !selectedPath || !selectedFileMode) return;
     void refreshWorkingDiff();
-  }, [laneId, selectedPath, selectedFileMode, refreshWorkingDiff]);
+  }, [refreshWorkingDiff]);
 
   useEffect(() => {
     if (!liveSync) return;
@@ -139,21 +147,24 @@ export function LaneDiffPane({
   }, [liveSync, laneId, selectedPath, selectedFileMode, selectedCommit, refreshWorkingDiff]);
 
   useEffect(() => {
+    const requestId = ++commitFilesRequestSeq.current;
+    commitDiffRequestSeq.current += 1;
     setCommitFiles([]);
     setSelectedCommitFilePath(null);
     setCommitDiff(null);
+    setCommitDiffFailed(false);
     if (!laneId || !selectedCommit) return;
 
     let cancelled = false;
     window.ade.git
       .listCommitFiles({ laneId, commitSha: selectedCommit.sha })
       .then((files) => {
-        if (cancelled) return;
+        if (cancelled || commitFilesRequestSeq.current !== requestId) return;
         setCommitFiles(files);
         setSelectedCommitFilePath(files[0] ?? null);
       })
       .catch(() => {
-        if (cancelled) return;
+        if (cancelled || commitFilesRequestSeq.current !== requestId) return;
         setCommitFiles([]);
         setSelectedCommitFilePath(null);
       });
@@ -163,6 +174,7 @@ export function LaneDiffPane({
   }, [laneId, selectedCommit]);
 
   const refreshCommitDiff = React.useCallback(() => {
+    const requestId = ++commitDiffRequestSeq.current;
     setCommitDiff(null);
     setCommitDiffFailed(false);
     if (!laneId || !selectedCommit || !selectedCommitFilePath) return;
@@ -175,9 +187,11 @@ export function LaneDiffPane({
         compareTo: "parent"
       })
       .then((value) => {
+        if (commitDiffRequestSeq.current !== requestId) return;
         setCommitDiff(value);
       })
       .catch(() => {
+        if (commitDiffRequestSeq.current !== requestId) return;
         setCommitDiff(null);
         setCommitDiffFailed(true);
       });
@@ -230,7 +244,7 @@ export function LaneDiffPane({
                 </div>
                 <div className="flex-1 min-h-0 overflow-auto" style={{ padding: 4 }}>
                   {commitFiles.length ? (
-                    commitFiles.map((file) => {
+                    visibleCommitFiles.map((file) => {
                       const isFileSelected = selectedCommitFilePath === file;
                       return (
                         <button
@@ -258,6 +272,11 @@ export function LaneDiffPane({
                       Loading files...
                     </div>
                   )}
+                  {hiddenCommitFileCount > 0 ? (
+                    <div style={{ padding: "8px", fontSize: 11, color: COLORS.textDim, fontFamily: MONO_FONT }}>
+                      Showing first {MAX_COMMIT_FILE_ROWS} of {commitFiles.length} files.
+                    </div>
+                  ) : null}
                 </div>
               </div>
             </Panel>

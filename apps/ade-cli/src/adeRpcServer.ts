@@ -2889,10 +2889,10 @@ function resolveCallerContext(session?: SessionState): CallerContext {
   return {
     callerId: asOptionalTrimmedString(session.identity.callerId),
     role: session.identity.role ?? envContext.role,
-    chatSessionId: envContext.chatSessionId,
+    chatSessionId: session.identity.chatSessionId ?? envContext.chatSessionId,
     standaloneChatSession: session.identity.standaloneChatSession,
     missionId: session.identity.missionId ?? envContext.missionId,
-    runId: envContext.runId,
+    runId: session.identity.runId ?? envContext.runId,
     stepId: session.identity.stepId ?? envContext.stepId,
     attemptId: session.identity.attemptId ?? envContext.attemptId,
     ownerId: session.identity.ownerId ?? envContext.ownerId,
@@ -2995,7 +2995,11 @@ function parseInitializeIdentity(runtime: AdeRuntime, params: unknown): SessionI
       ? identityRole
       : null;
   const validRole: SessionIdentity["role"] = envContext.role ?? "external";
-  const resolvedRunId = envContext.runId;
+  const requestedChatSessionId = asOptionalTrimmedString(identity.chatSessionId);
+  const resolvedChatSessionId = envContext.chatSessionId ?? requestedChatSessionId;
+  const resolvedRunId = envContext.runId ?? asOptionalTrimmedString(identity.runId);
+  const resolvedStepId = envContext.stepId ?? asOptionalTrimmedString(identity.stepId);
+  const resolvedAttemptId = envContext.attemptId ?? asOptionalTrimmedString(identity.attemptId);
   const requestedMissionId = asOptionalTrimmedString(identity.missionId);
   const resolvedMissionId =
     envContext.missionId
@@ -3007,21 +3011,21 @@ function parseInitializeIdentity(runtime: AdeRuntime, params: unknown): SessionI
     );
   }
 
-  const standaloneChatSession = Boolean(envContext.chatSessionId)
+  const standaloneChatSession = Boolean(resolvedChatSessionId)
     && !envContext.missionId
-    && !envContext.runId
-    && !envContext.stepId
-    && !envContext.attemptId;
+    && !resolvedRunId
+    && !resolvedStepId
+    && !resolvedAttemptId;
 
   return {
-    callerId: asOptionalTrimmedString(identity.callerId) ?? envContext.chatSessionId ?? envContext.attemptId ?? "unknown",
+    callerId: asOptionalTrimmedString(identity.callerId) ?? resolvedChatSessionId ?? envContext.attemptId ?? "unknown",
     role: validRole,
-    chatSessionId: envContext.chatSessionId,
+    chatSessionId: resolvedChatSessionId,
     standaloneChatSession,
     missionId: resolvedMissionId ?? requestedMissionId ?? null,
     runId: resolvedRunId,
-    stepId: asOptionalTrimmedString(identity.stepId) ?? envContext.stepId,
-    attemptId: asOptionalTrimmedString(identity.attemptId) ?? envContext.attemptId,
+    stepId: resolvedStepId,
+    attemptId: resolvedAttemptId,
     ownerId: asOptionalTrimmedString(identity.ownerId) ?? envContext.ownerId,
   };
 }

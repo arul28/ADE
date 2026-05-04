@@ -1,12 +1,14 @@
 import fs from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import YAML from "yaml";
 
 import type { ProjectIcon } from "../../../shared/types";
-import { resolvePathWithinRoot } from "../shared/utils";
+import { isWithinDir, resolvePathWithinRoot } from "../shared/utils";
 
 const ICON_MAX_BYTES = 1024 * 1024;
 const SUPPORTED_ICON_EXTENSIONS = new Set([".svg", ".ico", ".png", ".jpg", ".jpeg", ".webp"]);
+const IMPORTED_PROJECT_ICON_DIR = ".ade/project-icons";
 
 const IGNORED_ICON_DIRS = new Set([
   ".ade",
@@ -56,6 +58,13 @@ const ICON_SOURCE_FILES = [
   "src/root.tsx",
   "src/index.html",
 ] as const;
+
+const IOS_ASSET_CATALOG_CANDIDATE_DIRS = [
+  "Assets.xcassets",
+  "Resources/Assets.xcassets",
+] as const;
+
+const IOS_ASSET_ICONSET_EXTENSIONS = new Set([".appiconset", ".imageset"]);
 
 const LINK_ICON_HTML_RE =
   /<link\b(?=[^>]*\brel=["'](?:icon|shortcut icon)["'])(?=[^>]*\bhref=["']([^"'?]+))[^>]*>/i;
@@ -107,6 +116,12 @@ function resolveIconHref(projectRoot: string, href: string): string[] {
 
 function isSupportedIconPath(filePath: string): boolean {
   return SUPPORTED_ICON_EXTENSIONS.has(path.extname(filePath).toLowerCase());
+}
+
+function realpathExisting(filePath: string): string {
+  return typeof fs.realpathSync.native === "function"
+    ? fs.realpathSync.native(filePath)
+    : fs.realpathSync(filePath);
 }
 
 function toProjectRelative(projectRoot: string, filePath: string): string {
@@ -312,7 +327,122 @@ function buildDetectedIconCandidates(projectRoot: string): string[] {
       }
     }
   }
+  for (const discovered of discoverIosAssetCatalogIconFiles(projectRoot)) {
+    candidates.add(discovered);
+  }
   return Array.from(candidates);
+}
+
+function assetCatalogCandidateRoots(projectRoot: string): string[] {
+  const candidates = new Set<string>();
+  const addCatalogCandidates = (root: string) => {
+    for (const candidateDir of IOS_ASSET_CATALOG_CANDIDATE_DIRS) {
+      candidates.add(root === "." ? candidateDir : path.posix.join(root, candidateDir));
+    }
+  };
+  const addNestedCatalogCandidates = (root: string, remainingDepth: number) => {
+    addCatalogCandidates(root);
+    if (remainingDepth <= 0) return;
+    for (const child of listSubdirectories(projectRoot, root)) {
+      addNestedCatalogCandidates(child, remainingDepth - 1);
+    }
+  };
+
+  for (const root of iconSearchRoots(projectRoot)) {
+    addNestedCatalogCandidates(root, 2);
+  }
+
+  const existing: string[] = [];
+  for (const candidate of candidates) {
+    let resolved: string;
+    try {
+      resolved = resolvePathWithinRoot(projectRoot, candidate, { allowMissing: false });
+    } catch {
+      continue;
+    }
+    try {
+      if (fs.statSync(resolved).isDirectory()) existing.push(candidate);
+    } catch {
+      // Keep probing.
+    }
+  }
+  return existing;
+}
+
+function isLikelyIosAssetIconSet(dirName: string): boolean {
+  const ext = path.extname(dirName).toLowerCase();
+  if (!IOS_ASSET_ICONSET_EXTENSIONS.has(ext)) return false;
+  if (ext === ".appiconset") return true;
+
+  const base = path.basename(dirName, ext).toLowerCase();
+  return base.includes("icon")
+    || base.includes("logo")
+    || base.includes("brand")
+    || base.includes("mark");
+}
+
+function assetContentsFilenames(assetSetPath: string): string[] {
+  const contentsPath = path.join(assetSetPath, "Contents.json");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(contentsPath, "utf8"));
+  } catch {
+    return [];
+  }
+  const images = parsed && typeof parsed === "object" && "images" in parsed
+    ? (parsed as { images?: unknown }).images
+    : undefined;
+  if (!Array.isArray(images)) return [];
+
+  return images
+    .map((entry) => {
+      if (!entry || typeof entry !== "object" || !("filename" in entry)) return null;
+      const filename = (entry as { filename?: unknown }).filename;
+      return typeof filename === "string" ? filename.trim() : null;
+    })
+    .filter((filename): filename is string =>
+      !!filename
+      && !path.isAbsolute(filename)
+      && !filename.includes("/")
+      && !filename.includes("\\")
+      && isSupportedIconPath(filename)
+    );
+}
+
+function discoverIosAssetCatalogIconFiles(projectRoot: string): string[] {
+  const candidates: string[] = [];
+  for (const catalogDir of assetCatalogCandidateRoots(projectRoot)) {
+    let catalogPath: string;
+    try {
+      catalogPath = resolvePathWithinRoot(projectRoot, catalogDir, { allowMissing: false });
+    } catch {
+      continue;
+    }
+
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(catalogPath, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !isLikelyIosAssetIconSet(entry.name)) continue;
+      const relativeSetDir = path.posix.join(catalogDir, entry.name);
+      const assetSetPath = path.join(catalogPath, entry.name);
+      const filenames = assetContentsFilenames(assetSetPath);
+      if (filenames.length > 0) {
+        for (const filename of filenames) {
+          candidates.push(path.posix.join(relativeSetDir, filename));
+        }
+        continue;
+      }
+      for (const discovered of discoverDirectoryIconFiles(projectRoot, relativeSetDir)) {
+        candidates.push(discovered);
+      }
+    }
+  }
+  return candidates;
 }
 
 function scoreIconCandidate(projectRoot: string, filePath: string): number {
@@ -330,9 +460,26 @@ function scoreIconCandidate(projectRoot: string, filePath: string): number {
 
   if (normalized.includes("/app/") || normalized.includes("/src/app/")) score += 16;
   if (normalized.includes("/assets/")) score += 14;
+  if (normalized.includes("/assets.xcassets/")) score += 24;
+  if (normalized.includes(".appiconset/")) score += 90;
+  if (normalized.includes("/appicon.appiconset/")) score += 35;
+  if (normalized.includes(".imageset/")) score += 18;
+  if (normalized.includes("/brandmark.imageset/")) score += 30;
   if (normalized.includes("/public/")) score += 8;
   if (normalized.includes("/apps/desktop/build/")) score += 20;
   if (normalized.includes("/docs/") || normalized.includes("/mintlify/")) score -= 30;
+
+  const pixelMatch = normalized.match(/(?:^|[-_])(\d{2,4})x(\d{2,4})(?:@(\d)x)?/);
+  if (pixelMatch) {
+    const width = Number(pixelMatch[1]);
+    const height = Number(pixelMatch[2]);
+    const scale = pixelMatch[3] ? Number(pixelMatch[3]) : 1;
+    if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+      const displayEdge = Math.sqrt(width * height) * (Number.isFinite(scale) && scale > 0 ? scale : 1);
+      score += Math.min(44, Math.round(displayEdge / 24));
+    }
+  }
+  if (normalized.includes("1024")) score += 18;
 
   switch (path.extname(normalized)) {
     case ".png":
@@ -354,11 +501,20 @@ function scoreIconCandidate(projectRoot: string, filePath: string): number {
   return score - depth;
 }
 
+function isInlineableIconFile(filePath: string): boolean {
+  try {
+    const stat = fs.statSync(filePath);
+    return stat.isFile() && stat.size <= ICON_MAX_BYTES;
+  } catch {
+    return false;
+  }
+}
+
 function findBestDetectedIcon(projectRoot: string): string | null {
   const matches: string[] = [];
   for (const candidate of buildDetectedIconCandidates(projectRoot)) {
     const match = findExistingFile(projectRoot, [candidate]);
-    if (match && isSupportedIconPath(match)) matches.push(match);
+    if (match && isSupportedIconPath(match) && isInlineableIconFile(match)) matches.push(match);
   }
   matches.sort((a, b) => {
     const delta = scoreIconCandidate(projectRoot, b) - scoreIconCandidate(projectRoot, a);
@@ -402,7 +558,7 @@ export function resolveProjectIconPath(
     const href = extractIconHref(source);
     if (!href || !isLocalIconHref(href)) continue;
     const existing = findExistingFile(root, resolveIconHref(root, href));
-    if (existing && isSupportedIconPath(existing)) return existing;
+    if (existing && isSupportedIconPath(existing) && isInlineableIconFile(existing)) return existing;
   }
 
   return null;
@@ -465,16 +621,66 @@ function writeProjectIconPathOverride(projectRoot: string, iconPath: string | nu
 export function setProjectIconOverride(projectRoot: string, iconPath: string): ProjectIcon {
   const root = path.resolve(projectRoot);
   const resolvedIconPath = resolvePathWithinRoot(root, iconPath, { allowMissing: false });
-  const stat = fs.statSync(resolvedIconPath);
-  if (!stat.isFile()) throw new Error("Project icon must be a file.");
-  if (!isSupportedIconPath(resolvedIconPath)) {
-    throw new Error("Project icon must be an ico, jpg, png, svg, or webp file.");
-  }
+  assertUsableProjectIconFile(resolvedIconPath);
 
   const relativeIconPath = toProjectRelative(root, resolvedIconPath);
   writeProjectIconPathOverride(root, relativeIconPath);
   clearProjectIconResultCache(root);
   return resolveProjectIcon(root, { iconPathOverride: relativeIconPath });
+}
+
+function assertUsableProjectIconFile(iconPath: string): void {
+  const stat = fs.statSync(iconPath);
+  if (!stat.isFile()) throw new Error("Project icon must be a file.");
+  if (!isSupportedIconPath(iconPath)) {
+    throw new Error("Project icon must be an ico, jpg, png, svg, or webp file.");
+  }
+  if (stat.size > ICON_MAX_BYTES) {
+    throw new Error("Project icon must be 1 MB or smaller.");
+  }
+}
+
+function importedProjectIconRelativePath(sourcePath: string, data: Buffer): string {
+  const ext = path.extname(sourcePath).toLowerCase();
+  const rawBase = path.basename(sourcePath, path.extname(sourcePath));
+  const safeBase = rawBase
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48)
+    || "icon";
+  const hash = createHash("sha256").update(data).digest("hex").slice(0, 12);
+  return path.posix.join(IMPORTED_PROJECT_ICON_DIR, `${safeBase}-${hash}${ext}`);
+}
+
+export function setProjectIconOverrideFromSelection(projectRoot: string, iconPath: string): ProjectIcon {
+  const root = path.resolve(projectRoot);
+  const selectedPath = realpathExisting(path.resolve(iconPath));
+  assertUsableProjectIconFile(selectedPath);
+
+  const rootReal = realpathExisting(root);
+  if (isWithinDir(rootReal, selectedPath)) {
+    return setProjectIconOverride(root, selectedPath);
+  }
+
+  const data = fs.readFileSync(selectedPath);
+  if (data.length > ICON_MAX_BYTES) {
+    throw new Error("Project icon must be 1 MB or smaller.");
+  }
+  const relativeImportPath = importedProjectIconRelativePath(selectedPath, data);
+  const importDir = resolvePathWithinRoot(root, IMPORTED_PROJECT_ICON_DIR, { allowMissing: true });
+  fs.mkdirSync(importDir, { recursive: true });
+  const importPath = resolvePathWithinRoot(root, relativeImportPath, { allowMissing: true });
+  try {
+    fs.writeFileSync(importPath, data, { flag: "wx", mode: 0o644 });
+  } catch (error) {
+    const code = error && typeof error === "object" && "code" in error
+      ? (error as NodeJS.ErrnoException).code
+      : undefined;
+    if (code !== "EEXIST") throw error;
+  }
+
+  return setProjectIconOverride(root, relativeImportPath);
 }
 
 export function removeProjectIconOverride(projectRoot: string): ProjectIcon {
