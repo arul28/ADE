@@ -283,6 +283,14 @@ import type {
   ProjectDetail,
   ProjectIcon,
   ProjectInfo,
+  CreateProjectInput,
+  CreateProjectResult,
+  CloneProjectInput,
+  CloneProjectResult,
+  ListMyGitHubReposInput,
+  ListMyGitHubReposResult,
+  PublishProjectInput,
+  PublishProjectResult,
   RecentProjectSummary,
   PtyCreateArgs,
   PtyCreateResult,
@@ -647,6 +655,7 @@ import type { createSyncService } from "../sync/syncService";
 import type { createFeedbackReporterService } from "../feedback/feedbackReporterService";
 import type { AdeProjectService } from "../projects/adeProjectService";
 import type { ConfigReloadService } from "../projects/configReloadService";
+import type { createProjectScaffoldService } from "../projects/projectScaffoldService";
 import type { createAdeCliService } from "../cli/adeCliService";
 import { getErrorMessage, isRecord, nowIso, resolvePathWithinRoot, toMemoryEntryDto } from "../shared/utils";
 import { quoteWindowsCmdArg } from "../shared/processExecution";
@@ -690,6 +699,7 @@ export type AppContext = {
   appControlService?: ReturnType<typeof createAppControlService> | null;
   builtInBrowserService?: ReturnType<typeof createBuiltInBrowserService> | null;
   githubService: ReturnType<typeof createGithubService>;
+  projectScaffoldService: ReturnType<typeof createProjectScaffoldService>;
   prService: ReturnType<typeof createPrService>;
   prPollingService: ReturnType<typeof createPrPollingService>;
   queueLandingService: ReturnType<typeof createQueueLandingService>;
@@ -3302,6 +3312,42 @@ export function registerIpc({
   ipcMain.handle(IPC.projectListRecent, async (): Promise<RecentProjectSummary[]> => {
     const state = readGlobalState(globalStatePath);
     return (state.recentProjects ?? []).map(toRecentProjectSummary);
+  });
+
+  ipcMain.handle(
+    IPC.projectCreateLocal,
+    async (_event, arg: CreateProjectInput): Promise<CreateProjectResult> => {
+      const name = typeof arg?.name === "string" ? arg.name.trim() : "";
+      const parentDir = typeof arg?.parentDir === "string" ? arg.parentDir.trim() : "";
+      if (!name) throw new Error("Project name is required.");
+      if (!parentDir) throw new Error("Parent directory is required.");
+      const ctx = getCtx();
+      return await ctx.projectScaffoldService.createLocalProject({ name, parentDir });
+    },
+  );
+
+  ipcMain.handle(
+    IPC.projectClone,
+    async (_event, arg: CloneProjectInput): Promise<CloneProjectResult> => {
+      const url = typeof arg?.url === "string" ? arg.url.trim() : "";
+      const parentDir = typeof arg?.parentDir === "string" ? arg.parentDir.trim() : "";
+      const name = typeof arg?.name === "string" ? arg.name.trim() : undefined;
+      if (!url) throw new Error("Repository URL is required.");
+      if (!parentDir) throw new Error("Parent directory is required.");
+      const ctx = getCtx();
+      return await ctx.projectScaffoldService.cloneRepository({
+        url,
+        parentDir,
+        ...(name ? { name } : {}),
+      });
+    },
+  );
+
+  ipcMain.handle(IPC.projectGetDefaultParentDir, async (): Promise<string> => {
+    const state = readGlobalState(globalStatePath);
+    const recents = (state.recentProjects ?? []).map(toRecentProjectSummary);
+    const ctx = getCtx();
+    return ctx.projectScaffoldService.getDefaultParentDir(recents);
   });
 
   ipcMain.handle(IPC.projectCloseCurrent, async (): Promise<void> => {
@@ -7156,6 +7202,60 @@ export function registerIpc({
       since: arg?.since,
     });
   });
+
+  // Backend services use Error.code for known failures (e.g.
+  // "github_not_connected", "remote_already_exists"). Electron IPC strips
+  // custom properties from thrown errors, so we re-throw with the code
+  // prepended to the message. Renderer matches on the prefix.
+  const surfaceCodedError = (error: unknown): never => {
+    if (error instanceof Error) {
+      const code = (error as Error & { code?: unknown }).code;
+      if (typeof code === "string" && code.length > 0 && !error.message.startsWith(`${code}:`)) {
+        const wrapped = new Error(`${code}: ${error.message}`);
+        throw wrapped;
+      }
+    }
+    throw error;
+  };
+
+  ipcMain.handle(
+    IPC.githubListMyRepos,
+    async (_event, arg: ListMyGitHubReposInput = {}): Promise<ListMyGitHubReposResult> => {
+      const search = typeof arg?.search === "string" ? arg.search.trim() : undefined;
+      const ctx = getCtx();
+      try {
+        return await ctx.projectScaffoldService.listMyGitHubRepos(
+          search ? { search } : {},
+        );
+      } catch (error) {
+        return surfaceCodedError(error);
+      }
+    },
+  );
+
+  ipcMain.handle(
+    IPC.githubPublishCurrentProject,
+    async (_event, arg: PublishProjectInput): Promise<PublishProjectResult> => {
+      const name = typeof arg?.name === "string" ? arg.name.trim() : "";
+      const description = typeof arg?.description === "string" ? arg.description.trim() : undefined;
+      const isPrivate = arg?.isPrivate !== false;
+      if (!name) throw new Error("Repository name is required.");
+      const ctx = getCtx();
+      const projectRoot = ctx.project?.rootPath ?? "";
+      if (!projectRoot) {
+        throw new Error("No active project to publish.");
+      }
+      try {
+        return await ctx.githubService.publishCurrentProject({
+          name,
+          ...(description ? { description } : {}),
+          isPrivate,
+        });
+      } catch (error) {
+        return surfaceCodedError(error);
+      }
+    },
+  );
 
   // ── Feedback Reporter ──────────────────────────────────────────────
   ipcMain.handle(IPC.feedbackPrepareDraft, async (_event, arg: FeedbackPrepareDraftArgs): Promise<FeedbackPreparedDraft> => {

@@ -571,3 +571,208 @@ describe("githubService.getStatus", () => {
     expect(status.repoAccessError).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// createRepository — POST /user/repos
+// ---------------------------------------------------------------------------
+
+describe("githubService.createRepository", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.GITHUB_TOKEN = "ghp_env_token";
+  });
+
+  function lastFetchCall() {
+    const calls = mockFetch.mock.calls;
+    return calls[calls.length - 1] as [string, RequestInit];
+  }
+
+  it("POSTs the canonical body shape and parses the response", async () => {
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse(201, {
+        clone_url: "https://github.com/alice/test.git",
+        ssh_url: "git@github.com:alice/test.git",
+        html_url: "https://github.com/alice/test",
+        default_branch: "main",
+      }),
+    );
+
+    const result = await makeService().createRepository({
+      name: "test",
+      description: "hello world",
+      isPrivate: true,
+    });
+
+    const [url, init] = lastFetchCall();
+    expect(url).toContain("/user/repos");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({
+      name: "test",
+      description: "hello world",
+      private: true,
+      auto_init: false,
+    });
+    expect(result).toEqual({
+      cloneUrl: "https://github.com/alice/test.git",
+      sshUrl: "git@github.com:alice/test.git",
+      htmlUrl: "https://github.com/alice/test",
+      defaultBranch: "main",
+    });
+  });
+
+  it("omits the description field when blank", async () => {
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse(201, {
+        clone_url: "https://github.com/alice/test.git",
+        ssh_url: "git@github.com:alice/test.git",
+        html_url: "https://github.com/alice/test",
+        default_branch: "main",
+      }),
+    );
+
+    await makeService().createRepository({ name: "test", isPrivate: false });
+
+    const [, init] = lastFetchCall();
+    const body = JSON.parse(init.body as string);
+    expect(body).not.toHaveProperty("description");
+    expect(body.private).toBe(false);
+  });
+
+  it("propagates GitHub error messages on 4xx", async () => {
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse(422, {
+        message: "Validation Failed",
+        errors: [{ message: "name already exists on this account" }],
+      }),
+    );
+
+    await expect(
+      makeService().createRepository({ name: "existing", isPrivate: true }),
+    ).rejects.toThrow(/validation failed.*already exists/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// publishCurrentProject — orchestrates createRepo + remote add + push
+// ---------------------------------------------------------------------------
+
+describe("githubService.publishCurrentProject", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.GITHUB_TOKEN = "ghp_env_token";
+  });
+
+  it("returns state=pushed when HEAD exists, after creating the repo and pushing", async () => {
+    runGitMock
+      // get-url origin: no remote yet
+      .mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "fatal: No such remote 'origin'" })
+      // remote add origin: ok
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" })
+      // rev-parse HEAD: ok (commit exists)
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "abc123\n", stderr: "" })
+      // push -u origin HEAD: ok
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" });
+
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse(201, {
+        clone_url: "https://github.com/alice/proj.git",
+        ssh_url: "git@github.com:alice/proj.git",
+        html_url: "https://github.com/alice/proj",
+        default_branch: "main",
+      }),
+    );
+
+    const result = await makeService().publishCurrentProject({
+      name: "proj",
+      isPrivate: true,
+    });
+
+    expect(result).toEqual({ state: "pushed", htmlUrl: "https://github.com/alice/proj" });
+    const gitCalls = runGitMock.mock.calls.map((c) => c[0]);
+    expect(gitCalls[0]).toEqual(["remote", "get-url", "origin"]);
+    expect(gitCalls[1]).toEqual(["remote", "add", "origin", "https://github.com/alice/proj.git"]);
+    expect(gitCalls[2]).toEqual(["rev-parse", "--verify", "HEAD"]);
+    expect(gitCalls[3]).toEqual(["push", "-u", "origin", "HEAD"]);
+  });
+
+  it("returns state=remote_added when the project has no commits yet", async () => {
+    runGitMock
+      .mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "" }) // get-url origin
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" }) // remote add
+      .mockResolvedValueOnce({ exitCode: 128, stdout: "", stderr: "fatal: Needed a single revision" }); // rev-parse HEAD fails
+
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse(201, {
+        clone_url: "https://github.com/alice/empty.git",
+        ssh_url: "git@github.com:alice/empty.git",
+        html_url: "https://github.com/alice/empty",
+        default_branch: "main",
+      }),
+    );
+
+    const result = await makeService().publishCurrentProject({
+      name: "empty",
+      isPrivate: true,
+    });
+
+    expect(result).toEqual({ state: "remote_added", htmlUrl: "https://github.com/alice/empty" });
+    // Should NOT have called push
+    expect(runGitMock.mock.calls.map((c) => (c[0] as string[])[0])).not.toContain("push");
+  });
+
+  it("throws remote_already_exists when origin is already configured", async () => {
+    runGitMock.mockResolvedValueOnce({
+      exitCode: 0,
+      stdout: "git@github.com:someone/already.git\n",
+      stderr: "",
+    });
+
+    let caught: any;
+    try {
+      await makeService().publishCurrentProject({ name: "x", isPrivate: true });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught.code).toBe("remote_already_exists");
+    // Must NOT have hit the API
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("throws github_not_connected when no token is stored", async () => {
+    delete process.env.GITHUB_TOKEN;
+    delete process.env.ADE_GITHUB_TOKEN;
+
+    let caught: any;
+    try {
+      await makeService().publishCurrentProject({ name: "x", isPrivate: true });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught.code).toBe("github_not_connected");
+    expect(runGitMock).not.toHaveBeenCalled();
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a clear error when the push step fails", async () => {
+    runGitMock
+      .mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "" })
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" })
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "abc\n", stderr: "" })
+      .mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "Authentication failed" });
+
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse(201, {
+        clone_url: "https://github.com/alice/proj.git",
+        ssh_url: "git@github.com:alice/proj.git",
+        html_url: "https://github.com/alice/proj",
+        default_branch: "main",
+      }),
+    );
+
+    await expect(
+      makeService().publishCurrentProject({ name: "proj", isPrivate: true }),
+    ).rejects.toThrow(/authentication failed/i);
+  });
+});

@@ -406,6 +406,14 @@ import type {
   ProjectConfigTrust,
   ProjectConfigValidationResult,
   ProjectInfo,
+  CreateProjectInput,
+  CreateProjectResult,
+  CloneProjectInput,
+  CloneProjectResult,
+  ListMyGitHubReposInput,
+  ListMyGitHubReposResult,
+  PublishProjectInput,
+  PublishProjectResult,
   RecentProjectSummary,
   PtyCreateArgs,
   PtyCreateResult,
@@ -735,6 +743,9 @@ declare global {
         reorderRecent: (
           orderedPaths: string[],
         ) => Promise<RecentProjectSummary[]>;
+        createLocal: (input: CreateProjectInput) => Promise<CreateProjectResult>;
+        clone: (input: CloneProjectInput) => Promise<CloneProjectResult>;
+        getDefaultParentDir: () => Promise<string>;
         getSnapshot: () => Promise<AdeProjectSnapshot>;
         initializeOrRepair: () => Promise<AdeCleanupResult>;
         runIntegrityCheck: () => Promise<AdeCleanupResult>;
@@ -1568,6 +1579,8 @@ declare global {
         detectRepo: () => Promise<{ owner: string; name: string } | null>;
         listRepoLabels: (args: { owner: string; name: string }) => Promise<Array<{ name: string; color?: string }>>;
         listRepoCollaborators: (args: { owner: string; name: string }) => Promise<Array<{ login: string; avatarUrl?: string }>>;
+        listMyRepos: (input?: ListMyGitHubReposInput) => Promise<ListMyGitHubReposResult>;
+        publishCurrentProject: (input: PublishProjectInput) => Promise<PublishProjectResult>;
         onStatusChanged: (cb: (status: GitHubStatus) => void) => () => void;
       };
       prs: {
