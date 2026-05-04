@@ -14,6 +14,10 @@ import { invalidateSessionListCache } from "../../lib/sessionListCache";
 import { formatSessionBundleMarkdown, triggerBrowserDownload } from "../../lib/transcriptExport";
 import { useAppStore } from "../../state/appStore";
 import { ADE_OPEN_BUILT_IN_BROWSER_EVENT } from "../../lib/openExternal";
+import {
+  ADE_WORK_SIDEBAR_BROWSER_RESIZE_END_EVENT,
+  ADE_WORK_SIDEBAR_BROWSER_RESIZE_START_EVENT,
+} from "../../lib/workSidebarBrowserResize";
 
 const TERMINALS_TILING_TREE: PaneSplit = {
   type: "split",
@@ -29,6 +33,14 @@ const MAX_WORK_SIDEBAR_WIDTH_PCT = 55;
 
 function clampWorkSidebarWidthPct(widthPct: number): number {
   return Math.max(MIN_WORK_SIDEBAR_WIDTH_PCT, Math.min(MAX_WORK_SIDEBAR_WIDTH_PCT, widthPct));
+}
+
+function dispatchWorkSidebarBrowserResizeEvent(type: "start" | "end"): void {
+  window.dispatchEvent(new Event(
+    type === "start"
+      ? ADE_WORK_SIDEBAR_BROWSER_RESIZE_START_EVENT
+      : ADE_WORK_SIDEBAR_BROWSER_RESIZE_END_EVENT,
+  ));
 }
 
 export function TerminalsPage() {
@@ -477,10 +489,12 @@ export function TerminalsPage() {
       document.removeEventListener("mouseup", onUp);
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
+      if (work.workSidebarTab === "browser") dispatchWorkSidebarBrowserResizeEvent("end");
       work.setWorkSidebarWidthPct(pendingWidthPct);
     };
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
+    if (work.workSidebarTab === "browser") dispatchWorkSidebarBrowserResizeEvent("start");
     applyWidth(startWidthPct);
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);

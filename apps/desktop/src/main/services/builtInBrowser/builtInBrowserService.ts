@@ -1,4 +1,4 @@
-import { WebContentsView, nativeImage, session, webContents as electronWebContents } from "electron";
+import { WebContentsView, nativeImage, session, shell, webContents as electronWebContents } from "electron";
 import type { BrowserWindow, WebContents } from "electron";
 import { randomUUID } from "node:crypto";
 import type {
@@ -17,12 +17,16 @@ import type {
   BuiltInBrowserTabArgs,
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
+import { BUILT_IN_BROWSER_PARTITION } from "./builtInBrowserConstants";
 
-const BROWSER_PARTITION: BuiltInBrowserStatus["partition"] = "persist:ade-browser";
+const BROWSER_PARTITION = BUILT_IN_BROWSER_PARTITION;
 const SCREENSHOT_TIMEOUT_MS = 3_000;
 const ELEMENT_SCREENSHOT_TIMEOUT_MS = 2_000;
 const DEBUGGER_TIMEOUT_MS = 3_000;
 const MAX_BROWSER_TABS = 10;
+const GOOGLE_SIGN_IN_EXTERNAL_NOTICE_DEDUPE_MS = 2_000;
+const GOOGLE_SIGN_IN_EXTERNAL_MESSAGE =
+  "Google blocks account sign-in inside embedded app browsers. ADE opened the Google sign-in page in your system browser instead. ADE browser cookies are separate, so that system-browser login will not transfer back into ADE.";
 
 type DebuggerMessageListener = (
   event: Electron.Event,
@@ -96,6 +100,7 @@ export function createBuiltInBrowserService(args: {
   let handlingInspectNode = false;
   let browserSessionConfigured = false;
   let lastEmittedStatusKey: string | null = null;
+  let lastGoogleSignInExternalNotice: { url: string; at: number } | null = null;
   const configuredWebContents = new WeakSet<WebContents>();
 
   const logger = (): Logger | null => {
@@ -133,6 +138,32 @@ export function createBuiltInBrowserService(args: {
     const message = error instanceof Error ? error.message : String(error);
     logger()?.warn("built_in_browser.error", { err: message });
     emit({ type: "error", message, occurredAt: new Date().toISOString() });
+  };
+
+  const emitGoogleSignInExternalNotice = (url: string): void => {
+    const now = Date.now();
+    if (
+      lastGoogleSignInExternalNotice
+      && lastGoogleSignInExternalNotice.url === url
+      && now - lastGoogleSignInExternalNotice.at < GOOGLE_SIGN_IN_EXTERNAL_NOTICE_DEDUPE_MS
+    ) {
+      return;
+    }
+    lastGoogleSignInExternalNotice = { url, at: now };
+    emit({
+      type: "error",
+      message: GOOGLE_SIGN_IN_EXTERNAL_MESSAGE,
+      occurredAt: new Date().toISOString(),
+    });
+  };
+
+  const openGoogleSignInExternallyIfNeeded = (url: string): boolean => {
+    if (!isGoogleEmbeddedSignInUrl(url)) return false;
+    void shell.openExternal(url).catch((error) => {
+      emitError(new Error(`Could not open Google sign-in in the system browser: ${error instanceof Error ? error.message : String(error)}`));
+    });
+    emitGoogleSignInExternalNotice(url);
+    return true;
   };
 
   const stopInspectQuietly = async (logKey: string): Promise<void> => {
@@ -187,10 +218,17 @@ export function createBuiltInBrowserService(args: {
     if (configuredWebContents.has(wc)) return;
     configuredWebContents.add(wc);
     wc.setWindowOpenHandler(({ url }) => {
+      if (openGoogleSignInExternallyIfNeeded(url)) {
+        return { action: "deny" };
+      }
       void navigate({ url, newTab: true }).catch(emitError);
       return { action: "deny" };
     });
     wc.on("will-navigate", (event, url) => {
+      if (openGoogleSignInExternallyIfNeeded(url)) {
+        event.preventDefault();
+        return;
+      }
       if (isAllowedNavigationUrl(url)) return;
       event.preventDefault();
       emitError(new Error(`Blocked unsupported browser navigation protocol: ${url}`));
@@ -269,7 +307,7 @@ export function createBuiltInBrowserService(args: {
     for (const tab of tabs) {
       if (tab.webContents.isDestroyed()) continue;
       if (!tab.view) {
-        applyTabLifecycle(tab, tab.id === activeTabId);
+        applyTabLifecycle(tab, visible && tab.id === activeTabId);
         continue;
       }
       if (!win.contentView.children.includes(tab.view)) {
@@ -278,7 +316,7 @@ export function createBuiltInBrowserService(args: {
       const isActive = tab.id === activeTabId;
       if (isActive) tab.view.setBounds(electronRect);
       tab.view.setVisible(visible && isActive);
-      applyTabLifecycle(tab, isActive);
+      applyTabLifecycle(tab, visible && isActive);
     }
   };
 
@@ -442,6 +480,9 @@ export function createBuiltInBrowserService(args: {
 
   async function navigate(input: BuiltInBrowserNavigateArgs): Promise<BuiltInBrowserStatus> {
     const targetUrl = normalizeBrowserUrl(input.url);
+    if (openGoogleSignInExternallyIfNeeded(targetUrl)) {
+      return getStatus();
+    }
     if (input.newTab && tabs.length >= MAX_BROWSER_TABS) {
       throw new Error(`ADE browser is limited to ${MAX_BROWSER_TABS} tabs. Close a tab before opening another.`);
     }
@@ -480,6 +521,9 @@ export function createBuiltInBrowserService(args: {
     }
     // Normalize URL up front so we don't leave an orphan tab on invalid input.
     const normalizedUrl = input.url ? normalizeBrowserUrl(input.url) : null;
+    if (normalizedUrl && openGoogleSignInExternallyIfNeeded(normalizedUrl)) {
+      return getStatus();
+    }
     const willActivate = input.activate !== false || !activeTabId;
     if (willActivate) {
       await stopInspectQuietly("built_in_browser.create_tab_stop_inspect_failed");
@@ -1066,6 +1110,27 @@ function isAllowedNavigationUrl(rawUrl: string): boolean {
     const parsed = new URL(rawUrl);
     if (parsed.protocol === "about:") return parsed.href.startsWith("about:blank");
     return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function isGoogleEmbeddedSignInUrl(rawUrl: string): boolean {
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+    if (parsed.hostname.toLowerCase() !== "accounts.google.com") return false;
+    if (parsed.searchParams.get("error") === "disallowed_useragent") return true;
+    const path = parsed.pathname.toLowerCase();
+    return (
+      path === "/"
+      || path.startsWith("/accountchooser")
+      || path.startsWith("/interactivelogin")
+      || path.startsWith("/o/oauth")
+      || path.startsWith("/signin")
+      || path.startsWith("/servicelogin")
+      || path.startsWith("/v3/signin")
+    );
   } catch {
     return false;
   }

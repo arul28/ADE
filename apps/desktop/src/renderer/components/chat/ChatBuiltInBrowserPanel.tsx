@@ -19,6 +19,10 @@ import type { AgentChatFileRef } from "../../../shared/types";
 import { inferAttachmentType } from "../../../shared/types";
 import type { BuiltInBrowserTab } from "../../../shared/types/builtInBrowser";
 import { consumePendingBuiltInBrowserNavigation } from "../../lib/openExternal";
+import {
+  ADE_WORK_SIDEBAR_BROWSER_RESIZE_END_EVENT,
+  ADE_WORK_SIDEBAR_BROWSER_RESIZE_START_EVENT,
+} from "../../lib/workSidebarBrowserResize";
 import { cn } from "../ui/cn";
 
 type BrowserFrame = {
@@ -168,6 +172,9 @@ type BrowserCrop = {
 const BOUNDS_SETTLE_MS = 1_200;
 const BOUNDS_SETTLE_MIN_FRAME_MS = 32;
 const DEFAULT_BROWSER_URL = "https://www.google.com/";
+// Renderer-owned <webview> nodes lose their backing webContents when the panel unmounts.
+// Keep tabs owned by the main browser service so tab state survives Work sidebar tab switches.
+const USE_RENDERER_BROWSER_WEBVIEWS = false;
 
 const STATUS_PILL_TONE: Record<StatusTone, string> = {
   idle: "border-white/[0.08] bg-white/[0.03] text-muted-fg/65",
@@ -207,6 +214,12 @@ function errorMessage(error: unknown): string {
 
 function getBrowserApi(): BuiltInBrowserApi | null {
   return (window.ade as unknown as { builtInBrowser?: BuiltInBrowserApi }).builtInBrowser ?? null;
+}
+
+function shouldUseRendererBrowserWebviews(
+  api: BuiltInBrowserApi | null,
+): api is BuiltInBrowserApi & Required<Pick<BuiltInBrowserApi, "attachWebview">> {
+  return USE_RENDERER_BROWSER_WEBVIEWS && typeof api?.attachWebview === "function";
 }
 
 function requireBrowserApi(): BuiltInBrowserApi {
@@ -580,6 +593,7 @@ export function ChatBuiltInBrowserPanel({
   const statusRef = useRef<BuiltInBrowserStatus | null>(null);
   const selectedItemRef = useRef<BuiltInBrowserContextItem | null>(null);
   const captureModeRef = useRef(false);
+  const browserInputSuppressedRef = useRef(false);
   const autoAttachedContextIdsRef = useRef(new Set<string>());
   const editingUrlRef = useRef(false);
   const apiAvailable = Boolean(getBrowserApi());
@@ -593,6 +607,7 @@ export function ChatBuiltInBrowserPanel({
   const [lastScreenshot, setLastScreenshot] = useState<BuiltInBrowserScreenshot | null>(null);
   const [captureBase, setCaptureBase] = useState<BuiltInBrowserScreenshot | null>(null);
   const [captureSelection, setCaptureSelection] = useState<BrowserCaptureSelection | null>(null);
+  const [browserInputSuppressed, setBrowserInputSuppressed] = useState(false);
   const [webviewNavigationNonce, setWebviewNavigationNonce] = useState(0);
 
   const statusInfo = useMemo(() => buildStatusInfo(apiAvailable, status), [apiAvailable, status]);
@@ -707,7 +722,7 @@ export function ChatBuiltInBrowserPanel({
     const api = getBrowserApi();
     const element = browserSurfaceRef.current;
     if (!api || !element) return;
-    if (typeof api.attachWebview === "function") {
+    if (shouldUseRendererBrowserWebviews(api)) {
       const hidden: BrowserBounds = { x: 0, y: 0, width: 0, height: 0, visible: false };
       if (boundsEqual(latestBoundsRef.current, hidden)) return;
       latestBoundsRef.current = hidden;
@@ -719,7 +734,7 @@ export function ChatBuiltInBrowserPanel({
     const measured = measureNativeBrowserBounds(element);
     const next: BrowserBounds = {
       ...measured,
-      visible: visibleOverride ?? (!captureModeRef.current && measured.visible),
+      visible: visibleOverride ?? (!browserInputSuppressedRef.current && !captureModeRef.current && measured.visible),
     };
     if (boundsEqual(latestBoundsRef.current, next)) return;
     latestBoundsRef.current = next;
@@ -743,6 +758,37 @@ export function ChatBuiltInBrowserPanel({
     await api.stopInspect().catch(() => {});
     await api.setBounds(hidden).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    let restoreFrame: number | null = null;
+    const cancelRestoreFrame = () => {
+      if (restoreFrame == null) return;
+      window.cancelAnimationFrame(restoreFrame);
+      restoreFrame = null;
+    };
+    const suppressInput = () => {
+      cancelRestoreFrame();
+      browserInputSuppressedRef.current = true;
+      setBrowserInputSuppressed(true);
+      reportBounds(false);
+    };
+    const restoreInput = () => {
+      browserInputSuppressedRef.current = false;
+      setBrowserInputSuppressed(false);
+      cancelRestoreFrame();
+      restoreFrame = window.requestAnimationFrame(() => {
+        restoreFrame = null;
+        reportBounds();
+      });
+    };
+    window.addEventListener(ADE_WORK_SIDEBAR_BROWSER_RESIZE_START_EVENT, suppressInput);
+    window.addEventListener(ADE_WORK_SIDEBAR_BROWSER_RESIZE_END_EVENT, restoreInput);
+    return () => {
+      window.removeEventListener(ADE_WORK_SIDEBAR_BROWSER_RESIZE_START_EVENT, suppressInput);
+      window.removeEventListener(ADE_WORK_SIDEBAR_BROWSER_RESIZE_END_EVENT, restoreInput);
+      cancelRestoreFrame();
+    };
+  }, [reportBounds]);
 
   useLayoutEffect(() => {
     const element = browserSurfaceRef.current;
@@ -878,7 +924,7 @@ export function ChatBuiltInBrowserPanel({
   useLayoutEffect(() => {
     const api = getBrowserApi();
     const host = browserSurfaceRef.current;
-    if (!api?.attachWebview || !host) return;
+    if (!shouldUseRendererBrowserWebviews(api) || !host) return;
 
     const tabIds = new Set(browserTabs.map((tab) => tab.id));
     for (const [tabId, cleanup] of browserWebviewAttachCleanupRef.current) {
@@ -951,10 +997,10 @@ export function ChatBuiltInBrowserPanel({
       const isActive = tab.id === activeTabId;
       webview.style.display = isActive ? "flex" : "none";
       webview.style.visibility = isActive && captureBase ? "hidden" : "visible";
-      webview.style.pointerEvents = isActive && !captureBase ? "auto" : "none";
+      webview.style.pointerEvents = isActive && !captureBase && !browserInputSuppressed ? "auto" : "none";
       webview.setAttribute("aria-hidden", isActive ? "false" : "true");
     }
-  }, [activeTabId, applyStatus, tabIdsSignature, captureBase, webviewNavigationNonce]);
+  }, [activeTabId, applyStatus, browserInputSuppressed, browserTabs, tabIdsSignature, captureBase, webviewNavigationNonce]);
 
   const runBusy = useCallback(async (label: string, action: () => Promise<void>) => {
     setBusy(label);
@@ -991,7 +1037,7 @@ export function ChatBuiltInBrowserPanel({
 
   const attachActiveRendererWebview = useCallback(async (): Promise<boolean> => {
     const api = getBrowserApi();
-    if (!api?.attachWebview || !activeTabId) return false;
+    if (!shouldUseRendererBrowserWebviews(api) || !activeTabId) return false;
     const webview = browserWebviewsRef.current.get(activeTabId);
     if (!webview) return false;
     let webContentsId: number | undefined;
@@ -1057,7 +1103,7 @@ export function ChatBuiltInBrowserPanel({
     defaultBrowserOpenedRef.current = true;
     void (async () => {
       try {
-        if (api.attachWebview && api.createTab) {
+        if (shouldUseRendererBrowserWebviews(api) && api.createTab) {
           const nextStatus = normalizeStatus(await api.createTab({ activate: true }), statusRef.current);
           applyStatus(nextStatus);
           const tabId = nextStatus.activeTabId;
@@ -1091,7 +1137,7 @@ export function ChatBuiltInBrowserPanel({
       void runBusy("navigate", async () => {
         if (captureModeRef.current) restoreLiveBrowserView();
         const api = requireBrowserApi();
-        if (api.attachWebview) {
+        if (shouldUseRendererBrowserWebviews(api)) {
           let tabId: string | null = activeTabId;
           if (!tabId) {
             if (!api.createTab) throw new Error("This ADE build does not support browser tab creation.");
@@ -1116,7 +1162,7 @@ export function ChatBuiltInBrowserPanel({
     void runBusy("new-tab", async () => {
       if (captureModeRef.current) restoreLiveBrowserView();
       const api = requireBrowserApi();
-      if (api.attachWebview && api.createTab) {
+      if (shouldUseRendererBrowserWebviews(api) && api.createTab) {
         const nextStatus = normalizeStatus(await api.createTab({ activate: true }), statusRef.current);
         applyStatus(nextStatus);
         const tabId = nextStatus.activeTabId;

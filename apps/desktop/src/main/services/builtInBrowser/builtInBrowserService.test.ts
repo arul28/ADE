@@ -4,6 +4,7 @@ import { createBuiltInBrowserService } from "./builtInBrowserService";
 
 const fakes = vi.hoisted(() => {
   type DebuggerHandler = (...args: unknown[]) => void;
+  type WindowOpenHandler = (details: { url: string }) => { action: string };
 
   class FakeDebugger {
     attached = false;
@@ -33,7 +34,18 @@ const fakes = vi.hoisted(() => {
   class FakeWebContents {
     id = Math.floor(Math.random() * 1_000_000);
     debugger = new FakeDebugger();
-    loadURL = async (_url: string): Promise<void> => undefined;
+    audioMutedCalls: boolean[] = [];
+    currentUrl = "";
+    private listeners: Record<string, Array<(...args: unknown[]) => void>> = {};
+    private windowOpenHandler: WindowOpenHandler | null = null;
+    loadURL = async (url: string): Promise<void> => {
+      const event = { preventDefault: vi.fn() };
+      this.emit("will-navigate", event, url);
+      if (event.preventDefault.mock.calls.length === 0) {
+        this.currentUrl = url;
+        this.emit("did-navigate", {}, url);
+      }
+    };
     reload = (): void => undefined;
     goBack = (): void => undefined;
     goForward = (): void => undefined;
@@ -42,11 +54,23 @@ const fakes = vi.hoisted(() => {
     canGoBack = (): boolean => false;
     canGoForward = (): boolean => false;
     isDestroyed = (): boolean => false;
-    getURL = (): string => "";
+    getURL = (): string => this.currentUrl;
     getTitle = (): string => "";
-    setAudioMuted = (_muted: boolean): void => undefined;
-    setWindowOpenHandler = (_handler: unknown): void => undefined;
-    on = (_event: string, _fn: (...args: unknown[]) => void): void => undefined;
+    setAudioMuted = (muted: boolean): void => {
+      this.audioMutedCalls.push(muted);
+    };
+    setWindowOpenHandler = (handler: WindowOpenHandler): void => {
+      this.windowOpenHandler = handler;
+    };
+    openWindow = (url: string): { action: string } | null => this.windowOpenHandler?.({ url }) ?? null;
+    on = (event: string, fn: (...args: unknown[]) => void): void => {
+      (this.listeners[event] ??= []).push(fn);
+    };
+    emit = (event: string, ...args: unknown[]): void => {
+      for (const listener of this.listeners[event] ?? []) {
+        listener(...args);
+      }
+    };
   }
 
   class FakeWebContentsView {
@@ -58,6 +82,7 @@ const fakes = vi.hoisted(() => {
 
   // Track the most recently constructed FakeDebugger so tests can wire sendCommand impls.
   const debuggerInstances: FakeDebugger[] = [];
+  const webContentsInstances: FakeWebContents[] = [];
   const OriginalFakeDebugger = FakeDebugger;
   class TrackedFakeDebugger extends OriginalFakeDebugger {
     constructor() {
@@ -70,6 +95,7 @@ const fakes = vi.hoisted(() => {
     constructor() {
       super();
       this.debugger = new TrackedFakeDebugger();
+      webContentsInstances.push(this);
     }
   }
   class TrackedFakeWebContentsView extends FakeWebContentsView {
@@ -89,6 +115,8 @@ const fakes = vi.hoisted(() => {
   return {
     WebContentsView: TrackedFakeWebContentsView,
     debuggerInstances,
+    webContentsInstances,
+    openExternal: vi.fn(async (_url: string) => undefined),
     setSendCommand: (impl: (method: string, params?: Record<string, unknown>) => Promise<unknown>) => {
       activeImpl = impl;
     },
@@ -98,6 +126,9 @@ const fakes = vi.hoisted(() => {
     clearDebuggerInstances: () => {
       debuggerInstances.length = 0;
     },
+    clearWebContentsInstances: () => {
+      webContentsInstances.length = 0;
+    },
   };
 });
 
@@ -105,6 +136,7 @@ vi.mock("electron", () => ({
   WebContentsView: fakes.WebContentsView,
   nativeImage: { createFromDataURL: () => ({ getSize: () => ({ width: 0, height: 0 }) }) },
   session: { fromPartition: () => ({ setPermissionCheckHandler: () => {}, setPermissionRequestHandler: () => {} }) },
+  shell: { openExternal: fakes.openExternal },
   webContents: { fromId: () => null },
 }));
 
@@ -121,11 +153,32 @@ function captureStatusEvents(): {
   };
 }
 
+function fakeBrowserWindow() {
+  const children: unknown[] = [];
+  return {
+    isDestroyed: () => false,
+    contentView: {
+      children,
+      addChildView: (view: unknown) => {
+        if (!children.includes(view)) children.push(view);
+      },
+      removeChildView: (view: unknown) => {
+        const index = children.indexOf(view);
+        if (index >= 0) children.splice(index, 1);
+      },
+    },
+    once: vi.fn(),
+    removeListener: vi.fn(),
+  };
+}
+
 describe("createBuiltInBrowserService — bounds and status dedupe", () => {
   let collector: ReturnType<typeof captureStatusEvents>;
 
   beforeEach(() => {
     collector = captureStatusEvents();
+    fakes.clearWebContentsInstances();
+    fakes.openExternal.mockClear();
   });
 
   it("getStatus returns sane defaults before any window or tab is attached", () => {
@@ -207,6 +260,53 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     await expect(service.selectPoint({ x: 10, y: 10 })).rejects.toThrow(/no active browser tab/i);
     expect(service.getStatus().tabs).toEqual([]);
   });
+
+  it("keeps owned tabs alive while hidden and mutes them until visible", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    service.attachToWindow(fakeBrowserWindow() as unknown as Parameters<typeof service.attachToWindow>[0]);
+
+    await service.createTab({ url: "https://example.test", activate: true });
+    expect(service.getStatus().tabs).toHaveLength(1);
+    const wc = fakes.webContentsInstances[0];
+    expect(wc?.audioMutedCalls.at(-1)).toBe(true);
+
+    await service.setBounds({ x: 12, y: 24, width: 640, height: 360, visible: true });
+    expect(service.getStatus().tabs).toHaveLength(1);
+    expect(wc?.audioMutedCalls.at(-1)).toBe(false);
+
+    await service.setBounds({ x: 12, y: 24, width: 640, height: 360, visible: false });
+    expect(service.getStatus().tabs).toHaveLength(1);
+    expect(wc?.audioMutedCalls.at(-1)).toBe(true);
+  });
+
+  it("opens Google account sign-in externally without creating an ADE browser tab", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const googleAuthUrl = "https://accounts.google.com/o/oauth2/v2/auth?client_id=test";
+
+    await service.navigate({ url: googleAuthUrl, newTab: true });
+
+    expect(fakes.openExternal).toHaveBeenCalledWith(googleAuthUrl);
+    expect(service.getStatus().tabs).toEqual([]);
+    expect(collector.events.some((event) => (
+      event.type === "error" && /system browser/i.test(event.message)
+    ))).toBe(true);
+  });
+
+  it("blocks in-page Google sign-in navigations and opens them externally", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    service.attachToWindow(fakeBrowserWindow() as unknown as Parameters<typeof service.attachToWindow>[0]);
+    await service.createTab({ url: "https://example.test", activate: true });
+    fakes.openExternal.mockClear();
+
+    const googleSignInUrl = "https://accounts.google.com/v3/signin/identifier?continue=https%3A%2F%2Fexample.test";
+    const event = { preventDefault: vi.fn() };
+    const wc = fakes.webContentsInstances[0];
+    wc?.emit("will-navigate", event, googleSignInUrl);
+
+    expect(event.preventDefault).toHaveBeenCalled();
+    expect(fakes.openExternal).toHaveBeenCalledWith(googleSignInUrl);
+    expect(service.getStatus().url).toBe("https://example.test/");
+  });
 });
 
 describe("createBuiltInBrowserService — switchTab and navigate inspect/selection invariants", () => {
@@ -216,6 +316,8 @@ describe("createBuiltInBrowserService — switchTab and navigate inspect/selecti
     collector = captureStatusEvents();
     fakes.resetSendCommand();
     fakes.clearDebuggerInstances();
+    fakes.clearWebContentsInstances();
+    fakes.openExternal.mockClear();
   });
 
   it("switchTab to the currently active tab does not clear an existing selection", async () => {

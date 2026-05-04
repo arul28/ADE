@@ -141,6 +141,7 @@ import { createComputerUseArtifactBrokerService } from "./services/computerUse/c
 import { createIosSimulatorService } from "./services/ios/iosSimulatorService";
 import { createAppControlService } from "./services/appControl/appControlService";
 import { createBuiltInBrowserService } from "./services/builtInBrowser/builtInBrowserService";
+import { configureBuiltInBrowserWebAuthn } from "./services/builtInBrowser/builtInBrowserWebAuthn";
 import { createSyncService } from "./services/sync/syncService";
 import { ApnsService, ApnsKeyStore } from "./services/notifications/apnsService";
 import {
@@ -4572,6 +4573,9 @@ app.whenReady().then(async () => {
   };
 
   dormantContext = createDormantProjectContext();
+  configureBuiltInBrowserWebAuthn({
+    getLogger: () => getActiveContext().logger,
+  });
 
   let shutdownPromise: Promise<void> | null = null;
   let shutdownRequested = false;

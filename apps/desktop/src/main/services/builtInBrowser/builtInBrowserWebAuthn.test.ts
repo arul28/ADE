@@ -1,0 +1,154 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const fakes = vi.hoisted(() => {
+  type WebAuthnAccount = {
+    credentialId: string;
+    displayName?: string;
+    name?: string;
+  };
+  type WebAuthnDetails = {
+    relyingPartyId: string;
+    accounts: WebAuthnAccount[];
+  };
+  type WebAuthnHandler = (
+    event: unknown,
+    details: WebAuthnDetails,
+    callback: (credentialId?: string | null) => void,
+  ) => void;
+
+  const handlers: Record<string, WebAuthnHandler[]> = {};
+  const parentWindow = { id: 1 };
+  const fakeSession = {
+    on: vi.fn((event: string, handler: WebAuthnHandler) => {
+      (handlers[event] ??= []).push(handler);
+    }),
+  };
+
+  return {
+    handlers,
+    parentWindow,
+    app: {
+      configureWebAuthn: vi.fn(),
+    },
+    session: {
+      fromPartition: vi.fn(() => fakeSession),
+    },
+    dialog: {
+      showMessageBox: vi.fn(async () => ({ response: 0 })),
+    },
+    BrowserWindow: {
+      getFocusedWindow: vi.fn(() => null),
+      getAllWindows: vi.fn(() => [parentWindow]),
+    },
+    reset: () => {
+      for (const key of Object.keys(handlers)) delete handlers[key];
+      fakeSession.on.mockClear();
+      fakes.app.configureWebAuthn.mockReset();
+      fakes.session.fromPartition.mockClear();
+      fakes.dialog.showMessageBox.mockReset();
+      fakes.dialog.showMessageBox.mockResolvedValue({ response: 0 });
+      fakes.BrowserWindow.getFocusedWindow.mockReset();
+      fakes.BrowserWindow.getFocusedWindow.mockReturnValue(null);
+      fakes.BrowserWindow.getAllWindows.mockReset();
+      fakes.BrowserWindow.getAllWindows.mockReturnValue([parentWindow]);
+    },
+  };
+});
+
+vi.mock("electron", () => ({
+  app: fakes.app,
+  session: fakes.session,
+  dialog: fakes.dialog,
+  BrowserWindow: fakes.BrowserWindow,
+}));
+
+async function loadModule() {
+  vi.resetModules();
+  return import("./builtInBrowserWebAuthn");
+}
+
+async function flushPromises(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+describe("configureBuiltInBrowserWebAuthn", () => {
+  beforeEach(() => {
+    fakes.reset();
+  });
+
+  it("configures the browser session once", async () => {
+    const { configureBuiltInBrowserWebAuthn } = await loadModule();
+
+    configureBuiltInBrowserWebAuthn();
+    configureBuiltInBrowserWebAuthn();
+
+    expect(fakes.session.fromPartition).toHaveBeenCalledTimes(1);
+    expect(fakes.session.fromPartition).toHaveBeenCalledWith("persist:ade-browser");
+    expect(fakes.handlers["select-webauthn-account"]).toHaveLength(1);
+    if (process.platform === "darwin") {
+      expect(fakes.app.configureWebAuthn).toHaveBeenCalledWith({
+        touchID: { keychainAccessGroup: "VQ372F39G6.com.ade.desktop.webauthn" },
+      });
+    } else {
+      expect(fakes.app.configureWebAuthn).not.toHaveBeenCalled();
+    }
+  });
+
+  it("selects the only returned passkey without prompting", async () => {
+    const { configureBuiltInBrowserWebAuthn } = await loadModule();
+    configureBuiltInBrowserWebAuthn();
+    const callback = vi.fn();
+
+    fakes.handlers["select-webauthn-account"][0]({}, {
+      relyingPartyId: "example.com",
+      accounts: [{ credentialId: "cred-1", displayName: "Alice" }],
+    }, callback);
+    await flushPromises();
+
+    expect(callback).toHaveBeenCalledWith("cred-1");
+    expect(fakes.dialog.showMessageBox).not.toHaveBeenCalled();
+  });
+
+  it("prompts when a site returns multiple discoverable passkeys", async () => {
+    const { configureBuiltInBrowserWebAuthn } = await loadModule();
+    configureBuiltInBrowserWebAuthn();
+    fakes.dialog.showMessageBox.mockResolvedValue({ response: 1 });
+    const callback = vi.fn();
+
+    fakes.handlers["select-webauthn-account"][0]({}, {
+      relyingPartyId: "example.com",
+      accounts: [
+        { credentialId: "cred-1", displayName: "Alice", name: "alice@example.com" },
+        { credentialId: "cred-2", displayName: "Bob", name: "bob@example.com" },
+      ],
+    }, callback);
+    await flushPromises();
+
+    expect(fakes.dialog.showMessageBox).toHaveBeenCalledWith(
+      fakes.parentWindow,
+      expect.objectContaining({
+        buttons: ["Alice (alice@example.com)", "Bob (bob@example.com)", "Cancel"],
+        message: "Choose a passkey for example.com",
+      }),
+    );
+    expect(callback).toHaveBeenCalledWith("cred-2");
+  });
+
+  it("cancels the WebAuthn request when the chooser is cancelled", async () => {
+    const { configureBuiltInBrowserWebAuthn } = await loadModule();
+    configureBuiltInBrowserWebAuthn();
+    fakes.dialog.showMessageBox.mockResolvedValue({ response: 2 });
+    const callback = vi.fn();
+
+    fakes.handlers["select-webauthn-account"][0]({}, {
+      relyingPartyId: "example.com",
+      accounts: [
+        { credentialId: "cred-1", displayName: "Alice" },
+        { credentialId: "cred-2", displayName: "Bob" },
+      ],
+    }, callback);
+    await flushPromises();
+
+    expect(callback).toHaveBeenCalledWith(null);
+  });
+});
