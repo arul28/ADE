@@ -3401,6 +3401,10 @@ function migrate(db: MigrationDb) {
       foreign key(pr_id) references pull_requests(id) on delete cascade
     )
   `);
+  // PtM-specific run args (modelId, reasoning, scope, additionalInstructions)
+  // serialized as JSON. Persisted so resumeFromPersistedState can re-dispatch
+  // the fix agent after a desktop restart instead of pausing on missing modelId.
+  try { db.run("alter table pr_convergence_state add column ptm_args_json text"); } catch {}
 }
 
 function loadCrsqlite(db: DatabaseSyncType, extensionPath: string): void {

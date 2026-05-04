@@ -85,7 +85,7 @@ export type PathToMergeDeps = {
   laneService: ReturnType<typeof createLaneService>;
   agentChatService: Pick<
     ReturnType<typeof createAgentChatService>,
-    "createSession" | "sendMessage" | "previewSessionToolNames" | "interrupt"
+    "createSession" | "sendMessage" | "previewSessionToolNames" | "interrupt" | "getSessionSummary"
   >;
   sessionService: Pick<ReturnType<typeof createSessionService>, "updateMeta">;
   issueInventoryService: ReturnType<typeof createIssueInventoryService>;
@@ -275,6 +275,15 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
       lastStartedAt: nowIso(),
     });
 
+    // Persist run args so a desktop restart can resume with the same modelId
+    // and reasoning instead of pausing on "No modelId available".
+    issueInventoryService.savePathToMergeArgs(prId, {
+      modelId: args.modelId ?? null,
+      reasoning: args.reasoning ?? null,
+      scope: args.scope ?? "both",
+      additionalInstructions: args.additionalInstructions ?? null,
+    });
+
     // Kick the loop immediately rather than waiting for a phase delay —
     // operators expect "Start" to do something visible right away.
     clearTimer(prId);
@@ -313,6 +322,7 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
       errorMessage: null,
       lastStoppedAt: nowIso(),
     });
+    issueInventoryService.savePathToMergeArgs(prId, null);
 
     return { prId, stopped: true, runtime };
   }
@@ -328,12 +338,24 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
       if (!runtime.autoConvergeEnabled) continue;
       if (runtime.pollerStatus === "stopped") continue;
       if (runtime.status === "merged" || runtime.status === "stopped" || runtime.status === "cancelled") continue;
-      // We don't have the original startPathToMerge args here — fall back to
-      // sane defaults. The orchestrator's iteration logic re-reads pipeline
-      // settings each iteration, so the outcome converges either way.
+      // Rehydrate the original startPathToMerge args (modelId, reasoning,
+      // scope, additionalInstructions) from the side-channel column.
+      const persistedArgs = issueInventoryService.getPathToMergeArgs(pr.id);
+      const runArgs: StartPathToMergeArgs = {
+        prId: pr.id,
+        modelId: typeof persistedArgs?.modelId === "string" ? persistedArgs.modelId as string : null,
+        reasoning: typeof persistedArgs?.reasoning === "string" ? persistedArgs.reasoning as string : null,
+        scope: (persistedArgs?.scope as PrIssueResolutionScope | undefined) ?? "both",
+        additionalInstructions: typeof persistedArgs?.additionalInstructions === "string"
+          ? persistedArgs.additionalInstructions as string : null,
+      };
+      // forceFinalizeUsed is reconstructed from `pauseReason === 'force-finalize'`,
+      // which Step 4 writes BEFORE launching the bonus iteration — that signal is
+      // reliable across restarts (the heuristic `currentRound > maxRounds` is
+      // not, because currentRound doesn't bump when no `new` items exist).
       inProcessState.set(pr.id, {
-        forceFinalizeUsed: runtime.currentRound > readMaxRoundsForPr(pr.id),
-        runArgs: { prId: pr.id, scope: "both" },
+        forceFinalizeUsed: runtime.pauseReason === "force-finalize",
+        runArgs,
       });
       schedule(pr.id, "warming");
     }
@@ -420,8 +442,14 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
   ): Promise<ApplyConflictStrategyResult> {
     const { pr, pipelineSettings } = ctx;
     const strategy: ConflictStrategy = pipelineSettings.conflictStrategy;
-    const lane = laneService.getLaneBaseAndBranch(pr.laneId);
-    const cwd = lane.worktreePath;
+    let cwd: string;
+    try {
+      cwd = laneService.getLaneBaseAndBranch(pr.laneId).worktreePath;
+    } catch (err) {
+      // Lane row was deleted out from under us (operator action, archive, etc.).
+      // Surface a clean pause instead of letting the throw silently kill the loop.
+      return { kind: "paused", reason: `Lane ${pr.laneId} unavailable: ${getErrorMessage(err)}` };
+    }
     const baseRef = `origin/${pr.baseBranch}`;
     const branch = pr.headBranch;
 
@@ -506,7 +534,9 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
   // -------------------------------------------------------------------------
 
   type MergeLadderResult =
-    | { kind: "merged" }
+    | { kind: "merged"; via: "rest" | "admin" }
+    /** `gh pr merge --auto` armed GitHub auto-merge — the PR is NOT yet landed. */
+    | { kind: "auto_armed" }
     | { kind: "conflict"; error: string }
     | { kind: "blocked"; error: string }
     | { kind: "failed"; error: string };
@@ -514,12 +544,13 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
   /**
    * 1. Try the configured merge method via existing `prService.land()` (REST).
    * 2. On policy block, retry with `gh pr merge --admin`.
-   * 3. On further failure, fall back to `gh pr merge --auto`.
+   * 3. On further failure, fall back to `gh pr merge --auto` (when the
+   *    pipeline's auto-merge toggle is on).
    *
-   * CRITICAL: never pass `--delete-branch` (shipLane.md line 212 — would
-   * conflict with the project-root worktree on `main`). `prService.land()`
-   * already deletes via `gh api -X DELETE`, so the cleanup path is
-   * worktree-safe.
+   * CRITICAL: never pass `--delete-branch` to gh (shipLane.md line 212 —
+   * would conflict with the project-root worktree on `main`). For rungs 2/3
+   * we run `prService.runPostMergeCleanup` after success so branch deletion,
+   * child-lane rebase advance, and cache refresh all still happen.
    */
   async function runMergeLadder(ctx: IterationContext): Promise<MergeLadderResult> {
     const { pr, pipelineSettings } = ctx;
@@ -531,7 +562,7 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
     // child-lane rebase, branch deletion via gh api -X DELETE).
     const restResult = await prService.land({ prId: pr.id, method, archiveLane: false });
     if (restResult.success) {
-      return { kind: "merged" };
+      return { kind: "merged", via: "rest" };
     }
     const restErr = restResult.error ?? "unknown REST merge error";
     logger.warn("ptm.merge_ladder_rest_failed", { prId: pr.id, error: restErr });
@@ -543,7 +574,12 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
     }
 
     // Look up the lane worktree for `gh` calls (gh resolves the PR from cwd).
-    const lane = laneService.getLaneBaseAndBranch(pr.laneId);
+    let laneWorktreePath: string;
+    try {
+      laneWorktreePath = laneService.getLaneBaseAndBranch(pr.laneId).worktreePath;
+    } catch (err) {
+      return { kind: "failed", error: `Lane lookup failed for merge ladder: ${getErrorMessage(err)}` };
+    }
     const ghMethodFlag = `--${method}`;
     const prNumberArg = String(pr.githubPrNumber);
 
@@ -551,25 +587,43 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
     // operator has admin rights).
     const adminRes = await runGh(
       ["pr", "merge", prNumberArg, ghMethodFlag, "--admin"],
-      { cwd: lane.worktreePath, timeoutMs: 90_000 },
+      { cwd: laneWorktreePath, timeoutMs: 90_000 },
     );
     if (adminRes.exitCode === 0) {
       logger.info("ptm.merge_ladder_admin_succeeded", { prId: pr.id });
-      return { kind: "merged" };
+      // gh CLI doesn't run our cleanup pipeline — invoke it explicitly so the
+      // remote branch is deleted, child lanes advance, group memberships are
+      // cleared, and caches refresh. Any cleanup error is logged inside the
+      // helper and never masks the successful merge.
+      try {
+        await prService.runPostMergeCleanup({ prId: pr.id, mergeCommitSha: null, archiveLane: false });
+      } catch (err) {
+        logger.warn("ptm.merge_ladder_admin_cleanup_failed", { prId: pr.id, error: getErrorMessage(err) });
+      }
+      return { kind: "merged", via: "admin" };
     }
     logger.warn("ptm.merge_ladder_admin_failed", { prId: pr.id, stderr: adminRes.stderr.trim() });
 
     // Rung 3: gh pr merge --auto (queue the merge for when checks/policy
     // gates clear). This is a "park & wait" outcome, not an immediate land.
+    // Only attempt it when the user explicitly opted into auto-merge.
+    if (!pipelineSettings.autoMerge) {
+      return {
+        kind: "blocked",
+        error: `Merge ladder exhausted (REST: ${restErr}; admin: ${adminRes.stderr.trim() || adminRes.stdout.trim() || "exit " + adminRes.exitCode}). auto-merge skipped because pipelineSettings.autoMerge is false.`,
+      };
+    }
     const autoRes = await runGh(
       ["pr", "merge", prNumberArg, ghMethodFlag, "--auto"],
-      { cwd: lane.worktreePath, timeoutMs: 60_000 },
+      { cwd: laneWorktreePath, timeoutMs: 60_000 },
     );
     if (autoRes.exitCode === 0) {
       logger.info("ptm.merge_ladder_auto_armed", { prId: pr.id });
-      // Treat "auto-merge armed" as success-with-park: GitHub will land it
-      // when conditions clear, no need to keep iterating.
-      return { kind: "merged" };
+      // DO NOT run post-merge cleanup here — the PR has not actually merged
+      // yet. The caller parks the loop and re-polls pr.state until GitHub
+      // either lands the auto-merge (then cleanup runs on observation) or it
+      // times out/fails (then we surface that to the user).
+      return { kind: "auto_armed" };
     }
 
     return {
@@ -676,21 +730,87 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
     }
     const fresh = refreshed;
 
-    // ---- Step 1: base-advance conflict check (every iteration) ----
-    const baseSync = await applyConflictStrategy(fresh, "base_advance");
-    if (baseSync.kind === "paused") {
-      pauseLoop(prId, baseSync.reason);
+    // Re-check merged state in case a previously armed `gh pr merge --auto`
+    // landed between iterations. If so, complete the cleanup now and exit.
+    if (fresh.pr.state === "merged") {
+      try {
+        await prService.runPostMergeCleanup({ prId, mergeCommitSha: null, archiveLane: false });
+      } catch (err) {
+        logger.warn("ptm.post_merge_cleanup_on_observation_failed", { prId, error: getErrorMessage(err) });
+      }
+      issueInventoryService.saveConvergenceRuntime(prId, {
+        status: "merged",
+        pollerStatus: "stopped",
+        autoConvergeEnabled: false,
+        errorMessage: null,
+        pauseReason: null,
+      });
+      clearTimer(prId);
       return;
     }
-    if (baseSync.kind === "failed") {
-      pauseLoop(prId, "Base sync failed.", baseSync.error);
-      return;
+
+    // Look up `behindBaseBy` once via the status snapshot; skip the base-sync
+    // round-trip when the PR is already at base — otherwise every wake fires
+    // a redundant `git fetch` + `git push --force-with-lease` that no-ops on
+    // the remote but pollutes the audit log and wastes round-trips.
+    let behindBaseBy = 0;
+    try {
+      const status = await prService.getStatus(prId);
+      behindBaseBy = status.behindBaseBy ?? 0;
+    } catch (err) {
+      logger.debug("ptm.status_fetch_failed", { prId, error: getErrorMessage(err) });
+      // Fall through; treat as "unknown" → safest is to run the base sync.
+      behindBaseBy = 1;
     }
+
+    // ---- Step 1: base-advance conflict check (only when actually behind) ----
+    if (behindBaseBy > 0) {
+      const baseSync = await applyConflictStrategy(fresh, "base_advance");
+      if (baseSync.kind === "paused") {
+        pauseLoop(prId, baseSync.reason);
+        return;
+      }
+      if (baseSync.kind === "failed") {
+        pauseLoop(prId, "Base sync failed.", baseSync.error);
+        return;
+      }
+    }
+
+    // Helper: persist a "converged but not auto-merging" parked state. Used
+    // when `pipelineSettings.autoMerge === false` — the loop gets the PR into
+    // a green/clean state but stops short of landing it.
+    const parkConverged = (reason: string): void => {
+      issueInventoryService.saveConvergenceRuntime(prId, {
+        status: "converged",
+        pollerStatus: "waiting_for_comments",
+        pauseReason: reason,
+        errorMessage: null,
+      });
+      schedule(prId, "waitingOnReview");
+    };
+
+    // Helper: persist a "merge armed via gh --auto" parked state. The PR has
+    // not actually landed; GitHub will land it when its required gates clear.
+    // We re-poll `pr.state` until that transition is observed.
+    const parkAutoArmed = (): void => {
+      issueInventoryService.saveConvergenceRuntime(prId, {
+        status: "converged",
+        pollerStatus: "waiting_for_checks",
+        pauseReason: "auto-merge armed via gh CLI; waiting for GitHub to land.",
+        errorMessage: null,
+      });
+      schedule(prId, "waitingOnReview");
+    };
 
     // ---- Step 2: early merge on green (shipLane intent) ----
     if (fresh.pipelineSettings.earlyMergeOnGreen) {
       const reviewClean = fresh.pr.reviewStatus !== "changes_requested" && fresh.pr.reviewStatus !== "requested";
       if (fresh.pr.checksStatus === "passing" && reviewClean) {
+        if (!fresh.pipelineSettings.autoMerge) {
+          // User has explicitly opted out of auto-merge: stop short of landing.
+          parkConverged("Converged but pipelineSettings.autoMerge is false; click merge when ready.");
+          return;
+        }
         const ladder = await runMergeLadder(fresh);
         if (ladder.kind === "merged") {
           issueInventoryService.saveConvergenceRuntime(prId, {
@@ -701,6 +821,10 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
             pauseReason: null,
           });
           clearTimer(prId);
+          return;
+        }
+        if (ladder.kind === "auto_armed") {
+          parkAutoArmed();
           return;
         }
         if (ladder.kind === "conflict") {
@@ -769,6 +893,31 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
     const shouldSkipFixDispatch = isForceFinalizeIteration && ciIsGreen;
 
     if (!shouldSkipFixDispatch) {
+      // Busy-guard: if a fix agent is still running from a previous iteration,
+      // do NOT dispatch another. Two agents racing on the same worktree
+      // corrupts pushes and orphans the first session's reconciliation row.
+      const priorSessionId = fresh.runtime.activeSessionId?.trim() ?? null;
+      if (priorSessionId) {
+        let priorActive = false;
+        try {
+          const summary = await agentChatService.getSessionSummary(priorSessionId);
+          // `active` = a turn is in flight; `idle` = session exists but waiting; we
+          // also defensively treat absent summary as "alive" so we never double-
+          // dispatch on a transient lookup error.
+          priorActive = summary == null
+            ? true
+            : summary.status === "active" || summary.status === "idle" && summary.awaitingInput === true;
+        } catch (err) {
+          logger.warn("ptm.session_alive_check_failed", { prId, sessionId: priorSessionId, error: getErrorMessage(err) });
+          priorActive = true;
+        }
+        if (priorActive) {
+          logger.info("ptm.fix_agent_still_running_skipping_dispatch", { prId, sessionId: priorSessionId });
+          schedule(prId, "warming");
+          return;
+        }
+      }
+
       let scope: PrIssueResolutionScope;
       if (isForceFinalizeIteration) {
         // shipLane line 189: ignore review, only run CI fixes.
@@ -808,9 +957,11 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
           },
         );
 
-        if (isForceFinalizeIteration) {
-          inProc.forceFinalizeUsed = true;
-        }
+        // NOTE: forceFinalizeUsed is intentionally NOT set here. The bonus
+        // iteration is consumed by the merge-ladder attempt in Step 6, not by
+        // a fix dispatch — otherwise force-finalize would degrade to "one
+        // extra fix iteration, then pause" and never actually retry the
+        // merge once the agent's fix turned CI green.
         inProcessState.set(prId, inProc);
 
         const status = issueInventoryService.getConvergenceStatus(prId);
@@ -836,6 +987,15 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
 
     // ---- Step 6: force-finalize green-path → straight to merge ladder ----
     if (isForceFinalizeIteration) {
+      if (!fresh.pipelineSettings.autoMerge) {
+        // User opted into force-finalize but not auto-merge: park instead of land.
+        inProc.forceFinalizeUsed = true;
+        inProcessState.set(prId, inProc);
+        parkConverged("Force-finalize complete with green CI; pipelineSettings.autoMerge is false, click merge when ready.");
+        return;
+      }
+
+      // Consume the bonus only when we actually attempt the merge ladder.
       inProc.forceFinalizeUsed = true;
       inProcessState.set(prId, inProc);
 
@@ -849,6 +1009,10 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
           pauseReason: "force-finalize",
         });
         clearTimer(prId);
+        return;
+      }
+      if (ladder.kind === "auto_armed") {
+        parkAutoArmed();
         return;
       }
       if (ladder.kind === "conflict") {

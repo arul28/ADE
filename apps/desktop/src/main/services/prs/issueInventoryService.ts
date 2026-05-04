@@ -983,6 +983,37 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
       db.run("delete from pr_convergence_state where pr_id = ?", [prId]);
     },
 
+    /**
+     * Persist the original {@link StartPathToMergeArgs} alongside the
+     * convergence state so the orchestrator can rehydrate them after a desktop
+     * restart. The blob is opaque JSON — typed at the call site.
+     */
+    savePathToMergeArgs(prId: string, args: Record<string, unknown> | null): void {
+      // Make sure the row exists so the alter-table column has somewhere to land.
+      readConvergenceRuntime(prId);
+      saveConvergenceRuntimeState(prId, {});
+      const payload = args == null ? null : JSON.stringify(args);
+      db.run(
+        "update pr_convergence_state set ptm_args_json = ? where pr_id = ?",
+        [payload, prId],
+      );
+    },
+
+    getPathToMergeArgs(prId: string): Record<string, unknown> | null {
+      const row = db.get<{ ptm_args_json: string | null }>(
+        "select ptm_args_json from pr_convergence_state where pr_id = ?",
+        [prId],
+      );
+      const raw = row?.ptm_args_json;
+      if (!raw) return null;
+      try {
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+      } catch {
+        return null;
+      }
+    },
+
     // ----- Pipeline settings (auto-converge / auto-merge) -----
 
     getPipelineSettings(prId: string): PipelineSettings {

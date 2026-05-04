@@ -14,7 +14,8 @@ import type {
   ResumeQueueAutomationArgs,
   StartQueueAutomationArgs,
 } from "../../../shared/types";
-import { DEFAULT_PIPELINE_SETTINGS } from "../../../shared/types";
+import { DEFAULT_PIPELINE_SETTINGS, pipelineFromLegacyQueueConfig } from "../../../shared/types";
+import type { PipelineSettings } from "../../../shared/types";
 import type { AdeDb } from "../state/kvDb";
 import type { Logger } from "../logging/logger";
 import type { createConflictService } from "../conflicts/conflictService";
@@ -288,12 +289,49 @@ export function createQueueLandingService({
     emitQueueState(state.groupId, state.state, state.currentPosition);
   };
 
+  const mergePipelineSettings = (
+    base: PipelineSettings,
+    override: PipelineSettings | undefined,
+  ): PipelineSettings => {
+    if (!override) return base;
+    return {
+      ...base,
+      ...override,
+      autoAgentSettings: {
+        ...base.autoAgentSettings,
+        ...override.autoAgentSettings,
+      },
+    };
+  };
+
   const resolveQueueConfig = (
     args: StartQueueAutomationArgs | ResumeQueueAutomationArgs,
     existing?: QueueLandingState | null,
     group?: QueueGroupRow | null,
   ): QueueAutomationConfig => {
     const prior = existing?.config ?? DEFAULT_QUEUE_CONFIG;
+    // Pipeline resolution: explicit args win over prior over default. When no
+    // args.pipeline is given but the caller passed only the legacy mirror
+    // fields (autoResolve / resolverProvider / etc.), synthesize a pipeline
+    // from those so the new fields stay in sync with the legacy ones.
+    const hasLegacyAutoResolveArgs =
+      args.autoResolve !== undefined
+      || args.resolverProvider !== undefined
+      || args.resolverModel !== undefined
+      || args.reasoningEffort !== undefined
+      || args.permissionMode !== undefined
+      || args.confidenceThreshold !== undefined;
+    const argsPipeline: PipelineSettings | undefined =
+      args.pipeline ?? (hasLegacyAutoResolveArgs ? pipelineFromLegacyQueueConfig({
+        autoResolve: args.autoResolve,
+        resolverProvider: args.resolverProvider,
+        resolverModel: args.resolverModel,
+        reasoningEffort: args.reasoningEffort,
+        permissionMode: args.permissionMode,
+        confidenceThreshold: args.confidenceThreshold,
+      }) : undefined);
+    const basePipeline = mergePipelineSettings(DEFAULT_QUEUE_CONFIG.pipeline, prior.pipeline);
+    const pipeline = mergePipelineSettings(basePipeline, argsPipeline);
     return {
       ...DEFAULT_QUEUE_CONFIG,
       ...prior,
@@ -301,6 +339,7 @@ export function createQueueLandingService({
       archiveLane: args.archiveLane ?? prior.archiveLane ?? false,
       autoResolve: args.autoResolve ?? prior.autoResolve ?? false,
       ciGating: args.ciGating ?? prior.ciGating ?? Boolean(group?.ci_gating),
+      pipeline,
       resolverProvider: args.resolverProvider ?? prior.resolverProvider ?? null,
       resolverModel: args.resolverModel ?? prior.resolverModel ?? null,
       reasoningEffort: args.reasoningEffort ?? prior.reasoningEffort ?? null,
