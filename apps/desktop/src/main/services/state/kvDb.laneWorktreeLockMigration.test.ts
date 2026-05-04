@@ -93,3 +93,31 @@ describe("kvDb lane worktree lock schema migration", () => {
     }
   });
 });
+
+describe("lane worktree locks", () => {
+  it("returns the actual number of rows released", async () => {
+    const dbPath = makeDbPath("ade-kvdb-lane-lock-release-");
+    const worktreePath = path.join(path.dirname(dbPath), "worktree");
+    fs.mkdirSync(worktreePath, { recursive: true });
+
+    const db = await openKvDb(dbPath, createLogger() as any);
+    try {
+      const service = createLaneWorktreeLockService({ db, logger: createLogger() });
+      const acquired = service.acquire({
+        laneId: "lane-1",
+        worktreePath,
+        ownerKind: "path_to_merge",
+        ownerPrId: "pr-1",
+        ownerLabel: "Path to Merge for PR #1",
+      });
+
+      expect(service.release({ ownerKind: "path_to_merge", ownerPrId: "missing" })).toBe(0);
+      expect(service.getActiveForLane("lane-1")).toHaveLength(1);
+      expect(service.release({ token: "missing-token" })).toBe(0);
+      expect(service.release({ token: acquired.token })).toBe(1);
+      expect(service.release({ token: acquired.token })).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+});

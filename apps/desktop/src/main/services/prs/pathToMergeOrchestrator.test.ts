@@ -728,6 +728,78 @@ describe("createPathToMergeOrchestrator.runIteration", () => {
     }
   });
 
+  it("ignores superseded commented reviews when the reviewer later approves", async () => {
+    const runtimeByPrId = new Map<string, ConvergenceRuntimeState>();
+    const land = vi.fn(async () => ({
+      prId: "pr-1",
+      prNumber: 1,
+      success: true as const,
+      mergeCommitSha: "merge-sha",
+      branchDeleted: false,
+      laneArchived: false,
+      error: null,
+    }));
+    const { deps } = buildDeps({
+      runtimeByPrId,
+      prs: [buildPrSummary({ checksStatus: "passing", reviewStatus: "approved" })],
+      pipelineSettings: { earlyMergeOnGreen: false, autoMerge: true },
+      convergenceStatus: { totalNew: 0 },
+      getReviews: async () => [
+        makeReview({
+          reviewer: "reviewer-1",
+          state: "commented",
+          body: "Looks good after one tweak.",
+          submittedAt: "2026-05-01T00:00:00.000Z",
+        }),
+        makeReview({
+          reviewer: "reviewer-1",
+          state: "approved",
+          body: null,
+          submittedAt: "2026-05-01T01:00:00.000Z",
+        }),
+      ],
+      land,
+    });
+    const orchestrator = createPathToMergeOrchestrator(deps);
+    try {
+      await orchestrator.startPathToMerge({ prId: "pr-1", modelId: "openai/gpt-5.4" });
+      await flushIteration();
+
+      expect(launchPrIssueResolutionChatMock).not.toHaveBeenCalled();
+      expect(land).toHaveBeenCalledWith({ prId: "pr-1", method: "squash", archiveLane: false });
+      expect(runtimeByPrId.get("pr-1")).toMatchObject({
+        status: "merged",
+        pollerStatus: "stopped",
+        autoConvergeEnabled: false,
+      });
+    } finally {
+      orchestrator.dispose();
+    }
+  });
+
+  it("heartbeats the PtM lane lock before scheduling a long wait", async () => {
+    const runtimeByPrId = new Map<string, ConvergenceRuntimeState>();
+    const laneWorktreeLockService = makeLaneWorktreeLockService();
+    const { deps } = buildDeps({
+      runtimeByPrId,
+      laneWorktreeLockService,
+      prs: [buildPrSummary({ checksStatus: "pending", reviewStatus: "none" })],
+    });
+    const orchestrator = createPathToMergeOrchestrator(deps);
+    try {
+      await orchestrator.startPathToMerge({ prId: "pr-1", modelId: "openai/gpt-5.4" });
+      await flushIteration();
+
+      expect(laneWorktreeLockService.heartbeat).toHaveBeenCalledWith("lock-1");
+      expect(runtimeByPrId.get("pr-1")).toMatchObject({
+        status: "running",
+        pollerStatus: "waiting_for_checks",
+      });
+    } finally {
+      orchestrator.dispose();
+    }
+  });
+
   it("narrows the default both scope to review comments when CI is already green", async () => {
     const runtimeByPrId = new Map<string, ConvergenceRuntimeState>();
     const { deps } = buildDeps({

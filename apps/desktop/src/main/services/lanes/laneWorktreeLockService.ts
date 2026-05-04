@@ -9,7 +9,7 @@ import type {
   LaneWorktreeLockOwnerKind,
 } from "../../../shared/types";
 
-const DEFAULT_LEASE_MS = 45 * 60_000;
+const DEFAULT_LEASE_MS = 75 * 60_000;
 
 type LaneWorktreeLockRow = {
   worktree_key: string;
@@ -272,8 +272,12 @@ export function createLaneWorktreeLockService({
   function release(args: ReleaseLaneWorktreeLockArgs): number {
     const token = args.token?.trim();
     if (token) {
+      const count = db.get<{ count: number }>(
+        "select count(1) as count from lane_worktree_locks where token = ?",
+        [token],
+      )?.count ?? 0;
       db.run("delete from lane_worktree_locks where token = ?", [token]);
-      return 1;
+      return count;
     }
     const clauses: string[] = [];
     const params: Array<string | null> = [];
@@ -294,8 +298,12 @@ export function createLaneWorktreeLockService({
       params.push(args.ownerProposalId ?? null);
     }
     if (clauses.length === 0) return 0;
+    const count = db.get<{ count: number }>(
+      `select count(1) as count from lane_worktree_locks where ${clauses.join(" and ")}`,
+      params,
+    )?.count ?? 0;
     db.run(`delete from lane_worktree_locks where ${clauses.join(" and ")}`, params);
-    return 1;
+    return count;
   }
 
   function getActiveForLane(laneId: string): LaneWorktreeLockInfo[] {

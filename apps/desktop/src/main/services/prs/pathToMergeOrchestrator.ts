@@ -417,9 +417,23 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
     }
   }
 
+  function heartbeatLoopLock(prId: string): void {
+    const token = inProcessState.get(prId)?.laneWorktreeLockToken?.trim() ?? "";
+    if (!token) return;
+    try {
+      const lock = laneWorktreeLockService.heartbeat(token);
+      if (!lock) {
+        logger.warn("ptm.lock_heartbeat_missing", { prId });
+      }
+    } catch (err) {
+      logger.warn("ptm.lock_heartbeat_failed", { prId, error: getErrorMessage(err) });
+    }
+  }
+
   function schedule(prId: string, kind: PhaseDelayKind): void {
     if (disposed) return;
     clearTimer(prId);
+    heartbeatLoopLock(prId);
     const seconds = PHASE_DELAY_SECONDS[kind];
     logger.info("ptm.schedule", { prId, kind, seconds });
     const handle = setTimeout(() => {
@@ -888,6 +902,25 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
     return review.state === "commented" && Boolean(review.body?.trim());
   }
 
+  function latestReviewByReviewer(reviews: PrReview[]): PrReview[] {
+    const latestByReviewer = new Map<string, PrReview>();
+    const anonymousReviews: PrReview[] = [];
+    for (const review of reviews) {
+      const reviewer = review.reviewer.trim().toLowerCase();
+      if (!reviewer) {
+        anonymousReviews.push(review);
+        continue;
+      }
+      const current = latestByReviewer.get(reviewer);
+      const currentAt = current?.submittedAt ? Date.parse(current.submittedAt) : Number.NEGATIVE_INFINITY;
+      const nextAt = review.submittedAt ? Date.parse(review.submittedAt) : Number.NEGATIVE_INFINITY;
+      if (!current || nextAt >= currentAt) {
+        latestByReviewer.set(reviewer, review);
+      }
+    }
+    return [...latestByReviewer.values(), ...anonymousReviews];
+  }
+
   async function getMergeReadinessBlocker(
     ctx: IterationContext,
     opts: { allowForceMerge?: boolean } = {},
@@ -937,10 +970,11 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
       if (unresolvedThreads.length > 0) {
         return `Auto-merge blocked because ${unresolvedThreads.length} review thread${unresolvedThreads.length === 1 ? "" : "s"} are unresolved.`;
       }
-      if (reviews.some((review) => review.state === "changes_requested")) {
+      const latestReviews = latestReviewByReviewer(reviews);
+      if (latestReviews.some((review) => review.state === "changes_requested")) {
         return "Auto-merge blocked because a review requested changes.";
       }
-      const commentedReviews = reviews.filter(hasBlockingCommentedReview);
+      const commentedReviews = latestReviews.filter(hasBlockingCommentedReview);
       if (commentedReviews.length > 0) {
         const reviewers = Array.from(new Set(commentedReviews.map((review) => review.reviewer).filter(Boolean))).slice(0, 3);
         const suffix = reviewers.length ? ` (${reviewers.join(", ")})` : "";

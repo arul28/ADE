@@ -4016,6 +4016,11 @@ app.whenReady().then(async () => {
       // ignore
     }
     try {
+      ctx.pathToMergeOrchestrator?.dispose();
+    } catch {
+      // ignore
+    }
+    try {
       ctx.autoRebaseService?.dispose();
     } catch {
       // ignore
