@@ -43,6 +43,7 @@ import type { createRebaseSuggestionService } from "../lanes/rebaseSuggestionSer
 import type { createMissionService } from "../missions/missionService";
 import type { createProcessService } from "../processes/processService";
 import type { createIssueInventoryService } from "../prs/issueInventoryService";
+import type { PathToMergeOrchestrator } from "../prs/pathToMergeOrchestrator";
 import type { createPrService } from "../prs/prService";
 import type { createQueueLandingService } from "../prs/queueLandingService";
 import type { createPtyService } from "../pty/ptyService";
@@ -74,6 +75,11 @@ type SyncServiceArgs = {
   conflictService?: ReturnType<typeof createConflictService>;
   prService: ReturnType<typeof createPrService>;
   issueInventoryService?: ReturnType<typeof createIssueInventoryService> | null;
+  /**
+   * Optional Path-to-Merge orchestrator forwarded to the embedded sync host so
+   * iOS callers can drive the convergence loop via remote commands.
+   */
+  pathToMergeOrchestrator?: PathToMergeOrchestrator | null;
   queueLandingService?: ReturnType<typeof createQueueLandingService> | null;
   sessionService: ReturnType<typeof createSessionService>;
   ptyService: ReturnType<typeof createPtyService>;
@@ -523,6 +529,7 @@ export function createSyncService(args: SyncServiceArgs) {
         conflictService: args.conflictService,
         prService: args.prService,
         issueInventoryService: args.issueInventoryService,
+        pathToMergeOrchestrator: args.pathToMergeOrchestrator,
         queueLandingService: args.queueLandingService,
         sessionService: args.sessionService,
         ptyService: args.ptyService,

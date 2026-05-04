@@ -44,6 +44,7 @@ import { createPrService } from "./services/prs/prService";
 import { createPrPollingService } from "./services/prs/prPollingService";
 import { createQueueLandingService } from "./services/prs/queueLandingService";
 import { createIssueInventoryService } from "./services/prs/issueInventoryService";
+import { createPathToMergeOrchestrator } from "./services/prs/pathToMergeOrchestrator";
 import { createPrSummaryService } from "./services/prs/prSummaryService";
 import {
   detectDefaultBaseRef,
@@ -2424,6 +2425,27 @@ app.whenReady().then(async () => {
     // Wire agentChatService into prService for integration resolution
     prService.setAgentChatService(agentChatService);
 
+    const pathToMergeOrchestrator = createPathToMergeOrchestrator({
+      logger,
+      prService,
+      laneService,
+      agentChatService,
+      sessionService,
+      issueInventoryService,
+      conflictService,
+      defaultModelId: null,
+      defaultReasoningEffort: null,
+    });
+    setImmediate(() => {
+      try {
+        pathToMergeOrchestrator.resumeFromPersistedState();
+      } catch (err) {
+        logger.warn("path_to_merge.resume_failed", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    });
+
     const gitService = createGitOperationsService({
       laneService,
       operationService,
@@ -2925,6 +2947,7 @@ app.whenReady().then(async () => {
       conflictService,
       prService,
       issueInventoryService,
+      pathToMergeOrchestrator,
       queueLandingService,
       sessionService,
       ptyService,
@@ -3763,6 +3786,7 @@ app.whenReady().then(async () => {
       appControlService,
       queueLandingService,
       issueInventoryService,
+      pathToMergeOrchestrator,
       prSummaryService,
       reviewService,
       jobEngine,
@@ -3874,6 +3898,7 @@ app.whenReady().then(async () => {
       prPollingService: null,
       queueLandingService: null,
       issueInventoryService: null,
+      pathToMergeOrchestrator: null,
       prSummaryService: null,
       reviewService: null,
       jobEngine: null,

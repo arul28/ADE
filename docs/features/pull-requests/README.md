@@ -11,6 +11,7 @@ This folder documents:
 - [`stacking.md`](./stacking.md) — stacked PR chains, rebase ordering, queue-aware rebase targeting.
 - [`queue.md`](./queue.md) — PR merge queue model and landing state machine.
 - [`conflict-simulation.md`](./conflict-simulation.md) — how ADE predicts PR merge conflicts before the user hits Merge.
+- [`path-to-merge.md`](./path-to-merge.md) — the Path-to-Merge orchestrator: phase delays, terminal-state gate, conflict strategy switch, force-finalize, merge ladder, and Queue Automate Merging.
 
 ## Source file map
 
@@ -24,9 +25,10 @@ Main-process services (`apps/desktop/src/main/services/prs/`):
 | `prPollingService.ts` | 60 s polling loop, fingerprint-based change detection, notification emission. Writes `last_polled_at` per PR so callers can run delta polls on the next tick |
 | `prSummaryService.ts` | AI PR summary generator; caches `PrAiSummary` per `(prId, headSha)` in `pull_request_ai_summaries` so pushes invalidate the cache |
 | `queueLandingService.ts` | Merge queue state machine (`ALLOWED_TRANSITIONS`), landing loop, auto-resolve on conflicts |
+| `pathToMergeOrchestrator.ts` | Path-to-Merge orchestrator: phase-aware setTimeout wake-ups, combined CI + review terminal-state gate, 4-option conflict strategy, force-finalize bonus iteration, REST → `gh --admin` → `gh --auto` merge ladder, persistent resume across restarts. Native port of the `/shipLane` Claude skill. See [`path-to-merge.md`](./path-to-merge.md). |
 | `integrationPlanning.ts` | `buildIntegrationPreflight` — validates source lanes for an integration proposal |
 | `integrationValidation.ts` | `parseGitStatusPorcelain`, `hasMergeConflictMarkers` — shared helpers for integration flows |
-| `issueInventoryService.ts` | Typed issue inventory, per-round convergence status, participant classification, thread re-open logic. `IssueInventoryItem` carries `type` (`review_thread | check_failure | issue_comment`), `externalId`, `body`, `author`, and `threadCommentCount` / `threadLatestCommentAuthor` / `threadLatestCommentAt` so `PrConvergencePanel` can render expandable rows with the full comment context inline. |
+| `issueInventoryService.ts` | Typed issue inventory, per-round convergence status, participant classification, thread re-open logic. `IssueInventoryItem` carries `type` (`review_thread | check_failure | issue_comment`), `externalId`, `body`, `author`, and `threadCommentCount` / `threadLatestCommentAuthor` / `threadLatestCommentAt` so `PrConvergencePanel` can render expandable rows with the full comment context inline. Also persists pipeline settings (incl. the new `conflictStrategy`, `forceFinalizeMode`, `earlyMergeOnGreen`, `autoAgentSettings`) and the orchestrator's serialized run args (`pr_convergence_state.ptm_args_json`) via `savePathToMergeArgs` / `getPathToMergeArgs`. |
 | `prIssueResolver.ts` | Builds issue-resolution prompts for the agent, launches chat session |
 | `prRebaseResolver.ts` | Builds rebase-resolution prompts, launches chat session |
 | `resolverUtils.ts` | Shared permission-mode mapping, recent commit reading, comment noise filter, and the `looksLikeResolutionAck` heuristic that flags resolved-looking replies on unresolved review threads |
@@ -41,12 +43,13 @@ Renderer components (`apps/desktop/src/renderer/components/prs/`):
 | `CreatePrModal.tsx` | Draft/queue/integration PR creation with lane warnings, branch name validation |
 | `tabs/NormalTab.tsx` | Normal PR list |
 | `tabs/GitHubTab.tsx` | Unified repo + external PR browser with label filters, CI badges, review indicators |
-| `tabs/QueueTab.tsx` | Merge queue UI |
+| `tabs/QueueTab.tsx` | Merge queue UI. Hosts the "Automate Merging" entry point that opens `QueueAutomateMergingModal` with the queue's eligible members (everything that has not landed yet). |
+| `tabs/QueueAutomateMergingModal.tsx` | Stack-wide automation modal: edits one `PipelineSettings` config that applies to every queue member, then sequentially saves settings, calls `ade.prs.retargetBase` for non-leading members so each PR's base points at the queue's tracking branch, starts Path-to-Merge via `ade.prs.pathToMerge.start`, and polls `convergenceStateGet` every 4 s until the runtime status is terminal. Halts the sequence on the first `failed | cancelled | stopped`. Closing mid-sequence stops dispatching new starts but leaves already-launched orchestrators running. |
 | `tabs/IntegrationTab.tsx` | Integration (merge-plan) proposals and execution, including merge-into-lane selection, apply-and-resimulate, and adopted-lane cleanup messaging |
 | `tabs/RebaseTab.tsx` | Lane rebase needs (base + queue + PR target) and attention items |
 | `tabs/WorkflowsTab.tsx` | Container for queue/integration/rebase sub-tabs |
 | `tabs/queueWorkflowModel.ts` | Pure model for queue tab rendering (active/history bucketing, guidance computation) |
-| `detail/PrDetailPane.tsx` | Selected PR detail pane: status, checks, reviews, comments, merge readiness, bypass, convergence, resolver modals. Switches the Overview tab between the legacy grid and the Timeline+Rails layout based on `prsTimelineRailsEnabled`. Persists the selected sub-tab (`overview | convergence | files | checks | activity`) per PR in `localStorage` under `ade:prs:detailTabs:v1`, mirrored through the `detailTab` URL param so deep links restore the last-used tab |
+| `detail/PrDetailPane.tsx` | Selected PR detail pane: status, checks, reviews, comments, merge readiness, bypass, Path-to-Merge convergence sub-tab (labelled "Path to Merge" in the tab list), resolver modals. Switches the Overview tab between the legacy grid and the Timeline+Rails layout based on `prsTimelineRailsEnabled`. Persists the selected sub-tab (`overview | convergence | files | checks | activity`) per PR in `localStorage` under `ade:prs:detailTabs:v1`, mirrored through the `detailTab` URL param so deep links restore the last-used tab |
 | `detail/PrDetailTimelineRails.tsx` | Timeline+Rails overview: merges timeline events, commit rail (seeded from both `PrActivityEvent.commit_push` entries and the `getCommits` snapshot), status rail, deployment cards, AI summary, and command-palette navigation (`g c` / `g t` / `g f` and `[` / `]`) |
 | `shared/PrTimeline.tsx` | Timeline column: synthesises `PrTimelineEvent`s from detail data, handles per-PR filters (`PrTimelineFilters`), renders grouped events |
 | `shared/PrCommitRail.tsx`, `shared/PrStatusRail.tsx` | Right-hand rails on the timeline view: commit list, checks/reviews summary, deployment chips |
@@ -54,10 +57,10 @@ Renderer components (`apps/desktop/src/renderer/components/prs/`):
 | `shared/PrAiSummaryCard.tsx` | AI summary card above the timeline; dismissible per PR (state in `PrsContext.dismissedAiSummaries`), with a "Regenerate" action wired to `prSummaryService.regenerateSummary` |
 | `shared/PrReviewThreadCard.tsx`, `shared/PrBotReviewCard.tsx` | Rich thread cards for the timeline (bot-review collapse, reply box, resolve/react actions) |
 | `shared/PrDeploymentCard.tsx` | Deployment row used in the status rail and on the timeline |
-| `shared/PrConvergencePanel.tsx` | Auto-converge slide-over panel with issue inventory, agent session embed, pipeline settings. Each issue row is expandable (caret toggles full comment body, author, and thread comment count); a "show ignored" toggle un-hides previously dismissed items. The dismiss button is labelled "Ignore comment" so users understand it removes the item from the round without resolving the thread. The waiting-state copy hides the round number when the panel runs in non-round-aware contexts (`showRoundLabels = false`). |
+| `shared/PrConvergencePanel.tsx` | Path-to-Merge slide-over panel with issue inventory, agent session embed, pipeline settings. Status copy uses "Path to Merge" verbatim (e.g. "Agent working on Path to Merge…", "Ready to launch another Path to Merge run"). Each issue row is expandable (caret toggles full comment body, author, and thread comment count); a "show ignored" toggle un-hides previously dismissed items. The dismiss button is labelled "Ignore comment" so users understand it removes the item from the round without resolving the thread. The waiting-state copy hides the round number when the panel runs in non-round-aware contexts (`showRoundLabels = false`). Terminal PRs render a frozen state with historical comments shown for reference only. |
 | `shared/PrIssueResolverModal.tsx` | Launch issue resolution (checks/comments/both scopes) |
 | `shared/PrAiResolverPanel.tsx` | AI resolver launch controls in Rebase/Integration flows, including additional-instructions passthrough |
-| `shared/PrPipelineSettings.tsx` | Auto-converge pipeline settings per PR |
+| `shared/PrPipelineSettings.tsx` | Per-PR pipeline settings editor used inside `PrConvergencePanel` and the queue Automate Merging modal. Surfaces the 4-option `conflictStrategy` selector, the `auto`-only `autoAgentSettings` group (provider / model / reasoning / permission mode / confidence threshold), the `forceFinalizeMode` selector with the conditional sub-toggle, the `earlyMergeOnGreen` switch, `autoMerge`, `mergeMethod`, and `maxRounds`. Renders a force-push warning when `conflictStrategy` is `rebase` or `auto`. |
 | `shared/PrLaneCleanupBanner.tsx` | Post-merge cleanup banner on the PR detail. Also renders a dedicated "PR branch cleanup" variant when the PR is linked to the primary lane but its head branch differs — the primary lane is never deleted, but the user can still delete the local and/or remote PR branch after confirming `delete <branch>` |
 | `shared/IntegrationPrContextPanel.tsx` | Integration PR context panel |
 | `shared/prVisuals.tsx` | CI running indicator, check/review badges, dot colors, activity derivation |
@@ -129,6 +132,9 @@ Selected channels exposed through `preload.ts`:
 - `ade.prs.issueResolutionStart`, `ade.prs.issueResolutionPreview`
 - `ade.prs.rebaseResolutionStart`
 - `ade.prs.convergenceStateGet`, `ade.prs.convergenceStateSave`, `ade.prs.convergenceStateDelete`
+- `ade.prs.pathToMerge.start`, `ade.prs.pathToMerge.stop` — drive the Path-to-Merge orchestrator (see [`path-to-merge.md`](./path-to-merge.md))
+- `ade.prs.retargetBase` — re-point a PR's base branch (used by Queue Automate Merging when stacking the chain bases before PtM picks them up)
+- `ade.prs.pipelineSettingsGet`, `ade.prs.pipelineSettingsSave`, `ade.prs.pipelineSettingsDelete`
 - `ade.prs.getGitHubSnapshot` — merged repo + external PR snapshot
 - `ade.prs.simulateIntegration`, `ade.prs.createIntegrationLaneForProposal`, `ade.prs.commitIntegration`, `ade.prs.cleanupIntegrationWorkflow`
 
@@ -392,13 +398,31 @@ type ConvergenceRuntimeState = {
 };
 ```
 
-`PipelineSettings` (per PR): `autoMerge`, `mergeMethod`, `maxRounds`,
-`onRebaseNeeded` (`pause | auto_rebase`). Default `maxRounds = 5`.
+`PipelineSettings` (per PR) drives both the manual auto-converge panel
+and the Path-to-Merge orchestrator:
 
-The auto-converge poller waits for CI to finish and comments to
-stabilize (2 consecutive polls with same count) before starting the
-next round. Auto-merge additionally requires a non-empty check list: if
-GitHub returns zero checks for the PR, the poller pauses with
+| Field | Purpose |
+|-------|---------|
+| `autoMerge` | When true, PtM lands the PR after convergence (or via the early-green gate). |
+| `mergeMethod` | `repo_default | merge | squash | rebase`. PtM falls back to `squash` when the value is `repo_default` because GitHub's REST merge API requires an explicit method. |
+| `maxRounds` | Hard cap on normal iterations before the loop either gives up or runs the force-finalize bonus iteration. Default `5`. |
+| `conflictStrategy` | `pause | rebase | merge | auto`. Drives both base-advance sync between iterations and merge-time conflict handling. See [`path-to-merge.md`](./path-to-merge.md). |
+| `autoAgentSettings` | Provider / model / reasoning / permission mode / confidence threshold used when `conflictStrategy === "auto"` — also reused by the queue's standalone auto-resolve flow. |
+| `forceFinalizeMode` | `off | unconditional | conditional`. Controls the bonus iteration that runs after `maxRounds` is exhausted. |
+| `forceFinalizeRequireNoCiFailures` | When `forceFinalizeMode === "conditional"`, the bonus iteration only fires if no required CI checks are failing. |
+| `earlyMergeOnGreen` | Default `true`. Each iteration first checks whether checks are green and reviews are clean — if so, the merge ladder runs immediately instead of dispatching another fix round. |
+| `onRebaseNeeded` | Legacy two-option projection (`pause | auto_rebase`) of `conflictStrategy`. Kept for back-compat reads; new code reads `conflictStrategy`. |
+
+The orchestrator persists per-PR start args (`modelId`, `reasoning`,
+`scope`, `additionalInstructions`) in
+`pr_convergence_state.ptm_args_json` so a desktop restart can rehydrate
+the loop instead of pausing on missing model overrides.
+
+The manual auto-converge poller (still used when PtM is not active)
+waits for CI to finish and comments to stabilize (2 consecutive polls
+with same count) before starting the next round. Auto-merge
+additionally requires a non-empty check list: if GitHub returns zero
+checks for the PR, the poller pauses with
 `Auto-merge paused because GitHub returned no check data for this PR.`
 instead of merging on vacuously-true "all checks passed".
 

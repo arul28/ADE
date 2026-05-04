@@ -556,6 +556,11 @@ struct PrPathToMergeTab: View {
   let onCopyPrompt: () -> Void
   let onLaunchAiResolver: () -> Void
   let onStopAiResolver: () -> Void
+  /// True while a `prs.pathToMerge.start` or `prs.pathToMerge.stop` round-trip
+  /// is in flight. Prevents double-taps on the convergence toggle.
+  let isPathToMergeBusy: Bool
+  let onStartPathToMerge: () -> Void
+  let onStopPathToMerge: () -> Void
 
   @State private var pipelineExpanded = false
 
@@ -585,7 +590,10 @@ struct PrPathToMergeTab: View {
     onSetPipelineRebasePolicy: @escaping (String) -> Void,
     onCopyPrompt: @escaping () -> Void = {},
     onLaunchAiResolver: @escaping () -> Void = {},
-    onStopAiResolver: @escaping () -> Void = {}
+    onStopAiResolver: @escaping () -> Void = {},
+    isPathToMergeBusy: Bool = false,
+    onStartPathToMerge: @escaping () -> Void = {},
+    onStopPathToMerge: @escaping () -> Void = {}
   ) {
     self.pr = pr
     self.snapshot = snapshot
@@ -613,6 +621,9 @@ struct PrPathToMergeTab: View {
     self.onCopyPrompt = onCopyPrompt
     self.onLaunchAiResolver = onLaunchAiResolver
     self.onStopAiResolver = onStopAiResolver
+    self.isPathToMergeBusy = isPathToMergeBusy
+    self.onStartPathToMerge = onStartPathToMerge
+    self.onStopPathToMerge = onStopPathToMerge
   }
 
   private var unresolvedThreadCount: Int {
@@ -689,53 +700,127 @@ struct PrPathToMergeTab: View {
 
   // MARK: - Mode strip (Manual / Auto-Converge)
 
-  /// Read-only mirror of the desktop's mode toggle. The host doesn't expose a
-  /// mobile setter for `auto_converge_enabled`, so we surface state without
-  /// trying to write it. Round + status pill appear when in auto mode, exactly
-  /// like desktop.
+  /// Interactive mode toggle paired with a Start/Stop control. The two pills
+  /// are now real buttons — tapping `Auto-Converge` issues `prs.pathToMerge.start`,
+  /// tapping `Manual` issues `prs.pathToMerge.stop`. Round + status pill appear
+  /// when in auto mode, mirroring desktop's PtM panel.
+  ///
+  /// Accessibility:
+  /// - Each pill carries a descriptive `accessibilityLabel` and an
+  ///   `accessibilityValue` of "selected" / "not selected".
+  /// - The hit target is `44 × 44` pt minimum via `.contentShape` + frame.
+  /// - When `!isLive` or `isPathToMergeBusy`, the strip dims and taps are
+  ///   ignored; the second row surfaces a contextual reason.
   @ViewBuilder
   private var modeStrip: some View {
     let convergence = issueInventory?.convergence
     let runtimeStatus = issueInventory?.runtime.status.replacingOccurrences(of: "_", with: " ") ?? "idle"
-    HStack(spacing: 8) {
-      HStack(spacing: 0) {
-        modePill(label: "Manual", isActive: !isAutoConverge)
-        modePill(label: "Auto-Converge", isActive: isAutoConverge)
+    let canToggle = isLive && !isPathToMergeBusy
+    VStack(alignment: .leading, spacing: 8) {
+      HStack(spacing: 8) {
+        HStack(spacing: 0) {
+          modePillButton(
+            label: "Manual",
+            isActive: !isAutoConverge,
+            accessibilityHint: "Stop path-to-merge convergence and switch to manual mode."
+          ) {
+            guard canToggle, isAutoConverge else { return }
+            ADEHaptics.light()
+            onStopPathToMerge()
+          }
+          modePillButton(
+            label: "Auto-Converge",
+            isActive: isAutoConverge,
+            accessibilityHint: "Start path-to-merge convergence on this pull request."
+          ) {
+            guard canToggle, !isAutoConverge else { return }
+            ADEHaptics.success()
+            onStartPathToMerge()
+          }
+        }
+        .padding(2)
+        .background(
+          RoundedRectangle(cornerRadius: 9, style: .continuous)
+            .fill(Color.white.opacity(0.04))
+        )
+        .overlay(
+          RoundedRectangle(cornerRadius: 9, style: .continuous)
+            .strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5)
+        )
+        .opacity(canToggle ? 1 : 0.55)
+
+        Spacer(minLength: 6)
+
+        if isPathToMergeBusy {
+          ProgressView().controlSize(.mini).tint(ADEColor.textSecondary)
+        } else if isAutoConverge, let convergence {
+          Text("Round \(convergence.currentRound)/\(convergence.maxRounds)")
+            .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+            .foregroundStyle(ADEColor.textSecondary)
+            .accessibilityLabel("Convergence round \(convergence.currentRound) of \(convergence.maxRounds).")
+          ConvergenceStatusPill(status: runtimeStatus)
+        }
       }
-      .padding(2)
-      .background(
-        RoundedRectangle(cornerRadius: 9, style: .continuous)
-          .fill(Color.white.opacity(0.04))
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: 9, style: .continuous)
-          .strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5)
-      )
 
-      Spacer(minLength: 6)
-
-      if isAutoConverge, let convergence {
-        Text("Round \(convergence.currentRound)/\(convergence.maxRounds)")
-          .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
-          .foregroundStyle(ADEColor.textSecondary)
-        ConvergenceStatusPill(status: runtimeStatus)
+      if let footnote = autoConvergeFootnote {
+        Text(footnote)
+          .font(.footnote)
+          .foregroundStyle(ADEColor.textMuted)
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityLabel(footnote)
       }
     }
   }
 
-  private func modePill(label: String, isActive: Bool) -> some View {
-    Text(label)
-      .font(.system(size: 10.5, weight: isActive ? .bold : .medium))
-      .tracking(0.4)
-      .foregroundStyle(isActive ? Color(red: 0x10/255, green: 0x0D/255, blue: 0x14/255) : ADEColor.textSecondary)
-      .padding(.horizontal, 12)
-      .padding(.vertical, 6)
-      .background {
-        if isActive {
-          RoundedRectangle(cornerRadius: 7, style: .continuous)
-            .fill(ADEColor.tintPRs)
+  /// Optional one-line explanation rendered below the mode strip. Surfaces
+  /// pause/error reasons or the offline-disabled state so users understand
+  /// why a tap had no effect.
+  private var autoConvergeFootnote: String? {
+    if !isLive {
+      return "Reconnect to control Path to Merge."
+    }
+    if isPathToMergeBusy {
+      return isAutoConverge ? "Stopping convergence…" : "Starting convergence…"
+    }
+    let runtime = issueInventory?.runtime
+    if let reason = runtime?.pauseReason, !reason.isEmpty {
+      return "Paused: \(reason)"
+    }
+    if let err = runtime?.errorMessage, !err.isEmpty {
+      return err
+    }
+    return nil
+  }
+
+  /// Tap-target wrapper for the mode toggle pills. Plain Button keeps the
+  /// custom shape but supplies VoiceOver semantics + 44pt hit area.
+  private func modePillButton(
+    label: String,
+    isActive: Bool,
+    accessibilityHint: String,
+    action: @escaping () -> Void
+  ) -> some View {
+    Button(action: action) {
+      Text(label)
+        .font(.system(size: 10.5, weight: isActive ? .bold : .medium))
+        .tracking(0.4)
+        .foregroundStyle(isActive ? Color(red: 0x10/255, green: 0x0D/255, blue: 0x14/255) : ADEColor.textSecondary)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .frame(minHeight: 32)
+        .background {
+          if isActive {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+              .fill(ADEColor.tintPRs)
+          }
         }
-      }
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .frame(minWidth: 44, minHeight: 44, alignment: .center)
+    .accessibilityLabel("\(label) mode")
+    .accessibilityValue(isActive ? "selected" : "not selected")
+    .accessibilityHint(accessibilityHint)
   }
 
   // MARK: - Counter strip (NEW / FIXED / DISMISSED / ESCALATED)

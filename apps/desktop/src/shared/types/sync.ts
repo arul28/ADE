@@ -678,6 +678,8 @@ export type SyncRemoteCommandAction =
   | "prs.pipelineSettings.get"
   | "prs.pipelineSettings.save"
   | "prs.pipelineSettings.delete"
+  | "prs.pathToMerge.start"
+  | "prs.pathToMerge.stop"
   | "prs.getMobileSnapshot";
 
 export type SyncRemoteCommandPolicy = {
