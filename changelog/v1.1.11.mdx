@@ -1,0 +1,73 @@
+---
+title: "v1.1.11"
+description: "Release notes for ADE v1.1.11 - May 4, 2026"
+---
+
+v1.1.11 ships an Add Project flow, a built-in agent browser with a resizable Work sidebar, and a wave of PR-tab and Path-to-Merge fixes. The iOS companion comes along on the same TestFlight train as 1.1.10 — same marketing version, new build — to stay in sync with the desktop chat and PR contract changes.
+
+---
+
+## Desktop
+
+<Tabs>
+  <Tab title="Projects and onboarding">
+    A first-class entry point for creating, cloning, and publishing projects, available from the command palette and topbar.
+
+    - **Add Project surface.** A chooser sits in front of Create-local and Clone-from-GitHub flows, both reachable from the command palette and topbar. Successful create/clone lands the new project and opens it directly.
+    - **Local create + GitHub clone.** A new `projectScaffoldService` handles local scaffolding with rollback on partial failure, plus URL and "My repos" clone tabs backed by a debounced GitHub repo search.
+    - **Publish to GitHub.** Existing local projects can be published from a dedicated dialog: it creates the remote repo, configures origin, and handles the empty-repo + push-failure edge cases. Connect-GitHub is wired inline if no token is set.
+    - **Welcome-screen wiring.** GitHub and scaffold services run in a dormant mode for the no-project state so onboarding works before any project is opened.
+  </Tab>
+
+  <Tab title="Built-in browser and Work sidebar">
+    ADE now hosts its own browser inside the chat surface, replacing the old right-edge floating panes with a resizable sidebar.
+
+    - **Built-in browser.** A new `BuiltInBrowserService` powers multi-tab navigation, screenshots, and CDP-backed element inspection. The chat panel uses Electron `<webview>` with strict scheme guards (file/blob/data/devtools rejected with a toast) and password fields stripped before they reach the agent.
+    - **Resizable Work sidebar.** Git, Files, iOS, AppControl, and Browser tools live in one resizable sidebar; the floating files workspace and right-edge floating pane were removed. Lane-aware launch and connect flows replace the older workspace-selection paths.
+    - **Terminal links open in ADE.** xterm now detects http(s) and localhost URLs in terminal output and routes them into the built-in browser instead of the system browser.
+    - **Inspect-state hardening.** Same-tab navigation, switchTab, and dispose paths all reset CDP overlay and selection state correctly so the "Inspecting" badge can no longer go out of sync with what clicks actually do.
+    - **Drawer persistence.** Work browser drawer state is preserved across panel transitions instead of resetting on each remount.
+  </Tab>
+
+  <Tab title="PRs tab and Path-to-Merge">
+    PR convergence, badging, and composer behavior get a coordinated overhaul, and Path-to-Merge automation lands as a persistent, controllable pipeline.
+
+    - **State-aware PR badges.** Lane-scoped PR display falls back to merged/closed PRs when no open PR is found, with badge labels driven by `formatPrBadgeLabel` and `selectLanePrTag`. Branch-less lanes no longer claim a stray PR badge.
+    - **Expandable issue rows.** `PrConvergencePanel` issue rows now expand to show author, body, thread comment counts, and an updated-at timestamp; "show ignored" works in terminal-state PRs; manual-run round labels are capped at the configured maxRounds.
+    - **Composer pending-input lock.** Chat composer hard-locks while a blocking pending input is active, with a server-side gate that mirrors the lock so dropped/silent submits stop happening. Non-blocking pending inputs no longer block sends.
+    - **Path-to-Merge automation.** A persistent Path-to-Merge orchestrator drives PR loops with controllable pipeline settings, dedupes Actions check entries, and recovers from transient review blockers more cleanly.
+    - **Lane PR refresh races.** `LanesPage` PR-tag refresh is now request-id and project-root scoped so stale `listAll()` responses can no longer overwrite newer state.
+  </Tab>
+
+  <Tab title="Runtime, simulator, and platform">
+    Targeted fixes around the iOS Simulator helpers, packaging, paste handling, and a handful of P1/P2 review findings.
+
+    - **iOS Simulator stability.** Refreshed simulator helpers, chat panel, and CLI guidance, including `switchTab` same-tab guards and an inspect-overlay desync fix that previously left the badge stuck after navigation.
+    - **PTY resume scan bound.** `ptyService` caps the resume-command scan window so long sessions can no longer block on a forever-running regex.
+    - **Renderer CSP.** `frame-src` is split out into a `rendererCsp` helper with a contract test so the built-in browser frame policy stays explicit and reviewable.
+    - **Paste handling.** Image paste into the chat composer no longer drops or duplicates frames in the new browser-aware compose path.
+    - **Diff and lane git.** Diff service hardening (with new tests), commit-timeline tweaks, and lane git-section updates.
+  </Tab>
+</Tabs>
+
+---
+
+## iOS
+
+<Tabs>
+  <Tab title="Chat lock and PR contract">
+    The mobile companion picks up the desktop's pending-input gate and the new PR badge contract so it stays in step with the desktop on the same TestFlight train.
+
+    - **Awaiting-input gate.** `WorkChatSessionView` aligns with the desktop's blocking pending-input contract — the composer locks while a blocking input is awaited and unlocks once it clears.
+    - **PR detail overview.** `PrDetailOverviewTab` and `PrDetailScreen` follow the new state-aware PR display, including merged-PR rendering and the updated badge labels.
+    - **Lane detail.** Lane components, git section, rebase banner, and lane-list parts pick up the lane PR-tag normalization changes shipped on desktop.
+  </Tab>
+
+  <Tab title="Work flow updates">
+    Smaller surface alignment in the Work tab to track the desktop chat contract changes.
+
+    - **Work session views.** Destination, transcript, and timeline helpers update for the new chat session lifecycle — same data model, fewer divergent paths between desktop and iOS.
+    - **Sync and database.** `SyncService`, `Database`, and the bootstrap SQL pick up incremental fields needed for the desktop catalog and PR contract changes.
+    - **TestFlight build.** This release ships a new TestFlight build of marketing version 1.1.10 (no version bump on the App Store side) and is distributed to all non-empty internal tester groups.
+  </Tab>
+</Tabs>
