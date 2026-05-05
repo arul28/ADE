@@ -216,6 +216,44 @@ describe("sessionService resume metadata", () => {
     activeDisposers.push(async () => db.close());
   });
 
+  it("recovers launch permissions from a detected resume command when metadata is missing", async () => {
+    const projectRoot = makeProjectRoot("ade-session-service-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+
+    service.create({
+      sessionId: "session-opencode-legacy",
+      laneId: "lane-1",
+      ptyId: null,
+      tracked: true,
+      title: "OpenCode CLI",
+      startedAt: "2026-03-17T00:10:00.000Z",
+      transcriptPath: "/tmp/session-opencode-legacy.log",
+      toolType: "opencode",
+    });
+
+    service.setResumeCommand(
+      "session-opencode-legacy",
+      "OPENCODE_CONFIG_CONTENT='{\"permission\":\"allow\"}' opencode --session ses_legacy",
+    );
+
+    const resumed = service.get("session-opencode-legacy");
+    expect(resumed?.resumeMetadata).toEqual({
+      provider: "opencode",
+      targetKind: "session",
+      targetId: "ses_legacy",
+      permissionMode: "full-auto",
+      launch: { permissionMode: "full-auto" },
+    });
+    expect(resumed?.resumeCommand).toBe(
+      "OPENCODE_CONFIG_CONTENT='{\"permission\":\"allow\"}' opencode --session ses_legacy",
+    );
+
+    activeDisposers.push(async () => db.close());
+  });
+
   it("hard deletes a stored session row", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");

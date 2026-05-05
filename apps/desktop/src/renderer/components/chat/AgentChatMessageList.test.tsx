@@ -76,6 +76,8 @@ function renderMessageList(
     assistantLabel?: string;
     initialState?: Record<string, unknown>;
     showStreamingIndicator?: boolean;
+    sessionId?: string | null;
+    onInsertDraft?: (text: string) => void;
     onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
   },
 ) {
@@ -85,6 +87,8 @@ function renderMessageList(
         events={events}
         assistantLabel={options?.assistantLabel}
         showStreamingIndicator={options?.showStreamingIndicator}
+        sessionId={options?.sessionId}
+        onInsertDraft={options?.onInsertDraft}
         onApproval={options?.onApproval as any}
       />
       <LocationProbe />
@@ -109,6 +113,14 @@ beforeEach(() => {
           isReadOnlyByDefault: false,
         },
       ]),
+    },
+    builtInBrowser: {
+      ...(originalAde?.builtInBrowser ?? {}),
+      navigate: vi.fn().mockResolvedValue({ tabs: [], activeTabId: null }),
+    },
+    terminal: {
+      ...(originalAde?.terminal ?? {}),
+      activeForChat: vi.fn().mockResolvedValue(null),
     },
   } as any;
 });
@@ -188,6 +200,62 @@ describe("AgentChatMessageList operator navigation suggestions", () => {
 });
 
 describe("AgentChatMessageList transcript rendering", () => {
+  it("opens detected localhost command URLs in the ADE browser", async () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "command",
+          command: "npm run dev",
+          cwd: "/repo",
+          output: "Local: http://localhost:5173/",
+          itemId: "command-1",
+          turnId: "turn-1",
+          status: "running",
+        },
+      },
+    ]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open http://localhost:5173/ in ADE browser" }));
+
+    await waitFor(() => {
+      expect(globalThis.window.ade.builtInBrowser.navigate).toHaveBeenCalledWith({
+        url: "http://localhost:5173/",
+        newTab: true,
+      });
+    });
+  });
+
+  it("drafts an agent request to reopen localhost servers in the chat terminal", async () => {
+    const onInsertDraft = vi.fn();
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "command",
+          command: "npm run dev",
+          cwd: "/repo",
+          output: "Local: http://localhost:5173/",
+          itemId: "command-1",
+          turnId: "turn-1",
+          status: "running",
+        },
+      },
+    ], { sessionId: "session-1", onInsertDraft });
+
+    fireEvent.click(screen.getByRole("button", {
+      name: "Open terminal logs or ask the agent to run this server in the chat terminal",
+    }));
+
+    await waitFor(() => {
+      expect(onInsertDraft).toHaveBeenCalledWith(expect.stringContaining("ade --socket terminal read"));
+    });
+    expect(onInsertDraft).toHaveBeenCalledWith(expect.stringContaining("http://localhost:5173/"));
+    expect(onInsertDraft).toHaveBeenCalledWith(expect.stringContaining("npm run dev"));
+  });
+
   it("renders queued user messages in-thread when not a steer placeholder", async () => {
     renderMessageList([
       {

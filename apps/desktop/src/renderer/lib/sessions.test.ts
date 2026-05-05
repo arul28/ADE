@@ -35,6 +35,9 @@ describe("isChatToolType", () => {
     expect(isChatToolType("run-shell")).toBe(false);
     expect(isChatToolType("claude")).toBe(false);
     expect(isChatToolType("codex")).toBe(false);
+    expect(isChatToolType("cursor-cli")).toBe(false);
+    expect(isChatToolType("droid")).toBe(false);
+    expect(isChatToolType("opencode")).toBe(false);
   });
 });
 
@@ -69,6 +72,8 @@ describe("shortToolTypeLabel", () => {
 
   it("returns exact labels for known single-name tools", () => {
     expect(shortToolTypeLabel("cursor")).toBe("Cursor");
+    expect(shortToolTypeLabel("cursor-cli")).toBe("Cursor");
+    expect(shortToolTypeLabel("droid")).toBe("Droid");
     expect(shortToolTypeLabel("aider")).toBe("Aider");
     expect(shortToolTypeLabel("continue")).toBe("Continue");
   });

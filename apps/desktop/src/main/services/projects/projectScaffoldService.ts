@@ -14,6 +14,7 @@ import type {
 import { runGit } from "../git/git";
 import type { Logger } from "../logging/logger";
 import type { createGithubService } from "../github/githubService";
+import { initializeOrRepairAdeProject } from "./adeProjectService";
 
 type GithubService = ReturnType<typeof createGithubService>;
 
@@ -22,7 +23,6 @@ const GITIGNORE_CONTENT = [
   "dist/",
   "build/",
   ".DS_Store",
-  ".ade/",
   ".env",
   ".env.*",
   "*.log",
@@ -128,6 +128,7 @@ export function createProjectScaffoldService({
 
       fs.writeFileSync(path.join(rootPath, "README.md"), `# ${name}\n`, "utf8");
       fs.writeFileSync(path.join(rootPath, ".gitignore"), GITIGNORE_CONTENT, "utf8");
+      initializeOrRepairAdeProject(rootPath, { logger, mode: "shared" });
 
       const addRes = await runGit(["add", "."], { cwd: rootPath, timeoutMs: 15_000 });
       if (addRes.exitCode !== 0) {

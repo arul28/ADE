@@ -212,12 +212,13 @@ presence of an AI integration service in non-guest mode:
   `aiTitleTimer` fires after 6 s, sends up to 800 chars of
   ANSI-stripped early output to `aiIntegrationService.summarizeTerminal`
   with a "max 80 chars, plain text" prompt.
-- **CLI user title** (claude, codex): `tryCliUserTitleFromWrite`
-  listens to PTY *writes* (keyboard input) and commits the first
-  submitted prompt line (3 to 180 chars). This avoids the alt-screen
-  noise of Claude/Codex TUIs. Skipped when the session is
-  `manuallyNamed`. If the current session title is still a CLI
-  placeholder (`Claude`, `Codex`, `Claude Code`, etc. — see
+- **CLI user title** (claude, codex, cursor-cli, droid, opencode):
+  `tryCliUserTitleFromWrite` listens to PTY *writes* (keyboard input)
+  and commits the first submitted prompt line (3 to 180 chars). This
+  avoids the alt-screen noise that every interactive agent TUI hides
+  output behind. Skipped when the session is `manuallyNamed`. If the
+  current session title is still a CLI placeholder (`Claude`, `Codex`,
+  `Cursor Agent CLI`, `Factory Droid CLI`, `OpenCode CLI`, etc. — see
   `isCliPlaceholderTitle`), a deterministic fallback title is committed
   immediately from the seed via `deterministicCliTitleFromSeed` (strips
   filler lead-ins like "ok"/"please", clips to 72 chars on a clause or
@@ -242,7 +243,10 @@ on-demand call path is `async` and returns whether a target was
 resolved. Strategies, in order:
 
 1. Scan the transcript tail with provider-specific regexes
-   (`extractResumeCommandFromOutput`).
+   (`extractResumeCommandFromOutput`). The regex now matches resume /
+   continue / session flags for `claude`, `codex`, `cursor-agent`,
+   `droid`, and `opencode` (`--resume`, `--continue`, `--session`,
+   `-r`, `-c`, `-s`, `resume`).
 2. Read Claude's local storage: `~/.claude/projects/<escaped-cwd>/*.jsonl`,
    newest file modified in the last 5 minutes, filename is the session
    UUID.
@@ -266,6 +270,22 @@ resolved. Strategies, in order:
    runs while a Codex session is still streaming uses all three gates;
    the close-time backfill only enforces a 10-minute drift window so
    it can match older sessions on resume.
+4. Read Droid's local storage:
+   `~/.factory/sessions/<escaped-cwd>/*.jsonl`. Each candidate's first
+   line must be a `session_start` record whose `cwd` matches the ADE
+   session; the file's mtime is scored against `startedAt` with a
+   10-minute drift window. The recovered session UUID becomes
+   `droid --resume <id>` and is written through
+   `sessionService.setResumeCommand`.
+5. Shell out to `opencode session list --format json --max-count 80`
+   in the lane cwd. Sessions whose `directory` matches are scored by
+   `created`/`updated` against `startedAt` with the same 10-minute
+   drift window. The recovered id becomes `opencode --session <id>`.
+
+The Droid storage scan and the OpenCode `session list` invocation only
+fire on the `close` / `dispose` reasons (and on demand), not on
+`session-list` or `resume-launch`, so renderer list refreshes don't
+spawn a `spawnSync` or hit external storage on every render.
 
 Any found ID updates the row's `resumeMetadata.targetId` through
 `sessionService.updateMeta`. A resume command is always written even

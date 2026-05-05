@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import type { IPty, IWindowsPtyForkOptions } from "node-pty";
 import type * as ptyNs from "node-pty";
 import type { Logger } from "../logging/logger";
@@ -45,8 +46,8 @@ import {
 export const PTY_AI_TITLE_DEBOUNCE_MS = 6000;
 export const PTY_AI_TITLE_TIMEOUT_MS = 60_000;
 
-/** Claude/Codex TUIs often hide useful text in an alt-screen, so snippet-based titles fail; titles come from the first PTY write that ends with \\r (submitted prompt) instead. */
-const CLI_USER_TITLE_TOOL_TYPES = new Set<TerminalToolType>(["claude", "codex"]);
+/** Interactive agent TUIs often hide useful text in an alt-screen, so titles come from the first submitted user prompt instead of startup output. */
+const CLI_USER_TITLE_TOOL_TYPES = new Set<TerminalToolType>(["claude", "codex", "cursor-cli", "droid", "opencode"]);
 
 function shouldScheduleOutputSnippetTitle(tool: TerminalToolType | null): boolean {
   if (!tool || tool === "shell" || tool === "run-shell") return false;
@@ -75,6 +76,24 @@ function withInteractiveTerminalColorEnv(env: NodeJS.ProcessEnv): NodeJS.Process
   }
   if (!hasEnvValue(next, "NO_COLOR") && !hasEnvValue(next, "FORCE_COLOR")) {
     next.FORCE_COLOR = "1";
+  }
+  return next;
+}
+
+function withAdeTerminalContextEnv(env: NodeJS.ProcessEnv, args: {
+  projectRoot: string;
+  laneId: string;
+  chatSessionId: string | null;
+}): NodeJS.ProcessEnv {
+  const next: NodeJS.ProcessEnv = {
+    ...env,
+    ADE_PROJECT_ROOT: args.projectRoot,
+    ADE_LANE_ID: args.laneId,
+  };
+  if (args.chatSessionId) {
+    next.ADE_CHAT_SESSION_ID = args.chatSessionId;
+  } else {
+    delete next.ADE_CHAT_SESSION_ID;
   }
   return next;
 }
@@ -262,6 +281,9 @@ function normalizeToolType(raw: unknown): TerminalToolType | null {
     "run-shell",
     "claude",
     "codex",
+    "cursor-cli",
+    "droid",
+    "opencode",
     "claude-orchestrated",
     "codex-orchestrated",
     "opencode-orchestrated",
@@ -290,13 +312,21 @@ function buildInitialResumeMetadata(args: {
   const parsedLaunch = parseTrackedCliLaunchConfig(args.startupCommand, args.toolType);
   const isClaude = args.toolType === "claude" || args.toolType === "claude-orchestrated";
   const isCodex = args.toolType === "codex" || args.toolType === "codex-orchestrated";
+  const isCursor = args.toolType === "cursor-cli";
+  const isDroid = args.toolType === "droid";
+  const isOpenCode = args.toolType === "opencode";
 
   // Extract pre-assigned --session-id from Claude startup command
   const preAssignedId = isClaude ? extractClaudeSessionIdFromCommand(args.startupCommand) : null;
 
   if (parsedLaunch) {
+    let provider: TerminalResumeMetadata["provider"] = "claude";
+    if (isCodex) provider = "codex";
+    else if (isCursor) provider = "cursor";
+    else if (isDroid) provider = "droid";
+    else if (isOpenCode) provider = "opencode";
     return {
-      provider: isCodex ? "codex" : "claude",
+      provider,
       targetKind: isCodex ? "thread" : "session",
       targetId: preAssignedId,
       launch: parsedLaunch,
@@ -309,11 +339,26 @@ function buildInitialResumeMetadata(args: {
   if (isCodex) {
     return { provider: "codex", targetKind: "thread", targetId: null, launch: {} };
   }
+  if (isCursor) {
+    return { provider: "cursor", targetKind: "session", targetId: null, launch: {} };
+  }
+  if (isDroid) {
+    return { provider: "droid", targetKind: "session", targetId: null, launch: {} };
+  }
+  if (isOpenCode) {
+    return { provider: "opencode", targetKind: "session", targetId: null, launch: {} };
+  }
   return null;
 }
 
-function isTrackedCliToolType(toolType: TerminalToolType | null): toolType is "claude" | "codex" | "claude-orchestrated" | "codex-orchestrated" {
-  return toolType === "claude" || toolType === "codex" || toolType === "claude-orchestrated" || toolType === "codex-orchestrated";
+function isTrackedCliToolType(toolType: TerminalToolType | null): toolType is "claude" | "codex" | "cursor-cli" | "droid" | "opencode" | "claude-orchestrated" | "codex-orchestrated" {
+  return toolType === "claude"
+    || toolType === "codex"
+    || toolType === "cursor-cli"
+    || toolType === "droid"
+    || toolType === "opencode"
+    || toolType === "claude-orchestrated"
+    || toolType === "codex-orchestrated";
 }
 
 function inferSessionCwdFromTranscriptPath(transcriptPath: string | null | undefined): string | null {
@@ -912,6 +957,107 @@ export function createPtyService({
     }
   };
 
+  const resolveDroidSessionIdFromStorage = (args: {
+    cwd: string;
+    startedAt?: string | null;
+    maxStartDeltaMs?: number;
+  }): string | null => {
+    try {
+      const escapedCwd = args.cwd.replace(/\//g, "-");
+      const droidSessionsDir = path.join(os.homedir(), ".factory", "sessions");
+      const expectedProjectDir = path.join(droidSessionsDir, escapedCwd);
+      if (!fs.existsSync(droidSessionsDir)) return null;
+      const projectDirs = fs.existsSync(expectedProjectDir)
+        ? [expectedProjectDir]
+        : fs.readdirSync(droidSessionsDir, { withFileTypes: true })
+          .filter((entry) => entry.isDirectory())
+          .map((entry) => path.join(droidSessionsDir, entry.name));
+      const requestedStartedAtMs = Date.parse(args.startedAt ?? "");
+      const hasStartedAt = Number.isFinite(requestedStartedAtMs);
+      let bestMatch: { id: string; score: number; mtimeMs: number } | null = null;
+      for (const projectDir of projectDirs) {
+        for (const entry of fs.readdirSync(projectDir, { withFileTypes: true })) {
+          if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
+          const filePath = path.join(projectDir, entry.name);
+          const stat = fs.statSync(filePath);
+          const firstLine = readJsonlFirstLine(filePath);
+          if (!firstLine) continue;
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(firstLine);
+          } catch {
+            continue;
+          }
+          const record = parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : null;
+          const id = typeof record?.id === "string" ? record.id.trim() : entry.name.replace(/\.jsonl$/, "");
+          const cwd = typeof record?.cwd === "string" ? record.cwd.trim() : "";
+          if (record?.type !== "session_start" || !id || cwd !== args.cwd) continue;
+          if (!hasStartedAt) return id;
+          const score = Math.abs(stat.mtimeMs - requestedStartedAtMs);
+          if (typeof args.maxStartDeltaMs === "number" && score > args.maxStartDeltaMs) continue;
+          if (!bestMatch || score < bestMatch.score || (score === bestMatch.score && stat.mtimeMs > bestMatch.mtimeMs)) {
+            bestMatch = { id, score, mtimeMs: stat.mtimeMs };
+          }
+        }
+      }
+      return bestMatch?.id ?? null;
+    } catch {
+      return null;
+    }
+  };
+
+  const resolveOpenCodeSessionIdFromCli = (args: {
+    cwd: string;
+    startedAt?: string | null;
+    maxStartDeltaMs?: number;
+  }): string | null => {
+    try {
+      const env: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: "1" };
+      delete env.FORCE_COLOR;
+      const result = spawnSync("opencode", ["session", "list", "--format", "json", "--max-count", "80"], {
+        cwd: args.cwd,
+        encoding: "utf8",
+        timeout: 4000,
+        maxBuffer: 1024 * 1024,
+        env,
+      });
+      if (result.error || result.status !== 0) return null;
+      const stdout = String(result.stdout ?? "");
+      const jsonStart = stdout.indexOf("[");
+      if (jsonStart < 0) return null;
+      const rows = JSON.parse(stdout.slice(jsonStart)) as unknown;
+      if (!Array.isArray(rows)) return null;
+      const requestedStartedAtMs = Date.parse(args.startedAt ?? "");
+      const hasStartedAt = Number.isFinite(requestedStartedAtMs);
+      let bestMatch: { id: string; score: number; updatedMs: number } | null = null;
+      for (const row of rows) {
+        const record = row && typeof row === "object" ? row as Record<string, unknown> : null;
+        const id = typeof record?.id === "string" ? record.id.trim() : "";
+        const directory = typeof record?.directory === "string" ? record.directory.trim() : "";
+        if (!id || directory !== args.cwd) continue;
+        const createdMs = Number(record?.created);
+        const updatedMs = Number(record?.updated);
+        let referenceMs: number;
+        if (Number.isFinite(createdMs)) {
+          referenceMs = createdMs;
+        } else if (Number.isFinite(updatedMs)) {
+          referenceMs = updatedMs;
+        } else {
+          referenceMs = Date.now();
+        }
+        if (!hasStartedAt) return id;
+        const score = Math.abs(referenceMs - requestedStartedAtMs);
+        if (typeof args.maxStartDeltaMs === "number" && score > args.maxStartDeltaMs) continue;
+        if (!bestMatch || score < bestMatch.score || (score === bestMatch.score && referenceMs > bestMatch.updatedMs)) {
+          bestMatch = { id, score, updatedMs: referenceMs };
+        }
+      }
+      return bestMatch?.id ?? null;
+    } catch {
+      return null;
+    }
+  };
+
   const tryBackfillResumeTarget = async (
     sessionId: string,
     preferredToolType: TerminalToolType | null,
@@ -972,6 +1118,36 @@ export function createPtyService({
         missingResumeTargetBackfillFailures.delete(sessionId);
         sessionService.setResumeCommand(sessionId, resumeCmd);
         logger.info("pty.resume_target_backfilled", { sessionId, toolType: effectiveToolType, reason, source: "codex-storage", codexSessionId });
+        return true;
+      }
+    }
+
+    if (effectiveToolType === "droid" && cwd && reason !== "resume-launch") {
+      const droidSessionId = resolveDroidSessionIdFromStorage({
+        cwd,
+        startedAt: session.startedAt,
+        maxStartDeltaMs: 10 * 60_000,
+      });
+      if (droidSessionId) {
+        const resumeCmd = `droid --resume ${droidSessionId}`;
+        missingResumeTargetBackfillFailures.delete(sessionId);
+        sessionService.setResumeCommand(sessionId, resumeCmd);
+        logger.info("pty.resume_target_backfilled", { sessionId, toolType: effectiveToolType, reason, source: "droid-storage", droidSessionId });
+        return true;
+      }
+    }
+
+    if (effectiveToolType === "opencode" && cwd && reason !== "resume-launch") {
+      const opencodeSessionId = resolveOpenCodeSessionIdFromCli({
+        cwd,
+        startedAt: session.startedAt,
+        maxStartDeltaMs: 10 * 60_000,
+      });
+      if (opencodeSessionId) {
+        const resumeCmd = `opencode --session ${opencodeSessionId}`;
+        missingResumeTargetBackfillFailures.delete(sessionId);
+        sessionService.setResumeCommand(sessionId, resumeCmd);
+        logger.info("pty.resume_target_backfilled", { sessionId, toolType: effectiveToolType, reason, source: "opencode-session-list", opencodeSessionId });
         return true;
       }
     }
@@ -1583,7 +1759,12 @@ export function createPtyService({
         ...((await getLaneRuntimeEnv?.(laneId)) ?? {}),
         ...(args.env ?? {})
       };
-      const launchEnv = withInteractiveTerminalColorEnv(getAdeCliAgentEnv?.(baseLaunchEnv) ?? baseLaunchEnv);
+      const contextLaunchEnv = withAdeTerminalContextEnv(baseLaunchEnv, {
+        projectRoot,
+        laneId,
+        chatSessionId,
+      });
+      const launchEnv = withInteractiveTerminalColorEnv(getAdeCliAgentEnv?.(contextLaunchEnv) ?? contextLaunchEnv);
       const shouldBackfillResumeTarget =
         existingSession
         && isTrackedCliToolType(toolTypeHint)

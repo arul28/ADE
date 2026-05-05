@@ -22,6 +22,20 @@ time. `projectConfigService.get()` returns a `ProjectConfigSnapshot`
 with all three (`shared`, `local`, `effective`) plus validation and
 trust metadata.
 
+`projectConfigService.save({ shared, local })` is also the seam that
+promotes a project from the **local-only ADE scaffold** to the **shared
+scaffold**. Saving with any non-empty shared content
+(`hasSharedConfigContent(shared)` checks for processes, stack buttons,
+test suites, overlays, automations, environments, github/git/ai
+metadata, lane init, lane templates, lane cleanup, providers, linear
+sync, notifications, or a `project` block) calls
+`ensureSharedAdeProjectScaffold(projectRoot)` so the canonical
+`.ade/.gitignore`, `ade.yaml`, and `cto/identity.yaml` exist before the
+write hits disk and `.git/info/exclude` is scrubbed. Saves that only
+change `local` skip the shared write entirely (so a brand-new project
+can stay local-only) and re-run `initializeOrRepairAdeProject` in auto
+mode to keep the local-only `.git/info/exclude .ade/` rule in place.
+
 ## Top-level type
 
 ```ts
@@ -59,8 +73,11 @@ type ProjectIdentityConfig = {
 `project.iconPath` is the user-overridable input to
 `projectIconResolver`. Validation rejects paths outside the project
 root or with unsupported extensions (must be one of `.ico`, `.jpeg`,
-`.jpg`, `.png`, `.svg`, `.webp`). The TopBar tab icon picker
-(`window.ade.project.chooseIcon` / `removeIcon`) writes this field.
+`.jpg`, `.png`, `.svg`, `.webp`) and enforces a 10 MB cap. The TopBar
+tab icon picker (`window.ade.project.chooseIcon` / `removeIcon`)
+writes this field; selecting a file outside the project root copies
+the bytes into `.ade/project-icons/<contentHash>.<ext>` so the icon
+travels with the repo.
 
 The lenient `Config*` variants allow every field to be optional so
 `ade.yaml` and `local.yaml` can be partial. `projectConfigService`
@@ -402,8 +419,18 @@ name handled inside `registerIpc.ts`).
 
 ## Gotchas
 
-- `ade.yaml` is the only file version-controlled; be explicit about
-  what belongs in `local.yaml` to avoid leaking user paths/secrets.
+- `ade.yaml`, `cto/identity.yaml`, and the human-authored `templates/`
+  / `skills/` / `workflows/linear/` / `project-icons/` directories are
+  the only `.ade/` paths under version control. The shared
+  `.ade/.gitignore` is `*` with explicit allowlist entries, so any new
+  runtime file dropped into `.ade/` stays out of git automatically.
+- A project that has only ever saved local-only state (no shared
+  config, no shared icon override, no Linear workflow) keeps `.ade/`
+  ignored via `.git/info/exclude` instead of materializing the shared
+  `.ade/.gitignore`. The first save that changes shared content (or
+  any caller of `ensureSharedAdeProjectScaffold`) promotes the
+  scaffold and removes the local exclude rule. After that the project
+  behaves like a normal shared-scaffold ADE project.
 - Hot-reload of config changes is best-effort. Process env, lane
   overlay policies, and AI mode apply to new launches, not live
   ones.

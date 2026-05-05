@@ -24,6 +24,7 @@ _    ____  _____
     $ ade prs list | create | path-to-merge         Manage PRs, queues, and Path to Merge repair rounds
     $ ade run defs | ps | start | logs              Manage Run tab process definitions and runtime
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
+    $ ade terminal list | read | write | signal     Control the active in-chat terminal
     $ ade chat list | create | send | interrupt     Work with ADE agent chats
     $ ade agent spawn --lane <id> --prompt <text>   Launch an agent session in ADE
     $ ade cto state | chats                         Operate CTO state and Work chats
@@ -33,6 +34,8 @@ _    ____  _____
     $ ade tests list | run | stop | runs | logs     Run configured test suites
     $ ade proof status | list | screenshot | record Manage proof and computer-use artifacts
     $ ade ios-sim devices | apps | launch | tap   Control iOS Simulator apps, capture, and input
+    $ ade app-control launch | snapshot | click   Inspect and drive Electron apps
+    $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade memory add | search | pin                 Use ADE memory
     $ ade settings action <method>                  Call project config actions
     $ ade actions list | run | status               Escape hatch for every ADE service action
@@ -60,6 +63,9 @@ _    ____  _____
     $ ade proof record --seconds 20
     $ ade ios-sim apps --text
     $ ade ios-sim launch --target <id> --text
+    $ ade app-control launch --command "pnpm dev" --text
+    $ ade --socket browser open http://localhost:5173 --new-tab --text
+    $ ade terminal read --chat-session <id> --text
 
   Generic ADE action JSON contract:
     Object-shaped call:
@@ -101,6 +107,7 @@ _    ____  _____
     $ ade prs list | create | path-to-merge         Manage PRs, queues, and Path to Merge repair rounds
     $ ade run defs | ps | start | logs              Manage Run tab process definitions and runtime
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
+    $ ade terminal list | read | write | signal     Control the active in-chat terminal
     $ ade chat list | create | send | interrupt     Work with ADE agent chats
     $ ade agent spawn --lane <id> --prompt <text>   Launch an agent session in ADE
     $ ade cto state | chats                         Operate CTO state and Work chats
@@ -110,6 +117,8 @@ _    ____  _____
     $ ade tests list | run | stop | runs | logs     Run configured test suites
     $ ade proof status | list | screenshot | record Manage proof and computer-use artifacts
     $ ade ios-sim devices | apps | launch | tap   Control iOS Simulator apps, capture, and input
+    $ ade app-control launch | snapshot | click   Inspect and drive Electron apps
+    $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade memory add | search | pin                 Use ADE memory
     $ ade settings action <method>                  Call project config actions
     $ ade actions list | run | status               Escape hatch for every ADE service action
@@ -137,6 +146,9 @@ _    ____  _____
     $ ade proof record --seconds 20
     $ ade ios-sim apps --text
     $ ade ios-sim launch --target <id> --text
+    $ ade app-control launch --command "pnpm dev" --text
+    $ ade --socket browser open http://localhost:5173 --new-tab --text
+    $ ade terminal read --chat-session <id> --text
 
   Generic ADE action JSON contract:
     Object-shaped call:
@@ -178,6 +190,7 @@ _    ____  _____
     $ ade prs list | create | path-to-merge         Manage PRs, queues, and Path to Merge repair rounds
     $ ade run defs | ps | start | logs              Manage Run tab process definitions and runtime
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
+    $ ade terminal list | read | write | signal     Control the active in-chat terminal
     $ ade chat list | create | send | interrupt     Work with ADE agent chats
     $ ade agent spawn --lane <id> --prompt <text>   Launch an agent session in ADE
     $ ade cto state | chats                         Operate CTO state and Work chats
@@ -187,6 +200,8 @@ _    ____  _____
     $ ade tests list | run | stop | runs | logs     Run configured test suites
     $ ade proof status | list | screenshot | record Manage proof and computer-use artifacts
     $ ade ios-sim devices | apps | launch | tap   Control iOS Simulator apps, capture, and input
+    $ ade app-control launch | snapshot | click   Inspect and drive Electron apps
+    $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade memory add | search | pin                 Use ADE memory
     $ ade settings action <method>                  Call project config actions
     $ ade actions list | run | status               Escape hatch for every ADE service action
@@ -214,6 +229,9 @@ _    ____  _____
     $ ade proof record --seconds 20
     $ ade ios-sim apps --text
     $ ade ios-sim launch --target <id> --text
+    $ ade app-control launch --command "pnpm dev" --text
+    $ ade --socket browser open http://localhost:5173 --new-tab --text
+    $ ade terminal read --chat-session <id> --text
 
   Generic ADE action JSON contract:
     Object-shaped call:
@@ -272,6 +290,8 @@ _    ____  _____
     $ ade git unstage --lane <lane> src/file.ts     Unstage one file
     $ ade git commit --lane <lane> [-m <message>]   Commit, generating a message when omitted
     $ ade git push --lane <lane> --set-upstream     Push through ADE
+    $ ade git branches --lane <lane> --text         List branches with last-commit metadata
+    $ ade git user-identity --lane <lane> --text    Read lane checkout's git user.name/email
     $ ade git stash push|list|apply|pop             Use ADE lane stash actions
     $ ade git rebase --lane <lane> --ai             Rebase with ADE conflict support
     $ ade diff changes --lane <lane> --text         Inspect changed files
@@ -324,12 +344,16 @@ _    ____  _____
   Creating or linking a PR persists the lane mapping in ADE so the PR tab tracks it.
 
     $ ade prs list --text                           List PRs known to ADE
+    $ ade prs list-open --text                      List every open GitHub PR in the repo, keyed by head branch
     $ ade prs create --lane <lane> --base main      Open and map a GitHub PR from a lane
     $ ade prs link --lane <lane> --url <pr-url>     Map an existing GitHub PR to a lane
     $ ade prs checks <pr> --text                    Show check status
     $ ade prs comments <pr> --text                  Show unresolved review work
     $ ade prs inventory <pr>                        Refresh ADE issue inventory
     $ ade prs path-to-merge <pr> --model <model> --max-rounds 3 --no-auto-merge
+    $ ade prs path-to-merge <pr> --model <model> --conflict-strategy auto --force-finalize conditional
+    $ ade prs path-to-merge <pr> --model <model> --no-early-merge-on-green
+    $ ade prs pipeline <pr> save --conflict-strategy rebase --early-merge-on-green
     $ ade prs resolve-thread <pr> --thread <id>     Resolve a review thread
     $ ade prs labels set <pr> ready-to-merge        Replace labels
     $ ade prs reviewers request <pr> alice bob      Request reviewers
@@ -364,12 +388,33 @@ _    ____  _____
   Shell sessions
 
   Shell commands create tracked PTY sessions that ADE can display and audit.
+  Inside an ADE chat, shell starts attach to the active chat automatically.
 
     $ ade shell start --lane <lane> -- npm test     Start a tracked shell session
     $ ade shell start --lane <lane> -c "npm test"   Start with a command string
+    $ ade shell start --lane <lane> --chat-session <id> -c "npm test"
     $ ade shell write <pty-id> --data "q"           Write data to a PTY
     $ ade shell resize <pty-id> --cols 120 --rows 36
     $ ade shell close <pty-id>                      Dispose a PTY
+
+## ade terminal --help
+_    ____  _____
+    / \  |  _ \| ____|
+   / _ \ | | | |  _|
+  / ___ \| |_| | |___
+ /_/   \_\____/|_____|
+
+  Chat terminal
+
+  Terminal commands control the active in-chat terminal for an ADE chat. Use
+  desktop socket mode when you want the same terminal the user sees in the app.
+
+    $ ade terminal list --chat-session <id> --text  List terminals for a chat
+    $ ade terminal active --chat-session <id> --text Show the active chat terminal
+    $ ade terminal read --terminal <id> --text      Read terminal scrollback
+    $ ade app-control logs --text                   Read the active App Control launch terminal
+    $ ade terminal write --terminal <id> --data "y\n"
+    $ ade terminal signal --terminal <id> --signal SIGINT
 
 ## ade chat --help
 _    ____  _____
@@ -384,7 +429,7 @@ _    ____  _____
   requires the desktop socket because the app owns provider/session state.
 
     $ ade chat list --text                          List chat sessions
-    $ ade chat create --lane <lane> --provider codex --model <model>
+    $ ade chat create --lane <lane> --provider codex --model <model> [--fast]
     $ ade chat send <session> --text "next step"    Send a message
     $ ade chat interrupt <session>                  Stop an active turn
     $ ade chat resume <session>                     Resume a session
@@ -467,6 +512,21 @@ _    ____  _____
   Run filter:
     --status <queued|running|succeeded|failed|cancelled|paused|all>
 
+## ade flow --help
+_    ____  _____
+    / \  |  _ \| ____|
+   / _ \ | | | |  _|
+  / ___ \| |_| | |___
+ /_/   \_\____/|_____|
+
+  Flow policy
+
+    $ ade flow policy get --text                    Read current workflow policy
+    $ ade flow policy validate --input-json '{...}' Validate policy JSON
+    $ ade flow policy save --input-json '{...}'     Save policy JSON
+    $ ade flow policy revisions --text              List saved revisions
+    $ ade flow policy rollback <revision-id>        Restore a prior revision
+
 ## ade coordinator --help
 _    ____  _____
     / \  |  _ \| ____|
@@ -535,7 +595,7 @@ _    ____  _____
   drawer simulator. Aliases: `ade ios` and `ade simulator` route to the same
   surface. For drawer/shared session state, prefer desktop socket mode
   (--socket) so launch/select/tap operate on the same long-lived ADE service.
-  Launch keeps Simulator.app hidden by default; use --foreground only when you
+  Launch is headless by default; use --foreground only when you
   need the native Simulator window in front. idb is optional for direct
   pointer/text control and the low-latency MJPEG live stream.
 
@@ -550,7 +610,7 @@ _    ____  _____
     $ ade ios-sim apps --device <udid> --text      List launchable apps (listLaunchTargets)
     $ ade --socket ios-sim launch --target <id>    Build/install/launch and update drawer state
     $ ade --socket ios-sim launch --bundle-id com.example Launch installed app
-    $ ade --socket ios-sim shutdown                Tear down session, streams, idb companion (alias: stop)
+    $ ade --socket ios-sim shutdown                Tear down session, streams, helper processes (alias: stop)
     $ ade --socket ios-sim shutdown --force        Force-release a session owned by another chat
     $ ade ios-sim actions --text                   List every callable ios_simulator action
 
@@ -564,7 +624,7 @@ _    ____  _____
     $ ade ios-sim preview-render --source <file>   Render a SwiftUI preview through Xcode MCP
 
   Streaming:
-    $ ade ios-sim live-start --fps 30              Low-latency idb live stream
+    $ ade ios-sim live-start --fps 30              Auto live stream (IOSurface first)
     $ ade ios-sim preview-start --fps 8            simctl screenshot-poll fallback
     $ ade ios-sim window-start --fps 60            Native Simulator.app window capture diagnostic
     $ ade ios-sim stream-status --text             Backend/fps/latency/URL (getStreamStatus)
@@ -572,10 +632,113 @@ _    ____  _____
 
   Input and selection:
     $ ade --socket ios-sim select --x 120 --y 420  Add UI context to drawer chat (selectPoint)
-    $ ade ios-sim tap 120 420                      Tap through idb (tap)
-    $ ade ios-sim drag 120 700 120 250             Drag through idb (drag)
-    $ ade ios-sim swipe 120 700 120 250            Swipe through idb (swipe)
+    $ ade ios-sim tap 120 420                      Tap active simulator app (tap)
+    $ ade ios-sim drag 120 700 120 250             Drag active simulator app (drag)
+    $ ade ios-sim swipe 120 700 120 250            Swipe active simulator app (swipe)
     $ ade ios-sim type "hello" --text              Type into the launched app (typeText)
+
+## ade app-control --help
+_    ____  _____
+    / \  |  _ \| ____|
+   / _ \ | | | |  _|
+  / ___ \| |_| | |___
+ /_/   \_\____/|_____|
+
+  App Control
+
+  App Control is ADE's bridge for developer-owned app sessions. The first
+  supported kind is Electron: ADE can launch or connect to an Electron renderer
+  that exposes a Chrome DevTools Protocol port, then capture screenshots, DOM
+  elements, selected UI context, and basic input in the same style as the iOS
+  simulator drawer. App Control is intentionally a bridge: Playwright,
+  agent-browser, Computer Use, and other tools may also attach to the same app;
+  ADE keeps the launch/session state and turns snapshots into chat context.
+
+  Launching runs the command in the chat terminal instead of a hidden child
+  process. ADE sets ADE_APP_CONTROL_CDP_PORT and ADE_APP_CONTROL_DEBUG_FLAGS in
+  the environment and auto-forwards debug flags for common npm/pnpm/yarn/bun
+  script launches and direct electron commands. Custom launchers should forward
+  ADE_APP_CONTROL_DEBUG_FLAGS or ADE_APP_CONTROL_CDP_PORT. You can also put
+  {ADE_APP_CONTROL_DEBUG_FLAGS} in the command string for explicit substitution.
+
+  Reuse a Run-tab command: list configured processes with
+  `ade settings get --text`, then pass `--cwd` so the launch runs from the
+  same directory the Run tab uses. Relative cwds resolve against the lane root.
+
+  Discovery and lifecycle:
+    $ ade app-control status --text                Show active session and provider readiness
+    $ ade app-control launch --command "npm run dev" --text
+    $ ade app-control launch pnpm dev --text       Launch via the visible chat terminal
+    $ ade app-control launch --command "pnpm dev" --cwd apps/desktop --text
+    $ ade app-control launch --command "/path/script.sh {ADE_APP_CONTROL_DEBUG_FLAGS}"
+    $ ade app-control connect --cdp-port 9222      Attach to an already-running app
+    $ ade app-control targets --text               List debuggable CDP targets
+    $ ade app-control attach-target --target <id>  Attach to one renderer target
+    $ ade app-control logs --text                  Read the active App Control launch terminal
+    $ ade app-control terminal write --data "y\n" Answer a prompt in that terminal
+    $ ade app-control stop --text                  Signal the App Control terminal session
+    $ ade app-control actions --text               List every callable app_control action
+    $ ade terminal read --terminal <id> --text     Read a specific chat terminal
+    $ ade terminal write --chat-session <id> --data "y\n" Answer a prompt
+
+  Capture and context:
+    $ ade app-control screenshot --text            Capture the active renderer screenshot
+    $ ade app-control snapshot --text              Screenshot + DOM element refs
+    $ ade app-control inspect --x 120 --y 420      Hit-test a point without committing context
+    $ ade app-control select --x 120 --y 420       Add selected app context to the drawer chat
+
+  Input:
+    $ ade app-control click 120 420                Click screenshot coordinates
+    $ ade app-control scroll --x 120 --y 420 --delta-y 600
+    $ ade app-control key --key Enter
+    $ ade app-control type "hello" --text          Type text into the focused element
+
+## ade browser --help
+_    ____  _____
+    / \  |  _ \| ____|
+   / _ \ | | | |  _|
+  / ___ \| |_| | |___
+ /_/   \_\____/|_____|
+
+  ADE browser
+
+  Browser commands control ADE's global built-in browser pane. Use desktop
+  socket mode so CLI calls, chat link clicks, terminal localhost links, and the
+  Work sidebar all share the same browser tabs. The browser is global, not
+  lane-scoped.
+
+  Tabs and navigation:
+    $ ade --socket browser status --text           Show active tab and tab list
+    $ ade --socket browser panel --text            Open the Work sidebar Browser panel
+    $ ade --socket browser open https://example.com --text
+    $ ade --socket browser open localhost:5173 --new-tab --text
+    $ ade --socket browser open https://example.com --no-panel
+    $ ade --socket browser new-tab --url https://example.com
+    $ ade --socket browser switch --tab <tab-id>
+    $ ade --socket browser close --tab <tab-id>
+    $ ade --socket browser actions --text          List built_in_browser actions
+
+  Page controls:
+    $ ade --socket browser reload
+    $ ade --socket browser back
+    $ ade --socket browser forward
+    $ ade --socket browser stop
+
+  Capture and context:
+    $ ade --socket browser screenshot --text       Capture the active browser tab
+    $ ade --socket browser select --x 120 --y 420  Attach DOM context at a viewport point
+    $ ade --socket browser inspect-start           Start DOM inspect mode
+    $ ade --socket browser inspect-stop            Stop DOM inspect mode
+    $ ade --socket browser select-current --text   Return the selected DOM item
+    $ ade --socket browser clear-selection
+
+  Flags:
+    --url <url>          URL for panel/open/new-tab. Bare localhost gets http://.
+    --new-tab           Open navigation in a new tab instead of active tab.
+    --active-tab         Navigate the active tab; aliases: --current-tab, --same-tab.
+    --background         Create a new tab without activating it.
+    --no-panel           Keep the Work sidebar panel hidden; alias: --hidden.
+    --tab, --tab-id <id> Target tab for switch/close/open.
 
 ## ade memory --help
 _    ____  _____
@@ -614,6 +777,7 @@ _    ____  _____
     $ ade prs list | create | path-to-merge         Manage PRs, queues, and Path to Merge repair rounds
     $ ade run defs | ps | start | logs              Manage Run tab process definitions and runtime
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
+    $ ade terminal list | read | write | signal     Control the active in-chat terminal
     $ ade chat list | create | send | interrupt     Work with ADE agent chats
     $ ade agent spawn --lane <id> --prompt <text>   Launch an agent session in ADE
     $ ade cto state | chats                         Operate CTO state and Work chats
@@ -623,6 +787,8 @@ _    ____  _____
     $ ade tests list | run | stop | runs | logs     Run configured test suites
     $ ade proof status | list | screenshot | record Manage proof and computer-use artifacts
     $ ade ios-sim devices | apps | launch | tap   Control iOS Simulator apps, capture, and input
+    $ ade app-control launch | snapshot | click   Inspect and drive Electron apps
+    $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade memory add | search | pin                 Use ADE memory
     $ ade settings action <method>                  Call project config actions
     $ ade actions list | run | status               Escape hatch for every ADE service action
@@ -650,6 +816,9 @@ _    ____  _____
     $ ade proof record --seconds 20
     $ ade ios-sim apps --text
     $ ade ios-sim launch --target <id> --text
+    $ ade app-control launch --command "pnpm dev" --text
+    $ ade --socket browser open http://localhost:5173 --new-tab --text
+    $ ade terminal read --chat-session <id> --text
 
   Generic ADE action JSON contract:
     Object-shaped call:

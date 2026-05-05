@@ -2,7 +2,7 @@
 
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import type {
   AgentChatEventEnvelope,
@@ -10,11 +10,21 @@ import type {
   AgentChatSession,
   AgentChatSessionSummary,
   PrSummary,
+  TerminalSessionChangedEvent,
+  TerminalSessionDetail,
 } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
 import { invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
 import { useAppStore } from "../../state/appStore";
 import { AgentChatPane } from "./AgentChatPane";
+
+vi.mock("../terminals/TerminalView", () => {
+  const ReactMod = require("react") as typeof import("react");
+  return {
+    TerminalView: (props: { sessionId: string; ptyId: string }) =>
+      ReactMod.createElement("div", { "data-testid": "terminal-view" }, `${props.sessionId}:${props.ptyId}`),
+  };
+});
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -145,6 +155,7 @@ function installAdeMocks(options?: {
   const parallelLaunchStateGet = vi.fn().mockResolvedValue(options?.parallelLaunchState ?? null);
   const parallelLaunchStateSet = vi.fn().mockResolvedValue(undefined);
   const chatEventListeners = new Set<(event: AgentChatEventEnvelope) => void>();
+  const sessionChangeListeners = new Set<(event: TerminalSessionChangedEvent) => void>();
 
   globalThis.window.ade = {
     projectConfig: {
@@ -202,6 +213,12 @@ function installAdeMocks(options?: {
       get: vi.fn().mockResolvedValue({ toolType: "codex-chat" }),
       readTranscriptTail: vi.fn().mockResolvedValue(options?.transcript ?? ""),
       getDelta: vi.fn().mockResolvedValue(null),
+      onChanged: vi.fn().mockImplementation((listener: (event: TerminalSessionChangedEvent) => void) => {
+        sessionChangeListeners.add(listener);
+        return () => {
+          sessionChangeListeners.delete(listener);
+        };
+      }),
     },
     computerUse: {
       getOwnerSnapshot: vi.fn().mockResolvedValue(null),
@@ -228,6 +245,7 @@ function installAdeMocks(options?: {
       getForLane: vi.fn().mockResolvedValue(options?.linkedPr ?? null),
     },
     pty: {
+      create: vi.fn().mockResolvedValue({ ptyId: "pty-created", sessionId: "terminal-created", pid: 1234 }),
       onExit: vi.fn().mockImplementation(() => () => undefined),
       dispose: vi.fn().mockResolvedValue(undefined),
       resize: vi.fn().mockResolvedValue(undefined),
@@ -254,6 +272,11 @@ function installAdeMocks(options?: {
     handoff,
     emitChatEvent: (event: AgentChatEventEnvelope) => {
       for (const listener of chatEventListeners) {
+        listener(event);
+      }
+    },
+    emitSessionChanged: (event: TerminalSessionChangedEvent) => {
+      for (const listener of sessionChangeListeners) {
         listener(event);
       }
     },
@@ -304,6 +327,7 @@ function renderPane(session: AgentChatSessionSummary) {
         lockSessionId={session.sessionId}
         hideSessionTabs
         initialSessionSummary={session}
+        onSessionCreated={vi.fn()}
       />
     </MemoryRouter>,
   );
@@ -388,6 +412,107 @@ function expectSessionTabOrder(expectedTitles: string[]) {
 }
 
 describe("AgentChatPane submit recovery", () => {
+  it("opens the chat terminal drawer when a CLI-created terminal belongs to the active chat", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    const { emitSessionChanged } = installAdeMocks({ sessions: [session] });
+    const terminalSession: TerminalSessionDetail = {
+      id: "terminal-1",
+      laneId: "lane-1",
+      laneName: "Lane 1",
+      ptyId: "pty-1",
+      tracked: true,
+      pinned: false,
+      manuallyNamed: false,
+      goal: null,
+      title: "CLI run",
+      startedAt: "2026-03-24T05:57:45.700Z",
+      endedAt: null,
+      exitCode: null,
+      transcriptPath: "/tmp/terminal-1.log",
+      headShaStart: null,
+      headShaEnd: null,
+      status: "running",
+      lastOutputPreview: null,
+      summary: null,
+      toolType: "shell",
+      runtimeState: "running",
+      resumeCommand: null,
+      resumeMetadata: null,
+      archivedAt: null,
+      chatSessionId: session.sessionId,
+    };
+    vi.mocked(window.ade.sessions.get).mockResolvedValue(terminalSession);
+
+    renderPane(session);
+
+    await screen.findByRole("textbox");
+    act(() => {
+      emitSessionChanged({ sessionId: terminalSession.id, reason: "created" });
+    });
+
+    expect(await screen.findByText("CLI run")).toBeTruthy();
+    expect(screen.getByTestId("terminal-view").textContent).toBe("terminal-1:pty-1");
+    expect(window.ade.pty.create).not.toHaveBeenCalled();
+  });
+
+  it("reveals rapid CLI-created terminals independently", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    const { emitSessionChanged } = installAdeMocks({ sessions: [session] });
+    const terminalSession = (id: string, ptyId: string, title: string): TerminalSessionDetail => ({
+      id,
+      laneId: "lane-1",
+      laneName: "Lane 1",
+      ptyId,
+      tracked: true,
+      pinned: false,
+      manuallyNamed: false,
+      goal: null,
+      title,
+      startedAt: "2026-03-24T05:57:45.700Z",
+      endedAt: null,
+      exitCode: null,
+      transcriptPath: `/tmp/${id}.log`,
+      headShaStart: null,
+      headShaEnd: null,
+      status: "running",
+      lastOutputPreview: null,
+      summary: null,
+      toolType: "shell",
+      runtimeState: "running",
+      resumeCommand: null,
+      resumeMetadata: null,
+      archivedAt: null,
+      chatSessionId: session.sessionId,
+    });
+    const sessionsById = new Map<string, TerminalSessionDetail>([
+      ["terminal-1", terminalSession("terminal-1", "pty-1", "CLI run 1")],
+      ["terminal-2", terminalSession("terminal-2", "pty-2", "CLI run 2")],
+    ]);
+    const dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(123);
+    vi.mocked(window.ade.sessions.get).mockImplementation(async (sessionId: string) => sessionsById.get(sessionId) ?? null);
+
+    try {
+      renderPane(session);
+
+      await screen.findByRole("textbox");
+      act(() => {
+        emitSessionChanged({ sessionId: "terminal-1", reason: "created" });
+      });
+
+      expect(await screen.findByText("CLI run 1")).toBeTruthy();
+      act(() => {
+        emitSessionChanged({ sessionId: "terminal-2", reason: "created" });
+      });
+
+      expect(await screen.findByText("CLI run 2")).toBeTruthy();
+      await waitFor(() => {
+        expect(screen.getByTestId("terminal-view").textContent).toBe("terminal-2:pty-2");
+      });
+    } finally {
+      dateNowSpy.mockRestore();
+    }
+  });
+
   it("shows a green session indicator while the agent is working", async () => {
     const session = buildSession("session-1");
     installAdeMocks({
@@ -714,6 +839,54 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
+  it("waits for Codex fast mode updates before sending the next turn", async () => {
+    const session = buildSession("session-1", {
+      status: "idle",
+      codexFastMode: false,
+    });
+    const sessions = [session];
+    const resolveUpdates: Array<() => void> = [];
+    const updateSession = vi.fn().mockImplementation((args: any) => new Promise((resolve) => {
+      resolveUpdates.push(() => {
+        sessions[0] = {
+          ...sessions[0]!,
+          codexFastMode: args.codexFastMode ?? sessions[0]!.codexFastMode,
+        };
+        resolve(sessions[0]);
+      });
+    }));
+    const { send } = installAdeMocks({
+      sessions,
+    });
+    window.ade.agentChat.updateSession = updateSession as any;
+
+    renderPane(session);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Fast mode" }));
+
+    await waitFor(() => {
+      expect(updateSession).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: session.sessionId,
+        codexFastMode: true,
+      }));
+    });
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Use the faster tier." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(send).not.toHaveBeenCalled();
+
+    resolveUpdates[0]?.();
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: session.sessionId,
+        text: "Use the faster tier.",
+      }));
+    });
+  });
+
   it("persists Codex reasoning effort changes on the selected session", async () => {
     const session = buildSession("session-1", {
       status: "idle",
@@ -963,6 +1136,26 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
+  it("hides chat handoff when the pane cannot open the created work chat", async () => {
+    const session = buildSession("session-1");
+    installAdeMocks();
+
+    render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId={session.laneId}
+          lockSessionId={session.sessionId}
+          hideSessionTabs
+          initialSessionSummary={session}
+        />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Handoff" })).toBeNull();
+    });
+  });
+
   it("disables chat handoff while the current turn is still active", async () => {
     const session = buildSession("session-1");
     installAdeMocks({
@@ -1002,6 +1195,7 @@ describe("AgentChatPane submit recovery", () => {
     const handoffBtn = await screen.findByRole("button", { name: "Handoff" }) as HTMLButtonElement;
     await waitFor(() => expect(handoffBtn.disabled).toBe(false));
     fireEvent.click(handoffBtn);
+    expect(await screen.findByText("Create opens the new work chat and sends the handoff summary as its first message.")).toBeTruthy();
     fireEvent.click(await screen.findByRole("button", { name: "Create handoff chat" }));
 
     await waitFor(() => {
@@ -1020,6 +1214,50 @@ describe("AgentChatPane submit recovery", () => {
         cursorConfigValues: {},
       }));
       expect(onSessionCreated).toHaveBeenCalledWith(expect.objectContaining({ id: "session-2" }));
+    });
+  });
+
+  it("sends the selected handoff model and permission mode", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    const { handoff } = installAdeMocks({
+      includeClaudeModel: true,
+      handoffResult: {
+        session: buildCreatedSession("session-2", {
+          provider: "claude",
+          model: "sonnet",
+          modelId: "anthropic/claude-sonnet-4-6",
+          interactionMode: "plan",
+          permissionMode: "plan",
+        }),
+        usedFallbackSummary: false,
+      },
+    });
+
+    renderPane(session);
+
+    const handoffBtn = await screen.findByRole("button", { name: "Handoff" }) as HTMLButtonElement;
+    await waitFor(() => expect(handoffBtn.disabled).toBe(false));
+    fireEvent.click(handoffBtn);
+
+    const handoffMenu = (await screen.findByText("Start a sibling chat on another model")).closest("[data-chat-handoff-menu='true']");
+    expect(handoffMenu).toBeTruthy();
+    fireEvent.click(within(handoffMenu as HTMLElement).getByRole("button", { name: "Select model" }));
+    const claudeLabel = getModelById("anthropic/claude-sonnet-4-6")?.displayName ?? "Claude Sonnet 4.6";
+    fireEvent.click(await screen.findByRole("button", { name: /^Claude$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(claudeLabel), "i"));
+    expect(screen.getByText("Create opens the new work chat and sends the handoff summary as its first message.")).toBeTruthy();
+
+    const permissionSelect = await screen.findByLabelText("Claude permission mode for handoff") as HTMLSelectElement;
+    fireEvent.change(permissionSelect, { target: { value: "plan" } });
+    fireEvent.click(await screen.findByRole("button", { name: "Create handoff chat" }));
+
+    await waitFor(() => {
+      expect(handoff).toHaveBeenCalledWith(expect.objectContaining({
+        sourceSessionId: session.sessionId,
+        targetModelId: "anthropic/claude-sonnet-4-6",
+        claudePermissionMode: "plan",
+        permissionMode: "plan",
+      }));
     });
   });
 

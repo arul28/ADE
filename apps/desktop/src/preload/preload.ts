@@ -674,6 +674,7 @@ import type {
   BuiltInBrowserCreateTabArgs,
   BuiltInBrowserEventPayload,
   BuiltInBrowserNavigateArgs,
+  BuiltInBrowserOpenPanelArgs,
   BuiltInBrowserScreenshot,
   BuiltInBrowserSelectPointArgs,
   BuiltInBrowserSelectResult,
@@ -2476,6 +2477,8 @@ contextBridge.exposeInMainWorld("ade", {
   builtInBrowser: {
     getStatus: async (): Promise<BuiltInBrowserStatus> =>
       builtInBrowserStatusCache.get(),
+    showPanel: async (args: BuiltInBrowserOpenPanelArgs = {}): Promise<BuiltInBrowserStatus> =>
+      clearAround(() => builtInBrowserStatusCache.clear(), () => ipcRenderer.invoke(IPC.builtInBrowserShowPanel, args)),
     setBounds: async (args: BuiltInBrowserBoundsArgs): Promise<BuiltInBrowserStatus> =>
       clearAround(() => builtInBrowserStatusCache.clear(), () => ipcRenderer.invoke(IPC.builtInBrowserSetBounds, args)),
     attachWebview: async (args: BuiltInBrowserAttachWebviewArgs): Promise<BuiltInBrowserStatus> =>

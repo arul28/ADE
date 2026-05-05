@@ -18,6 +18,9 @@ import {
   resolveLaunchFields,
   resolveTrackedCliResumeCommand,
   withCodexNoAltScreen,
+  LAUNCH_PROFILE_TITLE,
+  LAUNCH_PROFILE_TOOL_TYPE,
+  type LaunchProfile,
 } from "./cliLaunch";
 import { sortLanesForTabs } from "../lanes/laneUtils";
 
@@ -234,9 +237,12 @@ export function buildWorkTabGroupModel(args: {
 }
 
 function inferToolFromResumeCommand(command: string): string | null {
-  const n = command.trim().toLowerCase();
+  const n = command.trim().toLowerCase().replace(/^(?:[a-z_][a-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s]+)\s+)+/, "");
   if (n.startsWith("claude ")) return "claude";
   if (n.startsWith("codex ")) return "codex";
+  if (n.startsWith("cursor-agent ")) return "cursor-cli";
+  if (n.startsWith("droid ")) return "droid";
+  if (n.startsWith("opencode ")) return "opencode";
   return null;
 }
 
@@ -1105,19 +1111,14 @@ export function useWorkSessions() {
   const launchPtySession = useCallback(
     async (args: {
       laneId: string;
-      profile: "claude" | "codex" | "shell";
+      profile: LaunchProfile;
       tracked?: boolean;
       title?: string;
       startupCommand?: string;
       command?: string;
       args?: string[];
+      env?: Record<string, string>;
     }) => {
-      const toolTypeMap = {
-        claude: "claude" as const,
-        codex: "codex" as const,
-        shell: "shell" as const,
-      };
-      const titleMap = { claude: "Claude Code", codex: "Codex", shell: "Shell" };
       // resolveLaunchFields preserves caller intent: any caller-supplied
       // startupCommand/command/args is used as-is, never mixed with defaults
       // from the other fields. Only when the caller passes none of them do
@@ -1127,14 +1128,15 @@ export function useWorkSessions() {
         ...(args.startupCommand !== undefined ? { startupCommand: args.startupCommand } : {}),
         ...(args.command !== undefined ? { command: args.command } : {}),
         ...(args.args !== undefined ? { args: args.args } : {}),
+        ...(args.env !== undefined ? { env: args.env } : {}),
       });
       const result = await window.ade.pty.create({
         laneId: args.laneId,
         cols: 100,
         rows: 30,
-        title: args.title ?? titleMap[args.profile],
+        title: args.title ?? LAUNCH_PROFILE_TITLE[args.profile],
         tracked: args.tracked ?? true,
-        toolType: toolTypeMap[args.profile],
+        toolType: LAUNCH_PROFILE_TOOL_TYPE[args.profile],
         ...launchFields,
       });
       selectLane(args.laneId);

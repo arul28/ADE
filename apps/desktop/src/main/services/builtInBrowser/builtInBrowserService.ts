@@ -1,4 +1,4 @@
-import { WebContentsView, nativeImage, session, shell, webContents as electronWebContents } from "electron";
+import { WebContentsView, nativeImage, session, webContents as electronWebContents } from "electron";
 import type { BrowserWindow, WebContents } from "electron";
 import { randomUUID } from "node:crypto";
 import type {
@@ -9,6 +9,7 @@ import type {
   BuiltInBrowserEventPayload,
   BuiltInBrowserFrame,
   BuiltInBrowserNavigateArgs,
+  BuiltInBrowserOpenPanelArgs,
   BuiltInBrowserScreenshot,
   BuiltInBrowserSelectPointArgs,
   BuiltInBrowserSelectResult,
@@ -24,9 +25,10 @@ const SCREENSHOT_TIMEOUT_MS = 3_000;
 const ELEMENT_SCREENSHOT_TIMEOUT_MS = 2_000;
 const DEBUGGER_TIMEOUT_MS = 3_000;
 const MAX_BROWSER_TABS = 10;
-const GOOGLE_SIGN_IN_EXTERNAL_NOTICE_DEDUPE_MS = 2_000;
-const GOOGLE_SIGN_IN_EXTERNAL_MESSAGE =
-  "Google blocks account sign-in inside embedded app browsers. ADE opened the Google sign-in page in your system browser instead. ADE browser cookies are separate, so that system-browser login will not transfer back into ADE.";
+const BROWSER_CHROME_VERSION = normalizeChromeVersion(process.versions.chrome);
+const BROWSER_CHROME_MAJOR_VERSION = BROWSER_CHROME_VERSION.split(".")[0] || "120";
+const BROWSER_USER_AGENT = buildDesktopChromeUserAgent(BROWSER_CHROME_VERSION, process.platform);
+const BROWSER_UA_PLATFORM = browserClientHintsPlatform(process.platform);
 
 type DebuggerMessageListener = (
   event: Electron.Event,
@@ -100,7 +102,6 @@ export function createBuiltInBrowserService(args: {
   let handlingInspectNode = false;
   let browserSessionConfigured = false;
   let lastEmittedStatusKey: string | null = null;
-  let lastGoogleSignInExternalNotice: { url: string; at: number } | null = null;
   const configuredWebContents = new WeakSet<WebContents>();
 
   const logger = (): Logger | null => {
@@ -138,32 +139,6 @@ export function createBuiltInBrowserService(args: {
     const message = error instanceof Error ? error.message : String(error);
     logger()?.warn("built_in_browser.error", { err: message });
     emit({ type: "error", message, occurredAt: new Date().toISOString() });
-  };
-
-  const emitGoogleSignInExternalNotice = (url: string): void => {
-    const now = Date.now();
-    if (
-      lastGoogleSignInExternalNotice
-      && lastGoogleSignInExternalNotice.url === url
-      && now - lastGoogleSignInExternalNotice.at < GOOGLE_SIGN_IN_EXTERNAL_NOTICE_DEDUPE_MS
-    ) {
-      return;
-    }
-    lastGoogleSignInExternalNotice = { url, at: now };
-    emit({
-      type: "error",
-      message: GOOGLE_SIGN_IN_EXTERNAL_MESSAGE,
-      occurredAt: new Date().toISOString(),
-    });
-  };
-
-  const openGoogleSignInExternallyIfNeeded = (url: string): boolean => {
-    if (!isGoogleEmbeddedSignInUrl(url)) return false;
-    void shell.openExternal(url).catch((error) => {
-      emitError(new Error(`Could not open Google sign-in in the system browser: ${error instanceof Error ? error.message : String(error)}`));
-    });
-    emitGoogleSignInExternalNotice(url);
-    return true;
   };
 
   const stopInspectQuietly = async (logKey: string): Promise<void> => {
@@ -217,18 +192,18 @@ export function createBuiltInBrowserService(args: {
   const configureBrowserWebContents = (wc: WebContents): void => {
     if (configuredWebContents.has(wc)) return;
     configuredWebContents.add(wc);
+    try {
+      wc.setUserAgent(BROWSER_USER_AGENT);
+    } catch (error) {
+      logger()?.debug("built_in_browser.set_user_agent_failed", {
+        err: error instanceof Error ? error.message : String(error),
+      });
+    }
     wc.setWindowOpenHandler(({ url }) => {
-      if (openGoogleSignInExternallyIfNeeded(url)) {
-        return { action: "deny" };
-      }
-      void navigate({ url, newTab: true }).catch(emitError);
+      void navigate({ url, newTab: true, openPanel: true }).catch(emitError);
       return { action: "deny" };
     });
     wc.on("will-navigate", (event, url) => {
-      if (openGoogleSignInExternallyIfNeeded(url)) {
-        event.preventDefault();
-        return;
-      }
       if (isAllowedNavigationUrl(url)) return;
       event.preventDefault();
       emitError(new Error(`Blocked unsupported browser navigation protocol: ${url}`));
@@ -333,6 +308,9 @@ export function createBuiltInBrowserService(args: {
   const configureBrowserSession = (): void => {
     if (browserSessionConfigured) return;
     const browserSession = session.fromPartition(BROWSER_PARTITION);
+    browserSession.webRequest.onBeforeSendHeaders((details, callback) => {
+      callback({ requestHeaders: normalizeBrowserRequestHeaders(details.requestHeaders) });
+    });
     browserSession.setPermissionCheckHandler((_webContents, permission, requestingOrigin) => {
       logger()?.debug("built_in_browser.permission_check_denied", {
         permission,
@@ -395,6 +373,32 @@ export function createBuiltInBrowserService(args: {
       isInspecting: inspecting,
       hasSelection: lastSelectedItem !== null,
     };
+  }
+
+  const requestOpenPanel = (input: BuiltInBrowserOpenPanelArgs = {}): BuiltInBrowserStatus => {
+    const status = getStatus();
+    const tabId = stringOrNull(input.tabId) ?? status.activeTabId;
+    const url = stringOrNull(input.url) ?? status.url;
+    emit({
+      type: "open-request",
+      status,
+      tabId,
+      url,
+      requestedAt: new Date().toISOString(),
+    });
+    return status;
+  };
+
+  async function showPanel(input: BuiltInBrowserOpenPanelArgs = {}): Promise<BuiltInBrowserStatus> {
+    const tabId = stringOrNull(input.tabId);
+    const url = stringOrNull(input.url);
+    if (url) {
+      return navigate({ url, tabId, openPanel: true });
+    }
+    if (tabId) {
+      return switchTab({ tabId, openPanel: true });
+    }
+    return requestOpenPanel(input);
   }
 
   async function setBounds(nextBounds: BuiltInBrowserBoundsArgs): Promise<BuiltInBrowserStatus> {
@@ -480,9 +484,6 @@ export function createBuiltInBrowserService(args: {
 
   async function navigate(input: BuiltInBrowserNavigateArgs): Promise<BuiltInBrowserStatus> {
     const targetUrl = normalizeBrowserUrl(input.url);
-    if (openGoogleSignInExternallyIfNeeded(targetUrl)) {
-      return getStatus();
-    }
     if (input.newTab && tabs.length >= MAX_BROWSER_TABS) {
       throw new Error(`ADE browser is limited to ${MAX_BROWSER_TABS} tabs. Close a tab before opening another.`);
     }
@@ -511,6 +512,9 @@ export function createBuiltInBrowserService(args: {
     const wc = tab.webContents;
     attachViewsToCurrentWindow();
     await wc.loadURL(targetUrl);
+    if (input.openPanel) {
+      requestOpenPanel({ url: targetUrl, tabId: tab.id });
+    }
     emitStatus();
     return getStatus();
   }
@@ -521,9 +525,6 @@ export function createBuiltInBrowserService(args: {
     }
     // Normalize URL up front so we don't leave an orphan tab on invalid input.
     const normalizedUrl = input.url ? normalizeBrowserUrl(input.url) : null;
-    if (normalizedUrl && openGoogleSignInExternallyIfNeeded(normalizedUrl)) {
-      return getStatus();
-    }
     const willActivate = input.activate !== false || !activeTabId;
     if (willActivate) {
       await stopInspectQuietly("built_in_browser.create_tab_stop_inspect_failed");
@@ -535,6 +536,9 @@ export function createBuiltInBrowserService(args: {
     attachViewsToCurrentWindow();
     if (normalizedUrl) {
       await tab.webContents.loadURL(normalizedUrl);
+    }
+    if (input.openPanel) {
+      requestOpenPanel({ url: normalizedUrl, tabId: tab.id });
     }
     emitStatus();
     return getStatus();
@@ -554,6 +558,9 @@ export function createBuiltInBrowserService(args: {
       clearSelectionInternal();
     }
     attachViewsToCurrentWindow();
+    if (input.openPanel) {
+      requestOpenPanel({ tabId: tab.id });
+    }
     emitStatus();
     return getStatus();
   }
@@ -1031,6 +1038,7 @@ export function createBuiltInBrowserService(args: {
   return {
     attachToWindow,
     getStatus,
+    showPanel,
     setBounds,
     attachWebview,
     navigate,
@@ -1060,6 +1068,60 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function emptyToNull(value: string): string | null {
   const trimmed = value.trim();
   return trimmed.length ? trimmed : null;
+}
+
+function normalizeChromeVersion(version: string | undefined): string {
+  const match = (version ?? "").match(/^\d+(?:\.\d+){0,3}/);
+  const parts = (match?.[0] ?? "120.0.0.0").split(".");
+  while (parts.length < 4) parts.push("0");
+  return parts.slice(0, 4).join(".");
+}
+
+function buildDesktopChromeUserAgent(chromeVersion: string, platform: NodeJS.Platform): string {
+  let platformToken: string;
+  if (platform === "darwin") {
+    platformToken = "Macintosh; Intel Mac OS X 10_15_7";
+  } else if (platform === "win32") {
+    platformToken = "Windows NT 10.0; Win64; x64";
+  } else {
+    platformToken = "X11; Linux x86_64";
+  }
+  return `Mozilla/5.0 (${platformToken}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeVersion} Safari/537.36`;
+}
+
+function browserClientHintsPlatform(platform: NodeJS.Platform): string {
+  if (platform === "darwin") return "macOS";
+  if (platform === "win32") return "Windows";
+  return "Linux";
+}
+
+function browserClientHintsBrands(): string {
+  return `"Google Chrome";v="${BROWSER_CHROME_MAJOR_VERSION}", "Chromium";v="${BROWSER_CHROME_MAJOR_VERSION}", "Not:A-Brand";v="24"`;
+}
+
+type BrowserRequestHeaders = Record<string, string | string[]>;
+
+function setRequestHeader(headers: BrowserRequestHeaders, name: string, value: string): void {
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() === name.toLowerCase()) {
+      delete headers[key];
+    }
+  }
+  headers[name] = value;
+}
+
+function normalizeBrowserRequestHeaders(
+  headers: Record<string, string | string[] | undefined>,
+): BrowserRequestHeaders {
+  const next: BrowserRequestHeaders = {};
+  for (const [key, value] of Object.entries(headers)) {
+    if (value !== undefined) next[key] = value;
+  }
+  setRequestHeader(next, "User-Agent", BROWSER_USER_AGENT);
+  setRequestHeader(next, "Sec-CH-UA", browserClientHintsBrands());
+  setRequestHeader(next, "Sec-CH-UA-Mobile", "?0");
+  setRequestHeader(next, "Sec-CH-UA-Platform", `"${BROWSER_UA_PLATFORM}"`);
+  return next;
 }
 
 function tabStatus(tab: BrowserTabState): BuiltInBrowserTab {
@@ -1110,27 +1172,6 @@ function isAllowedNavigationUrl(rawUrl: string): boolean {
     const parsed = new URL(rawUrl);
     if (parsed.protocol === "about:") return parsed.href.startsWith("about:blank");
     return parsed.protocol === "http:" || parsed.protocol === "https:";
-  } catch {
-    return false;
-  }
-}
-
-function isGoogleEmbeddedSignInUrl(rawUrl: string): boolean {
-  try {
-    const parsed = new URL(rawUrl);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
-    if (parsed.hostname.toLowerCase() !== "accounts.google.com") return false;
-    if (parsed.searchParams.get("error") === "disallowed_useragent") return true;
-    const path = parsed.pathname.toLowerCase();
-    return (
-      path === "/"
-      || path.startsWith("/accountchooser")
-      || path.startsWith("/interactivelogin")
-      || path.startsWith("/o/oauth")
-      || path.startsWith("/signin")
-      || path.startsWith("/servicelogin")
-      || path.startsWith("/v3/signin")
-    );
   } catch {
     return false;
   }

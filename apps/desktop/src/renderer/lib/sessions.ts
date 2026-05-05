@@ -60,6 +60,9 @@ export function defaultSessionLabel(toolType: string | null | undefined): string
   if (toolType === "codex-chat") return "Codex chat";
   if (toolType === "opencode-chat") return "OpenCode chat";
   if (toolType === "cursor") return "Cursor chat";
+  if (toolType === "cursor-cli") return "Cursor CLI session";
+  if (toolType === "droid") return "Droid CLI session";
+  if (toolType === "opencode") return "OpenCode CLI session";
   if (toolType === "droid-chat") return "Droid chat";
   if (toolType === "claude") return "Claude session";
   if (toolType === "codex") return "Codex session";
@@ -103,6 +106,9 @@ const SHORT_TOOL_TYPE_LABELS: Record<string, string> = {
   shell: "Shell",
   "run-shell": "Run",
   cursor: "Cursor",
+  "cursor-cli": "Cursor",
+  droid: "Droid",
+  opencode: "OpenCode",
   aider: "Aider",
   continue: "Continue",
 };
@@ -138,6 +144,9 @@ export function formatToolTypeLabel(toolType: string | null | undefined): string
   if (toolType === "codex-chat") return "Codex chat";
   if (toolType === "opencode-chat") return "OpenCode chat";
   if (toolType === "cursor") return "Cursor chat";
+  if (toolType === "cursor-cli") return "Cursor CLI session";
+  if (toolType === "droid") return "Droid CLI session";
+  if (toolType === "opencode") return "OpenCode CLI session";
   if (toolType === "droid-chat") return "Droid chat";
   if (toolType === "claude") return "Claude session";
   if (toolType === "codex") return "Codex session";

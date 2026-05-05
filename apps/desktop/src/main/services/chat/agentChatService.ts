@@ -145,6 +145,7 @@ import {
   pickDefaultCursorDescriptorFromCliList,
   pickDefaultDroidDescriptorFromCliList,
   getRuntimeModelRefForDescriptor,
+  modelSupportsFastMode,
   resolveModelAlias,
   resolveModelDescriptorForProvider,
   resolveProviderGroupForModel,
@@ -301,6 +302,7 @@ type PersistedChatState = {
   modelId?: string;
   sessionProfile?: "light" | "workflow";
   reasoningEffort?: string | null;
+  codexFastMode?: boolean;
   executionMode?: AgentChatExecutionMode | null;
   interactionMode?: AgentChatInteractionMode | null;
   claudePermissionMode?: AgentChatClaudePermissionMode;
@@ -1257,7 +1259,7 @@ const KNOWN_CLAUDE_EFFORTS = new Set(CLAUDE_REASONING_EFFORTS.map((e) => e.effor
 
 function codexModelInfoFromDescriptor(
   descriptor: ModelDescriptor,
-  overrides?: Partial<Pick<AgentChatModelInfo, "description" | "isDefault" | "reasoningEfforts">>,
+  overrides?: Partial<Pick<AgentChatModelInfo, "description" | "isDefault" | "reasoningEfforts" | "serviceTiers">>,
 ): AgentChatModelInfo {
   return {
     id: descriptor.providerModelId,
@@ -1267,6 +1269,11 @@ function codexModelInfoFromDescriptor(
     reasoningEfforts: overrides?.reasoningEfforts ?? (descriptor.reasoningTiers?.length
       ? CODEX_REASONING_EFFORTS.filter((effort) => descriptor.reasoningTiers?.includes(effort.effort))
       : CODEX_REASONING_EFFORTS),
+    ...(overrides?.serviceTiers !== undefined
+      ? { serviceTiers: overrides.serviceTiers }
+      : descriptor.serviceTiers?.length
+        ? { serviceTiers: descriptor.serviceTiers }
+        : {}),
     modelId: descriptor.id,
     family: descriptor.family,
     supportsReasoning: descriptor.capabilities.reasoning,
@@ -1299,6 +1306,12 @@ function normalizeReasoningEffort(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const normalized = value.trim().toLowerCase();
   return normalized.length > 0 ? normalized : null;
+}
+
+type CodexServiceTier = "fast";
+
+function normalizeCodexFastMode(value: unknown): boolean {
+  return value === true;
 }
 
 function catalogDescriptorInfoKey(
@@ -1366,6 +1379,35 @@ function resolveSessionModelDescriptor(session: AgentChatSession): ModelDescript
 
 function sessionSupportsReasoning(session: AgentChatSession): boolean {
   return resolveSessionModelDescriptor(session)?.capabilities.reasoning ?? true;
+}
+
+function sessionSupportsCodexFastMode(session: AgentChatSession): boolean {
+  return session.provider === "codex" && modelSupportsFastMode(resolveSessionModelDescriptor(session));
+}
+
+function codexServiceTierArgs(session: AgentChatSession): { serviceTier: CodexServiceTier | null } {
+  // JSON-RPC needs an explicit null to clear any app-server/config default.
+  const serviceTier = session.codexFastMode === true && sessionSupportsCodexFastMode(session) ? "fast" : null;
+  return { serviceTier };
+}
+
+function normalizeCodexServiceTier(value: unknown): string | null {
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    return normalized.length ? normalized : null;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  return normalizeCodexServiceTier(record.id ?? record.tier ?? record.serviceTier);
+}
+
+function normalizeCodexServiceTierList(...values: unknown[]): string[] | undefined {
+  const tiers = values.flatMap((value) => Array.isArray(value) ? value : []);
+  const normalized = tiers
+    .map((entry) => normalizeCodexServiceTier(entry))
+    .filter((entry): entry is string => Boolean(entry));
+  const deduped = normalized.filter((tier, index, list) => list.indexOf(tier) === index);
+  return deduped.length ? deduped : undefined;
 }
 
 function initialTurnActivity(session: AgentChatSession): {
@@ -6087,6 +6129,7 @@ export function createAgentChatService(args: {
       ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
       ...(managed.session.sessionProfile ? { sessionProfile: managed.session.sessionProfile } : {}),
       ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
+      ...(managed.session.codexFastMode === true ? { codexFastMode: true } : {}),
       ...(managed.session.executionMode ? { executionMode: managed.session.executionMode } : {}),
       ...(managed.session.interactionMode ? { interactionMode: managed.session.interactionMode } : {}),
       ...(managed.session.claudePermissionMode ? { claudePermissionMode: managed.session.claudePermissionMode } : {}),
@@ -6209,6 +6252,7 @@ export function createAgentChatService(args: {
         : resolveModelIdFromStoredValue(model, provider);
       const sessionProfile = normalizeSessionProfile(record.sessionProfile);
       const reasoningEffort = normalizeReasoningEffort(record.reasoningEffort);
+      const codexFastMode = normalizeCodexFastMode(record.codexFastMode);
       const executionMode = normalizePersistedExecutionMode(record.executionMode);
       const permissionMode = normalizePersistedPermissionMode(record.permissionMode);
       const claudePermissionMode = normalizePersistedClaudePermissionMode(record.claudePermissionMode);
@@ -6301,6 +6345,7 @@ export function createAgentChatService(args: {
         ...(modelId ? { modelId } : {}),
         ...(sessionProfile ? { sessionProfile } : {}),
         ...(reasoningEffort ? { reasoningEffort } : {}),
+        ...(codexFastMode ? { codexFastMode: true } : {}),
         ...(executionMode ? { executionMode } : {}),
         ...(interactionMode ? { interactionMode } : {}),
         ...(claudePermissionMode ? { claudePermissionMode } : {}),
@@ -7215,6 +7260,7 @@ export function createAgentChatService(args: {
         ...(hydratedModelId ? { modelId: hydratedModelId } : {}),
         ...(persisted?.sessionProfile ? { sessionProfile: persisted.sessionProfile } : {}),
         reasoningEffort: persisted?.reasoningEffort ?? null,
+        codexFastMode: persisted?.codexFastMode === true,
         executionMode: persisted?.executionMode ?? null,
         interactionMode: persisted?.interactionMode ?? null,
         ...(persisted?.claudePermissionMode ? { claudePermissionMode: persisted.claudePermissionMode } : {}),
@@ -7496,6 +7542,7 @@ export function createAgentChatService(args: {
         input,
         model: managed.session.model,
         ...(managed.session.reasoningEffort ? { effort: managed.session.reasoningEffort } : {}),
+        ...codexServiceTierArgs(managed.session),
         ...codexTurnPolicyArgs(codexPolicy),
         ...(collaborationMode ? { collaborationMode } : {}),
       });
@@ -10979,6 +11026,7 @@ export function createAgentChatService(args: {
       model: managed.session.model,
       cwd: managed.laneWorktreePath,
       reasoningEffort,
+      ...codexServiceTierArgs(managed.session),
       ...codexPolicyArgs(codexPolicy),
       experimentalRawEvents: false,
       persistExtendedHistory: true
@@ -11775,13 +11823,18 @@ export function createAgentChatService(args: {
             : undefined;
 
           const normalizedEfforts = reasoningEfforts?.length ? reasoningEfforts : CODEX_REASONING_EFFORTS;
+          const serviceTiers = normalizeCodexServiceTierList(
+            row.additionalSpeedTiers,
+            row.serviceTiers,
+          );
 
           return {
             id,
             displayName,
             ...(description ? { description } : {}),
             isDefault,
-            reasoningEfforts: normalizedEfforts
+            reasoningEfforts: normalizedEfforts,
+            ...(serviceTiers ? { serviceTiers } : {})
           } satisfies AgentChatModelInfo;
         })
         .filter((entry): entry is AgentChatModelInfo => entry != null);
@@ -11808,6 +11861,7 @@ export function createAgentChatService(args: {
               reasoningEfforts: appServerEntry?.reasoningEfforts?.length
                 ? appServerEntry.reasoningEfforts
                 : undefined,
+              serviceTiers: appServerEntry?.serviceTiers,
             });
           });
 
@@ -11892,6 +11946,7 @@ export function createAgentChatService(args: {
     title,
     sessionProfile,
     reasoningEffort,
+    codexFastMode: requestedCodexFastMode,
     interactionMode: requestedInteractionMode,
     claudePermissionMode: requestedClaudePermissionMode,
     codexApprovalPolicy: requestedCodexApprovalPolicy,
@@ -12105,6 +12160,7 @@ export function createAgentChatService(args: {
         ...(resolvedModelId ? { modelId: resolvedModelId } : {}),
         sessionProfile: sessionProfile ?? "workflow",
         ...(normalizedReasoningEffort ? { reasoningEffort: normalizedReasoningEffort } : {}),
+        ...(effectiveProvider === "codex" && requestedCodexFastMode === true ? { codexFastMode: true } : {}),
         ...nativePermissionFields,
         ...(effectivePermissionMode ? { permissionMode: effectivePermissionMode } : {}),
         ...(identityKey ? { identityKey } : {}),
@@ -12251,7 +12307,9 @@ export function createAgentChatService(args: {
       modelId: targetDescriptor.id,
       sessionProfile: managed.session.sessionProfile,
       reasoningEffort: targetReasoningEffort,
-      interactionMode: managed.session.interactionMode,
+      codexFastMode: targetProvider === "codex"
+        ? args.codexFastMode ?? managed.session.codexFastMode === true
+        : undefined,
       claudePermissionMode: args.claudePermissionMode ?? managed.session.claudePermissionMode,
       codexApprovalPolicy: args.codexApprovalPolicy ?? managed.session.codexApprovalPolicy,
       codexSandbox: args.codexSandbox ?? managed.session.codexSandbox,
@@ -12268,7 +12326,6 @@ export function createAgentChatService(args: {
 
     const createdManaged = ensureManagedSession(created.id);
     createdManaged.session.executionMode = managed.session.executionMode ?? sourceSession.executionMode ?? null;
-    createdManaged.session.interactionMode = managed.session.interactionMode ?? sourceSession.interactionMode ?? null;
     const inheritedGoal = trimLine(sourceSession.goal)
       ?? trimLine(sourceSession.summary)
       ?? trimLine(sourceSession.title);
@@ -15448,6 +15505,7 @@ export function createAgentChatService(args: {
               model: managed.session.model,
               cwd: managed.laneWorktreePath,
               reasoningEffort: resumeReasoningEffort,
+              ...codexServiceTierArgs(managed.session),
               ...codexPolicyArgs(codexPolicy),
               persistExtendedHistory: true
             });
@@ -16304,6 +16362,7 @@ export function createAgentChatService(args: {
             model: managed.session.model,
             cwd: managed.laneWorktreePath,
             reasoningEffort: managed.session.reasoningEffort,
+            ...codexServiceTierArgs(managed.session),
             ...codexPolicyArgs(codexPolicy),
             persistExtendedHistory: true
           });
@@ -16461,6 +16520,7 @@ export function createAgentChatService(args: {
       title: row.title ?? null,
       goal: row.goal ?? null,
       reasoningEffort: liveSession?.reasoningEffort ?? persisted?.reasoningEffort ?? null,
+      codexFastMode: (liveSession?.codexFastMode ?? persisted?.codexFastMode) === true,
       executionMode: liveSession?.executionMode ?? persisted?.executionMode ?? null,
       interactionMode: liveSession?.interactionMode ?? persisted?.interactionMode ?? null,
       ...(liveSession?.claudePermissionMode || persisted?.claudePermissionMode
@@ -17090,6 +17150,7 @@ export function createAgentChatService(args: {
             family: descriptor.family,
             supportsReasoning: descriptor.capabilities.reasoning,
             supportsTools: descriptor.capabilities.tools,
+            ...(descriptor.serviceTiers?.length ? { serviceTiers: descriptor.serviceTiers } : {}),
             color: descriptor.color,
           });
           firstRow = false;
@@ -17122,6 +17183,7 @@ export function createAgentChatService(args: {
           family: m.family,
           supportsReasoning: m.capabilities.reasoning,
           supportsTools: m.capabilities.tools,
+          ...(m.serviceTiers?.length ? { serviceTiers: m.serviceTiers } : {}),
           color: m.color,
         }));
       }
@@ -17191,6 +17253,11 @@ export function createAgentChatService(args: {
             ...(typeof info.supportsTools === "boolean" ? { tools: info.supportsTools } : {}),
           },
           ...(runtimeTiers?.length ? { reasoningTiers: runtimeTiers } : {}),
+          ...(info.serviceTiers !== undefined
+            ? { serviceTiers: info.serviceTiers }
+            : descriptor.serviceTiers?.length
+              ? { serviceTiers: descriptor.serviceTiers }
+              : {}),
         };
         descriptors.push(patched);
         descriptorInfo.set(catalogDescriptorInfoKey(provider, patched.family, patched.id), { provider, info });
@@ -17240,6 +17307,11 @@ export function createAgentChatService(args: {
                 family: descriptor.family,
                 supportsReasoning: descriptor.capabilities.reasoning,
                 supportsTools: descriptor.capabilities.tools,
+                ...(entry?.info.serviceTiers !== undefined
+                  ? { serviceTiers: entry.info.serviceTiers }
+                  : descriptor.serviceTiers?.length
+                    ? { serviceTiers: descriptor.serviceTiers }
+                    : {}),
                 color: descriptor.color,
                 isAvailable: Boolean(entry),
               };
@@ -17487,6 +17559,7 @@ export function createAgentChatService(args: {
     manuallyNamed,
     modelId,
     reasoningEffort,
+    codexFastMode,
     interactionMode,
     claudePermissionMode,
     codexApprovalPolicy,
@@ -17506,6 +17579,7 @@ export function createAgentChatService(args: {
     const prevCodexApprovalPolicy = managed.session.codexApprovalPolicy;
     const prevCodexSandbox = managed.session.codexSandbox;
     const prevCodexConfigSource = managed.session.codexConfigSource;
+    const prevCodexFastMode = managed.session.codexFastMode === true;
 
     if (modelId !== undefined) {
       const nextModelId = String(modelId ?? "").trim();
@@ -17554,6 +17628,9 @@ export function createAgentChatService(args: {
       managed.session.provider = nextProvider;
       managed.session.modelId = descriptor.id;
       managed.session.model = nextModel;
+      if (nextProvider !== "codex") {
+        delete managed.session.codexFastMode;
+      }
       managed.session.capabilityMode = inferCapabilityMode(nextProvider);
       if (previousProvider !== nextProvider || previousProvider === "codex") {
         delete managed.session.threadId;
@@ -17673,6 +17750,14 @@ export function createAgentChatService(args: {
       managed.session.codexConfigSource = codexConfigSource;
     }
 
+    if (codexFastMode !== undefined) {
+      if (managed.session.provider === "codex" && normalizeCodexFastMode(codexFastMode)) {
+        managed.session.codexFastMode = true;
+      } else {
+        delete managed.session.codexFastMode;
+      }
+    }
+
     if (opencodePermissionMode !== undefined && !identityPinned) {
       managed.session.opencodePermissionMode = opencodePermissionMode;
     }
@@ -17753,6 +17838,13 @@ export function createAgentChatService(args: {
       if (managed.runtime?.kind === "droid" && !managed.runtime.busy) {
         await ensureDroidSessionState(managed, managed.runtime);
       }
+    }
+    if (
+      codexFastMode !== undefined
+      && managed.runtime?.kind === "codex"
+      && (managed.session.codexFastMode === true) !== prevCodexFastMode
+    ) {
+      managed.runtime.threadResumed = false;
     }
 
     if (title !== undefined) {

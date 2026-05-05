@@ -248,6 +248,35 @@ describe("AgentChatComposer", () => {
     });
   });
 
+  it("toggles Codex fast mode for supported models", () => {
+    const onCodexFastModeChange = vi.fn();
+    renderComposer({
+      sessionProvider: "codex",
+      modelId: "openai/gpt-5.5",
+      availableModelIds: ["openai/gpt-5.5"],
+      codexFastMode: false,
+      onCodexFastModeChange,
+    });
+
+    const fastButton = screen.getByRole("button", { name: "Fast mode" });
+    expect(fastButton.getAttribute("aria-pressed")).toBe("false");
+
+    fireEvent.click(fastButton);
+
+    expect(onCodexFastModeChange).toHaveBeenCalledWith(true);
+  });
+
+  it("hides Codex fast mode for unsupported models", () => {
+    renderComposer({
+      sessionProvider: "codex",
+      modelId: "openai/gpt-5.4-mini",
+      availableModelIds: ["openai/gpt-5.4-mini"],
+      codexFastMode: true,
+    });
+
+    expect(screen.queryByRole("button", { name: "Fast mode" })).toBeNull();
+  });
+
   it("renders Droid autonomy controls without OpenCode permission labels", () => {
     const onDroidPermissionModeChange = vi.fn();
     renderComposer({

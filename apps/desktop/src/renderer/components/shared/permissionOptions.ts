@@ -209,6 +209,98 @@ export function getPermissionOptions(opts: {
     ];
   }
 
+  // Cursor Agent CLI
+  if (opts.isCliWrapped && opts.family === "cursor") {
+    return [
+      {
+        value: "default",
+        label: "Agent",
+        shortDesc: "Cursor Agent's normal approval flow",
+        detail: "Starts Cursor Agent in its default coding mode. The CLI asks before terminal commands and follows Cursor's configured workspace policy.",
+        allows: ["File reads", "Edits through Cursor Agent", "Command proposals with approval"],
+        gates: ["Terminal commands unless allowed by Cursor policy"],
+        safety: "semi-auto",
+      },
+      {
+        value: "plan",
+        label: "Plan",
+        shortDesc: "Read-only planning mode",
+        detail: "Starts Cursor Agent with --mode plan for analysis and planning without edits.",
+        allows: ["Code search", "File reads", "Plan generation"],
+        blocks: ["File edits", "Command execution"],
+        safety: "safe",
+      },
+      {
+        value: "edit",
+        label: "Ask",
+        shortDesc: "Read-only Q&A mode",
+        detail: "Starts Cursor Agent with --mode ask for explanations and questions without code changes.",
+        allows: ["Questions", "Explanations", "Read-only context use"],
+        blocks: ["File edits", "Command execution"],
+        safety: "safe",
+      },
+      {
+        value: "full-auto",
+        label: "Force",
+        shortDesc: "Cursor --force / yolo mode",
+        detail: "Starts Cursor Agent with --force so commands are allowed unless explicitly denied by Cursor policy.",
+        allows: ["Edits and commands allowed by Cursor policy"],
+        warning: "Use only when you trust the lane and Cursor workspace policy.",
+        safety: "danger",
+      },
+    ];
+  }
+
+  // OpenCode CLI
+  if (opts.isCliWrapped && opts.family === "opencode") {
+    return [
+      {
+        value: "default",
+        label: "Ask",
+        shortDesc: "Ask before tool actions",
+        detail: "Starts OpenCode with an inline permission policy that asks before tool actions.",
+        allows: ["Reads and tool calls after approval"],
+        gates: ["Bash, edits, and other tools"],
+        safety: "safe",
+      },
+      {
+        value: "plan",
+        label: "Plan",
+        shortDesc: "OpenCode plan agent",
+        detail: "Starts OpenCode in its plan agent, which disables write, edit, patch, and bash tools by default.",
+        allows: ["Read-only analysis", "Plan generation"],
+        blocks: ["File writes", "Edits", "Patch application", "Shell commands"],
+        safety: "safe",
+      },
+      {
+        value: "edit",
+        label: "Edit",
+        shortDesc: "Allow edits; ask for the rest",
+        detail: "Starts OpenCode with edit permission allowed while other tool actions still ask.",
+        allows: ["File edits"],
+        gates: ["Bash and other tools"],
+        safety: "semi-auto",
+      },
+      {
+        value: "full-auto",
+        label: "Allow",
+        shortDesc: "Allow configured OpenCode tools",
+        detail: "Starts OpenCode with inline permission set to allow. OpenCode still respects explicit denies in agent or project configuration.",
+        allows: ["Configured OpenCode tools without prompts"],
+        warning: "Only use in trusted or isolated lanes.",
+        safety: "danger",
+      },
+      {
+        value: "config-toml",
+        label: "Config",
+        shortDesc: "Use OpenCode config",
+        detail: "No inline permission environment is passed. OpenCode uses opencode.json and your global configuration.",
+        allows: ["Determined by OpenCode config"],
+        safety: "custom",
+      },
+    ];
+  }
+
   // API and local models
   return [
     {

@@ -58,10 +58,10 @@ describe("ctoStateService", () => {
     expect(fs.existsSync(path.join(fixture.adeDir, "cto", "MEMORY.md"))).toBe(true);
     expect(fs.existsSync(path.join(fixture.adeDir, "cto", "CURRENT.md"))).toBe(true);
     expect(fs.existsSync(path.join(fixture.adeDir, "cto", "sessions.jsonl"))).toBe(false);
-    expect(buildAdeGitignore()).not.toContain("cto/identity.yaml");
-    expect(buildAdeGitignore()).toContain("cto/core-memory.json");
-    expect(buildAdeGitignore()).toContain("cto/CURRENT.md");
-    expect(buildAdeGitignore()).toContain("cto/openclaw-history.json");
+    expect(buildAdeGitignore()).toContain("!cto/identity.yaml");
+    expect(buildAdeGitignore()).not.toContain("cto/core-memory.json");
+    expect(buildAdeGitignore()).not.toContain("cto/CURRENT.md");
+    expect(buildAdeGitignore()).not.toContain("cto/openclaw-history.json");
 
     fixture.db.close();
   });

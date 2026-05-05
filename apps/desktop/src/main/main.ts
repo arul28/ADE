@@ -1033,7 +1033,7 @@ app.whenReady().then(async () => {
       projectLastActivatedAt.set(activeProjectRoot, Date.now());
       const activeCtx = projectContexts.get(activeProjectRoot);
       if (activeCtx) {
-        persistRecentProject(activeCtx.project, { recordLastProject: false });
+        persistRecentProject(activeCtx.project, { recordLastProject: false, preserveRecentOrder: true });
       }
       try {
         adeArtifactAllowedDir =
@@ -1286,6 +1286,7 @@ app.whenReady().then(async () => {
     ensureExclude,
     recordLastProject = true,
     recordRecent = true,
+    preserveRecentOrder = false,
     userSelectedProject = false,
   }: {
     projectRoot: string;
@@ -1293,6 +1294,7 @@ app.whenReady().then(async () => {
     ensureExclude: boolean;
     recordLastProject?: boolean;
     recordRecent?: boolean;
+    preserveRecentOrder?: boolean;
     userSelectedProject?: boolean;
   }): Promise<AppContext> => {
     // The .ade directory may exist from git (shared scaffold files like ade.yaml),
@@ -3527,6 +3529,7 @@ app.whenReady().then(async () => {
       {
         recordLastProject,
         recordRecent,
+        preserveRecentOrder,
       },
     );
     writeGlobalState(globalStatePath, state);
@@ -4338,6 +4341,7 @@ app.whenReady().then(async () => {
           ensureExclude: true,
           recordLastProject: false,
           recordRecent: true,
+          preserveRecentOrder: true,
           userSelectedProject: false,
         });
         projectContexts.set(normalizedRoot, ctx);
@@ -4515,7 +4519,7 @@ app.whenReady().then(async () => {
 
   const persistRecentProject = (
     project: ProjectInfo,
-    options: { recordLastProject?: boolean; recordRecent?: boolean } = {},
+    options: { recordLastProject?: boolean; recordRecent?: boolean; preserveRecentOrder?: boolean } = {},
   ): void => {
     const state = upsertRecentProject(
       readGlobalState(globalStatePath),
@@ -4538,6 +4542,10 @@ app.whenReady().then(async () => {
     try {
       const resolveStartedAt = Date.now();
       repoRoot = normalizeProjectRoot(await resolveRepoRoot(selectedPath)); // require a real git repo for onboarding.
+      const isKnownRecentProject = (readGlobalState(globalStatePath).recentProjects ?? []).some((entry) => {
+        if (typeof entry?.rootPath !== "string") return false;
+        return normalizeProjectRoot(entry.rootPath) === repoRoot;
+      });
       projectOpenLogger.info("project.open.repo_resolved", {
         selectedPath,
         repoRoot,
@@ -4549,7 +4557,7 @@ app.whenReady().then(async () => {
         setActiveProject(repoRoot);
         persistRecentProject(existing.project, {
           recordLastProject: true,
-          recordRecent: false,
+          preserveRecentOrder: isKnownRecentProject,
         });
         emitProjectChanged(existing.project);
         scheduleProjectContextRebalance();
@@ -4580,6 +4588,7 @@ app.whenReady().then(async () => {
             ensureExclude: true,
             recordLastProject: true,
             recordRecent: true,
+            preserveRecentOrder: isKnownRecentProject,
             userSelectedProject: true,
           });
           projectOpenLogger.info("project.open.context_initialized", {

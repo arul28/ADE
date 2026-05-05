@@ -119,6 +119,15 @@ Each work-log entry carries a `collapseKey` built from `turnId`,
 Streaming updates for the same tool call merge into the existing entry
 instead of appending a new row.
 
+`withLocalhostUrls(entry)` runs at every emit/merge step and stamps
+`entry.localUrls?: ChatLocalhostUrl[]` whenever the entry's
+command/output/args/result/label/detail mention a `localhost`,
+`127.0.0.1`, `0.0.0.0`, or `[::1]` URL. The extractor (also exported as
+`extractLocalhostUrlsFromText`) trims trailing punctuation, normalises
+the host to `localhost` for the canonical `href`, and dedupes by
+`href`. Downstream `ChatWorkLogBlock` consumes `entry.localUrls` to
+render the localhost-strip chips that route into the in-app browser.
+
 ## Text merging
 
 Adjacent `text` events merge via `shouldMergeTextRows()`:

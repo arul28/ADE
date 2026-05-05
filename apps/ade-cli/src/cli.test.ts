@@ -1500,6 +1500,83 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("attaches shell starts to the active ADE chat session from the environment", () => {
+    const previous = process.env.ADE_CHAT_SESSION_ID;
+    try {
+      process.env.ADE_CHAT_SESSION_ID = "chat-env-1";
+      const plan = buildCliPlan(["shell", "start", "--lane", "lane-1", "--command", "npm test"]);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") return;
+      expect(plan.steps[0]?.params).toMatchObject({
+        arguments: {
+          domain: "pty",
+          action: "create",
+          args: {
+            laneId: "lane-1",
+            chatSessionId: "chat-env-1",
+            startupCommand: "npm test",
+          },
+        },
+      });
+    } finally {
+      if (previous === undefined) delete process.env.ADE_CHAT_SESSION_ID;
+      else process.env.ADE_CHAT_SESSION_ID = previous;
+    }
+  });
+
+  it("lets an explicit shell chat session override the environment", () => {
+    const previous = process.env.ADE_CHAT_SESSION_ID;
+    try {
+      process.env.ADE_CHAT_SESSION_ID = "chat-env-1";
+      const plan = buildCliPlan([
+        "shell",
+        "start",
+        "--lane",
+        "lane-1",
+        "--chat-session",
+        "chat-explicit-1",
+        "--command",
+        "npm test",
+      ]);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") return;
+      expect(plan.steps[0]?.params).toMatchObject({
+        arguments: {
+          domain: "pty",
+          action: "create",
+          args: {
+            chatSessionId: "chat-explicit-1",
+          },
+        },
+      });
+    } finally {
+      if (previous === undefined) delete process.env.ADE_CHAT_SESSION_ID;
+      else process.env.ADE_CHAT_SESSION_ID = previous;
+    }
+  });
+
+  it("ignores a blank ADE chat session environment value for shell starts", () => {
+    const previous = process.env.ADE_CHAT_SESSION_ID;
+    try {
+      process.env.ADE_CHAT_SESSION_ID = "   ";
+      const plan = buildCliPlan(["shell", "start", "--lane", "lane-1", "--command", "npm test"]);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") return;
+      expect(plan.steps[0]?.params).toMatchObject({
+        arguments: {
+          domain: "pty",
+          action: "create",
+          args: expect.not.objectContaining({
+            chatSessionId: expect.anything(),
+          }),
+        },
+      });
+    } finally {
+      if (previous === undefined) delete process.env.ADE_CHAT_SESSION_ID;
+      else process.env.ADE_CHAT_SESSION_ID = previous;
+    }
+  });
+
   it("`ios` and `simulator` are accepted as aliases for `ios-sim`", () => {
     for (const alias of ["ios", "simulator"]) {
       const plan = buildCliPlan([alias, "devices"]);
@@ -1660,8 +1737,22 @@ describe("ADE CLI", () => {
       arguments: {
         domain: "built_in_browser",
         action: "navigate",
-        args: { url: "localhost:5173", newTab: true },
+        args: { url: "localhost:5173", newTab: true, openPanel: true },
       },
+    });
+
+    const panel = buildCliPlan(["browser", "panel"]);
+    expect(panel.kind).toBe("execute");
+    if (panel.kind !== "execute") return;
+    expect(panel.steps[0]?.params).toMatchObject({
+      arguments: { domain: "built_in_browser", action: "showPanel", args: {} },
+    });
+
+    const panelWithUrl = buildCliPlan(["browser", "panel", "--url", "localhost:5173"]);
+    expect(panelWithUrl.kind).toBe("execute");
+    if (panelWithUrl.kind !== "execute") return;
+    expect(panelWithUrl.steps[0]?.params).toMatchObject({
+      arguments: { domain: "built_in_browser", action: "showPanel", args: { url: "localhost:5173" } },
     });
 
     const targetedOpen = buildCliPlan(["browser", "open", "https://example.com", "--tab", "tab-1"]);
@@ -1671,7 +1762,40 @@ describe("ADE CLI", () => {
       arguments: {
         domain: "built_in_browser",
         action: "navigate",
-        args: { url: "https://example.com", tabId: "tab-1" },
+        args: { url: "https://example.com", tabId: "tab-1", openPanel: true },
+      },
+    });
+
+    const hiddenOpen = buildCliPlan(["browser", "open", "https://example.com", "--no-panel"]);
+    expect(hiddenOpen.kind).toBe("execute");
+    if (hiddenOpen.kind !== "execute") return;
+    expect(hiddenOpen.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "built_in_browser",
+        action: "navigate",
+        args: { url: "https://example.com", openPanel: false },
+      },
+    });
+
+    const openWithGenericArg = buildCliPlan(["browser", "open", "https://example.com", "--arg", "openPanel=false"]);
+    expect(openWithGenericArg.kind).toBe("execute");
+    if (openWithGenericArg.kind !== "execute") return;
+    expect(openWithGenericArg.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "built_in_browser",
+        action: "navigate",
+        args: { url: "https://example.com", openPanel: false },
+      },
+    });
+
+    const openFromGenericUrl = buildCliPlan(["browser", "open", "--arg", "url=https://example.com"]);
+    expect(openFromGenericUrl.kind).toBe("execute");
+    if (openFromGenericUrl.kind !== "execute") return;
+    expect(openFromGenericUrl.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "built_in_browser",
+        action: "navigate",
+        args: { url: "https://example.com", openPanel: true },
       },
     });
 
@@ -1682,7 +1806,7 @@ describe("ADE CLI", () => {
       arguments: {
         domain: "built_in_browser",
         action: "createTab",
-        args: { url: "https://example.com", activate: false },
+        args: { url: "https://example.com", activate: false, openPanel: true },
       },
     });
 
@@ -1690,7 +1814,7 @@ describe("ADE CLI", () => {
     expect(switchTab.kind).toBe("execute");
     if (switchTab.kind !== "execute") return;
     expect(switchTab.steps[0]?.params).toMatchObject({
-      arguments: { domain: "built_in_browser", action: "switchTab", args: { tabId: "tab-1" } },
+      arguments: { domain: "built_in_browser", action: "switchTab", args: { tabId: "tab-1", openPanel: true } },
     });
 
     const selectPoint = buildCliPlan(["browser", "select", "--x", "120", "--y", "420", "--no-screenshot"]);

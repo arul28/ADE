@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Terminal,
   ArrowRight,
@@ -9,11 +9,11 @@ import { useAppStore } from "../../state/appStore";
 import { AgentChatPane } from "../chat/AgentChatPane";
 import { getPermissionOptions, safetyColors } from "../shared/permissionOptions";
 import { LaneCombobox } from "./LaneCombobox";
-import { COLORS } from "../lanes/laneDesignTokens";
-import { buildTrackedCliLaunchCommand, type CliProvider } from "./cliLaunch";
-import { ClaudeLogo, CodexLogo } from "./ToolLogos";
+import { buildTrackedCliLaunchCommand, type CliProvider, type LaunchProfile } from "./cliLaunch";
+import { ClaudeLogo, CodexLogo, CursorAgentLogo, OpenCodeLogo } from "./ToolLogos";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
+import { DroidLogo } from "../shared/ProviderLogos";
 
 type WorkStartSurfaceProps = {
   draftKind: WorkDraftKind;
@@ -21,14 +21,40 @@ type WorkStartSurfaceProps = {
   onOpenChatSession: (session: AgentChatSession) => void | Promise<void>;
   onLaunchPtySession: (args: {
     laneId: string;
-    profile: "claude" | "codex" | "shell";
+    profile: LaunchProfile;
     title?: string;
     startupCommand?: string;
     command?: string;
     args?: string[];
+    env?: Record<string, string>;
     tracked?: boolean;
   }) => Promise<unknown>;
 };
+
+type CliProviderOption = {
+  id: CliProvider;
+  label: string;
+  shortLabel: string;
+  family: string;
+  defaultPermission: AgentChatPermissionMode;
+  Logo: React.FC<{ size?: number; className?: string }>;
+};
+
+const CLI_PROVIDER_OPTIONS: Record<CliProvider, CliProviderOption> = {
+  claude: { id: "claude", label: "Claude Code", shortLabel: "Claude", family: "anthropic", defaultPermission: "default", Logo: ClaudeLogo },
+  codex: { id: "codex", label: "Codex CLI", shortLabel: "Codex", family: "openai", defaultPermission: "default", Logo: CodexLogo },
+  cursor: { id: "cursor", label: "Cursor Agent CLI", shortLabel: "Cursor", family: "cursor", defaultPermission: "default", Logo: CursorAgentLogo },
+  droid: { id: "droid", label: "Factory Droid CLI", shortLabel: "Droid", family: "factory", defaultPermission: "edit", Logo: DroidLogo },
+  opencode: { id: "opencode", label: "OpenCode CLI", shortLabel: "OpenCode", family: "opencode", defaultPermission: "edit", Logo: OpenCodeLogo },
+};
+
+const CLI_PROVIDER_LIST: CliProviderOption[] = [
+  CLI_PROVIDER_OPTIONS.claude,
+  CLI_PROVIDER_OPTIONS.codex,
+  CLI_PROVIDER_OPTIONS.cursor,
+  CLI_PROVIDER_OPTIONS.droid,
+  CLI_PROVIDER_OPTIONS.opencode,
+];
 
 export function WorkStartSurface({
   draftKind,
@@ -74,20 +100,27 @@ export function WorkStartSurface({
   }, [globallySelectedLaneId, lanes, selectedLaneId, selectLaneGlobal]);
 
   const cliPermissionOptions = useMemo(
-    () =>
-      getPermissionOptions({
-        family: cliProvider === "claude" ? "anthropic" : "openai",
-        isCliWrapped: true,
-      }),
+    () => getPermissionOptions({
+      family: CLI_PROVIDER_OPTIONS[cliProvider].family,
+      isCliWrapped: true,
+    }),
     [cliProvider],
   );
 
   useEffect(() => {
-    const defaultPermission = "default";
     if (!cliPermissionOptions.some((option) => option.value === cliPermissionMode)) {
-      setCliPermissionMode(defaultPermission);
+      const providerDefault = CLI_PROVIDER_OPTIONS[cliProvider].defaultPermission;
+      const fallback = cliPermissionOptions.some((option) => option.value === providerDefault)
+        ? providerDefault
+        : cliPermissionOptions[0]?.value ?? "default";
+      setCliPermissionMode(fallback);
     }
-  }, [cliPermissionMode, cliPermissionOptions, cliProvider]);
+  }, [cliProvider, cliPermissionMode, cliPermissionOptions]);
+
+  const selectCliProvider = useCallback((provider: CliProvider) => {
+    setCliProvider(provider);
+    setCliPermissionMode(CLI_PROVIDER_OPTIONS[provider].defaultPermission);
+  }, []);
 
   useEffect(() => {
     if (draftKind !== "chat") {
@@ -114,10 +147,11 @@ export function WorkStartSurface({
       await onLaunchPtySession({
         laneId: selectedLaneId,
         profile: cliProvider,
-        title: cliProvider === "claude" ? "Claude CLI" : "Codex CLI",
+        title: CLI_PROVIDER_OPTIONS[cliProvider].label,
         startupCommand: launch.startupCommand,
-        command: launch.command,
+        ...(launch.command !== undefined ? { command: launch.command } : {}),
         args: launch.args,
+        ...(launch.env ? { env: launch.env } : {}),
       });
     } finally {
       setLaunchBusy(false);
@@ -197,23 +231,20 @@ export function WorkStartSurface({
           </div>
 
           {/* Provider toggle */}
-          <div className="flex w-full min-w-0 items-stretch gap-3">
-            {([
-              { id: "claude" as const, label: "Claude Code", Logo: ClaudeLogo },
-              { id: "codex" as const, label: "Codex CLI", Logo: CodexLogo },
-            ] as const).map((opt) => {
+          <div className="grid w-full min-w-0 grid-cols-5 gap-1.5">
+            {CLI_PROVIDER_LIST.map((opt) => {
               const active = cliProvider === opt.id;
               return (
                 <SmartTooltip
                   key={opt.id}
                   content={{ label: opt.label, description: `Use ${opt.label} as the CLI provider for this session.` }}
-                  wrapperClassName="min-w-0 flex-1"
-                  wrapperStyle={{ display: "flex", minWidth: 0 }}
+                  wrapperClassName="min-w-0"
+                  wrapperStyle={{ display: "block", minWidth: 0 }}
                 >
                   <button
                     type="button"
                     className={cn(
-                      "inline-flex h-full min-h-[2.5rem] w-full min-w-0 items-center justify-center gap-2 rounded-md px-3.5 py-2.5 text-[11px] leading-none transition-colors whitespace-nowrap",
+                      "inline-flex h-[3.25rem] w-full min-w-0 flex-col items-center justify-center gap-1 rounded-md px-1.5 py-2 text-[10px] leading-none transition-colors",
                       active ? "font-medium" : "font-normal",
                     )}
                     style={{
@@ -222,10 +253,10 @@ export function WorkStartSurface({
                       color: active ? "var(--color-fg)" : "var(--color-muted-fg)",
                       cursor: "pointer",
                     }}
-                    onClick={() => setCliProvider(opt.id)}
+                    onClick={() => selectCliProvider(opt.id)}
                   >
-                    <opt.Logo size={14} />
-                    {opt.label}
+                    <opt.Logo size={15} />
+                    <span className="block max-w-full truncate">{opt.shortLabel}</span>
                   </button>
                 </SmartTooltip>
               );
@@ -266,7 +297,7 @@ export function WorkStartSurface({
               disabled={!selectedLaneId || launchBusy}
               onClick={() => void launchCli()}
             >
-              Open {cliProvider === "claude" ? "Claude Code" : "Codex CLI"}
+              Open {CLI_PROVIDER_OPTIONS[cliProvider].label}
               <ArrowRight size={12} weight="regular" />
             </button>
           </SmartTooltip>

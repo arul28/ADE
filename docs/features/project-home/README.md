@@ -127,12 +127,20 @@ Main process (the substrate):
   validates the path stays inside the project root and points at a
   supported file, then writes `project.iconPath` into
   `.ade/ade.yaml`. `removeProjectIconOverride(rootPath)` writes
-  `iconPath: null`. Both helpers return the freshly resolved
-  `ProjectIcon` so the renderer can update the cache in one round
-  trip.
+  `iconPath: null`. `setProjectIconOverrideFromSelection(rootPath, srcPath)`
+  is the file-picker entry point: it validates the source file
+  (`.ico` / `.jpg` / `.jpeg` / `.png` / `.svg` / `.webp`, ≤ 10 MB),
+  copies the bytes into `.ade/project-icons/<contentHash>.<ext>` so the
+  icon travels with the repo, then writes `project.iconPath` to that
+  relative path. Every override write also runs
+  `ensureSharedAdeProjectScaffold(projectRoot)` so a project that was
+  previously local-only gets promoted to the shared scaffold the moment
+  the user picks a custom icon. All three helpers return the freshly
+  resolved `ProjectIcon` so the renderer can update the cache in one
+  round trip.
 
   `resolveProjectIcon(rootPath)` returns
-  `{ dataUrl, sourcePath, mimeType }`: any matched file under 1 MB is
+  `{ dataUrl, sourcePath, mimeType }`: any matched file under 10 MB is
   base64-encoded as a data URL (svg / ico / png / jpeg / webp), larger
   files report only `sourcePath`. Path traversal outside the project
   root is blocked end-to-end (probe paths run through
@@ -347,10 +355,16 @@ Each project gets a best-effort icon resolved by
 `IPC.projectResolveIcon` →
 `ipcMain.handle("ade.project.resolveIcon", …)`); the desktop TopBar
 project tab strip caches the result per `rootPath` in a module-local
-`Map` so a tab swap doesn't re-scan the disk. When the resolver finds
-no icon (or the file is over the 1 MB cap), the tab falls back to the
-`Folder` Phosphor glyph. Missing-project tabs skip the lookup
-entirely.
+`Map` so a tab swap doesn't re-scan the disk. The same TopBar derives
+a per-project accent colour from the resolved data URL by sampling the
+icon's dominant pixel through a tiny offscreen canvas
+(`deriveIconAccentColor`), then drives the project tab's active /
+hovered / focused background and border via the `--project-tab-accent`
+CSS variable in `index.css`; the colour is luminance-balanced and
+cached per data-URL (`PROJECT_ICON_ACCENT_CACHE_MAX = 48`). When the
+resolver finds no icon (or the file is over the 10 MB cap), the tab
+falls back to the `Folder` Phosphor glyph and the default accent.
+Missing-project tabs skip the lookup entirely.
 
 The TopBar tab also exposes a small icon-override dialog: clicking the
 icon button opens a Radix dialog with **Choose icon…** and **Reset to
@@ -358,14 +372,17 @@ auto-detected**. **Choose icon…** calls
 `window.ade.project.chooseIcon(rootPath)` which opens an Electron
 file picker (filtered to `ico`/`jpeg`/`jpg`/`png`/`svg`/`webp`); the
 selected path is validated (must live inside the project root and be a
-supported image type), persisted to `.ade/ade.yaml` under
-`project.iconPath`, and the freshly resolved icon is returned to the
-renderer. **Reset to auto-detected** calls
-`window.ade.project.removeIcon(rootPath)`, which writes
-`project.iconPath: null` so the project deliberately shows the
+supported image type, ≤ 10 MB), copied into
+`.ade/project-icons/<contentHash>.<ext>` so the icon ships with the
+repo, persisted to `.ade/ade.yaml` under `project.iconPath`, and the
+freshly resolved icon is returned to the renderer. **Reset to
+auto-detected** calls `window.ade.project.removeIcon(rootPath)`, which
+writes `project.iconPath: null` so the project deliberately shows the
 fallback glyph (use the file picker to pick a new one to re-enable
 detection or override). The override is committed to `.ade/ade.yaml`
-(shared, committed) so collaborators see the same project icon.
+(shared, committed) so collaborators see the same project icon, and
+the `.ade/project-icons/` directory is part of the tracked shared
+scaffold so the actual bytes travel with the override.
 
 The mobile companion gets the icon through a dedicated path: the host's
 `mobileProjectSummaryForContext` / `mobileProjectSummaryForRecent` in

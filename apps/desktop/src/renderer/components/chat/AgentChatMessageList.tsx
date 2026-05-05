@@ -3280,6 +3280,8 @@ type EventRowProps = {
   onOpenWorkspacePath?: (path: string | WorkspacePathLocation) => void;
   onNavigateSuggestion?: (suggestion: OperatorNavigationSuggestion) => void;
   onReviewChanges?: () => void;
+  onInsertDraft?: (text: string) => void;
+  onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
   respondingApprovalIds?: Set<string>;
   pendingApprovalIds?: Set<string>;
   resolvedInputStates?: Map<string, PendingInputResolution>;
@@ -3301,6 +3303,8 @@ const EventRow = React.memo(function EventRow({
   onOpenWorkspacePath,
   onNavigateSuggestion,
   onReviewChanges,
+  onInsertDraft,
+  onRevealChatTerminal,
   respondingApprovalIds,
   pendingApprovalIds,
   resolvedInputStates,
@@ -3329,6 +3333,9 @@ const EventRow = React.memo(function EventRow({
               summary={envelope.event.summary}
               onNavigateSuggestion={onNavigateSuggestion}
               onUndoChanges={onReviewChanges}
+              onInsertDraft={onInsertDraft}
+              onRevealChatTerminal={onRevealChatTerminal}
+              sessionId={sessionId}
               animate={workLogAnimate}
             />
           </div>
@@ -3503,6 +3510,8 @@ export function AgentChatMessageList({
   respondingApprovalIds,
   pendingApprovalIds,
   sessionId,
+  onInsertDraft,
+  onRevealChatTerminal,
   sessionEnded = false,
 }: {
   events: AgentChatEventEnvelope[];
@@ -3513,6 +3522,8 @@ export function AgentChatMessageList({
   surfaceProfile?: ChatSurfaceProfile;
   assistantLabel?: string;
   onOpenWorkspacePath?: (path: string, laneId?: string | null) => void;
+  onInsertDraft?: (text: string) => void;
+  onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
   respondingApprovalIds?: Set<string>;
   pendingApprovalIds?: Set<string>;
   sessionId?: string | null;
@@ -3922,6 +3933,8 @@ export function AgentChatMessageList({
           onOpenWorkspacePath={openWorkspacePath}
           onNavigateSuggestion={handleNavigateSuggestion}
           onReviewChanges={handleReviewChanges}
+          onInsertDraft={onInsertDraft}
+          onRevealChatTerminal={onRevealChatTerminal}
           respondingApprovalIds={respondingApprovalIds}
           pendingApprovalIds={pendingApprovalIds}
           resolvedInputStates={resolvedInputStates}
@@ -3947,13 +3960,15 @@ export function AgentChatMessageList({
         onOpenWorkspacePath={openWorkspacePath}
         onNavigateSuggestion={handleNavigateSuggestion}
         onReviewChanges={handleReviewChanges}
+        onInsertDraft={onInsertDraft}
+        onRevealChatTerminal={onRevealChatTerminal}
         respondingApprovalIds={respondingApprovalIds}
         pendingApprovalIds={pendingApprovalIds}
         resolvedInputStates={resolvedInputStates}
         sessionId={sessionId}
       />
     );
-  }, [activeTurnId, assistantLabel, surfaceMode, surfaceProfile, groupedRows, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, sessionId, sessionEnded]);
+  }, [activeTurnId, assistantLabel, surfaceMode, surfaceProfile, groupedRows, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onInsertDraft, onRevealChatTerminal, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, sessionId, sessionEnded]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {

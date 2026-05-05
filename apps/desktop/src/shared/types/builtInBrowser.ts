@@ -20,6 +20,7 @@ export type BuiltInBrowserNavigateArgs = {
   url: string;
   tabId?: string | null;
   newTab?: boolean;
+  openPanel?: boolean;
 };
 
 export type BuiltInBrowserTab = {
@@ -49,11 +50,18 @@ export type BuiltInBrowserStatus = {
 
 export type BuiltInBrowserTabArgs = {
   tabId: string;
+  openPanel?: boolean;
 };
 
 export type BuiltInBrowserCreateTabArgs = {
   url?: string | null;
   activate?: boolean;
+  openPanel?: boolean;
+};
+
+export type BuiltInBrowserOpenPanelArgs = {
+  url?: string | null;
+  tabId?: string | null;
 };
 
 export type BuiltInBrowserSelectPointArgs = {
@@ -91,6 +99,13 @@ export type BuiltInBrowserSelectResult = {
 
 export type BuiltInBrowserEventPayload =
   | { type: "status"; status: BuiltInBrowserStatus }
+  | {
+      type: "open-request";
+      status: BuiltInBrowserStatus;
+      url: string | null;
+      tabId: string | null;
+      requestedAt: string;
+    }
   | { type: "selection"; item: BuiltInBrowserContextItem }
   | { type: "selection-cleared"; item: null; clearedAt: string }
   | { type: "error"; message: string; occurredAt: string };

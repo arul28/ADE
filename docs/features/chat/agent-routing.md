@@ -148,18 +148,37 @@ values into the Codex app-server wire format at the JSON-RPC boundary:
 `on-request` -> `onRequest`, `untrusted` -> `unlessTrusted`,
 `on-failure` -> `onFailure`, and `workspace-write` -> `workspaceWrite`.
 Every `thread/start` and `thread/resume` call passes `{ model, cwd,
-reasoningEffort, ...codexPolicyArgs, persistExtendedHistory: true }`.
-The return envelope is consumed by `applyCodexEffectiveThreadState`,
-which normalizes `approvalPolicy`, `sandbox` (including the camel-case
-aliases `readOnly` / `workspaceWrite` / `dangerFullAccess` that the
-server emits), and `reasoningEffort`. That snapshot becomes the session
-state, so the picker chips always show what the runtime actually
-applied. On resume, the persisted chat state is re-written after
-normalization instead of being re-copied from the on-disk file — the
-server's reading of `.codex/config.toml` wins over a stale persisted
-pair. Turns use the Codex-native `effort` key
-(`turn/start({ threadId, input, effort? })`) instead of the lifecycle
-`reasoningEffort` name.
+reasoningEffort, ...codexPolicyArgs, ...codexServiceTierArgs(session),
+persistExtendedHistory: true }`. The return envelope is consumed by
+`applyCodexEffectiveThreadState`, which normalizes `approvalPolicy`,
+`sandbox` (including the camel-case aliases `readOnly` /
+`workspaceWrite` / `dangerFullAccess` that the server emits), and
+`reasoningEffort`. That snapshot becomes the session state, so the
+picker chips always show what the runtime actually applied. On resume,
+the persisted chat state is re-written after normalization instead of
+being re-copied from the on-disk file — the server's reading of
+`.codex/config.toml` wins over a stale persisted pair. Turns use the
+Codex-native `effort` key (`turn/start({ threadId, input, effort?,
+serviceTier? })`) instead of the lifecycle `reasoningEffort` name.
+
+#### Codex service tiers (Fast Mode)
+
+`ModelDescriptor.serviceTiers?: string[]` advertises the optional
+service tiers a model accepts (today only `"fast"`). The composer's
+**Fast** toggle (a yellow Lightning chip next to the model picker)
+shows whenever `modelSupportsFastMode(descriptor)` is true for the
+selected model and the session provider is Codex. `AgentChatSession`
+carries `codexFastMode?: boolean` and the chat adapter forwards it as
+`serviceTier: "fast" | null` on every `turn/start` and `thread/start`
+JSON-RPC call (an explicit `null` clears any app-server default). The
+flag persists with the session, survives reload through
+`PersistedChatState`, and is forwarded to remote devices through the
+sync command service. Parallel-model rows track Fast mode per slot
+(`ParallelModelRowState.codexFastMode`) so launching multiple Codex
+runs side-by-side can mix Fast and Standard turns. The discovery layer
+populates `serviceTiers` from app-server-reported `additionalSpeedTiers`
+/ `serviceTiers` rows; the static registry pre-marks the GPT 5.4 / 5.5
+Codex CLI entries.
 
 Codex plan mode uses the native app-server planning flow. ADE passes its
 runtime guidance as an ordinary system-context input item and keeps

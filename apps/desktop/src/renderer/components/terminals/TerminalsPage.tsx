@@ -437,7 +437,13 @@ export function TerminalsPage() {
       setWorkSidebarTab("browser");
     };
     window.addEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, openBrowserSidebar);
-    return () => window.removeEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, openBrowserSidebar);
+    const unsubscribeBrowserEvents = window.ade?.builtInBrowser?.onEvent?.((event) => {
+      if (event.type === "open-request") openBrowserSidebar();
+    }) ?? null;
+    return () => {
+      window.removeEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, openBrowserSidebar);
+      unsubscribeBrowserEvents?.();
+    };
   }, [setViewMode, setWorkSidebarTab]);
 
   const expandSessionsPane = useCallback(() => {

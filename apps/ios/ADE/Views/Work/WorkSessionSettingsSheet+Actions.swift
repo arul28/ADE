@@ -47,6 +47,8 @@ extension WorkSessionSettingsSheet {
     let normalizedReasoning = selectedReasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
     let reasoningPayload = normalizedReasoning.isEmpty ? "" : normalizedReasoning
     let reasoningChanged = reasoningPayload != resolvedInitialReasoningEffort
+    let effectiveCodexFastMode = supportsCodexFastModeToggle ? selectedCodexFastMode : false
+    let codexFastModeChanged = summary.provider == "codex" && effectiveCodexFastMode != resolvedInitialCodexFastMode
     let initialRuntimeMode = workInitialRuntimeMode(summary)
     let initialCursorModeId = workInitialCursorModeId(summary)
 
@@ -107,7 +109,7 @@ extension WorkSessionSettingsSheet {
       break
     }
 
-    guard titleChanged || modelChanged || reasoningChanged || runtimeChanged else {
+    guard titleChanged || modelChanged || reasoningChanged || runtimeChanged || codexFastModeChanged else {
       dismiss()
       return
     }
@@ -119,6 +121,7 @@ extension WorkSessionSettingsSheet {
         title: titleChanged ? trimmedTitle : nil,
         modelId: modelChanged ? selectedModelId : nil,
         reasoningEffort: reasoningChanged ? reasoningPayload : nil,
+        codexFastMode: codexFastModeChanged ? effectiveCodexFastMode : nil,
         permissionMode: permissionMode,
         interactionMode: interactionMode,
         claudePermissionMode: claudePermissionMode,

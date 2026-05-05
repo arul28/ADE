@@ -16,7 +16,9 @@ import {
   buildTrackedCliResumeCommand,
   defaultResumeCommandForTool,
   normalizeResumeCommand,
+  parseTrackedCliLaunchConfig,
   parseTrackedCliResumeCommand,
+  providerFromTool,
 } from "../../utils/terminalSessionSignals";
 
 type SessionRow = {
@@ -72,7 +74,7 @@ const SESSION_COLUMNS = `
 `;
 
 function isResumeProvider(value: unknown): value is TerminalResumeProvider {
-  return value === "claude" || value === "codex";
+  return value === "claude" || value === "codex" || value === "cursor" || value === "droid" || value === "opencode";
 }
 
 function normalizeResumeMetadata(raw: unknown): TerminalResumeMetadata | null {
@@ -136,20 +138,12 @@ function parseLaunchMetadataFromCurrentSession(
   const currentMetadata = currentSession.resumeMetadata ?? null;
   if (currentMetadata) return currentMetadata;
 
-  const fallbackTool = currentSession.toolType;
-  let provider: "claude" | "codex" | null;
-  if (fallbackTool === "claude" || fallbackTool === "claude-orchestrated") {
-    provider = "claude";
-  } else if (fallbackTool === "codex" || fallbackTool === "codex-orchestrated") {
-    provider = "codex";
-  } else {
-    provider = null;
-  }
+  const provider = providerFromTool(currentSession.toolType);
   if (!provider) return null;
 
   return {
     provider,
-    targetKind: provider === "claude" ? "session" : "thread",
+    targetKind: provider === "codex" ? "thread" : "session",
     targetId: null,
     launch: {},
   };
@@ -182,6 +176,9 @@ export function createSessionService({ db }: { db: AdeDb }) {
       "run-shell",
       "claude",
       "codex",
+      "cursor-cli",
+      "droid",
+      "opencode",
       "claude-orchestrated",
       "codex-orchestrated",
       "opencode-orchestrated",
@@ -559,12 +556,18 @@ export function createSessionService({ db }: { db: AdeDb }) {
       const preferredToolType = currentSession?.toolType ?? null;
       const parsed = parseTrackedCliResumeCommand(resumeCommand, preferredToolType);
       const currentMetadata = currentSession?.resumeMetadata ?? null;
+      const launchFromResumeCommand = typeof resumeCommand === "string"
+        ? parseTrackedCliLaunchConfig(resumeCommand, preferredToolType)
+        : null;
       const nextMetadata = parsed
         ? {
             provider: parsed.provider,
-            targetKind: parsed.provider === "claude" ? "session" : "thread",
+            targetKind: parsed.provider === "codex" ? "thread" : "session",
             targetId: parsed.targetId ?? currentMetadata?.targetId ?? null,
-            launch: currentMetadata?.launch ?? parseLaunchMetadataFromCurrentSession(currentSession)?.launch ?? {},
+            launch: currentMetadata?.launch
+              ?? launchFromResumeCommand
+              ?? parseLaunchMetadataFromCurrentSession(currentSession)?.launch
+              ?? {},
           } satisfies TerminalResumeMetadata
         : currentMetadata;
       const next = nextMetadata

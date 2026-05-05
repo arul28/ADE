@@ -6,6 +6,7 @@ import {
   collapseChatTranscriptEvents,
   collapseChatTranscriptEventsIncremental,
   deriveTurnDividerData,
+  extractLocalhostUrlsFromText,
   eventHasPayload,
   formatStructuredValue,
   groupConsecutiveWorkLogRows,
@@ -19,6 +20,19 @@ function groupEvents(events: AgentChatEventEnvelope[]) {
 }
 
 describe("chatTranscriptRows", () => {
+  it("extracts and normalizes localhost URLs from tool output text", () => {
+    expect(
+      extractLocalhostUrlsFromText("Local: http://localhost:5173/\nNetwork: http://0.0.0.0:5173/"),
+    ).toEqual([
+      {
+        url: "http://localhost:5173/",
+        href: "http://localhost:5173/",
+        host: "localhost",
+        port: 5173,
+      },
+    ]);
+  });
+
   it("keeps Claude reasoning blocks split across tool boundaries", () => {
     const grouped = groupEvents([
       {
@@ -320,6 +334,79 @@ describe("chatTranscriptRows", () => {
     expect(rows[0]!.event.entry.output).toBe("running\ncompleted");
     expect(rows[1]!.event.entry.status).toBe("completed");
     expect(rows[1]!.event.entry.changedFiles?.[0]?.diff).toContain("+ const second = true;");
+  });
+
+  it("carries detected localhost URLs through merged command output deltas", () => {
+    const rows = collapseChatTranscriptEvents([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "command",
+          command: "npm run dev",
+          cwd: "/Users/admin/project",
+          output: "starting vite\n",
+          itemId: "command-1",
+          turnId: "turn-1",
+          status: "running",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "command",
+          command: "npm run dev",
+          cwd: "/Users/admin/project",
+          output: "Local: http://127.0.0.1:5173/\n",
+          itemId: "command-1",
+          turnId: "turn-1",
+          status: "running",
+        },
+      },
+    ]);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.event.type).toBe("work_log_entry");
+    if (rows[0]!.event.type !== "work_log_entry") {
+      throw new Error("Expected a work log entry");
+    }
+    expect(rows[0]!.event.entry.localUrls).toEqual([
+      {
+        url: "http://127.0.0.1:5173/",
+        href: "http://localhost:5173/",
+        host: "127.0.0.1",
+        port: 5173,
+      },
+    ]);
+  });
+
+  it("detects localhost URLs from structured tool results, not only command events", () => {
+    const rows = collapseChatTranscriptEvents([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "tool_result",
+          tool: "functions.exec_command",
+          result: {
+            stdout: "server ready at http://localhost:3000/",
+          },
+          itemId: "tool-1",
+          turnId: "turn-1",
+          status: "completed",
+        },
+      },
+    ]);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.event.type).toBe("work_log_entry");
+    if (rows[0]!.event.type !== "work_log_entry") {
+      throw new Error("Expected a work log entry");
+    }
+    expect(rows[0]!.event.entry.localUrls?.map((url) => url.href)).toEqual([
+      "http://localhost:3000/",
+    ]);
   });
 
   it("groups mixed tool activity into one shared work-log block", () => {

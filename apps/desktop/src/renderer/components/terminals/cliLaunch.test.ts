@@ -47,6 +47,12 @@ describe("defaultTrackedCliStartupCommand", () => {
   it("returns 'codex --no-alt-screen' for codex provider", () => {
     expect(defaultTrackedCliStartupCommand("codex")).toBe("codex --no-alt-screen");
   });
+
+  it("returns launch binaries for the other tracked CLI providers", () => {
+    expect(defaultTrackedCliStartupCommand("cursor")).toBe("cursor-agent");
+    expect(defaultTrackedCliStartupCommand("droid")).toBe("droid");
+    expect(defaultTrackedCliStartupCommand("opencode")).toBe("opencode");
+  });
 });
 
 describe("buildTrackedCliStartupCommand", () => {
@@ -147,13 +153,44 @@ describe("buildTrackedCliStartupCommand", () => {
     });
   });
 
+  describe("additional CLI providers", () => {
+    it("launches Cursor through a pre-created resumable chat", () => {
+      const launch = buildTrackedCliLaunchCommand({ provider: "cursor", permissionMode: "plan" });
+      expect(launch.command).toBeUndefined();
+      expect(launch.startupCommand).toContain("cursor-agent create-chat");
+      expect(launch.startupCommand).toContain("cursor-agent --mode plan --resume \"$ADE_CURSOR_CHAT_ID\"");
+      expect(launch.startupCommand).toContain("Resume with cursor-agent --resume");
+    });
+
+    it("launches Droid with process-local autonomy settings", () => {
+      const launch = buildTrackedCliLaunchCommand({ provider: "droid", permissionMode: "edit" });
+      expect(launch.command).toBeUndefined();
+      expect(launch.startupCommand).toContain("ade-droid-settings");
+      expect(launch.startupCommand).toContain("\\\"autonomyLevel\\\":\\\"low\\\"");
+      expect(launch.startupCommand).toContain("droid --settings \"$ADE_DROID_SETTINGS\"");
+    });
+
+    it("launches OpenCode with inline permission config", () => {
+      const launch = buildTrackedCliLaunchCommand({ provider: "opencode", permissionMode: "full-auto" });
+      expect(launch.command).toBe("opencode");
+      expect(launch.env?.OPENCODE_CONFIG_CONTENT).toBe("{\"permission\":\"allow\"}");
+      expect(launch.startupCommand).toContain("OPENCODE_CONFIG_CONTENT=\"{\\\"permission\\\":\\\"allow\\\"}\" opencode");
+    });
+  });
+
   it("covers all AgentChatPermissionMode values for both providers", () => {
     const modes = ["default", "plan", "edit", "full-auto", "config-toml"] as const satisfies readonly AgentChatPermissionMode[];
     for (const mode of modes) {
       const claude = buildTrackedCliStartupCommand({ provider: "claude", permissionMode: mode });
       const codex = buildTrackedCliStartupCommand({ provider: "codex", permissionMode: mode });
+      const cursor = buildTrackedCliStartupCommand({ provider: "cursor", permissionMode: mode });
+      const droid = buildTrackedCliStartupCommand({ provider: "droid", permissionMode: mode });
+      const opencode = buildTrackedCliStartupCommand({ provider: "opencode", permissionMode: mode });
       expect(claude.length).toBeGreaterThan(0);
       expect(codex.length).toBeGreaterThan(0);
+      expect(cursor.length).toBeGreaterThan(0);
+      expect(droid.length).toBeGreaterThan(0);
+      expect(opencode.length).toBeGreaterThan(0);
     }
   });
 });
@@ -173,6 +210,20 @@ describe("tracked CLI resume helpers", () => {
       targetId: "thread-99",
       launch: { permissionMode: "edit" },
     })).toBe("codex --no-alt-screen --sandbox workspace-write --ask-for-approval untrusted resume thread-99");
+
+    expect(buildTrackedCliResumeCommand({
+      provider: "cursor",
+      targetKind: "session",
+      targetId: "chat-99",
+      launch: { permissionMode: "full-auto" },
+    })).toBe("cursor-agent --force --resume chat-99");
+
+    expect(buildTrackedCliResumeCommand({
+      provider: "opencode",
+      targetKind: "session",
+      targetId: "ses_99",
+      launch: { permissionMode: "plan" },
+    })).toContain("opencode --agent plan --session ses_99");
   });
 
   it("falls back to the provider resume picker when the concrete target is missing", () => {
@@ -189,6 +240,20 @@ describe("tracked CLI resume helpers", () => {
       targetId: null,
       launch: { permissionMode: "full-auto" },
     })).toBe("codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox resume");
+
+    expect(buildTrackedCliResumeCommand({
+      provider: "cursor",
+      targetKind: "session",
+      targetId: null,
+      launch: { permissionMode: "plan" },
+    })).toBe("cursor-agent --mode plan --continue");
+
+    expect(buildTrackedCliResumeCommand({
+      provider: "droid",
+      targetKind: "session",
+      targetId: null,
+      launch: { permissionMode: "default" },
+    })).toContain("droid --settings \"$ADE_DROID_SETTINGS\" --resume");
   });
 
   it("prefers structured metadata over the legacy resume command string", () => {

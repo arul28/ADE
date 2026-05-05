@@ -5,6 +5,10 @@ import { createBuiltInBrowserService } from "./builtInBrowserService";
 const fakes = vi.hoisted(() => {
   type DebuggerHandler = (...args: unknown[]) => void;
   type WindowOpenHandler = (details: { url: string }) => { action: string };
+  type BeforeSendHeadersHandler = (
+    details: { requestHeaders: Record<string, string | string[] | undefined> },
+    callback: (response: { requestHeaders: Record<string, string | string[] | undefined> }) => void,
+  ) => void;
 
   class FakeDebugger {
     attached = false;
@@ -35,6 +39,7 @@ const fakes = vi.hoisted(() => {
     id = Math.floor(Math.random() * 1_000_000);
     debugger = new FakeDebugger();
     audioMutedCalls: boolean[] = [];
+    userAgentCalls: string[] = [];
     currentUrl = "";
     private listeners: Record<string, Array<(...args: unknown[]) => void>> = {};
     private windowOpenHandler: WindowOpenHandler | null = null;
@@ -58,6 +63,9 @@ const fakes = vi.hoisted(() => {
     getTitle = (): string => "";
     setAudioMuted = (muted: boolean): void => {
       this.audioMutedCalls.push(muted);
+    };
+    setUserAgent = (userAgent: string): void => {
+      this.userAgentCalls.push(userAgent);
     };
     setWindowOpenHandler = (handler: WindowOpenHandler): void => {
       this.windowOpenHandler = handler;
@@ -83,6 +91,7 @@ const fakes = vi.hoisted(() => {
   // Track the most recently constructed FakeDebugger so tests can wire sendCommand impls.
   const debuggerInstances: FakeDebugger[] = [];
   const webContentsInstances: FakeWebContents[] = [];
+  const beforeSendHeadersHandlers: BeforeSendHeadersHandler[] = [];
   const OriginalFakeDebugger = FakeDebugger;
   class TrackedFakeDebugger extends OriginalFakeDebugger {
     constructor() {
@@ -117,6 +126,17 @@ const fakes = vi.hoisted(() => {
     debuggerInstances,
     webContentsInstances,
     openExternal: vi.fn(async (_url: string) => undefined),
+    beforeSendHeadersHandlers,
+    dispatchBeforeSendHeaders: (
+      requestHeaders: Record<string, string | string[] | undefined>,
+    ): { requestHeaders: Record<string, string | string[] | undefined> } | null => {
+      let response: { requestHeaders: Record<string, string | string[] | undefined> } | null = null;
+      const handler = beforeSendHeadersHandlers.at(-1);
+      handler?.({ requestHeaders }, (next) => {
+        response = next;
+      });
+      return response as { requestHeaders: Record<string, string | string[] | undefined> } | null;
+    },
     setSendCommand: (impl: (method: string, params?: Record<string, unknown>) => Promise<unknown>) => {
       activeImpl = impl;
     },
@@ -129,13 +149,26 @@ const fakes = vi.hoisted(() => {
     clearWebContentsInstances: () => {
       webContentsInstances.length = 0;
     },
+    clearBeforeSendHeadersHandlers: () => {
+      beforeSendHeadersHandlers.length = 0;
+    },
   };
 });
 
 vi.mock("electron", () => ({
   WebContentsView: fakes.WebContentsView,
   nativeImage: { createFromDataURL: () => ({ getSize: () => ({ width: 0, height: 0 }) }) },
-  session: { fromPartition: () => ({ setPermissionCheckHandler: () => {}, setPermissionRequestHandler: () => {} }) },
+  session: {
+    fromPartition: () => ({
+      webRequest: {
+        onBeforeSendHeaders: (handler: unknown) => {
+          fakes.beforeSendHeadersHandlers.push(handler as Parameters<typeof fakes.beforeSendHeadersHandlers.push>[0]);
+        },
+      },
+      setPermissionCheckHandler: () => {},
+      setPermissionRequestHandler: () => {},
+    }),
+  },
   shell: { openExternal: fakes.openExternal },
   webContents: { fromId: () => null },
 }));
@@ -178,6 +211,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
   beforeEach(() => {
     collector = captureStatusEvents();
     fakes.clearWebContentsInstances();
+    fakes.clearBeforeSendHeadersHandlers();
     fakes.openExternal.mockClear();
   });
 
@@ -279,20 +313,18 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(wc?.audioMutedCalls.at(-1)).toBe(true);
   });
 
-  it("opens Google account sign-in externally without creating an ADE browser tab", async () => {
+  it("keeps Google account sign-in inside ADE browser tabs", async () => {
     const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
     const googleAuthUrl = "https://accounts.google.com/o/oauth2/v2/auth?client_id=test";
 
     await service.navigate({ url: googleAuthUrl, newTab: true });
 
-    expect(fakes.openExternal).toHaveBeenCalledWith(googleAuthUrl);
-    expect(service.getStatus().tabs).toEqual([]);
-    expect(collector.events.some((event) => (
-      event.type === "error" && /system browser/i.test(event.message)
-    ))).toBe(true);
+    expect(fakes.openExternal).not.toHaveBeenCalled();
+    expect(service.getStatus().tabs).toHaveLength(1);
+    expect(service.getStatus().url).toBe(googleAuthUrl);
   });
 
-  it("blocks in-page Google sign-in navigations and opens them externally", async () => {
+  it("allows in-page Google sign-in navigations", async () => {
     const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
     service.attachToWindow(fakeBrowserWindow() as unknown as Parameters<typeof service.attachToWindow>[0]);
     await service.createTab({ url: "https://example.test", activate: true });
@@ -303,9 +335,75 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     const wc = fakes.webContentsInstances[0];
     wc?.emit("will-navigate", event, googleSignInUrl);
 
-    expect(event.preventDefault).toHaveBeenCalled();
-    expect(fakes.openExternal).toHaveBeenCalledWith(googleSignInUrl);
-    expect(service.getStatus().url).toBe("https://example.test/");
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(fakes.openExternal).not.toHaveBeenCalled();
+  });
+
+  it("uses a desktop Chrome user agent for ADE browser requests", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    await service.createTab({ url: "https://example.test", activate: true });
+
+    const wc = fakes.webContentsInstances[0];
+    expect(wc?.userAgentCalls.at(-1)).toMatch(/ Chrome\/\d+\.\d+\.\d+\.\d+ /);
+    expect(wc?.userAgentCalls.at(-1)).not.toMatch(/Electron|ADE/i);
+
+    const response = fakes.dispatchBeforeSendHeaders({
+      "User-Agent": "Electron/30",
+      "user-agent": "ADE/Electron",
+      "Sec-CH-UA": "\"Electron\";v=\"30\"",
+      "sec-ch-ua": "\"ADE\";v=\"1\"",
+    });
+
+    expect(response?.requestHeaders["User-Agent"]).toMatch(/ Chrome\/\d+\.\d+\.\d+\.\d+ /);
+    expect(response?.requestHeaders["User-Agent"]).not.toMatch(/Electron|ADE/i);
+    expect(response?.requestHeaders["user-agent"]).toBeUndefined();
+    expect(response?.requestHeaders["Sec-CH-UA"]).toContain("Google Chrome");
+    expect(response?.requestHeaders["Sec-CH-UA"]).not.toContain("Electron");
+    expect(response?.requestHeaders["sec-ch-ua"]).toBeUndefined();
+  });
+
+  it("emits an open request so the Work sidebar can reveal the browser panel", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    await service.createTab({ url: "https://example.test", activate: true, openPanel: true });
+
+    const openEvent = collector.events.find((event) => event.type === "open-request");
+    expect(openEvent).toMatchObject({
+      type: "open-request",
+      url: "https://example.test/",
+      tabId: service.getStatus().activeTabId,
+    });
+  });
+
+  it("showPanel can navigate to a URL before opening the panel", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+
+    await service.showPanel({ url: "localhost:5173" });
+
+    expect(service.getStatus().tabs).toHaveLength(1);
+    expect(service.getStatus().url).toBe("http://localhost:5173/");
+    const openEvent = collector.events.findLast((event) => event.type === "open-request");
+    expect(openEvent).toMatchObject({
+      type: "open-request",
+      url: "http://localhost:5173/",
+      tabId: service.getStatus().activeTabId,
+    });
+  });
+
+  it("showPanel can switch to a requested tab before opening the panel", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    await service.createTab({ url: "https://first.test", activate: true });
+    const firstTabId = service.getStatus().activeTabId;
+    await service.createTab({ url: "https://second.test", activate: true });
+    expect(service.getStatus().activeTabId).not.toBe(firstTabId);
+
+    await service.showPanel({ tabId: firstTabId });
+
+    expect(service.getStatus().activeTabId).toBe(firstTabId);
+    const openEvent = collector.events.findLast((event) => event.type === "open-request");
+    expect(openEvent).toMatchObject({
+      type: "open-request",
+      tabId: firstTabId,
+    });
   });
 });
 
@@ -317,6 +415,7 @@ describe("createBuiltInBrowserService — switchTab and navigate inspect/selecti
     fakes.resetSendCommand();
     fakes.clearDebuggerInstances();
     fakes.clearWebContentsInstances();
+    fakes.clearBeforeSendHeadersHandlers();
     fakes.openExternal.mockClear();
   });
 

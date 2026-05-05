@@ -5,8 +5,10 @@ import YAML from "yaml";
 
 import type { ProjectIcon } from "../../../shared/types";
 import { isWithinDir, resolvePathWithinRoot } from "../shared/utils";
+import { ensureSharedAdeProjectScaffold } from "./adeProjectService";
 
-const ICON_MAX_BYTES = 1024 * 1024;
+const ICON_MAX_BYTES = 10 * 1024 * 1024;
+const ICON_MAX_LABEL = "10 MB";
 const SUPPORTED_ICON_EXTENSIONS = new Set([".svg", ".ico", ".png", ".jpg", ".jpeg", ".webp"]);
 const IMPORTED_PROJECT_ICON_DIR = ".ade/project-icons";
 
@@ -583,6 +585,7 @@ function mimeTypeForIconPath(filePath: string): string | null {
 }
 
 function writeProjectIconPathOverride(projectRoot: string, iconPath: string | null): void {
+  ensureSharedAdeProjectScaffold(projectRoot);
   const sharedConfigPath = path.join(projectRoot, ".ade", "ade.yaml");
   let config: Record<string, unknown> = {};
   try {
@@ -636,7 +639,7 @@ function assertUsableProjectIconFile(iconPath: string): void {
     throw new Error("Project icon must be an ico, jpg, png, svg, or webp file.");
   }
   if (stat.size > ICON_MAX_BYTES) {
-    throw new Error("Project icon must be 1 MB or smaller.");
+    throw new Error(`Project icon must be ${ICON_MAX_LABEL} or smaller.`);
   }
 }
 
@@ -666,7 +669,7 @@ export function setProjectIconOverrideFromSelection(projectRoot: string, iconPat
   const data = fs.readFileSync(selectedPath);
   // TOCTOU safety net: file may have grown between assertUsableProjectIconFile's stat and this read.
   if (data.length > ICON_MAX_BYTES) {
-    throw new Error("Project icon must be 1 MB or smaller.");
+    throw new Error(`Project icon must be ${ICON_MAX_LABEL} or smaller.`);
   }
   const relativeImportPath = importedProjectIconRelativePath(selectedPath, data);
   const importDir = resolvePathWithinRoot(root, IMPORTED_PROJECT_ICON_DIR, { allowMissing: true });

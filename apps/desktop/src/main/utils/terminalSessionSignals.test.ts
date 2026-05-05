@@ -46,6 +46,9 @@ describe("terminalSessionSignals", () => {
   it("returns default resume command for known tools", () => {
     expect(defaultResumeCommandForTool("claude")).toBe("claude --resume");
     expect(defaultResumeCommandForTool("codex")).toBe("codex resume");
+    expect(defaultResumeCommandForTool("cursor-cli")).toBe("cursor-agent --continue");
+    expect(defaultResumeCommandForTool("droid")).toBe("droid --resume");
+    expect(defaultResumeCommandForTool("opencode")).toBe("opencode --continue");
     expect(defaultResumeCommandForTool("shell")).toBeNull();
   });
 
@@ -59,6 +62,15 @@ describe("terminalSessionSignals", () => {
       codexApprovalPolicy: "untrusted",
       codexSandbox: "workspace-write",
       codexConfigSource: "flags",
+    });
+    expect(parseTrackedCliLaunchConfig("cursor-agent --mode plan", "cursor-cli")).toEqual({
+      permissionMode: "plan",
+    });
+    expect(parseTrackedCliLaunchConfig("droid --settings /tmp/ade.json", "droid")).toEqual({
+      permissionMode: "plan",
+    });
+    expect(parseTrackedCliLaunchConfig("OPENCODE_CONFIG_CONTENT='{\"permission\":{\"*\":\"ask\",\"edit\":\"allow\"}}' opencode", "opencode")).toEqual({
+      permissionMode: "edit",
     });
   });
 
@@ -83,6 +95,20 @@ describe("terminalSessionSignals", () => {
       targetId: null,
       launch: { permissionMode: "full-auto" },
     })).toBe("codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox resume");
+
+    expect(buildTrackedCliResumeCommand({
+      provider: "cursor",
+      targetKind: "session",
+      targetId: "chat-1",
+      launch: { permissionMode: "edit" },
+    })).toBe("cursor-agent --mode ask --resume chat-1");
+
+    expect(buildTrackedCliResumeCommand({
+      provider: "opencode",
+      targetKind: "session",
+      targetId: "ses_1",
+      launch: { permissionMode: "full-auto" },
+    })).toBe("OPENCODE_CONFIG_CONTENT='{\"permission\":\"allow\"}' opencode --session ses_1");
   });
 
   it("parses codex --full-auto as default permission mode", () => {
@@ -145,5 +171,22 @@ describe("terminalSessionSignals", () => {
       provider: "codex",
       targetId: null,
     });
+    expect(parseTrackedCliResumeCommand("cursor-agent --force --resume chat-abc", "cursor-cli")).toEqual({
+      provider: "cursor",
+      targetId: "chat-abc",
+    });
+    expect(parseTrackedCliResumeCommand("droid --resume 29f8d3bf-6620-4c89-a72e-5327670acc69", "droid")).toEqual({
+      provider: "droid",
+      targetId: "29f8d3bf-6620-4c89-a72e-5327670acc69",
+    });
+    expect(parseTrackedCliResumeCommand("OPENCODE_CONFIG_CONTENT='{\"permission\":\"allow\"}' opencode --session ses_abc", "opencode")).toEqual({
+      provider: "opencode",
+      targetId: "ses_abc",
+    });
+  });
+
+  it("extracts Cursor resume commands printed by ADE launch wrappers", () => {
+    const chunk = "[ADE] Resume with cursor-agent --resume chat-abc";
+    expect(extractResumeCommandFromOutput(chunk, "cursor-cli")).toBe("cursor-agent --resume chat-abc");
   });
 });

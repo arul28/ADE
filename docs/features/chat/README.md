@@ -11,9 +11,9 @@ machinery layered on top.
 
 | Path | Role |
 |---|---|
-| `apps/desktop/src/main/services/chat/agentChatService.ts` | Main service: session lifecycle, turn dispatch, event emission, provider adapters, steer queue, handoff, auto-title, and prompt-derived lane-name suggestions for parallel launch. Spawns Claude/Codex agent runtimes with `buildAgentRuntimeEnv(managed)` so every agent process inherits `ADE_CHAT_SESSION_ID`, `ADE_LANE_ID`, `ADE_PROJECT_ROOT`, and `ADE_WORKSPACE_ROOT` (used by the agent guidance to call `ade --socket app-control logs` / `terminal read --chat-session "$ADE_CHAT_SESSION_ID"` without resolving the chat ID itself). Large orchestrator file. |
-| `apps/desktop/src/main/services/builtInBrowser/builtInBrowserService.ts` | Main-process broker for the in-app web browser. Owns a single `persist:ade-browser` partition, multiple `WebContentsView` tabs (cap 10), bounds + visibility against the renderer-supplied frame, debugger-protocol attachment for inspect-mode hit tests, screenshot capture, and emission of `BuiltInBrowserContextItem`s for selected page elements. Backs the `ade.builtInBrowser.*` IPC surface and is consumed by both `ChatBuiltInBrowserPanel` (sidebar Browser tab) and `openExternal.ts` (links inside the renderer route through the built-in browser when the protocol is `http`/`https`/`about:blank`). |
-| `apps/desktop/src/shared/types/builtInBrowser.ts` | Cross-process types for the built-in browser: `BuiltInBrowserStatus`, `BuiltInBrowserTab`, `BuiltInBrowserContextItem` (`kind: "built_in_browser_element" | "built_in_browser_capture"`), `BuiltInBrowserSelectResult`, `BuiltInBrowserScreenshot`, and the `BuiltInBrowserEventPayload` union (`status`, `selection`, `selection-cleared`, `error`). |
+| `apps/desktop/src/main/services/chat/agentChatService.ts` | Main service: session lifecycle, turn dispatch, event emission, provider adapters, steer queue, handoff, auto-title, and prompt-derived lane-name suggestions for parallel launch. Tracks Codex Fast Mode (`codexFastMode: boolean`) per session and forwards it as `serviceTier: "fast" \| null` on every Codex `thread/start` and `turn/start` JSON-RPC call (see [Agent Routing](agent-routing.md#codex-service-tiers-fast-mode)). Spawns Claude/Codex agent runtimes with `buildAgentRuntimeEnv(managed)` so every agent process inherits `ADE_CHAT_SESSION_ID`, `ADE_LANE_ID`, `ADE_PROJECT_ROOT`, and `ADE_WORKSPACE_ROOT` (used by the agent guidance to call `ade --socket app-control logs` / `terminal read --chat-session "$ADE_CHAT_SESSION_ID"` without resolving the chat ID itself). Large orchestrator file. |
+| `apps/desktop/src/main/services/builtInBrowser/builtInBrowserService.ts` | Main-process broker for the in-app web browser. Owns a single `persist:ade-browser` partition, multiple `WebContentsView` tabs (cap 10), bounds + visibility against the renderer-supplied frame, debugger-protocol attachment for inspect-mode hit tests, screenshot capture, and emission of `BuiltInBrowserContextItem`s for selected page elements. Spoofs a desktop Chrome `User-Agent` and the matching `Sec-CH-UA*` client hints on every request through `webRequest.onBeforeSendHeaders` so external sign-in flows (Google, etc.) treat the embedded view as a normal desktop Chrome instead of refusing to load — the previous "open Google sign-in in the system browser" branch was removed because the spoofed UA stops Google from blocking the page in the first place. Window-open requests are forwarded into a fresh tab with `openPanel: true` so the Work sidebar Browser tab pops automatically. Backs the `ade.builtInBrowser.*` IPC surface and is consumed by both `ChatBuiltInBrowserPanel` (sidebar Browser tab) and `openExternal.ts` (links inside the renderer route through the built-in browser when the protocol is `http`/`https`/`about:blank`). |
+| `apps/desktop/src/shared/types/builtInBrowser.ts` | Cross-process types for the built-in browser: `BuiltInBrowserStatus`, `BuiltInBrowserTab`, `BuiltInBrowserContextItem` (`kind: "built_in_browser_element" | "built_in_browser_capture"`), `BuiltInBrowserSelectResult`, `BuiltInBrowserScreenshot`, `BuiltInBrowserOpenPanelArgs`, and the `BuiltInBrowserEventPayload` union (`status`, `open-request`, `selection`, `selection-cleared`, `error`). Navigate / create-tab / switch-tab args carry an optional `openPanel: boolean` so callers can ask for the Work sidebar Browser tab to flip open atomically with the navigation. |
 | `apps/desktop/src/main/services/chat/buildClaudeV2Message.ts` | Builds the message payload the Claude Agent SDK V2 session consumes. Handles base64 image content blocks and MIME inference. |
 | `apps/desktop/src/main/services/chat/claudeSlashCommandDiscovery.ts` | Discovers per-project (`.claude/commands/**`) and per-user (`~/.claude/commands/**`) slash commands, including `.md` command files and `.skill` user-invocable skills, parsing YAML frontmatter for description and argument hints. Consumed by `agentChatService` to enrich the `chat.slashCommands` response so the composer's picker lists local Claude commands alongside SDK-provided ones. |
 | `apps/desktop/src/main/services/chat/chatTextBatching.ts` | Batches streaming assistant text fragments (100 ms) before emission to reduce renderer re-renders. |
@@ -87,10 +87,32 @@ machinery layered on top.
   The Work right-edge sidebar's `browser` tab renders this surface
   through `ChatBuiltInBrowserPanel`; any URL clicked elsewhere in the
   renderer routes through `openUrlInAdeBrowser()` so it opens inside
-  the sidebar instead of the system browser. Inspect-mode hit-tests
-  produce `BuiltInBrowserContextItem` payloads that the sidebar
-  forwards to the active chat as composer chips alongside iOS / App
-  Control selections.
+  the sidebar instead of the system browser. The browser broker spoofs
+  a desktop Chrome User-Agent (with matching `Sec-CH-UA*` headers) so
+  third-party sign-in flows treat the embedded view as desktop Chrome
+  — the older "Google sign-in opens in the system browser" carve-out is
+  gone. Navigation, tab create, switch-tab, and the new dedicated
+  `built_in_browser.showPanel` / `ade.builtInBrowser.showPanel` IPC
+  channel each accept `openPanel: true|false`; `true` emits an
+  `open-request` event that `TerminalsPage` listens for to flip the
+  Work sidebar to its Browser tab. The `--no-panel` / `--hidden` flags
+  on the matching `ade browser ...` CLI commands set `openPanel: false`
+  so headless callers can prefetch tabs without yanking the user's
+  attention. Inspect-mode hit-tests produce `BuiltInBrowserContextItem`
+  payloads that the sidebar forwards to the active chat as composer
+  chips alongside iOS / App Control selections.
+- **Localhost shortcuts in the work log.** When an agent's tool output
+  surfaces a `localhost`/`127.0.0.1`/`0.0.0.0`/`[::1]` URL, the chat
+  work-log block renders a sky-toned strip above the tool-call panels.
+  The primary chip opens the URL inside the ADE built-in browser
+  (`openUrlInAdeBrowser`); a sibling Logs button reveals the chat's
+  active terminal inside the bottom drawer through `onRevealChatTerminal`,
+  or — when no terminal exists yet — drafts a guided "please move this
+  server into the chat terminal" prompt for the agent through
+  `onInsertDraft`. URLs are extracted from `entry.localUrls` (set by
+  `withLocalhostUrls` in `chatTranscriptRows.ts`) so the strip works
+  uniformly across shell commands, tool calls, and arbitrary tool
+  results.
 
 See the detail docs for the specifics:
 
@@ -183,10 +205,10 @@ handlers live in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
 |---|---|---|
 | `ade.agentChat.list` | invoke | List sessions with optional `includeIdentity`, `includeAutomation`. |
 | `ade.agentChat.getSummary` | invoke | Fetch `AgentChatSessionSummary` for a single session. |
-| `ade.agentChat.create` | invoke | Create a new session; returns the `AgentChatSession`. |
+| `ade.agentChat.create` | invoke | Create a new session; returns the `AgentChatSession`. Accepts `codexFastMode?: boolean` for Codex sessions to start with the `serviceTier: "fast"` default. |
 | `ade.agentChat.suggestLaneName` | invoke | Derive a slug-safe base lane name from a parallel prompt using a lightweight model call with deterministic fallback. |
 | `ade.agentChat.parallelLaunchState.get` / `.set` | invoke | Read/write crash-recovery state for renderer-orchestrated parallel launches. State is scoped by project root and parent lane id. |
-| `ade.agentChat.handoff` | invoke | End current session and create a new one with summarized context. |
+| `ade.agentChat.handoff` | invoke | End current session and create a new one with summarized context. Forwards `codexFastMode` when the target provider is Codex. |
 | `ade.agentChat.send` | invoke | Dispatch a user message + attachments into an active session. |
 | `ade.agentChat.steer` | invoke | Send a follow-up message mid-turn; queued when appropriate. |
 | `ade.agentChat.cancelSteer` / `ade.agentChat.editSteer` | invoke | Queue management for queued steers. |
@@ -197,7 +219,7 @@ handlers live in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
 | `ade.agentChat.respondToInput` | invoke | Unified pending-input answer channel. |
 | `ade.agentChat.dispose` | invoke | End the runtime and persist final state ("End chat"). The row stays in `terminal_sessions` as `ended` so it remains resumable. |
 | `ade.agentChat.delete` | invoke | Permanently remove a chat session: disposes the runtime if still running, cancels any pending turn collector, resolves outstanding input waiters, removes the persisted JSON + transcript, and deletes the `terminal_sessions` row. Renderer surfaces this as "Delete chat" on ended sessions. |
-| `ade.agentChat.updateSession` | invoke | Mutate permission modes, `manuallyNamed`, capability mode. |
+| `ade.agentChat.updateSession` | invoke | Mutate permission modes, `manuallyNamed`, capability mode, and the `codexFastMode` toggle. |
 | `ade.agentChat.warmupModel` | invoke | Preload a Claude V2 session for an eventual turn. |
 | `ade.agentChat.slashCommands` | invoke | List provider + local slash commands. |
 | `ade.agentChat.fileSearch` | invoke | Debounced attachment picker backend. |

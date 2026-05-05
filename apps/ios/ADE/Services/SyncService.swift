@@ -3412,6 +3412,7 @@ final class SyncService: ObservableObject {
     provider: String,
     model: String = "",
     reasoningEffort: String? = nil,
+    codexFastMode: Bool? = nil,
     sessionProfile: String? = nil,
     permissionMode: String? = nil,
     interactionMode: String? = nil,
@@ -3436,6 +3437,9 @@ final class SyncService: ObservableObject {
     }
     if let reasoningEffort, !reasoningEffort.isEmpty {
       args["reasoningEffort"] = reasoningEffort
+    }
+    if let codexFastMode {
+      args["codexFastMode"] = codexFastMode
     }
     if let sessionProfile, !sessionProfile.isEmpty {
       args["sessionProfile"] = sessionProfile
@@ -3582,6 +3586,7 @@ final class SyncService: ObservableObject {
     title: String? = nil,
     modelId: String? = nil,
     reasoningEffort: String? = nil,
+    codexFastMode: Bool? = nil,
     permissionMode: String? = nil,
     interactionMode: String? = nil,
     claudePermissionMode: String? = nil,
@@ -3602,6 +3607,7 @@ final class SyncService: ObservableObject {
         title: title,
         modelId: modelId,
         reasoningEffort: reasoningEffort,
+        codexFastMode: codexFastMode,
         permissionMode: permissionMode,
         interactionMode: interactionMode,
         claudePermissionMode: claudePermissionMode,
