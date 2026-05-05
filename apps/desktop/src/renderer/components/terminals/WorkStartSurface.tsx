@@ -109,9 +109,13 @@ export function WorkStartSurface({
 
   useEffect(() => {
     if (!cliPermissionOptions.some((option) => option.value === cliPermissionMode)) {
-      setCliPermissionMode("default");
+      const providerDefault = CLI_PROVIDER_OPTIONS[cliProvider].defaultPermission;
+      const fallback = cliPermissionOptions.some((option) => option.value === providerDefault)
+        ? providerDefault
+        : cliPermissionOptions[0]?.value ?? "default";
+      setCliPermissionMode(fallback);
     }
-  }, [cliPermissionMode, cliPermissionOptions]);
+  }, [cliProvider, cliPermissionMode, cliPermissionOptions]);
 
   const selectCliProvider = useCallback((provider: CliProvider) => {
     setCliProvider(provider);

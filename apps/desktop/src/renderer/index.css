@@ -468,6 +468,12 @@ h6 {
   box-shadow: inset 0 0 0 1px var(--shell-project-tab-focus-ring);
 }
 
+.ade-shell-project-tab[data-state="active"]:focus-visible {
+  box-shadow:
+    inset 0 0 0 1px var(--shell-project-tab-focus-ring),
+    inset 0 -1px 0 color-mix(in srgb, var(--project-tab-accent, var(--color-accent)) 55%, transparent);
+}
+
 .ade-shell-control {
   color: var(--shell-control-fg);
   background: var(--shell-control-bg);

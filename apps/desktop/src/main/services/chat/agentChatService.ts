@@ -1269,9 +1269,11 @@ function codexModelInfoFromDescriptor(
     reasoningEfforts: overrides?.reasoningEfforts ?? (descriptor.reasoningTiers?.length
       ? CODEX_REASONING_EFFORTS.filter((effort) => descriptor.reasoningTiers?.includes(effort.effort))
       : CODEX_REASONING_EFFORTS),
-    ...(overrides?.serviceTiers?.length || descriptor.serviceTiers?.length
-      ? { serviceTiers: overrides?.serviceTiers ?? descriptor.serviceTiers }
-      : {}),
+    ...(overrides?.serviceTiers !== undefined
+      ? { serviceTiers: overrides.serviceTiers }
+      : descriptor.serviceTiers?.length
+        ? { serviceTiers: descriptor.serviceTiers }
+        : {}),
     modelId: descriptor.id,
     family: descriptor.family,
     supportsReasoning: descriptor.capabilities.reasoning,
@@ -11859,9 +11861,7 @@ export function createAgentChatService(args: {
               reasoningEfforts: appServerEntry?.reasoningEfforts?.length
                 ? appServerEntry.reasoningEfforts
                 : undefined,
-              serviceTiers: appServerEntry?.serviceTiers?.length
-                ? appServerEntry.serviceTiers
-                : undefined,
+              serviceTiers: appServerEntry?.serviceTiers,
             });
           });
 
@@ -17253,9 +17253,11 @@ export function createAgentChatService(args: {
             ...(typeof info.supportsTools === "boolean" ? { tools: info.supportsTools } : {}),
           },
           ...(runtimeTiers?.length ? { reasoningTiers: runtimeTiers } : {}),
-          ...(info.serviceTiers?.length || descriptor.serviceTiers?.length
-            ? { serviceTiers: info.serviceTiers ?? descriptor.serviceTiers }
-            : {}),
+          ...(info.serviceTiers !== undefined
+            ? { serviceTiers: info.serviceTiers }
+            : descriptor.serviceTiers?.length
+              ? { serviceTiers: descriptor.serviceTiers }
+              : {}),
         };
         descriptors.push(patched);
         descriptorInfo.set(catalogDescriptorInfoKey(provider, patched.family, patched.id), { provider, info });
@@ -17305,9 +17307,11 @@ export function createAgentChatService(args: {
                 family: descriptor.family,
                 supportsReasoning: descriptor.capabilities.reasoning,
                 supportsTools: descriptor.capabilities.tools,
-                ...(entry?.info.serviceTiers?.length || descriptor.serviceTiers?.length
-                  ? { serviceTiers: entry?.info.serviceTiers ?? descriptor.serviceTiers }
-                  : {}),
+                ...(entry?.info.serviceTiers !== undefined
+                  ? { serviceTiers: entry.info.serviceTiers }
+                  : descriptor.serviceTiers?.length
+                    ? { serviceTiers: descriptor.serviceTiers }
+                    : {}),
                 color: descriptor.color,
                 isAvailable: Boolean(entry),
               };

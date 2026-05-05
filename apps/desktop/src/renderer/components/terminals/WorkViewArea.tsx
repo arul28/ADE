@@ -32,7 +32,7 @@ import { SmartTooltip } from "../ui/SmartTooltip";
 import { useFloatingPaneEmbeddedChrome, type FloatingPaneEmbeddedChrome } from "../ui/FloatingPane";
 import { PaneTilingLayout, type PaneConfig } from "../ui/PaneTilingLayout";
 import { cn } from "../ui/cn";
-import { resolveTrackedCliResumeCommand, type CliProvider } from "./cliLaunch";
+import { resolveTrackedCliResumeCommand, type LaunchProfile } from "./cliLaunch";
 import { buildWorkSessionTilingTree, type TilingPreset } from "./workSessionTiling";
 import { laneSurfaceTint } from "../lanes/laneDesignTokens";
 
@@ -452,7 +452,7 @@ export function WorkViewArea({
   onOpenChatSession: (session: AgentChatSession) => void | Promise<void>;
   onLaunchPtySession: (args: {
     laneId: string;
-    profile: CliProvider | "shell";
+    profile: LaunchProfile;
     title?: string;
     startupCommand?: string;
     command?: string;

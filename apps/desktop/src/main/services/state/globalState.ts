@@ -64,7 +64,7 @@ export function upsertRecentProject(
   const nextEntry = { rootPath: proj.rootPath, displayName: proj.displayName, lastOpenedAt: now };
   if (options.preserveRecentOrder === true) {
     const existingIndex = prev.findIndex((p) => p.rootPath === proj.rootPath);
-    if (existingIndex >= 0) {
+    if (existingIndex >= 0 && existingIndex < 12) {
       const updated = prev.slice(0, 12);
       updated[existingIndex] = nextEntry;
       next.recentProjects = updated;

@@ -2090,7 +2090,6 @@ function hasSharedConfigContent(config: ProjectConfigFile): boolean {
     || config.laneEnvInit
     || (config.laneTemplates?.length ?? 0) > 0
     || config.defaultLaneTemplate
-    || config.laneCleanup
     || (config.providers && Object.keys(config.providers).length > 0)
     || config.linearSync
     || config.notifications

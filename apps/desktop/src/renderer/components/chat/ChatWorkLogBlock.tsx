@@ -549,8 +549,14 @@ function LocalhostServersStrip({
     if (busy) return;
     setBusy(true);
     try {
+      let terminal: Awaited<ReturnType<NonNullable<NonNullable<typeof window.ade>["terminal"]>["activeForChat"]>> | undefined;
       if (sessionId && onRevealChatTerminal) {
-        const terminal = await window.ade?.terminal?.activeForChat?.({ chatSessionId: sessionId });
+        try {
+          terminal = await window.ade?.terminal?.activeForChat?.({ chatSessionId: sessionId });
+        } catch (error) {
+          console.error("[ChatWorkLogBlock] activeForChat lookup failed", error);
+          terminal = undefined;
+        }
         if (terminal?.ptyId) {
           onRevealChatTerminal({
             terminalId: terminal.terminalId,
@@ -598,7 +604,11 @@ function LocalhostServersStrip({
       </button>
       <button
         type="button"
-        onClick={() => void handleTerminalClick()}
+        onClick={() => {
+          handleTerminalClick().catch((error) => {
+            console.error("[ChatWorkLogBlock] handleTerminalClick failed", error);
+          });
+        }}
         disabled={busy}
         title={logsTitle}
         aria-label="Open terminal logs or ask the agent to run this server in the chat terminal"

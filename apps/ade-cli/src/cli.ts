@@ -2287,12 +2287,14 @@ function buildChatPlan(args: string[]): CliPlan {
   if (sub === "show" || sub === "status") return { kind: "execute", label: "chat status", steps: [actionArgsListStep("result", "chat", "getSessionSummary", [requireValue(sessionId, "sessionId")])] };
   if (sub === "create" || sub === "spawn") {
     const modelArg = readValue(args, ["--model", "--model-id"]);
-    let codexFastMode: boolean | undefined;
-    if (readFlag(args, ["--fast", "--codex-fast"])) {
-      codexFastMode = true;
-    } else if (readFlag(args, ["--standard", "--no-fast", "--no-codex-fast"])) {
-      codexFastMode = false;
+    const fastRequested = readFlag(args, ["--fast", "--codex-fast"]);
+    const standardRequested = readFlag(args, ["--standard", "--no-fast", "--no-codex-fast"]);
+    if (fastRequested && standardRequested) {
+      throw new CliUsageError(
+        "Use either --fast/--codex-fast or --standard/--no-fast/--no-codex-fast, not both.",
+      );
     }
+    const codexFastMode: boolean | undefined = fastRequested ? true : standardRequested ? false : undefined;
     return { kind: "execute", label: "chat create", steps: [actionStep("result", "chat", "createSession", collectGenericObjectArgs(args, { laneId: readLaneId(args), provider: readValue(args, ["--provider"]), model: modelArg, modelId: modelArg, permissionMode: readValue(args, ["--permission-mode", "--permissions"]), droidPermissionMode: readValue(args, ["--droid-permission-mode", "--droid-autonomy", "--autonomy"]), title: readValue(args, ["--title"]), surface: readValue(args, ["--surface"]) ?? "work", ...(codexFastMode !== undefined ? { codexFastMode } : {}) }))] };
   }
   if (sub === "send") return { kind: "execute", label: "chat send", steps: [actionStep("result", "chat", "sendMessage", withSession({ sessionId: requireValue(sessionId, "sessionId"), text: requireValue(readValue(args, ["--text", "--message"]) ?? args.join(" "), "message text") }))] };

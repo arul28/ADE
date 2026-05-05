@@ -280,6 +280,12 @@ export function parseTrackedCliLaunchConfig(
   };
 }
 
+function extractWrappedProviderCommand(command: string, binary: string): string {
+  const escaped = binary.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = command.match(new RegExp(String.raw`(?:^|&&\s+|;\s+)(${escaped}\b[^;&|]*)`, "i"));
+  return match?.[1] ?? command;
+}
+
 function parseProviderResumeTarget(provider: TerminalResumeProvider, command: string): string | null | undefined {
   if (provider === "claude") {
     const match = command.match(/^claude(?:(?:\s+--[^\s]+)(?:\s+[^\s]+)?)*\s+(?:--resume|-r|resume)(?:\s+([^\s]+))?(?:\s|$)/i);
@@ -297,7 +303,10 @@ function parseProviderResumeTarget(provider: TerminalResumeProvider, command: st
   }
 
   if (provider === "droid") {
-    const match = command.match(/^droid\b.*?(?:--resume(?:=|\s+)?([^\s]+)?|-r\s+([^\s]+)|\bexec\b.*?(?:--session-id|-s)\s+([^\s]+))(?:\s|$)/i);
+    const droidCommand = extractWrappedProviderCommand(command, "droid");
+    const match = droidCommand.match(
+      /^droid\b.*?(?:--resume(?:=|\s+)?([^;\s]+)?|-r\s+([^;\s]+)|\bexec\b.*?(?:--session-id|-s)\s+([^;\s]+))(?=\s*(?:[;&]|$))/i,
+    );
     return match ? match[1] ?? match[2] ?? match[3] ?? null : undefined;
   }
 
@@ -418,7 +427,9 @@ export function extractResumeCommandFromOutput(
 
   for (const candidate of candidates) {
     const normalized = normalizeResumeCommand(candidate, preferredTool);
-    if (normalized) return normalized;
+    if (normalized && parseTrackedCliResumeCommand(normalized, preferredTool)) {
+      return normalized;
+    }
   }
 
   return null;

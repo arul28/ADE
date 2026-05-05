@@ -212,6 +212,7 @@ function buildCursorPrecreatedChatCommand(args: {
     .replace(quoteShellArg("$ADE_CURSOR_CHAT_ID"), "\"$ADE_CURSOR_CHAT_ID\"");
   return [
     "ADE_CURSOR_CHAT_ID=\"$(cursor-agent create-chat)\"",
+    "[ -n \"$ADE_CURSOR_CHAT_ID\" ] || { echo \"[ADE] cursor-agent create-chat returned no chat id\" >&2; exit 1; }",
     "printf %s\\\\n \"[ADE] Resume with cursor-agent --resume ${ADE_CURSOR_CHAT_ID}\"",
     command,
   ].join(" && ");

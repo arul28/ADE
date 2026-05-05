@@ -237,7 +237,7 @@ export function buildWorkTabGroupModel(args: {
 }
 
 function inferToolFromResumeCommand(command: string): string | null {
-  const n = command.trim().toLowerCase().replace(/^[a-z_][a-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s]+)\s+/, "");
+  const n = command.trim().toLowerCase().replace(/^(?:[a-z_][a-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s]+)\s+)+/, "");
   if (n.startsWith("claude ")) return "claude";
   if (n.startsWith("codex ")) return "codex";
   if (n.startsWith("cursor-agent ")) return "cursor-cli";

@@ -4341,6 +4341,7 @@ app.whenReady().then(async () => {
           ensureExclude: true,
           recordLastProject: false,
           recordRecent: true,
+          preserveRecentOrder: true,
           userSelectedProject: false,
         });
         projectContexts.set(normalizedRoot, ctx);

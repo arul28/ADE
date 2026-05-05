@@ -1811,6 +1811,9 @@ export function registerIpc({
     [IPC.appControlDispatchKey]: new Set(["text", "unmodifiedText", "key", "code"]),
     [IPC.terminalWrite]: new Set(["data"]),
     [IPC.ptyWrite]: new Set(["data"]),
+    [IPC.builtInBrowserNavigate]: new Set(["url"]),
+    [IPC.builtInBrowserCreateTab]: new Set(["url"]),
+    [IPC.builtInBrowserShowPanel]: new Set(["url"]),
   };
 
   const redactIpcArgsForChannel = (channel: string, args: unknown[]): unknown[] => {

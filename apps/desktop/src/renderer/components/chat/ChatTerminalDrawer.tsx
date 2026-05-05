@@ -236,19 +236,17 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
         exited: false,
       };
 
-      setTabs((prev) => {
-        const existing = prev.find(
-          (tab) => tab.sessionId === created.sessionId || tab.ptyId === created.ptyId,
-        );
-        setActiveTabId(existing?.id ?? tabId);
-        return existing ? prev : [...prev, nextEntry];
-      });
+      const existing = tabs.find(
+        (tab) => tab.sessionId === created.sessionId || tab.ptyId === created.ptyId,
+      );
+      setActiveTabId(existing?.id ?? tabId);
+      if (!existing) setTabs((prev) => [...prev, nextEntry]);
     } catch (error) {
       reportCreateError(error);
     } finally {
       setCreatingTab(false);
     }
-  }, [chatSessionId, creatingTab, laneId, reportCreateError]);
+  }, [chatSessionId, creatingTab, laneId, reportCreateError, tabs]);
 
   useEffect(() => {
     if (!chatSessionId) return;
