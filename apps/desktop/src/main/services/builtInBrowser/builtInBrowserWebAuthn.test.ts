@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const fakes = vi.hoisted(() => {
   type WebAuthnAccount = {
@@ -71,9 +71,20 @@ async function flushPromises(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+const originalTouchIdWebAuthnEnv = process.env.ADE_ENABLE_TOUCH_ID_WEBAUTHN;
+
 describe("configureBuiltInBrowserWebAuthn", () => {
   beforeEach(() => {
     fakes.reset();
+    delete process.env.ADE_ENABLE_TOUCH_ID_WEBAUTHN;
+  });
+
+  afterEach(() => {
+    if (originalTouchIdWebAuthnEnv === undefined) {
+      delete process.env.ADE_ENABLE_TOUCH_ID_WEBAUTHN;
+    } else {
+      process.env.ADE_ENABLE_TOUCH_ID_WEBAUTHN = originalTouchIdWebAuthnEnv;
+    }
   });
 
   it("configures the browser session once", async () => {
@@ -85,6 +96,15 @@ describe("configureBuiltInBrowserWebAuthn", () => {
     expect(fakes.session.fromPartition).toHaveBeenCalledTimes(1);
     expect(fakes.session.fromPartition).toHaveBeenCalledWith("persist:ade-browser");
     expect(fakes.handlers["select-webauthn-account"]).toHaveLength(1);
+    expect(fakes.app.configureWebAuthn).not.toHaveBeenCalled();
+  });
+
+  it("configures Touch ID WebAuthn only when explicitly enabled", async () => {
+    process.env.ADE_ENABLE_TOUCH_ID_WEBAUTHN = "1";
+    const { configureBuiltInBrowserWebAuthn } = await loadModule();
+
+    configureBuiltInBrowserWebAuthn();
+
     if (process.platform === "darwin") {
       expect(fakes.app.configureWebAuthn).toHaveBeenCalledWith({
         touchID: { keychainAccessGroup: "VQ372F39G6.com.ade.desktop.webauthn" },

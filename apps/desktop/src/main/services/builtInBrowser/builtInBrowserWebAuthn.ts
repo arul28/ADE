@@ -8,6 +8,11 @@ import {
 
 let configured = false;
 
+function isTouchIdWebAuthnEnabled(): boolean {
+  const value = process.env.ADE_ENABLE_TOUCH_ID_WEBAUTHN?.trim().toLowerCase();
+  return value === "1" || value === "true";
+}
+
 export function configureBuiltInBrowserWebAuthn(args: {
   getLogger?: () => Logger | null;
 } = {}): void {
@@ -22,7 +27,7 @@ export function configureBuiltInBrowserWebAuthn(args: {
     }
   };
 
-  if (process.platform === "darwin") {
+  if (process.platform === "darwin" && isTouchIdWebAuthnEnabled()) {
     try {
       app.configureWebAuthn({
         touchID: {
@@ -38,6 +43,11 @@ export function configureBuiltInBrowserWebAuthn(args: {
         keychainAccessGroup: BUILT_IN_BROWSER_WEBAUTHN_KEYCHAIN_ACCESS_GROUP,
       });
     }
+  } else if (process.platform === "darwin") {
+    logger()?.debug("built_in_browser.webauthn_touchid_disabled", {
+      reason: "missing_provisioned_keychain_access_group",
+      keychainAccessGroup: BUILT_IN_BROWSER_WEBAUTHN_KEYCHAIN_ACCESS_GROUP,
+    });
   }
 
   const browserSession = session.fromPartition(BUILT_IN_BROWSER_PARTITION);
