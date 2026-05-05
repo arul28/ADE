@@ -13,6 +13,7 @@ import type {
 } from "../../../shared/types";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { createDefaultLinearWorkflowConfig, createWorkflowPreset } from "../../../shared/linearWorkflowPresets";
+import { ensureSharedAdeProjectScaffold } from "../projects/adeProjectService";
 import { isRecord } from "../shared/utils";
 
 const WORKFLOW_VERSION = 1 as const;
@@ -532,6 +533,7 @@ export function createLinearWorkflowFileService(args: {
   };
 
   const save = (config: LinearWorkflowConfig): LinearWorkflowConfig => {
+    ensureSharedAdeProjectScaffold(args.projectRoot);
     fs.mkdirSync(workflowDir, { recursive: true });
     fs.mkdirSync(cacheDir, { recursive: true });
 

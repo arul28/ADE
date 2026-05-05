@@ -42,6 +42,7 @@ export type ModelDescriptor = {
   maxOutputTokens: number;
   capabilities: ModelCapabilities;
   reasoningTiers?: string[];
+  serviceTiers?: string[];
   color: string;
   providerRoute: string;
   providerModelId: string;
@@ -82,6 +83,19 @@ export type ModelProviderGroup = "claude" | "codex" | "opencode" | "cursor" | "d
 
 export function isModelProviderGroup(value: string | null | undefined): value is ModelProviderGroup {
   return value === "claude" || value === "codex" || value === "opencode" || value === "cursor" || value === "droid";
+}
+
+export function modelSupportsServiceTier(
+  descriptor: ModelDescriptor | null | undefined,
+  tier: string,
+): boolean {
+  const normalizedTier = tier.trim().toLowerCase();
+  if (!normalizedTier) return false;
+  return Boolean(descriptor?.serviceTiers?.some((entry) => entry.trim().toLowerCase() === normalizedTier));
+}
+
+export function modelSupportsFastMode(descriptor: ModelDescriptor | null | undefined): boolean {
+  return modelSupportsServiceTier(descriptor, "fast");
 }
 
 // ---------------------------------------------------------------------------
@@ -208,6 +222,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     maxOutputTokens: 128_000,
     capabilities: ALL_CAPS,
     reasoningTiers: ["low", "medium", "high", "xhigh"],
+    serviceTiers: ["fast"],
     color: "#10A37F",
     providerRoute: "codex-cli",
     providerModelId: "gpt-5.5",
@@ -226,6 +241,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     maxOutputTokens: 128_000,
     capabilities: ALL_CAPS,
     reasoningTiers: ["low", "medium", "high", "xhigh"],
+    serviceTiers: ["fast"],
     color: "#10A37F",
     providerRoute: "codex-cli",
     providerModelId: "gpt-5.4",

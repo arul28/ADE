@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { CaretDown, CaretRight, Check, Warning, XCircle } from "@phosphor-icons/react";
+import { ArrowSquareOut, CaretDown, CaretRight, Check, Globe, Terminal, Warning, XCircle } from "@phosphor-icons/react";
 import type { OperatorNavigationSuggestion } from "../../../shared/types";
 import {
   formatStructuredValue,
   readRecord,
   summarizeDiffStats,
   summarizeInlineText,
+  type ChatLocalhostUrl,
   type ChatWorkLogGroupEvent,
   type ChatWorkLogEntry,
   type ChatWorkLogFileChange,
@@ -13,6 +14,7 @@ import {
 import { cn } from "../ui/cn";
 import { getToolMeta } from "./chatToolAppearance";
 import { replaceInternalToolNames } from "./toolPresentation";
+import { openUrlInAdeBrowser } from "../../lib/openExternal";
 
 const NAVIGATION_SURFACES = new Set(["work", "missions", "lanes", "cto"]);
 
@@ -91,6 +93,56 @@ function entryArgText(entry: ChatWorkLogEntry): string {
     if (entry.detail) return summarizeInlineText(entry.detail, 140);
   }
   return "";
+}
+
+function collectLocalhostUrls(entries: ChatWorkLogEntry[]): ChatLocalhostUrl[] {
+  const urls: ChatLocalhostUrl[] = [];
+  const seen = new Set<string>();
+  for (const entry of entries) {
+    for (const url of entry.localUrls ?? []) {
+      if (seen.has(url.href)) continue;
+      seen.add(url.href);
+      urls.push(url);
+    }
+  }
+  return urls.slice(0, 4);
+}
+
+function localhostUrlLabel(url: ChatLocalhostUrl): string {
+  if (url.port !== null) return `localhost:${url.port}`;
+  try {
+    const parsed = new URL(url.href);
+    return parsed.host || url.host;
+  } catch {
+    return url.host;
+  }
+}
+
+function commandForLocalhostUrl(entries: ChatWorkLogEntry[], url: ChatLocalhostUrl): string | null {
+  const sourceEntry = entries.find((entry) =>
+    (entry.localUrls ?? []).some((candidate) => candidate.href === url.href),
+  ) ?? entries[0];
+  if (!sourceEntry) return null;
+  const trimmed = (sourceEntry.command ?? entryArgText(sourceEntry)).trim();
+  return trimmed.length ? trimmed : null;
+}
+
+function terminalizePrompt(args: {
+  url: ChatLocalhostUrl;
+  command: string | null;
+  sessionId?: string | null;
+}): string {
+  const lines = [
+    `Please reopen or move the local server for ${args.url.href} into this ADE chat terminal so I can watch the logs here.`,
+  ];
+  if (args.command) lines.push("", `Detected command: \`${args.command}\``);
+  if (args.sessionId) lines.push("", `Chat session: \`${args.sessionId}\``);
+  lines.push(
+    "",
+    "Use ADE socket terminal/app-control commands where helpful, for example `ade --socket terminal list --chat-session <id> --text`, `ade --socket terminal read --chat-session <id> --text`, or `ade --socket app-control launch --command \"<command>\" --text`.",
+    "After it is running, verify the localhost URL and keep the process logs readable from the chat terminal.",
+  );
+  return lines.join("\n");
 }
 
 /** Short slug for the tool rail (e.g. `bash`, `grep`, `spawn_chat`) — not a full sentence. */
@@ -470,12 +522,104 @@ function FilesChangedPanel({
   );
 }
 
+function LocalhostServersStrip({
+  entries,
+  sessionId,
+  onInsertDraft,
+  onRevealChatTerminal,
+}: {
+  entries: ChatWorkLogEntry[];
+  sessionId?: string | null;
+  onInsertDraft?: (text: string) => void;
+  onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
+}) {
+  const urls = useMemo(() => collectLocalhostUrls(entries), [entries]);
+  const [busy, setBusy] = useState(false);
+  if (urls.length === 0) return null;
+
+  const primary = urls[0]!;
+  const extraCount = Math.max(0, urls.length - 1);
+  const command = commandForLocalhostUrl(entries, primary);
+  const openTitle = extraCount > 0
+    ? `Open ${primary.href} in ADE browser (${extraCount} more detected)`
+    : `Open ${primary.href} in ADE browser`;
+  const logsTitle = "Open the active chat terminal for logs. If there is no terminal yet, draft a request for the agent to run this server there.";
+
+  async function handleTerminalClick() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      if (sessionId && onRevealChatTerminal) {
+        const terminal = await window.ade?.terminal?.activeForChat?.({ chatSessionId: sessionId });
+        if (terminal?.ptyId) {
+          onRevealChatTerminal({
+            terminalId: terminal.terminalId,
+            ptyId: terminal.ptyId,
+            label: terminal.title || "Terminal",
+          });
+          return;
+        }
+      }
+      const prompt = terminalizePrompt({ url: primary, command, sessionId });
+      if (onInsertDraft) {
+        onInsertDraft(prompt);
+      } else {
+        window.dispatchEvent(new CustomEvent("ade:agent-chat:insert-draft", {
+          detail: { text: prompt },
+        }));
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mb-1.5 flex max-w-full flex-wrap items-center gap-1.5 font-sans text-[length:calc(var(--chat-font-size)*10/14)]">
+      <button
+        type="button"
+        onClick={() => openUrlInAdeBrowser(primary.href)}
+        title={openTitle}
+        aria-label={openTitle}
+        className="group inline-flex max-w-full items-center gap-1.5 rounded-full border border-sky-300/15 bg-sky-400/[0.06] py-0.5 pr-1.5 pl-2 text-sky-100/80 transition-colors hover:border-sky-300/30 hover:bg-sky-400/[0.11] hover:text-sky-50"
+      >
+        <span className="relative inline-flex h-2 w-2 shrink-0">
+          <span className="absolute inline-flex h-full w-full rounded-full bg-sky-300/45 ade-thinking-pulse" />
+          <span className="relative inline-flex h-2 w-2 rounded-full bg-sky-300/80" />
+        </span>
+        <Globe size={11} weight="bold" className="shrink-0" aria-hidden />
+        <span className="min-w-0 truncate font-mono">{localhostUrlLabel(primary)}</span>
+        {extraCount > 0 ? (
+          <span className="shrink-0 text-sky-100/45">+{extraCount}</span>
+        ) : null}
+        <span className="rounded-full bg-sky-200/[0.10] px-1.5 py-px font-sans text-[length:calc(var(--chat-font-size)*9/14)] font-semibold text-sky-100/60 transition-colors group-hover:text-sky-50/85">
+          Browser
+        </span>
+        <ArrowSquareOut size={11} weight="bold" className="shrink-0 text-sky-100/45 transition-colors group-hover:text-sky-50/80" aria-hidden />
+      </button>
+      <button
+        type="button"
+        onClick={() => void handleTerminalClick()}
+        disabled={busy}
+        title={logsTitle}
+        aria-label="Open terminal logs or ask the agent to run this server in the chat terminal"
+        className="inline-flex h-[22px] shrink-0 items-center gap-1 rounded-full border border-white/[0.07] bg-white/[0.03] px-2 text-fg/45 transition-colors hover:border-white/[0.13] hover:bg-white/[0.06] hover:text-fg/75 disabled:cursor-progress disabled:opacity-50"
+      >
+        <Terminal size={12} weight="bold" aria-hidden />
+        <span className="font-sans text-[length:calc(var(--chat-font-size)*9/14)] font-semibold">Logs</span>
+      </button>
+    </div>
+  );
+}
+
 export function ChatWorkLogBlock({
   entries,
   summary: _summary,
   className,
   onNavigateSuggestion,
   onUndoChanges,
+  onInsertDraft,
+  onRevealChatTerminal,
+  sessionId,
   animate: _animate = true,
 }: {
   entries: ChatWorkLogEntry[];
@@ -483,6 +627,9 @@ export function ChatWorkLogBlock({
   className?: string;
   onNavigateSuggestion?: (suggestion: OperatorNavigationSuggestion) => void;
   onUndoChanges?: () => void;
+  onInsertDraft?: (text: string) => void;
+  onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
+  sessionId?: string | null;
   animate?: boolean;
 }) {
   const { readOnlyEntries, codeChangeEntries } = useMemo(() => {
@@ -506,6 +653,12 @@ export function ChatWorkLogBlock({
 
   return (
     <div className={cn("max-w-full space-y-3", className)}>
+      <LocalhostServersStrip
+        entries={entries}
+        sessionId={sessionId}
+        onInsertDraft={onInsertDraft}
+        onRevealChatTerminal={onRevealChatTerminal}
+      />
       {hasReadOnly ? (
         <ToolCallsPanel
           entries={readOnlyEntries}

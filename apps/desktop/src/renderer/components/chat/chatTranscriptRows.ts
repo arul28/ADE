@@ -4,6 +4,13 @@ export type ChatWorkLogStatus = "running" | "completed" | "failed" | "interrupte
 export type ChatWorkLogEntryKind = "tool" | "command" | "file_change" | "web_search";
 export type ChatWorkLogEntryTone = "tool" | "info" | "error";
 
+export type ChatLocalhostUrl = {
+  url: string;
+  href: string;
+  host: string;
+  port: number | null;
+};
+
 export type ChatWorkLogFileChange = {
   path: string;
   kind: Extract<AgentChatEvent, { type: "file_change" }>["kind"];
@@ -26,6 +33,7 @@ export type ChatWorkLogEntry = {
   args?: unknown;
   result?: unknown;
   output?: string;
+  localUrls?: ReadonlyArray<ChatLocalhostUrl>;
   cwd?: string;
   query?: string;
   action?: string;
@@ -86,6 +94,92 @@ export function summarizeInlineText(value: string, maxChars = 120): string {
   const text = value.replace(/\s+/g, " ").trim();
   if (!text.length) return "";
   return text.length > maxChars ? `${text.slice(0, maxChars)}...` : text;
+}
+
+const LOCALHOST_URL_PATTERN =
+  /https?:\/\/(?<host>localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::(?<port>\d{1,5}))?(?<suffix>[^\s<>"']*)?/giu;
+
+function stripTrailingUrlPunctuation(value: string): string {
+  let next = value;
+  while (/[.,)\]}]$/u.test(next)) {
+    next = next.slice(0, -1);
+  }
+  return next;
+}
+
+function normalizeLocalhostHref(url: string, host: string): string {
+  if (host === "localhost") return url;
+  return url.replace(`://${host}`, "://localhost");
+}
+
+export function extractLocalhostUrlsFromText(text: string): ChatLocalhostUrl[] {
+  const urls: ChatLocalhostUrl[] = [];
+  const seen = new Set<string>();
+
+  for (const match of text.matchAll(LOCALHOST_URL_PATTERN)) {
+    const host = match.groups?.host;
+    const portText = match.groups?.port;
+    if (!host) continue;
+    const port = portText ? Number.parseInt(portText, 10) : null;
+    if (port !== null && (!Number.isInteger(port) || port < 1 || port > 65_535)) continue;
+
+    const url = stripTrailingUrlPunctuation(match[0]);
+    const href = normalizeLocalhostHref(url, host);
+    if (seen.has(href)) continue;
+    seen.add(href);
+    urls.push({ url, href, host, port });
+  }
+
+  return urls;
+}
+
+function collectTextValues(value: unknown, depth = 0, out: string[] = []): string[] {
+  if (depth > 5 || out.length >= 80 || value == null) return out;
+  if (typeof value === "string") {
+    if (value.trim().length) out.push(value);
+    return out;
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) collectTextValues(entry, depth + 1, out);
+    return out;
+  }
+  if (typeof value === "object") {
+    for (const entry of Object.values(value as Record<string, unknown>)) {
+      collectTextValues(entry, depth + 1, out);
+    }
+  }
+  return out;
+}
+
+function appendLocalhostUrls(
+  target: ChatLocalhostUrl[],
+  seen: Set<string>,
+  text: string | undefined,
+): void {
+  if (!text) return;
+  for (const url of extractLocalhostUrlsFromText(text)) {
+    if (seen.has(url.href)) continue;
+    seen.add(url.href);
+    target.push(url);
+  }
+}
+
+export function deriveLocalhostUrlsForWorkLogEntry(entry: ChatWorkLogEntry): ChatLocalhostUrl[] {
+  const urls: ChatLocalhostUrl[] = [];
+  const seen = new Set<string>();
+  appendLocalhostUrls(urls, seen, entry.command);
+  appendLocalhostUrls(urls, seen, entry.output);
+  appendLocalhostUrls(urls, seen, entry.detail);
+  appendLocalhostUrls(urls, seen, entry.label);
+  for (const value of collectTextValues(entry.args)) appendLocalhostUrls(urls, seen, value);
+  for (const value of collectTextValues(entry.result)) appendLocalhostUrls(urls, seen, value);
+  return urls;
+}
+
+function withLocalhostUrls(entry: ChatWorkLogEntry): ChatWorkLogEntry {
+  const localUrls = deriveLocalhostUrlsForWorkLogEntry(entry);
+  const { localUrls: _previousLocalUrls, ...rest } = entry;
+  return localUrls.length > 0 ? { ...rest, localUrls } : rest;
 }
 
 function mergeStreamingText(existing: string, incoming: string): string {
@@ -234,7 +328,7 @@ function buildToolWorkLogEvent(
   return {
     type: "work_log_entry",
     collapseKey,
-    entry: {
+    entry: withLocalhostUrls({
       id: buildWorkLogEntryId(collapseKey, event),
       createdAt: timestamp,
       label: resolvedToolName,
@@ -248,7 +342,7 @@ function buildToolWorkLogEvent(
       ...(event.itemId ? { itemId: event.itemId } : {}),
       ...(event.turnId ? { turnId: event.turnId } : {}),
       ...(event.parentItemId ? { parentItemId: event.parentItemId } : {}),
-    },
+    }),
   };
 }
 
@@ -260,7 +354,7 @@ function buildCommandWorkLogEvent(
   return {
     type: "work_log_entry",
     collapseKey,
-    entry: {
+    entry: withLocalhostUrls({
       id: buildWorkLogEntryId(collapseKey, event),
       createdAt: timestamp,
       label: "Shell",
@@ -272,7 +366,7 @@ function buildCommandWorkLogEvent(
       entryKind: "command",
       ...(event.itemId ? { itemId: event.itemId } : {}),
       ...(event.turnId ? { turnId: event.turnId } : {}),
-    },
+    }),
   };
 }
 
@@ -380,7 +474,7 @@ function mergeWorkLogEntries(previous: ChatWorkLogEntry, next: ChatWorkLogEntry)
     ? previous.label
     : (next.label || previous.label);
 
-  return {
+  return withLocalhostUrls({
     ...previous,
     ...next,
     createdAt: previous.createdAt,
@@ -392,7 +486,7 @@ function mergeWorkLogEntries(previous: ChatWorkLogEntry, next: ChatWorkLogEntry)
     ...(changedFiles.length > 0 ? { changedFiles } : {}),
     ...(mergedOutput ? { output: mergedOutput } : {}),
     ...(result !== undefined ? { result } : {}),
-  };
+  });
 }
 
 function findMatchingWorkLogEntryIndex(

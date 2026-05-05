@@ -28,7 +28,7 @@ stream plus session metadata.
 | `ChatTerminalDrawer.tsx` | Collapsible terminal drawer at the bottom of the chat. |
 | `ChatGitToolbar.tsx` | Git status and quick-action toolbar above the composer. |
 | `ChatProposedPlanCard.tsx` | Plan approval card inline in the transcript. |
-| `ChatWorkLogBlock.tsx` | Collapsible work-log group (see `chatTranscriptRows.ts`). Accepts `animate` so completed groups render a static glyph while in-flight ones pulse; prefers `waiting` over `working` when any entry is `interrupted`. |
+| `ChatWorkLogBlock.tsx` | Collapsible work-log group (see `chatTranscriptRows.ts`). Accepts `animate` so completed groups render a static glyph while in-flight ones pulse; prefers `waiting` over `working` when any entry is `interrupted`. Also renders a `LocalhostServersStrip` above the panels when any work-log entry produced a `localhost`/`127.0.0.1`/`0.0.0.0`/`[::1]` URL: a sky-toned chip per detected URL routes through `openUrlInAdeBrowser()` (so the click opens the Work sidebar Browser tab in a new tab), and a sibling Logs button either reveals the chat's currently active terminal (via `onRevealChatTerminal`) or — when no terminal exists — drafts a "please move this server into the ADE chat terminal" prompt for the agent through `onInsertDraft`. |
 | `AgentQuestionModal.tsx` | Pending input modal for question-type requests. |
 | `CodeHighlighter.tsx`, `chatStatusVisuals.tsx`, `chatSurfaceTheme.ts`, `chatToolAppearance.tsx` | Supporting visuals. `chatStatusVisuals.ChatStatusGlyph` takes an `animate` prop so non-active rows skip the ping/spin animation; `AgentChatMessageList.ActivityIndicator` mirrors this and switches to a dimmed static tone plus a non-looping Brain lottie for `thinking` once the turn ends. |
 | `pendingInput.ts`, `chatExecutionSummary.ts`, `chatNavigation.ts`, `chatTranscriptRows.ts` | Pure state derivations consumed by the UI. |
@@ -101,6 +101,13 @@ and a footer that contains the composer.
   handoff.
 - **Reasoning effort.** Dropdown for models that support reasoning
   tiers.
+- **Fast mode (Codex).** A yellow Lightning chip next to the model
+  selector that toggles `codexFastMode` for the selected session.
+  Renders only when `modelSupportsFastMode(getModelById(modelId))`
+  returns true and the session provider is Codex (today: GPT 5.4 /
+  GPT 5.5 in the Codex CLI). The toggle is also exposed per-slot in
+  parallel mode through `onParallelSlotCodexFastModeChange`. State
+  flows into the next `turn/start` as `serviceTier: "fast"`.
 - **Attachments.** Allows the user to attach files and artifacts to
   the next turn.
 - **Permission controls.** Inline with the composer:
@@ -273,7 +280,15 @@ surface. Each drawer tab creates an untracked shell PTY in the current
 lane, reusing the shared `TerminalView` component (with global
 terminal preferences) rather than managing raw xterm instances
 directly. Tabs track PTY exit state and auto-close the drawer when the
-last tab is removed.
+last tab is removed. When a new chat-owned terminal is created from a
+non-drawer source (e.g. an in-chat agent calling
+`ade --socket app-control launch`, the localhost-strip "Logs" button,
+or another chat surface) the pane subscribes to
+`window.ade.sessions.onChanged` and dedupes the new terminal into the
+drawer instead of opening a duplicate tab — `ChatTerminalDrawer.openTab`
+checks the existing tab list by `sessionId` / `ptyId` before pushing a
+new entry, and the `AgentChatPane` `revealCreatedTerminal` effect calls
+the same drawer with the recovered `{ terminalId, ptyId, label }`.
 
 `ChatTerminalToggle` is the header button that shows the active tab
 count.

@@ -32,7 +32,7 @@ import { SmartTooltip } from "../ui/SmartTooltip";
 import { useFloatingPaneEmbeddedChrome, type FloatingPaneEmbeddedChrome } from "../ui/FloatingPane";
 import { PaneTilingLayout, type PaneConfig } from "../ui/PaneTilingLayout";
 import { cn } from "../ui/cn";
-import { resolveTrackedCliResumeCommand } from "./cliLaunch";
+import { resolveTrackedCliResumeCommand, type CliProvider } from "./cliLaunch";
 import { buildWorkSessionTilingTree, type TilingPreset } from "./workSessionTiling";
 import { laneSurfaceTint } from "../lanes/laneDesignTokens";
 
@@ -224,7 +224,7 @@ const MODE_OPTIONS: Array<{
   Icon: typeof Chats;
 }> = [
   { kind: "chat", label: "Chat", description: "Compose a new ADE chat in this lane.", Icon: Chats },
-  { kind: "cli", label: "CLI", description: "Start a tracked Claude Code or Codex CLI session.", Icon: Code },
+  { kind: "cli", label: "CLI", description: "Start a tracked agent CLI session.", Icon: Code },
   { kind: "shell", label: "Shell", description: "Open a plain terminal shell in this lane's worktree.", Icon: Terminal },
 ];
 
@@ -452,11 +452,12 @@ export function WorkViewArea({
   onOpenChatSession: (session: AgentChatSession) => void | Promise<void>;
   onLaunchPtySession: (args: {
     laneId: string;
-    profile: "claude" | "codex" | "shell";
+    profile: CliProvider | "shell";
     title?: string;
     startupCommand?: string;
     command?: string;
     args?: string[];
+    env?: Record<string, string>;
     tracked?: boolean;
   }) => Promise<unknown>;
   onShowDraftKind: (kind: WorkDraftKind) => void;

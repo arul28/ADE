@@ -219,6 +219,7 @@ export const IPC = {
   appControlAttachToTarget: "ade.appControl.attachToTarget",
   appControlEvent: "ade.appControl.event",
   builtInBrowserGetStatus: "ade.builtInBrowser.getStatus",
+  builtInBrowserShowPanel: "ade.builtInBrowser.showPanel",
   builtInBrowserSetBounds: "ade.builtInBrowser.setBounds",
   builtInBrowserAttachWebview: "ade.builtInBrowser.attachWebview",
   builtInBrowserNavigate: "ade.builtInBrowser.navigate",

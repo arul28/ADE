@@ -156,19 +156,31 @@ Renderer surfaces:
 - `apps/desktop/src/renderer/components/terminals/useSessionDelta.ts` —
   fetches `SessionDeltaSummary` for a given session.
 - `apps/desktop/src/renderer/components/terminals/cliLaunch.ts` —
-  builds Claude/Codex CLI launch payloads with permission and sandbox
-  flags. `buildTrackedCliLaunchCommand` returns a typed
-  `TrackedCliLaunchCommand` (`{ command, args, startupCommand }`) so
-  `ptyService.create` can spawn the CLI directly via argv (preferred)
-  while `startupCommand` stays as a shell-typed fallback for systems
-  whose Claude/Codex shim only resolves through the user's shell rc.
-  Both providers get ADE session guidance injected at launch:
-  Claude through `--append-system-prompt` (text from
-  `ADE_CLI_AGENT_GUIDANCE`), Codex through a leading initial prompt
-  built from `ADE_CLI_INLINE_GUIDANCE`. The legacy
+  builds tracked CLI launch payloads with permission flags for every
+  supported provider. `CliProvider = "claude" | "codex" | "cursor" |
+  "droid" | "opencode"` and `LaunchProfile = CliProvider | "shell"`;
+  `LAUNCH_PROFILE_TOOL_TYPE` and `LAUNCH_PROFILE_TITLE` map a launch
+  profile to the recorded `TerminalToolType` (`cursor-cli`, `droid`,
+  `opencode`, etc.) and the human tab title. `buildTrackedCliLaunchCommand`
+  returns a typed `TrackedCliLaunchCommand` (`{ command?, args,
+  startupCommand, env? }`) so `ptyService.create` can spawn Claude/
+  Codex directly via argv (preferred) while `startupCommand` stays as a
+  shell-typed fallback for the providers (Cursor, Droid, OpenCode) that
+  need a multi-line shell preamble: Cursor pre-allocates a chat with
+  `cursor-agent create-chat` so the resume target is known up front,
+  Droid materializes a temp `--settings` JSON keyed off the active
+  permission mode, and OpenCode passes its inline permission policy
+  through the `OPENCODE_CONFIG_CONTENT` env var. ADE session guidance is
+  injected on every launch — Claude through `--append-system-prompt`
+  (text from `ADE_CLI_AGENT_GUIDANCE`), every other provider through a
+  leading prompt built from `ADE_CLI_INLINE_GUIDANCE`. The legacy
   `buildTrackedCliStartupCommand` and `defaultTrackedCliStartupCommand`
   are now thin wrappers over `buildTrackedCliLaunchCommand` for
-  callers that only need the shell string.
+  callers that only need the shell string. `buildTrackedCliResumeCommand`
+  rebuilds a resume command line from `TerminalResumeMetadata` for any
+  provider; `parseTrackedCliResumeCommand`
+  (`apps/desktop/src/main/utils/terminalSessionSignals.ts`) is the
+  inverse it relies on for round-tripping.
 - `apps/desktop/src/shared/adeCliGuidance.ts` — single source of truth
   for the ADE session guidance text injected into Claude/Codex CLI
   launches. Exported as `ADE_CLI_AGENT_GUIDANCE` and
@@ -231,10 +243,11 @@ schema is used for:
 
 - interactive shell PTYs (`toolType = "shell"`)
 - managed processes launched by `processService` (`toolType = "run-shell"`)
-- CLI agent terminals (`claude`, `codex`, `claude-orchestrated`,
-  `codex-orchestrated`, `opencode-orchestrated`)
-- agent chat sessions that run through the Claude/Codex SDKs rather than
-  a PTY (`claude-chat`, `codex-chat`, `opencode-chat`)
+- tracked CLI agent terminals (`claude`, `codex`, `cursor-cli`, `droid`,
+  `opencode`, plus the `*-orchestrated` variants used by missions)
+- agent chat sessions that run through the Claude/Codex/Cursor/Droid/
+  OpenCode SDKs rather than a PTY (`claude-chat`, `codex-chat`,
+  `opencode-chat`, `cursor-chat`, `droid-chat`)
 - other tracked tools (`cursor`, `aider`, `continue`, `other`)
 
 Status transitions: `running` → `completed` | `failed` | `disposed`.
@@ -376,12 +389,15 @@ Chat-owned terminals (`ade.terminal.*` — used by the chat terminal drawer, the
 `activeTerminalByChatSession` (chatSessionId → terminalId). Disposing
 the active terminal automatically promotes the most recently created
 sibling, so `ade terminal read --chat-session <id>` always resolves a
-sensible target for in-chat agents. The headless ADE runtime and
-agent chat runtime both export `ADE_CHAT_SESSION_ID`,
-`ADE_LANE_ID`, `ADE_PROJECT_ROOT`, and `ADE_WORKSPACE_ROOT` into the
-agent process so an agent can call `ade --socket terminal read
---chat-session "$ADE_CHAT_SESSION_ID" --text` without resolving the
-chat ID itself.
+sensible target for in-chat agents. Every PTY launched through
+`ptyService.create` runs through `withAdeTerminalContextEnv` which
+exports `ADE_PROJECT_ROOT`, `ADE_LANE_ID`, and (when the PTY is
+chat-owned) `ADE_CHAT_SESSION_ID` into the spawn env — that's how a
+plain shell that the user types `ade --socket terminal read --chat-session
+"$ADE_CHAT_SESSION_ID" --text` into will resolve to the parent chat's
+terminal even though no agent runtime spawned it. The headless ADE
+runtime and agent chat runtime both layer the same identity envs
+(plus `ADE_WORKSPACE_ROOT`) on top through `buildAgentRuntimeEnv`.
 
 Processes (managed):
 

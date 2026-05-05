@@ -15,6 +15,7 @@ import { createLogIntegrityService, type LogIntegrityService } from "./logIntegr
 
 type RepairOptions = {
   logger?: Logger | null;
+  mode?: "auto" | "local" | "shared";
 };
 
 type AdeProjectServiceArgs = {
@@ -88,6 +89,30 @@ const TRACKED_PLACEHOLDER_PATHS = [
   path.join("skills", ".gitkeep"),
 ];
 
+const SHARED_SCAFFOLD_FILES = [
+  ".gitignore",
+  "ade.yaml",
+];
+
+const SHARED_SCAFFOLD_DIRS = [
+  "templates",
+  "skills",
+  path.join("workflows", "linear"),
+  "project-icons",
+];
+
+function isAdeRootIgnoreRule(line: string): boolean {
+  const trimmed = line.trim();
+  return trimmed === ".ade"
+    || trimmed === ".ade/"
+    || trimmed === ".ade/*"
+    || trimmed === ".ade/**"
+    || trimmed === "/.ade"
+    || trimmed === "/.ade/"
+    || trimmed === "/.ade/*"
+    || trimmed === "/.ade/**";
+}
+
 function normalizeAdeRelativePath(value: string): string {
   return value.replace(/\\/g, "/").replace(/^\.?\//, "");
 }
@@ -99,7 +124,8 @@ function isTrackedAdeFile(relativePath: string): boolean {
     || normalized === "cto/identity.yaml"
     || normalized.startsWith("templates/")
     || normalized.startsWith("skills/")
-    || normalized.startsWith("workflows/");
+    || normalized.startsWith("workflows/")
+    || normalized.startsWith("project-icons/");
 }
 
 function walkFiles(rootPath: string): string[] {
@@ -112,6 +138,44 @@ function walkFiles(rootPath: string): string[] {
     out.push(...walkFiles(path.join(rootPath, entry.name)));
   }
   return out;
+}
+
+function hasAnyFile(rootPath: string): boolean {
+  if (!fs.existsSync(rootPath)) return false;
+  const stat = fs.statSync(rootPath);
+  if (stat.isFile()) return true;
+  if (!stat.isDirectory()) return false;
+  for (const entry of fs.readdirSync(rootPath, { withFileTypes: true })) {
+    if (hasAnyFile(path.join(rootPath, entry.name))) return true;
+  }
+  return false;
+}
+
+function hasSharedAdeScaffold(paths: AdeLayoutPaths): boolean {
+  for (const relativePath of SHARED_SCAFFOLD_FILES) {
+    if (fs.existsSync(path.join(paths.adeDir, relativePath))) return true;
+  }
+  for (const relativePath of SHARED_SCAFFOLD_DIRS) {
+    if (hasAnyFile(path.join(paths.adeDir, relativePath))) return true;
+  }
+  return false;
+}
+
+function resolveGitDir(projectRoot: string): string | null {
+  const gitPath = path.join(projectRoot, ".git");
+  if (!fs.existsSync(gitPath)) return null;
+  const stat = fs.statSync(gitPath);
+  if (stat.isDirectory()) return gitPath;
+  if (!stat.isFile()) return null;
+  const raw = fs.readFileSync(gitPath, "utf8");
+  const match = raw.match(/^gitdir:\s*(.+)\s*$/im);
+  if (!match?.[1]) return null;
+  return path.resolve(projectRoot, match[1]);
+}
+
+function resolveGitInfoExcludePath(projectRoot: string): string | null {
+  const gitDir = resolveGitDir(projectRoot);
+  return gitDir ? path.join(gitDir, "info", "exclude") : null;
 }
 
 function validateYamlDocument(filePath: string, requiredKeys: string[]): string | null {
@@ -128,16 +192,13 @@ function validateYamlDocument(filePath: string, requiredKeys: string[]): string 
 }
 
 function scrubAdeExcludeRule(projectRoot: string): AdeSyncAction | null {
-  const gitDir = path.join(projectRoot, ".git");
-  const excludePath = path.join(gitDir, "info", "exclude");
+  const excludePath = resolveGitInfoExcludePath(projectRoot);
+  if (!excludePath) return null;
   if (!fs.existsSync(excludePath)) return null;
   const raw = fs.readFileSync(excludePath, "utf8");
   const nextLines = raw
     .split(/\r?\n/)
-    .filter((line) => {
-      const trimmed = line.trim();
-      return trimmed !== ".ade/" && trimmed !== ".ade";
-    });
+    .filter((line) => !isAdeRootIgnoreRule(line));
   while (nextLines.length > 0 && nextLines[nextLines.length - 1]?.trim() === "") {
     nextLines.pop();
   }
@@ -147,16 +208,28 @@ function scrubAdeExcludeRule(projectRoot: string): AdeSyncAction | null {
   return { kind: "scrub_exclude", relativePath: ".git/info/exclude", detail: "Removed stale .ade ignore rule." };
 }
 
+function ensureAdeLocalExcludeRule(projectRoot: string): AdeSyncAction | null {
+  const excludePath = resolveGitInfoExcludePath(projectRoot);
+  if (!excludePath) return null;
+  const raw = fs.existsSync(excludePath) ? fs.readFileSync(excludePath, "utf8") : "";
+  if (raw.split(/\r?\n/).some(isAdeRootIgnoreRule)) return null;
+  fs.mkdirSync(path.dirname(excludePath), { recursive: true });
+  const separator = raw.length > 0 && !raw.endsWith("\n") ? "\n" : "";
+  fs.writeFileSync(excludePath, `${raw}${separator}.ade/\n`, "utf8");
+  return {
+    kind: "reconcile",
+    relativePath: ".git/info/exclude",
+    detail: "Ignored local-only ADE runtime state.",
+  };
+}
+
 function scrubAdeRootGitignoreRule(projectRoot: string): AdeSyncAction | null {
   const gitignorePath = path.join(projectRoot, ".gitignore");
   if (!fs.existsSync(gitignorePath)) return null;
   const raw = fs.readFileSync(gitignorePath, "utf8");
   const nextLines = raw
     .split(/\r?\n/)
-    .filter((line) => {
-      const trimmed = line.trim();
-      return trimmed !== ".ade" && trimmed !== ".ade/" && trimmed !== "/.ade" && trimmed !== "/.ade/";
-    });
+    .filter((line) => !isAdeRootIgnoreRule(line));
   while (nextLines.length > 0 && nextLines[nextLines.length - 1]?.trim() === "") {
     nextLines.pop();
   }
@@ -256,24 +329,33 @@ export function initializeOrRepairAdeProject(projectRoot: string, options: Repai
   const paths = resolveAdeLayout(projectRoot);
   const actions: AdeSyncAction[] = [];
   fs.mkdirSync(paths.adeDir, { recursive: true });
+  const mode = options.mode ?? "auto";
+  const shouldRepairSharedScaffold = mode === "shared" || (mode === "auto" && hasSharedAdeScaffold(paths));
 
-  const scrubAction = scrubAdeExcludeRule(projectRoot);
-  if (scrubAction) actions.push(scrubAction);
-  const scrubRootGitignoreAction = scrubAdeRootGitignoreRule(projectRoot);
-  if (scrubRootGitignoreAction) actions.push(scrubRootGitignoreAction);
+  if (shouldRepairSharedScaffold) {
+    const scrubAction = scrubAdeExcludeRule(projectRoot);
+    if (scrubAction) actions.push(scrubAction);
+    const scrubRootGitignoreAction = scrubAdeRootGitignoreRule(projectRoot);
+    if (scrubRootGitignoreAction) actions.push(scrubRootGitignoreAction);
+  } else {
+    const localExcludeAction = ensureAdeLocalExcludeRule(projectRoot);
+    if (localExcludeAction) actions.push(localExcludeAction);
+  }
 
   for (const entry of ADE_LAYOUT_DEFINITIONS) {
     const absolutePath = path.join(paths.adeDir, entry.relativePath);
-    if (entry.pathType === "directory") {
+    if (entry.pathType === "directory" && (shouldRepairSharedScaffold || entry.kind === "ignored")) {
       ensureDir(absolutePath, entry.relativePath, actions);
     }
   }
 
-  ensureFile(path.join(paths.adeDir, ".gitignore"), buildAdeGitignore(), ".gitignore", actions);
-  ensureFileIfMissing(paths.sharedConfigPath, DEFAULT_ADE_CONFIG, "ade.yaml", actions);
-  ensureFileIfMissing(path.join(paths.ctoDir, "identity.yaml"), DEFAULT_CTO_IDENTITY, "cto/identity.yaml", actions);
-  for (const relativePath of TRACKED_PLACEHOLDER_PATHS) {
-    ensureFileIfMissing(path.join(paths.adeDir, relativePath), "", relativePath, actions);
+  if (shouldRepairSharedScaffold) {
+    ensureFile(path.join(paths.adeDir, ".gitignore"), buildAdeGitignore(), ".gitignore", actions);
+    ensureFileIfMissing(paths.sharedConfigPath, DEFAULT_ADE_CONFIG, "ade.yaml", actions);
+    ensureFileIfMissing(path.join(paths.ctoDir, "identity.yaml"), DEFAULT_CTO_IDENTITY, "cto/identity.yaml", actions);
+    for (const relativePath of TRACKED_PLACEHOLDER_PATHS) {
+      ensureFileIfMissing(path.join(paths.adeDir, relativePath), "", relativePath, actions);
+    }
   }
 
   repairLegacyPaths(paths, actions);
@@ -302,6 +384,10 @@ export function initializeOrRepairAdeProject(projectRoot: string, options: Repai
       actions,
     },
   };
+}
+
+export function ensureSharedAdeProjectScaffold(projectRoot: string, options: RepairOptions = {}): AdeCleanupResult {
+  return initializeOrRepairAdeProject(projectRoot, { ...options, mode: "shared" }).cleanup;
 }
 
 export function createAdeProjectService(args: AdeProjectServiceArgs) {
@@ -334,7 +420,9 @@ export function createAdeProjectService(args: AdeProjectServiceArgs) {
 
   const validateIdentityFiles = (): AdeHealthIssue[] => {
     const issues: AdeHealthIssue[] = [];
-    const ctoIdentityError = validateYamlDocument(path.join(repair.paths.ctoDir, "identity.yaml"), ["name", "updatedAt"]);
+    const identityPath = path.join(repair.paths.ctoDir, "identity.yaml");
+    if (!fs.existsSync(identityPath)) return issues;
+    const ctoIdentityError = validateYamlDocument(identityPath, ["name", "updatedAt"]);
     if (ctoIdentityError) {
       issues.push({
         code: "cto-identity-invalid",
@@ -438,7 +526,7 @@ export function createAdeProjectService(args: AdeProjectServiceArgs) {
   return {
     paths: repair.paths,
     getSnapshot,
-    initializeOrRepair: () => initializeOrRepairAdeProject(args.projectRoot, { logger: args.logger }).cleanup,
+    initializeOrRepair: () => initializeOrRepairAdeProject(args.projectRoot, { logger: args.logger, mode: "shared" }).cleanup,
     runIntegrityCheck,
     logIntegrityService,
   };

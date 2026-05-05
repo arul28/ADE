@@ -750,9 +750,11 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Shell sessions
 
   Shell commands create tracked PTY sessions that ADE can display and audit.
+  Inside an ADE chat, shell starts attach to the active chat automatically.
 
     $ ade shell start --lane <lane> -- npm test     Start a tracked shell session
     $ ade shell start --lane <lane> -c "npm test"   Start with a command string
+    $ ade shell start --lane <lane> --chat-session <id> -c "npm test"
     $ ade shell write <pty-id> --data "q"           Write data to a PTY
     $ ade shell resize <pty-id> --cols 120 --rows 36
     $ ade shell close <pty-id>                      Dispose a PTY
@@ -792,7 +794,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
   requires the desktop socket because the app owns provider/session state.
 
     $ ade chat list --text                          List chat sessions
-    $ ade chat create --lane <lane> --provider codex --model <model>
+    $ ade chat create --lane <lane> --provider codex --model <model> [--fast]
     $ ade chat send <session> --text "next step"    Send a message
     $ ade chat interrupt <session>                  Stop an active turn
     $ ade chat resume <session>                     Resume a session
@@ -933,8 +935,10 @@ const HELP_BY_COMMAND: Record<string, string> = {
 
   Tabs and navigation:
     $ ade --socket browser status --text           Show active tab and tab list
+    $ ade --socket browser panel --text            Open the Work sidebar Browser panel
     $ ade --socket browser open https://example.com --text
     $ ade --socket browser open localhost:5173 --new-tab --text
+    $ ade --socket browser open https://example.com --no-panel
     $ ade --socket browser new-tab --url https://example.com
     $ ade --socket browser switch --tab <tab-id>
     $ ade --socket browser close --tab <tab-id>
@@ -955,8 +959,11 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade --socket browser clear-selection
 
   Flags:
-    --url <url>          URL for open/new-tab. Bare localhost gets http://.
+    --url <url>          URL for panel/open/new-tab. Bare localhost gets http://.
     --new-tab           Open navigation in a new tab instead of active tab.
+    --active-tab         Navigate the active tab; aliases: --current-tab, --same-tab.
+    --background         Create a new tab without activating it.
+    --no-panel           Keep the Work sidebar panel hidden; alias: --hidden.
     --tab, --tab-id <id> Target tab for switch/close/open.
 `,
   tests: `${ADE_BANNER}
@@ -2187,6 +2194,10 @@ function buildShellPlan(args: string[]): CliPlan {
   if (sub === "actions") return { kind: "execute", label: "shell actions", steps: [listActionsStep("actions", "pty")] };
   if (sub === "start" || sub === "create") {
     const laneId = readLaneId(args);
+    const chatSessionId = asString(
+      readValue(args, ["--chat-session", "--chat-session-id", "--session", "--session-id"])
+      ?? process.env.ADE_CHAT_SESSION_ID,
+    );
     const startupCommandIndex = args.indexOf("--");
     const startupCommand = startupCommandIndex >= 0
       ? args.splice(startupCommandIndex + 1).map(shellEscapeToken).join(" ")
@@ -2194,6 +2205,7 @@ function buildShellPlan(args: string[]): CliPlan {
     if (startupCommandIndex >= 0) args.splice(startupCommandIndex, 1);
     const input = collectGenericObjectArgs(args, {
       ...(laneId ? { laneId } : {}),
+      ...(chatSessionId ? { chatSessionId } : {}),
       cwd: readValue(args, ["--cwd"]),
       title: readValue(args, ["--title"]),
       startupCommand,
@@ -2275,7 +2287,13 @@ function buildChatPlan(args: string[]): CliPlan {
   if (sub === "show" || sub === "status") return { kind: "execute", label: "chat status", steps: [actionArgsListStep("result", "chat", "getSessionSummary", [requireValue(sessionId, "sessionId")])] };
   if (sub === "create" || sub === "spawn") {
     const modelArg = readValue(args, ["--model", "--model-id"]);
-    return { kind: "execute", label: "chat create", steps: [actionStep("result", "chat", "createSession", collectGenericObjectArgs(args, { laneId: readLaneId(args), provider: readValue(args, ["--provider"]), model: modelArg, modelId: modelArg, permissionMode: readValue(args, ["--permission-mode", "--permissions"]), droidPermissionMode: readValue(args, ["--droid-permission-mode", "--droid-autonomy", "--autonomy"]), title: readValue(args, ["--title"]), surface: readValue(args, ["--surface"]) ?? "work" }))] };
+    let codexFastMode: boolean | undefined;
+    if (readFlag(args, ["--fast", "--codex-fast"])) {
+      codexFastMode = true;
+    } else if (readFlag(args, ["--standard", "--no-fast", "--no-codex-fast"])) {
+      codexFastMode = false;
+    }
+    return { kind: "execute", label: "chat create", steps: [actionStep("result", "chat", "createSession", collectGenericObjectArgs(args, { laneId: readLaneId(args), provider: readValue(args, ["--provider"]), model: modelArg, modelId: modelArg, permissionMode: readValue(args, ["--permission-mode", "--permissions"]), droidPermissionMode: readValue(args, ["--droid-permission-mode", "--droid-autonomy", "--autonomy"]), title: readValue(args, ["--title"]), surface: readValue(args, ["--surface"]) ?? "work", ...(codexFastMode !== undefined ? { codexFastMode } : {}) }))] };
   }
   if (sub === "send") return { kind: "execute", label: "chat send", steps: [actionStep("result", "chat", "sendMessage", withSession({ sessionId: requireValue(sessionId, "sessionId"), text: requireValue(readValue(args, ["--text", "--message"]) ?? args.join(" "), "message text") }))] };
   if (sub === "interrupt") return { kind: "execute", label: "chat interrupt", steps: [actionStep("result", "chat", "interrupt", withSession({ sessionId: requireValue(sessionId, "sessionId") }))] };
@@ -2732,35 +2750,63 @@ function buildBrowserPlan(args: string[]): CliPlan {
   if (sub === "status" || sub === "tabs" || sub === "list") {
     return { kind: "execute", label: "browser status", steps: [actionStep("result", "built_in_browser", "getStatus", collectGenericObjectArgs(args))] };
   }
+  if (sub === "panel" || sub === "show" || sub === "open-panel" || sub === "reveal") {
+    const panelArgs: JsonObject = {};
+    maybePut(panelArgs, "url", readValue(args, ["--url"]));
+    maybePut(panelArgs, "tabId", readValue(args, ["--tab", "--tab-id"]));
+    return { kind: "execute", label: "browser panel", steps: [actionStep("result", "built_in_browser", "showPanel", collectGenericObjectArgs(args, panelArgs))] };
+  }
   if (sub === "open" || sub === "navigate" || sub === "go") {
     const explicitUrl = readValue(args, ["--url"]);
     const tabId = readValue(args, ["--tab", "--tab-id"]);
+    const activeTab = readFlag(args, ["--active-tab", "--current-tab", "--same-tab"]);
     const newTab = readFlag(args, ["--new-tab"]);
-    const url = explicitUrl ?? args.filter((arg) => arg !== "--active-tab").join(" ");
+    const noPanel = readFlag(args, ["--no-panel", "--hidden"]);
+    const genericArgs = collectGenericObjectArgs(args);
+    const genericUrl = typeof genericArgs.url === "string" ? genericArgs.url : null;
+    const url = explicitUrl ?? genericUrl ?? args.join(" ");
     if (!url.trim()) throw new CliUsageError("browser open requires a URL.");
-    return { kind: "execute", label: "browser open", steps: [actionStep("result", "built_in_browser", "navigate", collectGenericObjectArgs(args, {
+    return { kind: "execute", label: "browser open", steps: [actionStep("result", "built_in_browser", "navigate", {
       url,
       tabId,
-      newTab: newTab ? true : undefined,
-    }))] };
+      newTab: newTab && !activeTab ? true : undefined,
+      openPanel: !noPanel,
+      ...genericArgs,
+    })] };
   }
   if (sub === "new-tab" || sub === "tab" || sub === "new") {
     const background = readFlag(args, ["--background"]);
-    const url = readValue(args, ["--url"]) ?? (args.length ? args.join(" ") : undefined);
-    return { kind: "execute", label: "browser new tab", steps: [actionStep("result", "built_in_browser", "createTab", collectGenericObjectArgs(args, {
+    const noPanel = readFlag(args, ["--no-panel", "--hidden"]);
+    const explicitUrl = readValue(args, ["--url"]);
+    const genericArgs = collectGenericObjectArgs(args);
+    const genericUrl = typeof genericArgs.url === "string" ? genericArgs.url : null;
+    const url = explicitUrl ?? genericUrl ?? (args.length ? args.join(" ") : undefined);
+    return { kind: "execute", label: "browser new tab", steps: [actionStep("result", "built_in_browser", "createTab", {
       url,
       activate: background ? false : undefined,
-    }))] };
+      openPanel: !noPanel,
+      ...genericArgs,
+    })] };
   }
   if (sub === "switch" || sub === "activate") {
-    return { kind: "execute", label: "browser switch", steps: [actionStep("result", "built_in_browser", "switchTab", collectGenericObjectArgs(args, {
-      tabId: requireValue(readValue(args, ["--tab", "--tab-id"]) ?? firstPositional(args), "tabId"),
-    }))] };
+    const noPanel = readFlag(args, ["--no-panel", "--hidden"]);
+    const explicitTabId = readValue(args, ["--tab", "--tab-id"]);
+    const genericArgs = collectGenericObjectArgs(args);
+    const genericTabId = typeof genericArgs.tabId === "string" ? genericArgs.tabId : null;
+    return { kind: "execute", label: "browser switch", steps: [actionStep("result", "built_in_browser", "switchTab", {
+      tabId: requireValue(explicitTabId ?? genericTabId ?? firstPositional(args), "tabId"),
+      openPanel: !noPanel,
+      ...genericArgs,
+    })] };
   }
   if (sub === "close" || sub === "close-tab") {
-    return { kind: "execute", label: "browser close", steps: [actionStep("result", "built_in_browser", "closeTab", collectGenericObjectArgs(args, {
-      tabId: requireValue(readValue(args, ["--tab", "--tab-id"]) ?? firstPositional(args), "tabId"),
-    }))] };
+    const explicitTabId = readValue(args, ["--tab", "--tab-id"]);
+    const genericArgs = collectGenericObjectArgs(args);
+    const genericTabId = typeof genericArgs.tabId === "string" ? genericArgs.tabId : null;
+    return { kind: "execute", label: "browser close", steps: [actionStep("result", "built_in_browser", "closeTab", {
+      tabId: requireValue(explicitTabId ?? genericTabId ?? firstPositional(args), "tabId"),
+      ...genericArgs,
+    })] };
   }
   if (sub === "reload" || sub === "refresh") return { kind: "execute", label: "browser reload", steps: [actionStep("result", "built_in_browser", "reload", collectGenericObjectArgs(args))] };
   if (sub === "back") return { kind: "execute", label: "browser back", steps: [actionStep("result", "built_in_browser", "goBack", collectGenericObjectArgs(args))] };
@@ -3568,6 +3614,7 @@ function checkProviderReadiness(value: unknown): ReadinessCheck {
     codex: commandExists("codex"),
     opencode: commandExists("opencode"),
     cursor: commandExists("agent") || commandExists("cursor-agent"),
+    droid: commandExists("droid"),
   };
   const apiKeyProviders = Object.keys(apiKeys).filter((key) => Boolean(asString(apiKeys[key])));
   const ready = Boolean(defaultProvider || defaultModel || apiKeyProviders.length || Object.values(cliProviders).some(Boolean));
@@ -4773,7 +4820,7 @@ function inferFormatter(plan: CliPlan & { kind: "execute" }): FormatterId | unde
   if (label === "app control status" || label === "app control launch" || label === "app control connect" || label === "app control stop") return "app-control-status";
   if (label === "app control snapshot" || label === "app control screenshot") return "app-control-snapshot";
   if (label === "app control select" || label === "app control inspect point") return "app-control-selection";
-  if (label === "browser status" || label === "browser open" || label === "browser new tab" || label === "browser switch" || label === "browser close") return "browser-status";
+  if (label === "browser status" || label === "browser panel" || label === "browser open" || label === "browser new tab" || label === "browser switch" || label === "browser close") return "browser-status";
   if (label === "terminal list" || label === "terminal active") return "terminal-list";
   if (label === "terminal read") return "terminal-read";
   if (label === "actions list") return "actions-list";

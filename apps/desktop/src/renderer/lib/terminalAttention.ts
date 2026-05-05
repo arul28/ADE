@@ -42,6 +42,9 @@ const NEEDS_INPUT_PATTERNS: RegExp[] = [
 const IDLE_ATTENTION_TOOL_TYPES = new Set<TerminalToolType>([
   "claude",
   "codex",
+  "cursor-cli",
+  "droid",
+  "opencode",
   "claude-orchestrated",
   "codex-orchestrated",
   "opencode-orchestrated",

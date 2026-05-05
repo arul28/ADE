@@ -17,6 +17,7 @@ struct WorkSessionSettingsSheet: View {
   @State var selectedReasoningEffort: String
   @State var selectedRuntimeMode: String
   @State var selectedCursorModeId: String
+  @State var selectedCodexFastMode: Bool
   @State var busy = false
   @State var errorMessage: String?
 
@@ -35,6 +36,7 @@ struct WorkSessionSettingsSheet: View {
     _selectedReasoningEffort = State(initialValue: summary.reasoningEffort ?? "")
     _selectedRuntimeMode = State(initialValue: workInitialRuntimeMode(summary))
     _selectedCursorModeId = State(initialValue: workInitialCursorModeId(summary))
+    _selectedCodexFastMode = State(initialValue: summary.codexFastMode ?? false)
   }
 
   var selectedModel: AgentChatModelInfo? {
@@ -52,6 +54,14 @@ struct WorkSessionSettingsSheet: View {
 
   var resolvedInitialReasoningEffort: String {
     summary.reasoningEffort ?? ""
+  }
+
+  var resolvedInitialCodexFastMode: Bool {
+    summary.codexFastMode ?? false
+  }
+
+  var supportsCodexFastModeToggle: Bool {
+    summary.provider == "codex" && (selectedModel?.supportsCodexFastMode == true)
   }
 
   var runtimeOptions: [WorkRuntimeOption] {
@@ -231,6 +241,24 @@ struct WorkSessionSettingsSheet: View {
             }
           }
 
+          if supportsCodexFastModeToggle {
+            GlassSection(title: "Speed") {
+              VStack(alignment: .leading, spacing: 8) {
+                Toggle(isOn: $selectedCodexFastMode) {
+                  VStack(alignment: .leading, spacing: 2) {
+                    Text("Fast mode")
+                      .font(.subheadline.weight(.semibold))
+                      .foregroundStyle(ADEColor.textPrimary)
+                    Text("Routes Codex turns to the fast service tier (uses extra usage credits).")
+                      .font(.caption)
+                      .foregroundStyle(ADEColor.textSecondary)
+                  }
+                }
+                .tint(ADEColor.accent)
+              }
+            }
+          }
+
           if summary.provider == "cursor", !cursorModeOptions.isEmpty {
             GlassSection(title: "Cursor mode") {
               VStack(alignment: .leading, spacing: 12) {
@@ -309,6 +337,9 @@ struct WorkSessionSettingsSheet: View {
           }
         } else {
           selectedReasoningEffort = ""
+        }
+        if !supportsCodexFastModeToggle {
+          selectedCodexFastMode = false
         }
       }
       .task {

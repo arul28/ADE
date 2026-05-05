@@ -55,6 +55,7 @@ import type {
   BuiltInBrowserBoundsArgs,
   BuiltInBrowserCreateTabArgs,
   BuiltInBrowserNavigateArgs,
+  BuiltInBrowserOpenPanelArgs,
   BuiltInBrowserSelectPointArgs,
   BuiltInBrowserTabArgs,
   ReviewListRunsArgs,
@@ -2290,7 +2291,8 @@ export function registerIpc({
     }
     const tabId = optionalBuiltInBrowserString(record, "tabId", channel, 128);
     const newTab = record.newTab === true ? true : undefined;
-    return { url, tabId, newTab };
+    const openPanel = optionalBoolean(record.openPanel);
+    return { url, tabId, newTab, openPanel };
   };
 
   function optionalBuiltInBrowserString(
@@ -2308,18 +2310,33 @@ export function registerIpc({
     return trimmed;
   }
 
+  function optionalBoolean(value: unknown): boolean | undefined {
+    if (value === true) return true;
+    if (value === false) return false;
+    return undefined;
+  }
+
   const parseBuiltInBrowserTabArgs = (value: unknown, channel: string): BuiltInBrowserTabArgs => {
     const record = builtInBrowserRecord(value, channel, true);
     const tabId = optionalBuiltInBrowserString(record, "tabId", channel, 128);
     if (!tabId) return invalidBuiltInBrowserArg(channel, "tabId must be a non-empty string");
-    return { tabId };
+    const openPanel = optionalBoolean(record.openPanel);
+    return { tabId, openPanel };
   };
 
   const parseBuiltInBrowserCreateTabArgs = (value: unknown, channel: string): BuiltInBrowserCreateTabArgs => {
     const record = builtInBrowserRecord(value, channel, false);
     const url = optionalBuiltInBrowserString(record, "url", channel, 4096);
     const activate = record.activate === false ? false : undefined;
-    return { url, activate };
+    const openPanel = optionalBoolean(record.openPanel);
+    return { url, activate, openPanel };
+  };
+
+  const parseBuiltInBrowserOpenPanelArgs = (value: unknown, channel: string): BuiltInBrowserOpenPanelArgs => {
+    const record = builtInBrowserRecord(value, channel, false);
+    const url = optionalBuiltInBrowserString(record, "url", channel, 4096);
+    const tabId = optionalBuiltInBrowserString(record, "tabId", channel, 128);
+    return { url, tabId };
   };
 
   const parseBuiltInBrowserSelectPointArgs = (value: unknown, channel: string): BuiltInBrowserSelectPointArgs => {
@@ -6540,6 +6557,11 @@ export function registerIpc({
   ipcMain.handle(IPC.builtInBrowserGetStatus, async (event) => {
     guardBuiltInBrowserIpc(event, IPC.builtInBrowserGetStatus, { windowMs: 10_000, max: 120 });
     return ensureBuiltInBrowser().getStatus();
+  });
+
+  ipcMain.handle(IPC.builtInBrowserShowPanel, async (event, arg) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserShowPanel, { windowMs: 10_000, max: 80 });
+    return ensureBuiltInBrowser().showPanel(parseBuiltInBrowserOpenPanelArgs(arg, IPC.builtInBrowserShowPanel));
   });
 
   ipcMain.handle(IPC.builtInBrowserSetBounds, async (event, arg) => {

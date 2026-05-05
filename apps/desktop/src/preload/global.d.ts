@@ -669,6 +669,7 @@ import type {
   BuiltInBrowserCreateTabArgs,
   BuiltInBrowserEventPayload,
   BuiltInBrowserNavigateArgs,
+  BuiltInBrowserOpenPanelArgs,
   BuiltInBrowserScreenshot,
   BuiltInBrowserSelectPointArgs,
   BuiltInBrowserSelectResult,
@@ -1402,6 +1403,7 @@ declare global {
       };
       builtInBrowser: {
         getStatus: () => Promise<BuiltInBrowserStatus>;
+        showPanel: (args?: BuiltInBrowserOpenPanelArgs) => Promise<BuiltInBrowserStatus>;
         setBounds: (args: BuiltInBrowserBoundsArgs) => Promise<BuiltInBrowserStatus>;
         attachWebview: (args: BuiltInBrowserAttachWebviewArgs) => Promise<BuiltInBrowserStatus>;
         navigate: (args: BuiltInBrowserNavigateArgs) => Promise<BuiltInBrowserStatus>;

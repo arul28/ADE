@@ -231,6 +231,7 @@ Types for these tables are split into domain modules under `apps/desktop/src/sha
 │   ├── templates/               # Lane/mission templates (tracked when human-authored)
 │   ├── skills/                  # Exported skill markdown (tracked when human-authored)
 │   ├── workflows/linear/        # Linear workflow config (tracked when present)
+│   ├── project-icons/           # Imported project icon overrides (tracked when ade.yaml.iconPath points at one)
 │   ├── ade.sock                 # Unix socket for ADE RPC (runtime)
 │   └── secrets/                 # Machine-local secret material (ignored)
 │       ├── github/*.bin         # safeStorage-encrypted tokens
@@ -244,9 +245,15 @@ Types for these tables are split into domain modules under `apps/desktop/src/sha
 
 **Portability buckets** (intentionally distinct):
 
-1. **Git-tracked shared scaffold** — `.ade/.gitignore`, `ade.yaml`, `cto/identity.yaml`, human-authored `templates/**`, `skills/**`, `workflows/linear/**`. This is the only `.ade/` subset that flows through normal clone/pull.
+1. **Git-tracked shared scaffold** — `.ade/.gitignore`, `ade.yaml`, `cto/identity.yaml`, human-authored `templates/**`, `skills/**`, `workflows/linear/**`, `project-icons/**`. This is the only `.ade/` subset that flows through normal clone/pull. The shared `.ade/.gitignore` is now `*` with explicit allowlist entries for those scaffold files (so the next time someone touches `.ade/` from a fresh tool the runtime state stays out of git automatically).
 2. **ADE sync state** — the replicated `ade.db` tables that flow through cr-sqlite over WebSocket when devices join the same host.
 3. **Machine-local runtime** — worktrees, caches, transcripts, artifacts, secrets, sockets, generated context/memory markdown. Never leaves the device.
+
+**Project scaffold modes.** `initializeOrRepairAdeProject(projectRoot, { mode })` controls whether a project gets the full shared scaffold or stays local-only:
+
+- `mode: "shared"` always materializes the canonical files (`.ade/.gitignore`, `ade.yaml`, `cto/identity.yaml`, the tracked placeholder `.gitkeep`s) and scrubs any leftover `.ade/` ignore lines from `.gitignore` / `.git/info/exclude`. Triggered automatically from `createLocalProject`, every shared-config save, and any helper that calls `ensureSharedAdeProjectScaffold(projectRoot)` (e.g. `setProjectIconOverrideFromSelection`, `linearWorkflowFileService.save`).
+- `mode: "auto"` (the default for `openProject`) keeps the project local-only when no shared scaffold files exist yet — it ensures `.git/info/exclude` has a `.ade/` entry so a brand-new clone or a personal-only setup never accidentally promotes runtime state into git, and only flips to the shared layout when shared scaffold files are already present (or after a save call promotes them).
+- `mode: "local"` is reserved for force-local repair flows.
 
 ### 3.4 Migration strategy
 
@@ -312,9 +319,9 @@ Agent tools are split by domain:
 
 `apps/desktop/src/shared/modelRegistry.ts` + `apps/desktop/src/shared/modelProfiles.ts`:
 
-- `MODEL_REGISTRY` — static CLI-wrapped entries + dynamically populated API-key/local entries. Includes the Claude Opus 4.7 1M-context entry (`anthropic/claude-opus-4-7-1m`, aliases `opus[1m]` / `claude-opus-4-7[1m]`, 1,000,000 context / 128,000 max output, `costTier: "very_high"`, full `low|medium|high|max` reasoning tiers).
-- `ModelProviderGroup` = `"claude" | "codex" | "opencode" | "cursor"`.
-- Helpers: `getModelById`, `getModelPricing`, `updateModelPricingInRegistry`, `replaceDynamicOpenCodeModelDescriptors`, `resolveProviderGroupForModel`, `resolveModelDescriptorForProvider`, `getRuntimeModelRefForDescriptor`.
+- `MODEL_REGISTRY` — static CLI-wrapped entries + dynamically populated API-key/local entries. Includes the Claude Opus 4.7 1M-context entry (`anthropic/claude-opus-4-7-1m`, aliases `opus[1m]` / `claude-opus-4-7[1m]`, 1,000,000 context / 128,000 max output, `costTier: "very_high"`, full `low|medium|high|max` reasoning tiers). `ModelDescriptor.serviceTiers?: string[]` advertises optional service tiers (today: `"fast"`, set on the Codex CLI GPT 5.4 / 5.5 entries) that the UI's Codex Fast Mode toggle and the Codex JSON-RPC `serviceTier` argument key off.
+- `ModelProviderGroup` = `"claude" | "codex" | "opencode" | "cursor" | "droid"`. Cursor and Droid each have their own top-level provider group used by the model picker, identity routing, and tracked CLI provider catalog.
+- Helpers: `getModelById`, `getModelPricing`, `updateModelPricingInRegistry`, `replaceDynamicOpenCodeModelDescriptors`, `resolveProviderGroupForModel`, `resolveModelDescriptorForProvider`, `getRuntimeModelRefForDescriptor`, `modelSupportsServiceTier(descriptor, tier)` / `modelSupportsFastMode(descriptor)`.
 - Reasoning tier passthrough (`providerOptions.ts`) maps tier strings directly to each provider's native config (`thinking.type`, `reasoningEffort`, `thinkingConfig.thinkingLevel`, etc.) — no arbitrary token budgets. The Claude vocabulary is `low | medium | high | max`.
 - Model profiles (`modelProfiles.ts`) derive the Missions UI model catalog and per-call-type intelligence defaults from `MODEL_REGISTRY` rather than maintaining parallel lists.
 
@@ -386,7 +393,7 @@ ade.layout.* / ade.graph.*
 ade.computerUse.*
 ade.iosSimulator.*           # macOS-only iOS Simulator drawer + Preview Lab: getStatus/launch/shutdown/screenshot/getScreenSnapshot/getInspectorSnapshot/inspectPoint/getPreviewCapability/listPreviewTargets/renderPreview/openPreviewWorkspace/startStream/stopStream/getStreamStatus/getWindowState/listWindowSources/tap/typeText/drag/swipe/selectPoint, plus the ade.iosSimulator.event push channel
 ade.appControl.*             # Electron app control bridge over Chrome DevTools Protocol: getStatus/launch/launchInTerminal/connect/stop/screenshot/getSnapshot/inspectPoint/selectPoint/click/typeText/scroll/dispatchKey/listTargets/attachToTarget, plus the ade.appControl.event push channel (session-started/updated/stopped, selection, screencast frame)
-ade.builtInBrowser.*         # in-app web browser owned by `builtInBrowserService`: getStatus/setBounds/attachWebview/navigate/createTab/switchTab/closeTab/reload/goBack/goForward/stop/startInspect/stopInspect/captureScreenshot/selectPoint/selectCurrent/clearSelection, plus the ade.builtInBrowser.event push channel (status / selection / selection-cleared / error). Backs the Work sidebar's Browser tab and the renderer-wide `openUrlInAdeBrowser()` link router.
+ade.builtInBrowser.*         # in-app web browser owned by `builtInBrowserService`: getStatus/showPanel/setBounds/attachWebview/navigate/createTab/switchTab/closeTab/reload/goBack/goForward/stop/startInspect/stopInspect/captureScreenshot/selectPoint/selectCurrent/clearSelection, plus the ade.builtInBrowser.event push channel (status / open-request / selection / selection-cleared / error). Backs the Work sidebar's Browser tab and the renderer-wide `openUrlInAdeBrowser()` link router.
 ade.terminal.*               # chat-owned terminal control: list/read/write/signal/activeForChat. Resolves a chat's active terminal via chatSessionId so in-chat agents and the App Control panel can drive the visible launch terminal.
 ade.updates.*
 ```
@@ -467,7 +474,7 @@ Every service lives under `apps/desktop/src/main/services/<domain>/`. Summary:
 | `runtime/` | `tempCleanupService.ts` | Runtime temp cleanup. |
 | `sessions/` | `sessionService.ts`, `sessionDeltaService.ts` | Terminal session CRUD, post-session delta computation. |
 | `shared/` | `utils.ts`, `queueRebase.ts`, `packLegacyUtils.ts`, `transcriptInsights.ts` | Cross-domain utilities. |
-| `state/` | `kvDb.ts`, `crsqliteExtension.ts`, `globalState.ts`, `projectState.ts`, `onConflictAudit.ts` | SQLite schema + open, CRR extension loader, global state file, per-project state init. |
+| `state/` | `kvDb.ts`, `crsqliteExtension.ts`, `globalState.ts`, `projectState.ts`, `onConflictAudit.ts` | SQLite schema + open, CRR extension loader, global state file, per-project state init. `globalState.upsertRecentProject` accepts `preserveRecentOrder` so reactivating an already-known project (by app focus, deep link, etc.) refreshes its `lastOpenedAt` in place instead of jumping it to the front of the recents list. |
 | `sync/` | `syncService.ts`, `syncHostService.ts`, `syncPeerService.ts`, `syncRemoteCommandService.ts`, `syncProtocol.ts`, `deviceRegistryService.ts`, `syncPairingStore.ts` | WebSocket host, peer client, remote command routing, protocol framing, device registry, pairing secrets. |
 | `notifications/` | `apnsService.ts`, `notificationMapper.ts`, `notificationEventBus.ts` | APNs HTTP/2 client (ES256 JWT, encrypted `.p8`), pure domain-event → `MappedNotification` mapping (13 categories / 4 families), event bus routing to APNs alert pushes + Live Activity update pushes + in-app WS delivery, filtered by per-device `NotificationPreferences`. |
 | `tests/` | `testService.ts` | Test-suite execution + run history. |

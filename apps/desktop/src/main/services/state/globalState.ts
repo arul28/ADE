@@ -44,6 +44,7 @@ export function writeGlobalState(filePath: string, state: GlobalState): void {
 type UpsertRecentProjectOptions = {
   recordLastProject?: boolean;
   recordRecent?: boolean;
+  preserveRecentOrder?: boolean;
 };
 
 export function upsertRecentProject(
@@ -60,8 +61,18 @@ export function upsertRecentProject(
     return next;
   }
   const prev = next.recentProjects ?? [];
+  const nextEntry = { rootPath: proj.rootPath, displayName: proj.displayName, lastOpenedAt: now };
+  if (options.preserveRecentOrder === true) {
+    const existingIndex = prev.findIndex((p) => p.rootPath === proj.rootPath);
+    if (existingIndex >= 0) {
+      const updated = prev.slice(0, 12);
+      updated[existingIndex] = nextEntry;
+      next.recentProjects = updated;
+      return next;
+    }
+  }
   const filtered = prev.filter((p) => p.rootPath !== proj.rootPath);
-  next.recentProjects = [{ rootPath: proj.rootPath, displayName: proj.displayName, lastOpenedAt: now }, ...filtered].slice(0, 12);
+  next.recentProjects = [nextEntry, ...filtered].slice(0, 12);
   return next;
 }
 

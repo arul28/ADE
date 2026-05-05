@@ -27,6 +27,7 @@ const SUBCOMMANDS = [
   "proof",
   "ios-sim",
   "app-control",
+  "browser",
   "memory",
   "settings",
   "actions",

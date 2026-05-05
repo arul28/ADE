@@ -71,6 +71,7 @@ import { AUTOMATION_TRIGGER_TYPES, NO_DEFAULT_LANE_TEMPLATE } from "../../../sha
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import { isRecord, resolvePathWithinRoot } from "../shared/utils";
+import { ensureSharedAdeProjectScaffold, initializeOrRepairAdeProject } from "../projects/adeProjectService";
 
 const TRUSTED_SHARED_HASH_KEY = "project_config:trusted_shared_hash";
 const VERSION = 1;
@@ -2073,6 +2074,29 @@ function hashContent(content: string): string {
   return createHash("sha256").update(content).digest("hex");
 }
 
+function hasSharedConfigContent(config: ProjectConfigFile): boolean {
+  return Boolean(
+    config.project
+    || (config.processes?.length ?? 0) > 0
+    || (config.processGroups?.length ?? 0) > 0
+    || (config.stackButtons?.length ?? 0) > 0
+    || (config.testSuites?.length ?? 0) > 0
+    || (config.laneOverlayPolicies?.length ?? 0) > 0
+    || (config.automations?.length ?? 0) > 0
+    || (config.environments?.length ?? 0) > 0
+    || config.github
+    || config.git
+    || config.ai
+    || config.laneEnvInit
+    || (config.laneTemplates?.length ?? 0) > 0
+    || config.defaultLaneTemplate
+    || config.laneCleanup
+    || (config.providers && Object.keys(config.providers).length > 0)
+    || config.linearSync
+    || config.notifications
+  );
+}
+
 function createDefId(projectId: string, key: string): string {
   return `${projectId}:${key}`;
 }
@@ -3195,13 +3219,23 @@ export function createProjectConfigService({
 
       const sharedYaml = toCanonicalYaml(shared);
       const localYaml = toCanonicalYaml(local);
+      const shouldWriteShared = fs.existsSync(sharedPath) || hasSharedConfigContent(shared);
 
+      if (shouldWriteShared) {
+        ensureSharedAdeProjectScaffold(projectRoot, { logger });
+      } else {
+        initializeOrRepairAdeProject(projectRoot, { logger });
+      }
       fs.mkdirSync(path.dirname(sharedPath), { recursive: true });
-      fs.writeFileSync(sharedPath, sharedYaml, "utf8");
+      if (shouldWriteShared) {
+        fs.writeFileSync(sharedPath, sharedYaml, "utf8");
+      }
       fs.writeFileSync(localPath, localYaml, "utf8");
 
-      const sharedHash = hashContent(sharedYaml);
-      setTrustedSharedHash(sharedHash);
+      const sharedHash = hashContent(shouldWriteShared ? sharedYaml : "");
+      if (shouldWriteShared) {
+        setTrustedSharedHash(sharedHash);
+      }
 
       logger.info("projectConfig.save", {
         sharedPath,

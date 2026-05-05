@@ -28,6 +28,8 @@ const RUNNING_LANE_PROCESS_STATES: ProcessRuntime["status"][] = ["starting", "ru
 // (current project + a few recents in the tab list) without unbounded growth.
 const PROJECT_ICON_CACHE_MAX = 24;
 const projectIconCache = new Map<string, ProjectIcon>();
+const PROJECT_ICON_ACCENT_CACHE_MAX = 48;
+const projectIconAccentCache = new Map<string, string | null>();
 function getProjectIconFromCache(rootPath: string): ProjectIcon | undefined {
   const cached = projectIconCache.get(rootPath);
   if (cached === undefined) return undefined;
@@ -47,6 +49,94 @@ function setProjectIconCache(rootPath: string, icon: ProjectIcon): void {
     }
   }
   projectIconCache.set(rootPath, icon);
+}
+function setProjectIconAccentCache(cacheKey: string, color: string | null): void {
+  if (projectIconAccentCache.has(cacheKey)) {
+    projectIconAccentCache.delete(cacheKey);
+  } else if (projectIconAccentCache.size >= PROJECT_ICON_ACCENT_CACHE_MAX) {
+    const oldestKey = projectIconAccentCache.keys().next().value;
+    if (oldestKey !== undefined) projectIconAccentCache.delete(oldestKey);
+  }
+  projectIconAccentCache.set(cacheKey, color);
+}
+
+function toHexByte(value: number): string {
+  return Math.max(0, Math.min(255, Math.round(value))).toString(16).padStart(2, "0");
+}
+
+function balancedAccentColor(red: number, green: number, blue: number): string {
+  const luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+  let mixTarget = 0;
+  let mixAmount = 0;
+  if (luminance < 64) {
+    mixTarget = 255;
+    mixAmount = 0.34;
+  } else if (luminance > 214) {
+    mixTarget = 0;
+    mixAmount = 0.22;
+  }
+  const mix = (channel: number) => channel + (mixTarget - channel) * mixAmount;
+  return `#${toHexByte(mix(red))}${toHexByte(mix(green))}${toHexByte(mix(blue))}`;
+}
+
+async function deriveIconAccentColor(dataUrl: string): Promise<string | null> {
+  if (projectIconAccentCache.has(dataUrl)) return projectIconAccentCache.get(dataUrl) ?? null;
+  if (typeof document === "undefined" || typeof Image === "undefined") return null;
+
+  const color = await new Promise<string | null>((resolve) => {
+    const image = new Image();
+    image.decoding = "async";
+    image.onload = () => {
+      try {
+        const canvas = document.createElement("canvas");
+        const width = Math.max(1, Math.min(24, image.naturalWidth || image.width || 24));
+        const height = Math.max(1, Math.min(24, image.naturalHeight || image.height || 24));
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
+        if (!ctx) {
+          resolve(null);
+          return;
+        }
+        ctx.clearRect(0, 0, width, height);
+        ctx.drawImage(image, 0, 0, width, height);
+        const pixels = ctx.getImageData(0, 0, width, height).data;
+        let redTotal = 0;
+        let greenTotal = 0;
+        let blueTotal = 0;
+        let weightTotal = 0;
+        for (let index = 0; index < pixels.length; index += 4) {
+          const alpha = pixels[index + 3] / 255;
+          if (alpha < 0.25) continue;
+          const red = pixels[index];
+          const green = pixels[index + 1];
+          const blue = pixels[index + 2];
+          const max = Math.max(red, green, blue);
+          const min = Math.min(red, green, blue);
+          const saturation = max === 0 ? 0 : (max - min) / max;
+          const luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+          if (saturation < 0.08 && (luminance < 28 || luminance > 230)) continue;
+          const weight = alpha * (0.18 + saturation * 1.65);
+          redTotal += red * weight;
+          greenTotal += green * weight;
+          blueTotal += blue * weight;
+          weightTotal += weight;
+        }
+        if (weightTotal <= 0) {
+          resolve(null);
+          return;
+        }
+        resolve(balancedAccentColor(redTotal / weightTotal, greenTotal / weightTotal, blueTotal / weightTotal));
+      } catch {
+        resolve(null);
+      }
+    };
+    image.onerror = () => resolve(null);
+    image.src = dataUrl;
+  });
+
+  setProjectIconAccentCache(dataUrl, color);
+  return color;
 }
 const PHONE_SYNC_FOCUSABLE_SELECTOR = [
   "a[href]",
@@ -81,6 +171,14 @@ function projectIconErrorMessage(error: unknown): string {
   return cleaned || "Failed to update project icon.";
 }
 
+function confirmProjectTabRemoval(projectName: string, isCurrent: boolean, isMissing: boolean): boolean {
+  const label = projectName.trim() || "this project";
+  const action = isCurrent && !isMissing
+    ? `Close "${label}" and remove it from project tabs?`
+    : `Remove "${label}" from project tabs?`;
+  return window.confirm(`${action}\n\nThis does not delete any files on disk.`);
+}
+
 function deriveSyncLabel(snapshot: SyncRoleSnapshot | null): string | null {
   if (!snapshot) return null;
   if (snapshot.client.state === "error") return "Phone sync error";
@@ -107,11 +205,13 @@ function ProjectTabIcon({
   isCurrent,
   animate,
   disabled,
+  onAccentColorChange,
 }: {
   rootPath: string;
   isCurrent: boolean;
   animate: boolean;
   disabled: boolean;
+  onAccentColorChange?: (rootPath: string, color: string | null) => void;
 }) {
   const [icon, setIcon] = useState<ProjectIcon | null>(() =>
     disabled ? null : getProjectIconFromCache(rootPath) ?? null
@@ -154,9 +254,28 @@ function ProjectTabIcon({
     };
   }, [disabled, isCurrent, rootPath]);
 
+  useEffect(() => {
+    let cancelled = false;
+    const dataUrl = icon?.dataUrl;
+    if (!dataUrl || failed) {
+      onAccentColorChange?.(rootPath, null);
+      return () => {
+        cancelled = true;
+      };
+    }
+    deriveIconAccentColor(dataUrl).then((color) => {
+      if (!cancelled) onAccentColorChange?.(rootPath, color);
+    }).catch(() => {
+      if (!cancelled) onAccentColorChange?.(rootPath, null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [failed, icon?.dataUrl, onAccentColorChange, rootPath]);
+
   const fallbackIcon = (
     <Folder
-      size={15}
+      size={16}
       weight="regular"
       className={cn(
         "shrink-0 transition-opacity duration-150",
@@ -171,7 +290,7 @@ function ProjectTabIcon({
       src={icon.dataUrl}
       alt=""
       className={cn(
-        "h-4 w-4 shrink-0 rounded-[3px] object-contain transition-opacity duration-150",
+        "h-[18px] w-[18px] shrink-0 rounded-[4px] object-contain transition-opacity duration-150",
         isCurrent ? "opacity-95" : "opacity-75",
         animate && "animate-pulse",
       )}
@@ -238,14 +357,14 @@ function ProjectTabIcon({
           aria-label="Project icon"
           title="Project icon"
           className={cn(
-            "inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-[4px]",
+            "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[5px]",
             "text-current transition-colors hover:bg-white/10 focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent/70",
           )}
           onClick={(event) => event.stopPropagation()}
           onKeyDown={(event) => event.stopPropagation()}
           onMouseDown={(event) => event.stopPropagation()}
         >
-          {choosing || removing ? <CircleNotch size={14} weight="bold" className="animate-spin opacity-80" /> : iconNode}
+          {choosing || removing ? <CircleNotch size={15} weight="bold" className="animate-spin opacity-80" /> : iconNode}
         </button>
       </Dialog.Trigger>
       <Dialog.Portal>
@@ -338,6 +457,7 @@ export function TopBar() {
   const clearProjectTransitionError = useAppStore((s) => s.clearProjectTransitionError);
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
   const [recentProjects, setRecentProjects] = useState<RecentProjectSummary[]>([]);
+  const [projectAccentColors, setProjectAccentColors] = useState<Record<string, string | null>>({});
   const [relocatingPath, setRelocatingPath] = useState<string | null>(null);
   const [zoom, setZoom] = useState(getStoredZoomLevel);
   const [syncSnapshot, setSyncSnapshot] = useState<SyncRoleSnapshot | null>(null);
@@ -521,6 +641,15 @@ export function TopBar() {
 
   const handleRemoveTab = useCallback((rootPath: string) => {
     void (async () => {
+      const target = recentProjects.find((entry) => entry.rootPath === rootPath);
+      const fallbackName = rootPath.split(/[\\/]/).filter(Boolean).pop() ?? rootPath;
+      const confirmed = confirmProjectTabRemoval(
+        target?.displayName ?? fallbackName,
+        project?.rootPath === rootPath,
+        target?.exists === false,
+      );
+      if (!confirmed) return;
+
       const shouldClose = await checkForActiveWorkloads(rootPath);
       if (!shouldClose) return;
 
@@ -538,7 +667,7 @@ export function TopBar() {
         }
       }
     })().catch(() => { });
-  }, [checkForActiveWorkloads, project?.rootPath, closeProject, switchProjectToPath]);
+  }, [checkForActiveWorkloads, project?.rootPath, recentProjects, closeProject, switchProjectToPath]);
 
   const handleRelocate = useCallback((oldPath: string) => {
     setRelocatingPath(oldPath);
@@ -585,6 +714,13 @@ export function TopBar() {
   const handleDragEnd = useCallback(() => {
     setDragIdx(null);
     setDropIdx(null);
+  }, []);
+
+  const handleProjectAccentColorChange = useCallback((rootPath: string, color: string | null) => {
+    setProjectAccentColors((prev) => {
+      if ((prev[rootPath] ?? null) === color) return prev;
+      return { ...prev, [rootPath]: color };
+    });
   }, []);
 
   const handlePhoneSyncDialogKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
@@ -659,13 +795,13 @@ export function TopBar() {
           <button
             type="button"
             className={cn(
-              "ade-shell-project-tab inline-flex items-center gap-1.5 px-3 py-1",
+              "ade-shell-project-tab inline-flex items-center gap-2 px-3 py-0.5",
               "transition-[background-color,color,border-color,box-shadow] duration-150"
             )}
             style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
             onClick={handleOpenNew}
           >
-            <Folder size={12} weight="regular" />
+            <Folder size={14} weight="regular" />
             Open a project
           </button>
         ) : (
@@ -680,6 +816,11 @@ export function TopBar() {
                 projectTransition?.kind === "closing" && isCurrent;
               const isDragging = dragIdx === idx;
               const isDropTarget = dropIdx === idx && dragIdx !== idx;
+              const projectAccentColor = projectAccentColors[rp.rootPath] ?? null;
+              const projectTabStyle = {
+                WebkitAppRegion: "no-drag",
+                ...(projectAccentColor ? { "--project-tab-accent": projectAccentColor } : {}),
+              } as React.CSSProperties;
               let projectTabState: string | undefined;
               if (isRelocating) projectTabState = "open";
               else if (isMissing) projectTabState = "missing";
@@ -701,7 +842,7 @@ export function TopBar() {
                   onDrop={(e) => handleDrop(e, idx)}
                   onDragEnd={handleDragEnd}
                   className={cn(
-                    "ade-shell-project-tab group inline-flex max-w-[180px] shrink-0 items-center gap-1.5 px-2.5 py-1",
+                    "ade-shell-project-tab group inline-flex w-[clamp(128px,16vw,220px)] max-w-[220px] shrink-0 items-center gap-2 px-3 py-0.5",
                     "transition-[background-color,color,border-color,box-shadow,opacity] duration-150",
                     !isMissing && "cursor-pointer",
                     isCurrent && "font-semibold",
@@ -710,7 +851,7 @@ export function TopBar() {
                     isDragging && "opacity-40",
                     isDropTarget && "ring-1 ring-accent/50"
                   )}
-                  style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+                  style={projectTabStyle}
                   onClick={() => {
                     if (!isMissing) handleSwitchProject(rp.rootPath);
                   }}
@@ -728,9 +869,10 @@ export function TopBar() {
                     isCurrent={isCurrent}
                     animate={isSwitchTarget || isClosingTarget}
                     disabled={isMissing}
+                    onAccentColorChange={handleProjectAccentColorChange}
                   />
                   {isSwitchTarget || isClosingTarget ? (
-                    <CircleNotch size={11} weight="bold" className="shrink-0 animate-spin opacity-80" />
+                    <CircleNotch size={12} weight="bold" className="shrink-0 animate-spin opacity-80" />
                   ) : null}
                   {isCurrent && indicator != null && indicator !== "none" ? (
                     <span
@@ -759,7 +901,7 @@ export function TopBar() {
                     <span className="inline-flex items-center gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150">
                       <button
                         type="button"
-                        className="ade-shell-control inline-flex h-4 w-4 items-center justify-center text-current transition-[background-color,color,border-color,box-shadow] duration-100"
+                        className="ade-shell-control inline-flex h-5 w-5 items-center justify-center text-current transition-[background-color,color,border-color,box-shadow] duration-100"
                         data-variant="ghost"
                         data-state={isRelocating ? "open" : undefined}
                         disabled={isRelocating || isProjectBusy}
@@ -770,11 +912,11 @@ export function TopBar() {
                         }}
                         title="Relocate project"
                       >
-                        <FolderOpen size={12} weight="regular" className={cn(isRelocating && "animate-pulse")} />
+                        <FolderOpen size={13} weight="regular" className={cn(isRelocating && "animate-pulse")} />
                       </button>
                       <button
                         type="button"
-                        className="ade-shell-control inline-flex h-4 w-4 items-center justify-center text-current transition-[background-color,color,border-color,box-shadow] duration-100"
+                        className="ade-shell-control inline-flex h-5 w-5 items-center justify-center text-current transition-[background-color,color,border-color,box-shadow] duration-100"
                         data-variant="ghost"
                         disabled={isProjectBusy}
                         onClick={(e) => {
@@ -784,14 +926,14 @@ export function TopBar() {
                         }}
                         title="Remove from list"
                       >
-                        <Trash size={12} weight="regular" />
+                        <Trash size={13} weight="regular" />
                       </button>
                     </span>
                   ) : (
                     <button
                       type="button"
                       className={cn(
-                        "ade-shell-control inline-flex h-4 w-4 items-center justify-center text-current",
+                        "ade-shell-control inline-flex h-5 w-5 items-center justify-center text-current",
                         "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150"
                       )}
                       data-variant="ghost"
@@ -803,7 +945,7 @@ export function TopBar() {
                       }}
                       title="Remove project"
                     >
-                      <X size={12} weight="regular" />
+                      <X size={13} weight="regular" />
                     </button>
                   )}
                 </div>
@@ -812,7 +954,7 @@ export function TopBar() {
             {isNewTabOpen && (
               <div
                 className={cn(
-                  "ade-shell-project-tab group inline-flex items-center gap-1.5 px-2.5 py-1",
+                  "ade-shell-project-tab group inline-flex w-[clamp(128px,16vw,220px)] max-w-[220px] items-center gap-2 px-3 py-0.5",
                   "transition-[background-color,color,border-color,box-shadow] duration-150",
                   "font-semibold"
                 )}
@@ -820,17 +962,17 @@ export function TopBar() {
                 style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
               >
                 {projectTransition?.kind === "opening" ? (
-                  <CircleNotch size={12} weight="bold" className="animate-spin" />
+                  <CircleNotch size={13} weight="bold" className="animate-spin" />
                 ) : (
-                  <img src="./logo.png" alt="" style={{ height: 14, width: 30, objectFit: "contain" }} draggable={false} />
+                  <img src="./logo.png" alt="" style={{ height: 16, width: 34, objectFit: "contain" }} draggable={false} />
                 )}
-                <span className="truncate text-[11px]">
+                <span className="truncate text-[12px]">
                   {projectTransition?.kind === "opening" ? "Opening…" : "New Tab"}
                 </span>
                 <button
                   type="button"
                   className={cn(
-                    "ade-shell-control inline-flex h-3.5 w-3.5 items-center justify-center rounded-sm",
+                    "ade-shell-control inline-flex h-4 w-4 items-center justify-center rounded-sm",
                     "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150"
                   )}
                   data-variant="ghost"
@@ -842,7 +984,7 @@ export function TopBar() {
                   }}
                   title="Close new tab"
                 >
-                  <X size={10} weight="regular" />
+                  <X size={11} weight="regular" />
                 </button>
               </div>
             )}

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
-import { Cube, Desktop, DeviceMobile, Plus } from "@phosphor-icons/react";
+import { Cube, Desktop, DeviceMobile, Lightning, Plus } from "@phosphor-icons/react";
 import {
   inferAttachmentType,
   PARALLEL_CHAT_MAX_ATTACHMENTS,
@@ -33,6 +33,7 @@ import {
   type IosElementContextItem,
   type IosSimulatorDrawerMode,
   type AiSettingsStatus,
+  type TerminalSessionDetail,
   type TerminalToolType,
 } from "../../../shared/types";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
@@ -45,6 +46,7 @@ import {
   getLocalProviderDefaultEndpoint,
   getModelById,
   getModelDescriptorForPermissionMode,
+  modelSupportsFastMode,
   parseLocalProviderFromModelId,
   resolveProviderGroupForModel,
   resolveModelDescriptorForProvider,
@@ -667,6 +669,7 @@ type NativeControlState = {
 type ParallelModelRowState = NativeControlState & {
   modelId: string;
   reasoningEffort: string | null;
+  codexFastMode: boolean;
   executionMode: AgentChatExecutionMode;
 };
 
@@ -712,7 +715,7 @@ function runtimeFacingModelId(desc: ModelDescriptor | null | undefined, registry
 }
 
 function nativeControlSliceFromParallelSlot(slot: ParallelModelRowState): NativeControlState {
-  const { modelId: _, reasoningEffort: _re, executionMode: _em, ...native } = slot;
+  const { modelId: _, reasoningEffort: _re, codexFastMode: _cfm, executionMode: _em, ...native } = slot;
   return native;
 }
 
@@ -720,6 +723,7 @@ function cloneParallelSlotFromComposer(args: {
   native: NativeControlState;
   modelId: string;
   reasoningEffort: string | null;
+  codexFastMode: boolean;
   executionMode: AgentChatExecutionMode;
 }): ParallelModelRowState {
   return {
@@ -727,6 +731,7 @@ function cloneParallelSlotFromComposer(args: {
     cursorConfigValues: { ...args.native.cursorConfigValues },
     modelId: args.modelId,
     reasoningEffort: args.reasoningEffort,
+    codexFastMode: args.codexFastMode,
     executionMode: args.executionMode,
   };
 }
@@ -1556,6 +1561,7 @@ export function AgentChatPane({
   const [pendingSteersBySession, setPendingSteersBySession] = useState<Record<string, PendingSteerEntry[]>>({});
   const [modelId, setModelId] = useState<string>("");
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
+  const [codexFastMode, setCodexFastMode] = useState(false);
   const [executionMode, setExecutionMode] = useState<AgentChatExecutionMode>("focused");
   const [interactionMode, setInteractionMode] = useState<AgentChatInteractionMode>(initialNativeControls.interactionMode);
   // Seed availableModelIds, aiStatus, and providerConnections synchronously
@@ -1649,6 +1655,7 @@ export function AgentChatPane({
     label: string;
     nonce: number;
   } | null>(null);
+  const terminalRevealNonceRef = useRef(0);
   const [rightPaneSplit, setRightPaneSplit] = useState<number>(() => {
     try {
       const raw = window.sessionStorage.getItem("ade.chat.rightPaneSplit");
@@ -1703,6 +1710,7 @@ export function AgentChatPane({
   const [handoffBusy, setHandoffBusy] = useState(false);
   const [handoffModelId, setHandoffModelId] = useState("");
   const [handoffReasoningEffort, setHandoffReasoningEffort] = useState<string | null>(null);
+  const [handoffCodexFastMode, setHandoffCodexFastMode] = useState(false);
   const [handoffClaudePermissionMode, setHandoffClaudePermissionMode] = useState<AgentChatClaudePermissionMode>(
     initialNativeControls.claudePermissionMode,
   );
@@ -1748,6 +1756,8 @@ export function AgentChatPane({
   } | null>(null);
   const nativeControlUpdateCounterRef = useRef(0);
   const reasoningEffortUpdateCounterRef = useRef(0);
+  const codexFastModeUpdateCounterRef = useRef(0);
+  const pendingCodexFastModeUpdateRef = useRef<{ sessionId: string; updateId: number; promise: Promise<void> } | null>(null);
   const pendingEventQueueRef = useRef<AgentChatEventEnvelope[]>([]);
   const eventsBySessionRef = useRef<Record<string, AgentChatEventEnvelope[]>>({});
   const eventFlushTimerRef = useRef<number | null>(null);
@@ -2352,6 +2362,7 @@ export function AgentChatPane({
       setDroidPermissionMode(initialNativeControls.droidPermissionMode);
       setCursorModeId(initialNativeControls.cursorModeId);
       setCursorConfigValues(initialNativeControls.cursorConfigValues);
+      setCodexFastMode(false);
       return;
     }
     const nextModelId = session.modelId ?? resolveRegistryModelId(session.model);
@@ -2359,6 +2370,7 @@ export function AgentChatPane({
       setModelId(nextModelId);
     }
     setReasoningEffort(session.reasoningEffort ?? null);
+    setCodexFastMode(session.codexFastMode === true);
     setExecutionMode(session.executionMode ?? "focused");
     setInteractionMode(session.interactionMode ?? initialNativeControls.interactionMode);
     setClaudePermissionMode(session.claudePermissionMode ?? initialNativeControls.claudePermissionMode);
@@ -2506,6 +2518,7 @@ export function AgentChatPane({
     lockSessionId
       && selectedSessionId
       && selectedSession
+      && onSessionCreated
       && handoffAvailableModelIds.length > 0
       && surfaceMode === "standard"
       && !isPersistentIdentitySurface
@@ -3163,6 +3176,44 @@ export function AgentChatPane({
   }, [selectedSessionId]);
 
   useEffect(() => {
+    const sessionsApi = window.ade?.sessions;
+    if (!sessionsApi?.onChanged || !sessionsApi.get || !showWorkspaceChrome || hideLaneToolDrawers || !laneId) return undefined;
+
+    let disposed = false;
+    const revealCreatedTerminal = async (sessionId: string) => {
+      let session: TerminalSessionDetail | null = null;
+      try {
+        session = await sessionsApi.get(sessionId);
+      } catch {
+        return;
+      }
+      if (disposed || !session) return;
+      const selectedChatSessionId = selectedSessionIdRef.current;
+      if (!selectedChatSessionId || session.chatSessionId !== selectedChatSessionId) return;
+      if (session.laneId !== laneId) return;
+      const ptyId = typeof session.ptyId === "string" ? session.ptyId.trim() : "";
+      if (!ptyId) return;
+
+      setTerminalDrawerOpen(true);
+      setTerminalRevealRequest({
+        terminalId: session.id,
+        ptyId,
+        label: session.title?.trim() || "Terminal",
+        nonce: ++terminalRevealNonceRef.current,
+      });
+    };
+
+    const unsubscribe = sessionsApi.onChanged((event) => {
+      if (event.reason !== "created") return;
+      void revealCreatedTerminal(event.sessionId);
+    });
+    return () => {
+      disposed = true;
+      unsubscribe();
+    };
+  }, [hideLaneToolDrawers, laneId, showWorkspaceChrome]);
+
+  useEffect(() => {
     const api = window.ade?.iosSimulator;
     if (!api?.onEvent || hideLaneToolDrawers) return undefined;
     return api.onEvent((event) => {
@@ -3205,7 +3256,11 @@ export function AgentChatPane({
     knownSessionIdsRef.current = next;
   }, [initialSessionId, lockSessionId, selectedSessionId, sessions]);
 
-  useClickOutside(handoffRef, () => setHandoffOpen(false), handoffOpen);
+  const shouldKeepHandoffOpenForPortalClick = useCallback((target: Node) => {
+    return Array.from(document.querySelectorAll("[data-model-picker-panel='true']"))
+      .some((panel) => panel.contains(target));
+  }, []);
+  useClickOutside(handoffRef, () => setHandoffOpen(false), handoffOpen, shouldKeepHandoffOpenForPortalClick);
 
   useEffect(() => {
     if (!handoffOpen) return;
@@ -3222,6 +3277,7 @@ export function AgentChatPane({
   useEffect(() => {
     if (handoffOpen && !prevHandoffOpenRef.current) {
       setHandoffReasoningEffort(reasoningEffort ?? null);
+      setHandoffCodexFastMode(codexFastMode);
       setHandoffClaudePermissionMode(claudePermissionMode);
       setHandoffCodexApprovalPolicy(codexApprovalPolicy);
       setHandoffCodexSandbox(codexSandbox);
@@ -3780,16 +3836,18 @@ export function AgentChatPane({
         native: currentNativeControls,
         modelId,
         reasoningEffort,
+        codexFastMode,
         executionMode,
       }),
       cloneParallelSlotFromComposer({
         native: currentNativeControls,
         modelId,
         reasoningEffort,
+        codexFastMode,
         executionMode,
       }),
     ]);
-  }, [parallelChatMode, parallelModelSlots.length, currentNativeControls, modelId, reasoningEffort, executionMode]);
+  }, [parallelChatMode, parallelModelSlots.length, currentNativeControls, modelId, reasoningEffort, codexFastMode, executionMode]);
 
   const buildNativeControlPayload = useCallback((provider: ChatRuntimeProviderKey) => {
     return {
@@ -3876,6 +3934,7 @@ export function AgentChatPane({
         modelId,
         sessionProfile,
         reasoningEffort,
+        ...(provider === "codex" ? { codexFastMode } : {}),
         ...nativeControlPayload,
       });
       loadedHistoryRef.current.delete(created.id);
@@ -3915,7 +3974,7 @@ export function AgentChatPane({
         createSessionPromiseRef.current = null;
       }
     }
-  }, [buildNativeControlPayload, currentNativeControls, iosSimulatorOpen, laneId, modelId, notifySessionCreated, reasoningEffort, refreshSessions, touchSession]);
+  }, [buildNativeControlPayload, codexFastMode, currentNativeControls, iosSimulatorOpen, laneId, modelId, notifySessionCreated, reasoningEffort, refreshSessions, touchSession]);
 
   const handoffSession = useCallback(async () => {
     if (!canShowHandoff || !selectedSessionId || !handoffModelId || handoffBlocked) return;
@@ -3927,6 +3986,7 @@ export function AgentChatPane({
         sourceSessionId: selectedSessionId,
         targetModelId: handoffModelId,
         reasoningEffort: handoffReasoningEffort,
+        ...(handoffTargetProvider === "codex" ? { codexFastMode: handoffCodexFastMode } : {}),
         claudePermissionMode: handoffClaudePermissionMode,
         codexApprovalPolicy: handoffCodexApprovalPolicy,
         codexSandbox: handoffCodexSandbox,
@@ -3951,6 +4011,7 @@ export function AgentChatPane({
     handoffClaudePermissionMode,
     handoffCodexApprovalPolicy,
     handoffCodexConfigSource,
+    handoffCodexFastMode,
     handoffCodexSandbox,
     handoffCursorConfigValues,
     handoffCursorModeId,
@@ -3959,6 +4020,7 @@ export function AgentChatPane({
     handoffNativePermissionMode,
     handoffOpenCodePermissionMode,
     handoffReasoningEffort,
+    handoffTargetProvider,
     notifySessionCreated,
     refreshSessions,
     selectedSession?.permissionMode,
@@ -4158,6 +4220,7 @@ export function AgentChatPane({
             modelId: slot.modelId,
             sessionProfile: resolveChatSessionProfile(),
             reasoningEffort: slot.reasoningEffort,
+            ...(provider === "codex" ? { codexFastMode: slot.codexFastMode } : {}),
             ...buildNativeControlPayloadForSlot(slot, provider),
           });
           sessionByLane.set(childLane.id, created.id);
@@ -4302,6 +4365,14 @@ export function AgentChatPane({
         return;
       }
     }
+    const pendingCodexFastModeUpdate = pendingCodexFastModeUpdateRef.current;
+    if (selectedSessionId && pendingCodexFastModeUpdate?.sessionId === selectedSessionId) {
+      try {
+        await pendingCodexFastModeUpdate.promise;
+      } catch {
+        return;
+      }
+    }
     const draftSnapshot = draft;
     const attachmentsSnapshot = attachments;
     const isLiteralSlashCommand = isProviderSlashCommandInput(text);
@@ -4327,6 +4398,10 @@ export function AgentChatPane({
         Boolean(selectedSessionId)
         && Boolean(selectedSessionModelId)
         && selectedSessionModelId !== modelId;
+      const selectedCodexFastModeChanged =
+        Boolean(selectedSessionId)
+        && selectedSession?.provider === "codex"
+        && (selectedSession.codexFastMode === true) !== codexFastMode;
       const selectedAttachments = isLiteralSlashCommand ? [] : attachmentsSnapshot;
       const optimisticEnvelope = (nextSessionId: string): AgentChatEventEnvelope => ({
         sessionId: nextSessionId,
@@ -4339,7 +4414,12 @@ export function AgentChatPane({
         },
       });
 
-      if (sessionId && !turnActive && (selectedModelChanged || hasComputerUseSelectionChanged || shouldPromoteLightSession)) {
+      if (sessionId && !turnActive && (
+        selectedModelChanged
+        || selectedCodexFastModeChanged
+        || hasComputerUseSelectionChanged
+        || shouldPromoteLightSession
+      )) {
         setOptimisticOutgoingMessage({ sessionId, envelope: optimisticEnvelope(sessionId) });
         const desc = getModelById(modelId);
         const provider = resolveChatRuntimeProvider(desc);
@@ -4347,6 +4427,7 @@ export function AgentChatPane({
           sessionId,
           modelId,
           reasoningEffort,
+          ...(provider === "codex" ? { codexFastMode } : {}),
           ...buildNativeControlPayload(provider),
         });
         void refreshSessions().catch(() => {});
@@ -4440,6 +4521,7 @@ export function AgentChatPane({
     attachments,
     buildNativeControlPayload,
     busy,
+    codexFastMode,
     createSession,
     draft,
     executionMode,
@@ -4448,12 +4530,13 @@ export function AgentChatPane({
     laneId,
     launchModeEditable,
     modelId,
+    patchSessionSummary,
     reasoningEffort,
     pendingInputsBySession,
     refreshAvailableModels,
     refreshSessions,
+    selectedSession,
     selectedSessionId,
-    selectedSession?.awaitingInput,
     selectedSessionModelId,
     sessionProvider,
     cursorRuntime,
@@ -4668,6 +4751,56 @@ export function AgentChatPane({
     sessionMutationKind,
   ]);
 
+  const handleCodexFastModeChange = useCallback((enabled: boolean) => {
+    const previousFastMode = codexFastMode;
+    setCodexFastMode(enabled);
+    if (!selectedSessionId) return;
+    if (isPersistentIdentitySurface && sessionMutationKind) return;
+
+    const updateId = ++codexFastModeUpdateCounterRef.current;
+    const targetSessionId = selectedSessionId;
+    patchSessionSummary(targetSessionId, { codexFastMode: enabled });
+    const updatePromise = window.ade.agentChat.updateSession({
+      sessionId: targetSessionId,
+      codexFastMode: enabled,
+    }).then((updatedSession) => {
+      if (updateId !== codexFastModeUpdateCounterRef.current) return;
+      const reconciled = updatedSession.codexFastMode === true;
+      patchSessionSummary(targetSessionId, { codexFastMode: reconciled });
+      if (selectedSessionIdRef.current === targetSessionId) {
+        setCodexFastMode(reconciled);
+      }
+      void refreshSessions().catch(() => {});
+    }).catch((err) => {
+      if (updateId === codexFastModeUpdateCounterRef.current
+        && selectedSessionIdRef.current === targetSessionId) {
+        setCodexFastMode(previousFastMode);
+        patchSessionSummary(targetSessionId, { codexFastMode: previousFastMode });
+      }
+      void refreshSessions().catch(() => {});
+      setError(err instanceof Error ? err.message : String(err));
+      throw err;
+    }).finally(() => {
+      const pending = pendingCodexFastModeUpdateRef.current;
+      if (pending?.sessionId === targetSessionId && pending.updateId === updateId) {
+        pendingCodexFastModeUpdateRef.current = null;
+      }
+    });
+    pendingCodexFastModeUpdateRef.current = {
+      sessionId: targetSessionId,
+      updateId,
+      promise: updatePromise,
+    };
+    void updatePromise.catch(() => {});
+  }, [
+    codexFastMode,
+    isPersistentIdentitySurface,
+    patchSessionSummary,
+    refreshSessions,
+    selectedSessionId,
+    sessionMutationKind,
+  ]);
+
   const handleComputerUsePolicyChange = useCallback(async (_nextPolicy: unknown) => {
     // Computer-use policy gating has been removed; this handler is a no-op retained for UI compat.
   }, []);
@@ -4804,7 +4937,7 @@ export function AgentChatPane({
           onInsertDraft={insertComposerDraft}
           onShowTerminal={(terminal) => {
             setTerminalDrawerOpen(true);
-            setTerminalRevealRequest({ ...terminal, nonce: Date.now() });
+            setTerminalRevealRequest({ ...terminal, nonce: ++terminalRevealNonceRef.current });
           }}
           onAddContext={addAppControlContext}
         />
@@ -4977,7 +5110,7 @@ export function AgentChatPane({
                 Handoff
               </button>
               {handoffOpen ? (
-                <div className="absolute right-0 top-full z-[100] mt-2 w-[min(26rem,calc(100vw-2rem))] rounded-[14px] border border-violet-400/[0.10] bg-[#13101a] p-4 shadow-[0_20px_50px_-12px_rgba(0,0,0,0.55)]">
+                <div data-chat-handoff-menu="true" className="absolute right-0 top-full z-[100] mt-2 w-[min(26rem,calc(100vw-2rem))] rounded-[14px] border border-violet-400/[0.10] bg-[#13101a] p-4 shadow-[0_20px_50px_-12px_rgba(0,0,0,0.55)]">
                   <div className="space-y-1">
                     <div className="font-sans text-[12px] font-semibold text-fg/82">Start a sibling chat on another model</div>
                     <div className="text-[11px] leading-5 text-fg/54">
@@ -5040,6 +5173,23 @@ export function AgentChatPane({
                             <option value="full-auto">Full auto — no prompts</option>
                             <option value="config-toml">Use codex config.toml</option>
                           </select>
+                          {modelSupportsFastMode(handoffTargetDescriptor) ? (
+                            <button
+                              type="button"
+                              className={cn(
+                                "mt-1 inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 font-sans text-[11px] font-semibold transition-colors",
+                                handoffCodexFastMode
+                                  ? "border-amber-300/28 bg-amber-400/12 text-amber-100"
+                                  : "border-white/[0.08] bg-white/[0.03] text-muted-fg/62 hover:bg-white/[0.06] hover:text-fg/78",
+                              )}
+                              aria-pressed={handoffCodexFastMode}
+                              aria-label="Fast mode for handoff"
+                              onClick={() => setHandoffCodexFastMode((current) => !current)}
+                            >
+                              <Lightning size={12} weight="fill" />
+                              Fast
+                            </button>
+                          ) : null}
                           {handoffCodexPermissionPreset === "custom" ? (
                             <div className="text-[10px] text-amber-200/55">Session uses a custom policy; select a standard preset to apply to the new chat.</div>
                           ) : null}
@@ -5091,6 +5241,9 @@ export function AgentChatPane({
                       ) : null}
                     </div>
                   ) : null}
+                  <div className="mt-3 rounded-md border border-white/[0.05] bg-white/[0.025] px-2.5 py-2 text-[10px] leading-4 text-fg/44">
+                    Create opens the new work chat and sends the handoff summary as its first message.
+                  </div>
                   <div className="mt-3 flex items-center justify-end gap-2">
                     <button
                       type="button"
@@ -5268,6 +5421,7 @@ export function AgentChatPane({
             modelId={modelId}
             availableModelIds={effectiveAvailableModelIds}
             reasoningEffort={reasoningEffort}
+            codexFastMode={codexFastMode}
             draft={draft}
             attachments={attachments}
             pendingInput={pendingInput?.request ?? null}
@@ -5357,6 +5511,7 @@ export function AgentChatPane({
                 sessionId: selectedSessionId,
                 modelId: nextModelId,
                 reasoningEffort: snapshot.nextReasoningEffort,
+                ...(snapshot.nextProvider === "codex" ? { codexFastMode } : {}),
                 ...nextNativeControlPayload,
               }).then((updatedSession) => {
                 applyModelSelectionSnapshot(snapshot);
@@ -5365,6 +5520,7 @@ export function AgentChatPane({
                   model: updatedSession.model,
                   modelId: updatedSession.modelId,
                   reasoningEffort: updatedSession.reasoningEffort ?? null,
+                  codexFastMode: updatedSession.codexFastMode === true,
                   permissionMode: updatedSession.permissionMode,
                   interactionMode: updatedSession.interactionMode ?? null,
                   claudePermissionMode: updatedSession.claudePermissionMode,
@@ -5397,6 +5553,7 @@ export function AgentChatPane({
               });
             }}
             onReasoningEffortChange={handleReasoningEffortChange}
+            onCodexFastModeChange={handleCodexFastModeChange}
             onDraftChange={updateComposerDraft}
             onClearDraft={() => updateComposerDraft("")}
             onSubmit={() => {
@@ -5534,6 +5691,7 @@ export function AgentChatPane({
                   native: nativeControlsRef.current,
                   modelId,
                   reasoningEffort,
+                  codexFastMode,
                   executionMode,
                 }),
               ]);
@@ -5575,6 +5733,9 @@ export function AgentChatPane({
             }}
             onParallelSlotReasoningChange={(index, effort) => {
               patchParallelSlot(index, { reasoningEffort: effort });
+            }}
+            onParallelSlotCodexFastModeChange={(index, enabled) => {
+              patchParallelSlot(index, { codexFastMode: enabled });
             }}
             parallelLaunchBusy={parallelLaunchBusy}
             parallelLaunchStatus={parallelLaunchStatus}
@@ -5745,6 +5906,11 @@ export function AgentChatPane({
                       respondingApprovalIds={respondingApprovalIds}
                       pendingApprovalIds={pendingApprovalIds}
                       sessionId={selectedSessionId}
+                      onInsertDraft={insertComposerDraft}
+                      onRevealChatTerminal={(terminal) => {
+                        setTerminalDrawerOpen(true);
+                        setTerminalRevealRequest({ ...terminal, nonce: ++terminalRevealNonceRef.current });
+                      }}
                       onApproval={(itemId, decision, responseText, answers) => {
                         void handleApproval(itemId, decision, responseText, answers);
                       }}

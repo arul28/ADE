@@ -9,8 +9,18 @@ import type {
 } from "../../shared/types";
 
 const OSC_133_REGEX = /\u001b\]133;([ABCD])(?:;[^\u0007\u001b]*)?(?:\u0007|\u001b\\)/g;
-const RESUME_BACKTICK_REGEX = /`((?:claude|codex)\s+(?:(?:--resume|-r|resume)\b)[^`\r\n]*)`/gi;
-const RESUME_PLAIN_REGEX = /\b((?:claude|codex)\s+(?:(?:--resume|-r|resume)\b)[^\r\n]*?(?=\s+(?:claude|codex)\s|$))/gi;
+const RESUME_BACKTICK_REGEX = /`([^`\r\n]*(?:claude|codex|cursor-agent|droid|opencode)\s+[^`\r\n]*(?:--resume|-r|resume|--continue|-c|--session|-s)[^`\r\n]*)`/gi;
+const RESUME_COMMAND_REGEX = /\b((?:claude|codex|cursor-agent|droid|opencode)\s+[^\r\n`]*?(?:--resume(?:=|\s+)?[^\s`\r\n]*|-r\s+[^\s`\r\n]+|resume(?:\s+[^\s`\r\n]+)?|--continue|-c(?:\s|$)|--session(?:=|\s+)[^\s`\r\n]+|-s\s+[^\s`\r\n]+)[^\r\n`]*?)(?=\s+(?:claude|codex|cursor-agent|droid|opencode)\s|$)/gi;
+
+function shellQuote(value: string): string {
+  if (!value.length) return "''";
+  if (/^[a-zA-Z0-9_.:@%+=,/-]+$/.test(value)) return value;
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function commandArrayToLine(parts: string[]): string {
+  return parts.map(shellQuote).join(" ");
+}
 
 function normalizeCommand(raw: string): string {
   return raw
@@ -20,16 +30,31 @@ function normalizeCommand(raw: string): string {
     .trim();
 }
 
+function stripLeadingEnvAssignments(command: string): string {
+  let next = command.trim();
+  for (;;) {
+    const before = next;
+    next = next.replace(/^[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s]+)\s+/, "").trim();
+    if (next === before) return next;
+  }
+}
+
 function toolFromCommand(raw: string): TerminalToolType | null {
-  const normalized = raw.trim().toLowerCase();
+  const normalized = stripLeadingEnvAssignments(raw).trim().toLowerCase();
   if (normalized.startsWith("claude ")) return "claude";
   if (normalized.startsWith("codex ")) return "codex";
+  if (normalized.startsWith("cursor-agent ")) return "cursor-cli";
+  if (normalized.startsWith("droid ")) return "droid";
+  if (normalized.startsWith("opencode ")) return "opencode";
   return null;
 }
 
-function providerFromTool(toolType: TerminalToolType | null | undefined): TerminalResumeProvider | null {
+export function providerFromTool(toolType: TerminalToolType | null | undefined): TerminalResumeProvider | null {
   if (toolType === "claude" || toolType === "claude-orchestrated" || toolType === "claude-chat") return "claude";
   if (toolType === "codex" || toolType === "codex-orchestrated" || toolType === "codex-chat") return "codex";
+  if (toolType === "cursor-cli") return "cursor";
+  if (toolType === "droid") return "droid";
+  if (toolType === "opencode") return "opencode";
   return null;
 }
 
@@ -48,6 +73,74 @@ function permissionModeToCodexFlags(permissionMode: AgentChatPermissionMode | nu
   return [];
 }
 
+function permissionModeToCursorFlags(permissionMode: AgentChatPermissionMode | null | undefined): string[] {
+  if (permissionMode === "full-auto") return ["--force"];
+  if (permissionMode === "plan") return ["--mode", "plan"];
+  if (permissionMode === "edit") return ["--mode", "ask"];
+  return [];
+}
+
+function droidSettingsJson(permissionMode: AgentChatPermissionMode | null | undefined): string {
+  if (permissionMode === "full-auto") {
+    return JSON.stringify({ sessionDefaultSettings: { interactionMode: "auto", autonomyLevel: "high" } });
+  }
+  if (permissionMode === "default") {
+    return JSON.stringify({ sessionDefaultSettings: { interactionMode: "auto", autonomyLevel: "medium" } });
+  }
+  if (permissionMode === "edit") {
+    return JSON.stringify({ sessionDefaultSettings: { interactionMode: "auto", autonomyLevel: "low" } });
+  }
+  return JSON.stringify({ sessionDefaultSettings: { interactionMode: "spec", autonomyLevel: "off" } });
+}
+
+function buildDroidCommandLine(args: {
+  permissionMode: AgentChatPermissionMode | null | undefined;
+  resumeTarget?: string | null;
+}): string {
+  const droidArgs = ["droid", "--settings", "$ADE_DROID_SETTINGS", "--resume"];
+  if (args.resumeTarget) droidArgs.push(args.resumeTarget);
+  const droidCommand = commandArrayToLine(droidArgs).replace(shellQuote("$ADE_DROID_SETTINGS"), "\"$ADE_DROID_SETTINGS\"");
+  return [
+    "ADE_DROID_SETTINGS=\"$(mktemp \"${TMPDIR:-/tmp}/ade-droid-settings.XXXXXX.json\")\"",
+    `printf %s ${shellQuote(droidSettingsJson(args.permissionMode))} > "$ADE_DROID_SETTINGS"`,
+    `${droidCommand}; ADE_DROID_STATUS=$?; rm -f "$ADE_DROID_SETTINGS"; exit $ADE_DROID_STATUS`,
+  ].join(" && ");
+}
+
+const OPENCODE_INLINE_CONFIG_ENV = "OPENCODE_CONFIG_CONTENT";
+
+function openCodePermissionValue(permissionMode: AgentChatPermissionMode | null | undefined): string | Record<string, string> | null {
+  if (permissionMode === "config-toml") return null;
+  if (permissionMode === "full-auto") return "allow";
+  if (permissionMode === "edit") return { "*": "ask", edit: "allow" };
+  if (permissionMode === "plan") return { "*": "ask", edit: "deny", bash: "deny" };
+  return { "*": "ask" };
+}
+
+function openCodeConfigEnv(permissionMode: AgentChatPermissionMode | null | undefined): string | null {
+  const permission = openCodePermissionValue(permissionMode);
+  return permission ? JSON.stringify({ permission }) : null;
+}
+
+function permissionModeToOpenCodeArgs(permissionMode: AgentChatPermissionMode | null | undefined): string[] {
+  return permissionMode === "plan" ? ["--agent", "plan"] : [];
+}
+
+function buildOpenCodeResumeCommand(args: {
+  permissionMode: AgentChatPermissionMode | null | undefined;
+  targetId: string | null;
+}): string {
+  const commandArgs = ["opencode", ...permissionModeToOpenCodeArgs(args.permissionMode)];
+  if (args.targetId) {
+    commandArgs.push("--session", args.targetId);
+  } else {
+    commandArgs.push("--continue");
+  }
+  const config = openCodeConfigEnv(args.permissionMode);
+  const assignment = config ? `${OPENCODE_INLINE_CONFIG_ENV}=${shellQuote(config)} ` : "";
+  return `${assignment}${commandArrayToLine(commandArgs)}`;
+}
+
 function extractTrackedCliPermissionMode(command: string, provider: TerminalResumeProvider): AgentChatPermissionMode | undefined {
   const normalized = command.trim().toLowerCase();
   if (provider === "claude") {
@@ -58,24 +151,58 @@ function extractTrackedCliPermissionMode(command: string, provider: TerminalResu
     return undefined;
   }
 
-  if (normalized.includes("--dangerously-bypass-approvals-and-sandbox") || normalized.includes("--yolo")) return "full-auto";
-  if (normalized.includes("--full-auto")) return "default";
-  if (
-    (normalized.includes("--ask-for-approval untrusted") || normalized.includes("-a untrusted") || normalized.includes("approval_policy=untrusted"))
-    && (normalized.includes("--sandbox workspace-write") || normalized.includes("-s workspace-write") || normalized.includes("sandbox_mode=workspace-write"))
-  ) return "edit";
-  if (
-    (normalized.includes("--ask-for-approval on-request") || normalized.includes("-a on-request") || normalized.includes("approval_policy=on-request"))
-    && (normalized.includes("--sandbox read-only") || normalized.includes("-s read-only") || normalized.includes("sandbox_mode=read-only"))
-  ) return "plan";
-  if (
-    (normalized.includes("--ask-for-approval on-request") || normalized.includes("-a on-request") || normalized.includes("approval_policy=on-request"))
-    && (normalized.includes("--sandbox workspace-write") || normalized.includes("-s workspace-write") || normalized.includes("sandbox_mode=workspace-write"))
-  ) return "default";
-  if (normalized.includes("approval_policy=on-failure") || normalized.includes("sandbox_mode=workspace-write")) return "edit";
-  if (normalized.includes("approval_policy=untrusted") || normalized.includes("sandbox_mode=read-only")) return "plan";
-  if (normalized.includes("approval_policy=") || normalized.includes("sandbox_mode=") || normalized.includes("--ask-for-approval") || normalized.includes("--sandbox")) return "plan";
-  return "config-toml";
+  if (provider === "codex") {
+    if (normalized.includes("--dangerously-bypass-approvals-and-sandbox") || normalized.includes("--yolo")) return "full-auto";
+    if (normalized.includes("--full-auto")) return "default";
+    if (
+      (normalized.includes("--ask-for-approval untrusted") || normalized.includes("-a untrusted") || normalized.includes("approval_policy=untrusted"))
+      && (normalized.includes("--sandbox workspace-write") || normalized.includes("-s workspace-write") || normalized.includes("sandbox_mode=workspace-write"))
+    ) return "edit";
+    if (
+      (normalized.includes("--ask-for-approval on-request") || normalized.includes("-a on-request") || normalized.includes("approval_policy=on-request"))
+      && (normalized.includes("--sandbox read-only") || normalized.includes("-s read-only") || normalized.includes("sandbox_mode=read-only"))
+    ) return "plan";
+    if (
+      (normalized.includes("--ask-for-approval on-request") || normalized.includes("-a on-request") || normalized.includes("approval_policy=on-request"))
+      && (normalized.includes("--sandbox workspace-write") || normalized.includes("-s workspace-write") || normalized.includes("sandbox_mode=workspace-write"))
+    ) return "default";
+    if (normalized.includes("approval_policy=on-failure") || normalized.includes("sandbox_mode=workspace-write")) return "edit";
+    if (normalized.includes("approval_policy=untrusted") || normalized.includes("sandbox_mode=read-only")) return "plan";
+    if (normalized.includes("approval_policy=") || normalized.includes("sandbox_mode=") || normalized.includes("--ask-for-approval") || normalized.includes("--sandbox")) return "plan";
+    return "config-toml";
+  }
+
+  if (provider === "cursor") {
+    if (normalized.includes("--force") || normalized.includes("--yolo")) return "full-auto";
+    if (normalized.includes("--mode plan") || normalized.includes("--plan")) return "plan";
+    if (normalized.includes("--mode ask")) return "edit";
+    return "default";
+  }
+
+  if (provider === "droid") {
+    if (normalized.includes("autonomylevel\":\"high") || normalized.includes("--auto high")) return "full-auto";
+    if (normalized.includes("autonomylevel\":\"medium") || normalized.includes("--auto medium")) return "default";
+    if (normalized.includes("autonomylevel\":\"low") || normalized.includes("--auto low")) return "edit";
+    if (normalized.includes("--skip-permissions-unsafe")) return "full-auto";
+    return "plan";
+  }
+
+  if (provider === "opencode") {
+    if (
+      normalized.includes("opencode_config_content=")
+      && (
+        normalized.includes("\"permission\":\"allow\"")
+        || normalized.includes("\\\"permission\\\":\\\"allow\\\"")
+      )
+    ) return "full-auto";
+    if (normalized.includes("opencode_permission='\"allow\"'") || normalized.includes("opencode_permission=\"\\\"allow\\\"\"")) return "full-auto";
+    if (normalized.includes("--agent plan")) return "plan";
+    if (normalized.includes("\"edit\":\"allow\"") || normalized.includes("\\\"edit\\\":\\\"allow\\\"")) return "edit";
+    if (normalized.includes("opencode_config_content=") || normalized.includes("opencode_permission=")) return "default";
+    return "config-toml";
+  }
+
+  return undefined;
 }
 
 export function parseTrackedCliLaunchConfig(
@@ -105,46 +232,77 @@ export function parseTrackedCliLaunchConfig(
     };
   }
 
-  if (permissionMode === "full-auto") {
-    return {
-      permissionMode,
-      codexApprovalPolicy: "never",
-      codexSandbox: "danger-full-access",
-      codexConfigSource: "flags",
-    };
-  }
+  if (provider === "codex") {
+    if (permissionMode === "full-auto") {
+      return {
+        permissionMode,
+        codexApprovalPolicy: "never",
+        codexSandbox: "danger-full-access",
+        codexConfigSource: "flags",
+      };
+    }
 
-  if (permissionMode === "edit") {
-    return {
-      permissionMode,
-      codexApprovalPolicy: "untrusted",
-      codexSandbox: "workspace-write",
-      codexConfigSource: "flags",
-    };
-  }
+    if (permissionMode === "edit") {
+      return {
+        permissionMode,
+        codexApprovalPolicy: "untrusted",
+        codexSandbox: "workspace-write",
+        codexConfigSource: "flags",
+      };
+    }
 
-  if (permissionMode === "default") {
-    return {
-      permissionMode,
-      codexApprovalPolicy: "on-request",
-      codexSandbox: "workspace-write",
-      codexConfigSource: "flags",
-    };
-  }
+    if (permissionMode === "default") {
+      return {
+        permissionMode,
+        codexApprovalPolicy: "on-request",
+        codexSandbox: "workspace-write",
+        codexConfigSource: "flags",
+      };
+    }
 
-  if (permissionMode === "plan") {
+    if (permissionMode === "plan") {
+      return {
+        permissionMode,
+        codexApprovalPolicy: "on-request",
+        codexSandbox: "read-only",
+        codexConfigSource: "flags",
+      };
+    }
+
     return {
-      permissionMode,
-      codexApprovalPolicy: "on-request",
-      codexSandbox: "read-only",
-      codexConfigSource: "flags",
+      permissionMode: "config-toml",
+      codexConfigSource: "config-toml",
     };
   }
 
   return {
-    permissionMode: "config-toml",
-    codexConfigSource: "config-toml",
+    ...(permissionMode ? { permissionMode } : {}),
   };
+}
+
+function parseProviderResumeTarget(provider: TerminalResumeProvider, command: string): string | null | undefined {
+  if (provider === "claude") {
+    const match = command.match(/^claude(?:(?:\s+--[^\s]+)(?:\s+[^\s]+)?)*\s+(?:--resume|-r|resume)(?:\s+([^\s]+))?(?:\s|$)/i);
+    return match ? match[1] ?? null : undefined;
+  }
+
+  if (provider === "codex") {
+    const match = command.match(/^codex(?:(?:\s+--no-alt-screen)|(?:\s+--full-auto)|(?:\s+--dangerously-bypass-approvals-and-sandbox)|(?:\s+--yolo)|(?:\s+--sandbox\s+[^\s]+)|(?:\s+-s\s+[^\s]+)|(?:\s+--ask-for-approval\s+[^\s]+)|(?:\s+-a\s+[^\s]+)|(?:\s+-c\s+[^\s]+))*\s+resume(?:\s+([^\s]+))?(?:\s|$)/i);
+    return match ? match[1] ?? null : undefined;
+  }
+
+  if (provider === "cursor") {
+    const match = command.match(/^cursor-agent\b.*?(?:--resume(?:=|\s+)([^\s]+)|--continue\b|\bresume\b)(?:\s|$)/i);
+    return match ? match[1] ?? null : undefined;
+  }
+
+  if (provider === "droid") {
+    const match = command.match(/^droid\b.*?(?:--resume(?:=|\s+)?([^\s]+)?|-r\s+([^\s]+)|\bexec\b.*?(?:--session-id|-s)\s+([^\s]+))(?:\s|$)/i);
+    return match ? match[1] ?? match[2] ?? match[3] ?? null : undefined;
+  }
+
+  const match = command.match(/^opencode\b.*?(?:--session(?:=|\s+)([^\s]+)|-s\s+([^\s]+)|--continue\b|-c\b)(?:\s|$)/i);
+  return match ? match[1] ?? match[2] ?? null : undefined;
 }
 
 export function parseTrackedCliResumeCommand(
@@ -154,21 +312,14 @@ export function parseTrackedCliResumeCommand(
   const normalized = normalizeCommand(raw ?? "");
   if (!normalized) return null;
 
-  const cmdTool = toolFromCommand(normalized);
-  const provider = cmdTool === "claude" || cmdTool === "codex"
-    ? cmdTool
-    : providerFromTool(preferredTool);
+  const command = stripLeadingEnvAssignments(normalized);
+  const cmdTool = toolFromCommand(command);
+  const provider = cmdTool ? providerFromTool(cmdTool) : providerFromTool(preferredTool);
   if (!provider) return null;
 
-  if (provider === "claude") {
-    const match = normalized.match(/^claude(?:(?:\s+--[^\s]+)(?:\s+[^\s]+)?)*\s+(?:--resume|-r|resume)(?:\s+([^\s]+))?(?:\s|$)/i);
-    if (!match) return { provider, targetId: null };
-    return { provider, targetId: match[1] ?? null };
-  }
-
-  const match = normalized.match(/^codex(?:(?:\s+--no-alt-screen)|(?:\s+--full-auto)|(?:\s+--dangerously-bypass-approvals-and-sandbox)|(?:\s+--yolo)|(?:\s+--sandbox\s+[^\s]+)|(?:\s+-s\s+[^\s]+)|(?:\s+--ask-for-approval\s+[^\s]+)|(?:\s+-a\s+[^\s]+)|(?:\s+-c\s+[^\s]+))*\s+resume(?:\s+([^\s]+))?(?:\s|$)/i);
-  if (!match) return { provider, targetId: null };
-  return { provider, targetId: match[1] ?? null };
+  const target = parseProviderResumeTarget(provider, command);
+  if (target === undefined) return null;
+  return { provider, targetId: target };
 }
 
 export function buildTrackedCliResumeCommand(metadata: TerminalResumeMetadata | null | undefined): string | null {
@@ -181,13 +332,31 @@ export function buildTrackedCliResumeCommand(metadata: TerminalResumeMetadata | 
     const parts = ["claude", ...permissionModeToClaudeFlag(permissionMode)];
     parts.push("--resume");
     if (targetId.length) parts.push(targetId);
-    return parts.join(" ");
+    return commandArrayToLine(parts);
   }
 
-  const parts = ["codex", "--no-alt-screen", ...permissionModeToCodexFlags(permissionMode)];
-  parts.push("resume");
-  if (targetId.length) parts.push(targetId);
-  return parts.join(" ");
+  if (provider === "codex") {
+    const parts = ["codex", "--no-alt-screen", ...permissionModeToCodexFlags(permissionMode)];
+    parts.push("resume");
+    if (targetId.length) parts.push(targetId);
+    return commandArrayToLine(parts);
+  }
+
+  if (provider === "cursor") {
+    const parts = ["cursor-agent", ...permissionModeToCursorFlags(permissionMode)];
+    if (targetId.length) {
+      parts.push("--resume", targetId);
+    } else {
+      parts.push("--continue");
+    }
+    return commandArrayToLine(parts);
+  }
+
+  if (provider === "droid") {
+    return buildDroidCommandLine({ permissionMode, resumeTarget: targetId || null });
+  }
+
+  return buildOpenCodeResumeCommand({ permissionMode, targetId: targetId || null });
 }
 
 function canonicalizePreferredTool(preferredTool: TerminalToolType | null | undefined): TerminalToolType | null | undefined {
@@ -198,8 +367,9 @@ function canonicalizePreferredTool(preferredTool: TerminalToolType | null | unde
 
 function prefersTool(raw: string, preferredTool: TerminalToolType | null | undefined): boolean {
   const canonicalPreferredTool = canonicalizePreferredTool(preferredTool);
-  if (!canonicalPreferredTool || (canonicalPreferredTool !== "claude" && canonicalPreferredTool !== "codex")) return true;
+  if (!canonicalPreferredTool) return true;
   const cmdTool = toolFromCommand(raw);
+  if (!cmdTool) return true;
   return cmdTool === canonicalPreferredTool;
 }
 
@@ -211,18 +381,21 @@ export function normalizeResumeCommand(
   if (!normalized) return null;
   if (!prefersTool(normalized, preferredTool)) return null;
 
-  if (/^claude\s+/i.test(normalized)) {
-    return normalized
+  const command = stripLeadingEnvAssignments(normalized);
+  if (/^claude\s+/i.test(command)) {
+    return command
       .replace(/^claude\s+resume\b/i, "claude --resume")
       .replace(/^claude\s+-r\b/i, "claude --resume");
   }
-
   return normalized;
 }
 
 export function defaultResumeCommandForTool(toolType: TerminalToolType | null | undefined): string | null {
   if (toolType === "claude" || toolType === "claude-orchestrated") return "claude --resume";
   if (toolType === "codex" || toolType === "codex-orchestrated") return "codex resume";
+  if (toolType === "cursor-cli") return "cursor-agent --continue";
+  if (toolType === "droid") return "droid --resume";
+  if (toolType === "opencode") return "opencode --continue";
   return null;
 }
 
@@ -237,18 +410,16 @@ export function extractResumeCommandFromOutput(
 ): string | null {
   if (!text.trim()) return null;
 
-  // Strip ANSI escape codes — TUI CLIs (claude/codex) embed escape codes that break regex matching
   const cleaned = stripAnsiCodes(text);
+  const candidates = [
+    ...Array.from(cleaned.matchAll(RESUME_BACKTICK_REGEX)).map((m) => m[1] ?? ""),
+    ...Array.from(cleaned.matchAll(RESUME_COMMAND_REGEX)).map((m) => m[1] ?? ""),
+  ];
 
-  const fromBackticks = Array.from(cleaned.matchAll(RESUME_BACKTICK_REGEX))
-    .map((m) => normalizeResumeCommand(m[1] ?? "", preferredTool))
-    .filter(Boolean);
-  if (fromBackticks[0]) return fromBackticks[0];
-
-  const fromPlain = Array.from(cleaned.matchAll(RESUME_PLAIN_REGEX))
-    .map((m) => normalizeResumeCommand(m[1] ?? "", preferredTool))
-    .filter(Boolean);
-  if (fromPlain[0]) return fromPlain[0];
+  for (const candidate of candidates) {
+    const normalized = normalizeResumeCommand(candidate, preferredTool);
+    if (normalized) return normalized;
+  }
 
   return null;
 }

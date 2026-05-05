@@ -87,9 +87,12 @@ describe("createLocalProject", () => {
     expect(fs.readFileSync(path.join(result.rootPath, "README.md"), "utf8")).toBe("# my-project\n");
     const gitignore = fs.readFileSync(path.join(result.rootPath, ".gitignore"), "utf8");
     expect(gitignore).toContain("node_modules/");
-    expect(gitignore).toContain(".ade/");
+    expect(gitignore).not.toContain(".ade/");
     expect(gitignore).toContain(".env");
     expect(gitignore).toContain("*.log");
+    expect(fs.existsSync(path.join(result.rootPath, ".ade", ".gitignore"))).toBe(true);
+    expect(fs.existsSync(path.join(result.rootPath, ".ade", "ade.yaml"))).toBe(true);
+    expect(fs.existsSync(path.join(result.rootPath, ".ade", "cto", "identity.yaml"))).toBe(true);
 
     const argsList = runGitMock.mock.calls.map((c) => c[0] as string[]);
     expect(argsList[0]).toEqual(["init", "--initial-branch=main"]);

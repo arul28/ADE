@@ -85,6 +85,23 @@ describe("getPermissionOptions", () => {
     expect(options.map((o) => o.value)).toEqual(["plan", "edit", "default", "full-auto"]);
   });
 
+  it("returns Cursor Agent options for CLI-wrapped cursor", () => {
+    const options = getPermissionOptions({ family: "cursor", isCliWrapped: true });
+    expect(options).toHaveLength(4);
+    expect(options.map((o) => o.value)).toEqual(["default", "plan", "edit", "full-auto"]);
+    const force = options.find((o) => o.value === "full-auto")!;
+    expect(force.label).toBe("Force");
+    expect(force.safety).toBe("danger");
+  });
+
+  it("returns OpenCode CLI options for CLI-wrapped opencode (incl. config-toml)", () => {
+    const options = getPermissionOptions({ family: "opencode", isCliWrapped: true });
+    expect(options).toHaveLength(5);
+    expect(options.map((o) => o.value)).toEqual(["default", "plan", "edit", "full-auto", "config-toml"]);
+    const configToml = options.find((o) => o.value === "config-toml")!;
+    expect(configToml.safety).toBe("custom");
+  });
+
   it("returns API/local options for CLI-wrapped codex family (family normalization only applies to guarded mode)", () => {
     // 'codex' as a family string does not match the openai CLI branch (which checks opts.family === "openai")
     const options = getPermissionOptions({ family: "codex", isCliWrapped: true });
@@ -165,6 +182,11 @@ describe("familyToPermissionKey", () => {
     expect(familyToPermissionKey("factory", true)).toBe("droid");
   });
 
+  it("maps CLI-wrapped cursor to 'cursor', falls back to 'opencode' off-CLI", () => {
+    expect(familyToPermissionKey("cursor", true)).toBe("cursor");
+    expect(familyToPermissionKey("cursor", false)).toBe("opencode");
+  });
+
   it("maps everything else to 'opencode'", () => {
     expect(familyToPermissionKey("anthropic", false)).toBe("opencode");
     expect(familyToPermissionKey("openai", false)).toBe("opencode");
@@ -177,6 +199,7 @@ describe("permissionFamilyLabel", () => {
   it("returns human-readable labels for all keys", () => {
     expect(permissionFamilyLabel("claude")).toBe("Claude Code workers");
     expect(permissionFamilyLabel("codex")).toBe("Codex workers");
+    expect(permissionFamilyLabel("cursor")).toBe("Cursor workers");
     expect(permissionFamilyLabel("droid")).toBe("Droid workers");
     expect(permissionFamilyLabel("opencode")).toBe("OpenCode workers");
   });

@@ -17,6 +17,9 @@ export type TerminalToolType =
   | "run-shell"
   | "claude"
   | "codex"
+  | "cursor-cli"
+  | "droid"
+  | "opencode"
   | "claude-orchestrated"
   | "codex-orchestrated"
   | "opencode-orchestrated"
@@ -31,7 +34,7 @@ export type TerminalToolType =
 
 export type TerminalRuntimeState = "running" | "waiting-input" | "idle" | "exited" | "killed";
 
-export type TerminalResumeProvider = "claude" | "codex";
+export type TerminalResumeProvider = "claude" | "codex" | "cursor" | "droid" | "opencode";
 
 export type TerminalResumeTargetKind = "session" | "thread";
 

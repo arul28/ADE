@@ -141,6 +141,7 @@ describe("TopBar", () => {
 
   afterEach(() => {
     cleanup();
+    vi.restoreAllMocks();
     if (originalAde === undefined) {
       delete (globalThis.window as any).ade;
     } else {
@@ -210,7 +211,7 @@ describe("TopBar", () => {
 
   it("shows project icon replacement errors", async () => {
     globalThis.window.ade.project.chooseIcon = vi.fn(async () => {
-      throw new Error("Failed to set project icon: Project icon must be 1 MB or smaller.");
+      throw new Error("Failed to set project icon: Project icon must be 10 MB or smaller.");
     }) as any;
 
     render(<TopBar />);
@@ -218,6 +219,31 @@ describe("TopBar", () => {
     fireEvent.click(await screen.findByLabelText("Project icon"));
     fireEvent.click(await screen.findByText("Replace"));
 
-    expect((await screen.findByRole("alert")).textContent).toContain("Project icon must be 1 MB or smaller.");
+    expect((await screen.findByRole("alert")).textContent).toContain("Project icon must be 10 MB or smaller.");
+  });
+
+  it("confirms before removing a project tab", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+
+    render(<TopBar />);
+
+    await screen.findByText("ADE");
+    fireEvent.click(screen.getByTitle("Remove project"));
+
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("Close \"ADE\" and remove it from project tabs?"));
+    expect(globalThis.window.ade.project.forgetRecent).not.toHaveBeenCalled();
+  });
+
+  it("removes the project tab after confirmation", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    render(<TopBar />);
+
+    await screen.findByText("ADE");
+    fireEvent.click(screen.getByTitle("Remove project"));
+
+    await waitFor(() => {
+      expect(globalThis.window.ade.project.forgetRecent).toHaveBeenCalledWith("/Users/arul/ADE");
+    });
   });
 });

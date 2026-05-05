@@ -768,8 +768,7 @@ function isMockChatToolType(toolType: unknown): boolean {
         || normalized === "claude-chat"
         || normalized === "opencode-chat"
         || normalized === "cursor"
-        || normalized === "droid"
-        || normalized.startsWith("droid")
+        || normalized === "droid-chat"
         || normalized.endsWith("-chat")
       ),
   );
@@ -847,6 +846,7 @@ function mockAgentChatSummaryFromSession(session: any): any | null {
     title: session.title ?? null,
     goal: session.goal ?? null,
     reasoningEffort: session.resumeMetadata?.reasoningEffort ?? null,
+    codexFastMode: session.resumeMetadata?.codexFastMode === true,
     executionMode: session.resumeMetadata?.executionMode ?? null,
     permissionMode: session.resumeMetadata?.permissionMode ?? null,
     interactionMode: session.resumeMetadata?.interactionMode ?? null,

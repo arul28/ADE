@@ -384,10 +384,10 @@ Rendered when the Work view has no open sessions. Contains:
 
 - A three-mode liquid-glass pill (`ModeSwitcherPills` in
   `WorkViewArea.tsx`) toggling `draftKind` between **Chat** (compose a
-  new ADE chat in the lane), **CLI** (spawn a tracked Claude Code or
-  Codex CLI session), and **Shell** (plain shell terminal in the
-  lane's worktree). `draftKind` is `WorkDraftKind = "chat" | "cli" |
-  "shell"` in `appStore`.
+  new ADE chat in the lane), **CLI** (spawn a tracked agent CLI
+  session), and **Shell** (plain shell terminal in the lane's
+  worktree). `draftKind` is `WorkDraftKind = "chat" | "cli" | "shell"`
+  in `appStore`.
 - A sessions-pane expand affordance (`SessionsPaneExpandAffordance`)
   on the toolbar when the sidebar is collapsed: a sidebar glyph plus
   a count chip ("N in list, M running"). Clicking it expands the
@@ -395,26 +395,59 @@ Rendered when the Work view has no open sessions. Contains:
 - lane selector (`LaneCombobox`) synced to the global `selectedLaneId`
 - for chat drafts: `AgentChatPane` in draft mode with provider-specific
   permission controls (`getPermissionOptions`, `safetyColors`)
-- for cli/shell drafts: provider picker (Claude / Codex / Shell),
-  permission mode dropdown, and a "Launch" button that calls
-  `onLaunchPtySession` with the launch payload from
-  `buildTrackedCliLaunchCommand` (`{ command, args, startupCommand }`).
-  `onLaunchPtySession` forwards `command` + `args` to `pty.create`
-  for direct argv spawn; `startupCommand` rides along as the shell
-  fallback for hosts that need rc-resolved CLI shims.
+- for cli drafts: a five-tile provider grid (Claude Code, Codex CLI,
+  Cursor Agent CLI, Factory Droid CLI, OpenCode CLI) with logos sourced
+  from `ToolLogos.tsx` / `ProviderLogos.tsx`. Selecting a provider
+  resets the permission picker to that provider's documented default
+  (`getPermissionOptions` keyed by `family`); Droid and OpenCode default
+  to `edit`, the rest default to `default`. The "Launch" button calls
+  `onLaunchPtySession` with the payload from
+  `buildTrackedCliLaunchCommand` (`{ command?, args, startupCommand,
+  env? }`). `onLaunchPtySession` forwards `command` + `args` for direct
+  argv spawn (Claude / Codex), passes `env` through to the PTY when set
+  (OpenCode's `OPENCODE_CONFIG_CONTENT`), and ships `startupCommand` as
+  the shell fallback the multi-line Cursor / Droid / OpenCode preambles
+  always rely on. The recorded `toolType` and tab title come from the
+  shared `LAUNCH_PROFILE_TOOL_TYPE` / `LAUNCH_PROFILE_TITLE` maps in
+  `cliLaunch.ts`, so adding a new provider only requires extending the
+  registry there plus the `WorkStartSurface` option list.
+- for shell drafts: a "Launch" button that opens an untracked shell PTY
+  in the lane's worktree (`profile = "shell"`).
 
 Launch commands are built by `cliLaunch.ts`:
 
 - `buildTrackedCliLaunchCommand({ provider, permissionMode, ... })`
-  returns the canonical `{ command, args, startupCommand }` triple
-  used for both fresh launches and resumes. The args list now embeds
-  the ADE CLI guidance prompt — Claude through `--append-system-prompt`,
-  Codex as the leading initial prompt — so every tracked CLI session
-  starts with the agent already aware of the ADE wrappers.
+  returns the canonical `{ command?, args, startupCommand, env? }`
+  shape used for both fresh launches and resumes. Permission mode
+  choices map onto provider-native flags / configs:
+  - **Claude** → `--permission-mode` flag (CLI default plus
+    plan/acceptEdits/bypassPermissions).
+  - **Codex** → `--ask-for-approval` + `--sandbox` pair (or
+    `--full-auto`/`--dangerously-bypass-approvals-and-sandbox` for the
+    presets), plus `config-toml` mode that defers to `.codex/config.toml`.
+  - **Cursor** → `--mode plan|ask` for read-only modes and `--force`
+    for full-auto. Sessions pre-allocate a chat id with
+    `cursor-agent create-chat` so `--resume <id>` is always known.
+  - **Droid** → an autonomy-tiered settings JSON written to a temp file
+    that `droid --settings $ADE_DROID_SETTINGS` consumes; `spec`
+    autonomy is the plan/read-only fallback.
+  - **OpenCode** → an inline JSON permission policy passed via the
+    `OPENCODE_CONFIG_CONTENT` env var (`config-toml` mode skips the env
+    so OpenCode reads `opencode.json` instead). Plan mode adds `--agent
+    plan`.
+  Every provider also receives the ADE CLI guidance prompt — Claude
+  through `--append-system-prompt`, every other provider as a leading
+  prompt argument — so the agent starts with the ADE wrappers in
+  context.
 - `buildTrackedCliStartupCommand({ provider, permissionMode, ... })`
   thin wrapper that returns just the shell-typed `startupCommand`.
 - `resolveTrackedCliResumeCommand(session)` — used for the resume
-  action on the session card
+  action on the session card. Internally calls
+  `buildTrackedCliResumeCommand(metadata)`, which knows how to format
+  Claude (`claude --resume <uuid>`), Codex (`codex resume <thread>`),
+  Cursor (`cursor-agent --resume <chatId>` / `--continue`), Droid (the
+  same `--settings` preamble plus `droid --resume <id>`), and OpenCode
+  (`opencode --session <id>` / `--continue`).
 
 ## Context menu: `SessionContextMenu.tsx`
 
@@ -448,12 +481,19 @@ before the IPC round-trip completes), `refresh`, and the right-sidebar
 setters `setWorkSidebarOpen`, `setWorkSidebarTab` (also forces the
 sidebar open), and `setWorkSidebarWidthPct` (clamped 26–55%). The
 `launchPtySession({ laneId, profile, command?, args?, startupCommand?,
-title?, tracked? })` helper (and its lane-scoped twin in
+env?, title?, tracked? })` helper (and its lane-scoped twin in
 `useLaneWorkSessions`) builds a default launch payload with
 `buildTrackedCliLaunchCommand` when the caller didn't override
-`command`/`args`, so every entry point — chat composer launch button,
-TopBar work controls, lane Work pane — produces the same argv-based
-spawn with ADE CLI guidance baked in.
+`command`/`args`/`env`, so every entry point — chat composer launch
+button, TopBar work controls, lane Work pane — produces the same
+argv-based spawn with ADE CLI guidance baked in. `profile` is a
+`LaunchProfile` (`"claude" | "codex" | "cursor" | "droid" | "opencode"
+| "shell"`); the matching tab title and recorded `TerminalToolType`
+come from the shared `LAUNCH_PROFILE_TITLE` / `LAUNCH_PROFILE_TOOL_TYPE`
+maps in `cliLaunch.ts`. `inferToolFromResumeCommand` strips leading
+`ENV=value` assignments before sniffing the provider, so resume
+commands the OpenCode preamble emits (`OPENCODE_CONFIG_CONTENT=…
+opencode --session …`) round-trip correctly.
 
 `useLaneWorkSessions` (same file) wraps the same state but scopes to a
 single lane for the Lanes tab.

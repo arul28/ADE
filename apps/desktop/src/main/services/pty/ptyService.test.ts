@@ -434,6 +434,54 @@ describe("ptyService", () => {
       );
     });
 
+    it("exports ADE chat terminal context to spawned shells", async () => {
+      const { service, loadPty } = createHarness();
+
+      await service.create({
+        laneId: "lane-1",
+        title: "Chat context",
+        cols: 80,
+        rows: 24,
+        chatSessionId: "chat-42",
+      });
+
+      const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+      const spawnArgs = ptyLib.spawn.mock.calls.at(-1);
+      const opts = spawnArgs?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+      expect(opts?.env).toEqual(expect.objectContaining({
+        ADE_CHAT_SESSION_ID: "chat-42",
+        ADE_LANE_ID: "lane-1",
+        ADE_PROJECT_ROOT: "/tmp/test-project",
+      }));
+    });
+
+    it("does not leak an inherited ADE chat session into unlinked terminals", async () => {
+      const previous = process.env.ADE_CHAT_SESSION_ID;
+      process.env.ADE_CHAT_SESSION_ID = "outer-chat";
+      try {
+        const { service, loadPty } = createHarness();
+
+        await service.create({
+          laneId: "lane-1",
+          title: "Unlinked terminal",
+          cols: 80,
+          rows: 24,
+        });
+
+        const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+        const spawnArgs = ptyLib.spawn.mock.calls.at(-1);
+        const opts = spawnArgs?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+        expect(opts?.env?.ADE_CHAT_SESSION_ID).toBeUndefined();
+        expect(opts?.env).toEqual(expect.objectContaining({
+          ADE_LANE_ID: "lane-1",
+          ADE_PROJECT_ROOT: "/tmp/test-project",
+        }));
+      } finally {
+        if (previous === undefined) delete process.env.ADE_CHAT_SESSION_ID;
+        else process.env.ADE_CHAT_SESSION_ID = previous;
+      }
+    });
+
     it("preserves explicit terminal color environment overrides", async () => {
       const { service, loadPty } = createHarness();
 
@@ -1132,7 +1180,13 @@ describe("ptyService", () => {
       );
     });
 
-    it("generates Claude CLI titles from the first submitted PTY write (user prompt) using the bound cwd", async () => {
+    it.each([
+      ["claude", "Claude session"],
+      ["codex", "Codex session"],
+      ["cursor-cli", "Cursor Agent CLI"],
+      ["droid", "Factory Droid CLI"],
+      ["opencode", "OpenCode CLI"],
+    ] as const)("generates %s titles from the first submitted PTY write using the bound cwd", async (toolType, title) => {
       vi.useFakeTimers();
       try {
         mocks.existsSyncResults.set("/tmp/test-worktree/subdir", true);
@@ -1144,10 +1198,10 @@ describe("ptyService", () => {
         const { ptyId } = await service.create({
           laneId: "lane-1",
           cwd: "/tmp/test-worktree/subdir",
-          title: "Claude session",
+          title,
           cols: 80,
           rows: 24,
-          toolType: "claude",
+          toolType,
         });
         // Mark the metadata file as non-existent so readPersistedChatManuallyNamed returns false
         const createdSessionId = (sessionService.create as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]?.sessionId;

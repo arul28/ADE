@@ -552,6 +552,7 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var title: String?
   var goal: String?
   var reasoningEffort: String?
+  var codexFastMode: Bool?
   var executionMode: String?
   var permissionMode: String?
   var interactionMode: String?
@@ -1071,6 +1072,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
   var modelId: String?
   var sessionProfile: String?
   var reasoningEffort: String?
+  var codexFastMode: Bool?
   var executionMode: String?
   var permissionMode: String?
   var interactionMode: String?
@@ -1107,6 +1109,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     case modelId
     case sessionProfile
     case reasoningEffort
+    case codexFastMode
     case executionMode
     case permissionMode
     case interactionMode
@@ -1145,6 +1148,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     modelId = try container.decodeIfPresent(String.self, forKey: .modelId)
     sessionProfile = try container.decodeIfPresent(String.self, forKey: .sessionProfile)
     reasoningEffort = try container.decodeIfPresent(String.self, forKey: .reasoningEffort)
+    codexFastMode = try container.decodeIfPresent(Bool.self, forKey: .codexFastMode)
     executionMode = try container.decodeIfPresent(String.self, forKey: .executionMode)
     permissionMode = try container.decodeIfPresent(String.self, forKey: .permissionMode)
     interactionMode = try container.decodeIfPresent(String.self, forKey: .interactionMode)
@@ -1182,6 +1186,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     try container.encodeIfPresent(modelId, forKey: .modelId)
     try container.encodeIfPresent(sessionProfile, forKey: .sessionProfile)
     try container.encodeIfPresent(reasoningEffort, forKey: .reasoningEffort)
+    try container.encodeIfPresent(codexFastMode, forKey: .codexFastMode)
     try container.encodeIfPresent(executionMode, forKey: .executionMode)
     try container.encodeIfPresent(permissionMode, forKey: .permissionMode)
     try container.encodeIfPresent(interactionMode, forKey: .interactionMode)
@@ -1821,6 +1826,7 @@ struct AgentChatUpdateSessionRequest: Codable, Equatable {
   var title: String?
   var modelId: String?
   var reasoningEffort: String?
+  var codexFastMode: Bool?
   var permissionMode: String?
   var interactionMode: String?
   var claudePermissionMode: String?
@@ -1862,12 +1868,25 @@ struct AgentChatModelInfo: Codable, Equatable, Identifiable {
   var description: String?
   var isDefault: Bool
   var reasoningEfforts: [AgentChatModelReasoningEffort]?
+  var serviceTiers: [String]?
   var maxThinkingTokens: Int?
   var modelId: String?
   var family: String?
   var supportsReasoning: Bool?
   var supportsTools: Bool?
   var color: String?
+}
+
+extension AgentChatModelInfo {
+  /// Mirrors desktop `modelSupportsServiceTier` — case-insensitive lookup so
+  /// callers don't have to normalize before checking, e.g. "Fast" vs "fast".
+  func supportsServiceTier(_ tier: String) -> Bool {
+    let needle = tier.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    guard !needle.isEmpty else { return false }
+    return serviceTiers?.contains(where: { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == needle }) == true
+  }
+
+  var supportsCodexFastMode: Bool { supportsServiceTier("fast") }
 }
 
 struct AgentChatModelCatalogModel: Codable, Equatable, Identifiable {
@@ -1880,6 +1899,7 @@ struct AgentChatModelCatalogModel: Codable, Equatable, Identifiable {
   var description: String?
   var isDefault: Bool
   var reasoningEfforts: [AgentChatModelReasoningEffort]?
+  var serviceTiers: [String]?
   var maxThinkingTokens: Int?
   var modelId: String?
   var family: String?

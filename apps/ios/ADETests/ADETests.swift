@@ -1007,6 +1007,7 @@ final class ADETests: XCTestCase {
       title: "Review run",
       modelId: "claude-sonnet-4",
       reasoningEffort: "high",
+      codexFastMode: true,
       permissionMode: "edit",
       interactionMode: "plan",
       claudePermissionMode: "default",
@@ -1018,6 +1019,7 @@ final class ADETests: XCTestCase {
     ))
     XCTAssertEqual(update["modelId"] as? String, "claude-sonnet-4")
     XCTAssertEqual(update["permissionMode"] as? String, "edit")
+    XCTAssertEqual(update["codexFastMode"] as? Bool, true)
     let computerUse = update["computerUse"] as? [String: Any]
     XCTAssertEqual(computerUse?["enabled"] as? Bool, true)
   }
@@ -4627,6 +4629,76 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(summary.requestedCwd, "apps/ios/ADE")
   }
 
+  func testAgentChatSessionDecodesCodexFastModeFlag() throws {
+    let payload: [String: Any] = [
+      "sessionId": "chat-fast",
+      "laneId": "lane-1",
+      "provider": "codex",
+      "model": "gpt-5.4",
+      "reasoningEffort": "high",
+      "codexFastMode": true,
+      "status": "active",
+      "createdAt": "2026-03-25T00:00:00.000Z",
+      "lastActivityAt": "2026-03-25T00:00:01.000Z",
+    ]
+    let data = try JSONSerialization.data(withJSONObject: payload)
+    let session = try JSONDecoder().decode(AgentChatSession.self, from: data)
+    XCTAssertEqual(session.codexFastMode, true)
+
+    let summaryPayload: [String: Any] = [
+      "sessionId": "chat-fast",
+      "laneId": "lane-1",
+      "provider": "codex",
+      "model": "gpt-5.4",
+      "codexFastMode": false,
+      "status": "active",
+      "startedAt": "2026-03-25T00:00:00.000Z",
+      "lastActivityAt": "2026-03-25T00:00:01.000Z",
+    ]
+    let summaryData = try JSONSerialization.data(withJSONObject: summaryPayload)
+    let summary = try JSONDecoder().decode(AgentChatSessionSummary.self, from: summaryData)
+    XCTAssertEqual(summary.codexFastMode, false)
+
+    // Missing key keeps the flag nil so older app servers continue to decode.
+    let legacyPayload: [String: Any] = [
+      "sessionId": "chat-legacy",
+      "laneId": "lane-1",
+      "provider": "claude",
+      "model": "claude-sonnet-4-6",
+      "status": "active",
+      "startedAt": "2026-03-25T00:00:00.000Z",
+      "lastActivityAt": "2026-03-25T00:00:01.000Z",
+    ]
+    let legacyData = try JSONSerialization.data(withJSONObject: legacyPayload)
+    let legacy = try JSONDecoder().decode(AgentChatSessionSummary.self, from: legacyData)
+    XCTAssertNil(legacy.codexFastMode)
+  }
+
+  func testAgentChatModelInfoDetectsFastServiceTier() throws {
+    let payload: [String: Any] = [
+      "id": "gpt-5.5",
+      "displayName": "GPT-5.5",
+      "isDefault": true,
+      "serviceTiers": ["fast"],
+      "reasoningEfforts": [
+        ["effort": "medium", "description": "balanced"],
+      ],
+    ]
+    let data = try JSONSerialization.data(withJSONObject: payload)
+    let info = try JSONDecoder().decode(AgentChatModelInfo.self, from: data)
+    XCTAssertTrue(info.supportsCodexFastMode)
+    XCTAssertTrue(info.supportsServiceTier("FAST"))
+    XCTAssertFalse(info.supportsServiceTier("priority"))
+
+    let plainData = try JSONSerialization.data(withJSONObject: [
+      "id": "claude-sonnet-4-6",
+      "displayName": "Sonnet 4.6",
+      "isDefault": false,
+    ])
+    let plain = try JSONDecoder().decode(AgentChatModelInfo.self, from: plainData)
+    XCTAssertFalse(plain.supportsCodexFastMode)
+  }
+
   func testCtoRosterDecodesCtoSummaryAndWorkerEntries() throws {
     let ctoSummary: [String: Any] = [
       "sessionId": "cto-session-1",
@@ -5280,6 +5352,7 @@ final class ADETests: XCTestCase {
             description: "Latest Codex model",
             isDefault: true,
             reasoningEfforts: nil,
+            serviceTiers: nil,
             maxThinkingTokens: nil,
             modelId: "openai/gpt-5.5",
             family: "openai",
@@ -5293,6 +5366,7 @@ final class ADETests: XCTestCase {
             description: nil,
             isDefault: false,
             reasoningEfforts: nil,
+            serviceTiers: nil,
             maxThinkingTokens: nil,
             modelId: "openai/gpt-5.4",
             family: "openai",
@@ -5308,6 +5382,7 @@ final class ADETests: XCTestCase {
             description: nil,
             isDefault: false,
             reasoningEfforts: nil,
+            serviceTiers: nil,
             maxThinkingTokens: nil,
             modelId: nil,
             family: "anthropic",
@@ -5321,6 +5396,7 @@ final class ADETests: XCTestCase {
             description: nil,
             isDefault: true,
             reasoningEfforts: nil,
+            serviceTiers: nil,
             maxThinkingTokens: nil,
             modelId: nil,
             family: "cursor",
@@ -5355,6 +5431,7 @@ final class ADETests: XCTestCase {
             description: nil,
             isDefault: true,
             reasoningEfforts: nil,
+            serviceTiers: nil,
             maxThinkingTokens: nil,
             modelId: "openai/gpt-5.5",
             family: "openai",
@@ -6860,6 +6937,7 @@ final class ADETests: XCTestCase {
       title: title,
       goal: nil,
       reasoningEffort: nil,
+      codexFastMode: nil,
       executionMode: nil,
       permissionMode: nil,
       interactionMode: nil,

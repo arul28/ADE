@@ -523,6 +523,7 @@ export type AgentChatSession = {
   modelId?: ModelId;
   sessionProfile?: AgentChatSessionProfile;
   reasoningEffort?: string | null;
+  codexFastMode?: boolean;
   executionMode?: AgentChatExecutionMode | null;
   permissionMode?: AgentChatPermissionMode;
   interactionMode?: AgentChatInteractionMode | null;
@@ -567,6 +568,7 @@ export type AgentChatSessionSummary = {
   title?: string | null;
   goal?: string | null;
   reasoningEffort?: string | null;
+  codexFastMode?: boolean;
   executionMode?: AgentChatExecutionMode | null;
   permissionMode?: AgentChatPermissionMode;
   interactionMode?: AgentChatInteractionMode | null;
@@ -645,6 +647,7 @@ export type AgentChatModelInfo = {
   description?: string | null;
   isDefault: boolean;
   reasoningEfforts?: Array<{ effort: string; description: string }>;
+  serviceTiers?: string[];
   maxThinkingTokens?: number | null;
   // OpenCode-backed model metadata
   modelId?: ModelId;
@@ -698,6 +701,7 @@ export type AgentChatCreateArgs = {
   title?: string | null;
   sessionProfile?: AgentChatSessionProfile;
   reasoningEffort?: string | null;
+  codexFastMode?: boolean;
   permissionMode?: AgentChatPermissionMode;
   interactionMode?: AgentChatInteractionMode | null;
   claudePermissionMode?: AgentChatClaudePermissionMode;
@@ -725,6 +729,7 @@ export type AgentChatHandoffArgs = {
    * session the same way as a legacy handoff.
    */
   reasoningEffort?: string | null;
+  codexFastMode?: boolean;
   claudePermissionMode?: AgentChatClaudePermissionMode;
   codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
   codexSandbox?: AgentChatCodexSandbox;
@@ -895,6 +900,7 @@ export type AgentChatUpdateSessionArgs = {
   manuallyNamed?: boolean;
   modelId?: ModelId;
   reasoningEffort?: string | null;
+  codexFastMode?: boolean;
   permissionMode?: AgentChatPermissionMode;
   interactionMode?: AgentChatInteractionMode | null;
   claudePermissionMode?: AgentChatClaudePermissionMode;

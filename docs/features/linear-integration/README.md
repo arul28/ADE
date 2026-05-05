@@ -146,7 +146,12 @@ Core Linear services on desktop
 - `linearClient.ts` — GraphQL client wrapper
 - `linearIssueTracker.ts` — normalization into `NormalizedLinearIssue`
 - `linearTemplateService.ts` — mission/session template resolution
-- `linearWorkflowFileService.ts` — YAML workflow files under `.ade/`
+- `linearWorkflowFileService.ts` — YAML workflow files under
+  `.ade/workflows/linear/**`. Every `save(config)` call invokes
+  `ensureSharedAdeProjectScaffold(projectRoot)` first so a project that
+  was previously local-only gets promoted to the shared `.ade/`
+  scaffold (including the canonical `.ade/.gitignore` and
+  `cto/identity.yaml`) the moment a Linear workflow is persisted.
 - `flowPolicyService.ts` — versioned policy read/write, rollback, revisions
 - `linearRoutingService.ts` — match triggers against an issue, pick workflow
 - `linearIntakeService.ts` — issue discovery loop, snapshots, hashes

@@ -25,7 +25,7 @@ import {
   type IosElementContextItem,
   type PendingInputRequest,
 } from "../../../shared/types";
-import { getModelById } from "../../../shared/modelRegistry";
+import { getModelById, modelSupportsFastMode } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
 import { ProviderModelSelector } from "../shared/ProviderModelSelector";
 import { getPermissionOptions, safetyColors } from "../shared/permissionOptions";
@@ -533,6 +533,43 @@ function PendingSteerItem({
   );
 }
 
+function CodexFastModeToggle({
+  active,
+  disabled,
+  onToggle,
+}: {
+  active: boolean;
+  disabled?: boolean;
+  onToggle?: (next: boolean) => void;
+}) {
+  return (
+    <SmartTooltip
+      content={{
+        label: "Fast mode",
+        description: active ? "Fast mode is on for the next Codex turn." : "Use Fast mode for supported Codex models.",
+        effect: active ? "Next turn uses the fast service tier." : "Standard mode is selected.",
+      }}
+    >
+      <button
+        type="button"
+        aria-label="Fast mode"
+        aria-pressed={active}
+        disabled={disabled || !onToggle}
+        onClick={() => onToggle?.(!active)}
+        className={cn(
+          "inline-flex h-8 min-h-8 shrink-0 items-center gap-1.5 rounded-md border px-2.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-45",
+          active
+            ? "border-amber-300/30 bg-amber-400/12 text-amber-100 shadow-[0_0_0_1px_rgba(251,191,36,0.08)]"
+            : "border-white/[0.07] bg-white/[0.025] text-muted-fg/60 hover:bg-white/[0.06] hover:text-fg/80",
+        )}
+      >
+        <Lightning size={13} weight="fill" />
+        <span>Fast</span>
+      </button>
+    </SmartTooltip>
+  );
+}
+
 export function AgentChatComposer({
   surfaceMode = "standard",
   layoutVariant = "standard",
@@ -543,6 +580,7 @@ export function AgentChatComposer({
   modelId,
   availableModelIds,
   reasoningEffort,
+  codexFastMode = false,
   draft,
   attachments,
   pendingInput,
@@ -571,6 +609,7 @@ export function AgentChatComposer({
   messagePlaceholder,
   onModelChange,
   onReasoningEffortChange,
+  onCodexFastModeChange,
   onDraftChange,
   onClearDraft,
   onSubmit,
@@ -613,6 +652,7 @@ export function AgentChatComposer({
   onParallelRemoveModel,
   onParallelSlotModelChange,
   onParallelSlotReasoningChange,
+  onParallelSlotCodexFastModeChange,
   parallelLaunchBusy = false,
   parallelLaunchStatus = null,
   parallelControlSlot = null,
@@ -647,6 +687,7 @@ export function AgentChatComposer({
   modelId: string;
   availableModelIds?: string[];
   reasoningEffort: string | null;
+  codexFastMode?: boolean;
   draft: string;
   attachments: AgentChatFileRef[];
   pendingInput: PendingInputRequest | null;
@@ -675,6 +716,7 @@ export function AgentChatComposer({
   messagePlaceholder?: string;
   onModelChange: (modelId: string) => void;
   onReasoningEffortChange: (reasoningEffort: string | null) => void;
+  onCodexFastModeChange?: (enabled: boolean) => void;
   onDraftChange: (value: string) => void;
   onClearDraft?: () => void;
   onSubmit: () => void;
@@ -715,13 +757,14 @@ export function AgentChatComposer({
   sessionId?: string | null;
   parallelChatMode?: boolean;
   onParallelChatModeChange?: (enabled: boolean) => void;
-  parallelModelSlots?: Array<{ modelId: string; reasoningEffort: string | null }>;
+  parallelModelSlots?: Array<{ modelId: string; reasoningEffort: string | null; codexFastMode?: boolean }>;
   parallelConfiguringIndex?: number | null;
   onParallelConfiguringIndexChange?: (index: number | null) => void;
   onParallelAddModel?: () => void;
   onParallelRemoveModel?: (index: number) => void;
   onParallelSlotModelChange?: (index: number, modelId: string) => void;
   onParallelSlotReasoningChange?: (index: number, effort: string | null) => void;
+  onParallelSlotCodexFastModeChange?: (index: number, enabled: boolean) => void;
   parallelLaunchBusy?: boolean;
   parallelLaunchStatus?: string | null;
   parallelControlSlot?: ParallelComposerControlSlot | null;
@@ -1273,6 +1316,16 @@ export function AgentChatComposer({
   const opmUse = slot?.opencodePermissionMode ?? opencodePermissionMode;
   const dpmUse = slot?.droidPermissionMode ?? droidPermissionMode ?? "auto-low";
   const cmsUse = slot?.cursorModeSnapshot ?? cursorModeSnapshot;
+  const fastModeModelId =
+    parallelChatMode && parallelConfiguringIndex != null
+      ? (parallelModelSlots[parallelConfiguringIndex]?.modelId ?? "")
+      : (modelId ?? "");
+  const fastModeSupported = sp === "codex" && modelSupportsFastMode(getModelById(fastModeModelId));
+  const fastModeActive =
+    parallelChatMode && parallelConfiguringIndex != null
+      ? parallelModelSlots[parallelConfiguringIndex]?.codexFastMode === true
+      : codexFastMode === true;
+  const fastModeToggleDisabled = parallelChatMode ? parallelLaunchBusy : modelSelectionLocked;
 
   const claudeSelectionMode = cpmUse === "plan" || im === "plan"
     ? "plan"
@@ -2711,7 +2764,15 @@ export function AgentChatComposer({
                 onOpenAiSettings={onOpenAiSettings}
                 compactToolbar
               />
-            ) : !parallelChatMode ? (
+            ) : null}
+            {parallelChatMode && parallelConfiguringIndex != null && fastModeSupported ? (
+              <CodexFastModeToggle
+                active={fastModeActive}
+                disabled={fastModeToggleDisabled}
+                onToggle={(next) => onParallelSlotCodexFastModeChange?.(parallelConfiguringIndex, next)}
+              />
+            ) : null}
+            {!parallelChatMode ? (
               <ProviderModelSelector
                 value={modelId}
                 onChange={onModelChange}
@@ -2722,6 +2783,13 @@ export function AgentChatComposer({
                 onReasoningEffortChange={onReasoningEffortChange}
                 onOpenAiSettings={onOpenAiSettings}
                 compactToolbar
+              />
+            ) : null}
+            {!parallelChatMode && fastModeSupported ? (
+              <CodexFastModeToggle
+                active={fastModeActive}
+                disabled={fastModeToggleDisabled}
+                onToggle={onCodexFastModeChange}
               />
             ) : null}
           </div>

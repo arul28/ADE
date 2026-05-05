@@ -5,7 +5,12 @@ import { listSessionsCached, invalidateSessionListCache } from "../../lib/sessio
 import { sessionStatusBucket } from "../../lib/terminalAttention";
 import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
 import { buildOptimisticChatSessionSummary, isRunOwnedSession } from "../../lib/sessions";
-import { resolveLaunchFields } from "../terminals/cliLaunch";
+import {
+  LAUNCH_PROFILE_TITLE,
+  LAUNCH_PROFILE_TOOL_TYPE,
+  resolveLaunchFields,
+  type LaunchProfile,
+} from "../terminals/cliLaunch";
 
 const EMPTY_WORK_STATE: WorkProjectViewState = {
   openItemIds: [],
@@ -441,14 +446,14 @@ export function useLaneWorkSessions(laneId: string | null) {
   const launchPtySession = useCallback(
     async (args: {
       laneId: string;
-      profile: "claude" | "codex" | "shell";
+      profile: LaunchProfile;
       tracked?: boolean;
       title?: string;
       startupCommand?: string;
       command?: string;
       args?: string[];
+      env?: Record<string, string>;
     }) => {
-      const titleMap = { claude: "Claude Code", codex: "Codex", shell: "Shell" } as const;
       // resolveLaunchFields treats the caller's launch overrides as atomic:
       // if any of startupCommand/command/args is supplied we don't mix in
       // defaults from the other fields (which used to override the caller's
@@ -459,14 +464,15 @@ export function useLaneWorkSessions(laneId: string | null) {
         ...(args.startupCommand !== undefined ? { startupCommand: args.startupCommand } : {}),
         ...(args.command !== undefined ? { command: args.command } : {}),
         ...(args.args !== undefined ? { args: args.args } : {}),
+        ...(args.env !== undefined ? { env: args.env } : {}),
       });
       const result = await window.ade.pty.create({
         laneId: args.laneId,
         cols: 100,
         rows: 30,
-        title: args.title ?? titleMap[args.profile],
+        title: args.title ?? LAUNCH_PROFILE_TITLE[args.profile],
         tracked: args.tracked ?? true,
-        toolType: args.profile,
+        toolType: LAUNCH_PROFILE_TOOL_TYPE[args.profile],
         ...launchFields,
       });
       selectLane(args.laneId);

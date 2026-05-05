@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildAdeGitignore, resolveAdeLayout } from "../../../shared/adeLayout";
@@ -9,6 +10,7 @@ import { browseProjectDirectories } from "./projectBrowserService";
 import { __internal, getProjectDetail } from "./projectDetailService";
 import { inspectRecentProject, toRecentProjectSummary } from "./recentProjectSummary";
 import { openKvDb } from "../state/kvDb";
+import { createProjectConfigService } from "../config/projectConfigService";
 
 const { parseLastCommitLine, parseAheadBehind } = __internal;
 
@@ -44,6 +46,21 @@ function createLogger() {
     warn: () => {},
     error: () => {},
   } as any;
+}
+
+function makeProjectConfigDb() {
+  const store = new Map<string, unknown>();
+  return {
+    getJson: vi.fn((key: string) => (store.has(key) ? store.get(key) : null)),
+    setJson: vi.fn((key: string, value: unknown) => {
+      store.set(key, value);
+    }),
+    run: vi.fn(),
+  } as any;
+}
+
+function git(cwd: string, args: string[]): string {
+  return execFileSync("git", args, { cwd, encoding: "utf8" });
 }
 
 function insertProject(
@@ -133,22 +150,21 @@ describe("initializeOrRepairAdeProject", () => {
     return root;
   }
 
-  it("creates the canonical layout, scrubs stale git excludes, and rehomes legacy state", () => {
+  it("creates the canonical shared layout, scrubs stale git excludes, and rehomes legacy state when requested", () => {
     const root = createRepoFixture();
     const layout = resolveAdeLayout(root);
 
-    const result = initializeOrRepairAdeProject(root);
+    const result = initializeOrRepairAdeProject(root, { mode: "shared" });
 
     expect(result.cleanup.changed).toBe(true);
     expect(fs.readFileSync(path.join(root, ".gitignore"), "utf8")).not.toContain("/.ade");
     expect(fs.readFileSync(path.join(root, ".git", "info", "exclude"), "utf8")).not.toContain(".ade/");
     const adeGitignore = fs.readFileSync(path.join(layout.adeDir, ".gitignore"), "utf8");
     expect(adeGitignore).toBe(buildAdeGitignore());
-    expect(adeGitignore).toContain("cto/core-memory.json");
-    expect(adeGitignore).toContain("context/");
-    expect(adeGitignore).toContain("agents/");
-    expect(adeGitignore).toContain("cto/openclaw-history.json");
-    expect(adeGitignore).not.toContain("cto/identity.yaml");
+    expect(adeGitignore).toContain("*");
+    expect(adeGitignore).toContain("!cto/identity.yaml");
+    expect(adeGitignore).toContain("!workflows/linear/**");
+    expect(adeGitignore).toContain("!project-icons/**");
     expect(fs.readFileSync(path.join(layout.adeDir, "ade.yaml"), "utf8")).toContain("version: 1");
     expect(fs.readFileSync(path.join(layout.ctoDir, "identity.yaml"), "utf8")).toContain("name: CTO");
     expect(fs.existsSync(path.join(layout.templatesDir, ".gitkeep"))).toBe(true);
@@ -166,7 +182,7 @@ describe("initializeOrRepairAdeProject", () => {
   it("is idempotent once the canonical structure is in place", () => {
     const root = createRepoFixture();
 
-    initializeOrRepairAdeProject(root);
+    initializeOrRepairAdeProject(root, { mode: "shared" });
     const second = initializeOrRepairAdeProject(root);
 
     expect(second.cleanup.changed).toBe(false);
@@ -179,9 +195,145 @@ describe("initializeOrRepairAdeProject", () => {
     fs.mkdirSync(layout.adeDir, { recursive: true });
     fs.writeFileSync(path.join(layout.adeDir, "ade.yaml"), "version: 1\nprocesses:\n  - id: keep-me\n", "utf8");
 
-    initializeOrRepairAdeProject(root);
+    initializeOrRepairAdeProject(root, { mode: "shared" });
 
     expect(fs.readFileSync(path.join(layout.adeDir, "ade.yaml"), "utf8")).toContain("keep-me");
+  });
+
+  it("keeps a non-ADE repo local-only on open so Git stays clean", () => {
+    const root = makeTempDir("ade-project-local-open-");
+    git(root, ["init"]);
+
+    const result = initializeOrRepairAdeProject(root);
+    const layout = resolveAdeLayout(root);
+
+    expect(result.cleanup.changed).toBe(true);
+    expect(fs.existsSync(layout.sharedConfigPath)).toBe(false);
+    expect(fs.existsSync(path.join(layout.adeDir, ".gitignore"))).toBe(false);
+    expect(fs.readFileSync(path.join(root, ".git", "info", "exclude"), "utf8")).toContain(".ade/");
+    expect(git(root, ["status", "--porcelain=v1", "--untracked-files=all"]).trim()).toBe("");
+  });
+
+  it("does not promote generated local CTO files on a later open", () => {
+    const root = makeTempDir("ade-project-local-cto-open-");
+    git(root, ["init"]);
+    const layout = resolveAdeLayout(root);
+    initializeOrRepairAdeProject(root);
+    fs.mkdirSync(layout.ctoDir, { recursive: true });
+    fs.writeFileSync(path.join(layout.ctoDir, "identity.yaml"), "name: CTO\nupdatedAt: 2026-01-01T00:00:00.000Z\n", "utf8");
+
+    const second = initializeOrRepairAdeProject(root);
+
+    expect(second.cleanup.actions.some((action) => action.kind === "scrub_exclude")).toBe(false);
+    expect(fs.existsSync(layout.sharedConfigPath)).toBe(false);
+    expect(fs.existsSync(path.join(layout.adeDir, ".gitignore"))).toBe(false);
+    expect(git(root, ["status", "--porcelain=v1", "--untracked-files=all"]).trim()).toBe("");
+  });
+
+  it("repairs shared scaffold automatically when a clone already has ADE config", () => {
+    const root = makeTempDir("ade-project-shared-open-");
+    git(root, ["init"]);
+    const layout = resolveAdeLayout(root);
+    fs.mkdirSync(layout.adeDir, { recursive: true });
+    fs.writeFileSync(layout.sharedConfigPath, "version: 1\nprocesses: []\n", "utf8");
+
+    const result = initializeOrRepairAdeProject(root);
+
+    expect(result.cleanup.actions.some((action) => action.relativePath === ".gitignore")).toBe(true);
+    expect(fs.readFileSync(path.join(layout.adeDir, ".gitignore"), "utf8")).toBe(buildAdeGitignore());
+    expect(fs.readFileSync(layout.sharedConfigPath, "utf8")).toContain("version: 1");
+    expect(fs.existsSync(path.join(layout.ctoDir, "identity.yaml"))).toBe(true);
+  });
+
+  it("promotes local-only ADE state to shared scaffold and removes local excludes", () => {
+    const root = makeTempDir("ade-project-promote-");
+    git(root, ["init"]);
+    fs.writeFileSync(path.join(root, ".gitignore"), "node_modules/\n/.ade/**\n", "utf8");
+    initializeOrRepairAdeProject(root);
+    fs.appendFileSync(path.join(root, ".git", "info", "exclude"), ".ade/*\n", "utf8");
+
+    const result = initializeOrRepairAdeProject(root, { mode: "shared" });
+    const layout = resolveAdeLayout(root);
+
+    expect(result.cleanup.actions.some((action) => action.kind === "scrub_exclude")).toBe(true);
+    expect(fs.readFileSync(path.join(root, ".git", "info", "exclude"), "utf8")).not.toContain(".ade");
+    expect(fs.readFileSync(path.join(root, ".gitignore"), "utf8")).not.toContain("/.ade");
+    expect(fs.existsSync(layout.sharedConfigPath)).toBe(true);
+    const status = git(root, ["status", "--porcelain=v1", "--untracked-files=all"]);
+    expect(status).toContain("?? .ade/.gitignore");
+    expect(status).toContain("?? .ade/ade.yaml");
+    expect(status).toContain("?? .ade/cto/identity.yaml");
+  });
+
+  it("promotes local-only ADE state when shared project config is saved", () => {
+    const root = makeTempDir("ade-project-config-promote-");
+    git(root, ["init"]);
+    const layout = resolveAdeLayout(root);
+    initializeOrRepairAdeProject(root);
+
+    const service = createProjectConfigService({
+      projectRoot: root,
+      adeDir: layout.adeDir,
+      projectId: "project-config-promote",
+      db: makeProjectConfigDb(),
+      logger: createLogger(),
+    });
+
+    service.save({
+      shared: {
+        version: 1,
+        processes: [{ id: "dev", name: "Dev", command: ["npm", "run", "dev"], cwd: "." }],
+        stackButtons: [],
+        testSuites: [],
+        laneOverlayPolicies: [],
+        automations: [],
+      },
+      local: {},
+    });
+
+    expect(fs.readFileSync(path.join(root, ".git", "info", "exclude"), "utf8")).not.toContain(".ade/");
+    const status = git(root, ["status", "--porcelain=v1", "--untracked-files=all"]);
+    expect(status).toContain("?? .ade/.gitignore");
+    expect(status).toContain("?? .ade/ade.yaml");
+    expect(status).not.toContain(".ade/local.yaml");
+  });
+
+  it("keeps local-only project config saves out of Git", () => {
+    const root = makeTempDir("ade-project-local-config-");
+    git(root, ["init"]);
+    const layout = resolveAdeLayout(root);
+    initializeOrRepairAdeProject(root);
+
+    const service = createProjectConfigService({
+      projectRoot: root,
+      adeDir: layout.adeDir,
+      projectId: "project-local-config",
+      db: makeProjectConfigDb(),
+      logger: createLogger(),
+    });
+
+    service.save({
+      shared: {
+        version: 1,
+        processes: [],
+        stackButtons: [],
+        testSuites: [],
+        laneOverlayPolicies: [],
+        automations: [],
+      },
+      local: {
+        version: 1,
+        processes: [{ id: "dev", name: "Dev", command: ["npm", "run", "dev"], cwd: "." }],
+        stackButtons: [],
+        testSuites: [],
+        laneOverlayPolicies: [],
+        automations: [],
+      },
+    });
+
+    expect(fs.existsSync(layout.sharedConfigPath)).toBe(false);
+    expect(fs.existsSync(layout.localConfigPath)).toBe(true);
+    expect(git(root, ["status", "--porcelain=v1", "--untracked-files=all"]).trim()).toBe("");
   });
 });
 

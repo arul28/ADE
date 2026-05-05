@@ -236,8 +236,13 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
         exited: false,
       };
 
-      setTabs((prev) => [...prev, nextEntry]);
-      setActiveTabId(tabId);
+      setTabs((prev) => {
+        const existing = prev.find(
+          (tab) => tab.sessionId === created.sessionId || tab.ptyId === created.ptyId,
+        );
+        setActiveTabId(existing?.id ?? tabId);
+        return existing ? prev : [...prev, nextEntry];
+      });
     } catch (error) {
       reportCreateError(error);
     } finally {

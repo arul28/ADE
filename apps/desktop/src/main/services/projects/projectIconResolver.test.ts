@@ -11,6 +11,8 @@ import {
   setProjectIconOverrideFromSelection,
 } from "./projectIconResolver";
 
+const OVER_ICON_LIMIT_BYTES = 10 * 1024 * 1024 + 1;
+
 function makeProjectRoot(): string {
   // Resolve through realpath so the assertions still hold on platforms
   // (macOS) where the system tmpdir is itself a symlink (e.g. `/var` ->
@@ -81,7 +83,7 @@ describe("projectIconResolver", () => {
       images: [{ filename: "icon.png", idiom: "universal", size: "1024x1024" }],
       info: { author: "xcode", version: 1 },
     }));
-    writeFile(root, "apps/ios/ADE/Assets.xcassets/AppIcon.appiconset/icon.png", Buffer.alloc(1024 * 1024 + 1));
+    writeFile(root, "apps/ios/ADE/Assets.xcassets/AppIcon.appiconset/icon.png", Buffer.alloc(OVER_ICON_LIMIT_BYTES));
     writeFile(root, "apps/ios/ADE/Assets.xcassets/BrandMark.imageset/Contents.json", JSON.stringify({
       images: [{ filename: "logo.png", idiom: "universal", scale: "1x" }],
       info: { author: "xcode", version: 1 },
@@ -94,7 +96,7 @@ describe("projectIconResolver", () => {
   it("skips overlarge source-linked icons during auto-detection", () => {
     const root = makeProjectRoot();
     writeFile(root, "index.html", '<link rel="icon" href="/brand/logo.png">');
-    writeFile(root, "public/brand/logo.png", Buffer.alloc(1024 * 1024 + 1));
+    writeFile(root, "public/brand/logo.png", Buffer.alloc(OVER_ICON_LIMIT_BYTES));
 
     expect(resolveProjectIconPath(root)).toBeNull();
   });
@@ -132,9 +134,9 @@ describe("projectIconResolver", () => {
 
   it("rejects selected icons that are too large to render", () => {
     const root = makeProjectRoot();
-    const iconPath = writeFile(root, "assets/icon.png", Buffer.alloc(1024 * 1024 + 1));
+    const iconPath = writeFile(root, "assets/icon.png", Buffer.alloc(OVER_ICON_LIMIT_BYTES));
 
-    expect(() => setProjectIconOverride(root, iconPath)).toThrow("Project icon must be 1 MB or smaller.");
+    expect(() => setProjectIconOverride(root, iconPath)).toThrow("Project icon must be 10 MB or smaller.");
   });
 
   it("can explicitly disable automatic icon detection", () => {
