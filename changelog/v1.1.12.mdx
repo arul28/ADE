@@ -1,0 +1,70 @@
+---
+title: "v1.1.12"
+description: "Release notes for ADE v1.1.12 - May 6, 2026"
+---
+
+v1.1.12 broadens CLI agent support (cursor-agent, droid, opencode), adds Codex Fast Mode plumbing, and tightens the built-in browser, PTY context, and Lanes UI. The iOS companion ships on the existing 1.1.10 TestFlight train (no marketing-version bump, new build) with a sharper connection-health surface, an iOS sim service expansion in the desktop, and an auto-update path with broader test coverage.
+
+---
+
+## Desktop
+
+<Tabs>
+  <Tab title="Multi-CLI agents and Codex Fast Mode">
+    Chat now drives more than just Claude — cursor-agent, droid, and opencode are first-class, and Codex picks up a Fast Mode toggle that propagates through the JSON-RPC service-tier surface.
+
+    - **cursor-agent, droid, and opencode support.** New CLI launch paths, transcript-row helpers, and tool-logo entries make these agents available alongside Claude in chat. cursor-agent precreate is gated on `$ADE_CURSOR_CHAT_ID` so we don't churn unnecessary chat IDs, and the Droid wrap regex was tightened to avoid false matches in `terminalSessionSignals`.
+    - **Codex Fast Mode.** `agentChatService` forwards a `codexFastMode` flag through to the Codex JSON-RPC `serviceTier`, with a presence check (`!== undefined`) so explicit `false` no longer gets dropped during merges. The `ade chat` CLI throws on conflicting `--fast` and `--standard` flags instead of silently picking one.
+    - **Permission options unified.** A single `permissionOptions` helper replaces the renderer's scattered defaults; `WorkStartSurface` falls back to the provider's `defaultPermission`, then the first available option, never to a hardcoded `"default"`.
+  </Tab>
+
+  <Tab title="Built-in browser, PTY, and chat composer">
+    The built-in browser learns to spoof its User-Agent, the PTY exports ADE chat/mission/lane context, and the chat composer/work-log get a localhost-link shortcut.
+
+    - **Built-in browser UA spoof + open-panel.** New UA-spoofing surface and `openPanel` IPC, with redacted URL params in IPC logs so query strings don't leak to the journal. `BuiltInBrowserService` gains tests and a sharper screenshot/CDP surface.
+    - **PTY ADE context env.** `ptyService` injects `ADE_CHAT`, `ADE_MISSION`, and `ADE_LANE` into spawned processes so CLIs can read the active chat/mission/lane from env without IPC. `terminalSessionSignals` validates resume candidates via `parseTrackedCliResumeCommand` before re-attaching.
+    - **Localhost-link shortcuts.** `ChatWorkLogBlock` recognizes localhost URLs in chat work-log output and opens them in the built-in browser; `chatTranscriptRows` picks up the same routing for transcript output.
+    - **ChatTerminalDrawer state.** `setActiveTabId` is pulled out of the `setTabs` updater so tab focus no longer races with tab list updates.
+  </Tab>
+
+  <Tab title="Lanes, projects, and recent-project ordering">
+    The Lanes page is reworked, recent-project ordering is preserved across mobile-sync upserts, and lane cleanup failures now surface instead of going silent.
+
+    - **Lanes page rework.** `LanesPage` is restructured for clearer state grouping, with a fallback test for the all-deleting case and a refs-based capture for high-churn vars so `onDeleteEvent` no longer re-subscribes on every render.
+    - **Recent-project upsert ordering.** `globalState` clamps `existingIndex < 12` to avoid sparse holes; `ensureProjectContextForMobileSync` passes `preserveRecentOrder` so mobile upserts don't reshuffle the recents list.
+    - **Lane pack cleanup.** `laneService` logs and surfaces `pack_dir_remove` failures rather than swallowing them.
+    - **Project config cleanup.** `projectConfigService` drops the dead `config.laneCleanup` branch.
+  </Tab>
+
+  <Tab title="iOS Simulator service + auto-update">
+    `iosSimulatorService` and `autoUpdateService` get a substantial test pass and a few correctness fixes.
+
+    - **iosSimulatorService expansion.** Project targets are now keyed by scheme + appTarget identity (including `productName`) so multi-target projects stop collapsing onto a single entry; new tests cover the previously uncovered branches.
+    - **autoUpdateService refactor.** `quitAndInstall` is serialized via a module-level guard mirroring `checkPromise` so concurrent triggers can't double-install. Test coverage expands to the install/check race surfaces.
+    - **`AutoUpdateControl` UX.** Renderer surface for auto-update gets a tighter status display; `TopBar` picks up the new states.
+    - **Focus-visible + tab styling.** `index.css` adds focus-visible accent + ring on active tabs.
+  </Tab>
+</Tabs>
+
+---
+
+## iOS
+
+<Tabs>
+  <Tab title="Connection health and Codex Fast Mode">
+    The mobile companion picks up a sharper connection-health surface and the new Codex Fast Mode flag so it stays in step with the desktop on the same TestFlight train.
+
+    - **Connection health presentation.** A new `SyncConnectionHealth` (transport / sync / load) replaces the flat `RemoteConnectionState` for visible affordances: `unreachable` now distinguishes "host went silent after being reachable" (`.danger`) from `.disconnected` (`.muted`), and connected-but-strained shows as `.warning`. `ConnectionHealthPresentation` is extracted in `ADEDesignSystem` so the button + toolbar dots stay in sync.
+    - **SettingsConnectionHeader.** Reachability copy and tint follow the new transport/load split; the disconnected dot color is corrected.
+    - **Codex Fast Mode flag.** `AgentChatSession`/`AgentChatSessionSummary`/`AgentChatUpdateSessionRequest` add a `codexFastMode: Bool?` field; `AgentChatModelInfo` gains `serviceTiers` plus a `supportsCodexFastMode` helper for case-insensitive tier checks against the desktop catalog.
+    - **SyncService timeouts.** When the reconnect path is skipped, the timeout message no longer references reconnect.
+  </Tab>
+
+  <Tab title="Work session settings and tests">
+    Smaller surface alignment in the Work tab and a refresh of the iOS test suite.
+
+    - **WorkSessionSettingsSheet.** Codex Fast Mode is wired into the actions sheet so iOS can flip the same toggle desktop exposes; `WorkPreviews` follows.
+    - **ADETests refresh.** Targeted test additions for the new connection-health and chat-session fields keep the iOS suite honest against the new desktop contract.
+    - **TestFlight build.** This release ships a new TestFlight build of marketing version 1.1.10 (no version bump on the App Store side) and is distributed to all non-empty internal tester groups.
+  </Tab>
+</Tabs>
