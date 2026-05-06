@@ -9103,7 +9103,7 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.updateQuitAndInstall, () => {
-    getCtx().autoUpdateService?.quitAndInstall();
+    return getCtx().autoUpdateService?.quitAndInstall() ?? false;
   });
 
   ipcMain.handle(IPC.updateDismissInstalledNotice, () => {

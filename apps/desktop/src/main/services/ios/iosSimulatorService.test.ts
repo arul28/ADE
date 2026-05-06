@@ -54,6 +54,62 @@ const simulatorDevicesJson = JSON.stringify({
   },
 });
 
+function writeMinimalXcodeProject(
+  projectRoot: string,
+  projectName: string,
+  options: { targetName?: string; productName?: string; schemeName?: string } = {},
+): string {
+  const targetName = options.targetName ?? projectName;
+  const productName = options.productName ?? targetName;
+  const targetId = "PROXTARGET00000000000001";
+  const projectPath = path.join(projectRoot, `${projectName}.xcodeproj`);
+  fs.mkdirSync(projectPath, { recursive: true });
+  fs.writeFileSync(path.join(projectPath, "project.pbxproj"), `
+/* Begin PBXGroup section */
+		PROXGROUP0000000000000001 /* Products */ = {
+			isa = PBXGroup;
+			name = Products;
+		};
+/* End PBXGroup section */
+/* Begin PBXNativeTarget section */
+		${targetId} /* ${targetName} */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = PROXCONFIG00000000000001 /* Build configuration list for PBXNativeTarget "${targetName}" */;
+			buildPhases = ();
+			buildRules = ();
+			dependencies = ();
+			name = ${targetName};
+			productName = ${productName};
+			productReference = PROXPRODUCT0000000000001 /* ${productName}.app */;
+			productType = "com.apple.product-type.application";
+		};
+		PROXTESTS000000000000001 /* ${targetName}Tests */ = {
+			isa = PBXNativeTarget;
+			name = ${targetName}Tests;
+			productName = ${targetName}Tests;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+`);
+  if (options.schemeName) {
+    const schemeDir = path.join(projectPath, "xcshareddata", "xcschemes");
+    fs.mkdirSync(schemeDir, { recursive: true });
+    fs.writeFileSync(path.join(schemeDir, `${options.schemeName}.xcscheme`), `<?xml version="1.0" encoding="UTF-8"?>
+<Scheme version="1.7">
+  <BuildAction>
+    <BuildActionEntries>
+      <BuildActionEntry buildForTesting="YES" buildForRunning="YES" buildForProfiling="YES" buildForArchiving="YES" buildForAnalyzing="YES">
+        <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="${targetId}" BuildableName="${productName}.app" BlueprintName="${targetName}" ReferencedContainer="container:${projectName}.xcodeproj">
+        </BuildableReference>
+      </BuildActionEntry>
+    </BuildActionEntries>
+  </BuildAction>
+</Scheme>
+`);
+  }
+  return projectPath;
+}
+
 afterEach(() => {
   __testResetIosurfaceCapabilityCache();
   vi.restoreAllMocks();
@@ -188,6 +244,59 @@ describe("iosSimulatorService cross-platform safety", () => {
   });
 });
 
+describe("iosSimulatorService launch target discovery", () => {
+  it("discovers root-level Xcode projects and ignores Products groups when parsing app targets", async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-ios-root-project-"));
+    writeMinimalXcodeProject(projectRoot, "Prox");
+    const service = createIosSimulatorService({
+      projectRoot,
+      logger: noopLogger,
+    });
+
+    try {
+      const targets = await service.listLaunchTargets({ projectRoot });
+      expect(targets).toHaveLength(1);
+      expect(targets[0]).toMatchObject({
+        kind: "project",
+        projectPath: "Prox.xcodeproj",
+        scheme: "Prox",
+        name: "Prox",
+      });
+      expect(targets.map((target) => target.scheme)).not.toContain("Products");
+    } finally {
+      service.dispose();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("uses shared scheme names when the app target and scheme differ", async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-ios-root-scheme-"));
+    writeMinimalXcodeProject(projectRoot, "Prox", {
+      targetName: "AppTarget",
+      productName: "Prox",
+      schemeName: "Prox",
+    });
+    const service = createIosSimulatorService({
+      projectRoot,
+      logger: noopLogger,
+    });
+
+    try {
+      const targets = await service.listLaunchTargets({ projectRoot });
+      expect(targets).toHaveLength(1);
+      expect(targets[0]).toMatchObject({
+        projectPath: "Prox.xcodeproj",
+        scheme: "Prox",
+        name: "Prox",
+      });
+      expect(targets[0]?.detail).toContain("target AppTarget");
+    } finally {
+      service.dispose();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("iosSimulatorService single-owner lock contract", () => {
   it("IosSimulatorOwnedBySessionError carries a stable code and currentChatSessionId", () => {
     const previousSession = {
@@ -238,6 +347,110 @@ describe("iosSimulatorService shutdown contract", () => {
 });
 
 describe("iosSimulatorService Simulator.app launch visibility", () => {
+  it("recovers a stale drawer target id when the project now has one valid app scheme", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-stale-target-`);
+    writeMinimalXcodeProject(projectRoot, "Prox");
+    const buildArgs: string[][] = [];
+    const runMock = vi.fn(async (command: string, commandArgs: string[]) => {
+      if (command === "ps") return { stdout: "", stderr: "" };
+      if (command === "/usr/bin/xcode-select") return { stdout: "", stderr: "" };
+      if (command === "xcodebuild" && commandArgs[0] === "-version") {
+        return { stdout: "Xcode 26.3\nBuild version 17C52\n", stderr: "" };
+      }
+      if (command === "xcodebuild") {
+        buildArgs.push(commandArgs);
+        const derivedDataIndex = commandArgs.indexOf("-derivedDataPath");
+        const derivedDataPath = commandArgs[derivedDataIndex + 1];
+        const appPath = path.join(derivedDataPath, "Build", "Products", "Debug-iphonesimulator", "Prox.app");
+        fs.mkdirSync(appPath, { recursive: true });
+        fs.writeFileSync(path.join(appPath, "Info.plist"), "<plist />");
+        return { stdout: "", stderr: "" };
+      }
+      if (command === "xcrun" && commandArgs.join(" ") === "simctl list devices available --json") {
+        return { stdout: simulatorDevicesJson, stderr: "" };
+      }
+      if (command === "xcrun" && commandArgs[1] === "bootstatus") return { stdout: "", stderr: "" };
+      if (command === "xcrun" && commandArgs[1] === "listapps") return { stdout: "", stderr: "" };
+      if (command === "xcrun" && commandArgs[1] === "install") return { stdout: "", stderr: "" };
+      if (command === "xcrun" && commandArgs[1] === "launch") return { stdout: "com.prox.app: 123\n", stderr: "" };
+      if (command === "/usr/libexec/PlistBuddy" && commandArgs[1]?.includes("CFBundleIdentifier")) {
+        return { stdout: "com.prox.app\n", stderr: "" };
+      }
+      if (command === "/usr/libexec/PlistBuddy" && commandArgs[1]?.includes("CFBundleDisplayName")) {
+        return { stdout: "Prox\n", stderr: "" };
+      }
+      return { stdout: "", stderr: "" };
+    });
+    const restoreHooks = __testSetIosSimulatorProcessHooks({
+      run: runMock,
+      commandExists: () => true,
+    });
+    const service = createIosSimulatorService({ projectRoot, logger: noopLogger });
+
+    try {
+      const staleTargetId = Buffer.from("project|apps/Prox/Prox.xcodeproj|Products").toString("base64url");
+      const session = await service.launch({
+        projectRoot,
+        targetId: staleTargetId,
+        build: true,
+      });
+
+      const build = buildArgs.find((args) => args.includes("-scheme"));
+      expect(build?.[build.indexOf("-scheme") + 1]).toBe("Prox");
+      expect(session.targetId).not.toBe(staleTargetId);
+      expect(session.bundleId).toBe("com.prox.app");
+    } finally {
+      service.dispose();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      restoreHooks();
+      platformSpy.mockRestore();
+    }
+  });
+
+  it("turns xcodebuild failures into actionable drawer errors", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-build-failure-`);
+    writeMinimalXcodeProject(projectRoot, "Prox");
+    const runMock = vi.fn(async (command: string, commandArgs: string[]) => {
+      if (command === "ps") return { stdout: "", stderr: "" };
+      if (command === "/usr/bin/xcode-select") return { stdout: "", stderr: "" };
+      if (command === "xcodebuild" && commandArgs[0] === "-version") {
+        return { stdout: "Xcode 26.3\nBuild version 17C52\n", stderr: "" };
+      }
+      if (command === "xcodebuild") {
+        const failure = new Error("Command failed: xcodebuild build") as Error & { stderr?: string };
+        failure.stderr = [
+          "2026-05-06 00:15:59.080 xcodebuild[10266:93709] Writing error result bundle to /tmp/ResultBundle.xcresult",
+          "** BUILD FAILED **",
+          "error: No such module 'MissingKit'",
+        ].join("\n");
+        throw failure;
+      }
+      if (command === "xcrun" && commandArgs.join(" ") === "simctl list devices available --json") {
+        return { stdout: simulatorDevicesJson, stderr: "" };
+      }
+      if (command === "xcrun" && commandArgs[1] === "bootstatus") return { stdout: "", stderr: "" };
+      if (command === "xcrun" && commandArgs[1] === "listapps") return { stdout: "", stderr: "" };
+      return { stdout: "", stderr: "" };
+    });
+    const restoreHooks = __testSetIosSimulatorProcessHooks({
+      run: runMock,
+      commandExists: () => true,
+    });
+    const service = createIosSimulatorService({ projectRoot, logger: noopLogger });
+
+    try {
+      await expect(service.launch({ projectRoot, build: true })).rejects.toThrow(/Could not build Prox/);
+      await expect(service.launch({ projectRoot, build: true })).rejects.toThrow(/No such module 'MissingKit'/);
+    } finally {
+      service.dispose();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      restoreHooks();
+      platformSpy.mockRestore();
+    }
+  });
+
   it("does not open Simulator.app by default during headless launch", async () => {
     const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     const runMock = vi.fn(async (command: string, commandArgs: string[]) => {

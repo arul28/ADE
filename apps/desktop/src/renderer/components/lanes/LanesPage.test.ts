@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   lanePrMatchesCurrentBranch,
+  resolveLaneDeleteStartSelection,
   resolveCreateLaneRequest,
   resolveLaneIdsDeepLinkSelection,
   selectLanePrTag,
@@ -129,6 +130,55 @@ describe("resolveLaneIdsDeepLinkSelection", () => {
       availableLaneIds: ["lane-a"],
       consumedSignature: null,
     })).toBeNull();
+  });
+});
+
+describe("resolveLaneDeleteStartSelection", () => {
+  it("moves selection and active panes away from lanes that just started deleting", () => {
+    const result = resolveLaneDeleteStartSelection({
+      deletingLaneIds: ["lane-b"],
+      selectedLaneId: "lane-b",
+      activeLaneIds: ["lane-b", "lane-c"],
+      pinnedLaneIds: ["lane-b", "lane-d"],
+      filteredLaneIds: ["lane-b", "lane-c", "lane-d"],
+      sortedLaneIds: ["lane-main", "lane-b", "lane-c", "lane-d"],
+    });
+
+    expect(result.selectedLaneId).toBe("lane-c");
+    expect(result.activeLaneIds).toEqual(["lane-c", "lane-d"]);
+    expect(Array.from(result.pinnedLaneIds)).toEqual(["lane-d"]);
+  });
+
+  it("keeps the current selected lane when a different split starts deleting", () => {
+    const result = resolveLaneDeleteStartSelection({
+      deletingLaneIds: ["lane-c"],
+      selectedLaneId: "lane-b",
+      activeLaneIds: ["lane-b", "lane-c", "lane-d"],
+      pinnedLaneIds: [],
+      filteredLaneIds: ["lane-b", "lane-c", "lane-d"],
+      sortedLaneIds: ["lane-main", "lane-b", "lane-c", "lane-d"],
+    });
+
+    expect(result.selectedLaneId).toBe("lane-b");
+    expect(result.activeLaneIds).toEqual(["lane-b", "lane-d"]);
+  });
+
+  it("falls back through sortedLaneIds when every filtered lane is being deleted", () => {
+    const result = resolveLaneDeleteStartSelection({
+      deletingLaneIds: ["lane-b", "lane-c", "lane-d"],
+      selectedLaneId: "lane-b",
+      activeLaneIds: ["lane-b", "lane-c"],
+      pinnedLaneIds: ["lane-b", "lane-d"],
+      // Every filtered lane is being deleted, so the function must fall
+      // through to sortedLaneIds and pick the first non-deleting entry there
+      // (lane-main) rather than re-selecting one of the deleting lanes.
+      filteredLaneIds: ["lane-b", "lane-c", "lane-d"],
+      sortedLaneIds: ["lane-main", "lane-b", "lane-c", "lane-d"],
+    });
+
+    expect(result.selectedLaneId).toBe("lane-main");
+    expect(result.activeLaneIds).toEqual(["lane-main"]);
+    expect(Array.from(result.pinnedLaneIds)).toEqual([]);
   });
 });
 

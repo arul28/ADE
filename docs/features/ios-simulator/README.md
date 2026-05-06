@@ -57,14 +57,33 @@ called from a non-darwin host.
 2. **Device + target discovery.** `listDevices()` parses
    `xcrun simctl list -j devices` and keeps `isAvailable` rows;
    `listLaunchTargets({ deviceUdid?, projectRoot? })` unions three
-   sources tagged on each target: `xcode-project` (running
-   `xcodebuild -list -json` against `apps/ios/ADE.xcodeproj` or any
-   `*.xcodeproj` discovered under the project root, filtered by
-   `IOS_APPLICATION_PRODUCT_TYPE`), `derived-data` (built `.app`
+   sources tagged on each target: `xcode-project` (parsing every
+   `*.xcodeproj` discovered by `discoverXcodeProjectPaths` —
+   root-level `.xcodeproj` bundles, the canonical `apps/ios/ADE.xcodeproj`,
+   and any `apps/*/*.xcodeproj` project), `derived-data` (built `.app`
    bundles already present under `~/Library/Developer/Xcode/DerivedData`),
    and `simctl-listapps` (apps already installed on the chosen
    simulator). `canBuild` is true for project sources; `canLaunch`
    depends on whether a usable bundle id is known.
+
+   The `xcode-project` parser reads `project.pbxproj` directly
+   (scoped to the `PBXNativeTarget` section so foreign matches like
+   widget extensions don't bleed in), filters by
+   `IOS_APPLICATION_PRODUCT_TYPE`, and then expands each target into
+   one launch target per matching shared/user `.xcscheme`. Schemes
+   are correlated to native targets by `BuildableReference`'s
+   `BlueprintIdentifier` first, then `BlueprintName` /
+   `BuildableName`, then a name fallback — so a project with a custom
+   "App Debug" scheme and a "App" target produces two distinct
+   launch targets, each with the right scheme name and a detail
+   string that calls out the target name when it differs from the
+   scheme. Targets without a matching `.xcscheme` fall back to the
+   target name so a stripped-down project still launches. Stale
+   target ids (e.g. saved by a previous session before the project
+   was renamed) are recovered through `recoverStaleLaunchTarget`,
+   which decodes the base64url id and matches the path or basename
+   against the freshly listed targets so a stale `--target` value
+   resolves silently when there is exactly one obvious replacement.
 
 3. **Launch.** `launch(args)` walks an eight-step pipeline and emits
    one `launch-progress` event per step transition:
@@ -80,7 +99,16 @@ called from a non-darwin host.
    -configuration Debug build`; install uses `xcrun simctl install`
    with a 180 s timeout (same stuck-CoreSimulator error mapping);
    launch uses `xcrun simctl launch --terminate-running-process
-   <udid> <bundleId>`. The default path does not open Simulator.app;
+   <udid> <bundleId>`. When `xcodebuild` itself fails,
+   `formatXcodeBuildFailure` extracts the important compiler /
+   provisioning / scheme-missing lines from the merged stdout/stderr,
+   captures the `.xcresult` bundle path when xcodebuild printed one,
+   and rejects with a multi-line message that names the project,
+   scheme, device, and a "Next action" hint pointing the user at
+   Xcode (or, when the scheme isn't visible, at sharing the
+   user-local scheme). The same formatted text is logged as
+   `ios_simulator.build.failed` for diagnostics. The default path
+   does not open Simulator.app;
    the live drawer stream is headless when IOSurface/idb/simctl backends
    are active. Pass
    `keepSimulatorInBackground: false` (or `--foreground` from the CLI)
@@ -387,6 +415,17 @@ chip attached.
   `idb_companion` remains lazy fallback infrastructure for accessibility,
   text, and degraded input, and is stopped after `COMPANION_IDLE_STOP_MS`
   when idle.
+- **Don't fake project layouts to fix "no apps" results.** Project
+  discovery already scans root-level `.xcodeproj` bundles and
+  `apps/*/*.xcodeproj` projects, expands each native iOS target across
+  every matching `.xcscheme`, and recovers stale target ids when the
+  project is renamed. Symlink shims, fake schemes, or layout hacks
+  added on top usually mask a real failure (missing shared scheme,
+  build error, wrong project root) instead of fixing it. Re-list with
+  `ade --socket ios-sim apps --text` and read the formatted xcodebuild
+  failure first — `ADE_CLI_AGENT_GUIDANCE` and the `ade ios-sim`
+  troubleshooting block both call this out so agents don't reach for
+  the wrong fix.
 - **Screenshot pairing window.** `AgentChatPane` tracks the most
   recent attachment via `latestAttachmentRef` and only stamps an
   `attachmentPath` onto the iOS element if the attachment was added

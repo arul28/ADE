@@ -59,6 +59,8 @@ const launchTarget: IosSimulatorLaunchTarget = {
   detail: "Example",
   projectPath: "apps/ios/Example.xcodeproj",
   scheme: "Example",
+  productName: "Example",
+  appTargetId: "target-1",
   appBundlePath: null,
   installed: false,
   canBuild: true,

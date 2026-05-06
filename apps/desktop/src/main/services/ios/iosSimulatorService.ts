@@ -168,6 +168,19 @@ type ResolvedLaunchTarget = {
   shouldInstall: boolean;
 };
 
+type PbxApplicationTarget = {
+  id: string;
+  targetName: string;
+  productName: string;
+};
+
+type XcodeSchemeDefinition = {
+  name: string;
+  blueprintIdentifiers: string[];
+  blueprintNames: string[];
+  buildableNames: string[];
+};
+
 type IosSourceMatch = {
   sourceFile: string;
   sourceLine: number;
@@ -264,6 +277,52 @@ function isTerminatedByTimeout(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
   const record = error as { killed?: unknown; signal?: unknown };
   return record.killed === true && record.signal === "SIGTERM";
+}
+
+function outputToString(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (Buffer.isBuffer(value)) return value.toString();
+  return "";
+}
+
+function commandFailureOutput(error: unknown): string {
+  if (!error || typeof error !== "object") return error instanceof Error ? error.message : String(error);
+  const record = error as { message?: unknown; stdout?: unknown; stderr?: unknown };
+  return [
+    outputToString(record.stderr),
+    outputToString(record.stdout),
+    typeof record.message === "string" ? record.message : null,
+  ].filter((part): part is string => Boolean(part?.trim())).join("\n");
+}
+
+function buildFailureSummary(output: string): string {
+  const lines = output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const important = lines.filter((line) => (
+    /\berror:|fatal error:|BUILD FAILED|The following build commands failed|Provisioning profile|No such module|CodeSign|Signing for|Command SwiftCompile failed|Command CompileSwiftSources failed/i.test(line)
+  ));
+  const selected = important.length ? important : lines.slice(-30);
+  return selected.slice(-40).join("\n").slice(0, 4000);
+}
+
+function formatXcodeBuildFailure(error: unknown, context: { projectPath: string; scheme: string; deviceName: string }): Error {
+  const output = commandFailureOutput(error);
+  const summary = buildFailureSummary(output);
+  const resultBundle = /Writing error result bundle to\s+([^\n]+\.xcresult)/i.exec(output)?.[1]?.trim() ?? null;
+  const schemeMissing = /does not contain a scheme named/i.test(output);
+  const nextAction = schemeMissing
+    ? "ADE could not find that scheme in the project. Refresh the iOS simulator drawer and choose one of the listed schemes; if Xcode only has a user-local scheme, share it from Xcode so command-line builds can see it."
+    : "Open the project in Xcode or rerun the shown xcodebuild command to see the full compiler output, then fix the build error and launch again.";
+  return new Error([
+    `Could not build ${context.scheme} for ${context.deviceName}.`,
+    `Project: ${context.projectPath}`,
+    `Scheme: ${context.scheme}`,
+    resultBundle ? `Result bundle: ${resultBundle}` : null,
+    summary ? `Build output:\n${summary}` : null,
+    `Next action: ${nextAction}`,
+  ].filter(Boolean).join("\n"));
 }
 
 const defaultRunCommand: RunCommand = async (command, args, options = {}) => {
@@ -853,6 +912,15 @@ async function readPlistValue(plistPath: string, key: string): Promise<string | 
 
 function targetId(parts: Array<string | null | undefined>): string {
   return Buffer.from(parts.filter(Boolean).join("|")).toString("base64url");
+}
+
+function decodeTargetId(id: string | null | undefined): string[] {
+  if (!id) return [];
+  try {
+    return Buffer.from(id, "base64url").toString("utf8").split("|").filter(Boolean);
+  } catch {
+    return [];
+  }
 }
 
 function normalizeProjectPath(root: string, rawProjectPath?: string | null): string | null {
@@ -1760,10 +1828,26 @@ async function findAppBundles(root: string): Promise<string[]> {
   return found;
 }
 
-async function findAppBundle(root: string, criteria: { bundleId?: string | null; scheme?: string | null; appBundlePath?: string | null }): Promise<string | null> {
+async function findAppBundle(
+  root: string,
+  criteria: {
+    bundleId?: string | null;
+    scheme?: string | null;
+    /**
+     * Xcode product name produced by the app target ("MyApp" → "MyApp.app").
+     * Preferred over `scheme` because schemes can build multiple `.app`
+     * bundles or use a name that differs from the produced bundle.
+     */
+    productName?: string | null;
+    appBundlePath?: string | null;
+  },
+): Promise<string | null> {
   if (criteria.appBundlePath && fs.existsSync(criteria.appBundlePath)) return criteria.appBundlePath;
   const appBundles = await findAppBundles(root);
+  // productName is the most accurate hint (scheme name can drift from the
+  // produced .app); fall back to scheme, then the well-known ADE.app name.
   const expectedNames = [
+    criteria.productName ? `${criteria.productName}.app` : null,
     criteria.scheme ? `${criteria.scheme}.app` : null,
     "ADE.app",
   ].filter((value): value is string => Boolean(value));
@@ -1780,7 +1864,22 @@ async function findAppBundle(root: string, criteria: { bundleId?: string | null;
   return appBundles[0] ?? null;
 }
 
-function parseApplicationTargetsFromPbxproj(projectPath: string): Array<{ scheme: string; productName: string }> {
+function unquotePbxValue(raw: string | null | undefined): string | null {
+  const value = raw?.trim();
+  if (!value) return null;
+  return value.replace(/^"|"$/g, "").trim();
+}
+
+function readPbxAssignment(block: string, key: string): string | null {
+  return unquotePbxValue(new RegExp(`\\n\\s*${escapeRegExp(key)} = ([^;]+);`).exec(block)?.[1]);
+}
+
+function normalizePbxName(value: string | null, fallback: string): string {
+  if (!value || value.includes("$(")) return fallback;
+  return value;
+}
+
+function parseApplicationTargetsFromPbxproj(projectPath: string): PbxApplicationTarget[] {
   const pbxPath = path.join(projectPath, "project.pbxproj");
   let text = "";
   try {
@@ -1788,16 +1887,157 @@ function parseApplicationTargetsFromPbxproj(projectPath: string): Array<{ scheme
   } catch {
     return [];
   }
-  const targets: Array<{ scheme: string; productName: string }> = [];
-  const targetBlocks = text.matchAll(/\/\* ([^*]+) \*\/ = \{[\s\S]*?isa = PBXNativeTarget;[\s\S]*?\n\t\t\};/g);
+  const nativeTargetSection = /\/\* Begin PBXNativeTarget section \*\/([\s\S]*?)\/\* End PBXNativeTarget section \*\//.exec(text)?.[1] ?? "";
+  const targets: PbxApplicationTarget[] = [];
+  const targetBlocks = nativeTargetSection.matchAll(/^\s*([A-Za-z0-9]+) \/\* ([^*]+) \*\/ = \{([\s\S]*?)^\s*\};/gm);
   for (const match of targetBlocks) {
-    const block = match[0];
+    const id = match[1]?.trim();
+    const block = match[3] ?? "";
+    if (!id) continue;
     if (!block.includes(`productType = "${IOS_APPLICATION_PRODUCT_TYPE}"`)) continue;
-    const name = /\n\s*name = ([^;]+);/.exec(block)?.[1]?.replace(/^"|"$/g, "").trim() || match[1]?.trim();
-    const productName = /\n\s*productName = ([^;]+);/.exec(block)?.[1]?.replace(/^"|"$/g, "").trim() || name;
-    if (name) targets.push({ scheme: name, productName });
+    const fallbackName = match[2]?.trim() ?? id;
+    const targetName = normalizePbxName(readPbxAssignment(block, "name"), fallbackName);
+    const productName = normalizePbxName(readPbxAssignment(block, "productName"), targetName);
+    if (targetName) targets.push({ id, targetName, productName });
   }
   return targets;
+}
+
+function parseXmlAttributes(raw: string): Record<string, string> {
+  const attributes: Record<string, string> = {};
+  for (const match of raw.matchAll(/([A-Za-z_:][A-Za-z0-9_:.-]*)="([^"]*)"/g)) {
+    attributes[match[1]] = match[2];
+  }
+  return attributes;
+}
+
+function readXcodeSchemeDefinitions(projectPath: string): XcodeSchemeDefinition[] {
+  const schemeDirs = [
+    path.join(projectPath, "xcshareddata", "xcschemes"),
+  ];
+  const xcuserdataDir = path.join(projectPath, "xcuserdata");
+  try {
+    for (const entry of fs.readdirSync(xcuserdataDir, { withFileTypes: true })) {
+      if (entry.isDirectory()) schemeDirs.push(path.join(xcuserdataDir, entry.name, "xcschemes"));
+    }
+  } catch {
+    // Shared schemes and target-name fallback cover normal projects.
+  }
+
+  const byName = new Map<string, XcodeSchemeDefinition>();
+  for (const schemeDir of schemeDirs) {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(schemeDir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(".xcscheme")) continue;
+      const name = path.basename(entry.name, ".xcscheme");
+      if (byName.has(name)) continue;
+      const schemePath = path.join(schemeDir, entry.name);
+      let text = "";
+      try {
+        text = fs.readFileSync(schemePath, "utf8");
+      } catch {
+        text = "";
+      }
+      const blueprintIdentifiers = new Set<string>();
+      const blueprintNames = new Set<string>();
+      const buildableNames = new Set<string>();
+      for (const refMatch of text.matchAll(/<BuildableReference\b([^>]*)\/?>/g)) {
+        const attrs = parseXmlAttributes(refMatch[1] ?? "");
+        if (attrs.BlueprintIdentifier) blueprintIdentifiers.add(attrs.BlueprintIdentifier);
+        if (attrs.BlueprintName) blueprintNames.add(attrs.BlueprintName);
+        if (attrs.BuildableName) buildableNames.add(attrs.BuildableName);
+      }
+      byName.set(name, {
+        name,
+        blueprintIdentifiers: Array.from(blueprintIdentifiers),
+        blueprintNames: Array.from(blueprintNames),
+        buildableNames: Array.from(buildableNames),
+      });
+    }
+  }
+  return Array.from(byName.values());
+}
+
+function schemeMatchesApplicationTarget(scheme: XcodeSchemeDefinition, target: PbxApplicationTarget): boolean {
+  if (scheme.blueprintIdentifiers.includes(target.id)) return true;
+  if (scheme.blueprintNames.includes(target.targetName) || scheme.blueprintNames.includes(target.productName)) return true;
+  if (scheme.buildableNames.includes(`${target.targetName}.app`) || scheme.buildableNames.includes(`${target.productName}.app`)) return true;
+  return scheme.name === target.targetName || scheme.name === target.productName;
+}
+
+function schemesForApplicationTarget(projectPath: string, target: PbxApplicationTarget): string[] {
+  const matchedSchemes = readXcodeSchemeDefinitions(projectPath)
+    .filter((scheme) => schemeMatchesApplicationTarget(scheme, target))
+    .map((scheme) => scheme.name);
+  return matchedSchemes.length ? Array.from(new Set(matchedSchemes)) : [target.targetName];
+}
+
+async function discoverXcodeProjectPaths(projectRoot: string): Promise<string[]> {
+  const projectPaths = new Set<string>();
+  const addProjectPath = async (candidate: string) => {
+    if (!candidate.endsWith(".xcodeproj")) return;
+    try {
+      const stat = await fs.promises.stat(candidate);
+      if (!stat.isDirectory()) return;
+      projectPaths.add(path.resolve(candidate));
+    } catch {
+      // Missing or unreadable projects are ignored during best-effort discovery.
+    }
+  };
+  const scanDirectory = async (dir: string) => {
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    await Promise.all(entries.map((entry) => addProjectPath(path.join(dir, entry.name))));
+  };
+
+  await addProjectPath(path.join(projectRoot, ADE_IOS_PROJECT));
+  await scanDirectory(projectRoot);
+
+  const appsRoot = path.join(projectRoot, "apps");
+  await scanDirectory(appsRoot);
+  let appEntries: fs.Dirent[];
+  try {
+    appEntries = await fs.promises.readdir(appsRoot, { withFileTypes: true });
+  } catch {
+    appEntries = [];
+  }
+  await Promise.all(appEntries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => scanDirectory(path.join(appsRoot, entry.name))));
+
+  return Array.from(projectPaths);
+}
+
+function recoverStaleLaunchTarget(targetIdValue: string | null | undefined, targets: IosSimulatorLaunchTarget[]): IosSimulatorLaunchTarget | null {
+  const parts = decodeTargetId(targetIdValue);
+  if (parts[0] === "project" && parts[1]) {
+    const matches = targets.filter((candidate) => candidate.kind === "project" && candidate.projectPath === parts[1]);
+    if (matches.length === 1) return matches[0];
+    const projectBasename = path.basename(parts[1]);
+    const basenameMatches = targets.filter((candidate) => (
+      candidate.kind === "project"
+      && candidate.projectPath
+      && path.basename(candidate.projectPath) === projectBasename
+    ));
+    return basenameMatches.length === 1 ? basenameMatches[0] : null;
+  }
+  if (parts[0] === "built" && parts[1]) {
+    const matches = targets.filter((candidate) => candidate.kind === "built" && candidate.appBundlePath === parts[1]);
+    return matches.length === 1 ? matches[0] : null;
+  }
+  if (parts[0] === "installed" && parts[2]) {
+    return targets.find((candidate) => candidate.kind === "installed" && candidate.bundleId === parts[2]) ?? null;
+  }
+  return null;
 }
 
 export type IosSimulatorService = ReturnType<typeof createIosSimulatorService>;
@@ -2497,49 +2737,40 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   };
 
   const listProjectLaunchTargets = async (projectRoot: string): Promise<IosSimulatorLaunchTarget[]> => {
-    const appsRoot = path.join(projectRoot, "apps");
-    const projectPaths: string[] = [];
-    const directIosProject = path.join(projectRoot, ADE_IOS_PROJECT);
-    if (fs.existsSync(directIosProject)) projectPaths.push(directIosProject);
-    try {
-      const appEntries = await fs.promises.readdir(appsRoot, { withFileTypes: true });
-      for (const entry of appEntries) {
-        if (!entry.isDirectory()) continue;
-        const appDir = path.join(appsRoot, entry.name);
-        const nested = await fs.promises.readdir(appDir, { withFileTypes: true }).catch(() => []);
-        for (const child of nested) {
-          if (child.isDirectory() && child.name.endsWith(".xcodeproj")) {
-            const projectPath = path.join(appDir, child.name);
-            if (!projectPaths.includes(projectPath)) projectPaths.push(projectPath);
-          }
-        }
-      }
-    } catch {
-      // The ADE repo only needs apps/ios, but keep discovery best-effort.
-    }
+    const projectPaths = await discoverXcodeProjectPaths(projectRoot);
 
     const targets: IosSimulatorLaunchTarget[] = [];
     for (const projectPath of projectPaths) {
       const appTargets = parseApplicationTargetsFromPbxproj(projectPath);
       for (const appTarget of appTargets) {
         const relativeProject = relativeToRoot(projectRoot, projectPath);
-        const bundleId = appTarget.scheme === ADE_IOS_SCHEME && relativeProject === ADE_IOS_PROJECT
-          ? ADE_IOS_BUNDLE_ID
-          : null;
-        targets.push({
-          id: targetId(["project", relativeProject, appTarget.scheme]),
-          kind: "project",
-          name: appTarget.productName || appTarget.scheme,
-          bundleId,
-          detail: `${appTarget.scheme} · ${relativeProject}`,
-          projectPath: relativeProject,
-          scheme: appTarget.scheme,
-          appBundlePath: null,
-          installed: false,
-          canBuild: true,
-          canLaunch: true,
-          source: "xcode-project",
-        });
+        for (const scheme of schemesForApplicationTarget(projectPath, appTarget)) {
+          const bundleId = scheme === ADE_IOS_SCHEME && relativeProject === ADE_IOS_PROJECT
+            ? ADE_IOS_BUNDLE_ID
+            : null;
+          targets.push({
+            // appTarget.id is the PBXNativeTarget id — including it in the
+            // target id keeps two app targets that share a scheme (or a scheme
+            // whose name differs from the produced `.app`) from collapsing
+            // onto the same id and confusing findAppBundle().
+            id: targetId(["project", relativeProject, scheme, appTarget.id]),
+            kind: "project",
+            name: appTarget.productName || appTarget.targetName || scheme,
+            bundleId,
+            detail: scheme === appTarget.targetName
+              ? `${scheme} · ${relativeProject}`
+              : `${scheme} · ${relativeProject} · target ${appTarget.targetName}`,
+            projectPath: relativeProject,
+            scheme,
+            productName: appTarget.productName || appTarget.targetName || null,
+            appTargetId: appTarget.id,
+            appBundlePath: null,
+            installed: false,
+            canBuild: true,
+            canLaunch: true,
+            source: "xcode-project",
+          });
+        }
       }
     }
     return targets;
@@ -2565,6 +2796,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         detail: `${bundleId} · ${relativeToRoot(projectRoot, appBundle)}`,
         projectPath: null,
         scheme: null,
+        productName: path.basename(appBundle, ".app") || null,
+        appTargetId: null,
         appBundlePath: appBundle,
         installed: false,
         canBuild: false,
@@ -2601,6 +2834,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         detail: `${bundleId} · installed on selected simulator`,
         projectPath: null,
         scheme: null,
+        productName: null,
+        appTargetId: null,
         appBundlePath: null,
         installed: true,
         canBuild: false,
@@ -3035,6 +3270,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
 
     if (launchArgs.targetId) {
       target = targets.find((candidate) => candidate.id === launchArgs.targetId) ?? null;
+      target ??= recoverStaleLaunchTarget(launchArgs.targetId, targets);
       if (!target) throw new Error(`Launch target ${launchArgs.targetId} was not found. Refresh launchable iOS apps and try again.`);
     }
     if (!target && launchArgs.bundleId) {
@@ -3053,6 +3289,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         detail: `${bundleId ?? "unknown bundle"} · ${relativeToRoot(projectRoot, explicitAppBundle)}`,
         projectPath: null,
         scheme: null,
+        productName: path.basename(explicitAppBundle, ".app") || null,
+        appTargetId: null,
         appBundlePath: explicitAppBundle,
         installed: false,
         canBuild: false,
@@ -3075,6 +3313,11 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         detail: `${scheme} · ${relativeProject}`,
         projectPath: relativeProject,
         scheme,
+        // Synthesized fallback target — caller didn't reference a discovered
+        // PBX target, so we have no productName/appTargetId. findAppBundle
+        // falls back to scheme/ADE.app, which is safe for the synthesized path.
+        productName: null,
+        appTargetId: null,
         appBundlePath: null,
         installed: false,
         canBuild: true,
@@ -3087,7 +3330,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       ?? targets[0]
       ?? null;
     if (!target) {
-      throw new Error("No launchable iOS apps were found. Add an application target under apps/ios or provide --app-bundle/--bundle-id.");
+      throw new Error("No launchable iOS apps were found. Add a buildable application target to a root-level .xcodeproj or apps/*/*.xcodeproj project, or provide --app-bundle/--bundle-id.");
     }
 
     const projectPath = normalizeProjectPath(projectRoot, target.projectPath);
@@ -3122,26 +3365,46 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         deviceUdid: device.udid,
         derivedDataPath,
       });
-      await run("xcodebuild", [
-        "-project",
-        relativeProjectPath,
-        "-scheme",
-        target.scheme,
-        "-configuration",
-        "Debug",
-        "-sdk",
-        "iphonesimulator",
-        "-destination",
-        `platform=iOS Simulator,id=${device.udid}`,
-        "-derivedDataPath",
-        derivedDataPath,
-        "build",
-      ], { cwd: projectRoot, timeoutMs: 10 * 60_000 });
+      try {
+        await run("xcodebuild", [
+          "-project",
+          relativeProjectPath,
+          "-scheme",
+          target.scheme,
+          "-configuration",
+          "Debug",
+          "-sdk",
+          "iphonesimulator",
+          "-destination",
+          `platform=iOS Simulator,id=${device.udid}`,
+          "-derivedDataPath",
+          derivedDataPath,
+          "build",
+        ], { cwd: projectRoot, timeoutMs: 10 * 60_000 });
+      } catch (error) {
+        const formatted = formatXcodeBuildFailure(error, {
+          projectPath: relativeProjectPath,
+          scheme: target.scheme,
+          deviceName: device.name,
+        });
+        args.logger.warn("ios_simulator.build.failed", {
+          projectPath: relativeProjectPath,
+          scheme: target.scheme,
+          deviceUdid: device.udid,
+          error: formatted.message,
+        });
+        throw formatted;
+      }
       args.logger.info("ios_simulator.build.complete", { projectPath: relativeProjectPath, scheme: target.scheme, derivedDataPath });
     }
     return findAppBundle(derivedDataPath, {
       bundleId: target.bundleId,
       scheme: target.scheme,
+      // productName lives on the underlying launch target (ResolvedLaunchTarget
+      // wraps IosSimulatorLaunchTarget). Prefer it over scheme so a project
+      // whose scheme builds multiple .app bundles, or whose scheme name
+      // differs from the produced .app, still resolves to the right bundle.
+      productName: target.target.productName,
       appBundlePath: target.appBundlePath,
     });
   };

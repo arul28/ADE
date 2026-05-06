@@ -4911,7 +4911,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       error: null,
       recentlyInstalled: null,
     }),
-    updateQuitAndInstall: resolved(undefined),
+    updateQuitAndInstall: resolved(true),
     updateDismissInstalledNotice: resolved(undefined),
     onUpdateEvent: noop,
   };

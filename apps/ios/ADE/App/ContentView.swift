@@ -142,10 +142,19 @@ private struct ProjectHomeView: View {
   }
 
   private var attachedComputerTint: Color {
-    switch syncService.connectionState {
-    case .connected: return ADEColor.success
-    case .syncing, .connecting: return ADEColor.warning
-    case .error, .disconnected: return ADEColor.textMuted
+    let health = syncService.connectionHealth
+    switch health.transport {
+    case .connected:
+      return health.load == .strained ? ADEColor.warning : ADEColor.success
+    case .connecting:
+      return ADEColor.warning
+    case .unreachable:
+      // Surface the connection-error affordance — collapsing this with
+      // .disconnected loses the "something is wrong" tint when a host that
+      // was reachable goes silent.
+      return ADEColor.danger
+    case .disconnected:
+      return ADEColor.textMuted
     }
   }
 

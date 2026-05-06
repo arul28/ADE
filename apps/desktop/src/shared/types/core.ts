@@ -25,7 +25,7 @@ export type RecentlyInstalledUpdate = {
   releaseNotesUrl: string | null;
 };
 
-export type AutoUpdateStatus = "idle" | "checking" | "downloading" | "ready" | "error";
+export type AutoUpdateStatus = "idle" | "checking" | "downloading" | "ready" | "installing" | "error";
 
 export type AutoUpdateSnapshot = {
   status: AutoUpdateStatus;

@@ -3872,7 +3872,7 @@ export function ChatIosSimulatorPanel({
           </div>
         ) : null}
         {footerStatus ? (
-          <div className="rounded-md border border-white/[0.07] bg-white/[0.03] px-2 py-1.5 font-sans text-[11px] text-muted-fg/70">
+          <div className="max-h-36 overflow-auto whitespace-pre-wrap break-words rounded-md border border-white/[0.07] bg-white/[0.03] px-2 py-1.5 font-sans text-[11px] text-muted-fg/70">
             {footerStatus}
           </div>
         ) : null}

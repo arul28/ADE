@@ -3,14 +3,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createAutoUpdateService } from "./autoUpdateService";
+import { compareUpdateVersions, createAutoUpdateService } from "./autoUpdateService";
 import type { Logger } from "../logging/logger";
 
 class FakeAutoUpdater extends EventEmitter {
   logger: Logger | null = null;
   autoDownload = false;
   autoInstallOnAppQuit = true;
-  checkForUpdates = vi.fn(async () => null);
+  checkForUpdates = vi.fn<[], Promise<unknown>>(async () => null);
   quitAndInstall = vi.fn();
 }
 
@@ -41,7 +41,11 @@ function makeUpdaterCacheDir(): string {
 }
 
 function readState(globalStatePath: string): Record<string, unknown> {
-  return JSON.parse(fs.readFileSync(globalStatePath, "utf8"));
+  try {
+    return JSON.parse(fs.readFileSync(globalStatePath, "utf8"));
+  } catch {
+    return {};
+  }
 }
 
 function expectCacheEmpty(updaterCacheDir: string): void {
@@ -133,7 +137,7 @@ describe("createAutoUpdateService", () => {
     service.dispose();
   });
 
-  it("tracks download progress and persists the target version before quit-and-install", () => {
+  it("tracks download progress and persists the target version before quit-and-install", async () => {
     const globalStatePath = makeStatePath();
     const updater = new FakeAutoUpdater();
     const service = createAutoUpdateService({
@@ -177,7 +181,7 @@ describe("createAutoUpdateService", () => {
       releaseNotesUrl: "https://www.ade-app.dev/changelog/v1.2.3",
     });
 
-    expect(service.quitAndInstall()).toBe(true);
+    await expect(service.quitAndInstall()).resolves.toBe(true);
     expect(updater.quitAndInstall).toHaveBeenCalledWith(false, true);
 
     expect(readState(globalStatePath)).toEqual({
@@ -187,6 +191,145 @@ describe("createAutoUpdateService", () => {
         releaseNotesUrl: "https://www.ade-app.dev/changelog/v1.2.3",
         requestedAt: "2026-04-06T15:21:00.000Z",
       },
+    });
+
+    service.dispose();
+  });
+
+  it("refreshes a stale ready update before installing so the target is the newest version", async () => {
+    const globalStatePath = makeStatePath();
+    const updaterCacheDir = makeUpdaterCacheDir();
+    const logger = makeLogger();
+    const updater = new FakeAutoUpdater();
+    const service = createAutoUpdateService({
+      logger,
+      currentVersion: "1.2.2",
+      globalStatePath,
+      updaterCacheDir,
+      startupDelayMs: 60_000,
+      periodicCheckMs: 60_000,
+      now: () => "2026-04-06T15:21:00.000Z",
+      updater,
+    });
+
+    updater.emit("update-downloaded", {
+      version: "1.2.3",
+    });
+    expect(service.getSnapshot()).toMatchObject({
+      status: "ready",
+      version: "1.2.3",
+    });
+
+    updater.checkForUpdates.mockImplementationOnce(async () => {
+      updater.emit("update-available", {
+        version: "1.2.4",
+      });
+      return {
+        downloadPromise: Promise.resolve().then(() => {
+          updater.emit("update-downloaded", {
+            version: "1.2.4",
+          });
+        }),
+      };
+    });
+
+    await expect(service.quitAndInstall()).resolves.toBe(true);
+
+    expect(updater.checkForUpdates).toHaveBeenCalledTimes(1);
+    expect(updater.quitAndInstall).toHaveBeenCalledWith(false, true);
+    expect(readState(globalStatePath)).toEqual({
+      pendingInstallUpdate: {
+        fromVersion: "1.2.2",
+        targetVersion: "1.2.4",
+        releaseNotesUrl: "https://www.ade-app.dev/changelog/v1.2.4",
+        requestedAt: "2026-04-06T15:21:00.000Z",
+      },
+    });
+    expect(service.getSnapshot()).toMatchObject({
+      status: "installing",
+      version: "1.2.4",
+    });
+    expectCacheEmpty(updaterCacheDir);
+    expect(logger.info).toHaveBeenCalledWith(
+      "autoUpdate.cache_cleaned",
+      expect.objectContaining({ reason: "superseded_ready_update", entriesRemoved: 2 }),
+    );
+
+    service.dispose();
+  });
+
+  it("does not install a ready update when latest-version verification fails", async () => {
+    const globalStatePath = makeStatePath();
+    const updaterCacheDir = makeUpdaterCacheDir();
+    const logger = makeLogger();
+    const updater = new FakeAutoUpdater();
+    const service = createAutoUpdateService({
+      logger,
+      currentVersion: "1.2.2",
+      globalStatePath,
+      updaterCacheDir,
+      startupDelayMs: 60_000,
+      periodicCheckMs: 60_000,
+      updater,
+    });
+
+    updater.emit("update-downloaded", {
+      version: "1.2.3",
+    });
+    updater.checkForUpdates.mockRejectedValueOnce(new Error("network unavailable"));
+
+    await expect(service.quitAndInstall()).resolves.toBe(false);
+
+    expect(updater.quitAndInstall).not.toHaveBeenCalled();
+    expect(readState(globalStatePath)).toEqual({});
+    expect(service.getSnapshot()).toMatchObject({
+      status: "error",
+      error: "Could not verify the latest update before installing: network unavailable",
+    });
+    expectCacheEmpty(updaterCacheDir);
+    expect(logger.warn).toHaveBeenCalledWith(
+      "autoUpdate.refresh_ready_before_install_failed",
+      expect.objectContaining({
+        version: "1.2.3",
+        message: "network unavailable",
+      }),
+    );
+
+    service.dispose();
+  });
+
+  it("does not replace a ready update with an older downloaded event", () => {
+    const globalStatePath = makeStatePath();
+    const updater = new FakeAutoUpdater();
+    const service = createAutoUpdateService({
+      logger: makeLogger(),
+      currentVersion: "1.2.2",
+      globalStatePath,
+      startupDelayMs: 60_000,
+      periodicCheckMs: 60_000,
+      updater,
+    });
+
+    updater.emit("update-downloaded", {
+      version: "1.2.4",
+    });
+    updater.emit("update-available", {
+      version: "1.2.3",
+    });
+    updater.emit("download-progress", {
+      percent: 25,
+      bytesPerSecond: 128_000,
+      transferred: 2_500_000,
+      total: 10_000_000,
+    });
+    updater.emit("update-downloaded", {
+      version: "1.2.3",
+    });
+
+    expect(service.getSnapshot()).toMatchObject({
+      status: "ready",
+      version: "1.2.4",
+      releaseNotesUrl: "https://www.ade-app.dev/changelog/v1.2.4",
     });
 
     service.dispose();
@@ -220,7 +363,7 @@ describe("createAutoUpdateService", () => {
     service.dispose();
   });
 
-  it("rolls back pending install state when quit-and-install fails synchronously", () => {
+  it("rolls back pending install state when quit-and-install fails synchronously", async () => {
     const globalStatePath = makeStatePath();
     const updaterCacheDir = makeUpdaterCacheDir();
     const logger = makeLogger();
@@ -243,7 +386,7 @@ describe("createAutoUpdateService", () => {
       version: "1.2.3",
     });
 
-    expect(service.quitAndInstall()).toBe(false);
+    await expect(service.quitAndInstall()).resolves.toBe(false);
     expect(service.getSnapshot()).toMatchObject({
       status: "error",
       error: "The command is disabled and cannot be executed",
@@ -259,5 +402,87 @@ describe("createAutoUpdateService", () => {
     );
 
     service.dispose();
+  });
+
+  it("rolls back pending install state when an async install error arrives", async () => {
+    const globalStatePath = makeStatePath();
+    const updaterCacheDir = makeUpdaterCacheDir();
+    const logger = makeLogger();
+    const updater = new FakeAutoUpdater();
+    const service = createAutoUpdateService({
+      logger,
+      currentVersion: "1.2.2",
+      globalStatePath,
+      updaterCacheDir,
+      startupDelayMs: 60_000,
+      periodicCheckMs: 60_000,
+      now: () => "2026-04-06T15:21:00.000Z",
+      updater,
+    });
+
+    updater.emit("update-downloaded", {
+      version: "1.2.3",
+    });
+
+    await expect(service.quitAndInstall()).resolves.toBe(true);
+    expect(readState(globalStatePath)).toMatchObject({
+      pendingInstallUpdate: {
+        targetVersion: "1.2.3",
+      },
+    });
+
+    updater.emit("error", new Error("installer failed after launch"));
+
+    expect(service.getSnapshot()).toMatchObject({
+      status: "error",
+      error: "installer failed after launch",
+    });
+    expect(readState(globalStatePath)).toEqual({});
+    expectCacheEmpty(updaterCacheDir);
+
+    service.dispose();
+  });
+
+  it("treats a relaunch on a version newer than the pending target as installed", () => {
+    const globalStatePath = makeStatePath();
+    const updaterCacheDir = makeUpdaterCacheDir();
+    const logger = makeLogger();
+    fs.writeFileSync(globalStatePath, JSON.stringify({
+      pendingInstallUpdate: {
+        fromVersion: "1.2.2",
+        targetVersion: "1.2.3",
+        releaseNotesUrl: "https://www.ade-app.dev/changelog/v1.2.3",
+        requestedAt: "2026-04-06T15:20:00.000Z",
+      },
+    }), "utf8");
+
+    const service = createAutoUpdateService({
+      logger,
+      currentVersion: "1.2.4",
+      globalStatePath,
+      updaterCacheDir,
+      startupDelayMs: 60_000,
+      periodicCheckMs: 60_000,
+      now: () => "2026-04-06T15:21:00.000Z",
+      updater: new FakeAutoUpdater(),
+    });
+
+    expect(service.getSnapshot().recentlyInstalled).toEqual({
+      version: "1.2.4",
+      installedAt: "2026-04-06T15:21:00.000Z",
+      releaseNotesUrl: "https://www.ade-app.dev/changelog/v1.2.4",
+    });
+    expectCacheEmpty(updaterCacheDir);
+
+    service.dispose();
+  });
+});
+
+describe("compareUpdateVersions", () => {
+  it("orders semver versions including prereleases", () => {
+    expect(compareUpdateVersions("1.2.4", "1.2.3")).toBeGreaterThan(0);
+    expect(compareUpdateVersions("v1.2.4-beta.2", "1.2.4-beta.1")).toBeGreaterThan(0);
+    expect(compareUpdateVersions("1.2.4", "1.2.4-beta.2")).toBeGreaterThan(0);
+    expect(compareUpdateVersions("1.2.4", "v1.2.4")).toBe(0);
   });
 });

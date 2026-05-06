@@ -29,6 +29,7 @@ function progressLabel(progressPercent: number | null): string | null {
 export function AutoUpdateControl() {
   const [snapshot, setSnapshot] = useState<AutoUpdateSnapshot>(EMPTY_UPDATE_SNAPSHOT);
   const [releaseNotesOpen, setReleaseNotesOpen] = useState(false);
+  const [installRequested, setInstallRequested] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -46,6 +47,9 @@ export function AutoUpdateControl() {
     const unsubscribe = window.ade.onUpdateEvent((nextSnapshot) => {
       if (cancelled) return;
       setSnapshot(nextSnapshot);
+      if (nextSnapshot.status !== "ready") {
+        setInstallRequested(false);
+      }
       if (nextSnapshot.recentlyInstalled) {
         setReleaseNotesOpen(true);
       }
@@ -70,20 +74,43 @@ export function AutoUpdateControl() {
 
   const handleRestartToInstall = useCallback(() => {
     const confirmed = window.confirm(
-      `ADE will quit and restart automatically to install ${versionLabel(snapshot.version)}.\n\nAny unsaved work may be lost. Continue?`,
+      `ADE will quit and reopen automatically to install ${versionLabel(snapshot.version)}.\n\nYou do not need to restart ADE yourself. Any unsaved work may be lost. Continue?`,
     );
     if (!confirmed) return;
-    void window.ade.updateQuitAndInstall().catch(() => {
-      // The main process logs updater failures.
-    });
+    setInstallRequested(true);
+    void window.ade.updateQuitAndInstall()
+      .then((started) => {
+        if (!started) setInstallRequested(false);
+      })
+      .catch(() => {
+        setInstallRequested(false);
+        // The main process logs updater failures.
+      });
   }, [snapshot.version]);
 
+  const effectiveStatus = installRequested && snapshot.status === "ready"
+    ? "installing"
+    : snapshot.status;
+  const isReadyOrInstalling = effectiveStatus === "ready" || effectiveStatus === "installing";
   const shouldShowIndicator =
-    snapshot.status === "checking"
-    || snapshot.status === "downloading"
-    || snapshot.status === "ready";
+    effectiveStatus === "checking"
+    || effectiveStatus === "downloading"
+    || isReadyOrInstalling;
   const downloadProgress = progressLabel(snapshot.progressPercent);
   const releaseNotesUrl = snapshot.recentlyInstalled?.releaseNotesUrl ?? null;
+
+  function indicatorTitle(): string {
+    switch (effectiveStatus) {
+      case "checking":
+        return "Checking for updates";
+      case "downloading":
+        return `Downloading ${versionLabel(snapshot.version)}${downloadProgress ? ` (${downloadProgress})` : ""}`;
+      case "installing":
+        return "ADE is preparing to quit and reopen automatically";
+      default:
+        return `Install ${versionLabel(snapshot.version)}. ADE will quit and reopen automatically.`;
+    }
+  }
 
   return (
     <>
@@ -93,40 +120,37 @@ export function AutoUpdateControl() {
           className={cn(
             "ade-shell-control shrink-0 inline-flex items-center gap-1.5 rounded-md px-2.5 py-1",
             "text-[11px] font-medium transition-colors duration-150",
-            snapshot.status === "ready"
-              ? "border border-emerald-400/25 bg-emerald-500/12 text-emerald-100 hover:bg-emerald-500/20"
+            isReadyOrInstalling
+              ? "animate-pulse border border-fuchsia-200/70 bg-fuchsia-500/30 text-white shadow-[0_0_20px_rgba(217,70,239,0.38)] hover:bg-fuchsia-400/40 [animation-duration:2.8s]"
               : "border border-border/60 bg-card/90 text-muted-fg",
-            snapshot.status !== "ready" && "cursor-default",
+            effectiveStatus !== "ready" && "cursor-default",
           )}
           style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-          disabled={snapshot.status !== "ready"}
+          disabled={effectiveStatus !== "ready"}
           onClick={() => {
-            if (snapshot.status === "ready") {
+            if (effectiveStatus === "ready") {
               handleRestartToInstall();
             }
           }}
-          title={
-            snapshot.status === "checking"
-              ? "Checking for updates"
-              : snapshot.status === "downloading"
-                ? `Downloading ${versionLabel(snapshot.version)}${downloadProgress ? ` (${downloadProgress})` : ""}`
-                : `Restart ADE to install ${versionLabel(snapshot.version)}`
-          }
+          title={indicatorTitle()}
         >
           <ArrowsClockwise
             size={12}
             weight="bold"
-            className={cn(snapshot.status !== "ready" && "animate-spin")}
+            className={cn(effectiveStatus !== "ready" && "animate-spin")}
           />
-          {snapshot.status === "checking" ? "Checking for updates" : null}
-          {snapshot.status === "downloading" ? (
+          {effectiveStatus === "checking" ? "Checking for updates" : null}
+          {effectiveStatus === "downloading" ? (
             <>
               <span>Downloading {snapshot.version ? `v${snapshot.version}` : "update"}</span>
               {downloadProgress ? <span className="text-[10px] text-muted-fg opacity-80">{downloadProgress}</span> : null}
             </>
           ) : null}
-          {snapshot.status === "ready" ? (
-            <span>Restart to install {snapshot.version ? `v${snapshot.version}` : "update"}</span>
+          {effectiveStatus === "ready" ? (
+            <span>Install update {snapshot.version ? `v${snapshot.version}` : ""}</span>
+          ) : null}
+          {effectiveStatus === "installing" ? (
+            <span>ADE will quit and reopen</span>
           ) : null}
         </button>
       ) : null}
@@ -172,7 +196,7 @@ export function AutoUpdateControl() {
             </div>
 
             <div className="mt-3 text-[13px] leading-6 text-muted-fg">
-              The update is installed. You can reopen the Mintlify release notes to see what changed in this build.
+              The update is installed. You can reopen the release notes to see what changed in this build.
             </div>
 
             <div className="mt-5 flex items-center justify-end gap-2">

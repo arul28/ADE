@@ -3049,6 +3049,7 @@ export function createLaneService({
         step.status = "running";
         step.startedAt = new Date().toISOString();
         broadcastDeleteEvent(progress);
+        await new Promise<void>((resolve) => setImmediate(resolve));
         const t0 = Date.now();
         try {
           const result = await work();
@@ -3185,7 +3186,7 @@ export function createLaneService({
             // the dir gone with stale metadata still registered. Either way: rm the
             // dir if any, then prune git's metadata.
             try {
-              fs.rmSync(row.worktree_path, { recursive: true, force: true });
+              await fs.promises.rm(row.worktree_path, { recursive: true, force: true });
             } catch (rmError) {
               const original = (removeRes.stderr || removeRes.stdout || "").trim();
               throw new Error(
@@ -3233,33 +3234,51 @@ export function createLaneService({
         await runStep("pack_dir_remove", async () => {
           const lanePackDir = path.join(resolveAdeLayout(projectRoot).packsDir, "lanes", laneId);
           try {
-            fs.rmSync(lanePackDir, { recursive: true, force: true });
-          } catch {
-            // ignore pack folder cleanup failures
+            await fs.promises.rm(lanePackDir, { recursive: true, force: true });
+            return { detail: lanePackDir };
+          } catch (err) {
+            // Best-effort cleanup — match the warn pattern used by the other
+            // best-effort steps (cleanup_env, stop_processes) so a failure
+            // here is at least surfaced in the lane's logs and progress UI
+            // rather than vanishing silently.
+            const message = err instanceof Error ? err.message : String(err);
+            logger.warn("lane.delete.pack_dir_remove_failed", { laneId, lanePackDir, error: message });
+            return { detail: `warning: ${message}` };
           }
         });
 
         await runStep("database_cleanup", async () => {
-          db.run("update lanes set parent_lane_id = null where parent_lane_id = ? and project_id = ?", [laneId, projectId]);
-          db.run("delete from pr_group_members where lane_id = ?", [laneId]);
-          // Explicit cascade — CRR conversion can strip checked FKs, leaving orphaned rows.
-          db.run("delete from pr_convergence_state where pr_id in (select id from pull_requests where lane_id = ? and project_id = ?)", [laneId, projectId]);
-          db.run("delete from pr_pipeline_settings where pr_id in (select id from pull_requests where lane_id = ? and project_id = ?)", [laneId, projectId]);
-          db.run("delete from pr_issue_inventory where pr_id in (select id from pull_requests where lane_id = ? and project_id = ?)", [laneId, projectId]);
-          db.run("delete from pull_requests where lane_id = ? and project_id = ?", [laneId, projectId]);
-          db.run("delete from review_run_publications where run_id in (select id from review_runs where lane_id = ? and project_id = ?)", [laneId, projectId]);
-          db.run("delete from review_finding_feedback where run_id in (select id from review_runs where lane_id = ? and project_id = ?)", [laneId, projectId]);
-          db.run("delete from review_findings where run_id in (select id from review_runs where lane_id = ? and project_id = ?)", [laneId, projectId]);
-          db.run("delete from review_run_artifacts where run_id in (select id from review_runs where lane_id = ? and project_id = ?)", [laneId, projectId]);
-          db.run("delete from review_runs where lane_id = ? and project_id = ?", [laneId, projectId]);
-          db.run("delete from session_deltas where lane_id = ?", [laneId]);
-          db.run("delete from terminal_sessions where lane_id = ?", [laneId]);
-          db.run("delete from operations where lane_id = ?", [laneId]);
-          db.run("delete from packs_index where lane_id = ?", [laneId]);
-          db.run("delete from process_runtime where lane_id = ?", [laneId]);
-          db.run("delete from process_runs where lane_id = ?", [laneId]);
-          db.run("delete from test_runs where lane_id = ?", [laneId]);
-          db.run("delete from lanes where id = ? and project_id = ?", [laneId, projectId]);
+          db.run("begin immediate");
+          try {
+            db.run("update lanes set parent_lane_id = null where parent_lane_id = ? and project_id = ?", [laneId, projectId]);
+            db.run("delete from pr_group_members where lane_id = ?", [laneId]);
+            // Explicit cascade — CRR conversion can strip checked FKs, leaving orphaned rows.
+            db.run("delete from pr_convergence_state where pr_id in (select id from pull_requests where lane_id = ? and project_id = ?)", [laneId, projectId]);
+            db.run("delete from pr_pipeline_settings where pr_id in (select id from pull_requests where lane_id = ? and project_id = ?)", [laneId, projectId]);
+            db.run("delete from pr_issue_inventory where pr_id in (select id from pull_requests where lane_id = ? and project_id = ?)", [laneId, projectId]);
+            db.run("delete from pull_requests where lane_id = ? and project_id = ?", [laneId, projectId]);
+            db.run("delete from review_run_publications where run_id in (select id from review_runs where lane_id = ? and project_id = ?)", [laneId, projectId]);
+            db.run("delete from review_finding_feedback where run_id in (select id from review_runs where lane_id = ? and project_id = ?)", [laneId, projectId]);
+            db.run("delete from review_findings where run_id in (select id from review_runs where lane_id = ? and project_id = ?)", [laneId, projectId]);
+            db.run("delete from review_run_artifacts where run_id in (select id from review_runs where lane_id = ? and project_id = ?)", [laneId, projectId]);
+            db.run("delete from review_runs where lane_id = ? and project_id = ?", [laneId, projectId]);
+            db.run("delete from session_deltas where lane_id = ?", [laneId]);
+            db.run("delete from terminal_sessions where lane_id = ?", [laneId]);
+            db.run("delete from operations where lane_id = ?", [laneId]);
+            db.run("delete from packs_index where lane_id = ?", [laneId]);
+            db.run("delete from process_runtime where lane_id = ?", [laneId]);
+            db.run("delete from process_runs where lane_id = ?", [laneId]);
+            db.run("delete from test_runs where lane_id = ?", [laneId]);
+            db.run("delete from lanes where id = ? and project_id = ?", [laneId, projectId]);
+            db.run("commit");
+          } catch (error) {
+            try {
+              db.run("rollback");
+            } catch {
+              // ignore rollback failures and surface the original cleanup error
+            }
+            throw error;
+          }
         });
 
         invalidateLaneListCache();

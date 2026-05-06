@@ -44,6 +44,20 @@ export type IosSimulatorLaunchTarget = {
   detail: string;
   projectPath: string | null;
   scheme: string | null;
+  /**
+   * Xcode product name produced by the application target this launch target
+   * resolves to. Distinct from `scheme` because a scheme can build multiple
+   * `.app` bundles or a scheme name can differ from the produced `.app`.
+   * Used to disambiguate target ids and to resolve the right `.app` bundle
+   * after a build (`findAppBundle` prefers `${productName}.app`).
+   */
+  productName: string | null;
+  /**
+   * Internal Xcode target identifier (PBXNativeTarget id). Only populated
+   * for `kind === "project"`. Carries the discriminator into the target id
+   * so two app targets that share a scheme don't collapse onto the same id.
+   */
+  appTargetId: string | null;
   appBundlePath: string | null;
   installed: boolean;
   canBuild: boolean;

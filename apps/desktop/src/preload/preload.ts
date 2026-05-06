@@ -3620,7 +3620,7 @@ contextBridge.exposeInMainWorld("ade", {
   updateCheckForUpdates: () => ipcRenderer.invoke(IPC.updateCheckForUpdates),
   updateGetState: (): Promise<AutoUpdateSnapshot> =>
     ipcRenderer.invoke(IPC.updateGetState),
-  updateQuitAndInstall: () => ipcRenderer.invoke(IPC.updateQuitAndInstall),
+  updateQuitAndInstall: (): Promise<boolean> => ipcRenderer.invoke(IPC.updateQuitAndInstall),
   updateDismissInstalledNotice: () =>
     ipcRenderer.invoke(IPC.updateDismissInstalledNotice),
   onUpdateEvent: (cb: (snapshot: AutoUpdateSnapshot) => void) => {
