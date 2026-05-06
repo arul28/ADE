@@ -291,6 +291,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade memory add | search | pin                 Use ADE memory
     $ ade settings action <method>                  Call project config actions
+    $ ade update status | check | install | dismiss Read auto-update state and drive install
     $ ade actions list | run | status               Escape hatch for every ADE service action
     $ ade cursor cloud agents | runs | artifacts | repos | models | me
                                                     Drive Cursor Cloud agents via @cursor/sdk
@@ -366,9 +367,9 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   apps: `${ADE_BANNER}
   iOS Simulator: apps
 
-  Lists launchable app targets from Xcode projects, DerivedData, and apps
-  already installed on the selected simulator. Aliases: targets, launchable,
-  launchables.
+  Lists launchable app targets from root-level .xcodeproj bundles,
+  apps/*/*.xcodeproj projects, DerivedData, and apps already installed on the
+  selected simulator. Aliases: targets, launchable, launchables.
 
     $ ade --socket ios-sim apps --device <udid> --text
 
@@ -852,6 +853,10 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade --socket ios-sim shutdown --force        Force-release a session owned by another chat
     $ ade ios-sim actions --text                   List every callable ios_simulator action
 
+  Project discovery scans root-level .xcodeproj bundles and apps/*/*.xcodeproj
+  projects; do not create symlink shims or fake schemes before checking
+  "ios-sim apps --text" and the build output.
+
   Capture and inspection:
     $ ade ios-sim screenshot --text                One-shot PNG via simctl (screenshot)
     $ ade ios-sim snapshot --text                  Screenshot + selectable elements (getScreenSnapshot)
@@ -1072,6 +1077,26 @@ const HELP_BY_COMMAND: Record<string, string> = {
 `,
   cursor: `${ADE_BANNER}
 ${CURSOR_CLOUD_HELP.cloud}`,
+  update: `${ADE_BANNER}
+  Auto-update
+
+  Auto-update commands query and drive ADE desktop's auto-updater. The desktop
+  app owns the updater process; CLI parity exists so agents can read state and,
+  when explicitly requested by the user, trigger a check, install, or dismiss
+  the post-install notice. quitAndInstall relaunches the desktop app and only
+  succeeds when status is "ready".
+
+    $ ade --socket update status --text             Read AutoUpdateSnapshot (status, version, progress)
+    $ ade --socket update check --text              Trigger a background update check
+    $ ade --socket update install --text            Refresh latest, then quit and install when ready
+    $ ade --socket update dismiss --text            Clear the recently-installed banner
+    $ ade --socket update actions --text            List callable update actions
+
+  Snapshot status values: idle, checking, downloading, ready, installing, error.
+  "installing" appears between quitAndInstall and the desktop relaunch; if the
+  install fails, status falls back to error and the pending-install record is
+  cleared automatically.
+`,
 };
 
 function isRecord(value: unknown): value is JsonObject {
@@ -3219,6 +3244,24 @@ function buildCoordinatorPlan(args: string[]): CliPlan {
   return { kind: "execute", label: `coordinator ${toolName}`, steps: [actionCallStep("result", toolName, collectGenericObjectArgs(args))] };
 }
 
+function buildUpdatePlan(args: string[]): CliPlan {
+  const sub = firstPositional(args) ?? "status";
+  if (sub === "actions") return { kind: "execute", label: "update actions", steps: [listActionsStep("actions", "update")] };
+  if (sub === "status" || sub === "state" || sub === "snapshot" || sub === "show") {
+    return { kind: "execute", label: "update status", steps: [actionStep("result", "update", "getSnapshot", collectGenericObjectArgs(args))] };
+  }
+  if (sub === "check" || sub === "check-for-updates" || sub === "check-now") {
+    return { kind: "execute", label: "update check", steps: [actionStep("result", "update", "checkForUpdates", collectGenericObjectArgs(args))] };
+  }
+  if (sub === "install" || sub === "quit-and-install" || sub === "apply") {
+    return { kind: "execute", label: "update install", steps: [actionStep("result", "update", "quitAndInstall", collectGenericObjectArgs(args))] };
+  }
+  if (sub === "dismiss" || sub === "dismiss-installed" || sub === "dismiss-installed-notice") {
+    return { kind: "execute", label: "update dismiss", steps: [actionStep("result", "update", "dismissInstalledNotice", collectGenericObjectArgs(args))] };
+  }
+  return { kind: "execute", label: `update ${sub}`, steps: [actionStep("result", "update", sub, collectGenericObjectArgs(args))] };
+}
+
 const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   // Only flags that actually take a following value (readValue / readIntOption
   // callers) belong here. Boolean-only flags consumed via readFlag must be
@@ -3312,6 +3355,8 @@ function buildCliPlan(command: string[]): CliPlan {
     action: "actions",
     coord: "coordinator",
     automation: "automations",
+    "auto-update": "update",
+    updates: "update",
   };
   const primaryHelpKey = aliases[primary] ?? primary;
   if (hasHelpFlag(args)) {
@@ -3398,6 +3443,7 @@ function buildCliPlan(command: string[]): CliPlan {
   if (primary === "memory") return buildMemoryPlan(args);
   if (primary === "settings" || primary === "config" || primary === "setting") return buildSettingsPlan(args);
   if (primary === "actions" || primary === "action") return buildActionsPlan(args);
+  if (primary === "update" || primary === "auto-update" || primary === "updates") return buildUpdatePlan(args);
   if (primary === "cursor") return buildCursorPlan(args);
   throw new CliUsageError(`Unknown command '${primary}'. Run 'ade help'.`);
 }

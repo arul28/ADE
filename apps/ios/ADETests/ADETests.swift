@@ -160,6 +160,78 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(SyncRequestTimeout.error().localizedDescription, "The host took too long to respond. Reconnecting now.")
   }
 
+  func testSyncRequestTimeoutOnlyReconnectsAfterSocketSilence() {
+    XCTAssertFalse(
+      syncShouldReconnectAfterRequestTimeout(
+        now: 100,
+        lastInboundMessageAt: 94,
+        silenceThreshold: 12
+      )
+    )
+    XCTAssertTrue(
+      syncShouldReconnectAfterRequestTimeout(
+        now: 100,
+        lastInboundMessageAt: 80,
+        silenceThreshold: 12
+      )
+    )
+    XCTAssertTrue(
+      syncShouldReconnectAfterRequestTimeout(
+        now: 100,
+        lastInboundMessageAt: nil,
+        silenceThreshold: 12
+      )
+    )
+  }
+
+  func testSyncConnectionHealthTreatsSyncingAsConnectedTransport() {
+    let health = syncConnectionHealth(
+      connectionState: .syncing,
+      prefersReducedSyncLoad: false,
+      lastError: "Transient sync work"
+    )
+
+    XCTAssertEqual(health.transport, .connected)
+    XCTAssertEqual(health.load, .normal)
+    XCTAssertNil(health.lastFailureMessage)
+  }
+
+  func testSyncConnectionHealthSeparatesLoadStrainFromTransportFailure() {
+    let health = syncConnectionHealth(
+      connectionState: .connected,
+      prefersReducedSyncLoad: true,
+      lastError: "The host took too long to respond."
+    )
+
+    XCTAssertEqual(health.transport, .connected)
+    XCTAssertEqual(health.load, .strained)
+    XCTAssertNil(health.lastFailureMessage)
+  }
+
+  func testSyncConnectionHealthSurfacesFailureOnlyWhenUnreachable() {
+    let health = syncConnectionHealth(
+      connectionState: .error,
+      prefersReducedSyncLoad: true,
+      lastError: "Heartbeat timed out."
+    )
+
+    XCTAssertEqual(health.transport, .unreachable)
+    XCTAssertEqual(health.load, .normal)
+    XCTAssertEqual(health.lastFailureMessage, "Heartbeat timed out.")
+  }
+
+  func testSyncConnectionHealthHidesStaleFailureWhenDisconnected() {
+    let health = syncConnectionHealth(
+      connectionState: .disconnected,
+      prefersReducedSyncLoad: true,
+      lastError: "Previous socket failed."
+    )
+
+    XCTAssertEqual(health.transport, .disconnected)
+    XCTAssertEqual(health.load, .normal)
+    XCTAssertNil(health.lastFailureMessage)
+  }
+
   func testSyncReconnectStateUsesBackoffAndResetsAfterSuccess() {
     var state = SyncReconnectState()
 

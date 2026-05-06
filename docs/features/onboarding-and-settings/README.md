@@ -187,6 +187,48 @@ Renderer — settings:
 - `apps/desktop/src/renderer/components/settings/DiagnosticsDashboardSection.tsx`
   — runtime diagnostics.
 
+Auto-update (top-bar control, not a settings tab):
+
+- `apps/desktop/src/main/services/updates/autoUpdateService.ts` —
+  electron-updater wrapper that owns the renderer-visible
+  `AutoUpdateSnapshot` (`status: "idle" | "checking" | "downloading"
+  | "ready" | "installing" | "error"`, version, progress, recently
+  installed notice). Tracks superseded downloads against the current
+  ready version via `compareUpdateVersions` (a SemVer-aware
+  comparator that handles `v` prefixes, missing patch, and
+  prerelease ordering) so a same-or-older `update-available` while a
+  newer build is already staged is logged and ignored instead of
+  clobbering the staged installer; if the new build is strictly
+  newer, the cached installer dir is wiped and the snapshot
+  transitions back through `downloading`. `quitAndInstall()` is
+  asynchronous: it gates on the current snapshot being `ready`,
+  re-runs `updater.checkForUpdates()` with `allowReady: true` to
+  confirm the staged installer is still the latest, and only then
+  flips the snapshot to `installing`, persists the
+  `pendingInstallUpdate` global-state row, and calls
+  `updater.quitAndInstall(false, true)`. If the refresh check fails,
+  it surfaces the error, drops the cache, and clears the pending
+  install. On the next launch, `reconcilePersistedUpdateState`
+  matches the running version against `pendingInstallUpdate` using
+  the same SemVer comparator (so `>=` target counts as installed,
+  even if the running build is one ahead), populates
+  `recentlyInstalledUpdate` with the actual running version, and
+  cleans up the updater cache directory.
+- `apps/desktop/src/renderer/components/app/AutoUpdateControl.tsx` —
+  the small badge in the app shell top bar. Shows "Checking for
+  updates" / "Downloading vX.Y.Z (NN%)" / "Install update vX.Y.Z" /
+  "ADE will quit and reopen" depending on the snapshot. Clicking the
+  install affordance prompts the user, sets a local
+  `installRequested` flag, and calls
+  `window.ade.updateQuitAndInstall()`; if the IPC returns `false`
+  (refresh check failed, no longer ready, etc.) the flag is cleared
+  so the badge falls back to the underlying snapshot. While
+  `installing` (or after the user clicks install but before the main
+  process flips status), the badge animates in fuchsia and is
+  disabled. The "Update installed" dialog reads
+  `recentlyInstalled.releaseNotesUrl` and opens the public release
+  notes link for the running version.
+
 ## Detail docs
 
 - [configuration-schema.md](./configuration-schema.md) — shape of
@@ -315,6 +357,21 @@ Onboarding and settings follow a simple rule:
   (most route to **General**; provider/GitHub/Linear/computer-use
   route to **Integrations**). The dedicated Onboarding tab no longer
   exists — its settings moved into General + the top-bar Help menu.
+- **Auto-update install must refresh before quitting.**
+  `quitAndInstall()` deliberately re-runs `updater.checkForUpdates()`
+  with `allowReady: true` before flipping to `installing`. Skipping
+  that step (e.g. a synchronous quitAndInstall) reintroduces the bug
+  where ADE quits to install a stale download while a strictly newer
+  build is available. Comparison goes through `compareUpdateVersions`
+  — never `===` on the version string — because `v1.2.3` /
+  `1.2.3-rc.1` / `1.2.3` all need consistent ordering on both the
+  pending-install reconcile path and the supersede check.
+- **`installing` is a sticky status.** While the snapshot is
+  `installing` the service ignores `update-not-available`,
+  `checking-for-update`, and `error`, because the main process is in
+  the middle of quitAndInstall. New status checks should treat
+  `ready` and `installing` symmetrically when deciding whether to
+  cancel or override the staged update.
 
 ## Cross-links
 

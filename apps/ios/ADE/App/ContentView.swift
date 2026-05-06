@@ -142,10 +142,14 @@ private struct ProjectHomeView: View {
   }
 
   private var attachedComputerTint: Color {
-    switch syncService.connectionState {
-    case .connected: return ADEColor.success
-    case .syncing, .connecting: return ADEColor.warning
-    case .error, .disconnected: return ADEColor.textMuted
+    let health = syncService.connectionHealth
+    switch health.transport {
+    case .connected:
+      return health.load == .strained ? ADEColor.warning : ADEColor.success
+    case .connecting:
+      return ADEColor.warning
+    case .unreachable, .disconnected:
+      return ADEColor.textMuted
     }
   }
 

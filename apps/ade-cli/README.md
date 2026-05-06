@@ -72,8 +72,12 @@ ade tests run --lane lane-id --suite unit --wait
 ade proof list --arg ownerKind=chat --arg ownerId=session-id
 ade help ios-sim preview-render
 ade ios-sim devices --text
+ade --socket ios-sim apps --text
 ade --socket ios-sim launch --target target-id --text
 ade --socket ios-sim preview-render --source apps/ios/ADE/Views/Home.swift --index 0 --text
+ade --socket update status --text
+ade --socket update check --text
+ade --socket update install --text
 ade actions list
 ade actions run git.stageFile --arg laneId=lane-id --arg path=src/index.ts
 ade cursor cloud agents list --text

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   lanePrMatchesCurrentBranch,
+  resolveLaneDeleteStartSelection,
   resolveCreateLaneRequest,
   resolveLaneIdsDeepLinkSelection,
   selectLanePrTag,
@@ -129,6 +130,37 @@ describe("resolveLaneIdsDeepLinkSelection", () => {
       availableLaneIds: ["lane-a"],
       consumedSignature: null,
     })).toBeNull();
+  });
+});
+
+describe("resolveLaneDeleteStartSelection", () => {
+  it("moves selection and active panes away from lanes that just started deleting", () => {
+    const result = resolveLaneDeleteStartSelection({
+      deletingLaneIds: ["lane-b"],
+      selectedLaneId: "lane-b",
+      activeLaneIds: ["lane-b", "lane-c"],
+      pinnedLaneIds: ["lane-b", "lane-d"],
+      filteredLaneIds: ["lane-b", "lane-c", "lane-d"],
+      sortedLaneIds: ["lane-main", "lane-b", "lane-c", "lane-d"],
+    });
+
+    expect(result.selectedLaneId).toBe("lane-c");
+    expect(result.activeLaneIds).toEqual(["lane-c", "lane-d"]);
+    expect(Array.from(result.pinnedLaneIds)).toEqual(["lane-d"]);
+  });
+
+  it("keeps the current selected lane when a different split starts deleting", () => {
+    const result = resolveLaneDeleteStartSelection({
+      deletingLaneIds: ["lane-c"],
+      selectedLaneId: "lane-b",
+      activeLaneIds: ["lane-b", "lane-c", "lane-d"],
+      pinnedLaneIds: [],
+      filteredLaneIds: ["lane-b", "lane-c", "lane-d"],
+      sortedLaneIds: ["lane-main", "lane-b", "lane-c", "lane-d"],
+    });
+
+    expect(result.selectedLaneId).toBe("lane-b");
+    expect(result.activeLaneIds).toEqual(["lane-b", "lane-d"]);
   });
 });
 

@@ -6,16 +6,20 @@ struct SettingsConnectionHeader: View {
 
   @State private var pulsing = false
 
+  private var health: SyncConnectionHealth {
+    syncService.connectionHealth
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 14) {
       HStack(alignment: .center, spacing: 12) {
         SettingsStatusDot(
-          state: syncService.connectionState,
+          health: health,
           pulsing: pulsing,
           reduceMotion: reduceMotion
         )
         VStack(alignment: .leading, spacing: 1) {
-          Text(SettingsConnectionPresentation.statusLabel(for: syncService.connectionState))
+          Text(SettingsConnectionPresentation.statusLabel(for: health))
             .font(.system(.body, design: .rounded).weight(.semibold))
             .foregroundStyle(ADEColor.textPrimary)
           if let detail = stateDetailLine {
@@ -29,7 +33,7 @@ struct SettingsConnectionHeader: View {
           .environmentObject(syncService)
       }
 
-      if syncService.connectionState == .connected {
+      if health.transport.isConnected {
         SettingsConnectedHostDetails()
           .environmentObject(syncService)
       } else if let hostName = pendingHostName {
@@ -45,8 +49,7 @@ struct SettingsConnectionHeader: View {
       }
 
       if let errorMessage,
-         syncService.connectionState != .connected,
-         syncService.connectionState != .syncing {
+         !health.transport.isConnected {
         SettingsInlineErrorBanner(message: errorMessage)
       }
     }
@@ -71,8 +74,8 @@ struct SettingsConnectionHeader: View {
         .strokeBorder(
           LinearGradient(
             colors: [
-              SettingsConnectionPresentation.statusTint(for: syncService.connectionState).opacity(0.55),
-              SettingsConnectionPresentation.statusTint(for: syncService.connectionState).opacity(0.10),
+              SettingsConnectionPresentation.statusTint(for: health).opacity(0.55),
+              SettingsConnectionPresentation.statusTint(for: health).opacity(0.10),
             ],
             startPoint: .topLeading,
             endPoint: .bottomTrailing
@@ -81,7 +84,7 @@ struct SettingsConnectionHeader: View {
         )
     )
     .shadow(
-      color: SettingsConnectionPresentation.glowTint(for: syncService.connectionState).opacity(0.35),
+      color: SettingsConnectionPresentation.glowTint(for: health).opacity(0.35),
       radius: 22,
       y: 8
     )
@@ -91,7 +94,7 @@ struct SettingsConnectionHeader: View {
   }
 
   private var isActiveState: Bool {
-    syncService.connectionState == .connecting || syncService.connectionState == .syncing
+    health.transport == .connecting
   }
 
   private var pulseTaskKey: Bool {
@@ -110,12 +113,12 @@ struct SettingsConnectionHeader: View {
   }
 
   private var errorMessage: String? {
-    syncService.lastError
+    health.lastFailureMessage
   }
 
   private var pendingHostName: String? {
-    switch syncService.connectionState {
-    case .connecting, .syncing, .error:
+    switch health.transport {
+    case .connecting, .unreachable:
       return displayHostName
     default:
       return nil
@@ -130,12 +133,18 @@ struct SettingsConnectionHeader: View {
   }
 
   private var stateDetailLine: String? {
-    switch syncService.connectionState {
-    case .connected, .syncing:
+    switch health.transport {
+    case .connected:
+      if health.load == .strained {
+        return "Live · host responding slowly"
+      }
+      if syncService.connectionState == .syncing {
+        return "Live · syncing changes"
+      }
       return "Live · ready to sync"
     case .connecting:
       return "Connecting to saved host"
-    case .error:
+    case .unreachable:
       return "Unable to reach your Mac"
     case .disconnected:
       if syncService.savedReconnectHost?.tailscaleAddress != nil {
@@ -149,12 +158,10 @@ struct SettingsConnectionHeader: View {
   }
 
   private func pendingDescription(hostName: String) -> String {
-    switch syncService.connectionState {
+    switch health.transport {
     case .connecting:
       return "Reaching \(hostName)..."
-    case .syncing:
-      return "Syncing data from \(hostName)..."
-    case .error:
+    case .unreachable:
       return "Tap reconnect to try \(hostName) again, or pair a different host below."
     default:
       return "Reaching \(hostName)..."
@@ -250,7 +257,7 @@ private struct SettingsConnectionQuickAction: View {
 }
 
 private struct SettingsStatusDot: View {
-  let state: RemoteConnectionState
+  let health: SyncConnectionHealth
   let pulsing: Bool
   let reduceMotion: Bool
 
@@ -283,7 +290,7 @@ private struct SettingsStatusDot: View {
   }
 
   private var shouldPulse: Bool {
-    (state == .connecting || state == .syncing) && pulsing && !reduceMotion
+    health.transport == .connecting && pulsing && !reduceMotion
   }
 
   private var pulseAnimation: Animation? {
@@ -292,12 +299,12 @@ private struct SettingsStatusDot: View {
   }
 
   private var dotColor: Color {
-    switch state {
+    switch health.transport {
     case .connected:
-      return ADEColor.purpleAccent
-    case .connecting, .syncing:
+      return health.load == .strained ? ADEColor.warning : ADEColor.purpleAccent
+    case .connecting:
       return ADEColor.warning
-    case .error:
+    case .unreachable:
       return ADEColor.danger
     case .disconnected:
       return Color(red: 156.0 / 255.0, green: 145.0 / 255.0, blue: 200.0 / 255.0)

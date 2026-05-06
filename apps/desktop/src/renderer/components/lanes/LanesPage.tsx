@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { useClickOutside } from "../../hooks/useClickOutside";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { Group, Panel } from "react-resizable-panels";
-import { Check, CaretDown, FileCode, GitBranch, GitPullRequest, House, Stack, Link, ArrowsOutSimple, ArrowsInSimple, PushPin, Plus, MagnifyingGlass, Terminal, X, ArrowSquareOut, Info, ArrowCounterClockwise, UsersThree } from "@phosphor-icons/react";
+import { Check, CaretDown, FileCode, GitBranch, GitPullRequest, House, Stack, Link, ArrowsOutSimple, ArrowsInSimple, PushPin, Plus, MagnifyingGlass, Terminal, X, ArrowSquareOut, Info, ArrowCounterClockwise, UsersThree, CircleNotch } from "@phosphor-icons/react";
 import { useAppStore, type LaneInspectorTab } from "../../state/appStore";
 import { buildIntegrationSourcesByLaneId } from "../../lib/integrationLanes";
 import { EmptyState } from "../ui/EmptyState";
@@ -64,6 +64,7 @@ import type {
   RebaseRun,
   RebaseScope,
   IntegrationProposal,
+  LaneDeleteProgress,
   LaneTemplate
 } from "../../../shared/types";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
@@ -237,6 +238,53 @@ export function resolveLaneIdsDeepLinkSelection(args: {
   return { laneIds, signature };
 }
 
+export function isLaneDeleteProgressActive(progress: LaneDeleteProgress | null | undefined): boolean {
+  return progress?.overallStatus === "running" || progress?.overallStatus === "completed";
+}
+
+function createPendingDeleteProgress(laneId: string): LaneDeleteProgress {
+  return {
+    laneId,
+    steps: [],
+    startedAt: new Date().toISOString(),
+    overallStatus: "running",
+    cancellable: true,
+  };
+}
+
+function getLaneDeleteStatusLabel(progress: LaneDeleteProgress | null | undefined): string {
+  return progress?.overallStatus === "completed" ? "Deleted" : "Deleting";
+}
+
+export function resolveLaneDeleteStartSelection(args: {
+  deletingLaneIds: Iterable<string>;
+  selectedLaneId: string | null;
+  activeLaneIds: string[];
+  pinnedLaneIds: Iterable<string>;
+  filteredLaneIds: string[];
+  sortedLaneIds: string[];
+}): { selectedLaneId: string | null; activeLaneIds: string[]; pinnedLaneIds: Set<string> } {
+  const deleting = new Set(args.deletingLaneIds);
+  const isAvailable = (laneId: string | null | undefined): laneId is string =>
+    Boolean(laneId && !deleting.has(laneId));
+  const pinnedLaneIds = new Set(Array.from(args.pinnedLaneIds).filter((laneId) => !deleting.has(laneId)));
+  const nextSelectedLaneId = isAvailable(args.selectedLaneId)
+    ? args.selectedLaneId
+    : args.filteredLaneIds.find((laneId) => !deleting.has(laneId))
+      ?? args.sortedLaneIds.find((laneId) => !deleting.has(laneId))
+      ?? null;
+  const preservedActiveLaneIds = args.activeLaneIds.filter((laneId) => !deleting.has(laneId) && laneId !== nextSelectedLaneId);
+  return {
+    selectedLaneId: nextSelectedLaneId,
+    activeLaneIds: mergeUnique(
+      nextSelectedLaneId ? [nextSelectedLaneId] : [],
+      preservedActiveLaneIds,
+      Array.from(pinnedLaneIds),
+    ),
+    pinnedLaneIds,
+  };
+}
+
 function laneTilingLayoutIds(laneId: string): string[] {
   return [
     `lanes:tiling:${LANES_TILING_LAYOUT_VERSION}:${laneId}`,
@@ -334,6 +382,7 @@ export function LanesPage() {
   const [laneActionStatus, setLaneActionStatus] = useState<string | null>(null);
   const [laneActionError, setLaneActionError] = useState<string | null>(null);
   const [laneActionKind, setLaneActionKind] = useState<"delete" | "archive" | "adopt" | null>(null);
+  const [deleteProgressByLaneId, setDeleteProgressByLaneId] = useState<Record<string, LaneDeleteProgress>>({});
   const [managedLaneIds, setManagedLaneIds] = useState<string[]>([]);
   const [conflictChipsByLane, setConflictChipsByLane] = useState<Record<string, ConflictChip[]>>({});
   const chipTimersRef = useRef<Map<string, number>>(new Map());
@@ -391,6 +440,7 @@ export function LanesPage() {
 
   useEffect(() => {
     completedLaneDeleteRefreshesRef.current.clear();
+    setDeleteProgressByLaneId({});
   }, [project?.rootPath]);
 
   const laneSnapshotByLaneId = useMemo(
@@ -399,12 +449,23 @@ export function LanesPage() {
   );
   const sortedLanes = useMemo(() => sortLanesForTabs(lanes), [lanes]);
   const lanesById = useMemo(() => new Map(sortedLanes.map((lane) => [lane.id, lane])), [sortedLanes]);
+  const deletingLaneIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const progress of Object.values(deleteProgressByLaneId)) {
+      if (isLaneDeleteProgressActive(progress)) ids.add(progress.laneId);
+    }
+    return ids;
+  }, [deleteProgressByLaneId]);
+  const sortedSelectableLaneIds = useMemo(
+    () => sortedLanes.map((lane) => lane.id).filter((laneId) => !deletingLaneIds.has(laneId)),
+    [sortedLanes, deletingLaneIds],
+  );
   // `availableLaneIdsKey` is the content-stable dep trigger (string changes only
   // when the id set changes). `availableLaneIds` recomputes from the key so its
   // identity is also content-stable, letting effects depend on either safely.
   const availableLaneIdsKey = useMemo(
-    () => sortedLanes.map((lane) => lane.id).sort().join("\0"),
-    [sortedLanes],
+    () => sortedSelectableLaneIds.slice().sort().join("\0"),
+    [sortedSelectableLaneIds],
   );
   const availableLaneIds = useMemo(
     () => (availableLaneIdsKey ? availableLaneIdsKey.split("\0") : []),
@@ -503,10 +564,14 @@ export function LanesPage() {
   const stackGraphLanes = useMemo(() => sortLanesForStackGraph(filteredLanes), [filteredLanes]);
 
   const filteredLaneIds = useMemo(() => filteredLanes.map((lane) => lane.id), [filteredLanes]);
-  const filteredSet = useMemo(() => new Set(filteredLaneIds), [filteredLaneIds]);
+  const selectableFilteredLaneIds = useMemo(
+    () => filteredLaneIds.filter((laneId) => !deletingLaneIds.has(laneId)),
+    [filteredLaneIds, deletingLaneIds],
+  );
+  const selectableFilteredSet = useMemo(() => new Set(selectableFilteredLaneIds), [selectableFilteredLaneIds]);
   const visibleRebaseSuggestions = useMemo(() => {
     if (suppressTourDistractions) return [];
-    const laneIdSet = new Set(filteredLaneIds);
+    const laneIdSet = new Set(selectableFilteredLaneIds);
     return laneSnapshots
       .map((snapshot) => snapshot.rebaseSuggestion)
       .filter(
@@ -515,10 +580,10 @@ export function LanesPage() {
           return laneIdSet.has(suggestion.laneId);
         },
       );
-  }, [laneSnapshots, filteredLaneIds, suppressTourDistractions]);
+  }, [laneSnapshots, selectableFilteredLaneIds, suppressTourDistractions]);
   const visibleAutoRebaseNeedsAttention = useMemo(() => {
     if (suppressTourDistractions) return [];
-    const laneIdSet = new Set(filteredLaneIds);
+    const laneIdSet = new Set(selectableFilteredLaneIds);
     return laneSnapshots
       .map((snapshot) => snapshot.autoRebaseStatus)
       .filter(
@@ -527,15 +592,18 @@ export function LanesPage() {
           return laneIdSet.has(status.laneId) && status.state !== "autoRebased";
         },
       );
-  }, [laneSnapshots, filteredLaneIds, suppressTourDistractions]);
+  }, [laneSnapshots, selectableFilteredLaneIds, suppressTourDistractions]);
 
   const activeWithPins = useMemo(
-    () => mergeUnique(activeLaneIds, Array.from(pinnedLaneIds).filter((id) => lanesById.has(id))),
-    [activeLaneIds, pinnedLaneIds, lanesById]
+    () => mergeUnique(
+      activeLaneIds.filter((id) => !deletingLaneIds.has(id)),
+      Array.from(pinnedLaneIds).filter((id) => lanesById.has(id) && !deletingLaneIds.has(id)),
+    ),
+    [activeLaneIds, pinnedLaneIds, lanesById, deletingLaneIds]
   );
   const visibleLaneIds = useMemo(
-    () => activeWithPins.filter((id) => lanesById.has(id) && filteredSet.has(id)),
-    [activeWithPins, lanesById, filteredSet]
+    () => activeWithPins.filter((id) => lanesById.has(id) && selectableFilteredSet.has(id)),
+    [activeWithPins, lanesById, selectableFilteredSet]
   );
 
   useEffect(() => {
@@ -718,6 +786,27 @@ export function LanesPage() {
   useEffect(() => {
     const unsubscribe = window.ade.lanes.onDeleteEvent((event) => {
       const { laneId, overallStatus } = event.progress;
+      setDeleteProgressByLaneId((prev) => {
+        if (isLaneDeleteProgressActive(event.progress)) {
+          return { ...prev, [laneId]: event.progress };
+        }
+        if (!prev[laneId]) return prev;
+        const next = { ...prev };
+        delete next[laneId];
+        return next;
+      });
+      if (overallStatus === "failed" || overallStatus === "cancelled") {
+        completedLaneDeleteRefreshesRef.current.delete(laneId);
+        const failedStep = event.progress.steps.find((step) => step.status === "failed");
+        const laneName = lanesById.get(laneId)?.name ?? laneId;
+        const detail = failedStep?.errorMessage ? `: ${failedStep.errorMessage}` : "";
+        setLaneActionError(
+          overallStatus === "cancelled"
+            ? `${laneName} delete was cancelled.`
+            : `${laneName} delete failed${detail}`,
+        );
+        return;
+      }
       if (overallStatus !== "completed") return;
       if (completedLaneDeleteRefreshesRef.current.has(laneId)) return;
       completedLaneDeleteRefreshesRef.current.add(laneId);
@@ -745,7 +834,7 @@ export function LanesPage() {
         });
     });
     return unsubscribe;
-  }, [clearLaneInspectorTab, managedLaneIds, manageOpen, refreshLanes, selectLane, selectedLaneId]);
+  }, [clearLaneInspectorTab, lanesById, managedLaneIds, manageOpen, refreshLanes, selectLane, selectedLaneId]);
 
   useEffect(() => {
     const unsubscribe = window.ade.conflicts.onEvent((event) => {
@@ -940,20 +1029,30 @@ export function LanesPage() {
   }, [lanesById]);
 
   useEffect(() => {
-    const pinned = Array.from(pinnedLaneIds).filter((laneId) => lanesById.has(laneId));
+    setDeleteProgressByLaneId((prev) => {
+      const next: Record<string, LaneDeleteProgress> = {};
+      for (const [laneId, progress] of Object.entries(prev)) {
+        if (lanesById.has(laneId) && isLaneDeleteProgressActive(progress)) next[laneId] = progress;
+      }
+      return Object.keys(next).length === Object.keys(prev).length ? prev : next;
+    });
+  }, [lanesById]);
+
+  useEffect(() => {
+    const pinned = Array.from(pinnedLaneIds).filter((laneId) => lanesById.has(laneId) && !deletingLaneIds.has(laneId));
     setActiveLaneIds((prev) => {
-      const validPrev = prev.filter((laneId) => lanesById.has(laneId));
-      const selected = selectedLaneId && lanesById.has(selectedLaneId) ? [selectedLaneId] : [];
+      const validPrev = prev.filter((laneId) => lanesById.has(laneId) && !deletingLaneIds.has(laneId));
+      const selected = selectedLaneId && lanesById.has(selectedLaneId) && !deletingLaneIds.has(selectedLaneId) ? [selectedLaneId] : [];
       const fallback = selected.length
         ? []
         : validPrev.length
           ? [validPrev[0]!]
-          : sortedLanes[0]?.id
-            ? [sortedLanes[0]!.id]
+          : sortedSelectableLaneIds[0]
+            ? [sortedSelectableLaneIds[0]]
             : [];
       return mergeUnique(selected, fallback, validPrev, pinned);
     });
-  }, [selectedLaneId, lanesById, sortedLanes, pinnedLaneIds]);
+  }, [selectedLaneId, lanesById, sortedSelectableLaneIds, pinnedLaneIds, deletingLaneIds]);
 
   useEffect(() => {
     setLanePaneDetails((prev) => {
@@ -968,16 +1067,16 @@ export function LanesPage() {
   /* ---- Keyboard navigation ---- */
 
   const stepLaneSelection = useCallback((direction: -1 | 1) => {
-    if (filteredLaneIds.length === 0) return;
-    const currentId = selectedLaneId && filteredSet.has(selectedLaneId) ? selectedLaneId : filteredLaneIds[0]!;
-    const currentIdx = filteredLaneIds.indexOf(currentId);
-    const nextIdx = (currentIdx + direction + filteredLaneIds.length) % filteredLaneIds.length;
-    const nextId = filteredLaneIds[nextIdx];
+    if (selectableFilteredLaneIds.length === 0) return;
+    const currentId = selectedLaneId && selectableFilteredSet.has(selectedLaneId) ? selectedLaneId : selectableFilteredLaneIds[0]!;
+    const currentIdx = selectableFilteredLaneIds.indexOf(currentId);
+    const nextIdx = (currentIdx + direction + selectableFilteredLaneIds.length) % selectableFilteredLaneIds.length;
+    const nextId = selectableFilteredLaneIds[nextIdx];
     if (!nextId) return;
-    const pinned = Array.from(pinnedLaneIds).filter((laneId) => laneId !== nextId && lanesById.has(laneId));
+    const pinned = Array.from(pinnedLaneIds).filter((laneId) => laneId !== nextId && lanesById.has(laneId) && !deletingLaneIds.has(laneId));
     setActiveLaneIds(mergeUnique([nextId], pinned));
     selectLane(nextId);
-  }, [filteredLaneIds, selectedLaneId, filteredSet, pinnedLaneIds, lanesById, selectLane]);
+  }, [selectableFilteredLaneIds, selectedLaneId, selectableFilteredSet, pinnedLaneIds, lanesById, deletingLaneIds, selectLane]);
 
   const kbFilterFocus = useMemo(() => getEffectiveBinding(keybindings, "lanes.filter.focus", "/,Mod+F"), [keybindings]);
   const kbNext = useMemo(() => getEffectiveBinding(keybindings, "lanes.select.next", "J,ArrowDown"), [keybindings]);
@@ -990,7 +1089,21 @@ export function LanesPage() {
     if (expandedGitActionsLaneId && !lanesById.has(expandedGitActionsLaneId)) {
       setExpandedGitActionsLaneId(null);
     }
-  }, [expandedGitActionsLaneId, lanesById]);
+    if (expandedGitActionsLaneId && deletingLaneIds.has(expandedGitActionsLaneId)) {
+      setExpandedGitActionsLaneId(null);
+    }
+  }, [expandedGitActionsLaneId, lanesById, deletingLaneIds]);
+
+  useEffect(() => {
+    if (expandedLaneId && (!lanesById.has(expandedLaneId) || deletingLaneIds.has(expandedLaneId))) {
+      setExpandedLaneId(null);
+    }
+  }, [expandedLaneId, lanesById, deletingLaneIds]);
+
+  useEffect(() => {
+    if (!selectedLaneId || !deletingLaneIds.has(selectedLaneId)) return;
+    selectLane(selectableFilteredLaneIds[0] ?? sortedSelectableLaneIds[0] ?? null);
+  }, [selectedLaneId, deletingLaneIds, selectableFilteredLaneIds, sortedSelectableLaneIds, selectLane]);
 
   useEffect(() => {
     const isTypingTarget = (target: EventTarget | null): boolean => {
@@ -1033,17 +1146,17 @@ export function LanesPage() {
       }
       if (eventMatchesBinding(event, kbNext)) { event.preventDefault(); stepLaneSelection(1); return; }
       if (eventMatchesBinding(event, kbPrev)) { event.preventDefault(); stepLaneSelection(-1); return; }
-      if (eventMatchesBinding(event, kbConfirm) && filteredLaneIds.length > 0) {
+      if (eventMatchesBinding(event, kbConfirm) && selectableFilteredLaneIds.length > 0) {
         event.preventDefault();
-        const laneId = selectedLaneId && filteredSet.has(selectedLaneId) ? selectedLaneId : filteredLaneIds[0]!;
-        const pinned = Array.from(pinnedLaneIds).filter((lane) => lane !== laneId && lanesById.has(lane));
+        const laneId = selectedLaneId && selectableFilteredSet.has(selectedLaneId) ? selectedLaneId : selectableFilteredLaneIds[0]!;
+        const pinned = Array.from(pinnedLaneIds).filter((lane) => lane !== laneId && lanesById.has(lane) && !deletingLaneIds.has(lane));
         setActiveLaneIds(mergeUnique([laneId], pinned));
         selectLane(laneId);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [filteredLaneIds, filteredSet, selectedLaneId, pinnedLaneIds, lanesById, selectLane, laneFilter, stepLaneSelection, kbFilterFocus, kbNext, kbPrev, kbNextTab, kbPrevTab, kbConfirm, expandedLaneId, expandedGitActionsLaneId]);
+  }, [selectableFilteredLaneIds, selectableFilteredSet, selectedLaneId, pinnedLaneIds, lanesById, deletingLaneIds, selectLane, laneFilter, stepLaneSelection, kbFilterFocus, kbNext, kbPrev, kbNextTab, kbPrevTab, kbConfirm, expandedLaneId, expandedGitActionsLaneId]);
 
   /* ---- Lane management actions ---- */
 
@@ -1232,75 +1345,104 @@ export function LanesPage() {
     }, actionable.length > 1 ? `Archiving ${actionable.length} lanes...` : "Archiving lane...", "archive");
   };
 
+  const moveAwayFromDeletingLanes = useCallback((laneIds: string[]) => {
+    const allDeletingLaneIds = new Set([...deletingLaneIds, ...laneIds]);
+    const selection = resolveLaneDeleteStartSelection({
+      deletingLaneIds: allDeletingLaneIds,
+      selectedLaneId,
+      activeLaneIds,
+      pinnedLaneIds,
+      filteredLaneIds,
+      sortedLaneIds: sortedSelectableLaneIds,
+    });
+    setPinnedLaneIds(selection.pinnedLaneIds);
+    setActiveLaneIds(selection.activeLaneIds);
+    selectLane(selection.selectedLaneId);
+    for (const laneId of laneIds) {
+      clearLaneInspectorTab(laneId);
+    }
+    const nextSearch = selection.selectedLaneId
+      ? `?laneId=${encodeURIComponent(selection.selectedLaneId)}`
+      : "";
+    navigate(`/lanes${nextSearch}`, { replace: true });
+  }, [
+    activeLaneIds,
+    clearLaneInspectorTab,
+    deletingLaneIds,
+    filteredLaneIds,
+    navigate,
+    pinnedLaneIds,
+    selectLane,
+    selectedLaneId,
+    sortedSelectableLaneIds,
+  ]);
+
   const deleteManagedLanes = async () => {
     const targets = isBatchManage ? managedLanes : managedLane ? [managedLane] : [];
     const actionable = targets.filter((l) => l.laneType !== "primary");
     if (actionable.length === 0) return;
     if (deleteConfirmText.trim().toLowerCase() !== deletePhrase.toLowerCase()) return;
-    const attachedCount = actionable.filter((l) => l.laneType === "attached").length;
-    const managedCount = actionable.length - attachedCount;
-    const deleteStatus = (() => {
-      if (managedCount === 0 && attachedCount > 0) {
-        return attachedCount > 1
-          ? `Unlinking ${attachedCount} attached lanes...`
-          : "Unlinking attached lane...";
+
+    const deleteArgsByLaneId = new Map<string, DeleteLaneArgs>();
+    for (const lane of actionable) {
+      const args: DeleteLaneArgs = { laneId: lane.id, force: deleteForce };
+      if (deleteMode === "worktree") {
+        args.deleteBranch = false;
+      } else {
+        args.deleteBranch = true;
+        if (deleteMode === "remote_branch") {
+          args.deleteRemoteBranch = true;
+          args.remoteName = deleteRemoteName.trim() || "origin";
+        }
       }
-      const managedPhrase =
-        deleteMode === "remote_branch"
-          ? managedCount > 1
-            ? `${managedCount} lane worktrees, local branches, and remote branches`
-            : "lane worktree, local branch, and remote branch"
-          : deleteMode === "local_branch"
-            ? managedCount > 1
-              ? `${managedCount} lane worktrees and local branches`
-              : "lane worktree and local branch"
-            : managedCount > 1
-              ? `${managedCount} lane worktrees`
-              : "lane worktree";
-      if (attachedCount === 0) {
-        return `Deleting ${managedPhrase}...`;
+      deleteArgsByLaneId.set(lane.id, args);
+    }
+
+    const laneIds = actionable.map((lane) => lane.id);
+    completedLaneDeleteRefreshesRef.current = new Set(
+      Array.from(completedLaneDeleteRefreshesRef.current).filter((laneId) => !laneIds.includes(laneId)),
+    );
+    setDeleteProgressByLaneId((prev) => {
+      const next = { ...prev };
+      for (const laneId of laneIds) {
+        next[laneId] = createPendingDeleteProgress(laneId);
       }
-      const attachedPhrase = attachedCount > 1
-        ? `${attachedCount} attached lanes`
-        : "attached lane";
-      return `Unlinking ${attachedPhrase} and deleting ${managedPhrase}...`;
-    })();
-    await runLaneAction(async () => {
+      return next;
+    });
+    setManageOpen(false);
+    setLaneActionBusy(false);
+    setLaneActionStatus(null);
+    setLaneActionKind(null);
+    setLaneActionError(null);
+    setDeleteConfirmText("");
+    moveAwayFromDeletingLanes(laneIds);
+
+    void (async () => {
       const errors: string[] = [];
       for (const lane of actionable) {
         try {
-          const args: DeleteLaneArgs = { laneId: lane.id, force: deleteForce };
-          if (deleteMode === "worktree") {
-            args.deleteBranch = false;
-          } else {
-            args.deleteBranch = true;
-            if (deleteMode === "remote_branch") {
-              args.deleteRemoteBranch = true;
-              args.remoteName = deleteRemoteName.trim() || "origin";
-            }
-          }
+          const args = deleteArgsByLaneId.get(lane.id);
+          if (!args) continue;
           await window.ade.lanes.delete(args);
         } catch (err) {
           errors.push(`${lane.name}: ${err instanceof Error ? err.message : String(err)}`);
+          setDeleteProgressByLaneId((prev) => {
+            const next = { ...prev };
+            delete next[lane.id];
+            return next;
+          });
         }
       }
       if (errors.length > 0) {
-        throw new Error(errors.join("\n"));
+        setLaneActionError(errors.join("\n"));
       }
-      const deletedIds = new Set(actionable.map((l) => l.id));
-      if (deletedIds.has(selectedLaneId ?? "")) selectLane(null);
-      setActiveLaneIds((prev) => prev.filter((id) => !deletedIds.has(id)));
-      // Clean up per-lane inspector tab preferences
-      for (const id of deletedIds) {
-        clearLaneInspectorTab(id);
-      }
-    }, deleteStatus);
+    })();
   };
 
   const openBatchManage = useCallback((laneIds: string[]) => {
     const manageable = laneIds.filter((id) => {
       const lane = lanesById.get(id);
-      return lane && lane.laneType !== "primary";
+      return lane && lane.laneType !== "primary" && !deletingLaneIds.has(id);
     });
     if (manageable.length === 0) return;
     setManagedLaneIds(manageable);
@@ -1310,14 +1452,15 @@ export function LanesPage() {
     setDeleteRemoteName("origin");
     setDeleteConfirmText("");
     setManageOpen(true);
-  }, [lanesById]);
+  }, [lanesById, deletingLaneIds]);
 
   const handleLaneSelect = useCallback((laneId: string, args: { extend: boolean }) => {
+    if (deletingLaneIds.has(laneId)) return;
     const lane = lanesById.get(laneId);
     if (!lane) return;
 
     if (!args.extend) {
-      const pinned = Array.from(pinnedLaneIds).filter((id) => id !== laneId && lanesById.has(id));
+      const pinned = Array.from(pinnedLaneIds).filter((id) => id !== laneId && lanesById.has(id) && !deletingLaneIds.has(id));
       setActiveLaneIds(mergeUnique([laneId], pinned));
       selectLane(laneId);
       return;
@@ -1331,25 +1474,25 @@ export function LanesPage() {
     }
 
     const next = isActive ? activeWithPins.filter((id) => id !== laneId) : [...activeWithPins, laneId];
-    const pinned = Array.from(pinnedLaneIds).filter((id) => lanesById.has(id));
+    const pinned = Array.from(pinnedLaneIds).filter((id) => lanesById.has(id) && !deletingLaneIds.has(id));
     setActiveLaneIds(mergeUnique(next.length ? next : [laneId], pinned));
     selectLane(laneId);
-  }, [lanesById, pinnedLaneIds, activeWithPins, selectLane]);
+  }, [deletingLaneIds, lanesById, pinnedLaneIds, activeWithPins, selectLane]);
 
   const removeSplitLane = useCallback((laneId: string) => {
     if (pinnedLaneIds.has(laneId)) return;
-    const pinned = Array.from(pinnedLaneIds).filter((id) => lanesById.has(id));
+    const pinned = Array.from(pinnedLaneIds).filter((id) => lanesById.has(id) && !deletingLaneIds.has(id));
     const next = activeWithPins.filter((id) => id !== laneId);
     const normalized = mergeUnique(next, pinned);
     setActiveLaneIds(normalized);
     if (!normalized.includes(selectedLaneId ?? "")) {
       selectLane(normalized[0] ?? null);
     }
-  }, [pinnedLaneIds, lanesById, activeWithPins, selectedLaneId, selectLane]);
+  }, [pinnedLaneIds, lanesById, deletingLaneIds, activeWithPins, selectedLaneId, selectLane]);
 
   const togglePinnedLane = useCallback((laneId: string) => {
     const lane = lanesById.get(laneId);
-    if (!lane || lane.laneType === "primary") return;
+    if (!lane || lane.laneType === "primary" || deletingLaneIds.has(laneId)) return;
     const isPinned = pinnedLaneIds.has(laneId);
     setPinnedLaneIds((prev) => {
       const next = new Set(prev);
@@ -1360,15 +1503,15 @@ export function LanesPage() {
     if (!isPinned) {
       setActiveLaneIds((prev) => mergeUnique(prev, [laneId]));
     }
-  }, [lanesById, pinnedLaneIds]);
+  }, [lanesById, deletingLaneIds, pinnedLaneIds]);
 
   const resetGridLayout = useCallback(async (preferredLaneId?: string | null) => {
     const selectedVisibleLane =
-      preferredLaneId && lanesById.has(preferredLaneId)
+      preferredLaneId && lanesById.has(preferredLaneId) && !deletingLaneIds.has(preferredLaneId)
         ? preferredLaneId
-        : selectedLaneId && lanesById.has(selectedLaneId)
+        : selectedLaneId && lanesById.has(selectedLaneId) && !deletingLaneIds.has(selectedLaneId)
           ? selectedLaneId
-          : visibleLaneIds[0] ?? filteredLaneIds[0] ?? sortedLanes[0]?.id ?? null;
+          : visibleLaneIds[0] ?? selectableFilteredLaneIds[0] ?? sortedSelectableLaneIds[0] ?? null;
     if (selectedVisibleLane) {
       setPinnedLaneIds(new Set());
       setActiveLaneIds([selectedVisibleLane]);
@@ -1376,7 +1519,7 @@ export function LanesPage() {
     }
     const promises: Promise<void>[] = [];
     const laneIdsToReset = new Set<string>([
-      ...filteredLaneIds,
+      ...selectableFilteredLaneIds,
       ...visibleLaneIds,
       ...activeLaneIds,
     ]);
@@ -1394,7 +1537,7 @@ export function LanesPage() {
     await Promise.all(promises);
     /* Force full remount so default sizes/trees take effect */
     setGridResetKey((k) => k + 1);
-  }, [activeLaneIds, filteredLaneIds, lanesById, selectLane, selectedLaneId, sortedLanes, visibleLaneIds]);
+  }, [activeLaneIds, selectableFilteredLaneIds, lanesById, deletingLaneIds, selectLane, selectedLaneId, sortedSelectableLaneIds, visibleLaneIds]);
 
   useEffect(() => {
     const onTourEnded = (event: Event) => {
@@ -1404,7 +1547,7 @@ export function LanesPage() {
     };
     window.addEventListener("ade:tour-ended", onTourEnded);
     return () => window.removeEventListener("ade:tour-ended", onTourEnded);
-  }, [resetGridLayout]);
+  }, [resetGridLayout, selectedLaneId]);
 
   useEffect(() => {
     const onTourFocusLane = (event: Event) => {
@@ -1709,7 +1852,7 @@ export function LanesPage() {
     const targetId = urlLaneDeeplinks.laneId;
     if (!targetId) return;
     const lane = lanesById.get(targetId);
-    if (!lane || lane.laneType === "primary") return;
+    if (!lane || lane.laneType === "primary" || deletingLaneIds.has(targetId)) return;
     setManagedLaneIds([targetId]);
     setLaneActionError(null);
     setDeleteForce(false);
@@ -1722,7 +1865,7 @@ export function LanesPage() {
     next.delete("action");
     navigate(`${location.pathname}?${next.toString()}`, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [urlLaneDeeplinks.action, urlLaneDeeplinks.laneId, lanesById]);
+  }, [urlLaneDeeplinks.action, urlLaneDeeplinks.laneId, lanesById, deletingLaneIds]);
 
   useEffect(() => {
     if (!urlLaneDeeplinks.laneIdsRaw) return;
@@ -1749,6 +1892,7 @@ export function LanesPage() {
     consumedLaneIdsDeepLinkSignatureRef.current = null;
     const laneId = urlLaneDeeplinks.laneId;
     if (!laneId) return;
+    if (deletingLaneIds.has(laneId)) return;
     selectLane(laneId);
     if (urlLaneDeeplinks.focus === "single") {
       setActiveLaneIds([laneId]);
@@ -1761,6 +1905,7 @@ export function LanesPage() {
     urlLaneDeeplinks.laneId,
     urlLaneDeeplinks.focus,
     urlLaneDeeplinks.inspectorTab,
+    deletingLaneIds,
     selectLane,
     setLaneInspectorTab,
   ]);
@@ -1906,6 +2051,7 @@ export function LanesPage() {
   }, [attachName, attachPath, attachDescription, attachBusy, refreshLanes, navigate]);
 
   const openManageDialog = useCallback((laneId: string) => {
+    if (deletingLaneIds.has(laneId)) return;
     selectLane(laneId);
     setManagedLaneIds([laneId]);
     setLaneActionError(null);
@@ -1915,7 +2061,7 @@ export function LanesPage() {
     setDeleteRemoteName("origin");
     setDeleteConfirmText("");
     setManageOpen(true);
-  }, [selectLane]);
+  }, [deletingLaneIds, selectLane]);
 
   const handleCreateDialogBusOpen = useCallback((props?: Record<string, unknown>) => {
     setAddLaneDropdownOpen(false);
@@ -2410,6 +2556,30 @@ export function LanesPage() {
             );
           })}
         </div>
+        {laneActionError ? (
+          <div
+            className="inline-flex max-w-[260px] shrink-0 items-center gap-2 rounded-md border px-2 py-1"
+            style={{
+              borderColor: "color-mix(in srgb, var(--color-error) 30%, transparent)",
+              background: "color-mix(in srgb, var(--color-error) 12%, transparent)",
+              color: COLORS.danger,
+              fontFamily: SANS_FONT,
+              fontSize: 11,
+            }}
+            title={laneActionError}
+          >
+            <span className="truncate">Lane action failed</span>
+            <button
+              type="button"
+              className="shrink-0"
+              style={{ background: "transparent", border: "none", color: COLORS.danger, cursor: "pointer", padding: 0 }}
+              onClick={() => setLaneActionError(null)}
+              title="Dismiss"
+            >
+              <X size={11} />
+            </button>
+          </div>
+        ) : null}
 
         {/* NEW LANE button + dropdown */}
         <div className="relative shrink-0" ref={addLaneDropdownRef}>
@@ -2653,15 +2823,19 @@ export function LanesPage() {
           const devicesOpen = lane.devicesOpen ?? [];
           const tabNumber = String(index + 1).padStart(2, "0");
           const lanePr = lanePrByLaneId.get(lane.id) ?? null;
+          const deleteProgress = deleteProgressByLaneId[lane.id] ?? null;
+          const isDeleting = isLaneDeleteProgressActive(deleteProgress);
 
           return (
             <div
               key={lane.id}
-              data-tour={isSelected && !isPrimary ? "lanes.laneTab" : undefined}
+              data-tour={isSelected && !isPrimary && !isDeleting ? "lanes.laneTab" : undefined}
               role="button"
-              tabIndex={0}
-              className="group flex items-center gap-2 cursor-pointer shrink-0"
+              tabIndex={isDeleting ? -1 : 0}
+              aria-disabled={isDeleting}
+              className="group flex items-center gap-2 shrink-0"
               style={{
+                position: "relative",
                 padding: "0 16px",
                 height: 44,
                 borderLeft: isSelected
@@ -2677,18 +2851,22 @@ export function LanesPage() {
                 borderBottom: isInSplit
                   ? `1px solid rgba(167,139,250,0.18)`
                   : "1px solid transparent",
+                cursor: isDeleting ? "not-allowed" : "pointer",
+                opacity: isDeleting ? 0.62 : 1,
               }}
               onClick={(event) => {
+                if (isDeleting) return;
                 handleLaneSelect(lane.id, {
                   extend: Boolean(event.shiftKey || event.metaKey || event.ctrlKey)
                 });
               }}
               onContextMenu={(event) => {
                 event.preventDefault();
+                if (isDeleting) return;
                 setLaneContextMenu({ laneId: lane.id, x: event.clientX, y: event.clientY });
               }}
               onMouseEnter={(e) => {
-                if (!isSelected && !isInSplit) e.currentTarget.style.background = COLORS.hoverBg;
+                if (!isDeleting && !isSelected && !isInSplit) e.currentTarget.style.background = COLORS.hoverBg;
               }}
               onMouseLeave={(e) => {
                 if (!isSelected) e.currentTarget.style.background = isInSplit ? "rgba(167,139,250,0.06)" : "transparent";
@@ -2706,7 +2884,7 @@ export function LanesPage() {
                 <span className="shrink-0" style={{ width: 10, height: 10, borderRadius: "50%", background: conflictDotColor(conflictStatus?.status) }} />
               )}
               {/* Terminal attention state */}
-              {laneRuntime.bucket === "running" || laneRuntime.bucket === "awaiting-input" ? (
+              {!isDeleting && (laneRuntime.bucket === "running" || laneRuntime.bucket === "awaiting-input") ? (
                 <span
                   title={
                     laneRuntime.bucket === "awaiting-input"
@@ -2719,13 +2897,14 @@ export function LanesPage() {
                     background: laneRuntime.bucket === "awaiting-input" ? COLORS.warning : COLORS.success,
                   }}
                 />
-	              ) : laneRuntime.bucket === "ended" ? (
+	              ) : !isDeleting && laneRuntime.bucket === "ended" ? (
                 <span
                   title={`${laneRuntime.endedCount} ended session${laneRuntime.endedCount === 1 ? "" : "s"}`}
                   className="shrink-0"
 	                  style={{ width: 8, height: 8, borderRadius: "50%", background: COLORS.danger }}
 	                />
 	              ) : null}
+	              {!isDeleting ? (
 	              <span
 	                className="opacity-0 transition-opacity group-hover:opacity-100"
 	                onClick={(event) => event.stopPropagation()}
@@ -2733,6 +2912,7 @@ export function LanesPage() {
 	              >
 	                <QuickRunMenu laneId={lane.id} compact iconOnly triggerStyle={{ height: 22, padding: "0 6px" }} />
 	              </span>
+	              ) : null}
 	              {/* Lane name */}
 	              <span className="truncate" style={{
 	                maxWidth: 180,
@@ -2740,7 +2920,7 @@ export function LanesPage() {
 	                fontWeight: isSelected ? 600 : 500,
 	                color: isSelected ? COLORS.textPrimary : COLORS.textMuted,
 	              }}>{lane.name}</span>
-              {lanePr ? (
+              {!isDeleting && lanePr ? (
                 <button
                   type="button"
                   className="shrink-0"
@@ -2766,7 +2946,7 @@ export function LanesPage() {
                   {formatPrBadgeLabel(lanePr)}
                 </button>
               ) : null}
-	              {devicesOpen.length > 0 ? (
+	              {!isDeleting && devicesOpen.length > 0 ? (
 	                <span
 	                  style={{
 	                    display: "inline-flex",
@@ -2788,7 +2968,7 @@ export function LanesPage() {
 	                </span>
 	              ) : null}
 	              {/* Behind badge (rebase suggestion) */}
-              {rebaseSuggestion ? (
+              {!isDeleting && rebaseSuggestion ? (
                 <span style={{
                   display: "inline-flex", alignItems: "center", padding: "2px 6px", borderRadius: 6,
                   fontFamily: MONO_FONT, fontSize: 9, fontWeight: 700,
@@ -2798,7 +2978,7 @@ export function LanesPage() {
                 </span>
               ) : null}
               {/* Pinned badge */}
-              {!isPrimary && isPinned ? (
+              {!isDeleting && !isPrimary && isPinned ? (
                 <span style={{
                   display: "inline-flex", alignItems: "center", padding: "2px 6px", borderRadius: 6,
                   fontFamily: MONO_FONT, fontSize: 9, fontWeight: 700,
@@ -2806,17 +2986,17 @@ export function LanesPage() {
                 }}>PINNED</span>
               ) : null}
               {/* Auto-rebase status badges */}
-              {autoRebaseStatus?.state === "autoRebased" ? (
+              {!isDeleting && autoRebaseStatus?.state === "autoRebased" ? (
                 <span style={inlineBadge(COLORS.success, { fontSize: 9 })} title={autoRebaseStatus.message ?? "Lane was rebased automatically."}>
                   REBASED
                 </span>
               ) : null}
-              {autoRebaseStatus?.state === "rebasePending" ? (
+              {!isDeleting && autoRebaseStatus?.state === "rebasePending" ? (
                 <span style={inlineBadge(COLORS.warning, { fontSize: 9 })} title={autoRebaseStatus.message ?? "Auto-rebase is pending manual action."}>
                   PENDING
                 </span>
               ) : null}
-              {autoRebaseStatus?.state === "rebaseFailed" ? (
+              {!isDeleting && autoRebaseStatus?.state === "rebaseFailed" ? (
                 <span
                   style={inlineBadge(COLORS.danger, { fontSize: 9 })}
                   title={autoRebaseStatus.message ?? "Auto-rebase failed and the lane needs manual follow-up."}
@@ -2824,7 +3004,7 @@ export function LanesPage() {
                   FAILED
                 </span>
               ) : null}
-              {autoRebaseStatus?.state === "rebaseConflict" ? (
+              {!isDeleting && autoRebaseStatus?.state === "rebaseConflict" ? (
                 <span
                   style={inlineBadge(COLORS.danger, { fontSize: 9 })}
                   title={autoRebaseStatus.message ?? "Auto-rebase stopped due to conflicts."}
@@ -2832,7 +3012,7 @@ export function LanesPage() {
                   CONFLICT{autoRebaseStatus.conflictCount > 0 ? ` ${autoRebaseStatus.conflictCount}` : ""}
                 </span>
               ) : null}
-              {chips.slice(0, 1).map((chip, chipIndex) => (
+              {!isDeleting && chips.slice(0, 1).map((chip, chipIndex) => (
                 <span
                   key={`${chip.kind}:${chip.peerId ?? "base"}:${chipIndex}`}
                   style={inlineBadge(chip.kind === "high-risk" ? COLORS.danger : COLORS.warning, { fontSize: 9 })}
@@ -2841,7 +3021,7 @@ export function LanesPage() {
                 </span>
               ))}
               {/* Pin toggle — appears on hover */}
-              {!isPrimary ? (
+              {!isDeleting && !isPrimary ? (
                 <button
                   type="button"
                   className="shrink-0 transition-opacity"
@@ -2862,7 +3042,7 @@ export function LanesPage() {
                 </button>
               ) : null}
               {/* Close from split — appears on hover */}
-              {closable ? (
+              {!isDeleting && closable ? (
                 <button
                   type="button"
                   className="shrink-0 transition-opacity opacity-0 group-hover:opacity-100"
@@ -2878,6 +3058,23 @@ export function LanesPage() {
                 >
                   <X size={10} />
                 </button>
+              ) : null}
+              {isDeleting ? (
+                <div
+                  className="pointer-events-none absolute inset-0 flex items-center justify-center gap-1.5"
+                  style={{
+                    background: "rgba(12, 15, 20, 0.72)",
+                    color: COLORS.textSecondary,
+                    fontFamily: MONO_FONT,
+                    fontSize: 9,
+                    fontWeight: 700,
+                    letterSpacing: "0.8px",
+                    textTransform: "uppercase",
+                  }}
+                >
+                  <CircleNotch size={12} className="animate-spin" />
+                  <span>{getLaneDeleteStatusLabel(deleteProgress)}</span>
+                </div>
               ) : null}
             </div>
           );

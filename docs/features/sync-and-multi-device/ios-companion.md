@@ -110,17 +110,40 @@ Phase 7).
 
 Host connection status is surfaced through a single shared component,
 `ADEConnectionDot` (in `Views/Components/ADEDesignSystem.swift`). It
-renders a colored dot, a state label (Connected / Syncing / Connecting
-/ Disconnected / Error), and the truncated host name when connected,
-and acts as a 44pt button that opens Settings. Tint mapping:
+renders a colored dot, a state label, and the truncated host name when
+connected, and acts as a 44pt button that opens Settings.
 
-| Connection state | Color |
-|---|---|
-| `connected` | success (green) |
-| `syncing` | warning (amber) |
-| `connecting` | warning (amber) |
-| `disconnected` | danger (red) |
-| `error` | danger (red) |
+All visible connection affordances read from `SyncConnectionHealth`
+(produced by the pure helper `syncConnectionHealth(connectionState:
+prefersReducedSyncLoad: lastError:)` and re-exposed through
+`SyncService.connectionHealth`) instead of branching on the raw
+`RemoteConnectionState`. The health value separates three concerns
+that used to be tangled together:
+
+- `transport: SyncTransportHealth` — `disconnected` / `connecting` /
+  `connected` / `unreachable`. `RemoteConnectionState.syncing` collapses
+  into `connected` because the socket is alive while the host streams a
+  catchup batch; only `RemoteConnectionState.error` maps to
+  `unreachable`.
+- `load: SyncLoadHealth` — `normal` / `strained`. `strained` is set
+  when the transport is connected but `prefersReducedSyncLoad` is on,
+  i.e. recent request timeouts have caused the phone to back off
+  background work.
+- `lastFailureMessage` — surfaced only when transport is `unreachable`,
+  so a stale error from a previous socket does not bleed into the UI
+  while the phone is happily disconnected or reconnecting.
+
+Tint mapping (resolved by `SettingsConnectionPresentation.statusTint`,
+`ADEConnectionDot`, `ProjectHomeView.attachedComputerTint`,
+`ADERootToolbarControls`, and `SettingsStatusDot`):
+
+| Transport | Load | Color |
+|---|---|---|
+| `connected` | `normal` | success (green) / purple accent on the Settings dot |
+| `connected` | `strained` | warning (amber) |
+| `connecting` | (n/a) | warning (amber) |
+| `unreachable` | (n/a) | danger (red) |
+| `disconnected` | (n/a) | danger (red) on the toolbar dot, muted on the Settings dot |
 
 The dot is placed in the top-leading `ToolbarItem` of every top-level
 tab (Lanes, Files, Work, PRs) and every deep screen
@@ -134,16 +157,37 @@ hydrating cards inside each screen body.
 `ProjectHomeView` is the exception: with the navigation bar hidden
 (brand-mark hero only) it surfaces the same connection state through
 an inline "Attached to <host>" banner above the open-project button.
-The banner uses the same tint mapping as `ADEConnectionDot` (success
-when connected/syncing, warning when connecting/error, muted when
-disconnected) and routes taps through `syncService.settingsPresented`
-to the same Settings sheet the dot opens.
+The banner uses the same `SyncConnectionHealth` mapping as
+`ADEConnectionDot` (success when connected and not strained, warning
+when connecting or strained, muted when disconnected/unreachable) and
+routes taps through `syncService.settingsPresented` to the same
+Settings sheet the dot opens.
 
-Accessibility: the dot exposes `accessibilityLabel` that includes the
-host name when connected and trims the last error message for the
-error state, an `accessibilityHint` of "Opens settings to pair or
-reconnect", and `accessibilityShowsLargeContentViewer()` so VoiceOver
-and Large Content can reach it.
+`SettingsConnectionHeader` distinguishes the four states explicitly:
+
+- Connected, normal load → "Live · ready to sync".
+- Connected, strained load → "Live · host responding slowly".
+- Connected with `connectionState == .syncing` → "Live · syncing
+  changes".
+- `connecting` → "Connecting to saved host".
+- `unreachable` → "Unable to reach your Mac" plus the
+  `lastFailureMessage` banner.
+- `disconnected` → reconnect / pair-different-host CTA depending on
+  whether a saved Tailscale address candidate is present.
+
+`SettingsConnectionPresentation.statusLabel` returns "Connected, slow"
+when transport is connected and load is strained, and "Connected"
+otherwise. The legacy "Syncing" label was removed — syncing is just
+a connected transport doing work.
+
+Accessibility: the dot's `accessibilityLabel` describes load strain
+("Connected to <host>. Host is responding slowly"), explicit syncing
+work ("Connected to <host>. Syncing changes"), or plain "Connected to
+<host>" when neither applies; for transport `unreachable` it appends
+the trimmed `lastFailureMessage`. `accessibilityHint` is "Opens
+settings to pair or reconnect", and
+`accessibilityShowsLargeContentViewer()` keeps it reachable from
+VoiceOver and Large Content.
 
 The one remaining inline banner per tab is the hydration-failure
 notice built from `SyncDomainStatus.inlineHydrationFailureNotice(for:)`
@@ -269,7 +313,22 @@ turns a raw response dict into either the `result` value or throws an
 
 `SyncRequestTimeout.defaultTimeoutNanoseconds = 30_000_000_000` (30s).
 Timed-out requests throw with the message *"The host took too long to
-respond. Reconnecting now."* The reconnect is automatic.
+respond. Reconnecting now."*
+
+A request timeout no longer unconditionally drops the socket. Inbound
+traffic on the WebSocket is timestamped via `lastInboundMessageAt`
+(set whenever any envelope arrives — heartbeats, change batches,
+results, anything), and the timeout path consults
+`syncShouldReconnectAfterRequestTimeout(now:lastInboundMessageAt:
+silenceThreshold:)` before tearing down. The default silence
+threshold is `SyncSocketTiming.requestTimeoutReconnectSilenceSeconds
+= 12 s`. If any envelope arrived within the last 12 seconds, the
+phone keeps the socket and lets the user retry; only when the socket
+has actually been silent for the full window does the timeout escalate
+to a reconnect. This avoids cycling a healthy connection while one
+slow command is in flight, and falls back to "reconnect" when
+`lastInboundMessageAt` is `nil` (fresh socket / never received
+anything).
 
 `InitialHydrationGate` polls for the project row at 200ms intervals up
 to a 15s total budget. This covers the first sync-after-pairing gap
@@ -709,6 +768,23 @@ reflected in the phone's UI on the next descriptor read.
   command handlers on the host responsive; bulk operations should
   be batched into a single command with a single reply rather than
   rapid-fire command storms.
+- **A request timeout is not the same as a dead socket.** The 30 s
+  `SyncRequestTimeout` only forces a reconnect when
+  `syncShouldReconnectAfterRequestTimeout` agrees — that helper
+  consults `lastInboundMessageAt` and the 12 s
+  `requestTimeoutReconnectSilenceSeconds` window. If anything has
+  arrived on the WebSocket recently (heartbeats, change batches, a
+  result), the timeout surfaces to the caller without dropping the
+  socket. New transport-affecting code should bump
+  `lastInboundMessageAt` on inbound traffic and treat that timestamp
+  as the source of truth for "is this socket actually alive".
+- **Connection UI must use `SyncConnectionHealth`, not the raw state.**
+  `RemoteConnectionState.syncing` is just transport `connected` doing
+  catchup work, and `RemoteConnectionState.error` carries failure text
+  that should not bleed into a `disconnected` UI. New connection
+  affordances should render off `syncService.connectionHealth` so
+  load-strain and transport failure stay distinct from each other and
+  from background sync work.
 - **Chat streaming is push, with polling as fallback.** Once a phone
   sends `chat_subscribe`, the host fans out `chat_event` envelopes in
   real time from `agentChatService.subscribeToEvents`. The host still

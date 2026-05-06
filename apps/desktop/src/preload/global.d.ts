@@ -2057,7 +2057,7 @@ declare global {
       };
       updateCheckForUpdates: () => Promise<void>;
       updateGetState: () => Promise<AutoUpdateSnapshot>;
-      updateQuitAndInstall: () => Promise<void>;
+      updateQuitAndInstall: () => Promise<boolean>;
       updateDismissInstalledNotice: () => Promise<void>;
       onUpdateEvent: (cb: (snapshot: AutoUpdateSnapshot) => void) => () => void;
     };

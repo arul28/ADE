@@ -450,17 +450,23 @@ struct ADEStatusPill: View {
 struct ADEConnectionDot: View {
   @EnvironmentObject private var syncService: SyncService
 
+  private var health: SyncConnectionHealth {
+    syncService.connectionHealth
+  }
+
   private var tint: Color {
-    switch syncService.connectionState {
-    case .connected: return ADEColor.success
-    case .syncing: return ADEColor.warning
-    case .connecting: return ADEColor.warning
-    case .error, .disconnected: return ADEColor.danger
+    switch health.transport {
+    case .connected:
+      return health.load == .strained ? ADEColor.warning : ADEColor.success
+    case .connecting:
+      return ADEColor.warning
+    case .unreachable, .disconnected:
+      return ADEColor.danger
     }
   }
 
   private var showsConnectedGlow: Bool {
-    syncService.connectionState == .connected
+    health.transport.isConnected
   }
 
   private var truncatedHostName: String? {
@@ -476,8 +482,8 @@ struct ADEConnectionDot: View {
 
   private var accessibilityLabel: String {
     let errorSuffix: String = {
-      guard syncService.connectionState == .error,
-            let raw = syncService.lastError?.trimmingCharacters(in: .whitespacesAndNewlines),
+      guard health.transport == .unreachable,
+            let raw = health.lastFailureMessage?.trimmingCharacters(in: .whitespacesAndNewlines),
             !raw.isEmpty
       else {
         return ""
@@ -487,17 +493,27 @@ struct ADEConnectionDot: View {
       return ". \(clipped)"
     }()
 
-    switch syncService.connectionState {
+    switch health.transport {
     case .connected:
       if let name = truncatedHostName {
+        if health.load == .strained {
+          return "Connected to \(name). Host is responding slowly"
+        }
+        if syncService.connectionState == .syncing {
+          return "Connected to \(name). Syncing changes"
+        }
         return "Connected to \(name)"
       }
+      if health.load == .strained {
+        return "Connected. Host is responding slowly"
+      }
+      if syncService.connectionState == .syncing {
+        return "Connected. Syncing changes"
+      }
       return "Connected"
-    case .syncing:
-      return "Syncing with host"
     case .connecting:
       return "Connecting to host"
-    case .error:
+    case .unreachable:
       return "Connection error\(errorSuffix)"
     case .disconnected:
       return "Disconnected from host"
@@ -603,21 +619,28 @@ struct ADERootToolbarControls: View {
     self.scopeKey = scopeKey
   }
 
+  private var connectionHealth: SyncConnectionHealth {
+    syncService.connectionHealth
+  }
+
   private var connectionTint: Color {
-    switch syncService.connectionState {
-    case .connected: return ADEColor.success
-    case .syncing, .connecting: return ADEColor.warning
-    case .error, .disconnected: return ADEColor.danger
+    switch connectionHealth.transport {
+    case .connected:
+      return connectionHealth.load == .strained ? ADEColor.warning : ADEColor.success
+    case .connecting:
+      return ADEColor.warning
+    case .unreachable, .disconnected:
+      return ADEColor.danger
     }
   }
 
   private var connectionIsAlive: Bool {
-    syncService.connectionState == .connected
+    connectionHealth.transport.isConnected
   }
 
   private var connectionAccessibilityLabel: String {
     let base: String
-    switch syncService.connectionState {
+    switch connectionHealth.transport {
     case .connected:
       if let rawName = syncService.hostName {
         let cleaned = rawName
@@ -626,20 +649,24 @@ struct ADERootToolbarControls: View {
           .trimmingCharacters(in: .whitespacesAndNewlines)
         if !cleaned.isEmpty {
           let truncated = cleaned.count <= 10 ? cleaned : String(cleaned.prefix(9)) + "…"
-          base = "Connected to \(truncated)"
+          if connectionHealth.load == .strained {
+            base = "Connected to \(truncated). Host is responding slowly"
+          } else if syncService.connectionState == .syncing {
+            base = "Connected to \(truncated). Syncing changes"
+          } else {
+            base = "Connected to \(truncated)"
+          }
         } else {
-          base = "Connected"
+          base = connectedFallbackLabel
         }
       } else {
-        base = "Connected"
+        base = connectedFallbackLabel
       }
-    case .syncing:
-      base = "Syncing with host"
     case .connecting:
       base = "Connecting to host"
-    case .error:
+    case .unreachable:
       var suffix = ""
-      if let raw = syncService.lastError?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
+      if let raw = connectionHealth.lastFailureMessage?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
         let normalized = raw.split(whereSeparator: \.isWhitespace).joined(separator: " ")
         let clipped = normalized.count > 120 ? String(normalized.prefix(117)) + "…" : normalized
         suffix = ". \(clipped)"
@@ -649,6 +676,16 @@ struct ADERootToolbarControls: View {
       base = "Disconnected from host"
     }
     return "Computer connection · \(base)"
+  }
+
+  private var connectedFallbackLabel: String {
+    if connectionHealth.load == .strained {
+      return "Connected. Host is responding slowly"
+    }
+    if syncService.connectionState == .syncing {
+      return "Connected. Syncing changes"
+    }
+    return "Connected"
   }
 
   private var hasUnread: Bool { drawer.unreadCount > 0 }

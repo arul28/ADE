@@ -29,11 +29,62 @@ enum RemoteConnectionState: String {
   /// True when the host is not reachable — either we never connected
   /// (or gave up) or the last socket turned over into an error state.
   /// UI uses this to suppress per-screen "failed to load" banners whose
-  /// underlying cause is simply "not connected"; the top-right gear dot
-  /// (ADEConnectionDot) is the single source of truth for this state.
+  /// underlying cause is simply "not connected"; visible connection affordances
+  /// should use `SyncConnectionHealth` so transport, sync work, and load strain
+  /// stay distinct.
   var isHostUnreachable: Bool {
     self == .disconnected || self == .error
   }
+}
+
+enum SyncTransportHealth: String, Equatable {
+  case disconnected
+  case connecting
+  case connected
+  case unreachable
+
+  var isConnected: Bool {
+    self == .connected
+  }
+
+  var isHostUnreachable: Bool {
+    self == .disconnected || self == .unreachable
+  }
+}
+
+enum SyncLoadHealth: String, Equatable {
+  case normal
+  case strained
+}
+
+struct SyncConnectionHealth: Equatable {
+  let transport: SyncTransportHealth
+  let load: SyncLoadHealth
+  let lastFailureMessage: String?
+}
+
+func syncConnectionHealth(
+  connectionState: RemoteConnectionState,
+  prefersReducedSyncLoad: Bool,
+  lastError: String?
+) -> SyncConnectionHealth {
+  let transport: SyncTransportHealth = {
+    switch connectionState {
+    case .disconnected:
+      return .disconnected
+    case .connecting:
+      return .connecting
+    case .connected, .syncing:
+      return .connected
+    case .error:
+      return .unreachable
+    }
+  }()
+  return SyncConnectionHealth(
+    transport: transport,
+    load: transport.isConnected && prefersReducedSyncLoad ? .strained : .normal,
+    lastFailureMessage: transport == .unreachable ? lastError : nil
+  )
 }
 
 enum SyncChatMessageDelivery: Equatable {
@@ -193,6 +244,7 @@ enum SyncBonjourTiming {
 enum SyncSocketTiming {
   static let openTimeoutNanoseconds: UInt64 = 5_000_000_000
   static let lanePresenceHeartbeatNanoseconds: UInt64 = 30_000_000_000
+  static let requestTimeoutReconnectSilenceSeconds: TimeInterval = 12
 }
 
 enum SyncTailnetDiscoveryTiming {
@@ -451,6 +503,15 @@ func syncClientHeartbeatIntervalNanoseconds(serverIntervalMs rawValue: Any?) -> 
   return UInt64(clientMs) * 1_000_000
 }
 
+func syncShouldReconnectAfterRequestTimeout(
+  now: TimeInterval,
+  lastInboundMessageAt: TimeInterval?,
+  silenceThreshold: TimeInterval = SyncSocketTiming.requestTimeoutReconnectSilenceSeconds
+) -> Bool {
+  guard let lastInboundMessageAt else { return true }
+  return now - lastInboundMessageAt >= silenceThreshold
+}
+
 func syncShouldRoamToTailnet(
   currentAddress: String?,
   hasTailnetRoute: Bool,
@@ -693,6 +754,14 @@ final class SyncService: ObservableObject {
   @Published var requestedLaneNavigation: LaneNavigationRequest?
   @Published var requestedPrNavigation: PrNavigationRequest?
 
+  var connectionHealth: SyncConnectionHealth {
+    syncConnectionHealth(
+      connectionState: connectionState,
+      prefersReducedSyncLoad: prefersReducedSyncLoad,
+      lastError: lastError
+    )
+  }
+
   private(set) var terminalBuffers: [String: String] = [:]
   private(set) var chatEventEnvelopesBySession: [String: [AgentChatEventEnvelope]] = [:]
   private(set) var chatEventRevisionsBySession: [String: Int] = [:]
@@ -796,6 +865,7 @@ final class SyncService: ObservableObject {
   private var reconnectState = SyncReconnectState()
   private var connectionGeneration: UInt64 = 0
   private var connectAttemptGeneration: UInt64 = 0
+  private var lastInboundMessageAt: TimeInterval?
   private var allowAutoReconnect = true
   /// User-initiated disconnects should stay disconnected until the user explicitly reconnects or pairs again.
   private var autoReconnectPausedByUser = false
@@ -5543,6 +5613,7 @@ final class SyncService: ObservableObject {
     let type = envelope["type"] as? String ?? ""
     let requestId = envelope["requestId"] as? String
     let payload = try decodeEnvelopePayload(envelope)
+    lastInboundMessageAt = ProcessInfo.processInfo.systemUptime
 
     switch type {
     case "hello_ok":
@@ -5980,6 +6051,7 @@ final class SyncService: ObservableObject {
     socket?.cancel(with: closeCode, reason: reason?.data(using: .utf8))
     socket = nil
     currentAddress = nil
+    lastInboundMessageAt = nil
     refreshReducedSyncLoad()
     pendingProjectCatalogChunks.removeAll()
     connectionGeneration &+= 1
@@ -6019,7 +6091,11 @@ final class SyncService: ObservableObject {
     timeoutError: NSError = SyncRequestTimeout.error()
   ) {
     guard pending[requestId] != nil else { return }
-    if disconnectOnTimeout {
+    if disconnectOnTimeout,
+       syncShouldReconnectAfterRequestTimeout(
+         now: ProcessInfo.processInfo.systemUptime,
+         lastInboundMessageAt: lastInboundMessageAt
+       ) {
       // handleTransportFailure tears the socket down before flipping the
       // reduced-load preference, so we must NOT call markConnectionLoadStrained
       // here — calling it pre-teardown re-subscribes chat events on the
