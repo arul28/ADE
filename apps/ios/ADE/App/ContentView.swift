@@ -148,7 +148,12 @@ private struct ProjectHomeView: View {
       return health.load == .strained ? ADEColor.warning : ADEColor.success
     case .connecting:
       return ADEColor.warning
-    case .unreachable, .disconnected:
+    case .unreachable:
+      // Surface the connection-error affordance — collapsing this with
+      // .disconnected loses the "something is wrong" tint when a host that
+      // was reachable goes silent.
+      return ADEColor.danger
+    case .disconnected:
       return ADEColor.textMuted
     }
   }

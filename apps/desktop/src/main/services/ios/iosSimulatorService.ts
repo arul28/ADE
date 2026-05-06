@@ -1828,10 +1828,26 @@ async function findAppBundles(root: string): Promise<string[]> {
   return found;
 }
 
-async function findAppBundle(root: string, criteria: { bundleId?: string | null; scheme?: string | null; appBundlePath?: string | null }): Promise<string | null> {
+async function findAppBundle(
+  root: string,
+  criteria: {
+    bundleId?: string | null;
+    scheme?: string | null;
+    /**
+     * Xcode product name produced by the app target ("MyApp" → "MyApp.app").
+     * Preferred over `scheme` because schemes can build multiple `.app`
+     * bundles or use a name that differs from the produced bundle.
+     */
+    productName?: string | null;
+    appBundlePath?: string | null;
+  },
+): Promise<string | null> {
   if (criteria.appBundlePath && fs.existsSync(criteria.appBundlePath)) return criteria.appBundlePath;
   const appBundles = await findAppBundles(root);
+  // productName is the most accurate hint (scheme name can drift from the
+  // produced .app); fall back to scheme, then the well-known ADE.app name.
   const expectedNames = [
+    criteria.productName ? `${criteria.productName}.app` : null,
     criteria.scheme ? `${criteria.scheme}.app` : null,
     "ADE.app",
   ].filter((value): value is string => Boolean(value));
@@ -2733,7 +2749,11 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
             ? ADE_IOS_BUNDLE_ID
             : null;
           targets.push({
-            id: targetId(["project", relativeProject, scheme]),
+            // appTarget.id is the PBXNativeTarget id — including it in the
+            // target id keeps two app targets that share a scheme (or a scheme
+            // whose name differs from the produced `.app`) from collapsing
+            // onto the same id and confusing findAppBundle().
+            id: targetId(["project", relativeProject, scheme, appTarget.id]),
             kind: "project",
             name: appTarget.productName || appTarget.targetName || scheme,
             bundleId,
@@ -2742,6 +2762,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
               : `${scheme} · ${relativeProject} · target ${appTarget.targetName}`,
             projectPath: relativeProject,
             scheme,
+            productName: appTarget.productName || appTarget.targetName || null,
+            appTargetId: appTarget.id,
             appBundlePath: null,
             installed: false,
             canBuild: true,
@@ -2774,6 +2796,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         detail: `${bundleId} · ${relativeToRoot(projectRoot, appBundle)}`,
         projectPath: null,
         scheme: null,
+        productName: path.basename(appBundle, ".app") || null,
+        appTargetId: null,
         appBundlePath: appBundle,
         installed: false,
         canBuild: false,
@@ -2810,6 +2834,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         detail: `${bundleId} · installed on selected simulator`,
         projectPath: null,
         scheme: null,
+        productName: null,
+        appTargetId: null,
         appBundlePath: null,
         installed: true,
         canBuild: false,
@@ -3263,6 +3289,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         detail: `${bundleId ?? "unknown bundle"} · ${relativeToRoot(projectRoot, explicitAppBundle)}`,
         projectPath: null,
         scheme: null,
+        productName: path.basename(explicitAppBundle, ".app") || null,
+        appTargetId: null,
         appBundlePath: explicitAppBundle,
         installed: false,
         canBuild: false,
@@ -3285,6 +3313,11 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         detail: `${scheme} · ${relativeProject}`,
         projectPath: relativeProject,
         scheme,
+        // Synthesized fallback target — caller didn't reference a discovered
+        // PBX target, so we have no productName/appTargetId. findAppBundle
+        // falls back to scheme/ADE.app, which is safe for the synthesized path.
+        productName: null,
+        appTargetId: null,
         appBundlePath: null,
         installed: false,
         canBuild: true,
@@ -3367,6 +3400,11 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     return findAppBundle(derivedDataPath, {
       bundleId: target.bundleId,
       scheme: target.scheme,
+      // productName lives on the underlying launch target (ResolvedLaunchTarget
+      // wraps IosSimulatorLaunchTarget). Prefer it over scheme so a project
+      // whose scheme builds multiple .app bundles, or whose scheme name
+      // differs from the produced .app, still resolves to the right bundle.
+      productName: target.target.productName,
       appBundlePath: target.appBundlePath,
     });
   };

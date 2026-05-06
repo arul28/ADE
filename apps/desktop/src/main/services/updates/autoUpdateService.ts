@@ -274,6 +274,13 @@ export function createAutoUpdateService({
     recentlyInstalled: initialState.recentlyInstalled,
   };
   let checkPromise: Promise<unknown> | null = null;
+  // In-flight guard for quitAndInstall. Two IPC callers (e.g. AutoUpdateControl
+  // double-click, or a renderer click that races a menu trigger) can both
+  // reach the await on refreshReadyUpdateBeforeInstall before either of them
+  // calls updater.quitAndInstall. Mirror the checkPromise pattern: the first
+  // call sets this; subsequent calls return the same promise so we never
+  // race the actual install.
+  let quitAndInstallPromise: Promise<boolean> | null = null;
   let ignoredDownloadVersion: string | null = null;
   let readyRefreshInProgress = false;
   let readyRefreshError: string | null = null;
@@ -565,48 +572,62 @@ export function createAutoUpdateService({
     },
     dismissInstalledNotice,
     async quitAndInstall(): Promise<boolean> {
+      // Mirrors checkPromise: collapse concurrent IPC calls onto one in-flight
+      // promise so two callers cannot race the refresh + quitAndInstall pair.
+      if (quitAndInstallPromise) return quitAndInstallPromise;
       if (snapshot.status !== "ready" || !snapshot.version) return false;
-      const refreshSucceeded = await refreshReadyUpdateBeforeInstall();
-      if (!refreshSucceeded) return false;
-      writeGlobalState(globalStatePath, {
-        ...readGlobalState(globalStatePath),
-        pendingInstallUpdate: {
-          fromVersion: currentVersion,
-          targetVersion: snapshot.version,
-          releaseNotesUrl: snapshot.releaseNotesUrl,
-          requestedAt: now(),
-        },
-        recentlyInstalledUpdate: undefined,
-      });
-      logger.info("autoUpdate.quit_and_install", { version: snapshot.version });
-      patchSnapshot({
-        status: "installing",
-        progressPercent: 100,
-        error: null,
-      });
-      try {
-        updater.quitAndInstall(false, true);
-        return true;
-      } catch (error) {
-        const message = formatErrorMessage(error);
-        logger.warn("autoUpdate.quit_and_install_failed", {
-          version: snapshot.version,
-          message,
+      const run = async (): Promise<boolean> => {
+        const refreshSucceeded = await refreshReadyUpdateBeforeInstall();
+        if (!refreshSucceeded) return false;
+        // After refresh, snapshot may have been replaced; re-check version
+        // (refreshReadyUpdateBeforeInstall returns false if snapshot is no
+        // longer "ready" with a version, but be explicit for the narrowing).
+        const installVersion = snapshot.version;
+        if (!installVersion) return false;
+        writeGlobalState(globalStatePath, {
+          ...readGlobalState(globalStatePath),
+          pendingInstallUpdate: {
+            fromVersion: currentVersion,
+            targetVersion: installVersion,
+            releaseNotesUrl: snapshot.releaseNotesUrl,
+            requestedAt: now(),
+          },
+          recentlyInstalledUpdate: undefined,
         });
-        clearPendingInstallUpdate();
+        logger.info("autoUpdate.quit_and_install", { version: installVersion });
         patchSnapshot({
-          ...createEmptyAutoUpdateSnapshot(),
-          status: "error",
-          error: message,
-          recentlyInstalled: snapshot.recentlyInstalled,
+          status: "installing",
+          progressPercent: 100,
+          error: null,
         });
-        cleanupUpdaterCacheDir({
-          updaterCacheDir,
-          logger,
-          reason: "quit_and_install_failed",
-        });
-        return false;
-      }
+        try {
+          updater.quitAndInstall(false, true);
+          return true;
+        } catch (error) {
+          const message = formatErrorMessage(error);
+          logger.warn("autoUpdate.quit_and_install_failed", {
+            version: installVersion,
+            message,
+          });
+          clearPendingInstallUpdate();
+          patchSnapshot({
+            ...createEmptyAutoUpdateSnapshot(),
+            status: "error",
+            error: message,
+            recentlyInstalled: snapshot.recentlyInstalled,
+          });
+          cleanupUpdaterCacheDir({
+            updaterCacheDir,
+            logger,
+            reason: "quit_and_install_failed",
+          });
+          return false;
+        }
+      };
+      quitAndInstallPromise = run().finally(() => {
+        quitAndInstallPromise = null;
+      });
+      return quitAndInstallPromise;
     },
     dispose() {
       clearTimeout(startupTimer);

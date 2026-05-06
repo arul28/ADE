@@ -414,6 +414,14 @@ export function LanesPage() {
   const branchDropdownRef = useRef<HTMLDivElement>(null);
   const completedLaneDeleteRefreshesRef = useRef<Set<string>>(new Set());
   const activeLanePresenceSignatureRef = useRef<string | null>(null);
+  // Refs for the onDeleteEvent IPC handler. Capturing high-churn values
+  // (selectedLaneId, lanesById, managedLaneIds, manageOpen) in refs lets the
+  // subscription useEffect keep its dep array minimal so it doesn't tear down
+  // and re-subscribe to the IPC bridge on every render.
+  const selectedLaneIdRef = useRef<string | null>(null);
+  const lanesByIdRef = useRef<Map<string, LaneSummary> | null>(null);
+  const managedLaneIdsRef = useRef<string[]>([]);
+  const manageOpenRef = useRef<boolean>(false);
 
   const [addLaneDropdownOpen, setAddLaneDropdownOpen] = useState(false);
   const addLaneDropdownRef = useRef<HTMLDivElement>(null);
@@ -783,6 +791,14 @@ export function LanesPage() {
 
   /* ---- Effects ---- */
 
+  // Mirror high-churn values into refs so the IPC subscription below doesn't
+  // re-subscribe every render (lanesById is rebuilt whenever any lane field
+  // changes; selectedLaneId / managedLaneIds / manageOpen flip on every nav).
+  useEffect(() => { selectedLaneIdRef.current = selectedLaneId; }, [selectedLaneId]);
+  useEffect(() => { lanesByIdRef.current = lanesById; }, [lanesById]);
+  useEffect(() => { managedLaneIdsRef.current = managedLaneIds; }, [managedLaneIds]);
+  useEffect(() => { manageOpenRef.current = manageOpen; }, [manageOpen]);
+
   useEffect(() => {
     const unsubscribe = window.ade.lanes.onDeleteEvent((event) => {
       const { laneId, overallStatus } = event.progress;
@@ -798,7 +814,7 @@ export function LanesPage() {
       if (overallStatus === "failed" || overallStatus === "cancelled") {
         completedLaneDeleteRefreshesRef.current.delete(laneId);
         const failedStep = event.progress.steps.find((step) => step.status === "failed");
-        const laneName = lanesById.get(laneId)?.name ?? laneId;
+        const laneName = lanesByIdRef.current?.get(laneId)?.name ?? laneId;
         const detail = failedStep?.errorMessage ? `: ${failedStep.errorMessage}` : "";
         setLaneActionError(
           overallStatus === "cancelled"
@@ -811,7 +827,7 @@ export function LanesPage() {
       if (completedLaneDeleteRefreshesRef.current.has(laneId)) return;
       completedLaneDeleteRefreshesRef.current.add(laneId);
 
-      if (selectedLaneId === laneId) selectLane(null);
+      if (selectedLaneIdRef.current === laneId) selectLane(null);
       setActiveLaneIds((prev) => prev.filter((id) => id !== laneId));
       setPinnedLaneIds((prev) => {
         if (!prev.has(laneId)) return prev;
@@ -825,7 +841,10 @@ export function LanesPage() {
 
       void refreshLanes()
         .then(() => {
-          if (manageOpen && (selectedLaneId === laneId || managedLaneIds.includes(laneId))) {
+          if (
+            manageOpenRef.current
+            && (selectedLaneIdRef.current === laneId || managedLaneIdsRef.current.includes(laneId))
+          ) {
             setManageOpen(false);
           }
         })
@@ -834,7 +853,7 @@ export function LanesPage() {
         });
     });
     return unsubscribe;
-  }, [clearLaneInspectorTab, lanesById, managedLaneIds, manageOpen, refreshLanes, selectLane, selectedLaneId]);
+  }, [clearLaneInspectorTab, refreshLanes, selectLane]);
 
   useEffect(() => {
     const unsubscribe = window.ade.conflicts.onEvent((event) => {

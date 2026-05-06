@@ -307,7 +307,10 @@ private struct SettingsStatusDot: View {
     case .unreachable:
       return ADEColor.danger
     case .disconnected:
-      return Color(red: 156.0 / 255.0, green: 145.0 / 255.0, blue: 200.0 / 255.0)
+      // Disconnected is an inactive state in the new header presentation —
+      // a saturated purple here reads as "active" and contradicts the rest
+      // of the inactive affordances.
+      return ADEColor.textMuted
     }
   }
 }

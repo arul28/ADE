@@ -6102,8 +6102,23 @@ final class SyncService: ObservableObject {
       // doomed socket. The transport-failure path strains the load itself.
       handleTransportFailure(timeoutError)
     } else {
+      // The default `timeoutError` is `SyncRequestTimeout.error()`, whose
+      // message says "Reconnecting now." That copy is only honest in the
+      // reconnect branch above. When we explicitly do *not* tear the socket
+      // down (either disconnectOnTimeout was false, or the socket has been
+      // hearing inbound traffic recently and we don't want to reconnect),
+      // surfacing that message lies to the user. Fall back to a non-reconnect
+      // timeout message in that branch.
+      let resolvedError: NSError
+      if disconnectOnTimeout {
+        resolvedError = SyncRequestTimeout.error(
+          message: "The host took too long to respond. Try again."
+        )
+      } else {
+        resolvedError = timeoutError
+      }
       markConnectionLoadStrained()
-      resolve(requestId: requestId, result: .failure(timeoutError))
+      resolve(requestId: requestId, result: .failure(resolvedError))
     }
   }
 

@@ -3235,8 +3235,15 @@ export function createLaneService({
           const lanePackDir = path.join(resolveAdeLayout(projectRoot).packsDir, "lanes", laneId);
           try {
             await fs.promises.rm(lanePackDir, { recursive: true, force: true });
-          } catch {
-            // ignore pack folder cleanup failures
+            return { detail: lanePackDir };
+          } catch (err) {
+            // Best-effort cleanup — match the warn pattern used by the other
+            // best-effort steps (cleanup_env, stop_processes) so a failure
+            // here is at least surfaced in the lane's logs and progress UI
+            // rather than vanishing silently.
+            const message = err instanceof Error ? err.message : String(err);
+            logger.warn("lane.delete.pack_dir_remove_failed", { laneId, lanePackDir, error: message });
+            return { detail: `warning: ${message}` };
           }
         });
 
