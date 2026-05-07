@@ -727,6 +727,85 @@ function createRuntime() {
       listArtifacts: vi.fn(() => []),
       ingest: vi.fn(() => ({ artifacts: [] })),
     } as any,
+    macosVmService: {
+      getStatus: vi.fn(async ({ laneId }: { laneId?: string | null } = {}) => ({
+        supported: true,
+        activeProvider: { kind: "lume", available: true },
+        laneVm: laneId ? { laneId, name: "ade-lane-1", state: "running" } : null,
+        vms: [],
+      })),
+      start: vi.fn(async ({ laneId }: { laneId: string }) => ({ laneId, name: "ade-lane-1", state: "running" })),
+      getAgentGuide: vi.fn(async ({ laneId }: { laneId: string }) => ({
+        laneId,
+        vmName: "ade-lane-1",
+        text: "Use macOS VM",
+        target: { kind: "macos_vm_target", id: "target-1", laneId, vmName: "ade-lane-1" },
+      })),
+      focusWindow: vi.fn(async ({ laneId }: { laneId: string }) => ({
+        laneId,
+        vmName: "ade-lane-1",
+        windowTitleQuery: "ade-lane-1",
+        processName: "Lume",
+        windowTitle: "ade-lane-1",
+        frame: { x: 10, y: 20, width: 800, height: 600 },
+        focusedAt: new Date().toISOString(),
+      })),
+      captureScreenshot: vi.fn(async ({ laneId }: { laneId: string }) => {
+        const screenshotPath = path.join(projectRoot, ".ade", "artifacts", "macos-vms", laneId, "shot.png");
+        fs.mkdirSync(path.dirname(screenshotPath), { recursive: true });
+        fs.writeFileSync(screenshotPath, "png");
+        return {
+          ok: true,
+          laneId,
+          vmName: "ade-lane-1",
+          path: screenshotPath,
+          capturedAt: new Date().toISOString(),
+          captureMode: "window-region",
+          window: {
+            laneId,
+            vmName: "ade-lane-1",
+            windowTitleQuery: "ade-lane-1",
+            processName: "Lume",
+            windowTitle: "ade-lane-1",
+            frame: { x: 10, y: 20, width: 800, height: 600 },
+            focusedAt: new Date().toISOString(),
+          },
+        };
+      }),
+      click: vi.fn(async ({ laneId, x, y }: { laneId: string; x: number; y: number }) => ({
+        ok: true,
+        laneId,
+        x,
+        y,
+      })),
+      selectPoint: vi.fn(async ({ laneId, x, y }: { laneId: string; x: number; y: number }) => {
+        const screenshotPath = path.join(projectRoot, ".ade", "artifacts", "macos-vms", laneId, "selection.png");
+        fs.mkdirSync(path.dirname(screenshotPath), { recursive: true });
+        fs.writeFileSync(screenshotPath, "png");
+        const screenshot = {
+          ok: true,
+          laneId,
+          vmName: "ade-lane-1",
+          path: screenshotPath,
+          capturedAt: new Date().toISOString(),
+          captureMode: "window-region",
+          window: { laneId, vmName: "ade-lane-1" },
+        };
+        return {
+          item: {
+            kind: "macos_vm_target",
+            id: "target-point-1",
+            laneId,
+            laneName: "Lane 1",
+            vmName: "ade-lane-1",
+            metadata: { selectedPoint: { x, y } },
+          },
+          source: "coordinate-fallback",
+          screenshot,
+        };
+      }),
+      typeText: vi.fn(async ({ laneId, text }: { laneId: string; text: string }) => ({ ok: true, laneId, textLength: text.length })),
+    } as any,
     orchestratorService: {
       listRuns: vi.fn(() => []),
       pauseRun: vi.fn(({ runId }: any) => ({ id: runId, status: "paused" })),
@@ -1042,6 +1121,8 @@ describe("adeRpcServer", () => {
       expect(names).not.toContain("interact_gui");
       expect(names).not.toContain("screenshot_environment");
       expect(names).not.toContain("record_environment");
+      expect(names).not.toContain("macos_vm_screenshot");
+      expect(names).not.toContain("macos_vm_click");
 
       const denied = await callTool(handler, "screenshot_environment", {});
       expect(denied.isError).toBe(true);
@@ -1180,6 +1261,149 @@ describe("adeRpcServer", () => {
         "update_tool_profiles",
       ])
     );
+  });
+
+  it("exposes lane-tied macOS VM computer-use tools to agent callers", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, {
+      callerId: "worker-1",
+      role: "agent",
+      missionId: "mission-1",
+      runId: "run-1",
+      stepId: "step-1",
+      attemptId: "attempt-1",
+    });
+
+    const result = (await handler({ jsonrpc: "2.0", id: 3, method: "ade/actions/list" })) as any;
+    const names = (result.actions ?? []).map((tool: any) => tool.name);
+
+    expect(names).toEqual(
+      expect.arrayContaining([
+        "macos_vm_status",
+        "macos_vm_start",
+        "macos_vm_guide",
+        "macos_vm_focus",
+        "macos_vm_screenshot",
+        "macos_vm_select",
+        "macos_vm_click",
+        "macos_vm_type",
+      ]),
+    );
+  });
+
+  it("routes macOS VM computer-use tools and ingests screenshots as proof artifacts", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-1", role: "agent", chatSessionId: "chat-session-1" });
+
+    const screenshot = await callTool(handler, "macos_vm_screenshot", {
+      laneId: "lane-1",
+      name: "VM proof",
+    });
+    expect(screenshot?.isError).toBeUndefined();
+    expect(fixture.runtime.macosVmService.captureScreenshot).toHaveBeenCalledWith({
+      laneId: "lane-1",
+      windowTitleQuery: null,
+    });
+    expect(fixture.runtime.computerUseArtifactBrokerService.ingest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        backend: { name: "macos-vm", toolName: "macos_vm_screenshot" },
+        owners: expect.arrayContaining([
+          expect.objectContaining({ kind: "lane", id: "lane-1" }),
+          expect.objectContaining({ kind: "chat_session", id: "chat-session-1" }),
+        ]),
+      }),
+    );
+
+    const selected = await callTool(handler, "macos_vm_select", {
+      laneId: "lane-1",
+      x: 120,
+      y: 420,
+    });
+    expect(selected?.isError).toBeUndefined();
+    expect(fixture.runtime.macosVmService.selectPoint).toHaveBeenCalledWith({
+      laneId: "lane-1",
+      x: 120,
+      y: 420,
+      coordinateSpace: undefined,
+      windowTitleQuery: null,
+    });
+    expect(fixture.runtime.computerUseArtifactBrokerService.ingest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        backend: { name: "macos-vm", toolName: "macos_vm_select" },
+      }),
+    );
+
+    const clicked = await callTool(handler, "macos_vm_click", { laneId: "lane-1", x: 12, y: 34 });
+    expect(clicked?.isError).toBeUndefined();
+    expect(fixture.runtime.macosVmService.click).toHaveBeenCalledWith({
+      laneId: "lane-1",
+      x: 12,
+      y: 34,
+      coordinateSpace: undefined,
+      windowTitleQuery: null,
+    });
+
+    const typed = await callTool(handler, "macos_vm_type", { laneId: "lane-1", text: "hello" });
+    expect(typed?.isError).toBeUndefined();
+    expect(fixture.runtime.macosVmService.typeText).toHaveBeenCalledWith({
+      laneId: "lane-1",
+      text: "hello",
+      windowTitleQuery: null,
+    });
+  });
+
+  it("routes standard computer-use tools to a lane-tied macOS VM target", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-1", role: "agent", chatSessionId: "chat-session-1" });
+
+    const screenshot = await callTool(handler, "screenshot_environment", {
+      target: "macos_vm",
+      laneId: "lane-1",
+      name: "standard VM proof",
+    });
+    expect(screenshot?.isError).toBeUndefined();
+    expect(fixture.runtime.macosVmService.captureScreenshot).toHaveBeenCalledWith({
+      laneId: "lane-1",
+      windowTitleQuery: null,
+    });
+    expect(fixture.runtime.computerUseArtifactBrokerService.ingest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        backend: { name: "macos-vm", toolName: "screenshot_environment" },
+      }),
+    );
+
+    const clicked = await callTool(handler, "interact_gui", {
+      target: "macos_vm",
+      laneId: "lane-1",
+      action: "click",
+      x: 30,
+      y: 40,
+    });
+    expect(clicked?.isError).toBeUndefined();
+    expect(fixture.runtime.macosVmService.click).toHaveBeenCalledWith({
+      laneId: "lane-1",
+      x: 30,
+      y: 40,
+      coordinateSpace: undefined,
+      windowTitleQuery: null,
+    });
+
+    const typed = await callTool(handler, "interact_gui", {
+      target: "macos_vm",
+      laneId: "lane-1",
+      action: "type",
+      text: "hello",
+    });
+    expect(typed?.isError).toBeUndefined();
+    expect(fixture.runtime.macosVmService.typeText).toHaveBeenCalledWith({
+      laneId: "lane-1",
+      text: "hello",
+      windowTitleQuery: null,
+    });
   });
 
   it("hides ADE spawn and mission-worker tools from standalone chat callers", async () => {

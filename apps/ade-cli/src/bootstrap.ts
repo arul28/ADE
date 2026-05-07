@@ -77,6 +77,7 @@ import {
   createAppControlService,
   type AppControlService,
 } from "../../desktop/src/main/services/appControl/appControlService";
+import { createMacosVmService } from "../../desktop/src/main/services/macosVm/macosVmService";
 import type { BuiltInBrowserService } from "../../desktop/src/main/services/builtInBrowser/builtInBrowserService";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
 import {
@@ -177,6 +178,7 @@ export type AdeRuntime = {
   iosSimulatorService?: IosSimulatorService | null;
   appControlService?: AppControlService | null;
   builtInBrowserService?: BuiltInBrowserService | null;
+  macosVmService?: ReturnType<typeof createMacosVmService> | null;
   orchestratorService: ReturnType<typeof createOrchestratorService>;
   aiOrchestratorService: ReturnType<typeof createAiOrchestratorService>;
   missionBudgetService?: ReturnType<typeof createMissionBudgetService> | null;
@@ -513,6 +515,16 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
       return matchingLane?.id ?? lanes[0]?.id ?? null;
     },
   });
+  const macosVmService = createMacosVmService({
+    projectRoot,
+    logger,
+    resolveLanes: async () => laneService.list({ includeArchived: false }),
+    onEvent: (event) => pushEvent("runtime", {
+      ...(event as unknown as Record<string, unknown>),
+      type: "macos_vm",
+      eventType: event.type,
+    }),
+  });
 
   const aiOrchestratorService = createAiOrchestratorService({
     db,
@@ -617,6 +629,7 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     computerUseArtifactBrokerService,
     iosSimulatorService,
     appControlService,
+    macosVmService,
     orchestratorService,
     aiOrchestratorService,
     eventBuffer,
@@ -626,6 +639,7 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
       swallow(() => processService.disposeAll());
       swallow(() => iosSimulatorService.dispose());
       swallow(() => appControlService.dispose());
+      swallow(() => macosVmService.dispose());
       swallow(() => headlessLinearServices.dispose());
       swallow(() => aiOrchestratorService.dispose());
       swallow(() => testService.disposeAll());

@@ -416,13 +416,17 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "interact_gui",
-    description: "Fallback-only: perform a local GUI interaction such as click, type, or keypress on macOS.",
+    description: "Perform a GUI interaction such as click, type, or keypress. Defaults to the local macOS desktop; set target=macos_vm to drive a lane-tied VM window.",
     inputSchema: {
       type: "object",
       required: ["action"],
       additionalProperties: false,
       properties: {
         action: { type: "string", enum: ["click", "type", "keypress"] },
+        target: { type: "string", enum: ["local", "macos_vm"], default: "local" },
+        laneId: { type: "string" },
+        coordinateSpace: { type: "string", enum: ["window", "screen"], default: "window" },
+        windowTitleQuery: { type: "string" },
         app: { type: "string" },
         x: { type: "number" },
         y: { type: "number" },
@@ -433,16 +437,137 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "screenshot_environment",
-    description: "Fallback-only: capture a local screenshot/image and store it as visual ADE proof.",
+    description: "Capture a screenshot/image and store it as visual ADE proof. Defaults to the local desktop; set target=macos_vm to capture a lane-tied VM window.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
+        target: { type: "string", enum: ["local", "macos_vm"], default: "local" },
+        laneId: { type: "string" },
+        windowTitleQuery: { type: "string" },
         name: { type: "string" },
         displayId: { type: "number" },
         ownerKind: { type: "string" },
         ownerId: { type: "string" },
         format: { type: "string", enum: ["png", "jpg"], default: "png" }
+      }
+    }
+  },
+  {
+    name: "macos_vm_status",
+    description: "Inspect lane-tied macOS VM provider readiness and VM state. Defaults to the caller's lane when available.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        laneId: { type: "string" }
+      }
+    }
+  },
+  {
+    name: "macos_vm_start",
+    description: "Start the macOS VM tied to a lane, optionally provisioning it first, with the lane worktree mounted into the guest.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        laneId: { type: "string" },
+        createIfMissing: { type: "boolean", default: true },
+        openDisplay: { type: "boolean", default: true },
+        mode: { type: "string", enum: ["pull-image", "create"] },
+        sourceImage: { type: "string" },
+        ipsw: { type: "string" },
+        cpuCores: { type: "number", minimum: 1, maximum: 32 },
+        memory: { type: "string" },
+        diskSize: { type: "string" },
+        display: { type: "string" }
+      }
+    }
+  },
+  {
+    name: "macos_vm_guide",
+    description: "Return agent guidance for the lane-tied macOS VM, including guest path, run command, and GUI control model.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        laneId: { type: "string" }
+      }
+    }
+  },
+  {
+    name: "macos_vm_focus",
+    description: "Select the lane-tied macOS VM GUI target; uses headless VNC when available or raises the visible viewer.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        laneId: { type: "string" },
+        windowTitleQuery: { type: "string" }
+      }
+    }
+  },
+  {
+    name: "macos_vm_screenshot",
+    description: "Capture a lane-tied macOS VM through headless VNC or its visible viewer and register it as ADE computer-use visual proof.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        laneId: { type: "string" },
+        windowTitleQuery: { type: "string" },
+        name: { type: "string" },
+        ownerKind: { type: "string" },
+        ownerId: { type: "string" }
+      }
+    }
+  },
+  {
+    name: "macos_vm_select",
+    description: "Capture screenshot-backed point context for a lane-tied macOS VM without clicking. Coordinates are window-relative by default.",
+    inputSchema: {
+      type: "object",
+      required: ["x", "y"],
+      additionalProperties: false,
+      properties: {
+        laneId: { type: "string" },
+        x: { type: "number" },
+        y: { type: "number" },
+        coordinateSpace: { type: "string", enum: ["window", "screen"], default: "window" },
+        windowTitleQuery: { type: "string" },
+        name: { type: "string" },
+        ownerKind: { type: "string" },
+        ownerId: { type: "string" }
+      }
+    }
+  },
+  {
+    name: "macos_vm_click",
+    description: "Click inside the lane-tied macOS VM GUI target. Coordinates are VM/window-relative by default.",
+    inputSchema: {
+      type: "object",
+      required: ["x", "y"],
+      additionalProperties: false,
+      properties: {
+        laneId: { type: "string" },
+        x: { type: "number" },
+        y: { type: "number" },
+        coordinateSpace: { type: "string", enum: ["window", "screen"], default: "window" },
+        windowTitleQuery: { type: "string" }
+      }
+    }
+  },
+  {
+    name: "macos_vm_type",
+    description: "Type text into the lane-tied macOS VM GUI target.",
+    inputSchema: {
+      type: "object",
+      required: ["text"],
+      additionalProperties: false,
+      properties: {
+        laneId: { type: "string" },
+        text: { type: "string", minLength: 1 },
+        windowTitleQuery: { type: "string" }
       }
     }
   },
@@ -1862,6 +1987,17 @@ const LOCAL_COMPUTER_USE_TOOL_NAMES = new Set([
   "record_environment",
 ]);
 
+const MACOS_VM_TOOL_NAMES = new Set([
+  "macos_vm_status",
+  "macos_vm_start",
+  "macos_vm_guide",
+  "macos_vm_focus",
+  "macos_vm_screenshot",
+  "macos_vm_select",
+  "macos_vm_click",
+  "macos_vm_type",
+]);
+
 const ALL_TOOL_SPECS: ToolSpec[] = [
   ...TOOL_SPECS,
   ...CTO_OPERATOR_TOOL_SPECS,
@@ -1905,6 +2041,8 @@ const READ_ONLY_TOOLS = new Set([
   "getFlowPolicy",
   "simulateFlowRoute",
   "get_environment_info",
+  "macos_vm_status",
+  "macos_vm_guide",
   "list_computer_use_artifacts",
   "get_computer_use_backend_status",
 ]);
@@ -1961,6 +2099,12 @@ const MUTATION_TOOLS = new Set([
   "launch_app",
   "interact_gui",
   "screenshot_environment",
+  "macos_vm_start",
+  "macos_vm_focus",
+  "macos_vm_screenshot",
+  "macos_vm_select",
+  "macos_vm_click",
+  "macos_vm_type",
   "record_environment",
   "ingest_computer_use_artifacts",
   "spawn_agent"
@@ -2963,12 +3107,13 @@ async function listToolSpecsForSession(runtime: AdeRuntime, session: SessionStat
     ?.backends.some((backend) => backend.available) ?? false;
   const localComputerUseAllowed = isLocalComputerUseAllowed(callerCtx);
   const shouldHideLocalComputerUse = !localComputerUseAllowed || externalComputerUseAvailable;
-  const visibleBaseTools = shouldHideLocalComputerUse
-    ? TOOL_SPECS.filter((tool) => !LOCAL_COMPUTER_USE_TOOL_NAMES.has(tool.name))
-    : TOOL_SPECS;
-  const visibleCoordinatorTools = shouldHideLocalComputerUse
-    ? COORDINATOR_TOOL_SPECS.filter((tool) => !LOCAL_COMPUTER_USE_TOOL_NAMES.has(tool.name))
-    : COORDINATOR_TOOL_SPECS;
+  const macosVmAllowed = localComputerUseAllowed && Boolean(runtime.macosVmService);
+  const keepVisibleTool = (tool: ToolSpec): boolean => (
+    (!shouldHideLocalComputerUse || !LOCAL_COMPUTER_USE_TOOL_NAMES.has(tool.name))
+    && (macosVmAllowed || !MACOS_VM_TOOL_NAMES.has(tool.name))
+  );
+  const visibleBaseTools = TOOL_SPECS.filter(keepVisibleTool);
+  const visibleCoordinatorTools = COORDINATOR_TOOL_SPECS.filter(keepVisibleTool);
   const allVisibleTools = (() => {
     if (callerCtx.role === "external" || !callerCtx.role) {
       return visibleBaseTools;
@@ -4100,6 +4245,176 @@ async function runTool(args: {
     }
     await sleep(250);
   };
+  const requireMacosVmService = () => {
+    if (!isLocalComputerUseAllowed(callerCtx)) {
+      throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported tool: ${name}`);
+    }
+    const service = runtime.macosVmService;
+    if (!service) {
+      throw new JsonRpcError(JsonRpcErrorCode.toolFailed, "macOS VM service is unavailable in this ADE runtime.");
+    }
+    return service;
+  };
+  const macosVmLaneId = (toolName: string): string =>
+    requireLaneIdForTool(runtime, session, toolArgs, toolName);
+  const macosVmWindowTitleQuery = (): string | null =>
+    asOptionalTrimmedString(toolArgs.windowTitleQuery ?? toolArgs.windowTitle ?? toolArgs.titleQuery);
+  const macosVmCoordinateSpace = (): "window" | "screen" | undefined => {
+    const value = asOptionalTrimmedString(toolArgs.coordinateSpace);
+    if (!value) return undefined;
+    if (value === "window" || value === "screen") return value;
+    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "coordinateSpace must be window or screen.");
+  };
+  const ingestMacosVmScreenshot = (args: {
+    laneId: string;
+    toolName: string;
+    title: string;
+    screenshot: {
+      path: string;
+      vmName: string;
+      captureMode: string;
+      capturedAt: string;
+      window: unknown;
+    };
+  }) => {
+    const result = runtime.computerUseArtifactBrokerService.ingest({
+      backend: {
+        name: "macos-vm",
+        toolName: args.toolName,
+      },
+      inputs: [
+        {
+          kind: "screenshot",
+          title: args.title,
+          path: args.screenshot.path,
+          mimeType: "image/png",
+          metadata: {
+            absolutePath: args.screenshot.path,
+            laneId: args.laneId,
+            vmName: args.screenshot.vmName,
+            captureMode: args.screenshot.captureMode,
+            capturedAt: args.screenshot.capturedAt,
+            window: args.screenshot.window,
+          },
+        },
+      ],
+      owners: resolveComputerUseOwners(session, { ...toolArgs, laneId: args.laneId }),
+    });
+    return {
+      artifact: {
+        type: "screenshot",
+        title: args.title,
+        uri: toProjectArtifactUri(runtime.projectRoot, args.screenshot.path),
+        metadata: {
+          absolutePath: args.screenshot.path,
+          laneId: args.laneId,
+          vmName: args.screenshot.vmName,
+          captureMode: args.screenshot.captureMode,
+          capturedAt: args.screenshot.capturedAt,
+          window: args.screenshot.window,
+        },
+      },
+      artifacts: result.artifacts,
+      links: result.links,
+    };
+  };
+
+  if (MACOS_VM_TOOL_NAMES.has(name)) {
+    const service = requireMacosVmService();
+    if (name === "macos_vm_status") {
+      const laneId = resolveRequestedOrSessionLaneId(runtime, session, toolArgs);
+      return await service.getStatus({ laneId });
+    }
+    if (name === "macos_vm_start") {
+      const laneId = macosVmLaneId(name);
+      const mode = asOptionalTrimmedString(toolArgs.mode);
+      if (mode && mode !== "pull-image" && mode !== "create") {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "mode must be pull-image or create.");
+      }
+      return await service.start({
+        laneId,
+        createIfMissing: toolArgs.createIfMissing === false ? false : true,
+        openDisplay: toolArgs.openDisplay === false ? false : true,
+        mode: mode === "pull-image" || mode === "create" ? mode : undefined,
+        sourceImage: asOptionalTrimmedString(toolArgs.sourceImage ?? toolArgs.image),
+        ipsw: asOptionalTrimmedString(toolArgs.ipsw),
+        cpuCores: Number.isFinite(Number(toolArgs.cpuCores)) ? Number(toolArgs.cpuCores) : undefined,
+        memory: asOptionalTrimmedString(toolArgs.memory),
+        diskSize: asOptionalTrimmedString(toolArgs.diskSize),
+        display: asOptionalTrimmedString(toolArgs.display),
+      });
+    }
+    if (name === "macos_vm_guide") {
+      return await service.getAgentGuide({ laneId: macosVmLaneId(name) });
+    }
+    if (name === "macos_vm_focus") {
+      return await service.focusWindow({
+        laneId: macosVmLaneId(name),
+        windowTitleQuery: macosVmWindowTitleQuery(),
+      });
+    }
+    if (name === "macos_vm_screenshot") {
+      const laneId = macosVmLaneId(name);
+      const screenshot = await service.captureScreenshot({
+        laneId,
+        windowTitleQuery: macosVmWindowTitleQuery(),
+      });
+      const title = asOptionalTrimmedString(toolArgs.name) ?? `macOS VM ${screenshot.vmName} screenshot`;
+      const ingested = ingestMacosVmScreenshot({
+        laneId,
+        toolName: name,
+        title,
+        screenshot,
+      });
+      return { screenshot, ...ingested };
+    }
+    if (name === "macos_vm_select") {
+      const laneId = macosVmLaneId(name);
+      const x = asNumber(toolArgs.x, Number.NaN);
+      const y = asNumber(toolArgs.y, Number.NaN);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "macos_vm_select requires numeric x and y coordinates.");
+      }
+      const selection = await service.selectPoint({
+        laneId,
+        x,
+        y,
+        coordinateSpace: macosVmCoordinateSpace(),
+        windowTitleQuery: macosVmWindowTitleQuery(),
+      });
+      const title = asOptionalTrimmedString(toolArgs.name) ?? `macOS VM ${selection.item.vmName} selection`;
+      const ingested = selection.screenshot
+        ? ingestMacosVmScreenshot({
+            laneId,
+            toolName: name,
+            title,
+            screenshot: selection.screenshot,
+          })
+        : null;
+      return { selection, ...(ingested ?? {}) };
+    }
+    if (name === "macos_vm_click") {
+      const x = asNumber(toolArgs.x, Number.NaN);
+      const y = asNumber(toolArgs.y, Number.NaN);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "macos_vm_click requires numeric x and y coordinates.");
+      }
+      return await service.click({
+        laneId: macosVmLaneId(name),
+        x,
+        y,
+        coordinateSpace: macosVmCoordinateSpace(),
+        windowTitleQuery: macosVmWindowTitleQuery(),
+      });
+    }
+    if (name === "macos_vm_type") {
+      return await service.typeText({
+        laneId: macosVmLaneId(name),
+        text: assertNonEmptyString(toolArgs.text, "text"),
+        windowTitleQuery: macosVmWindowTitleQuery(),
+      });
+    }
+  }
 
   if (CTO_OPERATOR_TOOL_NAMES.has(name)) {
     if (callerCtx.role !== "cto") {
@@ -4755,6 +5070,36 @@ async function runTool(args: {
 
   if (name === "interact_gui") {
     const action = assertNonEmptyString(toolArgs.action, "action");
+    const target = asOptionalTrimmedString(toolArgs.target) ?? "local";
+    if (target === "macos_vm") {
+      const service = requireMacosVmService();
+      const laneId = macosVmLaneId(name);
+      if (action === "click") {
+        const x = Math.floor(asNumber(toolArgs.x, Number.NaN));
+        const y = Math.floor(asNumber(toolArgs.y, Number.NaN));
+        if (!Number.isFinite(x) || !Number.isFinite(y)) {
+          throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "click requires numeric x and y coordinates.");
+        }
+        return await service.click({
+          laneId,
+          x,
+          y,
+          coordinateSpace: macosVmCoordinateSpace(),
+          windowTitleQuery: macosVmWindowTitleQuery(),
+        });
+      }
+      if (action === "type") {
+        return await service.typeText({
+          laneId,
+          text: assertNonEmptyString(toolArgs.text, "text"),
+          windowTitleQuery: macosVmWindowTitleQuery(),
+        });
+      }
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "target=macos_vm supports click and type actions.");
+    }
+    if (target !== "local") {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "target must be local or macos_vm.");
+    }
     const app = asOptionalTrimmedString(toolArgs.app);
     if (app) {
       ensureLocalComputerUse(name, "appLaunch");
@@ -4816,6 +5161,26 @@ async function runTool(args: {
   }
 
   if (name === "screenshot_environment") {
+    const target = asOptionalTrimmedString(toolArgs.target) ?? "local";
+    if (target === "macos_vm") {
+      const service = requireMacosVmService();
+      const laneId = macosVmLaneId(name);
+      const screenshot = await service.captureScreenshot({
+        laneId,
+        windowTitleQuery: macosVmWindowTitleQuery(),
+      });
+      const title = asOptionalTrimmedString(toolArgs.name) ?? `macOS VM ${screenshot.vmName} screenshot`;
+      const ingested = ingestMacosVmScreenshot({
+        laneId,
+        toolName: name,
+        title,
+        screenshot,
+      });
+      return { screenshot, ...ingested };
+    }
+    if (target !== "local") {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "target must be local or macos_vm.");
+    }
     ensureLocalComputerUse(name, "screenshot");
     const displayId = Number.isFinite(Number(toolArgs.displayId)) ? String(Math.floor(Number(toolArgs.displayId))) : null;
     const format = asOptionalTrimmedString(toolArgs.format) === "jpg" ? "jpg" : "png";
