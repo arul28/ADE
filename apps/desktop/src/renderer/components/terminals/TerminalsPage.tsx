@@ -422,7 +422,7 @@ export function TerminalsPage() {
   const attachChatSessionId = activeIsChat ? activeWorkSession!.id : null;
   let attachDisabledReason: string | null;
   if (!activeWorkSession) {
-    attachDisabledReason = "Start an ADE chat before attaching iOS Simulator or App Control context.";
+    attachDisabledReason = "Start an ADE chat before attaching tool context.";
   } else if (!activeIsChat) {
     attachDisabledReason = `Context attachment only works in ADE chat sessions. This ${formatToolTypeLabel(activeWorkSession.toolType)} session can still use the lane tools, but selections are not attached to chat.`;
   } else {

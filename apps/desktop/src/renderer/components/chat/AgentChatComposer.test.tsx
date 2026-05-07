@@ -156,6 +156,41 @@ describe("AgentChatComposer", () => {
     expect(props.onClearDraft).not.toHaveBeenCalled();
   });
 
+  it("renders and removes a macOS VM target chip", () => {
+    const onRemoveMacosVmContext = vi.fn();
+    const view = renderComposer({
+      turnActive: false,
+      draft: "",
+      macosVmContextItems: [{
+        kind: "macos_vm_target",
+        id: "vm-target-1",
+        laneId: "lane-1",
+        laneName: "Lane One",
+        vmName: "ade-lane-one",
+        provider: "lume",
+        state: "running",
+        hostLanePath: "/repo/.ade/worktrees/lane-one",
+        guestLanePath: "/Volumes/My Shared Files",
+        runCommand: "lume run ade-lane-one --shared-dir /repo/.ade/worktrees/lane-one",
+        sshCommand: null,
+        vncUrl: null,
+        windowTitleQuery: "ade-lane-one",
+        selectedAt: "2026-05-07T00:00:00.000Z",
+        metadata: {},
+      }],
+      onRemoveMacosVmContext,
+    });
+
+    expect(screen.getByText("ade-lane-one")).toBeTruthy();
+    fireEvent.click(screen.getByText("ade-lane-one"));
+    expect(screen.getByText("/Volumes/My Shared Files")).toBeTruthy();
+
+    const remove = view.container.querySelector("[data-macos-vm-remove='true']");
+    expect(remove).toBeTruthy();
+    fireEvent.click(remove as Element);
+    expect(onRemoveMacosVmContext).toHaveBeenCalledWith("vm-target-1");
+  });
+
   it("renders Claude mode dropdown without a Chat toggle", () => {
     renderComposer({
       sessionProvider: "claude",

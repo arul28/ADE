@@ -680,6 +680,24 @@ import type {
   BuiltInBrowserSelectResult,
   BuiltInBrowserStatus,
   BuiltInBrowserTabArgs,
+  MacosVmAgentGuide,
+  MacosVmAgentGuideArgs,
+  MacosVmCaptureScreenshotArgs,
+  MacosVmCaptureScreenshotResult,
+  MacosVmClickArgs,
+  MacosVmDeleteArgs,
+  MacosVmEventPayload,
+  MacosVmFocusWindowArgs,
+  MacosVmProvisionArgs,
+  MacosVmRecord,
+  MacosVmSelectPointArgs,
+  MacosVmSelectPointResult,
+  MacosVmStartArgs,
+  MacosVmStatus,
+  MacosVmStatusArgs,
+  MacosVmStopArgs,
+  MacosVmTypeTextArgs,
+  MacosVmWindowTarget,
   ChatTerminalActiveForChatArgs,
   ChatTerminalListArgs,
   ChatTerminalReadArgs,
@@ -902,6 +920,11 @@ const builtInBrowserStatusCache = createShortIpcCache<BuiltInBrowserStatus>(
   500,
 );
 
+const macosVmStatusCache = createKeyedShortIpcCache<MacosVmStatus>(
+  (key) => ipcRenderer.invoke(IPC.macosVmGetStatus, parseIpcCacheArgs<MacosVmStatusArgs>(key, {})),
+  750,
+);
+
 const computerUseOwnerSnapshotCache = createKeyedShortIpcCache<ComputerUseOwnerSnapshot>(
   (key) => ipcRenderer.invoke(
     IPC.computerUseGetOwnerSnapshot,
@@ -1023,6 +1046,10 @@ const appControlEventFanout = createIpcEventFanout<AppControlEventPayload>(
 const builtInBrowserEventFanout = createIpcEventFanout<BuiltInBrowserEventPayload>(
   IPC.builtInBrowserEvent,
   () => builtInBrowserStatusCache.clear(),
+);
+const macosVmEventFanout = createIpcEventFanout<MacosVmEventPayload>(
+  IPC.macosVmEvent,
+  () => macosVmStatusCache.clear(),
 );
 const ptyDataEventFanout = createIpcEventFanout<PtyDataEvent>(IPC.ptyData);
 const ptyExitEventFanout = createIpcEventFanout<PtyExitEvent>(IPC.ptyExit);
@@ -2512,6 +2539,31 @@ contextBridge.exposeInMainWorld("ade", {
     clearSelection: async (): Promise<{ ok: true }> =>
       clearAround(() => builtInBrowserStatusCache.clear(), () => ipcRenderer.invoke(IPC.builtInBrowserClearSelection)),
     onEvent: builtInBrowserEventFanout,
+  },
+  macosVm: {
+    getStatus: async (args: MacosVmStatusArgs = {}): Promise<MacosVmStatus> =>
+      macosVmStatusCache.get(serializeIpcCacheArgs(args)),
+    provision: async (args: MacosVmProvisionArgs): Promise<MacosVmRecord> =>
+      clearAround(() => macosVmStatusCache.clear(), () => ipcRenderer.invoke(IPC.macosVmProvision, args)),
+    start: async (args: MacosVmStartArgs): Promise<MacosVmRecord> =>
+      clearAround(() => macosVmStatusCache.clear(), () => ipcRenderer.invoke(IPC.macosVmStart, args)),
+    stop: async (args: MacosVmStopArgs): Promise<MacosVmRecord | null> =>
+      clearAround(() => macosVmStatusCache.clear(), () => ipcRenderer.invoke(IPC.macosVmStop, args)),
+    delete: async (args: MacosVmDeleteArgs): Promise<{ deleted: boolean; previous: MacosVmRecord | null }> =>
+      clearAround(() => macosVmStatusCache.clear(), () => ipcRenderer.invoke(IPC.macosVmDelete, args)),
+    getAgentGuide: async (args: MacosVmAgentGuideArgs): Promise<MacosVmAgentGuide> =>
+      ipcRenderer.invoke(IPC.macosVmGetAgentGuide, args),
+    focusWindow: async (args: MacosVmFocusWindowArgs): Promise<MacosVmWindowTarget> =>
+      ipcRenderer.invoke(IPC.macosVmFocusWindow, args),
+    captureScreenshot: async (args: MacosVmCaptureScreenshotArgs): Promise<MacosVmCaptureScreenshotResult> =>
+      ipcRenderer.invoke(IPC.macosVmCaptureScreenshot, args),
+    selectPoint: async (args: MacosVmSelectPointArgs): Promise<MacosVmSelectPointResult> =>
+      ipcRenderer.invoke(IPC.macosVmSelectPoint, args),
+    click: async (args: MacosVmClickArgs): Promise<{ ok: true; window: MacosVmWindowTarget; x: number; y: number }> =>
+      ipcRenderer.invoke(IPC.macosVmClick, args),
+    typeText: async (args: MacosVmTypeTextArgs): Promise<{ ok: true; window: MacosVmWindowTarget }> =>
+      ipcRenderer.invoke(IPC.macosVmTypeText, args),
+    onEvent: macosVmEventFanout,
   },
   terminal: {
     list: async (args: ChatTerminalListArgs = {}): Promise<ChatTerminalSession[]> =>
