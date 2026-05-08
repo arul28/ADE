@@ -2795,9 +2795,11 @@ export function AgentChatPane({
 
   const refreshCursorModelInventory = useCallback(async () => {
     const status = aiStatus;
-    const cursorReady = status?.availableProviders?.cursor === true
-      || status?.providerConnections?.cursor?.runtimeAvailable === true;
-    if (!cursorReady) return;
+    const cursorExplicitlyUnavailable =
+      status != null
+      && status.availableProviders?.cursor !== true
+      && status.providerConnections?.cursor?.runtimeAvailable !== true;
+    if (cursorExplicitlyUnavailable) return;
     if (availableModelIds.some(isCursorModelId)) return;
     const refreshSeq = availableModelsRefreshSeqRef.current;
     let cursorModels: Awaited<ReturnType<typeof getAgentChatModelsCached>>;

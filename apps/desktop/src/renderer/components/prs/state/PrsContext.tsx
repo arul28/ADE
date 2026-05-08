@@ -1141,8 +1141,12 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
   // The plain GitHub PR list does not render rebase workflow state, so avoid
   // doing that git work until a workflow tab or selected PR detail can use it.
   useEffect(() => {
-    if (activeTab === "normal" && selectedPrId == null) return;
     let cancelled = false;
+    if (activeTab === "normal" && selectedPrId == null) {
+      return () => {
+        cancelled = true;
+      };
+    }
     const scan = () => {
       window.ade.rebase.scanNeeds().then((needs) => {
         if (!cancelled) setRebaseNeeds(needs);

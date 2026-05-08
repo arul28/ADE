@@ -1,9 +1,5 @@
 import type { AutomationTrigger } from "../../../shared/types";
-import { INPUT_CLS, INPUT_STYLE } from "./shared";
-
-function parseList(value: string): string[] {
-  return value.split(",").map((entry) => entry.trim()).filter(Boolean);
-}
+import { INPUT_CLS, INPUT_STYLE, parseList } from "./shared";
 
 export function LinearTriggerFilters({
   trigger,

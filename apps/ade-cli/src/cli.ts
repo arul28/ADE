@@ -1210,7 +1210,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade automations delete <id>                   Remove a local rule
     $ ade automations toggle <id> --enabled true|false
     $ ade automations run <id> [--lane <id>] [--dry-run]
-    $ ade automations trigger <id> --lane <id>
+    $ ade automations trigger <id> [--lane <id>]
                                                      Trigger a rule manually
     $ ade automations runs [--rule <id>] [--status <s>] [--limit 50]
     $ ade automations run-show <runId> [--json]     Inspect a run
@@ -3739,20 +3739,24 @@ function applyLaneFlagsToDraft(draft: JsonObject, args: string[]): JsonObject {
     return draft;
   }
 
-  if (laneId != null && laneMode != null && laneMode !== "reuse") {
+  const existingExecution = isRecord(draft.execution) ? draft.execution : {};
+  const effectiveLaneMode =
+    laneMode
+    ?? (asString(existingExecution.laneMode) as AutomationLaneModeFlag | null);
+
+  if (laneId != null && effectiveLaneMode !== "reuse") {
     throw new CliUsageError("--lane is only valid with --lane-mode reuse.");
   }
-  if (preset != null && laneMode != null && laneMode !== "create") {
+  if (preset != null && effectiveLaneMode !== "create") {
     throw new CliUsageError("--lane-name-preset is only valid with --lane-mode create.");
   }
   if (template != null && preset != null && preset !== "custom") {
     throw new CliUsageError("--lane-name-template is only valid with --lane-name-preset custom.");
   }
-  if (template != null && preset == null && laneMode !== "create") {
+  if (template != null && preset == null && effectiveLaneMode !== "create") {
     throw new CliUsageError("--lane-name-template requires --lane-mode create (with --lane-name-preset custom).");
   }
 
-  const existingExecution = isRecord(draft.execution) ? draft.execution : {};
   const execution: JsonObject = { ...existingExecution };
   if (laneMode != null) execution.laneMode = laneMode;
   if (laneId != null) execution.targetLaneId = laneId;

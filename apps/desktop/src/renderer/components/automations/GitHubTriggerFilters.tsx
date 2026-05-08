@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { AutomationTrigger } from "../../../shared/types";
 import { cn } from "../ui/cn";
-import { INPUT_CLS, INPUT_STYLE } from "./shared";
+import { INPUT_CLS, INPUT_STYLE, parseList } from "./shared";
 
 type GitHubApi = {
   listRepoLabels?: (args: { owner: string; name: string }) => Promise<Array<{ name: string; color?: string }>>;
@@ -19,10 +19,6 @@ function parseRepoSlug(value: string | null | undefined): { owner: string; name:
   const trimmed = (value ?? "").trim();
   const match = /^([^/\s]+)\/([^/\s]+)$/.exec(trimmed);
   return match ? { owner: match[1]!, name: match[2]! } : null;
-}
-
-function parseList(value: string): string[] {
-  return value.split(",").map((entry) => entry.trim()).filter(Boolean);
 }
 
 export function GitHubTriggerFilters({

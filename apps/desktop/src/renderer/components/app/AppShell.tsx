@@ -377,6 +377,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       if (currentIsNewTabOpen && nextProject && !projectChanged) {
         setProject(nextProject);
+        if (currentShowWelcome) setShowWelcome(false);
         return;
       }
 

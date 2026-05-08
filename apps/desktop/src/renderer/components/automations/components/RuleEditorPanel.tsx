@@ -628,6 +628,7 @@ export function RuleEditorPanel({
   const modelValue = draft.modelConfig?.orchestratorModel ?? { modelId: DEFAULT_MODEL_ID, thinkingLevel: "medium" as const };
   const outputs = draft.outputs ?? { disposition: "comment-only" as const, createArtifact: true };
   const verification = draft.verification ?? { verifyBeforePublish: false, mode: "intervention" as const };
+  const toolPalette: AutomationToolFamily[] = draft.toolPalette ?? ["repo", "memory", "mission"];
   const permissionMeta = permissionControlsForModel(modelValue.modelId);
   const currentPermission = permissionMeta
     ? draft.permissionConfig?.providers?.[permissionMeta.key] ?? ""
@@ -933,8 +934,8 @@ export function RuleEditorPanel({
                   <SmallLabel>Tool palette</SmallLabel>
                   <div className="grid grid-cols-2 gap-1.5">
                     {TOOL_FAMILIES.map((tool) => {
-                      const checked = draft.toolPalette.includes(tool.value);
-                      const wouldEmptyPalette = checked && draft.toolPalette.length === 1;
+                      const checked = toolPalette.includes(tool.value);
+                      const wouldEmptyPalette = checked && toolPalette.length === 1;
                       return (
                         <label
                           key={tool.value}
@@ -950,8 +951,8 @@ export function RuleEditorPanel({
                             disabled={wouldEmptyPalette}
                             onChange={(event) => {
                               const next = event.target.checked
-                                ? [...new Set([...draft.toolPalette, tool.value])]
-                                : draft.toolPalette.filter((entry) => entry !== tool.value);
+                                ? [...new Set([...toolPalette, tool.value])]
+                                : toolPalette.filter((entry) => entry !== tool.value);
                               setDraft({ ...draft, toolPalette: next });
                             }}
                             className="accent-[#7DD3FC]"

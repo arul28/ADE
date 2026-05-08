@@ -1797,7 +1797,7 @@ export function createAutomationService({
       if (!conflictService) throw new Error("Conflict service unavailable");
       const laneId = requiresTriggerLane(rule) || rule.execution?.laneMode === "create"
         ? await resolveExecutionLaneId(rule, trigger, action, runId)
-        : trigger.laneId;
+        : getConfiguredTargetLaneId(rule, action) ?? trigger.laneId;
       await conflictService.runPrediction(laneId ? { laneId } : {});
       return { status: "succeeded" };
     }

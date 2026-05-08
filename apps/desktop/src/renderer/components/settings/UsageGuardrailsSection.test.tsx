@@ -70,7 +70,8 @@ describe("UsageGuardrailsSection", () => {
     render(<UsageGuardrailsSection />);
 
     await waitFor(() => {
-      expect(window.ade.usage.getSnapshot).toHaveBeenCalledTimes(1);
+      const refreshButton = screen.getByRole("button", { name: /refresh/i }) as HTMLButtonElement;
+      expect(refreshButton.disabled).toBe(false);
     });
 
     fireEvent.click(screen.getByRole("button", { name: /refresh/i }));

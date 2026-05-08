@@ -335,6 +335,7 @@ export function RulesTab({
   const [error, setError] = useState<string | null>(null);
   const [manualRunRule, setManualRunRule] = useState<AutomationRuleSummary | null>(null);
   const [manualRunLaneId, setManualRunLaneId] = useState<string>("");
+  const [manualRunPending, setManualRunPending] = useState(false);
   const [configTrustRequired, setConfigTrustRequired] = useState(false);
   const loadRef = useRef<(() => Promise<void>) | null>(null);
   // Snapshot of the last-saved (or last-loaded-from-rule) draft, used to detect
@@ -514,16 +515,20 @@ export function RulesTab({
   };
 
   const runRuleNow = useCallback(async (ruleId: string, laneId?: string | null) => {
+    if (manualRunPending) return;
+    setManualRunPending(true);
     setError(null);
     try {
       await window.ade.automations.triggerManually({ id: ruleId, ...(laneId ? { laneId } : {}) });
-      await refresh();
       setManualRunRule(null);
       setManualRunLaneId("");
+      await refresh();
     } catch (err) {
       setError(extractError(err));
+    } finally {
+      setManualRunPending(false);
     }
-  }, [refresh]);
+  }, [manualRunPending, refresh]);
 
   const beginRunRule = useCallback((rule: AutomationRuleSummary) => {
     if (rule.execution?.laneMode === "require-on-trigger") {
@@ -759,7 +764,7 @@ export function RulesTab({
               <Button
                 size="sm"
                 variant="primary"
-                disabled={!manualRunLaneId}
+                disabled={!manualRunLaneId || manualRunPending}
                 onClick={() => void runRuleNow(manualRunRule.id, manualRunLaneId)}
               >
                 <Play size={12} weight="regular" />
