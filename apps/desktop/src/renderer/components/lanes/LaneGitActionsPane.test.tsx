@@ -133,6 +133,7 @@ describe("LaneGitActionsPane rescue action", () => {
     };
     mockSyncStatus = {
       hasUpstream: false,
+      upstreamState: "none",
       upstreamRef: null,
       ahead: 0,
       behind: 0,
@@ -239,6 +240,7 @@ describe("LaneGitActionsPane rescue action", () => {
     };
     mockSyncStatus = {
       hasUpstream: true,
+      upstreamState: "tracking",
       upstreamRef: "origin/feature/parent",
       ahead: 0,
       behind: 2,

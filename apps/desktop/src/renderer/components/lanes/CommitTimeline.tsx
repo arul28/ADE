@@ -35,13 +35,15 @@ export function CommitTimeline({
   selectedSha,
   onSelectCommit,
   refreshTrigger,
-  hasUpstream
+  hasUpstream,
+  remoteMissing
 }: {
   laneId: string | null;
   selectedSha: string | null;
   onSelectCommit: (commit: GitCommitSummary) => void;
   refreshTrigger?: number;
   hasUpstream?: boolean | null;
+  remoteMissing?: boolean;
 }) {
   const [commits, setCommits] = React.useState<GitCommitSummary[]>([]);
   const [loading, setLoading] = React.useState(false);
@@ -242,7 +244,9 @@ export function CommitTimeline({
                       </span>
                       {isNewest ? <span style={inlineBadge(COLORS.success, { fontSize: 9 })}>HEAD</span> : null}
                       {isMerge ? <span style={inlineBadge(COLORS.info, { fontSize: 9 })}>MERGE</span> : null}
-                      {hasUpstream === false ? (
+                      {remoteMissing ? (
+                        <span style={inlineBadge(COLORS.warning, { fontSize: 9 })} title="The configured remote branch no longer exists.">REMOTE GONE</span>
+                      ) : hasUpstream === false ? (
                         <span style={inlineBadge(COLORS.textMuted, { fontSize: 9 })} title="No upstream branch yet.">UNPUBLISHED</span>
                       ) : commit.pushed ? (
                         <span style={inlineBadge(COLORS.info, { fontSize: 9 })} title="This commit exists on the remote branch.">REMOTE</span>

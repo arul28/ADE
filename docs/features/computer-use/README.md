@@ -103,6 +103,30 @@ Alongside the proof broker, ADE exposes a separate **App Control** capability fo
 
 See [`app-control.md`](./app-control.md) for the full surface (service, IPC, renderer panel, ADE CLI commands).
 
+## macOS VM bridge
+
+ADE also exposes a lane-tied **macOS VM** bridge for isolated macOS GUI work.
+The VM belongs to one lane, mounts that lane into the guest, and can attach a
+screenshot-backed `MacosVmContextItem` to an active Work chat. The bridge lives
+outside the proof broker for lifecycle/control, but screenshot and selection
+tools still register proof artifacts through the broker when called from the
+ADE CLI or agent tool surface.
+
+`apps/desktop/src/main/services/macosVm/macosVmService.ts` owns the lifecycle.
+It uses Lume as the first provider, keeps VM records under
+`.ade/cache/macos-vms`, stores managed VNC credentials under `.ade/secrets`, and
+mounts either the lane root directly or a sanitized rsync mirror. The mirror is
+used whenever the lane root contains `.ade/`; it excludes secrets, ADE runtime
+databases, caches, transcripts, generated local memory/history, nested
+worktrees, agent state, and `.git`.
+
+Control flows through `ade.macosVm.*` IPC and the `macos_vm` ADE action domain:
+`getStatus`, `provision`, `start`, `stop`, `delete`, `getAgentGuide`,
+`getSharePolicy`, `focusWindow`, `captureScreenshot`, `selectPoint`, `click`,
+and `typeText`. The Work sidebar's Mac VM tab renders the desktop panel, while
+`ade --socket macos-vm ...` gives agents the same status/start/screenshot/select
+and click/type controls from the CLI.
+
 ## Cross-links
 
 - [`../proof.md`](../proof.md) — `ade proof` CLI and the drawer UI contract.

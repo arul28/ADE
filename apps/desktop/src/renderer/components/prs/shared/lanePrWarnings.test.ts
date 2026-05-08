@@ -36,6 +36,7 @@ function makeLane(overrides: Partial<LaneSummary> = {}): LaneSummary {
 function makeSyncStatus(overrides: Partial<GitUpstreamSyncStatus> = {}): GitUpstreamSyncStatus {
   return {
     hasUpstream: overrides.hasUpstream ?? true,
+    upstreamState: overrides.upstreamState ?? (overrides.hasUpstream === false ? "none" : "tracking"),
     upstreamRef: overrides.upstreamRef ?? "origin/feature/test",
     ahead: overrides.ahead ?? 0,
     behind: overrides.behind ?? 0,
@@ -57,9 +58,9 @@ describe("lanePrWarnings", () => {
     });
 
     expect(describeLanePrIssues(lane, makeSyncStatus({ ahead: 2 }))).toEqual([
-      "has uncommitted changes",
-      "is 2 commits behind its base branch — rebase recommended before creating or merging a PR",
-      "has 2 unpushed commits",
+      "has uncommitted changes. Commit or stash them if they should be part of the PR.",
+      "is 2 commits behind its base branch. Update the lane before creating or merging a PR.",
+      "has 2 commits not pushed yet.",
     ]);
   });
 
@@ -76,12 +77,14 @@ describe("lanePrWarnings", () => {
     ).toEqual(["lane-stale", "lane-rebasing"]);
   });
 
-  it("reports unpublished and diverged lanes distinctly", () => {
+  it("reports unpublished, missing remote, and diverged lanes distinctly", () => {
     const unpublished = describeLanePrIssues(makeLane(), makeSyncStatus({ hasUpstream: false, upstreamRef: null }));
+    const missing = describeLanePrIssues(makeLane(), makeSyncStatus({ hasUpstream: false, upstreamState: "missing", upstreamRef: "origin/feature/test" }));
     const diverged = describeLanePrIssues(makeLane(), makeSyncStatus({ ahead: 1, behind: 3, diverged: true }));
 
-    expect(unpublished).toEqual(["has not been published to remote"]);
-    expect(diverged).toEqual(["has diverged from remote (1 ahead, 3 behind) — force push if this is from a rebase, or pull to merge remote changes."]);
+    expect(unpublished).toEqual(["has not been pushed to remote yet."]);
+    expect(missing).toEqual(["remote branch is missing. It may have been deleted after merge."]);
+    expect(diverged).toEqual(["local and remote both have changes (1 local, 3 remote). Pull or rebase, then push once the history looks right."]);
   });
 
   it("builds warnings only for lanes with issues", () => {
@@ -109,7 +112,7 @@ describe("lanePrWarnings", () => {
       {
         laneId: "lane-dirty",
         laneName: "Dirty Lane",
-        issues: ["has uncommitted changes"],
+        issues: ["has uncommitted changes. Commit or stash them if they should be part of the PR."],
       },
     ]);
   });
@@ -153,10 +156,10 @@ describe("lanePrWarnings", () => {
     const issues = describeLanePrIssues(lane, makeSyncStatus({ hasUpstream: false, upstreamRef: null }));
 
     expect(issues).toEqual([
-      "has a rebase in progress",
-      "has uncommitted changes",
-      "is 5 commits behind its base branch — rebase recommended before creating or merging a PR",
-      "has not been published to remote",
+      "has a rebase in progress. Finish or abort it before creating a PR.",
+      "has uncommitted changes. Commit or stash them if they should be part of the PR.",
+      "is 5 commits behind its base branch. Update the lane before creating or merging a PR.",
+      "has not been pushed to remote yet.",
     ]);
   });
 
@@ -173,8 +176,8 @@ describe("lanePrWarnings", () => {
     const issues = describeLanePrIssues(lane, makeSyncStatus({ ahead: 2, behind: 1, diverged: true }));
 
     expect(issues).toEqual([
-      "has a rebase in progress",
-      "has diverged from remote (2 ahead, 1 behind) — force push if this is from a rebase, or pull to merge remote changes.",
+      "has a rebase in progress. Finish or abort it before creating a PR.",
+      "local and remote both have changes (2 local, 1 remote). Pull or rebase, then push once the history looks right.",
     ]);
   });
 
@@ -184,15 +187,15 @@ describe("lanePrWarnings", () => {
     });
     const issues = describeLanePrIssues(behindLane, makeSyncStatus({ ahead: 1 }));
 
-    expect(issues).toContain("is 1 commit behind its base branch — rebase recommended before creating or merging a PR");
-    expect(issues).toContain("has 1 unpushed commit");
+    expect(issues).toContain("is 1 commit behind its base branch. Update the lane before creating or merging a PR.");
+    expect(issues).toContain("has 1 commit not pushed yet.");
   });
 
   it("reports being behind remote separately from being behind base", () => {
     const lane = makeLane();
     const issues = describeLanePrIssues(lane, makeSyncStatus({ behind: 4 }));
 
-    expect(issues).toEqual(["is 4 commits behind remote"]);
+    expect(issues).toEqual(["remote has 4 newer commits. Pull or rebase before creating a PR."]);
   });
 
   it("buildLanePrWarnings skips selectedLaneIds not found in lane list", () => {
@@ -233,7 +236,7 @@ describe("lanePrWarnings", () => {
 
     expect(warnings).toHaveLength(2);
     expect(warnings[0].laneId).toBe("lane-dirty");
-    expect(warnings[0].issues).toEqual(["has uncommitted changes"]);
+    expect(warnings[0].issues).toEqual(["has uncommitted changes. Commit or stash them if they should be part of the PR."]);
     expect(warnings[1].laneId).toBe("lane-behind");
     expect(warnings[1].issues[0]).toContain("behind its base branch");
   });

@@ -192,8 +192,17 @@ function buildService(opts: BuildServiceOpts = {}) {
   const githubService = opts.githubService ?? makeGithubService();
   const laneService = opts.laneService ?? makeLaneService();
 
-  // Make runGit succeed for upstream check (returns exitCode 0 → push path)
-  mockGit.runGit.mockResolvedValue({ exitCode: 0, stdout: "origin/my-feature", stderr: "" });
+  mockGit.runGit.mockImplementation(async (args: unknown[]) => {
+    const command = Array.isArray(args) ? args[0] : null;
+    if (command === "rev-list") {
+      return { exitCode: 0, stdout: "0\t1\n", stderr: "" };
+    }
+    if (command === "fetch" || command === "push") {
+      return { exitCode: 0, stdout: "", stderr: "" };
+    }
+    // Make runGit succeed for upstream check (returns exitCode 0 → push path)
+    return { exitCode: 0, stdout: "origin/my-feature", stderr: "" };
+  });
   // Make push succeed
   mockGit.runGitOrThrow.mockResolvedValue(undefined);
 
@@ -404,6 +413,102 @@ describe("prService.getGithubSnapshot", () => {
       nowSpy.mockRestore();
     }
   });
+
+  it("backfills a lane PR row from GitHub when the head branch matches an active lane", async () => {
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => ({
+        tokenStored: true,
+        repo: REPO,
+        userLogin: "octocat",
+      })),
+      apiRequest: vi.fn()
+        .mockResolvedValueOnce({
+          data: [
+            makeGitHubPull({
+              number: 134,
+              title: "QA pass",
+              state: "closed",
+              merged_at: "2026-05-05T20:06:50Z",
+              head: {
+                ref: "feature/cached",
+                user: { login: REPO.owner },
+                repo: { owner: { login: REPO.owner }, name: REPO.name },
+              },
+            }),
+          ],
+        })
+        .mockResolvedValueOnce({ data: { items: [] } }),
+    });
+    const db = makeMockDb();
+    const lane = makeFakeLane({ branchRef: "refs/heads/feature/cached" });
+    const { service } = buildService({ db, githubService, laneService: makeLaneService([lane]) });
+
+    await service.getGithubSnapshot({ force: true });
+
+    const insertCall = db.run.mock.calls.find(([sql]: [unknown]) => String(sql).includes("insert into pull_requests("));
+    expect(insertCall).toBeTruthy();
+    expect(insertCall?.[1]).toEqual(expect.arrayContaining([
+      LANE_ID,
+      REPO.owner,
+      REPO.name,
+      134,
+      "QA pass",
+      "merged",
+      "feature/cached",
+    ]));
+  });
+
+  it("updates an existing repo PR row during lane PR backfill instead of duplicating it", async () => {
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => ({
+        tokenStored: true,
+        repo: REPO,
+        userLogin: "octocat",
+      })),
+      apiRequest: vi.fn()
+        .mockResolvedValueOnce({
+          data: [
+            makeGitHubPull({
+              number: 134,
+              title: "QA pass",
+              head: {
+                ref: "feature/cached",
+                user: { login: REPO.owner },
+                repo: { owner: { login: REPO.owner }, name: REPO.name },
+              },
+            }),
+          ],
+        })
+        .mockResolvedValueOnce({ data: { items: [] } }),
+    });
+    const db = makeMockDb();
+    const existing = makePrRow({
+      id: "existing-pr",
+      lane_id: LANE_ID,
+      github_pr_number: 134,
+      head_branch: "old-feature",
+    });
+    db.get.mockImplementation((sql: string, params: unknown[]) => {
+      const text = String(sql);
+      if (text.includes("github_pr_number") && params[0] === "proj-1" && params[3] === 134) {
+        return existing;
+      }
+      return null;
+    });
+    const lane = makeFakeLane({ branchRef: "refs/heads/feature/cached" });
+    const { service } = buildService({ db, githubService, laneService: makeLaneService([lane]) });
+
+    await service.getGithubSnapshot({ force: true });
+
+    expect(db.run).toHaveBeenCalledWith(
+      expect.stringContaining("update pull_requests"),
+      expect.arrayContaining(["existing-pr", "proj-1"]),
+    );
+    expect(db.run).not.toHaveBeenCalledWith(
+      expect.stringContaining("insert into pull_requests("),
+      expect.anything(),
+    );
+  });
 });
 
 describe("prService.createFromLane", () => {
@@ -613,6 +718,163 @@ describe("prService.createFromLane", () => {
     );
   });
 
+  it("uses the merged parent PR base when creating a child PR", async () => {
+    const ghService = makeGithubService({
+      apiRequest: vi.fn().mockRejectedValue(new Error("stop after payload capture")),
+    });
+    const db = makeMockDb();
+    db.all.mockImplementation((sql: string, params: unknown[]) => {
+      if (String(sql).includes("from pull_requests") && params[0] === "lane-parent") {
+        return [
+          makePrRow({
+            id: "pr-parent",
+            lane_id: "lane-parent",
+            state: "merged",
+            base_branch: "main",
+            head_branch: "parent-feature",
+          }),
+        ];
+      }
+      return [];
+    });
+    db.get.mockImplementation((sql: string, params: unknown[]) => {
+      if (String(sql).includes("from lanes") && params[0] === "lane-parent") {
+        return {
+          lane_type: "worktree",
+          branch_ref: "refs/heads/parent-feature",
+          base_ref: "refs/heads/main",
+          archived_at: null,
+        };
+      }
+      return null;
+    });
+    const laneService = makeLaneService([
+      makeFakeLane({
+        parentLaneId: "lane-parent",
+        baseRef: "refs/heads/parent-feature",
+      }),
+      makeFakeLane({
+        id: "lane-parent",
+        name: "Parent",
+        branchRef: "refs/heads/parent-feature",
+        baseRef: "refs/heads/main",
+        parentLaneId: null,
+      }),
+      makeFakeLane({
+        id: "lane-primary",
+        name: "Primary",
+        laneType: "primary",
+        baseRef: "refs/heads/main",
+        branchRef: "refs/heads/main",
+        parentLaneId: null,
+      }),
+    ]);
+
+    const { service } = buildService({ githubService: ghService, laneService, db });
+
+    await expect(
+      service.createFromLane({
+        laneId: LANE_ID,
+        title: "My PR",
+        body: "description",
+        draft: false,
+        allowDirtyWorktree: true,
+      }),
+    ).rejects.toThrow('Failed to create pull request for "my-feature" → "main": stop after payload capture');
+
+    expect(ghService.apiRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "POST",
+        body: expect.objectContaining({
+          head: "my-feature",
+          base: "main",
+        }),
+      }),
+    );
+  });
+
+  it("blocks PR creation when the remote branch has newer commits", async () => {
+    const ghService = makeGithubService({
+      apiRequest: vi.fn().mockRejectedValue(new Error("should not create")),
+    });
+    mockGit.runGit
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "origin/my-feature\n", stderr: "" })
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" })
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "1\t0\n", stderr: "" });
+
+    const { service } = buildService({ githubService: ghService });
+
+    await expect(
+      service.createFromLane({
+        laneId: LANE_ID,
+        title: "My PR",
+        body: "",
+        draft: false,
+        allowDirtyWorktree: true,
+      }),
+    ).rejects.toThrow('The remote branch "my-feature" has 1 newer commit');
+
+    expect(ghService.apiRequest).not.toHaveBeenCalled();
+    expect(mockGit.runGit).toHaveBeenNthCalledWith(
+      2,
+      ["fetch", "--prune", "origin", "+refs/heads/my-feature:refs/remotes/origin/my-feature"],
+      expect.objectContaining({ cwd: "/tmp/lane-wt" }),
+    );
+    expect(mockGit.runGit).not.toHaveBeenCalledWith(["push"], expect.anything());
+    expect(mockGit.runGitOrThrow).not.toHaveBeenCalledWith(["push", "--force-with-lease"], expect.anything());
+  });
+
+  it("blocks PR creation when remote status cannot be parsed", async () => {
+    const ghService = makeGithubService({
+      apiRequest: vi.fn().mockRejectedValue(new Error("should not create")),
+    });
+    mockGit.runGit
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "origin/my-feature\n", stderr: "" })
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" })
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "not-a-count\n", stderr: "" });
+
+    const { service } = buildService({ githubService: ghService });
+
+    await expect(
+      service.createFromLane({
+        laneId: LANE_ID,
+        title: "My PR",
+        body: "",
+        draft: false,
+        allowDirtyWorktree: true,
+      }),
+    ).rejects.toThrow("Could not read the remote status");
+
+    expect(ghService.apiRequest).not.toHaveBeenCalled();
+    expect(mockGit.runGit).not.toHaveBeenCalledWith(["push"], expect.anything());
+  });
+
+  it("does not force-push when a create-PR push is rejected", async () => {
+    const ghService = makeGithubService({
+      apiRequest: vi.fn().mockRejectedValue(new Error("should not create")),
+    });
+    mockGit.runGit
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "origin/my-feature\n", stderr: "" })
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" })
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "0\t1\n", stderr: "" })
+      .mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "! [rejected] my-feature -> my-feature (non-fast-forward)" });
+
+    const { service } = buildService({ githubService: ghService });
+
+    await expect(
+      service.createFromLane({
+        laneId: LANE_ID,
+        title: "My PR",
+        body: "",
+        draft: false,
+        allowDirtyWorktree: true,
+      }),
+    ).rejects.toThrow("ADE did not force-push");
+
+    expect(ghService.apiRequest).not.toHaveBeenCalled();
+    expect(mockGit.runGitOrThrow).not.toHaveBeenCalledWith(["push", "--force-with-lease"], expect.anything());
+  });
+
   it("throws when GitHub returns an invalid PR number", async () => {
     const ghService = makeGithubService({
       apiRequest: vi.fn().mockResolvedValue({
@@ -648,6 +910,111 @@ describe("prService.createFromLane", () => {
         draft: false,
       }),
     ).rejects.toThrow("Lane not found: nonexistent");
+  });
+
+  it("throws before git or GitHub work when the lane has no branch", async () => {
+    const ghService = makeGithubService({
+      apiRequest: vi.fn().mockRejectedValue(new Error("should not create")),
+      getRepoOrThrow: vi.fn(async () => REPO),
+    });
+    const laneService = makeLaneService([
+      makeFakeLane({
+        branchRef: "",
+      }),
+    ]);
+    const { service } = buildService({ githubService: ghService, laneService });
+
+    await expect(
+      service.createFromLane({
+        laneId: LANE_ID,
+        title: "My PR",
+        body: "",
+        draft: false,
+        allowDirtyWorktree: true,
+      }),
+    ).rejects.toThrow('Lane "my-feature" has no branch checked out');
+
+    expect(mockGit.runGit).not.toHaveBeenCalled();
+    expect(ghService.getRepoOrThrow).not.toHaveBeenCalled();
+    expect(ghService.apiRequest).not.toHaveBeenCalled();
+  });
+
+  it("throws before git or GitHub work when the target branch is empty", async () => {
+    const ghService = makeGithubService({
+      apiRequest: vi.fn().mockRejectedValue(new Error("should not create")),
+      getRepoOrThrow: vi.fn(async () => REPO),
+    });
+    const { service } = buildService({ githubService: ghService });
+
+    await expect(
+      service.createFromLane({
+        laneId: LANE_ID,
+        title: "My PR",
+        body: "",
+        draft: false,
+        baseBranch: "   ",
+        allowDirtyWorktree: true,
+      }),
+    ).rejects.toThrow("Choose a target branch before creating the PR");
+
+    expect(mockGit.runGit).not.toHaveBeenCalled();
+    expect(ghService.getRepoOrThrow).not.toHaveBeenCalled();
+    expect(ghService.apiRequest).not.toHaveBeenCalled();
+  });
+});
+
+describe("prService.createQueuePrs", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("stops before database writes or GitHub PR creation when a queued lane cannot push", async () => {
+    const laneA = makeFakeLane({
+      id: "lane-a",
+      name: "feature-a",
+      branchRef: "refs/heads/feature-a",
+      worktreePath: "/tmp/lane-a-wt",
+    });
+    const laneB = makeFakeLane({
+      id: "lane-b",
+      name: "feature-b",
+      branchRef: "refs/heads/feature-b",
+      worktreePath: "/tmp/lane-b-wt",
+    });
+    const ghService = makeGithubService({
+      apiRequest: vi.fn().mockRejectedValue(new Error("should not create")),
+    });
+    const db = makeMockDb();
+    mockGit.runGit
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "origin/feature-a\n", stderr: "" })
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" })
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "0\t1\n", stderr: "" })
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" })
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "origin/feature-b\n", stderr: "" })
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" })
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "1\t0\n", stderr: "" });
+
+    const { service } = buildService({
+      githubService: ghService,
+      laneService: makeLaneService([laneA, laneB]),
+      db,
+    });
+
+    const result = await service.createQueuePrs({
+      laneIds: ["lane-a", "lane-b"],
+      targetBranch: "main",
+      draft: false,
+    });
+
+    expect(result.prs).toEqual([]);
+    expect(result.errors).toEqual([
+      expect.objectContaining({
+        laneId: "lane-b",
+        error: expect.stringContaining('The remote branch "feature-b" has 1 newer commit'),
+      }),
+    ]);
+    expect(ghService.apiRequest).not.toHaveBeenCalled();
+    expect(db.run).not.toHaveBeenCalled();
   });
 });
 

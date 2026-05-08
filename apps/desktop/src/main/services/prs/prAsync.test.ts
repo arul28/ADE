@@ -123,6 +123,42 @@ describe("prPollingService", () => {
     expect(events.filter((event) => event.type === "prs-updated")).toHaveLength(1);
   });
 
+  it("discovers lane PRs when the local PR cache starts empty", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-24T12:00:00.000Z"));
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+
+    let rows: PrSummary[] = [];
+    const summary = createSummary({ id: "pr-discovered", githubPrNumber: 134, state: "merged" });
+    const events: any[] = [];
+    const prService = {
+      listAll: () => rows,
+      discoverLanePullRequests: vi.fn(async () => {
+        rows = [summary];
+        return rows;
+      }),
+      refresh: vi.fn(async () => rows),
+      getHotRefreshDelayMs: () => null,
+      getHotRefreshPrIds: () => [],
+    } as any;
+
+    const service = createPrPollingService({
+      logger: createLogger() as any,
+      prService,
+      projectConfigService: { get: () => ({ effective: {} }) } as any,
+      onEvent: (event) => events.push(event),
+    });
+
+    service.start();
+    await vi.advanceTimersByTimeAsync(12_000);
+
+    expect(prService.discoverLanePullRequests).toHaveBeenCalledTimes(1);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "prs-updated",
+      prs: [summary],
+    }));
+  });
+
   it("keeps rate-limit backoff ahead of hot wakeups", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-24T12:00:00.000Z"));

@@ -257,6 +257,9 @@ function getPullModeSummary(mode: GitSyncMode): string {
 }
 
 function getPushSummary(syncStatus: GitUpstreamSyncStatus | null): string {
+  if (syncStatus?.upstreamState === "missing") {
+    return "The configured remote branch is missing. Push only if you need to recreate it.";
+  }
   if (syncStatus?.hasUpstream === false) {
     return "Publish lane creates the remote branch and connects this lane to it.";
   }
@@ -1114,8 +1117,13 @@ export function LaneGitActionsPane({
       setSyncStatus(latestSyncStatus);
 
       if (!latestSyncStatus.hasUpstream) {
+        const missingRemote = latestSyncStatus.upstreamState === "missing";
         if (confirmPublish) {
-          const ok = window.confirm(`Publish lane '${lane?.name ?? laneId}' to origin/${lane?.branchRef ?? "current branch"}?`);
+          const ok = window.confirm(
+            missingRemote
+              ? `The remote branch for lane '${lane?.name ?? laneId}' is missing. Recreate origin/${lane?.branchRef ?? "current branch"}?`
+              : `Publish lane '${lane?.name ?? laneId}' to origin/${lane?.branchRef ?? "current branch"}?`
+          );
           if (!ok) throw new Error("__ade_cancelled__");
         }
         await window.ade.git.push({ laneId });
@@ -1145,6 +1153,8 @@ export function LaneGitActionsPane({
     });
   };
 
+  const upstreamMissing = syncStatus?.upstreamState === "missing";
+
   const nextActionHint = useMemo<NextActionHint | null>(() => {
     if (!laneId) return null;
     if (conflictState?.inProgress) {
@@ -1172,6 +1182,13 @@ export function LaneGitActionsPane({
       };
     }
     if (!syncStatus) return null;
+    if (syncStatus.upstreamState === "missing") {
+      return {
+        action: "push",
+        label: "Remote branch missing",
+        detail: "This lane used to track a remote branch, but that branch no longer exists. It may have been deleted after merge."
+      };
+    }
     if (!syncStatus.hasUpstream) {
       return {
         action: "push",
@@ -1208,12 +1225,12 @@ export function LaneGitActionsPane({
   const mergeConflictState = conflictState?.inProgress && conflictState.kind === "merge" ? conflictState : null;
   const pullBlockedByConflict = Boolean(conflictState?.inProgress);
   const headerDotColor = getLaneHeaderDotColor(lane);
-  const pushButtonTitle = syncStatus?.hasUpstream === false ? "Publish lane" : "Push to remote";
+  const pushButtonTitle = upstreamMissing ? "Recreate remote branch" : syncStatus?.hasUpstream === false ? "Publish lane" : "Push to remote";
   const rebaseConflictParentLaneId = autoRebaseStatus?.parentLaneId ?? lane?.parentLaneId ?? null;
   const isGeneratingCommitMessage = busyAction === AUTO_GENERATE_COMMIT_ACTION;
   const commitButtonLabel = getCommitButtonLabel({ busyAction, amendCommit });
   const commitHelperText = getCommitHelperText({ commitMessage, commitMessageAi });
-  const primaryPushLabel = syncStatus?.hasUpstream === false ? "Publish lane" : "Push to remote";
+  const primaryPushLabel = upstreamMissing ? "Recreate remote" : syncStatus?.hasUpstream === false ? "Publish lane" : "Push to remote";
   const syncButtonDisabled = !laneId || busyAction != null || lane?.status.behind === 0 || lane?.status.dirty;
   const syncButtonTitle = useMemo(() => {
     if (!laneId) return "Sync is unavailable until you select a child lane.";
@@ -1443,7 +1460,14 @@ export function LaneGitActionsPane({
               </span>
             ) : null}
             {syncStatus ? (
-              syncStatus.hasUpstream ? (
+              syncStatus.upstreamState === "missing" ? (
+                <span
+                  style={{ fontSize: 10, fontFamily: MONO_FONT, letterSpacing: "0.4px", color: COLORS.warning }}
+                  title="The configured upstream branch no longer exists on remote. It may have been deleted after merge."
+                >
+                  remote missing
+                </span>
+              ) : syncStatus.hasUpstream ? (
                 <span
                   style={{ fontSize: 10, fontFamily: MONO_FONT, letterSpacing: "0.4px" }}
                   title={`Compared to ${syncStatus.upstreamRef ?? "upstream"}`}
@@ -1850,22 +1874,26 @@ export function LaneGitActionsPane({
               </button>
             </SmartTooltip>
             <SmartTooltip content={{
-              label: syncStatus?.hasUpstream === false ? "Publish" : nextActionHint?.action === "force_push_lease" ? "Force Push" : "Push",
-              description: syncStatus?.hasUpstream === false
-                ? "Create the remote branch and connect this lane to it."
-                : nextActionHint?.action === "force_push_lease"
-                  ? "Overwrite the remote branch with your local history after a rebase or amend."
-                  : "Send your local commits to the tracked remote branch.",
-              gitCommand: syncStatus?.hasUpstream === false
+              label: upstreamMissing ? "Recreate" : syncStatus?.hasUpstream === false ? "Publish" : nextActionHint?.action === "force_push_lease" ? "Force Push" : "Push",
+              description: upstreamMissing
+                ? "Recreate the missing remote branch for this lane."
+                : syncStatus?.hasUpstream === false
+                  ? "Create the remote branch and connect this lane to it."
+                  : nextActionHint?.action === "force_push_lease"
+                    ? "Overwrite the remote branch with your local history after a rebase or amend."
+                    : "Send your local commits to the tracked remote branch.",
+              gitCommand: upstreamMissing || syncStatus?.hasUpstream === false
                 ? `git push -u origin ${lane?.branchRef ?? "HEAD"}`
                 : nextActionHint?.action === "force_push_lease"
                   ? "git push --force-with-lease"
                   : "git push",
-              effect: syncStatus?.hasUpstream === false
-                ? `Publish lane "${lane?.name ?? ""}" to remote`
-                : (syncStatus?.ahead ?? 0) > 0
-                  ? `Push ${syncStatus!.ahead} commit${syncStatus!.ahead === 1 ? "" : "s"} to remote`
-                  : "No local commits to push",
+              effect: upstreamMissing
+                ? `Recreate the remote branch for "${lane?.name ?? ""}"`
+                : syncStatus?.hasUpstream === false
+                  ? `Publish lane "${lane?.name ?? ""}" to remote`
+                  : (syncStatus?.ahead ?? 0) > 0
+                    ? `Push ${syncStatus!.ahead} commit${syncStatus!.ahead === 1 ? "" : "s"} to remote`
+                    : "No local commits to push",
               warning: nextActionHint?.action === "force_push_lease" ? "This overwrites remote history" : undefined,
             }}>
               <button
@@ -1888,7 +1916,7 @@ export function LaneGitActionsPane({
                 }}
               >
                 <Upload size={12} weight="bold" style={{ marginRight: 4 }} />
-                {syncStatus?.hasUpstream === false ? "PUBLISH" : nextActionHint?.action === "force_push_lease" ? "FORCE PUSH" : "PUSH"}
+                {upstreamMissing ? "RECREATE" : syncStatus?.hasUpstream === false ? "PUBLISH" : nextActionHint?.action === "force_push_lease" ? "FORCE PUSH" : "PUSH"}
               </button>
             </SmartTooltip>
             {lane?.parentLaneId ? (
@@ -2566,6 +2594,7 @@ export function LaneGitActionsPane({
                 selectedSha={selectedCommitSha}
                 refreshTrigger={commitTimelineKey}
                 hasUpstream={syncStatus?.hasUpstream ?? null}
+                remoteMissing={upstreamMissing}
                 onSelectCommit={(commit) => {
                   onSelectCommit(commit);
                 }}

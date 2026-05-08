@@ -504,12 +504,12 @@ describe("appStore", () => {
 
       useAppStore.getState().setWorkViewState("/project/sidebar", {
         workSidebarOpen: true,
-        workSidebarTab: "ios",
+        workSidebarTab: "macos-vm",
         workSidebarWidthPct: 48,
       });
       const updated = useAppStore.getState().getWorkViewState("/project/sidebar");
       expect(updated.workSidebarOpen).toBe(true);
-      expect(updated.workSidebarTab).toBe("ios");
+      expect(updated.workSidebarTab).toBe("macos-vm");
       expect(updated.workSidebarWidthPct).toBe(48);
       expect(updated.viewMode).toBe("tabs");
     });
