@@ -77,6 +77,8 @@ ade ios-sim devices --text
 ade --socket ios-sim apps --text
 ade --socket ios-sim launch --target target-id --text
 ade --socket ios-sim preview-render --source apps/ios/ADE/Views/Home.swift --index 0 --text
+ade --socket app-control launch --command "npm run dev" --text
+ade --socket browser open http://localhost:5173 --new-tab --text
 ade --socket update status --text
 ade --socket update check --text
 ade --socket update install --text

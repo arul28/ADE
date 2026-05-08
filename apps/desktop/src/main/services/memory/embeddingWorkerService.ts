@@ -7,6 +7,7 @@ import type { createEmbeddingService } from "./embeddingService";
 
 export const DEFAULT_IDLE_BATCH_SIZE = 50;
 export const DEFAULT_ACTIVE_BATCH_SIZE = 10;
+export const DEFAULT_ACTIVE_SESSION_COLD_START_DEFER_MS = 60_000;
 const MIN_BATCH_SIZE = 10;
 const MAX_BATCH_SIZE = 50;
 const DEFAULT_YIELD_MS = 100;
@@ -26,6 +27,7 @@ type CreateEmbeddingWorkerServiceOpts = {
   sessionService?: Pick<ReturnType<typeof createSessionService>, "list">;
   idleBatchSize?: number;
   activeBatchSize?: number;
+  activeSessionColdStartDeferMs?: number;
   yieldMs?: number;
   now?: () => Date;
   sleep?: (ms: number) => Promise<void>;
@@ -75,6 +77,10 @@ export function createEmbeddingWorkerService(opts: CreateEmbeddingWorkerServiceO
 
   const idleBatchSize = normalizeBatchSize(opts.idleBatchSize, DEFAULT_IDLE_BATCH_SIZE);
   const activeBatchSize = normalizeBatchSize(opts.activeBatchSize, DEFAULT_ACTIVE_BATCH_SIZE);
+  const activeSessionColdStartDeferMs = Math.max(
+    1,
+    Math.floor(opts.activeSessionColdStartDeferMs ?? DEFAULT_ACTIVE_SESSION_COLD_START_DEFER_MS),
+  );
   const yieldMs = Math.max(0, Math.floor(opts.yieldMs ?? DEFAULT_YIELD_MS));
 
   const queue: string[] = [];
@@ -129,9 +135,15 @@ export function createEmbeddingWorkerService(opts: CreateEmbeddingWorkerServiceO
     return isSessionActive() ? activeBatchSize : idleBatchSize;
   }
 
-  function scheduleProcessing() {
+  function shouldDeferColdStartForActiveSession(): boolean {
+    if (embeddingService.isAvailable()) return false;
+    return isSessionActive();
+  }
+
+  function scheduleProcessing(delayMs = 0) {
     if (scheduled || processingPromise || queue.length === 0) return;
     scheduled = true;
+    const normalizedDelayMs = Math.max(0, Math.floor(delayMs));
     setTimeout(() => {
       scheduled = false;
       void processQueue().catch((error) => {
@@ -140,7 +152,7 @@ export function createEmbeddingWorkerService(opts: CreateEmbeddingWorkerServiceO
           error: getErrorMessage(error),
         });
       });
-    }, 0);
+    }, normalizedDelayMs);
   }
 
   function queueMemory(memoryId: string) {
@@ -227,8 +239,19 @@ export function createEmbeddingWorkerService(opts: CreateEmbeddingWorkerServiceO
   async function processQueue() {
     if (processingPromise) return processingPromise;
 
+    let rescheduleDelayMs = 0;
     processingPromise = (async () => {
       while (queue.length > 0) {
+        if (shouldDeferColdStartForActiveSession()) {
+          rescheduleDelayMs = activeSessionColdStartDeferMs;
+          logger.info("memory.embedding_worker.cold_start_deferred", {
+            projectId,
+            queueDepth: queue.length,
+            retryInMs: activeSessionColdStartDeferMs,
+          });
+          return;
+        }
+
         const batchSize = Math.min(nextBatchSize(), queue.length);
         const batchIds = queue.splice(0, batchSize);
         for (const id of batchIds) {
@@ -272,7 +295,7 @@ export function createEmbeddingWorkerService(opts: CreateEmbeddingWorkerServiceO
       processingPromise = null;
       resolveIdleIfNeeded();
       if (queue.length > 0) {
-        scheduleProcessing();
+        scheduleProcessing(rescheduleDelayMs);
       }
     });
 

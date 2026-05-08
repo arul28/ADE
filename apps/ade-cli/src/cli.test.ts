@@ -1974,6 +1974,44 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("update commands map to auto-update actions", () => {
+    const status = buildCliPlan(["update", "status"]);
+    expect(status.kind).toBe("execute");
+    if (status.kind !== "execute") return;
+    expect(status.steps[0]?.params).toMatchObject({
+      arguments: { domain: "update", action: "getSnapshot", args: {} },
+    });
+
+    const check = buildCliPlan(["auto-update", "check"]);
+    expect(check.kind).toBe("execute");
+    if (check.kind !== "execute") return;
+    expect(check.steps[0]?.params).toMatchObject({
+      arguments: { domain: "update", action: "checkForUpdates", args: {} },
+    });
+
+    const install = buildCliPlan(["updates", "install"]);
+    expect(install.kind).toBe("execute");
+    if (install.kind !== "execute") return;
+    expect(install.steps[0]?.params).toMatchObject({
+      arguments: { domain: "update", action: "quitAndInstall", args: {} },
+    });
+
+    const dismiss = buildCliPlan(["update", "dismiss"]);
+    expect(dismiss.kind).toBe("execute");
+    if (dismiss.kind !== "execute") return;
+    expect(dismiss.steps[0]?.params).toMatchObject({
+      arguments: { domain: "update", action: "dismissInstalledNotice", args: {} },
+    });
+
+    const actions = buildCliPlan(["update", "actions"]);
+    expect(actions.kind).toBe("execute");
+    if (actions.kind !== "execute") return;
+    expect(actions.steps[0]?.params).toMatchObject({
+      name: "list_ade_actions",
+      arguments: { domain: "update" },
+    });
+  });
+
   it("attaches a rendered lane graph when the plan has the lanes visualizer", () => {
     const connection = {
       mode: "headless" as const,

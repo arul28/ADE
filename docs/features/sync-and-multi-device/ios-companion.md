@@ -163,9 +163,9 @@ hydrating cards inside each screen body.
 an inline "Attached to <host>" banner above the open-project button.
 The banner uses the same `SyncConnectionHealth` mapping as
 `ADEConnectionDot` (success when connected and not strained, warning
-when connecting or strained, muted when disconnected/unreachable) and
-routes taps through `syncService.settingsPresented` to the same
-Settings sheet the dot opens.
+when connecting or strained, danger when unreachable, muted when
+disconnected) and routes taps through `syncService.settingsPresented`
+to the same Settings sheet the dot opens.
 
 `SettingsConnectionHeader` distinguishes the four states explicitly:
 
