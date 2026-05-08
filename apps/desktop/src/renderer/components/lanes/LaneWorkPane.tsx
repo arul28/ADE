@@ -1,9 +1,11 @@
+import { useEffect, useMemo } from "react";
 import { ChatCircleText, Command, Terminal } from "@phosphor-icons/react";
 import type { WorkDraftKind } from "../../state/appStore";
 import { EmptyState } from "../ui/EmptyState";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { COLORS, SANS_FONT, SPACING } from "./laneDesignTokens";
 import { WorkViewArea } from "../terminals/WorkViewArea";
+import { dispatchWorkSurfaceRevealed } from "../terminals/workSurfaceVisibility";
 import { useLaneWorkSessions } from "./useLaneWorkSessions";
 import { HelpChip } from "../onboarding/HelpChip";
 import { docs } from "../../onboarding/docsLinks";
@@ -53,6 +55,30 @@ export function LaneWorkPane({
 }) {
   const work = useLaneWorkSessions(laneId);
   const laneList = work.lane ? [work.lane] : [];
+  const visibleSessionIdsKey = useMemo(
+    () => work.visibleSessions.map((session) => session.id).join("\0"),
+    [work.visibleSessions],
+  );
+
+  useEffect(() => {
+    if (!laneId) return;
+    const hasVisibleTerminalSurface =
+      work.viewMode === "grid"
+        ? work.visibleSessions.length > 0
+        : Boolean(work.activeItemId);
+    if (!hasVisibleTerminalSurface) return;
+
+    const raf = window.requestAnimationFrame(() => {
+      dispatchWorkSurfaceRevealed();
+    });
+    const settleTimer = window.setTimeout(() => {
+      dispatchWorkSurfaceRevealed();
+    }, 140);
+    return () => {
+      window.cancelAnimationFrame(raf);
+      window.clearTimeout(settleTimer);
+    };
+  }, [laneId, work.activeItemId, work.viewMode, visibleSessionIdsKey, work.visibleSessions.length]);
 
   if (!laneId) {
     return (

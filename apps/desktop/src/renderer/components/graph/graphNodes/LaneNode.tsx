@@ -49,9 +49,11 @@ export function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>
   const isPrimary = lane.laneType === "primary";
   const depth = data.hierarchyDepth;
   const orphanStack = depth >= 1000;
+  const remoteMissing = remoteSync?.upstreamState === "missing";
 
   const syncBadge = (() => {
     if (remoteDiverged) return { label: "Diverged", className: "text-red-300" };
+    if (remoteMissing) return { label: "Remote missing", className: "text-amber-300" };
     if (autoRebase?.state === "rebaseConflict") return { label: "Rebase conflict", className: "text-red-300" };
     if (autoRebase?.state === "rebaseFailed") return { label: "Rebase failed", className: "text-red-300" };
     if (autoRebase?.state === "rebasePending") return { label: "Rebase pending", className: "text-amber-300" };

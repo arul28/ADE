@@ -31,6 +31,16 @@ const EMPTY_WORK_STATE: WorkProjectViewState = {
   workSidebarWidthPct: 36,
 };
 
+type QueuedRefresh = {
+  showLoading: boolean;
+  force: boolean;
+  deferred: {
+    promise: Promise<void>;
+    resolve: () => void;
+    reject: (reason: unknown) => void;
+  };
+};
+
 function arraysEqual(a: string[], b: string[]): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i += 1) {
@@ -63,8 +73,7 @@ export function useLaneWorkSessions(laneId: string | null) {
   const [loading, setLoading] = useState(false);
   const [closingPtyIds, setClosingPtyIds] = useState<Set<string>>(new Set());
   const refreshInFlightRef = useRef(false);
-  const refreshQueuedRef = useRef<{ showLoading: boolean; force: boolean } | null>(null);
-  const refreshWaitersRef = useRef<Array<() => void>>([]);
+  const refreshQueuedRef = useRef<QueuedRefresh | null>(null);
   const backgroundRefreshTimerRef = useRef<number | null>(null);
   const hasActiveSessionsRef = useRef(false);
   const hasLoadedOnceRef = useRef(false);
@@ -107,15 +116,23 @@ export function useLaneWorkSessions(laneId: string | null) {
       }
       const showLoading = options.showLoading ?? true;
       if (refreshInFlightRef.current) {
-        refreshQueuedRef.current = {
-          showLoading: (refreshQueuedRef.current?.showLoading ?? false) || showLoading,
-          force: (refreshQueuedRef.current?.force ?? false) || Boolean(options.force),
-        };
-        // Return a promise that resolves when the in-flight refresh completes,
-        // so callers who `await refresh()` get reliable timing.
-        return new Promise<void>((resolve) => {
-          refreshWaitersRef.current.push(resolve);
+        if (refreshQueuedRef.current) {
+          refreshQueuedRef.current.showLoading = refreshQueuedRef.current.showLoading || showLoading;
+          refreshQueuedRef.current.force = refreshQueuedRef.current.force || Boolean(options.force);
+          return refreshQueuedRef.current.deferred.promise;
+        }
+        let resolve!: () => void;
+        let reject!: (reason: unknown) => void;
+        const promise = new Promise<void>((nextResolve, nextReject) => {
+          resolve = nextResolve;
+          reject = nextReject;
         });
+        refreshQueuedRef.current = {
+          showLoading,
+          force: Boolean(options.force),
+          deferred: { promise, resolve, reject },
+        };
+        return promise;
       }
       refreshInFlightRef.current = true;
       if (showLoading) setLoading(true);
@@ -133,15 +150,11 @@ export function useLaneWorkSessions(laneId: string | null) {
         if (showLoading) setLoading(false);
         refreshInFlightRef.current = false;
 
-        // Resolve all callers that were waiting on this in-flight refresh.
-        const waiters = refreshWaitersRef.current;
-        refreshWaitersRef.current = [];
-        for (const resolve of waiters) resolve();
-
         const queued = refreshQueuedRef.current;
         refreshQueuedRef.current = null;
         if (queued) {
-          void refresh(queued);
+          void refresh({ showLoading: queued.showLoading, force: queued.force })
+            .then(queued.deferred.resolve, queued.deferred.reject);
         }
       }
     },

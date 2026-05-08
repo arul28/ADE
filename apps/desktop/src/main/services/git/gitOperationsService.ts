@@ -62,6 +62,17 @@ function localBranchNameFromRemoteRef(ref: string): string {
   return slashIndex >= 0 ? normalized.slice(slashIndex + 1) : normalized;
 }
 
+function localBranchNameForConfig(ref: string): string {
+  return ref.trim().replace(/^refs\/heads\//, "");
+}
+
+function configuredUpstreamRef(remote: string, mergeRef: string): string | null {
+  const normalizedRemote = remote.trim();
+  const branch = mergeRef.trim().replace(/^refs\/heads\//, "");
+  if (!normalizedRemote || !branch) return null;
+  return normalizedRemote === "." ? branch : `${normalizedRemote}/${branch}`;
+}
+
 function ensureRelativeRepoPath(relPath: string): string {
   const normalized = relPath.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
   if (!normalized.length) throw new Error("File path is required");
@@ -691,15 +702,33 @@ export function createGitOperationsService({
       const laneId = args.laneId.trim();
       return readLaneCached(`sync-status:${laneId}:default`, 2_000, async () => {
         const lane = laneService.getLaneBaseAndBranch(laneId);
+        const readConfiguredUpstream = async (): Promise<string | null> => {
+          const branchName = localBranchNameForConfig(lane.branchRef);
+          if (!branchName) return null;
+          const [remoteRes, mergeRes] = await Promise.all([
+            runGit(["config", "--get", `branch.${branchName}.remote`], {
+              cwd: lane.worktreePath,
+              timeoutMs: 5_000
+            }),
+            runGit(["config", "--get", `branch.${branchName}.merge`], {
+              cwd: lane.worktreePath,
+              timeoutMs: 5_000
+            }),
+          ]);
+          if (remoteRes.exitCode !== 0 || mergeRes.exitCode !== 0) return null;
+          return configuredUpstreamRef(remoteRes.stdout, mergeRes.stdout);
+        };
         const upstreamRes = await runGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], {
           cwd: lane.worktreePath,
           timeoutMs: 10_000
         });
 
         if (upstreamRes.exitCode !== 0) {
+          const configuredRef = await readConfiguredUpstream();
           return {
             hasUpstream: false,
-            upstreamRef: null,
+            upstreamState: configuredRef ? "missing" : "none",
+            upstreamRef: configuredRef,
             ahead: 0,
             behind: 0,
             diverged: false,
@@ -709,9 +738,11 @@ export function createGitOperationsService({
 
         const upstreamRef = upstreamRes.stdout.trim();
         if (!upstreamRef.length) {
+          const configuredRef = await readConfiguredUpstream();
           return {
             hasUpstream: false,
-            upstreamRef: null,
+            upstreamState: configuredRef ? "missing" : "none",
+            upstreamRef: configuredRef,
             ahead: 0,
             behind: 0,
             diverged: false,
@@ -726,6 +757,7 @@ export function createGitOperationsService({
         if (countRes.exitCode !== 0) {
           return {
             hasUpstream: true,
+            upstreamState: "tracking",
             upstreamRef,
             ahead: 0,
             behind: 0,
@@ -766,6 +798,7 @@ export function createGitOperationsService({
 
         return {
           hasUpstream: true,
+          upstreamState: "tracking",
           upstreamRef,
           ahead: normalizedAhead,
           behind: normalizedBehind,

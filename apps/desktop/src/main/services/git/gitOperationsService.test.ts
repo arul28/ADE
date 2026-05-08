@@ -90,6 +90,39 @@ describe("gitOperationsService.stashClear", () => {
   });
 });
 
+describe("gitOperationsService.getSyncStatus", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("marks a configured upstream as missing when the remote branch was deleted", async () => {
+    mockGit.runGit.mockImplementation(async (args: string[]) => {
+      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") {
+        return { exitCode: 128, stdout: "", stderr: "upstream gone" };
+      }
+      if (args[0] === "config" && args[2] === "branch.feature/stash-test.remote") {
+        return { exitCode: 0, stdout: "origin\n", stderr: "" };
+      }
+      if (args[0] === "config" && args[2] === "branch.feature/stash-test.merge") {
+        return { exitCode: 0, stdout: "refs/heads/feature/stash-test\n", stderr: "" };
+      }
+      return { exitCode: 1, stdout: "", stderr: `unexpected git command: ${args.join(" ")}` };
+    });
+
+    const { service } = createTestGitOperationsService("feature/stash-test");
+
+    await expect(service.getSyncStatus({ laneId: "lane-1" })).resolves.toEqual({
+      hasUpstream: false,
+      upstreamState: "missing",
+      upstreamRef: "origin/feature/stash-test",
+      ahead: 0,
+      behind: 0,
+      diverged: false,
+      recommendedAction: "push",
+    });
+  });
+});
+
 describe("gitOperationsService stash item commands", () => {
   beforeEach(() => {
     vi.clearAllMocks();

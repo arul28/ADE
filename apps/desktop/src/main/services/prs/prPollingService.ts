@@ -173,7 +173,14 @@ export function createPrPollingService({
 
     const polledAt = nowIso();
     try {
-      const existing = prService.listAll();
+      let existing = prService.listAll();
+      if (existing.length === 0) {
+        try {
+          existing = await prService.discoverLanePullRequests();
+        } catch (error) {
+          logger.warn("prs.discovery_failed", { error: error instanceof Error ? error.message : String(error) });
+        }
+      }
       if (existing.length === 0) {
         consecutiveFailures = 0;
         initialized = true;

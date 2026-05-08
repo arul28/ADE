@@ -191,6 +191,91 @@ describe("useLaneWorkSessions — refresh-before-focus ordering", () => {
     expect(refreshDoneIdx).toBeLessThan(openTabIdx);
   });
 
+  it("launchPtySession: waits for the queued force refresh when another refresh is already running", async () => {
+    const callOrder: string[] = [];
+    let refreshCallCount = 0;
+    let initialRefreshResolve: (() => void) | null = null;
+    let queuedRefreshResolve: (() => void) | null = null;
+
+    listSessionsCachedMock.mockImplementation(() => {
+      refreshCallCount += 1;
+      if (refreshCallCount === 1) {
+        callOrder.push("initial-refresh-start");
+        return new Promise<never[]>((resolve) => {
+          initialRefreshResolve = () => {
+            callOrder.push("initial-refresh-done");
+            resolve([]);
+          };
+        });
+      }
+      callOrder.push("queued-refresh-start");
+      return new Promise<never[]>((resolve) => {
+        queuedRefreshResolve = () => {
+          callOrder.push("queued-refresh-done");
+          resolve([]);
+        };
+      });
+    });
+
+    focusSessionSpy.mockImplementation(() => {
+      callOrder.push("focusSession");
+    });
+    setWorkViewStateSpy.mockImplementation(() => {
+      if (!callOrder.includes("openSessionTab")) {
+        callOrder.push("openSessionTab");
+      }
+    });
+
+    const { result } = renderHook(() => useLaneWorkSessions("lane-1"));
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    expect(callOrder).toContain("initial-refresh-start");
+
+    let launchPromise!: Promise<unknown>;
+    act(() => {
+      launchPromise = result.current.launchPtySession({
+        laneId: "lane-1",
+        profile: "shell",
+      });
+    });
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    expect(callOrder).not.toContain("focusSession");
+    expect(callOrder).not.toContain("openSessionTab");
+
+    await act(async () => {
+      expect(initialRefreshResolve).not.toBeNull();
+      initialRefreshResolve!();
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    expect(callOrder).toContain("queued-refresh-start");
+    expect(callOrder).not.toContain("focusSession");
+    expect(callOrder).not.toContain("openSessionTab");
+
+    await act(async () => {
+      expect(queuedRefreshResolve).not.toBeNull();
+      queuedRefreshResolve!();
+      await launchPromise;
+    });
+
+    const queuedDoneIdx = callOrder.indexOf("queued-refresh-done");
+    const focusIdx = callOrder.indexOf("focusSession");
+    const openTabIdx = callOrder.indexOf("openSessionTab");
+
+    expect(queuedDoneIdx).toBeGreaterThanOrEqual(0);
+    expect(focusIdx).toBeGreaterThanOrEqual(0);
+    expect(openTabIdx).toBeGreaterThanOrEqual(0);
+    expect(queuedDoneIdx).toBeLessThan(focusIdx);
+    expect(queuedDoneIdx).toBeLessThan(openTabIdx);
+  });
+
   // -----------------------------------------------------------------------
   // handleOpenChatSession: opens immediately, then reconciles in background
   // -----------------------------------------------------------------------

@@ -1523,6 +1523,256 @@ export function createPrService({
     }
   };
 
+  const backfillLanePrRowsFromGithubPulls = (rawPulls: any[], repo: GitHubRepoRef, lanes: LaneSummary[]): number => {
+    const activeLaneByBranch = new Map<string, LaneSummary>();
+    for (const lane of lanes) {
+      if (lane.archivedAt || lane.laneType === "primary") continue;
+      const branch = normalizeBranchName(branchNameFromRef(lane.branchRef));
+      if (!branch || activeLaneByBranch.has(branch)) continue;
+      activeLaneByBranch.set(branch, lane);
+    }
+    if (activeLaneByBranch.size === 0) return 0;
+
+    const backfilledIds: string[] = [];
+    for (const rawPr of rawPulls) {
+      const headBranch = normalizeBranchName(asString(rawPr?.head?.ref));
+      const lane = headBranch ? activeLaneByBranch.get(headBranch) ?? null : null;
+      if (!lane) continue;
+
+      const headOwner = asString(rawPr?.head?.repo?.owner?.login)
+        || asString(rawPr?.head?.user?.login)
+        || asString(rawPr?.head?.repo?.owner);
+      if (!headOwner || headOwner.toLowerCase() !== repo.owner.toLowerCase()) continue;
+
+      const prNumber = asNumber(rawPr?.number);
+      if (!prNumber) continue;
+
+      const existingRepoRow = getRowForRepoPr(repo.owner, repo.name, prNumber);
+      if (existingRepoRow && existingRepoRow.lane_id !== lane.id) continue;
+
+      const summary: PrSummary = {
+        id: randomUUID(),
+        laneId: lane.id,
+        projectId,
+        repoOwner: repo.owner,
+        repoName: repo.name,
+        githubPrNumber: prNumber,
+        githubUrl: asString(rawPr?.html_url) || "",
+        githubNodeId: asString(rawPr?.node_id) || null,
+        title: asString(rawPr?.title) || `PR #${prNumber}`,
+        state: toPrState({
+          state: asString(rawPr?.state) || "open",
+          draft: Boolean(rawPr?.draft),
+          mergedAt: asString(rawPr?.merged_at) || null,
+        }),
+        baseBranch: asString(rawPr?.base?.ref) || branchNameFromRef(lane.baseRef),
+        headBranch,
+        checksStatus: "none",
+        reviewStatus: "none",
+        additions: Number(rawPr?.additions ?? 0),
+        deletions: Number(rawPr?.deletions ?? 0),
+        lastSyncedAt: nowIso(),
+        createdAt: asString(rawPr?.created_at) || nowIso(),
+        updatedAt: asString(rawPr?.updated_at) || nowIso(),
+        creationStrategy: "pr_target",
+      };
+      backfilledIds.push(upsertRow(summary, { allowRepoPrAdoption: true }));
+    }
+
+    if (backfilledIds.length > 0) {
+      markHotRefresh(backfilledIds);
+      invalidateGithubSnapshotCache();
+    }
+    return backfilledIds.length;
+  };
+
+  const pluralizeCommit = (count: number): string => count === 1 ? "commit" : "commits";
+
+  const parseLeftRightCounts = (stdout: string): { left: number; right: number } | null => {
+    const [leftRaw, rightRaw] = stdout.trim().split(/\s+/);
+    const left = Number.parseInt(leftRaw ?? "", 10);
+    const right = Number.parseInt(rightRaw ?? "", 10);
+    if (!Number.isFinite(left) || !Number.isFinite(right)) return null;
+    return { left, right };
+  };
+
+  const parseUpstreamRef = (upstreamRef: string): { remote: string; branch: string } | null => {
+    const trimmed = upstreamRef.trim();
+    if (!trimmed) return null;
+    const normalized = trimmed.startsWith("refs/remotes/")
+      ? trimmed.slice("refs/remotes/".length)
+      : trimmed;
+    const slashIndex = normalized.indexOf("/");
+    if (slashIndex <= 0 || slashIndex >= normalized.length - 1) return null;
+    return {
+      remote: normalized.slice(0, slashIndex),
+      branch: normalized.slice(slashIndex + 1),
+    };
+  };
+
+  const fetchRemoteBranchForPrCheck = async (args: {
+    cwd: string;
+    remote: string;
+    branch: string;
+    headBranch: string;
+  }): Promise<void> => {
+    const fetchResult = await runGit([
+      "fetch",
+      "--prune",
+      args.remote,
+      `+refs/heads/${args.branch}:refs/remotes/${args.remote}/${args.branch}`,
+    ], {
+      cwd: args.cwd,
+      timeoutMs: 60_000,
+      maxOutputBytes: 256 * 1024,
+    });
+    if (fetchResult.exitCode === 0) return;
+    const detail = (fetchResult.stderr || fetchResult.stdout).trim();
+    throw new Error(`Could not check the remote branch "${args.headBranch}" before creating the PR.${detail ? ` ${detail}` : ""}`);
+  };
+
+  const readBranchComparison = async (args: {
+    cwd: string;
+    remoteRef: string;
+    headBranch: string;
+  }): Promise<{ remoteAhead: number; localAhead: number } | null> => {
+    const result = await runGit(
+      ["rev-list", "--left-right", "--count", `${args.remoteRef}...HEAD`],
+      { cwd: args.cwd, timeoutMs: 15_000 }
+    );
+    if (result.exitCode !== 0) {
+      const detail = (result.stderr || result.stdout).trim();
+      throw new Error(`Could not compare "${args.headBranch}" with remote before creating the PR.${detail ? ` ${detail}` : ""}`);
+    }
+    const counts = parseLeftRightCounts(result.stdout);
+    if (!counts) {
+      logger.warn("prs.remote_comparison_unparseable", {
+        headBranch: args.headBranch,
+        remoteRef: args.remoteRef,
+        stdout: result.stdout,
+      });
+      throw new Error(`Could not read the remote status for "${args.headBranch}" before creating the PR. Try again after fetching the lane.`);
+    }
+    return { remoteAhead: counts.left, localAhead: counts.right };
+  };
+
+  const getRemoteBranchComparison = async (lane: LaneSummary, headBranch: string): Promise<{
+    hasUpstream: boolean;
+    hasRemoteBranch: boolean;
+    upstreamRef: string | null;
+    remoteAhead: number;
+    localAhead: number;
+  }> => {
+    const upstreamCheck = await runGit(
+      ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+      { cwd: lane.worktreePath, timeoutMs: 10_000 }
+    );
+
+    if (upstreamCheck.exitCode === 0) {
+      const upstreamRef = upstreamCheck.stdout.trim();
+      const parsedUpstream = parseUpstreamRef(upstreamRef);
+      if (parsedUpstream) {
+        await fetchRemoteBranchForPrCheck({
+          cwd: lane.worktreePath,
+          remote: parsedUpstream.remote,
+          branch: parsedUpstream.branch,
+          headBranch,
+        });
+      }
+
+      const comparison = await readBranchComparison({
+        cwd: lane.worktreePath,
+        remoteRef: upstreamRef,
+        headBranch,
+      });
+      return {
+        hasUpstream: true,
+        hasRemoteBranch: true,
+        upstreamRef,
+        remoteAhead: comparison?.remoteAhead ?? 0,
+        localAhead: comparison?.localAhead ?? 0,
+      };
+    }
+
+    const remoteBranchCheck = await runGit(["ls-remote", "--heads", "origin", headBranch], {
+      cwd: lane.worktreePath,
+      timeoutMs: 30_000,
+      maxOutputBytes: 256 * 1024,
+    });
+    if (remoteBranchCheck.exitCode !== 0 || remoteBranchCheck.stdout.trim().length === 0) {
+      return {
+        hasUpstream: false,
+        hasRemoteBranch: false,
+        upstreamRef: null,
+        remoteAhead: 0,
+        localAhead: 0,
+      };
+    }
+
+    await fetchRemoteBranchForPrCheck({
+      cwd: lane.worktreePath,
+      remote: "origin",
+      branch: headBranch,
+      headBranch,
+    });
+
+    const remoteRef = `origin/${headBranch}`;
+    const comparison = await readBranchComparison({
+      cwd: lane.worktreePath,
+      remoteRef,
+      headBranch,
+    });
+    return {
+      hasUpstream: false,
+      hasRemoteBranch: true,
+      upstreamRef: remoteRef,
+      remoteAhead: comparison?.remoteAhead ?? 0,
+      localAhead: comparison?.localAhead ?? 0,
+    };
+  };
+
+  const assertRemoteBranchReadyForPr = async (lane: LaneSummary, headBranch: string): Promise<{
+    hasUpstream: boolean;
+    hasRemoteBranch: boolean;
+  }> => {
+    const comparison = await getRemoteBranchComparison(lane, headBranch);
+    if (comparison.remoteAhead > 0 && comparison.localAhead > 0) {
+      throw new Error(
+        `Cannot create this PR yet. The remote branch "${headBranch}" has ${comparison.remoteAhead} newer ${pluralizeCommit(comparison.remoteAhead)}, and this lane has ${comparison.localAhead} local ${pluralizeCommit(comparison.localAhead)} that are not on remote. Pull or rebase the lane, then push once the history looks right. ADE did not force-push.`
+      );
+    }
+    if (comparison.remoteAhead > 0) {
+      throw new Error(
+        `Cannot create this PR yet. The remote branch "${headBranch}" has ${comparison.remoteAhead} newer ${pluralizeCommit(comparison.remoteAhead)}. Pull or rebase this lane before creating the PR. ADE did not force-push.`
+      );
+    }
+    return {
+      hasUpstream: comparison.hasUpstream,
+      hasRemoteBranch: comparison.hasRemoteBranch,
+    };
+  };
+
+  const pushLaneBranchForPr = async (lane: LaneSummary, headBranch: string): Promise<void> => {
+    if (!headBranch.trim()) {
+      throw new Error(`Lane "${lane.name}" has no branch checked out. Check out a branch before creating a PR.`);
+    }
+    const readiness = await assertRemoteBranchReadyForPr(lane, headBranch);
+    const pushArgs = readiness.hasUpstream
+      ? ["push"]
+      : ["push", "-u", "origin", headBranch];
+    const pushResult = await runGit(pushArgs, { cwd: lane.worktreePath, timeoutMs: 60_000 });
+    if (pushResult.exitCode === 0) return;
+
+    const detail = (pushResult.stderr || pushResult.stdout).trim();
+    const detailLower = detail.toLowerCase();
+    if (detailLower.includes("non-fast-forward") || detailLower.includes("rejected")) {
+      throw new Error(
+        `Push was rejected because the remote branch "${headBranch}" has changes this lane does not have. Pull or rebase this lane, then try again. ADE did not force-push.${detail ? `\n\n${detail}` : ""}`
+      );
+    }
+    throw new Error(`Push failed for "${headBranch}".${detail ? ` ${detail}` : ""}`);
+  };
+
   const fetchPr = async (repo: GitHubRepoRef, prNumber: number): Promise<any> => {
     const { data } = await githubService.apiRequest<any>({
       method: "GET",
@@ -2618,38 +2868,28 @@ export function createPrService({
       allowDirtyWorktree: args.allowDirtyWorktree
     });
 
-    const repo = await githubService.getRepoOrThrow();
     const headBranch = branchNameFromRef(lane.branchRef);
+    if (!headBranch) {
+      throw new Error(`Lane "${lane.name}" has no branch checked out. Check out a branch before creating a PR.`);
+    }
     const parentLane = lane.parentLaneId ? allLanes.find((entry) => entry.id === lane.parentLaneId) ?? null : null;
     const primaryLane = allLanes.find((entry) => entry.laneType === "primary") ?? null;
-    const defaultBaseBranch = resolveStableLaneBaseBranch({
-      lane,
-      parent: parentLane,
-      primaryBranchRef: primaryLane?.branchRef ?? null,
-    });
+    const parentPr = parentLane ? getRowForLane(parentLane.id) : null;
+    const defaultBaseBranch = parentPr?.state === "merged" && parentPr.base_branch
+      ? parentPr.base_branch
+      : resolveStableLaneBaseBranch({
+          lane,
+          parent: parentLane,
+          primaryBranchRef: primaryLane?.branchRef ?? null,
+        });
     const baseBranch = (args.baseBranch ?? defaultBaseBranch).trim();
-
-    // Push the branch to remote before creating the PR
-    const upstreamCheck = await runGit(
-      ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
-      { cwd: lane.worktreePath, timeoutMs: 10_000 }
-    );
-    if (upstreamCheck.exitCode === 0) {
-      const pushResult = await runGit(["push"], { cwd: lane.worktreePath, timeoutMs: 60_000 });
-      if (pushResult.exitCode !== 0) {
-        const stderr = pushResult.stderr ?? "";
-        if (stderr.includes("non-fast-forward") || stderr.includes("rejected")) {
-          // Branch was rebased locally — force-push safely
-          logger.info("prs.push_force_lease", { headBranch, reason: "non-fast-forward after rebase" });
-          await runGitOrThrow(["push", "--force-with-lease"], { cwd: lane.worktreePath, timeoutMs: 60_000 });
-        } else {
-          throw new Error(`Push failed: ${stderr}`);
-        }
-      }
-    } else {
-      await runGitOrThrow(["push", "-u", "origin", headBranch], { cwd: lane.worktreePath, timeoutMs: 60_000 });
+    if (!baseBranch) {
+      throw new Error("Choose a target branch before creating the PR.");
     }
 
+    await pushLaneBranchForPr(lane, headBranch);
+
+    const repo = await githubService.getRepoOrThrow();
     const createdAt = nowIso();
     let created: { data: any; response: Response | null };
     try {
@@ -3182,6 +3422,28 @@ export function createPrService({
       allowDirtyWorktree: args.allowDirtyWorktree
     });
     const laneMap = new Map(lanes.map((lane) => [lane.id, lane]));
+
+    for (const laneId of args.laneIds) {
+      const lane = laneMap.get(laneId);
+      if (!lane) {
+        errors.push({ laneId, error: `Lane not found: ${laneId}` });
+        continue;
+      }
+      const headBranch = branchNameFromRef(lane.branchRef);
+      if (!headBranch) {
+        errors.push({ laneId, error: `Lane "${lane.name}" has no branch checked out. Check out a branch before creating a PR.` });
+        continue;
+      }
+      try {
+        await assertRemoteBranchReadyForPr(lane, headBranch);
+      } catch (error) {
+        errors.push({ laneId, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+
+    if (errors.length > 0) {
+      return { groupId, prs, errors };
+    }
 
     db.run(
       `insert into pr_groups(id, project_id, group_type, name, auto_rebase, ci_gating, target_branch, created_at) values (?, ?, 'queue', ?, ?, ?, ?, ?)`,
@@ -4472,8 +4734,8 @@ export function createPrService({
 
     const lanes = await laneService.list({ includeArchived: true, includeStatus: false });
     const laneById = new Map(lanes.map((lane) => [lane.id, lane]));
-    const pullRequestRows = listRows();
-    const linkedPrByRepoKey = new Map(
+    let pullRequestRows = listRows();
+    let linkedPrByRepoKey = new Map(
       pullRequestRows.map((row) => [repoPrKey(row.repo_owner, row.repo_name, Number(row.github_pr_number)), row] as const)
     );
     const groupRows = db.all<{ pr_id: string; group_id: string; group_type: "queue" | "integration" }>(
@@ -4559,6 +4821,12 @@ export function createPrService({
       path: `/repos/${repo.owner}/${repo.name}/pulls`,
       query: { state: "all", sort: "updated", direction: "desc" },
     });
+    if (backfillLanePrRowsFromGithubPulls(repoPullRequestsRaw, repo, lanes) > 0) {
+      pullRequestRows = listRows();
+      linkedPrByRepoKey = new Map(
+        pullRequestRows.map((row) => [repoPrKey(row.repo_owner, row.repo_name, Number(row.github_pr_number)), row] as const)
+      );
+    }
 
     const externalPullRequestsRaw = githubStatus.userLogin
       ? await fetchAllPages<any>({
@@ -5654,6 +5922,11 @@ export function createPrService({
 
     async getGithubSnapshot(options?: { force?: boolean }): Promise<GitHubPrSnapshot> {
       return await getGithubSnapshot(options);
+    },
+
+    async discoverLanePullRequests(): Promise<PrSummary[]> {
+      await getGithubSnapshot({ force: true });
+      return listRows().map(rowToSummary);
     },
 
     async listIntegrationProposals(): Promise<IntegrationProposal[]> {

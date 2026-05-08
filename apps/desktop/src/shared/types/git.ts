@@ -63,9 +63,11 @@ export type GitPushArgs = {
 };
 
 export type GitRecommendedAction = "none" | "pull" | "push" | "force_push_lease";
+export type GitUpstreamState = "none" | "tracking" | "missing";
 
 export type GitUpstreamSyncStatus = {
   hasUpstream: boolean;
+  upstreamState?: GitUpstreamState;
   upstreamRef: string | null;
   ahead: number;
   behind: number;

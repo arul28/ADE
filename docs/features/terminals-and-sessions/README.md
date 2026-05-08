@@ -63,12 +63,16 @@ Shared types and IPC:
 - `apps/desktop/src/shared/ipc.ts` — channels `ade.sessions.*`,
   `ade.pty.*`, `ade.processes.*`, plus the chat-scoped
   `ade.terminal.*` family (`list`, `read`, `write`, `signal`,
-  `activeForChat`).
+  `activeForChat`) and the lane-tied `ade.macosVm.*` family
+  (`getStatus`, `provision`, `start`, `stop`, `delete`,
+  `getAgentGuide`, `getSharePolicy`, `focusWindow`,
+  `captureScreenshot`, `selectPoint`, `click`, `typeText`, event push).
 
 Preload bridge:
 
 - `apps/desktop/src/preload/preload.ts` — `window.ade.sessions`,
-  `window.ade.pty`, `window.ade.processes` APIs.
+  `window.ade.pty`, `window.ade.processes`, and `window.ade.macosVm`
+  APIs.
 
 IPC registration:
 
@@ -110,10 +114,15 @@ Renderer surfaces:
   refs to that chat by dispatching the
   `ade:agent-chat:add-attachment` / `add-ios-context` /
   `add-app-control-context` / `add-builtin-browser-context` /
-  `insert-draft` window events the matching `AgentChatPane` listens to.
-  Non-chat sessions disable attachment with a banner; lane mismatches
-  between the Work lane and an existing App Control / iOS Simulator
-  session also disable attachment with a warning.
+  `add-macos-vm-context` / `insert-draft` window events the matching
+  `AgentChatPane` listens to. Non-chat sessions disable attachment with
+  a banner; lane mismatches between the Work lane and an existing App
+  Control / iOS Simulator session also disable attachment with a warning.
+- `apps/desktop/src/renderer/components/terminals/MacosVmPanel.tsx` —
+  Work sidebar panel for the active lane's macOS VM. It shows provider
+  readiness, provisioning/start/stop/delete controls, sanitized share
+  status, screenshot capture, point selection, click/type controls, and
+  chat context attachment for selected VM targets.
 - `apps/desktop/src/renderer/components/terminals/SessionListPane.tsx` —
   sidebar list with three organization modes (lane / status / time),
   sticky group headers, search/filter. Renders a bulk action bar at the
@@ -209,6 +218,23 @@ Renderer surfaces:
   for a list of selected sessions; `triggerBrowserDownload` writes it
   to disk via a transient anchor + Object URL. Used by the bulk-export
   action in the session list.
+- `apps/desktop/src/main/services/macosVm/macosVmService.ts` —
+  lane-tied macOS VM lifecycle and control service. Uses Lume as the
+  first provider, stores per-lane records under `.ade/cache/macos-vms`,
+  keeps VNC credentials in `.ade/secrets`, mounts direct lane roots when
+  safe, and otherwise maintains a sanitized rsync mirror that excludes
+  ADE secrets, runtime databases, caches, transcripts, generated local
+  memory/history, worktrees, agents, and `.git`.
+- `apps/desktop/src/main/services/macosVm/rfbDirectClient.ts` —
+  headless VNC bridge for screenshot, click, and type operations. It
+  disables unsupported audio negotiation for Lume VNC sessions and
+  encodes captured RGBA frames as PNGs for proof/context flows.
+- `apps/desktop/src/main/services/macosVm/macosVmService.test.ts` —
+  macOS VM provider, share-policy, lifecycle, guidance, and direct-VNC
+  control tests.
+- `apps/desktop/src/shared/types/macosVm.ts` — `MacosVmStatus`,
+  `MacosVmRecord`, provision/start/control arguments, event payloads,
+  screenshot results, and `MacosVmContextItem`.
 
 iOS Work surfaces:
 
