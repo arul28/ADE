@@ -1710,6 +1710,7 @@ export function AgentChatPane({
   );
   const availableModelIdsRef = useRef(availableModelIds);
   const availableModelsRefreshSeqRef = useRef(0);
+  const cursorInventoryRefreshSeqRef = useRef(0);
   useEffect(() => {
     availableModelIdsRef.current = availableModelIds;
   }, [availableModelIds]);
@@ -2798,6 +2799,7 @@ export function AgentChatPane({
   }, [modelId, projectRoot, selectedSession?.provider, sessionProvider]);
 
   const refreshCursorModelInventory = useCallback(async () => {
+    const cursorRefreshSeq = ++cursorInventoryRefreshSeqRef.current;
     const status = aiStatus;
     const cursorExplicitlyUnavailable =
       status != null
@@ -2816,7 +2818,12 @@ export function AgentChatPane({
     } catch {
       return;
     }
-    if (availableModelsRefreshSeqRef.current !== refreshSeq) return;
+    if (
+      availableModelsRefreshSeqRef.current !== refreshSeq
+      || cursorInventoryRefreshSeqRef.current !== cursorRefreshSeq
+    ) {
+      return;
+    }
     if (!cursorModels.length) {
       setAvailableModelIds((prev) => prev.filter((id) => !isCursorModelId(id)));
       return;
