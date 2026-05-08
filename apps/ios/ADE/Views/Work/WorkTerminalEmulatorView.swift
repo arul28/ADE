@@ -356,7 +356,32 @@ private final class WorkTerminalScreen {
       column = max(0, min(cols - 1, max(1, params.dropFirst().first ?? 1) - 1))
       ensureCursor()
     case "J":
-      if first == 2 || first == 3 { reset() }
+      ensureCursor()
+      if first == 2 || first == 3 {
+        reset()
+      } else if first == 1 {
+        let space = WorkTerminalCell(scalar: " ", foreground: foreground, bold: bold)
+        for lineIndex in 0...row {
+          guard lines.indices.contains(lineIndex) else { continue }
+          if lineIndex == row {
+            let endIndex = min(column + 1, lines[lineIndex].count)
+            for cellIndex in 0..<endIndex {
+              lines[lineIndex][cellIndex] = space
+            }
+          } else {
+            for cellIndex in lines[lineIndex].indices {
+              lines[lineIndex][cellIndex] = space
+            }
+          }
+        }
+      } else {
+        if column < lines[row].count {
+          lines[row].removeSubrange(column..<lines[row].count)
+        }
+        if row + 1 < lines.count {
+          lines.removeSubrange((row + 1)..<lines.count)
+        }
+      }
     case "K":
       ensureCursor()
       if first == 1 {

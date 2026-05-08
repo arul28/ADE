@@ -1267,7 +1267,7 @@ function takeArgsAfterTerminator(args: string[]): string[] | null {
   if (index < 0) return null;
   const rest = args.slice(index + 1);
   args.splice(index);
-  return rest;
+  return rest.length > 0 ? rest : null;
 }
 
 function peekFirstPositional(args: string[]): string | null {
@@ -3359,7 +3359,7 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--description", "--domain", "--droid-autonomy", "--droid-permission-mode",
   "--duration-sec", "--enabled", "--event",
   "--end-x", "--end-y", "--file", "--fps", "--from", "--from-file", "--group", "--group-id", "--head", "--icon", "--id",
-  "--index", "--input", "--input-json", "--input-text", "--instructions",
+  "--index", "--initial-input", "--input", "--input-json", "--input-text", "--instructions",
   "--kind",
   "--json-input", "--lane", "--lane-id", "--limit", "--max-bytes",
   "--line",
@@ -3371,7 +3371,8 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--path", "--permission-mode", "--permissions", "--port", "--pr", "--pr-id",
   "--pr-number", "--pr-url", "--process", "--process-id", "--project-root",
   "--prompt", "--provider", "--pty", "--pty-id", "--query", "--question",
-  "--reason", "--reasoning", "--recent-limit", "--ref", "--role", "--root",
+  "--reason", "--reasoning", "--recent-limit", "--ref", "--resume-session", "--resume-session-id",
+  "--resume-target", "--resume-target-id", "--role", "--root",
   "--root-lane", "--round", "--rounds", "--rows", "--rule", "--run", "--run-id", "--scalar",
   "--scalar-json", "--scope", "--seconds", "--session", "--session-id", "--set",
   "--set-json", "--sha", "--signal", "--since", "--source", "--source-lane", "--stack", "--stack-id",

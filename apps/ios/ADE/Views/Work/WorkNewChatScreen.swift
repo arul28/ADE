@@ -310,7 +310,7 @@ struct WorkNewChatScreen: View {
             pinned: false,
             manuallyNamed: nil,
             goal: nil,
-            toolType: nil,
+            toolType: workCliToolType(provider: provider),
             title: workCliProviderOptions.first(where: { $0.id == provider })?.title ?? providerLabel(provider),
             status: "running",
             startedAt: workDateFormatter.string(from: Date()),
@@ -382,10 +382,21 @@ private func workNewChatModel(_ modelId: String, belongsTo provider: String) -> 
 
 private func workDefaultNewChatModelId(provider: String) -> String {
   switch workNormalizedNewChatProvider(provider) {
-  case "codex": return "gpt-5.5"
+  case "codex": return workDefaultCatalogModelId(provider: "codex") ?? "gpt-5.5"
   case "cursor": return "auto"
   case "opencode": return "opencode/anthropic/claude-sonnet-4-6"
   default: return "claude-sonnet-4-6"
+  }
+}
+
+private func workCliToolType(provider: String) -> String {
+  switch providerFamilyKey(provider) {
+  case "claude": return "claude"
+  case "codex": return "codex"
+  case "cursor": return "cursor-cli"
+  case "opencode": return "opencode"
+  case "droid": return "droid"
+  default: return "shell"
   }
 }
 

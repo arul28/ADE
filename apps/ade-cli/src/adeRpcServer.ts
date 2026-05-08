@@ -2141,8 +2141,13 @@ function parseCliSessionProvider(value: unknown): LaunchProfile {
 }
 
 function parseCliSessionPermissionMode(value: unknown): AgentChatPermissionMode {
-  const mode = asTrimmedString(value);
-  return isTrackedCliPermissionMode(mode) ? mode : "default";
+  const mode = asTrimmedString(value).toLowerCase();
+  if (!mode) return "default";
+  if (isTrackedCliPermissionMode(mode)) return mode;
+  throw new JsonRpcError(
+    JsonRpcErrorCode.invalidParams,
+    "permissionMode must be one of default, plan, edit, full-auto, or config-toml",
+  );
 }
 
 function clampInteger(value: unknown, fallback: number, min: number, max: number): number {
@@ -4352,7 +4357,8 @@ async function runTool(args: {
     const rows = clampInteger(toolArgs.rows, DEFAULT_PTY_ROWS, 4, 120);
     const title = asOptionalTrimmedString(toolArgs.title) ?? LAUNCH_PROFILE_TITLE[provider];
     const resumeSessionId = asOptionalTrimmedString(toolArgs.resumeSessionId);
-    const resumeTargetId = asOptionalTrimmedString(toolArgs.resumeTargetId);
+    const resumeTargetIdRaw = asOptionalTrimmedString(toolArgs.resumeTargetId);
+    const resumeTargetId = resumeTargetIdRaw ? stripInjectionChars(resumeTargetIdRaw) : null;
     const initialInput = asOptionalTrimmedString(toolArgs.initialInput)?.slice(0, 20_000) ?? null;
     const resumeSession = resumeSessionId ? requireCliResumeSession(runtime, resumeSessionId, provider) : null;
     const ptyService = runtime.ptyService;

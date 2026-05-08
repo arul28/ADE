@@ -923,6 +923,38 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("finds a start-cli provider after resume value-taking options", () => {
+    const cases: Array<[string, string, string]> = [
+      ["--resume-session", "session-1", "resumeSessionId"],
+      ["--resume-session-id", "session-2", "resumeSessionId"],
+      ["--resume-target", "target-1", "resumeTargetId"],
+      ["--resume-target-id", "target-2", "resumeTargetId"],
+      ["--initial-input", "hello agent", "initialInput"],
+    ];
+
+    for (const [flag, value, field] of cases) {
+      const plan = buildCliPlan([
+        "shell",
+        "start-cli",
+        "--lane",
+        "lane-1",
+        flag,
+        value,
+        "codex",
+      ]);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") return;
+      expect(plan.steps[0]?.params).toMatchObject({
+        name: "start_cli_session",
+        arguments: {
+          laneId: "lane-1",
+          provider: "codex",
+          [field]: value,
+        },
+      });
+    }
+  });
+
   it("accepts --provider on shell start as the CLI-session launcher", () => {
     const plan = buildCliPlan([
       "shell",
@@ -1557,6 +1589,34 @@ describe("ADE CLI", () => {
         domain: "ios_simulator",
         action: "shutdown",
         args: { force: true },
+      },
+    });
+  });
+
+  it("keeps shell --command when an argument terminator has no trailing tokens", () => {
+    const plan = buildCliPlan(["shell", "start", "--lane", "lane-1", "--command", "npm test", "--"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "pty",
+        action: "create",
+        args: {
+          startupCommand: "npm test",
+        },
+      },
+    });
+  });
+
+  it("keeps start-cli --message when an argument terminator has no trailing tokens", () => {
+    const plan = buildCliPlan(["shell", "start-cli", "codex", "--lane", "lane-1", "--message", "hello", "--"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toMatchObject({
+      name: "start_cli_session",
+      arguments: {
+        provider: "codex",
+        initialInput: "hello",
       },
     });
   });

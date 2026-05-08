@@ -95,6 +95,16 @@ func workModelCatalog(currentModelId: String, currentProvider: String) -> [WorkM
   }
 }
 
+func workDefaultCatalogModelId(provider: String) -> String? {
+  let family = providerFamilyKey(provider)
+  return workCuratedModelCatalogGroups()
+    .first(where: { $0.key == family })?
+    .providers
+    .flatMap(\.models)
+    .first?
+    .id
+}
+
 /// Desktop-shaped hierarchical catalog: group → provider → models. Mirrors
 /// `apps/desktop/src/shared/modelRegistry.ts` + `ModelCatalogPanel` so mobile
 /// users see the same CLAUDE / CODEX / CURSOR / OPENCODE tab strip and, within

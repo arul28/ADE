@@ -31,6 +31,14 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(output, "middle\nbottom")
   }
 
+  func testTerminalDisplayErasesFromCursorToEndOfScreen() {
+    let absentParam = sanitizeTerminalOutputForDisplay("alpha\nbravo\ncharlie\u{001B}[2A\u{001B}[3G\u{001B}[JZ")
+    let zeroParam = sanitizeTerminalOutputForDisplay("alpha\nbravo\ncharlie\u{001B}[2A\u{001B}[3G\u{001B}[0JZ")
+
+    XCTAssertEqual(absentParam, "alZ")
+    XCTAssertEqual(zeroParam, "alZ")
+  }
+
   func testTerminalDisplayStripsAnsiColorAndBackspaces() {
     let output = sanitizeTerminalOutputForDisplay("\u{001B}[31merr\u{001B}[0mor\u{0008}k")
 

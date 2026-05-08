@@ -199,10 +199,33 @@ private final class WorkTerminalTextReplay {
       column = max(0, max(1, params.dropFirst().first ?? 1) - 1)
       ensureCursor()
     case "J":
+      ensureCursor()
       if first == 2 || first == 3 {
         lines = [[]]
         row = 0
         column = 0
+      } else if first == 1 {
+        let space = WorkTerminalCell(scalar: " ")
+        for lineIndex in 0...row {
+          guard lines.indices.contains(lineIndex) else { continue }
+          if lineIndex == row {
+            let endIndex = min(column + 1, lines[lineIndex].count)
+            for cellIndex in 0..<endIndex {
+              lines[lineIndex][cellIndex] = space
+            }
+          } else {
+            for cellIndex in lines[lineIndex].indices {
+              lines[lineIndex][cellIndex] = space
+            }
+          }
+        }
+      } else {
+        if column < lines[row].count {
+          lines[row].removeSubrange(column..<lines[row].count)
+        }
+        if row + 1 < lines.count {
+          lines.removeSubrange((row + 1)..<lines.count)
+        }
       }
     case "K":
       ensureCursor()

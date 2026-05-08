@@ -278,7 +278,11 @@ function createRuntime() {
     ptyService: {
       create: vi.fn(async () => ({ ptyId: "pty-1", sessionId: "session-1" })),
       dispose: vi.fn(),
-      writeBySessionId: vi.fn(() => true),
+      writeBySessionId: vi.fn((sessionId: string, data: string): boolean => {
+        void sessionId;
+        void data;
+        return true;
+      }),
       enrichSessions: vi.fn((sessions: unknown[]) => sessions),
     },
     testService: {
@@ -2024,6 +2028,23 @@ describe("adeRpcServer", () => {
     );
   });
 
+  it("sanitizes start_cli_session resume target ids before building commands", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "orchestrator" });
+    const response = await callTool(handler, "start_cli_session", {
+      laneId: "lane-1",
+      provider: "codex",
+      resumeTargetId: "thread-1\n--danger",
+    });
+
+    expect(response?.isError).toBeUndefined();
+    const createCall = fixture.runtime.ptyService.create.mock.calls.at(-1)?.[0];
+    expect(createCall.startupCommand).toContain("thread-1 --danger");
+    expect(createCall.startupCommand).not.toContain("\n");
+  });
+
   it("rejects start_cli_session resume when the session id is missing", async () => {
     const fixture = createRuntime();
     fixture.runtime.sessionService.get.mockReturnValue(null);
@@ -2070,6 +2091,24 @@ describe("adeRpcServer", () => {
 
     expect(response.isError).toBe(true);
     expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain("belongs to claude, not codex");
+    expect(fixture.runtime.ptyService.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid start_cli_session permission modes", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "orchestrator" });
+    const response = await callTool(handler, "start_cli_session", {
+      laneId: "lane-1",
+      provider: "codex",
+      permissionMode: "surprise-me",
+    });
+
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain(
+      "permissionMode must be one of default, plan, edit, full-auto, or config-toml",
+    );
     expect(fixture.runtime.ptyService.create).not.toHaveBeenCalled();
   });
 
