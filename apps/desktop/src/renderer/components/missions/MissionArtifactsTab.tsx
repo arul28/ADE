@@ -28,14 +28,14 @@ function describeCloseoutRequirement(requirement: MissionCloseoutRequirement): s
     browser_verification: "Records browser-based proof that the user flow was actually exercised.",
     browser_trace: "Keeps a browser trace for debugging or audit follow-up.",
     test_report: "Shows what ADE ran to validate the work and what happened.",
-    pr_url: "Links the mission to the pull request created during closeout.",
+    pr_url: "Links the mission to an external pull request if one is created after closeout.",
     proposal_url: "Links the mission to the proposal or review thread created during finalization.",
   };
   return requirement.detail?.trim() || purposes[requirement.key] || "Required to explain or verify the mission before closeout.";
 }
 
 function friendlyRequirementStatus(requirement: MissionCloseoutRequirement): {
-  label: "Captured" | "Missing" | "Not required";
+  label: "Captured" | "Incomplete" | "Missing" | "Blocked" | "Not required";
   color: string;
 } {
   if (!requirement.required || requirement.status === "waived") {
@@ -43,6 +43,12 @@ function friendlyRequirementStatus(requirement: MissionCloseoutRequirement): {
   }
   if (requirement.status === "present") {
     return { label: "Captured", color: COLORS.success };
+  }
+  if (requirement.status === "incomplete") {
+    return { label: "Incomplete", color: COLORS.warning };
+  }
+  if (requirement.status === "blocked_by_capability") {
+    return { label: "Blocked", color: COLORS.danger };
   }
   return { label: "Missing", color: COLORS.warning };
 }
@@ -112,7 +118,6 @@ export function MissionArtifactsTab({
   groupedArtifacts,
   closeoutRequirements = [],
   missionId = null,
-  runId = null,
   laneId = null,
   computerUseSnapshot = null,
 }: {

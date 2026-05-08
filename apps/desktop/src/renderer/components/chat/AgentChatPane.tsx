@@ -95,6 +95,7 @@ import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
 import { getAgentChatModelsCached, getAiStatusCached, peekAiStatusCached } from "../../lib/aiDiscoveryCache";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
+import { rewriteMissionControlTextToolEvents } from "./missionControlTextTools";
 
 import { playAgentTurnCompletionSound } from "../../lib/agentTurnCompletionSound";
 
@@ -2016,22 +2017,25 @@ export function AgentChatPane({
     const baseEvents = optimisticOutgoingMessage && optimisticOutgoingMessage.sessionId === selectedSessionId
       ? [...selectedEvents, optimisticOutgoingMessage.envelope]
       : selectedEvents;
+    const displayEvents = presentation?.rewriteMissionControlTextTools === true || presentation?.mode === "mission-thread"
+      ? rewriteMissionControlTextToolEvents(baseEvents)
+      : baseEvents;
     const promotedTurnId = selectedSession?.cursorPromotedTurnId;
     const cloudAgentId = selectedSession?.cursorCloudAgentId;
-    if (!promotedTurnId || !cloudAgentId) return baseEvents;
-    if (baseEvents.some((env) => env.event.type === "system_notice" && env.event.noticeKind === "info" && env.event.message === "Promoted to Cursor Cloud")) {
-      return baseEvents;
+    if (!promotedTurnId || !cloudAgentId) return displayEvents;
+    if (displayEvents.some((env) => env.event.type === "system_notice" && env.event.noticeKind === "info" && env.event.message === "Promoted to Cursor Cloud")) {
+      return displayEvents;
     }
-    let insertAt = baseEvents.length;
-    for (let i = 0; i < baseEvents.length; i += 1) {
-      const evt = baseEvents[i]?.event;
+    let insertAt = displayEvents.length;
+    for (let i = 0; i < displayEvents.length; i += 1) {
+      const evt = displayEvents[i]?.event;
       const turnId = evt && "turnId" in evt ? (evt as { turnId?: string }).turnId : undefined;
       if (turnId === promotedTurnId) {
         insertAt = i;
         break;
       }
     }
-    const refEnvelope = baseEvents[insertAt] ?? baseEvents[baseEvents.length - 1];
+    const refEnvelope = displayEvents[insertAt] ?? displayEvents[displayEvents.length - 1];
     const synthetic: AgentChatEventEnvelope = {
       sessionId: selectedSessionId ?? "",
       timestamp: refEnvelope?.timestamp ?? new Date().toISOString(),
@@ -2043,8 +2047,8 @@ export function AgentChatPane({
         turnId: promotedTurnId,
       },
     };
-    return [...baseEvents.slice(0, insertAt), synthetic, ...baseEvents.slice(insertAt)];
-  }, [optimisticOutgoingMessage, selectedEvents, selectedSession?.cursorCloudAgentId, selectedSession?.cursorPromotedTurnId, selectedSessionId]);
+    return [...displayEvents.slice(0, insertAt), synthetic, ...displayEvents.slice(insertAt)];
+  }, [optimisticOutgoingMessage, presentation?.mode, presentation?.rewriteMissionControlTextTools, selectedEvents, selectedSession?.cursorCloudAgentId, selectedSession?.cursorPromotedTurnId, selectedSessionId]);
   const selectedSubagentSnapshots = useMemo(() => deriveChatSubagentSnapshots(selectedEvents), [selectedEvents]);
   const selectedTurnDiffSummaries = useMemo(() => deriveTurnDiffSummaries(selectedEvents), [selectedEvents]);
   const selectedTodoItems = useMemo(() => deriveTodoItems(selectedEvents), [selectedEvents]);

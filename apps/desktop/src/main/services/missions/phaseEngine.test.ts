@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { PhaseCard, PhaseProfile, MissionPhaseConfiguration } from "../../../shared/types";
+import type { PhaseCard, MissionPhaseConfiguration } from "../../../shared/types";
 import {
   BUILT_IN_PHASE_KEYS,
   createBuiltInPhaseCards,
@@ -36,16 +36,25 @@ describe("BUILT_IN_PHASE_KEYS", () => {
   it("has the expected built-in keys", () => {
     expect(BUILT_IN_PHASE_KEYS.planning).toBe("planning");
     expect(BUILT_IN_PHASE_KEYS.development).toBe("development");
+    expect(BUILT_IN_PHASE_KEYS.integration).toBe("integration");
     expect(BUILT_IN_PHASE_KEYS.testing).toBe("testing");
     expect(BUILT_IN_PHASE_KEYS.validation).toBe("validation");
+    expect(BUILT_IN_PHASE_KEYS.closeout).toBe("closeout");
   });
 });
 
 describe("createBuiltInPhaseCards", () => {
-  it("creates 4 built-in phase cards", () => {
+  it("creates 6 built-in phase cards", () => {
     const cards = createBuiltInPhaseCards("2026-03-25T00:00:00.000Z");
-    expect(cards).toHaveLength(4);
-    expect(cards.map((c) => c.phaseKey)).toEqual(["planning", "development", "testing", "validation"]);
+    expect(cards).toHaveLength(6);
+    expect(cards.map((c) => c.phaseKey)).toEqual([
+      "planning",
+      "development",
+      "integration",
+      "testing",
+      "validation",
+      "closeout",
+    ]);
   });
 
   it("sets planning phase as mustBeFirst and position 0", () => {
@@ -59,7 +68,7 @@ describe("createBuiltInPhaseCards", () => {
 
   it("assigns sequential positions", () => {
     const cards = createBuiltInPhaseCards();
-    expect(cards.map((c) => c.position)).toEqual([0, 1, 2, 3]);
+    expect(cards.map((c) => c.position)).toEqual([0, 1, 2, 3, 4, 5]);
   });
 
   it("marks all as isBuiltIn and not isCustom", () => {
@@ -99,21 +108,21 @@ describe("createBuiltInPhaseProfiles", () => {
     expect(profiles[1].name).toBe("TDD");
   });
 
-  it("default profile has Planning -> Development -> Testing -> Validation order", () => {
+  it("default profile has Planning -> Development -> Integration -> Testing -> Validation -> Closeout order", () => {
     const cards = createBuiltInPhaseCards();
     const profiles = createBuiltInPhaseProfiles(cards);
     const defaultProfile = profiles.find((p) => p.name === "Default")!;
     expect(defaultProfile.phases.map((p) => p.phaseKey)).toEqual([
-      "planning", "development", "testing", "validation",
+      "planning", "development", "integration", "testing", "validation", "closeout",
     ]);
   });
 
-  it("TDD profile has Planning -> Testing -> Development -> Validation order", () => {
+  it("TDD profile has Planning -> Testing -> Development -> Integration -> Validation -> Closeout order", () => {
     const cards = createBuiltInPhaseCards();
     const profiles = createBuiltInPhaseProfiles(cards);
     const tddProfile = profiles.find((p) => p.name === "TDD")!;
     expect(tddProfile.phases.map((p) => p.phaseKey)).toEqual([
-      "planning", "testing", "development", "validation",
+      "planning", "testing", "development", "integration", "validation", "closeout",
     ]);
   });
 
@@ -131,7 +140,9 @@ describe("createBuiltInPhaseProfiles", () => {
     expect(tdd.phases[0].position).toBe(0); // planning
     expect(tdd.phases[1].position).toBe(1); // testing
     expect(tdd.phases[2].position).toBe(2); // development
-    expect(tdd.phases[3].position).toBe(3); // validation
+    expect(tdd.phases[3].position).toBe(3); // integration
+    expect(tdd.phases[4].position).toBe(4); // validation
+    expect(tdd.phases[5].position).toBe(5); // closeout
   });
 });
 
@@ -151,7 +162,53 @@ describe("validatePhaseSequence", () => {
     const errors = validatePhaseSequence([
       makePhaseCard({ phaseKey: "planning", position: 0 }),
     ]);
-    expect(errors).toContain("Development phase is required.");
+    expect(errors).toContain("Development or implementation phase is required.");
+  });
+
+  it("accepts custom implementation phases as the development portion of a mission", () => {
+    const errors = validatePhaseSequence([
+      makePhaseCard({ id: "phase-planning", phaseKey: "planning", name: "Planning", position: 0 }),
+      makePhaseCard({
+        id: "phase-implementation-math",
+        phaseKey: "implementation_math",
+        name: "Implementation math",
+        position: 1,
+        isBuiltIn: false,
+        isCustom: true,
+      }),
+      makePhaseCard({
+        id: "phase-implementation-strings",
+        phaseKey: "implementation_strings",
+        name: "Implementation strings",
+        position: 2,
+        isBuiltIn: false,
+        isCustom: true,
+      }),
+    ]);
+    expect(errors).toEqual([]);
+  });
+
+  it("accepts arbitrary custom executable phases as the development portion of a mission", () => {
+    const errors = validatePhaseSequence([
+      makePhaseCard({ id: "phase-planning", phaseKey: "planning", name: "Planning", position: 0 }),
+      makePhaseCard({
+        id: "phase-parser-enrichment",
+        phaseKey: "parser_enrichment",
+        name: "Parser enrichment",
+        position: 1,
+        isBuiltIn: false,
+        isCustom: true,
+      }),
+      makePhaseCard({
+        id: "phase-formatter-reporting",
+        phaseKey: "formatter_reporting",
+        name: "Formatter reporting",
+        position: 2,
+        isBuiltIn: false,
+        isCustom: true,
+      }),
+    ]);
+    expect(errors).toEqual([]);
   });
 
   it("errors when planning appears after development", () => {
@@ -188,6 +245,30 @@ describe("validatePhaseSequence", () => {
     ];
     const errors = validatePhaseSequence(tddOrder);
     expect(errors).toEqual([]);
+  });
+
+  it("enforces built-in ordering constraints", () => {
+    const cards = createBuiltInPhaseCards();
+    const closeout = cards.find((c) => c.phaseKey === "closeout")!;
+    const development = cards.find((c) => c.phaseKey === "development")!;
+    const planning = cards.find((c) => c.phaseKey === "planning")!;
+    const validation = cards.find((c) => c.phaseKey === "validation")!;
+
+    const errors = validatePhaseSequence([development, closeout, validation, planning]);
+
+    expect(errors).toContain("Planning phase must be first.");
+    expect(errors).toContain("Closeout phase must be last.");
+    expect(errors).toContain("Closeout phase must come after Validation.");
+  });
+
+  it("errors when an ordering prerequisite is missing", () => {
+    const cards = createBuiltInPhaseCards();
+    const development = cards.find((c) => c.phaseKey === "development")!;
+    const closeout = cards.find((c) => c.phaseKey === "closeout")!;
+
+    const errors = validatePhaseSequence([development, closeout]);
+
+    expect(errors).toContain("Closeout phase requires validation phase.");
   });
 
   it("deduplicates error messages", () => {
@@ -272,6 +353,42 @@ describe("applyPhaseCardsToPlanSteps", () => {
     expect(applied[0].metadata.phaseKey).toBe("testing");
   });
 
+  it("routes steps to custom phases when kind or stepType matches a custom phase key", () => {
+    const basePhases = createBuiltInPhaseCards();
+    const developmentPhase = basePhases.find((phase) => phase.phaseKey === "development");
+    if (!developmentPhase) throw new Error("Expected development phase");
+    const phases = [
+      ...basePhases,
+      {
+        ...developmentPhase,
+        id: "custom:review",
+        phaseKey: "review",
+        name: "Review",
+        position: basePhases.length,
+        isBuiltIn: false,
+        isCustom: true,
+      },
+      {
+        ...developmentPhase,
+        id: "custom:slash-command",
+        phaseKey: "slash_command",
+        name: "Slash command",
+        position: basePhases.length + 1,
+        isBuiltIn: false,
+        isCustom: true,
+      },
+    ];
+    const steps = [
+      { index: 0, title: "Review", detail: "Review work", kind: "task", metadata: { stepType: "review" } },
+      { index: 1, title: "Slash", detail: "Run slash command", kind: "slash_command", metadata: {} },
+    ];
+
+    const applied = applyPhaseCardsToPlanSteps(steps, phases);
+
+    expect(applied[0].metadata.phaseKey).toBe("review");
+    expect(applied[1].metadata.phaseKey).toBe("slash_command");
+  });
+
   it("attaches phase model, budget, instructions, and validation info", () => {
     const phases = createBuiltInPhaseCards();
     const steps = [
@@ -294,6 +411,33 @@ describe("applyPhaseCardsToPlanSteps", () => {
     expect(applied[0].metadata.phaseKey).toBe("development");
   });
 
+  it("falls back to the first custom implementation phase for unknown step types when development is custom-split", () => {
+    const phases = [
+      makePhaseCard({ id: "phase-planning", phaseKey: "planning", name: "Planning", position: 0 }),
+      makePhaseCard({
+        id: "phase-implementation-math",
+        phaseKey: "implementation_math",
+        name: "Implementation math",
+        position: 1,
+        isBuiltIn: false,
+        isCustom: true,
+      }),
+      makePhaseCard({
+        id: "phase-implementation-strings",
+        phaseKey: "implementation_strings",
+        name: "Implementation strings",
+        position: 2,
+        isBuiltIn: false,
+        isCustom: true,
+      }),
+    ];
+    const steps = [
+      { index: 0, title: "Unknown", detail: "Unknown step", kind: "unknown", metadata: { stepType: "unknown" } },
+    ];
+    const applied = applyPhaseCardsToPlanSteps(steps, phases);
+    expect(applied[0].metadata.phaseKey).toBe("implementation_math");
+  });
+
   it("infers milestone stepType as validation", () => {
     const phases = createBuiltInPhaseCards();
     const steps = [
@@ -303,13 +447,49 @@ describe("applyPhaseCardsToPlanSteps", () => {
     expect(applied[0].metadata.phaseKey).toBe("validation");
   });
 
-  it("infers integration stepType as validation", () => {
+  it("infers validation kind as validation even without a stepType", () => {
+    const phases = createBuiltInPhaseCards();
+    const steps = [
+      { index: 0, title: "Validate", detail: "Check output", kind: "validation", metadata: {} },
+    ];
+    const applied = applyPhaseCardsToPlanSteps(steps, phases);
+    expect(applied[0].metadata.phaseKey).toBe("validation");
+  });
+
+  it("infers test kind as testing even without a stepType", () => {
+    const phases = createBuiltInPhaseCards();
+    const steps = [
+      { index: 0, title: "Test", detail: "Run tests", kind: "test", metadata: {} },
+    ];
+    const applied = applyPhaseCardsToPlanSteps(steps, phases);
+    expect(applied[0].metadata.phaseKey).toBe("testing");
+  });
+
+  it("infers integration stepType as integration when the integration phase exists", () => {
     const phases = createBuiltInPhaseCards();
     const steps = [
       { index: 0, title: "Merge", detail: "Integration step", kind: "integration", metadata: { stepType: "integration" } },
     ];
     const applied = applyPhaseCardsToPlanSteps(steps, phases);
+    expect(applied[0].metadata.phaseKey).toBe("integration");
+  });
+
+  it("falls back to validation for integration steps when no integration phase exists", () => {
+    const phases = createBuiltInPhaseCards().filter((phase) => phase.phaseKey !== "integration");
+    const steps = [
+      { index: 0, title: "Merge", detail: "Integration step", kind: "integration", metadata: { stepType: "integration" } },
+    ];
+    const applied = applyPhaseCardsToPlanSteps(steps, phases);
     expect(applied[0].metadata.phaseKey).toBe("validation");
+  });
+
+  it("infers closeout stepType as closeout when the closeout phase exists", () => {
+    const phases = createBuiltInPhaseCards();
+    const steps = [
+      { index: 0, title: "Summarize", detail: "Closeout step", kind: "summary", metadata: { stepType: "closeout" } },
+    ];
+    const applied = applyPhaseCardsToPlanSteps(steps, phases);
+    expect(applied[0].metadata.phaseKey).toBe("closeout");
   });
 });
 

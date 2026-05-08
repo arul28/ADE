@@ -69,8 +69,8 @@ import type {
   MissionStateDocumentPatch,
   MissionCloseoutRequirement,
   MissionCloseoutRequirementKey,
+  MissionCloseoutRequirementStatus,
   MissionFinalizationPolicy,
-  MissionFinalizationPolicyKind,
   MissionFinalizationState,
   MissionCoordinatorAvailability,
   MissionStatePendingIntervention,
@@ -103,7 +103,7 @@ import {
   DEFAULT_INTEGRATION_PR_POLICY,
 } from "./orchestratorConstants";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
-import { modelConfigToServiceModel } from "../../../shared/modelProfiles";
+import { modelConfigToServiceModel, thinkingLevelToReasoningEffort } from "../../../shared/modelProfiles";
 import { isWorkerBootstrapNoiseLine } from "../../../shared/workerRuntimeNoise";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
@@ -148,6 +148,8 @@ import {
   buildPlanningPromptPreview,
   buildWorkerPromptInspector,
 } from "./promptInspector";
+import { COORDINATOR_TOOL_NAMES } from "./coordinatorTools";
+import { normalizeCoordinatorToolName } from "./delegationContracts";
 
 type CoordinatorLifecycleState =
   | "booting"
@@ -155,8 +157,13 @@ type CoordinatorLifecycleState =
   | "fetching_project_context"
   | "launching_planner"
   | "waiting_on_planner"
+  | "running_phase"
   | "planner_launch_failed"
   | "stopped";
+
+const WORKER_STARTUP_ATTACH_TIMEOUT_MS = 75_000;
+const RUN_VIEW_CACHE_TTL_MS = 750;
+const RUN_VIEW_STALE_WHILE_REFRESHING_MS = 5_000;
 
 // ── Module imports (extracted from this file) ────────────────────
 import type {
@@ -255,6 +262,7 @@ import {
   dispatchOrchestratorHookCtx,
   maybeDispatchTeammateIdleHookCtx,
 } from "./missionLifecycle";
+import { resolveDevelopmentPhaseKey } from "../missions/phaseEngine";
 import type { HookDispatchDeps } from "./missionLifecycle";
 import { hasMaterialWorkerChatEvent } from "../../../shared/chatTranscript";
 import {
@@ -305,10 +313,22 @@ type MissionLaunchFailureStage =
   | "coordinator_start"
   | "run_activate";
 
+export function hasRecoverableWorkerRuntimeState(states: Iterable<OrchestratorWorkerState>): boolean {
+  for (const state of states) {
+    if (state.state !== "completed" && state.state !== "failed" && state.state !== "disposed") {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function buildCoordinatorEvaluationActionHints(graph: OrchestratorRunGraph): string[] {
   const hints: string[] = [];
   const executionSteps = filterExecutionSteps(graph.steps);
   if (executionSteps.length === 0) return hints;
+  const nextImplementationPhaseKey = resolveDevelopmentPhaseKey(
+    deriveConfiguredPhasesForSync(graph) as unknown as PhaseCard[],
+  );
 
   const runMeta = isRecord(graph.run.metadata) ? graph.run.metadata : null;
   const phaseRuntime = isRecord(runMeta?.phaseRuntime) ? runMeta.phaseRuntime : null;
@@ -337,7 +357,7 @@ export function buildCoordinatorEvaluationActionHints(graph: OrchestratorRunGrap
     && currentPhaseTerminal.length > 0
     && currentPhaseNonTerminal.length === 0
   ) {
-    hints.push("REQUIRED NEXT ACTION: Planning work is complete. Call set_current_phase with phaseKey \"development\" before spawning any implementation workers.");
+    hints.push(`REQUIRED NEXT ACTION: Planning work is complete. Call set_current_phase with phaseKey "${nextImplementationPhaseKey}" before spawning any implementation workers.`);
   }
 
   if (remainingExecution.length === 0) {
@@ -810,6 +830,12 @@ export function createAiOrchestratorService(args: {
   const workerDeliveryInterventionCooldowns = new Map<string, number>();
   const runTeamManifests = new Map<string, TeamManifest>();
   const runRecoveryLoopStates = new Map<string, RecoveryLoopState>();
+  const runViewCache = new Map<string, {
+    value: MissionRunView | null;
+    updatedAt: number;
+    inFlight: Promise<MissionRunView | null> | null;
+  }>();
+  const cancelingRuns = new Set<string>();
   const pendingCoordinatorEvals = new Map<string, NodeJS.Timeout>();
   const milestoneReadyNotificationSignatures = new Map<string, string>();
   const runWatchdogTimers = new Map<string, Set<NodeJS.Timeout>>();
@@ -820,6 +846,12 @@ export function createAiOrchestratorService(args: {
   // ── V2 Coordinator Agents (tool-based, replaces specialist calls) ──
   const coordinatorAgents = new Map<string, CoordinatorAgent>();
   const coordinatorRecoveryAttempts = new Map<string, number>();
+  const coordinatorStartInFlight = new Set<string>();
+  const coordinatorStartFailureCooldowns = new Map<string, { count: number; lastFailedAtMs: number; message: string }>();
+  const coordinatorChatSessions = new Map<string, { missionId: string; runId: string; laneId: string | null }>();
+  const coordinatorChatSessionByRunId = new Map<string, string>();
+  const coordinatorChatRuntimeOwnedSessions = new Set<string>();
+  const coordinatorManualChatReplayBuffers = new Map<string, Map<string, { text: string; updatedAtMs: number; replayStarted: boolean }>>();
   const coordinatorLifecycleStates = new Map<string, {
     state: CoordinatorLifecycleState;
     message: string;
@@ -874,6 +906,7 @@ export function createAiOrchestratorService(args: {
     workerDeliveryInterventionCooldowns,
     runTeamManifests,
     runRecoveryLoopStates,
+    cancelingRuns,
     aiTimeoutBudgetStepLocks: new Set(),
     aiTimeoutBudgetRunLocks: new Set(),
     aiRetryDecisionLocks: new Set(),
@@ -969,6 +1002,7 @@ export function createAiOrchestratorService(args: {
   const WORKER_PROGRESS_CHAT_MIN_INTERVAL_MS = 12_000;
   const WORKER_PROGRESS_CHAT_REPEAT_INTERVAL_MS = 45_000;
   const structuredThreadMessageIds = new Map<string, string>();
+  const structuredThreadUpsertSignatures = new Map<string, string>();
   const structuredChatSessions = new Set<string>();
   const TERMINAL_COORDINATOR_RUN_STATUSES = new Set<OrchestratorRunStatus>(["succeeded", "failed", "canceled"]);
 
@@ -1005,6 +1039,31 @@ export function createAiOrchestratorService(args: {
     });
   };
 
+  const hasActivePersistedCoordinatorChatSessionForRun = (runId: string): boolean => {
+    const mappedSessionId = coordinatorChatSessionByRunId.get(runId);
+    if (mappedSessionId && coordinatorChatSessions.has(mappedSessionId)) return true;
+
+    try {
+      const row = db.get<{ session_id: string | null }>(
+        `
+          select session_id
+          from orchestrator_chat_threads
+          where thread_type = 'coordinator'
+            and run_id = ?
+            and status != 'closed'
+            and session_id is not null
+            and trim(session_id) != ''
+          order by updated_at desc
+          limit 1
+        `,
+        [runId]
+      );
+      return typeof row?.session_id === "string" && row.session_id.trim().length > 0;
+    } catch {
+      return false;
+    }
+  };
+
   const updateCoordinatorMissionState = (args: {
     missionId: string;
     runId: string;
@@ -1018,6 +1077,7 @@ export function createAiOrchestratorService(args: {
       fetching_project_context: { available: true, mode: "continuation_required" },
       launching_planner: { available: true, mode: "continuation_required" },
       waiting_on_planner: { available: true, mode: "consult_only" },
+      running_phase: { available: true, mode: "continuation_required" },
       planner_launch_failed: { available: true, mode: "consult_only" },
       stopped: { available: false, mode: "offline" },
     };
@@ -1242,6 +1302,99 @@ export function createAiOrchestratorService(args: {
     }
   };
 
+  const hasTerminalStreamStatus = (status: unknown): boolean =>
+    status === "completed" || status === "failed" || status === "interrupted";
+  const isMissionControlToolEvent = (event: AgentChatEvent): boolean => {
+    if (event.type !== "tool_call" && event.type !== "tool_result") return false;
+    return (COORDINATOR_TOOL_NAMES as readonly string[]).includes(normalizeCoordinatorToolName(event.tool));
+  };
+  const RECOVERED_COORDINATOR_TOOL_REPLAY_MESSAGE =
+    "The coordinator wrote mission-control calls as text, so ADE is replaying those calls through the real mission-control tools.";
+  const isCoordinatorPseudoToolText = (text: string): boolean => {
+    const trimmed = text.trim();
+    if (!trimmed.startsWith("```")) return false;
+    const labels = [...trimmed.matchAll(/^\s*\/\/\s*([A-Za-z_][\w-]*)\s*$/gm)]
+      .map((match) => normalizeCoordinatorToolName(match[1] ?? ""));
+    return labels.length > 0
+      && labels.every((toolName) => (COORDINATOR_TOOL_NAMES as readonly string[]).includes(toolName));
+  };
+  const isCoordinatorPseudoToolFragment = (text: string): boolean => {
+    const trimmed = text.trim();
+    if (!trimmed.length) return false;
+    if (isCoordinatorPseudoToolText(trimmed)) return true;
+    if (/^```(?:json|jsonc)?$/i.test(trimmed) || trimmed === "```") return true;
+    const labelMatch = trimmed.match(/^\/\/\s*([A-Za-z_][\w-]*)\s*$/);
+    if (labelMatch) {
+      const toolName = normalizeCoordinatorToolName(labelMatch[1] ?? "");
+      return (COORDINATOR_TOOL_NAMES as readonly string[]).includes(toolName);
+    }
+    return /^\{/.test(trimmed)
+      || /^\}/.test(trimmed)
+      || /^,?\s*"[^"]+"\s*:/.test(trimmed)
+      || /^,\s*\{/.test(trimmed);
+  };
+
+  const shouldPersistStructuredChatEvent = (args: {
+    role: "worker" | "orchestrator";
+    event: AgentChatEvent;
+  }): boolean => {
+    const { role, event } = args;
+    switch (event.type) {
+      case "text":
+      case "reasoning":
+        if (role === "orchestrator") return false;
+        if (event.type === "text") return !isCoordinatorPseudoToolFragment(event.text);
+        return true;
+      case "error":
+      case "approval_request":
+      case "delegation_state":
+      case "plan":
+        return true;
+      case "tool_call":
+        return role === "orchestrator" && isMissionControlToolEvent(event);
+      case "tool_result":
+        if (role === "orchestrator" && !isMissionControlToolEvent(event)) return false;
+        return hasTerminalStreamStatus(event.status ?? "completed");
+      case "command":
+      case "file_change":
+        return hasTerminalStreamStatus(event.status);
+      case "status":
+        if (
+          role === "orchestrator"
+          && event.turnStatus === "interrupted"
+          && event.message === RECOVERED_COORDINATOR_TOOL_REPLAY_MESSAGE
+        ) {
+          return false;
+        }
+        if (event.turnStatus === "failed" || event.turnStatus === "interrupted") return true;
+        // Coordinator lifecycle messages arrive as turnStatus "started" with a meaningful body.
+        return role === "orchestrator" && (event.message?.trim().length ?? 0) > 0;
+      case "done":
+        return event.status === "failed" || event.status === "interrupted";
+      default:
+        return false;
+    }
+  };
+
+  const upsertStructuredThread = (args: Parameters<typeof upsertThreadCtx>[1]): void => {
+    const target = args.target && typeof args.target === "object" ? args.target : null;
+    const targetRecord = target && !Array.isArray(target) ? target as Record<string, unknown> : {};
+    const signature = JSON.stringify({
+      threadType: args.threadType,
+      title: args.title,
+      status: args.status ?? null,
+      runId: typeof targetRecord.runId === "string" ? targetRecord.runId : null,
+      stepId: typeof targetRecord.stepId === "string" ? targetRecord.stepId : null,
+      stepKey: typeof targetRecord.stepKey === "string" ? targetRecord.stepKey : null,
+      attemptId: typeof targetRecord.attemptId === "string" ? targetRecord.attemptId : null,
+      sessionId: typeof targetRecord.sessionId === "string" ? targetRecord.sessionId : null,
+      laneId: typeof targetRecord.laneId === "string" ? targetRecord.laneId : null,
+    });
+    if (structuredThreadUpsertSignatures.get(args.threadId) === signature) return;
+    structuredThreadUpsertSignatures.set(args.threadId, signature);
+    upsertThread(args);
+  };
+
   const buildStructuredEventMetadata = (sessionId: string, event: AgentChatEvent): Record<string, unknown> => {
     if (event.type === "tool_call") {
       return {
@@ -1443,6 +1596,10 @@ export function createAiOrchestratorService(args: {
       };
     }
     if (event.type === "user_message") {
+      const displayText = event.displayText?.trim();
+      const internalKind = displayText === "Start mission coordination." || displayText === "Continue mission coordination."
+        ? "coordinator_runtime_prompt"
+        : null;
       return {
         source: "agent_chat_event",
         missionChatMode: "thread_only",
@@ -1451,6 +1608,8 @@ export function createAiOrchestratorService(args: {
           sessionId,
           turnId: event.turnId ?? null,
           text: event.text,
+          ...(displayText ? { displayText } : {}),
+          ...(internalKind ? { internalKind } : {}),
           attachments: event.attachments ?? [],
         },
       };
@@ -1565,6 +1724,7 @@ export function createAiOrchestratorService(args: {
   const persistStructuredWorkerChatEvent = (envelope: AgentChatEventEnvelope): void => {
     const workerState = [...workerStates.values()].find((candidate) => candidate.sessionId === envelope.sessionId);
     if (!workerState) return;
+    const shouldPersist = shouldPersistStructuredChatEvent({ role: "worker", event: envelope.event });
     let graph: OrchestratorRunGraph;
     try {
       graph = orchestratorService.getRunGraph({ runId: workerState.runId, timelineLimit: 0 });
@@ -1576,44 +1736,39 @@ export function createAiOrchestratorService(args: {
     const missionId = graph.run.missionId ?? getMissionIdForRun(workerState.runId);
     if (!missionId) return;
     const threadId = `worker:${missionId}:${workerState.attemptId}`;
-    upsertThread({
-      missionId,
-      threadId,
-      threadType: "worker",
-      title: `Worker: ${step.stepKey}`,
-      target: {
-        kind: "worker",
+    if (shouldPersist) {
+      const target: OrchestratorChatTarget = {
+          kind: "worker",
+          runId: workerState.runId,
+          stepId: step.id,
+          stepKey: step.stepKey,
+          attemptId: workerState.attemptId,
+          sessionId: workerState.sessionId,
+          laneId: step.laneId ?? null,
+        };
+      upsertStructuredThread({
+        missionId,
+        threadId,
+        threadType: "worker",
+        title: `Worker: ${step.stepKey}`,
+        target,
+        status: step.status === "running" ? "active" : "closed",
+      });
+      structuredChatSessions.add(envelope.sessionId);
+      appendOrUpdateStructuredThreadMessage({
+        missionId,
+        threadId,
+        role: "worker",
+        senderStepKey: step.stepKey,
+        target,
+        timestamp: envelope.timestamp,
+        sessionId: envelope.sessionId,
         runId: workerState.runId,
-        stepId: step.id,
-        stepKey: step.stepKey,
         attemptId: workerState.attemptId,
-        sessionId: workerState.sessionId,
         laneId: step.laneId ?? null,
-      },
-      status: step.status === "running" ? "active" : "closed",
-    });
-    structuredChatSessions.add(envelope.sessionId);
-    appendOrUpdateStructuredThreadMessage({
-      missionId,
-      threadId,
-      role: "worker",
-      senderStepKey: step.stepKey,
-      target: {
-        kind: "worker",
-        runId: workerState.runId,
-        stepId: step.id,
-        stepKey: step.stepKey,
-        attemptId: workerState.attemptId,
-        sessionId: workerState.sessionId,
-        laneId: step.laneId ?? null,
-      },
-      timestamp: envelope.timestamp,
-      sessionId: envelope.sessionId,
-      runId: workerState.runId,
-      attemptId: workerState.attemptId,
-      laneId: step.laneId ?? null,
-      event: envelope.event,
-    });
+        event: envelope.event,
+      });
+    }
     if (!hasMaterialWorkerChatEvent([envelope])) return;
     if (workerState.state !== "initializing" && workerState.state !== "spawned") return;
     upsertWorkerState(workerState.attemptId, {
@@ -1630,18 +1785,24 @@ export function createAiOrchestratorService(args: {
     runId: string;
     event: AgentChatEvent;
     timestamp?: string;
+    sessionId?: string;
+    laneId?: string | null;
   }): void => {
     if (shouldSuppressCoordinatorWrites(args.runId)) return;
+    if (!shouldPersistStructuredChatEvent({ role: "orchestrator", event: args.event })) return;
     const threadId = `mission:${args.missionId}`;
-    upsertThread({
+    const target: OrchestratorChatTarget = {
+      kind: "coordinator",
+      runId: args.runId,
+      sessionId: args.sessionId ?? null,
+      laneId: args.laneId ?? null,
+    };
+    upsertStructuredThread({
       missionId: args.missionId,
       threadId,
       threadType: "coordinator",
       title: "Orchestrator",
-      target: {
-        kind: "coordinator",
-        runId: args.runId,
-      },
+      target,
       status: "active",
     });
     appendOrUpdateStructuredThreadMessage({
@@ -1649,15 +1810,12 @@ export function createAiOrchestratorService(args: {
       threadId,
       role: "orchestrator",
       senderStepKey: null,
-      target: {
-        kind: "coordinator",
-        runId: args.runId,
-      },
+      target,
       timestamp: args.timestamp ?? nowIso(),
-      sessionId: `coordinator:${args.runId}`,
+      sessionId: args.sessionId ?? `coordinator:${args.runId}`,
       runId: args.runId,
       attemptId: null,
-      laneId: null,
+      laneId: args.laneId ?? null,
       event: args.event,
     });
   };
@@ -1814,12 +1972,33 @@ export function createAiOrchestratorService(args: {
     missionId: string;
     runId: string;
     planningIsFirstPhase: boolean;
+    currentPhaseKey: string;
     event: AgentChatEvent;
-  }): void => {
-    if (!args.planningIsFirstPhase) return;
+  }): string | null => {
+    if (args.event.type === "tool_result" && normalizeCoordinatorToolEventName(args.event.tool) === "set_current_phase") {
+      const result = asRecord(args.event.result);
+      if (result?.ok === true) {
+        const phaseKey = toOptionalString(result.currentPhaseKey);
+        const phaseName = toOptionalString(result.currentPhaseName)
+          ?? phaseKey
+          ?? "current";
+        emitCoordinatorLifecycle({
+          missionId: args.missionId,
+          runId: args.runId,
+          state: "running_phase",
+          message: `The coordinator is running the ${phaseName} phase.`,
+          delegation: null,
+        });
+        return phaseKey?.trim().toLowerCase() || null;
+      }
+      return null;
+    }
+
+    const activePhaseKey = args.currentPhaseKey.trim().toLowerCase();
+    if (!args.planningIsFirstPhase || activePhaseKey !== "planning") return null;
     if (args.event.type === "delegation_state") {
       const nextLifecycle = derivePlannerLifecycleFromDelegation(args.event.contract);
-      if (!nextLifecycle) return;
+      if (!nextLifecycle) return null;
       emitCoordinatorLifecycle({
         missionId: args.missionId,
         runId: args.runId,
@@ -1827,7 +2006,7 @@ export function createAiOrchestratorService(args: {
         message: args.event.message?.trim().length ? args.event.message.trim() : nextLifecycle.message,
         delegation: args.event.contract,
       });
-      return;
+      return null;
     }
     if (args.event.type === "tool_call") {
       const toolName = normalizeCoordinatorToolEventName(args.event.tool);
@@ -1846,12 +2025,12 @@ export function createAiOrchestratorService(args: {
           message: "I’m starting the planning agent now.",
         });
       }
-      return;
+      return null;
     }
 
     if (args.event.type === "tool_result") {
       const toolName = normalizeCoordinatorToolEventName(args.event.tool);
-      if (toolName !== "spawn_worker") return;
+      if (toolName !== "spawn_worker") return null;
       const result = asRecord(args.event.result);
       if (result?.ok === true) {
         emitCoordinatorLifecycle({
@@ -1870,7 +2049,7 @@ export function createAiOrchestratorService(args: {
           message: "The planner hit a launch issue, so I’m diagnosing that now.",
         });
       }
-      return;
+      return null;
     }
 
     if (args.event.type === "status" && typeof args.event.message === "string" && args.event.message.trim().length > 0) {
@@ -1898,6 +2077,7 @@ export function createAiOrchestratorService(args: {
         });
       }
     }
+    return null;
   };
 
   // ── Coordinator Session Management ──────────────────────────────
@@ -1923,6 +2103,26 @@ export function createAiOrchestratorService(args: {
       missionLaneId?: string;
     },
   ): CoordinatorAgent | null => {
+    const startCooldownMs = 10_000;
+    const nowMs = Date.now();
+    const recentFailure = coordinatorStartFailureCooldowns.get(runId);
+    if (recentFailure && nowMs - recentFailure.lastFailedAtMs < startCooldownMs) {
+      logger.debug("ai_orchestrator.coordinator_agent_v2_start_suppressed", {
+        missionId,
+        runId,
+        count: recentFailure.count,
+        error: recentFailure.message,
+      });
+      return null;
+    }
+    if (coordinatorStartInFlight.has(runId)) {
+      logger.debug("ai_orchestrator.coordinator_agent_v2_start_suppressed", {
+        missionId,
+        runId,
+        reason: "start_in_flight",
+      });
+      return null;
+    }
     if (!projectRoot) {
       logger.debug("ai_orchestrator.coordinator_agent_v2_skip", {
         missionId,
@@ -1932,6 +2132,7 @@ export function createAiOrchestratorService(args: {
       return null;
     }
 
+    coordinatorStartInFlight.add(runId);
     try {
       const coordinatorProjectId = resolveProjectIdForMission(missionId) ?? missionId;
       const modelId = modelConfigToServiceModel(modelConfig);
@@ -1950,6 +2151,18 @@ export function createAiOrchestratorService(args: {
         ? [...opts.phases].sort((a, b) => a.position - b.position)[0] ?? null
         : null;
       const planningIsFirstPhase = initialCoordinatorPhase?.phaseKey.trim().toLowerCase() === "planning";
+      const initialCoordinatorPhaseKey = (() => {
+        try {
+          const graph = orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
+          const phaseRuntime = asRecord(graph.run.metadata?.phaseRuntime);
+          const currentPhaseKey = toOptionalString(phaseRuntime?.currentPhaseKey)?.trim().toLowerCase();
+          if (currentPhaseKey) return currentPhaseKey;
+        } catch {
+          // Fall back to the first configured phase while the run is still being initialized.
+        }
+        return initialCoordinatorPhase?.phaseKey.trim().toLowerCase() ?? "";
+      })();
+      let coordinatorLifecyclePhaseKey = initialCoordinatorPhaseKey;
       const agent = new CoordinatorAgent({
         orchestratorService,
         missionService,
@@ -1963,6 +2176,8 @@ export function createAiOrchestratorService(args: {
         projectRoot,
         workspaceRoot,
         aiIntegrationService: aiIntegrationService ?? null,
+        agentChatService: agentChatService ?? null,
+        coordinatorReasoningEffort: thinkingLevelToReasoningEffort(modelConfig.thinkingLevel),
         memoryService: plannerMemoryService,
         projectConfigService: projectConfigService ?? null,
         getMissionBudgetStatus: missionBudgetService
@@ -1978,13 +2193,48 @@ export function createAiOrchestratorService(args: {
           if (onDagMutation) onDagMutation(event);
         },
         onCoordinatorEvent: (event) => {
-          syncCoordinatorLifecycleFromEvent({
+          const nextLifecyclePhaseKey = syncCoordinatorLifecycleFromEvent({
             missionId,
             runId,
             planningIsFirstPhase,
+            currentPhaseKey: coordinatorLifecyclePhaseKey,
             event,
           });
+          if (nextLifecyclePhaseKey) coordinatorLifecyclePhaseKey = nextLifecyclePhaseKey;
           persistStructuredCoordinatorChatEvent({ missionId, runId, event });
+        },
+        onCoordinatorChatSessionStarted: ({ sessionId, missionId: startedMissionId, runId: startedRunId, laneId }) => {
+          const previousSessionId = coordinatorChatSessionByRunId.get(startedRunId);
+          if (previousSessionId && previousSessionId !== sessionId) {
+            coordinatorChatSessions.delete(previousSessionId);
+          }
+          coordinatorChatSessionByRunId.set(startedRunId, sessionId);
+          coordinatorChatSessions.set(sessionId, {
+            missionId: startedMissionId,
+            runId: startedRunId,
+            laneId,
+          });
+          upsertThread({
+            missionId: startedMissionId,
+            threadId: `mission:${startedMissionId}`,
+            threadType: "coordinator",
+            title: "Orchestrator",
+            target: {
+              kind: "coordinator",
+              runId: startedRunId,
+              sessionId,
+              laneId,
+            },
+            status: "active",
+          });
+        },
+        onCoordinatorChatRuntimeTurnStarted: ({ sessionId }) => {
+          if (sessionId.trim().length > 0) {
+            coordinatorChatRuntimeOwnedSessions.add(sessionId);
+          }
+        },
+        onCoordinatorChatRuntimeTurnFinished: ({ sessionId }) => {
+          coordinatorChatRuntimeOwnedSessions.delete(sessionId);
         },
         onRunFinalize: (args) => {
           // Forward coordinator's verdict to the chat before finalizing
@@ -1993,6 +2243,9 @@ export function createAiOrchestratorService(args: {
               role: "coordinator_v2",
               runId,
               event: "mission_complete",
+            });
+            void syncMissionFromRun(runId, "coordinator_complete_mission", {
+              nextMissionStatus: "completed",
             });
           } else {
             emitOrchestratorMessage(missionId, `[Mission Failed] ${args.reason ?? "Mission could not be completed."}`, null, {
@@ -2118,20 +2371,36 @@ export function createAiOrchestratorService(args: {
         modelId,
       });
 
+      coordinatorStartFailureCooldowns.delete(runId);
       return agent;
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const previous = coordinatorStartFailureCooldowns.get(runId);
+      coordinatorStartFailureCooldowns.set(runId, {
+        count: (previous?.count ?? 0) + 1,
+        lastFailedAtMs: Date.now(),
+        message,
+      });
       logger.warn("ai_orchestrator.coordinator_agent_v2_start_failed", {
         missionId,
         runId,
-        error: error instanceof Error ? error.message : String(error),
+        error: message,
       });
       return null;
+    } finally {
+      coordinatorStartInFlight.delete(runId);
     }
   };
 
   const endCoordinatorAgentV2 = (runId: string): void => {
     const agent = coordinatorAgents.get(runId);
     const missionId = getMissionIdForRun(runId);
+    const coordinatorSessionId = coordinatorChatSessionByRunId.get(runId);
+    if (coordinatorSessionId) {
+      coordinatorChatSessionByRunId.delete(runId);
+      coordinatorChatSessions.delete(coordinatorSessionId);
+      structuredChatSessions.delete(coordinatorSessionId);
+    }
     if (agent) {
       agent.shutdown();
       coordinatorAgents.delete(runId);
@@ -2504,7 +2773,7 @@ Check all worker statuses and continue managing the mission from here. Read work
   const RESULT_LANE_FINALIZATION_POLICY: MissionFinalizationPolicy = {
     ...NULL_FINALIZATION_FIELDS,
     kind: "result_lane",
-    description: "Assemble a single result lane for the mission and stop before PR creation."
+    description: "Assemble a single result lane for the mission and stop before external PR creation."
   };
 
   const resolveMissionFinalizationPolicyForMission = (
@@ -2542,9 +2811,32 @@ Check all worker statuses and continue managing the mission from here. Read work
           )
         : false;
     const outcomeSummary = buildOutcomeSummary(args.graph).trim();
+    const runtimeSummaryStatus: MissionCloseoutRequirementStatus = args.graph.run.status === "succeeded" && outcomeSummary.length > 0
+      ? "present"
+      : (args.graph.run.status === "failed" || args.graph.run.status === "canceled") && outcomeSummary.length > 0
+        ? "incomplete"
+        : "missing";
     const modifiedFiles = args.stateDoc?.modifiedFiles ?? [];
     const completionDiagnostics = args.graph.completionEvaluation?.diagnostics ?? [];
     const explicitValidationVerdict = args.graph.completionEvaluation?.validation?.canComplete;
+    const stepMetadata = args.graph.steps
+      .map((step) => isRecord(step.metadata) ? step.metadata : {})
+      .filter((meta) => Object.keys(meta).length > 0);
+    const requiredValidationStepMetadata = stepMetadata.filter((meta) => {
+      const validationContract = isRecord(meta.validationContract) ? meta.validationContract : null;
+      return validationContract?.required === true;
+    });
+    const hasRuntimeValidationPass = (meta: Record<string, unknown>): boolean => {
+      const lastValidationReport = isRecord(meta.lastValidationReport) ? meta.lastValidationReport : null;
+      const lastVerdict = typeof lastValidationReport?.verdict === "string" ? lastValidationReport.verdict.trim().toLowerCase() : "";
+      const validationState = typeof meta.validationState === "string" ? meta.validationState.trim().toLowerCase() : "";
+      const validationPassedAt = typeof meta.validationPassedAt === "string" ? meta.validationPassedAt.trim() : "";
+      const isPass = (value: string) => value === "pass" || value === "passed" || value === "success" || value === "succeeded";
+      return isPass(lastVerdict) || isPass(validationState) || validationPassedAt.length > 0;
+    };
+    const runtimeValidationVerdict = requiredValidationStepMetadata.length > 0
+      ? requiredValidationStepMetadata.every(hasRuntimeValidationPass)
+      : undefined;
     const validationPhaseSucceeded = completionDiagnostics.some(
       (diagnostic) => diagnostic.phase === "validation" && diagnostic.code === "phase_succeeded"
     );
@@ -2553,6 +2845,8 @@ Check all worker statuses and continue managing the mission from here. Read work
     );
     const validationVerdict = typeof explicitValidationVerdict === "boolean"
       ? explicitValidationVerdict
+      : typeof runtimeValidationVerdict === "boolean"
+        ? runtimeValidationVerdict
       : validationPhaseSucceeded
         ? true
         : validationPhaseBlocked
@@ -2561,7 +2855,14 @@ Check all worker statuses and continue managing the mission from here. Read work
     const missionArtifacts = args.mission.artifacts ?? [];
     const orchestratorArtifacts = orchestratorService.getArtifactsForMission(args.mission.id);
     const closeoutRequirements = new Map<MissionCloseoutRequirementKey, MissionCloseoutRequirement>();
-    const artifactByKey = new Map<MissionCloseoutRequirementKey, { artifactId: string | null; uri: string | null; detail: string | null; source: "declared" | "discovered" }>();
+    type CloseoutEvidence = {
+      artifactId: string | null;
+      uri: string | null;
+      detail: string | null;
+      source: "declared" | "discovered" | "runtime";
+    };
+    const artifactByKey = new Map<MissionCloseoutRequirementKey, CloseoutEvidence>();
+    const runtimeEvidenceByKey = new Map<MissionCloseoutRequirementKey, CloseoutEvidence>();
 
     for (const artifact of missionArtifacts) {
       const requirementKey = resolveCloseoutRequirementKeyFromArtifact({
@@ -2599,6 +2900,62 @@ Check all worker statuses and continue managing the mission from here. Read work
       });
     }
 
+    const collectRiskLikeStrings = (value: unknown, details: string[]): void => {
+      if (typeof value === "string" && value.trim().length > 0) {
+        details.push(value.trim());
+      } else if (Array.isArray(value)) {
+        for (const entry of value) collectRiskLikeStrings(entry, details);
+      }
+    };
+    const collectRiskSummary = (summary: unknown, details: string[]): void => {
+      const normalized = typeof summary === "string" ? summary.trim() : "";
+      if (normalized && /\brisks?\b|\brisk notes?\b|\bdownstream notes?\b/i.test(normalized)) {
+        details.push(normalized);
+      }
+    };
+    const runtimeRiskDetails = stepMetadata.flatMap((meta) => {
+      const report = isRecord(meta.lastResultReport) ? meta.lastResultReport : null;
+      if (!report) return [];
+      const details: string[] = [];
+      collectRiskLikeStrings(report.risks, details);
+      collectRiskLikeStrings(report.riskNotes, details);
+      collectRiskLikeStrings(report.warnings, details);
+      collectRiskSummary(report.summary, details);
+      return details;
+    });
+    const runtimeCloseoutRiskDetails = (args.graph.runtimeEvents ?? []).flatMap((event) => {
+      if (event.eventType !== "done") return [];
+      const payload = isRecord(event.payload) ? event.payload : {};
+      const details: string[] = [];
+      collectRiskLikeStrings(payload.risks, details);
+      collectRiskLikeStrings(payload.riskNotes, details);
+      collectRiskLikeStrings(payload.warnings, details);
+      collectRiskSummary(payload.summary, details);
+      return details;
+    });
+    const allRuntimeRiskDetails = [...runtimeRiskDetails, ...runtimeCloseoutRiskDetails];
+    const phaseRequiresRiskNotes = (args.mission.phaseConfiguration?.selectedPhases ?? [])
+      .some((phase) =>
+        phase.validationGate.required
+        && (phase.validationGate.evidenceRequirements ?? [])
+          .some((entry) => mapEvidenceRequirementToCloseoutKey(entry) === "risk_notes")
+      );
+    if (allRuntimeRiskDetails.length > 0) {
+      runtimeEvidenceByKey.set("risk_notes", {
+        artifactId: null,
+        uri: null,
+        detail: clipTextForContext(allRuntimeRiskDetails[0], 600),
+        source: "runtime",
+      });
+    } else if (args.graph.run.status === "succeeded" && !phaseRequiresRiskNotes) {
+      runtimeEvidenceByKey.set("risk_notes", {
+        artifactId: null,
+        uri: null,
+        detail: "No unresolved risks were reported by completed mission steps.",
+        source: "runtime",
+      });
+    }
+
     const pushRequirement = (requirement: MissionCloseoutRequirement): void => {
       closeoutRequirements.set(requirement.key, requirement);
     };
@@ -2607,7 +2964,7 @@ Check all worker statuses and continue managing the mission from here. Read work
       key: "implementation_summary",
       label: "Implementation summary",
       required: true,
-      status: outcomeSummary.length > 0 ? "present" : "missing",
+      status: runtimeSummaryStatus,
       detail: outcomeSummary.length > 0 ? outcomeSummary : "Execution finished without a final implementation summary.",
       artifactId: null,
       uri: null,
@@ -2618,7 +2975,7 @@ Check all worker statuses and continue managing the mission from here. Read work
       key: "final_outcome_summary",
       label: "Final outcome summary",
       required: true,
-      status: outcomeSummary.length > 0 ? "present" : "missing",
+      status: runtimeSummaryStatus,
       detail: outcomeSummary.length > 0 ? outcomeSummary : "No final outcome summary has been recorded yet.",
       artifactId: null,
       uri: null,
@@ -2709,7 +3066,7 @@ Check all worker statuses and continue managing the mission from here. Read work
 
     for (const requirementKey of requiredEvidence) {
       if (closeoutRequirements.has(requirementKey)) continue;
-      const artifact = artifactByKey.get(requirementKey) ?? null;
+      const artifact = artifactByKey.get(requirementKey) ?? runtimeEvidenceByKey.get(requirementKey) ?? null;
       const capability = isProofEvidenceRequirement(requirementKey)
         ? getCapabilityForRequirement(requirementKey)
         : null;
@@ -2800,21 +3157,29 @@ Check all worker statuses and continue managing the mission from here. Read work
     const unmetRequirements = closeoutRequirements.filter((requirement) =>
       requirement.required && requirement.status !== "present" && requirement.status !== "waived",
     );
+    const closeoutSatisfied = unmetRequirements.length === 0;
+    const nextStatus = args.finalization.status === "finalization_failed"
+      ? "finalization_failed"
+      : closeoutSatisfied
+        ? "completed"
+        : args.finalization.status === "completed"
+          ? "finalizing"
+          : args.finalization.status;
     const nextFinalization = await updateMissionFinalizationState(args.runId, {
       policy: args.finalization.policy,
-      status: unmetRequirements.length > 0 && args.finalization.status === "completed"
-        ? "finalizing"
-        : args.finalization.status,
+      status: nextStatus,
       executionComplete: true,
-      contractSatisfied: args.finalization.contractSatisfied && unmetRequirements.length === 0,
+      contractSatisfied: args.finalization.status !== "finalization_failed" && closeoutSatisfied,
       requirements: closeoutRequirements,
       summary: unmetRequirements.length > 0
         ? "Execution finished, but the closeout contract is still incomplete."
-        : args.finalization.summary,
+        : args.finalization.summary?.includes("closeout contract is still incomplete")
+          ? "Mission finalization completed."
+          : args.finalization.summary,
       detail: unmetRequirements.length > 0
         ? unmetRequirements.map((requirement) => requirement.label).join(", ")
         : args.finalization.detail,
-      completedAt: unmetRequirements.length > 0 ? null : args.finalization.completedAt,
+      completedAt: closeoutSatisfied ? (args.finalization.completedAt ?? nowIso()) : null,
     }, { graph: args.graph });
     if (!nextFinalization) return;
     if (nextFinalization.status === "finalization_failed") {
@@ -3222,6 +3587,35 @@ Check all worker statuses and continue managing the mission from here. Read work
     }
     if (sourceLaneIds.length === 0) {
       throw new Error("No mission-owned lanes were available to assemble a result lane.");
+    }
+
+    const missionLaneHasConsolidatedResult =
+      !!missionLaneId
+      && fallbackGraph.steps.some((step) => {
+        if (step.laneId !== missionLaneId || step.status !== "succeeded") return false;
+        const meta = isRecord(step.metadata) ? step.metadata : {};
+        const phaseKey = typeof meta.phaseKey === "string" ? meta.phaseKey.trim().toLowerCase() : "";
+        const taskType = typeof meta.taskType === "string" ? meta.taskType.trim().toLowerCase() : "";
+        const stepType = typeof meta.stepType === "string" ? meta.stepType.trim().toLowerCase() : "";
+        const title = step.title.trim().toLowerCase();
+        return phaseKey === "integration"
+          || phaseKey === "closeout"
+          || taskType === "integration"
+          || taskType === "result_lane_consolidation"
+          || stepType === "integration"
+          || title.includes("result-lane consolidation")
+          || title.includes("result lane consolidation");
+      });
+    if (missionLaneId && missionLaneHasConsolidatedResult) {
+      missionService.setResultLane({ missionId: args.mission.id, laneId: missionLaneId });
+      await setLaneMissionOwnership(missionLaneId, args.mission.id, "result");
+      await archiveMissionIntermediateLanes(args.mission.id, missionLaneId);
+      return {
+        resultLaneId: missionLaneId,
+        summary: "Execution completed. The mission result lane is ready.",
+        detail: `Result lane ${missionLaneId} already contains the consolidated mission output.`,
+        warnings: [],
+      };
     }
 
     if (sourceLaneIds.length === 1) {
@@ -4487,6 +4881,46 @@ Check all worker statuses and continue managing the mission from here. Read work
           const startedMs = Date.parse(startedAt);
           if (!Number.isFinite(startedMs)) continue;
           const elapsedMs = Date.now() - startedMs;
+          const workerStateMetadata = typeof attemptMetadata?.workerState === "string"
+            ? attemptMetadata.workerState.trim().toLowerCase()
+            : "";
+          if (
+            sessionId.length === 0
+            && (workerStateMetadata === "initializing" || workerStateMetadata === "spawned" || !attempt.executorSessionId)
+            && elapsedMs > WORKER_STARTUP_ATTACH_TIMEOUT_MS
+          ) {
+            const elapsedSeconds = Math.max(1, Math.round(elapsedMs / 1000));
+            const errorMessage = `Worker startup did not attach an executor session after ${elapsedSeconds}s.`;
+            try {
+              await orchestratorService.completeAttempt({
+                attemptId: attempt.id,
+                status: "failed",
+                errorClass: "executor_failure",
+                errorMessage,
+                metadata: {
+                  watchdogReason: reason,
+                  watchdogRecoveredAt: nowIso(),
+                  watchdogStartupAttachTimeoutMs: WORKER_STARTUP_ATTACH_TIMEOUT_MS,
+                  watchdogElapsedMs: elapsedMs,
+                  ownerId,
+                  coordinatorNotified: Boolean(coordinatorAgents.get(run.id)?.isAlive)
+                }
+              });
+              staleRecovered += 1;
+              emitOrchestratorMessage(
+                graph.run.missionId,
+                `Step "${stepTitleForMessage(step)}" did not attach an executor session and was moved into recovery.`,
+                step.stepKey
+              );
+            } catch (error) {
+              logger.debug("ai_orchestrator.health_sweep_startup_attach_complete_failed", {
+                runId: run.id,
+                attemptId: attempt.id,
+                error: error instanceof Error ? error.message : String(error)
+              });
+            }
+            continue;
+          }
           const timeoutMs = resolveStepTimeoutMs({
             runId: run.id,
             missionId: graph.run.missionId,
@@ -4883,7 +5317,6 @@ Check all worker statuses and continue managing the mission from here. Read work
       return payload;
     };
 
-    // Transition mission status
     if (finalStatus !== "succeeded") {
       persistRecoveryHandoff("recovery_handoff");
       transitionMissionStatus(missionId, "failed");
@@ -5182,6 +5615,19 @@ Check all worker statuses and continue managing the mission from here. Read work
     }, COORDINATOR_EVAL_DEBOUNCE_MS));
   };
 
+  const runRequiresCoordinatorOwnership = (run: { metadata?: unknown } | null | undefined): boolean => {
+    const runMetadata = isRecord(run?.metadata) ? run.metadata : {};
+    const runMode = typeof runMetadata.runMode === "string" ? runMetadata.runMode.trim().toLowerCase() : "";
+    const autopilot = isRecord(runMetadata.autopilot) ? runMetadata.autopilot : null;
+    const autopilotExecutorKind = typeof autopilot?.executorKind === "string"
+      ? autopilot.executorKind.trim().toLowerCase()
+      : "";
+    if (runMode === "manual") return false;
+    if (autopilot?.enabled === false) return false;
+    if (autopilotExecutorKind === "manual") return false;
+    return true;
+  };
+
   /**
    * Run an immediate coordinator evaluation for a run.
    * Routes a rich status event to the coordinator agent and starts any newly-ready autopilot steps.
@@ -5198,6 +5644,14 @@ Check all worker statuses and continue managing the mission from here. Read work
         ) {
           return;
         }
+        if (!runRequiresCoordinatorOwnership(graph.run)) {
+          logger.debug("ai_orchestrator.coordinator_eval_skipped_manual_run", {
+            runId,
+            reason,
+            runMode: isRecord(graph.run.metadata) ? graph.run.metadata.runMode ?? null : null,
+          });
+          return;
+        }
 
         const missionId = graph.run.missionId;
         const launchFailure = getRunLaunchFailureMetadata(runId);
@@ -5207,6 +5661,10 @@ Check all worker statuses and continue managing the mission from here. Read work
         if (!coordinator && existingCoordinator && !existingCoordinator.isAlive) {
           const recovered = attemptCoordinatorRecovery(runId);
           if (recovered?.isAlive) coordinator = recovered;
+        }
+        if (!coordinator && hasActivePersistedCoordinatorChatSessionForRun(runId)) {
+          const ensured = ensureCoordinatorAgentV2(runId);
+          if (ensured.agent?.isAlive) coordinator = ensured.agent;
         }
         if (!coordinator) {
           if (launchFailure && hasOpenMissionLaunchFailureIntervention({ missionId, runId })) {
@@ -5518,6 +5976,7 @@ Check all worker statuses and continue managing the mission from here. Read work
 
     const missionId = graph.run.missionId;
     const planAdjustConfig = resolveCallTypeConfig(missionId, "coordinator");
+    const planAdjustModelConfig = resolveOrchestratorModelConfig(missionId, "coordinator");
 
     const result = await aiIntegrationService.executeTask({
       feature: "orchestrator",
@@ -5525,6 +5984,7 @@ Check all worker statuses and continue managing the mission from here. Read work
       prompt,
       cwd: projectRoot,
       provider: planAdjustConfig.provider,
+      model: modelConfigToServiceModel(planAdjustModelConfig),
       reasoningEffort: planAdjustConfig.reasoningEffort,
       jsonSchema: adjustmentSchema,
       permissionMode: "read-only",
@@ -6054,10 +6514,12 @@ Check all worker statuses and continue managing the mission from here. Read work
             properties: {
               title: { type: "string" },
               instructions: { type: "string" }
-            }
+            },
+            additionalProperties: false
           }
         },
-        required: ["autoResolvable", "confidence", "suggestedAction", "reasoning"]
+        required: ["autoResolvable", "confidence", "suggestedAction", "reasoning"],
+        additionalProperties: false
       };
 
       const configIntervention = resolveOrchestratorModelConfig(args.missionId, "coordinator");
@@ -6154,12 +6616,22 @@ Check all worker statuses and continue managing the mission from here. Read work
     resolveOrchestratorModelConfigCtx(ctx, missionId, callType);
 
   // Delegated to missionLifecycle.ts
-  const transitionMissionStatus = (missionId: string, next: MissionStatus, args?: { outcomeSummary?: string | null; lastError?: string | null }) =>
+  const transitionMissionStatus = (
+    missionId: string,
+    next: MissionStatus,
+    args?: { outcomeSummary?: string | null; lastError?: string | null; allowTerminalRestart?: boolean }
+  ) =>
     transitionMissionStatusCtx(ctx, missionId, next, args);
 
   const COORDINATOR_FAILURE_REASON_CODES = new Set([
     "coordinator_unavailable",
     "coordinator_recovery_failed",
+    "coordinator_runtime_provider_auth_failed",
+    "coordinator_runtime_model_unavailable",
+    "coordinator_runtime_permission_denied",
+    "coordinator_runtime_provider_unreachable",
+    "coordinator_runtime_cli_exit",
+    "coordinator_runtime_failed",
   ]);
 
   const resolveCoordinatorHealthInterventions = (args: {
@@ -6176,11 +6648,12 @@ Check all worker statuses and continue managing the mission from here. Read work
     const resolvedAt = nowIso();
 
     for (const intervention of mission.interventions) {
-      if (intervention.status !== "open" || intervention.interventionType !== "failed_step") continue;
+      if (intervention.status !== "open") continue;
       const metadata = isRecord(intervention.metadata) ? intervention.metadata : null;
       const reasonCode = typeof metadata?.reasonCode === "string" ? metadata.reasonCode.trim() : "";
       const interventionRunId = typeof metadata?.runId === "string" ? metadata.runId.trim() : "";
-      if (!COORDINATOR_FAILURE_REASON_CODES.has(reasonCode)) continue;
+      const coordinatorFailureHandled = metadata?.coordinatorFailureHandled === true;
+      if (!COORDINATOR_FAILURE_REASON_CODES.has(reasonCode) && !coordinatorFailureHandled) continue;
       if (interventionRunId.length > 0 && interventionRunId !== args.runId) continue;
 
       try {
@@ -6596,21 +7069,29 @@ Check all worker statuses and continue managing the mission from here. Read work
             && requirement.status !== "present"
             && requirement.status !== "waived"
           );
+          const closeoutSatisfied = unmetRequirements.length === 0;
+          const nextFinalizationStatus = stateDocAfterFinalization.finalization.status === "finalization_failed"
+            ? "finalization_failed"
+            : closeoutSatisfied
+              ? "completed"
+              : stateDocAfterFinalization.finalization.status === "completed"
+                ? "finalizing"
+                : stateDocAfterFinalization.finalization.status;
           await updateMissionFinalizationState(runId, {
             policy: stateDocAfterFinalization.finalization.policy,
-            status: unmetRequirements.length > 0 && stateDocAfterFinalization.finalization.status === "completed"
-              ? "finalizing"
-              : stateDocAfterFinalization.finalization.status,
+            status: nextFinalizationStatus,
             executionComplete: true,
-            contractSatisfied: stateDocAfterFinalization.finalization.contractSatisfied && unmetRequirements.length === 0,
+            contractSatisfied: stateDocAfterFinalization.finalization.status !== "finalization_failed" && closeoutSatisfied,
             requirements: closeoutRequirements,
             summary: unmetRequirements.length > 0
               ? "Execution finished, but the closeout contract is still incomplete."
-              : stateDocAfterFinalization.finalization.summary,
+              : stateDocAfterFinalization.finalization.summary?.includes("closeout contract is still incomplete")
+                ? "Mission finalization completed."
+                : stateDocAfterFinalization.finalization.summary,
             detail: unmetRequirements.length > 0
               ? unmetRequirements.map((requirement) => requirement.label).join(", ")
               : stateDocAfterFinalization.finalization.detail,
-            completedAt: unmetRequirements.length > 0 ? null : stateDocAfterFinalization.finalization.completedAt,
+            completedAt: closeoutSatisfied ? (stateDocAfterFinalization.finalization.completedAt ?? nowIso()) : null,
           }, { graph });
             stateDocAfterFinalization = projectRoot
             ? await readMissionStateDocument({ projectRoot, runId }).catch(() => null)
@@ -6625,7 +7106,8 @@ Check all worker statuses and continue managing the mission from here. Read work
         } else if (!workersSpawned && finalizationSatisfied) {
           transitionMissionStatus(mission.id, "completed", {
             outcomeSummary: refreshed.outcomeSummary ?? buildOutcomeSummary(graph),
-            lastError: null
+            lastError: null,
+            allowTerminalRestart: true
           });
         }
       } else if (nextMissionStatus === "failed") {
@@ -6898,7 +7380,9 @@ Check all worker statuses and continue managing the mission from here. Read work
       // Transition mission to in_progress early so that failure paths
       // (lane creation, coordinator startup) can move it to intervention_required.
       // The queued -> intervention_required transition is not allowed.
-      transitionMissionStatus(missionId, "in_progress");
+      // Starting a new run is the one intentional terminal -> active transition:
+      // completed/failed/canceled missions can be explicitly rerun from the UI.
+      transitionMissionStatus(missionId, "in_progress", { allowTerminalRestart: true });
 
       emitCoordinatorLifecycle({
         missionId,
@@ -6990,7 +7474,7 @@ Check all worker statuses and continue managing the mission from here. Read work
       // of the run_activated event can already resolve the lane ID.
       persistMissionLaneIdForRun(startedRunId, missionLaneId);
       const activatedRun = orchestratorService.activateRun(startedRunId);
-      transitionMissionStatus(missionId, "in_progress");
+      transitionMissionStatus(missionId, "in_progress", { allowTerminalRestart: true });
       if (initialPhase?.phaseKey.trim().toLowerCase() !== "planning") {
         emitOrchestratorMessage(
           missionId,
@@ -7085,7 +7569,7 @@ Check all worker statuses and continue managing the mission from here. Read work
     if (typeof launch.laneStrategy === "string") userRules.laneStrategy = launch.laneStrategy;
     if (typeof launch.customInstructions === "string") userRules.customInstructions = launch.customInstructions;
     if (args.defaultExecutorKind) userRules.providerPreference = args.defaultExecutorKind;
-    userRules.closeoutContract = "Promote or assemble one result lane at mission closeout. Never create a PR automatically.";
+    userRules.closeoutContract = "Promote or assemble one result lane at mission closeout. Use ADE's internal integration lane when multiple worker lanes must be joined. Never create an external GitHub PR automatically.";
 
     // Read phase-based settings and pass budget/recovery/model fields directly into userRules
     const { settings: phaseSettings } = resolveActivePhaseSettings(missionId);
@@ -7186,7 +7670,7 @@ Check all worker statuses and continue managing the mission from here. Read work
 
     const graph = getRunGraphSafe(runId);
     const runStatus = graph?.run.status ?? null;
-    if (runStatus && TERMINAL_COORDINATOR_RUN_STATUSES.has(runStatus as OrchestratorRunStatus)) {
+    if (runStatus && TERMINAL_COORDINATOR_RUN_STATUSES.has(runStatus as OrchestratorRunStatus) && runStatus !== "succeeded") {
       return { agent: null, created: false };
     }
 
@@ -7213,6 +7697,15 @@ Check all worker statuses and continue managing the mission from here. Read work
     });
     if (!agent?.isAlive) {
       return { agent: null, created: false };
+    }
+    if (runStatus === "succeeded") {
+      agent.injectMessage(
+        [
+          "[MISSION TERMINAL CONSULT]",
+          "The run has already succeeded. Stay in post-run closeout mode: answer questions and record missing closeout evidence only.",
+          "Do not spawn new implementation work. If the operator provides final risk notes or changed-files context, you may call complete_mission to record the closeout summary.",
+        ].join("\n"),
+      );
     }
 
     logger.info("ai_orchestrator.coordinator_resumed_after_pause", {
@@ -7310,6 +7803,7 @@ Check all worker statuses and continue managing the mission from here. Read work
       clearTimeout(evalTimer);
       pendingCoordinatorEvals.delete(runId);
     }
+    cancelingRuns.add(runId);
     coordinatorWriteBarrierRuns.add(runId);
     endCoordinatorAgentV2(runId);
     const targets = collectGracefulShutdownTargets(runId);
@@ -7409,7 +7903,12 @@ Check all worker statuses and continue managing the mission from here. Read work
 
     orchestratorService.cancelRun({ runId, reason });
     purgeRunMaps(runId);
-    void syncMissionFromRun(runId, "graceful_cancel");
+    if (missionId) {
+      transitionMissionStatus(missionId, "canceled", {
+        lastError: reason,
+      });
+    }
+    await syncMissionFromRun(runId, "graceful_cancel", { nextMissionStatus: "canceled" });
 
     const run = orchestratorService.listRuns({ limit: 1_000 }).find((entry) => entry.id === runId);
     if (!run) throw new Error(`Run not found after cancellation: ${runId}`);
@@ -7425,6 +7924,7 @@ Check all worker statuses and continue managing the mission from here. Read work
     });
 
     bestEffortCascadeCleanup(missionId, runId, "run_cancel");
+    cancelingRuns.delete(runId);
 
     return run;
   };
@@ -7547,6 +8047,22 @@ Check all worker statuses and continue managing the mission from here. Read work
     if (!runId) throw new Error("runId is required.");
 
     const currentRun = getRunGraphSafe(runId)?.run ?? null;
+    if (currentRun?.status === "completing") {
+      const finalized = finalizeRun({ runId });
+      if (finalized.finalized) {
+        void syncMissionFromRun(runId, "resume_completing_finalized");
+      }
+      return getRunGraphSafe(runId)?.run ?? currentRun;
+    }
+    if (
+      currentRun?.status === "succeeded"
+      || currentRun?.status === "failed"
+      || currentRun?.status === "canceled"
+    ) {
+      void syncMissionFromRun(runId, "resume_terminal_sync");
+      return currentRun;
+    }
+
     const shouldEnsureCoordinator =
       currentRun?.status === "paused"
       || currentRun?.status === "active"
@@ -7680,14 +8196,81 @@ Check all worker statuses and continue managing the mission from here. Read work
     const projectedStepCount = projectSteeringDirectiveToActiveSteps(directive);
 
     const resolvedInterventions: string[] = [];
+    let resolvedNonManualInterventionCount = 0;
     const resumedRunIds = new Set<string>();
     const refreshedMission = missionService.get(missionId);
+    const targetedOpenIntervention = targetedInterventionId
+      ? refreshedMission?.interventions.find((entry) => entry.status === "open" && entry.id === targetedInterventionId) ?? null
+      : null;
     const openManualInput = targetedInterventionId
-      ? refreshedMission?.interventions.filter((entry) => {
-          if (entry.status !== "open" || entry.interventionType !== "manual_input") return false;
-          return entry.id === targetedInterventionId;
-        }) ?? []
+      ? targetedOpenIntervention?.interventionType === "manual_input" ? [targetedOpenIntervention] : []
       : [];
+    const openNonManualInterventions = targetedOpenIntervention && targetedOpenIntervention.interventionType !== "manual_input"
+      ? [targetedOpenIntervention]
+      : [];
+
+    for (const intervention of openNonManualInterventions) {
+      try {
+        const meta = isRecord(intervention.metadata) ? intervention.metadata : null;
+        const runId = typeof meta?.runId === "string" ? meta.runId.trim() : "";
+        const stepId = typeof meta?.stepId === "string" ? meta.stepId.trim() : "";
+        const attemptId = typeof meta?.attemptId === "string" ? meta.attemptId.trim() : "";
+        missionService.resolveIntervention({
+          missionId,
+          interventionId: intervention.id,
+          status: "resolved",
+          resolutionKind: resolutionKind ?? "answer_provided",
+          note:
+            resolutionKind === "accept_defaults"
+              ? "Resolved by accepting defaults."
+              : resolutionKind === "skip_question"
+                ? "Resolved by dismissing the intervention."
+                : resolutionKind === "cancel_run"
+                  ? "Resolved by canceling the run."
+                  : `Resolved by operator directive (${directive.priority}).`,
+        });
+        resolvedInterventions.push(intervention.id);
+        resolvedNonManualInterventionCount += 1;
+        if (runId.length > 0) {
+          recordRuntimeEvent({
+            runId,
+            stepId: stepId || null,
+            attemptId: attemptId || null,
+            sessionId: typeof meta?.sessionId === "string" ? meta.sessionId : null,
+            eventType: "intervention_resolved",
+            eventKey: `intervention_resolved:${intervention.id}:${directive.priority}`,
+            payload: {
+              interventionId: intervention.id,
+              reason: resolutionKind === "cancel_run" ? "cancel_run" : "steering_directive",
+              priority: directive.priority,
+              directive: clipTextForContext(directive.directive, 220),
+              resolutionKind,
+            },
+          });
+          if (resolutionKind === "cancel_run") {
+            void cancelRunGracefully({
+              runId,
+              reason: "User canceled the run from an intervention.",
+            }).catch((error) => {
+              logger.warn("ai_orchestrator.cancel_run_from_intervention_failed", {
+                missionId,
+                runId,
+                error: getErrorMessage(error),
+              });
+            });
+          } else {
+            resumedRunIds.add(runId);
+          }
+        }
+      } catch (error) {
+        logger.debug("ai_orchestrator.steer_resolve_intervention_failed", {
+          missionId,
+          interventionId: intervention.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
     for (const intervention of openManualInput) {
       try {
         const meta = isRecord(intervention.metadata) ? intervention.metadata : null;
@@ -7699,11 +8282,16 @@ Check all worker statuses and continue managing the mission from here. Read work
         const ownerAttempt = attemptId.length > 0 ? ownerGraph?.attempts.find((entry) => entry.id === attemptId) ?? null : null;
         const ownerStep = stepId.length > 0 ? ownerGraph?.steps.find((entry) => entry.id === stepId) ?? null : null;
         const ownerStepMeta = isRecord(ownerStep?.metadata) ? ownerStep.metadata : null;
+        const reasonCode = typeof meta?.reasonCode === "string" ? meta.reasonCode.trim() : "";
         const ownerPlanningLike =
           String(ownerStepMeta?.stepType ?? "").trim().toLowerCase() === "planning"
           || String(ownerStepMeta?.stepType ?? "").trim().toLowerCase() === "analysis"
           || String(ownerStepMeta?.phaseKey ?? "").trim().toLowerCase() === "planning";
-        const ownerCanResume = attemptId.length === 0 || Boolean(ownerAttempt && ownerAttempt.status === "running");
+        const plannerNaturalQuestionRetry = reasonCode === "planner_natural_question";
+        const ownerCanResume =
+          attemptId.length === 0
+          || Boolean(ownerAttempt && ownerAttempt.status === "running")
+          || plannerNaturalQuestionRetry;
 
         if (resolutionKind !== "cancel_run" && !ownerCanResume) {
           const failureTitle = ownerPlanningLike ? "Planner can no longer continue" : "Question owner is no longer active";
@@ -7774,9 +8362,9 @@ Check all worker statuses and continue managing the mission from here. Read work
               replyTo: questionReplyLink?.replyTo ?? null
             }
           });
-          if (questionReplyLink) {
-            recordRuntimeEvent({
-              runId,
+	          if (questionReplyLink) {
+	            recordRuntimeEvent({
+	              runId,
               stepId: typeof meta?.stepId === "string" ? meta.stepId : null,
               attemptId: typeof meta?.attemptId === "string" ? meta.attemptId : null,
               sessionId: typeof meta?.sessionId === "string" ? meta.sessionId : null,
@@ -7788,10 +8376,89 @@ Check all worker statuses and continue managing the mission from here. Read work
                 threadId: questionReplyLink.threadId,
                 messageId: questionReplyLink.messageId,
                 replyTo: questionReplyLink.replyTo
-              }
-            });
-          }
-          if (resolutionKind !== "cancel_run" && attemptId.length > 0 && stepId.length > 0) {
+	              }
+	            });
+	          }
+	          if (
+	            plannerNaturalQuestionRetry
+	            && resolutionKind !== "cancel_run"
+	            && ownerGraph
+	            && ownerStep
+	            && stepId.length > 0
+	          ) {
+	            const answeredAt = nowIso();
+	            const nextStepMetadata: Record<string, unknown> = {
+	              ...(isRecord(ownerStep.metadata) ? ownerStep.metadata : {}),
+	              lastAnsweredPlannerQuestion: {
+	                interventionId: intervention.id,
+	                question: typeof meta?.question === "string" ? meta.question : intervention.body,
+	                answer: directive.directive,
+	                answeredAt,
+	              },
+	            };
+	            delete nextStepMetadata.awaitingUserInput;
+	            delete nextStepMetadata.blockedAt;
+	            delete nextStepMetadata.blockedByAttemptId;
+	            delete nextStepMetadata.blockedErrorClass;
+	            delete nextStepMetadata.blockedErrorMessage;
+	            delete nextStepMetadata.blockedSticky;
+	            db.run(
+	              `
+	                update orchestrator_steps
+	                set status = 'ready',
+	                    metadata_json = ?,
+	                    updated_at = ?
+	                where id = ?
+	                  and run_id = ?
+	                  and project_id = ?
+	              `,
+	              [JSON.stringify(nextStepMetadata), answeredAt, stepId, runId, ownerGraph.run.projectId],
+	            );
+	            const runMetadata = { ...(isRecord(ownerGraph.run.metadata) ? ownerGraph.run.metadata : {}) };
+	            delete runMetadata.pendingPlannerQuestion;
+	            db.run(
+	              `
+	                update orchestrator_runs
+	                set metadata_json = ?,
+	                    last_error = null,
+	                    updated_at = ?
+	                where id = ?
+	                  and project_id = ?
+	              `,
+	              [JSON.stringify(runMetadata), answeredAt, runId, ownerGraph.run.projectId],
+	            );
+	            orchestratorService.appendTimelineEvent({
+	              runId,
+	              stepId,
+	              attemptId: attemptId || null,
+	              eventType: "step_status_changed",
+	              reason: "planner_question_answered",
+	              detail: {
+	                from: ownerStep.status,
+	                to: "ready",
+	                interventionId: intervention.id,
+	                reasonCode,
+	              },
+	            });
+	            recordRuntimeEvent({
+	              runId,
+	              stepId,
+	              attemptId: attemptId || null,
+	              sessionId: typeof meta?.sessionId === "string" ? meta.sessionId : null,
+	              eventType: "progress",
+	              eventKey: `planner_question_answered:${intervention.id}`,
+	              payload: {
+	                transition: "planner_question_answered_retry_ready",
+	                interventionId: intervention.id,
+	              },
+	            });
+	          }
+	          if (
+	            resolutionKind !== "cancel_run"
+	            && attemptId.length > 0
+            && stepId.length > 0
+            && ownerAttempt?.status === "running"
+          ) {
             const existingWorker = workerStates.get(attemptId);
             const executorKindRaw = typeof meta?.executorKind === "string" ? meta.executorKind : null;
             const executorKind: OrchestratorExecutorKind =
@@ -7839,25 +8506,19 @@ Check all worker statuses and continue managing the mission from here. Read work
           error: error instanceof Error ? error.message : String(error)
         });
       }
-    }
-    if (resolvedInterventions.length > 0) {
-      for (const runId of resumedRunIds) {
-        void startReadyAutopilotAttemptsWithMilestoneReadiness({
-          runId,
-          reason: "question_answered_resume"
-        }).catch((error) => {
-          logger.warn("ai_orchestrator.start_ready_attempts_failed", { runId, reason: "question_answered_resume", error: getErrorMessage(error) });
-        });
-      }
-      emitOrchestratorMessage(
-        missionId,
+	    }
+	    if (resolvedInterventions.length > 0) {
+	      emitOrchestratorMessage(
+	        missionId,
         resolutionKind === "cancel_run"
           ? `Resolved ${resolvedInterventions.length} intervention${resolvedInterventions.length === 1 ? "" : "s"} and started canceling the run.`
           : resolutionKind === "accept_defaults"
             ? `Accepted defaults for ${resolvedInterventions.length} intervention${resolvedInterventions.length === 1 ? "" : "s"} and resumed the owning worker.`
             : resolutionKind === "skip_question"
               ? `Skipped ${resolvedInterventions.length} question${resolvedInterventions.length === 1 ? "" : "s"} and resumed the owning worker.`
-              : `Applied user answers and resolved ${resolvedInterventions.length} waiting-input intervention${resolvedInterventions.length === 1 ? "" : "s"}.`,
+              : resolvedNonManualInterventionCount > 0
+                ? `Applied operator direction and resolved ${resolvedInterventions.length} intervention${resolvedInterventions.length === 1 ? "" : "s"}.`
+                : `Applied user answers and resolved ${resolvedInterventions.length} waiting-input intervention${resolvedInterventions.length === 1 ? "" : "s"}.`,
         directive.targetStepKey ?? null,
         {
           interventionIds: resolvedInterventions,
@@ -7876,12 +8537,12 @@ Check all worker statuses and continue managing the mission from here. Read work
         if (remainingOpenInterventions.length === 0) {
           for (const runId of resumedRunIds) {
             try {
-              const runGraph = orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
-              if (runGraph.run.status === "paused") {
-                resumeRun({ runId });
-                logger.info("ai_orchestrator.steer_auto_resumed_run", { missionId, runId });
-              }
-            } catch (resumeError) {
+	              const runGraph = orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
+	              if (runGraph.run.status === "paused") {
+	                resumeRun({ runId });
+	                logger.info("ai_orchestrator.steer_auto_resumed_run", { missionId, runId });
+	              }
+	            } catch (resumeError) {
               logger.debug("ai_orchestrator.steer_auto_resume_failed", {
                 missionId,
                 runId,
@@ -7983,6 +8644,20 @@ Check all worker statuses and continue managing the mission from here. Read work
     try {
       const steerRuns = orchestratorService.listRuns({ missionId });
       for (const steerRun of steerRuns) {
+        if (steerRun.status === "active" || steerRun.status === "bootstrapping" || steerRun.status === "queued") {
+          void orchestratorService
+            .startReadyAutopilotAttempts({
+              runId: steerRun.id,
+              reason: "steering_directive",
+            })
+            .catch((error: unknown) => {
+              logger.debug("ai_orchestrator.steering_autopilot_start_failed", {
+                missionId,
+                runId: steerRun.id,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            });
+        }
         if (steerRun.status === "active" || steerRun.status === "bootstrapping" || steerRun.status === "paused") {
           triggerCoordinatorEvaluation(steerRun.id, "steering_directive");
         }
@@ -8243,7 +8918,13 @@ Check all worker statuses and continue managing the mission from here. Read work
     if (disposed || healthSweepTimer) return;
     healthSweepTimer = setInterval(() => {
       if (disposed) return;
-      if (workerStates.size === 0 && activeHealthSweepRuns.size === 0 && !hasRecoverableRuntimeWork()) return;
+      if (
+        !hasRecoverableWorkerRuntimeState(workerStates.values())
+        && activeHealthSweepRuns.size === 0
+        && !hasRecoverableRuntimeWork()
+      ) {
+        return;
+      }
       void runHealthSweep("interval").catch((error) => {
         logger.debug("ai_orchestrator.health_sweep_interval_failed", {
           error: error instanceof Error ? error.message : String(error)
@@ -8283,9 +8964,172 @@ Check all worker statuses and continue managing the mission from here. Read work
     }
   };
 
+  const COORDINATOR_MANUAL_CHAT_TURNLESS_KEY = "__turnless__";
+  const MAX_COORDINATOR_MANUAL_CHAT_REPLAY_BUFFERS = 80;
+
+  const agentChatTurnKey = (event: AgentChatEvent): string => {
+    const turnId = "turnId" in event && typeof event.turnId === "string"
+      ? event.turnId.trim()
+      : "";
+    return turnId || COORDINATOR_MANUAL_CHAT_TURNLESS_KEY;
+  };
+
+  const pruneCoordinatorManualChatReplayBuffers = (): void => {
+    let total = 0;
+    for (const buffers of coordinatorManualChatReplayBuffers.values()) total += buffers.size;
+    if (total <= MAX_COORDINATOR_MANUAL_CHAT_REPLAY_BUFFERS) return;
+    const entries = [...coordinatorManualChatReplayBuffers.entries()]
+      .flatMap(([sessionId, buffers]) =>
+        [...buffers.entries()].map(([turnKey, buffer]) => ({ sessionId, turnKey, updatedAtMs: buffer.updatedAtMs }))
+      )
+      .sort((a, b) => a.updatedAtMs - b.updatedAtMs);
+    for (const entry of entries.slice(0, Math.max(0, total - MAX_COORDINATOR_MANUAL_CHAT_REPLAY_BUFFERS))) {
+      const buffers = coordinatorManualChatReplayBuffers.get(entry.sessionId);
+      buffers?.delete(entry.turnKey);
+      if (buffers && buffers.size === 0) coordinatorManualChatReplayBuffers.delete(entry.sessionId);
+    }
+  };
+
+  const maybeReplayManualCoordinatorChatToolCalls = (
+    coordinatorChat: { missionId: string; runId: string; laneId: string | null },
+    envelope: AgentChatEventEnvelope,
+  ): void => {
+    const sessionId = envelope.sessionId.trim();
+    if (!sessionId || coordinatorChatRuntimeOwnedSessions.has(sessionId)) return;
+    const event = envelope.event;
+    const turnKey = agentChatTurnKey(event);
+
+    if (event.type === "text") {
+      const text = event.text;
+      if (!text.length) return;
+      const buffers = coordinatorManualChatReplayBuffers.get(sessionId) ?? new Map<string, { text: string; updatedAtMs: number; replayStarted: boolean }>();
+      const current = buffers.get(turnKey) ?? { text: "", updatedAtMs: 0, replayStarted: false };
+      if (!current.replayStarted) {
+        current.text += text;
+        current.updatedAtMs = Date.now();
+        buffers.set(turnKey, current);
+        coordinatorManualChatReplayBuffers.set(sessionId, buffers);
+        pruneCoordinatorManualChatReplayBuffers();
+      }
+      return;
+    }
+
+    if (event.type !== "done" || event.status !== "completed") return;
+
+    const buffers = coordinatorManualChatReplayBuffers.get(sessionId);
+    if (!buffers || buffers.size === 0) return;
+    const resolvedTurnKey =
+      turnKey !== COORDINATOR_MANUAL_CHAT_TURNLESS_KEY
+        ? turnKey
+        : buffers.size === 1
+          ? [...buffers.keys()][0] ?? COORDINATOR_MANUAL_CHAT_TURNLESS_KEY
+          : COORDINATOR_MANUAL_CHAT_TURNLESS_KEY;
+    const buffer = buffers.get(resolvedTurnKey);
+    if (!buffer || buffer.replayStarted) return;
+    const assistantText = buffer.text.trim();
+    if (!assistantText.length) {
+      buffers.delete(resolvedTurnKey);
+      if (buffers.size === 0) coordinatorManualChatReplayBuffers.delete(sessionId);
+      return;
+    }
+
+    const existingCoordinator = coordinatorAgents.get(coordinatorChat.runId) ?? null;
+    const coordinator = existingCoordinator?.isAlive
+      ? existingCoordinator
+      : ensureCoordinatorAgentV2(coordinatorChat.runId).agent;
+    if (!coordinator?.isAlive) {
+      logger.warn("ai_orchestrator.coordinator_manual_chat_tool_replay_no_runtime", {
+        missionId: coordinatorChat.missionId,
+        runId: coordinatorChat.runId,
+        sessionId,
+      });
+      return;
+    }
+    buffer.replayStarted = true;
+    const fallbackReplayKey = envelope.sequence ?? (Date.parse(envelope.timestamp) || Date.now());
+    const replayTurnId = resolvedTurnKey === COORDINATOR_MANUAL_CHAT_TURNLESS_KEY
+      ? `manual-chat:${sessionId}:${fallbackReplayKey}`
+      : `manual-chat:${resolvedTurnKey}`;
+    void coordinator.replayRecoveredMissionControlText(assistantText, replayTurnId)
+      .then((executedCount) => {
+        buffers.delete(resolvedTurnKey);
+        if (buffers.size === 0) coordinatorManualChatReplayBuffers.delete(sessionId);
+        if (executedCount > 0) {
+          logger.info("ai_orchestrator.coordinator_manual_chat_tools_replayed", {
+            missionId: coordinatorChat.missionId,
+            runId: coordinatorChat.runId,
+            sessionId,
+            turnId: replayTurnId,
+            executedCount,
+          });
+        }
+      })
+      .catch((error: unknown) => {
+        buffer.replayStarted = false;
+        logger.warn("ai_orchestrator.coordinator_manual_chat_tool_replay_failed", {
+          missionId: coordinatorChat.missionId,
+          runId: coordinatorChat.runId,
+          sessionId,
+          turnId: replayTurnId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+  };
+
+  const resolvePersistedCoordinatorChatSession = (sessionId: string): { missionId: string; runId: string; laneId: string | null } | null => {
+    const normalizedSessionId = sessionId.trim();
+    if (!normalizedSessionId) return null;
+    const existing = coordinatorChatSessions.get(normalizedSessionId);
+    if (existing) return existing;
+    try {
+      const row = db.get<{ mission_id: string; run_id: string | null; lane_id: string | null }>(
+        `
+          select mission_id, run_id, lane_id
+          from orchestrator_chat_threads
+          where thread_type = 'coordinator'
+            and session_id = ?
+          order by updated_at desc
+          limit 1
+        `,
+        [normalizedSessionId]
+      );
+      const missionId = typeof row?.mission_id === "string" ? row.mission_id.trim() : "";
+      const runId = typeof row?.run_id === "string" ? row.run_id.trim() : "";
+      if (!missionId || !runId) return null;
+      const hydrated = {
+        missionId,
+        runId,
+        laneId: typeof row?.lane_id === "string" && row.lane_id.trim().length > 0 ? row.lane_id.trim() : null,
+      };
+      coordinatorChatSessions.set(normalizedSessionId, hydrated);
+      coordinatorChatSessionByRunId.set(runId, normalizedSessionId);
+      return hydrated;
+    } catch (error) {
+      logger.debug("ai_orchestrator.coordinator_chat_session_hydrate_failed", {
+        sessionId: normalizedSessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  };
+
   const onAgentChatEvent = (envelope: AgentChatEventEnvelope): void => {
     if (disposed) return;
-    persistStructuredWorkerChatEvent(envelope);
+    const coordinatorChat = resolvePersistedCoordinatorChatSession(envelope.sessionId);
+    if (coordinatorChat) {
+      structuredChatSessions.add(envelope.sessionId);
+      persistStructuredCoordinatorChatEvent({
+        missionId: coordinatorChat.missionId,
+        runId: coordinatorChat.runId,
+        laneId: coordinatorChat.laneId,
+        sessionId: envelope.sessionId,
+        timestamp: envelope.timestamp,
+        event: envelope.event,
+      });
+      maybeReplayManualCoordinatorChatToolCalls(coordinatorChat, envelope);
+    } else {
+      persistStructuredWorkerChatEvent(envelope);
+    }
     onAgentChatEventCtx(ctx, envelope, { replayQueuedWorkerMessages });
   };
 
@@ -8452,15 +9296,6 @@ Check all worker statuses and continue managing the mission from here. Read work
         createdAt: openIntervention.updatedAt || openIntervention.createdAt,
       };
     }
-    if (args.coordinatorAvailability && args.coordinatorAvailability.available === false) {
-      return {
-        source: "coordinator",
-        title: "Coordinator unavailable",
-        detail: args.coordinatorAvailability.detail?.trim() || args.coordinatorAvailability.summary,
-        severity: "error",
-        createdAt: args.coordinatorAvailability.updatedAt,
-      };
-    }
     if (args.runStatus === "failed") {
       return {
         source: "run",
@@ -8479,6 +9314,15 @@ Check all worker statuses and continue managing the mission from here. Read work
         createdAt: args.mission.updatedAt,
       };
     }
+    if (args.coordinatorAvailability && args.coordinatorAvailability.available === false) {
+      return {
+        source: "coordinator",
+        title: "Coordinator unavailable",
+        detail: args.coordinatorAvailability.detail?.trim() || args.coordinatorAvailability.summary,
+        severity: "error",
+        createdAt: args.coordinatorAvailability.updatedAt,
+      };
+    }
     if (args.mission.status === "failed") {
       return {
         source: "mission",
@@ -8489,6 +9333,87 @@ Check all worker statuses and continue managing the mission from here. Read work
       };
     }
     return null;
+  };
+
+  const collectRunViewStringList = (value: unknown, limit = 12): string[] => {
+    if (!Array.isArray(value)) return [];
+    return value
+      .map((entry) => String(entry ?? "").trim())
+      .filter((entry, index, entries) => entry.length > 0 && entries.indexOf(entry) === index)
+      .slice(0, limit);
+  };
+
+  const extractWorkerSummaryFileList = (value: string): { summary: string; filesChanged: string[] } => {
+    const filesChanged: string[] = [];
+    const cleaned = value.replace(
+      /(?:\*{0,2}Changed Files\*{0,2}:?\s*)?```(?:json)?\s*([\s\S]*?)```/gi,
+      (match, body: string) => {
+        try {
+          const parsed = JSON.parse(body.trim());
+          const files = collectRunViewStringList(isRecord(parsed) ? parsed.filesChanged ?? parsed.files_changed : null);
+          if (files.length === 0) return match;
+          filesChanged.push(...files);
+          return "";
+        } catch {
+          return match;
+        }
+      },
+    ).replace(/\s{2,}/g, " ").trim();
+    return {
+      summary: cleaned,
+      filesChanged: filesChanged.filter((entry, index, all) => all.indexOf(entry) === index),
+    };
+  };
+
+  const formatRunViewWorkerResultDetail = (
+    detailRecord: Record<string, unknown> | null,
+    fallback: string | null,
+  ): string | null => {
+    if (!detailRecord) return fallback;
+    const summaryRaw = toOptionalString(detailRecord.summary)
+      ?? toOptionalString(detailRecord.message)
+      ?? fallback
+      ?? null;
+    const summaryExtraction = summaryRaw ? extractWorkerSummaryFileList(summaryRaw) : { summary: "", filesChanged: [] };
+    const summary = summaryExtraction.summary || summaryRaw;
+    const filesChanged = [
+      ...summaryExtraction.filesChanged,
+      ...collectRunViewStringList(detailRecord.filesChanged),
+      ...collectRunViewStringList(detailRecord.changedFiles),
+      ...collectRunViewStringList(detailRecord.modifiedFiles),
+      ...collectRunViewStringList(detailRecord.files_changed),
+      ...collectRunViewStringList(detailRecord.changed_files),
+      ...collectRunViewStringList(detailRecord.modified_files),
+    ].filter((entry, index, all) => all.indexOf(entry) === index).slice(0, 12);
+    const testsRun = isRecord(detailRecord.testsRun)
+      ? detailRecord.testsRun
+      : isRecord(detailRecord.tests_run)
+        ? detailRecord.tests_run
+        : null;
+    const parts: string[] = [];
+
+    if (summary) parts.push(summary);
+    if (filesChanged.length > 0) {
+      parts.push(`Changed files:\n- ${filesChanged.join("\n- ")}`);
+    }
+    if (testsRun) {
+      const command = toOptionalString(testsRun.command);
+      const raw = toOptionalString(testsRun.raw);
+      const counts = [
+        Number.isFinite(Number(testsRun.passed)) ? `${Number(testsRun.passed)} passed` : null,
+        Number.isFinite(Number(testsRun.failed)) ? `${Number(testsRun.failed)} failed` : null,
+        Number.isFinite(Number(testsRun.skipped)) ? `${Number(testsRun.skipped)} skipped` : null,
+      ].filter((entry): entry is string => Boolean(entry));
+      const countSummary = counts.join(", ");
+      const testLines = [
+        command ? `- ${command}` : null,
+        countSummary.length > 0 ? `- ${countSummary}` : null,
+        raw && raw !== command && raw !== countSummary ? `- ${raw}` : null,
+      ].filter((entry): entry is string => Boolean(entry));
+      if (testLines.length > 0) parts.push(`Tests:\n${testLines.join("\n")}`);
+    }
+
+    return parts.length > 0 ? parts.join("\n\n") : fallback;
   };
 
   const buildRunViewTimelineItem = (
@@ -8518,6 +9443,8 @@ Check all worker statuses and continue managing the mission from here. Read work
                 ? "Planning worker is launching"
                 : state === "waiting_on_planner"
                   ? "Planning worker is in flight"
+                  : state === "running_phase"
+                    ? "Coordinator is running a mission phase"
                   : state === "planner_launch_failed"
                     ? "Planning worker launch failed"
                     : state === "stopped"
@@ -8587,7 +9514,9 @@ Check all worker statuses and continue managing the mission from here. Read work
           at: event.createdAt,
           kind: "worker",
           title: event.eventType === "worker_result_reported" ? "Worker result" : "Worker update",
-          detail: detailSummary ?? `${stepLabel} reported progress.`,
+          detail: event.eventType === "worker_result_reported"
+            ? formatRunViewWorkerResultDetail(detailRecord, detailSummary ?? `${stepLabel} reported progress.`) ?? `${stepLabel} reported progress.`
+            : detailSummary ?? `${stepLabel} reported progress.`,
           severity: toRunViewSeverity(detailSummary ?? event.reason),
           audience: "mission_feed",
           source: "timeline",
@@ -8659,19 +9588,28 @@ Check all worker statuses and continue managing the mission from here. Read work
     }
     const step = event.stepId ? stepById.get(event.stepId) ?? null : null;
     const payload = isRecord(event.payload) ? event.payload : null;
+    const rawReason = toOptionalString(payload?.reason);
+    const reasonLooksInternal = rawReason ? /^[a-z0-9_:-]+$/i.test(rawReason) : false;
     const detail = toOptionalString(payload?.summary)
       ?? toOptionalString(payload?.message)
-      ?? toOptionalString(payload?.reason)
       ?? toOptionalString(payload?.directive)
+      ?? (reasonLooksInternal ? null : rawReason)
       ?? null;
 
     if (event.eventType === "coordinator_steering" || event.eventType === "coordinator_broadcast") {
+      const delivered = payload?.delivered === true;
+      const title = (() => {
+        if (event.eventType === "coordinator_broadcast") return "Broadcast sent";
+        return delivered ? "Steering delivered" : "Steering saved";
+      })();
       return {
         id: `runtime:${event.id}`,
         at: event.occurredAt,
         kind: "user",
-        title: event.eventType === "coordinator_broadcast" ? "Broadcast sent" : "Steering applied",
-        detail: detail ?? "Mission steering was applied.",
+        title,
+        detail: detail ?? (delivered
+          ? "Mission steering was delivered to the active worker."
+          : "ADE saved the instruction for the coordinator, but no live worker session accepted it directly."),
         severity: "info",
         audience: "mission_feed",
         source: "runtime",
@@ -8706,13 +9644,15 @@ Check all worker statuses and continue managing the mission from here. Read work
             ? "Question skipped"
             : payload?.resolutionKind === "cancel_run"
               ? "Run canceled"
-              : "Answer received";
+              : "Operator decision applied";
       return {
         id: `runtime:${event.id}`,
         at: event.occurredAt,
         kind: "user",
         title: resolutionLabel,
-        detail: detail ?? "ADE applied the intervention outcome.",
+        detail: detail ?? (payload?.resolutionKind === "answer_provided"
+          ? "ADE resolved the intervention and resumed mission coordination."
+          : "ADE applied the intervention outcome."),
         severity: payload?.resolutionKind === "cancel_run" ? "warning" : "info",
         audience: "mission_feed",
         source: "runtime",
@@ -8860,7 +9800,7 @@ Check all worker statuses and continue managing the mission from here. Read work
       .slice(0, 80);
   };
 
-  const getRunView = async (
+  const buildRunView = async (
     viewArgs: GetMissionRunViewArgs,
   ): Promise<MissionRunView | null> => {
     const missionId = String(viewArgs.missionId ?? "").trim();
@@ -8876,7 +9816,7 @@ Check all worker statuses and continue managing the mission from here. Read work
     const latestIntervention = toRunViewLatestIntervention(mission);
     const openIntervention = getScopedOpenIntervention({ mission, run });
     const openInterventionReasonCode = toOptionalString(asRecord(openIntervention?.metadata)?.reasonCode);
-    const coordinatorAvailability = stateDoc?.coordinatorAvailability
+    let coordinatorAvailability = stateDoc?.coordinatorAvailability
       ?? (
         openInterventionReasonCode === "coordinator_unavailable" || openInterventionReasonCode === "coordinator_recovery_failed"
           ? {
@@ -8907,6 +9847,51 @@ Check all worker statuses and continue managing the mission from here. Read work
       latestIntervention,
       openIntervention,
     });
+    const closeoutRequirements = graph
+      ? buildMissionCloseoutRequirements({
+          mission,
+          graph,
+          policy: resolveMissionFinalizationPolicyForMission(mission.id),
+          finalization: stateDoc?.finalization ?? null,
+          stateDoc,
+        })
+      : [];
+    const unmetCloseoutRequirements = closeoutRequirements.filter((requirement) =>
+      requirement.required
+      && requirement.status !== "present"
+      && requirement.status !== "waived"
+    );
+    const closeoutBlocked =
+      run?.status === "succeeded"
+      && mission.status !== "completed"
+      && unmetCloseoutRequirements.length > 0;
+    if (closeoutBlocked && run) {
+      const existingCoordinator = coordinatorAgents.get(run.id) ?? null;
+      if (existingCoordinator?.isAlive) {
+        coordinatorAvailability = {
+          available: true,
+          mode: "consult_only",
+          summary: "Mission execution is complete. The coordinator remains available for closeout evidence and follow-up questions.",
+          detail: "Post-completion messages stay in closeout/consult mode. New implementation work should create an explicit continuation.",
+          updatedAt: stateDoc?.finalization?.updatedAt ?? mission.updatedAt,
+        };
+      }
+    }
+    const closeoutBlockDetail = closeoutBlocked
+      ? (
+          stateDoc?.finalization?.summary?.trim()
+          || `Closeout is incomplete: ${unmetCloseoutRequirements.map((requirement) => requirement.label).join(", ")}.`
+        )
+      : null;
+    const effectiveHaltReason = haltReason ?? (closeoutBlocked
+      ? {
+          source: "mission",
+          title: "Closeout incomplete",
+          detail: closeoutBlockDetail ?? "Closeout evidence is still missing.",
+          severity: "warning",
+          createdAt: stateDoc?.finalization?.updatedAt ?? run?.completedAt ?? mission.updatedAt,
+        } satisfies MissionRunViewHaltReason
+      : null);
 
     const activeStep = (() => {
       const steps = filterExecutionSteps(graph?.steps ?? []);
@@ -8922,10 +9907,12 @@ Check all worker statuses and continue managing the mission from here. Read work
     const phaseRuntime = asRecord(isRecord(graph?.run.metadata) ? graph?.run.metadata.phaseRuntime : null);
     const activeStepMeta = asRecord(activeStep?.metadata);
     const displayStatus = (() => {
-      if (openIntervention || coordinatorAvailability?.available === false) return "blocked" satisfies MissionRunViewDisplayStatus;
+      if (openIntervention) return "blocked" satisfies MissionRunViewDisplayStatus;
       if (run?.status === "failed" || mission.status === "failed") return "failed" satisfies MissionRunViewDisplayStatus;
       if (run?.status === "canceled" || mission.status === "canceled") return "canceled" satisfies MissionRunViewDisplayStatus;
+      if (closeoutBlocked) return "blocked" satisfies MissionRunViewDisplayStatus;
       if (run?.status === "succeeded" || mission.status === "completed") return "completed" satisfies MissionRunViewDisplayStatus;
+      if (coordinatorAvailability?.available === false) return "blocked" satisfies MissionRunViewDisplayStatus;
       if (run?.status === "queued" || run?.status === "bootstrapping" || mission.status === "planning") return "starting" satisfies MissionRunViewDisplayStatus;
       if (run?.status === "paused") return "paused" satisfies MissionRunViewDisplayStatus;
       if (run?.status === "active" || mission.status === "in_progress") return "running" satisfies MissionRunViewDisplayStatus;
@@ -8988,7 +9975,7 @@ Check all worker statuses and continue managing the mission from here. Read work
         missionStatus: mission.status,
         runStatus: run?.status ?? null,
         displayStatus,
-        summary: haltReason?.detail
+        summary: effectiveHaltReason?.detail
           ?? (
             displayStatus === "running"
               ? activeStep?.title
@@ -9004,7 +9991,9 @@ Check all worker statuses and continue managing the mission from here. Read work
                       ? "Mission was canceled."
                       : displayStatus === "paused"
                         ? "Mission is paused."
-                      : "Mission has not started yet."
+                        : displayStatus === "blocked"
+                          ? "Mission is blocked and requires attention."
+                        : "Mission has not started yet."
           ),
         startedAt: run?.startedAt ?? mission.startedAt ?? null,
         completedAt: run?.completedAt ?? mission.completedAt ?? null,
@@ -9034,7 +10023,7 @@ Check all worker statuses and continue managing the mission from here. Read work
         updatedAt: coordinatorAvailability?.updatedAt ?? null,
       },
       latestIntervention,
-      haltReason,
+      haltReason: effectiveHaltReason,
       workers: workers.sort((left, right) => {
         const leftAt = Date.parse(left.completedAt || left.lastHeartbeatAt || "");
         const rightAt = Date.parse(right.completedAt || right.lastHeartbeatAt || "");
@@ -9042,17 +10031,58 @@ Check all worker statuses and continue managing the mission from here. Read work
       }),
       progressLog,
       lastMeaningfulProgress: progressLog[0] ?? null,
-      closeoutRequirements: graph
-        ? buildMissionCloseoutRequirements({
-            mission,
-            graph,
-            policy: resolveMissionFinalizationPolicyForMission(mission.id),
-            finalization: stateDoc?.finalization ?? null,
-            stateDoc,
-          })
-        : [],
+      closeoutRequirements,
       computerUse: missionComputerUse,
     };
+  };
+
+  const getRunView = async (
+    viewArgs: GetMissionRunViewArgs,
+  ): Promise<MissionRunView | null> => {
+    const missionId = String(viewArgs.missionId ?? "").trim();
+    if (!missionId.length) return null;
+    const runId = typeof viewArgs.runId === "string" ? viewArgs.runId.trim() : "";
+    const cacheKey = `${missionId}::${runId}`;
+    const now = Date.now();
+    const cached = runViewCache.get(cacheKey);
+
+    if (cached) {
+      const ageMs = now - cached.updatedAt;
+      if (cached.value !== null && ageMs < RUN_VIEW_CACHE_TTL_MS) {
+        return cached.value;
+      }
+      if (cached.inFlight) {
+        if (cached.value !== null && ageMs < RUN_VIEW_STALE_WHILE_REFRESHING_MS) {
+          return cached.value;
+        }
+        return cached.inFlight;
+      }
+    }
+
+    const inFlight = buildRunView(viewArgs)
+      .then((view) => {
+        runViewCache.set(cacheKey, {
+          value: view,
+          updatedAt: Date.now(),
+          inFlight: null,
+        });
+        return view;
+      })
+      .catch((error) => {
+        if (cached) {
+          runViewCache.set(cacheKey, { ...cached, inFlight: null });
+        } else {
+          runViewCache.delete(cacheKey);
+        }
+        throw error;
+      });
+
+    runViewCache.set(cacheKey, {
+      value: cached?.value ?? null,
+      updatedAt: cached?.updatedAt ?? 0,
+      inFlight,
+    });
+    return inFlight;
   };
 
   // ── Execution Plan Preview ──────────────────────────────────
@@ -9785,8 +10815,27 @@ Check all worker statuses and continue managing the mission from here. Read work
         const recovered = attemptCoordinatorRecovery(runId);
         if (recovered?.isAlive) coordinator = recovered;
       }
+      if (!coordinator && hasActivePersistedCoordinatorChatSessionForRun(runId)) {
+        const ensured = ensureCoordinatorAgentV2(runId);
+        if (ensured.agent?.isAlive) coordinator = ensured.agent;
+      }
       const coordinatorWritesSuppressed = coordinatorWriteBarrierRuns.has(runId);
-      if (!coordinator) {
+      const coordinatorOwnershipRequired = runRequiresCoordinatorOwnership(getEventGraph().run);
+      if (!coordinatorOwnershipRequired) {
+        if (coordinator) {
+          resolveCoordinatorHealthInterventions({
+            runId,
+            note: "Coordinator runtime is healthy again; closed stale coordinator availability intervention.",
+            resolutionReason: "coordinator_recovered",
+          });
+        }
+        void syncMissionFromRun(runId, event.reason);
+        logger.debug("ai_orchestrator.coordinator_gate_skipped_manual_run", {
+          runId,
+          eventType: event.type,
+          reason: event.reason,
+        });
+      } else if (!coordinator) {
         const runStatus = getEventGraph().run.status;
         const terminalCoordinatorRun =
           typeof runStatus === "string" && TERMINAL_COORDINATOR_RUN_STATUSES.has(runStatus as OrchestratorRunStatus);
@@ -9891,7 +10940,8 @@ Check all worker statuses and continue managing the mission from here. Read work
         });
       }
 
-      // Run finalized — coordinator's job is done, shut it down
+      // Failed/canceled terminal runs end the coordinator. Successful runs keep
+      // it available for closeout evidence and follow-up consults.
       if (event.reason === "finalized") {
         const terminalRunStatus = getEventGraph().run.status;
         if (terminalRunStatus === "succeeded" || terminalRunStatus === "failed" || terminalRunStatus === "canceled") {
@@ -9902,6 +10952,16 @@ Check all worker statuses and continue managing the mission from here. Read work
           });
         }
         void syncMissionFromRun(runId, event.reason);
+        if (terminalRunStatus === "succeeded") {
+          setCoordinatorAvailability(runId, {
+            available: true,
+            mode: "consult_only",
+            summary: "Mission execution is complete. The coordinator remains available for closeout evidence and follow-up questions.",
+            detail: "Post-completion messages stay in closeout/consult mode. New implementation work should create an explicit continuation.",
+            updatedAt: nowIso(),
+          }, { graph: getEventGraph() });
+          return;
+        }
         endCoordinatorAgentV2(runId);
         return;
       }

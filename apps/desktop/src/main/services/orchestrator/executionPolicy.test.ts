@@ -114,6 +114,11 @@ describe("executionPolicy", () => {
       expect(phaseModelToExecutorKind("anthropic/claude-sonnet-4-6")).toBe("claude");
     });
 
+    it("maps alias and short model ids through the registry before falling back", () => {
+      expect(phaseModelToExecutorKind("gpt-5.5")).toBe("codex");
+      expect(phaseModelToExecutorKind("gpt-5.3-codex-spark")).toBe("codex");
+    });
+
     it("falls back to opencode when model id is absent/unknown", () => {
       expect(phaseModelToExecutorKind("legacy-provider-string")).toBe("opencode");
       expect(phaseModelToExecutorKind(undefined)).toBe("opencode");
@@ -289,6 +294,267 @@ describe("evaluateRunCompletionFromPhases", () => {
     const result = evaluateRunCompletionFromPhases(steps, phases, defaultSettings);
     expect(result.status).toBe("succeeded");
     expect(result.completionReady).toBe(true);
+  });
+
+  it("does not require a second validation report for auto-spawned validator workers", () => {
+    const phases = [
+      makePhaseCard({ phaseKey: "implementation", validationGate: { tier: "none", required: true } }),
+      makePhaseCard({ phaseKey: "testing", validationGate: { tier: "dedicated", required: true } }),
+      makePhaseCard({ phaseKey: "validation", validationGate: { tier: "dedicated", required: true } }),
+    ];
+    const steps = [
+      makeStep({ id: "impl", status: "succeeded", metadata: { stepType: "code", phaseKey: "implementation" } }),
+      makeStep({
+        id: "test",
+        status: "succeeded",
+        metadata: {
+          stepType: "test",
+          phaseKey: "testing",
+          validationContract: {
+            level: "step",
+            tier: "dedicated",
+            required: true,
+            criteria: "Testing output must be validated.",
+            evidence: [],
+          },
+          validationState: "pass",
+          validationPassedAt: "2026-03-02T00:10:00.000Z",
+        },
+      }),
+      makeStep({
+        id: "validate_test",
+        status: "succeeded",
+        metadata: {
+          stepType: "validation",
+          phaseKey: "validation",
+          autoSpawnedValidation: true,
+          targetStepKey: "test",
+          validationContract: {
+            level: "step",
+            tier: "dedicated",
+            required: true,
+            criteria: "Validate testing output.",
+            evidence: [],
+          },
+        },
+      }),
+    ];
+
+    const result = evaluateRunCompletionFromPhases(steps, phases, defaultSettings);
+
+    expect(result.completionReady).toBe(true);
+    expect(result.diagnostics).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "required_validation_missing",
+        }),
+      ])
+    );
+  });
+
+  it("does not require a worker step for the closeout summary gate", () => {
+    const phases = [
+      makePhaseCard({ phaseKey: "implementation", validationGate: { tier: "none", required: true }, position: 0 }),
+      makePhaseCard({ phaseKey: "validation", validationGate: { tier: "dedicated", required: true }, position: 1 }),
+      makePhaseCard({
+        phaseKey: "closeout",
+        name: "Closeout",
+        validationGate: { tier: "self", required: true },
+        position: 2,
+      }),
+    ];
+    const steps = [
+      makeStep({ id: "impl", status: "succeeded", metadata: { stepType: "code", phaseKey: "implementation" } }),
+      makeStep({
+        id: "validation",
+        status: "succeeded",
+        metadata: {
+          stepType: "validation",
+          phaseKey: "validation",
+          validationState: "pass",
+          validationPassedAt: "2026-03-02T00:10:00.000Z",
+        },
+      }),
+    ];
+
+    const result = evaluateRunCompletionFromPhases(steps, phases, defaultSettings);
+
+    expect(result.completionReady).toBe(true);
+    expect(result.diagnostics).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          phase: "closeout",
+          code: "phase_required_missing",
+        }),
+      ])
+    );
+  });
+
+  it("treats legacy passed validation aliases as a passing required gate", () => {
+    const phases = [
+      makePhaseCard({ phaseKey: "implementation", validationGate: { tier: "self", required: true } }),
+    ];
+    const steps = [
+      makeStep({
+        id: "impl",
+        status: "succeeded",
+        metadata: {
+          stepType: "code",
+          phaseKey: "implementation",
+          validationContract: {
+            level: "step",
+            tier: "self",
+            required: true,
+            criteria: "Validation must pass.",
+            evidence: [],
+          },
+          validationState: "passed",
+          lastValidationReport: {
+            verdict: "passed",
+          },
+        },
+      }),
+    ];
+
+    const result = evaluateRunCompletionFromPhases(steps, phases, defaultSettings);
+
+    expect(result.completionReady).toBe(true);
+    expect(result.diagnostics).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "required_validation_missing" }),
+      ])
+    );
+  });
+
+  it("maps customized built-in development phases to the implementation completion bucket", () => {
+    const phases = [
+      makePhaseCard({
+        phaseKey: "development",
+        name: "Parallel development",
+        validationGate: { tier: "none", required: false },
+        isBuiltIn: true,
+        isCustom: true
+      })
+    ];
+    const steps = [
+      makeStep({
+        id: "s1",
+        status: "succeeded",
+        metadata: { stepType: "code", phaseKey: "development", phaseName: "Parallel development" }
+      })
+    ];
+
+    const result = evaluateRunCompletionFromPhases(steps, phases, defaultSettings);
+
+    expect(result.diagnostics).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          phase: "implementation",
+          code: "phase_required_missing"
+        })
+      ])
+    );
+    expect(result.completionReady).toBe(true);
+  });
+
+  it("does not require the built-in implementation bucket for custom-only executable phase runs", () => {
+    const phases = [
+      makePhaseCard({
+        phaseKey: "parser_enrichment",
+        name: "Parser enrichment",
+        validationGate: { tier: "self", required: true },
+        isBuiltIn: false,
+        isCustom: true
+      }),
+      makePhaseCard({
+        phaseKey: "formatter_reporting",
+        name: "Formatter reporting",
+        validationGate: { tier: "self", required: true },
+        isBuiltIn: false,
+        isCustom: true
+      })
+    ];
+    const steps = [
+      makeStep({
+        id: "s1",
+        status: "succeeded",
+        metadata: {
+          stepType: "implementation",
+          phaseKey: "parser_enrichment",
+          phaseName: "Parser enrichment",
+          validationState: "pass"
+        }
+      }),
+      makeStep({
+        id: "s2",
+        status: "succeeded",
+        metadata: {
+          stepType: "implementation",
+          phaseKey: "formatter_reporting",
+          phaseName: "Formatter reporting",
+          validationState: "pass"
+        }
+      })
+    ];
+
+    const result = evaluateRunCompletionFromPhases(steps, phases, defaultSettings);
+
+    expect(result.diagnostics).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          phase: "implementation",
+          code: "phase_required_missing"
+        })
+      ])
+    );
+    expect(result.completionReady).toBe(true);
+    expect(result.status).toBe("succeeded");
+  });
+
+  it("counts succeeded display-only custom phase records as completion evidence", () => {
+    const phases = [
+      makePhaseCard({ phaseKey: "implementation", validationGate: { tier: "none", required: true } }),
+      makePhaseCard({
+        phaseKey: "evidence_review",
+        name: "Evidence review",
+        validationGate: { tier: "self", required: true },
+        isBuiltIn: false,
+        isCustom: true
+      })
+    ];
+    const steps = [
+      makeStep({
+        id: "impl",
+        status: "succeeded",
+        metadata: { stepType: "code", phaseKey: "implementation" }
+      }),
+      makeStep({
+        id: "evidence",
+        status: "succeeded",
+        metadata: {
+          phaseKey: "evidence_review",
+          phaseName: "Evidence review",
+          stepType: "task",
+          taskType: "evidence_review",
+          isTask: true,
+          displayOnlyTask: true,
+          validationState: "pass"
+        }
+      })
+    ];
+
+    const result = evaluateRunCompletionFromPhases(steps, phases, defaultSettings);
+
+    expect(result.completionReady).toBe(true);
+    expect(result.status).toBe("succeeded");
+    expect(result.diagnostics).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          phase: "evidence_review",
+          code: "phase_required_missing"
+        })
+      ])
+    );
   });
 
   it("returns active when a required phase is missing", () => {

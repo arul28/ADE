@@ -155,4 +155,30 @@ describe("missionThreadEventAdapter reliability", () => {
       },
     });
   });
+
+  it("omits persisted internal coordinator runtime prompts", () => {
+    const events = adaptMissionThreadMessagesToAgentEvents([
+      {
+        id: "msg-internal",
+        missionId: "mission-1",
+        role: "orchestrator",
+        content: "## ADE Mission-Control Tool Transport\nInternal prompt.",
+        timestamp: "2026-03-09T12:00:00.000Z",
+        threadId: "mission:mission-1",
+        runId: "run-1",
+        sourceSessionId: "coordinator-session",
+        target: { kind: "coordinator", runId: "run-1" },
+        metadata: {
+          structuredStream: {
+            kind: "user_message",
+            text: "## ADE Mission-Control Tool Transport\nInternal prompt.",
+            displayText: "Continue mission coordination.",
+            internalKind: "coordinator_runtime_prompt",
+          },
+        },
+      },
+    ] as any);
+
+    expect(events).toHaveLength(0);
+  });
 });

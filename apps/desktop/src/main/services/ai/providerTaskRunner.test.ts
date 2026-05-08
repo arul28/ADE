@@ -31,7 +31,7 @@ vi.mock("./codexExecutable", () => ({
   resolveCodexExecutable: () => resolveCodexExecutableMock(),
 }));
 
-import { runProviderTask } from "./providerTaskRunner";
+import { makeCodexCompatibleJsonSchema, runProviderTask } from "./providerTaskRunner";
 
 type MockSpawnProcess = EventEmitter & {
   stdout: EventEmitter;
@@ -81,6 +81,47 @@ afterEach(() => {
 });
 
 describe("runProviderTask", () => {
+  it("converts structured schemas to Codex-compatible strict object schemas", () => {
+    const schema = {
+      type: "object",
+      properties: {
+        reasoning: { type: "string" },
+        adjustments: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              action: { type: "string", enum: ["no_change", "add_step"] },
+              reason: { type: "string" },
+              targetStepKey: { type: "string" },
+              newStep: {
+                type: "object",
+                properties: {
+                  title: { type: "string" },
+                  instructions: { type: "string" },
+                },
+              },
+            },
+            required: ["action", "reason"],
+          },
+        },
+      },
+      required: ["reasoning", "adjustments"],
+    };
+
+    const strict = makeCodexCompatibleJsonSchema(schema) as any;
+
+    expect(strict.additionalProperties).toBe(false);
+    expect(strict.required).toEqual(["reasoning", "adjustments"]);
+    const itemSchema = strict.properties.adjustments.items;
+    expect(itemSchema.additionalProperties).toBe(false);
+    expect(itemSchema.required).toEqual(["action", "reason", "targetStepKey", "newStep"]);
+    expect(itemSchema.properties.targetStepKey.type).toEqual(["string", "null"]);
+    expect(itemSchema.properties.newStep.type).toEqual(["object", "null"]);
+    expect(itemSchema.properties.newStep.additionalProperties).toBe(false);
+    expect(itemSchema.properties.newStep.required).toEqual(["title", "instructions"]);
+  });
+
   it("pipes Claude prompts over stdin instead of argv", async () => {
     const child = createMockProcess({
       stdout: '{"result":"READY"}',

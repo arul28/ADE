@@ -1563,11 +1563,11 @@ create index if not exists idx_unified_memories_project_dedupe on unified_memori
 alter table unified_memories add column access_score real not null default 0;
 
 update unified_memories
-    set access_score = case
-      when coalesce(access_score, 0) > 0 then access_score
-      when coalesce(composite_score, 0) > 0 then composite_score
-      else min(1.0, max(0.0, coalesce(access_count, 0) / 10.0))
-    end;
+      set access_score = case
+        when coalesce(access_score, 0) > 0 then access_score
+        when coalesce(composite_score, 0) > 0 then composite_score
+        else min(1.0, max(0.0, coalesce(access_count, 0) / 10.0))
+      end;
 
 create trigger if not exists unified_memories_fts_ai after insert on unified_memories begin
       insert into unified_memories_fts(rowid, content)
@@ -1720,83 +1720,83 @@ create table if not exists memory_consolidation_log (
 create index if not exists idx_memory_consolidation_log_project_completed on memory_consolidation_log(project_id, completed_at desc);
 
 insert or ignore into unified_memories (
-      id,
-      project_id,
-      scope,
-      scope_owner_id,
-      tier,
-      category,
-      content,
-      importance,
-      confidence,
-      observation_count,
-      status,
-      source_type,
-      source_id,
-      source_session_id,
-      source_pack_key,
-      source_run_id,
-      file_scope_pattern,
-      agent_id,
-      pinned,
-      access_score,
-      composite_score,
-      write_gate_reason,
-      dedupe_key,
-      created_at,
-      updated_at,
-      last_accessed_at,
-      access_count,
-      promoted_at
-    )
-    select
-      id,
-      project_id,
-      case scope
-        when 'project' then 'project'
-        when 'mission' then 'mission'
-        when 'user' then 'agent'
-        when 'lane' then 'mission'
-        else 'project'
-      end as scope,
-      case scope
-        when 'mission' then coalesce(source_run_id, agent_id, source_session_id)
-        when 'user' then coalesce(agent_id, source_session_id)
-        when 'lane' then coalesce(agent_id, source_session_id)
-        else null
-      end as scope_owner_id,
-      case
-        when status = 'archived' then 3
-        when status = 'candidate' then 3
-        else 2
-      end as tier,
-      category,
-      content,
-      coalesce(importance, 'medium') as importance,
-      coalesce(confidence, 1.0) as confidence,
-      case
-        when coalesce(access_count, 0) > 0 then access_count
-        else 1
-      end as observation_count,
-      coalesce(status, 'promoted') as status,
-      'system' as source_type,
-      coalesce(source_run_id, source_session_id, source_pack_key, agent_id) as source_id,
-      source_session_id,
-      source_pack_key,
-      source_run_id,
-      null as file_scope_pattern,
-      agent_id,
-      0 as pinned,
-      min(1.0, max(0.0, coalesce(access_count, 0) / 10.0)) as access_score,
-      0 as composite_score,
-      null as write_gate_reason,
-      lower(trim(content)) as dedupe_key,
-      coalesce(created_at, last_accessed_at, datetime('now')) as created_at,
-      coalesce(promoted_at, last_accessed_at, created_at, datetime('now')) as updated_at,
-      coalesce(last_accessed_at, created_at, datetime('now')) as last_accessed_at,
-      coalesce(access_count, 0) as access_count,
-      promoted_at
-    from memories;
+        id,
+        project_id,
+        scope,
+        scope_owner_id,
+        tier,
+        category,
+        content,
+        importance,
+        confidence,
+        observation_count,
+        status,
+        source_type,
+        source_id,
+        source_session_id,
+        source_pack_key,
+        source_run_id,
+        file_scope_pattern,
+        agent_id,
+        pinned,
+        access_score,
+        composite_score,
+        write_gate_reason,
+        dedupe_key,
+        created_at,
+        updated_at,
+        last_accessed_at,
+        access_count,
+        promoted_at
+      )
+      select
+        id,
+        project_id,
+        case scope
+          when 'project' then 'project'
+          when 'mission' then 'mission'
+          when 'user' then 'agent'
+          when 'lane' then 'mission'
+          else 'project'
+        end as scope,
+        case scope
+          when 'mission' then coalesce(source_run_id, agent_id, source_session_id)
+          when 'user' then coalesce(agent_id, source_session_id)
+          when 'lane' then coalesce(agent_id, source_session_id)
+          else null
+        end as scope_owner_id,
+        case
+          when status = 'archived' then 3
+          when status = 'candidate' then 3
+          else 2
+        end as tier,
+        category,
+        content,
+        coalesce(importance, 'medium') as importance,
+        coalesce(confidence, 1.0) as confidence,
+        case
+          when coalesce(access_count, 0) > 0 then access_count
+          else 1
+        end as observation_count,
+        coalesce(status, 'promoted') as status,
+        'system' as source_type,
+        coalesce(source_run_id, source_session_id, source_pack_key, agent_id) as source_id,
+        source_session_id,
+        source_pack_key,
+        source_run_id,
+        null as file_scope_pattern,
+        agent_id,
+        0 as pinned,
+        min(1.0, max(0.0, coalesce(access_count, 0) / 10.0)) as access_score,
+        0 as composite_score,
+        null as write_gate_reason,
+        lower(trim(content)) as dedupe_key,
+        coalesce(created_at, last_accessed_at, datetime('now')) as created_at,
+        coalesce(promoted_at, last_accessed_at, created_at, datetime('now')) as updated_at,
+        coalesce(last_accessed_at, created_at, datetime('now')) as last_accessed_at,
+        coalesce(access_count, 0) as access_count,
+        promoted_at
+      from memories;
 
 insert into unified_memories_fts(unified_memories_fts) values ('rebuild');
 
@@ -2661,11 +2661,11 @@ create table if not exists lane_worktree_locks (
 delete from lane_worktree_locks where worktree_key is null or trim(worktree_key) = '';
 
 delete from lane_worktree_locks
-    where rowid not in (
-      select max(rowid)
-      from lane_worktree_locks
-      group by worktree_key
-    );
+      where rowid not in (
+        select max(rowid)
+        from lane_worktree_locks
+        group by worktree_key
+      );
 
 create unique index if not exists idx_lane_worktree_locks_worktree_key_unique on lane_worktree_locks(worktree_key);
 

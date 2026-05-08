@@ -400,6 +400,7 @@ export type OrchestratorContext = {
   workerDeliveryInterventionCooldowns: Map<string, number>;
   runTeamManifests: Map<string, TeamManifest>;
   runRecoveryLoopStates: Map<string, RecoveryLoopState>;
+  cancelingRuns: Set<string>;
   aiTimeoutBudgetStepLocks: Set<string>;
   aiTimeoutBudgetRunLocks: Set<string>;
   aiRetryDecisionLocks: Set<string>;
@@ -489,17 +490,18 @@ export function asRecord(value: unknown): Record<string, unknown> | null {
 }
 
 export function isDisplayOnlyTaskStep(
-  step: Pick<OrchestratorStep, "metadata"> | null | undefined,
+  step: { metadata?: unknown } | null | undefined,
 ): boolean {
-  void step;
-  return false;
+  const metadata = asRecord(step?.metadata);
+  if (!metadata) return false;
+  if (metadata.isTask === true || metadata.displayOnlyTask === true) return true;
+  const stepType = typeof metadata.stepType === "string" ? metadata.stepType.trim().toLowerCase() : "";
+  if (stepType !== "task") return false;
+  return metadata.spawnedByCoordinator !== true && typeof metadata.workerName !== "string";
 }
 
 export function filterExecutionSteps<T extends { metadata?: unknown }>(steps: T[]): T[] {
-  return steps.filter((step) => {
-    const metadata = asRecord(step.metadata);
-    return metadata?.isTask !== true && metadata?.displayOnlyTask !== true;
-  });
+  return steps.filter((step) => !isDisplayOnlyTaskStep(step));
 }
 
 export function asBool(value: unknown, fallback = false): boolean {
@@ -546,7 +548,9 @@ export function parseChatTarget(value: unknown): OrchestratorChatTarget | null {
   if (kind === "coordinator") {
     return {
       kind: "coordinator",
-      runId: typeof value.runId === "string" ? value.runId : null
+      runId: typeof value.runId === "string" ? value.runId : null,
+      sessionId: typeof value.sessionId === "string" ? value.sessionId : null,
+      laneId: typeof value.laneId === "string" ? value.laneId : null
     };
   }
   if (kind === "teammate") {
@@ -798,7 +802,9 @@ export function sanitizeChatTarget(target: OrchestratorChatTarget | null | undef
   if (target.kind === "coordinator") {
     return {
       kind: "coordinator",
-      runId: toOptionalString(target.runId)
+      runId: toOptionalString(target.runId),
+      sessionId: toOptionalString(target.sessionId),
+      laneId: toOptionalString(target.laneId)
     };
   }
   if (target.kind === "teammate") {
@@ -918,6 +924,12 @@ export function mapOrchestratorStepStatus(status: OrchestratorStepStatus): Missi
 }
 
 export function deriveMissionStatusFromRun(graph: OrchestratorRunGraph, mission: MissionDetail): MissionStatus {
+  if (graph.run.status === "succeeded") {
+    return "completed";
+  }
+  if (graph.run.status === "failed") return "failed";
+  if (graph.run.status === "canceled") return "canceled";
+
   const hasBlockingIntervention = mission.interventions.some((entry) => {
     if (entry.status !== "open") return false;
     if (entry.interventionType !== "manual_input") return true;
@@ -934,11 +946,6 @@ export function deriveMissionStatusFromRun(graph: OrchestratorRunGraph, mission:
   ) {
     return "in_progress";
   }
-  if (graph.run.status === "succeeded") {
-    return "completed";
-  }
-  if (graph.run.status === "failed") return "failed";
-  if (graph.run.status === "canceled") return "canceled";
   return mission.status;
 }
 

@@ -1001,6 +1001,23 @@ async function isSteerLikelyQueuedForSession(
   }
 }
 
+async function shouldPreferSteerForWorkerSession(
+  ctx: OrchestratorContext,
+  sessionId: string
+): Promise<boolean> {
+  if (!ctx.agentChatService) return false;
+  try {
+    const sessions = await ctx.agentChatService.listSessions();
+    const session = sessions.find((entry) => entry.sessionId === sessionId) ?? null;
+    const provider = typeof session?.provider === "string" ? session.provider.trim().toLowerCase() : "";
+    // Codex rejects a second send while a turn is active. Start with steer so
+    // coordinator nudges attach to the in-flight turn instead of interrupting it.
+    return provider === "codex";
+  } catch {
+    return false;
+  }
+}
+
 function isQueuedSteerDeliveryPending(
   ctx: OrchestratorContext,
   message: OrchestratorChatMessage,
@@ -1086,6 +1103,9 @@ export async function sendWorkerMessageToSessionWithStatusCtx(
     }
   };
   if (priority === "urgent") {
+    return await attemptSteerDelivery();
+  }
+  if (await shouldPreferSteerForWorkerSession(ctx, sessionId)) {
     return await attemptSteerDelivery();
   }
   try {

@@ -37,7 +37,7 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
       switch type {
       case "user_message":
         event = .userMessage(
-          text: stringValue(eventDict["text"]),
+          text: userMessageDisplayText(from: eventDict),
           turnId: turnId,
           steerId: optionalString(eventDict["steerId"]),
           deliveryState: optionalString(eventDict["deliveryState"]),
@@ -360,6 +360,14 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
       }
       return lhs.timestamp < rhs.timestamp
     }
+}
+
+private func userMessageDisplayText(from eventDict: [String: Any]) -> String {
+  if let displayText = optionalString(eventDict["displayText"])?.trimmingCharacters(in: .whitespacesAndNewlines),
+     !displayText.isEmpty {
+    return displayText
+  }
+  return stringValue(eventDict["text"])
 }
 
 func extractLooseJSONObjects(from raw: String) -> [String] {

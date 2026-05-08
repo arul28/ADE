@@ -35,6 +35,8 @@ const WORKER_ENV_KEYS = [
   "ADE_RUN_ID",
   "ADE_STEP_ID",
   "ADE_ATTEMPT_ID",
+  "ADE_RPC_URL",
+  "ADE_RPC_SOCKET_PATH",
   "ADE_DEFAULT_ROLE",
   "ADE_OWNER_ID",
 ] as const;
@@ -51,6 +53,8 @@ function buildWorkerEnvVars(args: {
   runId: string;
   stepId: string;
   attemptId: string;
+  rpcUrl?: string | null;
+  rpcSocketPath?: string | null;
   ownerId?: string | null;
 }): WorkerEnvVars {
   return {
@@ -58,6 +62,8 @@ function buildWorkerEnvVars(args: {
     ADE_RUN_ID: args.runId,
     ADE_STEP_ID: args.stepId,
     ADE_ATTEMPT_ID: args.attemptId,
+    ...(args.rpcUrl ? { ADE_RPC_URL: args.rpcUrl } : {}),
+    ...(args.rpcSocketPath ? { ADE_RPC_SOCKET_PATH: args.rpcSocketPath } : {}),
     ADE_DEFAULT_ROLE: "agent",
     ...(args.ownerId ? { ADE_OWNER_ID: args.ownerId } : {}),
   };
@@ -77,6 +83,36 @@ function resolveWorkerOwnerId(metadata: Record<string, unknown> | null | undefin
   return typeof metadata?.employeeAgentId === "string" && metadata.employeeAgentId.trim().length > 0
     ? metadata.employeeAgentId.trim()
     : null;
+}
+
+function resolveStepReasoningEffort(metadata: Record<string, unknown> | null | undefined): string | undefined {
+  const explicit = typeof metadata?.reasoningEffort === "string" ? metadata.reasoningEffort.trim() : "";
+  if (explicit.length > 0) return explicit;
+
+  const phaseModel = metadata?.phaseModel;
+  if (phaseModel && typeof phaseModel === "object" && !Array.isArray(phaseModel)) {
+    const thinkingLevel = (phaseModel as Record<string, unknown>).thinkingLevel;
+    const fromPhase = typeof thinkingLevel === "string" ? thinkingLevel.trim() : "";
+    if (fromPhase.length > 0) return fromPhase;
+  }
+
+  return undefined;
+}
+
+function resolveWorkerRpcSocketPath(projectRoot: string, step: { metadata?: Record<string, unknown> | null }): string | null {
+  const rootSocketPath = resolveAdeLayout(projectRoot).socketPath;
+  const laneWorktreePath = typeof step.metadata?.laneWorktreePath === "string"
+    ? step.metadata.laneWorktreePath.trim()
+    : "";
+  if (!laneWorktreePath.length) return rootSocketPath;
+
+  const laneSocketPath = path.join(laneWorktreePath, ".ade", "ade.sock");
+  try {
+    fs.mkdirSync(path.dirname(laneSocketPath), { recursive: true });
+    return laneSocketPath;
+  } catch {
+    return rootSocketPath;
+  }
 }
 
 export function getProviderAdapterUnsupportedModelReason(modelRef: string): string | null {
@@ -484,6 +520,8 @@ export function createProviderOrchestratorAdapter(options?: {
         runId: run.id,
         stepId: step.id,
         attemptId: attempt.id,
+        rpcUrl: process.env.ADE_RPC_URL,
+        rpcSocketPath: resolveWorkerRpcSocketPath(canonicalProjectRoot, step),
         ownerId: resolveWorkerOwnerId(run.metadata),
       });
       // Determine which CLI to use based on the model
@@ -558,11 +596,21 @@ export function createProviderOrchestratorAdapter(options?: {
 
       if (descriptor?.isCliWrapped && descriptor.family === "openai") {
         // Codex CLI path — use per-provider permission when available
+        const originalProviderPermissions = normalizeMissionPermissions(permissionConfig as MissionPermissionConfig | undefined);
+        const allowReadOnlyControlPlaneFullAuto =
+          readOnlyExecution
+          && originalProviderPermissions.codex === "full-auto"
+          && typeof process.env.ADE_RPC_URL === "string"
+          && process.env.ADE_RPC_URL.trim().length > 0;
         const codexProviderMode = effectivePermissionConfig?._providers?.codex;
         const mappedCodex = mapPermissionToCodex(codexProviderMode);
         const useCodexConfig = codexProviderMode === "config-toml" || mappedCodex == null;
-        const approvalPolicy = mappedCodex?.approvalPolicy ?? "on-request";
-        const sandboxMode = readOnlyExecution
+        const approvalPolicy = allowReadOnlyControlPlaneFullAuto
+          ? "never"
+          : mappedCodex?.approvalPolicy ?? "on-request";
+        const sandboxMode = allowReadOnlyControlPlaneFullAuto
+          ? "danger-full-access"
+          : readOnlyExecution
           ? "read-only"
           : codexProviderMode === "full-auto"
             ? mappedCodex?.sandbox ?? "danger-full-access"
@@ -702,10 +750,7 @@ export function createProviderOrchestratorAdapter(options?: {
       });
       const provider = resolveProviderGroupForModel(descriptor);
       const model = descriptor.isCliWrapped ? descriptor.providerModelId : descriptor.id;
-      const reasoningEffort =
-        typeof args.step.metadata?.reasoningEffort === "string" && args.step.metadata.reasoningEffort.trim().length > 0
-          ? args.step.metadata.reasoningEffort.trim()
-          : undefined;
+      const reasoningEffort = resolveStepReasoningEffort(args.step.metadata);
       const permissionMode = resolveManagedPermissionMode({
         provider,
         descriptor,
@@ -727,6 +772,8 @@ export function createProviderOrchestratorAdapter(options?: {
           provider,
           model,
           modelId: descriptor.id,
+          title: args.step.title,
+          surface: "mission",
           reasoningEffort: reasoningEffort ?? null,
           ...mapPermissionModeToNativeFields(provider, permissionMode),
           ...configTomlFields,

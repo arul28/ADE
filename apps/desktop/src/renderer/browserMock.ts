@@ -887,7 +887,7 @@ function listMockAgentChatSummaries(args: any = {}): any[] {
     rows = rows.filter((session) => session.laneId === args.laneId.trim());
   }
   if (!args?.includeAutomation) {
-    rows = rows.filter((session) => session.surface !== "automation");
+    rows = rows.filter((session) => (session.surface ?? "work") === "work");
   }
   return rows;
 }

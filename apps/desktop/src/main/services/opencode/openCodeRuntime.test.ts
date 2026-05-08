@@ -95,6 +95,7 @@ vi.mock("./openCodeServerManager", () => ({
 
 import {
   __resetOpenCodeRuntimeDiagnosticsForTests,
+  buildOpenCodeMergedConfig,
   getOpenCodeRuntimeSnapshot,
   runOpenCodeTextPrompt,
   startOpenCodeSession,
@@ -124,10 +125,54 @@ describe("openCodeRuntime", () => {
 
     expect(acquireSharedOpenCodeServer).toHaveBeenCalledTimes(1);
     expect(acquireDedicatedOpenCodeServer).not.toHaveBeenCalled();
+    expect(acquireSharedOpenCodeServer).toHaveBeenCalledWith(expect.objectContaining({
+      config: expect.objectContaining({
+        agent: expect.objectContaining({
+          "ade-plan": expect.objectContaining({
+            tools: expect.objectContaining({ task: false }),
+          }),
+        }),
+      }),
+    }));
     expect(handle.toolSelection).toBeNull();
 
     await handle.close("handle_close");
     expect(mockState.sharedLease.close).toHaveBeenCalledWith("handle_close");
+  });
+
+  it("registers ADE stdio MCP when requested for coordinator sessions", () => {
+    const config = buildOpenCodeMergedConfig({
+      projectConfig: { ai: {} },
+      adeMcp: {
+        projectRoot: "/repo",
+        workspaceRoot: "/repo/.ade/worktrees/mission",
+        missionId: "mission-1",
+        runId: "run-1",
+        role: "orchestrator",
+      },
+    }) as any;
+
+    expect(config.mcp?.ade).toEqual(expect.objectContaining({
+      type: "local",
+      enabled: true,
+      timeout: 10_000,
+      environment: expect.objectContaining({
+        ADE_DEFAULT_ROLE: "orchestrator",
+        ADE_MCP_TOOL_SCOPE: "coordinator",
+        ADE_MISSION_ID: "mission-1",
+        ADE_RUN_ID: "run-1",
+      }),
+    }));
+    expect(config.mcp?.ade.command).toEqual(expect.arrayContaining([
+      "--headless",
+      "--project-root",
+      "/repo",
+      "--workspace-root",
+      "/repo/.ade/worktrees/mission",
+      "--role",
+      "orchestrator",
+      "mcp",
+    ]));
   });
 
   it("omits the session title when ADE wants OpenCode to auto-name", async () => {

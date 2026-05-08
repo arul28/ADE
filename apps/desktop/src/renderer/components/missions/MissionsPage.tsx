@@ -23,6 +23,8 @@ import { ManageMissionDialog, MissionContextMenu } from "./ManageMissionDialog";
 import { MissionCreateDialogHost } from "./MissionCreateDialogHost";
 import { MissionSettingsDialog } from "./MissionSettingsDialog";
 import { useMissionPolling } from "./useMissionPolling";
+import { useMissionRunView } from "./useMissionRunView";
+import { filterExecutionSteps } from "./missionHelpers";
 
 import type { CreateDraft, CreateMissionDefaults } from "./CreateMissionDialog";
 import { buildMissionLaunchRequest, prewarmCreateMissionDialogCache } from "./CreateMissionDialog";
@@ -315,6 +317,7 @@ function MissionsWorkspace() {
 
   /* ── Checkpoint polling via shared coordinator ── */
   const runGraph = useMissionsStore((s) => s.runGraph);
+  const { runView } = useMissionRunView(selectedMissionId, runGraph?.run.id ?? null);
   const checkpointPollEnabled = Boolean(runGraph && !TERMINAL_RUN_STATUSES.has(runGraph.run.status));
   const checkpointRunId = runGraph?.run.id ?? null;
   const refreshCheckpointStatus = useCallback(() => {
@@ -333,15 +336,17 @@ function MissionsWorkspace() {
   /* ── Step selection reconciliation ── */
   useEffect(() => {
     const steps = runGraph?.steps ?? [];
+    const selectableSteps = filterExecutionSteps(steps);
+    const selectionPool = selectableSteps.length > 0 ? selectableSteps : steps;
     const store = useMissionsStore.getState();
     const currentStepId = store.selectedStepId;
     if (!steps.length) {
       if (currentStepId !== null) store.setSelectedStepId(null);
       return;
     }
-    if (currentStepId && steps.some((s) => s.id === currentStepId)) return;
-    const running = steps.find((s) => s.status === "running");
-    store.setSelectedStepId((running ?? steps[0]).id);
+    if (currentStepId && selectionPool.some((s) => s.id === currentStepId)) return;
+    const running = selectionPool.find((s) => s.status === "running");
+    store.setSelectedStepId((running ?? selectionPool[0]).id);
   }, [runGraph]);
 
   useEffect(() => {
@@ -465,7 +470,7 @@ function MissionsWorkspace() {
               onResize={(size) => persistSidebarPx(size.inPixels)}
               style={{ overflow: "hidden" }}
             >
-              <MissionSidebar />
+              <MissionSidebar runView={runView} />
             </Panel>
             <Separator
               id="missions-separator"
@@ -477,7 +482,7 @@ function MissionsWorkspace() {
         {/* Main workspace */}
         <Panel id="missions-detail" minSize="50%">
           <div className="flex flex-1 flex-col min-w-0 h-full bg-bg">
-            <MissionDetailView />
+            <MissionDetailView runView={runView} />
           </div>
         </Panel>
       </Group>

@@ -42,6 +42,9 @@ async function createFixture(opts: {
   activeBatchSize?: number;
   activeSessionColdStartDeferMs?: number;
   attachQueueHook?: boolean;
+  processBeforeStart?: boolean;
+  canProcess?: () => boolean;
+  deferMs?: number;
 } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-embedding-worker-"));
   const db = await openKvDb(path.join(root, "ade.db"), createLogger() as any);
@@ -103,6 +106,9 @@ async function createFixture(opts: {
     activeBatchSize: opts.activeBatchSize ?? DEFAULT_ACTIVE_BATCH_SIZE,
     activeSessionColdStartDeferMs: opts.activeSessionColdStartDeferMs ?? DEFAULT_ACTIVE_SESSION_COLD_START_DEFER_MS,
     sleep: opts.sleep,
+    processBeforeStart: opts.processBeforeStart,
+    canProcess: opts.canProcess,
+    deferMs: opts.deferMs,
   });
 
   return {
@@ -138,6 +144,32 @@ describe("embeddingWorkerService", () => {
 
     await worker.waitForIdle();
 
+    expect(countEmbeddings(db)).toBe(1);
+  });
+
+  it("can queue memory without loading embeddings before startup", async () => {
+    const { db, worker, memoryService, embeddingService } = await createFixture({
+      processBeforeStart: false,
+    });
+
+    memoryService.addMemory({
+      projectId: "project-1",
+      scope: "project",
+      category: "fact",
+      content: "Queue without starting the embedding model.",
+      importance: "high",
+    });
+
+    await Promise.resolve();
+
+    expect(embeddingService.embed).not.toHaveBeenCalled();
+    expect(countEmbeddings(db)).toBe(0);
+    expect(worker.getStatus().queueDepth).toBe(1);
+
+    await worker.start();
+    await worker.waitForIdle();
+
+    expect(embeddingService.embed).toHaveBeenCalledTimes(1);
     expect(countEmbeddings(db)).toBe(1);
   });
 

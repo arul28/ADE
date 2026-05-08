@@ -43,6 +43,7 @@ export type Channel = {
   fullLabel: string;
   threadId: string | null;
   sessionId: string | null;
+  laneId: string | null;
   status: "active" | "closed";
   stepKey: string | null;
   attemptId: string | null;
@@ -106,8 +107,6 @@ export const ChatChannelList = React.memo(function ChatChannelList({
               isSelected={selectedChannelId === orchestratorChannel.id}
               onClick={() => onSelectChannel(orchestratorChannel.id)}
               unreadCount={orchestratorChannel.unreadCount}
-              badge="orchestrator"
-              badgeColor="#3B82F6"
             />
           </>
         )}
@@ -125,8 +124,6 @@ export const ChatChannelList = React.memo(function ChatChannelList({
                 isSelected={selectedChannelId === ch.id}
                 onClick={() => onSelectChannel(ch.id)}
                 unreadCount={ch.unreadCount}
-                badge="teammate"
-                badgeColor="#06B6D4"
               />
             ))}
           </>
@@ -206,6 +203,13 @@ function statusDotColor(status: string): string {
   return STATUS_DOT[status] ?? STATUS_GRAY;
 }
 
+export function formatChannelAccessibleName(label: string, badge?: string): string {
+  const cleanLabel = label.trim();
+  const cleanBadge = badge?.trim();
+  if (!cleanBadge) return cleanLabel;
+  return `${cleanLabel}, ${cleanBadge} channel`;
+}
+
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
     <div
@@ -243,9 +247,13 @@ function ChannelButton({
   badge?: string;
   badgeColor?: string;
 }) {
+  const accessibleName = formatChannelAccessibleName(label, badge);
+  const badgeText = badge ? `Phase: ${badge}` : "";
   return (
     <button
       onClick={onClick}
+      aria-label={accessibleName}
+      title={accessibleName}
       className="flex w-full flex-col gap-0.5 px-2 py-1.5 text-left transition-colors"
       style={
         isSelected
@@ -278,7 +286,7 @@ function ChannelButton({
         )}
       </div>
       {badge && (
-        <div className="flex items-center gap-1 pl-5">
+        <div className="flex items-center gap-1 pl-5" aria-hidden="true">
           {badgeColor ? (
             <span
               className="inline-flex items-center gap-0.5 px-1 py-0 text-[8px] font-bold uppercase tracking-[0.5px]"
@@ -291,7 +299,7 @@ function ChannelButton({
               className="inline-flex items-center px-1 py-0 text-[8px] font-bold uppercase tracking-[0.5px]"
               style={{ background: `${ACCENT}12`, color: ACCENT, border: `1px solid ${ACCENT}25` }}
             >
-              {badge}
+              {badgeText}
             </span>
           )}
         </div>

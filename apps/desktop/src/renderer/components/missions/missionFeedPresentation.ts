@@ -30,6 +30,16 @@ function sanitizeMissionFeedText(value: string): string {
   return normalizeWhitespace(replaceInternalToolNames(value));
 }
 
+function sanitizeMissionFeedDisplayText(value: string): string {
+  return replaceInternalToolNames(value)
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/[ \t]+/g, " ").trimEnd())
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 function isDismissiveSteerMessage(value: string): boolean {
   return /^(acknowledged\.?|dismissed by user\b.*proceed without action\.?)$/i.test(value.trim());
 }
@@ -63,6 +73,19 @@ function isGenericInternalActivityText(value: string): boolean {
   return false;
 }
 
+function isLowValueValidationBookkeeping(title: string, detail: string): boolean {
+  const normalizedTitle = title.toLowerCase();
+  const normalizedDetail = detail.toLowerCase();
+  if (normalizedTitle !== "validation signal" && normalizedTitle !== "validation update") return false;
+  if (/^step ".+" requires self-validation\b/.test(normalizedDetail)) return true;
+  if (/\brequires self-validation\. review output and call report_validation\b/.test(normalizedDetail)) return true;
+  if (/\bvalidation state changed\.?$/.test(normalizedDetail)) return true;
+  if (/\bvalidation changed\.?$/.test(normalizedDetail)) return true;
+  if (/^validate:\s+.+ validation changed\.?$/.test(normalizedDetail)) return true;
+  if (/^run validation changed\.?$/.test(normalizedDetail)) return true;
+  return false;
+}
+
 function shouldDisplayMissionFeedItem(item: MissionRunViewProgressItem): boolean {
   if (item.audience && item.audience !== "mission_feed") return false;
   const title = sanitizeMissionFeedText(item.title);
@@ -86,6 +109,7 @@ function shouldDisplayMissionFeedItem(item: MissionRunViewProgressItem): boolean
   if (isDismissiveSteerMessage(title) || isDismissiveSteerMessage(detail)) return false;
   if (item.kind === "user" && isDismissiveSteerMessage(detail || title)) return false;
   if (looksLikeLowSignalNoise(title) && (!detail.length || looksLikeLowSignalNoise(detail))) return false;
+  if (isLowValueValidationBookkeeping(title, detail)) return false;
 
   if (item.severity === "info" && item.kind !== "user" && item.kind !== "intervention") {
     if (isGenericInternalActivityText(title) && (!detail.length || isGenericInternalActivityText(detail) || looksLikeLowSignalNoise(detail))) {
@@ -103,7 +127,7 @@ function sanitizeMissionFeedItem(item: MissionRunViewProgressItem): MissionRunVi
   return {
     ...item,
     title: sanitizeMissionFeedText(item.title),
-    detail: sanitizeMissionFeedText(item.detail),
+    detail: sanitizeMissionFeedDisplayText(item.detail),
   };
 }
 
@@ -135,9 +159,13 @@ export function prepareMissionFeedItems(progressLog: MissionRunViewProgressItem[
     .map(sanitizeMissionFeedItem)
     .filter(shouldDisplayMissionFeedItem);
 
-  return prepared.filter(
-    (item, index, items) => index === 0 || buildMissionFeedSignature(item) !== buildMissionFeedSignature(items[index - 1]!),
-  );
+  const seen = new Set<string>();
+  return prepared.filter((item) => {
+    const signature = buildMissionFeedSignature(item);
+    if (seen.has(signature)) return false;
+    seen.add(signature);
+    return true;
+  });
 }
 
 export function buildMissionStateNarrative(runView: MissionRunView | null): MissionStateNarrative | null {

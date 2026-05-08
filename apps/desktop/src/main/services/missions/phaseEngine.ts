@@ -21,11 +21,44 @@ import { nowIso } from "../shared/utils";
 export const BUILT_IN_PHASE_KEYS = {
   planning: "planning",
   development: "development",
+  integration: "integration",
   testing: "testing",
   validation: "validation",
+  closeout: "closeout",
   /** @deprecated Legacy phase key retained only for backward compatibility with existing mission metadata. */
   prAndConflicts: "pr_conflict_resolution",
 } as const;
+
+function normalizePhaseKey(value: string | null | undefined): string {
+  return typeof value === "string" ? value.trim().toLowerCase() : "";
+}
+
+export function isDevelopmentLikePhaseKey(phaseKey: string | null | undefined): boolean {
+  const key = normalizePhaseKey(phaseKey);
+  if (!key) return false;
+  if (key === BUILT_IN_PHASE_KEYS.development || key === "implementation" || key === "code") return true;
+  return (
+    key.startsWith("development_")
+    || key.startsWith("implementation_")
+    || key.endsWith("_development")
+    || key.endsWith("_implementation")
+  );
+}
+
+function isCustomExecutablePhase(phase: PhaseCard): boolean {
+  const key = normalizePhaseKey(phase.phaseKey);
+  if (!key || phase.isBuiltIn === true || phase.isCustom !== true) return false;
+  return !Object.values(BUILT_IN_PHASE_KEYS).includes(key as (typeof BUILT_IN_PHASE_KEYS)[keyof typeof BUILT_IN_PHASE_KEYS]);
+}
+
+function isDevelopmentLikePhase(phase: PhaseCard): boolean {
+  return isDevelopmentLikePhaseKey(phase.phaseKey) || isCustomExecutablePhase(phase);
+}
+
+export function resolveDevelopmentPhaseKey(phases: PhaseCard[]): string {
+  const phase = phases.find((entry) => isDevelopmentLikePhase(entry));
+  return phase?.phaseKey ?? BUILT_IN_PHASE_KEYS.development;
+}
 
 const DEFAULT_CLAUDE_PHASE_MODEL_ID = getDefaultModelDescriptor("claude")?.id ?? "anthropic/claude-sonnet-4-6";
 const DEFAULT_CODEX_PHASE_MODEL_ID = getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.5";
@@ -33,8 +66,10 @@ const DEFAULT_CODEX_PHASE_MODEL_ID = getDefaultModelDescriptor("codex")?.id ?? "
 const DEFAULT_MODELS: Record<string, ModelConfig> = {
   [BUILT_IN_PHASE_KEYS.planning]: { modelId: DEFAULT_CLAUDE_PHASE_MODEL_ID, thinkingLevel: "medium" },
   [BUILT_IN_PHASE_KEYS.development]: { modelId: DEFAULT_CODEX_PHASE_MODEL_ID, thinkingLevel: "medium" },
+  [BUILT_IN_PHASE_KEYS.integration]: { modelId: DEFAULT_CODEX_PHASE_MODEL_ID, thinkingLevel: "medium" },
   [BUILT_IN_PHASE_KEYS.testing]: { modelId: DEFAULT_CODEX_PHASE_MODEL_ID, thinkingLevel: "low" },
   [BUILT_IN_PHASE_KEYS.validation]: { modelId: DEFAULT_CLAUDE_PHASE_MODEL_ID, thinkingLevel: "medium" },
+  [BUILT_IN_PHASE_KEYS.closeout]: { modelId: DEFAULT_CLAUDE_PHASE_MODEL_ID, thinkingLevel: "medium" },
 };
 
 export function createBuiltInPhaseCards(at: string = nowIso()): PhaseCard[] {
@@ -89,6 +124,34 @@ export function createBuiltInPhaseCards(at: string = nowIso()): PhaseCard[] {
       updatedAt: at,
     },
     {
+      id: `builtin:${BUILT_IN_PHASE_KEYS.integration}`,
+      phaseKey: BUILT_IN_PHASE_KEYS.integration,
+      name: "Integration",
+      description: "Join child-lane work into the mission result lane.",
+      instructions:
+        "After implementation workers finish, consolidate their outputs, resolve conflicts, and assemble a single reviewable result lane.",
+      model: DEFAULT_MODELS[BUILT_IN_PHASE_KEYS.integration],
+      budget: {},
+      orderingConstraints: {
+        mustFollow: [BUILT_IN_PHASE_KEYS.development],
+      },
+      askQuestions: {
+        enabled: false,
+      },
+      validationGate: {
+        tier: "self",
+        required: true,
+        criteria: "All child-lane outputs are accounted for and the result lane can be inspected.",
+        evidenceRequirements: ["changed_files_summary", "risk_notes"],
+        capabilityFallback: "warn",
+      },
+      isBuiltIn: true,
+      isCustom: false,
+      position: 2,
+      createdAt: at,
+      updatedAt: at,
+    },
+    {
       id: `builtin:${BUILT_IN_PHASE_KEYS.testing}`,
       phaseKey: BUILT_IN_PHASE_KEYS.testing,
       name: "Testing",
@@ -106,7 +169,7 @@ export function createBuiltInPhaseCards(at: string = nowIso()): PhaseCard[] {
       },
       isBuiltIn: true,
       isCustom: false,
-      position: 2,
+      position: 3,
       createdAt: at,
       updatedAt: at,
     },
@@ -128,7 +191,36 @@ export function createBuiltInPhaseCards(at: string = nowIso()): PhaseCard[] {
       },
       isBuiltIn: true,
       isCustom: false,
-      position: 3,
+      position: 4,
+      createdAt: at,
+      updatedAt: at,
+    },
+    {
+      id: `builtin:${BUILT_IN_PHASE_KEYS.closeout}`,
+      phaseKey: BUILT_IN_PHASE_KEYS.closeout,
+      name: "Closeout",
+      description: "Collect final proof and present the finished mission output.",
+      instructions:
+        "Confirm the result lane, summarize the final product, attach required proof, and leave the mission ready for user review.",
+      model: DEFAULT_MODELS[BUILT_IN_PHASE_KEYS.closeout],
+      budget: {},
+      orderingConstraints: {
+        mustBeLast: true,
+        mustFollow: [BUILT_IN_PHASE_KEYS.validation],
+      },
+      askQuestions: {
+        enabled: false,
+      },
+      validationGate: {
+        tier: "self",
+        required: true,
+        criteria: "Outcome summary, changed-files summary, and remaining risks are visible before completion.",
+        evidenceRequirements: ["final_outcome_summary", "changed_files_summary", "risk_notes"],
+        capabilityFallback: "warn",
+      },
+      isBuiltIn: true,
+      isCustom: false,
+      position: 5,
       createdAt: at,
       updatedAt: at,
     },
@@ -140,14 +232,18 @@ export function createBuiltInPhaseProfiles(cards: PhaseCard[], at: string = nowI
   const defaultKeys = [
     BUILT_IN_PHASE_KEYS.planning,
     BUILT_IN_PHASE_KEYS.development,
+    BUILT_IN_PHASE_KEYS.integration,
     BUILT_IN_PHASE_KEYS.testing,
     BUILT_IN_PHASE_KEYS.validation,
+    BUILT_IN_PHASE_KEYS.closeout,
   ];
   const tddKeys = [
     BUILT_IN_PHASE_KEYS.planning,
     BUILT_IN_PHASE_KEYS.testing,
     BUILT_IN_PHASE_KEYS.development,
+    BUILT_IN_PHASE_KEYS.integration,
     BUILT_IN_PHASE_KEYS.validation,
+    BUILT_IN_PHASE_KEYS.closeout,
   ];
   const asPhaseList = (keys: string[]): PhaseCard[] =>
     keys
@@ -162,7 +258,7 @@ export function createBuiltInPhaseProfiles(cards: PhaseCard[], at: string = nowI
     {
       id: "builtin:default",
       name: "Default",
-      description: "Planning -> Development -> Testing -> Validation",
+      description: "Planning -> Development -> Integration -> Testing -> Validation -> Closeout",
       phases: asPhaseList(defaultKeys),
       isBuiltIn: true,
       isDefault: true,
@@ -172,7 +268,7 @@ export function createBuiltInPhaseProfiles(cards: PhaseCard[], at: string = nowI
     {
       id: "builtin:tdd",
       name: "TDD",
-      description: "Planning -> Testing -> Development -> Validation",
+      description: "Planning -> Testing -> Development -> Integration -> Validation -> Closeout",
       phases: asPhaseList(tddKeys),
       isBuiltIn: true,
       isDefault: false,
@@ -190,11 +286,15 @@ export function validatePhaseSequence(phases: PhaseCard[]): string[] {
   }
 
   const byKey = new Map<string, number>();
+  const labelForKey = (phaseKey: string): string => {
+    const phase = phases.find((entry) => normalizePhaseKey(entry.phaseKey) === normalizePhaseKey(phaseKey));
+    return phase?.name?.trim() || phaseKey;
+  };
   let firstDevelopmentIndex = -1;
   let firstPlanningIndex = -1;
   for (let i = 0; i < phases.length; i += 1) {
     const phase = phases[i]!;
-    const phaseKey = phase.phaseKey.trim().toLowerCase();
+    const phaseKey = normalizePhaseKey(phase.phaseKey);
     if (!phaseKey) {
       errors.push(`Phase at position ${i + 1} is missing phaseKey.`);
       continue;
@@ -203,12 +303,43 @@ export function validatePhaseSequence(phases: PhaseCard[]): string[] {
       errors.push(`Duplicate phase key: ${phase.phaseKey}.`);
     }
     byKey.set(phaseKey, i);
-    if (phaseKey === BUILT_IN_PHASE_KEYS.development && firstDevelopmentIndex < 0) firstDevelopmentIndex = i;
+    if (isDevelopmentLikePhase(phase) && firstDevelopmentIndex < 0) firstDevelopmentIndex = i;
     if (phaseKey === BUILT_IN_PHASE_KEYS.planning && firstPlanningIndex < 0) firstPlanningIndex = i;
   }
 
-  if (!byKey.has(BUILT_IN_PHASE_KEYS.development)) {
-    errors.push("Development phase is required.");
+  phases.forEach((phase, index) => {
+    const phaseKey = normalizePhaseKey(phase.phaseKey);
+    if (!phaseKey) return;
+    const label = phase.name.trim() || phase.phaseKey;
+    const orderingConstraints = phase.orderingConstraints ?? {};
+    if (orderingConstraints.mustBeFirst && index !== 0) {
+      errors.push(`${label} phase must be first.`);
+    }
+    if (orderingConstraints.mustBeLast && index !== phases.length - 1) {
+      errors.push(`${label} phase must be last.`);
+    }
+    for (const requiredPredecessor of orderingConstraints.mustFollow ?? []) {
+      const predecessorKey = normalizePhaseKey(requiredPredecessor);
+      const predecessorIndex = byKey.get(predecessorKey);
+      if (predecessorIndex == null) {
+        errors.push(`${label} phase requires ${labelForKey(predecessorKey)} phase.`);
+      } else if (predecessorIndex >= index) {
+        errors.push(`${label} phase must come after ${labelForKey(predecessorKey)}.`);
+      }
+    }
+    for (const requiredSuccessor of orderingConstraints.mustPrecede ?? []) {
+      const successorKey = normalizePhaseKey(requiredSuccessor);
+      const successorIndex = byKey.get(successorKey);
+      if (successorIndex == null) {
+        errors.push(`${label} phase requires ${labelForKey(successorKey)} phase.`);
+      } else if (successorIndex <= index) {
+        errors.push(`${label} phase must come before ${labelForKey(successorKey)}.`);
+      }
+    }
+  });
+
+  if (firstDevelopmentIndex < 0) {
+    errors.push("Development or implementation phase is required.");
   }
   if (
     firstPlanningIndex >= 0
@@ -249,20 +380,33 @@ function inferPhaseKeyFromStep(kind: string, metadata: MissionStepMetadata | Rec
     return explicit;
   }
   const stepType = typeof metadata.stepType === "string" ? metadata.stepType.trim() : "";
-  const lowerKind = kind.toLowerCase();
+  const lowerKind = kind.trim().toLowerCase();
   const lowerType = stepType.toLowerCase();
+  const phaseByLowerKey = new Map(phases.map((phase) => [phase.phaseKey.trim().toLowerCase(), phase.phaseKey] as const));
+  const directTypePhase = lowerType ? phaseByLowerKey.get(lowerType) : undefined;
+  if (directTypePhase) return directTypePhase;
+  const directKindPhase = lowerKind ? phaseByLowerKey.get(lowerKind) : undefined;
+  if (directKindPhase) return directKindPhase;
 
   if (lowerType === "analysis" || lowerType === "planning") {
     return phases.some((phase) => phase.phaseKey === BUILT_IN_PHASE_KEYS.planning)
       ? BUILT_IN_PHASE_KEYS.planning
-      : BUILT_IN_PHASE_KEYS.development;
+      : resolveDevelopmentPhaseKey(phases);
   }
-  if (lowerType === "test" || lowerKind === "validation") return BUILT_IN_PHASE_KEYS.testing;
-  if (lowerType === "milestone") return BUILT_IN_PHASE_KEYS.validation;
+  if (lowerType === "test" || lowerKind === "test" || lowerKind === "testing") return BUILT_IN_PHASE_KEYS.testing;
+  if (lowerType === "milestone" || lowerType === "validation" || lowerKind === "validation") return BUILT_IN_PHASE_KEYS.validation;
   if (lowerType === "review") return BUILT_IN_PHASE_KEYS.validation;
-  if (lowerType === "integration" || lowerType === "merge" || lowerKind === "integration") return BUILT_IN_PHASE_KEYS.validation;
-  if (lowerKind === "summary") return BUILT_IN_PHASE_KEYS.validation;
-  return BUILT_IN_PHASE_KEYS.development;
+  if (lowerType === "integration" || lowerType === "merge" || lowerKind === "integration") {
+    return phases.some((phase) => phase.phaseKey === BUILT_IN_PHASE_KEYS.integration)
+      ? BUILT_IN_PHASE_KEYS.integration
+      : BUILT_IN_PHASE_KEYS.validation;
+  }
+  if (lowerKind === "summary" || lowerType === "closeout" || lowerKind === "closeout") {
+    return phases.some((phase) => phase.phaseKey === BUILT_IN_PHASE_KEYS.closeout)
+      ? BUILT_IN_PHASE_KEYS.closeout
+      : BUILT_IN_PHASE_KEYS.validation;
+  }
+  return resolveDevelopmentPhaseKey(phases);
 }
 
 export function applyPhaseCardsToPlanSteps(steps: MissionPlanStepDraft[], phases: PhaseCard[]): MissionPlanStepDraft[] {

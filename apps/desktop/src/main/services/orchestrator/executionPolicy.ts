@@ -31,8 +31,8 @@ import {
   DEFAULT_INTEGRATION_PR_POLICY
 } from "./orchestratorConstants";
 
-import { getDefaultModelDescriptor, getModelById, resolveProviderGroupForModel } from "../../../shared/modelRegistry";
-import { TERMINAL_STEP_STATUSES, filterExecutionSteps } from "./orchestratorContext";
+import { getDefaultModelDescriptor, getModelById, resolveModelDescriptor, resolveProviderGroupForModel } from "../../../shared/modelRegistry";
+import { TERMINAL_STEP_STATUSES, filterExecutionSteps, isDisplayOnlyTaskStep } from "./orchestratorContext";
 
 // ─────────────────────────────────────────────────────
 // Default policy
@@ -40,6 +40,11 @@ import { TERMINAL_STEP_STATUSES, filterExecutionSteps } from "./orchestratorCont
 
 const DEFAULT_CLAUDE_POLICY_MODEL_ID = getDefaultModelDescriptor("claude")?.id ?? "anthropic/claude-sonnet-4-6";
 const DEFAULT_CODEX_POLICY_MODEL_ID = getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.5";
+
+function isPassingValidationValue(value: unknown): boolean {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return normalized === "pass" || normalized === "passed" || normalized === "success" || normalized === "succeeded";
+}
 
 export const DEFAULT_EXECUTION_POLICY: MissionExecutionPolicy = {
   planning: { mode: "auto", model: DEFAULT_CLAUDE_POLICY_MODEL_ID },
@@ -156,6 +161,10 @@ export function stepTypeToPhase(stepType: string, taskType?: string): ExecutionP
   return null;
 }
 
+function isAutoSpawnedValidationProofStep(step: OrchestratorStep): boolean {
+  return step.metadata?.autoSpawnedValidation === true;
+}
+
 // ─────────────────────────────────────────────────────
 // Completion evaluator
 // ─────────────────────────────────────────────────────
@@ -173,7 +182,12 @@ export function evaluateRunCompletion(
   for (const step of relevantSteps) {
     const stepType = typeof step.metadata?.stepType === "string" ? step.metadata.stepType : "";
     const taskType = typeof step.metadata?.taskType === "string" ? step.metadata.taskType : "";
-    const phase = stepTypeToPhase(stepType, taskType);
+    const phaseKey = typeof step.metadata?.phaseKey === "string" ? step.metadata.phaseKey : "";
+    const phaseName = typeof step.metadata?.phaseName === "string" ? step.metadata.phaseName : "";
+    const phase =
+      phaseKeyToExecutionPhase(phaseKey)
+      ?? phaseKeyToExecutionPhase(phaseName)
+      ?? stepTypeToPhase(stepType, taskType);
     if (phase) {
       const bucket = phaseSteps.get(phase) ?? [];
       bucket.push(step);
@@ -230,6 +244,7 @@ export function evaluateRunCompletion(
 
   const requiredValidationMissingStepKeys = relevantSteps
     .filter((step) => step.status === "succeeded")
+    .filter((step) => !isAutoSpawnedValidationProofStep(step))
     .filter((step) => {
       const meta = step.metadata ?? {};
       const validationContract =
@@ -245,7 +260,7 @@ export function evaluateRunCompletion(
       const lastVerdict = typeof lastValidationReport?.verdict === "string" ? lastValidationReport.verdict.toLowerCase() : "";
       const validationState = typeof meta.validationState === "string" ? meta.validationState.toLowerCase() : "";
       const validationPassedAt = typeof meta.validationPassedAt === "string" ? meta.validationPassedAt.trim() : "";
-      const hasPassingValidation = lastVerdict === "pass" || validationState === "pass" || validationPassedAt.length > 0;
+      const hasPassingValidation = isPassingValidationValue(lastVerdict) || isPassingValidationValue(validationState) || validationPassedAt.length > 0;
       return !hasPassingValidation;
     })
     .map((step) => step.stepKey);
@@ -458,7 +473,7 @@ function hasMultipleLanes(steps: OrchestratorStep[]): boolean {
 
 export function phaseModelToExecutorKind(model?: string | null, fallback: OrchestratorExecutorKind = "opencode"): OrchestratorExecutorKind {
   if (!model) return fallback;
-  const descriptor = getModelById(model);
+  const descriptor = resolveModelDescriptor(model);
   if (descriptor) return resolveProviderGroupForModel(descriptor);
   return fallback;
 }
@@ -813,7 +828,15 @@ export function buildExecutionPlanPreview(args: {
 function phaseKeyToExecutionPhase(phaseKey: string): ExecutionPhase | null {
   const key = phaseKey.trim().toLowerCase();
   if (key === "planning" || key === "analysis") return null;
-  if (key === "implementation" || key === "development" || key === "code") return "implementation";
+  if (
+    key === "implementation"
+    || key === "development"
+    || key === "code"
+    || key.startsWith("implementation_")
+    || key.startsWith("development_")
+    || key.endsWith("_implementation")
+    || key.endsWith("_development")
+  ) return "implementation";
   if (key === "testing" || key === "test") return "testing";
   if (key === "validation") return "validation";
   if (key === "code_review" || key === "codereview" || key === "review") return "codeReview";
@@ -829,6 +852,26 @@ type PhaseEvaluationTarget = {
   required: boolean;
 };
 
+function shouldCountDisplayOnlyPhaseRecordForCompletion(
+  step: OrchestratorStep,
+  configuredPhaseAliases: Map<string, string>,
+  phaseTargets: Map<string, PhaseEvaluationTarget>
+): boolean {
+  if (!isDisplayOnlyTaskStep(step) || step.status !== "succeeded") return false;
+
+  const meta = step.metadata ?? {};
+  const explicitPhaseKey = normalizePhaseIdentity(typeof meta.phaseKey === "string" ? meta.phaseKey : "");
+  const explicitPhaseName = normalizePhaseIdentity(typeof meta.phaseName === "string" ? meta.phaseName : "");
+  const stepType = typeof meta.stepType === "string" ? meta.stepType : "";
+  const taskType = typeof meta.taskType === "string" ? meta.taskType : "";
+  const resolvedTargetKey =
+    configuredPhaseAliases.get(explicitPhaseKey)
+    ?? configuredPhaseAliases.get(explicitPhaseName)
+    ?? stepTypeToPhase(stepType, taskType);
+
+  return Boolean(resolvedTargetKey && phaseTargets.has(resolvedTargetKey));
+}
+
 const BUILT_IN_EXECUTION_PHASES: ExecutionPhase[] = [
   "implementation",
   "testing",
@@ -838,8 +881,40 @@ const BUILT_IN_EXECUTION_PHASES: ExecutionPhase[] = [
   "integration"
 ];
 
+const BUILT_IN_PHASE_KEYS_FOR_COMPLETION = new Set([
+  "planning",
+  "development",
+  "implementation",
+  "code",
+  "integration",
+  "testing",
+  "test",
+  "validation",
+  "code_review",
+  "codereview",
+  "review",
+  "test_review",
+  "testreview",
+  "merge",
+  "pr_conflict_resolution",
+  "closeout"
+]);
+
 function normalizePhaseIdentity(value: string | null | undefined): string {
   return typeof value === "string" ? value.trim().toLowerCase() : "";
+}
+
+function isNonExecutableCloseoutPhase(card: PhaseCard): boolean {
+  const key = normalizePhaseIdentity(card.phaseKey);
+  const name = normalizePhaseIdentity(card.name);
+  return key === "closeout" || name === "closeout";
+}
+
+function isCustomExecutableCompletionPhase(card: PhaseCard): boolean {
+  const key = normalizePhaseIdentity(card.phaseKey);
+  if (!key || card.isBuiltIn === true || card.isCustom !== true) return false;
+  if (isNonExecutableCloseoutPhase(card)) return false;
+  return !BUILT_IN_PHASE_KEYS_FOR_COMPLETION.has(key);
 }
 
 /**
@@ -851,13 +926,14 @@ export function evaluateRunCompletionFromPhases(
   phases: PhaseCard[],
   settings: MissionLevelSettings
 ): RunCompletionEvaluation {
-  const relevantSteps = filterExecutionSteps(steps);
   const diagnostics: CompletionDiagnostic[] = [];
   const riskFactors: string[] = [];
 
   const phaseTargets = new Map<string, PhaseEvaluationTarget>();
   const configuredPhaseAliases = new Map<string, string>();
   const customPhaseOrder: string[] = [];
+  let hasConfiguredImplementationEquivalent = false;
+  let hasCustomExecutablePhase = false;
 
   for (const phase of BUILT_IN_EXECUTION_PHASES) {
     phaseTargets.set(phase, {
@@ -874,8 +950,13 @@ export function evaluateRunCompletionFromPhases(
     const rawPhaseName = typeof card.name === "string" ? card.name.trim() : "";
     const normalizedPhaseKey = normalizePhaseIdentity(rawPhaseKey);
     const normalizedPhaseName = normalizePhaseIdentity(rawPhaseName);
-    const builtInPhase = card.isCustom ? null : phaseKeyToExecutionPhase(rawPhaseKey);
+    const builtInPhase = phaseKeyToExecutionPhase(rawPhaseKey);
     const targetKey = builtInPhase ?? normalizedPhaseKey;
+    if (builtInPhase === "implementation") {
+      hasConfiguredImplementationEquivalent = true;
+    } else if (isCustomExecutableCompletionPhase(card)) {
+      hasCustomExecutablePhase = true;
+    }
 
     if (!targetKey) {
       continue;
@@ -897,7 +978,7 @@ export function evaluateRunCompletionFromPhases(
     if ((rawPhaseName || rawPhaseKey) && target.label === target.key) {
       target.label = rawPhaseName || rawPhaseKey;
     }
-    if (card.validationGate.required) {
+    if (card.validationGate.required && !isNonExecutableCloseoutPhase(card)) {
       target.required = true;
     }
 
@@ -910,12 +991,21 @@ export function evaluateRunCompletionFromPhases(
   }
 
   const implementationTarget = phaseTargets.get("implementation");
-  if (implementationTarget) {
+  const requireImplementationBucket = hasConfiguredImplementationEquivalent || !hasCustomExecutablePhase;
+  if (implementationTarget && requireImplementationBucket) {
     implementationTarget.enabled = true;
     implementationTarget.required = true;
   }
 
-  if (settings.integrationPr && hasMultipleLanes(relevantSteps)) {
+  const executionSteps = filterExecutionSteps(steps);
+  const relevantSteps = [
+    ...executionSteps,
+    ...steps.filter((step) =>
+      shouldCountDisplayOnlyPhaseRecordForCompletion(step, configuredPhaseAliases, phaseTargets)
+    )
+  ];
+
+  if (settings.integrationPr && hasMultipleLanes(executionSteps)) {
     const integrationTarget = phaseTargets.get("integration");
     if (integrationTarget) {
       integrationTarget.enabled = true;
@@ -981,6 +1071,7 @@ export function evaluateRunCompletionFromPhases(
   // Check validation contracts
   const requiredValidationMissingStepKeys = relevantSteps
     .filter((step) => step.status === "succeeded")
+    .filter((step) => !isAutoSpawnedValidationProofStep(step))
     .filter((step) => {
       const meta = step.metadata ?? {};
       const validationContract =
@@ -995,7 +1086,7 @@ export function evaluateRunCompletionFromPhases(
       const lastVerdict = typeof lastValidationReport?.verdict === "string" ? lastValidationReport.verdict.toLowerCase() : "";
       const validationState = typeof meta.validationState === "string" ? meta.validationState.toLowerCase() : "";
       const validationPassedAt = typeof meta.validationPassedAt === "string" ? meta.validationPassedAt.trim() : "";
-      return !(lastVerdict === "pass" || validationState === "pass" || validationPassedAt.length > 0);
+      return !(isPassingValidationValue(lastVerdict) || isPassingValidationValue(validationState) || validationPassedAt.length > 0);
     })
     .map((step) => step.stepKey);
 
