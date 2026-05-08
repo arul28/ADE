@@ -39,6 +39,21 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(zeroParam, "alZ")
   }
 
+  func testTerminalDisplayHandlesLineAndCharacterEditing() {
+    XCTAssertEqual(
+      sanitizeTerminalOutputForDisplay("one\ntwo\nthree\u{001B}[2A\u{001B}[G\u{001B}[M"),
+      "two\nthree"
+    )
+    XCTAssertEqual(
+      sanitizeTerminalOutputForDisplay("one\nthree\u{001B}[1A\u{001B}[G\u{001B}[Ltwo"),
+      "two\none\nthree"
+    )
+    XCTAssertEqual(
+      sanitizeTerminalOutputForDisplay("abcdef\u{001B}[1G\u{001B}[2P"),
+      "cdef"
+    )
+  }
+
   func testTerminalDisplayStripsAnsiColorAndBackspaces() {
     let output = sanitizeTerminalOutputForDisplay("\u{001B}[31merr\u{001B}[0mor\u{0008}k")
 

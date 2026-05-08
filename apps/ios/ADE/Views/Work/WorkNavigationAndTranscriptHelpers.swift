@@ -43,6 +43,8 @@ private final class WorkTerminalTextReplay {
   private var column = 0
   private var foreground: WorkANSIColor?
   private var bold = false
+  private var scrollTop = 0
+  private var scrollBottom: Int?
 
   var text: String {
     renderedLines()
@@ -140,6 +142,8 @@ private final class WorkTerminalTextReplay {
       column = 0
       foreground = nil
       bold = false
+      scrollTop = 0
+      scrollBottom = nil
     case "(", ")", "*", "+":
       if index < scalars.endIndex {
         index = scalars.index(after: index)
@@ -248,11 +252,81 @@ private final class WorkTerminalTextReplay {
       } else if column < lines[row].count {
         lines[row].removeSubrange(column..<lines[row].count)
       }
+    case "L":
+      insertBlankLines(count: max(1, first))
+    case "M":
+      deleteLines(count: max(1, first))
+    case "P":
+      deleteCharacters(count: max(1, first))
+    case "r":
+      setScrollRegion(params)
     case "m":
       applySGR(params)
     default:
       break
     }
+  }
+
+  private func insertBlankLines(count: Int) {
+    ensureCursor()
+    let start = min(max(row, scrollTop), lines.count)
+    let bottom = activeScrollBottom()
+    while lines.count <= bottom {
+      lines.append([])
+    }
+    lines.insert(contentsOf: Array(repeating: [WorkTerminalCell](), count: count), at: start)
+    if let scrollBottom {
+      let removalStart = min(scrollBottom + 1, lines.count)
+      let removalEnd = min(removalStart + count, lines.count)
+      if removalStart < removalEnd {
+        lines.removeSubrange(removalStart..<removalEnd)
+      }
+    }
+    row = min(row, max(0, lines.count - 1))
+  }
+
+  private func deleteLines(count: Int) {
+    ensureCursor()
+    let start = min(max(row, scrollTop), max(0, lines.count - 1))
+    let bottom = activeScrollBottom()
+    while lines.count <= bottom {
+      lines.append([])
+    }
+    let removalEnd = min(start + count, bottom + 1, lines.count)
+    guard start < removalEnd else { return }
+    let removed = removalEnd - start
+    lines.removeSubrange(start..<removalEnd)
+    if scrollBottom != nil {
+      let insertIndex = min(max(start, bottom - removed + 1), lines.count)
+      lines.insert(contentsOf: Array(repeating: [WorkTerminalCell](), count: removed), at: insertIndex)
+    }
+    if lines.isEmpty {
+      lines = [[]]
+    }
+    row = min(row, max(0, lines.count - 1))
+  }
+
+  private func deleteCharacters(count: Int) {
+    ensureCursor()
+    guard column < lines[row].count else { return }
+    let end = min(column + count, lines[row].count)
+    lines[row].removeSubrange(column..<end)
+  }
+
+  private func setScrollRegion(_ params: [Int]) {
+    scrollTop = max(0, max(1, params.first ?? 1) - 1)
+    if let bottom = params.dropFirst().first, bottom > 0 {
+      scrollBottom = max(scrollTop, bottom - 1)
+    } else {
+      scrollBottom = nil
+    }
+    row = 0
+    column = 0
+    ensureCursor()
+  }
+
+  private func activeScrollBottom() -> Int {
+    max(scrollTop, scrollBottom ?? max(lines.count - 1, row))
   }
 
   private func applySGR(_ rawParams: [Int]) {
