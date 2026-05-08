@@ -914,6 +914,7 @@ final class ADETests: XCTestCase {
     service.disconnect(clearCredentials: true)
 
     XCTAssertEqual(service.terminalBuffers["terminal-1"], "full terminal history")
+    XCTAssertEqual(service.subscribedTerminalSessionIds, Set(["terminal-1"]))
   }
 
   @MainActor

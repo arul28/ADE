@@ -141,6 +141,7 @@ struct WorkTerminalSessionView: View {
   @State private var sendingFeedback = 0
   @State private var lastSentTerminalSize: WorkTerminalViewport?
   @State private var currentTerminalViewport: WorkTerminalViewport?
+  @StateObject private var subscriptionLifecycle = WorkTerminalSubscriptionLifecycle()
 
   private var rawBuffer: String {
     syncService.terminalBuffers[session.id] ?? session.lastOutputPreview ?? ""
@@ -170,13 +171,12 @@ struct WorkTerminalSessionView: View {
     .adeScreenBackground()
     .adeNavigationGlass()
     .sensoryFeedback(.impact(weight: .light), trigger: sendingFeedback)
-    .task {
+    .task(id: session.id) {
+      subscriptionLifecycle.markVisible()
       try? await syncService.subscribeTerminal(sessionId: session.id)
     }
     .onDisappear {
-      Task {
-        try? await syncService.unsubscribeTerminal(sessionId: session.id)
-      }
+      subscriptionLifecycle.scheduleUnsubscribe(sessionId: session.id, syncService: syncService)
     }
     .onChange(of: syncService.connectionState) { _, _ in
       lastSentTerminalSize = nil
@@ -343,6 +343,30 @@ struct WorkTerminalSessionView: View {
     guard viewport != lastSentTerminalSize else { return }
     lastSentTerminalSize = viewport
     syncService.sendTerminalResize(sessionId: session.id, cols: viewport.cols, rows: viewport.rows)
+  }
+}
+
+@MainActor
+private final class WorkTerminalSubscriptionLifecycle: ObservableObject {
+  private var generation = 0
+  private var unsubscribeTask: Task<Void, Never>?
+
+  func markVisible() {
+    generation += 1
+    unsubscribeTask?.cancel()
+    unsubscribeTask = nil
+  }
+
+  func scheduleUnsubscribe(sessionId: String, syncService: SyncService) {
+    let generationAtDisappear = generation
+    unsubscribeTask?.cancel()
+    unsubscribeTask = Task {
+      await Task.yield()
+      guard !Task.isCancelled else { return }
+      let shouldUnsubscribe = await MainActor.run { generation == generationAtDisappear }
+      guard shouldUnsubscribe else { return }
+      try? await syncService.unsubscribeTerminal(sessionId: sessionId)
+    }
   }
 }
 

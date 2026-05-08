@@ -5394,6 +5394,7 @@ final class SyncService: ObservableObject {
   }
 
   func seedTerminalBufferForTesting(sessionId: String, transcript: String) {
+    subscribedTerminalSessionIds.insert(sessionId)
     terminalBuffers[sessionId] = transcript
     terminalBufferRevision += 1
   }
@@ -6557,8 +6558,8 @@ final class SyncService: ObservableObject {
   }
 
   private func resetTerminalSubscriptionState(clearHistory: Bool) {
-    subscribedTerminalSessionIds.removeAll()
     if clearHistory {
+      subscribedTerminalSessionIds.removeAll()
       terminalBuffers.removeAll()
     }
     terminalBufferRevision += 1
