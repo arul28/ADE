@@ -439,11 +439,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         currentRoot === nextRoot &&
         state.showWelcome === expectedShowWelcome;
 
-      if (state.projectTransition || alreadyApplied) {
-        if (alreadyApplied) {
-          setProject(nextProject);
-          setShowWelcome(expectedShowWelcome);
-        }
+      if (state.projectTransition) return;
+
+      if (alreadyApplied) {
+        setProject(nextProject);
+        setShowWelcome(expectedShowWelcome);
         return;
       }
 
