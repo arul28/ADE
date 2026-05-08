@@ -1515,6 +1515,28 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("automations create with implicit reuse accepts --lane", () => {
+    const plan = buildCliPlan([
+      "automations",
+      "create",
+      "--text",
+      "id: r1\n",
+      "--lane",
+      "lane-99",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toMatchObject({
+      arguments: {
+        args: {
+          draft: {
+            execution: { targetLaneId: "lane-99" },
+          },
+        },
+      },
+    });
+  });
+
   it("automations create accepts require-on-trigger lane mode without a target lane", () => {
     const plan = buildCliPlan([
       "automations",

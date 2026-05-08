@@ -3744,7 +3744,7 @@ function applyLaneFlagsToDraft(draft: JsonObject, args: string[]): JsonObject {
     laneMode
     ?? (asString(existingExecution.laneMode) as AutomationLaneModeFlag | null);
 
-  if (laneId != null && effectiveLaneMode !== "reuse") {
+  if (laneId != null && effectiveLaneMode != null && effectiveLaneMode !== "reuse") {
     throw new CliUsageError("--lane is only valid with --lane-mode reuse.");
   }
   if (preset != null && effectiveLaneMode !== "create") {
