@@ -614,10 +614,15 @@ describe("missionService lifecycle", () => {
     };
     const service = createMissionService({ db, projectId, logger });
 
-    db.run(
-      "update lanes set mission_id = ?, lane_role = 'mission' where id = ? and project_id = ?",
-      ["missing-mission", laneId, projectId]
-    );
+    db.run("pragma foreign_keys = off");
+    try {
+      db.run(
+        "update lanes set mission_id = ?, lane_role = 'mission' where id = ? and project_id = ?",
+        ["missing-mission", laneId, projectId]
+      );
+    } finally {
+      db.run("pragma foreign_keys = on");
+    }
 
     expect(service.isLaneClaimed(laneId).claimed).toBe(false);
     expect(logger.info).toHaveBeenCalledWith("missions.lane_ghost_claim_cleared", {
