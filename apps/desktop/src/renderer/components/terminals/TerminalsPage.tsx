@@ -30,6 +30,7 @@ const TERMINALS_TILING_TREE: PaneSplit = {
 
 const MIN_WORK_SIDEBAR_WIDTH_PCT = 26;
 const MAX_WORK_SIDEBAR_WIDTH_PCT = 55;
+const BULK_SESSION_DELETE_CONCURRENCY = 4;
 
 function clampWorkSidebarWidthPct(widthPct: number): number {
   return Math.max(MIN_WORK_SIDEBAR_WIDTH_PCT, Math.min(MAX_WORK_SIDEBAR_WIDTH_PCT, widthPct));
@@ -41,6 +42,33 @@ function dispatchWorkSidebarBrowserResizeEvent(type: "start" | "end"): void {
       ? ADE_WORK_SIDEBAR_BROWSER_RESIZE_START_EVENT
       : ADE_WORK_SIDEBAR_BROWSER_RESIZE_END_EVENT,
   ));
+}
+
+async function allSettledWithConcurrency<T>(
+  items: readonly T[],
+  concurrency: number,
+  task: (item: T) => Promise<void>,
+): Promise<PromiseSettledResult<void>[]> {
+  if (items.length === 0) return [];
+  const limit = Math.max(1, Math.min(concurrency, items.length));
+  const results: PromiseSettledResult<void>[] = new Array(items.length);
+  let nextIndex = 0;
+
+  await Promise.all(Array.from({ length: limit }, async () => {
+    while (true) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= items.length) return;
+      try {
+        await task(items[index] as T);
+        results[index] = { status: "fulfilled", value: undefined };
+      } catch (reason) {
+        results[index] = { status: "rejected", reason };
+      }
+    }
+  }));
+
+  return results;
 }
 
 export function TerminalsPage() {
@@ -280,12 +308,16 @@ export function TerminalsPage() {
 
     setSessionActionError(null);
     setDeletingSessionId("bulk");
-    void Promise.allSettled(
-      ended.map((session) => (
-        isChatToolType(session.toolType)
-          ? window.ade.agentChat.delete({ sessionId: session.id })
-          : window.ade.sessions.delete({ sessionId: session.id })
-      )),
+    void allSettledWithConcurrency(
+      ended,
+      BULK_SESSION_DELETE_CONCURRENCY,
+      async (session) => {
+        if (isChatToolType(session.toolType)) {
+          await window.ade.agentChat.delete({ sessionId: session.id });
+          return;
+        }
+        await window.ade.sessions.delete({ sessionId: session.id });
+      },
     )
       .then(async (results) => {
         const failed = results.filter((result) => result.status === "rejected").length;

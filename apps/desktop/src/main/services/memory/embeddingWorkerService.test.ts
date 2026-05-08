@@ -8,6 +8,7 @@ import { createMemoryService } from "./memoryService";
 import {
   createEmbeddingWorkerService,
   DEFAULT_ACTIVE_BATCH_SIZE,
+  DEFAULT_ACTIVE_SESSION_COLD_START_DEFER_MS,
   DEFAULT_IDLE_BATCH_SIZE,
 } from "./embeddingWorkerService";
 import { DEFAULT_EMBEDDING_MODEL_ID, EXPECTED_EMBEDDING_DIMENSIONS } from "./embeddingService";
@@ -35,9 +36,11 @@ function buildVector(seed: string): Float32Array {
 async function createFixture(opts: {
   withActiveSession?: boolean;
   embedImpl?: (text: string) => Promise<Float32Array>;
+  isAvailable?: () => boolean;
   sleep?: (ms: number) => Promise<void>;
   idleBatchSize?: number;
   activeBatchSize?: number;
+  activeSessionColdStartDeferMs?: number;
   attachQueueHook?: boolean;
 } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-embedding-worker-"));
@@ -76,7 +79,7 @@ async function createFixture(opts: {
   const sessionService = createSessionService({ db });
   const embeddingService = {
     embed: vi.fn(opts.embedImpl ?? (async (text: string) => buildVector(text))),
-    isAvailable: vi.fn(() => true),
+    isAvailable: vi.fn(opts.isAvailable ?? (() => true)),
     getModelId: vi.fn(() => DEFAULT_EMBEDDING_MODEL_ID),
   };
 
@@ -98,6 +101,7 @@ async function createFixture(opts: {
     sessionService,
     idleBatchSize: opts.idleBatchSize ?? DEFAULT_IDLE_BATCH_SIZE,
     activeBatchSize: opts.activeBatchSize ?? DEFAULT_ACTIVE_BATCH_SIZE,
+    activeSessionColdStartDeferMs: opts.activeSessionColdStartDeferMs ?? DEFAULT_ACTIVE_SESSION_COLD_START_DEFER_MS,
     sleep: opts.sleep,
   });
 
@@ -266,6 +270,51 @@ describe("embeddingWorkerService", () => {
       }),
     );
     expect(sleep).toHaveBeenCalledWith(100);
+  });
+
+  it("defers a cold embedding model load while sessions are active", async () => {
+    vi.useFakeTimers();
+    try {
+      let modelReady = false;
+      const { db, logger, worker, memoryService, embeddingService } = await createFixture({
+        withActiveSession: true,
+        activeSessionColdStartDeferMs: 25,
+        isAvailable: () => modelReady,
+      });
+
+      memoryService.addMemory({
+        projectId: "project-1",
+        scope: "project",
+        category: "fact",
+        content: "Defer this until the active session is not competing with a cold model load.",
+        importance: "medium",
+      });
+
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(embeddingService.embed).not.toHaveBeenCalled();
+      expect(worker.getStatus()).toEqual(expect.objectContaining({
+        batchesProcessed: 0,
+        queueDepth: 1,
+      }));
+      expect(logger.info).toHaveBeenCalledWith(
+        "memory.embedding_worker.cold_start_deferred",
+        expect.objectContaining({
+          projectId: "project-1",
+          queueDepth: 1,
+          retryInMs: 25,
+        }),
+      );
+
+      modelReady = true;
+      await vi.advanceTimersByTimeAsync(25);
+      await worker.waitForIdle();
+
+      expect(embeddingService.embed).toHaveBeenCalledTimes(1);
+      expect(countEmbeddings(db)).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("logs and skips a failed entry without blocking the rest of the batch", async () => {
