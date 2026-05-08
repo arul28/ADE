@@ -452,6 +452,7 @@ function ActionButton({
 export function LaneGitActionsPane({
   laneId,
   autoRebaseEnabled,
+  autoRebaseStatusSnapshot,
   onOpenSettings,
   onRebaseNowLocal,
   onRebaseAndPush,
@@ -467,6 +468,7 @@ export function LaneGitActionsPane({
 }: {
   laneId: string | null;
   autoRebaseEnabled: boolean;
+  autoRebaseStatusSnapshot?: AutoRebaseLaneStatus | null;
   onOpenSettings: () => void;
   onRebaseNowLocal?: (laneId: string) => Promise<void> | void;
   onRebaseAndPush?: (laneId: string) => Promise<void> | void;
@@ -517,7 +519,8 @@ export function LaneGitActionsPane({
   const [commitTimelineKey, setCommitTimelineKey] = useState(0);
   const [amendCommit, setAmendCommit] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [autoRebaseStatus, setAutoRebaseStatus] = useState<AutoRebaseLaneStatus | null>(null);
+  const [autoRebaseStatus, setAutoRebaseStatus] = useState<AutoRebaseLaneStatus | null>(autoRebaseStatusSnapshot ?? null);
+  const autoRebaseStatusSnapshotRef = useRef<AutoRebaseLaneStatus | null | undefined>(autoRebaseStatusSnapshot);
   const [conflictState, setConflictState] = useState<GitConflictState | null>(null);
   const [stuckRebase, setStuckRebase] = useState<GitConflictState | null>(null);
   const laneGitActionRuntime = useLaneGitActionRuntimeState(laneId);
@@ -709,6 +712,13 @@ export function LaneGitActionsPane({
     }
   }, [projectRoot]);
 
+  useEffect(() => {
+    autoRebaseStatusSnapshotRef.current = autoRebaseStatusSnapshot;
+    if (autoRebaseStatusSnapshot !== undefined) {
+      setAutoRebaseStatus(autoRebaseStatusSnapshot);
+    }
+  }, [autoRebaseStatusSnapshot]);
+
   const isNonFastForwardError = useCallback((rawMessage: string): boolean => {
     const lower = rawMessage.toLowerCase();
     return lower.includes("non-fast-forward") || lower.includes("failed to push some refs");
@@ -838,7 +848,7 @@ export function LaneGitActionsPane({
     setForcePushSuggested(false);
     setAmendCommit(false);
     setCommitMessageAi({ enabled: false, modelId: null });
-    setAutoRebaseStatus(null);
+    setAutoRebaseStatus(autoRebaseStatusSnapshotRef.current ?? null);
     setConflictState(null);
     setStuckRebase(null);
     if (!laneId) return;
@@ -848,9 +858,20 @@ export function LaneGitActionsPane({
         error: err instanceof Error ? err.message : String(err),
       });
     });
-    void refreshAutoRebaseStatus(laneId);
     void refreshCommitMessageAiState();
-  }, [laneId, lane?.branchRef, refreshAutoRebaseStatus, refreshCommitMessageAiState]);
+  }, [laneId, lane?.branchRef, refreshCommitMessageAiState]);
+
+  useEffect(() => {
+    if (!laneId) return;
+    if (autoRebaseStatusSnapshotRef.current !== undefined) return;
+    const targetLaneId = laneId;
+    const timer = window.setTimeout(() => {
+      if (document.visibilityState !== "visible") return;
+      if (autoRebaseStatusSnapshotRef.current !== undefined) return;
+      void refreshAutoRebaseStatus(targetLaneId);
+    }, 3_500);
+    return () => window.clearTimeout(timer);
+  }, [laneId, lane?.branchRef, refreshAutoRebaseStatus]);
 
   useEffect(() => {
     if (!laneId) return;
