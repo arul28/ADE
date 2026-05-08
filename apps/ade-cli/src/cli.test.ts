@@ -861,6 +861,58 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("maps provider shell launches to start_cli_session", () => {
+    const plan = buildCliPlan([
+      "shell",
+      "start-cli",
+      "codex",
+      "--lane",
+      "lane-1",
+      "--permission-mode",
+      "edit",
+      "--message",
+      "fix the tests",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toEqual({
+      name: "start_cli_session",
+      arguments: expect.objectContaining({
+        laneId: "lane-1",
+        provider: "codex",
+        permissionMode: "edit",
+        initialInput: "fix the tests",
+        title: "Codex",
+        cols: 120,
+        rows: 36,
+        tracked: true,
+      }),
+    });
+  });
+
+  it("accepts --provider on shell start as the CLI-session launcher", () => {
+    const plan = buildCliPlan([
+      "shell",
+      "start",
+      "--provider",
+      "claude",
+      "--lane",
+      "lane-1",
+      "--resume-session",
+      "session-1",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toMatchObject({
+      name: "start_cli_session",
+      arguments: {
+        laneId: "lane-1",
+        provider: "claude",
+        resumeSessionId: "session-1",
+      },
+    });
+  });
+
   it("renders an empty lane graph placeholder when no lanes are returned", () => {
     expect(renderLaneGraph({ lanes: [] })).toBe("ADE lanes\n(no lanes)");
     expect(renderLaneGraph(null)).toBe("ADE lanes\n(no lanes)");

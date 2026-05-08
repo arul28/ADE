@@ -409,12 +409,15 @@ Rendered when the Work view has no open sessions. Contains:
   the shell fallback the multi-line Cursor / Droid / OpenCode preambles
   always rely on. The recorded `toolType` and tab title come from the
   shared `LAUNCH_PROFILE_TOOL_TYPE` / `LAUNCH_PROFILE_TITLE` maps in
-  `cliLaunch.ts`, so adding a new provider only requires extending the
-  registry there plus the `WorkStartSurface` option list.
+  `apps/desktop/src/shared/cliLaunch.ts` (the renderer
+  `components/terminals/cliLaunch.ts` is now a thin re-export), so
+  adding a new provider only requires extending the shared registry
+  plus the `WorkStartSurface` option list — the same module also
+  powers the iOS `work.startCliSession` mobile launcher.
 - for shell drafts: a "Launch" button that opens an untracked shell PTY
   in the lane's worktree (`profile = "shell"`).
 
-Launch commands are built by `cliLaunch.ts`:
+Launch commands are built by `apps/desktop/src/shared/cliLaunch.ts`:
 
 - `buildTrackedCliLaunchCommand({ provider, permissionMode, ... })`
   returns the canonical `{ command?, args, startupCommand, env? }`
@@ -490,7 +493,8 @@ argv-based spawn with ADE CLI guidance baked in. `profile` is a
 `LaunchProfile` (`"claude" | "codex" | "cursor" | "droid" | "opencode"
 | "shell"`); the matching tab title and recorded `TerminalToolType`
 come from the shared `LAUNCH_PROFILE_TITLE` / `LAUNCH_PROFILE_TOOL_TYPE`
-maps in `cliLaunch.ts`. `inferToolFromResumeCommand` strips leading
+maps in `apps/desktop/src/shared/cliLaunch.ts`.
+`inferToolFromResumeCommand` strips leading
 `ENV=value` assignments before sniffing the provider, so resume
 commands the OpenCode preamble emits (`OPENCODE_CONFIG_CONTENT=…
 opencode --session …`) round-trip correctly.

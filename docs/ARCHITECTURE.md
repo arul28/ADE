@@ -862,7 +862,13 @@ Renderer surfaces:
 - Bidirectional sync continues; on disconnect, exponential-backoff reconnect with version catch-up. `reconnectIfPossible` is guarded against overlapping runs.
 - All reads are local and scoped to the active project id — the iOS tab is instant and offline-capable after the selected project's row has hydrated.
 - Writes from user actions: write locally, replicate to host. Execution commands (create PR, run command) are routed to the host via the `command`/`command_ack`/`command_result` message flow.
-- Sub-protocols: changeset sync, project catalog/switch, file access, terminal stream, chat stream (live `chat_event` push from host), command routing, lane presence announce/release.
+- Sub-protocols: changeset sync, project catalog/switch, file access,
+  subscribed terminal stream/control, chat stream (live `chat_event`
+  push from host), command routing, and lane presence announce/release.
+  Command routing includes the Work CLI launcher
+  (`work.startCliSession`), whose provider command construction is
+  shared with the desktop Work tab through
+  `apps/desktop/src/shared/cliLaunch.ts`.
 - Pairing is a **user-set 6-digit PIN** stored at `.ade/secrets/sync-pin.json` on the host. The phone sends the PIN once; the host returns a durable per-device secret. QR payload is v2 (host identity + port + address candidates, no pairing code).
 - APNs pipeline: iOS registers device tokens (alert + push-to-start + per-activity update) via `SyncService.registerPushToken`. The host's `notificationEventBus` routes domain events (chat, PR, CTO, system) to `apnsService` for alert pushes and Live Activity update pushes, filtered by per-device `NotificationPreferences` stored in the iOS App Group `UserDefaults`.
 - Widgets: `ADEWorkspaceWidget` (Home Screen), `ADELockScreenWidget`, `ADEControlWidget` (Control Center, iOS 18+) read from a shared `WorkspaceSnapshot` in the App Group container. `LiveActivityCoordinator` manages the single workspace Live Activity.

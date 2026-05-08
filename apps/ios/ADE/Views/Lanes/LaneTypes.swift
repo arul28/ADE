@@ -136,8 +136,8 @@ enum LaneFileConfirmation: Identifiable {
     switch self {
     case .discardUnstaged: return "Discard changes?"
     case .discardAllUnstaged: return "Discard all unstaged changes?"
-    case .restoreStaged: return "Discard staged changes?"
-    case .restoreAllStaged: return "Discard all staged changes?"
+    case .restoreStaged: return "Restore staged file?"
+    case .restoreAllStaged: return "Restore all staged files?"
     }
   }
 
@@ -158,8 +158,8 @@ enum LaneFileConfirmation: Identifiable {
     switch self {
     case .discardUnstaged: return "Discard"
     case .discardAllUnstaged: return "Discard all"
-    case .restoreStaged: return "Discard"
-    case .restoreAllStaged: return "Discard all"
+    case .restoreStaged: return "Restore"
+    case .restoreAllStaged: return "Restore all"
     }
   }
 

@@ -67,6 +67,8 @@ ade prs pipeline pr-id save --conflict-strategy rebase --no-early-merge-on-green
 ade run defs --text
 ade run start web --lane lane-id
 ade shell start --lane lane-id -- npm test
+ade shell start-cli codex --lane lane-id --permission-mode edit --message "fix failing tests"
+ade shell start --provider claude --lane lane-id --permission-mode default
 ade chat create --lane lane-id --model gpt-5.5
 ade tests run --lane lane-id --suite unit --wait
 ade proof list --arg ownerKind=chat --arg ownerId=session-id

@@ -109,7 +109,7 @@ Each live PTY has an entry in the `ptys` map keyed by `ptyId` with:
 - `pty` (node-pty handle), `laneId`, `laneWorktreePath`, `boundCwd`,
   `sessionId`, `tracked`
 - transcript: `transcriptPath`, `transcriptStream`,
-  `transcriptBytesWritten`, `transcriptLimitReached` (8 MB cap from
+  `transcriptBytesWritten`, `transcriptLimitReached` (64 MB cap from
   `MAX_TRANSCRIPT_BYTES`)
 - preview: `lastPreviewWriteAt`, `previewCurrentLine`,
   `latestPreviewLine`, `lastPreviewWritten`
@@ -168,7 +168,7 @@ Each live PTY has an entry in the `ptys` map keyed by `ptyId` with:
 ### Data, preview, and runtime state
 
 `writeTranscript(entry, data)` writes to the append-mode write stream.
-Once the 8 MB cap is hit it writes a single notice line and drops
+Once the 64 MB cap is hit it writes a single notice line and drops
 further output. Bytes written are not persisted, so the cap resets on
 reattach.
 

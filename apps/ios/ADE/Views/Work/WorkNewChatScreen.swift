@@ -1,5 +1,33 @@
 import SwiftUI
 
+enum WorkNewSessionMode: String, CaseIterable, Identifiable {
+  case chat
+  case cli
+
+  var id: String { rawValue }
+
+  var title: String {
+    switch self {
+    case .chat: return "ADE chat"
+    case .cli: return "CLI session"
+    }
+  }
+}
+
+struct WorkCliProviderOption: Identifiable, Hashable {
+  let id: String
+  let title: String
+}
+
+private let workCliProviderOptions: [WorkCliProviderOption] = [
+  WorkCliProviderOption(id: "claude", title: "Claude Code"),
+  WorkCliProviderOption(id: "codex", title: "Codex"),
+  WorkCliProviderOption(id: "cursor", title: "Cursor Agent CLI"),
+  WorkCliProviderOption(id: "opencode", title: "OpenCode CLI"),
+  WorkCliProviderOption(id: "droid", title: "Factory Droid CLI"),
+  WorkCliProviderOption(id: "shell", title: "Shell"),
+]
+
 /// Full-screen "Start a new conversation" composer that replaces the modal
 /// WorkNewChatSheet. Mirrors the desktop welcome screen: big ADE word-mark,
 /// one-line tagline, a minimal workspace pill users can change inline, and a
@@ -14,6 +42,7 @@ struct WorkNewChatScreen: View {
   let lanes: [LaneSummary]
   let preferredLaneId: String?
   let onStarted: @MainActor (AgentChatSessionSummary, String) async -> Void
+  let onCliStarted: @MainActor (TerminalSessionSummary) async -> Void
   let onRefreshLanes: @MainActor () async -> Void
 
   @State private var selectedLaneId: String = ""
@@ -24,6 +53,7 @@ struct WorkNewChatScreen: View {
   @State private var modelPickerPresented = false
   @State private var runtimeMode: String = "default"
   @State private var reasoningEffort: String = ""
+  @State private var sessionMode: WorkNewSessionMode = .chat
 
   private var selectedLaneName: String {
     if let match = lanes.first(where: { $0.id == selectedLaneId }) {
@@ -51,6 +81,7 @@ struct WorkNewChatScreen: View {
           }
 
           laneSelector
+          modeSelector
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 16)
@@ -92,6 +123,12 @@ struct WorkNewChatScreen: View {
       runtimeMode = workDefaultRuntimeMode(provider: newProvider)
       if !modelSupportsReasoning(modelId: modelId, provider: newProvider) {
         reasoningEffort = ""
+      }
+    }
+    .onChange(of: sessionMode) { _, newMode in
+      if newMode == .chat && !["claude", "codex", "cursor", "opencode"].contains(provider) {
+        provider = "claude"
+        modelId = "claude-sonnet-4-6"
       }
     }
     .onChange(of: modelId) { _, newModel in
@@ -186,13 +223,26 @@ struct WorkNewChatScreen: View {
   }
 
   @ViewBuilder
+  private var modeSelector: some View {
+    Picker("Session type", selection: $sessionMode) {
+      ForEach(WorkNewSessionMode.allCases) { mode in
+        Text(mode.title).tag(mode)
+      }
+    }
+    .pickerStyle(.segmented)
+    .padding(.horizontal, 8)
+    .accessibilityLabel("Session type")
+  }
+
+  @ViewBuilder
   private var composerBar: some View {
     WorkNewChatComposerBar(
-      provider: provider,
+      sessionMode: sessionMode,
+      provider: $provider,
       modelId: modelId,
       modelName: prettyNewChatModelName(modelId),
       busy: busy,
-      canStart: !busy && !selectedLaneId.isEmpty && !modelId.isEmpty,
+      canStart: !busy && !selectedLaneId.isEmpty && (sessionMode == .cli || !modelId.isEmpty),
       runtimeMode: $runtimeMode,
       reasoningEffort: $reasoningEffort,
       onOpenModelPicker: { modelPickerPresented = true },
@@ -229,12 +279,58 @@ struct WorkNewChatScreen: View {
   @MainActor
   private func submit(openingMessage: String) async -> Bool {
     let opener = openingMessage.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !busy && !opener.isEmpty && !selectedLaneId.isEmpty && !modelId.isEmpty else { return false }
+    guard !busy && !selectedLaneId.isEmpty else { return false }
+    if sessionMode == .chat {
+      guard !opener.isEmpty && !modelId.isEmpty else { return false }
+    }
     busy = true
     errorMessage = nil
     let wire = workRuntimeWireFields(provider: provider, mode: runtimeMode)
     let normalizedReasoning = reasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
     do {
+      if sessionMode == .cli {
+        let result = try await syncService.startCliSession(
+          laneId: selectedLaneId,
+          provider: provider,
+          permissionMode: wire.permissionMode ?? (runtimeMode.isEmpty ? nil : runtimeMode),
+          title: workCliProviderOptions.first(where: { $0.id == provider })?.title,
+          initialInput: opener.isEmpty ? nil : opener,
+          cols: 88,
+          rows: 28
+        )
+        if let session = result.session {
+          await onCliStarted(session)
+        } else {
+          let lane = lanes.first(where: { $0.id == selectedLaneId })
+          await onCliStarted(TerminalSessionSummary(
+            id: result.sessionId,
+            laneId: selectedLaneId,
+            laneName: lane?.name ?? selectedLaneId,
+            ptyId: result.ptyId,
+            tracked: true,
+            pinned: false,
+            manuallyNamed: nil,
+            goal: nil,
+            toolType: provider == "shell" ? "shell" : (provider == "cursor" ? "cursor-cli" : provider),
+            title: workCliProviderOptions.first(where: { $0.id == provider })?.title ?? providerLabel(provider),
+            status: "running",
+            startedAt: workDateFormatter.string(from: Date()),
+            endedAt: nil,
+            exitCode: nil,
+            transcriptPath: "",
+            headShaStart: nil,
+            headShaEnd: nil,
+            lastOutputPreview: nil,
+            summary: nil,
+            runtimeState: "running",
+            resumeCommand: nil,
+            resumeMetadata: nil,
+            chatIdleSinceAt: nil
+          ))
+        }
+        busy = false
+        return true
+      }
       let summary = try await syncService.createChatSession(
         laneId: selectedLaneId,
         provider: provider,
@@ -261,7 +357,8 @@ struct WorkNewChatScreen: View {
 }
 
 private struct WorkNewChatComposerBar: View {
-  let provider: String
+  let sessionMode: WorkNewSessionMode
+  @Binding var provider: String
   let modelId: String
   let modelName: String
   let busy: Bool
@@ -279,7 +376,7 @@ private struct WorkNewChatComposerBar: View {
   }
 
   private var canSend: Bool {
-    canStart && !trimmedDraft.isEmpty
+    canStart && (sessionMode == .cli || !trimmedDraft.isEmpty)
   }
 
   private var runtimeOptions: [WorkRuntimeModeOption] {
@@ -294,9 +391,24 @@ private struct WorkNewChatComposerBar: View {
     workRuntimeModeTint(runtimeMode)
   }
 
+  private var acceptsOpeningMessage: Bool {
+    !(sessionMode == .cli && provider == "shell")
+  }
+
+  private var placeholder: String {
+    if sessionMode == .cli && provider == "shell" {
+      return "Shell starts empty; type after it opens"
+    }
+    return sessionMode == .cli ? "Optional first instruction…" : "Type to vibecode…"
+  }
+
+  private var sendLabel: String {
+    sessionMode == .cli ? "Start" : "Send"
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
-      TextField("Type to vibecode…", text: $draft, axis: .vertical)
+      TextField(placeholder, text: $draft, axis: .vertical)
         .textFieldStyle(.plain)
         .lineLimit(1...6)
         .font(.body)
@@ -306,46 +418,52 @@ private struct WorkNewChatComposerBar: View {
         .textInputAutocapitalization(.sentences)
         .focused($composerFocused)
         .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+        .disabled(!acceptsOpeningMessage)
+        .opacity(acceptsOpeningMessage ? 1 : 0.62)
 
       HStack(alignment: .center, spacing: 8) {
         ScrollView(.horizontal, showsIndicators: false) {
           HStack(alignment: .center, spacing: 10) {
-            Button {
-              onOpenModelPicker()
-            } label: {
-              HStack(spacing: 6) {
-                WorkProviderLogo(
-                  provider: provider,
-                  fallbackSymbol: providerIcon(provider),
-                  tint: providerTint(provider),
-                  size: 16
-                )
-                Text(modelName)
-                  .font(.caption.weight(.semibold))
-                  .foregroundStyle(ADEColor.textPrimary)
-                  .lineLimit(1)
-                if !reasoningEffort.isEmpty {
-                  Text("·")
-                    .font(.caption2)
-                    .foregroundStyle(ADEColor.textMuted.opacity(0.5))
-                  Text(reasoningEffort.capitalized)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(ADEColor.textMuted)
+            if sessionMode == .chat {
+              Button {
+                onOpenModelPicker()
+              } label: {
+                HStack(spacing: 6) {
+                  WorkProviderLogo(
+                    provider: provider,
+                    fallbackSymbol: providerIcon(provider),
+                    tint: providerTint(provider),
+                    size: 16
+                  )
+                  Text(modelName)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(ADEColor.textPrimary)
                     .lineLimit(1)
+                  if !reasoningEffort.isEmpty {
+                    Text("·")
+                      .font(.caption2)
+                      .foregroundStyle(ADEColor.textMuted.opacity(0.5))
+                    Text(reasoningEffort.capitalized)
+                      .font(.system(size: 10, weight: .medium))
+                      .foregroundStyle(ADEColor.textMuted)
+                      .lineLimit(1)
+                  }
+                  Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(ADEColor.textMuted)
                 }
-                Image(systemName: "chevron.down")
-                  .font(.system(size: 9, weight: .bold))
-                  .foregroundStyle(ADEColor.textMuted)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 6)
+                .background(Color.clear, in: Capsule(style: .continuous))
+                .overlay(
+                  Capsule(style: .continuous)
+                    .stroke(ADEColor.border.opacity(0.22), lineWidth: 0.5)
+                )
               }
-              .padding(.horizontal, 9)
-              .padding(.vertical, 6)
-              .background(Color.clear, in: Capsule(style: .continuous))
-              .overlay(
-                Capsule(style: .continuous)
-                  .stroke(ADEColor.border.opacity(0.22), lineWidth: 0.5)
-              )
+              .buttonStyle(.plain)
+            } else {
+              cliProviderMenu
             }
-            .buttonStyle(.plain)
 
             if !runtimeOptions.isEmpty {
               Menu {
@@ -388,7 +506,7 @@ private struct WorkNewChatComposerBar: View {
         }
 
         Button {
-          let text = trimmedDraft
+          let text = acceptsOpeningMessage ? trimmedDraft : ""
           draft = ""
           Task {
             let started = await onSubmit(text)
@@ -406,7 +524,7 @@ private struct WorkNewChatComposerBar: View {
               Image(systemName: "paperplane.fill")
                 .font(.system(size: 12, weight: .bold))
             }
-            Text("Send")
+            Text(sendLabel)
               .font(.caption.weight(.semibold))
           }
           .foregroundStyle(canSend ? Color.white : ADEColor.textSecondary)
@@ -424,7 +542,7 @@ private struct WorkNewChatComposerBar: View {
         }
         .buttonStyle(.plain)
         .disabled(!canSend)
-        .accessibilityLabel(canSend ? "Start chat" : "Enter a message to start")
+        .accessibilityLabel(canSend ? (sessionMode == .cli ? "Start CLI session" : "Start chat") : "Enter a message to start")
       }
     }
     .padding(.horizontal, 14)
@@ -452,6 +570,54 @@ private struct WorkNewChatComposerBar: View {
     .shadow(color: Color.black.opacity(0.32), radius: 14, y: 6)
     .padding(.horizontal, 16)
     .padding(.bottom, 0)
+    .onChange(of: provider) { _, _ in
+      if !acceptsOpeningMessage { draft = "" }
+    }
+    .onChange(of: sessionMode) { _, _ in
+      if !acceptsOpeningMessage { draft = "" }
+    }
+  }
+
+  private var cliProviderMenu: some View {
+    Menu {
+      ForEach(workCliProviderOptions) { option in
+        Button {
+          provider = option.id
+        } label: {
+          if option.id == provider {
+            Label(option.title, systemImage: "checkmark")
+          } else {
+            Text(option.title)
+          }
+        }
+      }
+    } label: {
+      HStack(spacing: 6) {
+        WorkProviderLogo(
+          provider: provider,
+          fallbackSymbol: provider == "shell" ? "terminal.fill" : providerIcon(provider),
+          tint: providerTint(provider),
+          size: 16
+        )
+        Text(workCliProviderOptions.first(where: { $0.id == provider })?.title ?? providerLabel(provider))
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+        Image(systemName: "chevron.down")
+          .font(.system(size: 9, weight: .bold))
+          .foregroundStyle(ADEColor.textMuted)
+      }
+      .padding(.horizontal, 9)
+      .padding(.vertical, 6)
+      .background(Color.clear, in: Capsule(style: .continuous))
+      .overlay(
+        Capsule(style: .continuous)
+          .stroke(ADEColor.border.opacity(0.22), lineWidth: 0.5)
+      )
+    }
+    .menuStyle(.borderlessButton)
+    .buttonStyle(.plain)
+    .accessibilityLabel("CLI provider: \(workCliProviderOptions.first(where: { $0.id == provider })?.title ?? provider). Tap to change.")
   }
 }
 

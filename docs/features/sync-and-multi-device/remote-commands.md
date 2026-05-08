@@ -8,7 +8,7 @@ host-side services, and replies with `command_ack` and then
 `command_result`.
 
 Source file: `apps/desktop/src/main/services/sync/syncRemoteCommandService.ts`
-(~1,920 lines).
+(~2,030 lines).
 
 ## Shape
 
@@ -105,7 +105,7 @@ Listed in order of appearance in the registry:
 
 **Work** (`work.*`)
 - `listSessions`, `updateSessionMeta`, `runQuickCommand`,
-  `closeSession`
+  `startCliSession`, `closeSession`
 
 **Chat** (`chat.*`)
 - `listSessions`, `getSummary`, `getTranscript`
@@ -185,6 +185,32 @@ A handful have more logic:
 - **`work.runQuickCommand`** — constructs a `PtyCreateArgs`, calls
   `ptyService.create`, and returns the PTY handle for the controller
   to subscribe to via `terminal_subscribe`.
+- **`work.startCliSession`** — host-side mobile CLI launcher used by
+  the iOS Work "new session" surface and by tap-to-resume on existing
+  PTY rows. Args are validated through `parseStartCliSessionArgs`,
+  which restricts `provider` to the allowlist
+  `claude | codex | cursor | droid | opencode | shell` (any other
+  value throws `"work.startCliSession requires provider."`), clamps
+  `cols` to `[20, 240]` and `rows` to `[4, 120]`, and truncates
+  `initialInput` at 20 KB. Provider-specific argv, env, and shell
+  preambles come from `buildTrackedCliLaunchCommand` /
+  `buildTrackedCliResumeCommand` in `apps/desktop/src/shared/cliLaunch.ts`
+  — the same module the desktop Work tab uses — so the host owns the
+  startup-command shape and a phone cannot smuggle in a free-form
+  shell command (the `shell` provider takes no startup payload at all).
+  Claude launches mint a pre-assigned `--session-id` upfront via
+  `randomUUID()` so resume works as soon as the row exists. When
+  `resumeSessionId` is set, the handler reuses the saved
+  `resumeMetadata` (or the persisted `resumeCommand`) to rebuild the
+  startup line. After `ptyService.create` returns, any `initialInput`
+  is forwarded as keystrokes via `ptyService.writeBySessionId`. The
+  result is `SyncStartCliSessionResult` (`{ sessionId, ptyId,
+  session: TerminalSessionSummary | null }`) — the controller can
+  immediately render the session card and call `terminal_subscribe`
+  without an extra round-trip. The command-result journal persists
+  only the returned session handle and summary, not the `initialInput`
+  text, so reconnect replay does not leak the user's prompt into the
+  host-side ledger.
 - **`work.closeSession`** — looks up the session's PTY id and
   disposes the PTY.
 - **`chat.create`** — resolves a missing `model` to the first
@@ -292,10 +318,10 @@ can be sensitive.
   controller observes the effect of a command through replicated
   `lanes`, `sessions`, `linear_workflow_runs`, etc. rows arriving
   after the host finishes the command.
-- **Terminal sub-protocol** pairs with `work.runQuickCommand` +
-  `work.closeSession`. The controller invokes the command, then
-  sends `terminal_subscribe` with the returned PTY id to stream
-  output.
+- **Terminal sub-protocol** pairs with `work.runQuickCommand`,
+  `work.startCliSession`, and `work.closeSession`. The controller
+  invokes the command, then sends `terminal_subscribe` with the
+  returned session id to stream output and enable input/resize control.
 - **Chat sub-protocol** pairs with `chat.create` / `chat.send` +
   `chat_subscribe`. Same pattern: create / send the message through
   a command, subscribe to the transcript stream for incremental
@@ -345,6 +371,14 @@ see the chat README for the passive/active contract.
   `work.closeSession`. This is why headless ADE CLI mode provides a
   stub PTY service that throws on `.create` — the action is not
   supported there.
+- **`work.startCliSession` provider list is host-controlled.** The
+  controller cannot pass `command` / `args` / `startupCommand`
+  overrides — the host derives those from the provider name through
+  `buildTrackedCliLaunchCommand`. To add a new provider you extend
+  `apps/desktop/src/shared/cliLaunch.ts` and the
+  `parseCliProvider` allowlist together; a phone client that hardcodes
+  the new id without a host update will get a "requires provider"
+  error.
 - **`files.writeTextAtomic` does not invoke git hooks or editors.**
   It writes atomically to the lane worktree and that is all.
   Services that care about post-write side effects (lint,

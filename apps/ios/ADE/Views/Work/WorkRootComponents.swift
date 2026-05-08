@@ -561,7 +561,7 @@ struct WorkSessionListRow: View {
 
   private var shouldShowResumeAction: Bool {
     guard !isChatSession(session) else { return false }
-    return status == "idle" || status == "ended"
+    return (status == "idle" || status == "ended") && terminalSessionHasResumeTarget(session)
   }
 }
 

@@ -12,6 +12,7 @@ import {
 } from "./cursorCloud";
 import { type JsonRpcHandler, type JsonRpcId, type JsonRpcRequest } from "./jsonrpc";
 import { isAdeMcpNamedPipePath } from "../../desktop/src/shared/adeMcpIpc";
+import { LAUNCH_PROFILE_TITLE, type LaunchProfile } from "../../desktop/src/shared/cliLaunch";
 
 type JsonObject = Record<string, unknown>;
 
@@ -755,6 +756,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
 
     $ ade shell start --lane <lane> -- npm test     Start a tracked shell session
     $ ade shell start --lane <lane> -c "npm test"   Start with a command string
+    $ ade shell start-cli codex --lane <lane> --permission-mode edit
+    $ ade shell start --provider claude --lane <lane> --message "fix tests"
     $ ade shell start --lane <lane> --chat-session <id> -c "npm test"
     $ ade shell write <pty-id> --data "q"           Write data to a PTY
     $ ade shell resize <pty-id> --cols 120 --rows 36
@@ -2217,7 +2220,14 @@ function buildRunPlan(args: string[]): CliPlan {
 function buildShellPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "start";
   if (sub === "actions") return { kind: "execute", label: "shell actions", steps: [listActionsStep("actions", "pty")] };
+  if (sub === "start-cli" || sub === "cli" || sub === "agent-cli") {
+    return buildCliSessionStartPlan(args);
+  }
   if (sub === "start" || sub === "create") {
+    const provider = readValue(args, ["--provider", "--profile"]);
+    if (provider) {
+      return buildCliSessionStartPlan(args, provider);
+    }
     const laneId = readLaneId(args);
     const chatSessionId = asString(
       readValue(args, ["--chat-session", "--chat-session-id", "--session", "--session-id"])
@@ -2245,6 +2255,33 @@ function buildShellPlan(args: string[]): CliPlan {
   if (sub === "resize") return { kind: "execute", label: "shell resize", steps: [actionStep("result", "pty", "resize", collectGenericObjectArgs(args, { ptyId: requireValue(readValue(args, ["--pty", "--pty-id"]) ?? firstPositional(args), "ptyId"), cols: readIntOption(args, ["--cols"], 120), rows: readIntOption(args, ["--rows"], 36) }))] };
   if (sub === "close" || sub === "dispose") return { kind: "execute", label: "shell close", steps: [actionStep("result", "pty", "dispose", collectGenericObjectArgs(args, { ptyId: requireValue(readValue(args, ["--pty", "--pty-id"]) ?? firstPositional(args), "ptyId"), sessionId: readValue(args, ["--session", "--session-id"]) }))] };
   return { kind: "execute", label: `shell ${sub}`, steps: [actionStep("result", "pty", sub, collectGenericObjectArgs(args))] };
+}
+
+function buildCliSessionStartPlan(args: string[], providerArg?: string): CliPlan {
+  const laneId = requireValue(readLaneId(args), "laneId");
+  const provider = requireValue(providerArg ?? readValue(args, ["--provider", "--profile"]) ?? firstPositional(args), "provider") as LaunchProfile;
+  const promptIndex = args.indexOf("--");
+  const initialInput = promptIndex >= 0
+    ? args.splice(promptIndex + 1).join(" ").trim()
+    : readValue(args, ["--message", "--prompt", "--initial-input"]);
+  if (promptIndex >= 0) args.splice(promptIndex, 1);
+
+  const input = collectGenericObjectArgs(args, {
+    laneId,
+    provider,
+    permissionMode: readValue(args, ["--permission-mode", "--permissions"]) ?? "default",
+    title: readValue(args, ["--title"]) ?? LAUNCH_PROFILE_TITLE[provider] ?? undefined,
+    initialInput,
+    cols: readIntOption(args, ["--cols"], 120),
+    rows: readIntOption(args, ["--rows"], 36),
+    cwd: readValue(args, ["--cwd"]),
+    chatSessionId: readValue(args, ["--chat-session", "--chat-session-id"]),
+    resumeSessionId: readValue(args, ["--resume-session", "--resume-session-id"]),
+    resumeTargetId: readValue(args, ["--resume-target", "--resume-target-id", "--target"]),
+    tracked: !readFlag(args, ["--untracked"]),
+  });
+
+  return { kind: "execute", label: "shell start cli", steps: [actionCallStep("result", "start_cli_session", input)] };
 }
 
 function buildTerminalPlan(args: string[]): CliPlan {

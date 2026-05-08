@@ -277,7 +277,9 @@ function createRuntime() {
     },
     ptyService: {
       create: vi.fn(async () => ({ ptyId: "pty-1", sessionId: "session-1" })),
-      dispose: vi.fn()
+      dispose: vi.fn(),
+      writeBySessionId: vi.fn(() => true),
+      enrichSessions: vi.fn((sessions: unknown[]) => sessions),
     },
     testService: {
       run: vi.fn(async () => ({ id: "test-run-1", status: "running" })),
@@ -1085,6 +1087,7 @@ describe("adeRpcServer", () => {
         "screenshot_environment",
         "record_environment",
         "run_tests",
+        "start_cli_session",
         "get_lane_status",
         "list_lanes",
         "commit_changes",
@@ -1916,6 +1919,109 @@ describe("adeRpcServer", () => {
     expect(response.structuredContent.startupCommand).toContain("only normal reason to skip ADE CLI");
     expect(response.structuredContent.permissionMode).toBe("default");
     expect(response.structuredContent.contextRef?.path).toBeNull();
+  });
+
+  it("routes start_cli_session through shared provider launch helpers", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.sessionService.get.mockReturnValue({
+      id: "session-1",
+      laneId: "lane-1",
+      ptyId: "pty-1",
+      tracked: true,
+      toolType: "codex",
+      title: "Codex",
+      status: "running",
+      resumeCommand: null,
+      resumeMetadata: null,
+    });
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "orchestrator" });
+    const response = await callTool(handler, "start_cli_session", {
+      laneId: "lane-1",
+      provider: "codex",
+      permissionMode: "edit",
+      initialInput: "fix failing tests",
+      cols: 90,
+      rows: 24,
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fixture.runtime.ptyService.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        laneId: "lane-1",
+        title: "Codex",
+        toolType: "codex",
+        cols: 90,
+        rows: 24,
+        command: "codex",
+        startupCommand: expect.stringContaining("codex --no-alt-screen"),
+      }),
+    );
+    expect(fixture.runtime.ptyService.writeBySessionId).toHaveBeenCalledWith("session-1", "fix failing tests\r");
+    expect(response.structuredContent).toMatchObject({
+      provider: "codex",
+      laneId: "lane-1",
+      ptyId: "pty-1",
+      sessionId: "session-1",
+      initialInputWritten: true,
+    });
+  });
+
+  it("preassigns Claude session ids for start_cli_session launches", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "orchestrator" });
+    const response = await callTool(handler, "start_cli_session", {
+      laneId: "lane-1",
+      provider: "claude",
+      permissionMode: "default",
+    });
+
+    expect(response?.isError).toBeUndefined();
+    const createCall = fixture.runtime.ptyService.create.mock.calls.at(-1)?.[0];
+    expect(createCall.sessionId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    expect(createCall.allowNewSessionId).toBe(true);
+    expect(createCall.startupCommand).toContain("--session-id");
+    expect(createCall.startupCommand).toContain(createCall.sessionId);
+    expect(createCall.toolType).toBe("claude");
+  });
+
+  it("resumes start_cli_session from stored terminal metadata", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.sessionService.get.mockReturnValue({
+      id: "session-existing",
+      laneId: "lane-1",
+      ptyId: "pty-existing",
+      tracked: true,
+      toolType: "codex",
+      title: "Codex",
+      status: "exited",
+      resumeCommand: "codex resume picker",
+      resumeMetadata: {
+        provider: "codex",
+        targetKind: "thread",
+        targetId: "thread-77",
+        launch: { permissionMode: "edit" },
+      },
+    });
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "orchestrator" });
+    const response = await callTool(handler, "start_cli_session", {
+      laneId: "lane-1",
+      provider: "codex",
+      resumeSessionId: "session-existing",
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fixture.runtime.ptyService.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "session-existing",
+        startupCommand: "codex --no-alt-screen --sandbox workspace-write --ask-for-approval untrusted resume thread-77",
+      }),
+    );
   });
 
   it("starts spawn_agent without writing an attached ADE server config", async () => {

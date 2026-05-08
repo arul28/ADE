@@ -122,14 +122,9 @@ struct WorkArtifactView: View {
   }
 }
 
-/// Terminal session view. Subscribes to the host PTY for `session.id`,
-/// streams output into a monospaced buffer, and offers a one-shot input bar
-/// that forwards typed lines back to the host as `terminal_input`.
-///
-/// Future work (tracked in PTY foundation): swap this replay-backed SwiftUI
-/// view for a real terminal emulator (SwiftTerm) so we can render alt-screen
-/// apps (vim, htop, fzf). Today we replay the common cursor/erase sequences
-/// and preserve SGR colours/bold so agent CLIs stay readable on iPhone.
+/// Terminal session view. Subscribes to the host PTY for `session.id`, streams
+/// output through the terminal emulator, and forwards typed bytes back to the
+/// host as `terminal_input`.
 struct WorkTerminalSessionView: View {
   @EnvironmentObject var syncService: SyncService
   let session: TerminalSessionSummary
@@ -144,20 +139,11 @@ struct WorkTerminalSessionView: View {
   @State private var inputBuffer = ""
   @FocusState private var inputFocused: Bool
   @State private var sendingFeedback = 0
-  @State private var lastSentTerminalSize: TerminalViewportSize?
+  @State private var lastSentTerminalSize: WorkTerminalViewport?
+  @State private var currentTerminalViewport: WorkTerminalViewport?
 
   private var rawBuffer: String {
     syncService.terminalBuffers[session.id] ?? session.lastOutputPreview ?? ""
-  }
-
-  var terminalDisplay: WorkTerminalDisplay {
-    workTerminalDisplay(raw: rawBuffer, fallback: nil)
-  }
-
-  private var renderedText: AttributedString {
-    terminalDisplay.attributedText.characters.isEmpty
-      ? workTerminalPlainAttributedString("  ")
-      : terminalDisplay.attributedText
   }
 
   private var canSendInput: Bool {
@@ -169,28 +155,13 @@ struct WorkTerminalSessionView: View {
       laneStrip
 
       GeometryReader { proxy in
-        ScrollView([.horizontal, .vertical]) {
-          Text(renderedText)
-            .textSelection(.enabled)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .fixedSize(horizontal: true, vertical: false)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        }
+        WorkTerminalEmulatorView(
+          rawText: rawBuffer,
+          revision: syncService.terminalBufferRevision,
+          onViewportChange: handleTerminalViewportChange
+        )
+        .frame(width: proxy.size.width, height: proxy.size.height)
         .background(Color.black)
-        .scrollIndicators(.visible)
-        .overlay(alignment: .topTrailing) {
-          if terminalDisplay.truncated {
-            Image(systemName: "text.line.last.and.arrowtriangle.forward")
-              .font(.system(size: 10, weight: .semibold))
-              .foregroundStyle(ADEColor.textMuted)
-              .padding(6)
-              .accessibilityLabel("Older output truncated for performance")
-          }
-        }
-        .onAppear { sendTerminalResize(for: proxy.size) }
-        .onChange(of: proxy.size) { _, newSize in sendTerminalResize(for: newSize) }
-        .onChange(of: syncService.connectionState) { _, _ in sendTerminalResize(for: proxy.size) }
       }
 
       terminalKeyBar
@@ -201,6 +172,17 @@ struct WorkTerminalSessionView: View {
     .sensoryFeedback(.impact(weight: .light), trigger: sendingFeedback)
     .task {
       try? await syncService.subscribeTerminal(sessionId: session.id)
+    }
+    .onDisappear {
+      Task {
+        try? await syncService.unsubscribeTerminal(sessionId: session.id)
+      }
+    }
+    .onChange(of: syncService.connectionState) { _, _ in
+      lastSentTerminalSize = nil
+      if let currentTerminalViewport {
+        sendTerminalResize(currentTerminalViewport)
+      }
     }
   }
 
@@ -351,26 +333,16 @@ struct WorkTerminalSessionView: View {
     inputFocused = true
   }
 
-  private func sendTerminalResize(for size: CGSize) {
+  private func handleTerminalViewportChange(_ viewport: WorkTerminalViewport) {
+    currentTerminalViewport = viewport
+    sendTerminalResize(viewport)
+  }
+
+  private func sendTerminalResize(_ viewport: WorkTerminalViewport) {
     guard canSendInput else { return }
-    let viewport = TerminalViewportSize(size: size)
     guard viewport != lastSentTerminalSize else { return }
     lastSentTerminalSize = viewport
     syncService.sendTerminalResize(sessionId: session.id, cols: viewport.cols, rows: viewport.rows)
-  }
-}
-
-private struct TerminalViewportSize: Equatable {
-  let cols: Int
-  let rows: Int
-
-  init(size: CGSize) {
-    // Matches the 12pt monospaced transcript text closely enough for PTY
-    // reflow until this screen hosts a full terminal emulator.
-    let contentWidth = max(0, size.width - 28)
-    let contentHeight = max(0, size.height - 24)
-    cols = max(20, min(240, Int(floor(contentWidth / 7.2))))
-    rows = max(4, min(80, Int(floor(contentHeight / 15.0))))
   }
 }
 

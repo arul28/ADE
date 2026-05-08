@@ -41,6 +41,15 @@ import {
 } from "../../desktop/src/shared/types";
 import type { PrActionRun, PrCheck, PrComment, PrReviewThread } from "../../desktop/src/shared/types/prs";
 import { resolveAdeLayout } from "../../desktop/src/shared/adeLayout";
+import {
+  buildTrackedCliLaunchCommand,
+  buildTrackedCliResumeCommand,
+  LAUNCH_PROFILE_TITLE,
+  LAUNCH_PROFILE_TOOL_TYPE,
+  type CliProvider,
+  type LaunchProfile,
+} from "../../desktop/src/shared/cliLaunch";
+import type { AgentChatPermissionMode, TerminalSessionSummary } from "../../desktop/src/shared/types";
 import type { AdeRuntime } from "./bootstrap";
 import { JsonRpcError, JsonRpcErrorCode, type JsonRpcHandler, type JsonRpcRequest } from "./jsonrpc";
 
@@ -214,6 +223,29 @@ const TOOL_SPECS: ToolSpec[] = [
         args: { type: "object" },
         argsList: { type: "array" },
         arg: {},
+      }
+    }
+  },
+  {
+    name: "start_cli_session",
+    description: "Start or resume a tracked ADE Work CLI terminal for an allowlisted provider, using the same launch helpers as desktop and mobile.",
+    inputSchema: {
+      type: "object",
+      required: ["laneId", "provider"],
+      additionalProperties: false,
+      properties: {
+        laneId: { type: "string", minLength: 1 },
+        provider: { type: "string", enum: ["claude", "codex", "cursor", "droid", "opencode", "shell"] },
+        permissionMode: { type: "string", enum: ["default", "plan", "edit", "full-auto", "config-toml"], default: "default" },
+        title: { type: "string" },
+        initialInput: { type: "string" },
+        cols: { type: "number", minimum: 20, maximum: 240, default: 120 },
+        rows: { type: "number", minimum: 4, maximum: 120, default: 36 },
+        cwd: { type: "string" },
+        chatSessionId: { type: "string" },
+        resumeSessionId: { type: "string" },
+        resumeTargetId: { type: "string" },
+        tracked: { type: "boolean", default: true }
       }
     }
   },
@@ -1912,6 +1944,7 @@ const READ_ONLY_TOOLS = new Set([
 const MUTATION_TOOLS = new Set([
   "create_lane",
   "run_ade_action",
+  "start_cli_session",
   "import_lane",
   "merge_lane",
   "git_fetch",
@@ -2090,6 +2123,35 @@ function assertNonEmptyString(value: unknown, field: string): string {
     throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `${field} is required`);
   }
   return text;
+}
+
+const CLI_SESSION_PROVIDERS: readonly LaunchProfile[] = ["claude", "codex", "cursor", "droid", "opencode", "shell"];
+const CLI_SESSION_PERMISSION_MODES: readonly AgentChatPermissionMode[] = ["default", "plan", "edit", "full-auto", "config-toml"];
+
+function parseCliSessionProvider(value: unknown): LaunchProfile {
+  const provider = asTrimmedString(value).toLowerCase();
+  const match = CLI_SESSION_PROVIDERS.find((entry) => entry === provider);
+  if (!match) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      "provider must be one of claude, codex, cursor, droid, opencode, or shell",
+    );
+  }
+  return match;
+}
+
+function parseCliSessionPermissionMode(value: unknown): AgentChatPermissionMode {
+  const mode = asTrimmedString(value);
+  return CLI_SESSION_PERMISSION_MODES.find((entry) => entry === mode) ?? "default";
+}
+
+function clampInteger(value: unknown, fallback: number, min: number, max: number): number {
+  const raw = typeof value === "number" && Number.isFinite(value) ? value : fallback;
+  return Math.max(min, Math.min(max, Math.floor(raw)));
+}
+
+function isCliProvider(provider: LaunchProfile): provider is CliProvider {
+  return provider !== "shell";
 }
 
 export function resolveComputerUseOwners(session: SessionState, toolArgs: Record<string, unknown>): ComputerUseArtifactOwner[] {
@@ -4255,6 +4317,79 @@ async function runTool(args: {
       action,
       result,
       statusHints,
+    };
+  }
+
+  if (name === "start_cli_session") {
+    const laneId = assertNonEmptyString(toolArgs.laneId, "laneId");
+    const provider = parseCliSessionProvider(toolArgs.provider);
+    const permissionMode = parseCliSessionPermissionMode(toolArgs.permissionMode);
+    const cols = clampInteger(toolArgs.cols, DEFAULT_PTY_COLS, 20, 240);
+    const rows = clampInteger(toolArgs.rows, DEFAULT_PTY_ROWS, 4, 120);
+    const title = asOptionalTrimmedString(toolArgs.title) ?? LAUNCH_PROFILE_TITLE[provider];
+    const resumeSessionId = asOptionalTrimmedString(toolArgs.resumeSessionId);
+    const resumeTargetId = asOptionalTrimmedString(toolArgs.resumeTargetId);
+    const initialInput = asOptionalTrimmedString(toolArgs.initialInput)?.slice(0, 20_000) ?? null;
+    const ptyService = runtime.ptyService as typeof runtime.ptyService & {
+      writeBySessionId?: (sessionId: string, data: string) => boolean;
+      enrichSessions?: (sessions: TerminalSessionSummary[]) => TerminalSessionSummary[];
+    };
+    const preassignedSessionId = provider === "claude" && !resumeSessionId ? randomUUID() : undefined;
+
+    const launchFields: { startupCommand?: string; command?: string; args?: string[]; env?: Record<string, string> } = (() => {
+      if (!isCliProvider(provider)) return {};
+      if (resumeSessionId || resumeTargetId) {
+        const resumeSession = resumeSessionId ? runtime.sessionService.get(resumeSessionId) : null;
+        const startupCommand = resumeSession?.resumeMetadata
+          ? buildTrackedCliResumeCommand(resumeSession.resumeMetadata)
+          : resumeSession?.resumeCommand?.trim()
+            || buildTrackedCliResumeCommand({
+              provider,
+              targetKind: "session",
+              targetId: resumeTargetId,
+              launch: { permissionMode },
+            });
+        return { startupCommand };
+      }
+      return buildTrackedCliLaunchCommand({ provider, permissionMode, sessionId: preassignedSessionId });
+    })();
+
+    const created = await ptyService.create({
+      ...(resumeSessionId || preassignedSessionId ? { sessionId: resumeSessionId ?? preassignedSessionId } : {}),
+      ...(preassignedSessionId ? { allowNewSessionId: true } : {}),
+      laneId,
+      cols,
+      rows,
+      title,
+      tracked: toolArgs.tracked !== false,
+      toolType: LAUNCH_PROFILE_TOOL_TYPE[provider],
+      ...(asOptionalTrimmedString(toolArgs.cwd) ? { cwd: asOptionalTrimmedString(toolArgs.cwd)! } : {}),
+      ...(asOptionalTrimmedString(toolArgs.chatSessionId) ? { chatSessionId: asOptionalTrimmedString(toolArgs.chatSessionId) } : {}),
+      ...launchFields,
+    });
+
+    let initialInputWritten = false;
+    if (initialInput && isCliProvider(provider)) {
+      if (typeof ptyService.writeBySessionId !== "function") {
+        throw new JsonRpcError(JsonRpcErrorCode.internalError, "PTY service does not support session-scoped writes.");
+      }
+      initialInputWritten = ptyService.writeBySessionId(created.sessionId, `${initialInput}\r`);
+    }
+
+    const session = runtime.sessionService.get(created.sessionId) as TerminalSessionSummary | null;
+    const enrichedSession = session && typeof ptyService.enrichSessions === "function"
+      ? ptyService.enrichSessions([session])[0] ?? session
+      : session;
+    return {
+      provider,
+      laneId,
+      title,
+      permissionMode,
+      ptyId: created.ptyId,
+      sessionId: created.sessionId,
+      startupCommand: launchFields.startupCommand ?? null,
+      initialInputWritten,
+      session: enrichedSession ?? null,
     };
   }
 

@@ -4622,6 +4622,42 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(isChatSession(makeTerminalSessionSummary(toolType: nil)))
   }
 
+  func testTerminalResumeTargetDetectionMatchesDesktopResumeAvailability() {
+    XCTAssertFalse(terminalSessionHasResumeTarget(makeTerminalSessionSummary(
+      toolType: "shell",
+      resumeCommand: nil,
+      resumeMetadata: nil
+    )))
+    XCTAssertFalse(terminalSessionHasResumeTarget(makeTerminalSessionSummary(
+      toolType: "run-shell",
+      resumeCommand: "   ",
+      resumeMetadata: nil
+    )))
+    XCTAssertTrue(terminalSessionHasResumeTarget(makeTerminalSessionSummary(
+      toolType: "codex",
+      resumeCommand: "codex resume thread-1",
+      resumeMetadata: nil
+    )))
+    XCTAssertTrue(terminalSessionHasResumeTarget(makeTerminalSessionSummary(
+      toolType: "codex",
+      resumeCommand: nil,
+      resumeMetadata: TerminalResumeMetadata(
+        provider: "codex",
+        targetKind: "thread",
+        targetId: "thread-1",
+        launch: TerminalResumeLaunchConfig(
+          permissionMode: "edit",
+          claudePermissionMode: nil,
+          codexApprovalPolicy: "on-request",
+          codexSandbox: "workspace-write",
+          codexConfigSource: "flags"
+        ),
+        target: nil,
+        permissionMode: "edit"
+      )
+    )))
+  }
+
   func testAgentChatSessionSummaryDecodesCursorAndControlFields() throws {
     let payload: [String: Any] = [
       "sessionId": "chat-1",
@@ -7050,7 +7086,9 @@ final class ADETests: XCTestCase {
     status: String = "running",
     title: String = "Codex chat",
     lastOutputPreview: String? = nil,
-    startedAt: String = recentIso8601Fixture()
+    startedAt: String = recentIso8601Fixture(),
+    resumeCommand: String? = nil,
+    resumeMetadata: TerminalResumeMetadata? = nil
   ) -> TerminalSessionSummary {
     TerminalSessionSummary(
       id: id,
@@ -7073,8 +7111,8 @@ final class ADETests: XCTestCase {
       lastOutputPreview: lastOutputPreview,
       summary: nil,
       runtimeState: runtimeState,
-      resumeCommand: nil,
-      resumeMetadata: nil,
+      resumeCommand: resumeCommand,
+      resumeMetadata: resumeMetadata,
       chatIdleSinceAt: nil
     )
   }

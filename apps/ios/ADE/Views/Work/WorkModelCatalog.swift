@@ -584,7 +584,7 @@ func workKnownModelDisplayName(_ raw: String?) -> String? {
   case "gpt-5.4", "gpt-5.4-codex", "openai/gpt-5.4", "openai/gpt-5.4-codex":
     return "GPT-5.4"
   case "gpt-5.4-mini", "gpt-5.4-mini-codex", "openai/gpt-5.4-mini", "openai/gpt-5.4-mini-codex":
-    return "GPT-5.4-Mini"
+    return "GPT 5.4 Mini"
   case "gpt-5.3-codex", "openai/gpt-5.3-codex":
     return "GPT-5.3-Codex"
   case "gpt-5.3-codex-spark", "gpt-5.3-spark", "codex-spark", "spark", "openai/gpt-5.3-codex-spark":

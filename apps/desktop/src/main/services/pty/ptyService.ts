@@ -369,8 +369,8 @@ function inferSessionCwdFromTranscriptPath(transcriptPath: string | null | undef
   return transcriptPath.slice(0, markerIndex) || null;
 }
 
-const MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
-const TRANSCRIPT_LIMIT_NOTICE = "\n[ADE] transcript limit reached (8MB). Further output omitted.\n";
+const MAX_TRANSCRIPT_BYTES = 64 * 1024 * 1024;
+const TRANSCRIPT_LIMIT_NOTICE = "\n[ADE] transcript limit reached (64MB). Further output omitted.\n";
 const RESUME_TARGET_MISSING_COOLDOWN_MS = 10 * 60_000;
 const RESUME_SCAN_WINDOW_MS = 60_000;
 
