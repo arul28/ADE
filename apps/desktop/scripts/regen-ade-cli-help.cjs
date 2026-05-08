@@ -30,6 +30,7 @@ const SUBCOMMANDS = [
   "browser",
   "memory",
   "settings",
+  "update",
   "actions",
   "cursor",
 ];

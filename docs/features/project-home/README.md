@@ -75,8 +75,8 @@ Main process (the substrate):
   — backs the "Add project → Create" and "Add project → Clone" flows.
   `createLocalProject({ name, parentDir })` makes a new directory, runs
   `git init --initial-branch=main` (with a `git init` + `symbolic-ref`
-  fallback for older git), writes a starter `README.md` + `.gitignore`,
-  and creates an "Initial commit" (retried with an `ADE <ade@local>`
+  fallback for older git), writes a starter `README.md` + `.gitignore`
+  that ignores `.ade/`, and creates an "Initial commit" (retried with an `ADE <ade@local>`
   author when the user has no git identity configured).
   `cloneRepository({ url, parentDir, name })` validates the URL via
   `parseGitHubRepoFromRemoteUrl`, ensures the target is empty, and
@@ -241,7 +241,7 @@ The "Add project" forms live in
 
 - `AddProjectChooser.tsx` — three large tiles (Open / Create / Clone)
   with icon, headline, tagline, and a soft hue-tinted hover state.
-- `CreateProjectForm.tsx` — local-only flow: validates the project
+- `CreateProjectForm.tsx` — create flow: validates the project
   name, debounces an existence check via `browseDirectories`, fetches
   `getDefaultParentDir()` for the parent suggestion, and calls
   `window.ade.project.createLocal({ name, parentDir })`.

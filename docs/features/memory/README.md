@@ -12,7 +12,7 @@ background; agents and the user rarely touch the raw store.
 |---|---|
 | `apps/desktop/src/main/services/memory/memoryService.ts` | Core CRUD, dedup, write gates, tier and status logic. Entry point for all other memory services. |
 | `apps/desktop/src/main/services/memory/hybridSearchService.ts` | BM25 + cosine vector search + MMR re-ranking. Used by `memorySearch` when embeddings are available. |
-| `apps/desktop/src/main/services/memory/embeddingService.ts` / `embeddingWorkerService.ts` | Local embedding model (`Xenova/all-MiniLM-L6-v2`, 384 dims). Generates vectors and queues pending writes. |
+| `apps/desktop/src/main/services/memory/embeddingService.ts` / `embeddingWorkerService.ts` | Local embedding model (`Xenova/all-MiniLM-L6-v2`, 384 dims). Generates vectors and queues pending writes. The worker uses a smaller batch size while sessions are active and defers a cold embedding-model load for 60s when active sessions are running, so a first memory write does not compete with interactive agent work. |
 | `apps/desktop/src/main/services/memory/memoryLifecycleService.ts` | Daily sweep: decay, demotion, promotion, archival by scope limits. |
 | `apps/desktop/src/main/services/memory/batchConsolidationService.ts` | Weekly consolidation: cluster similar entries and merge via AI. |
 | `apps/desktop/src/main/services/memory/knowledgeCaptureService.ts` | Captures conventions/patterns/gotchas from interventions, error clusters, PR feedback, and failures. |
@@ -222,9 +222,12 @@ All channels are invoke-style and prefixed `ade.memory.*`. Defined in
 - **Dedup by Jaccard.** Threshold 0.85 is empirical; lowering it causes
   aggressive merging, raising it causes growth toward limits.
 - **Embedding queue during model load.** When the embedding model is
-  still loading, new memories queue rather than drop. The queue is
-  drained in `embeddingWorkerService.ts` when the model reports ready.
-  Missing the drain causes silent loss of embeddings.
+  still loading, new memories queue rather than drop. If the model has
+  not started and a session is active, `embeddingWorkerService.ts`
+  defers the cold start by
+  `DEFAULT_ACTIVE_SESSION_COLD_START_DEFER_MS` (60s) and reschedules
+  the queue. Missing the drain or reschedule causes silent loss of
+  embeddings.
 - **Evergreen exemption order.** Decay skips evergreen categories
   before checking the importance threshold, so raising an evergreen
   entry's importance does not affect its decay (it is already exempt).
@@ -263,5 +266,3 @@ All channels are invoke-style and prefixed `ade.memory.*`. Defined in
   `memoryAdd` / `memoryPin` / `memoryUpdateCore` tool definitions.
 - [Agents Identity and Personas](../agents/identity-and-personas.md) --
   CTO core memory document, agent core memory.
-</content>
-</invoke>
