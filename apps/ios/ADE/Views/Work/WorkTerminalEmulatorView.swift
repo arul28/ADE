@@ -17,16 +17,18 @@ struct WorkTerminalEmulatorView: UIViewRepresentable {
 
   func makeUIView(context: Context) -> ADETerminalTextView {
     let view = ADETerminalTextView()
-    view.onViewportChange = { viewport in
-      context.coordinator.updateViewport(viewport, rawText: rawText, revision: revision, view: view)
+    view.onViewportChange = { [weak view, weak coordinator = context.coordinator] viewport in
+      guard let view, let coordinator else { return }
+      coordinator.updateViewport(viewport, rawText: rawText, revision: revision, view: view)
     }
     return view
   }
 
   func updateUIView(_ view: ADETerminalTextView, context: Context) {
-    view.onViewportChange = { viewport in
-      context.coordinator.onViewportChange = onViewportChange
-      context.coordinator.updateViewport(viewport, rawText: rawText, revision: revision, view: view)
+    view.onViewportChange = { [weak view, weak coordinator = context.coordinator] viewport in
+      guard let view, let coordinator else { return }
+      coordinator.onViewportChange = onViewportChange
+      coordinator.updateViewport(viewport, rawText: rawText, revision: revision, view: view)
     }
     context.coordinator.onViewportChange = onViewportChange
     context.coordinator.render(rawText: rawText, revision: revision, in: view)
@@ -46,11 +48,13 @@ struct WorkTerminalEmulatorView: UIViewRepresentable {
     func updateViewport(_ viewport: WorkTerminalViewport, rawText: String, revision: Int, view: ADETerminalTextView) {
       guard viewport != lastViewport else { return }
       lastViewport = viewport
-      screen.resize(cols: viewport.cols)
-      screen.reset()
-      screen.write(rawText)
-      lastRawText = rawText
-      lastRevision = revision
+      let columnsChanged = screen.resize(cols: viewport.cols)
+      if columnsChanged || revision != lastRevision || rawText != lastRawText {
+        screen.reset()
+        screen.write(rawText)
+        lastRawText = rawText
+        lastRevision = revision
+      }
       view.render(screen.attributedString(font: view.terminalFont))
       onViewportChange(viewport)
     }
@@ -158,9 +162,12 @@ private final class WorkTerminalScreen {
   private var bold = false
   private let maxLines = 4_000
 
-  func resize(cols: Int) {
-    self.cols = max(20, min(240, cols))
+  func resize(cols: Int) -> Bool {
+    let nextCols = max(20, min(240, cols))
+    guard nextCols != self.cols else { return false }
+    self.cols = nextCols
     column = min(column, self.cols - 1)
+    return true
   }
 
   func reset() {

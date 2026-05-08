@@ -204,6 +204,8 @@ private final class WorkTerminalTextReplay {
         lines = [[]]
         row = 0
         column = 0
+        foreground = nil
+        bold = false
       } else if first == 1 {
         let space = WorkTerminalCell(scalar: " ")
         for lineIndex in 0...row {

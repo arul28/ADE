@@ -1316,6 +1316,7 @@ describe("ADE CLI", () => {
       arguments: {
         laneId: "lane-1",
         provider: "claude",
+        permissionMode: "default",
         resumeSessionId: "session-1",
       },
     });
