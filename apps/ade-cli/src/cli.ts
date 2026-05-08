@@ -20,6 +20,13 @@ import {
   type JsonRpcTransport,
 } from "./jsonrpc";
 import { isAdeMcpNamedPipePath } from "../../desktop/src/shared/adeMcpIpc";
+import {
+  isLaunchProfile,
+  isTrackedCliPermissionMode,
+  LAUNCH_PROFILE_TITLE,
+  validateLaunchProfilePermissionMode,
+  type LaunchProfile,
+} from "../../desktop/src/shared/cliLaunch";
 
 type JsonObject = Record<string, unknown>;
 
@@ -860,6 +867,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
 
     $ ade shell start --lane <lane> -- npm test     Start a tracked shell session
     $ ade shell start --lane <lane> -c "npm test"   Start with a command string
+    $ ade shell start-cli codex --lane <lane> --permission-mode edit
+    $ ade shell start --provider claude --lane <lane> --message "fix tests"
     $ ade shell start --lane <lane> --chat-session <id> -c "npm test"
     $ ade shell write <pty-id> --data "q"           Write data to a PTY
     $ ade shell resize <pty-id> --cols 120 --rows 36
@@ -1372,6 +1381,34 @@ function firstPositional(args: string[]): string | null {
   if (index < 0) return null;
   const [value] = args.splice(index, 1);
   return value ?? null;
+}
+
+function firstStandalonePositional(args: string[]): string | null {
+  let previousTokenWasValueCarrier = false;
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index]!;
+    if (token === "--") return null;
+    if (previousTokenWasValueCarrier) {
+      previousTokenWasValueCarrier = false;
+      continue;
+    }
+    if (token.startsWith("-")) {
+      const flagName = token.includes("=") ? token.slice(0, token.indexOf("=")) : token;
+      previousTokenWasValueCarrier = !token.includes("=") && VALUE_CARRIER_FLAGS.has(flagName);
+      continue;
+    }
+    const [value] = args.splice(index, 1);
+    return value ?? null;
+  }
+  return null;
+}
+
+function takeArgsAfterTerminator(args: string[]): string[] | null {
+  const index = args.indexOf("--");
+  if (index < 0) return null;
+  const rest = args.slice(index + 1);
+  args.splice(index);
+  return rest.length > 0 ? rest : null;
 }
 
 function peekFirstPositional(args: string[]): string | null {
@@ -2760,17 +2797,23 @@ function buildRunPlan(args: string[]): CliPlan {
 function buildShellPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "start";
   if (sub === "actions") return { kind: "execute", label: "shell actions", steps: [listActionsStep("actions", "pty")] };
+  if (sub === "start-cli" || sub === "cli" || sub === "agent-cli") {
+    return buildCliSessionStartPlan(args);
+  }
   if (sub === "start" || sub === "create") {
+    const provider = readValue(args, ["--provider", "--profile"]);
+    if (provider) {
+      return buildCliSessionStartPlan(args, provider);
+    }
     const laneId = readLaneId(args);
     const chatSessionId = asString(
       readValue(args, ["--chat-session", "--chat-session-id", "--session", "--session-id"])
       ?? process.env.ADE_CHAT_SESSION_ID,
     );
-    const startupCommandIndex = args.indexOf("--");
-    const startupCommand = startupCommandIndex >= 0
-      ? args.splice(startupCommandIndex + 1).map(shellEscapeToken).join(" ")
+    const startupCommandArgs = takeArgsAfterTerminator(args);
+    const startupCommand = startupCommandArgs
+      ? startupCommandArgs.map(shellEscapeToken).join(" ")
       : readValue(args, ["--command", "-c"]);
-    if (startupCommandIndex >= 0) args.splice(startupCommandIndex, 1);
     const input = collectGenericObjectArgs(args, {
       ...(laneId ? { laneId } : {}),
       ...(chatSessionId ? { chatSessionId } : {}),
@@ -2788,6 +2831,44 @@ function buildShellPlan(args: string[]): CliPlan {
   if (sub === "resize") return { kind: "execute", label: "shell resize", steps: [actionStep("result", "pty", "resize", collectGenericObjectArgs(args, { ptyId: requireValue(readValue(args, ["--pty", "--pty-id"]) ?? firstPositional(args), "ptyId"), cols: readIntOption(args, ["--cols"], 120), rows: readIntOption(args, ["--rows"], 36) }))] };
   if (sub === "close" || sub === "dispose") return { kind: "execute", label: "shell close", steps: [actionStep("result", "pty", "dispose", collectGenericObjectArgs(args, { ptyId: requireValue(readValue(args, ["--pty", "--pty-id"]) ?? firstPositional(args), "ptyId"), sessionId: readValue(args, ["--session", "--session-id"]) }))] };
   return { kind: "execute", label: `shell ${sub}`, steps: [actionStep("result", "pty", sub, collectGenericObjectArgs(args))] };
+}
+
+function buildCliSessionStartPlan(args: string[], providerArg?: string): CliPlan {
+  const laneId = requireValue(readLaneId(args), "laneId");
+  const rawProvider = requireValue(
+    providerArg ?? readValue(args, ["--provider", "--profile"]) ?? firstStandalonePositional(args),
+    "provider",
+  );
+  if (!isLaunchProfile(rawProvider)) {
+    throw new CliUsageError("provider must be one of claude, codex, cursor, droid, opencode, or shell.");
+  }
+  const provider: LaunchProfile = rawProvider;
+  const promptArgs = takeArgsAfterTerminator(args);
+  const initialInput = promptArgs
+    ? promptArgs.join(" ").trim()
+    : readValue(args, ["--message", "--prompt", "--initial-input"]);
+  const permissionMode = readValue(args, ["--permission-mode", "--permissions"]) ?? "default";
+  if (!isTrackedCliPermissionMode(permissionMode)) {
+    throw new CliUsageError("permissionMode must be one of default, plan, edit, full-auto, or config-toml.");
+  }
+  validateLaunchProfilePermissionMode(provider, permissionMode);
+
+  const input = collectGenericObjectArgs(args, {
+    laneId,
+    provider,
+    permissionMode,
+    title: readValue(args, ["--title"]) ?? LAUNCH_PROFILE_TITLE[provider] ?? undefined,
+    initialInput,
+    cols: readIntOption(args, ["--cols"], 120),
+    rows: readIntOption(args, ["--rows"], 36),
+    cwd: readValue(args, ["--cwd"]),
+    chatSessionId: readValue(args, ["--chat-session", "--chat-session-id"]),
+    resumeSessionId: readValue(args, ["--resume-session", "--resume-session-id"]),
+    resumeTargetId: readValue(args, ["--resume-target", "--resume-target-id", "--target"]),
+    tracked: !readFlag(args, ["--untracked"]),
+  });
+
+  return { kind: "execute", label: "shell start cli", steps: [actionCallStep("result", "start_cli_session", input)] };
 }
 
 function buildTerminalPlan(args: string[]): CliPlan {
@@ -3942,7 +4023,7 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--description", "--domain", "--droid-autonomy", "--droid-permission-mode",
   "--duration-sec", "--enabled", "--event",
   "--end-x", "--end-y", "--file", "--fps", "--from", "--from-file", "--group", "--group-id", "--head", "--icon", "--id",
-  "--image", "--index", "--input", "--input-json", "--input-text", "--instructions",
+  "--image", "--index", "--initial-input", "--input", "--input-json", "--input-text", "--instructions",
   "--ipsw", "--kind",
   "--json-input", "--lane", "--lane-id", "--limit", "--max-bytes",
   "--line",
@@ -3955,7 +4036,8 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--path", "--permission-mode", "--permissions", "--port", "--pr", "--pr-id",
   "--pr-number", "--pr-url", "--process", "--process-id", "--project-root",
   "--prompt", "--provider", "--pty", "--pty-id", "--query", "--question",
-  "--reason", "--reasoning", "--recent-limit", "--ref", "--role", "--root",
+  "--reason", "--reasoning", "--recent-limit", "--ref", "--resume-session", "--resume-session-id",
+  "--resume-target", "--resume-target-id", "--role", "--root",
   "--root-lane", "--round", "--rounds", "--rows", "--rule", "--run", "--run-id", "--scalar",
   "--scalar-json", "--scope", "--seconds", "--session", "--session-id", "--set",
   "--set-json", "--sha", "--signal", "--since", "--source", "--source-lane", "--stack", "--stack-id",

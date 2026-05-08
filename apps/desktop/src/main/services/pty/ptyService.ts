@@ -66,6 +66,7 @@ const CLI_USER_TITLE_FALLBACK_MAX_LEN = 72;
 const PTY_DATA_BATCH_INTERVAL_MS = 16;
 const PTY_DATA_BATCH_MAX_CHARS = 64 * 1024;
 const PTY_DATA_SUMMARY_INTERVAL_MS = 10_000;
+const DEFAULT_TERMINAL_READ_MAX_BYTES = 220_000;
 
 function hasEnvValue(env: NodeJS.ProcessEnv, key: string): boolean {
   return typeof env[key] === "string" && env[key]!.trim().length > 0;
@@ -432,8 +433,8 @@ function inferSessionCwdFromTranscriptPath(transcriptPath: string | null | undef
   return transcriptPath.slice(0, markerIndex) || null;
 }
 
-const MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
-const TRANSCRIPT_LIMIT_NOTICE = "\n[ADE] transcript limit reached (8MB). Further output omitted.\n";
+const MAX_TRANSCRIPT_BYTES = 64 * 1024 * 1024;
+const TRANSCRIPT_LIMIT_NOTICE = "\n[ADE] transcript limit reached (64MB). Further output omitted.\n";
 const RESUME_TARGET_MISSING_COOLDOWN_MS = 10 * 60_000;
 const RESUME_SCAN_WINDOW_MS = 60_000;
 
@@ -2262,7 +2263,7 @@ export function createPtyService({
       if (!session) throw new Error(`Terminal session '${terminalId}' was not found.`);
       const maxBytes = typeof args.maxBytes === "number" && Number.isFinite(args.maxBytes)
         ? Math.max(1, Math.min(MAX_TRANSCRIPT_BYTES, Math.floor(args.maxBytes)))
-        : MAX_TRANSCRIPT_BYTES;
+        : DEFAULT_TERMINAL_READ_MAX_BYTES;
       const full = await sessionService.readTranscriptTail(session.transcriptPath, maxBytes, { raw: true });
       const since = typeof args.since === "number" && Number.isFinite(args.since)
         ? Math.max(0, Math.floor(args.since))

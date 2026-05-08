@@ -471,6 +471,7 @@ private enum WorkPreviewData {
       lanes: [WorkPreviewData.lane],
       preferredLaneId: WorkPreviewData.lane.id,
       onStarted: { _, _ in },
+      onCliStarted: { _ in },
       onRefreshLanes: {}
     )
     .environmentObject(WorkPreviewData.syncService)

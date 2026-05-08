@@ -42,6 +42,19 @@ import {
 } from "../../desktop/src/shared/types";
 import type { PrActionRun, PrCheck, PrComment, PrReviewThread } from "../../desktop/src/shared/types/prs";
 import { resolveAdeLayout } from "../../desktop/src/shared/adeLayout";
+import {
+  buildTrackedCliLaunchCommand,
+  buildTrackedCliResumeCommand,
+  isLaunchProfile,
+  isTrackedCliPermissionMode,
+  LAUNCH_PROFILE_TITLE,
+  LAUNCH_PROFILE_TOOL_TYPE,
+  launchProfileForTerminalSession,
+  validateLaunchProfilePermissionMode,
+  type CliProvider,
+  type LaunchProfile,
+} from "../../desktop/src/shared/cliLaunch";
+import type { AgentChatPermissionMode, TerminalSessionSummary } from "../../desktop/src/shared/types";
 import type { AdeRuntime } from "./bootstrap";
 import { JsonRpcError, JsonRpcErrorCode, type JsonRpcHandler, type JsonRpcRequest } from "./jsonrpc";
 
@@ -215,6 +228,29 @@ const TOOL_SPECS: ToolSpec[] = [
         args: { type: "object" },
         argsList: { type: "array" },
         arg: {},
+      }
+    }
+  },
+  {
+    name: "start_cli_session",
+    description: "Start or resume a tracked ADE Work CLI terminal for an allowlisted provider, using the same launch helpers as desktop and mobile.",
+    inputSchema: {
+      type: "object",
+      required: ["laneId", "provider"],
+      additionalProperties: false,
+      properties: {
+        laneId: { type: "string", minLength: 1 },
+        provider: { type: "string", enum: ["claude", "codex", "cursor", "droid", "opencode", "shell"] },
+        permissionMode: { type: "string", enum: ["default", "plan", "edit", "full-auto", "config-toml"], default: "default" },
+        title: { type: "string" },
+        initialInput: { type: "string" },
+        cols: { type: "number", minimum: 20, maximum: 240, default: 120 },
+        rows: { type: "number", minimum: 4, maximum: 120, default: 36 },
+        cwd: { type: "string" },
+        chatSessionId: { type: "string" },
+        resumeSessionId: { type: "string" },
+        resumeTargetId: { type: "string" },
+        tracked: { type: "boolean", default: true }
       }
     }
   },
@@ -2052,6 +2088,7 @@ const READ_ONLY_TOOLS = new Set([
 const MUTATION_TOOLS = new Set([
   "create_lane",
   "run_ade_action",
+  "start_cli_session",
   "import_lane",
   "merge_lane",
   "git_fetch",
@@ -2243,6 +2280,55 @@ function assertNonEmptyString(value: unknown, field: string): string {
     throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `${field} is required`);
   }
   return text;
+}
+
+function parseCliSessionProvider(value: unknown): LaunchProfile {
+  const provider = asTrimmedString(value).toLowerCase();
+  if (!isLaunchProfile(provider)) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      "provider must be one of claude, codex, cursor, droid, opencode, or shell",
+    );
+  }
+  return provider;
+}
+
+function parseCliSessionPermissionMode(value: unknown): AgentChatPermissionMode {
+  const mode = asTrimmedString(value).toLowerCase();
+  if (!mode) return "default";
+  if (isTrackedCliPermissionMode(mode)) return mode;
+  throw new JsonRpcError(
+    JsonRpcErrorCode.invalidParams,
+    "permissionMode must be one of default, plan, edit, full-auto, or config-toml",
+  );
+}
+
+function clampInteger(value: unknown, fallback: number, min: number, max: number): number {
+  const raw = typeof value === "number" && Number.isFinite(value) ? value : fallback;
+  return Math.max(min, Math.min(max, Math.floor(raw)));
+}
+
+function isCliProvider(provider: LaunchProfile): provider is CliProvider {
+  return provider !== "shell";
+}
+
+function requireCliResumeSession(
+  runtime: AdeRuntime,
+  sessionId: string,
+  provider: LaunchProfile,
+): TerminalSessionSummary {
+  const session = runtime.sessionService.get(sessionId) as TerminalSessionSummary | null;
+  if (!session) {
+    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `resumeSessionId '${sessionId}' was not found.`);
+  }
+  const existingProvider = launchProfileForTerminalSession(session);
+  if (existingProvider && existingProvider !== provider) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      `resumeSessionId '${sessionId}' belongs to ${existingProvider}, not ${provider}.`,
+    );
+  }
+  return session;
 }
 
 export function resolveComputerUseOwners(session: SessionState, toolArgs: Record<string, unknown>): ComputerUseArtifactOwner[] {
@@ -4715,6 +4801,88 @@ async function runTool(args: {
       action,
       result,
       statusHints,
+    };
+  }
+
+  if (name === "start_cli_session") {
+    const laneId = assertNonEmptyString(toolArgs.laneId, "laneId");
+    const provider = parseCliSessionProvider(toolArgs.provider);
+    const permissionMode = parseCliSessionPermissionMode(toolArgs.permissionMode);
+    try {
+      validateLaunchProfilePermissionMode(provider, permissionMode);
+    } catch (err) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, err instanceof Error ? err.message : String(err));
+    }
+    const cols = clampInteger(toolArgs.cols, DEFAULT_PTY_COLS, 20, 240);
+    const rows = clampInteger(toolArgs.rows, DEFAULT_PTY_ROWS, 4, 120);
+    const title = asOptionalTrimmedString(toolArgs.title) ?? LAUNCH_PROFILE_TITLE[provider];
+    const resumeSessionId = asOptionalTrimmedString(toolArgs.resumeSessionId);
+    const resumeTargetIdRaw = asOptionalTrimmedString(toolArgs.resumeTargetId);
+    const resumeTargetId = resumeTargetIdRaw ? stripInjectionChars(resumeTargetIdRaw) : null;
+    const initialInput = asOptionalTrimmedString(toolArgs.initialInput)?.slice(0, 20_000) ?? null;
+    const resumeSession = resumeSessionId ? requireCliResumeSession(runtime, resumeSessionId, provider) : null;
+    const ptyService = runtime.ptyService;
+    const preassignedSessionId = provider === "claude" && !resumeSessionId ? randomUUID() : undefined;
+
+    const launchFields: { startupCommand?: string; command?: string; args?: string[]; env?: Record<string, string> } = (() => {
+      if (!isCliProvider(provider)) return {};
+      if (resumeSessionId || resumeTargetId) {
+        const startupCommand = resumeSession?.resumeMetadata
+          ? buildTrackedCliResumeCommand(resumeSession.resumeMetadata)
+          : resumeSession?.resumeCommand?.trim()
+            || buildTrackedCliResumeCommand({
+              provider,
+              targetKind: "session",
+              targetId: resumeTargetId,
+              launch: { permissionMode },
+            });
+        return { startupCommand };
+      }
+      return buildTrackedCliLaunchCommand({ provider, permissionMode, sessionId: preassignedSessionId });
+    })();
+
+    const created = await ptyService.create({
+      ...(resumeSessionId || preassignedSessionId ? { sessionId: resumeSessionId ?? preassignedSessionId } : {}),
+      ...(preassignedSessionId ? { allowNewSessionId: true } : {}),
+      laneId,
+      cols,
+      rows,
+      title,
+      tracked: toolArgs.tracked !== false,
+      toolType: LAUNCH_PROFILE_TOOL_TYPE[provider],
+      ...(asOptionalTrimmedString(toolArgs.cwd) ? { cwd: asOptionalTrimmedString(toolArgs.cwd)! } : {}),
+      ...(asOptionalTrimmedString(toolArgs.chatSessionId) ? { chatSessionId: asOptionalTrimmedString(toolArgs.chatSessionId) } : {}),
+      ...launchFields,
+    });
+
+    let initialInputWritten = false;
+    if (initialInput && isCliProvider(provider)) {
+      initialInputWritten = ptyService.writeBySessionId(created.sessionId, `${initialInput}\r`);
+      if (!initialInputWritten) {
+        try {
+          ptyService.dispose({ ptyId: created.ptyId, sessionId: created.sessionId });
+        } catch {
+          // Best-effort cleanup; preserve the caller-facing write failure.
+        }
+        throw new JsonRpcError(
+          JsonRpcErrorCode.internalError,
+          "Created terminal session could not receive the initial input.",
+        );
+      }
+    }
+
+    const session = runtime.sessionService.get(created.sessionId) as TerminalSessionSummary | null;
+    const enrichedSession = session ? ptyService.enrichSessions([session])[0] ?? session : session;
+    return {
+      provider,
+      laneId,
+      title,
+      permissionMode,
+      ptyId: created.ptyId,
+      sessionId: created.sessionId,
+      startupCommand: launchFields.startupCommand ?? null,
+      initialInputWritten,
+      session: enrichedSession ?? null,
     };
   }
 

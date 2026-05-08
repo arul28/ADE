@@ -2802,6 +2802,12 @@ struct TerminalSnapshot: Codable, Equatable {
   var capturedAt: String
 }
 
+struct StartCliSessionResult: Codable, Equatable {
+  var sessionId: String
+  var ptyId: String?
+  var session: TerminalSessionSummary?
+}
+
 struct SyncScalarBytes: Codable, Equatable {
   var type: String
   var base64: String

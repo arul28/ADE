@@ -12,6 +12,7 @@ const IOS_REMOTE_COMMAND_ACTIONS = [
   "work.updateSessionMeta",
   "prs.getMobileSnapshot",
   "work.runQuickCommand",
+  "work.startCliSession",
   "work.closeSession",
   "processes.listDefinitions",
   "processes.listRuntime",
@@ -325,7 +326,8 @@ function createMockQueueLandingService() {
 
 function createMockPtyService() {
   return {
-    create: vi.fn().mockResolvedValue({ sessionId: "pty-1" }),
+    create: vi.fn().mockResolvedValue({ sessionId: "pty-1", ptyId: "pty-proc" }),
+    writeBySessionId: vi.fn().mockReturnValue(true),
     dispose: vi.fn().mockResolvedValue(undefined),
     enrichSessions: vi.fn((sessions) => sessions),
   } as any;
@@ -1623,6 +1625,198 @@ describe("createSyncRemoteCommandService", () => {
           toolType: "shell",
         }),
       );
+    });
+
+    it("work.startCliSession builds allowlisted provider launch commands", async () => {
+      sessionService.get.mockReturnValue({
+        id: "pty-1",
+        laneId: "lane-1",
+        laneName: "Lane",
+        ptyId: "pty-1",
+        tracked: true,
+        pinned: false,
+        goal: null,
+        toolType: "codex",
+        title: "Codex",
+        status: "running",
+        startedAt: "2026-01-01T00:00:00.000Z",
+        endedAt: null,
+        exitCode: null,
+        transcriptPath: "",
+        headShaStart: null,
+        headShaEnd: null,
+        lastOutputPreview: null,
+        summary: null,
+        runtimeState: "running",
+        resumeCommand: null,
+      });
+      const result = await service.execute(makePayload("work.startCliSession", {
+        laneId: "lane-1",
+        provider: "codex",
+        permissionMode: "edit",
+        initialInput: "fix the tests",
+        cols: 70,
+        rows: 24,
+      }));
+      expect(ptyService.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          laneId: "lane-1",
+          title: "Codex",
+          toolType: "codex",
+          cols: 70,
+          rows: 24,
+          command: "codex",
+          startupCommand: expect.stringContaining("codex"),
+        }),
+      );
+      expect(ptyService.writeBySessionId).toHaveBeenCalledWith("pty-1", "fix the tests\r");
+      expect(result).toEqual(expect.objectContaining({
+        sessionId: "pty-1",
+        ptyId: "pty-proc",
+        session: expect.objectContaining({ id: "pty-1" }),
+      }));
+    });
+
+    it("work.startCliSession uses desktop-sized defaults when dimensions are omitted", async () => {
+      await service.execute(makePayload("work.startCliSession", {
+        laneId: "lane-1",
+        provider: "codex",
+      }));
+      expect(ptyService.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          cols: 120,
+          rows: 36,
+        }),
+      );
+    });
+
+    it("work.startCliSession opens a shell without accepting arbitrary startup commands", async () => {
+      await service.execute(makePayload("work.startCliSession", {
+        laneId: "lane-1",
+        provider: "shell",
+        startupCommand: "rm -rf nope",
+        initialInput: "rm -rf also-nope",
+      }));
+      expect(ptyService.create).toHaveBeenCalledWith(
+        expect.not.objectContaining({
+          startupCommand: "rm -rf nope",
+        }),
+      );
+      expect(ptyService.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          laneId: "lane-1",
+          title: "Shell",
+          toolType: "shell",
+        }),
+      );
+      expect(ptyService.writeBySessionId).not.toHaveBeenCalled();
+    });
+
+    it("work.startCliSession rejects unknown providers", async () => {
+      await expect(service.execute(makePayload("work.startCliSession", {
+        laneId: "lane-1",
+        provider: "node -e nope",
+      }))).rejects.toThrow("work.startCliSession requires provider.");
+    });
+
+    it("work.startCliSession rejects unsupported permission/provider combinations", async () => {
+      await expect(service.execute(makePayload("work.startCliSession", {
+        laneId: "lane-1",
+        provider: "claude",
+        permissionMode: "config-toml",
+      }))).rejects.toThrow("config-toml is only supported for Codex");
+      expect(ptyService.create).not.toHaveBeenCalled();
+    });
+
+    it("work.startCliSession pre-assigns a claude --session-id so resume is reliable", async () => {
+      await service.execute(makePayload("work.startCliSession", {
+        laneId: "lane-1",
+        provider: "claude",
+        permissionMode: "default",
+      }));
+      const call = ptyService.create.mock.calls.at(-1)?.[0];
+      expect(call?.sessionId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+      expect(call?.allowNewSessionId).toBe(true);
+      expect(call?.startupCommand).toContain("--session-id");
+      expect(call?.startupCommand).toContain(call!.sessionId);
+      expect(call?.toolType).toBe("claude");
+    });
+
+    it("work.startCliSession rebuilds the resume command from stored metadata when resumeSessionId is given", async () => {
+      sessionService.get.mockReturnValue({
+        id: "pty-existing",
+        laneId: "lane-1",
+        ptyId: "pty-existing",
+        toolType: "codex",
+        title: "Codex",
+        status: "running",
+        resumeCommand: "codex resume picker",
+        resumeMetadata: {
+          provider: "codex",
+          targetKind: "thread",
+          targetId: "thread-77",
+          launch: { permissionMode: "edit" },
+        },
+      });
+      await service.execute(makePayload("work.startCliSession", {
+        laneId: "lane-1",
+        provider: "codex",
+        resumeSessionId: "pty-existing",
+      }));
+      const call = ptyService.create.mock.calls.at(-1)?.[0];
+      expect(call?.sessionId).toBe("pty-existing");
+      expect(call?.allowNewSessionId).toBe(false);
+      expect(call?.startupCommand).toBe(
+        "codex --no-alt-screen --sandbox workspace-write --ask-for-approval untrusted resume thread-77",
+      );
+      expect(call?.command).toBeUndefined();
+    });
+
+    it("work.startCliSession fails fast when resumeSessionId is missing", async () => {
+      sessionService.get.mockReturnValue(null);
+
+      await expect(service.execute(makePayload("work.startCliSession", {
+        laneId: "lane-1",
+        provider: "codex",
+        resumeSessionId: "missing-session",
+      }))).rejects.toThrow("missing-session");
+      expect(ptyService.create).not.toHaveBeenCalled();
+    });
+
+    it("work.startCliSession fails fast when resumeSessionId belongs to a different provider", async () => {
+      sessionService.get.mockReturnValue({
+        id: "pty-existing",
+        laneId: "lane-1",
+        ptyId: "pty-existing",
+        toolType: "claude",
+        title: "Claude",
+        status: "running",
+        resumeCommand: "claude --resume old",
+        resumeMetadata: {
+          provider: "claude",
+          targetKind: "session",
+          targetId: "old",
+          launch: { permissionMode: "default" },
+        },
+      });
+
+      await expect(service.execute(makePayload("work.startCliSession", {
+        laneId: "lane-1",
+        provider: "codex",
+        resumeSessionId: "pty-existing",
+      }))).rejects.toThrow("belongs to claude, not codex");
+      expect(ptyService.create).not.toHaveBeenCalled();
+    });
+
+    it("work.startCliSession disposes the created session when initial input cannot be written", async () => {
+      ptyService.writeBySessionId.mockReturnValueOnce(false);
+
+      await expect(service.execute(makePayload("work.startCliSession", {
+        laneId: "lane-1",
+        provider: "codex",
+        initialInput: "fix the tests",
+      }))).rejects.toThrow("could not write initialInput");
+      expect(ptyService.dispose).toHaveBeenCalledWith({ ptyId: "pty-proc", sessionId: "pty-1" });
     });
 
     it("work.closeSession disposes pty if session has a ptyId", async () => {

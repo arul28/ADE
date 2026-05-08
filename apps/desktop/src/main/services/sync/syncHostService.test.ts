@@ -1376,7 +1376,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     fs.rmSync(outsideArtifact, { force: true });
   });
 
-  it("streams terminal snapshots, live output, exit events, and supports the quick-run seed command", async () => {
+  it("streams terminal snapshots, live output, exit events, and supports mobile terminal seed commands", async () => {
     const brainDb = await openKvDb(makeDbPath("ade-sync-terminal-"), createLogger() as any);
     const projectRoot = makeProjectRoot("ade-sync-terminal-project-");
     const workspaceRoot = path.join(projectRoot, "workspace");
@@ -1494,10 +1494,25 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
         ],
         get: () => ({
           id: "session-1",
+          laneId: "lane-1",
+          laneName: "Primary",
+          ptyId: "pty-1",
+          tracked: true,
+          pinned: false,
+          goal: "Run tests",
+          toolType: "codex",
+          title: "Codex",
           transcriptPath: path.join(projectRoot, ".ade", "transcripts", "session-1.log"),
           status: "running",
           runtimeState: "running",
           lastOutputPreview: "echo hi",
+          startedAt: "2026-03-17T00:10:00.000Z",
+          endedAt: null,
+          exitCode: null,
+          headShaStart: null,
+          headShaEnd: null,
+          summary: null,
+          resumeCommand: "codex resume picker",
         }),
         readTranscriptTail: async () => "prior output\n",
       } as any,
@@ -1638,6 +1653,71 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     const mismatchResult = await client.queue.next("command_result");
     expect((mismatchResult.payload as { ok: boolean; error?: { code: string } }).error?.code).toBe("duplicate_command_mismatch");
     expect(createSpy).toHaveBeenCalledTimes(1);
+
+    client.ws.send(encodeSyncEnvelope({
+      type: "command",
+      requestId: "cmd-start-cli",
+      payload: {
+        commandId: "cmd-start-cli",
+        action: "work.startCliSession",
+        args: {
+          laneId: "lane-1",
+          provider: "codex",
+          permissionMode: "edit",
+          initialInput: "fix from phone",
+        },
+      },
+    }));
+    const startCliAck = await client.queue.next("command_ack");
+    expect((startCliAck.payload as { accepted: boolean }).accepted).toBe(true);
+    const startCliResult = await client.queue.next("command_result");
+    const startCliPayload = startCliResult.payload as {
+      ok: boolean;
+      result: { sessionId: string; ptyId: string; session: { id: string; toolType: string } };
+    };
+    expect(startCliPayload.result.sessionId).toBe("session-1");
+    expect(startCliPayload.result.ptyId).toBe("pty-1");
+    expect(startCliPayload.result.session).toEqual(expect.objectContaining({
+      id: "session-1",
+      toolType: "codex",
+    }));
+    expect(createSpy).toHaveBeenCalledTimes(2);
+    expect(writeBySessionId).toHaveBeenCalledWith("session-1", "fix from phone\r");
+
+    await waitFor(() => fs.readFileSync(commandLedgerPath, "utf8").includes("cmd-start-cli"));
+    const startCliLedger = fs.readFileSync(commandLedgerPath, "utf8");
+    expect(startCliLedger).toContain("cmd-start-cli");
+    expect(startCliLedger).toContain("argsFingerprint");
+    expect(startCliLedger).not.toContain("fix from phone");
+
+    client.ws.send(encodeSyncEnvelope({
+      type: "command",
+      requestId: "cmd-start-cli-retry",
+      payload: {
+        commandId: "cmd-start-cli",
+        action: "work.startCliSession",
+        args: {
+          laneId: "lane-1",
+          provider: "codex",
+          permissionMode: "edit",
+          initialInput: "fix from phone",
+        },
+      },
+    }));
+    const startCliReplayAck = await client.queue.next("command_ack");
+    expect((startCliReplayAck.payload as { accepted: boolean }).accepted).toBe(true);
+    const startCliReplayResult = await client.queue.next("command_result");
+    const startCliReplayPayload = startCliReplayResult.payload as {
+      ok: boolean;
+      result: { sessionId: string; ptyId: string; session: { id: string; toolType: string } };
+    };
+    expect(startCliReplayPayload.result.sessionId).toBe("session-1");
+    expect(startCliReplayPayload.result.ptyId).toBe("pty-1");
+    expect(startCliReplayPayload.result.session).toEqual(expect.objectContaining({
+      id: "session-1",
+      toolType: "codex",
+    }));
+    expect(createSpy).toHaveBeenCalledTimes(2);
 
     client.ws.send(encodeSyncEnvelope({
       type: "command",

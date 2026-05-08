@@ -95,6 +95,16 @@ func workModelCatalog(currentModelId: String, currentProvider: String) -> [WorkM
   }
 }
 
+func workDefaultCatalogModelId(provider: String) -> String? {
+  let family = providerFamilyKey(provider)
+  return workCuratedModelCatalogGroups()
+    .first(where: { $0.key == family })?
+    .providers
+    .flatMap(\.models)
+    .first?
+    .id
+}
+
 /// Desktop-shaped hierarchical catalog: group → provider → models. Mirrors
 /// `apps/desktop/src/shared/modelRegistry.ts` + `ModelCatalogPanel` so mobile
 /// users see the same CLAUDE / CODEX / CURSOR / OPENCODE tab strip and, within
@@ -584,7 +594,7 @@ func workKnownModelDisplayName(_ raw: String?) -> String? {
   case "gpt-5.4", "gpt-5.4-codex", "openai/gpt-5.4", "openai/gpt-5.4-codex":
     return "GPT-5.4"
   case "gpt-5.4-mini", "gpt-5.4-mini-codex", "openai/gpt-5.4-mini", "openai/gpt-5.4-mini-codex":
-    return "GPT-5.4-Mini"
+    return "GPT 5.4 Mini"
   case "gpt-5.3-codex", "openai/gpt-5.3-codex":
     return "GPT-5.3-Codex"
   case "gpt-5.3-codex-spark", "gpt-5.3-spark", "codex-spark", "spark", "openai/gpt-5.3-codex-spark":

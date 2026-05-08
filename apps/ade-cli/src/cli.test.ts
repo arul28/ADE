@@ -1204,6 +1204,124 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("maps provider shell launches to start_cli_session", () => {
+    const plan = buildCliPlan([
+      "shell",
+      "start-cli",
+      "codex",
+      "--lane",
+      "lane-1",
+      "--permission-mode",
+      "edit",
+      "--message",
+      "fix the tests",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toEqual({
+      name: "start_cli_session",
+      arguments: expect.objectContaining({
+        laneId: "lane-1",
+        provider: "codex",
+        permissionMode: "edit",
+        initialInput: "fix the tests",
+        title: "Codex",
+        cols: 120,
+        rows: 36,
+        tracked: true,
+      }),
+    });
+  });
+
+  it("does not treat option values as start-cli providers", () => {
+    expect(() => buildCliPlan([
+      "shell",
+      "start-cli",
+      "--lane",
+      "lane-1",
+      "--permission-mode",
+      "edit",
+    ])).toThrow("provider is required");
+  });
+
+  it("finds a start-cli provider after value-taking options", () => {
+    const plan = buildCliPlan([
+      "shell",
+      "start-cli",
+      "--lane",
+      "lane-1",
+      "--permission-mode",
+      "edit",
+      "codex",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toMatchObject({
+      name: "start_cli_session",
+      arguments: {
+        laneId: "lane-1",
+        provider: "codex",
+        permissionMode: "edit",
+      },
+    });
+  });
+
+  it("finds a start-cli provider after resume value-taking options", () => {
+    const cases: Array<[string, string, string]> = [
+      ["--resume-session", "session-1", "resumeSessionId"],
+      ["--resume-session-id", "session-2", "resumeSessionId"],
+      ["--resume-target", "target-1", "resumeTargetId"],
+      ["--resume-target-id", "target-2", "resumeTargetId"],
+      ["--initial-input", "hello agent", "initialInput"],
+    ];
+
+    for (const [flag, value, field] of cases) {
+      const plan = buildCliPlan([
+        "shell",
+        "start-cli",
+        "--lane",
+        "lane-1",
+        flag,
+        value,
+        "codex",
+      ]);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") return;
+      expect(plan.steps[0]?.params).toMatchObject({
+        name: "start_cli_session",
+        arguments: {
+          laneId: "lane-1",
+          provider: "codex",
+          [field]: value,
+        },
+      });
+    }
+  });
+
+  it("accepts --provider on shell start as the CLI-session launcher", () => {
+    const plan = buildCliPlan([
+      "shell",
+      "start",
+      "--provider",
+      "claude",
+      "--lane",
+      "lane-1",
+      "--resume-session",
+      "session-1",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toMatchObject({
+      name: "start_cli_session",
+      arguments: {
+        laneId: "lane-1",
+        provider: "claude",
+        permissionMode: "default",
+        resumeSessionId: "session-1",
+      },
+    });
+  });
+
   it("renders an empty lane graph placeholder when no lanes are returned", () => {
     expect(renderLaneGraph({ lanes: [] })).toBe("ADE lanes\n(no lanes)");
     expect(renderLaneGraph(null)).toBe("ADE lanes\n(no lanes)");
@@ -1815,6 +1933,34 @@ describe("ADE CLI", () => {
         domain: "ios_simulator",
         action: "shutdown",
         args: { force: true },
+      },
+    });
+  });
+
+  it("keeps shell --command when an argument terminator has no trailing tokens", () => {
+    const plan = buildCliPlan(["shell", "start", "--lane", "lane-1", "--command", "npm test", "--"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "pty",
+        action: "create",
+        args: {
+          startupCommand: "npm test",
+        },
+      },
+    });
+  });
+
+  it("keeps start-cli --message when an argument terminator has no trailing tokens", () => {
+    const plan = buildCliPlan(["shell", "start-cli", "codex", "--lane", "lane-1", "--message", "hello", "--"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toMatchObject({
+      name: "start_cli_session",
+      arguments: {
+        provider: "codex",
+        initialInput: "hello",
       },
     });
   });
