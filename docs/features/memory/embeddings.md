@@ -181,6 +181,15 @@ const MIN_VECTOR_RESULTS = 40;
    against similarity to already-selected candidates.
 6. Apply final `limit` (default 5).
 
+`createHybridSearchService({ canUseEmbeddings })` can temporarily turn
+off vector lookup even when the model and vectors are available. The
+desktop host uses the same activity gate as the embedding worker: while
+mission runs are queued/active/paused/completing or any terminal/chat
+session is running, memory search falls back to lexical candidates so
+local vector scoring does not compete with active agent work. If the
+gate throws, the service treats embeddings as unavailable for that
+search.
+
 ### Candidate shape
 
 ```ts

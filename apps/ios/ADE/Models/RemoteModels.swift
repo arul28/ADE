@@ -1433,6 +1433,7 @@ extension AgentChatEvent {
   private enum CodingKeys: String, CodingKey {
     case type
     case text
+    case displayText
     case attachments
     case turnId
     case steerId
@@ -1496,8 +1497,11 @@ extension AgentChatEvent {
 
     switch type {
     case "user_message":
+      let text = try container.decode(String.self, forKey: .text)
+      let displayText = try container.decodeIfPresent(String.self, forKey: .displayText)?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
       self = .userMessage(
-        text: try container.decode(String.self, forKey: .text),
+        text: displayText.flatMap { $0.isEmpty ? nil : $0 } ?? text,
         attachments: try container.decodeIfPresent([AgentChatFileRef].self, forKey: .attachments),
         turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
         steerId: try container.decodeIfPresent(String.self, forKey: .steerId),

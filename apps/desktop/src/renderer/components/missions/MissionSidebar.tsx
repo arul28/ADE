@@ -546,19 +546,12 @@ function MissionListItem(props: {
 
 function MissionListStatusDot({ mission: m, displayStatus }: { mission: MissionSummary; displayStatus: MissionRunViewDisplayStatus | null }) {
   const baseStatus = getMissionStatusBadgeConfig(m.status, displayStatus);
-  const isBlocked = displayStatus === "blocked" || m.status === "intervention_required";
-  const isFailed = displayStatus === "failed" || m.status === "failed";
-  const hasOpenInterventions = m.status === "in_progress" && m.openInterventions > 0;
-  const needsAttention = isBlocked || isFailed || hasOpenInterventions;
-  let dotColor: string;
-  if (isBlocked) dotColor = "#F59E0B";
-  else if (hasOpenInterventions) dotColor = "#3B82F6";
-  else if (isFailed) dotColor = "#EF4444";
-  else dotColor = baseStatus.color;
+  const attention = getMissionAttentionState(m, displayStatus);
+  const dotColor = attention?.color ?? baseStatus.color;
   return (
     <span
       className="mt-1 h-2 w-2 shrink-0"
-      style={{ background: dotColor, borderRadius: needsAttention ? "50%" : 0, boxShadow: needsAttention ? `0 0 6px ${dotColor}60` : "none" }}
+      style={{ background: dotColor, borderRadius: attention ? "50%" : 0, boxShadow: attention ? `0 0 6px ${dotColor}60` : "none" }}
     />
   );
 }
@@ -566,22 +559,8 @@ function MissionListStatusDot({ mission: m, displayStatus }: { mission: MissionS
 /* ────────── Shared small components ────────── */
 
 function MissionStatusDot({ mission: m, displayStatus }: { mission: MissionSummary; displayStatus: MissionRunViewDisplayStatus | null }) {
-  const isBlocked = displayStatus === "blocked" || m.status === "intervention_required";
-  const isFailed = displayStatus === "failed" || m.status === "failed";
-  const hasOpenInterventions = m.status === "in_progress" && m.openInterventions > 0;
-  if (!(isBlocked || isFailed || hasOpenInterventions)) return null;
-  let color: string;
-  let title: string;
-  if (isBlocked) {
-    color = "#F59E0B";
-    title = "Needs attention";
-  } else if (isFailed) {
-    color = "#EF4444";
-    title = "Failed";
-  } else {
-    color = "#3B82F6";
-    title = `${m.openInterventions} open intervention${m.openInterventions === 1 ? "" : "s"}`;
-  }
+  const attention = getMissionAttentionState(m, displayStatus);
+  if (!attention) return null;
   return (
     <span
       className="shrink-0"
@@ -589,12 +568,31 @@ function MissionStatusDot({ mission: m, displayStatus }: { mission: MissionSumma
         width: 6,
         height: 6,
         borderRadius: "50%",
-        background: color,
-        boxShadow: `0 0 6px ${color}60`,
+        background: attention.color,
+        boxShadow: `0 0 6px ${attention.color}60`,
       }}
-      title={title}
+      title={attention.title}
     />
   );
+}
+
+function getMissionAttentionState(
+  mission: MissionSummary,
+  displayStatus: MissionRunViewDisplayStatus | null,
+): { color: string; title: string } | null {
+  if (displayStatus === "blocked" || mission.status === "intervention_required") {
+    return { color: "#F59E0B", title: "Needs attention" };
+  }
+  if (mission.status === "in_progress" && mission.openInterventions > 0) {
+    return {
+      color: "#3B82F6",
+      title: `${mission.openInterventions} open intervention${mission.openInterventions === 1 ? "" : "s"}`,
+    };
+  }
+  if (displayStatus === "failed" || mission.status === "failed") {
+    return { color: "#EF4444", title: "Failed" };
+  }
+  return null;
 }
 
 function MissionInterventionBadge({ count, missionStatus }: { count: number; missionStatus: MissionSummary["status"] }) {

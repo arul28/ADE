@@ -14,7 +14,7 @@ All in `apps/desktop/src/main/services/orchestrator/`.
 - `coordinatorEventFormatter.ts` — formats runtime events into human-readable messages for the coordinator chat thread.
 - `missionLifecycle.ts` — mission-specific run start, approve, cancel, cleanup, steer, sync, lane provisioning, team manifest synthesis. Partial extraction from `aiOrchestratorService`; uses the deps-injection pattern so closures still live in the façade.
 - `missionStateDoc.ts` — `.ade/missions/<missionId>/state.md` + coordinator checkpoint files (`checkpoint.json`). Used for resume and for the `check_finalization_status` tool.
-- `executionPolicy.ts` — default `MissionExecutionPolicy`, merge rules (mission metadata > project config > fallback), run completion validation, phase-to-executor mapping.
+- `executionPolicy.ts` — default `MissionExecutionPolicy`, merge rules (mission metadata > project config > fallback), run completion validation, phase-to-executor mapping. Completion evaluates renamed implementation phases, excludes auto-spawned validation-proof steps from validation obligations, ignores non-executable Closeout gates, and can count succeeded display-only phase records only when they correspond to configured phase targets.
 - `adaptiveRuntime.ts` — `classifyTaskComplexity` heuristics (`trivial` / `simple` / `moderate` / `complex`), parallelism scaling, model downgrade rules.
 - `delegationContracts.ts` — `DelegationContract` types and helpers. Each worker delegation carries a scope, allowed tools, and handoff shape.
 - `workerDeliveryService.ts` — message delivery pipeline: coordinator -> worker chat, worker -> coordinator. Retry, idempotency, in-flight leases. Imports `WORKER_MESSAGE_RETRY_BUDGET`, `WORKER_MESSAGE_INFLIGHT_LEASE_MS`, `WORKER_MESSAGE_INFLIGHT_STALE_FAIL_MS`.
@@ -86,13 +86,15 @@ Every `CHECKPOINT_TURN_INTERVAL` turns, the coordinator writes a checkpoint via 
 
 `createCoordinatorToolSet` registers tools on the coordinator agent. Each tool has a schema (Zod), a handler, and a `CoordinatorExecutableTool` wrapper for permission checks (`checkCoordinatorToolPermission`). Highlights:
 
-- `spawn_worker` — launches a worker attempt. Respects `allowParallelAgents` and the mission's max-parallel-workers cap. Honors role isolation rules (`DEFAULT_ROLE_ISOLATION_RULES`). When the spawn request omits an explicit phase, `inferWorkerPhaseHintFromRequest` reads the worker name + role + prompt and matches it to one of `planning`/`implementation`/`testing`/`validation`/`integration` so phase routing degrades gracefully when the coordinator forgets to set one. App-restart orphans are detected via `isAppRestartOrphanAttempt` (matches against the canonical orphan / shutdown / lost-session error messages) so they are surfaced for retry instead of being treated as real failures.
+- `spawn_worker` — launches a worker attempt. Respects `allowParallelAgents` and the mission's max-parallel-workers cap. Honors role isolation rules (`DEFAULT_ROLE_ISOLATION_RULES`). When the spawn request omits an explicit phase, `inferWorkerPhaseHintFromRequest` reads the worker name + role + prompt and matches it to one of `planning`/`implementation`/`testing`/`validation`/`integration` so phase routing degrades gracefully when the coordinator forgets to set one. Phase-order violations return a structured `blockedByPhaseOrdering` response with the phase that must advance first. App-restart orphans are detected via `isAppRestartOrphanAttempt` (matches against the canonical orphan / shutdown / lost-session error messages) so they are surfaced for retry instead of being treated as real failures.
 - `send_message_to_worker` — routes a message into an active worker chat via `sendWorkerMessageToSession`.
 - `check_status` — reads run/step/attempt state.
 - `ask_user` — creates a `manual_input` intervention.
 - `mark_phase_complete` — advances the phase cursor.
 - `request_human_review` — creates an `awaiting_human_review` intervention.
 - `request_lane` — asks the orchestrator to provision a new lane via `provisionLane`.
+- `retry_step` — resets a failed step to pending. For app-restart orphan attempts it can extend that step's retry limit once and marks the metadata with `infraRetryLimitExtended`.
+- `fail_mission` — appends the failure runtime event, marks the run failed, and best-effort synchronizes the mission status / outcome summary so the dashboard does not remain active after coordinator failure.
 - `finalize_run` — synthesizes the result lane and ends the run.
 - `check_finalization_status` — reads `state.md` and returns contract-satisfaction, execution-completeness, and result-lane readiness.
 - DAG mutation helpers — `add_step`, `add_dependency`, `remove_step`, `update_step_metadata`.

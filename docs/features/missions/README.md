@@ -8,9 +8,9 @@ The runtime is feature-rich but the mission launcher and page shell now follow a
 
 ### Core services (apps/desktop/src/main/services/)
 
-- `missions/missionService.ts` — the mission persistence layer. Missions, steps, interventions, artifacts, events. `createMission`, `addMissionStep`, `addIntervention`, `addArtifact`, `getMissionDetail`, `getMissionEvents`. Handles terminal-status guards (`TERMINAL_MISSION_STATUSES`).
-- `missions/phaseEngine.ts` — phase cards, profiles, built-in phases (`planning`, `development`, `testing`, `validation`, legacy `prAndConflicts`), `applyPhaseCardsToPlanSteps`, `validatePhaseSequence`, `groupMissionStepsByPhase`.
-- `missions/missionPreflightService.ts` — preflight checks: knowledge sync, human work digest, computer-use readiness, budget estimates.
+- `missions/missionService.ts` — the mission persistence layer. Missions, steps, interventions, artifacts, events. `createMission`, `addMissionStep`, `addIntervention`, `addArtifact`, `getMissionDetail`, `getMissionEvents`. Handles terminal-status guards (`TERMINAL_MISSION_STATUSES`), treats only `planning` / `in_progress` as dashboard-active, clears stale lane ownership when a referenced mission no longer exists, and releases mission-owned lanes during deletion.
+- `missions/phaseEngine.ts` — phase cards, profiles, built-in phases (`planning`, `development`, `integration`, `testing`, `validation`, `closeout`, legacy `prAndConflicts`), `applyPhaseCardsToPlanSteps`, `validatePhaseSequence`, `groupMissionStepsByPhase`. `isDevelopmentLikePhaseKey` / `resolveDevelopmentPhaseKey` keep renamed implementation phases executable, while ordering constraints (`mustFollow`, `mustPrecede`, `mustBeFirst`, `mustBeLast`) keep Integration after Development and Closeout last.
+- `missions/missionPreflightService.ts` — preflight checks: lane claim ownership, knowledge sync, human work digest, computer-use readiness, phase structure, budget estimates.
 - `orchestrator/orchestratorService.ts` — runtime state machine: runs, steps, attempts, claims, artifacts, gate reports, timeline events. ~8000 LOC. Owns the tick loop and `completeAttempt`.
 - `orchestrator/aiOrchestratorService.ts` — façade that ties missionService + orchestratorService + AI integration together. Owns `pauseMissionWithIntervention`, `steerMission`, recovery, `check_finalization_status`.
 - `orchestrator/coordinatorAgent.ts` — the coordinator brain. Long-running AI agent that plans, spawns workers, monitors, advances phases, and finalizes. Lifecycle states: `booting`, `analyzing_prompt`, `fetching_project_context`, `launching_planner`, `waiting_on_planner`, `planner_launch_failed`, `stopped`.
@@ -35,6 +35,7 @@ The runtime is feature-rich but the mission launcher and page shell now follow a
 - `orchestrator/teamRuntimeConfig.ts` / `teamRuntimeState.ts` — team manifest and runtime state.
 - `orchestrator/permissionMapping.ts` — mission permission config to provider-specific tool permissions.
 - `orchestrator/orchestratorQueries.ts` — row types, helpers for mapping DB rows to typed objects, normalization.
+- `apps/ade-cli/src/cli.ts` — typed `ade missions` command group (`list`, `create`, `launch`, `start`, `resume`, `show`, `runs`, `graph`, `watch`) plus phase/planned-step JSON payload options for headless or socket-backed mission operations.
 
 ### Renderer
 
@@ -44,7 +45,7 @@ All under `apps/desktop/src/renderer/components/missions/`:
 - `CreateMissionDialog.tsx` + `MissionCreateDialogHost.tsx` — staged-load create dialog. `phasesMatchProfile`, `applyModelToMissionPhases`, `withLowReasoning`, and `applyCodexLowFullAutoPresetToDraft` keep the phase override draft in sync with model/profile changes; `validatePhaseOrder` accepts development-like phase keys (`development_*`, `*_development`, `implementation`, `build`, `code`) so user-renamed phases still pass ordering checks.
 - `MissionDetailView.tsx`, `MissionTabContainer.tsx`, `MissionHeader.tsx`, `MissionRunPanel.tsx`, `MissionControlOfficePanel.tsx`, `MissionActivePhasePanel.tsx`, `MissionLogsTab.tsx`, `MissionArtifactsTab.tsx`, `PromptInspectorCard.tsx` — mission detail tabs and chrome.
 - `MissionChatV2.tsx`, `ChatChannelList.tsx`, `ChatMessageArea.tsx`, `ChatInput.tsx`, `MissionThreadMessageList.tsx`, `chatFilters.ts`, `missionChatChannelModel.ts` — conversations tab. Channel rows expose accessible names through `formatChannelAccessibleName` (e.g. `"Orchestrator, orchestrator channel"`); legacy badge/badge-color props were removed in favor of the accessible label.
-- `PlanTab.tsx`, `PhaseCardEditor.tsx`, `missionPhaseDefaults.ts` — plan review and phase-card editing surface (validation gate evidence checklist, phase key editing for custom phases).
+- `PlanTab.tsx`, `PhaseCardEditor.tsx`, `missionPhaseDefaults.ts` — plan review and phase-card editing surface (validation gate evidence checklist, phase key editing for custom phases). Display-only task records are filtered out of executable step lists so task-planning rows do not inflate phase progress.
 - `missionControlViewModel.ts`, `missionFeedPresentation.ts`, `missionThreadEventAdapter.ts`, `missionInterventionRouting.ts`, `missionWorkerPresentation.ts`, `missionHelpers.ts`, `chatFilters.ts` — pure derivations consumed by the UI.
 - `useMissionRunView.ts`, `useMissionPolling.ts`, `useMissionsStore.ts`, `missionDialogDataCache.ts`, `missionCreateDialogStore.ts` — store + hooks. `MissionTabContent` now receives `runView` as a prop (computed once at the page level via `useMissionRunView`) instead of subscribing locally, so the panels share one polling source.
 - `apps/desktop/src/renderer/components/chat/missionControlTextTools.ts` — coordinator-side rewrite that turns ADE mission-control text-tool envelopes into rendered tool events for `MissionThreadMessageList`. `isMissionControlToolName(name)` is the canonical predicate; the `mission-thread` presentation mode auto-rewrites events on mount via `rewriteMissionControlTextToolEvents`.
@@ -146,9 +147,10 @@ Heavy sections (budget, team runtime, permissions, computer-use controls) mount 
 
 Preflight (`missionPreflightService.ts`) checks the current project and runtime state before launch, including:
 
+- lane-claim ownership — blocks launches when the selected lane is archived, rebasing, already owned by another live mission, or already recorded as a result lane.
 - knowledge-sync freshness (`HumanWorkDigestService`) — warn when human-authored code changed since the last digest.
 - computer-use readiness (required proof kinds for the selected phase profile, available backends).
-- mission policy (execution, finalization, computer-use, budget caps).
+- mission policy (execution, finalization, computer-use, budget caps) and phase structural ordering.
 - budget estimates (`MissionPreflightBudgetEstimate`).
 
 Preflight warnings surface in the launch dialog but do not block launch unless they are hard-blocking (missing required proof, missing model credentials, no lane selected).
