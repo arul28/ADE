@@ -78,7 +78,7 @@ export function LaneWorkPane({
       window.cancelAnimationFrame(raf);
       window.clearTimeout(settleTimer);
     };
-  }, [laneId, work.activeItemId, work.viewMode, visibleSessionIdsKey, work.visibleSessions.length]);
+  }, [laneId, work.activeItemId, work.viewMode, visibleSessionIdsKey]);
 
   if (!laneId) {
     return (

@@ -138,6 +138,10 @@ import { asNumber, asString, getErrorMessage, normalizeBranchName, nowIso, resol
 import { branchNameFromLaneRef, resolveStableLaneBaseBranch } from "../../../shared/laneBaseResolution";
 import { normalizePrCreationStrategy, resolvePrRebaseMode } from "../../../shared/prStrategy";
 
+type CreatePrFromLaneInternalArgs = CreatePrFromLaneArgs & {
+  skipBranchPush?: boolean;
+};
+
 type PullRequestRow = {
   id: string;
   lane_id: string;
@@ -2858,7 +2862,7 @@ export function createPrService({
     };
   };
 
-  const createFromLane = async (args: CreatePrFromLaneArgs): Promise<PrSummary> => {
+  const createFromLane = async (args: CreatePrFromLaneInternalArgs): Promise<PrSummary> => {
     const allLanes = await laneService.list({ includeArchived: true });
     const lane = allLanes.find((entry) => entry.id === args.laneId);
     if (!lane) throw new Error(`Lane not found: ${args.laneId}`);
@@ -2887,7 +2891,9 @@ export function createPrService({
       throw new Error("Choose a target branch before creating the PR.");
     }
 
-    await pushLaneBranchForPr(lane, headBranch);
+    if (!args.skipBranchPush) {
+      await pushLaneBranchForPr(lane, headBranch);
+    }
 
     const repo = await githubService.getRepoOrThrow();
     const createdAt = nowIso();
@@ -3422,6 +3428,7 @@ export function createPrService({
       allowDirtyWorktree: args.allowDirtyWorktree
     });
     const laneMap = new Map(lanes.map((lane) => [lane.id, lane]));
+    const queueLanesReadyToCreate: Array<{ laneId: string; headBranch: string }> = [];
 
     for (const laneId of args.laneIds) {
       const lane = laneMap.get(laneId);
@@ -3435,7 +3442,8 @@ export function createPrService({
         continue;
       }
       try {
-        await assertRemoteBranchReadyForPr(lane, headBranch);
+        await pushLaneBranchForPr(lane, headBranch);
+        queueLanesReadyToCreate.push({ laneId, headBranch });
       } catch (error) {
         errors.push({ laneId, error: error instanceof Error ? error.message : String(error) });
       }
@@ -3449,6 +3457,7 @@ export function createPrService({
       `insert into pr_groups(id, project_id, group_type, name, auto_rebase, ci_gating, target_branch, created_at) values (?, ?, 'queue', ?, ?, ?, ?, ?)`,
       [groupId, projectId, args.queueName ?? null, args.autoRebase ? 1 : 0, args.ciGating ? 1 : 0, args.targetBranch, now]
     );
+    const queueHeadBranchByLaneId = new Map(queueLanesReadyToCreate.map((entry) => [entry.laneId, entry.headBranch] as const));
 
     // Graphite-style chain bases: PR_0 targets args.targetBranch; PR_N targets
     // PR_(N-1)'s branch so each PR's GitHub diff shows only its own changes.
@@ -3470,6 +3479,13 @@ export function createPrService({
       }
 
       const baseBranch = previousBranch ?? args.targetBranch;
+      const headBranch = queueHeadBranchByLaneId.get(laneId);
+      if (!headBranch) {
+        errors.push({ laneId, error: `Lane "${lane.name}" was not pushed before queue PR creation.` });
+        previousBranch = null;
+        previousLaneId = null;
+        continue;
+      }
       if (previousLaneId && lane.parentLaneId !== previousLaneId) {
         logger.warn("prs.queue_chain_unrelated_lanes", {
           groupId,
@@ -3488,7 +3504,8 @@ export function createPrService({
           body: "",
           draft: Boolean(args.draft),
           baseBranch,
-          allowDirtyWorktree: true
+          allowDirtyWorktree: true,
+          skipBranchPush: true
         });
         prs.push(pr);
 
@@ -3498,7 +3515,7 @@ export function createPrService({
           [memberId, groupId, pr.id, laneId, i]
         );
 
-        previousBranch = branchNameFromRef(lane.branchRef);
+        previousBranch = headBranch;
         previousLaneId = laneId;
       } catch (error) {
         errors.push({ laneId, error: error instanceof Error ? error.message : String(error) });

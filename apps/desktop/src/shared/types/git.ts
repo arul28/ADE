@@ -67,7 +67,7 @@ export type GitUpstreamState = "none" | "tracking" | "missing";
 
 export type GitUpstreamSyncStatus = {
   hasUpstream: boolean;
-  upstreamState?: GitUpstreamState;
+  upstreamState: GitUpstreamState;
   upstreamRef: string | null;
   ahead: number;
   behind: number;
