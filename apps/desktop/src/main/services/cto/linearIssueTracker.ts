@@ -8,12 +8,20 @@ export function createLinearIssueTracker(args: { client: LinearClient }): IssueT
       return args.client.listProjects();
     },
 
+    getQuickView(connection) {
+      return args.client.getQuickView(connection);
+    },
+
     listUsers() {
       return args.client.listUsers();
     },
 
     listLabels(teamKey) {
       return args.client.listLabels(teamKey);
+    },
+
+    searchIssues(query) {
+      return args.client.searchIssues(query);
     },
 
     fetchCandidateIssues(query) {

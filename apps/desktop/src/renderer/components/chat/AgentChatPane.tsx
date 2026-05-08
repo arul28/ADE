@@ -14,6 +14,7 @@ import {
   type AgentChatDroidPermissionMode,
   type AgentChatExecutionMode,
   type AgentChatEventEnvelope,
+  type AgentChatContextAttachment,
   type AgentChatFileRef,
   type AgentChatInteractionMode,
   type AiProviderConnectionStatus,
@@ -32,12 +33,18 @@ import {
   type AppControlContextItem,
   type IosElementContextItem,
   type IosSimulatorDrawerMode,
+  type LaneLinearIssue,
   type AiSettingsStatus,
   type MacosVmContextItem,
   type MacosVmStatus,
   type TerminalSessionDetail,
   type TerminalToolType,
 } from "../../../shared/types";
+import {
+  makeLinearIssueContextAttachment,
+  mergeChatContextAttachments,
+  removeChatContextAttachment,
+} from "../../../shared/chatContextAttachments";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import { isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
 import {
@@ -1373,6 +1380,7 @@ export function parallelLaneModelSuffix(descriptor: ModelDescriptor | null | und
 export function buildParallelLaunchPrompt(args: {
   text: string;
   attachmentCount: number;
+  contextAttachmentCount?: number;
 }): { sendText: string; displayText: string } {
   const trimmed = args.text.trim();
   let displayText = "";
@@ -1380,6 +1388,8 @@ export function buildParallelLaunchPrompt(args: {
     displayText = trimmed;
   } else if (args.attachmentCount > 0) {
     displayText = DEFAULT_PARALLEL_ATTACHMENT_REQUEST;
+  } else if ((args.contextAttachmentCount ?? 0) > 0) {
+    displayText = "Use the attached issue context.";
   }
   if (!displayText.length) {
     return { sendText: "", displayText: "" };
@@ -1609,6 +1619,8 @@ export function AgentChatPane({
   isTileActive = true,
   isTileVisible = isTileActive,
   shouldAutofocusComposer = false,
+  initialLinearIssueContext = null,
+  onInitialLinearIssueContextConsumed,
   onSessionCreated,
   availableLanes,
   onLaneChange,
@@ -1636,6 +1648,8 @@ export function AgentChatPane({
   /** Visible grid tiles hydrate transcripts even when they are not the focused tile. */
   isTileVisible?: boolean;
   shouldAutofocusComposer?: boolean;
+  initialLinearIssueContext?: LaneLinearIssue | null;
+  onInitialLinearIssueContextConsumed?: () => void;
   onSessionCreated?: (session: AgentChatSession) => void | Promise<void>;
   /** Available lanes for the lane selector in empty state (full `LaneSummary` includes `branchRef` for branch sublines in the menu). */
   availableLanes?: Array<{ id: string; name: string; color?: string | null; branchRef?: string | null }>;
@@ -1665,6 +1679,10 @@ export function AgentChatPane({
   const laneAccentColor = useAppStore((s) => {
     if (!laneId) return null;
     return s.lanes.find((l) => l.id === laneId)?.color ?? null;
+  });
+  const pinnedLinearIssue = useAppStore((s) => {
+    if (!laneId) return null;
+    return s.lanes.find((l) => l.id === laneId)?.linearIssue ?? null;
   });
   const lockedSingleSessionMode = Boolean(lockSessionId && hideSessionTabs);
   const forceDraft = forceDraftMode || forceNewSession;
@@ -1740,6 +1758,7 @@ export function AgentChatPane({
       : null,
   );
   const [attachments, setAttachments] = useState<AgentChatFileRef[]>([]);
+  const [contextAttachments, setContextAttachments] = useState<AgentChatContextAttachment[]>([]);
   const [sdkSlashCommands, setSdkSlashCommands] = useState<import("../../../shared/types").AgentChatSlashCommand[]>([]);
   const [sendOnEnter, setSendOnEnter] = useState(true);
   const [draft, setDraft] = useState("");
@@ -3471,6 +3490,7 @@ export function AgentChatPane({
 
   useEffect(() => {
     setAttachments([]);
+    setContextAttachments([]);
     setPromptSuggestion(null);
     setHandoffOpen(false);
     setHandoffBusy(false);
@@ -3959,6 +3979,29 @@ export function AgentChatPane({
     setBuiltInBrowserContextItems((prev) => prev.filter((entry) => getBuiltInBrowserContextAttachmentPath(entry) !== attachmentPath));
   }, []);
 
+  const addContextAttachment = useCallback((attachment: AgentChatContextAttachment) => {
+    setContextAttachments((prev) => mergeChatContextAttachments(prev, [attachment]));
+  }, []);
+
+  const removeContextAttachment = useCallback((key: string) => {
+    setContextAttachments((prev) => removeChatContextAttachment(prev, key));
+  }, []);
+
+  const consumedInitialLinearIssueContextRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!initialLinearIssueContext) {
+      consumedInitialLinearIssueContextRef.current = null;
+      return;
+    }
+    const key = initialLinearIssueContext.id;
+    if (consumedInitialLinearIssueContextRef.current === key) return;
+    consumedInitialLinearIssueContextRef.current = key;
+    setContextAttachments((prev) => mergeChatContextAttachments(prev, [
+      makeLinearIssueContextAttachment(initialLinearIssueContext, "lane_link"),
+    ]));
+    onInitialLinearIssueContextConsumed?.();
+  }, [initialLinearIssueContext, onInitialLinearIssueContextConsumed]);
+
   const currentNativeControls = useMemo<NativeControlState>(() => ({
     interactionMode,
     claudePermissionMode,
@@ -4309,7 +4352,7 @@ export function AgentChatPane({
 
     if (isParallelLaunch) {
       const text = draft.trim();
-      if ((!text.length && attachments.length === 0) || !laneId || !projectRoot) return;
+      if ((!text.length && attachments.length === 0 && contextAttachments.length === 0) || !laneId || !projectRoot) return;
       if (parallelModelSlots.length < 2) {
         setError("Add at least two models for a parallel launch.");
         return;
@@ -4331,6 +4374,7 @@ export function AgentChatPane({
 
       const draftSnapshot = draft;
       const attachmentsSnapshot = [...attachments];
+      const contextAttachmentsSnapshot = [...contextAttachments];
       submitInFlightRef.current = true;
       setParallelLaunchBusy(true);
       setParallelLaunchStatus("Naming lanes…");
@@ -4340,13 +4384,15 @@ export function AgentChatPane({
       const sessionByLane = new Map<string, string>();
       try {
         let namingSeed = text;
-        if (!text.length && attachmentsSnapshot.length) {
+        if (!text.length && (attachmentsSnapshot.length || contextAttachmentsSnapshot.length)) {
           const imageCount = attachmentsSnapshot.filter((a) => a.type === "image").length;
           const fileCount = attachmentsSnapshot.filter((a) => a.type === "file").length;
+          const issueCount = contextAttachmentsSnapshot.filter((a) => a.type === "linear_issue").length;
           namingSeed = [
             "Parallel attachment task",
             imageCount ? `${imageCount} image${imageCount === 1 ? "" : "s"}` : null,
             fileCount ? `${fileCount} file${fileCount === 1 ? "" : "s"}` : null,
+            issueCount ? `${issueCount} issue${issueCount === 1 ? "" : "s"}` : null,
           ].filter(Boolean).join(" · ");
         }
         const baseName = await window.ade.agentChat.suggestLaneName({
@@ -4388,6 +4434,7 @@ export function AgentChatPane({
         const { sendText, displayText: displayForSend } = buildParallelLaunchPrompt({
           text,
           attachmentCount: attachmentsSnapshot.length,
+          contextAttachmentCount: contextAttachmentsSnapshot.length,
         });
 
         setParallelLaunchStatus("Sending prompt to each lane…");
@@ -4410,6 +4457,7 @@ export function AgentChatPane({
               text: sendText,
               displayText: displayForSend,
               attachments: attachmentsSnapshot,
+              contextAttachments: contextAttachmentsSnapshot,
               reasoningEffort: slot.reasoningEffort,
               executionMode: slot.executionMode,
               interactionMode: provider === "claude" ? slot.interactionMode : null,
@@ -4422,6 +4470,7 @@ export function AgentChatPane({
                 sessionId,
                 text: sendText,
                 ...(attachmentsSnapshot.length ? { attachments: attachmentsSnapshot } : {}),
+                ...(contextAttachmentsSnapshot.length ? { contextAttachments: contextAttachmentsSnapshot } : {}),
               });
             } else {
               throw sendError;
@@ -4457,6 +4506,7 @@ export function AgentChatPane({
 
         setDraft("");
         setAttachments([]);
+        setContextAttachments([]);
         setParallelChatMode(false);
         setParallelModelSlots([]);
         setParallelConfiguringIndex(null);
@@ -4488,6 +4538,7 @@ export function AgentChatPane({
         }
         setDraft((current) => (current.trim().length ? current : draftSnapshot));
         setAttachments((current) => (current.length ? current : attachmentsSnapshot));
+        setContextAttachments((current) => (current.length ? current : contextAttachmentsSnapshot));
         setError(formatParallelLaunchFailureMessage({
           launchError: message,
           cleanupIssues,
@@ -4506,6 +4557,7 @@ export function AgentChatPane({
     const appControlContextSnapshot = [...appControlContextItems];
     const builtInBrowserContextSnapshot = [...builtInBrowserContextItems];
     const macosVmContextSnapshot = [...macosVmContextItems];
+    const contextAttachmentsSnapshot = [...contextAttachments];
     const iosContextPrefix = formatIosElementContextForPrompt(iosContextSnapshot);
     const appControlContextPrefix = formatAppControlContextForPrompt(appControlContextSnapshot);
     const builtInBrowserContextPrefix = formatBuiltInBrowserContextForPrompt(builtInBrowserContextSnapshot);
@@ -4516,7 +4568,7 @@ export function AgentChatPane({
     const macosVmContextDisplayChips = formatMacosVmContextChipsForDisplay(macosVmContextSnapshot);
     const visualContextPrefix = [iosContextPrefix, appControlContextPrefix, builtInBrowserContextPrefix, macosVmContextPrefix].filter(Boolean).join("\n");
     const visualContextDisplayChips = [iosContextDisplayChips, appControlContextDisplayChips, builtInBrowserContextDisplayChips, macosVmContextDisplayChips].filter(Boolean).join(" ");
-    if ((!text.length && !visualContextPrefix.length) || !laneId) return;
+    if ((!text.length && !visualContextPrefix.length && !contextAttachmentsSnapshot.length) || !laneId) return;
     const pendingNativeControlUpdate = pendingNativeControlUpdateRef.current;
     if (selectedSessionId && pendingNativeControlUpdate?.sessionId === selectedSessionId) {
       try {
@@ -4543,16 +4595,24 @@ export function AgentChatPane({
     setDraft("");
     draftsPerSessionRef.current.delete(selectedSessionId);
     setAttachments([]);
+    setContextAttachments([]);
     try {
       const automaticMacosVmContextPrefix = await buildAutomaticMacosVmContextForPrompt(laneId);
       let justCreatedSession = false;
       const finalTextPrefix = [automaticMacosVmContextPrefix, visualContextPrefix].filter(Boolean).join("\n");
-      const finalText = finalTextPrefix ? `${finalTextPrefix}${text}` : text;
+      let finalText = finalTextPrefix ? `${finalTextPrefix}${text}` : text;
+      if (!finalText.trim().length && contextAttachmentsSnapshot.length) {
+        finalText = "Use the attached issue context.";
+      }
       const finalDisplayText = visualContextDisplayChips
         ? text.length
           ? `${visualContextDisplayChips} ${text}`
           : visualContextDisplayChips
-        : text;
+        : text.length
+          ? text
+          : contextAttachmentsSnapshot.length
+            ? "Attached issue context"
+            : text;
 
       let sessionId = selectedSessionId;
       const shouldPromoteLightSession = shouldPromoteSessionForComputerUse(selectedSession);
@@ -4565,6 +4625,7 @@ export function AgentChatPane({
         && selectedSession?.provider === "codex"
         && (selectedSession.codexFastMode === true) !== codexFastMode;
       const selectedAttachments = isLiteralSlashCommand ? [] : attachmentsSnapshot;
+      const selectedContextAttachments = isLiteralSlashCommand ? [] : contextAttachmentsSnapshot;
       const optimisticEnvelope = (nextSessionId: string): AgentChatEventEnvelope => ({
         sessionId: nextSessionId,
         timestamp: new Date().toISOString(),
@@ -4572,6 +4633,7 @@ export function AgentChatPane({
           type: "user_message",
           text: finalDisplayText || finalText,
           ...(selectedAttachments.length ? { attachments: selectedAttachments } : {}),
+          ...(selectedContextAttachments.length ? { contextAttachments: selectedContextAttachments } : {}),
           deliveryState: "queued",
         },
       });
@@ -4620,6 +4682,7 @@ export function AgentChatPane({
           sessionId,
           text: finalText,
           ...(selectedAttachments.length ? { attachments: selectedAttachments } : {}),
+          ...(selectedContextAttachments.length ? { contextAttachments: selectedContextAttachments } : {}),
         });
       } else {
         try {
@@ -4629,6 +4692,7 @@ export function AgentChatPane({
             text: finalText,
             displayText: finalDisplayText || "Selected visual app context",
             attachments: selectedAttachments,
+            contextAttachments: selectedContextAttachments,
             reasoningEffort,
             executionMode: launchModeEditable ? executionMode : null,
             interactionMode: sessionProvider === "claude" ? interactionMode : null,
@@ -4645,6 +4709,7 @@ export function AgentChatPane({
               sessionId,
               text: finalText,
               ...(selectedAttachments.length ? { attachments: selectedAttachments } : {}),
+              ...(selectedContextAttachments.length ? { contextAttachments: selectedContextAttachments } : {}),
             });
           } else {
             throw sendError;
@@ -4664,6 +4729,7 @@ export function AgentChatPane({
       const message = submitError instanceof Error ? submitError.message : String(submitError);
       setDraft((current) => (current.trim().length ? current : draftSnapshot));
       setAttachments((current) => (current.length ? current : attachmentsSnapshot));
+      setContextAttachments((current) => (current.length ? current : contextAttachmentsSnapshot));
       setIosElementContextItems((current) => (current.length ? current : iosContextSnapshot));
       setAppControlContextItems((current) => (current.length ? current : appControlContextSnapshot));
       setBuiltInBrowserContextItems((current) => (current.length ? current : builtInBrowserContextSnapshot));
@@ -4687,6 +4753,7 @@ export function AgentChatPane({
     busy,
     codexFastMode,
     createSession,
+    contextAttachments,
     draft,
     executionMode,
     hasComputerUseSelectionChanged,
@@ -5544,6 +5611,7 @@ export function AgentChatPane({
               setSelectedSessionId(null);
               setDraft("");
               setAttachments([]);
+              setContextAttachments([]);
             }}
           >
             <Plus size={10} weight="bold" />
@@ -5590,6 +5658,8 @@ export function AgentChatPane({
             codexFastMode={codexFastMode}
             draft={draft}
             attachments={attachments}
+            contextAttachments={contextAttachments}
+            pinnedLinearIssue={pinnedLinearIssue}
             pendingInput={pendingInput?.request ?? null}
             approvalResponding={pendingInput ? respondingApprovalIds.has(pendingInput.itemId) : false}
             turnActive={turnActive}
@@ -5736,6 +5806,8 @@ export function AgentChatPane({
             }}
             onAddAttachment={addAttachment}
             onRemoveAttachment={removeAttachment}
+            onAddContextAttachment={addContextAttachment}
+            onRemoveContextAttachment={removeContextAttachment}
             onSearchAttachments={searchAttachments}
             onClearEvents={() => {
               if (selectedSessionId) {

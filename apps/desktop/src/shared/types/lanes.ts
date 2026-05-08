@@ -1,6 +1,7 @@
 import type { AgentChatSessionSummary } from "./chat";
 import type { LaneEnvInitProgress } from "./config";
 import type { ConflictOverlap, ConflictStatus } from "./conflicts";
+import type { LinearPriorityLabel } from "./linearSync";
 import type {
   DiffChanges,
   GitCommitSummary,
@@ -58,6 +59,36 @@ export type LaneSummary = {
   archivedAt?: string | null;
   devicesOpen?: DeviceMarker[];
   activeBranchProfile?: LaneBranchProfile | null;
+  linearIssue?: LaneLinearIssue | null;
+};
+
+export type LaneLinearIssue = {
+  id: string;
+  identifier: string;
+  title: string;
+  description?: string | null;
+  url: string | null;
+  projectId: string;
+  projectSlug: string;
+  projectName?: string | null;
+  teamId: string;
+  teamKey: string;
+  teamName?: string | null;
+  stateId: string;
+  stateName: string;
+  stateType: string;
+  priority: number;
+  priorityLabel: LinearPriorityLabel;
+  labels: string[];
+  assigneeId: string | null;
+  assigneeName: string | null;
+  creatorId?: string | null;
+  creatorName?: string | null;
+  dueDate?: string | null;
+  estimate?: number | null;
+  branchName?: string | null;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type LaneBranchProfile = {
@@ -134,6 +165,8 @@ export type CreateLaneArgs = {
   description?: string;
   parentLaneId?: string;
   baseBranch?: string;
+  branchName?: string;
+  linearIssue?: LaneLinearIssue | null;
 };
 
 export type CreateChildLaneArgs = {
@@ -144,6 +177,8 @@ export type CreateChildLaneArgs = {
   missionId?: string | null;
   laneRole?: MissionLaneRole | null;
   baseBranchRef?: string;
+  branchName?: string;
+  linearIssue?: LaneLinearIssue | null;
 };
 
 export type CreateLaneFromUnstagedArgs = {

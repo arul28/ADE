@@ -585,7 +585,8 @@ import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import { mapPermissionToClaude, mapPermissionToCodex } from "../orchestrator/permissionMapping";
 import { acquireCursorSdkConnection } from "./cursorSdkPool";
 import { acquireDroidAcpConnection } from "./droidAcpPool";
-import type { AgentChatEvent, AgentChatEventEnvelope, ComputerUseBackendStatus } from "../../../shared/types";
+import type { AgentChatEvent, AgentChatEventEnvelope, ComputerUseBackendStatus, LaneLinearIssue } from "../../../shared/types";
+import { makeLinearIssueContextAttachment } from "../../../shared/chatContextAttachments";
 import {
   createDynamicOpenCodeModelDescriptor,
   replaceDynamicOpenCodeModelDescriptors,
@@ -912,6 +913,38 @@ async function waitForSessionTitle(sessionService: ReturnType<typeof createMockS
   await vi.waitFor(() => {
     expect(sessionService.get(sessionId)?.title).toBe(title);
   }, { timeout: 1_000 });
+}
+
+function makeLaneLinearIssue(overrides: Partial<LaneLinearIssue> = {}): LaneLinearIssue {
+  return {
+    id: "issue-1",
+    identifier: "ADE-123",
+    title: "Attach Linear context to chat",
+    description: "Use this issue as prompt context.",
+    url: "https://linear.app/ade/issue/ADE-123/attach-linear-context-to-chat",
+    projectId: "project-1",
+    projectSlug: "ade",
+    projectName: "ADE",
+    teamId: "team-1",
+    teamKey: "ADE",
+    teamName: "ADE",
+    stateId: "state-1",
+    stateName: "In Progress",
+    stateType: "started",
+    priority: 2,
+    priorityLabel: "high",
+    labels: ["desktop"],
+    assigneeId: "user-1",
+    assigneeName: "Arul",
+    creatorId: "user-2",
+    creatorName: "Annie",
+    dueDate: null,
+    estimate: null,
+    branchName: "ade-123-attach-linear-context-to-chat",
+    createdAt: "2026-05-08T00:00:00.000Z",
+    updatedAt: "2026-05-08T00:00:00.000Z",
+    ...overrides,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -4159,6 +4192,91 @@ describe("createAgentChatService", () => {
 
       expect(attachments[0]?.path).toBe(" note.txt ");
       expect(userMessage.event.attachments).toEqual([{ path: "note.txt", type: "file" }]);
+    });
+
+    it("injects Linear issue context into Codex prompts and public user events", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => {
+          events.push(event);
+        },
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+      const contextAttachment = makeLinearIssueContextAttachment(makeLaneLinearIssue(), "manual");
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Plan the implementation.",
+        contextAttachments: [contextAttachment],
+      });
+
+      const userMessage = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & { event: { type: "user_message"; contextAttachments?: unknown[] } } =>
+          event.event.type === "user_message",
+      );
+      expect(userMessage.event.contextAttachments).toHaveLength(1);
+      expect(userMessage.event.contextAttachments?.[0]).toMatchObject({
+        type: "linear_issue",
+        issue: {
+          id: "issue-1",
+          identifier: "ADE-123",
+          title: "Attach Linear context to chat",
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+      const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
+      const turnParams = turnStartRequest?.params as { input?: Array<{ text?: unknown }> } | undefined;
+      const textInput = turnParams?.input?.map((entry) => String(entry.text ?? "")).join("\n") ?? "";
+      expect(textInput).toContain("Attached issue context");
+      expect(textInput).toContain("- Identifier: ADE-123");
+      expect(textInput).toContain("Attach Linear context to chat");
+      expect(textInput).toContain("do not ask the user for a Linear API key");
+      expect(textInput).toContain("Plan the implementation.");
+    });
+
+    it("dispatches context-only Linear issue sends with a fallback prompt", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => {
+          events.push(event);
+        },
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "",
+        contextAttachments: [makeLinearIssueContextAttachment(makeLaneLinearIssue(), "manual")],
+      });
+
+      const userMessage = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & { event: { type: "user_message"; text: string; contextAttachments?: unknown[] } } =>
+          event.event.type === "user_message",
+      );
+      expect(userMessage.event.text).toBe("Use the attached issue context.");
+      expect(userMessage.event.contextAttachments).toHaveLength(1);
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+      const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
+      const turnParams = turnStartRequest?.params as { input?: Array<{ text?: unknown }> } | undefined;
+      const textInput = turnParams?.input?.map((entry) => String(entry.text ?? "")).join("\n") ?? "";
+      expect(textInput).toContain("Attached issue context");
+      expect(textInput).toContain("Use the attached issue context.");
     });
 
     it("prefers the canonical turn-scoped Codex text stream when item-scoped deltas also arrive", async () => {

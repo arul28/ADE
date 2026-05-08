@@ -208,6 +208,10 @@ import type {
   CtoOnboardingState,
   CtoSystemPromptPreview,
   CtoLinearProject,
+  CtoLinearQuickView,
+  CtoGetLinearIssuePickerDataResult,
+  CtoSearchLinearIssuesArgs,
+  CtoSearchLinearIssuesResult,
   CtoSetLinearOAuthClientArgs,
   CtoStartLinearOAuthResult,
   CtoGetLinearOAuthSessionArgs,
@@ -2080,6 +2084,11 @@ declare global {
           identityOverride?: Record<string, unknown>;
         }) => Promise<CtoSystemPromptPreview>;
         getLinearProjects: () => Promise<CtoLinearProject[]>;
+        getLinearQuickView: () => Promise<CtoLinearQuickView>;
+        getLinearIssuePickerData: () => Promise<CtoGetLinearIssuePickerDataResult>;
+        searchLinearIssues: (
+          args?: CtoSearchLinearIssuesArgs,
+        ) => Promise<CtoSearchLinearIssuesResult>;
         setLinearOAuthClient: (
           args: CtoSetLinearOAuthClientArgs,
         ) => Promise<LinearConnectionStatus>;

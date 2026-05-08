@@ -535,8 +535,10 @@ export type NormalizedLinearIssue = {
   url: string | null;
   projectId: string;
   projectSlug: string;
+  projectName?: string | null;
   teamId: string;
   teamKey: string;
+  teamName?: string | null;
   stateId: string;
   stateName: string;
   stateType: string;
@@ -554,6 +556,12 @@ export type NormalizedLinearIssue = {
   creatorName?: string | null;
   blockerIssueIds: string[];
   hasOpenBlockers: boolean;
+  dueDate?: string | null;
+  estimate?: number | null;
+  archivedAt?: string | null;
+  completedAt?: string | null;
+  canceledAt?: string | null;
+  startedAt?: string | null;
   createdAt: string;
   updatedAt: string;
   raw: Record<string, unknown>;

@@ -9,6 +9,7 @@ import { SmartTooltip, type SmartTooltipContent } from "../ui/SmartTooltip";
 import { COLORS, LABEL_STYLE, MONO_FONT, inlineBadge, outlineButton, primaryButton, dangerButton } from "./laneDesignTokens";
 import { CommitTimeline } from "./CommitTimeline";
 import { LaneDiffPane } from "./LaneDiffPane";
+import { LinearIssueBadge } from "./LinearIssueBadge";
 import type {
   DiffChanges,
   FileChange,
@@ -1575,6 +1576,9 @@ export function LaneGitActionsPane({
           >
             {lane?.name ?? "NO LANE"}
           </span>
+          {lane?.linearIssue ? (
+            <LinearIssueBadge issue={lane.linearIssue} />
+          ) : null}
           {lane ? (
             <>
               <span

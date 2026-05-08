@@ -1,4 +1,10 @@
-import type { ModelId } from "./core";
+import type { ModelId, OnboardingDetectionResult } from "./core";
+import type {
+  LinearCatalogState,
+  LinearCatalogUser,
+  LinearConnectionStatus,
+  NormalizedLinearIssue,
+} from "./linearSync";
 import type {
   OpenclawBridgeConfig,
   OpenclawBridgeState,
@@ -148,6 +154,99 @@ export type CtoLinearProject = {
   name: string;
   slug: string;
   teamName: string;
+  teamKey?: string | null;
+};
+
+export type CtoSearchLinearIssuesArgs = {
+  projectId?: string | null;
+  projectSlug?: string | null;
+  teamKey?: string | null;
+  stateTypes?: string[];
+  assigneeId?: string | null;
+  priority?: number | null;
+  query?: string | null;
+  first?: number;
+  after?: string | null;
+  includeArchived?: boolean;
+};
+
+export type CtoSearchLinearIssuesResult = {
+  issues: NormalizedLinearIssue[];
+  pageInfo: {
+    hasNextPage: boolean;
+    endCursor: string | null;
+  };
+};
+
+export type CtoGetLinearIssuePickerDataResult = {
+  projects: CtoLinearProject[];
+  users: LinearCatalogUser[];
+  states: LinearCatalogState[];
+};
+
+export type CtoLinearQuickViewProject = CtoLinearProject & {
+  url: string | null;
+  color: string | null;
+  icon: string | null;
+  description: string | null;
+  statusName: string | null;
+  statusType: string | null;
+  health: string | null;
+  progress: number | null;
+  scope: number | null;
+  priority: number | null;
+  priorityLabel: string | null;
+  issueCount: number | null;
+  completedIssueCount: number | null;
+  startDate: string | null;
+  targetDate: string | null;
+  leadName: string | null;
+  teamKeys: string[];
+};
+
+export type CtoLinearQuickViewTeam = {
+  id: string;
+  key: string;
+  name: string;
+  displayName: string;
+  color: string | null;
+  issueCount: number | null;
+  cyclesEnabled: boolean | null;
+  private: boolean | null;
+};
+
+export type CtoLinearQuickView = {
+  connection: LinearConnectionStatus;
+  organization: {
+    id: string;
+    name: string;
+    urlKey: string | null;
+    logoUrl: string | null;
+    gitBranchFormat: string | null;
+    createdIssueCount: number | null;
+    roadmapEnabled: boolean | null;
+    customersEnabled: boolean | null;
+    releasesEnabled: boolean | null;
+  } | null;
+  viewer: {
+    id: string;
+    name: string;
+    displayName: string;
+    email: string | null;
+    avatarUrl: string | null;
+    admin: boolean | null;
+    guest: boolean | null;
+    url: string | null;
+  } | null;
+  projects: CtoLinearQuickViewProject[];
+  teams: CtoLinearQuickViewTeam[];
+  assignedIssues: NormalizedLinearIssue[];
+  recentIssues: NormalizedLinearIssue[];
+  fetchedAt: string;
+  sdk: {
+    packageName: "@linear/sdk";
+    surfaces: string[];
+  };
 };
 
 export type CtoStartLinearOAuthArgs = Record<string, never>;
@@ -173,14 +272,14 @@ export type CtoGetLinearOAuthSessionArgs = {
 
 export type CtoGetLinearOAuthSessionResult = {
   status: CtoLinearOAuthSessionState;
-  connection?: import("./linearSync").LinearConnectionStatus;
+  connection?: LinearConnectionStatus;
   error?: string | null;
 };
 
 export type CtoRunProjectScanArgs = Record<string, never>;
 
 export type CtoRunProjectScanResult = {
-  detection: import("./core").OnboardingDetectionResult | null;
+  detection: OnboardingDetectionResult | null;
   coreMemoryPatch: Partial<Omit<CtoCoreMemory, "version" | "updatedAt">>;
   createdMemoryIds: string[];
 };

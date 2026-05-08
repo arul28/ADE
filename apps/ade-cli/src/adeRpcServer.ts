@@ -38,9 +38,12 @@ import {
   type ComputerUseArtifactOwner,
   type DockLayout,
   type GraphPersistedState,
+  type LaneLinearIssue,
   type MergeMethod,
 } from "../../desktop/src/shared/types";
 import type { PrActionRun, PrCheck, PrComment, PrReviewThread } from "../../desktop/src/shared/types/prs";
+import type { CtoLinearQuickView } from "../../desktop/src/shared/types/cto";
+import type { LinearConnectionStatus } from "../../desktop/src/shared/types/linearSync";
 import { resolveAdeLayout } from "../../desktop/src/shared/adeLayout";
 import {
   buildTrackedCliLaunchCommand,
@@ -69,6 +72,59 @@ type ExecutableTool = {
   inputSchema?: unknown;
   parameters?: unknown;
   execute?: (args: Record<string, unknown>) => Promise<unknown>;
+};
+
+const LINEAR_ISSUE_TOOL_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  required: [
+    "id",
+    "identifier",
+    "title",
+    "url",
+    "projectId",
+    "projectSlug",
+    "teamId",
+    "teamKey",
+    "stateId",
+    "stateName",
+    "stateType",
+    "priority",
+    "priorityLabel",
+    "labels",
+    "assigneeId",
+    "assigneeName",
+    "createdAt",
+    "updatedAt",
+  ],
+  additionalProperties: false,
+  properties: {
+    id: { type: "string", minLength: 1 },
+    identifier: { type: "string", minLength: 1 },
+    title: { type: "string", minLength: 1 },
+    description: { anyOf: [{ type: "string" }, { type: "null" }] },
+    url: { anyOf: [{ type: "string" }, { type: "null" }] },
+    projectId: { type: "string", minLength: 1 },
+    projectSlug: { type: "string", minLength: 1 },
+    projectName: { anyOf: [{ type: "string" }, { type: "null" }] },
+    teamId: { type: "string", minLength: 1 },
+    teamKey: { type: "string", minLength: 1 },
+    teamName: { anyOf: [{ type: "string" }, { type: "null" }] },
+    stateId: { type: "string", minLength: 1 },
+    stateName: { type: "string", minLength: 1 },
+    stateType: { type: "string", minLength: 1 },
+    priority: { type: "number" },
+    priorityLabel: { type: "string", enum: ["urgent", "high", "normal", "low", "none"] },
+    labels: { type: "array", items: { type: "string" } },
+    assigneeId: { anyOf: [{ type: "string" }, { type: "null" }] },
+    assigneeName: { anyOf: [{ type: "string" }, { type: "null" }] },
+    creatorId: { anyOf: [{ type: "string" }, { type: "null" }] },
+    creatorName: { anyOf: [{ type: "string" }, { type: "null" }] },
+    dueDate: { anyOf: [{ type: "string" }, { type: "null" }] },
+    estimate: { anyOf: [{ type: "number" }, { type: "null" }] },
+    branchName: { anyOf: [{ type: "string" }, { type: "null" }] },
+    createdAt: { type: "string", minLength: 1 },
+    updatedAt: { type: "string", minLength: 1 },
+  },
 };
 
 type SessionIdentity = {
@@ -193,7 +249,10 @@ const TOOL_SPECS: ToolSpec[] = [
       properties: {
         name: { type: "string", minLength: 1 },
         description: { type: "string" },
-        parentLaneId: { type: "string" }
+        parentLaneId: { type: "string" },
+        baseBranch: { type: "string" },
+        branchName: { type: "string" },
+        linearIssue: LINEAR_ISSUE_TOOL_SCHEMA
       }
     }
   },
@@ -1096,6 +1155,7 @@ const TOOL_SPECS: ToolSpec[] = [
         title: { type: "string", minLength: 1 },
         body: { type: "string" },
         draft: { type: "boolean", default: false },
+        closeLinearIssueOnMerge: { type: "boolean", default: false },
       }
     }
   },
@@ -1835,6 +1895,11 @@ const CTO_OPERATOR_TOOL_SPECS: ToolSpec[] = [
 
 const CTO_LINEAR_SYNC_TOOL_SPECS: ToolSpec[] = [
   {
+    name: "getLinearQuickView",
+    description: "Read a compact Linear workspace, project, and issue quick view through the connected Linear SDK account.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {} }
+  },
+  {
     name: "getLinearSyncDashboard",
     description: "Read the ADE Linear sync dashboard.",
     inputSchema: { type: "object", additionalProperties: false, properties: {} }
@@ -2069,6 +2134,7 @@ const READ_ONLY_TOOLS = new Set([
   "listChats",
   "getChatStatus",
   "readChatTranscript",
+  "getLinearQuickView",
   "listLinearWorkflows",
   "getLinearRunStatus",
   "getLinearSyncDashboard",
@@ -2272,6 +2338,87 @@ function asBoolean(value: unknown, fallback = false): boolean {
 
 function asNumber(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function assertOptionalStringOrNull(value: unknown, field: string): string | null {
+  if (value == null) return null;
+  if (typeof value !== "string") {
+    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `${field} must be a string or null`);
+  }
+  return value;
+}
+
+function assertStringArray(value: unknown, field: string): string[] {
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) {
+    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `${field} must be an array of strings`);
+  }
+  return [...value];
+}
+
+function assertOptionalNumberOrNull(value: unknown, field: string): number | null {
+  if (value == null) return null;
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `${field} must be a number or null`);
+  }
+  return value;
+}
+
+function assertNumber(value: unknown, field: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `${field} must be a number`);
+  }
+  return value;
+}
+
+function assertLinearPriorityLabel(value: unknown, field: string): LaneLinearIssue["priorityLabel"] {
+  if (value === "urgent" || value === "high" || value === "normal" || value === "low" || value === "none") {
+    return value;
+  }
+  throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `${field} must be one of: urgent, high, normal, low, none`);
+}
+
+function parseLaneLinearIssue(value: unknown, field = "linearIssue"): LaneLinearIssue {
+  const issue = safeObject(value);
+  if (Object.keys(issue).length === 0) {
+    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `${field} must be an object`);
+  }
+  return {
+    id: assertNonEmptyString(issue.id, `${field}.id`),
+    identifier: assertNonEmptyString(issue.identifier, `${field}.identifier`),
+    title: assertNonEmptyString(issue.title, `${field}.title`),
+    description: assertOptionalStringOrNull(issue.description, `${field}.description`),
+    url: assertOptionalStringOrNull(issue.url, `${field}.url`),
+    projectId: assertNonEmptyString(issue.projectId, `${field}.projectId`),
+    projectSlug: assertNonEmptyString(issue.projectSlug, `${field}.projectSlug`),
+    projectName: assertOptionalStringOrNull(issue.projectName, `${field}.projectName`),
+    teamId: assertNonEmptyString(issue.teamId, `${field}.teamId`),
+    teamKey: assertNonEmptyString(issue.teamKey, `${field}.teamKey`),
+    teamName: assertOptionalStringOrNull(issue.teamName, `${field}.teamName`),
+    stateId: assertNonEmptyString(issue.stateId, `${field}.stateId`),
+    stateName: assertNonEmptyString(issue.stateName, `${field}.stateName`),
+    stateType: assertNonEmptyString(issue.stateType, `${field}.stateType`),
+    priority: assertNumber(issue.priority, `${field}.priority`),
+    priorityLabel: assertLinearPriorityLabel(issue.priorityLabel, `${field}.priorityLabel`),
+    labels: assertStringArray(issue.labels, `${field}.labels`),
+    assigneeId: assertOptionalStringOrNull(issue.assigneeId, `${field}.assigneeId`),
+    assigneeName: assertOptionalStringOrNull(issue.assigneeName, `${field}.assigneeName`),
+    creatorId: assertOptionalStringOrNull(issue.creatorId, `${field}.creatorId`),
+    creatorName: assertOptionalStringOrNull(issue.creatorName, `${field}.creatorName`),
+    dueDate: assertOptionalStringOrNull(issue.dueDate, `${field}.dueDate`),
+    estimate: assertOptionalNumberOrNull(issue.estimate, `${field}.estimate`),
+    branchName: assertOptionalStringOrNull(issue.branchName, `${field}.branchName`),
+    createdAt: assertNonEmptyString(issue.createdAt, `${field}.createdAt`),
+    updatedAt: assertNonEmptyString(issue.updatedAt, `${field}.updatedAt`),
+  };
+}
+
+function projectLaneLinearIssue(value: unknown): LaneLinearIssue | null {
+  if (!value) return null;
+  try {
+    return parseLaneLinearIssue(value);
+  } catch {
+    return null;
+  }
 }
 
 function assertNonEmptyString(value: unknown, field: string): string {
@@ -2692,6 +2839,13 @@ function requireLinearSyncService(runtime: AdeRuntime): NonNullable<AdeRuntime["
   return runtime.linearSyncService;
 }
 
+function requireLinearIssueTracker(runtime: AdeRuntime): NonNullable<AdeRuntime["linearIssueTracker"]> {
+  if (!runtime.linearIssueTracker) {
+    throw new JsonRpcError(JsonRpcErrorCode.internalError, "linearIssueTracker is not available in this ADE runtime configuration");
+  }
+  return runtime.linearIssueTracker;
+}
+
 function requireLinearIngressService(runtime: AdeRuntime): NonNullable<AdeRuntime["linearIngressService"]> {
   if (!runtime.linearIngressService) {
     throw new JsonRpcError(JsonRpcErrorCode.internalError, "linearIngressService is not available in this ADE runtime configuration");
@@ -2711,6 +2865,69 @@ function requireLinearRoutingService(runtime: AdeRuntime): NonNullable<AdeRuntim
     throw new JsonRpcError(JsonRpcErrorCode.internalError, "linearRoutingService is not available in this ADE runtime configuration");
   }
   return runtime.linearRoutingService;
+}
+
+async function buildCliLinearConnectionStatus(runtime: AdeRuntime): Promise<LinearConnectionStatus> {
+  const credentialStatus = runtime.linearCredentialService?.getStatus() ?? {
+    tokenStored: false,
+    authMode: null,
+    tokenExpiresAt: null,
+    oauthConfigured: false,
+  };
+  const tokenStored = Boolean(credentialStatus.tokenStored);
+  if (!runtime.linearIssueTracker || !tokenStored) {
+    return {
+      tokenStored,
+      connected: false,
+      viewerId: null,
+      viewerName: null,
+      checkedAt: nowIso(),
+      authMode: credentialStatus.authMode,
+      oauthAvailable: credentialStatus.oauthConfigured,
+      tokenExpiresAt: credentialStatus.tokenExpiresAt,
+      message: tokenStored ? "Linear tracker service unavailable." : "Linear token not configured.",
+    };
+  }
+  try {
+    const status = await runtime.linearIssueTracker.getConnectionStatus();
+    return {
+      tokenStored,
+      connected: status.connected,
+      viewerId: status.viewerId,
+      viewerName: status.viewerName,
+      checkedAt: nowIso(),
+      authMode: credentialStatus.authMode,
+      oauthAvailable: credentialStatus.oauthConfigured,
+      tokenExpiresAt: credentialStatus.tokenExpiresAt,
+      message: status.message,
+    };
+  } catch (err) {
+    return {
+      tokenStored,
+      connected: false,
+      viewerId: null,
+      viewerName: null,
+      checkedAt: nowIso(),
+      authMode: credentialStatus.authMode,
+      oauthAvailable: credentialStatus.oauthConfigured,
+      tokenExpiresAt: credentialStatus.tokenExpiresAt,
+      message: err instanceof Error && err.message ? err.message : "Linear tracker error",
+    };
+  }
+}
+
+function emptyLinearQuickView(connection: LinearConnectionStatus): CtoLinearQuickView {
+  return {
+    connection,
+    organization: null,
+    viewer: null,
+    projects: [],
+    teams: [],
+    assignedIssues: [],
+    recentIssues: [],
+    fetchedAt: nowIso(),
+    sdk: { packageName: "@linear/sdk", surfaces: [] },
+  };
 }
 
 async function resolveDefaultLaneId(runtime: AdeRuntime): Promise<string> {
@@ -3073,6 +3290,7 @@ function mapLaneSummary(lane: Record<string, unknown>): Record<string, unknown> 
     worktreePath: lane.worktreePath,
     archivedAt: lane.archivedAt,
     stackDepth: lane.stackDepth,
+    linearIssue: projectLaneLinearIssue(lane.linearIssue),
     status: lane.status
   };
 }
@@ -4657,6 +4875,23 @@ async function runTool(args: {
       throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported tool: ${name}`);
     }
 
+    if (name === "getLinearQuickView") {
+      const connection = await buildCliLinearConnectionStatus(runtime);
+      if (!connection.connected) return emptyLinearQuickView(connection);
+      try {
+        return await requireLinearIssueTracker(runtime).getQuickView(connection);
+      } catch (err) {
+        return emptyLinearQuickView({
+          ...connection,
+          connected: false,
+          viewerId: null,
+          viewerName: null,
+          checkedAt: nowIso(),
+          message: err instanceof Error && err.message ? err.message : "Linear tracker error",
+        });
+      }
+    }
+
     if (name === "getLinearSyncDashboard") {
       return requireLinearSyncService(runtime).getDashboard();
     }
@@ -4971,11 +5206,19 @@ async function runTool(args: {
     const nameArg = assertNonEmptyString(toolArgs.name, "name");
     const description = asOptionalTrimmedString(toolArgs.description);
     const parentLaneId = asOptionalTrimmedString(toolArgs.parentLaneId);
+    const baseBranch = asOptionalTrimmedString(toolArgs.baseBranch);
+    const branchName = asOptionalTrimmedString(toolArgs.branchName);
+    const linearIssue = typeof toolArgs.linearIssue === "object" && toolArgs.linearIssue != null && !Array.isArray(toolArgs.linearIssue)
+      ? parseLaneLinearIssue(toolArgs.linearIssue)
+      : null;
 
     const lane = await runtime.laneService.create({
       name: nameArg,
       ...(description ? { description } : {}),
-      ...(parentLaneId ? { parentLaneId } : {})
+      ...(parentLaneId ? { parentLaneId } : {}),
+      ...(baseBranch ? { baseBranch } : {}),
+      ...(branchName ? { branchName } : {}),
+      ...(linearIssue ? { linearIssue } : {})
     });
 
     return {
@@ -6227,10 +6470,12 @@ async function runTool(args: {
     const prSvc = requirePrService(runtime);
     let title = asOptionalTrimmedString(toolArgs.title);
     let body = typeof toolArgs.body === "string" ? toolArgs.body : null;
+    const closeLinearIssueOnMerge = asBoolean(toolArgs.closeLinearIssueOnMerge, false);
     if (!title || body == null) {
       const draft = await prSvc.draftDescription({
         laneId,
         ...(baseBranch ? { baseBranch } : {}),
+        ...(closeLinearIssueOnMerge ? { closeLinearIssueOnMerge } : {}),
       });
       title = title || asOptionalTrimmedString(draft.title) || `PR for ${laneId}`;
       body = body ?? asOptionalTrimmedString(draft.body) ?? "";
@@ -6242,6 +6487,7 @@ async function runTool(args: {
       body,
       draft,
       ...(baseBranch ? { baseBranch } : {}),
+      ...(closeLinearIssueOnMerge ? { closeLinearIssueOnMerge } : {}),
     });
     return { pr };
   }

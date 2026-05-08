@@ -5,7 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
-import type { LaneSummary } from "../../../shared/types";
+import type { LaneLinearIssue, LaneSummary } from "../../../shared/types";
 
 function renderWithRouter(ui: React.ReactElement) {
   return render(<MemoryRouter>{ui}</MemoryRouter>);
@@ -29,6 +29,38 @@ function makeLane(overrides: Partial<LaneSummary> = {}): LaneSummary {
     icon: null,
     tags: [],
     createdAt: "2026-03-23T12:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function makeLinearIssue(overrides: Partial<LaneLinearIssue> = {}): LaneLinearIssue {
+  return {
+    id: "issue-1",
+    identifier: "ADE-123",
+    title: "Connect Linear issue dropdown",
+    description: "Let PRs link back to Linear.",
+    url: "https://linear.app/ade/issue/ADE-123/connect-linear-issue-dropdown",
+    projectId: "project-1",
+    projectSlug: "ade",
+    projectName: "ADE",
+    teamId: "team-1",
+    teamKey: "ADE",
+    teamName: "ADE",
+    stateId: "state-1",
+    stateName: "In Progress",
+    stateType: "started",
+    priority: 2,
+    priorityLabel: "high",
+    labels: ["desktop"],
+    assigneeId: "user-1",
+    assigneeName: "Arul",
+    creatorId: "user-2",
+    creatorName: "Annie",
+    dueDate: null,
+    estimate: null,
+    branchName: "ade-123-connect-linear-issue-dropdown",
+    createdAt: "2026-05-08T00:00:00.000Z",
+    updatedAt: "2026-05-08T00:00:00.000Z",
     ...overrides,
   };
 }
@@ -61,6 +93,17 @@ const mockLanes: LaneSummary[] = [
     stackDepth: 1,
     status: { dirty: false, ahead: 2, behind: 0, remoteBehind: 0, rebaseInProgress: false },
     createdAt: "2026-03-23T12:02:00.000Z",
+  }),
+  makeLane({
+    id: "lane-linear",
+    name: "Linear linked lane",
+    branchRef: "ade-123-connect-linear-issue-dropdown",
+    worktreePath: "/tmp/lane-linear",
+    parentLaneId: "lane-primary",
+    stackDepth: 1,
+    status: { dirty: false, ahead: 3, behind: 0, remoteBehind: 0, rebaseInProgress: false },
+    linearIssue: makeLinearIssue(),
+    createdAt: "2026-05-08T12:02:00.000Z",
   }),
 ];
 
@@ -191,6 +234,56 @@ describe("CreatePrModal queue workflow", () => {
       expect.objectContaining({
         laneId: "lane-1",
         baseBranch: "release-9",
+      }),
+    );
+  });
+
+  it("defaults single-PR title and body from a linked Linear issue", async () => {
+    const user = userEvent.setup();
+    renderWithRouter(<CreatePrModal open onOpenChange={vi.fn()} />);
+
+    const comboboxes = screen.getAllByRole("combobox");
+    await user.selectOptions(comboboxes[0]!, "lane-linear");
+
+    await user.click(screen.getByRole("button", { name: /next step/i }));
+
+    expect(screen.getByDisplayValue("ADE-123: Connect Linear issue dropdown")).toBeTruthy();
+    expect(screen.getByDisplayValue(/Refs ADE-123/)).toBeTruthy();
+    expect(screen.getByText(/PR body will include Refs ADE-123/i)).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: /create pr/i }));
+
+    await waitFor(() => expect(createFromLane).toHaveBeenCalledTimes(1));
+    expect(createFromLane).toHaveBeenCalledWith(
+      expect.objectContaining({
+        laneId: "lane-linear",
+        title: "ADE-123: Connect Linear issue dropdown",
+        body: expect.stringContaining("Refs ADE-123"),
+        closeLinearIssueOnMerge: false,
+      }),
+    );
+  });
+
+  it("uses a closing Linear magic word when close-on-merge is enabled", async () => {
+    const user = userEvent.setup();
+    renderWithRouter(<CreatePrModal open onOpenChange={vi.fn()} />);
+
+    const comboboxes = screen.getAllByRole("combobox");
+    await user.selectOptions(comboboxes[0]!, "lane-linear");
+    await user.click(screen.getByRole("button", { name: /next step/i }));
+    await user.click(screen.getByRole("checkbox", { name: /close linear issue/i }));
+
+    expect(screen.getByDisplayValue(/Fixes ADE-123/)).toBeTruthy();
+    expect(screen.getByText(/PR body will include Fixes ADE-123/i)).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: /create pr/i }));
+
+    await waitFor(() => expect(createFromLane).toHaveBeenCalledTimes(1));
+    expect(createFromLane).toHaveBeenCalledWith(
+      expect.objectContaining({
+        laneId: "lane-linear",
+        body: expect.stringContaining("Fixes ADE-123"),
+        closeLinearIssueOnMerge: true,
       }),
     );
   });

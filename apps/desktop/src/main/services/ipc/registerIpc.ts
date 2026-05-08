@@ -526,6 +526,10 @@ import type {
   CtoClearAgentTaskSessionArgs,
   CtoGetLinearOAuthSessionArgs,
   CtoGetLinearOAuthSessionResult,
+  CtoGetLinearIssuePickerDataResult,
+  CtoLinearQuickView,
+  CtoSearchLinearIssuesArgs,
+  CtoSearchLinearIssuesResult,
   CtoRunProjectScanResult,
   CtoStartLinearOAuthResult,
   LinearConnectionStatus,
@@ -5405,6 +5409,8 @@ export function registerIpc({
       description: arg.description,
       parentLaneId: arg.parentLaneId,
       baseBranch: arg.baseBranch,
+      branchName: arg.branchName,
+      linearIssue: arg.linearIssue ?? null,
     });
     await ensureLanePortLease(ctx, lane.id);
     notifyLaneCreated(ctx, lane);
@@ -9570,6 +9576,49 @@ export function registerIpc({
       return [];
     }
   });
+
+  ipcMain.handle(IPC.ctoGetLinearQuickView, async (): Promise<CtoLinearQuickView> => {
+    const ctx = getCtx();
+    const tokenStored = Boolean(ctx.linearCredentialService?.getStatus().tokenStored);
+    const connection = await buildLinearConnectionStatus(ctx, tokenStored);
+    if (!connection.connected || !ctx.linearIssueTracker) {
+      return {
+        connection,
+        organization: null,
+        viewer: null,
+        projects: [],
+        teams: [],
+        assignedIssues: [],
+        recentIssues: [],
+        fetchedAt: nowIso(),
+        sdk: {
+          packageName: "@linear/sdk",
+          surfaces: [],
+        },
+      };
+    }
+    return ctx.linearIssueTracker.getQuickView(connection);
+  });
+
+  ipcMain.handle(IPC.ctoGetLinearIssuePickerData, async (): Promise<CtoGetLinearIssuePickerDataResult> => {
+    const ctx = getCtx();
+    if (!ctx.linearIssueTracker) throw new Error("Linear issue tracker is not available.");
+    const [projects, users, states] = await Promise.all([
+      ctx.linearIssueTracker.listProjects().catch(() => []),
+      ctx.linearIssueTracker.listUsers().catch(() => []),
+      ctx.linearIssueTracker.listWorkflowStates().catch(() => []),
+    ]);
+    return { projects, users, states };
+  });
+
+  ipcMain.handle(
+    IPC.ctoSearchLinearIssues,
+    async (_event, arg: CtoSearchLinearIssuesArgs = {}): Promise<CtoSearchLinearIssuesResult> => {
+      const ctx = getCtx();
+      if (!ctx.linearIssueTracker) throw new Error("Linear issue tracker is not available.");
+      return ctx.linearIssueTracker.searchIssues(arg);
+    }
+  );
 
   ipcMain.handle(IPC.ctoRunProjectScan, async (): Promise<CtoRunProjectScanResult> => {
     const ctx = getCtx();

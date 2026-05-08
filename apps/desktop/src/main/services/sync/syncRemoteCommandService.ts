@@ -964,6 +964,7 @@ function parseCreatePrArgs(value: Record<string, unknown>): CreatePrFromLaneArgs
     ...(asStringArray(value.labels).length ? { labels: asStringArray(value.labels) } : {}),
     ...(asStringArray(value.reviewers).length ? { reviewers: asStringArray(value.reviewers) } : {}),
     ...(typeof value.allowDirtyWorktree === "boolean" ? { allowDirtyWorktree: value.allowDirtyWorktree } : {}),
+    ...(typeof value.closeLinearIssueOnMerge === "boolean" ? { closeLinearIssueOnMerge: value.closeLinearIssueOnMerge } : {}),
     ...(strategy ? { strategy } : {}),
   };
 }
@@ -983,6 +984,7 @@ function parseDraftPrDescriptionArgs(value: Record<string, unknown>): DraftPrDes
       ? { reasoningEffort: value.reasoningEffort == null ? null : asTrimmedString(value.reasoningEffort) ?? null }
       : {}),
     ...(asTrimmedString(value.baseBranch) ? { baseBranch: asTrimmedString(value.baseBranch)! } : {}),
+    ...(typeof value.closeLinearIssueOnMerge === "boolean" ? { closeLinearIssueOnMerge: value.closeLinearIssueOnMerge } : {}),
   };
 }
 

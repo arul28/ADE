@@ -665,6 +665,59 @@ describe("linearClient", () => {
     ]);
   });
 
+  it("searches issues with picker filters and pagination", async () => {
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { query?: string; variables?: Record<string, unknown> };
+      if (!body.query?.includes("SearchIssues")) {
+        return new Response(JSON.stringify({ data: {} }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      expect(body.query).toContain('project: { id: { eq: "project-1" } }');
+      expect(body.query).toContain('state: { type: { in: ["unstarted", "started"] } }');
+      expect(body.query).toContain('assignee: { id: { eq: "user-1" } }');
+      expect(body.query).toContain("priority: { eq: 2 }");
+      expect(body.query).toContain("containsIgnoreCase");
+      expect(body.variables).toMatchObject({
+        first: 25,
+        after: "cursor-1",
+        includeArchived: false,
+      });
+      return new Response(
+        JSON.stringify({
+          data: {
+            issues: {
+              pageInfo: { hasNextPage: true, endCursor: "cursor-2" },
+              nodes: [makeIssueNode("7", "2026-03-05T00:07:00.000Z")],
+            },
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    });
+
+    const client = createLinearClient({
+      credentials: {
+        getTokenOrThrow: () => "lin_api_test",
+        getStatus: () => ({ authMode: "manual" }),
+      } as any,
+      fetchImpl: fetchImpl as any,
+      logger: null,
+    });
+
+    const result = await client.searchIssues({
+      projectId: "project-1",
+      stateTypes: ["unstarted", "started"],
+      assigneeId: "user-1",
+      priority: 2,
+      query: "auth",
+      first: 25,
+      after: "cursor-1",
+    });
+
+    expect(result.pageInfo).toEqual({ hasNextPage: true, endCursor: "cursor-2" });
+    expect(result.issues).toHaveLength(1);
+    expect(result.issues[0]?.identifier).toBe("ABC-7");
+  });
+
   it("strips a pasted bearer prefix from manual API keys", async () => {
     const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
       expect(init?.headers).toMatchObject({ authorization: "lin_api_test" });

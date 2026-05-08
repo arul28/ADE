@@ -7,6 +7,7 @@ import { isWithinDir, normalizeBranchName } from "../shared/utils";
 import { fetchRemoteTrackingBranch, resolveQueueRebaseOverride, type QueueRebaseOverride } from "../shared/queueRebase";
 import { detectConflictKind } from "../git/gitConflictState";
 import { shouldLaneTrackParent } from "../../../shared/laneBaseResolution";
+import { linearIssueBranchName, sanitizeLinearIssueBranchName } from "../../../shared/linearIssueBranch";
 import type { createOperationService } from "../history/operationService";
 import type { Logger } from "../logging/logger";
 import type {
@@ -27,6 +28,7 @@ import type {
   LaneBranchSwitchArgs,
   LaneBranchSwitchPreview,
   LaneBranchSwitchResult,
+  LaneLinearIssue,
   MissionLaneRole,
   LaneStateSnapshotSummary,
   LaneStatus,
@@ -96,6 +98,16 @@ type LaneBranchProfileRow = {
   last_checked_out_at: string | null;
 };
 
+type LaneLinearIssueRow = {
+  id: string;
+  project_id: string;
+  lane_id: string;
+  issue_id: string;
+  issue_json: string;
+  created_at: string;
+  updated_at: string;
+};
+
 const DEFAULT_LANE_STATUS: LaneStatus = { dirty: false, ahead: 0, behind: 0, remoteBehind: -1, rebaseInProgress: false };
 const LANE_LIST_CACHE_TTL_MS = 10_000;
 
@@ -115,7 +127,8 @@ function cloneLaneSummary(summary: LaneSummary): LaneSummary {
     status: cloneLaneStatus(summary.status),
     parentStatus: summary.parentStatus ? cloneLaneStatus(summary.parentStatus) : null,
     tags: [...summary.tags],
-    activeBranchProfile: summary.activeBranchProfile ? { ...summary.activeBranchProfile } : null
+    activeBranchProfile: summary.activeBranchProfile ? { ...summary.activeBranchProfile } : null,
+    linearIssue: summary.linearIssue ? { ...summary.linearIssue, labels: [...summary.linearIssue.labels] } : null
   };
 }
 
@@ -167,6 +180,64 @@ function parseSummaryRecord(raw: string | null): Record<string, unknown> | null 
   }
 }
 
+function parseLaneLinearIssue(raw: string | null): LaneLinearIssue | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const record = parsed as Record<string, unknown>;
+    const id = typeof record.id === "string" ? record.id : "";
+    const identifier = typeof record.identifier === "string" ? record.identifier : "";
+    const title = typeof record.title === "string" ? record.title : "";
+    const projectId = typeof record.projectId === "string" ? record.projectId : "";
+    const projectSlug = typeof record.projectSlug === "string" ? record.projectSlug : "";
+    const teamId = typeof record.teamId === "string" ? record.teamId : "";
+    const teamKey = typeof record.teamKey === "string" ? record.teamKey : "";
+    const stateId = typeof record.stateId === "string" ? record.stateId : "";
+    const stateName = typeof record.stateName === "string" ? record.stateName : "";
+    const stateType = typeof record.stateType === "string" ? record.stateType : "";
+    const createdAt = typeof record.createdAt === "string" ? record.createdAt : "";
+    const updatedAt = typeof record.updatedAt === "string" ? record.updatedAt : "";
+    if (!id || !identifier || !title || !projectId || !projectSlug || !teamId || !teamKey || !stateId || !stateName || !stateType || !createdAt || !updatedAt) {
+      return null;
+    }
+    const priority = typeof record.priority === "number" && Number.isFinite(record.priority) ? record.priority : 0;
+    const priorityLabel = record.priorityLabel === "urgent" || record.priorityLabel === "high" || record.priorityLabel === "normal" || record.priorityLabel === "low"
+      ? record.priorityLabel
+      : "none";
+    return {
+      id,
+      identifier,
+      title,
+      description: typeof record.description === "string" ? record.description : null,
+      url: typeof record.url === "string" ? record.url : null,
+      projectId,
+      projectSlug,
+      projectName: typeof record.projectName === "string" ? record.projectName : null,
+      teamId,
+      teamKey,
+      teamName: typeof record.teamName === "string" ? record.teamName : null,
+      stateId,
+      stateName,
+      stateType,
+      priority,
+      priorityLabel,
+      labels: Array.isArray(record.labels) ? record.labels.filter((entry): entry is string => typeof entry === "string") : [],
+      assigneeId: typeof record.assigneeId === "string" ? record.assigneeId : null,
+      assigneeName: typeof record.assigneeName === "string" ? record.assigneeName : null,
+      creatorId: typeof record.creatorId === "string" ? record.creatorId : null,
+      creatorName: typeof record.creatorName === "string" ? record.creatorName : null,
+      dueDate: typeof record.dueDate === "string" ? record.dueDate : null,
+      estimate: typeof record.estimate === "number" && Number.isFinite(record.estimate) ? record.estimate : null,
+      branchName: typeof record.branchName === "string" ? record.branchName : null,
+      createdAt,
+      updatedAt,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function toLaneSummary(args: {
   row: LaneRow;
   status: LaneStatus;
@@ -174,8 +245,9 @@ function toLaneSummary(args: {
   childCount: number;
   stackDepth: number;
   activeBranchProfile?: LaneBranchProfile | null;
+  linearIssue?: LaneLinearIssue | null;
 }): LaneSummary {
-  const { row, status, parentStatus, childCount, stackDepth, activeBranchProfile } = args;
+  const { row, status, parentStatus, childCount, stackDepth, activeBranchProfile, linearIssue } = args;
   return {
     id: row.id,
     name: row.name,
@@ -199,7 +271,8 @@ function toLaneSummary(args: {
     laneRole: row.lane_role,
     createdAt: row.created_at,
     archivedAt: row.archived_at,
-    activeBranchProfile: activeBranchProfile ?? null
+    activeBranchProfile: activeBranchProfile ?? null,
+    linearIssue: linearIssue ?? null
   };
 }
 
@@ -661,6 +734,25 @@ export function createLaneService({
   const getLaneRow = (laneId: string) =>
     db.get<LaneRow>("select * from lanes where id = ? and project_id = ? limit 1", [laneId, projectId]);
 
+  const getLaneLinearIssue = (laneId: string): LaneLinearIssue | null => {
+    try {
+      const row = db.get<LaneLinearIssueRow>(
+        `
+          select *
+          from lane_linear_issues
+          where project_id = ?
+            and lane_id = ?
+          order by updated_at desc
+          limit 1
+        `,
+        [projectId, laneId],
+      );
+      return parseLaneLinearIssue(row?.issue_json ?? null);
+    } catch {
+      return null;
+    }
+  };
+
   const getAllLaneRows = (includeArchived = false) =>
     db.all<LaneRow>(
       includeArchived
@@ -791,6 +883,125 @@ export function createLaneService({
       );
     }
     return toLaneBranchProfile(profile);
+  };
+
+  const normalizeLaneLinearIssue = (issue: LaneLinearIssue, branchName: string): LaneLinearIssue => ({
+    ...issue,
+    id: issue.id.trim(),
+    identifier: issue.identifier.trim(),
+    title: issue.title.trim(),
+    description: issue.description ?? null,
+    url: issue.url ?? null,
+    projectId: issue.projectId.trim(),
+    projectSlug: issue.projectSlug.trim(),
+    projectName: issue.projectName ?? null,
+    teamId: issue.teamId.trim(),
+    teamKey: issue.teamKey.trim(),
+    teamName: issue.teamName ?? null,
+    stateId: issue.stateId.trim(),
+    stateName: issue.stateName.trim(),
+    stateType: issue.stateType.trim(),
+    labels: issue.labels.map((entry) => entry.trim()).filter(Boolean).slice(0, 24),
+    assigneeId: issue.assigneeId ?? null,
+    assigneeName: issue.assigneeName ?? null,
+    creatorId: issue.creatorId ?? null,
+    creatorName: issue.creatorName ?? null,
+    dueDate: issue.dueDate ?? null,
+    estimate: issue.estimate ?? null,
+    branchName,
+  });
+
+  const upsertLaneLinearIssue = (laneId: string, issue: LaneLinearIssue, branchName: string): LaneLinearIssue => {
+    const normalized = normalizeLaneLinearIssue(issue, branchName);
+    if (!normalized.id || !normalized.identifier || !normalized.title) {
+      throw new Error("Linear issue attachment is missing required issue details.");
+    }
+    const now = new Date().toISOString();
+    db.run("begin");
+    try {
+      db.run(
+        `
+          delete from lane_linear_issues
+          where project_id = ?
+            and lane_id = ?
+        `,
+        [projectId, laneId],
+      );
+      db.run(
+        `
+          insert into lane_linear_issues(
+            id, project_id, lane_id, issue_id, issue_json, created_at, updated_at
+          )
+          values(?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          randomUUID(),
+          projectId,
+          laneId,
+          normalized.id,
+          JSON.stringify(normalized),
+          now,
+          now,
+        ],
+      );
+      db.run("commit");
+    } catch (err) {
+      try { db.run("rollback"); } catch { /* keep the original upsert error */ }
+      throw err;
+    }
+    return normalized;
+  };
+
+  const resolveCreateBranchRef = async (args: {
+    name: string;
+    laneId: string;
+    branchName?: string | null;
+    linearIssue?: LaneLinearIssue | null;
+  }): Promise<string> => {
+    const suggested = args.branchName?.trim()
+      || (args.linearIssue ? linearIssueBranchName(args.linearIssue) : "");
+    const isCustomBranch = suggested.length > 0;
+    const slug = slugify(args.name);
+    const fallback = `ade/${slug}-${args.laneId.slice(0, 8)}`;
+    const branchRef = suggested
+      ? sanitizeLinearIssueBranchName(suggested)
+      : fallback;
+
+    const check = await runGit(["check-ref-format", "--branch", branchRef], {
+      cwd: projectRoot,
+      timeoutMs: 8_000,
+    });
+    if (check.exitCode !== 0) {
+      throw new Error(`Generated branch name "${branchRef}" is not valid.`);
+    }
+
+    const localExists = await runGit(["show-ref", "--verify", "--quiet", `refs/heads/${branchRef}`], {
+      cwd: projectRoot,
+      timeoutMs: 8_000,
+    }).then((res) => res.exitCode === 0);
+    if (localExists) {
+      throw new Error(`Branch "${branchRef}" already exists locally.`);
+    }
+
+    if (isCustomBranch) {
+      const remoteTrackingExists = await runGit(["show-ref", "--verify", "--quiet", `refs/remotes/origin/${branchRef}`], {
+        cwd: projectRoot,
+        timeoutMs: 8_000,
+      }).then((res) => res.exitCode === 0);
+      if (remoteTrackingExists) {
+        throw new Error(`Branch "origin/${branchRef}" already exists. Detach the Linear issue or choose a different issue.`);
+      }
+
+      const remoteExists = await runGit(["ls-remote", "--heads", "origin", branchRef], {
+        cwd: projectRoot,
+        timeoutMs: 15_000,
+      }).then((res) => res.exitCode === 0 && res.stdout.trim().length > 0);
+      if (remoteExists) {
+        throw new Error(`Branch "origin/${branchRef}" already exists. Detach the Linear issue or choose a different issue.`);
+      }
+    }
+
+    return branchRef;
   };
 
   const ensureBranchProfileForRow = (row: LaneRow): LaneBranchProfile =>
@@ -1280,7 +1491,8 @@ export function createLaneService({
             parentStatus,
             childCount: childCountMap.get(row.id) ?? 0,
             stackDepth,
-            activeBranchProfile: ensureBranchProfileForRow(row)
+            activeBranchProfile: ensureBranchProfileForRow(row),
+            linearIssue: getLaneLinearIssue(row.id),
           })
         );
         if (includeStatus) {
@@ -1312,12 +1524,19 @@ export function createLaneService({
     folder?: string;
     missionId?: string | null;
     laneRole?: MissionLaneRole | null;
+    branchName?: string | null;
+    linearIssue?: LaneLinearIssue | null;
   }): Promise<LaneSummary> => {
     const laneId = randomUUID();
     const now = new Date().toISOString();
     const slug = slugify(args.name);
     const suffix = laneId.slice(0, 8);
-    const branchRef = `ade/${slug}-${suffix}`;
+    const branchRef = await resolveCreateBranchRef({
+      name: args.name,
+      laneId,
+      branchName: args.branchName,
+      linearIssue: args.linearIssue,
+    });
     const worktreePath = path.join(worktreesDir, `${slug}-${suffix}`);
 
     await runGitOrThrow(["worktree", "add", "-b", branchRef, worktreePath, args.startPoint], {
@@ -1349,6 +1568,9 @@ export function createLaneService({
         now
       ]
     );
+    const linearIssue = args.linearIssue
+      ? upsertLaneLinearIssue(laneId, args.linearIssue, branchRef)
+      : null;
     invalidateLaneListCache();
 
     // Best-effort initial push to establish upstream tracking
@@ -1379,7 +1601,8 @@ export function createLaneService({
       parentStatus,
       childCount: 0,
       stackDepth: computeStackDepth({ laneId: laneId, rowsById, memo: new Map() }),
-      activeBranchProfile: ensureBranchProfileForRow(row)
+      activeBranchProfile: ensureBranchProfileForRow(row),
+      linearIssue,
     });
   };
 
@@ -1568,7 +1791,7 @@ export function createLaneService({
       invalidateLaneListCache();
     },
 
-    async create({ name, description, parentLaneId, baseBranch }: CreateLaneArgs): Promise<LaneSummary> {
+    async create({ name, description, parentLaneId, baseBranch, branchName, linearIssue }: CreateLaneArgs): Promise<LaneSummary> {
       if (parentLaneId) {
         const parent = getLaneRow(parentLaneId);
         if (!parent) throw new Error(`Parent lane not found: ${parentLaneId}`);
@@ -1615,7 +1838,9 @@ export function createLaneService({
           description,
           baseRef: requestedBaseRef,
           startPoint: parentHeadSha,
-          parentLaneId: parent.lane_type === "primary" ? null : parent.id
+          parentLaneId: parent.lane_type === "primary" ? null : parent.id,
+          branchName,
+          linearIssue,
         });
       }
 
@@ -1632,7 +1857,9 @@ export function createLaneService({
         description,
         baseRef: requestedBaseRef,
         startPoint,
-        parentLaneId: null
+        parentLaneId: null,
+        branchName,
+        linearIssue,
       });
     },
 
@@ -1680,6 +1907,8 @@ export function createLaneService({
           folder: args.folder,
           missionId: args.missionId ?? null,
           laneRole: args.laneRole ?? null,
+          branchName: args.branchName,
+          linearIssue: args.linearIssue ?? null,
         });
       }
 
@@ -1699,6 +1928,8 @@ export function createLaneService({
           folder: args.folder,
           missionId: args.missionId ?? null,
           laneRole: args.laneRole ?? null,
+          branchName: args.branchName,
+          linearIssue: args.linearIssue ?? null,
         });
       }
 
@@ -1712,7 +1943,9 @@ export function createLaneService({
         parentLaneId: parent.id,
         folder: args.folder,
         missionId: args.missionId ?? null,
-        laneRole: args.laneRole ?? null
+        laneRole: args.laneRole ?? null,
+        branchName: args.branchName,
+        linearIssue: args.linearIssue ?? null,
       });
     },
 
@@ -3399,10 +3632,16 @@ export function createLaneService({
       return row.worktree_path;
     },
 
-    getLaneBaseAndBranch(laneId: string): { baseRef: string; branchRef: string; worktreePath: string; laneType: LaneType } {
+    getLaneBaseAndBranch(laneId: string): { baseRef: string; branchRef: string; worktreePath: string; laneType: LaneType; linearIssue: LaneLinearIssue | null } {
       const row = getLaneRow(laneId);
       if (!row) throw new Error(`Lane not found: ${laneId}`);
-      return { baseRef: row.base_ref, branchRef: row.branch_ref, worktreePath: row.worktree_path, laneType: row.lane_type };
+      return {
+        baseRef: row.base_ref,
+        branchRef: row.branch_ref,
+        worktreePath: row.worktree_path,
+        laneType: row.lane_type,
+        linearIssue: getLaneLinearIssue(laneId),
+      };
     },
 
     updateBranchRef(laneId: string, branchRef: string): void {

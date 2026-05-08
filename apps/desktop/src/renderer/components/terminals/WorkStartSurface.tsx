@@ -3,7 +3,7 @@ import {
   Terminal,
   ArrowRight,
 } from "@phosphor-icons/react";
-import type { AgentChatPermissionMode, AgentChatSession, LaneSummary } from "../../../shared/types";
+import type { AgentChatPermissionMode, AgentChatSession, LaneLinearIssue, LaneSummary } from "../../../shared/types";
 import type { WorkDraftKind } from "../../state/appStore";
 import { useAppStore } from "../../state/appStore";
 import { AgentChatPane } from "../chat/AgentChatPane";
@@ -29,6 +29,8 @@ type WorkStartSurfaceProps = {
     env?: Record<string, string>;
     tracked?: boolean;
   }) => Promise<unknown>;
+  initialLinearIssueContext?: LaneLinearIssue | null;
+  onInitialLinearIssueContextConsumed?: () => void;
 };
 
 type CliProviderOption = {
@@ -61,6 +63,8 @@ export function WorkStartSurface({
   lanes,
   onOpenChatSession,
   onLaunchPtySession,
+  initialLinearIssueContext = null,
+  onInitialLinearIssueContextConsumed,
 }: WorkStartSurfaceProps) {
   const globallySelectedLaneId = useAppStore((s) => s.selectedLaneId);
   const selectLaneGlobal = useAppStore((s) => s.selectLane);
@@ -198,6 +202,8 @@ export function WorkStartSurface({
               hideLaneToolDrawers
               forceDraftMode
               embeddedWorkLayout
+              initialLinearIssueContext={initialLinearIssueContext}
+              onInitialLinearIssueContextConsumed={onInitialLinearIssueContextConsumed}
               onSessionCreated={onOpenChatSession}
               availableLanes={lanes}
               onLaneChange={setLaneAndSync}

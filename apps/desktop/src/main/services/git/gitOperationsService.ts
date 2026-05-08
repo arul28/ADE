@@ -27,8 +27,10 @@ import type {
   GitSyncArgs,
   GitSyncMode,
   GitUpstreamSyncStatus,
+  LaneLinearIssue,
   LaneType
 } from "../../../shared/types";
+import { ensureLinearCommitReference } from "../../../shared/linearMagicWords";
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
 import type { createOperationService } from "../history/operationService";
@@ -41,6 +43,7 @@ type LaneInfo = {
   branchRef: string;
   worktreePath: string;
   laneType: LaneType;
+  linearIssue?: LaneLinearIssue | null;
 };
 
 type CommitMessagePromptContext = {
@@ -512,7 +515,11 @@ export function createGitOperationsService({
     },
 
     async commit(args: GitCommitArgs): Promise<GitActionResult> {
-      const message = args.message.trim();
+      const inputMessage = args.message.trim();
+      const laneForMessage = laneService.getLaneBaseAndBranch(args.laneId);
+      const message = laneForMessage.linearIssue
+        ? ensureLinearCommitReference(inputMessage, laneForMessage.linearIssue)
+        : inputMessage;
       if (!message.length) {
         throw new Error("Commit message is required");
       }
@@ -547,8 +554,11 @@ export function createGitOperationsService({
           prompt,
           model
         });
+        const message = lane.linearIssue
+          ? ensureLinearCommitReference(normalizeCommitMessage(result.text), lane.linearIssue)
+          : normalizeCommitMessage(result.text);
         return {
-          message: normalizeCommitMessage(result.text),
+          message,
           model: result.model ?? model
         };
       } catch (error) {
