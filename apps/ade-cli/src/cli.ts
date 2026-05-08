@@ -2715,8 +2715,8 @@ function buildMissionsPlan(args: string[]): CliPlan {
   }
 
   if (sub === "cancel") {
-    const missionId = requireValue(readValue(args, ["--mission", "--mission-id"]) ?? firstPositional(args), "missionId");
-    return { kind: "execute", label: "mission cancel", formatter: "mission-detail", steps: [actionStep("result", "orchestrator", "cancelRunGracefully", collectGenericObjectArgs(args, { missionId, reason: readValue(args, ["--reason"]) }))] };
+    const runId = requireValue(readValue(args, ["--run", "--run-id"]) ?? readValue(args, ["--mission", "--mission-id"]) ?? firstPositional(args), "runId");
+    return { kind: "execute", label: "mission cancel", formatter: "mission-detail", steps: [actionStep("result", "orchestrator", "cancelRunGracefully", collectGenericObjectArgs(args, { runId, reason: readValue(args, ["--reason"]) }))] };
   }
 
   return { kind: "execute", label: `mission ${sub}`, steps: [actionStep("result", "mission", sub, collectGenericObjectArgs(args))] };
@@ -4705,38 +4705,8 @@ async function startHeadlessRpcSocketServer(args: {
     return null;
   }
   fs.mkdirSync(path.dirname(args.socketPath), { recursive: true });
-  const activeConnections = new Set<net.Socket>();
-  const activeStops = new Set<ReturnType<typeof startJsonRpcServer>>();
-  const server = net.createServer((conn) => {
-    activeConnections.add(conn);
-    const handler = args.createHandler();
-    const transport: JsonRpcTransport = {
-      onData(callback) {
-        conn.on("data", (chunk) => callback(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
-      },
-      write(data) {
-        conn.write(data);
-      },
-      close() {
-        if (!conn.destroyed) conn.destroy();
-      },
-    };
-    const stop = startJsonRpcServer(handler, transport, { nonFatal: true });
-    activeStops.add(stop);
-    let cleanedUp = false;
-    const cleanup = () => {
-      if (cleanedUp) return;
-      cleanedUp = true;
-      activeConnections.delete(conn);
-      activeStops.delete(stop);
-      try { stop(); } catch {}
-      try { handler.dispose?.(); } catch {}
-    };
-    conn.once("close", cleanup);
-    conn.once("end", cleanup);
-    conn.once("error", cleanup);
-    conn.on("error", () => {});
-  });
+  const serverState = createHeadlessRpcServer(args.createHandler);
+  const { server } = serverState;
 
   await new Promise<void>((resolve, reject) => {
     const handleListening = () => {
@@ -4753,13 +4723,7 @@ async function startHeadlessRpcSocketServer(args: {
   });
 
   return () => {
-    for (const conn of activeConnections) {
-      try { conn.destroy(); } catch {}
-    }
-    for (const stop of activeStops) {
-      try { stop(); } catch {}
-    }
-    try { server.close(); } catch {}
+    stopHeadlessRpcServer(serverState);
     try { fs.unlinkSync(args.socketPath); } catch {}
   };
 }
@@ -4767,38 +4731,8 @@ async function startHeadlessRpcSocketServer(args: {
 async function startHeadlessRpcTcpServer(args: {
   createHandler: () => JsonRpcHandler & { dispose?: () => void };
 }): Promise<{ url: string; stop: () => void }> {
-  const activeConnections = new Set<net.Socket>();
-  const activeStops = new Set<ReturnType<typeof startJsonRpcServer>>();
-  const server = net.createServer((conn) => {
-    activeConnections.add(conn);
-    const handler = args.createHandler();
-    const transport: JsonRpcTransport = {
-      onData(callback) {
-        conn.on("data", (chunk) => callback(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
-      },
-      write(data) {
-        conn.write(data);
-      },
-      close() {
-        if (!conn.destroyed) conn.destroy();
-      },
-    };
-    const stop = startJsonRpcServer(handler, transport, { nonFatal: true });
-    activeStops.add(stop);
-    let cleanedUp = false;
-    const cleanup = () => {
-      if (cleanedUp) return;
-      cleanedUp = true;
-      activeConnections.delete(conn);
-      activeStops.delete(stop);
-      try { stop(); } catch {}
-      try { handler.dispose?.(); } catch {}
-    };
-    conn.once("close", cleanup);
-    conn.once("end", cleanup);
-    conn.once("error", cleanup);
-    conn.on("error", () => {});
-  });
+  const serverState = createHeadlessRpcServer(args.createHandler);
+  const { server } = serverState;
 
   const port = await new Promise<number>((resolve, reject) => {
     const handleListening = () => {
@@ -4821,16 +4755,60 @@ async function startHeadlessRpcTcpServer(args: {
 
   return {
     url: `tcp://127.0.0.1:${port}`,
-    stop: () => {
-      for (const conn of activeConnections) {
-        try { conn.destroy(); } catch {}
-      }
-      for (const stop of activeStops) {
-        try { stop(); } catch {}
-      }
-      try { server.close(); } catch {}
-    },
+    stop: () => stopHeadlessRpcServer(serverState),
   };
+}
+
+type HeadlessRpcServerState = {
+  activeConnections: Set<net.Socket>;
+  activeStops: Set<ReturnType<typeof startJsonRpcServer>>;
+  server: net.Server;
+};
+
+function createHeadlessRpcServer(createHandler: () => JsonRpcHandler & { dispose?: () => void }): HeadlessRpcServerState {
+  const activeConnections = new Set<net.Socket>();
+  const activeStops = new Set<ReturnType<typeof startJsonRpcServer>>();
+  const server = net.createServer((conn) => {
+    activeConnections.add(conn);
+    const handler = createHandler();
+    const transport: JsonRpcTransport = {
+      onData(callback) {
+        conn.on("data", (chunk) => callback(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+      },
+      write(data) {
+        conn.write(data);
+      },
+      close() {
+        if (!conn.destroyed) conn.destroy();
+      },
+    };
+    const stop = startJsonRpcServer(handler, transport, { nonFatal: true });
+    activeStops.add(stop);
+    let cleanedUp = false;
+    const cleanup = () => {
+      if (cleanedUp) return;
+      cleanedUp = true;
+      activeConnections.delete(conn);
+      activeStops.delete(stop);
+      try { stop(); } catch {}
+      try { handler.dispose?.(); } catch {}
+    };
+    conn.once("close", cleanup);
+    conn.once("end", cleanup);
+    conn.once("error", cleanup);
+    conn.on("error", () => {});
+  });
+  return { activeConnections, activeStops, server };
+}
+
+function stopHeadlessRpcServer(state: HeadlessRpcServerState): void {
+  for (const conn of state.activeConnections) {
+    try { conn.destroy(); } catch {}
+  }
+  for (const stop of state.activeStops) {
+    try { stop(); } catch {}
+  }
+  try { state.server.close(); } catch {}
 }
 
 function discoverHeadlessWorktreeSocketPaths(projectRoot: string): string[] {

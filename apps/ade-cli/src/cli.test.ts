@@ -389,6 +389,25 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("builds mission cancel with a run id for graceful cancellation", () => {
+    const plan = buildCliPlan(["missions", "cancel", "run-1", "--reason", "superseded"]);
+
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.formatter).toBe("mission-detail");
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "orchestrator",
+        action: "cancelRunGracefully",
+        args: {
+          runId: "run-1",
+          reason: "superseded",
+        },
+      },
+    });
+  });
+
   it("builds shell-friendly worker mission tool aliases", () => {
     const pending = buildCliPlan(["get_pending_messages", "--limit", "10"]);
     expect(pending.kind).toBe("execute");
