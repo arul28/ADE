@@ -18,7 +18,7 @@ struct WorkTerminalEmulatorView: UIViewRepresentable {
   func makeUIView(context: Context) -> ADETerminalTextView {
     let view = ADETerminalTextView()
     view.onViewportChange = { viewport in
-      context.coordinator.updateViewport(viewport, rawText: rawText, view: view)
+      context.coordinator.updateViewport(viewport, rawText: rawText, revision: revision, view: view)
     }
     return view
   }
@@ -26,7 +26,7 @@ struct WorkTerminalEmulatorView: UIViewRepresentable {
   func updateUIView(_ view: ADETerminalTextView, context: Context) {
     view.onViewportChange = { viewport in
       context.coordinator.onViewportChange = onViewportChange
-      context.coordinator.updateViewport(viewport, rawText: rawText, view: view)
+      context.coordinator.updateViewport(viewport, rawText: rawText, revision: revision, view: view)
     }
     context.coordinator.onViewportChange = onViewportChange
     context.coordinator.render(rawText: rawText, revision: revision, in: view)
@@ -43,13 +43,14 @@ struct WorkTerminalEmulatorView: UIViewRepresentable {
       self.onViewportChange = onViewportChange
     }
 
-    func updateViewport(_ viewport: WorkTerminalViewport, rawText: String, view: ADETerminalTextView) {
+    func updateViewport(_ viewport: WorkTerminalViewport, rawText: String, revision: Int, view: ADETerminalTextView) {
       guard viewport != lastViewport else { return }
       lastViewport = viewport
       screen.resize(cols: viewport.cols)
       screen.reset()
       screen.write(rawText)
       lastRawText = rawText
+      lastRevision = revision
       view.render(screen.attributedString(font: view.terminalFont))
       onViewportChange(viewport)
     }
@@ -375,8 +376,11 @@ private final class WorkTerminalScreen {
     }
   }
 
-  private func applySGR(_ params: [Int]) {
-    for param in params {
+  private func applySGR(_ rawParams: [Int]) {
+    let params = rawParams.isEmpty ? [0] : rawParams
+    var index = params.startIndex
+    while index < params.endIndex {
+      let param = params[index]
       switch param {
       case 0:
         foreground = nil
@@ -389,11 +393,22 @@ private final class WorkTerminalScreen {
         foreground = ansiColor(index: param - 30, bright: false)
       case 90...97:
         foreground = ansiColor(index: param - 90, bright: true)
+      case 38:
+        if index + 2 < params.endIndex, params[index + 1] == 5 {
+          if let color = ansi256Color(params[index + 2]) {
+            foreground = color
+          }
+          index += 2
+        } else if index + 4 < params.endIndex, params[index + 1] == 2 {
+          foreground = rgbColor(red: params[index + 2], green: params[index + 3], blue: params[index + 4])
+          index += 4
+        }
       case 39:
         foreground = nil
       default:
         break
       }
+      index += 1
     }
   }
 
@@ -408,6 +423,36 @@ private final class WorkTerminalScreen {
     ]
     let palette = bright ? brightColors : normal
     return palette[max(0, min(index, palette.count - 1))]
+  }
+
+  private func ansi256Color(_ code: Int) -> UIColor? {
+    switch code {
+    case 0...7:
+      return ansiColor(index: code, bright: false)
+    case 8...15:
+      return ansiColor(index: code - 8, bright: true)
+    case 16...231:
+      let value = code - 16
+      let levels: [CGFloat] = [0, 95, 135, 175, 215, 255]
+      return UIColor(
+        red: levels[value / 36] / 255,
+        green: levels[(value / 6) % 6] / 255,
+        blue: levels[value % 6] / 255,
+        alpha: 1
+      )
+    case 232...255:
+      let level = CGFloat(8 + (code - 232) * 10) / 255
+      return UIColor(white: level, alpha: 1)
+    default:
+      return nil
+    }
+  }
+
+  private func rgbColor(red: Int, green: Int, blue: Int) -> UIColor {
+    func channel(_ value: Int) -> CGFloat {
+      CGFloat(max(0, min(255, value))) / 255
+    }
+    return UIColor(red: channel(red), green: channel(green), blue: channel(blue), alpha: 1)
   }
 }
 

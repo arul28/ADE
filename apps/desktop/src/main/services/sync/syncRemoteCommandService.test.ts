@@ -1677,6 +1677,19 @@ describe("createSyncRemoteCommandService", () => {
       }));
     });
 
+    it("work.startCliSession uses desktop-sized defaults when dimensions are omitted", async () => {
+      await service.execute(makePayload("work.startCliSession", {
+        laneId: "lane-1",
+        provider: "codex",
+      }));
+      expect(ptyService.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          cols: 120,
+          rows: 36,
+        }),
+      );
+    });
+
     it("work.startCliSession opens a shell without accepting arbitrary startup commands", async () => {
       await service.execute(makePayload("work.startCliSession", {
         laneId: "lane-1",
@@ -1704,6 +1717,15 @@ describe("createSyncRemoteCommandService", () => {
         laneId: "lane-1",
         provider: "node -e nope",
       }))).rejects.toThrow("work.startCliSession requires provider.");
+    });
+
+    it("work.startCliSession rejects unsupported permission/provider combinations", async () => {
+      await expect(service.execute(makePayload("work.startCliSession", {
+        laneId: "lane-1",
+        provider: "claude",
+        permissionMode: "config-toml",
+      }))).rejects.toThrow("config-toml is only supported for Codex");
+      expect(ptyService.create).not.toHaveBeenCalled();
     });
 
     it("work.startCliSession pre-assigns a claude --session-id so resume is reliable", async () => {
@@ -1748,6 +1770,53 @@ describe("createSyncRemoteCommandService", () => {
         "codex --no-alt-screen --sandbox workspace-write --ask-for-approval untrusted resume thread-77",
       );
       expect(call?.command).toBeUndefined();
+    });
+
+    it("work.startCliSession fails fast when resumeSessionId is missing", async () => {
+      sessionService.get.mockReturnValue(null);
+
+      await expect(service.execute(makePayload("work.startCliSession", {
+        laneId: "lane-1",
+        provider: "codex",
+        resumeSessionId: "missing-session",
+      }))).rejects.toThrow("missing-session");
+      expect(ptyService.create).not.toHaveBeenCalled();
+    });
+
+    it("work.startCliSession fails fast when resumeSessionId belongs to a different provider", async () => {
+      sessionService.get.mockReturnValue({
+        id: "pty-existing",
+        laneId: "lane-1",
+        ptyId: "pty-existing",
+        toolType: "claude",
+        title: "Claude",
+        status: "running",
+        resumeCommand: "claude --resume old",
+        resumeMetadata: {
+          provider: "claude",
+          targetKind: "session",
+          targetId: "old",
+          launch: { permissionMode: "default" },
+        },
+      });
+
+      await expect(service.execute(makePayload("work.startCliSession", {
+        laneId: "lane-1",
+        provider: "codex",
+        resumeSessionId: "pty-existing",
+      }))).rejects.toThrow("belongs to claude, not codex");
+      expect(ptyService.create).not.toHaveBeenCalled();
+    });
+
+    it("work.startCliSession disposes the created session when initial input cannot be written", async () => {
+      ptyService.writeBySessionId.mockReturnValueOnce(false);
+
+      await expect(service.execute(makePayload("work.startCliSession", {
+        laneId: "lane-1",
+        provider: "codex",
+        initialInput: "fix the tests",
+      }))).rejects.toThrow("could not write initialInput");
+      expect(ptyService.dispose).toHaveBeenCalledWith({ ptyId: "pty-proc", sessionId: "pty-1" });
     });
 
     it("work.closeSession disposes pty if session has a ptyId", async () => {

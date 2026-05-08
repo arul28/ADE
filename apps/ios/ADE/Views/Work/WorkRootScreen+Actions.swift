@@ -343,10 +343,24 @@ extension WorkRootScreen {
           title: session.title,
           resumeSessionId: session.id
         )
-        if let resumed = result.session {
-          optimisticSessions[resumed.id] = resumed
+        let sessionToOpen: TerminalSessionSummary = {
+          if let resumed = result.session {
+            return resumed
+          }
+          var fallback = session
+          fallback.id = result.sessionId
+          fallback.ptyId = result.ptyId ?? session.ptyId
+          fallback.status = "running"
+          fallback.runtimeState = "running"
+          fallback.endedAt = nil
+          fallback.exitCode = nil
+          return fallback
+        }()
+        if sessionToOpen.id != session.id {
+          optimisticSessions[session.id] = nil
         }
-        openSession(session)
+        optimisticSessions[sessionToOpen.id] = sessionToOpen
+        openSession(sessionToOpen)
         await reload(refreshRemote: true)
       } catch {
         errorMessage = error.localizedDescription

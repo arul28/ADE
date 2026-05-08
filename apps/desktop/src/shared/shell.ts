@@ -69,6 +69,7 @@ export function parseCommandLine(input: string, options: { platform?: ShellPlatf
 
   const out: string[] = [];
   let current = "";
+  let currentStarted = false;
   let quote: "\"" | "'" | null = null;
   let escaped = false;
 
@@ -77,6 +78,7 @@ export function parseCommandLine(input: string, options: { platform?: ShellPlatf
 
     if (escaped) {
       current += ch;
+      currentStarted = true;
       escaped = false;
       continue;
     }
@@ -97,39 +99,46 @@ export function parseCommandLine(input: string, options: { platform?: ShellPlatf
           i += 1;
           current += next;
         }
+        currentStarted = true;
       } else {
         current += ch;
+        currentStarted = true;
       }
       continue;
     }
 
     if (ch === "\\") {
       escaped = true;
+      currentStarted = true;
       continue;
     }
     if (ch === "'" || ch === "\"") {
       quote = ch;
+      currentStarted = true;
       continue;
     }
     if (/\s/.test(ch)) {
-      if (current.length) {
+      if (currentStarted) {
         out.push(current);
         current = "";
+        currentStarted = false;
       }
       continue;
     }
     current += ch;
+    currentStarted = true;
   }
 
   if (escaped) current += "\\";
   if (quote != null) throw new Error("Unclosed quote in command line");
-  if (current.length) out.push(current);
+  if (currentStarted) out.push(current);
   return out;
 }
 
 function parseWindowsCommandLine(input: string): string[] {
   const out: string[] = [];
   let current = "";
+  let currentStarted = false;
   let inQuotes = false;
 
   for (let i = 0; i < input.length; i += 1) {
@@ -141,6 +150,7 @@ function parseWindowsCommandLine(input: string): string[] {
       const count = end - i;
       if (input[end] === "\"") {
         current += "\\".repeat(Math.floor(count / 2));
+        currentStarted = true;
         if (count % 2 === 0) {
           if (inQuotes && input[end + 1] === "\"") {
             current += "\"";
@@ -155,6 +165,7 @@ function parseWindowsCommandLine(input: string): string[] {
         }
       } else {
         current += "\\".repeat(count);
+        currentStarted = true;
         i = end - 1;
       }
       continue;
@@ -166,22 +177,25 @@ function parseWindowsCommandLine(input: string): string[] {
         i += 1;
       } else {
         inQuotes = !inQuotes;
+        currentStarted = true;
       }
       continue;
     }
 
     if (!inQuotes && /\s/.test(ch)) {
-      if (current.length) {
+      if (currentStarted) {
         out.push(current);
         current = "";
+        currentStarted = false;
       }
       continue;
     }
 
     current += ch;
+    currentStarted = true;
   }
 
   if (inQuotes) throw new Error("Unclosed quote in command line");
-  if (current.length) out.push(current);
+  if (currentStarted) out.push(current);
   return out;
 }

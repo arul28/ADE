@@ -890,6 +890,39 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("does not treat option values as start-cli providers", () => {
+    expect(() => buildCliPlan([
+      "shell",
+      "start-cli",
+      "--lane",
+      "lane-1",
+      "--permission-mode",
+      "edit",
+    ])).toThrow("provider is required");
+  });
+
+  it("finds a start-cli provider after value-taking options", () => {
+    const plan = buildCliPlan([
+      "shell",
+      "start-cli",
+      "--lane",
+      "lane-1",
+      "--permission-mode",
+      "edit",
+      "codex",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toMatchObject({
+      name: "start_cli_session",
+      arguments: {
+        laneId: "lane-1",
+        provider: "codex",
+        permissionMode: "edit",
+      },
+    });
+  });
+
   it("accepts --provider on shell start as the CLI-session launcher", () => {
     const plan = buildCliPlan([
       "shell",

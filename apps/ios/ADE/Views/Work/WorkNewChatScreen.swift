@@ -126,9 +126,8 @@ struct WorkNewChatScreen: View {
       }
     }
     .onChange(of: sessionMode) { _, newMode in
-      if newMode == .chat && !["claude", "codex", "cursor", "opencode"].contains(provider) {
-        provider = "claude"
-        modelId = "claude-sonnet-4-6"
+      if newMode == .chat {
+        normalizeChatSelection()
       }
     }
     .onChange(of: modelId) { _, newModel in
@@ -311,7 +310,7 @@ struct WorkNewChatScreen: View {
             pinned: false,
             manuallyNamed: nil,
             goal: nil,
-            toolType: provider == "shell" ? "shell" : (provider == "cursor" ? "cursor-cli" : provider),
+            toolType: nil,
             title: workCliProviderOptions.first(where: { $0.id == provider })?.title ?? providerLabel(provider),
             status: "running",
             startedAt: workDateFormatter.string(from: Date()),
@@ -353,6 +352,40 @@ struct WorkNewChatScreen: View {
       busy = false
       return false
     }
+  }
+
+  private func normalizeChatSelection() {
+    let normalizedProvider = workNormalizedNewChatProvider(provider)
+    if provider != normalizedProvider {
+      provider = normalizedProvider
+    }
+    if !workNewChatModel(modelId, belongsTo: normalizedProvider) {
+      modelId = workDefaultNewChatModelId(provider: normalizedProvider)
+    }
+    runtimeMode = workDefaultRuntimeMode(provider: normalizedProvider)
+    if !modelSupportsReasoning(modelId: modelId, provider: normalizedProvider) {
+      reasoningEffort = ""
+    }
+  }
+}
+
+private func workNormalizedNewChatProvider(_ provider: String) -> String {
+  let family = providerFamilyKey(provider)
+  return ["claude", "codex", "cursor", "opencode"].contains(family) ? family : "claude"
+}
+
+private func workNewChatModel(_ modelId: String, belongsTo provider: String) -> Bool {
+  let trimmed = modelId.trimmingCharacters(in: .whitespacesAndNewlines)
+  guard !trimmed.isEmpty else { return false }
+  return workModelCatalogGroupKey(for: trimmed, currentProvider: provider) == provider
+}
+
+private func workDefaultNewChatModelId(provider: String) -> String {
+  switch workNormalizedNewChatProvider(provider) {
+  case "codex": return "gpt-5.5"
+  case "cursor": return "auto"
+  case "opencode": return "opencode/anthropic/claude-sonnet-4-6"
+  default: return "claude-sonnet-4-6"
   }
 }
 

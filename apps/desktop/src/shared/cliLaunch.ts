@@ -16,6 +16,9 @@ export type TrackedCliLaunchCommand = {
   env?: Record<string, string>;
 };
 
+export const LAUNCH_PROFILES = ["claude", "codex", "cursor", "droid", "opencode", "shell"] as const satisfies readonly LaunchProfile[];
+export const TRACKED_CLI_PERMISSION_MODES = ["default", "plan", "edit", "full-auto", "config-toml"] as const satisfies readonly AgentChatPermissionMode[];
+
 /** Maps a `launchPtySession` profile to the `TerminalToolType` recorded on the session. */
 export const LAUNCH_PROFILE_TOOL_TYPE: Record<LaunchProfile, TerminalToolType> = {
   claude: "claude",
@@ -35,6 +38,49 @@ export const LAUNCH_PROFILE_TITLE: Record<LaunchProfile, string> = {
   opencode: "OpenCode CLI",
   shell: "Shell",
 };
+
+const LAUNCH_PROFILE_TOOL_TYPES: Record<LaunchProfile, readonly TerminalToolType[]> = {
+  claude: ["claude", "claude-orchestrated", "claude-chat"],
+  codex: ["codex", "codex-orchestrated", "codex-chat"],
+  cursor: ["cursor-cli", "cursor"],
+  droid: ["droid", "droid-chat"],
+  opencode: ["opencode", "opencode-orchestrated", "opencode-chat"],
+  shell: ["shell", "run-shell"],
+};
+
+export function isLaunchProfile(value: string | null | undefined): value is LaunchProfile {
+  return typeof value === "string" && (LAUNCH_PROFILES as readonly string[]).includes(value);
+}
+
+export function isTrackedCliPermissionMode(value: string | null | undefined): value is AgentChatPermissionMode {
+  return typeof value === "string" && (TRACKED_CLI_PERMISSION_MODES as readonly string[]).includes(value);
+}
+
+export function validateLaunchProfilePermissionMode(
+  profile: LaunchProfile,
+  permissionMode: AgentChatPermissionMode | null | undefined,
+): void {
+  const mode = permissionMode ?? "default";
+  if (profile === "shell" && mode !== "default") {
+    throw new Error(`permissionMode ${mode} is not supported for shell sessions.`);
+  }
+  if (mode === "config-toml" && profile !== "codex") {
+    throw new Error("permissionMode config-toml is only supported for Codex CLI sessions.");
+  }
+}
+
+export function launchProfileForTerminalSession(
+  session: Pick<TerminalSessionSummary, "resumeMetadata" | "toolType">,
+): LaunchProfile | null {
+  const resumeProvider = session.resumeMetadata?.provider;
+  if (resumeProvider) return resumeProvider;
+  const toolType = session.toolType;
+  if (!toolType) return null;
+  for (const profile of LAUNCH_PROFILES) {
+    if (LAUNCH_PROFILE_TOOL_TYPES[profile].includes(toolType)) return profile;
+  }
+  return null;
+}
 
 export function withCodexNoAltScreen(command: string): string {
   const trimmed = command.trim();
@@ -76,6 +122,8 @@ export function buildTrackedCliLaunchCommand(args: {
   /** Pre-assigned session ID for Claude CLI (enables reliable resume). */
   sessionId?: string;
 }): TrackedCliLaunchCommand {
+  validateLaunchProfilePermissionMode(args.provider, args.permissionMode);
+
   if (args.provider === "claude") {
     const commandArgs: string[] = [];
     // Inject --session-id so we know the Claude session ID upfront for resume.
@@ -264,6 +312,8 @@ function buildOpenCodeCommandParts(args: {
 }
 
 export function buildTrackedCliResumeCommand(metadata: TerminalResumeMetadata): string {
+  validateLaunchProfilePermissionMode(metadata.provider, metadata.launch.permissionMode);
+
   const targetId = metadata.targetId?.trim() ?? "";
   if (metadata.provider === "claude") {
     const parts = ["claude", ...permissionModeToClaudeFlag(metadata.launch.permissionMode)];
@@ -328,6 +378,8 @@ export function resolveLaunchFields<P extends LaunchProfile>(args: {
   args?: string[];
   env?: Record<string, string>;
 }): { startupCommand?: string; command?: string; args?: string[]; env?: Record<string, string> } {
+  validateLaunchProfilePermissionMode(args.profile, args.permissionMode);
+
   const callerHasOverride =
     args.startupCommand !== undefined
     || args.command !== undefined

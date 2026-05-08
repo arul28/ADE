@@ -12,7 +12,13 @@ import {
 } from "./cursorCloud";
 import { type JsonRpcHandler, type JsonRpcId, type JsonRpcRequest } from "./jsonrpc";
 import { isAdeMcpNamedPipePath } from "../../desktop/src/shared/adeMcpIpc";
-import { LAUNCH_PROFILE_TITLE, type LaunchProfile } from "../../desktop/src/shared/cliLaunch";
+import {
+  isLaunchProfile,
+  isTrackedCliPermissionMode,
+  LAUNCH_PROFILE_TITLE,
+  validateLaunchProfilePermissionMode,
+  type LaunchProfile,
+} from "../../desktop/src/shared/cliLaunch";
 
 type JsonObject = Record<string, unknown>;
 
@@ -1236,6 +1242,34 @@ function firstPositional(args: string[]): string | null {
   return value ?? null;
 }
 
+function firstStandalonePositional(args: string[]): string | null {
+  let previousTokenWasValueCarrier = false;
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index]!;
+    if (token === "--") return null;
+    if (previousTokenWasValueCarrier) {
+      previousTokenWasValueCarrier = false;
+      continue;
+    }
+    if (token.startsWith("-")) {
+      const flagName = token.includes("=") ? token.slice(0, token.indexOf("=")) : token;
+      previousTokenWasValueCarrier = !token.includes("=") && VALUE_CARRIER_FLAGS.has(flagName);
+      continue;
+    }
+    const [value] = args.splice(index, 1);
+    return value ?? null;
+  }
+  return null;
+}
+
+function takeArgsAfterTerminator(args: string[]): string[] | null {
+  const index = args.indexOf("--");
+  if (index < 0) return null;
+  const rest = args.slice(index + 1);
+  args.splice(index);
+  return rest;
+}
+
 function peekFirstPositional(args: string[]): string | null {
   return args.find((arg) => arg !== "--" && !arg.startsWith("-")) ?? null;
 }
@@ -2233,11 +2267,10 @@ function buildShellPlan(args: string[]): CliPlan {
       readValue(args, ["--chat-session", "--chat-session-id", "--session", "--session-id"])
       ?? process.env.ADE_CHAT_SESSION_ID,
     );
-    const startupCommandIndex = args.indexOf("--");
-    const startupCommand = startupCommandIndex >= 0
-      ? args.splice(startupCommandIndex + 1).map(shellEscapeToken).join(" ")
+    const startupCommandArgs = takeArgsAfterTerminator(args);
+    const startupCommand = startupCommandArgs
+      ? startupCommandArgs.map(shellEscapeToken).join(" ")
       : readValue(args, ["--command", "-c"]);
-    if (startupCommandIndex >= 0) args.splice(startupCommandIndex, 1);
     const input = collectGenericObjectArgs(args, {
       ...(laneId ? { laneId } : {}),
       ...(chatSessionId ? { chatSessionId } : {}),
@@ -2259,17 +2292,28 @@ function buildShellPlan(args: string[]): CliPlan {
 
 function buildCliSessionStartPlan(args: string[], providerArg?: string): CliPlan {
   const laneId = requireValue(readLaneId(args), "laneId");
-  const provider = requireValue(providerArg ?? readValue(args, ["--provider", "--profile"]) ?? firstPositional(args), "provider") as LaunchProfile;
-  const promptIndex = args.indexOf("--");
-  const initialInput = promptIndex >= 0
-    ? args.splice(promptIndex + 1).join(" ").trim()
+  const rawProvider = requireValue(
+    providerArg ?? readValue(args, ["--provider", "--profile"]) ?? firstStandalonePositional(args),
+    "provider",
+  );
+  if (!isLaunchProfile(rawProvider)) {
+    throw new CliUsageError("provider must be one of claude, codex, cursor, droid, opencode, or shell.");
+  }
+  const provider: LaunchProfile = rawProvider;
+  const promptArgs = takeArgsAfterTerminator(args);
+  const initialInput = promptArgs
+    ? promptArgs.join(" ").trim()
     : readValue(args, ["--message", "--prompt", "--initial-input"]);
-  if (promptIndex >= 0) args.splice(promptIndex, 1);
+  const permissionMode = readValue(args, ["--permission-mode", "--permissions"]) ?? "default";
+  if (!isTrackedCliPermissionMode(permissionMode)) {
+    throw new CliUsageError("permissionMode must be one of default, plan, edit, full-auto, or config-toml.");
+  }
+  validateLaunchProfilePermissionMode(provider, permissionMode);
 
   const input = collectGenericObjectArgs(args, {
     laneId,
     provider,
-    permissionMode: readValue(args, ["--permission-mode", "--permissions"]) ?? "default",
+    permissionMode,
     title: readValue(args, ["--title"]) ?? LAUNCH_PROFILE_TITLE[provider] ?? undefined,
     initialInput,
     cols: readIntOption(args, ["--cols"], 120),

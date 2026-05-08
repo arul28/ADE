@@ -2175,6 +2175,24 @@ describe("ptyService", () => {
       expect(read.nextSince).toBe(4 + "456789".length);
     });
 
+    it("readTerminal defaults to a bounded transcript tail", async () => {
+      const { service, sessionService } = createChatHarness();
+      await service.create({
+        laneId: "lane-1",
+        title: "Reader",
+        cols: 80,
+        rows: 24,
+        chatSessionId: "chat-7",
+      });
+
+      await service.readTerminal({ chatSessionId: "chat-7" });
+      expect(sessionService.readTranscriptTail).toHaveBeenCalledWith(
+        expect.stringContaining("/tmp/transcripts/"),
+        220_000,
+        { raw: true },
+      );
+    });
+
     it("writeTerminal routes data via the active chat terminal and the underlying PTY", async () => {
       const { service, mockPty } = createChatHarness();
       await service.create({

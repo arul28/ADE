@@ -2024,6 +2024,71 @@ describe("adeRpcServer", () => {
     );
   });
 
+  it("rejects start_cli_session resume when the session id is missing", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.sessionService.get.mockReturnValue(null);
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "orchestrator" });
+    const response = await callTool(handler, "start_cli_session", {
+      laneId: "lane-1",
+      provider: "codex",
+      resumeSessionId: "missing-session",
+    });
+
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain("missing-session");
+    expect(fixture.runtime.ptyService.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects start_cli_session resume for a different provider", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.sessionService.get.mockReturnValue({
+      id: "session-existing",
+      laneId: "lane-1",
+      ptyId: "pty-existing",
+      tracked: true,
+      toolType: "claude",
+      title: "Claude",
+      status: "exited",
+      resumeCommand: "claude --resume old",
+      resumeMetadata: {
+        provider: "claude",
+        targetKind: "session",
+        targetId: "old",
+        launch: { permissionMode: "default" },
+      },
+    });
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "orchestrator" });
+    const response = await callTool(handler, "start_cli_session", {
+      laneId: "lane-1",
+      provider: "codex",
+      resumeSessionId: "session-existing",
+    });
+
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain("belongs to claude, not codex");
+    expect(fixture.runtime.ptyService.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects unsupported start_cli_session permission/provider combinations", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "orchestrator" });
+    const response = await callTool(handler, "start_cli_session", {
+      laneId: "lane-1",
+      provider: "claude",
+      permissionMode: "config-toml",
+    });
+
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain("config-toml is only supported for Codex");
+    expect(fixture.runtime.ptyService.create).not.toHaveBeenCalled();
+  });
+
   it("starts spawn_agent without writing an attached ADE server config", async () => {
     const fixture = createRuntime();
     fixture.runtime.workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-spawn-workspace-"));

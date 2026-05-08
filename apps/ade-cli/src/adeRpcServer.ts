@@ -44,8 +44,12 @@ import { resolveAdeLayout } from "../../desktop/src/shared/adeLayout";
 import {
   buildTrackedCliLaunchCommand,
   buildTrackedCliResumeCommand,
+  isLaunchProfile,
+  isTrackedCliPermissionMode,
   LAUNCH_PROFILE_TITLE,
   LAUNCH_PROFILE_TOOL_TYPE,
+  launchProfileForTerminalSession,
+  validateLaunchProfilePermissionMode,
   type CliProvider,
   type LaunchProfile,
 } from "../../desktop/src/shared/cliLaunch";
@@ -2125,24 +2129,20 @@ function assertNonEmptyString(value: unknown, field: string): string {
   return text;
 }
 
-const CLI_SESSION_PROVIDERS: readonly LaunchProfile[] = ["claude", "codex", "cursor", "droid", "opencode", "shell"];
-const CLI_SESSION_PERMISSION_MODES: readonly AgentChatPermissionMode[] = ["default", "plan", "edit", "full-auto", "config-toml"];
-
 function parseCliSessionProvider(value: unknown): LaunchProfile {
   const provider = asTrimmedString(value).toLowerCase();
-  const match = CLI_SESSION_PROVIDERS.find((entry) => entry === provider);
-  if (!match) {
+  if (!isLaunchProfile(provider)) {
     throw new JsonRpcError(
       JsonRpcErrorCode.invalidParams,
       "provider must be one of claude, codex, cursor, droid, opencode, or shell",
     );
   }
-  return match;
+  return provider;
 }
 
 function parseCliSessionPermissionMode(value: unknown): AgentChatPermissionMode {
   const mode = asTrimmedString(value);
-  return CLI_SESSION_PERMISSION_MODES.find((entry) => entry === mode) ?? "default";
+  return isTrackedCliPermissionMode(mode) ? mode : "default";
 }
 
 function clampInteger(value: unknown, fallback: number, min: number, max: number): number {
@@ -2152,6 +2152,25 @@ function clampInteger(value: unknown, fallback: number, min: number, max: number
 
 function isCliProvider(provider: LaunchProfile): provider is CliProvider {
   return provider !== "shell";
+}
+
+function requireCliResumeSession(
+  runtime: AdeRuntime,
+  sessionId: string,
+  provider: LaunchProfile,
+): TerminalSessionSummary {
+  const session = runtime.sessionService.get(sessionId) as TerminalSessionSummary | null;
+  if (!session) {
+    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `resumeSessionId '${sessionId}' was not found.`);
+  }
+  const existingProvider = launchProfileForTerminalSession(session);
+  if (existingProvider && existingProvider !== provider) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      `resumeSessionId '${sessionId}' belongs to ${existingProvider}, not ${provider}.`,
+    );
+  }
+  return session;
 }
 
 export function resolveComputerUseOwners(session: SessionState, toolArgs: Record<string, unknown>): ComputerUseArtifactOwner[] {
@@ -4324,22 +4343,24 @@ async function runTool(args: {
     const laneId = assertNonEmptyString(toolArgs.laneId, "laneId");
     const provider = parseCliSessionProvider(toolArgs.provider);
     const permissionMode = parseCliSessionPermissionMode(toolArgs.permissionMode);
+    try {
+      validateLaunchProfilePermissionMode(provider, permissionMode);
+    } catch (err) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, err instanceof Error ? err.message : String(err));
+    }
     const cols = clampInteger(toolArgs.cols, DEFAULT_PTY_COLS, 20, 240);
     const rows = clampInteger(toolArgs.rows, DEFAULT_PTY_ROWS, 4, 120);
     const title = asOptionalTrimmedString(toolArgs.title) ?? LAUNCH_PROFILE_TITLE[provider];
     const resumeSessionId = asOptionalTrimmedString(toolArgs.resumeSessionId);
     const resumeTargetId = asOptionalTrimmedString(toolArgs.resumeTargetId);
     const initialInput = asOptionalTrimmedString(toolArgs.initialInput)?.slice(0, 20_000) ?? null;
-    const ptyService = runtime.ptyService as typeof runtime.ptyService & {
-      writeBySessionId?: (sessionId: string, data: string) => boolean;
-      enrichSessions?: (sessions: TerminalSessionSummary[]) => TerminalSessionSummary[];
-    };
+    const resumeSession = resumeSessionId ? requireCliResumeSession(runtime, resumeSessionId, provider) : null;
+    const ptyService = runtime.ptyService;
     const preassignedSessionId = provider === "claude" && !resumeSessionId ? randomUUID() : undefined;
 
     const launchFields: { startupCommand?: string; command?: string; args?: string[]; env?: Record<string, string> } = (() => {
       if (!isCliProvider(provider)) return {};
       if (resumeSessionId || resumeTargetId) {
-        const resumeSession = resumeSessionId ? runtime.sessionService.get(resumeSessionId) : null;
         const startupCommand = resumeSession?.resumeMetadata
           ? buildTrackedCliResumeCommand(resumeSession.resumeMetadata)
           : resumeSession?.resumeCommand?.trim()
@@ -4370,16 +4391,18 @@ async function runTool(args: {
 
     let initialInputWritten = false;
     if (initialInput && isCliProvider(provider)) {
-      if (typeof ptyService.writeBySessionId !== "function") {
-        throw new JsonRpcError(JsonRpcErrorCode.internalError, "PTY service does not support session-scoped writes.");
-      }
       initialInputWritten = ptyService.writeBySessionId(created.sessionId, `${initialInput}\r`);
+      if (!initialInputWritten) {
+        ptyService.dispose({ ptyId: created.ptyId, sessionId: created.sessionId });
+        throw new JsonRpcError(
+          JsonRpcErrorCode.internalError,
+          "Created terminal session could not receive the initial input.",
+        );
+      }
     }
 
     const session = runtime.sessionService.get(created.sessionId) as TerminalSessionSummary | null;
-    const enrichedSession = session && typeof ptyService.enrichSessions === "function"
-      ? ptyService.enrichSessions([session])[0] ?? session
-      : session;
+    const enrichedSession = session ? ptyService.enrichSessions([session])[0] ?? session : session;
     return {
       provider,
       laneId,

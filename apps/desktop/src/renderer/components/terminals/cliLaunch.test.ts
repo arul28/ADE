@@ -82,10 +82,10 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(command).toContain("--permission-mode plan");
     });
 
-    it("adds --permission-mode plan for config-toml (falls through to else)", () => {
-      const command = buildTrackedCliStartupCommand({ provider: "claude", permissionMode: "config-toml" });
-      expect(command).toContain("--append-system-prompt");
-      expect(command).toContain("--permission-mode plan");
+    it("rejects config-toml before building unsupported Claude commands", () => {
+      expect(() => buildTrackedCliStartupCommand({ provider: "claude", permissionMode: "config-toml" })).toThrow(
+        "config-toml is only supported for Codex",
+      );
     });
 
     it("uses Claude's system-prompt hook for ADE guidance", () => {
@@ -176,21 +176,30 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(launch.env?.OPENCODE_CONFIG_CONTENT).toBe("{\"permission\":\"allow\"}");
       expect(launch.startupCommand).toContain("OPENCODE_CONFIG_CONTENT=\"{\\\"permission\\\":\\\"allow\\\"}\" opencode");
     });
+
+    it("rejects config-toml for providers that do not support it", () => {
+      expect(() => buildTrackedCliLaunchCommand({ provider: "cursor", permissionMode: "config-toml" })).toThrow(
+        "config-toml is only supported for Codex",
+      );
+      expect(() => buildTrackedCliLaunchCommand({ provider: "droid", permissionMode: "config-toml" })).toThrow(
+        "config-toml is only supported for Codex",
+      );
+      expect(() => buildTrackedCliLaunchCommand({ provider: "opencode", permissionMode: "config-toml" })).toThrow(
+        "config-toml is only supported for Codex",
+      );
+    });
   });
 
-  it("covers all AgentChatPermissionMode values for both providers", () => {
+  it("covers supported AgentChatPermissionMode values for each provider", () => {
     const modes = ["default", "plan", "edit", "full-auto", "config-toml"] as const satisfies readonly AgentChatPermissionMode[];
     for (const mode of modes) {
-      const claude = buildTrackedCliStartupCommand({ provider: "claude", permissionMode: mode });
       const codex = buildTrackedCliStartupCommand({ provider: "codex", permissionMode: mode });
-      const cursor = buildTrackedCliStartupCommand({ provider: "cursor", permissionMode: mode });
-      const droid = buildTrackedCliStartupCommand({ provider: "droid", permissionMode: mode });
-      const opencode = buildTrackedCliStartupCommand({ provider: "opencode", permissionMode: mode });
-      expect(claude.length).toBeGreaterThan(0);
       expect(codex.length).toBeGreaterThan(0);
-      expect(cursor.length).toBeGreaterThan(0);
-      expect(droid.length).toBeGreaterThan(0);
-      expect(opencode.length).toBeGreaterThan(0);
+      if (mode === "config-toml") continue;
+      expect(buildTrackedCliStartupCommand({ provider: "claude", permissionMode: mode }).length).toBeGreaterThan(0);
+      expect(buildTrackedCliStartupCommand({ provider: "cursor", permissionMode: mode }).length).toBeGreaterThan(0);
+      expect(buildTrackedCliStartupCommand({ provider: "droid", permissionMode: mode }).length).toBeGreaterThan(0);
+      expect(buildTrackedCliStartupCommand({ provider: "opencode", permissionMode: mode }).length).toBeGreaterThan(0);
     }
   });
 });
@@ -254,6 +263,15 @@ describe("tracked CLI resume helpers", () => {
       targetId: null,
       launch: { permissionMode: "default" },
     })).toContain("droid --settings \"$ADE_DROID_SETTINGS\" --resume");
+  });
+
+  it("rejects unsupported resume permission/provider combinations", () => {
+    expect(() => buildTrackedCliResumeCommand({
+      provider: "claude",
+      targetKind: "session",
+      targetId: "claude-session-1",
+      launch: { permissionMode: "config-toml" },
+    })).toThrow("config-toml is only supported for Codex");
   });
 
   it("prefers structured metadata over the legacy resume command string", () => {
