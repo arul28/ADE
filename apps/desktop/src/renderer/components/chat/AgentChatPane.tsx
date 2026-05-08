@@ -2739,7 +2739,8 @@ export function AgentChatPane({
       setAvailableModelIds(orderedAvailable);
       const cursorReady = status.availableProviders?.cursor === true
         || status.providerConnections?.cursor?.runtimeAvailable === true;
-      if (!cursorReady) return orderedAvailable;
+      const hasCursorModelIds = orderedAvailable.some(isCursorModelId);
+      if (!cursorReady || hasCursorModelIds) return orderedAvailable;
 
       void getAgentChatModelsCached({
         projectRoot,
