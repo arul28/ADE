@@ -5237,13 +5237,24 @@ function missionFromResult(value: unknown): JsonObject | null {
 function graphFromResult(value: unknown): JsonObject | null {
   const result = unwrapActionEnvelope(value);
   if (!isRecord(result)) return null;
-  const graph = isRecord(result.graph) ? result.graph : result;
+  if (hasRunGraphShape(result)) return result;
+  const nestedGraph = isRecord(result.graph) ? result.graph : null;
+  const graph = nestedGraph && hasRunGraphShape(nestedGraph) ? nestedGraph : nestedGraph ?? result;
   return isRecord(graph) ? graph : null;
 }
 
 function runFromGraphResult(value: unknown): JsonObject | null {
   const graph = graphFromResult(value);
   return firstRecord(graph, ["run"]);
+}
+
+function hasRunGraphShape(value: unknown): boolean {
+  return isRecord(value) && (
+    isRecord(value.run)
+    || Array.isArray(value.steps)
+    || Array.isArray(value.attempts)
+    || Array.isArray(value.timeline)
+  );
 }
 
 function runIdFromWatchValues(values: JsonObject): string {
@@ -6442,7 +6453,7 @@ const HEADLESS_ACTIVE_ATTEMPT_DRAIN_MS = 30 * 60 * 1000;
 
 function graphWaitState(value: unknown): { status: string; activeCount: number } {
   const graph = graphFromResult(value) ?? {};
-  const run = runFromGraphResult(graph) ?? {};
+  const run = firstRecord(graph, ["run"]) ?? {};
   const status = (asString(run.status) ?? "").trim().toLowerCase();
   const steps = firstArray(graph, ["steps"]);
   const attempts = firstArray(graph, ["attempts"]);
@@ -6719,6 +6730,7 @@ export {
   buildCliPlan,
   findProjectRoots,
   formatOutput,
+  graphWaitState,
   parseCliArgs,
   renderLaneGraph,
   resolveRoots,

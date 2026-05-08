@@ -7,6 +7,7 @@ import {
   createCoordinatorToolSet,
   type CoordinatorExecutableTool,
 } from "../../desktop/src/main/services/orchestrator/coordinatorTools";
+import { isDisplayOnlyTaskStep } from "../../desktop/src/main/services/orchestrator/orchestratorContext";
 import {
   createComputerUseArtifactPath,
   getLocalComputerUseCapabilities,
@@ -2159,6 +2160,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function safeObject(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : {};
+}
+
+function isRunWorkerStep(step: { stepKey?: unknown; metadata?: unknown }): boolean {
+  if (step.stepKey === "__planner__") return false;
+  const metadata = isRecord(step.metadata) ? step.metadata : {};
+  if (metadata.systemManaged === true || metadata.plannerLaunchTracker === true) return false;
+  return !isDisplayOnlyTaskStep(step);
 }
 
 /**
@@ -6652,7 +6660,7 @@ async function runTool(args: {
     const states = runtime.aiOrchestratorService.getWorkerStates({ runId });
     const graph = runtime.orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
     const runWorkers = graph.steps
-      .filter((step) => step.stepKey !== "__planner__")
+      .filter(isRunWorkerStep)
       .map((step) => {
         const runningAttempt = graph.attempts.find((attempt) => attempt.stepId === step.id && attempt.status === "running");
         const latestAttempt = [...graph.attempts]

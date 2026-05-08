@@ -6,6 +6,7 @@ import {
   buildCliPlan,
   findProjectRoots,
   formatOutput,
+  graphWaitState,
   parseCliArgs,
   renderLaneGraph,
   resolveRoots,
@@ -387,6 +388,23 @@ describe("ADE CLI", () => {
       untilTerminal: false,
       timelineLimit: 200,
     });
+  });
+
+  it("reads wait state from run graphs with a nested visual graph", () => {
+    const waitState = graphWaitState({
+      domain: "orchestrator_core",
+      action: "getRunGraph",
+      result: {
+        graph: {
+          run: { id: "run-1", status: "succeeded" },
+          steps: [{ id: "step-1", status: "succeeded" }],
+          attempts: [{ id: "attempt-1", status: "completed" }],
+          graph: { nodes: [], edges: [] },
+        },
+      },
+    });
+
+    expect(waitState).toEqual({ status: "succeeded", activeCount: 0 });
   });
 
   it("builds mission cancel with a run id for graceful cancellation", () => {

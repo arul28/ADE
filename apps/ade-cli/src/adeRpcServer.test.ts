@@ -4555,6 +4555,23 @@ describe("adeRpcServer", () => {
   it("routes get_worker_states to aiOrchestratorService.getWorkerStates", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    fixture.runtime.orchestratorService.getRunGraph.mockReturnValueOnce({
+      run: { id: "run-1", missionId: "mission-1", status: "running" },
+      steps: [
+        { id: "step-1", stepKey: "step-a", laneId: "lane-1", title: "Worker", status: "completed", retryCount: 0, metadata: {} },
+        { id: "task-1", stepKey: "task-a", laneId: null, title: "Display task", status: "pending", retryCount: 0, metadata: { isTask: true } },
+        { id: "system-1", stepKey: "system-a", laneId: null, title: "System", status: "pending", retryCount: 0, metadata: { systemManaged: true } },
+        { id: "tracker-1", stepKey: "tracker-a", laneId: null, title: "Tracker", status: "pending", retryCount: 0, metadata: { plannerLaunchTracker: true } },
+        { id: "planner-1", stepKey: "__planner__", laneId: null, title: "Planner", status: "succeeded", retryCount: 0, metadata: {} },
+      ],
+      attempts: [{ id: "attempt-1", stepId: "step-1", status: "completed" }],
+      claims: [],
+      contextSnapshots: [],
+      handoffs: [],
+      timeline: [],
+      runtimeEvents: [],
+      completionEvaluation: null,
+    });
 
     await initialize(handler, { role: "external" });
     const response = await callTool(handler, "get_worker_states", { runId: "run-1" });
