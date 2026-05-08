@@ -477,6 +477,7 @@ function coerceAutomationAction(value: unknown): AutomationAction | null {
   if (!type) return null;
 
   const out: AutomationAction = { type };
+  const targetLaneId = asString(value.targetLaneId)?.trim();
   const suiteId = asString(value.suiteId);
   const command = asString(value.command);
   const cwd = asString(value.cwd);
@@ -488,6 +489,7 @@ function coerceAutomationAction(value: unknown): AutomationAction | null {
   const prompt = asString(value.prompt);
   const sessionTitle = asString(value.sessionTitle);
 
+  if (targetLaneId) out.targetLaneId = targetLaneId;
   if (suiteId != null) out.suiteId = suiteId;
   if (command != null) out.command = command;
   if (cwd != null) out.cwd = cwd;
@@ -527,8 +529,10 @@ function coerceAutomationExecution(value: unknown): AutomationExecution | undefi
 
   const targetLaneId = asString(value.targetLaneId)?.trim() || undefined;
   const laneModeRaw = asString(value.laneMode)?.trim();
-  const laneMode: AutomationExecution["laneMode"] = laneModeRaw === "create" || laneModeRaw === "reuse"
+  const laneMode: AutomationExecution["laneMode"] = laneModeRaw === "create" || laneModeRaw === "reuse" || laneModeRaw === "require-on-trigger"
     ? laneModeRaw
+    : laneModeRaw === "provided" || laneModeRaw === "prompt-at-run"
+      ? "require-on-trigger"
     : undefined;
   const laneNamePresetRaw = asString(value.laneNamePreset)?.trim();
   const laneNamePreset: AutomationExecution["laneNamePreset"] = laneNamePresetRaw === "issue-title" ||
@@ -2348,6 +2352,7 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
       ...(typeof entry.includeProjectContext === "boolean" ? { includeProjectContext: entry.includeProjectContext } : {}),
       actions: (entry.actions ?? []).map((action) => ({
         type: action.type,
+        ...(action.targetLaneId ? { targetLaneId: action.targetLaneId.trim() } : {}),
         ...(action.suiteId ? { suiteId: action.suiteId.trim() } : {}),
         ...(action.command ? { command: action.command } : {}),
         ...(action.cwd ? { cwd: action.cwd.trim() } : {}),
@@ -2364,6 +2369,7 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
         ...(entry.actions ? {
           actions: entry.actions.map((action) => ({
             type: action.type,
+            ...(action.targetLaneId ? { targetLaneId: action.targetLaneId.trim() } : {}),
             ...(action.suiteId ? { suiteId: action.suiteId.trim() } : {}),
             ...(action.command ? { command: action.command } : {}),
             ...(action.cwd ? { cwd: action.cwd.trim() } : {}),
@@ -2920,6 +2926,29 @@ function validateEffectiveConfig(
       issues.push({ path: `${p}.execution.kind`, message: `Unknown execution kind '${String((rule.execution as { kind?: unknown }).kind)}'` });
     } else if (rule.execution.kind === "built-in" && !(rule.execution.builtIn?.actions?.length ?? 0)) {
       issues.push({ path: `${p}.execution.builtIn.actions`, message: "Built-in automations need at least one task." });
+    }
+    if (
+      rule.execution?.laneMode
+      && rule.execution.laneMode !== "create"
+      && rule.execution.laneMode !== "reuse"
+      && rule.execution.laneMode !== "require-on-trigger"
+    ) {
+      issues.push({ path: `${p}.execution.laneMode`, message: `Unknown lane mode '${String(rule.execution.laneMode)}'` });
+    }
+    if (rule.execution?.laneMode === "require-on-trigger" && (rule.execution.targetLaneId ?? "").trim()) {
+      issues.push({
+        path: `${p}.execution.targetLaneId`,
+        message: "targetLaneId is not allowed when lane must be supplied at trigger time.",
+      });
+    }
+    if (rule.execution?.laneMode === "require-on-trigger" && rule.execution.kind === "built-in") {
+      rule.execution.builtIn?.actions.forEach((action, actionIndex) => {
+        if (!(action.targetLaneId ?? "").trim()) return;
+        issues.push({
+          path: `${p}.execution.builtIn.actions[${actionIndex}].targetLaneId`,
+          message: "Step lane overrides are not allowed when lane must be supplied at trigger time.",
+        });
+      });
     }
 
     if (

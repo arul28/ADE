@@ -29,7 +29,11 @@ import type {
   AutomationDraftIssue,
   AutomationLaneMode,
   AutomationLaneNamePreset,
+  AutomationMode,
+  AutomationOutputDisposition,
+  AutomationReviewProfile,
   AutomationRuleDraft,
+  AutomationToolFamily,
   AutomationTrigger,
   TestSuiteDefinition,
 } from "../../../../shared/types";
@@ -124,6 +128,40 @@ const SCHEDULE_PRESETS: Array<{ label: string; cron: string }> = [
   { label: "Fridays at 4 PM", cron: "0 16 * * 5" },
 ];
 
+const REVIEW_PROFILES: Array<{ value: AutomationReviewProfile; label: string }> = [
+  { value: "quick", label: "Quick" },
+  { value: "incremental", label: "Incremental" },
+  { value: "full", label: "Full" },
+  { value: "security", label: "Security" },
+  { value: "release-risk", label: "Release risk" },
+  { value: "cross-repo-contract", label: "Cross-repo contract" },
+];
+
+const RULE_MODES: Array<{ value: AutomationMode; label: string }> = [
+  { value: "review", label: "Review" },
+  { value: "fix", label: "Fix" },
+  { value: "monitor", label: "Monitor" },
+];
+
+const TOOL_FAMILIES: Array<{ value: AutomationToolFamily; label: string }> = [
+  { value: "repo", label: "Repo" },
+  { value: "git", label: "Git" },
+  { value: "tests", label: "Tests" },
+  { value: "github", label: "GitHub" },
+  { value: "linear", label: "Linear" },
+  { value: "browser", label: "Browser" },
+  { value: "memory", label: "Memory" },
+  { value: "mission", label: "Mission" },
+];
+
+const OUTPUT_DISPOSITIONS: Array<{ value: AutomationOutputDisposition; label: string }> = [
+  { value: "comment-only", label: "Comment only" },
+  { value: "open-task", label: "Open task" },
+  { value: "open-lane", label: "Open lane" },
+  { value: "prepare-patch", label: "Prepare patch" },
+  { value: "open-pr-draft", label: "Open PR draft" },
+];
+
 const LANE_NAME_PRESETS: Array<{
   value: AutomationLaneNamePreset;
   label: string;
@@ -135,6 +173,8 @@ const LANE_NAME_PRESETS: Array<{
   { value: "pr-title-author", label: "PR title – Author", template: "{{trigger.pr.title}} – {{trigger.pr.author}}", helpEvent: "pr" },
   { value: "custom", label: "Custom template…", template: "", helpEvent: "any" },
 ];
+
+type DraftLaneMode = AutomationLaneMode | (string & {});
 
 function presetTemplate(preset: AutomationLaneNamePreset, customTemplate: string | undefined): string {
   if (preset === "custom") return customTemplate ?? "";
@@ -225,6 +265,23 @@ function triggerFamilyForType(type: AutomationTrigger["type"]): TriggerFamily {
   return "manual";
 }
 
+function readLaneMode(draft: AutomationRuleDraft): DraftLaneMode {
+  const raw = (draft.execution as { laneMode?: unknown } | undefined)?.laneMode;
+  return typeof raw === "string" && raw.trim() ? (raw.trim() as DraftLaneMode) : "reuse";
+}
+
+function isRequireLaneAtRunTimeMode(mode: DraftLaneMode | null | undefined): boolean {
+  return mode === "require-on-trigger" || mode === "provided" || mode === "prompt-at-run";
+}
+
+function humanizeLaneMode(mode: string): string {
+  return mode
+    .split(/[-_]/g)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
 function defaultTriggerForFamily(family: TriggerFamily): AutomationTrigger {
   switch (family) {
     case "github":
@@ -268,6 +325,60 @@ function computeIncludeProjectContext(draft: AutomationRuleDraft): boolean {
 
 // --- draft <-> ActionRow[] bridge ---
 
+type ActionRowRuntimeOptions = Pick<ActionRowValue, "targetLaneId" | "condition" | "continueOnFailure" | "timeoutMs" | "retry">;
+type AutomationActionRuntimeOptions = Pick<AutomationAction, "targetLaneId" | "condition" | "continueOnFailure" | "timeoutMs" | "retry">;
+
+function actionRuntimeOptions(action: AutomationAction): Partial<ActionRowRuntimeOptions> {
+  return {
+    ...(action.targetLaneId ? { targetLaneId: action.targetLaneId } : {}),
+    ...(action.condition ? { condition: action.condition } : {}),
+    ...(typeof action.continueOnFailure === "boolean" ? { continueOnFailure: action.continueOnFailure } : {}),
+    ...(Number.isFinite(action.timeoutMs) ? { timeoutMs: action.timeoutMs } : {}),
+    ...(Number.isFinite(action.retry) ? { retry: action.retry } : {}),
+  };
+}
+
+function rowRuntimeOptions(row: ActionRowValue): Partial<AutomationActionRuntimeOptions> {
+  return {
+    ...(row.targetLaneId ? { targetLaneId: row.targetLaneId } : {}),
+    ...(row.condition?.trim() ? { condition: row.condition.trim() } : {}),
+    ...(row.continueOnFailure ? { continueOnFailure: true } : {}),
+    ...(Number.isFinite(row.timeoutMs) ? { timeoutMs: row.timeoutMs } : {}),
+    ...(Number.isFinite(row.retry) ? { retry: row.retry } : {}),
+  };
+}
+
+function rowHasRuntimeOptions(row: ActionRowValue): boolean {
+  return Boolean(
+    row.targetLaneId
+      || row.condition?.trim()
+      || row.continueOnFailure
+      || Number.isFinite(row.timeoutMs)
+      || Number.isFinite(row.retry),
+  );
+}
+
+function stripActionTargetLaneId<T extends { targetLaneId?: string | null }>(action: T): Omit<T, "targetLaneId"> {
+  const { targetLaneId: _targetLaneId, ...rest } = action;
+  return rest;
+}
+
+function stripActionTargetLaneIdsFromDraft(draft: AutomationRuleDraft): AutomationRuleDraft {
+  const execution = draft.execution ? { ...draft.execution } : undefined;
+  if (execution) delete execution.targetLaneId;
+  if (execution?.kind === "built-in") {
+    execution.builtIn = {
+      actions: (execution.builtIn?.actions ?? []).map((action) => stripActionTargetLaneId(action) as AutomationAction),
+    };
+  }
+  return {
+    ...draft,
+    ...(execution ? { execution } : {}),
+    actions: draft.actions.map((action) => stripActionTargetLaneId(action) as AutomationRuleDraft["actions"][number]),
+    legacyActions: draft.legacyActions?.map((action) => stripActionTargetLaneId(action) as AutomationRuleDraft["actions"][number]),
+  };
+}
+
 function draftToActionRows(draft: AutomationRuleDraft): ActionRowValue[] {
   const rows: ActionRowValue[] = [];
   const execution = draft.execution;
@@ -290,15 +401,16 @@ function draftToActionRows(draft: AutomationRuleDraft): ActionRowValue[] {
           laneNameTemplate: action.laneNameTemplate ?? "",
           laneDescriptionTemplate: action.laneDescriptionTemplate ?? "",
           parentLaneId: action.parentLaneId ?? null,
+          ...actionRuntimeOptions(action),
         });
       } else if (action.type === "run-tests") {
-        rows.push({ kind: "run-tests", suiteId: action.suiteId ?? "" });
+        rows.push({ kind: "run-tests", suiteId: action.suiteId ?? "", ...actionRuntimeOptions(action) });
       } else if (action.type === "run-command") {
-        rows.push({ kind: "run-command", command: action.command ?? "", cwd: action.cwd ?? "" });
+        rows.push({ kind: "run-command", command: action.command ?? "", cwd: action.cwd ?? "", ...actionRuntimeOptions(action) });
       } else if (action.type === "predict-conflicts") {
-        rows.push({ kind: "predict-conflicts" });
+        rows.push({ kind: "predict-conflicts", ...actionRuntimeOptions(action) });
       } else if (action.type === "ade-action") {
-        rows.push({ kind: "ade-action", adeAction: action.adeAction ?? { domain: "", action: "" } });
+        rows.push({ kind: "ade-action", adeAction: action.adeAction ?? { domain: "", action: "" }, ...actionRuntimeOptions(action) });
       } else if (action.type === "agent-session") {
         rows.push({
           kind: "agent-session",
@@ -306,9 +418,10 @@ function draftToActionRows(draft: AutomationRuleDraft): ActionRowValue[] {
           sessionTitle: action.sessionTitle ?? "",
           modelConfig: action.modelConfig,
           permissionConfig: action.permissionConfig,
+          ...actionRuntimeOptions(action),
         });
       } else if (action.type === "launch-mission") {
-        rows.push({ kind: "launch-mission", missionTitle: action.sessionTitle ?? "" });
+        rows.push({ kind: "launch-mission", missionTitle: action.sessionTitle ?? "", ...actionRuntimeOptions(action) });
       }
     }
   }
@@ -316,17 +429,20 @@ function draftToActionRows(draft: AutomationRuleDraft): ActionRowValue[] {
 }
 
 function applyActionRowsToDraft(draft: AutomationRuleDraft, rows: ActionRowValue[]): AutomationRuleDraft {
-  const soloAgent = rows.length === 1 && rows[0]!.kind === "agent-session";
-  const soloMission = rows.length === 1 && rows[0]!.kind === "launch-mission";
+  const rowsForSave = isRequireLaneAtRunTimeMode(readLaneMode(draft))
+    ? rows.map((row) => stripActionTargetLaneId(row) as ActionRowValue)
+    : rows;
+  const soloAgent = rowsForSave.length === 1 && rowsForSave[0]!.kind === "agent-session" && !rowHasRuntimeOptions(rowsForSave[0]!);
+  const soloMission = rowsForSave.length === 1 && rowsForSave[0]!.kind === "launch-mission" && !rowHasRuntimeOptions(rowsForSave[0]!);
 
   if (soloAgent) {
-    const first = rows[0]!;
+    const first = rowsForSave[0]!;
     return {
       ...draft,
       execution: {
         ...(draft.execution ?? { kind: "agent-session" }),
         kind: "agent-session",
-        session: { title: first.sessionTitle || null },
+        session: { ...(draft.execution?.kind === "agent-session" ? draft.execution.session : {}), title: first.sessionTitle || null },
       },
       ...(first.modelConfig ? { modelConfig: { orchestratorModel: first.modelConfig } } : {}),
       ...(first.permissionConfig ? { permissionConfig: first.permissionConfig } : {}),
@@ -337,20 +453,20 @@ function applyActionRowsToDraft(draft: AutomationRuleDraft, rows: ActionRowValue
   }
 
   if (soloMission) {
-    const first = rows[0]!;
+    const first = rowsForSave[0]!;
     return {
       ...draft,
       execution: {
         ...(draft.execution ?? { kind: "mission" }),
         kind: "mission",
-        mission: { title: first.missionTitle || null },
+        mission: { ...(draft.execution?.kind === "mission" ? draft.execution.mission : {}), title: first.missionTitle || null },
       },
       actions: [],
       legacyActions: [],
     };
   }
 
-  const builtInActions: AutomationAction[] = rows.map((row) => rowToAutomationAction(row));
+  const builtInActions: AutomationAction[] = rowsForSave.map((row) => rowToAutomationAction(row));
   const legacyDraftActions: AutomationRuleDraft["actions"] = builtInActions
     .map((action) => automationActionToDraftAction(action))
     .filter((entry): entry is AutomationRuleDraft["actions"][number] => entry != null);
@@ -373,28 +489,32 @@ function rowToAutomationAction(row: ActionRowValue): AutomationAction {
     case "create-lane":
       return {
         type: "create-lane",
+        ...rowRuntimeOptions(row),
         ...(row.laneNameTemplate ? { laneNameTemplate: row.laneNameTemplate } : {}),
         ...(row.laneDescriptionTemplate ? { laneDescriptionTemplate: row.laneDescriptionTemplate } : {}),
         ...(row.parentLaneId ? { parentLaneId: row.parentLaneId } : {}),
       };
     case "run-tests":
-      return { type: "run-tests", suiteId: row.suiteId ?? "" };
+      return { type: "run-tests", ...rowRuntimeOptions(row), suiteId: row.suiteId ?? "" };
     case "run-command":
       return {
         type: "run-command",
+        ...rowRuntimeOptions(row),
         command: row.command ?? "",
         ...(row.cwd ? { cwd: row.cwd } : {}),
       };
     case "predict-conflicts":
-      return { type: "predict-conflicts" };
+      return { type: "predict-conflicts", ...rowRuntimeOptions(row) };
     case "ade-action":
       return {
         type: "ade-action",
+        ...rowRuntimeOptions(row),
         adeAction: row.adeAction ?? { domain: "", action: "" },
       };
     case "agent-session":
       return {
         type: "agent-session",
+        ...rowRuntimeOptions(row),
         ...(row.modelConfig ? { modelConfig: row.modelConfig } : {}),
         ...(row.permissionConfig ? { permissionConfig: row.permissionConfig } : {}),
         ...(row.prompt ? { prompt: row.prompt } : {}),
@@ -403,6 +523,7 @@ function rowToAutomationAction(row: ActionRowValue): AutomationAction {
     case "launch-mission":
       return {
         type: "launch-mission",
+        ...rowRuntimeOptions(row),
         ...(row.missionTitle ? { sessionTitle: row.missionTitle } : {}),
       };
   }
@@ -415,28 +536,32 @@ function automationActionToDraftAction(
     case "create-lane":
       return {
         type: "create-lane",
+        ...rowRuntimeOptions(actionToRow(action)),
         ...(action.laneNameTemplate ? { laneNameTemplate: action.laneNameTemplate } : {}),
         ...(action.laneDescriptionTemplate ? { laneDescriptionTemplate: action.laneDescriptionTemplate } : {}),
         ...(action.parentLaneId ? { parentLaneId: action.parentLaneId } : {}),
       };
     case "run-tests":
-      return { type: "run-tests", suite: action.suiteId ?? "" };
+      return { type: "run-tests", ...rowRuntimeOptions(actionToRow(action)), suite: action.suiteId ?? "" };
     case "run-command":
       return {
         type: "run-command",
+        ...rowRuntimeOptions(actionToRow(action)),
         command: action.command ?? "",
         ...(action.cwd ? { cwd: action.cwd } : {}),
       };
     case "predict-conflicts":
-      return { type: "predict-conflicts" };
+      return { type: "predict-conflicts", ...rowRuntimeOptions(actionToRow(action)) };
     case "ade-action":
       return {
         type: "ade-action",
+        ...rowRuntimeOptions(actionToRow(action)),
         adeAction: action.adeAction ?? { domain: "", action: "" },
       };
     case "agent-session":
       return {
         type: "agent-session",
+        ...rowRuntimeOptions(actionToRow(action)),
         ...(action.modelConfig ? { modelConfig: action.modelConfig } : {}),
         ...(action.permissionConfig ? { permissionConfig: action.permissionConfig } : {}),
         ...(action.prompt ? { prompt: action.prompt } : {}),
@@ -445,6 +570,7 @@ function automationActionToDraftAction(
     case "launch-mission":
       return {
         type: "launch-mission",
+        ...rowRuntimeOptions(actionToRow(action)),
         ...(action.sessionTitle ? { missionTitle: action.sessionTitle } : {}),
       };
     case "lane-setup":
@@ -452,6 +578,10 @@ function automationActionToDraftAction(
       // "create"; never authored by the user, so it has no draft form.
       return null;
   }
+}
+
+function actionToRow(action: AutomationAction): ActionRowValue {
+  return { kind: action.type === "lane-setup" ? "predict-conflicts" : action.type, ...actionRuntimeOptions(action) } as ActionRowValue;
 }
 
 // --- component ---
@@ -496,6 +626,9 @@ export function RuleEditorPanel({
   const actionRows = useMemo(() => draftToActionRows(draft), [draft]);
   const includeProjectContext = computeIncludeProjectContext(draft);
   const modelValue = draft.modelConfig?.orchestratorModel ?? { modelId: DEFAULT_MODEL_ID, thinkingLevel: "medium" as const };
+  const outputs = draft.outputs ?? { disposition: "comment-only" as const, createArtifact: true };
+  const verification = draft.verification ?? { verifyBeforePublish: false, mode: "intervention" as const };
+  const toolPalette: AutomationToolFamily[] = draft.toolPalette ?? ["repo", "memory", "mission"];
   const permissionMeta = permissionControlsForModel(modelValue.modelId);
   const currentPermission = permissionMeta
     ? draft.permissionConfig?.providers?.[permissionMeta.key] ?? ""
@@ -503,7 +636,7 @@ export function RuleEditorPanel({
 
   // laneMode resolution: missing → "reuse" (server-side migration handles
   // legacy create-lane-as-first-action collapse).
-  const laneMode: AutomationLaneMode = draft.execution?.laneMode ?? "reuse";
+  const laneMode = readLaneMode(draft);
   const lanePreset: AutomationLaneNamePreset = draft.execution?.laneNamePreset ?? "issue-title";
   const laneCustomTemplate = draft.execution?.laneNameTemplate ?? "";
   const laneTargetLaneId = draft.execution?.targetLaneId ?? null;
@@ -530,7 +663,7 @@ export function RuleEditorPanel({
 
   const patchExecution = (
     patch: Partial<{
-      laneMode: AutomationLaneMode;
+      laneMode: DraftLaneMode;
       targetLaneId: string | null;
       laneNamePreset: AutomationLaneNamePreset;
       laneNameTemplate: string;
@@ -538,14 +671,15 @@ export function RuleEditorPanel({
   ) => {
     const current = draft.execution ?? { kind: "agent-session" as const };
     const next = { ...current };
-    if (patch.laneMode !== undefined) next.laneMode = patch.laneMode;
+    if (patch.laneMode !== undefined) (next as { laneMode?: string }).laneMode = patch.laneMode;
     if (patch.laneNamePreset !== undefined) next.laneNamePreset = patch.laneNamePreset;
     if (patch.laneNameTemplate !== undefined) next.laneNameTemplate = patch.laneNameTemplate;
     if (patch.targetLaneId !== undefined) {
       if (patch.targetLaneId == null) delete next.targetLaneId;
       else next.targetLaneId = patch.targetLaneId;
     }
-    setDraft({ ...draft, execution: next });
+    const nextDraft = { ...draft, execution: next };
+    setDraft(isRequireLaneAtRunTimeMode(next.laneMode) ? stripActionTargetLaneIdsFromDraft(nextDraft) : nextDraft);
   };
 
   // Smart defaults: when the trigger event changes and the user hasn't yet
@@ -640,6 +774,20 @@ export function RuleEditorPanel({
                   checked={draft.enabled}
                   onChange={(next) => setDraft({ ...draft, enabled: next })}
                 />
+                <label className="block space-y-1.5">
+                  <SmallLabel>Mode</SmallLabel>
+                  <select
+                    className={selectCls}
+                    value={draft.mode}
+                    onChange={(event) => setDraft({ ...draft, mode: event.target.value as AutomationMode })}
+                  >
+                    {RULE_MODES.map((mode) => (
+                      <option key={mode.value} value={mode.value}>
+                        {mode.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
               </div>
             </Section>
 
@@ -767,6 +915,55 @@ export function RuleEditorPanel({
                   }}
                 />
                 <div className="space-y-1.5">
+                  <SmallLabel>Review profile</SmallLabel>
+                  <select
+                    className={selectCls}
+                    value={draft.reviewProfile}
+                    onChange={(event) =>
+                      setDraft({ ...draft, reviewProfile: event.target.value as AutomationReviewProfile })
+                    }
+                  >
+                    {REVIEW_PROFILES.map((profile) => (
+                      <option key={profile.value} value={profile.value}>
+                        {profile.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-1.5">
+                  <SmallLabel>Tool palette</SmallLabel>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {TOOL_FAMILIES.map((tool) => {
+                      const checked = toolPalette.includes(tool.value);
+                      const wouldEmptyPalette = checked && toolPalette.length === 1;
+                      return (
+                        <label
+                          key={tool.value}
+                          className={cn(
+                            "flex items-center gap-2 rounded-md border border-white/[0.08] bg-black/15 px-2 py-1.5 text-[11px] text-[#D8E3F2]",
+                            wouldEmptyPalette && "opacity-60",
+                          )}
+                          title={wouldEmptyPalette ? "At least one tool family is required." : undefined}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            disabled={wouldEmptyPalette}
+                            onChange={(event) => {
+                              const next = event.target.checked
+                                ? [...new Set([...toolPalette, tool.value])]
+                                : toolPalette.filter((entry) => entry !== tool.value);
+                              setDraft({ ...draft, toolPalette: next });
+                            }}
+                            className="accent-[#7DD3FC]"
+                          />
+                          {tool.label}
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div className="space-y-1.5">
                   <SmallLabel>Model</SmallLabel>
                   <ModelSelector
                     value={modelValue}
@@ -823,6 +1020,47 @@ export function RuleEditorPanel({
                   placeholder="20"
                   icon={Clock}
                 />
+                <div className="grid gap-2 md:grid-cols-2">
+                  <label className="block space-y-1">
+                    <SmallLabel>Confidence threshold</SmallLabel>
+                    <input
+                      className={inputCls}
+                      type="number"
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      value={draft.guardrails.confidenceThreshold ?? ""}
+                      onChange={(event) => {
+                        const raw = event.target.value.trim();
+                        const parsed = Number(raw);
+                        setDraft({
+                          ...draft,
+                          guardrails: {
+                            ...draft.guardrails,
+                            confidenceThreshold: raw && Number.isFinite(parsed)
+                              ? Math.max(0, Math.min(1, parsed))
+                              : undefined,
+                          },
+                        });
+                      }}
+                      placeholder="Default"
+                    />
+                  </label>
+                  <LabeledNumber
+                    label="Max findings"
+                    value={draft.guardrails.maxFindings ?? null}
+                    onChange={(n) =>
+                      setDraft({
+                        ...draft,
+                        guardrails: {
+                          ...draft.guardrails,
+                          maxFindings: n == null ? undefined : Math.max(1, Math.floor(n)),
+                        },
+                      })
+                    }
+                    placeholder="Default"
+                  />
+                </div>
                 <ActiveHoursFields
                   hours={primaryTrigger.activeHours ?? null}
                   onChange={(next) => patchTrigger({ activeHours: next ?? undefined })}
@@ -830,6 +1068,86 @@ export function RuleEditorPanel({
                 <div className="rounded-md border border-[#35506B]/40 bg-[#0F1B2A]/60 px-2.5 py-2 text-[10px] leading-relaxed text-[#9FB2C7]">
                   <CloudArrowUp size={10} weight="regular" className="mr-1 inline-block align-text-bottom" />
                   Budget caps live in <span className="text-[#D8E3F2]">Settings → Usage</span> and apply to every rule.
+                </div>
+              </div>
+            </Section>
+
+            {/* Output */}
+            <Section icon={Flag} accent="#34D399" title="Output" hint="Artifacts and publish gates">
+              <div className="space-y-3">
+                <label className="block space-y-1.5">
+                  <SmallLabel>Disposition</SmallLabel>
+                  <select
+                    className={selectCls}
+                    value={outputs.disposition}
+                    onChange={(event) =>
+                      setDraft({
+                        ...draft,
+                        outputs: { ...outputs, disposition: event.target.value as AutomationOutputDisposition },
+                      })
+                    }
+                  >
+                    {OUTPUT_DISPOSITIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <Toggle
+                  label="Create artifact"
+                  hint={outputs.createArtifact === false ? "Run stores history only" : "Run stores an artifact"}
+                  checked={outputs.createArtifact !== false}
+                  onChange={(next) => setDraft({ ...draft, outputs: { ...outputs, createArtifact: next } })}
+                />
+                <label className="block space-y-1.5">
+                  <SmallLabel>Notification channel</SmallLabel>
+                  <input
+                    className={inputCls}
+                    value={outputs.notificationChannel ?? ""}
+                    onChange={(event) =>
+                      setDraft({
+                        ...draft,
+                        outputs: {
+                          ...outputs,
+                          notificationChannel: event.target.value.trim() || null,
+                        },
+                      })
+                    }
+                    placeholder="Optional"
+                  />
+                </label>
+                <div className="grid gap-2 md:grid-cols-2">
+                  <label className="block space-y-1.5">
+                    <SmallLabel>Verification mode</SmallLabel>
+                    <select
+                      className={selectCls}
+                      value={verification.mode ?? "intervention"}
+                      onChange={(event) =>
+                        setDraft({
+                          ...draft,
+                          verification: {
+                            ...verification,
+                            mode: event.target.value as "intervention" | "dry-run",
+                          },
+                        })
+                      }
+                    >
+                      <option value="intervention">Intervention</option>
+                      <option value="dry-run">Dry run</option>
+                    </select>
+                  </label>
+                  <Toggle
+                    label="Verify before publish"
+                    hint={verification.verifyBeforePublish ? "Publish waits for review" : "Publish can complete automatically"}
+                    checked={verification.verifyBeforePublish}
+                    onChange={(next) =>
+                      setDraft({
+                        ...draft,
+                        verification: { ...verification, verifyBeforePublish: next },
+                      })
+                    }
+                  />
                 </div>
               </div>
             </Section>
@@ -850,6 +1168,7 @@ export function RuleEditorPanel({
                 lanes={lanes}
                 suites={suites}
                 fallbackModel={modelValue}
+                executionLaneMode={laneMode}
                 onChange={setActionRows}
                 onOpenAiSettings={openAiSettings}
               />
@@ -869,13 +1188,23 @@ function LaneModeControl({
   lanes,
   onChange,
 }: {
-  laneMode: AutomationLaneMode;
+  laneMode: DraftLaneMode;
   targetLaneId: string | null;
   lanes: Array<{ id: string; name: string }>;
-  onChange: (patch: { laneMode?: AutomationLaneMode; targetLaneId?: string | null }) => void;
+  onChange: (patch: { laneMode?: DraftLaneMode; targetLaneId?: string | null }) => void;
 }) {
-  // Compose a single value: "create", "reuse:" (primary), or "reuse:<laneId>".
-  const selectValue = laneMode === "create" ? "create" : `reuse:${targetLaneId ?? ""}`;
+  const knownMode = laneMode === "create"
+    || laneMode === "reuse"
+    || laneMode === "provided"
+    || laneMode === "prompt-at-run"
+    || laneMode === "require-on-trigger";
+  const selectValue = laneMode === "create"
+    ? "create"
+    : laneMode === "provided" || laneMode === "prompt-at-run" || laneMode === "require-on-trigger"
+      ? "require-on-trigger"
+      : laneMode === "reuse"
+        ? `reuse:${targetLaneId ?? ""}`
+        : `unknown:${laneMode}`;
   const sortedLanes = useMemo(() => [...lanes].sort((a, b) => a.name.localeCompare(b.name)), [lanes]);
 
   return (
@@ -890,6 +1219,10 @@ function LaneModeControl({
             onChange({ laneMode: "create", targetLaneId: null });
             return;
           }
+          if (v === "require-on-trigger") {
+            onChange({ laneMode: "require-on-trigger", targetLaneId: null });
+            return;
+          }
           if (v === "reuse:") {
             onChange({ laneMode: "reuse", targetLaneId: null });
             return;
@@ -900,11 +1233,17 @@ function LaneModeControl({
         }}
       >
         <option value="create">Create new lane per run</option>
+        <option value="require-on-trigger">Require lane at run time</option>
         <option value="__sep__" disabled>──────</option>
         <option value="reuse:">Reuse primary lane</option>
         {sortedLanes.map((lane) => (
           <option key={lane.id} value={`reuse:${lane.id}`}>{lane.name}</option>
         ))}
+        {!knownMode ? (
+          <option value={`unknown:${laneMode}`} disabled>
+            Backend mode: {humanizeLaneMode(laneMode)}
+          </option>
+        ) : null}
       </select>
     </label>
   );
@@ -1366,4 +1705,3 @@ function ActiveHoursFields({
     </div>
   );
 }
-

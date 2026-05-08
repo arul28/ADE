@@ -215,6 +215,7 @@ export type AutomationPlannerConfig =
 
 export type AutomationDraftActionBase = {
   type: AutomationActionType;
+  targetLaneId?: string | null;
   condition?: string;
   continueOnFailure?: boolean;
   timeoutMs?: number;

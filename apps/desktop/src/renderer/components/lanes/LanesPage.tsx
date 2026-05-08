@@ -2147,6 +2147,7 @@ export function LanesPage() {
 
   const getPaneConfigs = useCallback((laneId: string | null) => {
     const laneDetail = laneId ? lanePaneDetails[laneId] ?? EMPTY_LANE_PANE_DETAIL : EMPTY_LANE_PANE_DETAIL;
+    const laneSnapshot = laneId ? laneSnapshotByLaneId.get(laneId) ?? null : null;
     return {
       "git-actions": {
         title: "Git Actions",
@@ -2180,6 +2181,7 @@ export function LanesPage() {
             <LaneGitActionsPane
               laneId={laneId}
               autoRebaseEnabled={autoRebaseEnabled}
+              autoRebaseStatusSnapshot={laneSnapshot?.autoRebaseStatus}
               onOpenSettings={openAutoRebaseSettings}
               onRebaseNowLocal={(targetLaneId) => runRebaseFlow(targetLaneId, "local_only")}
               onRebaseAndPush={(targetLaneId) => runRebaseFlow(targetLaneId, "local_and_remote")}
@@ -2211,6 +2213,7 @@ export function LanesPage() {
     };
   }, [
     lanePaneDetails,
+    laneSnapshotByLaneId,
     expandedGitActionsLaneId,
     autoRebaseEnabled,
     openAutoRebaseSettings,

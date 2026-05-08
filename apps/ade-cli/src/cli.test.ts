@@ -1515,6 +1515,65 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("automations create with implicit reuse accepts --lane", () => {
+    const plan = buildCliPlan([
+      "automations",
+      "create",
+      "--text",
+      "id: r1\n",
+      "--lane",
+      "lane-99",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toMatchObject({
+      arguments: {
+        args: {
+          draft: {
+            execution: { targetLaneId: "lane-99" },
+          },
+        },
+      },
+    });
+  });
+
+  it("automations create accepts require-on-trigger lane mode without a target lane", () => {
+    const plan = buildCliPlan([
+      "automations",
+      "create",
+      "--text",
+      "id: r1\n",
+      "--lane-mode",
+      "require-on-trigger",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toMatchObject({
+      arguments: {
+        args: {
+          draft: {
+            execution: { laneMode: "require-on-trigger" },
+          },
+        },
+      },
+    });
+  });
+
+  it("automations create rejects --lane with --lane-mode require-on-trigger", () => {
+    expect(() =>
+      buildCliPlan([
+        "automations",
+        "create",
+        "--text",
+        "id: r1\n",
+        "--lane-mode",
+        "require-on-trigger",
+        "--lane",
+        "lane-1",
+      ]),
+    ).toThrow(/--lane is only valid with --lane-mode reuse/);
+  });
+
   it("automations create with --lane-name-preset custom accepts --lane-name-template", () => {
     const plan = buildCliPlan([
       "automations",
@@ -1602,7 +1661,7 @@ describe("ADE CLI", () => {
         "--lane-mode",
         "bogus",
       ]),
-    ).toThrow(/--lane-mode must be one of create, reuse/);
+    ).toThrow(/--lane-mode must be one of create, reuse, require-on-trigger/);
   });
 
   it("automations runs accepts a --status filter", () => {
@@ -1728,6 +1787,19 @@ describe("ADE CLI", () => {
     if (plan.kind !== "execute") return;
     expect(plan.steps[0]?.params).toMatchObject({
       arguments: { args: { id: "rule-42", laneId: "lane-7" } },
+    });
+  });
+
+  it("automations trigger aliases run and forwards --lane as laneId", () => {
+    const plan = buildCliPlan(["automations", "trigger", "rule-42", "--lane", "lane-7"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "automations",
+        action: "triggerManually",
+        args: { id: "rule-42", laneId: "lane-7" },
+      },
     });
   });
 

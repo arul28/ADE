@@ -16,3 +16,8 @@ export const CARD_STYLE: React.CSSProperties = {};
 export function extractError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
+
+/** Parse a comma-separated input into a trimmed, non-empty string list. */
+export function parseList(value: string): string[] {
+  return value.split(",").map((entry) => entry.trim()).filter(Boolean);
+}

@@ -540,6 +540,7 @@ export function TopBar() {
 
   useEffect(() => {
     let cancelled = false;
+    let statusRequestVersion = 0;
     if (!project?.rootPath) {
       setSyncSnapshot(null);
       setPhoneSyncOpen(false);
@@ -548,31 +549,31 @@ export function TopBar() {
       };
     }
     const refreshSyncStatus = () => {
+      const requestVersion = ++statusRequestVersion;
       void window.ade.sync.getStatus({ includeTransferReadiness: false }).then((snapshot) => {
-        if (!cancelled) setSyncSnapshot(snapshot);
+        if (!cancelled && requestVersion === statusRequestVersion) setSyncSnapshot(snapshot);
       }).catch(() => {
-        if (!cancelled) setSyncSnapshot(null);
+        if (!cancelled && requestVersion === statusRequestVersion) setSyncSnapshot(null);
       });
     };
     setSyncSnapshot(null);
     refreshSyncStatus();
-    const interval = window.setInterval(refreshSyncStatus, 5_000);
     window.addEventListener("focus", refreshSyncStatus);
     const dispose = window.ade.sync.onEvent((event) => {
       if (!cancelled && event.type === "sync-status") {
+        statusRequestVersion += 1;
         setSyncSnapshot(event.snapshot);
       }
     });
     return () => {
       cancelled = true;
-      window.clearInterval(interval);
       window.removeEventListener("focus", refreshSyncStatus);
       dispose();
     };
     // Background projects don't broadcast sync-status events (main.ts filters
-    // them to the active project), so we re-run this effect on rootPath
-    // change to force an immediate refetch instead of waiting up to 5s for
-    // the next polling tick.
+    // them to the active project), so we re-run this effect on rootPath change
+    // to force an immediate refetch. Focus refresh covers state changes that
+    // happen while ADE is not active.
   }, [project?.rootPath]);
 
   const checkForActiveWorkloads = useCallback(async (projectRootPath: string): Promise<boolean> => {
@@ -845,7 +846,7 @@ export function TopBar() {
                   onDrop={(e) => handleDrop(e, idx)}
                   onDragEnd={handleDragEnd}
                   className={cn(
-                    "ade-shell-project-tab group inline-flex w-[clamp(128px,16vw,220px)] max-w-[220px] shrink-0 items-center gap-2 px-3 py-0.5",
+                    "ade-shell-project-tab group inline-flex w-[clamp(128px,16vw,220px)] max-w-[220px] min-w-0 shrink-0 items-center gap-2 px-3 py-0.5",
                     "transition-[background-color,color,border-color,box-shadow,opacity] duration-150",
                     !isMissing && "cursor-pointer",
                     isCurrent && "font-semibold",
@@ -894,14 +895,14 @@ export function TopBar() {
                   ) : null}
                   <span
                     className={cn(
-                      "truncate",
+                      "min-w-0 flex-1 truncate",
                       isMissing && "line-through"
                     )}
                   >
                     {rp.displayName}
                   </span>
                   {isMissing ? (
-                    <span className="inline-flex items-center gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150">
+                    <span className="ml-auto inline-flex shrink-0 items-center gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150">
                       <button
                         type="button"
                         className="ade-shell-control inline-flex h-5 w-5 items-center justify-center text-current transition-[background-color,color,border-color,box-shadow] duration-100"
@@ -936,7 +937,7 @@ export function TopBar() {
                     <button
                       type="button"
                       className={cn(
-                        "ade-shell-control inline-flex h-5 w-5 items-center justify-center text-current",
+                        "ade-shell-control ml-auto inline-flex h-5 w-5 shrink-0 items-center justify-center text-current",
                         "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150"
                       )}
                       data-variant="ghost"
@@ -957,7 +958,7 @@ export function TopBar() {
             {isNewTabOpen && (
               <div
                 className={cn(
-                  "ade-shell-project-tab group inline-flex w-[clamp(128px,16vw,220px)] max-w-[220px] items-center gap-2 px-3 py-0.5",
+                  "ade-shell-project-tab group inline-flex w-[clamp(128px,16vw,220px)] max-w-[220px] min-w-0 items-center gap-2 px-3 py-0.5",
                   "transition-[background-color,color,border-color,box-shadow] duration-150",
                   "font-semibold"
                 )}
@@ -969,13 +970,13 @@ export function TopBar() {
                 ) : (
                   <img src="./logo.png" alt="" style={{ height: 16, width: 34, objectFit: "contain" }} draggable={false} />
                 )}
-                <span className="truncate text-[12px]">
+                <span className="min-w-0 flex-1 truncate text-[12px]">
                   {projectTransition?.kind === "opening" ? "Opening…" : "New Tab"}
                 </span>
                 <button
                   type="button"
                   className={cn(
-                    "ade-shell-control inline-flex h-4 w-4 items-center justify-center rounded-sm",
+                    "ade-shell-control ml-auto inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-sm",
                     "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150"
                   )}
                   data-variant="ghost"

@@ -78,6 +78,34 @@ function safeTrim(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function normalizeLaneMode(value: unknown): NonNullable<AutomationRule["execution"]>["laneMode"] | undefined {
+  const raw = safeTrim(value);
+  if (raw === "provided" || raw === "prompt-at-run") return "require-on-trigger";
+  return raw === "create" || raw === "reuse" || raw === "require-on-trigger" ? raw : undefined;
+}
+
+function normalizeLaneNamePreset(value: unknown): NonNullable<AutomationRule["execution"]>["laneNamePreset"] | undefined {
+  const raw = safeTrim(value);
+  return raw === "issue-title" || raw === "issue-num-title" || raw === "pr-title-author" || raw === "custom"
+    ? raw
+    : undefined;
+}
+
+function normalizeOutputDisposition(value: unknown): AutomationRule["outputs"]["disposition"] {
+  const raw = safeTrim(value);
+  return raw === "open-task" ||
+    raw === "open-lane" ||
+    raw === "prepare-patch" ||
+    raw === "open-pr-draft" ||
+    raw === "comment-only"
+      ? raw
+      : "comment-only";
+}
+
+function normalizeVerificationMode(value: unknown): NonNullable<AutomationRule["verification"]["mode"]> {
+  return safeTrim(value) === "dry-run" ? "dry-run" : "intervention";
+}
+
 function extractFirstJsonObject(text: string): string | null {
   const raw = text.trim();
   if (!raw) return null;
@@ -797,10 +825,40 @@ function normalizeDraft(args: {
   }
 
   const requestedExecution = args.draft.execution;
+  const requestedLaneMode = normalizeLaneMode(requestedExecution?.laneMode);
+  const requestedLaneNamePreset = normalizeLaneNamePreset(requestedExecution?.laneNamePreset);
+  const requestedLaneNameTemplate = requestedLaneNamePreset === "custom"
+    ? safeTrim(requestedExecution?.laneNameTemplate)
+    : "";
+  if (requestedLaneMode === "require-on-trigger" && safeTrim(requestedExecution?.targetLaneId)) {
+    issues.push({
+      level: "error",
+      path: "execution.targetLaneId",
+      message: "targetLaneId is not allowed when lane must be supplied at trigger time.",
+    });
+  }
+  if (requestedLaneMode === "require-on-trigger") {
+    normalizedActions.forEach((action, index) => {
+      if (!safeTrim(action.targetLaneId)) return;
+      issues.push({
+        level: "error",
+        path: `actions[${index}].targetLaneId`,
+        message: "Step lane overrides are ignored when lane must be supplied at trigger time.",
+      });
+    });
+  }
+  const laneExecutionFields = {
+    ...(requestedLaneMode ? { laneMode: requestedLaneMode } : {}),
+    ...(requestedLaneMode === "create" && requestedLaneNamePreset ? { laneNamePreset: requestedLaneNamePreset } : {}),
+    ...(requestedLaneMode === "create" && requestedLaneNamePreset === "custom" && requestedLaneNameTemplate
+      ? { laneNameTemplate: requestedLaneNameTemplate }
+      : {}),
+  };
   const execution =
     requestedExecution?.kind === "agent-session" || requestedExecution?.kind === "mission" || requestedExecution?.kind === "built-in"
       ? {
           kind: requestedExecution.kind,
+          ...laneExecutionFields,
           ...(safeTrim(requestedExecution.targetLaneId) ? { targetLaneId: safeTrim(requestedExecution.targetLaneId) } : {}),
           ...(requestedExecution.kind === "agent-session"
             ? {
@@ -822,8 +880,8 @@ function normalizeDraft(args: {
           ...(requestedExecution.kind === "built-in" ? { builtIn: { actions: normalizedActions } } : {}),
         }
       : normalizedActions.length > 0
-        ? { kind: "built-in" as const, builtIn: { actions: normalizedActions } }
-        : { kind: "agent-session" as const, session: {} };
+        ? { kind: "built-in" as const, ...laneExecutionFields, builtIn: { actions: normalizedActions } }
+        : { kind: "agent-session" as const, ...laneExecutionFields, session: {} };
 
   if (execution.kind === "built-in" && normalizedActions.length === 0) {
     issues.push({
@@ -903,13 +961,13 @@ function normalizeDraft(args: {
       ...(args.draft.guardrails?.activeHours ? { activeHours: args.draft.guardrails.activeHours } : {}),
     },
     outputs: {
-      disposition: "comment-only",
+      disposition: normalizeOutputDisposition(args.draft.outputs?.disposition),
       ...(typeof args.draft.outputs?.createArtifact === "boolean" ? { createArtifact: args.draft.outputs.createArtifact } : { createArtifact: true }),
       ...(safeTrim(args.draft.outputs?.notificationChannel) ? { notificationChannel: safeTrim(args.draft.outputs?.notificationChannel) } : {}),
     },
     verification: {
-      verifyBeforePublish: false,
-      mode: "intervention",
+      verifyBeforePublish: Boolean(args.draft.verification?.verifyBeforePublish),
+      mode: normalizeVerificationMode(args.draft.verification?.mode),
     },
     billingCode: safeTrim(args.draft.billingCode) || `auto:${slugify(name)}`,
     includeProjectContext,
@@ -1348,6 +1406,9 @@ export function createAutomationPlannerService({
       }
       if (execution.kind === "built-in") {
         notes.push("Built-in tasks run directly without launching a mission or chat thread.");
+      }
+      if (execution.laneMode === "require-on-trigger") {
+        notes.push("Lane resolution: trigger caller must supply a lane.");
       }
 
       return { normalized, actions, notes, issues };

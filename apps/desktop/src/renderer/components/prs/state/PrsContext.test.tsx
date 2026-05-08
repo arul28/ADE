@@ -50,6 +50,8 @@ function TabSwitchHarness() {
 
 describe("PrsContext refresh", () => {
   beforeEach(() => {
+    window.history.replaceState(null, "", "/");
+    window.location.hash = "";
     const refreshedNeed: RebaseNeed = {
       laneId: "lane-1",
       laneName: "Lane 1",
@@ -82,19 +84,11 @@ describe("PrsContext refresh", () => {
       },
       lanes: {
         list: vi.fn().mockResolvedValue([]),
-        listAutoRebaseStatuses: vi
-          .fn()
-          .mockResolvedValueOnce([])
-          .mockResolvedValueOnce([])
-          .mockResolvedValue([refreshedAutoStatus]),
+        listAutoRebaseStatuses: vi.fn().mockResolvedValue([refreshedAutoStatus]),
         onAutoRebaseEvent: vi.fn(() => () => {}),
       },
       rebase: {
-        scanNeeds: vi
-          .fn()
-          .mockResolvedValueOnce([])
-          .mockResolvedValueOnce([])
-          .mockResolvedValue([refreshedNeed]),
+        scanNeeds: vi.fn().mockResolvedValue([refreshedNeed]),
         onEvent: vi.fn(() => () => {}),
       },
     } as any;
@@ -104,10 +98,27 @@ describe("PrsContext refresh", () => {
     cleanup();
     globalThis.window.ade = originalAde;
     window.location.hash = "";
+    window.history.replaceState(null, "", "/");
   });
 
-  it("refreshes rebase needs and auto-rebase statuses without waiting for events", async () => {
-    const user = userEvent.setup();
+  it("skips rebase scans for the plain GitHub PR list", async () => {
+    render(
+      <PrsProvider>
+        <Harness />
+      </PrsProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("loading").textContent).toBe("idle");
+    });
+    expect(window.ade.rebase.scanNeeds).not.toHaveBeenCalled();
+    expect(window.ade.lanes.listAutoRebaseStatuses).not.toHaveBeenCalled();
+    expect(window.ade.lanes.list).toHaveBeenCalledWith({ includeStatus: false });
+    expect(window.ade.prs.refresh).not.toHaveBeenCalled();
+  });
+
+  it("refreshes rebase needs and auto-rebase statuses for workflow routes without waiting for events", async () => {
+    window.location.hash = "#/prs?tab=workflows&workflow=rebase&laneId=lane-1";
 
     render(
       <PrsProvider>
@@ -119,11 +130,32 @@ describe("PrsContext refresh", () => {
       expect(screen.getByTestId("loading").textContent).toBe("idle");
     });
 
-    await user.click(screen.getByRole("button", { name: "refresh" }));
-
     await waitFor(() => {
       expect(screen.getByTestId("needs-count").textContent).toBe("1");
       expect(screen.getByTestId("auto-count").textContent).toBe("1");
+    });
+    expect(window.ade.lanes.list).toHaveBeenCalledWith({ includeStatus: true });
+    expect(window.ade.prs.refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("runs a GitHub PR refresh for explicit refresh actions", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <PrsProvider>
+        <Harness />
+      </PrsProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("loading").textContent).toBe("idle");
+    });
+    expect(window.ade.prs.refresh).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "refresh" }));
+
+    await waitFor(() => {
+      expect(window.ade.prs.refresh).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -139,14 +171,14 @@ describe("PrsContext refresh", () => {
     await waitFor(() => {
       expect(screen.getByTestId("loading").textContent).toBe("idle");
     });
-    expect(window.ade.prs.refresh).toHaveBeenCalledTimes(1);
+    expect(window.ade.prs.refresh).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole("button", { name: "queue" }));
 
     await waitFor(() => {
       expect(screen.getByTestId("active-tab").textContent).toBe("queue");
     });
-    expect(window.ade.prs.refresh).toHaveBeenCalledTimes(1);
+    expect(window.ade.prs.refresh).not.toHaveBeenCalled();
   });
 
   it("hydrates the Rebase/Merge workflow selection from the initial hash route", async () => {
