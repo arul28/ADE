@@ -63,6 +63,7 @@ import type {
   UpdateMissionStepArgs
 } from "../../../shared/types";
 import type { AdeDb } from "../state/kvDb";
+import type { Logger } from "../logging/logger";
 type MissionPlanStepDraft = {
   index: number;
   title: string;
@@ -84,7 +85,7 @@ import { filterExecutionSteps, TERMINAL_STEP_STATUSES } from "../orchestrator/or
 import { resolveModelDescriptor } from "../../../shared/modelRegistry";
 import { normalizeMissionArtifactType as normalizeMissionArtifactTypeValue } from "../../../shared/proofArtifacts";
 
-const ACTIVE_MISSION_STATUSES = new Set<MissionStatus>(["in_progress", "planning"]);
+const ACTIVE_MISSION_STATUSES = new Set<MissionStatus>(["in_progress", "planning", "intervention_required"]);
 
 const DEFAULT_CONCURRENCY_CONFIG: MissionConcurrencyConfig = {
   maxConcurrentMissions: 3,
@@ -796,6 +797,7 @@ export function createMissionService({
   db,
   projectId,
   projectRoot,
+  logger,
   onEvent,
   concurrencyConfig,
   onInterventionResolved,
@@ -804,6 +806,7 @@ export function createMissionService({
   db: AdeDb;
   projectId: string;
   projectRoot?: string;
+  logger?: Logger;
   onEvent?: (payload: MissionsEventPayload) => void;
   concurrencyConfig?: Partial<MissionConcurrencyConfig>;
   onInterventionResolved?: (args: {
@@ -930,6 +933,11 @@ export function createMissionService({
         `,
         [laneId, projectId, lane.mission_id]
       );
+      logger?.info("missions.lane_ghost_claim_cleared", {
+        projectId,
+        laneId,
+        staleMissionId: lane.mission_id,
+      });
       db.flushNow();
     }
     const existingResultMission = db.get<{ id: string }>(

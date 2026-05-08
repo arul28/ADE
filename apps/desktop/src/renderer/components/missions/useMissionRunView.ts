@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { MissionRunView } from "../../../shared/types";
+import { useMissionPolling } from "./useMissionPolling";
 
 const runViewRequestCache = new Map<string, Promise<MissionRunView | null>>();
+const RUN_VIEW_SAFETY_POLL_MS = 45_000;
 
 function getRunViewCoalesced(args: {
   requestKey: string;
@@ -90,6 +92,14 @@ export function useMissionRunView(missionId: string | null, runId: string | null
       }
     }
   }, [requestKey, resolvedMissionId, runId]);
+
+  useMissionPolling(
+    () => {
+      void refresh();
+    },
+    RUN_VIEW_SAFETY_POLL_MS,
+    Boolean(resolvedMissionId.length),
+  );
 
   useEffect(() => {
     if (!resolvedMissionId.length) return;

@@ -2576,6 +2576,7 @@ app.whenReady().then(async () => {
       db,
       projectId,
       projectRoot,
+      logger,
       onBlockingInterventionAdded: ({ missionId, intervention }) => {
         const currentMissionService = missionServiceRef;
         const currentOrchestratorService = orchestratorServiceRef;

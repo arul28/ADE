@@ -386,6 +386,27 @@ describe("missionService lifecycle", () => {
     dispose();
   });
 
+  it("counts intervention-required missions against the concurrency cap", async () => {
+    const { db, projectId, dispose } = await createDbWithProjectAndLane();
+    const service = createMissionService({
+      db,
+      projectId,
+      concurrencyConfig: { maxConcurrentMissions: 1 },
+    });
+
+    const blockedMission = service.create({ prompt: "Wait for user input" });
+    service.update({ missionId: blockedMission.id, status: "in_progress" });
+    service.update({ missionId: blockedMission.id, status: "intervention_required" });
+
+    const queuedMission = service.create({ prompt: "Start after the blocked mission resumes" });
+    const startCheck = service.canStartMission(queuedMission.id);
+
+    expect(startCheck.allowed).toBe(false);
+    expect(startCheck.reason).toContain("1 missions already active");
+
+    dispose();
+  });
+
   it("deletes mission records and orchestrator runtime dependents", async () => {
     const { db, projectId, laneId, dispose } = await createDbWithProjectAndLane();
     const service = createMissionService({ db, projectId });
@@ -573,6 +594,37 @@ describe("missionService lifecycle", () => {
     expect(
       db.get<{ count: number }>("select count(*) as count from orchestrator_timeline_events where run_id = ?", [runId])?.count ?? 0
     ).toBe(0);
+    const lane = db.get<{ mission_id: string | null; lane_role: string | null }>(
+      "select mission_id, lane_role from lanes where id = ? and project_id = ?",
+      [laneId, projectId]
+    );
+    expect(lane?.mission_id).toBeNull();
+    expect(lane?.lane_role).toBeNull();
+
+    dispose();
+  });
+
+  it("logs when clearing stale lane mission claims", async () => {
+    const { db, projectId, laneId, dispose } = await createDbWithProjectAndLane();
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const service = createMissionService({ db, projectId, logger });
+
+    db.run(
+      "update lanes set mission_id = ?, lane_role = 'mission' where id = ? and project_id = ?",
+      ["missing-mission", laneId, projectId]
+    );
+
+    expect(service.isLaneClaimed(laneId).claimed).toBe(false);
+    expect(logger.info).toHaveBeenCalledWith("missions.lane_ghost_claim_cleared", {
+      projectId,
+      laneId,
+      staleMissionId: "missing-mission",
+    });
     const lane = db.get<{ mission_id: string | null; lane_role: string | null }>(
       "select mission_id, lane_role from lanes where id = ? and project_id = ?",
       [laneId, projectId]
@@ -942,7 +994,7 @@ describe("missionService lifecycle", () => {
     expect(activeEntry).toBeTruthy();
     expect(activeEntry?.phaseName).toBe("Development");
     expect(activeEntry?.phaseProgress).toEqual({ completed: 2, total: 2, pct: 100 });
-    expect(snapshot.active.some((entry) => entry.mission.id === actionMission.id)).toBe(false);
+    expect(snapshot.active.some((entry) => entry.mission.id === actionMission.id)).toBe(true);
     expect(snapshot.recent.some((entry) => entry.mission.id === completedMission.id)).toBe(true);
     expect(snapshot.weekly.missions).toBeGreaterThanOrEqual(2);
 
