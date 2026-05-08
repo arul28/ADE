@@ -140,4 +140,11 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
       expect(actions).toContain(name);
     }
   });
+
+  it("exposes the macOS VM computer-use control surface", () => {
+    const actions = ADE_ACTION_ALLOWLIST.macos_vm ?? [];
+    for (const name of ["getStatus", "start", "getAgentGuide", "captureScreenshot", "click", "selectPoint", "typeText"]) {
+      expect(actions).toContain(name);
+    }
+  });
 });

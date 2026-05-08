@@ -2176,16 +2176,19 @@ function GraphInner() {
 
       const confirmPublish = Boolean(args?.confirmPublish);
       if (!sync.hasUpstream) {
+        const missingRemote = sync.upstreamState === "missing";
         if (confirmPublish) {
           const ok = await graphConfirm.confirmAsync({
-            title: "Publish Lane",
-            message: `Publish lane '${lane.name}' to origin/${lane.branchRef}?`,
-            confirmLabel: "PUBLISH",
+            title: missingRemote ? "Recreate remote branch" : "Publish lane",
+            message: missingRemote
+              ? `The remote branch for '${lane.name}' is missing. Recreate origin/${lane.branchRef}?`
+              : `Publish lane '${lane.name}' to origin/${lane.branchRef}?`,
+            confirmLabel: missingRemote ? "RECREATE" : "PUBLISH",
           });
           if (!ok) return { status: "skipped", message: "publish skipped" };
         }
         await window.ade.git.push({ laneId });
-        return { status: "done", message: "published new remote branch" };
+        return { status: "done", message: missingRemote ? "recreated remote branch" : "published new remote branch" };
       }
 
       if (sync.diverged && sync.ahead > 0) {
@@ -2668,6 +2671,7 @@ function GraphInner() {
     const remoteSync = syncByLaneId[selectedLane.id] ?? null;
     const autoRebase = autoRebaseByLaneId[selectedLane.id] ?? null;
     if (remoteSync?.diverged) return { label: "Diverged", tone: "text-red-300" };
+    if (remoteSync?.upstreamState === "missing") return { label: "Remote missing", tone: "text-amber-300" };
     if (autoRebase?.state === "rebaseConflict") return { label: "Rebase conflict", tone: "text-red-300" };
     if (autoRebase?.state === "rebaseFailed") return { label: "Rebase failed", tone: "text-red-300" };
     if (autoRebase?.state === "rebasePending") return { label: "Rebase pending", tone: "text-amber-300" };

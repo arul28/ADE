@@ -144,7 +144,7 @@ describe("describePrTargetDiff", () => {
     const lane = makeLane({ baseRef: "main" });
     const result = describePrTargetDiff({ lane, lanes: [], targetBranch: "develop" });
     expect(result).toBe(
-      "targets develop, but this lane currently tracks main. If you want to move the lane onto develop, use rebase or reparent instead of only retargeting the PR.",
+      "targets develop, but this lane is based on main. If the PR should start from develop, move the lane onto develop before creating it.",
     );
   });
 
@@ -173,7 +173,7 @@ describe("describePrTargetDiff", () => {
     // Child tracks feature/parent, so targeting "main" should show mismatch
     const result = describePrTargetDiff({ lane: child, lanes: [parent, child], targetBranch: "main" });
     expect(result).toBe(
-      "targets main, but this lane currently tracks feature/parent. If you want to move the lane onto main, use rebase or reparent instead of only retargeting the PR.",
+      "targets main, but this lane is based on feature/parent. If the PR should start from main, move the lane onto main before creating it.",
     );
   });
 
@@ -202,7 +202,7 @@ describe("describePrTargetDiff", () => {
       primaryBranchRef: "refs/heads/master",
     });
     expect(result).toBe(
-      "targets develop, but this lane currently tracks master. If you want to move the lane onto develop, use rebase or reparent instead of only retargeting the PR.",
+      "targets develop, but this lane is based on master. If the PR should start from develop, move the lane onto develop before creating it.",
     );
   });
 });

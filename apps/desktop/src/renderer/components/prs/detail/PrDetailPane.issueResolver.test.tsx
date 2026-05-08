@@ -298,6 +298,7 @@ function renderPane(args: {
     diverged: false,
     recommendedAction: "none",
     ...args.syncStatus,
+    upstreamState: args.syncStatus?.upstreamState ?? "tracking",
   } satisfies GitUpstreamSyncStatus);
   const persistedSessionId = args.convergenceState?.activeSessionId ?? "session-1";
   const getSession = vi.fn().mockImplementation(async (lookupId?: string) => {

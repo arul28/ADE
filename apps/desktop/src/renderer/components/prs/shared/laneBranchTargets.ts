@@ -36,5 +36,5 @@ export function describePrTargetDiff(args: {
     primaryBranchRef: args.primaryBranchRef,
   });
   if (!laneBaseBranch || laneBaseBranch === targetBranch) return null;
-  return `targets ${targetBranch}, but this lane currently tracks ${laneBaseBranch}. If you want to move the lane onto ${targetBranch}, use rebase or reparent instead of only retargeting the PR.`;
+  return `targets ${targetBranch}, but this lane is based on ${laneBaseBranch}. If the PR should start from ${targetBranch}, move the lane onto ${targetBranch} before creating it.`;
 }

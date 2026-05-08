@@ -395,6 +395,7 @@ ade.iosSimulator.*           # macOS-only iOS Simulator drawer + Preview Lab: ge
 ade.appControl.*             # Electron app control bridge over Chrome DevTools Protocol: getStatus/launch/launchInTerminal/connect/stop/screenshot/getSnapshot/inspectPoint/selectPoint/click/typeText/scroll/dispatchKey/listTargets/attachToTarget, plus the ade.appControl.event push channel (session-started/updated/stopped, selection, screencast frame)
 ade.builtInBrowser.*         # in-app web browser owned by `builtInBrowserService`: getStatus/showPanel/setBounds/attachWebview/navigate/createTab/switchTab/closeTab/reload/goBack/goForward/stop/startInspect/stopInspect/captureScreenshot/selectPoint/selectCurrent/clearSelection, plus the ade.builtInBrowser.event push channel (status / open-request / selection / selection-cleared / error). Backs the Work sidebar's Browser tab and the renderer-wide `openUrlInAdeBrowser()` link router.
 ade.terminal.*               # chat-owned terminal control: list/read/write/signal/activeForChat. Resolves a chat's active terminal via chatSessionId so in-chat agents and the App Control panel can drive the visible launch terminal.
+ade.macosVm.*                # lane-tied macOS VM lifecycle and GUI control: getStatus/provision/start/stop/delete/getAgentGuide/getSharePolicy/focusWindow/captureScreenshot/selectPoint/click/typeText, plus the ade.macosVm.event push channel. Uses Lume first, direct/headless VNC when ADE has managed credentials, and sanitized mirrors for lane roots that contain ADE local state.
 ade.updates.*
 ```
 
@@ -462,6 +463,7 @@ Every service lives under `apps/desktop/src/main/services/<domain>/`. Summary:
 | `keybindings/` | `keybindingsService.ts` | User keybindings read/write. |
 | `lanes/` | `laneService.ts`, `laneEnvironmentService.ts`, `laneTemplateService.ts`, `laneProxyService.ts`, `portAllocationService.ts`, `autoRebaseService.ts`, `rebaseSuggestionService.ts`, `laneLaunchContext.ts`, `oauthRedirectService.ts`, `runtimeDiagnosticsService.ts` | Worktree lifecycle, env bootstrap, templates, reverse proxy, port leases, auto-rebase, suggestions, OAuth redirect, diagnostics. |
 | `logging/` | `logger.ts` | File-backed structured logger. |
+| `macosVm/` | `macosVmService.ts`, `rfbDirectClient.ts` | Lane-tied macOS VM lifecycle and GUI control. Uses Lume, stores VM records in `.ade/cache`, stores VNC credentials in `.ade/secrets`, mounts direct lane roots when safe, otherwise keeps a sanitized rsync mirror, and exposes screenshot/click/type/select through headless VNC or visible-window fallbacks. |
 | `memory/` | `unifiedMemoryService.ts` (canonical; listed under `memory/memoryService.ts`), `memoryBriefingService.ts`, `memoryLifecycleService.ts`, `batchConsolidationService.ts`, `embeddingService.ts`, `embeddingWorkerService.ts`, `hybridSearchService.ts`, `episodicSummaryService.ts`, `knowledgeCaptureService.ts`, `humanWorkDigestService.ts`, `proceduralLearningService.ts`, `compactionFlushPrompt.ts`, `skillRegistryService.ts`, `memoryFilesService.ts`, `memoryRepairService.ts`, `missionMemoryLifecycleService.ts` | Unified memory subsystem — see §10. |
 | `missions/` | `missionService.ts`, `missionPreflightService.ts`, `phaseEngine.ts` | Mission CRUD, preflight validation, phase lifecycle. |
 | `onboarding/` | `onboardingService.ts` | First-run flow, defaults detection, existing lane discovery. |
@@ -535,7 +537,7 @@ app/            # shell, App.tsx, TopBar, TabNav, startup, splash
 project/        # Play tab, run/test/process controls
 lanes/          # list/detail/inspector, stacks, laneDesignTokens.ts
 files/          # tree, editor, diffs
-terminals/      # TerminalView, WorkViewArea (PaneTilingLayout-backed grid), workSessionTiling, LaneCombobox
+terminals/      # TerminalView, WorkViewArea (PaneTilingLayout-backed grid), WorkSidebar, MacosVmPanel, workSessionTiling, LaneCombobox
 conflicts/      # risk matrix, simulation, resolution
 graph/          # WorkspaceGraphPage (decomposed into nodes/edges/dialogs)
 prs/            # PR list/detail, stacked queue, shared/

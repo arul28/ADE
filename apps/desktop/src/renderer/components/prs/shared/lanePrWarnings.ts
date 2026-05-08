@@ -17,45 +17,44 @@ export function describeLanePrIssues(
   const issues: string[] = [];
 
   if (lane.status.rebaseInProgress) {
-    issues.push("has a rebase in progress");
+    issues.push("has a rebase in progress. Finish or abort it before creating a PR.");
   }
 
   if (lane.status.dirty) {
-    issues.push("has uncommitted changes");
+    issues.push("has uncommitted changes. Commit or stash them if they should be part of the PR.");
   }
 
   if (lane.status.behind > 0) {
-    issues.push(`is ${lane.status.behind} ${formatCommitSuffix(lane.status.behind)} behind its base branch — rebase recommended before creating or merging a PR`);
+    issues.push(`is ${lane.status.behind} ${formatCommitSuffix(lane.status.behind)} behind its base branch. Update the lane before creating or merging a PR.`);
   }
 
   if (!syncStatus) {
     return issues;
   }
 
+  if (syncStatus.upstreamState === "missing") {
+    issues.push("remote branch is missing. It may have been deleted after merge.");
+    return issues;
+  }
+
   if (!syncStatus.hasUpstream) {
-    issues.push("has not been published to remote");
+    issues.push("has not been pushed to remote yet.");
     return issues;
   }
 
   if (syncStatus.diverged) {
-    if (syncStatus.recommendedAction === "force_push_lease") {
-      issues.push(
-        `has diverged from remote (${syncStatus.ahead} ahead, ${syncStatus.behind} behind) — this is expected after a rebase. Force push to update the remote branch before creating a PR.`
-      );
-    } else {
-      issues.push(
-        `has diverged from remote (${syncStatus.ahead} ahead, ${syncStatus.behind} behind) — force push if this is from a rebase, or pull to merge remote changes.`
-      );
-    }
+    issues.push(
+      `local and remote both have changes (${syncStatus.ahead} local, ${syncStatus.behind} remote). Pull or rebase, then push once the history looks right.`
+    );
     return issues;
   }
 
   if (syncStatus.ahead > 0) {
-    issues.push(`has ${syncStatus.ahead} unpushed ${formatCommitSuffix(syncStatus.ahead)}`);
+    issues.push(`has ${syncStatus.ahead} ${formatCommitSuffix(syncStatus.ahead)} not pushed yet.`);
   }
 
   if (syncStatus.behind > 0) {
-    issues.push(`is ${syncStatus.behind} ${formatCommitSuffix(syncStatus.behind)} behind remote`);
+    issues.push(`remote has ${syncStatus.behind} newer ${formatCommitSuffix(syncStatus.behind)}. Pull or rebase before creating a PR.`);
   }
 
   return issues;

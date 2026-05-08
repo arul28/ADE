@@ -103,6 +103,7 @@ describe("CreatePrModal queue workflow", () => {
       prs: {
         createQueue,
         createFromLane,
+        listAll: vi.fn().mockResolvedValue([]),
       },
       git: {
         getSyncStatus: vi.fn().mockResolvedValue(null),
@@ -208,9 +209,69 @@ describe("CreatePrModal queue workflow", () => {
     await user.clear(targetInput);
     await user.type(targetInput, "release-9");
 
-    expect(screen.getByText("Lane Needs Attention")).toBeTruthy();
-    expect(screen.getByText(/targets release-9, but this lane currently tracks main/i)).toBeTruthy();
-    expect(screen.getByText(/use rebase or reparent instead of only retargeting the pr/i)).toBeTruthy();
+    expect(screen.getByText("Check Before Creating PR")).toBeTruthy();
+    expect(screen.getByText(/targets release-9, but this lane is based on main/i)).toBeTruthy();
+    expect(screen.getByText(/move the lane onto release-9 before creating it/i)).toBeTruthy();
+  });
+
+  it("moves a child lane target back to the merged parent PR base", async () => {
+    mockLanes.push(makeLane({
+      id: "lane-child",
+      name: "03 child lane",
+      branchRef: "feature/child",
+      baseRef: "feature/queue-1",
+      parentLaneId: "lane-1",
+      stackDepth: 2,
+      createdAt: "2026-03-23T12:03:00.000Z",
+    }));
+    try {
+      (globalThis.window.ade.prs.listAll as any).mockResolvedValue([
+        {
+          id: "pr-parent",
+          laneId: "lane-1",
+          projectId: "proj-1",
+          repoOwner: "test-owner",
+          repoName: "test-repo",
+          githubPrNumber: 1,
+          githubUrl: "https://example.test/pr/1",
+          githubNodeId: null,
+          title: "Parent",
+          state: "merged",
+          baseBranch: "main",
+          headBranch: "feature/queue-1",
+          checksStatus: "none",
+          reviewStatus: "none",
+          additions: 1,
+          deletions: 1,
+          lastSyncedAt: null,
+          createdAt: "2026-03-23T12:00:00.000Z",
+          updatedAt: "2026-03-23T12:30:00.000Z",
+          creationStrategy: "pr_target",
+        },
+      ]);
+
+      const user = userEvent.setup();
+      renderWithRouter(<CreatePrModal open onOpenChange={vi.fn()} />);
+
+      const comboboxes = screen.getAllByRole("combobox");
+      await user.selectOptions(comboboxes[0]!, "lane-child");
+
+      await waitFor(() => expect(screen.getByDisplayValue("main")).toBeTruthy());
+      expect(screen.getByText(/The lane this builds on \("01 queue lane"\) has already merged/i)).toBeTruthy();
+
+      await user.click(screen.getByRole("button", { name: /next step/i }));
+      await user.click(screen.getByRole("button", { name: /create pr/i }));
+
+      await waitFor(() => expect(createFromLane).toHaveBeenCalledTimes(1));
+      expect(createFromLane).toHaveBeenCalledWith(
+        expect.objectContaining({
+          laneId: "lane-child",
+          baseBranch: "main",
+        }),
+      );
+    } finally {
+      mockLanes.pop();
+    }
   });
 
   it("lets queue creation target a different branch than Primary's current branch", async () => {
