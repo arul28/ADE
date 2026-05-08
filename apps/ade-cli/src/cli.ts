@@ -1785,15 +1785,6 @@ function actionScalarStep(key: string, domain: string, action: string, arg: unkn
   return actionCallStep(key, "run_ade_action", { domain, action, arg });
 }
 
-function sleepStep(key: string, ms: number | undefined): InvocationStep | null {
-  if (ms == null || ms <= 0) return null;
-  return {
-    key,
-    method: "ade-cli/sleep",
-    params: { ms: Math.min(30 * 60 * 1000, Math.max(0, Math.floor(ms))) },
-  };
-}
-
 function waitRunGraphStep(args: {
   key: string;
   runId: string | ((values: JsonObject) => string);
@@ -6521,8 +6512,7 @@ async function waitForRunGraph(args: {
     if (pastDeadline) {
       timedOut = true;
       const shouldDrainActiveHeadlessWork =
-        !args.untilTerminal
-        && args.connection.mode === "headless"
+        args.connection.mode === "headless"
         && waitState.activeCount > 0
         && now < headlessDrainDeadline;
       if (!shouldDrainActiveHeadlessWork) break;
@@ -6592,12 +6582,6 @@ async function executePlan(plan: CliPlan & { kind: "execute" }, options: GlobalO
     for (const step of plan.steps) {
       try {
         const params = typeof step.params === "function" ? step.params(values) : step.params;
-        if (step.method === "ade-cli/sleep") {
-          const ms = Math.max(0, Math.floor(typeof params?.ms === "number" ? params.ms : 0));
-          await sleep(ms);
-          values[step.key] = { sleptMs: ms };
-          continue;
-        }
         if (step.method === "ade-cli/wait-run-graph") {
           const runId = requireValue(asString(params?.runId) ?? null, "run id");
           const waitMs = Math.max(0, Math.floor(typeof params?.waitMs === "number" ? params.waitMs : 0));
