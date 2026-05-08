@@ -74,7 +74,7 @@ export function UsageGuardrailsSection({
     setError(null);
     try {
       const [nextSnapshot, nextBudgetConfig] = await Promise.all([
-        window.ade.usage.refresh(),
+        window.ade.usage.getSnapshot(),
         window.ade.usage.getBudgetConfig(),
       ]);
       setSnapshot(nextSnapshot);
