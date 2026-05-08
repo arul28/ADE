@@ -1611,16 +1611,28 @@ contextBridge.exposeInMainWorld("ade", {
     ) => {
       let disposed = false;
       let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+      let inFlight = false;
+      let pending = false;
       const refresh = () => {
         if (disposed) return;
+        if (inFlight) {
+          pending = true;
+          return;
+        }
+        inFlight = true;
         void ipcRenderer.invoke(IPC.missionsGetRunView, args).then(
           (view: MissionRunView | null) => {
             if (!disposed) cb(view);
           },
           () => {},
-        );
+        ).finally(() => {
+          inFlight = false;
+          if (disposed || !pending) return;
+          pending = false;
+          scheduleRefresh(350);
+        });
       };
-      const scheduleRefresh = (delayMs = 160) => {
+      const scheduleRefresh = (delayMs = 650) => {
         if (disposed) return;
         if (refreshTimer) clearTimeout(refreshTimer);
         refreshTimer = setTimeout(() => {
@@ -1648,14 +1660,14 @@ contextBridge.exposeInMainWorld("ade", {
       ) => {
         if (payload.missionId !== args.missionId) return;
         if (args.runId && payload.runId !== args.runId) return;
-        scheduleRefresh(120);
+        scheduleRefresh(750);
       };
       const dagListener = (
         _event: Electron.IpcRendererEvent,
         payload: DagMutationEvent,
       ) => {
         if (args.runId && payload.runId !== args.runId) return;
-        scheduleRefresh(120);
+        scheduleRefresh(750);
       };
       ipcRenderer.on(IPC.missionsEvent, missionListener);
       ipcRenderer.on(IPC.orchestratorEvent, runtimeListener);

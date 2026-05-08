@@ -161,6 +161,17 @@ describe("TopBar", () => {
     expect(globalThis.window.ade.sync.getStatus).not.toHaveBeenCalled();
   });
 
+  it("does not eagerly resolve icons for non-current recent projects", async () => {
+    useAppStore.setState({ project: null } as any);
+
+    render(<TopBar />);
+
+    expect(await screen.findByText("ADE")).toBeTruthy();
+    await new Promise((resolve) => setTimeout(resolve, 850));
+
+    expect(globalThis.window.ade.project.resolveIcon).not.toHaveBeenCalled();
+  });
+
   it("opens the phone sync drawer from the host status control", async () => {
     render(<TopBar />);
 

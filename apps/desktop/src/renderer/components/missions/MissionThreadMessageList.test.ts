@@ -174,6 +174,115 @@ describe("MissionThreadMessageList transcript merge", () => {
     expect(merged).toHaveLength(0);
   });
 
+  it("drops synthetic coordinator prompts from mission threads", () => {
+    const merged = mergeMissionThreadEvents([
+      {
+        sessionId: "coordinator-session",
+        timestamp: "2026-03-10T12:00:00.000Z",
+        provenance: {
+          messageId: "msg-internal",
+          role: "orchestrator",
+          targetKind: "coordinator",
+        },
+        event: {
+          type: "user_message",
+          text: "## ADE Mission-Control Tool Transport\nInternal runtime prompt.",
+          displayText: "Continue mission coordination.",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "worker-session",
+        timestamp: "2026-03-10T12:00:01.000Z",
+        event: {
+          type: "text",
+          text: "Visible worker update.",
+          turnId: "turn-2",
+          itemId: "text-1",
+        },
+      },
+    ], []);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.event).toMatchObject({
+      type: "text",
+      text: "Visible worker update.",
+    });
+  });
+
+  it("drops coordinator mission-control replay plumbing", () => {
+    const merged = mergeMissionThreadEvents([
+      {
+        sessionId: "coordinator:run-1",
+        timestamp: "2026-03-10T12:00:00.000Z",
+        provenance: {
+          role: "orchestrator",
+          targetKind: "coordinator",
+        },
+        event: {
+          type: "status",
+          turnStatus: "interrupted",
+          message: "The coordinator wrote mission-control calls as text, so ADE is replaying those calls through the real mission-control tools.",
+        },
+      },
+      {
+        sessionId: "coordinator:run-1",
+        timestamp: "2026-03-10T12:00:01.000Z",
+        provenance: {
+          role: "orchestrator",
+          targetKind: "coordinator",
+        },
+        event: {
+          type: "tool_call",
+          tool: "spawn_worker",
+          args: { name: "implementation" },
+          itemId: "recovered:turn-1:0",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "coordinator:run-1",
+        timestamp: "2026-03-10T12:00:02.000Z",
+        provenance: {
+          role: "orchestrator",
+          targetKind: "coordinator",
+        },
+        event: {
+          type: "error",
+          message: "Codex app-server exited (code=0, signal=null).",
+        },
+      },
+      {
+        sessionId: "coordinator-session",
+        timestamp: "2026-03-10T12:00:02.500Z",
+        provenance: {
+          role: "orchestrator",
+          targetKind: "coordinator",
+        },
+        event: {
+          type: "text",
+          text: "// spawn_worker\n{ malformed transport text that should stay internal }",
+          itemId: "raw-transport",
+        },
+      },
+      {
+        sessionId: "coordinator:run-1",
+        timestamp: "2026-03-10T12:00:03.000Z",
+        event: {
+          type: "text",
+          text: "Visible coordinator note.",
+          itemId: "visible",
+        },
+      },
+    ], []);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.event).toMatchObject({
+      type: "text",
+      text: "Visible coordinator note.",
+    });
+  });
+
   it("keeps mission-thread text fragments merged even when structured events interleave", () => {
     const merged = mergeMissionThreadEvents([], [
       {
@@ -252,6 +361,273 @@ describe("MissionThreadMessageList usage", () => {
       expect.objectContaining({ surfaceMode: "mission-thread" }),
       expect.anything(),
     );
+  });
+
+  it("does not read raw transcript tails for closed mission history threads", async () => {
+    const readTranscriptTail = vi.fn(() => Promise.resolve(""));
+    globalThis.window.ade = {
+      sessions: {
+        readTranscriptTail,
+      },
+    } as any;
+
+    render(React.createElement(MissionThreadMessageList, {
+      messages: [],
+      sessionId: "session-closed",
+      transcriptPollingEnabled: false,
+    }));
+
+    await Promise.resolve();
+    expect(readTranscriptTail).not.toHaveBeenCalled();
+  });
+
+  it("hides recovered mission-control transport blocks before rendering", () => {
+    render(React.createElement(MissionThreadMessageList, {
+      messages: [
+        {
+          id: "msg-tool-transport",
+          missionId: "mission-1",
+          role: "orchestrator",
+          content: [
+            "```json",
+            "// spawn_worker",
+            "{\"name\":\"implementation\",\"prompt\":\"Write the test\"}",
+            "```",
+          ].join("\n"),
+          timestamp: "2026-03-10T12:00:00.000Z",
+          threadId: "mission:mission-1",
+          sourceSessionId: "coordinator-session",
+          target: { kind: "coordinator", runId: "run-1" },
+          metadata: {
+            structuredStream: {
+              kind: "text",
+              sessionId: "coordinator-session",
+              turnId: "turn-1",
+              itemId: "text-1",
+            },
+          },
+        },
+        {
+          id: "msg-visible",
+          missionId: "mission-1",
+          role: "orchestrator",
+          content: "Visible mission update.",
+          timestamp: "2026-03-10T12:00:01.000Z",
+          threadId: "mission:mission-1",
+          metadata: {
+            structuredStream: {
+              kind: "text",
+              sessionId: "coordinator-session",
+              turnId: "turn-2",
+              itemId: "text-2",
+            },
+          },
+        },
+      ] as any,
+    }));
+
+    const events = agentListMock.mock.calls.at(-1)?.[0].events as AgentChatEventEnvelope[];
+    expect(events).toHaveLength(1);
+    expect(events[0]?.event).toMatchObject({
+      type: "text",
+      text: "Visible mission update.",
+    });
+  });
+
+  it("cleans worker result file JSON from rendered mission thread text", () => {
+    render(React.createElement(MissionThreadMessageList, {
+      messages: [
+        {
+          id: "msg-worker-result",
+          missionId: "mission-1",
+          role: "orchestrator",
+          content: [
+            "[worker] Finished - Created the helper. *Changed Files**",
+            "```json",
+            "{\"filesChanged\":[\"src/helper.ts\",\"src/helper.test.ts\"]}",
+            "```",
+          ].join("\n"),
+          timestamp: "2026-03-10T12:00:00.000Z",
+          threadId: "mission:mission-1",
+          metadata: {
+            structuredStream: {
+              kind: "text",
+              sessionId: "coordinator-session",
+              turnId: "turn-1",
+              itemId: "text-1",
+            },
+          },
+        },
+      ] as any,
+    }));
+
+    const events = agentListMock.mock.calls.at(-1)?.[0].events as AgentChatEventEnvelope[];
+    expect(events).toHaveLength(1);
+    expect(events[0]?.event).toMatchObject({
+      type: "text",
+      text: "[worker] Finished - Created the helper.\n\nChanged files:\n- src/helper.ts\n- src/helper.test.ts",
+    });
+  });
+
+  it("removes dangling worker result file fences from legacy transcript snippets", () => {
+    render(React.createElement(MissionThreadMessageList, {
+      messages: [
+        {
+          id: "msg-worker-result-truncated",
+          missionId: "mission-1",
+          role: "orchestrator",
+          content: "[worker] Finished - Created the helper. *Changed Files** ```json",
+          timestamp: "2026-03-10T12:00:00.000Z",
+          threadId: "mission:mission-1",
+        },
+      ] as any,
+    }));
+
+    const events = agentListMock.mock.calls.at(-1)?.[0].events as AgentChatEventEnvelope[];
+    expect(events).toHaveLength(1);
+    expect(events[0]?.event).toMatchObject({
+      type: "text",
+      text: "[worker] Finished - Created the helper.",
+    });
+  });
+
+  it("removes malformed worker report payloads that were truncated mid-json", () => {
+    render(React.createElement(MissionThreadMessageList, {
+      messages: [
+        {
+          id: "msg-worker-result-truncated-json",
+          missionId: "mission-1",
+          role: "worker",
+          content: "I finished this task and reported back: Created the helper. Targeted test passed. *Changed Files** ```json { \"filesChanged\": [ \"src/helper.ts\"",
+          timestamp: "2026-03-10T12:00:00.000Z",
+          threadId: "worker:mission-1:attempt-1",
+          sourceSessionId: "session-worker",
+        },
+      ] as any,
+    }));
+
+    const events = agentListMock.mock.calls.at(-1)?.[0].events as AgentChatEventEnvelope[];
+    expect(events).toHaveLength(1);
+    expect(events[0]?.event).toMatchObject({
+      type: "text",
+      text: "I finished this task and reported back: Created the helper. Targeted test passed.",
+    });
+  });
+
+  it("hides completed done rows when they only repeat the model label", () => {
+    render(React.createElement(MissionThreadMessageList, {
+      messages: [
+        {
+          id: "msg-model-only-done",
+          missionId: "mission-1",
+          role: "worker",
+          content: "Turn completed.",
+          timestamp: "2026-03-10T12:00:00.000Z",
+          threadId: "worker:mission-1:attempt-1",
+          metadata: {
+            structuredStream: {
+              kind: "done",
+              sessionId: "session-worker",
+              turnId: "turn-1",
+              status: "completed",
+              model: "gpt-5.5",
+              modelId: "openai/gpt-5.5",
+            },
+          },
+        },
+        {
+          id: "msg-visible",
+          missionId: "mission-1",
+          role: "worker",
+          content: "Finished the step.",
+          timestamp: "2026-03-10T12:00:01.000Z",
+          threadId: "worker:mission-1:attempt-1",
+        },
+      ] as any,
+    }));
+
+    const events = agentListMock.mock.calls.at(-1)?.[0].events as AgentChatEventEnvelope[];
+    expect(events).toHaveLength(1);
+    expect(events[0]?.event).toMatchObject({
+      type: "text",
+      text: "Finished the step.",
+    });
+  });
+
+  it("hides dangling persisted text fragments from closed worker histories", () => {
+    render(React.createElement(MissionThreadMessageList, {
+      messages: [
+        {
+          id: "msg-dangling-fragment",
+          missionId: "mission-1",
+          role: "worker",
+          content: "looking at the",
+          timestamp: "2026-03-10T12:00:00.000Z",
+          threadId: "worker:mission-1:attempt-1",
+          metadata: {
+            structuredStream: {
+              kind: "text",
+              sessionId: "session-worker",
+              turnId: "turn-1",
+              itemId: "text-1",
+            },
+          },
+        },
+        {
+          id: "msg-visible",
+          missionId: "mission-1",
+          role: "worker",
+          content: "Plan is ready",
+          timestamp: "2026-03-10T12:00:01.000Z",
+          threadId: "worker:mission-1:attempt-1",
+        },
+      ] as any,
+    }));
+
+    const events = agentListMock.mock.calls.at(-1)?.[0].events as AgentChatEventEnvelope[];
+    expect(events).toHaveLength(1);
+    expect(events[0]?.event).toMatchObject({
+      type: "text",
+      text: "Plan is ready",
+    });
+  });
+
+  it("hides internal validation control chatter from mission transcripts", () => {
+    render(React.createElement(MissionThreadMessageList, {
+      messages: [
+        {
+          id: "msg-validation-missing",
+          missionId: "mission-1",
+          role: "orchestrator",
+          content: "[test_step] Validation System: Required validation is missing for \"Run tests\". A validator pass is required before this step can be treated as complete.",
+          timestamp: "2026-03-10T12:00:00.000Z",
+          threadId: "mission:mission-1",
+        },
+        {
+          id: "msg-plan-adjust",
+          missionId: "mission-1",
+          role: "orchestrator",
+          content: "[test_step] Progress: 4/5 steps (80%) | next: \"Validate: Run tests\" — triggering plan adjustment",
+          timestamp: "2026-03-10T12:00:01.000Z",
+          threadId: "mission:mission-1",
+        },
+        {
+          id: "msg-visible",
+          missionId: "mission-1",
+          role: "orchestrator",
+          content: "[validate_test_step] Started worker \"Validate: Run tests\". It is now working on this step.",
+          timestamp: "2026-03-10T12:00:02.000Z",
+          threadId: "mission:mission-1",
+        },
+      ] as any,
+    }));
+
+    const events = agentListMock.mock.calls.at(-1)?.[0].events as AgentChatEventEnvelope[];
+    expect(events).toHaveLength(1);
+    expect(events[0]?.event).toMatchObject({
+      type: "text",
+      text: "[validate_test_step] Started worker \"Validate: Run tests\". It is now working on this step.",
+    });
   });
 
   it("remounts the transcript list when the selected session changes", async () => {

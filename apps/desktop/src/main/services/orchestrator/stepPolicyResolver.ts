@@ -296,6 +296,7 @@ const DOC_PRIORITY_REL_PATHS = [
 ];
 const DOC_SCAN_MAX_DEPTH = 4;
 const DOC_SCAN_SKIP_DIRS = new Set([
+  ".ade",
   ".git",
   "node_modules",
   ".next",
@@ -310,6 +311,7 @@ const DOC_SCAN_SKIP_DIRS = new Set([
 ]);
 const DOC_FILE_EXT_RE = /\.(md|mdx|txt|rst)$/i;
 const DOC_FILE_NAME_HINT_RE = /(readme|architecture|arch|prd|design|spec|requirement|guide|overview|plan|context|claude|agents)/i;
+const DOC_SCAN_MAX_PATHS = 80;
 
 export function readDocPaths(projectRoot: string): string[] {
   const cached = docPathsCache.get(projectRoot);
@@ -345,7 +347,7 @@ export function readDocPaths(projectRoot: string): string[] {
       return;
     }
     for (const entry of entries) {
-      if (entry.name.startsWith(".") && entry.name !== ".ade") continue;
+      if (entry.name.startsWith(".")) continue;
       if (DOC_SCAN_SKIP_DIRS.has(entry.name)) continue;
       const abs = path.join(root, entry.name);
       if (entry.isDirectory()) {
@@ -367,7 +369,7 @@ export function readDocPaths(projectRoot: string): string[] {
   walk(projectRoot, DOC_SCAN_MAX_DEPTH);
 
   const scannedPaths = [...scannedSet].sort((a, b) => a.localeCompare(b));
-  const paths = [...priorityPaths, ...scannedPaths];
+  const paths = [...priorityPaths, ...scannedPaths].slice(0, DOC_SCAN_MAX_PATHS);
   docPathsCache.set(projectRoot, { paths, expiresAt: Date.now() + DOC_PATHS_CACHE_TTL_MS });
   return paths;
 }

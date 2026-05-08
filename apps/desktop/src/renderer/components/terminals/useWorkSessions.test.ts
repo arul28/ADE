@@ -1071,6 +1071,27 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, undefined);
   });
 
+  it("does not subscribe or refresh while the kept-alive Work surface is inactive", async () => {
+    const windowAddEventListenerSpy = vi.spyOn(window, "addEventListener");
+    const documentAddEventListenerSpy = vi.spyOn(document, "addEventListener");
+
+    renderHook(() => useWorkSessions({ active: false }));
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    expect(listSessionsCachedMock).not.toHaveBeenCalled();
+    expect((window as any).ade.pty.onExit).not.toHaveBeenCalled();
+    expect((window as any).ade.agentChat.onEvent).not.toHaveBeenCalled();
+    expect((window as any).ade.sessions.onChanged).not.toHaveBeenCalled();
+    expect(windowAddEventListenerSpy).not.toHaveBeenCalledWith("focus", expect.any(Function));
+    expect(documentAddEventListenerSpy).not.toHaveBeenCalledWith("visibilitychange", expect.any(Function));
+
+    windowAddEventListenerSpy.mockRestore();
+    documentAddEventListenerSpy.mockRestore();
+  });
+
   it("invalidates the session cache before refetching for chat activity", async () => {
     let chatEventHandler: ((payload: unknown) => void) | null = null;
     (window as any).ade.agentChat.onEvent.mockImplementation((cb: (payload: unknown) => void) => {

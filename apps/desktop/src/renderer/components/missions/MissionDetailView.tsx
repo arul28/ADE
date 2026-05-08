@@ -1,7 +1,7 @@
 import { useMemo, useEffect, useRef, useCallback } from "react";
 import { X, WarningCircle } from "@phosphor-icons/react";
 import { motion, AnimatePresence } from "motion/react";
-import { type ClarificationQuiz, type MissionInterventionResolutionKind, resolutionKindLabel } from "../../../shared/types";
+import { type ClarificationQuiz, type MissionInterventionResolutionKind, type MissionRunView, resolutionKindLabel } from "../../../shared/types";
 import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
 import { useMissionsStore, type MissionAttentionToast } from "./useMissionsStore";
 import { MissionHeader } from "./MissionHeader";
@@ -17,7 +17,7 @@ export { ManageMissionDialog, MissionContextMenu } from "./ManageMissionDialog";
 
 /* ════════════════════ MISSION DETAIL VIEW ════════════════════ */
 
-export function MissionDetailView() {
+export function MissionDetailView({ runView }: { runView: MissionRunView | null }) {
   const selectedMissionId = useMissionsStore((s) => s.selectedMissionId);
   const selectedMission = useMissionsStore((s) => s.selectedMission);
   const dashboard = useMissionsStore((s) => s.dashboard);
@@ -75,7 +75,7 @@ export function MissionDetailView() {
 
   return (
     <>
-      <MissionHeader />
+      <MissionHeader runView={runView} />
       <AnimatePresence>
         {error && (
           <motion.div
@@ -90,7 +90,7 @@ export function MissionDetailView() {
       </AnimatePresence>
       <InterventionPanel compact={compactPhaseChrome} />
       <MissionTabNavigation />
-      <MissionTabContent />
+      <MissionTabContent runView={runView} />
       <InterventionModals onInterventionResponse={handleInterventionResponse} />
       <AttentionToasts />
     </>

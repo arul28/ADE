@@ -943,6 +943,7 @@ function createRuntime() {
       })),
       finalizeRun: vi.fn(() => ({ finalized: true, blockers: [], finalStatus: "succeeded" })),
       cancelRunGracefully: vi.fn(async ({ runId }: any) => ({ cancelled: true, runId })),
+      resumeRun: vi.fn(async ({ runId }: any) => ({ id: runId, status: "running" })),
       steerMission: vi.fn(({ missionId }: any) => ({ acknowledged: true, appliedAt: new Date().toISOString() })),
       getWorkerStates: vi.fn(({ runId }: any) => [
         { attemptId: "a-1", stepId: "s-1", runId, state: "running" }
@@ -1249,6 +1250,7 @@ describe("adeRpcServer", () => {
         "report_validation",
         "delegate_to_subagent",
         "delegate_parallel",
+        "message_worker",
         "get_worker_output",
         "list_workers",
         "read_mission_status",
@@ -1264,7 +1266,6 @@ describe("adeRpcServer", () => {
         "revise_plan",
         "request_specialist",
         "set_current_phase",
-        "message_worker",
         "update_tool_profiles",
       ])
     );
@@ -2936,6 +2937,127 @@ describe("adeRpcServer", () => {
     });
   });
 
+  it("queues message_worker handoffs for get_pending_messages when live delivery is unavailable", async () => {
+    await withEnv({ ADE_RUN_ID: "run-1" }, async () => {
+      const fixture = createRuntime();
+      fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
+      run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
+      steps: [
+        {
+          id: "step-a",
+          runId: "run-1",
+          missionStepId: null,
+          stepKey: "worker-a",
+          stepIndex: 0,
+          title: "Worker A",
+          laneId: "lane-1",
+          status: "running",
+          joinPolicy: "all_success",
+          quorumCount: null,
+          dependencyStepIds: [],
+          retryLimit: 1,
+          retryCount: 0,
+          lastAttemptId: "attempt-a",
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          startedAt: new Date().toISOString(),
+          completedAt: null,
+          metadata: {}
+        },
+        {
+          id: "step-b",
+          runId: "run-1",
+          missionStepId: null,
+          stepKey: "worker-b",
+          stepIndex: 1,
+          title: "Worker B",
+          laneId: "lane-1",
+          status: "running",
+          joinPolicy: "all_success",
+          quorumCount: null,
+          dependencyStepIds: [],
+          retryLimit: 1,
+          retryCount: 0,
+          lastAttemptId: "attempt-b",
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          startedAt: new Date().toISOString(),
+          completedAt: null,
+          metadata: {}
+        }
+      ],
+      attempts: [
+        { id: "attempt-a", stepId: "step-a", status: "running", createdAt: new Date().toISOString(), executorSessionId: "session-a" },
+        { id: "attempt-b", stepId: "step-b", status: "running", createdAt: new Date().toISOString(), executorSessionId: "session-b" }
+      ],
+      claims: [],
+      contextSnapshots: [],
+      handoffs: [],
+      timeline: [],
+      runtimeEvents: [],
+      completionEvaluation: null
+    }));
+
+      const senderHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await initialize(senderHandler, {
+        callerId: "attempt-a",
+        role: "agent",
+        missionId: "mission-1",
+        runId: "run-1",
+        stepId: "step-a",
+        attemptId: "attempt-a"
+      });
+      const sent = await callTool(senderHandler, "message_worker", {
+        toWorkerId: "worker-b",
+        content: "contract is ready",
+      });
+
+      expect(sent?.isError).toBeUndefined();
+      expect(sent.structuredContent.ok).toBe(true);
+      expect(sent.structuredContent.delivered).toBe(false);
+      expect(sent.structuredContent.reason).toBe("queued_for_polling");
+      expect(fixture.runtime.aiOrchestratorService.sendAgentMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          missionId: "mission-1",
+          fromAttemptId: "attempt-a",
+          toAttemptId: "attempt-b",
+          content: "contract is ready",
+          metadata: expect.objectContaining({
+            source: "message_worker",
+            fromWorkerId: "worker-a",
+            toWorkerId: "worker-b",
+            queuedForPolling: true
+          })
+        })
+      );
+
+      const recipientHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await initialize(recipientHandler, {
+        callerId: "attempt-b",
+        role: "agent",
+        missionId: "mission-1",
+        runId: "run-1",
+        stepId: "step-b",
+        attemptId: "attempt-b"
+      });
+      const pending = await callTool(recipientHandler, "get_pending_messages", {});
+
+      expect(pending?.isError).toBeUndefined();
+      expect(pending.structuredContent.messages).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            role: "agent",
+            content: "contract is ready",
+            metadata: expect.objectContaining({
+              source: "message_worker",
+              interAgentDelivery: true
+            })
+          })
+        ])
+      );
+    });
+  });
+
   it("surfaces native terminal rollups through get_pending_messages after report_result", async () => {
     await withEnv({ ADE_RUN_ID: "run-1" }, async () => {
       const fixture = createRuntime();
@@ -3857,6 +3979,28 @@ describe("adeRpcServer", () => {
     expect(layoutGet.structuredContent.result).toEqual({ left: 100, right: 0 });
   });
 
+  it("binds service method context when invoking dynamic ADE actions", async () => {
+    const fixture = createRuntime();
+    const missionService = fixture.runtime.missionService as any;
+    missionService.create = vi.fn(function (this: { get: (missionId: string) => unknown }, args: { prompt: string }) {
+      expect(args.prompt).toBe("smoke mission");
+      return this.get("mission-new");
+    });
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-1", role: "agent" });
+
+    const response = await callTool(handler, "run_ade_action", {
+      domain: "mission",
+      action: "create",
+      args: { prompt: "smoke mission" },
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(missionService.create).toHaveBeenCalledWith({ prompt: "smoke mission" });
+    expect(response.structuredContent.result).toMatchObject({ id: "mission-new", status: "running" });
+    expect(response.structuredContent.statusHints.missionId).toBe("mission-new");
+  });
+
   it("does not expose unlisted service methods through dynamic ADE actions", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
@@ -4477,7 +4621,7 @@ describe("adeRpcServer", () => {
     );
   });
 
-  it("routes resume_mission to orchestratorService.resumeRun", async () => {
+  it("routes resume_mission through aiOrchestratorService.resumeRun so coordinator runtime restarts", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
@@ -4487,7 +4631,7 @@ describe("adeRpcServer", () => {
     expect(response?.isError).toBeUndefined();
     expect(response.structuredContent.run.id).toBe("run-1");
     expect(response.structuredContent.run.status).toBe("running");
-    expect(fixture.runtime.orchestratorService.resumeRun).toHaveBeenCalledWith({ runId: "run-1" });
+    expect(fixture.runtime.aiOrchestratorService.resumeRun).toHaveBeenCalledWith({ runId: "run-1" });
   });
 
   it("routes cancel_mission to aiOrchestratorService.cancelRunGracefully", async () => {
@@ -4643,6 +4787,23 @@ describe("adeRpcServer", () => {
   it("routes get_worker_states to aiOrchestratorService.getWorkerStates", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    fixture.runtime.orchestratorService.getRunGraph.mockReturnValueOnce({
+      run: { id: "run-1", missionId: "mission-1", status: "running" },
+      steps: [
+        { id: "step-1", stepKey: "step-a", laneId: "lane-1", title: "Worker", status: "completed", retryCount: 0, metadata: {} },
+        { id: "task-1", stepKey: "task-a", laneId: null, title: "Display task", status: "pending", retryCount: 0, metadata: { isTask: true } },
+        { id: "system-1", stepKey: "system-a", laneId: null, title: "System", status: "pending", retryCount: 0, metadata: { systemManaged: true } },
+        { id: "tracker-1", stepKey: "tracker-a", laneId: null, title: "Tracker", status: "pending", retryCount: 0, metadata: { plannerLaunchTracker: true } },
+        { id: "planner-1", stepKey: "__planner__", laneId: null, title: "Planner", status: "succeeded", retryCount: 0, metadata: {} },
+      ],
+      attempts: [{ id: "attempt-1", stepId: "step-1", status: "completed" }],
+      claims: [],
+      contextSnapshots: [],
+      handoffs: [],
+      timeline: [],
+      runtimeEvents: [],
+      completionEvaluation: null,
+    });
 
     await initialize(handler, { role: "external" });
     const response = await callTool(handler, "get_worker_states", { runId: "run-1" });
@@ -4651,7 +4812,15 @@ describe("adeRpcServer", () => {
     expect(response.structuredContent.runId).toBe("run-1");
     expect(response.structuredContent.workers).toHaveLength(1);
     expect(response.structuredContent.workers[0].state).toBe("running");
+    expect(response.structuredContent.runWorkers).toHaveLength(1);
+    expect(response.structuredContent.runWorkers[0]).toMatchObject({
+      workerId: "step-a",
+      status: "completed",
+    });
     expect(fixture.runtime.aiOrchestratorService.getWorkerStates).toHaveBeenCalledWith({ runId: "run-1" });
+    expect(fixture.runtime.orchestratorService.getRunGraph).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: "run-1", timelineLimit: 0 })
+    );
   });
 
   it("routes get_timeline to orchestratorService.listTimeline", async () => {

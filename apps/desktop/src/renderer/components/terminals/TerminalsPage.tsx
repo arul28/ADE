@@ -71,8 +71,8 @@ async function allSettledWithConcurrency<T>(
   return results;
 }
 
-export function TerminalsPage() {
-  const work = useWorkSessions();
+export function TerminalsPage({ active = true }: { active?: boolean }) {
+  const work = useWorkSessions({ active });
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
   const sortedLanes = useMemo(() => sortLanesForTabs(work.lanes), [work.lanes]);
 
@@ -461,9 +461,10 @@ export function TerminalsPage() {
     attachDisabledReason = null;
   }
 
-  const workSidebarVisible = work.workSidebarOpen && work.viewMode !== "grid";
+  const workSidebarVisible = active && work.workSidebarOpen && work.viewMode !== "grid";
   const { setViewMode, setWorkSidebarTab } = work;
   useEffect(() => {
+    if (!active) return;
     const openBrowserSidebar = () => {
       setViewMode("tabs");
       setWorkSidebarTab("browser");
@@ -476,7 +477,7 @@ export function TerminalsPage() {
       window.removeEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, openBrowserSidebar);
       unsubscribeBrowserEvents?.();
     };
-  }, [setViewMode, setWorkSidebarTab]);
+  }, [active, setViewMode, setWorkSidebarTab]);
 
   const expandSessionsPane = useCallback(() => {
     work.setWorkFocusSessionsHidden(false);

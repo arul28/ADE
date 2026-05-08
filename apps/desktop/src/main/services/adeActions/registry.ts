@@ -244,6 +244,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getThreadMessages",
     "getWorkerStates",
     "listChatThreads",
+    "resumeRun",
     "startMissionRun",
     "steerMission",
   ],

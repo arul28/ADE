@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import { unstable_v2_createSession, unstable_v2_resumeSession } from "@anthropic-ai/claude-agent-sdk";
@@ -347,6 +348,8 @@ type PersistedChatState = {
   awaitingInput?: boolean;
   requestedCwd?: string | null;
   idleSinceAt?: string | null;
+  /** Recent terminal Codex turn ids, used to suppress late replayed lifecycle events. */
+  codexTerminalTurnIds?: string[];
   /** Persisted "Allow for Session" tool approval overrides (Claude runtime). */
   approvalOverrides?: string[];
   /** Queued mid-turn steers for the Claude runtime, restored on app restart. */
@@ -393,6 +396,7 @@ type CodexRuntime = {
   startedTurnId: string | null;
   awaitingTurnStart: boolean;
   threadResumed: boolean;
+  canAttachResumedTurnStart: boolean;
   itemTurnIdByItemId: Map<string, string>;
   commandOutputByItemId: Map<string, string>;
   fileDeltaByItemId: Map<string, string>;
@@ -401,6 +405,7 @@ type CodexRuntime = {
   activeSubagents: Map<string, { taskId: string; description: string; background: boolean }>;
   interruptedTurnIds: Set<string>;
   ignoredTurnIds: Set<string>;
+  terminalTurnIds: Set<string>;
   agentMessageScopeByTurn: Map<string, "item" | "turn">;
   agentMessageTextByTurn: Map<string, string>;
   recentNotificationKeys: Set<string>;
@@ -825,6 +830,39 @@ function isInterruptedCodexTurn(runtime: CodexRuntime, turnId: string | null | u
   return normalizedTurnId ? runtime.interruptedTurnIds.has(normalizedTurnId) : false;
 }
 
+function rememberBoundedId(set: Set<string>, value: string | null | undefined, limit = 64): void {
+  const normalized = value?.trim() || null;
+  if (!normalized) return;
+  set.add(normalized);
+  while (set.size > limit) {
+    const [first] = set;
+    if (!first) break;
+    set.delete(first);
+  }
+}
+
+function rememberTerminalCodexTurn(
+  runtime: CodexRuntime,
+  turnId: string | null | undefined,
+  managed?: ManagedChatSession,
+): void {
+  const normalizedTurnId = turnId?.trim() || null;
+  if (!normalizedTurnId) return;
+  rememberBoundedId(runtime.terminalTurnIds, normalizedTurnId);
+  if (managed) rememberBoundedId(managed.codexTerminalTurnIds, normalizedTurnId);
+}
+
+function isTerminalCodexTurn(
+  runtime: CodexRuntime,
+  turnId: string | null | undefined,
+  managed?: ManagedChatSession,
+): boolean {
+  const normalizedTurnId = turnId?.trim() || null;
+  return normalizedTurnId
+    ? runtime.terminalTurnIds.has(normalizedTurnId) || managed?.codexTerminalTurnIds.has(normalizedTurnId) === true
+    : false;
+}
+
 function normalizeCodexAssistantDelta(
   runtime: CodexRuntime,
   args: {
@@ -1033,6 +1071,7 @@ type ManagedChatSession = {
     turnId?: string;
     itemId?: string;
     summaryIndex?: number;
+    timer: NodeJS.Timeout | null;
   } | null;
   previewTextBuffer: {
     text: string;
@@ -1054,6 +1093,7 @@ type ManagedChatSession = {
   selectedExecutionLaneId: string | null;
   lastLaneDirectiveKey: string | null;
   runtimeInvalidated: boolean;
+  codexTerminalTurnIds: Set<string>;
   todoItems: Extract<AgentChatEvent, { type: "todo_update" }>["items"];
   localPendingInputs: Map<string, {
     request: PendingInputRequest;
@@ -1181,6 +1221,7 @@ const DEFAULT_REASONING_EFFORT = "medium";
 const DEFAULT_AUTO_TITLE_MODEL_ID = "anthropic/claude-haiku-4-5";
 const MAX_CHAT_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
 const BUFFERED_TEXT_FLUSH_MS = 100;
+const TRANSCRIPT_WRITE_FLUSH_MS = 100;
 const CHAT_TRANSCRIPT_LIMIT_NOTICE = "\n[ADE] chat transcript limit reached (8MB). Further events omitted.\n";
 const DEFAULT_TRANSCRIPT_READ_LIMIT = 20;
 const MAX_TRANSCRIPT_READ_LIMIT = 100;
@@ -1201,6 +1242,57 @@ const SESSION_CLEANUP_INTERVAL_MS = 15 * 1000; // check every 15 seconds
 const MAX_CONCURRENT_ACTIVE_RUNTIMES = 5;
 const MAX_RECENT_CONVERSATION_ENTRIES = 50;
 const MAX_SESSION_MAP_ENTRIES = 200;
+
+type PendingTranscriptWrite = {
+  chunks: Buffer[];
+  timer: NodeJS.Timeout | null;
+};
+
+const pendingTranscriptWrites = new Map<string, PendingTranscriptWrite>();
+
+function normalizeTranscriptWritePath(filePath: string): string {
+  return path.resolve(filePath);
+}
+
+function flushQueuedTranscriptWrite(filePath: string): void {
+  const normalizedPath = normalizeTranscriptWritePath(filePath);
+  const pending = pendingTranscriptWrites.get(normalizedPath);
+  if (!pending) return;
+  pendingTranscriptWrites.delete(normalizedPath);
+  if (pending.timer) {
+    clearTimeout(pending.timer);
+    pending.timer = null;
+  }
+  if (!pending.chunks.length) return;
+  try {
+    fs.mkdirSync(path.dirname(normalizedPath), { recursive: true });
+    fs.appendFileSync(normalizedPath, Buffer.concat(pending.chunks));
+  } catch {
+    // Transcript persistence is best effort; callers still receive live events.
+  }
+}
+
+function flushAllQueuedTranscriptWrites(): void {
+  for (const filePath of [...pendingTranscriptWrites.keys()]) {
+    flushQueuedTranscriptWrite(filePath);
+  }
+}
+
+function queueTranscriptWrite(filePath: string, chunk: Buffer | string): void {
+  if (!filePath.trim().length) return;
+  const normalizedPath = normalizeTranscriptWritePath(filePath);
+  let pending = pendingTranscriptWrites.get(normalizedPath);
+  if (!pending) {
+    pending = { chunks: [], timer: null };
+    pendingTranscriptWrites.set(normalizedPath, pending);
+  }
+  pending.chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, "utf8"));
+  if (pending.timer) return;
+  pending.timer = setTimeout(() => {
+    flushQueuedTranscriptWrite(normalizedPath);
+  }, TRANSCRIPT_WRITE_FLUSH_MS);
+  pending.timer.unref?.();
+}
 
 function evictOldestEntries<K, V>(map: Map<K, V>, maxSize: number): void {
   if (map.size <= maxSize) return;
@@ -1235,6 +1327,16 @@ const CODEX_REASONING_EFFORTS: Array<{ effort: string; description: string }> = 
   { effort: "high", description: "Deeper reasoning for multi-step implementation." },
   { effort: "xhigh", description: "Extra-high reasoning depth for complex tasks." }
 ];
+
+const QUIET_CODEX_NOTIFICATION_METHODS = new Set([
+  "item/commandExecution/terminalInteraction",
+  "mcpServer/startupStatus/updated",
+  "remoteControl/status/changed",
+  "thread/archived",
+  "thread/started",
+  "thread/tokenUsage/updated",
+  "turn/diff/updated",
+]);
 
 const CLAUDE_REASONING_EFFORTS: Array<{ effort: string; description: string }> = [
   { effort: "low", description: "Quick responses with minimal reasoning." },
@@ -2555,7 +2657,7 @@ function applyCodexEffectiveThreadState(
         requestedReasoningEffort,
         runtimeReasoningEffort: reasoningEffort,
       });
-      managed.session.reasoningEffort = reasoningEffort;
+      managed.session.reasoningEffort = requestedReasoningEffort;
       managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
       return;
     }
@@ -2971,13 +3073,14 @@ function buildCodexAdeContextInput(args: {
 function buildCodexCollaborationMode(
   session: Pick<
     AgentChatSession,
-    "provider" | "permissionMode" | "interactionMode" | "model" | "reasoningEffort" | "codexConfigSource"
+    "provider" | "permissionMode" | "interactionMode" | "model" | "reasoningEffort" | "codexConfigSource" | "surface"
   >,
   supportedModes: Set<string> | null,
 ): CodexCollaborationModePayload | null {
   if (session.provider !== "codex") return null;
   if (resolveSessionCodexConfigSource(session) === "config-toml") return null;
-  const requestedMode = session.interactionMode === "plan" || session.permissionMode === "plan"
+  const requestedMode = (session.interactionMode === "plan" || session.permissionMode === "plan")
+    && session.surface !== "mission"
     ? "plan"
     : "default";
   const mode = (() => {
@@ -3000,12 +3103,13 @@ function buildCodexCollaborationMode(
 function resolveRequestedCodexCollaborationMode(
   session: Pick<
     AgentChatSession,
-    "provider" | "permissionMode" | "interactionMode" | "codexConfigSource"
+    "provider" | "permissionMode" | "interactionMode" | "codexConfigSource" | "surface"
   >,
 ): "default" | "plan" | null {
   if (session.provider !== "codex") return null;
   if (resolveSessionCodexConfigSource(session) === "config-toml") return null;
-  return session.interactionMode === "plan" || session.permissionMode === "plan"
+  return (session.interactionMode === "plan" || session.permissionMode === "plan")
+    && session.surface !== "mission"
     ? "plan"
     : "default";
 }
@@ -3550,6 +3654,48 @@ export function createAgentChatService(args: {
     ADE_PROJECT_ROOT: projectRoot,
     ADE_WORKSPACE_ROOT: managed.laneWorktreePath,
   });
+
+  const tomlString = (value: string): string => JSON.stringify(value);
+
+  const ensureMissionCodexHome = (managed: ManagedChatSession): string => {
+    const safeSessionId = managed.session.id.replace(/[^a-zA-Z0-9_.-]/g, "_");
+    const codexHome = path.join(os.tmpdir(), "ade-mission-codex-home", safeSessionId);
+    fs.mkdirSync(codexHome, { recursive: true, mode: 0o700 });
+
+    const sourceAuthPath = path.join(os.homedir(), ".codex", "auth.json");
+    const targetAuthPath = path.join(codexHome, "auth.json");
+    if (fs.existsSync(sourceAuthPath) && !fs.existsSync(targetAuthPath)) {
+      try {
+        fs.symlinkSync(sourceAuthPath, targetAuthPath);
+      } catch {
+        // If symlinks are unavailable, leave auth resolution to other Codex mechanisms.
+      }
+    }
+
+    const reasoningEffort = managed.session.reasoningEffort ?? "medium";
+    const configToml = [
+      `model = ${tomlString(managed.session.model || "gpt-5.5")}`,
+      `model_reasoning_effort = ${tomlString(reasoningEffort)}`,
+      `sandbox_mode = "danger-full-access"`,
+      `approval_policy = "never"`,
+      ``,
+      `[projects.${tomlString(managed.laneWorktreePath)}]`,
+      `trust_level = "trusted"`,
+      ``,
+      `[features]`,
+      `apps = false`,
+      `browser_use = false`,
+      `computer_use = false`,
+      `multi_agent = false`,
+      `enable_mcp_apps = false`,
+      `plugins = false`,
+      `tool_search_always_defer_mcp_tools = false`,
+      ``,
+      `[plugins]`,
+    ].join("\n");
+    fs.writeFileSync(path.join(codexHome, "config.toml"), configToml, { mode: 0o600 });
+    return codexHome;
+  };
 
   const eventSubscribers = new Set<(event: AgentChatEventEnvelope) => void>();
 
@@ -4661,6 +4807,7 @@ export function createAgentChatService(args: {
 
   const readTranscriptConversationEntries = (managed: ManagedChatSession): string[] => {
     try {
+      flushQueuedTranscriptWrite(managed.transcriptPath);
       const raw = fs.readFileSync(managed.transcriptPath, "utf8");
       return parseAgentChatTranscript(raw)
         .filter((entry) => entry.sessionId === managed.session.id)
@@ -4682,6 +4829,7 @@ export function createAgentChatService(args: {
 
   const readTranscriptEntries = (managed: ManagedChatSession): AgentChatTranscriptEntry[] => {
     try {
+      flushQueuedTranscriptWrite(managed.transcriptPath);
       const raw = fs.readFileSync(managed.transcriptPath, "utf8");
       const entries: AgentChatTranscriptEntry[] = [];
       for (const entry of parseAgentChatTranscript(raw)) {
@@ -4722,6 +4870,7 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
   ): Extract<AgentChatEvent, { type: "todo_update" }>["items"] => {
     try {
+      flushQueuedTranscriptWrite(managed.transcriptPath);
       const raw = fs.readFileSync(managed.transcriptPath, "utf8");
       let latest: Extract<AgentChatEvent, { type: "todo_update" }>["items"] = [];
       for (const entry of parseAgentChatTranscript(raw)) {
@@ -4802,6 +4951,7 @@ export function createAgentChatService(args: {
 
   const readTranscriptEnvelopes = (managed: ManagedChatSession): AgentChatEventEnvelope[] => {
     try {
+      flushQueuedTranscriptWrite(managed.transcriptPath);
       return parseAgentChatTranscript(fs.readFileSync(managed.transcriptPath, "utf8"))
         .filter((entry) => entry.sessionId === managed.session.id);
     } catch {
@@ -4817,6 +4967,7 @@ export function createAgentChatService(args: {
     const managed = managedSessions.get(sessionId);
     if (managed?.transcriptPath) {
       try {
+        flushQueuedTranscriptWrite(managed.transcriptPath);
         return parseAgentChatTranscript(fs.readFileSync(managed.transcriptPath, "utf8"))
           .filter((entry) => entry.sessionId === sessionId);
       } catch {
@@ -4832,6 +4983,7 @@ export function createAgentChatService(args: {
     ];
     for (const candidatePath of candidates) {
       try {
+        flushQueuedTranscriptWrite(candidatePath);
         if (!fs.existsSync(candidatePath)) continue;
         const raw = fs.readFileSync(candidatePath, "utf8");
         return parseAgentChatTranscript(raw).filter((entry) => entry.sessionId === sessionId);
@@ -5476,6 +5628,7 @@ export function createAgentChatService(args: {
     args: { stage: "initial" | "final"; latestUserText?: string | null; summary?: string | null }
   ): Promise<void> => {
     if (managed.deleted) return;
+    if (managed.session.surface === "mission") return;
     const config = resolveChatConfig();
     if (!config.titleGenerationEnabled) return;
     if (sessionIsManuallyNamed(managed)) return;
@@ -6217,6 +6370,9 @@ export function createAgentChatService(args: {
         ? { requestedCwd: String(managed.session.requestedCwd).trim() }
         : {}),
       ...(managed.session.idleSinceAt !== undefined ? { idleSinceAt: managed.session.idleSinceAt ?? null } : {}),
+      ...(managed.codexTerminalTurnIds.size
+        ? { codexTerminalTurnIds: [...managed.codexTerminalTurnIds].slice(-64) }
+        : prevPersisted?.codexTerminalTurnIds?.length ? { codexTerminalTurnIds: prevPersisted.codexTerminalTurnIds.slice(-64) } : {}),
       updatedAt: nowIso()
     };
 
@@ -6277,7 +6433,7 @@ export function createAgentChatService(args: {
           : undefined;
       const cursorConfigValues = normalizeCursorConfigValueRecord(record.cursorConfigValues);
       const identityKey = normalizeIdentityKey(record.identityKey);
-      const surface = record.surface === "automation" ? "automation" : "work";
+      const surface = record.surface === "automation" || record.surface === "mission" ? record.surface : "work";
       const capabilityMode = normalizeCapabilityMode(record.capabilityMode);
       const completion = normalizePersistedCompletion(record.completion);
       if (!laneId || !model) return null;
@@ -6321,6 +6477,12 @@ export function createAgentChatService(args: {
           : undefined;
       const cursorPromotedTurnId = typeof record.cursorPromotedTurnId === "string" && record.cursorPromotedTurnId.trim().length
         ? record.cursorPromotedTurnId.trim()
+        : undefined;
+      const codexTerminalTurnIds = Array.isArray(record.codexTerminalTurnIds)
+        ? uniqueNonEmpty(
+            record.codexTerminalTurnIds.map((turnId) => typeof turnId === "string" ? turnId : null),
+            64,
+          )
         : undefined;
       const approvalOverrides = Array.isArray(record.approvalOverrides)
         ? record.approvalOverrides.filter((v): v is string => typeof v === "string" && v.trim().length > 0)
@@ -6411,6 +6573,7 @@ export function createAgentChatService(args: {
           : record.idleSinceAt === null
             ? { idleSinceAt: null }
             : {}),
+        ...(codexTerminalTurnIds?.length ? { codexTerminalTurnIds } : {}),
         updatedAt: typeof record.updatedAt === "string" && record.updatedAt.trim().length ? record.updatedAt : nowIso()
       };
       hydrateNativePermissionControls(hydrated as Parameters<typeof hydrateNativePermissionControls>[0]);
@@ -6429,7 +6592,7 @@ export function createAgentChatService(args: {
       const remaining = MAX_CHAT_TRANSCRIPT_BYTES - managed.transcriptBytesWritten;
       if (remaining <= 0) {
         managed.transcriptLimitReached = true;
-        void fs.promises.appendFile(managed.transcriptPath, CHAT_TRANSCRIPT_LIMIT_NOTICE, "utf8").catch(() => {});
+        queueTranscriptWrite(managed.transcriptPath, CHAT_TRANSCRIPT_LIMIT_NOTICE);
         return;
       }
       let toWrite = chunk;
@@ -6438,12 +6601,10 @@ export function createAgentChatService(args: {
         managed.transcriptLimitReached = true;
       }
       managed.transcriptBytesWritten += toWrite.length;
-      void fs.promises.appendFile(managed.transcriptPath, toWrite).then(async () => {
-        if (!managed.transcriptLimitReached) return;
-        await fs.promises.appendFile(managed.transcriptPath, CHAT_TRANSCRIPT_LIMIT_NOTICE, "utf8");
-      }).catch(() => {
-        // ignore transcript write failures
-      });
+      queueTranscriptWrite(managed.transcriptPath, toWrite);
+      if (managed.transcriptLimitReached) {
+        queueTranscriptWrite(managed.transcriptPath, CHAT_TRANSCRIPT_LIMIT_NOTICE);
+      }
     } catch {
       // ignore transcript write failures
     }
@@ -6456,7 +6617,7 @@ export function createAgentChatService(args: {
     try {
       const transcriptFile = path.join(chatTranscriptsDir, `${sessionId}.jsonl`);
       const line = `${JSON.stringify(envelope)}\n`;
-      void fs.promises.appendFile(transcriptFile, line, "utf8").catch(() => {});
+      queueTranscriptWrite(transcriptFile, line);
     } catch {
       // ignore chat transcript write failures
     }
@@ -6683,7 +6844,11 @@ export function createAgentChatService(args: {
   const flushBufferedReasoning = (managed: ManagedChatSession): void => {
     const buffered = managed.bufferedReasoning;
     if (!buffered) return;
+    if (buffered.timer) {
+      clearTimeout(buffered.timer);
+    }
     managed.bufferedReasoning = null;
+    if (!buffered.text.length) return;
     commitChatEvent(managed, {
       type: "reasoning",
       text: buffered.text,
@@ -6697,10 +6862,36 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     event: Extract<AgentChatEvent, { type: "reasoning" }>,
   ): void => {
-    // Stream reasoning deltas immediately so the renderer can surface live
-    // progress instead of waiting for a later non-reasoning event to flush.
-    // The renderer already collapses adjacent reasoning fragments by turn.
-    commitChatEvent(managed, event);
+    const sameReasoning =
+      managed.bufferedReasoning
+      && (managed.bufferedReasoning.turnId ?? null) === (event.turnId ?? null)
+      && (managed.bufferedReasoning.itemId ?? null) === (event.itemId ?? null)
+      && (managed.bufferedReasoning.summaryIndex ?? null) === (event.summaryIndex ?? null);
+
+    if (!sameReasoning) {
+      flushBufferedReasoning(managed);
+      managed.bufferedReasoning = {
+        text: event.text,
+        ...(event.turnId ? { turnId: event.turnId } : {}),
+        ...(event.itemId ? { itemId: event.itemId } : {}),
+        ...(typeof event.summaryIndex === "number" ? { summaryIndex: event.summaryIndex } : {}),
+        timer: null,
+      };
+    } else {
+      managed.bufferedReasoning = {
+        ...managed.bufferedReasoning!,
+        text: `${managed.bufferedReasoning!.text}${event.text}`,
+      };
+    }
+
+    if (!managed.bufferedReasoning.timer) {
+      managed.bufferedReasoning.timer = setTimeout(() => {
+        if (managed.bufferedReasoning) {
+          managed.bufferedReasoning.timer = null;
+        }
+        flushBufferedReasoning(managed);
+      }, BUFFERED_TEXT_FLUSH_MS);
+    }
   };
 
   const emitChatEvent = (managed: ManagedChatSession, event: AgentChatEvent): void => {
@@ -7055,6 +7246,8 @@ export function createAgentChatService(args: {
       sessionService.setSummary(managed.session.id, deterministicText);
     }
 
+    if (managed.session.surface === "mission") return;
+
     // Fire-and-forget AI summary enhancement
     const auth = await detectAuth();
     const availableModels = await getAvailableRegistryModels(auth);
@@ -7124,6 +7317,8 @@ export function createAgentChatService(args: {
     clearSubagentSnapshots(managed.session.id);
     flushBufferedText(managed);
     flushBufferedReasoning(managed);
+    flushQueuedTranscriptWrite(managed.transcriptPath);
+    flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${managed.session.id}.jsonl`));
     for (const pending of managed.localPendingInputs.values()) {
       pending.resolve({ decision: "cancel" });
     }
@@ -7312,6 +7507,7 @@ export function createAgentChatService(args: {
       selectedExecutionLaneId: persisted?.selectedExecutionLaneId ?? null,
       lastLaneDirectiveKey: persisted?.lastLaneDirectiveKey ?? null,
       runtimeInvalidated: false,
+      codexTerminalTurnIds: new Set<string>(persisted?.codexTerminalTurnIds ?? []),
       todoItems: [],
       activeAssistantMessageId: null,
       lastActivitySignature: null,
@@ -7455,6 +7651,12 @@ export function createAgentChatService(args: {
       const reviewTurnId = typeof reviewResult.turn?.id === "string" ? reviewResult.turn.id : null;
       if (reviewTurnId) {
         runtime.awaitingTurnStart = false;
+        if (isTerminalCodexTurn(runtime, reviewTurnId, managed)) {
+          runtime.activeTurnId = null;
+          runtime.startedTurnId = null;
+          persistChatState(managed);
+          return;
+        }
         runtime.activeTurnId = reviewTurnId;
       }
       return;
@@ -7541,7 +7743,13 @@ export function createAgentChatService(args: {
         threadId: managed.session.threadId,
         input,
         model: managed.session.model,
-        ...(managed.session.reasoningEffort ? { effort: managed.session.reasoningEffort } : {}),
+        ...(managed.session.reasoningEffort
+          ? {
+              effort: managed.session.reasoningEffort,
+              reasoningEffort: managed.session.reasoningEffort,
+              reasoning_effort: managed.session.reasoningEffort,
+            }
+          : {}),
         ...codexServiceTierArgs(managed.session),
         ...codexTurnPolicyArgs(codexPolicy),
         ...(collaborationMode ? { collaborationMode } : {}),
@@ -7556,6 +7764,12 @@ export function createAgentChatService(args: {
     const turnId = typeof result?.turn?.id === "string" ? result.turn.id : null;
     if (turnId) {
       managed.runtime.awaitingTurnStart = false;
+      if (isTerminalCodexTurn(managed.runtime, turnId, managed)) {
+        managed.runtime.activeTurnId = null;
+        managed.runtime.startedTurnId = null;
+        persistChatState(managed);
+        return;
+      }
       managed.runtime.activeTurnId = turnId;
       if (managed.runtime.startedTurnId !== turnId) {
         managed.runtime.startedTurnId = turnId;
@@ -10178,6 +10392,7 @@ export function createAgentChatService(args: {
     const isResumedInProgressTurnStart = Boolean(
       startedTurn
       && runtime.threadResumed
+      && runtime.canAttachResumedTurnStart
       && managed.session.threadId
       && !runtime.awaitingTurnStart
       && !runtime.activeTurnId
@@ -10207,6 +10422,7 @@ export function createAgentChatService(args: {
     }
 
     const isIgnoredTurn = turnIdFromParams ? runtime.ignoredTurnIds.has(turnIdFromParams) : false;
+    const isTerminalTurn = turnIdFromParams ? isTerminalCodexTurn(runtime, turnIdFromParams, managed) : false;
     const isTerminalTurnNotification =
       method === "turn/completed"
       || method === "turn/aborted"
@@ -10215,6 +10431,14 @@ export function createAgentChatService(args: {
       if (isTerminalTurnNotification && turnIdFromParams) {
         runtime.ignoredTurnIds.delete(turnIdFromParams);
       }
+      return;
+    }
+    if (isTerminalTurn) {
+      logger.debug("agent_chat.codex_ignored_terminal_turn_notification", {
+        sessionId: managed.session.id,
+        method,
+        turnId: turnIdFromParams,
+      });
       return;
     }
 
@@ -10252,6 +10476,7 @@ export function createAgentChatService(args: {
         return;
       }
       runtime.awaitingTurnStart = false;
+      runtime.canAttachResumedTurnStart = false;
       runtime.activeTurnId = turnId;
       resetAssistantMessageStream(managed);
       runtime.agentMessageScopeByTurn.clear();
@@ -10292,7 +10517,9 @@ export function createAgentChatService(args: {
         return;
       }
       const turnId = resolvedTurnId ?? randomUUID();
+      rememberTerminalCodexTurn(runtime, turnId, managed);
       runtime.awaitingTurnStart = false;
+      runtime.canAttachResumedTurnStart = false;
       runtime.activeTurnId = null;
       runtime.startedTurnId = null;
       runtime.ignoredTurnIds.delete(turnId);
@@ -10435,6 +10662,9 @@ export function createAgentChatService(args: {
       const next = `${runtime.commandOutputByItemId.get(itemId) ?? ""}${delta}`;
       runtime.commandOutputByItemId.set(itemId, next);
       evictOldestEntries(runtime.commandOutputByItemId, MAX_SESSION_MAP_ENTRIES);
+      if (managed.session.surface === "mission") {
+        return;
+      }
       emitChatEvent(managed, {
         type: "activity",
         activity: "running_command",
@@ -10460,6 +10690,9 @@ export function createAgentChatService(args: {
       const next = `${runtime.fileDeltaByItemId.get(itemId) ?? ""}${delta}`;
       runtime.fileDeltaByItemId.set(itemId, next);
       evictOldestEntries(runtime.fileDeltaByItemId, MAX_SESSION_MAP_ENTRIES);
+      if (managed.session.surface === "mission") {
+        return;
+      }
       emitChatEvent(managed, {
         type: "activity",
         activity: "editing_file",
@@ -10543,7 +10776,9 @@ export function createAgentChatService(args: {
       }
       const turnId = resolvedAbortTurnId ?? randomUUID();
       rememberInterruptedCodexTurn(runtime, turnId);
+      rememberTerminalCodexTurn(runtime, turnId, managed);
       runtime.awaitingTurnStart = false;
+      runtime.canAttachResumedTurnStart = false;
       runtime.activeTurnId = null;
       runtime.startedTurnId = null;
       runtime.ignoredTurnIds.delete(turnId);
@@ -10669,6 +10904,9 @@ export function createAgentChatService(args: {
       const next = `${runtime.planTextByItemId.get(itemId) ?? ""}${delta}`;
       runtime.planTextByItemId.set(itemId, next);
       evictOldestEntries(runtime.planTextByItemId, MAX_SESSION_MAP_ENTRIES);
+      if (managed.session.surface === "mission") {
+        return;
+      }
       emitChatEvent(managed, {
         type: "plan_text",
         text: delta,
@@ -10716,6 +10954,7 @@ export function createAgentChatService(args: {
 
     // Log unhandled notification methods for debugging
     if (method) {
+      if (QUIET_CODEX_NOTIFICATION_METHODS.has(method)) return;
       logger.warn("agent_chat.codex_unhandled_notification", {
         sessionId: managed.session.id,
         method,
@@ -10746,10 +10985,26 @@ export function createAgentChatService(args: {
       });
       throw error;
     }
-    const invocation = resolveCliSpawnInvocation(codexExecutable, ["app-server"]);
+    const missionCodexHome = managed.session.surface === "mission" ? ensureMissionCodexHome(managed) : null;
+    const appServerArgs = ["app-server"];
+    if (sessionSupportsReasoning(managed.session)) {
+      const descriptor = resolveSessionModelDescriptor(managed.session);
+      const reasoningEffort = resolveCodexReasoningEffortForRuntime(
+        managed.session.reasoningEffort,
+        null,
+        descriptor,
+      );
+      managed.session.reasoningEffort = reasoningEffort;
+      appServerArgs.push("-c", `model_reasoning_effort="${reasoningEffort}"`);
+    }
+    if (missionCodexHome) {
+      appServerArgs.push("-c", "mcp_servers={}");
+      appServerArgs.push("--disable", "plugins", "--disable", "apps", "--disable", "browser_use", "--disable", "computer_use");
+    }
+    const invocation = resolveCliSpawnInvocation(codexExecutable, appServerArgs);
     const proc = spawn(invocation.command, invocation.args, {
       cwd: managed.laneWorktreePath,
-      env: spawnEnv,
+      env: missionCodexHome ? { ...spawnEnv, CODEX_HOME: missionCodexHome } : spawnEnv,
       stdio: ["pipe", "pipe", "pipe"],
       detached: process.platform !== "win32",
       windowsVerbatimArguments: invocation.windowsVerbatimArguments,
@@ -10771,6 +11026,7 @@ export function createAgentChatService(args: {
       startedTurnId: null,
       awaitingTurnStart: false,
       threadResumed: false,
+      canAttachResumedTurnStart: false,
       itemTurnIdByItemId: new Map<string, string>(),
       commandOutputByItemId: new Map<string, string>(),
       fileDeltaByItemId: new Map<string, string>(),
@@ -10779,6 +11035,7 @@ export function createAgentChatService(args: {
       activeSubagents: new Map<string, { taskId: string; description: string; background: boolean }>(),
       interruptedTurnIds: new Set<string>(),
       ignoredTurnIds: new Set<string>(),
+      terminalTurnIds: new Set<string>(managed.codexTerminalTurnIds),
       agentMessageScopeByTurn: new Map<string, "item" | "turn">(),
       agentMessageTextByTurn: new Map<string, string>(),
       recentNotificationKeys: new Set<string>(),
@@ -10908,6 +11165,11 @@ export function createAgentChatService(args: {
 
     proc.on("exit", (code, signal) => {
       const message = `Codex app-server exited (code=${code ?? "null"}, signal=${signal ?? "null"}).`;
+      const hadPendingRequests = pending.size > 0;
+      const cleanExit = code === 0 && signal == null && !hadPendingRequests;
+      if (missionCodexHome) {
+        fs.rm(missionCodexHome, { recursive: true, force: true }, () => {});
+      }
       if (runtime.killTimer) {
         clearTimeout(runtime.killTimer);
         runtime.killTimer = null;
@@ -10928,6 +11190,7 @@ export function createAgentChatService(args: {
       runtime.approvals.clear();
 
       if (runtime.suppressExitError) return;
+      if (cleanExit) return;
       if (managed.closed || managed.session.status === "ended") return;
       keepChatSessionOpen(managed, {
         message,
@@ -10947,22 +11210,26 @@ export function createAgentChatService(args: {
       }
     });
 
-    const collaborationModesRequest = runtime.request<unknown>("collaborationMode/list", {})
-      .then((res) => {
-        const modes = parseCodexCollaborationModes(res);
-        if (modes) {
-          runtime.collaborationModes = modes;
-        }
-      })
-      .catch(() => { /* collaborationMode/list not supported — ignore */ });
-    runtime.collaborationModesReady = Promise.race([
-      collaborationModesRequest,
-      new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, DEFAULT_COLLABORATION_MODES_LIST_TIMEOUT_MS);
-        timer.unref?.();
-        collaborationModesRequest.finally(() => clearTimeout(timer)).catch(() => {});
-      }),
-    ]).then(() => undefined);
+    if (managed.session.surface === "mission") {
+      runtime.collaborationModesReady = Promise.resolve();
+    } else {
+      const collaborationModesRequest = runtime.request<unknown>("collaborationMode/list", {})
+        .then((res) => {
+          const modes = parseCodexCollaborationModes(res);
+          if (modes) {
+            runtime.collaborationModes = modes;
+          }
+        })
+        .catch(() => { /* collaborationMode/list not supported — ignore */ });
+      runtime.collaborationModesReady = Promise.race([
+        collaborationModesRequest,
+        new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, DEFAULT_COLLABORATION_MODES_LIST_TIMEOUT_MS);
+          timer.unref?.();
+          collaborationModesRequest.finally(() => clearTimeout(timer)).catch(() => {});
+        }),
+      ]).then(() => undefined);
+    }
 
     runtime.notify("initialized");
     return runtime;
@@ -11026,6 +11293,8 @@ export function createAgentChatService(args: {
       model: managed.session.model,
       cwd: managed.laneWorktreePath,
       reasoningEffort,
+      reasoning_effort: reasoningEffort,
+      effort: reasoningEffort,
       ...codexServiceTierArgs(managed.session),
       ...codexPolicyArgs(codexPolicy),
       experimentalRawEvents: false,
@@ -11047,31 +11316,34 @@ export function createAgentChatService(args: {
       sessionService.setResumeCommand(managed.session.id, `chat:codex:${newThreadId}`);
     }
     runtime.threadResumed = true;
+    runtime.canAttachResumedTurnStart = false;
     persistChatState(managed);
 
-    // Fetch available skills and populate slash commands
-    runtime.request<{ skills?: Array<{ name?: string; description?: string }> }>("skills/list", {})
-      .then((res) => {
-        if (Array.isArray(res?.skills)) {
-          runtime.slashCommands = res.skills
-            .filter((s): s is { name: string; description?: string } => typeof s?.name === "string" && s.name.length > 0)
-            .map((s) => ({ name: s.name.startsWith("/") ? s.name : `/${s.name}`, description: s.description ?? "" }));
-        }
-      })
-      .catch(() => { /* skills/list not supported — ignore */ });
+    if (managed.session.surface !== "mission") {
+      // Fetch available skills and populate slash commands.
+      runtime.request<{ skills?: Array<{ name?: string; description?: string }> }>("skills/list", {})
+        .then((res) => {
+          if (Array.isArray(res?.skills)) {
+            runtime.slashCommands = res.skills
+              .filter((s): s is { name: string; description?: string } => typeof s?.name === "string" && s.name.length > 0)
+              .map((s) => ({ name: s.name.startsWith("/") ? s.name : `/${s.name}`, description: s.description ?? "" }));
+          }
+        })
+        .catch(() => { /* skills/list not supported — ignore */ });
 
-    // Fetch initial rate limits
-    runtime.request<{ rateLimits?: { remaining?: number; limit?: number; resetAt?: string } }>("account/rateLimits/read", {})
-      .then((res) => {
-        if (res?.rateLimits) {
-          runtime.rateLimits = {
-            remaining: typeof res.rateLimits.remaining === "number" ? res.rateLimits.remaining : null,
-            limit: typeof res.rateLimits.limit === "number" ? res.rateLimits.limit : null,
-            resetAt: typeof res.rateLimits.resetAt === "string" ? res.rateLimits.resetAt : null,
-          };
-        }
-      })
-      .catch(() => { /* account/rateLimits/read not supported — ignore */ });
+      // Fetch initial rate limits.
+      runtime.request<{ rateLimits?: { remaining?: number; limit?: number; resetAt?: string } }>("account/rateLimits/read", {})
+        .then((res) => {
+          if (res?.rateLimits) {
+            runtime.rateLimits = {
+              remaining: typeof res.rateLimits.remaining === "number" ? res.rateLimits.remaining : null,
+              limit: typeof res.rateLimits.limit === "number" ? res.rateLimits.limit : null,
+              resetAt: typeof res.rateLimits.resetAt === "string" ? res.rateLimits.resetAt : null,
+            };
+          }
+        })
+        .catch(() => { /* account/rateLimits/read not supported — ignore */ });
+    }
   };
 
   /**
@@ -11768,6 +12040,7 @@ export function createAgentChatService(args: {
       selectedExecutionLaneId: null,
       lastLaneDirectiveKey: null,
       runtimeInvalidated: false,
+      codexTerminalTurnIds: new Set<string>(),
       todoItems: [],
       activeAssistantMessageId: null,
       previewTextBuffer: null,
@@ -12202,6 +12475,7 @@ export function createAgentChatService(args: {
       selectedExecutionLaneId: null,
       lastLaneDirectiveKey: null,
       runtimeInvalidated: false,
+      codexTerminalTurnIds: new Set<string>(),
       todoItems: [],
       activeAssistantMessageId: null,
       lastActivitySignature: null,
@@ -15485,6 +15759,7 @@ export function createAgentChatService(args: {
           // Policy or config source drifted — force a re-resume so the codex
           // server picks up the new ADE-controlled settings on this turn.
           runtime.threadResumed = false;
+          runtime.canAttachResumedTurnStart = false;
         }
       }
 
@@ -15505,6 +15780,8 @@ export function createAgentChatService(args: {
               model: managed.session.model,
               cwd: managed.laneWorktreePath,
               reasoningEffort: resumeReasoningEffort,
+              reasoning_effort: resumeReasoningEffort,
+              effort: resumeReasoningEffort,
               ...codexServiceTierArgs(managed.session),
               ...codexPolicyArgs(codexPolicy),
               persistExtendedHistory: true
@@ -15526,6 +15803,7 @@ export function createAgentChatService(args: {
             managed.session.threadId = resumedThreadId;
             sessionService.setResumeCommand(managed.session.id, `chat:codex:${resumedThreadId}`);
             runtime.threadResumed = true;
+            runtime.canAttachResumedTurnStart = true;
             persistChatState(managed);
             // Fetch skills after resume if not already fetched
             if (runtime.slashCommands.length === 0) {
@@ -16362,6 +16640,8 @@ export function createAgentChatService(args: {
             model: managed.session.model,
             cwd: managed.laneWorktreePath,
             reasoningEffort: managed.session.reasoningEffort,
+            reasoning_effort: managed.session.reasoningEffort,
+            effort: managed.session.reasoningEffort,
             ...codexServiceTierArgs(managed.session),
             ...codexPolicyArgs(codexPolicy),
             persistExtendedHistory: true
@@ -16382,6 +16662,7 @@ export function createAgentChatService(args: {
             : threadId;
           managed.session.threadId = resumedThreadId;
           runtime.threadResumed = true;
+          runtime.canAttachResumedTurnStart = true;
           sessionService.setResumeCommand(sessionId, `chat:codex:${resumedThreadId}`);
           persistChatState(managed);
           // Fetch skills after resume if not already fetched
@@ -16602,7 +16883,7 @@ export function createAgentChatService(args: {
     return chatRows
       .map((row) => summarizeSessionRow(row))
       .filter((summary) => includeIdentity || !summary.identityKey)
-      .filter((summary) => includeAutomation || summary.surface !== "automation");
+      .filter((summary) => includeAutomation || (summary.surface ?? "work") === "work");
   };
 
   const getSessionSummary = async (sessionId: string): Promise<AgentChatSessionSummary | null> => {
@@ -16809,6 +17090,7 @@ export function createAgentChatService(args: {
           applyLegacyPermissionModeToNativeControls(managed.session, "edit");
           managed.session.interactionMode = "default";
           runtime.threadResumed = false;
+          runtime.canAttachResumedTurnStart = false;
           persistChatState(managed);
         }
         runtime.pendingPlanFollowups.push({
@@ -17440,6 +17722,8 @@ export function createAgentChatService(args: {
       managed.endedNotified = true;
       managed.ctoSessionStartedAt = null;
       clearSubagentSnapshots(trimmedSessionId);
+      flushQueuedTranscriptWrite(managed.transcriptPath);
+      flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${trimmedSessionId}.jsonl`));
       teardownRuntime(managed, "ended_session");
       managedSessions.delete(trimmedSessionId);
     } else {
@@ -17488,6 +17772,7 @@ export function createAgentChatService(args: {
         // ignore shutdown errors
       }
     }
+    flushAllQueuedTranscriptWrites();
   };
 
   const forceDisposeAll = (): void => {
@@ -17514,6 +17799,7 @@ export function createAgentChatService(args: {
       }
     }
     managedSessions.clear();
+    flushAllQueuedTranscriptWrites();
   };
 
   // --- Session inactivity cleanup ---
@@ -17808,6 +18094,7 @@ export function createAgentChatService(args: {
         )
       ) {
         managed.runtime.threadResumed = false;
+        managed.runtime.canAttachResumedTurnStart = false;
       }
       if (managed.runtime?.kind === "claude" && managed.runtime.v2Session) {
         const turnPermissionMode = resolveClaudeTurnPermissionMode(managed);

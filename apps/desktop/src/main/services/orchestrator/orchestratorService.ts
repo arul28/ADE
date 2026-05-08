@@ -61,6 +61,7 @@ import type {
   FanOutDecision,
   AgentChatExecutionMode,
   AgentChatPermissionMode,
+  WorkerResultReport,
 } from "../../../shared/types";
 import {
   DEFAULT_RECOVERY_LOOP_POLICY,
@@ -92,7 +93,7 @@ import type { KnowledgeCaptureService } from "../memory/knowledgeCaptureService"
 import type { MemoryBriefing, MemoryBriefingService } from "../memory/memoryBriefingService";
 import type { MissionMemoryLifecycleService } from "../memory/missionMemoryLifecycleService";
 import type { ProceduralLearningService } from "../memory/proceduralLearningService";
-import { asRecord, nowIso, parseJsonRecord, TERMINAL_STEP_STATUSES, filterExecutionSteps } from "./orchestratorContext";
+import { asRecord, nowIso, parseJsonRecord, TERMINAL_STEP_STATUSES, filterExecutionSteps, isDisplayOnlyTaskStep, buildQuestionThreadLink } from "./orchestratorContext";
 import { parseNumericDependencyIndices } from "./missionLifecycle";
 import { getMissionStateDocumentPath } from "./missionStateDoc";
 import { buildFullPrompt, shellEscapeArg } from "./baseOrchestratorAdapter";
@@ -185,6 +186,7 @@ const VALID_PROJECT_PROVIDER_PERMISSION_MODES = new Set<AgentChatPermissionMode>
   "full-auto",
   "config-toml",
 ]);
+const STARTUP_VERIFICATION_GRACE_MS = 60_000;
 
 function projectPermissionConfigFromRecord(permissions: Record<string, unknown> | null | undefined): MissionPermissionConfig {
   const projectPerms: MissionPermissionConfig = {};
@@ -378,14 +380,20 @@ function hasPassingValidation(metadata: Record<string, unknown> | null): boolean
   const validationState = typeof metadata.validationState === "string"
     ? metadata.validationState.trim().toLowerCase()
     : "";
-  if (validationState === "pass") return true;
+  if (validationState === "pass" || validationState === "passed" || validationState === "success" || validationState === "succeeded") return true;
   const lastValidationReport = asRecord(metadata.lastValidationReport);
   const reportVerdict = typeof lastValidationReport?.verdict === "string"
     ? lastValidationReport.verdict.trim().toLowerCase()
     : "";
-  if (reportVerdict === "pass") return true;
+  if (reportVerdict === "pass" || reportVerdict === "passed" || reportVerdict === "success" || reportVerdict === "succeeded") return true;
   const validationPassedAt = typeof metadata.validationPassedAt === "string" ? metadata.validationPassedAt.trim() : "";
   return validationPassedAt.length > 0;
+}
+
+function getAutoSpawnedValidationTargetStepId(metadata: Record<string, unknown> | null): string | null {
+  if (!metadata || metadata.autoSpawnedValidation !== true) return null;
+  const targetStepId = typeof metadata.targetStepId === "string" ? metadata.targetStepId.trim() : "";
+  return targetStepId.length > 0 ? targetStepId : null;
 }
 
 type ReflectionAddInput = {
@@ -440,6 +448,12 @@ const ISO_8601_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})
 const RETRY_BASE_MS = 10_000;
 const RETRY_MULTIPLIER = 2;
 const RETRY_MAX_MS = 300_000;
+const MAX_RESTART_RECOVERY_ATTEMPTS = 3;
+const RESTART_INTERRUPTION_MESSAGE_PARTS = [
+  "closed during shutdown",
+  "orphaned by app restart",
+  "worker session was lost"
+] as const;
 
 function normalizeReflectionSignalType(value: string): OrchestratorReflectionEntry["signalType"] | null {
   if (
@@ -462,6 +476,16 @@ function isStrictIsoTimestamp(value: string): boolean {
   if (!ISO_8601_TIMESTAMP_RE.test(value)) return false;
   const ms = Date.parse(value);
   return Number.isFinite(ms);
+}
+
+function isRestartInterruptedAttemptFailure(input: {
+  errorClass?: OrchestratorErrorClass | string | null;
+  errorMessage?: string | null;
+}): boolean {
+  const errorClass = String(input.errorClass ?? "").trim();
+  const message = String(input.errorMessage ?? "").toLowerCase();
+  if (errorClass === "resume_recovered") return true;
+  return RESTART_INTERRUPTION_MESSAGE_PARTS.some((part) => message.includes(part));
 }
 
 function parseRetrospectivePayload(payload: string | null | undefined): MissionRetrospective | null {
@@ -559,17 +583,882 @@ function readUtf8Tail(filePath: string, maxBytes = 64 * 1024): string {
   }
 }
 
+const RUN_METADATA_DOC_REF_LIMIT = 12;
+
+function isAdeInternalDocRef(ref: OrchestratorDocsRef): boolean {
+  const normalized = ref.path.replace(/\\/g, "/");
+  return normalized === ".ade" || normalized.startsWith(".ade/") || normalized.includes("/.ade/");
+}
+
+function compactRuntimeCursorForRunMetadata(cursor: OrchestratorContextSnapshotCursor): Record<string, unknown> {
+  const docs = cursor.docs
+    .filter((ref) => !isAdeInternalDocRef(ref))
+    .slice(0, RUN_METADATA_DOC_REF_LIMIT);
+  return {
+    ...cursor,
+    docs,
+    docsOmittedCount: Math.max(0, cursor.docs.length - docs.length),
+  };
+}
+
+function stripAnsiCodes(value: string): string {
+  return value.replace(/\u001b\[[0-9;]*[A-Za-z]/g, "");
+}
+
+function parseJsonObjectAt(text: string, startIndex: number): Record<string, unknown> | null {
+  let depth = 0;
+  let inString = false;
+  let escaping = false;
+  for (let i = startIndex; i < text.length; i += 1) {
+    const ch = text[i]!;
+    if (inString) {
+      if (escaping) {
+        escaping = false;
+      } else if (ch === "\\") {
+        escaping = true;
+      } else if (ch === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === "\"") {
+      inString = true;
+      continue;
+    }
+    if (ch === "{") depth += 1;
+    if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        try {
+          const parsed = JSON.parse(text.slice(startIndex, i + 1));
+          return asRecord(parsed);
+        } catch {
+          return null;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function stripCodexTranscriptFooter(text: string): string {
+  return text.replace(/\r?\n\r?\ntokens used\r?\n[\s\S]*$/i, "").trimEnd();
+}
+
+function missingJsonObjectClosingBraceCount(text: string, startIndex: number): number | null {
+  let depth = 0;
+  let inString = false;
+  let escaping = false;
+  for (let i = startIndex; i < text.length; i += 1) {
+    const ch = text[i]!;
+    if (inString) {
+      if (escaping) {
+        escaping = false;
+      } else if (ch === "\\") {
+        escaping = true;
+      } else if (ch === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === "\"") {
+      inString = true;
+      continue;
+    }
+    if (ch === "{") depth += 1;
+    if (ch === "}") depth -= 1;
+    if (depth < 0) return null;
+  }
+  if (inString || depth <= 0 || depth > 4) return null;
+  return depth;
+}
+
+function parseJsonObjectAtWithMissingTrailingBraces(text: string, startIndex: number): Record<string, unknown> | null {
+  const candidate = stripCodexTranscriptFooter(text.slice(startIndex)).trim();
+  if (!candidate.startsWith("{")) return null;
+  const missingBraces = missingJsonObjectClosingBraceCount(candidate, 0);
+  if (missingBraces == null) return null;
+  try {
+    return asRecord(JSON.parse(`${candidate}${"}".repeat(missingBraces)}`));
+  } catch {
+    return null;
+  }
+}
+
+function looksLikeWorkerResultReportPayload(value: Record<string, unknown> | null): value is Record<string, unknown> {
+  const plan = asRecord(value?.plan);
+  if (typeof plan?.markdown === "string" && plan.markdown.trim().length > 0) return true;
+  const summary = typeof value?.summary === "string" ? value.summary.trim() : "";
+  if (!summary.length) return false;
+  const outcome = typeof value?.outcome === "string" ? value.outcome.trim().toLowerCase() : "";
+  if (outcome === "failed" || outcome === "partial" || outcome === "succeeded" || outcome === "completed") return true;
+  if (Array.isArray(value?.filesChanged) || Array.isArray(value?.files_changed)) return true;
+  if (asRecord(value?.testsRun) || asRecord(value?.tests_run)) return true;
+  return false;
+}
+
+function findLastWorkerResultReportJson(
+  text: string,
+  options: { allowMissingTrailingBraces?: boolean } = {}
+): Record<string, unknown> | null {
+  let fencedReport: Record<string, unknown> | null = null;
+  const fencedJsonPattern = /```(?:json)?\s*([\s\S]*?)```/gi;
+  for (const match of text.matchAll(fencedJsonPattern)) {
+    try {
+      const parsed = asRecord(JSON.parse(match[1]?.trim() ?? ""));
+      if (looksLikeWorkerResultReportPayload(parsed)) {
+        fencedReport = parsed;
+      }
+    } catch {
+      // Ignore non-JSON fenced blocks and fall back to balanced-object recovery.
+    }
+  }
+  if (fencedReport) return fencedReport;
+
+  let found: Record<string, unknown> | null = null;
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] !== "{") continue;
+    const parsed = parseJsonObjectAt(text, i);
+    if (looksLikeWorkerResultReportPayload(parsed)) {
+      found = parsed;
+    }
+  }
+  if (found || !options.allowMissingTrailingBraces) return found;
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] !== "{") continue;
+    const parsed = parseJsonObjectAtWithMissingTrailingBraces(text, i);
+    if (looksLikeWorkerResultReportPayload(parsed)) {
+      found = parsed;
+    }
+  }
+  return found;
+}
+
+function stripMarkdownLinkLabel(value: string): string {
+  const trimmed = value.trim();
+  const markdownLink = /^\[([^\]]+)\]\([^)]+\)$/.exec(trimmed);
+  return (markdownLink?.[1] ?? trimmed).replace(/^`|`$/g, "").trim();
+}
+
+function parseReportResultMarkdownSectionMap(text: string): Map<string, string> {
+  const sections = new Map<string, string>();
+  const sectionPattern = /^###\s+(.+?)\s*\n([\s\S]*?)(?=^###\s+|(?![\s\S]))/gm;
+  for (const match of text.matchAll(sectionPattern)) {
+    const key = String(match[1] ?? "").trim().toLowerCase();
+    const body = String(match[2] ?? "").trim();
+    if (key.length > 0 && body.length > 0) sections.set(key, body);
+  }
+  return sections;
+}
+
+function parseReportResultMarkdown(text: string): Record<string, unknown> | null {
+  const markerIndex = text.toLowerCase().lastIndexOf("## report_result");
+  if (markerIndex < 0) return null;
+  const reportText = text.slice(markerIndex);
+  const sections = parseReportResultMarkdownSectionMap(reportText);
+  const summary = sections.get("summary")?.trim() ?? "";
+  if (!summary.length) return null;
+  const outcomeRaw = (sections.get("outcome") ?? "").trim().toLowerCase();
+  const outcome =
+    outcomeRaw.includes("fail")
+      ? "failed"
+      : outcomeRaw.includes("partial")
+        ? "partial"
+        : "succeeded";
+  const filesChanged = (sections.get("fileschanged") ?? sections.get("files changed") ?? "")
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\s*[-*]\s*/, "").trim())
+    .map(stripMarkdownLinkLabel)
+    .filter((line) => line.length > 0);
+  const testsSection = sections.get("testsrun") ?? sections.get("tests run") ?? "";
+  const command = /`([^`]+)`/.exec(testsSection)?.[1]?.trim();
+  const numeric = (label: string): number | undefined => {
+    const pattern = new RegExp(`${label}\\s*:\\s*(\\d+)`, "i");
+    const match = pattern.exec(testsSection);
+    if (!match?.[1]) return undefined;
+    const value = Number(match[1]);
+    return Number.isFinite(value) ? value : undefined;
+  };
+  const testsRun = testsSection.trim().length > 0
+    ? {
+        ...(command ? { command } : {}),
+        ...(numeric("passed") != null ? { passed: numeric("passed") } : {}),
+        ...(numeric("failed") != null ? { failed: numeric("failed") } : {}),
+        ...(numeric("skipped") != null ? { skipped: numeric("skipped") } : {}),
+        raw: testsSection.trim(),
+      }
+    : null;
+  return {
+    outcome,
+    summary,
+    filesChanged,
+    ...(testsRun ? { testsRun } : {}),
+  };
+}
+
+function unquoteYamlishScalar(value: string): string {
+  const trimmed = value.trim();
+  if (
+    (trimmed.startsWith("\"") && trimmed.endsWith("\""))
+    || (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1).replace(/\\"/g, "\"").replace(/\\'/g, "'");
+  }
+  return trimmed;
+}
+
+function parseYamlishStringList(reportText: string, fieldName: string): string[] | undefined {
+  const escaped = fieldName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const inline = new RegExp(`^\\s{2}${escaped}:\\s*(\\[[^\\n\\r]*\\])\\s*$`, "im").exec(reportText)?.[1]?.trim();
+  if (inline === "[]") return [];
+  if (inline?.startsWith("[") && inline.endsWith("]")) {
+    return inline
+      .slice(1, -1)
+      .split(",")
+      .map((entry) => unquoteYamlishScalar(entry))
+      .filter((entry) => entry.length > 0);
+  }
+
+  const block = new RegExp(`^\\s{2}${escaped}:\\s*$\\n([\\s\\S]*?)(?=^\\s{2}\\w[\\w-]*:\\s*|^diff --git\\s|\\ncodex\\n|(?![\\s\\S]))`, "im")
+    .exec(reportText)?.[1] ?? "";
+  if (!block.trim().length) return undefined;
+  return block
+    .split(/\r?\n/)
+    .map((line) => /^\s{4}-\s*(.+?)\s*$/.exec(line)?.[1] ?? "")
+    .map((entry) => unquoteYamlishScalar(stripMarkdownLinkLabel(entry)))
+    .filter((entry) => entry.length > 0);
+}
+
+function parseCodexYamlishReportResult(text: string): Record<string, unknown> | null {
+  const markerMatches = [...text.matchAll(/^report_result:\s*$/gim)];
+  const marker = markerMatches.at(-1);
+  if (!marker?.index && marker?.index !== 0) return null;
+  const reportText = text.slice(marker.index);
+  const scalar = (fieldName: string): string => {
+    const escaped = fieldName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const value = new RegExp(`^\\s{2}${escaped}:\\s*([^\\n\\r]*)$`, "im").exec(reportText)?.[1] ?? "";
+    return unquoteYamlishScalar(value);
+  };
+
+  const outcome = scalar("outcome");
+  const summary = scalar("summary");
+  const filesChanged = parseYamlishStringList(reportText, "filesChanged");
+  const planMarker = /^ {2}plan:\s*\r?\n {4}markdown:\s*\|\s*\r?\n/im.exec(reportText);
+  const planMarkdown = (() => {
+    if (!planMarker) return "";
+    const start = (planMarker.index ?? 0) + planMarker[0].length;
+    const rest = reportText.slice(start);
+    const boundary = /\n {2}\w[\w-]*:\s*/.exec(rest);
+    const block = boundary ? rest.slice(0, boundary.index) : rest;
+    return block
+      .split(/\r?\n/)
+      .map((line) => {
+        if (line.startsWith("      ")) return line.slice(6);
+        if (line.trim().length === 0) return "";
+        return line;
+      })
+      .join("\n")
+      .trim();
+  })();
+
+  if (!summary.length && !planMarkdown.length) return null;
+  return {
+    ...(outcome.length > 0 ? { outcome } : {}),
+    ...(summary.length > 0 ? { summary } : {}),
+    ...(filesChanged ? { filesChanged } : {}),
+    ...(planMarkdown.length > 0 ? { plan: { markdown: planMarkdown } } : {}),
+  };
+}
+
+function markdownFieldLabelSource(fieldName: string): string {
+  const labels = [
+    fieldName,
+    fieldName.replace(/([a-z])([A-Z])/g, "$1 $2"),
+  ].filter((entry, index, all) => all.indexOf(entry) === index);
+  const labelSource = labels
+    .map((entry) => entry.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("|");
+  return `(?:\`\\s*(?:${labelSource})\\s*\`|\\*\\*\\s*(?:${labelSource})\\s*:?\\s*\\*\\*|(?:${labelSource}))`;
+}
+
+function parseBoldMarkdownField(text: string, fieldName: string): string {
+  const labels = [
+    fieldName,
+    fieldName.replace(/([a-z])([A-Z])/g, "$1 $2"),
+  ].filter((entry, index, all) => all.indexOf(entry) === index);
+  const labelSource = labels
+    .map((entry) => entry.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("|");
+  const pattern = new RegExp(
+    `^\\s*(?:[-*]\\s*)?(?:\`\\s*(?:${labelSource})\\s*\`|\\*\\*\\s*(?:${labelSource})\\s*:?\\s*\\*\\*)\\s*:?\\s*([^\\n\\r]+)`,
+    "im"
+  );
+  return pattern.exec(text)?.[1]?.trim().replace(/^`|`$/g, "") ?? "";
+}
+
+function parseLooseMarkdownField(text: string, fieldName: string): string {
+  const allLabels = [
+    "Outcome",
+    "Summary",
+    "Implemented",
+    "Accomplished",
+    "What I accomplished",
+    "What I changed",
+    "FilesChanged",
+    "Files Changed",
+    "TestsRun",
+    "Tests Run",
+    "Tests",
+    "Validation",
+    "Risks",
+    "Plan",
+    "PlanMarkdown",
+    "Plan Markdown",
+    "plan.markdown",
+    "Risk/notes for downstream",
+    "Handoff Summary",
+  ];
+  const fieldSource = markdownFieldLabelSource(fieldName);
+  const boundarySource = allLabels
+    .map(markdownFieldLabelSource)
+    .join("|");
+  const pattern = new RegExp(
+    `^\\s*(?:[-*]\\s*)?${fieldSource}\\s*:?\\s*([^\\n\\r]*)\\n?([\\s\\S]*?)(?=^\\s*(?:[-*]\\s*)?(?:${boundarySource})\\s*:?|^HANDOFF SUMMARY\\s*:|^diff --git\\s|\\ncodex\\n|(?![\\s\\S]))`,
+    "im",
+  );
+  const match = pattern.exec(text);
+  if (!match) return "";
+  const inline = String(match[1] ?? "").trim();
+  const body = String(match[2] ?? "").trim();
+  return [inline, body]
+    .filter((entry) => entry.length > 0)
+    .join("\n")
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\s*[-*]\s*/, "").trim())
+    .filter((line) => line.length > 0)
+    .join(" ");
+}
+
+function parseLooseMarkdownSection(text: string, sectionName: string): string {
+  const escaped = sectionName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const sectionBoundaries = [
+    "Outcome",
+    "Summary",
+    "Implemented",
+    "Accomplished",
+    "What I accomplished",
+    "What I changed",
+    "Files Changed",
+    "FilesChanged",
+    "Tests Run",
+    "TestsRun",
+    "Test Results",
+    "Tests",
+    "Validation",
+    "Warnings",
+    "Warnings / risks",
+    "Risks / Notes",
+    "Next Steps",
+    "Plan",
+    "PlanMarkdown",
+    "Plan Markdown",
+    "plan.markdown",
+    "Mission changes from upstream",
+    "Validation / exact closeout evidence",
+    "Plan for next phase handoff",
+    "Risk/notes for downstream",
+    "Handoff Summary",
+  ];
+  const boundaryPattern = sectionBoundaries
+    .map((entry) => entry.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("|");
+  const pattern = new RegExp(
+    `^(?:#{1,6}\\s+|\\d+\\)\\s*)?${escaped}\\s*$\\n([\\s\\S]*?)(?=^(?:(?:#{1,6}\\s+|\\d+\\)\\s*)?(?:${boundaryPattern})\\s*$)|^diff --git\\s|\\ncodex\\n|(?![\\s\\S]))`,
+    "im",
+  );
+  const body = pattern.exec(text)?.[1]?.trim() ?? "";
+  if (!body.length) return "";
+  return body
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\s*[-*]\s*/, "").trim())
+    .filter((line) => line.length > 0)
+    .join(" ");
+}
+
+function extractMarkdownLinkedFileLabels(text: string): string[] {
+  const files: string[] = [];
+  const linkPattern = /\[([^\]]+)\]\(([^)]+)\)/g;
+  for (const match of text.matchAll(linkPattern)) {
+    const label = stripMarkdownLinkLabel(match[0] ?? "");
+    if (!label.length) continue;
+    if (label === ".ade" || label.startsWith(".ade/") || label.startsWith("./.ade/")) continue;
+    if (!/\.(?:[cm]?[jt]sx?|json|md|css|scss|html|swift|kt|java|py|rb|go|rs|php|sql|ya?ml)$/i.test(label)) continue;
+    if (!files.includes(label)) files.push(label);
+  }
+  return files;
+}
+
+function looksLikeRepoFilePath(value: string): boolean {
+  const normalized = value.trim().replace(/^\.\/+/, "");
+  if (!normalized.length) return false;
+  if (path.isAbsolute(normalized)) return false;
+  const segments = normalized.split(/[\\/]+/).filter((segment) => segment.length > 0);
+  if (segments.some((segment) => segment === "." || segment === ".." || segment.startsWith(".."))) return false;
+  if (normalized === ".ade" || normalized.startsWith(".ade/")) return false;
+  if (normalized.includes("/.ade/")) return false;
+  if (normalized.includes("://")) return false;
+  return /\.(?:[cm]?[jt]sx?|json|md|css|scss|html|swift|kt|java|py|rb|go|rs|php|sql|ya?ml)$/i.test(normalized);
+}
+
+function extractFileMentionsFromMarkdownList(text: string): string[] {
+  const files: string[] = [];
+  const pushFile = (candidate: string) => {
+    const normalized = stripMarkdownLinkLabel(candidate.trim()).replace(/^\.\/+/, "");
+    if (!looksLikeRepoFilePath(normalized)) return;
+    if (!files.includes(normalized)) files.push(normalized);
+  };
+  for (const line of text.split(/\r?\n/)) {
+    const cleaned = line.replace(/^\s*[-*]\s*/, "").trim();
+    if (!cleaned.length) continue;
+    for (const match of cleaned.matchAll(/`([^`]+)`/g)) {
+      pushFile(String(match[1] ?? ""));
+    }
+    for (const token of cleaned.split(/\s+/)) {
+      pushFile(token.replace(/[.,;:]$/g, ""));
+    }
+  }
+  return files;
+}
+
+function sliceLikelyCodexResultText(text: string): string {
+  const lower = text.toLowerCase();
+  const explicitReportResultPattern = /(?:^|[\n\r]|[^\w])(?:#{1,6}\s*)?(?:`|\[)?report_result(?:`|\])?\s*:?\s*(?:\r?\n|$)/gi;
+  let explicitReportResultIndex = -1;
+  for (const match of text.matchAll(explicitReportResultPattern)) {
+    explicitReportResultIndex = Math.max(explicitReportResultIndex, match.index ?? -1);
+  }
+  if (explicitReportResultIndex >= 0) return text.slice(explicitReportResultIndex);
+
+  const reportPayloadFieldsIndex = /`?report_result`?\s+payload fields\s*:/i.exec(text)?.index ?? -1;
+  const markerSearchLower =
+    reportPayloadFieldsIndex >= 0 ? lower.slice(0, reportPayloadFieldsIndex) : lower;
+  const markers = [
+    "## report_result",
+    "\n### report_result",
+    "\n## `report_result`",
+    "\n### `report_result`",
+    "\n`report_result`\n",
+    "\nreport_result\n",
+    "\nreport_result:",
+    "\n[report_result]",
+    "\n## outcome",
+    "\noutcome:",
+    "\n1) accomplished",
+    "\n## accomplished",
+    "\n## what i accomplished",
+    "\n## what i have accomplished",
+    "\nwhat i accomplished",
+    "\n## summary",
+    "\nsummary:",
+    "\nimplemented:",
+    "\naccomplished:",
+    "\n**outcome**",
+  ];
+  let markerIndex = -1;
+  for (const marker of markers) {
+    markerIndex = Math.max(markerIndex, markerSearchLower.lastIndexOf(marker));
+  }
+  if (markerIndex >= 0) {
+    return text.slice(markerIndex, reportPayloadFieldsIndex >= 0 ? reportPayloadFieldsIndex : undefined);
+  }
+
+  const codexMarker = lower.lastIndexOf("\ncodex\n");
+  return codexMarker >= 0 ? text.slice(codexMarker) : text;
+}
+
+function looksLikeReportTemplatePlaceholder(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  return (
+    normalized === "1-2 sentence description of what was accomplished."
+    || normalized.includes("1-2 sentence description of what was accomplished")
+    || normalized.includes("bulleted list of files created or modified")
+    || normalized.includes("test results if any tests were run")
+  );
+}
+
+function firstNonPlaceholderMarkdownValue(...values: string[]): string {
+  return values.find((value) => value.length > 0 && !looksLikeReportTemplatePlaceholder(value)) ?? "";
+}
+
+function dedentMarkdownBlock(block: string): string {
+  const lines = block.replace(/\s+$/g, "").split(/\r?\n/);
+  const indents = lines
+    .filter((line) => line.trim().length > 0)
+    .map((line) => /^[ \t]*/.exec(line)?.[0]?.length ?? 0);
+  const minIndent = indents.length > 0 ? Math.min(...indents) : 0;
+  return lines
+    .map((line) => line.trim().length > 0 ? line.slice(minIndent) : "")
+    .join("\n")
+    .trim();
+}
+
+function extractLoosePlanMarkdown(text: string): string {
+  const fenced = /(?:^|\n)(?:#{1,6}\s*)?Plan(?:\s*\([^)\r\n]+\))?\s*:?\s*\r?\n```(?:markdown|md)?\s*\r?\n([\s\S]*?)\r?\n```/i.exec(text);
+  if (fenced?.[1]?.trim()) return fenced[1].trim();
+
+  const namedPlanArtifact = /(?:^|\n)\s*[-*]\s*`?plan\.markdown`?\s*:?\s*\r?\n\s*```(?:markdown|md)?\s*\r?\n([\s\S]*?)\r?\n\s*```/i.exec(text);
+  if (namedPlanArtifact?.[1]?.trim()) return namedPlanArtifact[1].trim();
+
+  const namedPlanListArtifact = /(?:^|\n)\s*[-*]\s*`?plan\.markdown`?\s*:?\s*\r?\n/i.exec(text);
+  if (namedPlanListArtifact) {
+    const start = (namedPlanListArtifact.index ?? 0) + namedPlanListArtifact[0].length;
+    const rest = text.slice(start);
+    const boundary = /\n\s{0,4}[-*]\s*(?:metadata|outcome|summary|filesChanged|files_changed|testsRun|tests_run|warnings|risks?):\s*/i.exec(rest)
+      ?? /\n(?:#{1,6}\s*)?(?:Accomplished|Changed Files|Tests Run|Risks\s*\/\s*Notes|HANDOFF SUMMARY|Handoff summary)\s*:?\s*(?:\r?\n|$)/i.exec(rest)
+      ?? /\n(?:diff --git|codex)\b/i.exec(rest);
+    const block = boundary ? rest.slice(0, boundary.index) : rest;
+    const withoutFences = block
+      .replace(/^\s*```(?:markdown|md)?\s*/i, "")
+      .replace(/\s*```\s*$/i, "");
+    const markdown = dedentMarkdownBlock(withoutFences);
+    if (markdown.length > 0) return markdown;
+  }
+
+  const namedPlanHeading = /(?:^|\n)(?:#{1,6}\s*)?plan\.markdown\s*:?\s*\r?\n```(?:markdown|md)?\s*\r?\n([\s\S]*?)\r?\n```/i.exec(text);
+  if (namedPlanHeading?.[1]?.trim()) return namedPlanHeading[1].trim();
+
+  const jsonPlanPayload = /(?:^|\n)(?:#{1,6}\s*)?plan(?:\s*\([^)\r\n]+\))?\s*(?:\(first-class payload\))?\s*:?\s*\r?\n```json\s*\r?\n([\s\S]*?)\r?\n```/i.exec(text);
+  if (jsonPlanPayload?.[1]?.trim()) {
+    try {
+      const parsed = asRecord(JSON.parse(jsonPlanPayload[1].trim()));
+      const markdown = typeof parsed?.markdown === "string" ? parsed.markdown.trim() : "";
+      if (markdown.length > 0) return markdown;
+    } catch {
+      // Ignore malformed JSON plan payloads and keep trying looser shapes.
+    }
+  }
+
+  const reportResultListPlan = /(?:^|\n)\s*[-*]\s*plan:\s*\r?\n\s*[-*]\s*markdown:\s*\|\s*\r?\n/i.exec(text);
+  if (reportResultListPlan) {
+    const start = (reportResultListPlan.index ?? 0) + reportResultListPlan[0].length;
+    const rest = text.slice(start);
+    const boundary = /\n\s{0,4}[-*]\s*(?:metadata|outcome|summary|filesChanged|files_changed|testsRun|tests_run|warnings|risks?):\s*/i.exec(rest)
+      ?? /\n(?:HANDOFF SUMMARY|Handoff summary|diff --git|codex)\b/i.exec(rest);
+    return dedentMarkdownBlock(boundary ? rest.slice(0, boundary.index) : rest);
+  }
+
+  const heading = /(?:^|\n)(?:#{1,6}\s*)?Plan(?:\s*\([^)\r\n]+\))?\s*:?\s*\r?\n/i.exec(text);
+  if (!heading) return "";
+  const start = (heading.index ?? 0) + heading[0].length;
+  const rest = text.slice(start);
+  const boundary = /\n(?:#{1,6}\s+)?(?:report_result payload fields|handoff summary|risk notes|risks?|summary|outcome|what changed|what i changed|accomplished)\s*:?\s*(?:\r?\n|$)/i.exec(rest);
+  return (boundary ? rest.slice(0, boundary.index) : rest).trim();
+}
+
+function stripCodexReportPayloadFieldsTail(text: string): string {
+  return text.replace(/\n\s*`?report_result`?\s+payload fields\s*:[\s\S]*$/i, "").trim();
+}
+
+function parseCodexFinalMarkdownReport(text: string): Record<string, unknown> | null {
+  const reportText = stripCodexReportPayloadFieldsTail(sliceLikelyCodexResultText(text));
+  const outcomeRaw = (
+    parseBoldMarkdownField(reportText, "Outcome")
+    || parseLooseMarkdownField(reportText, "Outcome")
+    || parseLooseMarkdownSection(reportText, "Outcome")
+  ).toLowerCase();
+  let summary = firstNonPlaceholderMarkdownValue(
+    parseBoldMarkdownField(reportText, "Summary"),
+    parseLooseMarkdownField(reportText, "Summary"),
+    parseLooseMarkdownSection(reportText, "Summary"),
+    parseLooseMarkdownField(reportText, "Accomplished"),
+    parseLooseMarkdownField(reportText, "What I accomplished"),
+    parseLooseMarkdownSection(reportText, "Accomplished"),
+    parseLooseMarkdownSection(reportText, "What I accomplished"),
+    parseLooseMarkdownSection(reportText, "What I Have Accomplished So Far"),
+    parseLooseMarkdownField(reportText, "Implemented"),
+    parseLooseMarkdownSection(reportText, "Implemented"),
+    outcomeRaw
+  );
+  const planMarkdown = extractLoosePlanMarkdown(reportText) || extractLoosePlanMarkdown(text);
+  if (!summary.length && planMarkdown.length > 0) {
+    summary = "Planning step completed.";
+  }
+  if (!summary.length) return null;
+  const fileSection =
+    parseLooseMarkdownSection(reportText, "Files Changed")
+    || parseLooseMarkdownSection(reportText, "FilesChanged")
+    || parseLooseMarkdownSection(reportText, "What I changed")
+    || parseLooseMarkdownField(reportText, "FilesChanged");
+  const filesChanged = [
+    ...extractMarkdownLinkedFileLabels(reportText),
+    ...extractFileMentionsFromMarkdownList(fileSection),
+  ].filter((file, index, all) => all.indexOf(file) === index);
+  const testsText = [
+    parseLooseMarkdownSection(reportText, "Tests Run"),
+    parseLooseMarkdownSection(reportText, "TestsRun"),
+    parseLooseMarkdownSection(reportText, "Test Results"),
+    parseLooseMarkdownSection(reportText, "Tests"),
+    parseLooseMarkdownSection(reportText, "Validation"),
+    parseLooseMarkdownField(reportText, "TestsRun"),
+    parseLooseMarkdownField(reportText, "Tests"),
+    parseLooseMarkdownField(reportText, "Validation"),
+  ].filter((entry) => entry.length > 0).join("\n");
+  const testsSearchText = testsText.length > 0 ? testsText : reportText;
+  const command =
+    /`([^`]*npm\s+test[^`]*)`/i.exec(testsSearchText)?.[1]?.trim()
+    ?? /\bnpm\s+test\b/i.exec(testsSearchText)?.[0]?.trim();
+  const count = (labels: string[]): number | undefined => {
+    const labelPattern = labels
+      .map((label) => label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+      .join("|");
+    const labelFirst = new RegExp(`(?:^|[^\\w])(?:${labelPattern})\\s*:?\\s*\`?(\\d+)\`?\\b`, "i");
+    const valueFirst = new RegExp(`\\b\`?(\\d+)\`?\\s+(?:${labelPattern})\\b`, "i");
+    const match = labelFirst.exec(testsSearchText) ?? valueFirst.exec(testsSearchText);
+    if (!match?.[1]) return undefined;
+    const value = Number(match[1]);
+    return Number.isFinite(value) ? value : undefined;
+  };
+  const slashPassed =
+    /(\d+)\s*\/\s*\d+\s+passing/i.exec(testsSearchText)?.[1]
+    ?? /PASS\s*\(\s*(\d+)\s*\/\s*\d+\s+tests?\s*\)/i.exec(testsSearchText)?.[1]
+    ?? /Result:\s*pass\s*\(\s*(\d+)\s*\/\s*\d+\s+tests?\s*\)/i.exec(testsSearchText)?.[1];
+  const passed = slashPassed && Number.isFinite(Number(slashPassed)) ? Number(slashPassed) : count(["passed", "pass"]);
+  const failed = count(["failed", "fail"]);
+  const skipped = count(["skipped", "skip"]);
+  const outcome = (() => {
+    const zeroFailureSignal = /\b(?:0\s+(?:failed|failures?)|(?:failed|failures?)\s*:?\s*0|no\s+(?:functional\s+)?(?:test\s+)?(?:failures?|blockers?)|zero[-\s]+failures?)\b/i;
+    const passSignal = /\b(?:pass|passed|passes|passing|success|successful|successfully)\b/i;
+    if (failed != null && failed > 0) return "failed";
+    if (outcomeRaw.includes("partial")) return "partial";
+    if (outcomeRaw.includes("fail") && !zeroFailureSignal.test(outcomeRaw) && !passSignal.test(outcomeRaw)) {
+      return "failed";
+    }
+    return "succeeded";
+  })();
+  const testsRun =
+    command || passed != null || failed != null || skipped != null
+      ? {
+          ...(command ? { command } : {}),
+          ...(passed != null ? { passed } : {}),
+          ...(failed != null ? { failed } : {}),
+          ...(skipped != null ? { skipped } : {}),
+          raw: [
+            command ? `Ran \`${command}\`` : null,
+            passed != null ? `${passed} passed` : null,
+            failed != null ? `${failed} failed` : null,
+            skipped != null ? `${skipped} skipped` : null,
+          ].filter((entry): entry is string => Boolean(entry)).join(", "),
+        }
+      : null;
+  return {
+    outcome,
+    summary,
+    filesChanged,
+    ...(testsRun ? { testsRun } : {}),
+    ...(planMarkdown.length > 0 ? { plan: { markdown: planMarkdown } } : {}),
+  };
+}
+
+function sliceLastCodexTurnText(text: string): string {
+  const matches = [...text.matchAll(/(?:^|\n)codex\r?\n/gim)];
+  const match = matches.at(-1);
+  if (!match?.index && match?.index !== 0) return text;
+  return text.slice(match.index + match[0].length);
+}
+
+function hasLikelyCodexResultMarker(text: string): boolean {
+  return (
+    /(?:^|\n)\s*`?report_result`?\s*:?\s*(?:\r?\n|$)/i.test(text)
+    || /(?:^|\n)\s*implemented\s*:\s*/i.test(text)
+    || /(?:^|\n)\s*(?:#{1,6}\s*)?what i accomplished\s*(?:\r?\n|$)/i.test(text)
+    || /(?:^|\n)\s*(?:#{1,6}\s*)?what i changed\s*(?:\r?\n|$)/i.test(text)
+  );
+}
+
+function extractReportResultPayloadFromText(rawText: string): Record<string, unknown> | null {
+  const raw = stripAnsiCodes(rawText);
+  if (!raw.trim().length) return null;
+  const markerIndex = raw.lastIndexOf("[report_result]");
+  if (markerIndex >= 0) {
+    const jsonStart = raw.indexOf("{", markerIndex);
+    if (jsonStart >= 0) {
+      const markedPayload = parseJsonObjectAt(raw, jsonStart);
+      if (looksLikeWorkerResultReportPayload(markedPayload)) return markedPayload;
+    }
+  }
+  const lastCodexTurn = sliceLastCodexTurnText(raw);
+  const candidateTexts = lastCodexTurn === raw
+    ? [{ text: raw, allowMissingTrailingBraces: true }]
+    : [
+        { text: lastCodexTurn, allowMissingTrailingBraces: true },
+        { text: raw, allowMissingTrailingBraces: false },
+      ];
+  for (const candidate of candidateTexts) {
+    const candidateText = candidate.text;
+    const yamlishPayload = parseCodexYamlishReportResult(candidateText);
+    if (yamlishPayload && looksLikeWorkerResultReportPayload(yamlishPayload)) return yamlishPayload;
+    const markdownPayload = parseReportResultMarkdown(candidateText);
+    if (markdownPayload && looksLikeWorkerResultReportPayload(markdownPayload)) return markdownPayload;
+    const jsonPayload = findLastWorkerResultReportJson(candidateText, {
+      allowMissingTrailingBraces: candidate.allowMissingTrailingBraces,
+    });
+    if (jsonPayload && looksLikeWorkerResultReportPayload(jsonPayload)) return jsonPayload;
+    const codexMarkdownPayload = parseCodexFinalMarkdownReport(candidateText);
+    if (codexMarkdownPayload && looksLikeWorkerResultReportPayload(codexMarkdownPayload)) return codexMarkdownPayload;
+  }
+  if (lastCodexTurn !== raw && hasLikelyCodexResultMarker(lastCodexTurn)) return null;
+  const yamlishPayload = parseCodexYamlishReportResult(raw);
+  if (yamlishPayload && looksLikeWorkerResultReportPayload(yamlishPayload)) return yamlishPayload;
+  const markdownPayload = parseReportResultMarkdown(raw);
+  if (markdownPayload && looksLikeWorkerResultReportPayload(markdownPayload)) return markdownPayload;
+  const jsonPayload = findLastWorkerResultReportJson(raw);
+  if (jsonPayload && looksLikeWorkerResultReportPayload(jsonPayload)) return jsonPayload;
+  return null;
+}
+
+const REPORT_RESULT_TRANSCRIPT_TAIL_BYTES = 128 * 1024;
+const REPORT_RESULT_MAX_CANDIDATE_CHARS = 48_000;
+const REPORT_RESULT_MAX_CANDIDATES = 24;
+
+function appendBoundedReportResultText(current: string, next: string): string {
+  if (!current.length) {
+    return next.length > REPORT_RESULT_MAX_CANDIDATE_CHARS
+      ? next.slice(-REPORT_RESULT_MAX_CANDIDATE_CHARS)
+      : next;
+  }
+  const combined = `${current}${next}`;
+  return combined.length > REPORT_RESULT_MAX_CANDIDATE_CHARS
+    ? combined.slice(-REPORT_RESULT_MAX_CANDIDATE_CHARS)
+    : combined;
+}
+
+function agentChatAssistantTextCandidates(rawTranscript: string): string[] {
+  const events = parseAgentChatTranscript(rawTranscript);
+  const byMessage = new Map<string, string>();
+  let allText = "";
+  let anonymousIndex = 0;
+  for (const entry of events) {
+    if (entry.event.type !== "text") continue;
+    const text = typeof entry.event.text === "string" ? entry.event.text : "";
+    if (!text.length) continue;
+    allText = appendBoundedReportResultText(allText, text);
+    const eventRecord = entry.event as Record<string, unknown>;
+    const key =
+      typeof eventRecord.messageId === "string" && eventRecord.messageId.trim().length > 0
+        ? eventRecord.messageId.trim()
+        : typeof eventRecord.turnId === "string" && eventRecord.turnId.trim().length > 0
+          ? eventRecord.turnId.trim()
+          : `anonymous:${anonymousIndex++}`;
+    byMessage.set(key, appendBoundedReportResultText(byMessage.get(key) ?? "", text));
+  }
+  const candidates = Array.from(byMessage.values()).reverse().slice(0, REPORT_RESULT_MAX_CANDIDATES);
+  if (allText.trim().length > 0 && !candidates.includes(allText)) {
+    candidates.push(allText);
+  }
+  return candidates.filter((candidate) => candidate.trim().length > 0);
+}
+
+function extractReportResultPayloadFromTranscript(filePath: string | null | undefined): Record<string, unknown> | null {
+  const normalizedPath = typeof filePath === "string" ? filePath.trim() : "";
+  if (!normalizedPath || !fs.existsSync(normalizedPath)) return null;
+  try {
+    const rawTail = readUtf8Tail(normalizedPath, REPORT_RESULT_TRANSCRIPT_TAIL_BYTES);
+    if (normalizedPath.endsWith(".chat.jsonl")) {
+      for (const candidate of agentChatAssistantTextCandidates(rawTail)) {
+        const payload = extractReportResultPayloadFromText(candidate);
+        if (payload) return payload;
+      }
+    }
+    return extractReportResultPayloadFromText(rawTail);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeRecoveredWorkerResultReport(args: {
+  payload: Record<string, unknown>;
+  step: OrchestratorStep;
+  attempt: OrchestratorAttempt;
+  missionId: string;
+  runId: string;
+}): WorkerResultReport | null {
+  const rawOutcome = typeof args.payload.outcome === "string" ? args.payload.outcome.trim().toLowerCase() : "";
+  const outcome: WorkerResultReport["outcome"] =
+    rawOutcome === "failed" || rawOutcome === "partial" || rawOutcome === "succeeded"
+      ? rawOutcome
+      : "succeeded";
+  const rawPlan = asRecord(args.payload.plan);
+  const planMarkdown = typeof rawPlan?.markdown === "string" ? rawPlan.markdown.trim() : "";
+  const normalizedPlan = rawPlan && planMarkdown.length > 0
+    ? {
+        markdown: planMarkdown,
+        ...(typeof rawPlan.summary === "string" && rawPlan.summary.trim().length > 0 ? { summary: rawPlan.summary.trim() } : {}),
+        ...(typeof rawPlan.title === "string" && rawPlan.title.trim().length > 0 ? { title: rawPlan.title.trim() } : {}),
+        ...(rawPlan.format === "markdown" ? { format: "markdown" as const } : {}),
+        ...(typeof rawPlan.artifactPath === "string" && rawPlan.artifactPath.trim().length > 0 ? { artifactPath: rawPlan.artifactPath.trim() } : {}),
+      }
+    : null;
+  const summary =
+    typeof args.payload.summary === "string" && args.payload.summary.trim().length > 0
+      ? args.payload.summary.trim()
+      : typeof rawPlan?.summary === "string" && rawPlan.summary.trim().length > 0
+        ? rawPlan.summary.trim()
+        : normalizedPlan
+          ? "Planning step completed."
+          : "";
+  if (!summary && !normalizedPlan) return null;
+  const artifactsRaw = Array.isArray(args.payload.artifacts) ? args.payload.artifacts : [];
+  const filesChangedRaw = Array.isArray(args.payload.filesChanged)
+    ? args.payload.filesChanged
+    : Array.isArray(args.payload.files_changed)
+      ? args.payload.files_changed
+      : [];
+  const testsRunRaw = asRecord(args.payload.testsRun) ?? asRecord(args.payload.tests_run);
+  return {
+    workerId: args.step.stepKey,
+    stepId: args.step.id,
+    stepKey: args.step.stepKey,
+    runId: args.runId,
+    missionId: args.missionId,
+    outcome,
+    summary: summary || "Worker completed.",
+    ...(normalizedPlan ? { plan: normalizedPlan } : {}),
+    artifacts: artifactsRaw
+      .map((entry) => asRecord(entry))
+      .filter((entry): entry is Record<string, unknown> => Boolean(entry))
+      .map((artifact) => ({
+        type: typeof artifact.type === "string" && artifact.type.trim().length > 0 ? artifact.type.trim() : "artifact",
+        title: typeof artifact.title === "string" && artifact.title.trim().length > 0 ? artifact.title.trim() : "Untitled artifact",
+        uri: typeof artifact.uri === "string" && artifact.uri.trim().length > 0 ? artifact.uri.trim() : null,
+        metadata: asRecord(artifact.metadata) ?? undefined,
+      })),
+    filesChanged: filesChangedRaw
+      .map((entry) => String(entry ?? "").trim().replace(/^\.\/+/, ""))
+      .filter((entry) => looksLikeRepoFilePath(entry)),
+    testsRun: testsRunRaw
+      ? {
+          ...(typeof testsRunRaw.command === "string" && testsRunRaw.command.trim().length > 0 ? { command: testsRunRaw.command.trim() } : {}),
+          ...(Number.isFinite(Number(testsRunRaw.passed)) ? { passed: Number(testsRunRaw.passed) } : {}),
+          ...(Number.isFinite(Number(testsRunRaw.failed)) ? { failed: Number(testsRunRaw.failed) } : {}),
+          ...(Number.isFinite(Number(testsRunRaw.skipped)) ? { skipped: Number(testsRunRaw.skipped) } : {}),
+          ...(testsRunRaw.raw != null ? { raw: String(testsRunRaw.raw) } : {}),
+        }
+      : null,
+    laneId: args.step.laneId,
+    reportedAt: nowIso(),
+  };
+}
+
 function deriveTranscriptSummaryFromPath(filePath: string | null | undefined): string | null {
   const normalizedPath = typeof filePath === "string" ? filePath.trim() : "";
   if (!normalizedPath || !fs.existsSync(normalizedPath)) return null;
   try {
     const rawTail = readUtf8Tail(normalizedPath);
-    if (normalizedPath.endsWith(".chat.jsonl")) {
-      const events = parseAgentChatTranscript(rawTail);
+    const events = parseAgentChatTranscript(rawTail);
+    if (events.length > 0) {
       return deriveAgentChatTranscriptSummary(events);
     }
-    const sanitizedTail = rawTail
-      .replace(/\u001b\[[0-9;]*[A-Za-z]/g, "")
+    const sanitizedTail = stripAnsiCodes(rawTail)
       .split(/\r?\n/)
       .map((line) => line.trim())
       .filter((line) => line.length > 0)
@@ -593,32 +1482,71 @@ function deriveTranscriptSummaryFromPath(filePath: string | null | undefined): s
   }
 }
 
+function extractNaturalQuestionFromTranscriptPath(filePath: string | null | undefined): string | null {
+  const normalizedPath = typeof filePath === "string" ? filePath.trim() : "";
+  if (!normalizedPath || !fs.existsSync(normalizedPath)) return null;
+  try {
+    const rawTail = stripAnsiCodes(readUtf8Tail(normalizedPath, 96 * 1024));
+    const lines = rawTail
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .filter((line) => !isWorkerBootstrapNoiseLine(line));
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      const line = lines[index]!;
+      if (!line.includes("?")) continue;
+      const compact = line.replace(/\s+/g, " ").trim();
+      if (compact.length < 8 || compact.length > 500) continue;
+      const lower = compact.toLowerCase();
+      if (
+        lower.startsWith("if ")
+        || lower.startsWith("- if ")
+        || lower.includes("ask_user")
+        || lower.includes("request_user_input")
+        || lower.includes("phase question policy")
+        || lower.includes("planning phase instructions")
+        || lower.includes("should ask one clarification")
+      ) {
+        continue;
+      }
+      return compact;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 function analyzeTranscriptFromPath(filePath: string | null | undefined): {
   summary: string | null;
   hasMaterialOutput: boolean;
   hasLifecycleActivity: boolean;
   isStructuredChat: boolean;
+  appearsInterruptedDuringCommand: boolean;
 } {
   const normalizedPath = typeof filePath === "string" ? filePath.trim() : "";
   if (!normalizedPath || !fs.existsSync(normalizedPath)) {
-    return { summary: null, hasMaterialOutput: false, hasLifecycleActivity: false, isStructuredChat: false };
+    return { summary: null, hasMaterialOutput: false, hasLifecycleActivity: false, isStructuredChat: false, appearsInterruptedDuringCommand: false };
   }
   try {
     const rawTail = readUtf8Tail(normalizedPath);
-    if (normalizedPath.endsWith(".chat.jsonl")) {
-      const events = parseAgentChatTranscript(rawTail);
+    const events = parseAgentChatTranscript(rawTail);
+    if (events.length > 0) {
       return {
         summary: deriveAgentChatTranscriptSummary(events),
         hasMaterialOutput: hasMaterialWorkerChatEvent(events),
         hasLifecycleActivity: hasWorkerChatLifecycleEvent(events),
         isStructuredChat: true,
+        appearsInterruptedDuringCommand: false,
       };
     }
+    const summary = deriveTranscriptSummaryFromPath(normalizedPath);
     return {
-      summary: deriveTranscriptSummaryFromPath(normalizedPath),
-      hasMaterialOutput: deriveTranscriptSummaryFromPath(normalizedPath) != null,
-      hasLifecycleActivity: deriveTranscriptSummaryFromPath(normalizedPath) != null,
+      summary,
+      hasMaterialOutput: summary != null,
+      hasLifecycleActivity: summary != null,
       isStructuredChat: false,
+      appearsInterruptedDuringCommand: transcriptTailEndsWithOpenCommand(rawTail),
     };
   } catch {
     return {
@@ -626,8 +1554,20 @@ function analyzeTranscriptFromPath(filePath: string | null | undefined): {
       hasMaterialOutput: false,
       hasLifecycleActivity: false,
       isStructuredChat: normalizedPath.endsWith(".chat.jsonl"),
+      appearsInterruptedDuringCommand: false,
     };
   }
+}
+
+function transcriptTailEndsWithOpenCommand(rawText: string): boolean {
+  const lines = stripAnsiCodes(rawText)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !isWorkerBootstrapNoiseLine(line));
+  const lastLine = lines.at(-1) ?? "";
+  if (!lastLine.length) return false;
+  return /(?:^|\s)(?:\/bin\/(?:zsh|bash|sh)|(?:zsh|bash|sh))\s+-lc\s+['"]/.test(lastLine)
+    && /\s+in\s+\//.test(lastLine);
 }
 
 function classifySilentWorkerExit(args: {
@@ -635,7 +1575,16 @@ function classifySilentWorkerExit(args: {
   transcriptSummary: string | null;
   hasMaterialOutput: boolean;
   hasLifecycleActivity: boolean;
+  appearsInterruptedDuringCommand: boolean;
 }): { errorClass: OrchestratorErrorClass; errorMessage: string } | null {
+  if (args.appearsInterruptedDuringCommand) {
+    return {
+      errorClass: "interrupted",
+      errorMessage: isPlanningLikeStepMetadata(args.stepMetadata)
+        ? "Planning worker session was interrupted while a shell command was still running before report_result.plan.markdown."
+        : "Worker session was interrupted while a shell command was still running before report_result.",
+    };
+  }
   if (args.transcriptSummary) return null;
   if (isPlanningLikeStepMetadata(args.stepMetadata)) {
     if (args.hasLifecycleActivity && !args.hasMaterialOutput) {
@@ -750,6 +1699,21 @@ function isPlanningLikeStepMetadata(stepMetadata: Record<string, unknown> | null
   return stepMetadata.readOnlyExecution === true || stepType === "planning" || phaseKey === "planning";
 }
 
+function isValidationLikeStepMetadata(stepMetadata: Record<string, unknown> | null | undefined): boolean {
+  if (!stepMetadata) return false;
+  const stepType = typeof stepMetadata.stepType === "string" ? stepMetadata.stepType.trim().toLowerCase() : "";
+  const taskType = typeof stepMetadata.taskType === "string" ? stepMetadata.taskType.trim().toLowerCase() : "";
+  const phaseKey = typeof stepMetadata.phaseKey === "string" ? stepMetadata.phaseKey.trim().toLowerCase() : "";
+  const phaseName = typeof stepMetadata.phaseName === "string" ? stepMetadata.phaseName.trim().toLowerCase() : "";
+  return (
+    stepMetadata.autoSpawnedValidation === true
+    || stepType === "validation"
+    || taskType === "validation"
+    || phaseKey === "validation"
+    || phaseName === "validation"
+  );
+}
+
 function resolveCurrentRunPhaseCard(
   runMetadata: Record<string, unknown> | null | undefined,
   phaseCards: PhaseCard[] | null | undefined,
@@ -793,6 +1757,7 @@ function stepRequiresValidation(
   phaseCards: PhaseCard[] | null | undefined,
 ): boolean {
   const stepMetadata = asRecord(step.metadata);
+  if (isValidationLikeStepMetadata(stepMetadata)) return false;
   const validationContract = parseValidationContract(stepMetadata?.validationContract ?? null);
   if (validationContract?.required) return true;
   const phaseCard = resolvePhaseCardForStep(step, phaseCards);
@@ -807,8 +1772,22 @@ function stepMatchesPhase(step: OrchestratorStep, phase: PhaseCard): boolean {
   return stepPhaseKey === phase.phaseKey || stepPhaseName === phase.name;
 }
 
+function isValidationPhase(phase: PhaseCard): boolean {
+  return phase.phaseKey.trim().toLowerCase() === "validation" || phase.name.trim().toLowerCase() === "validation";
+}
+
 function getExecutionStepsForPhase(phase: PhaseCard, steps: OrchestratorStep[]): OrchestratorStep[] {
   return filterExecutionSteps(steps.filter((step) => stepMatchesPhase(step, phase)));
+}
+
+function phaseHasTerminalSuccessfulExecution(phase: PhaseCard, steps: OrchestratorStep[]): boolean {
+  const phaseSteps = getExecutionStepsForPhase(phase, steps);
+  if (phaseSteps.length === 0) return false;
+  const allTerminalWithoutFailure = phaseSteps.every(
+    (step) => step.status === "succeeded" || step.status === "skipped" || step.status === "superseded",
+  );
+  const hasConcreteSuccess = phaseSteps.some((step) => step.status === "succeeded");
+  return allTerminalWithoutFailure && hasConcreteSuccess;
 }
 
 function phaseHasSuccessfulCompletionRuntime(phase: PhaseCard, steps: OrchestratorStep[]): boolean {
@@ -819,15 +1798,29 @@ function phaseHasSuccessfulCompletionRuntime(phase: PhaseCard, steps: Orchestrat
   if (phaseKey === "planning" || phaseName === "planning") {
     return phaseSteps.some((step) => isPlanningLikeStepMetadata(asRecord(step.metadata)) && step.status === "succeeded");
   }
-  const allTerminalWithoutFailure = phaseSteps.every(
-    (step) => step.status === "succeeded" || step.status === "skipped" || step.status === "superseded",
-  );
-  const hasConcreteSuccess = phaseSteps.some((step) => step.status === "succeeded");
-  return allTerminalWithoutFailure && hasConcreteSuccess;
+  const allTerminalWithoutFailure = phaseHasTerminalSuccessfulExecution(phase, steps);
+  const allRequiredValidationPassed = phaseSteps.every((step) => {
+    if (step.status !== "succeeded") return true;
+    if (!stepRequiresValidation(step, [phase])) return true;
+    return hasPassingValidation(asRecord(step.metadata));
+  });
+  return allTerminalWithoutFailure && allRequiredValidationPassed;
 }
 
 function phaseHasNonTerminalExecutionWork(phase: PhaseCard, steps: OrchestratorStep[]): boolean {
   return getExecutionStepsForPhase(phase, steps).some((step) => !TERMINAL_STEP_STATUSES.has(step.status));
+}
+
+function phaseHasPendingRequiredValidation(
+  phase: PhaseCard,
+  steps: OrchestratorStep[],
+  phaseCards: PhaseCard[] | null | undefined,
+): boolean {
+  return getExecutionStepsForPhase(phase, steps).some((step) => {
+    if (step.status !== "succeeded") return false;
+    if (!stepRequiresValidation(step, phaseCards)) return false;
+    return !hasPassingValidation(asRecord(step.metadata));
+  });
 }
 
 function phaseHasAssignedExecutionWork(phase: PhaseCard, steps: OrchestratorStep[]): boolean {
@@ -841,19 +1834,27 @@ function canEnterConfiguredPhase(
 ): boolean {
   const targetIndex = phases.findIndex((phase) => phase.phaseKey === targetPhase.phaseKey);
   if (targetIndex < 0) return false;
+  const targetIsValidationPhase = isValidationPhase(targetPhase);
+  const canValidateEarlierDedicatedPhase = (phase: PhaseCard): boolean =>
+    targetIsValidationPhase
+    && normalizeValidationTier(phase.validationGate.tier) === "dedicated"
+    && phaseHasTerminalSuccessfulExecution(phase, steps);
+  const explicitMustFollow = (targetPhase.orderingConstraints.mustFollow ?? [])
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
   for (let index = 0; index < targetIndex; index += 1) {
     const earlier = phases[index]!;
-    const mustComplete = earlier.validationGate.required || earlier.orderingConstraints.mustBeFirst;
+    const mustComplete = earlier.orderingConstraints.mustBeFirst || (explicitMustFollow.length === 0 && earlier.validationGate.required);
     if (mustComplete && !phaseHasSuccessfulCompletionRuntime(earlier, steps)) {
+      if (canValidateEarlierDedicatedPhase(earlier)) continue;
       return false;
     }
   }
-  const mustFollow = targetPhase.orderingConstraints.mustFollow ?? [];
-  for (const rawPredecessor of mustFollow) {
-    const predecessorKey = rawPredecessor.trim();
+  for (const predecessorKey of explicitMustFollow) {
     if (!predecessorKey.length) continue;
     const predecessor = phases.find((phase) => phase.phaseKey === predecessorKey || phase.name === predecessorKey);
     if (predecessor && !phaseHasSuccessfulCompletionRuntime(predecessor, steps)) {
+      if (canValidateEarlierDedicatedPhase(predecessor)) continue;
       return false;
     }
   }
@@ -905,6 +1906,7 @@ export function createOrchestratorService({
     adapters.set(kind, sharedAdapter);
   }
   const autopilotRunLocks = new Set<string>();
+  const autopilotCapSignatures = new Map<string, string>();
   const recoveryLoopStates = new Map<string, RecoveryLoopState>();
   const toOptionalNonEmptyString = (value: unknown): string | null => {
     if (typeof value !== "string") return null;
@@ -1524,6 +2526,7 @@ export function createOrchestratorService({
     const updatedAt = nowIso();
     const startedAt = (status === "active" || status === "bootstrapping") && !existing.started_at ? updatedAt : existing.started_at;
     const completedAt = TERMINAL_RUN_STATUSES.has(status) ? updatedAt : null;
+    const hasPatchField = (field: string) => Object.prototype.hasOwnProperty.call(patch, field);
     db.run(
       `
         update orchestrator_runs
@@ -1540,10 +2543,10 @@ export function createOrchestratorService({
       `,
       [
         status,
-        patch.scheduler_state ?? existing.scheduler_state,
-        patch.runtime_cursor_json ?? existing.runtime_cursor_json,
-        patch.last_error ?? existing.last_error,
-        patch.metadata_json ?? existing.metadata_json,
+        hasPatchField("scheduler_state") ? patch.scheduler_state : existing.scheduler_state,
+        hasPatchField("runtime_cursor_json") ? patch.runtime_cursor_json : existing.runtime_cursor_json,
+        hasPatchField("last_error") ? patch.last_error : existing.last_error,
+        hasPatchField("metadata_json") ? patch.metadata_json : existing.metadata_json,
         startedAt,
         completedAt,
         updatedAt,
@@ -1567,7 +2570,31 @@ export function createOrchestratorService({
   const runCanStartAttempts = (status: OrchestratorRunStatus): boolean =>
     status === "queued" || status === "bootstrapping" || status === "active";
 
-  const hasOpenBlockingInterventionForRun = (run: OrchestratorRun): boolean => {
+  const hasNonTerminalExecutionWork = (steps: OrchestratorStep[]): boolean =>
+    filterExecutionSteps(steps).some((step) => !TERMINAL_STEP_STATUSES.has(step.status));
+
+  const isPlannerPlanMissingIntervention = (metadata: Record<string, unknown> | null): boolean => {
+    const reasonCode = typeof metadata?.reasonCode === "string" ? metadata.reasonCode.trim() : "";
+    return reasonCode === "planner_plan_missing";
+  };
+
+  const isPlanningRecoveryStep = (step: OrchestratorStep): boolean => {
+    const metadata = asRecord(step.metadata);
+    const stepType = typeof metadata?.stepType === "string" ? metadata.stepType.trim().toLowerCase() : "";
+    const taskType = typeof metadata?.taskType === "string" ? metadata.taskType.trim().toLowerCase() : "";
+    const phaseKey = typeof metadata?.phaseKey === "string" ? metadata.phaseKey.trim().toLowerCase() : "";
+    return stepType === "planning" || stepType === "analysis" || taskType === "planning" || phaseKey === "planning";
+  };
+
+  const hasReadyPlannerPlanRecoveryStep = (runId: string): boolean =>
+    filterExecutionSteps(listStepRows(runId).map(toStep)).some(
+      (step) => step.status === "ready" && isPlanningRecoveryStep(step),
+    );
+
+  const getRunInterventionGateState = (run: OrchestratorRun): {
+    blocked: boolean;
+    recoveryMode: "planner_plan_missing" | null;
+  } => {
     const missionRow = db.get<{ status: string | null }>(
       "select status from missions where id = ? and project_id = ? limit 1",
       [run.missionId, projectId],
@@ -1588,7 +2615,155 @@ export function createOrchestratorService({
       const interventionRunId = typeof metadata?.runId === "string" ? metadata.runId.trim() : "";
       return interventionRunId.length === 0 || interventionRunId === run.id;
     });
-    return missionStatus === "intervention_required" || hasRelevantOpenIntervention;
+    const relevantOpenInterventions = openInterventions.filter((row) => {
+      const metadata = parseJsonRecord(row.metadata_json);
+      const interventionRunId = typeof metadata?.runId === "string" ? metadata.runId.trim() : "";
+      return interventionRunId.length === 0 || interventionRunId === run.id;
+    });
+
+    if (missionStatus !== "intervention_required" && !hasRelevantOpenIntervention) {
+      return { blocked: false, recoveryMode: null };
+    }
+
+    const onlyPlannerPlanMissing =
+      relevantOpenInterventions.length > 0
+      && relevantOpenInterventions.every((row) => isPlannerPlanMissingIntervention(parseJsonRecord(row.metadata_json)));
+    if (onlyPlannerPlanMissing && hasReadyPlannerPlanRecoveryStep(run.id)) {
+      return { blocked: false, recoveryMode: "planner_plan_missing" };
+    }
+
+    return { blocked: true, recoveryMode: null };
+  };
+
+  const hasOpenBlockingInterventionForRun = (run: OrchestratorRun): boolean => {
+    return getRunInterventionGateState(run).blocked;
+  };
+
+  const ensurePlannerNaturalQuestionIntervention = (args: {
+    missionId: string;
+    runId: string;
+    step: OrchestratorStep;
+    attempt: OrchestratorAttempt;
+    question: string;
+    questionLink: ReturnType<typeof buildQuestionThreadLink>;
+    detectedAt: string;
+    sessionId: string | null;
+    phaseKey: string;
+    stepType: string;
+  }): string | null => {
+    const missionId = args.missionId.trim();
+    const question = args.question.trim();
+    if (!missionId || !question) return null;
+    const existingRows = db.all<{ id: string; metadata_json: string | null }>(
+      `
+        select id, metadata_json
+        from mission_interventions
+        where project_id = ?
+          and mission_id = ?
+          and status = 'open'
+          and intervention_type = 'manual_input'
+      `,
+      [projectId, missionId],
+    );
+    for (const row of existingRows) {
+      const metadata = parseJsonRecord(row.metadata_json);
+      if (metadata?.reasonCode === "planner_natural_question" && metadata?.attemptId === args.attempt.id) {
+        return row.id;
+      }
+    }
+
+    const id = randomUUID();
+    const title = question.length > 96 ? "Planner question ready" : `Question: ${question}`;
+    const metadata = {
+      source: "planner_natural_question",
+      reasonCode: "planner_natural_question",
+      question,
+      runId: args.runId,
+      stepId: args.step.id,
+      stepKey: args.step.stepKey,
+      attemptId: args.attempt.id,
+      sessionId: args.sessionId,
+      phaseKey: args.phaseKey || null,
+      stepType: args.stepType || null,
+      threadId: args.questionLink.threadId,
+      messageId: args.questionLink.messageId,
+      replyTo: args.questionLink.replyTo,
+    };
+    db.run(
+      `
+        insert into mission_interventions(
+          id,
+          mission_id,
+          project_id,
+          intervention_type,
+          status,
+          resolution_kind,
+          title,
+          body,
+          requested_action,
+          resolution_note,
+          lane_id,
+          metadata_json,
+          created_at,
+          updated_at,
+          resolved_at
+        ) values (?, ?, ?, 'manual_input', 'open', null, ?, ?, ?, null, ?, ?, ?, ?, null)
+      `,
+      [
+        id,
+        missionId,
+        projectId,
+        title,
+        question,
+        "Answer the planning question to retry the planner with your guidance.",
+        args.step.laneId ?? null,
+        JSON.stringify(metadata),
+        args.detectedAt,
+        args.detectedAt,
+      ],
+    );
+    db.run(
+      `
+        update missions
+        set status = 'intervention_required',
+            updated_at = ?
+        where id = ?
+          and project_id = ?
+          and status in ('queued', 'planning', 'in_progress')
+      `,
+      [args.detectedAt, missionId, projectId],
+    );
+
+    const runRow = getRunRow(args.runId);
+    if (runRow) {
+      const run = toRun(runRow);
+      if (!TERMINAL_RUN_STATUSES.has(run.status) && run.status !== "paused") {
+        updateRunStatus(args.runId, "paused", {
+          last_error: `Planning question needs an answer: ${question.slice(0, 140)}`,
+          metadata_json: JSON.stringify({
+            ...(parseJsonRecord(runRow.metadata_json) ?? {}),
+            pendingPlannerQuestion: {
+              interventionId: id,
+              stepId: args.step.id,
+              stepKey: args.step.stepKey,
+              attemptId: args.attempt.id,
+              question,
+            },
+          }),
+        });
+        appendTimelineEvent({
+          runId: args.runId,
+          eventType: "run_paused",
+          reason: "planner_natural_question",
+          detail: {
+            interventionId: id,
+            question,
+          },
+        });
+      }
+    }
+
+    return id;
   };
 
   const expireClaims = () => {
@@ -2115,6 +3290,149 @@ export function createOrchestratorService({
     return isPermanentlyBlockedStep(step);
   };
 
+  const supersedeAutoSpawnedValidationStepIfTargetPassed = (args: {
+    runId: string;
+    step: OrchestratorStep;
+    reason: string;
+  }): boolean => {
+    const stepMetadata = asRecord(args.step.metadata);
+    const targetStepId = getAutoSpawnedValidationTargetStepId(stepMetadata);
+    if (!targetStepId) return false;
+    const targetRow = getStepRow(targetStepId);
+    if (!targetRow || targetRow.run_id !== args.runId) return false;
+    const targetStep = toStep(targetRow);
+    if (!hasPassingValidation(asRecord(targetStep.metadata))) return false;
+
+    const supersededAt = nowIso();
+    const openThreadRow = db.get<{ count: number }>(
+      `
+        select count(*) as count
+        from orchestrator_chat_threads
+        where run_id = ?
+          and step_id = ?
+          and status <> 'closed'
+      `,
+      [args.runId, args.step.id],
+    );
+    const openThreadCount = Number(openThreadRow?.count ?? 0);
+    db.run(
+      `
+        update orchestrator_chat_threads
+        set status = 'closed',
+            updated_at = ?
+        where run_id = ?
+          and step_id = ?
+          and status <> 'closed'
+      `,
+      [supersededAt, args.runId, args.step.id],
+    );
+    if (!["pending", "ready", "blocked", "failed"].includes(args.step.status)) {
+      if (openThreadCount > 0) {
+        emit({
+          type: "orchestrator-step-updated",
+          runId: args.runId,
+          stepId: args.step.id,
+          reason: "target_validation_thread_closed",
+        });
+      }
+      return openThreadCount > 0;
+    }
+
+    const nextMetadata = {
+      ...(stepMetadata ?? {}),
+      superseded: true,
+      supersededAt,
+      supersededReason: "target_validation_already_passed",
+      targetValidationAlreadyPassed: true,
+    };
+    db.run(
+      `
+        update orchestrator_steps
+        set status = 'superseded',
+            metadata_json = ?,
+            updated_at = ?,
+            completed_at = coalesce(completed_at, ?)
+        where id = ?
+          and run_id = ?
+          and project_id = ?
+          and status in ('pending', 'ready', 'blocked', 'failed')
+      `,
+      [JSON.stringify(nextMetadata), supersededAt, supersededAt, args.step.id, args.runId, projectId],
+    );
+    emit({
+      type: "orchestrator-step-updated",
+      runId: args.runId,
+      stepId: args.step.id,
+      reason: "target_validation_already_passed",
+    });
+    appendTimelineEvent({
+      runId: args.runId,
+      stepId: args.step.id,
+      eventType: "validation_auto_step_superseded",
+      reason: args.reason,
+      detail: {
+        stepKey: args.step.stepKey,
+        previousStatus: args.step.status,
+        targetStepId,
+        targetStepKey: targetStep.stepKey,
+      },
+    });
+    return true;
+  };
+
+  const settleStaleAutoSpawnedValidationSteps = (runId: string): void => {
+    for (const step of listStepRows(runId).map(toStep)) {
+      supersedeAutoSpawnedValidationStepIfTargetPassed({
+        runId,
+        step,
+        reason: "target_validation_already_passed",
+      });
+    }
+  };
+
+  const closeTerminalWorkerThreadsForRun = (runId: string): void => {
+    const closedAt = nowIso();
+    const openThreadRow = db.get<{ count: number }>(
+      `
+        select count(*) as count
+        from orchestrator_chat_threads
+        where run_id = ?
+          and thread_type = 'worker'
+          and status <> 'closed'
+          and step_id in (
+            select id
+            from orchestrator_steps
+            where run_id = ?
+              and project_id = ?
+              and status in ('succeeded', 'failed', 'blocked', 'canceled', 'skipped', 'superseded')
+          )
+      `,
+      [runId, runId, projectId],
+    );
+    const openThreadCount = Number(openThreadRow?.count ?? 0);
+    db.run(
+      `
+        update orchestrator_chat_threads
+        set status = 'closed',
+            updated_at = ?
+        where run_id = ?
+          and thread_type = 'worker'
+          and status <> 'closed'
+          and step_id in (
+            select id
+            from orchestrator_steps
+            where run_id = ?
+              and project_id = ?
+              and status in ('succeeded', 'failed', 'blocked', 'canceled', 'skipped', 'superseded')
+          )
+      `,
+      [closedAt, runId, runId, projectId],
+    );
+    if (openThreadCount > 0) {
+      emit({ type: "orchestrator-run-updated", runId, reason: "terminal_worker_threads_reconciled" });
+    }
+  };
+
   const evaluateDependencyGate = (step: OrchestratorStep, stepsById: Map<string, OrchestratorStep>) => {
     if (!step.dependencyStepIds.length) {
       return { satisfied: true, permanentlyBlocked: false };
@@ -2147,6 +3465,7 @@ export function createOrchestratorService({
     step: OrchestratorStep;
     phaseCards: PhaseCard[] | null;
     currentPhase: PhaseCard | null;
+    steps: OrchestratorStep[];
   }): {
     satisfied: boolean;
     reason: "no_configured_phases" | "step_unphased" | "phase_runtime_missing" | "inactive_phase" | null;
@@ -2162,8 +3481,14 @@ export function createOrchestratorService({
       return { satisfied: false, reason: "phase_runtime_missing" };
     }
     return {
-      satisfied: stepPhase.phaseKey === args.currentPhase.phaseKey,
-      reason: stepPhase.phaseKey === args.currentPhase.phaseKey ? null : "inactive_phase"
+      satisfied:
+        stepPhase.phaseKey === args.currentPhase.phaseKey
+        || canEnterConfiguredPhase(stepPhase, args.phaseCards, args.steps),
+      reason:
+        stepPhase.phaseKey === args.currentPhase.phaseKey
+        || canEnterConfiguredPhase(stepPhase, args.phaseCards, args.steps)
+          ? null
+          : "inactive_phase"
     };
   };
 
@@ -2176,6 +3501,10 @@ export function createOrchestratorService({
     blockingDependencyIds: string[];
   } => {
     if (!args.step.dependencyStepIds.length || args.step.joinPolicy === "advisory") {
+      return { satisfied: true, blockingDependencyIds: [] };
+    }
+    const stepMetadata = asRecord(args.step.metadata);
+    if (isValidationLikeStepMetadata(stepMetadata)) {
       return { satisfied: true, blockingDependencyIds: [] };
     }
     const depSteps = args.step.dependencyStepIds
@@ -2328,6 +3657,20 @@ export function createOrchestratorService({
       if (phaseHasNonTerminalExecutionWork(currentPhase, steps)) {
         return null;
       }
+      if (phaseHasPendingRequiredValidation(currentPhase, steps, sortedPhases)) {
+        if (normalizeValidationTier(currentPhase.validationGate.tier) === "dedicated") {
+          const currentIndex = sortedPhases.findIndex((phase) => phase.phaseKey === currentPhase.phaseKey);
+          for (let index = currentIndex + 1; index < sortedPhases.length; index += 1) {
+            const candidate = sortedPhases[index]!;
+            if (!isValidationPhase(candidate)) continue;
+            if (!phaseHasAssignedExecutionWork(candidate, steps)) continue;
+            if (canEnterConfiguredPhase(candidate, sortedPhases, steps)) {
+              return candidate;
+            }
+          }
+        }
+        return null;
+      }
       const currentIndex = sortedPhases.findIndex((phase) => phase.phaseKey === currentPhase.phaseKey);
       if (currentIndex < 0) return null;
       for (let index = currentIndex + 1; index < sortedPhases.length; index += 1) {
@@ -2375,13 +3718,14 @@ export function createOrchestratorService({
 
     for (const step of steps) {
       const stepMeta = asRecord(step.metadata);
-      const isDisplayOnlyStep = stepMeta?.displayOnlyTask === true || stepMeta?.plannerLaunchTracker === true;
+      const isDisplayOnlyStep = isDisplayOnlyTaskStep(step) || stepMeta?.plannerLaunchTracker === true;
       if (isDisplayOnlyStep) {
-        statusesById.set(step.id, "pending");
-        if (step.status !== "pending") {
+        const nextDisplayStatus = TERMINAL_STEP_STATUSES.has(step.status) ? step.status : "pending";
+        statusesById.set(step.id, nextDisplayStatus);
+        if (step.status !== nextDisplayStatus) {
           db.run(
             `update orchestrator_steps set status = ?, updated_at = ? where id = ? and run_id = ? and project_id = ?`,
-            ["pending", now, step.id, runId, projectId],
+            [nextDisplayStatus, now, step.id, runId, projectId],
           );
         }
         continue;
@@ -2391,7 +3735,8 @@ export function createOrchestratorService({
       const phaseGate = evaluateConfiguredPhaseGate({
         step,
         phaseCards,
-        currentPhase
+        currentPhase,
+        steps
       });
       const validationGate =
         gate.satisfied && phaseGate.satisfied
@@ -3128,11 +4473,12 @@ export function createOrchestratorService({
       }
     });
 
+    const fullRuntimeCursor: OrchestratorContextSnapshotCursor = {
+      ...cursor,
+      packDeltaSince: createdAt
+    };
     const runtimeCursorPayload = {
-      runtimeCursor: {
-        ...cursor,
-        packDeltaSince: createdAt
-      }
+      runtimeCursor: compactRuntimeCursorForRunMetadata(fullRuntimeCursor)
     };
     const currentMetadata = args.run.metadata ?? {};
     db.run(
@@ -3145,7 +4491,7 @@ export function createOrchestratorService({
           and project_id = ?
       `,
       [
-        JSON.stringify(runtimeCursorPayload.runtimeCursor),
+        JSON.stringify(fullRuntimeCursor),
         JSON.stringify({
           ...currentMetadata,
           ...runtimeCursorPayload
@@ -5292,7 +6638,8 @@ export function createOrchestratorService({
         return 0;
       }
       const preCheckRun = toRun(preCheckRow);
-      if (preCheckRun.status === "paused" || hasOpenBlockingInterventionForRun(preCheckRun)) {
+      const preCheckGate = getRunInterventionGateState(preCheckRun);
+      if (preCheckRun.status === "paused" || preCheckGate.blocked) {
         return 0;
       }
 
@@ -5314,7 +6661,8 @@ export function createOrchestratorService({
         const runRow = getRunRow(runId);
         if (!runRow) return 0;
         const run = toRun(runRow);
-        if (!runCanStartAttempts(run.status) || hasOpenBlockingInterventionForRun(run)) return 0;
+        const runGate = getRunInterventionGateState(run);
+        if (!runCanStartAttempts(run.status) || runGate.blocked) return 0;
 
         const autopilot = parseAutopilotConfig(run.metadata, DEFAULT_ORCHESTRATOR_RUNTIME_CONFIG.maxParallelWorkers);
         if (!autopilot.enabled) return 0;
@@ -5333,8 +6681,6 @@ export function createOrchestratorService({
           if (aiParallelismCap != null) return { cap: aiParallelismCap, reasons: ["ai_decision_cap"] };
           return { cap: parallelismCap, reasons: ["configured_cap"] };
         };
-        let lastCapSignature = "";
-
         let startedAttempts = 0;
         const startedByExecutor: Record<string, number> = {};
         let loops = 0;
@@ -5343,13 +6689,14 @@ export function createOrchestratorService({
           const loopRunRow = getRunRow(runId);
           if (!loopRunRow) break;
           const loopRun = toRun(loopRunRow);
-          if (!runCanStartAttempts(loopRun.status) || hasOpenBlockingInterventionForRun(loopRun)) break;
+          const loopGate = getRunInterventionGateState(loopRun);
+          if (!runCanStartAttempts(loopRun.status) || loopGate.blocked) break;
           this.tick({ runId });
           const effectiveCapState = computeEffectiveParallelismCap();
           const effectiveCap = effectiveCapState.cap;
           const capSignature = `${effectiveCap}:${effectiveCapState.reasons.join(",")}`;
-          if (capSignature !== lastCapSignature) {
-            lastCapSignature = capSignature;
+          if (capSignature !== (autopilotCapSignatures.get(runId) ?? "")) {
+            autopilotCapSignatures.set(runId, capSignature);
             appendTimelineEvent({
               runId,
               eventType: "autopilot_parallelism_cap_adjusted",
@@ -5369,21 +6716,29 @@ export function createOrchestratorService({
           const readySteps = filterExecutionSteps(listStepRows(runId)
             .map(toStep))
             .filter((step) => step.status === "ready")
+            .filter((step) => loopGate.recoveryMode !== "planner_plan_missing" || isPlanningRecoveryStep(step))
             .sort(readyStepOrderComparator);
           if (!readySteps.length) break;
 
           // Phase 1 (sequential): pre-validate steps and collect spawn descriptors
           // up to the effective cap. This keeps freshness checks and manual-step
           // filtering sequential so we don't over-commit slots.
-          const spawnDescriptors: Array<{ step: typeof readySteps[number]; executor: OrchestratorExecutorKind }> = [];
-          for (const step of readySteps) {
-            if (runningAttemptCount + spawnDescriptors.length >= effectiveCap) break;
-            const fresh = getStepRow(step.id);
-            if (!fresh) continue;
-            if (toStep(fresh).status !== "ready") continue;
-            const stepMetadata = asRecord(step.metadata);
-            if (asBool(stepMetadata?.isMilestone, false)) {
-              const contract = asRecord(stepMetadata?.validationContract);
+	          const spawnDescriptors: Array<{ step: typeof readySteps[number]; executor: OrchestratorExecutorKind }> = [];
+	          for (const step of readySteps) {
+	            if (runningAttemptCount + spawnDescriptors.length >= effectiveCap) break;
+	            const fresh = getStepRow(step.id);
+	            if (!fresh) continue;
+	            if (toStep(fresh).status !== "ready") continue;
+	            const stepMetadata = asRecord(step.metadata);
+	            if (supersedeAutoSpawnedValidationStepIfTargetPassed({
+	              runId,
+	              step,
+	              reason: "autopilot_ready_validation_target_passed"
+	            })) {
+	              continue;
+	            }
+	            if (asBool(stepMetadata?.isMilestone, false)) {
+	              const contract = asRecord(stepMetadata?.validationContract);
               const validationCriteria =
                 typeof contract?.criteria === "string"
                   ? contract.criteria.trim()
@@ -5427,32 +6782,39 @@ export function createOrchestratorService({
           // serialize naturally. Context snapshots and PTY sessions are the
           // expensive async work that benefits from parallelism.
           // Promise.allSettled ensures one failure does not cancel others.
-          let startedInLoop = 0;
-          if (spawnDescriptors.length > 0) {
-            const results = await Promise.allSettled(
-              spawnDescriptors.map(({ step, executor }) =>
-                this.startAttempt({
-                  runId,
-                  stepId: step.id,
-                  ownerId: autopilot.ownerId,
-                  executorKind: executor
-                }).then(
-                  () => ({ ok: true as const, step, executor }),
-                  (error: unknown) => {
-                    appendTimelineEvent({
-                      runId,
-                      stepId: step.id,
-                      eventType: "autopilot_attempt_start_failed",
-                      reason: "autopilot_start_failed",
-                      detail: {
-                        message: error instanceof Error ? error.message : String(error)
-                      }
-                    });
-                    return { ok: false as const, step, executor };
-                  }
-                )
-              )
-            );
+	          let startedInLoop = 0;
+	          if (spawnDescriptors.length > 0) {
+	            const results = await Promise.allSettled(
+	              spawnDescriptors.map(({ step, executor }) => {
+	                if (supersedeAutoSpawnedValidationStepIfTargetPassed({
+	                  runId,
+	                  step,
+	                  reason: "autopilot_pre_start_validation_target_passed"
+	                })) {
+	                  return Promise.resolve({ ok: false as const, step, executor });
+	                }
+	                return this.startAttempt({
+	                  runId,
+	                  stepId: step.id,
+	                  ownerId: autopilot.ownerId,
+	                  executorKind: executor
+	                }).then(
+	                  () => ({ ok: true as const, step, executor }),
+	                  (error: unknown) => {
+	                    appendTimelineEvent({
+	                      runId,
+	                      stepId: step.id,
+	                      eventType: "autopilot_attempt_start_failed",
+	                      reason: "autopilot_start_failed",
+	                      detail: {
+	                        message: error instanceof Error ? error.message : String(error)
+	                      }
+	                    });
+	                    return { ok: false as const, step, executor };
+	                  }
+	                );
+	              })
+	            );
             for (const result of results) {
               // allSettled with the inner .then() catch means all results are
               // "fulfilled" — the inner catch converts rejections to { ok: false }.
@@ -5598,6 +6960,7 @@ export function createOrchestratorService({
           transcriptSummary,
           hasMaterialOutput: transcriptAnalysis.hasMaterialOutput,
           hasLifecycleActivity: transcriptAnalysis.hasLifecycleActivity,
+          appearsInterruptedDuringCommand: transcriptAnalysis.appearsInterruptedDuringCommand,
         });
         const completionForAttempt =
           completion.status === "succeeded" && silentFailure
@@ -5631,6 +6994,7 @@ export function createOrchestratorService({
           metadata: {
             reconciledFromTrackedSession: true,
             trackedSessionId: sessionId,
+            transcriptPath: transcriptPath || null,
             laneId: args.laneId ?? null,
             exitCode: resolvedExitCode,
             sessionStatus
@@ -6156,7 +7520,9 @@ export function createOrchestratorService({
 
       // ── Maintenance only: claim expiry + step readiness refresh ──
       expireClaims();
+      settleStaleAutoSpawnedValidationSteps(args.runId);
       refreshStepReadiness(args.runId);
+      closeTerminalWorkerThreadsForRun(args.runId);
 
       // Promote queued → bootstrapping (or active if no planning needed)
       const current = runStatus;
@@ -6275,12 +7641,21 @@ export function createOrchestratorService({
       if (!runCanStartAttempts(run.status)) {
         throw new Error(`Cannot start attempt for run in status '${run.status}'.`);
       }
-      if (step.status !== "ready") {
-        throw new Error(`Step is not ready: ${step.id} (${step.status})`);
-      }
+	      if (step.status !== "ready") {
+	        throw new Error(`Step is not ready: ${step.id} (${step.status})`);
+	      }
+	      if (supersedeAutoSpawnedValidationStepIfTargetPassed({
+	        runId: run.id,
+	        step,
+	        reason: "start_attempt_validation_target_passed"
+	      })) {
+	        throw new Error(
+	          `Validation step '${step.stepKey}' is no longer needed because the target step already has a passing validation report.`,
+	        );
+	      }
 
-      // ── Populate handoff summaries from predecessor worker digests ──
-      if (step.dependencyStepIds.length > 0) {
+	      // ── Populate handoff summaries from predecessor worker digests ──
+	      if (step.dependencyStepIds.length > 0) {
         const HANDOFF_SUMMARY_MAX_CHARS = 500;
         const depIds = step.dependencyStepIds;
         const placeholders = depIds.map(() => "?").join(", ");
@@ -7414,33 +8789,86 @@ export function createOrchestratorService({
           if (sessionId && managedLaunch && agentChatService) {
             void (async () => {
               try {
-                const rawTimeoutMs = step.metadata?.timeoutMs;
-                const parsedTimeoutMs = Number(rawTimeoutMs);
-                const managedTurnTimeoutMs =
-                  rawTimeoutMs === null || parsedTimeoutMs === 0
-                    ? null
-                    : Number.isFinite(parsedTimeoutMs) && parsedTimeoutMs > 0
-                      ? Math.max(1_000, Math.floor(parsedTimeoutMs))
-                      : runtimeConfig.stepTimeoutDefaultMs;
                 await agentChatService.runSessionTurn({
                   sessionId,
                   text: managedLaunch.prompt,
                   displayText: managedLaunch.displayText,
-                  timeoutMs: managedTurnTimeoutMs,
+                  // Mission worker timeouts are enforced by the orchestrator health
+                  // sweep, which accounts for session heartbeats and recent output.
+                  // The chat helper's wall-clock timeout cannot see active worker
+                  // tool/file activity and can interrupt healthy Codex workers.
+                  timeoutMs: null,
                   ...(managedLaunch.reasoningEffort ? { reasoningEffort: managedLaunch.reasoningEffort } : {}),
                   ...(managedLaunch.executionMode ? { executionMode: managedLaunch.executionMode } : {}),
                 });
                 const currentAttemptRow = getAttemptRow(attempt.id);
                 if (!currentAttemptRow || currentAttemptRow.status !== "running") return;
                 const currentStep = getStepRow(step.id);
-                const currentStepMetadata = asRecord(toStep(currentStep ?? stepRow).metadata) ?? {};
+                let currentStepMetadata = asRecord(toStep(currentStep ?? stepRow).metadata) ?? {};
                 const attemptMetadata = parseJsonRecord(currentAttemptRow.metadata_json);
                 const transcriptPath =
                   typeof attemptMetadata?.transcriptPath === "string"
                     ? attemptMetadata.transcriptPath.trim()
                     : "";
                 const transcriptAnalysis = analyzeTranscriptFromPath(transcriptPath);
-                const hasStructuredResult = asRecord(currentStepMetadata.lastResultReport) != null;
+                let hasStructuredResult = asRecord(currentStepMetadata.lastResultReport) != null;
+                if (!hasStructuredResult) {
+                  const recoveredPayload = extractReportResultPayloadFromTranscript(transcriptPath);
+                  const recoveredReport = recoveredPayload
+                    ? normalizeRecoveredWorkerResultReport({
+                        payload: recoveredPayload,
+                        step: toStep(currentStep ?? stepRow),
+                        attempt: toAttempt(currentAttemptRow),
+                        missionId: run.missionId,
+                        runId: run.id,
+                      })
+                    : null;
+                  if (recoveredReport) {
+                    currentStepMetadata = {
+                      ...currentStepMetadata,
+                      lastResultReport: recoveredReport,
+                      recoveredResultReportFromTranscript: true,
+                    };
+                    this.updateStepMetadata({
+                      runId: run.id,
+                      stepId: step.id,
+                      metadata: currentStepMetadata,
+                      allowTerminal: true,
+                    });
+                    this.appendRuntimeEvent({
+                      runId: run.id,
+                      stepId: step.id,
+                      attemptId: attempt.id,
+                      sessionId,
+                      eventType: "worker_result_report",
+                      payload: {
+                        ...recoveredReport,
+                        recoveredFromTranscript: true,
+                      } as unknown as Record<string, unknown>,
+                    });
+                    this.appendTimelineEvent({
+                      runId: run.id,
+                      stepId: step.id,
+                      attemptId: attempt.id,
+                      eventType: "worker_result_reported",
+                      reason: "transcript_report_result",
+                      detail: {
+                        ...recoveredReport,
+                        recoveredFromTranscript: true,
+                      } as unknown as Record<string, unknown>,
+                    });
+                    this.createHandoff({
+                      missionId: run.missionId,
+                      runId: run.id,
+                      stepId: step.id,
+                      attemptId: attempt.id,
+                      handoffType: "worker_result_report",
+                      producer: step.stepKey,
+                      payload: recoveredReport as unknown as Record<string, unknown>,
+                    });
+                    hasStructuredResult = true;
+                  }
+                }
                 const silentFailure = hasStructuredResult
                   ? null
                   : classifySilentWorkerExit({
@@ -7448,6 +8876,7 @@ export function createOrchestratorService({
                       transcriptSummary: transcriptAnalysis.summary,
                       hasMaterialOutput: transcriptAnalysis.hasMaterialOutput,
                       hasLifecycleActivity: transcriptAnalysis.hasLifecycleActivity,
+                      appearsInterruptedDuringCommand: transcriptAnalysis.appearsInterruptedDuringCommand,
                     });
                 if (silentFailure) {
                   await this.completeAttempt({
@@ -7479,6 +8908,7 @@ export function createOrchestratorService({
                   transcriptSummary: transcriptAnalysis.summary,
                   hasMaterialOutput: transcriptAnalysis.hasMaterialOutput,
                   hasLifecycleActivity: transcriptAnalysis.hasLifecycleActivity,
+                  appearsInterruptedDuringCommand: transcriptAnalysis.appearsInterruptedDuringCommand,
                 });
                 await this.completeAttempt({
                   attemptId: attempt.id,
@@ -7556,7 +8986,7 @@ export function createOrchestratorService({
                       executorKind,
                       sessionId: acceptedSessionId,
                       sessionStatus,
-                      elapsedMs: 15_000,
+                      elapsedMs: STARTUP_VERIFICATION_GRACE_MS,
                       workerState: "stalled"
                     }
                   });
@@ -7571,7 +9001,7 @@ export function createOrchestratorService({
               } catch {
                 // Ignore verification errors — health sweep will catch persistent issues
               }
-            }, 15_000);
+            }, STARTUP_VERIFICATION_GRACE_MS);
           }
 
           return toAttempt(getAttemptRow(attempt.id) ?? attemptRow);
@@ -7648,14 +9078,80 @@ export function createOrchestratorService({
 	      if (reservationBlocks) {
 	        status = "blocked";
 	      }
-	      const stepMetadata = asRecord(step.metadata) ?? {};
+	      let stepMetadata = asRecord(step.metadata) ?? {};
 	      const phaseKey = typeof stepMetadata.phaseKey === "string" ? stepMetadata.phaseKey.trim().toLowerCase() : "";
 	      const stepType = typeof stepMetadata.stepType === "string" ? stepMetadata.stepType.trim().toLowerCase() : "";
 	      const planningStep =
-	        stepMetadata.readOnlyExecution === true ||
 	        phaseKey === "planning" ||
 	        stepType === "planning";
-	      const lastResultReport = asRecord(stepMetadata.lastResultReport);
+	      const effectiveAttemptMetadata = {
+	        ...(asRecord(attempt.metadata) ?? {}),
+	        ...(args.metadata ?? {}),
+	      };
+	      const transcriptPath =
+	        typeof effectiveAttemptMetadata.transcriptPath === "string" ? effectiveAttemptMetadata.transcriptPath.trim() : "";
+	      const sessionId =
+	        typeof effectiveAttemptMetadata.trackedSessionId === "string" && effectiveAttemptMetadata.trackedSessionId.trim().length > 0
+	          ? effectiveAttemptMetadata.trackedSessionId.trim()
+	          : null;
+	      let lastResultReport = asRecord(stepMetadata.lastResultReport);
+	      if (!lastResultReport && status === "succeeded") {
+	        const recoveredPayload = extractReportResultPayloadFromTranscript(transcriptPath);
+	        const recoveredReport = recoveredPayload
+	          ? normalizeRecoveredWorkerResultReport({
+	              payload: recoveredPayload,
+	              step,
+	              attempt,
+	              missionId: run.missionId,
+	              runId: run.id,
+	            })
+	          : null;
+	        if (recoveredReport) {
+	          stepMetadata = {
+	            ...stepMetadata,
+	            lastResultReport: recoveredReport,
+	            recoveredResultReportFromTranscript: true,
+	          };
+	          this.updateStepMetadata({
+	            runId: run.id,
+	            stepId: step.id,
+	            metadata: stepMetadata,
+	            allowTerminal: true,
+	          });
+	          this.appendRuntimeEvent({
+	            runId: run.id,
+	            stepId: step.id,
+	            attemptId: attempt.id,
+	            sessionId,
+	            eventType: "worker_result_report",
+	            payload: {
+	              ...recoveredReport,
+	              recoveredFromTranscript: true,
+	            } as unknown as Record<string, unknown>,
+	          });
+	          this.appendTimelineEvent({
+	            runId: run.id,
+	            stepId: step.id,
+	            attemptId: attempt.id,
+	            eventType: "worker_result_reported",
+	            reason: "transcript_report_result",
+	            detail: {
+	              ...recoveredReport,
+	              recoveredFromTranscript: true,
+	            } as unknown as Record<string, unknown>,
+	          });
+	          this.createHandoff({
+	            missionId: run.missionId,
+	            runId: run.id,
+	            stepId: step.id,
+	            attemptId: attempt.id,
+	            handoffType: "worker_result_report",
+	            producer: step.stepKey,
+	            payload: recoveredReport as unknown as Record<string, unknown>,
+	          });
+	          lastResultReport = asRecord(stepMetadata.lastResultReport);
+	        }
+	      }
 	      const reportedPlan = asRecord(lastResultReport?.plan);
 	      const reportedPlanMarkdown =
 	        typeof reportedPlan?.markdown === "string" ? reportedPlan.markdown.trim() : "";
@@ -7663,14 +9159,87 @@ export function createOrchestratorService({
 	        typeof reportedPlan?.artifactPath === "string" && reportedPlan.artifactPath.trim().length > 0
 	          ? reportedPlan.artifactPath.trim()
 	          : ".ade/plans/mission-plan.md";
+	      const phaseCardsForQuestionRecovery = resolveRunPhaseCardsFromMetadata(asRecord(run.metadata)) ?? [];
+	      const phaseForQuestionRecovery =
+	        phaseCardsForQuestionRecovery.find((phase) => phase.phaseKey.trim().toLowerCase() === phaseKey)
+	        ?? phaseCardsForQuestionRecovery.find((phase) => phase.name.trim().toLowerCase() === String(stepMetadata.phaseName ?? "").trim().toLowerCase())
+	        ?? null;
+	      const phaseAllowsQuestions = phaseForQuestionRecovery?.askQuestions?.enabled === true;
+	      const naturalPlannerQuestion =
+	        status === "succeeded" && planningStep && reportedPlanMarkdown.length === 0 && phaseAllowsQuestions
+	          ? extractNaturalQuestionFromTranscriptPath(transcriptPath)
+	          : null;
+		      if (naturalPlannerQuestion) {
+		        const questionLink = buildQuestionThreadLink({
+		          attemptId: attempt.id,
+		          preview: naturalPlannerQuestion,
+		          occurredAt: completedAt,
+		        });
+		        const interventionId = ensurePlannerNaturalQuestionIntervention({
+		          missionId: run.missionId,
+		          runId: run.id,
+		          step,
+		          attempt,
+		          question: naturalPlannerQuestion,
+		          questionLink,
+		          detectedAt: completedAt,
+		          sessionId,
+		          phaseKey,
+		          stepType,
+		        });
+		        status = "blocked";
+		        stepMetadata = {
+		          ...stepMetadata,
+		          awaitingUserInput: {
+		            source: "planner_natural_question",
+		            question: naturalPlannerQuestion,
+		            interventionId,
+		            questionLink,
+		            detectedAt: completedAt,
+		          },
+		        };
+	        this.updateStepMetadata({
+	          runId: run.id,
+	          stepId: step.id,
+	          metadata: stepMetadata,
+	          allowTerminal: true,
+	        });
+	        this.appendRuntimeEvent({
+	          runId: run.id,
+	          stepId: step.id,
+	          attemptId: attempt.id,
+	          sessionId,
+	          eventType: "question",
+	          eventKey: questionLink.messageId,
+		          payload: {
+		            interventionId,
+		            preview: naturalPlannerQuestion,
+		            runtimeState: "waiting-input",
+		            source: "planner_natural_question",
+	            threadId: questionLink.threadId,
+	            messageId: questionLink.messageId,
+	            replyTo: questionLink.replyTo,
+	          },
+	        });
+	        this.appendTimelineEvent({
+	          runId: run.id,
+	          stepId: step.id,
+	          attemptId: attempt.id,
+	          eventType: "intervention_opened",
+		          reason: "planner_natural_question",
+		          detail: {
+		            interventionId,
+		            question: naturalPlannerQuestion,
+		            source: "transcript_question_recovery",
+		          },
+	        });
+	      }
 	      const plannerContractViolation =
 	        status === "succeeded" &&
 	        planningStep &&
 	        reportedPlanMarkdown.length === 0;
 	      const reportedSummary =
 	        typeof lastResultReport?.summary === "string" ? lastResultReport.summary.trim() : "";
-	      const transcriptPath =
-	        typeof attempt.metadata?.transcriptPath === "string" ? attempt.metadata.transcriptPath.trim() : "";
 	      const transcriptSummary =
 	        !args.result && status === "succeeded"
 	          ? deriveTranscriptSummaryFromPath(transcriptPath)
@@ -7701,6 +9270,8 @@ export function createOrchestratorService({
 	      }
 	      const effectiveErrorMessage = plannerContractViolation
 	        ? "PLANNER CONTRACT VIOLATION: Planning worker completed without returning report_result.plan.markdown."
+	        : naturalPlannerQuestion
+	          ? `Planning worker is waiting for input: ${naturalPlannerQuestion}`
 	        : softFailureOverride
 	          ? softFailureOverride.detail
 	          : reservationBlocks
@@ -7709,6 +9280,8 @@ export function createOrchestratorService({
 	      const errorClass =
 	        plannerContractViolation
 	          ? "planner_contract_violation" as OrchestratorErrorClass
+	          : naturalPlannerQuestion
+	            ? "deterministic" as OrchestratorErrorClass
 	          : softFailureOverride
 	          ? "soft_success_blocking_failure" as OrchestratorErrorClass
 	          : status === "failed"
@@ -7746,9 +9319,13 @@ export function createOrchestratorService({
 	          }
 	        });
 	      }
+	      const restartInterruptedFailure =
+	        status === "failed" &&
+	        isRestartInterruptedAttemptFailure({ errorClass, errorMessage: effectiveErrorMessage });
 	      const retryable = status === "failed" ? RETRYABLE_ERROR_CLASSES.has(errorClass) : false;
 	      const retryRemaining = status === "failed" ? step.retryCount < step.retryLimit : false;
-	      const shouldRetry = status === "failed" ? retryable && retryRemaining : false;
+	      const shouldRetry = status === "failed" ? restartInterruptedFailure || (retryable && retryRemaining) : false;
+	      const retryConsumesBudget = shouldRetry && !restartInterruptedFailure;
 	      const aiRetryBackoffRaw = Number(
 	        step.metadata?.aiRetryBackoffMs ?? step.metadata?.ai_retry_backoff_ms ?? Number.NaN
 	      );
@@ -7767,7 +9344,9 @@ export function createOrchestratorService({
 	          ? Math.min(RETRY_MAX_MS, Math.floor(callerBackoffRaw))
 	          : null;
 	      const computedBackoff = shouldRetry
-	        ? (callerBackoffMs ?? aiRetryBackoffMs ?? exponentialBackoffMs)
+	        ? restartInterruptedFailure
+	          ? 0
+	          : (callerBackoffMs ?? aiRetryBackoffMs ?? exponentialBackoffMs)
 	        : 0;
 	      const reportedFilesChanged = Array.isArray(lastResultReport?.filesChanged)
 	        ? lastResultReport.filesChanged
@@ -7839,14 +9418,16 @@ export function createOrchestratorService({
       let validationContractUnfulfilledSignal = false;
       let validationSelfCheckReminder = false;
 
-      if (status === "failed") {
+      if (status === "failed" && !restartInterruptedFailure) {
         const gotchaLines = [
-          `Step "${step.stepKey}" failed.`,
-          `Summary: ${String(envelope.summary ?? effectiveErrorMessage ?? defaultSummary).trim() || "Unknown failure."}`,
-          `Error class: ${errorClass}`,
-          shouldRetry
-            ? `Retry scheduled (${step.retryCount + 1}/${step.retryLimit}).`
-            : "No retries remain for this failure.",
+	          `Step "${step.stepKey}" failed.`,
+	          `Summary: ${String(envelope.summary ?? effectiveErrorMessage ?? defaultSummary).trim() || "Unknown failure."}`,
+	          `Error class: ${errorClass}`,
+	          restartInterruptedFailure
+	            ? "Infrastructure retry scheduled after app restart/shutdown; step retry budget was preserved."
+	            : shouldRetry
+	              ? `Retry scheduled (${step.retryCount + 1}/${step.retryLimit}).`
+	              : "No retries remain for this failure.",
         ];
         missionMemoryLifecycleService?.recordFailureGotcha({
           projectId,
@@ -8041,8 +9622,10 @@ export function createOrchestratorService({
               ? latestStepMeta.validationState.trim().toLowerCase()
               : "";
             const nextValidationState =
-              validationStateRaw === "pass" || validationStateRaw === "fail"
-                ? validationStateRaw
+              validationStateRaw === "pass" || validationStateRaw === "passed" || validationStateRaw === "success" || validationStateRaw === "succeeded"
+                ? "pass"
+                : validationStateRaw === "fail" || validationStateRaw === "failed" || validationStateRaw === "failure"
+                  ? "fail"
                 : "pending";
             const nextStepMetadata = {
               ...latestStepMeta,
@@ -8321,12 +9904,12 @@ export function createOrchestratorService({
         );
       } else if (status === "blocked") {
         const blockedMetadata = {
-          ...(step.metadata ?? {}),
+          ...stepMetadata,
           blockedAt: completedAt,
 	          blockedByAttemptId: args.attemptId,
 	          blockedErrorClass: errorClass,
 	          blockedErrorMessage: effectiveErrorMessage ?? defaultSummary,
-	          blockedSticky: errorClass === "policy"
+	          blockedSticky: errorClass === "policy" || naturalPlannerQuestion != null
 	        };
         db.run(
           `
@@ -8342,28 +9925,40 @@ export function createOrchestratorService({
         [JSON.stringify(blockedMetadata), completedAt, args.attemptId, step.id, run.id, projectId]
       );
       } else {
-        if (shouldRetry) {
-          const nextRetryAt = new Date(Date.now() + computedBackoff).toISOString();
-          db.run(
-            `
-              update orchestrator_steps
-              set status = 'pending',
-                  retry_count = retry_count + 1,
-                  metadata_json = ?,
-                  updated_at = ?,
-                  last_attempt_id = ?
+	        if (shouldRetry) {
+	          const nextRetryAt = new Date(Date.now() + computedBackoff).toISOString();
+	          const nextRetryCount = retryConsumesBudget ? step.retryCount + 1 : step.retryCount;
+	          const restartInterruptedCountRaw = Number(stepMetadata.restartInterruptedRetryCount ?? 0);
+	          const restartInterruptedRetryCount =
+	            Number.isFinite(restartInterruptedCountRaw) ? Math.max(0, Math.floor(restartInterruptedCountRaw)) : 0;
+	          db.run(
+	            `
+	              update orchestrator_steps
+	              set status = 'pending',
+	                  retry_count = ?,
+	                  metadata_json = ?,
+	                  updated_at = ?,
+	                  last_attempt_id = ?
               where id = ?
                 and run_id = ?
                 and project_id = ?
-            `,
-            [
-              JSON.stringify({
-                ...(step.metadata ?? {}),
-                nextRetryAt,
-                lastRetryBackoffMs: computedBackoff
-              }),
-              completedAt,
-              args.attemptId,
+	            `,
+	            [
+	              nextRetryCount,
+	              JSON.stringify({
+	                ...(step.metadata ?? {}),
+	                nextRetryAt,
+	                lastRetryBackoffMs: computedBackoff,
+	                ...(restartInterruptedFailure
+	                  ? {
+	                      lastRestartInterruptedAttemptId: args.attemptId,
+	                      lastRestartInterruptedAt: completedAt,
+	                      restartInterruptedRetryCount: restartInterruptedRetryCount + 1
+	                    }
+	                  : {})
+	              }),
+	              completedAt,
+	              args.attemptId,
               step.id,
               run.id,
               projectId
@@ -8375,13 +9970,15 @@ export function createOrchestratorService({
 	        attemptId: args.attemptId,
             eventType: "attempt_retry_scheduled",
             reason: "retryable_failure",
-            detail: {
-              retryBackoffMs: computedBackoff,
-              nextRetryAt,
-              retryCount: step.retryCount + 1,
-              retryLimit: step.retryLimit
-            }
-          });
+	            detail: {
+	              retryBackoffMs: computedBackoff,
+	              nextRetryAt,
+	              retryCount: nextRetryCount,
+	              retryLimit: step.retryLimit,
+	              restartInterrupted: restartInterruptedFailure,
+	              retryBudgetPreserved: !retryConsumesBudget
+	            }
+	          });
           persistRuntimeEvent({
             runId: run.id,
             stepId: step.id,
@@ -8390,14 +9987,16 @@ export function createOrchestratorService({
             eventType: "retry_scheduled",
             eventKey: `retry_scheduled:${args.attemptId}:${step.retryCount + 1}:${nextRetryAt}`,
             occurredAt: completedAt,
-            payload: {
-              retryBackoffMs: computedBackoff,
-              nextRetryAt,
-              retryCount: step.retryCount + 1,
-              retryLimit: step.retryLimit,
-              errorClass
-            }
-          });
+	            payload: {
+	              retryBackoffMs: computedBackoff,
+	              nextRetryAt,
+	              retryCount: nextRetryCount,
+	              retryLimit: step.retryLimit,
+	              errorClass,
+	              restartInterrupted: restartInterruptedFailure,
+	              retryBudgetPreserved: !retryConsumesBudget
+	            }
+	          });
         } else {
           db.run(
             `
@@ -8635,7 +10234,7 @@ export function createOrchestratorService({
 
       // VAL-STATE-002: When a step completes, check if it is a fan-out child
       // and all siblings are terminal. If so, update the parent step status.
-      if (status === "succeeded" || status === "failed") {
+      if (status === "succeeded" || (status === "failed" && !shouldRetry)) {
         this.checkFanOutCompletion({ runId: run.id, completedStepKey: step.stepKey });
       }
 
@@ -8669,8 +10268,9 @@ export function createOrchestratorService({
           ]
         );
       }
-      // Store last error on the run when a failed attempt completes
-      if (status === "failed") {
+      // Store last error on the run when a real failed attempt completes.
+      // App restart/shutdown interruptions are audit events, not mission failures.
+      if (status === "failed" && !restartInterruptedFailure) {
         db.run(
           `
             update orchestrator_runs
@@ -8680,6 +10280,17 @@ export function createOrchestratorService({
               and project_id = ?
           `,
           [effectiveErrorMessage ?? defaultSummary, nowIso(), run.id, projectId]
+        );
+      } else if (restartInterruptedFailure) {
+        db.run(
+          `
+            update orchestrator_runs
+            set last_error = null,
+                updated_at = ?
+            where id = ?
+              and project_id = ?
+          `,
+          [nowIso(), run.id, projectId]
         );
       }
       const updatedAttemptRow = getAttemptRow(args.attemptId);
@@ -8691,7 +10302,53 @@ export function createOrchestratorService({
       const runRow = getRunRow(args.runId);
       if (!runRow) throw new Error(`Run not found: ${args.runId}`);
       const run = toRun(runRow);
-      if (TERMINAL_RUN_STATUSES.has(run.status)) return run;
+      const failedRestartAttempts = db.all<AttemptRow>(
+        `
+          select
+            attempt.id,
+            attempt.run_id,
+            attempt.step_id,
+            attempt.attempt_number,
+            attempt.status,
+            attempt.executor_kind,
+            attempt.executor_session_id,
+            attempt.tracked_session_enforced,
+            attempt.context_profile,
+            attempt.context_snapshot_id,
+            attempt.error_class,
+            attempt.error_message,
+            attempt.retry_backoff_ms,
+            attempt.result_envelope_json,
+            attempt.metadata_json,
+            attempt.created_at,
+            attempt.started_at,
+            attempt.completed_at
+          from orchestrator_attempts attempt
+          join orchestrator_steps step
+            on step.id = attempt.step_id
+           and step.project_id = attempt.project_id
+           and step.run_id = attempt.run_id
+          where attempt.project_id = ?
+            and attempt.run_id = ?
+            and attempt.status = 'failed'
+            and step.status = 'failed'
+            and step.last_attempt_id = attempt.id
+            and (
+              attempt.error_class = 'resume_recovered'
+              or lower(coalesce(attempt.error_message, '')) like '%closed during shutdown%'
+              or lower(coalesce(attempt.error_message, '')) like '%orphaned by app restart%'
+              or lower(coalesce(attempt.error_message, '')) like '%worker session was lost%'
+            )
+          order by attempt.created_at asc
+        `,
+        [projectId, run.id]
+      );
+      if (TERMINAL_RUN_STATUSES.has(run.status)) {
+        if (run.status !== "failed" || failedRestartAttempts.length === 0) return run;
+        updateRunStatus(run.id, "active", {
+          last_error: null
+        });
+      }
       if (run.status === "completing") return run;
       if (run.status === "paused") {
         updateRunStatus(run.id, "active", {
@@ -8735,6 +10392,17 @@ export function createOrchestratorService({
         if (!step) continue;
         releaseClaimsForAttempt({ attemptId: attemptRow.id, state: "expired" });
         const completedAt = nowIso();
+        const stepMetadata = parseJsonRecord(step.metadata_json) ?? {};
+        const recoveryCountRaw = Number(stepMetadata.resumeRecoveryCount ?? 0);
+        const recoveryCount = Number.isFinite(recoveryCountRaw) ? Math.max(0, Math.floor(recoveryCountRaw)) : 0;
+        const infrastructureRetryAvailable = recoveryCount < MAX_RESTART_RECOVERY_ATTEMPTS;
+        const shouldRetryRecoveredAttempt = infrastructureRetryAvailable;
+        const nextStepMetadata = {
+          ...stepMetadata,
+          lastResumeRecoveredAttemptId: attemptRow.id,
+          lastResumeRecoveredAt: completedAt,
+          ...(infrastructureRetryAvailable ? { resumeRecoveryCount: recoveryCount + 1 } : {}),
+        };
         db.run(
           `
             update orchestrator_attempts
@@ -8767,24 +10435,27 @@ export function createOrchestratorService({
         db.run(
           `
             update orchestrator_steps
-            set status = case
-              when retry_count < retry_limit then 'ready'
-              else 'failed'
-            end,
-            retry_count = case
-              when retry_count < retry_limit then retry_count + 1
-              else retry_count
-            end,
+            set status = ?,
+            retry_count = ?,
+            last_attempt_id = ?,
+            metadata_json = ?,
             updated_at = ?,
-            completed_at = case
-              when retry_count < retry_limit then completed_at
-              else ?
-            end
+            completed_at = ?
             where id = ?
               and run_id = ?
               and project_id = ?
           `,
-          [completedAt, completedAt, step.id, run.id, projectId]
+          [
+            shouldRetryRecoveredAttempt ? "ready" : "failed",
+            step.retry_count,
+            attemptRow.id,
+            JSON.stringify(nextStepMetadata),
+            completedAt,
+            shouldRetryRecoveredAttempt ? null : completedAt,
+            step.id,
+            run.id,
+            projectId
+          ]
         );
         insertHandoff({
           missionId: run.missionId,
@@ -8808,27 +10479,130 @@ export function createOrchestratorService({
           reason: "resume_recovered",
           detail: {
             retryLimit: step.retry_limit,
-            retryCount: step.retry_count
+            retryCount: step.retry_count,
+            restartRecoveryCount: infrastructureRetryAvailable ? recoveryCount + 1 : recoveryCount,
+            infrastructureRetryGranted: infrastructureRetryAvailable
           }
         });
+        emit({ type: "orchestrator-attempt-updated", runId: run.id, stepId: step.id, attemptId: attemptRow.id, reason: "completed" });
+        emit({ type: "orchestrator-step-updated", runId: run.id, stepId: step.id, reason: "attempt_completed" });
       }
 
-      const resumed = this.tick({ runId: run.id });
-      const autopilot = parseAutopilotConfig(resumed.metadata, DEFAULT_ORCHESTRATOR_RUNTIME_CONFIG.maxParallelWorkers);
-      if (autopilot.enabled && runCanStartAttempts(resumed.status)) {
-        void this
-          .startReadyAutopilotAttempts({
-            runId: run.id,
-            reason: "resume_run"
-          })
-          .catch(() => {});
+      for (const attemptRow of failedRestartAttempts) {
+        const step = getStepRow(attemptRow.step_id);
+        if (!step || step.status !== "failed" || step.last_attempt_id !== attemptRow.id) continue;
+        const completedAt = nowIso();
+        const stepMetadata = parseJsonRecord(step.metadata_json) ?? {};
+        const recoveryCountRaw = Number(stepMetadata.resumeRecoveryCount ?? 0);
+        const recoveryCount = Number.isFinite(recoveryCountRaw) ? Math.max(0, Math.floor(recoveryCountRaw)) : 0;
+        const scheduledRetryAttempts = db.all<{ error_class: string | null; error_message: string | null }>(
+          `
+            select attempt.error_class, attempt.error_message
+            from orchestrator_runtime_events event
+            join orchestrator_attempts attempt
+              on attempt.id = event.attempt_id
+             and attempt.project_id = event.project_id
+            where event.project_id = ?
+              and event.run_id = ?
+              and event.step_id = ?
+              and event.event_type = 'retry_scheduled'
+          `,
+          [projectId, run.id, step.id]
+        );
+        const restoredRetryCount =
+          scheduledRetryAttempts.length > 0
+            ? Math.min(
+                step.retry_limit,
+                scheduledRetryAttempts.filter(
+                  (entry) => !isRestartInterruptedAttemptFailure({
+                    errorClass: entry.error_class,
+                    errorMessage: entry.error_message
+                  })
+                ).length
+              )
+            : Math.max(0, step.retry_count - 1);
+        db.run(
+          `
+            update orchestrator_steps
+            set status = 'pending',
+                retry_count = ?,
+                last_attempt_id = ?,
+                metadata_json = ?,
+                updated_at = ?,
+                completed_at = null
+            where id = ?
+              and run_id = ?
+              and project_id = ?
+          `,
+          [
+            restoredRetryCount,
+            attemptRow.id,
+            JSON.stringify({
+              ...stepMetadata,
+              lastResumeRecoveredAttemptId: attemptRow.id,
+              lastResumeRecoveredAt: completedAt,
+              resumeRecoveryCount: recoveryCount + 1,
+              restoredRetryCountAfterRestartFailure: restoredRetryCount,
+              restartInterruptedFailureRecovered: true
+            }),
+            completedAt,
+            step.id,
+            run.id,
+            projectId
+          ]
+        );
+        insertHandoff({
+          missionId: run.missionId,
+          missionStepId: step.mission_step_id,
+          runId: run.id,
+          stepId: step.id,
+          attemptId: attemptRow.id,
+          handoffType: "attempt_recovered_after_restart",
+          producer: "orchestrator",
+          payload: {
+            errorClass: attemptRow.error_class ?? "executor_failure",
+            message: "Previously failed attempt was caused by app restart/shutdown and was restored to the scheduler.",
+            restoredRetryCount,
+            contextProfile: normalizeProfileId(attemptRow.context_profile)
+          }
+        });
+        appendTimelineEvent({
+          runId: run.id,
+          stepId: step.id,
+          attemptId: attemptRow.id,
+          eventType: "attempt_recovered_after_restart",
+          reason: "restart_interrupted_failure",
+          detail: {
+            retryLimit: step.retry_limit,
+            retryCount: restoredRetryCount,
+            retryBudgetRestored: restoredRetryCount !== step.retry_count
+          }
+        });
+        emit({ type: "orchestrator-step-updated", runId: run.id, stepId: step.id, reason: "attempt_recovered_after_restart" });
       }
-      appendTimelineEvent({
+
+      if (failedRestartAttempts.length > 0) {
+        db.run(
+          `
+            update orchestrator_runs
+            set last_error = null,
+                updated_at = ?
+            where id = ?
+              and project_id = ?
+          `,
+          [nowIso(), run.id, projectId]
+        );
+      }
+
+	      const resumed = this.tick({ runId: run.id });
+	      appendTimelineEvent({
         runId: run.id,
         eventType: "run_resumed",
         reason: "resume_run",
         detail: {
-          recoveredAttempts: runningAttempts.length,
+          recoveredAttempts: runningAttempts.length + failedRestartAttempts.length,
+          recoveredRunningAttempts: runningAttempts.length,
+          recoveredFailedRestartAttempts: failedRestartAttempts.length,
           status: resumed.status
         }
       });
@@ -9110,6 +10884,19 @@ export function createOrchestratorService({
           eventType: "step_dependencies_resolved",
           reason: "add_steps",
           detail: { dependencyStepIds: depIds }
+        });
+      }
+
+      if (run.status === "completing" && stepEntries.length > 0) {
+        updateRunStatus(runId, "active");
+        appendTimelineEvent({
+          runId,
+          eventType: "run_reactivated",
+          reason: "completion_recovery_steps_added",
+          detail: {
+            previousStatus: run.status,
+            newStepCount: stepEntries.length
+          }
         });
       }
 
@@ -9429,6 +11216,7 @@ export function createOrchestratorService({
       runId: string;
       stepId: string;
       reason?: string;
+      allowTerminal?: boolean;
     }): OrchestratorStep {
       const runId = String(args.runId ?? "").trim();
       const stepId = String(args.stepId ?? "").trim();
@@ -9446,22 +11234,38 @@ export function createOrchestratorService({
       if (!stepRow || stepRow.run_id !== runId) throw new Error(`Step not found in run: ${stepId}`);
       const step = toStep(stepRow);
       if (TERMINAL_STEP_STATUSES.has(step.status)) {
-        throw new Error(`Step is already terminal (status: ${step.status}).`);
+        const canReclassifyTerminal =
+          args.allowTerminal === true
+          && (step.status === "failed" || step.status === "canceled");
+        if (!canReclassifyTerminal) {
+          throw new Error(`Step is already terminal (status: ${step.status}).`);
+        }
       }
 
       const now = nowIso();
       const reason = args.reason?.trim() || "Manually skipped.";
+      const existingMeta =
+        step.metadata && typeof step.metadata === "object" && !Array.isArray(step.metadata)
+          ? (step.metadata as Record<string, unknown>)
+          : {};
+      const metadata = {
+        ...existingMeta,
+        skippedAt: now,
+        skippedReason: reason,
+        skippedFromStatus: step.status,
+      };
       db.run(
         `
           update orchestrator_steps
           set status = 'skipped',
+              metadata_json = ?,
               updated_at = ?,
               completed_at = ?
           where id = ?
             and run_id = ?
             and project_id = ?
         `,
-        [now, now, stepId, runId, projectId]
+        [JSON.stringify(metadata), now, now, stepId, runId, projectId]
       );
 
       appendTimelineEvent({
@@ -9985,6 +11789,7 @@ export function createOrchestratorService({
       runId: string;
       stepId: string;
       metadata: Record<string, unknown>;
+      retryLimit?: number | null;
       allowTerminal?: boolean;
     }): OrchestratorStep {
       const runId = String(args.runId ?? "").trim();
@@ -10008,11 +11813,25 @@ export function createOrchestratorService({
 
       const existingMeta = (step.metadata && typeof step.metadata === "object" && !Array.isArray(step.metadata)) ? step.metadata as Record<string, unknown> : {};
       const mergedMeta = { ...existingMeta, ...args.metadata };
+      const retryLimit = Number(args.retryLimit);
+      const hasRetryLimit = Number.isFinite(retryLimit) && retryLimit >= 0;
 
       const now = nowIso();
       db.run(
-        `update orchestrator_steps set metadata_json = ?, updated_at = ? where id = ? and run_id = ? and project_id = ?`,
-        [JSON.stringify(mergedMeta), now, stepId, runId, projectId]
+        `update orchestrator_steps
+         set metadata_json = ?,
+             retry_limit = case when ? then ? else retry_limit end,
+             updated_at = ?
+         where id = ? and run_id = ? and project_id = ?`,
+        [
+          JSON.stringify(mergedMeta),
+          hasRetryLimit ? 1 : 0,
+          hasRetryLimit ? Math.floor(retryLimit) : step.retryLimit,
+          now,
+          stepId,
+          runId,
+          projectId
+        ]
       );
 
       appendTimelineEvent({
@@ -10020,7 +11839,10 @@ export function createOrchestratorService({
         stepId,
         eventType: "step_metadata_updated",
         reason: "update_step_metadata",
-        detail: { updatedKeys: Object.keys(args.metadata) }
+        detail: {
+          updatedKeys: Object.keys(args.metadata),
+          ...(hasRetryLimit ? { retryLimit: Math.floor(retryLimit) } : {})
+        }
       });
       emit({ type: "orchestrator-step-updated", runId, stepId, reason: "metadata_updated" });
 
@@ -10794,6 +12616,12 @@ export function createOrchestratorService({
           from orchestrator_runtime_events e
           where e.project_id = ? and e.run_id = ? and e.event_type = 'intervention_opened'
             and not exists (
+              select 1 from mission_interventions mi
+              where mi.project_id = e.project_id
+                and mi.id = json_extract(e.payload_json, '$.interventionId')
+                and mi.status in ('resolved', 'dismissed')
+            )
+            and not exists (
               select 1 from orchestrator_runtime_events r
               where r.project_id = e.project_id and r.run_id = e.run_id
                 and r.event_type = 'intervention_resolved'
@@ -10848,6 +12676,15 @@ export function createOrchestratorService({
         && (!hasConfiguredPhaseEvaluation || evaluation.completionReady);
 
       if (!completionReady) {
+        const recoveryWorkPending = hasNonTerminalExecutionWork(steps);
+        const evaluationRecoveryRequired = evaluationBlockers.length > 0;
+        const nextStatus: OrchestratorRunStatus =
+          recoveryWorkPending || evaluationRecoveryRequired ? "active" : "completing";
+        const currentRunStatus = normalizeRunStatus(getRunRow(runId)?.status ?? run.status);
+        if (nextStatus !== currentRunStatus) {
+          updateRunStatus(runId, nextStatus);
+        }
+
         // Store the validation error in run state
         if (runState) {
           this.upsertRunState(runId, {
@@ -10865,14 +12702,25 @@ export function createOrchestratorService({
             blockers: completionBlockers,
             validatedAt: validation.validatedAt,
             completionReady: evaluation.completionReady,
-            evaluationStatus: evaluation.status
+            evaluationStatus: evaluation.status,
+            evaluationRecoveryRequired,
+            recoveryWorkPending,
+            nextStatus
           }
         });
+
+        if (nextStatus !== "completing") {
+          emit({
+            type: "orchestrator-run-updated",
+            runId,
+            reason: "completion_recovery_active",
+          });
+        }
 
         return {
           finalized: false,
           blockers: completionBlockers.map((b) => b.message),
-          finalStatus: "completing"
+          finalStatus: nextStatus
         };
       }
 
@@ -10906,7 +12754,8 @@ export function createOrchestratorService({
               || "Mission run failed.",
       });
       updateRunStatus(runId, finalStatus, {
-        metadata_json: JSON.stringify(updatedMeta)
+        metadata_json: JSON.stringify(updatedMeta),
+        ...(finalStatus === "succeeded" ? { last_error: null } : {})
       });
 
       // Update run state to mark completion validated

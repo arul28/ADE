@@ -57,6 +57,77 @@ Return only valid JSON matching this schema:
 ${JSON.stringify(jsonSchema, null, 2)}`;
 }
 
+function isSchemaRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function nullableSchema(schema: Record<string, unknown>): Record<string, unknown> {
+  const next = { ...schema };
+  const type = next.type;
+  if (Array.isArray(type)) {
+    next.type = type.includes("null") ? type : [...type, "null"];
+  } else if (typeof type === "string") {
+    next.type = type === "null" ? type : [type, "null"];
+  } else if (!("anyOf" in next) && !("oneOf" in next)) {
+    next.type = ["null"];
+  }
+
+  if (Array.isArray(next.enum) && !next.enum.includes(null)) {
+    next.enum = [...next.enum, null];
+  }
+  return next;
+}
+
+function strictifyJsonSchema(value: unknown, optionalProperty: boolean): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) => strictifyJsonSchema(entry, false));
+  }
+  if (!isSchemaRecord(value)) return value;
+
+  const next: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (key === "properties" || key === "items" || key === "anyOf" || key === "oneOf" || key === "allOf") continue;
+    next[key] = strictifyJsonSchema(entry, false);
+  }
+
+  if (isSchemaRecord(value.properties)) {
+    const originalRequired = new Set(
+      Array.isArray(value.required)
+        ? value.required.filter((entry): entry is string => typeof entry === "string")
+        : [],
+    );
+    const properties: Record<string, unknown> = {};
+    for (const [propertyName, propertySchema] of Object.entries(value.properties)) {
+      properties[propertyName] = strictifyJsonSchema(propertySchema, !originalRequired.has(propertyName));
+    }
+    next.properties = properties;
+    next.required = Object.keys(properties);
+    next.additionalProperties = false;
+  }
+
+  if (value.items !== undefined) {
+    next.items = strictifyJsonSchema(value.items, false);
+  }
+  for (const key of ["anyOf", "oneOf", "allOf"] as const) {
+    if (Array.isArray(value[key])) {
+      next[key] = value[key].map((entry) => strictifyJsonSchema(entry, false));
+    }
+  }
+
+  const isObjectSchema = next.type === "object"
+    || (Array.isArray(next.type) && next.type.includes("object"))
+    || isSchemaRecord(next.properties);
+  if (isObjectSchema && next.additionalProperties !== false) {
+    next.additionalProperties = false;
+  }
+
+  return optionalProperty ? nullableSchema(next) : next;
+}
+
+export function makeCodexCompatibleJsonSchema(schema: unknown): unknown {
+  return strictifyJsonSchema(schema, false);
+}
+
 function buildClaudePermissionMode(mode: AgentPermissionMode | undefined): string {
   if (mode === "full-auto") return "bypassPermissions";
   if (mode === "edit") return "acceptEdits";
@@ -196,7 +267,8 @@ async function runClaudeTask(args: ProviderTaskRunnerArgs): Promise<ProviderTask
 }
 
 async function runCodexTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRunnerResult> {
-  const prompt = appendStructuredOutputInstruction(args.prompt, args.jsonSchema);
+  const codexJsonSchema = args.jsonSchema ? makeCodexCompatibleJsonSchema(args.jsonSchema) : undefined;
+  const prompt = appendStructuredOutputInstruction(args.prompt, codexJsonSchema);
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-codex-task-"));
   const outPath = path.join(tmpDir, "out.txt");
   const cliArgs = [
@@ -218,9 +290,9 @@ async function runCodexTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskR
     cliArgs.push("--ephemeral");
   }
 
-  if (args.jsonSchema) {
+  if (codexJsonSchema) {
     const schemaPath = path.join(tmpDir, "schema.json");
-    fs.writeFileSync(schemaPath, JSON.stringify(args.jsonSchema, null, 2), "utf8");
+    fs.writeFileSync(schemaPath, JSON.stringify(codexJsonSchema, null, 2), "utf8");
     cliArgs.push("--output-schema", schemaPath);
   }
 

@@ -326,12 +326,12 @@ function ToolCallRow({
   const detailBody = useMemo(() => buildEntryDetail(entry), [entry]);
 
   return (
-    <div>
+    <div className="min-w-0 max-w-full overflow-hidden">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        className="flex w-full items-center gap-2.5 rounded-[6px] px-1.5 py-1 text-left transition-colors hover:bg-white/[0.025]"
+        className="flex w-full min-w-0 max-w-full items-center gap-2.5 rounded-[6px] px-1.5 py-1 text-left transition-colors hover:bg-white/[0.025]"
       >
         {workLogStatusGlyph(entry)}
         <span className={cn("shrink-0 font-mono text-[length:calc(var(--chat-font-size)*11/14)] font-medium tracking-tight", kindTone)}>
@@ -342,7 +342,7 @@ function ToolCallRow({
         ) : null}
       </button>
       {open && navigationSuggestions.length > 0 && onNavigateSuggestion ? (
-        <div className="mt-1 ml-[18px] flex flex-wrap gap-1.5 border-t border-white/[0.05] pt-2">
+        <div className="mt-1 ml-[18px] flex min-w-0 max-w-full flex-wrap gap-1.5 border-t border-white/[0.05] pt-2">
           {navigationSuggestions.map((suggestion) => (
             <button
               key={`${suggestion.surface}:${suggestion.href}`}
@@ -423,7 +423,7 @@ function ToolCallsPanel({
         )}
       </button>
       {panelOpen ? (
-        <div className="mt-1.5 w-full min-w-0 space-y-0.5 pl-4">
+        <div className="mt-1.5 w-full min-w-0 max-w-full space-y-0.5 overflow-hidden pl-4">
           {entries.map((entry) => (
             <ToolCallRow key={entry.id} entry={entry} onNavigateSuggestion={onNavigateSuggestion} />
           ))}
@@ -448,13 +448,13 @@ function FilesChangedPanel({
   const Caret = open ? CaretDown : CaretRight;
 
   return (
-    <div className="space-y-1.5">
-      <div className="flex items-center gap-2">
+    <div className="min-w-0 max-w-full space-y-1.5 overflow-hidden">
+      <div className="flex min-w-0 max-w-full items-center gap-2">
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
-          className="flex flex-1 items-center gap-2 rounded-[6px] px-1 py-0.5 text-left transition-colors hover:bg-white/[0.025]"
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-[6px] px-1 py-0.5 text-left transition-colors hover:bg-white/[0.025]"
         >
           <Caret size={10} weight="bold" className="text-fg/35" />
           <span className="font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-medium text-fg/70">
@@ -472,7 +472,7 @@ function FilesChangedPanel({
         ) : null}
       </div>
       {open ? (
-        <div className="space-y-0.5 pl-[18px]">
+        <div className="min-w-0 max-w-full space-y-0.5 overflow-hidden pl-[18px]">
           {files.map((file) => {
             const expanded = expandedFiles[file.path] ?? false;
             return (
@@ -483,7 +483,7 @@ function FilesChangedPanel({
                     setExpandedFiles((current) => ({ ...current, [file.path]: !expanded }))
                   }
                   aria-expanded={expanded}
-                  className="flex w-full items-center gap-3 rounded-[6px] px-1.5 py-1 text-left transition-colors hover:bg-white/[0.025]"
+                  className="flex w-full min-w-0 max-w-full items-center gap-3 rounded-[6px] px-1.5 py-1 text-left transition-colors hover:bg-white/[0.025]"
                 >
                   <span className="inline-flex h-3.5 w-7 shrink-0 items-center justify-center rounded-[3px] border border-white/[0.06] bg-white/[0.02] font-mono text-[length:calc(var(--chat-font-size)*8/14)] font-bold tracking-wider text-fg/40">
                     {fileExtBadge(file.path)}
@@ -662,7 +662,7 @@ export function ChatWorkLogBlock({
   if (!hasReadOnly && !hasCodeChange) return null;
 
   return (
-    <div className={cn("max-w-full space-y-3", className)}>
+    <div className={cn("min-w-0 max-w-full space-y-3 overflow-hidden", className)}>
       <LocalhostServersStrip
         entries={entries}
         sessionId={sessionId}

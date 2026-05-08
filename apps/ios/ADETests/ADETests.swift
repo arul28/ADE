@@ -856,6 +856,26 @@ final class ADETests: XCTestCase {
     }
     XCTAssertEqual(detailObject["summary"], .string("Retry later"))
 
+    let userMessageJSON = """
+    {
+      "sessionId": "session-3",
+      "timestamp": "2026-03-17T00:02:00.000Z",
+      "event": {
+        "type": "user_message",
+        "text": "INTERNAL_RUNTIME_PROMPT",
+        "displayText": "ADE coordinator tick: review mission state and route the next action.",
+        "turnId": "turn-1"
+      }
+    }
+    """
+
+    let userMessageEnvelope = try JSONDecoder().decode(AgentChatEventEnvelope.self, from: Data(userMessageJSON.utf8))
+    guard case .userMessage(let userText, _, let userTurnId, _, _, _) = userMessageEnvelope.event else {
+      return XCTFail("Expected user message event.")
+    }
+    XCTAssertEqual(userText, "ADE coordinator tick: review mission state and route the next action.")
+    XCTAssertEqual(userTurnId, "turn-1")
+
     let resolvedJSON = """
     {
       "sessionId": "session-3",
@@ -5116,6 +5136,21 @@ final class ADETests: XCTestCase {
       return XCTFail("Expected system_notice event.")
     }
     XCTAssertEqual(noticeSteerId, "steer-1")
+  }
+
+  func testParseWorkChatTranscriptPrefersUserMessageDisplayText() {
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:01.000Z","sequence":1,"event":{"type":"user_message","text":"INTERNAL_RUNTIME_PROMPT","displayText":"ADE coordinator start: initialize the mission.","turnId":"turn-1"}}
+    """
+
+    let transcript = parseWorkChatTranscript(raw)
+    XCTAssertEqual(transcript.count, 1)
+
+    guard case .userMessage(let text, let turnId, _, _, _) = transcript[0].event else {
+      return XCTFail("Expected user_message event.")
+    }
+    XCTAssertEqual(text, "ADE coordinator start: initialize the mission.")
+    XCTAssertEqual(turnId, "turn-1")
   }
 
   func testDerivePendingWorkInputsReturnsApprovalsAndQuestionsInRequestOrder() {

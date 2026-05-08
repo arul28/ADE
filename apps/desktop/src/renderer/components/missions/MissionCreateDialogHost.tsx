@@ -29,6 +29,8 @@ export const MissionCreateDialogHost = React.memo(function MissionCreateDialogHo
     try {
       await onLaunch(draft);
       resetMissionCreateDialog();
+    } catch {
+      // The page-level launch handler records the user-facing error in the Missions store.
     } finally {
       setBusy(false);
     }

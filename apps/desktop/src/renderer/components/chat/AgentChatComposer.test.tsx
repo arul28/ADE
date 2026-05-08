@@ -663,6 +663,43 @@ describe("AgentChatComposer", () => {
     expect(textarea.getAttribute("spellcheck")).toBe("true");
   });
 
+  it("uses a contextual accessible name for active turn textareas", () => {
+    renderComposer({
+      draft: "",
+      turnActive: true,
+      messagePlaceholder: "Message the mission orchestrator...",
+    });
+
+    const textarea = screen.getByRole("textbox", {
+      name: "Steer active turn: Message the mission orchestrator",
+    }) as HTMLTextAreaElement;
+    expect(textarea.placeholder).toBe("Steer the active turn...");
+  });
+
+  it("uses a contextual accessible name for active rich composers", () => {
+    renderComposer({
+      draft: "",
+      turnActive: true,
+      messagePlaceholder: "Message this mission worker...",
+      iosElementContextItems: [
+        {
+          kind: "ios_element",
+          id: "button-1",
+          componentId: "PrimaryButton",
+          sourceFile: null,
+          sourceLine: null,
+          frame: null,
+          metadata: { label: "Primary" },
+          selectedAt: "2026-05-07T00:00:00.000Z",
+        },
+      ],
+    });
+
+    expect(screen.getByRole("textbox", {
+      name: "Steer active turn: Message this mission worker",
+    })).toBeTruthy();
+  });
+
   it("focuses the grid composer when the tile becomes active", () => {
     const props = buildComposerProps({
       layoutVariant: "grid-tile",

@@ -57,7 +57,7 @@ vi.mock("../terminals/TerminalsPage", async () => {
   const Router = await vi.importActual("react-router-dom") as typeof RouterNamespace;
 
   return {
-    TerminalsPage: () => {
+    TerminalsPage: ({ active = true }: { active?: boolean }) => {
       const navigate = Router.useNavigate();
       ReactModule.useEffect(() => {
         workLifecycle.mounts += 1;
@@ -67,7 +67,7 @@ vi.mock("../terminals/TerminalsPage", async () => {
       }, []);
 
       return (
-        <div data-testid="work-page">
+        <div data-testid="work-page" data-active={active ? "true" : "false"}>
           <button type="button" onClick={() => navigate("/files")}>
             Open files
           </button>
@@ -129,12 +129,14 @@ describe("App Work route keep-alive", () => {
     const parkedWorkSurface = screen.getByTestId("work-page").closest("[aria-hidden='true']");
     expect(parkedWorkSurface).not.toBeNull();
     expect(parkedWorkSurface?.hasAttribute("hidden")).toBe(false);
+    expect(screen.getByTestId("work-page").getAttribute("data-active")).toBe("false");
     expect(workLifecycle.mounts).toBe(1);
     expect(workLifecycle.unmounts).toBe(0);
 
     fireEvent.click(screen.getByRole("button", { name: "Open work" }));
     await waitFor(() => {
       expect(screen.getByTestId("work-page").closest("[aria-hidden='true']")).toBeNull();
+      expect(screen.getByTestId("work-page").getAttribute("data-active")).toBe("true");
     });
     expect(workLifecycle.mounts).toBe(1);
     expect(workLifecycle.unmounts).toBe(0);

@@ -140,6 +140,10 @@ const acquireQueues = new Map<string, Array<() => void>>();
 const protectedLaunchPorts = new Set<number>();
 let openCodeServerLauncher: OpenCodeServerLauncher = defaultOpenCodeServerLauncher;
 
+function commandLooksLikeOpenCodeServe(command: string): boolean {
+  return /\bopencode(?:\.cmd|\.bat|\.exe)?\b/i.test(command) && /\bserve\b/i.test(command);
+}
+
 function readLinuxProcessEnvironment(pid: number): string[] {
   try {
     const raw = fs.readFileSync(`/proc/${pid}/environ`, "utf8");
@@ -266,6 +270,44 @@ function listWindowsProcesses(): OpenCodeProcessSnapshot[] {
   return listWindowsProcessesFromPowerShell();
 }
 
+function parseUnixPsProcessRows(stdout: string): OpenCodeProcessSnapshot[] {
+  const rows: OpenCodeProcessSnapshot[] = [];
+  for (const line of stdout.split(/\r?\n/)) {
+    const match = line.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/);
+    if (!match) continue;
+    rows.push({
+      pid: Number(match[1]),
+      ppid: Number(match[2]),
+      command: match[3] ?? "",
+    });
+  }
+  return rows;
+}
+
+function withDarwinCandidateEnvironments(rows: OpenCodeProcessSnapshot[]): OpenCodeProcessSnapshot[] {
+  if (process.platform !== "darwin") return rows;
+  const candidatePids = rows
+    .filter((proc) => commandLooksLikeOpenCodeServe(proc.command))
+    .map((proc) => proc.pid);
+  if (candidatePids.length === 0) return rows;
+
+  const result = spawnSync(
+    "ps",
+    ["-wwE", "-p", candidatePids.join(","), "-o", "pid=,ppid=,command="],
+    {
+      encoding: "utf8",
+      windowsHide: true,
+      maxBuffer: 5 * 1024 * 1024,
+    },
+  );
+  if (result.error || result.status !== 0 || typeof result.stdout !== "string") {
+    return rows;
+  }
+
+  const enrichedByPid = new Map(parseUnixPsProcessRows(result.stdout).map((proc) => [proc.pid, proc]));
+  return rows.map((proc) => enrichedByPid.get(proc.pid) ?? proc);
+}
+
 const defaultOpenCodeProcessController: OpenCodeProcessController = {
   listProcesses(): OpenCodeProcessSnapshot[] {
     if (process.platform === "win32") {
@@ -273,7 +315,7 @@ const defaultOpenCodeProcessController: OpenCodeProcessController = {
     }
     const psArgs = process.platform === "linux"
       ? ["-ww", "-axo", "pid=,ppid=,command="]
-      : ["-wwE", "-axo", "pid=,ppid=,command="];
+      : ["-ww", "-axo", "pid=,ppid=,command="];
     const result = spawnSync("ps", psArgs, {
       encoding: "utf8",
       windowsHide: true,
@@ -281,19 +323,17 @@ const defaultOpenCodeProcessController: OpenCodeProcessController = {
     if (result.error || result.status !== 0 || typeof result.stdout !== "string") {
       return [];
     }
-    const rows: OpenCodeProcessSnapshot[] = [];
-    for (const line of result.stdout.split(/\r?\n/)) {
-      const match = line.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/);
-      if (!match) continue;
-      rows.push({
-        pid: Number(match[1]),
-        ppid: Number(match[2]),
-        command: process.platform === "linux"
-          ? [match[3], ...readLinuxProcessEnvironment(Number(match[1]))].join(" ")
-          : match[3],
+    const rows = parseUnixPsProcessRows(result.stdout);
+    if (process.platform === "linux") {
+      return rows.map((proc) => {
+        if (!commandLooksLikeOpenCodeServe(proc.command)) return proc;
+        return {
+          ...proc,
+          command: [proc.command, ...readLinuxProcessEnvironment(proc.pid)].join(" "),
+        };
       });
     }
-    return rows;
+    return withDarwinCandidateEnvironments(rows);
   },
   listListeningPids(port: number): number[] {
     if (!Number.isInteger(port) || port <= 0) return [];
@@ -971,7 +1011,9 @@ function shutdownEntry(
     // ignore shutdown failures
   }
   logRuntimeEvent(logger, "opencode.server_shutdown", entry, { reason });
-  void recoverManagedOpenCodeOrphans({ force: true, logger }).catch(() => {});
+  if (reason === "error" || reason === "attach_failed") {
+    void recoverManagedOpenCodeOrphans({ force: true, logger }).catch(() => {});
+  }
 }
 
 function scheduleSharedIdleTimer(

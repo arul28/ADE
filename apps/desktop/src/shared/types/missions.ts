@@ -687,6 +687,7 @@ export type MissionPreflightCheckId =
   | "capabilities"
   | "computer_use"
   | "permissions"
+  | "lane_claim"
   | "worktrees"
   | "knowledge_sync"
   | "phase_structural"

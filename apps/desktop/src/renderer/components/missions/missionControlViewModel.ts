@@ -7,7 +7,7 @@ import type {
   PhaseCard,
   ValidationEvidenceRequirement,
 } from "../../../shared/types";
-import { isRecord } from "./missionHelpers";
+import { filterExecutionSteps, isRecord } from "./missionHelpers";
 import {
   resolveCloseoutRequirementKeyFromArtifact,
   resolveOrchestratorArtifactUri,
@@ -32,13 +32,29 @@ function coercePhaseCards(mission: MissionDetail | null, runGraph: OrchestratorR
   return [...missionPhases].sort((a, b) => a.position - b.position);
 }
 
+function terminalPhaseSummary(args: {
+  missionStatus: MissionDetail["status"] | null | undefined;
+  runStatus: OrchestratorRunGraph["run"]["status"];
+}): string | null {
+  if (args.missionStatus === "canceled" || args.runStatus === "canceled") {
+    return "Mission canceled. Rerun to start a fresh run.";
+  }
+  if (args.missionStatus === "failed" || args.runStatus === "failed") {
+    return "Mission failed. Review the feed or rerun after fixing the blocker.";
+  }
+  if (args.missionStatus === "completed" || args.runStatus === "succeeded") {
+    return "Mission completed. Review artifacts or rerun for another pass.";
+  }
+  return null;
+}
+
 export type ActivePhaseViewModel = {
   currentPhaseKey: string | null;
   currentPhaseName: string | null;
   phase: PhaseCard | null;
   position: number | null;
   total: number;
-  modeLabel: "blocked" | "manual" | "coordinator-driven" | "auto-assisted";
+  modeLabel: "blocked" | "manual" | "coordinator-driven" | "auto-assisted" | "closed";
   validationRequired: boolean;
   validationTier: string;
   clarificationLabel: string;
@@ -64,6 +80,10 @@ export function deriveActivePhaseViewModel(args: {
     entry.phaseKey === currentPhaseKey
     || entry.name === currentPhaseName
   ) ?? null;
+  const terminalSummary = terminalPhaseSummary({
+    missionStatus: mission?.status,
+    runStatus: runGraph.run.status,
+  });
 
   const activePhase = phase ?? phases[0] ?? null;
   if (!activePhase) {
@@ -73,28 +93,48 @@ export function deriveActivePhaseViewModel(args: {
       phase: null,
       position: null,
       total: 0,
-      modeLabel: runGraph.run.status === "paused" ? "blocked" : "coordinator-driven",
+      modeLabel: terminalSummary ? "closed" : runGraph.run.status === "paused" ? "blocked" : "coordinator-driven",
       validationRequired: false,
       validationTier: "none",
       clarificationLabel: "No phase profile attached",
-      whyActive: "This run has no visible phase snapshot. The orchestrator is operating without a user-visible phase profile.",
-      exitRequirements: ["Wait for the run to publish a phase snapshot or finish."],
+      whyActive: terminalSummary ?? "This run has no visible phase snapshot. The orchestrator is operating without a user-visible phase profile.",
+      exitRequirements: terminalSummary ? [] : ["Wait for the run to publish a phase snapshot or finish."],
       blockedLaterWork: [],
       capabilityWarnings: [],
     };
   }
 
   const position = phases.findIndex((entry) => entry.phaseKey === activePhase.phaseKey);
+  if (terminalSummary) {
+    return {
+      currentPhaseKey,
+      currentPhaseName,
+      phase: activePhase,
+      position: position >= 0 ? position + 1 : null,
+      total: phases.length,
+      modeLabel: "closed",
+      validationRequired: activePhase.validationGate.required,
+      validationTier: activePhase.validationGate.tier,
+      clarificationLabel: activePhase.askQuestions.enabled
+        ? `active phase owner may ask${activePhase.askQuestions.maxQuestions == null ? " without a question limit" : `, max ${activePhase.askQuestions.maxQuestions}`}`
+        : "Ask questions disabled",
+      whyActive: terminalSummary,
+      exitRequirements: [],
+      blockedLaterWork: [],
+      capabilityWarnings: [],
+    };
+  }
+
   const openInterventions = mission?.interventions.filter((intervention) => intervention.status === "open") ?? [];
-  const phaseSteps = runGraph.steps.filter((step) => {
+  const phaseSteps = filterExecutionSteps(runGraph.steps.filter((step) => {
     const metadata = isRecord(step.metadata) ? step.metadata : null;
     return metadata?.phaseKey === activePhase.phaseKey || metadata?.phaseName === activePhase.name;
-  });
-  const laterPhaseSteps = runGraph.steps.filter((step) => {
+  }));
+  const laterPhaseSteps = filterExecutionSteps(runGraph.steps.filter((step) => {
     const metadata = isRecord(step.metadata) ? step.metadata : null;
     const stepPosition = Number(metadata?.phasePosition);
     return Number.isFinite(stepPosition) && stepPosition > activePhase.position;
-  });
+  }));
   const laterBlocked = laterPhaseSteps
     .filter((step) => step.status === "blocked" || step.status === "pending" || step.status === "ready")
     .slice(0, 4)
@@ -104,6 +144,7 @@ export function deriveActivePhaseViewModel(args: {
   const completedCurrentPhase = phaseSteps.filter((step) =>
     step.status === "succeeded" || step.status === "skipped" || step.status === "canceled"
   );
+  const remainingCurrentPhaseCount = Math.max(0, phaseSteps.length - completedCurrentPhase.length);
 
   let modeLabel: ActivePhaseViewModel["modeLabel"] = "auto-assisted";
   if (runGraph.run.status === "paused" || openInterventions.length > 0) {
@@ -117,7 +158,7 @@ export function deriveActivePhaseViewModel(args: {
   const whyBits: string[] = [];
   if (inFlightCurrentPhase.length > 0) {
     whyBits.push(`${inFlightCurrentPhase.length} step${inFlightCurrentPhase.length === 1 ? " is" : "s are"} active in this phase.`);
-  } else if (phaseSteps.length > 0 && completedCurrentPhase.length < phaseSteps.length) {
+  } else if (phaseSteps.length > 0 && remainingCurrentPhaseCount > 0) {
     whyBits.push("This phase still has non-terminal work that must finish before advancement.");
   } else if (runGraph.run.status === "paused") {
     whyBits.push("The run is paused, so this phase remains active until the mission resumes.");
@@ -127,8 +168,10 @@ export function deriveActivePhaseViewModel(args: {
 
   const exitRequirements: string[] = [];
   if (activePhase.phaseKey === "planning") {
-    if (phaseSteps.length > 0) {
-      exitRequirements.push(`Wait for the planning worker to finish and review ${phaseSteps.length - completedCurrentPhase.length} remaining planning step(s).`);
+    if (phaseSteps.length > 0 && remainingCurrentPhaseCount > 0) {
+      exitRequirements.push(`Wait for the planning worker to finish and review ${remainingCurrentPhaseCount} remaining planning step(s).`);
+    } else if (phaseSteps.length > 0) {
+      exitRequirements.push("Planning worker output is ready for coordinator review.");
     } else {
       exitRequirements.push("The coordinator must either ask planning questions or start the planning worker.");
     }
@@ -141,8 +184,10 @@ export function deriveActivePhaseViewModel(args: {
       exitRequirements.push("Once the planner succeeds, ADE can move into Development immediately.");
     }
   } else if (activePhase.phaseKey === "validation") {
-    if (phaseSteps.length > 0) {
-      exitRequirements.push(`Finish the remaining validation step${phaseSteps.length - completedCurrentPhase.length === 1 ? "" : "s"}.`);
+    if (phaseSteps.length > 0 && remainingCurrentPhaseCount > 0) {
+      exitRequirements.push(`Finish the remaining validation step${remainingCurrentPhaseCount === 1 ? "" : "s"}.`);
+    } else if (phaseSteps.length > 0) {
+      exitRequirements.push("All executable validation steps are terminal. ADE can complete after coordinator review.");
     } else {
       exitRequirements.push("Validation is active. ADE will finish the final validation protocol before completion.");
     }
@@ -150,8 +195,10 @@ export function deriveActivePhaseViewModel(args: {
       exitRequirements.push(`Resolve ${openInterventions.length} open intervention(s).`);
     }
   } else {
-    if (phaseSteps.length > 0) {
-      exitRequirements.push(`Finish or explicitly disposition ${phaseSteps.length - completedCurrentPhase.length} remaining step(s) in ${activePhase.name}.`);
+    if (phaseSteps.length > 0 && remainingCurrentPhaseCount > 0) {
+      exitRequirements.push(`Finish or explicitly disposition ${remainingCurrentPhaseCount} remaining step(s) in ${activePhase.name}.`);
+    } else if (phaseSteps.length > 0) {
+      exitRequirements.push(`All executable ${activePhase.name} steps are terminal. ADE can advance after coordinator review.`);
     } else {
       exitRequirements.push(`The coordinator must finish the ${activePhase.name} phase protocol before advancing.`);
     }

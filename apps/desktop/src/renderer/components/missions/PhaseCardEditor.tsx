@@ -1,7 +1,7 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
 import { X } from "@phosphor-icons/react";
-import type { PhaseCard, OrchestratorPromptInspector } from "../../../shared/types";
+import type { PhaseCard, OrchestratorPromptInspector, ValidationEvidenceRequirement } from "../../../shared/types";
 import { COLORS, MONO_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { ModelSelector } from "./ModelSelector";
 import { PromptInspectorCard } from "./PromptInspectorCard";
@@ -52,6 +52,21 @@ const DEFAULT_INPUT_STYLE: React.CSSProperties = {
   outline: "none",
 };
 
+const EVIDENCE_REQUIREMENTS: Array<{ key: ValidationEvidenceRequirement; label: string }> = [
+  { key: "planning_document", label: "Plan" },
+  { key: "research_summary", label: "Research" },
+  { key: "changed_files_summary", label: "Changed files" },
+  { key: "test_report", label: "Tests" },
+  { key: "review_summary", label: "Review" },
+  { key: "risk_notes", label: "Risks" },
+  { key: "final_outcome_summary", label: "Outcome" },
+  { key: "screenshot", label: "Screenshot" },
+  { key: "browser_verification", label: "Browser" },
+  { key: "video_recording", label: "Video" },
+  { key: "browser_trace", label: "Trace" },
+  { key: "console_logs", label: "Console" },
+];
+
 export function PhaseCardEditor({
   phase,
   index,
@@ -77,13 +92,31 @@ export function PhaseCardEditor({
   }, [navigate]);
   const labelStyle = lblStyle ?? DEFAULT_LABEL_STYLE;
   const inputStyle = inpStyle ?? DEFAULT_INPUT_STYLE;
+  const textareaStyle: React.CSSProperties = { ...inputStyle, height: "auto", minHeight: 64, lineHeight: "16px" };
   const isPlanningPhase = phase.phaseKey.trim().toLowerCase() === "planning";
+  const modelSummary = [
+    phase.model.modelId,
+    phase.model.thinkingLevel ? `${phase.model.thinkingLevel} reasoning` : null,
+    `Ask Questions ${phase.askQuestions.enabled ? "on" : "off"}`,
+  ].filter(Boolean).join(" · ");
   const [planningInspector, setPlanningInspector] = React.useState<OrchestratorPromptInspector | null>(null);
   const [planningInspectorLoading, setPlanningInspectorLoading] = React.useState(false);
   const [planningInspectorError, setPlanningInspectorError] = React.useState<string | null>(null);
 
   const updateField = <K extends keyof PhaseCard>(key: K, value: PhaseCard[K]) => {
     onUpdate({ ...phase, [key]: value });
+  };
+  const updateEvidenceRequirement = (key: ValidationEvidenceRequirement, checked: boolean) => {
+    const current = new Set(phase.validationGate.evidenceRequirements ?? []);
+    if (checked) current.add(key);
+    else current.delete(key);
+    onUpdate({
+      ...phase,
+      validationGate: {
+        ...phase.validationGate,
+        evidenceRequirements: Array.from(current),
+      },
+    });
   };
 
   // Stable fingerprint to avoid re-fetching on every object-identity change.
@@ -201,8 +234,7 @@ export function PhaseCardEditor({
             </div>
           ) : null}
           <div className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-            {phase.model.modelId}
-            {` · Ask Questions ${phase.askQuestions.enabled ? "on" : "off"}`}
+            {modelSummary}
           </div>
         </div>
 
@@ -271,6 +303,26 @@ export function PhaseCardEditor({
                 disabled={readOnly}
               />
             </label>
+            <label className="space-y-1 text-[10px]">
+              <span style={labelStyle}>PHASE KEY</span>
+              <input
+                value={phase.phaseKey}
+                onChange={(e) => {
+                  const next = e.target.value
+                    .toLowerCase()
+                    .replace(/[^a-z0-9_-]+/g, "_")
+                    .replace(/_+/g, "_")
+                    .replace(/^_+/, "");
+                  updateField("phaseKey", next);
+                }}
+                className="h-7 w-full px-2 outline-none"
+                style={inputStyle}
+                disabled={readOnly || phase.isBuiltIn}
+              />
+            </label>
+          </div>
+
+          <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
             <div className="space-y-1 text-[10px]">
               <span style={labelStyle}>WORKER MODEL</span>
               {readOnly ? (
@@ -288,6 +340,30 @@ export function PhaseCardEditor({
                 />
               )}
             </div>
+            <label className="space-y-1 text-[10px]">
+              <span style={labelStyle}>VALIDATION TIER</span>
+              <select
+                value={phase.validationGate.tier}
+                onChange={(e) => {
+                  const tier = e.target.value as PhaseCard["validationGate"]["tier"];
+                  onUpdate({
+                    ...phase,
+                    validationGate: {
+                      ...phase.validationGate,
+                      tier,
+                      required: tier === "none" ? false : phase.validationGate.required,
+                    },
+                  });
+                }}
+                className="h-7 w-full px-2 outline-none"
+                style={inputStyle}
+                disabled={readOnly}
+              >
+                <option value="none">None</option>
+                <option value="self">Self-check</option>
+                <option value="dedicated">Dedicated validator</option>
+              </select>
+            </label>
           </div>
 
           <label className="space-y-1 text-[10px]">
@@ -309,7 +385,7 @@ export function PhaseCardEditor({
               onChange={(e) => updateField("instructions", e.target.value)}
               className="w-full px-2 py-1.5 outline-none"
               rows={3}
-              style={inputStyle}
+              style={textareaStyle}
               disabled={readOnly}
             />
           </label>
@@ -395,6 +471,85 @@ export function PhaseCardEditor({
                   disabled={readOnly || !phase.askQuestions.enabled || (isPlanningPhase && phase.askQuestions.maxQuestions == null)}
                 />
               </label>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <span style={labelStyle}>VALIDATION GATE</span>
+            <div className="flex flex-wrap items-center gap-3">
+              <label className="flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                <input
+                  type="checkbox"
+                  checked={phase.validationGate.required}
+                  onChange={(e) => {
+                    onUpdate({
+                      ...phase,
+                      validationGate: {
+                        ...phase.validationGate,
+                        required: e.target.checked,
+                        tier: e.target.checked && phase.validationGate.tier === "none" ? "self" : phase.validationGate.tier,
+                      },
+                    });
+                  }}
+                  disabled={readOnly}
+                />
+                Required before next phase
+              </label>
+              <label className="flex items-center gap-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                <span style={{ fontSize: 9 }}>Missing capability</span>
+                <select
+                  value={phase.validationGate.capabilityFallback ?? "block"}
+                  onChange={(e) => {
+                    onUpdate({
+                      ...phase,
+                      validationGate: {
+                        ...phase.validationGate,
+                        capabilityFallback: e.target.value as PhaseCard["validationGate"]["capabilityFallback"],
+                      },
+                    });
+                  }}
+                  className="h-6 px-1 text-[10px] outline-none"
+                  style={inputStyle}
+                  disabled={readOnly}
+                >
+                  <option value="block">Block</option>
+                  <option value="warn">Warn</option>
+                </select>
+              </label>
+            </div>
+            <textarea
+              value={phase.validationGate.criteria ?? ""}
+              onChange={(e) => {
+                onUpdate({
+                  ...phase,
+                  validationGate: {
+                    ...phase.validationGate,
+                    criteria: e.target.value,
+                  },
+                });
+              }}
+              className="w-full px-2 py-1.5 outline-none"
+              rows={2}
+              style={{ ...textareaStyle, minHeight: 48 }}
+              disabled={readOnly}
+              placeholder="Pass/fail criteria for this phase"
+            />
+            <div className="flex flex-wrap gap-2">
+              {EVIDENCE_REQUIREMENTS.map((entry) => (
+                <label
+                  key={entry.key}
+                  className="flex items-center gap-1 text-[10px]"
+                  style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={(phase.validationGate.evidenceRequirements ?? []).includes(entry.key)}
+                    onChange={(e) => updateEvidenceRequirement(entry.key, e.target.checked)}
+                    disabled={readOnly}
+                  />
+                  {entry.label}
+                </label>
+              ))}
             </div>
           </div>
         </div>

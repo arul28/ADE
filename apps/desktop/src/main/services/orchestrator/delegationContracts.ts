@@ -22,6 +22,11 @@ const PLANNER_STARTUP_OBSERVATION_TOOL_NAMES = new Set([
   "get_step_output",
   "get_worker_states",
   "get_timeline",
+  "get_worker_output",
+  "list_workers",
+  "read_mission_status",
+  "read_mission_state",
+  "read_step_output",
   "stream_events",
 ]);
 
@@ -42,7 +47,17 @@ const COORDINATOR_TOOL_CAPABILITIES: Array<{
 ];
 
 export function normalizeCoordinatorToolName(toolName: string): string {
-  return toolName.trim();
+  const trimmed = toolName.trim();
+  const prefixPatterns = [
+    /^ade[_:.](.+)$/i,
+    /^mcp[_:.]ade[_:.](.+)$/i,
+    /^mcp__ade__(.+)$/i,
+  ];
+  for (const pattern of prefixPatterns) {
+    const match = pattern.exec(trimmed);
+    if (match?.[1]) return match[1].trim();
+  }
+  return trimmed;
 }
 
 export function createDelegationScope(args: {

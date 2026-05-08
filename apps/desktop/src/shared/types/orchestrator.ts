@@ -1484,6 +1484,8 @@ export type OrchestratorChatMessage = {
 export type OrchestratorMissionThreadUserMessageStructuredStream = {
   kind: "user_message";
   text: string;
+  displayText?: string;
+  internalKind?: "coordinator_runtime_prompt";
   attachments?: AgentChatFileRef[];
 };
 
@@ -1497,6 +1499,8 @@ export type OrchestratorChatTarget =
   | {
       kind: "coordinator";
       runId?: string | null;
+      sessionId?: string | null;
+      laneId?: string | null;
     }
   | {
       kind: "teammate";

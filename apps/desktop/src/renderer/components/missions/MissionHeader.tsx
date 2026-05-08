@@ -11,6 +11,7 @@ import {
   Gauge,
 } from "@phosphor-icons/react";
 import type {
+  MissionRunView,
   MissionSummary,
   OrchestratorExecutorKind,
   StartOrchestratorRunFromMissionArgs,
@@ -20,13 +21,13 @@ import { COLORS, MONO_FONT, SANS_FONT, primaryButton, outlineButton, dangerButto
 import { useAppStore } from "../../state/appStore";
 import { relativeWhen } from "../../lib/format";
 import {
-  STATUS_CONFIG,
   PRIORITY_STYLES,
   TERMINAL_MISSION_STATUSES,
   ElapsedTime,
   computeProgress,
   LIFECYCLE_ACTIONS,
   formatResetCountdown,
+  getMissionStatusBadgeConfig,
   usagePercentColor,
 } from "./missionHelpers";
 import { useMissionsStore, type MissionsStore } from "./useMissionsStore";
@@ -53,7 +54,7 @@ const selectHeaderMissionSummary = (s: MissionsStore) => {
 
 /* ════════════════════ MISSION HEADER ════════════════════ */
 
-export function MissionHeader() {
+export function MissionHeader({ runView }: { runView: MissionRunView | null }) {
   /* ── Grouped selector for render data (VAL-ARCH-008) ── */
   const {
     selectedMission,
@@ -67,9 +68,10 @@ export function MissionHeader() {
 
   const selectedMissionSummary = useMissionsStore(selectHeaderMissionSummary);
 
-  /* ── computeProgress excludes superseded/retry (VAL-UX-003) ── */
+  /* ── Header progress should reflect the whole user-facing plan, including
+      pending task shells that have not yet become worker steps. ── */
   const executionProgress = useMemo(
-    () => computeProgress(runGraph?.steps ?? []),
+    () => computeProgress(runGraph?.steps ?? [], { includeDisplayOnlyTaskShells: true }),
     [runGraph?.steps],
   );
 
@@ -249,6 +251,10 @@ export function MissionHeader() {
   }, []);
 
   if (!selectedMission) return null;
+  const statusBadgeConfig = getMissionStatusBadgeConfig(
+    selectedMission.status,
+    runView?.lifecycle.displayStatus ?? null,
+  );
 
   return (
     <div
@@ -263,17 +269,12 @@ export function MissionHeader() {
           >
             {selectedMission.title}
           </h2>
-          {(() => {
-            const sc = STATUS_CONFIG[selectedMission.status];
-            return (
-              <span
-                className="px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-[1px]"
-                style={{ background: sc.background, color: sc.color, border: sc.border, fontFamily: MONO_FONT }}
-              >
-                {sc.label}
-              </span>
-            );
-          })()}
+          <span
+            className="px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-[1px]"
+            style={{ background: statusBadgeConfig.background, color: statusBadgeConfig.color, border: statusBadgeConfig.border, fontFamily: MONO_FONT }}
+          >
+            {statusBadgeConfig.label}
+          </span>
           {selectedMission.priority !== "normal" &&
             (() => {
               const p = PRIORITY_STYLES[selectedMission.priority];
@@ -428,7 +429,7 @@ function CompactUsageMeter() {
     let cancelled = false;
     const fetchBudget = () => {
       window.ade.orchestrator
-        .getMissionBudgetStatus({ missionId: selectedMission.id })
+        .getMissionBudgetStatus({ missionId: selectedMission.id, includeCliTelemetry: false })
         .then((budget) => {
           if (!cancelled) setPerMissionCost(budget.mission.usedCostUsd ?? 0);
         })

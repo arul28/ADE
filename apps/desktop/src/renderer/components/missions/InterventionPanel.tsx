@@ -116,12 +116,16 @@ export function InterventionPanel({ compact }: { compact: boolean }) {
         setActiveInterventionId(interventionId);
         return;
       }
+      if (!intervention) return;
+      const defaultDirective = intervention.interventionType === "manual_input"
+        ? "Acknowledged."
+        : intervention.requestedAction || "Continue with the safest available resolution.";
       s.setSteerBusy(true);
       try {
         await window.ade.orchestrator.steerMission({
           missionId: s.selectedMission.id,
           interventionId,
-          directive: responseText.trim() || "Acknowledged.",
+          directive: responseText.trim() || defaultDirective,
           priority: "instruction",
           resolutionKind: "answer_provided",
         });
@@ -212,7 +216,11 @@ function InterventionCard({
   const stackTrace = typeof intervention.metadata?.rootErrorStack === "string"
     ? intervention.metadata.rootErrorStack.trim()
     : "";
-  const canRespondInline = intervention.interventionType === "manual_input";
+  const isManualInput = intervention.interventionType === "manual_input";
+  const canRespondInline = isManualInput || Boolean(intervention.requestedAction);
+  const responsePlaceholder = isManualInput
+    ? "Type your response..."
+    : "Tell the coordinator to retry, skip, or apply a workaround...";
 
   const typeLabel = intervention.interventionType.replace(/_/g, " ");
 
@@ -444,13 +452,13 @@ function InterventionCard({
         </div>
       ) : null}
 
-      {/* Response input — only for manual_input type */}
+      {/* Response input */}
       {canRespondInline && (
         <div style={{ marginTop: 8 }}>
           <textarea
             value={responseText}
             onChange={(e) => onResponseChange(e.target.value)}
-            placeholder="Type your response..."
+            placeholder={responsePlaceholder}
             rows={2}
             style={{
               width: "100%",
@@ -477,9 +485,9 @@ function InterventionCard({
               disabled={busy}
             >
               <Check size={12} />
-              RESOLVE
+              {isManualInput ? "RESOLVE" : "SEND DECISION"}
             </button>
-            {!isBlocking && (
+            {!isBlocking && isManualInput ? (
               <button
                 style={outlineButton({ height: 28, padding: "0 12px", fontSize: 10 })}
                 onClick={() => void onDismiss(intervention.id)}
@@ -488,7 +496,17 @@ function InterventionCard({
                 <X size={12} />
                 DISMISS
               </button>
-            )}
+            ) : null}
+            {!isManualInput ? (
+              <button
+                style={outlineButton({ height: 28, padding: "0 12px", fontSize: 10 })}
+                onClick={handleViewDetails}
+                disabled={busy}
+              >
+                <Eye size={12} />
+                VIEW DETAILS
+              </button>
+            ) : null}
           </>
         ) : (
           <>
