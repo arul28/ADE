@@ -540,6 +540,7 @@ export function TopBar() {
 
   useEffect(() => {
     let cancelled = false;
+    let statusRequestVersion = 0;
     if (!project?.rootPath) {
       setSyncSnapshot(null);
       setPhoneSyncOpen(false);
@@ -548,31 +549,31 @@ export function TopBar() {
       };
     }
     const refreshSyncStatus = () => {
+      const requestVersion = ++statusRequestVersion;
       void window.ade.sync.getStatus({ includeTransferReadiness: false }).then((snapshot) => {
-        if (!cancelled) setSyncSnapshot(snapshot);
+        if (!cancelled && requestVersion === statusRequestVersion) setSyncSnapshot(snapshot);
       }).catch(() => {
-        if (!cancelled) setSyncSnapshot(null);
+        if (!cancelled && requestVersion === statusRequestVersion) setSyncSnapshot(null);
       });
     };
     setSyncSnapshot(null);
     refreshSyncStatus();
-    const interval = window.setInterval(refreshSyncStatus, 5_000);
     window.addEventListener("focus", refreshSyncStatus);
     const dispose = window.ade.sync.onEvent((event) => {
       if (!cancelled && event.type === "sync-status") {
+        statusRequestVersion += 1;
         setSyncSnapshot(event.snapshot);
       }
     });
     return () => {
       cancelled = true;
-      window.clearInterval(interval);
       window.removeEventListener("focus", refreshSyncStatus);
       dispose();
     };
     // Background projects don't broadcast sync-status events (main.ts filters
-    // them to the active project), so we re-run this effect on rootPath
-    // change to force an immediate refetch instead of waiting up to 5s for
-    // the next polling tick.
+    // them to the active project), so we re-run this effect on rootPath change
+    // to force an immediate refetch. Focus refresh covers state changes that
+    // happen while ADE is not active.
   }, [project?.rootPath]);
 
   const checkForActiveWorkloads = useCallback(async (projectRootPath: string): Promise<boolean> => {

@@ -220,6 +220,49 @@ describe("TopBar", () => {
     expect(await screen.findByText("1 phone connected")).toBeTruthy();
   });
 
+  it("does not refresh phone sync status on an idle interval", async () => {
+    vi.useFakeTimers();
+    try {
+      const getStatus = vi.fn(async () => makeSyncSnapshot());
+      globalThis.window.ade.sync.getStatus = getStatus as any;
+
+      render(<TopBar />);
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(getStatus).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        vi.advanceTimersByTime(15_000);
+        await Promise.resolve();
+      });
+
+      expect(getStatus).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("refreshes phone sync status when the window regains focus", async () => {
+    const getStatus = vi.fn()
+      .mockResolvedValueOnce(makeSyncSnapshot({ connectedPeers: [] }))
+      .mockResolvedValueOnce(makeSyncSnapshot());
+    globalThis.window.ade.sync.getStatus = getStatus as any;
+
+    render(<TopBar />);
+
+    expect(await screen.findByText("Phone sync ready")).toBeTruthy();
+
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+    });
+
+    expect(await screen.findByText("1 phone connected")).toBeTruthy();
+    expect(getStatus).toHaveBeenCalledTimes(2);
+  });
+
   it("shows project icon replacement errors", async () => {
     globalThis.window.ade.project.chooseIcon = vi.fn(async () => {
       throw new Error("Failed to set project icon: Project icon must be 10 MB or smaller.");
