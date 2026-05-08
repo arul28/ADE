@@ -223,6 +223,19 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("reports unreadable JSON payload files as CLI usage errors", () => {
+    const missingPath = path.join(os.tmpdir(), "ade-cli-missing-phases.json");
+
+    expect(() => buildCliPlan([
+      "missions",
+      "create",
+      "--prompt",
+      "Try the mission backend",
+      "--phase-override-file",
+      missingPath,
+    ])).toThrow(/Could not read --phase-override-file file/);
+  });
+
   it("builds typed mission launch with a dependent start step", () => {
     const plan = buildCliPlan([
       "mission",

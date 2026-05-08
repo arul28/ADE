@@ -4222,6 +4222,13 @@ async function runCoordinatorTool(args: {
   const output = await toolEntry.execute(effectiveToolArgs);
   if (isRecord(output)) {
     if (args.name === "message_worker") {
+      const liveDelivered = output.delivered === true;
+      if (liveDelivered) {
+        return {
+          ...output,
+          queuedForPolling: false,
+        };
+      }
       const queued = await maybeRecordMessageWorkerHandoffForPolling({
         runtime: args.runtime,
         missionId,
@@ -4230,14 +4237,13 @@ async function runCoordinatorTool(args: {
         toolArgs: effectiveToolArgs,
       });
       if (queued) {
-        const liveDelivered = output.delivered === true;
         return {
           ...output,
-          ok: liveDelivered ? output.ok : true,
-          delivered: liveDelivered,
-          method: liveDelivered ? (output.method ?? null) : "thread",
-          reason: liveDelivered ? (output.reason ?? null) : "queued_for_polling",
-          queuedForPolling: !liveDelivered,
+          ok: true,
+          delivered: false,
+          method: "thread",
+          reason: "queued_for_polling",
+          queuedForPolling: true,
           fromAttemptId: queued.fromAttemptId,
           toAttemptId: queued.toAttemptId,
           fromWorkerId: queued.fromWorkerId,

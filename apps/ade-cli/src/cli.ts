@@ -1498,7 +1498,15 @@ function readJsonOption(args: string[], names: string[], label: string): unknown
 function readJsonFileOption(args: string[], names: string[], label: string): unknown | undefined {
   const filePath = readValue(args, names);
   if (filePath == null) return undefined;
-  return parseJson(fs.readFileSync(path.resolve(filePath), "utf8"), label);
+  const resolvedPath = path.resolve(filePath);
+  let text: string;
+  try {
+    text = fs.readFileSync(resolvedPath, "utf8");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new CliUsageError(`Could not read ${names[0]} file '${filePath}': ${message}`);
+  }
+  return parseJson(text, label);
 }
 
 function readJsonPayloadOption(args: string[], jsonNames: string[], fileNames: string[], label: string): unknown | undefined {
