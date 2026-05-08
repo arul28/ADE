@@ -113,6 +113,7 @@ describe("PrsContext refresh", () => {
     });
     expect(window.ade.rebase.scanNeeds).not.toHaveBeenCalled();
     expect(window.ade.lanes.listAutoRebaseStatuses).not.toHaveBeenCalled();
+    expect(window.ade.prs.refresh).not.toHaveBeenCalled();
   });
 
   it("refreshes rebase needs and auto-rebase statuses for workflow routes without waiting for events", async () => {
@@ -132,6 +133,28 @@ describe("PrsContext refresh", () => {
       expect(screen.getByTestId("needs-count").textContent).toBe("1");
       expect(screen.getByTestId("auto-count").textContent).toBe("1");
     });
+    expect(window.ade.prs.refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("runs a GitHub PR refresh for explicit refresh actions", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <PrsProvider>
+        <Harness />
+      </PrsProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("loading").textContent).toBe("idle");
+    });
+    expect(window.ade.prs.refresh).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "refresh" }));
+
+    await waitFor(() => {
+      expect(window.ade.prs.refresh).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("does not run a GitHub PR refresh just because the local PR tab changes", async () => {
@@ -146,14 +169,14 @@ describe("PrsContext refresh", () => {
     await waitFor(() => {
       expect(screen.getByTestId("loading").textContent).toBe("idle");
     });
-    expect(window.ade.prs.refresh).toHaveBeenCalledTimes(1);
+    expect(window.ade.prs.refresh).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole("button", { name: "queue" }));
 
     await waitFor(() => {
       expect(screen.getByTestId("active-tab").textContent).toBe("queue");
     });
-    expect(window.ade.prs.refresh).toHaveBeenCalledTimes(1);
+    expect(window.ade.prs.refresh).not.toHaveBeenCalled();
   });
 
   it("hydrates the Rebase/Merge workflow selection from the initial hash route", async () => {

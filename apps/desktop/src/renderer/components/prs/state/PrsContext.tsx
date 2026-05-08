@@ -795,7 +795,12 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
 
   // Initial load
   useEffect(() => {
-    void refreshCore({ skipFreshWarmCache: true, githubRefreshMode: "background" });
+    const shouldRefreshFromGithub =
+      activeTabRef.current !== "normal" || selectedPrIdRef.current !== null;
+    void refreshCore({
+      skipFreshWarmCache: true,
+      githubRefreshMode: shouldRefreshFromGithub ? "background" : undefined,
+    });
   }, [refreshCore]);
 
   // Silently refresh detail data for the given PR (no loading state).
