@@ -22,6 +22,20 @@ function createLogger() {
   } as any;
 }
 
+/** Default stubs for `resolveCreateBranchRef` git probes. Limits `show-ref` to `ade/*` lane branches so tests can still mock specific feature/upstream refs. */
+function defaultLaneBranchGitStub(args: string[]): { exitCode: number; stdout: string; stderr: string } | null {
+  if (args[0] === "check-ref-format" && args[1] === "--branch") {
+    return { exitCode: 0, stdout: "", stderr: "" };
+  }
+  if (args[0] === "show-ref" && args[1] === "--verify" && args[2] === "--quiet") {
+    const ref = args[3] ?? "";
+    if (ref.startsWith("refs/heads/ade/") || ref.startsWith("refs/remotes/origin/ade/")) {
+      return { exitCode: 1, stdout: "", stderr: "fatal: not a valid ref" };
+    }
+  }
+  return null;
+}
+
 async function seedProjectAndStack(db: any, args: { projectId: string; repoRoot: string }) {
   const now = "2026-03-11T12:00:00.000Z";
   db.run(
@@ -83,6 +97,8 @@ describe("laneService createFromUnstaged", () => {
     );
 
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
       if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "HEAD") {
         return { exitCode: 0, stdout: "main\n", stderr: "" };
       }
@@ -143,6 +159,8 @@ describe("laneService createFromUnstaged", () => {
     });
 
     vi.mocked(runGit).mockImplementation(async (args: string[], options: { cwd?: string } = {}) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
       if (args[0] === "status" && args[1] === "--porcelain=v1") {
         if (options.cwd === sourceWorktreePath) {
           return { exitCode: 0, stdout: stashPushed ? "" : " M src/file.ts\n?? src/new.ts\n", stderr: "" };
@@ -205,6 +223,8 @@ describe("laneService createFromUnstaged", () => {
 
     vi.mocked(getHeadSha).mockResolvedValue("sha-parent-head");
     vi.mocked(runGit).mockImplementation(async (args: string[], options: { cwd?: string } = {}) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
       if (args[0] === "status" && args[1] === "--porcelain=v1" && options.cwd === sourceWorktreePath) {
         return { exitCode: 0, stdout: "M  src/file.ts\n", stderr: "" };
       }
@@ -262,6 +282,8 @@ describe("laneService createFromUnstaged", () => {
     });
 
     vi.mocked(runGit).mockImplementation(async (args: string[], options: { cwd?: string } = {}) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
       if (args[0] === "status" && args[1] === "--porcelain=v1") {
         if (options.cwd === sourceWorktreePath) {
           return { exitCode: 0, stdout: stashPushed ? "" : " M README.md\n", stderr: "" };
@@ -363,6 +385,8 @@ describe("laneService createFromUnstaged", () => {
     });
 
     vi.mocked(runGit).mockImplementation(async (args: string[], options: { cwd?: string } = {}) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
       if (args[0] === "status" && args[1] === "--porcelain=v1") {
         if (options.cwd === sourceWorktreePath) {
           return { exitCode: 0, stdout: stashPushed ? "" : " M src/file.ts\n", stderr: "" };
@@ -383,9 +407,6 @@ describe("laneService createFromUnstaged", () => {
       }
       if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--git-dir") {
         return { exitCode: 1, stdout: "", stderr: "fatal: no git dir" };
-      }
-      if (args[0] === "show-ref" && args[1] === "--verify" && args[2] === "--quiet") {
-        return { exitCode: 0, stdout: "", stderr: "" };
       }
       throw new Error(`Unexpected git call: ${args.join(" ")}`);
     });
@@ -414,6 +435,8 @@ describe("laneService createFromUnstaged", () => {
 
     vi.mocked(getHeadSha).mockResolvedValue("sha-parent-head");
     vi.mocked(runGit).mockImplementation(async (args: string[], options: { cwd?: string } = {}) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
       if (args[0] === "status" && args[1] === "--porcelain=v1" && options.cwd === sourceWorktreePath) {
         return { exitCode: 0, stdout: "", stderr: "" };
       }
@@ -470,6 +493,8 @@ describe("laneService create", () => {
       });
 
       vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
         if (args[0] === "rev-parse" && args[1] === "main") {
           return { exitCode: 0, stdout: "sha-main\n", stderr: "" };
         }
@@ -545,6 +570,8 @@ describe("laneService create", () => {
       });
 
       vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
         if (args[0] === "rev-parse" && args[1] === "@{upstream}") {
           return { exitCode: 1, stdout: "", stderr: "fatal: no upstream configured" };
         }
@@ -620,6 +647,8 @@ describe("laneService create", () => {
       });
 
       vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
         if (args[0] === "rev-parse" && args[1] === "main") {
           return { exitCode: 0, stdout: "sha-main\n", stderr: "" };
         }
@@ -735,6 +764,8 @@ describe("laneService list repairs", () => {
       );
 
       vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
         if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "HEAD") {
           return { exitCode: 0, stdout: "missions-overhaul\n", stderr: "" };
         }
@@ -786,6 +817,8 @@ describe("laneService importBranch", () => {
     });
 
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
       if (args[0] === "show-ref" && args[1] === "--verify" && args[3] === "refs/heads/upstream/feature/import") {
         return { exitCode: 1, stdout: "", stderr: "" };
       }
@@ -851,6 +884,8 @@ describe("laneService importBranch", () => {
     );
 
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
       if (args[0] === "show-ref" && args[1] === "--verify" && args[3] === "refs/heads/origin/feature/existing") {
         return { exitCode: 1, stdout: "", stderr: "" };
       }
@@ -886,6 +921,8 @@ describe("laneService importBranch", () => {
     await seedProjectAndStack(db, { projectId: "proj-import-local-existing", repoRoot });
 
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
       if (args[0] === "show-ref" && args[1] === "--verify" && args[3] === "refs/heads/origin/feature/existing-local") {
         return { exitCode: 1, stdout: "", stderr: "" };
       }
@@ -944,6 +981,8 @@ describe("laneService importBranch", () => {
     await seedProjectAndStack(db, { projectId: "proj-import-cleanup", repoRoot });
 
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
       if (args[0] === "show-ref" && args[1] === "--verify" && args[3] === "refs/heads/origin/feature/broken") {
         return { exitCode: 1, stdout: "", stderr: "" };
       }
@@ -1008,6 +1047,8 @@ describe("laneService rebaseStart", () => {
       return "sha-main";
     });
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
       if (args[0] === "merge-base" && args[1] === "--is-ancestor") {
         return { exitCode: 0, stdout: "", stderr: "" };
       }
@@ -1068,6 +1109,8 @@ describe("laneService rebaseStart", () => {
       return "sha-main";
     });
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
       if (args[0] === "fetch" && args[1] === "--prune" && args[2] === "origin") {
         return { exitCode: 0, stdout: "", stderr: "" };
       }
@@ -1134,6 +1177,8 @@ describe("laneService rebaseStart", () => {
       return "sha-main";
     });
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
       if (args[0] === "rev-parse" && args[1] === "--verify" && args[2] === "origin/main") {
         return { exitCode: 0, stdout: "sha-origin-main\n", stderr: "" };
       }
@@ -1189,6 +1234,8 @@ describe("laneService rebaseStart", () => {
       return "sha-main";
     });
     vi.mocked(runGit).mockImplementation((args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return Promise.resolve(laneBranchGitStub);
       if (args[0] === "merge-base" && args[1] === "--is-ancestor") {
         return Promise.resolve({ exitCode: 1, stdout: "", stderr: "" });
       }
@@ -1255,6 +1302,8 @@ describe("laneService rebaseStart", () => {
     });
     vi.mocked(runGitOrThrow).mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" } as any);
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
       if (args[0] === "rev-parse" && args[1] === "--verify" && args[2] === "origin/main") {
         return { exitCode: 0, stdout: "sha-origin-main\n", stderr: "" };
       }
@@ -1311,6 +1360,8 @@ describe("laneService rebaseStart", () => {
       return "sha-main";
     });
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
       if (
         args[0] === "rev-parse"
         && args[1] === "--abbrev-ref"
@@ -1365,6 +1416,8 @@ describe("laneService rebaseStart", () => {
       return "sha-main";
     });
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
       // upstream detection fails (no upstream configured)
       if (
         args[0] === "rev-parse"
@@ -1426,6 +1479,8 @@ describe("laneService rebaseStart", () => {
       return "sha-main";
     });
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
       // upstream detection fails
       if (
         args[0] === "rev-parse"
@@ -1474,6 +1529,8 @@ describe("laneService rebaseStart", () => {
       return "sha-main";
     });
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
       // For a worktree parent, resolveParentRebaseTarget should NOT call
       // rev-parse for upstream or origin refs. It goes straight to getHeadSha.
       if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") {
@@ -1530,6 +1587,8 @@ describe("laneService rebaseStart", () => {
       return null;
     });
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
       // All remote resolution attempts fail
       if (args[0] === "rev-parse") {
         return { exitCode: 1, stdout: "", stderr: "fatal: not found" };
@@ -1564,6 +1623,8 @@ describe("laneService rebaseStart", () => {
       return "sha-main";
     });
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
       if (
         args[0] === "rev-parse"
         && args[1] === "--abbrev-ref"
@@ -1614,6 +1675,8 @@ describe("laneService rebaseStart", () => {
       return "sha-main";
     });
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
       if (args[0] === "merge-base" && args[1] === "--is-ancestor") {
         return { exitCode: 1, stdout: "", stderr: "" };
       }
@@ -1657,6 +1720,8 @@ describe("laneService rebaseStart", () => {
 
     const revParseVerifyCalls: string[] = [];
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
       if (
         args[0] === "rev-parse"
         && args[1] === "--abbrev-ref"
@@ -1716,6 +1781,8 @@ describe("laneService reparent", () => {
     });
 
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
       if (
         args[0] === "rev-parse"
         && args[1] === "--abbrev-ref"
@@ -1786,6 +1853,8 @@ describe("laneService missionId and laneRole", () => {
     });
 
     vi.mocked(runGit).mockImplementation(async (args: string[], options: { cwd?: string } = {}) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
       if (args[0] === "push" && args[1] === "-u") {
         return { exitCode: 0, stdout: "", stderr: "" };
       }
@@ -1899,6 +1968,8 @@ describe("laneService missionId and laneRole", () => {
     });
 
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
       if (args[0] === "push" && args[1] === "-u") {
         return { exitCode: 0, stdout: "", stderr: "" };
       }
@@ -1962,6 +2033,8 @@ describe("laneService missionId and laneRole", () => {
       });
 
       vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
         if (args[0] === "rev-parse" && args[1] === "main") {
           return { exitCode: 0, stdout: "sha-main\n", stderr: "" };
         }
@@ -2031,6 +2104,8 @@ describe("laneService missionId and laneRole", () => {
     });
 
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
       if (args[0] === "show-ref" && args[1] === "--verify" && args[3] === "refs/heads/origin/feature/remote-only") {
         return { exitCode: 1, stdout: "", stderr: "" };
       }
@@ -2089,6 +2164,8 @@ describe("laneService missionId and laneRole", () => {
     await seedProjectAndStack(db, { projectId: "proj-set-ownership", repoRoot });
 
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
       if (args[0] === "status" && args[1] === "--porcelain=v1") {
         return { exitCode: 0, stdout: "", stderr: "" };
       }
@@ -2154,6 +2231,8 @@ describe("laneService missionId and laneRole", () => {
     db.run("update lanes set mission_id = ?, lane_role = ? where id = ?", ["mission-existing", "worker", "lane-parent"]);
 
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
       if (args[0] === "status" && args[1] === "--porcelain=v1") {
         return { exitCode: 0, stdout: "", stderr: "" };
       }
@@ -2257,6 +2336,8 @@ describe("laneService missionId and laneRole", () => {
     db.run("update lanes set mission_id = ?, lane_role = ? where id = ?", ["mission-map-test", "integration", "lane-parent"]);
 
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
       if (args[0] === "status" && args[1] === "--porcelain=v1") {
         return { exitCode: 0, stdout: "", stderr: "" };
       }
@@ -2450,6 +2531,8 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     const { service } = await setupWithLane({ teardown: fake, events });
     // git status: clean. git_worktree_remove: succeeds. branch ref check: not found (skip branch delete).
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
       if (args[0] === "status") return { exitCode: 0, stdout: "", stderr: "" } as any;
       if (args[0] === "show-ref") return { exitCode: 1, stdout: "", stderr: "" } as any;
       if (args[0] === "worktree" && args[1] === "remove") {
@@ -2512,6 +2595,8 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     const { service } = await setupWithLane({ teardown: fake, events });
     // 3 unpushed commits + remote branch exists.
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
       if (args[0] === "status") return { exitCode: 0, stdout: "", stderr: "" } as any;
       if (args[0] === "rev-list") return { exitCode: 0, stdout: "3", stderr: "" } as any;
       if (args[0] === "ls-remote") return { exitCode: 0, stdout: "abc123\trefs/heads/feature/child", stderr: "" } as any;

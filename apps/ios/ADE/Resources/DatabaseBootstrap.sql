@@ -54,6 +54,22 @@ create index if not exists idx_lanes_project_mission on lanes(project_id, missio
 
 create index if not exists idx_lanes_project_role on lanes(project_id, lane_role);
 
+create table if not exists lane_linear_issues (
+      id text primary key,
+      project_id text not null,
+      lane_id text not null,
+      issue_id text not null,
+      issue_json text not null,
+      created_at text not null,
+      updated_at text not null,
+      foreign key(project_id) references projects(id) on delete cascade,
+      foreign key(lane_id) references lanes(id) on delete cascade
+    );
+
+create index if not exists idx_lane_linear_issues_lane on lane_linear_issues(project_id, lane_id);
+
+create index if not exists idx_lane_linear_issues_issue on lane_linear_issues(project_id, issue_id);
+
 create table if not exists lane_branch_profiles (
       id text primary key,
       project_id text not null,
