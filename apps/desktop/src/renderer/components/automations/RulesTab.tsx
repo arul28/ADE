@@ -11,6 +11,7 @@ import {
 import { motion } from "motion/react";
 import { getDefaultModelDescriptor } from "../../../shared/modelRegistry";
 import type {
+  AutomationAction,
   AutomationDraftConfirmationRequirement,
   AutomationDraftIssue,
   AutomationRuleDraft,
@@ -68,6 +69,16 @@ function createBlankDraft(): AutomationRuleDraft {
   };
 }
 
+function runtimeActionFields(action: AutomationAction) {
+  return {
+    ...(action.targetLaneId ? { targetLaneId: action.targetLaneId } : {}),
+    ...(action.condition ? { condition: action.condition } : {}),
+    ...(typeof action.continueOnFailure === "boolean" ? { continueOnFailure: action.continueOnFailure } : {}),
+    ...(Number.isFinite(action.timeoutMs) ? { timeoutMs: action.timeoutMs } : {}),
+    ...(Number.isFinite(action.retry) ? { retry: action.retry } : {}),
+  };
+}
+
 function toDraftFromRule(rule: AutomationRuleSummary): AutomationRuleDraft {
   const builtInActions = rule.execution?.kind === "built-in"
     ? rule.execution.builtIn?.actions ?? []
@@ -76,20 +87,27 @@ function toDraftFromRule(rule: AutomationRuleSummary): AutomationRuleDraft {
     if (action.type === "create-lane") {
       return {
         type: action.type,
+        ...runtimeActionFields(action),
         ...(action.laneNameTemplate ? { laneNameTemplate: action.laneNameTemplate } : {}),
         ...(action.laneDescriptionTemplate ? { laneDescriptionTemplate: action.laneDescriptionTemplate } : {}),
         ...(action.parentLaneId ? { parentLaneId: action.parentLaneId } : {}),
       } as any;
     }
     if (action.type === "run-tests") {
-      return { type: action.type, suite: action.suiteId ?? "" } as any;
+      return { type: action.type, ...runtimeActionFields(action), suite: action.suiteId ?? "" } as any;
     }
     if (action.type === "run-command") {
-      return { type: action.type, command: action.command ?? "", ...(action.cwd ? { cwd: action.cwd } : {}) } as any;
+      return {
+        type: action.type,
+        ...runtimeActionFields(action),
+        command: action.command ?? "",
+        ...(action.cwd ? { cwd: action.cwd } : {}),
+      } as any;
     }
     if (action.type === "ade-action") {
       return {
         type: action.type,
+        ...runtimeActionFields(action),
         adeAction: action.adeAction
           ? {
               domain: action.adeAction.domain ?? "",
@@ -103,7 +121,7 @@ function toDraftFromRule(rule: AutomationRuleSummary): AutomationRuleDraft {
     if (action.type === "agent-session") {
       return {
         type: action.type,
-        ...(action.targetLaneId ? { targetLaneId: action.targetLaneId } : {}),
+        ...runtimeActionFields(action),
         ...(action.modelConfig ? { modelConfig: structuredClone(action.modelConfig) } : {}),
         ...(action.permissionConfig ? { permissionConfig: structuredClone(action.permissionConfig) } : {}),
         ...(action.prompt ? { prompt: action.prompt } : {}),
@@ -113,10 +131,11 @@ function toDraftFromRule(rule: AutomationRuleSummary): AutomationRuleDraft {
     if (action.type === "launch-mission") {
       return {
         type: action.type,
+        ...runtimeActionFields(action),
         ...(action.sessionTitle ? { missionTitle: action.sessionTitle } : {}),
       } as any;
     }
-    return { type: action.type } as any;
+    return { type: action.type, ...runtimeActionFields(action) } as any;
   });
   return {
     id: rule.id,
@@ -314,6 +333,8 @@ export function RulesTab({
   const [saving, setSaving] = useState(false);
   const [simulating, setSimulating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [manualRunRule, setManualRunRule] = useState<AutomationRuleSummary | null>(null);
+  const [manualRunLaneId, setManualRunLaneId] = useState<string>("");
   const [configTrustRequired, setConfigTrustRequired] = useState(false);
   const loadRef = useRef<(() => Promise<void>) | null>(null);
   // Snapshot of the last-saved (or last-loaded-from-rule) draft, used to detect
@@ -492,15 +513,26 @@ export function RulesTab({
     setDetailView("editor");
   };
 
-  const runRuleNow = useCallback(async (ruleId: string) => {
+  const runRuleNow = useCallback(async (ruleId: string, laneId?: string | null) => {
     setError(null);
     try {
-      await window.ade.automations.triggerManually({ id: ruleId });
+      await window.ade.automations.triggerManually({ id: ruleId, ...(laneId ? { laneId } : {}) });
       await refresh();
+      setManualRunRule(null);
+      setManualRunLaneId("");
     } catch (err) {
       setError(extractError(err));
     }
   }, [refresh]);
+
+  const beginRunRule = useCallback((rule: AutomationRuleSummary) => {
+    if (rule.execution?.laneMode === "require-on-trigger") {
+      setManualRunRule(rule);
+      setManualRunLaneId(lanes[0]?.id ?? "");
+      return;
+    }
+    void runRuleNow(rule.id);
+  }, [lanes, runRuleNow]);
 
   const deleteRule = useCallback(async (ruleId: string) => {
     setError(null);
@@ -601,7 +633,7 @@ export function RulesTab({
                   onToggle={(enabled) => {
                     window.ade.automations.toggle({ id: rule.id, enabled }).then(setRules).catch((err) => setError(extractError(err)));
                   }}
-                  onRunNow={() => void runRuleNow(rule.id)}
+                  onRunNow={() => beginRunRule(rule)}
                   onDelete={() => void deleteRule(rule.id)}
                 />
               ))}
@@ -687,6 +719,56 @@ export function RulesTab({
           )}
         </div>
       </div>
+      {manualRunRule ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 px-4">
+          <div className="w-full max-w-md rounded-xl border border-white/[0.12] bg-[#0B121A] p-4 shadow-2xl">
+            <div className="text-sm font-semibold text-[#F5FAFF]">Select lane for this run</div>
+            <div className="mt-1 text-xs leading-relaxed text-[#93A4B8]">
+              {manualRunRule.name} requires a lane when triggered.
+            </div>
+            <label className="mt-4 block space-y-1.5">
+              <span className="text-[10px] uppercase tracking-[1px] text-[#8FA1B8]">Lane</span>
+              <select
+                className={inputCls}
+                value={manualRunLaneId}
+                onChange={(event) => setManualRunLaneId(event.target.value)}
+              >
+                {lanes.map((lane) => (
+                  <option key={lane.id} value={lane.id}>
+                    {lane.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {!lanes.length ? (
+              <div className="mt-3 rounded-md border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-200">
+                No active lanes are available for this automation run.
+              </div>
+            ) : null}
+            <div className="mt-4 flex justify-end gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  setManualRunRule(null);
+                  setManualRunLaneId("");
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                variant="primary"
+                disabled={!manualRunLaneId}
+                onClick={() => void runRuleNow(manualRunRule.id, manualRunLaneId)}
+              >
+                <Play size={12} weight="regular" />
+                Run
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </motion.div>
   );
 }

@@ -71,8 +71,6 @@ const ADD_OPTIONS: readonly AddOption[] = [
     icon: Rocket,
     accent: "#94A3B8",
     description: "Spin up a multi-step mission for this rule.",
-    disabled: true,
-    hint: "Soon",
   },
 ];
 
@@ -111,6 +109,7 @@ export function ActionList({
   lanes,
   suites,
   fallbackModel,
+  executionLaneMode,
   onChange,
   onOpenAiSettings,
 }: {
@@ -118,6 +117,7 @@ export function ActionList({
   lanes: Array<{ id: string; name: string }>;
   suites: TestSuiteDefinition[];
   fallbackModel: ModelConfig;
+  executionLaneMode?: string | null;
   onChange: (next: ActionRowValue[]) => void;
   onOpenAiSettings?: () => void;
 }) {
@@ -175,6 +175,7 @@ export function ActionList({
               lanes={lanes}
               suites={suites}
               fallbackModel={fallbackModel}
+              executionLaneMode={executionLaneMode}
               onChange={(next) => updateAction(index, next)}
               onRemove={() => removeAction(index)}
               onMove={(direction) => moveAction(index, direction)}

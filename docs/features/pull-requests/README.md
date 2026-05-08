@@ -531,6 +531,7 @@ best-effort — failures log a warning and do not abort the tick.
 - `PRsPage` parses URL state via `parsePrsRouteState` and writes it
   back with `buildPrsRouteSearch`. Active tab, workflow sub-tab,
   selected PR, queue group, lane, and rebase item are all encoded.
+- `PrsContext` mounts cheaply on the plain GitHub PR list. The initial `refreshCore` only kicks a background GitHub refresh when the active tab is a workflow tab (`queue` / `integration` / `rebase`) or a PR is selected; otherwise `githubRefreshMode` is left undefined so the renderer paints from the existing snapshot. `applyLocalPrState` calls `lanes.list({ includeStatus: false })` and skips `rebase.scanNeeds` / `lanes.listAutoRebaseStatuses` on the plain list — those legs hydrate the moment a workflow tab opens or a PR is selected, and the periodic 60 s rebase scan + auto-rebase listener also no-op while the user is on the plain list.
 - `PrsContext` owns PR list, queue states, rebase needs, proposals,
   convergence runtime state, and the Timeline+Rails UI state
   (`prsTimelineRailsEnabled`, `timelineFiltersByPrId`,

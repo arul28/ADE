@@ -105,6 +105,13 @@ returns to their preferred view across sessions.
 `normalizeGraphPreferences(state)` migrates legacy schemas (including
 the older `presets: […]` shape) to the current format.
 
+The persistence callback dedupes against the value just loaded:
+`GraphInner` keeps a `skipNextGraphPreferencePersistRootRef` set to the
+project root that was just hydrated. The next `viewMode`-watcher run
+skips its `graphState.set` because the load handler's `setViewMode`
+would otherwise echo the loaded preference straight back to disk on
+every project switch.
+
 ## Node data (`GraphNodeData`)
 
 Every lane node carries enough derived state to render without

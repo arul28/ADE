@@ -571,10 +571,14 @@ Enforced rules (from the stability overhaul):
 2. New integrations are dormant-until-configured.
 3. Feature pages stage data: cheapest (list/summary/topology) first, heavy (dashboard/settings/model metadata/overlays) on delay.
 4. Never mount expensive trees eagerly — settings dialogs, advanced launcher sections unmount when closed.
-5. Renderer polling is route-scoped; terminal attention only polls on terminal routes; lane panels only poll while live sessions exist.
+5. Renderer polling is route-scoped; terminal attention only polls on terminal routes; lane panels only poll while live sessions exist. The plain PR list does not fire a GitHub refresh on mount and skips rebase-needs / auto-rebase polling until the user opens a workflow tab or selects a PR. The Lanes page reuses the `LaneSummary.autoRebaseStatus` snapshot already in the lane list instead of probing per-lane on `LaneGitActionsPane` mount; a fallback probe runs only when the snapshot is missing and after a visibility-gated 3.5 s delay. The Work top-bar sync chip refreshes on focus and on `sync-status` events instead of a 5 s interval. The chat composer's Cursor model inventory is fetched lazily — `ProviderModelSelector` calls `onOpen` on first open of the model catalog, and `AgentChatPane.refreshCursorModelInventory` is the only entry point that hits `cursor` with `activateRuntime: true`.
 6. Shared caches for high-frequency calls (`sessionListCache`, GitHub fingerprint-based snapshots).
 7. Memoize expensive renderer computations (`useMemo`, `React.memo`); isolate frequently-refreshing subtrees (e.g., budget footers).
 8. `Promise.allSettled` over `Promise.all` for parallel startup — one failing service must not block others.
+9. Settings sections that surface a snapshot read the cached snapshot on mount (`ade.usage.getSnapshot`) instead of forcing a refresh; an explicit Refresh button drives recompute.
+10. Persistence callbacks dedupe against the last-saved value: the workspace-graph view-mode persister tracks the last-loaded preference root and skips the immediate write that the load handler's `setViewMode` would otherwise fire.
+
+CLI-launcher and shell-quoting helpers (`cliLaunch.ts`, `shell.ts`) live under `apps/desktop/src/renderer/` only — the prior `apps/desktop/src/shared/` copies were renderer-only in practice and have been removed. The mobile-launcher path (`work.startCliSession`) was retired with them; iOS launches CLI sessions through host-side actions that don't share renderer modules.
 
 Themes: six shipped themes (`e-paper`, `bloomberg`, `github`, `rainbow`, `sky`, `pats`), persisted in `localStorage.ade.theme`, applied via `data-theme` on root. Token-based palettes in `apps/desktop/src/renderer/index.css`.
 

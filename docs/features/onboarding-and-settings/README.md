@@ -181,7 +181,11 @@ Renderer — settings:
   via `tailscale serve`), and the per-device connection panel used to
   forget paired phones.
 - `apps/desktop/src/renderer/components/settings/SettingsUsageSection.tsx`
-  and `UsageGuardrailsSection.tsx` — cost and usage.
+  and `UsageGuardrailsSection.tsx` — cost and usage. The guardrails
+  section's mount-time hydrate calls `ade.usage.getSnapshot` (cached
+  read), not `ade.usage.refresh` (which forces a recompute); the user
+  still gets the live numbers via the section's explicit Refresh
+  control.
 - `apps/desktop/src/renderer/components/settings/ProxyAndPreviewSection.tsx`
   — proxy/preview configuration UI.
 - `apps/desktop/src/renderer/components/settings/DiagnosticsDashboardSection.tsx`

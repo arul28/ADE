@@ -675,10 +675,9 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
   const applyLocalPrState = useCallback(async () => {
     const shouldLoadWorkflowState = activeTabRef.current !== "normal";
     const shouldLoadRebaseState = shouldLoadWorkflowState || selectedPrIdRef.current !== null;
-    const shouldLoadDecoratedLaneStatus = shouldLoadWorkflowState || selectedPrIdRef.current !== null;
     const [prList, laneList, queueStateList, refreshedRebaseNeeds, refreshedAutoRebaseStatuses] = await Promise.all([
       window.ade.prs.listWithConflicts(),
-      window.ade.lanes.list({ includeStatus: shouldLoadDecoratedLaneStatus }),
+      window.ade.lanes.list({ includeStatus: shouldLoadRebaseState }),
       shouldLoadWorkflowState
         ? window.ade.prs.listQueueStates({ includeCompleted: true, limit: 50 })
         : Promise.resolve([] as QueueLandingState[]),

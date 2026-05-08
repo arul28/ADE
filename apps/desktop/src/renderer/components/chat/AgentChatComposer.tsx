@@ -626,6 +626,7 @@ export function AgentChatComposer({
   hideNativeControls = false,
   messagePlaceholder,
   onModelChange,
+  onModelCatalogOpen,
   onReasoningEffortChange,
   onCodexFastModeChange,
   onDraftChange,
@@ -735,6 +736,7 @@ export function AgentChatComposer({
   hideNativeControls?: boolean;
   messagePlaceholder?: string;
   onModelChange: (modelId: string) => void;
+  onModelCatalogOpen?: () => void;
   onReasoningEffortChange: (reasoningEffort: string | null) => void;
   onCodexFastModeChange?: (enabled: boolean) => void;
   onDraftChange: (value: string) => void;
@@ -2870,6 +2872,7 @@ export function AgentChatComposer({
               <ProviderModelSelector
                 value={parallelModelSlots[parallelConfiguringIndex]!.modelId}
                 onChange={(next) => onParallelSlotModelChange?.(parallelConfiguringIndex, next)}
+                onOpen={onModelCatalogOpen}
                 availableModelIds={availableModelIds}
                 disabled={parallelLaunchBusy}
                 showReasoning
@@ -2890,6 +2893,7 @@ export function AgentChatComposer({
               <ProviderModelSelector
                 value={modelId}
                 onChange={onModelChange}
+                onOpen={onModelCatalogOpen}
                 availableModelIds={availableModelIds}
                 disabled={modelSelectionLocked}
                 showReasoning

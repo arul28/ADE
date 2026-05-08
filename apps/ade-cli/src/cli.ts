@@ -1209,13 +1209,15 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade automations update <id> --from-file <path>
     $ ade automations delete <id>                   Remove a local rule
     $ ade automations toggle <id> --enabled true|false
-    $ ade automations run <id> [--dry-run]          Trigger a rule manually
+    $ ade automations run <id> [--lane <id>] [--dry-run]
+    $ ade automations trigger <id> --lane <id>
+                                                     Trigger a rule manually
     $ ade automations runs [--rule <id>] [--status <s>] [--limit 50]
     $ ade automations run-show <runId> [--json]     Inspect a run
     $ ade automations example                       Print an example rule (stdout)
 
   Lane mode flags (apply to create/update on top of --from-file/--stdin/--text):
-    --lane-mode <create|reuse>                      Spawn a new lane per run, or reuse one
+    --lane-mode <create|reuse|require-on-trigger>   Create, reuse, or require lane at trigger time
     --lane <id>                                     Target lane (only with --lane-mode reuse)
     --lane-name-preset <issue-title|issue-num-title|pr-title-author|custom>
     --lane-name-template <string>                   Template (only with preset custom)
@@ -3706,7 +3708,7 @@ function parseDraftInput(args: string[]): JsonObject {
   return parsed;
 }
 
-const AUTOMATION_LANE_MODES = ["create", "reuse"] as const;
+const AUTOMATION_LANE_MODES = ["create", "reuse", "require-on-trigger"] as const;
 const AUTOMATION_LANE_NAME_PRESETS = ["issue-title", "issue-num-title", "pr-title-author", "custom"] as const;
 const AUTOMATION_RUN_STATUSES = ["queued", "running", "succeeded", "failed", "cancelled", "paused", "all"] as const;
 
@@ -3737,10 +3739,10 @@ function applyLaneFlagsToDraft(draft: JsonObject, args: string[]): JsonObject {
     return draft;
   }
 
-  if (laneId != null && laneMode === "create") {
+  if (laneId != null && laneMode != null && laneMode !== "reuse") {
     throw new CliUsageError("--lane is only valid with --lane-mode reuse.");
   }
-  if (preset != null && laneMode === "reuse") {
+  if (preset != null && laneMode != null && laneMode !== "create") {
     throw new CliUsageError("--lane-name-preset is only valid with --lane-mode create.");
   }
   if (template != null && preset != null && preset !== "custom") {
@@ -3867,7 +3869,7 @@ function buildAutomationsPlan(args: string[]): CliPlan {
     };
   }
 
-  if (sub === "run") {
+  if (sub === "run" || sub === "trigger") {
     const id = requireValue(readValue(args, ["--id"]) ?? firstPositional(args), "rule id");
     const dryRun = readFlag(args, ["--dry-run"]);
     const laneId = readLaneId(args);

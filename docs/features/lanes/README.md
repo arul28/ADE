@@ -40,7 +40,7 @@ Renderer components:
 | `renderer/components/lanes/LaneContextMenu.tsx` | Right-click menu on the lane list. Hosts the inline color swatch row that calls `lanes.updateAppearance` directly, "Reveal/Copy path", manage/adopt/open-in-Run actions, split-tab actions, and batch manage. |
 | `renderer/components/lanes/LaneStackPane.tsx` | Stack graph sidebar, integration source chips, canvas jump |
 | `renderer/components/lanes/LaneDiffPane.tsx` | Diff viewer, per-file stage/unstage/discard |
-| `renderer/components/lanes/LaneGitActionsPane.tsx` | Commit, stash, fetch, sync, push, recent commits |
+| `renderer/components/lanes/LaneGitActionsPane.tsx` | Commit, stash, fetch, sync, push, recent commits. Seeds its `autoRebaseStatus` from the `autoRebaseStatusSnapshot` prop that `LanesPage` passes from the lane list (`laneSnapshot.autoRebaseStatus`), so opening a lane does not trigger a per-lane probe. A fallback `refreshAutoRebaseStatus` runs only when the snapshot is `undefined`, after a 3.5 s delay, and only while the document is visible. |
 | `renderer/components/lanes/LaneWorkPane.tsx` | Terminal/chat toggle work surface |
 | `renderer/components/lanes/LaneRebaseBanner.tsx` | Inline banner driven by `rebaseSuggestionService` |
 | `renderer/components/lanes/LaneEnvInitProgress.tsx` | Env init step progress inside create dialog |

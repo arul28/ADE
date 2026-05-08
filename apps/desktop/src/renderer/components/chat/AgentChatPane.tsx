@@ -1505,6 +1505,25 @@ function chatSessionTitle(session: AgentChatSessionSummary): string {
   return descriptor?.displayName ?? `${session.provider}/${session.model}`;
 }
 
+function orderAvailableModelIds(ids: Iterable<string>): string[] {
+  const available = new Set(ids);
+  const ordered = MODEL_REGISTRY
+    .filter((model) => !model.deprecated && available.has(model.id))
+    .map((model) => model.id);
+  const extra = [...available].filter((modelId) => !ordered.includes(modelId));
+  extra.sort((left, right) => {
+    const leftLabel = getModelById(left)?.displayName ?? left;
+    const rightLabel = getModelById(right)?.displayName ?? right;
+    return leftLabel.localeCompare(rightLabel, undefined, { sensitivity: "base" });
+  });
+  return [...ordered, ...extra];
+}
+
+function isCursorModelId(id: string): boolean {
+  return id.startsWith("cursor/")
+    || getModelById(id)?.family === "cursor";
+}
+
 function completionBadgeClass(status: NonNullable<AgentChatSessionSummary["completion"]>["status"]): string {
   switch (status) {
     case "completed": return "border-emerald-400/20 bg-emerald-400/[0.08] text-emerald-300";
@@ -2694,25 +2713,7 @@ export function AgentChatPane({
   });
 
   const refreshAvailableModels = useCallback(async () => {
-    const refreshSeq = ++availableModelsRefreshSeqRef.current;
-    const orderModelIds = (ids: Iterable<string>): string[] => {
-      const available = new Set(ids);
-      const ordered = MODEL_REGISTRY
-        .filter((model) => !model.deprecated && available.has(model.id))
-        .map((model) => model.id);
-      const extra = [...available].filter((modelId) => !ordered.includes(modelId));
-      extra.sort((left, right) => {
-        const leftLabel = getModelById(left)?.displayName ?? left;
-        const rightLabel = getModelById(right)?.displayName ?? right;
-        return leftLabel.localeCompare(rightLabel, undefined, { sensitivity: "base" });
-      });
-      return [...ordered, ...extra];
-    };
-    const isCursorModelId = (id: string): boolean => (
-      id.startsWith("cursor/")
-      || getModelById(id)?.family === "cursor"
-    );
-
+    ++availableModelsRefreshSeqRef.current;
     const selectedModelProvider = modelId.trim()
       ? resolveChatRuntimeProvider(getModelById(modelId))
       : null;
@@ -2735,34 +2736,8 @@ export function AgentChatPane({
         droid: status.providerConnections?.droid ?? null,
       });
       const available = deriveConfiguredModelIds(status, { includeDroid: true });
-      const orderedAvailable = orderModelIds(available);
+      const orderedAvailable = orderAvailableModelIds(available);
       setAvailableModelIds(orderedAvailable);
-      const cursorReady = status.availableProviders?.cursor === true
-        || status.providerConnections?.cursor?.runtimeAvailable === true;
-      const hasCursorModelIds = orderedAvailable.some(isCursorModelId);
-      if (!cursorReady || hasCursorModelIds) return orderedAvailable;
-
-      void getAgentChatModelsCached({
-        projectRoot,
-        provider: "cursor",
-        activateRuntime: true,
-      }).then((cursorModels) => {
-        if (availableModelsRefreshSeqRef.current !== refreshSeq) return;
-        if (!cursorModels.length) {
-          const withoutCursor = orderedAvailable.filter((id) => !isCursorModelId(id));
-          setAvailableModelIds(withoutCursor);
-          return;
-        }
-
-        const merged = new Set<string>(available);
-        for (const model of cursorModels) {
-          const resolved = resolveCliRegistryModelId("cursor", model.id);
-          if (resolved) merged.add(resolved);
-        }
-        const withCursor = orderModelIds(merged);
-        setAvailableModelIds(withCursor);
-      }).catch(() => undefined);
-
       return orderedAvailable;
     } catch {
       setAiStatus(null);
@@ -2809,7 +2784,7 @@ export function AgentChatPane({
         }
       }
 
-      const allAvailable = orderModelIds(available);
+      const allAvailable = orderAvailableModelIds(available);
       setAvailableModelIds(allAvailable);
       return allAvailable;
     } catch {
@@ -2817,6 +2792,38 @@ export function AgentChatPane({
       return [];
     }
   }, [modelId, projectRoot, selectedSession?.provider, sessionProvider]);
+
+  const refreshCursorModelInventory = useCallback(async () => {
+    const status = aiStatus;
+    const cursorReady = status?.availableProviders?.cursor === true
+      || status?.providerConnections?.cursor?.runtimeAvailable === true;
+    if (!cursorReady) return;
+    if (availableModelIds.some(isCursorModelId)) return;
+    const refreshSeq = availableModelsRefreshSeqRef.current;
+    let cursorModels: Awaited<ReturnType<typeof getAgentChatModelsCached>>;
+    try {
+      cursorModels = await getAgentChatModelsCached({
+        projectRoot,
+        provider: "cursor",
+        activateRuntime: true,
+      });
+    } catch {
+      return;
+    }
+    if (availableModelsRefreshSeqRef.current !== refreshSeq) return;
+    if (!cursorModels.length) {
+      setAvailableModelIds((prev) => prev.filter((id) => !isCursorModelId(id)));
+      return;
+    }
+    setAvailableModelIds((prev) => {
+      const merged = new Set<string>(prev);
+      for (const model of cursorModels) {
+        const resolved = resolveCliRegistryModelId("cursor", model.id);
+        if (resolved) merged.add(resolved);
+      }
+      return orderAvailableModelIds(merged);
+    });
+  }, [aiStatus, availableModelIds, projectRoot]);
 
   const touchSession = useCallback((sessionId: string | null | undefined, touchedAt = new Date().toISOString()) => {
     if (!sessionId) return;
@@ -5271,6 +5278,7 @@ export function AgentChatPane({
                     <ProviderModelSelector
                       value={handoffModelId}
                       onChange={setHandoffModelId}
+                      onOpen={refreshCursorModelInventory}
                       availableModelIds={handoffAvailableModelIds}
                       showReasoning
                       reasoningEffort={handoffReasoningEffort}
@@ -5595,6 +5603,7 @@ export function AgentChatPane({
             hideNativeControls={hideNativeControls}
             messagePlaceholder={messagePlaceholder}
             onExecutionModeChange={setExecutionMode}
+            onModelCatalogOpen={refreshCursorModelInventory}
             onInteractionModeChange={(value) => { void updateNativeControls({ interactionMode: value }); }}
             onClaudeModeChange={handleClaudeModeChange}
             onClaudePermissionModeChange={(value) => { void updateNativeControls({ claudePermissionMode: value }); }}

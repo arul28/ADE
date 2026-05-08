@@ -846,7 +846,7 @@ export function TopBar() {
                   onDrop={(e) => handleDrop(e, idx)}
                   onDragEnd={handleDragEnd}
                   className={cn(
-                    "ade-shell-project-tab group inline-flex w-[clamp(128px,16vw,220px)] max-w-[220px] shrink-0 items-center gap-2 px-3 py-0.5",
+                    "ade-shell-project-tab group inline-flex w-[clamp(128px,16vw,220px)] max-w-[220px] min-w-0 shrink-0 items-center gap-2 px-3 py-0.5",
                     "transition-[background-color,color,border-color,box-shadow,opacity] duration-150",
                     !isMissing && "cursor-pointer",
                     isCurrent && "font-semibold",
@@ -895,14 +895,14 @@ export function TopBar() {
                   ) : null}
                   <span
                     className={cn(
-                      "truncate",
+                      "min-w-0 flex-1 truncate",
                       isMissing && "line-through"
                     )}
                   >
                     {rp.displayName}
                   </span>
                   {isMissing ? (
-                    <span className="inline-flex items-center gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150">
+                    <span className="ml-auto inline-flex shrink-0 items-center gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150">
                       <button
                         type="button"
                         className="ade-shell-control inline-flex h-5 w-5 items-center justify-center text-current transition-[background-color,color,border-color,box-shadow] duration-100"
@@ -937,7 +937,7 @@ export function TopBar() {
                     <button
                       type="button"
                       className={cn(
-                        "ade-shell-control inline-flex h-5 w-5 items-center justify-center text-current",
+                        "ade-shell-control ml-auto inline-flex h-5 w-5 shrink-0 items-center justify-center text-current",
                         "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150"
                       )}
                       data-variant="ghost"
@@ -958,7 +958,7 @@ export function TopBar() {
             {isNewTabOpen && (
               <div
                 className={cn(
-                  "ade-shell-project-tab group inline-flex w-[clamp(128px,16vw,220px)] max-w-[220px] items-center gap-2 px-3 py-0.5",
+                  "ade-shell-project-tab group inline-flex w-[clamp(128px,16vw,220px)] max-w-[220px] min-w-0 items-center gap-2 px-3 py-0.5",
                   "transition-[background-color,color,border-color,box-shadow] duration-150",
                   "font-semibold"
                 )}
@@ -970,13 +970,13 @@ export function TopBar() {
                 ) : (
                   <img src="./logo.png" alt="" style={{ height: 16, width: 34, objectFit: "contain" }} draggable={false} />
                 )}
-                <span className="truncate text-[12px]">
+                <span className="min-w-0 flex-1 truncate text-[12px]">
                   {projectTransition?.kind === "opening" ? "Opening…" : "New Tab"}
                 </span>
                 <button
                   type="button"
                   className={cn(
-                    "ade-shell-control inline-flex h-4 w-4 items-center justify-center rounded-sm",
+                    "ade-shell-control ml-auto inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-sm",
                     "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150"
                   )}
                   data-variant="ghost"

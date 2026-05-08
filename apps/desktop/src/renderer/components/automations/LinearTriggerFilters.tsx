@@ -1,6 +1,10 @@
 import type { AutomationTrigger } from "../../../shared/types";
 import { INPUT_CLS, INPUT_STYLE } from "./shared";
 
+function parseList(value: string): string[] {
+  return value.split(",").map((entry) => entry.trim()).filter(Boolean);
+}
+
 export function LinearTriggerFilters({
   trigger,
   onPatch,
@@ -43,14 +47,23 @@ export function LinearTriggerFilters({
           placeholder="bug, priority"
           onChange={(value) =>
             onPatch({
-              labels: value
-                .split(",")
-                .map((l) => l.trim())
-                .filter(Boolean),
+              labels: parseList(value),
             })
           }
         />
       )}
+      <LabeledInput
+        label="Changed fields"
+        value={(trigger.changedFields ?? []).join(", ")}
+        placeholder="title, description, labels"
+        onChange={(value) => onPatch({ changedFields: parseList(value) })}
+      />
+      <LabeledInput
+        label="Keywords"
+        value={(trigger.keywords ?? []).join(", ")}
+        placeholder="escalated, customer"
+        onChange={(value) => onPatch({ keywords: parseList(value) })}
+      />
     </div>
   );
 }

@@ -34,10 +34,15 @@ export type ActionRowKind =
 
 export type ActionRowValue = {
   kind: ActionRowKind;
+  // Runtime
+  targetLaneId?: string | null;
+  condition?: string;
+  continueOnFailure?: boolean;
+  timeoutMs?: number;
+  retry?: number;
   // Agent-session
   prompt?: string;
   sessionTitle?: string;
-  targetLaneId?: string | null;
   modelConfig?: ModelConfig;
   permissionConfig?: MissionPermissionConfig;
   // Create lane
@@ -72,6 +77,7 @@ export function ActionRow({
   lanes,
   suites,
   fallbackModel,
+  executionLaneMode,
   onChange,
   onRemove,
   onMove,
@@ -83,6 +89,7 @@ export function ActionRow({
   lanes: Array<{ id: string; name: string }>;
   suites: TestSuiteDefinition[];
   fallbackModel: ModelConfig;
+  executionLaneMode?: string | null;
   onChange: (next: ActionRowValue) => void;
   onRemove: () => void;
   onMove: (direction: -1 | 1) => void;
@@ -90,11 +97,23 @@ export function ActionRow({
 }) {
   const meta = KIND_META[value.kind];
   const Icon = meta.icon;
+  const triggerSuppliesLane = executionLaneMode === "require-on-trigger"
+    || executionLaneMode === "provided"
+    || executionLaneMode === "prompt-at-run";
   const activeModel = value.modelConfig ?? fallbackModel;
   const permissionMeta = permissionControlsForModel(activeModel.modelId);
   const currentPermission = permissionMeta
     ? value.permissionConfig?.providers?.[permissionMeta.key] ?? ""
     : "";
+  const patchValue = (patch: Partial<ActionRowValue>) => {
+    const next = { ...value, ...patch };
+    if ("condition" in patch && !patch.condition?.trim()) delete next.condition;
+    if ("targetLaneId" in patch && !patch.targetLaneId) delete next.targetLaneId;
+    if ("timeoutMs" in patch && patch.timeoutMs == null) delete next.timeoutMs;
+    if ("retry" in patch && patch.retry == null) delete next.retry;
+    if ("continueOnFailure" in patch && !patch.continueOnFailure) delete next.continueOnFailure;
+    onChange(next);
+  };
 
   return (
     <div
@@ -308,16 +327,184 @@ export function ActionRow({
         {value.kind === "launch-mission" ? (
           <div className="space-y-2">
             <input
-              className={cn(inputCls, "opacity-60")}
+              className={inputCls}
               value={value.missionTitle ?? ""}
               onChange={(event) => onChange({ ...value, missionTitle: event.target.value })}
               placeholder="Mission title"
-              disabled
             />
-            <Chip className="text-[9px] text-[#B6B2C9]">Mission launches are coming soon.</Chip>
+            <Chip className="text-[9px] text-[#B6B2C9]">Starts a mission and records the mission id in run history.</Chip>
           </div>
         ) : null}
+
+        {value.kind !== "create-lane" ? (
+          <RuntimeControls
+            value={value}
+            lanes={lanes}
+            showLaneOverride={supportsLaneOverride(value.kind)}
+            triggerSuppliesLane={triggerSuppliesLane}
+            onChange={patchValue}
+          />
+        ) : null}
       </div>
+    </div>
+  );
+}
+
+function supportsLaneOverride(kind: ActionRowKind): boolean {
+  return kind === "agent-session" || kind === "run-tests" || kind === "run-command";
+}
+
+function secondsFromMs(ms: number | undefined): number | "" {
+  if (!Number.isFinite(ms)) return "";
+  return Math.max(1, Math.round((ms ?? 0) / 1000));
+}
+
+function RuntimeControls({
+  value,
+  lanes,
+  showLaneOverride,
+  triggerSuppliesLane,
+  onChange,
+}: {
+  value: ActionRowValue;
+  lanes: Array<{ id: string; name: string }>;
+  showLaneOverride: boolean;
+  triggerSuppliesLane: boolean;
+  onChange: (patch: Partial<ActionRowValue>) => void;
+}) {
+  const condition = value.condition?.trim() ?? "";
+  const conditionMode =
+    condition === ""
+      ? "always"
+      : condition === "provider-enabled"
+        ? "provider-enabled"
+        : condition === "false"
+          ? "false"
+          : "custom";
+  const sortedLanes = [...lanes].sort((a, b) => a.name.localeCompare(b.name));
+
+  return (
+    <div className="mt-3 border-t border-white/[0.06] pt-3">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div className={labelCls}>Runtime</div>
+        <div className="text-[10px] text-[#7E8A9A]">Controls how this step runs</div>
+      </div>
+      <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+        <label className="block space-y-1.5">
+          <div className={labelCls}>Condition</div>
+          <select
+            className={selectCls}
+            value={conditionMode}
+            onChange={(event) => {
+              const next = event.target.value;
+              if (next === "always") onChange({ condition: undefined });
+              else if (next === "provider-enabled") onChange({ condition: "provider-enabled" });
+              else if (next === "false") onChange({ condition: "false" });
+              else onChange({ condition: condition || "provider-enabled" });
+            }}
+          >
+            <option value="always">Always run</option>
+            <option value="provider-enabled">Only when providers are enabled</option>
+            <option value="false">Always skip</option>
+            <option value="custom">Stored expression</option>
+          </select>
+        </label>
+
+        <label className="block space-y-1.5">
+          <div className={labelCls}>On failure</div>
+          <select
+            className={selectCls}
+            value={value.continueOnFailure ? "continue" : "stop"}
+            onChange={(event) => onChange({ continueOnFailure: event.target.value === "continue" })}
+          >
+            <option value="stop">Stop workflow</option>
+            <option value="continue">Continue to next step</option>
+          </select>
+        </label>
+
+        <label className="block space-y-1.5">
+          <div className={labelCls}>Timeout (sec)</div>
+          <input
+            className={inputCls}
+            type="number"
+            min={1}
+            value={secondsFromMs(value.timeoutMs)}
+            onChange={(event) => {
+              const raw = event.target.value.trim();
+              if (!raw) {
+                onChange({ timeoutMs: undefined });
+                return;
+              }
+              const parsed = Number(raw);
+              onChange({ timeoutMs: Number.isFinite(parsed) ? Math.max(1, Math.floor(parsed)) * 1000 : undefined });
+            }}
+            placeholder="Default"
+          />
+        </label>
+
+        <label className="block space-y-1.5">
+          <div className={labelCls}>Retries</div>
+          <input
+            className={inputCls}
+            type="number"
+            min={0}
+            max={5}
+            value={Number.isFinite(value.retry) ? value.retry : ""}
+            onChange={(event) => {
+              const raw = event.target.value.trim();
+              if (!raw) {
+                onChange({ retry: undefined });
+                return;
+              }
+              const parsed = Number(raw);
+              onChange({ retry: Number.isFinite(parsed) ? Math.max(0, Math.min(5, Math.floor(parsed))) : undefined });
+            }}
+            placeholder="0"
+          />
+        </label>
+      </div>
+
+      {conditionMode === "custom" ? (
+        <label className="mt-2 block space-y-1.5">
+          <div className={labelCls}>Stored condition</div>
+          <input
+            className={inputCls}
+            value={value.condition ?? ""}
+            onChange={(event) => onChange({ condition: event.target.value })}
+            placeholder="provider-enabled"
+          />
+          <div className="text-[10px] leading-snug text-[#7E8A9A]">
+            Runtime currently treats <span className="font-mono text-[#A7B7CA]">false</span> and{" "}
+            <span className="font-mono text-[#A7B7CA]">provider-enabled</span> specially.
+          </div>
+        </label>
+      ) : null}
+
+      {triggerSuppliesLane ? (
+        <div className="mt-2 rounded-md border border-[#2DD4BF]/20 bg-[#2DD4BF]/[0.06] px-2.5 py-2 text-[10.5px] leading-snug text-[#9BE7D8]">
+          This rule uses the lane supplied at run time for every step. Saved step lane overrides are ignored and removed on save.
+        </div>
+      ) : showLaneOverride ? (
+        <label className="mt-2 block space-y-1.5">
+          <div className={labelCls}>Lane override</div>
+          <select
+            className={selectCls}
+            value={value.targetLaneId ?? ""}
+            onChange={(event) => onChange({ targetLaneId: event.target.value || null })}
+          >
+            <option value="">Use execution lane</option>
+            {sortedLanes.map((lane) => (
+              <option key={lane.id} value={lane.id}>
+                {lane.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : value.targetLaneId ? (
+        <div className="mt-2 rounded-md border border-warning/20 bg-warning/[0.06] px-2.5 py-2 text-[10.5px] text-warning">
+          This saved step has a lane override, but this action type does not use it at runtime.
+        </div>
+      ) : null}
     </div>
   );
 }

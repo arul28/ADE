@@ -1060,12 +1060,11 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
-  it("does not block chat boot on Cursor model inventory after AI status resolves", async () => {
+  it("does not auto-fetch Cursor inventory on chat boot", async () => {
     let resolveProjectConfig: (value: unknown) => void = () => {};
     const projectConfig = new Promise((resolve) => {
       resolveProjectConfig = resolve;
     });
-    const cursorModels = new Promise(() => {});
     installAdeMocks({
       sessions: [],
     });
@@ -1092,10 +1091,7 @@ describe("AgentChatPane submit recovery", () => {
       ],
       availableModelIds: [],
     }) as any;
-    window.ade.agentChat.models = vi.fn().mockImplementation(({ provider }: { provider: string }) => {
-      if (provider === "cursor") return cursorModels;
-      return Promise.resolve([]);
-    }) as any;
+    window.ade.agentChat.models = vi.fn().mockResolvedValue([]) as any;
 
     render(
       <MemoryRouter>
@@ -1121,10 +1117,10 @@ describe("AgentChatPane submit recovery", () => {
       expect(screen.queryByText("Loading sessions")).toBeNull();
     });
     expect(await screen.findByText("Start a new conversation")).toBeTruthy();
-    expect(window.ade.agentChat.models).toHaveBeenCalledWith({
-      provider: "cursor",
-      activateRuntime: true,
-    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(window.ade.agentChat.models).not.toHaveBeenCalledWith(
+      expect.objectContaining({ provider: "cursor" }),
+    );
   });
 
   it("uses Cursor model IDs from AI status without probing Cursor inventory", async () => {

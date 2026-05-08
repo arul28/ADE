@@ -363,6 +363,86 @@ describe("automationPlannerService.validateDraft", () => {
     expect((res.normalized?.actions[2] as any).targetLaneId).toBe("lane-conflict");
   });
 
+  it("preserves require-on-trigger lane mode without requiring a target lane", () => {
+    const { planner } = getPlanner({ suites: [] });
+    const draft = createDraft({
+      name: "Require trigger lane",
+      execution: { kind: "agent-session", laneMode: "require-on-trigger" } as any,
+      prompt: "Use the lane supplied by the caller.",
+    });
+
+    const res = planner.validateDraft({ draft, confirmations: [] });
+    expect(res.ok).toBe(true);
+    expect(res.normalized?.execution).toMatchObject({
+      kind: "agent-session",
+      laneMode: "require-on-trigger",
+    });
+  });
+
+  it("normalizes legacy prompt-at-run lane mode to require-on-trigger", () => {
+    const { planner } = getPlanner({ suites: [] });
+    const draft = createDraft({
+      name: "Legacy prompt at run",
+      execution: { kind: "agent-session", laneMode: "prompt-at-run" } as any,
+      prompt: "Use the selected lane.",
+    });
+
+    const res = planner.validateDraft({ draft, confirmations: [] });
+    expect(res.ok).toBe(true);
+    expect(res.normalized?.execution).toMatchObject({
+      kind: "agent-session",
+      laneMode: "require-on-trigger",
+    });
+  });
+
+  it("rejects targetLaneId when lane mode requires the trigger lane", () => {
+    const { planner } = getPlanner({ suites: [] });
+    const draft = createDraft({
+      name: "Conflicting trigger lane",
+      execution: {
+        kind: "agent-session",
+        laneMode: "require-on-trigger",
+        targetLaneId: "lane-fixed",
+      } as any,
+      prompt: "This should choose at trigger time.",
+    });
+
+    const res = planner.validateDraft({ draft, confirmations: [] });
+    expect(res.ok).toBe(false);
+    expect(res.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          level: "error",
+          path: "execution.targetLaneId",
+        }),
+      ]),
+    );
+  });
+
+  it("rejects per-action targetLaneId when lane mode requires the trigger lane", () => {
+    const { planner } = getPlanner({ suites: [] });
+    const draft = createDraft({
+      name: "Conflicting step lane",
+      execution: {
+        kind: "built-in",
+        laneMode: "require-on-trigger",
+      } as any,
+      actions: [{ type: "run-command", command: "pwd", targetLaneId: "lane-fixed" } as any],
+      legacyActions: [{ type: "run-command", command: "pwd", targetLaneId: "lane-fixed" } as any],
+    });
+
+    const res = planner.validateDraft({ draft, confirmations: ["confirm.run-command"] });
+    expect(res.ok).toBe(false);
+    expect(res.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          level: "error",
+          path: "actions[0].targetLaneId",
+        }),
+      ]),
+    );
+  });
+
   it("validates run-command cwd against the per-action targetLaneId before draft execution lane", () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-automation-planner-action-lane-"));
     const actionLane = fs.mkdtempSync(path.join(os.tmpdir(), "ade-automation-planner-action-lane-target-"));
@@ -395,6 +475,36 @@ describe("automationPlannerService.validateDraft", () => {
       fs.rmSync(actionLane, { recursive: true, force: true });
       fs.rmSync(draftLane, { recursive: true, force: true });
     }
+  });
+
+  it("preserves output disposition and verification settings", () => {
+    const { planner } = getPlanner({ suites: [] });
+    const draft = createDraft({
+      name: "Publish settings",
+      execution: { kind: "agent-session" } as any,
+      prompt: "Prepare a draft PR.",
+      outputs: {
+        disposition: "open-pr-draft",
+        createArtifact: false,
+        notificationChannel: "automation-alerts",
+      },
+      verification: {
+        verifyBeforePublish: true,
+        mode: "dry-run",
+      },
+    });
+
+    const res = planner.validateDraft({ draft, confirmations: [] });
+    expect(res.ok).toBe(true);
+    expect(res.normalized?.outputs).toMatchObject({
+      disposition: "open-pr-draft",
+      createArtifact: false,
+      notificationChannel: "automation-alerts",
+    });
+    expect(res.normalized?.verification).toMatchObject({
+      verifyBeforePublish: true,
+      mode: "dry-run",
+    });
   });
 });
  

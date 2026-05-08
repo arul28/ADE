@@ -618,6 +618,11 @@ function deriveIncludeProjectContext(rule: AutomationRule): boolean {
   return false;
 }
 
+function normalizeAutomationLaneMode(mode: unknown): AutomationExecution["laneMode"] | undefined {
+  if (mode === "provided" || mode === "prompt-at-run") return "require-on-trigger";
+  return mode === "create" || mode === "reuse" || mode === "require-on-trigger" ? mode : undefined;
+}
+
 export function normalizeRuntimeRule(rule: AutomationRule): AutomationRule {
   const triggers = normalizedRuleTriggers(rule).map(canonicalizeTriggerForRuntime);
   const legacyActions = Array.isArray(rule.legacy?.actions)
@@ -630,8 +635,9 @@ export function normalizeRuntimeRule(rule: AutomationRule): AutomationRule {
   const rawExecution = rule.execution ?? (legacyActions.length > 0
     ? { kind: "built-in" as const, builtIn: { actions: legacyActions } }
     : { kind: "mission" as const });
+  const laneMode = normalizeAutomationLaneMode(rawExecution.laneMode);
   const sharedLaneFields = {
-    ...(rawExecution.laneMode ? { laneMode: rawExecution.laneMode } : {}),
+    ...(laneMode ? { laneMode } : {}),
     ...(rawExecution.laneNamePreset ? { laneNamePreset: rawExecution.laneNamePreset } : {}),
     ...(rawExecution.laneNamePreset === "custom" && rawExecution.laneNameTemplate
       ? { laneNameTemplate: rawExecution.laneNameTemplate }
@@ -660,9 +666,9 @@ export function normalizeRuntimeRule(rule: AutomationRule): AutomationRule {
           ...(rawExecution.mission ? { mission: rawExecution.mission } : {}),
         };
   const outputDisposition = rule.outputs?.disposition ?? "comment-only";
-  // Silently drop per-rule budget/review fields that are no longer surfaced
-  // in the UI. We keep them in the on-disk YAML so a downgrade doesn't lose
-  // data, but the in-memory runtime shape zeroes them out.
+  // Per-rule budget fields are deprecated in favor of global usage caps. We
+  // keep them in YAML for downgrade compatibility, but do not let runtime
+  // consume them.
   const sanitizedGuardrails = { ...(rule.guardrails ?? {}) } as AutomationRule["guardrails"] & {
     budgetCapUsd?: number;
     maxSpendUsd?: number;
@@ -1405,6 +1411,26 @@ export function createAutomationService({
     );
   };
 
+  const loadLaneSetupLaneId = (runId: string | null | undefined): string | null => {
+    if (!runId) return null;
+    const row = db.get<{ output: string | null }>(
+      `
+        select output
+        from automation_action_results
+        where project_id = ?
+          and run_id = ?
+          and action_type = 'lane-setup'
+          and status = 'succeeded'
+        order by started_at asc
+        limit 1
+      `,
+      [projectId, runId]
+    );
+    const parsed = safeJsonParse<Record<string, unknown> | null>(row?.output, null);
+    if (!isRecord(parsed)) return null;
+    return trimToNull(parsed.laneId);
+  };
+
   const loadRunRow = (runId: string): AutomationRunRow | null => db.get<AutomationRunRow>(
     `
       select
@@ -1693,6 +1719,14 @@ export function createAutomationService({
     return trimToNull(action?.targetLaneId) ?? trimToNull(rule.execution?.targetLaneId);
   };
 
+  const requiresTriggerLane = (rule: AutomationRule): boolean =>
+    rule.execution?.laneMode === "require-on-trigger";
+
+  const missingTriggerLaneMessage = (trigger: Pick<TriggerContext, "triggerType">): string =>
+    trigger.triggerType === "manual"
+      ? "This automation requires a lane when triggered manually. Pass laneId / --lane."
+      : "This automation requires the trigger payload to include a laneId.";
+
   const dispatchAdeAction = async (
     config: RunAdeActionConfig,
     trigger: TriggerContext,
@@ -1761,7 +1795,10 @@ export function createAutomationService({
     }
     if (action.type === "predict-conflicts") {
       if (!conflictService) throw new Error("Conflict service unavailable");
-      await conflictService.runPrediction(trigger.laneId ? { laneId: trigger.laneId } : {});
+      const laneId = requiresTriggerLane(rule) || rule.execution?.laneMode === "create"
+        ? await resolveExecutionLaneId(rule, trigger, action, runId)
+        : trigger.laneId;
+      await conflictService.runPrediction(laneId ? { laneId } : {});
       return { status: "succeeded" };
     }
     if (action.type === "create-lane") {
@@ -1802,11 +1839,13 @@ export function createAutomationService({
       if (!testService) throw new Error("Test service unavailable");
       const activeLanes = await laneService.list({ includeArchived: false });
       const configuredLaneId = getConfiguredTargetLaneId(rule, action);
-      const laneId = configuredLaneId
-        ?? trigger.laneId
-        ?? activeLanes.find((lane) => lane.laneType === "primary")?.id
-        ?? activeLanes[0]?.id
-        ?? null;
+      const laneId = requiresTriggerLane(rule) || rule.execution?.laneMode === "create"
+        ? await resolveExecutionLaneId(rule, trigger, action, runId)
+        : configuredLaneId
+          ?? trigger.laneId
+          ?? activeLanes.find((lane) => lane.laneType === "primary")?.id
+          ?? activeLanes[0]?.id
+          ?? null;
       if (!laneId) throw new Error("No lane available to run tests");
       await testService.run({ laneId, suiteId });
       return { status: "succeeded" };
@@ -1881,11 +1920,19 @@ export function createAutomationService({
       }
     }
     if (action.type === "launch-mission") {
+      const laneMode = rule.execution?.laneMode;
+      const actionTargetLaneId = trimToNull(action.targetLaneId);
+      const ruleTargetLaneId = trimToNull(rule.execution?.targetLaneId);
       const missionRule: AutomationRule = {
         ...rule,
         execution: {
           kind: "mission",
-          ...(rule.execution?.targetLaneId ? { targetLaneId: rule.execution.targetLaneId } : {}),
+          ...(laneMode ? { laneMode } : {}),
+          ...(laneMode === "create" && rule.execution?.laneNamePreset ? { laneNamePreset: rule.execution.laneNamePreset } : {}),
+          ...(laneMode === "create" && rule.execution?.laneNameTemplate ? { laneNameTemplate: rule.execution.laneNameTemplate } : {}),
+          ...(laneMode !== "require-on-trigger" && (actionTargetLaneId ?? ruleTargetLaneId)
+            ? { targetLaneId: actionTargetLaneId ?? ruleTargetLaneId }
+            : {}),
           mission: { title: action.sessionTitle?.trim() || rule.execution?.mission?.title || null },
         },
       };
@@ -1905,7 +1952,9 @@ export function createAutomationService({
     if (action.type === "run-command") {
       const command = (action.command ?? "").trim();
       if (!command) throw new Error("run-command requires command");
-      const laneId = getConfiguredTargetLaneId(rule, action) ?? trigger.laneId;
+      const laneId = requiresTriggerLane(rule) || rule.execution?.laneMode === "create"
+        ? await resolveExecutionLaneId(rule, trigger, action, runId)
+        : getConfiguredTargetLaneId(rule, action) ?? trigger.laneId;
       const baseCwd = laneId ? laneService.getLaneWorktreePath(laneId) : projectRoot;
       const configuredCwd = (action.cwd ?? "").trim();
       const cwdCandidate = configuredCwd.length
@@ -2123,9 +2172,18 @@ export function createAutomationService({
     runId?: string | null,
   ): Promise<string | null> => {
     const actionLaneId = trimToNull(action?.targetLaneId);
+    if (requiresTriggerLane(rule)) {
+      const triggerLaneId = trimToNull(trigger.laneId);
+      if (triggerLaneId) return triggerLaneId;
+      throw new Error(missingTriggerLaneMessage(trigger));
+    }
+
     if (actionLaneId) return actionLaneId;
 
     if (rule.execution?.laneMode === "create") {
+      const existingCreatedLaneId = loadLaneSetupLaneId(runId);
+      if (existingCreatedLaneId) return existingCreatedLaneId;
+
       const setupActionId = runId ? insertAction(runId, -1, "lane-setup") : null;
       try {
         const { laneId, laneName } = await createLaneForRun(rule, trigger);
@@ -3278,9 +3336,13 @@ export function createAutomationService({
       if (!id) throw new Error("Automation id is required");
       const rule = findRule(id);
       if (!rule) throw new Error(`Automation not found: ${id}`);
+      const laneId = typeof args.laneId === "string" && args.laneId.trim().length ? args.laneId.trim() : undefined;
+      if (requiresTriggerLane(rule) && !laneId) {
+        throw new Error(missingTriggerLaneMessage({ triggerType: "manual" }));
+      }
       return await runRule(rule, {
         triggerType: "manual",
-        laneId: typeof args.laneId === "string" && args.laneId.trim().length ? args.laneId.trim() : undefined,
+        laneId,
         reason: id,
         scheduledAt: nowIso(),
         reviewProfileOverride: args.reviewProfileOverride ?? null,

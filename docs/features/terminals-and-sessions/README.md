@@ -258,10 +258,13 @@ Renderer surfaces:
 
 iOS Work surfaces:
 
-- `apps/ios/ADE/Views/Work/WorkRootScreen.swift` and
-  `WorkRootScreen+Actions.swift` — mobile Work list, filters,
-  grouped session rows, live-count/status pills, and the resume
-  flow that re-uses `work.startCliSession` for ended PTY rows.
+- `apps/ios/ADE/Views/Work/WorkRootScreen.swift`,
+  `WorkRootScreen+Actions.swift`, `WorkRootScreen+Selection.swift`, and
+  `WorkRootComponents.swift` — mobile Work list, filters, grouped
+  session rows, and live-count/status pills, plus the resume flow that
+  re-uses `work.startCliSession` for ended PTY rows. The earlier
+  in-list activity feed is gone — running chats surface through the
+  session list and the live-count chip.
 - `apps/ios/ADE/Views/Work/WorkArtifactTerminalViews.swift` —
   terminal artifact/output views and the compact input bar that sends
   `terminal_input` bytes and Ctrl-C to the subscribed host PTY. Hosts
