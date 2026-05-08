@@ -167,11 +167,11 @@ describe("AgentChatComposer", () => {
         laneId: "lane-1",
         laneName: "Lane One",
         vmName: "ade-lane-one",
-        provider: "lume",
+        provider: "apple-virtualization-helper",
         state: "running",
         hostLanePath: "/repo/.ade/worktrees/lane-one",
         guestLanePath: "/Volumes/My Shared Files",
-        runCommand: "lume run ade-lane-one --shared-dir /repo/.ade/worktrees/lane-one",
+        runCommand: "ade --socket macos-vm start --lane lane-1 --create --text",
         sshCommand: null,
         vncUrl: null,
         windowTitleQuery: "ade-lane-one",
@@ -183,6 +183,7 @@ describe("AgentChatComposer", () => {
 
     expect(screen.getByText("ade-lane-one")).toBeTruthy();
     fireEvent.click(screen.getByText("ade-lane-one"));
+    expect(screen.getAllByText("Lane One lane").length).toBeGreaterThan(0);
     expect(screen.getByText("/Volumes/My Shared Files")).toBeTruthy();
 
     const remove = view.container.querySelector("[data-macos-vm-remove='true']");

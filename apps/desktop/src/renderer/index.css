@@ -1660,6 +1660,17 @@ button:active, [role="button"]:active {
   50%      { transform: scale(1.06); opacity: 0.9; }
 }
 
+@keyframes ade-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+@keyframes ade-wizard-indeterminate {
+  0%   { transform: translateX(-100%); }
+  50%  { transform: translateX(0); }
+  100% { transform: translateX(120%); }
+}
+
 /* Spotlight pulse on the tour target cutout */
 @keyframes ade-tour-spotlight-pulse {
   0%, 100% {
@@ -1909,15 +1920,6 @@ button:active, [role="button"]:active {
 }
 
 
-@keyframes ade-radar-sweep {
-  0% {
-    transform: rotate(0deg);
-  }
-  100% {
-    transform: rotate(360deg);
-  }
-}
-
 @keyframes ade-code-rain {
   0% {
     transform: translateY(-100%);
@@ -1933,24 +1935,6 @@ button:active, [role="button"]:active {
   }
   100% {
     transform: translateX(200%);
-  }
-}
-
-@keyframes ade-timeline-arc {
-  0% {
-    transform: rotate(0deg);
-  }
-  100% {
-    transform: rotate(360deg);
-  }
-}
-
-@keyframes ade-gear-spin {
-  0% {
-    transform: rotate(0deg);
-  }
-  100% {
-    transform: rotate(360deg);
   }
 }
 
@@ -2178,7 +2162,7 @@ button:active, [role="button"]:active {
   border: 1px solid rgba(217, 119, 6, 0.05);
   border-radius: 50%;
   opacity: 0.6;
-  animation: ade-timeline-arc 90s linear infinite;
+  animation: ade-spin 90s linear infinite;
   box-shadow:
     inset 0 0 0 60px transparent,
     inset 0 0 0 61px rgba(217, 119, 6, 0.03),
@@ -2199,7 +2183,7 @@ button:active, [role="button"]:active {
   border: 1px solid rgba(217, 119, 6, 0.035);
   border-radius: 50%;
   opacity: 0.5;
-  animation: ade-timeline-arc 65s linear infinite reverse;
+  animation: ade-spin 65s linear infinite reverse;
 }
 
 /* 10. Automations — Factory Floor / Rotating Gears + Heat Shimmer (orange #f97316) */
@@ -2218,7 +2202,7 @@ button:active, [role="button"]:active {
   height: 200px;
   border: 2px dashed rgba(249, 115, 22, 0.06);
   border-radius: 50%;
-  animation: ade-gear-spin 20s linear infinite;
+  animation: ade-spin 20s linear infinite;
   opacity: 0.4;
 }
 
@@ -3163,12 +3147,6 @@ button:active, [role="button"]:active {
 @keyframes ade-fade-slide-up {
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }
-}
-
-/* Subtle rotate for spinner icons */
-@keyframes ade-icon-spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
 }
 
 /* Progress bar indeterminate */

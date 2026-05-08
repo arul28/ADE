@@ -77,6 +77,9 @@ type FormatterId =
   | "macos-vm-selection"
   | "terminal-list"
   | "terminal-read"
+  | "memory-search"
+  | "memory-stats"
+  | "memory-reindex"
   | "actions-list"
   | "action-result"
   | "automation-run-detail";
@@ -295,7 +298,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
     $ ade macos-vm status | start | guide          Run lane-tied macOS VMs for agent work
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
-    $ ade memory add | search | pin                 Use ADE memory
+    $ ade memory search | stats | reindex | add     Use ADE memory
     $ ade settings action <method>                  Call project config actions
     $ ade update status | check | install | dismiss Read auto-update state and drive install
     $ ade actions list | run | status               Escape hatch for every ADE service action
@@ -324,7 +327,8 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade ios-sim apps --text
     $ ade ios-sim launch --target <id> --text
     $ ade app-control launch --command "pnpm dev" --text
-    $ ade macos-vm start --lane <lane> --create --text
+    $ ade macos-vm base create --text
+    $ ade macos-vm start --lane <lane> --create --from-base --text
     $ ade macos-vm guide --lane <lane> --text
     $ ade --socket browser open http://localhost:5173 --new-tab --text
     $ ade terminal read --chat-session <id> --text
@@ -892,20 +896,29 @@ const HELP_BY_COMMAND: Record<string, string> = {
   macOS VM
 
   macOS VM commands provision and control lane-tied Apple silicon macOS
-  guests through Lume. ADE mounts the lane worktree into the guest with a
-  shared directory so host and guest edits stay in sync. Use desktop socket
+  guests through Apple's Virtualization framework. ADE mounts the lane
+  worktree into the guest with a shared directory so host and guest edits stay
+  in sync. Use desktop socket
   mode when the Work sidebar and agents should observe the same live VM state.
+  A raw Apple restore image creates a clean Mac and boots into Setup Assistant.
+  For desktop-ready lane VMs, save one snapshot after first-boot setup and clone
+  snapshots for lanes.
 
   Discovery and lifecycle:
     $ ade macos-vm status --text                  Show provider readiness and lane VMs
     $ ade macos-vm status --lane <lane> --text    Show one lane's VM
-    $ ade macos-vm provision --lane <lane>        Pull/create a VM for a lane
-    $ ade macos-vm start --lane <lane> --create   Start the VM, provisioning if missing
+    $ ade macos-vm base create --text             Install the one-time snapshot VM
+    $ ade macos-vm base start --text              Open the snapshot for Setup Assistant
+    $ ade macos-vm base mark-ready --text         Save the stopped snapshot for cloning
+    $ ade macos-vm provision --lane <lane> --from-base
+                                                  Clone the snapshot for a lane
+    $ ade macos-vm start --lane <lane> --create --from-base
+                                                  Start the lane VM, cloning if missing
     $ ade macos-vm stop --lane <lane>             Stop the lane VM
     $ ade macos-vm delete --lane <lane> --force   Delete the VM record and provider VM
     $ ade macos-vm guide --lane <lane> --text     Print agent VM guidance
     $ ade macos-vm focus --lane <lane>            Select the VM GUI target or raise its viewer
-    $ ade macos-vm screenshot --lane <lane>        Capture the VM through VNC or its viewer
+    $ ade macos-vm screenshot --lane <lane>        Capture the VM viewer window
     $ ade macos-vm select --lane <lane> --x 120 --y 420
                                                     Attach screenshot-backed VM point context
     $ ade macos-vm click --lane <lane> 120 420     Click window-relative coordinates
@@ -913,13 +926,17 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade macos-vm actions --text                 List callable macos_vm actions
 
   Provisioning flags:
-    --mode pull-image|create      Pull a Lume image or create from an IPSW.
-    --image, --source-image <id>  Lume image, default macos-tahoe-vanilla:latest.
-    --ipsw <path|latest>          Restore image for --mode create.
+    --ipsw <path|latest>          Apple restore image; latest asks Apple for
+                                  the newest supported image. If macOS reports
+                                  "software update required", pass a local IPSW
+                                  matching this Mac's current macOS build or
+                                  update the host first.
     --cpu, --cpu-cores <n>        Virtual CPU count.
-    --memory <size>               Memory, for example 8GB.
-    --disk, --disk-size <size>    Disk size, for example 80GB.
-    --display <WxH>               Display size, for example 1920x1200.
+    --memory <size>               Memory, for example 4GB.
+    --disk, --disk-size <size>    Sparse virtual disk maximum, for example 64GB.
+    --display <WxH>               Display size, for example 1440x900.
+    --from-base [name]            Clone the snapshot instead of a raw restore.
+    --raw                         Force a raw Apple restore for a lane VM.
     --no-display                  Start without opening the VM display window.
     --window-title <text>          Override the VM window title match.
     --coordinate-space window|screen Coordinates for click; default window.
@@ -1030,6 +1047,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
 
     $ ade memory add --category fact --content "User prefers concise summaries"
     $ ade memory search -q "release process" --text
+    $ ade memory stats --text
+    $ ade memory reindex --text
     $ ade memory pin <memory-id>
     $ ade memory core --arg projectSummary="Current focus"
 `,
@@ -2839,11 +2858,65 @@ function buildMacosVmPlan(args: string[]): CliPlan {
       display: readValue(args, ["--display"]),
       mode: readValue(args, ["--mode"]),
       ipsw: readValue(args, ["--ipsw"]),
-      sourceImage: readValue(args, ["--image", "--source-image"]),
-      unattendedPreset: readValue(args, ["--unattended", "--unattended-preset"]),
     };
     return Object.fromEntries(Object.entries(options).filter(([, value]) => value !== undefined && value !== null && value !== ""));
   };
+
+  const readBaseNameOption = (): string | undefined => {
+    const explicit = readValue(args, ["--base", "--base-name"]);
+    if (explicit) return explicit;
+    const fromBaseValue = readCommandTextValue(args, ["--from-base"]);
+    return fromBaseValue || undefined;
+  };
+
+  const readBaseActionOptions = (): JsonObject => {
+    const options: JsonObject = {
+      name: readValue(args, ["--name", "--base", "--base-name"]),
+      cpuCores: readIntOption(args, ["--cpu", "--cpu-cores"]),
+      memory: readValue(args, ["--memory"]),
+      diskSize: readValue(args, ["--disk", "--disk-size"]),
+      display: readValue(args, ["--display"]),
+      ipsw: readValue(args, ["--ipsw"]),
+      force: readFlag(args, ["--force", "-f"]) ? true : undefined,
+    };
+    return Object.fromEntries(Object.entries(options).filter(([, value]) => value !== undefined && value !== null && value !== ""));
+  };
+
+  if (sub === "base" || sub === "bases") {
+    const baseSub = firstPositional(args) ?? "status";
+    if (baseSub === "status" || baseSub === "list" || baseSub === "ls") {
+      return { kind: "execute", label: "macOS VM status", steps: [actionStep("result", "macos_vm", "getStatus", collectGenericObjectArgs(args, { laneId: readVmLaneId(false) }))] };
+    }
+    if (baseSub === "create" || baseSub === "provision") {
+      return { kind: "execute", label: "macOS VM base create", steps: [actionStep("result", "macos_vm", "createBase", collectGenericObjectArgs(args, readBaseActionOptions()))] };
+    }
+    if (baseSub === "start" || baseSub === "run" || baseSub === "open") {
+      const noDisplay = readFlag(args, ["--no-display", "--headless"]);
+      const openDisplay = noDisplay ? false : readFlag(args, ["--open-display", "--display-window"]) ? true : undefined;
+      return { kind: "execute", label: "macOS VM base start", steps: [actionStep("result", "macos_vm", "startBase", collectGenericObjectArgs(args, {
+        name: readValue(args, ["--name", "--base", "--base-name"]),
+        openDisplay,
+      }))] };
+    }
+    if (baseSub === "stop" || baseSub === "shutdown") {
+      return { kind: "execute", label: "macOS VM base stop", steps: [actionStep("result", "macos_vm", "stopBase", collectGenericObjectArgs(args, {
+        name: readValue(args, ["--name", "--base", "--base-name"]),
+        force: readFlag(args, ["--force", "-f"]) ? true : undefined,
+      }))] };
+    }
+    if (baseSub === "mark-ready" || baseSub === "ready" || baseSub === "complete") {
+      return { kind: "execute", label: "macOS VM save snapshot", steps: [actionStep("result", "macos_vm", "markBaseReady", collectGenericObjectArgs(args, {
+        name: readValue(args, ["--name", "--base", "--base-name"]),
+      }))] };
+    }
+    if (baseSub === "delete" || baseSub === "rm" || baseSub === "remove" || baseSub === "destroy") {
+      return { kind: "execute", label: "macOS VM base delete", steps: [actionStep("result", "macos_vm", "deleteBase", collectGenericObjectArgs(args, {
+        name: readValue(args, ["--name", "--base", "--base-name"]),
+        force: readFlag(args, ["--force", "-f"]) ? true : undefined,
+      }))] };
+    }
+    return { kind: "execute", label: `macos-vm base ${baseSub}`, steps: [actionStep("result", "macos_vm", baseSub, collectGenericObjectArgs(args))] };
+  }
 
   if (sub === "actions") return { kind: "execute", label: "macOS VM actions", steps: [listActionsStep("actions", "macos_vm")] };
   if (sub === "status" || sub === "list" || sub === "ls") {
@@ -2852,24 +2925,34 @@ function buildMacosVmPlan(args: string[]): CliPlan {
   if (sub === "share" || sub === "share-policy") {
     return { kind: "execute", label: "macOS VM share policy", steps: [actionStep("result", "macos_vm", "getSharePolicy", collectGenericObjectArgs(args, { laneId: readVmLaneId(true) }))] };
   }
-  if (sub === "provision" || sub === "create" || sub === "pull") {
+  if (sub === "provision" || sub === "create") {
     const provisionOptions = readProvisionOptions();
-    const mode = sub === "create" ? "create" : sub === "pull" ? "pull-image" : provisionOptions.mode;
+    const mode = "create";
+    const raw = readFlag(args, ["--raw", "--from-restore"]);
+    const baseName = readBaseNameOption();
+    const fromBase = raw ? false : (baseName || readFlag(args, ["--from-base"])) ? true : undefined;
     return { kind: "execute", label: "macOS VM provision", steps: [actionStep("result", "macos_vm", "provision", collectGenericObjectArgs(args, {
       laneId: readVmLaneId(true),
       ...provisionOptions,
       mode,
       force: readFlag(args, ["--force", "-f"]) ? true : undefined,
+      fromBase,
+      baseName,
     }))] };
   }
   if (sub === "start" || sub === "run" || sub === "open") {
     const noDisplay = readFlag(args, ["--no-display", "--headless"]);
     const openDisplay = noDisplay ? false : readFlag(args, ["--open-display", "--display-window"]) ? true : undefined;
+    const raw = readFlag(args, ["--raw", "--from-restore"]);
+    const baseName = readBaseNameOption();
+    const fromBase = raw ? false : (baseName || readFlag(args, ["--from-base"])) ? true : undefined;
     return { kind: "execute", label: "macOS VM start", steps: [actionStep("result", "macos_vm", "start", collectGenericObjectArgs(args, {
       laneId: readVmLaneId(true),
       ...readProvisionOptions(),
       openDisplay,
       createIfMissing: readFlag(args, ["--create", "--create-if-missing"]) ? true : undefined,
+      fromBase,
+      baseName,
     }))] };
   }
   if (sub === "stop" || sub === "shutdown") {
@@ -3025,7 +3108,9 @@ function buildMemoryPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "search";
   if (sub === "actions") return { kind: "execute", label: "memory actions", steps: [listActionsStep("actions", "memory")] };
   if (sub === "add") return { kind: "execute", label: "memory add", steps: [actionCallStep("result", "memory_add", collectGenericObjectArgs(args, { content: requireValue(readValue(args, ["--content"]) ?? args.join(" "), "content"), category: requireValue(readValue(args, ["--category"]), "category"), scope: readValue(args, ["--scope"]) }))] };
-  if (sub === "search") return { kind: "execute", label: "memory search", steps: [actionCallStep("result", "memory_search", collectGenericObjectArgs(args, { query: requireValue(readValue(args, ["--query", "-q"]) ?? args.join(" "), "query") }))] };
+  if (sub === "search") return { kind: "execute", label: "memory search", formatter: "memory-search", steps: [actionCallStep("result", "memory_search", collectGenericObjectArgs(args, { query: requireValue(readValue(args, ["--query", "-q"]) ?? args.join(" "), "query") }))] };
+  if (sub === "stats" || sub === "health") return { kind: "execute", label: "memory stats", formatter: "memory-stats", steps: [actionCallStep("result", "memory_stats", collectGenericObjectArgs(args))] };
+  if (sub === "reindex") return { kind: "execute", label: "memory reindex", formatter: "memory-reindex", steps: [actionCallStep("result", "memory_reindex", collectGenericObjectArgs(args))] };
   if (sub === "pin") return { kind: "execute", label: "memory pin", steps: [actionCallStep("result", "memory_pin", collectGenericObjectArgs(args, { id: requireValue(readValue(args, ["--memory", "--memory-id", "--id"]) ?? firstPositional(args), "memory id") }))] };
   if (sub === "core") return { kind: "execute", label: "memory core", steps: [actionCallStep("result", "memory_update_core", collectGenericObjectArgs(args))] };
   return { kind: "execute", label: `memory ${sub}`, steps: [actionStep("result", "memory", sub, collectGenericObjectArgs(args))] };
@@ -4737,6 +4822,22 @@ function formatIosSimPreview(value: unknown): string {
 
 function formatMacosVmStatus(value: unknown): string {
   const status = isRecord(value) ? value : {};
+  const singleRecord = isRecord(status.previous) ? status.previous : status;
+  const metadata = isRecord(singleRecord.metadata) ? singleRecord.metadata : {};
+  const isBaseRecord = singleRecord.name && !singleRecord.laneId && (metadata.baseRole || String(singleRecord.id ?? "").startsWith("macos-vm-base:"));
+  if (isBaseRecord) {
+    return renderKeyValues("ADE macOS VM base", [
+      ["deleted", "deleted" in status ? status.deleted : null],
+      ["base", singleRecord.name],
+      ["state", singleRecord.state],
+      ["memory", singleRecord.memory],
+      ["disk max", singleRecord.diskSize],
+      ["display", singleRecord.display],
+      ["guest setup complete", metadata.guestSetupCompleted],
+      ["bundle", metadata.bundlePath],
+      ["last error", singleRecord.lastError],
+    ]);
+  }
   if (isRecord(status.previous) || status.name || status.laneId) {
     const vm = isRecord(status.previous) ? status.previous : status;
     return renderKeyValues("ADE macOS VM", [
@@ -4757,6 +4858,8 @@ function formatMacosVmStatus(value: unknown): string {
   const tools = Array.isArray(status.tools) ? status.tools.filter(isRecord) : [];
   const laneVm = isRecord(status.laneVm) ? status.laneVm : null;
   const vms = Array.isArray(status.vms) ? status.vms.filter(isRecord) : [];
+  const bases = Array.isArray(status.bases) ? status.bases.filter(isRecord) : [];
+  const defaultBase = isRecord(status.defaultBase) ? status.defaultBase : null;
   const lines = [
     renderKeyValues("ADE macOS VM", [
       ["supported", status.supported],
@@ -4765,12 +4868,19 @@ function formatMacosVmStatus(value: unknown): string {
       ["provider", provider.kind],
       ["provider ready", provider.available],
       ["provider detail", provider.detail],
+      ["default base", defaultBase ? `${defaultBase.name ?? defaultBase.id} (${defaultBase.state ?? "unknown"})` : null],
       ["lane VM", laneVm ? `${laneVm.name ?? laneVm.id} (${laneVm.state ?? "unknown"})` : null],
       ["guest path", laneVm?.guestSharedPath],
       ["host path", laneVm?.sharedDirectory ?? laneVm?.laneRoot],
       ["ssh", laneVm?.sshCommand],
       ["vnc", laneVm?.vncUrl],
     ]),
+    "",
+    renderTable(
+      ["base", "state", "memory", "disk max", "display"],
+      bases.map((base) => [base.name, base.state, base.memory, base.diskSize, base.display]),
+      "Snapshots\n(none)",
+    ),
     "",
     renderTable(
       ["lane", "vm", "state", "host path"],
@@ -4971,6 +5081,72 @@ function formatTerminalRead(value: unknown): string {
   return data.length ? `${header}\n\n${data}` : `${header}\n\n(no output)`;
 }
 
+function formatMemorySearch(value: unknown): string {
+  if (!isRecord(value)) return JSON.stringify(value, null, 2);
+  const memories = Array.isArray(value.memories) ? value.memories.filter(isRecord) : [];
+  return [
+    renderKeyValues("ADE memory search", [
+      ["query", value.query],
+      ["scope", value.scope],
+      ["status", value.status],
+      ["count", value.count],
+    ]),
+    "",
+    renderTable(
+      ["id", "scope", "status", "category", "content"],
+      memories.map((memory) => [
+        memory.id,
+        memory.scope,
+        memory.status,
+        memory.category,
+        memory.content,
+      ]),
+      "(no matching memory)",
+    ),
+  ].join("\n");
+}
+
+function formatMemoryStats(value: unknown): string {
+  if (!isRecord(value)) return JSON.stringify(value, null, 2);
+  const stats = isRecord(value.stats) ? value.stats : {};
+  const recent = Array.isArray(value.recentRetrievals) ? value.recentRetrievals.filter(isRecord) : [];
+  return [
+    renderKeyValues("ADE memory health", [
+      ["active", stats.activeMemories],
+      ["promoted", stats.promotedMemories],
+      ["candidates", stats.candidateMemories],
+      ["archived", stats.archivedMemories],
+      ["embedded", stats.embeddedMemories],
+      ["entities", stats.entityCount],
+      ["entity links", stats.entityLinkCount],
+      ["missing links", stats.memoriesMissingEntityLinks],
+      ["retrievals 7d", stats.recentRetrievals],
+      ["injected 7d", stats.recentInjectedMemories],
+    ]),
+    "",
+    "Recent retrievals",
+    renderTable(
+      ["time", "source", "hits", "injected", "query"],
+      recent.map((entry) => [
+        entry.createdAt,
+        entry.sourceType,
+        entry.resultCount,
+        entry.injectedCount,
+        entry.query,
+      ]),
+      "(no recent retrievals)",
+    ),
+  ].join("\n");
+}
+
+function formatMemoryReindex(value: unknown): string {
+  return renderKeyValues("ADE memory reindex", [
+    ["indexed memories", isRecord(value) ? value.indexedMemories : null],
+    ["entities", isRecord(value) ? value.entityCount : null],
+    ["entity links", isRecord(value) ? value.entityLinkCount : null],
+  ]);
+}
+
 function formatAppControlSelection(value: unknown): string {
   const item = firstRecord(value, ["item", "selection"]) ?? (isRecord(value) ? value : {});
   const metadata = isRecord(item.metadata) ? item.metadata : {};
@@ -5120,6 +5296,12 @@ function formatTextOutput(value: unknown, formatter: FormatterId | undefined): s
       return formatTerminalList(value);
     case "terminal-read":
       return formatTerminalRead(value);
+    case "memory-search":
+      return formatMemorySearch(value);
+    case "memory-stats":
+      return formatMemoryStats(value);
+    case "memory-reindex":
+      return formatMemoryReindex(value);
     case "actions-list":
       return formatActionsList(value);
     case "automation-run-detail":
@@ -5162,7 +5344,7 @@ function inferFormatter(plan: CliPlan & { kind: "execute" }): FormatterId | unde
   if (label === "app control snapshot" || label === "app control screenshot") return "app-control-snapshot";
   if (label === "app control select" || label === "app control inspect point") return "app-control-selection";
   if (label === "browser status" || label === "browser panel" || label === "browser open" || label === "browser new tab" || label === "browser switch" || label === "browser close") return "browser-status";
-  if (label === "macos vm status" || label === "macos vm start" || label === "macos vm stop" || label === "macos vm provision" || label === "macos vm delete") return "macos-vm-status";
+  if (label === "macos vm status" || label === "macos vm start" || label === "macos vm stop" || label === "macos vm provision" || label === "macos vm delete" || label.startsWith("macos vm base ")) return "macos-vm-status";
   if (label === "macos vm share policy") return "macos-vm-share-policy";
   if (label === "macos vm guide") return "macos-vm-guide";
   if (label === "macos vm screenshot") return "macos-vm-capture";

@@ -1685,6 +1685,36 @@ describe("ADE CLI", () => {
         },
       },
     });
+
+    const baseCreate = buildCliPlan(["macos-vm", "base", "create", "--ipsw", "latest", "--memory", "4GB"]);
+    expect(baseCreate.kind).toBe("execute");
+    if (baseCreate.kind !== "execute") return;
+    expect(baseCreate.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "macos_vm",
+        action: "createBase",
+        args: {
+          ipsw: "latest",
+          memory: "4GB",
+        },
+      },
+    });
+
+    const fromBase = buildCliPlan(["macos-vm", "start", "--lane", "lane-1", "--create", "--from-base", "default"]);
+    expect(fromBase.kind).toBe("execute");
+    if (fromBase.kind !== "execute") return;
+    expect(fromBase.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "macos_vm",
+        action: "start",
+        args: {
+          laneId: "lane-1",
+          createIfMissing: true,
+          fromBase: true,
+          baseName: "default",
+        },
+      },
+    });
   });
 
   it("macos-vm guide and actions are available for agent guidance", () => {

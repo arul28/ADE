@@ -206,6 +206,12 @@ function getCommitButtonLabel(args: {
   return args.amendCommit ? "AMEND COMMIT" : "COMMIT";
 }
 
+function stripIpcInvokeError(rawMessage: string): string {
+  return rawMessage
+    .replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/i, "")
+    .trim() || rawMessage;
+}
+
 function getCommitHelperText(args: {
   commitMessage: string;
   commitMessageAi: CommitMessageAiState;
@@ -712,10 +718,11 @@ export function LaneGitActionsPane({
   }, []);
 
   const formatActionError = useCallback((actionName: string, rawMessage: string): string => {
-    if ((actionName === "push" || actionName === "force push") && isNonFastForwardError(rawMessage)) {
+    const message = stripIpcInvokeError(rawMessage);
+    if ((actionName === "push" || actionName === "force push") && isNonFastForwardError(message)) {
       return "Push rejected because remote history changed. Use Force Push (lease) after a rebase, amend, or other rewritten history.";
     }
-    return rawMessage;
+    return message;
   }, [isNonFastForwardError]);
 
   const runAction = async (actionName: string, fn: () => Promise<void>) => {
@@ -967,9 +974,7 @@ export function LaneGitActionsPane({
     const ok = window.confirm(`Discard ALL unstaged changes (${changes.unstaged.length} file${changes.unstaged.length === 1 ? "" : "s"})? This cannot be undone.`);
     if (!ok) return;
     void runAction("discard all", async () => {
-      for (const file of changes.unstaged) {
-        await window.ade.git.discardFile({ laneId, path: file.path });
-      }
+      await window.ade.git.discardFiles({ laneId, paths: changes.unstaged.map((file) => file.path) });
     });
   };
 
@@ -979,9 +984,7 @@ export function LaneGitActionsPane({
     const ok = window.confirm(`Discard ALL staged changes (${changes.staged.length} file${changes.staged.length === 1 ? "" : "s"})? This also discards any unstaged edits to the same files and cannot be undone.`);
     if (!ok) return;
     void runAction("discard staged files", async () => {
-      for (const file of changes.staged) {
-        await window.ade.git.restoreStagedFile({ laneId, path: file.path });
-      }
+      await window.ade.git.restoreStagedFiles({ laneId, paths: changes.staged.map((file) => file.path) });
     });
   };
 
@@ -1233,6 +1236,8 @@ export function LaneGitActionsPane({
     const alsoStaged = mode === "unstaged" && stagedPathSet.has(file.path);
     const alsoUnstaged = mode === "staged" && unstagedPathSet.has(file.path);
     const kindColor = getFileKindColor(file.kind);
+    const stageActionLabel = mode === "staged" ? "Unstage" : "Stage";
+    const actionDisabled = busyAction != null;
 
     return (
       <div
@@ -1267,20 +1272,28 @@ export function LaneGitActionsPane({
         }}>
           <button
             type="button"
-            className="shrink-0 flex items-center justify-center"
+            className="shrink-0"
             style={{
-              width: 16,
-              height: 16,
-              background: COLORS.recessedBg,
-              border: `1px solid ${COLORS.border}`,
-              cursor: "pointer",
+              ...outlineButton({
+                height: 22,
+                minWidth: 58,
+                padding: "0 7px",
+                fontSize: 10,
+                borderRadius: 5,
+                gap: 4,
+              }),
+              color: mode === "staged" ? COLORS.accent : COLORS.textSecondary,
+              opacity: actionDisabled ? 0.5 : 1,
             }}
+            aria-label={`${stageActionLabel} ${file.path}`}
+            disabled={actionDisabled}
             onClick={(event) => {
               event.stopPropagation();
               void toggleStageFile(file.path, mode === "staged");
             }}
           >
-            {mode === "staged" ? <Check size={9} style={{ color: COLORS.accent }} /> : null}
+            {mode === "staged" ? <Check size={10} weight="bold" /> : null}
+            {stageActionLabel}
           </button>
         </SmartTooltip>
         <span
@@ -1307,28 +1320,35 @@ export function LaneGitActionsPane({
           }}>
             <button
               type="button"
-              className="shrink-0 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity flex items-center justify-center"
+              className="shrink-0"
               style={{
-                width: 20,
-                height: 20,
-                background: "transparent",
-                border: "none",
-                cursor: "pointer",
+                ...dangerButton({
+                  height: 22,
+                  minWidth: 62,
+                  padding: "0 7px",
+                  fontSize: 10,
+                  borderRadius: 5,
+                  background: "transparent",
+                  border: `1px solid ${COLORS.borderMuted}`,
+                  gap: 4,
+                }),
                 color: COLORS.textDim,
+                opacity: actionDisabled ? 0.5 : 1,
               }}
               aria-label={`Discard changes to ${file.path}`}
               onMouseEnter={(e) => { e.currentTarget.style.color = COLORS.danger; }}
               onMouseLeave={(e) => { e.currentTarget.style.color = COLORS.textDim; }}
               onFocus={(e) => { e.currentTarget.style.color = COLORS.danger; }}
               onBlur={(e) => { e.currentTarget.style.color = COLORS.textDim; }}
-              disabled={!!busyAction}
+              disabled={actionDisabled}
               onClick={(event) => {
                 event.stopPropagation();
                 void discardFile(file.path);
               }}
             >
-            <Trash size={12} />
-          </button>
+              <Trash size={11} />
+              Discard
+            </button>
           </SmartTooltip>
         ) : (
           <SmartTooltip content={{
@@ -1340,27 +1360,34 @@ export function LaneGitActionsPane({
           }}>
             <button
               type="button"
-              className="shrink-0 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity flex items-center justify-center"
+              className="shrink-0"
               style={{
-                width: 20,
-                height: 20,
-                background: "transparent",
-                border: "none",
-                cursor: "pointer",
+                ...dangerButton({
+                  height: 22,
+                  minWidth: 62,
+                  padding: "0 7px",
+                  fontSize: 10,
+                  borderRadius: 5,
+                  background: "transparent",
+                  border: `1px solid ${COLORS.borderMuted}`,
+                  gap: 4,
+                }),
                 color: COLORS.textDim,
+                opacity: actionDisabled ? 0.5 : 1,
               }}
               aria-label={`Discard staged changes to ${file.path}`}
               onMouseEnter={(e) => { e.currentTarget.style.color = COLORS.danger; }}
               onMouseLeave={(e) => { e.currentTarget.style.color = COLORS.textDim; }}
               onFocus={(e) => { e.currentTarget.style.color = COLORS.danger; }}
               onBlur={(e) => { e.currentTarget.style.color = COLORS.textDim; }}
-              disabled={!!busyAction}
+              disabled={actionDisabled}
               onClick={(event) => {
                 event.stopPropagation();
                 void discardStagedFile(file.path);
               }}
             >
-              <Trash size={12} />
+              <Trash size={11} />
+              Discard
             </button>
           </SmartTooltip>
         )}

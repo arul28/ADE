@@ -2,9 +2,23 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
   <dict>
+    <!-- Electron renderer/runtime support for packaged ADE. -->
     <key>com.apple.security.cs.allow-jit</key>
     <true/>
+    <!-- Required for ADE's native modules and Electron runtime loading outside the Mac App Store sandbox. -->
     <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <!-- Apple Virtualization input devices use virtual USB keyboard/pointer devices. -->
+    <key>com.apple.security.device.usb</key>
+    <true/>
+    <!-- ADE agents, sync, GitHub, and local tooling need outbound network access. -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+    <!-- ADE hosts local socket/sync endpoints for CLI, desktop, and device integrations. -->
+    <key>com.apple.security.network.server</key>
+    <true/>
+    <!-- Lane macOS VMs are backed by Apple's Virtualization framework. -->
+    <key>com.apple.security.virtualization</key>
     <true/>
   </dict>
 </plist>

@@ -150,7 +150,12 @@ describe("preload OAuth bridge", () => {
     expect(bridge.macosVm).toBeTruthy();
 
     await bridge.macosVm.getStatus({ laneId: "lane-1" });
-    await bridge.macosVm.provision({ laneId: "lane-1", mode: "pull-image" });
+    await bridge.macosVm.createBase({ name: "default", ipsw: "latest" });
+    await bridge.macosVm.startBase({ name: "default", openDisplay: true });
+    await bridge.macosVm.stopBase({ name: "default" });
+    await bridge.macosVm.markBaseReady({ name: "default" });
+    await bridge.macosVm.deleteBase({ name: "default", force: true });
+    await bridge.macosVm.provision({ laneId: "lane-1", mode: "create" });
     await bridge.macosVm.start({ laneId: "lane-1", openDisplay: true });
     await bridge.macosVm.stop({ laneId: "lane-1" });
     await bridge.macosVm.delete({ laneId: "lane-1", force: true });
@@ -162,7 +167,12 @@ describe("preload OAuth bridge", () => {
     await bridge.macosVm.typeText({ laneId: "lane-1", text: "hello" });
 
     expect(invoke).toHaveBeenCalledWith(IPC.macosVmGetStatus, { laneId: "lane-1" });
-    expect(invoke).toHaveBeenCalledWith(IPC.macosVmProvision, { laneId: "lane-1", mode: "pull-image" });
+    expect(invoke).toHaveBeenCalledWith(IPC.macosVmCreateBase, { name: "default", ipsw: "latest" });
+    expect(invoke).toHaveBeenCalledWith(IPC.macosVmStartBase, { name: "default", openDisplay: true });
+    expect(invoke).toHaveBeenCalledWith(IPC.macosVmStopBase, { name: "default" });
+    expect(invoke).toHaveBeenCalledWith(IPC.macosVmMarkBaseReady, { name: "default" });
+    expect(invoke).toHaveBeenCalledWith(IPC.macosVmDeleteBase, { name: "default", force: true });
+    expect(invoke).toHaveBeenCalledWith(IPC.macosVmProvision, { laneId: "lane-1", mode: "create" });
     expect(invoke).toHaveBeenCalledWith(IPC.macosVmStart, { laneId: "lane-1", openDisplay: true });
     expect(invoke).toHaveBeenCalledWith(IPC.macosVmStop, { laneId: "lane-1" });
     expect(invoke).toHaveBeenCalledWith(IPC.macosVmDelete, { laneId: "lane-1", force: true });

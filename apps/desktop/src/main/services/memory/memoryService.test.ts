@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { openKvDb } from "../state/kvDb";
-import { createMemoryService } from "./memoryService";
+import { createMemoryService, resolveAgentMemoryWritePolicy } from "./memoryService";
 
 function createLogger() {
   return {
@@ -145,5 +145,228 @@ describe("memoryService", () => {
 
     expect(result.accepted).toBe(false);
     expect(result.reason).toContain("raw stack trace");
+  });
+
+  it("rejects raw automated review output instead of saving it as memory", async () => {
+    const { memoryService } = await createFixture();
+
+    const result = memoryService.writeMemory({
+      projectId: "project-1",
+      scope: "project",
+      category: "convention",
+      content: "** ![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat) Fall back to pull on branch divergence**",
+      importance: "high",
+      status: "candidate",
+      confidence: 0.6,
+    });
+
+    expect(result.accepted).toBe(false);
+    expect(result.reason).toContain("raw review output");
+  });
+
+  it("rejects prompt questions instead of treating them as conventions", async () => {
+    const { memoryService } = await createFixture();
+
+    const result = memoryService.writeMemory({
+      projectId: "project-1",
+      scope: "project",
+      category: "convention",
+      content: "What should this test mission accomplish?",
+      importance: "medium",
+      status: "candidate",
+      confidence: 0.6,
+    });
+
+    expect(result.accepted).toBe(false);
+    expect(result.reason).toContain("prompt question");
+  });
+
+  it("lexical memory search matches relevant query terms without requiring every prompt word", async () => {
+    const { memoryService } = await createFixture();
+
+    const write = memoryService.writeMemory({
+      projectId: "project-1",
+      scope: "project",
+      category: "convention",
+      content: "Always update snapshot coverage when changing prompt templates.",
+      importance: "high",
+      status: "promoted",
+      tier: 2,
+      confidence: 0.9,
+    });
+    expect(write.accepted).toBe(true);
+
+    const hits = await memoryService.search({
+      projectId: "project-1",
+      scope: "project",
+      status: "promoted",
+      query: "please debug the failing renderer test before changing prompt snapshots",
+      mode: "lexical",
+      limit: 5,
+    });
+
+    expect(hits.map((memory) => memory.id)).toContain(write.memory?.id);
+  });
+
+  it("indexes file-scoped memory entities and retrieves them by file path", async () => {
+    const { db, memoryService } = await createFixture();
+
+    const write = memoryService.writeMemory({
+      projectId: "project-1",
+      scope: "project",
+      category: "gotcha",
+      content: "Changing prompt rendering requires snapshot coverage because renderer prompts are cached.",
+      fileScopePattern: "apps/desktop/src/main/services/ai/tools/systemPrompt.ts",
+      importance: "high",
+      status: "promoted",
+      tier: 2,
+      confidence: 0.9,
+    });
+    expect(write.accepted).toBe(true);
+    expect(write.memory?.id).toBeTruthy();
+    const memoryId = write.memory!.id;
+
+    const links = db.get<{ count: number }>(
+      "select count(*) as count from memory_entity_links where memory_id = ?",
+      [memoryId],
+    )?.count ?? 0;
+    expect(links).toBeGreaterThan(0);
+
+    const hits = await memoryService.search({
+      projectId: "project-1",
+      scope: "project",
+      status: "promoted",
+      query: "apps/desktop/src/main/services/ai/tools/systemPrompt.ts",
+      mode: "lexical",
+      limit: 5,
+    });
+
+    expect(hits.map((memory) => memory.id)).toContain(memoryId);
+  });
+
+  it("records bounded retrieval telemetry for memory use", async () => {
+    const { db, memoryService } = await createFixture();
+
+    const write = memoryService.writeMemory({
+      projectId: "project-1",
+      scope: "project",
+      category: "decision",
+      content: "Decision: route agent memory through a central planner before mutating tools.",
+      importance: "high",
+      status: "promoted",
+      tier: 2,
+      confidence: 0.9,
+    });
+    expect(write.accepted).toBe(true);
+
+    const hits = await memoryService.search({
+      projectId: "project-1",
+      scope: "project",
+      status: "promoted",
+      query: "central planner mutating tools",
+      recordRetrieval: true,
+      retrievalSourceType: "unit_test",
+      injectedMemoryIds: write.memory?.id ? [write.memory.id] : [],
+      limit: 5,
+    });
+
+    expect(hits.map((memory) => memory.id)).toContain(write.memory?.id);
+    const ledger = db.get<Record<string, unknown>>(
+      "select * from memory_retrieval_ledger where project_id = ? order by created_at desc limit 1",
+      ["project-1"],
+    );
+    expect(ledger?.source_type).toBe("unit_test");
+    expect(ledger?.injected_count).toBe(1);
+    expect(String(ledger?.top_memory_ids_json ?? "")).toContain(write.memory?.id ?? "");
+
+    const stats = memoryService.getMemoryHealthStats("project-1");
+    expect(stats.recentRetrievals).toBeGreaterThan(0);
+    expect(stats.recentInjectedMemories).toBeGreaterThan(0);
+  });
+
+  it("can rebuild entity links for existing active memories", async () => {
+    const { db, memoryService } = await createFixture();
+
+    const write = memoryService.writeMemory({
+      projectId: "project-1",
+      scope: "project",
+      category: "convention",
+      content: "Convention: WorkViewArea keeps open chat tabs mounted during route changes.",
+      fileScopePattern: "apps/desktop/src/renderer/components/work/WorkViewArea.tsx",
+      importance: "high",
+      status: "promoted",
+      tier: 2,
+      confidence: 0.9,
+    });
+    expect(write.accepted).toBe(true);
+    expect(write.memory?.id).toBeTruthy();
+    db.run("delete from memory_entity_links where memory_id = ?", [write.memory!.id]);
+
+    const result = memoryService.reindexMemoryEntities("project-1");
+
+    expect(result.indexedMemories).toBeGreaterThan(0);
+    expect(result.entityLinkCount).toBeGreaterThan(0);
+    expect(memoryService.getMemoryHealthStats("project-1").memoriesMissingEntityLinks).toBe(0);
+  });
+
+  it("keeps default agent memory writes as reviewable candidates unless pinned or strict", () => {
+    expect(resolveAgentMemoryWritePolicy({ writeGateMode: "default" })).toEqual({
+      status: "candidate",
+      tier: 3,
+      confidence: 0.6,
+    });
+    expect(resolveAgentMemoryWritePolicy({ writeGateMode: "strict" })).toEqual({
+      status: "promoted",
+      tier: 2,
+      confidence: 0.9,
+    });
+    expect(resolveAgentMemoryWritePolicy({ pin: true, writeGateMode: "default" })).toEqual({
+      status: "promoted",
+      tier: 1,
+      confidence: 1,
+    });
+  });
+
+  it("dedupes repeated candidate memories instead of accumulating identical pending rows", async () => {
+    const { memoryService } = await createFixture();
+
+    const first = memoryService.writeMemory({
+      projectId: "project-1",
+      scope: "project",
+      category: "convention",
+      content: "Always add coverage when changing validation logic.",
+      importance: "medium",
+      status: "candidate",
+      tier: 3,
+      confidence: 0.6,
+      sourceType: "system",
+      sourceId: "pr:1:comment:1",
+    });
+    const second = memoryService.writeMemory({
+      projectId: "project-1",
+      scope: "project",
+      category: "convention",
+      content: "Always add coverage when changing validation logic.",
+      importance: "medium",
+      status: "candidate",
+      tier: 3,
+      confidence: 0.6,
+      sourceType: "system",
+      sourceId: "pr:2:comment:1",
+    });
+
+    const memories = memoryService.listMemories({
+      projectId: "project-1",
+      scope: "project",
+      status: "candidate",
+      limit: 20,
+    });
+
+    expect(first.accepted).toBe(true);
+    expect(second.accepted).toBe(true);
+    expect(second.deduped).toBe(true);
+    expect(second.mergedIntoId).toBe(first.memory?.id);
+    expect(memories).toHaveLength(1);
+    expect(memories[0]?.observationCount).toBe(2);
   });
 });

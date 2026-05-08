@@ -619,7 +619,7 @@ export function buildFullPrompt(
           "- You can report progress, blockers, and discoveries",
           "- Focus on your claimed task — the coordinator manages task distribution",
           "- When your task is done, report completion and the coordinator will assign more work or finalize the run",
-          "- If you discover something relevant to other tasks, write it with memory_add so it is preserved in project memories and shared facts"
+          "- If you discover a non-obvious convention, decision, reusable pitfall, or cross-task pattern, write it with memory_add; do not save task progress, raw review output, paths, or facts that grep/git/code can answer"
         ].join("\n")
       );
     } else if (teamRuntime?.enabled) {

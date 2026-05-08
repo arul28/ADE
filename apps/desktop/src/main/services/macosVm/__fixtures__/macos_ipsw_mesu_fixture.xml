@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>MobileDeviceSoftwareVersionsByVersion</key>
+  <dict>
+    <key>1</key>
+    <dict>
+      <key>MobileDeviceSoftwareVersions</key>
+      <dict>
+        <key>Mac16,1</key>
+        <dict>
+          <key>25D125</key>
+          <dict>
+            <key>Restore</key>
+            <dict>
+              <key>BuildVersion</key>
+              <string>25D125</string>
+              <key>FirmwareURL</key>
+              <string>https://updates.cdn-apple.com/macOS-26.3-25D125.ipsw</string>
+              <key>ProductVersion</key>
+              <string>26.3</string>
+            </dict>
+          </dict>
+          <key>25E253</key>
+          <dict>
+            <key>Restore</key>
+            <dict>
+              <key>BuildVersion</key>
+              <string>25E253</string>
+              <key>FirmwareURL</key>
+              <string>https://updates.cdn-apple.com/macOS-26.4.1-25E253.ipsw</string>
+              <key>ProductVersion</key>
+              <string>26.4.1</string>
+            </dict>
+          </dict>
+        </dict>
+        <key>Mac15,3</key>
+        <dict>
+          <key>25E253</key>
+          <dict>
+            <key>Restore</key>
+            <dict>
+              <key>BuildVersion</key>
+              <string>25E253</string>
+              <key>FirmwareURL</key>
+              <string>https://updates.cdn-apple.com/macOS-26.4.1-25E253.ipsw</string>
+              <key>ProductVersion</key>
+              <string>26.4.1</string>
+            </dict>
+          </dict>
+        </dict>
+      </dict>
+    </dict>
+  </dict>
+</dict>
+</plist>

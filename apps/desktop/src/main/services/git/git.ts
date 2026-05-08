@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync, spawn } from "node:child_process";
+import type { ChildProcessByStdio } from "node:child_process";
+import type { Readable } from "node:stream";
 import type { ConflictFileType } from "../../../shared/types";
 import { terminateProcessTree } from "../shared/processExecution";
 import { resolveExecutableFromKnownLocations } from "../ai/cliExecutableResolver";
@@ -162,11 +164,24 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
     : DEFAULT_MAX_OUTPUT_BYTES;
 
   return await new Promise<GitRunResult>((resolve) => {
-    const child = spawn(resolveGitExecutable(), args, {
-      cwd: opts.cwd,
-      env: { ...process.env, ...(opts.env ?? {}) },
-      stdio: ["ignore", "pipe", "pipe"]
-    });
+    const gitExecutable = resolveGitExecutable();
+    let child: ChildProcessByStdio<null, Readable, Readable>;
+    try {
+      child = spawn(gitExecutable, args, {
+        cwd: opts.cwd,
+        env: { ...process.env, ...(opts.env ?? {}) },
+        stdio: ["ignore", "pipe", "pipe"]
+      }) as ChildProcessByStdio<null, Readable, Readable>;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException)?.code;
+      const message = `Unable to start git${code ? ` (${code})` : ""}: ${error instanceof Error ? error.message : String(error)}`;
+      resolve({
+        exitCode: 1,
+        stdout: "",
+        stderr: message,
+      });
+      return;
+    }
     if (typeof child.pid === "number" && child.pid > 0) {
       activeGitPids.add(child.pid);
     }
@@ -232,8 +247,8 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
       const code = (error as NodeJS.ErrnoException)?.code;
       const friendlyMessage =
         code === "ENOENT"
-          ? gitExecutableNotFoundMessage(resolveGitExecutable())
-          : error.message;
+          ? gitExecutableNotFoundMessage(gitExecutable)
+          : `Unable to start git${code ? ` (${code})` : ""}: ${error.message}`;
       finish({
         exitCode: 1,
         stdout,

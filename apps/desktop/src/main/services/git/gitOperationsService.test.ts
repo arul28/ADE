@@ -90,6 +90,71 @@ describe("gitOperationsService.stashClear", () => {
   });
 });
 
+describe("gitOperationsService file actions", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("restores both sides of a staged rename when discarding the staged file", async () => {
+    mockGit.getHeadSha.mockResolvedValue("abc123");
+    mockGit.runGit.mockResolvedValue({
+      exitCode: 0,
+      stdout: "R  src/old.ts -> src/new.ts\n",
+      stderr: "",
+    });
+    mockGit.runGitOrThrow.mockResolvedValue("");
+    const { service } = createTestGitOperationsService();
+
+    await service.restoreStagedFile({ laneId: "lane-1", path: "src/new.ts" });
+
+    expect(mockGit.runGit).toHaveBeenCalledWith(
+      ["status", "--porcelain=v1"],
+      { cwd: "/tmp/ade-lane", timeoutMs: 12_000 },
+    );
+    expect(mockGit.runGitOrThrow).toHaveBeenCalledWith(
+      ["restore", "--staged", "--worktree", "--source=HEAD", "--", "src/new.ts", "src/old.ts"],
+      { cwd: "/tmp/ade-lane", timeoutMs: 15_000 },
+    );
+  });
+
+  it("partitions tracked and untracked paths when discarding unstaged files in bulk", async () => {
+    mockGit.getHeadSha.mockResolvedValue("abc123");
+    mockGit.runGit.mockResolvedValue({
+      exitCode: 0,
+      stdout: " M src/tracked.ts\n?? src/new.ts\n",
+      stderr: "",
+    });
+    mockGit.runGitOrThrow.mockResolvedValue("");
+    const { service } = createTestGitOperationsService();
+
+    await service.discardFiles({
+      laneId: "lane-1",
+      paths: ["src/tracked.ts", "src/new.ts"],
+    });
+
+    expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
+      1,
+      ["ls-files", "--error-unmatch", "--", "src/tracked.ts"],
+      { cwd: "/tmp/ade-lane", timeoutMs: 30_000 },
+    );
+    expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
+      2,
+      ["restore", "--worktree", "--", "src/tracked.ts"],
+      { cwd: "/tmp/ade-lane", timeoutMs: 30_000 },
+    );
+    expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
+      3,
+      ["clean", "-fdn", "--", "src/new.ts"],
+      { cwd: "/tmp/ade-lane", timeoutMs: 30_000 },
+    );
+    expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
+      4,
+      ["clean", "-fd", "--", "src/new.ts"],
+      { cwd: "/tmp/ade-lane", timeoutMs: 30_000 },
+    );
+  });
+});
+
 describe("gitOperationsService stash item commands", () => {
   beforeEach(() => {
     vi.clearAllMocks();

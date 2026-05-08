@@ -46,6 +46,7 @@ import { readMissionStateDocument, updateMissionStateDocument } from "./missionS
 import { escapeRegExp, resolvePathWithinRoot } from "../shared/utils";
 import { normalizeAgentRuntimeFlags } from "./teamRuntimeConfig";
 import { registerTeamMember } from "./teamRuntimeState";
+import { resolveAgentMemoryWritePolicy } from "../memory/memoryService";
 import type { createMemoryService } from "../memory/memoryService";
 import {
   classifyWorkerExecutionPath,
@@ -4157,6 +4158,9 @@ export function createCoordinatorToolSet(deps: {
               scope: "mission",
               scopeOwnerIds: [missionId, runId, scopeOwnerId ?? null],
               limit: effectiveLimit,
+              recordRetrieval: true,
+              retrievalSourceType: "coordinator_tool",
+              retrievalSourceId: runId ?? missionId ?? null,
             })
           : await memoryService.search({
               projectId,
@@ -4164,6 +4168,9 @@ export function createCoordinatorToolSet(deps: {
               ...(scope ? { scope } : {}),
               ...(scope ? { scopeOwnerId: resolveMemoryScopeOwnerId(scope, scopeOwnerId) ?? null } : {}),
               limit: effectiveLimit,
+              recordRetrieval: true,
+              retrievalSourceType: "coordinator_tool",
+              retrievalSourceId: runId ?? missionId ?? null,
             });
         return {
           ok: true,
@@ -4214,7 +4221,7 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
       scopeOwnerId: z.string().optional().describe("Optional explicit owner id for agent/mission scope"),
       importance: z.enum(["low", "medium", "high"]).optional().default("medium").describe("Memory importance"),
       pin: z.boolean().optional().default(false).describe("Pin this memory into Tier-1 context"),
-      writeMode: z.enum(["default", "strict"]).optional().default("default").describe("Write gate strictness"),
+      writeMode: z.enum(["default", "strict"]).optional().default("default").describe("Write gate strictness. Default stores candidates; strict promotes high-confidence insights."),
     }),
     execute: async ({ content, category, scope, scopeOwnerId, importance, pin, writeMode }) => {
       try {
@@ -4225,17 +4232,21 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
         const effectiveImportance = importance ?? "medium";
         const effectivePin = pin ?? false;
         const effectiveWriteMode = writeMode ?? "default";
+        const writePolicy = resolveAgentMemoryWritePolicy({
+          pin: effectivePin,
+          writeGateMode: effectiveWriteMode,
+        });
         const result = memoryService.writeMemory({
           projectId,
           scope: effectiveScope,
           scopeOwnerId: resolveMemoryScopeOwnerId(effectiveScope, scopeOwnerId),
-          tier: effectivePin ? 1 : 2,
+          tier: writePolicy.tier,
           category,
           content,
           importance: effectiveImportance,
           pinned: effectivePin,
-          status: "promoted",
-          confidence: 1,
+          status: writePolicy.status,
+          confidence: writePolicy.confidence,
           sourceType: "system",
           sourceRunId: runId,
           sourceId: `coordinator:${runId}`,

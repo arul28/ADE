@@ -60,6 +60,7 @@ import { createReviewSuppressionService, type ReviewSuppressionService } from ".
 import { buildDiffContextForFinding } from "./reviewDiffContext";
 import { buildToolBackedEvidence } from "./reviewToolEvidence";
 import type { EmbeddingService } from "../memory/embeddingService";
+import type { createMemoryService, Memory } from "../memory/memoryService";
 
 type ReviewRunRow = {
   id: string;
@@ -221,6 +222,32 @@ type ReviewContextArtifactIds = {
   provenanceArtifactId: string;
   rulesArtifactId: string;
   validationArtifactId: string;
+  memoryContextArtifactId?: string | null;
+};
+
+type ReviewMemoryContextEntry = {
+  id: string;
+  scope: Memory["scope"];
+  tier: Memory["tier"];
+  category: Memory["category"];
+  content: string;
+  importance: Memory["importance"];
+  confidence: number;
+  pinned: boolean;
+  fileScopePattern: string | null;
+  sourceType: Memory["sourceType"];
+  sourceId: string | null;
+  updatedAt: string;
+  matchReason: "file_scope" | "semantic";
+  score: number;
+};
+
+type ReviewMemoryContext = {
+  summary: string;
+  prompt: string;
+  query: string;
+  entries: ReviewMemoryContextEntry[];
+  metadata: Record<string, unknown>;
 };
 
 type PassExecutionResult = {
@@ -447,6 +474,185 @@ const REVIEW_PASSES: PassDefinition[] = [
   },
 ];
 
+const REVIEW_MEMORY_CATEGORIES = new Set<Memory["category"]>([
+  "convention",
+  "pattern",
+  "gotcha",
+  "decision",
+  "preference",
+]);
+
+function toGlobRegExp(pattern: string): RegExp | null {
+  const trimmed = pattern.trim();
+  if (!trimmed.length) return null;
+  const escaped = trimmed
+    .replace(/\*\*/g, "__ADE_GLOBSTAR__")
+    .replace(/\*/g, "__ADE_STAR__")
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/__ADE_GLOBSTAR__/g, ".*")
+    .replace(/__ADE_STAR__/g, "[^/]*");
+  try {
+    return new RegExp(`^${escaped}$`);
+  } catch {
+    return null;
+  }
+}
+
+function memoryPatternMatchesPath(pattern: string | null, filePath: string): boolean {
+  const trimmed = String(pattern ?? "").trim();
+  if (!trimmed.length) return false;
+  const patterns = trimmed
+    .split(/[\n,]+/g)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  return patterns.some((entry) => {
+    if (entry === filePath) return true;
+    if (entry.endsWith("/**")) {
+      const directory = entry.slice(0, -3);
+      return filePath === directory || filePath.startsWith(`${directory}/`);
+    }
+    const regex = toGlobRegExp(entry);
+    return regex ? regex.test(filePath) : filePath.includes(entry);
+  });
+}
+
+function buildReviewMemoryQuery(args: {
+  run: ReviewRun;
+  changedFiles: MaterializedChangedFile[];
+}): string {
+  const changedPaths = args.changedFiles.map((entry) => entry.filePath).slice(0, 16);
+  return [
+    args.run.targetLabel,
+    args.run.target.mode,
+    args.run.config.selectionMode,
+    "code review conventions gotchas decisions preferences validation regressions",
+    ...changedPaths,
+  ].filter(Boolean).join(" ");
+}
+
+function toReviewMemoryEntry(args: {
+  memory: Memory;
+  matchReason: ReviewMemoryContextEntry["matchReason"];
+  score?: number | null;
+}): ReviewMemoryContextEntry {
+  return {
+    id: args.memory.id,
+    scope: args.memory.scope,
+    tier: args.memory.tier,
+    category: args.memory.category,
+    content: args.memory.content,
+    importance: args.memory.importance,
+    confidence: args.memory.confidence,
+    pinned: args.memory.pinned,
+    fileScopePattern: args.memory.fileScopePattern,
+    sourceType: args.memory.sourceType,
+    sourceId: args.memory.sourceId,
+    updatedAt: args.memory.updatedAt,
+    matchReason: args.matchReason,
+    score: Number(args.score ?? args.memory.compositeScore ?? 0),
+  };
+}
+
+function summarizeReviewMemory(entries: ReviewMemoryContextEntry[]): string {
+  if (entries.length === 0) return "No promoted ADE memory matched";
+  const fileScoped = entries.filter((entry) => entry.matchReason === "file_scope").length;
+  const pinned = entries.filter((entry) => entry.pinned).length;
+  return [
+    `${entries.length} promoted memory ${entries.length === 1 ? "entry" : "entries"}`,
+    fileScoped > 0 ? `${fileScoped} file-scoped` : null,
+    pinned > 0 ? `${pinned} pinned` : null,
+  ].filter((part): part is string => Boolean(part)).join(", ");
+}
+
+function buildReviewMemoryPrompt(entries: ReviewMemoryContextEntry[]): string {
+  if (entries.length === 0) {
+    return "- No promoted ADE memory matched this review target.";
+  }
+  return entries.map((entry) => {
+    const scope = entry.fileScopePattern ? ` scope=${entry.fileScopePattern}` : "";
+    const pin = entry.pinned ? " pinned" : "";
+    return `- [${entry.id}] ${entry.category} tier ${entry.tier}${pin}${scope}: ${entry.content}`;
+  }).join("\n");
+}
+
+async function buildReviewMemoryContext(args: {
+  memoryService?: Pick<ReturnType<typeof createMemoryService>, "search" | "listMemories"> | null;
+  run: ReviewRun;
+  changedFiles: MaterializedChangedFile[];
+}): Promise<ReviewMemoryContext> {
+  const query = buildReviewMemoryQuery(args);
+  const changedPaths = args.changedFiles.map((entry) => entry.filePath);
+  const ranked = new Map<string, ReviewMemoryContextEntry>();
+
+  const addEntry = (entry: ReviewMemoryContextEntry) => {
+    const existing = ranked.get(entry.id);
+    if (!existing || entry.score > existing.score || (entry.matchReason === "file_scope" && existing.matchReason !== "file_scope")) {
+      ranked.set(entry.id, entry);
+    }
+  };
+
+  if (args.memoryService) {
+    try {
+      const scoped = args.memoryService.listMemories({
+        projectId: args.run.projectId,
+        scope: "project",
+        status: "promoted",
+        categories: [...REVIEW_MEMORY_CATEGORIES],
+        limit: 200,
+      });
+      for (const memory of scoped) {
+        if (!memory.fileScopePattern || !changedPaths.some((filePath) => memoryPatternMatchesPath(memory.fileScopePattern, filePath))) {
+          continue;
+        }
+        const fileScopedBoost = memory.pinned ? 2 : memory.tier === 1 ? 1.8 : 1.5;
+        addEntry(toReviewMemoryEntry({ memory, matchReason: "file_scope", score: fileScopedBoost + memory.confidence }));
+      }
+    } catch {
+      // Memory is additive review context; review runs must not fail if it is temporarily unavailable.
+    }
+
+    try {
+      const hits = await args.memoryService.search({
+        projectId: args.run.projectId,
+        query,
+        scope: "project",
+        status: "promoted",
+        limit: 16,
+        recordRetrieval: false,
+      });
+      for (const memory of hits) {
+        if (!REVIEW_MEMORY_CATEGORIES.has(memory.category)) continue;
+        addEntry(toReviewMemoryEntry({ memory, matchReason: "semantic", score: memory.compositeScore }));
+      }
+    } catch {
+      // See note above.
+    }
+  }
+
+  const entries = [...ranked.values()]
+    .sort((left, right) => {
+      if (right.score !== left.score) return right.score - left.score;
+      if (left.tier !== right.tier) return left.tier - right.tier;
+      return right.updatedAt.localeCompare(left.updatedAt);
+    })
+    .slice(0, 8);
+
+  return {
+    summary: summarizeReviewMemory(entries),
+    prompt: buildReviewMemoryPrompt(entries),
+    query,
+    entries,
+    metadata: {
+      summary: summarizeReviewMemory(entries),
+      memoryCount: entries.length,
+      fileScopedCount: entries.filter((entry) => entry.matchReason === "file_scope").length,
+      pinnedCount: entries.filter((entry) => entry.pinned).length,
+      categories: Array.from(new Set(entries.map((entry) => entry.category))).sort(),
+      query,
+    },
+  };
+}
+
 function buildChangedFilesSummary(changedFiles: Array<{ filePath: string }>): string {
   const changedFilesSummary = changedFiles.length > 0
     ? changedFiles.map((entry) => `- ${entry.filePath}`).join("\n")
@@ -465,6 +671,9 @@ function buildContextArtifactHints(args: {
   if (args.includeValidation) {
     lines.push(`- validation_signals artifact id: ${args.artifactIds.validationArtifactId}`);
   }
+  if (args.artifactIds.memoryContextArtifactId) {
+    lines.push(`- memory_context artifact id: ${args.artifactIds.memoryContextArtifactId}`);
+  }
   return lines;
 }
 
@@ -475,6 +684,7 @@ function buildPassPrompt(args: {
   changedFiles: Array<{ filePath: string }>;
   context: ReviewContextPacket;
   contextArtifactIds: ReviewContextArtifactIds;
+  memoryContext: ReviewMemoryContext;
 }): string {
   const changedFilesSummary = buildChangedFilesSummary(args.changedFiles);
   const includeValidation = args.pass.key === "checks-and-tests";
@@ -487,6 +697,7 @@ function buildPassPrompt(args: {
     "Prioritize correctness, regressions, security, data loss, race conditions, risky migrations, and missing tests.",
     "Do not suggest style-only nits or speculative rewrites.",
     "Every finding must include concrete evidence from the diff bundle or supplied review context.",
+    "Persistent memory is review guidance, not proof. Do not create a finding from memory alone.",
     `Return strict JSON only with this exact top-level shape: {"summary": string, "findings": Finding[]}.`,
     "Each Finding must be an object with:",
     '- "title": short issue title',
@@ -526,6 +737,9 @@ function buildPassPrompt(args: {
     "",
     "Checks and validation context:",
     includeValidation ? args.context.validation.prompt : "- Full validation evidence is reserved for the checks-and-tests pass.",
+    "",
+    "Persistent ADE memory relevant to this review:",
+    args.memoryContext.prompt,
     "",
     "Diff bundle:",
     truncateText(args.diffText, args.run.config.budgets.maxPromptChars),
@@ -1291,6 +1505,7 @@ export function createReviewService({
   issueInventoryService,
   prService,
   embeddingService,
+  memoryService,
   onEvent,
 }: {
   db: AdeDb;
@@ -1307,6 +1522,7 @@ export function createReviewService({
   issueInventoryService: Pick<ReturnType<typeof createIssueInventoryService>, "getInventory">;
   prService?: Pick<ReturnType<typeof createPrService>, "getReviewSnapshot" | "getChecks" | "publishReviewPublication">;
   embeddingService?: Pick<EmbeddingService, "embed"> | null;
+  memoryService?: Pick<ReturnType<typeof createMemoryService>, "search" | "listMemories"> | null;
   onEvent?: (event: ReviewEventPayload) => void;
 }) {
   const materializer = createReviewTargetMaterializer({ laneService, prService });
@@ -1673,6 +1889,7 @@ export function createReviewService({
     changedFilesByPath: Map<string, { excerpt: string; lineNumbers: Set<number> }>;
     context: ReviewContextPacket;
     contextArtifactIds: ReviewContextArtifactIds;
+    memoryContext: ReviewMemoryContext;
   }): Promise<PassExecutionResult> {
     const prompt = buildPassPrompt({
       run: args.run,
@@ -1681,6 +1898,7 @@ export function createReviewService({
       changedFiles: args.changedFiles,
       context: args.context,
       contextArtifactIds: args.contextArtifactIds,
+      memoryContext: args.memoryContext,
     });
     const promptArtifact = insertArtifact(args.runId, {
       artifactType: "pass_prompt",
@@ -1692,6 +1910,7 @@ export function createReviewService({
         modelId: args.descriptorId,
         reasoningEffort: args.run.config.reasoningEffort,
         matchedRuleIds: args.context.rules.metadata.matchedRuleIds ?? [],
+        memoryCount: args.memoryContext.entries.length,
       },
     });
     const result = await agentChatService.runSessionTurn({
@@ -1856,6 +2075,11 @@ export function createReviewService({
           changedFiles,
         },
       });
+      const memoryContext = await buildReviewMemoryContext({
+        memoryService,
+        run: effectiveRun,
+        changedFiles,
+      });
       const provenanceArtifact = insertArtifact(runId, {
         artifactType: "provenance_brief",
         title: "Provenance brief",
@@ -1877,10 +2101,21 @@ export function createReviewService({
         contentText: JSON.stringify(reviewContext.validation.payload, null, 2),
         metadata: reviewContext.validation.metadata,
       });
+      const memoryArtifact = insertArtifact(runId, {
+        artifactType: "memory_context",
+        title: "Memory context",
+        mimeType: "application/json",
+        contentText: JSON.stringify({
+          query: memoryContext.query,
+          entries: memoryContext.entries,
+        }, null, 2),
+        metadata: memoryContext.metadata,
+      });
       const contextArtifactIds: ReviewContextArtifactIds = {
         provenanceArtifactId: provenanceArtifact.id,
         rulesArtifactId: rulesArtifact.id,
         validationArtifactId: validationArtifact.id,
+        memoryContextArtifactId: memoryArtifact.id,
       };
       insertArtifact(runId, {
         artifactType: "prompt",
@@ -1895,6 +2130,7 @@ export function createReviewService({
             provenanceSummary: reviewContext.provenance.summary,
             rulesSummary: reviewContext.rules.summary,
             validationSummary: reviewContext.validation.summary,
+            memorySummary: memoryContext.summary,
             matchedRuleIds: reviewContext.rules.metadata.matchedRuleIds ?? [],
             contextArtifactIds,
           },
@@ -1907,6 +2143,7 @@ export function createReviewService({
           matchedRuleIds: reviewContext.rules.metadata.matchedRuleIds ?? [],
           provenanceCount: reviewContext.provenance.metadata.provenanceCount ?? 0,
           validationSignalCount: reviewContext.validation.metadata.signalCount ?? 0,
+          memoryCount: memoryContext.entries.length,
         },
       });
 
@@ -1947,6 +2184,7 @@ export function createReviewService({
           changedFilesByPath,
           context: reviewContext,
           contextArtifactIds,
+          memoryContext,
         });
         passResults.push(passResult);
       }

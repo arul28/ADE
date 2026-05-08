@@ -157,7 +157,9 @@ describe("LaneGitActionsPane rescue action", () => {
         stageAll: vi.fn(async () => ({ operationId: "stage-all", preHeadSha: "abc", postHeadSha: "abc" })),
         unstageFile: vi.fn(async () => ({ operationId: "unstage-file", preHeadSha: "abc", postHeadSha: "abc" })),
         discardFile: vi.fn(async () => ({ operationId: "discard-file", preHeadSha: "abc", postHeadSha: "abc" })),
+        discardFiles: vi.fn(async () => ({ operationId: "discard-files", preHeadSha: "abc", postHeadSha: "abc" })),
         restoreStagedFile: vi.fn(async () => ({ operationId: "restore-staged-file", preHeadSha: "abc", postHeadSha: "abc" })),
+        restoreStagedFiles: vi.fn(async () => ({ operationId: "restore-staged-files", preHeadSha: "abc", postHeadSha: "abc" })),
         generateCommitMessage: vi.fn(async () => ({ message: "feat: auto", model: "openai/gpt-5.4-mini" })),
         stashList: vi.fn(async ({ laneId }: { laneId: string }) => mockStashesByLaneId[laneId] ?? []),
         stashPush: vi.fn(async () => ({ operationId: "stash-push", preHeadSha: "abc", postHeadSha: "abc" })),
@@ -320,6 +322,66 @@ describe("LaneGitActionsPane rescue action", () => {
     });
     await waitFor(() => {
       expect(screen.queryByText(".claude/worktrees/fix-session-auto-naming")).toBeNull();
+    });
+  });
+
+  it("uses one batch IPC call when discarding all unstaged files", async () => {
+    const user = userEvent.setup();
+    mockChangesByLaneId["lane-1"] = {
+      staged: [],
+      unstaged: [
+        { path: "src/file-a.ts", kind: "modified" },
+        { path: "src/file-b.ts", kind: "untracked" },
+      ],
+    };
+    (window.ade.git.discardFiles as any).mockImplementationOnce(async () => {
+      mockChangesByLaneId["lane-1"] = { staged: [], unstaged: [] };
+      return { operationId: "discard-files", preHeadSha: "abc", postHeadSha: "abc" };
+    });
+
+    renderPane();
+
+    await user.click(await screen.findByRole("button", { name: "DISCARD UNSTAGED" }));
+
+    await waitFor(() => {
+      expect(window.ade.git.discardFiles).toHaveBeenCalledWith({
+        laneId: "lane-1",
+        paths: ["src/file-a.ts", "src/file-b.ts"],
+      });
+    });
+    expect(window.ade.git.discardFile).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(screen.queryByText("src/file-a.ts")).toBeNull();
+    });
+  });
+
+  it("uses one batch IPC call when discarding all staged files", async () => {
+    const user = userEvent.setup();
+    mockChangesByLaneId["lane-1"] = {
+      staged: [
+        { path: "src/file-a.ts", kind: "modified" },
+        { path: "src/file-b.ts", kind: "added" },
+      ],
+      unstaged: [],
+    };
+    (window.ade.git.restoreStagedFiles as any).mockImplementationOnce(async () => {
+      mockChangesByLaneId["lane-1"] = { staged: [], unstaged: [] };
+      return { operationId: "restore-staged-files", preHeadSha: "abc", postHeadSha: "abc" };
+    });
+
+    renderPane();
+
+    await user.click(await screen.findByRole("button", { name: "DISCARD STAGED" }));
+
+    await waitFor(() => {
+      expect(window.ade.git.restoreStagedFiles).toHaveBeenCalledWith({
+        laneId: "lane-1",
+        paths: ["src/file-a.ts", "src/file-b.ts"],
+      });
+    });
+    expect(window.ade.git.restoreStagedFile).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(screen.queryByText("src/file-a.ts")).toBeNull();
     });
   });
 

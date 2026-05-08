@@ -2530,6 +2530,7 @@ app.whenReady().then(async () => {
       issueInventoryService,
       prService,
       embeddingService,
+      memoryService,
       onEvent: (event) => emitProjectEvent(projectRoot, IPC.reviewEvent, event),
     });
     const automationIngressService = createAutomationIngressService({

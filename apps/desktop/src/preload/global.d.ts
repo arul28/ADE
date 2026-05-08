@@ -677,14 +677,26 @@ import type {
   BuiltInBrowserTabArgs,
   MacosVmAgentGuide,
   MacosVmAgentGuideArgs,
+  MacosVmBaseCreateArgs,
+  MacosVmBaseDeleteArgs,
+  MacosVmBaseMarkReadyArgs,
+  MacosVmBaseRecord,
+  MacosVmBaseStartArgs,
+  MacosVmBaseStopArgs,
   MacosVmCaptureScreenshotArgs,
   MacosVmCaptureScreenshotResult,
+  MacosVmClearIpswCacheResult,
   MacosVmClickArgs,
   MacosVmDeleteArgs,
   MacosVmEventPayload,
+  MacosVmFocusBaseWindowArgs,
   MacosVmFocusWindowArgs,
+  MacosVmHostCapabilities,
   MacosVmProvisionArgs,
   MacosVmRecord,
+  MacosVmRenameBaseArgs,
+  MacosVmSaveLaneAsSnapshotArgs,
+  MacosVmScreenRecordingProbeResult,
   MacosVmSelectPointArgs,
   MacosVmSelectPointResult,
   MacosVmStartArgs,
@@ -1442,12 +1454,23 @@ declare global {
       };
       macosVm: {
         getStatus: (args?: MacosVmStatusArgs) => Promise<MacosVmStatus>;
+        getScreenRecordingStatus: () => Promise<MacosVmScreenRecordingProbeResult>;
+        getHostCapabilities: () => Promise<MacosVmHostCapabilities>;
+        createBase: (args?: MacosVmBaseCreateArgs) => Promise<MacosVmBaseRecord>;
+        startBase: (args?: MacosVmBaseStartArgs) => Promise<MacosVmBaseRecord>;
+        stopBase: (args?: MacosVmBaseStopArgs) => Promise<MacosVmBaseRecord | null>;
+        markBaseReady: (args?: MacosVmBaseMarkReadyArgs) => Promise<MacosVmBaseRecord>;
+        deleteBase: (args?: MacosVmBaseDeleteArgs) => Promise<{ deleted: boolean; previous: MacosVmBaseRecord | null }>;
+        renameBase: (args: MacosVmRenameBaseArgs) => Promise<MacosVmBaseRecord>;
+        saveLaneVmAsSnapshot: (args: MacosVmSaveLaneAsSnapshotArgs) => Promise<MacosVmBaseRecord>;
+        clearIpswCache: () => Promise<MacosVmClearIpswCacheResult>;
         provision: (args: MacosVmProvisionArgs) => Promise<MacosVmRecord>;
         start: (args: MacosVmStartArgs) => Promise<MacosVmRecord>;
         stop: (args: MacosVmStopArgs) => Promise<MacosVmRecord | null>;
         delete: (args: MacosVmDeleteArgs) => Promise<{ deleted: boolean; previous: MacosVmRecord | null }>;
         getAgentGuide: (args: MacosVmAgentGuideArgs) => Promise<MacosVmAgentGuide>;
         focusWindow: (args: MacosVmFocusWindowArgs) => Promise<MacosVmWindowTarget>;
+        focusBaseWindow: (args?: MacosVmFocusBaseWindowArgs) => Promise<MacosVmWindowTarget>;
         captureScreenshot: (args: MacosVmCaptureScreenshotArgs) => Promise<MacosVmCaptureScreenshotResult>;
         selectPoint: (args: MacosVmSelectPointArgs) => Promise<MacosVmSelectPointResult>;
         click: (args: MacosVmClickArgs) => Promise<{ ok: true; window: MacosVmWindowTarget; x: number; y: number }>;
@@ -1503,8 +1526,12 @@ declare global {
         unstageFile: (args: GitFileActionArgs) => Promise<GitActionResult>;
         unstageAll: (args: GitBatchFileActionArgs) => Promise<GitActionResult>;
         discardFile: (args: GitFileActionArgs) => Promise<GitActionResult>;
+        discardFiles: (args: GitBatchFileActionArgs) => Promise<GitActionResult>;
         restoreStagedFile: (
           args: GitFileActionArgs,
+        ) => Promise<GitActionResult>;
+        restoreStagedFiles: (
+          args: GitBatchFileActionArgs,
         ) => Promise<GitActionResult>;
         commit: (args: GitCommitArgs) => Promise<GitActionResult>;
         generateCommitMessage: (

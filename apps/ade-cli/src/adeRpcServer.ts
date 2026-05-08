@@ -390,6 +390,18 @@ const TOOL_SPECS: ToolSpec[] = [
     }
   },
   {
+    name: "memory_stats",
+    description: "Inspect ADE memory health, retrieval usage, entity index coverage, and recent retrieval ledger entries.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        limit: { type: "number", minimum: 1, maximum: 100, default: 10 },
+        includeRecent: { type: "boolean", default: true }
+      }
+    }
+  },
+  {
     name: "get_environment_info",
     description: "Inspect ADE local fallback computer-use capability state, frontmost app context, and ADE artifact paths.",
     inputSchema: {
@@ -474,13 +486,14 @@ const TOOL_SPECS: ToolSpec[] = [
         laneId: { type: "string" },
         createIfMissing: { type: "boolean", default: true },
         openDisplay: { type: "boolean", default: true },
-        mode: { type: "string", enum: ["pull-image", "create"] },
-        sourceImage: { type: "string" },
+        mode: { type: "string", enum: ["create"] },
         ipsw: { type: "string" },
         cpuCores: { type: "number", minimum: 1, maximum: 32 },
         memory: { type: "string" },
         diskSize: { type: "string" },
-        display: { type: "string" }
+        display: { type: "string" },
+        fromBase: { type: "boolean" },
+        baseName: { type: "string" }
       }
     }
   },
@@ -497,7 +510,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "macos_vm_focus",
-    description: "Select the lane-tied macOS VM GUI target; uses headless VNC when available or raises the visible viewer.",
+    description: "Select the lane-tied macOS VM GUI target and raise the native Apple Virtualization VM window.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -509,7 +522,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "macos_vm_screenshot",
-    description: "Capture a lane-tied macOS VM through headless VNC or its visible viewer and register it as ADE computer-use visual proof.",
+    description: "Capture a lane-tied macOS VM from the native Apple Virtualization VM window and register it as ADE computer-use visual proof.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -700,6 +713,17 @@ const TOOL_SPECS: ToolSpec[] = [
       additionalProperties: false,
       properties: {
         id: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "memory_reindex",
+    description: "Rebuild the lightweight memory entity index for active project memories. Use after repair/import when memory retrieval needs file/entity-aware matches.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        limit: { type: "number", minimum: 1, maximum: 5000, default: 500 }
       }
     }
   },
@@ -2027,6 +2051,7 @@ const READ_ONLY_TOOLS = new Set([
   "pr_refresh_issue_inventory",
   "pr_preview_issue_resolution_prompt",
   "memory_search",
+  "memory_stats",
   "get_cto_state",
   "listChats",
   "getChatStatus",
@@ -2079,6 +2104,7 @@ const MUTATION_TOOLS = new Set([
   "pr_resolve_review_thread",
   "memory_add",
   "memory_pin",
+  "memory_reindex",
   "memory_update_core",
   "reflection_add",
   "spawnChat",
@@ -2226,6 +2252,17 @@ function asBoolean(value: unknown, fallback = false): boolean {
 
 function asNumber(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function safeParseJsonArray(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== "string" || !value.trim().length) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 }
 
 function assertNonEmptyString(value: unknown, field: string): string {
@@ -2729,7 +2766,9 @@ function resolveRequestedOrSessionLaneId(
   session: SessionState,
   toolArgs: Record<string, unknown>,
 ): string | null {
-  return extractLaneId(toolArgs) ?? resolveChatSessionLaneId(runtime, session);
+  return extractLaneId(toolArgs)
+    ?? resolveChatSessionLaneId(runtime, session)
+    ?? resolveRunContextLaneId(runtime, resolveCallerContext(session));
 }
 
 function requireLaneIdForTool(
@@ -2742,7 +2781,7 @@ function requireLaneIdForTool(
   if (!laneId) {
     throw new JsonRpcError(
       JsonRpcErrorCode.invalidParams,
-      `${toolName} requires laneId unless the caller is already bound to a chat session lane.`,
+      `${toolName} requires laneId unless the caller is already bound to a chat session lane or ADE run context.`,
     );
   }
   return laneId;
@@ -4328,20 +4367,21 @@ async function runTool(args: {
     if (name === "macos_vm_start") {
       const laneId = macosVmLaneId(name);
       const mode = asOptionalTrimmedString(toolArgs.mode);
-      if (mode && mode !== "pull-image" && mode !== "create") {
-        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "mode must be pull-image or create.");
+      if (mode && mode !== "create") {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "mode must be create.");
       }
       return await service.start({
         laneId,
         createIfMissing: toolArgs.createIfMissing === false ? false : true,
         openDisplay: toolArgs.openDisplay === false ? false : true,
-        mode: mode === "pull-image" || mode === "create" ? mode : undefined,
-        sourceImage: asOptionalTrimmedString(toolArgs.sourceImage ?? toolArgs.image),
+        mode: mode === "create" ? mode : undefined,
         ipsw: asOptionalTrimmedString(toolArgs.ipsw),
         cpuCores: Number.isFinite(Number(toolArgs.cpuCores)) ? Number(toolArgs.cpuCores) : undefined,
         memory: asOptionalTrimmedString(toolArgs.memory),
         diskSize: asOptionalTrimmedString(toolArgs.diskSize),
         display: asOptionalTrimmedString(toolArgs.display),
+        fromBase: toolArgs.fromBase === true ? true : toolArgs.fromBase === false ? false : undefined,
+        baseName: asOptionalTrimmedString(toolArgs.baseName ?? toolArgs.base),
       });
     }
     if (name === "macos_vm_guide") {
@@ -5314,7 +5354,7 @@ async function runTool(args: {
     const content = assertNonEmptyString(toolArgs.content, "content");
     const category = parseMemoryToolCategory(toolArgs.category);
     const importance = parseMemoryToolImportance(toolArgs.importance);
-    const requestedScope = parseMemoryToolScope(toolArgs.scope, callerCtx.runId ? "mission" : "project");
+    const requestedScope = parseMemoryToolScope(toolArgs.scope, "project");
     const serviceScope = mapMemoryToolScopeToServiceScope(requestedScope);
     const scopeOwnerId = resolveMemoryToolScopeOwnerId(requestedScope, callerCtx);
     const writePolicy = resolveAgentMemoryWritePolicy({ pin: false, writeGateMode: "default" });
@@ -5535,7 +5575,7 @@ async function runTool(args: {
     ensureMemorySearchAllowed(session);
 
     const query = assertNonEmptyString(toolArgs.query, "query");
-    const requestedScope = parseMemoryToolScope(toolArgs.scope, callerCtx.runId ? "mission" : "project");
+    const requestedScope = parseMemoryToolScope(toolArgs.scope, "project");
     const serviceScope = mapMemoryToolScopeToServiceScope(requestedScope);
     const scopeOwnerId = resolveMemoryToolScopeOwnerId(requestedScope, callerCtx);
     const status = parseMemoryToolSearchStatus(toolArgs.status);
@@ -5550,7 +5590,13 @@ async function runTool(args: {
       serviceScope,
       limit,
       statusFilter,
-      scopeOwnerId
+      scopeOwnerId,
+      "hybrid",
+      {
+        recordRetrieval: true,
+        retrievalSourceType: "ade_cli_memory_search",
+        retrievalSourceId: callerCtx.chatSessionId ?? callerCtx.ownerId ?? callerCtx.runId ?? callerCtx.callerId,
+      }
     );
 
     return {
@@ -5573,6 +5619,31 @@ async function runTool(args: {
     };
   }
 
+  if (name === "memory_stats") {
+    const limit = Math.max(1, Math.min(100, Math.floor(asNumber(toolArgs.limit, 10))));
+    const includeRecent = asBoolean(toolArgs.includeRecent, true);
+    const stats = runtime.memoryService.getMemoryHealthStats(runtime.projectId);
+    const recent = includeRecent
+      ? runtime.memoryService.listRecentRetrievals(runtime.projectId, limit)
+      : [];
+    return {
+      stats,
+      recentRetrievals: recent.map((row: Record<string, unknown>) => ({
+        id: row.id,
+        query: row.query,
+        scope: row.scope,
+        sourceType: row.source_type,
+        resultCount: row.result_count,
+        injectedCount: row.injected_count,
+        topMemoryIds: safeParseJsonArray(row.top_memory_ids_json),
+        injectedMemoryIds: safeParseJsonArray(row.injected_memory_ids_json),
+        entityMatches: safeParseJsonArray(row.entity_matches_json),
+        durationMs: row.duration_ms,
+        createdAt: row.created_at,
+      })),
+    };
+  }
+
   if (name === "memory_pin") {
     ensureMemoryAddAllowed(session);
 
@@ -5583,6 +5654,12 @@ async function runTool(args: {
       pinned: true,
       tier: "pinned"
     };
+  }
+
+  if (name === "memory_reindex") {
+    ensureMemoryAddAllowed(session);
+    const limit = Math.max(1, Math.min(5000, Math.floor(asNumber(toolArgs.limit, 500))));
+    return runtime.memoryService.reindexMemoryEntities(runtime.projectId, limit);
   }
 
   if (name === "run_tests") {

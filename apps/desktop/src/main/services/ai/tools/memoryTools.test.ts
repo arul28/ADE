@@ -9,8 +9,8 @@ describe("createMemoryTools", () => {
         accepted: true,
         memory: {
           id: "memory-1",
-          tier: 2,
-          status: "promoted",
+          tier: 3,
+          status: "candidate",
         },
         deduped: false,
       })),
@@ -44,11 +44,56 @@ describe("createMemoryTools", () => {
       expect.objectContaining({
         scope: "mission",
         scopeOwnerId: "run-1",
-        status: "promoted",
-        tier: 2,
-        confidence: 1,
+        status: "candidate",
+        tier: 3,
+        confidence: 0.6,
       })
     );
+  });
+
+  it("filters internal episode memories out of agent-facing search results", async () => {
+    const memoryService = {
+      search: vi.fn(() => [
+        {
+          id: "episode-1",
+          scope: "project",
+          tier: 2,
+          pinned: false,
+          category: "episode",
+          content: "Resolved intervention transcript.",
+          importance: "medium",
+          confidence: 0.8,
+          compositeScore: 0.95,
+          createdAt: "2026-04-01T00:00:00.000Z",
+        },
+        {
+          id: "memory-1",
+          scope: "project",
+          tier: 2,
+          pinned: false,
+          category: "gotcha",
+          content: "Pitfall: prompt changes need focused snapshot coverage.",
+          importance: "high",
+          confidence: 0.9,
+          compositeScore: 0.9,
+          createdAt: "2026-04-01T00:00:00.000Z",
+        },
+      ]),
+      writeMemory: vi.fn(),
+      pinMemory: vi.fn(),
+      unpinMemory: vi.fn(),
+    } as any;
+
+    const tools = createMemoryTools(memoryService, "project-1");
+
+    const result = await (tools.memorySearch as any).execute({
+      query: "prompt snapshots",
+      scope: "project",
+      limit: 5,
+    });
+
+    expect(result.count).toBe(1);
+    expect(result.memories.map((memory: { id: string }) => memory.id)).toEqual(["memory-1"]);
   });
 
   it("defaults agent scope owner id to the current agent identity", async () => {
@@ -58,8 +103,8 @@ describe("createMemoryTools", () => {
         accepted: true,
         memory: {
           id: "memory-2",
-          tier: 2,
-          status: "promoted",
+          tier: 3,
+          status: "candidate",
         },
         deduped: false,
       })),
@@ -93,9 +138,9 @@ describe("createMemoryTools", () => {
       expect.objectContaining({
         scope: "agent",
         scopeOwnerId: "agent-session-1",
-        status: "promoted",
-        tier: 2,
-        confidence: 1,
+        status: "candidate",
+        tier: 3,
+        confidence: 0.6,
       })
     );
   });
@@ -131,7 +176,7 @@ describe("createMemoryTools", () => {
       expect.objectContaining({
         status: "promoted",
         tier: 2,
-        confidence: 1,
+        confidence: 0.9,
       })
     );
     expect(result).toEqual(expect.objectContaining({

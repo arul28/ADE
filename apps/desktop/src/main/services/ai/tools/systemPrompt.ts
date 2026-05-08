@@ -181,7 +181,8 @@ export function buildCodingAgentSystemPrompt(args: {
           "",
           "## Memory",
           "You have access to a persistent project memory that survives across sessions.",
-          "**Search first:** Before starting non-trivial work, search memory for relevant conventions, past decisions, or known pitfalls. Do not guess when you can check.",
+          "**Search first:** Before starting non-trivial work, before mutating files, before review/architecture decisions, and when behavior may be a known gotcha, search memory for relevant conventions, past decisions, and pitfalls. Use a short intent query plus important file/domain terms. Do not guess when you can check.",
+          "**Use retrieved memory as guidance, not proof:** Current code, tests, logs, and user instructions override stale memory.",
           ...(hasCoreMemoryTool
             ? ["**Keep the project brief current:** Use memoryUpdateCore when the project summary, standing conventions, user preferences, or active focus changes. Use memoryAdd for reusable lessons that should survive beyond the current brief."]
             : []),
@@ -194,6 +195,7 @@ export function buildCodingAgentSystemPrompt(args: {
           "BAD memories (never save these):",
           "- File paths, directory listings, or code structure (use grep/find)",
           "- Raw error messages or stack traces without a lesson learned",
+          "- Raw CodeRabbit/Greptile/Copilot review output, severity badges, or review commands",
           "- Task progress, status updates, or session summaries",
           "- Git history, recent changes, or who-changed-what (use git log/blame)",
           "- Obvious patterns already visible in the codebase",

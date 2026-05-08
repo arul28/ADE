@@ -1,9 +1,10 @@
-import { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, nativeImage, shell } from "electron";
+import { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, nativeImage, shell, systemPreferences } from "electron";
 import type { IpcMainInvokeEvent } from "electron";
 import { createEmptyAutoUpdateSnapshot, type createAutoUpdateService } from "../updates/autoUpdateService";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import type { Server as NetServer } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -60,16 +61,28 @@ import type {
   BuiltInBrowserTabArgs,
   MacosVmAgentGuide,
   MacosVmAgentGuideArgs,
+  MacosVmBaseCreateArgs,
+  MacosVmBaseDeleteArgs,
+  MacosVmBaseMarkReadyArgs,
+  MacosVmBaseRecord,
+  MacosVmBaseStartArgs,
+  MacosVmBaseStopArgs,
   MacosVmCaptureScreenshotArgs,
   MacosVmCaptureScreenshotResult,
+  MacosVmClearIpswCacheResult,
   MacosVmClickArgs,
   MacosVmDeleteArgs,
+  MacosVmFocusBaseWindowArgs,
   MacosVmFocusWindowArgs,
   MacosVmProvisionArgs,
   MacosVmRecord,
+  MacosVmRenameBaseArgs,
+  MacosVmSaveLaneAsSnapshotArgs,
   MacosVmSelectPointArgs,
   MacosVmSelectPointResult,
   MacosVmStartArgs,
+  MacosVmHostCapabilities,
+  MacosVmScreenRecordingProbeResult,
   MacosVmStatus,
   MacosVmStatusArgs,
   MacosVmStopArgs,
@@ -1828,6 +1841,7 @@ export function registerIpc({
     [IPC.appControlLaunch]: new Set(["command", "env"]),
     [IPC.appControlLaunchInTerminal]: new Set(["command", "env"]),
     [IPC.appControlTypeText]: new Set(["text"]),
+    [IPC.macosVmTypeText]: new Set(["text"]),
     [IPC.appControlDispatchKey]: new Set(["text", "unmodifiedText", "key", "code"]),
     [IPC.terminalWrite]: new Set(["data"]),
     [IPC.ptyWrite]: new Set(["data"]),
@@ -1914,6 +1928,7 @@ export function registerIpc({
         return 4 * 60_000;
       case IPC.iosSimulatorLaunch:
       case IPC.macosVmProvision:
+      case IPC.macosVmSaveLaneAsSnapshot:
         return 120 * 60_000;
       case IPC.macosVmStart:
       case IPC.macosVmStop:
@@ -2510,12 +2525,56 @@ export function registerIpc({
     return { laneId };
   };
 
+  const parseMacosVmBaseCreateArgs = (value: unknown, channel: string): MacosVmBaseCreateArgs => {
+    const record = macosVmRecord(value, channel, false);
+    return {
+      name: macosVmString(record, "name", channel, 256),
+      cpuCores: macosVmNumber(record, "cpuCores", channel, { integer: true, min: 1, max: 32 }),
+      memory: macosVmString(record, "memory", channel, 32),
+      diskSize: macosVmString(record, "diskSize", channel, 32),
+      display: macosVmString(record, "display", channel, 32),
+      ipsw: macosVmString(record, "ipsw", channel, 4096),
+      force: macosVmBoolean(record, "force", channel),
+    };
+  };
+
+  const parseMacosVmBaseStartArgs = (value: unknown, channel: string): MacosVmBaseStartArgs => {
+    const record = macosVmRecord(value, channel, false);
+    return {
+      name: macosVmString(record, "name", channel, 256),
+      openDisplay: macosVmBoolean(record, "openDisplay", channel),
+    };
+  };
+
+  const parseMacosVmBaseStopArgs = (value: unknown, channel: string): MacosVmBaseStopArgs => {
+    const record = macosVmRecord(value, channel, false);
+    return {
+      name: macosVmString(record, "name", channel, 256),
+      force: macosVmBoolean(record, "force", channel),
+    };
+  };
+
+  const parseMacosVmBaseMarkReadyArgs = (value: unknown, channel: string): MacosVmBaseMarkReadyArgs => {
+    const record = macosVmRecord(value, channel, false);
+    return {
+      name: macosVmString(record, "name", channel, 256),
+    };
+  };
+
+  const parseMacosVmBaseDeleteArgs = (value: unknown, channel: string): MacosVmBaseDeleteArgs => {
+    const record = macosVmRecord(value, channel, false);
+    return {
+      name: macosVmString(record, "name", channel, 256),
+      force: macosVmBoolean(record, "force", channel),
+    };
+  };
+
   const parseMacosVmProvisionArgs = (value: unknown, channel: string): MacosVmProvisionArgs => {
     const record = macosVmRecord(value, channel, true);
     const laneId = macosVmString(record, "laneId", channel, 512, true) as string;
     const modeValue = record.mode;
-    if (modeValue != null && modeValue !== "create" && modeValue !== "pull-image") {
-      invalidMacosVmArg(channel, "mode must be create or pull-image");
+    if (modeValue != null && modeValue !== "create") {
+      invalidMacosVmArg(channel, "mode must be create");
     }
     return {
       laneId,
@@ -2524,11 +2583,11 @@ export function registerIpc({
       memory: macosVmString(record, "memory", channel, 32),
       diskSize: macosVmString(record, "diskSize", channel, 32),
       display: macosVmString(record, "display", channel, 32),
-      mode: modeValue === "pull-image" ? "pull-image" : modeValue === "create" ? "create" : undefined,
+      mode: modeValue === "create" ? "create" : undefined,
       ipsw: macosVmString(record, "ipsw", channel, 4096),
-      sourceImage: macosVmString(record, "sourceImage", channel, 256),
-      unattendedPreset: macosVmString(record, "unattendedPreset", channel, 128),
       force: macosVmBoolean(record, "force", channel),
+      fromBase: macosVmBoolean(record, "fromBase", channel),
+      baseName: macosVmString(record, "baseName", channel, 256),
     };
   };
 
@@ -2536,8 +2595,8 @@ export function registerIpc({
     const record = macosVmRecord(value, channel, true);
     const laneId = macosVmString(record, "laneId", channel, 512, true) as string;
     const modeValue = record.mode;
-    if (modeValue != null && modeValue !== "create" && modeValue !== "pull-image") {
-      invalidMacosVmArg(channel, "mode must be create or pull-image");
+    if (modeValue != null && modeValue !== "create") {
+      invalidMacosVmArg(channel, "mode must be create");
     }
     return {
       laneId,
@@ -2547,10 +2606,10 @@ export function registerIpc({
       memory: macosVmString(record, "memory", channel, 32),
       diskSize: macosVmString(record, "diskSize", channel, 32),
       display: macosVmString(record, "display", channel, 32),
-      mode: modeValue === "pull-image" ? "pull-image" : modeValue === "create" ? "create" : undefined,
+      mode: modeValue === "create" ? "create" : undefined,
       ipsw: macosVmString(record, "ipsw", channel, 4096),
-      sourceImage: macosVmString(record, "sourceImage", channel, 256),
-      unattendedPreset: macosVmString(record, "unattendedPreset", channel, 128),
+      fromBase: macosVmBoolean(record, "fromBase", channel),
+      baseName: macosVmString(record, "baseName", channel, 256),
     };
   };
 
@@ -2578,6 +2637,31 @@ export function registerIpc({
     return {
       laneId: macosVmString(record, "laneId", channel, 512, true) as string,
       windowTitleQuery: macosVmString(record, "windowTitleQuery", channel, 256),
+    };
+  };
+
+  const parseMacosVmFocusBaseWindowArgs = (value: unknown, channel: string): MacosVmFocusBaseWindowArgs => {
+    const record = macosVmRecord(value, channel, false);
+    return {
+      name: macosVmString(record, "name", channel, 256),
+      windowTitleQuery: macosVmString(record, "windowTitleQuery", channel, 256),
+    };
+  };
+
+  const parseMacosVmRenameBaseArgs = (value: unknown, channel: string): MacosVmRenameBaseArgs => {
+    const record = macosVmRecord(value, channel, true);
+    return {
+      from: macosVmString(record, "from", channel, 256, true) as string,
+      to: macosVmString(record, "to", channel, 256, true) as string,
+    };
+  };
+
+  const parseMacosVmSaveLaneAsSnapshotArgs = (value: unknown, channel: string): MacosVmSaveLaneAsSnapshotArgs => {
+    const record = macosVmRecord(value, channel, true);
+    return {
+      laneId: macosVmString(record, "laneId", channel, 512, true) as string,
+      name: macosVmString(record, "name", channel, 256, true) as string,
+      description: macosVmString(record, "description", channel, 4096),
     };
   };
 
@@ -6938,6 +7022,161 @@ export function registerIpc({
     return ensureMacosVm().getStatus(parseMacosVmStatusArgs(arg, IPC.macosVmGetStatus));
   });
 
+  ipcMain.handle(
+    IPC.macosVmGetScreenRecordingStatus,
+    async (event): Promise<MacosVmScreenRecordingProbeResult> => {
+      guardMacosVmIpc(event, IPC.macosVmGetScreenRecordingStatus, {
+        windowMs: 10_000,
+        max: 30,
+      });
+      if (process.platform !== "darwin") {
+        return {
+          status: "unknown",
+          detail: "Screen Recording permission only applies on macOS hosts.",
+        };
+      }
+      try {
+        const raw = systemPreferences.getMediaAccessStatus("screen");
+        const status =
+          raw === "granted" || raw === "denied" || raw === "restricted" || raw === "not-determined"
+            ? raw
+            : "unknown";
+        const detail = (() => {
+          switch (status) {
+            case "granted":
+              return "Screen Recording is allowed for ADE. Capturing the VM and clicking into it will work.";
+            case "denied":
+              return "Screen Recording is blocked. Open System Settings › Privacy & Security › Screen Recording and enable ADE.";
+            case "restricted":
+              return "Screen Recording is restricted by a profile or MDM policy. Contact your admin.";
+            case "not-determined":
+              return "macOS hasn't asked yet. The first time ADE captures the VM, you'll get a system prompt — accept it.";
+            default:
+              return "Could not determine Screen Recording status.";
+          }
+        })();
+        return { status, detail };
+      } catch (err) {
+        getCtx().logger.warn("ipc.macos_vm.screen_recording_probe_failed", {
+          message: err instanceof Error ? err.message : String(err),
+        });
+        return {
+          status: "unknown",
+          detail: "Could not determine Screen Recording status.",
+        };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    IPC.macosVmGetHostCapabilities,
+    async (event): Promise<MacosVmHostCapabilities> => {
+      guardMacosVmIpc(event, IPC.macosVmGetHostCapabilities, {
+        windowMs: 10_000,
+        max: 30,
+      });
+      const cpus = os.cpus();
+      const cpuCount = Array.isArray(cpus) ? cpus.length : 1;
+      const model = (Array.isArray(cpus) && cpus[0]?.model) ? String(cpus[0].model) : os.arch();
+      const memoryBytes = os.totalmem();
+      const freeMemoryBytes = os.freemem();
+      const homeDir = os.homedir();
+      let freeDiskBytes = 0;
+      let totalDiskBytes = 0;
+      try {
+        const stat = (fs as unknown as {
+          statfsSync?: (p: string) => { bsize: number; blocks: number; bavail: number };
+        }).statfsSync?.(homeDir);
+        if (stat) {
+          freeDiskBytes = Number(stat.bavail) * Number(stat.bsize);
+          totalDiskBytes = Number(stat.blocks) * Number(stat.bsize);
+        }
+      } catch (err) {
+        getCtx().logger.warn("ipc.macos_vm.host_capabilities_statfs_failed", {
+          message: err instanceof Error ? err.message : String(err),
+        });
+      }
+
+      const freeGb = freeDiskBytes / (1024 ** 3);
+
+      // Apple Virtualization minimums for macOS guests: 2 cores, 4 GB. Comfortable: 4 cores, 8 GB.
+      // Reserve 4 logical cores for the host; cap recommendation at 8 (UI slider max).
+      const recommendedCpu = Math.max(2, Math.min(8, cpuCount - 4));
+
+      // The backend rejects any VM memory > 40% of host total (memoryPressureMessage in
+      // macosVmService.ts). Pick the largest UI chip whose byte size is under that cap.
+      // Chips are 4/6/8/16 GB.
+      const memoryChoices = [4, 6, 8, 16];
+      const memoryCapBytes = memoryBytes * 0.4;
+      const eligibleMemoryGb = memoryChoices.filter(
+        (gb) => gb * (1024 ** 3) <= memoryCapBytes,
+      );
+      const recommendedMemoryGb =
+        eligibleMemoryGb.length > 0
+          ? eligibleMemoryGb[eligibleMemoryGb.length - 1]
+          : memoryChoices[0];
+      const recommendedMemory = `${recommendedMemoryGb}GB`;
+
+      // Snap to UI slider step (4 GB). macOS install ≈ 30 GB; 64 GB gives ~30 GB headroom.
+      // If the user has plenty of free space, recommend 80 GB so guest updates fit comfortably.
+      const recommendedDiskGb = freeGb >= 200 ? 80 : freeGb >= 100 ? 64 : 64;
+
+      return {
+        model,
+        cpuCount,
+        memoryBytes,
+        freeMemoryBytes,
+        freeDiskBytes,
+        totalDiskBytes,
+        recommended: {
+          cpuCores: recommendedCpu,
+          memory: recommendedMemory,
+          diskSize: `${recommendedDiskGb}GB`,
+        },
+      };
+    },
+  );
+
+  ipcMain.handle(IPC.macosVmCreateBase, async (event, arg = {}): Promise<MacosVmBaseRecord> => {
+    guardMacosVmIpc(event, IPC.macosVmCreateBase, { windowMs: 60_000, max: 4 });
+    return ensureMacosVm().createBase(parseMacosVmBaseCreateArgs(arg, IPC.macosVmCreateBase));
+  });
+
+  ipcMain.handle(IPC.macosVmStartBase, async (event, arg = {}): Promise<MacosVmBaseRecord> => {
+    guardMacosVmIpc(event, IPC.macosVmStartBase, { windowMs: 60_000, max: 8 });
+    return ensureMacosVm().startBase(parseMacosVmBaseStartArgs(arg, IPC.macosVmStartBase));
+  });
+
+  ipcMain.handle(IPC.macosVmStopBase, async (event, arg = {}): Promise<MacosVmBaseRecord | null> => {
+    guardMacosVmIpc(event, IPC.macosVmStopBase, { windowMs: 60_000, max: 12 });
+    return ensureMacosVm().stopBase(parseMacosVmBaseStopArgs(arg, IPC.macosVmStopBase));
+  });
+
+  ipcMain.handle(IPC.macosVmMarkBaseReady, async (event, arg = {}): Promise<MacosVmBaseRecord> => {
+    guardMacosVmIpc(event, IPC.macosVmMarkBaseReady, { windowMs: 60_000, max: 12 });
+    return ensureMacosVm().markBaseReady(parseMacosVmBaseMarkReadyArgs(arg, IPC.macosVmMarkBaseReady));
+  });
+
+  ipcMain.handle(IPC.macosVmDeleteBase, async (event, arg = {}): Promise<{ deleted: boolean; previous: MacosVmBaseRecord | null }> => {
+    guardMacosVmIpc(event, IPC.macosVmDeleteBase, { windowMs: 60_000, max: 4 });
+    return ensureMacosVm().deleteBase(parseMacosVmBaseDeleteArgs(arg, IPC.macosVmDeleteBase));
+  });
+
+  ipcMain.handle(IPC.macosVmRenameBase, async (event, arg): Promise<MacosVmBaseRecord> => {
+    guardMacosVmIpc(event, IPC.macosVmRenameBase, { windowMs: 60_000, max: 12 });
+    return ensureMacosVm().renameBase(parseMacosVmRenameBaseArgs(arg, IPC.macosVmRenameBase));
+  });
+
+  ipcMain.handle(IPC.macosVmSaveLaneAsSnapshot, async (event, arg): Promise<MacosVmBaseRecord> => {
+    guardMacosVmIpc(event, IPC.macosVmSaveLaneAsSnapshot, { windowMs: 60_000, max: 4 });
+    return ensureMacosVm().saveLaneVmAsSnapshot(parseMacosVmSaveLaneAsSnapshotArgs(arg, IPC.macosVmSaveLaneAsSnapshot));
+  });
+
+  ipcMain.handle(IPC.macosVmClearIpswCache, async (event): Promise<MacosVmClearIpswCacheResult> => {
+    guardMacosVmIpc(event, IPC.macosVmClearIpswCache, { windowMs: 60_000, max: 4 });
+    return ensureMacosVm().clearIpswCache();
+  });
+
   ipcMain.handle(IPC.macosVmProvision, async (event, arg): Promise<MacosVmRecord> => {
     guardMacosVmIpc(event, IPC.macosVmProvision, { windowMs: 60_000, max: 4 });
     return ensureMacosVm().provision(parseMacosVmProvisionArgs(arg, IPC.macosVmProvision));
@@ -6966,6 +7205,11 @@ export function registerIpc({
   ipcMain.handle(IPC.macosVmFocusWindow, async (event, arg): Promise<MacosVmWindowTarget> => {
     guardMacosVmIpc(event, IPC.macosVmFocusWindow, { windowMs: 10_000, max: 30 });
     return ensureMacosVm().focusWindow(parseMacosVmFocusWindowArgs(arg, IPC.macosVmFocusWindow));
+  });
+
+  ipcMain.handle(IPC.macosVmFocusBaseWindow, async (event, arg = {}): Promise<MacosVmWindowTarget> => {
+    guardMacosVmIpc(event, IPC.macosVmFocusBaseWindow, { windowMs: 10_000, max: 30 });
+    return ensureMacosVm().focusBaseWindow(parseMacosVmFocusBaseWindowArgs(arg, IPC.macosVmFocusBaseWindow));
   });
 
   ipcMain.handle(IPC.macosVmCaptureScreenshot, async (event, arg): Promise<MacosVmCaptureScreenshotResult> => {
@@ -7178,9 +7422,19 @@ export function registerIpc({
     return ctx.gitService.discardFile(arg);
   });
 
+  ipcMain.handle(IPC.gitDiscardFiles, async (_event, arg: GitBatchFileActionArgs): Promise<GitActionResult> => {
+    const ctx = getCtx();
+    return ctx.gitService.discardFiles(arg);
+  });
+
   ipcMain.handle(IPC.gitRestoreStagedFile, async (_event, arg: GitFileActionArgs): Promise<GitActionResult> => {
     const ctx = getCtx();
     return ctx.gitService.restoreStagedFile(arg);
+  });
+
+  ipcMain.handle(IPC.gitRestoreStagedFiles, async (_event, arg: GitBatchFileActionArgs): Promise<GitActionResult> => {
+    const ctx = getCtx();
+    return ctx.gitService.restoreStagedFiles(arg);
   });
 
   ipcMain.handle(IPC.gitCommit, async (_event, arg: GitCommitArgs): Promise<GitActionResult> => {

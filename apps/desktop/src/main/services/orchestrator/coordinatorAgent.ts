@@ -2252,7 +2252,7 @@ Your initial plan is a hypothesis. Adjust it as you learn:
 ### 6.5 Persist Mission Memory
 Quality bar: "Would a developer joining this project find this useful on their first day?" If not, do not save it.
 
-ALWAYS save (memory_add) when you:
+Search memory at mission start and before briefing unfamiliar subsystems. Save with memory_add only when you:
 - Discover a convention that is NOT documented anywhere in the codebase or docs
 - Make or observe a decision with non-obvious reasoning (e.g., "chose X over Y because Z")
 - Hit a pitfall that other developers or future missions would hit too
@@ -2262,9 +2262,11 @@ DO NOT save:
 - File paths, doc paths, or directory listings — discoverable with search tools
 - Session metadata, task status, or mission progress — that is what update_mission_state is for
 - Raw error messages or stack traces without a distilled lesson
+- Raw CodeRabbit/Greptile/Copilot review output, review commands, or severity badges
 - Things derivable from code, git log, or git blame
 - Obvious patterns already visible in the codebase (e.g., "this project uses TypeScript")
 
+Treat retrieved memory as guidance, not proof. Current code, tests, logs, and user instructions override stale memory.
 Use memory_search at mission start and before writing worker briefs on unfamiliar subsystems to surface past gotchas.
 Use update_mission_state after significant coordinator decisions so run-local rationale survives context compaction.
 Use read_mission_state before major plan changes or mission completion to refresh this run's durable state.

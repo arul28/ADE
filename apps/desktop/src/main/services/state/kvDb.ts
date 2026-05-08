@@ -383,6 +383,13 @@ function writeMigrationBackupIfNeeded(dbPath: string): void {
   }
 }
 
+const LOCAL_DERIVED_TABLES = new Set([
+  "memory_access_stats",
+  "memory_entities",
+  "memory_entity_links",
+  "memory_retrieval_ledger",
+]);
+
 function listEligibleCrrTables(db: DatabaseSyncType): string[] {
   const tables = allRows<{ name: string; sql: string | null }>(
     db,
@@ -398,6 +405,7 @@ function listEligibleCrrTables(db: DatabaseSyncType): string[] {
   );
   return tables
     .filter((table) => !table.sql?.toLowerCase().startsWith("create virtual table"))
+    .filter((table) => !LOCAL_DERIVED_TABLES.has(table.name))
     .filter((table) => allRows<{ pk: number }>(db, `pragma table_info('${table.name.replace(/'/g, "''")}')`).some((column) => column.pk > 0))
     .map((table) => table.name);
 }
@@ -2349,6 +2357,22 @@ function migrate(db: MigrationDb) {
   db.run("create index if not exists idx_unified_memory_embeddings_memory on unified_memory_embeddings(memory_id)");
 
   db.run(`
+    create table if not exists memory_access_stats (
+      memory_id text not null,
+      project_id text not null,
+      access_count integer not null default 0,
+      last_accessed_at text not null,
+      access_score real not null default 0,
+      composite_score real not null default 0,
+      updated_at text not null,
+      foreign key(memory_id) references unified_memories(id),
+      foreign key(project_id) references projects(id)
+    )
+  `);
+  db.run("create unique index if not exists idx_memory_access_stats_memory on memory_access_stats(memory_id)");
+  db.run("create index if not exists idx_memory_access_stats_project_accessed on memory_access_stats(project_id, last_accessed_at desc)");
+
+  db.run(`
     create table if not exists memory_procedure_details (
       memory_id text primary key,
       trigger text not null,
@@ -2429,6 +2453,65 @@ function migrate(db: MigrationDb) {
   `);
   db.run("create index if not exists idx_memory_capture_ledger_source on memory_capture_ledger(project_id, source_type, updated_at desc)");
   db.run("create index if not exists idx_memory_capture_ledger_memory on memory_capture_ledger(memory_id)");
+
+  db.run(`
+    create table if not exists memory_entities (
+      id text primary key,
+      project_id text not null,
+      entity_type text not null,
+      normalized_value text not null,
+      display_value text not null,
+      occurrence_count integer not null default 1,
+      created_at text not null,
+      updated_at text not null,
+      unique(project_id, entity_type, normalized_value),
+      foreign key(project_id) references projects(id)
+    )
+  `);
+  db.run("create index if not exists idx_memory_entities_project_type on memory_entities(project_id, entity_type, normalized_value)");
+
+  db.run(`
+    create table if not exists memory_entity_links (
+      memory_id text not null,
+      entity_id text not null,
+      project_id text not null,
+      source text not null default 'content',
+      weight real not null default 1,
+      created_at text not null,
+      primary key(memory_id, entity_id),
+      foreign key(memory_id) references unified_memories(id),
+      foreign key(entity_id) references memory_entities(id),
+      foreign key(project_id) references projects(id)
+    )
+  `);
+  db.run("create index if not exists idx_memory_entity_links_project_entity on memory_entity_links(project_id, entity_id)");
+  db.run("create index if not exists idx_memory_entity_links_entity_project_memory on memory_entity_links(entity_id, project_id, memory_id)");
+  db.run("create index if not exists idx_memory_entity_links_memory on memory_entity_links(memory_id)");
+
+  db.run(`
+    create table if not exists memory_retrieval_ledger (
+      id text primary key,
+      project_id text not null,
+      query text not null,
+      scope text,
+      scope_owner_id text,
+      mode text not null default 'hybrid',
+      status_filter_json text,
+      tier_filter_json text,
+      source_type text not null default 'service',
+      source_id text,
+      result_count integer not null default 0,
+      injected_count integer not null default 0,
+      top_memory_ids_json text,
+      injected_memory_ids_json text,
+      entity_matches_json text,
+      duration_ms integer not null default 0,
+      created_at text not null,
+      foreign key(project_id) references projects(id)
+    )
+  `);
+  db.run("create index if not exists idx_memory_retrieval_ledger_project_created on memory_retrieval_ledger(project_id, created_at desc)");
+  db.run("create index if not exists idx_memory_retrieval_ledger_source on memory_retrieval_ledger(project_id, source_type, created_at desc)");
 
   db.run(`
     create table if not exists memory_sweep_log (
@@ -3620,13 +3703,13 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
                 site_id,
                 cl,
                 seq
-           from crsql_changes
-          where db_version > ?
-          order by db_version asc, cl asc, seq asc`,
+	         from crsql_changes
+	          where db_version > ?
+	          order by db_version asc, cl asc, seq asc`,
         [version]
       );
 
-      return rows.map((row) => ({
+      return rows.filter((row) => !LOCAL_DERIVED_TABLES.has(row.table_name)).map((row) => ({
         table: row.table_name,
         pk: encodeSyncScalar(row.pk),
         cid: row.cid,
@@ -3645,6 +3728,9 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
       runStatement(db, "begin");
       try {
         for (const change of changes) {
+          if (LOCAL_DERIVED_TABLES.has(change.table)) {
+            continue;
+          }
           const result = runStatement(
             db,
             `insert or ignore into crsql_changes ([table], pk, cid, val, col_version, db_version, site_id, cl, seq)

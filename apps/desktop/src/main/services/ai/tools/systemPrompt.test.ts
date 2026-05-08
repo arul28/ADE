@@ -153,6 +153,9 @@ describe("buildCodingAgentSystemPrompt", () => {
       });
       expect(result).toContain("## Memory");
       expect(result).toContain("Search first");
+      expect(result).toContain("before mutating files");
+      expect(result).toContain("Use retrieved memory as guidance, not proof");
+      expect(result).toContain("Raw CodeRabbit/Greptile/Copilot review output");
     });
 
     it("includes memory section when memoryAdd is in toolNames", () => {

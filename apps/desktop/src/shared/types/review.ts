@@ -25,6 +25,7 @@ export type ReviewArtifactType =
   | "provenance_brief"
   | "rule_overlays"
   | "validation_signals"
+  | "memory_context"
   | "tool_evidence"
   | "diff_bundle"
   | "review_output"

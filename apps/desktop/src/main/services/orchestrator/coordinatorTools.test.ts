@@ -141,7 +141,7 @@ describe("coordinator memory tools", () => {
       writeMemory: vi.fn(() => ({
         accepted: true,
         deduped: false,
-        memory: { id: "memory-2", tier: 2 },
+        memory: { id: "memory-2", tier: 3, status: "candidate" },
       })),
     };
     const { tools } = createTestDeps({
@@ -165,6 +165,9 @@ describe("coordinator memory tools", () => {
       sourceRunId: "run-1",
       sourceType: "system",
       sourceId: "coordinator:run-1",
+      status: "candidate",
+      tier: 3,
+      confidence: 0.6,
     }));
     expect(result.ok).toBe(true);
     expect(result.saved).toBe(true);

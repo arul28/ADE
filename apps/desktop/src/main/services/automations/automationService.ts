@@ -256,7 +256,7 @@ const TOOL_FAMILY_ALLOWED_TOOLS: Record<AutomationToolFamily, string[]> = {
     "browser_type",
     "browser_take_screenshot",
   ],
-  memory: ["memory_search", "memory_add"],
+  memory: ["memory_search", "memory_stats", "memory_add", "memory_reindex"],
   mission: [
     "get_mission",
     "get_run_graph",

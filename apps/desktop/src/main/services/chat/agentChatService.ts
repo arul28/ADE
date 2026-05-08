@@ -177,6 +177,12 @@ import { ADE_CLI_AGENT_GUIDANCE } from "../../../shared/adeCliGuidance";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import { extractLeadingSlashCommand, isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
 import type { createMemoryService, Memory } from "../memory/memoryService";
+import {
+  AGENT_SEARCHABLE_MEMORY_CATEGORIES,
+  buildMemoryQueryPlan,
+  type MemoryQueryPlan,
+  type MemoryRetrievalClassification,
+} from "../memory/memoryQueryPlannerService";
 import type { createCtoStateService } from "../cto/ctoStateService";
 import type { createWorkerAgentService } from "../cto/workerAgentService";
 import type { createWorkerHeartbeatService } from "../cto/workerHeartbeatService";
@@ -3719,18 +3725,6 @@ export function createAgentChatService(args: {
   const droidRuntimeSetupInterruptRequested = new WeakMap<ManagedChatSession, boolean>();
   const sessionTurnCollectors = new Map<string, SessionTurnCollector>();
   const subagentStates = new Map<string, Map<string, AgentChatSubagentSnapshot>>();
-  const AUTO_MEMORY_CATEGORY_ALLOWLIST = new Set([
-    "fact",
-    "preference",
-    "pattern",
-    "decision",
-    "gotcha",
-    "convention",
-    "procedure",
-  ]);
-
-  type AutoMemoryTurnClassification = "none" | "soft" | "required";
-
   type AutoMemoryTurnTelemetry = {
     searched: boolean;
     projectHits: number;
@@ -3741,7 +3735,9 @@ export function createAgentChatService(args: {
   };
 
   type AutoMemoryTurnPlan = {
-    classification: AutoMemoryTurnClassification;
+    classification: MemoryRetrievalClassification;
+    query: string;
+    reasons: string[];
     contextText: string;
     telemetry: AutoMemoryTurnTelemetry;
   };
@@ -3770,32 +3766,9 @@ export function createAgentChatService(args: {
     return `${normalized.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
   };
 
-  const AUTO_MEMORY_REQUIRED_RE = /\b(?:fix|debug|investigat(?:e|ing|ion)|implement|refactor|patch|edit|write|add|remove|rename|update|change|test(?:s|ing)?|failing|error|exception|stack trace|crash|bug|diff|pull request|regression|build|compile|lint|typecheck)\b/i;
-  const AUTO_MEMORY_SOFT_RE = /\b(?:explain|why|how|walk through|summari[sz]e|context|overview|review|plan|brainstorm|design|architecture|tradeoff|decision|pattern|convention|gotcha)\b/i;
-  const AUTO_MEMORY_META_RE = /^(?:hi|hello|hey|thanks|thank you|ok(?:ay)?|cool|sounds good|nice|what model are you|who are you|are you there|can you help)\b/i;
-  const AUTO_MEMORY_FILE_PATH_RE = /(?:^|\s)(?:\/|\.{1,2}\/|[A-Za-z]:\\|[A-Za-z0-9_.-]+\/)[^\s]+\.(?:ts|tsx|js|jsx|json|md|yml|yaml|py|go|rs|java|rb|sh)\b/i;
   const CLAUDE_MUTATING_TOOL_RE = /\b(?:bash|write|edit|multiedit|notebookedit)\b/;
   const CHAT_MEMORY_GUARD_MESSAGE = "Search memory before mutating files or running mutating commands for this turn.";
   const CLAUDE_MUTATING_BASH_RE = /\b(?:rm|mv|cp|mkdir|touch|chmod|chown|patch|install|uninstall|add|remove|upgrade|apply|commit|rebase|merge|reset|checkout|switch|restore|sed\s+-i|perl\s+-i)\b|>>?|tee\b/i;
-  const AUTO_MEMORY_TEST_MESSAGE_RE = /^(?:this is\s+)?(?:just\s+)?(?:a\s+)?test message[.!?]*$|^(?:just\s+)?testing[.!?]*$/i;
-
-  const classifyAutoMemoryTurn = (
-    promptText: string,
-    attachmentCount = 0,
-  ): AutoMemoryTurnClassification => {
-    const trimmed = promptText.trim();
-    if (trimmed.length < 12) return "none";
-    if (trimmed.startsWith("/")) return "none";
-    if (AUTO_MEMORY_TEST_MESSAGE_RE.test(trimmed)) return "none";
-    if (/^before context compaction runs\b/i.test(trimmed)) return "none";
-    if (/^review this conversation and persist\b/i.test(trimmed)) return "none";
-    if (attachmentCount > 0) return "required";
-    if (/```/.test(trimmed) || AUTO_MEMORY_FILE_PATH_RE.test(trimmed)) return "required";
-    if (AUTO_MEMORY_REQUIRED_RE.test(trimmed)) return "required";
-    if (AUTO_MEMORY_SOFT_RE.test(trimmed)) return "soft";
-    if (AUTO_MEMORY_META_RE.test(trimmed) && trimmed.length <= 80) return "none";
-    return "none";
-  };
 
   const selectAutoMemoryEntries = (
     memories: Memory[],
@@ -3803,7 +3776,7 @@ export function createAgentChatService(args: {
   ): Memory[] => {
     const seen = new Set<string>();
     return memories
-      .filter((memory) => AUTO_MEMORY_CATEGORY_ALLOWLIST.has(String(memory.category ?? "").trim()))
+      .filter((memory) => AGENT_SEARCHABLE_MEMORY_CATEGORIES.has(memory.category))
       .filter((memory) => {
         if (seen.has(memory.id)) return false;
         seen.add(memory.id);
@@ -3825,6 +3798,8 @@ export function createAgentChatService(args: {
     const message = `Checked memory: ${plan.telemetry.totalHits} hit${plan.telemetry.totalHits === 1 ? "" : "s"}, injected ${plan.telemetry.injectedCount} relevant entr${plan.telemetry.injectedCount === 1 ? "y" : "ies"}`;
     const detail = [
       `Policy: ${plan.classification}`,
+      ...(plan.query ? [`Query: ${plan.query}`] : []),
+      ...(plan.reasons.length ? [`Reasons: ${plan.reasons.join(", ")}`] : []),
       `Project hits: ${plan.telemetry.projectHits}`,
       `Agent hits: ${plan.telemetry.agentHits}`,
       ...(plan.telemetry.includedProcedure ? ["Included procedure memory in the injected set."] : []),
@@ -3837,15 +3812,23 @@ export function createAgentChatService(args: {
     promptText: string,
     attachments: AgentChatFileRef[] = [],
   ): Promise<AutoMemoryTurnPlan> => {
-    const classification = classifyAutoMemoryTurn(promptText, attachments.length);
+    const retrievalPlan = buildMemoryQueryPlan({
+      promptText,
+      attachmentCount: attachments.length,
+    });
+    const emptyPlan = (plan: MemoryQueryPlan): AutoMemoryTurnPlan => ({
+      ...plan,
+      contextText: "",
+      telemetry: EMPTY_MEMORY_TELEMETRY,
+    });
     if (!memoryService || !projectId) {
-      return { classification: "none", contextText: "", telemetry: EMPTY_MEMORY_TELEMETRY };
+      return emptyPlan({ ...retrievalPlan, classification: "none", query: "", reasons: ["memory_unavailable"] });
     }
-    if (isLightweightSession(managed.session) || classification === "none") {
-      return { classification, contextText: "", telemetry: EMPTY_MEMORY_TELEMETRY };
+    if (isLightweightSession(managed.session) || retrievalPlan.classification === "none") {
+      return emptyPlan(retrievalPlan);
     }
 
-    const query = promptText.trim().slice(0, 300);
+    const query = retrievalPlan.query;
     const agentScopeOwnerId = managed.session.identityKey ?? managed.session.id;
 
     const [projectHits, agentHits] = await Promise.all([
@@ -3855,7 +3838,8 @@ export function createAgentChatService(args: {
         scope: "project",
         status: "promoted",
         tiers: [1, 2],
-        limit: 12,
+        limit: retrievalPlan.projectLimit,
+        recordRetrieval: false,
       }).catch(() => []),
       memoryService.search({
         projectId,
@@ -3864,12 +3848,24 @@ export function createAgentChatService(args: {
         scopeOwnerId: agentScopeOwnerId,
         status: "promoted",
         tiers: [1, 2],
-        limit: 6,
+        limit: retrievalPlan.agentLimit,
+        recordRetrieval: false,
       }).catch(() => []),
     ]);
 
     const allQualifying = selectAutoMemoryEntries([...projectHits, ...agentHits], 32);
-    const selected = allQualifying.slice(0, 4);
+    const selected = allQualifying.slice(0, retrievalPlan.injectionLimit);
+    memoryService.recordMemoryRetrieval?.({
+      projectId,
+      query,
+      scope: "project",
+      status: "promoted",
+      tiers: [1, 2],
+      sourceType: "chat_auto_memory",
+      sourceId: managed.session.id,
+      resultMemoryIds: allQualifying.map((memory) => memory.id),
+      injectedMemoryIds: selected.map((memory) => memory.id),
+    });
     const contextText = selected.length === 0
       ? ""
       : [
@@ -3878,7 +3874,7 @@ export function createAgentChatService(args: {
         ].join("\n");
 
     return {
-      classification,
+      ...retrievalPlan,
       contextText,
       telemetry: {
         searched: true,
@@ -11144,11 +11140,12 @@ export function createAgentChatService(args: {
           "Read, edit, and run commands only inside that worktree. Do not switch to project root, another lane, or another repo unless ADE explicitly relaunches you there.",
           "",
           "## ADE Memory",
-          "Use the ADE CLI (`ade memory search`, `ade memory add`, `ade memory pin`) when you need project memory from a terminal-capable session.",
-          "**Search first:** Before starting non-trivial work, search memory for relevant conventions, past decisions, or known pitfalls when the CLI is available.",
+          "Use the ADE CLI (`ade memory search -q \"<short intent + file/domain terms>\" --text`, `ade memory add`, `ade memory pin`) when you need project memory from a terminal-capable session.",
+          "**Search first:** Before starting non-trivial work, before mutating files, before review/architecture decisions, and when behavior may be a known gotcha, search memory for relevant conventions, past decisions, or pitfalls when the CLI is available.",
+          "**Trust order:** Treat retrieved memory as guidance, not proof. Current code, tests, logs, and user instructions override stale memory.",
           "**Write sparingly and well:** Only save knowledge a developer joining this project would find useful on their first day. Each memory should be a single actionable insight.",
           "GOOD memories: \"Convention: always use snake_case for DB columns\", \"Decision: chose Postgres over Mongo for ACID transactions\", \"Pitfall: CI silently skips tests if file doesn't match *.test.ts\"",
-          "DO NOT save: file paths, raw error messages without lessons, task progress updates, information derivable from git log or the code itself, obvious patterns already visible in the codebase.",
+          "DO NOT save: file paths, raw error messages without lessons, task progress updates, raw CodeRabbit/Greptile/Copilot review output, review commands, severity badges, information derivable from git log or the code itself, obvious patterns already visible in the codebase.",
           ...slashCommandsSection,
           "",
           ADE_CLI_AGENT_GUIDANCE,

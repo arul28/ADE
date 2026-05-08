@@ -160,6 +160,8 @@ describe("memoryRepairService", () => {
     expect(result.repairedLegacyEpisodes).toBe(2);
     expect(result.archivedPrFeedbackEpisodes).toBe(1);
     expect(result.archivedLowValuePrFeedbackMemories).toBe(1);
+    expect(result.archivedDuplicatePrFeedbackMemories).toBe(0);
+    expect(result.archivedLowValueGeneralMemories).toBe(0);
     expect(result.archivedDerivedProcedures).toBe(1);
 
     expect(getMemoryRow(fixture.db, normalEpisodeId)?.content).toContain("<!--episode:");
@@ -167,5 +169,60 @@ describe("memoryRepairService", () => {
     expect(getMemoryRow(fixture.db, lowValueMemoryId)?.status).toBe("archived");
     expect(getMemoryRow(fixture.db, durablePrFeedbackMemoryId)?.status).toBe("candidate");
     expect(getMemoryRow(fixture.db, lowValueProcedureId)?.status).toBe("archived");
+  });
+
+  it("archives low-value review commands and duplicate PR feedback memories", async () => {
+    const fixture = await createFixture();
+    const commandId = insertMemory(fixture.db, {
+      category: "convention",
+      sourceId: "pr:1:comment:command",
+      content: "@copilot review but do not make fixes",
+    });
+    const badgeReviewId = insertMemory(fixture.db, {
+      category: "convention",
+      sourceId: "pr:1:comment:badge",
+      content: "** ![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat) Persist manual rename state across session reloads**",
+    });
+    const changeSummaryId = insertMemory(fixture.db, {
+      category: "pattern",
+      sourceId: "pr:1:comment:change-summary",
+      content: "Added a re-check of managed.manuallyNamed after the async generateText call returns.",
+    });
+    const promptQuestionId = insertMemory(fixture.db, {
+      category: "convention",
+      sourceId: "intervention:test-question",
+      content: "What should this test mission accomplish?",
+    });
+    const firstDurableId = insertMemory(fixture.db, {
+      category: "convention",
+      sourceId: "pr:1:comment:durable-1",
+      content: "Always add coverage when changing validation logic.",
+    });
+    const secondDurableId = insertMemory(fixture.db, {
+      category: "convention",
+      sourceId: "pr:2:comment:durable-2",
+      content: "Always add coverage when changing validation logic.",
+    });
+    insertPrFeedbackLedger(fixture.db, { memoryId: commandId });
+    insertPrFeedbackLedger(fixture.db, { memoryId: badgeReviewId });
+    insertPrFeedbackLedger(fixture.db, { memoryId: changeSummaryId });
+    insertPrFeedbackLedger(fixture.db, { memoryId: firstDurableId });
+    insertPrFeedbackLedger(fixture.db, { memoryId: secondDurableId });
+
+    const result = fixture.service.runRepair();
+
+    expect(result.archivedLowValuePrFeedbackMemories).toBe(3);
+    expect(result.archivedDuplicatePrFeedbackMemories).toBe(1);
+    expect(result.archivedLowValueGeneralMemories).toBe(1);
+    expect(getMemoryRow(fixture.db, commandId)?.status).toBe("archived");
+    expect(getMemoryRow(fixture.db, badgeReviewId)?.status).toBe("archived");
+    expect(getMemoryRow(fixture.db, changeSummaryId)?.status).toBe("archived");
+    expect(getMemoryRow(fixture.db, promptQuestionId)?.status).toBe("archived");
+    const durableStatuses = [
+      getMemoryRow(fixture.db, firstDurableId)?.status,
+      getMemoryRow(fixture.db, secondDurableId)?.status,
+    ];
+    expect(durableStatuses.filter((status) => status === "candidate")).toHaveLength(1);
+    expect(durableStatuses.filter((status) => status === "archived")).toHaveLength(1);
   });
 });

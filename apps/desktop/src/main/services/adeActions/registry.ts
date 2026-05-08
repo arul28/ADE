@@ -84,6 +84,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly strin
   linear_ingress: ["ensureRelayWebhook"],
   budget: ["updateConfig"],
   feedback: ["submitPreparedDraft"],
+  macos_vm: ["provision", "delete", "stop"],
   usage: ["forceRefresh", "poll", "start", "stop"],
 };
 
@@ -348,7 +349,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   ios_simulator: ["getStatus", "listDevices", "listLaunchTargets", "launch", "shutdown", "screenshot", "getScreenSnapshot", "getInspectorSnapshot", "inspectPoint", "getPreviewCapability", "listPreviewTargets", "renderPreview", "openPreviewWorkspace", "startStream", "stopStream", "getStreamStatus", "tap", "typeText", "drag", "swipe", "selectPoint"],
   app_control: ["getStatus", "launch", "launchInTerminal", "connect", "stop", "screenshot", "getSnapshot", "inspectPoint", "selectPoint", "click", "typeText", "scroll", "dispatchKey", "listTargets", "attachToTarget", "readTerminal", "writeTerminal", "signalTerminal"],
   built_in_browser: ["getStatus", "showPanel", "setBounds", "navigate", "createTab", "switchTab", "closeTab", "reload", "goBack", "goForward", "stop", "startInspect", "stopInspect", "captureScreenshot", "selectPoint", "selectCurrent", "clearSelection"],
-  macos_vm: ["getStatus", "provision", "start", "stop", "delete", "getAgentGuide", "getSharePolicy", "focusWindow", "captureScreenshot", "click", "selectPoint", "typeText"],
+  macos_vm: ["getStatus", "createBase", "startBase", "stopBase", "markBaseReady", "deleteBase", "provision", "start", "stop", "delete", "getAgentGuide", "getSharePolicy", "focusWindow", "captureScreenshot", "click", "selectPoint", "typeText"],
   automations: [
     "list",
     "get",

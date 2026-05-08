@@ -1,9 +1,11 @@
-export type MacosVmProviderKind = "lume" | "apple-virtualization-helper";
+export type MacosVmProviderKind = "apple-virtualization-helper";
 
 export type MacosVmLifecycleState =
   | "not_created"
   | "creating"
   | "installing"
+  | "setup_required"
+  | "ready"
   | "stopped"
   | "starting"
   | "running"
@@ -13,7 +15,7 @@ export type MacosVmLifecycleState =
   | "unknown";
 
 export type MacosVmToolStatus = {
-  name: "apple-virtualization" | "lume";
+  name: "apple-virtualization";
   available: boolean;
   detail: string;
   installHint: string;
@@ -66,6 +68,24 @@ export type MacosVmRecord = {
   metadata: Record<string, unknown>;
 };
 
+export type MacosVmBaseRecord = {
+  id: string;
+  provider: MacosVmProviderKind;
+  name: string;
+  state: MacosVmLifecycleState;
+  cpuCores: number;
+  memory: string;
+  diskSize: string;
+  display: string;
+  guestSharedPath: string;
+  createdAt: string;
+  updatedAt: string;
+  lastStartedAt: string | null;
+  lastStoppedAt: string | null;
+  lastError: string | null;
+  metadata: Record<string, unknown>;
+};
+
 export type MacosVmStatus = {
   platform: NodeJS.Platform;
   arch: string;
@@ -75,10 +95,11 @@ export type MacosVmStatus = {
   tools: MacosVmToolStatus[];
   laneVm: MacosVmRecord | null;
   vms: MacosVmRecord[];
+  defaultBase: MacosVmBaseRecord | null;
+  bases: MacosVmBaseRecord[];
   docs: {
     appleVirtualization: string;
     appleSharedDirectories: string;
-    lume: string;
   };
 };
 
@@ -86,7 +107,7 @@ export type MacosVmStatusArgs = {
   laneId?: string | null;
 };
 
-export type MacosVmProvisionMode = "create" | "pull-image";
+export type MacosVmProvisionMode = "create";
 
 export type MacosVmProvisionArgs = {
   laneId: string;
@@ -97,9 +118,9 @@ export type MacosVmProvisionArgs = {
   display?: string | null;
   mode?: MacosVmProvisionMode | null;
   ipsw?: string | null;
-  sourceImage?: string | null;
-  unattendedPreset?: string | null;
   force?: boolean | null;
+  fromBase?: boolean | null;
+  baseName?: string | null;
 };
 
 export type MacosVmStartArgs = {
@@ -112,8 +133,8 @@ export type MacosVmStartArgs = {
   display?: string | null;
   mode?: MacosVmProvisionMode | null;
   ipsw?: string | null;
-  sourceImage?: string | null;
-  unattendedPreset?: string | null;
+  fromBase?: boolean | null;
+  baseName?: string | null;
 };
 
 export type MacosVmStopArgs = {
@@ -124,6 +145,67 @@ export type MacosVmStopArgs = {
 export type MacosVmDeleteArgs = {
   laneId: string;
   force?: boolean | null;
+};
+
+export type MacosVmBaseCreateArgs = {
+  name?: string | null;
+  cpuCores?: number | null;
+  memory?: string | null;
+  diskSize?: string | null;
+  display?: string | null;
+  ipsw?: string | null;
+  force?: boolean | null;
+};
+
+export type MacosVmBaseStartArgs = {
+  name?: string | null;
+  openDisplay?: boolean | null;
+};
+
+export type MacosVmBaseStopArgs = {
+  name?: string | null;
+  force?: boolean | null;
+};
+
+export type MacosVmBaseMarkReadyArgs = {
+  name?: string | null;
+};
+
+export type MacosVmBaseDeleteArgs = {
+  name?: string | null;
+  force?: boolean | null;
+};
+
+export type MacosVmClearIpswCacheResult = {
+  cleared: boolean;
+  path: string;
+  bytesFreed: number;
+};
+
+export type MacosVmIpswHostProbe = {
+  pendingBuild: string | null;
+  pendingProductVersion: string | null;
+  currentBuild: string | null;
+  model: string | null;
+};
+
+export type MacosVmIpswManifestEntry = {
+  build: string;
+  productVersion: string;
+  supportedDeviceModels: string[];
+  firmwareUrl: string;
+  sizeBytes: number | null;
+};
+
+export type MacosVmIpswResolution = {
+  url: string;
+  build: string;
+  productVersion: string;
+  sizeBytes: number | null;
+  source: "pending-build" | "current-build" | "newest-supported";
+  supportedDeviceModels: string[];
+  alternatives: MacosVmIpswManifestEntry[];
+  host: MacosVmIpswHostProbe;
 };
 
 export type MacosVmAgentGuideArgs = {
@@ -142,6 +224,8 @@ export type MacosVmWindowTarget = {
   vmName: string;
   windowTitleQuery: string;
   processName: string;
+  processId?: number | null;
+  windowId?: number | null;
   windowTitle: string;
   frame: MacosVmWindowFrame | null;
   focusedAt: string;
@@ -150,6 +234,22 @@ export type MacosVmWindowTarget = {
 export type MacosVmFocusWindowArgs = {
   laneId: string;
   windowTitleQuery?: string | null;
+};
+
+export type MacosVmFocusBaseWindowArgs = {
+  name?: string | null;
+  windowTitleQuery?: string | null;
+};
+
+export type MacosVmSaveLaneAsSnapshotArgs = {
+  laneId: string;
+  name: string;
+  description?: string | null;
+};
+
+export type MacosVmRenameBaseArgs = {
+  from: string;
+  to: string;
 };
 
 export type MacosVmCaptureScreenshotArgs = {
@@ -165,7 +265,7 @@ export type MacosVmCaptureScreenshotResult = {
   path: string;
   dataUrl?: string | null;
   capturedAt: string;
-  captureMode: "direct-vnc" | "window-region" | "full-screen";
+  captureMode: "window-id" | "window-region" | "full-screen";
   window: MacosVmWindowTarget;
 };
 
@@ -222,32 +322,72 @@ export type MacosVmAgentGuide = {
 
 export type MacosVmSelectPointResult = {
   item: MacosVmContextItem;
-  source: "direct-vnc" | "coordinate-fallback";
+  source: "coordinate-fallback";
   screenshot: MacosVmCaptureScreenshotResult | null;
 };
 
 export type MacosVmOperation =
   | "status"
+  | "base-create"
+  | "base-start"
+  | "base-stop"
+  | "base-mark-ready"
+  | "base-delete"
+  | "base-rename"
+  | "base-save-from-lane"
+  | "ipsw-cache-clear"
   | "provision"
   | "start"
   | "stop"
   | "delete"
   | "agent-guide"
   | "focus-window"
+  | "focus-base-window"
   | "screenshot"
   | "click"
   | "select-point"
   | "type-text";
 
+export type MacosVmScreenRecordingStatus =
+  | "granted"
+  | "denied"
+  | "restricted"
+  | "not-determined"
+  | "unknown";
+
+export type MacosVmScreenRecordingProbeResult = {
+  status: MacosVmScreenRecordingStatus;
+  detail: string;
+};
+
+export type MacosVmHostCapabilitiesRecommendation = {
+  cpuCores: number;
+  memory: string;
+  diskSize: string;
+};
+
+export type MacosVmHostCapabilities = {
+  model: string;
+  cpuCount: number;
+  memoryBytes: number;
+  freeMemoryBytes: number;
+  freeDiskBytes: number;
+  totalDiskBytes: number;
+  recommended: MacosVmHostCapabilitiesRecommendation;
+};
+
 export type MacosVmEventPayload =
   | { type: "status"; status: MacosVmStatus }
   | { type: "vm-updated"; vm: MacosVmRecord }
+  | { type: "base-updated"; base: MacosVmBaseRecord }
   | {
       type: "operation";
       operation: MacosVmOperation;
-      state: "started" | "completed" | "failed";
+      state: "started" | "progress" | "completed" | "failed";
       laneId: string | null;
       vmName: string | null;
       message: string;
       occurredAt: string;
+      stage?: string | null;
+      progress?: number | null;
     };

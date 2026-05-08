@@ -125,14 +125,20 @@ module.exports = async function afterPack(context) {
     const bundledCliInstallerPath = path.join(resourcesRoot, "ade-cli", "install-path.sh");
     const iosSimHelperRoot = path.join(resourcesRoot, "native", "ios-sim-helpers");
     const iosSimHelperBuildScript = path.join(iosSimHelperRoot, "build.sh");
+    const macosVmHelperRoot = path.join(resourcesRoot, "native", "macos-vm-helper");
+    const macosVmHelperBuildScript = path.join(macosVmHelperRoot, "build.sh");
     requireFile(bundledCliBinPath, "bundled ADE CLI wrapper");
     requireFile(bundledCliInstallerPath, "bundled ADE CLI PATH installer");
     requireFile(iosSimHelperBuildScript, "bundled iOS simulator helper build script");
     requireFile(path.join(iosSimHelperRoot, "sim-capture.swift"), "bundled iOS simulator capture helper source");
     requireFile(path.join(iosSimHelperRoot, "sim-input.m"), "bundled iOS simulator input helper source");
+    requireFile(macosVmHelperBuildScript, "bundled macOS VM helper build script");
+    requireFile(path.join(macosVmHelperRoot, "entitlements.plist"), "bundled macOS VM helper entitlements");
+    requireFile(path.join(macosVmHelperRoot, "macos-vm-helper.swift"), "bundled macOS VM helper source");
     fs.chmodSync(bundledCliBinPath, 0o755);
     fs.chmodSync(bundledCliInstallerPath, 0o755);
     fs.chmodSync(iosSimHelperBuildScript, 0o755);
+    fs.chmodSync(macosVmHelperBuildScript, 0o755);
   } else if (platform === "win32") {
     requireFile(path.join(resourcesRoot, "ade-cli", "bin", "ade.cmd"), "bundled ADE CLI Windows wrapper");
     requireFile(path.join(resourcesRoot, "ade-cli", "install-path.cmd"), "bundled ADE CLI Windows PATH installer");

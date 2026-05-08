@@ -682,14 +682,26 @@ import type {
   BuiltInBrowserTabArgs,
   MacosVmAgentGuide,
   MacosVmAgentGuideArgs,
+  MacosVmBaseCreateArgs,
+  MacosVmBaseDeleteArgs,
+  MacosVmBaseMarkReadyArgs,
+  MacosVmBaseRecord,
+  MacosVmBaseStartArgs,
+  MacosVmBaseStopArgs,
   MacosVmCaptureScreenshotArgs,
   MacosVmCaptureScreenshotResult,
+  MacosVmClearIpswCacheResult,
   MacosVmClickArgs,
   MacosVmDeleteArgs,
   MacosVmEventPayload,
+  MacosVmFocusBaseWindowArgs,
   MacosVmFocusWindowArgs,
+  MacosVmHostCapabilities,
   MacosVmProvisionArgs,
   MacosVmRecord,
+  MacosVmRenameBaseArgs,
+  MacosVmSaveLaneAsSnapshotArgs,
+  MacosVmScreenRecordingProbeResult,
   MacosVmSelectPointArgs,
   MacosVmSelectPointResult,
   MacosVmStartArgs,
@@ -2543,6 +2555,26 @@ contextBridge.exposeInMainWorld("ade", {
   macosVm: {
     getStatus: async (args: MacosVmStatusArgs = {}): Promise<MacosVmStatus> =>
       macosVmStatusCache.get(serializeIpcCacheArgs(args)),
+    getScreenRecordingStatus: async (): Promise<MacosVmScreenRecordingProbeResult> =>
+      ipcRenderer.invoke(IPC.macosVmGetScreenRecordingStatus),
+    getHostCapabilities: async (): Promise<MacosVmHostCapabilities> =>
+      ipcRenderer.invoke(IPC.macosVmGetHostCapabilities),
+    createBase: async (args: MacosVmBaseCreateArgs = {}): Promise<MacosVmBaseRecord> =>
+      clearAround(() => macosVmStatusCache.clear(), () => ipcRenderer.invoke(IPC.macosVmCreateBase, args)),
+    startBase: async (args: MacosVmBaseStartArgs = {}): Promise<MacosVmBaseRecord> =>
+      clearAround(() => macosVmStatusCache.clear(), () => ipcRenderer.invoke(IPC.macosVmStartBase, args)),
+    stopBase: async (args: MacosVmBaseStopArgs = {}): Promise<MacosVmBaseRecord | null> =>
+      clearAround(() => macosVmStatusCache.clear(), () => ipcRenderer.invoke(IPC.macosVmStopBase, args)),
+    markBaseReady: async (args: MacosVmBaseMarkReadyArgs = {}): Promise<MacosVmBaseRecord> =>
+      clearAround(() => macosVmStatusCache.clear(), () => ipcRenderer.invoke(IPC.macosVmMarkBaseReady, args)),
+    deleteBase: async (args: MacosVmBaseDeleteArgs = {}): Promise<{ deleted: boolean; previous: MacosVmBaseRecord | null }> =>
+      clearAround(() => macosVmStatusCache.clear(), () => ipcRenderer.invoke(IPC.macosVmDeleteBase, args)),
+    renameBase: async (args: MacosVmRenameBaseArgs): Promise<MacosVmBaseRecord> =>
+      clearAround(() => macosVmStatusCache.clear(), () => ipcRenderer.invoke(IPC.macosVmRenameBase, args)),
+    saveLaneVmAsSnapshot: async (args: MacosVmSaveLaneAsSnapshotArgs): Promise<MacosVmBaseRecord> =>
+      clearAround(() => macosVmStatusCache.clear(), () => ipcRenderer.invoke(IPC.macosVmSaveLaneAsSnapshot, args)),
+    clearIpswCache: async (): Promise<MacosVmClearIpswCacheResult> =>
+      clearAround(() => macosVmStatusCache.clear(), () => ipcRenderer.invoke(IPC.macosVmClearIpswCache)),
     provision: async (args: MacosVmProvisionArgs): Promise<MacosVmRecord> =>
       clearAround(() => macosVmStatusCache.clear(), () => ipcRenderer.invoke(IPC.macosVmProvision, args)),
     start: async (args: MacosVmStartArgs): Promise<MacosVmRecord> =>
@@ -2555,6 +2587,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.macosVmGetAgentGuide, args),
     focusWindow: async (args: MacosVmFocusWindowArgs): Promise<MacosVmWindowTarget> =>
       ipcRenderer.invoke(IPC.macosVmFocusWindow, args),
+    focusBaseWindow: async (args: MacosVmFocusBaseWindowArgs = {}): Promise<MacosVmWindowTarget> =>
+      ipcRenderer.invoke(IPC.macosVmFocusBaseWindow, args),
     captureScreenshot: async (args: MacosVmCaptureScreenshotArgs): Promise<MacosVmCaptureScreenshotResult> =>
       ipcRenderer.invoke(IPC.macosVmCaptureScreenshot, args),
     selectPoint: async (args: MacosVmSelectPointArgs): Promise<MacosVmSelectPointResult> =>
@@ -2675,11 +2709,27 @@ contextBridge.exposeInMainWorld("ade", {
       clearGitReadCaches();
       return result;
     },
+    discardFiles: async (
+      args: GitBatchFileActionArgs,
+    ): Promise<GitActionResult> => {
+      clearGitReadCaches();
+      const result = await ipcRenderer.invoke(IPC.gitDiscardFiles, args);
+      clearGitReadCaches();
+      return result;
+    },
     restoreStagedFile: async (
       args: GitFileActionArgs,
     ): Promise<GitActionResult> => {
       clearGitReadCaches();
       const result = await ipcRenderer.invoke(IPC.gitRestoreStagedFile, args);
+      clearGitReadCaches();
+      return result;
+    },
+    restoreStagedFiles: async (
+      args: GitBatchFileActionArgs,
+    ): Promise<GitActionResult> => {
+      clearGitReadCaches();
+      const result = await ipcRenderer.invoke(IPC.gitRestoreStagedFiles, args);
       clearGitReadCaches();
       return result;
     },

@@ -186,6 +186,9 @@ export function createMemoryBriefingService(args: {
           status: "promoted",
           limit: BUDGET_LIMITS[levels.l1],
           tiers: [1, 2],
+          recordRetrieval: input.mode !== "heartbeat",
+          retrievalSourceType: "memory_briefing",
+          retrievalSourceId: input.runId ?? input.missionId ?? input.agentId ?? null,
         })
       : memoryService
           .getMemoryBudget(input.projectId, levels.l1, { scope: "project" })

@@ -100,6 +100,11 @@ export type SearchMemoryOpts = {
   mode?: MemorySearchMode;
   status?: MemoryStatus | ReadonlyArray<MemoryStatus>;
   tiers?: MemoryTier[];
+  recordRetrieval?: boolean;
+  recordAccess?: boolean;
+  retrievalSourceType?: string;
+  retrievalSourceId?: string | null;
+  injectedMemoryIds?: ReadonlyArray<string>;
 };
 
 export type ListMemoriesOpts = {
@@ -143,6 +148,33 @@ export type WriteMemoryResult = {
   reason?: string;
   deduped?: boolean;
   mergedIntoId?: string;
+};
+
+export type MemoryEntityType = "file_path" | "symbol" | "error_signature" | "domain_term";
+
+export type MemoryEntity = {
+  id: string;
+  projectId: string;
+  entityType: MemoryEntityType;
+  normalizedValue: string;
+  displayValue: string;
+  occurrenceCount: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type MemoryHealthStats = {
+  projectId: string;
+  activeMemories: number;
+  promotedMemories: number;
+  candidateMemories: number;
+  archivedMemories: number;
+  embeddedMemories: number;
+  entityCount: number;
+  entityLinkCount: number;
+  recentRetrievals: number;
+  recentInjectedMemories: number;
+  memoriesMissingEntityLinks: number;
 };
 
 export type AgentMemoryWritePolicy = {
@@ -223,6 +255,110 @@ function normalizeMemoryForDedup(content: string): string {
     .toLowerCase();
 }
 
+const MEMORY_QUERY_STOP_WORDS = new Set([
+  "the", "and", "for", "with", "that", "this", "from", "into", "when", "where", "what", "why", "how",
+  "please", "could", "would", "should", "about", "before", "after", "because", "there", "their", "have",
+  "has", "had", "are", "was", "were", "been", "being", "you", "your", "our", "out", "not", "but",
+]);
+
+function tokenizeMemoryQuery(query: string): string[] {
+  const seen = new Set<string>();
+  return normalizeMemoryForDedup(query)
+    .split(/[^a-z0-9_]+/)
+    .map((word) => word.trim())
+    .filter((word) => word.length >= 3 && !MEMORY_QUERY_STOP_WORDS.has(word))
+    .filter((word) => {
+      if (seen.has(word)) return false;
+      seen.add(word);
+      return true;
+    })
+    .slice(0, 16);
+}
+
+const MEMORY_ENTITY_STOP_WORDS = new Set([
+  ...MEMORY_QUERY_STOP_WORDS,
+  "always", "before", "after", "because", "changing", "memory", "project", "agent", "agents", "service",
+  "tests", "test", "update", "updates", "using", "should", "would", "could", "need", "needs",
+]);
+
+const ENTITY_FILE_PATH_RE = /(?:^|\s)(?:\/|\.{1,2}\/|[A-Za-z]:\\|[A-Za-z0-9_.-]+\/)[^\s`'",;)]+?\.(?:ts|tsx|js|jsx|json|md|yml|yaml|py|go|rs|java|rb|sh|swift|m|mm|c|cc|cpp|h|hpp)(?::\d+)?\b/gi;
+const ENTITY_SYMBOL_RE = /`([A-Za-z_$][A-Za-z0-9_$]*(?:(?:\.|::)[A-Za-z_$][A-Za-z0-9_$]*)?)`|\b([A-Z][A-Za-z0-9]+(?:Service|Controller|Store|Provider|Renderer|Bridge|Client|Manager|Coordinator|Adapter|Repository|View|Model|Error|Exception))\b/g;
+const ENTITY_ERROR_RE = /\b([A-Z][A-Za-z0-9]*(?:Error|Exception|Failure):\s*[^\n.]{8,140})/g;
+
+function normalizeEntityValue(value: string): string {
+  return normalizeMemoryForDedup(value)
+    .replace(/["'`]+/g, "")
+    .replace(/[.,;:!?)]$/g, "")
+    .trim()
+    .slice(0, 240);
+}
+
+function addEntityCandidate(
+  entities: Map<string, { entityType: MemoryEntityType; displayValue: string; source: string; weight: number }>,
+  entityType: MemoryEntityType,
+  displayValue: string,
+  source: string,
+  weight: number,
+): void {
+  const normalizedValue = normalizeEntityValue(displayValue);
+  if (normalizedValue.length < 3) return;
+  const key = `${entityType}:${normalizedValue}`;
+  const existing = entities.get(key);
+  if (!existing || weight > existing.weight) {
+    entities.set(key, {
+      entityType,
+      displayValue: displayValue.trim().slice(0, 240),
+      source,
+      weight,
+    });
+  }
+}
+
+function extractMemoryEntityCandidates(args: {
+  content: string;
+  fileScopePattern?: string | null;
+  max?: number;
+}): Array<{ entityType: MemoryEntityType; normalizedValue: string; displayValue: string; source: string; weight: number }> {
+  const max = Math.max(1, Math.min(48, args.max ?? 32));
+  const sourceText = String(args.content ?? "");
+  const entities = new Map<string, { entityType: MemoryEntityType; displayValue: string; source: string; weight: number }>();
+
+  if (args.fileScopePattern?.trim()) {
+    addEntityCandidate(entities, "file_path", args.fileScopePattern.trim(), "file_scope", 1);
+  }
+
+  ENTITY_FILE_PATH_RE.lastIndex = 0;
+  for (const match of sourceText.matchAll(ENTITY_FILE_PATH_RE)) {
+    addEntityCandidate(entities, "file_path", String(match[0] ?? "").trim(), "content", 1);
+    if (entities.size >= max) break;
+  }
+
+  ENTITY_ERROR_RE.lastIndex = 0;
+  for (const match of sourceText.matchAll(ENTITY_ERROR_RE)) {
+    addEntityCandidate(entities, "error_signature", String(match[1] ?? "").trim(), "content", 0.9);
+    if (entities.size >= max) break;
+  }
+
+  ENTITY_SYMBOL_RE.lastIndex = 0;
+  for (const match of sourceText.matchAll(ENTITY_SYMBOL_RE)) {
+    addEntityCandidate(entities, "symbol", String(match[1] ?? match[2] ?? "").trim(), "content", 0.75);
+    if (entities.size >= max) break;
+  }
+
+  for (const token of normalizeMemoryForDedup(sourceText).split(/[^a-z0-9_.-]+/)) {
+    const normalized = token.trim();
+    if (normalized.length < 5 || normalized.length > 48) continue;
+    if (/^\d+$/.test(normalized) || MEMORY_ENTITY_STOP_WORDS.has(normalized)) continue;
+    addEntityCandidate(entities, "domain_term", normalized, "content", 0.35);
+    if (entities.size >= max) break;
+  }
+
+  return [...entities.entries()].slice(0, max).map(([key, entity]) => ({
+    ...entity,
+    normalizedValue: key.slice(key.indexOf(":") + 1),
+  }));
+}
+
 function countMatches(value: string, pattern: RegExp): number {
   let count = 0;
   for (const _ of value.matchAll(pattern)) count += 1;
@@ -245,7 +381,7 @@ function looksLikeRawDiffOrCodeDump(value: string): boolean {
 }
 
 function looksLikeSessionSummary(value: string): boolean {
-  return /^(?:status|progress|summary|session summary|mission summary|task summary|working on|implemented|fixed|updated|changed|next steps?)\b/i.test(value.trim());
+  return /^(?:status|progress|summary|session summary|mission summary|task summary|working on|implemented|fixed|updated|changed|added|removed|renamed|inverted|next steps?)\b/i.test(value.trim());
 }
 
 function looksLikeRawGitHistory(value: string): boolean {
@@ -268,7 +404,35 @@ function looksLikePathDump(value: string): boolean {
   return false;
 }
 
+function looksLikeAutomatedReviewOutput(value: string): boolean {
+  const trimmed = value.trim();
+  return (
+    /^\s*>?\s*@(?:copilot|coderabbit(?:ai)?|greptile)\s+review\b/i.test(trimmed)
+    || /\bdo not make fixes\b/i.test(trimmed)
+    || /^here(?:'|’)s the review\b/i.test(trimmed)
+    || /automated review suggestions/i.test(trimmed)
+    || /^#{1,6}\s+.*\bCodex Review\b/i.test(trimmed)
+    || /!\[[^\]]*\b(?:P[0-3]|priority|severity|badge)\b[^\]]*\]\(/i.test(trimmed)
+    || /^\*\*\[[^\]]*\b(?:critical|high|medium|low|investigate|p[0-3])\b[^\]]*\]\*\*/i.test(trimmed)
+    || /\bP[0-3]\s+Badge\b/i.test(trimmed)
+  );
+}
+
+function looksLikePromptQuestion(value: string): boolean {
+  const normalized = normalizeMemoryForDedup(value);
+  return (
+    /^what should .+\?$/.test(normalized)
+    || /\bwhat should this test mission accomplish\?/.test(normalized)
+  );
+}
+
 function rejectCodeDerivableContent(content: string): string | null {
+  if (looksLikeAutomatedReviewOutput(content)) {
+    return "memory appears to be an automated review command or raw review output";
+  }
+  if (looksLikePromptQuestion(content)) {
+    return "memory appears to be a prompt question, not a durable project memory";
+  }
   if (looksLikeRawDiffOrCodeDump(content)) {
     return "memory appears to be a raw diff or code dump";
   }
@@ -292,11 +456,12 @@ export function resolveAgentMemoryWritePolicy(args: {
   writeGateMode?: WriteGateMode;
 }): AgentMemoryWritePolicy {
   const pinned = args.pin === true;
+  const strict = args.writeGateMode === "strict";
 
   return {
-    status: "promoted",
-    tier: pinned ? 1 : 2,
-    confidence: 1,
+    status: pinned || strict ? "promoted" : "candidate",
+    tier: pinned ? 1 : strict ? 2 : 3,
+    confidence: pinned ? 1 : strict ? 0.9 : 0.6,
   };
 }
 
@@ -453,6 +618,8 @@ function mapMemoryRow(row: Record<string, unknown>): Memory {
 export type MemoryService = ReturnType<typeof createMemoryService>;
 
 export function createMemoryService(db: AdeDb, serviceOpts: CreateMemoryServiceOpts = {}) {
+  let retrievalEventsSincePrune = 0;
+
   const notifyMutation = () => {
     try {
       serviceOpts.onMemoryMutated?.();
@@ -477,34 +644,305 @@ export function createMemoryService(db: AdeDb, serviceOpts: CreateMemoryServiceO
     return row ? mapMemoryRow(row) : null;
   }
 
+  function indexMemoryEntities(memory: Memory): void {
+    const now = new Date().toISOString();
+    const entities = extractMemoryEntityCandidates({
+      content: memory.content,
+      fileScopePattern: memory.fileScopePattern,
+    });
+    db.run("DELETE FROM memory_entity_links WHERE memory_id = ?", [memory.id]);
+    if (!entities.length || memory.status === "archived") return;
+
+    for (const entity of entities) {
+      const existing = db.get<{ id: string; occurrence_count: number }>(
+        `
+          SELECT id, occurrence_count
+          FROM memory_entities
+          WHERE project_id = ?
+            AND entity_type = ?
+            AND normalized_value = ?
+          LIMIT 1
+        `,
+        [memory.projectId, entity.entityType, entity.normalizedValue],
+      );
+      const entityId = existing?.id ?? randomUUID();
+      if (existing) {
+        db.run(
+          `
+            UPDATE memory_entities
+            SET display_value = ?,
+                updated_at = ?
+            WHERE id = ?
+          `,
+          [entity.displayValue, now, entityId],
+        );
+      } else {
+        db.run(
+          `
+            INSERT INTO memory_entities (
+              id, project_id, entity_type, normalized_value, display_value,
+              occurrence_count, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+          `,
+          [entityId, memory.projectId, entity.entityType, entity.normalizedValue, entity.displayValue, now, now],
+        );
+      }
+
+      db.run(
+        `
+          INSERT OR REPLACE INTO memory_entity_links (
+            memory_id, entity_id, project_id, source, weight, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?)
+        `,
+        [memory.id, entityId, memory.projectId, entity.source, entity.weight, now],
+      );
+      db.run(
+        `
+          UPDATE memory_entities
+          SET occurrence_count = (
+                SELECT COUNT(*)
+                FROM memory_entity_links
+                WHERE entity_id = ?
+              ),
+              updated_at = ?
+          WHERE id = ?
+        `,
+        [entityId, now, entityId],
+      );
+    }
+  }
+
+  function entityMatchesForQuery(query: string): Array<{ entityType: MemoryEntityType; normalizedValue: string; displayValue: string; source: string; weight: number }> {
+    return extractMemoryEntityCandidates({ content: query, max: 16 });
+  }
+
+  function readEntityMatchedMemories(opts: SearchMemoryOpts, queryEntities: ReturnType<typeof entityMatchesForQuery>): Memory[] {
+    if (!queryEntities.length) return [];
+    const limit = Math.max(1, Math.min(50, (opts.limit ?? 10) * 4));
+    const statusList = Array.isArray(opts.status)
+      ? [...opts.status]
+      : opts.status
+        ? [opts.status]
+        : ["promoted"];
+    const params: Array<string | number | null> = [];
+    let sql = `
+      WITH matching_entities AS (
+        SELECT id
+        FROM memory_entities
+        WHERE project_id = ?
+          AND (
+    `;
+    params.push(opts.projectId);
+    sql += queryEntities.map(() => "(entity_type = ? AND normalized_value = ?)").join(" OR ");
+    for (const entity of queryEntities) {
+      params.push(entity.entityType, entity.normalizedValue);
+    }
+    sql += `
+          )
+      )
+      SELECT m.*, SUM(l.weight) AS entity_match_weight, COUNT(*) AS entity_match_count
+      FROM matching_entities e
+      JOIN memory_entity_links l
+        ON l.entity_id = e.id
+       AND l.project_id = ?
+      JOIN unified_memories m
+        ON m.id = l.memory_id
+      WHERE m.project_id = ?
+        AND m.status != 'archived'
+    `;
+    params.push(opts.projectId, opts.projectId);
+
+    if (opts.scope) {
+      sql += " AND m.scope = ?";
+      params.push(normalizeScope(opts.scope));
+    }
+    if (opts.scopeOwnerId !== undefined) {
+      sql += " AND COALESCE(m.scope_owner_id, '') = ?";
+      params.push(String(opts.scopeOwnerId ?? ""));
+    }
+    if (statusList.length) {
+      sql += ` AND m.status IN (${statusList.map(() => "?").join(",")})`;
+      params.push(...statusList);
+    }
+    if (opts.tiers?.length) {
+      sql += ` AND m.tier IN (${opts.tiers.map(() => "?").join(",")})`;
+      params.push(...opts.tiers);
+    }
+
+    sql += `
+      GROUP BY m.id
+      ORDER BY entity_match_weight DESC, entity_match_count DESC, m.pinned DESC, m.tier ASC, m.updated_at DESC
+      LIMIT ?
+    `;
+    params.push(limit);
+
+    return db.all<Record<string, unknown>>(sql, params).map((row) => ({
+      ...mapMemoryRow(row),
+      compositeScore: Math.max(
+        Number(row.composite_score ?? 0),
+        0.45 + Math.min(0.35, Number(row.entity_match_weight ?? 0) * 0.08),
+      ),
+    }));
+  }
+
+  function applyEntityAugmentation(opts: SearchMemoryOpts, base: Memory[], queryEntities: ReturnType<typeof entityMatchesForQuery>): Memory[] {
+    if (!queryEntities.length) return base;
+    const limit = Math.max(1, Math.min(100, opts.limit ?? 10));
+    const merged = new Map<string, Memory>();
+    for (const memory of base) {
+      merged.set(memory.id, memory);
+    }
+    for (const memory of readEntityMatchedMemories(opts, queryEntities)) {
+      const existing = merged.get(memory.id);
+      if (!existing || memory.compositeScore > existing.compositeScore) {
+        merged.set(memory.id, memory);
+      }
+    }
+    return [...merged.values()]
+      .sort((left, right) => {
+        if (right.compositeScore !== left.compositeScore) return right.compositeScore - left.compositeScore;
+        if (left.pinned !== right.pinned) return left.pinned ? -1 : 1;
+        if (left.tier !== right.tier) return left.tier - right.tier;
+        return String(right.lastAccessedAt).localeCompare(String(left.lastAccessedAt));
+      })
+      .slice(0, limit);
+  }
+
+  function recordRetrievalEvent(args: {
+    opts: SearchMemoryOpts;
+    memories: Memory[];
+    queryEntities: ReturnType<typeof entityMatchesForQuery>;
+    durationMs: number;
+  }): void {
+    if (args.opts.recordRetrieval !== true) return;
+    const query = String(args.opts.query ?? "").trim();
+    if (!query.length) return;
+    const now = new Date().toISOString();
+    const injectedMemoryIds = [...new Set(args.opts.injectedMemoryIds ?? [])].filter(Boolean).slice(0, 20);
+    try {
+      db.run(
+        `
+          INSERT INTO memory_retrieval_ledger (
+            id,
+            project_id,
+            query,
+            scope,
+            scope_owner_id,
+            mode,
+            status_filter_json,
+            tier_filter_json,
+            source_type,
+            source_id,
+            result_count,
+            injected_count,
+            top_memory_ids_json,
+            injected_memory_ids_json,
+            entity_matches_json,
+            duration_ms,
+            created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          randomUUID(),
+          args.opts.projectId,
+          query.slice(0, 500),
+          args.opts.scope ? normalizeScope(args.opts.scope) : null,
+          args.opts.scopeOwnerId ?? null,
+          args.opts.mode ?? "hybrid",
+          JSON.stringify(args.opts.status ?? "promoted"),
+          JSON.stringify(args.opts.tiers ?? null),
+          String(args.opts.retrievalSourceType ?? "service").slice(0, 80),
+          args.opts.retrievalSourceId ? String(args.opts.retrievalSourceId).slice(0, 160) : null,
+          args.memories.length,
+          injectedMemoryIds.length,
+          JSON.stringify(args.memories.slice(0, 10).map((memory) => memory.id)),
+          JSON.stringify(injectedMemoryIds),
+          JSON.stringify(args.queryEntities.map((entity) => ({
+            type: entity.entityType,
+            value: entity.normalizedValue,
+          }))),
+          Math.max(0, Math.floor(args.durationMs)),
+          now,
+        ],
+      );
+      retrievalEventsSincePrune += 1;
+      if (retrievalEventsSincePrune >= 50) {
+        const ledgerCount = db.get<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM memory_retrieval_ledger WHERE project_id = ?",
+          [args.opts.projectId],
+        )?.count ?? 0;
+        if (ledgerCount > 600) {
+          db.run(
+            `
+              DELETE FROM memory_retrieval_ledger
+              WHERE project_id = ?
+                AND id NOT IN (
+                  SELECT id
+                  FROM memory_retrieval_ledger
+                  WHERE project_id = ?
+                  ORDER BY created_at DESC
+                  LIMIT 500
+                )
+            `,
+            [args.opts.projectId, args.opts.projectId],
+          );
+        }
+        retrievalEventsSincePrune = 0;
+      }
+    } catch {
+      // Retrieval telemetry must never make memory search fail.
+    }
+  }
+
   function updateAccessStats(id: string, compositeScore?: number) {
     const now = new Date().toISOString();
     if (typeof compositeScore === "number" && Number.isFinite(compositeScore)) {
       db.run(
         `
-          UPDATE unified_memories
-          SET access_count = access_count + 1,
-              last_accessed_at = ?,
-              updated_at = ?,
-              access_score = CASE
-                WHEN COALESCE(access_score, 0) > ? THEN COALESCE(access_score, 0)
-                ELSE ?
-              END,
-              composite_score = ?
+          INSERT INTO memory_access_stats (
+            memory_id,
+            project_id,
+            access_count,
+            last_accessed_at,
+            access_score,
+            composite_score,
+            updated_at
+          )
+          SELECT id, project_id, 1, ?, ?, ?, ?
+          FROM unified_memories
           WHERE id = ?
+          ON CONFLICT(memory_id) DO UPDATE SET
+            access_count = access_count + 1,
+            last_accessed_at = excluded.last_accessed_at,
+            access_score = CASE
+              WHEN COALESCE(memory_access_stats.access_score, 0) > excluded.access_score
+                THEN COALESCE(memory_access_stats.access_score, 0)
+              ELSE excluded.access_score
+            END,
+            composite_score = excluded.composite_score,
+            updated_at = excluded.updated_at
         `,
-        [now, now, compositeScore, compositeScore, compositeScore, id]
+        [now, compositeScore, compositeScore, now, id]
       );
       return;
     }
 
     db.run(
       `
-        UPDATE unified_memories
-        SET access_count = access_count + 1,
-            last_accessed_at = ?,
-            updated_at = ?
+        INSERT INTO memory_access_stats (
+          memory_id,
+          project_id,
+          access_count,
+          last_accessed_at,
+          updated_at
+        )
+        SELECT id, project_id, 1, ?, ?
+        FROM unified_memories
         WHERE id = ?
+        ON CONFLICT(memory_id) DO UPDATE SET
+          access_count = access_count + 1,
+          last_accessed_at = excluded.last_accessed_at,
+          updated_at = excluded.updated_at
       `,
       [now, now, id]
     );
@@ -585,7 +1023,6 @@ export function createMemoryService(db: AdeDb, serviceOpts: CreateMemoryServiceO
           AND scope = ?
           AND COALESCE(scope_owner_id, '') = ?
           AND status != 'archived'
-          AND tier IN (1, 2)
         ORDER BY updated_at DESC
         LIMIT 120
       `,
@@ -755,6 +1192,7 @@ export function createMemoryService(db: AdeDb, serviceOpts: CreateMemoryServiceO
         };
       }
 
+      indexMemoryEntities(updated);
       notifyMutation();
       notifyMemoryUpserted({
         memory: updated,
@@ -849,6 +1287,7 @@ export function createMemoryService(db: AdeDb, serviceOpts: CreateMemoryServiceO
       };
     }
 
+    indexMemoryEntities(inserted);
     notifyMutation();
     notifyMemoryUpserted({
       memory: inserted,
@@ -942,6 +1381,8 @@ export function createMemoryService(db: AdeDb, serviceOpts: CreateMemoryServiceO
       `,
       [now, now, id]
     );
+    const promoted = readById(id);
+    if (promoted) indexMemoryEntities(promoted);
     notifyMutation();
   }
 
@@ -958,6 +1399,7 @@ export function createMemoryService(db: AdeDb, serviceOpts: CreateMemoryServiceO
       `,
       [now, id]
     );
+    db.run("DELETE FROM memory_entity_links WHERE memory_id = ?", [id]);
     notifyMutation();
   }
 
@@ -1025,7 +1467,7 @@ export function createMemoryService(db: AdeDb, serviceOpts: CreateMemoryServiceO
         : ["promoted"];
 
     const limit = Math.max(1, Math.min(100, opts.limit ?? 10));
-    const words = normalizeMemoryForDedup(opts.query).split(/\s+/).filter(Boolean);
+    const words = tokenizeMemoryQuery(opts.query);
     const params: Array<string | number | null> = [opts.projectId];
 
     let sql = `
@@ -1059,8 +1501,8 @@ export function createMemoryService(db: AdeDb, serviceOpts: CreateMemoryServiceO
     }
 
     if (words.length > 0) {
-      const contentFilters = words.map(() => `LOWER(m.content) LIKE ?`).join(" AND ");
-      sql += ` AND ${contentFilters}`;
+      const contentFilters = words.map(() => `LOWER(m.content) LIKE ?`).join(" OR ");
+      sql += ` AND (${contentFilters})`;
       for (const word of words) {
         params.push(`%${word}%`);
       }
@@ -1124,13 +1566,25 @@ export function createMemoryService(db: AdeDb, serviceOpts: CreateMemoryServiceO
   }
 
   async function search(opts: SearchMemoryOpts): Promise<Memory[]> {
-    const scored = opts.mode === "lexical"
+    const startedAt = Date.now();
+    const queryEntities = entityMatchesForQuery(opts.query);
+    const base = opts.mode === "lexical"
       ? searchLexical(opts)
       : (await searchHybrid(opts)) ?? searchLexical(opts);
+    const scored = applyEntityAugmentation(opts, base, queryEntities);
 
-    for (const entry of scored) {
-      updateAccessStats(entry.id, entry.compositeScore);
+    if (opts.recordAccess === true) {
+      for (const entry of scored) {
+        updateAccessStats(entry.id, entry.compositeScore);
+      }
     }
+
+    recordRetrievalEvent({
+      opts,
+      memories: scored,
+      queryEntities,
+      durationMs: Date.now() - startedAt,
+    });
 
     return scored;
   }
@@ -1174,7 +1628,8 @@ export function createMemoryService(db: AdeDb, serviceOpts: CreateMemoryServiceO
     limit = 10,
     status: MemoryStatus | ReadonlyArray<MemoryStatus> = "promoted",
     scopeOwnerId?: string | null,
-    mode: MemorySearchMode = "hybrid"
+    mode: MemorySearchMode = "hybrid",
+    extra?: Pick<SearchMemoryOpts, "recordRetrieval" | "recordAccess" | "retrievalSourceType" | "retrievalSourceId" | "injectedMemoryIds">
   ): Promise<Memory[]> {
     return await search({
       query,
@@ -1184,6 +1639,7 @@ export function createMemoryService(db: AdeDb, serviceOpts: CreateMemoryServiceO
       mode,
       status,
       ...(scopeOwnerId !== undefined ? { scopeOwnerId } : {}),
+      ...(extra ?? {}),
     });
   }
 
@@ -1289,6 +1745,172 @@ export function createMemoryService(db: AdeDb, serviceOpts: CreateMemoryServiceO
     return db.all<Record<string, unknown>>(sql, params).map(mapMemoryRow);
   }
 
+  function reindexMemoryEntities(projectId: string, limit = 500): { indexedMemories: number; entityCount: number; entityLinkCount: number } {
+    const boundedLimit = Math.max(1, Math.min(5_000, Math.floor(limit)));
+    const memories = db.all<Record<string, unknown>>(
+      `
+        SELECT *
+        FROM unified_memories
+        WHERE project_id = ?
+          AND status != 'archived'
+        ORDER BY pinned DESC, tier ASC, updated_at DESC
+        LIMIT ?
+      `,
+      [projectId, boundedLimit],
+    ).map(mapMemoryRow);
+
+    for (const memory of memories) {
+      indexMemoryEntities(memory);
+    }
+
+    const entityCount = db.get<{ count: number }>(
+      "SELECT COUNT(*) AS count FROM memory_entities WHERE project_id = ?",
+      [projectId],
+    )?.count ?? 0;
+    const entityLinkCount = db.get<{ count: number }>(
+      "SELECT COUNT(*) AS count FROM memory_entity_links WHERE project_id = ?",
+      [projectId],
+    )?.count ?? 0;
+
+    return {
+      indexedMemories: memories.length,
+      entityCount,
+      entityLinkCount,
+    };
+  }
+
+  function getMemoryHealthStats(projectId: string): MemoryHealthStats {
+    const activeMemories = db.get<{ count: number }>(
+      "SELECT COUNT(*) AS count FROM unified_memories WHERE project_id = ? AND status != 'archived'",
+      [projectId],
+    )?.count ?? 0;
+    const promotedMemories = db.get<{ count: number }>(
+      "SELECT COUNT(*) AS count FROM unified_memories WHERE project_id = ? AND status = 'promoted'",
+      [projectId],
+    )?.count ?? 0;
+    const candidateMemories = db.get<{ count: number }>(
+      "SELECT COUNT(*) AS count FROM unified_memories WHERE project_id = ? AND status = 'candidate'",
+      [projectId],
+    )?.count ?? 0;
+    const archivedMemories = db.get<{ count: number }>(
+      "SELECT COUNT(*) AS count FROM unified_memories WHERE project_id = ? AND status = 'archived'",
+      [projectId],
+    )?.count ?? 0;
+    const embeddedMemories = db.get<{ count: number }>(
+      `
+        SELECT COUNT(DISTINCT memory_id) AS count
+        FROM unified_memory_embeddings
+        WHERE project_id = ?
+      `,
+      [projectId],
+    )?.count ?? 0;
+    const entityCount = db.get<{ count: number }>(
+      "SELECT COUNT(*) AS count FROM memory_entities WHERE project_id = ?",
+      [projectId],
+    )?.count ?? 0;
+    const entityLinkCount = db.get<{ count: number }>(
+      "SELECT COUNT(*) AS count FROM memory_entity_links WHERE project_id = ?",
+      [projectId],
+    )?.count ?? 0;
+    const recentRetrievals = db.get<{ count: number }>(
+      `
+        SELECT COUNT(*) AS count
+        FROM memory_retrieval_ledger
+        WHERE project_id = ?
+          AND julianday(created_at) >= julianday('now', '-7 days')
+      `,
+      [projectId],
+    )?.count ?? 0;
+    const recentInjectedMemories = db.get<{ count: number }>(
+      `
+        SELECT COALESCE(SUM(injected_count), 0) AS count
+        FROM memory_retrieval_ledger
+        WHERE project_id = ?
+          AND julianday(created_at) >= julianday('now', '-7 days')
+      `,
+      [projectId],
+    )?.count ?? 0;
+    const memoriesMissingEntityLinks = db.get<{ count: number }>(
+      `
+        SELECT COUNT(*) AS count
+        FROM unified_memories m
+        WHERE m.project_id = ?
+          AND m.status != 'archived'
+          AND NOT EXISTS (
+            SELECT 1
+            FROM memory_entity_links l
+            WHERE l.memory_id = m.id
+          )
+      `,
+      [projectId],
+    )?.count ?? 0;
+
+    return {
+      projectId,
+      activeMemories,
+      promotedMemories,
+      candidateMemories,
+      archivedMemories,
+      embeddedMemories,
+      entityCount,
+      entityLinkCount,
+      recentRetrievals,
+      recentInjectedMemories,
+      memoriesMissingEntityLinks,
+    };
+  }
+
+  function listRecentRetrievals(projectId: string, limit = 20): Array<Record<string, unknown>> {
+    return db.all<Record<string, unknown>>(
+      `
+        SELECT *
+        FROM memory_retrieval_ledger
+        WHERE project_id = ?
+        ORDER BY created_at DESC
+        LIMIT ?
+      `,
+      [projectId, Math.max(1, Math.min(100, Math.floor(limit)))],
+    );
+  }
+
+  function recordMemoryRetrieval(args: {
+    projectId: string;
+    query: string;
+    scope?: MemoryWriteScope;
+    scopeOwnerId?: string | null;
+    mode?: MemorySearchMode;
+    status?: MemoryStatus | ReadonlyArray<MemoryStatus>;
+    tiers?: ReadonlyArray<MemoryTier>;
+    sourceType?: string;
+    sourceId?: string | null;
+    resultMemoryIds?: ReadonlyArray<string>;
+    injectedMemoryIds?: ReadonlyArray<string>;
+    durationMs?: number;
+  }): void {
+    const memories = [...new Set(args.resultMemoryIds ?? [])]
+      .map((id) => readById(id))
+      .filter((memory): memory is Memory => Boolean(memory));
+    const queryEntities = entityMatchesForQuery(args.query);
+    recordRetrievalEvent({
+      opts: {
+        projectId: args.projectId,
+        query: args.query,
+        scope: args.scope,
+        scopeOwnerId: args.scopeOwnerId,
+        mode: args.mode ?? "hybrid",
+        status: args.status ?? "promoted",
+        tiers: args.tiers ? [...args.tiers] : undefined,
+        recordRetrieval: true,
+        retrievalSourceType: args.sourceType ?? "service",
+        retrievalSourceId: args.sourceId ?? null,
+        injectedMemoryIds: args.injectedMemoryIds,
+      },
+      memories,
+      queryEntities,
+      durationMs: args.durationMs ?? 0,
+    });
+  }
+
   return {
     writeMemory,
     getMemory: readById,
@@ -1304,5 +1926,9 @@ export function createMemoryService(db: AdeDb, serviceOpts: CreateMemoryServiceO
     getCandidateMemories,
     searchMemories,
     getMemoryBudget,
+    reindexMemoryEntities,
+    getMemoryHealthStats,
+    listRecentRetrievals,
+    recordMemoryRetrieval,
   };
 }

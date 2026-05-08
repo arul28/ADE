@@ -249,13 +249,18 @@ function toContextArtifactLabel(artifactType: string): string {
       return "Rule overlays";
     case "validation_signals":
       return "Validation signals";
+    case "memory_context":
+      return "Memory context";
     default:
       return artifactType.replaceAll("_", " ");
   }
 }
 
 function isContextArtifactType(artifactType: string): boolean {
-  return artifactType === "provenance_brief" || artifactType === "rule_overlays" || artifactType === "validation_signals";
+  return artifactType === "provenance_brief"
+    || artifactType === "rule_overlays"
+    || artifactType === "validation_signals"
+    || artifactType === "memory_context";
 }
 
 function normalizeTimestamp(...values: unknown[]): string | null {
@@ -1430,7 +1435,9 @@ export function ReviewPage() {
                         ? readArtifactMetaCount(artifact, ["provenanceCount", "missionCount", "workerDigestCount", "sessionDeltaCount", "priorReviewCount"])
                         : artifactType === "rule_overlays"
                           ? readArtifactMetaCount(artifact, ["ruleCount", "matchedRuleCount", "overlayCount", "pathCount"])
-                          : readArtifactMetaCount(artifact, ["signalCount", "checkCount", "testRunCount", "issueCount"]);
+                          : artifactType === "memory_context"
+                            ? readArtifactMetaCount(artifact, ["memoryCount"])
+                            : readArtifactMetaCount(artifact, ["signalCount", "checkCount", "testRunCount", "issueCount"]);
                     const detailChips =
                       artifactType === "provenance_brief"
                         ? [
@@ -1443,7 +1450,12 @@ export function ReviewPage() {
                               readArtifactMetaCount(artifact, ["ruleCount", "matchedRuleCount"]) ? `rules ${readArtifactMetaCount(artifact, ["ruleCount", "matchedRuleCount"])}` : null,
                               readArtifactMetaCount(artifact, ["pathCount"]) ? `paths ${readArtifactMetaCount(artifact, ["pathCount"])}` : null,
                             ].filter((value): value is string => Boolean(value))
-                          : [
+                          : artifactType === "memory_context"
+                            ? [
+                                readArtifactMetaCount(artifact, ["fileScopedCount"]) ? `file scoped ${readArtifactMetaCount(artifact, ["fileScopedCount"])}` : null,
+                                readArtifactMetaCount(artifact, ["pinnedCount"]) ? `pinned ${readArtifactMetaCount(artifact, ["pinnedCount"])}` : null,
+                              ].filter((value): value is string => Boolean(value))
+                            : [
                               readArtifactMetaCount(artifact, ["signalCount"]) ? `signals ${readArtifactMetaCount(artifact, ["signalCount"])}` : null,
                               readArtifactMetaCount(artifact, ["checkCount", "testRunCount"]) ? `checks ${readArtifactMetaCount(artifact, ["checkCount", "testRunCount"])}` : null,
                               readArtifactMetaCount(artifact, ["issueCount"]) ? `issues ${readArtifactMetaCount(artifact, ["issueCount"])}` : null,

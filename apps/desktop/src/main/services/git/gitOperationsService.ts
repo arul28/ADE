@@ -56,6 +56,13 @@ type CachedReadEntry<T> = {
   promise?: Promise<T>;
 };
 
+type GitStatusEntry = {
+  x: string;
+  y: string;
+  path: string;
+  previousPath?: string;
+};
+
 function localBranchNameFromRemoteRef(ref: string): string {
   const normalized = ref.trim();
   const slashIndex = normalized.indexOf("/");
@@ -90,6 +97,91 @@ async function isUntrackedFile(worktreePath: string, relPath: string): Promise<b
   if (res.exitCode !== 0) return false;
   const lines = res.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
   return lines.some((line) => line.startsWith("??"));
+}
+
+function parseStatusPath(raw: string): { path: string; previousPath?: string } {
+  const renameSeparator = " -> ";
+  const renameIndex = raw.indexOf(renameSeparator);
+  if (renameIndex >= 0) {
+    const previousPath = raw.slice(0, renameIndex).trim();
+    const nextPath = raw.slice(renameIndex + renameSeparator.length).trim();
+    return { path: nextPath, previousPath };
+  }
+  return { path: raw.trim() };
+}
+
+function parseGitStatusEntry(line: string): GitStatusEntry | null {
+  if (line.length < 3) return null;
+  const x = line[0] ?? " ";
+  const y = line[1] ?? " ";
+  const parsedPath = parseStatusPath(line.slice(2));
+  if (!parsedPath.path) return null;
+  return { x, y, ...parsedPath };
+}
+
+async function listGitStatusEntries(worktreePath: string): Promise<GitStatusEntry[]> {
+  const res = await runGit(["status", "--porcelain=v1"], { cwd: worktreePath, timeoutMs: 12_000 });
+  if (res.exitCode !== 0) return [];
+  return res.stdout
+    .split("\n")
+    .map((line) => parseGitStatusEntry(line.trimEnd()))
+    .filter((entry): entry is GitStatusEntry => entry != null);
+}
+
+function pushUniquePathspec(target: string[], seen: Set<string>, pathspec: string | undefined): void {
+  if (!pathspec) return;
+  try {
+    const normalized = ensureRelativeRepoPath(pathspec);
+    if (seen.has(normalized)) return;
+    seen.add(normalized);
+    target.push(normalized);
+  } catch {
+    // Ignore malformed paths parsed from git status. Explicit user paths are
+    // validated before this helper is called.
+  }
+}
+
+async function expandRenamePathspecs(worktreePath: string, filePaths: string[]): Promise<string[]> {
+  const entries = await listGitStatusEntries(worktreePath);
+  const seen = new Set<string>();
+  const expanded: string[] = [];
+  for (const filePath of filePaths) {
+    pushUniquePathspec(expanded, seen, filePath);
+    for (const entry of entries) {
+      if (entry.path === filePath || entry.previousPath === filePath) {
+        pushUniquePathspec(expanded, seen, entry.path);
+        pushUniquePathspec(expanded, seen, entry.previousPath);
+      }
+    }
+  }
+  return expanded;
+}
+
+function chunkPathspecs(paths: string[], maxPathsPerChunk = 200): string[][] {
+  const chunks: string[][] = [];
+  for (let i = 0; i < paths.length; i += maxPathsPerChunk) {
+    chunks.push(paths.slice(i, i + maxPathsPerChunk));
+  }
+  return chunks;
+}
+
+async function runGitPathspecChunks(
+  baseArgs: string[],
+  paths: string[],
+  opts: { cwd: string; timeoutMs: number },
+): Promise<void> {
+  const chunks = chunkPathspecs(paths).filter((chunk) => chunk.length > 0);
+  for (const chunk of chunks) {
+    if (baseArgs[0] === "clean") {
+      await runGitOrThrow(["clean", "-fdn", "--", ...chunk], opts);
+    } else if (baseArgs[0] === "restore" && !baseArgs.includes("--source=HEAD")) {
+      await runGitOrThrow(["ls-files", "--error-unmatch", "--", ...chunk], opts);
+    }
+  }
+  for (const chunk of chunks) {
+    if (chunk.length === 0) continue;
+    await runGitOrThrow([...baseArgs, "--", ...chunk], opts);
+  }
 }
 
 async function getAbsoluteGitDir(worktreePath: string): Promise<string | null> {
@@ -444,7 +536,8 @@ export function createGitOperationsService({
         metadata: { count: filePaths.length },
         fn: async (lane) => {
           if (filePaths.length === 0) return;
-          await runGitOrThrow(["restore", "--staged", "--", ...filePaths], { cwd: lane.worktreePath, timeoutMs: 30_000 });
+          const pathspecs = await expandRenamePathspecs(lane.worktreePath, filePaths);
+          await runGitPathspecChunks(["restore", "--staged"], pathspecs, { cwd: lane.worktreePath, timeoutMs: 30_000 });
         }
       });
       return action;
@@ -458,7 +551,8 @@ export function createGitOperationsService({
         reason: "unstage_file",
         metadata: { path: filePath },
         fn: async (lane) => {
-          await runGitOrThrow(["restore", "--staged", "--", filePath], { cwd: lane.worktreePath, timeoutMs: 15_000 });
+          const pathspecs = await expandRenamePathspecs(lane.worktreePath, [filePath]);
+          await runGitPathspecChunks(["restore", "--staged"], pathspecs, { cwd: lane.worktreePath, timeoutMs: 15_000 });
         }
       });
       return action;
@@ -474,10 +568,34 @@ export function createGitOperationsService({
         fn: async (lane) => {
           const untracked = await isUntrackedFile(lane.worktreePath, filePath);
           if (untracked) {
-            await runGitOrThrow(["clean", "-f", "--", filePath], { cwd: lane.worktreePath, timeoutMs: 15_000 });
+            await runGitOrThrow(["clean", "-fd", "--", filePath], { cwd: lane.worktreePath, timeoutMs: 15_000 });
             return;
           }
-          await runGitOrThrow(["restore", "--worktree", "--", filePath], { cwd: lane.worktreePath, timeoutMs: 15_000 });
+          await runGitPathspecChunks(["restore", "--worktree"], [filePath], { cwd: lane.worktreePath, timeoutMs: 15_000 });
+        }
+      });
+      return action;
+    },
+
+    async discardFiles(args: GitBatchFileActionArgs): Promise<GitActionResult> {
+      const filePaths = args.paths.map(ensureRelativeRepoPath);
+      const { action } = await runLaneOperation({
+        laneId: args.laneId,
+        kind: "git_discard_all",
+        reason: "discard_files",
+        metadata: { count: filePaths.length },
+        fn: async (lane) => {
+          if (filePaths.length === 0) return;
+          const entries = await listGitStatusEntries(lane.worktreePath);
+          const untrackedPathSet = new Set(
+            entries
+              .filter((entry) => entry.x === "?" && entry.y === "?")
+              .map((entry) => entry.path),
+          );
+          const untrackedPaths = filePaths.filter((filePath) => untrackedPathSet.has(filePath));
+          const trackedPaths = filePaths.filter((filePath) => !untrackedPathSet.has(filePath));
+          await runGitPathspecChunks(["restore", "--worktree"], trackedPaths, { cwd: lane.worktreePath, timeoutMs: 30_000 });
+          await runGitPathspecChunks(["clean", "-fd"], untrackedPaths, { cwd: lane.worktreePath, timeoutMs: 30_000 });
         }
       });
       return action;
@@ -491,9 +609,29 @@ export function createGitOperationsService({
         reason: "restore_staged_file",
         metadata: { path: filePath },
         fn: async (lane) => {
-          await runGitOrThrow(["restore", "--staged", "--worktree", "--source=HEAD", "--", filePath], {
+          const pathspecs = await expandRenamePathspecs(lane.worktreePath, [filePath]);
+          await runGitPathspecChunks(["restore", "--staged", "--worktree", "--source=HEAD"], pathspecs, {
             cwd: lane.worktreePath,
-            timeoutMs: 15_000
+            timeoutMs: 15_000,
+          });
+        }
+      });
+      return action;
+    },
+
+    async restoreStagedFiles(args: GitBatchFileActionArgs): Promise<GitActionResult> {
+      const filePaths = args.paths.map(ensureRelativeRepoPath);
+      const { action } = await runLaneOperation({
+        laneId: args.laneId,
+        kind: "git_restore_staged_all",
+        reason: "restore_staged_files",
+        metadata: { count: filePaths.length },
+        fn: async (lane) => {
+          if (filePaths.length === 0) return;
+          const pathspecs = await expandRenamePathspecs(lane.worktreePath, filePaths);
+          await runGitPathspecChunks(["restore", "--staged", "--worktree", "--source=HEAD"], pathspecs, {
+            cwd: lane.worktreePath,
+            timeoutMs: 30_000,
           });
         }
       });

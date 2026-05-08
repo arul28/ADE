@@ -355,6 +355,25 @@ function getMacosVmContextAttachmentPath(item: MacosVmContextItem): string | nul
   return typeof value === "string" && value.length ? value : null;
 }
 
+function macosVmMetadataSummaryForPrompt(metadata: Record<string, unknown>): Record<string, unknown> | null {
+  const summary: Record<string, unknown> = {};
+  for (const key of [
+    "selectedPoint",
+    "screenshotPath",
+    "attachmentPath",
+    "shareMode",
+    "display",
+    "screenSize",
+    "captureFrame",
+  ]) {
+    const value = metadata[key];
+    if (value !== undefined && value !== null) {
+      summary[key] = value;
+    }
+  }
+  return Object.keys(summary).length ? summary : null;
+}
+
 function formatMacosVmContextForPrompt(items: MacosVmContextItem[]): string {
   if (!items.length) return "";
   const rows = items.map((item, index) => {
@@ -377,14 +396,14 @@ function formatMacosVmContextForPrompt(items: MacosVmContextItem[]): string {
       selectedAt: item.selectedAt,
       selectedPoint: metadata.selectedPoint,
       screenshotPath: metadata.screenshotPath,
-      metadata,
+      metadataSummary: macosVmMetadataSummaryForPrompt(metadata),
     };
     return `${index + 1}. ${macosVmContextLabel(item)} (${item.state}, lane=${item.laneName})\nPacket:\n${JSON.stringify(packet, null, 2)}`;
   });
   return [
     "macOS VM target context attached by the user.",
     "Use this VM for isolated GUI validation tied to the active lane. The host lane path is shared into the guest with VirtioFS, so edits in the mounted folder stay synced between host and guest. When visualAttachmentPath or selectedPoint is present, treat it as screenshot-backed VM context.",
-    "For GUI computer use, prefer ADE macos-vm screenshot/click/type tools; they use headless VNC when available and only fall back to a visible Lume/VNC/macOS VM window. Do not target the host ADE window unless the user asks to switch back.",
+    "For GUI computer use, prefer ADE macos-vm screenshot/click/type tools; they target the native Apple Virtualization VM window. Do not target the host ADE window unless the user asks to switch back.",
     "For shell commands inside the guest, use sshCommand when present or configure SSH/in-guest agent access, then work from guestLanePath.",
     "Keep secrets out of the VM; ADE blocks lane roots that contain .ade/secrets from being mounted.",
     ...rows,
@@ -410,10 +429,10 @@ function formatAutomaticMacosVmContextForPrompt(status: MacosVmStatus, laneId: s
     `- Guest lane path: ${guestPath}`,
     vm?.sharedDirectory ? `- Shared directory mounted into the VM: ${vm.sharedDirectory}` : null,
     vm?.sshCommand ? `- Guest SSH command: ${vm.sshCommand}` : "- Guest SSH command: not configured yet",
-    vm?.vncUrl ? `- Sanitized VNC URL: ${vm.vncUrl}` : "- Sanitized VNC URL: available after the VM is running",
+    `- VM window title query: ${vm?.name ?? "available after the VM is provisioned"}`,
     "- ADE RPC tools: macos_vm_status, macos_vm_start, macos_vm_focus, macos_vm_screenshot, macos_vm_select, macos_vm_click, macos_vm_type.",
     `- ADE CLI examples: ade macos-vm status --lane ${laneId} --text; ade macos-vm start --lane ${laneId} --create --no-display; ade macos-vm screenshot --lane ${laneId} --text.`,
-    "- GUI control goes through ADE's direct headless VNC bridge when available, then falls back to a visible VM viewer. Do not target the host ADE window when the task is to control the lane VM.",
+    "- GUI control targets the native Apple Virtualization VM window through ADE. Do not target the host ADE window when the task is to control the lane VM.",
     state === "running"
       ? "- The VM is currently running; prefer macos_vm_screenshot first, then click/type/select against the VM."
       : "- The VM is not running; start it only if the user asked for VM use or the task clearly needs isolated macOS GUI validation.",
@@ -428,11 +447,21 @@ function formatAutomaticMacosVmContextForPrompt(status: MacosVmStatus, laneId: s
 async function buildAutomaticMacosVmContextForPrompt(laneId: string): Promise<string> {
   const api = window.ade?.macosVm;
   if (!api?.getStatus) return "";
+  let timeoutId: number | null = null;
   try {
-    const status = await api.getStatus({ laneId });
+    const statusPromise = api.getStatus({ laneId }).catch(() => null);
+    const timeoutPromise = new Promise<null>((resolve) => {
+      timeoutId = window.setTimeout(() => resolve(null), 2_000);
+    });
+    const status = await Promise.race([statusPromise, timeoutPromise]);
+    if (!status) return "";
     return formatAutomaticMacosVmContextForPrompt(status, laneId);
   } catch {
     return "";
+  } finally {
+    if (timeoutId !== null) {
+      window.clearTimeout(timeoutId);
+    }
   }
 }
 

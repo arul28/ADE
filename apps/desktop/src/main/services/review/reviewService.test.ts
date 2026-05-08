@@ -471,6 +471,7 @@ function createHarness(args: {
   publicationTarget?: ReviewPublicationDestination | null;
   config?: Partial<ReviewRunConfig>;
   target?: { mode: "lane_diff" | "pr" | "commit_range" | "working_tree"; laneId: string; prId?: string; baseCommit?: string; headCommit?: string };
+  memoryService?: any;
 }) {
   const { db, raw } = createInMemoryAdeDb();
   let sessionCount = 0;
@@ -579,6 +580,7 @@ function createHarness(args: {
       ]),
       publishReviewPublication,
     } as any : undefined,
+    memoryService: args.memoryService ?? null,
   });
 
   const target = args.target?.mode === "pr"
@@ -733,6 +735,72 @@ describe("reviewService", () => {
 
     const persisted = mapExecRows(harness.raw.exec("select finding_class from review_findings"));
     expect(String(persisted[0]?.finding_class)).toBe("intent_drift");
+  });
+
+  it("injects promoted ADE memory into review prompts as a persisted context artifact", async () => {
+    const memoryService = {
+      listMemories: vi.fn(() => [
+        {
+          id: "memory-file-1",
+          projectId: "project-1",
+          scope: "project",
+          scopeOwnerId: null,
+          tier: 2,
+          category: "gotcha",
+          content: "When review fallback code changes, verify renderer and preload callers together.",
+          importance: "high",
+          sourceSessionId: null,
+          sourcePackKey: null,
+          createdAt: "2026-04-04T10:00:00.000Z",
+          updatedAt: "2026-04-04T10:00:00.000Z",
+          lastAccessedAt: "2026-04-04T10:00:00.000Z",
+          accessCount: 0,
+          observationCount: 1,
+          status: "promoted",
+          agentId: null,
+          confidence: 0.9,
+          promotedAt: "2026-04-04T10:00:00.000Z",
+          sourceRunId: null,
+          sourceType: "system",
+          sourceId: "review-feedback",
+          fileScopePattern: "src/**",
+          pinned: false,
+          accessScore: 0.9,
+          compositeScore: 0.9,
+          writeGateReason: null,
+        },
+      ]),
+      search: vi.fn(async () => []),
+    };
+    const harness = createHarness({
+      memoryService,
+      outputs: [
+        makeOutput("Renderer regression.", [makeFinding()]),
+        makeOutput("No cross-file issues.", []),
+        makeOutput("No checks issues.", []),
+      ],
+    });
+
+    const run = await harness.start();
+    await waitFor(() => harness.service.listRuns(), (runs) => runs[0]?.status === "completed");
+
+    const detail = await harness.service.getRunDetail({ runId: run.id });
+    const memoryArtifact = detail?.artifacts.find((artifact) => artifact.artifactType === "memory_context");
+    const firstPassPrompt = detail?.artifacts.find((artifact) => artifact.artifactType === "pass_prompt");
+
+    expect(memoryService.listMemories).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: "project-1",
+      scope: "project",
+      status: "promoted",
+    }));
+    expect(memoryArtifact?.metadata).toMatchObject({
+      memoryCount: 1,
+      fileScopedCount: 1,
+    });
+    expect(memoryArtifact?.contentText).toContain("memory-file-1");
+    expect(firstPassPrompt?.contentText).toContain("Persistent ADE memory relevant to this review");
+    expect(firstPassPrompt?.contentText).toContain("When review fallback code changes");
+    expect(firstPassPrompt?.contentText).toContain("memory_context artifact id");
   });
 
   it("rejects strict preload/shared findings without cross-boundary or provenance-backed evidence", async () => {

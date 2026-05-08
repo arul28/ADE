@@ -16,6 +16,12 @@ type MemoryRow = {
   status: string | null;
 };
 
+type PrFeedbackMemoryRow = MemoryRow & {
+  created_at: string | null;
+  observation_count: number | null;
+  pinned: number | null;
+};
+
 type LedgerRow = {
   memory_id: string | null;
   episode_memory_id: string | null;
@@ -30,6 +36,8 @@ export type MemoryRepairResult = {
   repairedLegacyEpisodes: number;
   archivedPrFeedbackEpisodes: number;
   archivedLowValuePrFeedbackMemories: number;
+  archivedDuplicatePrFeedbackMemories: number;
+  archivedLowValueGeneralMemories: number;
   archivedDerivedProcedures: number;
 };
 
@@ -63,8 +71,56 @@ function archiveLooksLikeGenericLinkNudge(content: string): boolean {
   return /https?:\/\//.test(content) && wordCount <= 8;
 }
 
+function archiveLooksLikeReviewCommand(content: string): boolean {
+  const normalized = normalizeText(content).replace(/^>\s*/, "");
+  return (
+    /^@(?:copilot|coderabbit(?:ai)?|greptile)\s+review\b/.test(normalized)
+    || /\bdo not make fixes\b/.test(normalized)
+    || /^here(?:'|’)s the review\b/.test(normalized)
+    || /\bautomated review suggestions\b/.test(normalized)
+    || /\bp[0-3]\s+badge\b/.test(normalized)
+    || /!\[[^\]]*\b(?:p[0-3]|priority|severity|badge)\b[^\]]*\]\(/.test(normalized)
+    || /^\*\*\[[^\]]*\b(?:critical|high|medium|low|investigate|p[0-3])\b[^\]]*\]\*\*/.test(normalized)
+  );
+}
+
+function archiveLooksLikeRawReviewFinding(content: string): boolean {
+  const trimmed = content.trim();
+  const normalized = normalizeText(trimmed);
+  return (
+    /^#{1,6}\s+\S/.test(trimmed)
+    || /^\*\*.+\*\*/.test(trimmed)
+    || /\b(?:critical|high|medium|low)\s+severity\b/.test(normalized)
+  );
+}
+
+function archiveLooksLikeChangeSummary(content: string): boolean {
+  return /^(?:implemented|fixed|updated|changed|added|removed|renamed|inverted)\b/i.test(content.trim());
+}
+
+function archiveLooksLikePromptQuestion(content: string): boolean {
+  const normalized = normalizeText(content);
+  return (
+    /^what should .+\?$/.test(normalized)
+    || /\bwhat should this test mission accomplish\?/.test(normalized)
+  );
+}
+
+function hasDurablePrFeedbackSignals(content: string): boolean {
+  const normalized = normalizeText(content);
+  return (
+    /\b(?:always|never|must|should|prefer|unless|before|after)\b/.test(normalized)
+    || /^(?:when|if)\b.+\b(?:must|should|preserve|verify|keep|avoid|ensure|prefer)\b/.test(normalized)
+    || /\b(?:durable convention|standing decision|project preference|known pitfall|recurring gotcha|safe action)\b/.test(normalized)
+  );
+}
+
 function isLowValuePrFeedbackContent(content: string): boolean {
-  return archiveLooksDerivableFromCommit(content) || archiveLooksLikeGenericLinkNudge(content);
+  return archiveLooksDerivableFromCommit(content)
+    || archiveLooksLikeGenericLinkNudge(content)
+    || archiveLooksLikeReviewCommand(content)
+    || archiveLooksLikeRawReviewFinding(content)
+    || archiveLooksLikeChangeSummary(content);
 }
 
 export type MemoryRepairService = ReturnType<typeof createMemoryRepairService>;
@@ -93,6 +149,8 @@ export function createMemoryRepairService(args: CreateMemoryRepairServiceArgs) {
       repairedLegacyEpisodes: 0,
       archivedPrFeedbackEpisodes: 0,
       archivedLowValuePrFeedbackMemories: 0,
+      archivedDuplicatePrFeedbackMemories: 0,
+      archivedLowValueGeneralMemories: 0,
       archivedDerivedProcedures: 0,
     };
 
@@ -163,9 +221,63 @@ export function createMemoryRepairService(args: CreateMemoryRepairServiceArgs) {
       const id = cleanText(row.id);
       if (!prFeedbackMemoryIds.has(id)) continue;
       if (String(row.category ?? "") === "episode") continue;
-      if (!isLowValuePrFeedbackContent(String(row.content ?? ""))) continue;
+      const content = String(row.content ?? "");
+      const promoted = String(row.status ?? "") === "promoted";
+      if (!isLowValuePrFeedbackContent(content) && (promoted || hasDurablePrFeedbackSignals(content))) continue;
       archiveMemory(id);
       result.archivedLowValuePrFeedbackMemories += 1;
+    }
+
+    const activePrFeedbackMemories = db.all<PrFeedbackMemoryRow>(
+      `
+        select id, category, content, source_id, status, created_at, observation_count, pinned
+        from unified_memories
+        where project_id = ?
+          and status != 'archived'
+      `,
+      [projectId],
+    ).filter((row) => prFeedbackMemoryIds.has(cleanText(row.id)) && String(row.category ?? "") !== "episode");
+    const duplicateGroups = new Map<string, PrFeedbackMemoryRow[]>();
+    for (const row of activePrFeedbackMemories) {
+      const key = normalizeText(row.content);
+      if (!key) continue;
+      const bucket = duplicateGroups.get(key) ?? [];
+      bucket.push(row);
+      duplicateGroups.set(key, bucket);
+    }
+    for (const rows of duplicateGroups.values()) {
+      if (rows.length < 2) continue;
+      const [, ...duplicates] = [...rows].sort((left, right) => {
+        const pinnedDelta = Number(right.pinned ?? 0) - Number(left.pinned ?? 0);
+        if (pinnedDelta !== 0) return pinnedDelta;
+        const observationDelta = Number(right.observation_count ?? 0) - Number(left.observation_count ?? 0);
+        if (observationDelta !== 0) return observationDelta;
+        return cleanText(left.created_at).localeCompare(cleanText(right.created_at));
+      });
+      for (const duplicate of duplicates) {
+        const id = cleanText(duplicate.id);
+        if (!id) continue;
+        archiveMemory(id);
+        result.archivedDuplicatePrFeedbackMemories += 1;
+      }
+    }
+
+    const activeGeneralMemories = db.all<MemoryRow>(
+      `
+        select id, category, content, source_id, status
+        from unified_memories
+        where project_id = ?
+          and status != 'archived'
+      `,
+      [projectId],
+    );
+    for (const row of activeGeneralMemories) {
+      const id = cleanText(row.id);
+      if (!id) continue;
+      if (prFeedbackMemoryIds.has(id)) continue;
+      if (!archiveLooksLikePromptQuestion(String(row.content ?? ""))) continue;
+      archiveMemory(id);
+      result.archivedLowValueGeneralMemories += 1;
     }
 
     const procedureSources = db.all<ProcedureSourceRow>(
@@ -208,6 +320,8 @@ export function createMemoryRepairService(args: CreateMemoryRepairServiceArgs) {
       result.repairedLegacyEpisodes
       + result.archivedPrFeedbackEpisodes
       + result.archivedLowValuePrFeedbackMemories
+      + result.archivedDuplicatePrFeedbackMemories
+      + result.archivedLowValueGeneralMemories
       + result.archivedDerivedProcedures;
 
     if (totalChanges > 0) {

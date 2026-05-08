@@ -1,6 +1,7 @@
 import { executableTool as tool } from "./executableTool";
 import { z } from "zod";
 import { resolveAgentMemoryWritePolicy } from "../../memory/memoryService";
+import { AGENT_SEARCHABLE_MEMORY_CATEGORIES } from "../../memory/memoryQueryPlannerService";
 import type {
   createMemoryService,
   MemoryStatus,
@@ -43,7 +44,7 @@ export function createMemoryTools(
   };
 
   const memorySearch = tool({
-    description: "Search project memory BEFORE starting work that might repeat past mistakes. Use at session start for orientation, before architectural decisions, and when you hit unexpected behavior that might be a known gotcha. Do NOT search for things you can find with grep, git log, or by reading code directly.",
+    description: "Search project memory BEFORE non-trivial work, before mutating files, before architectural or review decisions, and when unexpected behavior might be a known gotcha. Use a short intent query plus important file/domain terms. Do NOT search for facts that grep, git log, or reading code can answer directly.",
     inputSchema: z.object({
       query: z.string().describe("Search query for finding relevant memories"),
       scope: z.enum(["project", "agent", "mission"]).optional().describe("Scope to search within"),
@@ -56,14 +57,18 @@ export function createMemoryTools(
         query,
         scope,
         ...(scope ? { scopeOwnerId: resolveScopeOwnerId(scope, scopeOwnerId) ?? null } : {}),
-        limit
+        limit,
+        recordRetrieval: true,
+        retrievalSourceType: "agent_tool",
+        retrievalSourceId: opts?.stepId ?? opts?.runId ?? opts?.agentScopeOwnerId ?? null,
       });
+      const searchableMemories = memories.filter((memory) => AGENT_SEARCHABLE_MEMORY_CATEGORIES.has(memory.category));
       if (opts?.turnMemoryPolicyState) {
         opts.turnMemoryPolicyState.explicitSearchPerformed = true;
         opts.turnMemoryPolicyState.orientationSatisfied = true;
       }
       return {
-        memories: memories.map(m => ({
+        memories: searchableMemories.map(m => ({
           id: m.id,
           scope: m.scope,
           tier: m.tier,
@@ -75,13 +80,13 @@ export function createMemoryTools(
           compositeScore: m.compositeScore,
           createdAt: m.createdAt
         })),
-        count: memories.length
+        count: searchableMemories.length
       };
     }
   });
 
   const memoryAdd = tool({
-    description: `Save a durable insight that is NOT derivable from the code, git history, or project files.
+    description: `Save a durable insight that is NOT derivable from the code, git history, project files, raw review output, or the current task transcript.
 
 If the standing CTO brief itself changed (project summary, conventions, user preferences, or active focus), use memoryUpdateCore instead of memoryAdd.
 
@@ -96,6 +101,7 @@ GOOD memories (non-obvious knowledge worth preserving):
 BAD memories (NEVER save these):
 - File paths, directory listings, or code structure (use search tools)
 - Raw error messages or stack traces without a lesson learned
+- Raw CodeRabbit/Greptile/Copilot review output, severity badges, or review commands
 - Task progress, status updates, or session summaries
 - Git history, recent changes, or who-changed-what (use git log/blame)
 - Debugging solutions or fix recipes (the fix is in the code already)

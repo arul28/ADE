@@ -586,7 +586,26 @@ function createRuntime() {
         tier: 1
       })),
       promoteMemory: vi.fn(),
-      searchMemories: vi.fn(() => [])
+      searchMemories: vi.fn(() => []),
+      getMemoryHealthStats: vi.fn(() => ({
+        projectId: "project-1",
+        activeMemories: 3,
+        promotedMemories: 2,
+        candidateMemories: 1,
+        archivedMemories: 4,
+        embeddedMemories: 2,
+        entityCount: 7,
+        entityLinkCount: 9,
+        recentRetrievals: 5,
+        recentInjectedMemories: 2,
+        memoriesMissingEntityLinks: 1,
+      })),
+      listRecentRetrievals: vi.fn(() => []),
+      reindexMemoryEntities: vi.fn(() => ({
+        indexedMemories: 3,
+        entityCount: 7,
+        entityLinkCount: 9,
+      })),
     } as any,
     ctoStateService: {
       getIdentity: vi.fn(() => ({
@@ -730,10 +749,17 @@ function createRuntime() {
     macosVmService: {
       getStatus: vi.fn(async ({ laneId }: { laneId?: string | null } = {}) => ({
         supported: true,
-        activeProvider: { kind: "lume", available: true },
+        activeProvider: { kind: "apple-virtualization-helper", available: true },
         laneVm: laneId ? { laneId, name: "ade-lane-1", state: "running" } : null,
         vms: [],
+        defaultBase: null,
+        bases: [],
       })),
+      createBase: vi.fn(async ({ name = "default" }: { name?: string }) => ({ id: `macos-vm-base:${name}`, name, state: "setup_required" })),
+      startBase: vi.fn(async ({ name = "default" }: { name?: string }) => ({ id: `macos-vm-base:${name}`, name, state: "running" })),
+      stopBase: vi.fn(async ({ name = "default" }: { name?: string }) => ({ id: `macos-vm-base:${name}`, name, state: "setup_required" })),
+      markBaseReady: vi.fn(async ({ name = "default" }: { name?: string }) => ({ id: `macos-vm-base:${name}`, name, state: "ready" })),
+      deleteBase: vi.fn(async ({ name = "default" }: { name?: string }) => ({ deleted: true, previous: { id: `macos-vm-base:${name}`, name, state: "ready" } })),
       start: vi.fn(async ({ laneId }: { laneId: string }) => ({ laneId, name: "ade-lane-1", state: "running" })),
       getAgentGuide: vi.fn(async ({ laneId }: { laneId: string }) => ({
         laneId,
@@ -745,7 +771,7 @@ function createRuntime() {
         laneId,
         vmName: "ade-lane-1",
         windowTitleQuery: "ade-lane-1",
-        processName: "Lume",
+        processName: "macos-vm-helper",
         windowTitle: "ade-lane-1",
         frame: { x: 10, y: 20, width: 800, height: 600 },
         focusedAt: new Date().toISOString(),
@@ -765,7 +791,7 @@ function createRuntime() {
             laneId,
             vmName: "ade-lane-1",
             windowTitleQuery: "ade-lane-1",
-            processName: "Lume",
+            processName: "macos-vm-helper",
             windowTitle: "ade-lane-1",
             frame: { x: 10, y: 20, width: 800, height: 600 },
             focusedAt: new Date().toISOString(),
@@ -2873,7 +2899,8 @@ describe("adeRpcServer", () => {
       const response = await callTool(handler, "memory_add", {
         content: "Cache layer requires warm-up before benchmark runs.",
         category: "fact",
-        importance: "high"
+        importance: "high",
+        scope: "mission"
       });
 
       expect(response?.isError).toBeUndefined();
@@ -2881,9 +2908,9 @@ describe("adeRpcServer", () => {
         expect.objectContaining({
           scope: "mission",
           scopeOwnerId: "run-from-env",
-          status: "promoted",
-          tier: 2,
-          confidence: 1,
+          status: "candidate",
+          tier: 3,
+          confidence: 0.6,
         })
       );
       expect(fixture.runtime.memoryService.addSharedFact).toHaveBeenCalledWith(
@@ -2907,6 +2934,33 @@ describe("adeRpcServer", () => {
       );
       expect(response.structuredContent.sharedFact.written).toBe(true);
     });
+  });
+
+  it("defaults memory_add to project scope inside agent runs", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, {
+      callerId: "worker-1",
+      role: "agent",
+      missionId: "mission-1",
+      runId: "run-1",
+    });
+    const response = await callTool(handler, "memory_add", {
+      content: "Durable convention: search project memory before mutating files.",
+      category: "convention",
+      importance: "high",
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fixture.runtime.memoryService.writeMemory).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: "project",
+        status: "candidate",
+        tier: 3,
+      }),
+    );
+    expect(response.structuredContent.sharedFact.attempted).toBe(false);
   });
 
   it("supports memory_search scope/status filters and returns enriched memory rows", async () => {
@@ -2949,6 +3003,11 @@ describe("adeRpcServer", () => {
         7,
         "candidate",
         "run-1",
+        "hybrid",
+        expect.objectContaining({
+          recordRetrieval: true,
+          retrievalSourceType: "ade_cli_memory_search",
+        }),
       );
       expect(response.structuredContent.scope).toBe("mission");
       expect(response.structuredContent.status).toBe("candidate");
@@ -2961,6 +3020,59 @@ describe("adeRpcServer", () => {
         })
       );
     });
+  });
+
+  it("reports memory health and recent retrieval telemetry", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.memoryService.listRecentRetrievals = vi.fn(() => ([
+      {
+        id: "retrieval-1",
+        query: "prompt memory architecture",
+        scope: "project",
+        source_type: "chat_auto_memory",
+        result_count: 3,
+        injected_count: 1,
+        top_memory_ids_json: JSON.stringify(["memory-1", "memory-2"]),
+        injected_memory_ids_json: JSON.stringify(["memory-1"]),
+        entity_matches_json: JSON.stringify([{ type: "domain_term", value: "architecture" }]),
+        duration_ms: 4,
+        created_at: "2026-03-01T10:00:00.000Z",
+      },
+    ]));
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "worker-1", role: "agent" });
+    const response = await callTool(handler, "memory_stats", { limit: 5 });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fixture.runtime.memoryService.getMemoryHealthStats).toHaveBeenCalledWith("project-1");
+    expect(fixture.runtime.memoryService.listRecentRetrievals).toHaveBeenCalledWith("project-1", 5);
+    expect(response.structuredContent.stats.entityCount).toBe(7);
+    expect(response.structuredContent.recentRetrievals[0]).toEqual(
+      expect.objectContaining({
+        sourceType: "chat_auto_memory",
+        topMemoryIds: ["memory-1", "memory-2"],
+        injectedMemoryIds: ["memory-1"],
+      }),
+    );
+  });
+
+  it("reindexes memory entities through memory_reindex", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "worker-1", role: "agent" });
+    const response = await callTool(handler, "memory_reindex", { limit: 25 });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fixture.runtime.memoryService.reindexMemoryEntities).toHaveBeenCalledWith("project-1", 25);
+    expect(response.structuredContent).toEqual(
+      expect.objectContaining({
+        indexedMemories: 3,
+        entityCount: 7,
+        entityLinkCount: 9,
+      }),
+    );
   });
 
   it("pins memory entries through memory_pin", async () => {

@@ -21,6 +21,7 @@ import type {
   MacosVmContextItem,
   TerminalSessionSummary,
 } from "../../../shared/types";
+import { MacosVmTabDot, useMacosVmTabDotKind } from "./macosVm/macosVmTabDot";
 import type { WorkSidebarTab } from "../../state/appStore";
 import { formatToolTypeLabel } from "../../lib/sessions";
 import { ChatAppControlPanel } from "../chat/ChatAppControlPanel";
@@ -104,6 +105,7 @@ export function WorkSidebar({
   const [selectedCommit, setSelectedCommit] = useState<GitCommitSummary | null>(null);
   const [appControlSession, setAppControlSession] = useState<AppControlSession | null>(null);
   const [iosSession, setIosSession] = useState<IosSimulatorSession | null>(null);
+  const macosVmTabDotKind = useMacosVmTabDotKind(laneId);
 
   const activeLane = useMemo(
     () => (laneId ? lanes.find((lane) => lane.id === laneId) ?? null : null),
@@ -373,7 +375,7 @@ export function WorkSidebar({
                 <button
                   type="button"
                   className={cn(
-                    "inline-flex h-7 min-w-0 shrink-0 cursor-pointer items-center gap-1.5 rounded-full border-none bg-transparent px-2 text-[10px] font-medium transition-all",
+                    "relative inline-flex h-7 min-w-0 shrink-0 cursor-pointer items-center gap-1.5 rounded-full border-none bg-transparent px-2 text-[10px] font-medium transition-all",
                     active ? "ade-work-tab-active text-fg" : "text-muted-fg",
                   )}
                   onClick={() => {
@@ -384,6 +386,7 @@ export function WorkSidebar({
                 >
                   <Icon size={12} weight={active ? "fill" : "regular"} className="shrink-0" />
                   <span className="truncate">{label}</span>
+                  {id === "macos-vm" ? <MacosVmTabDot kind={macosVmTabDotKind} /> : null}
                 </button>
               </SmartTooltip>
             );
