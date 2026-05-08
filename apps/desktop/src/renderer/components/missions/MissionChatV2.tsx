@@ -136,6 +136,10 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
   // ── State ──
   const [threads, setThreads] = useState<OrchestratorChatThread[]>([]);
   const [threadMessages, setThreadMessages] = useState<OrchestratorChatMessage[]>([]);
+  const [threadMessagesLoading, setThreadMessagesLoading] = useState(false);
+  const [threadMessagesLoadingMore, setThreadMessagesLoadingMore] = useState(false);
+  const [threadMessagesError, setThreadMessagesError] = useState<string | null>(null);
+  const [threadMessagesHasMore, setThreadMessagesHasMore] = useState(false);
   const [workerStates, setWorkerStates] = useState<OrchestratorWorkerState[]>([]);
   const [selectedChannelId, setSelectedChannelId] = useState("global");
   const [runActionBusy, setRunActionBusy] = useState<"pause" | "resume" | "cancel" | null>(null);
@@ -200,11 +204,23 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
   ) => {
     if (!threadId) {
       setThreadMessages([]);
+      setThreadMessagesError(null);
+      setThreadMessagesHasMore(false);
+      setThreadMessagesLoading(false);
+      setThreadMessagesLoadingMore(false);
       return;
     }
     const requestId = latestThreadMessagesRequestRef.current + 1;
     latestThreadMessagesRequestRef.current = requestId;
     const before = mode === "append-older" ? threadMessagesRef.current[0]?.timestamp ?? null : null;
+    if (mode === "replace") {
+      setThreadMessagesLoading(true);
+      setThreadMessagesError(null);
+      setThreadMessagesHasMore(false);
+    } else {
+      setThreadMessagesLoadingMore(true);
+      setThreadMessagesError(null);
+    }
     try {
       const nextMessages = await window.ade.orchestrator.getThreadMessages({
         missionId,
@@ -220,9 +236,18 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
         }
         return nextMessages;
       });
+      setThreadMessagesHasMore(nextMessages.length >= THREAD_MESSAGE_PAGE_SIZE);
+      setThreadMessagesError(null);
     } catch (error) {
       if (latestThreadMessagesRequestRef.current !== requestId) return;
-      console.warn("[MissionChatV2] failed to refresh mission thread messages", error);
+      setThreadMessagesError(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (latestThreadMessagesRequestRef.current !== requestId) return;
+      if (mode === "replace") {
+        setThreadMessagesLoading(false);
+      } else {
+        setThreadMessagesLoadingMore(false);
+      }
     }
   }, [missionId]);
   const refreshWorkers = useCallback(async () => {
@@ -237,11 +262,31 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
     if (selectedChannel.kind === "global") return;
     await refreshThreadMessages(selectedChannel.threadId);
   }, [refreshThreadMessages, selectedChannel]);
+  const loadOlderSelectedMessages = useCallback(() => {
+    if (
+      !selectedChannel ||
+      selectedChannel.kind === "global" ||
+      !selectedChannel.threadId ||
+      !threadMessagesHasMore ||
+      threadMessagesLoadingMore
+    ) {
+      return;
+    }
+    void refreshThreadMessages(selectedChannel.threadId, "append-older");
+  }, [refreshThreadMessages, selectedChannel, threadMessagesHasMore, threadMessagesLoadingMore]);
+  const retrySelectedMessages = useCallback(() => {
+    if (!selectedChannel || selectedChannel.kind === "global" || !selectedChannel.threadId) return;
+    void refreshThreadMessages(selectedChannel.threadId);
+  }, [refreshThreadMessages, selectedChannel]);
 
   useEffect(() => {
     latestThreadMessagesRequestRef.current += 1;
     setThreads([]);
     setThreadMessages([]);
+    setThreadMessagesLoading(false);
+    setThreadMessagesLoadingMore(false);
+    setThreadMessagesError(null);
+    setThreadMessagesHasMore(false);
     setWorkerStates([]);
     setSelectedChannelId("global");
     setRunActionBusy(null);
@@ -599,6 +644,12 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
               threadIntervention={threadIntervention}
               onOpenIntervention={onOpenIntervention}
               showStreamingIndicator={showStreaming}
+              threadMessagesLoading={threadMessagesLoading}
+              threadMessagesLoadingMore={threadMessagesLoadingMore}
+              threadMessagesError={threadMessagesError}
+              threadMessagesHasMore={threadMessagesHasMore}
+              onLoadOlderMessages={loadOlderSelectedMessages}
+              onRetryMessages={retrySelectedMessages}
               missionNarrative={missionNarrative}
               runControls={runControls}
               onApproval={handleApproval}

@@ -600,10 +600,6 @@ export function heartbeatAgeMinutes(iso: string | null): number | null {
   return Math.max(0, (Date.now() - ts) / 60_000);
 }
 
-function isRecordValue(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
-}
-
 function prettifyStepKey(value: string): string {
   return value
     .replace(/^validate_worker_/, "Validate ")
@@ -621,7 +617,7 @@ function narrativeStepLabel(ev: {
   title?: string | null;
   detail?: unknown;
 }): string {
-  const detail = isRecordValue(ev.detail) ? ev.detail : null;
+  const detail = isRecord(ev.detail) ? ev.detail : null;
   const candidates = [
     ev.stepTitle,
     ev.title,

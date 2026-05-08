@@ -4550,7 +4550,8 @@ class SocketJsonRpcClient {
 
   static connect(socketPath: string, timeoutMs: number): Promise<SocketJsonRpcClient> {
     return new Promise((resolve, reject) => {
-      const deadline = Date.now() + Math.min(timeoutMs, 5000);
+      const connectTimeoutMs = Math.min(timeoutMs, 5000);
+      const deadline = Date.now() + connectTimeoutMs;
       const retryable = (error: NodeJS.ErrnoException) =>
         error.code === "ENOENT" || error.code === "ECONNREFUSED" || error.code === "EACCES" || error.code === "EPERM";
       const attempt = () => {
@@ -4565,11 +4566,19 @@ class SocketJsonRpcClient {
           return net.createConnection(socketPath);
         })();
         let settled = false;
+        let connectTimer: ReturnType<typeof setTimeout> | null = null;
         const finish = (fn: () => void) => {
           if (settled) return;
           settled = true;
+          if (connectTimer) clearTimeout(connectTimer);
           fn();
         };
+        connectTimer = setTimeout(() => {
+          finish(() => {
+            socket.destroy();
+            reject(new Error(`Timed out connecting to ADE desktop socket after ${connectTimeoutMs}ms.`));
+          });
+        }, Math.max(1, deadline - Date.now()));
         socket.once("connect", () => {
           finish(() => resolve(new SocketJsonRpcClient(socket, timeoutMs)));
         });

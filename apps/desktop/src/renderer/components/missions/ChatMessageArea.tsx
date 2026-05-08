@@ -52,6 +52,12 @@ export type ChatMessageAreaProps = {
   threadIntervention: MissionIntervention | null;
   onOpenIntervention: (interventionId: string) => void;
   showStreamingIndicator: boolean;
+  threadMessagesLoading: boolean;
+  threadMessagesLoadingMore: boolean;
+  threadMessagesError: string | null;
+  threadMessagesHasMore: boolean;
+  onLoadOlderMessages: () => void;
+  onRetryMessages: () => void;
   missionNarrative: MissionStateNarrative | null;
   runControls?: React.ReactNode;
   onApproval: (
@@ -79,6 +85,12 @@ export const ChatMessageArea = React.memo(function ChatMessageArea({
   threadIntervention,
   onOpenIntervention,
   showStreamingIndicator,
+  threadMessagesLoading,
+  threadMessagesLoadingMore,
+  threadMessagesError,
+  threadMessagesHasMore,
+  onLoadOlderMessages,
+  onRetryMessages,
   missionNarrative,
   runControls,
   onApproval,
@@ -318,6 +330,46 @@ export const ChatMessageArea = React.memo(function ChatMessageArea({
         </div>
       )}
 
+      {selectedChannel && selectedChannel.kind !== "global" && (threadMessagesLoading || threadMessagesError || threadMessagesHasMore) ? (
+        <div
+          className="flex min-w-0 max-w-full items-center justify-between gap-3 overflow-hidden px-3 py-1.5 text-[10px]"
+          style={{
+            borderBottom: `1px solid ${BORDER}`,
+            background: "rgba(9, 7, 14, 0.62)",
+            color: TEXT_MUTED,
+            fontFamily: MONO,
+          }}
+        >
+          <span className="min-w-0 truncate">
+            {threadStatusLabel(threadMessagesLoading, threadMessagesError, threadMessagesHasMore)}
+          </span>
+          <div className="flex shrink-0 items-center gap-2">
+            {threadMessagesError ? (
+              <button
+                type="button"
+                className="border px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.12em]"
+                style={{ borderColor: `${WARNING}45`, color: WARNING }}
+                onClick={onRetryMessages}
+              >
+                Retry
+              </button>
+            ) : null}
+            {threadMessagesHasMore ? (
+              <button
+                type="button"
+                className="border px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.12em] disabled:opacity-55"
+                style={{ borderColor: "color-mix(in srgb, var(--chat-accent) 30%, transparent)", color: "var(--chat-accent)" }}
+                onClick={onLoadOlderMessages}
+                disabled={threadMessagesLoadingMore}
+                aria-label={threadMessagesLoadingMore ? "Loading older mission thread messages" : "Load older mission thread messages"}
+              >
+                {threadMessagesLoadingMore ? "Loading..." : "Load older"}
+              </button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
       {/* Message list */}
       <MissionThreadMessageList
         messages={displayMessages}
@@ -334,6 +386,13 @@ export const ChatMessageArea = React.memo(function ChatMessageArea({
 });
 
 // ── Small helper components ──
+
+function threadStatusLabel(loading: boolean, error: string | null, hasMore: boolean): string {
+  if (loading) return "Loading thread messages...";
+  if (error) return error;
+  if (hasMore) return "Older messages available.";
+  return "";
+}
 
 function workerBadgeLabel(status: string, phaseLabel: string | null): string {
   const suffix = status === "active" ? "worker" : "history";
