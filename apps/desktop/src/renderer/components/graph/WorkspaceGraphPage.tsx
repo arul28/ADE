@@ -259,6 +259,7 @@ function GraphInner() {
   const [viewMode, setViewMode] = React.useState<GraphViewMode>("all");
   const [sessionState, setSessionState] = React.useState(createSessionState);
   const [loadedGraphPreferences, setLoadedGraphPreferences] = React.useState(false);
+  const skipNextGraphPreferencePersistRootRef = React.useRef<string | null>(null);
   const [nodes, setNodes] = React.useState<Array<Node<GraphNodeData>>>([]);
   const [edges, setEdges] = React.useState<Array<Edge<GraphEdgeData>>>([]);
 
@@ -871,14 +872,20 @@ function GraphInner() {
   }, [refreshIntegrationProposals, reportGraphIssue]);
 
   React.useEffect(() => {
-    if (!project?.rootPath) return;
+    if (!project?.rootPath) {
+      setLoadedGraphPreferences(false);
+      skipNextGraphPreferencePersistRootRef.current = null;
+      return;
+    }
     const rootPath = project.rootPath;
     let cancelled = false;
+    setLoadedGraphPreferences(false);
     void window.ade.graphState
       .get(rootPath)
       .then((state) => {
         if (cancelled) return;
         const normalized = normalizeGraphPreferences(state);
+        skipNextGraphPreferencePersistRootRef.current = rootPath;
         setViewMode(normalized.preferences.lastViewMode);
         if (normalized.migrated) {
           void window.ade.graphState.set(rootPath, normalized.preferences).catch(() => {});
@@ -887,6 +894,7 @@ function GraphInner() {
       .catch((err) => {
         console.warn("[Graph] Failed to load graph state:", err);
         if (cancelled) return;
+        skipNextGraphPreferencePersistRootRef.current = rootPath;
         setViewMode(createGraphPreferences().lastViewMode);
       })
       .finally(() => {
@@ -899,6 +907,10 @@ function GraphInner() {
 
   React.useEffect(() => {
     if (!project?.rootPath || !loadedGraphPreferences) return;
+    if (skipNextGraphPreferencePersistRootRef.current === project.rootPath) {
+      skipNextGraphPreferencePersistRootRef.current = null;
+      return;
+    }
     void window.ade.graphState.set(project.rootPath, createGraphPreferences(viewMode)).catch(() => {});
   }, [loadedGraphPreferences, project?.rootPath, viewMode]);
 
