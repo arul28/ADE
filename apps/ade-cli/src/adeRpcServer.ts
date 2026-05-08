@@ -4399,7 +4399,11 @@ async function runTool(args: {
     if (initialInput && isCliProvider(provider)) {
       initialInputWritten = ptyService.writeBySessionId(created.sessionId, `${initialInput}\r`);
       if (!initialInputWritten) {
-        ptyService.dispose({ ptyId: created.ptyId, sessionId: created.sessionId });
+        try {
+          ptyService.dispose({ ptyId: created.ptyId, sessionId: created.sessionId });
+        } catch {
+          // Best-effort cleanup; preserve the caller-facing write failure.
+        }
         throw new JsonRpcError(
           JsonRpcErrorCode.internalError,
           "Created terminal session could not receive the initial input.",

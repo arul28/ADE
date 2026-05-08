@@ -1972,6 +1972,28 @@ describe("adeRpcServer", () => {
     });
   });
 
+  it("preserves the initial input write error if cleanup fails", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.ptyService.writeBySessionId.mockReturnValueOnce(false);
+    fixture.runtime.ptyService.dispose.mockImplementationOnce(() => {
+      throw new Error("already disposed");
+    });
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "orchestrator" });
+    const response = await callTool(handler, "start_cli_session", {
+      laneId: "lane-1",
+      provider: "codex",
+      initialInput: "fix failing tests",
+    });
+
+    expect(response.isError).toBe(true);
+    expect(fixture.runtime.ptyService.dispose).toHaveBeenCalledWith({ ptyId: "pty-1", sessionId: "session-1" });
+    expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain(
+      "Created terminal session could not receive the initial input.",
+    );
+  });
+
   it("preassigns Claude session ids for start_cli_session launches", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
