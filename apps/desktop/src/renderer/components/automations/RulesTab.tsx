@@ -336,6 +336,7 @@ export function RulesTab({
   const [manualRunRule, setManualRunRule] = useState<AutomationRuleSummary | null>(null);
   const [manualRunLaneId, setManualRunLaneId] = useState<string>("");
   const [manualRunPending, setManualRunPending] = useState(false);
+  const manualRunPendingRef = useRef(false);
   const [configTrustRequired, setConfigTrustRequired] = useState(false);
   const loadRef = useRef<(() => Promise<void>) | null>(null);
   // Snapshot of the last-saved (or last-loaded-from-rule) draft, used to detect
@@ -515,7 +516,8 @@ export function RulesTab({
   };
 
   const runRuleNow = useCallback(async (ruleId: string, laneId?: string | null) => {
-    if (manualRunPending) return;
+    if (manualRunPendingRef.current) return;
+    manualRunPendingRef.current = true;
     setManualRunPending(true);
     setError(null);
     try {
@@ -526,9 +528,10 @@ export function RulesTab({
     } catch (err) {
       setError(extractError(err));
     } finally {
+      manualRunPendingRef.current = false;
       setManualRunPending(false);
     }
-  }, [manualRunPending, refresh]);
+  }, [refresh]);
 
   const beginRunRule = useCallback((rule: AutomationRuleSummary) => {
     if (rule.execution?.laneMode === "require-on-trigger") {

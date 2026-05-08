@@ -1708,7 +1708,11 @@ export function AgentChatPane({
   const [availableModelIds, setAvailableModelIds] = useState<string[]>(() =>
     seedAiStatus ? deriveConfiguredModelIds(seedAiStatus, { includeDroid: true }) : [],
   );
+  const availableModelIdsRef = useRef(availableModelIds);
   const availableModelsRefreshSeqRef = useRef(0);
+  useEffect(() => {
+    availableModelIdsRef.current = availableModelIds;
+  }, [availableModelIds]);
   const [claudePermissionMode, setClaudePermissionMode] = useState<AgentChatClaudePermissionMode>(initialNativeControls.claudePermissionMode);
   const [codexApprovalPolicy, setCodexApprovalPolicy] = useState<AgentChatCodexApprovalPolicy>(initialNativeControls.codexApprovalPolicy);
   const [codexSandbox, setCodexSandbox] = useState<AgentChatCodexSandbox>(initialNativeControls.codexSandbox);
@@ -2800,7 +2804,7 @@ export function AgentChatPane({
       && status.availableProviders?.cursor !== true
       && status.providerConnections?.cursor?.runtimeAvailable !== true;
     if (cursorExplicitlyUnavailable) return;
-    if (availableModelIds.some(isCursorModelId)) return;
+    if (availableModelIdsRef.current.some(isCursorModelId)) return;
     const refreshSeq = availableModelsRefreshSeqRef.current;
     let cursorModels: Awaited<ReturnType<typeof getAgentChatModelsCached>>;
     try {
@@ -2825,7 +2829,7 @@ export function AgentChatPane({
       }
       return orderAvailableModelIds(merged);
     });
-  }, [aiStatus, availableModelIds, projectRoot]);
+  }, [aiStatus, projectRoot]);
 
   const touchSession = useCallback((sessionId: string | null | undefined, touchedAt = new Date().toISOString()) => {
     if (!sessionId) return;

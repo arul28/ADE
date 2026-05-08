@@ -351,7 +351,11 @@ export function ActionRow({
 }
 
 function supportsLaneOverride(kind: ActionRowKind): boolean {
-  return kind === "agent-session" || kind === "run-tests" || kind === "run-command";
+  return kind === "agent-session"
+    || kind === "run-tests"
+    || kind === "run-command"
+    || kind === "predict-conflicts"
+    || kind === "launch-mission";
 }
 
 function secondsFromMs(ms: number | undefined): number | "" {

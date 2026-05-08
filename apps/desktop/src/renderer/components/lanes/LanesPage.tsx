@@ -2181,7 +2181,7 @@ export function LanesPage() {
             <LaneGitActionsPane
               laneId={laneId}
               autoRebaseEnabled={autoRebaseEnabled}
-              autoRebaseStatusSnapshot={laneSnapshot?.autoRebaseStatus ?? null}
+              autoRebaseStatusSnapshot={laneSnapshot?.autoRebaseStatus}
               onOpenSettings={openAutoRebaseSettings}
               onRebaseNowLocal={(targetLaneId) => runRebaseFlow(targetLaneId, "local_only")}
               onRebaseAndPush={(targetLaneId) => runRebaseFlow(targetLaneId, "local_and_remote")}
