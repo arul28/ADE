@@ -14,7 +14,7 @@ const MAX_LOG_FILE_BYTES = 10 * 1024 * 1024;
 const ROTATION_CHECK_WRITE_INTERVAL = 1000;
 const ROTATION_CHECK_INTERVAL_MS = 60_000;
 const FLUSH_INTERVAL_MS = 500;
-const FLUSH_BATCH_SIZE = 100;
+const FLUSH_BATCH_SIZE = 500;
 
 export type Logger = {
   debug: (event: string, meta?: Record<string, unknown>) => void;
@@ -62,19 +62,32 @@ export function createFileLogger(logFilePath: string): Logger {
   let flushTimer: NodeJS.Timeout | null = null;
   let flushInProgress = false;
   let flushRequested = false;
+  let logDirReady = false;
+  let logStream: fs.WriteStream | null = null;
 
   const shouldCheckRotation = (): boolean => {
     if (writesSinceRotateCheck >= ROTATION_CHECK_WRITE_INTERVAL) return true;
     return Date.now() - lastRotateCheckAt >= ROTATION_CHECK_INTERVAL_MS;
   };
 
-  const refreshEstimatedFileSizeIfNeeded = async (): Promise<void> => {
+  const ensureLogDir = (): boolean => {
+    if (logDirReady) return true;
+    try {
+      fs.mkdirSync(logDir, { recursive: true });
+      logDirReady = true;
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const refreshEstimatedFileSizeIfNeeded = (): void => {
     if (estimatedFileSize != null && !shouldCheckRotation()) return;
     writesSinceRotateCheck = 0;
     lastRotateCheckAt = Date.now();
 
     try {
-      const stat = await fs.promises.stat(logFilePath);
+      const stat = fs.statSync(logFilePath);
       estimatedFileSize = stat.size;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") {
@@ -85,26 +98,68 @@ export function createFileLogger(logFilePath: string): Logger {
     }
   };
 
+  const closeLogStream = (): Promise<void> => new Promise((resolve) => {
+    const stream = logStream;
+    if (!stream) {
+      resolve();
+      return;
+    }
+    logStream = null;
+    stream.end(() => resolve());
+  });
+
   const rotateIfNeeded = async (upcomingWriteBytes: number): Promise<void> => {
-    await refreshEstimatedFileSizeIfNeeded();
+    refreshEstimatedFileSizeIfNeeded();
     const currentFileSize = estimatedFileSize ?? 0;
     if (currentFileSize < MAX_LOG_FILE_BYTES && currentFileSize + upcomingWriteBytes <= MAX_LOG_FILE_BYTES) return;
 
+    await closeLogStream();
+
     try {
-      await fs.promises.unlink(rotatedLogFilePath);
+      fs.unlinkSync(rotatedLogFilePath);
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
     }
 
     try {
-      await fs.promises.rename(logFilePath, rotatedLogFilePath);
+      fs.renameSync(logFilePath, rotatedLogFilePath);
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
     }
 
-    await fs.promises.writeFile(logFilePath, "", "utf8");
     estimatedFileSize = 0;
   };
+
+  const getLogStream = (): fs.WriteStream | null => {
+    if (!ensureLogDir()) return null;
+    if (logStream) return logStream;
+    const stream = fs.createWriteStream(logFilePath, { flags: "a" });
+    stream.on("error", () => {
+      if (logStream === stream) {
+        logStream = null;
+      }
+      stream.destroy();
+    });
+    logStream = stream;
+    return stream;
+  };
+
+  const writePayload = (payload: string): Promise<void> => new Promise((resolve) => {
+    const stream = getLogStream();
+    if (!stream) {
+      resolve();
+      return;
+    }
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      stream.off("error", finish);
+      resolve();
+    };
+    stream.once("error", finish);
+    stream.write(payload, "utf8", finish);
+  });
 
   const flush = async (): Promise<void> => {
     if (flushInProgress) {
@@ -123,9 +178,9 @@ export function createFileLogger(logFilePath: string): Logger {
     flushInProgress = true;
 
     try {
-      await fs.promises.mkdir(logDir, { recursive: true });
+      if (!ensureLogDir()) return;
       await rotateIfNeeded(bytes);
-      await fs.promises.appendFile(logFilePath, payload, "utf8");
+      await writePayload(payload);
       estimatedFileSize = (estimatedFileSize ?? 0) + bytes;
     } catch {
       // Last ditch: avoid crashing the app on log write failures.
@@ -148,6 +203,7 @@ export function createFileLogger(logFilePath: string): Logger {
       flushTimer = null;
       void flush();
     }, FLUSH_INTERVAL_MS);
+    flushTimer.unref?.();
   };
 
   const writeLine = (level: LogLevel, event: string, meta?: Record<string, unknown>) => {

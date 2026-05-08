@@ -12,7 +12,6 @@ import {
   Globe,
 } from "@phosphor-icons/react";
 import type {
-  MissionAgentRuntimeConfig,
   MissionIntervention,
   OrchestratorChatMessage,
 } from "../../../shared/types";
@@ -54,8 +53,6 @@ export type ChatMessageAreaProps = {
   onOpenIntervention: (interventionId: string) => void;
   showStreamingIndicator: boolean;
   missionNarrative: MissionStateNarrative | null;
-  runtimeSummary: { title: string; detail: string } | null;
-  agentRuntimeConfig: MissionAgentRuntimeConfig | null;
   runControls?: React.ReactNode;
   onApproval: (
     sessionId: string,
@@ -65,6 +62,11 @@ export type ChatMessageAreaProps = {
     answers?: Record<string, string | string[]>,
   ) => void;
 };
+
+export function shouldPollRawMissionTranscript(channel: Channel | undefined): boolean {
+  if (!channel || channel.status !== "active") return false;
+  return channel.kind === "worker" || channel.kind === "teammate";
+}
 
 export const ChatMessageArea = React.memo(function ChatMessageArea({
   selectedChannel,
@@ -78,8 +80,6 @@ export const ChatMessageArea = React.memo(function ChatMessageArea({
   onOpenIntervention,
   showStreamingIndicator,
   missionNarrative,
-  runtimeSummary,
-  agentRuntimeConfig,
   runControls,
   onApproval,
 }: ChatMessageAreaProps) {
@@ -102,15 +102,15 @@ export const ChatMessageArea = React.memo(function ChatMessageArea({
     if (!selectedChannel) return "Mission chat";
     switch (selectedChannel.kind) {
       case "global":
-        return "Readable mission updates land here. Timeline keeps the raw scheduler and runtime diagnostics.";
+        return "Read-only status updates from ADE, the coordinator, workers, and recovery flow.";
       case "orchestrator":
-        return "Message the coordinator directly for planning changes, recovery guidance, and run-level direction.";
+        return "Messages here go to the mission coordinator. Worker threads stay separate.";
       case "teammate":
-        return "Direct teammate thread for specialist collaboration without leaving the mission surface.";
+        return "Messages here go to this teammate thread only.";
       case "worker":
         return selectedChannel.status === "active"
-          ? "Live worker thread. Notes here stay pinned to this execution lane."
-          : "Worker history thread. Review the transcript even after the worker has finished.";
+          ? "Messages here go to this worker while it is running in the mission lane."
+          : "Read-only worker transcript. Send new direction to the coordinator or rerun.";
       default:
         return "Mission chat";
     }
@@ -133,18 +133,53 @@ export const ChatMessageArea = React.memo(function ChatMessageArea({
     selectedChannel?.kind === "orchestrator"
       ? STATUS_DOT[selectedChannel.status] ?? STATUS_GRAY
       : workerStatusDot(selectedChannel?.attemptId ?? null);
+  const channelRoute = (() => {
+    if (!selectedChannel || selectedChannel.kind === "global") {
+      return {
+        label: "Read-only feed",
+        detail: "Mission Feed summarizes events; it does not send messages to an agent.",
+        tone: "muted" as const,
+      };
+    }
+    if (chatBlocked || selectedChannel.status !== "active") {
+      return {
+        label: "Transcript only",
+        detail: chatBlocked ? `${chatBlocked.reason} ${chatBlocked.action}` : "This thread is no longer live.",
+        tone: "muted" as const,
+      };
+    }
+    if (selectedChannel.kind === "orchestrator") {
+      return {
+        label: "Sends to coordinator",
+        detail: "Messages in this thread are sent to the mission coordinator.",
+        tone: "active" as const,
+      };
+    }
+    if (selectedChannel.kind === "teammate") {
+      return {
+        label: "Sends to teammate",
+        detail: "Messages in this thread are sent to this teammate only.",
+        tone: "active" as const,
+      };
+    }
+    return {
+      label: "Sends to worker",
+      detail: "Messages in this thread are sent to this worker only.",
+      tone: "active" as const,
+    };
+  })();
 
   return (
     <>
       {/* Header */}
       <div
-        className="border-b px-4 py-4"
+        className="min-w-0 max-w-full overflow-hidden border-b px-4 py-4"
         style={{
           borderBottomColor: BORDER,
           background: "linear-gradient(180deg, rgba(20,16,29,0.96) 0%, rgba(13,10,20,0.92) 100%)",
         }}
       >
-        <div className="flex flex-wrap items-start gap-3">
+        <div className="grid grid-cols-[auto,minmax(0,1fr)] items-start gap-x-3 gap-y-2">
           <div
             className="flex h-10 w-10 shrink-0 items-center justify-center border"
             style={{
@@ -156,10 +191,11 @@ export const ChatMessageArea = React.memo(function ChatMessageArea({
             {headerIcon}
           </div>
           <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
               <span
-                className="truncate text-[13px] font-semibold"
+                className="min-w-0 max-w-full truncate text-[13px] font-semibold"
                 style={{ color: TEXT_PRIMARY, fontFamily: MONO }}
+                title={channelHeaderName}
               >
                 {channelHeaderName}
               </span>
@@ -170,30 +206,21 @@ export const ChatMessageArea = React.memo(function ChatMessageArea({
                 />
               ) : null}
               <ChannelKindBadge channel={selectedChannel} />
-              {runtimeSummary && selectedChannel?.kind === "global" ? (
-                <HeaderMetaPill label={runtimeSummary.title} detail={runtimeSummary.detail} />
-              ) : null}
+              <ChannelRouteBadge route={channelRoute} />
             </div>
             <div className="mt-1 text-[12px] leading-[1.55]" style={{ color: TEXT_SECONDARY }}>
               {channelSummary}
             </div>
           </div>
-          <div className="flex flex-wrap gap-1.5">
+          <div className="col-start-2 flex min-w-0 flex-wrap gap-1.5">
             {runControls}
-            {agentRuntimeConfig && selectedChannel?.kind !== "worker" ? (
-              <>
-                <RuntimeFlagPill label="Parallel" enabled={agentRuntimeConfig.allowParallelAgents} />
-                <RuntimeFlagPill label="Sub-agents" enabled={agentRuntimeConfig.allowSubAgents} />
-                <RuntimeFlagPill label="Claude teams" enabled={agentRuntimeConfig.allowClaudeAgentTeams} />
-              </>
-            ) : null}
           </div>
         </div>
       </div>
 
       {missionNarrative && selectedChannel?.kind === "global" && (
         <div
-          className="flex items-start gap-3 px-3 py-2"
+          className="flex min-w-0 max-w-full items-start gap-3 overflow-hidden px-3 py-2"
           style={{
             borderBottom: `1px solid ${BORDER}`,
             background: `${severityColorForNarrative(missionNarrative.severity)}10`,
@@ -227,7 +254,7 @@ export const ChatMessageArea = React.memo(function ChatMessageArea({
 
       {jumpNotice && (
         <div
-          className="px-3 py-1.5 text-[10px]"
+          className="min-w-0 max-w-full overflow-hidden px-3 py-1.5 text-[10px]"
           style={{ borderBottom: `1px solid ${WARNING}30`, background: `${WARNING}12`, color: WARNING }}
         >
           {jumpNotice}
@@ -236,7 +263,7 @@ export const ChatMessageArea = React.memo(function ChatMessageArea({
 
       {threadIntervention && (
         <div
-          className="flex items-start justify-between gap-3 px-3 py-2"
+          className="flex min-w-0 max-w-full items-start justify-between gap-3 overflow-hidden px-3 py-2"
           style={{ borderBottom: `1px solid ${WARNING}30`, background: `${WARNING}10` }}
         >
           <div className="min-w-0">
@@ -279,10 +306,13 @@ export const ChatMessageArea = React.memo(function ChatMessageArea({
             display: "flex",
             alignItems: "center",
             gap: "8px",
+            minWidth: 0,
+            maxWidth: "100%",
+            overflow: "hidden",
           }}
         >
           <span style={{ fontSize: "14px" }}>{"\u26A0"}</span>
-          <span>
+          <span className="min-w-0 break-words">
             {(chatBlocked ?? chatNotice)?.reason} {(chatBlocked ?? chatNotice)?.action}
           </span>
         </div>
@@ -295,7 +325,7 @@ export const ChatMessageArea = React.memo(function ChatMessageArea({
         showStreamingIndicator={
           selectedChannel?.kind === "global" ? false : showStreamingIndicator
         }
-        transcriptPollingEnabled={selectedChannel?.kind !== "global" && selectedChannel?.status === "active"}
+        transcriptPollingEnabled={shouldPollRawMissionTranscript(selectedChannel)}
         className="flex-1"
         onApproval={onApproval}
       />
@@ -349,36 +379,24 @@ function ChannelKindBadge({ channel }: { channel: Channel | undefined }) {
   return null;
 }
 
-function HeaderMetaPill({ label, detail }: { label: string; detail: string }) {
+function ChannelRouteBadge({
+  route,
+}: {
+  route: { label: string; detail: string; tone: "active" | "muted" };
+}) {
+  const active = route.tone === "active";
   return (
     <span
       className="inline-flex items-center gap-1.5 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.12em]"
       style={{
-        background: "color-mix(in srgb, var(--chat-accent) 10%, transparent)",
-        color: TEXT_SECONDARY,
-        border: "1px solid color-mix(in srgb, var(--chat-accent) 16%, rgba(255,255,255,0.08))",
+        background: active ? "#22C55E18" : "#6B728018",
+        color: active ? "#22C55E" : TEXT_MUTED,
+        border: `1px solid ${active ? "#22C55E30" : "#6B728030"}`,
         fontFamily: MONO,
       }}
-      title={detail}
+      title={route.detail}
     >
-      <Globe size={10} weight="fill" />
-      {label}
-    </span>
-  );
-}
-
-function RuntimeFlagPill({ label, enabled }: { label: string; enabled: boolean }) {
-  return (
-    <span
-      className="inline-flex items-center gap-1 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.12em]"
-      style={{
-        background: enabled ? "#22C55E18" : "#6B728018",
-        color: enabled ? "#22C55E" : TEXT_MUTED,
-        border: `1px solid ${enabled ? "#22C55E30" : "#6B728030"}`,
-      }}
-    >
-      {label}
-      <span>{enabled ? "on" : "off"}</span>
+      {route.label}
     </span>
   );
 }

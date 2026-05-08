@@ -2944,29 +2944,29 @@ export function LanesPage() {
                     background: laneRuntime.bucket === "awaiting-input" ? COLORS.warning : COLORS.success,
                   }}
                 />
-	              ) : !isDeleting && laneRuntime.bucket === "ended" ? (
+              ) : !isDeleting && laneRuntime.bucket === "ended" ? (
                 <span
                   title={`${laneRuntime.endedCount} ended session${laneRuntime.endedCount === 1 ? "" : "s"}`}
                   className="shrink-0"
-	                  style={{ width: 8, height: 8, borderRadius: "50%", background: COLORS.danger }}
-	                />
-	              ) : null}
-	              {!isDeleting ? (
-	              <span
-	                className="opacity-0 transition-opacity group-hover:opacity-100"
-	                onClick={(event) => event.stopPropagation()}
-	                onMouseDown={(event) => event.stopPropagation()}
-	              >
-	                <QuickRunMenu laneId={lane.id} compact iconOnly triggerStyle={{ height: 22, padding: "0 6px" }} />
-	              </span>
-	              ) : null}
-	              {/* Lane name */}
-	              <span className="truncate" style={{
-	                maxWidth: 180,
-	                fontFamily: SANS_FONT, fontSize: 12, letterSpacing: "0.5px", textTransform: "uppercase",
-	                fontWeight: isSelected ? 600 : 500,
-	                color: isSelected ? COLORS.textPrimary : COLORS.textMuted,
-	              }}>{lane.name}</span>
+                  style={{ width: 8, height: 8, borderRadius: "50%", background: COLORS.danger }}
+                />
+              ) : null}
+              {!isDeleting ? (
+                <span
+                  className="opacity-0 transition-opacity group-hover:opacity-100"
+                  onClick={(event) => event.stopPropagation()}
+                  onMouseDown={(event) => event.stopPropagation()}
+                >
+                  <QuickRunMenu laneId={lane.id} compact iconOnly triggerStyle={{ height: 22, padding: "0 6px" }} />
+                </span>
+              ) : null}
+              {/* Lane name */}
+              <span className="truncate" style={{
+                maxWidth: 180,
+                fontFamily: SANS_FONT, fontSize: 12, letterSpacing: "0.5px", textTransform: "uppercase",
+                fontWeight: isSelected ? 600 : 500,
+                color: isSelected ? COLORS.textPrimary : COLORS.textMuted,
+              }}>{lane.name}</span>
               {!isDeleting && lanePr ? (
                 <button
                   type="button"
@@ -2993,28 +2993,28 @@ export function LanesPage() {
                   {formatPrBadgeLabel(lanePr)}
                 </button>
               ) : null}
-	              {!isDeleting && devicesOpen.length > 0 ? (
-	                <span
-	                  style={{
-	                    display: "inline-flex",
-	                    alignItems: "center",
-	                    gap: 4,
-	                    padding: "2px 6px",
-	                    borderRadius: 6,
-	                    fontFamily: MONO_FONT,
-	                    fontSize: 9,
-	                    fontWeight: 700,
-	                    color: COLORS.accent,
-	                    background: COLORS.accentSubtle,
-	                    border: `1px solid ${COLORS.accentBorder}`,
-	                  }}
-	                  title={getDevicePresenceTitle(devicesOpen)}
-	                >
-	                  <UsersThree size={10} weight="bold" />
-	                  {devicesOpen.length}
-	                </span>
-	              ) : null}
-	              {/* Behind badge (rebase suggestion) */}
+              {!isDeleting && devicesOpen.length > 0 ? (
+                <span
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 4,
+                    padding: "2px 6px",
+                    borderRadius: 6,
+                    fontFamily: MONO_FONT,
+                    fontSize: 9,
+                    fontWeight: 700,
+                    color: COLORS.accent,
+                    background: COLORS.accentSubtle,
+                    border: `1px solid ${COLORS.accentBorder}`,
+                  }}
+                  title={getDevicePresenceTitle(devicesOpen)}
+                >
+                  <UsersThree size={10} weight="bold" />
+                  {devicesOpen.length}
+                </span>
+              ) : null}
+              {/* Behind badge (rebase suggestion) */}
               {!isDeleting && rebaseSuggestion ? (
                 <span style={{
                   display: "inline-flex", alignItems: "center", padding: "2px 6px", borderRadius: 6,

@@ -35,7 +35,7 @@ All in `apps/desktop/src/main/services/orchestrator/`.
 - `worktreeIsolation.test.ts` — worktree isolation invariants (`VAL-ISO-*`).
 - `orchestrationRuntime.test.ts` — end-to-end runtime integration tests.
 - `orchestratorConstants.ts` — `DEFAULT_RECOVERY_LOOP_POLICY`, `DEFAULT_CONTEXT_VIEW_POLICIES`, `DEFAULT_ROLE_ISOLATION_RULES`, `DEFAULT_INTEGRATION_PR_POLICY`.
-- `orchestratorContext.ts` — `OrchestratorContext` type (shared runtime state), pure helpers, constants (`TERMINAL_STEP_STATUSES`, `STEERING_DIRECTIVES_METADATA_KEY`, etc.), `parseJsonRecord`, `isRecord`, `nowIso`.
+- `orchestratorContext.ts` — `OrchestratorContext` type (shared runtime state, including the `cancelingRuns: Set<string>` cancellation guard the AI failure-diagnosis fallback consults so a canceled run never has a diagnosis intervention written after the fact), pure helpers, constants (`TERMINAL_STEP_STATUSES`, `STEERING_DIRECTIVES_METADATA_KEY`, etc.), `parseJsonRecord`, `isRecord`, `nowIso`. `isDisplayOnlyTaskStep` is the canonical predicate for steps that should be hidden from execution flow (`metadata.isTask === true`, `metadata.displayOnlyTask === true`, or `metadata.stepType === "task"` without a coordinator-spawned worker); `filterExecutionSteps` delegates to it.
 - `orchestratorQueries.ts` — row-to-typed-object mapping: `toRun`, `toStep`, `toAttempt`, `toClaim`, `toContextSnapshot`, `toHandoff`, `toArtifact`, `toTimelineEvent`, `toRuntimeEvent`, `toGateReport`; `normalizeEnvelope`, `classifyBlockingWarnings`, `validateStepGraphIntegrity`.
 - `permissionMapping.ts` — `MissionProviderPermissions` -> provider allowed-tools; `mapPermissionToInProcess`.
 - `teamRuntimeConfig.ts` / `teamRuntimeState.ts` — team manifest and runtime state.
@@ -86,7 +86,7 @@ Every `CHECKPOINT_TURN_INTERVAL` turns, the coordinator writes a checkpoint via 
 
 `createCoordinatorToolSet` registers tools on the coordinator agent. Each tool has a schema (Zod), a handler, and a `CoordinatorExecutableTool` wrapper for permission checks (`checkCoordinatorToolPermission`). Highlights:
 
-- `spawn_worker` — launches a worker attempt. Respects `allowParallelAgents` and the mission's max-parallel-workers cap. Honors role isolation rules (`DEFAULT_ROLE_ISOLATION_RULES`).
+- `spawn_worker` — launches a worker attempt. Respects `allowParallelAgents` and the mission's max-parallel-workers cap. Honors role isolation rules (`DEFAULT_ROLE_ISOLATION_RULES`). When the spawn request omits an explicit phase, `inferWorkerPhaseHintFromRequest` reads the worker name + role + prompt and matches it to one of `planning`/`implementation`/`testing`/`validation`/`integration` so phase routing degrades gracefully when the coordinator forgets to set one. App-restart orphans are detected via `isAppRestartOrphanAttempt` (matches against the canonical orphan / shutdown / lost-session error messages) so they are surfaced for retry instead of being treated as real failures.
 - `send_message_to_worker` — routes a message into an active worker chat via `sendWorkerMessageToSession`.
 - `check_status` — reads run/step/attempt state.
 - `ask_user` — creates a `manual_input` intervention.

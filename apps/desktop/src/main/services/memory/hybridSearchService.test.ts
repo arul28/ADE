@@ -144,6 +144,7 @@ function semanticVector(text: string): Float32Array {
 
 async function createFixture(opts: {
   attachQueueHook?: boolean;
+  canUseEmbeddings?: () => boolean;
   embedImpl?: (text: string) => Promise<Float32Array>;
   enableHybridSearch?: boolean;
   now?: Date;
@@ -170,6 +171,7 @@ async function createFixture(opts: {
   const hybridSearchService = createHybridSearchService({
     db,
     embeddingService,
+    canUseEmbeddings: opts.canUseEmbeddings,
     now: () => new Date(timestamp),
   });
 
@@ -442,6 +444,34 @@ describe("hybridSearchService", () => {
     });
 
     expect(embeddingService.embed).toHaveBeenCalledWith("automobile");
+  });
+
+  it.skipIf(!ftsAvailable)("skips query embeddings while the embedding gate is closed", async () => {
+    const { embeddingService, hybridSearchService, memoryService, worker } = await createFixture({
+      canUseEmbeddings: () => false,
+    });
+
+    const memory = memoryService.addMemory({
+      projectId: "project-1",
+      scope: "project",
+      category: "fact",
+      content: "mission coordination performance note",
+      importance: "high",
+    });
+    await worker.waitForIdle();
+    embeddingService.embed.mockClear();
+
+    const hits = await hybridSearchService.search({
+      projectId: "project-1",
+      query: "mission coordination",
+      limit: 5,
+    });
+
+    expect(embeddingService.embed).not.toHaveBeenCalled();
+    expect(hits.map((hit) => hit.memory.id)).toContain(memory.id);
+    expect(hits[0]!.hasEmbedding).toBe(false);
+    expect(hits[0]!.vector).toBeNull();
+    expect(hits[0]!.hybridScore).toBeCloseTo(hits[0]!.bm25Normalized, 6);
   });
 
   it.skipIf(!ftsAvailable)("post-filters vector candidates by project, scope, and scope owner for isolation", async () => {

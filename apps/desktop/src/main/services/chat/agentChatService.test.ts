@@ -1952,6 +1952,92 @@ describe("createAgentChatService", () => {
       expect(textInput).toContain("ade actions list --text");
     });
 
+    it("passes the selected Codex reasoning effort into app-server config", async () => {
+      const laneRootPath = path.join(tmpRoot, "lane-2");
+      fs.mkdirSync(laneRootPath, { recursive: true });
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-2",
+        provider: "codex",
+        model: "gpt-5.4",
+        reasoningEffort: "low",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Inspect the repo and report status.",
+      });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start")).toBe(true);
+      });
+
+      expect(spawn).toHaveBeenCalledWith(
+        "codex",
+        ["app-server", "-c", "model_reasoning_effort=\"low\""],
+        expect.any(Object),
+      );
+
+      const startPayload = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/start");
+      expect((startPayload?.params as { reasoningEffort?: unknown } | undefined)?.reasoningEffort).toBe("low");
+    });
+
+    it("starts mission Codex app-server sessions without global MCP servers", async () => {
+      const laneRootPath = path.join(tmpRoot, "lane-2");
+      fs.mkdirSync(laneRootPath, { recursive: true });
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-2",
+        provider: "codex",
+        model: "gpt-5.4",
+        reasoningEffort: "low",
+        surface: "mission",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Plan this mission without loading desktop MCP helpers.",
+      });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start")).toBe(true);
+      });
+
+      expect(spawn).toHaveBeenCalledWith(
+        "codex",
+        [
+          "app-server",
+          "-c",
+          "model_reasoning_effort=\"low\"",
+          "-c",
+          "mcp_servers={}",
+          "--disable",
+          "plugins",
+          "--disable",
+          "apps",
+          "--disable",
+          "browser_use",
+          "--disable",
+          "computer_use",
+        ],
+        expect.any(Object),
+      );
+      const spawnCall = vi.mocked(spawn).mock.calls.find((call) =>
+        call[0] === "codex" && Array.isArray(call[1]) && call[1].includes("app-server")
+      );
+      const spawnOptions = spawnCall?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+      const codexHome = spawnOptions?.env?.CODEX_HOME;
+      expect(codexHome).toContain("ade-mission-codex-home");
+      const configToml = fs.readFileSync(path.join(String(codexHome), "config.toml"), "utf8");
+      expect(configToml).toContain("enable_mcp_apps = false");
+      expect(configToml).toContain("multi_agent = false");
+      expect(configToml).toContain("plugins = false");
+      expect(configToml).toContain("apps = false");
+      expect(configToml).not.toContain("[mcp_servers");
+    });
+
     it("spawns Codex with ADE CLI agent env injected", async () => {
       const laneRootPath = path.join(tmpRoot, "lane-2");
       fs.mkdirSync(laneRootPath, { recursive: true });
@@ -1980,7 +2066,7 @@ describe("createAgentChatService", () => {
       expect(getAdeCliAgentEnv).toHaveBeenCalled();
       expect(spawn).toHaveBeenCalledWith(
         "codex",
-        ["app-server"],
+        ["app-server", "-c", "model_reasoning_effort=\"medium\""],
         expect.objectContaining({
           env: expect.objectContaining({
             PATH: "/tmp/ade-cli/bin",
@@ -3265,6 +3351,46 @@ describe("createAgentChatService", () => {
     expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
   });
 
+  it("keeps mission-surface sessions on deterministic titles and summaries", async () => {
+    vi.mocked(detectAllAuth).mockResolvedValue([
+      { type: "cli-subscription", cli: "claude", authenticated: true },
+      { type: "cli-subscription", cli: "codex", authenticated: true },
+    ] as any);
+    const { service, aiIntegrationService } = createService();
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.5",
+      surface: "mission",
+    });
+
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "Execute worker step \"Run targeted throwaway score tests\".",
+    }, { awaitDispatch: true });
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      method: "item/completed",
+      params: {
+        turnId: "turn-1",
+        item: {
+          id: "assistant-1",
+          type: "assistant_message",
+          text: "Both targeted tests passed.",
+        },
+      },
+    });
+    mockState.emitCodexPayload({
+      jsonrpc: "2.0",
+      method: "turn/completed",
+      params: { turnId: "turn-1" },
+    });
+
+    await service.dispose({ sessionId: session.id });
+
+    expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+  });
+
   describe("runtime-native chat titles", () => {
     it("adopts Codex app-server thread names from lifecycle responses", async () => {
       mockState.codexResponseOverrides.set("thread/start", () => ({
@@ -3661,7 +3787,7 @@ describe("createAgentChatService", () => {
 
         expect(spawn).toHaveBeenCalledWith(
           "codex",
-          ["app-server"],
+          ["app-server", "-c", "model_reasoning_effort=\"medium\""],
           expect.objectContaining({ detached: process.platform !== "win32" }),
         );
         expect(processKillSpy).toHaveBeenCalledWith(-99999, "SIGTERM");
@@ -4371,6 +4497,296 @@ describe("createAgentChatService", () => {
         expect.objectContaining({ type: "text", turnId: "resumed-turn", text: "Continuing after reconnect" }),
         expect.objectContaining({ type: "done", turnId: "resumed-turn", status: "completed" }),
       ]));
+    });
+
+    it("ignores late duplicate Codex turn/started notifications for a completed turn", async () => {
+      const events: Array<{ type: string; turnId?: string; text?: string; status?: string; turnStatus?: string }> = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => {
+          events.push({
+            type: event.event.type,
+            turnId: "turnId" in event.event ? event.event.turnId ?? undefined : undefined,
+            text: "text" in event.event ? event.event.text : undefined,
+            status: "status" in event.event ? event.event.status : undefined,
+            turnStatus: "turnStatus" in event.event ? event.event.turnStatus : undefined,
+          });
+        },
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      const firstTurn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Start mission coordination.",
+      });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start")).toHaveLength(1);
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/started",
+        params: { turn: { id: "turn-1", status: "inProgress" } },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/agentMessage/delta",
+        params: { turnId: "turn-1", delta: "Planner started." },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: { turn: { id: "turn-1", status: "completed" } },
+      });
+      await expect(firstTurn).resolves.toEqual(expect.objectContaining({
+        outputText: "Planner started.",
+        turnId: "turn-1",
+      }));
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/started",
+        params: { turn: { id: "turn-1", status: "inProgress" } },
+      });
+
+      const secondTurn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Continue mission coordination.",
+      });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start")).toHaveLength(2);
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/started",
+        params: { turn: { id: "turn-2", status: "inProgress" } },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/agentMessage/delta",
+        params: { turnId: "turn-2", delta: "Development started." },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: { turn: { id: "turn-2", status: "completed" } },
+      });
+
+      await expect(secondTurn).resolves.toEqual(expect.objectContaining({
+        outputText: "Development started.",
+        turnId: "turn-2",
+      }));
+      expect(events.filter((event) => event.type === "status" && event.turnId === "turn-1" && event.turnStatus === "started")).toHaveLength(1);
+    });
+
+    it("closes the Codex resumed-turn attach gate after an expected turn completes", async () => {
+      const events: Array<{ type: string; turnId?: string; text?: string; status?: string; turnStatus?: string }> = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => {
+          events.push({
+            type: event.event.type,
+            turnId: "turnId" in event.event ? event.event.turnId ?? undefined : undefined,
+            text: "text" in event.event ? event.event.text : undefined,
+            status: "status" in event.event ? event.event.status : undefined,
+            turnStatus: "turnStatus" in event.event ? event.event.turnStatus : undefined,
+          });
+        },
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+      writePersistedChatState(session.id, {
+        ...readPersistedChatState(session.id),
+        threadId: "thread-resumed",
+      });
+      await service.resumeSession({ sessionId: session.id });
+
+      const turn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Continue after resume.",
+      });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/started",
+        params: { turn: { id: "turn-1", status: "inProgress" } },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/agentMessage/delta",
+        params: { turnId: "turn-1", delta: "Expected turn completed." },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: { turn: { id: "turn-1", status: "completed" } },
+      });
+      await expect(turn).resolves.toEqual(expect.objectContaining({
+        outputText: "Expected turn completed.",
+        turnId: "turn-1",
+      }));
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/started",
+        params: { turn: { id: "ghost-resumed-turn", status: "inProgress" } },
+      });
+
+      expect(events.filter((event) => event.type === "status" && event.turnId === "ghost-resumed-turn")).toHaveLength(0);
+    });
+
+    it("persists terminal Codex turn ids across runtime recreation", async () => {
+      const events: Array<{ type: string; turnId?: string; text?: string; status?: string; turnStatus?: string }> = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => {
+          events.push({
+            type: event.event.type,
+            turnId: "turnId" in event.event ? event.event.turnId ?? undefined : undefined,
+            text: "text" in event.event ? event.event.text : undefined,
+            status: "status" in event.event ? event.event.status : undefined,
+            turnStatus: "turnStatus" in event.event ? event.event.turnStatus : undefined,
+          });
+        },
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      const firstTurn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Start mission coordination.",
+      });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/started",
+        params: { turn: { id: "turn-1", status: "inProgress" } },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/agentMessage/delta",
+        params: { turnId: "turn-1", delta: "Persisted turn completed." },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: { turn: { id: "turn-1", status: "completed" } },
+      });
+      await expect(firstTurn).resolves.toEqual(expect.objectContaining({
+        outputText: "Persisted turn completed.",
+        turnId: "turn-1",
+      }));
+
+      service.forceDisposeAll();
+      writePersistedChatState(session.id, {
+        ...readPersistedChatState(session.id),
+        threadId: "thread-resumed",
+      });
+      await service.resumeSession({ sessionId: session.id });
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/started",
+        params: { turn: { id: "turn-1", status: "inProgress" } },
+      });
+
+      expect(events.filter((event) => event.type === "status" && event.turnId === "turn-1" && event.turnStatus === "started")).toHaveLength(1);
+    });
+
+    it("does not reactivate a Codex turn when turn/start resolves after turn/completed", async () => {
+      const events: Array<{ type: string; turnId?: string; text?: string; status?: string; turnStatus?: string }> = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => {
+          events.push({
+            type: event.event.type,
+            turnId: "turnId" in event.event ? event.event.turnId ?? undefined : undefined,
+            text: "text" in event.event ? event.event.text : undefined,
+            status: "status" in event.event ? event.event.status : undefined,
+            turnStatus: "turnStatus" in event.event ? event.event.turnStatus : undefined,
+          });
+        },
+      });
+      mockState.delayedCodexMethods.add("turn/start");
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      const firstTurn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Start mission coordination.",
+      });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start")).toHaveLength(1);
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/started",
+        params: { turn: { id: "turn-1", status: "inProgress" } },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/agentMessage/delta",
+        params: { turnId: "turn-1", delta: "Coordinator answered." },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: { turn: { id: "turn-1", status: "completed" } },
+      });
+      await expect(firstTurn).resolves.toEqual(expect.objectContaining({
+        outputText: "Coordinator answered.",
+        turnId: "turn-1",
+      }));
+
+      mockState.flushCodexResponses();
+      await vi.waitFor(() => {
+        expect(events.filter((event) => event.type === "status" && event.turnId === "turn-1" && event.turnStatus === "started")).toHaveLength(1);
+      });
+
+      const secondTurn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Continue mission coordination.",
+      });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start")).toHaveLength(2);
+      });
+      mockState.flushCodexResponses();
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/started",
+        params: { turn: { id: "turn-2", status: "inProgress" } },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/agentMessage/delta",
+        params: { turnId: "turn-2", delta: "Next turn started." },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: { turn: { id: "turn-2", status: "completed" } },
+      });
+
+      await expect(secondTurn).resolves.toEqual(expect.objectContaining({
+        outputText: "Next turn started.",
+        turnId: "turn-2",
+      }));
     });
 
     it("ignores stale Codex lifecycle notifications from a foreign turn", async () => {
@@ -5603,6 +6019,42 @@ describe("createAgentChatService", () => {
       );
     });
 
+    it("keeps mission-surface Codex coordinator sessions out of native plan collaboration", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        codexApprovalPolicy: "on-request",
+        codexSandbox: "read-only",
+        codexConfigSource: "flags",
+        surface: "mission",
+      });
+      expect(session.permissionMode).toBe("plan");
+      expect(session.surface).toBe("mission");
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Coordinate the mission without provider-native plan approval.",
+      });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+      const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
+      const params = turnStartRequest?.params as {
+        approvalPolicy?: unknown;
+        sandboxPolicy?: { type?: unknown };
+        collaborationMode?: { mode?: unknown };
+      } | undefined;
+
+      expect(params?.approvalPolicy).toBe("on-request");
+      expect(params?.sandboxPolicy?.type).toBe("readOnly");
+      expect(params?.collaborationMode?.mode).toBe("default");
+      expect(await service.listSessions()).toHaveLength(0);
+      expect(await service.listSessions(undefined, { includeAutomation: true })).toHaveLength(1);
+    });
+
     it("turns native Codex plan items into an implementation approval request", async () => {
       vi.mocked(mapPermissionToCodex).mockImplementation((mode) => {
         if (mode === "edit") return { approvalPolicy: "untrusted", sandbox: "workspace-write" };
@@ -6074,20 +6526,28 @@ describe("createAgentChatService", () => {
         approvalPolicy?: unknown;
         sandbox?: unknown;
         reasoningEffort?: unknown;
+        reasoning_effort?: unknown;
+        effort?: unknown;
       } | undefined;
       expect(params?.approvalPolicy).toBe("never");
       expect(params?.sandbox).toBe("danger-full-access");
       expect(params?.reasoningEffort).toBe("medium");
+      expect(params?.reasoning_effort).toBe("medium");
+      expect(params?.effort).toBe("medium");
 
       const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
       const turnStartParams = turnStartRequest?.params as {
         approvalPolicy?: unknown;
         sandboxPolicy?: { type?: unknown };
         effort?: unknown;
+        reasoningEffort?: unknown;
+        reasoning_effort?: unknown;
       } | undefined;
       expect(turnStartParams?.approvalPolicy).toBe("never");
       expect(turnStartParams?.sandboxPolicy?.type).toBe("dangerFullAccess");
       expect(turnStartParams?.effort).toBe("medium");
+      expect(turnStartParams?.reasoningEffort).toBe("medium");
+      expect(turnStartParams?.reasoning_effort).toBe("medium");
     });
 
     it("serializes every Codex permission mode to the app-server wire shapes", async () => {
@@ -6170,7 +6630,7 @@ describe("createAgentChatService", () => {
       }
     });
 
-    it("persists the runtime-effective Codex reasoning effort while applying effective thread policy", async () => {
+    it("keeps the requested Codex reasoning effort while applying effective thread policy", async () => {
       mockState.codexResponseOverrides.set("thread/start", () => ({
         thread: { id: "thread-effective-start" },
         approvalPolicy: "onFailure",
@@ -6203,27 +6663,33 @@ describe("createAgentChatService", () => {
       });
 
       const threadStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/start");
-      expect((threadStartRequest?.params as { reasoningEffort?: unknown } | undefined)?.reasoningEffort).toBe("xhigh");
+      expect((threadStartRequest?.params as { reasoningEffort?: unknown; reasoning_effort?: unknown; effort?: unknown } | undefined)?.reasoningEffort).toBe("xhigh");
+      expect((threadStartRequest?.params as { reasoningEffort?: unknown; reasoning_effort?: unknown; effort?: unknown } | undefined)?.reasoning_effort).toBe("xhigh");
+      expect((threadStartRequest?.params as { reasoningEffort?: unknown; reasoning_effort?: unknown; effort?: unknown } | undefined)?.effort).toBe("xhigh");
       const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
       const turnStartParams = turnStartRequest?.params as {
         approvalPolicy?: unknown;
         sandboxPolicy?: { type?: unknown };
         effort?: unknown;
+        reasoningEffort?: unknown;
+        reasoning_effort?: unknown;
       } | undefined;
       expect(turnStartParams?.approvalPolicy).toBe("on-failure");
       expect(turnStartParams?.sandboxPolicy?.type).toBe("workspaceWrite");
-      expect(turnStartParams?.effort).toBe("high");
+      expect(turnStartParams?.effort).toBe("xhigh");
+      expect(turnStartParams?.reasoningEffort).toBe("xhigh");
+      expect(turnStartParams?.reasoning_effort).toBe("xhigh");
 
       const summary = await service.getSessionSummary(session.id);
       expect(summary?.codexApprovalPolicy).toBe("on-failure");
       expect(summary?.codexSandbox).toBe("workspace-write");
       expect(summary?.permissionMode).toBe("default");
-      expect(summary?.reasoningEffort).toBe("high");
+      expect(summary?.reasoningEffort).toBe("xhigh");
 
       const persisted = readPersistedChatState(session.id);
       expect(persisted.codexApprovalPolicy).toBe("on-failure");
       expect(persisted.codexSandbox).toBe("workspace-write");
-      expect(persisted.reasoningEffort).toBe("high");
+      expect(persisted.reasoningEffort).toBe("xhigh");
     });
 
     it("re-resumes Codex threads when permission mode changes mid-session", async () => {
@@ -6290,10 +6756,12 @@ describe("createAgentChatService", () => {
         approvalPolicy?: unknown;
         sandbox?: unknown;
         reasoningEffort?: unknown;
+        effort?: unknown;
       } | undefined;
       expect(params?.approvalPolicy).toBe("never");
       expect(params?.sandbox).toBe("danger-full-access");
       expect(params?.reasoningEffort).toBe("medium");
+      expect(params?.effort).toBe("medium");
 
       const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
       const turnStartParams = turnStartRequest?.params as {
@@ -6554,7 +7022,7 @@ describe("createAgentChatService", () => {
       expect(sessionService.reopen).toHaveBeenCalledWith(session.id);
     });
 
-    it("keeps runtime-effective Codex reasoning effort while applying effective policy on resume", async () => {
+    it("keeps requested Codex reasoning effort while applying effective policy on resume", async () => {
       mockState.codexResponseOverrides.set("thread/resume", () => ({
         thread: { id: "thread-effective-resume" },
         approvalPolicy: "onFailure",
@@ -6584,17 +7052,19 @@ describe("createAgentChatService", () => {
       const resumed = await service.resumeSession({ sessionId: session.id });
 
       const resumeRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/resume");
-      expect((resumeRequest?.params as { reasoningEffort?: unknown } | undefined)?.reasoningEffort).toBe("xhigh");
+      expect((resumeRequest?.params as { reasoningEffort?: unknown; reasoning_effort?: unknown; effort?: unknown } | undefined)?.reasoningEffort).toBe("xhigh");
+      expect((resumeRequest?.params as { reasoningEffort?: unknown; reasoning_effort?: unknown; effort?: unknown } | undefined)?.reasoning_effort).toBe("xhigh");
+      expect((resumeRequest?.params as { reasoningEffort?: unknown; reasoning_effort?: unknown; effort?: unknown } | undefined)?.effort).toBe("xhigh");
       expect(resumed.codexApprovalPolicy).toBe("on-failure");
       expect(resumed.codexSandbox).toBe("workspace-write");
       expect(resumed.permissionMode).toBe("default");
-      expect(resumed.reasoningEffort).toBe("high");
+      expect(resumed.reasoningEffort).toBe("xhigh");
 
       const persistedAfter = readPersistedChatState(session.id);
       expect(persistedAfter.threadId).toBe("thread-effective-resume");
       expect(persistedAfter.codexApprovalPolicy).toBe("on-failure");
       expect(persistedAfter.codexSandbox).toBe("workspace-write");
-      expect(persistedAfter.reasoningEffort).toBe("high");
+      expect(persistedAfter.reasoningEffort).toBe("xhigh");
     });
 
     it("throws when resuming an unknown session", async () => {
@@ -8512,7 +8982,7 @@ describe("createAgentChatService", () => {
           },
         },
       };
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 120));
       reasoningCountAfterDelta = events.filter((event) => event.event.type === "reasoning").length;
       yield {
         type: "assistant",

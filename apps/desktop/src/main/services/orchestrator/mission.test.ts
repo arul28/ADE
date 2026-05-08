@@ -1,8 +1,9 @@
 import fs from "node:fs";
+import fsPromises from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createOrchestratorService } from "./orchestratorService";
 import { transitionMissionStatus } from "./missionLifecycle";
 import { createMissionService } from "../missions/missionService";
@@ -180,6 +181,17 @@ describe("transitionMissionStatus — terminal status regression guard", () => {
       transitionMissionStatus(fixture.ctx, fixture.missionId, "in_progress");
       const mission = fixture.missionService.get(fixture.missionId);
       expect(mission?.status).toBe("canceled");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("allows an explicit restart from canceled to in_progress", async () => {
+    const fixture = await createLifecycleFixture("canceled");
+    try {
+      transitionMissionStatus(fixture.ctx, fixture.missionId, "in_progress", { allowTerminalRestart: true });
+      const mission = fixture.missionService.get(fixture.missionId);
+      expect(mission?.status).toBe("in_progress");
     } finally {
       fixture.dispose();
     }
@@ -369,6 +381,7 @@ function writeCodexSessionLog(args: {
   sessionsRoot: string;
   cwd: string;
   timestampIso: string;
+  fileName?: string;
   model?: string;
   inputTokens: number;
   outputTokens: number;
@@ -379,7 +392,7 @@ function writeCodexSessionLog(args: {
   const dd = String(date.getUTCDate()).padStart(2, "0");
   const dayDir = path.join(args.sessionsRoot, yyyy, mm, dd);
   fs.mkdirSync(dayDir, { recursive: true });
-  const filePath = path.join(dayDir, "rollout-test.jsonl");
+  const filePath = path.join(dayDir, args.fileName ?? "rollout-test.jsonl");
   const model = args.model ?? "openai/gpt-5";
   const lines = [
     JSON.stringify({
@@ -564,6 +577,98 @@ describe("missionBudgetService", () => {
     expect(codexProvider?.fiveHour.usedCostUsd).toBeCloseTo(1.23, 6);
     expect(snapshot.burnRateUsdPerHour).toBeNull();
     expect(snapshot.dataSources).toContain("~/.codex/sessions/*.jsonl");
+
+    dispose();
+  });
+
+  it("scopes subscription mission cost to the mission lane worktree", async () => {
+    const { db, projectId, laneId, root, dispose } = await createBudgetDbWithProjectAndLane();
+    const missionWorktree = path.join(root, ".ade", "worktrees", "mission-lane");
+    fs.mkdirSync(missionWorktree, { recursive: true });
+    db.run(`update lanes set worktree_path = ? where id = ?`, [missionWorktree, laneId]);
+
+    const missionService = createMissionService({ db, projectId });
+    const mission = missionService.create({
+      prompt: "Scope mission telemetry to this lane.",
+      laneId,
+      phaseOverride: createBuiltInPhaseCards(),
+    });
+    const orchestratorService = createOrchestratorService({
+      db,
+      projectId,
+      projectRoot: root,
+      projectConfigService: null as any,
+    });
+    const started = orchestratorService.startRun({
+      missionId: mission.id,
+      steps: [
+        {
+          stepKey: "mission-worker",
+          title: "Mission worker",
+          stepIndex: 0,
+          laneId,
+          executorKind: "manual",
+          dependencyStepKeys: [],
+        },
+      ],
+    });
+    db.run(
+      `update orchestrator_runs set metadata_json = ? where id = ?`,
+      [JSON.stringify({ missionLaneId: laneId }), started.run.id],
+    );
+
+    const codexSessionsRoot = path.join(root, "codex-sessions");
+    const nowIso = new Date().toISOString();
+    writeCodexSessionLog({
+      sessionsRoot: codexSessionsRoot,
+      cwd: root,
+      fileName: "rollout-project-root.jsonl",
+      timestampIso: nowIso,
+      model: "openai/gpt-5",
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000,
+    });
+    writeCodexSessionLog({
+      sessionsRoot: codexSessionsRoot,
+      cwd: missionWorktree,
+      fileName: "rollout-mission-lane.jsonl",
+      timestampIso: nowIso,
+      model: "openai/gpt-5",
+      inputTokens: 100_000,
+      outputTokens: 128_750,
+    });
+
+    const budgetService = createMissionBudgetService({
+      db,
+      logger: createLogger(),
+      projectId,
+      projectRoot: root,
+      missionService,
+      aiIntegrationService: {
+        getStatus: async () => ({ mode: "subscription", detectedAuth: [{ type: "cli-subscription", authenticated: true, cli: "codex" }] })
+      } as any,
+      projectConfigService: {
+        get: () => ({
+          effective: {
+            cto: {
+              budgetTelemetry: {
+                enabled: true,
+                codexSessionsRoot,
+                claudeProjectsRoot: path.join(root, "no-claude-logs"),
+              },
+            },
+          },
+        }),
+      } as any,
+    });
+
+    const snapshot = await budgetService.getMissionBudgetStatus({
+      missionId: mission.id,
+      runId: started.run.id,
+    });
+
+    expect(snapshot.mode).toBe("subscription");
+    expect(snapshot.mission.usedCostUsd).toBeCloseTo(1.23, 6);
 
     dispose();
   });
@@ -1168,6 +1273,65 @@ describe("missionStateDoc", () => {
       expect(doc).not.toBeNull();
       expect(doc!.goal).toBe("Readable goal");
       expect(doc!.progress.currentPhase).toBe("testing");
+    });
+
+    it("falls back to the persisted document when a pending write stalls", async () => {
+      const runId = "run-read-pending-write";
+      await updateMissionStateDocument({
+        projectRoot: tmpDir,
+        missionId: "m1",
+        runId,
+        goal: "Readable goal",
+        patch: { updateProgress: { currentPhase: "testing" } },
+      });
+
+      const originalRename = fsPromises.rename.bind(fsPromises);
+      let releaseRename: () => void = () => {};
+      let renameStartedResolve: (() => void) | null = null;
+      const renameStarted = new Promise<void>((resolve) => {
+        renameStartedResolve = resolve;
+      });
+      const renameSpy = vi.spyOn(fsPromises, "rename").mockImplementation(async (oldPath, newPath) => {
+        if (String(oldPath).includes(`mission-state-${runId}.json`)) {
+          renameStartedResolve?.();
+          await new Promise<void>((resolve) => {
+            releaseRename = resolve;
+          });
+        }
+        return originalRename(oldPath, newPath);
+      });
+
+      const pendingUpdate = updateMissionStateDocument({
+        projectRoot: tmpDir,
+        missionId: "m1",
+        runId,
+        goal: "Readable goal",
+        patch: { updateProgress: { currentPhase: "validation" } },
+      });
+
+      try {
+        await renameStarted;
+
+        const startedAt = Date.now();
+        const doc = await readMissionStateDocument({
+          projectRoot: tmpDir,
+          runId,
+        });
+
+        expect(Date.now() - startedAt).toBeLessThan(1_500);
+        expect(doc).not.toBeNull();
+        expect(doc!.progress.currentPhase).toBe("testing");
+      } finally {
+        releaseRename();
+        await pendingUpdate;
+        renameSpy.mockRestore();
+      }
+
+      const finalDoc = await readMissionStateDocument({
+        projectRoot: tmpDir,
+        runId,
+      });
+      expect(finalDoc?.progress.currentPhase).toBe("validation");
     });
   });
 

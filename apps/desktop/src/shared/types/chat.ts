@@ -45,6 +45,7 @@ export type ChatSurfacePresentation = {
   messagePlaceholder?: string | null;
   chips?: ChatSurfaceChip[];
   showMcpStatus?: boolean;
+  rewriteMissionControlTextTools?: boolean;
 };
 
 export type AgentChatApprovalDecision = "accept" | "accept_for_session" | "decline" | "cancel";
@@ -447,7 +448,7 @@ export type AgentChatPermissionMode = "default" | "plan" | "edit" | "full-auto" 
 export type AgentChatExecutionMode = "focused" | "parallel" | "subagents" | "teams";
 export type AgentChatInteractionMode = "default" | "plan";
 export type AgentChatIdentityKey = "cto" | `agent:${string}`;
-export type AgentChatSurface = "work" | "automation";
+export type AgentChatSurface = "work" | "automation" | "mission";
 export type AgentChatCursorConfigValue = string | boolean | number;
 export type AgentChatCursorConfigSelectOption = {
   value: string;

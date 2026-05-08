@@ -275,7 +275,11 @@ type QueuedRefresh = {
   };
 };
 
-export function useWorkSessions() {
+type UseWorkSessionsOptions = {
+  active?: boolean;
+};
+
+export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) {
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams] = useSearchParams();
@@ -300,7 +304,7 @@ export function useWorkSessions() {
   const partiallyAppliedUrlFilterKeyRef = useRef<string | null>(null);
   const hasLoadedOnceRef = useRef(false);
   const projectRootRef = useRef<string | null>(projectRoot);
-  const isWorkRoute = location.pathname === "/work" || location.pathname.startsWith("/work/");
+  const isWorkRoute = active && (location.pathname === "/work" || location.pathname.startsWith("/work/"));
 
   useEffect(() => {
     projectRootRef.current = projectRoot;
@@ -659,12 +663,13 @@ export function useWorkSessions() {
   }, [lanes]);
 
   const scheduleBackgroundRefresh = useCallback((delayMs = 450) => {
+    if (!isWorkRoute) return;
     if (backgroundRefreshTimerRef.current != null) return;
     backgroundRefreshTimerRef.current = window.setTimeout(() => {
       backgroundRefreshTimerRef.current = null;
       void refresh({ showLoading: false });
     }, delayMs);
-  }, [refresh]);
+  }, [isWorkRoute, refresh]);
 
   useEffect(() => {
     invalidateSessionListCache();
@@ -679,9 +684,19 @@ export function useWorkSessions() {
     appliedQuerySessionIdRef.current = null;
     appliedUrlFilterKeyRef.current = null;
     partiallyAppliedUrlFilterKeyRef.current = null;
-    if (!projectRoot) return;
+  }, [projectRoot]);
+
+  useEffect(() => {
+    if (!projectRoot || !isWorkRoute) return;
     refresh({ showLoading: true, force: true }).catch(() => {});
-  }, [projectRoot, refresh]);
+  }, [isWorkRoute, projectRoot, refresh]);
+
+  useEffect(() => {
+    if (isWorkRoute) return;
+    if (backgroundRefreshTimerRef.current == null) return;
+    window.clearTimeout(backgroundRefreshTimerRef.current);
+    backgroundRefreshTimerRef.current = null;
+  }, [isWorkRoute]);
 
   useEffect(() => {
     hasRunningSessionsRef.current = sessions.some((s) => s.status === "running");
@@ -767,6 +782,7 @@ export function useWorkSessions() {
   }, [filterLaneId, lanes, setProjectViewState]);
 
   useEffect(() => {
+    if (!isWorkRoute) return;
     const sessionParam = (searchParams.get("sessionId") ?? "").trim();
     if (!sessionParam) {
       appliedQuerySessionIdRef.current = null;
@@ -798,9 +814,10 @@ export function useWorkSessions() {
         selectedItemId: session.id,
       };
     });
-  }, [focusSession, searchParams, selectLane, sessions, setProjectViewState]);
+  }, [focusSession, isWorkRoute, searchParams, selectLane, sessions, setProjectViewState]);
 
   useEffect(() => {
+    if (!isWorkRoute) return;
     const unsubExit = window.ade.pty.onExit((event) => {
       const currentProjectRoot = projectRootRef.current;
       if (event.projectRoot && event.projectRoot !== currentProjectRoot) return;
@@ -819,9 +836,10 @@ export function useWorkSessions() {
       }
       clearInterval(t);
     };
-  }, [scheduleBackgroundRefresh]);
+  }, [isWorkRoute, scheduleBackgroundRefresh]);
 
   useEffect(() => {
+    if (!isWorkRoute) return;
     const unsubscribe = window.ade.agentChat.onEvent((payload) => {
       if (document.visibilityState !== "visible") return;
       if (!shouldRefreshSessionListForChatEvent(payload)) return;
@@ -829,16 +847,17 @@ export function useWorkSessions() {
       scheduleBackgroundRefresh(220);
     });
     return unsubscribe;
-  }, [scheduleBackgroundRefresh]);
+  }, [isWorkRoute, scheduleBackgroundRefresh]);
 
   useEffect(() => {
+    if (!isWorkRoute) return;
     const unsubscribe = window.ade.sessions.onChanged(() => {
       if (document.visibilityState !== "visible") return;
       invalidateSessionListCache();
       scheduleBackgroundRefresh(80);
     });
     return unsubscribe;
-  }, [scheduleBackgroundRefresh]);
+  }, [isWorkRoute, scheduleBackgroundRefresh]);
 
   useEffect(() => {
     return () => {
@@ -849,6 +868,7 @@ export function useWorkSessions() {
   }, []);
 
   useEffect(() => {
+    if (!isWorkRoute) return;
     const refreshVisibleWork = () => {
       if (document.visibilityState !== "visible") return;
       invalidateSessionListCache();
@@ -860,7 +880,7 @@ export function useWorkSessions() {
       window.removeEventListener("focus", refreshVisibleWork);
       document.removeEventListener("visibilitychange", refreshVisibleWork);
     };
-  }, [scheduleBackgroundRefresh]);
+  }, [isWorkRoute, scheduleBackgroundRefresh]);
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();

@@ -180,7 +180,7 @@ export type MissionsActions = {
   setManageMissionError: (error: string | null) => void;
 
   /* ── Compound actions (IPC calls) ── */
-  refreshMissionList: (opts?: { preserveSelection?: boolean; silent?: boolean }) => Promise<void>;
+  refreshMissionList: (opts?: { preserveSelection?: boolean; silent?: boolean; refreshDashboard?: boolean }) => Promise<void>;
   loadDashboard: () => Promise<void>;
   loadMissionDetail: (missionId: string) => Promise<void>;
   loadOrchestratorGraph: (missionId: string) => Promise<void>;
@@ -344,7 +344,7 @@ export const useMissionsStore = create<MissionsStore>((set, get) => ({
 
   /* ── Compound actions (IPC calls) ── */
   refreshMissionList: async (opts = {}) => {
-    const { preserveSelection = true, silent = false } = opts;
+    const { preserveSelection = true, silent = false, refreshDashboard = false } = opts;
     if (!silent) set({ refreshing: true });
     try {
       const list = await window.ade.missions.list({ limit: 300 });
@@ -364,6 +364,9 @@ export const useMissionsStore = create<MissionsStore>((set, get) => ({
           ...(!nextId ? buildClearedSelectionState() : {}),
         };
       });
+      if (refreshDashboard) {
+        await get().loadDashboard();
+      }
     } catch (err) {
       set({
         error: err instanceof Error ? err.message : String(err),

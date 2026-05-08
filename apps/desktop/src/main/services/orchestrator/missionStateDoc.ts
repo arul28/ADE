@@ -26,6 +26,7 @@ const MAX_STEP_OUTCOMES = 40;
 const MAX_ACTIVE_ISSUES = 20;
 const MAX_PENDING_INTERVENTIONS = 10;
 const MAX_CHECKPOINT_SUMMARY_CHARS = 8_000;
+const MISSION_STATE_READ_PENDING_WRITE_TIMEOUT_MS = 500;
 
 const missionStateWriteQueues = new Map<string, Promise<MissionStateDocument>>();
 const coordinatorCheckpointWriteQueues = new Map<string, Promise<CoordinatorCheckpointDocument>>();
@@ -65,6 +66,25 @@ const trimSummary = (value: string): string => value.trim().slice(0, 200);
 
 function missionStateQueueKey(projectRoot: string, runId: string): string {
   return `${projectRoot}::${runId}`;
+}
+
+async function waitForPendingMissionStateWrite(
+  pending: Promise<MissionStateDocument>
+): Promise<void> {
+  let timeout: NodeJS.Timeout | null = null;
+  try {
+    await Promise.race([
+      pending.then(
+        () => undefined,
+        () => undefined
+      ),
+      new Promise<void>((resolve) => {
+        timeout = setTimeout(resolve, MISSION_STATE_READ_PENDING_WRITE_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 }
 
 export function getMissionStateDocumentPath(projectRoot: string, runId: string): string {
@@ -772,11 +792,7 @@ export async function readMissionStateDocument(args: {
   const key = missionStateQueueKey(args.projectRoot, args.runId);
   const pending = missionStateWriteQueues.get(key);
   if (pending) {
-    try {
-      await pending;
-    } catch {
-      // Best-effort wait; continue reading last persisted content.
-    }
+    await waitForPendingMissionStateWrite(pending);
   }
   return loadDocumentFromDisk(getMissionStateDocumentPath(args.projectRoot, args.runId));
 }

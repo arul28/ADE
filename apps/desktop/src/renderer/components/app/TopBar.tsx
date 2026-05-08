@@ -236,8 +236,11 @@ function ProjectTabIcon({
       setIcon(cached);
       return;
     }
+    if (!isCurrent) {
+      setIcon(null);
+      return;
+    }
 
-    const delayMs = isCurrent ? 100 : 750;
     let cancelled = false;
     const timer = window.setTimeout(() => {
       window.ade.project.resolveIcon(rootPath).then((nextIcon) => {
@@ -247,7 +250,7 @@ function ProjectTabIcon({
       }).catch(() => {
         if (!cancelled) setIcon(null);
       });
-    }, delayMs);
+    }, 100);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);

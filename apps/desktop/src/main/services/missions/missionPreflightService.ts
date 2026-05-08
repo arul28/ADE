@@ -16,7 +16,7 @@ import { getModelById, resolveModelAlias } from "../../../shared/modelRegistry";
 import type { MissionBudgetService } from "../orchestrator/missionBudgetService";
 import { mergeMissionPermissionConfig, normalizeMissionPermissions } from "../orchestrator/permissionMapping";
 import type { MissionPermissionConfig } from "../../../shared/types/missions";
-import { isRecord, nowIso, toOptionalString } from "../shared/utils";
+import { nowIso, toOptionalString } from "../shared/utils";
 import type { HumanWorkDigestService } from "../memory/humanWorkDigestService";
 import type { ComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import {
@@ -67,6 +67,29 @@ function toChecklistItem(args: {
     details: args.details,
     ...(args.fixHint ? { fixHint: args.fixHint } : {}),
   };
+}
+
+function analyzeCustomPhaseInstructions(phases: PhaseCard[]): string[] {
+  const warnings: string[] = [];
+  const actionPattern = /\b(add|apply|build|capture|check|confirm|create|inspect|implement|produce|record|report|review|run|summarize|test|update|verify|write)\b/i;
+  const outputPattern = /\b(artifact|criteria|done|evidence|output|pass|proof|report|result|summary|verify)\b/i;
+
+  for (const phase of phases) {
+    const instructions = phase.instructions?.trim() ?? "";
+    const label = phase.name?.trim() || phase.phaseKey || "Custom phase";
+    if (instructions.length < 20) {
+      warnings.push(`${label}: instructions look too short for autonomous execution.`);
+      continue;
+    }
+    if (!actionPattern.test(instructions)) {
+      warnings.push(`${label}: instructions should include a concrete action for the worker.`);
+    }
+    if (!outputPattern.test(instructions)) {
+      warnings.push(`${label}: instructions should name the expected output or done criteria.`);
+    }
+  }
+
+  return warnings;
 }
 
 function resolveSelectedPhases(args: {
@@ -314,6 +337,50 @@ export function createMissionPreflightService(args: {
     );
 
     const activeLanes = await laneService.list({ includeArchived: false }).catch(() => []);
+    const selectedLaneId = toOptionalString(launch.laneId);
+    const selectedLane = selectedLaneId
+      ? activeLanes.find((lane) => lane.id === selectedLaneId) ?? null
+      : null;
+
+    if (selectedLaneId) {
+      const laneClaim = missionService.isLaneClaimed(selectedLaneId);
+      if (!selectedLane) {
+        checklist.push(
+          toChecklistItem({
+            id: "lane_claim",
+            severity: "fail",
+            title: "Selected lane availability",
+            summary: "The selected lane is not available.",
+            details: [`Lane not found or archived: ${selectedLaneId}`],
+            fixHint: "Pick an active lane or create a new throwaway lane before launching.",
+          }),
+        );
+      } else if (laneClaim.claimed) {
+        checklist.push(
+          toChecklistItem({
+            id: "lane_claim",
+            severity: "fail",
+            title: "Selected lane availability",
+            summary: laneClaim.reason ?? "The selected lane is already claimed by another mission.",
+            details: [
+              `Lane: ${selectedLane.name ?? selectedLaneId}`,
+              ...(laneClaim.byMissionId ? [`Owning mission: ${laneClaim.byMissionId}`] : []),
+            ],
+            fixHint: "Pick a different lane, delete/archive the owning mission with cleanup, or create a new throwaway lane.",
+          }),
+        );
+      } else {
+        checklist.push(
+          toChecklistItem({
+            id: "lane_claim",
+            severity: "pass",
+            title: "Selected lane availability",
+            summary: "Selected lane is available for mission launch.",
+            details: [`Lane: ${selectedLane.name ?? selectedLaneId}`],
+          }),
+        );
+      }
+    }
 
     checklist.push(
       requiredComputerUseKinds.length === 0
@@ -586,51 +653,7 @@ export function createMissionPreflightService(args: {
         }),
       );
     } else {
-      const semanticWarnings: string[] = [];
-      const shortInstructions = customPhases.filter((phase) => (phase.instructions?.trim().length ?? 0) < 20);
-      for (const phase of shortInstructions) {
-        semanticWarnings.push(`${phase.name}: instructions look too short for autonomous execution.`);
-      }
-
-      try {
-        const evaluationPrompt = [
-          "You are validating custom mission phase instructions for an autonomous coding orchestrator.",
-          "For each phase, determine if instructions are concrete, actionable, and safe for autonomous execution.",
-          "Return JSON with keys: clear (boolean), feedback (string[]).",
-          "",
-          ...customPhases.map((phase, index) => `${index + 1}. ${phase.name}\nInstructions: ${phase.instructions}`),
-        ].join("\n");
-
-        const semanticEval = await aiIntegrationService.executeTask({
-          feature: "orchestrator",
-          taskType: "planning",
-          prompt: evaluationPrompt,
-          cwd: projectRoot,
-          model: "haiku",
-          timeoutMs: 20_000,
-          permissionMode: "read-only",
-          jsonSchema: {
-            type: "object",
-            properties: {
-              clear: { type: "boolean" },
-              feedback: { type: "array", items: { type: "string" } },
-            },
-            required: ["clear", "feedback"],
-            additionalProperties: false,
-          },
-        });
-
-        const structured = isRecord(semanticEval.structuredOutput) ? semanticEval.structuredOutput : null;
-        const clear = structured?.clear === true;
-        const feedback = Array.isArray(structured?.feedback)
-          ? structured.feedback.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0)
-          : [];
-        if (!clear) {
-          semanticWarnings.push(...(feedback.length > 0 ? feedback : ["AI semantic check flagged unclear custom phase instructions."]));
-        }
-      } catch (error) {
-        semanticWarnings.push(`Semantic AI check unavailable: ${error instanceof Error ? error.message : String(error)}`);
-      }
+      const semanticWarnings = analyzeCustomPhaseInstructions(customPhases);
 
       checklist.push(
         semanticWarnings.length === 0
@@ -639,7 +662,10 @@ export function createMissionPreflightService(args: {
               severity: "pass",
               title: "Phase configuration — semantic",
               summary: "Custom phase instructions are actionable.",
-              details: [`${customPhases.length} custom phase(s) evaluated.`],
+              details: [
+                `${customPhases.length} custom phase(s) evaluated with local checks.`,
+                "Launch review skips blocking AI semantic calls to keep mission creation responsive.",
+              ],
             })
           : toChecklistItem({
               id: "phase_semantic",
@@ -717,7 +743,6 @@ export function createMissionPreflightService(args: {
     const hardFailures = checklist.filter((item) => item.severity === "fail").length;
     const warnings = checklist.filter((item) => item.severity === "warning").length;
     const teamRuntimeConfig = launch.teamRuntime ?? launch.executionPolicy?.teamRuntime ?? null;
-    const selectedLaneId = toOptionalString(launch.laneId);
     const selectedLaneLabel = selectedLaneId
       ? activeLanes.find((lane) => lane.id === selectedLaneId)?.name ?? null
       : null;
@@ -751,7 +776,7 @@ export function createMissionPreflightService(args: {
         worktreeItem.severity === "warning"
           ? "Parallel fan-out may be reduced because available worktrees are below the ideal concurrency target."
           : "ADE can provision or reuse enough active lanes for the expected worker fan-out.",
-        "Mission closeout always ends with a result lane that contains the consolidated changes. ADE will not auto-open a PR during mission finalization.",
+        "Mission closeout always ends with a result lane that contains the consolidated changes. Multi-lane work is joined through ADE's internal integration lane, and ADE will not auto-open an external GitHub PR during mission finalization.",
       ],
       knownBlockers: checklist
         .filter((item) => item.severity === "fail")

@@ -1831,6 +1831,54 @@ describe("laneService missionId and laneRole", () => {
     expect(lane.laneRole).toBe("worker");
   });
 
+  it("createChild links existing app dependency installs into the worktree", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-child-deps-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    await seedProjectAndStack(db, { projectId: "proj-child-deps", repoRoot });
+    fs.mkdirSync(path.join(repoRoot, "apps", "desktop", "node_modules"), { recursive: true });
+
+    const parentWorktreePath = path.join(repoRoot, "parent");
+    vi.mocked(getHeadSha).mockImplementation(async (cwd: string) => {
+      if (cwd === parentWorktreePath) return "sha-parent-head";
+      return "sha-generic";
+    });
+
+    let createdWorktreePath = "";
+    vi.mocked(runGitOrThrow).mockImplementation(async (args: string[]) => {
+      if (args[0] === "worktree" && args[1] === "add") {
+        createdWorktreePath = args[4] ?? "";
+        fs.mkdirSync(path.join(createdWorktreePath, "apps", "desktop"), { recursive: true });
+        return { exitCode: 0, stdout: "", stderr: "" } as any;
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      if (args[0] === "push" && args[1] === "-u") return { exitCode: 0, stdout: "", stderr: "" };
+      if (args[0] === "status" && args[1] === "--porcelain=v1") return { exitCode: 0, stdout: "", stderr: "" };
+      if (args[0] === "rev-list" && args[1] === "--left-right" && args[2] === "--count") return { exitCode: 0, stdout: "0\t0\n", stderr: "" };
+      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "--symbolic-full-name" && args[3] === "@{upstream}") return { exitCode: 1, stdout: "", stderr: "" };
+      if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--git-dir") return { exitCode: 1, stdout: "", stderr: "" };
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-child-deps",
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, "worktrees"),
+    });
+
+    await service.createChild({
+      parentLaneId: "lane-parent",
+      name: "Mission worker lane",
+    });
+
+    expect(createdWorktreePath).toBeTruthy();
+    const linked = fs.lstatSync(path.join(createdWorktreePath, "apps", "desktop", "node_modules"));
+    expect(linked.isSymbolicLink()).toBe(true);
+  });
+
   it("createChild defaults missionId and laneRole to null when omitted", async () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-child-no-mission-"));
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());

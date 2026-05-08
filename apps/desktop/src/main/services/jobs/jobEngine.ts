@@ -23,15 +23,10 @@ export function createJobEngine({
   const devStabilityMode =
     process.env.ADE_STABILITY_MODE === "1"
     || !!process.env.VITE_DEV_SERVER_URL;
-  const conflictPredictionEnabledByDefault =
-    devStabilityMode
-    && process.env.ADE_ENABLE_CONFLICT_PREDICTION !== "0"
-    && !!process.env.VITE_DEV_SERVER_URL;
   const periodicPredictionEnabled =
     !devStabilityMode
     || process.env.ADE_ENABLE_ALL_BACKGROUND_TASKS === "1"
-    || process.env.ADE_ENABLE_CONFLICT_PREDICTION === "1"
-    || conflictPredictionEnabledByDefault;
+    || process.env.ADE_ENABLE_CONFLICT_PREDICTION === "1";
   const laneQueue = new Map<string, LaneQueueState>();
   const dirtyLaneQueue = new Set<string>();
   let dirtyQueueTimer: NodeJS.Timeout | null = null;

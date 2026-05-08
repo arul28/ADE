@@ -7,6 +7,7 @@ import { getChatMessageById, sendThreadMessageCtx, upsertThread } from "./chatMe
 import {
   resolveWorkerDeliverySessionCtx,
   routeMessageToCoordinatorCtx,
+  sendWorkerMessageToSessionWithStatusCtx,
   upsertWorkerDeliveryInterventionCtx,
 } from "./workerDeliveryService";
 
@@ -524,6 +525,62 @@ describe("workerDeliveryService upsertWorkerDeliveryInterventionCtx", () => {
 
     expect(result).toBeNull();
     expect(addIntervention).not.toHaveBeenCalled();
+  });
+});
+
+describe("workerDeliveryService sendWorkerMessageToSessionWithStatusCtx", () => {
+  it("uses Codex steer before send so coordinator reminders do not interrupt active turns", async () => {
+    const sendMessage = vi.fn();
+    const steer = vi.fn().mockResolvedValue({ steerId: "steer-1", queued: false });
+    const listSessions = vi.fn().mockResolvedValue([
+      { sessionId: "codex-session-1", provider: "codex" },
+    ]);
+
+    const result = await sendWorkerMessageToSessionWithStatusCtx(
+      {
+        agentChatService: {
+          listSessions,
+          sendMessage,
+          steer,
+        },
+      } as any,
+      "codex-session-1",
+      "Coordinator reminder: verify the result lane before reporting success.",
+    );
+
+    expect(result).toEqual({ ok: true, delivered: true, method: "steer" });
+    expect(steer).toHaveBeenCalledWith({
+      sessionId: "codex-session-1",
+      text: "Coordinator reminder: verify the result lane before reporting success.",
+    });
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("falls back to send when a Codex worker has no active turn to steer", async () => {
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    const steer = vi.fn().mockRejectedValue(new Error("No active turn to steer."));
+    const listSessions = vi.fn().mockResolvedValue([
+      { sessionId: "codex-session-2", provider: "codex" },
+    ]);
+
+    const result = await sendWorkerMessageToSessionWithStatusCtx(
+      {
+        agentChatService: {
+          listSessions,
+          sendMessage,
+          steer,
+        },
+      } as any,
+      "codex-session-2",
+      "Coordinator reminder: continue when ready.",
+    );
+
+    expect(result).toEqual({ ok: true, delivered: true, method: "send" });
+    expect(steer).toHaveBeenCalledTimes(1);
+    expect(sendMessage).toHaveBeenCalledWith({
+      sessionId: "codex-session-2",
+      text: "Coordinator reminder: continue when ready.",
+    });
   });
 });
 

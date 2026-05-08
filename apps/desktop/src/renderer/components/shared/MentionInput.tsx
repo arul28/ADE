@@ -168,7 +168,7 @@ export function MentionInput({
 
   return (
     <div
-      className="relative"
+      className="relative w-full min-w-0 max-w-full overflow-hidden"
       style={{
         background: "linear-gradient(180deg, rgba(18,14,28,0.98) 0%, rgba(12,10,18,0.98) 100%)",
         border: focused
@@ -240,7 +240,7 @@ export function MentionInput({
 
       <ChatComposerShell
         mode={surfaceMode}
-        className="border-0 bg-transparent shadow-none backdrop-blur-0"
+        className="w-full min-w-0 max-w-full border-0 bg-transparent shadow-none backdrop-blur-0"
         trays={attachments.length > 0 ? (
           <ChatAttachmentTray
             attachments={attachments}
@@ -251,7 +251,7 @@ export function MentionInput({
         ) : undefined}
         footer={(
           <div
-            className="flex flex-wrap items-center gap-2 px-4 py-3"
+            className="flex w-full min-w-0 max-w-full flex-wrap items-center gap-2 overflow-hidden px-4 py-3"
             style={{ borderColor: "rgba(54, 46, 74, 0.9)" }}
           >
             {onPickAttachments ? (
@@ -300,7 +300,7 @@ export function MentionInput({
           </div>
         )}
       >
-        <div className="px-4 py-4">
+        <div className="w-full min-w-0 max-w-full px-4 py-4">
           <textarea
             ref={textareaRef}
             value={value}
@@ -319,7 +319,7 @@ export function MentionInput({
             autoCapitalize="sentences"
             spellCheck={true}
             rows={1}
-            className="w-full resize-none rounded-[var(--chat-radius-card)] border border-white/8 bg-black/12 px-4 py-3 text-[12px] outline-none transition-colors placeholder:text-white/24 disabled:opacity-50"
+            className="block w-full min-w-0 max-w-full resize-none rounded-[var(--chat-radius-card)] border border-white/8 bg-black/12 px-4 py-3 text-[12px] outline-none transition-colors placeholder:text-white/24 disabled:opacity-50"
             style={{
               fontFamily: MONO_FONT,
               color: "#FAFAFA",

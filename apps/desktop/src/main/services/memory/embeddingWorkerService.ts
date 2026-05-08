@@ -29,6 +29,9 @@ type CreateEmbeddingWorkerServiceOpts = {
   activeBatchSize?: number;
   activeSessionColdStartDeferMs?: number;
   yieldMs?: number;
+  deferMs?: number;
+  processBeforeStart?: boolean;
+  canProcess?: () => boolean;
   now?: () => Date;
   sleep?: (ms: number) => Promise<void>;
 };
@@ -82,6 +85,9 @@ export function createEmbeddingWorkerService(opts: CreateEmbeddingWorkerServiceO
     Math.floor(opts.activeSessionColdStartDeferMs ?? DEFAULT_ACTIVE_SESSION_COLD_START_DEFER_MS),
   );
   const yieldMs = Math.max(0, Math.floor(opts.yieldMs ?? DEFAULT_YIELD_MS));
+  const deferMs = Math.max(1_000, Math.floor(opts.deferMs ?? 60_000));
+  const processBeforeStart = opts.processBeforeStart !== false;
+  const canProcess = opts.canProcess ?? (() => true);
 
   const queue: string[] = [];
   const queuedIds = new Set<string>();
@@ -140,12 +146,34 @@ export function createEmbeddingWorkerService(opts: CreateEmbeddingWorkerServiceO
     return isSessionActive();
   }
 
+  function shouldProcessNow(): boolean {
+    try {
+      return canProcess();
+    } catch (error) {
+      logger.warn("memory.embedding_worker.can_process_failed", {
+        projectId,
+        error: getErrorMessage(error),
+      });
+      return false;
+    }
+  }
+
   function scheduleProcessing(delayMs = 0) {
+    if (!processBeforeStart && !started) return;
     if (scheduled || processingPromise || queue.length === 0) return;
     scheduled = true;
     const normalizedDelayMs = Math.max(0, Math.floor(delayMs));
     setTimeout(() => {
       scheduled = false;
+      if (!shouldProcessNow()) {
+        logger.info("memory.embedding_worker.processing_deferred", {
+          projectId,
+          queueDepth: queue.length,
+          deferMs,
+        });
+        scheduleProcessing(deferMs);
+        return;
+      }
       void processQueue().catch((error) => {
         logger.error("memory.embedding_worker.queue_failed", {
           projectId,
@@ -242,6 +270,15 @@ export function createEmbeddingWorkerService(opts: CreateEmbeddingWorkerServiceO
     let rescheduleDelayMs = 0;
     processingPromise = (async () => {
       while (queue.length > 0) {
+        if (!shouldProcessNow()) {
+          rescheduleDelayMs = deferMs;
+          logger.info("memory.embedding_worker.processing_deferred", {
+            projectId,
+            queueDepth: queue.length,
+            deferMs,
+          });
+          return;
+        }
         if (shouldDeferColdStartForActiveSession()) {
           rescheduleDelayMs = activeSessionColdStartDeferMs;
           logger.info("memory.embedding_worker.cold_start_deferred", {
@@ -308,6 +345,7 @@ export function createEmbeddingWorkerService(opts: CreateEmbeddingWorkerServiceO
     for (const id of listBackfillIds()) {
       queueMemory(id);
     }
+    scheduleProcessing();
     return getStatus();
   }
 

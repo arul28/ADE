@@ -110,6 +110,62 @@ describe("prepareMissionFeedItems", () => {
     expect(items).toHaveLength(1);
     expect(items[0]?.id).toBe("keep");
   });
+
+  it("drops validation bookkeeping and de-dupes repeated feed entries", () => {
+    const items = prepareMissionFeedItems([
+      makeProgressItem({
+        id: "requires-self-validation",
+        kind: "validation",
+        title: "Validation signal",
+        detail: 'Step "integration_phase_closeout" requires self-validation. Review output and call report_validation with verdict pass/fail.',
+      }),
+      makeProgressItem({
+        id: "state-changed",
+        kind: "validation",
+        title: "Validation update",
+        detail: "Validate: validation-worker validation changed.",
+      }),
+      makeProgressItem({
+        id: "meaningful-validation",
+        kind: "validation",
+        title: "Validation signal",
+        detail: "Dedicated validation passed. The throwaway implementation is confined to the fake lane.",
+      }),
+      makeProgressItem({
+        id: "duplicate-validation",
+        kind: "validation",
+        title: "Validation signal",
+        detail: "Dedicated validation passed. The throwaway implementation is confined to the fake lane.",
+        at: "2026-03-11T14:10:00.000Z",
+      }),
+    ]);
+
+    expect(items.map((item) => item.id)).toEqual(["meaningful-validation"]);
+  });
+
+  it("preserves readable worker result sections", () => {
+    const items = prepareMissionFeedItems([
+      makeProgressItem({
+        id: "worker-result",
+        title: "Worker result",
+        detail: [
+          "Created the smoke helper.",
+          "",
+          "Changed files:",
+          "- apps/desktop/src/smoke.ts",
+          "- apps/desktop/src/smoke.test.ts",
+          "",
+          "Tests:",
+          "- npm test -- smoke.test.ts",
+          "- 3 passed, 0 failed, 0 skipped",
+        ].join("\n"),
+      }),
+    ]);
+
+    expect(items).toHaveLength(1);
+    expect(items[0]?.detail).toContain("Changed files:\n- apps/desktop/src/smoke.ts");
+    expect(items[0]?.detail).toContain("Tests:\n- npm test -- smoke.test.ts");
+  });
 });
 
 describe("buildMissionStateNarrative", () => {

@@ -84,6 +84,20 @@ producing bad vectors.
 - Yields `DEFAULT_YIELD_MS = 100 ms` between batches to avoid blocking
   the event loop.
 
+### Activity-aware deferral
+
+The worker accepts an optional `canProcess()` callback (default: always
+true) that gates whether a scheduled batch may run. When the callback
+returns false, the worker logs `memory.embedding_worker.processing_deferred`
+and reschedules itself after `deferMs` (default 60 s, floor 1 s). This
+runs in two places: at `scheduleProcessing()` time (if the gate is
+closed when a tick fires) and inside `processQueue()` between batches
+(so a session that goes active mid-drain pauses the rest of the queue
+until the gate reopens). `processBeforeStart` (default true) lets the
+host reject any work before `start()` has been called — useful when the
+service composition wants to register the worker without immediately
+processing anything.
+
 ### Worker status
 
 ```ts

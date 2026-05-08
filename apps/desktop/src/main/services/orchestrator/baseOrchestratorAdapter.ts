@@ -262,6 +262,20 @@ export function buildFullPrompt(
   const phaseMaxQuestions = Number.isFinite(phaseMaxQuestionsRaw)
     ? Math.max(1, Math.min(10, Math.floor(phaseMaxQuestionsRaw)))
     : null;
+  const answeredPlannerQuestionRaw =
+    step.metadata?.lastAnsweredPlannerQuestion
+    && typeof step.metadata.lastAnsweredPlannerQuestion === "object"
+    && !Array.isArray(step.metadata.lastAnsweredPlannerQuestion)
+      ? step.metadata.lastAnsweredPlannerQuestion as Record<string, unknown>
+      : null;
+  const answeredPlannerQuestion =
+    typeof answeredPlannerQuestionRaw?.question === "string" && answeredPlannerQuestionRaw.question.trim().length > 0
+      ? answeredPlannerQuestionRaw.question.trim()
+      : "";
+  const answeredPlannerAnswer =
+    typeof answeredPlannerQuestionRaw?.answer === "string" && answeredPlannerQuestionRaw.answer.trim().length > 0
+      ? answeredPlannerQuestionRaw.answer.trim()
+      : "";
   const phaseLabel =
     typeof step.metadata?.phaseName === "string" && step.metadata.phaseName.trim().length > 0
       ? step.metadata.phaseName.trim()
@@ -290,6 +304,18 @@ export function buildFullPrompt(
           "- Proceed with the best grounded assumption you can and document it in your result.",
         ].join("\n")
   );
+
+  if (answeredPlannerAnswer.length > 0) {
+    systemParts.push(
+      [
+        "PLANNING QUESTION ALREADY ANSWERED:",
+        answeredPlannerQuestion.length > 0 ? `- Question: ${compactText(answeredPlannerQuestion, 360)}` : null,
+        `- User answer: ${compactText(answeredPlannerAnswer, 500)}`,
+        "- The clarification round for this planning phase is already consumed. Do not call `ask_user`, do not call `request_user_input`, and do not ask another natural-language clarification.",
+        "- Use the answer above as a hard planning input and return `report_result.plan.markdown` now."
+      ].filter((line): line is string => typeof line === "string").join("\n")
+    );
+  }
 
   // Planning-specific instructions for planning steps
   {
@@ -590,6 +616,7 @@ export function buildFullPrompt(
         "- get_pending_messages: Check for messages from the coordinator or peer workers",
         "- get_timeline: See recent events in your run",
         "- stream_events: Poll for new orchestrator events",
+        "From a shell worker, call these through the ADE CLI, for example `ade get_pending_messages --text`, `ade get_run_graph --text`, `ade get_worker_states --text`, or `ade message_worker <target-worker-step-key> --content \"...\" --text`.",
         "Use get_pending_messages periodically to check for steering directives or peer communications."
       ].join("\n")
     );

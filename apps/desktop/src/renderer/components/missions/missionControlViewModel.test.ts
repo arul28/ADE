@@ -170,6 +170,101 @@ describe("deriveActivePhaseViewModel", () => {
     expect(vm?.exitRequirements.some((entry) => entry.includes("remaining validation step"))).toBe(true);
     expect(vm?.capabilityWarnings[0]).toContain("screenshot");
   });
+
+  it("does not treat display-only task shells as remaining phase work", () => {
+    const phases = [
+      makePhase(),
+      makePhase({
+        id: "phase-development",
+        phaseKey: "development",
+        name: "Development",
+        position: 2,
+      }),
+    ];
+    const runGraph = makeRunGraph(phases);
+    runGraph.run.metadata = {
+      ...runGraph.run.metadata,
+      phaseRuntime: {
+        currentPhaseKey: "development",
+        currentPhaseName: "Development",
+      },
+    };
+    const planningStep = runGraph.steps[0]!;
+    runGraph.steps = [
+      planningStep,
+      {
+        ...planningStep,
+        id: "step-task-shell",
+        stepKey: "development-readonly-noop-verification",
+        stepIndex: 1,
+        title: "Read-only no-op development verification",
+        status: "pending",
+        dependencyStepIds: [planningStep.id],
+        startedAt: null,
+        completedAt: null,
+        metadata: {
+          phaseKey: "development",
+          phaseName: "Development",
+          phasePosition: 2,
+          stepType: "task",
+          taskType: "implementation",
+        },
+      },
+      {
+        ...planningStep,
+        id: "step-development-worker",
+        stepKey: "worker-development",
+        stepIndex: 2,
+        title: "Development worker",
+        status: "succeeded",
+        dependencyStepIds: [planningStep.id],
+        metadata: {
+          phaseKey: "development",
+          phaseName: "Development",
+          phasePosition: 2,
+          stepType: "implementation",
+          taskType: "implementation",
+          spawnedByCoordinator: true,
+          workerName: "Development worker",
+        },
+      },
+    ];
+
+    const vm = deriveActivePhaseViewModel({
+      mission: makeMission(phases),
+      runGraph,
+      modelCapabilities: { profiles: [] },
+    });
+
+    expect(vm?.whyActive).not.toContain("non-terminal work");
+    expect(vm?.exitRequirements.join("\n")).not.toContain("remaining step");
+    expect(vm?.exitRequirements).toContain("All executable Development steps are terminal. ADE can advance after coordinator review.");
+  });
+
+  it("does not show active phase instructions after the mission is canceled", () => {
+    const phases = [makePhase()];
+    const mission = makeMission(phases);
+    mission.status = "canceled";
+    const runGraph = makeRunGraph(phases);
+    runGraph.run.status = "canceled";
+    runGraph.run.metadata = {
+      ...runGraph.run.metadata,
+      phaseRuntime: {
+        currentPhaseKey: "planning",
+        currentPhaseName: "Planning",
+      },
+    };
+
+    const vm = deriveActivePhaseViewModel({
+      mission,
+      runGraph,
+      modelCapabilities: { profiles: [] },
+    });
+
+    expect(vm?.modeLabel).toBe("closed");
+    expect(vm?.whyActive).toContain("Mission canceled");
+    expect(vm?.exitRequirements).toEqual([]);
+  });
 });
 
 describe("buildMissionArtifactGroups", () => {

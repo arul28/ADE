@@ -1,10 +1,11 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
   SquaresFour,
   ChatCircle,
   Pulse,
 } from "@phosphor-icons/react";
 import type {
+  MissionRunView,
   OrchestratorAttempt,
   PhaseCard,
 } from "../../../shared/types";
@@ -25,9 +26,9 @@ import { MissionRunPanel } from "./MissionRunPanel";
 import { MissionLogsTab } from "./MissionLogsTab";
 import { MissionArtifactsTab } from "./MissionArtifactsTab";
 import { MissionActivePhasePanel } from "./MissionActivePhasePanel";
+import { MissionControlOfficePanel } from "./MissionControlOfficePanel";
 import { PromptInspectorCard } from "./PromptInspectorCard";
 import { buildMissionArtifactGroups, deriveActivePhaseViewModel } from "./missionControlViewModel";
-import { useMissionRunView } from "./useMissionRunView";
 import { routeMissionIntervention } from "./missionInterventionRouting";
 
 /* ════════════════════ TAB NAVIGATION ════════════════════ */
@@ -49,12 +50,23 @@ export function MissionTabNavigation() {
   ];
 
   return (
-    <div className="flex items-center gap-0 px-3" style={{ borderBottom: `1px solid ${COLORS.border}` }}>
+    <div
+      role="tablist"
+      aria-label="Mission views"
+      className="flex items-center gap-0 px-3"
+      style={{ borderBottom: `1px solid ${COLORS.border}` }}
+    >
       {tabs.map((tab) => {
         const isActive = activeTab === tab.key;
         return (
           <button
             key={tab.key}
+            id={`mission-tab-${tab.key}`}
+            type="button"
+            role="tab"
+            aria-selected={isActive}
+            aria-controls={`mission-panel-${tab.key}`}
+            tabIndex={isActive ? 0 : -1}
             onClick={() => setActiveTab(tab.key)}
             className="flex items-center gap-1.5 px-2.5 py-2 text-[11px] transition-colors"
             style={{
@@ -102,7 +114,7 @@ const selectPromptInspectorData = (s: MissionsStore) => ({
 
 /* ════════════════════ TAB CONTENT ════════════════════ */
 
-export function MissionTabContent() {
+export function MissionTabContent({ runView }: { runView: MissionRunView | null }) {
   /* ── Grouped selectors (VAL-ARCH-008) ── */
   const {
     selectedMissionId,
@@ -129,8 +141,6 @@ export function MissionTabContent() {
   const runSteps = useMemo(() => runGraph?.steps ?? [], [runGraph?.steps]);
   const runClaims = useMemo(() => runGraph?.claims ?? [], [runGraph?.claims]);
   const runTimeline = useMemo(() => runGraph?.timeline ?? [], [runGraph?.timeline]);
-
-  const { runView } = useMissionRunView(selectedMissionId, runGraph?.run.id ?? null);
 
   const attemptsByStep = useMemo(() => {
     const map = new Map<string, OrchestratorAttempt[]>();
@@ -187,6 +197,7 @@ export function MissionTabContent() {
   const chatFocused = activeTab === "chat";
   const compactPhaseChrome = chatFocused;
   const showCompletionBanner = activeTab !== "chat";
+  const [showRawTimelineLogs, setShowRawTimelineLogs] = useState(false);
 
   /* ── Prompt inspectors (imperative store access to avoid extra subscriptions) ── */
   const loadCoordinatorPromptInspector = async () => {
@@ -242,6 +253,9 @@ export function MissionTabContent() {
       {runGraph && showCompletionBanner && (<div className="px-4 pt-3 space-y-2"><CompletionBanner status={runGraph.run.status} evaluation={runGraph.completionEvaluation} runId={runGraph.run.id} /></div>)}
       {/* Tab Content */}
       <div
+        id={`mission-panel-${activeTab}`}
+        role="tabpanel"
+        aria-labelledby={`mission-tab-${activeTab}`}
         className={cn(
           "flex-1 min-h-0",
           activeTab === "chat" ? "flex flex-col overflow-hidden" : "overflow-y-auto overflow-x-hidden p-4",
@@ -249,6 +263,13 @@ export function MissionTabContent() {
       >
         {activeTab === "overview" && selectedMission && (
           <div className="space-y-3">
+            <MissionControlOfficePanel
+              mission={selectedMission}
+              runView={runView}
+              runGraph={runGraph}
+              phases={missionPhaseBadge.phases}
+              onOpenIntervention={handleOpenIntervention}
+            />
             <MissionRunPanel
               runView={runView}
               interventions={selectedMission.interventions}
@@ -309,12 +330,29 @@ export function MissionTabContent() {
               </div>
             )}
             {selectedMission && (
-              <MissionLogsTab
-                missionId={selectedMission.id}
-                runId={runGraph?.run.id ?? null}
-                focusInterventionId={logsFocusInterventionId}
-                onFocusHandled={() => useMissionsStore.getState().setLogsFocusInterventionId(null)}
-              />
+              <div className="space-y-2">
+                <button
+                  type="button"
+                  onClick={() => setShowRawTimelineLogs((value) => !value)}
+                  className="px-2 py-1 text-[10px] font-bold uppercase tracking-[1px]"
+                  style={{
+                    background: showRawTimelineLogs ? "color-mix(in srgb, var(--color-accent) 18%, transparent)" : COLORS.recessedBg,
+                    border: showRawTimelineLogs ? "1px solid color-mix(in srgb, var(--color-accent) 35%, transparent)" : `1px solid ${COLORS.border}`,
+                    color: showRawTimelineLogs ? COLORS.accent : COLORS.textMuted,
+                    fontFamily: MONO_FONT,
+                  }}
+                >
+                  {showRawTimelineLogs ? "Hide raw logs" : "Show raw logs"}
+                </button>
+                {showRawTimelineLogs ? (
+                  <MissionLogsTab
+                    missionId={selectedMission.id}
+                    runId={runGraph?.run.id ?? null}
+                    focusInterventionId={logsFocusInterventionId}
+                    onFocusHandled={() => useMissionsStore.getState().setLogsFocusInterventionId(null)}
+                  />
+                ) : null}
+              </div>
             )}
           </div>
         )}

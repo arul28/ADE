@@ -545,15 +545,15 @@ export function upsertThread(
   const runId = (target && "runId" in target ? target.runId : null) ?? null;
   const isWorkerTarget = target?.kind === "worker";
   const isTeammateTarget = target?.kind === "teammate";
+  const isCoordinatorTarget = target?.kind === "coordinator";
   const stepId = isWorkerTarget ? target.stepId ?? null : null;
   const stepKey = isWorkerTarget ? target.stepKey ?? null : null;
   const attemptId = isWorkerTarget ? target.attemptId ?? null : null;
-  const sessionId = isWorkerTarget
+  const sessionId = isWorkerTarget || isTeammateTarget || isCoordinatorTarget
     ? target.sessionId ?? null
-    : isTeammateTarget
-      ? target.sessionId ?? null
-      : null;
-  const laneId = isWorkerTarget ? target.laneId ?? missionIdentity.laneId : missionIdentity.laneId;
+    : null;
+  const laneId = (isWorkerTarget || isCoordinatorTarget ? target.laneId : null)
+    ?? missionIdentity.laneId;
   const metadataJson =
     args.metadata
       ? JSON.stringify(args.metadata)
@@ -588,8 +588,8 @@ export function upsertThread(
         step_id = excluded.step_id,
         step_key = excluded.step_key,
         attempt_id = excluded.attempt_id,
-        session_id = excluded.session_id,
-        lane_id = excluded.lane_id,
+        session_id = coalesce(excluded.session_id, orchestrator_chat_threads.session_id),
+        lane_id = coalesce(excluded.lane_id, orchestrator_chat_threads.lane_id),
         status = excluded.status,
         metadata_json = excluded.metadata_json,
         updated_at = excluded.updated_at
@@ -757,6 +757,8 @@ function deriveTargetFromThread(thread: OrchestratorChatThread): OrchestratorCha
   return {
     kind: "coordinator",
     runId: thread.runId ?? null,
+    sessionId: thread.sessionId ?? null,
+    laneId: thread.laneId ?? null,
   };
 }
 
@@ -795,11 +797,15 @@ function mergeThreadResolvedTarget(
     case "workers":
     case "agent":
       return explicitTarget;
-    case "coordinator":
+    case "coordinator": {
+      const tt = threadTarget as Extract<typeof threadTarget, { kind: "coordinator" }>;
       return {
         kind: "coordinator",
-        runId: explicitTarget.runId ?? threadTarget.runId ?? null,
+        runId: explicitTarget.runId ?? tt.runId ?? null,
+        sessionId: explicitTarget.sessionId ?? tt.sessionId ?? null,
+        laneId: explicitTarget.laneId ?? tt.laneId ?? null,
       };
+    }
     default:
       return explicitTarget;
   }
@@ -992,6 +998,8 @@ export function persistUpdatedChatMessage(
     `
       update orchestrator_chat_messages
       set
+        content = ?,
+        timestamp = ?,
         thread_id = ?,
         step_key = ?,
         target_json = ?,
@@ -1005,6 +1013,8 @@ export function persistUpdatedChatMessage(
       where id = ?
     `,
     [
+      normalized.content,
+      normalized.timestamp,
       normalized.threadId ?? missionThreadId(normalized.missionId),
       normalized.stepKey ?? null,
       normalized.target ? JSON.stringify(normalized.target) : null,
@@ -1240,7 +1250,20 @@ export function listChatThreadsCtx(
         step_id,
         step_key,
         attempt_id,
-        session_id,
+        coalesce(
+          session_id,
+          (
+            select m.source_session_id
+            from orchestrator_chat_messages m
+            where m.mission_id = orchestrator_chat_threads.mission_id
+              and m.thread_id = orchestrator_chat_threads.id
+              and m.source_session_id is not null
+              and trim(m.source_session_id) != ''
+              and m.source_session_id not like 'coordinator:%'
+            order by m.timestamp desc
+            limit 1
+          )
+        ) as session_id,
         lane_id,
         status,
         unread_count,

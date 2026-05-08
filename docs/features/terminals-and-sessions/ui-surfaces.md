@@ -475,6 +475,13 @@ A single hook that owns a lot of state:
   every mutation
 - `refresh({ showLoading, force })` — forces a cache bust and reloads
 
+`useWorkSessions({ active })` accepts an optional `active` flag (default
+`true`). When `active` is false, the hook stops scheduling background
+refreshes, defers the initial `refresh` until the route flips back to
+`/work`, and cancels any pending refresh timer on transition. Callers
+that mount the hook on tabs other than Work pass `active: false` to
+avoid scanning sessions while the user can't see them.
+
 The hook exposes `openSessionTab`, `focusSession`, `selectLane`,
 `upsertOptimisticChatSession` (so new chats appear in the tab strip
 before the IPC round-trip completes), `refresh`, and the right-sidebar

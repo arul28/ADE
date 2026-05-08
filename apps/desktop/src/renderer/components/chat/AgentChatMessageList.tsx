@@ -876,8 +876,8 @@ const MarkdownBlock = React.memo(function MarkdownBlock({
                 tabIndex={0}
                 className={
                   neu
-                    ? "inline-flex cursor-pointer items-center rounded-md border border-white/14 bg-white/[0.06] px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-white/88 underline decoration-white/25 underline-offset-2 transition-colors hover:border-white/22 hover:bg-white/[0.1] hover:text-white"
-                    : "inline-flex cursor-pointer items-center rounded-md border border-sky-400/16 bg-sky-500/[0.08] px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-sky-200 underline decoration-sky-300/30 underline-offset-2 transition-colors hover:border-sky-400/24 hover:bg-sky-500/[0.12] hover:text-sky-100"
+                    ? "inline max-w-full cursor-pointer break-all whitespace-normal rounded-md border border-white/14 bg-white/[0.06] px-1.5 py-0.5 align-baseline font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-white/88 underline decoration-white/25 underline-offset-2 transition-colors hover:border-white/22 hover:bg-white/[0.1] hover:text-white"
+                    : "inline max-w-full cursor-pointer break-all whitespace-normal rounded-md border border-sky-400/16 bg-sky-500/[0.08] px-1.5 py-0.5 align-baseline font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-sky-200 underline decoration-sky-300/30 underline-offset-2 transition-colors hover:border-sky-400/24 hover:bg-sky-500/[0.12] hover:text-sky-100"
                 }
                 onClick={() => openWorkspacePath(workspacePath!)}
                 onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openWorkspacePath(workspacePath!); } }}
@@ -905,8 +905,8 @@ const MarkdownBlock = React.memo(function MarkdownBlock({
                   type="button"
                   className={
                     neu
-                      ? "inline-flex items-center rounded-sm border border-white/12 bg-white/[0.06] px-1.5 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*12/14)] text-white/88 underline decoration-white/25 underline-offset-2 transition-colors hover:border-white/20 hover:bg-white/[0.1] hover:text-white"
-                      : "inline-flex items-center rounded-sm border border-sky-400/12 bg-sky-500/[0.06] px-1.5 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*12/14)] text-sky-200 underline decoration-sky-300/30 underline-offset-2 transition-colors hover:border-sky-400/22 hover:bg-sky-500/[0.1] hover:text-sky-100"
+                      ? "inline max-w-full break-all whitespace-normal rounded-sm border border-white/12 bg-white/[0.06] px-1.5 py-0.5 align-baseline font-sans text-[length:calc(var(--chat-font-size)*12/14)] text-left text-white/88 underline decoration-white/25 underline-offset-2 transition-colors hover:border-white/20 hover:bg-white/[0.1] hover:text-white"
+                      : "inline max-w-full break-all whitespace-normal rounded-sm border border-sky-400/12 bg-sky-500/[0.06] px-1.5 py-0.5 align-baseline font-sans text-[length:calc(var(--chat-font-size)*12/14)] text-left text-sky-200 underline decoration-sky-300/30 underline-offset-2 transition-colors hover:border-sky-400/22 hover:bg-sky-500/[0.1] hover:text-sky-100"
                   }
                   onClick={() => openWorkspacePath(workspacePath)}
                   title="Open file in Files"
@@ -1453,10 +1453,14 @@ function FileChangeEventCard({
       </span>
       <FileCode size={11} weight="regular" className="text-fg/34" />
       <span className="font-medium text-fg/62">{formatFileAction(event.kind)}</span>
-      <span className="truncate text-fg/78">{basename}</span>
+      <span className="min-w-0 max-w-full truncate text-fg/78" title={event.path}>{basename}</span>
       {additions > 0 ? <span className="text-emerald-300/70">+{additions}</span> : null}
       {deletions > 0 || event.kind === "delete" ? <span className="text-red-300/70">-{deletions}</span> : null}
-      {dirname ? <span className="truncate text-[length:calc(var(--chat-font-size)*10/14)] text-fg/26">{dirname}</span> : null}
+      {dirname ? (
+        <span className="min-w-0 max-w-full truncate text-[length:calc(var(--chat-font-size)*10/14)] text-fg/26" title={dirname}>
+          {dirname}
+        </span>
+      ) : null}
     </div>
   );
 
@@ -1905,6 +1909,9 @@ function renderEvent(
   }
 ) {
   const event = envelope.event;
+  const activeTurnMotionEnabled = Boolean(options?.turnActive)
+    && options?.surfaceMode !== "mission-thread"
+    && options?.surfaceMode !== "mission-feed";
 
   /* ── User message ── */
   if (event.type === "user_message") {
@@ -1917,7 +1924,7 @@ function renderEvent(
     }
     return (
       <motion.div
-        className="flex min-w-0 w-full justify-end"
+        className="flex min-w-0 max-w-full w-full justify-end overflow-hidden"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.14, ease: "easeOut" }}
@@ -1925,7 +1932,7 @@ function renderEvent(
         <div
           className={cn(
             GLASS_CARD_CLASS,
-            "ade-chat-message-card-user group relative min-w-0 max-w-[82%] px-[length:var(--chat-bubble-user-px)] py-[length:var(--chat-bubble-user-py)]",
+            "ade-chat-message-card-user group relative min-w-0 max-w-[82%] overflow-hidden px-[length:var(--chat-bubble-user-px)] py-[length:var(--chat-bubble-user-py)]",
           )}
           style={MESSAGE_CARD_STYLE}
         >
@@ -1993,7 +2000,7 @@ function renderEvent(
   if (event.type === "text") {
     return (
       <motion.div
-        className="flex min-w-0 w-full justify-start"
+        className="flex min-w-0 max-w-full w-full justify-start overflow-hidden"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.14, ease: "easeOut" }}
@@ -2001,13 +2008,13 @@ function renderEvent(
         <div
           className={cn(
             GLASS_CARD_CLASS,
-            "ade-chat-message-card-assistant group relative min-w-0 max-w-[min(104ch,78%)] px-[length:var(--chat-bubble-assistant-px)] py-[length:var(--chat-bubble-assistant-py)]",
-            options?.turnActive && "ade-glow-pulse",
+            "ade-chat-message-card-assistant group relative min-w-0 max-w-[min(104ch,78%)] overflow-hidden px-[length:var(--chat-bubble-assistant-px)] py-[length:var(--chat-bubble-assistant-py)]",
+            activeTurnMotionEnabled && "ade-glow-pulse",
           )}
           style={ASSISTANT_MESSAGE_CARD_STYLE}
         >
           <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-violet-400/25 to-transparent" />
-          {options?.turnActive && (
+          {activeTurnMotionEnabled && (
             <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-[var(--chat-radius-card)]">
               <div className="absolute inset-0 ade-streaming-shimmer" />
             </div>
@@ -2999,10 +3006,12 @@ function renderEvent(
               className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-white/[0.05] bg-black/10 px-2.5 py-2"
             >
               <span className="font-medium text-fg/72">{formatTurnDiffAction(file.status)}</span>
-              <span className="text-fg/58">{basenamePathLabel(file.path)}</span>
+              <span className="min-w-0 max-w-full truncate text-fg/58" title={file.path}>{basenamePathLabel(file.path)}</span>
               {file.additions > 0 ? <span className="text-emerald-300/70">+{file.additions}</span> : null}
               {file.deletions > 0 || file.status === "D" ? <span className="text-red-300/70">-{file.deletions}</span> : null}
-              <span className="ml-auto truncate font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-fg/34">{dirnamePathLabel(file.path) ?? ""}</span>
+              <span className="min-w-0 max-w-full truncate font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-fg/34" title={dirnamePathLabel(file.path) ?? ""}>
+                {dirnamePathLabel(file.path) ?? ""}
+              </span>
             </div>
           ))}
         </div>
@@ -3310,9 +3319,13 @@ const EventRow = React.memo(function EventRow({
   resolvedInputStates,
   sessionId,
 }: EventRowProps) {
-  const workLogAnimate = Boolean(turnActive) && !sessionEnded && Boolean(isLatestWorkLog);
+  const workLogAnimate = Boolean(turnActive)
+    && !sessionEnded
+    && Boolean(isLatestWorkLog)
+    && surfaceMode !== "mission-thread"
+    && surfaceMode !== "mission-feed";
   return (
-    <div className="space-y-3">
+    <div className="min-w-0 max-w-full space-y-3 overflow-hidden">
       {showTurnDivider ? (
         <div className="my-3 flex items-center gap-4">
           <span className="h-px flex-1 bg-gradient-to-r from-transparent via-violet-400/[0.08] to-transparent" />
@@ -3327,7 +3340,7 @@ const EventRow = React.memo(function EventRow({
       ) : null}
       {envelope.event.type === "work_log_group"
         ? (
-          <div className="w-fit max-w-[min(100%,70ch)]">
+          <div className="w-fit min-w-0 max-w-[min(100%,70ch)] overflow-hidden">
             <ChatWorkLogBlock
               entries={envelope.event.entries}
               summary={envelope.event.summary}
@@ -3383,7 +3396,7 @@ const MeasuredEventRow = React.memo(function MeasuredEventRow({
   }, [index, onMeasure]);
 
   return (
-    <div ref={rowRef}>
+    <div ref={rowRef} className="min-w-0 max-w-full overflow-hidden">
       <EventRow {...rest} />
     </div>
   );
@@ -3984,6 +3997,10 @@ export function AgentChatMessageList({
     return Math.max(0, h);
   }, [shouldVirtualize, endIndex, groupedRows.length, rowHeight, timelineRowGapPx]);
 
+  const streamingIndicatorAnimated = showStreamingIndicator
+    && !sessionEnded
+    && surfaceMode !== "mission-thread"
+    && surfaceMode !== "mission-feed";
   const streamingIndicator = showStreamingIndicator && !sessionEnded ? (
     <motion.div
       className="w-fit max-w-[min(100%,70ch)] pt-3 pb-2"
@@ -3992,8 +4009,17 @@ export function AgentChatMessageList({
       transition={{ duration: 0.12, ease: "easeOut" }}
     >
       {latestActivity ? (
-        <span className="ade-shimmer-text font-sans text-[length:calc(var(--chat-font-size)*12/14)] italic">
+        <span
+          className={cn(
+            "font-sans text-[length:calc(var(--chat-font-size)*12/14)] italic",
+            streamingIndicatorAnimated ? "ade-shimmer-text" : "text-fg/45",
+          )}
+        >
           {formatActivityText(latestActivity.activity, latestActivity.detail)}
+        </span>
+      ) : !streamingIndicatorAnimated ? (
+        <span className="font-sans text-[length:calc(var(--chat-font-size)*12/14)] text-fg/45">
+          Working...
         </span>
       ) : (
         <span className="flex items-center gap-2 font-sans text-[length:calc(var(--chat-font-size)*12/14)] text-fg/35">
@@ -4011,7 +4037,7 @@ export function AgentChatMessageList({
   const showJumpToLatest = !stickToBottom && !sessionEnded;
 
   return (
-    <div className={cn("relative h-full min-h-0", className)}>
+    <div className={cn("relative h-full min-h-0 min-w-0 max-w-full overflow-hidden", className)}>
       <ChatUserMinimap
         displayEntries={minimapDisplayEntries}
         activeDisplayIndex={activeMinimapDisplayIndex}
@@ -4019,15 +4045,15 @@ export function AgentChatMessageList({
       />
       <div
         ref={scrollRef}
-        className="ade-chat-timeline-pane h-full min-h-0 min-w-0 overflow-auto pl-[length:var(--chat-timeline-pad-x)] pr-[length:var(--chat-timeline-pad-x)] pt-[length:var(--chat-timeline-pad-top)] pb-[length:var(--chat-timeline-pad-bottom)]"
+        className="ade-chat-timeline-pane h-full min-h-0 min-w-0 overflow-x-hidden overflow-y-auto pl-[length:var(--chat-timeline-pad-x)] pr-[length:var(--chat-timeline-pad-x)] pt-[length:var(--chat-timeline-pad-top)] pb-[length:var(--chat-timeline-pad-bottom)]"
         onScroll={handleScroll}
       >
-        <div ref={contentWrapperRef}>
+        <div ref={contentWrapperRef} className="min-w-0 max-w-full overflow-hidden">
           {rows.length === 0 && !streamingIndicator ? (
             null
           ) : shouldVirtualize ? (
             /* ── Virtualized path: only render rows in / near the viewport ── */
-            <div className="flex flex-col gap-[length:var(--chat-row-gap)]">
+            <div className="flex min-w-0 max-w-full flex-col gap-[length:var(--chat-row-gap)]">
               <div style={{ height: totalHeight, position: "relative" }}>
                 {/* Top spacer pushes rendered rows to their correct scroll position */}
                 <div style={{ height: offsetTop }} aria-hidden />
@@ -4044,7 +4070,7 @@ export function AgentChatMessageList({
             </div>
           ) : (
             /* ── Non-virtualized path: render all rows (small conversation) ── */
-            <div className="flex flex-col gap-[length:var(--chat-row-gap)]">
+            <div className="flex min-w-0 max-w-full flex-col gap-[length:var(--chat-row-gap)]">
               {groupedRows.map((envelope, index) => renderRow(envelope, index, false))}
               {streamingIndicator}
               {turnDivider}

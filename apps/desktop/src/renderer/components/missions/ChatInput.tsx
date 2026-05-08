@@ -51,8 +51,8 @@ export type ChatInputProps = {
   onInputChange: (value: string) => void;
   onSend: (message: string, mentions: string[]) => void;
   onAppendMentionTarget: (targetId: string) => void;
-  onPickAttachments: () => void | Promise<void>;
-  onRemoveAttachment: (attachmentPath: string) => void;
+  onPickAttachments?: () => void | Promise<void>;
+  onRemoveAttachment?: (attachmentPath: string) => void;
 };
 
 export const ChatInput = React.memo(function ChatInput({
@@ -97,13 +97,13 @@ export const ChatInput = React.memo(function ChatInput({
 
   return (
     <div
-      className="px-4 pb-4 pt-3"
+      className="w-full min-w-0 max-w-full overflow-hidden px-4 pb-4 pt-3"
       style={{
         background: `radial-gradient(circle at top, color-mix(in srgb, var(--chat-liquid-sheen, rgba(255,255,255,0.08)) 34%, transparent) 0%, transparent 34%), linear-gradient(180deg, ${BG_MAIN} 0%, ${BG_ELEVATED} 100%)`,
       }}
     >
       <div
-        className="ade-liquid-glass ade-liquid-glass-strong mb-3 flex flex-wrap items-start gap-3 rounded-[18px] px-4 py-3"
+        className="ade-liquid-glass ade-liquid-glass-strong mb-3 flex w-full min-w-0 max-w-full flex-wrap items-start gap-3 overflow-hidden rounded-[18px] px-4 py-3"
         style={{
           borderColor: `color-mix(in srgb, ${BORDER} 70%, rgba(255,255,255,0.08))`,
           boxShadow: "0 22px 52px -28px rgba(4, 2, 10, 0.58)",

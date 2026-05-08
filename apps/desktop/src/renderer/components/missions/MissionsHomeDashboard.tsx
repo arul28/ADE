@@ -4,6 +4,15 @@ import type { MissionDashboardSnapshot } from "../../../shared/types";
 import { COLORS, MONO_FONT, SANS_FONT, primaryButton, outlineButton } from "../lanes/laneDesignTokens";
 import { formatDurationMs } from "../../lib/format";
 
+type ActiveDashboardEntry = MissionDashboardSnapshot["active"][number];
+
+function describeActiveWorkers(entry: ActiveDashboardEntry): string {
+  if (entry.activeWorkers > 0) return `${entry.activeWorkers} active`;
+  const { total, completed } = entry.phaseProgress;
+  if (total > 0 && completed >= total) return "no active workers";
+  return "0 active";
+}
+
 export const MissionsHomeDashboard = React.memo(function MissionsHomeDashboard({
   snapshot,
   onNewMission,
@@ -48,7 +57,7 @@ export const MissionsHomeDashboard = React.memo(function MissionsHomeDashboard({
                 <span className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>{entry.phaseProgress.pct}%</span>
               </div>
               <div className="mt-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                {entry.phaseName ?? "Phase"} · {entry.activeWorkers} workers · {formatDurationMs(entry.elapsedMs)}
+                {entry.phaseName ?? "Phase"} · {describeActiveWorkers(entry)} · {formatDurationMs(entry.elapsedMs)}
               </div>
               <div className="mt-1 h-1.5 w-full" style={{ background: COLORS.pageBg }}>
                 <div className="h-full" style={{ width: `${entry.phaseProgress.pct}%`, background: COLORS.accent }} />

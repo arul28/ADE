@@ -46,6 +46,12 @@ import {
 export const PTY_AI_TITLE_DEBOUNCE_MS = 6000;
 export const PTY_AI_TITLE_TIMEOUT_MS = 60_000;
 
+export type NodePtySpawnHelperExecutableResult =
+  | { status: "skipped"; reason: "non_darwin" | "unsupported_arch" | "package_root_unresolved" }
+  | { status: "already_executable"; path: string }
+  | { status: "chmod_applied"; path: string }
+  | { status: "failed"; path?: string; error: string };
+
 /** Interactive agent TUIs often hide useful text in an alt-screen, so titles come from the first submitted user prompt instead of startup output. */
 const CLI_USER_TITLE_TOOL_TYPES = new Set<TerminalToolType>(["claude", "codex", "cursor-cli", "droid", "opencode"]);
 
@@ -63,6 +69,63 @@ const PTY_DATA_SUMMARY_INTERVAL_MS = 10_000;
 
 function hasEnvValue(env: NodeJS.ProcessEnv, key: string): boolean {
   return typeof env[key] === "string" && env[key]!.trim().length > 0;
+}
+
+function resolveNodePtyPrebuildDir(platform: NodeJS.Platform, arch: string): string | null {
+  if (platform !== "darwin") return null;
+  if (arch === "arm64") return "darwin-arm64";
+  if (arch === "x64") return "darwin-x64";
+  return null;
+}
+
+function resolveNodePtyPackageRoot(): string | null {
+  try {
+    if (typeof require !== "function" || typeof require.resolve !== "function") return null;
+    return path.dirname(require.resolve("node-pty/package.json"));
+  } catch {
+    return null;
+  }
+}
+
+export function ensureNodePtySpawnHelperExecutable({
+  packageRoot,
+  platform = process.platform,
+  arch = process.arch,
+}: {
+  packageRoot?: string | null;
+  platform?: NodeJS.Platform;
+  arch?: string;
+} = {}): NodePtySpawnHelperExecutableResult {
+  if (platform !== "darwin") {
+    return { status: "skipped", reason: "non_darwin" };
+  }
+
+  const prebuildDir = resolveNodePtyPrebuildDir(platform, arch);
+  if (!prebuildDir) {
+    return { status: "skipped", reason: "unsupported_arch" };
+  }
+
+  const root = packageRoot?.trim() || resolveNodePtyPackageRoot();
+  if (!root) {
+    return { status: "skipped", reason: "package_root_unresolved" };
+  }
+
+  const helperPath = path.join(root, "prebuilds", prebuildDir, "spawn-helper");
+  try {
+    const stat = fs.statSync(helperPath);
+    const mode = typeof stat.mode === "number" ? stat.mode : 0;
+    if ((mode & 0o111) !== 0) {
+      return { status: "already_executable", path: helperPath };
+    }
+    fs.chmodSync(helperPath, mode | 0o111);
+    return { status: "chmod_applied", path: helperPath };
+  } catch (err) {
+    return {
+      status: "failed",
+      path: helperPath,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
 }
 
 function withInteractiveTerminalColorEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
@@ -1786,6 +1849,15 @@ export function createPtyService({
       const directArgs = Array.isArray(args.args) ? args.args.filter((value): value is string => typeof value === "string") : [];
       let launchedDirectCommand = false;
       try {
+        const spawnHelperRepair = ensureNodePtySpawnHelperExecutable();
+        if (spawnHelperRepair.status === "chmod_applied") {
+          logger.info("pty.spawn_helper_chmod_applied", { path: spawnHelperRepair.path });
+        } else if (spawnHelperRepair.status === "failed") {
+          logger.warn("pty.spawn_helper_chmod_failed", {
+            path: spawnHelperRepair.path ?? "",
+            err: spawnHelperRepair.error,
+          });
+        }
         const ptyLib = loadPty();
         const opts: IWindowsPtyForkOptions = {
           name: "xterm-256color",

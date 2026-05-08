@@ -57,6 +57,14 @@ function gitExecutableNotFoundMessage(executable: string): string {
   return `git executable not found (tried ${executable}). Install git or set ADE_GIT_EXECUTABLE to git's absolute path.`;
 }
 
+function gitSpawnErrorMessage(error: NodeJS.ErrnoException, opts: GitRunOptions): string {
+  if (error.code !== "ENOENT") return error.message;
+  if (!fs.existsSync(opts.cwd)) {
+    return `git working directory not found: ${opts.cwd}`;
+  }
+  return gitExecutableNotFoundMessage(resolveGitExecutable());
+}
+
 export type GitRunOptions = {
   cwd: string;
   timeoutMs?: number;
@@ -229,11 +237,7 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
     });
 
     child.on("error", (error) => {
-      const code = (error as NodeJS.ErrnoException)?.code;
-      const friendlyMessage =
-        code === "ENOENT"
-          ? gitExecutableNotFoundMessage(resolveGitExecutable())
-          : error.message;
+      const friendlyMessage = gitSpawnErrorMessage(error as NodeJS.ErrnoException, opts);
       finish({
         exitCode: 1,
         stdout,

@@ -56,7 +56,7 @@ export function ChatSurfaceShell({
     <>
       {header ? (
         <div
-          className="relative z-10 w-full overflow-visible rounded-t-none rounded-b-[var(--chat-radius-shell)]"
+          className="relative z-10 w-full min-w-0 max-w-full overflow-visible rounded-t-none rounded-b-[var(--chat-radius-shell)]"
           style={{
             backdropFilter: "blur(30px)",
             WebkitBackdropFilter: "blur(30px)",
@@ -71,7 +71,7 @@ export function ChatSurfaceShell({
       ) : null}
       <div
         className={cn(
-          autoHeight ? "relative flex-none overflow-visible" : "relative min-h-0 flex-1 overflow-hidden",
+          autoHeight ? "relative min-w-0 max-w-full flex-none overflow-visible" : "relative min-h-0 min-w-0 max-w-full flex-1 overflow-hidden",
           bodyClassName,
         )}
       >
@@ -80,7 +80,7 @@ export function ChatSurfaceShell({
       {footer ? (
         <div
           className={cn(
-            "relative px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-0 sm:px-3 sm:pb-2",
+            "relative w-full min-w-0 max-w-full overflow-hidden px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-0 sm:px-3 sm:pb-2",
             footerClassName,
           )}
           style={{ background: "var(--color-bg)" }}
@@ -104,9 +104,9 @@ export function ChatSurfaceShell({
         data-chat-chrome-tint={chromeTint}
         {...geometryAttr}
         className={cn(
-          "relative flex flex-col",
+          "relative flex w-full max-w-full flex-col",
           /* autoHeight: grow with transcript (e.g. settings preview) — avoid min-h-0 or the shell can clip when nested in grid/flex. */
-          autoHeight ? "h-auto min-h-min overflow-visible" : "min-h-0 h-full overflow-hidden",
+          autoHeight ? "h-auto min-h-min overflow-visible" : "min-h-0 h-full min-w-0 overflow-hidden",
           className,
         )}
         style={{
@@ -115,7 +115,7 @@ export function ChatSurfaceShell({
         }}
       >
         {scaled ? (
-          <div className="flex min-h-0 flex-1 flex-col overflow-hidden" style={scaleWrapperStyle}>
+          <div className="flex min-h-0 min-w-0 max-w-full flex-1 flex-col overflow-hidden" style={scaleWrapperStyle}>
             {inner}
           </div>
         ) : (

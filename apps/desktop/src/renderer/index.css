@@ -394,6 +394,7 @@ h6 {
 .ade-prose-themed {
   font-family: var(--font-sans);
   color: var(--color-fg);
+  overflow-wrap: anywhere;
 }
 
 .ade-prose-themed :is(p, h1, h2, h3, h4, h5, h6, li, strong, em, td, th, blockquote, dd, dt, figcaption) {

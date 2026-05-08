@@ -1400,7 +1400,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "get_worker_states",
-    description: "Get the current state of all workers in a run. When called by a worker, runId defaults to the worker's own run, so you can see your peers without passing parameters.",
+    description: "Get active worker runtime states plus persisted run worker rows. When called by a worker, runId defaults to the worker's own run, so you can see your peers without passing parameters.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1956,6 +1956,7 @@ const AGENT_VISIBLE_COORDINATOR_TOOL_NAMES = new Set([
   "report_status",
   "report_result",
   "report_validation",
+  "message_worker",
   "delegate_to_subagent",
   "delegate_parallel",
   "get_worker_output",
@@ -3746,6 +3747,30 @@ function normalizeAgentDelegationToolArgs(args: {
 }): Record<string, unknown> {
   const normalized = { ...args.toolArgs };
   if (args.callerCtx.role !== "agent") return normalized;
+  if (args.name === "message_worker") {
+    if (!args.graph) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        "Agent caller cannot use 'message_worker' without an active run graph."
+      );
+    }
+    const ownedWorkerId = inferWorkerIdFromCaller(args.graph, args.callerCtx);
+    if (!ownedWorkerId) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        "Agent caller cannot use 'message_worker' without an active worker context."
+      );
+    }
+    const requestedFromWorkerId = asOptionalTrimmedString(normalized.fromWorkerId);
+    if (requestedFromWorkerId && requestedFromWorkerId !== ownedWorkerId) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        `Agent caller may only send messages from its own worker '${ownedWorkerId}'.`
+      );
+    }
+    normalized.fromWorkerId = ownedWorkerId;
+    return normalized;
+  }
   if (args.name !== "delegate_to_subagent" && args.name !== "delegate_parallel") return normalized;
   if (!args.graph) {
     throw new JsonRpcError(
@@ -3785,6 +3810,29 @@ function resolveParentAttemptIdFromGraph(graph: Record<string, unknown>, parentW
   const running = parentAttempts.find((attempt) => asOptionalTrimmedString(attempt.status) === "running");
   if (running) return asOptionalTrimmedString(running.id);
   const sorted = [...parentAttempts].sort((left, right) => {
+    const leftTs = Date.parse(asOptionalTrimmedString(left.completedAt) ?? asOptionalTrimmedString(left.createdAt) ?? "");
+    const rightTs = Date.parse(asOptionalTrimmedString(right.completedAt) ?? asOptionalTrimmedString(right.createdAt) ?? "");
+    return (Number.isFinite(rightTs) ? rightTs : 0) - (Number.isFinite(leftTs) ? leftTs : 0);
+  });
+  return asOptionalTrimmedString(sorted[0]?.id);
+}
+
+function resolveAttemptIdForWorkerRef(graph: Record<string, unknown>, workerRef: string | null | undefined): string | null {
+  const ref = asOptionalTrimmedString(workerRef);
+  if (!ref) return null;
+  const attempts = Array.isArray(graph.attempts) ? (graph.attempts as Array<Record<string, unknown>>) : [];
+  const step = resolveStepFromGraph(graph, ref, ref);
+  const stepId = asOptionalTrimmedString(step?.id);
+  if (!stepId) return null;
+  const stepAttempts = attempts.filter((attempt) => asOptionalTrimmedString(attempt.stepId) === stepId);
+  if (!stepAttempts.length) return null;
+  const running = stepAttempts.find((attempt) => asOptionalTrimmedString(attempt.status) === "running");
+  if (running) return asOptionalTrimmedString(running.id);
+  const lastAttemptId = asOptionalTrimmedString(step?.lastAttemptId);
+  if (lastAttemptId && stepAttempts.some((attempt) => asOptionalTrimmedString(attempt.id) === lastAttemptId)) {
+    return lastAttemptId;
+  }
+  const sorted = [...stepAttempts].sort((left, right) => {
     const leftTs = Date.parse(asOptionalTrimmedString(left.completedAt) ?? asOptionalTrimmedString(left.createdAt) ?? "");
     const rightTs = Date.parse(asOptionalTrimmedString(right.completedAt) ?? asOptionalTrimmedString(right.createdAt) ?? "");
     return (Number.isFinite(rightTs) ? rightTs : 0) - (Number.isFinite(leftTs) ? leftTs : 0);
@@ -3955,6 +4003,59 @@ async function maybeSendInterAgentMessage(args: {
   }));
 }
 
+async function maybeRecordMessageWorkerHandoffForPolling(args: {
+  runtime: AdeRuntime;
+  missionId: string;
+  graph: Record<string, unknown> | null;
+  callerCtx: CallerContext;
+  toolArgs: Record<string, unknown>;
+}): Promise<{
+  fromAttemptId: string;
+  toAttemptId: string;
+  fromWorkerId: string;
+  toWorkerId: string;
+} | null> {
+  if (!args.graph) return null;
+  const fromWorkerId = asOptionalTrimmedString(args.toolArgs.fromWorkerId)
+    ?? inferWorkerIdFromCaller(args.graph, args.callerCtx);
+  const toWorkerId = asOptionalTrimmedString(args.toolArgs.toWorkerId);
+  const rawContent = args.toolArgs.content;
+  const content = typeof rawContent === "string"
+    ? rawContent
+    : rawContent == null
+      ? ""
+      : String(rawContent);
+  if (!fromWorkerId || !toWorkerId || !content.trim().length) return null;
+
+  const fromAttemptId =
+    asOptionalTrimmedString(args.callerCtx.attemptId)
+    ?? resolveAttemptIdForWorkerRef(args.graph, fromWorkerId);
+  const toAttemptId = resolveAttemptIdForWorkerRef(args.graph, toWorkerId);
+  if (!fromAttemptId || !toAttemptId || fromAttemptId === toAttemptId) return null;
+
+  await maybeSendInterAgentMessage({
+    runtime: args.runtime,
+    missionId: args.missionId,
+    fromAttemptId,
+    toAttemptId,
+    content,
+    metadata: {
+      source: "message_worker",
+      fromWorkerId,
+      toWorkerId,
+      priority: asOptionalTrimmedString(args.toolArgs.priority) ?? "normal",
+      queuedForPolling: true,
+    },
+  });
+
+  return {
+    fromAttemptId,
+    toAttemptId,
+    fromWorkerId,
+    toWorkerId,
+  };
+}
+
 async function postProcessCoordinatorToolResult(args: {
   runtime: AdeRuntime;
   toolName: string;
@@ -4112,6 +4213,30 @@ async function runCoordinatorTool(args: {
   });
   const output = await toolEntry.execute(effectiveToolArgs);
   if (isRecord(output)) {
+    if (args.name === "message_worker") {
+      const queued = await maybeRecordMessageWorkerHandoffForPolling({
+        runtime: args.runtime,
+        missionId,
+        graph,
+        callerCtx: args.callerCtx,
+        toolArgs: effectiveToolArgs,
+      });
+      if (queued) {
+        const liveDelivered = output.delivered === true;
+        return {
+          ...output,
+          ok: liveDelivered ? output.ok : true,
+          delivered: liveDelivered,
+          method: liveDelivered ? (output.method ?? null) : "thread",
+          reason: liveDelivered ? (output.reason ?? null) : "queued_for_polling",
+          queuedForPolling: !liveDelivered,
+          fromAttemptId: queued.fromAttemptId,
+          toAttemptId: queued.toAttemptId,
+          fromWorkerId: queued.fromWorkerId,
+          toWorkerId: queued.toWorkerId,
+        };
+      }
+    }
     if (output.ok === true && (args.name === "report_status" || args.name === "report_result")) {
       await postProcessCoordinatorToolResult({
         runtime: args.runtime,
@@ -4551,10 +4676,11 @@ async function runTool(args: {
     const hasScalarArg = Object.prototype.hasOwnProperty.call(toolArgs, "arg");
     const rawObjectArgs = safeObject(toolArgs.args);
     const result = argsList
-      ? await (callable as (...params: unknown[]) => Promise<unknown>)(...argsList)
+      ? await (callable as (...params: unknown[]) => Promise<unknown>).apply(service, argsList)
       : hasScalarArg
-        ? await (callable as (arg: unknown) => Promise<unknown>)(toolArgs.arg)
-        : await (callable as (args?: Record<string, unknown>) => Promise<unknown>)(
+        ? await (callable as (arg: unknown) => Promise<unknown>).call(service, toolArgs.arg)
+        : await (callable as (args?: Record<string, unknown>) => Promise<unknown>).call(
+            service,
             Object.keys(rawObjectArgs).length > 0 ? rawObjectArgs : undefined
           );
     const record = isRecord(result) ? result : null;
@@ -4563,7 +4689,12 @@ async function runTool(args: {
       testRunId: typeof record?.id === "string" && domain === "tests" ? record.id : null,
       chatSessionId: typeof record?.sessionId === "string" ? record.sessionId : null,
       runId: typeof record?.runId === "string" ? record.runId : null,
-      missionId: typeof record?.missionId === "string" ? record.missionId : null,
+      missionId:
+        typeof record?.missionId === "string"
+          ? record.missionId
+          : typeof record?.id === "string" && domain === "mission"
+            ? record.id
+            : null,
     };
     return {
       domain,
@@ -6360,7 +6491,7 @@ async function runTool(args: {
   if (name === "resume_mission") {
 
     const runId = assertNonEmptyString(toolArgs.runId, "runId");
-    const run = runtime.orchestratorService.resumeRun({ runId });
+    const run = runtime.aiOrchestratorService.resumeRun({ runId });
     return { run };
   }
 
@@ -6519,7 +6650,27 @@ async function runTool(args: {
       throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "runId is required (not available from caller context)");
     }
     const states = runtime.aiOrchestratorService.getWorkerStates({ runId });
-    return { runId, workers: states };
+    const graph = runtime.orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
+    const runWorkers = graph.steps
+      .filter((step) => step.stepKey !== "__planner__")
+      .map((step) => {
+        const runningAttempt = graph.attempts.find((attempt) => attempt.stepId === step.id && attempt.status === "running");
+        const latestAttempt = [...graph.attempts]
+          .filter((attempt) => attempt.stepId === step.id)
+          .sort((a, b) => String(b.completedAt ?? b.createdAt ?? "").localeCompare(String(a.completedAt ?? a.createdAt ?? "")))[0];
+        return {
+          workerId: step.stepKey,
+          stepId: step.id,
+          title: step.title,
+          status: step.status,
+          phaseKey: isRecord(step.metadata) && typeof step.metadata.phaseKey === "string" ? step.metadata.phaseKey : null,
+          hasRunningAttempt: Boolean(runningAttempt),
+          activeAttemptId: runningAttempt?.id ?? null,
+          lastAttemptStatus: latestAttempt?.status ?? null,
+          retryCount: step.retryCount,
+        };
+      });
+    return { runId, workers: states, runWorkers };
   }
 
   if (name === "get_timeline") {

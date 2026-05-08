@@ -26,6 +26,58 @@ vi.mock("../ai/claudeCodeExecutable", () => ({
 import { createProviderOrchestratorAdapter } from "./providerOrchestratorAdapter";
 
 describe("buildFullPrompt", () => {
+  it("tells planning retries not to ask again after a planner question is answered", () => {
+    const prompt = buildFullPrompt(
+      {
+        run: {
+          id: "run-1",
+          missionId: "mission-1",
+          metadata: {
+            missionGoal: "Plan weighted item parsing",
+          },
+        } as any,
+        step: {
+          id: "step-1",
+          title: "Planning worker",
+          stepKey: "planning-worker",
+          laneId: "lane-1",
+          metadata: {
+            stepType: "planning",
+            phaseName: "Planning",
+            phaseAskQuestions: { enabled: true, maxQuestions: 1 },
+            readOnlyExecution: true,
+            lastAnsweredPlannerQuestion: {
+              question: "Should missing weights default to 1?",
+              answer: "Yes, default missing or invalid weights to 1.",
+            },
+          },
+          dependencyStepIds: [],
+          joinPolicy: "all_success",
+        } as any,
+        attempt: {} as any,
+        allSteps: [],
+        contextProfile: {} as any,
+        laneExport: {
+          content: "",
+          truncated: false,
+        },
+        projectExport: {
+          content: "Project context body",
+          truncated: false,
+        } as any,
+        docsRefs: [],
+        fullDocs: [],
+        createTrackedSession: async () => ({ ptyId: "pty-1", sessionId: "session-1" }),
+      },
+      "codex"
+    ).prompt;
+
+    expect(prompt).toContain("PLANNING QUESTION ALREADY ANSWERED");
+    expect(prompt).toContain("Yes, default missing or invalid weights to 1.");
+    expect(prompt).toContain("do not ask another natural-language clarification");
+    expect(prompt).toContain("return `report_result.plan.markdown` now");
+  });
+
   it("injects shared facts, mission memory, and project knowledge into worker prompts", () => {
     const memoryService = {
       getMemoryBudget: (_projectId: string, _level: string, opts?: { scope?: string; scopeOwnerId?: string | null }) => {
@@ -368,9 +420,76 @@ describe("providerOrchestratorAdapter", () => {
       provider: "codex",
       model: "gpt-5.3-codex",
       modelId: "openai/gpt-5.3-codex",
+      title: "Codex worker",
+      surface: "mission",
       permissionMode: "config-toml",
       codexConfigSource: "config-toml",
     }));
+  });
+
+  it("uses phase model thinking level for managed chat worker reasoning", async () => {
+    projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-provider-adapter-"));
+    const createSession = vi.fn(async () => ({ id: "managed-session-1" }));
+    const adapter = createProviderOrchestratorAdapter({
+      projectRoot,
+      workspaceRoot: projectRoot,
+      agentChatService: {
+        createSession,
+      } as any,
+    });
+
+    const result = await adapter.start({
+      run: {
+        id: "run-1",
+        missionId: "mission-1",
+        metadata: {},
+      },
+      step: {
+        id: "step-1",
+        runId: "run-1",
+        stepKey: "codex-worker",
+        title: "Codex worker",
+        stepIndex: 0,
+        dependencyStepIds: [],
+        dependencyStepKeys: [],
+        laneId: "lane-1",
+        status: "ready",
+        metadata: {
+          modelId: "openai/gpt-5.5",
+          phaseModel: {
+            modelId: "openai/gpt-5.5",
+            provider: "codex",
+            thinkingLevel: "low",
+          },
+        },
+      },
+      attempt: {
+        id: "attempt-1",
+        runId: "run-1",
+        stepId: "step-1",
+      },
+      allSteps: [],
+      contextProfile: {} as any,
+      laneExport: null,
+      projectExport: { content: "", truncated: false },
+      docsRefs: [],
+      fullDocs: [],
+      createTrackedSession: vi.fn(),
+      permissionConfig: {},
+    } as any);
+
+    expect(result.status).toBe("accepted");
+    expect(createSession).toHaveBeenCalledWith(expect.objectContaining({
+      provider: "codex",
+      modelId: "openai/gpt-5.5",
+      title: "Codex worker",
+      surface: "mission",
+      reasoningEffort: "low",
+    }));
+    expect(result).toMatchObject({
+      launch: { reasoningEffort: "low" },
+      metadata: { reasoningEffort: "low" },
+    });
   });
 
   it("resolves the Claude executable for direct startup-command overrides", async () => {

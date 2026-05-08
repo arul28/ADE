@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { openKvDb } from "../state/kvDb";
 import { createMissionService } from "./missionService";
+import type { PhaseCard } from "../../../shared/types";
 
 function createLogger() {
   return {
@@ -138,6 +139,27 @@ describe("missionService lifecycle", () => {
     expect(completed.status).toBe("completed");
     expect(completed.outcomeSummary).toContain("PR #123");
     expect(completed.artifacts.some((artifact) => artifact.artifactType === "summary")).toBe(true);
+
+    dispose();
+  });
+
+  it("normalizes loose planned steps before persisting them", async () => {
+    const { db, projectId, dispose } = await createDbWithProjectAndLane();
+    const service = createMissionService({ db, projectId });
+
+    const created = service.create({
+      prompt: "Create a loose planned-step fixture.",
+      plannedSteps: [
+        { title: "Implement fixture", kind: "implementation", metadata: { stepType: "implementation" } } as any,
+        { index: 2, title: "Run tests", detail: "Verify", kind: "test", metadata: { stepType: "test" } } as any,
+      ],
+    });
+
+    expect(created.steps).toHaveLength(2);
+    expect(created.steps[0]?.title).toBe("Implement fixture");
+    expect(created.steps[0]?.detail).toBe("");
+    expect(created.steps[0]?.kind).toBe("implementation");
+    expect(created.steps[1]?.detail).toBe("Verify");
 
     dispose();
   });
@@ -534,6 +556,10 @@ describe("missionService lifecycle", () => {
       `,
       [randomUUID(), projectId, runId, orchestratorStepId, attemptId, claimId, now]
     );
+    db.run(
+      "update lanes set mission_id = ?, lane_role = 'result' where id = ? and project_id = ?",
+      [created.id, laneId, projectId]
+    );
 
     service.delete({ missionId: created.id });
 
@@ -547,6 +573,12 @@ describe("missionService lifecycle", () => {
     expect(
       db.get<{ count: number }>("select count(*) as count from orchestrator_timeline_events where run_id = ?", [runId])?.count ?? 0
     ).toBe(0);
+    const lane = db.get<{ mission_id: string | null; lane_role: string | null }>(
+      "select mission_id, lane_role from lanes where id = ? and project_id = ?",
+      [laneId, projectId]
+    );
+    expect(lane?.mission_id).toBeNull();
+    expect(lane?.lane_role).toBeNull();
 
     dispose();
   });
@@ -640,6 +672,121 @@ describe("missionService lifecycle", () => {
     dispose();
   });
 
+  it("runs a sample mission configuration with custom Codex-only phases", async () => {
+    const { db, projectId, laneId, dispose } = await createDbWithProjectAndLane();
+    const service = createMissionService({ db, projectId });
+    const defaultProfile = service.listPhaseProfiles().find((profile) => profile.isDefault);
+    if (!defaultProfile) throw new Error("Expected default profile");
+
+    const now = "2026-03-25T00:00:00.000Z";
+    const codexModel = { provider: "codex" as const, modelId: "openai/gpt-5.5", thinkingLevel: "medium" as const };
+    const basePhases = defaultProfile.phases.map((phase, index) => ({
+      ...phase,
+      model: codexModel,
+      position: index,
+    }));
+    const closeoutPhase = basePhases.find((phase) => phase.phaseKey === "closeout");
+    if (!closeoutPhase) throw new Error("Expected closeout phase");
+
+    const reviewPhase: PhaseCard = {
+      id: "custom:review",
+      phaseKey: "review",
+      name: "Review",
+      description: "Review mission output before closeout.",
+      instructions: "Audit the result lane and call out missing proof or regressions before closeout.",
+      model: codexModel,
+      budget: {},
+      orderingConstraints: { mustFollow: ["validation"] },
+      askQuestions: { enabled: false },
+      validationGate: {
+        tier: "dedicated",
+        required: true,
+        criteria: "Reviewer confirms the result matches the mission goal.",
+        evidenceRequirements: ["review_summary", "risk_notes"],
+        capabilityFallback: "warn",
+      },
+      isBuiltIn: false,
+      isCustom: true,
+      position: 0,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const slashCommandPhase: PhaseCard = {
+      ...reviewPhase,
+      id: "custom:slash-command",
+      phaseKey: "slash_command",
+      name: "Slash command",
+      description: "Run a scripted follow-up command.",
+      instructions: "Execute the requested slash-command style workflow and return structured output.",
+      orderingConstraints: { mustFollow: ["review"] },
+      validationGate: {
+        tier: "self",
+        required: true,
+        criteria: "Command output is captured before closeout.",
+        evidenceRequirements: ["final_outcome_summary"],
+        capabilityFallback: "warn",
+      },
+    };
+    const phaseOverride = [
+      ...basePhases.filter((phase) => phase.phaseKey !== "closeout"),
+      reviewPhase,
+      slashCommandPhase,
+      closeoutPhase,
+    ].map((phase, index) => ({ ...phase, position: index }));
+
+    const created = service.create({
+      prompt: "Sample backend mission using Codex planning, custom review, slash command, integration, and closeout.",
+      laneId,
+      phaseProfileId: defaultProfile.id,
+      phaseOverride,
+      plannedSteps: [
+        { index: 0, title: "Plan work", detail: "Planning pass", kind: "task", metadata: { stepType: "planning" } },
+        { index: 1, title: "Implement work", detail: "Implementation pass", kind: "task", metadata: { stepType: "implementation" } },
+        { index: 2, title: "Integrate lanes", detail: "Merge worker output", kind: "integration", metadata: { stepType: "integration" } },
+        { index: 3, title: "Run tests", detail: "Targeted verification", kind: "task", metadata: { stepType: "test" } },
+        { index: 4, title: "Validate result", detail: "Dedicated validation", kind: "validation", metadata: { stepType: "milestone" } },
+        { index: 5, title: "Review output", detail: "Review result lane", kind: "task", metadata: { phaseKey: "review" } },
+        { index: 6, title: "Run slash command", detail: "Run slash workflow", kind: "task", metadata: { phaseKey: "slash_command" } },
+        { index: 7, title: "Close out", detail: "Summarize result lane", kind: "summary", metadata: { stepType: "closeout" } },
+      ],
+    });
+
+    const selectedPhases = created.phaseConfiguration?.selectedPhases ?? [];
+    expect(selectedPhases.map((phase) => phase.phaseKey)).toEqual([
+      "planning",
+      "development",
+      "integration",
+      "testing",
+      "validation",
+      "review",
+      "slash_command",
+      "closeout",
+    ]);
+    for (const phase of selectedPhases) {
+      expect(phase.model).toMatchObject({ provider: "codex", modelId: "openai/gpt-5.5" });
+    }
+    expect(selectedPhases.find((phase) => phase.phaseKey === "review")?.validationGate.evidenceRequirements).toEqual([
+      "review_summary",
+      "risk_notes",
+    ]);
+
+    const phaseKeyForStep = (title: string) => {
+      const step = created.steps.find((entry) => entry.title === title);
+      if (!step) throw new Error(`Missing step ${title}`);
+      return (step.metadata ?? {}).phaseKey;
+    };
+    expect(phaseKeyForStep("Plan work")).toBe("planning");
+    expect(phaseKeyForStep("Implement work")).toBe("development");
+    expect(phaseKeyForStep("Integrate lanes")).toBe("integration");
+    expect(phaseKeyForStep("Run tests")).toBe("testing");
+    expect(phaseKeyForStep("Validate result")).toBe("validation");
+    expect(phaseKeyForStep("Review output")).toBe("review");
+    expect(phaseKeyForStep("Run slash command")).toBe("slash_command");
+    expect(phaseKeyForStep("Close out")).toBe("closeout");
+
+    dispose();
+  });
+
   it("normalizes question and validation settings to planning-only semantics", async () => {
     const { db, projectId, laneId, dispose } = await createDbWithProjectAndLane();
     const service = createMissionService({ db, projectId });
@@ -682,6 +829,106 @@ describe("missionService lifecycle", () => {
       laneId
     });
     service.update({ missionId: activeMission.id, status: "in_progress" });
+    const runId = randomUUID();
+    const now = "2026-02-19T00:00:00.000Z";
+    db.run(
+      `
+        insert into orchestrator_runs(
+          id,
+          project_id,
+          mission_id,
+          status,
+          context_profile,
+          scheduler_state,
+          runtime_cursor_json,
+          last_error,
+          metadata_json,
+          created_at,
+          updated_at,
+          started_at,
+          completed_at
+        ) values (?, ?, ?, 'active', 'orchestrator_deterministic_v1', 'manual', null, null, ?, ?, ?, ?, null)
+      `,
+      [
+        runId,
+        projectId,
+        activeMission.id,
+        JSON.stringify({ phaseRuntime: { currentPhaseName: "Development" } }),
+        now,
+        now,
+        now,
+      ]
+    );
+    for (const [index, step] of [
+      {
+        key: "planning-worker",
+        title: "Planning worker",
+        status: "succeeded",
+        metadata: { phaseName: "Planning", stepType: "planning" },
+      },
+      {
+        key: "display-task",
+        title: "Display task",
+        status: "pending",
+        metadata: { stepType: "task" },
+      },
+      {
+        key: "development-worker",
+        title: "Development worker",
+        status: "succeeded",
+        metadata: { phaseName: "Development", stepType: "implementation" },
+      },
+    ].entries()) {
+      db.run(
+        `
+          insert into orchestrator_steps(
+            id,
+            run_id,
+            project_id,
+            mission_step_id,
+            step_key,
+            step_index,
+            title,
+            lane_id,
+            status,
+            join_policy,
+            quorum_count,
+            dependency_step_ids_json,
+            retry_limit,
+            retry_count,
+            last_attempt_id,
+            policy_json,
+            metadata_json,
+            created_at,
+            updated_at,
+            started_at,
+            completed_at
+          ) values (?, ?, ?, null, ?, ?, ?, ?, ?, 'all_success', null, '[]', 1, 0, null, null, ?, ?, ?, ?, ?)
+        `,
+        [
+          randomUUID(),
+          runId,
+          projectId,
+          step.key,
+          index,
+          step.title,
+          laneId,
+          step.status,
+          JSON.stringify(step.metadata),
+          now,
+          now,
+          now,
+          step.status === "succeeded" ? now : null,
+        ]
+      );
+    }
+
+    const actionMission = service.create({
+      prompt: "Implement blocked mission",
+      laneId
+    });
+    service.update({ missionId: actionMission.id, status: "in_progress" });
+    service.update({ missionId: actionMission.id, status: "intervention_required" });
 
     const completedMission = service.create({
       prompt: "Implement completed mission",
@@ -691,7 +938,11 @@ describe("missionService lifecycle", () => {
     service.update({ missionId: completedMission.id, status: "completed" });
 
     const snapshot = service.getDashboard();
-    expect(snapshot.active.some((entry) => entry.mission.id === activeMission.id)).toBe(true);
+    const activeEntry = snapshot.active.find((entry) => entry.mission.id === activeMission.id);
+    expect(activeEntry).toBeTruthy();
+    expect(activeEntry?.phaseName).toBe("Development");
+    expect(activeEntry?.phaseProgress).toEqual({ completed: 2, total: 2, pct: 100 });
+    expect(snapshot.active.some((entry) => entry.mission.id === actionMission.id)).toBe(false);
     expect(snapshot.recent.some((entry) => entry.mission.id === completedMission.id)).toBe(true);
     expect(snapshot.weekly.missions).toBeGreaterThanOrEqual(2);
 

@@ -13,7 +13,7 @@ const mocks = vi.hoisted(() => {
   const realpathOverrides = new Map<string, string>();
   const dirEntries = new Map<string, string[]>();
   const fileContents = new Map<string, string>();
-  const fileStats = new Map<string, { size?: number; mtimeMs?: number; isDirectory?: boolean }>();
+  const fileStats = new Map<string, { size?: number; mtimeMs?: number; mode?: number; isDirectory?: boolean }>();
   const openFiles = new Map<number, string>();
   let nextFd = 100;
   return {
@@ -47,6 +47,7 @@ const mocks = vi.hoisted(() => {
       return {
         size: stat?.size ?? fileContents.get(p)?.length ?? 0,
         mtimeMs: stat?.mtimeMs ?? 0,
+        mode: stat?.mode ?? 0o040755,
         isDirectory: () => stat?.isDirectory ?? true,
       };
     }),
@@ -66,6 +67,7 @@ const mocks = vi.hoisted(() => {
     closeSync: vi.fn((fd: number) => {
       openFiles.delete(fd);
     }),
+    chmodSync: vi.fn(),
     createWriteStream: vi.fn(() => {
       const listeners = {
         finish: new Set<() => void>(),
@@ -119,6 +121,7 @@ vi.mock("node:fs", () => ({
     openSync: mocks.openSync,
     readSync: mocks.readSync,
     closeSync: mocks.closeSync,
+    chmodSync: mocks.chmodSync,
     createWriteStream: mocks.createWriteStream,
     unlinkSync: mocks.unlinkSync,
     writeFileSync: mocks.writeFileSync,
@@ -132,6 +135,7 @@ vi.mock("node:fs", () => ({
   openSync: mocks.openSync,
   readSync: mocks.readSync,
   closeSync: mocks.closeSync,
+  chmodSync: mocks.chmodSync,
   createWriteStream: mocks.createWriteStream,
   unlinkSync: mocks.unlinkSync,
   writeFileSync: mocks.writeFileSync,
@@ -169,7 +173,12 @@ vi.mock("../../utils/terminalSessionSignals", async () => {
   };
 });
 
-import { createPtyService, PTY_AI_TITLE_DEBOUNCE_MS, PTY_AI_TITLE_TIMEOUT_MS } from "./ptyService";
+import {
+  createPtyService,
+  ensureNodePtySpawnHelperExecutable,
+  PTY_AI_TITLE_DEBOUNCE_MS,
+  PTY_AI_TITLE_TIMEOUT_MS,
+} from "./ptyService";
 
 const originalPlatform = process.platform;
 
@@ -351,6 +360,49 @@ describe("ptyService", () => {
     mocks.defaultResumeCommandForTool.mockReturnValue(null);
     mocks.extractResumeCommandFromOutput.mockReturnValue(null);
     mocks.derivePreviewFromChunk.mockReturnValue({ nextLine: "", preview: "preview" });
+  });
+
+  describe("ensureNodePtySpawnHelperExecutable", () => {
+    it("adds executable bits to the Darwin node-pty spawn helper", () => {
+      const packageRoot = "/tmp/node-pty";
+      const helperPath = path.join(packageRoot, "prebuilds", "darwin-arm64", "spawn-helper");
+      mocks.fileStats.set(helperPath, { size: 123, mode: 0o100644, isDirectory: false } as any);
+
+      const result = ensureNodePtySpawnHelperExecutable({
+        packageRoot,
+        platform: "darwin",
+        arch: "arm64",
+      });
+
+      expect(result).toEqual({ status: "chmod_applied", path: helperPath });
+      expect(mocks.chmodSync).toHaveBeenCalledWith(helperPath, 0o100755);
+    });
+
+    it("leaves already executable Darwin node-pty spawn helpers alone", () => {
+      const packageRoot = "/tmp/node-pty";
+      const helperPath = path.join(packageRoot, "prebuilds", "darwin-arm64", "spawn-helper");
+      mocks.fileStats.set(helperPath, { size: 123, mode: 0o100755, isDirectory: false } as any);
+
+      const result = ensureNodePtySpawnHelperExecutable({
+        packageRoot,
+        platform: "darwin",
+        arch: "arm64",
+      });
+
+      expect(result).toEqual({ status: "already_executable", path: helperPath });
+      expect(mocks.chmodSync).not.toHaveBeenCalled();
+    });
+
+    it("skips non-Darwin platforms", () => {
+      const result = ensureNodePtySpawnHelperExecutable({
+        packageRoot: "/tmp/node-pty",
+        platform: "linux",
+        arch: "arm64",
+      });
+
+      expect(result).toEqual({ status: "skipped", reason: "non_darwin" });
+      expect(mocks.chmodSync).not.toHaveBeenCalled();
+    });
   });
 
   describe("create", () => {

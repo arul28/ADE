@@ -124,6 +124,11 @@ export type MissionBudgetSnapshot = {
 export type GetMissionBudgetStatusArgs = {
   missionId: string;
   runId?: string | null;
+  /**
+   * Set to false for lightweight renderer reads that should not synchronously
+   * scan local Claude/Codex JSONL telemetry.
+   */
+  includeCliTelemetry?: boolean | null;
 };
 
 export type GetMissionBudgetTelemetryArgs = {

@@ -269,7 +269,7 @@ function WelcomeScreen() {
             alignItems: "center",
             justifyContent: "center",
             marginBottom: 16,
-            animation: "pulse-glow 3s infinite",
+            filter: "drop-shadow(0 0 22px color-mix(in srgb, var(--color-accent) 45%, transparent))",
           }}
         >
           <img src="./logo.png" alt="ADE Logo" style={{ width: 420, height: 240, objectFit: "contain", maxWidth: "72vw" }} />

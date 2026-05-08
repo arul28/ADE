@@ -151,6 +151,40 @@ describe("deriveMissionStatusFromRun", () => {
 
     expect(status).toBe("canceled");
   });
+
+  it("keeps canceled runs terminal even when stale blocking interventions are open", () => {
+    const status = deriveMissionStatusFromRun(
+      {
+        run: { status: "canceled" },
+        steps: [],
+        attempts: [],
+        timeline: [],
+        claims: [],
+      } as any,
+      {
+        status: "intervention_required",
+        interventions: [
+          {
+            id: "iv-1",
+            missionId: "mission-1",
+            interventionType: "failed_step",
+            status: "open",
+            title: "Worker failed",
+            body: "A worker failed before cancellation.",
+            requestedAction: null,
+            resolutionNote: null,
+            laneId: null,
+            createdAt: "",
+            updatedAt: "",
+            resolvedAt: null,
+            metadata: {},
+          },
+        ],
+      } as any
+    );
+
+    expect(status).toBe("canceled");
+  });
 });
 
 describe("task step helpers", () => {
@@ -160,8 +194,18 @@ describe("task step helpers", () => {
       { id: "step-1", stepKey: "impl", metadata: { stepType: "implementation" } },
     ] as any[];
 
-    expect(isDisplayOnlyTaskStep(steps[0])).toBe(false);
+    expect(isDisplayOnlyTaskStep(steps[0])).toBe(true);
     expect(isDisplayOnlyTaskStep(steps[1])).toBe(false);
+    expect(filterExecutionSteps(steps).map((step) => step.stepKey)).toEqual(["impl"]);
+  });
+
+  it("filters legacy task rows that only have stepType task", () => {
+    const steps = [
+      { id: "task-1", stepKey: "plan", metadata: { stepType: "task" } },
+      { id: "step-1", stepKey: "impl", metadata: { stepType: "implementation" } },
+    ] as any[];
+
+    expect(isDisplayOnlyTaskStep(steps[0])).toBe(true);
     expect(filterExecutionSteps(steps).map((step) => step.stepKey)).toEqual(["impl"]);
   });
 });

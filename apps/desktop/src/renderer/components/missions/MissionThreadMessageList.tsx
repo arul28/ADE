@@ -5,6 +5,7 @@ import { AgentChatMessageList } from "../chat/AgentChatMessageList";
 import { ChatSubagentsPanel } from "../chat/ChatSubagentsPanel";
 import { deriveChatSubagentSnapshots } from "../chat/chatExecutionSummary";
 import { eventHasPayload } from "../chat/chatTranscriptRows";
+import { isMissionControlToolName, rewriteMissionControlTextToolEvents } from "../chat/missionControlTextTools";
 import { derivePendingInputRequests, type DerivedPendingInput } from "../chat/pendingInput";
 import { looksLikeLowSignalNoise } from "./missionHelpers";
 import { adaptMissionThreadMessagesToAgentEvents } from "./missionThreadEventAdapter";
@@ -43,6 +44,61 @@ function mergeInlineText(existing: string, incoming: string): string {
   if (existing.includes(incoming)) return existing;
   if (incoming.includes(existing)) return incoming;
   return `${existing}${textJoinSeparator(existing, incoming)}${incoming}`;
+}
+
+function collectFilesChangedFromJson(value: string): string[] {
+  try {
+    const parsed = JSON.parse(value.trim());
+    const record = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+    const files = Array.isArray(record?.filesChanged)
+      ? record.filesChanged
+      : Array.isArray(record?.files_changed)
+        ? record.files_changed
+        : [];
+    return files
+      .map((entry) => String(entry ?? "").trim())
+      .filter((entry, index, entries) => entry.length > 0 && entries.indexOf(entry) === index);
+  } catch {
+    return [];
+  }
+}
+
+function cleanMissionThreadText(value: string): string {
+  const filesChanged: string[] = [];
+  const cleaned = value.replace(
+    /(?:\*{0,2}Changed Files\*{0,2}:?\s*)?```(?:json)?\s*([\s\S]*?)```/gi,
+    (match, body: string) => {
+      const files = collectFilesChangedFromJson(body);
+      if (files.length === 0) return match;
+      filesChanged.push(...files);
+      return "";
+    },
+  )
+    .replace(
+      /\s*\*{0,2}\s*Changed\s+Files\s*\*{0,2}:?\s*```(?:json)?[\s\S]*$/i,
+      "",
+    )
+    .replace(
+      /\s*\*{0,2}\s*Tests\s+Run\s*\*{0,2}:?\s*```(?:json)?[\s\S]*$/i,
+      "",
+    )
+    .replace(
+      /\s*\*{0,2}\s*(?:Risks\s*\/\s*Notes|Risks|Notes)\s*\*{0,2}:?[\s\S]*$/i,
+      "",
+    )
+    .replace(/\s*\*{0,2}Changed Files\*{0,2}:?\s*```(?:json)?\s*$/i, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  const uniqueFiles = filesChanged.filter((entry, index, entries) => entries.indexOf(entry) === index);
+  if (uniqueFiles.length === 0) return cleaned;
+  return [
+    cleaned,
+    `Changed files:\n- ${uniqueFiles.join("\n- ")}`,
+  ].filter(Boolean).join("\n\n");
 }
 
 function pickLaterTimestamp(left: string, right: string): string {
@@ -243,6 +299,115 @@ function shouldSuppressLowSignalEphemeralEvent(envelope: AgentChatEventEnvelope)
   return (event.type === "text" || event.type === "reasoning") && looksLikeLowSignalNoise(event.text);
 }
 
+const INTERNAL_COORDINATOR_DISPLAY_TEXT = new Set([
+  "Start mission coordination.",
+  "Continue mission coordination.",
+]);
+
+function looksLikeInternalCoordinatorPrompt(text: string): boolean {
+  const trimmed = text.trim();
+  return trimmed.startsWith("## ADE Mission-Control Tool Transport")
+    || trimmed.startsWith("You are ADE's mission lead for a software engineering mission.")
+    || trimmed.startsWith("RECOVERED TOOL CALLS EXECUTED");
+}
+
+function isCoordinatorSessionId(value: string | null | undefined): boolean {
+  return typeof value === "string" && value.trim().startsWith("coordinator:");
+}
+
+function isCoordinatorEnvelope(envelope: AgentChatEventEnvelope): boolean {
+  return envelope.provenance?.targetKind === "coordinator"
+    || isCoordinatorSessionId(envelope.sessionId)
+    || isCoordinatorSessionId(envelope.provenance?.sourceSessionId);
+}
+
+function looksLikeCoordinatorReplayMessage(value: string | null | undefined): boolean {
+  return typeof value === "string"
+    && value.includes("coordinator wrote mission-control calls as text");
+}
+
+function looksLikeCleanCodexAppServerExit(value: string | null | undefined): boolean {
+  return typeof value === "string"
+    && /^Codex app-server exited \(code=0, signal=null\)\.?$/i.test(value.trim());
+}
+
+function looksLikeMissionControlTransportText(value: string): boolean {
+  const lines = value
+    .trim()
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const firstPayloadLine = lines.find((line) => !line.startsWith("```"));
+  const match = /^\/\/\s*([A-Za-z0-9_.:-]+)/.exec(firstPayloadLine ?? "");
+  if (!match) return false;
+  const label = match[1] ?? "";
+  return /^(?:multi_tool_use\.)?parallel$/i.test(label) || isMissionControlToolName(label);
+}
+
+function looksLikeGenericTurnStatus(value: string | null | undefined): boolean {
+  return typeof value === "string"
+    && /^(Turn started|Turn completed)\.?$/i.test(value.trim());
+}
+
+function looksLikeInternalValidationControlMessage(value: string | null | undefined): boolean {
+  if (typeof value !== "string") return false;
+  const normalized = normalizeInlineText(value);
+  return /\bValidation System:\s*Required validation is missing\b/i.test(normalized)
+    || /\|\s*next:\s*"[^"]+"\s*—\s*triggering plan adjustment\b/i.test(normalized);
+}
+
+function looksLikeDanglingTextFragment(value: string): boolean {
+  const trimmed = normalizeInlineText(value);
+  if (trimmed.length === 0 || trimmed.length >= 32) return false;
+  if (/[.!?:;]$/.test(trimmed)) return false;
+  return /\b(?:a|an|and|at|for|from|in|of|or|the|then|to|with)$/i.test(trimmed);
+}
+
+function hasMissionVisibleDoneDetails(event: Extract<AgentChatEvent, { type: "done" }>): boolean {
+  const usage = event.usage;
+  return [
+    usage?.inputTokens,
+    usage?.outputTokens,
+    usage?.cacheReadTokens,
+    usage?.cacheCreationTokens,
+    event.costUsd,
+  ].some((value) => typeof value === "number" && value > 0)
+    || event.runtime === "cloud";
+}
+
+function shouldSuppressMissionControlToolEvent(envelope: AgentChatEventEnvelope): boolean {
+  const event = envelope.event;
+  if (event.type !== "tool_call" && event.type !== "tool_result") return false;
+  const itemId = typeof event.itemId === "string" ? event.itemId : "";
+  if (itemId.startsWith("mission-control-text:")) return true;
+  return isMissionControlToolName(event.tool) && isCoordinatorEnvelope(envelope);
+}
+
+export function shouldSuppressMissionThreadEvent(envelope: AgentChatEventEnvelope): boolean {
+  const event = envelope.event;
+  if (shouldSuppressMissionControlToolEvent(envelope)) return true;
+  if (event.type === "user_message") {
+    const displayText = event.displayText?.trim();
+    if (displayText && INTERNAL_COORDINATOR_DISPLAY_TEXT.has(displayText)) return true;
+    if (looksLikeInternalCoordinatorPrompt(event.text)) return true;
+  }
+  if (event.type === "status") {
+    if (looksLikeGenericTurnStatus(event.message)) return true;
+    if (looksLikeCoordinatorReplayMessage(event.message)) return true;
+    if (looksLikeCleanCodexAppServerExit(event.message)) return true;
+    if (looksLikeInternalValidationControlMessage(event.message)) return true;
+  }
+  if (event.type === "error" && looksLikeCleanCodexAppServerExit(event.message)) return true;
+  if (event.type === "done" && event.status === "completed" && !hasMissionVisibleDoneDetails(event)) return true;
+  if (event.type === "text" || event.type === "reasoning") {
+    if (event.text.trim() === "Agent event") return true;
+    if (event.type === "text" && looksLikeDanglingTextFragment(event.text)) return true;
+    if (looksLikeInternalValidationControlMessage(event.text)) return true;
+    if (looksLikeMissionControlTransportText(event.text)) return true;
+  }
+  return shouldSuppressLowSignalEphemeralEvent(envelope);
+}
+
 export function mergeMissionThreadEvents(
   fallbackEvents: AgentChatEventEnvelope[],
   sessionEvents: AgentChatEventEnvelope[] | null,
@@ -256,7 +421,7 @@ export function mergeMissionThreadEvents(
     const existing = merged.get(key);
     merged.set(key, existing ? mergeDuplicateEnvelope(existing, event) : event);
   }
-  return [...merged.values()].filter((entry) => !shouldSuppressLowSignalEphemeralEvent(entry)).sort((left, right) => {
+  return [...merged.values()].filter((entry) => !shouldSuppressMissionThreadEvent(entry)).sort((left, right) => {
     const delta = Date.parse(left.timestamp) - Date.parse(right.timestamp);
     return Number.isFinite(delta) && delta !== 0
       ? delta
@@ -265,7 +430,23 @@ export function mergeMissionThreadEvents(
 }
 
 function filterLowSignalStructuredEvents(events: AgentChatEventEnvelope[]): AgentChatEventEnvelope[] {
-  const filtered = events.filter((envelope) => {
+  const filtered = events.map((envelope) => {
+    const event = envelope.event;
+    if (event.type === "text" || event.type === "reasoning") {
+      const text = cleanMissionThreadText(event.text);
+      if (text !== event.text) {
+        return {
+          ...envelope,
+          event: {
+            ...event,
+            text,
+          },
+        };
+      }
+    }
+    return envelope;
+  }).filter((envelope) => {
+    if (shouldSuppressMissionThreadEvent(envelope)) return false;
     const event = envelope.event;
     if ((event.type === "text" || event.type === "reasoning") && looksLikeLowSignalNoise(event.text)) {
       return false;
@@ -273,6 +454,7 @@ function filterLowSignalStructuredEvents(events: AgentChatEventEnvelope[]): Agen
     if (event.type === "activity") {
       const detail = normalizeInlineText(event.detail ?? "");
       if (!detail.length) return false;
+      if (event.activity === "thinking" && /^thinking through the answer\.?$/i.test(detail)) return false;
       if (event.activity === "thinking" && looksLikeLowSignalNoise(detail)) return false;
     }
     return true;
@@ -305,7 +487,7 @@ export const MissionThreadMessageList = React.memo(function MissionThreadMessage
   }, [sessionId]);
 
   const refreshSessionTranscript = useCallback(() => {
-    if (!sessionId) {
+    if (!sessionId || !transcriptPollingEnabled) {
       setSessionEvents(null);
       lastTranscriptRawRef.current = null;
       return;
@@ -323,7 +505,7 @@ export const MissionThreadMessageList = React.memo(function MissionThreadMessage
       },
       () => setSessionEvents([]),
     );
-  }, [sessionId]);
+  }, [sessionId, transcriptPollingEnabled]);
 
   useEffect(() => {
     refreshSessionTranscript();
@@ -332,14 +514,16 @@ export const MissionThreadMessageList = React.memo(function MissionThreadMessage
   useMissionPolling(refreshSessionTranscript, 4_000, Boolean(sessionId && transcriptPollingEnabled));
 
   const events = useMemo(() => {
-    return filterLowSignalStructuredEvents(mergeMissionThreadEvents(fallbackEvents, sessionEvents));
+    return filterLowSignalStructuredEvents(
+      rewriteMissionControlTextToolEvents(mergeMissionThreadEvents(fallbackEvents, sessionEvents)),
+    );
   }, [fallbackEvents, sessionEvents]);
   const subagentSnapshots = useMemo(() => deriveChatSubagentSnapshots(events), [events]);
   const pendingInput = useMemo<DerivedPendingInput | null>(() => derivePendingInputRequests(events)[0] ?? null, [events]);
 
   return (
     <>
-      <div className="flex h-full min-h-0 flex-col">
+      <div className="flex h-full min-h-0 min-w-0 max-w-full flex-col overflow-hidden">
         <AgentChatMessageList
           key={sessionId ?? "mission-feed"}
           events={events}

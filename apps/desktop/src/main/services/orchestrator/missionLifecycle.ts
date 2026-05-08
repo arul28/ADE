@@ -432,12 +432,16 @@ export function transitionMissionStatus(
   ctx: OrchestratorContext,
   missionId: string,
   next: MissionStatus,
-  args?: { outcomeSummary?: string | null; lastError?: string | null }
+  args?: { outcomeSummary?: string | null; lastError?: string | null; allowTerminalRestart?: boolean }
 ): void {
   const mission = ctx.missionService.get(missionId);
   if (!mission) return;
   if (mission.status === next && args?.outcomeSummary == null && args?.lastError == null) return;
-  if (TERMINAL_MISSION_STATUSES.has(mission.status) && !TERMINAL_MISSION_STATUSES.has(next)) {
+  if (
+    TERMINAL_MISSION_STATUSES.has(mission.status) &&
+    !TERMINAL_MISSION_STATUSES.has(next) &&
+    !args?.allowTerminalRestart
+  ) {
     ctx.logger.debug("ai_orchestrator.mission_status_regression_skipped", {
       missionId,
       from: mission.status,

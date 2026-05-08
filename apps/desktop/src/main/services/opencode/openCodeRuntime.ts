@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
 import { createServer } from "node:net";
+import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   createOpencodeClient,
@@ -38,6 +40,28 @@ import {
 
 export type OpenCodeAgentProfile = "ade-plan" | "ade-edit" | "ade-full-auto" | "ade-helper";
 
+const ADE_PLAN_TOOL_SELECTION: Record<string, boolean> = {
+  // ADE mission planning must go through coordinator tools such as
+  // spawn_worker; OpenCode's native task subagent bypasses mission state.
+  task: false,
+  codesearch: false,
+  code_search: false,
+  filesearch: false,
+  file_search: false,
+  websearch: false,
+  web_search: false,
+  skill: false,
+  skills: false,
+};
+
+export type OpenCodeAdeMcpConfig = {
+  projectRoot: string;
+  workspaceRoot: string;
+  missionId: string;
+  runId: string;
+  role?: "orchestrator" | "agent" | "cto" | "external" | "evaluator";
+};
+
 export type OpenCodeSessionHandle = {
   client: OpencodeClient;
   server: {
@@ -72,6 +96,8 @@ type BuildOpenCodeConfigArgs = {
   projectConfig: ProjectConfigFile | EffectiveProjectConfig;
   /** Dynamically discovered models from local provider endpoints (e.g. LM Studio /v1/models). */
   discoveredLocalModels?: DiscoveredLocalModelEntry[];
+  /** Optional ADE stdio MCP bridge used by mission coordinators. */
+  adeMcp?: OpenCodeAdeMcpConfig | null;
 };
 
 type StartOpenCodeSessionArgs = BuildOpenCodeConfigArgs & {
@@ -263,6 +289,70 @@ function buildProviderConfig(
   return Object.keys(provider).length > 0 ? provider : undefined;
 }
 
+function fileExists(filePath: string | null | undefined): filePath is string {
+  if (!filePath) return false;
+  try {
+    return fs.statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function resolveAdeCliCommandPath(): string | null {
+  const envCli = trimToUndefined(process.env.ADE_CLI_PATH);
+  if (fileExists(envCli)) return envCli;
+
+  const envBin = trimToUndefined(process.env.ADE_CLI_BIN_DIR);
+  const envBinCli = envBin ? path.join(envBin, process.platform === "win32" ? "ade.cmd" : "ade") : null;
+  if (fileExists(envBinCli)) return envBinCli;
+
+  const candidateRoots = [
+    process.cwd(),
+    path.resolve(process.cwd(), ".."),
+    path.resolve(process.cwd(), "..", ".."),
+  ];
+  for (const root of candidateRoots) {
+    const repoBuilt = path.join(root, "apps", "ade-cli", "dist", "cli.cjs");
+    if (fileExists(repoBuilt)) return repoBuilt;
+    const siblingBuilt = path.join(root, "ade-cli", "dist", "cli.cjs");
+    if (fileExists(siblingBuilt)) return siblingBuilt;
+  }
+
+  return null;
+}
+
+function buildAdeMcpCommand(args: OpenCodeAdeMcpConfig): { command: string[]; environment: Record<string, string> } {
+  const cliPath = resolveAdeCliCommandPath();
+  const commandPrefix = cliPath && /\.(?:cjs|mjs|js)$/i.test(cliPath)
+    ? [process.execPath, cliPath]
+    : [cliPath ?? "ade"];
+  const role = args.role ?? "orchestrator";
+  return {
+    command: [
+      ...commandPrefix,
+      "--headless",
+      "--project-root",
+      args.projectRoot,
+      "--workspace-root",
+      args.workspaceRoot,
+      "--role",
+      role,
+      "mcp",
+    ],
+    environment: {
+      ADE_DEFAULT_ROLE: role,
+      ADE_CLI_HEADLESS: "1",
+      ADE_MCP_TOOL_SCOPE: "coordinator",
+      ADE_PROJECT_ROOT: args.projectRoot,
+      ADE_WORKSPACE_ROOT: args.workspaceRoot,
+      ADE_MISSION_ID: args.missionId,
+      ADE_RUN_ID: args.runId,
+      ADE_CLI_NODE: process.execPath,
+      ...(process.env.PATH ? { PATH: process.env.PATH } : {}),
+    },
+  };
+}
+
 export function buildOpenCodeConfig(args: BuildOpenCodeConfigArgs): OpenCodeConfig {
   const provider = buildProviderConfig(args.projectConfig, args.discoveredLocalModels);
   const helperPermission = {
@@ -272,15 +362,30 @@ export function buildOpenCodeConfig(args: BuildOpenCodeConfigArgs): OpenCodeConf
     doom_loop: "deny",
     external_directory: "deny",
   } as const;
+  const adeMcp = args.adeMcp ? buildAdeMcpCommand(args.adeMcp) : null;
 
   return {
     share: "disabled",
     autoupdate: false,
     snapshot: false,
     ...(provider ? { provider } : {}),
+    ...(adeMcp
+      ? {
+          mcp: {
+            ade: {
+              type: "local",
+              command: adeMcp.command,
+              environment: adeMcp.environment,
+              enabled: true,
+              timeout: 10_000,
+            },
+          },
+        }
+      : {}),
     agent: {
       "ade-plan": {
         permission: buildPermissionConfig("plan"),
+        tools: ADE_PLAN_TOOL_SELECTION,
       },
       "ade-edit": {
         permission: buildPermissionConfig("edit"),

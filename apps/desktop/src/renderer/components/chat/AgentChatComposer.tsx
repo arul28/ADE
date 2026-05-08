@@ -247,6 +247,10 @@ function getAttachBlockedReason(args: {
   return null;
 }
 
+function normalizeComposerLabelText(value: string): string {
+  return value.trim().replace(/\s*\.\.\.$/, "").trim();
+}
+
 function iosSourceResolutionLabel(resolution: string): string {
   switch (resolution) {
     case "ade-inspector":
@@ -857,6 +861,12 @@ export function AgentChatComposer({
     || macosVmContextItems.length > 0;
   const composerInputLocked = Boolean(pendingInput?.blocking);
   const composerInputLockMessage = getComposerInputLockMessage(pendingInput);
+  const composerInputContextLabel = normalizeComposerLabelText(messagePlaceholder ?? "") || "Chat message";
+  const composerInputAccessibleLabel = composerInputLockMessage
+    ? `Chat input locked: ${composerInputLockMessage}`
+    : turnActive
+      ? `Steer active turn: ${composerInputContextLabel}`
+      : composerInputContextLabel;
   const canAttach = !composerInputLocked && (!parallelChatMode || attachments.length < PARALLEL_CHAT_MAX_ATTACHMENTS);
   const attachBlockedReason = getAttachBlockedReason({
     composerInputLocked,
@@ -3233,6 +3243,7 @@ export function AgentChatComposer({
                 contentEditable={!parallelLaunchBusy && !composerInputLocked}
                 role="textbox"
                 aria-multiline="true"
+                aria-label={composerInputAccessibleLabel}
                 suppressContentEditableWarning
                 className={cn(
                   "block max-h-[200px] min-h-[2.6rem] w-full overflow-auto whitespace-pre-wrap break-words bg-transparent px-4 py-2.5 font-sans text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-fg/88 outline-none transition-colors",
@@ -3359,6 +3370,7 @@ export function AgentChatComposer({
               autoCorrect="on"
               autoCapitalize="sentences"
               spellCheck={true}
+              aria-label={composerInputAccessibleLabel}
               className={cn(
                 "block w-full resize-none bg-transparent px-4 py-2.5 text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-fg/88 outline-none transition-colors placeholder:text-muted-fg/30",
                 dragActive ? "opacity-30" : "",
