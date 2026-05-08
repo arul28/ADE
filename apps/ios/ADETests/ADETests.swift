@@ -45,6 +45,11 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(output, "errok")
   }
 
+  func testShellCliPermissionModeDoesNotInheritRuntimeMode() {
+    XCTAssertNil(workCliPermissionMode(provider: "shell", runtimeMode: "plan"))
+    XCTAssertEqual(workCliPermissionMode(provider: "codex", runtimeMode: "plan"), "plan")
+  }
+
   func testTerminalDisplayPreservesAnsiRunsForRendering() {
     let display = workTerminalDisplay(
       raw: "\u{001B}[31mError\u{001B}[0m plain \u{001B}[32;1mOK\u{001B}[0m",
@@ -899,6 +904,16 @@ final class ADETests: XCTestCase {
     let unsubscribedRevision = service.localStateRevision
     try await service.unsubscribeFromChatEvents(sessionId: "session-1")
     XCTAssertEqual(service.localStateRevision, unsubscribedRevision)
+  }
+
+  @MainActor
+  func testTerminalBufferSurvivesCredentialClearingDisconnect() {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+
+    service.seedTerminalBufferForTesting(sessionId: "terminal-1", transcript: "full terminal history")
+    service.disconnect(clearCredentials: true)
+
+    XCTAssertEqual(service.terminalBuffers["terminal-1"], "full terminal history")
   }
 
   @MainActor

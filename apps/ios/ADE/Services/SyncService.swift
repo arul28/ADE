@@ -2343,7 +2343,7 @@ final class SyncService: ObservableObject {
       saveProfile(nil)
       saveRemoteCommandDescriptors([])
       resetChatEventState(clearHistory: true)
-      resetTerminalSubscriptionState(clearHistory: true)
+      resetTerminalSubscriptionState(clearHistory: false)
       activeHostProfile = nil
       hostName = nil
     }
@@ -5391,6 +5391,11 @@ final class SyncService: ObservableObject {
     pendingOutboundChangeset = nil
     clearPendingOutboundChangesetForActiveProject()
     advanceOutboundCursorForActiveProject(to: dbVersion)
+  }
+
+  func seedTerminalBufferForTesting(sessionId: String, transcript: String) {
+    terminalBuffers[sessionId] = transcript
+    terminalBufferRevision += 1
   }
 
   func pendingOperationsForTesting() -> [(id: String, kind: String, action: String, projectId: String?, projectRootPath: String?)] {

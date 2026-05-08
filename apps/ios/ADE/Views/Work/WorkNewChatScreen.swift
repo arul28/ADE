@@ -291,7 +291,7 @@ struct WorkNewChatScreen: View {
         let result = try await syncService.startCliSession(
           laneId: selectedLaneId,
           provider: provider,
-          permissionMode: wire.permissionMode ?? (runtimeMode.isEmpty ? nil : runtimeMode),
+          permissionMode: workCliPermissionMode(provider: provider, runtimeMode: runtimeMode),
           title: workCliProviderOptions.first(where: { $0.id == provider })?.title,
           initialInput: opener.isEmpty ? nil : opener,
           cols: 88,
@@ -387,6 +387,14 @@ private func workDefaultNewChatModelId(provider: String) -> String {
   case "opencode": return "opencode/anthropic/claude-sonnet-4-6"
   default: return "claude-sonnet-4-6"
   }
+}
+
+func workCliPermissionMode(provider: String, runtimeMode: String) -> String? {
+  if provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "shell" {
+    return nil
+  }
+  let wire = workRuntimeWireFields(provider: provider, mode: runtimeMode)
+  return wire.permissionMode ?? (runtimeMode.isEmpty ? nil : runtimeMode)
 }
 
 private func workCliToolType(provider: String) -> String {
