@@ -6491,7 +6491,7 @@ async function runTool(args: {
   if (name === "resume_mission") {
 
     const runId = assertNonEmptyString(toolArgs.runId, "runId");
-    const run = runtime.aiOrchestratorService.resumeRun({ runId });
+    const run = await runtime.aiOrchestratorService.resumeRun({ runId });
     return { run };
   }
 

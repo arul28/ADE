@@ -937,7 +937,7 @@ function createRuntime() {
       })),
       finalizeRun: vi.fn(() => ({ finalized: true, blockers: [], finalStatus: "succeeded" })),
       cancelRunGracefully: vi.fn(async ({ runId }: any) => ({ cancelled: true, runId })),
-      resumeRun: vi.fn(({ runId }: any) => ({ id: runId, status: "running" })),
+      resumeRun: vi.fn(async ({ runId }: any) => ({ id: runId, status: "running" })),
       steerMission: vi.fn(({ missionId }: any) => ({ acknowledged: true, appliedAt: new Date().toISOString() })),
       getWorkerStates: vi.fn(({ runId }: any) => [
         { attemptId: "a-1", stepId: "s-1", runId, state: "running" }
