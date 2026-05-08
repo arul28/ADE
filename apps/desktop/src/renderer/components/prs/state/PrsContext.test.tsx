@@ -50,6 +50,8 @@ function TabSwitchHarness() {
 
 describe("PrsContext refresh", () => {
   beforeEach(() => {
+    window.history.replaceState(null, "", "/");
+    window.location.hash = "";
     const refreshedNeed: RebaseNeed = {
       laneId: "lane-1",
       laneName: "Lane 1",
@@ -82,19 +84,11 @@ describe("PrsContext refresh", () => {
       },
       lanes: {
         list: vi.fn().mockResolvedValue([]),
-        listAutoRebaseStatuses: vi
-          .fn()
-          .mockResolvedValueOnce([])
-          .mockResolvedValueOnce([])
-          .mockResolvedValue([refreshedAutoStatus]),
+        listAutoRebaseStatuses: vi.fn().mockResolvedValue([refreshedAutoStatus]),
         onAutoRebaseEvent: vi.fn(() => () => {}),
       },
       rebase: {
-        scanNeeds: vi
-          .fn()
-          .mockResolvedValueOnce([])
-          .mockResolvedValueOnce([])
-          .mockResolvedValue([refreshedNeed]),
+        scanNeeds: vi.fn().mockResolvedValue([refreshedNeed]),
         onEvent: vi.fn(() => () => {}),
       },
     } as any;
@@ -104,10 +98,25 @@ describe("PrsContext refresh", () => {
     cleanup();
     globalThis.window.ade = originalAde;
     window.location.hash = "";
+    window.history.replaceState(null, "", "/");
   });
 
-  it("refreshes rebase needs and auto-rebase statuses without waiting for events", async () => {
-    const user = userEvent.setup();
+  it("skips rebase scans for the plain GitHub PR list", async () => {
+    render(
+      <PrsProvider>
+        <Harness />
+      </PrsProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("loading").textContent).toBe("idle");
+    });
+    expect(window.ade.rebase.scanNeeds).not.toHaveBeenCalled();
+    expect(window.ade.lanes.listAutoRebaseStatuses).not.toHaveBeenCalled();
+  });
+
+  it("refreshes rebase needs and auto-rebase statuses for workflow routes without waiting for events", async () => {
+    window.location.hash = "#/prs?tab=workflows&workflow=rebase&laneId=lane-1";
 
     render(
       <PrsProvider>
@@ -118,8 +127,6 @@ describe("PrsContext refresh", () => {
     await waitFor(() => {
       expect(screen.getByTestId("loading").textContent).toBe("idle");
     });
-
-    await user.click(screen.getByRole("button", { name: "refresh" }));
 
     await waitFor(() => {
       expect(screen.getByTestId("needs-count").textContent).toBe("1");
