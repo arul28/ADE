@@ -1689,6 +1689,7 @@ export function AgentChatPane({
   const [availableModelIds, setAvailableModelIds] = useState<string[]>(() =>
     seedAiStatus ? deriveConfiguredModelIds(seedAiStatus, { includeDroid: true }) : [],
   );
+  const availableModelsRefreshSeqRef = useRef(0);
   const [claudePermissionMode, setClaudePermissionMode] = useState<AgentChatClaudePermissionMode>(initialNativeControls.claudePermissionMode);
   const [codexApprovalPolicy, setCodexApprovalPolicy] = useState<AgentChatCodexApprovalPolicy>(initialNativeControls.codexApprovalPolicy);
   const [codexSandbox, setCodexSandbox] = useState<AgentChatCodexSandbox>(initialNativeControls.codexSandbox);
@@ -2693,6 +2694,7 @@ export function AgentChatPane({
   });
 
   const refreshAvailableModels = useCallback(async () => {
+    const refreshSeq = ++availableModelsRefreshSeqRef.current;
     const orderModelIds = (ids: Iterable<string>): string[] => {
       const available = new Set(ids);
       const ordered = MODEL_REGISTRY
@@ -2739,30 +2741,28 @@ export function AgentChatPane({
         || status.providerConnections?.cursor?.runtimeAvailable === true;
       if (!cursorReady) return orderedAvailable;
 
-      let cursorModels: Awaited<ReturnType<typeof getAgentChatModelsCached>>;
-      try {
-        cursorModels = await getAgentChatModelsCached({
-          projectRoot,
-          provider: "cursor",
-          activateRuntime: true,
-        });
-      } catch {
-        return orderedAvailable;
-      }
-      if (!cursorModels.length) {
-        const withoutCursor = orderedAvailable.filter((id) => !isCursorModelId(id));
-        setAvailableModelIds(withoutCursor);
-        return withoutCursor;
-      }
+      void getAgentChatModelsCached({
+        projectRoot,
+        provider: "cursor",
+        activateRuntime: true,
+      }).then((cursorModels) => {
+        if (availableModelsRefreshSeqRef.current !== refreshSeq) return;
+        if (!cursorModels.length) {
+          const withoutCursor = orderedAvailable.filter((id) => !isCursorModelId(id));
+          setAvailableModelIds(withoutCursor);
+          return;
+        }
 
-      const merged = new Set<string>(available);
-      for (const model of cursorModels) {
-        const resolved = resolveCliRegistryModelId("cursor", model.id);
-        if (resolved) merged.add(resolved);
-      }
-      const withCursor = orderModelIds(merged);
-      setAvailableModelIds(withCursor);
-      return withCursor;
+        const merged = new Set<string>(available);
+        for (const model of cursorModels) {
+          const resolved = resolveCliRegistryModelId("cursor", model.id);
+          if (resolved) merged.add(resolved);
+        }
+        const withCursor = orderModelIds(merged);
+        setAvailableModelIds(withCursor);
+      }).catch(() => undefined);
+
+      return orderedAvailable;
     } catch {
       setAiStatus(null);
       setProviderConnections(null);

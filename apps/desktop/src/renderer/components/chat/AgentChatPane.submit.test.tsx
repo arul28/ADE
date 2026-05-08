@@ -1060,6 +1060,73 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
+  it("does not block chat boot on Cursor model inventory after AI status resolves", async () => {
+    let resolveProjectConfig: (value: unknown) => void = () => {};
+    const projectConfig = new Promise((resolve) => {
+      resolveProjectConfig = resolve;
+    });
+    const cursorModels = new Promise(() => {});
+    installAdeMocks({
+      sessions: [],
+    });
+    useAppStore.setState({
+      project: { rootPath: "/tmp/project-under-test" } as any,
+      lanes: [{
+        id: "lane-1",
+        name: "Lane 1",
+        laneType: "worktree",
+        branchRef: "refs/heads/lane-1",
+        worktreePath: "/tmp/project-under-test/lane-1",
+      } as any],
+      selectedLaneId: "lane-1",
+    });
+    window.ade.projectConfig.get = vi.fn().mockReturnValue(projectConfig) as any;
+    window.ade.ai.getStatus = vi.fn().mockResolvedValue({
+      mode: "subscription",
+      availableProviders: { claude: false, codex: true, cursor: true, droid: false },
+      models: { claude: [], codex: [], cursor: [], droid: [] },
+      features: [],
+      detectedAuth: [
+        { type: "cli-subscription", cli: "codex", authenticated: true },
+        { type: "api-key", provider: "cursor" },
+      ],
+      availableModelIds: ["cursor/auto"],
+    }) as any;
+    window.ade.agentChat.models = vi.fn().mockImplementation(({ provider }: { provider: string }) => {
+      if (provider === "cursor") return cursorModels;
+      return Promise.resolve([]);
+    }) as any;
+
+    render(
+      <MemoryRouter>
+        <AgentChatPane laneId="lane-1" />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("Loading sessions")).toBeTruthy();
+
+    await act(async () => {
+      resolveProjectConfig({
+        effective: {
+          ai: {
+            chat: {
+              sendOnEnter: true,
+            },
+          },
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText("Loading sessions")).toBeNull();
+    });
+    expect(await screen.findByText("Start a new conversation")).toBeTruthy();
+    expect(window.ade.agentChat.models).toHaveBeenCalledWith({
+      provider: "cursor",
+      activateRuntime: true,
+    });
+  });
+
   it("keeps the committed model visible until the backend confirms the switch", async () => {
     const session = buildSession("session-1", { status: "idle" });
     const sessions = [session];
