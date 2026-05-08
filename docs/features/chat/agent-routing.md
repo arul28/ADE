@@ -15,12 +15,12 @@ where the machinery lives.
 | `apps/desktop/src/main/services/ai/providerRuntimeHealth.ts` | Tracks provider readiness/auth/network failures so the UI can surface degraded states. |
 | `apps/desktop/src/main/services/ai/providerOptions.ts` | Normalises provider-native options (Claude permission mode, Codex approval + sandbox, OpenCode permission). |
 | `apps/desktop/src/main/services/ai/authDetector.ts` | Discovers available credentials (CLI, API key, OAuth) and reports auth status. |
-| `apps/desktop/src/main/services/ai/claudeCodeExecutable.ts` / `codexExecutable.ts` | CLI resolution (looks on PATH, in the app bundle, then in configured install paths). Cursor no longer needs a CLI resolver — it runs through the embedded `@cursor/sdk`. |
+| `apps/desktop/src/main/services/ai/claudeCodeExecutable.ts` / `codexExecutable.ts` / `droidExecutable.ts` | CLI resolution (looks on PATH, in the app bundle, then in configured install paths where supported). Cursor no longer needs a CLI resolver — it runs through the embedded `@cursor/sdk`. |
 | `apps/desktop/src/main/services/ai/tools/systemPrompt.ts` | Adjusts the system prompt per mode (`chat`, `coding`, `planning`) and permission mode. |
 
 ## Supported providers
 
-`AgentChatProvider` is `"codex" | "claude" | "cursor" | "opencode" | (string & {})`.
+`AgentChatProvider` is `"codex" | "claude" | "cursor" | "droid" | "opencode" | (string & {})`.
 The final branch exists so local discovery can populate provider keys
 for vendored runtimes without changing the union.
 
@@ -30,6 +30,7 @@ for vendored runtimes without changing the union.
 | `codex` | `codex app-server` subprocess, JSON-RPC protocol. Spawn failures surface as error events. | `agentChatService.ts` (Codex adapter); config via `codexAppServerConfig.ts`. |
 | `opencode` | OpenCode server runtime: Anthropic/OpenAI/Google/Mistral/DeepSeek/xAI/Groq/Together AI API keys, OpenRouter, and local (Ollama, LM Studio, vLLM). | `agentChatService.ts` (OpenCode adapter); model discovery in `localModelDiscovery.ts` and `modelsDevService.ts`. |
 | `cursor` | Official `@cursor/sdk` running in a Node worker pool. ADE owns permissions, hooks, and the system prompt; the SDK owns the model + tool execution. | `cursorSdkPool.ts`, `cursorSdkWorker.ts`, `cursorSdkProtocol.ts`, `cursorSdkPolicy.ts`, `cursorSdkSystemPrompt.ts`, `cursorSdkEventMapper.ts`. |
+| `droid` | Factory Droid CLI models exposed as dynamic `droid/<modelId>` descriptors and driven through the Droid ACP bridge. | `agentChatService.ts` (Droid adapter); model helpers in `modelRegistry.ts`. |
 
 ## Model registry
 
@@ -219,6 +220,7 @@ translates the abstract value into the correct provider-native fields:
 - `claude`: `claudePermissionMode = "default" | "plan" | "acceptEdits" | "bypassPermissions"`.
 - `codex`: `codexApprovalPolicy` + `codexSandbox` pair.
 - `opencode`: `opencodePermissionMode = "plan" | "edit" | "full-auto"`.
+- `droid`: `droidPermissionMode = "read-only" | "auto-low" | "auto-medium" | "auto-high"`.
 
 The abstract field is persisted alongside the native fields so the UI
 can summarize session state consistently, and so legacy flows that only

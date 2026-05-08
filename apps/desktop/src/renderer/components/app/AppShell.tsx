@@ -429,8 +429,27 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       }
     };
 
-    const disposeProjectChanged = window.ade.app.onProjectChanged(() => {
-      void initializeProjectState();
+    const disposeProjectChanged = window.ade.app.onProjectChanged((nextProject) => {
+      const state = useAppStore.getState();
+      const nextRoot = nextProject?.rootPath ?? null;
+      const currentRoot = state.project?.rootPath ?? null;
+      const expectedShowWelcome = !nextProject;
+      const alreadyApplied =
+        state.projectHydrated &&
+        currentRoot === nextRoot &&
+        state.showWelcome === expectedShowWelcome;
+
+      if (state.projectTransition) return;
+
+      if (alreadyApplied) {
+        setProject(nextProject);
+        setShowWelcome(expectedShowWelcome);
+        return;
+      }
+
+      setProjectHydrated(false);
+      applyProjectState(nextProject);
+      setProjectHydrated(true);
     });
 
     void initializeProjectState();

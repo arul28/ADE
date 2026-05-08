@@ -38,6 +38,7 @@ _    ____  _____
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade memory add | search | pin                 Use ADE memory
     $ ade settings action <method>                  Call project config actions
+    $ ade update status | check | install | dismiss Read auto-update state and drive install
     $ ade actions list | run | status               Escape hatch for every ADE service action
     $ ade cursor cloud agents | runs | artifacts | repos | models | me
                                                     Drive Cursor Cloud agents via @cursor/sdk
@@ -121,6 +122,7 @@ _    ____  _____
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade memory add | search | pin                 Use ADE memory
     $ ade settings action <method>                  Call project config actions
+    $ ade update status | check | install | dismiss Read auto-update state and drive install
     $ ade actions list | run | status               Escape hatch for every ADE service action
     $ ade cursor cloud agents | runs | artifacts | repos | models | me
                                                     Drive Cursor Cloud agents via @cursor/sdk
@@ -204,6 +206,7 @@ _    ____  _____
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade memory add | search | pin                 Use ADE memory
     $ ade settings action <method>                  Call project config actions
+    $ ade update status | check | install | dismiss Read auto-update state and drive install
     $ ade actions list | run | status               Escape hatch for every ADE service action
     $ ade cursor cloud agents | runs | artifacts | repos | models | me
                                                     Drive Cursor Cloud agents via @cursor/sdk
@@ -614,6 +617,10 @@ _    ____  _____
     $ ade --socket ios-sim shutdown --force        Force-release a session owned by another chat
     $ ade ios-sim actions --text                   List every callable ios_simulator action
 
+  Project discovery scans root-level .xcodeproj bundles and apps/*/*.xcodeproj
+  projects; do not create symlink shims or fake schemes before checking
+  "ios-sim apps --text" and the build output.
+
   Capture and inspection:
     $ ade ios-sim screenshot --text                One-shot PNG via simctl (screenshot)
     $ ade ios-sim snapshot --text                  Screenshot + selectable elements (getScreenSnapshot)
@@ -791,6 +798,7 @@ _    ____  _____
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade memory add | search | pin                 Use ADE memory
     $ ade settings action <method>                  Call project config actions
+    $ ade update status | check | install | dismiss Read auto-update state and drive install
     $ ade actions list | run | status               Escape hatch for every ADE service action
     $ ade cursor cloud agents | runs | artifacts | repos | models | me
                                                     Drive Cursor Cloud agents via @cursor/sdk
@@ -836,6 +844,32 @@ _    ____  _____
     $ ade actions run <domain.action> --input-json '{"key":"value"}'
 
   Start with: ade doctor --text
+
+## ade update --help
+_    ____  _____
+    / \  |  _ \| ____|
+   / _ \ | | | |  _|
+  / ___ \| |_| | |___
+ /_/   \_\____/|_____|
+
+  Auto-update
+
+  Auto-update commands query and drive ADE desktop's auto-updater. The desktop
+  app owns the updater process; CLI parity exists so agents can read state and,
+  when explicitly requested by the user, trigger a check, install, or dismiss
+  the post-install notice. quitAndInstall relaunches the desktop app and only
+  succeeds when status is "ready".
+
+    $ ade --socket update status --text             Read AutoUpdateSnapshot (status, version, progress)
+    $ ade --socket update check --text              Trigger a background update check
+    $ ade --socket update install --text            Refresh latest, then quit and install when ready
+    $ ade --socket update dismiss --text            Clear the recently-installed banner
+    $ ade --socket update actions --text            List callable update actions
+
+  Snapshot status values: idle, checking, downloading, ready, installing, error.
+  "installing" appears between quitAndInstall and the desktop relaunch; if the
+  install fails, status falls back to error and the pending-install record is
+  cleared automatically.
 
 ## ade actions --help
 _    ____  _____
