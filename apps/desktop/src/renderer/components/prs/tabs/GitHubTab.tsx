@@ -525,11 +525,8 @@ export function GitHubTab({
         .map((pr) => [
           pr.id,
           pr.state,
-          pr.checksStatus,
-          pr.reviewStatus,
           pr.title,
           pr.githubPrNumber,
-          pr.updatedAt,
         ])
         .sort((left, right) => String(left[0]).localeCompare(String(right[0]))),
     );

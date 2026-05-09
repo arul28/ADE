@@ -327,6 +327,68 @@ describe("GitHubTab", () => {
     expect(window.ade.prs.getGitHubSnapshot).not.toHaveBeenCalledWith({ force: true });
   });
 
+  it("does not force-refresh the GitHub snapshot for CI/review-only PR status updates", async () => {
+    const loadedContext = {
+      prs: [
+        { id: "pr-open", checksStatus: "pending", reviewStatus: "requested", additions: 12, deletions: 3, updatedAt: "2026-03-13T11:30:00.000Z" },
+      ],
+      mergeContextByPrId: {},
+      detailStatus: null,
+      detailChecks: [],
+      detailReviews: [],
+      detailComments: [],
+      detailBusy: false,
+      loading: false,
+      setViewerLogin: vi.fn(),
+    };
+    mockUsePrs.mockReturnValue(loadedContext);
+    const { rerender } = render(
+      <MemoryRouter>
+        <GitHubTab
+          lanes={[] satisfies LaneSummary[]}
+          mergeMethod={"squash" satisfies MergeMethod}
+          selectedPrId={null}
+          onSelectPr={vi.fn()}
+          onRefreshAll={vi.fn().mockResolvedValue(undefined)}
+        />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: false });
+    });
+
+    vi.useFakeTimers();
+    (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockClear();
+    await vi.advanceTimersByTimeAsync(31_000);
+
+    mockUsePrs.mockReturnValue({
+      ...loadedContext,
+      prs: [
+        {
+          ...loadedContext.prs[0]!,
+          checksStatus: "passing",
+          reviewStatus: "approved",
+          updatedAt: "2026-03-13T11:31:00.000Z",
+        },
+      ],
+    });
+    rerender(
+      <MemoryRouter>
+        <GitHubTab
+          lanes={[] satisfies LaneSummary[]}
+          mergeMethod={"squash" satisfies MergeMethod}
+          selectedPrId={null}
+          onSelectPr={vi.fn()}
+          onRefreshAll={vi.fn().mockResolvedValue(undefined)}
+        />
+      </MemoryRouter>,
+    );
+    await vi.advanceTimersByTimeAsync(31_000);
+
+    expect(window.ade.prs.getGitHubSnapshot).not.toHaveBeenCalled();
+  });
+
   it("paces hot snapshot refreshes after manual sync", async () => {
     renderTab();
 
