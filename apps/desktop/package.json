@@ -7,9 +7,10 @@
   "author": "Arul Sharma",
   "license": "AGPL-3.0",
   "scripts": {
-    "predev": "node ./scripts/clear-vite-cache.cjs && node ./scripts/normalize-runtime-binaries.cjs",
+    "predev": "node ./scripts/normalize-runtime-binaries.cjs",
     "prebuild": "node ./scripts/normalize-runtime-binaries.cjs && npm run ade:build",
     "dev": "node ./scripts/ensure-electron.cjs && node ./scripts/dev.cjs",
+    "dev:clean": "node ./scripts/clear-vite-cache.cjs && node ./scripts/normalize-runtime-binaries.cjs && node ./scripts/ensure-electron.cjs && node ./scripts/dev.cjs --force-vite",
     "predev:vite": "node ./scripts/export-browser-mock-ade-snapshot.mjs --optional",
     "dev:vite": "vite --port 5173 --strictPort",
     "export:browser-mock-ade": "node ./scripts/export-browser-mock-ade-snapshot.mjs",
