@@ -1,6 +1,6 @@
 import React from "react";
 import { Box, Text } from "ink";
-import type { AgentChatSlashCommand } from "../../../desktop/src/shared/types";
+import type { AgentChatSlashCommand } from "../../../desktop/src/shared/types/chat";
 import { paletteCommands } from "../commands";
 
 export function SlashPalette({

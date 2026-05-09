@@ -294,7 +294,9 @@ function ShellLayout() {
 function AppNavigationBridge() {
   const navigate = useNavigate();
   React.useEffect(() => {
-    return window.ade.app.onNavigate((request: AppNavigationRequest) => {
+    const onNavigate = window.ade?.app?.onNavigate;
+    if (!onNavigate) return;
+    return onNavigate((request: AppNavigationRequest) => {
       const target = request.target;
       if (target.kind === "chat" || target.kind === "work") {
         const params = new URLSearchParams();

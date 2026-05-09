@@ -1,6 +1,6 @@
 import React from "react";
 import { Box, Text } from "ink";
-import type { AgentChatEventEnvelope, AgentChatSessionSummary } from "../../../desktop/src/shared/types";
+import type { AgentChatEventEnvelope, AgentChatSessionSummary } from "../../../desktop/src/shared/types/chat";
 import type { LocalNotice } from "../types";
 import { renderChatLines } from "../format";
 

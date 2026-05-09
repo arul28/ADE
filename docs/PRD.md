@@ -50,7 +50,7 @@ ADE is the control plane. It does not execute browser automation or computer-use
 ### Agents and chat
 
 - [**Agents**](./features/agents/README.md) — Three surfaces: chat, CTO operator, workers. Identity, capability modes, tool tiers, heartbeats.
-- [**Chat**](./features/chat/README.md) — Multi-provider, streaming, tool-aware. Transcript and turns, tool system (universal/workflow/coordinator), agent routing, composer + derived panels, and parallel multi-model lane launch.
+- [**Chat**](./features/chat/README.md) — Multi-provider, streaming, tool-aware. Transcript and turns, tool system (universal/workflow/coordinator), agent routing, composer + derived panels, and parallel multi-model lane launch. Terminal client: [ADE Code](./features/ade-code/README.md).
 - [**Memory**](./features/memory/README.md) — Unified SQLite + FTS + embeddings. Write gate, compaction, procedural learning, daily sweep, hybrid retrieval (BM25+cosine+MMR).
 - [**History**](./features/history/README.md) — Operations timeline + chat transcripts + exports. Every service follows the same `runTrackedOperation` recording pattern.
 
@@ -82,7 +82,7 @@ For the system-wide picture — apps, processes, data plane, IPC, security, buil
 
 Quick pointers:
 
-- **Apps**: `apps/desktop/` (Electron main + preload + renderer), `apps/ade-cli/` (headless ADE CLI action server), `apps/web/` (marketing), `apps/ios/` (companion).
+- **Apps**: `apps/desktop/` (Electron main + preload + renderer), `apps/ade-cli/` (headless ADE CLI action server), `apps/ade-code/` (terminal Ink client for Work chat), `apps/web/` (marketing), `apps/ios/` (companion).
 - **Main-process services**: `apps/desktop/src/main/services/<domain>/` — one directory per capability.
 - **Renderer components**: `apps/desktop/src/renderer/components/<feature>/`.
 - **Shared types + IPC contract**: `apps/desktop/src/shared/`.

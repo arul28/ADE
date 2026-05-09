@@ -1,10 +1,10 @@
 import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolveAdeLayout } from "../../desktop/src/shared/adeLayout";
-import { createAdeRpcRequestHandler } from "../../ade-cli/src/adeRpcServer";
-import { createAdeRuntime } from "../../ade-cli/src/bootstrap";
 import { JsonRpcClient } from "./jsonRpcClient";
 import type { AdeCodeConnection, ProjectLaunchContext } from "./types";
-import type { AgentChatEventEnvelope } from "../../desktop/src/shared/types";
+import type { AgentChatEventEnvelope } from "../../desktop/src/shared/types/chat";
 
 type RpcResponseEnvelope<T> =
   | T
@@ -13,7 +13,36 @@ type RpcResponseEnvelope<T> =
       error: { message?: string };
     };
 
-type DirectHandler = ReturnType<typeof createAdeRpcRequestHandler>;
+type EmbeddedRuntime = {
+  dispose: () => void;
+  agentChatService?: {
+    subscribeToEvents?: (callback: (event: AgentChatEventEnvelope) => void) => () => void;
+  };
+};
+
+type DirectHandler = {
+  (message: unknown): Promise<unknown>;
+  dispose: () => void;
+};
+
+async function loadEmbeddedAdeCli(): Promise<{
+  createAdeRuntime: (args: {
+    projectRoot: string;
+    workspaceRoot: string;
+    chatRuntime: string;
+    runtimeProfile: string;
+  }) => Promise<EmbeddedRuntime>;
+  createAdeRpcRequestHandler: (args: { runtime: EmbeddedRuntime; serverVersion: string }) => DirectHandler;
+}> {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const bootstrapHref = pathToFileURL(path.join(here, "../../ade-cli/src/bootstrap.ts")).href;
+  const rpcHref = pathToFileURL(path.join(here, "../../ade-cli/src/adeRpcServer.ts")).href;
+  const [bootstrap, rpc] = await Promise.all([import(bootstrapHref as string), import(rpcHref as string)]);
+  return {
+    createAdeRuntime: bootstrap.createAdeRuntime,
+    createAdeRpcRequestHandler: rpc.createAdeRpcRequestHandler,
+  };
+}
 
 function unwrapActionResult<T>(payload: RpcResponseEnvelope<unknown>, domain: string, action: string): T {
   if (payload && typeof payload === "object" && "ok" in payload && payload.ok === false) {
@@ -125,6 +154,7 @@ export async function connectToAde(args: {
     throw new Error(`ADE RPC socket is required but unavailable at ${socketPath}.`);
   }
 
+  const { createAdeRuntime, createAdeRpcRequestHandler } = await loadEmbeddedAdeCli();
   const runtime = await createAdeRuntime({
     projectRoot: args.project.projectRoot,
     workspaceRoot: args.project.workspaceRoot,

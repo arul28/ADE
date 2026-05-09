@@ -1,7 +1,7 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { chooseInitialLane } from "../project";
-import type { LaneSummary } from "../../../desktop/src/shared/types";
+import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
 
 function lane(overrides: Partial<LaneSummary>): LaneSummary {
   return {

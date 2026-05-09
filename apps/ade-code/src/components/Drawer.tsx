@@ -1,6 +1,7 @@
 import React from "react";
 import { Box, Text } from "ink";
-import type { AgentChatSessionSummary, LaneSummary } from "../../../desktop/src/shared/types";
+import type { AgentChatSessionSummary } from "../../../desktop/src/shared/types/chat";
+import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
 import { formatLaneLabel, formatSessionLabel } from "../format";
 
 const PURPLE = "#A78BFA";

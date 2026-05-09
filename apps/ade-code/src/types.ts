@@ -1,14 +1,13 @@
+import type { AppNavigationRequest, AppNavigationResult } from "../../desktop/src/shared/types/core";
 import type {
   AgentChatEventEnvelope,
   AgentChatModelInfo,
-  PendingInputRequest,
   AgentChatSession,
   AgentChatSessionSummary,
   AgentChatSlashCommand,
-  AppNavigationRequest,
-  AppNavigationResult,
-  LaneSummary,
-} from "../../desktop/src/shared/types";
+  PendingInputRequest,
+} from "../../desktop/src/shared/types/chat";
+import type { LaneSummary } from "../../desktop/src/shared/types/lanes";
 
 export type RuntimeMode = "attached" | "embedded";
 

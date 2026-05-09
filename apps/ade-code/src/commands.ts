@@ -1,4 +1,4 @@
-import type { AgentChatSlashCommand } from "../../desktop/src/shared/types";
+import type { AgentChatSlashCommand } from "../../desktop/src/shared/types/chat";
 
 export type CommandPlacement = "inline" | "right" | "overlay" | "chat";
 
