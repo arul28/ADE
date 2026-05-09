@@ -952,6 +952,30 @@ describe("issueInventoryService", () => {
       expect(insertCalls.length).toBe(0);
     });
 
+    it("filters Capy auto-review spend-limit notices", () => {
+      const db = makeMockDb();
+      db.get.mockReturnValue(null);
+      db.all.mockReturnValue([]);
+
+      const service = createIssueInventoryService({ db });
+      service.syncFromPrData(
+        PR_ID,
+        [],
+        [],
+        [makeComment({
+          id: "ic-capy",
+          author: "capy-ai[bot]",
+          body: "<!-- capy:auto-review-spend-limit -->\nCapy auto-review is paused for this organization because the monthly auto-review limit has been reached.",
+          source: "issue",
+        })],
+      );
+
+      const insertCalls = db.run.mock.calls.filter(
+        (call: unknown[]) => typeof call[0] === "string" && (call[0] as string).includes("insert into pr_issue_inventory"),
+      );
+      expect(insertCalls.length).toBe(0);
+    });
+
     it("skips comments with source !== issue", () => {
       const db = makeMockDb();
       db.get.mockReturnValue(null);

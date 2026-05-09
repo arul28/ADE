@@ -11,6 +11,8 @@ const NOISY_BODY_PATTERNS = [
   /\[vc\]:/i,
   /mintlify-preview/i,
   /this is an auto-generated comment/i,
+  /<!--\s*capy:auto-review-spend-limit\s*-->/i,
+  /\bcapy auto-review is paused\b/i,
   /pre-merge checks/i,
   /thanks for using \[coderabbit\]/i,
   /<!-- internal state/i,
