@@ -17,6 +17,8 @@ import type { PrDetailRouteTab } from "../prsRouteState";
 const VIRTUALIZE_AT = 50;
 const GITHUB_TAB_REVISIT_CACHE_TTL_MS = 60_000;
 const GITHUB_TAB_SNAPSHOT_FRESH_MS = 30_000;
+const GITHUB_TAB_HOT_REFRESH_WINDOW_MS = 180_000;
+const GITHUB_TAB_HOT_REFRESH_INTERVAL_MS = 30_000;
 const GITHUB_TAB_CACHE_DISABLED = import.meta.env.MODE === "test";
 
 type GitHubTabProps = {
@@ -481,7 +483,7 @@ export function GitHubTab({
 
   const startHotRefreshWindow = React.useCallback(() => {
     const now = Date.now();
-    hotRefreshUntilRef.current = Math.max(hotRefreshUntilRef.current, now + 180_000);
+    hotRefreshUntilRef.current = Math.max(hotRefreshUntilRef.current, now + GITHUB_TAB_HOT_REFRESH_WINDOW_MS);
     if (hotRefreshTimerRef.current != null) return;
 
     const schedule = () => {
@@ -490,14 +492,12 @@ export function GitHubTab({
         hotRefreshTimerRef.current = null;
         return;
       }
-      const elapsed = 180_000 - remaining;
-      const delay = elapsed < 60_000 ? 5_000 : 15_000;
       hotRefreshTimerRef.current = window.setTimeout(() => {
         hotRefreshTimerRef.current = null;
         void loadSnapshot({ force: true, silent: true }).finally(() => {
           schedule();
         });
-      }, delay);
+      }, Math.min(GITHUB_TAB_HOT_REFRESH_INTERVAL_MS, remaining));
     };
 
     schedule();

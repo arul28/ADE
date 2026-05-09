@@ -2,7 +2,7 @@
 
 import React from "react";
 import { MemoryRouter } from "react-router-dom";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GitHubPrSnapshot, LaneSummary, MergeMethod, PrWithConflicts } from "../../../../shared/types";
@@ -132,6 +132,7 @@ describe("GitHubTab", () => {
 
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
   });
 
   function renderTab(overrides: Partial<{
@@ -324,6 +325,27 @@ describe("GitHubTab", () => {
       expect(screen.getByText("Open PR")).not.toBeNull();
     });
     expect(window.ade.prs.getGitHubSnapshot).not.toHaveBeenCalledWith({ force: true });
+  });
+
+  it("paces hot snapshot refreshes after manual sync", async () => {
+    renderTab();
+
+    await waitFor(() => {
+      expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: false });
+    });
+    vi.useFakeTimers();
+    (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockClear();
+
+    fireEvent.click(screen.getByRole("button", { name: /^sync$/i }));
+
+    expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: true });
+    expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(29_000);
+    expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledTimes(2);
   });
 
   it("filters by ADE scope showing only linked PRs", async () => {
