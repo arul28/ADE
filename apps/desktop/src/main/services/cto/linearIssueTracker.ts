@@ -70,18 +70,26 @@ export function createLinearIssueTracker(args: { client: LinearClient }): IssueT
 
     async getConnectionStatus() {
       try {
-        const viewer = await args.client.getViewer();
+        const identity = await args.client.getConnectionIdentity();
         return {
-          connected: Boolean(viewer.id),
-          viewerId: viewer.id,
-          viewerName: viewer.name,
-          message: viewer.id ? null : "Linear API token is valid but viewer lookup returned no id.",
+          connected: Boolean(identity.viewerId),
+          viewerId: identity.viewerId,
+          viewerName: identity.viewerName,
+          organizationId: identity.organizationId,
+          organizationName: identity.organizationName,
+          organizationUrlKey: identity.organizationUrlKey,
+          organizationLogoUrl: identity.organizationLogoUrl,
+          message: identity.viewerId ? null : "Linear API token is valid but viewer lookup returned no id.",
         };
       } catch (error) {
         return {
           connected: false,
           viewerId: null,
           viewerName: null,
+          organizationId: null,
+          organizationName: null,
+          organizationUrlKey: null,
+          organizationLogoUrl: null,
           message: getErrorMessage(error),
         };
       }

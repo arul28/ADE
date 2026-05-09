@@ -150,12 +150,12 @@ export function createLinearOAuthService(args: {
         const errorDescription = requestUrl.searchParams.get("error_description");
 
         if (returnedState !== session.state) {
-          finalizeSession(session, {
-            status: "failed",
-            error: "OAuth callback state did not match the active Linear session.",
+          args.logger?.warn("linear_sync.oauth_callback_state_mismatch", {
+            sessionId: session.id,
+            hasReturnedState: returnedState != null,
           });
           res.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
-          res.end("OAuth state mismatch.");
+          res.end("OAuth state mismatch. Return to ADE and continue the active Linear sign-in.");
           return;
         }
 
@@ -215,7 +215,8 @@ export function createLinearOAuthService(args: {
     authUrl.searchParams.set("response_type", "code");
     authUrl.searchParams.set("state", state);
     authUrl.searchParams.set("scope", "read,write");
-    // Always show consent screen so users can pick which workspace to connect.
+    // Ask Linear for a consent screen; Linear still resolves the workspace
+    // from the user's active browser session/workspace switcher.
     authUrl.searchParams.set("prompt", "consent");
     if (pkce) {
       authUrl.searchParams.set("code_challenge_method", "S256");

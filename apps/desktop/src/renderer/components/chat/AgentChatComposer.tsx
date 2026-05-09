@@ -39,7 +39,7 @@ import { getPermissionOptions, safetyColors } from "../shared/permissionOptions"
 import { ChatAttachmentTray } from "./ChatAttachmentTray";
 import { ChatComposerShell } from "./ChatComposerShell";
 import { LaneDialogShell } from "../lanes/LaneDialogShell";
-import { LinearIssuePickerView } from "../lanes/LinearIssuePicker";
+import { LinearIssueBrowser, linearBrowserIssueToLaneIssue } from "../app/LinearIssueBrowser";
 import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
 import { getPendingInputQuestionCount, hasPendingInputOptions } from "./pendingInput";
 import { CURSOR_MODE_LABELS } from "../../../shared/cursorModes";
@@ -51,6 +51,9 @@ import { SmartTooltip } from "../ui/SmartTooltip";
 
 const MAX_TEMP_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const CLIPBOARD_IMAGE_PASTE_FALLBACK_DELAY_MS = 80;
+const ISSUE_CONTEXT_MENU_WIDTH = 256;
+const ISSUE_CONTEXT_MENU_GAP = 8;
+const ISSUE_CONTEXT_MENU_VIEWPORT_GUTTER = 8;
 
 type PasteShortcutEvent = {
   key: string;
@@ -73,6 +76,24 @@ function isMacPasteShortcut(event: PasteShortcutEvent): boolean {
     && !event.altKey
     && !event.shiftKey
   );
+}
+
+function getIssueContextMenuStyle(trigger: HTMLButtonElement): React.CSSProperties {
+  const rect = trigger.getBoundingClientRect();
+  const maxLeft = Math.max(
+    ISSUE_CONTEXT_MENU_VIEWPORT_GUTTER,
+    window.innerWidth - ISSUE_CONTEXT_MENU_WIDTH - ISSUE_CONTEXT_MENU_VIEWPORT_GUTTER,
+  );
+  const left = Math.min(
+    Math.max(ISSUE_CONTEXT_MENU_VIEWPORT_GUTTER, rect.right - ISSUE_CONTEXT_MENU_WIDTH),
+    maxLeft,
+  );
+
+  return {
+    left,
+    bottom: Math.max(ISSUE_CONTEXT_MENU_VIEWPORT_GUTTER, window.innerHeight - rect.top + ISSUE_CONTEXT_MENU_GAP),
+    width: ISSUE_CONTEXT_MENU_WIDTH,
+  };
 }
 
 type ExecutionModeOption = {
@@ -598,43 +619,53 @@ function CodexFastModeToggle({
 
 function LinearIssueContextDialog({
   open,
-  selectedIssues,
+  selectedIssue,
   pinnedIssue,
   busy,
   onOpenChange,
   onAttach,
+  onOpenLinearSettings,
 }: {
   open: boolean;
-  selectedIssues: AgentChatContextAttachment[];
+  selectedIssue: LaneLinearIssue | null;
   pinnedIssue?: LaneLinearIssue | null;
   busy?: boolean;
   onOpenChange: (open: boolean) => void;
   onAttach: (attachment: AgentChatContextAttachment) => void;
+  onOpenLinearSettings?: () => void;
 }) {
-  const selectedIssue = selectedIssues.find((attachment) => attachment.type === "linear_issue")?.issue ?? null;
+  const featuredIssue = pinnedIssue ?? selectedIssue;
+  const openLinearSettings = useCallback(() => {
+    onOpenChange(false);
+    onOpenLinearSettings?.();
+  }, [onOpenChange, onOpenLinearSettings]);
+
   return (
     <LaneDialogShell
       open={open}
       onOpenChange={onOpenChange}
       title="Attach Linear issue"
-      description="Pick a Linear issue to send as chat context."
+      description="Browse Linear issues and attach one as chat context."
       icon={Bug}
-      widthClassName="w-[min(920px,calc(100vw-24px))]"
+      widthClassName="w-[min(1040px,calc(100vw-24px))]"
       busy={busy}
     >
-      <LinearIssuePickerView
-        selectedIssue={selectedIssue}
-        pinnedIssue={pinnedIssue ?? null}
-        pinnedIssueLabel="Linked to this lane"
-        selectOnIssueClick
-        submitLabel="Attach issue"
-        busy={busy}
-        onBack={() => onOpenChange(false)}
-        onSelect={(issue) => {
+      <LinearIssueBrowser
+        featuredIssue={featuredIssue}
+        featuredIssueLabel={pinnedIssue ? "Linked to this lane" : "Attached to chat"}
+        actionLabel="Attach issue"
+        actionBusyLabel="Attaching issue"
+        actionIcon={<Check size={14} />}
+        actionDisabled={busy}
+        showBranchPreview={false}
+        onOpenLinearSettings={openLinearSettings}
+        onIssueAction={(issue) => {
+          const laneIssue = linearBrowserIssueToLaneIssue(issue);
           onAttach(makeLinearIssueContextAttachment(
-            issue,
-            pinnedIssue?.id === issue.id ? "lane_link" : "manual",
+            laneIssue,
+            pinnedIssue?.id === laneIssue.id ? "lane_link" : "manual",
           ));
+          onOpenChange(false);
         }}
       />
     </LaneDialogShell>
@@ -720,6 +751,7 @@ export function AgentChatComposer({
   onDispatchSteerInline,
   onDispatchSteerInterrupt,
   onOpenAiSettings,
+  onOpenLinearSettings,
   sessionId,
   parallelChatMode = false,
   onParallelChatModeChange,
@@ -839,6 +871,7 @@ export function AgentChatComposer({
   onDispatchSteerInline?: (steerId: string) => void;
   onDispatchSteerInterrupt?: (steerId: string) => void;
   onOpenAiSettings?: () => void;
+  onOpenLinearSettings?: () => void;
   sessionId?: string | null;
   parallelChatMode?: boolean;
   onParallelChatModeChange?: (enabled: boolean) => void;
@@ -901,6 +934,7 @@ export function AgentChatComposer({
   const claudeModePickerRef = useRef<HTMLDivElement | null>(null);
   const [codexPresetPickerOpen, setCodexPresetPickerOpen] = useState(false);
   const codexPresetPickerRef = useRef<HTMLDivElement | null>(null);
+  const issueContextButtonRef = useRef<HTMLButtonElement | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const [commandMenuTrigger, setCommandMenuTrigger] = useState<{ type: "at" | "slash"; query: string; cursorIndex: number } | null>(null);
   const [commandMenuAnchor, setCommandMenuAnchor] = useState<{ top: number; left: number } | null>(null);
@@ -1586,6 +1620,28 @@ export function AgentChatComposer({
       window.removeEventListener("keydown", handleKey);
     };
   }, [claudeModePickerOpen]);
+
+  useEffect(() => {
+    if (!issueContextMenuOpen) return;
+    const handleClick = (event: MouseEvent) => {
+      if (issueContextButtonRef.current?.contains(event.target as Node)) return;
+      const target = event.target as Element | null;
+      if (target?.closest?.("[data-issue-context-menu]")) return;
+      setIssueContextMenuOpen(false);
+    };
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setIssueContextMenuOpen(false);
+      }
+    };
+    window.addEventListener("mousedown", handleClick);
+    window.addEventListener("keydown", handleKey);
+    return () => {
+      window.removeEventListener("mousedown", handleClick);
+      window.removeEventListener("keydown", handleKey);
+    };
+  }, [issueContextMenuOpen]);
+
   const codexCustomSummary = useMemo(() => {
     if (sp !== "codex" || codexPreset !== "custom") return null;
     if (ccsUse === "config-toml") {
@@ -2400,12 +2456,63 @@ export function AgentChatComposer({
     "m-3 mt-0 rounded-[var(--chat-radius-shell)]",
     layoutVariant === "grid-tile" ? "m-0" : "",
   );
+  const issueContextMenu = issueContextMenuOpen && issueContextButtonRef.current ? createPortal(
+    <div
+      className="ade-chat-drawer-glass fixed z-[1000] overflow-hidden"
+      data-issue-context-menu="true"
+      role="menu"
+      aria-label="Attach issue context"
+      style={getIssueContextMenuStyle(issueContextButtonRef.current)}
+    >
+      <div className="border-b border-white/[0.04] px-3 py-2">
+        <div className="font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-semibold text-fg/80">Attach issue context</div>
+      </div>
+      <div className="p-1">
+        <button
+          type="button"
+          className="ade-chat-drawer-row flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/75"
+          disabled={!canAttachIssueContext}
+          onClick={() => {
+            if (!canAttachIssueContext) return;
+            setIssueContextMenuOpen(false);
+            setLinearIssuePickerOpen(true);
+          }}
+        >
+          <span
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded"
+            style={{ background: LINEAR_BRAND.surfaceHover, color: LINEAR_BRAND.primaryBright }}
+          >
+            <LinearMark size={11} />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block font-medium">Linear issue</span>
+            <span className="block truncate text-[length:calc(var(--chat-font-size)*9/14)] text-muted-fg/45">Attach a ticket as chat context.</span>
+          </span>
+        </button>
+        <button
+          type="button"
+          className="flex w-full cursor-not-allowed items-center gap-2 rounded-lg px-3 py-2.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-muted-fg/30"
+          disabled
+        >
+          <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded bg-white/[0.04] text-muted-fg/35">
+            <GithubLogo size={13} weight="fill" />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block font-medium">GitHub issue</span>
+            <span className="block truncate text-[length:calc(var(--chat-font-size)*9/14)] text-muted-fg/30">Coming later.</span>
+          </span>
+        </button>
+      </div>
+    </div>,
+    document.body,
+  ) : null;
 
   return (
     <>
+      {issueContextMenu}
       <LinearIssueContextDialog
         open={linearIssuePickerOpen}
-        selectedIssues={contextAttachments}
+        selectedIssue={contextAttachments[0]?.issue ?? null}
         pinnedIssue={pinnedLinearIssue}
         busy={busy || parallelLaunchBusy}
         onOpenChange={setLinearIssuePickerOpen}
@@ -2413,6 +2520,7 @@ export function AgentChatComposer({
           onAddContextAttachment?.(attachment);
           setLinearIssuePickerOpen(false);
         }}
+        onOpenLinearSettings={onOpenLinearSettings}
       />
       <BorderBeam
         size="md"
@@ -2748,49 +2856,6 @@ export function AgentChatComposer({
               event.currentTarget.value = "";
             }}
           />
-          {issueContextMenuOpen ? (
-            <div className="ade-chat-drawer-glass absolute bottom-full right-20 z-10 mb-3 w-64 overflow-hidden">
-              <div className="border-b border-white/[0.04] px-3 py-2">
-                <div className="font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-semibold text-fg/80">Attach issue context</div>
-              </div>
-              <div className="p-1">
-                <button
-                  type="button"
-                  className="ade-chat-drawer-row flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/75"
-                  disabled={!canAttachIssueContext}
-                  onClick={() => {
-                    if (!canAttachIssueContext) return;
-                    setIssueContextMenuOpen(false);
-                    setLinearIssuePickerOpen(true);
-                  }}
-                >
-                  <span
-                    className="flex h-6 w-6 shrink-0 items-center justify-center rounded"
-                    style={{ background: LINEAR_BRAND.surfaceHover, color: LINEAR_BRAND.primaryBright }}
-                  >
-                    <LinearMark size={11} />
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block font-medium">Linear issue</span>
-                    <span className="block truncate text-[length:calc(var(--chat-font-size)*9/14)] text-muted-fg/45">Attach a ticket as chat context.</span>
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  className="flex w-full cursor-not-allowed items-center gap-2 rounded-lg px-3 py-2.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-muted-fg/30"
-                  disabled
-                >
-                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded bg-white/[0.04] text-muted-fg/35">
-                    <GithubLogo size={13} weight="fill" />
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block font-medium">GitHub issue</span>
-                    <span className="block truncate text-[length:calc(var(--chat-font-size)*9/14)] text-muted-fg/30">Coming later.</span>
-                  </span>
-                </button>
-              </div>
-            </div>
-          ) : null}
           {attachmentPickerOpen ? (
             <div className="ade-chat-drawer-glass absolute bottom-full left-3 z-10 mb-3 w-80 overflow-hidden">
               <div className="flex items-center gap-2 border-b border-white/[0.04] px-3 py-2.5">
@@ -3092,6 +3157,7 @@ export function AgentChatComposer({
             >
               <button
                 type="button"
+                ref={issueContextButtonRef}
                 className={cn(
                   "relative inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-fg/35 transition-colors hover:bg-violet-500/[0.06] hover:text-violet-300/60",
                   issueContextMenuOpen && "bg-violet-500/[0.08] text-violet-200/80",

@@ -1264,6 +1264,48 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("maps Linear picker data to the typed RPC tool", () => {
+    const plan = buildCliPlan(["linear", "picker-data", "--text"]);
+
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.label).toBe("Linear picker data");
+    expect(plan.steps[0]?.params).toEqual({
+      name: "getLinearIssuePickerData",
+      arguments: {},
+    });
+  });
+
+  it("maps Linear search-issues filters to the typed RPC tool", () => {
+    const plan = buildCliPlan([
+      "linear",
+      "search-issues",
+      "--project-id",
+      "proj-1",
+      "--state-type",
+      "started,unstarted",
+      "--query",
+      "auth",
+      "--first",
+      "25",
+      "--include-archived",
+    ]);
+
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.label).toBe("Linear search issues");
+    expect(plan.steps[0]?.params).toEqual({
+      name: "searchLinearIssues",
+      arguments: {
+        projectId: "proj-1",
+        stateTypes: ["started", "unstarted"],
+        query: "auth",
+        first: 25,
+        includeArchived: true,
+      },
+    });
+  });
+
   it("shows focused ios-sim help for subcommand help flags", () => {
     const renderHelp = buildCliPlan(["ios-sim", "preview-render", "--help"]);
     expect(renderHelp.kind).toBe("help");

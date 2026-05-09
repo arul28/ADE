@@ -572,6 +572,10 @@ export type LinearConnectionStatus = {
   connected: boolean;
   viewerId: string | null;
   viewerName: string | null;
+  organizationId?: string | null;
+  organizationName?: string | null;
+  organizationUrlKey?: string | null;
+  organizationLogoUrl?: string | null;
   projectCount?: number;
   projectPreview?: string[];
   checkedAt: string | null;

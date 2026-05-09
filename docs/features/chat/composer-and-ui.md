@@ -81,6 +81,19 @@ and a footer that contains the composer.
 - **Attachments** via drag-drop, paste, and an inline picker. Images are
   written through `ade.agentChat.saveTempAttachment` (10 MB cap; MIME
   validated per provider).
+- **Linear issue context.** A Linear-branded chip in the composer
+  opens `LinearIssueContextDialog`, which mounts the shared
+  `LinearIssueBrowser` so the user can attach a Linear issue as
+  chat context. Each attachment is an
+  `AgentChatLinearIssueContextAttachment` (`type: "linear_issue"`)
+  built by `makeLinearIssueContextAttachment(issue, source)` from
+  `shared/chatContextAttachments.ts`. When the chat opens on a
+  lane that already has a connected Linear issue, `AgentChatPane`
+  automatically attaches the lane's issue with
+  `source: "lane_link"` and pins it inside the dialog so the user
+  can see what's already linked. The dialog also exposes a deep
+  link to Settings > Integrations > Linear when the workspace
+  isn't connected.
 - **File attach picker** opened with the `@` key. Runs a debounced
   `ade.agentChat.fileSearch` and discards stale results.
 - **Slash commands.** Local commands (`/clear`, `/login`) are always

@@ -14,20 +14,15 @@ function attachmentName(path: string): string {
   return segments.pop() || path;
 }
 
-function contextAttachmentProjectLabel(attachment: AgentChatContextAttachment): string | null {
-  if (attachment.type !== "linear_issue") return null;
-  const issue = attachment.issue;
-  return issue.projectName?.trim() || issue.projectSlug || issue.teamKey || null;
-}
-
 function LinearIssueContextChip({
   attachment,
   onRemove,
 }: {
-  attachment: Extract<AgentChatContextAttachment, { type: "linear_issue" }>;
+  attachment: AgentChatContextAttachment;
   onRemove?: (key: string) => void;
 }) {
-  const projectLabel = contextAttachmentProjectLabel(attachment);
+  const issue = attachment.issue;
+  const projectLabel = issue.projectName?.trim() || issue.projectSlug || issue.teamKey || null;
   const title = [
     attachment.issue.identifier,
     attachment.issue.title,
@@ -351,18 +346,13 @@ export function ChatAttachmentTray({
 
   return (
     <div className={cn("flex flex-wrap items-center gap-2 px-4 py-3", className)}>
-      {contextAttachments.map((attachment) => {
-        if (attachment.type === "linear_issue") {
-          return (
-            <LinearIssueContextChip
-              key={chatContextAttachmentKey(attachment)}
-              attachment={attachment}
-              onRemove={onRemoveContext}
-            />
-          );
-        }
-        return null;
-      })}
+      {contextAttachments.map((attachment) => (
+        <LinearIssueContextChip
+          key={chatContextAttachmentKey(attachment)}
+          attachment={attachment}
+          onRemove={onRemoveContext}
+        />
+      ))}
       {attachments.map((attachment) => {
         if (attachment.type === "image") {
           return (

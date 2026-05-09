@@ -1,11 +1,7 @@
 import type { AgentChatContextAttachment, LaneLinearIssue } from "./types";
 
 export function chatContextAttachmentKey(attachment: AgentChatContextAttachment): string {
-  if (attachment.type === "linear_issue") return `linear:${attachment.issue.id}`;
-  const fallback = attachment as { id?: unknown; type?: unknown };
-  const type = typeof fallback.type === "string" && fallback.type.trim().length ? fallback.type.trim() : "context";
-  const id = typeof fallback.id === "string" && fallback.id.trim().length ? fallback.id.trim() : JSON.stringify(attachment);
-  return `${type}:${id}`;
+  return `linear:${attachment.issue.id}`;
 }
 
 export function makeLinearIssueContextAttachment(
@@ -164,12 +160,11 @@ function formatLinearIssueContext(issue: LaneLinearIssue): string {
 export function buildChatContextAttachmentPrompt(
   contextAttachments: AgentChatContextAttachment[],
 ): string {
-  const linearIssues = contextAttachments.filter((attachment) => attachment.type === "linear_issue");
-  if (!linearIssues.length) return "";
+  if (!contextAttachments.length) return "";
   return [
     "Attached issue context:",
     "ADE already stores any local Linear credentials; do not ask the user for a Linear API key. Use the identifiers below, and refresh from ADE/Linear tooling only if current state matters.",
-    ...linearIssues.map((attachment, index) => [
+    ...contextAttachments.map((attachment, index) => [
       `Linear issue ${index + 1}:`,
       formatLinearIssueContext(attachment.issue),
     ].join("\n")),

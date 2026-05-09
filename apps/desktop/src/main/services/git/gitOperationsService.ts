@@ -554,11 +554,9 @@ export function createGitOperationsService({
           prompt,
           model
         });
-        const message = lane.linearIssue
-          ? ensureLinearCommitReference(normalizeCommitMessage(result.text), lane.linearIssue)
-          : normalizeCommitMessage(result.text);
+        const normalized = normalizeCommitMessage(result.text);
         return {
-          message,
+          message: lane.linearIssue ? ensureLinearCommitReference(normalized, lane.linearIssue) : normalized,
           model: result.model ?? model
         };
       } catch (error) {

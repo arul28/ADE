@@ -218,8 +218,6 @@ export function CreateLaneDialog({
       || (createMode === "existing" && !createImportBranch)
       || selectedLinearBranchConflict);
 
-  const hasAdvanced = true;
-
   return (
     <LaneDialogShell
       open={open}
@@ -490,8 +488,7 @@ export function CreateLaneDialog({
         </section>
 
         {/* Advanced — Linear issue + template */}
-        {hasAdvanced ? (
-          <details open className="group rounded-xl border border-white/[0.06] bg-white/[0.02] open:bg-white/[0.03]">
+        <details open className="group rounded-xl border border-white/[0.06] bg-white/[0.02] open:bg-white/[0.03]">
             <summary className="flex cursor-pointer select-none items-center justify-between gap-3 rounded-xl px-4 py-2.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-fg/70 transition-colors hover:text-fg [&::-webkit-details-marker]:hidden">
               <span className="flex items-center gap-2">
                 <CaretDown size={10} weight="bold" className="transition-transform group-open:rotate-0 -rotate-90" />
@@ -598,7 +595,6 @@ export function CreateLaneDialog({
               </div>
             </div>
           </details>
-        ) : null}
 
         {error ? (
           <div className="rounded-xl border border-red-500/25 bg-red-500/10 px-3 py-2 text-sm text-red-200">

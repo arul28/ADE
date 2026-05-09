@@ -371,22 +371,37 @@ describe("linearOAuthService", () => {
     expect(session.error).toContain("User declined");
   });
 
-  it("handles OAuth callback with state mismatch", async () => {
+  it("rejects stale OAuth callbacks without failing the active session", async () => {
     const credentials = createCredentialsMock();
+    const mockFetch = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ access_token: "linear-access-token-123" }),
+    })) as any;
     const service = createLinearOAuthService({
       credentials: credentials as any,
       logger: createLogger(),
+      fetchImpl: mockFetch,
     });
     activeServices.push(service);
 
-    const { sessionId, redirectUri } = await service.startSession();
+    const { sessionId, authUrl, redirectUri } = await service.startSession();
+    const stateParam = new URL(authUrl).searchParams.get("state")!;
 
-    const callbackUrl = `${redirectUri}?code=test-code&state=wrong-state`;
+    const staleCallbackUrl = `${redirectUri}?code=stale-code&state=wrong-state`;
+    const staleResponse = await httpGet(staleCallbackUrl);
+
+    expect(staleResponse.statusCode).toBe(400);
+    expect(service.getSession(sessionId).status).toBe("pending");
+    expect(credentials.setOAuthToken).not.toHaveBeenCalled();
+
+    const callbackUrl = `${redirectUri}?code=test-code&state=${stateParam}`;
     await httpGet(callbackUrl);
 
-    await waitForSessionStatus(service, sessionId, "failed");
-    const session = service.getSession(sessionId);
-    expect(session.error).toContain("state did not match");
+    await waitForSessionStatus(service, sessionId, "completed");
+    expect(credentials.setOAuthToken).toHaveBeenCalledWith(expect.objectContaining({
+      accessToken: "linear-access-token-123",
+    }));
   });
 
   it("handles OAuth callback without authorization code", async () => {
@@ -621,6 +636,44 @@ describe("linearClient", () => {
     expect(viewer.id).toBe("viewer-1");
     expect(viewer.name).toBe("Alex");
     expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("loads connection identity with the authorized Linear workspace", async () => {
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      expect(init?.headers).toMatchObject({ authorization: "Bearer test-token" });
+      return new Response(
+        JSON.stringify({
+          data: {
+            viewer: { id: "viewer-1", displayName: "Alex" },
+            organization: {
+              id: "org-1",
+              name: "Acme Workspace",
+              urlKey: "acme",
+              logoUrl: "https://linear.app/acme/logo.png",
+            },
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    });
+
+    const client = createLinearClient({
+      credentials: {
+        getTokenOrThrow: () => "Bearer test-token",
+        getStatus: () => ({ authMode: "oauth" }),
+      } as any,
+      fetchImpl: fetchImpl as any,
+      logger: null,
+    });
+
+    await expect(client.getConnectionIdentity()).resolves.toEqual({
+      viewerId: "viewer-1",
+      viewerName: "Alex",
+      organizationId: "org-1",
+      organizationName: "Acme Workspace",
+      organizationUrlKey: "acme",
+      organizationLogoUrl: "https://linear.app/acme/logo.png",
+    });
   });
 
   it("lists projects with their owning team names", async () => {

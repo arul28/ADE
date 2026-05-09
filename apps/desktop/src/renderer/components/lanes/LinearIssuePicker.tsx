@@ -14,10 +14,6 @@ import { LinearMark, LinearPriorityIcon, LinearStateIcon, LINEAR_BRAND } from ".
 
 const ACTIVE_LINEAR_STATE_TYPES = ["backlog", "unstarted", "started"] as const;
 
-// Re-exported so existing callers (ChatAttachmentTray, AgentChatComposer)
-// keep working without updating their imports.
-export { LinearMark } from "./linearBrand";
-
 const PRIORITY_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
   { value: "", label: "Any priority" },
   { value: "1", label: "Urgent" },
@@ -295,6 +291,7 @@ export function LinearIssuePickerView({
   pinnedIssueLabel = "Linked to this lane",
   onSelect,
   onBack,
+  onOpenLinearSettings,
   busy,
   selectOnIssueClick = false,
   submitLabel = "Connect issue",
@@ -304,6 +301,7 @@ export function LinearIssuePickerView({
   pinnedIssueLabel?: string;
   onSelect: (issue: LaneLinearIssue) => void;
   onBack: () => void;
+  onOpenLinearSettings?: () => void;
   busy?: boolean;
   selectOnIssueClick?: boolean;
   submitLabel?: string;
@@ -474,6 +472,20 @@ export function LinearIssuePickerView({
     setPendingIssue(issue);
   }, [onBack, onSelect, selectOnIssueClick]);
 
+  const openLinearSettings = React.useCallback(() => {
+    onBack();
+    if (onOpenLinearSettings) {
+      onOpenLinearSettings();
+      return;
+    }
+    const target = "/settings?tab=integrations&integration=linear";
+    if (window.location.protocol === "http:" || window.location.protocol === "https:") {
+      window.location.assign(target);
+      return;
+    }
+    window.location.hash = target;
+  }, [onBack, onOpenLinearSettings]);
+
   return (
     <div className="flex min-h-[560px] flex-col">
       {/* Linear-branded header banner — establishes context */}
@@ -514,7 +526,8 @@ export function LinearIssuePickerView({
         <input
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          className="h-10 w-full rounded-lg border border-white/[0.06] bg-white/[0.03] pl-9 pr-9 text-sm text-fg outline-none transition-colors placeholder:text-muted-fg/55 focus:border-white/15"
+          className="h-10 w-full rounded-lg border border-white/[0.06] pl-9 pr-9 text-sm text-fg outline-none transition-colors placeholder:text-muted-fg/55 focus:border-white/15"
+          style={{ backgroundColor: "var(--color-composer-bg, #14121F)" }}
           placeholder="Search issues by title, description, or identifier"
           disabled={busy}
         />
@@ -560,14 +573,28 @@ export function LinearIssuePickerView({
       </div>
 
       {error ? (
-        <div className="mt-3 rounded-lg border border-red-500/25 bg-red-500/10 px-3 py-2 text-sm text-red-200">
-          {error}
+        <div
+          className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-red-500/25 px-3 py-2 text-sm text-red-200"
+          style={{ backgroundColor: "#321B20" }}
+        >
+          <span className="min-w-0 flex-1">{error}</span>
+          <Button
+            type="button"
+            variant="danger"
+            size="sm"
+            onClick={openLinearSettings}
+          >
+            Open Linear settings
+          </Button>
         </div>
       ) : null}
 
       {/* List + detail */}
       <div className="mt-3 grid min-h-0 flex-1 gap-3 md:grid-cols-[minmax(0,1fr)_280px]">
-        <div className="min-h-0 overflow-y-auto rounded-lg border border-white/[0.06] bg-black/20">
+        <div
+          className="min-h-0 overflow-y-auto rounded-lg border border-white/[0.06]"
+          style={{ backgroundColor: "var(--color-bg, #0C0B10)" }}
+        >
           {issues.length === 0 && !loadingIssues ? (
             <div className="px-4 py-12 text-center text-sm text-muted-fg/55">
               No Linear issues match these filters.
@@ -598,7 +625,10 @@ export function LinearIssuePickerView({
           ) : null}
         </div>
 
-        <aside className="overflow-hidden rounded-lg border border-white/[0.06] bg-white/[0.02]">
+        <aside
+          className="overflow-hidden rounded-lg border border-white/[0.06]"
+          style={{ backgroundColor: "var(--color-composer-bg, #14121F)" }}
+        >
           {issueForDetails ? (
             <div className="flex h-full flex-col">
               <div className="border-b border-white/[0.05] p-3">

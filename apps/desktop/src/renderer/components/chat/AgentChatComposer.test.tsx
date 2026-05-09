@@ -617,6 +617,55 @@ describe("AgentChatComposer", () => {
     expect((screen.getByLabelText("Upload file from disk") as HTMLButtonElement).disabled).toBe(false);
   });
 
+  it("renders the issue context menu outside the clipped composer shell", () => {
+    const { container } = renderComposer({
+      draft: "",
+      turnActive: false,
+      onAddContextAttachment: vi.fn(),
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Attach issue context" }));
+
+    const menu = document.body.querySelector("[data-issue-context-menu]");
+    const composerShell = container.querySelector("[data-chat-composer-mode]");
+    expect(menu).toBeTruthy();
+    expect(menu?.parentElement).toBe(document.body);
+    expect(composerShell?.contains(menu)).toBe(false);
+    expect((menu as HTMLElement).className).toContain("fixed");
+  });
+
+  it("offers Linear settings when issue search needs a connection", async () => {
+    const onOpenLinearSettings = vi.fn();
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: {
+        cto: {
+          getLinearIssuePickerData: vi.fn().mockResolvedValue({
+            projects: [],
+            users: [],
+            states: [],
+          }),
+          searchLinearIssues: vi.fn().mockRejectedValue(new Error("Linear token missing. Set it in Settings > Linear.")),
+        },
+      },
+    });
+
+    renderComposer({
+      draft: "",
+      turnActive: false,
+      onAddContextAttachment: vi.fn(),
+      onOpenLinearSettings,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Attach issue context" }));
+    fireEvent.click(screen.getByRole("button", { name: /Linear issue/i }));
+
+    await screen.findByText(/Linear token missing/i);
+    fireEvent.click(screen.getByRole("button", { name: "Open Linear settings" }));
+
+    expect(onOpenLinearSettings).toHaveBeenCalledTimes(1);
+  });
+
   it("attaches Linear issue context from the issue dropdown", async () => {
     const issue = makeLinearIssue();
     const onAddContextAttachment = vi.fn();
@@ -652,6 +701,7 @@ describe("AgentChatComposer", () => {
     const issueRow = issueIdentifier.closest("button");
     expect(issueRow).toBeTruthy();
     fireEvent.click(issueRow!);
+    fireEvent.click(screen.getByRole("button", { name: "Attach issue" }));
 
     await waitFor(() => {
       expect(onAddContextAttachment).toHaveBeenCalledTimes(1);

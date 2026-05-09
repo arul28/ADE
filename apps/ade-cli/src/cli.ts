@@ -763,6 +763,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade lanes show <lane> --text                  Inspect one lane status
     $ ade lanes create --name <name>                Create a lane from the current project context
     $ ade lanes create --linear-issue-json '{...}'  Create a lane linked to a Linear issue
+    $ ade lanes create --branch-name <branch>       Override the auto-generated branch name
     $ ade lanes child --lane <parent> --name <name> Create a child lane under a parent
     $ ade lanes import --branch <branch>            Register an existing branch/worktree
     $ ade lanes archive <lane>                      Archive a lane in ADE
@@ -1157,6 +1158,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Linear workflows
 
     $ ade --role cto linear quick-view --text      Show connected workspace, projects, and issues
+    $ ade --role cto linear picker-data --text     Read projects/users/states for the issue picker
+    $ ade --role cto linear search-issues --query "auth" --state-type started,unstarted --first 50
+                                                    Search issues for the lane Linear-issue picker
     $ ade linear workflows --text                   List configured workflows
     $ ade linear sync dashboard --text              Show sync dashboard
     $ ade linear sync run                           Trigger a sync run
@@ -3953,6 +3957,29 @@ function buildLinearPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "workflows";
   if (sub === "quick-view" || sub === "quick" || sub === "overview") {
     return { kind: "execute", label: "Linear quick view", formatter: "linear-quick-view", steps: [actionCallStep("result", "getLinearQuickView", collectGenericObjectArgs(args))] };
+  }
+  if (sub === "picker-data" || sub === "picker") {
+    return { kind: "execute", label: "Linear picker data", steps: [actionCallStep("result", "getLinearIssuePickerData", collectGenericObjectArgs(args))] };
+  }
+  if (sub === "search-issues" || sub === "search") {
+    const stateTypesValue = readValue(args, ["--state-type", "--state-types", "--state"]);
+    const stateTypes = stateTypesValue
+      ? stateTypesValue.split(",").map((entry) => entry.trim()).filter(Boolean)
+      : [];
+    const input: JsonObject = {};
+    maybePut(input, "projectId", readValue(args, ["--project-id"]));
+    maybePut(input, "projectSlug", readValue(args, ["--project-slug", "--project"]));
+    maybePut(input, "teamKey", readValue(args, ["--team-key", "--team"]));
+    if (stateTypes.length) input.stateTypes = stateTypes;
+    maybePut(input, "assigneeId", readValue(args, ["--assignee", "--assignee-id"]));
+    const priority = readNumberOption(args, ["--priority"]);
+    if (priority !== undefined) input.priority = priority;
+    maybePut(input, "query", readValue(args, ["--query", "-q"]));
+    const first = readNumberOption(args, ["--first", "--limit"]);
+    if (first !== undefined) input.first = first;
+    maybePut(input, "after", readValue(args, ["--after", "--cursor"]));
+    if (readFlag(args, ["--include-archived"])) input.includeArchived = true;
+    return { kind: "execute", label: "Linear search issues", steps: [actionCallStep("result", "searchLinearIssues", collectGenericObjectArgs(args, input))] };
   }
   if (sub === "workflows") return { kind: "execute", label: "Linear workflows", steps: [actionCallStep("result", "listLinearWorkflows", collectGenericObjectArgs(args))] };
   if (sub === "run") {

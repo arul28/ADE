@@ -99,7 +99,6 @@ function toNormalizedIssue(node: Record<string, unknown>): NormalizedLinearIssue
 
   const assignee = isRecord(node.assignee) ? node.assignee : null;
   const owner = isRecord(node.creator) ? node.creator : null;
-  const metadata = isRecord(node.metadata) ? node.metadata : null;
   const priority = Number(node.priority ?? 0);
 
   return {
@@ -120,9 +119,7 @@ function toNormalizedIssue(node: Record<string, unknown>): NormalizedLinearIssue
     priority: Number.isFinite(priority) ? priority : 0,
     priorityLabel: mapPriorityLabel(Number.isFinite(priority) ? priority : 0),
     labels,
-    metadataTags: asArray(metadata?.tags)
-      .map((entry) => (typeof entry === "string" ? entry.trim().toLowerCase() : ""))
-      .filter((entry) => entry.length > 0),
+    metadataTags: [],
     assigneeId: assignee ? asString(assignee.id) : null,
     assigneeName: assignee ? (asString(assignee.displayName) ?? asString(assignee.name)) : null,
     ownerId: owner ? asString(owner.id) : null,
@@ -233,6 +230,36 @@ export function createLinearClient(args: LinearClientArgs) {
     return {
       id: asString(data.viewer?.id),
       name: asString(data.viewer?.displayName) ?? asString(data.viewer?.name),
+    };
+  };
+
+  const getConnectionIdentity = async (): Promise<{
+    viewerId: string | null;
+    viewerName: string | null;
+    organizationId: string | null;
+    organizationName: string | null;
+    organizationUrlKey: string | null;
+    organizationLogoUrl: string | null;
+  }> => {
+    const data = await request<{
+      viewer?: { id?: string; name?: string; displayName?: string };
+      organization?: { id?: string; name?: string; urlKey?: string | null; logoUrl?: string | null };
+    }>({
+      query: `
+        query LinearConnectionIdentity {
+          viewer { id name displayName }
+          organization { id name urlKey logoUrl }
+        }
+      `,
+      maxRetries: 1,
+    });
+    return {
+      viewerId: asString(data.viewer?.id),
+      viewerName: asString(data.viewer?.displayName) ?? asString(data.viewer?.name),
+      organizationId: asString(data.organization?.id),
+      organizationName: asString(data.organization?.name),
+      organizationUrlKey: asString(data.organization?.urlKey),
+      organizationLogoUrl: asString(data.organization?.logoUrl),
     };
   };
 
@@ -413,7 +440,6 @@ export function createLinearClient(args: LinearClientArgs) {
     state { id name type }
     assignee { id name displayName }
     creator { id name displayName }
-    metadata
     labels { nodes { id name } }
     children {
       nodes {
@@ -659,7 +685,6 @@ export function createLinearClient(args: LinearClientArgs) {
           .map((label) => ({ id: label.id, name: label.name })),
       },
       children: { nodes: childNodes },
-      metadata: {},
     };
 
     return toNormalizedIssue(raw);
@@ -1251,6 +1276,7 @@ export function createLinearClient(args: LinearClientArgs) {
   return {
     request,
     getViewer,
+    getConnectionIdentity,
     listProjects,
     listUsers,
     listLabels,

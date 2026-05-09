@@ -365,6 +365,9 @@ describe("TopBar", () => {
     await waitFor(() => {
       expect(screen.getAllByText("Add Linear quick view").length).toBeGreaterThan(0);
     });
+    const quickViewDialog = screen.getByRole("dialog", { name: /linear quick view/i });
+    expect(document.body.querySelector("[data-linear-quick-view-backdrop]")).toBeTruthy();
+    expect(quickViewDialog.getAttribute("style")).toContain("rgba(123, 138, 240, 0.55)");
 
     fireEvent.click(screen.getByRole("button", { name: /create lane/i }));
 

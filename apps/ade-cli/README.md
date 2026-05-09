@@ -55,12 +55,16 @@ ade auth status
 ade doctor
 ade lanes list --text
 ade lanes create "fix-checkout-flow" --parent main
+ade lanes create "lin-123" --linear-issue-json '{"id":"...","identifier":"LIN-123","title":"...","projectId":"...","projectSlug":"...","teamId":"...","teamKey":"...","stateId":"...","stateName":"Todo","stateType":"unstarted","priority":2,"priorityLabel":"high","labels":[],"assigneeId":null,"assigneeName":null,"createdAt":"...","updatedAt":"..."}'
+ade --role cto linear quick-view --text
+ade --role cto linear search-issues --query "auth" --state-type started,unstarted --first 50
 ade git commit --lane lane-id
 ade git push --lane lane-id
 ade git branches --lane lane-id --text
 ade git user-identity --lane lane-id --text
 ade diff patch --lane lane-id --path src/file.ts --text
 ade prs create --lane lane-id --base main --title "Fix checkout flow"
+ade prs create --lane lane-id --base main --close-linear-issue-on-merge
 ade prs list-open --text
 ade prs path-to-merge --pr pr-id --model gpt-5.5 --max-rounds 3 --no-auto-merge
 ade prs path-to-merge --pr pr-id --model gpt-5.5 --conflict-strategy auto --force-finalize conditional

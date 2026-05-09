@@ -756,6 +756,13 @@ function createRuntime() {
       createComment: vi.fn(async () => ({ id: "comment-1" })),
       fetchWorkflowStates: vi.fn(async () => [{ id: "state-done", name: "Done" }]),
       updateIssueState: vi.fn(async () => {}),
+      listProjects: vi.fn(async () => [{ id: "proj-1", name: "ADE", slug: "ade", teamName: "ADE", teamKey: "ADE" }]),
+      listUsers: vi.fn(async () => [{ id: "user-1", name: "Arul", displayName: "Arul" }]),
+      listWorkflowStates: vi.fn(async () => [{ id: "state-1", name: "Todo", type: "unstarted", teamId: "team-1", teamKey: "ADE" }]),
+      searchIssues: vi.fn(async (query: any) => ({
+        issues: [{ id: "issue-1", identifier: "ADE-123", title: "Test", _query: query }],
+        pageInfo: { hasNextPage: false, endCursor: null },
+      })),
     } as any,
     linearSyncService: {
       getDashboard: vi.fn(() => ({ enabled: true, running: false, ingressMode: "webhook-first", reconciliationIntervalSec: 60, lastPollAt: null, lastSuccessAt: null, lastError: null, queue: { queued: 1, blocked: 0, failed: 0 }, workflowRuns: { active: 1, waiting: 0 }, recentIssues: [] })),
@@ -1588,6 +1595,55 @@ describe("adeRpcServer", () => {
       expect.objectContaining({
         organization: expect.objectContaining({ name: "ADE" }),
         sdk: expect.objectContaining({ packageName: "@linear/sdk" }),
+      }),
+    );
+  });
+
+  it("returns the Linear issue picker data for cto callers", async () => {
+    const { runtime } = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "cto-1", role: "cto" });
+    const result = await callTool(handler, "getLinearIssuePickerData", {});
+
+    expect((runtime.linearIssueTracker as any).listProjects).toHaveBeenCalled();
+    expect((runtime.linearIssueTracker as any).listUsers).toHaveBeenCalled();
+    expect((runtime.linearIssueTracker as any).listWorkflowStates).toHaveBeenCalled();
+    expect(result.structuredContent).toEqual(
+      expect.objectContaining({
+        projects: expect.any(Array),
+        users: expect.any(Array),
+        states: expect.any(Array),
+      }),
+    );
+  });
+
+  it("forwards search filters when calling searchLinearIssues", async () => {
+    const { runtime } = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "cto-1", role: "cto" });
+    const result = await callTool(handler, "searchLinearIssues", {
+      projectId: "proj-1",
+      stateTypes: ["started", "unstarted"],
+      query: "auth",
+      first: 25,
+      includeArchived: true,
+    });
+
+    expect((runtime.linearIssueTracker as any).searchIssues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: "proj-1",
+        stateTypes: ["started", "unstarted"],
+        query: "auth",
+        first: 25,
+        includeArchived: true,
+      }),
+    );
+    expect(result.structuredContent).toEqual(
+      expect.objectContaining({
+        issues: expect.any(Array),
+        pageInfo: expect.objectContaining({ hasNextPage: false }),
       }),
     );
   });

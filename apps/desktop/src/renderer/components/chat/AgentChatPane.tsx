@@ -1673,6 +1673,9 @@ export function AgentChatPane({
   const openAiProvidersSettings = useCallback(() => {
     navigate("/settings?tab=ai#ai-providers");
   }, [navigate]);
+  const openLinearSettings = useCallback(() => {
+    navigate("/settings?tab=integrations&integration=linear");
+  }, [navigate]);
   const setWorkViewState = useAppStore((s) => s.setWorkViewState);
   const setLaneWorkViewState = useAppStore((s) => s.setLaneWorkViewState);
   const refreshLanesStore = useAppStore((s) => s.refreshLanes);
@@ -4610,9 +4613,7 @@ export function AgentChatPane({
           : visualContextDisplayChips
         : text.length
           ? text
-          : contextAttachmentsSnapshot.length
-            ? "Attached issue context"
-            : text;
+          : "Attached issue context";
 
       let sessionId = selectedSessionId;
       const shouldPromoteLightSession = shouldPromoteSessionForComputerUse(selectedSession);
@@ -5711,6 +5712,7 @@ export function AgentChatPane({
             onRemoveBuiltInBrowserContext={removeBuiltInBrowserContext}
             onRemoveMacosVmContext={removeMacosVmContext}
             onOpenAiSettings={openAiProvidersSettings}
+            onOpenLinearSettings={openLinearSettings}
             onModelChange={(nextModelId) => {
               if (selectedSessionModelId && effectiveAvailableModelIds.length && !effectiveAvailableModelIds.includes(nextModelId)) {
                 return;

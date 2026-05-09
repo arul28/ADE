@@ -66,6 +66,10 @@ export type IssueTracker = {
     connected: boolean;
     viewerId: string | null;
     viewerName: string | null;
+    organizationId?: string | null;
+    organizationName?: string | null;
+    organizationUrlKey?: string | null;
+    organizationLogoUrl?: string | null;
     message: string | null;
   }>;
 };

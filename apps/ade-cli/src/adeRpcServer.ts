@@ -1900,6 +1900,31 @@ const CTO_LINEAR_SYNC_TOOL_SPECS: ToolSpec[] = [
     inputSchema: { type: "object", additionalProperties: false, properties: {} }
   },
   {
+    name: "getLinearIssuePickerData",
+    description: "Read the projects, users, and workflow states needed to populate the Linear issue picker for lane creation.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {} }
+  },
+  {
+    name: "searchLinearIssues",
+    description: "Search Linear issues for the lane Linear-issue picker, filtered by project, team, state, assignee, priority, or text query.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        projectId: { anyOf: [{ type: "string" }, { type: "null" }] },
+        projectSlug: { anyOf: [{ type: "string" }, { type: "null" }] },
+        teamKey: { anyOf: [{ type: "string" }, { type: "null" }] },
+        stateTypes: { type: "array", items: { type: "string" } },
+        assigneeId: { anyOf: [{ type: "string" }, { type: "null" }] },
+        priority: { anyOf: [{ type: "number" }, { type: "null" }] },
+        query: { anyOf: [{ type: "string" }, { type: "null" }] },
+        first: { type: "number", minimum: 1, maximum: 200 },
+        after: { anyOf: [{ type: "string" }, { type: "null" }] },
+        includeArchived: { type: "boolean" }
+      }
+    }
+  },
+  {
     name: "getLinearSyncDashboard",
     description: "Read the ADE Linear sync dashboard.",
     inputSchema: { type: "object", additionalProperties: false, properties: {} }
@@ -2135,6 +2160,8 @@ const READ_ONLY_TOOLS = new Set([
   "getChatStatus",
   "readChatTranscript",
   "getLinearQuickView",
+  "getLinearIssuePickerData",
+  "searchLinearIssues",
   "listLinearWorkflows",
   "getLinearRunStatus",
   "getLinearSyncDashboard",
@@ -4890,6 +4917,35 @@ async function runTool(args: {
           message: err instanceof Error && err.message ? err.message : "Linear tracker error",
         });
       }
+    }
+
+    if (name === "getLinearIssuePickerData") {
+      const tracker = requireLinearIssueTracker(runtime);
+      const [projects, users, states] = await Promise.all([
+        tracker.listProjects().catch(() => []),
+        tracker.listUsers().catch(() => []),
+        tracker.listWorkflowStates().catch(() => []),
+      ]);
+      return { projects, users, states };
+    }
+
+    if (name === "searchLinearIssues") {
+      const tracker = requireLinearIssueTracker(runtime);
+      const stateTypes = Array.isArray(toolArgs.stateTypes)
+        ? assertStringArray(toolArgs.stateTypes, "stateTypes")
+        : [];
+      return await tracker.searchIssues({
+        projectId: assertOptionalStringOrNull(toolArgs.projectId ?? null, "projectId"),
+        projectSlug: assertOptionalStringOrNull(toolArgs.projectSlug ?? null, "projectSlug"),
+        teamKey: assertOptionalStringOrNull(toolArgs.teamKey ?? null, "teamKey"),
+        stateTypes,
+        assigneeId: assertOptionalStringOrNull(toolArgs.assigneeId ?? null, "assigneeId"),
+        priority: assertOptionalNumberOrNull(toolArgs.priority ?? null, "priority"),
+        query: assertOptionalStringOrNull(toolArgs.query ?? null, "query"),
+        first: typeof toolArgs.first === "number" ? toolArgs.first : 50,
+        after: assertOptionalStringOrNull(toolArgs.after ?? null, "after"),
+        includeArchived: asBoolean(toolArgs.includeArchived, false),
+      });
     }
 
     if (name === "getLinearSyncDashboard") {

@@ -1,10 +1,3 @@
-import React from "react";
-
-/**
- * Linear brand identity. Linear's primary purple sits between blue and ADE's
- * violet accent, so Linear-specific surfaces stay distinguishable from the
- * rest of the app even though both palettes are purple-leaning.
- */
 export const LINEAR_BRAND = {
   primary: "#5E6AD2",
   primaryBright: "#7B8AF0",
@@ -17,7 +10,6 @@ export const LINEAR_BRAND = {
   textMuted: "rgba(199, 205, 245, 0.65)",
 } as const;
 
-/** Linear's official simple-icons mark. */
 export function LinearMark({ size = 14, className }: { size?: number | string; className?: string }) {
   return (
     <svg
@@ -34,12 +26,6 @@ export function LinearMark({ size = 14, className }: { size?: number | string; c
   );
 }
 
-/**
- * Linear's signature status circles. Each Linear workflow state belongs to one
- * of five state types, and Linear renders them with a recognizable iconography:
- * dashed for backlog, hollow for todo, partially-filled for in-progress, solid
- * with a checkmark for done, and a slashed circle for canceled.
- */
 const STATE_COLORS = {
   backlog: "#94A3B8",
   unstarted: "#94A3B8",
@@ -132,11 +118,6 @@ export function LinearStateIcon({
   );
 }
 
-/**
- * Linear's signal-bar priority glyph. Three bars filled left-to-right by
- * urgency, with a dedicated treatment for Urgent (warning square) and No
- * Priority (a single dim dash).
- */
 export function LinearPriorityIcon({
   priority,
   size = 14,
