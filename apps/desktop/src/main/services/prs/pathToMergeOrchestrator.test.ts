@@ -1,13 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { launchPrIssueResolutionChat } from "./prIssueResolver";
 import {
-  PHASE_DELAY_SECONDS,
-  createPathToMergeOrchestrator,
-  decideAtCapAction,
-  makeInProcessState,
-  type InProcessState,
-  type PathToMergeDeps,
-} from "./pathToMergeOrchestrator";
+	  PHASE_DELAY_SECONDS,
+	  createPathToMergeOrchestrator,
+	  decideAtCapAction,
+	  makeInProcessState,
+	  shouldAttemptAdminMergeForRestError,
+	  type InProcessState,
+	  type PathToMergeDeps,
+	} from "./pathToMergeOrchestrator";
 import { LaneWorktreeLockedError, formatLaneWorktreeLockBlocker } from "../lanes/laneWorktreeLockService";
 import type {
   AtCapPolicy,
@@ -418,6 +419,21 @@ describe("PHASE_DELAY_SECONDS", () => {
     expect(PHASE_DELAY_SECONDS.justPushed).toBe(270);
     expect(PHASE_DELAY_SECONDS.warming).toBe(720);
     expect(PHASE_DELAY_SECONDS.waitingOnReview).toBe(1800);
+  });
+});
+
+describe("shouldAttemptAdminMergeForRestError", () => {
+  it("does not use admin merge when review checks were intentionally skipped", () => {
+    expect(shouldAttemptAdminMergeForRestError("Review is required before merging", { ignoreReview: true })).toBe(false);
+  });
+
+  it("allows the admin rung after full review readiness or explicit force merge", () => {
+    expect(shouldAttemptAdminMergeForRestError("required status check failed", { ignoreReview: false })).toBe(true);
+    expect(shouldAttemptAdminMergeForRestError("required review", { allowForceMerge: true, ignoreReview: true })).toBe(true);
+  });
+
+  it("ignores non-policy REST failures", () => {
+    expect(shouldAttemptAdminMergeForRestError("network timed out", { ignoreReview: false })).toBe(false);
   });
 });
 

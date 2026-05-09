@@ -397,6 +397,15 @@ function looksLikeBranchPolicyBlock(error: string): boolean {
   return /base branch policy|branch protection|protected branch|required status|required check|required review|review is required|review required|code owner|codeowner/i.test(error);
 }
 
+export function shouldAttemptAdminMergeForRestError(
+  error: string,
+  opts: { allowForceMerge?: boolean; ignoreReview?: boolean } = {},
+): boolean {
+  if (!looksLikeBranchPolicyBlock(error)) return false;
+  if (opts.allowForceMerge) return true;
+  return !opts.ignoreReview;
+}
+
 // ---------------------------------------------------------------------------
 // `gh` shell wrapper (used for the `--admin` and `--auto` rungs of the
 // merge ladder; the first rung uses the existing `prService.land()` REST
@@ -1156,7 +1165,7 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
     // policy/protection blocks; using admin for arbitrary API failures can
     // accidentally bypass real red signals.
     let adminError = "admin merge skipped because REST failure was not a branch-policy block";
-    if (looksLikeBranchPolicyBlock(restErr)) {
+    if (shouldAttemptAdminMergeForRestError(restErr, opts)) {
       const adminRes = await runGh(
         ["pr", "merge", prNumberArg, ghMethodFlag, "--admin"],
         { cwd: laneWorktreePath, timeoutMs: 90_000 },
@@ -1176,6 +1185,11 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
       }
       adminError = adminRes.stderr.trim() || adminRes.stdout.trim() || `exit ${adminRes.exitCode}`;
       logger.warn("ptm.merge_ladder_admin_failed", { prId: pr.id, stderr: adminRes.stderr.trim() });
+    } else if (looksLikeBranchPolicyBlock(restErr)) {
+      adminError = opts.ignoreReview && !opts.allowForceMerge
+        ? "admin merge skipped because review policy was intentionally left for GitHub to enforce"
+        : "admin merge skipped because force merge is not allowed";
+      logger.info("ptm.merge_ladder_admin_skipped", { prId: pr.id, restErr, reason: adminError });
     } else {
       logger.info("ptm.merge_ladder_admin_skipped", { prId: pr.id, restErr });
     }
