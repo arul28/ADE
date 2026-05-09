@@ -1,4 +1,5 @@
-import { app, BrowserWindow, dialog, nativeImage, protocol, safeStorage, shell } from "electron";
+import { app, BrowserWindow, dialog, Menu, nativeImage, protocol, safeStorage, shell } from "electron";
+import { AsyncLocalStorage } from "node:async_hooks";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -394,15 +395,22 @@ function isAllowedAdeBrowserWebviewNavigation(rawUrl: string): boolean {
 
 async function createWindow(args: {
   logger?: Logger;
+  onCreated?: (win: BrowserWindow) => void;
   onCloseRequested?: (win: BrowserWindow, event: Electron.Event) => void;
 } = {}): Promise<BrowserWindow> {
-  // Load the app icon from the build directory.
+  // Load the app icon from the build directory. In dev (`npm run dev` sets
+  // VITE_DEV_SERVER_URL) prefer the inverted icon so the dock/window icon makes
+  // it obvious at a glance that this is a dev build, not the installed app.
   const iconDir = path.join(__dirname, "../../build");
   const icoPath = path.join(iconDir, "icon.ico");
   const pngPath = path.join(iconDir, "icon.png");
+  const devPngPath = path.join(iconDir, "icon.dev.png");
   const icnsPath = path.join(iconDir, "icon.icns");
+  const isDev = !!process.env.VITE_DEV_SERVER_URL;
   let icon: Electron.NativeImage;
-  if (process.platform === "win32" && fs.existsSync(icoPath)) {
+  if (isDev && fs.existsSync(devPngPath)) {
+    icon = nativeImage.createFromPath(devPngPath);
+  } else if (process.platform === "win32" && fs.existsSync(icoPath)) {
     icon = nativeImage.createFromPath(icoPath);
   } else if (fs.existsSync(pngPath)) {
     icon = nativeImage.createFromPath(pngPath);
@@ -428,6 +436,8 @@ async function createWindow(args: {
       webviewTag: true,
     },
   });
+
+  args.onCreated?.(win);
 
   win.webContents.on("will-attach-webview", (event, webPreferences, params) => {
     const src = typeof params.src === "string" ? params.src : "";
@@ -685,6 +695,19 @@ protocol.registerSchemesAsPrivileged([
   },
 ]);
 
+let pendingProjectOpenFiles: string[] = [];
+let handleProjectOpenFile: ((filePath: string) => void) | null = null;
+
+app.on("open-file", (event, filePath) => {
+  event.preventDefault();
+  if (!filePath) return;
+  if (handleProjectOpenFile) {
+    handleProjectOpenFile(filePath);
+    return;
+  }
+  pendingProjectOpenFiles.push(filePath);
+});
+
 app.whenReady().then(async () => {
   /** Canonical artifacts dir for the active project; ade-artifact:// only serves under this path. */
   let adeArtifactAllowedDir: string | null = null;
@@ -922,14 +945,25 @@ app.whenReady().then(async () => {
   }
 
   const envRoot = process.env.ADE_PROJECT_ROOT;
+  const pendingStartupProjectRoot =
+    pendingProjectOpenFiles
+      .map((filePath) => normalizeProjectPath(filePath))
+      .find((filePath) => isLikelyRepoRoot(filePath)) ?? null;
+  if (pendingStartupProjectRoot) {
+    pendingProjectOpenFiles = pendingProjectOpenFiles.filter(
+      (filePath) => normalizeProjectPath(filePath) !== pendingStartupProjectRoot,
+    );
+  }
   const devFallbackProject = process.env.VITE_DEV_SERVER_URL
     ? path.resolve(process.cwd(), "..", "..")
     : fallbackProjectRoot;
 
-  const startupUserSelected = Boolean(envRoot && envRoot.trim().length);
+  const startupUserSelected = Boolean((envRoot && envRoot.trim().length) || pendingStartupProjectRoot);
   const initialCandidate =
     envRoot && envRoot.trim().length
       ? normalizeProjectPath(envRoot)
+      : pendingStartupProjectRoot
+        ? pendingStartupProjectRoot
       : devFallbackProject;
 
   const broadcast = (channel: string, payload: unknown) => {
@@ -958,6 +992,8 @@ app.whenReady().then(async () => {
   const projectContexts = new Map<string, AppContext>();
   const projectInitPromises = new Map<string, Promise<AppContext>>();
   const closeContextPromises = new Map<string, Promise<void>>();
+  const windowProjectRoots = new Map<number, string | null>();
+  const ipcWindowScope = new AsyncLocalStorage<number | null>();
   const rpcSocketCleanupByRoot = new Map<string, () => void>();
   const projectLastActivatedAt = new Map<string, number>();
   const mobileSyncHandoffLeases = new Map<string, number>();
@@ -969,9 +1005,35 @@ app.whenReady().then(async () => {
   let mobileSyncSelectedRoot: string | null = null;
   let dormantContext!: AppContext;
   let projectContextRebalancePromise: Promise<void> = Promise.resolve();
+  const closeWindowWithoutQuitPrompt = new Set<number>();
 
-  const emitProjectChanged = (project: ProjectInfo | null): void => {
-    broadcast(IPC.appProjectChanged, project);
+  const currentIpcWindowId = (): number | null =>
+    ipcWindowScope.getStore() ?? null;
+
+  const projectForRoot = (projectRoot: string | null): ProjectInfo | null => {
+    if (!projectRoot) return null;
+    return projectContexts.get(projectRoot)?.project ?? null;
+  };
+
+  const rootsBoundToWindows = (): Set<string> => {
+    const roots = new Set<string>();
+    for (const root of windowProjectRoots.values()) {
+      if (root) roots.add(root);
+    }
+    return roots;
+  };
+
+  const emitProjectChangedToWindow = (
+    windowId: number | null,
+    project: ProjectInfo | null,
+  ): void => {
+    const win = windowId == null ? null : BrowserWindow.fromId(windowId);
+    if (!win || win.isDestroyed()) return;
+    try {
+      win.webContents.send(IPC.appProjectChanged, project);
+    } catch {
+      // ignore
+    }
   };
 
   const firstAvailableRecentProjectRoot = (): string | null => {
@@ -1024,7 +1086,7 @@ app.whenReady().then(async () => {
     return next;
   };
 
-  const setActiveProject = (projectRoot: string | null): void => {
+  const setForegroundProject = (projectRoot: string | null): void => {
     activeProjectRoot = projectRoot ? normalizeProjectRoot(projectRoot) : null;
     void reconcileSyncHostContexts().then(() => {
       notifyMobileSyncProjectCatalogChanged();
@@ -1046,7 +1108,41 @@ app.whenReady().then(async () => {
     }
   };
 
+  const bindWindowToProject = (
+    windowId: number | null,
+    projectRoot: string | null,
+    options: { emit?: boolean; foreground?: boolean } = {},
+  ): void => {
+    const normalizedRoot = projectRoot ? normalizeProjectRoot(projectRoot) : null;
+    if (windowId != null) {
+      windowProjectRoots.set(windowId, normalizedRoot);
+    }
+    if (options.foreground ?? true) {
+      setForegroundProject(normalizedRoot);
+    }
+    if (normalizedRoot) {
+      projectLastActivatedAt.set(normalizedRoot, Date.now());
+      const ctx = projectContexts.get(normalizedRoot);
+      if (ctx) {
+        persistRecentProject(ctx.project, { recordLastProject: false, preserveRecentOrder: true });
+      }
+    }
+    if (options.emit !== false) {
+      emitProjectChangedToWindow(windowId, projectForRoot(normalizedRoot));
+    }
+  };
+
   const getActiveContext = (): AppContext => {
+    const windowId = currentIpcWindowId();
+    if (windowId != null) {
+      const windowProjectRoot = windowProjectRoots.get(windowId) ?? null;
+      if (windowProjectRoot) {
+        const ctx = projectContexts.get(windowProjectRoot);
+        if (ctx) return ctx;
+        windowProjectRoots.set(windowId, null);
+      }
+      return dormantContext;
+    }
     if (activeProjectRoot) {
       const ctx = projectContexts.get(activeProjectRoot);
       if (ctx) return ctx;
@@ -1060,9 +1156,15 @@ app.whenReady().then(async () => {
     channel: string,
     payload: unknown,
   ): void => {
-    if (!activeProjectRoot) return;
-    if (normalizeProjectRoot(projectRoot) !== activeProjectRoot) return;
-    broadcast(channel, payload);
+    const normalizedRoot = normalizeProjectRoot(projectRoot);
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (windowProjectRoots.get(win.id) !== normalizedRoot) continue;
+      try {
+        win.webContents.send(channel, payload);
+      } catch {
+        // ignore
+      }
+    }
   };
 
   const hasActiveProjectWorkloads = async (
@@ -1183,12 +1285,14 @@ app.whenReady().then(async () => {
   };
 
   const rebalanceProjectContexts = async (): Promise<void> => {
-    const currentActiveRoot = activeProjectRoot;
-    if (!currentActiveRoot) return;
+    const activeRoots = rootsBoundToWindows();
+    if (activeProjectRoot) activeRoots.add(activeProjectRoot);
+    if (activeRoots.size === 0) return;
+    const currentActiveRoot = activeProjectRoot ?? [...activeRoots][0] ?? null;
 
     const idleRoots: string[] = [];
     for (const [projectRoot, ctx] of projectContexts.entries()) {
-      if (projectRoot === currentActiveRoot) continue;
+      if (activeRoots.has(projectRoot)) continue;
       if (await hasActiveProjectWorkloads(projectRoot, ctx)) {
         ctx.logger.info("project.context_retained", {
           projectRoot,
@@ -1209,12 +1313,17 @@ app.whenReady().then(async () => {
     );
 
     for (const projectRoot of idleRoots) {
-      if (activeProjectRoot !== currentActiveRoot) {
+      const nextActiveRoots = rootsBoundToWindows();
+      if (activeProjectRoot) nextActiveRoots.add(activeProjectRoot);
+      const stillSameActiveSet =
+        nextActiveRoots.size === activeRoots.size
+        && [...activeRoots].every((root) => nextActiveRoots.has(root));
+      if (!stillSameActiveSet) {
         return;
       }
       const ctx = projectContexts.get(projectRoot);
       if (!ctx) continue;
-      if (projectRoot === activeProjectRoot) continue;
+      if (rootsBoundToWindows().has(projectRoot) || projectRoot === activeProjectRoot) continue;
       if (warmRoots.has(projectRoot)) {
         ctx.logger.info("project.context_retained", {
           projectRoot,
@@ -3644,6 +3753,33 @@ app.whenReady().then(async () => {
       budgetCapService,
       sessionDeltaService,
       autoUpdateService,
+      appNavigationService: {
+        navigate: async (request) => {
+          const normalizedRoot = normalizeProjectRoot(projectRoot);
+          let targetWindow = BrowserWindow.getAllWindows()
+            .find((win) => !win.isDestroyed() && windowProjectRoots.get(win.id) === normalizedRoot) ?? null;
+          if (!targetWindow) {
+            const opened = await openAdeWindow({ projectRoot });
+            targetWindow = opened.windowId != null ? BrowserWindow.fromId(opened.windowId) : null;
+          }
+          if (!targetWindow || targetWindow.isDestroyed()) {
+            return {
+              ok: false,
+              mode: "unavailable" as const,
+              message: "No ADE desktop window is available for this project.",
+            };
+          }
+          if (targetWindow.isMinimized()) targetWindow.restore();
+          targetWindow.show();
+          targetWindow.focus();
+          targetWindow.webContents.send(IPC.appNavigate, request);
+          return {
+            ok: true,
+            mode: "desktop" as const,
+            windowId: targetWindow.id,
+          };
+        },
+      },
       issueInventoryService,
       eventBuffer: rpcEventBuffer,
       dispose: () => {}, // desktop manages service lifecycle
@@ -3705,8 +3841,15 @@ app.whenReady().then(async () => {
         },
       });
       stop = startJsonRpcServer(rpcHandler, transport, { nonFatal: true });
+      const unsubscribeChatEvents = rpcRuntime.agentChatService?.subscribeToEvents((event) => {
+        stop?.notify("chat/event", event);
+      }) ?? (() => {});
+      let removedConnection = false;
       const removeConnection = (): void => {
+        if (removedConnection) return;
+        removedConnection = true;
         activeRpcConnections.delete(conn);
+        unsubscribeChatEvents();
       };
       conn.once("close", removeConnection);
       conn.once("end", removeConnection);
@@ -4275,7 +4418,7 @@ app.whenReady().then(async () => {
     for (const root of roots) {
       await closeProjectContext(root);
     }
-    setActiveProject(null);
+    setForegroundProject(null);
   };
 
   async function mobileProjectSummaryForContext(
@@ -4597,12 +4740,11 @@ app.whenReady().then(async () => {
       const existing = projectContexts.get(repoRoot);
       if (existing) {
         existing.hasUserSelectedProject = true;
-        setActiveProject(repoRoot);
         persistRecentProject(existing.project, {
           recordLastProject: true,
           preserveRecentOrder: isKnownRecentProject,
         });
-        emitProjectChanged(existing.project);
+        bindWindowToProject(currentIpcWindowId(), repoRoot, { emit: true, foreground: true });
         scheduleProjectContextRebalance();
         projectOpenLogger.info("project.open.done", {
           selectedPath,
@@ -4651,12 +4793,11 @@ app.whenReady().then(async () => {
 
       const ctx = await initPromise;
       ctx.hasUserSelectedProject = true;
-      setActiveProject(repoRoot);
       persistRecentProject(ctx.project, {
         recordLastProject: true,
         recordRecent: false,
       });
-      emitProjectChanged(ctx.project);
+      bindWindowToProject(currentIpcWindowId(), repoRoot, { emit: true, foreground: true });
       scheduleProjectContextRebalance();
       projectOpenLogger.info("project.open.done", {
         selectedPath,
@@ -4680,22 +4821,34 @@ app.whenReady().then(async () => {
   const closeProjectByPath = async (projectRoot: string): Promise<void> => {
     const normalizedRoot = normalizeProjectRoot(projectRoot);
     const wasActive = activeProjectRoot === normalizedRoot;
+    for (const [windowId, root] of windowProjectRoots) {
+      if (root === normalizedRoot) {
+        windowProjectRoots.set(windowId, null);
+        emitProjectChangedToWindow(windowId, null);
+      }
+    }
     await closeProjectContext(normalizedRoot);
     if (wasActive) {
+      setForegroundProject(firstOpenWindowProjectRoot());
       dormantContext = createDormantProjectContext(normalizedRoot);
-      emitProjectChanged(null);
     }
   };
 
   const closeCurrentProject = async () => {
     const current = getActiveContext();
     const previousRoot = current.project?.rootPath ?? "";
+    const windowId = currentIpcWindowId();
+    if (windowId != null) {
+      bindWindowToProject(windowId, null, { emit: true, foreground: true });
+      dormantContext = createDormantProjectContext(previousRoot);
+      scheduleProjectContextRebalance();
+      return;
+    }
     if (activeProjectRoot) {
       await closeProjectContext(activeProjectRoot);
     }
-    setActiveProject(null);
+    setForegroundProject(null);
     dormantContext = createDormantProjectContext(previousRoot);
-    emitProjectChanged(null);
   };
 
   dormantContext = createDormantProjectContext();
@@ -4843,7 +4996,7 @@ app.whenReady().then(async () => {
       } catch {
         // ignore
       }
-      setActiveProject(null);
+      setForegroundProject(null);
       dormantContext = createDormantProjectContext(previousRoot);
 
       try {
@@ -4861,38 +5014,85 @@ app.whenReady().then(async () => {
     });
   };
 
-  const confirmQuitWarning = (): boolean => {
-    if (quitWarningAcknowledged || shutdownRequested) return true;
-    const options = {
+  const showWindowCloseWarning = (
+    ownerWindow: BrowserWindow | null | undefined,
+    options: {
+      buttons: string[];
+      title: string;
+      message: string;
+      detail: string;
+      rememberQuitAcknowledgement?: boolean;
+    },
+  ): boolean => {
+    if (shutdownRequested) return true;
+    if (options.rememberQuitAcknowledgement && quitWarningAcknowledged) return true;
+    const dialogOptions = {
       type: "warning" as const,
-      buttons: ["Keep ADE open", "Quit ADE"],
+      buttons: options.buttons,
       defaultId: 0,
       cancelId: 0,
       noLink: true,
+      title: options.title,
+      message: options.message,
+      detail: options.detail,
+    };
+    const parentWindow =
+      ownerWindow && !ownerWindow.isDestroyed()
+        ? ownerWindow
+        : BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+    const response = parentWindow
+      ? dialog.showMessageBoxSync(parentWindow, dialogOptions)
+      : dialog.showMessageBoxSync(dialogOptions);
+    if (response !== 1) {
+      return false;
+    }
+    if (options.rememberQuitAcknowledgement) {
+      quitWarningAcknowledged = true;
+    }
+    return true;
+  };
+
+  const confirmQuitWarning = (ownerWindow?: BrowserWindow | null): boolean =>
+    showWindowCloseWarning(ownerWindow, {
+      buttons: ["Keep ADE open", "Quit ADE"],
       title: "Quit ADE?",
       message: "Save your work before closing ADE.",
       detail:
         "Quitting ADE will end any running agents and stop background processes started by ADE, including OpenCode servers, terminal sessions, and test runs.",
-    };
-    const parentWindow = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
-    const response = parentWindow
-      ? dialog.showMessageBoxSync(parentWindow, options)
-      : dialog.showMessageBoxSync(options);
-    if (response !== 1) {
-      return false;
+      rememberQuitAcknowledgement: true,
+    });
+
+  const confirmCloseWindowWarning = (ownerWindow: BrowserWindow): boolean =>
+    showWindowCloseWarning(ownerWindow, {
+      buttons: ["Keep window open", "Close window"],
+      title: "Close ADE window?",
+      message: "Close this ADE window?",
+      detail:
+        "ADE will keep running in other windows. Active agents and background processes continue unless you quit ADE.",
+      rememberQuitAcknowledgement: false,
+    });
+
+  const closeWindowWithoutPrompt = (win: BrowserWindow): void => {
+    closeWindowWithoutQuitPrompt.add(win.id);
+    win.close();
+    if (!win.isDestroyed()) {
+      closeWindowWithoutQuitPrompt.delete(win.id);
     }
-    quitWarningAcknowledged = true;
-    return true;
   };
 
   const handleMainWindowCloseRequested = (
-    _win: BrowserWindow,
+    win: BrowserWindow,
     event: Electron.Event,
   ): void => {
     if (shutdownRequested) return;
-    if (BrowserWindow.getAllWindows().length > 1) return;
+    if (closeWindowWithoutQuitPrompt.delete(win.id)) return;
     event.preventDefault();
-    if (!confirmQuitWarning()) return;
+    if (BrowserWindow.getAllWindows().filter((openWindow) => !openWindow.isDestroyed()).length > 1) {
+      if (!confirmCloseWindowWarning(win)) return;
+      closeWindowWithoutPrompt(win);
+      return;
+    }
+    if (!confirmQuitWarning(win)) return;
     requestAppShutdown({ reason: "window_close", exitCode: 0 });
   };
 
@@ -4977,6 +5177,169 @@ app.whenReady().then(async () => {
     });
   });
 
+  const firstOpenWindowProjectRoot = (): string | null => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      const root = windowProjectRoots.get(win.id);
+      if (root) return root;
+    }
+    return null;
+  };
+
+  const registerWindowSession = (win: BrowserWindow, projectRoot: string | null = null): void => {
+    windowProjectRoots.set(win.id, projectRoot ? normalizeProjectRoot(projectRoot) : null);
+    win.on("focus", () => {
+      setForegroundProject(windowProjectRoots.get(win.id) ?? null);
+      builtInBrowserService.attachToWindow(win);
+    });
+    win.on("closed", () => {
+      const previousRoot = windowProjectRoots.get(win.id) ?? null;
+      windowProjectRoots.delete(win.id);
+      if (activeProjectRoot === previousRoot) {
+        setForegroundProject(firstOpenWindowProjectRoot());
+      }
+      scheduleProjectContextRebalance();
+    });
+  };
+
+  const getWindowSession = (windowId: number | null): { windowId: number | null; project: ProjectInfo | null } => {
+    if (windowId == null) {
+      return { windowId: null, project: projectForRoot(activeProjectRoot) };
+    }
+    return {
+      windowId,
+      project: projectForRoot(windowProjectRoots.get(windowId) ?? null),
+    };
+  };
+
+  const openAdeWindow = async (
+    args: { projectRoot?: string | null } = {},
+  ): Promise<{ windowId: number | null; project: ProjectInfo | null }> => {
+    const win = await createWindow({
+      logger: getActiveContext().logger,
+      onCreated: (createdWindow) => registerWindowSession(createdWindow, null),
+      onCloseRequested: handleMainWindowCloseRequested,
+    });
+    builtInBrowserService.attachToWindow(win);
+    if (args.projectRoot) {
+      await ipcWindowScope.run(win.id, async () => {
+        await switchProjectFromDialog(args.projectRoot!);
+      });
+    } else {
+      emitProjectChangedToWindow(win.id, null);
+    }
+    return getWindowSession(win.id);
+  };
+
+  const openProjectFileRequest = async (filePath: string): Promise<void> => {
+    const projectRoot = normalizeProjectPath(filePath);
+    if (!isLikelyRepoRoot(projectRoot)) return;
+    const normalizedRoot = normalizeProjectRoot(projectRoot);
+    const existing = BrowserWindow.getAllWindows()
+      .find((win) => !win.isDestroyed() && windowProjectRoots.get(win.id) === normalizedRoot) ?? null;
+    if (existing) {
+      if (existing.isMinimized()) existing.restore();
+      existing.show();
+      existing.focus();
+      return;
+    }
+    await openAdeWindow({ projectRoot: normalizedRoot });
+  };
+
+  handleProjectOpenFile = (filePath) => {
+    void openProjectFileRequest(filePath).catch((error) => {
+      getActiveContext().logger.warn("project.open_file_request_failed", {
+        filePath,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
+
+  for (const filePath of pendingProjectOpenFiles.splice(0)) {
+    handleProjectOpenFile(filePath);
+  }
+
+  const closeAdeWindow = async (windowId: number | null): Promise<{ closed: boolean }> => {
+    if (windowId == null) return { closed: false };
+    const win = BrowserWindow.fromId(windowId);
+    if (!win || win.isDestroyed()) return { closed: false };
+    closeWindowWithoutPrompt(win);
+    return { closed: true };
+  };
+
+  const installApplicationMenu = (): void => {
+    const template: Electron.MenuItemConstructorOptions[] = [
+      ...(process.platform === "darwin"
+        ? [{
+            label: app.name,
+            submenu: [
+              { role: "about" as const },
+              { type: "separator" as const },
+              { role: "hide" as const },
+              { role: "hideOthers" as const },
+              { role: "unhide" as const },
+              { type: "separator" as const },
+              { role: "quit" as const },
+            ],
+          }]
+        : []),
+      {
+        label: "File",
+        submenu: [
+          {
+            label: "New window",
+            accelerator: "CommandOrControl+N",
+            click: () => {
+              void openAdeWindow();
+            },
+          },
+          { type: "separator" },
+          { role: "close" },
+        ],
+      },
+      {
+        label: "Edit",
+        submenu: [
+          { role: "undo" },
+          { role: "redo" },
+          { type: "separator" },
+          { role: "cut" },
+          { role: "copy" },
+          { role: "paste" },
+          { role: "selectAll" },
+        ],
+      },
+      {
+        label: "View",
+        submenu: [
+          { role: "reload" },
+          { role: "toggleDevTools" },
+          { type: "separator" },
+          { role: "resetZoom" },
+          { role: "zoomIn" },
+          { role: "zoomOut" },
+          { type: "separator" },
+          { role: "togglefullscreen" },
+        ],
+      },
+      {
+        label: "Window",
+        submenu: [
+          { role: "minimize" },
+          { role: "zoom" },
+          ...(process.platform === "darwin"
+            ? [
+                { type: "separator" as const },
+                { role: "front" as const },
+              ]
+            : []),
+        ],
+      },
+    ];
+    Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+  };
+
+  installApplicationMenu();
+
   registerIpc({
     getCtx: () => {
       const ctx = getActiveContext();
@@ -4989,6 +5352,11 @@ app.whenReady().then(async () => {
       return getMobileSyncService();
     },
     resolveSyncService: ensureMobileSyncService,
+    runWithIpcWindow: (event, fn) =>
+      ipcWindowScope.run(BrowserWindow.fromWebContents(event.sender)?.id ?? null, fn),
+    getWindowSession,
+    createWindow: openAdeWindow,
+    closeWindow: closeAdeWindow,
     switchProjectFromDialog,
     closeCurrentProject,
     closeProjectByPath,
@@ -5003,24 +5371,22 @@ app.whenReady().then(async () => {
     try {
       await switchProjectFromDialog(initialCandidate);
     } catch {
-      setActiveProject(null);
+      setForegroundProject(null);
       dormantContext = createDormantProjectContext();
     }
   }
 
+  const initialWindowProjectRoot = startupUserSelected ? activeProjectRoot : null;
   const initialWindow = await createWindow({
     logger: getActiveContext().logger,
+    onCreated: (createdWindow) => registerWindowSession(createdWindow, initialWindowProjectRoot),
     onCloseRequested: handleMainWindowCloseRequested,
   });
   builtInBrowserService.attachToWindow(initialWindow);
 
   app.on("activate", async () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      const activatedWindow = await createWindow({
-        logger: getActiveContext().logger,
-        onCloseRequested: handleMainWindowCloseRequested,
-      });
-      builtInBrowserService.attachToWindow(activatedWindow);
+      await openAdeWindow();
     }
   });
 

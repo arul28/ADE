@@ -45,6 +45,41 @@ export type ProjectInfo = {
   baseRef: string;
 };
 
+export type AppNavigationTarget =
+  | {
+      kind: "work" | "chat";
+      sessionId?: string | null;
+      laneId?: string | null;
+    }
+  | {
+      kind: "lane";
+      laneId: string;
+      sessionId?: string | null;
+    }
+  | {
+      kind: "pr";
+      prId?: string | null;
+      prNumber?: number | null;
+      laneId?: string | null;
+    }
+  | {
+      kind: "route";
+      route: string;
+    };
+
+export type AppNavigationRequest = {
+  target: AppNavigationTarget;
+  source?: "ade-code" | "desktop" | "cli" | string;
+};
+
+export type AppNavigationResult = {
+  ok: boolean;
+  mode: "desktop" | "unavailable";
+  windowId?: number | null;
+  route?: string;
+  message?: string;
+};
+
 export type ProjectBrowseInput = {
   partialPath?: string;
   cwd?: string | null;

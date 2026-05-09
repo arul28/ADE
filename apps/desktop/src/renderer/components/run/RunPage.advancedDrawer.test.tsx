@@ -3,6 +3,7 @@
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { RunPage } from "./RunPage";
 import { useAppStore } from "../../state/appStore";
 import type { LaneSummary, ProjectInfo } from "../../../shared/types";
@@ -87,6 +88,7 @@ function installAdeStub() {
     },
     project: {
       listRecent: vi.fn().mockResolvedValue([]),
+      resolveIcon: vi.fn().mockResolvedValue({ dataUrl: null, sourcePath: null, mimeType: null }),
     },
   };
 }
@@ -112,6 +114,44 @@ afterEach(() => {
 });
 
 describe("RunPage Advanced lane runtime drawer", () => {
+  it("renders saved project icons in the recent projects list", async () => {
+    const ade = (window as unknown as {
+      ade: {
+        project: {
+          listRecent: ReturnType<typeof vi.fn>;
+          resolveIcon: ReturnType<typeof vi.fn>;
+        };
+      };
+    }).ade;
+    ade.project.listRecent.mockResolvedValueOnce([
+      {
+        rootPath: "/tmp/icon-project",
+        displayName: "Icon project",
+        exists: true,
+        lastOpenedAt: "2026-05-08T00:00:00.000Z",
+        laneCount: 1,
+      },
+    ]);
+    ade.project.resolveIcon.mockResolvedValueOnce({
+      dataUrl: "data:image/png;base64,icon",
+      sourcePath: "/tmp/icon-project/.ade/icon.png",
+      mimeType: "image/png",
+    });
+    useAppStore.setState({ showWelcome: true, project: null });
+
+    const { container } = render(
+      <MemoryRouter>
+        <RunPage />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("Icon project")).toBeTruthy();
+    await waitFor(() => {
+      expect(ade.project.resolveIcon).toHaveBeenCalledWith("/tmp/icon-project");
+      expect(container.querySelector('img[src="data:image/png;base64,icon"]')).toBeTruthy();
+    });
+  });
+
   it("keeps LaneRuntimeBar collapsed by default with aria-expanded on the toggle", async () => {
     render(<RunPage />);
     const toggle = screen.getByRole("button", { name: /^advanced$/i });

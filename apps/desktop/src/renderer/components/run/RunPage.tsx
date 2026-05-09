@@ -21,6 +21,7 @@ import type {
   ProcessRuntime,
   ProjectConfigSnapshot,
   ConfigProcessGroupDefinition,
+  ProjectIcon,
 } from "../../../shared/types";
 
 function generateId(): string {
@@ -236,6 +237,44 @@ function runPageLaneStateEqual(left: PersistedRunPageLaneState, right: Persisted
   return leftEntries.every(([processId, laneId]) => right.commandLaneIds[processId] === laneId);
 }
 
+function RecentProjectIcon({ rootPath }: { rootPath: string }) {
+  const [icon, setIcon] = useState<ProjectIcon | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setIcon(null);
+    setFailed(false);
+    window.ade.project.resolveIcon(rootPath).then((nextIcon) => {
+      if (!cancelled) setIcon(nextIcon);
+    }).catch(() => {
+      if (!cancelled) setIcon(null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [rootPath]);
+
+  if (icon?.dataUrl && !failed) {
+    return (
+      <img
+        src={icon.dataUrl}
+        alt=""
+        draggable={false}
+        onError={() => setFailed(true)}
+        style={{
+          width: 22,
+          height: 22,
+          borderRadius: 6,
+          objectFit: "contain",
+        }}
+      />
+    );
+  }
+
+  return <Folder size={16} weight="regular" />;
+}
+
 function WelcomeScreen() {
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
   const project = useAppStore((s) => s.project);
@@ -346,7 +385,7 @@ function WelcomeScreen() {
                     flexShrink: 0,
                   }}
                 >
-                  <Folder size={16} weight="regular" />
+                  <RecentProjectIcon rootPath={rp.rootPath} />
                 </div>
                 <div style={{ overflow: "hidden", flex: 1 }}>
                   <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 2 }}>{rp.displayName}</div>

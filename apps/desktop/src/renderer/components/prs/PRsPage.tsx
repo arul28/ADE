@@ -139,7 +139,10 @@ function PRsPageInner() {
         setActiveTab(resolved.activeTab);
 
         if (!resolved.isWorkflowRoute) {
-          setSelectedPrId(routeState.prId ?? null);
+          const prNumberMatch = routeState.prNumber == null
+            ? null
+            : prs.find((pr) => pr.githubPrNumber === routeState.prNumber)?.id ?? null;
+          setSelectedPrId(routeState.prId ?? prNumberMatch);
           setSelectedDetailTab(routeState.detailTab);
         }
         if (resolved.effectiveWorkflow === "queue") {
@@ -160,7 +163,7 @@ function PRsPageInner() {
       window.removeEventListener("popstate", syncFromLocation);
       window.removeEventListener("hashchange", syncFromLocation);
     };
-  }, [location.search, rebaseNeeds, setActiveTab, setSelectedPrId, setSelectedQueueGroupId, setSelectedRebaseItemId]);
+  }, [location.search, prs, rebaseNeeds, setActiveTab, setSelectedPrId, setSelectedQueueGroupId, setSelectedRebaseItemId]);
 
   React.useEffect(() => {
     const current = parsePrsRouteState({ search: location.search });

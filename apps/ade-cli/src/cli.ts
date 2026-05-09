@@ -104,6 +104,7 @@ type FormatterId =
 type CliPlan =
   | { kind: "help"; text: string }
   | { kind: "execute"; label: string; steps: InvocationStep[]; visualizer?: "lanes"; summary?: "status" | "doctor" | "auth"; formatter?: FormatterId; preferHeadless?: boolean }
+  | { kind: "ade-code"; rest: string[] }
   | { kind: "cursor-cloud"; rest: string[] }
   | { kind: "mcp" };
 
@@ -345,6 +346,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
 
     $ ade help <command...>                         Display help for a command
     $ ade auth status                               Check local ADE CLI readiness
+    $ ade code                                      Open ADE Work chat in the terminal
     $ ade doctor                                    Inspect project, socket, runtime, and tool availability
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
     $ ade git status | commit | push | stash        Run ADE-aware git operations
@@ -752,6 +754,17 @@ const IOS_SIMULATOR_HELP_ALIASES: Record<string, string> = {
 };
 
 const HELP_BY_COMMAND: Record<string, string> = {
+  code: `${ADE_BANNER}
+  ADE Code
+
+  Launch the terminal-native ADE Work chat. It shares lanes, chat sessions,
+  transcript state, and slash commands with desktop ADE.
+
+    $ ade code                                      Start the TUI for the current project
+    $ ade code --print-state                       Smoke-test attach/embed state
+    $ ade code --embedded                          Force the embedded runtime fallback
+    $ ade --project-root <path> code                Launch against a specific ADE project
+`,
   lanes: `${ADE_BANNER}
   Lanes
 
@@ -4147,6 +4160,10 @@ function buildCliPlan(command: string[]): CliPlan {
   if (primary === "version" || primary === "--version" || primary === "-v") {
     return { kind: "help", text: `ade ${VERSION}\n` };
   }
+  if (primary === "code") {
+    const rest = args;
+    return { kind: "ade-code", rest };
+  }
   if (primary === "status") {
     return { kind: "execute", label: "status", summary: "status", steps: [{ key: "ping", method: "ping" }] };
   }
@@ -4309,6 +4326,56 @@ function commandExists(command: string): boolean {
     stdio: ["ignore", "pipe", "ignore"],
   });
   return result.status === 0 && result.stdout.trim().length > 0;
+}
+
+function resolveAdeCodeLaunch(): { command: string; args: string[] } {
+  const explicit = process.env.ADE_CODE_EXECUTABLE?.trim();
+  if (explicit) return { command: explicit, args: [] };
+
+  const siblingDist = path.resolve(CLI_PACKAGE_ROOT, "..", "ade-code", "dist", "cli.js");
+  if (fs.existsSync(siblingDist)) {
+    return { command: process.execPath, args: [siblingDist] };
+  }
+
+  if (commandExists("ade-code")) {
+    return { command: "ade-code", args: [] };
+  }
+
+  throw new CliUsageError("ade code could not find ade-code. Build apps/ade-code or install the ade-code binary.");
+}
+
+function resolveAdeCodeSocketPath(projectRoot: string): string {
+  return process.env.ADE_RPC_URL?.trim()
+    || process.env.ADE_RPC_SOCKET_PATH?.trim()
+    || path.join(projectRoot, ".ade", "ade.sock");
+}
+
+function buildAdeCodeArgs(rest: string[], options: GlobalOptions): string[] {
+  const roots = resolveRoots(options);
+  return [
+    "--project-root",
+    roots.projectRoot,
+    "--workspace-root",
+    roots.workspaceRoot,
+    ...(options.headless ? ["--embedded"] : []),
+    ...(options.requireSocket ? ["--socket", resolveAdeCodeSocketPath(roots.projectRoot), "--require-socket"] : []),
+    ...rest,
+  ];
+}
+
+function runAdeCode(rest: string[], options: GlobalOptions): { output: string; exitCode: number } {
+  const launch = resolveAdeCodeLaunch();
+  const args = [
+    ...launch.args,
+    ...buildAdeCodeArgs(rest, options),
+  ];
+  const result = spawnSync(launch.command, args, {
+    cwd: process.cwd(),
+    env: process.env,
+    stdio: "inherit",
+  });
+  if (result.error) throw result.error;
+  return { output: "", exitCode: typeof result.status === "number" ? result.status : 1 };
 }
 
 function runLocalCommand(command: string, args: string[], cwd: string): { ok: boolean; stdout: string; stderr: string } {
@@ -6750,6 +6817,9 @@ async function runCli(argv: string[]): Promise<{ output: string; exitCode: numbe
       await runMcpServer({ ...parsed.options, headless: true, requireSocket: false });
       return { output: "", exitCode: 0 };
     }
+    if (plan.kind === "ade-code") {
+      return runAdeCode(plan.rest, parsed.options);
+    }
     const result = await executePlan(plan, parsed.options);
     return { output: formatOutput(result, parsed.options, inferFormatter(plan)), exitCode: 0 };
   } finally {
@@ -6808,6 +6878,7 @@ if (/(^|[/\\])cli\.(?:ts|js|cjs)$/.test(process.argv[1] ?? "")) {
 
 export {
   buildCliPlan,
+  buildAdeCodeArgs,
   findProjectRoots,
   formatOutput,
   graphWaitState,

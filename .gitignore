@@ -23,6 +23,7 @@ __pycache__/
 
 # Build outputs
 /apps/ade-cli/dist/
+/apps/ade-code/dist/
 /apps/desktop/release/
 /apps/desktop/dist/
 /apps/desktop/vendor/crsqlite/darwin-x64/
@@ -62,3 +63,4 @@ ios-signing/
 /.playwright-mcp
 /.codex-derived-data
 package-lock.json
+!/apps/ade-code/package-lock.json

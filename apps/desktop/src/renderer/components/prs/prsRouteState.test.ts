@@ -28,6 +28,7 @@ describe("prsRouteState", () => {
       workflowTab: "queue",
       laneId: null,
       prId: null,
+      prNumber: null,
       queueGroupId: "group-hash",
       eventId: null,
       threadId: null,
@@ -47,6 +48,7 @@ describe("prsRouteState", () => {
       workflowTab: "rebase",
       laneId: "lane-456",
       prId: "pr-789",
+      prNumber: null,
       queueGroupId: "group-1",
       eventId: null,
       threadId: null,
@@ -65,6 +67,7 @@ describe("prsRouteState", () => {
       workflowTab: null,
       laneId: null,
       prId: "pr-1",
+      prNumber: null,
       queueGroupId: null,
       eventId: "evt-99",
       threadId: "thr-12",
@@ -86,6 +89,13 @@ describe("prsRouteState", () => {
         detailTab: "checks",
       }),
     ).toBe("?tab=normal&prId=pr-1&eventId=evt-5&threadId=thr-3&commitSha=abc&detailTab=checks");
+  });
+
+  it("parses PR number handoff routes", () => {
+    const parsed = parsePrsRouteState({ search: "?tab=normal&pr=123&laneId=lane-1" });
+    expect(parsed.prNumber).toBe(123);
+    expect(parsed.prId).toBeNull();
+    expect(parsed.laneId).toBe("lane-1");
   });
 
   it("builds normal and workflow route searches with the expected ids", () => {

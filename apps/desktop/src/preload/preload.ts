@@ -16,6 +16,7 @@ import type {
   AdoptAttachedLaneArgs,
   UnregisteredLaneCandidate,
   AppInfo,
+  AppNavigationRequest,
   AutoUpdateSnapshot,
   ClearLocalAdeDataArgs,
   ClearLocalAdeDataResult,
@@ -1060,6 +1061,16 @@ contextBridge.exposeInMainWorld("ade", {
     getInfo: async (): Promise<AppInfo> => ipcRenderer.invoke(IPC.appGetInfo),
     getProject: async (): Promise<ProjectInfo | null> =>
       ipcRenderer.invoke(IPC.appGetProject),
+    getWindowSession: async (): Promise<{ windowId: number | null; project: ProjectInfo | null }> =>
+      ipcRenderer.invoke(IPC.appGetWindowSession),
+    newWindow: async (): Promise<{ windowId: number | null }> =>
+      ipcRenderer.invoke(IPC.appNewWindow),
+    openProjectInNewWindow: async (
+      rootPath: string,
+    ): Promise<{ windowId: number | null; project: ProjectInfo | null }> =>
+      ipcRenderer.invoke(IPC.appOpenProjectInNewWindow, { rootPath }),
+    closeWindow: async (windowId?: number | null): Promise<{ closed: boolean }> =>
+      ipcRenderer.invoke(IPC.appCloseWindow, { windowId: windowId ?? null }),
     onProjectChanged: (cb: (project: ProjectInfo | null) => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,
@@ -1070,6 +1081,14 @@ contextBridge.exposeInMainWorld("ade", {
       };
       ipcRenderer.on(IPC.appProjectChanged, listener);
       return () => ipcRenderer.removeListener(IPC.appProjectChanged, listener);
+    },
+    onNavigate: (cb: (request: AppNavigationRequest) => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        payload: AppNavigationRequest,
+      ) => cb(payload);
+      ipcRenderer.on(IPC.appNavigate, listener);
+      return () => ipcRenderer.removeListener(IPC.appNavigate, listener);
     },
     openExternal: async (url: string): Promise<void> =>
       ipcRenderer.invoke(IPC.appOpenExternal, { url }),

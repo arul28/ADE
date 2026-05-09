@@ -1904,6 +1904,10 @@ export function registerIpc({
   getCtx,
   getSyncService,
   resolveSyncService,
+  runWithIpcWindow,
+  getWindowSession,
+  createWindow,
+  closeWindow,
   switchProjectFromDialog,
   closeCurrentProject,
   closeProjectByPath,
@@ -1913,6 +1917,10 @@ export function registerIpc({
   getCtx: () => AppContext;
   getSyncService?: () => ReturnType<typeof createSyncService> | null | undefined;
   resolveSyncService?: () => Promise<ReturnType<typeof createSyncService> | null | undefined>;
+  runWithIpcWindow?: <T>(event: { sender: Electron.WebContents }, fn: () => T | Promise<T>) => T | Promise<T>;
+  getWindowSession?: (windowId: number | null) => { windowId: number | null; project: ProjectInfo | null };
+  createWindow?: (args?: { projectRoot?: string | null }) => Promise<{ windowId: number | null; project: ProjectInfo | null }>;
+  closeWindow?: (windowId: number | null) => Promise<{ closed: boolean }>;
   switchProjectFromDialog: (selectedPath: string) => Promise<ProjectInfo>;
   closeCurrentProject: () => Promise<void>;
   closeProjectByPath: (projectRoot: string) => Promise<void>;
@@ -2101,7 +2109,20 @@ export function registerIpc({
   type TracedIpcMain = typeof ipcMain & {
     __adeTraceWrapped?: boolean;
     __adeOriginalHandle?: typeof ipcMain.handle;
+    __adeWindowScopeWrapped?: boolean;
+    __adeWindowScopeOriginalHandle?: typeof ipcMain.handle;
   };
+
+  const tracedIpcMain = ipcMain as TracedIpcMain;
+  if (runWithIpcWindow && !tracedIpcMain.__adeWindowScopeWrapped) {
+    const originalHandle = tracedIpcMain.handle.bind(ipcMain);
+    tracedIpcMain.__adeWindowScopeOriginalHandle = originalHandle;
+    tracedIpcMain.handle = ((channel, listener) =>
+      originalHandle(channel, (event, ...args) =>
+        runWithIpcWindow(event, () => listener(event, ...args))
+      )) as typeof ipcMain.handle;
+    tracedIpcMain.__adeWindowScopeWrapped = true;
+  }
 
   type IpcInvokeAggregate = {
     channel: string;
@@ -2188,7 +2209,6 @@ export function registerIpc({
     }
   };
 
-  const tracedIpcMain = ipcMain as TracedIpcMain;
   if (traceIpcInvokes && !tracedIpcMain.__adeTraceWrapped) {
     const originalHandle = tracedIpcMain.handle.bind(ipcMain);
     tracedIpcMain.__adeOriginalHandle = originalHandle;
@@ -3204,6 +3224,37 @@ export function registerIpc({
   ipcMain.handle(IPC.appGetProject, async () => {
     const ctx = getCtx();
     return ctx.hasUserSelectedProject ? ctx.project : null;
+  });
+
+  ipcMain.handle(IPC.appGetWindowSession, async (event) => {
+    const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
+    if (getWindowSession) return getWindowSession(windowId);
+    const ctx = getCtx();
+    return {
+      windowId,
+      project: ctx.hasUserSelectedProject ? ctx.project : null,
+    };
+  });
+
+  ipcMain.handle(IPC.appNewWindow, async () => {
+    if (!createWindow) return { windowId: null };
+    const result = await createWindow({ projectRoot: null });
+    return { windowId: result.windowId };
+  });
+
+  ipcMain.handle(IPC.appOpenProjectInNewWindow, async (_event, arg: { rootPath?: string }) => {
+    const rootPath = typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
+    if (!rootPath) throw new Error("rootPath is required");
+    if (!createWindow) return { windowId: null, project: null };
+    return createWindow({ projectRoot: rootPath });
+  });
+
+  ipcMain.handle(IPC.appCloseWindow, async (event, arg: { windowId?: number | null } = {}) => {
+    const requestedWindowId = Number.isFinite(arg?.windowId)
+      ? Number(arg.windowId)
+      : BrowserWindow.fromWebContents(event.sender)?.id ?? null;
+    if (!closeWindow) return { closed: false };
+    return closeWindow(requestedWindowId);
   });
 
   ipcMain.handle(IPC.appOpenExternal, async (_event, arg: { url: string }): Promise<void> => {

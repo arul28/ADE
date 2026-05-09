@@ -27,7 +27,8 @@ jobs:
             apps/desktop/node_modules
             apps/ade-cli/node_modules
             apps/web/node_modules
-          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json') }}
+            apps/ade-code/node_modules
+          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/ade-code/package-lock.json') }}
 
       - name: Install all dependencies (parallel)
         if: steps.cache.outputs.cache-hit != 'true'
@@ -35,6 +36,7 @@ jobs:
           cd apps/desktop   && npm ci &
           cd apps/ade-cli && npm ci &
           cd apps/web        && npm ci &
+          cd apps/ade-code && npm ci &
           wait
 
   # ── Secret scanning (no deps needed) ───────────────────────────────────
@@ -63,7 +65,8 @@ jobs:
             apps/desktop/node_modules
             apps/ade-cli/node_modules
             apps/web/node_modules
-          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json') }}
+            apps/ade-code/node_modules
+          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/ade-code/package-lock.json') }}
       - run: cd apps/desktop && npm run typecheck
 
   typecheck-ade-cli:
@@ -80,7 +83,8 @@ jobs:
             apps/desktop/node_modules
             apps/ade-cli/node_modules
             apps/web/node_modules
-          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json') }}
+            apps/ade-code/node_modules
+          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/ade-code/package-lock.json') }}
       - run: cd apps/ade-cli && npm run typecheck
 
   typecheck-web:
@@ -97,8 +101,27 @@ jobs:
             apps/desktop/node_modules
             apps/ade-cli/node_modules
             apps/web/node_modules
-          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json') }}
+            apps/ade-code/node_modules
+          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/ade-code/package-lock.json') }}
       - run: cd apps/web && npm run typecheck
+
+  typecheck-ade-code:
+    needs: install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            apps/desktop/node_modules
+            apps/ade-cli/node_modules
+            apps/web/node_modules
+            apps/ade-code/node_modules
+          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/ade-code/package-lock.json') }}
+      - run: cd apps/ade-code && npm run typecheck
 
   lint-desktop:
     needs: install
@@ -114,7 +137,8 @@ jobs:
             apps/desktop/node_modules
             apps/ade-cli/node_modules
             apps/web/node_modules
-          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json') }}
+            apps/ade-code/node_modules
+          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/ade-code/package-lock.json') }}
       - run: cd apps/desktop && npm run lint
 
   test-desktop:
@@ -135,7 +159,8 @@ jobs:
             apps/desktop/node_modules
             apps/ade-cli/node_modules
             apps/web/node_modules
-          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json') }}
+            apps/ade-code/node_modules
+          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/ade-code/package-lock.json') }}
       - run: cd apps/desktop && npx vitest run --shard=${{ matrix.shard }}/8
 
   test-ade-cli:
@@ -152,8 +177,27 @@ jobs:
             apps/desktop/node_modules
             apps/ade-cli/node_modules
             apps/web/node_modules
-          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json') }}
+            apps/ade-code/node_modules
+          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/ade-code/package-lock.json') }}
       - run: cd apps/ade-cli && npm test
+
+  test-ade-code:
+    needs: install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            apps/desktop/node_modules
+            apps/ade-cli/node_modules
+            apps/web/node_modules
+            apps/ade-code/node_modules
+          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/ade-code/package-lock.json') }}
+      - run: cd apps/ade-code && npm test
 
   build:
     needs: install
@@ -169,10 +213,12 @@ jobs:
             apps/desktop/node_modules
             apps/ade-cli/node_modules
             apps/web/node_modules
-          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json') }}
+            apps/ade-code/node_modules
+          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/ade-code/package-lock.json') }}
       - run: cd apps/desktop && npm run build
       - run: cd apps/ade-cli && npm run build
       - run: cd apps/web && npm run build
+      - run: cd apps/ade-code && npm run build
 
   validate-docs:
     needs: install
@@ -188,7 +234,8 @@ jobs:
             apps/desktop/node_modules
             apps/ade-cli/node_modules
             apps/web/node_modules
-          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json') }}
+            apps/ade-code/node_modules
+          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/ade-code/package-lock.json') }}
       - run: node scripts/validate-docs.mjs
 
   # ── Windows build smoke (self-contained — no shared cache) ────────────
@@ -235,9 +282,11 @@ jobs:
       - typecheck-desktop
       - typecheck-ade-cli
       - typecheck-web
+      - typecheck-ade-code
       - lint-desktop
       - test-desktop
       - test-ade-cli
+      - test-ade-code
       - build
       - validate-docs
       - build-win

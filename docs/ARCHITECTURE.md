@@ -8,7 +8,7 @@ Consolidated technical reference for the ADE (Agentic Development Environment) s
 
 ADE is a local-first development control plane that orchestrates AI-assisted software engineering across parallel worktrees. It combines worktree-per-lane git isolation, a multi-provider AI runtime, a deterministic orchestrator for multi-step missions, a Linear-integrated CTO agent acting as a team lead, a pipeline builder for visual automations, stacked pull requests with conflict simulation, computer-use proofs, a SQLite-backed memory system, and multi-device sync via cr-sqlite CRDTs. Nothing leaves the user's machine by default: AI work runs through user-authenticated CLIs (Claude Code, Codex), local API-key routes (OpenCode server), or local model endpoints (Ollama, LM Studio, vLLM).
 
-ADE ships as four coordinated apps:
+ADE ships as five coordinated apps:
 
 ```
                        ┌─────────────────────────┐
@@ -31,9 +31,14 @@ ADE ships as four coordinated apps:
 │  │─── spawns ─────────────────────┐      │                          │
 │  │                                ▼      │                          │
 │  │                ┌──────────────────────┐                          │
-│  │                │ apps/ade-cli      │                          │
-│  │                │ (JSON-RPC over stdio │◀──── headless mode ──────┤
+│  │                │ apps/ade-cli         │◀──── headless mode ──────┤
+│  │                │ (JSON-RPC over stdio │                          │
 │  │                │  or .ade/ade.sock)   │                          │
+│  │                └──────────────────────┘                          │
+│  │                ┌──────────────────────┐                          │
+│  │                │ apps/ade-code        │◀──── terminal Work chat ─┤
+│  │                │ (Ink TUI, same RPC   │                          │
+│  │                │  socket or embedded) │                          │
 │  │                └──────────────────────┘                          │
 │  │                                                                   │
 │  └── spawns CLI runtimes:                                             │
@@ -134,6 +139,7 @@ bridge.
   `app_control` (every public method on `AppControlService`) and
   `terminal` (`list`, `read`, `write`, `signal`, `activeForChat`
   against `ptyService`).
+- **`ade code`** — launches the terminal-native Work chat client (`apps/ade-code`, Ink + React). Uses the desktop JSON-RPC socket when `--socket` is set on the parent `ade` invocation (same path as other socket-backed commands); otherwise the TUI runs embedded against the headless runtime (`--embedded`) without implying the global auto-socket discovery used by `executePlan`. Override the binary with `ADE_CODE_EXECUTABLE` or a sibling `apps/ade-code/dist/cli.js` after `npm run build` in that package.
 - **Proof subcommands** — `ade proof capture` (alias of `screenshot`),
   `ade proof attach <path>`, `ade proof record`, `ade proof launch`,
   `ade proof interact`, `ade proof list/status/environment/ingest`.
@@ -145,11 +151,15 @@ bridge.
   `--owner-id` (with `chat` and `pr` aliases) to layer an explicit
   owner on top of the inferred session identity.
 
-### 2.3 Web app (`apps/web/`)
+### 2.3 ADE Code (`apps/ade-code/`)
+
+Terminal-native **Work** chat client (Ink + React) for agents and power users who live in a shell. It speaks the same ADE JSON-RPC surface as the desktop app and `ade-cli`: **attached** mode connects to `.ade/ade.sock` (or the Windows named pipe from `adeMcpIpc`) when a socket is present; **embedded** mode loads `createAdeRuntime` / `createAdeRpcRequestHandler` from `apps/ade-cli` at runtime so headless services run in-process without Electron. Shared chat DTOs are imported from `apps/desktop/src/shared/types/*` (never the renderer barrel) so `npm run typecheck` in this package stays isolated. Entry: `src/cli.tsx` → `dist/cli.js` (`ade-code` bin). Launched from the desktop shell via `ade code` (see §2.2). Multi-window navigation from the TUI uses the `app/navigate` JSON-RPC method when a desktop socket is attached.
+
+### 2.4 Web app (`apps/web/`)
 
 A Vite/React SPA that serves the public marketing site and download page. Four pages: `HomePage`, `DownloadPage`, `PrivacyPage`, `TermsPage`. Independent package (`ade-web`), deployed via Vercel (`apps/web/vercel.json`). Not a runtime dependency of the desktop app. Shared-origin with the Mintlify docs site (`docs.json` at repo root).
 
-### 2.4 iOS companion (`apps/ios/`)
+### 2.5 iOS companion (`apps/ios/`)
 
 Native SwiftUI app acting as a controller for an ADE host. It reads live desktop state from a local cr-sqlite-backed SQLite database and sends commands to the host for execution. The phone never runs agents.
 
@@ -407,6 +417,7 @@ ade.updates.*
 - Every handler is wrapped with a **30-second timeout** — if it does not resolve, the call rejects with a timeout error rather than hanging the renderer.
 - Every handler emits structured tracing: `ipc.invoke.begin`, `ipc.invoke.done`, `ipc.invoke.failed` with call ID, channel, window ID, duration, and summarized args/results.
 - `AppContext` indirection: handlers close over a context pointer that swaps atomically on project switch, so IPC channels remain registered across project transitions.
+- **Multi-window shell** — the app can host multiple `BrowserWindow` instances (for example when opening another project in a dedicated window). Handler tracing already carries **window ID** so logs and diagnostics distinguish which renderer surface invoked a channel; `main.ts` ties each window to its project context before routing into services.
 
 ### 5.4 Event subscriptions (push, not poll)
 
@@ -906,7 +917,8 @@ Full detail: [`docs/architecture/MULTI_DEVICE_SYNC.md`](../docs/architecture/MUL
 ADE/
 ├── apps/
 │   ├── desktop/        # Electron main/preload/renderer (primary product)
-│   ├── ade-cli/     # Headless ADE CLI (Node, JSON-RPC over stdio)
+│   ├── ade-cli/        # Headless ADE CLI (Node, JSON-RPC over stdio)
+│   ├── ade-code/       # Terminal Ink TUI for Work chat (socket or embedded headless)
 │   ├── web/            # Marketing + download landing (Vite + React)
 │   └── ios/            # Native SwiftUI controller
 ├── docs/
@@ -914,7 +926,6 @@ ADE/
 │   ├── architecture/   # Deep subsystem docs (source for this file)
 │   ├── features/
 │   └── final-plan/
-├── new-docs/           # This file + feature docs
 ├── scripts/            # Release, validate, notarize, after-pack (per-platform)
 │                       # Platform-specific: validate-mac-artifacts.mjs,
 │                       # validate-win-artifacts.mjs, ade-cli-windows-wrapper.cmd, etc.
@@ -939,6 +950,7 @@ Per-app scripts:
 |-----|-------------|
 | `apps/desktop` | `dev`, `build` (tsup + vite), `typecheck`, `test` (vitest), `lint` (ESLint), `dist:mac`, `dist:mac:universal:signed:zip`, `notarize:mac:dmg`, `validate:mac:artifacts`, `rebuild:native`, `version:ci`, `version:release`, `ade:dev`, `ade:build`, `ade:test`. |
 | `apps/ade-cli` | `dev`, `build`, `typecheck`, `test`. |
+| `apps/ade-code` | `dev`, `build`, `typecheck`, `test` (Ink TUI; uses granular imports from `apps/desktop/src/shared/types/*`). |
 | `apps/web` | `dev`, `build`, `preview`, `typecheck`. |
 | `apps/ios` | Xcode project; tests via `xcodebuild test` / Xcode. |
 
@@ -946,16 +958,18 @@ Per-app scripts:
 
 Stages:
 
-1. **Install** (`install` job) — checkout, setup Node 22, parallel `npm ci` across desktop/ade-cli/web with shared cache keyed on all three lockfiles.
+1. **Install** (`install` job) — checkout, setup Node 22, parallel `npm ci` across desktop, ade-cli, web, and ade-code with a shared cache keyed on all four lockfiles.
 2. **Parallel checks**:
    - `secret-scan` — gitleaks on full history.
    - `typecheck-desktop` — `cd apps/desktop && npm run typecheck`.
    - `typecheck-ade-cli` — `cd apps/ade-cli && npm run typecheck`.
    - `typecheck-web` — `cd apps/web && npm run typecheck`.
+   - `typecheck-ade-code` — `cd apps/ade-code && npm run typecheck`.
    - `lint-desktop` — ESLint on `src/**/*.{ts,tsx}`.
    - `test-desktop` — **8-way shard matrix**: `npx vitest run --shard=${{ matrix.shard }}/8` across shards 1–8.
    - `test-ade-cli` — full ade-cli vitest.
-   - `build` — all three apps built sequentially after install.
+   - `test-ade-code` — ade-code vitest.
+   - `build` — all four apps built sequentially after install.
    - `validate-docs` — `node scripts/validate-docs.mjs`.
 3. **Gate** (`ci-pass`) — all required jobs must pass (`if: always()` with failure/cancelled detection).
 
@@ -1061,5 +1075,5 @@ Post-packaging hardening (`apps/desktop/scripts/`):
 - UI framework · [`docs/architecture/UI_FRAMEWORK.md`](../docs/architecture/UI_FRAMEWORK.md)
 - Multi-device sync · [`docs/architecture/MULTI_DEVICE_SYNC.md`](../docs/architecture/MULTI_DEVICE_SYNC.md)
 - iOS app · [`docs/architecture/IOS_APP.md`](../docs/architecture/IOS_APP.md)
-- Feature docs (this directory) · [`new-docs/features/`](./features/)
+- Feature docs · [`docs/features/`](./features/)
 - Product spec · [`docs/PRD.md`](../docs/PRD.md)
