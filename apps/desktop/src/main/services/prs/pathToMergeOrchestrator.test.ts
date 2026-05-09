@@ -1069,7 +1069,7 @@ describe("createPathToMergeOrchestrator.runIteration", () => {
     }));
     const { deps } = buildDeps({
       runtimeByPrId,
-      prs: [buildPrSummary({ checksStatus: "passing", reviewStatus: "requested" })],
+      prs: [buildPrSummary({ checksStatus: "passing", reviewStatus: "approved" })],
       pipelineSettings: { earlyMergeOnGreen: false, autoMerge: true, atCapPolicy: "ci_retry_once" },
       convergenceStatus: { totalNew: 0 },
       getChecks: async () => [
@@ -1189,7 +1189,7 @@ describe("createPathToMergeOrchestrator.runIteration", () => {
     }
   });
 
-  it("ignores review blockers at the cap while still requiring green CI", async () => {
+  it("blocks review blockers at the cap for non-force policies", async () => {
     const runtimeByPrId = new Map<string, ConvergenceRuntimeState>();
     const land = vi.fn(async () => ({
       prId: "pr-1",
@@ -1219,17 +1219,18 @@ describe("createPathToMergeOrchestrator.runIteration", () => {
       await flushIteration();
 
       expect(launchPrIssueResolutionChatMock).not.toHaveBeenCalled();
-      expect(land).toHaveBeenCalledWith({ prId: "pr-1", method: "squash", archiveLane: false });
+      expect(land).not.toHaveBeenCalled();
       expect(runtimeByPrId.get("pr-1")).toMatchObject({
-        status: "merged",
-        autoConvergeEnabled: false,
+        status: "failed",
+        pollerStatus: "stopped",
+        errorMessage: "At-cap merge ladder blocked: Auto-merge blocked because a review requested changes.",
       });
     } finally {
       orchestrator.dispose();
     }
   });
 
-  it("does not wait forever on requested human review at the cap when CI is green", async () => {
+  it("blocks requested human review at the cap for non-force policies", async () => {
     const runtimeByPrId = new Map<string, ConvergenceRuntimeState>();
     const land = vi.fn(async () => ({
       prId: "pr-1",
@@ -1260,17 +1261,18 @@ describe("createPathToMergeOrchestrator.runIteration", () => {
       await flushIteration();
 
       expect(launchPrIssueResolutionChatMock).not.toHaveBeenCalled();
-      expect(land).toHaveBeenCalledWith({ prId: "pr-1", method: "squash", archiveLane: false });
+      expect(land).not.toHaveBeenCalled();
       expect(runtimeByPrId.get("pr-1")).toMatchObject({
-        status: "merged",
-        autoConvergeEnabled: false,
+        status: "failed",
+        pollerStatus: "stopped",
+        errorMessage: "At-cap merge ladder blocked: Auto-merge blocked because a requested review is still pending.",
       });
     } finally {
       orchestrator.dispose();
     }
   });
 
-  it("still verifies CI before merging at the cap while ignoring review blockers", async () => {
+  it("still verifies CI before merging at the cap", async () => {
     const runtimeByPrId = new Map<string, ConvergenceRuntimeState>();
     const land = vi.fn(async () => ({
       prId: "pr-1",
@@ -1283,7 +1285,7 @@ describe("createPathToMergeOrchestrator.runIteration", () => {
     }));
     const { deps } = buildDeps({
       runtimeByPrId,
-      prs: [buildPrSummary({ checksStatus: "passing", reviewStatus: "requested" })],
+      prs: [buildPrSummary({ checksStatus: "passing", reviewStatus: "approved" })],
       pipelineSettings: { earlyMergeOnGreen: false, autoMerge: true, atCapPolicy: "ci_retry_once" },
       convergenceStatus: { totalNew: 0 },
       getChecks: async () => [],
@@ -1325,7 +1327,7 @@ describe("createPathToMergeOrchestrator.runIteration", () => {
     }));
     const { deps } = buildDeps({
       runtimeByPrId,
-      prs: [buildPrSummary({ checksStatus: "passing", reviewStatus: "requested" })],
+      prs: [buildPrSummary({ checksStatus: "passing", reviewStatus: "approved" })],
       pipelineSettings: { earlyMergeOnGreen: false, autoMerge: true, atCapPolicy: "ci_retry_once" },
       convergenceStatus: { totalNew: 0 },
       getChecks: async () => [

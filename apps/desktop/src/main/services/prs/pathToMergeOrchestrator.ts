@@ -1825,7 +1825,6 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
 
       const ladder = await runMergeLadder(fresh, {
         allowForceMerge: fresh.pipelineSettings.atCapPolicy === "force_merge",
-        ignoreReview: fresh.pipelineSettings.atCapPolicy !== "force_merge",
       });
       if (!isAutoConvergeStillEnabled(prId)) {
         clearTimer(prId);
