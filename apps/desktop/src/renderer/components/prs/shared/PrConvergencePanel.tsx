@@ -1207,15 +1207,20 @@ export function PrConvergencePanel({
   const atMaxRounds = convergence.currentRound >= convergence.maxRounds;
   const hasActiveWaitState = displayedWaitState.phase === "agent_running" || displayedWaitState.phase === "waiting_checks" || displayedWaitState.phase === "waiting_comments" || displayedWaitState.phase === "paused";
   const canRunManualRound = hasNewItems && !atMaxRounds && !busy && !checksStillRunning && !hasActiveWaitState;
-  const canStartPathToMerge = !autoConverge && !pathToMergeActive && !busy && !atMaxRounds && !hasActiveWaitState && (hasNewItems || checksStillRunning || failingChecks.length > 0);
+  const canStartMergeOnlyPath = pipelineSettings.autoMerge && allChecksPassing;
+  const canStartPathToMerge = !autoConverge
+    && !pathToMergeActive
+    && !busy
+    && !hasActiveWaitState
+    && ((!atMaxRounds && (hasNewItems || checksStillRunning || failingChecks.length > 0)) || canStartMergeOnlyPath);
   const canRunNext = mode === "auto-converge" ? canStartPathToMerge : canRunManualRound;
 
   const launchDisabledReason = mode === "auto-converge"
     ? autoConverge || pathToMergeActive ? "Path to Merge is already running"
       : busy ? "Agent is currently running"
-      : atMaxRounds ? "Maximum rounds reached"
+      : atMaxRounds && !canStartMergeOnlyPath ? "Maximum rounds reached"
       : hasActiveWaitState ? "Path to Merge is already waiting"
-      : !hasNewItems && !checksStillRunning && failingChecks.length === 0 ? "No actionable issues to resolve"
+      : !hasNewItems && !checksStillRunning && failingChecks.length === 0 && !canStartMergeOnlyPath ? "No actionable issues to resolve"
       : null
     : !hasNewItems ? "No new issues to resolve"
     : atMaxRounds ? "Maximum rounds reached"

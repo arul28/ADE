@@ -741,6 +741,7 @@ export function PrDetailPane({
   // expandedRun state removed — the unified ChecksTab manages its own expand state
   const [expandedFile, setExpandedFile] = React.useState<string | null>(null);
   const detailLoadSeqRef = React.useRef(0);
+  const detailStatusRefreshKeyRef = React.useRef<string | null>(null);
   const inventoryLoadSeqRef = React.useRef(0);
 
   const loadDetail = React.useCallback(async () => {
@@ -827,24 +828,48 @@ export function PrDetailPane({
     };
   }, [applyConvergenceRuntime, loadConvergenceState, loadDetail, pr.id]);
 
-  // Poll actionRuns + activity + reviewThreads every 60s so CI data stays fresh.
-  // PrsContext polls checks/status/reviews/comments, but action runs are only loaded
-  // in PrDetailPane and would otherwise go stale after the initial fetch.
   React.useEffect(() => {
+    const key = [
+      pr.id,
+      pr.checksStatus ?? "",
+      pr.reviewStatus ?? "",
+      pr.updatedAt ?? "",
+    ].join("|");
+    const prev = detailStatusRefreshKeyRef.current;
+    if (!prev || !prev.startsWith(`${pr.id}|`)) {
+      detailStatusRefreshKeyRef.current = key;
+      return;
+    }
+    if (prev === key) return;
+    detailStatusRefreshKeyRef.current = key;
+    void loadDetail();
+    void refreshReviewThreads();
+  }, [loadDetail, pr.checksStatus, pr.id, pr.reviewStatus, pr.updatedAt, refreshReviewThreads]);
+
+  // Poll checks + actionRuns + activity + reviewThreads every 60s so the
+  // Path to Merge readiness panel stays fresh without requiring a manual refresh.
+  React.useEffect(() => {
+    let cancelled = false;
     const id = window.setInterval(() => {
-      const reqId = detailLoadSeqRef.current;
       Promise.allSettled([
+        window.ade.prs.getChecks(pr.id),
         window.ade.prs.getActionRuns(pr.id),
         window.ade.prs.getActivity(pr.id),
         window.ade.prs.getReviewThreads(pr.id),
-      ]).then(([arResult, actResult, thrResult]) => {
-        if (reqId !== detailLoadSeqRef.current) return;
+      ]).then(([checksResult, arResult, actResult, thrResult]) => {
+        if (cancelled) return;
+        if (checksResult.status === "fulfilled" && checksResult.value.length > 0) {
+          setConvergenceChecks(checksResult.value);
+        }
         if (arResult.status === "fulfilled") setActionRuns(arResult.value);
         if (actResult.status === "fulfilled") setActivity(actResult.value);
         if (thrResult.status === "fulfilled") setReviewThreads(thrResult.value);
       });
     }, 60_000);
-    return () => window.clearInterval(id);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
   }, [pr.id]);
 
   React.useEffect(() => {
@@ -1056,9 +1081,10 @@ export function PrDetailPane({
     }
     const requestId = ++inventoryLoadSeqRef.current;
     try {
-      const [snapshot, freshChecks] = await Promise.all([
+      const [snapshot, freshChecks, freshActionRuns] = await Promise.all([
         window.ade.prs.issueInventorySync(pr.id),
         window.ade.prs.getChecks(pr.id).catch(() => checks),
+        window.ade.prs.getActionRuns(pr.id).catch(() => null),
       ]);
       if (requestId !== inventoryLoadSeqRef.current) return null;
       setInventorySnapshot(snapshot);
@@ -1067,6 +1093,9 @@ export function PrDetailPane({
       // API failure or rate-limit.
       if (freshChecks.length > 0) {
         setConvergenceChecks(freshChecks);
+      }
+      if (freshActionRuns && freshActionRuns.length > 0) {
+        setActionRuns(freshActionRuns);
       }
       return snapshot;
     } catch {
@@ -1389,13 +1418,17 @@ export function PrDetailPane({
         if (!autoConvergeRef.current) { stopAutoConvergePoller(); return; }
         try {
           // Poll checks and inventory
-          const [freshChecks, snapshot] = await Promise.all([
+          const [freshChecks, snapshot, freshActionRuns] = await Promise.all([
             window.ade.prs.getChecks(pr.id),
             window.ade.prs.issueInventorySync(pr.id),
+            window.ade.prs.getActionRuns(pr.id).catch(() => null),
           ]);
           setInventorySnapshot(snapshot);
           if (freshChecks.length > 0) {
             setConvergenceChecks(freshChecks);
+          }
+          if (freshActionRuns && freshActionRuns.length > 0) {
+            setActionRuns(freshActionRuns);
           }
 
           // Skip rebase logic while an agent session is still active
@@ -1717,6 +1750,33 @@ export function PrDetailPane({
     }
   }, [autoConverge, autoConvergeWaitState.phase, convergenceSessionId, pathToMergeActive, startAutoConvergePoller, stopAutoConvergePoller]);
 
+  React.useEffect(() => {
+    if (!pathToMergeActive) return;
+    let cancelled = false;
+    let inFlight = false;
+    const pollRuntime = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const runtime = await loadConvergenceState(pr.id, { force: true });
+        if (cancelled) return;
+        applyConvergenceRuntime(runtime);
+      } catch {
+        // Keep the last known PtM runtime and retry on the next interval.
+      } finally {
+        inFlight = false;
+      }
+    };
+    const id = window.setInterval(() => {
+      void pollRuntime();
+    }, 10_000);
+    void pollRuntime();
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [applyConvergenceRuntime, loadConvergenceState, pathToMergeActive, pr.id]);
+
   // Cleanup poller on unmount
   React.useEffect(() => {
     return () => {
@@ -1831,10 +1891,6 @@ export function PrDetailPane({
   const handleAutoConvergeToggle = React.useCallback(async (enabled: boolean) => {
     if (!enabled) {
       const previousSessionHref = convergenceSessionHrefRef.current;
-      setAutoConverge(false);
-      autoConvergeRef.current = false;
-      setPathToMergeActive(false);
-      pathToMergeActiveRef.current = false;
       pathToMergeActionSeqRef.current += 1;
       // Tear down the orchestrator's per-PR scheduling so a re-enable starts
       // fresh instead of resuming with stale args.
@@ -1842,10 +1898,15 @@ export function PrDetailPane({
         const stopped = await window.ade.prs.pathToMergeStop({ prId: pr.id, reason: "user disabled auto-converge" });
         applyConvergenceRuntime(stopped.runtime);
       } catch (err: unknown) {
-        // Non-fatal — the renderer-side stop below still clears UI state.
-        // eslint-disable-next-line no-console
-        console.warn("pathToMergeStop failed", err);
+        setActionError(`Failed to stop Path to Merge: ${err instanceof Error ? err.message : String(err)}`);
+        const runtime = await loadConvergenceState(pr.id, { force: true }).catch(() => null);
+        applyConvergenceRuntime(runtime);
+        return;
       }
+      setAutoConverge(false);
+      autoConvergeRef.current = false;
+      setPathToMergeActive(false);
+      pathToMergeActiveRef.current = false;
       stopAutoConvergePoller();
       const activeSessionId = convergenceSessionIdRef.current;
       if (activeSessionId) {
@@ -1963,7 +2024,7 @@ export function PrDetailPane({
         );
       }
     }
-  }, [applyConvergenceRuntime, pr.id, resolverModel, resolverPermissionMode, resolverReasoningLevel, resolveIssueScope, saveConvergenceRuntime, stopAutoConvergePoller]);
+  }, [applyConvergenceRuntime, loadConvergenceState, pr.id, resolverModel, resolverPermissionMode, resolverReasoningLevel, resolveIssueScope, saveConvergenceRuntime, stopAutoConvergePoller]);
 
   const handleMarkDismissed = React.useCallback(async (itemIds: string[], reason: string) => {
     try {

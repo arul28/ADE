@@ -3387,7 +3387,7 @@ function migrate(db: MigrationDb) {
   db.run(`
     create table if not exists pr_pipeline_settings (
       pr_id text primary key,
-      auto_merge integer not null default 0,
+      auto_merge integer not null default 1,
       merge_method text not null default 'repo_default',
       max_rounds integer not null default 5,
       on_rebase_needed text not null default 'pause',
@@ -3396,7 +3396,7 @@ function migrate(db: MigrationDb) {
     )
   `);
   try { db.run("alter table pr_pipeline_settings add column conflict_strategy text not null default 'pause'"); } catch {}
-  try { db.run("alter table pr_pipeline_settings add column force_finalize_mode text not null default 'off'"); } catch {}
+  try { db.run("alter table pr_pipeline_settings add column force_finalize_mode text not null default 'conditional'"); } catch {}
   try { db.run("alter table pr_pipeline_settings add column force_finalize_require_no_ci_failures integer not null default 1"); } catch {}
   try { db.run("alter table pr_pipeline_settings add column early_merge_on_green integer not null default 1"); } catch {}
   try { db.run("alter table pr_pipeline_settings add column auto_agent_provider text"); } catch {}
@@ -3404,10 +3404,38 @@ function migrate(db: MigrationDb) {
   try { db.run("alter table pr_pipeline_settings add column auto_agent_reasoning_effort text"); } catch {}
   try { db.run("alter table pr_pipeline_settings add column auto_agent_permission_mode text"); } catch {}
   try { db.run("alter table pr_pipeline_settings add column auto_agent_confidence_threshold real"); } catch {}
-  try { db.run("alter table pr_pipeline_settings add column at_cap_policy text"); } catch {}
+  try { db.run("alter table pr_pipeline_settings add column at_cap_policy text default 'ci_retry_once'"); } catch {}
   try { db.run("alter table pr_pipeline_settings add column at_cap_wait_minutes integer"); } catch {}
   try { db.run("alter table pr_pipeline_settings add column at_cap_ci_retry_max integer"); } catch {}
   try { db.run("alter table pr_pipeline_settings add column force_merge_requires_confirmation integer"); } catch {}
+  try { db.run("alter table pr_pipeline_settings add column ptm_defaults_backfilled_version text"); } catch {}
+  try {
+    db.run(`
+      update pr_pipeline_settings
+         set auto_merge = 1,
+             force_finalize_mode = 'conditional',
+             at_cap_policy = 'ci_retry_once',
+             ptm_defaults_backfilled_version = 'ptm-defaults-v1'
+       where auto_merge = 0
+         and merge_method = 'repo_default'
+         and max_rounds = 5
+         and on_rebase_needed = 'pause'
+         and coalesce(conflict_strategy, 'pause') = 'pause'
+         and coalesce(force_finalize_mode, 'off') = 'off'
+         and coalesce(force_finalize_require_no_ci_failures, 1) = 1
+         and coalesce(early_merge_on_green, 1) = 1
+         and (at_cap_policy is null or at_cap_policy = 'stop')
+         and (at_cap_wait_minutes is null or at_cap_wait_minutes = 30)
+         and (at_cap_ci_retry_max is null or at_cap_ci_retry_max = 3)
+         and coalesce(force_merge_requires_confirmation, 1) = 1
+         and auto_agent_provider is null
+         and auto_agent_model is null
+         and auto_agent_reasoning_effort is null
+         and auto_agent_permission_mode is null
+         and auto_agent_confidence_threshold is null
+         and (ptm_defaults_backfilled_version is null or ptm_defaults_backfilled_version <> 'ptm-defaults-v1')
+    `);
+  } catch {}
 
   db.run(`
     create table if not exists pr_convergence_state (
@@ -3438,6 +3466,9 @@ function migrate(db: MigrationDb) {
   try { db.run("alter table pr_convergence_state add column ci_retry_attempts_used integer not null default 0"); } catch {}
   try { db.run("alter table pr_convergence_state add column wait_for_ci_started_at text"); } catch {}
   try { db.run("alter table pr_convergence_state add column last_dispatch_head_sha text"); } catch {}
+  try { db.run("alter table pr_convergence_state add column last_bot_ping_head_sha text"); } catch {}
+  try { db.run("alter table pr_convergence_state add column last_bot_ping_at text"); } catch {}
+  try { db.run("alter table pr_convergence_state add column merge_wait_kind text"); } catch {}
   try { db.run("alter table pr_convergence_state add column pause_repeat_count integer not null default 0"); } catch {}
   try { db.run("alter table pr_convergence_state add column last_pause_reason_hash text"); } catch {}
 

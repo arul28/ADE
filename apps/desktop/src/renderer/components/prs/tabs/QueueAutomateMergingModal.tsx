@@ -11,6 +11,7 @@ import { COLORS, MONO_FONT, SANS_FONT, outlineButton, primaryButton } from "../.
 import { LaneAccentDot } from "../../lanes/LaneAccentDot";
 import { PrPipelineSettings } from "../shared/PrPipelineSettings";
 import { SmartTooltip } from "../../ui/SmartTooltip";
+import { isWaitingForGithubAutoMerge } from "./queueAutomateMergingRuntime";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -58,6 +59,8 @@ type SequenceState =
 const POLL_INTERVAL_MS = 4000;
 
 const TERMINAL_FAILED: ReadonlySet<ConvergenceRuntimeStatus> = new Set([
+  "paused",
+  "converged",
   "failed",
   "cancelled",
   "stopped",
@@ -223,8 +226,14 @@ export function QueueAutomateMergingModal({
         if (status && TERMINAL_SUCCESS.has(status)) {
           return { outcome: "merged", runtime };
         }
+        if (isWaitingForGithubAutoMerge(runtime)) {
+          await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+          continue;
+        }
         if (status && TERMINAL_FAILED.has(status)) {
-          const message = runtime?.errorMessage?.trim() || `Path to Merge ${status}`;
+          const message = runtime?.errorMessage?.trim()
+            || runtime?.pauseReason?.trim()
+            || (status === "converged" ? "Path to Merge converged without merging." : `Path to Merge ${status}`);
           return { outcome: "failed", runtime, error: message };
         }
         await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));

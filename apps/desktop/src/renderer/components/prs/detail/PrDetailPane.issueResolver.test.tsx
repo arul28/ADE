@@ -129,7 +129,7 @@ const visibilityCases: Array<{
   },
 ];
 
-function makePr(): PrWithConflicts {
+function makePr(overrides: Partial<PrWithConflicts> = {}): PrWithConflicts {
   return {
     id: "pr-80",
     laneId: "lane-1",
@@ -151,6 +151,7 @@ function makePr(): PrWithConflicts {
     createdAt: "2026-03-23T11:00:00.000Z",
     updatedAt: "2026-03-23T12:00:00.000Z",
     conflictAnalysis: null,
+    ...overrides,
   };
 }
 
@@ -201,6 +202,7 @@ function makeConvergenceState(overrides: Partial<PrConvergenceState> = {}): PrCo
     pathToMergeActive: false,
     status: "idle",
     pollerStatus: "idle",
+    mergeWaitKind: null,
     currentRound: 0,
     activeSessionId: null,
     activeLaneId: null,
@@ -211,6 +213,8 @@ function makeConvergenceState(overrides: Partial<PrConvergenceState> = {}): PrCo
     ciRetryAttemptsUsed: 0,
     waitForCiStartedAt: null,
     lastDispatchHeadSha: null,
+    lastBotPingHeadSha: null,
+    lastBotPingAt: null,
     pauseRepeatCount: 0,
     lastPauseReasonHash: null,
     lastStartedAt: null,
@@ -251,9 +255,11 @@ function renderPane(args: {
   checks: PrCheck[];
   freshChecks?: PrCheck[];
   actionRuns?: PrActionRun[];
+  freshActionRuns?: PrActionRun[];
   reviewThreads: PrReviewThread[];
   lanes?: LaneSummary[];
   laneStatusOverrides?: Partial<LaneSummary["status"]>;
+  prOverrides?: Partial<PrWithConflicts>;
   onNavigate?: (path: string) => void;
   activity?: PrActivityEvent[];
   statusOverrides?: Partial<PrStatus>;
@@ -288,6 +294,13 @@ function renderPane(args: {
   const aiResolutionStop = vi.fn().mockResolvedValue(undefined);
   const getReviewThreads = vi.fn().mockResolvedValue(args.reviewThreads);
   const getChecks = vi.fn().mockResolvedValue(args.freshChecks ?? args.checks);
+  const getActionRuns = vi.fn();
+  if (args.freshActionRuns) {
+    getActionRuns.mockResolvedValueOnce(args.actionRuns ?? []);
+    getActionRuns.mockResolvedValue(args.freshActionRuns);
+  } else {
+    getActionRuns.mockResolvedValue(args.actionRuns ?? []);
+  }
   const getStatus = vi.fn().mockResolvedValue(args.statusOverrides ? makeStatus(args.statusOverrides) : makeStatus());
   const issueInventorySync = vi.fn().mockResolvedValue({
     items: args.inventorySnapshot?.items ?? [],
@@ -412,7 +425,7 @@ function renderPane(args: {
           linkedIssues: [],
         }),
         getFiles: vi.fn().mockResolvedValue([]),
-        getActionRuns: vi.fn().mockResolvedValue(args.actionRuns ?? []),
+        getActionRuns,
         getActivity: vi.fn().mockResolvedValue(args.activity ?? []),
         getReviewThreads,
         issueInventorySync,
@@ -473,11 +486,30 @@ function renderPane(args: {
     },
   });
 
+  const renderSubject = (prOverrides: Partial<PrWithConflicts> = args.prOverrides ?? {}) => (
+    <MemoryRouter>
+      <PrDetailPane
+        pr={makePr(prOverrides)}
+        status={makeStatus(args.statusOverrides)}
+        checks={args.checks}
+        reviews={[]}
+        comments={[]}
+        detailBusy={false}
+        lanes={laneList}
+        mergeMethod={args.mergeMethod ?? "squash"}
+        onRefresh={onRefresh}
+        onNavigate={args.onNavigate ?? vi.fn()}
+      />
+    </MemoryRouter>
+  );
+  const rendered = render(renderSubject());
+
   return {
     issueResolutionStart,
     issueResolutionPreviewPrompt,
     aiResolutionStop,
     getReviewThreads,
+    getActionRuns,
     issueInventorySync,
     issueInventoryReset,
     getChecks,
@@ -496,22 +528,10 @@ function renderPane(args: {
     writeClipboardText,
     land,
     onRefresh,
-    ...render(
-      <MemoryRouter>
-        <PrDetailPane
-          pr={makePr()}
-          status={makeStatus(args.statusOverrides)}
-          checks={args.checks}
-          reviews={[]}
-          comments={[]}
-          detailBusy={false}
-          lanes={laneList}
-          mergeMethod={args.mergeMethod ?? "squash"}
-          onRefresh={onRefresh}
-          onNavigate={args.onNavigate ?? vi.fn()}
-        />
-      </MemoryRouter>,
-    ),
+    rerenderPane: (prOverrides: Partial<PrWithConflicts>) => {
+      rendered.rerender(renderSubject({ ...(args.prOverrides ?? {}), ...prOverrides }));
+    },
+    ...rendered,
   };
 }
 
@@ -535,6 +555,7 @@ describe("PrDetailPane issue resolver CTA", () => {
 
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
   });
 
   it.each(visibilityCases)("$name — Path to Merge tab is always visible", async ({ checks, reviewThreads, statusOverrides }) => {
@@ -635,6 +656,175 @@ describe("PrDetailPane issue resolver CTA", () => {
       expect(screen.queryByText("Fast Checks (Lint, Type, Unit)")).toBeNull();
       expect(screen.queryByText("Coverage Report")).toBeNull();
     });
+  });
+
+  it("refreshes detail-side action runs when the selected PR status changes", async () => {
+    const user = userEvent.setup();
+    const { getActionRuns, rerenderPane } = renderPane({
+      checks: [],
+      actionRuns: [],
+      freshActionRuns: [
+        makeActionRun({
+          status: "in_progress",
+          conclusion: null,
+          jobs: [{
+            id: 73898654393,
+            name: "build",
+            status: "in_progress",
+            conclusion: null,
+            startedAt: null,
+            completedAt: null,
+            steps: [],
+          }],
+        }),
+      ],
+      reviewThreads: [],
+      prOverrides: {
+        checksStatus: "none",
+        updatedAt: "2026-03-23T12:00:00.000Z",
+      },
+    });
+
+    await user.click(screen.getByRole("button", { name: /ci \/ checks/i }));
+    await waitFor(() => {
+      expect(screen.getByText("No checks found")).toBeTruthy();
+      expect(getActionRuns).toHaveBeenCalledTimes(1);
+    });
+
+    rerenderPane({
+      checksStatus: "pending",
+      updatedAt: "2026-03-23T12:01:00.000Z",
+    });
+
+    await waitFor(() => {
+      expect(getActionRuns).toHaveBeenCalledTimes(2);
+      expect(screen.getByText("0 passing, 1 pending")).toBeTruthy();
+      expect(screen.getByText("Path Filtered CI on PR / build")).toBeTruthy();
+    });
+  });
+
+  it("refreshes Path to Merge action runs during inventory sync", async () => {
+    const user = userEvent.setup();
+    const { getActionRuns, issueInventorySync } = renderPane({
+      checks: [
+        makeCheck({
+          name: "CI / build-win",
+          status: "in_progress",
+          conclusion: null,
+        }),
+      ],
+      freshChecks: [
+        makeCheck({
+          name: "CI / build-win",
+          status: "completed",
+          conclusion: "success",
+        }),
+      ],
+      actionRuns: [
+        makeActionRun({
+          name: "CI",
+          status: "in_progress",
+          conclusion: null,
+          jobs: [{
+            id: 73898654393,
+            name: "build-win",
+            status: "in_progress",
+            conclusion: null,
+            startedAt: null,
+            completedAt: null,
+            steps: [],
+          }],
+        }),
+      ],
+      freshActionRuns: [
+        makeActionRun({
+          name: "CI",
+          status: "completed",
+          conclusion: "success",
+          jobs: [{
+            id: 73898654393,
+            name: "build-win",
+            status: "completed",
+            conclusion: "success",
+            startedAt: null,
+            completedAt: null,
+            steps: [],
+          }],
+        }),
+      ],
+      reviewThreads: [],
+      inventorySnapshot: {
+        items: [makeInventoryItem()],
+        convergence: { currentRound: 0, maxRounds: 5, totalNew: 1, totalSentToAgent: 0, isConverging: false },
+      },
+    });
+
+    await user.click(screen.getByRole("button", { name: /path to merge/i }));
+
+    await waitFor(() => {
+      expect(issueInventorySync).toHaveBeenCalled();
+      expect(getActionRuns).toHaveBeenCalledTimes(2);
+      expect(screen.getByText("CI / build-win")).toBeTruthy();
+      expect(screen.queryByText("1 running")).toBeNull();
+    });
+  });
+
+  it("refreshes external check statuses during detail polling", async () => {
+    const intervalTicks: Array<() => void> = [];
+    const setIntervalSpy = vi.spyOn(window, "setInterval").mockImplementation((handler) => {
+      if (typeof handler === "function") {
+        intervalTicks.push(handler as () => void);
+      }
+      return 1 as unknown as ReturnType<typeof window.setInterval>;
+    });
+    const clearIntervalSpy = vi.spyOn(window, "clearInterval").mockImplementation(() => undefined);
+
+    try {
+      const user = userEvent.setup();
+      const { getChecks } = renderPane({
+        checks: [
+          makeCheck({
+            name: "CodeRabbit",
+            status: "in_progress",
+            conclusion: null,
+          }),
+        ],
+        reviewThreads: [],
+        inventorySnapshot: {
+          items: [makeInventoryItem()],
+          convergence: { currentRound: 0, maxRounds: 5, totalNew: 1, totalSentToAgent: 0, isConverging: false },
+        },
+      });
+
+      await user.click(screen.getByRole("button", { name: /path to merge/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText("CodeRabbit")).toBeTruthy();
+        expect(screen.getByText("running")).toBeTruthy();
+      });
+
+      getChecks.mockResolvedValue([
+        makeCheck({
+          name: "CodeRabbit",
+          status: "completed",
+          conclusion: "success",
+        }),
+      ]);
+
+      await React.act(async () => {
+        intervalTicks.forEach((tick) => tick());
+        await Promise.resolve();
+      });
+
+      await waitFor(() => {
+        expect(getChecks).toHaveBeenCalled();
+        expect(screen.getByText("success")).toBeTruthy();
+        expect(screen.queryByText("running")).toBeNull();
+      });
+    } finally {
+      setIntervalSpy.mockRestore();
+      clearIntervalSpy.mockRestore();
+    }
   });
 
   it("lets the operator attempt a bypass merge and uses the selected merge method", async () => {
