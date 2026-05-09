@@ -18,6 +18,7 @@ import type { ProcessRuntime, ProjectIcon, RecentProjectSummary, SyncRoleSnapsho
 import { AutoUpdateControl } from "./AutoUpdateControl";
 import { FeedbackReporterModal } from "./FeedbackReporterModal";
 import { HelpMenu } from "../onboarding/HelpMenu";
+import { LinearQuickViewButton } from "./LinearQuickViewButton";
 import { PublishToGitHubDialog } from "../projects/PublishToGitHubDialog";
 import { SyncDevicesSection } from "../settings/SyncDevicesSection";
 
@@ -1082,6 +1083,8 @@ export function TopBar() {
           </button>
         </div>
       ) : null}
+
+      <LinearQuickViewButton />
 
       {syncSnapshot && syncLabel ? (
         <button

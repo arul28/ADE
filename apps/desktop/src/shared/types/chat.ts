@@ -5,6 +5,7 @@
 import type { ModelId } from "./core";
 import type { CtoCapabilityMode } from "./cto";
 import type { FileDiff } from "./git";
+import type { LaneLinearIssue } from "./lanes";
 import type { DelegationContract } from "./orchestrator";
 
 export type AgentChatProvider = "codex" | "claude" | "cursor" | "droid" | "opencode" | (string & {});
@@ -80,6 +81,15 @@ export type AgentChatFileRef = {
   type: "file" | "image";
 };
 
+export type AgentChatLinearIssueContextAttachment = {
+  type: "linear_issue";
+  issue: LaneLinearIssue;
+  source?: "manual" | "lane_link";
+  attachedAt?: string;
+};
+
+export type AgentChatContextAttachment = AgentChatLinearIssueContextAttachment;
+
 /** Max attachments per parallel multi-lane launch (same refs sent to each child session). */
 export const PARALLEL_CHAT_MAX_ATTACHMENTS = 12;
 
@@ -143,6 +153,7 @@ export type AgentChatEvent =
       text: string;
       displayText?: string;
       attachments?: AgentChatFileRef[];
+      contextAttachments?: AgentChatContextAttachment[];
       turnId?: string;
       steerId?: string;
       deliveryState?: "queued" | "delivered" | "inline" | "failed";
@@ -803,6 +814,7 @@ export type AgentChatSendArgs = {
   text: string;
   displayText?: string;
   attachments?: AgentChatFileRef[];
+  contextAttachments?: AgentChatContextAttachment[];
   reasoningEffort?: string | null;
   executionMode?: AgentChatExecutionMode | null;
   interactionMode?: AgentChatInteractionMode | null;
@@ -816,6 +828,7 @@ export type AgentChatSteerArgs = {
   sessionId: string;
   text: string;
   attachments?: AgentChatFileRef[];
+  contextAttachments?: AgentChatContextAttachment[];
 };
 
 export type AgentChatSteerResult = {

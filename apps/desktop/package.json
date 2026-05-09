@@ -54,6 +54,7 @@
     "@fontsource-variable/jetbrains-mono": "^5.2.8",
     "@fontsource-variable/space-grotesk": "^5.2.10",
     "@huggingface/transformers": "^3.8.1",
+    "@linear/sdk": "^84.0.0",
     "@lobehub/fluent-emoji": "^4.1.0",
     "@lobehub/icons": "^5.2.0",
     "@lobehub/icons-static-svg": "^1.84.0",

@@ -1,5 +1,6 @@
 import type {
   CtoLinearProject,
+  CtoLinearQuickView,
   LinearCatalogLabel,
   LinearCatalogState,
   LinearCatalogUser,
@@ -9,6 +10,27 @@ import type {
 export type IssueTrackerCandidateQuery = {
   projectSlugs: string[];
   stateTypes: string[];
+};
+
+export type IssueTrackerIssueSearchQuery = {
+  projectId?: string | null;
+  projectSlug?: string | null;
+  teamKey?: string | null;
+  stateTypes?: string[];
+  assigneeId?: string | null;
+  priority?: number | null;
+  query?: string | null;
+  first?: number;
+  after?: string | null;
+  includeArchived?: boolean;
+};
+
+export type IssueTrackerIssueSearchResult = {
+  issues: NormalizedLinearIssue[];
+  pageInfo: {
+    hasNextPage: boolean;
+    endCursor: string | null;
+  };
 };
 
 export type IssueTrackerWorkpadResult = {
@@ -25,8 +47,10 @@ export type IssueTrackerWorkflowState = {
 
 export type IssueTracker = {
   listProjects(): Promise<CtoLinearProject[]>;
+  getQuickView(connection: CtoLinearQuickView["connection"]): Promise<CtoLinearQuickView>;
   listUsers(): Promise<LinearCatalogUser[]>;
   listLabels(teamKey?: string | null): Promise<LinearCatalogLabel[]>;
+  searchIssues(query: IssueTrackerIssueSearchQuery): Promise<IssueTrackerIssueSearchResult>;
   fetchCandidateIssues(query: IssueTrackerCandidateQuery): Promise<NormalizedLinearIssue[]>;
   fetchIssueById(issueId: string): Promise<NormalizedLinearIssue | null>;
   fetchIssuesByIds(issueIds: string[]): Promise<Map<string, NormalizedLinearIssue>>;
@@ -42,6 +66,10 @@ export type IssueTracker = {
     connected: boolean;
     viewerId: string | null;
     viewerName: string | null;
+    organizationId?: string | null;
+    organizationName?: string | null;
+    organizationUrlKey?: string | null;
+    organizationLogoUrl?: string | null;
     message: string | null;
   }>;
 };

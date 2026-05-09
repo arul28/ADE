@@ -44,9 +44,12 @@ Renderer components:
 | `renderer/components/lanes/LaneWorkPane.tsx` | Terminal/chat toggle work surface |
 | `renderer/components/lanes/LaneRebaseBanner.tsx` | Inline banner driven by `rebaseSuggestionService` |
 | `renderer/components/lanes/LaneEnvInitProgress.tsx` | Env init step progress inside create dialog |
-| `renderer/components/lanes/CreateLaneDialog.tsx`, `AttachLaneDialog.tsx`, `MultiAttachWorktreeDialog.tsx`, `LaneDialogShell.tsx` | Lane creation / attach dialogs and shared dialog chrome. The "import existing branch" path inside `CreateLaneDialog` swaps the dialog body for `BranchPickerView` when the user opens the picker; the dialog title/description switches with it. |
+| `renderer/components/lanes/CreateLaneDialog.tsx`, `AttachLaneDialog.tsx`, `MultiAttachWorktreeDialog.tsx`, `LaneDialogShell.tsx` | Lane creation / attach dialogs and shared dialog chrome. The "import existing branch" path inside `CreateLaneDialog` swaps the dialog body for `BranchPickerView` when the user opens the picker; the "Connect Linear issue" affordance in the always-open Advanced section swaps it for `LinearIssuePickerView`. The dialog title/description/icon switch in lockstep with the active sub-view, and connecting a Linear issue auto-flips the create mode out of `existing` (the import-branch tab is locked while an issue is attached). |
 | `renderer/components/lanes/BranchPickerView.tsx` | Filterable virtualized branch list rendered inside `CreateLaneDialog`. Each row shows branch name, last-commit author + relative date, and an inline PR pill (`#NNN`, dim for drafts) when the branch has an open PR. Loading/empty/error states are handled inline. Backed by `branchPickerSearch.ts`. |
 | `renderer/components/lanes/branchPickerSearch.ts` | Pure parser + matcher. Tokens AND together: `pr:open` / `pr:none` / `pr:draft`, `author:NAME` (or `author:me` / `mine` resolved against the local git user), `stale:Nd` (older than N days), `#PRNUMBER` (exact match), and free text fuzzy-matched across branch name / PR title / author. Also exposes `formatRelativeTime` for the row subtitle. |
+| `renderer/components/lanes/LinearIssuePicker.tsx` | Filterable Linear issue picker rendered inside `CreateLaneDialog`. Loads project / state / assignee filters from `ade.cto.getLinearIssuePickerData` and pages issues through `ade.cto.searchLinearIssues`. Shared row + label helpers (`LinearIssueRow`, `linearPriorityLabel`, `issueProjectLabel`, `issueUpdatedLabel`, `toLaneLinearIssue`, `branchExistsForLinearIssue`) are reused by `LinearIssueBrowser` (top-bar quick view) and the chat composer's Linear context dialog. Also exports a `LinearIssueSummaryCard` used by the dialog's "currently connected" state. |
+| `renderer/components/lanes/LinearIssueBadge.tsx` | Compact lane-list badge that surfaces the lane's connected Linear issue (identifier + state + priority); clicking opens the issue in a new chat with the issue pre-attached as context, falling back to opening the issue in Linear when chat is unavailable. |
+| `renderer/components/lanes/linearBrand.tsx` | Linear brand tokens (`LINEAR_BRAND` colour palette) plus the icon family used everywhere ADE references Linear: `LinearMark`, `LinearStateIcon`, `LinearPriorityIcon`. |
 | `renderer/components/lanes/ManageLaneDialog.tsx` | Unified delete / archive / adopt-attached dialog. Supports single-lane and batch (multi-select) modes, three delete scopes (`worktree`, `local_branch`, `remote_branch`), a typed confirmation phrase, remote-branch name input, dirty-state warnings, and a live multi-step progress strip wired to `lanes.delete.event` (`stop_processes` / `stop_ptys` / `stop_watchers` / `cancel_auto_rebase` / `cleanup_env` / `git_status` / `git_worktree_remove` / `git_branch_delete` / `git_remote_branch_delete` / `pack_dir_remove` / `database_cleanup`). The dialog calls `lanes.getDeleteRisk` on open to surface dirty state, unpushed commits, running processes / PTYs / watchers, and remote-branch existence before the user confirms; while a delete is running, the user can cancel each lane through `lanes.cancelDelete` until the irreversible filesystem step (`git_worktree_remove`) starts. |
 | `renderer/components/lanes/MonacoDiffView.tsx` | Monaco diff editor used for editable working-tree views (invoked from `AdeDiffViewer`) |
 | `renderer/components/run/LaneRuntimeBar.tsx` | Compact lane runtime status bar (health, preview, port, proxy, oauth) |
@@ -164,6 +167,15 @@ a lane parented to primary would always show zero behind.
   heartbeat; the desktop host calls `ade.sync.setActiveLanePresence`
   from `LanesPage` whenever the visible lane list changes and clears
   it on unmount.
+- `linearIssue?: LaneLinearIssue | null` — the Linear issue connected
+  to the lane at create time (or null). Persisted in
+  `lane_linear_issues` (project-scoped, keyed by `lane_id`) and
+  hydrated by `laneService` on every `list`/`get`. Drives the
+  `LinearIssueBadge` in the lane list, the auto-prefixed commit
+  message in `gitOperationsService` (`Refs IDENT: <message>`), and
+  the PR-creation flow in `prService` / `CreatePrModal` (default PR
+  title `IDENT: title`, body magic-word `Fixes IDENT` /
+  `Refs IDENT`).
 
 ## Mission lane roles
 
@@ -187,7 +199,15 @@ default from the Lanes list (see `isMissionLaneHiddenByDefault` in
 1. **Create** — `laneService.create()` resolves the base ref (explicit
    or parent's branch), normalizes the branch name, computes a unique
    worktree path under `.ade/worktrees/<slug>/`, runs `git worktree
-   add`, inserts the lane row, and returns a `LaneSummary`.
+   add`, inserts the lane row, and returns a `LaneSummary`. When
+   `CreateLaneArgs.linearIssue` is supplied (from `CreateLaneDialog`
+   via the Linear issue picker), the service derives the branch name
+   from the issue (`linearIssueBranchName`: `ident-title-slug`,
+   sanitised against git-ref rules) when no explicit `branchName` was
+   provided, refuses to create the lane if the resolved branch already
+   exists locally or under `origin/`, and writes the issue payload
+   into `lane_linear_issues` so the PR / commit / chat surfaces can
+   pick it up later. The same path runs for `createChild`.
 2. **Create child** — same as create but with `parentLaneId`. Child's
    base ref defaults to the parent's branch ref. Callers can override
    with `baseBranchRef` on `CreateChildLaneArgs` to fork from any local

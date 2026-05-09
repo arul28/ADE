@@ -13,6 +13,11 @@ import type {
   GitBranchSummary,
   LaneSummary,
 } from "../../../shared/types";
+import {
+  buildLinearPrReference,
+  buildLinearPrTitle,
+  ensureLinearPrReference,
+} from "../../../shared/linearMagicWords";
 import { COLORS, MONO_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
 import { isDirtyWorktreeErrorMessage, stripDirtyWorktreePrefix } from "./shared/dirtyWorktree";
 import { branchNameFromRef, describePrTargetDiff, resolveLaneBaseBranch } from "./shared/laneBranchTargets";
@@ -521,7 +526,10 @@ export function CreatePrModal({
   const [normalTitle, setNormalTitle] = React.useState("");
   const [normalDraft, setNormalDraft] = React.useState(false);
   const [normalBaseBranch, setNormalBaseBranch] = React.useState("");
+  const [normalCloseLinearIssueOnMerge, setNormalCloseLinearIssueOnMerge] = React.useState(false);
   const normalBaseBranchDefaultRef = React.useRef("");
+  const normalLinearTitleDefaultRef = React.useRef("");
+  const normalLinearBodyDefaultRef = React.useRef("");
 
   // Queue PRs
   const [queueLaneIds, setQueueLaneIds] = React.useState<string[]>([]);
@@ -611,8 +619,10 @@ export function CreatePrModal({
     try {
       const result = await window.ade.prs.draftDescription({ laneId });
       if (mode === "normal") {
-        setNormalTitle(result.title);
-        setNormalBody(result.body);
+        const lane = lanes.find((entry) => entry.id === laneId) ?? null;
+        const issue = lane?.linearIssue ?? null;
+        setNormalTitle(issue && !result.title.includes(issue.identifier) ? buildLinearPrTitle(issue) : result.title);
+        setNormalBody(issue ? ensureLinearPrReference(result.body, issue, normalCloseLinearIssueOnMerge, { preserveExisting: false }) : result.body);
       }
     } catch (err: unknown) {
       setDraftError(err instanceof Error ? err.message : String(err));
@@ -648,6 +658,9 @@ export function CreatePrModal({
       normalBaseBranchDefaultRef.current = "";
       setNormalTitle("");
       setNormalDraft(false);
+      setNormalCloseLinearIssueOnMerge(false);
+      normalLinearTitleDefaultRef.current = "";
+      normalLinearBodyDefaultRef.current = "";
       setQueueLaneIds([]);
       setQueueDraft(false);
       setQueueDragLaneId(null);
@@ -732,6 +745,50 @@ export function CreatePrModal({
     () => lanes.find((lane) => lane.id === normalLaneId) ?? null,
     [lanes, normalLaneId],
   );
+  const selectedNormalLinearIssue = selectedNormalLane?.linearIssue ?? null;
+
+  React.useEffect(() => {
+    if (!open) return;
+    if (!selectedNormalLinearIssue) {
+      // Lane no longer has a linked Linear issue — clear any auto-generated
+      // title/body fragments and reset the close-on-merge toggle so stale
+      // Linear-flavored values don't follow the user to a non-Linear lane.
+      const previousAutoTitle = normalLinearTitleDefaultRef.current;
+      setNormalTitle((current) =>
+        previousAutoTitle && current.trim() === previousAutoTitle.trim() ? "" : current,
+      );
+      const previousAutoBody = normalLinearBodyDefaultRef.current;
+      setNormalBody((current) =>
+        previousAutoBody && current.trim() === previousAutoBody.trim() ? "" : current,
+      );
+      setNormalCloseLinearIssueOnMerge(false);
+      normalLinearTitleDefaultRef.current = "";
+      normalLinearBodyDefaultRef.current = "";
+      return;
+    }
+
+    const nextTitle = buildLinearPrTitle(selectedNormalLinearIssue);
+    setNormalTitle((current) => {
+      const previousAutoTitle = normalLinearTitleDefaultRef.current;
+      if (!current.trim() || (previousAutoTitle && current === previousAutoTitle)) {
+        normalLinearTitleDefaultRef.current = nextTitle;
+        return nextTitle;
+      }
+      normalLinearTitleDefaultRef.current = nextTitle;
+      return current;
+    });
+
+    const nextBody = `${buildLinearPrReference(selectedNormalLinearIssue, normalCloseLinearIssueOnMerge)}\n`;
+    setNormalBody((current) => {
+      const previousAutoBody = normalLinearBodyDefaultRef.current;
+      if (!current.trim() || (previousAutoBody && current === previousAutoBody)) {
+        normalLinearBodyDefaultRef.current = nextBody;
+        return nextBody;
+      }
+      normalLinearBodyDefaultRef.current = nextBody;
+      return ensureLinearPrReference(current, selectedNormalLinearIssue, normalCloseLinearIssueOnMerge, { preserveExisting: false });
+    });
+  }, [open, normalCloseLinearIssueOnMerge, selectedNormalLinearIssue]);
 
   React.useEffect(() => {
     if (!open) return;
@@ -803,13 +860,21 @@ export function CreatePrModal({
     try {
       if (mode === "normal") {
         const lane = lanes.find((l) => l.id === normalLaneId);
+        const linearIssue = lane?.linearIssue ?? null;
+        const title = linearIssue && !normalTitle.trim()
+          ? buildLinearPrTitle(linearIssue)
+          : normalTitle || lane?.name || "PR";
+        const body = linearIssue
+          ? ensureLinearPrReference(normalBody, linearIssue, normalCloseLinearIssueOnMerge, { preserveExisting: false })
+          : normalBody;
         const pr = await runWithDirtyWorktreeConfirmation({
           confirmMessage: "Continue and create the PR anyway?",
           run: async (allowDirtyWorktree) => await window.ade.prs.createFromLane({
             laneId: normalLaneId,
-            title: normalTitle || lane?.name || "PR",
-            body: normalBody,
+            title,
+            body,
             draft: normalDraft,
+            ...(linearIssue ? { closeLinearIssueOnMerge: normalCloseLinearIssueOnMerge } : {}),
             ...(normalBaseBranch.trim() ? { baseBranch: normalBaseBranch.trim() } : {}),
             ...(allowDirtyWorktree ? { allowDirtyWorktree: true } : {})
           })
@@ -1932,6 +1997,73 @@ export function CreatePrModal({
                         onBlur={(e) => { e.currentTarget.style.borderColor = C.borderSubtle; }}
                       />
                     </div>
+
+                    {selectedNormalLinearIssue ? (
+                      <div
+                        style={{
+                          border: `1px solid ${C.accentBorder}`,
+                          background: C.accentSubtleBg,
+                          padding: "10px 12px",
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 8,
+                        }}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <span
+                            style={{
+                              fontFamily: MONO_FONT,
+                              fontSize: 11,
+                              fontWeight: 700,
+                              color: C.accent,
+                            }}
+                          >
+                            {selectedNormalLinearIssue.identifier}
+                          </span>
+                          <span
+                            style={{
+                              minWidth: 0,
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                              fontFamily: "var(--font-sans)",
+                              fontSize: 12,
+                              color: C.textPrimary,
+                            }}
+                          >
+                            {selectedNormalLinearIssue.title}
+                          </span>
+                        </div>
+                        <label
+                          style={{
+                            display: "grid",
+                            gridTemplateColumns: "auto minmax(0,1fr)",
+                            alignItems: "start",
+                            gap: "2px 8px",
+                            fontFamily: "var(--font-sans)",
+                            fontSize: 12,
+                            color: C.textSecondary,
+                            cursor: "pointer",
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={normalCloseLinearIssueOnMerge}
+                            onChange={(e) => setNormalCloseLinearIssueOnMerge(e.target.checked)}
+                            style={{ accentColor: C.accent }}
+                          />
+                          <span style={{ fontWeight: 700, color: C.textPrimary }}>
+                            Close Linear issue when this PR merges
+                          </span>
+                          <span style={{ gridColumn: "2", fontSize: 11, color: C.textMuted, lineHeight: "15px" }}>
+                            Off links the PR only. On changes the PR body from Refs to Fixes so Linear can complete the issue on merge.
+                          </span>
+                        </label>
+                        <div style={{ fontFamily: MONO_FONT, fontSize: 10, color: C.textMuted }}>
+                          PR body will include {buildLinearPrReference(selectedNormalLinearIssue, normalCloseLinearIssueOnMerge)} so Linear links the PR.
+                        </div>
+                      </div>
+                    ) : null}
 
                     <label style={{
                       display: "flex",

@@ -8,8 +8,8 @@ CTO owns Linear intake, routing, dispatch, sync, and closeout. Automations never
 
 - `linearCredentialService.ts` — token store (personal API key). Exposes `getStatus`, `getTokenOrThrow`, `setToken`, `clearToken`.
 - `linearOAuthService.ts` — PKCE loopback OAuth on port 19836. `SESSION_TTL_MS = 10 min`. Authorize at `linear.app/oauth/authorize`, exchange at `api.linear.app/oauth/token`.
-- `linearClient.ts` — GraphQL client; used by both desktop and headless ADE CLI.
-- `linearIssueTracker.ts` + `issueTracker.ts` — issue cache, snapshot hashes, change detection.
+- `linearClient.ts` — GraphQL client; used by both desktop and headless ADE CLI. Surfaces `getQuickView(connection)` (workspace + active project counters consumed by the top-bar quick view) and `searchIssues(query)` (paginated issue search consumed by `LinearIssuePicker` and `LinearIssueBrowser`) alongside the existing `fetchIssueById` / `listProjects` / `listLabels` / `listUsers` calls.
+- `linearIssueTracker.ts` + `issueTracker.ts` — issue cache, snapshot hashes, change detection. The `IssueTracker` interface includes the matching `getQuickView(connection)` and `searchIssues(query)` shims so renderer-side surfaces have the same entry point as the dispatcher.
 - `flowPolicyService.ts` — canonical `LinearWorkflowConfig` aggregate: intake rules, workflows, files, migration info, legacy config. File-backed via `linearWorkflowFileService`.
 - `linearWorkflowFileService.ts` — persists workflows as YAML under the project's ADE config area.
 - `linearTemplateService.ts` — template metadata registry.
@@ -26,6 +26,19 @@ CTO owns Linear intake, routing, dispatch, sync, and closeout. Automations never
 - `renderer/components/cto/LinearConnectionPanel.tsx` — API key form, OAuth start, project picker.
 - `renderer/components/cto/LinearSyncPanel.tsx` — workflow list (via `WorkflowListSidebar`), pipeline builder, sync dashboard, run timeline, "Watch It Live" monitor.
 - `renderer/components/cto/pipeline/` — the visual builder (see `pipeline-builder.md`).
+- `renderer/components/lanes/LinearIssuePicker.tsx`, `LinearIssueBadge.tsx`, `linearBrand.tsx` — shared issue picker, lane-list badge, and brand-token / icon family used by every Linear surface in the app.
+- `renderer/components/app/LinearQuickViewButton.tsx`, `LinearIssueBrowser.tsx` — top-bar quick view that opens the full filter/search browser, lets the user create a lane straight from a Linear issue (`lanes.create` with `linearIssue` set), and persists per-project filter state under `ade.linear.quickView.filters.v1:<projectRoot>`.
+- `renderer/components/settings/LinearSection.tsx` — Settings > Integrations panel for managing the Linear token / OAuth session and surfacing the connected workspace.
+
+### Lane / commit / PR integration (developer-driven path)
+
+The CTO autonomous pipeline is one consumer of Linear; the other is the human-in-the-loop developer flow. ADE attaches a `LaneLinearIssue` to a lane at create time (via the `LinearIssuePicker` in `CreateLaneDialog` or the `LinearIssueBrowser` opened from the top bar / chat composer) and persists it in `lane_linear_issues`. Once a lane is connected:
+
+- `gitOperationsService.commitChanges` (and the AI commit-message generator) auto-prefix the subject with `Refs IDENT: …` via `shared/linearMagicWords.ts#ensureLinearCommitReference`.
+- `prService.draftPrMetadata` / `createFromLane` and the renderer `CreatePrModal` default the PR title to `IDENT: title` (`buildLinearPrTitle`) and inject `Fixes IDENT` (closes the Linear issue when the PR merges) or `Refs IDENT` (links without closing) into the body via `ensureLinearPrReference`. The user toggles `closeLinearIssueOnMerge` from a checkbox in `CreatePrModal`; mobile drives the same flag through `syncRemoteCommandService`.
+- `agentChatService` accepts an `AgentChatLinearIssueContextAttachment` (`type: "linear_issue"`) on session creation; `AgentChatPane` automatically attaches the lane's connected issue when chat opens (source `"lane_link"`), and the composer's Linear attach dialog adds manual attachments. Attachment helpers live in `shared/chatContextAttachments.ts`.
+
+Detailed wiring lives in [`../linear-integration/README.md`](../linear-integration/README.md#lane-attachment-commit-references-and-pr-magic-words).
 
 ### Shared
 

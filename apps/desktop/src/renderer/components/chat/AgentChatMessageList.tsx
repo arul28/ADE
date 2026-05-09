@@ -7,6 +7,7 @@ import {
   CaretDown,
   CaretLeft,
   CaretRight,
+  Bug,
   CloudArrowUp,
   Warning,
   Terminal,
@@ -429,12 +430,14 @@ function UserMessageSendConfirmations({
   if (event.deliveryState === "queued") return null;
 
   const attachments = event.attachments ?? [];
+  const contextAttachments = event.contextAttachments ?? [];
   const hasImage = attachments.some((a) => a.type === "image");
   const hasFile = attachments.some((a) => a.type === "file");
+  const hasIssueContext = contextAttachments.some((a) => a.type === "linear_issue");
   const showFilesRow = hasImage || hasFile;
   const showSimRow = event.text.startsWith(IOS_SIMULATOR_CONTEXT_PREFIX);
 
-  if (!showFilesRow && !showSimRow) return null;
+  if (!showFilesRow && !showSimRow && !hasIssueContext) return null;
 
   const attachmentCount = attachments.length;
   const attachmentLabel = attachmentCount <= 1 ? "Attachment analyzed" : "Attachments analyzed";
@@ -467,6 +470,18 @@ function UserMessageSendConfirmations({
         >
           <Code size={12} weight="regular" className="shrink-0 text-emerald-400/85" aria-hidden />
           <span>Attachments from simulator analyzed</span>
+        </motion.div>
+      ) : null}
+      {hasIssueContext ? (
+        <motion.div
+          className="flex items-center gap-1.5 font-sans text-[length:calc(var(--chat-font-size)*12/14)] italic text-emerald-400/80"
+          data-testid="user-message-issue-context-analyzed"
+          initial={{ opacity: 0, y: 2 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.15, ease: "easeOut" }}
+        >
+          <Bug size={12} weight="regular" className="shrink-0 text-emerald-400/85" aria-hidden />
+          <span>Issue context analyzed</span>
         </motion.div>
       ) : null}
     </div>
@@ -1987,8 +2002,13 @@ function renderEvent(
               </div>
             );
           })()}
-          {event.attachments?.length ? (
-            <ChatAttachmentTray attachments={event.attachments} mode={options?.surfaceMode ?? "standard"} className="mt-1 px-0 py-0" />
+          {event.attachments?.length || event.contextAttachments?.length ? (
+            <ChatAttachmentTray
+              attachments={event.attachments ?? []}
+              contextAttachments={event.contextAttachments ?? []}
+              mode={options?.surfaceMode ?? "standard"}
+              className="mt-1 px-0 py-0"
+            />
           ) : null}
           <UserMessageSendConfirmations event={event} />
         </div>

@@ -243,6 +243,7 @@ export type CreatePrFromLaneArgs = {
   reviewers?: string[];
   allowDirtyWorktree?: boolean;
   strategy?: PrCreationStrategy;
+  closeLinearIssueOnMerge?: boolean;
 };
 
 export type LinkPrToLaneArgs = {
@@ -255,6 +256,7 @@ export type DraftPrDescriptionArgs = {
   model?: string;
   reasoningEffort?: string | null;
   baseBranch?: string;
+  closeLinearIssueOnMerge?: boolean;
 };
 
 export type UpdatePrDescriptionArgs = {

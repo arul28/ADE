@@ -110,6 +110,10 @@ import type {
   CtoOnboardingState,
   CtoSystemPromptPreview,
   CtoLinearProject,
+  CtoLinearQuickView,
+  CtoGetLinearIssuePickerDataResult,
+  CtoSearchLinearIssuesArgs,
+  CtoSearchLinearIssuesResult,
   CtoStartLinearOAuthResult,
   CtoGetLinearOAuthSessionArgs,
   CtoGetLinearOAuthSessionResult,
@@ -3670,6 +3674,14 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.ctoPreviewSystemPrompt, args),
     getLinearProjects: async (): Promise<CtoLinearProject[]> =>
       ipcRenderer.invoke(IPC.ctoGetLinearProjects),
+    getLinearQuickView: async (): Promise<CtoLinearQuickView> =>
+      ipcRenderer.invoke(IPC.ctoGetLinearQuickView),
+    getLinearIssuePickerData: async (): Promise<CtoGetLinearIssuePickerDataResult> =>
+      ipcRenderer.invoke(IPC.ctoGetLinearIssuePickerData),
+    searchLinearIssues: async (
+      args: CtoSearchLinearIssuesArgs = {},
+    ): Promise<CtoSearchLinearIssuesResult> =>
+      ipcRenderer.invoke(IPC.ctoSearchLinearIssues, args),
     setLinearOAuthClient: async (
       args: CtoSetLinearOAuthClientArgs,
     ): Promise<LinearConnectionStatus> =>

@@ -1193,6 +1193,119 @@ describe("ADE CLI", () => {
     expect(lanesHelp.kind).toBe("help");
   });
 
+  it("maps PR create Linear close flag to the typed RPC tool", () => {
+    const plan = buildCliPlan([
+      "prs",
+      "create",
+      "--lane",
+      "lane-1",
+      "--title",
+      "Linked PR",
+      "--body",
+      "Body",
+      "--close-linear-issue-on-merge",
+    ]);
+
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toEqual({
+      name: "create_pr_from_lane",
+      arguments: {
+        laneId: "lane-1",
+        title: "Linked PR",
+        body: "Body",
+        draft: false,
+        closeLinearIssueOnMerge: true,
+      },
+    });
+  });
+
+  it("maps lane create Linear issue JSON to the typed RPC tool", () => {
+    const plan = buildCliPlan([
+      "lanes",
+      "create",
+      "--name",
+      "Linked lane",
+      "--base",
+      "main",
+      "--branch-name",
+      "ade-123-linked-lane",
+      "--linear-issue-json",
+      "{\"id\":\"issue-1\",\"identifier\":\"ADE-123\",\"title\":\"Linked lane\"}",
+    ]);
+
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toEqual({
+      name: "create_lane",
+      arguments: {
+        name: "Linked lane",
+        baseBranch: "main",
+        branchName: "ade-123-linked-lane",
+        linearIssue: {
+          id: "issue-1",
+          identifier: "ADE-123",
+          title: "Linked lane",
+        },
+      },
+    });
+  });
+
+  it("maps Linear quick view to the typed RPC tool", () => {
+    const plan = buildCliPlan(["linear", "quick-view", "--text"]);
+
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.label).toBe("Linear quick view");
+    expect(plan.formatter).toBe("linear-quick-view");
+    expect(plan.steps[0]?.params).toEqual({
+      name: "getLinearQuickView",
+      arguments: {},
+    });
+  });
+
+  it("maps Linear picker data to the typed RPC tool", () => {
+    const plan = buildCliPlan(["linear", "picker-data", "--text"]);
+
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.label).toBe("Linear picker data");
+    expect(plan.steps[0]?.params).toEqual({
+      name: "getLinearIssuePickerData",
+      arguments: {},
+    });
+  });
+
+  it("maps Linear search-issues filters to the typed RPC tool", () => {
+    const plan = buildCliPlan([
+      "linear",
+      "search-issues",
+      "--project-id",
+      "proj-1",
+      "--state-type",
+      "started,unstarted",
+      "--query",
+      "auth",
+      "--first",
+      "25",
+      "--include-archived",
+    ]);
+
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.label).toBe("Linear search issues");
+    expect(plan.steps[0]?.params).toEqual({
+      name: "searchLinearIssues",
+      arguments: {
+        projectId: "proj-1",
+        stateTypes: ["started", "unstarted"],
+        query: "auth",
+        first: 25,
+        includeArchived: true,
+      },
+    });
+  });
+
   it("shows focused ios-sim help for subcommand help flags", () => {
     const renderHelp = buildCliPlan(["ios-sim", "preview-render", "--help"]);
     expect(renderHelp.kind).toBe("help");

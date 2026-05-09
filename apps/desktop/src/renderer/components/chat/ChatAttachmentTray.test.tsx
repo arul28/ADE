@@ -2,7 +2,41 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { makeLinearIssueContextAttachment } from "../../../shared/chatContextAttachments";
+import type { LaneLinearIssue } from "../../../shared/types";
 import { ChatAttachmentTray } from "./ChatAttachmentTray";
+
+function makeIssue(overrides: Partial<LaneLinearIssue> = {}): LaneLinearIssue {
+  return {
+    id: "issue-1",
+    identifier: "ADE-123",
+    title: "Connect chat context to Linear",
+    description: null,
+    url: "https://linear.app/ade/issue/ADE-123/connect-chat-context-to-linear",
+    projectId: "project-1",
+    projectSlug: "ade",
+    projectName: "ADE",
+    teamId: "team-1",
+    teamKey: "ADE",
+    teamName: "ADE",
+    stateId: "state-1",
+    stateName: "In Progress",
+    stateType: "started",
+    priority: 2,
+    priorityLabel: "high",
+    labels: ["desktop"],
+    assigneeId: "user-1",
+    assigneeName: "Arul",
+    creatorId: null,
+    creatorName: null,
+    dueDate: null,
+    estimate: null,
+    branchName: "ade-123-connect-chat-context-to-linear",
+    createdAt: "2026-05-08T00:00:00.000Z",
+    updatedAt: "2026-05-08T00:00:00.000Z",
+    ...overrides,
+  };
+}
 
 describe("ChatAttachmentTray", () => {
   const getImageDataUrl = vi.fn();
@@ -73,5 +107,27 @@ describe("ChatAttachmentTray", () => {
 
     expect(screen.getByText("context.txt")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Open context.txt" })).toBeNull();
+  });
+
+  it("renders removable Linear issue context chips", () => {
+    const onRemoveContext = vi.fn();
+    const contextAttachment = makeLinearIssueContextAttachment(makeIssue(), "manual");
+
+    render(
+      <ChatAttachmentTray
+        attachments={[]}
+        contextAttachments={[contextAttachment]}
+        mode="standard"
+        onRemoveContext={onRemoveContext}
+      />,
+    );
+
+    expect(screen.getByTestId("linear-issue-context-chip")).toBeTruthy();
+    expect(screen.getByText("ADE-123")).toBeTruthy();
+    expect(screen.getByText("Connect chat context to Linear")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove ADE-123" }));
+
+    expect(onRemoveContext).toHaveBeenCalledWith("linear:issue-1");
   });
 });

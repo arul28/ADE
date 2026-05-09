@@ -13,7 +13,7 @@ headless ADE CLI run the same pipeline.
 
 ## Who uses it
 
-The integration is used by three distinct consumers:
+The integration is used by four distinct consumers:
 
 1. **The CTO agent.** Linear workflows are authored, saved, and rolled back
    through the CTO tab's flow-policy surface, and the CTO agent is the
@@ -25,7 +25,19 @@ The integration is used by three distinct consumers:
    `aiOrchestratorService`, links the mission back to the
    `LinearWorkflowRun` row, and waits for mission completion before moving
    on to PR gates or closeout.
-3. **The headless ADE CLI.** `apps/ade-cli/src/headlessLinearServices.ts`
+3. **Lanes, commits, PRs, and chat.** A user can attach a Linear issue
+   to a brand-new lane from `CreateLaneDialog` (the Linear issue picker
+   in the always-open Advanced section), or to chat context from the
+   composer's Linear attach affordance. Once a lane is connected to an
+   issue, ADE auto-derives the branch name, prefixes commit messages
+   with `Refs IDENT: …`, seeds the PR title (`IDENT: title`), and adds
+   a `Fixes IDENT` / `Refs IDENT` magic word to the PR body so Linear
+   links the PR back to the issue. There is also a top-bar
+   `LinearQuickViewButton` that opens the same `LinearIssueBrowser`
+   the chat composer uses, lets the operator filter / search across
+   their Linear backlog, and turns any selected issue into a new
+   lane in one click.
+4. **The headless ADE CLI.** `apps/ade-cli/src/headlessLinearServices.ts`
    instantiates the full Linear service stack (sync, dispatcher, closeout,
    intake, ingress, routing, outbound, templates) so external callers can
    trigger and resolve Linear runs without the desktop UI running. The
@@ -164,11 +176,41 @@ Core Linear services on desktop
 - `linearIngressService.ts` — webhook HTTP listener + relay poller, hands
   off to `syncService.processIssueUpdate`
 
-Shared types and workflow presets:
+Shared types and helpers:
 
 - `apps/desktop/src/shared/types/linearSync.ts` — all `LinearWorkflow*`
-  types, run statuses, event payloads, catalog types, and the legacy
-  `LinearSyncConfig` kept for migration reads
+  types, run statuses, event payloads, catalog types, the
+  `NormalizedLinearIssue` shape (extended with `projectName`,
+  `teamName`, `dueDate`, `estimate`, `archivedAt`, `completedAt`,
+  `canceledAt`, `startedAt`), `LinearConnectionStatus` (extended with
+  `organizationId` / `organizationName` / `organizationUrlKey` /
+  `organizationLogoUrl` so controllers can render the workspace
+  brand), and the legacy `LinearSyncConfig` kept for migration reads.
+- `apps/desktop/src/shared/types/lanes.ts` — `LaneLinearIssue` (the
+  lane-attached subset of a Linear issue that gets persisted with
+  the lane row) plus the optional `linearIssue` field on
+  `CreateLaneArgs` / `CreateChildLaneArgs` / `LaneSummary`.
+- `apps/desktop/src/shared/linearIssueBranch.ts` — pure helpers
+  `linearIssueLaneName(issue)` ("IDENT title") and
+  `linearIssueBranchName(issue)` (slugified, sanitised against git
+  ref rules: `IDENT-title-slug`). `sanitizeLinearIssueBranchName`
+  is the underlying ref-safety pass and is also exported.
+- `apps/desktop/src/shared/linearMagicWords.ts` — pure helpers for
+  the PR / commit Linear references: `linearPrMagicWord(closeOnMerge)`
+  picks `Fixes` (closes the issue when the PR merges) or `Refs`
+  (links without closing); `buildLinearPrTitle` /
+  `buildLinearPrReference` build the strings; `ensureLinearPrReference`
+  injects the magic word into a PR body if one isn't already there
+  (with `preserveExisting: false` to overwrite an existing
+  `Refs/Fixes <IDENT>` line); `ensureLinearCommitReference` prefixes
+  a commit subject with `Refs IDENT: …` when missing.
+- `apps/desktop/src/shared/chatContextAttachments.ts` — pure helpers
+  for the chat composer's Linear context attachment surface:
+  `makeLinearIssueContextAttachment(issue, source)`,
+  `mergeChatContextAttachments`, `removeChatContextAttachment`,
+  `chatContextAttachmentKey`, plus a defensive
+  `normalizeLinearIssue` reader used when re-hydrating attachments
+  from disk or wire payloads.
 - `apps/desktop/src/shared/linearWorkflowPresets.ts` — default workflow
   presets, visual plan derivation, step rebuilding. See
   `workflow-presets.md`.
@@ -177,9 +219,59 @@ Renderer wiring:
 
 - `apps/desktop/src/renderer/components/cto/LinearSyncPanel.tsx` — the main
   CTO-tab management surface (connection, workflow editor, queue,
-  dashboard, ingress status)
+  dashboard, ingress status).
 - `apps/desktop/src/renderer/components/cto/pipeline/*` — the visual
-  pipeline canvas with trigger, stage, closeout cards
+  pipeline canvas with trigger, stage, closeout cards.
+- `apps/desktop/src/renderer/components/lanes/LinearIssuePicker.tsx` —
+  shared issue picker mounted inside `CreateLaneDialog`. Loads
+  filters via `ade.cto.getLinearIssuePickerData` (projects + states
+  + assignees in one call) and pages issues with
+  `ade.cto.searchLinearIssues`. Exports a row component
+  (`LinearIssueRow`) and pure label helpers reused by the chat
+  composer's Linear attach dialog and the top-bar quick-view.
+- `apps/desktop/src/renderer/components/lanes/LinearIssueBadge.tsx` —
+  compact lane-list badge showing the connected issue's
+  identifier / state / priority. Clicking opens chat with the issue
+  pre-attached as context, falling back to the public Linear URL
+  when chat is unavailable.
+- `apps/desktop/src/renderer/components/lanes/linearBrand.tsx` —
+  shared Linear brand tokens (`LINEAR_BRAND` palette) and icon
+  family (`LinearMark`, `LinearStateIcon`, `LinearPriorityIcon`).
+- `apps/desktop/src/renderer/components/app/LinearQuickViewButton.tsx`
+  — top-bar button (rendered in `TopBar.tsx` when
+  `LinearConnectionStatus.connected === true`). Opens a popover
+  hosting the shared `LinearIssueBrowser`; selecting an issue
+  creates a new lane via `lanes.create` with `linearIssue` set,
+  refreshes the lane store, and selects the new lane.
+- `apps/desktop/src/renderer/components/app/LinearIssueBrowser.tsx`
+  — full filter/search surface. Reads `ade.cto.getLinearQuickView`
+  for the workspace summary and `ade.cto.searchLinearIssues` for
+  paginated results. Persists per-project filter state in
+  `localStorage` under `ade.linear.quickView.filters.v1:<projectRoot>`.
+- `apps/desktop/src/renderer/components/chat/AgentChatComposer.tsx`
+  — the composer's Linear attach affordance opens a
+  `LinearIssueContextDialog` that hosts the same
+  `LinearIssueBrowser` and emits an
+  `AgentChatLinearIssueContextAttachment` (`type: "linear_issue"`)
+  through the chat session's `contextAttachments` array.
+  `AgentChatPane` automatically attaches the lane's connected
+  issue when a chat opens on a Linear-connected lane (via
+  `initialLinearIssueContext`, source `"lane_link"`), and the
+  composer pins it to the dialog so the user can see what's
+  already linked.
+- `apps/desktop/src/renderer/components/prs/CreatePrModal.tsx` —
+  reads `lane.linearIssue`, defaults the PR title to
+  `buildLinearPrTitle`, and uses `ensureLinearPrReference` against
+  the body whenever the user toggles the
+  `closeLinearIssueOnMerge` checkbox so the magic word stays in
+  sync with `Fixes` / `Refs`.
+- `apps/desktop/src/renderer/components/settings/LinearSection.tsx`
+  — Settings > Integrations panel for connecting Linear. Reads /
+  writes via `ade.cto.getLinearConnectionStatus`,
+  `ade.cto.setLinearToken`, `ade.cto.startLinearOAuth`, and
+  `ade.cto.clearLinearToken`. Surfaces connection state, project
+  list, and a docs-style hint card describing the issue-routing /
+  CTO-workflow value props.
 
 IPC wiring (`apps/desktop/src/main/services/ipc/registerIpc.ts`):
 
@@ -192,7 +284,18 @@ IPC wiring (`apps/desktop/src/main/services/ipc/registerIpc.ts`):
   `ctoLinearWorkflowEvent` (renderer notification broadcast),
   `ctoStartLinearOAuth`, `ctoGetLinearOAuthSession`,
   `ctoSetLinearOAuthClient`, `ctoClearLinearOAuthClient`,
-  `ctoGetLinearProjects`, `ctoGetLinearWorkflowCatalog`.
+  `ctoGetLinearProjects`, `ctoGetLinearWorkflowCatalog`,
+  `ctoGetLinearQuickView` (workspace summary used by the top-bar
+  quick view), `ctoGetLinearIssuePickerData` (one-shot
+  projects + states + assignees catalog for `LinearIssuePicker`),
+  and `ctoSearchLinearIssues` (paginated issue search consumed by
+  both `LinearIssuePicker` and `LinearIssueBrowser`).
+- `IssueTracker` (`apps/desktop/src/main/services/cto/issueTracker.ts`)
+  grew matching `getQuickView(connection)` and
+  `searchIssues(query)` methods, both forwarded to `linearClient`
+  by `linearIssueTracker.ts`. `IssueTrackerIssueSearchQuery` covers
+  project / state-types / assignee / priority / free-text / cursor
+  pagination filters; the result is `{ issues, pageInfo }`.
 
 Headless ADE CLI mode:
 
@@ -218,6 +321,65 @@ Deeper reading:
 - `workflow-presets.md` — how presets produce and round-trip to the
   visual plan in the pipeline builder
 
+## Lane attachment, commit references, and PR magic words
+
+The Linear pipeline above is fully autonomous: it runs missions /
+chats / workers without the human ever opening a lane manually. Most
+day-to-day developer work, though, starts the other way around — the
+human picks a Linear ticket and creates a lane to work on it. ADE
+exposes that path in three places that all share the same primitives:
+
+- **Create a lane from a Linear issue.** `CreateLaneDialog`'s Advanced
+  section hosts a "Connect Linear issue" affordance backed by
+  `LinearIssuePicker`. Selecting an issue auto-derives the lane name
+  (`linearIssueLaneName` → `IDENT title`) and the branch name
+  (`linearIssueBranchName` → `ident-title-slug`, sanitised against
+  git ref rules), pre-fills the create form, and locks the
+  "Import existing branch" tab while an issue is connected. The
+  same picker is launched from the top-bar `LinearQuickViewButton`
+  and from the chat composer's Linear attach dialog so all three
+  entry points produce identical lane shapes.
+- **`lane_linear_issues` table.** `laneService.create` /
+  `createChild` accept `linearIssue?: LaneLinearIssue`; when set,
+  the issue payload (`id`, `identifier`, `title`, project / team /
+  state / priority / labels / assignee / creator / due / estimate /
+  branch name / timestamps) is upserted into `lane_linear_issues`
+  keyed by `(project_id, lane_id)`. `LaneSummary.linearIssue` is
+  hydrated on every `list` / `get`. The service also enforces a
+  collision check: if the resolved branch already exists locally
+  or as `origin/<branch>`, lane creation throws
+  `Branch "…" already exists. Detach the Linear issue or choose
+  a different issue.`.
+- **Commit message prefix.** When a lane has a connected issue,
+  `gitOperationsService.commitChanges` (and the commit-message
+  generator) auto-prefixes the subject with `Refs IDENT: …` via
+  `ensureLinearCommitReference`. Subjects that already mention the
+  identifier are left alone.
+- **PR title + body magic word.** `prService.draftPrMetadata` /
+  `createFromLane` and the renderer `CreatePrModal` use
+  `buildLinearPrTitle(issue)` (`IDENT: title`) as the default PR
+  title and `ensureLinearPrReference(body, issue, closeOnMerge)`
+  to inject `Fixes IDENT` (closes the Linear issue when the PR
+  merges) or `Refs IDENT` (links without closing) into the PR
+  description. The user toggles `closeLinearIssueOnMerge` from a
+  checkbox in `CreatePrModal`; the same flag is forwarded by
+  `syncRemoteCommandService` so phones drive the same behaviour.
+- **Chat context attachment.** Chats opened on a lane with a
+  connected issue automatically receive an
+  `AgentChatLinearIssueContextAttachment` (`type: "linear_issue"`,
+  `source: "lane_link"`) via `AgentChatPane`'s
+  `initialLinearIssueContext`. The composer also supports manual
+  attachment through `LinearIssueContextDialog`, which reuses
+  `LinearIssueBrowser`. Helpers live in
+  `shared/chatContextAttachments.ts`.
+- **Top-bar quick view.** `TopBar` mounts
+  `LinearQuickViewButton` whenever `LinearConnectionStatus.connected`
+  is true. The popover shows `CtoLinearQuickView` (workspace +
+  active project counters) plus the shared
+  `LinearIssueBrowser`; clicking an issue creates a fresh lane via
+  `lanes.create`, refreshes the lane store, and selects the new
+  lane.
+
 ## Database tables (selected)
 
 All state is kept in `.ade/ade.db` and replicated through cr-sqlite like any
@@ -230,6 +392,13 @@ other ADE table. Key tables the Linear stack writes:
   change detection in `processIssueUpdate`
 - `linear_sync_events` — `issue_closed`, `watch_only_match`,
   `workflow_capacity_wait`, `issue_deduped` observability records
+- `lane_linear_issues` — issue payload attached to a lane at
+  create time, keyed by `(project_id, lane_id)`. Used by lane
+  hydration, `LinearIssueBadge`, commit-message prefixing, and PR
+  defaults.
+- `linear_issue_claims` — active-claim ledger (one active row per
+  `(project_id, issue_id)`) so two lanes don't try to drive the
+  same issue simultaneously.
 
 Workflow definitions themselves live either inline in the flow policy
 (stored in the project config row, versioned via `flowPolicyService`

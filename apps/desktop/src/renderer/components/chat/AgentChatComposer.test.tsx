@@ -3,6 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, type RenderResult } from "@testing-library/react";
 import type { ComponentProps } from "react";
+import type { NormalizedLinearIssue } from "../../../shared/types";
 import { AgentChatComposer } from "./AgentChatComposer";
 
 function installMatchMediaMock(): void {
@@ -117,6 +118,41 @@ function renderComposer(overrides: Partial<ComponentProps<typeof AgentChatCompos
 
   const view = render(<AgentChatComposer {...props} />);
   return Object.assign(view, props) as RenderResult & ComponentProps<typeof AgentChatComposer>;
+}
+
+function makeLinearIssue(overrides: Partial<NormalizedLinearIssue> = {}): NormalizedLinearIssue {
+  return {
+    id: "issue-1",
+    identifier: "ADE-123",
+    title: "Attach Linear context to chat",
+    description: "Use this issue as prompt context.",
+    url: "https://linear.app/ade/issue/ADE-123/attach-linear-context-to-chat",
+    projectId: "project-1",
+    projectSlug: "ade",
+    projectName: "ADE",
+    teamId: "team-1",
+    teamKey: "ADE",
+    teamName: "ADE",
+    stateId: "state-1",
+    stateName: "In Progress",
+    stateType: "started",
+    priority: 2,
+    priorityLabel: "high",
+    labels: ["desktop"],
+    assigneeId: "user-1",
+    assigneeName: "Arul",
+    ownerId: "user-1",
+    creatorId: "user-2",
+    creatorName: "Annie",
+    blockerIssueIds: [],
+    hasOpenBlockers: false,
+    dueDate: null,
+    estimate: null,
+    createdAt: "2026-05-08T00:00:00.000Z",
+    updatedAt: "2026-05-08T00:00:00.000Z",
+    raw: {},
+    ...overrides,
+  };
 }
 
 const executionModeOptions = [
@@ -579,6 +615,163 @@ describe("AgentChatComposer", () => {
 
     expect((screen.getByLabelText("Open attachment picker") as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByLabelText("Upload file from disk") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("renders the issue context menu outside the clipped composer shell", () => {
+    const { container } = renderComposer({
+      draft: "",
+      turnActive: false,
+      onAddContextAttachment: vi.fn(),
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Attach issue context" }));
+
+    const menu = document.body.querySelector("[data-issue-context-menu]");
+    const composerShell = container.querySelector("[data-chat-composer-mode]");
+    expect(menu).toBeTruthy();
+    expect(menu?.parentElement).toBe(document.body);
+    expect(composerShell?.contains(menu)).toBe(false);
+    expect((menu as HTMLElement).className).toContain("fixed");
+  });
+
+  it("offers Linear settings when issue search needs a connection", async () => {
+    const onOpenLinearSettings = vi.fn();
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: {
+        cto: {
+          getLinearIssuePickerData: vi.fn().mockResolvedValue({
+            projects: [],
+            users: [],
+            states: [],
+          }),
+          searchLinearIssues: vi.fn().mockRejectedValue(new Error("Linear token missing. Set it in Settings > Linear.")),
+        },
+      },
+    });
+
+    renderComposer({
+      draft: "",
+      turnActive: false,
+      onAddContextAttachment: vi.fn(),
+      onOpenLinearSettings,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Attach issue context" }));
+    fireEvent.click(screen.getByRole("button", { name: /Linear issue/i }));
+
+    await screen.findByText(/Linear token missing/i);
+    fireEvent.click(screen.getByRole("button", { name: "Open Linear settings" }));
+
+    expect(onOpenLinearSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it("attaches Linear issue context from the issue dropdown", async () => {
+    const issue = makeLinearIssue();
+    const onAddContextAttachment = vi.fn();
+    const searchLinearIssues = vi.fn().mockResolvedValue({
+      issues: [issue],
+      pageInfo: { hasNextPage: false, endCursor: null },
+    });
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: {
+        cto: {
+          getLinearIssuePickerData: vi.fn().mockResolvedValue({
+            projects: [{ id: "project-1", name: "ADE", slug: "ade", teamName: "ADE", teamKey: "ADE" }],
+            users: [{ id: "user-1", name: "arul", displayName: "Arul", email: "arul@example.com", active: true }],
+            states: [{ id: "state-1", name: "In Progress", type: "started", teamId: "team-1", teamKey: "ADE" }],
+          }),
+          searchLinearIssues,
+        },
+      },
+    });
+
+    renderComposer({
+      draft: "",
+      turnActive: false,
+      onAddContextAttachment,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Attach issue context" }));
+    fireEvent.click(screen.getByRole("button", { name: /Linear issue/i }));
+
+    await waitFor(() => expect(searchLinearIssues).toHaveBeenCalled());
+    const issueIdentifier = (await screen.findAllByText("ADE-123"))[0]!;
+    const issueRow = issueIdentifier.closest("button");
+    expect(issueRow).toBeTruthy();
+    fireEvent.click(issueRow!);
+    fireEvent.click(screen.getByRole("button", { name: "Attach issue" }));
+
+    await waitFor(() => {
+      expect(onAddContextAttachment).toHaveBeenCalledTimes(1);
+    });
+    expect(onAddContextAttachment.mock.calls[0]?.[0]).toMatchObject({
+      type: "linear_issue",
+      source: "manual",
+      issue: {
+        id: "issue-1",
+        identifier: "ADE-123",
+        title: "Attach Linear context to chat",
+        projectSlug: "ade",
+      },
+    });
+  });
+
+  it("keeps appended Linear issue search pages loaded", async () => {
+    const firstIssue = makeLinearIssue();
+    const secondIssue = makeLinearIssue({
+      id: "issue-2",
+      identifier: "ADE-124",
+      title: "Second page issue",
+    });
+    const searchLinearIssues = vi.fn().mockImplementation(async (args: { after?: string | null }) => {
+      if (args.after === "cursor-1") {
+        return {
+          issues: [secondIssue],
+          pageInfo: { hasNextPage: false, endCursor: null },
+        };
+      }
+      return {
+        issues: [firstIssue],
+        pageInfo: { hasNextPage: true, endCursor: "cursor-1" },
+      };
+    });
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: {
+        cto: {
+          getLinearIssuePickerData: vi.fn().mockResolvedValue({
+            projects: [],
+            users: [],
+            states: [],
+          }),
+          searchLinearIssues,
+        },
+      },
+    });
+
+    renderComposer({
+      draft: "",
+      turnActive: false,
+      onAddContextAttachment: vi.fn(),
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Attach issue context" }));
+    fireEvent.click(screen.getByRole("button", { name: /Linear issue/i }));
+
+    await waitFor(() => expect(screen.getAllByText("ADE-123").length).toBeGreaterThan(0));
+    await new Promise((resolve) => window.setTimeout(resolve, 260));
+    expect(searchLinearIssues).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    await waitFor(() => expect(screen.getAllByText("ADE-124").length).toBeGreaterThan(0));
+    expect(searchLinearIssues).toHaveBeenLastCalledWith(expect.objectContaining({ after: "cursor-1" }));
+    await new Promise((resolve) => window.setTimeout(resolve, 260));
+
+    expect(searchLinearIssues).toHaveBeenCalledTimes(2);
+    expect(screen.getAllByText("ADE-123").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("ADE-124").length).toBeGreaterThan(0);
   });
 
   it("attaches a native clipboard image when macOS Cmd+V does not expose paste files", async () => {

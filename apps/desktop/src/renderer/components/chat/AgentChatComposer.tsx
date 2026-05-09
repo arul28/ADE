@@ -1,11 +1,12 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { At, CaretDown, Check, CloudArrowUp, Cube, Desktop, DeviceMobile, Globe, Image, Paperclip, PencilSimple, Square, X, PaperPlaneTilt, SquareSplitHorizontal, Plus, Trash, Lightning, ArrowBendDownRight } from "@phosphor-icons/react";
+import { ArrowBendDownRight, At, Bug, CaretDown, Check, CloudArrowUp, Cube, Desktop, DeviceMobile, GithubLogo, Globe, Image, Lightning, PaperPlaneTilt, Paperclip, PencilSimple, Plus, Square, SquareSplitHorizontal, Trash, X } from "@phosphor-icons/react";
 import { BorderBeam } from "border-beam";
 import {
   inferAttachmentType,
   PARALLEL_CHAT_MAX_ATTACHMENTS,
   type AgentChatApprovalDecision,
+  type AgentChatContextAttachment,
   type AgentChatClaudePermissionMode,
   type AgentChatCursorConfigOption,
   type AgentChatCursorModeSnapshot,
@@ -23,15 +24,23 @@ import {
   type AppControlContextItem,
   type BuiltInBrowserContextItem,
   type IosElementContextItem,
+  type LaneLinearIssue,
   type MacosVmContextItem,
   type PendingInputRequest,
 } from "../../../shared/types";
+import {
+  buildChatContextAttachmentPrompt,
+  makeLinearIssueContextAttachment,
+} from "../../../shared/chatContextAttachments";
 import { getModelById, modelSupportsFastMode } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
 import { ProviderModelSelector } from "../shared/ProviderModelSelector";
 import { getPermissionOptions, safetyColors } from "../shared/permissionOptions";
 import { ChatAttachmentTray } from "./ChatAttachmentTray";
 import { ChatComposerShell } from "./ChatComposerShell";
+import { LaneDialogShell } from "../lanes/LaneDialogShell";
+import { LinearIssueBrowser, linearBrowserIssueToLaneIssue } from "../app/LinearIssueBrowser";
+import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
 import { getPendingInputQuestionCount, hasPendingInputOptions } from "./pendingInput";
 import { CURSOR_MODE_LABELS } from "../../../shared/cursorModes";
 import { ChatStatusGlyph } from "./chatStatusVisuals";
@@ -42,6 +51,9 @@ import { SmartTooltip } from "../ui/SmartTooltip";
 
 const MAX_TEMP_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const CLIPBOARD_IMAGE_PASTE_FALLBACK_DELAY_MS = 80;
+const ISSUE_CONTEXT_MENU_WIDTH = 256;
+const ISSUE_CONTEXT_MENU_GAP = 8;
+const ISSUE_CONTEXT_MENU_VIEWPORT_GUTTER = 8;
 
 type PasteShortcutEvent = {
   key: string;
@@ -64,6 +76,24 @@ function isMacPasteShortcut(event: PasteShortcutEvent): boolean {
     && !event.altKey
     && !event.shiftKey
   );
+}
+
+function getIssueContextMenuStyle(trigger: HTMLButtonElement): React.CSSProperties {
+  const rect = trigger.getBoundingClientRect();
+  const maxLeft = Math.max(
+    ISSUE_CONTEXT_MENU_VIEWPORT_GUTTER,
+    window.innerWidth - ISSUE_CONTEXT_MENU_WIDTH - ISSUE_CONTEXT_MENU_VIEWPORT_GUTTER,
+  );
+  const left = Math.min(
+    Math.max(ISSUE_CONTEXT_MENU_VIEWPORT_GUTTER, rect.right - ISSUE_CONTEXT_MENU_WIDTH),
+    maxLeft,
+  );
+
+  return {
+    left,
+    bottom: Math.max(ISSUE_CONTEXT_MENU_VIEWPORT_GUTTER, window.innerHeight - rect.top + ISSUE_CONTEXT_MENU_GAP),
+    width: ISSUE_CONTEXT_MENU_WIDTH,
+  };
 }
 
 type ExecutionModeOption = {
@@ -587,6 +617,61 @@ function CodexFastModeToggle({
   );
 }
 
+function LinearIssueContextDialog({
+  open,
+  selectedIssue,
+  pinnedIssue,
+  busy,
+  onOpenChange,
+  onAttach,
+  onOpenLinearSettings,
+}: {
+  open: boolean;
+  selectedIssue: LaneLinearIssue | null;
+  pinnedIssue?: LaneLinearIssue | null;
+  busy?: boolean;
+  onOpenChange: (open: boolean) => void;
+  onAttach: (attachment: AgentChatContextAttachment) => void;
+  onOpenLinearSettings?: () => void;
+}) {
+  const featuredIssue = pinnedIssue ?? selectedIssue;
+  const openLinearSettings = useCallback(() => {
+    onOpenChange(false);
+    onOpenLinearSettings?.();
+  }, [onOpenChange, onOpenLinearSettings]);
+
+  return (
+    <LaneDialogShell
+      open={open}
+      onOpenChange={onOpenChange}
+      title="Attach Linear issue"
+      description="Browse Linear issues and attach one as chat context."
+      icon={Bug}
+      widthClassName="w-[min(1040px,calc(100vw-24px))]"
+      busy={busy}
+    >
+      <LinearIssueBrowser
+        featuredIssue={featuredIssue}
+        featuredIssueLabel={pinnedIssue ? "Linked to this lane" : "Attached to chat"}
+        actionLabel="Attach issue"
+        actionBusyLabel="Attaching issue"
+        actionIcon={<Check size={14} />}
+        actionDisabled={busy}
+        showBranchPreview={false}
+        onOpenLinearSettings={openLinearSettings}
+        onIssueAction={(issue) => {
+          const laneIssue = linearBrowserIssueToLaneIssue(issue);
+          onAttach(makeLinearIssueContextAttachment(
+            laneIssue,
+            pinnedIssue?.id === laneIssue.id ? "lane_link" : "manual",
+          ));
+          onOpenChange(false);
+        }}
+      />
+    </LaneDialogShell>
+  );
+}
+
 export function AgentChatComposer({
   surfaceMode = "standard",
   layoutVariant = "standard",
@@ -600,6 +685,8 @@ export function AgentChatComposer({
   codexFastMode = false,
   draft,
   attachments,
+  contextAttachments = [],
+  pinnedLinearIssue = null,
   pendingInput,
   approvalResponding,
   turnActive,
@@ -636,6 +723,8 @@ export function AgentChatComposer({
   onApproval,
   onAddAttachment,
   onRemoveAttachment,
+  onAddContextAttachment,
+  onRemoveContextAttachment,
   onSearchAttachments,
   onExecutionModeChange,
   onInteractionModeChange,
@@ -662,6 +751,7 @@ export function AgentChatComposer({
   onDispatchSteerInline,
   onDispatchSteerInterrupt,
   onOpenAiSettings,
+  onOpenLinearSettings,
   sessionId,
   parallelChatMode = false,
   onParallelChatModeChange,
@@ -710,6 +800,8 @@ export function AgentChatComposer({
   codexFastMode?: boolean;
   draft: string;
   attachments: AgentChatFileRef[];
+  contextAttachments?: AgentChatContextAttachment[];
+  pinnedLinearIssue?: LaneLinearIssue | null;
   pendingInput: PendingInputRequest | null;
   approvalResponding?: boolean;
   turnActive: boolean;
@@ -746,6 +838,8 @@ export function AgentChatComposer({
   onApproval: (decision: AgentChatApprovalDecision, responseText?: string | null) => void;
   onAddAttachment: (attachment: AgentChatFileRef) => void;
   onRemoveAttachment: (path: string) => void;
+  onAddContextAttachment?: (attachment: AgentChatContextAttachment) => void;
+  onRemoveContextAttachment?: (key: string) => void;
   onSearchAttachments: (query: string) => Promise<AgentChatFileRef[]>;
   onExecutionModeChange?: (mode: AgentChatExecutionMode) => void;
   onInteractionModeChange?: (mode: AgentChatInteractionMode) => void;
@@ -777,6 +871,7 @@ export function AgentChatComposer({
   onDispatchSteerInline?: (steerId: string) => void;
   onDispatchSteerInterrupt?: (steerId: string) => void;
   onOpenAiSettings?: () => void;
+  onOpenLinearSettings?: () => void;
   sessionId?: string | null;
   parallelChatMode?: boolean;
   onParallelChatModeChange?: (enabled: boolean) => void;
@@ -826,6 +921,8 @@ export function AgentChatComposer({
   const [attachmentResults, setAttachmentResults] = useState<AgentChatFileRef[]>([]);
   const [attachmentCursor, setAttachmentCursor] = useState(0);
   const [attachError, setAttachError] = useState<string | null>(null);
+  const [issueContextMenuOpen, setIssueContextMenuOpen] = useState(false);
+  const [linearIssuePickerOpen, setLinearIssuePickerOpen] = useState(false);
   const [selectedIosContextId, setSelectedIosContextId] = useState<string | null>(null);
   const [selectedAppControlContextId, setSelectedAppControlContextId] = useState<string | null>(null);
   const [selectedBuiltInBrowserContextId, setSelectedBuiltInBrowserContextId] = useState<string | null>(null);
@@ -837,6 +934,7 @@ export function AgentChatComposer({
   const claudeModePickerRef = useRef<HTMLDivElement | null>(null);
   const [codexPresetPickerOpen, setCodexPresetPickerOpen] = useState(false);
   const codexPresetPickerRef = useRef<HTMLDivElement | null>(null);
+  const issueContextButtonRef = useRef<HTMLButtonElement | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const [commandMenuTrigger, setCommandMenuTrigger] = useState<{ type: "at" | "slash"; query: string; cursorIndex: number } | null>(null);
   const [commandMenuAnchor, setCommandMenuAnchor] = useState<{ top: number; left: number } | null>(null);
@@ -876,6 +974,8 @@ export function AgentChatComposer({
     parallelChatMode,
     attachmentCount: attachments.length,
   });
+  const contextAttachmentCount = contextAttachments.length;
+  const canAttachIssueContext = !composerInputLocked && typeof onAddContextAttachment === "function";
 
   const resizeTextarea = useCallback(() => {
     if (useRichComposer) return;
@@ -907,6 +1007,8 @@ export function AgentChatComposer({
   useEffect(() => {
     if (!composerInputLocked) return;
     setAttachmentPickerOpen(false);
+    setIssueContextMenuOpen(false);
+    setLinearIssuePickerOpen(false);
     setCommandMenuTrigger(null);
     setDragActive(false);
     if (clipboardImagePasteFallbackTimerRef.current != null) {
@@ -1518,6 +1620,28 @@ export function AgentChatComposer({
       window.removeEventListener("keydown", handleKey);
     };
   }, [claudeModePickerOpen]);
+
+  useEffect(() => {
+    if (!issueContextMenuOpen) return;
+    const handleClick = (event: MouseEvent) => {
+      if (issueContextButtonRef.current?.contains(event.target as Node)) return;
+      const target = event.target as Element | null;
+      if (target?.closest?.("[data-issue-context-menu]")) return;
+      setIssueContextMenuOpen(false);
+    };
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setIssueContextMenuOpen(false);
+      }
+    };
+    window.addEventListener("mousedown", handleClick);
+    window.addEventListener("keydown", handleKey);
+    return () => {
+      window.removeEventListener("mousedown", handleClick);
+      window.removeEventListener("keydown", handleKey);
+    };
+  }, [issueContextMenuOpen]);
+
   const codexCustomSummary = useMemo(() => {
     if (sp !== "codex" || codexPreset !== "custom") return null;
     if (ccsUse === "config-toml") {
@@ -2218,7 +2342,7 @@ export function AgentChatComposer({
       if (busy || parallelLaunchBusy) return;
       if (parallelModelSlots.length < 2) return;
       const hasPrompt = draft.trim().length > 0;
-      const hasAttachments = attachments.length > 0;
+      const hasAttachments = attachments.length > 0 || contextAttachmentCount > 0;
       if (!hasPrompt && !hasAttachments) return;
       onSubmit();
       return;
@@ -2238,15 +2362,20 @@ export function AgentChatComposer({
       && onSubmitToCloud
     ) {
       const trimmed = draft.trim();
-      if (!trimmed.length && !hasContextSelection) return;
-      void Promise.resolve(onSubmitToCloud(trimmed)).then((ok) => {
+      if (!trimmed.length && !hasContextSelection && contextAttachmentCount === 0) return;
+      const issueContextPrompt = buildChatContextAttachmentPrompt(contextAttachments);
+      const cloudPrompt = [
+        issueContextPrompt || null,
+        trimmed || (issueContextPrompt ? "Use the attached issue context." : null),
+      ].filter((part): part is string => Boolean(part)).join("\n\n");
+      void Promise.resolve(onSubmitToCloud(cloudPrompt)).then((ok) => {
         if (ok) onDraftChange("");
       });
       return;
     }
-    if (busy || !modelId || (!draft.trim().length && !hasContextSelection)) return;
+    if (busy || !modelId || (!draft.trim().length && !hasContextSelection && contextAttachmentCount === 0)) return;
     onSubmit();
-  }, [appControlContextItems.length, attachments, builtInBrowserContextItems.length, busy, cursorCloudAvailable, cursorCloudCanLaunch, cursorCloudLaunchModeOpen, draft, iosElementContextItems.length, macosVmContextItems.length, modelId, onDraftChange, onSubmit, onSubmitToCloud, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length]);
+  }, [appControlContextItems.length, attachments, builtInBrowserContextItems.length, busy, contextAttachmentCount, contextAttachments, cursorCloudAvailable, cursorCloudCanLaunch, cursorCloudLaunchModeOpen, draft, iosElementContextItems.length, macosVmContextItems.length, modelId, onDraftChange, onSubmit, onSubmitToCloud, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length]);
 
   const pendingQuestionCount = getPendingInputQuestionCount(pendingInput);
   const showPendingInputOptionsHint = hasPendingInputOptions(pendingInput);
@@ -2299,22 +2428,23 @@ export function AgentChatComposer({
   const parallelReady =
     parallelChatMode
     && parallelModelSlots.length >= 2
-    && (draft.trim().length > 0 || attachments.length > 0);
+    && (draft.trim().length > 0 || attachments.length > 0 || contextAttachmentCount > 0);
   const hasIosElementContext = iosElementContextItems.length > 0;
   const hasAppControlContext = appControlContextItems.length > 0;
   const hasBuiltInBrowserContext = builtInBrowserContextItems.length > 0;
   const hasMacosVmContext = macosVmContextItems.length > 0;
-  const singleReady = !parallelChatMode && Boolean(modelId) && (draft.trim().length > 0 || hasIosElementContext || hasAppControlContext || hasBuiltInBrowserContext || hasMacosVmContext);
+  const singleReady = !parallelChatMode && Boolean(modelId) && (draft.trim().length > 0 || hasIosElementContext || hasAppControlContext || hasBuiltInBrowserContext || hasMacosVmContext || contextAttachmentCount > 0);
   const sendEnabled = !busy && !parallelLaunchBusy && !composerInputLocked && (parallelReady || singleReady);
 
   function sendButtonTitle(): string {
     if (composerInputLocked) return composerInputLockMessage ?? "Resolve the pending request before sending.";
     if (parallelChatMode) {
       if (parallelModelSlots.length < 2) return "Add at least two models";
-      if (draft.trim().length === 0 && attachments.length === 0) return "Add a message or at least one attachment";
+      if (draft.trim().length === 0 && attachments.length === 0 && contextAttachmentCount === 0) return "Add a message or at least one attachment";
       return "Send to all lanes";
     }
     if (!modelId) return "Select a model first";
+    if (!draft.trim().length && contextAttachmentCount > 0) return "Send attached issue context";
     if (!draft.trim().length && hasAppControlContext) return "Send selected App Control context";
     if (!draft.trim().length && hasIosElementContext) return "Send selected iOS context";
     if (!draft.trim().length && hasBuiltInBrowserContext) return "Send selected browser context";
@@ -2326,9 +2456,72 @@ export function AgentChatComposer({
     "m-3 mt-0 rounded-[var(--chat-radius-shell)]",
     layoutVariant === "grid-tile" ? "m-0" : "",
   );
+  const issueContextMenu = issueContextMenuOpen && issueContextButtonRef.current ? createPortal(
+    <div
+      className="ade-chat-drawer-glass fixed z-[1000] overflow-hidden"
+      data-issue-context-menu="true"
+      role="menu"
+      aria-label="Attach issue context"
+      style={getIssueContextMenuStyle(issueContextButtonRef.current)}
+    >
+      <div className="border-b border-white/[0.04] px-3 py-2">
+        <div className="font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-semibold text-fg/80">Attach issue context</div>
+      </div>
+      <div className="p-1">
+        <button
+          type="button"
+          className="ade-chat-drawer-row flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/75"
+          disabled={!canAttachIssueContext}
+          onClick={() => {
+            if (!canAttachIssueContext) return;
+            setIssueContextMenuOpen(false);
+            setLinearIssuePickerOpen(true);
+          }}
+        >
+          <span
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded"
+            style={{ background: LINEAR_BRAND.surfaceHover, color: LINEAR_BRAND.primaryBright }}
+          >
+            <LinearMark size={11} />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block font-medium">Linear issue</span>
+            <span className="block truncate text-[length:calc(var(--chat-font-size)*9/14)] text-muted-fg/45">Attach a ticket as chat context.</span>
+          </span>
+        </button>
+        <button
+          type="button"
+          className="flex w-full cursor-not-allowed items-center gap-2 rounded-lg px-3 py-2.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-muted-fg/30"
+          disabled
+        >
+          <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded bg-white/[0.04] text-muted-fg/35">
+            <GithubLogo size={13} weight="fill" />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block font-medium">GitHub issue</span>
+            <span className="block truncate text-[length:calc(var(--chat-font-size)*9/14)] text-muted-fg/30">Coming later.</span>
+          </span>
+        </button>
+      </div>
+    </div>,
+    document.body,
+  ) : null;
 
   return (
     <>
+      {issueContextMenu}
+      <LinearIssueContextDialog
+        open={linearIssuePickerOpen}
+        selectedIssue={contextAttachments[0]?.issue ?? null}
+        pinnedIssue={pinnedLinearIssue}
+        busy={busy || parallelLaunchBusy}
+        onOpenChange={setLinearIssuePickerOpen}
+        onAttach={(attachment) => {
+          onAddContextAttachment?.(attachment);
+          setLinearIssuePickerOpen(false);
+        }}
+        onOpenLinearSettings={onOpenLinearSettings}
+      />
       <BorderBeam
         size="md"
         colorVariant={composerBeamVariant}
@@ -2397,7 +2590,7 @@ export function AgentChatComposer({
         )
       ) : undefined}
       trays={
-        attachments.length || attachError || selectedIosContext || selectedAppControlContext || selectedBuiltInBrowserContext || selectedMacosVmContext ? (
+        attachments.length || contextAttachmentCount || attachError || selectedIosContext || selectedAppControlContext || selectedBuiltInBrowserContext || selectedMacosVmContext ? (
           <div className="space-y-2 px-1 py-2">
             {selectedMacosVmContext ? (
               <div className="relative mx-3 grid grid-cols-[72px_minmax(0,1fr)] gap-2 rounded-md border border-violet-300/12 bg-black/20 p-2 pr-6">
@@ -2642,8 +2835,10 @@ export function AgentChatComposer({
             ) : null}
             <ChatAttachmentTray
               attachments={attachments}
+              contextAttachments={contextAttachments}
               mode={surfaceMode}
               onRemove={onRemoveAttachment}
+              onRemoveContext={onRemoveContextAttachment}
               className="px-3 py-0"
             />
           </div>
@@ -2952,6 +3147,39 @@ export function AgentChatComposer({
                 <Paperclip className="h-3 w-3" size={14} weight="bold" />
               </button>
             </SmartTooltip>
+            <SmartTooltip
+              content={{
+                label: "Issue context",
+                description: canAttachIssueContext
+                  ? "Attach a Linear ticket as context for this chat. GitHub issue attachment is coming later."
+                  : composerInputLockMessage ?? "Resolve the pending request before adding issue context.",
+              }}
+            >
+              <button
+                type="button"
+                ref={issueContextButtonRef}
+                className={cn(
+                  "relative inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-fg/35 transition-colors hover:bg-violet-500/[0.06] hover:text-violet-300/60",
+                  issueContextMenuOpen && "bg-violet-500/[0.08] text-violet-200/80",
+                )}
+                disabled={!canAttachIssueContext}
+                onClick={() => {
+                  if (!canAttachIssueContext) return;
+                  setAttachmentPickerOpen(false);
+                  setIssueContextMenuOpen((open) => !open);
+                }}
+                aria-label="Attach issue context"
+                aria-haspopup="menu"
+                aria-expanded={issueContextMenuOpen}
+              >
+                <Bug className="h-3 w-3" size={14} weight={contextAttachmentCount ? "fill" : "regular"} />
+                {contextAttachmentCount ? (
+                  <span className="absolute -right-1 -top-1 inline-flex min-w-[14px] items-center justify-center rounded-full border border-violet-200/30 bg-violet-500 px-1 font-mono text-[8px] leading-[14px] text-white">
+                    {contextAttachmentCount}
+                  </span>
+                ) : null}
+              </button>
+            </SmartTooltip>
             <SmartTooltip content={{ label: "Commands", description: "Open the slash-command picker for this chat.", shortcut: "/" }}>
               <button
                 type="button"
@@ -3084,7 +3312,7 @@ export function AgentChatComposer({
                     </button>
                   </SmartTooltip>
                 ) : null}
-                {(draft.trim().length > 0 || hasIosElementContext || hasAppControlContext || hasBuiltInBrowserContext) && !composerInputLocked ? (
+                {(draft.trim().length > 0 || hasIosElementContext || hasAppControlContext || hasBuiltInBrowserContext || contextAttachmentCount > 0) && !composerInputLocked ? (
                   <SmartTooltip content={{ label: "Send steer message", description: "Queue this message for the running chat after the current turn finishes." }}>
                     <button
                       type="button"
