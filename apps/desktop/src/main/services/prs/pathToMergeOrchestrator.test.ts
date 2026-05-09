@@ -18,6 +18,7 @@ import type {
 	  PipelineSettings,
 	  PrCheck,
 	  PrComment,
+	  PrFile,
 	  PrReview,
 	  PrReviewThread,
 	  PrSummary,
@@ -130,6 +131,17 @@ function makeReview(overrides: Partial<PrReview> = {}): PrReview {
     body: "Actionable comments posted: 1",
     submittedAt: "2026-05-01T00:00:00.000Z",
     ...overrides,
+  };
+}
+
+function makePrFile(index: number): PrFile {
+  return {
+    filename: `file-${index}.ts`,
+    status: "modified",
+    additions: 1,
+    deletions: 0,
+    patch: null,
+    previousFilename: null,
   };
 }
 
@@ -1501,6 +1513,74 @@ describe("createPathToMergeOrchestrator.runIteration", () => {
       });
     } finally {
       orchestrator.dispose();
+    }
+  });
+
+  it("does not post secondary review-bot pings when the Copilot ping fails", async () => {
+    vi.useFakeTimers();
+    const runtimeByPrId = new Map<string, ConvergenceRuntimeState>([
+      ["pr-1", buildRuntime("pr-1", {
+        autoConvergeEnabled: true,
+        status: "running",
+        pollerStatus: "polling",
+        activeSessionId: "sess-1",
+        lastDispatchHeadSha: "sha-before",
+      })],
+    ]);
+    const ptmArgsByPrId = new Map<string, Record<string, unknown> | null>([
+      ["pr-1", { modelId: "openai/gpt-5.4", reasoning: null, permissionMode: "default", scope: "both", additionalInstructions: null }],
+    ]);
+    const addComment = vi.fn(async (args: { prId: string; body: string }) => {
+      if (/^@copilot\b/i.test(args.body)) {
+        throw new Error("copilot unavailable");
+      }
+      return {
+        id: `comment-${args.body}`,
+        author: "ade",
+        authorAvatarUrl: null,
+        body: args.body,
+        source: "issue" as const,
+        url: null,
+        path: null,
+        line: null,
+        createdAt: "2026-05-01T00:00:00.000Z",
+        updatedAt: "2026-05-01T00:00:00.000Z",
+      };
+    });
+    const { deps } = buildDeps({
+      runtimeByPrId,
+      ptmArgsByPrId,
+      prs: [buildPrSummary({ checksStatus: "failing", reviewStatus: "changes_requested" })],
+      pipelineSettings: { earlyMergeOnGreen: false },
+      convergenceStatus: { totalNew: 1 },
+      getCommits: async () => [{
+        sha: "sha-after",
+        shortSha: "sha-after",
+        message: "fix",
+        author: { login: null, name: "Test", email: null },
+        committedDate: "2026-05-01T00:01:00.000Z",
+      }],
+      getSessionSummary: async () => ({ status: "idle", awaitingInput: false }) as Awaited<ReturnType<PathToMergeDeps["agentChatService"]["getSessionSummary"]>>,
+      getFiles: async () => Array.from({ length: 251 }, (_, index) => makePrFile(index)),
+      addComment: addComment as unknown as PathToMergeDeps["prService"]["addComment"],
+    });
+    const orchestrator = createPathToMergeOrchestrator(deps);
+    try {
+      orchestrator.resumeFromPersistedState();
+      await vi.advanceTimersByTimeAsync(PHASE_DELAY_SECONDS.warming * 1000);
+
+      expect(addComment).toHaveBeenCalledTimes(1);
+      expect(addComment).toHaveBeenCalledWith({ prId: "pr-1", body: "@copilot review but do not make fixes" });
+      expect(runtimeByPrId.get("pr-1")).toMatchObject({
+        activeSessionId: null,
+        pollerStatus: "waiting_for_comments",
+        lastDispatchHeadSha: null,
+        lastBotPingHeadSha: null,
+        lastBotPingAt: null,
+      });
+    } finally {
+      orchestrator.dispose();
+      vi.useRealTimers();
     }
   });
 });

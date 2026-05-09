@@ -823,23 +823,25 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
       bodies.push("@greptile review", "@coderabbit review");
     }
 
+    const copilotBody = bodies[0]!;
+    const secondaryBodies = bodies.slice(1);
     let postedCount = 0;
-    let postedCopilotPing = false;
-    for (const body of bodies) {
+    try {
+      await prService.addComment({ prId: ctx.pr.id, body: copilotBody });
+      postedCount += 1;
+    } catch (err) {
+      logger.warn("ptm.bot_ping_failed", { prId: ctx.pr.id, body: copilotBody, error: getErrorMessage(err) });
+      logger.warn("ptm.bot_pings_not_recorded", { prId: ctx.pr.id, headSha: normalizedHeadSha, postedCount });
+      return;
+    }
+
+    for (const body of secondaryBodies) {
       try {
         await prService.addComment({ prId: ctx.pr.id, body });
         postedCount += 1;
-        if (/^@copilot\b/i.test(body)) {
-          postedCopilotPing = true;
-        }
       } catch (err) {
         logger.warn("ptm.bot_ping_failed", { prId: ctx.pr.id, body, error: getErrorMessage(err) });
       }
-    }
-
-    if (!postedCopilotPing) {
-      logger.warn("ptm.bot_pings_not_recorded", { prId: ctx.pr.id, headSha: normalizedHeadSha, postedCount });
-      return;
     }
 
     inProc.lastBotPingHeadSha = normalizedHeadSha;
