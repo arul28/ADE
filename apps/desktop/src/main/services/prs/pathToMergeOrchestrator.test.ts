@@ -14,12 +14,13 @@ import type {
   ConvergenceRuntimeState,
   LaneWorktreeLockInfo,
   LaneWorktreeLockOwnerKind,
-  PipelineSettings,
-  PrCheck,
-  PrReview,
-  PrReviewThread,
-  PrSummary,
-} from "../../../shared/types";
+	  PipelineSettings,
+	  PrCheck,
+	  PrComment,
+	  PrReview,
+	  PrReviewThread,
+	  PrSummary,
+	} from "../../../shared/types";
 import { DEFAULT_CONVERGENCE_RUNTIME_STATE, DEFAULT_PIPELINE_SETTINGS } from "../../../shared/types/prs";
 
 vi.mock("./prIssueResolver", () => ({
