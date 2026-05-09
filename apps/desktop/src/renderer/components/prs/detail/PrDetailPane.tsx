@@ -850,20 +850,23 @@ export function PrDetailPane({
   // PrsContext polls checks/status/reviews/comments, but action runs are only loaded
   // in PrDetailPane and would otherwise go stale after the initial fetch.
   React.useEffect(() => {
+    let cancelled = false;
     const id = window.setInterval(() => {
-      const reqId = detailLoadSeqRef.current;
       Promise.allSettled([
         window.ade.prs.getActionRuns(pr.id),
         window.ade.prs.getActivity(pr.id),
         window.ade.prs.getReviewThreads(pr.id),
       ]).then(([arResult, actResult, thrResult]) => {
-        if (reqId !== detailLoadSeqRef.current) return;
+        if (cancelled) return;
         if (arResult.status === "fulfilled") setActionRuns(arResult.value);
         if (actResult.status === "fulfilled") setActivity(actResult.value);
         if (thrResult.status === "fulfilled") setReviewThreads(thrResult.value);
       });
     }, 60_000);
-    return () => window.clearInterval(id);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
   }, [pr.id]);
 
   React.useEffect(() => {
