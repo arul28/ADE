@@ -1208,7 +1208,11 @@ export function PrConvergencePanel({
   const hasActiveWaitState = displayedWaitState.phase === "agent_running" || displayedWaitState.phase === "waiting_checks" || displayedWaitState.phase === "waiting_comments" || displayedWaitState.phase === "paused";
   const canRunManualRound = hasNewItems && !atMaxRounds && !busy && !checksStillRunning && !hasActiveWaitState;
   const canStartMergeOnlyPath = pipelineSettings.autoMerge && allChecksPassing;
-  const canStartPathToMerge = !autoConverge && !pathToMergeActive && !busy && !hasActiveWaitState && (hasNewItems || checksStillRunning || failingChecks.length > 0 || canStartMergeOnlyPath);
+  const canStartPathToMerge = !autoConverge
+    && !pathToMergeActive
+    && !busy
+    && !hasActiveWaitState
+    && ((!atMaxRounds && (hasNewItems || checksStillRunning || failingChecks.length > 0)) || canStartMergeOnlyPath);
   const canRunNext = mode === "auto-converge" ? canStartPathToMerge : canRunManualRound;
 
   const launchDisabledReason = mode === "auto-converge"
