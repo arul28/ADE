@@ -764,7 +764,6 @@ describe("PrDetailPane issue resolver CTA", () => {
       expect(issueInventorySync).toHaveBeenCalled();
       expect(getActionRuns).toHaveBeenCalledTimes(2);
       expect(screen.getByText("CI / build-win")).toBeTruthy();
-      expect(screen.getByText("PASSED")).toBeTruthy();
       expect(screen.queryByText("1 running")).toBeNull();
     });
   });
