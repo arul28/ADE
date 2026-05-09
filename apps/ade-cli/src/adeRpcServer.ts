@@ -7363,7 +7363,7 @@ export function createAdeRpcRequestHandler(args: {
       const normalizedTarget: Record<string, unknown> = { kind };
       const sessionId = asOptionalTrimmedString(target.sessionId);
       const laneId = asOptionalTrimmedString(target.laneId);
-      if ((kind === "work" || kind === "chat") && sessionId) normalizedTarget.sessionId = sessionId;
+      if ((kind === "work" || kind === "chat" || kind === "lane") && sessionId) normalizedTarget.sessionId = sessionId;
       if ((kind === "work" || kind === "chat" || kind === "lane" || kind === "pr") && laneId) normalizedTarget.laneId = laneId;
       if (kind === "pr") {
         const prId = asOptionalTrimmedString(target.prId);

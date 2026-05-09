@@ -1113,14 +1113,14 @@ describe("adeRpcServer", () => {
       method: "app/navigate",
       params: {
         source: "ade-code",
-        target: { kind: "chat", sessionId: "chat-1", laneId: "lane-1" },
+        target: { kind: "lane", sessionId: "chat-1", laneId: "lane-1" },
       },
     });
 
     expect(result).toEqual({ ok: true, mode: "desktop", windowId: 7 });
     expect(navigate).toHaveBeenCalledWith({
       source: "ade-code",
-      target: { kind: "chat", sessionId: "chat-1", laneId: "lane-1" },
+      target: { kind: "lane", sessionId: "chat-1", laneId: "lane-1" },
     });
   });
 

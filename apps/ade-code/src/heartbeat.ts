@@ -14,6 +14,10 @@ const EXIT_CODES_BY_SIGNAL: Partial<Record<NodeJS.Signals, number>> = {
   SIGINT: 130,
   SIGTERM: 143,
 };
+const EXIT_SIGNALS = Object.keys(EXIT_CODES_BY_SIGNAL) as NodeJS.Signals[];
+const activeHeartbeatCleanups = new Set<() => void>();
+const signalHandlers = new Map<NodeJS.Signals, () => void>();
+let processHandlersRegistered = false;
 
 function safeUnlink(filePath: string): void {
   try {
@@ -54,6 +58,40 @@ function processExists(pid: number): boolean {
   }
 }
 
+function cleanupActiveHeartbeats(): void {
+  for (const cleanup of Array.from(activeHeartbeatCleanups)) {
+    cleanup();
+  }
+}
+
+function onProcessExit(): void {
+  cleanupActiveHeartbeats();
+}
+
+function ensureProcessHandlers(): void {
+  if (processHandlersRegistered) return;
+  process.once("exit", onProcessExit);
+  for (const signal of EXIT_SIGNALS) {
+    const handler = () => {
+      cleanupActiveHeartbeats();
+      process.exit(EXIT_CODES_BY_SIGNAL[signal] ?? 1);
+    };
+    signalHandlers.set(signal, handler);
+    process.once(signal, handler);
+  }
+  processHandlersRegistered = true;
+}
+
+function removeProcessHandlersIfIdle(): void {
+  if (!processHandlersRegistered || activeHeartbeatCleanups.size > 0) return;
+  process.removeListener("exit", onProcessExit);
+  for (const [signal, handler] of signalHandlers) {
+    process.removeListener(signal, handler);
+  }
+  signalHandlers.clear();
+  processHandlersRegistered = false;
+}
+
 export function startTuiHeartbeat(projectRoot: string): TuiHeartbeat {
   const dir = path.join(projectRoot, ".ade", "cache", "ade-code", "clients");
   fs.mkdirSync(dir, { recursive: true });
@@ -72,18 +110,17 @@ export function startTuiHeartbeat(projectRoot: string): TuiHeartbeat {
     cleanupAndCount(dir);
   }, 5_000);
   timer.unref?.();
+  let stopped = false;
   const stop = () => {
+    if (stopped) return;
+    stopped = true;
     clearInterval(timer);
+    activeHeartbeatCleanups.delete(stop);
     safeUnlink(filePath);
+    removeProcessHandlersIfIdle();
   };
-  const stopAndExit = (signal: NodeJS.Signals) => {
-    stop();
-    process.exit(EXIT_CODES_BY_SIGNAL[signal] ?? 1);
-  };
-  process.once("exit", stop);
-  for (const signal of Object.keys(EXIT_CODES_BY_SIGNAL) as NodeJS.Signals[]) {
-    process.once(signal, () => stopAndExit(signal));
-  }
+  activeHeartbeatCleanups.add(stop);
+  ensureProcessHandlers();
   return {
     count: cleanupAndCount(dir),
     stop,

@@ -1,6 +1,4 @@
 import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolveAdeLayout } from "../../desktop/src/shared/adeLayout";
 import { JsonRpcClient } from "./jsonRpcClient";
 import type { AdeCodeConnection, ProjectLaunchContext } from "./types";
@@ -25,22 +23,31 @@ type DirectHandler = {
   dispose: () => void;
 };
 
+type CreateEmbeddedRuntime = (args: {
+  projectRoot: string;
+  workspaceRoot: string;
+  chatRuntime: "agent";
+  runtimeProfile: "chat";
+}) => Promise<EmbeddedRuntime>;
+
+type CreateEmbeddedRpcRequestHandler = (args: { runtime: EmbeddedRuntime; serverVersion: string }) => DirectHandler;
+
 async function loadEmbeddedAdeCli(): Promise<{
   createAdeRuntime: (args: {
     projectRoot: string;
     workspaceRoot: string;
-    chatRuntime: string;
-    runtimeProfile: string;
+    chatRuntime: "agent";
+    runtimeProfile: "chat";
   }) => Promise<EmbeddedRuntime>;
-  createAdeRpcRequestHandler: (args: { runtime: EmbeddedRuntime; serverVersion: string }) => DirectHandler;
+  createAdeRpcRequestHandler: CreateEmbeddedRpcRequestHandler;
 }> {
-  const here = path.dirname(fileURLToPath(import.meta.url));
-  const bootstrapHref = pathToFileURL(path.join(here, "../../ade-cli/src/bootstrap.ts")).href;
-  const rpcHref = pathToFileURL(path.join(here, "../../ade-cli/src/adeRpcServer.ts")).href;
-  const [bootstrap, rpc] = await Promise.all([import(bootstrapHref as string), import(rpcHref as string)]);
+  const [bootstrap, rpc] = await Promise.all([
+    import("../../ade-cli/src/bootstrap"),
+    import("../../ade-cli/src/adeRpcServer"),
+  ]);
   return {
-    createAdeRuntime: bootstrap.createAdeRuntime,
-    createAdeRpcRequestHandler: rpc.createAdeRpcRequestHandler,
+    createAdeRuntime: bootstrap.createAdeRuntime as unknown as CreateEmbeddedRuntime,
+    createAdeRpcRequestHandler: rpc.createAdeRpcRequestHandler as unknown as CreateEmbeddedRpcRequestHandler,
   };
 }
 
@@ -165,10 +172,11 @@ export async function connectToAde(args: {
     runtime,
     serverVersion: "ade-code",
   });
+  let nextRequestId = 1;
   const request = async <T>(method: string, params?: unknown): Promise<T> => {
     return await handler({
       jsonrpc: "2.0",
-      id: 1,
+      id: nextRequestId++,
       method,
       params,
     }) as T;
