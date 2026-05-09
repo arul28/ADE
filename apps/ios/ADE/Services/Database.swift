@@ -2297,6 +2297,8 @@ final class DatabaseService {
     try ensureColumn(tableName: "pr_convergence_state", columnName: "ci_retry_attempts_used", definition: "integer not null default 0")
     try ensureColumn(tableName: "pr_convergence_state", columnName: "wait_for_ci_started_at", definition: "text")
     try ensureColumn(tableName: "pr_convergence_state", columnName: "last_dispatch_head_sha", definition: "text")
+    try ensureColumn(tableName: "pr_convergence_state", columnName: "last_bot_ping_head_sha", definition: "text")
+    try ensureColumn(tableName: "pr_convergence_state", columnName: "last_bot_ping_at", definition: "text")
     try ensureColumn(tableName: "pr_convergence_state", columnName: "pause_repeat_count", definition: "integer not null default 0")
     try ensureColumn(tableName: "pr_convergence_state", columnName: "last_pause_reason_hash", definition: "text")
 

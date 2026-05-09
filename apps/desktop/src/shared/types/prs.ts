@@ -1419,6 +1419,8 @@ export type ConvergenceRuntimeState = {
   ciRetryAttemptsUsed: number;
   waitForCiStartedAt: string | null;
   lastDispatchHeadSha: string | null;
+  lastBotPingHeadSha: string | null;
+  lastBotPingAt: string | null;
   pauseRepeatCount: number;
   lastPauseReasonHash: string | null;
   lastStartedAt: string | null;
@@ -1516,6 +1518,8 @@ export const DEFAULT_CONVERGENCE_RUNTIME_STATE: Omit<ConvergenceRuntimeState, "p
   ciRetryAttemptsUsed: 0,
   waitForCiStartedAt: null,
   lastDispatchHeadSha: null,
+  lastBotPingHeadSha: null,
+  lastBotPingAt: null,
   pauseRepeatCount: 0,
   lastPauseReasonHash: null,
   lastStartedAt: null,

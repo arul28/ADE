@@ -19,6 +19,8 @@ function runtime(patch: Partial<PrConvergenceState> = {}): PrConvergenceState {
     ciRetryAttemptsUsed: 0,
     waitForCiStartedAt: null,
     lastDispatchHeadSha: null,
+    lastBotPingHeadSha: null,
+    lastBotPingAt: null,
     pauseRepeatCount: 0,
     lastPauseReasonHash: null,
     lastStartedAt: null,

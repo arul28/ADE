@@ -295,6 +295,8 @@ type ConvergenceRuntimeRow = {
   ci_retry_attempts_used: number | null;
   wait_for_ci_started_at: string | null;
   last_dispatch_head_sha: string | null;
+  last_bot_ping_head_sha: string | null;
+  last_bot_ping_at: string | null;
   pause_repeat_count: number | null;
   last_pause_reason_hash: string | null;
   last_started_at: string | null;
@@ -363,6 +365,8 @@ function validateConvergenceRuntimeState(state: Partial<ConvergenceRuntimeState>
     "errorMessage",
     "waitForCiStartedAt",
     "lastDispatchHeadSha",
+    "lastBotPingHeadSha",
+    "lastBotPingAt",
     "lastPauseReasonHash",
     "lastStartedAt",
     "lastPolledAt",
@@ -405,6 +409,8 @@ function sanitizeConvergenceRuntimeState(
     ciRetryAttemptsUsed: Math.max(0, Math.floor(state.ciRetryAttemptsUsed)),
     waitForCiStartedAt: trimOrNull(state.waitForCiStartedAt),
     lastDispatchHeadSha: trimOrNull(state.lastDispatchHeadSha),
+    lastBotPingHeadSha: trimOrNull(state.lastBotPingHeadSha),
+    lastBotPingAt: trimOrNull(state.lastBotPingAt),
     pauseRepeatCount: Math.max(0, Math.floor(state.pauseRepeatCount)),
     lastPauseReasonHash: trimOrNull(state.lastPauseReasonHash),
     lastStartedAt: trimOrNull(state.lastStartedAt),
@@ -433,6 +439,8 @@ function rowToConvergenceRuntime(row: ConvergenceRuntimeRow): ConvergenceRuntime
     ciRetryAttemptsUsed: row.ci_retry_attempts_used ?? 0,
     waitForCiStartedAt: row.wait_for_ci_started_at,
     lastDispatchHeadSha: row.last_dispatch_head_sha,
+    lastBotPingHeadSha: row.last_bot_ping_head_sha,
+    lastBotPingAt: row.last_bot_ping_at,
     pauseRepeatCount: row.pause_repeat_count ?? 0,
     lastPauseReasonHash: row.last_pause_reason_hash,
     lastStartedAt: row.last_started_at,
@@ -774,10 +782,11 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
          (pr_id, auto_converge_enabled, status, poller_status, current_round, active_session_id,
           active_lane_id, active_href, pause_reason, error_message,
           force_finalize_used, ci_retry_attempts_used, wait_for_ci_started_at,
-          last_dispatch_head_sha, pause_repeat_count, last_pause_reason_hash,
+          last_dispatch_head_sha, last_bot_ping_head_sha, last_bot_ping_at,
+          pause_repeat_count, last_pause_reason_hash,
           last_started_at, last_polled_at, last_paused_at, last_stopped_at,
           created_at, updated_at)
-       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        on conflict(pr_id) do update set
          auto_converge_enabled = excluded.auto_converge_enabled,
          status = excluded.status,
@@ -792,6 +801,8 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
          ci_retry_attempts_used = excluded.ci_retry_attempts_used,
          wait_for_ci_started_at = excluded.wait_for_ci_started_at,
          last_dispatch_head_sha = excluded.last_dispatch_head_sha,
+         last_bot_ping_head_sha = excluded.last_bot_ping_head_sha,
+         last_bot_ping_at = excluded.last_bot_ping_at,
          pause_repeat_count = excluded.pause_repeat_count,
          last_pause_reason_hash = excluded.last_pause_reason_hash,
          last_started_at = excluded.last_started_at,
@@ -814,6 +825,8 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
         merged.ciRetryAttemptsUsed,
         merged.waitForCiStartedAt,
         merged.lastDispatchHeadSha,
+        merged.lastBotPingHeadSha,
+        merged.lastBotPingAt,
         merged.pauseRepeatCount,
         merged.lastPauseReasonHash,
         merged.lastStartedAt,

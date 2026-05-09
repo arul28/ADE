@@ -144,6 +144,8 @@ function makeRuntimeRow(overrides: Record<string, unknown> = {}) {
     ci_retry_attempts_used: 0,
     wait_for_ci_started_at: null,
     last_dispatch_head_sha: null,
+    last_bot_ping_head_sha: null,
+    last_bot_ping_at: null,
     pause_repeat_count: 0,
     last_pause_reason_hash: null,
     last_started_at: "2026-03-23T12:00:00.000Z",
@@ -1365,6 +1367,8 @@ describe("issueInventoryService", () => {
             ci_retry_attempts_used: 2,
             wait_for_ci_started_at: "2026-03-23T12:02:00.000Z",
             last_dispatch_head_sha: "abc123",
+            last_bot_ping_head_sha: "def456",
+            last_bot_ping_at: "2026-03-23T12:03:00.000Z",
             pause_repeat_count: 3,
             last_pause_reason_hash: "hash-1",
           });
@@ -1384,6 +1388,8 @@ describe("issueInventoryService", () => {
         ciRetryAttemptsUsed: 2,
         waitForCiStartedAt: "2026-03-23T12:02:00.000Z",
         lastDispatchHeadSha: "abc123",
+        lastBotPingHeadSha: "def456",
+        lastBotPingAt: "2026-03-23T12:03:00.000Z",
         pauseRepeatCount: 3,
         lastPauseReasonHash: "hash-1",
       }));
@@ -1452,6 +1458,8 @@ describe("issueInventoryService", () => {
         ciRetryAttemptsUsed: 2,
         waitForCiStartedAt: "2026-03-23T12:02:00.000Z",
         lastDispatchHeadSha: "abc123",
+        lastBotPingHeadSha: "def456",
+        lastBotPingAt: "2026-03-23T12:03:00.000Z",
         pauseRepeatCount: 3,
         lastPauseReasonHash: "hash-1",
       });
@@ -1473,8 +1481,10 @@ describe("issueInventoryService", () => {
       expect(params[11]).toBe(2);
       expect(params[12]).toBe("2026-03-23T12:02:00.000Z");
       expect(params[13]).toBe("abc123");
-      expect(params[14]).toBe(3);
-      expect(params[15]).toBe("hash-1");
+      expect(params[14]).toBe("def456");
+      expect(params[15]).toBe("2026-03-23T12:03:00.000Z");
+      expect(params[16]).toBe(3);
+      expect(params[17]).toBe("hash-1");
     });
 
     it("reconciles active convergence sessions when a tracked chat exits", () => {
@@ -2173,6 +2183,8 @@ describe("issueInventoryService", () => {
           ciRetryAttemptsUsed: 1,
           waitForCiStartedAt: "2026-03-23T12:02:00.000Z",
           lastDispatchHeadSha: "abc123",
+          lastBotPingHeadSha: "def456",
+          lastBotPingAt: "2026-03-23T12:03:00.000Z",
           pauseRepeatCount: 2,
           lastPauseReasonHash: "hash-1",
         }),

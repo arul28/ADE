@@ -3471,6 +3471,8 @@ function migrate(db: MigrationDb) {
   try { db.run("alter table pr_convergence_state add column ci_retry_attempts_used integer not null default 0"); } catch {}
   try { db.run("alter table pr_convergence_state add column wait_for_ci_started_at text"); } catch {}
   try { db.run("alter table pr_convergence_state add column last_dispatch_head_sha text"); } catch {}
+  try { db.run("alter table pr_convergence_state add column last_bot_ping_head_sha text"); } catch {}
+  try { db.run("alter table pr_convergence_state add column last_bot_ping_at text"); } catch {}
   try { db.run("alter table pr_convergence_state add column pause_repeat_count integer not null default 0"); } catch {}
   try { db.run("alter table pr_convergence_state add column last_pause_reason_hash text"); } catch {}
 

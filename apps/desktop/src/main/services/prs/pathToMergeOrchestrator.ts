@@ -221,8 +221,8 @@ function makeInProcessStateFromRuntime(
     waitForCiStartedAt: runtime.waitForCiStartedAt,
     ciRetryAttemptsUsed: runtime.ciRetryAttemptsUsed,
     lastDispatchHeadSha: runtime.lastDispatchHeadSha,
-    lastBotPingHeadSha: null,
-    lastBotPingAt: null,
+    lastBotPingHeadSha: runtime.lastBotPingHeadSha,
+    lastBotPingAt: runtime.lastBotPingAt,
     laneWorktreeLockToken: null,
   };
 }
@@ -351,8 +351,20 @@ const REVIEW_BOT_CHECKS = [
 ] as const;
 
 function hasCopilotResponse(comments: PrComment[], reviews: PrReview[]): boolean {
-  return comments.some((comment) => /copilot/i.test(comment.author))
-    || reviews.some((review) => /copilot/i.test(review.reviewer));
+  const isCopilotAuthor = (author: string | null | undefined) => {
+    const normalized = author?.trim().toLowerCase();
+    return normalized === "copilot-pull-request-reviewer[bot]"
+      || normalized === "github-copilot[bot]"
+      || normalized === "copilot[bot]";
+  };
+  return comments.some((comment) => isCopilotAuthor(comment.author))
+    || reviews.some((review) => isCopilotAuthor(review.reviewer));
+}
+
+function isWithinReviewBotWaitWindow(timestamp: string | null | undefined, now: () => number): boolean {
+  if (!timestamp) return true;
+  const startedAt = Date.parse(timestamp);
+  return !Number.isFinite(startedAt) || now() - startedAt < REVIEW_BOT_WAIT_TIMEOUT_MS;
 }
 
 function getPendingReviewBots(
@@ -365,7 +377,8 @@ function getPendingReviewBots(
   const pending = new Set<string>();
   for (const bot of REVIEW_BOT_CHECKS) {
     const matchingChecks = checks.filter((check) => bot.pattern.test(check.name));
-    if (matchingChecks.some((check) => check.status !== "completed")) {
+    if (matchingChecks.some((check) => check.status !== "completed"
+      && isWithinReviewBotWaitWindow(inProc.lastBotPingAt ?? check.startedAt, now))) {
       pending.add(bot.name);
     }
   }
@@ -766,6 +779,8 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
       ciRetryAttemptsUsed: inProc.ciRetryAttemptsUsed,
       waitForCiStartedAt: inProc.waitForCiStartedAt,
       lastDispatchHeadSha: inProc.lastDispatchHeadSha,
+      lastBotPingHeadSha: inProc.lastBotPingHeadSha,
+      lastBotPingAt: inProc.lastBotPingAt,
     });
   }
 

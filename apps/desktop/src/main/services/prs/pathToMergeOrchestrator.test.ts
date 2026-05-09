@@ -16,6 +16,7 @@ import type {
   LaneWorktreeLockOwnerKind,
   PipelineSettings,
   PrCheck,
+  PrComment,
   PrReview,
   PrReviewThread,
   PrSummary,
@@ -127,6 +128,22 @@ function makeReview(overrides: Partial<PrReview> = {}): PrReview {
     state: "commented",
     body: "Actionable comments posted: 1",
     submittedAt: "2026-05-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function makeComment(overrides: Partial<PrComment> = {}): PrComment {
+  return {
+    id: "comment-1",
+    author: "reviewer",
+    authorAvatarUrl: null,
+    body: "Please fix this.",
+    source: "issue",
+    url: null,
+    path: null,
+    line: null,
+    createdAt: "2026-05-01T00:00:00.000Z",
+    updatedAt: "2026-05-01T00:00:00.000Z",
     ...overrides,
   };
 }
@@ -369,9 +386,10 @@ function buildDeps(initial?: {
       resetSentToAgent,
       getPipelineSettings: () => ({ ...DEFAULT_PIPELINE_SETTINGS, ...initial?.pipelineSettings }),
       getConvergenceStatus: () => convergenceStatus,
-      syncFromPrData: (_prId: string, checks: PrCheck[], reviewThreads: PrReviewThread[]) => {
+      syncFromPrData: (_prId: string, checks: PrCheck[], reviewThreads: PrReviewThread[], comments: PrComment[]) => {
         const totalNew = checks.filter((check) => check.conclusion === "failure").length
-          + reviewThreads.filter((thread) => !thread.isResolved && !thread.isOutdated).length;
+          + reviewThreads.filter((thread) => !thread.isResolved && !thread.isOutdated).length
+          + comments.length;
         convergenceStatus = {
           ...convergenceStatus,
           totalNew,
@@ -970,6 +988,106 @@ describe("createPathToMergeOrchestrator.runIteration", () => {
     } finally {
       orchestrator.dispose();
       vi.useRealTimers();
+    }
+  });
+
+  it("does not repost review-bot pings for a restored head SHA", async () => {
+    vi.useFakeTimers();
+    const runtimeByPrId = new Map<string, ConvergenceRuntimeState>([
+      ["pr-1", buildRuntime("pr-1", {
+        autoConvergeEnabled: true,
+        status: "running",
+        pollerStatus: "polling",
+        activeSessionId: "sess-1",
+        lastDispatchHeadSha: "sha-before",
+        lastBotPingHeadSha: "sha-after",
+        lastBotPingAt: "2026-05-01T00:02:00.000Z",
+      })],
+    ]);
+    const ptmArgsByPrId = new Map<string, Record<string, unknown> | null>([
+      ["pr-1", { modelId: "openai/gpt-5.4", reasoning: null, permissionMode: "default", scope: "both", additionalInstructions: null }],
+    ]);
+    const addComment = vi.fn();
+    const { deps } = buildDeps({
+      runtimeByPrId,
+      ptmArgsByPrId,
+      prs: [buildPrSummary({ checksStatus: "failing", reviewStatus: "changes_requested" })],
+      pipelineSettings: { earlyMergeOnGreen: false },
+      convergenceStatus: { totalNew: 1 },
+      getCommits: async () => [{
+        sha: "sha-after",
+        shortSha: "sha-after",
+        message: "fix",
+        author: { login: null, name: "Test", email: null },
+        committedDate: "2026-05-01T00:01:00.000Z",
+      }],
+      getSessionSummary: async () => ({ status: "idle", awaitingInput: false }) as Awaited<ReturnType<PathToMergeDeps["agentChatService"]["getSessionSummary"]>>,
+      addComment: addComment as unknown as PathToMergeDeps["prService"]["addComment"],
+    });
+    const orchestrator = createPathToMergeOrchestrator(deps);
+    try {
+      orchestrator.resumeFromPersistedState();
+      await vi.advanceTimersByTimeAsync(PHASE_DELAY_SECONDS.warming * 1000);
+
+      expect(addComment).not.toHaveBeenCalled();
+      expect(runtimeByPrId.get("pr-1")).toMatchObject({
+        activeSessionId: null,
+        pollerStatus: "waiting_for_comments",
+        lastDispatchHeadSha: null,
+        lastBotPingHeadSha: "sha-after",
+        lastBotPingAt: "2026-05-01T00:02:00.000Z",
+      });
+    } finally {
+      orchestrator.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not wait forever on stale review-bot checks", async () => {
+    const runtimeByPrId = new Map<string, ConvergenceRuntimeState>();
+    const land = vi.fn(async () => ({
+      prId: "pr-1",
+      prNumber: 1,
+      success: true as const,
+      mergeCommitSha: "merge-sha",
+      branchDeleted: false,
+      laneArchived: false,
+      error: null,
+    }));
+    const { deps } = buildDeps({
+      runtimeByPrId,
+      prs: [buildPrSummary({ checksStatus: "passing", reviewStatus: "requested" })],
+      pipelineSettings: { earlyMergeOnGreen: false, autoMerge: true, atCapPolicy: "ci_retry_once" },
+      convergenceStatus: { totalNew: 0 },
+      getChecks: async () => [
+        makeCheck({ name: "ci / unit", status: "completed", conclusion: "success" }),
+        makeCheck({
+          name: "Greptile Review",
+          status: "in_progress",
+          conclusion: null,
+          startedAt: "2026-05-01T00:00:00.000Z",
+        }),
+      ],
+      getReviewThreads: async () => [],
+      getReviews: async () => [],
+      land,
+    });
+    const orchestrator = createPathToMergeOrchestrator(deps);
+    try {
+      await orchestrator.startPathToMerge({ prId: "pr-1", modelId: "openai/gpt-5.4" });
+      runtimeByPrId.set("pr-1", {
+        ...runtimeByPrId.get("pr-1")!,
+        currentRound: 5,
+      });
+      await flushIteration();
+
+      expect(land).toHaveBeenCalledWith(expect.objectContaining({ prId: "pr-1", method: "squash", archiveLane: false }));
+      expect(runtimeByPrId.get("pr-1")).toMatchObject({
+        status: "merged",
+        autoConvergeEnabled: false,
+      });
+    } finally {
+      orchestrator.dispose();
     }
   });
 
