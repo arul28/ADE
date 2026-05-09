@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowDown, ArrowLeft, ArrowsClockwise, Check, Stack, Trash, Upload, Warning } from "@phosphor-icons/react";
+import { ArrowDown, ArrowLeft, ArrowsClockwise, CaretDown, CaretRight, Check, Folder, Stack, Trash, Upload, Warning } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import { useAppStore } from "../../state/appStore";
 import { getProjectConfigCached } from "../../lib/projectConfigCache";
@@ -190,6 +190,49 @@ function getFileKindColor(kind: FileChange["kind"]): string {
   if (kind === "added") return COLORS.success;
   if (kind === "deleted") return COLORS.danger;
   return COLORS.warning;
+}
+
+type ChangeTreeNode = {
+  name: string;
+  path: string;
+  dirs: Map<string, ChangeTreeNode>;
+  files: FileChange[];
+};
+
+function createChangeTreeNode(name: string, path: string): ChangeTreeNode {
+  return { name, path, dirs: new Map(), files: [] };
+}
+
+function buildChangeTree(files: FileChange[]): ChangeTreeNode {
+  const root = createChangeTreeNode("", "");
+  for (const file of files) {
+    const parts = file.path.split("/").filter(Boolean);
+    let node = root;
+    for (const part of parts.slice(0, -1)) {
+      const nextPath = node.path ? `${node.path}/${part}` : part;
+      let next = node.dirs.get(part);
+      if (!next) {
+        next = createChangeTreeNode(part, nextPath);
+        node.dirs.set(part, next);
+      }
+      node = next;
+    }
+    node.files.push(file);
+  }
+  return root;
+}
+
+function getChangeTreeStats(node: ChangeTreeNode): { files: number; additions: number; deletions: number } {
+  let files = node.files.length;
+  let additions = node.files.reduce((sum, file) => sum + (file.additions ?? 0), 0);
+  let deletions = node.files.reduce((sum, file) => sum + (file.deletions ?? 0), 0);
+  for (const child of node.dirs.values()) {
+    const stats = getChangeTreeStats(child);
+    files += stats.files;
+    additions += stats.additions;
+    deletions += stats.deletions;
+  }
+  return { files, additions, deletions };
 }
 
 function getCommitButtonLabel(args: {
@@ -527,6 +570,7 @@ export function LaneGitActionsPane({
   const hasUnstaged = changes.unstaged.length > 0;
   const [showAllStagedChanges, setShowAllStagedChanges] = useState(false);
   const [showAllUnstagedChanges, setShowAllUnstagedChanges] = useState(false);
+  const [collapsedChangeFolders, setCollapsedChangeFolders] = useState<Set<string>>(() => new Set());
   const visibleStagedChanges = useMemo(
     () => (showAllStagedChanges ? changes.staged : changes.staged.slice(0, MAX_RENDERED_CHANGE_ROWS_PER_SECTION)),
     [changes.staged, showAllStagedChanges],
@@ -1288,7 +1332,18 @@ export function LaneGitActionsPane({
           title={`${file.kind} file`}
           style={{ width: 7, height: 7, borderRadius: "50%", background: kindColor }}
         />
-        <span className="truncate flex-1" style={{ fontSize: 11 }}>{file.path}</span>
+        <span className="truncate flex-1" style={{ fontSize: 11 }} title={file.oldPath ? `${file.oldPath} -> ${file.path}` : file.path}>
+          {file.oldPath ? `${file.oldPath} -> ${file.path}` : file.path}
+        </span>
+        {file.additions != null && file.additions > 0 ? (
+          <span style={{ fontSize: 10, color: COLORS.success }}>+{file.additions}</span>
+        ) : null}
+        {file.deletions != null && file.deletions > 0 ? (
+          <span style={{ fontSize: 10, color: COLORS.danger }}>-{file.deletions}</span>
+        ) : null}
+        {file.isBinary ? (
+          <span style={inlineBadge(COLORS.textDim, { fontSize: 9 })}>binary</span>
+        ) : null}
         {(alsoStaged || alsoUnstaged) ? (
           <span
             title="This file has both staged and unstaged changes."
@@ -1366,6 +1421,68 @@ export function LaneGitActionsPane({
         )}
       </div>
     );
+  };
+
+  const renderChangeTreeNode = (node: ChangeTreeNode, mode: "staged" | "unstaged", depth: number): React.ReactNode[] => {
+    const rows: React.ReactNode[] = [];
+    const dirs = [...node.dirs.values()].sort((a, b) => a.name.localeCompare(b.name));
+    const files = [...node.files].sort((a, b) => a.path.localeCompare(b.path));
+
+    for (const dir of dirs) {
+      const key = `${mode}:${dir.path}`;
+      const collapsed = collapsedChangeFolders.has(key);
+      const stats = getChangeTreeStats(dir);
+      rows.push(
+        <button
+          key={key}
+          type="button"
+          className="flex w-full items-center gap-2 text-left"
+          style={{
+            padding: "5px 8px",
+            paddingLeft: 8 + depth * 14,
+            color: COLORS.textMuted,
+            background: "transparent",
+            border: "none",
+            cursor: "pointer",
+            fontFamily: MONO_FONT,
+            fontSize: 11,
+          }}
+          onClick={() => {
+            setCollapsedChangeFolders((prev) => {
+              const next = new Set(prev);
+              if (next.has(key)) next.delete(key);
+              else next.add(key);
+              return next;
+            });
+          }}
+          onMouseEnter={(event) => { event.currentTarget.style.background = COLORS.hoverBg; }}
+          onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; }}
+        >
+          {collapsed ? <CaretRight size={12} /> : <CaretDown size={12} />}
+          <Folder size={13} weight="duotone" />
+          <span className="truncate" style={{ flex: 1 }}>{dir.name}</span>
+          <span style={{ color: COLORS.textDim }}>{stats.files}</span>
+          {stats.additions > 0 ? <span style={{ color: COLORS.success }}>+{stats.additions}</span> : null}
+          {stats.deletions > 0 ? <span style={{ color: COLORS.danger }}>-{stats.deletions}</span> : null}
+        </button>
+      );
+      if (!collapsed) rows.push(...renderChangeTreeNode(dir, mode, depth + 1));
+    }
+
+    for (const file of files) {
+      rows.push(
+        <div key={`${mode}:wrap:${file.path}`} style={{ paddingLeft: depth * 14 }}>
+          {renderFileRow(file, mode)}
+        </div>
+      );
+    }
+
+    return rows;
+  };
+
+  const renderChangeTree = (files: FileChange[], mode: "staged" | "unstaged") => {
+    const tree = buildChangeTree(files);
+    return renderChangeTreeNode(tree, mode, 0);
   };
 
   const diffViewActive = Boolean(
@@ -2510,7 +2627,7 @@ export function LaneGitActionsPane({
               {changes.staged.length > 0 ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
                   <div style={{ padding: "0 8px 4px", ...LABEL_STYLE }}>STAGED ({changes.staged.length})</div>
-                  {visibleStagedChanges.map((file) => renderFileRow(file, "staged"))}
+                  {renderChangeTree(visibleStagedChanges, "staged")}
                   {hiddenStagedChangeCount > 0 ? (
                     <div style={{ padding: "6px 8px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textDim, display: "flex", alignItems: "center", gap: 8 }}>
                       <span>Showing first {MAX_RENDERED_CHANGE_ROWS_PER_SECTION} of {changes.staged.length} staged files.</span>
@@ -2528,7 +2645,7 @@ export function LaneGitActionsPane({
               {changes.unstaged.length > 0 ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
                   <div style={{ padding: "0 8px 4px", ...LABEL_STYLE }}>UNSTAGED ({changes.unstaged.length})</div>
-                  {visibleUnstagedChanges.map((file) => renderFileRow(file, "unstaged"))}
+                  {renderChangeTree(visibleUnstagedChanges, "unstaged")}
                   {hiddenUnstagedChangeCount > 0 ? (
                     <div style={{ padding: "6px 8px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textDim, display: "flex", alignItems: "center", gap: 8 }}>
                       <span>Showing first {MAX_RENDERED_CHANGE_ROWS_PER_SECTION} of {changes.unstaged.length} unstaged files.</span>

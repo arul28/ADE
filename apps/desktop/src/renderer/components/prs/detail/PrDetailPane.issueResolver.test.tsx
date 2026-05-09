@@ -44,6 +44,10 @@ vi.mock("../shared/PrIssueResolverModal", () => ({
   ) : null),
 }));
 
+vi.mock("../../shared/AdeDiffViewer", () => ({
+  AdeDiffViewer: () => <div data-testid="ade-diff-viewer" />,
+}));
+
 import { PrDetailPane } from "./PrDetailPane";
 
 function makeCheck(overrides: Partial<PrCheck> = {}): PrCheck {

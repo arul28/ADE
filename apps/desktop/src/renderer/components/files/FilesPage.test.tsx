@@ -28,6 +28,25 @@ vi.mock("../lanes/MonacoDiffView", () => ({
   MonacoDiffView: () => <div data-testid="monaco-diff" />,
 }));
 
+vi.mock("../shared/AdeDiffViewer", () => ({
+  AdeDiffViewer: () => <div data-testid="ade-diff-viewer" />,
+}));
+
+vi.mock("@tanstack/react-virtual", () => ({
+  useVirtualizer: ({ count, estimateSize }: { count: number; estimateSize: () => number }) => {
+    const size = estimateSize();
+    return {
+      getTotalSize: () => count * size,
+      getVirtualItems: () => Array.from({ length: count }, (_, index) => ({
+        index,
+        key: index,
+        size,
+        start: index * size,
+      })),
+    };
+  },
+}));
+
 vi.mock("monaco-editor/esm/vs/editor/editor.worker?worker", () => ({
   default: class MockEditorWorker {},
 }));
@@ -290,6 +309,11 @@ describe("FilesPage", () => {
           modified: { exists: true, text: fileContents[path] ?? "" },
           language: path.endsWith(".ts") ? "typescript" : "markdown",
         })),
+        getFilePatch: vi.fn(async ({ path, mode }: { path: string; mode: string }) => ({
+          path,
+          mode,
+          patch: "",
+        })),
       },
       app: {
         openPathInEditor: vi.fn(async () => undefined),
@@ -335,7 +359,7 @@ describe("FilesPage", () => {
     });
   });
 
-  it("passes includeIgnored through quick open and search affordances", async () => {
+  it("filters loaded tree paths locally and keeps content search explicit", async () => {
     renderFilesPage({
       openFilePath: ".ade/notes/project.md",
       preferPrimaryWorkspace: true,
@@ -343,7 +367,18 @@ describe("FilesPage", () => {
 
     await waitForEditorText("# Project notes");
 
-    fireEvent.change(screen.getByPlaceholderText("SEARCH FILES"), {
+    fireEvent.change(screen.getByPlaceholderText("Filter paths"), {
+      target: { value: "src" },
+    });
+
+    expect(await screen.findByTitle("src")).toBeTruthy();
+    await waitFor(() => {
+      expect(screen.queryByTitle(".ade")).toBeNull();
+    });
+    expect(window.ade.files.searchText).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: /content/i }));
+    fireEvent.change(screen.getByPlaceholderText(/Search file contents/i), {
       target: { value: "renderer" },
     });
 
@@ -355,6 +390,7 @@ describe("FilesPage", () => {
       });
     });
     expect(await screen.findByText(".ade/notes/project.md:3:1")).toBeTruthy();
+    fireEvent.keyDown(window, { key: "Escape" });
 
     fireEvent.click(screen.getByText(/QUICK OPEN/i));
     fireEvent.change(screen.getByPlaceholderText(/Type to search files/i), {
@@ -489,6 +525,28 @@ describe("FilesPage", () => {
     expect(await screen.findByTitle("src/main.ts")).toBeTruthy();
     expect(screen.queryByTitle("src/index.ts")).toBeNull();
     expect((window.ade.files.readFile as any).mock.calls.some(([arg]: [{ path: string }]) => arg.path === "src/main.ts")).toBe(true);
+  });
+
+  it("renames the selected tree row inline with F2", async () => {
+    renderFilesPage({ preferPrimaryWorkspace: true });
+
+    fireEvent.click(await screen.findByTitle("src"));
+    const fileRow = await screen.findByTitle("src/index.ts");
+    fireEvent.click(fileRow);
+    await waitForEditorText("value = 1");
+
+    fireEvent.keyDown(window, { key: "F2" });
+    const renameInput = await screen.findByDisplayValue("index.ts");
+    fireEvent.change(renameInput, { target: { value: "main.ts" } });
+    fireEvent.keyDown(renameInput, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(window.ade.files.rename).toHaveBeenCalledWith({
+        workspaceId: "primary",
+        oldPath: "src/index.ts",
+        newPath: "src/main.ts",
+      });
+    });
   });
 
   it("closes deleted tabs without crashing the page", async () => {

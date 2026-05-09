@@ -4,8 +4,8 @@ import { useNavigate } from "react-router-dom";
 import { Group, Panel } from "react-resizable-panels";
 import { EmptyState } from "../ui/EmptyState";
 import { ResizeGutter } from "../ui/ResizeGutter";
-import { MonacoDiffView, type MonacoDiffHandle } from "./MonacoDiffView";
-import type { FileDiff, GitCommitSummary } from "../../../shared/types";
+import { AdeDiffViewer, type AdeDiffViewerHandle } from "../shared/AdeDiffViewer";
+import type { FileDiff, FilePatch, GitCommitSummary } from "../../../shared/types";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { COLORS, LABEL_STYLE, MONO_FONT, inlineBadge, outlineButton } from "./laneDesignTokens";
 
@@ -44,16 +44,18 @@ export function LaneDiffPane({
   liveSync?: boolean;
 }) {
   const navigate = useNavigate();
-  const diffRef = useRef<MonacoDiffHandle | null>(null);
+  const diffRef = useRef<AdeDiffViewerHandle | null>(null);
   const workingDiffRequestSeq = useRef(0);
   const commitFilesRequestSeq = useRef(0);
   const commitDiffRequestSeq = useRef(0);
 
   const [diff, setDiff] = useState<FileDiff | null>(null);
+  const [patch, setPatch] = useState<FilePatch | null>(null);
   const [diffFailed, setDiffFailed] = useState(false);
   const [commitFiles, setCommitFiles] = useState<string[]>([]);
   const [selectedCommitFilePath, setSelectedCommitFilePath] = useState<string | null>(null);
   const [commitDiff, setCommitDiff] = useState<FileDiff | null>(null);
+  const [commitPatch, setCommitPatch] = useState<FilePatch | null>(null);
   const [commitDiffFailed, setCommitDiffFailed] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [showAllCommitFiles, setShowAllCommitFiles] = useState(false);
@@ -70,20 +72,33 @@ export function LaneDiffPane({
     const requestId = ++workingDiffRequestSeq.current;
     if (!laneId || !selectedPath || !selectedFileMode) {
       setDiff(null);
+      setPatch(null);
       setDiffFailed(false);
       return Promise.resolve();
     }
 
-    return window.ade.diff
-      .getFile({ laneId, path: selectedPath, mode: selectedFileMode })
-      .then((value) => {
+    return Promise.allSettled([
+      window.ade.diff.getFile({ laneId, path: selectedPath, mode: selectedFileMode }),
+      selectedFileMode === "staged"
+        ? window.ade.diff.getFilePatch({ laneId, path: selectedPath, mode: selectedFileMode })
+        : Promise.resolve(null),
+    ])
+      .then(([diffResult, patchResult]) => {
         if (workingDiffRequestSeq.current !== requestId) return;
-        setDiff(value);
+        if (diffResult.status !== "fulfilled") {
+          setDiff(null);
+          setPatch(null);
+          setDiffFailed(true);
+          return;
+        }
+        setDiff(diffResult.value);
+        setPatch(patchResult.status === "fulfilled" && patchResult.value?.patch.trim() ? patchResult.value : null);
         setDiffFailed(false);
       })
       .catch(() => {
         if (workingDiffRequestSeq.current !== requestId) return;
         setDiff(null);
+        setPatch(null);
         setDiffFailed(true);
       });
   }, [laneId, selectedPath, selectedFileMode]);
@@ -158,6 +173,7 @@ export function LaneDiffPane({
     setCommitFiles([]);
     setSelectedCommitFilePath(null);
     setCommitDiff(null);
+    setCommitPatch(null);
     setCommitDiffFailed(false);
     if (!laneId || !selectedCommit) return;
 
@@ -182,19 +198,30 @@ export function LaneDiffPane({
   const refreshCommitDiff = React.useCallback(() => {
     const requestId = ++commitDiffRequestSeq.current;
     setCommitDiff(null);
+    setCommitPatch(null);
     setCommitDiffFailed(false);
     if (!laneId || !selectedCommit || !selectedCommitFilePath) return;
-    window.ade.diff
-      .getFile({
+    const args = {
         laneId,
         path: selectedCommitFilePath,
         mode: "commit",
         compareRef: selectedCommit.sha,
         compareTo: "parent"
-      })
-      .then((value) => {
+      } as const;
+    Promise.allSettled([
+      window.ade.diff.getFile(args),
+      window.ade.diff.getFilePatch(args),
+    ])
+      .then(([diffResult, patchResult]) => {
         if (commitDiffRequestSeq.current !== requestId) return;
-        setCommitDiff(value);
+        if (diffResult.status !== "fulfilled" && patchResult.status !== "fulfilled") {
+          setCommitDiff(null);
+          setCommitPatch(null);
+          setCommitDiffFailed(true);
+          return;
+        }
+        setCommitDiff(diffResult.status === "fulfilled" ? diffResult.value : null);
+        setCommitPatch(patchResult.status === "fulfilled" && patchResult.value.patch.trim() ? patchResult.value : null);
       })
       .catch(() => {
         if (commitDiffRequestSeq.current !== requestId) return;
@@ -301,10 +328,10 @@ export function LaneDiffPane({
                 </div>
               ) : commitDiffFailed ? (
                 <DiffFailedRetry onRetry={refreshCommitDiff} />
-              ) : !commitDiff ? (
+              ) : !commitDiff && !commitPatch ? (
                 <div className="flex h-full items-center justify-center" style={{ fontSize: 12, color: COLORS.textMuted }}>Loading diff...</div>
               ) : (
-                <MonacoDiffView diff={commitDiff} editable={false} className="h-full" />
+                <AdeDiffViewer diff={commitDiff} patch={commitPatch} editable={false} className="h-full" />
               )}
             </Panel>
           </Group>
@@ -396,7 +423,7 @@ export function LaneDiffPane({
             ) : null}
           </div>
         </div>
-        <MonacoDiffView ref={diffRef} diff={diff} editable={selectedFileMode === "unstaged"} className="flex-1" />
+        <AdeDiffViewer ref={diffRef} diff={diff} patch={patch} editable={selectedFileMode === "unstaged"} className="flex-1" />
       </div>
     );
   }

@@ -2,9 +2,11 @@ import fs from "node:fs";
 import path from "node:path";
 import type { createLaneService } from "../lanes/laneService";
 import { runGit } from "../git/git";
-import type { DiffChanges, DiffMode, FileDiff, FileChange } from "../../../shared/types";
+import { resolvePathWithinRoot } from "../shared/utils";
+import type { DiffChanges, DiffMode, FileDiff, FileChange, FilePatch } from "../../../shared/types";
 
 export const MAX_DIFF_SIDE_TEXT_BYTES = 192 * 1024;
+export const MAX_DIFF_PATCH_BYTES = 512 * 1024;
 export const DIFF_TRUNCATION_NOTICE = "\n\n[Preview truncated. Open the file externally or in Files for the full content.]\n";
 
 export function appendDiffTruncationNotice(text: string): string {
@@ -14,11 +16,20 @@ export function appendDiffTruncationNotice(text: string): string {
 function parseStatusKind(code: string): FileChange["kind"] {
   if (code === "??") return "untracked";
   const c = code.replace(/[^A-Z]/g, "");
-  if (c.includes("M")) return "modified";
-  if (c.includes("A")) return "added";
-  if (c.includes("D")) return "deleted";
   if (c.includes("R")) return "renamed";
+  if (c.includes("D")) return "deleted";
+  if (c.includes("A")) return "added";
+  if (c.includes("M")) return "modified";
   return "unknown";
+}
+
+function parseStatusColumnKind(column: string): FileChange["kind"] | null {
+  if (column === "R") return "renamed";
+  if (column === "D") return "deleted";
+  if (column === "A") return "added";
+  if (column === "M") return "modified";
+  if (column === "?") return "untracked";
+  return null;
 }
 
 function stripGitStatusPath(raw: string): string {
@@ -26,6 +37,74 @@ function stripGitStatusPath(raw: string): string {
   const idx = raw.indexOf("->");
   if (idx >= 0) return raw.slice(idx + 2).trim();
   return raw.trim();
+}
+
+function normalizeNumstatPath(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed.includes("=>")) return stripGitStatusPath(trimmed);
+  const braceMatch = trimmed.match(/^(.*)\{(.+?) => (.+?)\}(.*)$/);
+  if (braceMatch) {
+    return `${braceMatch[1] ?? ""}${braceMatch[3] ?? ""}${braceMatch[4] ?? ""}`.trim();
+  }
+  const idx = trimmed.indexOf("=>");
+  return trimmed.slice(idx + 2).trim();
+}
+
+function parsePorcelainStatusZ(stdout: string): DiffChanges {
+  const unstaged: FileChange[] = [];
+  const staged: FileChange[] = [];
+  const records = stdout.split("\0").filter(Boolean);
+
+  for (let i = 0; i < records.length; i++) {
+    const record = records[i] ?? "";
+    if (record.length < 3) continue;
+    const x = record[0] ?? " ";
+    const y = record[1] ?? " ";
+    const code = `${x}${y}`;
+    const p = stripGitStatusPath(record.slice(3));
+    if (!p) continue;
+
+    let oldPath: string | undefined;
+    if (x === "R" || x === "C" || y === "R" || y === "C") {
+      const previous = records[i + 1];
+      if (previous) {
+        oldPath = previous;
+        i += 1;
+      }
+    }
+
+    if (code === "??") {
+      unstaged.push({ path: p, kind: "untracked" });
+      continue;
+    }
+
+    const stagedKind = parseStatusColumnKind(x) ?? parseStatusKind(code);
+    const unstagedKind = parseStatusColumnKind(y) ?? parseStatusKind(code);
+    if (x !== " " && x !== "?") {
+      staged.push(oldPath && stagedKind === "renamed" ? { path: p, oldPath, kind: stagedKind } : { path: p, kind: stagedKind });
+    }
+    if (y !== " " && y !== "?") {
+      unstaged.push(oldPath && unstagedKind === "renamed" ? { path: p, oldPath, kind: unstagedKind } : { path: p, kind: unstagedKind });
+    }
+  }
+
+  return { unstaged, staged };
+}
+
+function applyNumstat(changes: FileChange[], stdout: string): void {
+  const byPath = new Map(changes.map((change) => [change.path, change]));
+  for (const line of stdout.split("\n")) {
+    if (!line.trim()) continue;
+    const [addRaw, delRaw, ...pathParts] = line.split("\t");
+    const filePath = normalizeNumstatPath(pathParts.join("\t"));
+    const change = byPath.get(filePath);
+    if (!change) continue;
+    const additions = Number.parseInt(addRaw ?? "", 10);
+    const deletions = Number.parseInt(delRaw ?? "", 10);
+    if (Number.isFinite(additions)) change.additions = additions;
+    if (Number.isFinite(deletions)) change.deletions = deletions;
+    if (addRaw === "-" || delRaw === "-") change.isBinary = true;
+  }
 }
 
 function detectBinary(buf: Buffer): boolean {
@@ -85,35 +164,90 @@ async function gitShowText(
   return { exists: true, text: res.stdout, size: buf.length };
 }
 
+function parsePatchSummary(patch: string, fallbackPath: string): Pick<FilePatch, "oldPath" | "path" | "status" | "isBinary" | "additions" | "deletions"> {
+  let currentPath = fallbackPath;
+  let oldPath: string | undefined;
+  let status: FileChange["kind"] = "modified";
+  let additions = 0;
+  let deletions = 0;
+  let isBinary = false;
+
+  for (const line of patch.split("\n")) {
+    if (line.startsWith("rename from ")) {
+      oldPath = line.slice("rename from ".length).trim();
+      status = "renamed";
+    } else if (line.startsWith("rename to ")) {
+      currentPath = line.slice("rename to ".length).trim() || currentPath;
+      status = "renamed";
+    } else if (line.startsWith("new file mode ")) {
+      status = "added";
+    } else if (line.startsWith("deleted file mode ")) {
+      status = "deleted";
+    } else if (line.startsWith("Binary files ") || line.startsWith("GIT binary patch")) {
+      isBinary = true;
+    } else if (line.startsWith("+++ b/")) {
+      const next = line.slice("+++ b/".length).trim();
+      if (next && next !== "/dev/null") currentPath = next;
+    } else if (line.startsWith("--- a/")) {
+      const prev = line.slice("--- a/".length).trim();
+      if (prev && prev !== "/dev/null") oldPath = prev;
+    } else if (line.startsWith("+") && !line.startsWith("+++")) {
+      additions += 1;
+    } else if (line.startsWith("-") && !line.startsWith("---")) {
+      deletions += 1;
+    }
+  }
+
+  return {
+    path: currentPath,
+    ...(oldPath && oldPath !== currentPath ? { oldPath } : {}),
+    status,
+    isBinary,
+    additions,
+    deletions
+  };
+}
+
+async function getCommitParentRef(cwd: string, ref: string): Promise<string | null> {
+  const parentsRes = await runGit(["rev-list", "--parents", "-n", "1", ref], { cwd, timeoutMs: 10_000 });
+  const parentSha = parentsRes.exitCode === 0 ? parentsRes.stdout.trim().split(" ").slice(1)[0] : undefined;
+  return parentSha?.trim() ? parentSha.trim() : null;
+}
+
+function resolveGitFilePath(worktreePath: string, filePath: string): { absPath: string; gitPath: string } {
+  if (!filePath.trim()) {
+    throw new Error("File path is required");
+  }
+  if (filePath.includes("\0")) {
+    throw new Error("File path contains an invalid null byte");
+  }
+  const root = fs.realpathSync(worktreePath);
+  const absPath = resolvePathWithinRoot(root, filePath, { allowMissing: true });
+  const gitPath = path.relative(root, absPath).replace(/\\/g, "/");
+  if (!gitPath || gitPath.startsWith("../") || gitPath === "..") {
+    throw new Error("Path escapes root");
+  }
+  return { absPath, gitPath };
+}
+
 export function createDiffService({ laneService }: { laneService: ReturnType<typeof createLaneService> }) {
   return {
     async getChanges(laneId: string): Promise<DiffChanges> {
       const { worktreePath } = laneService.getLaneBaseAndBranch(laneId);
-      const res = await runGit(["status", "--porcelain=v1"], { cwd: worktreePath, timeoutMs: 12_000 });
+      const res = await runGit(["status", "--porcelain=v1", "-z"], { cwd: worktreePath, timeoutMs: 12_000 });
       if (res.exitCode !== 0) {
         return { unstaged: [], staged: [] };
       }
 
-      const unstaged: FileChange[] = [];
-      const staged: FileChange[] = [];
+      const changes = parsePorcelainStatusZ(res.stdout);
+      const [unstagedStats, stagedStats] = await Promise.all([
+        runGit(["diff", "--numstat", "--find-renames"], { cwd: worktreePath, timeoutMs: 12_000, maxOutputBytes: 512 * 1024 }),
+        runGit(["diff", "--cached", "--numstat", "--find-renames"], { cwd: worktreePath, timeoutMs: 12_000, maxOutputBytes: 512 * 1024 }),
+      ]);
+      if (unstagedStats.exitCode === 0) applyNumstat(changes.unstaged, unstagedStats.stdout);
+      if (stagedStats.exitCode === 0) applyNumstat(changes.staged, stagedStats.stdout);
 
-      const lines = res.stdout.split("\n").map((l) => l.trimEnd()).filter(Boolean);
-      for (const line of lines) {
-        if (line.startsWith("??")) {
-          const p = stripGitStatusPath(line.slice(2));
-          unstaged.push({ path: p, kind: "untracked" });
-          continue;
-        }
-        const x = line[0] ?? " ";
-        const y = line[1] ?? " ";
-        const p = stripGitStatusPath(line.slice(2));
-        const code = `${x}${y}`;
-        const kind = parseStatusKind(code);
-        if (x !== " " && x !== "?") staged.push({ path: p, kind });
-        if (y !== " " && y !== "?") unstaged.push({ path: p, kind });
-      }
-
-      return { unstaged, staged };
+      return changes;
     },
 
     async getFileDiff({
@@ -130,14 +264,14 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
       compareTo?: "worktree" | "parent";
     }): Promise<FileDiff> {
       const { worktreePath } = laneService.getLaneBaseAndBranch(laneId);
-      const abs = path.join(worktreePath, filePath);
+      const { absPath, gitPath } = resolveGitFilePath(worktreePath, filePath);
 
       if (mode === "staged") {
-        const head = await gitShowText(worktreePath, `HEAD:${filePath}`, MAX_DIFF_SIDE_TEXT_BYTES);
-        const idx = await gitShowText(worktreePath, `:${filePath}`, MAX_DIFF_SIDE_TEXT_BYTES);
+        const head = await gitShowText(worktreePath, `HEAD:${gitPath}`, MAX_DIFF_SIDE_TEXT_BYTES);
+        const idx = await gitShowText(worktreePath, `:${gitPath}`, MAX_DIFF_SIDE_TEXT_BYTES);
         const isBinary = Boolean(head.isBinary || idx.isBinary);
         return {
-          path: filePath,
+          path: gitPath,
           mode,
           original: { exists: head.exists, text: head.text, size: head.size, isTruncated: head.isTruncated },
           modified: { exists: idx.exists, text: idx.text, size: idx.size, isTruncated: idx.isTruncated },
@@ -157,11 +291,11 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
           const parentSha = parentsRes.exitCode === 0 ? parentsRes.stdout.trim().split(" ").slice(1)[0] : undefined;
           const parentRef = parentSha?.trim() ? parentSha.trim() : null;
 
-          const parentSide = parentRef ? await gitShowText(worktreePath, `${parentRef}:${filePath}`, MAX_DIFF_SIDE_TEXT_BYTES) : { exists: false, text: "" };
-          const commitSide = await gitShowText(worktreePath, `${ref}:${filePath}`, MAX_DIFF_SIDE_TEXT_BYTES);
+          const parentSide = parentRef ? await gitShowText(worktreePath, `${parentRef}:${gitPath}`, MAX_DIFF_SIDE_TEXT_BYTES) : { exists: false, text: "" };
+          const commitSide = await gitShowText(worktreePath, `${ref}:${gitPath}`, MAX_DIFF_SIDE_TEXT_BYTES);
           const isBinary = Boolean(parentSide.isBinary || commitSide.isBinary);
           return {
-            path: filePath,
+            path: gitPath,
             mode,
             original: { exists: parentSide.exists, text: parentSide.text, size: parentSide.size, isTruncated: parentSide.isTruncated },
             modified: { exists: commitSide.exists, text: commitSide.text, size: commitSide.size, isTruncated: commitSide.isTruncated },
@@ -169,11 +303,11 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
           };
         }
 
-        const commitSide = await gitShowText(worktreePath, `${ref}:${filePath}`, MAX_DIFF_SIDE_TEXT_BYTES);
-        const wt = readTextFileSafe(abs, MAX_DIFF_SIDE_TEXT_BYTES);
+        const commitSide = await gitShowText(worktreePath, `${ref}:${gitPath}`, MAX_DIFF_SIDE_TEXT_BYTES);
+        const wt = readTextFileSafe(absPath, MAX_DIFF_SIDE_TEXT_BYTES);
         const isBinary = Boolean(commitSide.isBinary || wt.isBinary);
         return {
-          path: filePath,
+          path: gitPath,
           mode,
           original: { exists: commitSide.exists, text: commitSide.text, size: commitSide.size, isTruncated: commitSide.isTruncated },
           modified: { exists: wt.exists, text: wt.text, size: wt.size, isTruncated: wt.isTruncated },
@@ -182,15 +316,70 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
       }
 
       // Unstaged: index -> working tree
-      const idx = await gitShowText(worktreePath, `:${filePath}`, MAX_DIFF_SIDE_TEXT_BYTES);
-      const wt = readTextFileSafe(abs, MAX_DIFF_SIDE_TEXT_BYTES);
+      const idx = await gitShowText(worktreePath, `:${gitPath}`, MAX_DIFF_SIDE_TEXT_BYTES);
+      const wt = readTextFileSafe(absPath, MAX_DIFF_SIDE_TEXT_BYTES);
       const isBinary = Boolean(idx.isBinary || wt.isBinary);
       return {
-        path: filePath,
+        path: gitPath,
         mode,
         original: { exists: idx.exists, text: idx.text, size: idx.size, isTruncated: idx.isTruncated },
         modified: { exists: wt.exists, text: wt.text, size: wt.size, isTruncated: wt.isTruncated },
         ...(isBinary ? { isBinary: true } : {})
+      };
+    },
+
+    async getFilePatch({
+      laneId,
+      filePath,
+      mode,
+      compareRef,
+      compareTo
+    }: {
+      laneId: string;
+      filePath: string;
+      mode: DiffMode;
+      compareRef?: string;
+      compareTo?: "worktree" | "parent";
+    }): Promise<FilePatch> {
+      const { worktreePath } = laneService.getLaneBaseAndBranch(laneId);
+      const { gitPath } = resolveGitFilePath(worktreePath, filePath);
+      let args: string[];
+
+      if (mode === "staged") {
+        args = ["diff", "--cached", "--no-ext-diff", "--find-renames", "--patch", "--", gitPath];
+      } else if (mode === "commit") {
+        const ref = compareRef?.trim();
+        if (!ref) {
+          throw new Error("compareRef is required for commit mode");
+        }
+        const target = compareTo ?? "worktree";
+        if (target === "parent") {
+          const parentRef = await getCommitParentRef(worktreePath, ref);
+          args = parentRef
+            ? ["diff", "--no-ext-diff", "--find-renames", "--patch", parentRef, ref, "--", gitPath]
+            : ["show", "--format=", "--no-ext-diff", "--find-renames", "--patch", ref, "--", gitPath];
+        } else {
+          args = ["diff", "--no-ext-diff", "--find-renames", "--patch", ref, "--", gitPath];
+        }
+      } else {
+        args = ["diff", "--no-ext-diff", "--find-renames", "--patch", "--", gitPath];
+      }
+
+      const res = await runGit(args, {
+        cwd: worktreePath,
+        timeoutMs: 12_000,
+        maxOutputBytes: MAX_DIFF_PATCH_BYTES
+      });
+      if (res.exitCode !== 0) {
+        throw new Error(res.stderr.trim() || `git ${args.join(" ")} failed`);
+      }
+
+      return {
+        mode,
+        patch: res.stdout,
+        size: Buffer.byteLength(res.stdout, "utf8"),
+        isTruncated: res.stdoutTruncated || undefined,
+        ...parsePatchSummary(res.stdout, gitPath)
       };
     }
   };

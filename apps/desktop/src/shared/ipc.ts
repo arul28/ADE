@@ -250,6 +250,7 @@ export const IPC = {
   terminalActiveForChat: "ade.terminal.activeForChat",
   diffGetChanges: "ade.diff.getChanges",
   diffGetFile: "ade.diff.getFile",
+  diffGetFilePatch: "ade.diff.getFilePatch",
   filesWriteTextAtomic: "ade.files.writeTextAtomic",
   filesListWorkspaces: "ade.files.listWorkspaces",
   filesListTree: "ade.files.listTree",

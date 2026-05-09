@@ -18,7 +18,19 @@ export type FilesListWorkspacesArgs = {
   includeArchived?: boolean;
 };
 
-export type FileTreeChangeStatus = "M" | "A" | "D" | null;
+export type FileTreeChangeStatus =
+  | "modified"
+  | "added"
+  | "deleted"
+  | "renamed"
+  | "untracked"
+  | "ignored"
+  | "unknown"
+  // Legacy short codes are accepted while older callers/tests migrate.
+  | "M"
+  | "A"
+  | "D"
+  | null;
 
 export type FileTreeNode = {
   name: string;
