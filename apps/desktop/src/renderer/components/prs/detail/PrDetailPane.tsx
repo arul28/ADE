@@ -1078,9 +1078,10 @@ export function PrDetailPane({
     }
     const requestId = ++inventoryLoadSeqRef.current;
     try {
-      const [snapshot, freshChecks] = await Promise.all([
+      const [snapshot, freshChecks, freshActionRuns] = await Promise.all([
         window.ade.prs.issueInventorySync(pr.id),
         window.ade.prs.getChecks(pr.id).catch(() => checks),
+        window.ade.prs.getActionRuns(pr.id).catch(() => null),
       ]);
       if (requestId !== inventoryLoadSeqRef.current) return null;
       setInventorySnapshot(snapshot);
@@ -1089,6 +1090,9 @@ export function PrDetailPane({
       // API failure or rate-limit.
       if (freshChecks.length > 0) {
         setConvergenceChecks(freshChecks);
+      }
+      if (freshActionRuns && freshActionRuns.length > 0) {
+        setActionRuns(freshActionRuns);
       }
       return snapshot;
     } catch {
@@ -1411,13 +1415,17 @@ export function PrDetailPane({
         if (!autoConvergeRef.current) { stopAutoConvergePoller(); return; }
         try {
           // Poll checks and inventory
-          const [freshChecks, snapshot] = await Promise.all([
+          const [freshChecks, snapshot, freshActionRuns] = await Promise.all([
             window.ade.prs.getChecks(pr.id),
             window.ade.prs.issueInventorySync(pr.id),
+            window.ade.prs.getActionRuns(pr.id).catch(() => null),
           ]);
           setInventorySnapshot(snapshot);
           if (freshChecks.length > 0) {
             setConvergenceChecks(freshChecks);
+          }
+          if (freshActionRuns && freshActionRuns.length > 0) {
+            setActionRuns(freshActionRuns);
           }
 
           // Skip rebase logic while an agent session is still active

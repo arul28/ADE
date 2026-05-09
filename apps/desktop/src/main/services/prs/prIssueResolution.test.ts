@@ -690,6 +690,51 @@ describe("issueInventoryService", () => {
       expect(args[2]).toBe("greptile"); // source — known alias
     });
 
+    it("ignores CodeRabbit skipped-bot metadata when selecting the review thread issue", () => {
+      const db = makeMockDb();
+      db.get.mockReturnValue(null);
+      db.all.mockReturnValue([]);
+
+      const service = createIssueInventoryService({ db });
+      service.syncFromPrData(
+        PR_ID,
+        [],
+        [makeReviewThread({
+          comments: [
+            {
+              id: "greptile-1",
+              author: "greptile-apps",
+              authorAvatarUrl: null,
+              body: "**Greptile/CodeRabbit pings can duplicate when Copilot comment fails**\n\nFix this issue.",
+              url: null,
+              createdAt: "2026-03-23T12:00:00.000Z",
+              updatedAt: "2026-03-23T12:00:00.000Z",
+            },
+            {
+              id: "coderabbit-skip-1",
+              author: "coderabbitai",
+              authorAvatarUrl: null,
+              body: "> Skipped: comment is from another GitHub bot.\n\n<!-- This is an auto-generated reply by CodeRabbit -->",
+              url: null,
+              createdAt: "2026-03-23T12:05:00.000Z",
+              updatedAt: "2026-03-23T12:05:00.000Z",
+            },
+          ],
+        })],
+        [],
+      );
+
+      const insertCalls = db.run.mock.calls.filter(
+        (call: unknown[]) => typeof call[0] === "string" && (call[0] as string).includes("insert into pr_issue_inventory"),
+      );
+      const args = insertCalls[0][1] as unknown[];
+      expect(args[2]).toBe("greptile");
+      expect(args[10]).toBe("Greptile/CodeRabbit pings can duplicate when Copilot comment fails");
+      expect(args[12]).toBe("greptile-apps");
+      expect(args[16]).toBe(1);
+      expect(args[17]).toBe("greptile-1");
+    });
+
     it("extracts severity from bold keywords (Critical/Major/Minor)", () => {
       const db = makeMockDb();
       db.get.mockReturnValue(null);
@@ -2430,6 +2475,7 @@ describe("detectSource", () => {
     expect(detectSource("ade-review[bot]")).toBe("ade");
     expect(detectSource("greptile[bot]")).toBe("greptile");
     expect(detectSource("greptile-review[bot]")).toBe("greptile");
+    expect(detectSource("greptile-apps")).toBe("greptile");
     expect(detectSource("seer[bot]")).toBe("seer");
     expect(detectSource("seer-code-review[bot]")).toBe("seer");
   });

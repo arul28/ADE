@@ -56,6 +56,7 @@ const KNOWN_BOT_ALIASES: Record<string, IssueSource> = {
   "ade-review": "ade",
   "greptile-review": "greptile",
   "greptile": "greptile",
+  "greptile-apps": "greptile",
   "seer-code-review": "seer",
   "seer": "seer",
 };
@@ -168,6 +169,26 @@ function extractHeadline(body: string | null | undefined, fallback: string): str
     return firstLine.length > 120 ? `${firstLine.slice(0, 117)}...` : firstLine;
   }
   return fallback;
+}
+
+function isReviewThreadMetadataComment(comment: PrReviewThread["comments"][number] | null | undefined): boolean {
+  const body = (comment?.body ?? "").trim();
+  if (!body) return false;
+  return /^>\s*Skipped:\s*comment is from another GitHub bot\./i.test(body)
+    && /auto-generated reply by CodeRabbit/i.test(body);
+}
+
+function latestInventoryReviewComment(thread: PrReviewThread): PrReviewThread["comments"][number] | null {
+  for (let index = thread.comments.length - 1; index >= 0; index--) {
+    const comment = thread.comments[index];
+    if (!isReviewThreadMetadataComment(comment)) return comment;
+  }
+  return thread.comments.at(-1) ?? null;
+}
+
+function countInventoryReviewComments(thread: PrReviewThread): number {
+  const actionableCount = thread.comments.filter((comment) => !isReviewThreadMetadataComment(comment)).length;
+  return actionableCount > 0 ? actionableCount : thread.comments.length;
 }
 
 // ---------------------------------------------------------------------------
@@ -932,8 +953,8 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
       // Sync review threads using the latest reply in the conversation.
       for (const thread of reviewThreads) {
         const externalId = `thread:${thread.id}`;
-        const latestComment = thread.comments.at(-1) ?? null;
-        const commentCount = thread.comments.length;
+        const latestComment = latestInventoryReviewComment(thread);
+        const commentCount = countInventoryReviewComments(thread);
         const author = latestComment?.author ?? null;
         const body = latestComment?.body ?? null;
         const source = detectSource(author);

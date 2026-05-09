@@ -702,6 +702,73 @@ describe("PrDetailPane issue resolver CTA", () => {
     });
   });
 
+  it("refreshes Path to Merge action runs during inventory sync", async () => {
+    const user = userEvent.setup();
+    const { getActionRuns, issueInventorySync } = renderPane({
+      checks: [
+        makeCheck({
+          name: "CI / build-win",
+          status: "in_progress",
+          conclusion: null,
+        }),
+      ],
+      freshChecks: [
+        makeCheck({
+          name: "CI / build-win",
+          status: "completed",
+          conclusion: "success",
+        }),
+      ],
+      actionRuns: [
+        makeActionRun({
+          name: "CI",
+          status: "in_progress",
+          conclusion: null,
+          jobs: [{
+            id: 73898654393,
+            name: "build-win",
+            status: "in_progress",
+            conclusion: null,
+            startedAt: null,
+            completedAt: null,
+            steps: [],
+          }],
+        }),
+      ],
+      freshActionRuns: [
+        makeActionRun({
+          name: "CI",
+          status: "completed",
+          conclusion: "success",
+          jobs: [{
+            id: 73898654393,
+            name: "build-win",
+            status: "completed",
+            conclusion: "success",
+            startedAt: null,
+            completedAt: null,
+            steps: [],
+          }],
+        }),
+      ],
+      reviewThreads: [],
+      inventorySnapshot: {
+        items: [makeInventoryItem()],
+        convergence: { currentRound: 0, maxRounds: 5, totalNew: 1, totalSentToAgent: 0, isConverging: false },
+      },
+    });
+
+    await user.click(screen.getByRole("button", { name: /path to merge/i }));
+
+    await waitFor(() => {
+      expect(issueInventorySync).toHaveBeenCalled();
+      expect(getActionRuns).toHaveBeenCalledTimes(2);
+      expect(screen.getByText("CI / build-win")).toBeTruthy();
+      expect(screen.getByText("SUCCESS")).toBeTruthy();
+      expect(screen.queryByText("1 running")).toBeNull();
+    });
+  });
+
   it("lets the operator attempt a bypass merge and uses the selected merge method", async () => {
     const user = userEvent.setup();
     const { land, onRefresh } = renderPane({
