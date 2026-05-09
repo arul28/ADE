@@ -348,7 +348,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade doctor                                    Inspect project, socket, runtime, and tool availability
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
     $ ade git status | commit | push | stash        Run ADE-aware git operations
-    $ ade diff changes | file                       Inspect lane diffs
+    $ ade diff changes | file | patch               Inspect lane diffs (including raw git patch text)
     $ ade files tree | read | write | search        Read and edit lane workspaces
     $ ade missions launch | watch | graph           Create, start, and inspect mission runs
     $ ade prs list | create | path-to-merge         Manage PRs, queues, and Path to Merge repair rounds
@@ -790,7 +790,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Diffs
 
     $ ade diff changes --lane <lane> --text         Summarize staged/unstaged file changes
-    $ ade diff file --lane <lane> <path> --text     Show one file diff
+    $ ade diff file --lane <lane> <path> --text     Show one file diff (side-by-side text)
+    $ ade diff patch --lane <lane> <path> --text    Raw unified diff / patch for one file
     $ ade diff file --mode staged <path>            Inspect staged diff for one file
     $ ade diff actions --text                       List diff service actions
 `,
@@ -2192,6 +2193,19 @@ function buildDiffPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "diff file",
       steps: [actionStep("result", "diff", "getFileDiff", withLane({
+        filePath,
+        mode: readValue(args, ["--mode"]) ?? "unstaged",
+        compareRef: readValue(args, ["--compare-ref", "--base"]),
+        compareTo: readValue(args, ["--compare-to", "--head"]),
+      }))],
+    };
+  }
+  if (sub === "patch") {
+    const filePath = requireValue(readValue(args, ["--path"]) ?? firstPositional(args), "path");
+    return {
+      kind: "execute",
+      label: "diff patch",
+      steps: [actionStep("result", "diff", "getFilePatch", withLane({
         filePath,
         mode: readValue(args, ["--mode"]) ?? "unstaged",
         compareRef: readValue(args, ["--compare-ref", "--base"]),

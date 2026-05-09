@@ -13,6 +13,7 @@ import type {
   PrWithConflicts, PrCheck, PrReview, PrComment, PrStatus, PrDetail,
   PrFile, PrCommit, PrActionRun, PrActivityEvent, AiReviewSummary, PrReviewThread,
   LaneSummary, MergeMethod, LandResult,
+  FilePatch,
   IssueInventorySnapshot,
   PipelineSettings,
   PrConvergenceState,
@@ -25,6 +26,7 @@ import { PrDetailTimelineRails as TimelineRailsOverview, type PrDetailTimelineRa
 import { DEFAULT_PIPELINE_SETTINGS } from "../../../../shared/types";
 import { defaultPrIssueResolutionScope, getPrIssueResolutionAvailability } from "../../../../shared/prIssueResolution";
 import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, cardStyle, inlineBadge, outlineButton, primaryButton, dangerButton } from "../../lanes/laneDesignTokens";
+import { AdeDiffViewer } from "../../shared/AdeDiffViewer";
 import { getPrChecksBadge, getPrReviewsBadge, getPrStateBadge, InlinePrBadge, PrCiRunningIndicator } from "../shared/prVisuals";
 import { PrIssueResolverModal } from "../shared/PrIssueResolverModal";
 import { PrConvergencePanel } from "../shared/PrConvergencePanel";
@@ -3403,6 +3405,23 @@ function OverviewTab(props: OverviewTabProps) {
 function FilesTab({ files, expandedFile, setExpandedFile }: { files: PrFile[]; expandedFile: string | null; setExpandedFile: (f: string | null) => void }) {
   const totalAdd = files.reduce((s, f) => s + f.additions, 0);
   const totalDel = files.reduce((s, f) => s + f.deletions, 0);
+  const toPatchStatus = (status: PrFile["status"]): FilePatch["status"] => {
+    if (status === "removed") return "deleted";
+    if (status === "copied") return "added";
+    return status;
+  };
+  const toPatch = (file: PrFile): FilePatch | null => {
+    if (!file.patch) return null;
+    return {
+      path: file.filename,
+      oldPath: file.previousFilename ?? undefined,
+      mode: "commit",
+      patch: file.patch,
+      additions: file.additions,
+      deletions: file.deletions,
+      status: toPatchStatus(file.status),
+    };
+  };
 
   return (
     <div style={{ padding: 20 }}>
@@ -3420,6 +3439,7 @@ function FilesTab({ files, expandedFile, setExpandedFile }: { files: PrFile[]; e
           {files.map((file, idx) => {
             const isExpanded = expandedFile === file.filename;
             const statusCol = fileStatusColor(file.status);
+            const filePatch = toPatch(file);
             return (
               <div key={file.filename}>
                 <button
@@ -3451,24 +3471,24 @@ function FilesTab({ files, expandedFile, setExpandedFile }: { files: PrFile[]; e
                   <span style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.success, fontWeight: 600 }}>+{file.additions}</span>
                   <span style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.danger, fontWeight: 600 }}>-{file.deletions}</span>
                 </button>
-                {isExpanded && file.patch && (
-                  <div style={{ background: "rgba(0,0,0,0.2)", borderBottom: `1px solid ${COLORS.border}`, overflow: "auto", maxHeight: 500 }}>
-                    <pre style={{ fontFamily: MONO_FONT, fontSize: 11, lineHeight: 1.7, margin: 0, padding: 0 }}>
-                      {file.patch.split("\n").map((line, i) => {
-                        let color: string = COLORS.textSecondary;
-                        let bg: string = "transparent";
-                        if (line.startsWith("+")) { color = "#4ade80"; bg = "rgba(34,197,94,0.12)"; }
-                        else if (line.startsWith("-")) { color = "#f87171"; bg = "rgba(239,68,68,0.12)"; }
-                        else if (line.startsWith("@@")) { color = COLORS.accent; bg = "color-mix(in srgb, var(--color-accent) 4%, transparent)"; }
-                        return (
-                            <div key={i} style={{ color, background: bg, padding: "1px 14px", minHeight: "1.7em", borderLeft: line.startsWith("+") ? "3px solid color-mix(in srgb, var(--color-success) 50%, transparent)" : line.startsWith("-") ? "3px solid color-mix(in srgb, var(--color-error) 50%, transparent)" : "3px solid transparent" }}>
-                            {line}
-                          </div>
-                        );
-                      })}
-                    </pre>
+                {isExpanded && filePatch ? (
+                  <div style={{ borderBottom: `1px solid ${COLORS.border}`, height: 500 }}>
+                    <AdeDiffViewer patch={filePatch} editable={false} className="h-full rounded-none border-0" />
                   </div>
-                )}
+                ) : isExpanded ? (
+                  <div
+                    style={{
+                      borderBottom: `1px solid ${COLORS.border}`,
+                      padding: "10px 14px",
+                      fontFamily: MONO_FONT,
+                      fontSize: 11,
+                      color: COLORS.textDim,
+                      background: COLORS.recessedBg,
+                    }}
+                  >
+                    Patch unavailable for this file.
+                  </div>
+                ) : null}
               </div>
             );
           })}

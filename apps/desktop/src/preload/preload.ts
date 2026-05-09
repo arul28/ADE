@@ -165,6 +165,7 @@ import type {
   FileChangeEvent,
   FileContent,
   FileDiff,
+  FilePatch,
   FileTreeNode,
   FilesCreateDirectoryArgs,
   FilesCreateFileArgs,
@@ -265,6 +266,7 @@ import type {
   GetDiffChangesArgs,
   GetLaneConflictStatusArgs,
   GetFileDiffArgs,
+  GetFilePatchArgs,
   GetProcessLogTailArgs,
   GetTestLogTailArgs,
   ExportHistoryArgs,
@@ -2611,6 +2613,8 @@ contextBridge.exposeInMainWorld("ade", {
       diffChangesCache.get(serializeIpcCacheArgs(args)),
     getFile: async (args: GetFileDiffArgs): Promise<FileDiff> =>
       ipcRenderer.invoke(IPC.diffGetFile, args),
+    getFilePatch: async (args: GetFilePatchArgs): Promise<FilePatch> =>
+      ipcRenderer.invoke(IPC.diffGetFilePatch, args),
   },
   files: {
     writeTextAtomic: async (args: WriteTextAtomicArgs): Promise<void> =>

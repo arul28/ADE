@@ -98,6 +98,41 @@ describe("ADE CLI", () => {
     ]);
   });
 
+  it("builds a diff patch invocation with an explicit path flag", () => {
+    const parsed = parseCliArgs(["diff", "patch", "--lane", "main", "--path", "file.txt", "--text"]);
+    expect(parsed.options.text).toBe(true);
+
+    const plan = buildCliPlan(parsed.command);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+
+    expect(plan).toEqual({
+      kind: "execute",
+      label: "diff patch",
+      steps: [
+        {
+          key: "result",
+          method: "ade/actions/call",
+          params: {
+            name: "run_ade_action",
+            arguments: {
+              domain: "diff",
+              action: "getFilePatch",
+              args: {
+                filePath: "file.txt",
+                mode: "unstaged",
+                compareRef: null,
+                compareTo: null,
+                laneId: "main",
+              },
+            },
+          },
+          unwrapToolResult: true,
+        },
+      ],
+    });
+  });
+
   it("builds the stdio MCP server command", () => {
     expect(buildCliPlan(["mcp"])).toEqual({ kind: "mcp" });
     expect(buildCliPlan(["mcp-server"])).toEqual({ kind: "mcp" });
@@ -700,6 +735,7 @@ describe("ADE CLI", () => {
     expect(() => buildCliPlan(["lanes", "create"])).toThrow(/name is required/);
     expect(() => buildCliPlan(["lanes", "child", "--name", "child"])).toThrow(/parent lane is required/);
     expect(() => buildCliPlan(["diff", "file", "--lane", "main"])).toThrow(/path is required/);
+    expect(() => buildCliPlan(["diff", "patch", "--lane", "main"])).toThrow(/path is required/);
     expect(() => buildCliPlan(["files", "write", "src/index.ts"])).toThrow(/--text, --from-file, or --stdin/);
     expect(() => buildCliPlan(["chat", "send", "hello"])).toThrow(/message text is required/);
     expect(() => buildCliPlan(["agent", "spawn", "--prompt", "fix it"])).toThrow(/laneId is required/);

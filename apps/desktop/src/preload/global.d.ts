@@ -40,6 +40,7 @@ import type {
   FileChangeEvent,
   FileContent,
   FileDiff,
+  FilePatch,
   FileTreeNode,
   FilesCreateDirectoryArgs,
   FilesCreateFileArgs,
@@ -58,6 +59,7 @@ import type {
   GetLaneConflictStatusArgs,
   GetDiffChangesArgs,
   GetFileDiffArgs,
+  GetFilePatchArgs,
   GetProcessLogTailArgs,
   GetTestLogTailArgs,
   ExportHistoryArgs,
@@ -1476,6 +1478,7 @@ declare global {
       diff: {
         getChanges: (args: GetDiffChangesArgs) => Promise<DiffChanges>;
         getFile: (args: GetFileDiffArgs) => Promise<FileDiff>;
+        getFilePatch: (args: GetFilePatchArgs) => Promise<FilePatch>;
       };
       files: {
         writeTextAtomic: (args: WriteTextAtomicArgs) => Promise<void>;

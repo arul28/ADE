@@ -159,7 +159,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "unstageFile",
     "unstagePaths",
   ],
-  diff: ["getChanges", "getFileDiff"],
+  diff: ["getChanges", "getFileDiff", "getFilePatch"],
   conflicts: ["getLaneStatus", "listOverlaps", "rebaseLane", "runPrediction"],
   pr: [
     "addComment",

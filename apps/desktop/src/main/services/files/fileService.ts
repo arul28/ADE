@@ -347,7 +347,19 @@ function buildGitStatusSnapshot(fileStatus: Map<string, FileTreeChangeStatus>): 
 }
 
 function inferDirectoryStatus(statusSnapshot: GitStatusSnapshot, relPath: string): FileTreeChangeStatus {
-  return statusSnapshot.changedDirectories.has(normalizeRelative(relPath)) ? "M" : null;
+  return statusSnapshot.changedDirectories.has(normalizeRelative(relPath)) ? "modified" : null;
+}
+
+function parseFileTreeStatus(code: string): FileTreeChangeStatus {
+  if (code === "??") return "untracked";
+  if (code === "!!") return "ignored";
+  const combined = code.replace(/\s/g, "");
+  if (!combined) return null;
+  if (combined.includes("R")) return "renamed";
+  if (combined.includes("D")) return "deleted";
+  if (combined.includes("A")) return "added";
+  if (combined.includes("M")) return "modified";
+  return "unknown";
 }
 
 export function createFileService({
@@ -478,15 +490,7 @@ export function createFileService({
       }
 
       const normalized = normalizeRelative(rel);
-      if (code === "??") {
-        out.set(normalized, "A");
-        continue;
-      }
-      const combined = code.replace(/\s/g, "");
-      if (combined.includes("D")) out.set(normalized, "D");
-      else if (combined.includes("A")) out.set(normalized, "A");
-      else if (combined.length) out.set(normalized, "M");
-      else out.set(normalized, null);
+      out.set(normalized, parseFileTreeStatus(code));
     }
     const snapshot = buildGitStatusSnapshot(out);
     gitStatusCache.set(rootPath, { fetchedAt: now, snapshot });
@@ -575,7 +579,7 @@ export function createFileService({
           node.children = sub.children;
           if (sub.truncated) node.childrenTruncated = true;
           if (!node.changeStatus && node.children.some((child) => child.changeStatus)) {
-            node.changeStatus = "M";
+            node.changeStatus = "modified";
           }
         }
       }

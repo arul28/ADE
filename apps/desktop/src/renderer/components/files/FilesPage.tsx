@@ -1,27 +1,15 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Warning as AlertTriangle,
-  BookOpenText,
   ArrowSquareOut,
-  CaretDown as ChevronDown,
-  CaretRight as ChevronRight,
-  FileZip as FileArchive,
-  FileCss as FileBraces,
-  GearSix as FileCog,
   FileTs as FileCode2,
-  FileImage,
-  FilePlus as FilePlus2,
   FileText,
-  Folder,
   FolderOpen,
-  FolderPlus,
   FloppyDisk as Save,
   MagnifyingGlass as Search,
   Moon,
   Sparkle as Sparkles,
   Sun,
-  Terminal as TerminalSquare,
-  FileXls as FileSpreadsheet,
   X,
 } from "@phosphor-icons/react";
 import { useLocation, useNavigate } from "react-router-dom";
@@ -34,10 +22,11 @@ import type {
   FilesSearchTextMatch,
   FilesWorkspace,
   FileDiff,
+  FilePatch,
   GitCommitSummary,
   LaneSummary,
 } from "../../../shared/types";
-import { MonacoDiffView, type MonacoDiffHandle } from "../lanes/MonacoDiffView";
+import { AdeDiffViewer, type AdeDiffViewerHandle } from "../shared/AdeDiffViewer";
 import { useAppStore } from "../../state/appStore";
 import { clearDirtyBuffersForWorkspace, replaceDirtyBuffersForWorkspace } from "../../lib/dirtyWorkspaceBuffers";
 import { modifierKeyLabel, revealLabel } from "../../lib/platform";
@@ -47,6 +36,8 @@ import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, inlineBadge, outlineButton, 
 import { cn } from "../ui/cn";
 import { HelpChip } from "../onboarding/HelpChip";
 import { SmartTooltip } from "../ui/SmartTooltip";
+import { FilesExplorer } from "./FilesExplorer";
+import { getFileIcon } from "./filePresentation";
 type OpenTab = {
   path: string;
   content: string;
@@ -401,73 +392,20 @@ function findItemByWorkspacePath<T extends { path: string }>(
   return items.find((item) => areWorkspacePathsEqual(item.path, targetPath, workspaceRoot));
 }
 
-const FILE_ICON_COLORS = {
-  code: "#38BDF8",       // sky-400
-  json: "#34D399",       // emerald-400
-  config: "#FB923C",     // orange-400
-  markdown: "#FBBF24",   // amber-400
-  style: "#818CF8",      // indigo-400
-  shell: "#2DD4BF",      // teal-400
-  image: "#E879F9",      // fuchsia-400
-  archive: "#FB7185",    // rose-400
-  spreadsheet: "#4ADE80", // green-400
-  default: COLORS.textMuted,
-} as const;
-
-function getFileIcon(fileName: string): { icon: React.ComponentType<any>; color: string } {
-  const lower = fileName.toLowerCase();
-  const ext = lower.includes(".") ? lower.slice(lower.lastIndexOf(".")) : "";
-
-  if (
-    ext === ".ts" ||
-    ext === ".tsx" ||
-    ext === ".mts" ||
-    ext === ".cts" ||
-    ext === ".js" ||
-    ext === ".jsx" ||
-    ext === ".mjs" ||
-    ext === ".cjs"
-  ) {
-    return { icon: FileCode2, color: FILE_ICON_COLORS.code };
-  }
-  if (ext === ".json" || ext === ".jsonc") {
-    return { icon: FileBraces, color: FILE_ICON_COLORS.json };
-  }
-  if (ext === ".yml" || ext === ".yaml" || ext === ".toml" || ext === ".ini") {
-    return { icon: FileCog, color: FILE_ICON_COLORS.config };
-  }
-  if (ext === ".md" || ext === ".mdx") {
-    return { icon: BookOpenText, color: FILE_ICON_COLORS.markdown };
-  }
-  if (ext === ".css" || ext === ".scss" || ext === ".sass" || ext === ".less") {
-    return { icon: FileCode2, color: FILE_ICON_COLORS.style };
-  }
-  if (ext === ".sh" || ext === ".bash" || ext === ".zsh" || ext === ".fish" || ext === ".ps1") {
-    return { icon: TerminalSquare, color: FILE_ICON_COLORS.shell };
-  }
-  if (ext === ".png" || ext === ".jpg" || ext === ".jpeg" || ext === ".gif" || ext === ".webp" || ext === ".svg" || ext === ".ico") {
-    return { icon: FileImage, color: FILE_ICON_COLORS.image };
-  }
-  if (ext === ".zip" || ext === ".tar" || ext === ".gz" || ext === ".tgz" || ext === ".rar" || ext === ".7z") {
-    return { icon: FileArchive, color: FILE_ICON_COLORS.archive };
-  }
-  if (ext === ".csv" || ext === ".tsv" || ext === ".xls" || ext === ".xlsx") {
-    return { icon: FileSpreadsheet, color: FILE_ICON_COLORS.spreadsheet };
-  }
-  return { icon: FileText, color: FILE_ICON_COLORS.default };
-}
-
 function fileDiffHasRenderableChanges(diff: FileDiff): boolean {
   if (diff.original.exists !== diff.modified.exists) return true;
   if (diff.isBinary) return true;
   return diff.original.text !== diff.modified.text;
 }
 
-function changeStatusColor(changeStatus: FileTreeNode["changeStatus"]): string {
-  if (changeStatus === "A") return COLORS.success;
-  if (changeStatus === "D") return COLORS.danger;
-  if (changeStatus === "M") return COLORS.warning;
-  return COLORS.textDim;
+function filePatchHasRenderableChanges(patch: FilePatch | null | undefined): patch is FilePatch {
+  if (!patch) return false;
+  if (patch.isBinary) return true;
+  return patch.patch.trim().length > 0;
+}
+
+function settledErrorMessage(reason: unknown): string {
+  return reason instanceof Error ? reason.message : String(reason);
 }
 
 const FILES_WORKSPACE_SELECT_LABEL_MAX_LEN = 52;
@@ -595,7 +533,7 @@ export function FilesPage({
     startColumn?: number;
   } | null>(null);
   const pendingRevealRef = useRef<{ mode: EditorViewMode; startLine: number; startColumn?: number; targetPath?: string } | null>(null);
-  const diffViewRef = useRef<MonacoDiffHandle | null>(null);
+  const diffViewRef = useRef<AdeDiffViewerHandle | null>(null);
   const treeRefreshStateRef = useRef<{
     inFlight: boolean;
     queuedFull: boolean;
@@ -617,7 +555,10 @@ export function FilesPage({
   const [showQuickOpen, setShowQuickOpen] = useState(false);
 
   const [searchQuery, setSearchQuery] = useState(initialSession?.searchQuery ?? "");
-  const [searchResults, setSearchResults] = useState<FilesSearchTextMatch[]>([]);
+  const [showContentSearch, setShowContentSearch] = useState(false);
+  const [contentSearchQuery, setContentSearchQuery] = useState("");
+  const [contentSearchResults, setContentSearchResults] = useState<FilesSearchTextMatch[]>([]);
+  const [inlineRenameRequest, setInlineRenameRequest] = useState<{ path: string; nonce: number } | null>(null);
 
   const [resolvedConflictKeys, setResolvedConflictKeys] = useState<Set<string>>(new Set());
   const [textPrompt, setTextPrompt] = useState<TextPromptState | null>(null);
@@ -639,7 +580,7 @@ export function FilesPage({
   const activeTabPathRef = useRef<string | null>(null);
   const openTabsRef = useRef<OpenTab[]>([]);
 
-  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const contentSearchInputRef = useRef<HTMLInputElement | null>(null);
   const openInMenuRef = useRef<HTMLDivElement | null>(null);
   const setEditorHostRef = useCallback((node: HTMLDivElement | null) => {
     setEditorHostEl(node);
@@ -1224,32 +1165,20 @@ export function FilesPage({
     }
   }, [canEdit, laneIdForWorkspace, refreshTree, activeTabPath, openFile, workspaceComparisonRoot]);
 
-  const renamePath = useCallback(async (targetPath: string) => {
+  const renamePathTo = useCallback(async (targetPath: string, nextPath: string) => {
     if (!canEdit) {
-      setError("Editing is disabled for the current workspace.");
-      return;
+      throw new Error("Editing is disabled for the current workspace.");
     }
     if (!workspaceId) return;
-    const next = await requestTextInput({
-      title: "Rename path",
-      message: "Enter the new path.",
-      defaultValue: targetPath,
-      confirmLabel: "Rename",
-      validate: (value) => {
-        if (!value) return "Path is required.";
-        if (value === targetPath) return "Path is unchanged.";
-        return null;
-      }
-    });
-    if (!next || areWorkspacePathsEqual(next, targetPath, workspaceComparisonRoot)) return;
-    await window.ade.files.rename({ workspaceId, oldPath: targetPath, newPath: next });
+    if (!nextPath || areWorkspacePathsEqual(nextPath, targetPath, workspaceComparisonRoot)) return;
+    await window.ade.files.rename({ workspaceId, oldPath: targetPath, newPath: nextPath });
     setOpenTabs((prev) => prev.map((tab) => (
-      areWorkspacePathsEqual(tab.path, targetPath, workspaceComparisonRoot) ? { ...tab, path: next } : tab
+      areWorkspacePathsEqual(tab.path, targetPath, workspaceComparisonRoot) ? { ...tab, path: nextPath } : tab
     )));
-    if (areWorkspacePathsEqual(activeTabPath, targetPath, workspaceComparisonRoot)) setActiveTabPath(next);
-    setSelectedNodePath(next);
+    if (areWorkspacePathsEqual(activeTabPath, targetPath, workspaceComparisonRoot)) setActiveTabPath(nextPath);
+    setSelectedNodePath(nextPath);
     await refreshTree();
-  }, [canEdit, workspaceId, requestTextInput, activeTabPath, refreshTree, workspaceComparisonRoot]);
+  }, [canEdit, workspaceId, activeTabPath, refreshTree, workspaceComparisonRoot]);
 
   const deletePath = useCallback(async (targetPath: string) => {
     if (!canEdit) {
@@ -1568,6 +1497,7 @@ export function FilesPage({
       if (e.key === "Escape") {
         setContextMenu(null);
         if (showQuickOpen) setShowQuickOpen(false);
+        if (showContentSearch) setShowContentSearch(false);
         if (openInMenuOpen) setOpenInMenuOpen(false);
         return;
       }
@@ -1592,8 +1522,7 @@ export function FilesPage({
 
       if (mod && e.shiftKey && e.key.toLowerCase() === "f") {
         e.preventDefault();
-        searchInputRef.current?.focus();
-        searchInputRef.current?.select();
+        setShowContentSearch(true);
         return;
       }
 
@@ -1603,13 +1532,13 @@ export function FilesPage({
         e.preventDefault();
         const target = selectedNodePath ?? activeTabPath;
         if (!target) return;
-        renamePath(target).catch((err) => setError(err instanceof Error ? err.message : String(err)));
+        setInlineRenameRequest((prev) => ({ path: target, nonce: (prev?.nonce ?? 0) + 1 }));
       }
     };
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [saveActive, activeTabPath, closeTab, renamePath, selectedNodePath, showQuickOpen, openInMenuOpen]);
+  }, [saveActive, activeTabPath, closeTab, selectedNodePath, showQuickOpen, showContentSearch, openInMenuOpen]);
 
   useEffect(() => {
     if (!quickOpen.trim()) {
@@ -1634,17 +1563,26 @@ export function FilesPage({
   }, [quickOpen, workspaceId, showQuickOpen]);
 
   useEffect(() => {
-    if (!searchQuery.trim()) {
-      setSearchResults([]);
+    if (!showContentSearch) return;
+    const frame = window.requestAnimationFrame(() => {
+      contentSearchInputRef.current?.focus();
+      contentSearchInputRef.current?.select();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [showContentSearch]);
+
+  useEffect(() => {
+    if (!showContentSearch || !contentSearchQuery.trim()) {
+      setContentSearchResults([]);
       return;
     }
     const timer = setTimeout(() => {
-      window.ade.files.searchText({ workspaceId, query: searchQuery, limit: 200, includeIgnored: true })
-        .then(setSearchResults)
-        .catch(() => setSearchResults([]));
+      window.ade.files.searchText({ workspaceId, query: contentSearchQuery, limit: 200, includeIgnored: true })
+        .then(setContentSearchResults)
+        .catch(() => setContentSearchResults([]));
     }, 150);
     return () => clearTimeout(timer);
-  }, [searchQuery, workspaceId]);
+  }, [contentSearchQuery, workspaceId, showContentSearch]);
 
   useEffect(() => {
     if (!activeTab) return;
@@ -1791,113 +1729,8 @@ export function FilesPage({
     setResolvedConflictKeys(new Set());
   }, [activeTabPath]);
 
-  const renderTree = (nodes: FileTreeNode[], level = 0): React.ReactNode => (
-    <div>
-      {nodes.map((node) => {
-        const isExpanded = expanded.has(node.path);
-        const isActive = areWorkspacePathsEqual(activeTabPath, node.path, workspaceComparisonRoot)
-          || areWorkspacePathsEqual(selectedTreeNodePath, node.path, workspaceComparisonRoot);
-        const statusColor = changeStatusColor(node.changeStatus ?? null);
-        const fileIcon = node.type === "file" ? getFileIcon(node.name) : null;
-        const FileIcon = fileIcon?.icon;
-        const folderColor = isActive ? COLORS.accent : COLORS.textMuted;
-
-        return (
-          <div key={node.path}>
-            <button
-              className="group relative flex w-full items-center gap-1.5 text-left transition-colors"
-              style={{
-                height: 26,
-                paddingLeft: `${10 + level * 14}px`,
-                paddingRight: 8,
-                fontFamily: MONO_FONT,
-                fontSize: 11,
-                color: isActive ? COLORS.textPrimary : COLORS.textSecondary,
-                background: isActive ? COLORS.accentSubtle : "transparent",
-                border: "none",
-                borderLeft: isActive ? `2px solid ${COLORS.accent}` : "2px solid transparent",
-                cursor: "pointer",
-              }}
-              onClick={() => {
-                setSelectedNodePath(node.path);
-                if (node.type === "directory") {
-                  setExpanded((prev) => {
-                    const next = new Set(prev);
-                    if (next.has(node.path)) next.delete(node.path);
-                    else next.add(node.path);
-                    return next;
-                  });
-                  if (!isExpanded && !node.children) refreshTree(node.path).catch(() => {});
-                  return;
-                }
-                openFile(node.path).catch(() => {});
-              }}
-              onContextMenu={(event) => {
-                event.preventDefault();
-                setSelectedNodePath(node.path);
-                setContextMenu({
-                  x: event.clientX,
-                  y: event.clientY,
-                  nodePath: node.path,
-                  nodeType: node.type
-                });
-              }}
-              onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = COLORS.hoverBg; }}
-              onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = "transparent"; }}
-              title={node.path}
-            >
-              {level > 0 ? (
-                <span className="pointer-events-none absolute inset-y-0 left-0">
-                  {Array.from({ length: level }).map((_, idx) => (
-                    <span
-                      key={`${node.path}:guide:${idx}`}
-                      className="absolute inset-y-0"
-                      style={{ left: `${10 + idx * 14 + 5}px`, width: 1, background: "color-mix(in srgb, var(--color-border) 80%, transparent)" }}
-                    />
-                  ))}
-                </span>
-              ) : null}
-              {node.type === "directory" ? (
-                <>
-                  {isExpanded
-                    ? <ChevronDown size={12} weight="bold" style={{ color: folderColor, flexShrink: 0 }} />
-                    : <ChevronRight size={12} weight="bold" style={{ color: folderColor, flexShrink: 0 }} />}
-                  {isExpanded
-                    ? <FolderOpen size={14} weight="fill" style={{ color: folderColor, flexShrink: 0 }} />
-                    : <Folder size={14} weight="fill" style={{ color: folderColor, flexShrink: 0 }} />}
-                </>
-              ) : (
-                <>
-                  <span style={{ width: 12, flexShrink: 0 }} />
-                  {FileIcon
-                    ? <FileIcon size={14} weight="regular" style={{ color: fileIcon?.color, flexShrink: 0 }} />
-                    : <FileText size={14} weight="regular" style={{ color: COLORS.textMuted, flexShrink: 0 }} />}
-                </>
-              )}
-              <span className="truncate">{node.name}</span>
-              {node.type === "directory" && node.changeStatus ? (
-                <span style={{ marginLeft: "auto", width: 6, height: 6, borderRadius: "50%", background: statusColor, flexShrink: 0 }} />
-              ) : null}
-              {node.type === "file" && node.changeStatus ? (
-                <span style={{
-                  marginLeft: "auto", flexShrink: 0,
-                  fontFamily: MONO_FONT, fontSize: 9, fontWeight: 700, letterSpacing: "1px",
-                  color: statusColor,
-                  padding: "1px 5px",
-                  background: `${statusColor}18`,
-                }}>{node.changeStatus}</span>
-              ) : null}
-            </button>
-            {node.type === "directory" && isExpanded && node.children?.length ? renderTree(node.children, level + 1) : null}
-          </div>
-        );
-      })}
-    </div>
-  );
-
   const conflictHunks = activeTab ? parseConflictHunks(activeTab.content) : [];
   const laneIdForDiff = activeWorkspace?.laneId;
-  const hasConflictMarkers = conflictHunks.length > 0;
   const editorModeHint =
     mode === "edit"
       ? activeTabPreviewKind === "image"
@@ -1929,6 +1762,18 @@ export function FilesPage({
     return parentDirOfPath(activeContextPath);
   })();
 
+  const toggleDirectory = useCallback((nodePath: string, isExpanded: boolean, hasLoadedChildren: boolean) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(nodePath)) next.delete(nodePath);
+      else next.add(nodePath);
+      return next;
+    });
+    if (!isExpanded && !hasLoadedChildren) {
+      refreshTree(nodePath).catch(() => {});
+    }
+  }, [refreshTree]);
+
   const runContextAction = (fn: () => Promise<void>) => {
     setContextMenu(null);
     fn().catch((err) => setError(err instanceof Error ? err.message : String(err)));
@@ -1941,111 +1786,29 @@ export function FilesPage({
       title: "Explorer",
       icon: FolderOpen,
       meta: activeWorkspace?.name,
-      headerActions: (
-        <div className="flex items-center gap-1">
-          <SmartTooltip content={{ label: "New File", description: "Create a new file in the current directory." }}>
-            <button
-              type="button"
-              title="New file"
-              style={{ ...outlineButton({ height: 24, padding: "0 6px", fontSize: 10 }) }}
-              onClick={() => createFileAt(activeContextDir).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
-              onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.accent; e.currentTarget.style.color = COLORS.accent; }}
-              onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
-            >
-              <FilePlus2 size={12} weight="regular" />
-            </button>
-          </SmartTooltip>
-          <SmartTooltip content={{ label: "New Folder", description: "Create a new folder in the current directory." }}>
-            <button
-              type="button"
-              title="New folder"
-              style={{ ...outlineButton({ height: 24, padding: "0 6px", fontSize: 10 }) }}
-              onClick={() => createDirectoryAt(activeContextDir).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
-              onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.accent; e.currentTarget.style.color = COLORS.accent; }}
-              onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
-            >
-              <FolderPlus size={12} weight="regular" />
-            </button>
-          </SmartTooltip>
-        </div>
-      ),
       bodyClassName: "flex min-h-0 flex-col overflow-hidden",
       children: (
-        <div className="flex h-full min-h-0 flex-col" style={{ background: COLORS.cardBg, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderRadius: 12 }}>
-          {/* Search bar */}
-          <div style={{ padding: "8px 10px", borderBottom: `1px solid ${COLORS.border}` }} data-tour="files.searchBar">
-            <div className="relative flex items-center">
-              <Search size={14} weight="regular" className="pointer-events-none absolute" style={{ left: 8, color: COLORS.textDim }} />
-              <input
-                ref={searchInputRef}
-                value={searchQuery}
-                onChange={(event) => setSearchQuery(event.target.value)}
-                placeholder="SEARCH FILES"
-                style={{
-                  height: 30, width: "100%", padding: "0 28px 0 28px", fontSize: 10,
-                  fontFamily: MONO_FONT, fontWeight: 500,
-                  background: COLORS.recessedBg, borderRadius: 8,
-                  border: `1px solid ${COLORS.outlineBorder}`, color: COLORS.textSecondary,
-                  outline: "none", textTransform: "uppercase", letterSpacing: "1px",
-                }}
-                onFocus={(e) => { e.currentTarget.style.borderColor = COLORS.accent; }}
-                onBlur={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; }}
-              />
-              {searchQuery.trim() ? (
-                <button
-                  type="button"
-                  className="absolute"
-                  style={{ right: 4, top: "50%", transform: "translateY(-50%)", display: "inline-flex", width: 18, height: 18, alignItems: "center", justifyContent: "center", background: "transparent", border: "none", color: COLORS.textMuted, cursor: "pointer" }}
-                  onClick={() => setSearchQuery("")}
-                  title="Clear search"
-                >
-                  <X size={10} />
-                </button>
-              ) : null}
-            </div>
-            <div className="mt-1.5 flex items-center justify-end">
-              <SmartTooltip content={{ label: "Quick Open", description: "Search and open any file in the project.", shortcut: "\u2318P" }}>
-                <button
-                  type="button"
-                  style={{ ...outlineButton({ height: 22, padding: "0 8px", fontSize: 9 }) }}
-                  onClick={() => setShowQuickOpen(true)}
-                  onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.accent; e.currentTarget.style.color = COLORS.accent; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textSecondary; }}
-                >
-                  <Search size={10} /> QUICK OPEN
-                </button>
-              </SmartTooltip>
-            </div>
-          </div>
-          {/* Search results */}
-          {searchQuery.trim() ? (
-            <div className="max-h-[38%] shrink-0 overflow-auto" style={{ borderBottom: `1px solid ${COLORS.border}`, background: COLORS.recessedBg, padding: 4 }}>
-              {searchResults.map((item, idx) => {
-                const srIcon = getFileIcon(item.path.split("/").pop() ?? "");
-                const SrIcon = srIcon.icon;
-                return (
-                  <button
-                    key={`${item.path}:${item.line}:${idx}`}
-                    className="flex w-full items-start gap-2 text-left"
-                    style={{ padding: "6px 8px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textSecondary, background: "transparent", border: "none", cursor: "pointer" }}
-                    onClick={() => { openFile(item.path).catch(() => {}); }}
-                    onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
-                  >
-                    <SrIcon size={12} style={{ color: srIcon.color, flexShrink: 0, marginTop: 2 }} />
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate" style={{ fontWeight: 600, color: COLORS.textPrimary }}>{item.path}:{item.line}:{item.column}</div>
-                      <div className="truncate" style={{ color: COLORS.textMuted, fontSize: 10 }}>{item.preview}</div>
-                    </div>
-                  </button>
-                );
-              })}
-              {!searchResults.length ? <div style={{ padding: "8px", fontSize: 11, color: COLORS.textMuted, fontFamily: MONO_FONT }}>No matches</div> : null}
-            </div>
-          ) : null}
-          {/* File tree */}
-          <div className="min-h-0 flex-1 overflow-auto" style={{ paddingTop: 4, paddingBottom: 4 }} data-tour="files.fileTree">{renderTree(tree)}</div>
-        </div>
+        <FilesExplorer
+          tree={tree}
+          expanded={expanded}
+          selectedNodePath={selectedTreeNodePath}
+          activeTabPath={activeTabPath}
+          activeContextDir={activeContextDir}
+          workspaceComparisonRoot={workspaceComparisonRoot}
+          searchQuery={searchQuery}
+          inlineRenameRequest={inlineRenameRequest}
+          onSearchQueryChange={setSearchQuery}
+          onOpenQuickOpen={() => setShowQuickOpen(true)}
+          onOpenContentSearch={() => setShowContentSearch(true)}
+          onCreateFile={(basePath) => createFileAt(basePath).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
+          onCreateDirectory={(basePath) => createDirectoryAt(basePath).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
+          onToggleDirectory={toggleDirectory}
+          onOpenFile={(path) => { openFile(path).catch(() => {}); }}
+          onSelectNode={setSelectedNodePath}
+          onContextMenu={(event) => setContextMenu(event)}
+          onRenamePath={renamePathTo}
+          onInlineRenameSettled={() => setInlineRenameRequest(null)}
+        />
       )
     },
     editor: {
@@ -2293,12 +2056,12 @@ export function FilesPage({
       )
     }
   }), [
-    tree, activeWorkspace, activeTabPath, activeContextDir, openTabs, activeTab, activeTabIsText,
-    mode, canEdit, editorStatus, laneIdForDiff, activeContextPath,
-    searchQuery, searchResults, conflictHunks, editorTheme, editorModeHint, hasConflictMarkers,
-    resolvedConflictKeys, renderTree, createFileAt, createDirectoryAt, saveActive,
+    tree, expanded, activeWorkspace, activeTabPath, activeContextDir, openTabs, activeTab, activeTabIsText,
+    mode, canEdit, editorStatus, laneIdForDiff,
+    searchQuery, inlineRenameRequest, selectedTreeNodePath, conflictHunks, editorTheme, editorModeHint,
+    resolvedConflictKeys, createFileAt, createDirectoryAt, saveActive,
     closeTab, stagePath, unstagePath, discardPath, openFile, setShowQuickOpen, navigate,
-    applyConflictResolution, setEditorHostRef, workspaceComparisonRoot
+    applyConflictResolution, setEditorHostRef, workspaceComparisonRoot, toggleDirectory, renamePathTo
   ]);
 
   const renderPane = useCallback((paneId: keyof typeof paneConfigs) => {
@@ -2653,7 +2416,7 @@ export function FilesPage({
           <button className="flex w-full items-center text-left" style={{ padding: "6px 12px", fontSize: 11, fontFamily: MONO_FONT, fontWeight: 500, letterSpacing: "0.5px", color: COLORS.textSecondary, background: "transparent", border: "none", cursor: "pointer" }} onClick={() => { setContextMenu(null); if (activeWorkspace) window.ade.app.revealPath(`${activeWorkspace.rootPath}/${contextMenu.nodePath}`).catch(() => {}); }} onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }} onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>{revealLabel.toUpperCase()}</button>
           <button className="flex w-full items-center text-left" style={{ padding: "6px 12px", fontSize: 11, fontFamily: MONO_FONT, fontWeight: 500, letterSpacing: "0.5px", color: COLORS.textSecondary, background: "transparent", border: "none", cursor: "pointer" }} onClick={() => runContextAction(async () => createFileAt(contextMenu.nodeType === "directory" ? contextMenu.nodePath : parentDirOfPath(contextMenu.nodePath)))} onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }} onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>NEW FILE</button>
           <button className="flex w-full items-center text-left" style={{ padding: "6px 12px", fontSize: 11, fontFamily: MONO_FONT, fontWeight: 500, letterSpacing: "0.5px", color: COLORS.textSecondary, background: "transparent", border: "none", cursor: "pointer" }} onClick={() => runContextAction(async () => createDirectoryAt(contextMenu.nodeType === "directory" ? contextMenu.nodePath : parentDirOfPath(contextMenu.nodePath)))} onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }} onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>NEW FOLDER</button>
-          <button className="flex w-full items-center text-left" style={{ padding: "6px 12px", fontSize: 11, fontFamily: MONO_FONT, fontWeight: 500, letterSpacing: "0.5px", color: COLORS.accent, background: "transparent", border: "none", cursor: "pointer" }} onClick={() => runContextAction(async () => renamePath(contextMenu.nodePath))} onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }} onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>RENAME</button>
+          <button className="flex w-full items-center text-left" style={{ padding: "6px 12px", fontSize: 11, fontFamily: MONO_FONT, fontWeight: 500, letterSpacing: "0.5px", color: COLORS.accent, background: "transparent", border: "none", cursor: "pointer" }} onClick={() => { const path = contextMenu.nodePath; setContextMenu(null); setInlineRenameRequest((prev) => ({ path, nonce: (prev?.nonce ?? 0) + 1 })); }} onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }} onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>RENAME</button>
           <div style={{ margin: "4px 0", height: 1, background: COLORS.border }} />
           <button className="flex w-full items-center text-left" style={{ padding: "6px 12px", fontSize: 11, fontFamily: MONO_FONT, fontWeight: 700, letterSpacing: "0.5px", color: COLORS.danger, background: "transparent", border: "none", cursor: "pointer" }} onClick={() => runContextAction(async () => deletePath(contextMenu.nodePath))} onMouseEnter={(e) => { e.currentTarget.style.background = "color-mix(in srgb, var(--color-error) 18%, transparent)"; }} onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>DELETE</button>
         </div>
@@ -2706,6 +2469,68 @@ export function FilesPage({
                 );
               })}
               {!quickOpenResults.length ? <div style={{ padding: "12px", fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textDim }}>NO MATCHES</div> : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* Content Search overlay */}
+      {showContentSearch ? (
+        <div className="absolute inset-0 z-30 flex items-start justify-center" style={{ background: "rgba(0,0,0,0.6)", paddingTop: 80 }}>
+          <div style={{ width: 720, background: COLORS.cardBg, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", border: `1px solid ${COLORS.border}`, borderRadius: 16, padding: 16 }}>
+            <div style={{ ...LABEL_STYLE, marginBottom: 8, fontSize: 9 }}>CONTENT SEARCH</div>
+            <div className="relative flex items-center">
+              <Search size={14} weight="regular" className="pointer-events-none absolute" style={{ left: 10, color: COLORS.textDim }} />
+              <input
+                ref={contentSearchInputRef}
+                value={contentSearchQuery}
+                onChange={(e) => setContentSearchQuery(e.target.value)}
+                placeholder={`Search file contents... (${modifierKeyLabel}+Shift+F)`}
+                style={{
+                  height: 36, width: "100%", padding: "0 36px 0 32px",
+                  fontSize: 12, fontFamily: MONO_FONT, fontWeight: 500,
+                  background: COLORS.recessedBg, border: `1px solid ${COLORS.accent}`,
+                  borderRadius: 8, color: COLORS.textPrimary, outline: "none",
+                  letterSpacing: "0.3px",
+                }}
+                onKeyDown={(e) => { if (e.key === "Escape") setShowContentSearch(false); }}
+              />
+              <button
+                type="button"
+                className="absolute"
+                style={{ right: 8, ...outlineButton({ height: 22, padding: "0 6px", fontSize: 8 }) }}
+                onClick={() => setShowContentSearch(false)}
+              >ESC</button>
+            </div>
+            <div className="mt-2 max-h-[46vh] overflow-auto" style={{ border: `1px solid ${COLORS.border}`, background: COLORS.recessedBg, borderRadius: 8 }}>
+              {contentSearchResults.map((item, idx) => {
+                const srIcon = getFileIcon(item.path.split("/").pop() ?? "");
+                const SrIcon = srIcon.icon;
+                return (
+                  <button
+                    key={`${item.path}:${item.line}:${idx}`}
+                    className="flex w-full items-start gap-2 text-left"
+                    style={{ padding: "8px 12px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textSecondary, background: "transparent", border: "none", cursor: "pointer" }}
+                    onClick={() => {
+                      openFile(item.path).catch(() => {});
+                      setShowContentSearch(false);
+                    }}
+                    onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; e.currentTarget.style.color = COLORS.textPrimary; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = COLORS.textSecondary; }}
+                  >
+                    <SrIcon size={12} style={{ color: srIcon.color, flexShrink: 0, marginTop: 2 }} />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate" style={{ fontWeight: 600, color: COLORS.textPrimary }}>{item.path}:{item.line}:{item.column}</div>
+                      <div className="truncate" style={{ color: COLORS.textMuted, fontSize: 10 }}>{item.preview}</div>
+                    </div>
+                  </button>
+                );
+              })}
+              {!contentSearchResults.length ? (
+                <div style={{ padding: "12px", fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textDim }}>
+                  {contentSearchQuery.trim() ? "NO MATCHES" : "TYPE TO SEARCH CONTENTS"}
+                </div>
+              ) : null}
             </div>
           </div>
         </div>
@@ -2771,10 +2596,11 @@ function FilesDiffPanel({
   laneId: string;
   path: string;
   theme: EditorThemeMode;
-  diffViewRef?: React.MutableRefObject<MonacoDiffHandle | null>;
+  diffViewRef?: React.MutableRefObject<AdeDiffViewerHandle | null>;
 }) {
   const [mode, setMode] = useState<"unstaged" | "staged" | "commit">("unstaged");
   const [diff, setDiff] = useState<any>(null);
+  const [patch, setPatch] = useState<FilePatch | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [commits, setCommits] = useState<GitCommitSummary[]>([]);
   const [compareRef, setCompareRef] = useState<string>("");
@@ -2805,23 +2631,37 @@ function FilesDiffPanel({
     const load = async () => {
       if (mode === "commit" && !compareRef.trim()) {
         setDiff(null);
+        setPatch(null);
         return;
       }
 
-      const next = await window.ade.diff.getFile({
+      const args = {
         laneId,
         path,
         mode,
         compareRef: mode === "commit" ? compareRef : undefined
-      });
+      } as const;
+      const [nextDiff, nextPatch] = await Promise.allSettled([
+        window.ade.diff.getFile(args),
+        window.ade.diff.getFilePatch(args),
+      ]);
       if (cancelled) return;
-      setDiff(next);
+      const resolvedDiff = nextDiff.status === "fulfilled" ? nextDiff.value : null;
+      const resolvedPatch = nextPatch.status === "fulfilled" && filePatchHasRenderableChanges(nextPatch.value) ? nextPatch.value : null;
+      const hasRenderableDiff = resolvedDiff ? fileDiffHasRenderableChanges(resolvedDiff) : false;
+      if (!resolvedPatch && !hasRenderableDiff) {
+        if (nextDiff.status === "rejected") throw nextDiff.reason;
+        if (nextPatch.status === "rejected") throw nextPatch.reason;
+      }
+      setDiff(resolvedDiff);
+      setPatch(resolvedPatch);
     };
 
     load().catch((err) => {
       if (cancelled) return;
       setDiff(null);
-      setError(err instanceof Error ? err.message : String(err));
+      setPatch(null);
+      setError(settledErrorMessage(err));
     });
 
     return () => {
@@ -2881,8 +2721,8 @@ function FilesDiffPanel({
 
       {error ? <div style={{ padding: 12, fontFamily: MONO_FONT, fontSize: 11, color: COLORS.danger }}>{error}</div> : null}
       <div className="min-h-0 flex-1">
-        {diff && fileDiffHasRenderableChanges(diff) ? (
-          <MonacoDiffView ref={diffViewRef} diff={diff} className="h-full" theme={theme} />
+        {patch || (diff && fileDiffHasRenderableChanges(diff)) ? (
+          <AdeDiffViewer ref={diffViewRef} diff={diff} patch={patch} className="h-full" theme={theme} />
         ) : diff ? (
           <div className="flex h-full items-center justify-center px-4 text-xs" style={{ color: COLORS.textMuted }}>
             No changes for this file.

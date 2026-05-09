@@ -221,6 +221,7 @@ import type {
   GetLaneConflictStatusArgs,
   GetDiffChangesArgs,
   GetFileDiffArgs,
+  GetFilePatchArgs,
   GetProcessLogTailArgs,
   GetTestLogTailArgs,
   ExportHistoryArgs,
@@ -7191,7 +7192,9 @@ export function registerIpc({
 
   ipcMain.handle(IPC.diffGetChanges, async (_event, arg: GetDiffChangesArgs) => {
     const ctx = getCtx();
-    return await ctx.diffService.getChanges(arg.laneId);
+    return await withIpcTiming(ctx, "diff.getChanges", async () => await ctx.diffService.getChanges(arg.laneId), {
+      laneId: arg.laneId,
+    });
   });
 
   ipcMain.handle(IPC.diffGetFile, async (_event, arg: GetFileDiffArgs) => {
@@ -7200,6 +7203,26 @@ export function registerIpc({
       ctx,
       "diff.getFile",
       async () => await ctx.diffService.getFileDiff({
+        laneId: arg.laneId,
+        filePath: arg.path,
+        mode: arg.mode,
+        compareRef: arg.compareRef,
+        compareTo: arg.compareTo
+      }),
+      {
+        laneId: arg.laneId,
+        mode: arg.mode,
+        pathLength: arg.path.length,
+      }
+    );
+  });
+
+  ipcMain.handle(IPC.diffGetFilePatch, async (_event, arg: GetFilePatchArgs) => {
+    const ctx = getCtx();
+    return await withIpcTiming(
+      ctx,
+      "diff.getFilePatch",
+      async () => await ctx.diffService.getFilePatch({
         laneId: arg.laneId,
         filePath: arg.path,
         mode: arg.mode,
