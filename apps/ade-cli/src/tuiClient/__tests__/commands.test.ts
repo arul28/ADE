@@ -16,7 +16,7 @@ describe("commands", () => {
     expect(parsed ? commandPlacement(parsed) : null).toBe("right");
   });
 
-  it("routes user-defined commands to chat", () => {
+  it("routes runtime commands to chat", () => {
     const parsed = parseCommand("/ship now", [
       { name: "/ship", description: "Ship it", source: "sdk" },
     ]);
@@ -24,13 +24,22 @@ describe("commands", () => {
     expect(parsed ? commandPlacement(parsed) : null).toBe("chat");
   });
 
-  it("lets local project commands override ADE built-ins on exact name", () => {
+  it("lets runtime commands override single-word ADE built-ins on exact name", () => {
     const parsed = parseCommand("/status please", [
-      { name: "/status", description: "Project status prompt", source: "local" },
+      { name: "/status", description: "Runtime status", source: "sdk" },
     ]);
     expect(parsed?.spec).toBeNull();
     expect(parsed?.userCommand?.name).toBe("/status");
     expect(parsed ? commandPlacement(parsed) : null).toBe("chat");
+  });
+
+  it("keeps multi-word ADE commands ahead of first-token runtime commands", () => {
+    const parsed = parseCommand("/new lane perf-pass", [
+      { name: "/new", description: "Start a new runtime chat", source: "sdk" },
+    ]);
+    expect(parsed?.name).toBe("/new lane");
+    expect(parsed?.args).toBe("perf-pass");
+    expect(parsed ? commandPlacement(parsed) : null).toBe("right");
   });
 
   it("tags built-ins and user commands in the palette", () => {

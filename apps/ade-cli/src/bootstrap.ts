@@ -1123,6 +1123,7 @@ export async function createAdeRuntime(args: {
       swallow(() => linearOAuthService.dispose());
       swallow(() => headlessLinearServices.dispose());
       swallow(() => aiOrchestratorService.dispose());
+      swallow(() => agentChatService?.forceDisposeAll?.());
       swallow(() => testService.disposeAll());
       swallow(() => ptyService.disposeAll());
       swallow(() => db.flushNow());

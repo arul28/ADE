@@ -11,6 +11,7 @@ function HelpPane() {
       <Text dimColor>esc closes the active side pane</Text>
       <Text dimColor>ctrl-c interrupts a running chat; press again to quit</Text>
       <Text dimColor>/ opens commands, @ opens references, tab inserts selected</Text>
+      <Text dimColor>/ade status forces ADE's TUI command when a runtime owns /status</Text>
     </Box>
   );
 }

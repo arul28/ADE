@@ -212,22 +212,50 @@ describe("runtime Linear issue tracker actions", () => {
     const users = [{ id: "user-1", name: "Arul" }];
     const labels = [{ id: "label-1", name: "Bug" }];
     const states = [{ id: "state-1", name: "Todo" }];
+    const issues = [
+      { id: "LIN-1", title: "First" },
+      { id: "LIN-2", title: "Second" },
+      { id: "LIN-3", title: "Third" },
+    ];
+    const fetchCandidateIssues = vi.fn(async () => issues);
     const tracker = {
+      getConnectionStatus: vi.fn(async () => ({
+        connected: true,
+        viewerId: "user-1",
+        viewerName: "Arul",
+        message: null,
+      })),
+      fetchCandidateIssues,
       listProjects: vi.fn(async () => projects),
       listUsers: vi.fn(async () => users),
       listLabels: vi.fn(async () => labels),
       listWorkflowStates: vi.fn(async () => states),
     };
     const runtime = {
+      linearCredentialService: {
+        getStatus: vi.fn(() => ({
+          tokenStored: true,
+          authMode: "oauth",
+          oauthConfigured: true,
+          tokenExpiresAt: null,
+        })),
+      },
       linearIssueTracker: tracker,
     } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
     const service = getAdeActionDomainServices(runtime).linear_issue_tracker as {
+      getStatus: () => Promise<unknown>;
       getWorkflowCatalog: () => Promise<unknown>;
       getIssuePickerData: () => Promise<unknown>;
+      listIssues: (args?: Record<string, unknown>) => Promise<unknown>;
     } & Record<string, unknown>;
 
+    expect(listAllowedAdeActionNames("linear_issue_tracker", service)).toContain("getStatus");
+    expect(listAllowedAdeActionNames("linear_issue_tracker", service)).toContain("listIssues");
     expect(listAllowedAdeActionNames("linear_issue_tracker", service)).toContain("getWorkflowCatalog");
     expect(listAllowedAdeActionNames("linear_issue_tracker", service)).toContain("getIssuePickerData");
+    await expect(service.getStatus()).resolves.toMatchObject({ connected: true, tokenStored: true });
+    await expect(service.listIssues({ project: "desktop,cli", state: ["open"], limit: 2 })).resolves.toEqual(issues.slice(0, 2));
+    expect(fetchCandidateIssues).toHaveBeenCalledWith({ projectSlugs: ["desktop", "cli"], stateTypes: ["open"] });
     await expect(service.getWorkflowCatalog()).resolves.toEqual({ users, labels, states });
     await expect(service.getIssuePickerData()).resolves.toEqual({ projects, users, states });
   });

@@ -47,7 +47,7 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/model", description: "Pick the active chat model", placement: "right" },
   { name: "/effort", description: "Pick reasoning effort", placement: "right" },
   { name: "/system", description: "Show system and runtime details", placement: "right" },
-  { name: "/ade", description: "Run an allowlisted ADE action", placement: "right", argumentHint: "<domain.action> [json]" },
+  { name: "/ade", description: "Run an ADE action or force a TUI command", placement: "right", argumentHint: "<domain.action|command> [json]" },
 ];
 
 export type ParsedCommand = {
@@ -65,17 +65,33 @@ export function parseCommand(input: string, userCommands: AgentChatSlashCommand[
   const trimmed = input.trim();
   if (!trimmed.startsWith("/")) return null;
   const [first = ""] = trimmed.split(/\s+/, 1);
-  const exactLocalCommand = userCommands.find((command) => command.source === "local" && command.name === first) ?? null;
-  if (exactLocalCommand) {
+  const candidates = [...BUILTIN_COMMANDS]
+    .sort((left, right) => right.name.length - left.name.length);
+
+  // Preserve ADE's multi-word commands (`/new lane`, `/pr open`, `/linear pull`)
+  // even when a runtime exposes a first-token command like `/new`.
+  for (const spec of candidates.filter((candidate) => candidate.name.includes(" "))) {
+    const name = normalizeSlashName(spec.name);
+    if (trimmed === name || trimmed.startsWith(`${name} `)) {
+      return {
+        name,
+        args: trimmed.slice(name.length).trim(),
+        spec,
+        userCommand: null,
+      };
+    }
+  }
+
+  const exactUserCommand = userCommands.find((command) => command.name === first) ?? null;
+  if (exactUserCommand) {
     return {
       name: first,
       args: trimmed.slice(first.length).trim(),
       spec: null,
-      userCommand: exactLocalCommand,
+      userCommand: exactUserCommand,
     };
   }
-  const candidates = [...BUILTIN_COMMANDS]
-    .sort((left, right) => right.name.length - left.name.length);
+
   for (const spec of candidates) {
     const name = normalizeSlashName(spec.name);
     if (trimmed === name || trimmed.startsWith(`${name} `)) {

@@ -23,6 +23,7 @@ export function Header({
   let modeColor: string = "gray";
   if (mode === "attached") modeColor = "green";
   else if (mode === "embedded") modeColor = "yellow";
+  const modelLabel = model.reasoningEffort ? `${model.displayName} ${model.reasoningEffort}` : model.displayName;
   return (
     <Box borderStyle="single" borderColor="gray" paddingX={1}>
       <Text color={PURPLE}>▌ ADE</Text>
@@ -31,7 +32,7 @@ export function Header({
       <Text dimColor>   ▌ </Text>
       <Text color={AMBER}>{formatLaneLabel(lane)}</Text>
       <Text dimColor>   ▲ </Text>
-      <Text color={PURPLE}>{model.displayName}</Text>
+      <Text color={PURPLE}>{modelLabel}</Text>
       <Text dimColor>   ● </Text>
       <Text color={modeColor}>{mode}</Text>
       <Text dimColor>{` · ⏵ ${tuiCount} tui${tuiCount === 1 ? "" : "s"}`}</Text>

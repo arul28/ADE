@@ -12,6 +12,7 @@ import type {
 } from "../../../desktop/src/shared/types/chat";
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
 import {
+  DEFAULT_CODEX_REASONING_EFFORT,
   approveToolUse,
   createChatSession,
   getAvailableModels,
@@ -85,7 +86,7 @@ function initialModelState(): AdeCodeModelState {
     model: descriptor?.providerModelId ?? "gpt-5.5",
     modelId: descriptor?.id ?? null,
     displayName: descriptor?.displayName ?? "GPT-5.5",
-    reasoningEffort: "medium",
+    reasoningEffort: DEFAULT_CODEX_REASONING_EFFORT,
   };
 }
 
@@ -135,14 +136,56 @@ function splitFirstArg(input: string): { first: string; rest: string } {
   };
 }
 
-function parseAdeActionArgs(input: string): Record<string, unknown> {
+type ParsedAdeActionPayload =
+  | { args: Record<string, unknown> }
+  | { argsList: unknown[] }
+  | { arg: unknown };
+
+function parseAdeActionPayload(input: string): ParsedAdeActionPayload {
   const trimmed = input.trim();
-  if (!trimmed) return {};
+  if (!trimmed) return { args: {} };
   const parsed = JSON.parse(trimmed) as unknown;
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("/ade action arguments must be a JSON object.");
+  if (Array.isArray(parsed)) {
+    return { argsList: parsed };
   }
-  return parsed as Record<string, unknown>;
+  if (parsed && typeof parsed === "object") {
+    return { args: parsed as Record<string, unknown> };
+  }
+  return { arg: parsed };
+}
+
+function parseLinearIssueListArgs(input: string): Record<string, unknown> {
+  const projectSlugs: string[] = [];
+  const stateTypes: string[] = [];
+  let limit: number | undefined;
+  const tokens = input.match(/"([^"\\]*(?:\\.[^"\\]*)*)"|'([^']*)'|(\S+)/g)?.map((token) => (
+    token.startsWith("\"") && token.endsWith("\"")
+      ? token.slice(1, -1).replace(/\\"/g, "\"")
+      : token.startsWith("'") && token.endsWith("'")
+        ? token.slice(1, -1)
+        : token
+  )) ?? [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index] ?? "";
+    const next = tokens[index + 1];
+    if ((token === "--project" || token === "--project-slug" || token === "--projects") && next) {
+      projectSlugs.push(...next.split(",").map((entry) => entry.trim()).filter(Boolean));
+      index += 1;
+    } else if ((token === "--state" || token === "--states" || token === "--state-type") && next) {
+      stateTypes.push(...next.split(",").map((entry) => entry.trim()).filter(Boolean));
+      index += 1;
+    } else if (token === "--limit" && next && Number.isFinite(Number(next))) {
+      limit = Math.max(1, Math.min(100, Math.floor(Number(next))));
+      index += 1;
+    } else if (!token.startsWith("--")) {
+      projectSlugs.push(token);
+    }
+  }
+  return {
+    projectSlugs,
+    stateTypes,
+    ...(limit ? { limit } : {}),
+  };
 }
 
 function printableInput(input: string): string {
@@ -223,6 +266,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const lastLocalSendAtRef = useRef<number>(0);
   const eventCountRef = useRef<number>(0);
   const heartbeatRef = useRef<TuiHeartbeat | null>(null);
+
+  const selectActiveLaneId = useCallback((laneId: string | null) => {
+    activeLaneIdRef.current = laneId;
+    setActiveLaneId(laneId);
+  }, []);
+
+  const selectActiveSessionId = useCallback((sessionId: string | null) => {
+    activeSessionIdRef.current = sessionId;
+    setActiveSessionId(sessionId);
+  }, []);
 
   const projectName = path.basename(project.projectRoot);
   const activeLane = useMemo(
@@ -426,7 +479,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       const stats = latestTokenStats(history.events);
       setContextPercent(stats.percent);
       setTokenSummary(formatTokenSummary(stats));
-      setStreaming(stats.streaming || nextSession?.status === "active");
+      setStreaming(nextSession?.status === "active");
       const previousCount = eventCountRef.current;
       eventCountRef.current = history.events.length;
       if (previousCount > 0 && history.events.length > previousCount && Date.now() - lastLocalSendAtRef.current > 4_000) {
@@ -442,8 +495,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       ?? null;
     setLanes(nextLanes);
     setSessions(nextSessions);
-    setActiveLaneId(nextLaneId);
-    setActiveSessionId(nextSessionId);
+    selectActiveLaneId(nextLaneId);
+    selectActiveSessionId(nextSessionId);
     setEvents(nextEvents);
     setSlashCommands(nextCommands);
     setModels(nextModels);
@@ -455,7 +508,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       displayName: activeModel?.displayName ?? nextSession?.model ?? modelState.displayName,
       reasoningEffort: nextSession?.reasoningEffort ?? modelState.reasoningEffort,
     });
-  }, [clearedAt, modelState.displayName, modelState.model, modelState.modelId, modelState.reasoningEffort, project]);
+  }, [clearedAt, modelState.displayName, modelState.model, modelState.modelId, modelState.reasoningEffort, project, selectActiveLaneId, selectActiveSessionId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -525,11 +578,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     const laneId = activeLaneIdRef.current;
     if (!conn || !laneId) return null;
     if (activeSessionIdRef.current) return activeSessionIdRef.current;
-    const created = await createChatSession({ connection: conn, laneId });
-    setActiveSessionId(created.id);
+    const created = await createChatSession({
+      connection: conn,
+      laneId,
+      modelId: modelState.modelId,
+      reasoningEffort: modelState.reasoningEffort ?? DEFAULT_CODEX_REASONING_EFFORT,
+    });
+    selectActiveSessionId(created.id);
     await refreshState();
     return created.id;
-  }, [refreshState]);
+  }, [modelState.modelId, modelState.reasoningEffort, refreshState, selectActiveSessionId]);
 
   const resolvePendingApproval = useCallback(async (
     approval: PendingApproval,
@@ -621,8 +679,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         });
         return;
       }
-      const created = await createChatSession({ connection: conn, laneId, title: args });
-      setActiveSessionId(created.id);
+      const created = await createChatSession({
+        connection: conn,
+        laneId,
+        title: args,
+        modelId: modelState.modelId,
+        reasoningEffort: modelState.reasoningEffort ?? DEFAULT_CODEX_REASONING_EFFORT,
+      });
+      selectActiveSessionId(created.id);
       addNotice(`Created chat "${args}".`, "success");
       await refreshState();
       return;
@@ -641,7 +705,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         return;
       }
       const created = await conn.action<LaneSummary>("lane", "create", { name: args });
-      setActiveLaneId(created.id);
+      selectActiveLaneId(created.id);
+      selectActiveSessionId(null);
       setRightPane({ kind: "details", title: "New lane", body: renderObject(created, 20) });
       await refreshState();
       return;
@@ -672,7 +737,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         setRightPane({ kind: "details", title: "Diff", body: "No active lane is selected." });
         return;
       }
-      const diff = await conn.action("diff", "getChanges", { laneId });
+      const diff = await conn.actionList("diff", "getChanges", [laneId]);
       setRightPane({ kind: "diff", title: "Diff", files: summarizeDiffChanges(diff) });
       return;
     }
@@ -686,6 +751,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       return;
     }
     if (name.startsWith("/pr")) {
+      if (!laneId) {
+        setRightPane({ kind: "details", title: name.slice(1) || "PR", body: "No active lane is selected." });
+        return;
+      }
       const prs = await conn.action<Array<Record<string, unknown>>>("pr", "listAll", laneId ? { laneId } : {});
       const activePr = prs[0] ?? null;
       const prId = activePr ? String(activePr.id ?? activePr.prId ?? "") : "";
@@ -712,10 +781,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
             },
           });
           setRightPane({ kind: "details", title: "PR open", body: renderObject(activePr, 24) });
-          return;
-        }
-        if (!laneId) {
-          setRightPane({ kind: "details", title: "PR open", body: "No active lane is selected." });
           return;
         }
         if (!args) {
@@ -753,7 +818,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       return;
     }
     if (name === "/linear list") {
-      const linear = await conn.action("linear_issue_tracker", "listIssues", { limit: 20 });
+      const linear = await conn.action("linear_issue_tracker", "listIssues", parseLinearIssueListArgs(args || "--limit 20"));
       setRightPane({ kind: "list", title: "Linear", rows: routeRows(linear), emptyText: "No Linear issues." });
       return;
     }
@@ -860,11 +925,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       }
       const lane = lanes.find((entry) => entry.id.toLowerCase() === query || entry.name.toLowerCase().includes(query));
       if (lane) {
-        setActiveLaneId(lane.id);
+        selectActiveLaneId(lane.id);
         setDrawerLaneId(lane.id);
         setSelectedDrawerLaneId(lane.id);
         const session = newestSession(sessions.filter((entry) => entry.laneId === lane.id));
-        setActiveSessionId(session?.sessionId ?? null);
+        selectActiveSessionId(session?.sessionId ?? null);
         setSelectedDrawerChatId(session?.sessionId ?? null);
         addNotice(`Switched to lane ${lane.name}.`, "success");
       } else {
@@ -883,7 +948,18 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       return;
     }
     if (name === "/model") {
-      if (args && sessionId) {
+      if (args) {
+        if (!sessionId) {
+          const model = models.find((entry) => entry.id === args || entry.modelId === args);
+          setModelState((prev) => ({
+            ...prev,
+            model: model?.id ?? args,
+            modelId: model?.modelId ?? model?.id ?? args,
+            displayName: model?.displayName ?? args,
+          }));
+          addNotice(`Default model set to ${model?.displayName ?? args}.`, "success");
+          return;
+        }
         await updateChatModel({ connection: conn, sessionId, modelId: args });
         addNotice(`Model set to ${args}.`, "success");
         await refreshState();
@@ -896,7 +972,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       return;
     }
     if (name === "/effort") {
-      if (args && sessionId) {
+      if (args) {
+        if (!EFFORTS.includes(args)) {
+          setRightPane({ kind: "details", title: "Effort", body: `Usage: /effort <${EFFORTS.join("|")}>` });
+          return;
+        }
+        if (!sessionId) {
+          setModelState((prev) => ({ ...prev, reasoningEffort: args }));
+          addNotice(`Default effort set to ${args}.`, "success");
+          return;
+        }
         await updateChatModel({ connection: conn, sessionId, reasoningEffort: args });
         addNotice(`Effort set to ${args}.`, "success");
         await refreshState();
@@ -916,19 +1001,42 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     }
     if (name === "/ade") {
       const parsed = splitFirstArg(args);
+      const possibleBuiltin = parsed.first.startsWith("/") ? parsed.first : `/${parsed.first}`;
+      const alias = possibleBuiltin !== "/ade"
+        ? parseCommand(`${possibleBuiltin}${parsed.rest ? ` ${parsed.rest}` : ""}`, [])
+        : null;
+      if (alias?.spec?.placement === "right") {
+        await runRightCommand(alias.name, alias.args);
+        return;
+      }
+      if (alias?.spec?.placement === "inline") {
+        setRightPane({
+          kind: "details",
+          title: "ADE command",
+          body: `/${parsed.first.replace(/^\//, "")} is an inline TUI command. Run it before creating a runtime chat, or use the keyboard shortcut when available.`,
+        });
+        return;
+      }
       const [domain, action] = parsed.first.split(".", 2);
       if (!domain || !action) {
         setRightPane({
           kind: "details",
           title: "ADE action",
-          body: "Usage: /ade <domain.action> [json-object-args]",
+          body: "Usage: /ade <domain.action|status|diff|model|effort|help> [json-object|json-array|json-scalar]",
         });
         return;
       }
-      const result = await conn.action(domain, action, parseAdeActionArgs(parsed.rest));
-      setRightPane({ kind: "details", title: `ADE ${domain}.${action}`, body: renderObject(result, 24) });
+      const result = await conn.tool("run_ade_action", {
+        domain,
+        action,
+        ...parseAdeActionPayload(parsed.rest),
+      });
+      const body = result && typeof result === "object" && "result" in result
+        ? (result as { result?: unknown }).result
+        : result;
+      setRightPane({ kind: "details", title: `ADE ${domain}.${action}`, body: renderObject(body, 24) });
     }
-  }, [activeLane?.name, activeSession?.sessionId, activeSession?.title, addNotice, ensureActiveSession, lanes, mode, modelState.modelId, modelState.reasoningEffort, models, openForm, project, refreshState, sessions]);
+  }, [activeLane?.name, activeSession?.sessionId, activeSession?.title, addNotice, ensureActiveSession, lanes, mode, modelState.modelId, modelState.reasoningEffort, models, openForm, project, refreshState, selectActiveLaneId, selectActiveSessionId, sessions]);
 
   const runInlineCommand = useCallback(async (name: string, args: string) => {
     const conn = connectionRef.current;
@@ -1058,8 +1166,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       if (!laneId) return;
       const title = values.title?.trim() || null;
       const message = values.message?.trim() ?? "";
-      const created = await createChatSession({ connection: conn, laneId, title });
-      setActiveSessionId(created.id);
+      const created = await createChatSession({
+        connection: conn,
+        laneId,
+        title,
+        modelId: modelState.modelId,
+        reasoningEffort: modelState.reasoningEffort ?? DEFAULT_CODEX_REASONING_EFFORT,
+      });
+      selectActiveSessionId(created.id);
       if (message) {
         await sendChatMessage(conn, created.id, message);
       }
@@ -1078,8 +1192,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         name,
         ...(baseBranch ? { baseBranch } : {}),
       });
-      setActiveLaneId(created.id);
-      setActiveSessionId(null);
+      selectActiveLaneId(created.id);
+      selectActiveSessionId(null);
       setRightOpen(false);
       setRightPane({ kind: "empty" });
       addNotice(`Created lane ${created.name}.`, "success");
@@ -1114,7 +1228,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       addNotice("Created draft PR.", "success");
       await refreshState();
     }
-  }, [addNotice, refreshState]);
+  }, [addNotice, modelState.modelId, modelState.reasoningEffort, refreshState, selectActiveLaneId, selectActiveSessionId]);
 
   const submitPrompt = useCallback(async (value: string) => {
     const text = value.trim();
@@ -1275,21 +1389,21 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       if (rightPane.action.kind === "switch-lane") {
         const lane = lanes.find((entry) => entry.id === selectedId);
         if (!lane) return;
-        setActiveLaneId(lane.id);
+        selectActiveLaneId(lane.id);
         setDrawerLaneId(lane.id);
         setSelectedDrawerLaneId(lane.id);
         const session = newestSession(sessions.filter((entry) => entry.laneId === lane.id));
-        setActiveSessionId(session?.sessionId ?? null);
+        selectActiveSessionId(session?.sessionId ?? null);
         setSelectedDrawerChatId(session?.sessionId ?? null);
         addNotice(`Switched to lane ${lane.name}.`, "success");
         return;
       }
       const session = sessions.find((entry) => entry.sessionId === selectedId);
       if (!session) return;
-      setActiveLaneId(session.laneId);
+      selectActiveLaneId(session.laneId);
       setDrawerLaneId(session.laneId);
       setSelectedDrawerLaneId(session.laneId);
-      setActiveSessionId(session.sessionId);
+      selectActiveSessionId(session.sessionId);
       setSelectedDrawerChatId(session.sessionId);
       addNotice(`Switched to chat ${session.title ?? session.sessionId}.`, "success");
       return;
@@ -1297,14 +1411,23 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     if (rightOpen && (rightPane.kind === "models" || rightPane.kind === "effort") && key.return) {
       const conn = connectionRef.current;
       const sessionId = activeSessionIdRef.current;
-      if (!conn || !sessionId) {
-        addNotice("Create or select a chat before changing model settings.", "error");
+      if (!conn) {
         return;
       }
       if (rightPane.kind === "models") {
         const model = rightPane.models[rightSelectionIndex] ?? rightPane.models[0];
         if (!model) return;
         const modelId = model.modelId ?? model.id;
+        if (!sessionId) {
+          setModelState((prev) => ({
+            ...prev,
+            model: model.id,
+            modelId,
+            displayName: model.displayName,
+          }));
+          addNotice(`Default model set to ${model.displayName}.`, "success");
+          return;
+        }
         void updateChatModel({ connection: conn, sessionId, modelId })
           .then(() => {
             addNotice(`Model set to ${model.displayName}.`, "success");
@@ -1315,6 +1438,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       }
       const effort = rightPane.efforts[rightSelectionIndex] ?? rightPane.efforts[0];
       if (!effort) return;
+      if (!sessionId) {
+        setModelState((prev) => ({ ...prev, reasoningEffort: effort }));
+        addNotice(`Default effort set to ${effort}.`, "success");
+        return;
+      }
       void updateChatModel({ connection: conn, sessionId, reasoningEffort: effort })
         .then(() => {
           addNotice(`Effort set to ${effort}.`, "success");
@@ -1375,18 +1503,22 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       if (drawerSection === "lanes") {
         const lane = drawerLaneRows[selectedLaneIndex];
         if (lane) {
+          selectActiveLaneId(lane.id);
           setDrawerLaneId(lane.id);
           setSelectedDrawerLaneId(lane.id);
-          setDrawerSection("chats");
-          setSelectedDrawerChatId(sessions.find((session) => session.laneId === lane.id)?.sessionId ?? null);
+          const session = newestSession(sessions.filter((entry) => entry.laneId === lane.id));
+          selectActiveSessionId(session?.sessionId ?? null);
+          setSelectedDrawerChatId(session?.sessionId ?? null);
+          setDrawerSection(session ? "chats" : "lanes");
+          addNotice(`Switched to lane ${lane.name}.`, "success");
         }
       } else {
         const session = drawerLaneSessions[selectedChatIndex];
         if (session) {
-          setActiveLaneId(session.laneId);
+          selectActiveLaneId(session.laneId);
           setDrawerLaneId(session.laneId);
           setSelectedDrawerLaneId(session.laneId);
-          setActiveSessionId(session.sessionId);
+          selectActiveSessionId(session.sessionId);
           setSelectedDrawerChatId(session.sessionId);
         }
       }

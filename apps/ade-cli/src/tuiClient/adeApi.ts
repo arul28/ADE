@@ -11,6 +11,8 @@ import type {
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
 import type { AdeCodeConnection, ChatHistorySnapshot, CreatedChat, NavigateRequest, NavigateResult } from "./types";
 
+export const DEFAULT_CODEX_REASONING_EFFORT = "low";
+
 export async function listLanes(connection: AdeCodeConnection): Promise<LaneSummary[]> {
   return await connection.action<LaneSummary[]>("lane", "list", {
     includeArchived: false,
@@ -66,13 +68,14 @@ export async function createChatSession(args: {
     : getDefaultModelDescriptor(provider);
   const modelId = args.modelId ?? descriptor?.id ?? null;
   const model = descriptor?.providerModelId ?? descriptor?.shortId ?? (provider === "claude" ? "sonnet" : "gpt-5.5");
+  const reasoningEffort = args.reasoningEffort ?? (provider === "codex" ? DEFAULT_CODEX_REASONING_EFFORT : null);
   return await args.connection.action<AgentChatSession>("chat", "createSession", {
     laneId: args.laneId,
     provider,
     model,
     ...(modelId ? { modelId } : {}),
     ...(args.title?.trim() ? { title: args.title.trim() } : {}),
-    ...(args.reasoningEffort ? { reasoningEffort: args.reasoningEffort } : {}),
+    ...(reasoningEffort ? { reasoningEffort } : {}),
     surface: "work",
   });
 }
