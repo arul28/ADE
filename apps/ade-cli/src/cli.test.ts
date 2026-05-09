@@ -408,6 +408,7 @@ describe("ADE CLI", () => {
     expect(() => buildCliPlan(["lanes", "create"])).toThrow(/name is required/);
     expect(() => buildCliPlan(["lanes", "child", "--name", "child"])).toThrow(/parent lane is required/);
     expect(() => buildCliPlan(["diff", "file", "--lane", "main"])).toThrow(/path is required/);
+    expect(() => buildCliPlan(["diff", "patch", "--lane", "main"])).toThrow(/path is required/);
     expect(() => buildCliPlan(["files", "write", "src/index.ts"])).toThrow(/--text, --from-file, or --stdin/);
     expect(() => buildCliPlan(["chat", "send", "hello"])).toThrow(/message text is required/);
     expect(() => buildCliPlan(["agent", "spawn", "--prompt", "fix it"])).toThrow(/laneId is required/);
