@@ -741,6 +741,7 @@ export function PrDetailPane({
   // expandedRun state removed — the unified ChecksTab manages its own expand state
   const [expandedFile, setExpandedFile] = React.useState<string | null>(null);
   const detailLoadSeqRef = React.useRef(0);
+  const detailStatusRefreshKeyRef = React.useRef<string | null>(null);
   const inventoryLoadSeqRef = React.useRef(0);
 
   const loadDetail = React.useCallback(async () => {
@@ -826,6 +827,24 @@ export function PrDetailPane({
       convergenceLoadSeqRef.current += 1;
     };
   }, [applyConvergenceRuntime, loadConvergenceState, loadDetail, pr.id]);
+
+  React.useEffect(() => {
+    const key = [
+      pr.id,
+      pr.checksStatus ?? "",
+      pr.reviewStatus ?? "",
+      pr.updatedAt ?? "",
+    ].join("|");
+    const prev = detailStatusRefreshKeyRef.current;
+    if (!prev || !prev.startsWith(`${pr.id}|`)) {
+      detailStatusRefreshKeyRef.current = key;
+      return;
+    }
+    if (prev === key) return;
+    detailStatusRefreshKeyRef.current = key;
+    void loadDetail();
+    void refreshReviewThreads();
+  }, [loadDetail, pr.checksStatus, pr.id, pr.reviewStatus, pr.updatedAt, refreshReviewThreads]);
 
   // Poll actionRuns + activity + reviewThreads every 60s so CI data stays fresh.
   // PrsContext polls checks/status/reviews/comments, but action runs are only loaded
