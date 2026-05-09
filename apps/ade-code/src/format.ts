@@ -1,5 +1,6 @@
 import path from "node:path";
-import type { AgentChatEventEnvelope, AgentChatSessionSummary, LaneSummary } from "../../desktop/src/shared/types";
+import type { AgentChatEventEnvelope, AgentChatSessionSummary } from "../../desktop/src/shared/types/chat";
+import type { LaneSummary } from "../../desktop/src/shared/types/lanes";
 import type { LocalNotice } from "./types";
 
 function timeLabel(value: string): string {

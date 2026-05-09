@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AgentChatEventEnvelope } from "../../../desktop/src/shared/types";
+import type { AgentChatEventEnvelope } from "../../../desktop/src/shared/types/chat";
 import { latestTokenStats } from "../adeApi";
 
 function envelope(

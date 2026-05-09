@@ -12,7 +12,7 @@ Navigation map for the internal docs. **Start with [PRD.md](./PRD.md).**
 ## Layout
 
 ```
-new-docs/
+docs/
 ├── README.md                              # this file
 ├── PRD.md                                 # product entry point
 ├── ARCHITECTURE.md                        # system architecture
@@ -21,6 +21,7 @@ new-docs/
 │   └── ship-lane.md                       # autonomous PR-to-merge driver
 └── features/
     ├── agents/                            # agent identity, tools, personas
+    ├── ade-code/                          # terminal Ink Work chat client (ade-code)
     ├── automations/                       # rule triggers + actions + guardrails
     ├── chat/                              # multi-provider agent chat
     ├── computer-use/                      # proof control plane, backends, broker
@@ -53,4 +54,4 @@ new-docs/
 
 `docs.json` at the repo root configures the public-facing Mintlify docs site (`.mdx` files under `./chat/`, `./tools/`, `./missions/`, etc.). That site is user-facing and separate.
 
-**This folder (`new-docs/`) is internal-only** — for engineers and AI agents working on ADE itself.
+**This folder (`docs/`) is internal-only** — for engineers and AI agents working on ADE itself.

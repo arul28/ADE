@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AgentChatEventEnvelope, PendingInputRequest } from "../../../desktop/src/shared/types";
+import type { AgentChatEventEnvelope, PendingInputRequest } from "../../../desktop/src/shared/types/chat";
 import { buildPendingInputAnswers, latestPendingApproval } from "../pendingInput";
 
 const baseRequest: PendingInputRequest = {

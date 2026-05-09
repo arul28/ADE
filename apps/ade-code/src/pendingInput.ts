@@ -3,7 +3,7 @@ import type {
   PendingInputOption,
   PendingInputQuestion,
   PendingInputRequest,
-} from "../../desktop/src/shared/types";
+} from "../../desktop/src/shared/types/chat";
 import { renderObject } from "./format";
 import type { PendingApproval } from "./types";
 

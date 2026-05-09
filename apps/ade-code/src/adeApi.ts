@@ -7,8 +7,8 @@ import type {
   AgentChatSession,
   AgentChatSessionSummary,
   AgentChatSlashCommand,
-  LaneSummary,
-} from "../../desktop/src/shared/types";
+} from "../../desktop/src/shared/types/chat";
+import type { LaneSummary } from "../../desktop/src/shared/types/lanes";
 import type { AdeCodeConnection, ChatHistorySnapshot, CreatedChat, NavigateRequest, NavigateResult } from "./types";
 
 export async function listLanes(connection: AdeCodeConnection): Promise<LaneSummary[]> {

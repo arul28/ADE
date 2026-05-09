@@ -3,7 +3,14 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { Box, Text, useApp, useInput } from "ink";
 import { getDefaultModelDescriptor } from "../../desktop/src/shared/modelRegistry";
-import type { AgentChatEventEnvelope, AgentChatFileRef, AgentChatModelInfo, AgentChatSessionSummary, AgentChatSlashCommand, LaneSummary } from "../../desktop/src/shared/types";
+import type {
+  AgentChatEventEnvelope,
+  AgentChatFileRef,
+  AgentChatModelInfo,
+  AgentChatSessionSummary,
+  AgentChatSlashCommand,
+} from "../../desktop/src/shared/types/chat";
+import type { LaneSummary } from "../../desktop/src/shared/types/lanes";
 import {
   approveToolUse,
   createChatSession,

@@ -1,6 +1,6 @@
 import React from "react";
 import { Box, Text } from "ink";
-import type { LaneSummary } from "../../../desktop/src/shared/types";
+import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
 import type { AdeCodeModelState, RuntimeMode } from "../types";
 import { formatLaneLabel } from "../format";
 

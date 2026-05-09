@@ -70,6 +70,8 @@ ade shell start --lane lane-id -- npm test
 ade shell start-cli codex --lane lane-id --permission-mode edit --message "fix failing tests"
 ade shell start-cli --provider claude --lane lane-id --permission-mode default
 ade chat create --lane lane-id --model gpt-5.5
+ade code
+ade --socket /path/to/ade.sock code
 ade tests run --lane lane-id --suite unit --wait
 ade proof list --arg ownerKind=chat --arg ownerId=session-id
 ade help ios-sim preview-render
@@ -94,6 +96,8 @@ ade cursor cloud me
 ```
 
 Use typed commands first. They validate common arguments and provide stable JSON fields or readable text summaries. Use `ade help <command> <subcommand>` for exact flags, `ade actions list --text` to discover the full service-backed action catalog, and `ade actions run <domain.action>` only when there is no typed command for the workflow yet.
+
+**`ade code`** starts the terminal Work chat client (`apps/ade-code`). Build it with `npm run build` inside that directory, install the `ade-code` package, or point **`ADE_CODE_EXECUTABLE`** at `dist/cli.js`. Unlike other commands that auto-pick the desktop socket from the project layout during `executePlan`, **`ade code` only forwards `--socket` when you pass global `--socket` to `ade`** (for example `ade --socket /path/to/ade.sock code`). Without that, the TUI runs in **embedded** headless mode instead of opening a socket implicitly.
 
 The `prs path-to-merge` and `prs pipeline save` commands persist a partial `PipelineSettings` patch via `issue_inventory.savePipelineSettings` before launching the resolver. The Path to Merge orchestrator reads these from saved settings, so the same flags work either way:
 
