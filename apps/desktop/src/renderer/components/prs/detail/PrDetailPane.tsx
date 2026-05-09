@@ -846,18 +846,21 @@ export function PrDetailPane({
     void refreshReviewThreads();
   }, [loadDetail, pr.checksStatus, pr.id, pr.reviewStatus, pr.updatedAt, refreshReviewThreads]);
 
-  // Poll actionRuns + activity + reviewThreads every 60s so CI data stays fresh.
-  // PrsContext polls checks/status/reviews/comments, but action runs are only loaded
-  // in PrDetailPane and would otherwise go stale after the initial fetch.
+  // Poll checks + actionRuns + activity + reviewThreads every 60s so the
+  // Path to Merge readiness panel stays fresh without requiring a manual refresh.
   React.useEffect(() => {
     let cancelled = false;
     const id = window.setInterval(() => {
       Promise.allSettled([
+        window.ade.prs.getChecks(pr.id),
         window.ade.prs.getActionRuns(pr.id),
         window.ade.prs.getActivity(pr.id),
         window.ade.prs.getReviewThreads(pr.id),
-      ]).then(([arResult, actResult, thrResult]) => {
+      ]).then(([checksResult, arResult, actResult, thrResult]) => {
         if (cancelled) return;
+        if (checksResult.status === "fulfilled" && checksResult.value.length > 0) {
+          setConvergenceChecks(checksResult.value);
+        }
         if (arResult.status === "fulfilled") setActionRuns(arResult.value);
         if (actResult.status === "fulfilled") setActivity(actResult.value);
         if (thrResult.status === "fulfilled") setReviewThreads(thrResult.value);
