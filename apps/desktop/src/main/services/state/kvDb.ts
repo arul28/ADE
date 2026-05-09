@@ -3387,7 +3387,7 @@ function migrate(db: MigrationDb) {
   db.run(`
     create table if not exists pr_pipeline_settings (
       pr_id text primary key,
-      auto_merge integer not null default 0,
+      auto_merge integer not null default 1,
       merge_method text not null default 'repo_default',
       max_rounds integer not null default 5,
       on_rebase_needed text not null default 'pause',
@@ -3396,7 +3396,7 @@ function migrate(db: MigrationDb) {
     )
   `);
   try { db.run("alter table pr_pipeline_settings add column conflict_strategy text not null default 'pause'"); } catch {}
-  try { db.run("alter table pr_pipeline_settings add column force_finalize_mode text not null default 'off'"); } catch {}
+  try { db.run("alter table pr_pipeline_settings add column force_finalize_mode text not null default 'conditional'"); } catch {}
   try { db.run("alter table pr_pipeline_settings add column force_finalize_require_no_ci_failures integer not null default 1"); } catch {}
   try { db.run("alter table pr_pipeline_settings add column early_merge_on_green integer not null default 1"); } catch {}
   try { db.run("alter table pr_pipeline_settings add column auto_agent_provider text"); } catch {}
@@ -3404,7 +3404,7 @@ function migrate(db: MigrationDb) {
   try { db.run("alter table pr_pipeline_settings add column auto_agent_reasoning_effort text"); } catch {}
   try { db.run("alter table pr_pipeline_settings add column auto_agent_permission_mode text"); } catch {}
   try { db.run("alter table pr_pipeline_settings add column auto_agent_confidence_threshold real"); } catch {}
-  try { db.run("alter table pr_pipeline_settings add column at_cap_policy text"); } catch {}
+  try { db.run("alter table pr_pipeline_settings add column at_cap_policy text default 'ci_retry_once'"); } catch {}
   try { db.run("alter table pr_pipeline_settings add column at_cap_wait_minutes integer"); } catch {}
   try { db.run("alter table pr_pipeline_settings add column at_cap_ci_retry_max integer"); } catch {}
   try { db.run("alter table pr_pipeline_settings add column force_merge_requires_confirmation integer"); } catch {}

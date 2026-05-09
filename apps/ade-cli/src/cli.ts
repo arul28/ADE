@@ -2375,7 +2375,11 @@ function buildPrPlan(args: string[]): CliPlan {
         pipelinePatch,
       ]));
     }
-    steps.push(actionCallStep("result", mode === "preview" ? "pr_preview_issue_resolution_prompt" : "pr_start_issue_resolution", collectGenericObjectArgs(args, input)));
+    if (mode === "preview") {
+      steps.push(actionCallStep("result", "pr_preview_issue_resolution_prompt", collectGenericObjectArgs(args, input)));
+    } else {
+      steps.push(actionStep("result", "path_to_merge", "startPathToMerge", collectGenericObjectArgs(args, input)));
+    }
     return { kind: "execute", label: `PR path-to-merge ${mode}`, steps };
   }
 

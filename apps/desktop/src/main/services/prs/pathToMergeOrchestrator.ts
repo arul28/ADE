@@ -55,6 +55,7 @@ import type {
   PathToMergeStopResult,
   PipelineSettings,
   PrCheck,
+  PrComment,
   PrIssueResolutionScope,
   PrAgentPermissionMode,
   PrReview,
@@ -187,6 +188,10 @@ export type InProcessState = {
   sessionMissingSessionId: string | null;
   /** PR head SHA captured when the last fix agent was dispatched. */
   lastDispatchHeadSha: string | null;
+  /** PR head SHA for which post-push review-bot pings were already sent. */
+  lastBotPingHeadSha: string | null;
+  /** Timestamp for the last post-push review-bot ping. */
+  lastBotPingAt: string | null;
   /** Durable lane/worktree lock token held by this PtM run. */
   laneWorktreeLockToken: string | null;
 };
@@ -200,6 +205,8 @@ export function makeInProcessState(runArgs: StartPathToMergeArgs): InProcessStat
     sessionMissingPolls: 0,
     sessionMissingSessionId: null,
     lastDispatchHeadSha: null,
+    lastBotPingHeadSha: null,
+    lastBotPingAt: null,
     laneWorktreeLockToken: null,
   };
 }
@@ -214,6 +221,8 @@ function makeInProcessStateFromRuntime(
     waitForCiStartedAt: runtime.waitForCiStartedAt,
     ciRetryAttemptsUsed: runtime.ciRetryAttemptsUsed,
     lastDispatchHeadSha: runtime.lastDispatchHeadSha,
+    lastBotPingHeadSha: null,
+    lastBotPingAt: null,
     laneWorktreeLockToken: null,
   };
 }
@@ -333,6 +342,46 @@ function resolveMergeMethod(settings: PipelineSettings): MergeMethod {
   // merge_method, so we fall back to `squash` (matches shipLane's default).
   if (settings.mergeMethod === "repo_default") return "squash";
   return settings.mergeMethod;
+}
+
+const REVIEW_BOT_WAIT_TIMEOUT_MS = 5 * 60_000;
+const REVIEW_BOT_CHECKS = [
+  { name: "Greptile", pattern: /\bgreptile\b/i },
+  { name: "CodeRabbit", pattern: /\bcoderabbit\b|code\s*rabbit/i },
+] as const;
+
+function hasCopilotResponse(comments: PrComment[], reviews: PrReview[]): boolean {
+  return comments.some((comment) => /copilot/i.test(comment.author))
+    || reviews.some((review) => /copilot/i.test(review.reviewer));
+}
+
+function getPendingReviewBots(
+  checks: PrCheck[],
+  comments: PrComment[],
+  reviews: PrReview[],
+  inProc: InProcessState,
+  now: () => number = Date.now,
+): string[] {
+  const pending = new Set<string>();
+  for (const bot of REVIEW_BOT_CHECKS) {
+    const matchingChecks = checks.filter((check) => bot.pattern.test(check.name));
+    if (matchingChecks.some((check) => check.status !== "completed")) {
+      pending.add(bot.name);
+    }
+  }
+
+  if (inProc.lastBotPingAt && !hasCopilotResponse(comments, reviews)) {
+    const pingedAt = Date.parse(inProc.lastBotPingAt);
+    if (Number.isFinite(pingedAt) && now() - pingedAt < REVIEW_BOT_WAIT_TIMEOUT_MS) {
+      pending.add("Copilot");
+    }
+  }
+
+  return [...pending];
+}
+
+function looksLikeBranchPolicyBlock(error: string): boolean {
+  return /base branch policy|branch protection|protected branch|required status|required check|required review|review is required|review required|code owner|codeowner/i.test(error);
 }
 
 // ---------------------------------------------------------------------------
@@ -734,6 +783,47 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
     }
   }
 
+  async function postReviewBotPings(ctx: IterationContext, inProc: InProcessState, headSha: string | null): Promise<void> {
+    const normalizedHeadSha = headSha?.trim() || null;
+    if (!normalizedHeadSha) return;
+    if (inProc.lastBotPingHeadSha === normalizedHeadSha) return;
+
+    const bodies = ["@copilot review but do not make fixes"];
+    let changedFileCount = 0;
+    try {
+      changedFileCount = (await prService.getFiles(ctx.pr.id)).length;
+    } catch (err) {
+      logger.debug("ptm.bot_ping_file_count_failed", { prId: ctx.pr.id, error: getErrorMessage(err) });
+    }
+    if (changedFileCount > 250) {
+      bodies.push("@greptile review", "@coderabbit review");
+    }
+
+    let postedCount = 0;
+    let postedCopilotPing = false;
+    for (const body of bodies) {
+      try {
+        await prService.addComment({ prId: ctx.pr.id, body });
+        postedCount += 1;
+        if (/^@copilot\b/i.test(body)) {
+          postedCopilotPing = true;
+        }
+      } catch (err) {
+        logger.warn("ptm.bot_ping_failed", { prId: ctx.pr.id, body, error: getErrorMessage(err) });
+      }
+    }
+
+    if (!postedCopilotPing) {
+      logger.warn("ptm.bot_pings_not_recorded", { prId: ctx.pr.id, headSha: normalizedHeadSha, postedCount });
+      return;
+    }
+
+    inProc.lastBotPingHeadSha = normalizedHeadSha;
+    inProc.lastBotPingAt = nowIso();
+    persistInProcessState(ctx.pr.id, inProc);
+    logger.info("ptm.bot_pings_posted", { prId: ctx.pr.id, headSha: normalizedHeadSha, count: postedCount });
+  }
+
   function pauseLoop(prId: string, reason: string, errorMessage?: string | null): ConvergenceRuntimeState {
     clearTimer(prId);
     releaseLoopLock(prId);
@@ -928,13 +1018,14 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
 
   async function getMergeReadinessBlocker(
     ctx: IterationContext,
-    opts: { allowForceMerge?: boolean } = {},
+    opts: { allowForceMerge?: boolean; ignoreReview?: boolean } = {},
   ): Promise<string | null> {
     if (opts.allowForceMerge) return null;
 
     if (ctx.pr.checksStatus !== "passing") {
       return `Auto-merge blocked because CI is ${ctx.pr.checksStatus}.`;
     }
+    if (opts.ignoreReview) return null;
     if (ctx.pr.reviewStatus === "changes_requested") {
       return "Auto-merge blocked because a review requested changes.";
     }
@@ -1005,7 +1096,7 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
    */
   async function runMergeLadder(
     ctx: IterationContext,
-    opts: { allowForceMerge?: boolean } = {},
+    opts: { allowForceMerge?: boolean; ignoreReview?: boolean } = {},
   ): Promise<MergeLadderResult> {
     const { pr, pipelineSettings } = ctx;
     const method = resolveMergeMethod(pipelineSettings);
@@ -1042,26 +1133,33 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
     const ghMethodFlag = `--${method}`;
     const prNumberArg = String(pr.githubPrNumber);
 
-    // Rung 2: gh pr merge --admin (overrides branch protection if the
-    // operator has admin rights).
-    const adminRes = await runGh(
-      ["pr", "merge", prNumberArg, ghMethodFlag, "--admin"],
-      { cwd: laneWorktreePath, timeoutMs: 90_000 },
-    );
-    if (adminRes.exitCode === 0) {
-      logger.info("ptm.merge_ladder_admin_succeeded", { prId: pr.id });
-      // gh CLI doesn't run our cleanup pipeline — invoke it explicitly so the
-      // remote branch is deleted, child lanes advance, group memberships are
-      // cleared, and caches refresh. Any cleanup error is logged inside the
-      // helper and never masks the successful merge.
-      try {
-        await prService.runPostMergeCleanup({ prId: pr.id, mergeCommitSha: null, archiveLane: false });
-      } catch (err) {
-        logger.warn("ptm.merge_ladder_admin_cleanup_failed", { prId: pr.id, error: getErrorMessage(err) });
+    // Rung 2: gh pr merge --admin. Per shipLane, only try this for branch
+    // policy/protection blocks; using admin for arbitrary API failures can
+    // accidentally bypass real red signals.
+    let adminError = "admin merge skipped because REST failure was not a branch-policy block";
+    if (looksLikeBranchPolicyBlock(restErr)) {
+      const adminRes = await runGh(
+        ["pr", "merge", prNumberArg, ghMethodFlag, "--admin"],
+        { cwd: laneWorktreePath, timeoutMs: 90_000 },
+      );
+      if (adminRes.exitCode === 0) {
+        logger.info("ptm.merge_ladder_admin_succeeded", { prId: pr.id });
+        // gh CLI doesn't run our cleanup pipeline — invoke it explicitly so the
+        // remote branch is deleted, child lanes advance, group memberships are
+        // cleared, and caches refresh. Any cleanup error is logged inside the
+        // helper and never masks the successful merge.
+        try {
+          await prService.runPostMergeCleanup({ prId: pr.id, mergeCommitSha: null, archiveLane: false });
+        } catch (err) {
+          logger.warn("ptm.merge_ladder_admin_cleanup_failed", { prId: pr.id, error: getErrorMessage(err) });
+        }
+        return { kind: "merged", via: "admin" };
       }
-      return { kind: "merged", via: "admin" };
+      adminError = adminRes.stderr.trim() || adminRes.stdout.trim() || `exit ${adminRes.exitCode}`;
+      logger.warn("ptm.merge_ladder_admin_failed", { prId: pr.id, stderr: adminRes.stderr.trim() });
+    } else {
+      logger.info("ptm.merge_ladder_admin_skipped", { prId: pr.id, restErr });
     }
-    logger.warn("ptm.merge_ladder_admin_failed", { prId: pr.id, stderr: adminRes.stderr.trim() });
 
     // Rung 3: gh pr merge --auto (queue the merge for when checks/policy
     // gates clear). This is a "park & wait" outcome, not an immediate land.
@@ -1069,7 +1167,7 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
     if (!pipelineSettings.autoMerge) {
       return {
         kind: "blocked",
-        error: `Merge ladder exhausted (REST: ${restErr}; admin: ${adminRes.stderr.trim() || adminRes.stdout.trim() || "exit " + adminRes.exitCode}). auto-merge skipped because pipelineSettings.autoMerge is false.`,
+        error: `Merge ladder exhausted (REST: ${restErr}; admin: ${adminError}). auto-merge skipped because pipelineSettings.autoMerge is false.`,
       };
     }
     const autoRes = await runGh(
@@ -1087,7 +1185,7 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
 
     return {
       kind: "blocked",
-      error: `Merge ladder exhausted (REST: ${restErr}; admin: ${adminRes.stderr.trim() || adminRes.stdout.trim() || "exit " + adminRes.exitCode}; auto: ${autoRes.stderr.trim() || autoRes.stdout.trim() || "exit " + autoRes.exitCode})`,
+      error: `Merge ladder exhausted (REST: ${restErr}; admin: ${adminError}; auto: ${autoRes.stderr.trim() || autoRes.stdout.trim() || "exit " + autoRes.exitCode})`,
     };
   }
 
@@ -1181,6 +1279,32 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
     }
     const fresh = refreshed;
 
+    // Keep issue inventory fresh even when Path to Merge is started from the
+    // CLI or a queue flow instead of an already-open PR detail tab. Without
+    // this, a red PR with stale/empty inventory can look "clean" and park
+    // before the fix agent ever sees the failing check.
+    let latestChecks: PrCheck[] = [];
+    let latestComments: PrComment[] = [];
+    let latestReviews: PrReview[] = [];
+    try {
+      const [checks, reviewThreads, comments, reviews] = await Promise.all([
+        prService.getChecks(prId),
+        prService.getReviewThreads(prId),
+        (prService.getComments?.(prId) ?? Promise.resolve([] as PrComment[])).catch(() => [] as PrComment[]),
+        prService.getReviews(prId).catch(() => [] as PrReview[]),
+      ]);
+      latestChecks = checks;
+      latestComments = comments;
+      latestReviews = reviews;
+      issueInventoryService.syncFromPrData(prId, checks, reviewThreads, comments);
+    } catch (err) {
+      logger.warn("ptm.inventory_sync_failed", { prId, error: getErrorMessage(err) });
+    }
+    if (!isAutoConvergeStillEnabled(prId)) {
+      clearTimer(prId);
+      return;
+    }
+
     // Re-check merged state in case a previously armed `gh pr merge --auto`
     // landed between iterations. If so, complete the cleanup now and exit.
     if (fresh.pr.state === "merged") {
@@ -1234,6 +1358,10 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
         pauseLoop(prId, "Base sync failed.", baseSync.error);
         return;
       }
+      const headSha = await readCurrentHeadSha(prId);
+      await postReviewBotPings(fresh, inProc, headSha);
+      schedule(prId, "justPushed");
+      return;
     }
 
     // Helper: persist a "converged but not auto-merging" parked state. Used
@@ -1307,6 +1435,7 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
             pauseLoop(prId, "Merge-time conflict resolution failed.", conflictRes.error);
             return;
           }
+          await postReviewBotPings(fresh, inProc, await readCurrentHeadSha(prId));
           schedule(prId, "justPushed");
           return;
         }
@@ -1321,26 +1450,44 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
       }
     }
 
+    const maxRounds = fresh.pipelineSettings.maxRounds;
+    const completedRounds = fresh.runtime.currentRound;
+    const atCap = completedRounds >= maxRounds;
+    const afterForceFinalizePush = atCap && (inProc.ciRetryAttemptsUsed > 0 || inProc.forceFinalizeUsed);
+
     // ---- Step 3: terminal-gate check before dispatching fixes ----
-    const gate = isTerminalForFixPush(fresh.pr);
+    const gate = atCap
+      ? { terminal: CHECKS_TERMINAL_STATUSES.has(fresh.pr.checksStatus), pendingSignal: "checks" as const }
+      : isTerminalForFixPush(fresh.pr);
     if (!gate.terminal) {
       logger.info("ptm.terminal_gate_pending", { prId, pendingSignal: gate.pendingSignal });
       issueInventoryService.saveConvergenceRuntime(prId, {
-        pollerStatus: "waiting_for_checks",
+        pollerStatus: gate.pendingSignal === "review" ? "waiting_for_comments" : "waiting_for_checks",
         currentRound: fresh.runtime.currentRound,
       });
       schedule(prId, "warming");
       return;
     }
 
+    if (!afterForceFinalizePush) {
+      const pendingReviewBots = getPendingReviewBots(latestChecks, latestComments, latestReviews, inProc);
+      if (pendingReviewBots.length > 0) {
+        logger.info("ptm.review_bots_pending", { prId, pendingReviewBots });
+        issueInventoryService.saveConvergenceRuntime(prId, {
+          pollerStatus: "waiting_for_comments",
+          currentRound: fresh.runtime.currentRound,
+        });
+        schedule(prId, "warming");
+        return;
+      }
+    }
+
     // ---- Step 4: hard cap + at-cap policy logic ----
-    const maxRounds = fresh.pipelineSettings.maxRounds;
-    const completedRounds = fresh.runtime.currentRound;
     inProcessState.set(prId, inProc);
 
     let isAtCapDispatchCi = false;
     let isAtCapMergeNow = false;
-    if (completedRounds >= maxRounds) {
+    if (atCap) {
       if (inProc.forceFinalizeUsed) {
         // Bonus merge ladder already attempted; nothing left to try.
         pauseLoop(prId, "Hard cap reached (at-cap action already attempted).");
@@ -1409,7 +1556,8 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
           } else if (summary.status === "active") {
             priorActive = true;
           } else if (summary.status === "idle" && summary.awaitingInput === true) {
-            priorActive = true;
+            pauseLoop(prId, "Fix agent is awaiting user input; Path to Merge cannot continue unattended.");
+            return;
           } else {
             priorSessionFinished = true;
           }
@@ -1467,7 +1615,16 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
           }
           if (currentHeadSha && currentHeadSha !== inProc.lastDispatchHeadSha) {
             inProc.lastDispatchHeadSha = null;
+            issueInventoryService.saveConvergenceRuntime(prId, {
+              activeSessionId: null,
+              activeLaneId: null,
+              activeHref: null,
+              pollerStatus: "waiting_for_comments",
+            });
             persistInProcessState(prId, inProc);
+            await postReviewBotPings(fresh, inProc, currentHeadSha);
+            schedule(prId, "justPushed");
+            return;
           }
         }
       }
@@ -1513,6 +1670,7 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
             pauseLoop(prId, "Clean-inventory merge-time conflict resolution failed.", conflictRes.error);
             return;
           }
+          await postReviewBotPings(fresh, inProc, await readCurrentHeadSha(prId));
           schedule(prId, "justPushed");
           return;
         }
@@ -1631,6 +1789,7 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
 
       const ladder = await runMergeLadder(fresh, {
         allowForceMerge: fresh.pipelineSettings.atCapPolicy === "force_merge",
+        ignoreReview: fresh.pipelineSettings.atCapPolicy !== "force_merge",
       });
       if (!isAutoConvergeStillEnabled(prId)) {
         clearTimer(prId);
@@ -1666,6 +1825,7 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
           pauseLoop(prId, "At-cap merge-time conflict resolution failed.", conflictRes.error);
           return;
         }
+        await postReviewBotPings(fresh, inProc, await readCurrentHeadSha(prId));
         schedule(prId, "justPushed");
         return;
       }

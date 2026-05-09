@@ -623,11 +623,15 @@ describe("ADE CLI", () => {
       },
     });
     expect(plan.steps[1]?.params).toEqual({
-      name: "pr_start_issue_resolution",
+      name: "run_ade_action",
       arguments: {
-        prId: "pr-1",
-        scope: "both",
-        modelId: "gpt-5.4",
+        domain: "path_to_merge",
+        action: "startPathToMerge",
+        args: {
+          prId: "pr-1",
+          scope: "both",
+          modelId: "gpt-5.4",
+        },
       },
     });
   });
@@ -675,11 +679,15 @@ describe("ADE CLI", () => {
       },
     });
     expect(plan.steps[1]?.params).toEqual({
-      name: "pr_start_issue_resolution",
+      name: "run_ade_action",
       arguments: {
-        prId: "pr-2",
-        scope: "both",
-        modelId: "gpt-5.4",
+        domain: "path_to_merge",
+        action: "startPathToMerge",
+        args: {
+          prId: "pr-2",
+          scope: "both",
+          modelId: "gpt-5.4",
+        },
       },
     });
   });

@@ -155,6 +155,17 @@ export type AdeRuntime = {
   prSummaryService?: ReturnType<typeof createPrSummaryService> | null;
   queueLandingService?: ReturnType<typeof createQueueLandingService> | null;
   issueInventoryService: ReturnType<typeof createIssueInventoryService>;
+  pathToMergeOrchestrator?: {
+    startPathToMerge: (args: {
+      prId: string;
+      modelId?: string | null;
+      reasoning?: string | null;
+      permissionMode?: string | null;
+      scope?: "checks" | "comments" | "both";
+      additionalInstructions?: string | null;
+    }) => Promise<unknown>;
+    stopPathToMerge: (args: { prId: string; reason?: string | null }) => Promise<unknown>;
+  } | null;
   fileService?: ReturnType<typeof createFileService> | null;
   memoryService: ReturnType<typeof createMemoryService>;
   ctoStateService: ReturnType<typeof createCtoStateService>;

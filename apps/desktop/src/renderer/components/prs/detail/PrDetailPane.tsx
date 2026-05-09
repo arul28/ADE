@@ -1717,6 +1717,31 @@ export function PrDetailPane({
     }
   }, [autoConverge, autoConvergeWaitState.phase, convergenceSessionId, pathToMergeActive, startAutoConvergePoller, stopAutoConvergePoller]);
 
+  React.useEffect(() => {
+    if (!pathToMergeActive) return;
+    let cancelled = false;
+    let inFlight = false;
+    const pollRuntime = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const runtime = await loadConvergenceState(pr.id, { force: true }).catch(() => null);
+        if (cancelled) return;
+        applyConvergenceRuntime(runtime);
+      } finally {
+        inFlight = false;
+      }
+    };
+    const id = window.setInterval(() => {
+      void pollRuntime();
+    }, 10_000);
+    void pollRuntime();
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [applyConvergenceRuntime, loadConvergenceState, pathToMergeActive, pr.id]);
+
   // Cleanup poller on unmount
   React.useEffect(() => {
     return () => {
@@ -1831,10 +1856,6 @@ export function PrDetailPane({
   const handleAutoConvergeToggle = React.useCallback(async (enabled: boolean) => {
     if (!enabled) {
       const previousSessionHref = convergenceSessionHrefRef.current;
-      setAutoConverge(false);
-      autoConvergeRef.current = false;
-      setPathToMergeActive(false);
-      pathToMergeActiveRef.current = false;
       pathToMergeActionSeqRef.current += 1;
       // Tear down the orchestrator's per-PR scheduling so a re-enable starts
       // fresh instead of resuming with stale args.
@@ -1842,10 +1863,15 @@ export function PrDetailPane({
         const stopped = await window.ade.prs.pathToMergeStop({ prId: pr.id, reason: "user disabled auto-converge" });
         applyConvergenceRuntime(stopped.runtime);
       } catch (err: unknown) {
-        // Non-fatal — the renderer-side stop below still clears UI state.
-        // eslint-disable-next-line no-console
-        console.warn("pathToMergeStop failed", err);
+        setActionError(`Failed to stop Path to Merge: ${err instanceof Error ? err.message : String(err)}`);
+        const runtime = await loadConvergenceState(pr.id, { force: true }).catch(() => null);
+        applyConvergenceRuntime(runtime);
+        return;
       }
+      setAutoConverge(false);
+      autoConvergeRef.current = false;
+      setPathToMergeActive(false);
+      pathToMergeActiveRef.current = false;
       stopAutoConvergePoller();
       const activeSessionId = convergenceSessionIdRef.current;
       if (activeSessionId) {
@@ -1963,7 +1989,7 @@ export function PrDetailPane({
         );
       }
     }
-  }, [applyConvergenceRuntime, pr.id, resolverModel, resolverPermissionMode, resolverReasoningLevel, resolveIssueScope, saveConvergenceRuntime, stopAutoConvergePoller]);
+  }, [applyConvergenceRuntime, loadConvergenceState, pr.id, resolverModel, resolverPermissionMode, resolverReasoningLevel, resolveIssueScope, saveConvergenceRuntime, stopAutoConvergePoller]);
 
   const handleMarkDismissed = React.useCallback(async (itemIds: string[], reason: string) => {
     try {

@@ -58,6 +58,8 @@ type SequenceState =
 const POLL_INTERVAL_MS = 4000;
 
 const TERMINAL_FAILED: ReadonlySet<ConvergenceRuntimeStatus> = new Set([
+  "paused",
+  "converged",
   "failed",
   "cancelled",
   "stopped",
@@ -224,7 +226,9 @@ export function QueueAutomateMergingModal({
           return { outcome: "merged", runtime };
         }
         if (status && TERMINAL_FAILED.has(status)) {
-          const message = runtime?.errorMessage?.trim() || `Path to Merge ${status}`;
+          const message = runtime?.errorMessage?.trim()
+            || runtime?.pauseReason?.trim()
+            || (status === "converged" ? "Path to Merge converged without merging." : `Path to Merge ${status}`);
           return { outcome: "failed", runtime, error: message };
         }
         await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));

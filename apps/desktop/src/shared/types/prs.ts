@@ -1344,15 +1344,15 @@ export type PipelineSettings = {
 };
 
 export const DEFAULT_PIPELINE_SETTINGS: PipelineSettings = {
-  autoMerge: false,
+  autoMerge: true,
   mergeMethod: "repo_default",
   maxRounds: 5,
   onRebaseNeeded: "pause",
   conflictStrategy: "pause",
   autoAgentSettings: { ...DEFAULT_AUTO_CONFLICT_AGENT_SETTINGS },
-  forceFinalizeMode: "off",
+  forceFinalizeMode: "conditional",
   forceFinalizeRequireNoCiFailures: true,
-  atCapPolicy: "stop",
+  atCapPolicy: "ci_retry_once",
   atCapWaitMinutes: 30,
   atCapCiRetryMax: 3,
   forceMergeRequiresConfirmation: true,
