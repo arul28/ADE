@@ -11,6 +11,7 @@ import { COLORS, MONO_FONT, SANS_FONT, outlineButton, primaryButton } from "../.
 import { LaneAccentDot } from "../../lanes/LaneAccentDot";
 import { PrPipelineSettings } from "../shared/PrPipelineSettings";
 import { SmartTooltip } from "../../ui/SmartTooltip";
+import { isWaitingForGithubAutoMerge } from "./queueAutomateMergingRuntime";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -224,6 +225,10 @@ export function QueueAutomateMergingModal({
         updateStatus(prId, { kind: "running", runtimeStatus: status, pauseReason, round });
         if (status && TERMINAL_SUCCESS.has(status)) {
           return { outcome: "merged", runtime };
+        }
+        if (isWaitingForGithubAutoMerge(runtime)) {
+          await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+          continue;
         }
         if (status && TERMINAL_FAILED.has(status)) {
           const message = runtime?.errorMessage?.trim()

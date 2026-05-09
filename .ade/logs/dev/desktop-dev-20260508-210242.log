@@ -1,0 +1,54 @@
+
+> ade-desktop@1.0.0-beta.1 predev
+> node ./scripts/clear-vite-cache.cjs && node ./scripts/normalize-runtime-binaries.cjs
+
+[ade] cleared Vite optimize cache
+[runtime-binaries] No executable mode fixes were needed.
+
+> ade-desktop@1.0.0-beta.1 dev
+> node ./scripts/ensure-electron.cjs && node ./scripts/dev.cjs
+
+[ade] dev launcher using http://localhost:5173
+[ade] electron CDP endpoint: http://127.0.0.1:9222/json/version
+9:02:43 PM [vite] (client) Forced re-optimization of dependencies
+
+  VITE v8.0.3  ready in 120 ms
+
+  ➜  Local:   http://localhost:5173/
+  ➜  Network: http://192.168.1.240:5173/
+  ➜  Network: http://100.75.20.63:5173/
+  ➜  press h + enter to show help
+CLI Building entry: {"main/main":"src/main/main.ts","main/cursorSdkWorker":"src/main/services/chat/cursorSdkWorker.ts","main/packagedRuntimeSmoke":"src/main/packagedRuntimeSmoke.ts","preload/preload":"src/preload/preload.ts"}
+CLI Using tsconfig: tsconfig.json
+CLI tsup v8.5.1
+CLI Using tsup config: /Users/admin/Projects/ADE/.ade/worktrees/path-to-merge-audit-966dea25/apps/desktop/tsup.config.ts
+CLI Running in watch mode
+CLI Target: node18
+CLI Cleaning output folder
+CJS Build start
+CJS dist/main/cursorSdkWorker.cjs      42.18 KB
+CJS dist/preload/preload.cjs           132.96 KB
+CJS dist/main/packagedRuntimeSmoke.cjs 16.81 KB
+CJS dist/main/main.cjs                 6.68 MB
+CJS ⚡️ Build success in 105ms
+CLI Watching for changes in "."
+CLI Ignoring changes in "**/{.git,node_modules}/**" | "dist"
+[ade] restarting electron (main bundle updated)
+[ade] electron restarted with updated main bundle
+/Users/admin/.zshrc:3: no such file or directory: /Users/admin/.openclaw/get-codex-token.sh
+/Users/admin/.openclaw/completions/openclaw.zsh:3803: command not found: compdef
+
+DevTools listening on ws://127.0.0.1:9222/devtools/browser/3bebee25-339d-40e3-8db3-8ea40169cd62
+2026-05-08 21:02:45.203 Electron[95222:18680289] ApplePersistenceIgnoreState: Existing state will not be touched. New state will be written to /var/folders/ck/qnm27lyn4d3865_9s0xt26y80000gn/T/com.github.Electron.savedState
+[info] app.hardware_acceleration { enabled: true, reason: 'default' }
+[models.dev] Fetched metadata for 2437 models
+(electron) 'console-message' arguments are deprecated and will be removed. Please use Event<WebContentsConsoleMessageEventParams> object instead.
+Error occurred in handler for 'ade.prs.createFromLane': Error: DIRTY_WORKTREE: Uncommitted changes detected in path to merge audit. Commit, stash, or discard them before creating the PR, or explicitly continue anyway.
+    at formatDirtyWorktreeError (/Users/admin/Projects/ADE/.ade/worktrees/path-to-merge-audit-966dea25/apps/desktop/dist/main/main.cjs:72280:10)
+    at assertDirtyWorktreesAllowed (/Users/admin/Projects/ADE/.ade/worktrees/path-to-merge-audit-966dea25/apps/desktop/dist/main/main.cjs:72966:13)
+    at createFromLane (/Users/admin/Projects/ADE/.ade/worktrees/path-to-merge-audit-966dea25/apps/desktop/dist/main/main.cjs:73883:5)
+    at async Object.createFromLane (/Users/admin/Projects/ADE/.ade/worktrees/path-to-merge-audit-966dea25/apps/desktop/dist/main/main.cjs:76203:14)
+    at async /Users/admin/Projects/ADE/.ade/worktrees/path-to-merge-audit-966dea25/apps/desktop/dist/main/main.cjs:22360:12
+    at async /Users/admin/Projects/ADE/.ade/worktrees/path-to-merge-audit-966dea25/apps/desktop/dist/main/main.cjs:18017:24
+    at async Session.<anonymous> (node:electron/js2c/browser_init:2:116010)
+9:04:14 PM [vite] (client) [console.warn] renderer.event_loop_stall {"driftMs":8189,"route":"/prs","visibilityState":"visible","memory":{"usedMB":106,"totalMB":108,"limitMB":4096}}
