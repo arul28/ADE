@@ -1013,25 +1013,38 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
         });
       }
 
-      for (const comment of comments) {
-        if (comment.source !== "issue") continue;
-        if (isNoisyIssueComment(comment)) continue;
-        const body = comment.body ?? "";
-        upsertItem(prId, `comment:${comment.id}`, {
-          source: detectSource(comment.author),
-          type: "issue_comment",
+	      const noisyIssueCommentIds = new Set<string>();
+	      for (const comment of comments) {
+	        if (comment.source !== "issue") continue;
+	        if (isNoisyIssueComment(comment)) {
+	          noisyIssueCommentIds.add(`comment:${comment.id}`);
+	          continue;
+	        }
+	        const body = comment.body ?? "";
+	        upsertItem(prId, `comment:${comment.id}`, {
+	          source: detectSource(comment.author),
+	          type: "issue_comment",
           filePath: comment.path,
           line: comment.line,
           severity: extractSeverity(body),
           headline: extractHeadline(body, `Comment by ${comment.author}`),
           body,
           author: comment.author,
-          url: comment.url,
-        });
-      }
+	          url: comment.url,
+	        });
+	      }
+	      for (const existing of existingRows) {
+	        if (existing.type !== "issue_comment") continue;
+	        if (!noisyIssueCommentIds.has(existing.external_id)) continue;
+	        if (existing.state === "fixed" || existing.state === "dismissed") continue;
+	        db.run(
+	          "update pr_issue_inventory set state = 'fixed', updated_at = ? where id = ?",
+	          [nowIso(), existing.id],
+	        );
+	      }
 
-      return buildSnapshot(prId);
-    },
+	      return buildSnapshot(prId);
+	    },
 
     getInventory(prId: string): IssueInventorySnapshot {
       return buildSnapshot(prId);

@@ -976,6 +976,36 @@ describe("issueInventoryService", () => {
       expect(insertCalls.length).toBe(0);
     });
 
+    it("marks previously inventoried noisy issue comments as fixed", () => {
+      const db = makeMockDb();
+      db.get.mockReturnValue(null);
+      db.all.mockReturnValue([makeFakeRow({
+        id: "capy-item",
+        external_id: "comment:ic-capy",
+        type: "issue_comment",
+        state: "new",
+      })]);
+
+      const service = createIssueInventoryService({ db });
+      service.syncFromPrData(
+        PR_ID,
+        [],
+        [],
+        [makeComment({
+          id: "ic-capy",
+          author: "capy-ai[bot]",
+          body: "<!-- capy:auto-review-spend-limit -->\nCapy auto-review is paused for this organization because the monthly auto-review limit has been reached.",
+          source: "issue",
+        })],
+      );
+
+      const fixedCalls = db.run.mock.calls.filter(
+        (call: unknown[]) => typeof call[0] === "string" && (call[0] as string).includes("set state = 'fixed'"),
+      );
+      expect(fixedCalls).toHaveLength(1);
+      expect((fixedCalls[0][1] as unknown[])[1]).toBe("capy-item");
+    });
+
     it("skips comments with source !== issue", () => {
       const db = makeMockDb();
       db.get.mockReturnValue(null);
