@@ -259,7 +259,8 @@ session using `aggregateFiles(summaries)`:
 - Renders a compact list with status badges (`A`, `D`, `M`, `R`, `C`)
   and basename.
 - Clicking a file lazily fetches the diff via
-  `ade.agentChat.getTurnFileDiff` and shows a Monaco diff view.
+  `ade.agentChat.getTurnFileDiff` and shows it in `AdeDiffViewer`
+  (compact toolbar hidden).
 
 ## Subagents panel
 

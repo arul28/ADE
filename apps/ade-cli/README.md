@@ -59,6 +59,7 @@ ade git commit --lane lane-id
 ade git push --lane lane-id
 ade git branches --lane lane-id --text
 ade git user-identity --lane lane-id --text
+ade diff patch --lane lane-id src/file.ts --text
 ade prs create --lane lane-id --base main --title "Fix checkout flow"
 ade prs list-open --text
 ade prs path-to-merge --pr pr-id --model gpt-5.5 --max-rounds 3 --no-auto-merge
