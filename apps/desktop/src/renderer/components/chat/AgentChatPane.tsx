@@ -3498,7 +3498,9 @@ export function AgentChatPane({
     setHandoffOpen(false);
     setHandoffBusy(false);
     setOptimisticOutgoingMessage(null);
-  }, [selectedSessionId]);
+    // Also clear when the active lane changes — otherwise issue context staged
+    // in draft mode would persist after switching lanes.
+  }, [selectedSessionId, laneId]);
 
   useEffect(() => {
     optimisticOutgoingMessageRef.current = optimisticOutgoingMessage;

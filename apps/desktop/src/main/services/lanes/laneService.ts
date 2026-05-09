@@ -913,8 +913,21 @@ export function createLaneService({
 
   const upsertLaneLinearIssue = (laneId: string, issue: LaneLinearIssue, branchName: string): LaneLinearIssue => {
     const normalized = normalizeLaneLinearIssue(issue, branchName);
-    if (!normalized.id || !normalized.identifier || !normalized.title) {
-      throw new Error("Linear issue attachment is missing required issue details.");
+    const missing: string[] = [];
+    if (!normalized.id) missing.push("id");
+    if (!normalized.identifier) missing.push("identifier");
+    if (!normalized.title) missing.push("title");
+    if (!normalized.projectId) missing.push("projectId");
+    if (!normalized.projectSlug) missing.push("projectSlug");
+    if (!normalized.teamId) missing.push("teamId");
+    if (!normalized.teamKey) missing.push("teamKey");
+    if (!normalized.stateId) missing.push("stateId");
+    if (!normalized.stateName) missing.push("stateName");
+    if (!normalized.stateType) missing.push("stateType");
+    if (!issue.createdAt || typeof issue.createdAt !== "string" || !issue.createdAt.trim()) missing.push("createdAt");
+    if (!issue.updatedAt || typeof issue.updatedAt !== "string" || !issue.updatedAt.trim()) missing.push("updatedAt");
+    if (missing.length > 0) {
+      throw new Error(`Linear issue attachment is missing required fields: ${missing.join(", ")}.`);
     }
     const now = new Date().toISOString();
     db.run("begin");
@@ -1386,6 +1399,28 @@ export function createLaneService({
     const statusCache = new Map<string, LaneStatus>();
     const childCountMap = new Map<string, number>();
 
+    // Fetch all lane_linear_issues in a single query and build a map keyed by
+    // lane_id (latest by updated_at) — avoids an N+1 in the loop below.
+    const linearIssueByLaneId = new Map<string, LaneLinearIssue>();
+    try {
+      const linearRows = db.all<LaneLinearIssueRow>(
+        `
+          select *
+          from lane_linear_issues
+          where project_id = ?
+          order by updated_at desc
+        `,
+        [projectId],
+      );
+      for (const linearRow of linearRows) {
+        if (!linearRow?.lane_id || linearIssueByLaneId.has(linearRow.lane_id)) continue;
+        const parsed = parseLaneLinearIssue(linearRow.issue_json ?? null);
+        if (parsed) linearIssueByLaneId.set(linearRow.lane_id, parsed);
+      }
+    } catch {
+      // Non-fatal — fall back to empty map (per-lane lookup absent).
+    }
+
     for (const row of activeRows) {
       if (!row.parent_lane_id) continue;
       childCountMap.set(row.parent_lane_id, (childCountMap.get(row.parent_lane_id) ?? 0) + 1);
@@ -1492,7 +1527,7 @@ export function createLaneService({
             childCount: childCountMap.get(row.id) ?? 0,
             stackDepth,
             activeBranchProfile: ensureBranchProfileForRow(row),
-            linearIssue: getLaneLinearIssue(row.id),
+            linearIssue: linearIssueByLaneId.get(row.id) ?? null,
           })
         );
         if (includeStatus) {
@@ -2030,6 +2065,7 @@ export function createLaneService({
           }
         }
 
+        db.run("delete from lane_linear_issues where lane_id = ? and project_id = ?", [laneId, projectId]);
         db.run("delete from lanes where id = ? and project_id = ?", [laneId, projectId]);
         invalidateLaneListCache();
       };
@@ -3538,6 +3574,7 @@ export function createLaneService({
             db.run("delete from process_runtime where lane_id = ?", [laneId]);
             db.run("delete from process_runs where lane_id = ?", [laneId]);
             db.run("delete from test_runs where lane_id = ?", [laneId]);
+            db.run("delete from lane_linear_issues where lane_id = ? and project_id = ?", [laneId, projectId]);
             db.run("delete from lanes where id = ? and project_id = ?", [laneId, projectId]);
             db.run("commit");
           } catch (error) {

@@ -42,5 +42,9 @@ export function ensureLinearCommitReference(message: string, issue: LaneLinearIs
   const identifier = escapeRegExp(issue.identifier);
   const knownMagicRe = new RegExp(`\\b(?:Refs|Fixes)\\s+${identifier}\\b`, "i");
   if (knownMagicRe.test(trimmed)) return trimmed;
+  // If the commit message already starts with the issue identifier (e.g.
+  // "LIN-123: do thing"), don't prepend a duplicate `Refs LIN-123:` block.
+  const leadingIdRe = new RegExp(`^${identifier}\\s*[:\\-]`, "i");
+  if (leadingIdRe.test(trimmed)) return trimmed;
   return `Refs ${issue.identifier}: ${trimmed}`;
 }

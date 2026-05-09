@@ -9606,7 +9606,12 @@ export function registerIpc({
 
   ipcMain.handle(IPC.ctoGetLinearIssuePickerData, async (): Promise<CtoGetLinearIssuePickerDataResult> => {
     const ctx = getCtx();
-    if (!ctx.linearIssueTracker) throw new Error("Linear issue tracker is not available.");
+    // When Linear is not configured, return an empty payload so the renderer
+    // can render a graceful empty state instead of having to handle a thrown
+    // error — matches the behavior the picker expects when Linear is offline.
+    if (!ctx.linearIssueTracker) {
+      return { projects: [], users: [], states: [] };
+    }
     const [projects, users, states] = await Promise.all([
       ctx.linearIssueTracker.listProjects().catch(() => []),
       ctx.linearIssueTracker.listUsers().catch(() => []),
@@ -9619,7 +9624,9 @@ export function registerIpc({
     IPC.ctoSearchLinearIssues,
     async (_event, arg: CtoSearchLinearIssuesArgs = {}): Promise<CtoSearchLinearIssuesResult> => {
       const ctx = getCtx();
-      if (!ctx.linearIssueTracker) throw new Error("Linear issue tracker is not available.");
+      if (!ctx.linearIssueTracker) {
+        return { issues: [], pageInfo: { hasNextPage: false, endCursor: null } };
+      }
       return ctx.linearIssueTracker.searchIssues(arg);
     }
   );

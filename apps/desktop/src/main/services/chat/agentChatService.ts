@@ -16031,7 +16031,9 @@ export function createAgentChatService(args: {
   const steer = async ({ sessionId, text, attachments = [], contextAttachments = [] }: AgentChatSteerArgs): Promise<AgentChatSteerResult> => {
     const trimmed = text.trim();
     const steerId = randomUUID();
-    if (!trimmed.length) {
+    // Allow context-only steers: if text is empty but issue context attachments
+    // are present, prepareSendMessage will substitute a fallback prompt.
+    if (!trimmed.length && contextAttachments.length === 0) {
       return { steerId, queued: false };
     }
 

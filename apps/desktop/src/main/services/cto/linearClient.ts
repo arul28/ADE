@@ -513,8 +513,8 @@ export function createLinearClient(args: LinearClientArgs) {
     return results.flat();
   };
 
-  const buildIssueSearchFilter = (params: IssueTrackerIssueSearchQuery): string => {
-    const parts: string[] = [];
+  const buildIssueSearchFilter = (params: IssueTrackerIssueSearchQuery): Record<string, unknown> => {
+    const filter: Record<string, unknown> = {};
     const projectId = params.projectId?.trim();
     const projectSlug = params.projectSlug?.trim();
     const teamKey = params.teamKey?.trim();
@@ -523,31 +523,31 @@ export function createLinearClient(args: LinearClientArgs) {
     const query = params.query?.trim();
 
     if (projectId) {
-      parts.push(`project: { id: { eq: ${gqlString(projectId)} } }`);
+      filter.project = { id: { eq: projectId } };
     } else if (projectSlug) {
-      parts.push(`project: { slugId: { eq: ${gqlString(projectSlug)} } }`);
+      filter.project = { slugId: { eq: projectSlug } };
     }
     if (teamKey) {
-      parts.push(`team: { key: { eq: ${gqlString(teamKey)} } }`);
+      filter.team = { key: { eq: teamKey } };
     }
     if (stateTypes.length > 0) {
-      parts.push(`state: { type: { in: ${gqlStringArray(stateTypes)} } }`);
+      filter.state = { type: { in: stateTypes } };
     }
     if (assigneeId) {
-      parts.push(`assignee: { id: { eq: ${gqlString(assigneeId)} } }`);
+      filter.assignee = { id: { eq: assigneeId } };
     }
     if (priorityIsValid(params.priority)) {
-      parts.push(`priority: { eq: ${params.priority} }`);
+      filter.priority = { eq: params.priority };
     }
     if (query) {
-      parts.push(`or: [
-        { title: { containsIgnoreCase: ${gqlString(query)} } },
-        { description: { containsIgnoreCase: ${gqlString(query)} } },
-        { identifier: { containsIgnoreCase: ${gqlString(query)} } }
-      ]`);
+      filter.or = [
+        { title: { containsIgnoreCase: query } },
+        { description: { containsIgnoreCase: query } },
+        { identifier: { containsIgnoreCase: query } },
+      ];
     }
 
-    return parts.length > 0 ? `{ ${parts.join(", ")} }` : "{}";
+    return filter;
   };
 
   const searchIssues = async (params: IssueTrackerIssueSearchQuery): Promise<IssueTrackerIssueSearchResult> => {
@@ -560,13 +560,13 @@ export function createLinearClient(args: LinearClientArgs) {
       };
     }>({
       query: `
-        query SearchIssues($first: Int!, $after: String, $includeArchived: Boolean!) {
+        query SearchIssues($first: Int!, $after: String, $includeArchived: Boolean!, $filter: IssueFilter) {
           issues(
             first: $first,
             after: $after,
             includeArchived: $includeArchived,
             orderBy: updatedAt,
-            filter: ${filter}
+            filter: $filter
           ) {
             pageInfo { hasNextPage endCursor }
             nodes {
@@ -579,6 +579,7 @@ export function createLinearClient(args: LinearClientArgs) {
         first,
         after: params.after?.trim() || null,
         includeArchived: params.includeArchived === true,
+        filter,
       },
       maxRetries: 2,
     });

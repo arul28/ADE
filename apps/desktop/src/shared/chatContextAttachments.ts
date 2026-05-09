@@ -133,15 +133,23 @@ function cleanIssueValue(value: string | null | undefined): string | null {
   return trimmed?.length ? trimmed : null;
 }
 
+function wrapUntrustedLinearText(value: string): string {
+  // Linear titles/descriptions are author-controlled and may contain
+  // prompt-injection content. Wrap them so downstream agents know the text
+  // inside is data, not instructions.
+  return `<untrusted-data source="linear">${value}</untrusted-data>`;
+}
+
 function formatLinearIssueContext(issue: LaneLinearIssue): string {
   const project = cleanIssueValue(issue.projectName) ?? cleanIssueValue(issue.projectSlug) ?? cleanIssueValue(issue.teamKey);
   const team = cleanIssueValue(issue.teamName) ?? cleanIssueValue(issue.teamKey);
   const labels = issue.labels.filter((label) => label.trim().length > 0).join(", ");
+  const description = issue.description?.trim();
   return [
     `- Provider: Linear`,
     `- Identifier: ${issue.identifier}`,
     `- Linear issue id: ${issue.id}`,
-    `- Title: ${issue.title}`,
+    `- Title: ${wrapUntrustedLinearText(issue.title)}`,
     project ? `- Project: ${project}` : null,
     team ? `- Team: ${team}` : null,
     `- State: ${issue.stateName} (${issue.stateType})`,
@@ -153,7 +161,7 @@ function formatLinearIssueContext(issue: LaneLinearIssue): string {
     labels ? `- Labels: ${labels}` : null,
     issue.branchName ? `- Suggested branch: ${issue.branchName}` : null,
     issue.url ? `- URL: ${issue.url}` : null,
-    issue.description?.trim() ? `- Description:\n${issue.description.trim()}` : null,
+    description ? `- Description:\n${wrapUntrustedLinearText(description)}` : null,
   ].filter((line): line is string => Boolean(line)).join("\n");
 }
 

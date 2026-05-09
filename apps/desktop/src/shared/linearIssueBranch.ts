@@ -24,11 +24,17 @@ export function sanitizeLinearIssueBranchName(input: string): string {
     .trim()
     .replace(/^refs\/heads\//, "")
     .replace(/^origin\//, "")
+    // Git ref-format invalids: backslash, tilde, caret, colon, question, star,
+    // brackets, whitespace, plus the `@{` sequence (reflog selector syntax).
+    .replace(/@\{/g, "-")
     .replace(/[\\~^:?*\[\]\s]+/g, "-")
     .replace(/\/+/g, "/")
     .replace(/\/\.+/g, "/")
     .replace(/\.+\//g, "/")
+    .replace(/\.\.+/g, "-")
     .replace(/\.+$/g, "")
+    // Strip a trailing `.lock` (case-insensitive) — invalid as a Git ref suffix.
+    .replace(/\.lock$/i, "")
     .replace(/^-+|-+$/g, "")
     .replace(/\/$/g, "")
     .replace(/^\/+/g, "")

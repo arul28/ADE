@@ -80,7 +80,6 @@ const LINEAR_ISSUE_TOOL_SCHEMA: Record<string, unknown> = {
     "id",
     "identifier",
     "title",
-    "url",
     "projectId",
     "projectSlug",
     "teamId",
@@ -91,8 +90,6 @@ const LINEAR_ISSUE_TOOL_SCHEMA: Record<string, unknown> = {
     "priority",
     "priorityLabel",
     "labels",
-    "assigneeId",
-    "assigneeName",
     "createdAt",
     "updatedAt",
   ],
@@ -2922,6 +2919,10 @@ async function buildCliLinearConnectionStatus(runtime: AdeRuntime): Promise<Line
       connected: status.connected,
       viewerId: status.viewerId,
       viewerName: status.viewerName,
+      organizationId: status.organizationId ?? null,
+      organizationName: status.organizationName ?? null,
+      organizationUrlKey: status.organizationUrlKey ?? null,
+      organizationLogoUrl: status.organizationLogoUrl ?? null,
       checkedAt: nowIso(),
       authMode: credentialStatus.authMode,
       oauthAvailable: credentialStatus.oauthConfigured,
@@ -4934,6 +4935,16 @@ async function runTool(args: {
       const stateTypes = Array.isArray(toolArgs.stateTypes)
         ? assertStringArray(toolArgs.stateTypes, "stateTypes")
         : [];
+      let first = 50;
+      if (toolArgs.first !== undefined && toolArgs.first !== null) {
+        if (typeof toolArgs.first !== "number" || !Number.isFinite(toolArgs.first) || !Number.isInteger(toolArgs.first) || toolArgs.first <= 0) {
+          throw new JsonRpcError(
+            JsonRpcErrorCode.invalidParams,
+            "first must be a positive integer (1-50)",
+          );
+        }
+        first = Math.min(50, toolArgs.first);
+      }
       return await tracker.searchIssues({
         projectId: assertOptionalStringOrNull(toolArgs.projectId ?? null, "projectId"),
         projectSlug: assertOptionalStringOrNull(toolArgs.projectSlug ?? null, "projectSlug"),
@@ -4942,7 +4953,7 @@ async function runTool(args: {
         assigneeId: assertOptionalStringOrNull(toolArgs.assigneeId ?? null, "assigneeId"),
         priority: assertOptionalNumberOrNull(toolArgs.priority ?? null, "priority"),
         query: assertOptionalStringOrNull(toolArgs.query ?? null, "query"),
-        first: typeof toolArgs.first === "number" ? toolArgs.first : 50,
+        first,
         after: assertOptionalStringOrNull(toolArgs.after ?? null, "after"),
         includeArchived: asBoolean(toolArgs.includeArchived, false),
       });
@@ -5264,9 +5275,16 @@ async function runTool(args: {
     const parentLaneId = asOptionalTrimmedString(toolArgs.parentLaneId);
     const baseBranch = asOptionalTrimmedString(toolArgs.baseBranch);
     const branchName = asOptionalTrimmedString(toolArgs.branchName);
-    const linearIssue = typeof toolArgs.linearIssue === "object" && toolArgs.linearIssue != null && !Array.isArray(toolArgs.linearIssue)
-      ? parseLaneLinearIssue(toolArgs.linearIssue)
-      : null;
+    let linearIssue: LaneLinearIssue | null = null;
+    if (toolArgs.linearIssue !== undefined && toolArgs.linearIssue !== null) {
+      if (typeof toolArgs.linearIssue !== "object" || Array.isArray(toolArgs.linearIssue)) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          "linearIssue must be a non-array object",
+        );
+      }
+      linearIssue = parseLaneLinearIssue(toolArgs.linearIssue);
+    }
 
     const lane = await runtime.laneService.create({
       name: nameArg,

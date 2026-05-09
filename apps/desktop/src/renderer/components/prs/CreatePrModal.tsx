@@ -750,6 +750,18 @@ export function CreatePrModal({
   React.useEffect(() => {
     if (!open) return;
     if (!selectedNormalLinearIssue) {
+      // Lane no longer has a linked Linear issue — clear any auto-generated
+      // title/body fragments and reset the close-on-merge toggle so stale
+      // Linear-flavored values don't follow the user to a non-Linear lane.
+      const previousAutoTitle = normalLinearTitleDefaultRef.current;
+      setNormalTitle((current) =>
+        previousAutoTitle && current.trim() === previousAutoTitle.trim() ? "" : current,
+      );
+      const previousAutoBody = normalLinearBodyDefaultRef.current;
+      setNormalBody((current) =>
+        previousAutoBody && current.trim() === previousAutoBody.trim() ? "" : current,
+      );
+      setNormalCloseLinearIssueOnMerge(false);
       normalLinearTitleDefaultRef.current = "";
       normalLinearBodyDefaultRef.current = "";
       return;

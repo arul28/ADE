@@ -317,7 +317,7 @@ export function LinearIssuePickerView({
   const [priority, setPriority] = React.useState("");
   const [query, setQuery] = React.useState("");
   const [issues, setIssues] = React.useState<NormalizedLinearIssue[]>([]);
-  const [pendingIssue, setPendingIssue] = React.useState<NormalizedLinearIssue | LaneLinearIssue | null>(pinnedIssue ?? null);
+  const [pendingIssue, setPendingIssue] = React.useState<NormalizedLinearIssue | LaneLinearIssue | null>(pinnedIssue ?? selectedIssue ?? null);
   const [pageInfo, setPageInfo] = React.useState<{ hasNextPage: boolean; endCursor: string | null }>({
     hasNextPage: false,
     endCursor: null,
@@ -333,8 +333,8 @@ export function LinearIssuePickerView({
   }, [pageInfo]);
 
   React.useEffect(() => {
-    setPendingIssue((current) => current ?? pinnedIssue ?? null);
-  }, [pinnedIssue]);
+    setPendingIssue((current) => current ?? pinnedIssue ?? selectedIssue ?? null);
+  }, [pinnedIssue, selectedIssue]);
 
   React.useEffect(() => {
     let cancelled = false;

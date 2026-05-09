@@ -64,7 +64,10 @@ export function LinearIssueBadge({
   return (
     <span className="group relative inline-flex shrink-0" onClick={(event) => event.stopPropagation()}>
       <span
-        className="inline-flex items-center gap-1 rounded-md border"
+        tabIndex={0}
+        role="button"
+        aria-label={`${issue.identifier}: ${issue.title}`}
+        className="inline-flex items-center gap-1 rounded-md border outline-none focus-visible:ring-2 focus-visible:ring-white/20"
         style={{
           borderColor: LINEAR_BRAND.borderSubtle,
           background: LINEAR_BRAND.surface,
@@ -81,7 +84,7 @@ export function LinearIssueBadge({
         {!compact ? issue.identifier : null}
       </span>
       <span
-        className="pointer-events-none invisible absolute left-1/2 top-full z-[80] mt-2 w-[280px] -translate-x-1/2 overflow-hidden rounded-xl border opacity-0 shadow-xl transition-opacity group-hover:pointer-events-auto group-hover:visible group-hover:opacity-100"
+        className="pointer-events-none invisible absolute left-1/2 top-full z-[80] mt-2 w-[280px] -translate-x-1/2 overflow-hidden rounded-xl border opacity-0 shadow-xl transition-opacity group-hover:pointer-events-auto group-hover:visible group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:visible group-focus-within:opacity-100"
         style={{
           borderColor: LINEAR_BRAND.borderSubtle,
           background: COLORS.cardBg,

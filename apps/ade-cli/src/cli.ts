@@ -1997,7 +1997,13 @@ function buildLanePlan(args: string[]): CliPlan {
     maybePut(input, "baseBranch", readValue(args, ["--base", "--base-branch"]));
     maybePut(input, "branchName", readValue(args, ["--branch-name"]));
     const linearIssueJson = readValue(args, ["--linear-issue-json"]);
-    if (linearIssueJson) input.linearIssue = parseJson(linearIssueJson, "--linear-issue-json");
+    if (linearIssueJson) {
+      const parsed = parseJson(linearIssueJson, "--linear-issue-json");
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new CliUsageError("--linear-issue-json must decode to a non-null JSON object");
+      }
+      input.linearIssue = parsed as JsonObject;
+    }
     if (sub === "child" && !input.parentLaneId) throw new CliUsageError("parent lane is required. Use --lane <parent> or --parent <parent>.");
     return { kind: "execute", label: "lane create", steps: [actionCallStep("result", "create_lane", collectGenericObjectArgs(args, input))] };
   }

@@ -2949,6 +2949,35 @@ export function createPrService({
         : null;
       if (existingPr) {
         logger.info("prs.create_existing_mapped", { headBranch, baseBranch, prNumber: Number(existingPr?.number) || null });
+        // When we adopt an already-existing PR, ensure its body carries the
+        // Linear `Refs`/`Fixes` reference so close-on-merge / linkage works
+        // even though we couldn't inject it via the initial POST /pulls call.
+        if (lane.linearIssue) {
+          const existingPrNumber = Number(existingPr?.number);
+          if (Number.isFinite(existingPrNumber) && existingPrNumber > 0) {
+            const existingBody = typeof existingPr?.body === "string" ? existingPr.body : "";
+            const patchedBody = ensureLinearPrReference(
+              existingBody,
+              lane.linearIssue,
+              args.closeLinearIssueOnMerge === true,
+            );
+            if (patchedBody !== existingBody) {
+              try {
+                await githubService.apiRequest({
+                  method: "PATCH",
+                  path: `/repos/${repo.owner}/${repo.name}/pulls/${existingPrNumber}`,
+                  body: { body: patchedBody },
+                });
+                existingPr.body = patchedBody;
+              } catch (patchError) {
+                logger.warn("prs.adopt_linear_body_patch_failed", {
+                  prNumber: existingPrNumber,
+                  error: patchError instanceof Error ? patchError.message : String(patchError),
+                });
+              }
+            }
+          }
+        }
         created = { data: existingPr, response: null };
       } else {
         throw new Error(

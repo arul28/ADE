@@ -796,6 +796,18 @@ function migrate(db: MigrationDb) {
   `);
   db.run("create index if not exists idx_lane_linear_issues_lane on lane_linear_issues(project_id, lane_id)");
   db.run("create index if not exists idx_lane_linear_issues_issue on lane_linear_issues(project_id, issue_id)");
+  // Each lane is linked to at most one Linear issue. Enforce that invariant
+  // at the storage layer in addition to the application-level upsert (delete-
+  // then-insert) so concurrent writers can't double-link a lane.
+  try {
+    db.run(
+      "create unique index if not exists uniq_lane_linear_issues_lane on lane_linear_issues(project_id, lane_id)",
+    );
+  } catch {
+    // If existing rows violate uniqueness (only possible in pre-migration
+    // databases), leave the non-unique lookup index alone — application code
+    // continues to enforce single-issue-per-lane at write time.
+  }
 
   db.run(`
     create table if not exists lane_branch_profiles (
