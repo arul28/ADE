@@ -16149,6 +16149,17 @@ export function createAgentChatService(args: {
     if (managed.session.provider === "droid") {
       if (managed.runtime?.kind === "droid" && managed.runtime.busy) {
         const rt = managed.runtime;
+        const preparedSteer = prepareSendMessage({
+          sessionId,
+          text: trimmed,
+          displayText: trimmed,
+          attachments: [],
+          contextAttachments,
+          allowActiveSession: true,
+        });
+        if (!preparedSteer) {
+          return { steerId, queued: false };
+        }
         if (rt.pendingSteers.length >= MAX_PENDING_STEERS) {
           logger.warn("agent_chat.steer_queue_full", { sessionId, queueSize: rt.pendingSteers.length });
           emitChatEvent(managed, {
@@ -16159,12 +16170,17 @@ export function createAgentChatService(args: {
           });
           return { steerId, queued: false };
         }
-        const normalizedContextAttachments = normalizeChatContextAttachments(contextAttachments);
-        rt.pendingSteers.push({ steerId, text: trimmed, attachments: [], contextAttachments: normalizedContextAttachments, resolvedAttachments: [] });
+        rt.pendingSteers.push({
+          steerId,
+          text: preparedSteer.submittedText,
+          attachments: [],
+          contextAttachments: preparedSteer.contextAttachments,
+          resolvedAttachments: [],
+        });
         emitChatEvent(managed, {
           type: "user_message",
-          text: trimmed,
-          ...(normalizedContextAttachments.length ? { contextAttachments: normalizedContextAttachments } : {}),
+          text: preparedSteer.visibleText,
+          ...(preparedSteer.contextAttachments.length ? { contextAttachments: preparedSteer.contextAttachments } : {}),
           steerId,
           turnId: rt.activeTurnId ?? undefined,
           deliveryState: "queued",
@@ -16214,7 +16230,7 @@ export function createAgentChatService(args: {
       const input: Array<Record<string, unknown>> = [
         {
           type: "text",
-          text: trimmed,
+          text: preparedSteer.submittedText,
           text_elements: [],
         },
       ];

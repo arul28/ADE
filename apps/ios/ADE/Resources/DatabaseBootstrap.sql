@@ -70,6 +70,21 @@ create index if not exists idx_lane_linear_issues_lane on lane_linear_issues(pro
 
 create index if not exists idx_lane_linear_issues_issue on lane_linear_issues(project_id, issue_id);
 
+drop index if exists uniq_lane_linear_issues_lane;
+
+delete from lane_linear_issues
+      where rowid not in (
+        select rowid from lane_linear_issues as keep
+        where keep.id = (
+          select id from lane_linear_issues inner_p
+          where inner_p.project_id = keep.project_id
+            and inner_p.lane_id = keep.lane_id
+          order by inner_p.updated_at desc,
+                   inner_p.id asc
+          limit 1
+        )
+      );
+
 create table if not exists lane_branch_profiles (
       id text primary key,
       project_id text not null,

@@ -619,7 +619,9 @@ export function createLinearClient(args: LinearClientArgs) {
       typeof issue.creator === "object" ? issue.creator : Promise.resolve(null),
       typeof issue.labels === "function"
         ? (issue.labels as (args: { first: number }) => Promise<{ nodes?: unknown[] }>)({ first: 8 }).catch(() => null)
-        : Promise.resolve(null),
+        : typeof issue.labels === "object"
+          ? issue.labels
+          : Promise.resolve(null),
       typeof issue.children === "function"
         ? (issue.children as (args: { first: number }) => Promise<{ nodes?: unknown[] }>)({ first: 20 }).catch(() => null)
         : typeof issue.children === "object"

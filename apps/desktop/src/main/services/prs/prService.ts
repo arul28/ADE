@@ -2908,7 +2908,7 @@ export function createPrService({
       throw new Error("Choose a target branch before creating the PR.");
     }
     const prBody = lane.linearIssue
-      ? ensureLinearPrReference(args.body, lane.linearIssue, args.closeLinearIssueOnMerge === true)
+      ? ensureLinearPrReference(args.body, lane.linearIssue, args.closeLinearIssueOnMerge === true, { preserveExisting: false })
       : args.body;
 
     if (!args.skipBranchPush) {
