@@ -42,14 +42,6 @@ function toSdkTokenValue(token: string): string {
   return token.trim().replace(/^bearer\s+/i, "");
 }
 
-function gqlString(value: string): string {
-  return JSON.stringify(value);
-}
-
-function gqlStringArray(values: string[]): string {
-  return `[${values.map((value) => gqlString(value)).join(", ")}]`;
-}
-
 function priorityIsValid(value: number | null | undefined): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 4;
 }
@@ -695,25 +687,22 @@ export function createLinearClient(args: LinearClientArgs) {
 
   const getQuickView = async (connection: CtoLinearQuickView["connection"]): Promise<CtoLinearQuickView> => {
     const sdk = createSdkClient();
-    const [viewer, organization, projectsConnection, teamsConnection, recentIssuesConnection] = await Promise.all([
+    // Recent issues fetched via raw GraphQL (single request with ISSUE_FIELDS_FRAGMENT)
+    // to avoid the lazy-relation fan-out that the SDK normalizer triggers.
+    const recentIssuesPromise = searchIssues({ first: 12, includeArchived: false }).catch(() => null);
+    const [viewer, organization, projectsConnection, teamsConnection, recentIssuesResult] = await Promise.all([
       sdk.viewer,
       sdk.organization.catch(() => null),
       sdk.projects({ first: 8, includeArchived: false } as never).catch(() => null),
       sdk.teams({ first: 8, includeArchived: false } as never).catch(() => null),
-      sdk.issues({
-        first: 12,
-        includeArchived: false,
-        orderBy: "updatedAt",
-      } as never).catch(() => null),
+      recentIssuesPromise,
     ]);
 
-    const assignedIssuesConnection = await viewer
-      .assignedIssues({
-        first: 12,
-        includeArchived: false,
-        orderBy: "updatedAt",
-      } as never)
-      .catch(() => null);
+    // Assigned issues also via raw GraphQL using the resolved viewer id.
+    const viewerId = asString(viewer.id);
+    const assignedIssuesResult = viewerId
+      ? await searchIssues({ first: 12, includeArchived: false, assigneeId: viewerId }).catch(() => null)
+      : null;
 
     const projects: CtoLinearQuickViewProject[] = await Promise.all(
       asArray(projectsConnection?.nodes).filter(isRecord).map(async (project) => {
@@ -773,10 +762,8 @@ export function createLinearClient(args: LinearClientArgs) {
         private: typeof team.private === "boolean" ? team.private : null,
       }));
 
-    const [assignedIssues, recentIssues] = await Promise.all([
-      Promise.all(asArray(assignedIssuesConnection?.nodes).filter(isRecord).map(normalizeSdkIssue)),
-      Promise.all(asArray(recentIssuesConnection?.nodes).filter(isRecord).map(normalizeSdkIssue)),
-    ]);
+    const assignedIssues = assignedIssuesResult?.issues ?? [];
+    const recentIssues = recentIssuesResult?.issues ?? [];
 
     return {
       connection,
