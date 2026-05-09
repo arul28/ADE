@@ -84,6 +84,7 @@ type RebasePushReviewState = {
 };
 
 const ADOPT_HINT_DISMISSED_KEY = "ade.lanes.adoptHintDismissed.v1";
+const LANE_DELETE_REFRESH_DEBOUNCE_MS = 160;
 
 function getDevicePresenceTitle(devicesOpen: LaneSummary["devicesOpen"]): string {
   const names = (devicesOpen ?? [])
@@ -413,6 +414,8 @@ export function LanesPage() {
   const branchSearchInputRef = useRef<HTMLInputElement>(null);
   const branchDropdownRef = useRef<HTMLDivElement>(null);
   const completedLaneDeleteRefreshesRef = useRef<Set<string>>(new Set());
+  const pendingLaneDeleteRefreshIdsRef = useRef<Set<string>>(new Set());
+  const laneDeleteRefreshTimerRef = useRef<number | null>(null);
   const activeLanePresenceSignatureRef = useRef<string | null>(null);
   // Refs for the onDeleteEvent IPC handler. Capturing high-churn values
   // (selectedLaneId, lanesById, managedLaneIds, manageOpen) in refs lets the
@@ -448,6 +451,11 @@ export function LanesPage() {
 
   useEffect(() => {
     completedLaneDeleteRefreshesRef.current.clear();
+    pendingLaneDeleteRefreshIdsRef.current.clear();
+    if (laneDeleteRefreshTimerRef.current != null) {
+      window.clearTimeout(laneDeleteRefreshTimerRef.current);
+      laneDeleteRefreshTimerRef.current = null;
+    }
     setDeleteProgressByLaneId({});
   }, [project?.rootPath]);
 
@@ -789,6 +797,28 @@ export function LanesPage() {
     }
   }, []);
 
+  const scheduleLaneDeleteRefresh = useCallback(() => {
+    if (laneDeleteRefreshTimerRef.current != null) return;
+    laneDeleteRefreshTimerRef.current = window.setTimeout(() => {
+      laneDeleteRefreshTimerRef.current = null;
+      const laneIds = Array.from(pendingLaneDeleteRefreshIdsRef.current);
+      pendingLaneDeleteRefreshIdsRef.current.clear();
+      if (laneIds.length === 0) return;
+
+      void refreshLanes()
+        .then(() => {
+          const selectedId = selectedLaneIdRef.current;
+          const managedIds = managedLaneIdsRef.current;
+          if (manageOpenRef.current && laneIds.some((laneId) => selectedId === laneId || managedIds.includes(laneId))) {
+            setManageOpen(false);
+          }
+        })
+        .catch((err) => {
+          setLaneActionError(`Lane was deleted, but refresh failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
+    }, LANE_DELETE_REFRESH_DEBOUNCE_MS);
+  }, [refreshLanes]);
+
   /* ---- Effects ---- */
 
   // Mirror high-churn values into refs so the IPC subscription below doesn't
@@ -838,22 +868,11 @@ export function LanesPage() {
       setManagedLaneIds((prev) => prev.filter((id) => id !== laneId));
       clearLaneInspectorTab(laneId);
       setLaneActionError(null);
-
-      void refreshLanes()
-        .then(() => {
-          if (
-            manageOpenRef.current
-            && (selectedLaneIdRef.current === laneId || managedLaneIdsRef.current.includes(laneId))
-          ) {
-            setManageOpen(false);
-          }
-        })
-        .catch((err) => {
-          setLaneActionError(`Lane was deleted, but refresh failed: ${err instanceof Error ? err.message : String(err)}`);
-        });
+      pendingLaneDeleteRefreshIdsRef.current.add(laneId);
+      scheduleLaneDeleteRefresh();
     });
     return unsubscribe;
-  }, [clearLaneInspectorTab, refreshLanes, selectLane]);
+  }, [clearLaneInspectorTab, scheduleLaneDeleteRefresh, selectLane]);
 
   useEffect(() => {
     const unsubscribe = window.ade.conflicts.onEvent((event) => {
@@ -1016,9 +1035,15 @@ export function LanesPage() {
   }, [refreshAutoRebaseEnabled]);
 
   useEffect(() => {
+    const pendingLaneDeleteRefreshIds = pendingLaneDeleteRefreshIdsRef.current;
     return () => {
       for (const timer of chipTimersRef.current.values()) window.clearTimeout(timer);
       chipTimersRef.current.clear();
+      if (laneDeleteRefreshTimerRef.current != null) {
+        window.clearTimeout(laneDeleteRefreshTimerRef.current);
+        laneDeleteRefreshTimerRef.current = null;
+      }
+      pendingLaneDeleteRefreshIds.clear();
     };
   }, []);
 
@@ -1226,6 +1251,7 @@ export function LanesPage() {
     fn: () => Promise<void>,
     status: string,
     kind: "delete" | "archive" | "adopt" = "delete",
+    options: { refreshAfter?: boolean } = {},
   ) => {
     setLaneActionBusy(true);
     setLaneActionKind(kind);
@@ -1233,7 +1259,9 @@ export function LanesPage() {
     setLaneActionError(null);
     try {
       await fn();
-      await refreshLanes();
+      if (options.refreshAfter !== false) {
+        await refreshLanes();
+      }
       setManageOpen(false);
     } catch (err) {
       setLaneActionError(err instanceof Error ? err.message : String(err));
@@ -2119,6 +2147,7 @@ export function LanesPage() {
 
   const getPaneConfigs = useCallback((laneId: string | null) => {
     const laneDetail = laneId ? lanePaneDetails[laneId] ?? EMPTY_LANE_PANE_DETAIL : EMPTY_LANE_PANE_DETAIL;
+    const laneSnapshot = laneId ? laneSnapshotByLaneId.get(laneId) ?? null : null;
     return {
       "git-actions": {
         title: "Git Actions",
@@ -2152,6 +2181,7 @@ export function LanesPage() {
             <LaneGitActionsPane
               laneId={laneId}
               autoRebaseEnabled={autoRebaseEnabled}
+              autoRebaseStatusSnapshot={laneSnapshot?.autoRebaseStatus}
               onOpenSettings={openAutoRebaseSettings}
               onRebaseNowLocal={(targetLaneId) => runRebaseFlow(targetLaneId, "local_only")}
               onRebaseAndPush={(targetLaneId) => runRebaseFlow(targetLaneId, "local_and_remote")}
@@ -2183,6 +2213,7 @@ export function LanesPage() {
     };
   }, [
     lanePaneDetails,
+    laneSnapshotByLaneId,
     expandedGitActionsLaneId,
     autoRebaseEnabled,
     openAutoRebaseSettings,
@@ -2916,29 +2947,29 @@ export function LanesPage() {
                     background: laneRuntime.bucket === "awaiting-input" ? COLORS.warning : COLORS.success,
                   }}
                 />
-	              ) : !isDeleting && laneRuntime.bucket === "ended" ? (
+              ) : !isDeleting && laneRuntime.bucket === "ended" ? (
                 <span
                   title={`${laneRuntime.endedCount} ended session${laneRuntime.endedCount === 1 ? "" : "s"}`}
                   className="shrink-0"
-	                  style={{ width: 8, height: 8, borderRadius: "50%", background: COLORS.danger }}
-	                />
-	              ) : null}
-	              {!isDeleting ? (
-	              <span
-	                className="opacity-0 transition-opacity group-hover:opacity-100"
-	                onClick={(event) => event.stopPropagation()}
-	                onMouseDown={(event) => event.stopPropagation()}
-	              >
-	                <QuickRunMenu laneId={lane.id} compact iconOnly triggerStyle={{ height: 22, padding: "0 6px" }} />
-	              </span>
-	              ) : null}
-	              {/* Lane name */}
-	              <span className="truncate" style={{
-	                maxWidth: 180,
-	                fontFamily: SANS_FONT, fontSize: 12, letterSpacing: "0.5px", textTransform: "uppercase",
-	                fontWeight: isSelected ? 600 : 500,
-	                color: isSelected ? COLORS.textPrimary : COLORS.textMuted,
-	              }}>{lane.name}</span>
+                  style={{ width: 8, height: 8, borderRadius: "50%", background: COLORS.danger }}
+                />
+              ) : null}
+              {!isDeleting ? (
+                <span
+                  className="opacity-0 transition-opacity group-hover:opacity-100"
+                  onClick={(event) => event.stopPropagation()}
+                  onMouseDown={(event) => event.stopPropagation()}
+                >
+                  <QuickRunMenu laneId={lane.id} compact iconOnly triggerStyle={{ height: 22, padding: "0 6px" }} />
+                </span>
+              ) : null}
+              {/* Lane name */}
+              <span className="truncate" style={{
+                maxWidth: 180,
+                fontFamily: SANS_FONT, fontSize: 12, letterSpacing: "0.5px", textTransform: "uppercase",
+                fontWeight: isSelected ? 600 : 500,
+                color: isSelected ? COLORS.textPrimary : COLORS.textMuted,
+              }}>{lane.name}</span>
               {!isDeleting && lanePr ? (
                 <button
                   type="button"
@@ -2965,28 +2996,28 @@ export function LanesPage() {
                   {formatPrBadgeLabel(lanePr)}
                 </button>
               ) : null}
-	              {!isDeleting && devicesOpen.length > 0 ? (
-	                <span
-	                  style={{
-	                    display: "inline-flex",
-	                    alignItems: "center",
-	                    gap: 4,
-	                    padding: "2px 6px",
-	                    borderRadius: 6,
-	                    fontFamily: MONO_FONT,
-	                    fontSize: 9,
-	                    fontWeight: 700,
-	                    color: COLORS.accent,
-	                    background: COLORS.accentSubtle,
-	                    border: `1px solid ${COLORS.accentBorder}`,
-	                  }}
-	                  title={getDevicePresenceTitle(devicesOpen)}
-	                >
-	                  <UsersThree size={10} weight="bold" />
-	                  {devicesOpen.length}
-	                </span>
-	              ) : null}
-	              {/* Behind badge (rebase suggestion) */}
+              {!isDeleting && devicesOpen.length > 0 ? (
+                <span
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 4,
+                    padding: "2px 6px",
+                    borderRadius: 6,
+                    fontFamily: MONO_FONT,
+                    fontSize: 9,
+                    fontWeight: 700,
+                    color: COLORS.accent,
+                    background: COLORS.accentSubtle,
+                    border: `1px solid ${COLORS.accentBorder}`,
+                  }}
+                  title={getDevicePresenceTitle(devicesOpen)}
+                >
+                  <UsersThree size={10} weight="bold" />
+                  {devicesOpen.length}
+                </span>
+              ) : null}
+              {/* Behind badge (rebase suggestion) */}
               {!isDeleting && rebaseSuggestion ? (
                 <span style={{
                   display: "inline-flex", alignItems: "center", padding: "2px 6px", borderRadius: 6,

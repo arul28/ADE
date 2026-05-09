@@ -17,6 +17,7 @@ import type {
   ModelConfig,
   MissionPriority,
   MissionStatus,
+  MissionRunViewDisplayStatus,
   OrchestratorAttempt,
   OrchestratorChatMessage,
   OrchestratorClaim,
@@ -51,6 +52,38 @@ export const STATUS_CONFIG: Record<MissionStatus, {
   failed:                { color: "#EF4444", label: "Failed",   icon: "✗",  background: "#EF444418", border: "1px solid #EF444430" },
   canceled:              { color: "#71717A", label: "Canceled",  icon: "⊘",  background: "#71717A18", border: "1px solid #71717A30" },
 };
+
+export const RUN_VIEW_STATUS_CONFIG: Record<MissionRunViewDisplayStatus, {
+  color: string;
+  label: string;
+  icon: string;
+  background: string;
+  border: string;
+}> = {
+  not_started: { color: "#71717A", label: "Not started", icon: "", background: "#71717A18", border: "1px solid #71717A30" },
+  starting: { color: "#A78BFA", label: "Starting", icon: "", background: "#A78BFA18", border: "1px solid #A78BFA30" },
+  running: { color: "#22C55E", label: "Running", icon: "", background: "#22C55E18", border: "1px solid #22C55E30" },
+  paused: { color: "#F59E0B", label: "Paused", icon: "", background: "#F59E0B18", border: "1px solid #F59E0B30" },
+  blocked: { color: "#F59E0B", label: "Blocked", icon: "", background: "#F59E0B18", border: "1px solid #F59E0B30" },
+  completed: { color: "#22C55E", label: "Done", icon: "", background: "#22C55E18", border: "1px solid #22C55E30" },
+  failed: { color: "#EF4444", label: "Failed", icon: "", background: "#EF444418", border: "1px solid #EF444430" },
+  canceled: { color: "#71717A", label: "Canceled", icon: "", background: "#71717A18", border: "1px solid #71717A30" },
+};
+
+export function getMissionStatusBadgeConfig(
+  missionStatus: MissionStatus,
+  displayStatus?: MissionRunViewDisplayStatus | null,
+) {
+  return displayStatus ? RUN_VIEW_STATUS_CONFIG[displayStatus] : STATUS_CONFIG[missionStatus];
+}
+
+export function isMissionVisiblyActive(
+  missionStatus: MissionStatus,
+  displayStatus?: MissionRunViewDisplayStatus | null,
+): boolean {
+  if (displayStatus) return displayStatus === "running" || displayStatus === "starting";
+  return missionStatus === "in_progress" || missionStatus === "planning";
+}
 
 export const PRIORITY_STYLES: Record<MissionPriority, { background: string; color: string; border: string }> = {
   urgent: { background: "#EF444418", color: "#EF4444", border: "1px solid #EF444430" },
@@ -210,17 +243,18 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function isDisplayOnlyTaskStep(
-  step: Pick<OrchestratorStep, "metadata"> | null | undefined,
+  step: { metadata?: unknown } | null | undefined,
 ): boolean {
-  void step;
-  return false;
+  const metadata = isRecord(step?.metadata) ? step.metadata : null;
+  if (!metadata) return false;
+  if (metadata.isTask === true || metadata.displayOnlyTask === true) return true;
+  const stepType = typeof metadata.stepType === "string" ? metadata.stepType.trim().toLowerCase() : "";
+  if (stepType !== "task") return false;
+  return metadata.spawnedByCoordinator !== true && typeof metadata.workerName !== "string";
 }
 
 export function filterExecutionSteps<T extends { metadata?: unknown }>(steps: T[]): T[] {
-  return steps.filter((step) => {
-    const metadata = isRecord(step.metadata) ? step.metadata : null;
-    return metadata?.isTask !== true && metadata?.displayOnlyTask !== true;
-  });
+  return steps.filter((step) => !isDisplayOnlyTaskStep(step));
 }
 
 export function readBool(primary: unknown, fallback: unknown, defaultValue: boolean): boolean {
@@ -367,9 +401,11 @@ function inferMissionWorkerPhase(raw: string): string | null {
   if (!normalized.length) return null;
   if (normalized.startsWith("planner") || normalized.startsWith("plan")) return "Planning";
   if (normalized.startsWith("dev") || normalized.startsWith("implement")) return "Development";
+  if (normalized.startsWith("integration") || normalized.startsWith("integrate")) return "Integration";
   if (normalized.startsWith("validator") || normalized.startsWith("validate")) return "Validation";
   if (normalized.startsWith("test")) return "Testing";
   if (normalized.startsWith("review")) return "Review";
+  if (normalized.startsWith("closeout") || normalized.startsWith("close out")) return "Closeout";
   return null;
 }
 
@@ -378,14 +414,42 @@ function humanizeMissionWorkerText(raw: string): string {
   if (!trimmed.length) return "Worker";
   const withoutPrefix = trimmed
     .replace(/^Worker:\s*/i, "")
-    .replace(/^worker[_:-]*/i, "")
-    .replace(/^teammate[_:-]*/i, "");
+    .replace(/^worker[_:-]+/i, "")
+    .replace(/^teammate[_:-]+/i, "");
   const withoutTimestamp = withoutPrefix.replace(/[_-]\d{10,}$/, "");
   const withColon = withoutTimestamp.replace(/__/g, ": ");
   return withColon
     .replace(/[_-]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function canonicalMissionWorkerPresentation(human: string, stepKey?: string | null): {
+  label: string;
+  fullLabel: string;
+  phaseLabel: string;
+} | null {
+  const combined = `${human} ${stepKey ?? ""}`.toLowerCase();
+  const phaseMatch =
+    /\bread[- ]only planning worker\b/.test(combined) || /\bplanning worker\b/.test(combined)
+      ? { phase: "Planning", label: "Planning worker" }
+      : /\b(development|implementation) worker\b/.test(combined)
+        ? { phase: "Development", label: "Development worker" }
+        : /\bintegration worker\b/.test(combined)
+          ? { phase: "Integration", label: "Integration worker" }
+          : /\b(testing|test) worker\b/.test(combined)
+            ? { phase: "Testing", label: "Testing worker" }
+            : /\b(validation|validator) worker\b/.test(combined)
+              ? { phase: "Validation", label: "Validation worker" }
+              : /\bcloseout worker\b/.test(combined) || /\bclose out worker\b/.test(combined)
+                ? { phase: "Closeout", label: "Closeout worker" }
+                : null;
+  if (!phaseMatch) return null;
+  return {
+    label: phaseMatch.label,
+    fullLabel: `${phaseMatch.phase}: ${phaseMatch.label}`,
+    phaseLabel: phaseMatch.phase,
+  };
 }
 
 export function formatMissionWorkerPresentation(args: {
@@ -398,6 +462,8 @@ export function formatMissionWorkerPresentation(args: {
 } {
   const raw = (args.title && args.title.trim().length ? args.title : args.stepKey) ?? "Worker";
   const human = humanizeMissionWorkerText(raw);
+  const canonical = canonicalMissionWorkerPresentation(human, args.stepKey);
+  if (canonical) return canonical;
   const [lead, ...rest] = human.split(":");
   const inferredPhase = inferMissionWorkerPhase(lead ?? "") ?? inferMissionWorkerPhase(args.stepKey ?? "");
   if (rest.length > 0 && inferredPhase) {
@@ -534,10 +600,53 @@ export function heartbeatAgeMinutes(iso: string | null): number | null {
   return Math.max(0, (Date.now() - ts) / 60_000);
 }
 
+function prettifyStepKey(value: string): string {
+  return value
+    .replace(/^validate_worker_/, "Validate ")
+    .replace(/^worker_/, "")
+    .replace(/_\d{8,}$/, "")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function narrativeStepLabel(ev: {
+  stepId?: string | null;
+  stepKey?: string | null;
+  stepTitle?: string | null;
+  title?: string | null;
+  detail?: unknown;
+}): string {
+  const detail = isRecord(ev.detail) ? ev.detail : null;
+  const candidates = [
+    ev.stepTitle,
+    ev.title,
+    detail?.stepTitle,
+    detail?.title,
+    detail?.stepKey,
+    ev.stepKey,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate !== "string") continue;
+    const trimmed = candidate.trim();
+    if (!trimmed) continue;
+    return `"${prettifyStepKey(trimmed)}"`;
+  }
+  return ev.stepId ? "this step" : "the step";
+}
+
 /** Turn a raw orchestrator timeline event into a human-readable sentence. */
-export function narrativeForEvent(ev: { eventType: string; reason: string; stepId?: string | null }): string {
+export function narrativeForEvent(ev: {
+  eventType: string;
+  reason: string;
+  stepId?: string | null;
+  stepKey?: string | null;
+  stepTitle?: string | null;
+  title?: string | null;
+  detail?: unknown;
+}): string {
   const r = ev.reason.toLowerCase();
-  const stepLabel = ev.stepId ? `'${ev.stepId.slice(0, 8)}'` : "";
+  const stepLabel = narrativeStepLabel(ev);
 
   if (ev.eventType === "run_status_changed" || ev.eventType === "run_created" ||
       ev.eventType === "run_resumed" || ev.eventType === "run_canceled") {
@@ -552,13 +661,13 @@ export function narrativeForEvent(ev: { eventType: string; reason: string; stepI
 
   if (ev.eventType === "step_status_changed" || ev.eventType === "step_registered" ||
       ev.eventType === "step_dependencies_resolved" || ev.eventType === "step_skipped") {
-    if (ev.eventType === "step_registered") return `Step ${stepLabel} registered in the plan`;
-    if (ev.eventType === "step_dependencies_resolved") return `Dependencies resolved for step ${stepLabel}`;
-    if (ev.eventType === "step_skipped" || r.includes("skipped")) return `Leader decided to skip step ${stepLabel}`;
-    if (r.includes("ready")) return `Step ${stepLabel} is ready for execution`;
-    if (r.includes("running") || r.includes("started")) return `Worker picked up step ${stepLabel}`;
-    if (r.includes("succeeded")) return `Step ${stepLabel} completed successfully`;
-    if (r.includes("failed")) return `Step ${stepLabel} failed: ${ev.reason}`;
+    if (ev.eventType === "step_registered") return `Added ${stepLabel} to the plan`;
+    if (ev.eventType === "step_dependencies_resolved") return `Dependencies resolved for ${stepLabel}`;
+    if (ev.eventType === "step_skipped" || r.includes("skipped")) return `Skipped ${stepLabel}`;
+    if (r.includes("ready")) return `${stepLabel} is ready for execution`;
+    if (r.includes("running") || r.includes("started")) return `Worker picked up ${stepLabel}`;
+    if (r.includes("succeeded")) return `${stepLabel} completed successfully`;
+    if (r.includes("failed")) return `${stepLabel} failed: ${ev.reason}`;
     return `Step update: ${ev.reason}`;
   }
 
@@ -773,11 +882,15 @@ export function classifyErrorSource(message: string): ErrorSource {
  */
 export function computeProgress(
   steps: Array<Pick<OrchestratorStep, "status" | "metadata">>,
+  options: { includeDisplayOnlyTaskShells?: boolean } = {},
 ): { completed: number; total: number; pct: number } {
   // Filter out display-only task steps and superseded/retry variants
   const meaningful = steps.filter((step) => {
     const metadata = isRecord(step.metadata) ? step.metadata : null;
-    if (metadata?.isTask === true || metadata?.displayOnlyTask === true) return false;
+    if (isDisplayOnlyTaskStep(step)) {
+      if (!options.includeDisplayOnlyTaskShells) return false;
+      if (metadata?.plannerLaunchTracker === true || metadata?.systemManaged === true) return false;
+    }
     if (step.status === "superseded") return false;
     // If the step is a retry variant (has retryOf metadata), exclude it
     if (metadata?.retryOf) return false;

@@ -9,7 +9,9 @@ import type {
   OrchestratorStep,
   OrchestratorAttempt,
   OrchestratorStepStatus,
+  PhaseCard,
 } from "../../../shared/types";
+import { resolveDevelopmentPhaseKey } from "../missions/phaseEngine";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -126,6 +128,16 @@ function resolveStepPhase(step: OrchestratorStep | undefined): { phaseKey: strin
   };
 }
 
+function resolveGraphPhaseCards(graph: OrchestratorRunGraph): PhaseCard[] {
+  const runMeta = readRecord(graph.run.metadata);
+  const phaseRuntime = readRecord(runMeta.phaseConfiguration);
+  if (Array.isArray(phaseRuntime.selectedPhases)) return phaseRuntime.selectedPhases as PhaseCard[];
+  if (Array.isArray(phaseRuntime.phases)) return phaseRuntime.phases as PhaseCard[];
+  if (Array.isArray(runMeta.phaseOverride)) return runMeta.phaseOverride as PhaseCard[];
+  if (Array.isArray(runMeta.phases)) return runMeta.phases as PhaseCard[];
+  return [];
+}
+
 function buildCoordinatorActionHints(
   event: OrchestratorRuntimeEvent,
   graph: OrchestratorRunGraph,
@@ -146,8 +158,9 @@ function buildCoordinatorActionHints(
     || runPhase.phaseName === "planning";
 
   if (planningPhase && step?.status === "succeeded") {
+    const nextPhaseKey = resolveDevelopmentPhaseKey(resolveGraphPhaseCards(graph));
     hints.push(
-      "Coordinator action: this completion is still labeled Planning. Review the worker output, create/update the visible DAG if needed, then call set_current_phase with phaseKey \"development\" before spawning any code-changing worker."
+      `Coordinator action: this completion is still labeled Planning. Review the worker output, create/update the visible DAG if needed, then call set_current_phase with phaseKey "${nextPhaseKey}" before spawning any code-changing worker.`
     );
   }
 

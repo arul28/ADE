@@ -677,6 +677,24 @@ import type {
   BuiltInBrowserSelectResult,
   BuiltInBrowserStatus,
   BuiltInBrowserTabArgs,
+  MacosVmAgentGuide,
+  MacosVmAgentGuideArgs,
+  MacosVmCaptureScreenshotArgs,
+  MacosVmCaptureScreenshotResult,
+  MacosVmClickArgs,
+  MacosVmDeleteArgs,
+  MacosVmEventPayload,
+  MacosVmFocusWindowArgs,
+  MacosVmProvisionArgs,
+  MacosVmRecord,
+  MacosVmSelectPointArgs,
+  MacosVmSelectPointResult,
+  MacosVmStartArgs,
+  MacosVmStatus,
+  MacosVmStatusArgs,
+  MacosVmStopArgs,
+  MacosVmTypeTextArgs,
+  MacosVmWindowTarget,
   ChatTerminalActiveForChatArgs,
   ChatTerminalListArgs,
   ChatTerminalReadArgs,
@@ -1423,6 +1441,20 @@ declare global {
         selectCurrent: () => Promise<BuiltInBrowserSelectResult>;
         clearSelection: () => Promise<{ ok: true }>;
         onEvent: (cb: (ev: BuiltInBrowserEventPayload) => void) => () => void;
+      };
+      macosVm: {
+        getStatus: (args?: MacosVmStatusArgs) => Promise<MacosVmStatus>;
+        provision: (args: MacosVmProvisionArgs) => Promise<MacosVmRecord>;
+        start: (args: MacosVmStartArgs) => Promise<MacosVmRecord>;
+        stop: (args: MacosVmStopArgs) => Promise<MacosVmRecord | null>;
+        delete: (args: MacosVmDeleteArgs) => Promise<{ deleted: boolean; previous: MacosVmRecord | null }>;
+        getAgentGuide: (args: MacosVmAgentGuideArgs) => Promise<MacosVmAgentGuide>;
+        focusWindow: (args: MacosVmFocusWindowArgs) => Promise<MacosVmWindowTarget>;
+        captureScreenshot: (args: MacosVmCaptureScreenshotArgs) => Promise<MacosVmCaptureScreenshotResult>;
+        selectPoint: (args: MacosVmSelectPointArgs) => Promise<MacosVmSelectPointResult>;
+        click: (args: MacosVmClickArgs) => Promise<{ ok: true; window: MacosVmWindowTarget; x: number; y: number }>;
+        typeText: (args: MacosVmTypeTextArgs) => Promise<{ ok: true; window: MacosVmWindowTarget }>;
+        onEvent: (cb: (ev: MacosVmEventPayload) => void) => () => void;
       };
       terminal: {
         list: (args?: ChatTerminalListArgs) => Promise<ChatTerminalSession[]>;

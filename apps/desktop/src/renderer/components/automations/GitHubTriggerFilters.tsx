@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { AutomationTrigger } from "../../../shared/types";
 import { cn } from "../ui/cn";
-import { INPUT_CLS, INPUT_STYLE } from "./shared";
+import { INPUT_CLS, INPUT_STYLE, parseList } from "./shared";
 
 type GitHubApi = {
   listRepoLabels?: (args: { owner: string; name: string }) => Promise<Array<{ name: string; color?: string }>>;
@@ -168,6 +168,33 @@ export function GitHubTriggerFilters({
             placeholder="needs reproduction|security"
             onChange={(value) => onPatch({ bodyRegex: value })}
           />
+          <LabeledInput
+            label="Keywords"
+            value={(trigger.keywords ?? []).join(", ")}
+            placeholder="security, regression"
+            onChange={(value) => onPatch({ keywords: parseList(value) })}
+          />
+          <LabeledInput
+            label="Changed fields"
+            value={(trigger.changedFields ?? []).join(", ")}
+            placeholder="title, body, labels"
+            onChange={(value) => onPatch({ changedFields: parseList(value) })}
+          />
+          {isPr ? (
+            <label className="space-y-1 block">
+              <span className="text-[10px] uppercase tracking-[1px] text-[#8FA1B8]">Draft state</span>
+              <select
+                className={INPUT_CLS}
+                style={INPUT_STYLE}
+                value={trigger.draftState ?? "any"}
+                onChange={(event) => onPatch({ draftState: event.target.value as AutomationTrigger["draftState"] })}
+              >
+                <option value="any">Any</option>
+                <option value="draft">Draft</option>
+                <option value="ready">Ready</option>
+              </select>
+            </label>
+          ) : null}
         </div>
       ) : null}
 

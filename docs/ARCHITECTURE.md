@@ -396,6 +396,7 @@ ade.iosSimulator.*           # macOS-only iOS Simulator drawer + Preview Lab: ge
 ade.appControl.*             # Electron app control bridge over Chrome DevTools Protocol: getStatus/launch/launchInTerminal/connect/stop/screenshot/getSnapshot/inspectPoint/selectPoint/click/typeText/scroll/dispatchKey/listTargets/attachToTarget, plus the ade.appControl.event push channel (session-started/updated/stopped, selection, screencast frame)
 ade.builtInBrowser.*         # in-app web browser owned by `builtInBrowserService`: getStatus/showPanel/setBounds/attachWebview/navigate/createTab/switchTab/closeTab/reload/goBack/goForward/stop/startInspect/stopInspect/captureScreenshot/selectPoint/selectCurrent/clearSelection, plus the ade.builtInBrowser.event push channel (status / open-request / selection / selection-cleared / error). Backs the Work sidebar's Browser tab and the renderer-wide `openUrlInAdeBrowser()` link router.
 ade.terminal.*               # chat-owned terminal control: list/read/write/signal/activeForChat. Resolves a chat's active terminal via chatSessionId so in-chat agents and the App Control panel can drive the visible launch terminal.
+ade.macosVm.*                # lane-tied macOS VM lifecycle and GUI control: getStatus/provision/start/stop/delete/getAgentGuide/getSharePolicy/focusWindow/captureScreenshot/selectPoint/click/typeText, plus the ade.macosVm.event push channel. Uses Lume first, direct/headless VNC when ADE has managed credentials, and sanitized mirrors for lane roots that contain ADE local state.
 ade.updates.*
 ```
 
@@ -463,6 +464,7 @@ Every service lives under `apps/desktop/src/main/services/<domain>/`. Summary:
 | `keybindings/` | `keybindingsService.ts` | User keybindings read/write. |
 | `lanes/` | `laneService.ts`, `laneEnvironmentService.ts`, `laneTemplateService.ts`, `laneProxyService.ts`, `portAllocationService.ts`, `autoRebaseService.ts`, `rebaseSuggestionService.ts`, `laneLaunchContext.ts`, `oauthRedirectService.ts`, `runtimeDiagnosticsService.ts` | Worktree lifecycle, env bootstrap, templates, reverse proxy, port leases, auto-rebase, suggestions, OAuth redirect, diagnostics. |
 | `logging/` | `logger.ts` | File-backed structured logger. |
+| `macosVm/` | `macosVmService.ts`, `rfbDirectClient.ts` | Lane-tied macOS VM lifecycle and GUI control. Uses Lume, stores VM records in `.ade/cache`, stores VNC credentials in `.ade/secrets`, mounts direct lane roots when safe, otherwise keeps a sanitized rsync mirror, and exposes screenshot/click/type/select through headless VNC or visible-window fallbacks. |
 | `memory/` | `unifiedMemoryService.ts` (canonical; listed under `memory/memoryService.ts`), `memoryBriefingService.ts`, `memoryLifecycleService.ts`, `batchConsolidationService.ts`, `embeddingService.ts`, `embeddingWorkerService.ts`, `hybridSearchService.ts`, `episodicSummaryService.ts`, `knowledgeCaptureService.ts`, `humanWorkDigestService.ts`, `proceduralLearningService.ts`, `compactionFlushPrompt.ts`, `skillRegistryService.ts`, `memoryFilesService.ts`, `memoryRepairService.ts`, `missionMemoryLifecycleService.ts` | Unified memory subsystem — see §10. |
 | `missions/` | `missionService.ts`, `missionPreflightService.ts`, `phaseEngine.ts` | Mission CRUD, preflight validation, phase lifecycle. |
 | `onboarding/` | `onboardingService.ts` | First-run flow, defaults detection, existing lane discovery. |
@@ -536,7 +538,7 @@ app/            # shell, App.tsx, TopBar, TabNav, startup, splash
 project/        # Play tab, run/test/process controls
 lanes/          # list/detail/inspector, stacks, laneDesignTokens.ts
 files/          # tree, editor, diffs
-terminals/      # TerminalView, WorkViewArea (PaneTilingLayout-backed grid), workSessionTiling, LaneCombobox
+terminals/      # TerminalView, WorkViewArea (PaneTilingLayout-backed grid), WorkSidebar, MacosVmPanel, workSessionTiling, LaneCombobox
 conflicts/      # risk matrix, simulation, resolution
 graph/          # WorkspaceGraphPage (decomposed into nodes/edges/dialogs)
 prs/            # PR list/detail, stacked queue, shared/
@@ -570,10 +572,14 @@ Enforced rules (from the stability overhaul):
 2. New integrations are dormant-until-configured.
 3. Feature pages stage data: cheapest (list/summary/topology) first, heavy (dashboard/settings/model metadata/overlays) on delay.
 4. Never mount expensive trees eagerly — settings dialogs, advanced launcher sections unmount when closed.
-5. Renderer polling is route-scoped; terminal attention only polls on terminal routes; lane panels only poll while live sessions exist.
+5. Renderer polling is route-scoped; terminal attention only polls on terminal routes; lane panels only poll while live sessions exist. The plain PR list does not fire a GitHub refresh on mount and skips rebase-needs / auto-rebase polling until the user opens a workflow tab or selects a PR. The Lanes page reuses the `LaneSummary.autoRebaseStatus` snapshot already in the lane list instead of probing per-lane on `LaneGitActionsPane` mount; a fallback probe runs only when the snapshot is missing and after a visibility-gated 3.5 s delay. The Work top-bar sync chip refreshes on focus and on `sync-status` events instead of a 5 s interval. The chat composer's Cursor model inventory is fetched lazily — `ProviderModelSelector` calls `onOpen` on first open of the model catalog, and `AgentChatPane.refreshCursorModelInventory` is the only entry point that hits `cursor` with `activateRuntime: true`.
 6. Shared caches for high-frequency calls (`sessionListCache`, GitHub fingerprint-based snapshots).
 7. Memoize expensive renderer computations (`useMemo`, `React.memo`); isolate frequently-refreshing subtrees (e.g., budget footers).
 8. `Promise.allSettled` over `Promise.all` for parallel startup — one failing service must not block others.
+9. Settings sections that surface a snapshot read the cached snapshot on mount (`ade.usage.getSnapshot`) instead of forcing a refresh; an explicit Refresh button drives recompute.
+10. Persistence callbacks dedupe against the last-saved value: the workspace-graph view-mode persister tracks the last-loaded preference root and skips the immediate write that the load handler's `setViewMode` would otherwise fire.
+
+CLI-launcher and shell-quoting helpers (`cliLaunch.ts`, `shell.ts`) live under `apps/desktop/src/renderer/` only — the prior `apps/desktop/src/shared/` copies were renderer-only in practice and have been removed. The mobile-launcher path (`work.startCliSession`) was retired with them; iOS launches CLI sessions through host-side actions that don't share renderer modules.
 
 Themes: six shipped themes (`e-paper`, `bloomberg`, `github`, `rainbow`, `sky`, `pats`), persisted in `localStorage.ade.theme`, applied via `data-theme` on root. Token-based palettes in `apps/desktop/src/renderer/index.css`.
 
@@ -863,7 +869,13 @@ Renderer surfaces:
 - Bidirectional sync continues; on disconnect, exponential-backoff reconnect with version catch-up. `reconnectIfPossible` is guarded against overlapping runs.
 - All reads are local and scoped to the active project id — the iOS tab is instant and offline-capable after the selected project's row has hydrated.
 - Writes from user actions: write locally, replicate to host. Execution commands (create PR, run command) are routed to the host via the `command`/`command_ack`/`command_result` message flow.
-- Sub-protocols: changeset sync, project catalog/switch, file access, terminal stream, chat stream (live `chat_event` push from host), command routing, lane presence announce/release.
+- Sub-protocols: changeset sync, project catalog/switch, file access,
+  subscribed terminal stream/control, chat stream (live `chat_event`
+  push from host), command routing, and lane presence announce/release.
+  Command routing includes the Work CLI launcher
+  (`work.startCliSession`), whose provider command construction is
+  shared with the desktop Work tab through
+  `apps/desktop/src/shared/cliLaunch.ts`.
 - Pairing is a **user-set 6-digit PIN** stored at `.ade/secrets/sync-pin.json` on the host. The phone sends the PIN once; the host returns a durable per-device secret. QR payload is v2 (host identity + port + address candidates, no pairing code).
 - APNs pipeline: iOS registers device tokens (alert + push-to-start + per-activity update) via `SyncService.registerPushToken`. The host's `notificationEventBus` routes domain events (chat, PR, CTO, system) to `apnsService` for alert pushes and Live Activity update pushes, filtered by per-device `NotificationPreferences` stored in the iOS App Group `UserDefaults`.
 - Widgets: `ADEWorkspaceWidget` (Home Screen), `ADELockScreenWidget`, `ADEControlWidget` (Control Center, iOS 18+) read from a shared `WorkspaceSnapshot` in the App Group container. `LiveActivityCoordinator` manages the single workspace Live Activity.

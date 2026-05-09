@@ -46,6 +46,12 @@ import {
 export const PTY_AI_TITLE_DEBOUNCE_MS = 6000;
 export const PTY_AI_TITLE_TIMEOUT_MS = 60_000;
 
+export type NodePtySpawnHelperExecutableResult =
+  | { status: "skipped"; reason: "non_darwin" | "unsupported_arch" | "package_root_unresolved" }
+  | { status: "already_executable"; path: string }
+  | { status: "chmod_applied"; path: string }
+  | { status: "failed"; path?: string; error: string };
+
 /** Interactive agent TUIs often hide useful text in an alt-screen, so titles come from the first submitted user prompt instead of startup output. */
 const CLI_USER_TITLE_TOOL_TYPES = new Set<TerminalToolType>(["claude", "codex", "cursor-cli", "droid", "opencode"]);
 
@@ -60,9 +66,67 @@ const CLI_USER_TITLE_FALLBACK_MAX_LEN = 72;
 const PTY_DATA_BATCH_INTERVAL_MS = 16;
 const PTY_DATA_BATCH_MAX_CHARS = 64 * 1024;
 const PTY_DATA_SUMMARY_INTERVAL_MS = 10_000;
+const DEFAULT_TERMINAL_READ_MAX_BYTES = 220_000;
 
 function hasEnvValue(env: NodeJS.ProcessEnv, key: string): boolean {
   return typeof env[key] === "string" && env[key]!.trim().length > 0;
+}
+
+function resolveNodePtyPrebuildDir(platform: NodeJS.Platform, arch: string): string | null {
+  if (platform !== "darwin") return null;
+  if (arch === "arm64") return "darwin-arm64";
+  if (arch === "x64") return "darwin-x64";
+  return null;
+}
+
+function resolveNodePtyPackageRoot(): string | null {
+  try {
+    if (typeof require !== "function" || typeof require.resolve !== "function") return null;
+    return path.dirname(require.resolve("node-pty/package.json"));
+  } catch {
+    return null;
+  }
+}
+
+export function ensureNodePtySpawnHelperExecutable({
+  packageRoot,
+  platform = process.platform,
+  arch = process.arch,
+}: {
+  packageRoot?: string | null;
+  platform?: NodeJS.Platform;
+  arch?: string;
+} = {}): NodePtySpawnHelperExecutableResult {
+  if (platform !== "darwin") {
+    return { status: "skipped", reason: "non_darwin" };
+  }
+
+  const prebuildDir = resolveNodePtyPrebuildDir(platform, arch);
+  if (!prebuildDir) {
+    return { status: "skipped", reason: "unsupported_arch" };
+  }
+
+  const root = packageRoot?.trim() || resolveNodePtyPackageRoot();
+  if (!root) {
+    return { status: "skipped", reason: "package_root_unresolved" };
+  }
+
+  const helperPath = path.join(root, "prebuilds", prebuildDir, "spawn-helper");
+  try {
+    const stat = fs.statSync(helperPath);
+    const mode = typeof stat.mode === "number" ? stat.mode : 0;
+    if ((mode & 0o111) !== 0) {
+      return { status: "already_executable", path: helperPath };
+    }
+    fs.chmodSync(helperPath, mode | 0o111);
+    return { status: "chmod_applied", path: helperPath };
+  } catch (err) {
+    return {
+      status: "failed",
+      path: helperPath,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
 }
 
 function withInteractiveTerminalColorEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
@@ -369,8 +433,8 @@ function inferSessionCwdFromTranscriptPath(transcriptPath: string | null | undef
   return transcriptPath.slice(0, markerIndex) || null;
 }
 
-const MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
-const TRANSCRIPT_LIMIT_NOTICE = "\n[ADE] transcript limit reached (8MB). Further output omitted.\n";
+const MAX_TRANSCRIPT_BYTES = 64 * 1024 * 1024;
+const TRANSCRIPT_LIMIT_NOTICE = "\n[ADE] transcript limit reached (64MB). Further output omitted.\n";
 const RESUME_TARGET_MISSING_COOLDOWN_MS = 10 * 60_000;
 const RESUME_SCAN_WINDOW_MS = 60_000;
 
@@ -1786,6 +1850,15 @@ export function createPtyService({
       const directArgs = Array.isArray(args.args) ? args.args.filter((value): value is string => typeof value === "string") : [];
       let launchedDirectCommand = false;
       try {
+        const spawnHelperRepair = ensureNodePtySpawnHelperExecutable();
+        if (spawnHelperRepair.status === "chmod_applied") {
+          logger.info("pty.spawn_helper_chmod_applied", { path: spawnHelperRepair.path });
+        } else if (spawnHelperRepair.status === "failed") {
+          logger.warn("pty.spawn_helper_chmod_failed", {
+            path: spawnHelperRepair.path ?? "",
+            err: spawnHelperRepair.error,
+          });
+        }
         const ptyLib = loadPty();
         const opts: IWindowsPtyForkOptions = {
           name: "xterm-256color",
@@ -2190,7 +2263,7 @@ export function createPtyService({
       if (!session) throw new Error(`Terminal session '${terminalId}' was not found.`);
       const maxBytes = typeof args.maxBytes === "number" && Number.isFinite(args.maxBytes)
         ? Math.max(1, Math.min(MAX_TRANSCRIPT_BYTES, Math.floor(args.maxBytes)))
-        : MAX_TRANSCRIPT_BYTES;
+        : DEFAULT_TERMINAL_READ_MAX_BYTES;
       const full = await sessionService.readTranscriptTail(session.transcriptPath, maxBytes, { raw: true });
       const since = typeof args.since === "number" && Number.isFinite(args.since)
         ? Math.max(0, Math.floor(args.since))

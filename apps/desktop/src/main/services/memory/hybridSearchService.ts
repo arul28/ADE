@@ -46,6 +46,7 @@ export type HybridSearchService = ReturnType<typeof createHybridSearchService>;
 type CreateHybridSearchServiceOpts = {
   db: AdeDb;
   embeddingService: Pick<ReturnType<typeof createEmbeddingService>, "embed" | "getModelId">;
+  canUseEmbeddings?: () => boolean;
   logger?: Pick<import("../logging/logger").Logger, "warn"> | null;
   now?: () => Date;
 };
@@ -344,7 +345,11 @@ function rerankWithMmr(candidates: HybridSearchCandidate[], limit: number): Hybr
 export function createHybridSearchService(opts: CreateHybridSearchServiceOpts) {
   const { db, embeddingService, now = () => new Date() } = opts;
 
-  function readLexicalCandidates(query: string, searchOpts: SearchHybridOpts): HybridSearchCandidate[] {
+  function readLexicalCandidates(
+    query: string,
+    searchOpts: SearchHybridOpts,
+    includeEmbeddings: boolean,
+  ): HybridSearchCandidate[] {
     const matchQuery = buildFtsQuery(query);
     if (!matchQuery.length) return [];
 
@@ -353,6 +358,19 @@ export function createHybridSearchService(opts: CreateHybridSearchServiceOpts) {
 
     const rows = (() => {
       try {
+        if (!includeEmbeddings) {
+          return db.all<HybridSearchRow>(
+            `
+              SELECT m.*, NULL AS embedding_blob, NULL AS dimensions, matchinfo(unified_memories_fts, 'pcnalx') AS match_info
+              FROM unified_memories_fts
+              JOIN unified_memories m
+                ON m.rowid = unified_memories_fts.rowid
+              WHERE unified_memories_fts MATCH ?
+            `,
+            [matchQuery],
+          );
+        }
+
         return db.all<HybridSearchRow>(
           `
             SELECT m.*, e.embedding_blob, e.dimensions, matchinfo(unified_memories_fts, 'pcnalx') AS match_info
@@ -438,18 +456,33 @@ export function createHybridSearchService(opts: CreateHybridSearchServiceOpts) {
     if (!normalizedQuery.length) return [];
 
     let queryVector: Float32Array | null = null;
-    try {
-      queryVector = await embeddingService.embed(searchOpts.query);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      opts.logger?.warn?.("memory.hybrid_search.fallback_to_lexical", {
-        reason: message,
-        query: searchOpts.query.slice(0, 100),
-      });
-      // Fall through — we'll degrade to lexical-only search below.
+    let canUseEmbeddings = true;
+    if (opts.canUseEmbeddings) {
+      try {
+        canUseEmbeddings = opts.canUseEmbeddings();
+      } catch (error) {
+        canUseEmbeddings = false;
+        const message = error instanceof Error ? error.message : String(error);
+        opts.logger?.warn?.("memory.hybrid_search.embedding_gate_error", {
+          reason: message,
+        });
+      }
     }
 
-    const lexicalCandidates = readLexicalCandidates(searchOpts.query, searchOpts);
+    if (canUseEmbeddings) {
+      try {
+        queryVector = await embeddingService.embed(searchOpts.query);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        opts.logger?.warn?.("memory.hybrid_search.fallback_to_lexical", {
+          reason: message,
+          query: searchOpts.query.slice(0, 100),
+        });
+        // Fall through — we'll degrade to lexical-only search below.
+      }
+    }
+
+    const lexicalCandidates = readLexicalCandidates(searchOpts.query, searchOpts, queryVector != null);
     const lexicalById = new Map(lexicalCandidates.map((candidate) => [candidate.memory.id, candidate]));
 
     if (queryVector) {
@@ -476,7 +509,16 @@ export function createHybridSearchService(opts: CreateHybridSearchServiceOpts) {
       }
     }
 
-    const scored = normalizeBm25Scores([...combined.values()]).map((candidate) => {
+    const candidates = queryVector
+      ? [...combined.values()]
+      : [...combined.values()].map((candidate) => ({
+        ...candidate,
+        vector: null,
+        hasEmbedding: false,
+        cosineSimilarity: 0,
+      }));
+
+    const scored = normalizeBm25Scores(candidates).map((candidate) => {
       const nextNow = now();
       const { hybridScore, compositeScore } = computeHybridCompositeScore({
         memory: candidate.memory,

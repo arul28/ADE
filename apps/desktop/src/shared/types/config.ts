@@ -746,7 +746,7 @@ export type AutomationAction = {
 
 export type AutomationExecutionKind = "agent-session" | "mission" | "built-in";
 
-export type AutomationLaneMode = "create" | "reuse";
+export type AutomationLaneMode = "create" | "reuse" | "require-on-trigger";
 
 export type AutomationLaneNamePreset =
   | "issue-title"
@@ -758,7 +758,8 @@ export type AutomationExecution = {
   kind: AutomationExecutionKind;
   /**
    * Whether each run should spawn a fresh lane (`"create"`) or reuse the
-   * configured / trigger / primary lane (`"reuse"`). Defaults to `"reuse"`.
+   * configured / trigger / primary lane (`"reuse"`), or require the trigger
+   * caller/event to supply a lane (`"require-on-trigger"`). Defaults to `"reuse"`.
    */
   laneMode?: AutomationLaneMode;
   /**
@@ -837,8 +838,6 @@ export type AutomationOutputs = {
   notificationChannel?: string | null;
 };
 
-/** @deprecated Review/verification gate is no longer surfaced in the UI; kept
- * for YAML compatibility so existing rules still load. */
 export type AutomationVerification = {
   verifyBeforePublish: boolean;
   mode?: "intervention" | "dry-run";
@@ -858,9 +857,7 @@ export type AutomationRule = {
   permissionConfig?: MissionPermissionConfig;
   templateId?: string;
   prompt?: string;
-  /** @deprecated Review profile is no longer surfaced in the UI. */
   reviewProfile: AutomationReviewProfile;
-  /** @deprecated Tool palette is no longer surfaced in the UI. */
   toolPalette: AutomationToolFamily[];
   /** @deprecated Replaced by `includeProjectContext` in the UI. */
   contextSources: AutomationContextSource[];

@@ -30,6 +30,7 @@ const TERMINALS_TILING_TREE: PaneSplit = {
 
 const MIN_WORK_SIDEBAR_WIDTH_PCT = 26;
 const MAX_WORK_SIDEBAR_WIDTH_PCT = 55;
+const BULK_SESSION_DELETE_CONCURRENCY = 4;
 
 function clampWorkSidebarWidthPct(widthPct: number): number {
   return Math.max(MIN_WORK_SIDEBAR_WIDTH_PCT, Math.min(MAX_WORK_SIDEBAR_WIDTH_PCT, widthPct));
@@ -43,8 +44,35 @@ function dispatchWorkSidebarBrowserResizeEvent(type: "start" | "end"): void {
   ));
 }
 
-export function TerminalsPage() {
-  const work = useWorkSessions();
+async function allSettledWithConcurrency<T>(
+  items: readonly T[],
+  concurrency: number,
+  task: (item: T) => Promise<void>,
+): Promise<PromiseSettledResult<void>[]> {
+  if (items.length === 0) return [];
+  const limit = Math.max(1, Math.min(concurrency, items.length));
+  const results: PromiseSettledResult<void>[] = new Array(items.length);
+  let nextIndex = 0;
+
+  await Promise.all(Array.from({ length: limit }, async () => {
+    while (true) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= items.length) return;
+      try {
+        await task(items[index] as T);
+        results[index] = { status: "fulfilled", value: undefined };
+      } catch (reason) {
+        results[index] = { status: "rejected", reason };
+      }
+    }
+  }));
+
+  return results;
+}
+
+export function TerminalsPage({ active = true }: { active?: boolean }) {
+  const work = useWorkSessions({ active });
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
   const sortedLanes = useMemo(() => sortLanesForTabs(work.lanes), [work.lanes]);
 
@@ -280,12 +308,16 @@ export function TerminalsPage() {
 
     setSessionActionError(null);
     setDeletingSessionId("bulk");
-    void Promise.allSettled(
-      ended.map((session) => (
-        isChatToolType(session.toolType)
-          ? window.ade.agentChat.delete({ sessionId: session.id })
-          : window.ade.sessions.delete({ sessionId: session.id })
-      )),
+    void allSettledWithConcurrency(
+      ended,
+      BULK_SESSION_DELETE_CONCURRENCY,
+      async (session) => {
+        if (isChatToolType(session.toolType)) {
+          await window.ade.agentChat.delete({ sessionId: session.id });
+          return;
+        }
+        await window.ade.sessions.delete({ sessionId: session.id });
+      },
     )
       .then(async (results) => {
         const failed = results.filter((result) => result.status === "rejected").length;
@@ -422,16 +454,17 @@ export function TerminalsPage() {
   const attachChatSessionId = activeIsChat ? activeWorkSession!.id : null;
   let attachDisabledReason: string | null;
   if (!activeWorkSession) {
-    attachDisabledReason = "Start an ADE chat before attaching iOS Simulator or App Control context.";
+    attachDisabledReason = "Start an ADE chat before attaching tool context.";
   } else if (!activeIsChat) {
     attachDisabledReason = `Context attachment only works in ADE chat sessions. This ${formatToolTypeLabel(activeWorkSession.toolType)} session can still use the lane tools, but selections are not attached to chat.`;
   } else {
     attachDisabledReason = null;
   }
 
-  const workSidebarVisible = work.workSidebarOpen && work.viewMode !== "grid";
+  const workSidebarVisible = active && work.workSidebarOpen && work.viewMode !== "grid";
   const { setViewMode, setWorkSidebarTab } = work;
   useEffect(() => {
+    if (!active) return;
     const openBrowserSidebar = () => {
       setViewMode("tabs");
       setWorkSidebarTab("browser");
@@ -444,7 +477,7 @@ export function TerminalsPage() {
       window.removeEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, openBrowserSidebar);
       unsubscribeBrowserEvents?.();
     };
-  }, [setViewMode, setWorkSidebarTab]);
+  }, [active, setViewMode, setWorkSidebarTab]);
 
   const expandSessionsPane = useCallback(() => {
     work.setWorkFocusSessionsHidden(false);

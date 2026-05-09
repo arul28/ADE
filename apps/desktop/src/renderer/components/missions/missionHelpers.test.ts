@@ -1,28 +1,36 @@
-/**
- * Tests for MissionHeader helper functions.
- *
- * MissionHeader uses several exports from missionHelpers. We test:
- * - computeProgress (step progress calculation)
- * - getAvailableLifecycleActions (lifecycle state machine)
- * - formatElapsed (elapsed time formatting)
- * - looksLikeLowSignalNoise (noise detection)
- * - compactText (text truncation)
- * - formatMissionWorkerPresentation (worker name derivation)
- */
 import { describe, expect, it } from "vitest";
 import {
-  computeProgress,
-  getAvailableLifecycleActions,
-  formatElapsed,
-  looksLikeLowSignalNoise,
   compactText,
+  computeProgress,
+  formatElapsed,
   formatMissionWorkerPresentation,
-  LIFECYCLE_ACTIONS,
-  STATUS_CONFIG,
-  PRIORITY_STYLES,
+  getAvailableLifecycleActions,
+  getMissionStatusBadgeConfig,
+  isMissionVisiblyActive,
+  looksLikeLowSignalNoise,
+  narrativeForEvent,
 } from "./missionHelpers";
 
-// ── computeProgress ──
+describe("narrativeForEvent", () => {
+  it("uses step keys from timeline detail instead of exposing internal ids", () => {
+    expect(narrativeForEvent({
+      eventType: "step_registered",
+      reason: "add_steps",
+      stepId: "e57e9ac4-8efd-4a8b-ad17-24f99d299b10",
+      detail: {
+        stepKey: "worker_context-the-original-scenario-fixtures-worker-wa_1778196304920",
+      },
+    })).toBe('Added "context the original scenario fixtures worker wa" to the plan');
+  });
+
+  it("falls back to a generic step label when only an id is available", () => {
+    expect(narrativeForEvent({
+      eventType: "step_status_changed",
+      reason: "readiness_recomputed",
+      stepId: "e57e9ac4-8efd-4a8b-ad17-24f99d299b10",
+    })).toBe("Step update: readiness_recomputed");
+  });
+});
 
 describe("computeProgress", () => {
   it("returns zeros for empty steps", () => {
@@ -64,6 +72,29 @@ describe("computeProgress", () => {
     expect(result.completed).toBe(1);
   });
 
+  it("excludes legacy task shells identified by stepType", () => {
+    const steps = [
+      { status: "pending" as const, metadata: { stepType: "task" } },
+      { status: "succeeded" as const, metadata: { stepType: "implementation", spawnedByCoordinator: true } },
+    ];
+    const result = computeProgress(steps);
+    expect(result.total).toBe(1);
+    expect(result.completed).toBe(1);
+  });
+
+  it("can include user-facing planned task shells while still excluding system trackers", () => {
+    const steps = [
+      { status: "succeeded" as const, metadata: { displayOnlyTask: true, systemManaged: true, plannerLaunchTracker: true } },
+      { status: "succeeded" as const, metadata: { stepType: "planning" } },
+      { status: "succeeded" as const, metadata: { stepType: "implementation" } },
+      { status: "pending" as const, metadata: { stepType: "task", displayOnlyTask: true } },
+    ];
+    const result = computeProgress(steps, { includeDisplayOnlyTaskShells: true });
+    expect(result.total).toBe(3);
+    expect(result.completed).toBe(2);
+    expect(result.pct).toBe(67);
+  });
+
   it("excludes retry variants", () => {
     const steps = [
       { status: "failed" as const, metadata: null },
@@ -82,8 +113,6 @@ describe("computeProgress", () => {
     expect(result.pct).toBe(100);
   });
 });
-
-// ── getAvailableLifecycleActions ──
 
 describe("getAvailableLifecycleActions", () => {
   it("returns stop_run and cancel_mission for active run in non-terminal mission", () => {
@@ -117,8 +146,6 @@ describe("getAvailableLifecycleActions", () => {
   });
 });
 
-// ── formatElapsed ──
-
 describe("formatElapsed", () => {
   it("returns '--' for null startedAt", () => {
     expect(formatElapsed(null)).toBe("--");
@@ -145,12 +172,9 @@ describe("formatElapsed", () => {
   it("uses current time when endedAt is null", () => {
     const start = new Date(Date.now() - 5_000).toISOString();
     const result = formatElapsed(start);
-    // Should return a small number of seconds
     expect(result).toMatch(/^\d+s$/);
   });
 });
-
-// ── looksLikeLowSignalNoise ──
 
 describe("looksLikeLowSignalNoise", () => {
   it("returns true for empty strings", () => {
@@ -158,13 +182,13 @@ describe("looksLikeLowSignalNoise", () => {
     expect(looksLikeLowSignalNoise("  ")).toBe(true);
   });
 
-  it("returns true for 'streaming...'", () => {
+  it("returns true for streaming placeholders", () => {
     expect(looksLikeLowSignalNoise("streaming...")).toBe(true);
     expect(looksLikeLowSignalNoise("streaming")).toBe(true);
     expect(looksLikeLowSignalNoise("Streaming...")).toBe(true);
   });
 
-  it("returns true for 'usage'", () => {
+  it("returns true for usage placeholders", () => {
     expect(looksLikeLowSignalNoise("usage")).toBe(true);
     expect(looksLikeLowSignalNoise("Usage")).toBe(true);
   });
@@ -182,8 +206,6 @@ describe("looksLikeLowSignalNoise", () => {
     expect(looksLikeLowSignalNoise("-rwxr-xr-x")).toBe(true);
   });
 });
-
-// ── compactText ──
 
 describe("compactText", () => {
   it("returns empty for empty input", () => {
@@ -206,16 +228,11 @@ describe("compactText", () => {
   });
 });
 
-// ── formatMissionWorkerPresentation ──
-
 describe("formatMissionWorkerPresentation", () => {
-  it("returns empty presentation for empty input", () => {
+  it("returns generic worker presentation for empty input", () => {
     const result = formatMissionWorkerPresentation({});
-    // With no title or stepKey, "Worker" is the raw input but
-    // humanizeMissionWorkerText strips the "Worker:" / "worker" prefix,
-    // resulting in empty label and fullLabel
-    expect(result.label).toBe("");
-    expect(result.phaseLabel).toBe("");
+    expect(result.label).toBe("Worker");
+    expect(result.phaseLabel).toBeNull();
   });
 
   it("extracts phase from planner-prefixed title", () => {
@@ -249,50 +266,38 @@ describe("formatMissionWorkerPresentation", () => {
     expect(result.label).not.toContain("Worker:");
     expect(result.label).toContain("build");
   });
-});
 
-// ── LIFECYCLE_ACTIONS ──
-
-describe("LIFECYCLE_ACTIONS", () => {
-  it("has amber color for stop_run", () => {
-    expect(LIFECYCLE_ACTIONS.stop_run.color).toBe("#F59E0B");
-    expect(LIFECYCLE_ACTIONS.stop_run.confirmText).toBeNull();
-  });
-
-  it("has red color and confirm text for cancel_mission", () => {
-    expect(LIFECYCLE_ACTIONS.cancel_mission.color).toBe("#EF4444");
-    expect(LIFECYCLE_ACTIONS.cancel_mission.confirmText).toBeTruthy();
-  });
-
-  it("has gray color for archive_mission", () => {
-    expect(LIFECYCLE_ACTIONS.archive_mission.color).toBe("#71717A");
+  it("collapses generated planning-worker prompts to a readable label", () => {
+    const result = formatMissionWorkerPresentation({
+      title: "you-are-the-read-only-planning-worker-for-ade-mi",
+      stepKey: "worker_you-are-the-read-only-planning-worker-for-ade-mi_1778163691752",
+    });
+    expect(result.label).toBe("Planning worker");
+    expect(result.phaseLabel).toBe("Planning");
   });
 });
 
-// ── STATUS_CONFIG ──
+describe("getMissionStatusBadgeConfig", () => {
+  it("prefers the run-view lifecycle status for selected mission badges", () => {
+    const config = getMissionStatusBadgeConfig("in_progress", "blocked");
+    expect(config.label).toBe("Blocked");
+    expect(config.color).toBe("#F59E0B");
+  });
 
-describe("STATUS_CONFIG", () => {
-  it("has config for all mission statuses", () => {
-    const statuses: string[] = ["queued", "planning", "in_progress", "intervention_required", "completed", "failed", "canceled"];
-    for (const status of statuses) {
-      const config = STATUS_CONFIG[status as keyof typeof STATUS_CONFIG];
-      expect(config, `Missing STATUS_CONFIG for ${status}`).toBeDefined();
-      expect(config.color).toMatch(/^#/);
-      expect(config.label).toBeTruthy();
-    }
+  it("falls back to raw mission status when no run-view status is available", () => {
+    const config = getMissionStatusBadgeConfig("in_progress", null);
+    expect(config.label).toBe("Running");
+    expect(config.color).toBe("#22C55E");
   });
 });
 
-// ── PRIORITY_STYLES ──
+describe("isMissionVisiblyActive", () => {
+  it("does not pulse a raw running mission once the run-view is blocked", () => {
+    expect(isMissionVisiblyActive("in_progress", "blocked")).toBe(false);
+  });
 
-describe("PRIORITY_STYLES", () => {
-  it("has styles for all priorities", () => {
-    const priorities: string[] = ["urgent", "high", "normal", "low"];
-    for (const priority of priorities) {
-      const style = PRIORITY_STYLES[priority as keyof typeof PRIORITY_STYLES];
-      expect(style, `Missing PRIORITY_STYLES for ${priority}`).toBeDefined();
-      expect(style.color).toMatch(/^#/);
-      expect(style.background).toBeTruthy();
-    }
+  it("keeps active styling for run-view starting and running states", () => {
+    expect(isMissionVisiblyActive("queued", "starting")).toBe(true);
+    expect(isMissionVisiblyActive("queued", "running")).toBe(true);
   });
 });

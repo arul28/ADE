@@ -41,10 +41,12 @@ import {
 } from "./recoveryService";
 import {
   resolveCallTypeConfig,
+  resolveOrchestratorModelConfig,
 } from "./modelConfigResolver";
 import {
   PM_SYSTEM_PREAMBLE,
 } from "./coordinatorSession";
+import { modelConfigToServiceModel } from "../../../shared/modelProfiles";
 import { getModelById } from "../../../shared/modelRegistry";
 import type {
   OrchestratorWorkerState,
@@ -1088,6 +1090,78 @@ export function extractAndRegisterArtifacts(
         });
         planArtifactPersisted = true;
       } else {
+        const awaitingUserInput = isRecord(stepMeta.awaitingUserInput) ? stepMeta.awaitingUserInput : null;
+        const awaitingSource = typeof awaitingUserInput?.source === "string" ? awaitingUserInput.source : "";
+        const awaitingQuestion = typeof awaitingUserInput?.question === "string" ? awaitingUserInput.question.trim() : "";
+        const naturalPlannerQuestion =
+          awaitingSource === "planner_natural_question" && awaitingQuestion.length > 0
+            ? awaitingQuestion
+            : "";
+        if (naturalPlannerQuestion.length > 0) {
+          const questionLink = isRecord(awaitingUserInput?.questionLink) ? awaitingUserInput.questionLink : null;
+          const mission = ctx.missionService.get(graph.run.missionId);
+          const existing = mission?.interventions.some((entry) => {
+            if (entry.status !== "open" || entry.interventionType !== "manual_input") return false;
+            const metadata = isRecord(entry.metadata) ? entry.metadata : null;
+            return metadata?.reasonCode === "planner_natural_question" && metadata?.attemptId === attempt.id;
+          }) ?? false;
+          if (!existing) {
+            const intervention = ctx.missionService.addIntervention({
+              missionId: graph.run.missionId,
+              interventionType: "manual_input",
+              title: naturalPlannerQuestion.length > 96 ? "Planner question ready" : `Question: ${naturalPlannerQuestion}`,
+              body: naturalPlannerQuestion,
+              requestedAction: "Answer the planning question to retry the planner with your guidance.",
+              metadata: {
+                source: "planner_natural_question",
+                reasonCode: "planner_natural_question",
+                question: naturalPlannerQuestion,
+                runId: attempt.runId,
+                stepId: step?.id ?? attempt.stepId,
+                stepKey: step?.stepKey ?? null,
+                attemptId: attempt.id,
+                sessionId: attempt.executorSessionId ?? null,
+                phaseKey: phaseKey || null,
+                stepType: stepType || null,
+                threadId: typeof questionLink?.threadId === "string" ? questionLink.threadId : null,
+                messageId: typeof questionLink?.messageId === "string" ? questionLink.messageId : null,
+                replyTo: typeof questionLink?.replyTo === "string" ? questionLink.replyTo : null,
+              },
+            });
+            ctx.orchestratorService.appendRuntimeEvent({
+              runId: attempt.runId,
+              stepId: attempt.stepId,
+              attemptId: attempt.id,
+              sessionId: attempt.executorSessionId ?? null,
+              eventType: "intervention_opened",
+              eventKey: `intervention_opened:${intervention.id}`,
+              payload: {
+                interventionId: intervention.id,
+                interventionType: intervention.interventionType,
+                reason: "planner_natural_question",
+                question: naturalPlannerQuestion,
+              },
+            });
+            try {
+              ctx.orchestratorService.pauseRun({
+                runId: attempt.runId,
+                reason: `Planning question needs an answer: ${naturalPlannerQuestion.slice(0, 140)}`,
+                metadata: {
+                  pendingPlannerQuestion: {
+                    interventionId: intervention.id,
+                    stepId: step?.id ?? attempt.stepId,
+                    stepKey: step?.stepKey ?? null,
+                    attemptId: attempt.id,
+                    question: naturalPlannerQuestion,
+                  },
+                },
+              });
+            } catch {
+              // Best effort: the manual-input intervention is the durable blocker.
+            }
+          }
+          return { planArtifactPersisted };
+        }
         const missingPlanDetail = "Planning worker completed without returning a usable plan payload in report_result.plan.markdown.";
         ctx.logger.warn("ai_orchestrator.plan_artifact_missing", {
           missionId: graph.run.missionId,
@@ -1574,12 +1648,21 @@ export function updateWorkerStateFromEventCtx(
           }
 
           const coordForDiag = ctx.coordinatorAgents.get(attempt.runId);
-          if (!coordForDiag?.isAlive && ctx.aiIntegrationService && ctx.projectRoot) {
+          if (!coordForDiag?.isAlive && ctx.aiIntegrationService && ctx.projectRoot && !ctx.cancelingRuns.has(attempt.runId)) {
             // AI failure diagnosis that DECIDES and ACTS, not just describes (one-shot fallback when no coordinator)
             const diagConfig = resolveCallTypeConfig(ctx, graph.run.missionId, "coordinator");
+            const diagModelConfig = resolveOrchestratorModelConfig(ctx, graph.run.missionId, "coordinator");
             void (async () => {
               try {
                 const fullGraph = ctx.orchestratorService.getRunGraph({ runId: attempt.runId, timelineLimit: 5 });
+                if (
+                  ctx.cancelingRuns.has(attempt.runId)
+                  || fullGraph.run.status === "succeeded"
+                  || fullGraph.run.status === "failed"
+                  || fullGraph.run.status === "canceled"
+                ) {
+                  return;
+                }
                 const succeededContext = fullGraph.steps
                   .filter((s) => s.status === "succeeded")
                   .slice(0, 5)
@@ -1641,11 +1724,27 @@ export function updateWorkerStateFromEventCtx(
                   prompt: diagPrompt,
                   cwd: ctx.projectRoot!,
                   provider: diagConfig.provider,
+                  model: modelConfigToServiceModel(diagModelConfig),
                   reasoningEffort: diagConfig.reasoningEffort,
                   jsonSchema: diagSchema,
                   oneShot: true,
                   timeoutMs: 45_000
                 });
+
+                const latestGraph = ctx.orchestratorService.getRunGraph({ runId: attempt.runId, timelineLimit: 0 });
+                if (
+                  ctx.cancelingRuns.has(attempt.runId)
+                  || latestGraph.run.status === "succeeded"
+                  || latestGraph.run.status === "failed"
+                  || latestGraph.run.status === "canceled"
+                ) {
+                  ctx.logger.info("ai_orchestrator.failure_diagnosis_discarded_terminal", {
+                    runId: attempt.runId,
+                    stepId: step.id,
+                    runStatus: latestGraph.run.status,
+                  });
+                  return;
+                }
 
                 const diagParsed = isRecord(diagResult.structuredOutput) ? diagResult.structuredOutput : null;
                 const recommendation = String(diagParsed?.recommendation ?? "escalate");

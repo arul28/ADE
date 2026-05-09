@@ -113,7 +113,10 @@ Host-side service files
   Protocol version is `1`. Default host port is `8787`.
 - `apps/desktop/src/shared/types/sync.ts` — typed protocol DTOs for
   `SyncEnvelope`, including controller-originated `terminal_input` and
-  `terminal_resize` envelopes.
+  `terminal_resize` envelopes, plus the mobile CLI launcher payload
+  (`SyncCliLaunchProvider`, `SyncStartCliSessionArgs`,
+  `SyncStartCliSessionResult`) consumed by the
+  `work.startCliSession` remote command.
 - `syncService.ts` (~875 lines) — orchestrator that wires host,
   peer, device registry, draft persistence, pin store, and exposes
   the IPC entry points used by the renderer Settings > Sync surface
@@ -137,10 +140,17 @@ Host-side service files
   6-digit pairing PIN at `.ade/secrets/sync-pin.json`, chmodded `0600`.
   Host never rotates the PIN; the user sets or clears it from Settings
   > Sync.
-- `syncRemoteCommandService.ts` (~1,920 lines) — command action
+- `syncRemoteCommandService.ts` (~2,030 lines) — command action
   registry (lanes, chat, git, PR, sessions, conflicts, files,
-  `prs.getMobileSnapshot`, `lanes.presence.*`). Documented separately
-  in `remote-commands.md`.
+  `prs.getMobileSnapshot`, `lanes.presence.*`,
+  `work.runQuickCommand`, `work.startCliSession`). The CLI launch
+  registry shares its provider-to-argv translation with the desktop
+  Work tab through `apps/desktop/src/shared/cliLaunch.ts`
+  (`buildTrackedCliLaunchCommand`, `buildTrackedCliResumeCommand`,
+  `LAUNCH_PROFILE_TOOL_TYPE`, `LAUNCH_PROFILE_TITLE`) so a phone
+  starting Claude/Codex/Cursor/Droid/OpenCode/shell hits the same
+  permission-mode flags, ADE guidance, and provider preambles the
+  desktop sends. Documented separately in `remote-commands.md`.
 
 Client-side (iOS) service files (`apps/ios/ADE/Services/`):
 
@@ -151,10 +161,11 @@ Client-side (iOS) service files (`apps/ios/ADE/Services/`):
   fields mirrored from desktop schema.
 - `SyncService.swift` — WebSocket client, envelope encoding (zlib),
   command routing, keychain integration, PIN-based pairing, lane
-  presence announcements, terminal input/resize senders, PR mobile
-  snapshot fetch, live chat-event push listener, project home/catalog
-  state, active-project scoping, unregistered-worktree discovery, and
-  APNs push-token registration to the host.
+  presence announcements, terminal subscribe/unsubscribe tracking,
+  terminal input/resize senders, mobile CLI session launch/resume,
+  PR mobile snapshot fetch, live chat-event push listener, project
+  home/catalog state, active-project scoping, unregistered-worktree
+  discovery, and APNs push-token registration to the host.
 - `KeychainService.swift` — iOS Keychain Services for paired device
   secrets.
 - `LiveActivityCoordinator.swift` — owns the single workspace
@@ -198,8 +209,9 @@ iOS notification files:
 - `apps/ios/ADE/Shared/ADESharedModels.swift` — `AgentSnapshot`,
   `PrSnapshot` shared with widget and notification service extensions.
 - `apps/ios/ADE/Models/RemoteModels.swift` — Codable models used by
-  sync/mobile snapshots; `IntegrationProposal` mirrors desktop merge
-  target fields such as `preferredIntegrationLaneId` and
+  sync/mobile snapshots; carries `StartCliSessionResult` for
+  `work.startCliSession` and `IntegrationProposal` fields that mirror
+  desktop merge targets such as `preferredIntegrationLaneId` and
   `mergeIntoHeadSha`.
 - `apps/ios/ADE/Resources/DatabaseBootstrap.sql` — generated bootstrap
   schema copied from desktop `kvDb.ts`; includes
@@ -352,7 +364,12 @@ Mobile-originated `command` envelopes are deduplicated through a
 short-lived `mobileCommandResultCache` (TTL 30 minutes, 512 entries)
 plus a persisted journal, so a phone that retries the same
 `commandId` after a reconnect receives the cached `command_ack` /
-`command_result` instead of double-executing the action.
+`command_result` instead of double-executing the action. Persisted
+results are intentionally narrow: `work.runQuickCommand` and
+`work.startCliSession` keep only the returned `sessionId` / `ptyId`
+(and the `TerminalSessionSummary` for CLI launches), while failed
+commands store a generic failure message instead of the original
+payload.
 
 ### Sub-protocols at a glance
 

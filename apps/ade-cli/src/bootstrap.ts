@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import * as nodePty from "node-pty";
 import { createFileLogger, type Logger } from "../../desktop/src/main/services/logging/logger";
@@ -77,6 +78,7 @@ import {
   createAppControlService,
   type AppControlService,
 } from "../../desktop/src/main/services/appControl/appControlService";
+import { createMacosVmService } from "../../desktop/src/main/services/macosVm/macosVmService";
 import type { BuiltInBrowserService } from "../../desktop/src/main/services/builtInBrowser/builtInBrowserService";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
 import {
@@ -177,6 +179,7 @@ export type AdeRuntime = {
   iosSimulatorService?: IosSimulatorService | null;
   appControlService?: AppControlService | null;
   builtInBrowserService?: BuiltInBrowserService | null;
+  macosVmService?: ReturnType<typeof createMacosVmService> | null;
   orchestratorService: ReturnType<typeof createOrchestratorService>;
   aiOrchestratorService: ReturnType<typeof createAiOrchestratorService>;
   missionBudgetService?: ReturnType<typeof createMissionBudgetService> | null;
@@ -213,6 +216,66 @@ export function ensureAdePaths(projectRoot: string): AdeRuntimePaths {
   };
 }
 
+function resolveCurrentAdeCliEntry(): string | null {
+  const fromArgv = typeof process.argv[1] === "string" ? process.argv[1].trim() : "";
+  const fromEnv = process.env.ADE_CLI_PATH?.trim();
+  const fromEnvBin = process.env.ADE_CLI_BIN_DIR?.trim()
+    ? path.join(process.env.ADE_CLI_BIN_DIR.trim(), process.platform === "win32" ? "ade.cmd" : "ade")
+    : "";
+  const candidates = [
+    fromArgv ? path.resolve(fromArgv) : "",
+    fromEnv ? path.resolve(fromEnv) : "",
+    fromEnvBin ? path.resolve(fromEnvBin) : "",
+  ];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    try {
+      if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate;
+    } catch {
+      // Ignore stale or unreadable candidates.
+    }
+  }
+  return null;
+}
+
+function isJavaScriptCliEntry(entryPath: string): boolean {
+  return /\.(?:cjs|mjs|js)$/i.test(entryPath);
+}
+
+function ensureAdeCliShim(entryPath: string): { dir: string; path: string } | null {
+  const hash = createHash("sha256").update(entryPath).digest("hex").slice(0, 16);
+  const shimDir = path.join(os.tmpdir(), "ade-cli-shims", hash);
+  const shimPath = path.join(shimDir, process.platform === "win32" ? "ade.cmd" : "ade");
+  try {
+    fs.mkdirSync(shimDir, { recursive: true });
+    if (process.platform === "win32") {
+      const body = isJavaScriptCliEntry(entryPath)
+        ? `@echo off\r\n"${process.execPath}" "${entryPath}" %*\r\n`
+        : `@echo off\r\n"${entryPath}" %*\r\n`;
+      if (!fs.existsSync(shimPath) || fs.readFileSync(shimPath, "utf8") !== body) {
+        fs.writeFileSync(shimPath, body, "utf8");
+      }
+    } else {
+      const body = isJavaScriptCliEntry(entryPath)
+        ? `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(entryPath)} "$@"\n`
+        : `#!/bin/sh\nexec ${JSON.stringify(entryPath)} "$@"\n`;
+      if (!fs.existsSync(shimPath) || fs.readFileSync(shimPath, "utf8") !== body) {
+        fs.writeFileSync(shimPath, body, "utf8");
+      }
+      fs.chmodSync(shimPath, 0o755);
+    }
+    return { dir: shimDir, path: shimPath };
+  } catch {
+    return null;
+  }
+}
+
+function prependPathDir(env: NodeJS.ProcessEnv, dir: string): void {
+  const currentPath = env.PATH ?? env.Path ?? "";
+  const delimiter = process.platform === "win32" ? ";" : path.delimiter;
+  setPathEnvValue(env, currentPath ? `${dir}${delimiter}${currentPath}` : dir);
+}
+
 function createHeadlessAdeCliAgentEnv(baseEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const next: NodeJS.ProcessEnv = { ...baseEnv };
   const nextPath = augmentProcessPathWithShellAndKnownCliDirs({
@@ -221,6 +284,19 @@ function createHeadlessAdeCliAgentEnv(baseEnv: NodeJS.ProcessEnv = process.env):
     timeoutMs: 1_000,
   });
   if (nextPath) setPathEnvValue(next, nextPath);
+  const cliEntry = resolveCurrentAdeCliEntry();
+  if (cliEntry) {
+    const shim = ensureAdeCliShim(cliEntry);
+    if (shim) {
+      next.ADE_CLI_PATH = shim.path;
+      next.ADE_CLI_BIN_DIR = shim.dir;
+      next.ADE_CLI_ENTRY_PATH = cliEntry;
+      prependPathDir(next, shim.dir);
+    } else {
+      next.ADE_CLI_PATH = cliEntry;
+      delete next.ADE_CLI_ENTRY_PATH;
+    }
+  }
   return next;
 }
 
@@ -441,6 +517,21 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     projectConfigService,
   });
 
+  let aiOrchestratorServiceRef: ReturnType<typeof createAiOrchestratorService> | null = null;
+  const aiCoordinatorWakeReasons = new Set([
+    "attempt_completed",
+    "completed",
+    "failed",
+    "skipped",
+    "finalized",
+    "intervention_resolved",
+    "question_answered_resume",
+    "resume_recovered",
+    "validation_contract_unfulfilled",
+    "validation_self_check_reminder",
+    "validation_auto_spawned",
+    "validation_gate_blocked",
+  ]);
   const orchestratorService = createOrchestratorService({
     db,
     projectId,
@@ -452,6 +543,9 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     memoryService,
     onEvent: (e) => {
       pushEvent("orchestrator", e as unknown as Record<string, unknown>);
+      if (aiCoordinatorWakeReasons.has(e.reason)) {
+        aiOrchestratorServiceRef?.onOrchestratorRuntimeEvent(e);
+      }
       if (
         e.reason === "validation_contract_unfulfilled" ||
         e.reason === "validation_self_check_reminder" ||
@@ -513,6 +607,16 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
       return matchingLane?.id ?? lanes[0]?.id ?? null;
     },
   });
+  const macosVmService = createMacosVmService({
+    projectRoot,
+    logger,
+    resolveLanes: async () => laneService.list({ includeArchived: false }),
+    onEvent: (event) => pushEvent("runtime", {
+      ...(event as unknown as Record<string, unknown>),
+      type: "macos_vm",
+      eventType: event.type,
+    }),
+  });
 
   const aiOrchestratorService = createAiOrchestratorService({
     db,
@@ -528,6 +632,7 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     onThreadEvent: (e) => pushEvent("runtime", e as unknown as Record<string, unknown>),
     onDagMutation: (e) => pushEvent("dag_mutation", e as unknown as Record<string, unknown>)
   });
+  aiOrchestratorServiceRef = aiOrchestratorService;
 
   const headlessLinearServices = createHeadlessLinearServices({
     projectRoot,
@@ -617,6 +722,7 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     computerUseArtifactBrokerService,
     iosSimulatorService,
     appControlService,
+    macosVmService,
     orchestratorService,
     aiOrchestratorService,
     eventBuffer,
@@ -626,6 +732,7 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
       swallow(() => processService.disposeAll());
       swallow(() => iosSimulatorService.dispose());
       swallow(() => appControlService.dispose());
+      swallow(() => macosVmService.dispose());
       swallow(() => headlessLinearServices.dispose());
       swallow(() => aiOrchestratorService.dispose());
       swallow(() => testService.disposeAll());

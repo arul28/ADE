@@ -11,41 +11,37 @@ import {
 } from "@phosphor-icons/react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useShallow } from "zustand/react/shallow";
-import type { MissionRunViewDisplayStatus, MissionSummary } from "../../../shared/types";
+import type { MissionRunView, MissionRunViewDisplayStatus, MissionSummary } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { COLORS, MONO_FONT, SANS_FONT, primaryButton } from "../lanes/laneDesignTokens";
 import { relativeWhen } from "../../lib/format";
 import {
-  STATUS_CONFIG,
   MISSION_BOARD_COLUMNS,
+  getMissionStatusBadgeConfig,
+  isMissionVisiblyActive,
   type MissionListViewMode,
 } from "./missionHelpers";
 import { buildMissionStateNarrative } from "./missionFeedPresentation";
 import { useMissionsStore } from "./useMissionsStore";
 import { openMissionCreateDialog } from "./missionCreateDialogStore";
-import { useMissionRunView } from "./useMissionRunView";
 
 const selectSidebarState = (s: ReturnType<typeof useMissionsStore.getState>) => ({
   missions: s.missions,
   selectedMissionId: s.selectedMissionId,
+  selectedMission: s.selectedMission,
   searchFilter: s.searchFilter,
   missionListView: s.missionListView,
   refreshing: s.refreshing,
   missionSettingsSnapshot: s.missionSettingsSnapshot,
 });
 
-const selectSidebarFooterState = (s: ReturnType<typeof useMissionsStore.getState>) => ({
-  selectedMissionId: s.selectedMissionId,
-  selectedMission: s.selectedMission,
-  selectedRunId: s.runGraph?.run.id ?? null,
-});
-
 /* ════════════════════ MISSION SIDEBAR ════════════════════ */
 
-export function MissionSidebar() {
+export function MissionSidebar({ runView }: { runView: MissionRunView | null }) {
   const {
     missions,
     selectedMissionId,
+    selectedMission,
     searchFilter,
     missionListView,
     refreshing,
@@ -61,6 +57,9 @@ export function MissionSidebar() {
   const setMissionSettingsError = useMissionsStore((s) => s.setMissionSettingsError);
   const refreshMissionList = useMissionsStore((s) => s.refreshMissionList);
   const loadMissionSettings = useMissionsStore((s) => s.loadMissionSettings);
+
+  const selectedDisplayStatus = runView?.lifecycle.displayStatus ?? null;
+  const selectedMissionNarrative = useMemo(() => buildMissionStateNarrative(runView), [runView]);
 
   const filteredMissions = useMemo(() => {
     if (!searchFilter.trim()) return missions;
@@ -112,7 +111,7 @@ export function MissionSidebar() {
         </div>
         <div className="flex items-center gap-1">
           <button
-            onClick={() => void refreshMissionList({ preserveSelection: true })}
+            onClick={() => void refreshMissionList({ preserveSelection: true, refreshDashboard: true })}
             className="p-1 transition-colors"
             style={{ color: COLORS.textMuted }}
             title="Refresh"
@@ -222,6 +221,7 @@ export function MissionSidebar() {
           <MissionBoardView
             missions={filteredMissions}
             selectedMissionId={selectedMissionId}
+            selectedDisplayStatus={selectedDisplayStatus}
             onSelect={setSelectedMissionId}
             onContextMenu={handleMissionContextMenu}
           />
@@ -229,39 +229,26 @@ export function MissionSidebar() {
           <MissionListView
             missions={filteredMissions}
             selectedMissionId={selectedMissionId}
+            selectedDisplayStatus={selectedDisplayStatus}
             onSelect={setSelectedMissionId}
             onContextMenu={handleMissionContextMenu}
           />
         )}
       </div>
 
-      <MissionSidebarStatusContainer />
+      <MissionSidebarStatusBlock
+        missionTitle={selectedMission?.title ?? null}
+        missionPrompt={selectedMission?.prompt ?? null}
+        openInterventions={selectedMission?.openInterventions ?? 0}
+        artifactCount={selectedMission?.artifactCount ?? 0}
+        status={selectedDisplayStatus}
+        summary={selectedMissionNarrative?.detail ?? null}
+        headline={selectedMissionNarrative?.title ?? null}
+        phaseName={runView?.active.phaseName ?? null}
+        stepTitle={runView?.active.stepTitle ?? null}
+        updatedAt={selectedMissionNarrative?.at ?? runView?.lastMeaningfulProgress?.at ?? selectedMission?.updatedAt ?? null}
+      />
     </div>
-  );
-}
-
-function MissionSidebarStatusContainer() {
-  const {
-    selectedMissionId,
-    selectedMission,
-    selectedRunId,
-  } = useMissionsStore(useShallow(selectSidebarFooterState));
-  const { runView } = useMissionRunView(selectedMissionId, selectedRunId);
-  const selectedMissionNarrative = useMemo(() => buildMissionStateNarrative(runView), [runView]);
-
-  return (
-    <MissionSidebarStatusBlock
-      missionTitle={selectedMission?.title ?? null}
-      missionPrompt={selectedMission?.prompt ?? null}
-      openInterventions={selectedMission?.openInterventions ?? 0}
-      artifactCount={selectedMission?.artifactCount ?? 0}
-      status={runView?.lifecycle.displayStatus ?? null}
-      summary={selectedMissionNarrative?.detail ?? null}
-      headline={selectedMissionNarrative?.title ?? null}
-      phaseName={runView?.active.phaseName ?? null}
-      stepTitle={runView?.active.stepTitle ?? null}
-      updatedAt={selectedMissionNarrative?.at ?? runView?.lastMeaningfulProgress?.at ?? selectedMission?.updatedAt ?? null}
-    />
   );
 }
 
@@ -378,10 +365,11 @@ function MissionSidebarStatusBlock(props: {
 function MissionBoardView(props: {
   missions: MissionSummary[];
   selectedMissionId: string | null;
+  selectedDisplayStatus: MissionRunViewDisplayStatus | null;
   onSelect: (id: string) => void;
   onContextMenu: (m: MissionSummary, e: ReactMouseEvent<HTMLButtonElement>) => void;
 }) {
-  const { missions, selectedMissionId, onSelect, onContextMenu } = props;
+  const { missions, selectedMissionId, selectedDisplayStatus, onSelect, onContextMenu } = props;
   return (
     <div className="space-y-3 pt-1">
       {MISSION_BOARD_COLUMNS.map((col) => {
@@ -406,6 +394,7 @@ function MissionBoardView(props: {
                   key={m.id}
                   mission={m}
                   isSelected={m.id === selectedMissionId}
+                  displayStatus={m.id === selectedMissionId ? selectedDisplayStatus : null}
                   onSelect={onSelect}
                   onContextMenu={onContextMenu}
                 />
@@ -421,10 +410,11 @@ function MissionBoardView(props: {
 function MissionBoardCard(props: {
   mission: MissionSummary;
   isSelected: boolean;
+  displayStatus: MissionRunViewDisplayStatus | null;
   onSelect: (id: string) => void;
   onContextMenu: (m: MissionSummary, e: ReactMouseEvent<HTMLButtonElement>) => void;
 }) {
-  const { mission: m, isSelected, onSelect, onContextMenu } = props;
+  const { mission: m, isSelected, displayStatus, onSelect, onContextMenu } = props;
   return (
     <button
       onClick={() => onSelect(m.id)}
@@ -443,11 +433,11 @@ function MissionBoardCard(props: {
       }
     >
       <div className="flex items-center gap-1.5">
-        <MissionStatusDot mission={m} />
+        <MissionStatusDot mission={m} displayStatus={displayStatus} />
         <div className="text-xs font-medium truncate flex-1" style={{ color: COLORS.textPrimary }}>
           {m.title}
         </div>
-        <MissionInterventionBadge count={m.openInterventions} />
+        <MissionInterventionBadge count={m.openInterventions} missionStatus={m.status} />
       </div>
       <div className="mt-1 text-[11px] truncate" style={{ color: COLORS.textMuted }}>
         {m.prompt}
@@ -471,10 +461,11 @@ function MissionBoardCard(props: {
 function MissionListView(props: {
   missions: MissionSummary[];
   selectedMissionId: string | null;
+  selectedDisplayStatus: MissionRunViewDisplayStatus | null;
   onSelect: (id: string) => void;
   onContextMenu: (m: MissionSummary, e: ReactMouseEvent<HTMLButtonElement>) => void;
 }) {
-  const { missions, selectedMissionId, onSelect, onContextMenu } = props;
+  const { missions, selectedMissionId, selectedDisplayStatus, onSelect, onContextMenu } = props;
   const parentRef = useRef<HTMLDivElement>(null);
   const virtualizer = useVirtualizer({
     count: missions.length,
@@ -497,6 +488,7 @@ function MissionListView(props: {
               <MissionListItem
                 mission={m}
                 isSelected={m.id === selectedMissionId}
+                displayStatus={m.id === selectedMissionId ? selectedDisplayStatus : null}
                 onSelect={onSelect}
                 onContextMenu={onContextMenu}
               />
@@ -511,29 +503,32 @@ function MissionListView(props: {
 function MissionListItem(props: {
   mission: MissionSummary;
   isSelected: boolean;
+  displayStatus: MissionRunViewDisplayStatus | null;
   onSelect: (id: string) => void;
   onContextMenu: (m: MissionSummary, e: ReactMouseEvent<HTMLButtonElement>) => void;
 }) {
-  const { mission: m, isSelected, onSelect, onContextMenu } = props;
+  const { mission: m, isSelected, displayStatus, onSelect, onContextMenu } = props;
   const progress = m.totalSteps > 0 ? Math.round((m.completedSteps / m.totalSteps) * 100) : 0;
-  const isActive = m.status === "in_progress" || m.status === "planning";
-  const badgeStyle = STATUS_CONFIG[m.status];
+  const isActive = isMissionVisiblyActive(m.status, displayStatus);
+  const badgeStyle = getMissionStatusBadgeConfig(m.status, displayStatus);
   return (
     <button
       onClick={() => onSelect(m.id)}
       onContextMenu={(event) => onContextMenu(m, event)}
-      className={cn("w-full text-left px-2.5 py-2 transition-colors", isActive && !isSelected && "ade-glow-pulse-blue")}
+      className="w-full text-left px-2.5 py-2 transition-colors"
       style={isSelected
         ? { background: "#A78BFA12", borderTop: "1px solid color-mix(in srgb, var(--color-accent) 30%, transparent)", borderRight: "1px solid color-mix(in srgb, var(--color-accent) 30%, transparent)", borderBottom: "1px solid color-mix(in srgb, var(--color-accent) 30%, transparent)", borderLeft: `3px solid ${COLORS.accent}` }
-        : { border: "1px solid transparent" }}
+        : isActive
+          ? { background: "color-mix(in srgb, var(--color-info) 6%, transparent)", border: "1px solid color-mix(in srgb, var(--color-info) 16%, transparent)" }
+          : { border: "1px solid transparent" }}
     >
       <div className="flex items-start gap-2">
-        <MissionListStatusDot mission={m} />
+        <MissionListStatusDot mission={m} displayStatus={displayStatus} />
         <div className="min-w-0 flex-1">
           <div className="truncate text-xs font-medium" style={{ color: COLORS.textPrimary }}>{m.title}</div>
           <div className="mt-0.5 flex items-center gap-1.5">
             <span className="px-1 py-0.5 text-[10px] font-bold uppercase tracking-[1px]" style={{ background: badgeStyle.background, color: badgeStyle.color, border: badgeStyle.border, fontFamily: MONO_FONT }}>{badgeStyle.label}</span>
-            <MissionInterventionBadge count={m.openInterventions} />
+            <MissionInterventionBadge count={m.openInterventions} missionStatus={m.status} />
           </div>
           {m.totalSteps > 0 && (
             <div className="mt-1.5 flex items-center gap-2">
@@ -549,28 +544,23 @@ function MissionListItem(props: {
   );
 }
 
-function MissionListStatusDot({ mission: m }: { mission: MissionSummary }) {
-  const needsAttention = m.status === "intervention_required" || m.status === "failed" || (m.status === "in_progress" && m.openInterventions > 0);
-  const dotColor = m.status === "intervention_required" ? "#F59E0B" : m.status === "in_progress" && m.openInterventions > 0 ? "#3B82F6" : m.status === "failed" ? "#EF4444" : STATUS_CONFIG[m.status].color;
+function MissionListStatusDot({ mission: m, displayStatus }: { mission: MissionSummary; displayStatus: MissionRunViewDisplayStatus | null }) {
+  const baseStatus = getMissionStatusBadgeConfig(m.status, displayStatus);
+  const attention = getMissionAttentionState(m, displayStatus);
+  const dotColor = attention?.color ?? baseStatus.color;
   return (
     <span
-      className={cn("mt-1 h-2 w-2 shrink-0", needsAttention && m.status !== "failed" && "ade-glow-pulse-amber", m.status === "failed" && "ade-glow-pulse-red")}
-      style={{ background: dotColor, borderRadius: needsAttention ? "50%" : 0, boxShadow: needsAttention ? `0 0 6px ${dotColor}60` : "none" }}
+      className="mt-1 h-2 w-2 shrink-0"
+      style={{ background: dotColor, borderRadius: attention ? "50%" : 0, boxShadow: attention ? `0 0 6px ${dotColor}60` : "none" }}
     />
   );
 }
 
 /* ────────── Shared small components ────────── */
 
-function MissionStatusDot({ mission: m }: { mission: MissionSummary }) {
-  if (
-    !(
-      m.status === "intervention_required" ||
-      m.status === "failed" ||
-      (m.status === "in_progress" && m.openInterventions > 0)
-    )
-  )
-    return null;
+function MissionStatusDot({ mission: m, displayStatus }: { mission: MissionSummary; displayStatus: MissionRunViewDisplayStatus | null }) {
+  const attention = getMissionAttentionState(m, displayStatus);
+  if (!attention) return null;
   return (
     <span
       className="shrink-0"
@@ -578,32 +568,36 @@ function MissionStatusDot({ mission: m }: { mission: MissionSummary }) {
         width: 6,
         height: 6,
         borderRadius: "50%",
-        background:
-          m.status === "intervention_required"
-            ? "#F59E0B"
-            : m.status === "failed"
-              ? "#EF4444"
-              : "#3B82F6",
-        boxShadow:
-          m.status === "intervention_required"
-            ? "0 0 6px #F59E0B60"
-            : m.status === "failed"
-              ? "0 0 6px #EF444460"
-              : "0 0 6px #3B82F660",
+        background: attention.color,
+        boxShadow: `0 0 6px ${attention.color}60`,
       }}
-      title={
-        m.status === "intervention_required"
-          ? "Needs attention"
-          : m.status === "failed"
-            ? "Failed"
-            : `${m.openInterventions} open intervention${m.openInterventions === 1 ? "" : "s"}`
-      }
+      title={attention.title}
     />
   );
 }
 
-function MissionInterventionBadge({ count }: { count: number }) {
+function getMissionAttentionState(
+  mission: MissionSummary,
+  displayStatus: MissionRunViewDisplayStatus | null,
+): { color: string; title: string } | null {
+  if (displayStatus === "blocked" || mission.status === "intervention_required") {
+    return { color: "#F59E0B", title: "Needs attention" };
+  }
+  if (mission.status === "in_progress" && mission.openInterventions > 0) {
+    return {
+      color: "#3B82F6",
+      title: `${mission.openInterventions} open intervention${mission.openInterventions === 1 ? "" : "s"}`,
+    };
+  }
+  if (displayStatus === "failed" || mission.status === "failed") {
+    return { color: "#EF4444", title: "Failed" };
+  }
+  return null;
+}
+
+function MissionInterventionBadge({ count, missionStatus }: { count: number; missionStatus: MissionSummary["status"] }) {
   if (count <= 0) return null;
+  if (missionStatus === "completed" || missionStatus === "canceled") return null;
   return (
     <span
       className="shrink-0 px-1 py-0.5 text-[10px] font-bold"

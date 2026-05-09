@@ -370,6 +370,7 @@ function toStructuredEvents(message: OrchestratorChatMessage): AgentChatEventEnv
         },
       }];
     case "user_message":
+      if (readString(structuredStream.internalKind) === "coordinator_runtime_prompt") return [];
       return [{
         sessionId,
         timestamp: message.timestamp,
@@ -377,6 +378,7 @@ function toStructuredEvents(message: OrchestratorChatMessage): AgentChatEventEnv
         event: {
           type: "user_message",
           text: readString(structuredStream.text) ?? message.content,
+          displayText: readString(structuredStream.displayText) ?? undefined,
           turnId,
           deliveryState: normalizeDeliveryState(message.deliveryState),
           attachments: Array.isArray(structuredStream.attachments)
@@ -502,7 +504,7 @@ export function adaptMissionThreadMessagesToAgentEvents(messages: OrchestratorCh
   const events: AgentChatEventEnvelope[] = [];
   for (const { message } of sortedMessages) {
     const structuredEvents = toStructuredEvents(message);
-    if (structuredEvents?.length) {
+    if (structuredEvents) {
       events.push(...structuredEvents);
       continue;
     }

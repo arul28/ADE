@@ -47,6 +47,7 @@ async function createFixture(args: {
   aiIntegrationService?: Record<string, unknown> | null;
   memoryService?: Record<string, unknown> | null;
   memoryBriefingService?: Record<string, unknown> | null;
+  onEvent?: (event: any) => void;
 } = {}) {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-orchestrator-"));
   fs.mkdirSync(path.join(projectRoot, "docs", "architecture"), { recursive: true });
@@ -156,6 +157,7 @@ async function createFixture(args: {
     aiIntegrationService: (args.aiIntegrationService ?? null) as any,
     memoryService: (args.memoryService ?? null) as any,
     memoryBriefingService: (args.memoryBriefingService ?? null) as any,
+    onEvent: args.onEvent,
   });
 
   // Test harness convenience: opencode workers require metadata.modelId in Phase 3.
@@ -734,6 +736,169 @@ describe("orchestratorService", () => {
     }
   });
 
+  it("grants one infrastructure retry when restart recovery finds a zero-retry step", async () => {
+    const events: any[] = [];
+    const fixture = await createFixture({ onEvent: (event) => events.push(event) });
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "apply",
+            title: "Apply patch",
+            stepIndex: 0,
+            retryLimit: 0
+          }
+        ]
+      });
+      const step = fixture.service.listSteps(started.run.id)[0];
+      if (!step) throw new Error("Missing step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: step.id,
+        ownerId: "owner"
+      });
+      fixture.service.activateRun(started.run.id);
+
+      fixture.service.resumeRun({ runId: started.run.id });
+
+      const updatedStep = fixture.service.listSteps(started.run.id)[0];
+      expect(updatedStep?.status).toBe("ready");
+      expect(updatedStep?.retryCount).toBe(0);
+      expect(updatedStep?.metadata?.resumeRecoveryCount).toBe(1);
+      expect(events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "orchestrator-attempt-updated",
+            attemptId: attempt.id,
+            reason: "completed"
+          }),
+          expect.objectContaining({
+            type: "orchestrator-step-updated",
+            stepId: step.id,
+            reason: "attempt_completed"
+          })
+        ])
+      );
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("requeues shutdown-interrupted failures without consuming step retry budget", async () => {
+    const fixture = await createFixture();
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "reload-safe",
+            title: "Reload Safe",
+            stepIndex: 0,
+            retryLimit: 1
+          }
+        ]
+      });
+      const step = fixture.service.listSteps(started.run.id)[0];
+      if (!step) throw new Error("Missing step");
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: step.id,
+        ownerId: "owner"
+      });
+
+      await fixture.service.completeAttempt({
+        attemptId: attempt.id,
+        status: "failed",
+        errorClass: "executor_failure",
+        errorMessage: "Chat session 'session-1' was closed during shutdown."
+      });
+
+      const updatedStep = fixture.service.listSteps(started.run.id)[0];
+      expect(updatedStep?.status).toBe("ready");
+      expect(updatedStep?.retryCount).toBe(0);
+      expect(updatedStep?.metadata?.restartInterruptedRetryCount).toBe(1);
+
+      const updatedRun = fixture.service.listRuns({ missionId: fixture.missionId }).find((run) => run.id === started.run.id);
+      expect(updatedRun?.lastError).toBeNull();
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("resumeRun restores failed legacy shutdown attempts into the scheduler", async () => {
+    const fixture = await createFixture();
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "legacy-reload",
+            title: "Legacy Reload",
+            stepIndex: 0,
+            retryLimit: 1
+          }
+        ]
+      });
+      const step = fixture.service.listSteps(started.run.id)[0];
+      if (!step) throw new Error("Missing step");
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: step.id,
+        ownerId: "owner"
+      });
+      const completedAt = "2026-03-08T00:10:00.000Z";
+      fixture.db.run(
+        `
+          update orchestrator_attempts
+          set status = 'failed',
+              error_class = 'executor_failure',
+              error_message = ?,
+              completed_at = ?
+          where id = ?
+        `,
+        ["Chat session 'session-legacy' was closed during shutdown.", completedAt, attempt.id]
+      );
+      fixture.db.run(
+        `
+          update orchestrator_steps
+          set status = 'failed',
+              retry_count = 1,
+              last_attempt_id = ?,
+              completed_at = ?,
+              updated_at = ?
+          where id = ?
+        `,
+        [attempt.id, completedAt, completedAt, step.id]
+      );
+      fixture.db.run(
+        `
+          update orchestrator_runs
+          set status = 'active',
+              last_error = ?
+          where id = ?
+        `,
+        ["Chat session 'session-legacy' was closed during shutdown.", started.run.id]
+      );
+
+      const resumed = fixture.service.resumeRun({ runId: started.run.id });
+      expect(resumed.status).toBe("active");
+
+      const updatedStep = fixture.service.listSteps(started.run.id)[0];
+      expect(updatedStep?.status).toBe("ready");
+      expect(updatedStep?.retryCount).toBe(0);
+      expect(updatedStep?.metadata?.restartInterruptedFailureRecovered).toBe(true);
+
+      const timeline = fixture.service.listTimeline({ runId: started.run.id, limit: 50 });
+      expect(timeline.some((entry) => entry.eventType === "attempt_recovered_after_restart")).toBe(true);
+      const updatedRun = fixture.service.listRuns({ missionId: fixture.missionId }).find((run) => run.id === started.run.id);
+      expect(updatedRun?.lastError).toBeNull();
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("blocks startAttempt and autopilot dispatch when run is paused or completing", async () => {
     const fixture = await createFixture();
     try {
@@ -915,6 +1080,184 @@ describe("orchestratorService", () => {
       expect(attempts).toHaveLength(1);
       expect(attempts[0]?.stepId).toBe(planningWorkerStep?.id);
 
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("allows planner recovery autopilot through an open planner-plan-missing intervention only for planning steps", async () => {
+    const fixture = await createFixture();
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        metadata: {
+          autopilot: {
+            enabled: true,
+            executorKind: "opencode",
+            ownerId: "autopilot-owner",
+            parallelismCap: 2,
+          },
+        },
+        steps: [
+          {
+            stepKey: "planning-recovery",
+            title: "Recover planning",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "opencode",
+            metadata: {
+              stepType: "planning",
+              taskType: "planning",
+              phaseKey: "planning",
+            },
+          },
+          {
+            stepKey: "implementation-while-blocked",
+            title: "Implementation while blocked",
+            stepIndex: 1,
+            laneId: fixture.laneId,
+            executorKind: "opencode",
+            metadata: {
+              stepType: "implementation",
+              phaseKey: "development",
+            },
+          },
+        ],
+      });
+      const now = new Date().toISOString();
+      const planningStep = fixture.service.listSteps(started.run.id).find((step) => step.stepKey === "planning-recovery");
+      const implementationStep = fixture.service
+        .listSteps(started.run.id)
+        .find((step) => step.stepKey === "implementation-while-blocked");
+      if (!planningStep || !implementationStep) throw new Error("Missing test steps");
+
+      fixture.db.run(
+        `update missions set status = 'intervention_required', updated_at = ? where id = ? and project_id = ?`,
+        [now, fixture.missionId, fixture.projectId],
+      );
+      fixture.db.run(
+        `
+          insert into mission_interventions(
+            id,
+            mission_id,
+            project_id,
+            intervention_type,
+            status,
+            title,
+            body,
+            requested_action,
+            lane_id,
+            metadata_json,
+            created_at,
+            updated_at
+          ) values (?, ?, ?, 'failed_step', 'open', ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          "planner-plan-missing-intervention",
+          fixture.missionId,
+          fixture.projectId,
+          "Planner result missing plan",
+          "Planning worker completed without returning report_result.plan.markdown.",
+          "Retry planning and return report_result.plan.markdown.",
+          fixture.laneId,
+          JSON.stringify({
+            runId: started.run.id,
+            stepId: "failed-planner-step",
+            reasonCode: "planner_plan_missing",
+          }),
+          now,
+          now,
+        ],
+      );
+
+      const startedAttempts = await fixture.service.startReadyAutopilotAttempts({
+        runId: started.run.id,
+        reason: "planner_recovery",
+      });
+
+      const attempts = fixture.service.listAttempts({ runId: started.run.id });
+      expect(startedAttempts).toBe(1);
+      expect(attempts).toHaveLength(1);
+      expect(attempts[0]?.stepId).toBe(planningStep.id);
+      expect(fixture.service.listSteps(started.run.id).find((step) => step.id === implementationStep.id)?.status).toBe("ready");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("keeps non-planner recovery interventions blocking autopilot", async () => {
+    const fixture = await createFixture();
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        metadata: {
+          autopilot: {
+            enabled: true,
+            executorKind: "opencode",
+            ownerId: "autopilot-owner",
+            parallelismCap: 1,
+          },
+        },
+        steps: [
+          {
+            stepKey: "blocked-planning",
+            title: "Blocked planning",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "opencode",
+            metadata: {
+              stepType: "planning",
+              phaseKey: "planning",
+            },
+          },
+        ],
+      });
+      const now = new Date().toISOString();
+      fixture.db.run(
+        `update missions set status = 'intervention_required', updated_at = ? where id = ? and project_id = ?`,
+        [now, fixture.missionId, fixture.projectId],
+      );
+      fixture.db.run(
+        `
+          insert into mission_interventions(
+            id,
+            mission_id,
+            project_id,
+            intervention_type,
+            status,
+            title,
+            body,
+            requested_action,
+            lane_id,
+            metadata_json,
+            created_at,
+            updated_at
+          ) values (?, ?, ?, 'failed_step', 'open', ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          "ordinary-failed-step-intervention",
+          fixture.missionId,
+          fixture.projectId,
+          "Worker failed",
+          "A non-planning worker failed.",
+          "Review the failed worker before continuing.",
+          fixture.laneId,
+          JSON.stringify({
+            runId: started.run.id,
+            reasonCode: "worker_failed",
+          }),
+          now,
+          now,
+        ],
+      );
+
+      expect(
+        await fixture.service.startReadyAutopilotAttempts({
+          runId: started.run.id,
+          reason: "non_planner_intervention",
+        }),
+      ).toBe(0);
+      expect(fixture.service.listAttempts({ runId: started.run.id })).toHaveLength(0);
     } finally {
       fixture.dispose();
     }
@@ -1148,6 +1491,226 @@ describe("orchestratorService", () => {
       expect(
         refreshed.timeline.some((entry) => entry.eventType === "phase_transition" && entry.reason === "kernel_auto_advance")
       ).toBe(true);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("does not require plan.markdown from read-only non-planning workers", async () => {
+    const fixture = await createFixture();
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "read-only-development",
+            title: "Read-only development check",
+            stepIndex: 0,
+            executorKind: "manual",
+            metadata: {
+              stepType: "implementation",
+              phaseKey: "development",
+              phaseName: "Development",
+              readOnlyExecution: true,
+            },
+          },
+        ],
+      });
+      const step = fixture.service.listSteps(started.run.id)[0];
+      if (!step) throw new Error("Missing read-only development step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: step.id,
+        ownerId: "development-owner",
+        executorKind: "manual",
+      });
+      const completed = await fixture.service.completeAttempt({
+        attemptId: attempt.id,
+        status: "succeeded",
+        result: {
+          schema: "ade.orchestratorAttempt.v1",
+          success: true,
+          summary: "Read-only development check completed.",
+          outputs: null,
+          warnings: [],
+          sessionId: null,
+          trackedSession: false,
+        },
+      });
+
+      expect(completed.status).toBe("succeeded");
+      expect(completed.errorClass).toBe("none");
+      expect(completed.errorMessage).toBeNull();
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("does not auto-advance a phase while required self-validation is pending", async () => {
+    const fixture = await createFixture();
+    try {
+      const implementationPhase = {
+        id: "phase-implementation",
+        phaseKey: "implementation",
+        name: "Implementation",
+        description: "Build",
+        instructions: "Implement.",
+        model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
+        budget: {},
+        orderingConstraints: {},
+        askQuestions: { enabled: false },
+        validationGate: { tier: "self", required: true, criteria: "Implementation must be validated." },
+        isBuiltIn: true,
+        isCustom: false,
+        position: 1,
+        createdAt: "2026-03-08T00:00:00.000Z",
+        updatedAt: "2026-03-08T00:00:00.000Z",
+      };
+      const testingPhase = {
+        id: "phase-testing",
+        phaseKey: "testing",
+        name: "Testing",
+        description: "Test",
+        instructions: "Run tests.",
+        model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
+        budget: {},
+        orderingConstraints: { mustFollow: ["implementation"] },
+        askQuestions: { enabled: false },
+        validationGate: { tier: "self", required: true, criteria: "Tests must pass." },
+        isBuiltIn: true,
+        isCustom: false,
+        position: 2,
+        createdAt: "2026-03-08T00:00:00.000Z",
+        updatedAt: "2026-03-08T00:00:00.000Z",
+      };
+
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        metadata: {
+          phaseConfiguration: { selectedPhases: [implementationPhase, testingPhase] },
+          phaseRuntime: {
+            currentPhaseKey: "implementation",
+            currentPhaseName: "Implementation",
+            currentPhaseModel: implementationPhase.model,
+          },
+        },
+        steps: [
+          {
+            stepKey: "impl-work",
+            title: "Implement work",
+            stepIndex: 0,
+            executorKind: "manual",
+            metadata: {
+              stepType: "implementation",
+              phaseKey: "implementation",
+              phaseName: "Implementation",
+              validationContract: {
+                level: "step",
+                tier: "self",
+                required: true,
+                criteria: "Implementation must be validated.",
+                evidence: [],
+                maxRetries: 2,
+              },
+            },
+          },
+          {
+            stepKey: "test-work",
+            title: "Test work",
+            stepIndex: 1,
+            dependencyStepKeys: ["impl-work"],
+            executorKind: "manual",
+            metadata: {
+              stepType: "testing",
+              phaseKey: "testing",
+              phaseName: "Testing",
+            },
+          },
+        ],
+      });
+
+      const implStep = fixture.service.listSteps(started.run.id).find((step) => step.stepKey === "impl-work");
+      const testStep = fixture.service.listSteps(started.run.id).find((step) => step.stepKey === "test-work");
+      if (!implStep || !testStep) throw new Error("Missing phase validation gate steps");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: implStep.id,
+        ownerId: "owner",
+        executorKind: "manual",
+      });
+      await fixture.service.completeAttempt({
+        attemptId: attempt.id,
+        status: "succeeded",
+        result: {
+          schema: "ade.orchestratorAttempt.v1",
+          success: true,
+          summary: "Implementation complete.",
+          outputs: { filesChanged: ["src/index.ts"] },
+          warnings: [],
+          sessionId: null,
+          trackedSession: false,
+        },
+      });
+
+      const beforeValidation = fixture.service.getRunGraph({ runId: started.run.id, timelineLimit: 50 });
+      expect((beforeValidation.run.metadata?.phaseRuntime as Record<string, unknown>)?.currentPhaseKey).toBe("implementation");
+      expect(beforeValidation.steps.find((step) => step.id === testStep.id)?.status).toBe("pending");
+
+      const implAfterCompletion = beforeValidation.steps.find((step) => step.id === implStep.id);
+      fixture.db.run(
+        `update orchestrator_steps set metadata_json = ?, updated_at = ? where id = ?`,
+        [
+          JSON.stringify({
+            ...(implAfterCompletion?.metadata ?? {}),
+            validationState: "pass",
+            validationPassedAt: "2026-03-08T00:05:00.000Z",
+          }),
+          "2026-03-08T00:05:00.000Z",
+          implStep.id,
+        ],
+      );
+      fixture.service.tick({ runId: started.run.id });
+
+      const afterValidation = fixture.service.getRunGraph({ runId: started.run.id, timelineLimit: 50 });
+      expect((afterValidation.run.metadata?.phaseRuntime as Record<string, unknown>)?.currentPhaseKey).toBe("testing");
+      expect(afterValidation.steps.find((step) => step.id === testStep.id)?.status).toBe("ready");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("keeps terminal display-only tracker steps terminal during readiness refresh", async () => {
+    const fixture = await createFixture();
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "planner-launch-tracker",
+            title: "Launch planning worker",
+            stepIndex: -1000,
+            executorKind: "manual",
+            metadata: {
+              plannerLaunchTracker: true,
+              phaseKey: "planning",
+              phaseName: "Planning",
+            },
+          },
+        ],
+      });
+      const tracker = fixture.service.listSteps(started.run.id)[0];
+      if (!tracker) throw new Error("Missing tracker step");
+      fixture.db.run(
+        `update orchestrator_steps set status = 'succeeded', completed_at = ?, updated_at = ? where id = ?`,
+        ["2026-03-08T00:10:00.000Z", "2026-03-08T00:10:00.000Z", tracker.id],
+      );
+
+      fixture.service.tick({ runId: started.run.id });
+
+      const refreshed = fixture.service.listSteps(started.run.id).find((step) => step.id === tracker.id);
+      expect(refreshed?.status).toBe("succeeded");
     } finally {
       fixture.dispose();
     }
@@ -2746,9 +3309,193 @@ describe("orchestratorService", () => {
       const run = fixture.service.listRuns({ missionId: fixture.missionId }).find((entry) => entry.id === started.run.id);
 
       expect(finalized.finalized).toBe(false);
-      expect(finalized.finalStatus).toBe("completing");
+      expect(finalized.finalStatus).toBe("active");
       expect(finalized.blockers.some((entry) => entry.includes("without any successful work"))).toBe(true);
-      expect(run?.status).toBe("completing");
+      expect(run?.status).toBe("active");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("reactivates a completion-blocked run when recovery steps are added", async () => {
+    const fixture = await createFixture();
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [],
+      });
+      fixture.db.run(
+        `update orchestrator_runs set status = 'completing', updated_at = ? where id = ?`,
+        [new Date().toISOString(), started.run.id],
+      );
+
+      const [recoveryStep] = fixture.service.addSteps({
+        runId: started.run.id,
+        steps: [
+          {
+            stepKey: "recovery",
+            title: "Recovery validation work",
+            stepIndex: 1,
+          },
+        ],
+      });
+      expect(recoveryStep?.status).toBe("ready");
+
+      const graph = fixture.service.getRunGraph({ runId: started.run.id, timelineLimit: 20 });
+      expect(graph.run.status).toBe("active");
+      expect(graph.timeline.some((entry) => entry.eventType === "run_reactivated")).toBe(true);
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: recoveryStep!.id,
+        ownerId: "owner",
+      });
+      expect(attempt.status).toBe("running");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("moves blocked finalization back to active when pending recovery work exists", async () => {
+    const fixture = await createFixture();
+    try {
+      const developmentPhase = {
+        id: "phase-development",
+        phaseKey: "development",
+        name: "Development",
+        description: "Build the feature.",
+        instructions: "Implement the feature.",
+        model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
+        budget: {},
+        orderingConstraints: {},
+        askQuestions: { enabled: false },
+        validationGate: { tier: "none", required: false },
+        isBuiltIn: true,
+        isCustom: false,
+        position: 1,
+        createdAt: "2026-03-04T00:00:00.000Z",
+        updatedAt: "2026-03-04T00:00:00.000Z",
+      };
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        metadata: {
+          phaseConfiguration: { selectedPhases: [developmentPhase] },
+          missionLevelSettings: { prStrategy: { kind: "manual" } },
+        },
+        steps: [
+          {
+            stepKey: "pending-recovery",
+            title: "Pending recovery",
+            stepIndex: 0,
+            metadata: {
+              stepType: "implementation",
+              phaseKey: "development",
+              phaseName: "Development",
+            },
+          },
+        ],
+      });
+      fixture.db.run(
+        `update orchestrator_runs set status = 'completing', updated_at = ? where id = ?`,
+        [new Date().toISOString(), started.run.id],
+      );
+
+      const finalized = fixture.service.finalizeRun({ runId: started.run.id });
+      expect(finalized.finalized).toBe(false);
+      expect(finalized.finalStatus).toBe("active");
+
+      const graph = fixture.service.getRunGraph({ runId: started.run.id, timelineLimit: 20 });
+      expect(graph.run.status).toBe("active");
+      expect(
+        graph.timeline.some((entry) => (
+          entry.eventType === "run_completion_blocked"
+          && (entry.detail as Record<string, unknown> | null)?.nextStatus === "active"
+        )),
+      ).toBe(true);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("lets a dedicated validation phase run the previous phase gate", async () => {
+    const fixture = await createFixture();
+    try {
+      const testingPhase = {
+        id: "phase-testing",
+        phaseKey: "testing",
+        name: "Testing",
+        description: "Run tests.",
+        instructions: "Run tests.",
+        model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
+        budget: {},
+        orderingConstraints: { mustBeFirst: false, mustBeLast: false, mustFollow: [], mustPrecede: [], canLoop: false, loopTarget: null },
+        askQuestions: { enabled: false },
+        validationGate: { tier: "dedicated", required: true },
+        isBuiltIn: true,
+        isCustom: false,
+        position: 0,
+        createdAt: "2026-03-04T00:00:00.000Z",
+        updatedAt: "2026-03-04T00:00:00.000Z",
+      };
+      const validationPhase = {
+        ...testingPhase,
+        id: "phase-validation",
+        phaseKey: "validation",
+        name: "Validation",
+        description: "Validate output.",
+        instructions: "Validate output.",
+        validationGate: { tier: "dedicated", required: true },
+        position: 1,
+      };
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        metadata: {
+          phaseConfiguration: { phases: [testingPhase, validationPhase] },
+          missionLevelSettings: { prStrategy: { kind: "manual" } },
+        },
+        steps: [
+          {
+            stepKey: "test-work",
+            title: "Test work",
+            stepIndex: 0,
+            metadata: {
+              phaseKey: "testing",
+              phaseName: "Testing",
+              stepType: "testing",
+            },
+          },
+        ],
+      });
+      const testStep = fixture.service.listSteps(started.run.id)[0];
+      if (!testStep) throw new Error("Missing test step");
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: testStep.id,
+        ownerId: "owner",
+      });
+      await fixture.service.completeAttempt({ attemptId: attempt.id, status: "succeeded" });
+
+      const [validationStep] = fixture.service.addSteps({
+        runId: started.run.id,
+        steps: [
+          {
+            stepKey: "validate-test-work",
+            title: "Validate test work",
+            stepIndex: 1,
+            dependencyStepKeys: ["test-work"],
+            metadata: {
+              phaseKey: "validation",
+              phaseName: "Validation",
+              stepType: "validation",
+            },
+          },
+        ],
+      });
+
+      const graph = fixture.service.getRunGraph({ runId: started.run.id, timelineLimit: 20 });
+      const phaseRuntime = graph.run.metadata?.phaseRuntime as Record<string, unknown> | undefined;
+      expect(phaseRuntime?.currentPhaseKey).toBe("validation");
+      expect(graph.steps.find((step) => step.id === validationStep?.id)?.status).toBe("ready");
     } finally {
       fixture.dispose();
     }
@@ -2999,11 +3746,384 @@ describe("orchestratorService", () => {
         stepId,
         ownerId: "operator"
       });
-      if (!attempt.executorSessionId) throw new Error("Expected running session-backed attempt");
+      fixture.db.run(
+        `
+          update orchestrator_attempts
+          set status = 'running',
+              executor_session_id = ?,
+              executor_kind = 'codex',
+              error_class = 'none',
+              error_message = null,
+              completed_at = null
+          where id = ?
+        `,
+        [preSessionId, attempt.id]
+      );
 
       fs.writeFileSync(
         transcriptPath,
         "looking at router wiring first\n\nThe plan is ready. The implementation requires 4 targeted changes across 3 existing files plus 1 new file.\n",
+        "utf8"
+      );
+
+      const reconciled = await fixture.service.onTrackedSessionEnded({
+        sessionId: preSessionId,
+        laneId: fixture.laneId,
+        exitCode: 0
+      });
+      expect(reconciled).toBe(1);
+
+      const after = fixture.service.listAttempts({ runId: started.run.id }).find((entry) => entry.id === attempt.id);
+      expect(after?.status).toBe("succeeded");
+      expect(after?.resultEnvelope?.summary).toContain("The plan is ready.");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("recovers markdown report_result payloads from tracked worker transcripts", async () => {
+    const fixture = await createFixture();
+    try {
+      const now = "2026-02-19T00:00:00.000Z";
+      const transcriptDir = path.join(fixture.projectRoot, ".ade", "transcripts");
+      fs.mkdirSync(transcriptDir, { recursive: true });
+      const preSessionId = "session-1";
+      const transcriptPath = path.join(transcriptDir, `${preSessionId}.log`);
+      fixture.db.run(
+        `insert or ignore into terminal_sessions(
+          id, lane_id, pty_id, tracked, title, started_at, ended_at,
+          exit_code, transcript_path, head_sha_start, head_sha_end,
+          status, last_output_preview, summary, tool_type, resume_command, last_output_at
+        ) values (?, ?, null, 1, 'Worker', ?, null, null, ?, null, null,
+          'running', null, null, 'codex-orchestrated', null, ?)`,
+        [preSessionId, fixture.laneId, now, transcriptPath, now]
+      );
+
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        metadata: {
+          phaseConfiguration: {
+            selectedPhases: [
+              {
+                id: "phase-implementation-math",
+                phaseKey: "implementation_math",
+                name: "Implementation math",
+                position: 1,
+                instructions: "Implement math work.",
+                model: { provider: "openai", modelId: "openai/gpt-5.3-codex" },
+                budget: {},
+                orderingConstraints: {},
+                askQuestions: { enabled: false },
+                validationGate: { tier: "self", required: true, criteria: "Tests must pass." },
+                isBuiltIn: false,
+                isCustom: true,
+                createdAt: now,
+                updatedAt: now,
+              },
+            ],
+          },
+          phaseRuntime: { currentPhaseKey: "implementation_math", currentPhaseName: "Implementation math" },
+        },
+        steps: [
+          {
+            stepKey: "implementation-math-worker",
+            title: "Implementation math worker",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "opencode",
+            metadata: {
+              stepType: "implementation",
+              phaseKey: "implementation_math",
+              phaseName: "Implementation math",
+              validationContract: {
+                level: "step",
+                tier: "self",
+                required: true,
+                criteria: "Tests must pass.",
+                evidence: [],
+                maxRetries: 2,
+              },
+            },
+          }
+        ]
+      });
+      const stepId = fixture.service.listSteps(started.run.id)[0]?.id;
+      if (!stepId) throw new Error("Expected implementation step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId,
+        ownerId: "operator"
+      });
+      fixture.db.run(
+        `
+          update orchestrator_attempts
+          set status = 'running',
+              executor_session_id = ?,
+              executor_kind = 'codex',
+              error_class = 'none',
+              error_message = null,
+              completed_at = null
+          where id = ?
+        `,
+        [preSessionId, attempt.id]
+      );
+
+      fs.writeFileSync(
+        transcriptPath,
+        [
+          "Implemented helpers and ran the package tests.",
+          "",
+          "## report_result",
+          "### outcome",
+          "completed",
+          "### summary",
+          "Added three math utilities and tests.",
+          "### filesChanged",
+          "- [src/math.js](file:///tmp/src/math.js)",
+          "- [test/math.test.js](file:///tmp/test/math.test.js)",
+          "### testsRun",
+          "- Ran `npm test`",
+          "- Passed: 9",
+          "- Failed: 0",
+          "- Skipped: 0",
+          "",
+        ].join("\n"),
+        "utf8"
+      );
+
+      const reconciled = await fixture.service.onTrackedSessionEnded({
+        sessionId: preSessionId,
+        laneId: fixture.laneId,
+        exitCode: 0
+      });
+      expect(reconciled).toBe(1);
+
+      const step = fixture.service.listSteps(started.run.id).find((entry) => entry.id === stepId);
+      const metadata = (step?.metadata ?? {}) as Record<string, any>;
+      expect(metadata.recoveredResultReportFromTranscript).toBe(true);
+      expect(metadata.lastResultReport?.summary).toBe("Added three math utilities and tests.");
+      expect(metadata.lastResultReport?.filesChanged).toEqual(["src/math.js", "test/math.test.js"]);
+      expect(metadata.lastResultReport?.testsRun).toEqual(expect.objectContaining({
+        command: "npm test",
+        passed: 9,
+        failed: 0,
+        skipped: 0,
+      }));
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("blocks ask-enabled planners on recovered natural-language questions instead of failing the plan contract", async () => {
+    const fixture = await createFixture();
+    try {
+      const now = "2026-02-19T00:00:00.000Z";
+      const transcriptDir = path.join(fixture.projectRoot, ".ade", "transcripts");
+      fs.mkdirSync(transcriptDir, { recursive: true });
+      const preSessionId = "session-planner-question";
+      const transcriptPath = path.join(transcriptDir, `${preSessionId}.log`);
+      fixture.db.run(
+        `insert or ignore into terminal_sessions(
+          id, lane_id, pty_id, tracked, title, started_at, ended_at,
+          exit_code, transcript_path, head_sha_start, head_sha_end,
+          status, last_output_preview, summary, tool_type, resume_command, last_output_at
+        ) values (?, ?, null, 1, 'Planning Worker', ?, null, null, ?, null, null,
+          'running', null, null, 'codex-orchestrated', null, ?)`,
+        [preSessionId, fixture.laneId, now, transcriptPath, now]
+      );
+
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        metadata: {
+          phaseConfiguration: {
+            selectedPhases: [
+              {
+                id: "phase-planning",
+                phaseKey: "planning",
+                name: "Planning",
+                position: 0,
+                instructions: "Ask one clarification before planning.",
+                model: { provider: "codex", modelId: "openai/gpt-5.3-codex-spark" },
+                budget: {},
+                orderingConstraints: { mustBeFirst: true },
+                askQuestions: { enabled: true, maxQuestions: 1 },
+                validationGate: { tier: "none", required: false },
+                isBuiltIn: true,
+                isCustom: true,
+                createdAt: now,
+                updatedAt: now,
+              },
+            ],
+          },
+          phaseRuntime: { currentPhaseKey: "planning", currentPhaseName: "Planning" },
+        },
+        steps: [
+          {
+            stepKey: "planning-worker",
+            title: "Planning worker",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "codex",
+            metadata: {
+              stepType: "planning",
+              phaseKey: "planning",
+              phaseName: "Planning",
+              readOnlyExecution: true,
+            },
+          }
+        ]
+      });
+      const stepId = fixture.service.listSteps(started.run.id)[0]?.id;
+      if (!stepId) throw new Error("Expected planning step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId,
+        ownerId: "operator"
+      });
+      fixture.db.run(
+        `
+          update orchestrator_attempts
+          set status = 'running',
+              executor_session_id = ?,
+              executor_kind = 'codex',
+              error_class = 'none',
+              error_message = null,
+              completed_at = null
+          where id = ?
+        `,
+        [preSessionId, attempt.id]
+      );
+
+      fs.writeFileSync(
+        transcriptPath,
+        [
+          "codex",
+          "I inspected the parser and formatter files.",
+          "codex",
+          "Should missing/unknown item weights default to `1`?",
+          "tokens used",
+          "1200",
+        ].join("\n"),
+        "utf8"
+      );
+
+      const reconciled = await fixture.service.onTrackedSessionEnded({
+        sessionId: preSessionId,
+        laneId: fixture.laneId,
+        exitCode: 0
+      });
+      expect(reconciled).toBe(1);
+
+      const graph = fixture.service.getRunGraph({ runId: started.run.id, timelineLimit: 20 });
+      const step = graph.steps.find((entry) => entry.id === stepId);
+      const completedAttempt = graph.attempts.find((entry) => entry.id === attempt.id);
+      expect(step?.status).toBe("blocked");
+      expect(completedAttempt?.status).toBe("blocked");
+      expect(completedAttempt?.errorClass).toBe("deterministic");
+	      const awaitingUserInput = step?.metadata?.awaitingUserInput as Record<string, unknown> | undefined;
+	      expect(String(awaitingUserInput?.question ?? "")).toContain("default to `1`");
+	      expect(graph.run.status).toBe("paused");
+	      const intervention = fixture.db.get<{ status: string; intervention_type: string; body: string; metadata_json: string | null }>(
+	        `
+	          select status, intervention_type, body, metadata_json
+	          from mission_interventions
+	          where mission_id = ?
+	          limit 1
+	        `,
+	        [fixture.missionId]
+	      );
+	      expect(intervention).toEqual(expect.objectContaining({
+	        status: "open",
+	        intervention_type: "manual_input",
+	      }));
+	      expect(intervention?.body).toContain("default to `1`");
+	      expect(JSON.parse(intervention?.metadata_json ?? "{}")).toEqual(expect.objectContaining({
+	        reasonCode: "planner_natural_question",
+	        attemptId: attempt.id,
+	      }));
+
+	      const questionEvent = fixture.service
+        .listRuntimeEvents({ attemptId: attempt.id, eventTypes: ["question"], limit: 5 })
+        .find((entry) => entry.eventType === "question");
+      expect(questionEvent?.payload).toEqual(expect.objectContaining({
+        source: "planner_natural_question",
+      }));
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("recovers Codex final-answer markdown result summaries from tracked worker transcripts", async () => {
+    const fixture = await createFixture();
+    try {
+      const now = "2026-02-19T00:00:00.000Z";
+      const transcriptDir = path.join(fixture.projectRoot, ".ade", "transcripts");
+      fs.mkdirSync(transcriptDir, { recursive: true });
+      const preSessionId = "session-1";
+      const transcriptPath = path.join(transcriptDir, `${preSessionId}.log`);
+      fixture.db.run(
+        `insert or ignore into terminal_sessions(
+          id, lane_id, pty_id, tracked, title, started_at, ended_at,
+          exit_code, transcript_path, head_sha_start, head_sha_end,
+          status, last_output_preview, summary, tool_type, resume_command, last_output_at
+        ) values (?, ?, null, 1, 'Worker', ?, null, null, ?, null, null,
+          'running', null, null, 'codex-orchestrated', null, ?)`,
+        [preSessionId, fixture.laneId, now, transcriptPath, now]
+      );
+
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "implementation-math-worker",
+            title: "Implementation math worker",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "opencode",
+            metadata: {
+              stepType: "implementation",
+              phaseKey: "implementation_math",
+              phaseName: "Implementation math",
+            },
+          }
+        ]
+      });
+      const stepId = fixture.service.listSteps(started.run.id)[0]?.id;
+      if (!stepId) throw new Error("Expected implementation step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId,
+        ownerId: "operator"
+      });
+      if (!attempt.executorSessionId) throw new Error("Expected running session-backed attempt");
+
+      fs.writeFileSync(
+        transcriptPath,
+        [
+          "codex",
+          "The math worker lane is complete.",
+          "",
+          "Outcome: Math stream completed in the result lane.",
+          "",
+          "1) Accomplished",
+          "- Added `median`, `range`, and `clamp` to the math module with focused coverage.",
+          "- Did not edit shared files (`src/index.js` / `README.md`).",
+          "",
+          "FilesChanged:",
+          "- Added math utilities in [src/math.js](/tmp/work/src/math.js).",
+          "- Extended tests in [test/math.test.js](/tmp/work/test/math.test.js).",
+          "- Wrote [./.ade/checkpoints/worker.md](/tmp/work/.ade/checkpoints/worker.md).",
+          "",
+          "TestsRun:",
+          "- `npm test` (passes)",
+          "",
+          "Validation:",
+          "- Result: PASS (7/7 tests).",
+          "",
+        ].join("\n"),
         "utf8"
       );
 
@@ -3014,9 +4134,2014 @@ describe("orchestratorService", () => {
       });
       expect(reconciled).toBe(1);
 
-      const after = fixture.service.listAttempts({ runId: started.run.id }).find((entry) => entry.id === attempt.id);
-      expect(after?.status).toBe("succeeded");
-      expect(after?.resultEnvelope?.summary).toContain("The plan is ready.");
+      const step = fixture.service.listSteps(started.run.id).find((entry) => entry.id === stepId);
+      const metadata = (step?.metadata ?? {}) as Record<string, any>;
+      expect(metadata.recoveredResultReportFromTranscript).toBe(true);
+      expect(metadata.lastResultReport?.summary).toContain("Added `median`, `range`, and `clamp`");
+      expect(metadata.lastResultReport?.filesChanged).toEqual(["src/math.js", "test/math.test.js"]);
+      expect(metadata.lastResultReport?.testsRun).toEqual(expect.objectContaining({
+        command: "npm test",
+        passed: 7,
+      }));
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("does not treat zero failed tests as a failed Codex final-answer outcome", async () => {
+    const fixture = await createFixture();
+    try {
+      const now = "2026-02-19T00:00:00.000Z";
+      const transcriptDir = path.join(fixture.projectRoot, ".ade", "transcripts");
+      fs.mkdirSync(transcriptDir, { recursive: true });
+      const preSessionId = "session-1";
+      const transcriptPath = path.join(transcriptDir, `${preSessionId}.log`);
+      fixture.db.run(
+        `insert or ignore into terminal_sessions(
+          id, lane_id, pty_id, tracked, title, started_at, ended_at,
+          exit_code, transcript_path, head_sha_start, head_sha_end,
+          status, last_output_preview, summary, tool_type, resume_command, last_output_at
+        ) values (?, ?, null, 1, 'Worker', ?, null, null, ?, null, null,
+          'running', null, null, 'codex-orchestrated', null, ?)`,
+        [preSessionId, fixture.laneId, now, transcriptPath, now]
+      );
+
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "testing-worker",
+            title: "Testing worker",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "opencode",
+            metadata: {
+              stepType: "implementation",
+              phaseKey: "implementation_testing",
+              phaseName: "Testing",
+              validationContract: {
+                level: "step",
+                tier: "self",
+                required: true,
+                criteria: "npm test passes.",
+                evidence: [],
+                maxRetries: 2,
+              },
+            },
+          }
+        ]
+      });
+      const stepId = fixture.service.listSteps(started.run.id)[0]?.id;
+      if (!stepId) throw new Error("Expected testing step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId,
+        ownerId: "operator"
+      });
+      const sessionId = attempt.executorSessionId ?? preSessionId;
+      if (!attempt.executorSessionId) {
+        fixture.db.run(
+          `update orchestrator_attempts set status = 'running', executor_session_id = ?, completed_at = null where id = ?`,
+          [sessionId, attempt.id],
+        );
+        fixture.db.run(
+          `update orchestrator_steps set status = 'running', last_attempt_id = ?, updated_at = ? where id = ?`,
+          [attempt.id, now, stepId],
+        );
+      }
+
+      fs.writeFileSync(
+        transcriptPath,
+        [
+          "codex",
+          "",
+          "## Summary",
+          "Completed the testing lane. Executed `npm test` on the merged implementation and confirmed the suite passes fully.",
+          "",
+          "## Files Changed",
+          "- No functional source/test files were modified in this testing step.",
+          "- Added/updated:",
+          "  - `.ade/checkpoints/testing-worker.md`",
+          "  - `.ade/step-output-testing-worker.md`",
+          "- Worktree already contains upstream changes in:",
+          "  - `README.md`",
+          "  - `src/index.js`",
+          "",
+          "## Tests",
+          "- `npm test` executed from `/tmp/work`",
+          "  - Result: PASS (13 passed, 0 failed)",
+          "",
+          "## Validation",
+          "- Node test harness executed successfully.",
+          "",
+          "## Warnings",
+          "- No functional test blockers found.",
+          "- `.ade/` currently appears as untracked in git status and is generated lane metadata.",
+          "",
+        ].join("\n"),
+        "utf8"
+      );
+
+      const reconciled = await fixture.service.onTrackedSessionEnded({
+        sessionId,
+        laneId: fixture.laneId,
+        exitCode: 0
+      });
+      expect(reconciled).toBe(1);
+
+      const step = fixture.service.listSteps(started.run.id).find((entry) => entry.id === stepId);
+      const metadata = (step?.metadata ?? {}) as Record<string, any>;
+      expect(metadata.recoveredResultReportFromTranscript).toBe(true);
+      expect(metadata.lastResultReport?.outcome).toBe("succeeded");
+      expect(metadata.lastResultReport?.testsRun).toEqual(expect.objectContaining({
+        command: "npm test",
+        passed: 13,
+        failed: 0,
+      }));
+      expect(metadata.lastResultReport?.filesChanged).not.toEqual(expect.arrayContaining([
+        expect.stringContaining(".ade/"),
+        expect.stringMatching(/^\//),
+      ]));
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("recovers Codex h2 report_result sections from tracked worker transcripts", async () => {
+    const fixture = await createFixture();
+    try {
+      const now = "2026-02-19T00:00:00.000Z";
+      const transcriptDir = path.join(fixture.projectRoot, ".ade", "transcripts");
+      fs.mkdirSync(transcriptDir, { recursive: true });
+      const preSessionId = "session-1";
+      const transcriptPath = path.join(transcriptDir, `${preSessionId}.log`);
+      fixture.db.run(
+        `insert or ignore into terminal_sessions(
+          id, lane_id, pty_id, tracked, title, started_at, ended_at,
+          exit_code, transcript_path, head_sha_start, head_sha_end,
+          status, last_output_preview, summary, tool_type, resume_command, last_output_at
+        ) values (?, ?, null, 1, 'Worker', ?, null, null, ?, null, null,
+          'running', null, null, 'codex-orchestrated', null, ?)`,
+        [preSessionId, fixture.laneId, now, transcriptPath, now]
+      );
+
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "implementation-math-worker",
+            title: "Implementation math worker",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "opencode",
+            metadata: {
+              stepType: "implementation",
+              phaseKey: "implementation_math",
+              phaseName: "Implementation math",
+            },
+          }
+        ]
+      });
+      const stepId = fixture.service.listSteps(started.run.id)[0]?.id;
+      if (!stepId) throw new Error("Expected implementation step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId,
+        ownerId: "operator"
+      });
+      if (!attempt.executorSessionId) throw new Error("Expected running session-backed attempt");
+
+      fs.writeFileSync(
+        transcriptPath,
+        [
+          "codex",
+          "`report_result`:",
+          "",
+          "## Outcome",
+          "Completed math worker scope successfully. Added `median`, `range`, and `clamp` to the math module with focused tests, and executed the test suite successfully.",
+          "",
+          "## Summary",
+          "- Implemented `median`, `range`, and `clamp` in `src/math.js`.",
+          "- Extended `test/math.test.js` with focused coverage for each function.",
+          "- Did **not** edit `src/index.js` or `README.md` due shared ownership for API/docs consolidation phase.",
+          "- Recorded checkpoint and step-output per ADE requirements.",
+          "",
+          "## Files Changed",
+          "- `src/math.js`",
+          "- `test/math.test.js`",
+          "- `.ade/checkpoints/worker_implementation-math-worker.md`",
+          "- `.ade/step-output-worker_implementation-math-worker.md`",
+          "",
+          "## Tests Run",
+          "- `npm test`",
+          "- Result: pass (7/7 tests)",
+          "",
+        ].join("\n"),
+        "utf8"
+      );
+
+      const reconciled = await fixture.service.onTrackedSessionEnded({
+        sessionId: attempt.executorSessionId,
+        laneId: fixture.laneId,
+        exitCode: 0
+      });
+      expect(reconciled).toBe(1);
+
+      const step = fixture.service.listSteps(started.run.id).find((entry) => entry.id === stepId);
+      const metadata = (step?.metadata ?? {}) as Record<string, any>;
+      expect(metadata.recoveredResultReportFromTranscript).toBe(true);
+      expect(metadata.lastResultReport?.summary).toContain("Implemented `median`, `range`, and `clamp`");
+      expect(metadata.lastResultReport?.filesChanged).toEqual(["src/math.js", "test/math.test.js"]);
+      expect(metadata.lastResultReport?.testsRun).toEqual(expect.objectContaining({
+        command: "npm test",
+        passed: 7,
+      }));
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("recovers natural Codex final-answer sections after prompt templates", async () => {
+    const fixture = await createFixture();
+    try {
+      const now = "2026-02-19T00:00:00.000Z";
+      const transcriptDir = path.join(fixture.projectRoot, ".ade", "transcripts");
+      fs.mkdirSync(transcriptDir, { recursive: true });
+      const preSessionId = "session-1";
+      const transcriptPath = path.join(transcriptDir, `${preSessionId}.log`);
+      fixture.db.run(
+        `insert or ignore into terminal_sessions(
+          id, lane_id, pty_id, tracked, title, started_at, ended_at,
+          exit_code, transcript_path, head_sha_start, head_sha_end,
+          status, last_output_preview, summary, tool_type, resume_command, last_output_at
+        ) values (?, ?, null, 1, 'Worker', ?, null, null, ?, null, null,
+          'running', null, null, 'codex-orchestrated', null, ?)`,
+        [preSessionId, fixture.laneId, now, transcriptPath, now]
+      );
+
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "implementation-math-worker",
+            title: "Implementation math worker",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "opencode",
+            metadata: {
+              stepType: "implementation",
+              phaseKey: "implementation_math",
+              phaseName: "Implementation math",
+            },
+          }
+        ]
+      });
+      const stepId = fixture.service.listSteps(started.run.id)[0]?.id;
+      if (!stepId) throw new Error("Expected implementation step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId,
+        ownerId: "operator"
+      });
+      if (!attempt.executorSessionId) throw new Error("Expected running session-backed attempt");
+
+      fs.writeFileSync(
+        transcriptPath,
+        [
+          "STEP OUTPUT FILE: When you complete your task, write a structured summary file.",
+          "Before exiting, call `report_result` with outcome, summary, filesChanged, and testsRun.",
+          "",
+          "## Summary",
+          "1-2 sentence description of what was accomplished.",
+          "",
+          "## Files Changed",
+          "Bulleted list of files created or modified.",
+          "",
+          "codex",
+          "What I accomplished",
+          "- Completed the math phase: added `median`, `range`, and `clamp` utilities in `src/math.js`.",
+          "- Added focused `node:test` coverage in `test/math.test.js`.",
+          "",
+          "What I changed",
+          "- [`src/math.js`](file:///tmp/work/src/math.js): added math utilities.",
+          "- [`test/math.test.js`](file:///tmp/work/test/math.test.js): added tests.",
+          "- [`.ade/checkpoints/worker.md`](file:///tmp/work/.ade/checkpoints/worker.md): checkpoint.",
+          "",
+          "Tests",
+          "- `npm test`: passed (8 passed, 0 failed).",
+          "",
+          "Validation",
+          "- Confirmed all existing and new tests execute successfully.",
+          "",
+        ].join("\n"),
+        "utf8"
+      );
+
+      const reconciled = await fixture.service.onTrackedSessionEnded({
+        sessionId: attempt.executorSessionId,
+        laneId: fixture.laneId,
+        exitCode: 0
+      });
+      expect(reconciled).toBe(1);
+
+      const step = fixture.service.listSteps(started.run.id).find((entry) => entry.id === stepId);
+      const metadata = (step?.metadata ?? {}) as Record<string, any>;
+      expect(metadata.recoveredResultReportFromTranscript).toBe(true);
+      expect(metadata.lastResultReport?.summary).toContain("Completed the math phase");
+      expect(metadata.lastResultReport?.summary).not.toContain("1-2 sentence");
+      expect(metadata.lastResultReport?.filesChanged).toEqual(["src/math.js", "test/math.test.js"]);
+      expect(metadata.lastResultReport?.testsRun).toEqual(expect.objectContaining({
+        command: "npm test",
+        passed: 8,
+        failed: 0,
+      }));
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("recovers Codex closeout counts from label-first test summaries", async () => {
+    const fixture = await createFixture();
+    try {
+      const now = "2026-02-19T00:00:00.000Z";
+      const transcriptDir = path.join(fixture.projectRoot, ".ade", "transcripts");
+      fs.mkdirSync(transcriptDir, { recursive: true });
+      const preSessionId = "session-1";
+      const transcriptPath = path.join(transcriptDir, `${preSessionId}.log`);
+      fixture.db.run(
+        `insert or ignore into terminal_sessions(
+          id, lane_id, pty_id, tracked, title, started_at, ended_at,
+          exit_code, transcript_path, head_sha_start, head_sha_end,
+          status, last_output_preview, summary, tool_type, resume_command, last_output_at
+        ) values (?, ?, null, 1, 'Worker', ?, null, null, ?, null, null,
+          'running', null, null, 'codex-orchestrated', null, ?)`,
+        [preSessionId, fixture.laneId, now, transcriptPath, now]
+      );
+
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "closeout-worker",
+            title: "Closeout worker",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "opencode",
+            metadata: {
+              stepType: "implementation",
+              phaseKey: "closeout",
+              phaseName: "Closeout",
+            },
+          }
+        ]
+      });
+      const stepId = fixture.service.listSteps(started.run.id)[0]?.id;
+      if (!stepId) throw new Error("Expected closeout step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId,
+        ownerId: "operator"
+      });
+      if (!attempt.executorSessionId) throw new Error("Expected running session-backed attempt");
+
+      fs.writeFileSync(
+        transcriptPath,
+        [
+          "STEP OUTPUT FILE: When you complete your task, write a structured summary file.",
+          "Before exiting, call `report_result` with outcome, summary, filesChanged, and testsRun.",
+          "",
+          "## Accomplished",
+          "- This is prompt/template noise and must not become the final summary.",
+          "",
+          "TAP version 13",
+          "# pass 10",
+          "# fail 0",
+          "# skipped 0",
+          "",
+          "codex",
+          "Accomplished: closeout verification is complete. The requested math and string utilities are implemented, exported, documented, and covered by tests.",
+          "",
+          "What I changed in this phase:",
+          "- [src/math.js](./src/math.js)",
+          "- [src/strings.js](./src/strings.js)",
+          "- [src/index.js](./src/index.js)",
+          "- [README.md](./README.md)",
+          "- [test/math.test.js](./test/math.test.js)",
+          "- [test/strings.test.js](./test/strings.test.js)",
+          "- [`.ade/step-output-closeout.md`](./.ade/step-output-closeout.md)",
+          "- [`..checkpoints/closeout.md`](../.ade/checkpoints/closeout.md)",
+          "",
+          "Tests:",
+          "- Ran `npm test` (Node test runner via `node --test`)",
+          "- Result: `pass 10`, `fail 0`, `skipped 0`",
+          "",
+          "Notes / risks:",
+          "- No known functional risks.",
+          "",
+        ].join("\n"),
+        "utf8"
+      );
+
+      const reconciled = await fixture.service.onTrackedSessionEnded({
+        sessionId: attempt.executorSessionId,
+        laneId: fixture.laneId,
+        exitCode: 0
+      });
+      expect(reconciled).toBe(1);
+
+      const step = fixture.service.listSteps(started.run.id).find((entry) => entry.id === stepId);
+      const metadata = (step?.metadata ?? {}) as Record<string, any>;
+      expect(metadata.recoveredResultReportFromTranscript).toBe(true);
+      expect(metadata.lastResultReport?.summary).toContain("closeout verification is complete");
+      expect(metadata.lastResultReport?.summary).not.toContain("prompt/template noise");
+      expect(metadata.lastResultReport?.filesChanged).toEqual([
+        "src/math.js",
+        "src/strings.js",
+        "src/index.js",
+        "README.md",
+        "test/math.test.js",
+        "test/strings.test.js",
+      ]);
+      expect(metadata.lastResultReport?.testsRun).toEqual(expect.objectContaining({
+        command: "npm test",
+        passed: 10,
+        failed: 0,
+        skipped: 0,
+      }));
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("prefers the final Codex report over embedded earlier worker result JSON", async () => {
+    const fixture = await createFixture();
+    try {
+      const now = "2026-02-19T00:00:00.000Z";
+      const transcriptDir = path.join(fixture.projectRoot, ".ade", "transcripts");
+      fs.mkdirSync(transcriptDir, { recursive: true });
+      const preSessionId = "session-1";
+      const transcriptPath = path.join(transcriptDir, `${preSessionId}.log`);
+      fixture.db.run(
+        `insert or ignore into terminal_sessions(
+          id, lane_id, pty_id, tracked, title, started_at, ended_at,
+          exit_code, transcript_path, head_sha_start, head_sha_end,
+          status, last_output_preview, summary, tool_type, resume_command, last_output_at
+        ) values (?, ?, null, 1, 'Worker', ?, null, null, ?, null, null,
+          'running', null, null, 'codex-orchestrated', null, ?)`,
+        [preSessionId, fixture.laneId, now, transcriptPath, now]
+      );
+
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "closeout-worker",
+            title: "Closeout worker",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "opencode",
+            metadata: {
+              stepType: "implementation",
+              phaseKey: "closeout",
+              phaseName: "Closeout",
+            },
+          }
+        ]
+      });
+      const stepId = fixture.service.listSteps(started.run.id)[0]?.id;
+      if (!stepId) throw new Error("Expected closeout step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId,
+        ownerId: "operator"
+      });
+      if (!attempt.executorSessionId) throw new Error("Expected running session-backed attempt");
+
+      fs.writeFileSync(
+        transcriptPath,
+        [
+          "codex",
+          "Inspecting the run graph before final closeout.",
+          "exec",
+          JSON.stringify({
+            previousStep: {
+              lastResultReport: {
+                outcome: "succeeded",
+                summary: "Inspected the live run and produced a concrete execution DAG. No files were modified.",
+                filesChanged: [],
+                testsRun: null,
+                plan: {
+                  markdown: [
+                    "## Plan",
+                    "- Launch contract_author and consumer_impl in parallel.",
+                    "- Integrate, test, and close out.",
+                  ].join("\n"),
+                },
+              },
+            },
+          }, null, 2),
+          "",
+          "codex",
+          "## report_result",
+          "- `outcome`: `succeeded`",
+          "- `summary`: Closeout verification is complete with final file and test evidence.",
+          "- `filesChanged`:",
+          "  - [`src/statusContract.js`](/tmp/work/src/statusContract.js)",
+          "  - [`src/report.js`](/tmp/work/src/report.js)",
+          "  - [`test/inventory.test.js`](/tmp/work/test/inventory.test.js)",
+          "- `testsRun`:",
+          "  - `npm test`",
+          "  - pass: 6",
+          "  - fail: 0",
+          "  - skipped: 0",
+          "",
+          "## HANDOFF SUMMARY",
+          "Final closeout should not inherit the earlier planning payload.",
+        ].join("\n"),
+        "utf8"
+      );
+
+      const reconciled = await fixture.service.onTrackedSessionEnded({
+        sessionId: attempt.executorSessionId,
+        laneId: fixture.laneId,
+        exitCode: 0
+      });
+      expect(reconciled).toBe(1);
+
+      const step = fixture.service.listSteps(started.run.id).find((entry) => entry.id === stepId);
+      const metadata = (step?.metadata ?? {}) as Record<string, any>;
+      expect(metadata.recoveredResultReportFromTranscript).toBe(true);
+      expect(metadata.lastResultReport?.summary).toContain("Closeout verification is complete");
+      expect(metadata.lastResultReport?.summary).not.toContain("execution DAG");
+      expect(metadata.lastResultReport?.plan).toBeUndefined();
+      expect(metadata.lastResultReport?.filesChanged).toEqual([
+        "src/statusContract.js",
+        "src/report.js",
+        "test/inventory.test.js",
+      ]);
+      expect(metadata.lastResultReport?.testsRun).toEqual(expect.objectContaining({
+        command: "npm test",
+        passed: 6,
+        failed: 0,
+        skipped: 0,
+      }));
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("recovers Codex final-answer JSON plans that are missing a trailing top-level brace", async () => {
+    const fixture = await createFixture();
+    try {
+      const now = "2026-02-19T00:00:00.000Z";
+      const transcriptDir = path.join(fixture.projectRoot, ".ade", "transcripts");
+      fs.mkdirSync(transcriptDir, { recursive: true });
+      const preSessionId = "session-1";
+      const transcriptPath = path.join(transcriptDir, `${preSessionId}.log`);
+      fixture.db.run(
+        `insert or ignore into terminal_sessions(
+          id, lane_id, pty_id, tracked, title, started_at, ended_at,
+          exit_code, transcript_path, head_sha_start, head_sha_end,
+          status, last_output_preview, summary, tool_type, resume_command, last_output_at
+        ) values (?, ?, null, 1, 'Worker', ?, null, null, ?, null, null,
+          'running', null, null, 'codex-orchestrated', null, ?)`,
+        [preSessionId, fixture.laneId, now, transcriptPath, now]
+      );
+
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "planning-worker",
+            title: "Planning worker",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "opencode",
+            metadata: {
+              stepType: "planning",
+              phaseKey: "planning",
+              phaseName: "Planning",
+            },
+          }
+        ]
+      });
+      const stepId = fixture.service.listSteps(started.run.id)[0]?.id;
+      if (!stepId) throw new Error("Expected planning step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId,
+        ownerId: "operator"
+      });
+      if (!attempt.executorSessionId) throw new Error("Expected running session-backed attempt");
+
+      const finalPayload = JSON.stringify({
+        outcome: "Read-only planning pass complete.",
+        summary: "Validated custom Codex phase cards and produced the Real60 execution DAG.",
+        filesChanged: [],
+        testsRun: [],
+        plan: {
+          markdown: [
+            "## Mission Plan",
+            "- Run contract_author and consumer_impl in parallel.",
+            "- Integrate, test, and close out with ADE evidence.",
+          ].join("\n"),
+          metadata: {
+            phaseModel: "codex/openai/gpt-5.3-codex-spark",
+            nextCritical: "spawn contract_author + consumer_impl in parallel",
+          },
+        },
+      });
+
+      fs.writeFileSync(
+        transcriptPath,
+        [
+          "codex",
+          "Preparing the plan.",
+          "exec",
+          JSON.stringify({
+            previousStep: {
+              lastResultReport: {
+                outcome: "succeeded",
+                summary: "Earlier embedded planning JSON should not be the chosen payload.",
+                filesChanged: ["old.js"],
+                testsRun: null,
+              },
+            },
+          }, null, 2),
+          "",
+          "codex",
+          finalPayload.slice(0, -1),
+          "",
+          "tokens used",
+          "44,004",
+        ].join("\n"),
+        "utf8"
+      );
+
+      const reconciled = await fixture.service.onTrackedSessionEnded({
+        sessionId: attempt.executorSessionId,
+        laneId: fixture.laneId,
+        exitCode: 0
+      });
+      expect(reconciled).toBe(1);
+
+      const step = fixture.service.listSteps(started.run.id).find((entry) => entry.id === stepId);
+      const metadata = (step?.metadata ?? {}) as Record<string, any>;
+      expect(step?.status).toBe("succeeded");
+      expect(metadata.recoveredResultReportFromTranscript).toBe(true);
+      expect(metadata.lastResultReport?.summary).toContain("Real60 execution DAG");
+      expect(metadata.lastResultReport?.summary).not.toContain("Earlier embedded");
+      expect(metadata.lastResultReport?.filesChanged).toEqual([]);
+      expect(metadata.lastResultReport?.testsRun).toBeNull();
+      expect(metadata.lastResultReport?.plan?.markdown).toContain("contract_author and consumer_impl in parallel");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("prefers final Codex fenced JSON plans over loose prose recovery without a report_result heading", async () => {
+    const fixture = await createFixture();
+    try {
+      const now = "2026-02-19T00:00:00.000Z";
+      const transcriptDir = path.join(fixture.projectRoot, ".ade", "transcripts");
+      fs.mkdirSync(transcriptDir, { recursive: true });
+      const preSessionId = "session-1";
+      const transcriptPath = path.join(transcriptDir, `${preSessionId}.log`);
+      fixture.db.run(
+        `insert or ignore into terminal_sessions(
+          id, lane_id, pty_id, tracked, title, started_at, ended_at,
+          exit_code, transcript_path, head_sha_start, head_sha_end,
+          status, last_output_preview, summary, tool_type, resume_command, last_output_at
+        ) values (?, ?, null, 1, 'Worker', ?, null, null, ?, null, null,
+          'running', null, null, 'codex-orchestrated', null, ?)`,
+        [preSessionId, fixture.laneId, now, transcriptPath, now]
+      );
+
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "planning-worker",
+            title: "Planning worker",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "opencode",
+            metadata: {
+              stepType: "planning",
+              phaseKey: "planning",
+              phaseName: "Planning",
+            },
+          }
+        ]
+      });
+      const stepId = fixture.service.listSteps(started.run.id)[0]?.id;
+      if (!stepId) throw new Error("Expected planning step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId,
+        ownerId: "operator"
+      });
+      if (!attempt.executorSessionId) throw new Error("Expected running session-backed attempt");
+
+      fs.writeFileSync(
+        transcriptPath,
+        [
+          "codex",
+          "`what I accomplished`",
+          "- Inspected the run graph and phase cards.",
+          "",
+          "`what I changed`",
+          "- No files were modified.",
+          "- `filesChanged: []`",
+          "- `testsRun: []`",
+          "",
+          "```json",
+          JSON.stringify({
+            outcome: "success",
+            summary: "Structured planning payload should win over loose prose.",
+            filesChanged: [],
+            testsRun: [],
+            plan: {
+              markdown: [
+                "## Plan",
+                "- Spawn contract_author and consumer_impl in parallel.",
+                "- Capture ADE message_worker evidence.",
+              ].join("\n"),
+            },
+          }, null, 2),
+          "```",
+          "",
+          "`HANDOFF SUMMARY`",
+          "Structured JSON contains the first-class plan.",
+        ].join("\n"),
+        "utf8"
+      );
+
+      const reconciled = await fixture.service.onTrackedSessionEnded({
+        sessionId: attempt.executorSessionId,
+        laneId: fixture.laneId,
+        exitCode: 0
+      });
+      expect(reconciled).toBe(1);
+
+      const step = fixture.service.listSteps(started.run.id).find((entry) => entry.id === stepId);
+      const metadata = (step?.metadata ?? {}) as Record<string, any>;
+      expect(step?.status).toBe("succeeded");
+      expect(metadata.recoveredResultReportFromTranscript).toBe(true);
+      expect(metadata.lastResultReport?.summary).toContain("Structured planning payload");
+      expect(metadata.lastResultReport?.plan?.markdown).toContain("message_worker evidence");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("prefers the final Codex bullet report over earlier yamlish planning payloads", async () => {
+    const fixture = await createFixture();
+    try {
+      const now = "2026-02-19T00:00:00.000Z";
+      const transcriptDir = path.join(fixture.projectRoot, ".ade", "transcripts");
+      fs.mkdirSync(transcriptDir, { recursive: true });
+      const preSessionId = "session-1";
+      const transcriptPath = path.join(transcriptDir, `${preSessionId}.log`);
+      fixture.db.run(
+        `insert or ignore into terminal_sessions(
+          id, lane_id, pty_id, tracked, title, started_at, ended_at,
+          exit_code, transcript_path, head_sha_start, head_sha_end,
+          status, last_output_preview, summary, tool_type, resume_command, last_output_at
+        ) values (?, ?, null, 1, 'Worker', ?, null, null, ?, null, null,
+          'running', null, null, 'codex-orchestrated', null, ?)`,
+        [preSessionId, fixture.laneId, now, transcriptPath, now]
+      );
+
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "integration-worker",
+            title: "Integration worker",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "opencode",
+            metadata: {
+              stepType: "implementation",
+              phaseKey: "integration",
+              phaseName: "Integration",
+            },
+          }
+        ]
+      });
+      const stepId = fixture.service.listSteps(started.run.id)[0]?.id;
+      if (!stepId) throw new Error("Expected integration step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId,
+        ownerId: "operator"
+      });
+      if (!attempt.executorSessionId) throw new Error("Expected running session-backed attempt");
+
+      fs.writeFileSync(
+        transcriptPath,
+        [
+          "codex",
+          "Earlier graph output included an old planning payload.",
+          "report_result:",
+          "  outcome: complete",
+          "  summary: \"First-class plan is complete and should not be reused.\"",
+          "  filesChanged: []",
+          "  testsRun: []",
+          "  plan:",
+          "    markdown: |",
+          "      # Old planning payload",
+          "      - Do not select this for integration.",
+          "",
+          "codex",
+          "What I accomplished",
+          "- Completed the integration phase after both parallel peers were finished.",
+          "- Exported helper APIs and updated docs.",
+          "",
+          "What I changed",
+          "- [src/index.js](/tmp/work/src/index.js)",
+          "- [README.md](/tmp/work/README.md)",
+          "- [.ade/checkpoints/worker_integration-worker.md](/tmp/work/.ade/checkpoints/worker_integration-worker.md)",
+          "",
+          "Tests",
+          "- `npm test`: total 6, passed 6, failed 0, skipped 0.",
+          "",
+          "`report_result`",
+          "- outcome: `succeeded`",
+          "- summary: `Integrated status helper exports + README update after parallel workers.`",
+          "- filesChanged: `src/index.js`, `README.md`, `.ade/checkpoints/worker_integration-worker.md`",
+          "- testsRun: `npm test (passed: 6, failed: 0, skipped: 0)`",
+        ].join("\n"),
+        "utf8"
+      );
+
+      const reconciled = await fixture.service.onTrackedSessionEnded({
+        sessionId: attempt.executorSessionId,
+        laneId: fixture.laneId,
+        exitCode: 0
+      });
+      expect(reconciled).toBe(1);
+
+      const step = fixture.service.listSteps(started.run.id).find((entry) => entry.id === stepId);
+      const metadata = (step?.metadata ?? {}) as Record<string, any>;
+      expect(step?.status).toBe("succeeded");
+      expect(metadata.recoveredResultReportFromTranscript).toBe(true);
+      expect(metadata.lastResultReport?.summary).toContain("Integrated status helper exports");
+      expect(metadata.lastResultReport?.summary).not.toContain("First-class plan");
+      expect(metadata.lastResultReport?.plan).toBeUndefined();
+      expect(metadata.lastResultReport?.filesChanged).toEqual(["src/index.js", "README.md"]);
+      expect(metadata.lastResultReport?.testsRun).toEqual(expect.objectContaining({
+        command: expect.stringContaining("npm test"),
+        passed: 6,
+        failed: 0,
+        skipped: 0,
+      }));
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("recovers Codex testing summaries without an explicit report_result heading", async () => {
+    const fixture = await createFixture();
+    try {
+      const now = "2026-02-19T00:00:00.000Z";
+      const transcriptDir = path.join(fixture.projectRoot, ".ade", "transcripts");
+      fs.mkdirSync(transcriptDir, { recursive: true });
+      const preSessionId = "session-1";
+      const transcriptPath = path.join(transcriptDir, `${preSessionId}.log`);
+      fixture.db.run(
+        `insert or ignore into terminal_sessions(
+          id, lane_id, pty_id, tracked, title, started_at, ended_at,
+          exit_code, transcript_path, head_sha_start, head_sha_end,
+          status, last_output_preview, summary, tool_type, resume_command, last_output_at
+        ) values (?, ?, null, 1, 'Worker', ?, null, null, ?, null, null,
+          'running', null, null, 'codex-orchestrated', null, ?)`,
+        [preSessionId, fixture.laneId, now, transcriptPath, now]
+      );
+
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "testing-worker",
+            title: "Testing worker",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "opencode",
+            metadata: {
+              stepType: "testing",
+              phaseKey: "testing",
+              phaseName: "Testing",
+            },
+          }
+        ]
+      });
+      const stepId = fixture.service.listSteps(started.run.id)[0]?.id;
+      if (!stepId) throw new Error("Expected testing step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId,
+        ownerId: "operator"
+      });
+      if (!attempt.executorSessionId) throw new Error("Expected running session-backed attempt");
+
+      fs.writeFileSync(
+        transcriptPath,
+        [
+          "exec",
+          "/bin/zsh -lc \"ade actions run orchestrator_core.addReflection --input-json '{...}'\" in /tmp/work",
+          "exited 1",
+          "ade: occurredAt is required and must be a valid ISO-8601 timestamp.",
+          "",
+          "codex",
+          "Testing phase complete.",
+          "",
+          "## What I accomplished",
+          "- Ran required validation and reporting commands for this phase.",
+          "- Captured exact test counts and exact ADE evidence outputs.",
+          "",
+          "## What I changed",
+          "- [`.ade/checkpoints/worker_testing-worker.md`](.ade/checkpoints/worker_testing-worker.md)",
+          "- [`.ade/step-output-worker_testing-worker.md`](.ade/step-output-worker_testing-worker.md)",
+          "",
+          "## Test results",
+          "- `npm test`",
+          "- total: `6`",
+          "- pass: `6`",
+          "- fail: `0`",
+          "- skipped: `0`",
+          "",
+          "## Evidence captured",
+          "- `ade message_worker`: `queued_for_polling` for completed peers.",
+        ].join("\n"),
+        "utf8"
+      );
+
+      const reconciled = await fixture.service.onTrackedSessionEnded({
+        sessionId: attempt.executorSessionId,
+        laneId: fixture.laneId,
+        exitCode: 0
+      });
+      expect(reconciled).toBe(1);
+
+      const step = fixture.service.listSteps(started.run.id).find((entry) => entry.id === stepId);
+      const metadata = (step?.metadata ?? {}) as Record<string, any>;
+      expect(step?.status).toBe("succeeded");
+      expect(metadata.recoveredResultReportFromTranscript).toBe(true);
+      expect(metadata.lastResultReport?.summary).toContain("Ran required validation");
+      expect(metadata.lastResultReport?.filesChanged).toEqual([]);
+      expect(metadata.lastResultReport?.testsRun).toEqual(expect.objectContaining({
+        command: "npm test",
+        passed: 6,
+        failed: 0,
+        skipped: 0,
+      }));
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("recovers Codex closeout summaries that start with implemented", async () => {
+    const fixture = await createFixture();
+    try {
+      const now = "2026-02-19T00:00:00.000Z";
+      const transcriptDir = path.join(fixture.projectRoot, ".ade", "transcripts");
+      fs.mkdirSync(transcriptDir, { recursive: true });
+      const preSessionId = "session-1";
+      const transcriptPath = path.join(transcriptDir, `${preSessionId}.log`);
+      fixture.db.run(
+        `insert or ignore into terminal_sessions(
+          id, lane_id, pty_id, tracked, title, started_at, ended_at,
+          exit_code, transcript_path, head_sha_start, head_sha_end,
+          status, last_output_preview, summary, tool_type, resume_command, last_output_at
+        ) values (?, ?, null, 1, 'Worker', ?, null, null, ?, null, null,
+          'running', null, null, 'codex-orchestrated', null, ?)`,
+        [preSessionId, fixture.laneId, now, transcriptPath, now]
+      );
+
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "closeout-worker",
+            title: "Closeout worker",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "opencode",
+            metadata: {
+              stepType: "closeout",
+              phaseKey: "closeout",
+              phaseName: "Closeout",
+            },
+          }
+        ]
+      });
+      const stepId = fixture.service.listSteps(started.run.id)[0]?.id;
+      if (!stepId) throw new Error("Expected closeout step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId,
+        ownerId: "operator"
+      });
+      if (!attempt.executorSessionId) throw new Error("Expected running session-backed attempt");
+
+      fs.writeFileSync(
+        transcriptPath,
+        [
+          "codex",
+          "Earlier graph output included a planning payload.",
+          "report_result:",
+          "  outcome: complete",
+          "  summary: \"First-class plan is complete and should not close out the mission.\"",
+          "  filesChanged: []",
+          "  testsRun: []",
+          "  plan:",
+          "    markdown: |",
+          "      # Old planning payload",
+          "",
+          "codex",
+          "Implemented: Real63 closeout was completed from the active worker context, with upstream phase outputs and ADE evidence consolidated.",
+          "",
+          "What I changed:",
+          "- Added checkpoint: [.ade/checkpoints/worker_closeout-worker.md](/tmp/work/.ade/checkpoints/worker_closeout-worker.md)",
+          "- Added closeout step output: [.ade/step-output-worker_closeout-worker.md](/tmp/work/.ade/step-output-worker_closeout-worker.md)",
+          "",
+          "Mission changes from upstream:",
+          "- [README.md](/tmp/work/README.md)",
+          "- [src/index.js](/tmp/work/src/index.js)",
+          "- [src/report.js](/tmp/work/src/report.js)",
+          "- [test/inventory.test.js](/tmp/work/test/inventory.test.js)",
+          "- [src/statusContract.js](/tmp/work/src/statusContract.js)",
+          "",
+          "Tests:",
+          "- contract_author phase: pass 4, fail 0, skip 0",
+          "- consumer_impl phase: pass 5, fail 0, skip 0",
+          "- testing phase: pass 5, fail 0, skip 0",
+          "",
+          "Risks / notes for downstream:",
+          "- No product defaults or phase defaults were changed.",
+        ].join("\n"),
+        "utf8"
+      );
+
+      const reconciled = await fixture.service.onTrackedSessionEnded({
+        sessionId: attempt.executorSessionId,
+        laneId: fixture.laneId,
+        exitCode: 0
+      });
+      expect(reconciled).toBe(1);
+
+      const step = fixture.service.listSteps(started.run.id).find((entry) => entry.id === stepId);
+      const metadata = (step?.metadata ?? {}) as Record<string, any>;
+      expect(step?.status).toBe("succeeded");
+      expect(metadata.recoveredResultReportFromTranscript).toBe(true);
+      expect(metadata.lastResultReport?.summary).toContain("Real63 closeout");
+      expect(metadata.lastResultReport?.summary).not.toContain("First-class plan");
+      expect(metadata.lastResultReport?.plan).toBeUndefined();
+      expect(metadata.lastResultReport?.filesChanged).toEqual([
+        "README.md",
+        "src/index.js",
+        "src/report.js",
+        "test/inventory.test.js",
+        "src/statusContract.js",
+      ]);
+      expect(metadata.lastResultReport?.testsRun).toEqual(expect.objectContaining({
+        passed: 4,
+        failed: 0,
+        skipped: 0,
+      }));
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("recovers Codex report_result bullet lists under h3 headings", async () => {
+    const fixture = await createFixture();
+    try {
+      const now = "2026-02-19T00:00:00.000Z";
+      const transcriptDir = path.join(fixture.projectRoot, ".ade", "transcripts");
+      fs.mkdirSync(transcriptDir, { recursive: true });
+      const preSessionId = "session-1";
+      const transcriptPath = path.join(transcriptDir, `${preSessionId}.log`);
+      fixture.db.run(
+        `insert or ignore into terminal_sessions(
+          id, lane_id, pty_id, tracked, title, started_at, ended_at,
+          exit_code, transcript_path, head_sha_start, head_sha_end,
+          status, last_output_preview, summary, tool_type, resume_command, last_output_at
+        ) values (?, ?, null, 1, 'Worker', ?, null, null, ?, null, null,
+          'running', null, null, 'codex-orchestrated', null, ?)`,
+        [preSessionId, fixture.laneId, now, transcriptPath, now]
+      );
+
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "implementation-math-worker",
+            title: "Implementation math worker",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "opencode",
+            metadata: {
+              stepType: "implementation",
+              phaseKey: "implementation_math",
+              phaseName: "Implementation math",
+            },
+          }
+        ]
+      });
+      const stepId = fixture.service.listSteps(started.run.id)[0]?.id;
+      if (!stepId) throw new Error("Expected implementation step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId,
+        ownerId: "operator"
+      });
+      if (!attempt.executorSessionId) throw new Error("Expected running session-backed attempt");
+
+      fs.writeFileSync(
+        transcriptPath,
+        [
+          "Before exiting, call `report_result` with outcome, summary, filesChanged, and testsRun.",
+          "",
+          "codex",
+          "### report_result",
+          "- outcome: Completed. Implemented math utilities and math tests in this phase only; all tests pass.",
+          "- summary: Added `median`, `range`, and `clamp` utilities to `src/math.js`, and added focused `node:test` coverage in `test/math.test.js`.",
+          "- filesChanged: 2",
+          "  - [`src/math.js`](/tmp/work/src/math.js)",
+          "  - [`test/math.test.js`](/tmp/work/test/math.test.js)",
+          "- testsRun: `npm test` (pass; 14 total tests, 14 passed)",
+          "",
+          "### HANDOFF SUMMARY",
+          "Downstream should wire exports and docs later.",
+          "diff --git a/src/math.js b/src/math.js",
+          "",
+        ].join("\n"),
+        "utf8"
+      );
+
+      const reconciled = await fixture.service.onTrackedSessionEnded({
+        sessionId: attempt.executorSessionId,
+        laneId: fixture.laneId,
+        exitCode: 0
+      });
+      expect(reconciled).toBe(1);
+
+      const step = fixture.service.listSteps(started.run.id).find((entry) => entry.id === stepId);
+      const metadata = (step?.metadata ?? {}) as Record<string, any>;
+      expect(metadata.recoveredResultReportFromTranscript).toBe(true);
+      expect(metadata.lastResultReport?.summary).toContain("Added `median`, `range`, and `clamp`");
+      expect(metadata.lastResultReport?.filesChanged).toEqual(["src/math.js", "test/math.test.js"]);
+      expect(metadata.lastResultReport?.testsRun).toEqual(expect.objectContaining({
+        command: "npm test",
+        passed: 14,
+      }));
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("recovers Codex yamlish report_result plans without treating target files as changes", async () => {
+    const fixture = await createFixture();
+    try {
+      const now = "2026-02-19T00:00:00.000Z";
+      const transcriptDir = path.join(fixture.projectRoot, ".ade", "transcripts");
+      fs.mkdirSync(transcriptDir, { recursive: true });
+      const preSessionId = "session-1";
+      const transcriptPath = path.join(transcriptDir, `${preSessionId}.log`);
+      fixture.db.run(
+        `insert or ignore into terminal_sessions(
+          id, lane_id, pty_id, tracked, title, started_at, ended_at,
+          exit_code, transcript_path, head_sha_start, head_sha_end,
+          status, last_output_preview, summary, tool_type, resume_command, last_output_at
+        ) values (?, ?, null, 1, 'Worker', ?, null, null, ?, null, null,
+          'running', null, null, 'codex-orchestrated', null, ?)`,
+        [preSessionId, fixture.laneId, now, transcriptPath, now]
+      );
+
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "planning-worker",
+            title: "Planning worker",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "opencode",
+            metadata: {
+              stepType: "planning",
+              phaseKey: "planning",
+              phaseName: "Planning",
+            },
+          }
+        ]
+      });
+      const stepId = fixture.service.listSteps(started.run.id)[0]?.id;
+      if (!stepId) throw new Error("Expected planning step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId,
+        ownerId: "operator"
+      });
+      if (!attempt.executorSessionId) throw new Error("Expected running session-backed attempt");
+
+      fs.writeFileSync(
+        transcriptPath,
+        [
+          "Return the plan through report_result with a first-class plan payload.",
+          "",
+          "codex",
+          "report_result:",
+          "  outcome: \"Completed planning-only inspection and produced a concrete execution plan.\"",
+          "  summary: \"I completed a read-only sweep and split math/string work into parallel workers.\"",
+          "  filesChanged: []",
+          "  testsRun: []",
+          "  plan:",
+          "    markdown: |",
+          "      ## Context summary",
+          "      - Current API is split into `src/math.js` and `src/strings.js`.",
+          "",
+          "      ## Target files",
+          "      - `[src/math.js](/tmp/work/src/math.js)`",
+          "      - `[src/strings.js](/tmp/work/src/strings.js)`",
+          "      - `[src/index.js](/tmp/work/src/index.js)`",
+          "      - `[README.md](/tmp/work/README.md)`",
+          "",
+          "  handoffSummary:",
+          "    - \"No code changes were made in planning.\"",
+          "",
+        ].join("\n"),
+        "utf8"
+      );
+
+      const reconciled = await fixture.service.onTrackedSessionEnded({
+        sessionId: attempt.executorSessionId,
+        laneId: fixture.laneId,
+        exitCode: 0
+      });
+      expect(reconciled).toBe(1);
+
+      const step = fixture.service.listSteps(started.run.id).find((entry) => entry.id === stepId);
+      const metadata = (step?.metadata ?? {}) as Record<string, any>;
+      expect(metadata.recoveredResultReportFromTranscript).toBe(true);
+      expect(metadata.lastResultReport?.summary).toContain("read-only sweep");
+      expect(metadata.lastResultReport?.filesChanged).toEqual([]);
+      expect(metadata.lastResultReport?.testsRun).toBeNull();
+      expect(metadata.lastResultReport?.plan?.markdown).toContain("## Context summary");
+      expect(metadata.lastResultReport?.plan?.markdown).toContain("src/index.js");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("prefers Codex fenced JSON report_result plans over lossy final-answer parsing", async () => {
+    const fixture = await createFixture();
+    try {
+      const now = "2026-02-19T00:00:00.000Z";
+      const transcriptDir = path.join(fixture.projectRoot, ".ade", "transcripts");
+      fs.mkdirSync(transcriptDir, { recursive: true });
+      const preSessionId = "session-1";
+      const transcriptPath = path.join(transcriptDir, `${preSessionId}.log`);
+      fixture.db.run(
+        `insert or ignore into terminal_sessions(
+          id, lane_id, pty_id, tracked, title, started_at, ended_at,
+          exit_code, transcript_path, head_sha_start, head_sha_end,
+          status, last_output_preview, summary, tool_type, resume_command, last_output_at
+        ) values (?, ?, null, 1, 'Worker', ?, null, null, ?, null, null,
+          'running', null, null, 'codex-orchestrated', null, ?)`,
+        [preSessionId, fixture.laneId, now, transcriptPath, now]
+      );
+
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "planning-worker",
+            title: "Planning worker",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "opencode",
+            metadata: {
+              stepType: "planning",
+              phaseKey: "planning",
+              phaseName: "Planning",
+            },
+          }
+        ]
+      });
+      const stepId = fixture.service.listSteps(started.run.id)[0]?.id;
+      if (!stepId) throw new Error("Expected planning step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId,
+        ownerId: "operator"
+      });
+      if (!attempt.executorSessionId) throw new Error("Expected running session-backed attempt");
+
+      fs.writeFileSync(
+        transcriptPath,
+        [
+          "codex",
+          "### What I accomplished",
+          "- Completed a read-only planning scan.",
+          "",
+          "### report_result",
+          "```json",
+          JSON.stringify({
+            outcome: "Read-only planning complete; implementation plan is ready.",
+            summary: "Split math and string work into parallel streams, then consolidate docs and exports.",
+            filesChanged: [],
+            testsRun: [],
+            plan: {
+              metadata: {
+                owner: "planning-worker",
+                phase: "read-only planning",
+              },
+              markdown: [
+                "- Math worker owns `src/math.js` and `test/math.test.js`.",
+                "- String worker owns `src/strings.js` and `test/strings.test.js`.",
+                "- API/docs worker owns `src/index.js` and `README.md` after both streams finish.",
+              ].join("\n"),
+            },
+          }, null, 2),
+          "```",
+          "",
+          "### HANDOFF SUMMARY",
+          "- No files were edited.",
+        ].join("\n"),
+        "utf8"
+      );
+
+      const reconciled = await fixture.service.onTrackedSessionEnded({
+        sessionId: attempt.executorSessionId,
+        laneId: fixture.laneId,
+        exitCode: 0
+      });
+      expect(reconciled).toBe(1);
+
+      const step = fixture.service.listSteps(started.run.id).find((entry) => entry.id === stepId);
+      const metadata = (step?.metadata ?? {}) as Record<string, any>;
+      expect(step?.status).toBe("succeeded");
+      expect(metadata.recoveredResultReportFromTranscript).toBe(true);
+      expect(metadata.lastResultReport?.summary).toContain("parallel streams");
+      expect(metadata.lastResultReport?.filesChanged).toEqual([]);
+      expect(metadata.lastResultReport?.testsRun).toBeNull();
+      expect(metadata.lastResultReport?.plan?.markdown).toContain("API/docs worker");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("recovers Codex final-answer fenced planning markdown as report_result.plan.markdown", async () => {
+    const fixture = await createFixture();
+    try {
+      const now = "2026-02-19T00:00:00.000Z";
+      const transcriptDir = path.join(fixture.projectRoot, ".ade", "transcripts");
+      fs.mkdirSync(transcriptDir, { recursive: true });
+      const preSessionId = "session-1";
+      const transcriptPath = path.join(transcriptDir, `${preSessionId}.log`);
+      fixture.db.run(
+        `insert or ignore into terminal_sessions(
+          id, lane_id, pty_id, tracked, title, started_at, ended_at,
+          exit_code, transcript_path, head_sha_start, head_sha_end,
+          status, last_output_preview, summary, tool_type, resume_command, last_output_at
+        ) values (?, ?, null, 1, 'Worker', ?, null, null, ?, null, null,
+          'running', null, null, 'codex-orchestrated', null, ?)`,
+        [preSessionId, fixture.laneId, now, transcriptPath, now]
+      );
+
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "planning-worker",
+            title: "Planning worker",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "opencode",
+            metadata: {
+              stepType: "planning",
+              phaseKey: "planning",
+              phaseName: "Planning",
+            },
+          }
+        ]
+      });
+      const stepId = fixture.service.listSteps(started.run.id)[0]?.id;
+      if (!stepId) throw new Error("Expected planning step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId,
+        ownerId: "operator"
+      });
+      if (!attempt.executorSessionId) throw new Error("Expected running session-backed attempt");
+
+      fs.writeFileSync(
+        transcriptPath,
+        [
+          "codex",
+          "Accomplished:",
+          "- Completed read-only planning and confirmed the custom Codex phases.",
+          "",
+          "What changed:",
+          "- None; planning is read-only.",
+          "",
+          "Plan (for orchestration handoff):",
+          "```markdown",
+          "## Plan: Real49 parallel worker lane proof",
+          "",
+          "### 1) Parallel execution",
+          "- `contract_author` owns `src/statusContract.js` and focused tests.",
+          "- `consumer_impl` owns status-aware report output.",
+          "",
+          "### 2) Closeout",
+          "- Report worker paths, messaging outcome, and exact test counts.",
+          "```",
+          "",
+          "`report_result` payload fields:",
+          "- `outcome`: planning complete",
+          "- `summary`: validated fixture structure and phase ordering",
+          "",
+          "Handoff summary:",
+          "- No files were edited.",
+        ].join("\n"),
+        "utf8"
+      );
+
+      const reconciled = await fixture.service.onTrackedSessionEnded({
+        sessionId: attempt.executorSessionId,
+        laneId: fixture.laneId,
+        exitCode: 0
+      });
+      expect(reconciled).toBe(1);
+
+      const step = fixture.service.listSteps(started.run.id).find((entry) => entry.id === stepId);
+      const metadata = (step?.metadata ?? {}) as Record<string, any>;
+      expect(step?.status).toBe("succeeded");
+      expect(metadata.recoveredResultReportFromTranscript).toBe(true);
+      expect(metadata.lastResultReport?.summary).toContain("read-only planning");
+      expect(metadata.lastResultReport?.filesChanged).toEqual([]);
+      expect(metadata.lastResultReport?.plan?.markdown).toContain("Real49 parallel worker lane proof");
+      expect(metadata.lastResultReport?.plan?.markdown).toContain("consumer_impl");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("recovers Codex list-style report_result planning markdown", async () => {
+    const fixture = await createFixture();
+    try {
+      const now = "2026-02-19T00:00:00.000Z";
+      const transcriptDir = path.join(fixture.projectRoot, ".ade", "transcripts");
+      fs.mkdirSync(transcriptDir, { recursive: true });
+      const preSessionId = "session-1";
+      const transcriptPath = path.join(transcriptDir, `${preSessionId}.log`);
+      fixture.db.run(
+        `insert or ignore into terminal_sessions(
+          id, lane_id, pty_id, tracked, title, started_at, ended_at,
+          exit_code, transcript_path, head_sha_start, head_sha_end,
+          status, last_output_preview, summary, tool_type, resume_command, last_output_at
+        ) values (?, ?, null, 1, 'Worker', ?, null, null, ?, null, null,
+          'running', null, null, 'codex-orchestrated', null, ?)`,
+        [preSessionId, fixture.laneId, now, transcriptPath, now]
+      );
+
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "planning-worker",
+            title: "Planning worker",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "opencode",
+            metadata: {
+              stepType: "planning",
+              phaseKey: "planning",
+              phaseName: "Planning",
+            },
+          }
+        ]
+      });
+      const stepId = fixture.service.listSteps(started.run.id)[0]?.id;
+      if (!stepId) throw new Error("Expected planning step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId,
+        ownerId: "operator"
+      });
+      if (!attempt.executorSessionId) throw new Error("Expected running session-backed attempt");
+
+      fs.writeFileSync(
+        transcriptPath,
+        [
+          "codex",
+          "report_result",
+          "- outcome: `planning-complete`",
+          "- summary: `Prepared a concrete DAG for two custom Codex workers.`",
+          "- filesChanged: `[]`",
+          "- testsRun: `[]`",
+          "- plan:",
+          "  - markdown: |",
+          "      ## Plan for Real50 mission",
+          "",
+          "      ### Parallel custom phases",
+          "      - `contract_author` owns the shared status contract.",
+          "      - `consumer_impl` owns the report consumer.",
+          "",
+          "      ### Integration",
+          "      - Verify worker messaging and exact test counts.",
+          "  - metadata:",
+          "      parallelism: required",
+        ].join("\n"),
+        "utf8"
+      );
+
+      const reconciled = await fixture.service.onTrackedSessionEnded({
+        sessionId: attempt.executorSessionId,
+        laneId: fixture.laneId,
+        exitCode: 0
+      });
+      expect(reconciled).toBe(1);
+
+      const step = fixture.service.listSteps(started.run.id).find((entry) => entry.id === stepId);
+      const metadata = (step?.metadata ?? {}) as Record<string, any>;
+      expect(step?.status).toBe("succeeded");
+      expect(metadata.recoveredResultReportFromTranscript).toBe(true);
+      expect(metadata.lastResultReport?.summary).toContain("concrete DAG");
+      expect(metadata.lastResultReport?.plan?.markdown).toContain("Plan for Real50 mission");
+      expect(metadata.lastResultReport?.plan?.markdown).toContain("consumer_impl");
+      expect(metadata.lastResultReport?.plan?.markdown).not.toContain("metadata:");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("recovers glued Codex report_result bullets with direct plan.markdown", async () => {
+    const fixture = await createFixture();
+    try {
+      const now = "2026-02-19T00:00:00.000Z";
+      const transcriptDir = path.join(fixture.projectRoot, ".ade", "transcripts");
+      fs.mkdirSync(transcriptDir, { recursive: true });
+      const preSessionId = "session-1";
+      const transcriptPath = path.join(transcriptDir, `${preSessionId}.log`);
+      fixture.db.run(
+        `insert or ignore into terminal_sessions(
+          id, lane_id, pty_id, tracked, title, started_at, ended_at,
+          exit_code, transcript_path, head_sha_start, head_sha_end,
+          status, last_output_preview, summary, tool_type, resume_command, last_output_at
+        ) values (?, ?, null, 1, 'Worker', ?, null, null, ?, null, null,
+          'running', null, null, 'codex-orchestrated', null, ?)`,
+        [preSessionId, fixture.laneId, now, transcriptPath, now]
+      );
+
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "planning-worker",
+            title: "Planning worker",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "opencode",
+            metadata: {
+              stepType: "planning",
+              phaseKey: "planning",
+              phaseName: "Planning",
+            },
+          }
+        ]
+      });
+      const stepId = fixture.service.listSteps(started.run.id)[0]?.id;
+      if (!stepId) throw new Error("Expected planning step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId,
+        ownerId: "operator"
+      });
+      if (!attempt.executorSessionId) throw new Error("Expected running session-backed attempt");
+
+      fs.writeFileSync(
+        transcriptPath,
+        [
+          "codex",
+          "I’ll keep this strictly read-only and just ground the smoke-plan result in the mission context already provided.### report_result",
+          "- outcome: succeeded",
+          "- summary: Read the current mission context and produced the required minimal read-only planning payload; no repository inspection or edits were needed.",
+          "- filesChanged: []",
+          "- testsRun: read-only mission-context review only",
+          "- plan.markdown:",
+          "  ## Plan",
+          "  - What was learned: this is a throwaway ADE Missions smoke test for the normal chat runtime.",
+          "  - Recommended next steps: the coordinator should accept this result and stop the mission cleanly.",
+          "  - Risks or stop conditions: stop if any worker attempts mutation, PR, merge, push, or main activity.",
+          "",
+          "### Accomplished",
+          "- Produced the required report_result-shaped planning response.",
+          "",
+          "### Changed Files",
+          "- None.",
+        ].join("\n"),
+        "utf8"
+      );
+
+      const reconciled = await fixture.service.onTrackedSessionEnded({
+        sessionId: attempt.executorSessionId,
+        laneId: fixture.laneId,
+        exitCode: 0
+      });
+      expect(reconciled).toBe(1);
+
+      const step = fixture.service.listSteps(started.run.id).find((entry) => entry.id === stepId);
+      const metadata = (step?.metadata ?? {}) as Record<string, any>;
+      expect(step?.status).toBe("succeeded");
+      expect(metadata.recoveredResultReportFromTranscript).toBe(true);
+      expect(metadata.lastResultReport?.summary).toContain("minimal read-only planning payload");
+      expect(metadata.lastResultReport?.filesChanged).toEqual([]);
+      expect(metadata.lastResultReport?.plan?.markdown).toContain("throwaway ADE Missions smoke test");
+      expect(metadata.lastResultReport?.plan?.markdown).not.toContain("Accomplished");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("recovers chunked agent chat report_result bullets with direct plan.markdown", async () => {
+    const fixture = await createFixture();
+    try {
+      const now = "2026-02-19T00:00:00.000Z";
+      const transcriptDir = path.join(fixture.projectRoot, ".ade", "transcripts");
+      fs.mkdirSync(transcriptDir, { recursive: true });
+      const preSessionId = "session-1";
+      const transcriptPath = path.join(transcriptDir, `${preSessionId}.chat.jsonl`);
+      fixture.db.run(
+        `insert or ignore into terminal_sessions(
+          id, lane_id, pty_id, tracked, title, started_at, ended_at,
+          exit_code, transcript_path, head_sha_start, head_sha_end,
+          status, last_output_preview, summary, tool_type, resume_command, last_output_at
+        ) values (?, ?, null, 1, 'Worker', ?, null, null, ?, null, null,
+          'running', null, null, 'codex-chat', null, ?)`,
+        [preSessionId, fixture.laneId, now, transcriptPath, now]
+      );
+
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "planning-worker",
+            title: "Planning worker",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "opencode",
+            metadata: {
+              stepType: "planning",
+              phaseKey: "planning",
+              phaseName: "Planning",
+            },
+          }
+        ]
+      });
+      const stepId = fixture.service.listSteps(started.run.id)[0]?.id;
+      if (!stepId) throw new Error("Expected planning step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId,
+        ownerId: "operator"
+      });
+      fixture.db.run(
+        `
+          update orchestrator_attempts
+          set status = 'running',
+              executor_session_id = ?,
+              executor_kind = 'codex',
+              error_class = 'none',
+              error_message = null,
+              completed_at = null
+          where id = ?
+        `,
+        [preSessionId, attempt.id]
+      );
+
+      const chunks = [
+        "I’ll do the minimal read-only check for mission context, then return the required planning result with a first-class `plan.markdown`.### report_result\n- outcome: succeeded\n- summary",
+        ": Produced the required read-only planning payload for the mission without source edits.\n",
+        "- filesChanged: []\n",
+        "- testsRun: Read-only mission context inspection only.\n- plan",
+        ".markdown:\n  ```markdown\n  ## Plan\n  - What was learned: This is a throwaway ADE Missions smoke test for chunked chat transcript recovery.\n  - Recommended next steps: The coordinator should accept this result and continue or close cleanly.\n  - Risks or stop conditions: Stop if any worker attempts mutation, PR, merge, push, or main activity.\n  ```\n\n### HANDOFF SUMMARY\nThe plan was returned in the required field.",
+      ];
+      fs.writeFileSync(
+        transcriptPath,
+        chunks
+          .map((text, index) => JSON.stringify({
+            sessionId: preSessionId,
+            timestamp: now,
+            sequence: index + 1,
+            event: {
+              type: "text",
+              text,
+              messageId: "assistant-message-1",
+            },
+          }))
+          .join("\n"),
+        "utf8"
+      );
+
+      const reconciled = await fixture.service.onTrackedSessionEnded({
+        sessionId: preSessionId,
+        laneId: fixture.laneId,
+        exitCode: 0
+      });
+      expect(reconciled).toBe(1);
+
+      const step = fixture.service.listSteps(started.run.id).find((entry) => entry.id === stepId);
+      const metadata = (step?.metadata ?? {}) as Record<string, any>;
+      expect(step?.status).toBe("succeeded");
+      expect(metadata.recoveredResultReportFromTranscript).toBe(true);
+      expect(metadata.lastResultReport?.summary).toContain("read-only planning payload");
+      expect(metadata.lastResultReport?.filesChanged).toEqual([]);
+      expect(metadata.lastResultReport?.plan?.markdown).toContain("chunked chat transcript recovery");
+      expect(metadata.lastResultReport?.plan?.markdown).not.toContain("HANDOFF SUMMARY");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("recovers Codex REPORT_RESULT plan.markdown artifacts", async () => {
+    const fixture = await createFixture();
+    try {
+      const now = "2026-02-19T00:00:00.000Z";
+      const transcriptDir = path.join(fixture.projectRoot, ".ade", "transcripts");
+      fs.mkdirSync(transcriptDir, { recursive: true });
+      const preSessionId = "session-1";
+      const transcriptPath = path.join(transcriptDir, `${preSessionId}.log`);
+      fixture.db.run(
+        `insert or ignore into terminal_sessions(
+          id, lane_id, pty_id, tracked, title, started_at, ended_at,
+          exit_code, transcript_path, head_sha_start, head_sha_end,
+          status, last_output_preview, summary, tool_type, resume_command, last_output_at
+        ) values (?, ?, null, 1, 'Worker', ?, null, null, ?, null, null,
+          'running', null, null, 'codex-orchestrated', null, ?)`,
+        [preSessionId, fixture.laneId, now, transcriptPath, now]
+      );
+
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "planning-worker",
+            title: "Planning worker",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "opencode",
+            metadata: {
+              stepType: "planning",
+              phaseKey: "planning",
+              phaseName: "Planning",
+            },
+          }
+        ]
+      });
+      const stepId = fixture.service.listSteps(started.run.id)[0]?.id;
+      if (!stepId) throw new Error("Expected planning step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId,
+        ownerId: "operator"
+      });
+      if (!attempt.executorSessionId) throw new Error("Expected running session-backed attempt");
+
+      fs.writeFileSync(
+        transcriptPath,
+        [
+          "codex",
+          "[REPORT_RESULT]",
+          "",
+          "- What I accomplished:",
+          "  - Completed a read-only planning pass.",
+          "  - Ran ADE CLI aliases and captured failures.",
+          "",
+          "- Plan artifact (first-class):",
+          "  - `plan.markdown`",
+          "    ```md",
+          "    # Real51 Mission Plan",
+          "    ## Parallel track A",
+          "    - contract_author owns statusContract.js.",
+          "    ## Parallel track B",
+          "    - consumer_impl owns status-aware report output.",
+          "    ```",
+          "",
+          "- testsRun: `[]`",
+          "",
+          "HANDOFF SUMMARY:",
+          "1. Planning completed.",
+        ].join("\n"),
+        "utf8"
+      );
+
+      const reconciled = await fixture.service.onTrackedSessionEnded({
+        sessionId: attempt.executorSessionId,
+        laneId: fixture.laneId,
+        exitCode: 0
+      });
+      expect(reconciled).toBe(1);
+
+      const step = fixture.service.listSteps(started.run.id).find((entry) => entry.id === stepId);
+      const metadata = (step?.metadata ?? {}) as Record<string, any>;
+      expect(step?.status).toBe("succeeded");
+      expect(metadata.recoveredResultReportFromTranscript).toBe(true);
+      expect(metadata.lastResultReport?.summary).toContain("read-only planning");
+      expect(metadata.lastResultReport?.plan?.markdown).toContain("Real51 Mission Plan");
+      expect(metadata.lastResultReport?.plan?.markdown).toContain("consumer_impl");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("recovers Codex fenced JSON plan payload markdown", async () => {
+    const fixture = await createFixture();
+    try {
+      const now = "2026-02-19T00:00:00.000Z";
+      const transcriptDir = path.join(fixture.projectRoot, ".ade", "transcripts");
+      fs.mkdirSync(transcriptDir, { recursive: true });
+      const preSessionId = "session-1";
+      const transcriptPath = path.join(transcriptDir, `${preSessionId}.log`);
+      fixture.db.run(
+        `insert or ignore into terminal_sessions(
+          id, lane_id, pty_id, tracked, title, started_at, ended_at,
+          exit_code, transcript_path, head_sha_start, head_sha_end,
+          status, last_output_preview, summary, tool_type, resume_command, last_output_at
+        ) values (?, ?, null, 1, 'Worker', ?, null, null, ?, null, null,
+          'running', null, null, 'codex-orchestrated', null, ?)`,
+        [preSessionId, fixture.laneId, now, transcriptPath, now]
+      );
+
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "planning-worker",
+            title: "Planning worker",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "opencode",
+            metadata: {
+              stepType: "planning",
+              phaseKey: "planning",
+              phaseName: "Planning",
+            },
+          }
+        ]
+      });
+      const stepId = fixture.service.listSteps(started.run.id)[0]?.id;
+      if (!stepId) throw new Error("Expected planning step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId,
+        ownerId: "operator"
+      });
+      if (!attempt.executorSessionId) throw new Error("Expected running session-backed attempt");
+
+      fs.writeFileSync(
+        transcriptPath,
+        [
+          "codex",
+          "### What I accomplished",
+          "- Completed planning inspection.",
+          "",
+          "### plan (first-class payload)",
+          "```json",
+          JSON.stringify({
+            markdown: [
+              "## Plan: Real52 inventory status feature",
+              "",
+              "### contract_author",
+              "- Add statusContract.js.",
+              "",
+              "### consumer_impl",
+              "- Add status-aware report output.",
+            ].join("\n"),
+            metadata: { requiredParallelPhases: ["contract_author", "consumer_impl"] },
+          }, null, 2),
+          "```",
+        ].join("\n"),
+        "utf8"
+      );
+
+      const reconciled = await fixture.service.onTrackedSessionEnded({
+        sessionId: attempt.executorSessionId,
+        laneId: fixture.laneId,
+        exitCode: 0
+      });
+      expect(reconciled).toBe(1);
+
+      const step = fixture.service.listSteps(started.run.id).find((entry) => entry.id === stepId);
+      const metadata = (step?.metadata ?? {}) as Record<string, any>;
+      expect(step?.status).toBe("succeeded");
+      expect(metadata.recoveredResultReportFromTranscript).toBe(true);
+      expect(metadata.lastResultReport?.plan?.markdown).toContain("Real52 inventory status feature");
+      expect(metadata.lastResultReport?.plan?.markdown).toContain("consumer_impl");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("recovers Codex plan.markdown heading artifacts", async () => {
+    const fixture = await createFixture();
+    try {
+      const now = "2026-02-19T00:00:00.000Z";
+      const transcriptDir = path.join(fixture.projectRoot, ".ade", "transcripts");
+      fs.mkdirSync(transcriptDir, { recursive: true });
+      const preSessionId = "session-1";
+      const transcriptPath = path.join(transcriptDir, `${preSessionId}.log`);
+      fixture.db.run(
+        `insert or ignore into terminal_sessions(
+          id, lane_id, pty_id, tracked, title, started_at, ended_at,
+          exit_code, transcript_path, head_sha_start, head_sha_end,
+          status, last_output_preview, summary, tool_type, resume_command, last_output_at
+        ) values (?, ?, null, 1, 'Worker', ?, null, null, ?, null, null,
+          'running', null, null, 'codex-orchestrated', null, ?)`,
+        [preSessionId, fixture.laneId, now, transcriptPath, now]
+      );
+
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "planning-worker",
+            title: "Planning worker",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "opencode",
+            metadata: {
+              stepType: "planning",
+              phaseKey: "planning",
+              phaseName: "Planning",
+            },
+          }
+        ]
+      });
+      const stepId = fixture.service.listSteps(started.run.id)[0]?.id;
+      if (!stepId) throw new Error("Expected planning step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId,
+        ownerId: "operator"
+      });
+      if (!attempt.executorSessionId) throw new Error("Expected running session-backed attempt");
+
+      fs.writeFileSync(
+        transcriptPath,
+        [
+          "codex",
+          "### report_result",
+          "- **outcome:** Read-only planning complete.",
+          "- **summary:** Prepared the phase plan.",
+          "- **filesChanged:** `[]`",
+          "- **testsRun:** `[]`",
+          "",
+          "### plan.markdown",
+          "```markdown",
+          "## Objective",
+          "Run contract_author and consumer_impl in parallel.",
+          "```",
+        ].join("\n"),
+        "utf8"
+      );
+
+      const reconciled = await fixture.service.onTrackedSessionEnded({
+        sessionId: attempt.executorSessionId,
+        laneId: fixture.laneId,
+        exitCode: 0
+      });
+      expect(reconciled).toBe(1);
+
+      const step = fixture.service.listSteps(started.run.id).find((entry) => entry.id === stepId);
+      const metadata = (step?.metadata ?? {}) as Record<string, any>;
+      expect(step?.status).toBe("succeeded");
+      expect(metadata.recoveredResultReportFromTranscript).toBe(true);
+      expect(metadata.lastResultReport?.plan?.markdown).toContain("contract_author");
+      expect(metadata.lastResultReport?.plan?.markdown).toContain("consumer_impl");
     } finally {
       fixture.dispose();
     }
@@ -3164,6 +6289,76 @@ describe("orchestratorService", () => {
       expect(after?.status).toBe("failed");
       expect(after?.errorClass).toBe("interrupted");
       expect(after?.errorMessage).toBe("Planning worker session started but was interrupted before producing any assistant or tool activity.");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("classifies tracked workers interrupted during an open shell command as failed even with exit code zero", async () => {
+    const fixture = await createFixture();
+    try {
+      const now = "2026-02-19T00:00:00.000Z";
+      const transcriptDir = path.join(fixture.projectRoot, ".ade", "transcripts");
+      fs.mkdirSync(transcriptDir, { recursive: true });
+      const preSessionId = "session-1";
+      const transcriptPath = path.join(transcriptDir, `${preSessionId}.log`);
+      fixture.db.run(
+        `insert or ignore into terminal_sessions(
+          id, lane_id, pty_id, tracked, title, started_at, ended_at,
+          exit_code, transcript_path, head_sha_start, head_sha_end,
+          status, last_output_preview, summary, tool_type, resume_command, last_output_at
+        ) values (?, ?, null, 1, 'Worker', ?, null, null, ?, null, null,
+          'running', null, null, 'codex-orchestrated', null, ?)`,
+        [preSessionId, fixture.laneId, now, transcriptPath, now]
+      );
+
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "implementation-worker",
+            title: "Implementation Worker",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "opencode",
+            metadata: {
+              stepType: "implementation",
+            },
+          }
+        ]
+      });
+      const stepId = fixture.service.listSteps(started.run.id)[0]?.id;
+      if (!stepId) throw new Error("Expected implementation step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId,
+        ownerId: "operator"
+      });
+      if (!attempt.executorSessionId) throw new Error("Expected running session-backed attempt");
+
+      fs.writeFileSync(
+        transcriptPath,
+        [
+          "codex",
+          "I’m opening the required coordination window before making changes.",
+          "exec",
+          "/bin/zsh -lc 'node scripts/coordination-wait.js' in /tmp/mission-lane",
+        ].join("\n"),
+        "utf8"
+      );
+
+      const reconciled = await fixture.service.onTrackedSessionEnded({
+        sessionId: attempt.executorSessionId,
+        laneId: fixture.laneId,
+        exitCode: 0
+      });
+      expect(reconciled).toBe(1);
+
+      const after = fixture.service.listAttempts({ runId: started.run.id }).find((entry) => entry.id === attempt.id);
+      expect(after?.status).toBe("failed");
+      expect(after?.errorClass).toBe("interrupted");
+      expect(after?.errorMessage).toBe("Worker session was interrupted while a shell command was still running before report_result.");
     } finally {
       fixture.dispose();
     }
@@ -4334,6 +7529,50 @@ describe("orchestratorService", () => {
     }
   });
 
+  it("allows an explicitly superseded failed step to be skipped with rationale", async () => {
+    const fixture = await createFixture();
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [{ stepKey: "failed-but-superseded", title: "Failed But Superseded", stepIndex: 0 }]
+      });
+      const step = fixture.service.listSteps(started.run.id)[0];
+      if (!step) throw new Error("Missing step");
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: step.id,
+        ownerId: "owner"
+      });
+      await fixture.service.completeAttempt({
+        attemptId: attempt.id,
+        status: "failed",
+        errorMessage: "Validation reported contradicting evidence."
+      });
+
+      expect(() =>
+        fixture.service.skipStep({
+          runId: started.run.id,
+          stepId: step.id,
+          reason: "Superseded by replacement validation."
+        })
+      ).toThrow(/terminal/i);
+
+      const skipped = fixture.service.skipStep({
+        runId: started.run.id,
+        stepId: step.id,
+        reason: "Superseded by replacement validation.",
+        allowTerminal: true
+      });
+      expect(skipped.status).toBe("skipped");
+      expect(skipped.metadata).toMatchObject({
+        skippedFromStatus: "failed",
+        skippedReason: "Superseded by replacement validation."
+      });
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("evaluates and persists gate reports with deterministic thresholds", async () => {
     const fixture = await createFixture();
     try {
@@ -4715,6 +7954,260 @@ describe("orchestratorService", () => {
         return meta.autoSpawnedValidation === true && meta.targetStepId === implStep.id;
       });
       expect(validators).toHaveLength(1);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("supersedes ready auto-spawned validators when the target already has a passing validation report", async () => {
+    const fixture = await createFixture();
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        metadata: {
+          autopilot: {
+            enabled: true,
+            executorKind: "opencode",
+            ownerId: "autopilot-owner",
+            parallelismCap: 1
+          }
+        },
+        steps: [
+          {
+            stepKey: "test-npm",
+            title: "Run npm test",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "opencode",
+            metadata: {
+              validationContract: {
+                level: "step",
+                tier: "dedicated",
+                required: true,
+                criteria: "Validate completed tests",
+                evidence: [],
+                maxRetries: 2
+              }
+            }
+          }
+        ]
+      });
+      const targetStep = fixture.service.listSteps(started.run.id).find((step) => step.stepKey === "test-npm");
+      if (!targetStep) throw new Error("Missing target step");
+      const validatedAt = "2026-03-04T00:10:00.000Z";
+      fixture.db.run(
+        `
+          update orchestrator_steps
+          set status = 'succeeded',
+              metadata_json = ?,
+              started_at = coalesce(started_at, ?),
+              completed_at = ?,
+              updated_at = ?
+          where id = ?
+            and project_id = ?
+        `,
+        [
+          JSON.stringify({
+            ...(targetStep.metadata ?? {}),
+            validationState: "pass",
+            validationPassedAt: validatedAt
+          }),
+          validatedAt,
+          validatedAt,
+          validatedAt,
+          targetStep.id,
+          fixture.projectId
+        ]
+      );
+      fixture.service.addSteps({
+        runId: started.run.id,
+        steps: [
+          {
+            stepKey: "validate_test-npm",
+            title: "Validate: Run npm test",
+            stepIndex: 1,
+            laneId: fixture.laneId,
+            dependencyStepKeys: ["test-npm"],
+            executorKind: "opencode",
+            metadata: {
+              stepType: "validation",
+              autoSpawnedValidation: true,
+              targetStepId: targetStep.id,
+              targetStepKey: targetStep.stepKey,
+              validationContract: {
+                level: "step",
+                tier: "dedicated",
+                required: true,
+                criteria: "Validate completed tests",
+                evidence: [],
+                maxRetries: 2
+              }
+            }
+          }
+        ]
+      });
+
+      const startedAttempts = await fixture.service.startReadyAutopilotAttempts({
+        runId: started.run.id,
+        reason: "test_target_validation_passed"
+      });
+
+      expect(startedAttempts).toBe(0);
+      expect(fixture.service.listAttempts({ runId: started.run.id })).toHaveLength(0);
+      expect(fixture.ptyCreateCalls).toHaveLength(0);
+      const validator = fixture.service.listSteps(started.run.id).find((step) => step.stepKey === "validate_test-npm");
+      expect(validator?.status).toBe("superseded");
+      expect((validator?.metadata as Record<string, unknown>)?.supersededReason).toBe("target_validation_already_passed");
+      const timeline = fixture.service.listTimeline({ runId: started.run.id, limit: 100 });
+      expect(timeline.some((event) => event.eventType === "validation_auto_step_superseded")).toBe(true);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("heals failed auto-spawned validators after the target receives a passing validation report", async () => {
+    const fixture = await createFixture();
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "test-npm",
+            title: "Run npm test",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            metadata: {
+              validationContract: {
+                level: "step",
+                tier: "dedicated",
+                required: true,
+                criteria: "Validate completed tests",
+                evidence: [],
+                maxRetries: 2
+              },
+              validationState: "pass",
+              validationPassedAt: "2026-03-04T00:10:00.000Z"
+            }
+          }
+        ]
+      });
+      const targetStep = fixture.service.listSteps(started.run.id).find((step) => step.stepKey === "test-npm");
+      if (!targetStep) throw new Error("Missing target step");
+      fixture.db.run(
+        `update orchestrator_steps set status = 'succeeded', completed_at = ?, updated_at = ? where id = ? and project_id = ?`,
+        ["2026-03-04T00:10:00.000Z", "2026-03-04T00:10:00.000Z", targetStep.id, fixture.projectId]
+      );
+      const [validator] = fixture.service.addSteps({
+        runId: started.run.id,
+        steps: [
+          {
+            stepKey: "validate_test-npm",
+            title: "Validate: Run npm test",
+            stepIndex: 1,
+            laneId: fixture.laneId,
+            dependencyStepKeys: ["test-npm"],
+            executorKind: "opencode",
+            metadata: {
+              stepType: "validation",
+              autoSpawnedValidation: true,
+              targetStepId: targetStep.id,
+              targetStepKey: targetStep.stepKey
+            }
+          }
+        ]
+      });
+      if (!validator) throw new Error("Missing validator step");
+      fixture.db.run(
+        `
+          insert into orchestrator_chat_threads(
+            id, project_id, mission_id, thread_type, title, run_id, step_id,
+            step_key, attempt_id, session_id, lane_id, status, unread_count,
+            metadata_json, created_at, updated_at
+          ) values (?, ?, ?, 'worker', ?, ?, ?, ?, null, null, ?, 'active', 1, null, ?, ?)
+        `,
+        [
+          "worker-thread-validate-test-npm",
+          fixture.projectId,
+          fixture.missionId,
+          "Worker: validate_test-npm",
+          started.run.id,
+          validator.id,
+          validator.stepKey,
+          fixture.laneId,
+          "2026-03-04T00:11:00.000Z",
+          "2026-03-04T00:11:00.000Z"
+        ]
+      );
+      fixture.db.run(
+        `update orchestrator_steps set status = 'failed', completed_at = ?, updated_at = ? where id = ? and project_id = ?`,
+        ["2026-03-04T00:11:00.000Z", "2026-03-04T00:11:00.000Z", validator.id, fixture.projectId]
+      );
+
+      fixture.service.tick({ runId: started.run.id });
+
+      const healed = fixture.service.listSteps(started.run.id).find((step) => step.stepKey === "validate_test-npm");
+      expect(healed?.status).toBe("superseded");
+      expect((healed?.metadata as Record<string, unknown>)?.targetValidationAlreadyPassed).toBe(true);
+      const thread = fixture.db.get<{ status: string }>(
+        `select status from orchestrator_chat_threads where id = ?`,
+        ["worker-thread-validate-test-npm"]
+      );
+      expect(thread?.status).toBe("closed");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("reconciles active worker threads for terminal steps during tick", async () => {
+    const fixture = await createFixture();
+    try {
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "validate-output",
+            title: "Validate output",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            metadata: { stepType: "validation" }
+          }
+        ]
+      });
+      const step = fixture.service.listSteps(started.run.id).find((entry) => entry.stepKey === "validate-output");
+      if (!step) throw new Error("Missing validation step");
+      fixture.db.run(
+        `update orchestrator_steps set status = 'failed', completed_at = ?, updated_at = ? where id = ? and project_id = ?`,
+        ["2026-03-04T00:12:00.000Z", "2026-03-04T00:12:00.000Z", step.id, fixture.projectId]
+      );
+      fixture.db.run(
+        `
+          insert into orchestrator_chat_threads(
+            id, project_id, mission_id, thread_type, title, run_id, step_id,
+            step_key, attempt_id, session_id, lane_id, status, unread_count,
+            metadata_json, created_at, updated_at
+          ) values (?, ?, ?, 'worker', ?, ?, ?, ?, null, null, ?, 'active', 1, null, ?, ?)
+        `,
+        [
+          "worker-thread-validate-output",
+          fixture.projectId,
+          fixture.missionId,
+          "Worker: validate-output",
+          started.run.id,
+          step.id,
+          step.stepKey,
+          fixture.laneId,
+          "2026-03-04T00:12:00.000Z",
+          "2026-03-04T00:12:00.000Z"
+        ]
+      );
+
+      fixture.service.tick({ runId: started.run.id });
+
+      const thread = fixture.db.get<{ status: string }>(
+        `select status from orchestrator_chat_threads where id = ?`,
+        ["worker-thread-validate-output"]
+      );
+      expect(thread?.status).toBe("closed");
     } finally {
       fixture.dispose();
     }

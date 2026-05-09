@@ -14,7 +14,12 @@ import { launchPrIssueResolutionChat, previewPrIssueResolutionPrompt } from "../
 import { launchRebaseResolutionChat } from "../prs/prRebaseResolver";
 import { browseProjectDirectories } from "../projects/projectBrowserService";
 import { getProjectDetail } from "../projects/projectDetailService";
-import { removeProjectIconOverride, resolveProjectIcon, setProjectIconOverrideFromSelection } from "../projects/projectIconResolver";
+import {
+  removeProjectIconOverride,
+  resolveProjectIcon,
+  resolveProjectIconPath,
+  setProjectIconOverrideFromSelection,
+} from "../projects/projectIconResolver";
 import { runGit } from "../git/git";
 import type { AdeCleanupResult, AdeProjectSnapshot, IosSimulatorWindowState } from "../../../shared/types";
 import { toRecentProjectSummary } from "../projects/recentProjectSummary";
@@ -58,6 +63,23 @@ import type {
   BuiltInBrowserOpenPanelArgs,
   BuiltInBrowserSelectPointArgs,
   BuiltInBrowserTabArgs,
+  MacosVmAgentGuide,
+  MacosVmAgentGuideArgs,
+  MacosVmCaptureScreenshotArgs,
+  MacosVmCaptureScreenshotResult,
+  MacosVmClickArgs,
+  MacosVmDeleteArgs,
+  MacosVmFocusWindowArgs,
+  MacosVmProvisionArgs,
+  MacosVmRecord,
+  MacosVmSelectPointArgs,
+  MacosVmSelectPointResult,
+  MacosVmStartArgs,
+  MacosVmStatus,
+  MacosVmStatusArgs,
+  MacosVmStopArgs,
+  MacosVmTypeTextArgs,
+  MacosVmWindowTarget,
   ReviewListRunsArgs,
   ReviewRun,
   ReviewRunDetail,
@@ -607,6 +629,8 @@ import { buildComputerUseOwnerSnapshot } from "../computerUse/controlPlane";
 import type { createIosSimulatorService } from "../ios/iosSimulatorService";
 import type { createAppControlService } from "../appControl/appControlService";
 import type { createBuiltInBrowserService } from "../builtInBrowser/builtInBrowserService";
+import type { createMacosVmService } from "../macosVm/macosVmService";
+import { ipcInvokeTimeoutMs } from "./ipcTimeouts";
 import { readGlobalState, writeGlobalState, reorderRecentProjects } from "../state/globalState";
 import type { createKeybindingsService } from "../keybindings/keybindingsService";
 import type { createAgentToolsService } from "../agentTools/agentToolsService";
@@ -700,6 +724,7 @@ export type AppContext = {
   iosSimulatorService?: ReturnType<typeof createIosSimulatorService> | null;
   appControlService?: ReturnType<typeof createAppControlService> | null;
   builtInBrowserService?: ReturnType<typeof createBuiltInBrowserService> | null;
+  macosVmService?: ReturnType<typeof createMacosVmService> | null;
   githubService: ReturnType<typeof createGithubService>;
   projectScaffoldService: ReturnType<typeof createProjectScaffoldService>;
   prService: ReturnType<typeof createPrService>;
@@ -1079,8 +1104,182 @@ function getUnavailableAiStatus(): AiSettingsStatus {
 
 function normalizeAutopilotExecutor(value: unknown): OrchestratorExecutorKind {
   const raw = typeof value === "string" ? value.trim() : "";
-  if (raw === "shell" || raw === "manual" || raw === "opencode") return raw;
+  if (
+    raw === "shell"
+    || raw === "manual"
+    || raw === "opencode"
+    || raw === "codex"
+    || raw === "claude"
+    || raw === "cursor"
+    || raw === "droid"
+  ) return raw;
   return "opencode";
+}
+
+const RUNTIME_CURSOR_DOC_REF_TRANSPORT_LIMIT = 12;
+const PAYLOAD_DOC_REF_TRANSPORT_LIMIT = 12;
+const RUN_GRAPH_CONTEXT_SNAPSHOT_TRANSPORT_LIMIT = 5;
+const CHAT_TOOL_RESULT_STRING_LIMIT = 1_200;
+const CHAT_TOOL_RESULT_ARRAY_PREVIEW_LIMIT = 5;
+const CHAT_TOOL_RESULT_KEY_PREVIEW_LIMIT = 12;
+
+function isAdeInternalDocPath(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  const normalized = value.replace(/\\/g, "/");
+  return normalized === ".ade" || normalized.startsWith(".ade/") || normalized.includes("/.ade/");
+}
+
+function compactRuntimeCursorForTransport(value: unknown): unknown {
+  if (!isRecord(value)) return value;
+  const rawDocs = Array.isArray(value.docs) ? value.docs : [];
+  const docs = rawDocs
+    .filter((entry) => !isAdeInternalDocPath(isRecord(entry) ? entry.path : null))
+    .slice(0, RUNTIME_CURSOR_DOC_REF_TRANSPORT_LIMIT)
+    .map((entry) => {
+      if (!isRecord(entry)) return entry;
+      return {
+        path: typeof entry.path === "string" ? entry.path : "",
+        bytes: typeof entry.bytes === "number" ? entry.bytes : 0,
+        sha256: typeof entry.sha256 === "string" ? entry.sha256 : "",
+        truncated: entry.truncated === true,
+        mode: typeof entry.mode === "string" ? entry.mode : undefined,
+      };
+    });
+  return {
+    ...value,
+    docs,
+    docsOmittedCount: Math.max(0, rawDocs.length - docs.length),
+  };
+}
+
+function compactDocRefsArrayForTransport(rawDocs: unknown[], limit: number): unknown[] {
+  return rawDocs
+    .filter((entry) => !isAdeInternalDocPath(isRecord(entry) ? entry.path : null))
+    .slice(0, limit);
+}
+
+function compactPayloadForTransport(payload: Record<string, unknown> | null): Record<string, unknown> | null {
+  if (!payload) return payload;
+  const next: Record<string, unknown> = { ...payload };
+  if (Array.isArray(next.docsRefs)) {
+    const rawDocsRefs = next.docsRefs;
+    const docsRefs = compactDocRefsArrayForTransport(rawDocsRefs, PAYLOAD_DOC_REF_TRANSPORT_LIMIT);
+    next.docsRefs = docsRefs;
+    next.docsRefsOmittedCount = Math.max(0, rawDocsRefs.length - docsRefs.length);
+  }
+  return next;
+}
+
+function compactChatToolValueForTransport(value: unknown): unknown {
+  if (value == null || typeof value === "boolean" || typeof value === "number") return value;
+  if (typeof value === "string") {
+    if (value.length <= CHAT_TOOL_RESULT_STRING_LIMIT) return value;
+    return {
+      preview: value.slice(0, CHAT_TOOL_RESULT_STRING_LIMIT),
+      omittedChars: value.length - CHAT_TOOL_RESULT_STRING_LIMIT,
+    };
+  }
+  if (Array.isArray(value)) {
+    return {
+      type: "array",
+      length: value.length,
+      preview: value
+        .slice(0, CHAT_TOOL_RESULT_ARRAY_PREVIEW_LIMIT)
+        .map((entry) => compactChatToolValueForTransport(entry)),
+      omittedItems: Math.max(0, value.length - CHAT_TOOL_RESULT_ARRAY_PREVIEW_LIMIT),
+    };
+  }
+  if (!isRecord(value)) return value;
+
+  const safeKeys = [
+    "ok",
+    "status",
+    "outcome",
+    "summary",
+    "message",
+    "error",
+    "workerId",
+    "stepId",
+    "stepKey",
+    "runId",
+    "missionId",
+    "filesChanged",
+    "testsRun",
+    "artifacts",
+  ];
+  const next: Record<string, unknown> = {};
+  for (const key of safeKeys) {
+    if (Object.prototype.hasOwnProperty.call(value, key)) {
+      next[key] = compactChatToolValueForTransport(value[key]);
+    }
+  }
+  const keys = Object.keys(value);
+  next.__adeTransportCompact = true;
+  next.keys = keys.slice(0, CHAT_TOOL_RESULT_KEY_PREVIEW_LIMIT);
+  next.omittedKeys = Math.max(0, keys.length - CHAT_TOOL_RESULT_KEY_PREVIEW_LIMIT);
+  return next;
+}
+
+function compactChatMessageMetadataForTransport(metadata: OrchestratorChatMessage["metadata"]): OrchestratorChatMessage["metadata"] {
+  if (!isRecord(metadata)) return metadata;
+  const structuredStream = isRecord(metadata.structuredStream) ? metadata.structuredStream : null;
+  if (!structuredStream) return metadata;
+  const nextStructured = { ...structuredStream };
+  if (Object.prototype.hasOwnProperty.call(nextStructured, "result")) {
+    nextStructured.result = compactChatToolValueForTransport(nextStructured.result);
+  }
+  return {
+    ...metadata,
+    structuredStream: nextStructured,
+  };
+}
+
+function compactChatMessageForTransport(message: OrchestratorChatMessage): OrchestratorChatMessage {
+  return {
+    ...message,
+    metadata: compactChatMessageMetadataForTransport(message.metadata),
+  };
+}
+
+function compactRunMetadataForTransport(metadata: OrchestratorRun["metadata"]): OrchestratorRun["metadata"] {
+  if (!isRecord(metadata)) return metadata;
+  const next: Record<string, unknown> = { ...metadata };
+  if (isRecord(next.runtimeCursor)) {
+    next.runtimeCursor = compactRuntimeCursorForTransport(next.runtimeCursor);
+  }
+  return next;
+}
+
+function compactRunForTransport(run: OrchestratorRun): OrchestratorRun {
+  return {
+    ...run,
+    metadata: compactRunMetadataForTransport(run.metadata),
+  };
+}
+
+function compactRunGraphForTransport(graph: OrchestratorRunGraph): OrchestratorRunGraph {
+  return {
+    ...graph,
+    run: compactRunForTransport(graph.run),
+    contextSnapshots: graph.contextSnapshots
+      .slice(0, RUN_GRAPH_CONTEXT_SNAPSHOT_TRANSPORT_LIMIT)
+      .map((snapshot) => ({
+        ...snapshot,
+        cursor: compactRuntimeCursorForTransport(snapshot.cursor) as typeof snapshot.cursor,
+      })),
+    handoffs: graph.handoffs.map((handoff) => ({
+      ...handoff,
+      payload: compactPayloadForTransport(handoff.payload) ?? {},
+    })),
+    timeline: graph.timeline.map((event) => ({
+      ...event,
+      detail: compactPayloadForTransport(event.detail),
+    })),
+    runtimeEvents: graph.runtimeEvents?.map((event) => ({
+      ...event,
+      payload: compactPayloadForTransport(event.payload),
+    })),
+  };
 }
 
 type MemoryWriteScope = "user" | "project" | "lane" | "mission";
@@ -1726,6 +1925,7 @@ export function registerIpc({
   let linearOAuthServiceAdeDir: string | null = null;
   const appControlRateBuckets = new Map<string, { windowStartMs: number; count: number }>();
   const builtInBrowserRateBuckets = new Map<string, { windowStartMs: number; count: number }>();
+  const macosVmRateBuckets = new Map<string, { windowStartMs: number; count: number }>();
 
   const getOptionalSyncService = (): ReturnType<typeof createSyncService> | null => {
     if (getSyncService) return getSyncService() ?? null;
@@ -1798,7 +1998,8 @@ export function registerIpc({
     }
   };
 
-  const traceIpcInvokes = !app.isPackaged || process.env.ADE_TRACE_IPC === "1";
+  const traceIpcInvokes = !app.isPackaged || process.env.ADE_TRACE_IPC === "1" || process.env.ADE_TRACE_IPC === "verbose";
+  const traceEveryIpcInvoke = process.env.ADE_TRACE_IPC === "verbose";
   let ipcInvokeSeq = 0;
 
   // Channel-aware redaction: these channels carry sensitive payloads
@@ -1831,7 +2032,21 @@ export function registerIpc({
     });
   };
 
-  const summarizeIpcValue = (value: unknown, depth = 0): unknown => {
+  const shouldRedactIpcKey = (key: string | undefined): boolean => {
+    if (!key) return false;
+    const normalized = key.toLowerCase();
+    return normalized.includes("token")
+      || normalized.includes("secret")
+      || normalized.includes("password")
+      || normalized.includes("authorization")
+      || normalized === "apikey"
+      || normalized === "api_key"
+      || normalized === "pairingpin"
+      || normalized === "pairing_pin";
+  };
+
+  const summarizeIpcValue = (value: unknown, depth = 0, key?: string): unknown => {
+    if (shouldRedactIpcKey(key)) return "[redacted]";
     if (value == null) return value;
     if (typeof value === "string") {
       return value.length > 160 ? `${value.slice(0, 157)}...` : value;
@@ -1851,7 +2066,7 @@ export function registerIpc({
       if (depth >= 1) return "[object]";
       const record = value as Record<string, unknown>;
       const entries = Object.entries(record).slice(0, 8);
-      return Object.fromEntries(entries.map(([key, entryValue]) => [key, summarizeIpcValue(entryValue, depth + 1)]));
+      return Object.fromEntries(entries.map(([entryKey, entryValue]) => [entryKey, summarizeIpcValue(entryValue, depth + 1, entryKey)]));
     }
     return typeof value;
   };
@@ -1862,7 +2077,7 @@ export function registerIpc({
     }
     const record = value as Record<string, unknown>;
     const entries = Object.entries(record).slice(0, 8);
-    return Object.fromEntries(entries.map(([key, entryValue]) => [key, summarizeIpcValue(entryValue, 1)]));
+    return Object.fromEntries(entries.map(([key, entryValue]) => [key, summarizeIpcValue(entryValue, 1, key)]));
   };
 
   const summarizeIpcArgs = (args: unknown[]): unknown => ({
@@ -1887,55 +2102,6 @@ export function registerIpc({
   type TracedIpcMain = typeof ipcMain & {
     __adeTraceWrapped?: boolean;
     __adeOriginalHandle?: typeof ipcMain.handle;
-  };
-
-  const ipcInvokeTimeoutMs = (channel: string): number => {
-    switch (channel) {
-      case IPC.lanesDelete:
-        return 4 * 60_000;
-      case IPC.iosSimulatorLaunch:
-        return 10 * 60_000;
-      case IPC.iosSimulatorListLaunchTargets:
-      case IPC.iosSimulatorGetScreenSnapshot:
-      case IPC.iosSimulatorInspectPoint:
-      case IPC.iosSimulatorSelectPoint:
-      case IPC.iosSimulatorGetPreviewCapability:
-      case IPC.iosSimulatorListPreviewTargets:
-      case IPC.iosSimulatorRenderPreview:
-        return 2 * 60_000;
-      case IPC.iosSimulatorOpenPreviewWorkspace:
-      case IPC.iosSimulatorScreenshot:
-      case IPC.iosSimulatorStartStream:
-      case IPC.iosSimulatorStopStream:
-      case IPC.iosSimulatorShutdown:
-      case IPC.iosSimulatorGetStreamStatus:
-      case IPC.iosSimulatorGetWindowState:
-      case IPC.iosSimulatorListWindowSources:
-      case IPC.iosSimulatorTap:
-      case IPC.iosSimulatorTypeText:
-      case IPC.iosSimulatorDrag:
-      case IPC.iosSimulatorSwipe:
-      case IPC.appControlLaunch:
-      case IPC.appControlLaunchInTerminal:
-      case IPC.appControlGetSnapshot:
-      case IPC.appControlInspectPoint:
-      case IPC.appControlSelectPoint:
-      case IPC.appControlScreenshot:
-      case IPC.appControlConnect:
-      case IPC.appControlStop:
-      case IPC.appControlClick:
-      case IPC.appControlTypeText:
-      case IPC.builtInBrowserNavigate:
-      case IPC.builtInBrowserCreateTab:
-      case IPC.builtInBrowserReload:
-      case IPC.builtInBrowserStartInspect:
-      case IPC.builtInBrowserStopInspect:
-      case IPC.builtInBrowserCaptureScreenshot:
-      case IPC.builtInBrowserSelectPoint:
-        return 60_000;
-      default:
-        return 30_000;
-    }
   };
 
   type IpcInvokeAggregate = {
@@ -2033,19 +2199,21 @@ export function registerIpc({
         const startedAt = Date.now();
         const winId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
         const logger = getTraceLogger();
-        logger.info("ipc.invoke.begin", {
-          callId,
-          channel,
-          winId,
-          projectRoot: (() => {
-            try {
-              return getCtx().project.rootPath;
-            } catch {
-              return null;
-            }
-          })(),
-          args: summarizeIpcArgs(redactIpcArgsForChannel(channel, args)),
-        });
+        if (traceEveryIpcInvoke) {
+          logger.info("ipc.invoke.begin", {
+            callId,
+            channel,
+            winId,
+            projectRoot: (() => {
+              try {
+                return getCtx().project.rootPath;
+              } catch {
+                return null;
+              }
+            })(),
+            args: summarizeIpcArgs(redactIpcArgsForChannel(channel, args)),
+          });
+        }
         const IPC_TIMEOUT_MS = ipcInvokeTimeoutMs(channel);
         let timeoutHandle: NodeJS.Timeout | null = null;
         try {
@@ -2060,13 +2228,15 @@ export function registerIpc({
           ]);
           const durationMs = Date.now() - startedAt;
           recordIpcInvokeAggregate({ channel, winId, durationMs, failed: false });
-          logger.info("ipc.invoke.done", {
-            callId,
-            channel,
-            winId,
-            durationMs,
-            result: summarizeIpcValue(result),
-          });
+          if (traceEveryIpcInvoke || durationMs >= 120) {
+            logger.info("ipc.invoke.done", {
+              callId,
+              channel,
+              winId,
+              durationMs,
+              result: summarizeIpcValue(result),
+            });
+          }
           return result;
         } catch (error) {
           const durationMs = Date.now() - startedAt;
@@ -2115,6 +2285,14 @@ export function registerIpc({
       throw new Error("Built-in browser service is not available.");
     }
     return builtInBrowserService;
+  };
+
+  const ensureMacosVm = (): NonNullable<AppContext["macosVmService"]> => {
+    const service = getCtx().macosVmService;
+    if (!service) {
+      throw new Error("macOS VM service is not available.");
+    }
+    return service;
   };
 
   const isTrustedAppControlRendererUrl = (rawUrl: string | null | undefined): boolean => {
@@ -2230,6 +2408,37 @@ export function registerIpc({
       throw new Error("Built-in browser is only available to the ADE renderer.");
     }
     assertBuiltInBrowserRateLimit(event, channel, limit);
+  };
+
+  const guardMacosVmIpc = (
+    event: IpcMainInvokeEvent,
+    channel: string,
+    limit: { windowMs: number; max: number } = { windowMs: 10_000, max: 30 },
+  ): void => {
+    assertTrustedAppControlSender(event, channel);
+    const now = Date.now();
+    const key = `${event.sender.id}:${channel}`;
+    for (const [k, v] of macosVmRateBuckets) {
+      if (now - v.windowStartMs > limit.windowMs) {
+        macosVmRateBuckets.delete(k);
+      }
+    }
+    const bucket = macosVmRateBuckets.get(key);
+    if (!bucket || now - bucket.windowStartMs > limit.windowMs) {
+      macosVmRateBuckets.set(key, { windowStartMs: now, count: 1 });
+      return;
+    }
+    if (bucket.count >= limit.max) {
+      const win = BrowserWindow.fromWebContents(event.sender);
+      getCtx().logger.warn("ipc.macos_vm.rate_limited", {
+        channel,
+        windowId: win?.id ?? null,
+        count: bucket.count,
+        windowMs: limit.windowMs,
+      });
+      throw new Error("Too many macOS VM requests. Try again shortly.");
+    }
+    bucket.count += 1;
   };
 
   const invalidBuiltInBrowserArg = (channel: string, reason: string): never => {
@@ -2350,6 +2559,226 @@ export function registerIpc({
       x: builtInBrowserNumber(record, "x", channel, { min: 0, max: 100_000 }),
       y: builtInBrowserNumber(record, "y", channel, { min: 0, max: 100_000 }),
       includeScreenshot,
+    };
+  };
+
+  const invalidMacosVmArg = (channel: string, reason: string): never => {
+    getCtx().logger.warn("ipc.macos_vm.invalid_args", { channel, reason });
+    throw new Error(`Invalid macOS VM payload: ${reason}`);
+  };
+
+  const macosVmRecord = (value: unknown, channel: string, required = false): Record<string, unknown> => {
+    if (value == null) {
+      if (required) invalidMacosVmArg(channel, "payload object is required");
+      return {};
+    }
+    if (!isRecord(value)) invalidMacosVmArg(channel, "payload must be an object");
+    return value as Record<string, unknown>;
+  };
+
+  const macosVmString = (
+    record: Record<string, unknown>,
+    field: string,
+    channel: string,
+    maxLength: number,
+    required = false,
+  ): string | null | undefined => {
+    const value = record[field];
+    if (value == null) {
+      if (required) invalidMacosVmArg(channel, `${field} is required`);
+      return undefined;
+    }
+    if (typeof value !== "string") return invalidMacosVmArg(channel, `${field} must be a string`);
+    const trimmed = (value as string).trim();
+    if (!trimmed.length) {
+      if (required) invalidMacosVmArg(channel, `${field} is required`);
+      return null;
+    }
+    if (trimmed.length > maxLength || trimmed.includes("\0")) invalidMacosVmArg(channel, `${field} is invalid`);
+    return trimmed;
+  };
+
+  const macosVmRawString = (
+    record: Record<string, unknown>,
+    field: string,
+    channel: string,
+    maxLength: number,
+    required = false,
+  ): string | null | undefined => {
+    const value = record[field];
+    if (value == null) {
+      if (required) invalidMacosVmArg(channel, `${field} is required`);
+      return undefined;
+    }
+    if (typeof value !== "string") return invalidMacosVmArg(channel, `${field} must be a string`);
+    if (!value.length) {
+      if (required) invalidMacosVmArg(channel, `${field} is required`);
+      return null;
+    }
+    if (value.length > maxLength || value.includes("\0")) invalidMacosVmArg(channel, `${field} is invalid`);
+    return value;
+  };
+
+  const macosVmNumber = (
+    record: Record<string, unknown>,
+    field: string,
+    channel: string,
+    options: { integer?: boolean; min?: number; max?: number } = {},
+  ): number | undefined => {
+    const value = record[field];
+    if (value == null) return undefined;
+    if (typeof value !== "number" || !Number.isFinite(value)) invalidMacosVmArg(channel, `${field} must be a finite number`);
+    const numberValue = value as number;
+    if (options.integer && !Number.isInteger(numberValue)) invalidMacosVmArg(channel, `${field} must be an integer`);
+    if (options.min != null && numberValue < options.min) invalidMacosVmArg(channel, `${field} is below the minimum`);
+    if (options.max != null && numberValue > options.max) invalidMacosVmArg(channel, `${field} is above the maximum`);
+    return numberValue;
+  };
+
+  const macosVmBoolean = (record: Record<string, unknown>, field: string, channel: string): boolean | undefined => {
+    const value = record[field];
+    if (value == null) return undefined;
+    if (typeof value !== "boolean") return invalidMacosVmArg(channel, `${field} must be a boolean`);
+    return value as boolean;
+  };
+
+  const macosVmLaneArgs = (value: unknown, channel: string): { laneId: string } => {
+    const record = macosVmRecord(value, channel, true);
+    const laneId = macosVmString(record, "laneId", channel, 512, true);
+    return { laneId: laneId as string };
+  };
+
+  const parseMacosVmStatusArgs = (value: unknown, channel: string): MacosVmStatusArgs => {
+    const record = macosVmRecord(value, channel, false);
+    const laneId = macosVmString(record, "laneId", channel, 512);
+    return { laneId };
+  };
+
+  const parseMacosVmProvisionArgs = (value: unknown, channel: string): MacosVmProvisionArgs => {
+    const record = macosVmRecord(value, channel, true);
+    const laneId = macosVmString(record, "laneId", channel, 512, true) as string;
+    const modeValue = record.mode;
+    if (modeValue != null && modeValue !== "create" && modeValue !== "pull-image") {
+      invalidMacosVmArg(channel, "mode must be create or pull-image");
+    }
+    return {
+      laneId,
+      name: macosVmString(record, "name", channel, 256),
+      cpuCores: macosVmNumber(record, "cpuCores", channel, { integer: true, min: 1, max: 32 }),
+      memory: macosVmString(record, "memory", channel, 32),
+      diskSize: macosVmString(record, "diskSize", channel, 32),
+      display: macosVmString(record, "display", channel, 32),
+      mode: modeValue === "pull-image" ? "pull-image" : modeValue === "create" ? "create" : undefined,
+      ipsw: macosVmString(record, "ipsw", channel, 4096),
+      sourceImage: macosVmString(record, "sourceImage", channel, 256),
+      unattendedPreset: macosVmString(record, "unattendedPreset", channel, 128),
+      force: macosVmBoolean(record, "force", channel),
+    };
+  };
+
+  const parseMacosVmStartArgs = (value: unknown, channel: string): MacosVmStartArgs => {
+    const record = macosVmRecord(value, channel, true);
+    const laneId = macosVmString(record, "laneId", channel, 512, true) as string;
+    const modeValue = record.mode;
+    if (modeValue != null && modeValue !== "create" && modeValue !== "pull-image") {
+      invalidMacosVmArg(channel, "mode must be create or pull-image");
+    }
+    return {
+      laneId,
+      openDisplay: macosVmBoolean(record, "openDisplay", channel),
+      createIfMissing: macosVmBoolean(record, "createIfMissing", channel),
+      cpuCores: macosVmNumber(record, "cpuCores", channel, { integer: true, min: 1, max: 32 }),
+      memory: macosVmString(record, "memory", channel, 32),
+      diskSize: macosVmString(record, "diskSize", channel, 32),
+      display: macosVmString(record, "display", channel, 32),
+      mode: modeValue === "pull-image" ? "pull-image" : modeValue === "create" ? "create" : undefined,
+      ipsw: macosVmString(record, "ipsw", channel, 4096),
+      sourceImage: macosVmString(record, "sourceImage", channel, 256),
+      unattendedPreset: macosVmString(record, "unattendedPreset", channel, 128),
+    };
+  };
+
+  const parseMacosVmStopArgs = (value: unknown, channel: string): MacosVmStopArgs => {
+    const record = macosVmRecord(value, channel, true);
+    return {
+      laneId: macosVmString(record, "laneId", channel, 512, true) as string,
+      force: macosVmBoolean(record, "force", channel),
+    };
+  };
+
+  const parseMacosVmDeleteArgs = (value: unknown, channel: string): MacosVmDeleteArgs => {
+    const record = macosVmRecord(value, channel, true);
+    return {
+      laneId: macosVmString(record, "laneId", channel, 512, true) as string,
+      force: macosVmBoolean(record, "force", channel),
+    };
+  };
+
+  const parseMacosVmAgentGuideArgs = (value: unknown, channel: string): MacosVmAgentGuideArgs =>
+    macosVmLaneArgs(value, channel);
+
+  const parseMacosVmFocusWindowArgs = (value: unknown, channel: string): MacosVmFocusWindowArgs => {
+    const record = macosVmRecord(value, channel, true);
+    return {
+      laneId: macosVmString(record, "laneId", channel, 512, true) as string,
+      windowTitleQuery: macosVmString(record, "windowTitleQuery", channel, 256),
+    };
+  };
+
+  const parseMacosVmCaptureScreenshotArgs = (value: unknown, channel: string): MacosVmCaptureScreenshotArgs => {
+    const record = macosVmRecord(value, channel, true);
+    return {
+      laneId: macosVmString(record, "laneId", channel, 512, true) as string,
+      windowTitleQuery: macosVmString(record, "windowTitleQuery", channel, 256),
+      outputPath: macosVmString(record, "outputPath", channel, 4096),
+    };
+  };
+
+  const parseMacosVmClickArgs = (value: unknown, channel: string): MacosVmClickArgs => {
+    const record = macosVmRecord(value, channel, true);
+    const coordinateSpace = record.coordinateSpace;
+    if (coordinateSpace != null && coordinateSpace !== "window" && coordinateSpace !== "screen") {
+      invalidMacosVmArg(channel, "coordinateSpace must be window or screen");
+    }
+    const x = macosVmNumber(record, "x", channel, { min: 0, max: 100_000 });
+    const y = macosVmNumber(record, "y", channel, { min: 0, max: 100_000 });
+    if (x == null) invalidMacosVmArg(channel, "x is required");
+    if (y == null) invalidMacosVmArg(channel, "y is required");
+    return {
+      laneId: macosVmString(record, "laneId", channel, 512, true) as string,
+      x: x as number,
+      y: y as number,
+      coordinateSpace: coordinateSpace === "screen" ? "screen" : coordinateSpace === "window" ? "window" : undefined,
+      windowTitleQuery: macosVmString(record, "windowTitleQuery", channel, 256),
+    };
+  };
+
+  const parseMacosVmSelectPointArgs = (value: unknown, channel: string): MacosVmSelectPointArgs => {
+    const record = macosVmRecord(value, channel, true);
+    const coordinateSpace = record.coordinateSpace;
+    if (coordinateSpace != null && coordinateSpace !== "window" && coordinateSpace !== "screen") {
+      invalidMacosVmArg(channel, "coordinateSpace must be window or screen");
+    }
+    const x = macosVmNumber(record, "x", channel, { min: 0, max: 100_000 });
+    const y = macosVmNumber(record, "y", channel, { min: 0, max: 100_000 });
+    if (x == null) invalidMacosVmArg(channel, "x is required");
+    if (y == null) invalidMacosVmArg(channel, "y is required");
+    return {
+      laneId: macosVmString(record, "laneId", channel, 512, true) as string,
+      x: x as number,
+      y: y as number,
+      coordinateSpace: coordinateSpace === "screen" ? "screen" : coordinateSpace === "window" ? "window" : undefined,
+      windowTitleQuery: macosVmString(record, "windowTitleQuery", channel, 256),
+      includeScreenshot: macosVmBoolean(record, "includeScreenshot", channel),
+    };
+  };
+
+  const parseMacosVmTypeTextArgs = (value: unknown, channel: string): MacosVmTypeTextArgs => {
+    const record = macosVmRecord(value, channel, true);
+    return {
+      laneId: macosVmString(record, "laneId", channel, 512, true) as string,
+      text: macosVmRawString(record, "text", channel, 20_000, true) as string,
+      windowTitleQuery: macosVmString(record, "windowTitleQuery", channel, 256),
     };
   };
 
@@ -3259,6 +3688,16 @@ export function registerIpc({
         validatedRoot = resolveAllowedProjectRoot(rootPath);
       } catch {
         return { dataUrl: null, sourcePath: null, mimeType: null };
+      }
+      const sourcePath = resolveProjectIconPath(validatedRoot);
+      if (!sourcePath) return { dataUrl: null, sourcePath: null, mimeType: null };
+      const image = nativeImage.createFromPath(sourcePath);
+      if (!image.isEmpty()) {
+        return {
+          dataUrl: image.resize({ width: 64, height: 64, quality: "best" }).toDataURL(),
+          sourcePath,
+          mimeType: "image/png",
+        };
       }
       return resolveProjectIcon(validatedRoot);
     },
@@ -4249,7 +4688,11 @@ export function registerIpc({
       if (!missionId) return { mission: null, runGraph: null, artifacts: [], checkpoints: [], dashboard: null };
 
       let dashboard: MissionDashboardSnapshot | null = null;
-      try { dashboard = ctx.missionService.getDashboard(); } catch { /* best-effort */ }
+      try {
+        dashboard = ctx.missionService.getDashboard();
+      } catch {
+        /* best-effort */
+      }
 
       const mission = await ctx.missionService.get(missionId);
 
@@ -4266,7 +4709,7 @@ export function registerIpc({
           Promise.resolve().then(() => ctx.aiOrchestratorService.listArtifacts({ missionId, runId: preferredRun.id })).catch(() => []),
           Promise.resolve().then(() => ctx.aiOrchestratorService.listWorkerCheckpoints({ missionId, runId: preferredRun.id })).catch(() => []),
         ]);
-        runGraph = graph;
+        runGraph = compactRunGraphForTransport(graph);
         artifacts = Array.isArray(arts) ? arts : [];
         checkpoints = Array.isArray(cps) ? cps : [];
       }
@@ -4416,19 +4859,20 @@ export function registerIpc({
 
   ipcMain.handle(IPC.orchestratorListRuns, async (_event, arg: ListOrchestratorRunsArgs = {}): Promise<OrchestratorRun[]> => {
     const ctx = getCtx();
-    return ctx.orchestratorService.listRuns(arg);
+    return ctx.orchestratorService.listRuns(arg).map(compactRunForTransport);
   });
 
   ipcMain.handle(IPC.orchestratorGetRunGraph, async (_event, arg: GetOrchestratorRunGraphArgs): Promise<OrchestratorRunGraph> => {
     const ctx = getCtx();
-    return ctx.orchestratorService.getRunGraph(arg);
+    return compactRunGraphForTransport(ctx.orchestratorService.getRunGraph(arg));
   });
 
   ipcMain.handle(
     IPC.orchestratorStartRun,
     async (_event, arg: StartOrchestratorRunArgs): Promise<{ run: OrchestratorRun; steps: OrchestratorStep[] }> => {
       const ctx = getCtx();
-      return ctx.orchestratorService.startRun(arg);
+      const started = ctx.orchestratorService.startRun(arg);
+      return { ...started, run: compactRunForTransport(started.run) };
     }
   );
 
@@ -4448,7 +4892,7 @@ export function registerIpc({
       if (!started.started) {
         throw new Error("Mission run did not produce a runnable execution.");
       }
-      return started.started;
+      return { ...started.started, run: compactRunForTransport(started.started.run) };
     }
   );
 
@@ -4470,20 +4914,20 @@ export function registerIpc({
 
   ipcMain.handle(IPC.orchestratorTickRun, async (_event, arg: TickOrchestratorRunArgs): Promise<OrchestratorRun> => {
     const ctx = getCtx();
-    return ctx.orchestratorService.tick(arg);
+    return compactRunForTransport(ctx.orchestratorService.tick(arg));
   });
 
   ipcMain.handle(IPC.orchestratorPauseRun, async (_event, arg: PauseOrchestratorRunArgs): Promise<OrchestratorRun> => {
     const ctx = getCtx();
-    return ctx.orchestratorService.pauseRun({
+    return compactRunForTransport(ctx.orchestratorService.pauseRun({
       runId: arg.runId,
       reason: arg.reason ?? "Paused from Missions UI.",
-    });
+    }));
   });
 
   ipcMain.handle(IPC.orchestratorResumeRun, async (_event, arg: ResumeOrchestratorRunArgs): Promise<OrchestratorRun> => {
     const ctx = getCtx();
-    return ctx.aiOrchestratorService.resumeRun(arg);
+    return compactRunForTransport(ctx.aiOrchestratorService.resumeRun(arg));
   });
 
   ipcMain.handle(IPC.orchestratorCancelRun, async (_event, arg: CancelOrchestratorRunArgs): Promise<OrchestratorRun> => {
@@ -4499,7 +4943,7 @@ export function registerIpc({
     }
     const run = ctx.orchestratorService.listRuns({ limit: 1_000 }).find((entry) => entry.id === arg.runId);
     if (!run) throw new Error(`Run not found after cancellation: ${arg.runId}`);
-    return run;
+    return compactRunForTransport(run);
   });
 
   ipcMain.handle(
@@ -4562,7 +5006,10 @@ export function registerIpc({
     IPC.orchestratorStartMissionRun,
     async (_event, arg: StartMissionRunWithAIArgs): Promise<StartMissionRunWithAIResult> => {
       const ctx = getCtx();
-      return ctx.aiOrchestratorService.startMissionRun(arg);
+      const result = await ctx.aiOrchestratorService.startMissionRun(arg);
+      return result.started
+        ? { ...result, started: { ...result.started, run: compactRunForTransport(result.started.run) } }
+        : result;
     }
   );
 
@@ -4618,7 +5065,7 @@ export function registerIpc({
     IPC.orchestratorGetChat,
     async (_event, arg: GetOrchestratorChatArgs): Promise<OrchestratorChatMessage[]> => {
       const ctx = getCtx();
-      return ctx.aiOrchestratorService.getChat(arg);
+      return ctx.aiOrchestratorService.getChat(arg).map(compactChatMessageForTransport);
     }
   );
 
@@ -4634,7 +5081,7 @@ export function registerIpc({
     IPC.orchestratorGetThreadMessages,
     async (_event, arg: GetOrchestratorThreadMessagesArgs): Promise<OrchestratorChatMessage[]> => {
       const ctx = getCtx();
-      return ctx.aiOrchestratorService.getThreadMessages(arg);
+      return ctx.aiOrchestratorService.getThreadMessages(arg).map(compactChatMessageForTransport);
     }
   );
 
@@ -4789,7 +5236,7 @@ export function registerIpc({
     IPC.orchestratorGetGlobalChat,
     async (_event, arg: GetGlobalChatArgs): Promise<OrchestratorChatMessage[]> => {
       const ctx = getCtx();
-      return ctx.aiOrchestratorService.getGlobalChat(arg);
+      return ctx.aiOrchestratorService.getGlobalChat(arg).map(compactChatMessageForTransport);
     }
   );
 
@@ -6646,6 +7093,61 @@ export function registerIpc({
   ipcMain.handle(IPC.builtInBrowserClearSelection, async (event) => {
     guardBuiltInBrowserIpc(event, IPC.builtInBrowserClearSelection, { windowMs: 10_000, max: 80 });
     return ensureBuiltInBrowser().clearSelection();
+  });
+
+  ipcMain.handle(IPC.macosVmGetStatus, async (event, arg = {}): Promise<MacosVmStatus> => {
+    guardMacosVmIpc(event, IPC.macosVmGetStatus, { windowMs: 10_000, max: 80 });
+    return ensureMacosVm().getStatus(parseMacosVmStatusArgs(arg, IPC.macosVmGetStatus));
+  });
+
+  ipcMain.handle(IPC.macosVmProvision, async (event, arg): Promise<MacosVmRecord> => {
+    guardMacosVmIpc(event, IPC.macosVmProvision, { windowMs: 60_000, max: 4 });
+    return ensureMacosVm().provision(parseMacosVmProvisionArgs(arg, IPC.macosVmProvision));
+  });
+
+  ipcMain.handle(IPC.macosVmStart, async (event, arg): Promise<MacosVmRecord> => {
+    guardMacosVmIpc(event, IPC.macosVmStart, { windowMs: 60_000, max: 8 });
+    return ensureMacosVm().start(parseMacosVmStartArgs(arg, IPC.macosVmStart));
+  });
+
+  ipcMain.handle(IPC.macosVmStop, async (event, arg): Promise<MacosVmRecord | null> => {
+    guardMacosVmIpc(event, IPC.macosVmStop, { windowMs: 60_000, max: 12 });
+    return ensureMacosVm().stop(parseMacosVmStopArgs(arg, IPC.macosVmStop));
+  });
+
+  ipcMain.handle(IPC.macosVmDelete, async (event, arg): Promise<{ deleted: boolean; previous: MacosVmRecord | null }> => {
+    guardMacosVmIpc(event, IPC.macosVmDelete, { windowMs: 60_000, max: 4 });
+    return ensureMacosVm().delete(parseMacosVmDeleteArgs(arg, IPC.macosVmDelete));
+  });
+
+  ipcMain.handle(IPC.macosVmGetAgentGuide, async (event, arg): Promise<MacosVmAgentGuide> => {
+    guardMacosVmIpc(event, IPC.macosVmGetAgentGuide, { windowMs: 10_000, max: 40 });
+    return ensureMacosVm().getAgentGuide(parseMacosVmAgentGuideArgs(arg, IPC.macosVmGetAgentGuide));
+  });
+
+  ipcMain.handle(IPC.macosVmFocusWindow, async (event, arg): Promise<MacosVmWindowTarget> => {
+    guardMacosVmIpc(event, IPC.macosVmFocusWindow, { windowMs: 10_000, max: 30 });
+    return ensureMacosVm().focusWindow(parseMacosVmFocusWindowArgs(arg, IPC.macosVmFocusWindow));
+  });
+
+  ipcMain.handle(IPC.macosVmCaptureScreenshot, async (event, arg): Promise<MacosVmCaptureScreenshotResult> => {
+    guardMacosVmIpc(event, IPC.macosVmCaptureScreenshot, { windowMs: 30_000, max: 20 });
+    return ensureMacosVm().captureScreenshot(parseMacosVmCaptureScreenshotArgs(arg, IPC.macosVmCaptureScreenshot));
+  });
+
+  ipcMain.handle(IPC.macosVmSelectPoint, async (event, arg): Promise<MacosVmSelectPointResult> => {
+    guardMacosVmIpc(event, IPC.macosVmSelectPoint, { windowMs: 30_000, max: 40 });
+    return ensureMacosVm().selectPoint(parseMacosVmSelectPointArgs(arg, IPC.macosVmSelectPoint));
+  });
+
+  ipcMain.handle(IPC.macosVmClick, async (event, arg): Promise<{ ok: true; window: MacosVmWindowTarget; x: number; y: number }> => {
+    guardMacosVmIpc(event, IPC.macosVmClick, { windowMs: 10_000, max: 80 });
+    return ensureMacosVm().click(parseMacosVmClickArgs(arg, IPC.macosVmClick));
+  });
+
+  ipcMain.handle(IPC.macosVmTypeText, async (event, arg): Promise<{ ok: true; window: MacosVmWindowTarget }> => {
+    guardMacosVmIpc(event, IPC.macosVmTypeText, { windowMs: 10_000, max: 40 });
+    return ensureMacosVm().typeText(parseMacosVmTypeTextArgs(arg, IPC.macosVmTypeText));
   });
 
   ipcMain.handle(IPC.ptyCreate, async (_event, arg: PtyCreateArgs): Promise<PtyCreateResult> => {

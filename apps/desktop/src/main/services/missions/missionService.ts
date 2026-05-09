@@ -63,6 +63,7 @@ import type {
   UpdateMissionStepArgs
 } from "../../../shared/types";
 import type { AdeDb } from "../state/kvDb";
+import type { Logger } from "../logging/logger";
 type MissionPlanStepDraft = {
   index: number;
   title: string;
@@ -80,6 +81,7 @@ import {
 } from "./phaseEngine";
 import { isRecord, nowIso, safeJsonParse } from "../shared/utils";
 import { normalizeAgentRuntimeFlags } from "../orchestrator/teamRuntimeConfig";
+import { filterExecutionSteps, TERMINAL_STEP_STATUSES } from "../orchestrator/orchestratorContext";
 import { resolveModelDescriptor } from "../../../shared/modelRegistry";
 import { normalizeMissionArtifactType as normalizeMissionArtifactTypeValue } from "../../../shared/proofArtifacts";
 
@@ -161,6 +163,18 @@ type MissionStepRow = {
   started_at: string | null;
   completed_at: string | null;
   metadata_json: string | null;
+};
+
+type DashboardOrchestratorRunRow = {
+  id: string;
+  mission_id: string;
+  metadata_json: string | null;
+};
+
+type DashboardOrchestratorStep = {
+  runId: string;
+  status: string;
+  metadata: Record<string, unknown> | null;
 };
 
 type MissionEventRow = {
@@ -783,6 +797,7 @@ export function createMissionService({
   db,
   projectId,
   projectRoot,
+  logger,
   onEvent,
   concurrencyConfig,
   onInterventionResolved,
@@ -791,6 +806,7 @@ export function createMissionService({
   db: AdeDb;
   projectId: string;
   projectRoot?: string;
+  logger?: Logger;
   onEvent?: (payload: MissionsEventPayload) => void;
   concurrencyConfig?: Partial<MissionConcurrencyConfig>;
   onInterventionResolved?: (args: {
@@ -893,7 +909,36 @@ export function createMissionService({
     if (lane.archived_at || lane.status === "archived") return "Lane is archived.";
     if (Number(lane.rebase_in_progress ?? 0) === 1) return "Lane is currently rebasing.";
     if (lane.mission_id && lane.mission_id !== excludeMissionId) {
-      return "Lane is already owned by another mission.";
+      const owner = db.get<{ id: string }>(
+        `
+          select id
+          from missions
+          where id = ?
+            and project_id = ?
+          limit 1
+        `,
+        [lane.mission_id, projectId]
+      );
+      if (owner?.id) {
+        return "Lane is already owned by another mission.";
+      }
+      db.run(
+        `
+          update lanes
+          set mission_id = null,
+              lane_role = null
+          where id = ?
+            and project_id = ?
+            and mission_id = ?
+        `,
+        [laneId, projectId, lane.mission_id]
+      );
+      logger?.info("missions.lane_ghost_claim_cleared", {
+        projectId,
+        laneId,
+        staleMissionId: lane.mission_id,
+      });
+      db.flushNow();
     }
     const existingResultMission = db.get<{ id: string }>(
       `
@@ -2711,10 +2756,15 @@ export function createMissionService({
 
     getDashboard(): MissionDashboardSnapshot {
       ensurePhaseStorageSeeded();
-      const activeMissions = this.list({ status: "active", limit: 50 });
+      const activeMissions = this.list({ status: "active", limit: 50 })
+        .filter((mission) => ACTIVE_MISSION_STATUSES.has(mission.status));
       const activeMissionIds = activeMissions.map((mission) => mission.id);
       const phaseGroupsByMission = new Map<string, ReturnType<typeof groupMissionStepsByPhase>>();
       const activeWorkerCounts = new Map<string, number>();
+      const orchestratorProgressByMission = new Map<string, {
+        phaseName: string | null;
+        phaseProgress: { completed: number; total: number; pct: number };
+      }>();
 
       if (activeMissionIds.length > 0) {
         const placeholders = activeMissionIds.map(() => "?").join(", ");
@@ -2767,18 +2817,92 @@ export function createMissionService({
         for (const row of workerRows) {
           activeWorkerCounts.set(row.mission_id, Number(row.count ?? 0));
         }
+
+        const runRows = db.all<DashboardOrchestratorRunRow>(
+          `
+            select id, mission_id, metadata_json
+            from orchestrator_runs
+            where project_id = ?
+              and mission_id in (${placeholders})
+            order by mission_id asc, created_at desc
+          `,
+          [projectId, ...activeMissionIds]
+        );
+        const latestRunByMission = new Map<string, DashboardOrchestratorRunRow>();
+        for (const row of runRows) {
+          if (!latestRunByMission.has(row.mission_id)) latestRunByMission.set(row.mission_id, row);
+        }
+        const latestRunIds = [...latestRunByMission.values()].map((row) => row.id);
+        if (latestRunIds.length > 0) {
+          const runPlaceholders = latestRunIds.map(() => "?").join(", ");
+          const stepRows = db.all<{
+            run_id: string;
+            status: string;
+            metadata_json: string | null;
+          }>(
+            `
+              select run_id, status, metadata_json
+              from orchestrator_steps
+              where project_id = ?
+                and run_id in (${runPlaceholders})
+              order by run_id asc, step_index asc
+            `,
+            [projectId, ...latestRunIds]
+          );
+          const stepsByRun = new Map<string, DashboardOrchestratorStep[]>();
+          for (const row of stepRows) {
+            const bucket = stepsByRun.get(row.run_id) ?? [];
+            const metadata = safeJsonParse<unknown>(row.metadata_json ?? null, null);
+            bucket.push({
+              runId: row.run_id,
+              status: row.status,
+              metadata: isRecord(metadata) ? metadata : null,
+            });
+            stepsByRun.set(row.run_id, bucket);
+          }
+          for (const [missionId, run] of latestRunByMission.entries()) {
+            const executionSteps = filterExecutionSteps(stepsByRun.get(run.id) ?? []);
+            if (executionSteps.length === 0) continue;
+            const completed = executionSteps.filter((step) =>
+              TERMINAL_STEP_STATUSES.has(step.status as any)
+            ).length;
+            const currentStep =
+              executionSteps.find((step) => !TERMINAL_STEP_STATUSES.has(step.status as any)) ??
+              executionSteps[executionSteps.length - 1] ??
+              null;
+            const runMetadata = safeJsonParse<unknown>(run.metadata_json ?? null, null);
+            const phaseRuntime = isRecord(runMetadata) && isRecord(runMetadata.phaseRuntime)
+              ? runMetadata.phaseRuntime
+              : null;
+            const currentStepMetadata = isRecord(currentStep?.metadata) ? currentStep.metadata : null;
+            const phaseName =
+              (typeof currentStepMetadata?.phaseName === "string" && currentStepMetadata.phaseName.trim()) ||
+              (typeof phaseRuntime?.currentPhaseName === "string" && phaseRuntime.currentPhaseName.trim()) ||
+              (typeof currentStepMetadata?.phaseKey === "string" && currentStepMetadata.phaseKey.trim()) ||
+              null;
+            orchestratorProgressByMission.set(missionId, {
+              phaseName,
+              phaseProgress: {
+                completed,
+                total: executionSteps.length,
+                pct: Math.round((completed / executionSteps.length) * 100),
+              },
+            });
+          }
+        }
       }
 
       const active = activeMissions.map((mission) => {
         const phaseGroups = phaseGroupsByMission.get(mission.id) ?? [];
         const currentPhase = phaseGroups.find((group) => group.completed < group.total) ?? phaseGroups[phaseGroups.length - 1] ?? null;
+        const orchestratorProgress = orchestratorProgressByMission.get(mission.id) ?? null;
         const phaseProgress = currentPhase
           ? {
               completed: currentPhase.completed,
               total: currentPhase.total,
               pct: currentPhase.total > 0 ? Math.round((currentPhase.completed / currentPhase.total) * 100) : 0
             }
-          : { completed: 0, total: 0, pct: 0 };
+          : orchestratorProgress?.phaseProgress ?? { completed: 0, total: 0, pct: 0 };
         const activeWorkers = activeWorkerCounts.get(mission.id) ?? 0;
 
         const startedAtMs = mission.startedAt ? Date.parse(mission.startedAt) : NaN;
@@ -2791,7 +2915,7 @@ export function createMissionService({
 
         return {
           mission,
-          phaseName: currentPhase?.name ?? null,
+          phaseName: currentPhase?.name ?? orchestratorProgress?.phaseName ?? null,
           phaseProgress,
           activeWorkers,
           elapsedMs,
@@ -2990,7 +3114,26 @@ export function createMissionService({
         : [];
       const rawStepsToPersist: MissionPlanStepDraft[] =
         Array.isArray(args.plannedSteps) && args.plannedSteps.length
-          ? [...args.plannedSteps].sort((a: MissionPlanStepDraft, b: MissionPlanStepDraft) => a.index - b.index || a.title.localeCompare(b.title))
+          ? args.plannedSteps
+              .map((step, index) => {
+                const candidate: Record<string, unknown> = isRecord(step) ? step : {};
+                const rawIndex = Number(candidate.index);
+                const title = typeof candidate.title === "string" && candidate.title.trim().length > 0
+                  ? candidate.title.trim()
+                  : `Step ${index + 1}`;
+                const detail = typeof candidate.detail === "string" ? candidate.detail : "";
+                const kind = typeof candidate.kind === "string" && candidate.kind.trim().length > 0
+                  ? candidate.kind.trim()
+                  : "task";
+                return {
+                  index: Number.isFinite(rawIndex) ? Math.max(0, Math.floor(rawIndex)) : index,
+                  title,
+                  detail,
+                  kind,
+                  metadata: isRecord(candidate.metadata) ? candidate.metadata : {},
+                };
+              })
+              .sort((a: MissionPlanStepDraft, b: MissionPlanStepDraft) => a.index - b.index || a.title.localeCompare(b.title))
           : [];
       const stepsToPersist = applyPhaseCardsToPlanSteps(
         rawStepsToPersist.map((step) => ({
@@ -3757,6 +3900,16 @@ export function createMissionService({
       db.run(
         `
           delete from mission_phase_overrides
+          where project_id = ?
+            and mission_id = ?
+        `,
+        [projectId, missionId]
+      );
+      db.run(
+        `
+          update lanes
+          set mission_id = null,
+              lane_role = null
           where project_id = ?
             and mission_id = ?
         `,

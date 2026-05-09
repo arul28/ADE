@@ -329,7 +329,43 @@ extension WorkRootScreen {
     if archivedSessionIds.contains(session.id) {
       toggleArchive(session)
     }
-    openSession(session)
+    guard !isChatSession(session), session.status != "running", terminalSessionHasResumeTarget(session) else {
+      openSession(session)
+      return
+    }
+    Task {
+      do {
+        let provider = cliProviderForTerminalSession(session)
+        let result = try await syncService.startCliSession(
+          laneId: session.laneId,
+          provider: provider,
+          permissionMode: session.resumeMetadata?.launch.permissionMode ?? session.resumeMetadata?.permissionMode,
+          title: session.title,
+          resumeSessionId: session.id
+        )
+        let sessionToOpen: TerminalSessionSummary = {
+          if let resumed = result.session {
+            return resumed
+          }
+          var fallback = session
+          fallback.id = result.sessionId
+          fallback.ptyId = result.ptyId ?? session.ptyId
+          fallback.status = "running"
+          fallback.runtimeState = "running"
+          fallback.endedAt = nil
+          fallback.exitCode = nil
+          return fallback
+        }()
+        if sessionToOpen.id != session.id {
+          optimisticSessions[session.id] = nil
+        }
+        optimisticSessions[sessionToOpen.id] = sessionToOpen
+        openSession(sessionToOpen)
+        await reload(refreshRemote: true)
+      } catch {
+        errorMessage = error.localizedDescription
+      }
+    }
   }
 
   func deleteChatSession(_ session: TerminalSessionSummary) {
@@ -394,6 +430,19 @@ extension WorkRootScreen {
     )
   }
 
+}
+
+private func cliProviderForTerminalSession(_ session: TerminalSessionSummary) -> String {
+  if let provider = session.resumeMetadata?.provider, !provider.isEmpty {
+    return provider
+  }
+  let toolType = (session.toolType ?? "").lowercased()
+  if toolType.hasPrefix("claude") { return "claude" }
+  if toolType.hasPrefix("codex") { return "codex" }
+  if toolType.hasPrefix("cursor") { return "cursor" }
+  if toolType.hasPrefix("droid") { return "droid" }
+  if toolType.hasPrefix("opencode") { return "opencode" }
+  return "shell"
 }
 
 /// Lower rank = higher priority. Selected lane > priority lanes (live /

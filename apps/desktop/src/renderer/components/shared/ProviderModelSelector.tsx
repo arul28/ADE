@@ -12,6 +12,7 @@ import { SmartTooltip } from "../ui/SmartTooltip";
 type ProviderModelSelectorProps = {
   value: string;
   onChange: (modelId: string) => void;
+  onOpen?: () => void;
   filter?: (model: ModelDescriptor) => boolean;
   availableModelIds?: string[];
   catalogMode?: "all" | "available-only";
@@ -48,6 +49,7 @@ function tierLabel(tier: string): string {
 export function ProviderModelSelector({
   value,
   onChange,
+  onOpen,
   filter,
   availableModelIds,
   catalogMode = "all",
@@ -210,6 +212,7 @@ export function ProviderModelSelector({
         disabled={disabled}
         onClick={() => {
           if (disabled) return;
+          if (!open) onOpen?.();
           setOpen((current) => !current);
         }}
         className={cn(

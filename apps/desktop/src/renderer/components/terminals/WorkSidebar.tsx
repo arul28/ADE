@@ -5,6 +5,7 @@ import {
   FolderOpen,
   GitBranch,
   Globe,
+  Cube,
   WarningCircle,
   X,
 } from "@phosphor-icons/react";
@@ -17,6 +18,7 @@ import type {
   IosElementContextItem,
   IosSimulatorSession,
   LaneSummary,
+  MacosVmContextItem,
   TerminalSessionSummary,
 } from "../../../shared/types";
 import type { WorkSidebarTab } from "../../state/appStore";
@@ -27,6 +29,7 @@ import { ChatIosSimulatorPanel } from "../chat/ChatIosSimulatorPanel";
 import { FilesPage } from "../files/FilesPage";
 import { LaneDiffPane } from "../lanes/LaneDiffPane";
 import { LaneGitActionsPane } from "../lanes/LaneGitActionsPane";
+import { MacosVmPanel } from "./MacosVmPanel";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
 
@@ -40,6 +43,7 @@ const WORK_SIDEBAR_TABS: Array<{
   { id: "ios", label: "iOS Sim", Icon: DeviceMobile },
   { id: "app-control", label: "App Control", Icon: Desktop },
   { id: "browser", label: "Browser", Icon: Globe },
+  { id: "macos-vm", label: "Mac VM", Icon: Cube },
 ];
 
 const NOT_CHAT_ERROR = "Context attachment only works in ADE chat sessions.";
@@ -203,6 +207,9 @@ export function WorkSidebar({
   const addAppControlContext = useCallback((item: AppControlContextItem) => {
     dispatchToChat("ade:agent-chat:add-app-control-context", "item", item, NOT_CHAT_ERROR);
   }, [dispatchToChat]);
+  const addMacosVmContext = useCallback((item: MacosVmContextItem) => {
+    dispatchToChat("ade:agent-chat:add-macos-vm-context", "item", item, NOT_CHAT_ERROR);
+  }, [dispatchToChat]);
   const addBuiltInBrowserContext = useCallback((item: unknown) => {
     dispatchToChat("ade:agent-chat:add-builtin-browser-context", "item", item, NOT_CHAT_ERROR);
   }, [dispatchToChat]);
@@ -286,6 +293,21 @@ export function WorkSidebar({
       return <FilesPage preferredLaneId={laneId} embedded />;
     }
 
+    if (tab === "macos-vm") {
+      return (
+        <div className="flex h-full min-h-0 flex-col">
+          {contextDisabledReason ? <WarningBanner message={contextDisabledReason} /> : null}
+          <div className="min-h-0 flex-1 overflow-auto px-3 py-3">
+            <MacosVmPanel
+              laneId={laneId}
+              laneRoot={laneRoot}
+              onAddContext={canAttachToChat ? addMacosVmContext : undefined}
+            />
+          </div>
+        </div>
+      );
+    }
+
     const panel = tab === "ios" ? (
       <ChatIosSimulatorPanel
         sessionId={null}
@@ -316,6 +338,7 @@ export function WorkSidebar({
     addAttachment,
     addBuiltInBrowserContext,
     addIosContext,
+    addMacosVmContext,
     attachChatSessionId,
     canAttachToChat,
     contextDisabledReason,

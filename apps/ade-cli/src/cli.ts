@@ -10,8 +10,23 @@ import {
   CursorCloudUsageError,
   runCursorCloud,
 } from "./cursorCloud";
-import { type JsonRpcHandler, type JsonRpcId, type JsonRpcRequest } from "./jsonrpc";
+import {
+  JsonRpcError,
+  JsonRpcErrorCode,
+  startJsonRpcServer,
+  type JsonRpcHandler,
+  type JsonRpcId,
+  type JsonRpcRequest,
+  type JsonRpcTransport,
+} from "./jsonrpc";
 import { isAdeMcpNamedPipePath } from "../../desktop/src/shared/adeMcpIpc";
+import {
+  isLaunchProfile,
+  isTrackedCliPermissionMode,
+  LAUNCH_PROFILE_TITLE,
+  validateLaunchProfilePermissionMode,
+  type LaunchProfile,
+} from "../../desktop/src/shared/cliLaunch";
 
 type JsonObject = Record<string, unknown>;
 
@@ -34,7 +49,7 @@ type ParsedCli = {
 type InvocationStep = {
   key: string;
   method: string;
-  params?: JsonObject;
+  params?: JsonObject | ((values: JsonObject) => JsonObject);
   unwrapToolResult?: boolean;
   optional?: boolean;
 };
@@ -54,6 +69,11 @@ type FormatterId =
   | "pr-detail"
   | "pr-checks"
   | "pr-comments"
+  | "mission-list"
+  | "mission-detail"
+  | "mission-runs"
+  | "mission-graph"
+  | "mission-watch"
   | "run-defs"
   | "run-runtime"
   | "chat-list"
@@ -70,6 +90,11 @@ type FormatterId =
   | "app-control-snapshot"
   | "app-control-selection"
   | "browser-status"
+  | "macos-vm-status"
+  | "macos-vm-share-policy"
+  | "macos-vm-guide"
+  | "macos-vm-capture"
+  | "macos-vm-selection"
   | "terminal-list"
   | "terminal-read"
   | "actions-list"
@@ -79,7 +104,8 @@ type FormatterId =
 type CliPlan =
   | { kind: "help"; text: string }
   | { kind: "execute"; label: string; steps: InvocationStep[]; visualizer?: "lanes"; summary?: "status" | "doctor" | "auth"; formatter?: FormatterId; preferHeadless?: boolean }
-  | { kind: "cursor-cloud"; rest: string[] };
+  | { kind: "cursor-cloud"; rest: string[] }
+  | { kind: "mcp" };
 
 type CliConnection = {
   mode: "desktop-socket" | "headless";
@@ -124,6 +150,56 @@ const SOURCE_FALLBACK_ENV = "ADE_CLI_SOURCE_FALLBACK_ACTIVE";
 const CLI_ENTRY_PATH = typeof process.argv[1] === "string" ? path.resolve(process.argv[1]) : "";
 const CLI_PACKAGE_ROOT = resolveCliPackageRoot(CLI_ENTRY_PATH);
 const CLI_DIST_PATH = path.join(CLI_PACKAGE_ROOT, "dist", "cli.cjs");
+const COORDINATOR_MCP_TOOL_NAMES = new Set([
+  "spawn_worker",
+  "insert_milestone",
+  "request_specialist",
+  "delegate_to_subagent",
+  "delegate_parallel",
+  "stop_worker",
+  "send_message",
+  "message_worker",
+  "broadcast",
+  "get_worker_output",
+  "list_workers",
+  "report_status",
+  "report_result",
+  "report_validation",
+  "read_mission_status",
+  "read_mission_state",
+  "update_mission_state",
+  "revise_plan",
+  "update_tool_profiles",
+  "transfer_lane",
+  "provision_lane",
+  "set_current_phase",
+  "create_task",
+  "update_task",
+  "assign_task",
+  "list_tasks",
+  "skip_step",
+  "mark_step_complete",
+  "mark_step_failed",
+  "retry_step",
+  "complete_mission",
+  "fail_mission",
+  "get_budget_status",
+  "request_user_input",
+  "read_file",
+  "read_step_output",
+  "search_files",
+  "get_project_context",
+]);
+
+const WORKER_MISSION_TOOL_CLI_NAMES = new Set([
+  "get_mission",
+  "get_run_graph",
+  "get_worker_states",
+  "get_timeline",
+  "get_pending_messages",
+  "stream_events",
+  "message_worker",
+]);
 
 function resolveCliPackageRoot(entryPath: string): string {
   const seen = new Set<string>();
@@ -274,6 +350,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade git status | commit | push | stash        Run ADE-aware git operations
     $ ade diff changes | file | patch               Inspect lane diffs (including raw git patch text)
     $ ade files tree | read | write | search        Read and edit lane workspaces
+    $ ade missions launch | watch | graph           Create, start, and inspect mission runs
     $ ade prs list | create | path-to-merge         Manage PRs, queues, and Path to Merge repair rounds
     $ ade run defs | ps | start | logs              Manage Run tab process definitions and runtime
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
@@ -286,13 +363,15 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade coordinator <tool>                        Call coordinator runtime tools
     $ ade tests list | run | stop | runs | logs     Run configured test suites
     $ ade proof status | list | screenshot | record Manage proof and computer-use artifacts
-    $ ade ios-sim devices | apps | launch | tap   Control iOS Simulator apps, capture, and input
-    $ ade app-control launch | snapshot | click   Inspect and drive Electron apps
+    $ ade ios-sim devices | apps | launch | tap    Control iOS Simulator apps, capture, and input
+    $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
+    $ ade macos-vm status | start | guide          Run lane-tied macOS VMs for agent work
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade memory add | search | pin                 Use ADE memory
     $ ade settings action <method>                  Call project config actions
     $ ade update status | check | install | dismiss Read auto-update state and drive install
     $ ade actions list | run | status               Escape hatch for every ADE service action
+    $ ade mcp                                      Expose ADE actions over stdio MCP
     $ ade cursor cloud agents | runs | artifacts | repos | models | me
                                                     Drive Cursor Cloud agents via @cursor/sdk
 
@@ -312,12 +391,15 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade git status --lane <lane> --text
     $ ade git stage --lane <lane> src/index.ts
     $ ade git commit --lane <lane> -m "Fix login redirect"
+    $ ade missions launch --prompt "Fix onboarding" --manual --text
     $ ade prs create --lane <lane> --base main --draft
     $ ade prs path-to-merge <pr-id-or-number-or-url> --model <model> --max-rounds 3 --no-auto-merge
     $ ade proof record --seconds 20
     $ ade ios-sim apps --text
     $ ade ios-sim launch --target <id> --text
     $ ade app-control launch --command "pnpm dev" --text
+    $ ade macos-vm start --lane <lane> --create --text
+    $ ade macos-vm guide --lane <lane> --text
     $ ade --socket browser open http://localhost:5173 --new-tab --text
     $ ade terminal read --chat-session <id> --text
 
@@ -734,6 +816,36 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade prs labels set <pr> ready-to-merge        Replace labels
     $ ade prs reviewers request <pr> alice bob      Request reviewers
 `,
+  missions: `${ADE_BANNER}
+  Missions
+
+  Mission commands are the typed CLI surface for backend mission launch,
+  monitoring, and run inspection. They work in --headless mode for local
+  service checks, or --socket when you intentionally want the live desktop
+  drawer/session state.
+
+    $ ade missions list --text                      List missions
+    $ ade missions create --prompt "Fix login"      Create a mission without starting a run
+    $ ade missions launch --prompt "Fix login" --manual --text
+                                                    Create and start a mission run
+    $ ade missions launch --prompt "..." --wait-ms 30000 --text
+                                                    Keep headless runtime alive and return graph
+    $ ade missions start <mission-id> --manual      Start an existing mission
+    $ ade missions resume <run-id> --text           Resume an active/paused run and restart coordinator control
+    $ ade missions resume <run-id> --wait-ms 30000 --text
+                                                    Keep resumed coordinator alive and return graph
+    $ ade missions show <mission-id> --text         Inspect mission detail
+    $ ade missions runs <mission-id> --text         List run attempts for a mission
+    $ ade missions graph <run-id> --text            Inspect one run graph
+    $ ade missions watch <mission-id> --text        Snapshot mission + newest run graph
+    $ ade missions watch <mission-id> --wait-ms 5000 --text
+                                                    Wait before taking the snapshot
+
+  Phase and planner payloads:
+    $ ade missions create --prompt "..." --phase-override-file phases.json
+    $ ade missions create --prompt "..." --planned-steps-file steps.json
+    $ ade missions create --input-json '{"prompt":"...","phaseOverride":[...]}'
+`,
   run: `${ADE_BANNER}
   Run tab
 
@@ -756,6 +868,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
 
     $ ade shell start --lane <lane> -- npm test     Start a tracked shell session
     $ ade shell start --lane <lane> -c "npm test"   Start with a command string
+    $ ade shell start-cli codex --lane <lane> --permission-mode edit
+    $ ade shell start --provider claude --lane <lane> --message "fix tests"
     $ ade shell start --lane <lane> --chat-session <id> -c "npm test"
     $ ade shell write <pty-id> --data "q"           Write data to a PTY
     $ ade shell resize <pty-id> --cols 120 --rows 36
@@ -880,6 +994,42 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade ios-sim drag 120 700 120 250             Drag active simulator app (drag)
     $ ade ios-sim swipe 120 700 120 250            Swipe active simulator app (swipe)
     $ ade ios-sim type "hello" --text              Type into the launched app (typeText)
+`,
+  "macos-vm": `${ADE_BANNER}
+  macOS VM
+
+  macOS VM commands provision and control lane-tied Apple silicon macOS
+  guests through Lume. ADE mounts the lane worktree into the guest with a
+  shared directory so host and guest edits stay in sync. Use desktop socket
+  mode when the Work sidebar and agents should observe the same live VM state.
+
+  Discovery and lifecycle:
+    $ ade macos-vm status --text                  Show provider readiness and lane VMs
+    $ ade macos-vm status --lane <lane> --text    Show one lane's VM
+    $ ade macos-vm provision --lane <lane>        Pull/create a VM for a lane
+    $ ade macos-vm start --lane <lane> --create   Start the VM, provisioning if missing
+    $ ade macos-vm stop --lane <lane>             Stop the lane VM
+    $ ade macos-vm delete --lane <lane> --force   Delete the VM record and provider VM
+    $ ade macos-vm guide --lane <lane> --text     Print agent VM guidance
+    $ ade macos-vm focus --lane <lane>            Select the VM GUI target or raise its viewer
+    $ ade macos-vm screenshot --lane <lane>        Capture the VM through VNC or its viewer
+    $ ade macos-vm select --lane <lane> --x 120 --y 420
+                                                    Attach screenshot-backed VM point context
+    $ ade macos-vm click --lane <lane> 120 420     Click window-relative coordinates
+    $ ade macos-vm type --lane <lane> "hello"      Type into the VM GUI target
+    $ ade macos-vm actions --text                 List callable macos_vm actions
+
+  Provisioning flags:
+    --mode pull-image|create      Pull a Lume image or create from an IPSW.
+    --image, --source-image <id>  Lume image, default macos-tahoe-vanilla:latest.
+    --ipsw <path|latest>          Restore image for --mode create.
+    --cpu, --cpu-cores <n>        Virtual CPU count.
+    --memory <size>               Memory, for example 8GB.
+    --disk, --disk-size <size>    Disk size, for example 80GB.
+    --display <WxH>               Display size, for example 1920x1200.
+    --no-display                  Start without opening the VM display window.
+    --window-title <text>          Override the VM window title match.
+    --coordinate-space window|screen Coordinates for click; default window.
 `,
   "app-control": `${ADE_BANNER}
   App Control
@@ -1060,13 +1210,15 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade automations update <id> --from-file <path>
     $ ade automations delete <id>                   Remove a local rule
     $ ade automations toggle <id> --enabled true|false
-    $ ade automations run <id> [--dry-run]          Trigger a rule manually
+    $ ade automations run <id> [--lane <id>] [--dry-run]
+    $ ade automations trigger <id> [--lane <id>]
+                                                     Trigger a rule manually
     $ ade automations runs [--rule <id>] [--status <s>] [--limit 50]
     $ ade automations run-show <runId> [--json]     Inspect a run
     $ ade automations example                       Print an example rule (stdout)
 
   Lane mode flags (apply to create/update on top of --from-file/--stdin/--text):
-    --lane-mode <create|reuse>                      Spawn a new lane per run, or reuse one
+    --lane-mode <create|reuse|require-on-trigger>   Create, reuse, or require lane at trigger time
     --lane <id>                                     Target lane (only with --lane-mode reuse)
     --lane-name-preset <issue-title|issue-num-title|pr-title-author|custom>
     --lane-name-template <string>                   Template (only with preset custom)
@@ -1234,6 +1386,34 @@ function firstPositional(args: string[]): string | null {
   return value ?? null;
 }
 
+function firstStandalonePositional(args: string[]): string | null {
+  let previousTokenWasValueCarrier = false;
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index]!;
+    if (token === "--") return null;
+    if (previousTokenWasValueCarrier) {
+      previousTokenWasValueCarrier = false;
+      continue;
+    }
+    if (token.startsWith("-")) {
+      const flagName = token.includes("=") ? token.slice(0, token.indexOf("=")) : token;
+      previousTokenWasValueCarrier = !token.includes("=") && VALUE_CARRIER_FLAGS.has(flagName);
+      continue;
+    }
+    const [value] = args.splice(index, 1);
+    return value ?? null;
+  }
+  return null;
+}
+
+function takeArgsAfterTerminator(args: string[]): string[] | null {
+  const index = args.indexOf("--");
+  if (index < 0) return null;
+  const rest = args.slice(index + 1);
+  args.splice(index);
+  return rest.length > 0 ? rest : null;
+}
+
 function peekFirstPositional(args: string[]): string | null {
   return args.find((arg) => arg !== "--" && !arg.startsWith("-")) ?? null;
 }
@@ -1350,9 +1530,41 @@ function readNumberOption(args: string[], names: string[], fallback?: number): n
   return parsed;
 }
 
+function readJsonOption(args: string[], names: string[], label: string): unknown | undefined {
+  const value = readValue(args, names);
+  return value == null ? undefined : parseJson(value, label);
+}
+
+function readJsonFileOption(args: string[], names: string[], label: string): unknown | undefined {
+  const filePath = readValue(args, names);
+  if (filePath == null) return undefined;
+  const resolvedPath = path.resolve(filePath);
+  let text: string;
+  try {
+    text = fs.readFileSync(resolvedPath, "utf8");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new CliUsageError(`Could not read ${names[0]} file '${filePath}': ${message}`);
+  }
+  return parseJson(text, label);
+}
+
+function readJsonPayloadOption(args: string[], jsonNames: string[], fileNames: string[], label: string): unknown | undefined {
+  const inline = readJsonOption(args, jsonNames, label);
+  const fromFile = readJsonFileOption(args, fileNames, label);
+  if (inline !== undefined && fromFile !== undefined) {
+    throw new CliUsageError(`Use either ${jsonNames[0]} or ${fileNames[0]}, not both.`);
+  }
+  return inline ?? fromFile;
+}
+
 function requireValue(value: string | null, label: string): string {
   if (value && value.trim().length > 0) return value.trim();
   throw new CliUsageError(`${label} is required.`);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function isCommandTextValue(argv: string[], index: number, command: string[]): boolean {
@@ -1609,6 +1821,31 @@ function actionArgsListStep(key: string, domain: string, action: string, argsLis
   return actionCallStep(key, "run_ade_action", { domain, action, argsList });
 }
 
+function actionScalarStep(key: string, domain: string, action: string, arg: unknown): InvocationStep {
+  return actionCallStep(key, "run_ade_action", { domain, action, arg });
+}
+
+function waitRunGraphStep(args: {
+  key: string;
+  runId: string | ((values: JsonObject) => string);
+  waitMs: number | undefined;
+  timelineLimit: number;
+  untilTerminal: boolean;
+}): InvocationStep | null {
+  if ((args.waitMs == null || args.waitMs <= 0) && !args.untilTerminal) return null;
+  const waitMs = Math.min(30 * 60 * 1000, Math.max(0, Math.floor(args.waitMs ?? 30 * 60 * 1000)));
+  return {
+    key: args.key,
+    method: "ade-cli/wait-run-graph",
+    params: (values) => ({
+      runId: typeof args.runId === "function" ? args.runId(values) : args.runId,
+      waitMs,
+      untilTerminal: args.untilTerminal,
+      timelineLimit: args.timelineLimit,
+    }),
+  };
+}
+
 function listActionsStep(key: string, domain?: string): InvocationStep {
   return actionCallStep(key, "list_ade_actions", domain ? { domain } : {});
 }
@@ -1646,6 +1883,66 @@ function buildActionRunStep(args: string[]): InvocationStep {
   }
 
   return actionStep("result", domain, action, collectGenericObjectArgs(args));
+}
+
+function buildWorkerMissionToolPlan(name: string, args: string[]): CliPlan {
+  const input = (() => {
+    if (name === "get_mission") {
+      return collectGenericObjectArgs(args, {
+        missionId: readValue(args, ["--mission", "--mission-id"]),
+      });
+    }
+    if (name === "get_run_graph") {
+      return collectGenericObjectArgs(args, {
+        runId: readValue(args, ["--run", "--run-id"]),
+        timelineLimit: readIntOption(args, ["--timeline-limit"], 300),
+      });
+    }
+    if (name === "get_worker_states") {
+      return collectGenericObjectArgs(args, {
+        runId: readValue(args, ["--run", "--run-id"]),
+      });
+    }
+    if (name === "get_timeline") {
+      return collectGenericObjectArgs(args, {
+        runId: readValue(args, ["--run", "--run-id"]),
+        limit: readIntOption(args, ["--limit"], 300),
+        stepId: readValue(args, ["--step", "--step-id"]),
+      });
+    }
+    if (name === "get_pending_messages") {
+      return collectGenericObjectArgs(args, {
+        since_cursor: readValue(args, ["--since-cursor", "--since"]),
+        limit: readIntOption(args, ["--limit"], 50),
+      });
+    }
+    if (name === "stream_events") {
+      return collectGenericObjectArgs(args, {
+        cursor: readIntOption(args, ["--cursor"], 0),
+        limit: readIntOption(args, ["--limit"], 100),
+        category: readValue(args, ["--category"]),
+      });
+    }
+    if (name === "message_worker") {
+      const toWorkerId = readValue(args, ["--to-worker", "--to-worker-id", "--worker", "--worker-id", "--to"])
+        ?? firstPositional(args);
+      const content = readValue(args, ["--content", "--message", "--body"])
+        ?? args.filter((entry) => entry !== "--" && !entry.startsWith("-")).join(" ").trim();
+      return collectGenericObjectArgs(args, {
+        fromWorkerId: readValue(args, ["--from-worker", "--from-worker-id", "--from"]),
+        toWorkerId,
+        content,
+        priority: readValue(args, ["--priority"]) ?? "normal",
+      });
+    }
+    return collectGenericObjectArgs(args);
+  })();
+  return {
+    kind: "execute",
+    label: `worker mission tool ${name}`,
+    formatter: "action-result",
+    steps: [actionCallStep("result", name, input)],
+  };
 }
 
 function buildLanePlan(args: string[]): CliPlan {
@@ -2192,6 +2489,291 @@ function buildPrPlan(args: string[]): CliPlan {
   return { kind: "execute", label: `PR ${sub}`, steps: [actionStep("result", "pr", sub, withPr())] };
 }
 
+function collectMissionCreateArgs(args: string[], base: JsonObject = {}): JsonObject {
+  const noAutostart = readFlag(args, ["--no-autostart", "--no-start"]);
+  const autostartFlag = readFlag(args, ["--autostart"]);
+  const manual = readFlag(args, ["--manual"]);
+  const prompt = readValue(args, ["--prompt", "--message"]);
+  const createBase: JsonObject = { ...base };
+  if (noAutostart) createBase.autostart = false;
+  if (autostartFlag) createBase.autostart = true;
+  if (manual) createBase.launchMode = "manual";
+  const input = collectGenericObjectArgs(args, {
+    ...createBase,
+    ...(prompt ? { prompt } : {}),
+    title: readValue(args, ["--title"]),
+    laneId: readLaneId(args),
+    priority: readValue(args, ["--priority"]),
+    executionMode: readValue(args, ["--execution-mode"]),
+    targetMachineId: readValue(args, ["--target-machine", "--target-machine-id"]),
+    plannerEngine: readValue(args, ["--planner", "--planner-engine"]),
+    planningTimeoutMs: readIntOption(args, ["--planning-timeout-ms"]),
+    launchMode: readValue(args, ["--launch-mode", "--run-mode"]) ?? createBase.launchMode,
+    autopilotExecutor: readValue(args, ["--executor", "--autopilot-executor", "--default-executor"]),
+    autostart: createBase.autostart,
+    phaseProfileId: readValue(args, ["--phase-profile", "--phase-profile-id"]),
+    employeeAgentId: readValue(args, ["--employee-agent", "--employee-agent-id"]),
+  });
+
+  const phaseOverride = readJsonPayloadOption(args, ["--phase-override-json"], ["--phase-override-file"], "--phase-override-json");
+  if (phaseOverride !== undefined) {
+    if (!Array.isArray(phaseOverride)) throw new CliUsageError("--phase-override-json must be a JSON array.");
+    input.phaseOverride = phaseOverride;
+  }
+
+  const plannedSteps = readJsonPayloadOption(args, ["--planned-steps-json"], ["--planned-steps-file"], "--planned-steps-json");
+  if (plannedSteps !== undefined) {
+    if (!Array.isArray(plannedSteps)) throw new CliUsageError("--planned-steps-json must be a JSON array.");
+    input.plannedSteps = plannedSteps;
+  }
+
+  const jsonObjects: Array<[string, string[], string[], string]> = [
+    ["modelConfig", ["--model-config-json"], ["--model-config-file"], "--model-config-json"],
+    ["executionPolicy", ["--execution-policy-json"], ["--execution-policy-file"], "--execution-policy-json"],
+    ["recoveryLoop", ["--recovery-loop-json"], ["--recovery-loop-file"], "--recovery-loop-json"],
+    ["teamRuntime", ["--team-runtime-json"], ["--team-runtime-file"], "--team-runtime-json"],
+    ["agentRuntime", ["--agent-runtime-json"], ["--agent-runtime-file"], "--agent-runtime-json"],
+    ["permissionConfig", ["--permission-config-json"], ["--permission-config-file"], "--permission-config-json"],
+  ];
+  for (const [key, inlineNames, fileNames, label] of jsonObjects) {
+    const value = readJsonPayloadOption(args, inlineNames, fileNames, label);
+    if (value === undefined) continue;
+    if (!isRecord(value)) throw new CliUsageError(`${label} must be a JSON object.`);
+    input[key] = value;
+  }
+
+  if (!asString(input.prompt)) {
+    const positionalPrompt = args.filter((entry) => entry !== "--" && !entry.startsWith("-")).join(" ").trim();
+    if (positionalPrompt.length > 0) input.prompt = positionalPrompt;
+  }
+  input.prompt = requireValue(asString(input.prompt) ?? null, "prompt");
+  return input;
+}
+
+function collectMissionStartArgs(args: string[], base: JsonObject = {}): JsonObject {
+  const manual = readFlag(args, ["--manual"]);
+  const runMode = manual ? "manual" : readValue(args, ["--run-mode", "--launch-mode"]);
+  const executor = readValue(args, ["--executor", "--default-executor", "--executor-kind"]);
+  const owner = readValue(args, ["--owner", "--owner-id", "--autopilot-owner"]);
+  const input: JsonObject = { ...base };
+  if (runMode) input.runMode = runMode;
+  if (executor ?? base.defaultExecutorKind) input.defaultExecutorKind = executor ?? base.defaultExecutorKind;
+  if (owner) input.autopilotOwnerId = owner;
+  return collectGenericObjectArgs(args, input);
+}
+
+function buildMissionsPlan(args: string[]): CliPlan {
+  const sub = firstPositional(args) ?? "list";
+  if (sub === "actions") return { kind: "execute", label: "mission actions", steps: [listActionsStep("actions", "mission")] };
+  if (sub === "action") return { kind: "execute", label: "mission action", steps: [buildActionRunStep(["mission", ...args])] };
+
+  if (sub === "list" || sub === "ls") {
+    return {
+      kind: "execute",
+      label: "mission list",
+      formatter: "mission-list",
+      steps: [actionStep("result", "mission", "list", collectGenericObjectArgs(args, {
+        status: readValue(args, ["--status"]),
+        laneId: readLaneId(args),
+        limit: readIntOption(args, ["--limit"]),
+        includeArchived: readFlag(args, ["--include-archived"]),
+      }))],
+    };
+  }
+
+  if (sub === "create" || sub === "new") {
+    return {
+      kind: "execute",
+      label: "mission create",
+      formatter: "mission-detail",
+      steps: [actionStep("result", "mission", "create", collectMissionCreateArgs(args))],
+    };
+  }
+
+  if (sub === "launch") {
+    const waitUntilTerminal = readFlag(args, ["--wait", "--until-terminal", "--wait-until-terminal"]);
+    const waitMs = readIntOption(args, ["--wait-ms", "--hold-ms", "--wait-for-ms"], waitUntilTerminal ? 30 * 60 * 1000 : undefined);
+    const timelineLimit = readIntOption(args, ["--timeline-limit"], 120) ?? 120;
+    const createArgs = collectMissionCreateArgs(args, { autostart: false });
+    const startArgs = collectMissionStartArgs(args, {
+      runMode: createArgs.launchMode === "manual" ? "manual" : undefined,
+      defaultExecutorKind: createArgs.autopilotExecutor,
+    });
+    const waitGraphStep = waitRunGraphStep({
+      key: "graph",
+      runId: (values) => requireValue(asString(runFromStartResult(values.started)?.id) ?? null, "run id"),
+      waitMs,
+      untilTerminal: waitUntilTerminal,
+      timelineLimit,
+    });
+    const steps: InvocationStep[] = [
+      actionStep("created", "mission", "create", createArgs),
+      {
+        ...actionStep("started", "orchestrator", "startMissionRun", {}),
+        params: (values) => ({
+          name: "run_ade_action",
+          arguments: {
+            domain: "orchestrator",
+            action: "startMissionRun",
+            args: {
+              ...startArgs,
+              missionId: missionIdFromCreateResult(values.created),
+            },
+          },
+        }),
+      },
+    ];
+    if (waitGraphStep) {
+      steps.push({
+        ...actionScalarStep("mission", "mission", "get", ""),
+        optional: true,
+        params: (values) => ({
+          name: "run_ade_action",
+          arguments: {
+            domain: "mission",
+            action: "get",
+            arg: missionIdFromCreateResult(values.created),
+          },
+        }),
+      });
+      steps.push(waitGraphStep);
+    }
+    return {
+      kind: "execute",
+      label: "mission launch",
+      formatter: "mission-watch",
+      steps,
+    };
+  }
+
+  if (sub === "start" || sub === "run") {
+    const missionId = requireValue(readValue(args, ["--mission", "--mission-id"]) ?? firstPositional(args), "missionId");
+    return {
+      kind: "execute",
+      label: "mission start",
+      formatter: "mission-watch",
+      steps: [actionStep("result", "orchestrator", "startMissionRun", collectMissionStartArgs(args, { missionId }))],
+    };
+  }
+
+  if (sub === "show" || sub === "get" || sub === "view") {
+    const missionId = requireValue(readValue(args, ["--mission", "--mission-id"]) ?? firstPositional(args), "missionId");
+    return {
+      kind: "execute",
+      label: "mission show",
+      formatter: "mission-detail",
+      steps: [actionScalarStep("result", "mission", "get", missionId)],
+    };
+  }
+
+  if (sub === "runs" || sub === "attempts") {
+    const missionId = readValue(args, ["--mission", "--mission-id"]) ?? firstPositional(args);
+    return {
+      kind: "execute",
+      label: "mission runs",
+      formatter: "mission-runs",
+      steps: [actionStep("result", "orchestrator_core", "listRuns", collectGenericObjectArgs(args, {
+        missionId: missionId ?? undefined,
+        status: readValue(args, ["--status"]),
+        limit: readIntOption(args, ["--limit"], 20),
+      }))],
+    };
+  }
+
+  if (sub === "graph" || sub === "run-graph") {
+    const runId = requireValue(readValue(args, ["--run", "--run-id"]) ?? firstPositional(args), "runId");
+    return {
+      kind: "execute",
+      label: "mission graph",
+      formatter: "mission-graph",
+      steps: [actionStep("result", "orchestrator_core", "getRunGraph", collectGenericObjectArgs(args, {
+        runId,
+        timelineLimit: readIntOption(args, ["--timeline-limit"], 80),
+      }))],
+    };
+  }
+
+  if (sub === "watch" || sub === "monitor") {
+    const waitUntilTerminal = readFlag(args, ["--wait", "--until-terminal", "--wait-until-terminal"]);
+    const waitMs = readIntOption(args, ["--wait-ms", "--hold-ms", "--wait-for-ms"], waitUntilTerminal ? 30 * 60 * 1000 : undefined);
+    const runId = readValue(args, ["--run", "--run-id"]);
+    const missionId = readValue(args, ["--mission", "--mission-id"]) ?? (runId ? null : firstPositional(args));
+    const timelineLimit = readIntOption(args, ["--timeline-limit"], 80) ?? 80;
+    const steps: InvocationStep[] = [];
+    if (missionId) {
+      steps.push(actionScalarStep("mission", "mission", "get", missionId));
+      steps.push(actionStep("runs", "orchestrator_core", "listRuns", { missionId, limit: readIntOption(args, ["--limit"], 20) }));
+    }
+    const waitGraphStep = waitRunGraphStep({
+      key: "graph",
+      runId: (values) => runId ?? runIdFromWatchValues(values),
+      waitMs,
+      untilTerminal: waitUntilTerminal,
+      timelineLimit,
+    });
+    if (waitGraphStep) {
+      steps.push(waitGraphStep);
+    } else {
+      steps.push({
+        ...actionStep("graph", "orchestrator_core", "getRunGraph", {}),
+        optional: !runId,
+        params: (values) => ({
+          name: "run_ade_action",
+          arguments: {
+            domain: "orchestrator_core",
+            action: "getRunGraph",
+            args: {
+              runId: runId ?? runIdFromWatchValues(values),
+              timelineLimit,
+            },
+          },
+        }),
+      });
+    }
+    return {
+      kind: "execute",
+      label: "mission watch",
+      formatter: "mission-watch",
+      steps,
+    };
+  }
+
+  if (sub === "pause") {
+    const runId = requireValue(readValue(args, ["--run", "--run-id"]) ?? firstPositional(args), "runId");
+    return { kind: "execute", label: "mission pause", formatter: "mission-graph", steps: [actionStep("result", "orchestrator_core", "pauseRun", collectGenericObjectArgs(args, { runId, reason: readValue(args, ["--reason"]) }))] };
+  }
+
+  if (sub === "resume") {
+    const runId = requireValue(readValue(args, ["--run", "--run-id"]) ?? firstPositional(args), "runId");
+    const waitUntilTerminal = readFlag(args, ["--wait", "--until-terminal", "--wait-until-terminal"]);
+    const waitMs = readIntOption(args, ["--wait-ms", "--hold-ms", "--wait-for-ms"], waitUntilTerminal ? 30 * 60 * 1000 : undefined);
+    const steps: InvocationStep[] = [
+      actionStep("result", "orchestrator", "resumeRun", collectGenericObjectArgs(args, { runId })),
+    ];
+    const waitGraphStep = waitRunGraphStep({
+      key: "graph",
+      runId,
+      waitMs,
+      untilTerminal: waitUntilTerminal,
+      timelineLimit: readIntOption(args, ["--timeline-limit"], 120) ?? 120,
+    });
+    if (waitGraphStep) steps.push(waitGraphStep);
+    return {
+      kind: "execute",
+      label: "mission resume",
+      formatter: waitGraphStep ? "mission-watch" : "mission-graph",
+      steps,
+    };
+  }
+
+  if (sub === "cancel") {
+    const runId = requireValue(readValue(args, ["--run", "--run-id"]) ?? readValue(args, ["--mission", "--mission-id"]) ?? firstPositional(args), "runId");
+    return { kind: "execute", label: "mission cancel", formatter: "mission-detail", steps: [actionStep("result", "orchestrator", "cancelRunGracefully", collectGenericObjectArgs(args, { runId, reason: readValue(args, ["--reason"]) }))] };
+  }
+
+  return { kind: "execute", label: `mission ${sub}`, steps: [actionStep("result", "mission", sub, collectGenericObjectArgs(args))] };
+}
+
 function buildRunPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "ps";
   if (sub === "actions") return { kind: "execute", label: "run actions", steps: [listActionsStep("actions", "process")] };
@@ -2231,17 +2813,23 @@ function buildRunPlan(args: string[]): CliPlan {
 function buildShellPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "start";
   if (sub === "actions") return { kind: "execute", label: "shell actions", steps: [listActionsStep("actions", "pty")] };
+  if (sub === "start-cli" || sub === "cli" || sub === "agent-cli") {
+    return buildCliSessionStartPlan(args);
+  }
   if (sub === "start" || sub === "create") {
+    const provider = readValue(args, ["--provider", "--profile"]);
+    if (provider) {
+      return buildCliSessionStartPlan(args, provider);
+    }
     const laneId = readLaneId(args);
     const chatSessionId = asString(
       readValue(args, ["--chat-session", "--chat-session-id", "--session", "--session-id"])
       ?? process.env.ADE_CHAT_SESSION_ID,
     );
-    const startupCommandIndex = args.indexOf("--");
-    const startupCommand = startupCommandIndex >= 0
-      ? args.splice(startupCommandIndex + 1).map(shellEscapeToken).join(" ")
+    const startupCommandArgs = takeArgsAfterTerminator(args);
+    const startupCommand = startupCommandArgs
+      ? startupCommandArgs.map(shellEscapeToken).join(" ")
       : readValue(args, ["--command", "-c"]);
-    if (startupCommandIndex >= 0) args.splice(startupCommandIndex, 1);
     const input = collectGenericObjectArgs(args, {
       ...(laneId ? { laneId } : {}),
       ...(chatSessionId ? { chatSessionId } : {}),
@@ -2259,6 +2847,44 @@ function buildShellPlan(args: string[]): CliPlan {
   if (sub === "resize") return { kind: "execute", label: "shell resize", steps: [actionStep("result", "pty", "resize", collectGenericObjectArgs(args, { ptyId: requireValue(readValue(args, ["--pty", "--pty-id"]) ?? firstPositional(args), "ptyId"), cols: readIntOption(args, ["--cols"], 120), rows: readIntOption(args, ["--rows"], 36) }))] };
   if (sub === "close" || sub === "dispose") return { kind: "execute", label: "shell close", steps: [actionStep("result", "pty", "dispose", collectGenericObjectArgs(args, { ptyId: requireValue(readValue(args, ["--pty", "--pty-id"]) ?? firstPositional(args), "ptyId"), sessionId: readValue(args, ["--session", "--session-id"]) }))] };
   return { kind: "execute", label: `shell ${sub}`, steps: [actionStep("result", "pty", sub, collectGenericObjectArgs(args))] };
+}
+
+function buildCliSessionStartPlan(args: string[], providerArg?: string): CliPlan {
+  const laneId = requireValue(readLaneId(args), "laneId");
+  const rawProvider = requireValue(
+    providerArg ?? readValue(args, ["--provider", "--profile"]) ?? firstStandalonePositional(args),
+    "provider",
+  );
+  if (!isLaunchProfile(rawProvider)) {
+    throw new CliUsageError("provider must be one of claude, codex, cursor, droid, opencode, or shell.");
+  }
+  const provider: LaunchProfile = rawProvider;
+  const promptArgs = takeArgsAfterTerminator(args);
+  const initialInput = promptArgs
+    ? promptArgs.join(" ").trim()
+    : readValue(args, ["--message", "--prompt", "--initial-input"]);
+  const permissionMode = readValue(args, ["--permission-mode", "--permissions"]) ?? "default";
+  if (!isTrackedCliPermissionMode(permissionMode)) {
+    throw new CliUsageError("permissionMode must be one of default, plan, edit, full-auto, or config-toml.");
+  }
+  validateLaunchProfilePermissionMode(provider, permissionMode);
+
+  const input = collectGenericObjectArgs(args, {
+    laneId,
+    provider,
+    permissionMode,
+    title: readValue(args, ["--title"]) ?? LAUNCH_PROFILE_TITLE[provider] ?? undefined,
+    initialInput,
+    cols: readIntOption(args, ["--cols"], 120),
+    rows: readIntOption(args, ["--rows"], 36),
+    cwd: readValue(args, ["--cwd"]),
+    chatSessionId: readValue(args, ["--chat-session", "--chat-session-id"]),
+    resumeSessionId: readValue(args, ["--resume-session", "--resume-session-id"]),
+    resumeTargetId: readValue(args, ["--resume-target", "--resume-target-id", "--target"]),
+    tracked: !readFlag(args, ["--untracked"]),
+  });
+
+  return { kind: "execute", label: "shell start cli", steps: [actionCallStep("result", "start_cli_session", input)] };
 }
 
 function buildTerminalPlan(args: string[]): CliPlan {
@@ -2784,6 +3410,126 @@ function buildAppControlPlan(args: string[]): CliPlan {
   return { kind: "execute", label: `app-control ${sub}`, steps: [actionStep("result", "app_control", sub, collectGenericObjectArgs(args))] };
 }
 
+function buildMacosVmPlan(args: string[]): CliPlan {
+  const sub = firstPositional(args) ?? "status";
+  if (sub === "help") return { kind: "help", text: HELP_BY_COMMAND["macos-vm"] };
+  const numericPositionals = () => args.filter((value) => /^\d+(\.\d+)?$/.test(value));
+  const readCoordinate = (flag: string, index: number): number => {
+    const value = readNumberOption(args, [flag]) ?? Number(numericPositionals()[index]);
+    if (!Number.isFinite(value)) throw new CliUsageError(`${flag} is required and must be a number.`);
+    return value;
+  };
+
+  const readVmLaneId = (required: boolean): string | null => {
+    const laneId = readValue(args, ["--lane", "--lane-id"]) ?? firstPositional(args);
+    if (required) return requireValue(laneId, "laneId");
+    return laneId;
+  };
+
+  const readProvisionOptions = (): JsonObject => {
+    const options: JsonObject = {
+      name: readValue(args, ["--name", "--vm-name"]),
+      cpuCores: readIntOption(args, ["--cpu", "--cpu-cores"]),
+      memory: readValue(args, ["--memory"]),
+      diskSize: readValue(args, ["--disk", "--disk-size"]),
+      display: readValue(args, ["--display"]),
+      mode: readValue(args, ["--mode"]),
+      ipsw: readValue(args, ["--ipsw"]),
+      sourceImage: readValue(args, ["--image", "--source-image"]),
+      unattendedPreset: readValue(args, ["--unattended", "--unattended-preset"]),
+    };
+    return Object.fromEntries(Object.entries(options).filter(([, value]) => value !== undefined && value !== null && value !== ""));
+  };
+
+  if (sub === "actions") return { kind: "execute", label: "macOS VM actions", steps: [listActionsStep("actions", "macos_vm")] };
+  if (sub === "status" || sub === "list" || sub === "ls") {
+    return { kind: "execute", label: "macOS VM status", steps: [actionStep("result", "macos_vm", "getStatus", collectGenericObjectArgs(args, { laneId: readVmLaneId(false) }))] };
+  }
+  if (sub === "share" || sub === "share-policy") {
+    return { kind: "execute", label: "macOS VM share policy", steps: [actionStep("result", "macos_vm", "getSharePolicy", collectGenericObjectArgs(args, { laneId: readVmLaneId(true) }))] };
+  }
+  if (sub === "provision" || sub === "create" || sub === "pull") {
+    const provisionOptions = readProvisionOptions();
+    const mode = sub === "create" ? "create" : sub === "pull" ? "pull-image" : provisionOptions.mode;
+    return { kind: "execute", label: "macOS VM provision", steps: [actionStep("result", "macos_vm", "provision", collectGenericObjectArgs(args, {
+      laneId: readVmLaneId(true),
+      ...provisionOptions,
+      mode,
+      force: readFlag(args, ["--force", "-f"]) ? true : undefined,
+    }))] };
+  }
+  if (sub === "start" || sub === "run" || sub === "open") {
+    const noDisplay = readFlag(args, ["--no-display", "--headless"]);
+    const openDisplay = noDisplay ? false : readFlag(args, ["--open-display", "--display-window"]) ? true : undefined;
+    return { kind: "execute", label: "macOS VM start", steps: [actionStep("result", "macos_vm", "start", collectGenericObjectArgs(args, {
+      laneId: readVmLaneId(true),
+      ...readProvisionOptions(),
+      openDisplay,
+      createIfMissing: readFlag(args, ["--create", "--create-if-missing"]) ? true : undefined,
+    }))] };
+  }
+  if (sub === "stop" || sub === "shutdown") {
+    return { kind: "execute", label: "macOS VM stop", steps: [actionStep("result", "macos_vm", "stop", collectGenericObjectArgs(args, {
+      laneId: readVmLaneId(true),
+      force: readFlag(args, ["--force", "-f"]) ? true : undefined,
+    }))] };
+  }
+  if (sub === "delete" || sub === "rm" || sub === "remove" || sub === "destroy") {
+    return { kind: "execute", label: "macOS VM delete", steps: [actionStep("result", "macos_vm", "delete", collectGenericObjectArgs(args, {
+      laneId: readVmLaneId(true),
+      force: readFlag(args, ["--force", "-f"]) ? true : undefined,
+    }))] };
+  }
+  if (sub === "guide" || sub === "agent-guide" || sub === "handoff" || sub === "target") {
+    return { kind: "execute", label: "macOS VM guide", steps: [actionStep("result", "macos_vm", "getAgentGuide", collectGenericObjectArgs(args, { laneId: readVmLaneId(true) }))] };
+  }
+  if (sub === "focus" || sub === "focus-window") {
+    return { kind: "execute", label: "macOS VM focus", steps: [actionStep("result", "macos_vm", "focusWindow", collectGenericObjectArgs(args, {
+      laneId: readVmLaneId(true),
+      windowTitleQuery: readValue(args, ["--window-title", "--title-query"]),
+    }))] };
+  }
+  if (sub === "screenshot" || sub === "capture") {
+    return { kind: "execute", label: "macOS VM screenshot", steps: [actionStep("result", "macos_vm", "captureScreenshot", collectGenericObjectArgs(args, {
+      laneId: readVmLaneId(true),
+      windowTitleQuery: readValue(args, ["--window-title", "--title-query"]),
+      outputPath: readValue(args, ["--output", "--path"]),
+    }))] };
+  }
+  if (sub === "select" || sub === "select-point" || sub === "inspect") {
+    return { kind: "execute", label: "macOS VM select", steps: [actionStep("result", "macos_vm", "selectPoint", collectGenericObjectArgs(args, {
+      laneId: readVmLaneId(true),
+      x: readCoordinate("--x", 0),
+      y: readCoordinate("--y", 1),
+      coordinateSpace: readValue(args, ["--coordinate-space", "--coords"]),
+      windowTitleQuery: readValue(args, ["--window-title", "--title-query"]),
+      includeScreenshot: readFlag(args, ["--no-screenshot"]) ? false : undefined,
+    }))] };
+  }
+  if (sub === "click" || sub === "tap") {
+    return { kind: "execute", label: "macOS VM click", steps: [actionStep("result", "macos_vm", "click", collectGenericObjectArgs(args, {
+      laneId: readVmLaneId(true),
+      x: readCoordinate("--x", 0),
+      y: readCoordinate("--y", 1),
+      coordinateSpace: readValue(args, ["--coordinate-space", "--coords"]),
+      windowTitleQuery: readValue(args, ["--window-title", "--title-query"]),
+    }))] };
+  }
+  if (sub === "type" || sub === "text") {
+    return { kind: "execute", label: "macOS VM type", steps: [actionStep("result", "macos_vm", "typeText", collectGenericObjectArgs(args, {
+      laneId: readVmLaneId(true),
+      text: requireValue(
+        readValue(args, ["--value", "--message", "--input-text"])
+          ?? readCommandTextValue(args, ["--text"])
+          ?? args.filter((arg) => arg !== "--text").join(" "),
+        "text",
+      ),
+      windowTitleQuery: readValue(args, ["--window-title", "--title-query"]),
+    }))] };
+  }
+  return { kind: "execute", label: `macos-vm ${sub}`, steps: [actionStep("result", "macos_vm", sub, collectGenericObjectArgs(args))] };
+}
+
 function buildBrowserPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "status";
   if (sub === "help") return { kind: "help", text: HELP_BY_COMMAND.browser };
@@ -2976,7 +3722,7 @@ function parseDraftInput(args: string[]): JsonObject {
   return parsed;
 }
 
-const AUTOMATION_LANE_MODES = ["create", "reuse"] as const;
+const AUTOMATION_LANE_MODES = ["create", "reuse", "require-on-trigger"] as const;
 const AUTOMATION_LANE_NAME_PRESETS = ["issue-title", "issue-num-title", "pr-title-author", "custom"] as const;
 const AUTOMATION_RUN_STATUSES = ["queued", "running", "succeeded", "failed", "cancelled", "paused", "all"] as const;
 
@@ -3007,20 +3753,24 @@ function applyLaneFlagsToDraft(draft: JsonObject, args: string[]): JsonObject {
     return draft;
   }
 
-  if (laneId != null && laneMode === "create") {
+  const existingExecution = isRecord(draft.execution) ? draft.execution : {};
+  const effectiveLaneMode =
+    laneMode
+    ?? (asString(existingExecution.laneMode) as AutomationLaneModeFlag | null);
+
+  if (laneId != null && effectiveLaneMode != null && effectiveLaneMode !== "reuse") {
     throw new CliUsageError("--lane is only valid with --lane-mode reuse.");
   }
-  if (preset != null && laneMode === "reuse") {
+  if (preset != null && effectiveLaneMode !== "create") {
     throw new CliUsageError("--lane-name-preset is only valid with --lane-mode create.");
   }
   if (template != null && preset != null && preset !== "custom") {
     throw new CliUsageError("--lane-name-template is only valid with --lane-name-preset custom.");
   }
-  if (template != null && preset == null && laneMode !== "create") {
+  if (template != null && preset == null && effectiveLaneMode !== "create") {
     throw new CliUsageError("--lane-name-template requires --lane-mode create (with --lane-name-preset custom).");
   }
 
-  const existingExecution = isRecord(draft.execution) ? draft.execution : {};
   const execution: JsonObject = { ...existingExecution };
   if (laneMode != null) execution.laneMode = laneMode;
   if (laneId != null) execution.targetLaneId = laneId;
@@ -3137,7 +3887,7 @@ function buildAutomationsPlan(args: string[]): CliPlan {
     };
   }
 
-  if (sub === "run") {
+  if (sub === "run" || sub === "trigger") {
     const id = requireValue(readValue(args, ["--id"]) ?? firstPositional(args), "rule id");
     const dryRun = readFlag(args, ["--dry-run"]);
     const laneId = readLaneId(args);
@@ -3287,30 +4037,35 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--branch-name", "--branch-ref", "--bundle", "--bundle-id", "--category", "--color", "--cols",
   "--command", "--comment", "--comment-id", "--commit", "--compare-ref",
   "--caption", "--cdp-port", "--chat-session", "--chat-session-id", "--compare-to", "--content", "--context-file", "--cwd", "--data",
+  "--cpu", "--cpu-cores",
   "--debug-port",
-  "--depth", "--desc", "--device", "--duration", "--duration-ms",
+  "--depth", "--desc", "--device", "--disk", "--disk-size", "--display", "--duration", "--duration-ms",
   "--description", "--domain", "--droid-autonomy", "--droid-permission-mode",
   "--duration-sec", "--enabled", "--event",
   "--end-x", "--end-y", "--file", "--fps", "--from", "--from-file", "--group", "--group-id", "--head", "--icon", "--id",
-  "--index", "--input", "--input-json", "--input-text", "--instructions",
-  "--kind",
+  "--image", "--index", "--initial-input", "--input", "--input-json", "--input-text", "--instructions",
+  "--ipsw", "--kind",
   "--json-input", "--lane", "--lane-id", "--limit", "--max-bytes",
   "--line",
   "--max-log-bytes", "--max-prompt-chars", "--max-rounds", "--memory",
   "--memory-id", "--merge-method", "--message", "--method", "--mode", "--model",
   "--model-id", "--name", "--new", "--new-path", "--number", "--old",
   "--old-path", "--owner", "--owner-id", "--owner-kind",
+  "--output",
   "--params-json", "--parent", "--parent-lane", "--parent-lane-id",
   "--path", "--permission-mode", "--permissions", "--port", "--pr", "--pr-id",
   "--pr-number", "--pr-url", "--process", "--process-id", "--project-root",
   "--prompt", "--provider", "--pty", "--pty-id", "--query", "--question",
-  "--reason", "--reasoning", "--recent-limit", "--ref", "--role", "--root",
+  "--reason", "--reasoning", "--recent-limit", "--ref", "--resume-session", "--resume-session-id",
+  "--resume-target", "--resume-target-id", "--role", "--root",
   "--root-lane", "--round", "--rounds", "--rows", "--rule", "--run", "--run-id", "--scalar",
   "--scalar-json", "--scope", "--seconds", "--session", "--session-id", "--set",
   "--set-json", "--sha", "--signal", "--since", "--source", "--source-lane", "--stack", "--stack-id",
   "--scheme", "--start-point", "--start-x", "--start-y", "--stash-ref", "--step", "--step-id", "--suite", "--suite-id", "--surface",
   "--tab", "--tab-identifier", "--target", "--target-id", "--terminal", "--terminal-id", "--thread", "--thread-id", "--timeout", "--timeout-ms", "--title", "--tool-type",
-  "--udid", "--url", "--value", "--workspace", "--workspace-id", "--workspace-root",
+  "--title-query",
+  "--udid", "--unattended", "--unattended-preset", "--url", "--value", "--vm-name", "--window-title", "--workspace", "--workspace-id", "--workspace-root",
+  "--coordinate-space", "--coords",
   "--x", "--xcodeproj", "--y",
 ]);
 
@@ -3343,6 +4098,7 @@ function buildCliPlan(command: string[]): CliPlan {
     diff: "diff",
     diffs: "diff",
     file: "files",
+    mission: "missions",
     pr: "prs",
     process: "run",
     processes: "run",
@@ -3361,6 +4117,9 @@ function buildCliPlan(command: string[]): CliPlan {
     app: "app-control",
     apps: "app-control",
     electron: "app-control",
+    macos: "macos-vm",
+    "mac-vm": "macos-vm",
+    macvm: "macos-vm",
     "ade-browser": "browser",
     "built-in-browser": "browser",
     "builtin-browser": "browser",
@@ -3431,10 +4190,14 @@ function buildCliPlan(command: string[]): CliPlan {
       ],
     };
   }
+  if (WORKER_MISSION_TOOL_CLI_NAMES.has(primary)) {
+    return buildWorkerMissionToolPlan(primary, args);
+  }
   if (primary === "lanes" || primary === "lane") return buildLanePlan(args);
   if (primary === "git") return buildGitPlan(args);
   if (primary === "diff" || primary === "diffs") return buildDiffPlan(args);
   if (primary === "files" || primary === "file") return buildFilesPlan(args);
+  if (primary === "missions" || primary === "mission") return buildMissionsPlan(args);
   if (primary === "prs" || primary === "pr") return buildPrPlan(args);
   if (primary === "run" || primary === "process" || primary === "processes") return buildRunPlan(args);
   if (primary === "shell" || primary === "pty") return buildShellPlan(args);
@@ -3453,11 +4216,13 @@ function buildCliPlan(command: string[]): CliPlan {
   }
   if (primary === "ios-sim" || primary === "ios" || primary === "simulator") return buildIosSimulatorPlan(args);
   if (primary === "app-control" || primary === "app" || primary === "apps" || primary === "electron") return buildAppControlPlan(args);
+  if (primary === "macos-vm" || primary === "macos" || primary === "mac-vm" || primary === "macvm") return buildMacosVmPlan(args);
   if (primary === "browser" || primary === "ade-browser" || primary === "built-in-browser" || primary === "builtin-browser") return buildBrowserPlan(args);
   if (primary === "memory") return buildMemoryPlan(args);
   if (primary === "settings" || primary === "config" || primary === "setting") return buildSettingsPlan(args);
   if (primary === "actions" || primary === "action") return buildActionsPlan(args);
   if (primary === "update" || primary === "auto-update" || primary === "updates") return buildUpdatePlan(args);
+  if (primary === "mcp" || primary === "mcp-server") return { kind: "mcp" };
   if (primary === "cursor") return buildCursorPlan(args);
   throw new CliUsageError(`Unknown command '${primary}'. Run 'ade help'.`);
 }
@@ -3886,19 +4651,50 @@ class SocketJsonRpcClient {
 
   static connect(socketPath: string, timeoutMs: number): Promise<SocketJsonRpcClient> {
     return new Promise((resolve, reject) => {
-      const socket = net.createConnection(socketPath);
-      const timer = setTimeout(() => {
-        socket.destroy();
-        reject(new Error(`Timed out connecting to ADE desktop socket at ${socketPath}.`));
-      }, Math.min(timeoutMs, 5000));
-      socket.once("connect", () => {
-        clearTimeout(timer);
-        resolve(new SocketJsonRpcClient(socket, timeoutMs));
-      });
-      socket.once("error", (error) => {
-        clearTimeout(timer);
-        reject(error);
-      });
+      const connectTimeoutMs = Math.min(timeoutMs, 5000);
+      const deadline = Date.now() + connectTimeoutMs;
+      const retryable = (error: NodeJS.ErrnoException) =>
+        error.code === "ENOENT" || error.code === "ECONNREFUSED" || error.code === "EACCES" || error.code === "EPERM";
+      const attempt = () => {
+        const socket = (() => {
+          if (socketPath.startsWith("tcp://")) {
+            const parsed = new URL(socketPath);
+            return net.createConnection({
+              host: parsed.hostname,
+              port: Number(parsed.port),
+            });
+          }
+          return net.createConnection(socketPath);
+        })();
+        let settled = false;
+        let connectTimer: ReturnType<typeof setTimeout> | null = null;
+        const finish = (fn: () => void) => {
+          if (settled) return;
+          settled = true;
+          if (connectTimer) clearTimeout(connectTimer);
+          fn();
+        };
+        connectTimer = setTimeout(() => {
+          finish(() => {
+            socket.destroy();
+            reject(new Error(`Timed out connecting to ADE desktop socket after ${connectTimeoutMs}ms.`));
+          });
+        }, Math.max(1, deadline - Date.now()));
+        socket.once("connect", () => {
+          finish(() => resolve(new SocketJsonRpcClient(socket, timeoutMs)));
+        });
+        socket.once("error", (error: NodeJS.ErrnoException) => {
+          finish(() => {
+            socket.destroy();
+            if (retryable(error) && Date.now() < deadline) {
+              setTimeout(attempt, 100);
+              return;
+            }
+            reject(error);
+          });
+        });
+      };
+      attempt();
     });
   }
 
@@ -4002,22 +4798,296 @@ class InProcessJsonRpcClient {
   }
 }
 
+async function startHeadlessRpcSocketServer(args: {
+  socketPath: string;
+  createHandler: () => JsonRpcHandler & { dispose?: () => void };
+}): Promise<(() => void) | null> {
+  if (isAdeMcpNamedPipePath(args.socketPath) || fs.existsSync(args.socketPath)) {
+    return null;
+  }
+  fs.mkdirSync(path.dirname(args.socketPath), { recursive: true });
+  const serverState = createHeadlessRpcServer(args.createHandler);
+  const { server } = serverState;
+
+  await new Promise<void>((resolve, reject) => {
+    const handleListening = () => {
+      server.off("error", handleError);
+      resolve();
+    };
+    const handleError = (error: Error) => {
+      server.off("listening", handleListening);
+      reject(error);
+    };
+    server.once("listening", handleListening);
+    server.once("error", handleError);
+    server.listen(args.socketPath);
+  });
+
+  return () => {
+    stopHeadlessRpcServer(serverState);
+    try { fs.unlinkSync(args.socketPath); } catch {}
+  };
+}
+
+async function startHeadlessRpcTcpServer(args: {
+  createHandler: () => JsonRpcHandler & { dispose?: () => void };
+}): Promise<{ url: string; stop: () => void }> {
+  const serverState = createHeadlessRpcServer(args.createHandler);
+  const { server } = serverState;
+
+  const port = await new Promise<number>((resolve, reject) => {
+    const handleListening = () => {
+      server.off("error", handleError);
+      const address = server.address();
+      if (typeof address === "object" && address && typeof address.port === "number") {
+        resolve(address.port);
+      } else {
+        reject(new Error("Headless RPC TCP server did not expose a port."));
+      }
+    };
+    const handleError = (error: Error) => {
+      server.off("listening", handleListening);
+      reject(error);
+    };
+    server.once("listening", handleListening);
+    server.once("error", handleError);
+    server.listen(0, "127.0.0.1");
+  });
+
+  return {
+    url: `tcp://127.0.0.1:${port}`,
+    stop: () => stopHeadlessRpcServer(serverState),
+  };
+}
+
+type HeadlessRpcServerState = {
+  activeConnections: Set<net.Socket>;
+  activeStops: Set<ReturnType<typeof startJsonRpcServer>>;
+  server: net.Server;
+};
+
+function createHeadlessRpcServer(createHandler: () => JsonRpcHandler & { dispose?: () => void }): HeadlessRpcServerState {
+  const activeConnections = new Set<net.Socket>();
+  const activeStops = new Set<ReturnType<typeof startJsonRpcServer>>();
+  const server = net.createServer((conn) => {
+    activeConnections.add(conn);
+    const handler = createHandler();
+    const transport: JsonRpcTransport = {
+      onData(callback) {
+        conn.on("data", (chunk) => callback(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+      },
+      write(data) {
+        conn.write(data);
+      },
+      close() {
+        if (!conn.destroyed) conn.destroy();
+      },
+    };
+    const stop = startJsonRpcServer(handler, transport, { nonFatal: true });
+    activeStops.add(stop);
+    let cleanedUp = false;
+    const cleanup = () => {
+      if (cleanedUp) return;
+      cleanedUp = true;
+      activeConnections.delete(conn);
+      activeStops.delete(stop);
+      try { stop(); } catch {}
+      try { handler.dispose?.(); } catch {}
+    };
+    conn.once("close", cleanup);
+    conn.once("end", cleanup);
+    conn.once("error", cleanup);
+    conn.on("error", () => {});
+  });
+  return { activeConnections, activeStops, server };
+}
+
+function stopHeadlessRpcServer(state: HeadlessRpcServerState): void {
+  for (const conn of state.activeConnections) {
+    try { conn.destroy(); } catch {}
+  }
+  for (const stop of state.activeStops) {
+    try { stop(); } catch {}
+  }
+  try { state.server.close(); } catch {}
+}
+
+function discoverHeadlessWorktreeSocketPaths(projectRoot: string): string[] {
+  const worktreesDir = path.join(projectRoot, ".ade", "worktrees");
+  let entries: string[] = [];
+  try {
+    entries = fs.readdirSync(worktreesDir);
+  } catch {
+    return [];
+  }
+  const socketPaths: string[] = [];
+  for (const entry of entries) {
+    const worktreePath = path.join(worktreesDir, entry);
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(worktreePath);
+    } catch {
+      continue;
+    }
+    if (!stat.isDirectory()) continue;
+    const worktreeAdeDir = path.join(worktreePath, ".ade");
+    try {
+      fs.mkdirSync(worktreeAdeDir, { recursive: true });
+    } catch {
+      continue;
+    }
+    socketPaths.push(path.join(worktreeAdeDir, "ade.sock"));
+  }
+  return socketPaths;
+}
+
+async function startHeadlessRpcSocketServers(args: {
+  projectRoot: string;
+  socketPath: string;
+  createHandler: () => JsonRpcHandler & { dispose?: () => void };
+}): Promise<() => void> {
+  const stops = new Map<string, () => void>();
+  const pending = new Set<string>();
+  let stopped = false;
+
+  const ensure = async (socketPath: string) => {
+    if (stopped || stops.has(socketPath) || pending.has(socketPath)) return;
+    pending.add(socketPath);
+    try {
+      const stop = await startHeadlessRpcSocketServer({
+        socketPath,
+        createHandler: args.createHandler,
+      });
+      if (stop) stops.set(socketPath, stop);
+    } catch {
+      // Keep the primary in-process client usable even when a mirror socket
+      // cannot be created yet. The next scan will retry missing sockets.
+    } finally {
+      pending.delete(socketPath);
+    }
+  };
+
+  const scan = async () => {
+    await ensure(args.socketPath);
+    await Promise.all(discoverHeadlessWorktreeSocketPaths(args.projectRoot).map((socketPath) => ensure(socketPath)));
+  };
+
+  await scan();
+  const interval = setInterval(() => {
+    void scan();
+  }, 500);
+  interval.unref?.();
+
+  return () => {
+    stopped = true;
+    clearInterval(interval);
+    for (const stop of stops.values()) {
+      try { stop(); } catch {}
+    }
+    stops.clear();
+  };
+}
+
 export function shouldAttemptDesktopSocketConnection(socketPath: string): boolean {
   return isAdeMcpNamedPipePath(socketPath) || fs.existsSync(socketPath);
 }
 
 async function initializeConnection(connection: CliConnection, options: GlobalOptions): Promise<void> {
+  await connection.request("ade/initialize", buildInitializeParams(options, "ade-cli"));
+}
+
+async function createConnection(options: GlobalOptions): Promise<CliConnection> {
+  const roots = resolveRoots(options);
+  const { resolveAdeLayout } = await import("../../desktop/src/shared/adeLayout");
+  const layout = resolveAdeLayout(roots.projectRoot);
+  const socketPath = process.env.ADE_RPC_URL?.trim() || process.env.ADE_RPC_SOCKET_PATH?.trim() || layout.socketPath;
+
+  if (!options.headless && (shouldAttemptDesktopSocketConnection(socketPath) || options.requireSocket)) {
+    try {
+      const socketClient = await SocketJsonRpcClient.connect(socketPath, options.timeoutMs);
+      const connection: CliConnection = {
+        mode: "desktop-socket",
+        projectRoot: roots.projectRoot,
+        workspaceRoot: roots.workspaceRoot,
+        socketPath,
+        request: (method, params) => socketClient.request(method, params),
+        close: () => socketClient.close(),
+      };
+      await initializeConnection(connection, options);
+      return connection;
+    } catch (error) {
+      if (options.requireSocket) throw error;
+    }
+  }
+
+  if (options.requireSocket) {
+    throw new Error(`ADE desktop socket is not available at ${socketPath}.`);
+  }
+
+  const previousRole = process.env.ADE_DEFAULT_ROLE;
+  process.env.ADE_DEFAULT_ROLE = options.role;
+  const [{ createAdeRuntime }, { createAdeRpcRequestHandler }] = await Promise.all([
+    import("./bootstrap"),
+    import("./adeRpcServer"),
+  ]);
+  const runtime = await createAdeRuntime({ projectRoot: roots.projectRoot, workspaceRoot: roots.workspaceRoot });
+  const createHandler = () => createAdeRpcRequestHandler({
+    runtime,
+    serverVersion: VERSION,
+    onActionsListChanged: () => {},
+  });
+  const handler = createHandler();
+  const previousRpcUrl = process.env.ADE_RPC_URL;
+  let stopHeadlessSocket: (() => void) | null = null;
+  let stopHeadlessTcp: (() => void) | null = null;
+  try {
+    const tcp = await startHeadlessRpcTcpServer({ createHandler });
+    process.env.ADE_RPC_URL = tcp.url;
+    stopHeadlessTcp = tcp.stop;
+  } catch {
+    stopHeadlessTcp = null;
+  }
+  try {
+    stopHeadlessSocket = await startHeadlessRpcSocketServers({
+      projectRoot: roots.projectRoot,
+      socketPath,
+      createHandler,
+    });
+  } catch {
+    stopHeadlessSocket = null;
+  }
+
+  const inProcess = new InProcessJsonRpcClient(handler, runtime, previousRole);
+  const connection: CliConnection = {
+    mode: "headless",
+    projectRoot: roots.projectRoot,
+    workspaceRoot: roots.workspaceRoot,
+    socketPath,
+    request: (method, params) => inProcess.request(method, params),
+    close: () => {
+      try { stopHeadlessSocket?.(); } catch {}
+      try { stopHeadlessTcp?.(); } catch {}
+      if (previousRpcUrl == null) delete process.env.ADE_RPC_URL;
+      else process.env.ADE_RPC_URL = previousRpcUrl;
+      inProcess.close();
+    },
+  };
+  await initializeConnection(connection, options);
+  return connection;
+}
+
+function buildInitializeParams(options: GlobalOptions, clientName: string): JsonObject {
   const envChatSessionId = asString(process.env.ADE_CHAT_SESSION_ID);
   const envMissionId = asString(process.env.ADE_MISSION_ID);
   const envRunId = asString(process.env.ADE_RUN_ID);
   const envStepId = asString(process.env.ADE_STEP_ID);
   const envAttemptId = asString(process.env.ADE_ATTEMPT_ID);
   const envOwnerId = asString(process.env.ADE_OWNER_ID);
-  await connection.request("ade/initialize", {
+  return {
     protocolVersion: PROTOCOL_VERSION,
-    clientInfo: { name: "ade-cli", version: VERSION },
+    clientInfo: { name: clientName, version: VERSION },
     identity: {
-      callerId: envChatSessionId ?? envAttemptId ?? "ade-cli",
+      callerId: envChatSessionId ?? envAttemptId ?? `${clientName}:${process.pid}`,
       role: options.role,
       ...(envChatSessionId ? { chatSessionId: envChatSessionId } : {}),
       ...(envMissionId ? { missionId: envMissionId } : {}),
@@ -4031,36 +5101,43 @@ async function initializeConnection(connection: CliConnection, options: GlobalOp
         retainArtifacts: true,
       },
     },
-  });
+  };
 }
 
-async function createConnection(options: GlobalOptions): Promise<CliConnection> {
-  const roots = resolveRoots(options);
-  const { resolveAdeLayout } = await import("../../desktop/src/shared/adeLayout");
-  const layout = resolveAdeLayout(roots.projectRoot);
-
-  if (!options.headless && shouldAttemptDesktopSocketConnection(layout.socketPath)) {
-    try {
-      const socketClient = await SocketJsonRpcClient.connect(layout.socketPath, options.timeoutMs);
-      const connection: CliConnection = {
-        mode: "desktop-socket",
-        projectRoot: roots.projectRoot,
-        workspaceRoot: roots.workspaceRoot,
-        socketPath: layout.socketPath,
-        request: (method, params) => socketClient.request(method, params),
-        close: () => socketClient.close(),
-      };
-      await initializeConnection(connection, options);
-      return connection;
-    } catch (error) {
-      if (options.requireSocket) throw error;
-    }
+function normalizeMcpAdeToolName(name: string): string {
+  const trimmed = name.trim();
+  const prefixPatterns = [
+    /^ade[_:.](.+)$/i,
+    /^mcp[_:.]ade[_:.](.+)$/i,
+    /^mcp__ade__(.+)$/i,
+  ];
+  for (const pattern of prefixPatterns) {
+    const match = pattern.exec(trimmed);
+    if (match?.[1]) return match[1].trim();
   }
+  return trimmed;
+}
 
-  if (options.requireSocket) {
-    throw new Error(`ADE desktop socket is not available at ${layout.socketPath}.`);
+function mcpToolScope(): "all" | "coordinator" {
+  return process.env.ADE_MCP_TOOL_SCOPE === "coordinator" ? "coordinator" : "all";
+}
+
+function isMcpToolVisible(name: string): boolean {
+  if (mcpToolScope() !== "coordinator") return true;
+  return COORDINATOR_MCP_TOOL_NAMES.has(normalizeMcpAdeToolName(name));
+}
+
+function formatMcpToolText(value: unknown): string {
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value ?? null, null, 2);
+  } catch {
+    return String(value);
   }
+}
 
+async function runMcpServer(options: GlobalOptions): Promise<void> {
+  const roots = resolveRoots({ ...options, headless: true, requireSocket: false });
   const previousRole = process.env.ADE_DEFAULT_ROLE;
   process.env.ADE_DEFAULT_ROLE = options.role;
   const [{ createAdeRuntime }, { createAdeRpcRequestHandler }] = await Promise.all([
@@ -4068,23 +5145,127 @@ async function createConnection(options: GlobalOptions): Promise<CliConnection> 
     import("./adeRpcServer"),
   ]);
   const runtime = await createAdeRuntime({ projectRoot: roots.projectRoot, workspaceRoot: roots.workspaceRoot });
-  const handler = createAdeRpcRequestHandler({
+  const adeHandler = createAdeRpcRequestHandler({
     runtime,
     serverVersion: VERSION,
     onActionsListChanged: () => {},
   });
-
-  const inProcess = new InProcessJsonRpcClient(handler, runtime, previousRole);
-  const connection: CliConnection = {
-    mode: "headless",
-    projectRoot: roots.projectRoot,
-    workspaceRoot: roots.workspaceRoot,
-    socketPath: layout.socketPath,
-    request: (method, params) => inProcess.request(method, params),
-    close: () => inProcess.close(),
+  let initialized = false;
+  let nextAdeRequestId = 1;
+  const callAde = async (method: string, params?: JsonObject): Promise<unknown> => {
+    return await adeHandler({
+      jsonrpc: "2.0",
+      id: nextAdeRequestId++,
+      method,
+      ...(params !== undefined ? { params } : {}),
+    });
   };
-  await initializeConnection(connection, options);
-  return connection;
+  const ensureInitialized = async (): Promise<void> => {
+    if (initialized) return;
+    await callAde("ade/initialize", buildInitializeParams(options, "ade-mcp"));
+    initialized = true;
+  };
+
+  const mcpHandler: JsonRpcHandler = async (request) => {
+    const method = typeof request.method === "string" ? request.method : "";
+    const params = isRecord(request.params) ? request.params : {};
+    if (method === "initialize") {
+      await ensureInitialized();
+      const requestedVersion = asString(params.protocolVersion) ?? PROTOCOL_VERSION;
+      return {
+        protocolVersion: requestedVersion,
+        capabilities: {
+          tools: {
+            listChanged: false,
+          },
+        },
+        serverInfo: {
+          name: "ade",
+          version: VERSION,
+        },
+      };
+    }
+    if (method === "notifications/initialized" || method === "initialized") {
+      await ensureInitialized();
+      return null;
+    }
+    await ensureInitialized();
+    if (method === "tools/list") {
+      const listed = await callAde("ade/actions/list");
+      const actions = isRecord(listed) && Array.isArray(listed.actions)
+        ? listed.actions.filter(isRecord)
+        : [];
+      return {
+        tools: actions
+          .map((action) => ({
+            name: asString(action.name) ?? "",
+            description: asString(action.description) ?? "",
+            inputSchema: isRecord(action.inputSchema) ? action.inputSchema : { type: "object", properties: {} },
+          }))
+          .filter((tool) => tool.name.length > 0 && isMcpToolVisible(tool.name)),
+      };
+    }
+    if (method === "tools/call") {
+      const rawName = asString(params.name);
+      if (!rawName) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "tools/call requires a tool name.");
+      }
+      if (!isMcpToolVisible(rawName)) {
+        throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Tool not available in this MCP scope: ${rawName}`);
+      }
+      const result = await callAde("ade/actions/call", {
+        name: normalizeMcpAdeToolName(rawName),
+        arguments: isRecord(params.arguments) ? params.arguments : {},
+      });
+      const isError = isRecord(result) && result.ok === false;
+      return {
+        content: [
+          {
+            type: "text",
+            text: formatMcpToolText(result),
+          },
+        ],
+        structuredContent: result ?? null,
+        isError,
+      };
+    }
+    if (method === "shutdown") {
+      return {};
+    }
+    if (method === "exit") {
+      process.nextTick(() => process.exit(0));
+      return {};
+    }
+    throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Method not found: ${method}`);
+  };
+
+  const transport: JsonRpcTransport = {
+    onData(callback) {
+      process.stdin.on("data", (chunk) => callback(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+    },
+    write(data) {
+      process.stdout.write(data);
+    },
+    close() {
+      process.stdin.pause();
+    },
+  };
+  const stop = startJsonRpcServer(mcpHandler, transport, { nonFatal: true });
+  await new Promise<void>((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      resolve();
+    };
+    process.stdin.once("end", finish);
+    process.stdin.once("close", finish);
+  });
+  stop();
+  try { adeHandler.dispose?.(); } catch {}
+  try { runtime.dispose(); } catch {}
+  if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
+  else process.env.ADE_DEFAULT_ROLE = previousRole;
 }
 
 function unwrapToolResult(result: unknown): unknown {
@@ -4104,6 +5285,88 @@ function unwrapToolResult(result: unknown): unknown {
     return result.structuredContent;
   }
   return result;
+}
+
+function unwrapActionEnvelope(value: unknown): unknown {
+  if (!isRecord(value)) return value;
+  if (
+    Object.prototype.hasOwnProperty.call(value, "result")
+    && (asString(value.domain) || asString(value.action) || Object.prototype.hasOwnProperty.call(value, "statusHint"))
+  ) {
+    return value.result;
+  }
+  return value;
+}
+
+function missionIdFromCreateResult(value: unknown): string {
+  const result = unwrapActionEnvelope(value);
+  const mission = firstRecord(result, ["mission"]);
+  const id = asString(mission?.id) ?? (isRecord(result) ? asString(result.id) : null);
+  return requireValue(id ?? null, "created mission id");
+}
+
+function newestRunFromListResult(value: unknown): JsonObject | null {
+  const result = unwrapActionEnvelope(value);
+  const runs = firstArray(result, ["runs", "items", "results"]);
+  if (runs.length === 0) return null;
+  return [...runs].sort((left, right) => {
+    const leftAt = asString(left.startedAt) ?? asString(left.createdAt) ?? "";
+    const rightAt = asString(right.startedAt) ?? asString(right.createdAt) ?? "";
+    return rightAt.localeCompare(leftAt);
+  })[0] ?? null;
+}
+
+function runFromStartResult(value: unknown): JsonObject | null {
+  const result = unwrapActionEnvelope(value);
+  const direct = firstRecord(result, ["run"]);
+  if (direct && asString(direct.id)) return direct;
+  const started = firstRecord(result, ["started"]);
+  const nested = firstRecord(started, ["run"]);
+  if (nested && asString(nested.id)) return nested;
+  if (started && asString(started.id)) return started;
+  return null;
+}
+
+function missionFromResult(value: unknown): JsonObject | null {
+  const result = unwrapActionEnvelope(value);
+  const mission = firstRecord(result, ["mission"]);
+  if (mission && asString(mission.id)) return mission;
+  if (isRecord(result) && asString(result.id)) return result;
+  return null;
+}
+
+function graphFromResult(value: unknown): JsonObject | null {
+  const result = unwrapActionEnvelope(value);
+  if (!isRecord(result)) return null;
+  if (hasRunGraphShape(result)) return result;
+  const nestedGraph = isRecord(result.graph) ? result.graph : null;
+  const graph = nestedGraph && hasRunGraphShape(nestedGraph) ? nestedGraph : nestedGraph ?? result;
+  return isRecord(graph) ? graph : null;
+}
+
+function runFromGraphResult(value: unknown): JsonObject | null {
+  const graph = graphFromResult(value);
+  return firstRecord(graph, ["run"]);
+}
+
+function hasRunGraphShape(value: unknown): boolean {
+  return isRecord(value) && (
+    isRecord(value.run)
+    || Array.isArray(value.steps)
+    || Array.isArray(value.attempts)
+    || Array.isArray(value.timeline)
+  );
+}
+
+function runIdFromWatchValues(values: JsonObject): string {
+  const explicitGraph = unwrapActionEnvelope(values.graph);
+  if (isRecord(explicitGraph)) {
+    const graphRun = firstRecord(explicitGraph, ["run"]);
+    const graphRunId = asString(graphRun?.id);
+    if (graphRunId) return graphRunId;
+  }
+  const run = newestRunFromListResult(values.runs);
+  return requireValue(asString(run?.id) ?? null, "run id");
 }
 
 function renderLaneGraph(result: unknown): string {
@@ -4361,6 +5624,163 @@ function formatPrComments(value: unknown): string {
   return lines.join("\n");
 }
 
+function phaseKeysFromMission(mission: JsonObject): string {
+  const metadata = isRecord(mission.metadata) ? mission.metadata : {};
+  const phaseConfiguration = isRecord(metadata.phaseConfiguration) ? metadata.phaseConfiguration : {};
+  const phaseKeys = Array.isArray(phaseConfiguration.phaseKeys)
+    ? phaseConfiguration.phaseKeys
+    : Array.isArray(phaseConfiguration.phases)
+      ? phaseConfiguration.phases.filter(isRecord).map((phase) => phase.phaseKey)
+      : [];
+  return phaseKeys.map((key) => cell(key, 24)).filter(Boolean).join(" -> ");
+}
+
+function formatMissionDetail(value: unknown): string {
+  const result = unwrapActionEnvelope(value);
+  const mission = firstRecord(result, ["mission"]) ?? (isRecord(result) ? result : {});
+  const steps = firstArray(mission, ["steps"]);
+  const phaseKeys = phaseKeysFromMission(mission);
+  return [
+    renderKeyValues("ADE mission", [
+      ["id", mission.id],
+      ["title", mission.title],
+      ["status", mission.status],
+      ["priority", mission.priority],
+      ["lane", mission.laneId ?? mission.laneName],
+      ["mission lane", mission.missionLaneId ?? mission.missionLaneName],
+      ["result lane", mission.resultLaneId ?? mission.resultLaneName],
+      ["steps", steps.length || mission.totalSteps],
+      ["phases", phaseKeys],
+      ["error", mission.lastError],
+    ]),
+    steps.length
+      ? `\nSteps\n${renderTable(
+          ["#", "status", "phase", "title"],
+          steps.map((step) => [
+            step.index ?? step.stepIndex,
+            step.status,
+            step.phaseKey ?? (isRecord(step.metadata) ? step.metadata.phaseKey : null),
+            step.title,
+          ]),
+          "(no steps)",
+        )}`
+      : "",
+  ].filter(Boolean).join("\n");
+}
+
+function formatMissionList(value: unknown): string {
+  const result = unwrapActionEnvelope(value);
+  const missions = firstArray(result, ["missions", "items", "results"]);
+  return `ADE missions\n${renderTable(
+    ["mission", "status", "lane", "steps", "title"],
+    missions.map((mission) => [
+      mission.id,
+      mission.status,
+      mission.laneId ?? mission.laneName ?? mission.missionLaneId,
+      `${cell(mission.completedSteps, 8)}/${cell(mission.totalSteps, 8)}`,
+      mission.title,
+    ]),
+    "(no missions)",
+  )}`;
+}
+
+function formatMissionRuns(value: unknown): string {
+  const result = unwrapActionEnvelope(value);
+  const runs = firstArray(result, ["runs", "items", "results"]);
+  return `ADE mission runs\n${renderTable(
+    ["run", "status", "mission", "mode", "started"],
+    runs.map((run) => {
+      const metadata = isRecord(run.metadata) ? run.metadata : {};
+      return [
+        run.id,
+        run.status,
+        run.missionId,
+        metadata.runMode ?? run.runMode,
+        run.startedAt ?? run.createdAt,
+      ];
+    }),
+    "(no runs)",
+  )}`;
+}
+
+function formatMissionGraph(value: unknown): string {
+  const result = unwrapActionEnvelope(value);
+  const graph = isRecord(result) && isRecord(result.graph) ? result.graph : result;
+  const run = firstRecord(graph, ["run"]) ?? {};
+  const steps = firstArray(graph, ["steps"]);
+  const attempts = firstArray(graph, ["attempts"]);
+  const timeline = firstArray(graph, ["timeline", "events"]);
+  return [
+    renderKeyValues("ADE mission run graph", [
+      ["run", run.id],
+      ["mission", run.missionId],
+      ["status", run.status],
+      ["steps", steps.length],
+      ["attempts", attempts.length],
+      ["timeline events", timeline.length],
+      ["started", run.startedAt ?? run.createdAt],
+      ["error", run.lastError],
+    ]),
+    steps.length
+      ? `\nSteps\n${renderTable(
+          ["step", "status", "phase", "title"],
+          steps.map((step) => [
+            step.id ?? step.stepKey,
+            step.status,
+            step.phaseKey ?? (isRecord(step.metadata) ? step.metadata.phaseKey : null),
+            step.title,
+          ]),
+          "(no steps)",
+        )}`
+      : "",
+  ].filter(Boolean).join("\n");
+}
+
+function formatMissionWatch(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const created = unwrapActionEnvelope(result.created);
+  const started = unwrapActionEnvelope(result.started ?? result.result);
+  const mission = missionFromResult(result.mission)
+    ?? missionFromResult(created)
+    ?? missionFromResult(started)
+    ?? {};
+  const runsResult = unwrapActionEnvelope(result.runs);
+  const newestRun = newestRunFromListResult(runsResult) ?? runFromStartResult(started);
+  const graphResult = unwrapActionEnvelope(result.graph);
+  const graph = graphFromResult(graphResult) ?? {};
+  const wait = firstRecord(graphResult, ["wait"]);
+  const graphRun = runFromGraphResult(graphResult) ?? newestRun ?? {};
+  const graphSteps = firstArray(graph, ["steps"]);
+  const parts = [
+    renderKeyValues("ADE mission watch", [
+      ["mission", mission.id],
+      ["title", mission.title],
+      ["mission status", mission.status],
+      ["run", graphRun.id],
+      ["run status", graphRun.status],
+      ["steps", graphSteps.length || mission.totalSteps],
+      ["mission lane", mission.missionLaneId ?? mission.missionLaneName],
+      ["result lane", mission.resultLaneId ?? mission.resultLaneName],
+      ["wait timed out", wait?.timedOut],
+      ["wait extended", wait?.extendedForActiveHeadlessWork],
+      ["error", mission.lastError ?? graphRun.lastError],
+    ]),
+  ];
+  if (graphSteps.length > 0) {
+    parts.push("", renderTable(
+      ["step", "status", "phase", "title"],
+      graphSteps.map((step) => [
+        step.id ?? step.stepKey,
+        step.status,
+        step.phaseKey ?? (isRecord(step.metadata) ? step.metadata.phaseKey : null),
+        step.title,
+      ]),
+      "(no steps)",
+    ));
+  }
+  return parts.join("\n");
+}
+
 function formatFileTree(value: unknown): string {
   const entries = firstArray(value, ["entries", "nodes", "items", "children"]);
   return renderTable(
@@ -4574,6 +5994,117 @@ function formatIosSimPreview(value: unknown): string {
     ["rendered", record.renderedAt],
     ["setup", steps],
     ["error", record.error ?? capability.error],
+  ]);
+}
+
+function formatMacosVmStatus(value: unknown): string {
+  const status = isRecord(value) ? value : {};
+  if (isRecord(status.previous) || status.name || status.laneId) {
+    const vm = isRecord(status.previous) ? status.previous : status;
+    return renderKeyValues("ADE macOS VM", [
+      ["deleted", "deleted" in status ? status.deleted : null],
+      ["lane", vm.laneName ?? vm.laneId],
+      ["vm", vm.name],
+      ["state", vm.state],
+      ["guest path", vm.guestSharedPath],
+      ["host path", vm.sharedDirectory ?? vm.laneRoot],
+      ["ssh", vm.sshCommand],
+      ["vnc", vm.vncUrl],
+      ["ip", vm.ipAddress],
+      ["share mode", isRecord(vm.metadata) ? vm.metadata.shareMode : null],
+      ["last error", vm.lastError],
+    ]);
+  }
+  const provider = isRecord(status.activeProvider) ? status.activeProvider : {};
+  const tools = Array.isArray(status.tools) ? status.tools.filter(isRecord) : [];
+  const laneVm = isRecord(status.laneVm) ? status.laneVm : null;
+  const vms = Array.isArray(status.vms) ? status.vms.filter(isRecord) : [];
+  const lines = [
+    renderKeyValues("ADE macOS VM", [
+      ["supported", status.supported],
+      ["platform", status.platform],
+      ["arch", status.arch],
+      ["provider", provider.kind],
+      ["provider ready", provider.available],
+      ["provider detail", provider.detail],
+      ["lane VM", laneVm ? `${laneVm.name ?? laneVm.id} (${laneVm.state ?? "unknown"})` : null],
+      ["guest path", laneVm?.guestSharedPath],
+      ["host path", laneVm?.sharedDirectory ?? laneVm?.laneRoot],
+      ["ssh", laneVm?.sshCommand],
+      ["vnc", laneVm?.vncUrl],
+    ]),
+    "",
+    renderTable(
+      ["lane", "vm", "state", "host path"],
+      vms.map((vm) => [vm.laneName ?? vm.laneId, vm.name, vm.state, vm.sharedDirectory ?? vm.laneRoot]),
+      "Lane VMs\n(none)",
+    ),
+    "",
+    renderTable(
+      ["tool", "ready", "detail"],
+      tools.map((tool) => [tool.name, tool.available ? "yes" : "no", tool.detail]),
+      "Tools\n(none)",
+    ),
+  ];
+  return lines.join("\n");
+}
+
+function formatMacosVmSharePolicy(value: unknown): string {
+  const policy = isRecord(value) ? value : {};
+  const excludedPaths = Array.isArray(policy.excludedPaths) ? policy.excludedPaths.filter((entry) => typeof entry === "string") : [];
+  return renderKeyValues("ADE macOS VM share policy", [
+    ["allowed", policy.allowed],
+    ["mode", policy.syncMode],
+    ["host path", policy.hostPath],
+    ["original host path", policy.originalHostPath],
+    ["guest path", policy.guestPath],
+    ["mirror path", policy.mirrorPath],
+    ["read only", policy.readOnly],
+    ["detail", policy.detail],
+    ["blocked", policy.blockedReason],
+    ["excluded", excludedPaths.length ? excludedPaths.join(", ") : null],
+  ]);
+}
+
+function formatMacosVmGuide(value: unknown): string {
+  if (isRecord(value) && typeof value.text === "string") return value.text;
+  return renderKeyValues("ADE macOS VM guide", Object.entries(isRecord(value) ? value : {}).slice(0, 24));
+}
+
+function formatMacosVmCapture(value: unknown): string {
+  const capture = isRecord(value) ? value : {};
+  const window = isRecord(capture.window) ? capture.window : {};
+  const frame = isRecord(window.frame) ? window.frame : null;
+  return renderKeyValues("ADE macOS VM capture", [
+    ["ok", capture.ok],
+    ["lane", capture.laneId],
+    ["vm", capture.vmName],
+    ["path", capture.path],
+    ["mode", capture.captureMode],
+    ["window", window.windowTitle],
+    ["process", window.processName],
+    ["frame", frame ? `${frame.x},${frame.y} ${frame.width}x${frame.height}` : null],
+    ["captured", capture.capturedAt],
+    ["image data", capture.dataUrl ? "included" : null],
+  ]);
+}
+
+function formatMacosVmSelection(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const item = isRecord(result.item) ? result.item : {};
+  const metadata = isRecord(item.metadata) ? item.metadata : {};
+  const selectedPoint = isRecord(metadata.selectedPoint) ? metadata.selectedPoint : {};
+  const screenshot = isRecord(result.screenshot) ? result.screenshot : {};
+  return renderKeyValues("ADE macOS VM selection", [
+    ["source", result.source],
+    ["lane", item.laneId],
+    ["vm", item.vmName],
+    ["point", selectedPoint.x != null && selectedPoint.y != null ? `${selectedPoint.x},${selectedPoint.y}` : null],
+    ["coordinate space", selectedPoint.coordinateSpace],
+    ["guest path", item.guestLanePath],
+    ["host path", item.hostLanePath],
+    ["screenshot", screenshot.path ?? metadata.screenshotPath],
+    ["image data", item.screenshotDataUrl ? "included" : null],
   ]);
 }
 
@@ -4805,6 +6336,16 @@ function formatTextOutput(value: unknown, formatter: FormatterId | undefined): s
       return formatPrChecks(value);
     case "pr-comments":
       return formatPrComments(value);
+    case "mission-list":
+      return formatMissionList(value);
+    case "mission-detail":
+      return formatMissionDetail(value);
+    case "mission-runs":
+      return formatMissionRuns(value);
+    case "mission-graph":
+      return formatMissionGraph(value);
+    case "mission-watch":
+      return formatMissionWatch(value);
     case "run-defs":
       return formatRunTable(value, "ADE run definitions");
     case "run-runtime":
@@ -4837,6 +6378,16 @@ function formatTextOutput(value: unknown, formatter: FormatterId | undefined): s
       return formatAppControlSelection(value);
     case "browser-status":
       return formatBrowserStatus(value);
+    case "macos-vm-status":
+      return formatMacosVmStatus(value);
+    case "macos-vm-share-policy":
+      return formatMacosVmSharePolicy(value);
+    case "macos-vm-guide":
+      return formatMacosVmGuide(value);
+    case "macos-vm-capture":
+      return formatMacosVmCapture(value);
+    case "macos-vm-selection":
+      return formatMacosVmSelection(value);
     case "terminal-list":
       return formatTerminalList(value);
     case "terminal-read":
@@ -4883,6 +6434,11 @@ function inferFormatter(plan: CliPlan & { kind: "execute" }): FormatterId | unde
   if (label === "app control snapshot" || label === "app control screenshot") return "app-control-snapshot";
   if (label === "app control select" || label === "app control inspect point") return "app-control-selection";
   if (label === "browser status" || label === "browser panel" || label === "browser open" || label === "browser new tab" || label === "browser switch" || label === "browser close") return "browser-status";
+  if (label === "macos vm status" || label === "macos vm start" || label === "macos vm stop" || label === "macos vm provision" || label === "macos vm delete") return "macos-vm-status";
+  if (label === "macos vm share policy") return "macos-vm-share-policy";
+  if (label === "macos vm guide") return "macos-vm-guide";
+  if (label === "macos vm screenshot") return "macos-vm-capture";
+  if (label === "macos vm select") return "macos-vm-selection";
   if (label === "terminal list" || label === "terminal active") return "terminal-list";
   if (label === "terminal read") return "terminal-read";
   if (label === "actions list") return "actions-list";
@@ -4934,6 +6490,45 @@ function summarizeExecution(args: {
     };
   }
 
+  if (plan.label === "mission launch") {
+    const created = unwrapActionEnvelope(values.created);
+    const started = unwrapActionEnvelope(values.started);
+    const refreshedMission = missionFromResult(values.mission);
+    const graph = unwrapActionEnvelope(values.graph);
+    return {
+      created,
+      started,
+      mission: refreshedMission ?? missionFromResult(started) ?? missionFromResult(created) ?? created,
+      run: runFromGraphResult(graph) ?? runFromStartResult(started),
+      graph,
+    };
+  }
+
+  if (plan.label === "mission watch") {
+    return {
+      mission: unwrapActionEnvelope(values.mission),
+      runs: unwrapActionEnvelope(values.runs),
+      graph: unwrapActionEnvelope(values.graph),
+    };
+  }
+
+  if (plan.label === "mission resume") {
+    const graph = unwrapActionEnvelope(values.graph);
+    if (graph) {
+      return {
+        run: runFromGraphResult(graph),
+        graph,
+      };
+    }
+    const resumed = unwrapActionEnvelope(values.result);
+    return {
+      run: resumed,
+      steps: [],
+      attempts: [],
+      timeline: [],
+    };
+  }
+
   const result = values.result ?? values;
   if (
     isRecord(result)
@@ -4954,9 +6549,107 @@ function summarizeExecution(args: {
   return result;
 }
 
+const TERMINAL_MISSION_RUN_STATUSES = new Set(["succeeded", "failed", "canceled", "cancelled"]);
+const HEADLESS_ACTIVE_ATTEMPT_DRAIN_MS = 30 * 60 * 1000;
+
+function graphWaitState(value: unknown): { status: string; activeCount: number } {
+  const graph = graphFromResult(value) ?? {};
+  const run = firstRecord(graph, ["run"]) ?? {};
+  const status = (asString(run.status) ?? "").trim().toLowerCase();
+  const steps = firstArray(graph, ["steps"]);
+  const attempts = firstArray(graph, ["attempts"]);
+  const activeStepCount = steps.filter((step) => asString(step.status)?.trim().toLowerCase() === "running").length;
+  const activeAttemptCount = attempts.filter((attempt) => asString(attempt.status)?.trim().toLowerCase() === "running").length;
+  return {
+    status,
+    activeCount: Math.max(activeStepCount, activeAttemptCount),
+  };
+}
+
+async function requestRunGraph(args: {
+  connection: CliConnection;
+  runId: string;
+  timelineLimit: number;
+}): Promise<unknown> {
+  return await args.connection.request("ade/actions/call", {
+    name: "run_ade_action",
+    arguments: {
+      domain: "orchestrator_core",
+      action: "getRunGraph",
+      args: {
+        runId: args.runId,
+        timelineLimit: args.timelineLimit,
+      },
+    },
+  });
+}
+
+async function waitForRunGraph(args: {
+  connection: CliConnection;
+  runId: string;
+  waitMs: number;
+  timelineLimit: number;
+  untilTerminal: boolean;
+}): Promise<JsonObject> {
+  const startedAt = Date.now();
+  const deadline = startedAt + Math.max(0, args.waitMs);
+  const headlessDrainDeadline = deadline + HEADLESS_ACTIVE_ATTEMPT_DRAIN_MS;
+  let raw: unknown = null;
+  let timedOut = false;
+  let extendedForActiveHeadlessWork = false;
+
+  while (true) {
+    raw = await requestRunGraph({
+      connection: args.connection,
+      runId: args.runId,
+      timelineLimit: args.timelineLimit,
+    });
+    const unwrapped = unwrapActionEnvelope(raw);
+    const waitState = graphWaitState(unwrapped);
+    const terminal = TERMINAL_MISSION_RUN_STATUSES.has(waitState.status);
+    if (terminal) break;
+
+    const now = Date.now();
+    const pastDeadline = now >= deadline;
+    if (pastDeadline) {
+      timedOut = true;
+      const shouldDrainActiveHeadlessWork =
+        args.connection.mode === "headless"
+        && waitState.activeCount > 0
+        && now < headlessDrainDeadline;
+      if (!shouldDrainActiveHeadlessWork) break;
+      extendedForActiveHeadlessWork = true;
+    }
+
+    await sleep(1_000);
+  }
+
+  const graph = graphFromResult(raw) ?? {};
+  const waitState = graphWaitState(raw);
+  return {
+    graph,
+    wait: {
+      runId: args.runId,
+      waitedMs: Math.max(0, Date.now() - startedAt),
+      requestedWaitMs: args.waitMs,
+      untilTerminal: args.untilTerminal,
+      timedOut,
+      extendedForActiveHeadlessWork,
+      mode: args.connection.mode,
+      runStatus: waitState.status || null,
+      activeCount: waitState.activeCount,
+    },
+  };
+}
+
 async function executePlan(plan: CliPlan & { kind: "execute" }, options: GlobalOptions): Promise<unknown> {
   let connection: CliConnection;
-  const connectionOptions = plan.preferHeadless && !options.requireSocket
+  const isWorkerMissionToolPlan = plan.label.startsWith("worker mission tool ");
+  const workerRpcUrl = process.env.ADE_RPC_URL?.trim();
+  const workerSocketOverride = process.env.ADE_RPC_SOCKET_PATH?.trim();
+  const connectionOptions = isWorkerMissionToolPlan && !options.requireSocket
+    ? { ...options, headless: false, requireSocket: Boolean(workerRpcUrl || workerSocketOverride) }
+    : plan.preferHeadless && !options.requireSocket
     ? { ...options, headless: true }
     : options;
   try {
@@ -4990,7 +6683,21 @@ async function executePlan(plan: CliPlan & { kind: "execute" }, options: GlobalO
     const values: JsonObject = {};
     for (const step of plan.steps) {
       try {
-        const raw = await connection.request(step.method, step.params);
+        const params = typeof step.params === "function" ? step.params(values) : step.params;
+        if (step.method === "ade-cli/wait-run-graph") {
+          const runId = requireValue(asString(params?.runId) ?? null, "run id");
+          const waitMs = Math.max(0, Math.floor(typeof params?.waitMs === "number" ? params.waitMs : 0));
+          const timelineLimit = Math.max(0, Math.floor(typeof params?.timelineLimit === "number" ? params.timelineLimit : 120));
+          values[step.key] = await waitForRunGraph({
+            connection,
+            runId,
+            waitMs,
+            timelineLimit,
+            untilTerminal: params?.untilTerminal === true,
+          });
+          continue;
+        }
+        const raw = await connection.request(step.method, params);
         values[step.key] = step.unwrapToolResult ? unwrapToolResult(raw) : raw;
       } catch (error) {
         if (!step.optional) throw error;
@@ -5053,6 +6760,10 @@ async function runCli(argv: string[]): Promise<{ output: string; exitCode: numbe
         throw error;
       }
     }
+    if (plan.kind === "mcp") {
+      await runMcpServer({ ...parsed.options, headless: true, requireSocket: false });
+      return { output: "", exitCode: 0 };
+    }
     const result = await executePlan(plan, parsed.options);
     return { output: formatOutput(result, parsed.options, inferFormatter(plan)), exitCode: 0 };
   } finally {
@@ -5113,6 +6824,7 @@ export {
   buildCliPlan,
   findProjectRoots,
   formatOutput,
+  graphWaitState,
   parseCliArgs,
   renderLaneGraph,
   resolveRoots,

@@ -674,20 +674,25 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
   // kicks off another refresh instead of silently dropping the request.
   const applyLocalPrState = useCallback(async () => {
     const shouldLoadWorkflowState = activeTabRef.current !== "normal";
+    const shouldLoadRebaseState = shouldLoadWorkflowState || selectedPrIdRef.current !== null;
     const [prList, laneList, queueStateList, refreshedRebaseNeeds, refreshedAutoRebaseStatuses] = await Promise.all([
       window.ade.prs.listWithConflicts(),
-      window.ade.lanes.list({ includeStatus: true }),
+      window.ade.lanes.list({ includeStatus: shouldLoadRebaseState }),
       shouldLoadWorkflowState
         ? window.ade.prs.listQueueStates({ includeCompleted: true, limit: 50 })
         : Promise.resolve([] as QueueLandingState[]),
-      window.ade.rebase.scanNeeds().catch((err) => {
-        console.warn("[PrsContext] Failed to refresh rebase needs:", err);
-        return rebaseNeedsRef.current;
-      }),
-      window.ade.lanes.listAutoRebaseStatuses().catch((err) => {
-        console.warn("[PrsContext] Failed to refresh auto-rebase statuses:", err);
-        return autoRebaseStatusesRef.current;
-      }),
+      shouldLoadRebaseState
+        ? window.ade.rebase.scanNeeds().catch((err) => {
+            console.warn("[PrsContext] Failed to refresh rebase needs:", err);
+            return rebaseNeedsRef.current;
+          })
+        : Promise.resolve(rebaseNeedsRef.current),
+      shouldLoadRebaseState
+        ? window.ade.lanes.listAutoRebaseStatuses().catch((err) => {
+            console.warn("[PrsContext] Failed to refresh auto-rebase statuses:", err);
+            return autoRebaseStatusesRef.current;
+          })
+        : Promise.resolve(autoRebaseStatusesRef.current),
     ]);
     const changedPrIds = diffPrIds(prsRef.current, prList);
 
@@ -790,7 +795,12 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
 
   // Initial load
   useEffect(() => {
-    void refreshCore({ skipFreshWarmCache: true, githubRefreshMode: "background" });
+    const shouldRefreshFromGithub =
+      activeTabRef.current !== "normal" || selectedPrIdRef.current !== null;
+    void refreshCore({
+      skipFreshWarmCache: true,
+      githubRefreshMode: shouldRefreshFromGithub ? "background" : undefined,
+    });
   }, [refreshCore]);
 
   // Silently refresh detail data for the given PR (no loading state).
@@ -1127,9 +1137,16 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     return unsub;
   }, []);
 
-  // Periodic rebase needs scan (cancelled flag guards against setState after unmount)
+  // Periodic rebase needs scan (cancelled flag guards against setState after unmount).
+  // The plain GitHub PR list does not render rebase workflow state, so avoid
+  // doing that git work until a workflow tab or selected PR detail can use it.
   useEffect(() => {
     let cancelled = false;
+    if (activeTab === "normal" && selectedPrId == null) {
+      return () => {
+        cancelled = true;
+      };
+    }
     const scan = () => {
       window.ade.rebase.scanNeeds().then((needs) => {
         if (!cancelled) setRebaseNeeds(needs);
@@ -1143,13 +1160,10 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       cancelled = true;
       clearInterval(timer);
     };
-  }, []);
+  }, [activeTab, selectedPrId]);
 
   // Subscribe to auto-rebase events
   useEffect(() => {
-    window.ade.lanes.listAutoRebaseStatuses().then(setAutoRebaseStatuses).catch((err) => {
-      console.warn("[PrsContext] Failed to list auto-rebase statuses:", err);
-    });
     const unsub = window.ade.lanes.onAutoRebaseEvent((event: AutoRebaseEventPayload) => {
       if (event.type === "auto-rebase-updated") {
         setAutoRebaseStatuses(event.statuses);
@@ -1157,6 +1171,19 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     });
     return unsub;
   }, []);
+
+  useEffect(() => {
+    if (activeTab === "normal" && selectedPrId == null) return;
+    let cancelled = false;
+    window.ade.lanes.listAutoRebaseStatuses().then((statuses) => {
+      if (!cancelled) setAutoRebaseStatuses(statuses);
+    }).catch((err) => {
+      console.warn("[PrsContext] Failed to list auto-rebase statuses:", err);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, selectedPrId]);
 
   useEffect(() => {
     if (PRS_CONTEXT_CACHE_DISABLED) return;

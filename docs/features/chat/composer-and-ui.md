@@ -98,7 +98,14 @@ and a footer that contains the composer.
 - **Model selection.** `ProviderModelSelector` is embedded and filters
   the registry via `filterChatModelIdsForSession`. Switching within the
   allowed family is a normal update; crossing families triggers a
-  handoff.
+  handoff. The Cursor model inventory (`getAgentChatModelsCached` with
+  `provider: "cursor"`, `activateRuntime: true`) is no longer fetched
+  on chat boot — the selector exposes an `onOpen` callback that fires
+  the first time the user actually opens the model catalog, and
+  `AgentChatPane.refreshCursorModelInventory` is the only path that
+  performs the active probe. It also no-ops when the latest
+  `availableModelIds` already contains a Cursor entry, so re-opening
+  the catalog after a successful inventory does not refire the probe.
 - **Reasoning effort.** Dropdown for models that support reasoning
   tiers.
 - **Fast mode (Codex).** A yellow Lightning chip next to the model

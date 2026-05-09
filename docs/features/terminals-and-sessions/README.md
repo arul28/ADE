@@ -20,9 +20,10 @@ snapshot (the most recent run) is what lives in the `process_runtime` table.
 Main process:
 
 - `apps/desktop/src/main/services/pty/ptyService.ts` — PTY lifecycle,
-  transcript capture, runtime state, AI auto-titles, tool-type routing,
-  resume backfill, and session-id based write/resize entry points used
-  by mobile sync terminal control. ~1,500 lines. Branch rewrite.
+  transcript capture (capped at `MAX_TRANSCRIPT_BYTES = 64 MB`), runtime
+  state, AI auto-titles, tool-type routing, resume backfill, and
+  session-id based write/resize entry points used by mobile sync
+  terminal control. ~1,500 lines. Branch rewrite.
 - `apps/desktop/src/main/services/pty/ptyService.test.ts` — PTY behavior
   tests. Branch updated.
 - `apps/desktop/src/main/services/sessions/sessionService.ts` — persistence
@@ -52,8 +53,12 @@ Shared types and IPC:
   `ChatTerminalSignalArgs`, `ChatTerminalActiveForChatArgs`) used by the
   `ade.terminal.*` IPC surface and the `terminal` ADE action domain.
 - `apps/desktop/src/shared/types/sync.ts` — terminal stream/control
-  envelopes (`terminal_subscribe`, `terminal_data`, `terminal_exit`,
-  `terminal_input`, `terminal_resize`) for iOS Work surfaces.
+  envelopes (`terminal_subscribe`, `terminal_unsubscribe`,
+  `terminal_data`, `terminal_exit`, `terminal_input`, `terminal_resize`)
+  for iOS Work surfaces, plus the mobile CLI launcher payload
+  (`SyncCliLaunchProvider`, `SyncStartCliSessionArgs`,
+  `SyncStartCliSessionResult`) consumed by the
+  `work.startCliSession` remote command.
 - `apps/desktop/src/shared/types/config.ts` — `ProcessDefinition`
   (now carries `groupIds: string[]`), `ProcessGroupDefinition`,
   `ProcessRuntime` (now carries `runId`), `ProcessRuntimeStatus`,
@@ -63,12 +68,16 @@ Shared types and IPC:
 - `apps/desktop/src/shared/ipc.ts` — channels `ade.sessions.*`,
   `ade.pty.*`, `ade.processes.*`, plus the chat-scoped
   `ade.terminal.*` family (`list`, `read`, `write`, `signal`,
-  `activeForChat`).
+  `activeForChat`) and the lane-tied `ade.macosVm.*` family
+  (`getStatus`, `provision`, `start`, `stop`, `delete`,
+  `getAgentGuide`, `getSharePolicy`, `focusWindow`,
+  `captureScreenshot`, `selectPoint`, `click`, `typeText`, event push).
 
 Preload bridge:
 
 - `apps/desktop/src/preload/preload.ts` — `window.ade.sessions`,
-  `window.ade.pty`, `window.ade.processes` APIs.
+  `window.ade.pty`, `window.ade.processes`, and `window.ade.macosVm`
+  APIs.
 
 IPC registration:
 
@@ -110,10 +119,15 @@ Renderer surfaces:
   refs to that chat by dispatching the
   `ade:agent-chat:add-attachment` / `add-ios-context` /
   `add-app-control-context` / `add-builtin-browser-context` /
-  `insert-draft` window events the matching `AgentChatPane` listens to.
-  Non-chat sessions disable attachment with a banner; lane mismatches
-  between the Work lane and an existing App Control / iOS Simulator
-  session also disable attachment with a warning.
+  `add-macos-vm-context` / `insert-draft` window events the matching
+  `AgentChatPane` listens to. Non-chat sessions disable attachment with
+  a banner; lane mismatches between the Work lane and an existing App
+  Control / iOS Simulator session also disable attachment with a warning.
+- `apps/desktop/src/renderer/components/terminals/MacosVmPanel.tsx` —
+  Work sidebar panel for the active lane's macOS VM. It shows provider
+  readiness, provisioning/start/stop/delete controls, sanitized share
+  status, screenshot capture, point selection, click/type controls, and
+  chat context attachment for selected VM targets.
 - `apps/desktop/src/renderer/components/terminals/SessionListPane.tsx` —
   sidebar list with three organization modes (lane / status / time),
   sticky group headers, search/filter. Renders a bulk action bar at the
@@ -155,10 +169,11 @@ Renderer surfaces:
   tab switch always renders the current session set.
 - `apps/desktop/src/renderer/components/terminals/useSessionDelta.ts` —
   fetches `SessionDeltaSummary` for a given session.
-- `apps/desktop/src/renderer/components/terminals/cliLaunch.ts` —
-  builds tracked CLI launch payloads with permission flags for every
-  supported provider. `CliProvider = "claude" | "codex" | "cursor" |
-  "droid" | "opencode"` and `LaunchProfile = CliProvider | "shell"`;
+- `apps/desktop/src/shared/cliLaunch.ts` — canonical CLI launch
+  payload builder, shared between the desktop renderer Work tab and
+  the main-process `syncRemoteCommandService` mobile launcher. Exposes
+  `CliProvider = "claude" | "codex" | "cursor" | "droid" | "opencode"`
+  and `LaunchProfile = CliProvider | "shell"`;
   `LAUNCH_PROFILE_TOOL_TYPE` and `LAUNCH_PROFILE_TITLE` map a launch
   profile to the recorded `TerminalToolType` (`cursor-cli`, `droid`,
   `opencode`, etc.) and the human tab title. `buildTrackedCliLaunchCommand`
@@ -180,7 +195,21 @@ Renderer surfaces:
   rebuilds a resume command line from `TerminalResumeMetadata` for any
   provider; `parseTrackedCliResumeCommand`
   (`apps/desktop/src/main/utils/terminalSessionSignals.ts`) is the
-  inverse it relies on for round-tripping.
+  inverse it relies on for round-tripping. `resolveLaunchFields` is
+  the atomic-override helper that mixes a caller's
+  `command`/`args`/`startupCommand`/`env` with the profile defaults
+  (only when the caller passed nothing).
+- `apps/desktop/src/renderer/components/terminals/cliLaunch.ts` — thin
+  re-export of `apps/desktop/src/shared/cliLaunch.ts` so existing
+  renderer callers keep their import path.
+- `apps/desktop/src/shared/shell.ts` — shared shell-quoting and
+  command-line parsing utilities (`quoteShellArg`, `commandArrayToLine`,
+  `parseCommandLine`) used by both the renderer and the main-process
+  CLI launcher. Handles POSIX and Windows quoting rules behind a single
+  surface.
+- `apps/desktop/src/renderer/lib/shell.ts` — thin re-export of
+  `apps/desktop/src/shared/shell.ts` to preserve existing renderer
+  imports.
 - `apps/desktop/src/shared/adeCliGuidance.ts` — single source of truth
   for the ADE session guidance text injected into Claude/Codex CLI
   launches. Exported as `ADE_CLI_AGENT_GUIDANCE` and
@@ -209,19 +238,49 @@ Renderer surfaces:
   for a list of selected sessions; `triggerBrowserDownload` writes it
   to disk via a transient anchor + Object URL. Used by the bulk-export
   action in the session list.
+- `apps/desktop/src/main/services/macosVm/macosVmService.ts` —
+  lane-tied macOS VM lifecycle and control service. Uses Lume as the
+  first provider, stores per-lane records under `.ade/cache/macos-vms`,
+  keeps VNC credentials in `.ade/secrets`, mounts direct lane roots when
+  safe, and otherwise maintains a sanitized rsync mirror that excludes
+  ADE secrets, runtime databases, caches, transcripts, generated local
+  memory/history, worktrees, agents, and `.git`.
+- `apps/desktop/src/main/services/macosVm/rfbDirectClient.ts` —
+  headless VNC bridge for screenshot, click, and type operations. It
+  disables unsupported audio negotiation for Lume VNC sessions and
+  encodes captured RGBA frames as PNGs for proof/context flows.
+- `apps/desktop/src/main/services/macosVm/macosVmService.test.ts` —
+  macOS VM provider, share-policy, lifecycle, guidance, and direct-VNC
+  control tests.
+- `apps/desktop/src/shared/types/macosVm.ts` — `MacosVmStatus`,
+  `MacosVmRecord`, provision/start/control arguments, event payloads,
+  screenshot results, and `MacosVmContextItem`.
 
 iOS Work surfaces:
 
-- `apps/ios/ADE/Views/Work/WorkRootScreen.swift` and
-  `WorkRootComponents.swift` — mobile Work list, filters, activity feed,
-  grouped session rows, and live-count/status pills.
+- `apps/ios/ADE/Views/Work/WorkRootScreen.swift`,
+  `WorkRootScreen+Actions.swift`, `WorkRootScreen+Selection.swift`, and
+  `WorkRootComponents.swift` — mobile Work list, filters, grouped
+  session rows, and live-count/status pills, plus the resume flow that
+  re-uses `work.startCliSession` for ended PTY rows. The earlier
+  in-list activity feed is gone — running chats surface through the
+  session list and the live-count chip.
 - `apps/ios/ADE/Views/Work/WorkArtifactTerminalViews.swift` —
   terminal artifact/output views and the compact input bar that sends
-  `terminal_input` bytes and Ctrl-C to the subscribed host PTY.
+  `terminal_input` bytes and Ctrl-C to the subscribed host PTY. Hosts
+  the new emulator surface and unsubscribes via
+  `SyncService.unsubscribeTerminal` on view disappear.
+- `apps/ios/ADE/Views/Work/WorkTerminalEmulatorView.swift` —
+  UIKit-backed monospaced terminal screen + `WorkTerminalScreen`
+  model that reports its viewport in (cols, rows) so the host can
+  resize the PTY to the phone's actual rendered grid.
 - `apps/ios/ADE/Views/Work/WorkChatSessionView.swift`,
   `WorkChatComposerAndInputViews.swift`, `WorkChatRichCardViews.swift`,
   `WorkReasoningCard.swift`, `WorkNewChatScreen.swift` — mobile chat,
   composer, command/tool/reasoning cards, and new-chat launch surface.
+  `WorkNewChatScreen` segments between **ADE chat** and **CLI session**;
+  the CLI mode submits `work.startCliSession` against the host through
+  `SyncService.startCliSession`.
 
 ## Detail docs
 
@@ -278,7 +337,7 @@ See `apps/desktop/src/shared/types/sessions.ts` for the full shape.
    `terminal_sessions` row through `sessionService.create()`.
 
 2. **Stream** — PTY `data` events are written to the transcript
-   (capped at `MAX_TRANSCRIPT_BYTES = 8 MB`), throttled into a
+   (capped at `MAX_TRANSCRIPT_BYTES = 64 MB`), throttled into a
    `lastOutputPreview`, forwarded to `broadcastData`, and scanned for
    runtime state signals (OSC 133 prompt markers).
 
@@ -436,7 +495,7 @@ Processes (managed):
   falls back to `defaultResumeCommandForTool(toolType)`. Editing it
   directly is only allowed through `sessionService.setResumeCommand` or
   `updateMeta`, both of which re-derive the metadata.
-- Transcript writes are capped at 8 MB; after the cap a notice line is
+- Transcript writes are capped at 64 MB; after the cap a notice line is
   written once and further output is dropped. The runtime counter
   `transcriptBytesWritten` is not persisted.
 - Preview updates are throttled (~900 ms) and the string is capped at

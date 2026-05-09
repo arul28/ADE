@@ -125,6 +125,67 @@ describe("preload OAuth bridge", () => {
     expect(removeListener).toHaveBeenCalledWith(IPC.reviewEvent, listener);
   });
 
+  it("exposes macOS VM IPC methods and cleans up listeners", async () => {
+    const invoke = vi.fn(async () => undefined);
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    expect(bridge.macosVm).toBeTruthy();
+
+    await bridge.macosVm.getStatus({ laneId: "lane-1" });
+    await bridge.macosVm.provision({ laneId: "lane-1", mode: "pull-image" });
+    await bridge.macosVm.start({ laneId: "lane-1", openDisplay: true });
+    await bridge.macosVm.stop({ laneId: "lane-1" });
+    await bridge.macosVm.delete({ laneId: "lane-1", force: true });
+    await bridge.macosVm.getAgentGuide({ laneId: "lane-1" });
+    await bridge.macosVm.focusWindow({ laneId: "lane-1" });
+    await bridge.macosVm.captureScreenshot({ laneId: "lane-1" });
+    await bridge.macosVm.selectPoint({ laneId: "lane-1", x: 40, y: 60, includeScreenshot: true });
+    await bridge.macosVm.click({ laneId: "lane-1", x: 40, y: 60 });
+    await bridge.macosVm.typeText({ laneId: "lane-1", text: "hello" });
+
+    expect(invoke).toHaveBeenCalledWith(IPC.macosVmGetStatus, { laneId: "lane-1" });
+    expect(invoke).toHaveBeenCalledWith(IPC.macosVmProvision, { laneId: "lane-1", mode: "pull-image" });
+    expect(invoke).toHaveBeenCalledWith(IPC.macosVmStart, { laneId: "lane-1", openDisplay: true });
+    expect(invoke).toHaveBeenCalledWith(IPC.macosVmStop, { laneId: "lane-1" });
+    expect(invoke).toHaveBeenCalledWith(IPC.macosVmDelete, { laneId: "lane-1", force: true });
+    expect(invoke).toHaveBeenCalledWith(IPC.macosVmGetAgentGuide, { laneId: "lane-1" });
+    expect(invoke).toHaveBeenCalledWith(IPC.macosVmFocusWindow, { laneId: "lane-1" });
+    expect(invoke).toHaveBeenCalledWith(IPC.macosVmCaptureScreenshot, { laneId: "lane-1" });
+    expect(invoke).toHaveBeenCalledWith(IPC.macosVmSelectPoint, { laneId: "lane-1", x: 40, y: 60, includeScreenshot: true });
+    expect(invoke).toHaveBeenCalledWith(IPC.macosVmClick, { laneId: "lane-1", x: 40, y: 60 });
+    expect(invoke).toHaveBeenCalledWith(IPC.macosVmTypeText, { laneId: "lane-1", text: "hello" });
+
+    const callback = vi.fn();
+    const unsubscribe = bridge.macosVm.onEvent(callback);
+    expect(on).toHaveBeenCalledWith(IPC.macosVmEvent, expect.any(Function));
+
+    const listener = on.mock.calls.at(-1)?.[1];
+    expect(typeof listener).toBe("function");
+    listener({}, { type: "operation", operation: "start", state: "completed" });
+    expect(callback).toHaveBeenCalledWith({ type: "operation", operation: "start", state: "completed" });
+
+    unsubscribe();
+    expect(removeListener).toHaveBeenCalledWith(IPC.macosVmEvent, listener);
+  });
+
   it("clears the AI status bridge cache after API key verification", async () => {
     const status = {
       mode: "guest",

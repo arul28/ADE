@@ -133,6 +133,7 @@ describe("LaneGitActionsPane rescue action", () => {
     };
     mockSyncStatus = {
       hasUpstream: false,
+      upstreamState: "none",
       upstreamRef: null,
       ahead: 0,
       behind: 0,
@@ -225,6 +226,7 @@ describe("LaneGitActionsPane rescue action", () => {
     expect(window.ade.diff.getChanges).toHaveBeenCalledWith({ laneId: "lane-1" });
     expect(window.ade.git.getSyncStatus).toHaveBeenCalledWith({ laneId: "lane-1" });
     expect(window.ade.git.getSyncStatus).toHaveBeenCalledTimes(1);
+    expect(window.ade.lanes.listAutoRebaseStatuses).not.toHaveBeenCalled();
   });
 
   it("blocks pull and surfaces merge recovery actions when a merge is in progress", async () => {
@@ -239,6 +241,7 @@ describe("LaneGitActionsPane rescue action", () => {
     };
     mockSyncStatus = {
       hasUpstream: true,
+      upstreamState: "tracking",
       upstreamRef: "origin/feature/parent",
       ahead: 0,
       behind: 2,
@@ -397,7 +400,10 @@ describe("LaneGitActionsPane rescue action", () => {
       },
     ];
 
-    renderPane({ onResolveRebaseConflict: resolveRebaseConflict });
+    renderPane({
+      autoRebaseStatusSnapshot: mockAutoRebaseStatuses[0] ?? null,
+      onResolveRebaseConflict: resolveRebaseConflict,
+    });
 
     const rebaseTabButton = await screen.findByRole("button", { name: /open rebase\/merge tab/i });
     screen.getByText("AUTO-REBASE FAILED");

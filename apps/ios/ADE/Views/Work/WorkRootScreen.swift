@@ -496,6 +496,17 @@ struct WorkRootScreen: View {
               await reload(refreshRemote: true)
             }
           },
+          onCliStarted: { session in
+            optimisticSessions[session.id] = session
+            selectedSessionTransitionId = nil
+            var fresh = NavigationPath()
+            fresh.append(WorkSessionRoute(sessionId: session.id))
+            await Task.yield()
+            path = fresh
+            Task { @MainActor in
+              await reload(refreshRemote: true)
+            }
+          },
           onRefreshLanes: { await reload(refreshRemote: true) }
         )
         .environmentObject(syncService)

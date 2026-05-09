@@ -315,7 +315,9 @@ func collapseConsecutiveWorkToolEntries(_ entries: [WorkTimelineEntry]) -> [Work
   func flushCluster() {
     if !cluster.isEmpty {
       let members = cluster.compactMap(workToolGroupMember(from:))
-      if members.count == cluster.count {
+      if cluster.count == 1 {
+        result.append(contentsOf: cluster)
+      } else if members.count == cluster.count {
         let anchor = cluster[0]
         var readOnly: [WorkToolGroupMember] = []
         var codeChange: [WorkToolGroupMember] = []

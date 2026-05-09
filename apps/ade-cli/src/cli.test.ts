@@ -6,6 +6,7 @@ import {
   buildCliPlan,
   findProjectRoots,
   formatOutput,
+  graphWaitState,
   parseCliArgs,
   renderLaneGraph,
   resolveRoots,
@@ -97,6 +98,11 @@ describe("ADE CLI", () => {
     ]);
   });
 
+  it("builds the stdio MCP server command", () => {
+    expect(buildCliPlan(["mcp"])).toEqual({ kind: "mcp" });
+    expect(buildCliPlan(["mcp-server"])).toEqual({ kind: "mcp" });
+  });
+
   it("builds nested generic ADE action args", () => {
     const plan = buildCliPlan([
       "actions",
@@ -176,6 +182,292 @@ describe("ADE CLI", () => {
         domain: "mission",
         action: "get",
         arg: "mission-1",
+      },
+    });
+  });
+
+  it("builds typed mission create with custom phase and planned-step payload files", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-mission-plan-"));
+    const phasesPath = path.join(root, "phases.json");
+    const stepsPath = path.join(root, "steps.json");
+    fs.writeFileSync(phasesPath, JSON.stringify([{ phaseKey: "planning", name: "Planning", position: 0 }]));
+    fs.writeFileSync(stepsPath, JSON.stringify([{ index: 0, title: "Plan", detail: "Plan it", kind: "planning", metadata: {} }]));
+
+    const plan = buildCliPlan([
+      "missions",
+      "create",
+      "--prompt",
+      "Try the mission backend",
+      "--manual",
+      "--phase-override-file",
+      phasesPath,
+      "--planned-steps-file",
+      stepsPath,
+    ]);
+
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.formatter).toBe("mission-detail");
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "mission",
+        action: "create",
+        args: expect.objectContaining({
+          prompt: "Try the mission backend",
+          launchMode: "manual",
+          phaseOverride: [{ phaseKey: "planning", name: "Planning", position: 0 }],
+          plannedSteps: [{ index: 0, title: "Plan", detail: "Plan it", kind: "planning", metadata: {} }],
+        }),
+      },
+    });
+  });
+
+  it("reports unreadable JSON payload files as CLI usage errors", () => {
+    const missingPath = path.join(os.tmpdir(), "ade-cli-missing-phases.json");
+
+    expect(() => buildCliPlan([
+      "missions",
+      "create",
+      "--prompt",
+      "Try the mission backend",
+      "--phase-override-file",
+      missingPath,
+    ])).toThrow(/Could not read --phase-override-file file/);
+  });
+
+  it("builds typed mission launch with a dependent start step", () => {
+    const plan = buildCliPlan([
+      "mission",
+      "launch",
+      "--prompt",
+      "Run throwaway mission",
+      "--manual",
+      "--executor",
+      "codex",
+    ]);
+
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.formatter).toBe("mission-watch");
+    expect(plan.steps).toHaveLength(2);
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "mission",
+        action: "create",
+        args: expect.objectContaining({
+          prompt: "Run throwaway mission",
+          launchMode: "manual",
+          autopilotExecutor: "codex",
+        }),
+      },
+    });
+    expect(typeof plan.steps[1]?.params).toBe("function");
+    const params = typeof plan.steps[1]?.params === "function"
+      ? plan.steps[1].params({
+          created: {
+            domain: "mission",
+            action: "create",
+            result: { id: "mission-1" },
+          },
+        })
+      : null;
+    expect(params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "orchestrator",
+        action: "startMissionRun",
+        args: {
+          missionId: "mission-1",
+          runMode: "manual",
+          defaultExecutorKind: "codex",
+        },
+      },
+    });
+  });
+
+  it("builds typed mission launch wait mode with post-wait mission and graph reads", () => {
+    const plan = buildCliPlan([
+      "missions",
+      "launch",
+      "--prompt",
+      "Run and observe",
+      "--manual",
+      "--wait-ms",
+      "5000",
+    ]);
+
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps).toHaveLength(4);
+    expect(typeof plan.steps[2]?.params).toBe("function");
+    const missionParams = typeof plan.steps[2]?.params === "function"
+      ? plan.steps[2].params({
+          created: {
+            domain: "mission",
+            action: "create",
+            result: { id: "mission-1" },
+          },
+        })
+      : null;
+    expect(missionParams).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "mission",
+        action: "get",
+        arg: "mission-1",
+      },
+    });
+    expect(plan.steps[3]).toMatchObject({
+      key: "graph",
+      method: "ade-cli/wait-run-graph",
+    });
+    expect(typeof plan.steps[3]?.params).toBe("function");
+    const graphParams = typeof plan.steps[3]?.params === "function"
+      ? plan.steps[3].params({
+          started: {
+            domain: "orchestrator",
+            action: "startMissionRun",
+            result: {
+              started: { run: { id: "run-1" } },
+              mission: { id: "mission-1" },
+            },
+          },
+        })
+      : null;
+    expect(graphParams).toEqual({
+      runId: "run-1",
+      waitMs: 5000,
+      untilTerminal: false,
+      timelineLimit: 120,
+    });
+  });
+
+  it("builds mission resume through the AI orchestrator so coordinator recovery runs", () => {
+    const plan = buildCliPlan(["missions", "resume", "run-1"]);
+
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.formatter).toBe("mission-graph");
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "orchestrator",
+        action: "resumeRun",
+        args: {
+          runId: "run-1",
+        },
+      },
+    });
+  });
+
+  it("builds mission resume wait mode with a post-wait graph read", () => {
+    const plan = buildCliPlan([
+      "missions",
+      "resume",
+      "run-1",
+      "--wait-ms",
+      "5000",
+      "--timeline-limit",
+      "200",
+    ]);
+
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.formatter).toBe("mission-watch");
+    expect(plan.steps).toHaveLength(2);
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "orchestrator",
+        action: "resumeRun",
+        args: {
+          runId: "run-1",
+        },
+      },
+    });
+    expect(plan.steps[1]).toMatchObject({
+      key: "graph",
+      method: "ade-cli/wait-run-graph",
+    });
+    expect(typeof plan.steps[1]?.params).toBe("function");
+    const graphParams = typeof plan.steps[1]?.params === "function"
+      ? plan.steps[1].params({})
+      : null;
+    expect(graphParams).toEqual({
+      runId: "run-1",
+      waitMs: 5000,
+      untilTerminal: false,
+      timelineLimit: 200,
+    });
+  });
+
+  it("reads wait state from run graphs with a nested visual graph", () => {
+    const waitState = graphWaitState({
+      domain: "orchestrator_core",
+      action: "getRunGraph",
+      result: {
+        graph: {
+          run: { id: "run-1", status: "succeeded" },
+          steps: [{ id: "step-1", status: "succeeded" }],
+          attempts: [{ id: "attempt-1", status: "completed" }],
+          graph: { nodes: [], edges: [] },
+        },
+      },
+    });
+
+    expect(waitState).toEqual({ status: "succeeded", activeCount: 0 });
+  });
+
+  it("builds mission cancel with a run id for graceful cancellation", () => {
+    const plan = buildCliPlan(["missions", "cancel", "run-1", "--reason", "superseded"]);
+
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.formatter).toBe("mission-detail");
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "orchestrator",
+        action: "cancelRunGracefully",
+        args: {
+          runId: "run-1",
+          reason: "superseded",
+        },
+      },
+    });
+  });
+
+  it("builds shell-friendly worker mission tool aliases", () => {
+    const pending = buildCliPlan(["get_pending_messages", "--limit", "10"]);
+    expect(pending.kind).toBe("execute");
+    if (pending.kind !== "execute") return;
+    expect(pending.steps[0]?.params).toEqual({
+      name: "get_pending_messages",
+      arguments: {
+        since_cursor: null,
+        limit: 10,
+      },
+    });
+
+    const message = buildCliPlan([
+      "message_worker",
+      "worker_consumer",
+      "--content",
+      "Contract helper is ready",
+      "--priority",
+      "high",
+    ]);
+    expect(message.kind).toBe("execute");
+    if (message.kind !== "execute") return;
+    expect(message.steps[0]?.params).toEqual({
+      name: "message_worker",
+      arguments: {
+        fromWorkerId: null,
+        toWorkerId: "worker_consumer",
+        content: "Contract helper is ready",
+        priority: "high",
       },
     });
   });
@@ -452,6 +744,57 @@ describe("ADE CLI", () => {
       },
     } as any);
     expect(escapeHatch).toMatchObject({ domain: "git", action: "getStatus", result: { clean: true } });
+  });
+
+  it("summarizes mission launch from post-wait mission and graph snapshots", () => {
+    const connection = {
+      mode: "headless" as const,
+      projectRoot: "/tmp/project",
+      workspaceRoot: "/tmp/project",
+      socketPath: "/tmp/project/.ade/ade.sock",
+      request: async () => null,
+      close: () => {},
+    };
+
+    const summarized = summarizeExecution({
+      plan: { kind: "execute", label: "mission launch", steps: [] },
+      connection,
+      values: {
+        created: {
+          domain: "mission",
+          action: "create",
+          result: { id: "mission-1", status: "queued" },
+        },
+        started: {
+          domain: "orchestrator",
+          action: "startMissionRun",
+          result: {
+            started: { run: { id: "run-1", status: "active" } },
+            mission: { id: "mission-1", status: "in_progress" },
+          },
+        },
+        mission: {
+          domain: "mission",
+          action: "get",
+          result: { id: "mission-1", status: "intervention_required", lastError: "Model not found" },
+        },
+        graph: {
+          domain: "orchestrator_core",
+          action: "getRunGraph",
+          result: {
+            graph: {
+              run: { id: "run-1", status: "paused", lastError: "Model not found" },
+              steps: [],
+            },
+          },
+        },
+      },
+    } as any);
+
+    expect(summarized).toMatchObject({
+      mission: { id: "mission-1", status: "intervention_required", lastError: "Model not found" },
+      run: { id: "run-1", status: "paused", lastError: "Model not found" },
+    });
   });
 
   it("turns ADE action failure envelopes into CLI tool errors", () => {
@@ -862,6 +1205,124 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("maps provider shell launches to start_cli_session", () => {
+    const plan = buildCliPlan([
+      "shell",
+      "start-cli",
+      "codex",
+      "--lane",
+      "lane-1",
+      "--permission-mode",
+      "edit",
+      "--message",
+      "fix the tests",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toEqual({
+      name: "start_cli_session",
+      arguments: expect.objectContaining({
+        laneId: "lane-1",
+        provider: "codex",
+        permissionMode: "edit",
+        initialInput: "fix the tests",
+        title: "Codex",
+        cols: 120,
+        rows: 36,
+        tracked: true,
+      }),
+    });
+  });
+
+  it("does not treat option values as start-cli providers", () => {
+    expect(() => buildCliPlan([
+      "shell",
+      "start-cli",
+      "--lane",
+      "lane-1",
+      "--permission-mode",
+      "edit",
+    ])).toThrow("provider is required");
+  });
+
+  it("finds a start-cli provider after value-taking options", () => {
+    const plan = buildCliPlan([
+      "shell",
+      "start-cli",
+      "--lane",
+      "lane-1",
+      "--permission-mode",
+      "edit",
+      "codex",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toMatchObject({
+      name: "start_cli_session",
+      arguments: {
+        laneId: "lane-1",
+        provider: "codex",
+        permissionMode: "edit",
+      },
+    });
+  });
+
+  it("finds a start-cli provider after resume value-taking options", () => {
+    const cases: Array<[string, string, string]> = [
+      ["--resume-session", "session-1", "resumeSessionId"],
+      ["--resume-session-id", "session-2", "resumeSessionId"],
+      ["--resume-target", "target-1", "resumeTargetId"],
+      ["--resume-target-id", "target-2", "resumeTargetId"],
+      ["--initial-input", "hello agent", "initialInput"],
+    ];
+
+    for (const [flag, value, field] of cases) {
+      const plan = buildCliPlan([
+        "shell",
+        "start-cli",
+        "--lane",
+        "lane-1",
+        flag,
+        value,
+        "codex",
+      ]);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") return;
+      expect(plan.steps[0]?.params).toMatchObject({
+        name: "start_cli_session",
+        arguments: {
+          laneId: "lane-1",
+          provider: "codex",
+          [field]: value,
+        },
+      });
+    }
+  });
+
+  it("accepts --provider on shell start as the CLI-session launcher", () => {
+    const plan = buildCliPlan([
+      "shell",
+      "start",
+      "--provider",
+      "claude",
+      "--lane",
+      "lane-1",
+      "--resume-session",
+      "session-1",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toMatchObject({
+      name: "start_cli_session",
+      arguments: {
+        laneId: "lane-1",
+        provider: "claude",
+        permissionMode: "default",
+        resumeSessionId: "session-1",
+      },
+    });
+  });
+
   it("renders an empty lane graph placeholder when no lanes are returned", () => {
     expect(renderLaneGraph({ lanes: [] })).toBe("ADE lanes\n(no lanes)");
     expect(renderLaneGraph(null)).toBe("ADE lanes\n(no lanes)");
@@ -1055,6 +1516,65 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("automations create with implicit reuse accepts --lane", () => {
+    const plan = buildCliPlan([
+      "automations",
+      "create",
+      "--text",
+      "id: r1\n",
+      "--lane",
+      "lane-99",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toMatchObject({
+      arguments: {
+        args: {
+          draft: {
+            execution: { targetLaneId: "lane-99" },
+          },
+        },
+      },
+    });
+  });
+
+  it("automations create accepts require-on-trigger lane mode without a target lane", () => {
+    const plan = buildCliPlan([
+      "automations",
+      "create",
+      "--text",
+      "id: r1\n",
+      "--lane-mode",
+      "require-on-trigger",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toMatchObject({
+      arguments: {
+        args: {
+          draft: {
+            execution: { laneMode: "require-on-trigger" },
+          },
+        },
+      },
+    });
+  });
+
+  it("automations create rejects --lane with --lane-mode require-on-trigger", () => {
+    expect(() =>
+      buildCliPlan([
+        "automations",
+        "create",
+        "--text",
+        "id: r1\n",
+        "--lane-mode",
+        "require-on-trigger",
+        "--lane",
+        "lane-1",
+      ]),
+    ).toThrow(/--lane is only valid with --lane-mode reuse/);
+  });
+
   it("automations create with --lane-name-preset custom accepts --lane-name-template", () => {
     const plan = buildCliPlan([
       "automations",
@@ -1142,7 +1662,7 @@ describe("ADE CLI", () => {
         "--lane-mode",
         "bogus",
       ]),
-    ).toThrow(/--lane-mode must be one of create, reuse/);
+    ).toThrow(/--lane-mode must be one of create, reuse, require-on-trigger/);
   });
 
   it("automations runs accepts a --status filter", () => {
@@ -1268,6 +1788,19 @@ describe("ADE CLI", () => {
     if (plan.kind !== "execute") return;
     expect(plan.steps[0]?.params).toMatchObject({
       arguments: { args: { id: "rule-42", laneId: "lane-7" } },
+    });
+  });
+
+  it("automations trigger aliases run and forwards --lane as laneId", () => {
+    const plan = buildCliPlan(["automations", "trigger", "rule-42", "--lane", "lane-7"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "automations",
+        action: "triggerManually",
+        args: { id: "rule-42", laneId: "lane-7" },
+      },
     });
   });
 
@@ -1477,6 +2010,34 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("keeps shell --command when an argument terminator has no trailing tokens", () => {
+    const plan = buildCliPlan(["shell", "start", "--lane", "lane-1", "--command", "npm test", "--"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "pty",
+        action: "create",
+        args: {
+          startupCommand: "npm test",
+        },
+      },
+    });
+  });
+
+  it("keeps start-cli --message when an argument terminator has no trailing tokens", () => {
+    const plan = buildCliPlan(["shell", "start-cli", "codex", "--lane", "lane-1", "--message", "hello", "--"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toMatchObject({
+      name: "start_cli_session",
+      arguments: {
+        provider: "codex",
+        initialInput: "hello",
+      },
+    });
+  });
+
   it("ios-sim type accepts clear text payload aliases without shadowing output --text", () => {
     const withValue = buildCliPlan(["ios-sim", "type", "--value", "hello", "--text"]);
     expect(withValue.kind).toBe("execute");
@@ -1623,6 +2184,148 @@ describe("ADE CLI", () => {
         domain: "app_control",
         action: "launch",
         args: { command: "pnpm dev" },
+      },
+    });
+  });
+
+  it("macos-vm lifecycle commands map to macos_vm actions", () => {
+    const status = buildCliPlan(["macos-vm", "status", "--lane", "lane-1"]);
+    expect(status.kind).toBe("execute");
+    if (status.kind !== "execute") return;
+    expect(status.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "macos_vm",
+        action: "getStatus",
+        args: { laneId: "lane-1" },
+      },
+    });
+
+    const provision = buildCliPlan([
+      "macos-vm",
+      "provision",
+      "--lane",
+      "lane-1",
+      "--mode",
+      "create",
+      "--ipsw",
+      "latest",
+      "--cpu",
+      "6",
+      "--memory",
+      "12GB",
+      "--disk",
+      "120GB",
+    ]);
+    expect(provision.kind).toBe("execute");
+    if (provision.kind !== "execute") return;
+    expect(provision.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "macos_vm",
+        action: "provision",
+        args: {
+          laneId: "lane-1",
+          mode: "create",
+          ipsw: "latest",
+          cpuCores: 6,
+          memory: "12GB",
+          diskSize: "120GB",
+        },
+      },
+    });
+
+    const start = buildCliPlan(["mac-vm", "start", "lane-1", "--create", "--no-display"]);
+    expect(start.kind).toBe("execute");
+    if (start.kind !== "execute") return;
+    expect(start.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "macos_vm",
+        action: "start",
+        args: {
+          laneId: "lane-1",
+          createIfMissing: true,
+          openDisplay: false,
+        },
+      },
+    });
+  });
+
+  it("macos-vm guide and actions are available for agent guidance", () => {
+    const guide = buildCliPlan(["macos", "guide", "--lane", "lane-1"]);
+    expect(guide.kind).toBe("execute");
+    if (guide.kind !== "execute") return;
+    expect(guide.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "macos_vm",
+        action: "getAgentGuide",
+        args: { laneId: "lane-1" },
+      },
+    });
+
+    const actions = buildCliPlan(["macos-vm", "actions"]);
+    expect(actions.kind).toBe("execute");
+    if (actions.kind !== "execute") return;
+    expect(actions.steps[0]?.params).toMatchObject({
+      name: "list_ade_actions",
+      arguments: { domain: "macos_vm" },
+    });
+  });
+
+  it("macos-vm window control commands map to VM computer-use actions", () => {
+    const screenshot = buildCliPlan(["macos-vm", "screenshot", "--lane", "lane-1", "--output", "/tmp/vm.png"]);
+    expect(screenshot.kind).toBe("execute");
+    if (screenshot.kind !== "execute") return;
+    expect(screenshot.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "macos_vm",
+        action: "captureScreenshot",
+        args: {
+          laneId: "lane-1",
+          outputPath: "/tmp/vm.png",
+        },
+      },
+    });
+
+    const click = buildCliPlan(["macos-vm", "click", "--lane", "lane-1", "120", "420"]);
+    expect(click.kind).toBe("execute");
+    if (click.kind !== "execute") return;
+    expect(click.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "macos_vm",
+        action: "click",
+        args: {
+          laneId: "lane-1",
+          x: 120,
+          y: 420,
+        },
+      },
+    });
+
+    const select = buildCliPlan(["macos-vm", "select", "--lane", "lane-1", "--x", "120", "--y", "420"]);
+    expect(select.kind).toBe("execute");
+    if (select.kind !== "execute") return;
+    expect(select.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "macos_vm",
+        action: "selectPoint",
+        args: {
+          laneId: "lane-1",
+          x: 120,
+          y: 420,
+        },
+      },
+    });
+
+    const type = buildCliPlan(["macos-vm", "type", "--lane", "lane-1", "--value", "hello"]);
+    expect(type.kind).toBe("execute");
+    if (type.kind !== "execute") return;
+    expect(type.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "macos_vm",
+        action: "typeText",
+        args: {
+          laneId: "lane-1",
+          text: "hello",
+        },
       },
     });
   });
@@ -1827,6 +2530,44 @@ describe("ADE CLI", () => {
         action: "selectPoint",
         args: { x: 120, y: 420, includeScreenshot: false },
       },
+    });
+  });
+
+  it("update commands map to auto-update actions", () => {
+    const status = buildCliPlan(["update", "status"]);
+    expect(status.kind).toBe("execute");
+    if (status.kind !== "execute") return;
+    expect(status.steps[0]?.params).toMatchObject({
+      arguments: { domain: "update", action: "getSnapshot", args: {} },
+    });
+
+    const check = buildCliPlan(["auto-update", "check"]);
+    expect(check.kind).toBe("execute");
+    if (check.kind !== "execute") return;
+    expect(check.steps[0]?.params).toMatchObject({
+      arguments: { domain: "update", action: "checkForUpdates", args: {} },
+    });
+
+    const install = buildCliPlan(["updates", "install"]);
+    expect(install.kind).toBe("execute");
+    if (install.kind !== "execute") return;
+    expect(install.steps[0]?.params).toMatchObject({
+      arguments: { domain: "update", action: "quitAndInstall", args: {} },
+    });
+
+    const dismiss = buildCliPlan(["update", "dismiss"]);
+    expect(dismiss.kind).toBe("execute");
+    if (dismiss.kind !== "execute") return;
+    expect(dismiss.steps[0]?.params).toMatchObject({
+      arguments: { domain: "update", action: "dismissInstalledNotice", args: {} },
+    });
+
+    const actions = buildCliPlan(["update", "actions"]);
+    expect(actions.kind).toBe("execute");
+    if (actions.kind !== "execute") return;
+    expect(actions.steps[0]?.params).toMatchObject({
+      name: "list_ade_actions",
+      arguments: { domain: "update" },
     });
   });
 

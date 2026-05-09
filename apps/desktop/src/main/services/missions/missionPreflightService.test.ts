@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { MissionPreflightBudgetEstimate, PhaseProfile } from "../../../shared/types";
 import { createBuiltInPhaseCards } from "./phaseEngine";
 import { createMissionPreflightService } from "./missionPreflightService";
@@ -627,6 +627,82 @@ describe("missionPreflightService", () => {
     expect(result.canLaunch).toBe(true);
   });
 
+  it("fails launch preflight when the selected lane is claimed by another mission", async () => {
+    const profiles = createProfiles();
+    const service = createMissionPreflightService({
+      logger: createLogger(),
+      projectRoot: "/tmp/ade-preflight",
+      missionService: {
+        listPhaseProfiles: () => profiles,
+        isLaneClaimed: () => ({
+          claimed: true,
+          byMissionId: "mission-owner",
+          reason: "Lane is already owned by another mission.",
+        }),
+      } as any,
+      laneService: {
+        list: async () => [
+          { id: "lane-1", name: "Primary", archivedAt: null },
+          { id: "lane-2", name: "Throwaway", archivedAt: null },
+          { id: "lane-3", name: "Worker", archivedAt: null },
+        ]
+      } as any,
+      aiIntegrationService: {
+        getAvailabilityAsync: async () => ({
+          availableModels: [
+            { id: "anthropic/claude-sonnet-4-6", shortId: "claude-sonnet-4-6", family: "anthropic", displayName: "Claude Sonnet 4.6" },
+            { id: "claude-sonnet-4-6", shortId: "claude-sonnet-4-6", family: "claude", displayName: "Claude Sonnet 4.6" },
+            { id: "openai/gpt-5.3-codex", shortId: "gpt-5.3-codex", family: "openai", displayName: "GPT-5.3 Codex" },
+            { id: "gpt-5.3-codex", shortId: "gpt-5.3-codex", family: "codex", displayName: "GPT-5.3 Codex" },
+          ]
+        }),
+        executeTask: async () => ({ structuredOutput: { clear: true, feedback: [] } })
+      } as any,
+      projectConfigService: {
+        get: () => ({
+          effective: {
+            ai: {
+              permissions: {
+                cli: { mode: "full-auto", sandboxPermissions: "workspace-write" },
+                inProcess: { mode: "full-auto" },
+              }
+            }
+          }
+        })
+      } as any,
+      missionBudgetService: {
+        estimateLaunchBudget: async () => ({
+          estimate: createBudgetEstimate("subscription"),
+          hardLimitExceeded: false,
+          windowUsageCostUsd: 0.6,
+          remainingWindowCostUsd: 10.4,
+          budgetLimitCostUsd: 11
+        })
+      } as any
+    });
+
+    const result = await service.runPreflight({
+      launch: {
+        prompt: "Implement mission orchestration improvements.",
+        laneId: "lane-1",
+        phaseProfileId: profiles[0]!.id,
+        phaseOverride: profiles[0]!.phases,
+        modelConfig: {
+          orchestratorModel: {
+            provider: "claude",
+            modelId: "claude-sonnet-4-6"
+          }
+        }
+      }
+    });
+
+    expect(result.canLaunch).toBe(false);
+    expect(result.checklist.find((item) => item.id === "lane_claim")).toMatchObject({
+      severity: "fail",
+      summary: "Lane is already owned by another mission.",
+    });
+  });
+
   const runCodexLabelPreflight = async (codexMode: "default" | "plan" | "full-auto" | "config-toml") => {
     const profiles = createProfiles();
     const service = createMissionPreflightService({
@@ -713,6 +789,98 @@ describe("missionPreflightService", () => {
     expect(permItem?.details?.some((d) => d.includes("may still pause for approvals"))).toBe(false);
   });
 
+  it("checks custom phase instructions locally without blocking on an AI task", async () => {
+    const profiles = createProfiles();
+    const customPhase = {
+      ...profiles[0]!.phases[4]!,
+      id: "custom:score-audit",
+      phaseKey: "score_audit",
+      name: "Score audit",
+      description: "Inspect throwaway output before closeout.",
+      instructions: "Inspect the changed files, verify the targeted test output, and write an artifact with proof before closeout.",
+      isBuiltIn: false,
+      isCustom: true,
+      orderingConstraints: {},
+      validationGate: { tier: "none" as const, required: false },
+      position: 5,
+    };
+    const phaseOverride = [
+      ...profiles[0]!.phases.slice(0, 5),
+      customPhase,
+      { ...profiles[0]!.phases[5]!, position: 6 },
+    ].map((phase, index) => ({ ...phase, position: index }));
+    const executeTask = vi.fn(async () => {
+      throw new Error("semantic preflight should not call AI");
+    });
+    const service = createMissionPreflightService({
+      logger: createLogger(),
+      projectRoot: "/tmp/ade-preflight",
+      missionService: {
+        listPhaseProfiles: () => profiles,
+      } as any,
+      laneService: {
+        list: async () => [
+          { id: "lane-1", archivedAt: null },
+          { id: "lane-2", archivedAt: null },
+          { id: "lane-3", archivedAt: null },
+          { id: "lane-4", archivedAt: null },
+        ],
+      } as any,
+      aiIntegrationService: {
+        getAvailabilityAsync: async () => ({
+          availableModels: [
+            { id: "anthropic/claude-sonnet-4-6", shortId: "claude-sonnet-4-6", family: "anthropic", displayName: "Claude Sonnet 4.6" },
+            { id: "openai/gpt-5.5", shortId: "gpt-5.5", family: "openai", displayName: "GPT-5.5" },
+          ],
+        }),
+        executeTask,
+      } as any,
+      projectConfigService: {
+        get: () => ({
+          effective: {
+            ai: {
+              permissions: {
+                providers: {
+                  openai: { mode: "full-auto" },
+                  anthropic: { mode: "full-auto", sandboxPermissions: "workspace-write" },
+                },
+              },
+            },
+          },
+        }),
+      } as any,
+      missionBudgetService: {
+        estimateLaunchBudget: async () => ({
+          estimate: createBudgetEstimate("subscription"),
+          hardLimitExceeded: false,
+          windowUsageCostUsd: 0.1,
+          remainingWindowCostUsd: 10.9,
+          budgetLimitCostUsd: 11,
+        }),
+      } as any,
+    });
+
+    const result = await service.runPreflight({
+      launch: {
+        prompt: "Run a custom phase smoke mission.",
+        phaseProfileId: profiles[0]!.id,
+        phaseOverride,
+        modelConfig: {
+          orchestratorModel: {
+            provider: "openai",
+            modelId: "openai/gpt-5.5",
+          },
+        },
+      } as any,
+    });
+
+    expect(executeTask).not.toHaveBeenCalled();
+    expect(result.canLaunch).toBe(true);
+    const semanticItem = result.checklist.find((item) => item.id === "phase_semantic");
+    expect(semanticItem?.severity).toBe("pass");
+    expect(semanticItem?.details.join("\n")).toContain("local checks");
+  });
+
   it("summarizes result-lane closeout for new missions without requiring PR automation", async () => {
     const profiles = createProfiles();
     const service = createMissionPreflightService({
@@ -780,7 +948,7 @@ describe("missionPreflightService", () => {
     expect(result.checklist.find((item) => item.id === "capabilities")?.severity).toBe("pass");
     expect(
       result.approvalSummary?.conflictAssumptions.some((detail) =>
-        detail.includes("result lane") && detail.includes("will not auto-open a PR"),
+        detail.includes("result lane") && detail.includes("internal integration lane") && detail.includes("will not auto-open an external GitHub PR"),
       ),
     ).toBe(true);
   });

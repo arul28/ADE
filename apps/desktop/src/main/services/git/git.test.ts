@@ -79,6 +79,16 @@ describe("runGitOrThrow", () => {
 });
 
 describe("runGit", () => {
+  it("reports a missing worktree path instead of blaming the git executable", async () => {
+    const missingWorktree = path.join(os.tmpdir(), `ade-missing-worktree-${Date.now()}`);
+
+    const result = await runGit(["status", "--short"], { cwd: missingWorktree, timeoutMs: 8_000 });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain(`git working directory not found: ${missingWorktree}`);
+    expect(result.stderr).not.toContain("git executable not found");
+  });
+
   it("removes a stale index.lock and retries once", async () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-git-lock-"));
     git(repoRoot, ["init", "-b", "main"]);

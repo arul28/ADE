@@ -11,6 +11,11 @@ describe("shell helpers", () => {
     expect(parseCommandLine('pnpm --filter "web app" dev')).toEqual(["pnpm", "--filter", "web app", "dev"]);
   });
 
+  it("preserves empty quoted POSIX arguments", () => {
+    expect(parseCommandLine('node "" " " \'\' tail')).toEqual(["node", "", " ", "", "tail"]);
+    expect(parseCommandLine(commandArrayToLine(["node", "", "tail"]))).toEqual(["node", "", "tail"]);
+  });
+
   it("round-trips escaped quotes inside a quoted argument", () => {
     const argv = parseCommandLine('node -e "console.log(\\"hello world\\")"');
     expect(argv).toEqual(["node", "-e", 'console.log("hello world")']);
@@ -28,6 +33,15 @@ describe("shell helpers", () => {
     expect(parseCommandLine('"C:\\Program Files\\nodejs\\node.exe" "C:\\repo path\\script.js"', { platform: "win32" })).toEqual([
       "C:\\Program Files\\nodejs\\node.exe",
       "C:\\repo path\\script.js",
+    ]);
+  });
+
+  it("preserves empty quoted Windows arguments", () => {
+    expect(parseCommandLine('node.exe "" " " "" tail', { platform: "win32" })).toEqual(["node.exe", "", " ", "", "tail"]);
+    expect(parseCommandLine(commandArrayToLine(["node.exe", "", "tail"], { platform: "win32" }), { platform: "win32" })).toEqual([
+      "node.exe",
+      "",
+      "tail",
     ]);
   });
 

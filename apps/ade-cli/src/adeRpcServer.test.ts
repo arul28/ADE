@@ -277,7 +277,13 @@ function createRuntime() {
     },
     ptyService: {
       create: vi.fn(async () => ({ ptyId: "pty-1", sessionId: "session-1" })),
-      dispose: vi.fn()
+      dispose: vi.fn(),
+      writeBySessionId: vi.fn((sessionId: string, data: string): boolean => {
+        void sessionId;
+        void data;
+        return true;
+      }),
+      enrichSessions: vi.fn((sessions: unknown[]) => sessions),
     },
     testService: {
       run: vi.fn(async () => ({ id: "test-run-1", status: "running" })),
@@ -727,6 +733,85 @@ function createRuntime() {
       listArtifacts: vi.fn(() => []),
       ingest: vi.fn(() => ({ artifacts: [] })),
     } as any,
+    macosVmService: {
+      getStatus: vi.fn(async ({ laneId }: { laneId?: string | null } = {}) => ({
+        supported: true,
+        activeProvider: { kind: "lume", available: true },
+        laneVm: laneId ? { laneId, name: "ade-lane-1", state: "running" } : null,
+        vms: [],
+      })),
+      start: vi.fn(async ({ laneId }: { laneId: string }) => ({ laneId, name: "ade-lane-1", state: "running" })),
+      getAgentGuide: vi.fn(async ({ laneId }: { laneId: string }) => ({
+        laneId,
+        vmName: "ade-lane-1",
+        text: "Use macOS VM",
+        target: { kind: "macos_vm_target", id: "target-1", laneId, vmName: "ade-lane-1" },
+      })),
+      focusWindow: vi.fn(async ({ laneId }: { laneId: string }) => ({
+        laneId,
+        vmName: "ade-lane-1",
+        windowTitleQuery: "ade-lane-1",
+        processName: "Lume",
+        windowTitle: "ade-lane-1",
+        frame: { x: 10, y: 20, width: 800, height: 600 },
+        focusedAt: new Date().toISOString(),
+      })),
+      captureScreenshot: vi.fn(async ({ laneId }: { laneId: string }) => {
+        const screenshotPath = path.join(projectRoot, ".ade", "artifacts", "macos-vms", laneId, "shot.png");
+        fs.mkdirSync(path.dirname(screenshotPath), { recursive: true });
+        fs.writeFileSync(screenshotPath, "png");
+        return {
+          ok: true,
+          laneId,
+          vmName: "ade-lane-1",
+          path: screenshotPath,
+          capturedAt: new Date().toISOString(),
+          captureMode: "window-region",
+          window: {
+            laneId,
+            vmName: "ade-lane-1",
+            windowTitleQuery: "ade-lane-1",
+            processName: "Lume",
+            windowTitle: "ade-lane-1",
+            frame: { x: 10, y: 20, width: 800, height: 600 },
+            focusedAt: new Date().toISOString(),
+          },
+        };
+      }),
+      click: vi.fn(async ({ laneId, x, y }: { laneId: string; x: number; y: number }) => ({
+        ok: true,
+        laneId,
+        x,
+        y,
+      })),
+      selectPoint: vi.fn(async ({ laneId, x, y }: { laneId: string; x: number; y: number }) => {
+        const screenshotPath = path.join(projectRoot, ".ade", "artifacts", "macos-vms", laneId, "selection.png");
+        fs.mkdirSync(path.dirname(screenshotPath), { recursive: true });
+        fs.writeFileSync(screenshotPath, "png");
+        const screenshot = {
+          ok: true,
+          laneId,
+          vmName: "ade-lane-1",
+          path: screenshotPath,
+          capturedAt: new Date().toISOString(),
+          captureMode: "window-region",
+          window: { laneId, vmName: "ade-lane-1" },
+        };
+        return {
+          item: {
+            kind: "macos_vm_target",
+            id: "target-point-1",
+            laneId,
+            laneName: "Lane 1",
+            vmName: "ade-lane-1",
+            metadata: { selectedPoint: { x, y } },
+          },
+          source: "coordinate-fallback",
+          screenshot,
+        };
+      }),
+      typeText: vi.fn(async ({ laneId, text }: { laneId: string; text: string }) => ({ ok: true, laneId, textLength: text.length })),
+    } as any,
     orchestratorService: {
       listRuns: vi.fn(() => []),
       pauseRun: vi.fn(({ runId }: any) => ({ id: runId, status: "paused" })),
@@ -858,6 +943,7 @@ function createRuntime() {
       })),
       finalizeRun: vi.fn(() => ({ finalized: true, blockers: [], finalStatus: "succeeded" })),
       cancelRunGracefully: vi.fn(async ({ runId }: any) => ({ cancelled: true, runId })),
+      resumeRun: vi.fn(async ({ runId }: any) => ({ id: runId, status: "running" })),
       steerMission: vi.fn(({ missionId }: any) => ({ acknowledged: true, appliedAt: new Date().toISOString() })),
       getWorkerStates: vi.fn(({ runId }: any) => [
         { attemptId: "a-1", stepId: "s-1", runId, state: "running" }
@@ -1042,6 +1128,8 @@ describe("adeRpcServer", () => {
       expect(names).not.toContain("interact_gui");
       expect(names).not.toContain("screenshot_environment");
       expect(names).not.toContain("record_environment");
+      expect(names).not.toContain("macos_vm_screenshot");
+      expect(names).not.toContain("macos_vm_click");
 
       const denied = await callTool(handler, "screenshot_environment", {});
       expect(denied.isError).toBe(true);
@@ -1085,6 +1173,7 @@ describe("adeRpcServer", () => {
         "screenshot_environment",
         "record_environment",
         "run_tests",
+        "start_cli_session",
         "get_lane_status",
         "list_lanes",
         "commit_changes",
@@ -1161,6 +1250,7 @@ describe("adeRpcServer", () => {
         "report_validation",
         "delegate_to_subagent",
         "delegate_parallel",
+        "message_worker",
         "get_worker_output",
         "list_workers",
         "read_mission_status",
@@ -1176,10 +1266,152 @@ describe("adeRpcServer", () => {
         "revise_plan",
         "request_specialist",
         "set_current_phase",
-        "message_worker",
         "update_tool_profiles",
       ])
     );
+  });
+
+  it("exposes lane-tied macOS VM computer-use tools to agent callers", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, {
+      callerId: "worker-1",
+      role: "agent",
+      missionId: "mission-1",
+      runId: "run-1",
+      stepId: "step-1",
+      attemptId: "attempt-1",
+    });
+
+    const result = (await handler({ jsonrpc: "2.0", id: 3, method: "ade/actions/list" })) as any;
+    const names = (result.actions ?? []).map((tool: any) => tool.name);
+
+    expect(names).toEqual(
+      expect.arrayContaining([
+        "macos_vm_status",
+        "macos_vm_start",
+        "macos_vm_guide",
+        "macos_vm_focus",
+        "macos_vm_screenshot",
+        "macos_vm_select",
+        "macos_vm_click",
+        "macos_vm_type",
+      ]),
+    );
+  });
+
+  it("routes macOS VM computer-use tools and ingests screenshots as proof artifacts", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-1", role: "agent", chatSessionId: "chat-session-1" });
+
+    const screenshot = await callTool(handler, "macos_vm_screenshot", {
+      laneId: "lane-1",
+      name: "VM proof",
+    });
+    expect(screenshot?.isError).toBeUndefined();
+    expect(fixture.runtime.macosVmService.captureScreenshot).toHaveBeenCalledWith({
+      laneId: "lane-1",
+      windowTitleQuery: null,
+    });
+    expect(fixture.runtime.computerUseArtifactBrokerService.ingest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        backend: { name: "macos-vm", toolName: "macos_vm_screenshot" },
+        owners: expect.arrayContaining([
+          expect.objectContaining({ kind: "lane", id: "lane-1" }),
+          expect.objectContaining({ kind: "chat_session", id: "chat-session-1" }),
+        ]),
+      }),
+    );
+
+    const selected = await callTool(handler, "macos_vm_select", {
+      laneId: "lane-1",
+      x: 120,
+      y: 420,
+    });
+    expect(selected?.isError).toBeUndefined();
+    expect(fixture.runtime.macosVmService.selectPoint).toHaveBeenCalledWith({
+      laneId: "lane-1",
+      x: 120,
+      y: 420,
+      coordinateSpace: undefined,
+      windowTitleQuery: null,
+    });
+    expect(fixture.runtime.computerUseArtifactBrokerService.ingest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        backend: { name: "macos-vm", toolName: "macos_vm_select" },
+      }),
+    );
+
+    const clicked = await callTool(handler, "macos_vm_click", { laneId: "lane-1", x: 12, y: 34 });
+    expect(clicked?.isError).toBeUndefined();
+    expect(fixture.runtime.macosVmService.click).toHaveBeenCalledWith({
+      laneId: "lane-1",
+      x: 12,
+      y: 34,
+      coordinateSpace: undefined,
+      windowTitleQuery: null,
+    });
+
+    const typed = await callTool(handler, "macos_vm_type", { laneId: "lane-1", text: "hello" });
+    expect(typed?.isError).toBeUndefined();
+    expect(fixture.runtime.macosVmService.typeText).toHaveBeenCalledWith({
+      laneId: "lane-1",
+      text: "hello",
+      windowTitleQuery: null,
+    });
+  });
+
+  it("routes standard computer-use tools to a lane-tied macOS VM target", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-1", role: "agent", chatSessionId: "chat-session-1" });
+
+    const screenshot = await callTool(handler, "screenshot_environment", {
+      target: "macos_vm",
+      laneId: "lane-1",
+      name: "standard VM proof",
+    });
+    expect(screenshot?.isError).toBeUndefined();
+    expect(fixture.runtime.macosVmService.captureScreenshot).toHaveBeenCalledWith({
+      laneId: "lane-1",
+      windowTitleQuery: null,
+    });
+    expect(fixture.runtime.computerUseArtifactBrokerService.ingest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        backend: { name: "macos-vm", toolName: "screenshot_environment" },
+      }),
+    );
+
+    const clicked = await callTool(handler, "interact_gui", {
+      target: "macos_vm",
+      laneId: "lane-1",
+      action: "click",
+      x: 30,
+      y: 40,
+    });
+    expect(clicked?.isError).toBeUndefined();
+    expect(fixture.runtime.macosVmService.click).toHaveBeenCalledWith({
+      laneId: "lane-1",
+      x: 30,
+      y: 40,
+      coordinateSpace: undefined,
+      windowTitleQuery: null,
+    });
+
+    const typed = await callTool(handler, "interact_gui", {
+      target: "macos_vm",
+      laneId: "lane-1",
+      action: "type",
+      text: "hello",
+    });
+    expect(typed?.isError).toBeUndefined();
+    expect(fixture.runtime.macosVmService.typeText).toHaveBeenCalledWith({
+      laneId: "lane-1",
+      text: "hello",
+      windowTitleQuery: null,
+    });
   });
 
   it("hides ADE spawn and mission-worker tools from standalone chat callers", async () => {
@@ -1918,6 +2150,231 @@ describe("adeRpcServer", () => {
     expect(response.structuredContent.contextRef?.path).toBeNull();
   });
 
+  it("routes start_cli_session through shared provider launch helpers", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.sessionService.get.mockReturnValue({
+      id: "session-1",
+      laneId: "lane-1",
+      ptyId: "pty-1",
+      tracked: true,
+      toolType: "codex",
+      title: "Codex",
+      status: "running",
+      resumeCommand: null,
+      resumeMetadata: null,
+    });
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "orchestrator" });
+    const response = await callTool(handler, "start_cli_session", {
+      laneId: "lane-1",
+      provider: "codex",
+      permissionMode: "edit",
+      initialInput: "fix failing tests",
+      cols: 90,
+      rows: 24,
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fixture.runtime.ptyService.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        laneId: "lane-1",
+        title: "Codex",
+        toolType: "codex",
+        cols: 90,
+        rows: 24,
+        command: "codex",
+        startupCommand: expect.stringContaining("codex --no-alt-screen"),
+      }),
+    );
+    expect(fixture.runtime.ptyService.writeBySessionId).toHaveBeenCalledWith("session-1", "fix failing tests\r");
+    expect(response.structuredContent).toMatchObject({
+      provider: "codex",
+      laneId: "lane-1",
+      ptyId: "pty-1",
+      sessionId: "session-1",
+      initialInputWritten: true,
+    });
+  });
+
+  it("preserves the initial input write error if cleanup fails", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.ptyService.writeBySessionId.mockReturnValueOnce(false);
+    fixture.runtime.ptyService.dispose.mockImplementationOnce(() => {
+      throw new Error("already disposed");
+    });
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "orchestrator" });
+    const response = await callTool(handler, "start_cli_session", {
+      laneId: "lane-1",
+      provider: "codex",
+      initialInput: "fix failing tests",
+    });
+
+    expect(response.isError).toBe(true);
+    expect(fixture.runtime.ptyService.dispose).toHaveBeenCalledWith({ ptyId: "pty-1", sessionId: "session-1" });
+    expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain(
+      "Created terminal session could not receive the initial input.",
+    );
+  });
+
+  it("preassigns Claude session ids for start_cli_session launches", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "orchestrator" });
+    const response = await callTool(handler, "start_cli_session", {
+      laneId: "lane-1",
+      provider: "claude",
+      permissionMode: "default",
+    });
+
+    expect(response?.isError).toBeUndefined();
+    const createCall = fixture.runtime.ptyService.create.mock.calls.at(-1)?.[0];
+    expect(createCall.sessionId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    expect(createCall.allowNewSessionId).toBe(true);
+    expect(createCall.startupCommand).toContain("--session-id");
+    expect(createCall.startupCommand).toContain(createCall.sessionId);
+    expect(createCall.toolType).toBe("claude");
+  });
+
+  it("resumes start_cli_session from stored terminal metadata", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.sessionService.get.mockReturnValue({
+      id: "session-existing",
+      laneId: "lane-1",
+      ptyId: "pty-existing",
+      tracked: true,
+      toolType: "codex",
+      title: "Codex",
+      status: "exited",
+      resumeCommand: "codex resume picker",
+      resumeMetadata: {
+        provider: "codex",
+        targetKind: "thread",
+        targetId: "thread-77",
+        launch: { permissionMode: "edit" },
+      },
+    });
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "orchestrator" });
+    const response = await callTool(handler, "start_cli_session", {
+      laneId: "lane-1",
+      provider: "codex",
+      resumeSessionId: "session-existing",
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fixture.runtime.ptyService.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "session-existing",
+        startupCommand: "codex --no-alt-screen --sandbox workspace-write --ask-for-approval untrusted resume thread-77",
+      }),
+    );
+  });
+
+  it("sanitizes start_cli_session resume target ids before building commands", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "orchestrator" });
+    const response = await callTool(handler, "start_cli_session", {
+      laneId: "lane-1",
+      provider: "codex",
+      resumeTargetId: "thread-1\n--danger",
+    });
+
+    expect(response?.isError).toBeUndefined();
+    const createCall = fixture.runtime.ptyService.create.mock.calls.at(-1)?.[0];
+    expect(createCall.startupCommand).toContain("thread-1 --danger");
+    expect(createCall.startupCommand).not.toContain("\n");
+  });
+
+  it("rejects start_cli_session resume when the session id is missing", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.sessionService.get.mockReturnValue(null);
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "orchestrator" });
+    const response = await callTool(handler, "start_cli_session", {
+      laneId: "lane-1",
+      provider: "codex",
+      resumeSessionId: "missing-session",
+    });
+
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain("missing-session");
+    expect(fixture.runtime.ptyService.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects start_cli_session resume for a different provider", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.sessionService.get.mockReturnValue({
+      id: "session-existing",
+      laneId: "lane-1",
+      ptyId: "pty-existing",
+      tracked: true,
+      toolType: "claude",
+      title: "Claude",
+      status: "exited",
+      resumeCommand: "claude --resume old",
+      resumeMetadata: {
+        provider: "claude",
+        targetKind: "session",
+        targetId: "old",
+        launch: { permissionMode: "default" },
+      },
+    });
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "orchestrator" });
+    const response = await callTool(handler, "start_cli_session", {
+      laneId: "lane-1",
+      provider: "codex",
+      resumeSessionId: "session-existing",
+    });
+
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain("belongs to claude, not codex");
+    expect(fixture.runtime.ptyService.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid start_cli_session permission modes", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "orchestrator" });
+    const response = await callTool(handler, "start_cli_session", {
+      laneId: "lane-1",
+      provider: "codex",
+      permissionMode: "surprise-me",
+    });
+
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain(
+      "permissionMode must be one of default, plan, edit, full-auto, or config-toml",
+    );
+    expect(fixture.runtime.ptyService.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects unsupported start_cli_session permission/provider combinations", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "orchestrator" });
+    const response = await callTool(handler, "start_cli_session", {
+      laneId: "lane-1",
+      provider: "claude",
+      permissionMode: "config-toml",
+    });
+
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain("config-toml is only supported for Codex");
+    expect(fixture.runtime.ptyService.create).not.toHaveBeenCalled();
+  });
+
   it("starts spawn_agent without writing an attached ADE server config", async () => {
     const fixture = createRuntime();
     fixture.runtime.workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-spawn-workspace-"));
@@ -2473,6 +2930,127 @@ describe("adeRpcServer", () => {
             content: expect.stringContaining("[sub-agent:Child Worker]"),
             metadata: expect.objectContaining({
               source: "subagent_status_rollup"
+            })
+          })
+        ])
+      );
+    });
+  });
+
+  it("queues message_worker handoffs for get_pending_messages when live delivery is unavailable", async () => {
+    await withEnv({ ADE_RUN_ID: "run-1" }, async () => {
+      const fixture = createRuntime();
+      fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
+      run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
+      steps: [
+        {
+          id: "step-a",
+          runId: "run-1",
+          missionStepId: null,
+          stepKey: "worker-a",
+          stepIndex: 0,
+          title: "Worker A",
+          laneId: "lane-1",
+          status: "running",
+          joinPolicy: "all_success",
+          quorumCount: null,
+          dependencyStepIds: [],
+          retryLimit: 1,
+          retryCount: 0,
+          lastAttemptId: "attempt-a",
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          startedAt: new Date().toISOString(),
+          completedAt: null,
+          metadata: {}
+        },
+        {
+          id: "step-b",
+          runId: "run-1",
+          missionStepId: null,
+          stepKey: "worker-b",
+          stepIndex: 1,
+          title: "Worker B",
+          laneId: "lane-1",
+          status: "running",
+          joinPolicy: "all_success",
+          quorumCount: null,
+          dependencyStepIds: [],
+          retryLimit: 1,
+          retryCount: 0,
+          lastAttemptId: "attempt-b",
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          startedAt: new Date().toISOString(),
+          completedAt: null,
+          metadata: {}
+        }
+      ],
+      attempts: [
+        { id: "attempt-a", stepId: "step-a", status: "running", createdAt: new Date().toISOString(), executorSessionId: "session-a" },
+        { id: "attempt-b", stepId: "step-b", status: "running", createdAt: new Date().toISOString(), executorSessionId: "session-b" }
+      ],
+      claims: [],
+      contextSnapshots: [],
+      handoffs: [],
+      timeline: [],
+      runtimeEvents: [],
+      completionEvaluation: null
+    }));
+
+      const senderHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await initialize(senderHandler, {
+        callerId: "attempt-a",
+        role: "agent",
+        missionId: "mission-1",
+        runId: "run-1",
+        stepId: "step-a",
+        attemptId: "attempt-a"
+      });
+      const sent = await callTool(senderHandler, "message_worker", {
+        toWorkerId: "worker-b",
+        content: "contract is ready",
+      });
+
+      expect(sent?.isError).toBeUndefined();
+      expect(sent.structuredContent.ok).toBe(true);
+      expect(sent.structuredContent.delivered).toBe(false);
+      expect(sent.structuredContent.reason).toBe("queued_for_polling");
+      expect(fixture.runtime.aiOrchestratorService.sendAgentMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          missionId: "mission-1",
+          fromAttemptId: "attempt-a",
+          toAttemptId: "attempt-b",
+          content: "contract is ready",
+          metadata: expect.objectContaining({
+            source: "message_worker",
+            fromWorkerId: "worker-a",
+            toWorkerId: "worker-b",
+            queuedForPolling: true
+          })
+        })
+      );
+
+      const recipientHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await initialize(recipientHandler, {
+        callerId: "attempt-b",
+        role: "agent",
+        missionId: "mission-1",
+        runId: "run-1",
+        stepId: "step-b",
+        attemptId: "attempt-b"
+      });
+      const pending = await callTool(recipientHandler, "get_pending_messages", {});
+
+      expect(pending?.isError).toBeUndefined();
+      expect(pending.structuredContent.messages).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            role: "agent",
+            content: "contract is ready",
+            metadata: expect.objectContaining({
+              source: "message_worker",
+              interAgentDelivery: true
             })
           })
         ])
@@ -3401,6 +3979,28 @@ describe("adeRpcServer", () => {
     expect(layoutGet.structuredContent.result).toEqual({ left: 100, right: 0 });
   });
 
+  it("binds service method context when invoking dynamic ADE actions", async () => {
+    const fixture = createRuntime();
+    const missionService = fixture.runtime.missionService as any;
+    missionService.create = vi.fn(function (this: { get: (missionId: string) => unknown }, args: { prompt: string }) {
+      expect(args.prompt).toBe("smoke mission");
+      return this.get("mission-new");
+    });
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-1", role: "agent" });
+
+    const response = await callTool(handler, "run_ade_action", {
+      domain: "mission",
+      action: "create",
+      args: { prompt: "smoke mission" },
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(missionService.create).toHaveBeenCalledWith({ prompt: "smoke mission" });
+    expect(response.structuredContent.result).toMatchObject({ id: "mission-new", status: "running" });
+    expect(response.structuredContent.statusHints.missionId).toBe("mission-new");
+  });
+
   it("does not expose unlisted service methods through dynamic ADE actions", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
@@ -4021,7 +4621,7 @@ describe("adeRpcServer", () => {
     );
   });
 
-  it("routes resume_mission to orchestratorService.resumeRun", async () => {
+  it("routes resume_mission through aiOrchestratorService.resumeRun so coordinator runtime restarts", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
@@ -4031,7 +4631,7 @@ describe("adeRpcServer", () => {
     expect(response?.isError).toBeUndefined();
     expect(response.structuredContent.run.id).toBe("run-1");
     expect(response.structuredContent.run.status).toBe("running");
-    expect(fixture.runtime.orchestratorService.resumeRun).toHaveBeenCalledWith({ runId: "run-1" });
+    expect(fixture.runtime.aiOrchestratorService.resumeRun).toHaveBeenCalledWith({ runId: "run-1" });
   });
 
   it("routes cancel_mission to aiOrchestratorService.cancelRunGracefully", async () => {
@@ -4187,6 +4787,23 @@ describe("adeRpcServer", () => {
   it("routes get_worker_states to aiOrchestratorService.getWorkerStates", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    fixture.runtime.orchestratorService.getRunGraph.mockReturnValueOnce({
+      run: { id: "run-1", missionId: "mission-1", status: "running" },
+      steps: [
+        { id: "step-1", stepKey: "step-a", laneId: "lane-1", title: "Worker", status: "completed", retryCount: 0, metadata: {} },
+        { id: "task-1", stepKey: "task-a", laneId: null, title: "Display task", status: "pending", retryCount: 0, metadata: { isTask: true } },
+        { id: "system-1", stepKey: "system-a", laneId: null, title: "System", status: "pending", retryCount: 0, metadata: { systemManaged: true } },
+        { id: "tracker-1", stepKey: "tracker-a", laneId: null, title: "Tracker", status: "pending", retryCount: 0, metadata: { plannerLaunchTracker: true } },
+        { id: "planner-1", stepKey: "__planner__", laneId: null, title: "Planner", status: "succeeded", retryCount: 0, metadata: {} },
+      ],
+      attempts: [{ id: "attempt-1", stepId: "step-1", status: "completed" }],
+      claims: [],
+      contextSnapshots: [],
+      handoffs: [],
+      timeline: [],
+      runtimeEvents: [],
+      completionEvaluation: null,
+    });
 
     await initialize(handler, { role: "external" });
     const response = await callTool(handler, "get_worker_states", { runId: "run-1" });
@@ -4195,7 +4812,15 @@ describe("adeRpcServer", () => {
     expect(response.structuredContent.runId).toBe("run-1");
     expect(response.structuredContent.workers).toHaveLength(1);
     expect(response.structuredContent.workers[0].state).toBe("running");
+    expect(response.structuredContent.runWorkers).toHaveLength(1);
+    expect(response.structuredContent.runWorkers[0]).toMatchObject({
+      workerId: "step-a",
+      status: "completed",
+    });
     expect(fixture.runtime.aiOrchestratorService.getWorkerStates).toHaveBeenCalledWith({ runId: "run-1" });
+    expect(fixture.runtime.orchestratorService.getRunGraph).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: "run-1", timelineLimit: 0 })
+    );
   });
 
   it("routes get_timeline to orchestratorService.listTimeline", async () => {

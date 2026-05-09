@@ -18,6 +18,7 @@ export * from "./computerUseArtifacts";
 export * from "./iosSimulator";
 export * from "./appControl";
 export * from "./builtInBrowser";
+export * from "./macosVm";
 export * from "./missions";
 export * from "./orchestrator";
 export * from "./config";

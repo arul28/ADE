@@ -228,10 +228,10 @@ enum SyncRequestTimeout {
   }
 }
 
-private let syncTerminalSubscriptionMaxBytes = 80_000
+private let syncTerminalSubscriptionMaxBytes = 240_000
 private let syncChatSubscriptionMaxBytes = 2_000_000
 private let syncReducedLoadChatSubscriptionMaxBytes = 160_000
-private let syncTerminalBufferMaxCharacters = 80_000
+private let syncTerminalBufferMaxCharacters = 240_000
 private let chatEventHistoryMaxEvents = 1_000
 
 enum SyncBonjourTiming {
@@ -744,6 +744,7 @@ final class SyncService: ObservableObject {
   @Published private(set) var prefersReducedSyncLoad = false
   @Published private(set) var terminalBufferRevision = 0
   @Published private(set) var chatEventNotificationRevision = 0
+  @Published private(set) var subscribedTerminalSessionIds: Set<String> = []
   @Published private(set) var subscribedChatSessionIds: Set<String> = []
   @Published private(set) var pendingOperationCount = 0
   @Published private(set) var localStateRevision = 0
@@ -2342,6 +2343,7 @@ final class SyncService: ObservableObject {
       saveProfile(nil)
       saveRemoteCommandDescriptors([])
       resetChatEventState(clearHistory: true)
+      resetTerminalSubscriptionState(clearHistory: false)
       activeHostProfile = nil
       hostName = nil
     }
@@ -2926,16 +2928,35 @@ final class SyncService: ObservableObject {
   }
 
   func subscribeTerminal(sessionId: String) async throws {
+    let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedSessionId.isEmpty else { return }
+    if subscribedTerminalSessionIds.contains(trimmedSessionId), terminalBuffers[trimmedSessionId] != nil {
+      return
+    }
+    subscribedTerminalSessionIds.insert(trimmedSessionId)
     let requestId = makeRequestId()
     let raw = try await awaitResponse(requestId: requestId) {
       self.sendEnvelope(type: "terminal_subscribe", requestId: requestId, payload: [
-        "sessionId": sessionId,
+        "sessionId": trimmedSessionId,
         "maxBytes": syncTerminalSubscriptionMaxBytes,
       ])
     }
     let snapshot = try decode(raw, as: TerminalSnapshot.self)
-    terminalBuffers[sessionId] = trimmedTerminalBuffer(snapshot.transcript)
+    guard subscribedTerminalSessionIds.contains(trimmedSessionId) else { return }
+    terminalBuffers[trimmedSessionId] = trimmedTerminalBuffer(snapshot.transcript)
     markTerminalBufferChanged(immediate: true)
+  }
+
+  func unsubscribeTerminal(sessionId: String) async throws {
+    let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedSessionId.isEmpty else { return }
+    guard subscribedTerminalSessionIds.contains(trimmedSessionId) else { return }
+    subscribedTerminalSessionIds.remove(trimmedSessionId)
+    if canSendLiveRequests() {
+      sendEnvelope(type: "terminal_unsubscribe", requestId: nil, payload: [
+        "sessionId": trimmedSessionId,
+      ])
+    }
   }
 
   /// Forward keystrokes (or pasted text, or control sequences) from the
@@ -3022,6 +3043,41 @@ final class SyncService: ObservableObject {
       args["toolType"] = toolType
     }
     _ = try await sendCommand(action: "work.runQuickCommand", args: args)
+  }
+
+  func startCliSession(
+    laneId: String,
+    provider: String,
+    permissionMode: String? = nil,
+    title: String? = nil,
+    initialInput: String? = nil,
+    cols: Int? = nil,
+    rows: Int? = nil,
+    resumeSessionId: String? = nil
+  ) async throws -> StartCliSessionResult {
+    var args: [String: Any] = [
+      "laneId": laneId,
+      "provider": provider,
+    ]
+    if let permissionMode, !permissionMode.isEmpty {
+      args["permissionMode"] = permissionMode
+    }
+    if let title, !title.isEmpty {
+      args["title"] = title
+    }
+    if let initialInput, !initialInput.isEmpty {
+      args["initialInput"] = initialInput
+    }
+    if let cols, cols > 0 {
+      args["cols"] = cols
+    }
+    if let rows, rows > 0 {
+      args["rows"] = rows
+    }
+    if let resumeSessionId, !resumeSessionId.isEmpty {
+      args["resumeSessionId"] = resumeSessionId
+    }
+    return try await sendDecodableCommand(action: "work.startCliSession", args: args, as: StartCliSessionResult.self)
   }
 
   func closeWorkSession(sessionId: String) async throws {
@@ -5337,6 +5393,12 @@ final class SyncService: ObservableObject {
     advanceOutboundCursorForActiveProject(to: dbVersion)
   }
 
+  func seedTerminalBufferForTesting(sessionId: String, transcript: String) {
+    subscribedTerminalSessionIds.insert(sessionId)
+    terminalBuffers[sessionId] = transcript
+    terminalBufferRevision += 1
+  }
+
   func pendingOperationsForTesting() -> [(id: String, kind: String, action: String, projectId: String?, projectRootPath: String?)] {
     loadPendingOperations().map { operation in
       (
@@ -5509,6 +5571,7 @@ final class SyncService: ObservableObject {
     )
     startRelayLoop()
     startInitialHydrationTask(for: connectionGeneration)
+    restoreTerminalSubscriptions()
     restoreChatEventSubscriptions()
   }
 
@@ -5725,11 +5788,13 @@ final class SyncService: ObservableObject {
       }
     case "terminal_data":
       if let dict = payload as? [String: Any], let sessionId = dict["sessionId"] as? String, let chunk = dict["data"] as? String {
+        guard subscribedTerminalSessionIds.contains(sessionId) else { break }
         terminalBuffers[sessionId] = trimmedTerminalBuffer((terminalBuffers[sessionId] ?? "") + chunk)
         markTerminalBufferChanged()
       }
     case "terminal_exit":
       if let dict = payload as? [String: Any], let sessionId = dict["sessionId"] as? String {
+        guard subscribedTerminalSessionIds.contains(sessionId) else { break }
         let exitCode = dict["exitCode"] as? Int
         terminalBuffers[sessionId] = trimmedTerminalBuffer((terminalBuffers[sessionId] ?? "") + "\n\n[process exited\(exitCode.map { " with \($0)" } ?? "")]")
         markTerminalBufferChanged(immediate: true)
@@ -6336,9 +6401,12 @@ final class SyncService: ObservableObject {
   }
 
   private func chatSubscriptionPayload(sessionId: String) -> [String: Any] {
-    [
+    let maxBytes = canSendLiveRequests() && prefersReducedSyncLoad
+      ? syncReducedLoadChatSubscriptionMaxBytes
+      : syncChatSubscriptionMaxBytes
+    return [
       "sessionId": sessionId,
-      "maxBytes": prefersReducedSyncLoad ? syncReducedLoadChatSubscriptionMaxBytes : syncChatSubscriptionMaxBytes,
+      "maxBytes": maxBytes,
     ]
   }
 
@@ -6346,6 +6414,19 @@ final class SyncService: ObservableObject {
     guard canSendLiveRequests(), supportsChatStreaming else { return }
     for sessionId in subscribedChatSessionIds.sorted() {
       sendEnvelope(type: "chat_subscribe", requestId: nil, payload: chatSubscriptionPayload(sessionId: sessionId))
+    }
+  }
+
+  private func restoreTerminalSubscriptions() {
+    guard canSendLiveRequests() else { return }
+    let sessionIds = subscribedTerminalSessionIds.sorted()
+    guard !sessionIds.isEmpty else { return }
+    Task { @MainActor [weak self] in
+      guard let self else { return }
+      for sessionId in sessionIds {
+        self.subscribedTerminalSessionIds.remove(sessionId)
+        try? await self.subscribeTerminal(sessionId: sessionId)
+      }
     }
   }
 
@@ -6474,6 +6555,14 @@ final class SyncService: ObservableObject {
     }
     markChatEventsChanged(immediate: true)
     localStateRevision += 1
+  }
+
+  private func resetTerminalSubscriptionState(clearHistory: Bool) {
+    if clearHistory {
+      subscribedTerminalSessionIds.removeAll()
+      terminalBuffers.removeAll()
+    }
+    terminalBufferRevision += 1
   }
 
   private func performInitialHydration(for connectionGeneration: UInt64) async {

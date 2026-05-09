@@ -7,6 +7,7 @@ import {
   createCoordinatorToolSet,
   type CoordinatorExecutableTool,
 } from "../../desktop/src/main/services/orchestrator/coordinatorTools";
+import { isDisplayOnlyTaskStep } from "../../desktop/src/main/services/orchestrator/orchestratorContext";
 import {
   createComputerUseArtifactPath,
   getLocalComputerUseCapabilities,
@@ -41,6 +42,19 @@ import {
 } from "../../desktop/src/shared/types";
 import type { PrActionRun, PrCheck, PrComment, PrReviewThread } from "../../desktop/src/shared/types/prs";
 import { resolveAdeLayout } from "../../desktop/src/shared/adeLayout";
+import {
+  buildTrackedCliLaunchCommand,
+  buildTrackedCliResumeCommand,
+  isLaunchProfile,
+  isTrackedCliPermissionMode,
+  LAUNCH_PROFILE_TITLE,
+  LAUNCH_PROFILE_TOOL_TYPE,
+  launchProfileForTerminalSession,
+  validateLaunchProfilePermissionMode,
+  type CliProvider,
+  type LaunchProfile,
+} from "../../desktop/src/shared/cliLaunch";
+import type { AgentChatPermissionMode, TerminalSessionSummary } from "../../desktop/src/shared/types";
 import type { AdeRuntime } from "./bootstrap";
 import { JsonRpcError, JsonRpcErrorCode, type JsonRpcHandler, type JsonRpcRequest } from "./jsonrpc";
 
@@ -214,6 +228,29 @@ const TOOL_SPECS: ToolSpec[] = [
         args: { type: "object" },
         argsList: { type: "array" },
         arg: {},
+      }
+    }
+  },
+  {
+    name: "start_cli_session",
+    description: "Start or resume a tracked ADE Work CLI terminal for an allowlisted provider, using the same launch helpers as desktop and mobile.",
+    inputSchema: {
+      type: "object",
+      required: ["laneId", "provider"],
+      additionalProperties: false,
+      properties: {
+        laneId: { type: "string", minLength: 1 },
+        provider: { type: "string", enum: ["claude", "codex", "cursor", "droid", "opencode", "shell"] },
+        permissionMode: { type: "string", enum: ["default", "plan", "edit", "full-auto", "config-toml"], default: "default" },
+        title: { type: "string" },
+        initialInput: { type: "string" },
+        cols: { type: "number", minimum: 20, maximum: 240, default: 120 },
+        rows: { type: "number", minimum: 4, maximum: 120, default: 36 },
+        cwd: { type: "string" },
+        chatSessionId: { type: "string" },
+        resumeSessionId: { type: "string" },
+        resumeTargetId: { type: "string" },
+        tracked: { type: "boolean", default: true }
       }
     }
   },
@@ -416,13 +453,17 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "interact_gui",
-    description: "Fallback-only: perform a local GUI interaction such as click, type, or keypress on macOS.",
+    description: "Perform a GUI interaction such as click, type, or keypress. Defaults to the local macOS desktop; set target=macos_vm to drive a lane-tied VM window.",
     inputSchema: {
       type: "object",
       required: ["action"],
       additionalProperties: false,
       properties: {
         action: { type: "string", enum: ["click", "type", "keypress"] },
+        target: { type: "string", enum: ["local", "macos_vm"], default: "local" },
+        laneId: { type: "string" },
+        coordinateSpace: { type: "string", enum: ["window", "screen"], default: "window" },
+        windowTitleQuery: { type: "string" },
         app: { type: "string" },
         x: { type: "number" },
         y: { type: "number" },
@@ -433,16 +474,137 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "screenshot_environment",
-    description: "Fallback-only: capture a local screenshot/image and store it as visual ADE proof.",
+    description: "Capture a screenshot/image and store it as visual ADE proof. Defaults to the local desktop; set target=macos_vm to capture a lane-tied VM window.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
+        target: { type: "string", enum: ["local", "macos_vm"], default: "local" },
+        laneId: { type: "string" },
+        windowTitleQuery: { type: "string" },
         name: { type: "string" },
         displayId: { type: "number" },
         ownerKind: { type: "string" },
         ownerId: { type: "string" },
         format: { type: "string", enum: ["png", "jpg"], default: "png" }
+      }
+    }
+  },
+  {
+    name: "macos_vm_status",
+    description: "Inspect lane-tied macOS VM provider readiness and VM state. Defaults to the caller's lane when available.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        laneId: { type: "string" }
+      }
+    }
+  },
+  {
+    name: "macos_vm_start",
+    description: "Start the macOS VM tied to a lane, optionally provisioning it first, with the lane worktree mounted into the guest.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        laneId: { type: "string" },
+        createIfMissing: { type: "boolean", default: true },
+        openDisplay: { type: "boolean", default: true },
+        mode: { type: "string", enum: ["pull-image", "create"] },
+        sourceImage: { type: "string" },
+        ipsw: { type: "string" },
+        cpuCores: { type: "number", minimum: 1, maximum: 32 },
+        memory: { type: "string" },
+        diskSize: { type: "string" },
+        display: { type: "string" }
+      }
+    }
+  },
+  {
+    name: "macos_vm_guide",
+    description: "Return agent guidance for the lane-tied macOS VM, including guest path, run command, and GUI control model.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        laneId: { type: "string" }
+      }
+    }
+  },
+  {
+    name: "macos_vm_focus",
+    description: "Select the lane-tied macOS VM GUI target; uses headless VNC when available or raises the visible viewer.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        laneId: { type: "string" },
+        windowTitleQuery: { type: "string" }
+      }
+    }
+  },
+  {
+    name: "macos_vm_screenshot",
+    description: "Capture a lane-tied macOS VM through headless VNC or its visible viewer and register it as ADE computer-use visual proof.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        laneId: { type: "string" },
+        windowTitleQuery: { type: "string" },
+        name: { type: "string" },
+        ownerKind: { type: "string" },
+        ownerId: { type: "string" }
+      }
+    }
+  },
+  {
+    name: "macos_vm_select",
+    description: "Capture screenshot-backed point context for a lane-tied macOS VM without clicking. Coordinates are window-relative by default.",
+    inputSchema: {
+      type: "object",
+      required: ["x", "y"],
+      additionalProperties: false,
+      properties: {
+        laneId: { type: "string" },
+        x: { type: "number" },
+        y: { type: "number" },
+        coordinateSpace: { type: "string", enum: ["window", "screen"], default: "window" },
+        windowTitleQuery: { type: "string" },
+        name: { type: "string" },
+        ownerKind: { type: "string" },
+        ownerId: { type: "string" }
+      }
+    }
+  },
+  {
+    name: "macos_vm_click",
+    description: "Click inside the lane-tied macOS VM GUI target. Coordinates are VM/window-relative by default.",
+    inputSchema: {
+      type: "object",
+      required: ["x", "y"],
+      additionalProperties: false,
+      properties: {
+        laneId: { type: "string" },
+        x: { type: "number" },
+        y: { type: "number" },
+        coordinateSpace: { type: "string", enum: ["window", "screen"], default: "window" },
+        windowTitleQuery: { type: "string" }
+      }
+    }
+  },
+  {
+    name: "macos_vm_type",
+    description: "Type text into the lane-tied macOS VM GUI target.",
+    inputSchema: {
+      type: "object",
+      required: ["text"],
+      additionalProperties: false,
+      properties: {
+        laneId: { type: "string" },
+        text: { type: "string", minLength: 1 },
+        windowTitleQuery: { type: "string" }
       }
     }
   },
@@ -1275,7 +1437,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "get_worker_states",
-    description: "Get the current state of all workers in a run. When called by a worker, runId defaults to the worker's own run, so you can see your peers without passing parameters.",
+    description: "Get active worker runtime states plus persisted run worker rows. When called by a worker, runId defaults to the worker's own run, so you can see your peers without passing parameters.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1831,6 +1993,7 @@ const AGENT_VISIBLE_COORDINATOR_TOOL_NAMES = new Set([
   "report_status",
   "report_result",
   "report_validation",
+  "message_worker",
   "delegate_to_subagent",
   "delegate_parallel",
   "get_worker_output",
@@ -1860,6 +2023,17 @@ const LOCAL_COMPUTER_USE_TOOL_NAMES = new Set([
   "interact_gui",
   "screenshot_environment",
   "record_environment",
+]);
+
+const MACOS_VM_TOOL_NAMES = new Set([
+  "macos_vm_status",
+  "macos_vm_start",
+  "macos_vm_guide",
+  "macos_vm_focus",
+  "macos_vm_screenshot",
+  "macos_vm_select",
+  "macos_vm_click",
+  "macos_vm_type",
 ]);
 
 const ALL_TOOL_SPECS: ToolSpec[] = [
@@ -1905,6 +2079,8 @@ const READ_ONLY_TOOLS = new Set([
   "getFlowPolicy",
   "simulateFlowRoute",
   "get_environment_info",
+  "macos_vm_status",
+  "macos_vm_guide",
   "list_computer_use_artifacts",
   "get_computer_use_backend_status",
 ]);
@@ -1912,6 +2088,7 @@ const READ_ONLY_TOOLS = new Set([
 const MUTATION_TOOLS = new Set([
   "create_lane",
   "run_ade_action",
+  "start_cli_session",
   "import_lane",
   "merge_lane",
   "git_fetch",
@@ -1961,6 +2138,12 @@ const MUTATION_TOOLS = new Set([
   "launch_app",
   "interact_gui",
   "screenshot_environment",
+  "macos_vm_start",
+  "macos_vm_focus",
+  "macos_vm_screenshot",
+  "macos_vm_select",
+  "macos_vm_click",
+  "macos_vm_type",
   "record_environment",
   "ingest_computer_use_artifacts",
   "spawn_agent"
@@ -2014,6 +2197,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function safeObject(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : {};
+}
+
+function isRunWorkerStep(step: { stepKey?: unknown; metadata?: unknown }): boolean {
+  if (step.stepKey === "__planner__") return false;
+  const metadata = isRecord(step.metadata) ? step.metadata : {};
+  if (metadata.systemManaged === true || metadata.plannerLaunchTracker === true) return false;
+  return !isDisplayOnlyTaskStep(step);
 }
 
 /**
@@ -2090,6 +2280,55 @@ function assertNonEmptyString(value: unknown, field: string): string {
     throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `${field} is required`);
   }
   return text;
+}
+
+function parseCliSessionProvider(value: unknown): LaunchProfile {
+  const provider = asTrimmedString(value).toLowerCase();
+  if (!isLaunchProfile(provider)) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      "provider must be one of claude, codex, cursor, droid, opencode, or shell",
+    );
+  }
+  return provider;
+}
+
+function parseCliSessionPermissionMode(value: unknown): AgentChatPermissionMode {
+  const mode = asTrimmedString(value).toLowerCase();
+  if (!mode) return "default";
+  if (isTrackedCliPermissionMode(mode)) return mode;
+  throw new JsonRpcError(
+    JsonRpcErrorCode.invalidParams,
+    "permissionMode must be one of default, plan, edit, full-auto, or config-toml",
+  );
+}
+
+function clampInteger(value: unknown, fallback: number, min: number, max: number): number {
+  const raw = typeof value === "number" && Number.isFinite(value) ? value : fallback;
+  return Math.max(min, Math.min(max, Math.floor(raw)));
+}
+
+function isCliProvider(provider: LaunchProfile): provider is CliProvider {
+  return provider !== "shell";
+}
+
+function requireCliResumeSession(
+  runtime: AdeRuntime,
+  sessionId: string,
+  provider: LaunchProfile,
+): TerminalSessionSummary {
+  const session = runtime.sessionService.get(sessionId) as TerminalSessionSummary | null;
+  if (!session) {
+    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `resumeSessionId '${sessionId}' was not found.`);
+  }
+  const existingProvider = launchProfileForTerminalSession(session);
+  if (existingProvider && existingProvider !== provider) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      `resumeSessionId '${sessionId}' belongs to ${existingProvider}, not ${provider}.`,
+    );
+  }
+  return session;
 }
 
 export function resolveComputerUseOwners(session: SessionState, toolArgs: Record<string, unknown>): ComputerUseArtifactOwner[] {
@@ -2963,12 +3202,13 @@ async function listToolSpecsForSession(runtime: AdeRuntime, session: SessionStat
     ?.backends.some((backend) => backend.available) ?? false;
   const localComputerUseAllowed = isLocalComputerUseAllowed(callerCtx);
   const shouldHideLocalComputerUse = !localComputerUseAllowed || externalComputerUseAvailable;
-  const visibleBaseTools = shouldHideLocalComputerUse
-    ? TOOL_SPECS.filter((tool) => !LOCAL_COMPUTER_USE_TOOL_NAMES.has(tool.name))
-    : TOOL_SPECS;
-  const visibleCoordinatorTools = shouldHideLocalComputerUse
-    ? COORDINATOR_TOOL_SPECS.filter((tool) => !LOCAL_COMPUTER_USE_TOOL_NAMES.has(tool.name))
-    : COORDINATOR_TOOL_SPECS;
+  const macosVmAllowed = localComputerUseAllowed && Boolean(runtime.macosVmService);
+  const keepVisibleTool = (tool: ToolSpec): boolean => (
+    (!shouldHideLocalComputerUse || !LOCAL_COMPUTER_USE_TOOL_NAMES.has(tool.name))
+    && (macosVmAllowed || !MACOS_VM_TOOL_NAMES.has(tool.name))
+  );
+  const visibleBaseTools = TOOL_SPECS.filter(keepVisibleTool);
+  const visibleCoordinatorTools = COORDINATOR_TOOL_SPECS.filter(keepVisibleTool);
   const allVisibleTools = (() => {
     if (callerCtx.role === "external" || !callerCtx.role) {
       return visibleBaseTools;
@@ -3601,6 +3841,30 @@ function normalizeAgentDelegationToolArgs(args: {
 }): Record<string, unknown> {
   const normalized = { ...args.toolArgs };
   if (args.callerCtx.role !== "agent") return normalized;
+  if (args.name === "message_worker") {
+    if (!args.graph) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        "Agent caller cannot use 'message_worker' without an active run graph."
+      );
+    }
+    const ownedWorkerId = inferWorkerIdFromCaller(args.graph, args.callerCtx);
+    if (!ownedWorkerId) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        "Agent caller cannot use 'message_worker' without an active worker context."
+      );
+    }
+    const requestedFromWorkerId = asOptionalTrimmedString(normalized.fromWorkerId);
+    if (requestedFromWorkerId && requestedFromWorkerId !== ownedWorkerId) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        `Agent caller may only send messages from its own worker '${ownedWorkerId}'.`
+      );
+    }
+    normalized.fromWorkerId = ownedWorkerId;
+    return normalized;
+  }
   if (args.name !== "delegate_to_subagent" && args.name !== "delegate_parallel") return normalized;
   if (!args.graph) {
     throw new JsonRpcError(
@@ -3640,6 +3904,29 @@ function resolveParentAttemptIdFromGraph(graph: Record<string, unknown>, parentW
   const running = parentAttempts.find((attempt) => asOptionalTrimmedString(attempt.status) === "running");
   if (running) return asOptionalTrimmedString(running.id);
   const sorted = [...parentAttempts].sort((left, right) => {
+    const leftTs = Date.parse(asOptionalTrimmedString(left.completedAt) ?? asOptionalTrimmedString(left.createdAt) ?? "");
+    const rightTs = Date.parse(asOptionalTrimmedString(right.completedAt) ?? asOptionalTrimmedString(right.createdAt) ?? "");
+    return (Number.isFinite(rightTs) ? rightTs : 0) - (Number.isFinite(leftTs) ? leftTs : 0);
+  });
+  return asOptionalTrimmedString(sorted[0]?.id);
+}
+
+function resolveAttemptIdForWorkerRef(graph: Record<string, unknown>, workerRef: string | null | undefined): string | null {
+  const ref = asOptionalTrimmedString(workerRef);
+  if (!ref) return null;
+  const attempts = Array.isArray(graph.attempts) ? (graph.attempts as Array<Record<string, unknown>>) : [];
+  const step = resolveStepFromGraph(graph, ref, ref);
+  const stepId = asOptionalTrimmedString(step?.id);
+  if (!stepId) return null;
+  const stepAttempts = attempts.filter((attempt) => asOptionalTrimmedString(attempt.stepId) === stepId);
+  if (!stepAttempts.length) return null;
+  const running = stepAttempts.find((attempt) => asOptionalTrimmedString(attempt.status) === "running");
+  if (running) return asOptionalTrimmedString(running.id);
+  const lastAttemptId = asOptionalTrimmedString(step?.lastAttemptId);
+  if (lastAttemptId && stepAttempts.some((attempt) => asOptionalTrimmedString(attempt.id) === lastAttemptId)) {
+    return lastAttemptId;
+  }
+  const sorted = [...stepAttempts].sort((left, right) => {
     const leftTs = Date.parse(asOptionalTrimmedString(left.completedAt) ?? asOptionalTrimmedString(left.createdAt) ?? "");
     const rightTs = Date.parse(asOptionalTrimmedString(right.completedAt) ?? asOptionalTrimmedString(right.createdAt) ?? "");
     return (Number.isFinite(rightTs) ? rightTs : 0) - (Number.isFinite(leftTs) ? leftTs : 0);
@@ -3810,6 +4097,59 @@ async function maybeSendInterAgentMessage(args: {
   }));
 }
 
+async function maybeRecordMessageWorkerHandoffForPolling(args: {
+  runtime: AdeRuntime;
+  missionId: string;
+  graph: Record<string, unknown> | null;
+  callerCtx: CallerContext;
+  toolArgs: Record<string, unknown>;
+}): Promise<{
+  fromAttemptId: string;
+  toAttemptId: string;
+  fromWorkerId: string;
+  toWorkerId: string;
+} | null> {
+  if (!args.graph) return null;
+  const fromWorkerId = asOptionalTrimmedString(args.toolArgs.fromWorkerId)
+    ?? inferWorkerIdFromCaller(args.graph, args.callerCtx);
+  const toWorkerId = asOptionalTrimmedString(args.toolArgs.toWorkerId);
+  const rawContent = args.toolArgs.content;
+  const content = typeof rawContent === "string"
+    ? rawContent
+    : rawContent == null
+      ? ""
+      : String(rawContent);
+  if (!fromWorkerId || !toWorkerId || !content.trim().length) return null;
+
+  const fromAttemptId =
+    asOptionalTrimmedString(args.callerCtx.attemptId)
+    ?? resolveAttemptIdForWorkerRef(args.graph, fromWorkerId);
+  const toAttemptId = resolveAttemptIdForWorkerRef(args.graph, toWorkerId);
+  if (!fromAttemptId || !toAttemptId || fromAttemptId === toAttemptId) return null;
+
+  await maybeSendInterAgentMessage({
+    runtime: args.runtime,
+    missionId: args.missionId,
+    fromAttemptId,
+    toAttemptId,
+    content,
+    metadata: {
+      source: "message_worker",
+      fromWorkerId,
+      toWorkerId,
+      priority: asOptionalTrimmedString(args.toolArgs.priority) ?? "normal",
+      queuedForPolling: true,
+    },
+  });
+
+  return {
+    fromAttemptId,
+    toAttemptId,
+    fromWorkerId,
+    toWorkerId,
+  };
+}
+
 async function postProcessCoordinatorToolResult(args: {
   runtime: AdeRuntime;
   toolName: string;
@@ -3967,6 +4307,36 @@ async function runCoordinatorTool(args: {
   });
   const output = await toolEntry.execute(effectiveToolArgs);
   if (isRecord(output)) {
+    if (args.name === "message_worker") {
+      const liveDelivered = output.delivered === true;
+      if (liveDelivered) {
+        return {
+          ...output,
+          queuedForPolling: false,
+        };
+      }
+      const queued = await maybeRecordMessageWorkerHandoffForPolling({
+        runtime: args.runtime,
+        missionId,
+        graph,
+        callerCtx: args.callerCtx,
+        toolArgs: effectiveToolArgs,
+      });
+      if (queued) {
+        return {
+          ...output,
+          ok: true,
+          delivered: false,
+          method: "thread",
+          reason: "queued_for_polling",
+          queuedForPolling: true,
+          fromAttemptId: queued.fromAttemptId,
+          toAttemptId: queued.toAttemptId,
+          fromWorkerId: queued.fromWorkerId,
+          toWorkerId: queued.toWorkerId,
+        };
+      }
+    }
     if (output.ok === true && (args.name === "report_status" || args.name === "report_result")) {
       await postProcessCoordinatorToolResult({
         runtime: args.runtime,
@@ -4100,6 +4470,176 @@ async function runTool(args: {
     }
     await sleep(250);
   };
+  const requireMacosVmService = () => {
+    if (!isLocalComputerUseAllowed(callerCtx)) {
+      throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported tool: ${name}`);
+    }
+    const service = runtime.macosVmService;
+    if (!service) {
+      throw new JsonRpcError(JsonRpcErrorCode.toolFailed, "macOS VM service is unavailable in this ADE runtime.");
+    }
+    return service;
+  };
+  const macosVmLaneId = (toolName: string): string =>
+    requireLaneIdForTool(runtime, session, toolArgs, toolName);
+  const macosVmWindowTitleQuery = (): string | null =>
+    asOptionalTrimmedString(toolArgs.windowTitleQuery ?? toolArgs.windowTitle ?? toolArgs.titleQuery);
+  const macosVmCoordinateSpace = (): "window" | "screen" | undefined => {
+    const value = asOptionalTrimmedString(toolArgs.coordinateSpace);
+    if (!value) return undefined;
+    if (value === "window" || value === "screen") return value;
+    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "coordinateSpace must be window or screen.");
+  };
+  const ingestMacosVmScreenshot = (args: {
+    laneId: string;
+    toolName: string;
+    title: string;
+    screenshot: {
+      path: string;
+      vmName: string;
+      captureMode: string;
+      capturedAt: string;
+      window: unknown;
+    };
+  }) => {
+    const result = runtime.computerUseArtifactBrokerService.ingest({
+      backend: {
+        name: "macos-vm",
+        toolName: args.toolName,
+      },
+      inputs: [
+        {
+          kind: "screenshot",
+          title: args.title,
+          path: args.screenshot.path,
+          mimeType: "image/png",
+          metadata: {
+            absolutePath: args.screenshot.path,
+            laneId: args.laneId,
+            vmName: args.screenshot.vmName,
+            captureMode: args.screenshot.captureMode,
+            capturedAt: args.screenshot.capturedAt,
+            window: args.screenshot.window,
+          },
+        },
+      ],
+      owners: resolveComputerUseOwners(session, { ...toolArgs, laneId: args.laneId }),
+    });
+    return {
+      artifact: {
+        type: "screenshot",
+        title: args.title,
+        uri: toProjectArtifactUri(runtime.projectRoot, args.screenshot.path),
+        metadata: {
+          absolutePath: args.screenshot.path,
+          laneId: args.laneId,
+          vmName: args.screenshot.vmName,
+          captureMode: args.screenshot.captureMode,
+          capturedAt: args.screenshot.capturedAt,
+          window: args.screenshot.window,
+        },
+      },
+      artifacts: result.artifacts,
+      links: result.links,
+    };
+  };
+
+  if (MACOS_VM_TOOL_NAMES.has(name)) {
+    const service = requireMacosVmService();
+    if (name === "macos_vm_status") {
+      const laneId = resolveRequestedOrSessionLaneId(runtime, session, toolArgs);
+      return await service.getStatus({ laneId });
+    }
+    if (name === "macos_vm_start") {
+      const laneId = macosVmLaneId(name);
+      const mode = asOptionalTrimmedString(toolArgs.mode);
+      if (mode && mode !== "pull-image" && mode !== "create") {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "mode must be pull-image or create.");
+      }
+      return await service.start({
+        laneId,
+        createIfMissing: toolArgs.createIfMissing === false ? false : true,
+        openDisplay: toolArgs.openDisplay === false ? false : true,
+        mode: mode === "pull-image" || mode === "create" ? mode : undefined,
+        sourceImage: asOptionalTrimmedString(toolArgs.sourceImage ?? toolArgs.image),
+        ipsw: asOptionalTrimmedString(toolArgs.ipsw),
+        cpuCores: Number.isFinite(Number(toolArgs.cpuCores)) ? Number(toolArgs.cpuCores) : undefined,
+        memory: asOptionalTrimmedString(toolArgs.memory),
+        diskSize: asOptionalTrimmedString(toolArgs.diskSize),
+        display: asOptionalTrimmedString(toolArgs.display),
+      });
+    }
+    if (name === "macos_vm_guide") {
+      return await service.getAgentGuide({ laneId: macosVmLaneId(name) });
+    }
+    if (name === "macos_vm_focus") {
+      return await service.focusWindow({
+        laneId: macosVmLaneId(name),
+        windowTitleQuery: macosVmWindowTitleQuery(),
+      });
+    }
+    if (name === "macos_vm_screenshot") {
+      const laneId = macosVmLaneId(name);
+      const screenshot = await service.captureScreenshot({
+        laneId,
+        windowTitleQuery: macosVmWindowTitleQuery(),
+      });
+      const title = asOptionalTrimmedString(toolArgs.name) ?? `macOS VM ${screenshot.vmName} screenshot`;
+      const ingested = ingestMacosVmScreenshot({
+        laneId,
+        toolName: name,
+        title,
+        screenshot,
+      });
+      return { screenshot, ...ingested };
+    }
+    if (name === "macos_vm_select") {
+      const laneId = macosVmLaneId(name);
+      const x = asNumber(toolArgs.x, Number.NaN);
+      const y = asNumber(toolArgs.y, Number.NaN);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "macos_vm_select requires numeric x and y coordinates.");
+      }
+      const selection = await service.selectPoint({
+        laneId,
+        x,
+        y,
+        coordinateSpace: macosVmCoordinateSpace(),
+        windowTitleQuery: macosVmWindowTitleQuery(),
+      });
+      const title = asOptionalTrimmedString(toolArgs.name) ?? `macOS VM ${selection.item.vmName} selection`;
+      const ingested = selection.screenshot
+        ? ingestMacosVmScreenshot({
+            laneId,
+            toolName: name,
+            title,
+            screenshot: selection.screenshot,
+          })
+        : null;
+      return { selection, ...(ingested ?? {}) };
+    }
+    if (name === "macos_vm_click") {
+      const x = asNumber(toolArgs.x, Number.NaN);
+      const y = asNumber(toolArgs.y, Number.NaN);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "macos_vm_click requires numeric x and y coordinates.");
+      }
+      return await service.click({
+        laneId: macosVmLaneId(name),
+        x,
+        y,
+        coordinateSpace: macosVmCoordinateSpace(),
+        windowTitleQuery: macosVmWindowTitleQuery(),
+      });
+    }
+    if (name === "macos_vm_type") {
+      return await service.typeText({
+        laneId: macosVmLaneId(name),
+        text: assertNonEmptyString(toolArgs.text, "text"),
+        windowTitleQuery: macosVmWindowTitleQuery(),
+      });
+    }
+  }
 
   if (CTO_OPERATOR_TOOL_NAMES.has(name)) {
     if (callerCtx.role !== "cto") {
@@ -4236,10 +4776,11 @@ async function runTool(args: {
     const hasScalarArg = Object.prototype.hasOwnProperty.call(toolArgs, "arg");
     const rawObjectArgs = safeObject(toolArgs.args);
     const result = argsList
-      ? await (callable as (...params: unknown[]) => Promise<unknown>)(...argsList)
+      ? await (callable as (...params: unknown[]) => Promise<unknown>).apply(service, argsList)
       : hasScalarArg
-        ? await (callable as (arg: unknown) => Promise<unknown>)(toolArgs.arg)
-        : await (callable as (args?: Record<string, unknown>) => Promise<unknown>)(
+        ? await (callable as (arg: unknown) => Promise<unknown>).call(service, toolArgs.arg)
+        : await (callable as (args?: Record<string, unknown>) => Promise<unknown>).call(
+            service,
             Object.keys(rawObjectArgs).length > 0 ? rawObjectArgs : undefined
           );
     const record = isRecord(result) ? result : null;
@@ -4248,13 +4789,100 @@ async function runTool(args: {
       testRunId: typeof record?.id === "string" && domain === "tests" ? record.id : null,
       chatSessionId: typeof record?.sessionId === "string" ? record.sessionId : null,
       runId: typeof record?.runId === "string" ? record.runId : null,
-      missionId: typeof record?.missionId === "string" ? record.missionId : null,
+      missionId:
+        typeof record?.missionId === "string"
+          ? record.missionId
+          : typeof record?.id === "string" && domain === "mission"
+            ? record.id
+            : null,
     };
     return {
       domain,
       action,
       result,
       statusHints,
+    };
+  }
+
+  if (name === "start_cli_session") {
+    const laneId = assertNonEmptyString(toolArgs.laneId, "laneId");
+    const provider = parseCliSessionProvider(toolArgs.provider);
+    const permissionMode = parseCliSessionPermissionMode(toolArgs.permissionMode);
+    try {
+      validateLaunchProfilePermissionMode(provider, permissionMode);
+    } catch (err) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, err instanceof Error ? err.message : String(err));
+    }
+    const cols = clampInteger(toolArgs.cols, DEFAULT_PTY_COLS, 20, 240);
+    const rows = clampInteger(toolArgs.rows, DEFAULT_PTY_ROWS, 4, 120);
+    const title = asOptionalTrimmedString(toolArgs.title) ?? LAUNCH_PROFILE_TITLE[provider];
+    const resumeSessionId = asOptionalTrimmedString(toolArgs.resumeSessionId);
+    const resumeTargetIdRaw = asOptionalTrimmedString(toolArgs.resumeTargetId);
+    const resumeTargetId = resumeTargetIdRaw ? stripInjectionChars(resumeTargetIdRaw) : null;
+    const initialInput = asOptionalTrimmedString(toolArgs.initialInput)?.slice(0, 20_000) ?? null;
+    const resumeSession = resumeSessionId ? requireCliResumeSession(runtime, resumeSessionId, provider) : null;
+    const ptyService = runtime.ptyService;
+    const preassignedSessionId = provider === "claude" && !resumeSessionId ? randomUUID() : undefined;
+
+    const launchFields: { startupCommand?: string; command?: string; args?: string[]; env?: Record<string, string> } = (() => {
+      if (!isCliProvider(provider)) return {};
+      if (resumeSessionId || resumeTargetId) {
+        const startupCommand = resumeSession?.resumeMetadata
+          ? buildTrackedCliResumeCommand(resumeSession.resumeMetadata)
+          : resumeSession?.resumeCommand?.trim()
+            || buildTrackedCliResumeCommand({
+              provider,
+              targetKind: "session",
+              targetId: resumeTargetId,
+              launch: { permissionMode },
+            });
+        return { startupCommand };
+      }
+      return buildTrackedCliLaunchCommand({ provider, permissionMode, sessionId: preassignedSessionId });
+    })();
+
+    const created = await ptyService.create({
+      ...(resumeSessionId || preassignedSessionId ? { sessionId: resumeSessionId ?? preassignedSessionId } : {}),
+      ...(preassignedSessionId ? { allowNewSessionId: true } : {}),
+      laneId,
+      cols,
+      rows,
+      title,
+      tracked: toolArgs.tracked !== false,
+      toolType: LAUNCH_PROFILE_TOOL_TYPE[provider],
+      ...(asOptionalTrimmedString(toolArgs.cwd) ? { cwd: asOptionalTrimmedString(toolArgs.cwd)! } : {}),
+      ...(asOptionalTrimmedString(toolArgs.chatSessionId) ? { chatSessionId: asOptionalTrimmedString(toolArgs.chatSessionId) } : {}),
+      ...launchFields,
+    });
+
+    let initialInputWritten = false;
+    if (initialInput && isCliProvider(provider)) {
+      initialInputWritten = ptyService.writeBySessionId(created.sessionId, `${initialInput}\r`);
+      if (!initialInputWritten) {
+        try {
+          ptyService.dispose({ ptyId: created.ptyId, sessionId: created.sessionId });
+        } catch {
+          // Best-effort cleanup; preserve the caller-facing write failure.
+        }
+        throw new JsonRpcError(
+          JsonRpcErrorCode.internalError,
+          "Created terminal session could not receive the initial input.",
+        );
+      }
+    }
+
+    const session = runtime.sessionService.get(created.sessionId) as TerminalSessionSummary | null;
+    const enrichedSession = session ? ptyService.enrichSessions([session])[0] ?? session : session;
+    return {
+      provider,
+      laneId,
+      title,
+      permissionMode,
+      ptyId: created.ptyId,
+      sessionId: created.sessionId,
+      startupCommand: launchFields.startupCommand ?? null,
+      initialInputWritten,
+      session: enrichedSession ?? null,
     };
   }
 
@@ -4755,6 +5383,36 @@ async function runTool(args: {
 
   if (name === "interact_gui") {
     const action = assertNonEmptyString(toolArgs.action, "action");
+    const target = asOptionalTrimmedString(toolArgs.target) ?? "local";
+    if (target === "macos_vm") {
+      const service = requireMacosVmService();
+      const laneId = macosVmLaneId(name);
+      if (action === "click") {
+        const x = Math.floor(asNumber(toolArgs.x, Number.NaN));
+        const y = Math.floor(asNumber(toolArgs.y, Number.NaN));
+        if (!Number.isFinite(x) || !Number.isFinite(y)) {
+          throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "click requires numeric x and y coordinates.");
+        }
+        return await service.click({
+          laneId,
+          x,
+          y,
+          coordinateSpace: macosVmCoordinateSpace(),
+          windowTitleQuery: macosVmWindowTitleQuery(),
+        });
+      }
+      if (action === "type") {
+        return await service.typeText({
+          laneId,
+          text: assertNonEmptyString(toolArgs.text, "text"),
+          windowTitleQuery: macosVmWindowTitleQuery(),
+        });
+      }
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "target=macos_vm supports click and type actions.");
+    }
+    if (target !== "local") {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "target must be local or macos_vm.");
+    }
     const app = asOptionalTrimmedString(toolArgs.app);
     if (app) {
       ensureLocalComputerUse(name, "appLaunch");
@@ -4816,6 +5474,26 @@ async function runTool(args: {
   }
 
   if (name === "screenshot_environment") {
+    const target = asOptionalTrimmedString(toolArgs.target) ?? "local";
+    if (target === "macos_vm") {
+      const service = requireMacosVmService();
+      const laneId = macosVmLaneId(name);
+      const screenshot = await service.captureScreenshot({
+        laneId,
+        windowTitleQuery: macosVmWindowTitleQuery(),
+      });
+      const title = asOptionalTrimmedString(toolArgs.name) ?? `macOS VM ${screenshot.vmName} screenshot`;
+      const ingested = ingestMacosVmScreenshot({
+        laneId,
+        toolName: name,
+        title,
+        screenshot,
+      });
+      return { screenshot, ...ingested };
+    }
+    if (target !== "local") {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "target must be local or macos_vm.");
+    }
     ensureLocalComputerUse(name, "screenshot");
     const displayId = Number.isFinite(Number(toolArgs.displayId)) ? String(Math.floor(Number(toolArgs.displayId))) : null;
     const format = asOptionalTrimmedString(toolArgs.format) === "jpg" ? "jpg" : "png";
@@ -5995,7 +6673,7 @@ async function runTool(args: {
   if (name === "resume_mission") {
 
     const runId = assertNonEmptyString(toolArgs.runId, "runId");
-    const run = runtime.orchestratorService.resumeRun({ runId });
+    const run = await runtime.aiOrchestratorService.resumeRun({ runId });
     return { run };
   }
 
@@ -6154,7 +6832,27 @@ async function runTool(args: {
       throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "runId is required (not available from caller context)");
     }
     const states = runtime.aiOrchestratorService.getWorkerStates({ runId });
-    return { runId, workers: states };
+    const graph = runtime.orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
+    const runWorkers = graph.steps
+      .filter(isRunWorkerStep)
+      .map((step) => {
+        const runningAttempt = graph.attempts.find((attempt) => attempt.stepId === step.id && attempt.status === "running");
+        const latestAttempt = [...graph.attempts]
+          .filter((attempt) => attempt.stepId === step.id)
+          .sort((a, b) => String(b.completedAt ?? b.createdAt ?? "").localeCompare(String(a.completedAt ?? a.createdAt ?? "")))[0];
+        return {
+          workerId: step.stepKey,
+          stepId: step.id,
+          title: step.title,
+          status: step.status,
+          phaseKey: isRecord(step.metadata) && typeof step.metadata.phaseKey === "string" ? step.metadata.phaseKey : null,
+          hasRunningAttempt: Boolean(runningAttempt),
+          activeAttemptId: runningAttempt?.id ?? null,
+          lastAttemptStatus: latestAttempt?.status ?? null,
+          retryCount: step.retryCount,
+        };
+      });
+    return { runId, workers: states, runWorkers };
   }
 
   if (name === "get_timeline") {

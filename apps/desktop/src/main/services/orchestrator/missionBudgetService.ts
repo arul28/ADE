@@ -36,6 +36,7 @@ type RunRow = {
   created_at: string;
   started_at: string | null;
   completed_at: string | null;
+  metadata_json: string | null;
 };
 
 type StepUsageRow = {
@@ -741,6 +742,12 @@ function computePressure(scope: MissionBudgetScopeSnapshot): MissionBudgetPressu
   return "normal";
 }
 
+function maxPressure(pressures: MissionBudgetPressure[]): MissionBudgetPressure {
+  if (pressures.includes("critical")) return "critical";
+  if (pressures.includes("warning")) return "warning";
+  return "normal";
+}
+
 function pressureRecommendation(pressure: MissionBudgetPressure): string {
   if (pressure === "critical") {
     return "Critical pressure: run one worker at a time, finish the current milestone, and defer optional work.";
@@ -832,6 +839,23 @@ export function createMissionBudgetService(args: {
       codexSessionsRoot: telemetry.codexSessionsRoot,
       logger,
     });
+  };
+
+  const resolveMissionCliTelemetryRoot = (runMetadata: Record<string, unknown> | null): string | null => {
+    const teamRuntime = isRecord(runMetadata?.teamRuntime) ? runMetadata.teamRuntime : null;
+    const missionLaneId =
+      typeof runMetadata?.missionLaneId === "string" && runMetadata.missionLaneId.trim().length > 0
+        ? runMetadata.missionLaneId.trim()
+        : typeof teamRuntime?.missionLaneId === "string" && teamRuntime.missionLaneId.trim().length > 0
+          ? teamRuntime.missionLaneId.trim()
+          : "";
+    if (!missionLaneId.length) return projectRoot;
+    const lane = db.get<{ worktree_path: string | null }>(
+      `select worktree_path from lanes where id = ? and project_id = ? limit 1`,
+      [missionLaneId, projectId],
+    );
+    const worktreePath = typeof lane?.worktree_path === "string" ? lane.worktree_path.trim() : "";
+    return worktreePath.length > 0 ? worktreePath : projectRoot;
   };
 
   const collectProviderWindowUsage = (args: {
@@ -1032,9 +1056,10 @@ export function createMissionBudgetService(args: {
     const runIdFilter = typeof budgetArgs.runId === "string" && budgetArgs.runId.trim().length > 0
       ? budgetArgs.runId.trim()
       : null;
+    const includeCliTelemetry = budgetArgs.includeCliTelemetry !== false;
     const runRow = db.get<RunRow>(
       `
-        select id, status, created_at, started_at, completed_at
+        select id, status, created_at, started_at, completed_at, metadata_json
         from orchestrator_runs
         where mission_id = ?
           and project_id = ?
@@ -1080,6 +1105,7 @@ export function createMissionBudgetService(args: {
 
     const mode = await resolveBudgetMode();
     const metadata = parseJsonRecord(missionRow.metadata_json);
+    const runMetadata = parseJsonRecord(runRow?.metadata_json ?? null);
     const launchMeta = metadata && isRecord(metadata.launch) ? metadata.launch : null;
     const modelConfig = launchMeta && isRecord(launchMeta.modelConfig) ? launchMeta.modelConfig : null;
     const smartBudget = modelConfig && isRecord(modelConfig.smartBudget) ? modelConfig.smartBudget : null;
@@ -1219,17 +1245,18 @@ export function createMissionBudgetService(args: {
 
     const runStart = Date.parse(runRow?.started_at ?? missionRow.started_at ?? missionRow.completed_at ?? nowIso());
     const runEnd = Date.parse(runRow?.completed_at ?? missionRow.completed_at ?? nowIso());
-    const scopedCliUsage = mode === "subscription" && Number.isFinite(runStart) && Number.isFinite(runEnd)
+    const missionCliTelemetryRoot = resolveMissionCliTelemetryRoot(runMetadata);
+    const scopedCliUsage = includeCliTelemetry && mode === "subscription" && Number.isFinite(runStart) && Number.isFinite(runEnd)
       ? mergeWindowUsage([
           readClaudeUsageWindow({
             fromMs: runStart,
             toMs: runEnd,
-            projectRoot,
+            projectRoot: missionCliTelemetryRoot,
           }),
           readCodexUsageWindow({
             fromMs: runStart,
             toMs: runEnd,
-            projectRoot,
+            projectRoot: missionCliTelemetryRoot,
           }),
         ])
       : null;
@@ -1268,7 +1295,13 @@ export function createMissionBudgetService(args: {
 
     // ── Per-provider window usage ────────────────────────────────
     const nowMs = Date.now();
-    const providerWindowUsage = collectProviderWindowUsage({ nowMs });
+    const providerWindowUsage = includeCliTelemetry
+      ? collectProviderWindowUsage({ nowMs })
+      : {
+          fiveHourUsage: mergeWindowUsage([]),
+          weeklyUsage: mergeWindowUsage([]),
+          dataSources: [],
+        };
     const fiveHourUsage = providerWindowUsage.fiveHourUsage;
     const weeklyUsage = providerWindowUsage.weeklyUsage;
     for (const source of providerWindowUsage.dataSources) {
@@ -1386,7 +1419,11 @@ export function createMissionBudgetService(args: {
       apiKeyTriggered,
     };
 
-    const pressure = computePressure(missionScope);
+    const pressure = maxPressure([
+      computePressure(missionScope),
+      ...perPhase.map((phase) => computePressure(phase)),
+      ...perWorker.map((worker) => computePressure(worker)),
+    ]);
     const terminalStatuses = new Set(["succeeded", "failed", "blocked", "canceled", "skipped", "superseded"]);
     const completedWorkers = stepRows.filter((row) => terminalStatuses.has(row.status)).length;
     const remainingStepCount = Math.max(0, stepRows.length - completedWorkers);

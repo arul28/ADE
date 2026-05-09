@@ -11,7 +11,6 @@ import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
 import {
   filterExecutionSteps,
   isRecord,
-  PLAN_DONE_STATUSES,
   statusGlyph,
   STEP_STATUS_HEX,
 } from "./missionHelpers";
@@ -168,6 +167,23 @@ function kindLabel(kind: PlanGroup["kind"]): string {
   }
 }
 
+export function buildExecutableProgressLabel(steps: Array<Pick<OrchestratorStep, "status">>): string {
+  if (steps.length === 0) return "0 registered executable steps";
+  const succeeded = steps.filter((step) => step.status === "succeeded").length;
+  const failed = steps.filter((step) => step.status === "failed").length;
+  const canceled = steps.filter((step) => step.status === "canceled").length;
+  const skipped = steps.filter((step) => step.status === "skipped" || step.status === "superseded").length;
+  if (failed > 0 || canceled > 0 || skipped > 0) {
+    const suffixes = [
+      failed > 0 ? `${failed} failed` : null,
+      canceled > 0 ? `${canceled} canceled` : null,
+      skipped > 0 ? `${skipped} skipped` : null,
+    ].filter((entry): entry is string => entry != null);
+    return `${succeeded}/${steps.length} registered executable steps succeeded · ${suffixes.join(" · ")}`;
+  }
+  return `${succeeded}/${steps.length} registered executable steps complete`;
+}
+
 function SummaryList({
   title,
   items,
@@ -214,10 +230,11 @@ export const PlanTab = React.memo(function PlanTab({
   onStepSelect: (stepId: string) => void;
 }) {
   const steps = useMemo(() => runGraph?.steps ?? [], [runGraph?.steps]);
-  const phaseSections = useMemo(() => phaseSectionsFromSteps(steps), [steps]);
   const executableSteps = useMemo(() => filterExecutionSteps(steps), [steps]);
+  const phaseSections = useMemo(() => phaseSectionsFromSteps(executableSteps), [executableSteps]);
+  const executableProgressLabel = useMemo(() => buildExecutableProgressLabel(executableSteps), [executableSteps]);
   const plannerReview = useMemo(() => derivePlannerReview(mission, runGraph), [mission, runGraph]);
-  const planGroups = useMemo(() => derivePlanGroups(steps), [steps]);
+  const planGroups = useMemo(() => derivePlanGroups(executableSteps), [executableSteps]);
 
   if (!runGraph || steps.length === 0) {
     return (
@@ -239,7 +256,7 @@ export const PlanTab = React.memo(function PlanTab({
         <div className="flex items-center justify-between text-[11px]" style={{ color: COLORS.textSecondary, fontFamily: MONO_FONT }}>
           <span>Planner review and work breakdown</span>
           <span>
-            {executableSteps.filter((step) => PLAN_DONE_STATUSES.has(step.status)).length}/{executableSteps.length} executable steps complete
+            {executableProgressLabel}
           </span>
         </div>
         <div className="mt-1 text-[11px]" style={{ color: COLORS.textMuted }}>
@@ -355,7 +372,7 @@ export const PlanTab = React.memo(function PlanTab({
         </div>
         <div className="mt-2 overflow-auto">
           <OrchestratorDAG
-            steps={runGraph.steps}
+            steps={executableSteps}
             attempts={runGraph.attempts}
             claims={runGraph.claims}
             selectedStepId={selectedStepId}

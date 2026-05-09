@@ -33,6 +33,8 @@ import {
   type IosElementContextItem,
   type IosSimulatorDrawerMode,
   type AiSettingsStatus,
+  type MacosVmContextItem,
+  type MacosVmStatus,
   type TerminalSessionDetail,
   type TerminalToolType,
 } from "../../../shared/types";
@@ -93,6 +95,7 @@ import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
 import { getAgentChatModelsCached, getAiStatusCached, peekAiStatusCached } from "../../lib/aiDiscoveryCache";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
+import { rewriteMissionControlTextToolEvents } from "./missionControlTextTools";
 
 import { playAgentTurnCompletionSound } from "../../lib/agentTurnCompletionSound";
 
@@ -330,6 +333,108 @@ function formatAppControlContextForPrompt(items: AppControlContextItem[]): strin
     ...rows,
     "",
   ].join("\n");
+}
+
+function macosVmContextLabel(item: MacosVmContextItem): string {
+  return item.vmName || "macOS VM";
+}
+
+function formatMacosVmContextChipsForDisplay(items: MacosVmContextItem[]): string {
+  if (!items.length) return "";
+  return items.map((item) => `\`${macosVmContextLabel(item)}\``).join(" ");
+}
+
+function createMacosVmContextInstanceId(item: MacosVmContextItem): string {
+  const suffix = typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  return `${item.id}::${suffix}`;
+}
+
+function getMacosVmContextAttachmentPath(item: MacosVmContextItem): string | null {
+  const value = item.metadata?.screenshotPath ?? item.metadata?.attachmentPath;
+  return typeof value === "string" && value.length ? value : null;
+}
+
+function formatMacosVmContextForPrompt(items: MacosVmContextItem[]): string {
+  if (!items.length) return "";
+  const rows = items.map((item, index) => {
+    const metadata = item.metadata ?? {};
+    const attachmentPath = getMacosVmContextAttachmentPath(item);
+    const packet = {
+      contextId: item.id,
+      provider: item.provider,
+      state: item.state,
+      visualAttachmentPath: attachmentPath,
+      laneId: item.laneId,
+      laneName: item.laneName,
+      vmName: item.vmName,
+      hostLanePath: item.hostLanePath,
+      guestLanePath: item.guestLanePath,
+      runCommand: item.runCommand,
+      sshCommand: item.sshCommand,
+      vncUrl: item.vncUrl,
+      windowTitleQuery: item.windowTitleQuery,
+      selectedAt: item.selectedAt,
+      selectedPoint: metadata.selectedPoint,
+      screenshotPath: metadata.screenshotPath,
+      metadata,
+    };
+    return `${index + 1}. ${macosVmContextLabel(item)} (${item.state}, lane=${item.laneName})\nPacket:\n${JSON.stringify(packet, null, 2)}`;
+  });
+  return [
+    "macOS VM target context attached by the user.",
+    "Use this VM for isolated GUI validation tied to the active lane. The host lane path is shared into the guest with VirtioFS, so edits in the mounted folder stay synced between host and guest. When visualAttachmentPath or selectedPoint is present, treat it as screenshot-backed VM context.",
+    "For GUI computer use, prefer ADE macos-vm screenshot/click/type tools; they use headless VNC when available and only fall back to a visible Lume/VNC/macOS VM window. Do not target the host ADE window unless the user asks to switch back.",
+    "For shell commands inside the guest, use sshCommand when present or configure SSH/in-guest agent access, then work from guestLanePath.",
+    "Keep secrets out of the VM; ADE blocks lane roots that contain .ade/secrets from being mounted.",
+    ...rows,
+    "",
+  ].join("\n");
+}
+
+function formatAutomaticMacosVmContextForPrompt(status: MacosVmStatus, laneId: string): string {
+  if (!status.supported || !status.activeProvider.available) return "";
+  const vm = status.laneVm;
+  const state = vm?.state ?? "not_created";
+  const guestPath = vm?.guestSharedPath ?? "/Volumes/My Shared Files";
+  const hostPath = vm?.laneRoot ?? "current ADE lane worktree";
+  const lines = [
+    "ADE macOS VM capability for this lane (automatic context).",
+    "Use this capability only when the user asks to use the ADE VM, needs isolated macOS GUI validation, or asks for VM-backed computer use. Query fresh state before acting; do not assume this snapshot is current.",
+    `- Lane id: ${laneId}`,
+    `- Provider: ${status.activeProvider.kind}${status.activeProvider.version ? ` ${status.activeProvider.version}` : ""}`,
+    vm
+      ? `- Current lane VM: ${vm.name} (${state})`
+      : "- Current lane VM: not provisioned yet",
+    `- Host lane path: ${hostPath}`,
+    `- Guest lane path: ${guestPath}`,
+    vm?.sharedDirectory ? `- Shared directory mounted into the VM: ${vm.sharedDirectory}` : null,
+    vm?.sshCommand ? `- Guest SSH command: ${vm.sshCommand}` : "- Guest SSH command: not configured yet",
+    vm?.vncUrl ? `- Sanitized VNC URL: ${vm.vncUrl}` : "- Sanitized VNC URL: available after the VM is running",
+    "- ADE RPC tools: macos_vm_status, macos_vm_start, macos_vm_focus, macos_vm_screenshot, macos_vm_select, macos_vm_click, macos_vm_type.",
+    `- ADE CLI examples: ade macos-vm status --lane ${laneId} --text; ade macos-vm start --lane ${laneId} --create --no-display; ade macos-vm screenshot --lane ${laneId} --text.`,
+    "- GUI control goes through ADE's direct headless VNC bridge when available, then falls back to a visible VM viewer. Do not target the host ADE window when the task is to control the lane VM.",
+    state === "running"
+      ? "- The VM is currently running; prefer macos_vm_screenshot first, then click/type/select against the VM."
+      : "- The VM is not running; start it only if the user asked for VM use or the task clearly needs isolated macOS GUI validation.",
+    vm?.metadata?.shareMode === "sanitized-mirror"
+      ? "- This lane uses a sanitized mirror for the VM share; ADE syncs code while excluding secrets, runtime databases, caches, transcripts, generated local history, and .git."
+      : "- Keep VM-side edits inside the mounted guest lane path so the host lane and guest stay aligned.",
+    "",
+  ];
+  return lines.filter((line): line is string => Boolean(line)).join("\n");
+}
+
+async function buildAutomaticMacosVmContextForPrompt(laneId: string): Promise<string> {
+  const api = window.ade?.macosVm;
+  if (!api?.getStatus) return "";
+  try {
+    const status = await api.getStatus({ laneId });
+    return formatAutomaticMacosVmContextForPrompt(status, laneId);
+  } catch {
+    return "";
+  }
 }
 
 function normalizeBuiltInBrowserContextItem(value: unknown): BuiltInBrowserContextItem | null {
@@ -1400,6 +1505,25 @@ function chatSessionTitle(session: AgentChatSessionSummary): string {
   return descriptor?.displayName ?? `${session.provider}/${session.model}`;
 }
 
+function orderAvailableModelIds(ids: Iterable<string>): string[] {
+  const available = new Set(ids);
+  const ordered = MODEL_REGISTRY
+    .filter((model) => !model.deprecated && available.has(model.id))
+    .map((model) => model.id);
+  const extra = [...available].filter((modelId) => !ordered.includes(modelId));
+  extra.sort((left, right) => {
+    const leftLabel = getModelById(left)?.displayName ?? left;
+    const rightLabel = getModelById(right)?.displayName ?? right;
+    return leftLabel.localeCompare(rightLabel, undefined, { sensitivity: "base" });
+  });
+  return [...ordered, ...extra];
+}
+
+function isCursorModelId(id: string): boolean {
+  return id.startsWith("cursor/")
+    || getModelById(id)?.family === "cursor";
+}
+
 function completionBadgeClass(status: NonNullable<AgentChatSessionSummary["completion"]>["status"]): string {
   switch (status) {
     case "completed": return "border-emerald-400/20 bg-emerald-400/[0.08] text-emerald-300";
@@ -1584,6 +1708,12 @@ export function AgentChatPane({
   const [availableModelIds, setAvailableModelIds] = useState<string[]>(() =>
     seedAiStatus ? deriveConfiguredModelIds(seedAiStatus, { includeDroid: true }) : [],
   );
+  const availableModelIdsRef = useRef(availableModelIds);
+  const availableModelsRefreshSeqRef = useRef(0);
+  const cursorInventoryRefreshSeqRef = useRef(0);
+  useEffect(() => {
+    availableModelIdsRef.current = availableModelIds;
+  }, [availableModelIds]);
   const [claudePermissionMode, setClaudePermissionMode] = useState<AgentChatClaudePermissionMode>(initialNativeControls.claudePermissionMode);
   const [codexApprovalPolicy, setCodexApprovalPolicy] = useState<AgentChatCodexApprovalPolicy>(initialNativeControls.codexApprovalPolicy);
   const [codexSandbox, setCodexSandbox] = useState<AgentChatCodexSandbox>(initialNativeControls.codexSandbox);
@@ -1642,6 +1772,7 @@ export function AgentChatPane({
   const [appControlAvailable, setAppControlAvailable] = useState(false);
   const [appControlContextItems, setAppControlContextItems] = useState<AppControlContextItem[]>([]);
   const [builtInBrowserContextItems, setBuiltInBrowserContextItems] = useState<BuiltInBrowserContextItem[]>([]);
+  const [macosVmContextItems, setMacosVmContextItems] = useState<MacosVmContextItem[]>([]);
   const latestAttachmentRef = useRef<{ path: string; type: AgentChatFileRef["type"]; addedAt: number } | null>(null);
   const linkedIosAttachmentPathsRef = useRef<Set<string>>(new Set());
   const linkedAppControlAttachmentPathsRef = useRef<Set<string>>(new Set());
@@ -1881,6 +2012,9 @@ export function AgentChatPane({
       setAttachments((current) => current.filter((entry) => entry.path !== linkedAttachmentPath));
     }
   }, []);
+  const removeMacosVmContext = useCallback((id: string) => {
+    setMacosVmContextItems((current) => current.filter((entry) => entry.id !== id));
+  }, []);
   const updateComposerDraft = useCallback((value: string) => {
     setDraft(value);
     draftsPerSessionRef.current.set(selectedSessionId, value);
@@ -1908,22 +2042,25 @@ export function AgentChatPane({
     const baseEvents = optimisticOutgoingMessage && optimisticOutgoingMessage.sessionId === selectedSessionId
       ? [...selectedEvents, optimisticOutgoingMessage.envelope]
       : selectedEvents;
+    const displayEvents = presentation?.rewriteMissionControlTextTools === true || presentation?.mode === "mission-thread"
+      ? rewriteMissionControlTextToolEvents(baseEvents)
+      : baseEvents;
     const promotedTurnId = selectedSession?.cursorPromotedTurnId;
     const cloudAgentId = selectedSession?.cursorCloudAgentId;
-    if (!promotedTurnId || !cloudAgentId) return baseEvents;
-    if (baseEvents.some((env) => env.event.type === "system_notice" && env.event.noticeKind === "info" && env.event.message === "Promoted to Cursor Cloud")) {
-      return baseEvents;
+    if (!promotedTurnId || !cloudAgentId) return displayEvents;
+    if (displayEvents.some((env) => env.event.type === "system_notice" && env.event.noticeKind === "info" && env.event.message === "Promoted to Cursor Cloud")) {
+      return displayEvents;
     }
-    let insertAt = baseEvents.length;
-    for (let i = 0; i < baseEvents.length; i += 1) {
-      const evt = baseEvents[i]?.event;
+    let insertAt = displayEvents.length;
+    for (let i = 0; i < displayEvents.length; i += 1) {
+      const evt = displayEvents[i]?.event;
       const turnId = evt && "turnId" in evt ? (evt as { turnId?: string }).turnId : undefined;
       if (turnId === promotedTurnId) {
         insertAt = i;
         break;
       }
     }
-    const refEnvelope = baseEvents[insertAt] ?? baseEvents[baseEvents.length - 1];
+    const refEnvelope = displayEvents[insertAt] ?? displayEvents[displayEvents.length - 1];
     const synthetic: AgentChatEventEnvelope = {
       sessionId: selectedSessionId ?? "",
       timestamp: refEnvelope?.timestamp ?? new Date().toISOString(),
@@ -1935,8 +2072,8 @@ export function AgentChatPane({
         turnId: promotedTurnId,
       },
     };
-    return [...baseEvents.slice(0, insertAt), synthetic, ...baseEvents.slice(insertAt)];
-  }, [optimisticOutgoingMessage, selectedEvents, selectedSession?.cursorCloudAgentId, selectedSession?.cursorPromotedTurnId, selectedSessionId]);
+    return [...displayEvents.slice(0, insertAt), synthetic, ...displayEvents.slice(insertAt)];
+  }, [optimisticOutgoingMessage, presentation?.mode, presentation?.rewriteMissionControlTextTools, selectedEvents, selectedSession?.cursorCloudAgentId, selectedSession?.cursorPromotedTurnId, selectedSessionId]);
   const selectedSubagentSnapshots = useMemo(() => deriveChatSubagentSnapshots(selectedEvents), [selectedEvents]);
   const selectedTurnDiffSummaries = useMemo(() => deriveTurnDiffSummaries(selectedEvents), [selectedEvents]);
   const selectedTodoItems = useMemo(() => deriveTodoItems(selectedEvents), [selectedEvents]);
@@ -2581,24 +2718,7 @@ export function AgentChatPane({
   });
 
   const refreshAvailableModels = useCallback(async () => {
-    const orderModelIds = (ids: Iterable<string>): string[] => {
-      const available = new Set(ids);
-      const ordered = MODEL_REGISTRY
-        .filter((model) => !model.deprecated && available.has(model.id))
-        .map((model) => model.id);
-      const extra = [...available].filter((modelId) => !ordered.includes(modelId));
-      extra.sort((left, right) => {
-        const leftLabel = getModelById(left)?.displayName ?? left;
-        const rightLabel = getModelById(right)?.displayName ?? right;
-        return leftLabel.localeCompare(rightLabel, undefined, { sensitivity: "base" });
-      });
-      return [...ordered, ...extra];
-    };
-    const isCursorModelId = (id: string): boolean => (
-      id.startsWith("cursor/")
-      || getModelById(id)?.family === "cursor"
-    );
-
+    ++availableModelsRefreshSeqRef.current;
     const selectedModelProvider = modelId.trim()
       ? resolveChatRuntimeProvider(getModelById(modelId))
       : null;
@@ -2621,36 +2741,9 @@ export function AgentChatPane({
         droid: status.providerConnections?.droid ?? null,
       });
       const available = deriveConfiguredModelIds(status, { includeDroid: true });
-      const orderedAvailable = orderModelIds(available);
+      const orderedAvailable = orderAvailableModelIds(available);
       setAvailableModelIds(orderedAvailable);
-      const cursorReady = status.availableProviders?.cursor === true
-        || status.providerConnections?.cursor?.runtimeAvailable === true;
-      if (!cursorReady) return orderedAvailable;
-
-      let cursorModels: Awaited<ReturnType<typeof getAgentChatModelsCached>>;
-      try {
-        cursorModels = await getAgentChatModelsCached({
-          projectRoot,
-          provider: "cursor",
-          activateRuntime: true,
-        });
-      } catch {
-        return orderedAvailable;
-      }
-      if (!cursorModels.length) {
-        const withoutCursor = orderedAvailable.filter((id) => !isCursorModelId(id));
-        setAvailableModelIds(withoutCursor);
-        return withoutCursor;
-      }
-
-      const merged = new Set<string>(available);
-      for (const model of cursorModels) {
-        const resolved = resolveCliRegistryModelId("cursor", model.id);
-        if (resolved) merged.add(resolved);
-      }
-      const withCursor = orderModelIds(merged);
-      setAvailableModelIds(withCursor);
-      return withCursor;
+      return orderedAvailable;
     } catch {
       setAiStatus(null);
       setProviderConnections(null);
@@ -2696,7 +2789,7 @@ export function AgentChatPane({
         }
       }
 
-      const allAvailable = orderModelIds(available);
+      const allAvailable = orderAvailableModelIds(available);
       setAvailableModelIds(allAvailable);
       return allAvailable;
     } catch {
@@ -2704,6 +2797,46 @@ export function AgentChatPane({
       return [];
     }
   }, [modelId, projectRoot, selectedSession?.provider, sessionProvider]);
+
+  const refreshCursorModelInventory = useCallback(async () => {
+    const cursorRefreshSeq = ++cursorInventoryRefreshSeqRef.current;
+    const status = aiStatus;
+    const cursorExplicitlyUnavailable =
+      status != null
+      && status.availableProviders?.cursor !== true
+      && status.providerConnections?.cursor?.runtimeAvailable !== true;
+    if (cursorExplicitlyUnavailable) return;
+    if (availableModelIdsRef.current.some(isCursorModelId)) return;
+    const refreshSeq = availableModelsRefreshSeqRef.current;
+    let cursorModels: Awaited<ReturnType<typeof getAgentChatModelsCached>>;
+    try {
+      cursorModels = await getAgentChatModelsCached({
+        projectRoot,
+        provider: "cursor",
+        activateRuntime: true,
+      });
+    } catch {
+      return;
+    }
+    if (
+      availableModelsRefreshSeqRef.current !== refreshSeq
+      || cursorInventoryRefreshSeqRef.current !== cursorRefreshSeq
+    ) {
+      return;
+    }
+    if (!cursorModels.length) {
+      setAvailableModelIds((prev) => prev.filter((id) => !isCursorModelId(id)));
+      return;
+    }
+    setAvailableModelIds((prev) => {
+      const merged = new Set<string>(prev);
+      for (const model of cursorModels) {
+        const resolved = resolveCliRegistryModelId("cursor", model.id);
+        if (resolved) merged.add(resolved);
+      }
+      return orderAvailableModelIds(merged);
+    });
+  }, [aiStatus, projectRoot]);
 
   const touchSession = useCallback((sessionId: string | null | undefined, touchedAt = new Date().toISOString()) => {
     if (!sessionId) return;
@@ -3745,6 +3878,23 @@ export function AgentChatPane({
     ]);
   }, [addAttachment, selectedSessionId]);
 
+  const addMacosVmContext = useCallback((item: MacosVmContextItem) => {
+    const instanceId = createMacosVmContextInstanceId(item);
+    setMacosVmContextItems((current) => [
+      {
+        ...item,
+        id: instanceId,
+        metadata: {
+          ...item.metadata,
+          originalTargetId: item.metadata.originalTargetId ?? item.id,
+          contextInstanceId: instanceId,
+          ...(selectedSessionId ? { chatSessionId: selectedSessionId } : {}),
+        },
+      },
+      ...current.filter((entry) => entry.laneId !== item.laneId),
+    ]);
+  }, [selectedSessionId]);
+
   useEffect(() => {
     const matchesThisChat = (sessionId: unknown): boolean => (
       typeof sessionId === "string" && sessionId === selectedSessionIdRef.current
@@ -3777,20 +3927,27 @@ export function AgentChatPane({
       if (!matchesThisChat(detail?.sessionId) || !detail.item) return;
       void addBuiltInBrowserContext(detail.item);
     };
+    const onAddMacosVmContext = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: unknown; item?: unknown }>).detail;
+      if (!matchesThisChat(detail?.sessionId) || !detail.item) return;
+      addMacosVmContext(detail.item as MacosVmContextItem);
+    };
 
     window.addEventListener("ade:agent-chat:add-attachment", onAddAttachment);
     window.addEventListener("ade:agent-chat:insert-draft", onInsertDraft);
     window.addEventListener("ade:agent-chat:add-ios-context", onAddIosContext);
     window.addEventListener("ade:agent-chat:add-app-control-context", onAddAppControlContext);
     window.addEventListener("ade:agent-chat:add-builtin-browser-context", onAddBuiltInBrowserContext);
+    window.addEventListener("ade:agent-chat:add-macos-vm-context", onAddMacosVmContext);
     return () => {
       window.removeEventListener("ade:agent-chat:add-attachment", onAddAttachment);
       window.removeEventListener("ade:agent-chat:insert-draft", onInsertDraft);
       window.removeEventListener("ade:agent-chat:add-ios-context", onAddIosContext);
       window.removeEventListener("ade:agent-chat:add-app-control-context", onAddAppControlContext);
       window.removeEventListener("ade:agent-chat:add-builtin-browser-context", onAddBuiltInBrowserContext);
+      window.removeEventListener("ade:agent-chat:add-macos-vm-context", onAddMacosVmContext);
     };
-  }, [addAppControlContext, addAttachment, addBuiltInBrowserContext, addIosElementContext, insertComposerDraft]);
+  }, [addAppControlContext, addAttachment, addBuiltInBrowserContext, addIosElementContext, addMacosVmContext, insertComposerDraft]);
 
   const removeAttachment = useCallback((attachmentPath: string) => {
     linkedIosAttachmentPathsRef.current.delete(attachmentPath);
@@ -4348,14 +4505,17 @@ export function AgentChatPane({
     const iosContextSnapshot = [...iosElementContextItems];
     const appControlContextSnapshot = [...appControlContextItems];
     const builtInBrowserContextSnapshot = [...builtInBrowserContextItems];
+    const macosVmContextSnapshot = [...macosVmContextItems];
     const iosContextPrefix = formatIosElementContextForPrompt(iosContextSnapshot);
     const appControlContextPrefix = formatAppControlContextForPrompt(appControlContextSnapshot);
     const builtInBrowserContextPrefix = formatBuiltInBrowserContextForPrompt(builtInBrowserContextSnapshot);
+    const macosVmContextPrefix = formatMacosVmContextForPrompt(macosVmContextSnapshot);
     const iosContextDisplayChips = formatIosElementContextChipsForDisplay(iosContextSnapshot);
     const appControlContextDisplayChips = formatAppControlContextChipsForDisplay(appControlContextSnapshot);
     const builtInBrowserContextDisplayChips = formatBuiltInBrowserContextChipsForDisplay(builtInBrowserContextSnapshot);
-    const visualContextPrefix = [iosContextPrefix, appControlContextPrefix, builtInBrowserContextPrefix].filter(Boolean).join("\n");
-    const visualContextDisplayChips = [iosContextDisplayChips, appControlContextDisplayChips, builtInBrowserContextDisplayChips].filter(Boolean).join(" ");
+    const macosVmContextDisplayChips = formatMacosVmContextChipsForDisplay(macosVmContextSnapshot);
+    const visualContextPrefix = [iosContextPrefix, appControlContextPrefix, builtInBrowserContextPrefix, macosVmContextPrefix].filter(Boolean).join("\n");
+    const visualContextDisplayChips = [iosContextDisplayChips, appControlContextDisplayChips, builtInBrowserContextDisplayChips, macosVmContextDisplayChips].filter(Boolean).join(" ");
     if ((!text.length && !visualContextPrefix.length) || !laneId) return;
     const pendingNativeControlUpdate = pendingNativeControlUpdateRef.current;
     if (selectedSessionId && pendingNativeControlUpdate?.sessionId === selectedSessionId) {
@@ -4384,8 +4544,10 @@ export function AgentChatPane({
     draftsPerSessionRef.current.delete(selectedSessionId);
     setAttachments([]);
     try {
+      const automaticMacosVmContextPrefix = await buildAutomaticMacosVmContextForPrompt(laneId);
       let justCreatedSession = false;
-      let finalText = visualContextPrefix ? `${visualContextPrefix}${text}` : text;
+      const finalTextPrefix = [automaticMacosVmContextPrefix, visualContextPrefix].filter(Boolean).join("\n");
+      const finalText = finalTextPrefix ? `${finalTextPrefix}${text}` : text;
       const finalDisplayText = visualContextDisplayChips
         ? text.length
           ? `${visualContextDisplayChips} ${text}`
@@ -4497,6 +4659,7 @@ export function AgentChatPane({
       setIosElementContextItems([]);
       setAppControlContextItems([]);
       setBuiltInBrowserContextItems([]);
+      setMacosVmContextItems([]);
     } catch (submitError) {
       const message = submitError instanceof Error ? submitError.message : String(submitError);
       setDraft((current) => (current.trim().length ? current : draftSnapshot));
@@ -4504,6 +4667,7 @@ export function AgentChatPane({
       setIosElementContextItems((current) => (current.length ? current : iosContextSnapshot));
       setAppControlContextItems((current) => (current.length ? current : appControlContextSnapshot));
       setBuiltInBrowserContextItems((current) => (current.length ? current : builtInBrowserContextSnapshot));
+      setMacosVmContextItems((current) => (current.length ? current : macosVmContextSnapshot));
       setOptimisticOutgoingMessage(null);
       setError(message);
       if (
@@ -4560,6 +4724,7 @@ export function AgentChatPane({
     iosElementContextItems,
     appControlContextItems,
     builtInBrowserContextItems,
+    macosVmContextItems,
   ]);
 
   const interrupt = useCallback(async () => {
@@ -5126,6 +5291,7 @@ export function AgentChatPane({
                     <ProviderModelSelector
                       value={handoffModelId}
                       onChange={setHandoffModelId}
+                      onOpen={refreshCursorModelInventory}
                       availableModelIds={handoffAvailableModelIds}
                       showReasoning
                       reasoningEffort={handoffReasoningEffort}
@@ -5443,12 +5609,14 @@ export function AgentChatPane({
             iosElementContextItems={iosElementContextItems}
             appControlContextItems={appControlContextItems}
             builtInBrowserContextItems={builtInBrowserContextItems}
+            macosVmContextItems={macosVmContextItems}
             executionModeOptions={launchModeEditable ? executionModeOptions : []}
             modelSelectionLocked={modelSelectionLocked || sessionMutationKind === "model" || turnActive}
             permissionModeLocked={permissionModeLocked || identitySessionSettingsBusy}
             hideNativeControls={hideNativeControls}
             messagePlaceholder={messagePlaceholder}
             onExecutionModeChange={setExecutionMode}
+            onModelCatalogOpen={refreshCursorModelInventory}
             onInteractionModeChange={(value) => { void updateNativeControls({ interactionMode: value }); }}
             onClaudeModeChange={handleClaudeModeChange}
             onClaudePermissionModeChange={(value) => { void updateNativeControls({ claudePermissionMode: value }); }}
@@ -5471,6 +5639,7 @@ export function AgentChatPane({
             onRemoveIosElementContext={removeIosElementContext}
             onRemoveAppControlContext={removeAppControlContext}
             onRemoveBuiltInBrowserContext={removeBuiltInBrowserContext}
+            onRemoveMacosVmContext={removeMacosVmContext}
             onOpenAiSettings={openAiProvidersSettings}
             onModelChange={(nextModelId) => {
               if (selectedSessionModelId && effectiveAvailableModelIds.length && !effectiveAvailableModelIds.includes(nextModelId)) {

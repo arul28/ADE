@@ -144,6 +144,7 @@ import { createComputerUseArtifactBrokerService } from "./services/computerUse/c
 import { createIosSimulatorService } from "./services/ios/iosSimulatorService";
 import { createAppControlService } from "./services/appControl/appControlService";
 import { createBuiltInBrowserService } from "./services/builtInBrowser/builtInBrowserService";
+import { createMacosVmService } from "./services/macosVm/macosVmService";
 import { configureBuiltInBrowserWebAuthn } from "./services/builtInBrowser/builtInBrowserWebAuthn";
 import { createSyncService } from "./services/sync/syncService";
 import { ApnsService, ApnsKeyStore } from "./services/notifications/apnsService";
@@ -222,7 +223,6 @@ const defaultEnabledBackgroundTaskFlags = new Set<string>([
   "ADE_ENABLE_PORT_ALLOCATION_RECOVERY",
   "ADE_ENABLE_MEMORY_STARTUP_SWEEP",
   "ADE_ENABLE_MEMORY_CONSOLIDATION",
-  "ADE_ENABLE_EMBEDDING_WORKER",
   "ADE_ENABLE_MEMORY_FILE_SYNC",
   "ADE_ENABLE_SYNC_INIT",
 ]);
@@ -2089,6 +2089,28 @@ app.whenReady().then(async () => {
       logger,
       cacheDir: path.join(app.getPath("userData"), "transformers-cache"),
     });
+    const hasEmbeddingSensitiveActivity = () => {
+      try {
+        const activeRuns = db.get<{ count: number }>(
+          `
+            SELECT count(1) AS count
+            FROM orchestrator_runs
+            WHERE project_id = ?
+              AND status IN ('queued', 'bootstrapping', 'active', 'paused', 'completing')
+          `,
+          [projectId],
+        );
+        if (Number(activeRuns?.count ?? 0) > 0) return true;
+      } catch {
+        return true;
+      }
+
+      try {
+        return sessionService.list({ status: "running", limit: 1 }).length > 0;
+      } catch {
+        return true;
+      }
+    };
     // Auto-detect previously downloaded embedding model at startup
     void embeddingService.probeCache().catch(() => {
       /* best-effort */
@@ -2096,6 +2118,7 @@ app.whenReady().then(async () => {
     const hybridSearchService = createHybridSearchService({
       db,
       embeddingService,
+      canUseEmbeddings: () => !hasEmbeddingSensitiveActivity(),
       logger,
     });
     let ctoStateServiceRef: ReturnType<typeof createCtoStateService> | null =
@@ -2172,6 +2195,9 @@ app.whenReady().then(async () => {
       projectId,
       embeddingService,
       sessionService,
+      processBeforeStart: false,
+      canProcess: () => !hasEmbeddingSensitiveActivity(),
+      deferMs: 60_000,
     });
     embeddingWorkerServiceRef = embeddingWorkerService;
     const memoryBriefingService = createMemoryBriefingService({
@@ -2550,6 +2576,7 @@ app.whenReady().then(async () => {
       db,
       projectId,
       projectRoot,
+      logger,
       onBlockingInterventionAdded: ({ missionId, intervention }) => {
         const currentMissionService = missionServiceRef;
         const currentOrchestratorService = orchestratorServiceRef;
@@ -2918,6 +2945,13 @@ app.whenReady().then(async () => {
       },
       onEvent: (payload) =>
         emitProjectEvent(projectRoot, IPC.appControlEvent, payload),
+    });
+    const macosVmService = createMacosVmService({
+      projectRoot,
+      logger,
+      resolveLanes: async () => laneService.list({ includeArchived: false }),
+      onEvent: (payload) =>
+        emitProjectEvent(projectRoot, IPC.macosVmEvent, payload),
     });
     missionPreflightService = createMissionPreflightService({
       logger,
@@ -3598,6 +3632,7 @@ app.whenReady().then(async () => {
       iosSimulatorService: iosSimulatorRpcService,
       appControlService,
       builtInBrowserService,
+      macosVmService,
       orchestratorService,
       aiOrchestratorService,
       missionBudgetService,
@@ -3764,6 +3799,7 @@ app.whenReady().then(async () => {
         iosSimulatorService,
         appControlService,
         builtInBrowserService,
+        macosVmService,
         automationService,
         automationPlannerService,
         githubService,
@@ -3816,6 +3852,7 @@ app.whenReady().then(async () => {
       computerUseArtifactBrokerService,
       iosSimulatorService,
       appControlService,
+      macosVmService,
       queueLandingService,
       issueInventoryService,
       pathToMergeOrchestrator,
@@ -3938,6 +3975,7 @@ app.whenReady().then(async () => {
       iosSimulatorService: null,
       appControlService: null,
       builtInBrowserService: null,
+      macosVmService: null,
       githubService: dormantGithubService,
       projectScaffoldService: dormantProjectScaffoldService,
       feedbackReporterService: null,
@@ -4146,6 +4184,11 @@ app.whenReady().then(async () => {
     }
     try {
       ctx.appControlService?.dispose?.();
+    } catch {
+      // ignore
+    }
+    try {
+      ctx.macosVmService?.dispose?.();
     } catch {
       // ignore
     }

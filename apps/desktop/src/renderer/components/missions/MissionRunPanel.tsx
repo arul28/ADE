@@ -11,6 +11,7 @@ import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
 import { relativeWhen } from "../../lib/format";
 import { formatComputerUseKind, summarizeComputerUseProof } from "../../lib/computerUse";
 import { getMissionInterventionOwnerLabel } from "./missionHelpers";
+import { selectCurrentMissionWorkers, sortMissionWorkers } from "./missionWorkerPresentation";
 
 // ---------------------------------------------------------------------------
 // Props
@@ -80,15 +81,7 @@ function elapsed(startIso: string | null): string {
 }
 
 export function sortWorkers(workers: MissionRunViewWorkerSummary[]): MissionRunViewWorkerSummary[] {
-  const order: Record<string, number> = { active: 0, blocked: 1, idle: 2, completed: 3, failed: 4 };
-  return [...workers].sort((a, b) => {
-    const oa = order[a.status] ?? 5;
-    const ob = order[b.status] ?? 5;
-    if (oa !== ob) return oa - ob;
-    // Among completed workers, sort most recently completed first
-    if (a.completedAt && b.completedAt) return Date.parse(b.completedAt) - Date.parse(a.completedAt);
-    return 0;
-  });
+  return sortMissionWorkers(workers);
 }
 
 export function selectRecentProgress(items: MissionRunViewProgressItem[], limit = 6): MissionRunViewProgressItem[] {
@@ -436,7 +429,7 @@ export function MissionRunPanel({
   hideInterventionHaltReason = false,
 }: MissionRunPanelProps) {
   const sortedWorkers = useMemo(
-    () => (runView ? sortWorkers(runView.workers) : []),
+    () => (runView ? sortWorkers(selectCurrentMissionWorkers(runView.workers)) : []),
     [runView],
   );
 

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type {
   AgentChatCreateArgs,
   AgentChatArchiveArgs,
@@ -94,7 +95,10 @@ import type {
   SyncRemoteCommandAction,
   SyncRemoteCommandDescriptor,
   SyncRemoteCommandPolicy,
+  SyncStartCliSessionArgs,
+  SyncStartCliSessionResult,
   SyncRunQuickCommandArgs,
+  TerminalSessionSummary,
   UpdateSessionMetaArgs,
   UpdateIntegrationProposalArgs,
   TerminalToolType,
@@ -103,6 +107,17 @@ import type {
   UpdatePrTitleArgs,
   WriteTextAtomicArgs,
 } from "../../../shared/types";
+import {
+  buildTrackedCliLaunchCommand,
+  buildTrackedCliResumeCommand,
+  isLaunchProfile,
+  isTrackedCliPermissionMode,
+  LAUNCH_PROFILE_TITLE,
+  LAUNCH_PROFILE_TOOL_TYPE,
+  launchProfileForTerminalSession,
+  resolveTrackedCliResumeCommand,
+  validateLaunchProfilePermissionMode,
+} from "../../../shared/cliLaunch";
 import { normalizePrCreationStrategy } from "../../../shared/prStrategy";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { createCtoStateService } from "../cto/ctoStateService";
@@ -481,6 +496,56 @@ function parseQuickCommandArgs(value: Record<string, unknown>): SyncRunQuickComm
     toolType,
     tracked: asOptionalBoolean(value.tracked),
   };
+}
+
+const DEFAULT_CLI_COLS = 120;
+const DEFAULT_CLI_ROWS = 36;
+
+function clampCliDimension(value: number | undefined, fallback: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, Math.floor(value ?? fallback)));
+}
+
+function parseCliProvider(value: unknown): SyncStartCliSessionArgs["provider"] {
+  const provider = asTrimmedString(value)?.toLowerCase();
+  if (!isLaunchProfile(provider)) throw new Error("work.startCliSession requires provider.");
+  return provider;
+}
+
+function parseCliPermissionMode(value: unknown): SyncStartCliSessionArgs["permissionMode"] {
+  const mode = asTrimmedString(value);
+  return isTrackedCliPermissionMode(mode) ? mode : "default";
+}
+
+function parseStartCliSessionArgs(value: Record<string, unknown>): SyncStartCliSessionArgs {
+  const laneId = requireString(value.laneId, "work.startCliSession requires laneId.");
+  const provider = parseCliProvider(value.provider);
+  const initialInput = typeof value.initialInput === "string" && value.initialInput.trim().length > 0
+    ? value.initialInput.slice(0, 20_000)
+    : null;
+  return {
+    laneId,
+    provider,
+    permissionMode: parseCliPermissionMode(value.permissionMode),
+    title: asTrimmedString(value.title),
+    initialInput,
+    cols: asOptionalNumber(value.cols),
+    rows: asOptionalNumber(value.rows),
+    resumeSessionId: asTrimmedString(value.resumeSessionId),
+  };
+}
+
+function requireResumeSessionForProvider(
+  sessionService: ReturnType<typeof createSessionService>,
+  sessionId: string,
+  provider: SyncStartCliSessionArgs["provider"],
+): TerminalSessionSummary {
+  const session = sessionService.get(sessionId) as TerminalSessionSummary | null;
+  if (!session) throw new Error(`work.startCliSession resumeSessionId '${sessionId}' was not found.`);
+  const existingProvider = launchProfileForTerminalSession(session);
+  if (existingProvider && existingProvider !== provider) {
+    throw new Error(`work.startCliSession resumeSessionId '${sessionId}' belongs to ${existingProvider}, not ${provider}.`);
+  }
+  return session;
 }
 
 function isChatToolType(toolType: string | null | undefined): boolean {
@@ -1713,6 +1778,73 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
       rows: parsed.rows ?? 36,
       toolType: (parsed.toolType ?? "run-shell") as TerminalToolType,
     });
+  });
+  register("work.startCliSession", { viewerAllowed: true, queueable: true }, async (payload) => {
+    const parsed = parseStartCliSessionArgs(payload);
+    const cols = clampCliDimension(parsed.cols, DEFAULT_CLI_COLS, 20, 240);
+    const rows = clampCliDimension(parsed.rows, DEFAULT_CLI_ROWS, 4, 120);
+    const resumeSessionId = parsed.resumeSessionId?.trim() || undefined;
+    const { provider } = parsed;
+    const permissionMode = parsed.permissionMode ?? "default";
+    validateLaunchProfilePermissionMode(provider, permissionMode);
+    const resumeSession = resumeSessionId
+      ? requireResumeSessionForProvider(args.sessionService, resumeSessionId, provider)
+      : null;
+    const toolType = LAUNCH_PROFILE_TOOL_TYPE[provider] as TerminalToolType;
+    const title = parsed.title?.trim() || LAUNCH_PROFILE_TITLE[provider];
+    const preassignedSessionId = provider === "claude" && !resumeSessionId ? randomUUID() : undefined;
+
+    function resolveLaunch(): { startupCommand?: string; command?: string; args?: string[]; env?: Record<string, string> } {
+      if (provider === "shell") return {};
+      if (resumeSessionId) {
+        if (!resumeSession) throw new Error(`work.startCliSession resumeSessionId '${resumeSessionId}' was not found.`);
+        const startupCommand = resolveTrackedCliResumeCommand(resumeSession)
+          ?? buildTrackedCliResumeCommand({
+            provider,
+            targetKind: "session",
+            targetId: null,
+            launch: { permissionMode },
+          });
+        return { startupCommand };
+      }
+      return buildTrackedCliLaunchCommand({ provider, permissionMode, sessionId: preassignedSessionId });
+    }
+
+    const sessionId = resumeSessionId ?? preassignedSessionId;
+    const result = await args.ptyService.create({
+      ...(sessionId ? { sessionId } : {}),
+      allowNewSessionId: Boolean(preassignedSessionId),
+      laneId: parsed.laneId,
+      title,
+      tracked: true,
+      toolType,
+      cols,
+      rows,
+      ...resolveLaunch(),
+    });
+
+    if (parsed.initialInput && provider !== "shell") {
+      const written = args.ptyService.writeBySessionId(result.sessionId, `${parsed.initialInput}\r`);
+      if (!written) {
+        try {
+          args.ptyService.dispose({ ptyId: result.ptyId, sessionId: result.sessionId });
+        } catch (err) {
+          args.logger.warn("sync_remote.start_cli_session_initial_input_cleanup_failed", {
+            sessionId: result.sessionId,
+            err: String(err),
+          });
+        }
+        throw new Error("work.startCliSession created a terminal session but could not write initialInput.");
+      }
+    }
+
+    const session = args.sessionService.get(result.sessionId);
+    const enriched = session ? args.ptyService.enrichSessions([session])[0] ?? session : null;
+    return {
+      sessionId: result.sessionId,
+      ptyId: result.ptyId,
+      session: enriched,
+    } satisfies SyncStartCliSessionResult;
   });
   register("work.closeSession", { viewerAllowed: true, queueable: true }, async (payload) => {
     const { sessionId } = parseCloseSessionArgs(payload);

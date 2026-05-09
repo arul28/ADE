@@ -230,6 +230,7 @@ function buildLaneWarningSummaries(args: {
   lanes: Array<{ id: string; name: string }>;
   allLanes: LaneSummary[];
   laneWarningItemsById: Record<string, string[]>;
+  pullRequests: PrSummary[];
   targetBranch?: string;
   primaryBranchRef?: string | null;
 }): LaneWarningSummary[] {
@@ -243,7 +244,17 @@ function buildLaneWarningSummaries(args: {
         targetBranch: args.targetBranch ?? null,
         primaryBranchRef: args.primaryBranchRef ?? null,
       });
-      const messages = targetDiffMessage ? [...baseMessages, targetDiffMessage] : baseMessages;
+      const parentMergedMessage = describeMergedParentIssue({
+        lane: args.allLanes.find((entry) => entry.id === laneId) ?? null,
+        lanes: args.allLanes,
+        pullRequests: args.pullRequests,
+        primaryBranchRef: args.primaryBranchRef ?? null,
+      });
+      const messages = [
+        ...baseMessages,
+        ...(targetDiffMessage ? [targetDiffMessage] : []),
+        ...(parentMergedMessage ? [parentMergedMessage] : []),
+      ];
       if (!lane || messages.length === 0) return null;
       return { laneId, laneName: lane.name, messages };
     })
@@ -267,8 +278,30 @@ function resolveDefaultBaseBranchForLane(args: {
   lane: LaneSummary | null;
   lanes: LaneSummary[];
   primaryBranchRef?: string | null;
+  pullRequests?: PrSummary[];
 }): string {
+  const lane = args.lane;
+  if (lane?.parentLaneId) {
+    const parentPr = args.pullRequests?.find((pr) => pr.laneId === lane.parentLaneId && pr.state === "merged");
+    if (parentPr?.baseBranch) return parentPr.baseBranch;
+  }
   return resolveLaneBaseBranch(args);
+}
+
+function describeMergedParentIssue(args: {
+  lane: LaneSummary | null;
+  lanes: LaneSummary[];
+  pullRequests: PrSummary[];
+  primaryBranchRef?: string | null;
+}): string | null {
+  const lane = args.lane;
+  if (!lane?.parentLaneId) return null;
+  const parent = args.lanes.find((entry) => entry.id === lane.parentLaneId) ?? null;
+  if (!parent || parent.laneType === "primary") return null;
+  const parentPr = args.pullRequests.find((pr) => pr.laneId === parent.id && pr.state === "merged");
+  if (!parentPr) return null;
+  const targetBranch = parentPr.baseBranch || branchNameFromRef(args.primaryBranchRef ?? "main") || "main";
+  return `The lane this builds on ("${parent.name}") has already merged. Update this lane from ${targetBranch} before creating its PR so the diff starts from merged code.`;
 }
 
 export function reorderQueueLaneIds(queueLaneIds: string[], draggedLaneId: string, targetLaneId: string): string[] {
@@ -410,7 +443,7 @@ function LaneWarningPanel({
               color: C.warning,
             }}
           >
-            Lane Needs Attention
+            Check Before Creating PR
           </div>
           {items.map((item) => (
             <div key={item.laneId} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
@@ -512,6 +545,7 @@ export function CreatePrModal({
   const [simulating, setSimulating] = React.useState(false);
   const [laneSyncStatusById, setLaneSyncStatusById] = React.useState<Record<string, GitUpstreamSyncStatus | null>>({});
   const [laneSyncLoadingById, setLaneSyncLoadingById] = React.useState<Record<string, boolean>>({});
+  const [knownPrs, setKnownPrs] = React.useState<PrSummary[]>([]);
 
   const [draftError, setDraftError] = React.useState<string | null>(null);
 
@@ -534,7 +568,7 @@ export function CreatePrModal({
         }
       });
     return () => { cancelled = true; };
-  }, [open, primaryLane?.id]);
+  }, [open, primaryLane]);
 
   /** Deduplicated list of branch names suitable for a target-branch dropdown. */
   const targetBranchOptions = React.useMemo(() => {
@@ -639,8 +673,25 @@ export function CreatePrModal({
       setQueueErrors([]);
       setAvailableBranches([]);
       setBranchLoadError(null);
+      setKnownPrs([]);
     }, 200);
     return () => clearTimeout(id);
+  }, [open]);
+
+  React.useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    window.ade.prs.listAll()
+      .then((prs) => {
+        if (!cancelled) setKnownPrs(prs);
+      })
+      .catch((err: unknown) => {
+        console.warn("[CreatePrModal] listAll PRs failed", err);
+        if (!cancelled) setKnownPrs([]);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [open]);
 
   React.useEffect(() => {
@@ -700,6 +751,7 @@ export function CreatePrModal({
       lane: selectedNormalLane,
       lanes,
       primaryBranchRef: primaryLane?.branchRef ?? null,
+      pullRequests: knownPrs,
     });
     setNormalBaseBranch((current) => {
       const trimmedCurrent = current.trim();
@@ -710,7 +762,7 @@ export function CreatePrModal({
       }
       return current;
     });
-  }, [open, selectedNormalLane, lanes, primaryLane?.branchRef]);
+  }, [knownPrs, lanes, open, primaryLane?.branchRef, selectedNormalLane]);
 
   const handleSimulate = async () => {
     if (integrationSources.length === 0) return;
@@ -911,30 +963,42 @@ export function CreatePrModal({
       targetBranch: normalBaseBranch,
       primaryBranchRef: primaryLane?.branchRef ?? null,
     });
-    const messages = targetDiffMessage ? [...baseMessages, targetDiffMessage] : baseMessages;
+    const parentMergedMessage = describeMergedParentIssue({
+      lane: selectedNormalLane,
+      lanes,
+      pullRequests: knownPrs,
+      primaryBranchRef: primaryLane?.branchRef ?? null,
+    });
+    const messages = [
+      ...baseMessages,
+      ...(targetDiffMessage ? [targetDiffMessage] : []),
+      ...(parentMergedMessage ? [parentMergedMessage] : []),
+    ];
     if (!messages.length) return [];
     return [{ laneId: selectedNormalLane.id, laneName: selectedNormalLane.name, messages }];
-  }, [laneWarningItemsById, lanes, normalBaseBranch, primaryLane?.branchRef, selectedNormalLane]);
+  }, [knownPrs, laneWarningItemsById, lanes, normalBaseBranch, primaryLane?.branchRef, selectedNormalLane]);
   const selectedQueueWarnings = React.useMemo<LaneWarningSummary[]>(() => {
     return buildLaneWarningSummaries({
       selectedLaneIds: queueLaneIds,
       lanes,
       allLanes: nonPrimaryLanes,
       laneWarningItemsById,
+      pullRequests: knownPrs,
       targetBranch: queueTargetBranch,
       primaryBranchRef: primaryLane?.branchRef ?? null,
     });
-  }, [laneWarningItemsById, lanes, nonPrimaryLanes, primaryLane?.branchRef, queueLaneIds, queueTargetBranch]);
+  }, [knownPrs, laneWarningItemsById, lanes, nonPrimaryLanes, primaryLane?.branchRef, queueLaneIds, queueTargetBranch]);
   const selectedIntegrationWarnings = React.useMemo<LaneWarningSummary[]>(() => {
     return buildLaneWarningSummaries({
       selectedLaneIds: integrationSources,
       lanes,
       allLanes: nonPrimaryLanes,
       laneWarningItemsById,
+      pullRequests: knownPrs,
       targetBranch: integrationBaseBranch,
       primaryBranchRef: primaryLane?.branchRef ?? null,
     });
-  }, [integrationBaseBranch, integrationSources, laneWarningItemsById, lanes, nonPrimaryLanes, primaryLane?.branchRef]);
+  }, [integrationBaseBranch, integrationSources, knownPrs, laneWarningItemsById, lanes, nonPrimaryLanes, primaryLane?.branchRef]);
   const selectedNormalLoading = Boolean(normalLaneId) && laneSyncLoadingById[normalLaneId] === true;
   const selectedQueueLoading = queueLaneIds.some((laneId) => laneSyncLoadingById[laneId] === true);
   const selectedIntegrationLoading = integrationSources.some((laneId) => laneSyncLoadingById[laneId] === true);

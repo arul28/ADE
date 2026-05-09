@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { At, CaretDown, Check, CloudArrowUp, Desktop, DeviceMobile, Globe, Image, Paperclip, PencilSimple, Square, X, PaperPlaneTilt, SquareSplitHorizontal, Plus, Trash, Lightning, ArrowBendDownRight } from "@phosphor-icons/react";
+import { At, CaretDown, Check, CloudArrowUp, Cube, Desktop, DeviceMobile, Globe, Image, Paperclip, PencilSimple, Square, X, PaperPlaneTilt, SquareSplitHorizontal, Plus, Trash, Lightning, ArrowBendDownRight } from "@phosphor-icons/react";
 import { BorderBeam } from "border-beam";
 import {
   inferAttachmentType,
@@ -23,6 +23,7 @@ import {
   type AppControlContextItem,
   type BuiltInBrowserContextItem,
   type IosElementContextItem,
+  type MacosVmContextItem,
   type PendingInputRequest,
 } from "../../../shared/types";
 import { getModelById, modelSupportsFastMode } from "../../../shared/modelRegistry";
@@ -177,6 +178,18 @@ function builtInBrowserContextFrameHint(item: BuiltInBrowserContextItem): string
   return `${Math.round(item.frame.width)}×${Math.round(item.frame.height)} @ ${Math.round(item.frame.x)},${Math.round(item.frame.y)}`;
 }
 
+function macosVmContextDisplayLabel(item: MacosVmContextItem): string {
+  return item.vmName || "macOS VM";
+}
+
+function macosVmContextSourceDescription(item: MacosVmContextItem): string {
+  return item.laneName ? `${item.laneName} lane` : item.laneId;
+}
+
+function macosVmContextRoleHint(item: MacosVmContextItem): string | null {
+  return item.state.replace(/_/g, " ");
+}
+
 /** When set, permission/runtime controls bind to this slot (parallel model row configuration). */
 export type ParallelComposerControlSlot = {
   sessionProvider: string;
@@ -232,6 +245,10 @@ function getAttachBlockedReason(args: {
     return `Maximum ${PARALLEL_CHAT_MAX_ATTACHMENTS} attachments for parallel launch`;
   }
   return null;
+}
+
+function normalizeComposerLabelText(value: string): string {
+  return value.trim().replace(/\s*\.\.\.$/, "").trim();
 }
 
 function iosSourceResolutionLabel(resolution: string): string {
@@ -602,12 +619,14 @@ export function AgentChatComposer({
   iosElementContextItems = [],
   appControlContextItems = [],
   builtInBrowserContextItems = [],
+  macosVmContextItems = [],
   executionModeOptions = [],
   modelSelectionLocked = false,
   permissionModeLocked = false,
   hideNativeControls = false,
   messagePlaceholder,
   onModelChange,
+  onModelCatalogOpen,
   onReasoningEffortChange,
   onCodexFastModeChange,
   onDraftChange,
@@ -633,6 +652,7 @@ export function AgentChatComposer({
   onRemoveIosElementContext,
   onRemoveAppControlContext,
   onRemoveBuiltInBrowserContext,
+  onRemoveMacosVmContext,
   onClearEvents,
   promptSuggestion,
   chatHasMessages = false,
@@ -709,12 +729,14 @@ export function AgentChatComposer({
   iosElementContextItems?: IosElementContextItem[];
   appControlContextItems?: AppControlContextItem[];
   builtInBrowserContextItems?: BuiltInBrowserContextItem[];
+  macosVmContextItems?: MacosVmContextItem[];
   executionModeOptions?: ExecutionModeOption[];
   modelSelectionLocked?: boolean;
   permissionModeLocked?: boolean;
   hideNativeControls?: boolean;
   messagePlaceholder?: string;
   onModelChange: (modelId: string) => void;
+  onModelCatalogOpen?: () => void;
   onReasoningEffortChange: (reasoningEffort: string | null) => void;
   onCodexFastModeChange?: (enabled: boolean) => void;
   onDraftChange: (value: string) => void;
@@ -745,6 +767,7 @@ export function AgentChatComposer({
   onRemoveIosElementContext?: (id: string) => void;
   onRemoveAppControlContext?: (id: string) => void;
   onRemoveBuiltInBrowserContext?: (id: string) => void;
+  onRemoveMacosVmContext?: (id: string) => void;
   onClearEvents?: () => void;
   promptSuggestion?: string | null;
   chatHasMessages?: boolean;
@@ -806,6 +829,7 @@ export function AgentChatComposer({
   const [selectedIosContextId, setSelectedIosContextId] = useState<string | null>(null);
   const [selectedAppControlContextId, setSelectedAppControlContextId] = useState<string | null>(null);
   const [selectedBuiltInBrowserContextId, setSelectedBuiltInBrowserContextId] = useState<string | null>(null);
+  const [selectedMacosVmContextId, setSelectedMacosVmContextId] = useState<string | null>(null);
 
   const [hoveredClaudeMode, setHoveredClaudeMode] = useState<AgentChatClaudePermissionMode | null>(null);
   const [hoveredCodexPreset, setHoveredCodexPreset] = useState<Exclude<CodexPermissionPreset, "custom"> | null>(null);
@@ -833,9 +857,18 @@ export function AgentChatComposer({
   // image. handlePaste consults this to avoid attaching the same image twice
   // when the real paste event lands after the 80ms fallback has already fired.
   const clipboardImagePasteFallbackAttachedRef = useRef(false);
-  const useRichComposer = iosElementContextItems.length > 0 || appControlContextItems.length > 0 || builtInBrowserContextItems.length > 0;
+  const useRichComposer = iosElementContextItems.length > 0
+    || appControlContextItems.length > 0
+    || builtInBrowserContextItems.length > 0
+    || macosVmContextItems.length > 0;
   const composerInputLocked = Boolean(pendingInput?.blocking);
   const composerInputLockMessage = getComposerInputLockMessage(pendingInput);
+  const composerInputContextLabel = normalizeComposerLabelText(messagePlaceholder ?? "") || "Chat message";
+  const composerInputAccessibleLabel = composerInputLockMessage
+    ? `Chat input locked: ${composerInputLockMessage}`
+    : turnActive
+      ? `Steer active turn: ${composerInputContextLabel}`
+      : composerInputContextLabel;
   const canAttach = !composerInputLocked && (!parallelChatMode || attachments.length < PARALLEL_CHAT_MAX_ATTACHMENTS);
   const attachBlockedReason = getAttachBlockedReason({
     composerInputLocked,
@@ -1207,6 +1240,31 @@ export function AgentChatComposer({
     return chip;
   }, []);
 
+  const createMacosVmContextChipNode = useCallback((item: MacosVmContextItem): HTMLElement => {
+    const chip = document.createElement("span");
+    chip.contentEditable = "false";
+    chip.dataset.macosVmContextId = item.id;
+    chip.className = "mx-0.5 inline-flex max-w-[260px] translate-y-[1px] items-center gap-1.5 rounded-md border border-violet-300/22 bg-violet-500/12 px-2 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-5 text-violet-50/85 align-baseline";
+    chip.title = `${macosVmContextDisplayLabel(item)} - ${macosVmContextSourceDescription(item)}`;
+
+    const label = document.createElement("span");
+    label.className = "max-w-[150px] truncate";
+    label.textContent = macosVmContextDisplayLabel(item);
+    chip.appendChild(label);
+
+    const source = document.createElement("span");
+    source.className = "max-w-[90px] truncate text-violet-100/45";
+    source.textContent = macosVmContextSourceDescription(item);
+    chip.appendChild(source);
+
+    const remove = document.createElement("span");
+    remove.className = "rounded px-0.5 text-violet-100/45";
+    remove.textContent = "x";
+    remove.dataset.macosVmRemove = "true";
+    chip.appendChild(remove);
+    return chip;
+  }, []);
+
   useLayoutEffect(() => {
     const editor = richEditorRef.current;
     if (!useRichComposer || !editor) {
@@ -1289,11 +1347,27 @@ export function AgentChatComposer({
       existingBuiltInBrowserIds.add(item.id);
     }
 
+    const macosVmIds = new Set(macosVmContextItems.map((item) => item.id));
+    editor.querySelectorAll<HTMLElement>("[data-macos-vm-context-id]").forEach((node) => {
+      const id = node.dataset.macosVmContextId;
+      if (!id || !macosVmIds.has(id)) node.remove();
+    });
+    const existingMacosVmIds = new Set(
+      Array.from(editor.querySelectorAll<HTMLElement>("[data-macos-vm-context-id]"))
+        .map((node) => node.dataset.macosVmContextId)
+        .filter(Boolean),
+    );
+    for (const item of macosVmContextItems) {
+      if (existingMacosVmIds.has(item.id)) continue;
+      insertChipFragment(createMacosVmContextChipNode(item));
+      existingMacosVmIds.add(item.id);
+    }
+
     const next = serializeRichEditor();
     if (next === lastSerializedDraftRef.current) return;
     lastSerializedDraftRef.current = next;
     onDraftChange(next);
-  }, [appControlContextItems, builtInBrowserContextItems, createAppControlContextChipNode, createBuiltInBrowserContextChipNode, createIosContextChipNode, draft, insertNodeAtTextOffset, iosElementContextItems, onDraftChange, serializeRichEditor, useRichComposer]);
+  }, [appControlContextItems, builtInBrowserContextItems, createAppControlContextChipNode, createBuiltInBrowserContextChipNode, createIosContextChipNode, createMacosVmContextChipNode, draft, insertNodeAtTextOffset, iosElementContextItems, macosVmContextItems, onDraftChange, serializeRichEditor, useRichComposer]);
 
   const handleSlashSelect = useCallback((cmd: SlashCommandEntry) => {
     // Local-only commands handled client-side
@@ -2155,7 +2229,8 @@ export function AgentChatComposer({
     const hasContextSelection =
       iosElementContextItems.length > 0
       || appControlContextItems.length > 0
-      || builtInBrowserContextItems.length > 0;
+      || builtInBrowserContextItems.length > 0
+      || macosVmContextItems.length > 0;
     if (
       cursorCloudAvailable
       && cursorCloudCanLaunch
@@ -2171,13 +2246,14 @@ export function AgentChatComposer({
     }
     if (busy || !modelId || (!draft.trim().length && !hasContextSelection)) return;
     onSubmit();
-  }, [appControlContextItems.length, attachments, builtInBrowserContextItems.length, busy, cursorCloudAvailable, cursorCloudCanLaunch, cursorCloudLaunchModeOpen, draft, iosElementContextItems.length, modelId, onDraftChange, onSubmit, onSubmitToCloud, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length]);
+  }, [appControlContextItems.length, attachments, builtInBrowserContextItems.length, busy, cursorCloudAvailable, cursorCloudCanLaunch, cursorCloudLaunchModeOpen, draft, iosElementContextItems.length, macosVmContextItems.length, modelId, onDraftChange, onSubmit, onSubmitToCloud, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length]);
 
   const pendingQuestionCount = getPendingInputQuestionCount(pendingInput);
   const showPendingInputOptionsHint = hasPendingInputOptions(pendingInput);
   const selectedIosContext = iosElementContextItems.find((item) => item.id === selectedIosContextId) ?? null;
   const selectedAppControlContext = appControlContextItems.find((item) => item.id === selectedAppControlContextId) ?? null;
   const selectedBuiltInBrowserContext = builtInBrowserContextItems.find((item) => item.id === selectedBuiltInBrowserContextId) ?? null;
+  const selectedMacosVmContext = macosVmContextItems.find((item) => item.id === selectedMacosVmContextId) ?? null;
   const selectedIosCandidates = selectedIosContext
     ? iosMetadataArray(selectedIosContext.metadata.sourceCandidates ?? selectedIosContext.metadata.sourceMatches).slice(0, 3)
     : [];
@@ -2208,6 +2284,11 @@ export function AgentChatComposer({
     if (builtInBrowserContextItems.some((item) => item.id === selectedBuiltInBrowserContextId)) return;
     setSelectedBuiltInBrowserContextId(null);
   }, [builtInBrowserContextItems, selectedBuiltInBrowserContextId]);
+  useEffect(() => {
+    if (!selectedMacosVmContextId) return;
+    if (macosVmContextItems.some((item) => item.id === selectedMacosVmContextId)) return;
+    setSelectedMacosVmContextId(null);
+  }, [macosVmContextItems, selectedMacosVmContextId]);
 
   // Idle composer motion keeps the GPU busy; reserve the beam for active turns.
   const composerBeamActive = isActive && layoutVariant !== "grid-tile" && !iosSimulatorOpen && turnActive;
@@ -2222,7 +2303,8 @@ export function AgentChatComposer({
   const hasIosElementContext = iosElementContextItems.length > 0;
   const hasAppControlContext = appControlContextItems.length > 0;
   const hasBuiltInBrowserContext = builtInBrowserContextItems.length > 0;
-  const singleReady = !parallelChatMode && Boolean(modelId) && (draft.trim().length > 0 || hasIosElementContext || hasAppControlContext || hasBuiltInBrowserContext);
+  const hasMacosVmContext = macosVmContextItems.length > 0;
+  const singleReady = !parallelChatMode && Boolean(modelId) && (draft.trim().length > 0 || hasIosElementContext || hasAppControlContext || hasBuiltInBrowserContext || hasMacosVmContext);
   const sendEnabled = !busy && !parallelLaunchBusy && !composerInputLocked && (parallelReady || singleReady);
 
   function sendButtonTitle(): string {
@@ -2236,6 +2318,7 @@ export function AgentChatComposer({
     if (!draft.trim().length && hasAppControlContext) return "Send selected App Control context";
     if (!draft.trim().length && hasIosElementContext) return "Send selected iOS context";
     if (!draft.trim().length && hasBuiltInBrowserContext) return "Send selected browser context";
+    if (!draft.trim().length && hasMacosVmContext) return "Send selected macOS VM target";
     return "Send";
   }
 
@@ -2314,8 +2397,41 @@ export function AgentChatComposer({
         )
       ) : undefined}
       trays={
-        attachments.length || attachError || selectedIosContext || selectedAppControlContext || selectedBuiltInBrowserContext ? (
+        attachments.length || attachError || selectedIosContext || selectedAppControlContext || selectedBuiltInBrowserContext || selectedMacosVmContext ? (
           <div className="space-y-2 px-1 py-2">
+            {selectedMacosVmContext ? (
+              <div className="relative mx-3 grid grid-cols-[72px_minmax(0,1fr)] gap-2 rounded-md border border-violet-300/12 bg-black/20 p-2 pr-6">
+                <button
+                  type="button"
+                  aria-label="Dismiss preview"
+                  className="absolute right-1.5 top-1.5 rounded p-0.5 text-violet-100/40 transition-colors hover:text-violet-50/85"
+                  onClick={() => setSelectedMacosVmContextId(null)}
+                >
+                  <X size={10} weight="bold" />
+                </button>
+                <div className="flex h-16 w-16 items-center justify-center rounded border border-white/[0.06] bg-white/[0.03] text-violet-100/35">
+                  <Cube size={20} weight="regular" />
+                </div>
+                <div className="min-w-0 space-y-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/70">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <span className="shrink-0 rounded border border-violet-300/22 bg-violet-500/8 px-1 py-px font-mono text-[length:calc(var(--chat-font-size)*8/14)] uppercase text-violet-100/75">
+                      Mac VM
+                    </span>
+                    <span className="truncate text-violet-50/85">{macosVmContextDisplayLabel(selectedMacosVmContext)}</span>
+                    {macosVmContextRoleHint(selectedMacosVmContext) ? (
+                      <span className="shrink-0 rounded bg-white/[0.04] px-1 py-px font-mono text-[length:calc(var(--chat-font-size)*8/14)] uppercase text-muted-fg/55">
+                        {macosVmContextRoleHint(selectedMacosVmContext)}
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="truncate">{macosVmContextSourceDescription(selectedMacosVmContext)}</div>
+                  <div className="truncate text-violet-100/45">{selectedMacosVmContext.guestLanePath}</div>
+                  <div className="truncate font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-violet-50/55">
+                    {selectedMacosVmContext.runCommand}
+                  </div>
+                </div>
+              </div>
+            ) : null}
             {selectedBuiltInBrowserContext ? (
               <div className="relative mx-3 grid grid-cols-[72px_minmax(0,1fr)] gap-2 rounded-md border border-teal-300/12 bg-black/20 p-2 pr-6">
                 <button
@@ -2756,6 +2872,7 @@ export function AgentChatComposer({
               <ProviderModelSelector
                 value={parallelModelSlots[parallelConfiguringIndex]!.modelId}
                 onChange={(next) => onParallelSlotModelChange?.(parallelConfiguringIndex, next)}
+                onOpen={onModelCatalogOpen}
                 availableModelIds={availableModelIds}
                 disabled={parallelLaunchBusy}
                 showReasoning
@@ -2776,6 +2893,7 @@ export function AgentChatComposer({
               <ProviderModelSelector
                 value={modelId}
                 onChange={onModelChange}
+                onOpen={onModelCatalogOpen}
                 availableModelIds={availableModelIds}
                 disabled={modelSelectionLocked}
                 showReasoning
@@ -3119,7 +3237,7 @@ export function AgentChatComposer({
           />
           {useRichComposer ? (
             <div className="relative">
-              {!draft.trim().length && !iosElementContextItems.length && !appControlContextItems.length && !builtInBrowserContextItems.length ? (
+              {!draft.trim().length && !iosElementContextItems.length && !appControlContextItems.length && !builtInBrowserContextItems.length && !macosVmContextItems.length ? (
                 <div className="pointer-events-none absolute left-4 top-2.5 font-sans text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-muted-fg/30">
                   {composerInputLockMessage ?? (turnActive ? "Steer the active turn..." : (messagePlaceholder ?? "Type to vibecode..."))}
                 </div>
@@ -3129,6 +3247,7 @@ export function AgentChatComposer({
                 contentEditable={!parallelLaunchBusy && !composerInputLocked}
                 role="textbox"
                 aria-multiline="true"
+                aria-label={composerInputAccessibleLabel}
                 suppressContentEditableWarning
                 className={cn(
                   "block max-h-[200px] min-h-[2.6rem] w-full overflow-auto whitespace-pre-wrap break-words bg-transparent px-4 py-2.5 font-sans text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-fg/88 outline-none transition-colors",
@@ -3155,6 +3274,7 @@ export function AgentChatComposer({
                     setSelectedIosContextId((current) => current === iosChip.dataset.iosContextId ? null : iosChip.dataset.iosContextId ?? null);
                     setSelectedAppControlContextId(null);
                     setSelectedBuiltInBrowserContextId(null);
+                    setSelectedMacosVmContextId(null);
                     return;
                   }
                   const appControlChip = target?.closest?.("[data-app-control-context-id]") as HTMLElement | null;
@@ -3170,6 +3290,7 @@ export function AgentChatComposer({
                     );
                     setSelectedIosContextId(null);
                     setSelectedBuiltInBrowserContextId(null);
+                    setSelectedMacosVmContextId(null);
                     return;
                   }
                   const builtInBrowserChip = target?.closest?.("[data-built-in-browser-context-id]") as HTMLElement | null;
@@ -3185,6 +3306,23 @@ export function AgentChatComposer({
                     );
                     setSelectedIosContextId(null);
                     setSelectedAppControlContextId(null);
+                    setSelectedMacosVmContextId(null);
+                    return;
+                  }
+                  const macosVmChip = target?.closest?.("[data-macos-vm-context-id]") as HTMLElement | null;
+                  if (macosVmChip?.dataset.macosVmContextId) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    if (target?.dataset.macosVmRemove === "true") {
+                      onRemoveMacosVmContext?.(macosVmChip.dataset.macosVmContextId);
+                      return;
+                    }
+                    setSelectedMacosVmContextId((current) =>
+                      current === macosVmChip.dataset.macosVmContextId ? null : macosVmChip.dataset.macosVmContextId ?? null,
+                    );
+                    setSelectedIosContextId(null);
+                    setSelectedAppControlContextId(null);
+                    setSelectedBuiltInBrowserContextId(null);
                   }
                 }}
               />
@@ -3236,6 +3374,7 @@ export function AgentChatComposer({
               autoCorrect="on"
               autoCapitalize="sentences"
               spellCheck={true}
+              aria-label={composerInputAccessibleLabel}
               className={cn(
                 "block w-full resize-none bg-transparent px-4 py-2.5 text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-fg/88 outline-none transition-colors placeholder:text-muted-fg/30",
                 dragActive ? "opacity-30" : "",

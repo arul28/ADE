@@ -31,10 +31,38 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(output, "middle\nbottom")
   }
 
+  func testTerminalDisplayErasesFromCursorToEndOfScreen() {
+    let absentParam = sanitizeTerminalOutputForDisplay("alpha\nbravo\ncharlie\u{001B}[2A\u{001B}[3G\u{001B}[JZ")
+    let zeroParam = sanitizeTerminalOutputForDisplay("alpha\nbravo\ncharlie\u{001B}[2A\u{001B}[3G\u{001B}[0JZ")
+
+    XCTAssertEqual(absentParam, "alZ")
+    XCTAssertEqual(zeroParam, "alZ")
+  }
+
+  func testTerminalDisplayHandlesLineAndCharacterEditing() {
+    XCTAssertEqual(
+      sanitizeTerminalOutputForDisplay("one\ntwo\nthree\u{001B}[2A\u{001B}[G\u{001B}[M"),
+      "two\nthree"
+    )
+    XCTAssertEqual(
+      sanitizeTerminalOutputForDisplay("one\nthree\u{001B}[1A\u{001B}[G\u{001B}[Ltwo"),
+      "two\none\nthree"
+    )
+    XCTAssertEqual(
+      sanitizeTerminalOutputForDisplay("abcdef\u{001B}[1G\u{001B}[2P"),
+      "cdef"
+    )
+  }
+
   func testTerminalDisplayStripsAnsiColorAndBackspaces() {
     let output = sanitizeTerminalOutputForDisplay("\u{001B}[31merr\u{001B}[0mor\u{0008}k")
 
     XCTAssertEqual(output, "errok")
+  }
+
+  func testShellCliPermissionModeDoesNotInheritRuntimeMode() {
+    XCTAssertNil(workCliPermissionMode(provider: "shell", runtimeMode: "plan"))
+    XCTAssertEqual(workCliPermissionMode(provider: "codex", runtimeMode: "plan"), "plan")
   }
 
   func testTerminalDisplayPreservesAnsiRunsForRendering() {
@@ -843,6 +871,26 @@ final class ADETests: XCTestCase {
     }
     XCTAssertEqual(detailObject["summary"], .string("Retry later"))
 
+    let userMessageJSON = """
+    {
+      "sessionId": "session-3",
+      "timestamp": "2026-03-17T00:02:00.000Z",
+      "event": {
+        "type": "user_message",
+        "text": "INTERNAL_RUNTIME_PROMPT",
+        "displayText": "ADE coordinator tick: review mission state and route the next action.",
+        "turnId": "turn-1"
+      }
+    }
+    """
+
+    let userMessageEnvelope = try JSONDecoder().decode(AgentChatEventEnvelope.self, from: Data(userMessageJSON.utf8))
+    guard case .userMessage(let userText, _, let userTurnId, _, _, _) = userMessageEnvelope.event else {
+      return XCTFail("Expected user message event.")
+    }
+    XCTAssertEqual(userText, "ADE coordinator tick: review mission state and route the next action.")
+    XCTAssertEqual(userTurnId, "turn-1")
+
     let resolvedJSON = """
     {
       "sessionId": "session-3",
@@ -891,6 +939,17 @@ final class ADETests: XCTestCase {
     let unsubscribedRevision = service.localStateRevision
     try await service.unsubscribeFromChatEvents(sessionId: "session-1")
     XCTAssertEqual(service.localStateRevision, unsubscribedRevision)
+  }
+
+  @MainActor
+  func testTerminalBufferSurvivesCredentialClearingDisconnect() {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+
+    service.seedTerminalBufferForTesting(sessionId: "terminal-1", transcript: "full terminal history")
+    service.disconnect(clearCredentials: true)
+
+    XCTAssertEqual(service.terminalBuffers["terminal-1"], "full terminal history")
+    XCTAssertEqual(service.subscribedTerminalSessionIds, Set(["terminal-1"]))
   }
 
   @MainActor
@@ -4622,6 +4681,42 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(isChatSession(makeTerminalSessionSummary(toolType: nil)))
   }
 
+  func testTerminalResumeTargetDetectionMatchesDesktopResumeAvailability() {
+    XCTAssertFalse(terminalSessionHasResumeTarget(makeTerminalSessionSummary(
+      toolType: "shell",
+      resumeCommand: nil,
+      resumeMetadata: nil
+    )))
+    XCTAssertFalse(terminalSessionHasResumeTarget(makeTerminalSessionSummary(
+      toolType: "run-shell",
+      resumeCommand: "   ",
+      resumeMetadata: nil
+    )))
+    XCTAssertTrue(terminalSessionHasResumeTarget(makeTerminalSessionSummary(
+      toolType: "codex",
+      resumeCommand: "codex resume thread-1",
+      resumeMetadata: nil
+    )))
+    XCTAssertTrue(terminalSessionHasResumeTarget(makeTerminalSessionSummary(
+      toolType: "codex",
+      resumeCommand: nil,
+      resumeMetadata: TerminalResumeMetadata(
+        provider: "codex",
+        targetKind: "thread",
+        targetId: "thread-1",
+        launch: TerminalResumeLaunchConfig(
+          permissionMode: "edit",
+          claudePermissionMode: nil,
+          codexApprovalPolicy: "on-request",
+          codexSandbox: "workspace-write",
+          codexConfigSource: "flags"
+        ),
+        target: nil,
+        permissionMode: "edit"
+      )
+    )))
+  }
+
   func testAgentChatSessionSummaryDecodesCursorAndControlFields() throws {
     let payload: [String: Any] = [
       "sessionId": "chat-1",
@@ -5056,6 +5151,21 @@ final class ADETests: XCTestCase {
       return XCTFail("Expected system_notice event.")
     }
     XCTAssertEqual(noticeSteerId, "steer-1")
+  }
+
+  func testParseWorkChatTranscriptPrefersUserMessageDisplayText() {
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:01.000Z","sequence":1,"event":{"type":"user_message","text":"INTERNAL_RUNTIME_PROMPT","displayText":"ADE coordinator start: initialize the mission.","turnId":"turn-1"}}
+    """
+
+    let transcript = parseWorkChatTranscript(raw)
+    XCTAssertEqual(transcript.count, 1)
+
+    guard case .userMessage(let text, let turnId, _, _, _) = transcript[0].event else {
+      return XCTFail("Expected user_message event.")
+    }
+    XCTAssertEqual(text, "ADE coordinator start: initialize the mission.")
+    XCTAssertEqual(turnId, "turn-1")
   }
 
   func testDerivePendingWorkInputsReturnsApprovalsAndQuestionsInRequestOrder() {
@@ -7050,7 +7160,9 @@ final class ADETests: XCTestCase {
     status: String = "running",
     title: String = "Codex chat",
     lastOutputPreview: String? = nil,
-    startedAt: String = recentIso8601Fixture()
+    startedAt: String = recentIso8601Fixture(),
+    resumeCommand: String? = nil,
+    resumeMetadata: TerminalResumeMetadata? = nil
   ) -> TerminalSessionSummary {
     TerminalSessionSummary(
       id: id,
@@ -7073,8 +7185,8 @@ final class ADETests: XCTestCase {
       lastOutputPreview: lastOutputPreview,
       summary: nil,
       runtimeState: runtimeState,
-      resumeCommand: nil,
-      resumeMetadata: nil,
+      resumeCommand: resumeCommand,
+      resumeMetadata: resumeMetadata,
       chatIdleSinceAt: nil
     )
   }

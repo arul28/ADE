@@ -1,4 +1,5 @@
-import type { AgentChatEventEnvelope } from "./chat";
+import type { AgentChatEventEnvelope, AgentChatPermissionMode } from "./chat";
+import type { TerminalSessionSummary } from "./sessions";
 
 export type SyncScalarBytes = {
   type: "bytes";
@@ -500,6 +501,25 @@ export type SyncRunQuickCommandArgs = {
   tracked?: boolean;
 };
 
+export type SyncCliLaunchProvider = "claude" | "codex" | "cursor" | "droid" | "opencode" | "shell";
+
+export type SyncStartCliSessionArgs = {
+  laneId: string;
+  provider: SyncCliLaunchProvider;
+  permissionMode?: AgentChatPermissionMode | null;
+  title?: string | null;
+  initialInput?: string | null;
+  cols?: number;
+  rows?: number;
+  resumeSessionId?: string | null;
+};
+
+export type SyncStartCliSessionResult = {
+  sessionId: string;
+  ptyId: string | null;
+  session: TerminalSessionSummary | null;
+};
+
 export type SyncRemoteCommandAction =
   | "lanes.list"
   | "lanes.presence.announce"
@@ -538,6 +558,7 @@ export type SyncRemoteCommandAction =
   | "work.listSessions"
   | "work.updateSessionMeta"
   | "work.runQuickCommand"
+  | "work.startCliSession"
   | "work.closeSession"
   | "processes.listDefinitions"
   | "processes.listRuntime"
