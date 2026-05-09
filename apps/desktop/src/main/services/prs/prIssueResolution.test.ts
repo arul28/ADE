@@ -1536,7 +1536,7 @@ describe("issueInventoryService", () => {
       const settings = service.getPipelineSettings(PR_ID);
 
       expect(settings).toEqual({
-        autoMerge: false,
+        autoMerge: true,
         mergeMethod: "repo_default",
         maxRounds: 5,
         onRebaseNeeded: "pause",
@@ -1548,9 +1548,9 @@ describe("issueInventoryService", () => {
           permissionMode: null,
           confidenceThreshold: null,
         },
-        forceFinalizeMode: "off",
+        forceFinalizeMode: "conditional",
         forceFinalizeRequireNoCiFailures: true,
-        atCapPolicy: "stop",
+        atCapPolicy: "ci_retry_once",
         atCapWaitMinutes: 30,
         atCapCiRetryMax: 3,
         forceMergeRequiresConfirmation: true,

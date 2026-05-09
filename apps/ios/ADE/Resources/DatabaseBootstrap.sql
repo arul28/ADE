@@ -2575,7 +2575,7 @@ create index if not exists idx_inventory_pr_state on pr_issue_inventory(pr_id, s
 
 create table if not exists pr_pipeline_settings (
       pr_id text primary key,
-      auto_merge integer not null default 0,
+      auto_merge integer not null default 1,
       merge_method text not null default 'repo_default',
       max_rounds integer not null default 5,
       on_rebase_needed text not null default 'pause',
@@ -2585,7 +2585,7 @@ create table if not exists pr_pipeline_settings (
 
 alter table pr_pipeline_settings add column conflict_strategy text not null default 'pause';
 
-alter table pr_pipeline_settings add column force_finalize_mode text not null default 'off';
+alter table pr_pipeline_settings add column force_finalize_mode text not null default 'conditional';
 
 alter table pr_pipeline_settings add column force_finalize_require_no_ci_failures integer not null default 1;
 
@@ -2601,7 +2601,7 @@ alter table pr_pipeline_settings add column auto_agent_permission_mode text;
 
 alter table pr_pipeline_settings add column auto_agent_confidence_threshold real;
 
-alter table pr_pipeline_settings add column at_cap_policy text;
+alter table pr_pipeline_settings add column at_cap_policy text default 'ci_retry_once';
 
 alter table pr_pipeline_settings add column at_cap_wait_minutes integer;
 
