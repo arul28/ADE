@@ -2956,10 +2956,12 @@ export function createPrService({
           const existingPrNumber = Number(existingPr?.number);
           if (Number.isFinite(existingPrNumber) && existingPrNumber > 0) {
             const existingBody = typeof existingPr?.body === "string" ? existingPr.body : "";
+            const closeOnMerge = args.closeLinearIssueOnMerge === true;
             const patchedBody = ensureLinearPrReference(
               existingBody,
               lane.linearIssue,
-              args.closeLinearIssueOnMerge === true,
+              closeOnMerge,
+              closeOnMerge ? { preserveExisting: false } : undefined,
             );
             if (patchedBody !== existingBody) {
               try {

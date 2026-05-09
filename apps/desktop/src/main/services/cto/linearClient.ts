@@ -551,7 +551,7 @@ export function createLinearClient(args: LinearClientArgs) {
   };
 
   const searchIssues = async (params: IssueTrackerIssueSearchQuery): Promise<IssueTrackerIssueSearchResult> => {
-    const first = Math.min(100, Math.max(10, Math.floor(params.first ?? 50)));
+    const first = Math.min(100, Math.max(1, Math.floor(params.first ?? 50)));
     const filter = buildIssueSearchFilter(params);
     const data = await request<{
       issues?: {

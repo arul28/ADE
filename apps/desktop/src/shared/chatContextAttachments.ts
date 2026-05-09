@@ -133,11 +133,23 @@ function cleanIssueValue(value: string | null | undefined): string | null {
   return trimmed?.length ? trimmed : null;
 }
 
+function escapeUntrustedXml(value: string): string {
+  // Entity-escape characters that would otherwise let untrusted Linear content
+  // break out of the surrounding `<untrusted-data>` wrapper. `&` must be first
+  // so we don't double-escape entities introduced by later replacements.
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
 function wrapUntrustedLinearText(value: string): string {
   // Linear titles/descriptions are author-controlled and may contain
   // prompt-injection content. Wrap them so downstream agents know the text
   // inside is data, not instructions.
-  return `<untrusted-data source="linear">${value}</untrusted-data>`;
+  return `<untrusted-data source="linear">${escapeUntrustedXml(value)}</untrusted-data>`;
 }
 
 function formatLinearIssueContext(issue: LaneLinearIssue): string {
