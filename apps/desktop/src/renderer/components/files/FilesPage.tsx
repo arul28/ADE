@@ -26,8 +26,7 @@ import type {
   GitCommitSummary,
   LaneSummary,
 } from "../../../shared/types";
-import { type MonacoDiffHandle } from "../lanes/MonacoDiffView";
-import { AdeDiffViewer } from "../shared/AdeDiffViewer";
+import { AdeDiffViewer, type AdeDiffViewerHandle } from "../shared/AdeDiffViewer";
 import { useAppStore } from "../../state/appStore";
 import { clearDirtyBuffersForWorkspace, replaceDirtyBuffersForWorkspace } from "../../lib/dirtyWorkspaceBuffers";
 import { modifierKeyLabel, revealLabel } from "../../lib/platform";
@@ -399,6 +398,16 @@ function fileDiffHasRenderableChanges(diff: FileDiff): boolean {
   return diff.original.text !== diff.modified.text;
 }
 
+function filePatchHasRenderableChanges(patch: FilePatch | null | undefined): patch is FilePatch {
+  if (!patch) return false;
+  if (patch.isBinary) return true;
+  return patch.patch.trim().length > 0;
+}
+
+function settledErrorMessage(reason: unknown): string {
+  return reason instanceof Error ? reason.message : String(reason);
+}
+
 const FILES_WORKSPACE_SELECT_LABEL_MAX_LEN = 52;
 
 function shortBranchLabel(ref: string | null | undefined): string {
@@ -524,7 +533,7 @@ export function FilesPage({
     startColumn?: number;
   } | null>(null);
   const pendingRevealRef = useRef<{ mode: EditorViewMode; startLine: number; startColumn?: number; targetPath?: string } | null>(null);
-  const diffViewRef = useRef<MonacoDiffHandle | null>(null);
+  const diffViewRef = useRef<AdeDiffViewerHandle | null>(null);
   const treeRefreshStateRef = useRef<{
     inFlight: boolean;
     queuedFull: boolean;
@@ -2587,7 +2596,7 @@ function FilesDiffPanel({
   laneId: string;
   path: string;
   theme: EditorThemeMode;
-  diffViewRef?: React.MutableRefObject<MonacoDiffHandle | null>;
+  diffViewRef?: React.MutableRefObject<AdeDiffViewerHandle | null>;
 }) {
   const [mode, setMode] = useState<"unstaged" | "staged" | "commit">("unstaged");
   const [diff, setDiff] = useState<any>(null);
@@ -2637,18 +2646,22 @@ function FilesDiffPanel({
         window.ade.diff.getFilePatch(args),
       ]);
       if (cancelled) return;
-      if (nextDiff.status === "rejected" && nextPatch.status === "rejected") {
-        throw nextDiff.reason;
+      const resolvedDiff = nextDiff.status === "fulfilled" ? nextDiff.value : null;
+      const resolvedPatch = nextPatch.status === "fulfilled" && filePatchHasRenderableChanges(nextPatch.value) ? nextPatch.value : null;
+      const hasRenderableDiff = resolvedDiff ? fileDiffHasRenderableChanges(resolvedDiff) : false;
+      if (!resolvedPatch && !hasRenderableDiff) {
+        if (nextDiff.status === "rejected") throw nextDiff.reason;
+        if (nextPatch.status === "rejected") throw nextPatch.reason;
       }
-      setDiff(nextDiff.status === "fulfilled" ? nextDiff.value : null);
-      setPatch(nextPatch.status === "fulfilled" && nextPatch.value.patch.trim() ? nextPatch.value : null);
+      setDiff(resolvedDiff);
+      setPatch(resolvedPatch);
     };
 
     load().catch((err) => {
       if (cancelled) return;
       setDiff(null);
       setPatch(null);
-      setError(err instanceof Error ? err.message : String(err));
+      setError(settledErrorMessage(err));
     });
 
     return () => {

@@ -13,6 +13,19 @@ function normalizePath(pathValue: string): string {
   return pathValue.replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, "");
 }
 
+function filePatchHasRenderableChanges(patch: FilePatch | null | undefined): patch is FilePatch {
+  if (!patch) return false;
+  if (patch.isBinary) return true;
+  return patch.patch.trim().length > 0;
+}
+
+function fileDiffHasRenderableChanges(diff: FileDiff | null | undefined): diff is FileDiff {
+  if (!diff) return false;
+  if (diff.original.exists !== diff.modified.exists) return true;
+  if (diff.isBinary) return true;
+  return diff.original.text !== diff.modified.text;
+}
+
 const MAX_COMMIT_FILE_ROWS = 500;
 
 function DiffFailedRetry({ onRetry }: { onRetry: () => void }) {
@@ -79,20 +92,28 @@ export function LaneDiffPane({
 
     return Promise.allSettled([
       window.ade.diff.getFile({ laneId, path: selectedPath, mode: selectedFileMode }),
-      selectedFileMode === "staged"
-        ? window.ade.diff.getFilePatch({ laneId, path: selectedPath, mode: selectedFileMode })
-        : Promise.resolve(null),
+      window.ade.diff.getFilePatch({ laneId, path: selectedPath, mode: selectedFileMode }),
     ])
       .then(([diffResult, patchResult]) => {
         if (workingDiffRequestSeq.current !== requestId) return;
-        if (diffResult.status !== "fulfilled") {
+        const nextDiff = diffResult.status === "fulfilled" ? diffResult.value : null;
+        const nextPatch = patchResult.status === "fulfilled" && filePatchHasRenderableChanges(patchResult.value) ? patchResult.value : null;
+        if (!nextPatch && (!nextDiff || !fileDiffHasRenderableChanges(nextDiff))) {
+          if (diffResult.status === "rejected" || patchResult.status === "rejected") {
+            setDiff(null);
+            setPatch(null);
+            setDiffFailed(true);
+            return;
+          }
+        }
+        if (!nextDiff && !nextPatch) {
           setDiff(null);
           setPatch(null);
           setDiffFailed(true);
           return;
         }
-        setDiff(diffResult.value);
-        setPatch(patchResult.status === "fulfilled" && patchResult.value?.patch.trim() ? patchResult.value : null);
+        setDiff(nextDiff);
+        setPatch(nextPatch);
         setDiffFailed(false);
       })
       .catch(() => {
@@ -214,14 +235,25 @@ export function LaneDiffPane({
     ])
       .then(([diffResult, patchResult]) => {
         if (commitDiffRequestSeq.current !== requestId) return;
+        const nextDiff = diffResult.status === "fulfilled" ? diffResult.value : null;
+        const nextPatch = patchResult.status === "fulfilled" && filePatchHasRenderableChanges(patchResult.value) ? patchResult.value : null;
+        if (!nextPatch && !fileDiffHasRenderableChanges(nextDiff)) {
+          if (diffResult.status === "rejected" || patchResult.status === "rejected") {
+            setCommitDiff(null);
+            setCommitPatch(null);
+            setCommitDiffFailed(true);
+            return;
+          }
+        }
         if (diffResult.status !== "fulfilled" && patchResult.status !== "fulfilled") {
           setCommitDiff(null);
           setCommitPatch(null);
           setCommitDiffFailed(true);
           return;
         }
-        setCommitDiff(diffResult.status === "fulfilled" ? diffResult.value : null);
-        setCommitPatch(patchResult.status === "fulfilled" && patchResult.value.patch.trim() ? patchResult.value : null);
+        setCommitDiff(nextDiff);
+        setCommitPatch(nextPatch);
+        setCommitDiffFailed(false);
       })
       .catch(() => {
         if (commitDiffRequestSeq.current !== requestId) return;
@@ -341,7 +373,8 @@ export function LaneDiffPane({
   }
 
   // Working tree file diff
-  if (selectedPath && diff && laneId) {
+  if (selectedPath && laneId && (diff || patch)) {
+    const displayPath = diff?.path ?? patch?.path ?? selectedPath;
     return (
       <div className="h-full flex flex-col" style={{ background: COLORS.pageBg }}>
         <div
@@ -360,7 +393,7 @@ export function LaneDiffPane({
               {selectedFileMode === "unstaged" ? "WORKING TREE" : "INDEX"}
             </span>
             <span style={{ color: COLORS.outlineBorder }}>/</span>
-            {diff.path.split("/").map((segment, idx, arr) => (
+            {displayPath.split("/").map((segment, idx, arr) => (
               <React.Fragment key={idx}>
                 <span style={{
                   fontFamily: MONO_FONT,
@@ -392,7 +425,7 @@ export function LaneDiffPane({
                 </button>
               </SmartTooltip>
             ) : null}
-            {selectedFileMode === "unstaged" && !diff.isBinary ? (
+            {selectedFileMode === "unstaged" && diff && !diff.isBinary ? (
               <SmartTooltip content={{
                 label: "Save",
                 description: "Write the edited content back to the working tree.",

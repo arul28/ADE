@@ -50,6 +50,41 @@ describe("diffService", () => {
     }
   });
 
+  it("preserves numstat for non-ASCII and tabbed paths", async () => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-diff-service-quoted-paths-"));
+    const service = createDiffService({ laneService: createLaneServiceStub(rootPath) });
+    const unicodePath = "caf\u00e9.txt";
+    const tabbedPath = "tab\tname.txt";
+
+    try {
+      git(rootPath, ["init"]);
+      git(rootPath, ["config", "user.email", "ade@example.com"]);
+      git(rootPath, ["config", "user.name", "ADE"]);
+      fs.writeFileSync(path.join(rootPath, unicodePath), "one\n", "utf8");
+      fs.writeFileSync(path.join(rootPath, tabbedPath), "one\n", "utf8");
+      git(rootPath, ["add", "."]);
+      git(rootPath, ["commit", "-m", "base"]);
+
+      fs.writeFileSync(path.join(rootPath, unicodePath), "one\ntwo\n", "utf8");
+      fs.writeFileSync(path.join(rootPath, tabbedPath), "one\ntwo\n", "utf8");
+
+      const changes = await service.getChanges("lane-1");
+
+      expect(changes.unstaged.find((change) => change.path === unicodePath)).toMatchObject({
+        kind: "modified",
+        additions: 1,
+        deletions: 0,
+      });
+      expect(changes.unstaged.find((change) => change.path === tabbedPath)).toMatchObject({
+        kind: "modified",
+        additions: 1,
+        deletions: 0,
+      });
+    } finally {
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
   it("returns a bounded read-only patch for a selected file", async () => {
     const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-diff-service-patch-"));
     const service = createDiffService({ laneService: createLaneServiceStub(rootPath) });
@@ -98,6 +133,51 @@ describe("diffService", () => {
         filePath: "../outside.txt",
         mode: "unstaged",
       })).rejects.toThrow("Path escapes root");
+    } finally {
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects diff paths that contain null bytes", async () => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-diff-service-null-path-"));
+    const service = createDiffService({ laneService: createLaneServiceStub(rootPath) });
+
+    try {
+      await expect(service.getFileDiff({
+        laneId: "lane-1",
+        filePath: "bad\0name.txt",
+        mode: "unstaged",
+      })).rejects.toThrow("File path contains an invalid null byte");
+
+      await expect(service.getFilePatch({
+        laneId: "lane-1",
+        filePath: "bad\0name.txt",
+        mode: "unstaged",
+      })).rejects.toThrow("File path contains an invalid null byte");
+    } finally {
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects option-looking commit compare refs", async () => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-diff-service-compare-ref-"));
+    const service = createDiffService({ laneService: createLaneServiceStub(rootPath) });
+
+    try {
+      await expect(service.getFileDiff({
+        laneId: "lane-1",
+        filePath: "sample.ts",
+        mode: "commit",
+        compareRef: "--help",
+      })).rejects.toThrow("compareRef cannot start with '-'");
+
+      await expect(service.getFilePatch({
+        laneId: "lane-1",
+        filePath: "sample.ts",
+        mode: "commit",
+        compareRef: "--help",
+        compareTo: "parent",
+      })).rejects.toThrow("compareRef cannot start with '-'");
     } finally {
       fs.rmSync(rootPath, { recursive: true, force: true });
     }

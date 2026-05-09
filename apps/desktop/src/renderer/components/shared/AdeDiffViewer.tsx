@@ -130,6 +130,14 @@ export const AdeDiffViewer = forwardRef<AdeDiffViewerHandle, AdeDiffViewerProps>
   const normalizedPatch = patch ? normalizePatchForRenderer(patch) : "";
   const oldFile = diff && !patch ? makeFileContents(diff.path, diff.original.text ?? "", "old") : null;
   const newFile = diff && !patch ? makeFileContents(diff.path, diff.modified.text ?? "", "new") : null;
+  const hasInlineDiffContent = Boolean(
+    oldFile
+    && newFile
+    && (
+      (diff?.original.text ?? "").length > 0
+      || (diff?.modified.text ?? "").length > 0
+    ),
+  );
 
   return (
     <div
@@ -182,7 +190,11 @@ export const AdeDiffViewer = forwardRef<AdeDiffViewerHandle, AdeDiffViewerProps>
             <ViewerState title="No patch available" detail={activePath} />
           )
         ) : oldFile && newFile ? (
-          <MultiFileDiff oldFile={oldFile} newFile={newFile} options={options} />
+          hasInlineDiffContent ? (
+            <MultiFileDiff oldFile={oldFile} newFile={newFile} options={options} />
+          ) : (
+            <ViewerState title="No text diff available" detail={activePath} />
+          )
         ) : (
           <ViewerState title="No diff selected" />
         )}

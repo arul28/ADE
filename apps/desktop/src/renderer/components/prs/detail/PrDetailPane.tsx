@@ -3439,6 +3439,7 @@ function FilesTab({ files, expandedFile, setExpandedFile }: { files: PrFile[]; e
           {files.map((file, idx) => {
             const isExpanded = expandedFile === file.filename;
             const statusCol = fileStatusColor(file.status);
+            const filePatch = toPatch(file);
             return (
               <div key={file.filename}>
                 <button
@@ -3470,11 +3471,24 @@ function FilesTab({ files, expandedFile, setExpandedFile }: { files: PrFile[]; e
                   <span style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.success, fontWeight: 600 }}>+{file.additions}</span>
                   <span style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.danger, fontWeight: 600 }}>-{file.deletions}</span>
                 </button>
-                {isExpanded && (
+                {isExpanded && filePatch ? (
                   <div style={{ borderBottom: `1px solid ${COLORS.border}`, height: 500 }}>
-                    <AdeDiffViewer patch={toPatch(file)} editable={false} className="h-full rounded-none border-0" />
+                    <AdeDiffViewer patch={filePatch} editable={false} className="h-full rounded-none border-0" />
                   </div>
-                )}
+                ) : isExpanded ? (
+                  <div
+                    style={{
+                      borderBottom: `1px solid ${COLORS.border}`,
+                      padding: "10px 14px",
+                      fontFamily: MONO_FONT,
+                      fontSize: 11,
+                      color: COLORS.textDim,
+                      background: COLORS.recessedBg,
+                    }}
+                  >
+                    Patch unavailable for this file.
+                  </div>
+                ) : null}
               </div>
             );
           })}

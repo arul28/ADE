@@ -39,15 +39,28 @@ function stripGitStatusPath(raw: string): string {
   return raw.trim();
 }
 
-function normalizeNumstatPath(raw: string): string {
-  const trimmed = raw.trim();
-  if (!trimmed.includes("=>")) return stripGitStatusPath(trimmed);
-  const braceMatch = trimmed.match(/^(.*)\{(.+?) => (.+?)\}(.*)$/);
-  if (braceMatch) {
-    return `${braceMatch[1] ?? ""}${braceMatch[3] ?? ""}${braceMatch[4] ?? ""}`.trim();
+function parseNumstatZ(stdout: string): Array<{ addRaw: string; delRaw: string; filePath: string }> {
+  const entries: Array<{ addRaw: string; delRaw: string; filePath: string }> = [];
+  const records = stdout.split("\0");
+
+  for (let i = 0; i < records.length; i++) {
+    const record = records[i] ?? "";
+    if (!record) continue;
+
+    const [addRaw, delRaw, ...pathParts] = record.split("\t");
+    if (addRaw == null || delRaw == null || pathParts.length === 0) continue;
+
+    let filePath = pathParts.join("\t");
+    if (!filePath) {
+      filePath = records[i + 2] ?? "";
+      i += 2;
+    }
+    if (!filePath) continue;
+
+    entries.push({ addRaw, delRaw, filePath });
   }
-  const idx = trimmed.indexOf("=>");
-  return trimmed.slice(idx + 2).trim();
+
+  return entries;
 }
 
 function parsePorcelainStatusZ(stdout: string): DiffChanges {
@@ -93,14 +106,11 @@ function parsePorcelainStatusZ(stdout: string): DiffChanges {
 
 function applyNumstat(changes: FileChange[], stdout: string): void {
   const byPath = new Map(changes.map((change) => [change.path, change]));
-  for (const line of stdout.split("\n")) {
-    if (!line.trim()) continue;
-    const [addRaw, delRaw, ...pathParts] = line.split("\t");
-    const filePath = normalizeNumstatPath(pathParts.join("\t"));
+  for (const { addRaw, delRaw, filePath } of parseNumstatZ(stdout)) {
     const change = byPath.get(filePath);
     if (!change) continue;
-    const additions = Number.parseInt(addRaw ?? "", 10);
-    const deletions = Number.parseInt(delRaw ?? "", 10);
+    const additions = Number.parseInt(addRaw, 10);
+    const deletions = Number.parseInt(delRaw, 10);
     if (Number.isFinite(additions)) change.additions = additions;
     if (Number.isFinite(deletions)) change.deletions = deletions;
     if (addRaw === "-" || delRaw === "-") change.isBinary = true;
@@ -214,6 +224,17 @@ async function getCommitParentRef(cwd: string, ref: string): Promise<string | nu
   return parentSha?.trim() ? parentSha.trim() : null;
 }
 
+function readCommitCompareRef(compareRef: string | undefined): string {
+  const ref = compareRef?.trim();
+  if (!ref) {
+    throw new Error("compareRef is required for commit mode");
+  }
+  if (ref.startsWith("-")) {
+    throw new Error("compareRef cannot start with '-'");
+  }
+  return ref;
+}
+
 function resolveGitFilePath(worktreePath: string, filePath: string): { absPath: string; gitPath: string } {
   if (!filePath.trim()) {
     throw new Error("File path is required");
@@ -241,8 +262,8 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
 
       const changes = parsePorcelainStatusZ(res.stdout);
       const [unstagedStats, stagedStats] = await Promise.all([
-        runGit(["diff", "--numstat", "--find-renames"], { cwd: worktreePath, timeoutMs: 12_000, maxOutputBytes: 512 * 1024 }),
-        runGit(["diff", "--cached", "--numstat", "--find-renames"], { cwd: worktreePath, timeoutMs: 12_000, maxOutputBytes: 512 * 1024 }),
+        runGit(["diff", "--numstat", "--find-renames", "-z"], { cwd: worktreePath, timeoutMs: 12_000, maxOutputBytes: 512 * 1024 }),
+        runGit(["diff", "--cached", "--numstat", "--find-renames", "-z"], { cwd: worktreePath, timeoutMs: 12_000, maxOutputBytes: 512 * 1024 }),
       ]);
       if (unstagedStats.exitCode === 0) applyNumstat(changes.unstaged, unstagedStats.stdout);
       if (stagedStats.exitCode === 0) applyNumstat(changes.staged, stagedStats.stdout);
@@ -280,17 +301,11 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
       }
 
       if (mode === "commit") {
-        const ref = compareRef?.trim();
-        if (!ref) {
-          throw new Error("compareRef is required for commit mode");
-        }
+        const ref = readCommitCompareRef(compareRef);
         const target = compareTo ?? "worktree";
 
         if (target === "parent") {
-          const parentsRes = await runGit(["rev-list", "--parents", "-n", "1", ref], { cwd: worktreePath, timeoutMs: 10_000 });
-          const parentSha = parentsRes.exitCode === 0 ? parentsRes.stdout.trim().split(" ").slice(1)[0] : undefined;
-          const parentRef = parentSha?.trim() ? parentSha.trim() : null;
-
+          const parentRef = await getCommitParentRef(worktreePath, ref);
           const parentSide = parentRef ? await gitShowText(worktreePath, `${parentRef}:${gitPath}`, MAX_DIFF_SIDE_TEXT_BYTES) : { exists: false, text: "" };
           const commitSide = await gitShowText(worktreePath, `${ref}:${gitPath}`, MAX_DIFF_SIDE_TEXT_BYTES);
           const isBinary = Boolean(parentSide.isBinary || commitSide.isBinary);
@@ -348,10 +363,7 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
       if (mode === "staged") {
         args = ["diff", "--cached", "--no-ext-diff", "--find-renames", "--patch", "--", gitPath];
       } else if (mode === "commit") {
-        const ref = compareRef?.trim();
-        if (!ref) {
-          throw new Error("compareRef is required for commit mode");
-        }
+        const ref = readCommitCompareRef(compareRef);
         const target = compareTo ?? "worktree";
         if (target === "parent") {
           const parentRef = await getCommitParentRef(worktreePath, ref);

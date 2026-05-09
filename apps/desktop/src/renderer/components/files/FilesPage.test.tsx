@@ -23,14 +23,27 @@ type MockEditorInstance = {
 
 let latestMockEditor: MockEditorInstance | null = null;
 let createdMockEditors: MockEditorInstance[] = [];
+const adeDiffViewerMock = vi.hoisted(() => ({
+  getModifiedValue: vi.fn(() => ""),
+  revealLineInCenter: vi.fn(),
+}));
 
 vi.mock("../lanes/MonacoDiffView", () => ({
   MonacoDiffView: () => <div data-testid="monaco-diff" />,
 }));
 
-vi.mock("../shared/AdeDiffViewer", () => ({
-  AdeDiffViewer: () => <div data-testid="ade-diff-viewer" />,
-}));
+vi.mock("../shared/AdeDiffViewer", async () => {
+  const React = await import("react");
+  const AdeDiffViewer = React.forwardRef((_props: any, ref: any) => {
+    React.useImperativeHandle(ref, () => ({
+      getModifiedValue: adeDiffViewerMock.getModifiedValue,
+      revealLineInCenter: adeDiffViewerMock.revealLineInCenter,
+    }));
+    return React.createElement("div", { "data-testid": "ade-diff-viewer" });
+  });
+  AdeDiffViewer.displayName = "MockAdeDiffViewer";
+  return { AdeDiffViewer };
+});
 
 vi.mock("@tanstack/react-virtual", () => ({
   useVirtualizer: ({ count, estimateSize }: { count: number; estimateSize: () => number }) => {
@@ -205,6 +218,33 @@ function renderFilesPage(initialState?: Record<string, unknown>) {
   );
 }
 
+function useLaneWorkspace(laneId = "lane-diff") {
+  useAppStore.setState({
+    selectedLaneId: laneId,
+    lanes: [{ id: laneId, name: "Diff lane", branchRef: "refs/heads/feat/diff" }] as any,
+  });
+  vi.mocked(window.ade.files.listWorkspaces).mockResolvedValue([
+    {
+      id: "primary",
+      kind: "primary",
+      laneId: null,
+      name: "ADE",
+      branchRef: "refs/heads/main",
+      rootPath: projectRoot,
+      isReadOnlyByDefault: false,
+    },
+    {
+      id: "lane-ws",
+      kind: "worktree",
+      laneId,
+      name: "Diff lane",
+      branchRef: "refs/heads/feat/diff",
+      rootPath: `${projectRoot}/.ade/worktrees/diff-lane`,
+      isReadOnlyByDefault: false,
+    },
+  ]);
+}
+
 async function waitForEditorText(text: string) {
   await waitFor(() => {
     expect(screen.getByTestId("mock-monaco-editor").textContent).toContain(text);
@@ -217,6 +257,15 @@ async function waitForFilesWatcherStartup() {
   });
 }
 
+async function switchOpenLaneFileToDiff(laneId: string) {
+  renderFilesPage({
+    openFilePath: "src/index.ts",
+    laneId,
+  });
+  await waitForEditorText("value = 1");
+  fireEvent.click(screen.getByRole("button", { name: "CHANGES" }));
+}
+
 describe("FilesPage", () => {
   const originalAde = globalThis.window.ade;
   const originalConfirm = globalThis.window.confirm;
@@ -227,6 +276,8 @@ describe("FilesPage", () => {
     resetStore();
     latestMockEditor = null;
     createdMockEditors = [];
+    adeDiffViewerMock.getModifiedValue.mockClear();
+    adeDiffViewerMock.revealLineInCenter.mockClear();
     changeListener = null;
     currentTree = cloneTree(ignoredTree);
     fileContents = {
@@ -727,6 +778,69 @@ describe("FilesPage", () => {
         )
       )).toBe(true);
     });
+  });
+
+  it("renders the diff viewer mock with ref forwarding in diff view", async () => {
+    const laneId = "lane-diff";
+    useLaneWorkspace(laneId);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(window.ade.diff.getFile).mockResolvedValue({
+      path: "src/index.ts",
+      mode: "unstaged",
+      original: { exists: true, text: "export const value = 1;\n" },
+      modified: { exists: true, text: "export const value = 2;\n" },
+      language: "typescript",
+    });
+    vi.mocked(window.ade.diff.getFilePatch).mockResolvedValue({
+      path: "src/index.ts",
+      mode: "unstaged",
+      patch: "@@ -1 +1 @@\n-export const value = 1;\n+export const value = 2;\n",
+    });
+
+    try {
+      await switchOpenLaneFileToDiff(laneId);
+
+      await screen.findByTestId("ade-diff-viewer");
+      expect(consoleError.mock.calls.some(([message]) =>
+        String(message).includes("Function components cannot be given refs")
+      )).toBe(false);
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("surfaces diff load failures when the patch fallback is empty", async () => {
+    const laneId = "lane-diff";
+    useLaneWorkspace(laneId);
+    vi.mocked(window.ade.diff.getFile).mockRejectedValue(new Error("diff unavailable"));
+    vi.mocked(window.ade.diff.getFilePatch).mockResolvedValue({
+      path: "src/index.ts",
+      mode: "unstaged",
+      patch: "",
+    });
+
+    await switchOpenLaneFileToDiff(laneId);
+
+    expect(await screen.findByText("diff unavailable")).toBeTruthy();
+    expect(screen.queryByTestId("ade-diff-viewer")).toBeNull();
+  });
+
+  it("surfaces patch load failures when the inline diff has no changes", async () => {
+    const laneId = "lane-diff";
+    useLaneWorkspace(laneId);
+    vi.mocked(window.ade.diff.getFile).mockResolvedValue({
+      path: "src/index.ts",
+      mode: "unstaged",
+      original: { exists: true, text: "export const value = 1;\n" },
+      modified: { exists: true, text: "export const value = 1;\n" },
+      language: "typescript",
+    });
+    vi.mocked(window.ade.diff.getFilePatch).mockRejectedValue(new Error("patch unavailable"));
+
+    await switchOpenLaneFileToDiff(laneId);
+
+    expect(await screen.findByText("patch unavailable")).toBeTruthy();
+    expect(screen.queryByTestId("ade-diff-viewer")).toBeNull();
   });
 
   it("toggles editor theme from main Files header and persists", async () => {

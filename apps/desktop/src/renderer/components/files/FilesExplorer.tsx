@@ -13,6 +13,7 @@ import {
 } from "@phosphor-icons/react";
 import type { FileTreeNode } from "../../../shared/types";
 import { arePathsEqual, normalizePath } from "../../lib/pathUtils";
+import { modifierKeyLabel } from "../../lib/platform";
 import { COLORS, LABEL_STYLE, MONO_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { changeStatusColor, changeStatusLabel, changeStatusTitle, getFileIcon } from "./filePresentation";
@@ -180,6 +181,10 @@ export function FilesExplorer({
       setRenameError("Name is required.");
       return;
     }
+    if (nextName === "." || nextName === "..") {
+      setRenameError("Name cannot be '.' or '..'.");
+      return;
+    }
     if (nextName.includes("/") || nextName.includes("\\")) {
       setRenameError("Use a file name, not a path.");
       return;
@@ -208,6 +213,7 @@ export function FilesExplorer({
           <input
             value={searchQuery}
             onChange={(event) => onSearchQueryChange(event.target.value)}
+            aria-label="Filter paths"
             placeholder="Filter paths"
             style={{
               height: 30,
@@ -232,13 +238,14 @@ export function FilesExplorer({
               style={{ right: 4, top: "50%", transform: "translateY(-50%)", display: "inline-flex", width: 18, height: 18, alignItems: "center", justifyContent: "center", background: "transparent", border: "none", color: COLORS.textMuted, cursor: "pointer" }}
               onClick={() => onSearchQueryChange("")}
               title="Clear filter"
+              aria-label="Clear path filter"
             >
               <X size={10} />
             </button>
           ) : null}
         </div>
         <div className="mt-1.5 flex items-center justify-end gap-1.5">
-          <SmartTooltip content={{ label: "Content search", description: "Search file contents in this workspace.", shortcut: "\u2318\u21E7F" }}>
+          <SmartTooltip content={{ label: "Content search", description: "Search file contents in this workspace.", shortcut: `${modifierKeyLabel}+Shift+F` }}>
             <button
               type="button"
               style={{ ...outlineButton({ height: 22, padding: "0 8px", fontSize: 9 }) }}
@@ -249,7 +256,7 @@ export function FilesExplorer({
               <TextAlignLeft size={10} /> CONTENT
             </button>
           </SmartTooltip>
-          <SmartTooltip content={{ label: "Quick open", description: "Search and open any file in the project.", shortcut: "\u2318P" }}>
+          <SmartTooltip content={{ label: "Quick open", description: "Search and open any file in the project.", shortcut: `${modifierKeyLabel}+P` }}>
             <button
               type="button"
               style={{ ...outlineButton({ height: 22, padding: "0 8px", fontSize: 9 }) }}
@@ -268,6 +275,7 @@ export function FilesExplorer({
           <button
             type="button"
             title="New file"
+            aria-label="New file"
             style={{ ...outlineButton({ height: 24, padding: "0 6px", fontSize: 10 }) }}
             onClick={() => onCreateFile(activeContextDir)}
             onMouseEnter={(event) => { event.currentTarget.style.borderColor = COLORS.accent; event.currentTarget.style.color = COLORS.accent; }}
@@ -280,6 +288,7 @@ export function FilesExplorer({
           <button
             type="button"
             title="New folder"
+            aria-label="New folder"
             style={{ ...outlineButton({ height: 24, padding: "0 6px", fontSize: 10 }) }}
             onClick={() => onCreateDirectory(activeContextDir)}
             onMouseEnter={(event) => { event.currentTarget.style.borderColor = COLORS.accent; event.currentTarget.style.color = COLORS.accent; }}
@@ -319,6 +328,127 @@ export function FilesExplorer({
               const FileIcon = fileIcon?.icon;
               const folderColor = isActive ? COLORS.accent : COLORS.textMuted;
               const isRenaming = renamingPath != null && arePathsEqual(renamingPath, node.path, workspaceComparisonRoot);
+              const rowStyle: React.CSSProperties = {
+                height: ROW_HEIGHT,
+                paddingLeft: `${10 + level * 14}px`,
+                paddingRight: 8,
+                fontFamily: MONO_FONT,
+                fontSize: 11,
+                color: isActive ? COLORS.textPrimary : COLORS.textSecondary,
+                background: isActive ? COLORS.accentSubtle : "transparent",
+                border: "none",
+                borderLeft: isActive ? `2px solid ${COLORS.accent}` : "2px solid transparent",
+                cursor: isRenaming ? "text" : "pointer",
+              };
+              const handleRowActivate = () => {
+                onSelectNode(node.path);
+                if (node.type === "directory") {
+                  onToggleDirectory(node.path, isExpanded, Boolean(node.children));
+                  return;
+                }
+                onOpenFile(node.path);
+              };
+              const handleRowContextMenu = (event: React.MouseEvent) => {
+                event.preventDefault();
+                onSelectNode(node.path);
+                onContextMenu({
+                  x: event.clientX,
+                  y: event.clientY,
+                  nodePath: node.path,
+                  nodeType: node.type,
+                });
+              };
+              const handleRowMouseEnter = (event: React.MouseEvent<HTMLElement>) => {
+                if (!isActive) event.currentTarget.style.background = COLORS.hoverBg;
+              };
+              const handleRowMouseLeave = (event: React.MouseEvent<HTMLElement>) => {
+                if (!isActive) event.currentTarget.style.background = "transparent";
+              };
+              const rowContent = (
+                <>
+                  {level > 0 ? (
+                    <span className="pointer-events-none absolute inset-y-0 left-0">
+                      {Array.from({ length: level }).map((_, idx) => (
+                        <span
+                          key={`${node.path}:guide:${idx}`}
+                          className="absolute inset-y-0"
+                          style={{ left: `${10 + idx * 14 + 5}px`, width: 1, background: "color-mix(in srgb, var(--color-border) 80%, transparent)" }}
+                        />
+                      ))}
+                    </span>
+                  ) : null}
+                  {node.type === "directory" ? (
+                    <>
+                      {isExpanded
+                        ? <ChevronDown size={12} weight="bold" style={{ color: folderColor, flexShrink: 0 }} />
+                        : <ChevronRight size={12} weight="bold" style={{ color: folderColor, flexShrink: 0 }} />}
+                      {isExpanded
+                        ? <FolderOpen size={14} weight="fill" style={{ color: folderColor, flexShrink: 0 }} />
+                        : <Folder size={14} weight="fill" style={{ color: folderColor, flexShrink: 0 }} />}
+                    </>
+                  ) : (
+                    <>
+                      <span style={{ width: 12, flexShrink: 0 }} />
+                      {FileIcon
+                        ? <FileIcon size={14} weight="regular" style={{ color: fileIcon?.color, flexShrink: 0 }} />
+                        : null}
+                    </>
+                  )}
+                  {isRenaming ? (
+                    <input
+                      ref={renameInputRef}
+                      value={renameValue}
+                      onChange={(event) => setRenameValue(event.target.value)}
+                      onClick={(event) => event.stopPropagation()}
+                      aria-label={`Rename ${node.name}`}
+                      onKeyDown={(event) => {
+                        if (event.key === "Escape") {
+                          event.preventDefault();
+                          cancelRename();
+                        }
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          void submitRename();
+                        }
+                      }}
+                      onBlur={() => void submitRename()}
+                      style={{
+                        minWidth: 0,
+                        flex: 1,
+                        height: 20,
+                        padding: "0 4px",
+                        fontFamily: MONO_FONT,
+                        fontSize: 11,
+                        color: COLORS.textPrimary,
+                        background: COLORS.recessedBg,
+                        border: `1px solid ${COLORS.accent}`,
+                        borderRadius: 4,
+                        outline: "none",
+                      }}
+                    />
+                  ) : (
+                    <span className="truncate">{node.name}</span>
+                  )}
+                  {node.type === "directory" && node.changeStatus ? (
+                    <span title={changeStatusTitle(node.changeStatus)} style={{ marginLeft: "auto", width: 6, height: 6, borderRadius: "50%", background: statusColor, flexShrink: 0 }} />
+                  ) : null}
+                  {node.type === "file" && statusLabel ? (
+                    <span style={{
+                      marginLeft: "auto",
+                      flexShrink: 0,
+                      fontFamily: MONO_FONT,
+                      fontSize: 9,
+                      fontWeight: 700,
+                      color: statusColor,
+                      padding: "1px 5px",
+                      background: `${statusColor}18`,
+                      borderRadius: 4,
+                    }} title={changeStatusTitle(node.changeStatus)}>
+                      {statusLabel}
+                    </span>
+                  ) : null}
+                </>
+              );
 
               return (
                 <div
@@ -326,123 +456,31 @@ export function FilesExplorer({
                   className="absolute left-0 top-0 w-full"
                   style={{ height: virtualRow.size, transform: `translateY(${virtualRow.start}px)` }}
                 >
-                  <button
-                    className="group relative flex w-full items-center gap-1.5 text-left transition-colors"
-                    style={{
-                      height: ROW_HEIGHT,
-                      paddingLeft: `${10 + level * 14}px`,
-                      paddingRight: 8,
-                      fontFamily: MONO_FONT,
-                      fontSize: 11,
-                      color: isActive ? COLORS.textPrimary : COLORS.textSecondary,
-                      background: isActive ? COLORS.accentSubtle : "transparent",
-                      border: "none",
-                      borderLeft: isActive ? `2px solid ${COLORS.accent}` : "2px solid transparent",
-                      cursor: "pointer",
-                    }}
-                    onClick={() => {
-                      onSelectNode(node.path);
-                      if (node.type === "directory") {
-                        onToggleDirectory(node.path, isExpanded, Boolean(node.children));
-                        return;
-                      }
-                      onOpenFile(node.path);
-                    }}
-                    onContextMenu={(event) => {
-                      event.preventDefault();
-                      onSelectNode(node.path);
-                      onContextMenu({
-                        x: event.clientX,
-                        y: event.clientY,
-                        nodePath: node.path,
-                        nodeType: node.type,
-                      });
-                    }}
-                    onMouseEnter={(event) => { if (!isActive) event.currentTarget.style.background = COLORS.hoverBg; }}
-                    onMouseLeave={(event) => { if (!isActive) event.currentTarget.style.background = "transparent"; }}
-                    title={node.path}
-                  >
-                    {level > 0 ? (
-                      <span className="pointer-events-none absolute inset-y-0 left-0">
-                        {Array.from({ length: level }).map((_, idx) => (
-                          <span
-                            key={`${node.path}:guide:${idx}`}
-                            className="absolute inset-y-0"
-                            style={{ left: `${10 + idx * 14 + 5}px`, width: 1, background: "color-mix(in srgb, var(--color-border) 80%, transparent)" }}
-                          />
-                        ))}
-                      </span>
-                    ) : null}
-                    {node.type === "directory" ? (
-                      <>
-                        {isExpanded
-                          ? <ChevronDown size={12} weight="bold" style={{ color: folderColor, flexShrink: 0 }} />
-                          : <ChevronRight size={12} weight="bold" style={{ color: folderColor, flexShrink: 0 }} />}
-                        {isExpanded
-                          ? <FolderOpen size={14} weight="fill" style={{ color: folderColor, flexShrink: 0 }} />
-                          : <Folder size={14} weight="fill" style={{ color: folderColor, flexShrink: 0 }} />}
-                      </>
-                    ) : (
-                      <>
-                        <span style={{ width: 12, flexShrink: 0 }} />
-                        {FileIcon
-                          ? <FileIcon size={14} weight="regular" style={{ color: fileIcon?.color, flexShrink: 0 }} />
-                          : null}
-                      </>
-                    )}
-                    {isRenaming ? (
-                      <input
-                        ref={renameInputRef}
-                        value={renameValue}
-                        onChange={(event) => setRenameValue(event.target.value)}
-                        onClick={(event) => event.stopPropagation()}
-                        onKeyDown={(event) => {
-                          if (event.key === "Escape") {
-                            event.preventDefault();
-                            cancelRename();
-                          }
-                          if (event.key === "Enter") {
-                            event.preventDefault();
-                            void submitRename();
-                          }
-                        }}
-                        onBlur={() => void submitRename()}
-                        style={{
-                          minWidth: 0,
-                          flex: 1,
-                          height: 20,
-                          padding: "0 4px",
-                          fontFamily: MONO_FONT,
-                          fontSize: 11,
-                          color: COLORS.textPrimary,
-                          background: COLORS.recessedBg,
-                          border: `1px solid ${COLORS.accent}`,
-                          borderRadius: 4,
-                          outline: "none",
-                        }}
-                      />
-                    ) : (
-                      <span className="truncate">{node.name}</span>
-                    )}
-                    {node.type === "directory" && node.changeStatus ? (
-                      <span title={changeStatusTitle(node.changeStatus)} style={{ marginLeft: "auto", width: 6, height: 6, borderRadius: "50%", background: statusColor, flexShrink: 0 }} />
-                    ) : null}
-                    {node.type === "file" && statusLabel ? (
-                      <span style={{
-                        marginLeft: "auto",
-                        flexShrink: 0,
-                        fontFamily: MONO_FONT,
-                        fontSize: 9,
-                        fontWeight: 700,
-                        color: statusColor,
-                        padding: "1px 5px",
-                        background: `${statusColor}18`,
-                        borderRadius: 4,
-                      }} title={changeStatusTitle(node.changeStatus)}>
-                        {statusLabel}
-                      </span>
-                    ) : null}
-                  </button>
+                  {isRenaming ? (
+                    <div
+                      className="group relative flex w-full items-center gap-1.5 text-left transition-colors"
+                      style={rowStyle}
+                      onContextMenu={handleRowContextMenu}
+                      onMouseEnter={handleRowMouseEnter}
+                      onMouseLeave={handleRowMouseLeave}
+                      title={node.path}
+                    >
+                      {rowContent}
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      className="group relative flex w-full items-center gap-1.5 text-left transition-colors"
+                      style={rowStyle}
+                      onClick={handleRowActivate}
+                      onContextMenu={handleRowContextMenu}
+                      onMouseEnter={handleRowMouseEnter}
+                      onMouseLeave={handleRowMouseLeave}
+                      title={node.path}
+                    >
+                      {rowContent}
+                    </button>
+                  )}
                 </div>
               );
             })}
