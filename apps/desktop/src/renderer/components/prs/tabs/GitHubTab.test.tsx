@@ -346,6 +346,9 @@ describe("GitHubTab", () => {
 
     await vi.advanceTimersByTimeAsync(1_000);
     expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledTimes(2);
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledTimes(2);
   });
 
   it("filters by ADE scope showing only linked PRs", async () => {

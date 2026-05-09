@@ -17,8 +17,7 @@ import type { PrDetailRouteTab } from "../prsRouteState";
 const VIRTUALIZE_AT = 50;
 const GITHUB_TAB_REVISIT_CACHE_TTL_MS = 60_000;
 const GITHUB_TAB_SNAPSHOT_FRESH_MS = 30_000;
-const GITHUB_TAB_HOT_REFRESH_WINDOW_MS = 180_000;
-const GITHUB_TAB_HOT_REFRESH_INTERVAL_MS = 30_000;
+const GITHUB_TAB_HOT_REFRESH_DELAY_MS = 30_000;
 const GITHUB_TAB_CACHE_DISABLED = import.meta.env.MODE === "test";
 
 type GitHubTabProps = {
@@ -482,25 +481,13 @@ export function GitHubTab({
   }, [setContextViewerLogin, snapshot?.viewerLogin]);
 
   const startHotRefreshWindow = React.useCallback(() => {
-    const now = Date.now();
-    hotRefreshUntilRef.current = Math.max(hotRefreshUntilRef.current, now + GITHUB_TAB_HOT_REFRESH_WINDOW_MS);
     if (hotRefreshTimerRef.current != null) return;
-
-    const schedule = () => {
-      const remaining = hotRefreshUntilRef.current - Date.now();
-      if (remaining <= 0) {
-        hotRefreshTimerRef.current = null;
-        return;
-      }
-      hotRefreshTimerRef.current = window.setTimeout(() => {
-        hotRefreshTimerRef.current = null;
-        void loadSnapshot({ force: true, silent: true }).finally(() => {
-          schedule();
-        });
-      }, Math.min(GITHUB_TAB_HOT_REFRESH_INTERVAL_MS, remaining));
-    };
-
-    schedule();
+    hotRefreshUntilRef.current = Date.now() + GITHUB_TAB_HOT_REFRESH_DELAY_MS;
+    hotRefreshTimerRef.current = window.setTimeout(() => {
+      hotRefreshTimerRef.current = null;
+      hotRefreshUntilRef.current = 0;
+      void loadSnapshot({ force: true, silent: true });
+    }, GITHUB_TAB_HOT_REFRESH_DELAY_MS);
   }, [loadSnapshot]);
 
   React.useEffect(() => {
