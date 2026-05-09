@@ -9,6 +9,7 @@ function runtime(patch: Partial<PrConvergenceState> = {}): PrConvergenceState {
     pathToMergeActive: true,
     status: "running",
     pollerStatus: "polling",
+    mergeWaitKind: null,
     currentRound: 0,
     activeSessionId: null,
     activeLaneId: null,
@@ -38,8 +39,15 @@ describe("isWaitingForGithubAutoMerge", () => {
     expect(isWaitingForGithubAutoMerge(runtime({
       status: "converged",
       pollerStatus: "waiting_for_checks",
+      mergeWaitKind: "github_auto_merge_armed",
       pauseReason: "auto-merge armed via gh CLI; waiting for GitHub to land.",
     }))).toBe(true);
+
+    expect(isWaitingForGithubAutoMerge(runtime({
+      status: "converged",
+      pollerStatus: "waiting_for_checks",
+      pauseReason: "auto-merge armed via gh CLI; waiting for GitHub to land.",
+    }))).toBe(false);
   });
 
   it("does not treat operator-action converged states as active auto-merge waits", () => {

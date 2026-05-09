@@ -134,6 +134,7 @@ function makeRuntimeRow(overrides: Record<string, unknown> = {}) {
     auto_converge_enabled: 1,
     status: "running",
     poller_status: "waiting_for_comments",
+    merge_wait_kind: null,
     current_round: 2,
     active_session_id: "session-1",
     active_lane_id: "lane-1",
@@ -1475,16 +1476,17 @@ describe("issueInventoryService", () => {
       expect(params[1]).toBe(1);
       expect(params[2]).toBe("running");
       expect(params[3]).toBe("scheduled");
-      expect(params[4]).toBe(3);
-      expect(params[5]).toBe("session-9");
-      expect(params[10]).toBe(1);
-      expect(params[11]).toBe(2);
-      expect(params[12]).toBe("2026-03-23T12:02:00.000Z");
-      expect(params[13]).toBe("abc123");
-      expect(params[14]).toBe("def456");
-      expect(params[15]).toBe("2026-03-23T12:03:00.000Z");
-      expect(params[16]).toBe(3);
-      expect(params[17]).toBe("hash-1");
+      expect(params[4]).toBeNull();
+      expect(params[5]).toBe(3);
+      expect(params[6]).toBe("session-9");
+      expect(params[11]).toBe(1);
+      expect(params[12]).toBe(2);
+      expect(params[13]).toBe("2026-03-23T12:02:00.000Z");
+      expect(params[14]).toBe("abc123");
+      expect(params[15]).toBe("def456");
+      expect(params[16]).toBe("2026-03-23T12:03:00.000Z");
+      expect(params[17]).toBe(3);
+      expect(params[18]).toBe("hash-1");
     });
 
     it("reconciles active convergence sessions when a tracked chat exits", () => {
@@ -2123,6 +2125,16 @@ describe("issueInventoryService", () => {
       ).toThrow(/Invalid convergence poller status/);
     });
 
+    it("rejects an unknown mergeWaitKind value", () => {
+      const db = makeMockDb();
+      db.get.mockReturnValue(null);
+
+      const service = createIssueInventoryService({ db });
+      expect(() =>
+        service.saveConvergenceRuntime(PR_ID, { mergeWaitKind: "made_up" as any }),
+      ).toThrow(/Invalid convergence merge wait kind/);
+    });
+
     it("rejects a negative currentRound", () => {
       const db = makeMockDb();
       db.get.mockReturnValue(null);
@@ -2178,6 +2190,7 @@ describe("issueInventoryService", () => {
         service.saveConvergenceRuntime(PR_ID, {
           status: "running",
           pollerStatus: "polling",
+          mergeWaitKind: null,
           currentRound: 3,
           forceFinalizeUsed: true,
           ciRetryAttemptsUsed: 1,

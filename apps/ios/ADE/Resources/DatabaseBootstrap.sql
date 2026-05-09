@@ -2609,10 +2609,13 @@ alter table pr_pipeline_settings add column at_cap_ci_retry_max integer;
 
 alter table pr_pipeline_settings add column force_merge_requires_confirmation integer;
 
+alter table pr_pipeline_settings add column ptm_defaults_backfilled_version text;
+
 update pr_pipeline_settings
          set auto_merge = 1,
              force_finalize_mode = 'conditional',
-             at_cap_policy = 'ci_retry_once'
+             at_cap_policy = 'ci_retry_once',
+             ptm_defaults_backfilled_version = 'ptm-defaults-v1'
        where auto_merge = 0
          and merge_method = 'repo_default'
          and max_rounds = 5
@@ -2630,9 +2633,7 @@ update pr_pipeline_settings
          and auto_agent_reasoning_effort is null
          and auto_agent_permission_mode is null
          and auto_agent_confidence_threshold is null
-         and not exists (
-           select 1 from kv where key = 'pr_pipeline_settings.ptm_defaults_backfilled.v1'
-         );
+         and (ptm_defaults_backfilled_version is null or ptm_defaults_backfilled_version <> 'ptm-defaults-v1');
 
 create table if not exists pr_convergence_state (
       pr_id text primary key,
@@ -2667,6 +2668,8 @@ alter table pr_convergence_state add column last_dispatch_head_sha text;
 alter table pr_convergence_state add column last_bot_ping_head_sha text;
 
 alter table pr_convergence_state add column last_bot_ping_at text;
+
+alter table pr_convergence_state add column merge_wait_kind text;
 
 alter table pr_convergence_state add column pause_repeat_count integer not null default 0;
 

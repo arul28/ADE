@@ -1725,9 +1725,11 @@ export function PrDetailPane({
       if (inFlight) return;
       inFlight = true;
       try {
-        const runtime = await loadConvergenceState(pr.id, { force: true }).catch(() => null);
+        const runtime = await loadConvergenceState(pr.id, { force: true });
         if (cancelled) return;
         applyConvergenceRuntime(runtime);
+      } catch {
+        // Keep the last known PtM runtime and retry on the next interval.
       } finally {
         inFlight = false;
       }

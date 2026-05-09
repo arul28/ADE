@@ -3408,13 +3408,14 @@ function migrate(db: MigrationDb) {
   try { db.run("alter table pr_pipeline_settings add column at_cap_wait_minutes integer"); } catch {}
   try { db.run("alter table pr_pipeline_settings add column at_cap_ci_retry_max integer"); } catch {}
   try { db.run("alter table pr_pipeline_settings add column force_merge_requires_confirmation integer"); } catch {}
-  const PIPELINE_SETTINGS_DEFAULTS_BACKFILL_MARKER = "pr_pipeline_settings.ptm_defaults_backfilled.v1";
+  try { db.run("alter table pr_pipeline_settings add column ptm_defaults_backfilled_version text"); } catch {}
   try {
     db.run(`
       update pr_pipeline_settings
          set auto_merge = 1,
              force_finalize_mode = 'conditional',
-             at_cap_policy = 'ci_retry_once'
+             at_cap_policy = 'ci_retry_once',
+             ptm_defaults_backfilled_version = 'ptm-defaults-v1'
        where auto_merge = 0
          and merge_method = 'repo_default'
          and max_rounds = 5
@@ -3432,14 +3433,8 @@ function migrate(db: MigrationDb) {
          and auto_agent_reasoning_effort is null
          and auto_agent_permission_mode is null
          and auto_agent_confidence_threshold is null
-         and not exists (
-           select 1 from kv where key = 'pr_pipeline_settings.ptm_defaults_backfilled.v1'
-         )
+         and (ptm_defaults_backfilled_version is null or ptm_defaults_backfilled_version <> 'ptm-defaults-v1')
     `);
-    db.run(
-      "insert into kv (key, value) values (?, ?) on conflict(key) do nothing",
-      [PIPELINE_SETTINGS_DEFAULTS_BACKFILL_MARKER, new Date().toISOString()],
-    );
   } catch {}
 
   db.run(`
@@ -3473,6 +3468,7 @@ function migrate(db: MigrationDb) {
   try { db.run("alter table pr_convergence_state add column last_dispatch_head_sha text"); } catch {}
   try { db.run("alter table pr_convergence_state add column last_bot_ping_head_sha text"); } catch {}
   try { db.run("alter table pr_convergence_state add column last_bot_ping_at text"); } catch {}
+  try { db.run("alter table pr_convergence_state add column merge_wait_kind text"); } catch {}
   try { db.run("alter table pr_convergence_state add column pause_repeat_count integer not null default 0"); } catch {}
   try { db.run("alter table pr_convergence_state add column last_pause_reason_hash text"); } catch {}
 

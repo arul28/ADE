@@ -83,6 +83,10 @@ const CONVERGENCE_POLLER_STATUS_VALUES = new Set<ConvergenceRuntimeState["poller
   "stopped",
 ]);
 
+const CONVERGENCE_MERGE_WAIT_KIND_VALUES = new Set<NonNullable<ConvergenceRuntimeState["mergeWaitKind"]>>([
+  "github_auto_merge_armed",
+]);
+
 export function detectSource(author: string | null | undefined): IssueSource {
   const name = (author ?? "").trim();
   if (!name) return "unknown";
@@ -285,6 +289,7 @@ type ConvergenceRuntimeRow = {
   auto_converge_enabled: number;
   status: string;
   poller_status: string;
+  merge_wait_kind: string | null;
   current_round: number;
   active_session_id: string | null;
   active_lane_id: string | null;
@@ -337,6 +342,11 @@ function validateConvergenceRuntimeState(state: Partial<ConvergenceRuntimeState>
   if (state.pollerStatus !== undefined) {
     if (typeof state.pollerStatus !== "string" || !CONVERGENCE_POLLER_STATUS_VALUES.has(state.pollerStatus as ConvergenceRuntimeState["pollerStatus"])) {
       throw new Error(`Invalid convergence poller status: ${JSON.stringify(state.pollerStatus)}`);
+    }
+  }
+  if (state.mergeWaitKind !== undefined && state.mergeWaitKind !== null) {
+    if (typeof state.mergeWaitKind !== "string" || !CONVERGENCE_MERGE_WAIT_KIND_VALUES.has(state.mergeWaitKind as NonNullable<ConvergenceRuntimeState["mergeWaitKind"]>)) {
+      throw new Error(`Invalid convergence merge wait kind: ${JSON.stringify(state.mergeWaitKind)}`);
     }
   }
   if (state.currentRound !== undefined) {
@@ -393,12 +403,18 @@ function sanitizeConvergenceRuntimeState(
   state: ConvergenceRuntimeState,
 ): ConvergenceRuntimeState {
   const now = nowIso();
+  const mergeWaitKind = state.mergeWaitKind && CONVERGENCE_MERGE_WAIT_KIND_VALUES.has(state.mergeWaitKind)
+    ? state.mergeWaitKind
+    : null;
   return {
     prId,
     autoConvergeEnabled: state.autoConvergeEnabled,
     pathToMergeActive: state.pathToMergeActive,
     status: state.status,
     pollerStatus: state.pollerStatus,
+    mergeWaitKind: state.status === "converged" && state.pollerStatus === "waiting_for_checks"
+      ? mergeWaitKind
+      : null,
     currentRound: state.currentRound,
     activeSessionId: trimOrNull(state.activeSessionId),
     activeLaneId: trimOrNull(state.activeLaneId),
@@ -429,6 +445,7 @@ function rowToConvergenceRuntime(row: ConvergenceRuntimeRow): ConvergenceRuntime
     pathToMergeActive: false,
     status: row.status as ConvergenceRuntimeState["status"],
     pollerStatus: row.poller_status as ConvergenceRuntimeState["pollerStatus"],
+    mergeWaitKind: row.merge_wait_kind as ConvergenceRuntimeState["mergeWaitKind"],
     currentRound: row.current_round,
     activeSessionId: row.active_session_id,
     activeLaneId: row.active_lane_id,
@@ -779,18 +796,19 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
 
     db.run(
       `insert into pr_convergence_state
-         (pr_id, auto_converge_enabled, status, poller_status, current_round, active_session_id,
+         (pr_id, auto_converge_enabled, status, poller_status, merge_wait_kind, current_round, active_session_id,
           active_lane_id, active_href, pause_reason, error_message,
           force_finalize_used, ci_retry_attempts_used, wait_for_ci_started_at,
           last_dispatch_head_sha, last_bot_ping_head_sha, last_bot_ping_at,
           pause_repeat_count, last_pause_reason_hash,
           last_started_at, last_polled_at, last_paused_at, last_stopped_at,
           created_at, updated_at)
-       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        on conflict(pr_id) do update set
          auto_converge_enabled = excluded.auto_converge_enabled,
          status = excluded.status,
          poller_status = excluded.poller_status,
+         merge_wait_kind = excluded.merge_wait_kind,
          current_round = excluded.current_round,
          active_session_id = excluded.active_session_id,
          active_lane_id = excluded.active_lane_id,
@@ -815,6 +833,7 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
         merged.autoConvergeEnabled ? 1 : 0,
         merged.status,
         merged.pollerStatus,
+        merged.mergeWaitKind,
         merged.currentRound,
         merged.activeSessionId,
         merged.activeLaneId,

@@ -71,6 +71,7 @@ export type AdeActionRole = "cto" | "orchestrator" | "agent" | "external" | "eva
  * must be listed here.
  */
 export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly string[]>> = {
+  path_to_merge: ["startPathToMerge", "stopPathToMerge"],
   linear_credentials: [
     "setToken",
     "setOAuthToken",

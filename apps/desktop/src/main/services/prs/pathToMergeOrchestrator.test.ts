@@ -16,7 +16,6 @@ import type {
   LaneWorktreeLockOwnerKind,
   PipelineSettings,
   PrCheck,
-  PrComment,
   PrReview,
   PrReviewThread,
   PrSummary,
@@ -128,22 +127,6 @@ function makeReview(overrides: Partial<PrReview> = {}): PrReview {
     state: "commented",
     body: "Actionable comments posted: 1",
     submittedAt: "2026-05-01T00:00:00.000Z",
-    ...overrides,
-  };
-}
-
-function makeComment(overrides: Partial<PrComment> = {}): PrComment {
-  return {
-    id: "comment-1",
-    author: "reviewer",
-    authorAvatarUrl: null,
-    body: "Please fix this.",
-    source: "issue",
-    url: null,
-    path: null,
-    line: null,
-    createdAt: "2026-05-01T00:00:00.000Z",
-    updatedAt: "2026-05-01T00:00:00.000Z",
     ...overrides,
   };
 }
@@ -892,6 +875,7 @@ describe("createPathToMergeOrchestrator.runIteration", () => {
 
   it("waits for pending review-bot checks before dispatching a fix iteration", async () => {
     const runtimeByPrId = new Map<string, ConvergenceRuntimeState>();
+    const pendingReviewCheckStartedAt = new Date().toISOString();
     const { deps } = buildDeps({
       runtimeByPrId,
       prs: [buildPrSummary({ checksStatus: "passing", reviewStatus: "none" })],
@@ -899,7 +883,7 @@ describe("createPathToMergeOrchestrator.runIteration", () => {
       convergenceStatus: { totalNew: 1 },
       getChecks: async () => [
         makeCheck({ name: "ci / unit", status: "completed", conclusion: "success" }),
-        makeCheck({ name: "Greptile Review", status: "in_progress", conclusion: null }),
+        makeCheck({ name: "Greptile Review", status: "in_progress", conclusion: null, startedAt: pendingReviewCheckStartedAt }),
       ],
       getReviewThreads: async () => [makeReviewThread()],
     });
@@ -1081,10 +1065,11 @@ describe("createPathToMergeOrchestrator.runIteration", () => {
       });
       await flushIteration();
 
-      expect(land).toHaveBeenCalledWith(expect.objectContaining({ prId: "pr-1", method: "squash", archiveLane: false }));
+      expect(land).not.toHaveBeenCalled();
       expect(runtimeByPrId.get("pr-1")).toMatchObject({
-        status: "merged",
-        autoConvergeEnabled: false,
+        status: "failed",
+        pollerStatus: "stopped",
+        errorMessage: "At-cap merge ladder blocked: Auto-merge blocked because 1 CI check is still running.",
       });
     } finally {
       orchestrator.dispose();
@@ -1256,8 +1241,50 @@ describe("createPathToMergeOrchestrator.runIteration", () => {
     }
   });
 
+  it("still verifies CI before merging at the cap while ignoring review blockers", async () => {
+    const runtimeByPrId = new Map<string, ConvergenceRuntimeState>();
+    const land = vi.fn(async () => ({
+      prId: "pr-1",
+      prNumber: 1,
+      success: true as const,
+      mergeCommitSha: "merge-sha",
+      branchDeleted: false,
+      laneArchived: false,
+      error: null,
+    }));
+    const { deps } = buildDeps({
+      runtimeByPrId,
+      prs: [buildPrSummary({ checksStatus: "passing", reviewStatus: "requested" })],
+      pipelineSettings: { earlyMergeOnGreen: false, autoMerge: true, atCapPolicy: "ci_retry_once" },
+      convergenceStatus: { totalNew: 0 },
+      getChecks: async () => [],
+      getReviewThreads: async () => [],
+      getReviews: async () => [],
+      land,
+    });
+    const orchestrator = createPathToMergeOrchestrator(deps);
+    try {
+      await orchestrator.startPathToMerge({ prId: "pr-1", modelId: "openai/gpt-5.4" });
+      runtimeByPrId.set("pr-1", {
+        ...runtimeByPrId.get("pr-1")!,
+        currentRound: 5,
+      });
+      await flushIteration();
+
+      expect(land).not.toHaveBeenCalled();
+      expect(runtimeByPrId.get("pr-1")).toMatchObject({
+        status: "failed",
+        pollerStatus: "stopped",
+        errorMessage: "At-cap merge ladder blocked: Auto-merge blocked because no CI checks were found on the PR head.",
+      });
+    } finally {
+      orchestrator.dispose();
+    }
+  });
+
   it("still waits for pending review-bot checks before entering the at-cap action", async () => {
     const runtimeByPrId = new Map<string, ConvergenceRuntimeState>();
+    const pendingReviewCheckStartedAt = new Date().toISOString();
     const land = vi.fn(async () => ({
       prId: "pr-1",
       prNumber: 1,
@@ -1274,7 +1301,7 @@ describe("createPathToMergeOrchestrator.runIteration", () => {
       convergenceStatus: { totalNew: 0 },
       getChecks: async () => [
         makeCheck({ name: "ci / unit", status: "completed", conclusion: "success" }),
-        makeCheck({ name: "Greptile Review", status: "queued", conclusion: null }),
+        makeCheck({ name: "Greptile Review", status: "queued", conclusion: null, startedAt: pendingReviewCheckStartedAt }),
       ],
       getReviewThreads: async () => [],
       getReviews: async () => [],

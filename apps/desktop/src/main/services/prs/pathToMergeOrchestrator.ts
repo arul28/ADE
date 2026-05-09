@@ -362,9 +362,9 @@ function hasCopilotResponse(comments: PrComment[], reviews: PrReview[]): boolean
 }
 
 function isWithinReviewBotWaitWindow(timestamp: string | null | undefined, now: () => number): boolean {
-  if (!timestamp) return true;
+  if (!timestamp) return false;
   const startedAt = Date.parse(timestamp);
-  return !Number.isFinite(startedAt) || now() - startedAt < REVIEW_BOT_WAIT_TIMEOUT_MS;
+  return Number.isFinite(startedAt) && now() - startedAt < REVIEW_BOT_WAIT_TIMEOUT_MS;
 }
 
 function getPendingReviewBots(
@@ -1040,20 +1040,17 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
     if (ctx.pr.checksStatus !== "passing") {
       return `Auto-merge blocked because CI is ${ctx.pr.checksStatus}.`;
     }
-    if (opts.ignoreReview) return null;
-    if (ctx.pr.reviewStatus === "changes_requested") {
-      return "Auto-merge blocked because a review requested changes.";
-    }
-    if (ctx.pr.reviewStatus === "requested") {
-      return "Auto-merge blocked because a requested review is still pending.";
+    if (!opts.ignoreReview) {
+      if (ctx.pr.reviewStatus === "changes_requested") {
+        return "Auto-merge blocked because a review requested changes.";
+      }
+      if (ctx.pr.reviewStatus === "requested") {
+        return "Auto-merge blocked because a requested review is still pending.";
+      }
     }
 
     try {
-      const [checks, reviewThreads, reviews] = await Promise.all([
-        prService.getChecks(ctx.pr.id),
-        prService.getReviewThreads(ctx.pr.id),
-        prService.getReviews(ctx.pr.id),
-      ]);
+      const checks = await prService.getChecks(ctx.pr.id);
 
       if (checks.length === 0) {
         return "Auto-merge blocked because no CI checks were found on the PR head.";
@@ -1067,7 +1064,8 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
       }
       const pendingChecks = checks.filter((check) => check.status !== "completed");
       if (pendingChecks.length > 0) {
-        return `Auto-merge blocked because ${pendingChecks.length} CI check${pendingChecks.length === 1 ? "" : "s"} are still running.`;
+        const verb = pendingChecks.length === 1 ? "is" : "are";
+        return `Auto-merge blocked because ${pendingChecks.length} CI check${pendingChecks.length === 1 ? "" : "s"} ${verb} still running.`;
       }
       const passingChecks = checks.filter((check) =>
         check.status === "completed" &&
@@ -1077,19 +1075,25 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
         return "Auto-merge blocked because no completed successful CI checks were found.";
       }
 
-      const unresolvedThreads = reviewThreads.filter(hasActionableReviewThread);
-      if (unresolvedThreads.length > 0) {
-        return `Auto-merge blocked because ${unresolvedThreads.length} review thread${unresolvedThreads.length === 1 ? "" : "s"} are unresolved.`;
-      }
-      const latestReviews = latestReviewByReviewer(reviews);
-      if (latestReviews.some((review) => review.state === "changes_requested")) {
-        return "Auto-merge blocked because a review requested changes.";
-      }
-      const commentedReviews = latestReviews.filter(hasBlockingCommentedReview);
-      if (commentedReviews.length > 0) {
-        const reviewers = Array.from(new Set(commentedReviews.map((review) => review.reviewer).filter(Boolean))).slice(0, 3);
-        const suffix = reviewers.length ? ` (${reviewers.join(", ")})` : "";
-        return `Auto-merge blocked because ${commentedReviews.length} commented review${commentedReviews.length === 1 ? "" : "s"} still need operator review${suffix}.`;
+      if (!opts.ignoreReview) {
+        const [reviewThreads, reviews] = await Promise.all([
+          prService.getReviewThreads(ctx.pr.id),
+          prService.getReviews(ctx.pr.id),
+        ]);
+        const unresolvedThreads = reviewThreads.filter(hasActionableReviewThread);
+        if (unresolvedThreads.length > 0) {
+          return `Auto-merge blocked because ${unresolvedThreads.length} review thread${unresolvedThreads.length === 1 ? "" : "s"} are unresolved.`;
+        }
+        const latestReviews = latestReviewByReviewer(reviews);
+        if (latestReviews.some((review) => review.state === "changes_requested")) {
+          return "Auto-merge blocked because a review requested changes.";
+        }
+        const commentedReviews = latestReviews.filter(hasBlockingCommentedReview);
+        if (commentedReviews.length > 0) {
+          const reviewers = Array.from(new Set(commentedReviews.map((review) => review.reviewer).filter(Boolean))).slice(0, 3);
+          const suffix = reviewers.length ? ` (${reviewers.join(", ")})` : "";
+          return `Auto-merge blocked because ${commentedReviews.length} commented review${commentedReviews.length === 1 ? "" : "s"} still need operator review${suffix}.`;
+        }
       }
     } catch (err) {
       return `Auto-merge blocked because merge readiness could not be verified: ${getErrorMessage(err)}`;
@@ -1399,6 +1403,7 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
       issueInventoryService.saveConvergenceRuntime(prId, {
         status: "converged",
         pollerStatus: "waiting_for_checks",
+        mergeWaitKind: "github_auto_merge_armed",
         pauseReason: "auto-merge armed via gh CLI; waiting for GitHub to land.",
         errorMessage: null,
       });

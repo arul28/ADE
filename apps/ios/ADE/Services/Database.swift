@@ -2257,12 +2257,14 @@ final class DatabaseService {
     try ensureColumn(tableName: "pr_pipeline_settings", columnName: "at_cap_wait_minutes", definition: "integer")
     try ensureColumn(tableName: "pr_pipeline_settings", columnName: "at_cap_ci_retry_max", definition: "integer")
     try ensureColumn(tableName: "pr_pipeline_settings", columnName: "force_merge_requires_confirmation", definition: "integer")
-    if hasTable(named: "pr_pipeline_settings"), hasTable(named: "kv") {
+    try ensureColumn(tableName: "pr_pipeline_settings", columnName: "ptm_defaults_backfilled_version", definition: "text")
+    if hasTable(named: "pr_pipeline_settings") {
       try exec("""
         update pr_pipeline_settings
            set auto_merge = 1,
                force_finalize_mode = 'conditional',
-               at_cap_policy = 'ci_retry_once'
+               at_cap_policy = 'ci_retry_once',
+               ptm_defaults_backfilled_version = 'ptm-defaults-v1'
          where auto_merge = 0
            and merge_method = 'repo_default'
            and max_rounds = 5
@@ -2280,16 +2282,7 @@ final class DatabaseService {
            and auto_agent_reasoning_effort is null
            and auto_agent_permission_mode is null
            and auto_agent_confidence_threshold is null
-           and not exists (
-             select 1 from kv where key = 'pr_pipeline_settings.ptm_defaults_backfilled.v1'
-           )
-      """)
-      try exec("""
-        insert into kv(key, value)
-        select 'pr_pipeline_settings.ptm_defaults_backfilled.v1', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-         where not exists (
-           select 1 from kv where key = 'pr_pipeline_settings.ptm_defaults_backfilled.v1'
-         )
+           and (ptm_defaults_backfilled_version is null or ptm_defaults_backfilled_version <> 'ptm-defaults-v1')
       """)
     }
     try ensureColumn(tableName: "pr_convergence_state", columnName: "ptm_args_json", definition: "text")
@@ -2299,6 +2292,7 @@ final class DatabaseService {
     try ensureColumn(tableName: "pr_convergence_state", columnName: "last_dispatch_head_sha", definition: "text")
     try ensureColumn(tableName: "pr_convergence_state", columnName: "last_bot_ping_head_sha", definition: "text")
     try ensureColumn(tableName: "pr_convergence_state", columnName: "last_bot_ping_at", definition: "text")
+    try ensureColumn(tableName: "pr_convergence_state", columnName: "merge_wait_kind", definition: "text")
     try ensureColumn(tableName: "pr_convergence_state", columnName: "pause_repeat_count", definition: "integer not null default 0")
     try ensureColumn(tableName: "pr_convergence_state", columnName: "last_pause_reason_hash", definition: "text")
 

@@ -1402,6 +1402,9 @@ export type ConvergencePollerStatus =
   | "paused"
   | "stopped";
 
+export type ConvergenceMergeWaitKind =
+  | "github_auto_merge_armed";
+
 export type ConvergenceRuntimeState = {
   prId: string;
   autoConvergeEnabled: boolean;
@@ -1409,6 +1412,7 @@ export type ConvergenceRuntimeState = {
   pathToMergeActive: boolean;
   status: ConvergenceRuntimeStatus;
   pollerStatus: ConvergencePollerStatus;
+  mergeWaitKind: ConvergenceMergeWaitKind | null;
   currentRound: number;
   activeSessionId: string | null;
   activeLaneId: string | null;
@@ -1508,6 +1512,7 @@ export const DEFAULT_CONVERGENCE_RUNTIME_STATE: Omit<ConvergenceRuntimeState, "p
   pathToMergeActive: false,
   status: "idle",
   pollerStatus: "idle",
+  mergeWaitKind: null,
   currentRound: 0,
   activeSessionId: null,
   activeLaneId: null,

@@ -201,6 +201,7 @@ function makeConvergenceState(overrides: Partial<PrConvergenceState> = {}): PrCo
     pathToMergeActive: false,
     status: "idle",
     pollerStatus: "idle",
+    mergeWaitKind: null,
     currentRound: 0,
     activeSessionId: null,
     activeLaneId: null,
