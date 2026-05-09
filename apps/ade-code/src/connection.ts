@@ -11,6 +11,10 @@ type RpcResponseEnvelope<T> =
       error: { message?: string };
     };
 
+type AdeRpcRequest = <T>(method: string, params?: unknown) => Promise<T>;
+
+type AdeActionHelpers = Pick<AdeCodeConnection, "tool" | "action" | "actionList">;
+
 type EmbeddedRuntime = {
   dispose: () => void;
   agentChatService?: {
@@ -63,7 +67,38 @@ function unwrapActionResult<T>(payload: RpcResponseEnvelope<unknown>, domain: st
   return record.result as T;
 }
 
-async function initialize(request: <T>(method: string, params?: unknown) => Promise<T>): Promise<void> {
+function createAdeActionHelpers(request: AdeRpcRequest): AdeActionHelpers {
+  return {
+    tool: async <T>(name: string, toolArgs?: Record<string, unknown>): Promise<T> => {
+      const payload = await request<unknown>("ade/actions/call", {
+        name,
+        arguments: toolArgs ?? {},
+      });
+      if (payload && typeof payload === "object" && "ok" in payload && payload.ok === false) {
+        const error = (payload as { error?: { message?: string } }).error;
+        const message = typeof error?.message === "string" ? error.message : `ADE tool failed: ${name}`;
+        throw new Error(message);
+      }
+      return payload as T;
+    },
+    action: async <T>(domain: string, action: string, actionArgs?: Record<string, unknown>): Promise<T> => {
+      const payload = await request<unknown>("ade/actions/call", {
+        name: "run_ade_action",
+        arguments: { domain, action, args: actionArgs ?? {} },
+      });
+      return unwrapActionResult<T>(payload, domain, action);
+    },
+    actionList: async <T>(domain: string, action: string, argsList: unknown[]): Promise<T> => {
+      const payload = await request<unknown>("ade/actions/call", {
+        name: "run_ade_action",
+        arguments: { domain, action, argsList },
+      });
+      return unwrapActionResult<T>(payload, domain, action);
+    },
+  };
+}
+
+async function initialize(request: AdeRpcRequest): Promise<void> {
   await request("ade/initialize", {
     protocolVersion: "2025-06-18",
     clientName: "ade-code",
@@ -108,7 +143,7 @@ export async function connectToAde(args: {
     try {
       client = await JsonRpcClient.connect(socketPath);
       const connectedClient = client;
-      const request = <T>(method: string, params?: unknown) => connectedClient.request<T>(method, params);
+      const request: AdeRpcRequest = <T>(method: string, params?: unknown) => connectedClient.request<T>(method, params);
       await withTimeout(initialize(request), 3000, "ADE RPC socket did not finish initialization.");
       return {
         mode: "attached",
@@ -116,32 +151,7 @@ export async function connectToAde(args: {
         workspaceRoot: args.project.workspaceRoot,
         socketPath,
         request,
-        tool: async <T>(name: string, toolArgs?: Record<string, unknown>): Promise<T> => {
-          const payload = await request<unknown>("ade/actions/call", {
-            name,
-            arguments: toolArgs ?? {},
-          });
-          if (payload && typeof payload === "object" && "ok" in payload && payload.ok === false) {
-            const error = (payload as { error?: { message?: string } }).error;
-            const message = typeof error?.message === "string" ? error.message : `ADE tool failed: ${name}`;
-            throw new Error(message);
-          }
-          return payload as T;
-        },
-        action: async <T>(domain: string, action: string, actionArgs?: Record<string, unknown>): Promise<T> => {
-          const payload = await request<unknown>("ade/actions/call", {
-            name: "run_ade_action",
-            arguments: { domain, action, args: actionArgs ?? {} },
-          });
-          return unwrapActionResult<T>(payload, domain, action);
-        },
-        actionList: async <T>(domain: string, action: string, argsList: unknown[]): Promise<T> => {
-          const payload = await request<unknown>("ade/actions/call", {
-            name: "run_ade_action",
-            arguments: { domain, action, argsList },
-          });
-          return unwrapActionResult<T>(payload, domain, action);
-        },
+        ...createAdeActionHelpers(request),
         onChatEvent: (callback: (event: AgentChatEventEnvelope) => void) => (
           connectedClient.onNotification("chat/event", (params) => callback(params as AgentChatEventEnvelope))
         ),
@@ -173,7 +183,7 @@ export async function connectToAde(args: {
     serverVersion: "ade-code",
   });
   let nextRequestId = 1;
-  const request = async <T>(method: string, params?: unknown): Promise<T> => {
+  const request: AdeRpcRequest = async <T>(method: string, params?: unknown): Promise<T> => {
     return await handler({
       jsonrpc: "2.0",
       id: nextRequestId++,
@@ -192,32 +202,7 @@ export async function connectToAde(args: {
     workspaceRoot: args.project.workspaceRoot,
     socketPath: null,
     request,
-    tool: async <T>(name: string, toolArgs?: Record<string, unknown>): Promise<T> => {
-      const payload = await request<unknown>("ade/actions/call", {
-        name,
-        arguments: toolArgs ?? {},
-      });
-      if (payload && typeof payload === "object" && "ok" in payload && payload.ok === false) {
-        const error = (payload as { error?: { message?: string } }).error;
-        const message = typeof error?.message === "string" ? error.message : `ADE tool failed: ${name}`;
-        throw new Error(message);
-      }
-      return payload as T;
-    },
-    action: async <T>(domain: string, action: string, actionArgs?: Record<string, unknown>): Promise<T> => {
-      const payload = await request<unknown>("ade/actions/call", {
-        name: "run_ade_action",
-        arguments: { domain, action, args: actionArgs ?? {} },
-      });
-      return unwrapActionResult<T>(payload, domain, action);
-    },
-    actionList: async <T>(domain: string, action: string, argsList: unknown[]): Promise<T> => {
-      const payload = await request<unknown>("ade/actions/call", {
-        name: "run_ade_action",
-        arguments: { domain, action, argsList },
-      });
-      return unwrapActionResult<T>(payload, domain, action);
-    },
+    ...createAdeActionHelpers(request),
     onChatEvent: (callback) => chatEvents(callback),
     close: async () => {
       handler.dispose();
