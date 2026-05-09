@@ -796,17 +796,43 @@ function migrate(db: MigrationDb) {
   `);
   db.run("create index if not exists idx_lane_linear_issues_lane on lane_linear_issues(project_id, lane_id)");
   db.run("create index if not exists idx_lane_linear_issues_issue on lane_linear_issues(project_id, issue_id)");
-  // Each lane is linked to at most one Linear issue. Enforce that invariant
-  // at the storage layer in addition to the application-level upsert (delete-
-  // then-insert) so concurrent writers can't double-link a lane.
+  // Drop a previously-created UNIQUE index on (project_id, lane_id) — it
+  // existed briefly in development builds but conflicts with cr-sqlite's
+  // `crsql_as_crr` requirement that CRR tables carry no unique indices
+  // besides the primary key.
   try {
-    db.run(
-      "create unique index if not exists uniq_lane_linear_issues_lane on lane_linear_issues(project_id, lane_id)",
-    );
+    db.run("drop index if exists uniq_lane_linear_issues_lane");
   } catch {
-    // If existing rows violate uniqueness (only possible in pre-migration
-    // databases), leave the non-unique lookup index alone — application code
-    // continues to enforce single-issue-per-lane at write time.
+    // best-effort cleanup
+  }
+  // Each lane is linked to at most one Linear issue. CRR-converted tables
+  // cannot carry UNIQUE indices besides the primary key (`crsql_as_crr`
+  // rejects them with "Table … has unique indices besides the primary key.
+  // This is not allowed for CRRs"), so uniqueness on (project_id, lane_id)
+  // is enforced at the application layer inside `attachLinearIssue`
+  // (delete-then-insert in a transaction). Coalesce duplicates from older
+  // dev builds — keep the most recently updated row per (project, lane)
+  // and delete the rest. This runs on every bootstrap so the app-layer
+  // guarantee has a clean slate even after a multi-writer race produced
+  // extras.
+  try {
+    db.run(`
+      delete from lane_linear_issues
+      where rowid not in (
+        select rowid from lane_linear_issues as keep
+        where keep.id = (
+          select id from lane_linear_issues inner_p
+          where inner_p.project_id = keep.project_id
+            and inner_p.lane_id = keep.lane_id
+          order by inner_p.updated_at desc,
+                   inner_p.id asc
+          limit 1
+        )
+      )
+    `);
+  } catch {
+    // best-effort migration; duplicates will be coalesced on the next
+    // upsert via the existing delete-then-insert path.
   }
 
   db.run(`

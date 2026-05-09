@@ -724,15 +724,22 @@ describe("linearClient", () => {
       if (!body.query?.includes("SearchIssues")) {
         return new Response(JSON.stringify({ data: {} }), { status: 200, headers: { "content-type": "application/json" } });
       }
-      expect(body.query).toContain('project: { id: { eq: "project-1" } }');
-      expect(body.query).toContain('state: { type: { in: ["unstarted", "started"] } }');
-      expect(body.query).toContain('assignee: { id: { eq: "user-1" } }');
-      expect(body.query).toContain("priority: { eq: 2 }");
-      expect(body.query).toContain("containsIgnoreCase");
+      expect(body.query).toContain("$filter: IssueFilter");
       expect(body.variables).toMatchObject({
         first: 25,
         after: "cursor-1",
         includeArchived: false,
+        filter: {
+          project: { id: { eq: "project-1" } },
+          state: { type: { in: ["unstarted", "started"] } },
+          assignee: { id: { eq: "user-1" } },
+          priority: { eq: 2 },
+          or: [
+            { title: { containsIgnoreCase: "auth" } },
+            { description: { containsIgnoreCase: "auth" } },
+            { identifier: { containsIgnoreCase: "auth" } },
+          ],
+        },
       });
       return new Response(
         JSON.stringify({

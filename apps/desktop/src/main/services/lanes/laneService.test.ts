@@ -1922,6 +1922,8 @@ describe("laneService missionId and laneRole", () => {
       throw new Error(`Unexpected git call: ${args.join(" ")}`);
     });
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
       if (args[0] === "push" && args[1] === "-u") return { exitCode: 0, stdout: "", stderr: "" };
       if (args[0] === "status" && args[1] === "--porcelain=v1") return { exitCode: 0, stdout: "", stderr: "" };
       if (args[0] === "rev-list" && args[1] === "--left-right" && args[2] === "--count") return { exitCode: 0, stdout: "0\t0\n", stderr: "" };

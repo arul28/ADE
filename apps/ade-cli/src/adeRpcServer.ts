@@ -1915,7 +1915,7 @@ const CTO_LINEAR_SYNC_TOOL_SPECS: ToolSpec[] = [
         assigneeId: { anyOf: [{ type: "string" }, { type: "null" }] },
         priority: { anyOf: [{ type: "number" }, { type: "null" }] },
         query: { anyOf: [{ type: "string" }, { type: "null" }] },
-        first: { type: "number", minimum: 1, maximum: 200 },
+        first: { type: "number", minimum: 1, maximum: 50 },
         after: { anyOf: [{ type: "string" }, { type: "null" }] },
         includeArchived: { type: "boolean" }
       }
