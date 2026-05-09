@@ -1100,6 +1100,75 @@ function createFakePathExecutable(dir: string, name: string): string {
 }
 
 describe("adeRpcServer", () => {
+  it("routes app/navigate through the runtime navigation service", async () => {
+    const { runtime } = createRuntime();
+    const navigate = vi.fn(async () => ({ ok: true, mode: "desktop", windowId: 7 }));
+    runtime.appNavigationService = { navigate };
+    const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+    await initialize(handler, { role: "cto" });
+
+    const result = await handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "app/navigate",
+      params: {
+        source: "ade-code",
+        target: { kind: "chat", sessionId: "chat-1", laneId: "lane-1" },
+      },
+    });
+
+    expect(result).toEqual({ ok: true, mode: "desktop", windowId: 7 });
+    expect(navigate).toHaveBeenCalledWith({
+      source: "ade-code",
+      target: { kind: "chat", sessionId: "chat-1", laneId: "lane-1" },
+    });
+  });
+
+  it("reports app/navigate unavailable in headless runtime", async () => {
+    const { runtime } = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+    await initialize(handler, { role: "cto" });
+
+    const result = await handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "app/navigate",
+      params: {
+        source: "ade-code",
+        target: { kind: "work" },
+      },
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      mode: "unavailable",
+      message: "Desktop navigation is unavailable in this runtime.",
+    });
+  });
+
+  it("rejects malformed app/navigate targets before calling the runtime service", async () => {
+    const { runtime } = createRuntime();
+    const navigate = vi.fn(async () => ({ ok: true, mode: "desktop", windowId: 7 }));
+    runtime.appNavigationService = { navigate };
+    const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+    await initialize(handler, { role: "cto" });
+
+    await expect(handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "app/navigate",
+      params: {
+        source: "ade-code",
+        target: { kind: "lane" },
+      },
+    })).rejects.toMatchObject({
+      code: JsonRpcErrorCode.invalidParams,
+      message: "app/navigate target 'lane' requires laneId.",
+    });
+
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
   it("treats requested privileged roles as external without trusted env identity", async () => {
     const { runtime } = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });

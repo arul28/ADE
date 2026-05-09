@@ -2,7 +2,7 @@
 
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, createEvent, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { TopBar } from "./TopBar";
 import { useAppStore } from "../../state/appStore";
 
@@ -101,12 +101,42 @@ function resetStore() {
   } as any);
 }
 
+function makeDataTransfer(data: Record<string, string>, dropEffect = "move") {
+  return {
+    dropEffect,
+    effectAllowed: "move",
+    types: Object.keys(data),
+    getData: vi.fn((type: string) => data[type] ?? ""),
+    setData: vi.fn(),
+  };
+}
+
+function fireProjectTabDragEnd(
+  element: HTMLElement,
+  dataTransfer: ReturnType<typeof makeDataTransfer>,
+) {
+  const event = createEvent.dragEnd(element, { dataTransfer });
+  Object.defineProperty(event, "clientX", { value: -1 });
+  Object.defineProperty(event, "clientY", { value: 12 });
+  Object.defineProperty(event, "dataTransfer", { value: dataTransfer });
+  fireEvent(element, event);
+}
+
 describe("TopBar", () => {
   const originalAde = globalThis.window.ade;
 
   beforeEach(() => {
     resetStore();
     globalThis.window.ade = {
+      app: {
+        getWindowSession: vi.fn(async () => ({ windowId: 1, project: useAppStore.getState().project })),
+        newWindow: vi.fn(async () => ({ windowId: 2 })),
+        openProjectInNewWindow: vi.fn(async (rootPath: string) => ({
+          windowId: 2,
+          project: { rootPath, name: rootPath.split("/").pop() ?? rootPath },
+        })),
+        closeWindow: vi.fn(async () => ({ closed: true })),
+      },
       project: {
         listRecent: vi.fn(async () => [
           {
@@ -161,15 +191,65 @@ describe("TopBar", () => {
     expect(globalThis.window.ade.sync.getStatus).not.toHaveBeenCalled();
   });
 
-  it("does not eagerly resolve icons for non-current recent projects", async () => {
+  it("does not render recent projects as tabs before a project is open", async () => {
     useAppStore.setState({ project: null } as any);
 
     render(<TopBar />);
 
-    expect(await screen.findByText("ADE")).toBeTruthy();
+    await waitFor(() => {
+      expect(globalThis.window.ade.project.listRecent).toHaveBeenCalled();
+    });
+    expect(screen.queryByTitle("/Users/arul/ADE")).toBeNull();
     await new Promise((resolve) => setTimeout(resolve, 850));
 
     expect(globalThis.window.ade.project.resolveIcon).not.toHaveBeenCalled();
+  });
+
+  it("opens a blank ADE window from the top bar", async () => {
+    render(<TopBar />);
+
+    fireEvent.click(await screen.findByTitle("New window"));
+
+    expect(globalThis.window.ade.app.newWindow).toHaveBeenCalledTimes(1);
+  });
+
+  it("consolidates a cross-window project tab dropped onto the same project", async () => {
+    render(<TopBar />);
+
+    const tab = await screen.findByTitle("/Users/arul/ADE");
+    await waitFor(() => {
+      expect(globalThis.window.ade.app.getWindowSession).toHaveBeenCalled();
+    });
+
+    fireEvent.drop(tab, {
+      dataTransfer: makeDataTransfer({
+        "application/x-ade-project-root": "/Users/arul/ADE",
+        "application/x-ade-window-id": "2",
+      }),
+    });
+
+    expect(globalThis.window.ade.app.closeWindow).toHaveBeenCalledWith(2);
+    expect(useAppStore.getState().switchProjectToPath).not.toHaveBeenCalled();
+  });
+
+  it("does not detach again after a project tab is dropped onto an ADE target", async () => {
+    render(<TopBar />);
+
+    const tab = await screen.findByTitle("/Users/arul/ADE");
+
+    fireProjectTabDragEnd(tab, makeDataTransfer({}, "move"));
+
+    expect(globalThis.window.ade.app.openProjectInNewWindow).not.toHaveBeenCalled();
+  });
+
+  it("detaches a project tab when it is dragged outside without an ADE drop target", async () => {
+    render(<TopBar />);
+
+    const tab = await screen.findByTitle("/Users/arul/ADE");
+
+    fireProjectTabDragEnd(tab, makeDataTransfer({}, "none"));
+
+    expect(globalThis.window.ade.app.openProjectInNewWindow).toHaveBeenCalledWith("/Users/arul/ADE");
   });
 
   it("opens the phone sync drawer from the host status control", async () => {
@@ -276,7 +356,7 @@ describe("TopBar", () => {
     expect((await screen.findByRole("alert")).textContent).toContain("Project icon must be 10 MB or smaller.");
   });
 
-  it("confirms before removing a project tab", async () => {
+  it("confirms before closing a project tab", async () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
 
     render(<TopBar />);
@@ -284,11 +364,12 @@ describe("TopBar", () => {
     await screen.findByText("ADE");
     fireEvent.click(screen.getByTitle("Remove project"));
 
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("Close \"ADE\" and remove it from project tabs?"));
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("Close \"ADE\" project tab?"));
     expect(globalThis.window.ade.project.forgetRecent).not.toHaveBeenCalled();
+    expect(useAppStore.getState().closeProject).not.toHaveBeenCalled();
   });
 
-  it("removes the project tab after confirmation", async () => {
+  it("closes the active project tab after confirmation without removing it from recents", async () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
 
     render(<TopBar />);
@@ -297,7 +378,8 @@ describe("TopBar", () => {
     fireEvent.click(screen.getByTitle("Remove project"));
 
     await waitFor(() => {
-      expect(globalThis.window.ade.project.forgetRecent).toHaveBeenCalledWith("/Users/arul/ADE");
+      expect(useAppStore.getState().closeProject).toHaveBeenCalledTimes(1);
     });
+    expect(globalThis.window.ade.project.forgetRecent).not.toHaveBeenCalled();
   });
 });

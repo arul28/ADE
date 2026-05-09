@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  buildAdeCodeArgs,
   buildCliPlan,
   findProjectRoots,
   formatOutput,
@@ -45,6 +46,36 @@ describe("ADE CLI", () => {
     expect(parsed.options.projectRoot).toBe("/tmp/project");
     expect(parsed.options.role).toBe("cto");
     expect(parsed.command).toEqual(["actions", "run", "git.stageFile", "--arg", "laneId=lane-1"]);
+  });
+
+  it("maps ade code to the terminal Work chat launcher", () => {
+    const parsed = parseCliArgs(["--project-root", "/tmp/project", "code", "--print-state"]);
+    expect(parsed.options.projectRoot).toBe("/tmp/project");
+    expect(parsed.command).toEqual(["code", "--print-state"]);
+
+    const plan = buildCliPlan(parsed.command);
+    expect(plan).toEqual({ kind: "ade-code", rest: ["--print-state"] });
+  });
+
+  it("forwards resolved roots and socket intent to ade code", () => {
+    const args = buildAdeCodeArgs(["--print-state"], {
+      ...baseResolveOpts(),
+      projectRoot: "/tmp/project",
+      workspaceRoot: null,
+      headless: false,
+      requireSocket: true,
+    });
+
+    expect(args).toEqual([
+      "--project-root",
+      "/tmp/project",
+      "--workspace-root",
+      "/tmp/project",
+      "--socket",
+      "/tmp/project/.ade/ade.sock",
+      "--require-socket",
+      "--print-state",
+    ]);
   });
 
   it("preserves command-local value flags that overlap global flags", () => {

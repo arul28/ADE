@@ -39,6 +39,7 @@ import {
   type DockLayout,
   type GraphPersistedState,
   type MergeMethod,
+  type AppNavigationRequest,
 } from "../../desktop/src/shared/types";
 import type { PrActionRun, PrCheck, PrComment, PrReviewThread } from "../../desktop/src/shared/types/prs";
 import { resolveAdeLayout } from "../../desktop/src/shared/adeLayout";
@@ -7342,6 +7343,48 @@ export function createAdeRpcRequestHandler(args: {
     if (method === "ade/resources/read") {
       const uri = assertNonEmptyString(params.uri, "uri");
       return await readResource(runtime, uri);
+    }
+
+    if (method === "app/navigate") {
+      const target = safeObject(params.target);
+      const kind = asOptionalTrimmedString(target.kind);
+      if (!kind) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "app/navigate requires target.kind.");
+      }
+      if (kind !== "work" && kind !== "chat" && kind !== "lane" && kind !== "pr" && kind !== "route") {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Unsupported app navigation target kind: ${kind}.`);
+      }
+      if (kind === "lane" && !asOptionalTrimmedString(target.laneId)) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "app/navigate target 'lane' requires laneId.");
+      }
+      if (kind === "route" && !asOptionalTrimmedString(target.route)) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "app/navigate target 'route' requires route.");
+      }
+      const normalizedTarget: Record<string, unknown> = { kind };
+      const sessionId = asOptionalTrimmedString(target.sessionId);
+      const laneId = asOptionalTrimmedString(target.laneId);
+      if ((kind === "work" || kind === "chat") && sessionId) normalizedTarget.sessionId = sessionId;
+      if ((kind === "work" || kind === "chat" || kind === "lane" || kind === "pr") && laneId) normalizedTarget.laneId = laneId;
+      if (kind === "pr") {
+        const prId = asOptionalTrimmedString(target.prId);
+        if (prId) normalizedTarget.prId = prId;
+        if (typeof target.prNumber === "number") normalizedTarget.prNumber = target.prNumber;
+      }
+      if (kind === "route") {
+        normalizedTarget.route = asOptionalTrimmedString(target.route);
+      }
+      const request = {
+        target: normalizedTarget,
+        source: asOptionalTrimmedString(params.source) ?? "ade-rpc",
+      } as AppNavigationRequest;
+      if (!runtime.appNavigationService) {
+        return {
+          ok: false,
+          mode: "unavailable",
+          message: "Desktop navigation is unavailable in this runtime.",
+        };
+      }
+      return await runtime.appNavigationService.navigate(request);
     }
 
     if (method === "shutdown") {

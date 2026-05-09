@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChatCircleDots, CircleNotch, DeviceMobile, Folder, FolderOpen, Plus, Minus, Trash, UploadSimple, X } from "@phosphor-icons/react";
+import { ArrowSquareOut, ChatCircleDots, CircleNotch, DeviceMobile, Folder, FolderOpen, Plus, Minus, Trash, UploadSimple, X } from "@phosphor-icons/react";
 import * as Dialog from "@radix-ui/react-dialog";
 
 import { useAppStore } from "../../state/appStore";
@@ -22,6 +22,8 @@ import { PublishToGitHubDialog } from "../projects/PublishToGitHubDialog";
 import { SyncDevicesSection } from "../settings/SyncDevicesSection";
 
 const RUNNING_LANE_PROCESS_STATES: ProcessRuntime["status"][] = ["starting", "running", "degraded"];
+const ADE_PROJECT_TAB_ROOT_MIME = "application/x-ade-project-root";
+const ADE_PROJECT_TAB_WINDOW_MIME = "application/x-ade-window-id";
 
 // Bounded LRU so we don't accumulate icons for every project ever opened in
 // long-lived sessions. 24 entries keeps the working set hot for typical usage
@@ -171,12 +173,16 @@ function projectIconErrorMessage(error: unknown): string {
   return cleaned || "Failed to update project icon.";
 }
 
+function fallbackProjectName(rootPath: string): string {
+  return rootPath.split(/[\\/]/).filter(Boolean).pop() ?? rootPath;
+}
+
 function confirmProjectTabRemoval(projectName: string, isCurrent: boolean, isMissing: boolean): boolean {
   const label = projectName.trim() || "this project";
   const action = isCurrent && !isMissing
-    ? `Close "${label}" and remove it from project tabs?`
-    : `Remove "${label}" from project tabs?`;
-  return window.confirm(`${action}\n\nThis does not delete any files on disk.`);
+    ? `Close "${label}" project tab?`
+    : `Close "${label}" project tab?`;
+  return window.confirm(`${action}\n\nThis does not remove it from Recent Projects or delete any files on disk.`);
 }
 
 function deriveSyncLabel(snapshot: SyncRoleSnapshot | null): string | null {
@@ -467,8 +473,10 @@ export function TopBar() {
   const [phoneSyncOpen, setPhoneSyncOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [publishOpen, setPublishOpen] = useState(false);
+  const [openProjectTabRoots, setOpenProjectTabRoots] = useState<string[]>([]);
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [dropIdx, setDropIdx] = useState<number | null>(null);
+  const [windowId, setWindowId] = useState<number | null>(null);
   const phoneSyncPanelRef = useRef<HTMLDivElement | null>(null);
   const dragCounterRef = useRef(0);
   const isProjectBusy = projectTransition != null || relocatingPath != null;
@@ -516,6 +524,51 @@ export function TopBar() {
   useEffect(() => {
     fetchRecent();
   }, [project?.rootPath, fetchRecent]);
+
+  useEffect(() => {
+    const rootPath = project?.rootPath ?? null;
+    if (!rootPath) {
+      setOpenProjectTabRoots([]);
+      return;
+    }
+    setOpenProjectTabRoots((prev) =>
+      prev.includes(rootPath) ? prev : [...prev, rootPath]
+    );
+  }, [project?.rootPath]);
+
+  const projectTabs = useMemo<RecentProjectSummary[]>(() =>
+    openProjectTabRoots.map((rootPath) => {
+      const recent = recentProjects.find((entry) => entry.rootPath === rootPath);
+      if (recent) return recent;
+      return {
+        rootPath,
+        displayName:
+          project?.rootPath === rootPath
+            ? project.displayName ?? fallbackProjectName(rootPath)
+            : fallbackProjectName(rootPath),
+        exists: true,
+        lastOpenedAt: "",
+      };
+    }),
+  [openProjectTabRoots, project, recentProjects]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const getWindowSession = (window as unknown as {
+      ade?: { app?: { getWindowSession?: typeof window.ade.app.getWindowSession } };
+    }).ade?.app?.getWindowSession;
+    if (typeof getWindowSession !== "function") return undefined;
+    getWindowSession()
+      .then((session) => {
+        if (!cancelled) setWindowId(session.windowId);
+      })
+      .catch(() => {
+        if (!cancelled) setWindowId(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!phoneSyncOpen) return;
@@ -634,6 +687,11 @@ export function TopBar() {
     openNewTab();
   }, [isProjectBusy, openNewTab]);
 
+  const handleOpenNewWindow = useCallback(() => {
+    if (isProjectBusy) return;
+    window.ade.app.newWindow().catch(() => {});
+  }, [isProjectBusy]);
+
   const handleSwitchProject = useCallback((rootPath: string) => {
     if (isProjectBusy) return;
     if (project?.rootPath === rootPath) {
@@ -645,8 +703,8 @@ export function TopBar() {
 
   const handleRemoveTab = useCallback((rootPath: string) => {
     void (async () => {
-      const target = recentProjects.find((entry) => entry.rootPath === rootPath);
-      const fallbackName = rootPath.split(/[\\/]/).filter(Boolean).pop() ?? rootPath;
+      const target = projectTabs.find((entry) => entry.rootPath === rootPath);
+      const fallbackName = fallbackProjectName(rootPath);
       const confirmed = confirmProjectTabRemoval(
         target?.displayName ?? fallbackName,
         project?.rootPath === rootPath,
@@ -657,21 +715,22 @@ export function TopBar() {
       const shouldClose = await checkForActiveWorkloads(rootPath);
       if (!shouldClose) return;
 
-      const rows = await window.ade.project.forgetRecent(rootPath).catch(() => null);
-      if (!rows) return;
-
-      setRecentProjects(rows);
-      // If we just removed the active project, switch to the next available or show welcome.
+      const currentIndex = openProjectTabRoots.indexOf(rootPath);
+      const nextTabRoots = openProjectTabRoots.filter((entry) => entry !== rootPath);
+      setOpenProjectTabRoots(nextTabRoots);
       if (project?.rootPath === rootPath) {
-        const next = rows.find((r) => r.exists && r.rootPath !== rootPath);
-        if (next) {
-          switchProjectToPath(next.rootPath).catch(() => { });
+        const nextRoot =
+          nextTabRoots[currentIndex]
+          ?? nextTabRoots[currentIndex - 1]
+          ?? null;
+        if (nextRoot) {
+          switchProjectToPath(nextRoot).catch(() => { });
         } else {
           closeProject().catch(() => { });
         }
       }
     })().catch(() => { });
-  }, [checkForActiveWorkloads, project?.rootPath, recentProjects, closeProject, switchProjectToPath]);
+  }, [checkForActiveWorkloads, closeProject, openProjectTabRoots, project?.rootPath, projectTabs, switchProjectToPath]);
 
   const handleRelocate = useCallback((oldPath: string) => {
     setRelocatingPath(oldPath);
@@ -683,12 +742,16 @@ export function TopBar() {
     })().catch(() => { }).finally(() => setRelocatingPath(null));
   }, [openRepo]);
 
-  const handleDragStart = useCallback((e: React.DragEvent, idx: number) => {
+  const handleDragStart = useCallback((e: React.DragEvent, idx: number, rootPath: string) => {
     setDragIdx(idx);
     dragCounterRef.current = 0;
     e.dataTransfer.effectAllowed = "move";
     e.dataTransfer.setData("text/plain", String(idx));
-  }, []);
+    e.dataTransfer.setData(ADE_PROJECT_TAB_ROOT_MIME, rootPath);
+    if (windowId != null) {
+      e.dataTransfer.setData(ADE_PROJECT_TAB_WINDOW_MIME, String(windowId));
+    }
+  }, [windowId]);
 
   const handleDragOver = useCallback((e: React.DragEvent, idx: number) => {
     e.preventDefault();
@@ -701,23 +764,65 @@ export function TopBar() {
   }, []);
 
   const handleDrop = useCallback((e: React.DragEvent, targetIdx: number) => {
+    if (dragIdx === null && Array.from(e.dataTransfer.types).includes(ADE_PROJECT_TAB_ROOT_MIME)) {
+      return;
+    }
     e.preventDefault();
+    e.stopPropagation();
     setDropIdx(null);
     if (dragIdx === null || dragIdx === targetIdx) {
       setDragIdx(null);
       return;
     }
-    const items = [...recentProjects];
+    const items = [...openProjectTabRoots];
     const [moved] = items.splice(dragIdx, 1);
     items.splice(targetIdx, 0, moved);
-    setRecentProjects(items);
+    setOpenProjectTabRoots(items);
     setDragIdx(null);
-    window.ade.project.reorderRecent(items.map((r) => r.rootPath)).catch(() => {});
-  }, [dragIdx, recentProjects]);
+  }, [dragIdx, openProjectTabRoots]);
 
-  const handleDragEnd = useCallback(() => {
+  const handleProjectTabDrop = useCallback((e: React.DragEvent) => {
+    const rootPath = e.dataTransfer.getData(ADE_PROJECT_TAB_ROOT_MIME);
+    if (!rootPath) return;
+    e.preventDefault();
+    setDropIdx(null);
+    setDragIdx(null);
+
+    const sourceWindowIdRaw = e.dataTransfer.getData(ADE_PROJECT_TAB_WINDOW_MIME);
+    const parsedSourceWindowId = sourceWindowIdRaw ? Number(sourceWindowIdRaw) : null;
+    const sourceWindowId = parsedSourceWindowId != null && Number.isFinite(parsedSourceWindowId)
+      ? parsedSourceWindowId
+      : null;
+    if (sourceWindowId != null && sourceWindowId === windowId) return;
+
+    if (project?.rootPath === rootPath) {
+      if (sourceWindowId != null) {
+        window.ade.app.closeWindow(sourceWindowId).catch(() => {});
+      }
+      return;
+    }
+    switchProjectToPath(rootPath).catch(() => {});
+  }, [project?.rootPath, switchProjectToPath, windowId]);
+
+  const handleProjectTabDragOver = useCallback((e: React.DragEvent) => {
+    if (!Array.from(e.dataTransfer.types).includes(ADE_PROJECT_TAB_ROOT_MIME)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+  }, []);
+
+  const handleDragEnd = useCallback((e: React.DragEvent, rootPath?: string) => {
+    const draggedOutside =
+      rootPath &&
+      (e.clientX < 0 ||
+        e.clientY < 0 ||
+        e.clientX > window.innerWidth ||
+        e.clientY > window.innerHeight);
+    const droppedOnAdeTarget = e.dataTransfer.dropEffect && e.dataTransfer.dropEffect !== "none";
     setDragIdx(null);
     setDropIdx(null);
+    if (draggedOutside && !droppedOnAdeTarget) {
+      window.ade.app.openProjectInNewWindow(rootPath).catch(() => {});
+    }
   }, []);
 
   const handleProjectAccentColorChange = useCallback((rootPath: string, color: string | null) => {
@@ -761,8 +866,9 @@ export function TopBar() {
   const syncLabel = deriveSyncLabel(syncSnapshot);
   const transitionTargetName =
     projectTransition?.rootPath
-      ? (recentProjects.find((entry) => entry.rootPath === projectTransition.rootPath)?.displayName
-          ?? projectTransition.rootPath.split(/[\\/]/).filter(Boolean).pop()
+        ? (projectTabs.find((entry) => entry.rootPath === projectTransition.rootPath)?.displayName
+          ?? recentProjects.find((entry) => entry.rootPath === projectTransition.rootPath)?.displayName
+          ?? fallbackProjectName(projectTransition.rootPath)
           ?? "project")
       : "project";
   const projectTransitionLabel =
@@ -794,23 +900,12 @@ export function TopBar() {
       {/* Project tabs — the container stays draggable, only interactive elements opt out */}
       <div
         className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto scrollbar-none"
+        onDragOver={handleProjectTabDragOver}
+        onDrop={handleProjectTabDrop}
       >
-        {recentProjects.length === 0 && !project ? (
-          <button
-            type="button"
-            className={cn(
-              "ade-shell-project-tab inline-flex items-center gap-2 px-3 py-0.5",
-              "transition-[background-color,color,border-color,box-shadow] duration-150"
-            )}
-            style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-            onClick={handleOpenNew}
-          >
-            <Folder size={14} weight="regular" />
-            Open a project
-          </button>
-        ) : (
+        {projectTabs.length > 0 || isNewTabOpen ? (
           <>
-            {recentProjects.map((rp, idx) => {
+            {projectTabs.map((rp, idx) => {
               const isCurrent = project?.rootPath === rp.rootPath;
               const isMissing = !rp.exists;
               const isRelocating = relocatingPath === rp.rootPath;
@@ -840,11 +935,11 @@ export function TopBar() {
                   aria-current={isCurrent ? "true" : undefined}
                   aria-disabled={isRelocating || isProjectBusy ? true : undefined}
                   draggable={!isMissing && !isRelocating && !isProjectBusy}
-                  onDragStart={(e) => handleDragStart(e, idx)}
+                  onDragStart={(e) => handleDragStart(e, idx, rp.rootPath)}
                   onDragOver={(e) => handleDragOver(e, idx)}
                   onDragLeave={handleDragLeave}
                   onDrop={(e) => handleDrop(e, idx)}
-                  onDragEnd={handleDragEnd}
+                  onDragEnd={(e) => handleDragEnd(e, rp.rootPath)}
                   className={cn(
                     "ade-shell-project-tab group inline-flex w-[clamp(128px,16vw,220px)] max-w-[220px] min-w-0 shrink-0 items-center gap-2 px-3 py-0.5",
                     "transition-[background-color,color,border-color,box-shadow,opacity] duration-150",
@@ -993,7 +1088,7 @@ export function TopBar() {
               </div>
             )}
           </>
-        )}
+        ) : null}
 
         {/* Add project button */}
         <button
@@ -1010,6 +1105,20 @@ export function TopBar() {
           style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
         >
           <Plus size={12} weight="regular" />
+        </button>
+        <button
+          type="button"
+          className={cn(
+            "ade-shell-control inline-flex h-5.5 w-5.5 shrink-0 items-center justify-center",
+            "transition-[background-color,color,border-color,box-shadow] duration-150"
+          )}
+          data-variant="ghost"
+          onClick={handleOpenNewWindow}
+          disabled={isProjectBusy}
+          title="New window"
+          style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+        >
+          <ArrowSquareOut size={12} weight="regular" />
         </button>
       </div>
 

@@ -12,6 +12,7 @@ import type {
   AdoptAttachedLaneArgs,
   UnregisteredLaneCandidate,
   AppInfo,
+  AppNavigationRequest,
   AutoUpdateSnapshot,
   ClearLocalAdeDataArgs,
   ClearLocalAdeDataResult,
@@ -716,8 +717,20 @@ declare global {
         ping: () => Promise<"pong">;
         getInfo: () => Promise<AppInfo>;
         getProject: () => Promise<ProjectInfo | null>;
+        getWindowSession: () => Promise<{
+          windowId: number | null;
+          project: ProjectInfo | null;
+        }>;
+        newWindow: () => Promise<{ windowId: number | null }>;
+        openProjectInNewWindow: (
+          rootPath: string,
+        ) => Promise<{ windowId: number | null; project: ProjectInfo | null }>;
+        closeWindow: (windowId?: number | null) => Promise<{ closed: boolean }>;
         onProjectChanged: (
           cb: (project: ProjectInfo | null) => void,
+        ) => () => void;
+        onNavigate: (
+          cb: (request: AppNavigationRequest) => void,
         ) => () => void;
         openExternal: (url: string) => Promise<void>;
         revealPath: (path: string) => Promise<void>;

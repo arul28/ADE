@@ -68,6 +68,7 @@ import { useAppStore } from "../../state/appStore";
 import { getDirtyFileTextForWindow } from "../../lib/dirtyWorkspaceBuffers";
 import { getAiStatusCached } from "../../lib/aiDiscoveryCache";
 import { dispatchWorkSurfaceRevealed } from "../terminals/workSurfaceVisibility";
+import type { AppNavigationRequest } from "../../../shared/types";
 
 const StartupSplashScreen = (
   <div className="flex h-full w-full flex-col items-center justify-center relative overflow-hidden" style={{ background: "var(--color-bg)" }}>
@@ -290,6 +291,41 @@ function ShellLayout() {
   );
 }
 
+function AppNavigationBridge() {
+  const navigate = useNavigate();
+  React.useEffect(() => {
+    return window.ade.app.onNavigate((request: AppNavigationRequest) => {
+      const target = request.target;
+      if (target.kind === "chat" || target.kind === "work") {
+        const params = new URLSearchParams();
+        if (target.sessionId) params.set("sessionId", target.sessionId);
+        if (target.laneId) params.set("laneId", target.laneId);
+        navigate(`/work${params.toString() ? `?${params.toString()}` : ""}`);
+        return;
+      }
+      if (target.kind === "lane") {
+        const params = new URLSearchParams();
+        params.set("laneId", target.laneId);
+        if (target.sessionId) params.set("sessionId", target.sessionId);
+        navigate(`/lanes?${params.toString()}`);
+        return;
+      }
+      if (target.kind === "pr") {
+        const params = new URLSearchParams();
+        if (target.prId) params.set("prId", target.prId);
+        if (target.prNumber != null) params.set("pr", String(target.prNumber));
+        if (target.laneId) params.set("laneId", target.laneId);
+        navigate(`/prs${params.toString() ? `?${params.toString()}` : ""}`);
+        return;
+      }
+      if (target.kind === "route") {
+        navigate(target.route.startsWith("/") ? target.route : `/${target.route}`);
+      }
+    });
+  }, [navigate]);
+  return null;
+}
+
 export function App() {
   const theme = useAppStore((s) => s.theme);
   const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
@@ -317,6 +353,7 @@ export function App() {
     <Router>
       <div data-theme={theme} className="h-full bg-bg text-fg font-sans antialiased selection:bg-accent/30">
         <OnboardingBootstrap />
+        <AppNavigationBridge />
         <Routes>
           <Route path="/startup" element={<Navigate to="/work" replace />} />
           <Route element={<ShellLayout />}>
