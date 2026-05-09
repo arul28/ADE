@@ -2609,6 +2609,31 @@ alter table pr_pipeline_settings add column at_cap_ci_retry_max integer;
 
 alter table pr_pipeline_settings add column force_merge_requires_confirmation integer;
 
+update pr_pipeline_settings
+         set auto_merge = 1,
+             force_finalize_mode = 'conditional',
+             at_cap_policy = 'ci_retry_once'
+       where auto_merge = 0
+         and merge_method = 'repo_default'
+         and max_rounds = 5
+         and on_rebase_needed = 'pause'
+         and coalesce(conflict_strategy, 'pause') = 'pause'
+         and coalesce(force_finalize_mode, 'off') = 'off'
+         and coalesce(force_finalize_require_no_ci_failures, 1) = 1
+         and coalesce(early_merge_on_green, 1) = 1
+         and (at_cap_policy is null or at_cap_policy = 'stop')
+         and (at_cap_wait_minutes is null or at_cap_wait_minutes = 30)
+         and (at_cap_ci_retry_max is null or at_cap_ci_retry_max = 3)
+         and coalesce(force_merge_requires_confirmation, 1) = 1
+         and auto_agent_provider is null
+         and auto_agent_model is null
+         and auto_agent_reasoning_effort is null
+         and auto_agent_permission_mode is null
+         and auto_agent_confidence_threshold is null
+         and not exists (
+           select 1 from kv where key = 'pr_pipeline_settings.ptm_defaults_backfilled.v1'
+         );
+
 create table if not exists pr_convergence_state (
       pr_id text primary key,
       auto_converge_enabled integer not null default 0,
