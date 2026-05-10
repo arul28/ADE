@@ -1,13 +1,30 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { Bonjour, type Browser, type Service as BonjourService } from "bonjour-service";
+import { resolveTailscaleCliPath } from "../../../../../ade-cli/src/services/sync/resolveTailscaleCliPath";
 import type { RemoteRuntimeDiscoveredMachine } from "../../../shared/types/remoteRuntime";
 
 export const ADE_SYNC_MDNS_SERVICE_TYPE = "ade-sync";
+const TAILSCALE_SSH_PORT = 22;
+const execFileAsync = promisify(execFile);
 
 type BonjourServiceLike = Partial<BonjourService> & {
   rawTxt?: unknown;
 };
 
 type TxtRecord = Record<string, string>;
+type TailscaleStatusPeer = {
+  ID?: unknown;
+  HostName?: unknown;
+  DNSName?: unknown;
+  OS?: unknown;
+  TailscaleIPs?: unknown;
+  Online?: unknown;
+};
+
+type TailscaleStatus = {
+  Peer?: unknown;
+};
 
 function trimmed(value: unknown): string | null {
   if (value == null || value === false) return null;
@@ -67,6 +84,13 @@ function isTailscaleRoute(host: string): boolean {
   if (!match) return false;
   const second = Number.parseInt(match[1] ?? "", 10);
   return second >= 64 && second <= 127;
+}
+
+function normalizeTailscaleDnsName(value: unknown): string | null {
+  const text = trimmed(value);
+  if (!text) return null;
+  const normalized = text.replace(/\.$/, "");
+  return normalized.endsWith(".ts.net") ? normalized : null;
 }
 
 function orderAddresses(addresses: string[]): string[] {
@@ -136,6 +160,60 @@ export function discoveredRuntimeFromBonjourService(
   };
 }
 
+export function discoveredRuntimesFromTailscaleStatus(value: unknown, nowMs = Date.now()): RemoteRuntimeDiscoveredMachine[] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+  const peers = (value as TailscaleStatus).Peer;
+  if (!peers || typeof peers !== "object" || Array.isArray(peers)) return [];
+
+  const discovered: RemoteRuntimeDiscoveredMachine[] = [];
+  for (const [peerKey, rawPeer] of Object.entries(peers as Record<string, unknown>)) {
+    if (!rawPeer || typeof rawPeer !== "object" || Array.isArray(rawPeer)) continue;
+    const peer = rawPeer as TailscaleStatusPeer;
+    const tailscaleIps = Array.isArray(peer.TailscaleIPs)
+      ? peer.TailscaleIPs.map((entry) => trimmed(entry)).filter((entry): entry is string => Boolean(entry && isTailscaleRoute(entry)))
+      : [];
+    const dnsName = normalizeTailscaleDnsName(peer.DNSName);
+    const tailscaleAddress = firstNonEmpty([dnsName, tailscaleIps[0]]);
+    if (!tailscaleAddress) continue;
+
+    const hostName = trimmed(peer.HostName) ?? dnsName;
+    const machineName = trimmed(peer.HostName) ?? dnsName ?? tailscaleAddress;
+    const hostIdentity = trimmed(peer.ID) ?? trimmed(peerKey);
+    const online = peer.Online === true;
+    const addresses = uniqueStrings([...tailscaleIps, dnsName]);
+    discovered.push({
+      id: `tailscale:${hostIdentity ?? tailscaleAddress}`,
+      serviceName: "Tailscale peer",
+      machineName,
+      hostIdentity,
+      hostName,
+      port: TAILSCALE_SSH_PORT,
+      addresses,
+      primaryRoute: tailscaleAddress,
+      tailscaleAddress,
+      runtimeKind: online ? "tailscale-peer" : "tailscale-peer-offline",
+      runtimeVersion: null,
+      projectIds: [],
+      projectCount: null,
+      lastSeenAt: nowMs,
+    });
+  }
+
+  return discovered;
+}
+
+async function discoverTailscalePeers(timeoutMs = 1_200): Promise<RemoteRuntimeDiscoveredMachine[]> {
+  try {
+    const { stdout } = await execFileAsync(resolveTailscaleCliPath(), ["status", "--json"], {
+      timeout: Math.max(500, timeoutMs),
+      maxBuffer: 1024 * 1024,
+    });
+    return discoveredRuntimesFromTailscaleStatus(JSON.parse(stdout), Date.now());
+  } catch {
+    return [];
+  }
+}
+
 export async function discoverLanRuntimes(timeoutMs = 1_200): Promise<RemoteRuntimeDiscoveredMachine[]> {
   const bonjour = new Bonjour();
   const discovered = new Map<string, RemoteRuntimeDiscoveredMachine>();
@@ -147,18 +225,27 @@ export async function discoverLanRuntimes(timeoutMs = 1_200): Promise<RemoteRunt
     discovered.set(machine.id, machine);
   };
 
-  try {
-    browser = bonjour.find({ type: ADE_SYNC_MDNS_SERVICE_TYPE });
-    browser.on("up", remember);
-    browser.on("txt-update", remember);
-    await new Promise((resolve) => setTimeout(resolve, Math.max(100, timeoutMs)));
-  } finally {
-    browser?.stop();
-    await new Promise<void>((resolve) => {
-      bonjour.destroy(() => resolve());
-      setTimeout(resolve, 250);
-    });
-  }
+  await Promise.all([
+    (async () => {
+      try {
+        browser = bonjour.find({ type: ADE_SYNC_MDNS_SERVICE_TYPE });
+        browser.on("up", remember);
+        browser.on("txt-update", remember);
+        await new Promise((resolve) => setTimeout(resolve, Math.max(100, timeoutMs)));
+      } finally {
+        browser?.stop();
+        await new Promise<void>((resolve) => {
+          bonjour.destroy(() => resolve());
+          setTimeout(resolve, 250);
+        });
+      }
+    })(),
+    (async () => {
+      for (const machine of await discoverTailscalePeers(timeoutMs)) {
+        discovered.set(machine.id, machine);
+      }
+    })(),
+  ]);
 
   return [...discovered.values()].sort((a, b) => {
     const name = a.machineName.localeCompare(b.machineName);

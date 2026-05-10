@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
+import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import type { RemoteRuntimeTarget, RemoteRuntimeTargetInput } from "../../../shared/types/remoteRuntime";
 
 type RegistryFile = {
@@ -10,7 +10,7 @@ type RegistryFile = {
 };
 
 function registryPath(): string {
-  return path.join(os.homedir(), ".ade", "secrets", "remote-machines.json");
+  return path.join(resolveMachineAdeLayout().secretsDir, "remote-machines.json");
 }
 
 function normalizePort(port: number | null | undefined): number | null {

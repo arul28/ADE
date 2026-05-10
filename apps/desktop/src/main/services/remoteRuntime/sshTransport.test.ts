@@ -84,6 +84,23 @@ describe("buildSshConfig", () => {
     });
   });
 
+  it("uses the first readable OpenSSH default identity when no explicit key is configured", () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-ssh-home-"));
+    const sshDir = path.join(homeDir, ".ssh");
+    fs.mkdirSync(sshDir, { recursive: true });
+    fs.writeFileSync(path.join(sshDir, "id_ed25519"), "DEFAULT PRIVATE KEY", "utf8");
+
+    const config = buildSshConfig(target, {
+      env: {},
+      homeDir,
+      sshConfigPath: null,
+    });
+
+    expect(config).toMatchObject({
+      privateKey: Buffer.from("DEFAULT PRIVATE KEY"),
+    });
+  });
+
   it("uses OpenSSH User and Port entries from matching aliases", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-ssh-config-"));
     const configPath = path.join(dir, "config");

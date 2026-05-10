@@ -23,7 +23,15 @@ type OpenSshHostConfig = {
 type BuildSshConfigOptions = {
   env?: NodeJS.ProcessEnv;
   sshConfigPath?: string | null;
+  homeDir?: string;
 };
+
+const DEFAULT_IDENTITY_FILES = [
+  "id_ed25519",
+  "id_ecdsa",
+  "id_ecdsa_sk",
+  "id_rsa",
+];
 
 function stripInlineComment(line: string): string {
   const hashIndex = line.indexOf("#");
@@ -71,6 +79,18 @@ function expandSshPath(value: string, args: { host: string; username: string; po
   return expanded;
 }
 
+function firstReadableDefaultIdentity(homeDir: string): string | null {
+  for (const fileName of DEFAULT_IDENTITY_FILES) {
+    const candidate = path.join(homeDir, ".ssh", fileName);
+    try {
+      if (fs.statSync(candidate).isFile()) return candidate;
+    } catch {
+      // Try the next OpenSSH default identity path.
+    }
+  }
+  return null;
+}
+
 export function parseOpenSshHostConfig(configText: string, hostAlias: string): OpenSshHostConfig {
   const result: OpenSshHostConfig = {};
   let active = false;
@@ -114,6 +134,7 @@ export function buildSshConfig(target: RemoteRuntimeTarget, options: BuildSshCon
   const host = hostConfig.hostName ?? target.hostname;
   const port = target.port && target.port > 0 ? target.port : hostConfig.port ?? 22;
   const username = target.sshUser?.trim() || hostConfig.user || os.userInfo().username;
+  const homeDir = options.homeDir ?? os.homedir();
   const config: ConnectConfig = {
     host,
     port,
@@ -121,7 +142,8 @@ export function buildSshConfig(target: RemoteRuntimeTarget, options: BuildSshCon
     readyTimeout: 20_000,
   };
   const identityFile = target.sshKeyPath
-    ?? (hostConfig.identityFile ? expandSshPath(hostConfig.identityFile, { host, username, port }) : null);
+    ?? (hostConfig.identityFile ? expandSshPath(hostConfig.identityFile, { host, username, port }) : null)
+    ?? firstReadableDefaultIdentity(homeDir);
   if (identityFile) {
     config.privateKey = fs.readFileSync(identityFile);
   }

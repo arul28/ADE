@@ -53,6 +53,10 @@ function discoveredRuntimeLabel(machine: RemoteRuntimeDiscoveredMachine): string
   const kind = (machine.runtimeKind ?? "").toLowerCase();
   let label: string;
   switch (kind) {
+    case "tailscale-peer":
+      label = "Tailscale SSH target"; break;
+    case "tailscale-peer-offline":
+      label = "Tailscale SSH target offline"; break;
     case "daemon":
     case "headless":
       label = "Background ADE"; break;
@@ -66,6 +70,7 @@ function discoveredRuntimeLabel(machine: RemoteRuntimeDiscoveredMachine): string
 }
 
 function discoveredProjectLabel(machine: RemoteRuntimeDiscoveredMachine): string {
+  if ((machine.runtimeKind ?? "").startsWith("tailscale-peer")) return "Use host to add this SSH target";
   const count = machine.projectCount ?? machine.projectIds.length;
   if (count <= 0) return "No projects advertised";
   return `${count} project${count === 1 ? "" : "s"} advertised`;

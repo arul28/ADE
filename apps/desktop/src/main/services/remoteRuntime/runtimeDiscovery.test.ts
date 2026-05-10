@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { discoveredRuntimeFromBonjourService } from "./runtimeDiscovery";
+import { discoveredRuntimeFromBonjourService, discoveredRuntimesFromTailscaleStatus } from "./runtimeDiscovery";
 
 describe("runtimeDiscovery", () => {
   it("parses ADE sync Bonjour metadata into a discovered machine", () => {
@@ -66,6 +66,39 @@ describe("runtimeDiscovery", () => {
       projectIds: [],
       projectCount: null,
       lastSeenAt: 5678,
+    });
+  });
+
+  it("turns Tailscale peers into SSH discovery targets", () => {
+    const discovered = discoveredRuntimesFromTailscaleStatus({
+      Peer: {
+        "nodekey:abc": {
+          ID: "peer-1",
+          HostName: "aruls-mac-studio",
+          DNSName: "aruls-mac-studio.tail7497a6.ts.net.",
+          OS: "macOS",
+          TailscaleIPs: ["100.75.20.63", "fd7a:115c:a1e0::1"],
+          Online: true,
+        },
+      },
+    }, 9012);
+
+    expect(discovered).toHaveLength(1);
+    expect(discovered[0]).toMatchObject({
+      id: "tailscale:peer-1",
+      serviceName: "Tailscale peer",
+      machineName: "aruls-mac-studio",
+      hostIdentity: "peer-1",
+      hostName: "aruls-mac-studio",
+      port: 22,
+      addresses: ["100.75.20.63", "aruls-mac-studio.tail7497a6.ts.net"],
+      primaryRoute: "aruls-mac-studio.tail7497a6.ts.net",
+      tailscaleAddress: "aruls-mac-studio.tail7497a6.ts.net",
+      runtimeKind: "tailscale-peer",
+      runtimeVersion: null,
+      projectIds: [],
+      projectCount: null,
+      lastSeenAt: 9012,
     });
   });
 });

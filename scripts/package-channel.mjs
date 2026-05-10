@@ -135,6 +135,13 @@ function runtimeArtifactNames(target) {
   return [`ade-${target}`, `ade-${target}.native.tar.gz`];
 }
 
+function readDesktopVersion(repoRoot) {
+  const packageJson = JSON.parse(fs.readFileSync(path.join(repoRoot, "apps", "desktop", "package.json"), "utf8"));
+  const version = typeof packageJson.version === "string" ? packageJson.version.trim() : "";
+  if (!version) fail("apps/desktop/package.json is missing a version.");
+  return version;
+}
+
 function assertRuntimeArtifacts(repoRoot, target) {
   const runtimeRoot = path.join(repoRoot, "apps", "desktop", "resources", "runtime");
   for (const name of runtimeArtifactNames(target)) {
@@ -146,12 +153,20 @@ function assertRuntimeArtifacts(repoRoot, target) {
   }
 }
 
-function ensureHostRuntimeResources(repoRoot, options) {
+function cleanHostRuntimeArtifacts(repoRoot, target, options) {
+  const runtimeRoot = path.join(repoRoot, "apps", "desktop", "resources", "runtime");
+  for (const name of runtimeArtifactNames(target)) {
+    removePath(path.join(runtimeRoot, name), options.dryRun);
+  }
+}
+
+function ensureHostRuntimeResources(repoRoot, options, baseEnv = process.env) {
   const target = currentTarget();
   const env = {
-    ...process.env,
+    ...baseEnv,
     ADE_RUNTIME_RESOURCES_ALLOW_HOST_ONLY: "1",
   };
+  cleanHostRuntimeArtifacts(repoRoot, target, options);
   run("npm", [
     "--prefix",
     "apps/desktop",
@@ -271,9 +286,11 @@ function buildChannel(repoRoot, channel, options) {
   ensureRepoRoot(repoRoot, options);
   const desktopRoot = path.join(repoRoot, "apps", "desktop");
   const outputRoot = path.join(desktopRoot, config.outputDir);
+  const appVersion = readDesktopVersion(repoRoot);
   const env = {
     ...process.env,
     ADE_PACKAGE_CHANNEL: channel,
+    ADE_CLI_VERSION: appVersion,
     ADE_DESKTOP_APP_NAME: config.productName,
     ADE_HOME: config.adeHome,
     ADE_DISABLE_RUNTIME_SERVICE_INSTALL: "1",
@@ -284,7 +301,7 @@ function buildChannel(repoRoot, channel, options) {
   assertPackageChannelPrereqs(repoRoot, channel, options);
   installApps(repoRoot, options);
   run("npm", ["--prefix", "apps/ade-cli", "run", "build"], { cwd: repoRoot, env, dryRun: options.dryRun });
-  ensureHostRuntimeResources(repoRoot, options);
+  ensureHostRuntimeResources(repoRoot, options, env);
   run("npm", ["--prefix", "apps/desktop", "run", "build"], { cwd: repoRoot, env, dryRun: options.dryRun });
   run("npx", [
     "electron-builder",
