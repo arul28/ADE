@@ -798,6 +798,54 @@ describe("laneService importBranch", () => {
     vi.mocked(runGitOrThrow).mockReset();
   });
 
+  it("surfaces unregistered managed .ade worktrees during lane list", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-list-managed-orphan-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    await seedProjectAndStack(db, { projectId: "proj-list-managed-orphan", repoRoot });
+    const worktreesDir = path.join(repoRoot, ".ade", "worktrees");
+    const orphanPath = path.join(worktreesDir, "dashboard-f6949524");
+
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "HEAD") {
+        return { exitCode: 0, stdout: "main\n", stderr: "" };
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+    vi.mocked(runGitOrThrow).mockImplementation(async (args: string[]) => {
+      if (args[0] === "worktree" && args[1] === "list") {
+        return [
+          `worktree ${repoRoot}`,
+          "HEAD 1111111",
+          "branch refs/heads/main",
+          "",
+          `worktree ${orphanPath}`,
+          "HEAD 2222222",
+          "branch refs/heads/ade/dashboard-f6949524",
+          "",
+        ].join("\n") as any;
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-list-managed-orphan",
+      defaultBaseRef: "main",
+      worktreesDir,
+    });
+
+    const lanes = await service.list({ includeStatus: false });
+    const recovered = lanes.find((lane) => lane.branchRef === "ade/dashboard-f6949524");
+
+    expect(recovered).toMatchObject({
+      laneType: "worktree",
+      baseRef: "main",
+      branchRef: "ade/dashboard-f6949524",
+      worktreePath: orphanPath,
+    });
+  });
+
   it("imports a branch from an explicit non-origin remote", async () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-import-upstream-"));
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
@@ -913,6 +961,110 @@ describe("laneService importBranch", () => {
       "Lane already exists for branch 'feature/existing'",
     );
     expect(vi.mocked(runGitOrThrow).mock.calls.some(([args]) => args[0] === "branch" && args[1] === "--track")).toBe(false);
+  });
+
+  it("restores a managed orphan worktree before rejecting an import duplicate", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-import-managed-orphan-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    await seedProjectAndStack(db, { projectId: "proj-import-managed-orphan", repoRoot });
+    const worktreesDir = path.join(repoRoot, ".ade", "worktrees");
+    const orphanPath = path.join(worktreesDir, "dashboard-f6949524");
+
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      if (args[0] === "show-ref" && args[1] === "--verify" && args[3] === "refs/heads/ade/dashboard-f6949524") {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+    vi.mocked(runGitOrThrow).mockImplementation(async (args: string[]) => {
+      if (args[0] === "worktree" && args[1] === "list") {
+        return [
+          `worktree ${repoRoot}`,
+          "HEAD 1111111",
+          "branch refs/heads/main",
+          "",
+          `worktree ${orphanPath}`,
+          "HEAD 2222222",
+          "branch refs/heads/ade/dashboard-f6949524",
+          "",
+        ].join("\n") as any;
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-import-managed-orphan",
+      defaultBaseRef: "main",
+      worktreesDir,
+    });
+
+    await expect(service.importBranch({ branchRef: "ade/dashboard-f6949524" })).rejects.toThrow(
+      "Lane already exists for branch 'ade/dashboard-f6949524'",
+    );
+
+    const restored = db.get<{ branch_ref: string; worktree_path: string; status: string }>(
+      "select branch_ref, worktree_path, status from lanes where project_id = ? and branch_ref = ?",
+      ["proj-import-managed-orphan", "ade/dashboard-f6949524"],
+    );
+    expect(restored).toMatchObject({
+      branch_ref: "ade/dashboard-f6949524",
+      worktree_path: orphanPath,
+      status: "active",
+    });
+    expect(vi.mocked(runGitOrThrow).mock.calls.some(([args]) => args[0] === "worktree" && args[1] === "add")).toBe(false);
+  });
+
+  it("reports an actionable error when a branch is already checked out outside ADE lanes", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-import-external-orphan-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    await seedProjectAndStack(db, { projectId: "proj-import-external-orphan", repoRoot });
+    const externalPath = path.join(repoRoot, "..", "feature-taken");
+
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      if (args[0] === "show-ref" && args[1] === "--verify" && args[3] === "refs/heads/origin/feature/taken") {
+        return { exitCode: 1, stdout: "", stderr: "" };
+      }
+      if (args[0] === "fetch" && args[1] === "--prune" && args[2] === "--all") {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "show-ref" && args[1] === "--verify" && args[3] === "refs/remotes/origin/feature/taken") {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "show-ref" && args[1] === "--verify" && args[3] === "refs/heads/feature/taken") {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+    vi.mocked(runGitOrThrow).mockImplementation(async (args: string[]) => {
+      if (args[0] === "worktree" && args[1] === "list") {
+        return [
+          `worktree ${repoRoot}`,
+          "HEAD 1111111",
+          "branch refs/heads/main",
+          "",
+          `worktree ${externalPath}`,
+          "HEAD 2222222",
+          "branch refs/heads/feature/taken",
+          "",
+        ].join("\n") as any;
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-import-external-orphan",
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, ".ade", "worktrees"),
+    });
+
+    await expect(service.importBranch({ branchRef: "origin/feature/taken" })).rejects.toThrow(
+      `Branch 'feature/taken' is already checked out at '${path.resolve(externalPath)}'`,
+    );
+    expect(vi.mocked(runGitOrThrow).mock.calls.some(([args]) => args[0] === "worktree" && args[1] === "add")).toBe(false);
   });
 
   it("reuses an existing local branch when importing a remote-qualified ref", async () => {
@@ -2563,6 +2715,201 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     // git_worktree_remove step reached.
     const wtStep = last.progress.steps.find((s: any) => s.name === "git_worktree_remove");
     expect(wtStep?.status).toBe("completed");
+  });
+
+  it("cleans lane-owned database state when deleting a lane", async () => {
+    const events: any[] = [];
+    const fake = makeFakeServices();
+    const { service, db, repoRoot } = await setupWithLane({ teardown: fake, events, createWorktree: false });
+    const projectId = "proj-delete";
+    const now = "2026-03-11T12:30:00.000Z";
+
+    db.run(
+      `
+        insert into lane_branch_profiles(
+          id, project_id, lane_id, branch_ref, normalized_branch_ref, base_ref,
+          parent_lane_id, source_branch_ref, created_at, updated_at, last_checked_out_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      ["profile-child", projectId, "lane-child", "feature/child", "feature/child", "feature/parent", null, null, now, now, null],
+    );
+    db.run(
+      `
+        insert into lane_branch_profiles(
+          id, project_id, lane_id, branch_ref, normalized_branch_ref, base_ref,
+          parent_lane_id, source_branch_ref, created_at, updated_at, last_checked_out_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      ["profile-parent-ref", projectId, "lane-parent", "feature/parent-next", "feature/parent-next", "feature/child", "lane-child", null, now, now, null],
+    );
+    db.run("insert into lane_state_snapshots(lane_id, updated_at) values (?, ?)", ["lane-child", now]);
+    db.run(
+      "insert into conflict_predictions(id, project_id, lane_a_id, lane_b_id, status, predicted_at) values (?, ?, ?, ?, ?, ?)",
+      ["prediction-child", projectId, "lane-child", "lane-parent", "open", now],
+    );
+    db.run(
+      "insert into conflict_proposals(id, project_id, lane_id, peer_lane_id, prediction_id, source, diff_patch, status, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ["proposal-child", projectId, "lane-child", "lane-parent", "prediction-child", "ai", "diff --git a/file b/file", "open", now, now],
+    );
+    db.run(
+      "insert into files_workspaces(id, kind, lane_id, name, root_path, updated_at) values (?, ?, ?, ?, ?, ?)",
+      ["workspace-child", "lane", "lane-child", "Child", path.join(repoRoot, "child"), now],
+    );
+    db.run(
+      "insert into file_directory_snapshots(workspace_id, parent_path, include_hidden, nodes_json, updated_at) values (?, ?, ?, ?, ?)",
+      ["workspace-child", "", 0, "[]", now],
+    );
+    db.run(
+      "insert into terminal_sessions(id, lane_id, title, started_at, transcript_path, status) values (?, ?, ?, ?, ?, ?)",
+      ["session-child", "lane-child", "Child session", now, path.join(repoRoot, "session.log"), "ended"],
+    );
+    db.run(
+      `
+        insert into session_deltas(
+          session_id, project_id, lane_id, started_at, files_changed, insertions, deletions,
+          touched_files_json, failure_lines_json, computed_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      ["session-child", projectId, "lane-child", now, 1, 2, 3, "[]", "[]", now],
+    );
+    db.run(
+      "insert into checkpoints(id, project_id, lane_id, session_id, sha, created_at) values (?, ?, ?, ?, ?, ?)",
+      ["checkpoint-child", projectId, "lane-child", "session-child", "abc123", now],
+    );
+    db.run(
+      "insert into operations(id, project_id, lane_id, kind, started_at, status) values (?, ?, ?, ?, ?, ?)",
+      ["operation-child", projectId, "lane-child", "checkout", now, "completed"],
+    );
+    db.run(
+      "insert into packs_index(pack_key, project_id, lane_id, pack_type, pack_path, deterministic_updated_at) values (?, ?, ?, ?, ?, ?)",
+      ["pack-child", projectId, "lane-child", "lane", path.join(repoRoot, "pack.json"), now],
+    );
+    db.run(
+      "insert into process_runtime(project_id, lane_id, process_key, status, readiness, updated_at) values (?, ?, ?, ?, ?, ?)",
+      [projectId, "lane-child", "vite", "running", "unknown", now],
+    );
+    db.run(
+      "insert into process_runs(id, project_id, lane_id, process_key, started_at, termination_reason, log_path) values (?, ?, ?, ?, ?, ?, ?)",
+      ["process-run-child", projectId, "lane-child", "vite", now, "completed", path.join(repoRoot, "process.log")],
+    );
+    db.run(
+      "insert into test_runs(id, project_id, lane_id, suite_key, started_at, status, log_path) values (?, ?, ?, ?, ?, ?, ?)",
+      ["test-run-child", projectId, "lane-child", "unit", now, "passed", path.join(repoRoot, "test.log")],
+    );
+    db.run("insert into rebase_deferred(lane_id, project_id, deferred_until) values (?, ?, ?)", ["lane-child", projectId, now]);
+    db.run("insert into rebase_dismissed(lane_id, project_id, dismissed_at) values (?, ?, ?)", ["lane-child", projectId, now]);
+    db.run(
+      `
+        insert into lane_worktree_locks(
+          worktree_key, worktree_path, lane_id, owner_kind, owner_label, token,
+          created_at, heartbeat_at, expires_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      ["child-key", path.join(repoRoot, "child"), "lane-child", "pr", "PR #1", "token", now, now, now],
+    );
+
+    db.run(
+      `
+        insert into pull_requests(
+          id, project_id, lane_id, repo_owner, repo_name, github_pr_number, github_url,
+          state, base_branch, head_branch, created_at, updated_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      ["pr-child", projectId, "lane-child", "acme", "demo", 1, "https://example.com/pr/1", "open", "main", "feature/child", now, now],
+    );
+    db.run(
+      `
+        insert into pull_requests(
+          id, project_id, lane_id, repo_owner, repo_name, github_pr_number, github_url,
+          state, base_branch, head_branch, created_at, updated_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      ["pr-parent", projectId, "lane-parent", "acme", "demo", 2, "https://example.com/pr/2", "open", "main", "feature/parent", now, now],
+    );
+    db.run("insert into pr_groups(id, project_id, group_type, name, created_at) values (?, ?, ?, ?, ?)", ["group-child", projectId, "queue", "Queue", now]);
+    db.run("insert into pr_group_members(id, group_id, pr_id, lane_id, position, role) values (?, ?, ?, ?, ?, ?)", ["member-child", "group-child", "pr-child", "lane-child", 0, "member"]);
+    db.run("insert into pull_request_ai_summaries(pr_id, head_sha, summary_json, generated_at) values (?, ?, ?, ?)", ["pr-child", "abc123", "{}", now]);
+    db.run("insert into pull_request_snapshots(pr_id, updated_at) values (?, ?)", ["pr-child", now]);
+    db.run("insert into pr_pipeline_settings(pr_id, updated_at) values (?, ?)", ["pr-child", now]);
+    db.run(
+      "insert into pr_issue_inventory(id, pr_id, source, type, external_id, headline, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?)",
+      ["issue-child", "pr-child", "review", "comment", "1", "Fix it", now, now],
+    );
+    db.run("insert into pr_convergence_state(pr_id, active_lane_id, created_at, updated_at) values (?, ?, ?, ?)", ["pr-child", "lane-child", now, now]);
+    db.run("insert into pr_convergence_state(pr_id, active_lane_id, created_at, updated_at) values (?, ?, ?, ?)", ["pr-parent", "lane-child", now, now]);
+
+    db.run(
+      `
+        insert into missions(
+          id, project_id, lane_id, mission_lane_id, result_lane_id,
+          title, prompt, status, priority, created_at, updated_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      ["mission-child", projectId, "lane-child", "lane-child", "lane-child", "Mission", "Prompt", "active", "normal", now, now],
+    );
+    db.run(
+      "insert into mission_steps(id, mission_id, project_id, step_index, title, lane_id, status, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ["mission-step-child", "mission-child", projectId, 0, "Step", "lane-child", "pending", now, now],
+    );
+    db.run(
+      "insert into mission_artifacts(id, mission_id, project_id, artifact_type, title, lane_id, created_at, updated_at, created_by) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ["mission-artifact-child", "mission-child", projectId, "file", "Artifact", "lane-child", now, now, "agent"],
+    );
+    db.run(
+      "insert into mission_interventions(id, mission_id, project_id, intervention_type, status, title, body, lane_id, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ["mission-intervention-child", "mission-child", projectId, "question", "open", "Question", "Body", "lane-child", now, now],
+    );
+    db.run(
+      "insert into orchestrator_chat_threads(id, project_id, mission_id, thread_type, title, lane_id, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?)",
+      ["thread-child", projectId, "mission-child", "worker", "Thread", "lane-child", now, now],
+    );
+    db.run(
+      "insert into orchestrator_chat_messages(id, project_id, mission_id, thread_id, role, content, timestamp, lane_id, created_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ["message-child", projectId, "mission-child", "thread-child", "assistant", "ok", now, "lane-child", now],
+    );
+
+    await service.delete({ laneId: "lane-child", deleteBranch: false });
+
+    const count = (table: string, where: string, params: any[] = []) =>
+      Number(db.get<{ count: number }>(`select count(1) as count from ${table} where ${where}`, params)?.count ?? 0);
+
+    expect(count("lanes", "id = ?", ["lane-child"])).toBe(0);
+    expect(count("lane_branch_profiles", "lane_id = ?", ["lane-child"])).toBe(0);
+    expect(db.get<{ parent_lane_id: string | null }>("select parent_lane_id from lane_branch_profiles where id = ?", ["profile-parent-ref"])?.parent_lane_id).toBeNull();
+    expect(count("lane_state_snapshots", "lane_id = ?", ["lane-child"])).toBe(0);
+    expect(count("conflict_predictions", "lane_a_id = ? or lane_b_id = ?", ["lane-child", "lane-child"])).toBe(0);
+    expect(count("conflict_proposals", "lane_id = ? or peer_lane_id = ?", ["lane-child", "lane-child"])).toBe(0);
+    expect(count("files_workspaces", "lane_id = ?", ["lane-child"])).toBe(0);
+    expect(count("file_directory_snapshots", "workspace_id = ?", ["workspace-child"])).toBe(0);
+    expect(count("pull_requests", "id = ?", ["pr-child"])).toBe(0);
+    expect(count("pr_group_members", "lane_id = ?", ["lane-child"])).toBe(0);
+    expect(count("pull_request_ai_summaries", "pr_id = ?", ["pr-child"])).toBe(0);
+    expect(count("pull_request_snapshots", "pr_id = ?", ["pr-child"])).toBe(0);
+    expect(count("pr_pipeline_settings", "pr_id = ?", ["pr-child"])).toBe(0);
+    expect(count("pr_issue_inventory", "pr_id = ?", ["pr-child"])).toBe(0);
+    expect(db.get<{ active_lane_id: string | null }>("select active_lane_id from pr_convergence_state where pr_id = ?", ["pr-parent"])?.active_lane_id).toBeNull();
+    expect(count("terminal_sessions", "lane_id = ?", ["lane-child"])).toBe(0);
+    expect(count("session_deltas", "lane_id = ?", ["lane-child"])).toBe(0);
+    expect(count("checkpoints", "lane_id = ?", ["lane-child"])).toBe(0);
+    expect(count("operations", "lane_id = ?", ["lane-child"])).toBe(0);
+    expect(count("packs_index", "lane_id = ?", ["lane-child"])).toBe(0);
+    expect(count("process_runtime", "lane_id = ?", ["lane-child"])).toBe(0);
+    expect(count("process_runs", "lane_id = ?", ["lane-child"])).toBe(0);
+    expect(count("test_runs", "lane_id = ?", ["lane-child"])).toBe(0);
+    expect(count("rebase_deferred", "lane_id = ?", ["lane-child"])).toBe(0);
+    expect(count("rebase_dismissed", "lane_id = ?", ["lane-child"])).toBe(0);
+    expect(count("lane_worktree_locks", "lane_id = ?", ["lane-child"])).toBe(0);
+    expect(
+      db.get<{ lane_id: string | null; mission_lane_id: string | null; result_lane_id: string | null }>(
+        "select lane_id, mission_lane_id, result_lane_id from missions where id = ?",
+        ["mission-child"],
+      ),
+    ).toMatchObject({ lane_id: null, mission_lane_id: null, result_lane_id: null });
+    expect(db.get<{ lane_id: string | null }>("select lane_id from mission_steps where id = ?", ["mission-step-child"])?.lane_id).toBeNull();
+    expect(db.get<{ lane_id: string | null }>("select lane_id from mission_artifacts where id = ?", ["mission-artifact-child"])?.lane_id).toBeNull();
+    expect(db.get<{ lane_id: string | null }>("select lane_id from mission_interventions where id = ?", ["mission-intervention-child"])?.lane_id).toBeNull();
+    expect(db.get<{ lane_id: string | null }>("select lane_id from orchestrator_chat_threads where id = ?", ["thread-child"])?.lane_id).toBeNull();
+    expect(db.get<{ lane_id: string | null }>("select lane_id from orchestrator_chat_messages where id = ?", ["message-child"])?.lane_id).toBeNull();
   });
 
   it("honors cancelDelete before git_worktree_remove and skips destructive steps", async () => {
