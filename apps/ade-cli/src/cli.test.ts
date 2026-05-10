@@ -2822,6 +2822,10 @@ describe("ADE CLI", () => {
       .toThrow(/must be a JSON object/i);
     expect(() => buildCliPlan(["usage", "budget", "set", "--text", "   \n  "]))
       .toThrow(/non-empty JSON object/i);
+    expect(() => buildCliPlan(["usage", "budget", "set"]))
+      .toThrow(/at least one field/i);
+    expect(() => buildCliPlan(["usage", "budget", "set", "--text", "{}"]))
+      .toThrow(/at least one field/i);
   });
 
   it("usage budget check defaults scope to global and forwards --provider", () => {

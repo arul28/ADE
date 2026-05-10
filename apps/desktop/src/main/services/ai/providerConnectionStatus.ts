@@ -95,7 +95,9 @@ export async function buildProviderConnections(
     if (!health) return;
     if (health.state === "auth-failed" || health.state === "runtime-failed") {
       status.runtimeAvailable = false;
-      status.usageAvailable = false;
+      if (status.provider !== "cursor") {
+        status.usageAvailable = false;
+      }
       status.blocker = health.message
         ?? (health.state === "auth-failed"
           ? `${status.provider} runtime was detected, but ADE chat reported that login is still required.`

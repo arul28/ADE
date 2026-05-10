@@ -3711,6 +3711,7 @@ function buildUsagePlan(args: string[]): CliPlan {
         parsed = collectGenericObjectArgs(args);
       }
       if (!isRecord(parsed)) throw new CliUsageError("Budget config must be a JSON object.");
+      if (Object.keys(parsed).length === 0) throw new CliUsageError("Budget config must contain at least one field.");
       return { kind: "execute", label: "usage budget update", steps: [actionStep("result", "budget", "updateConfig", parsed as JsonObject)] };
     }
     if (mode === "check") {

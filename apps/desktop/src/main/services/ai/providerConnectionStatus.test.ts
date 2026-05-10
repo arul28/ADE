@@ -307,4 +307,34 @@ describe("buildProviderConnections", () => {
       else process.env.CURSOR_ADMIN_API_KEY = prevAdminKey;
     }
   });
+
+  it("preserves Cursor usage availability when SDK auth fails but an admin key is configured", async () => {
+    const prevKey = process.env.CURSOR_API_KEY;
+    const prevAdminKey = process.env.CURSOR_ADMIN_API_KEY;
+    process.env.CURSOR_API_KEY = "test-key";
+    process.env.CURSOR_ADMIN_API_KEY = "key_cursor_admin_test";
+    mockState.getProviderRuntimeHealth.mockImplementation((provider: string) => {
+      if (provider === "cursor") {
+        return {
+          provider: "cursor",
+          state: "auth-failed",
+          message: "Cursor rejected the configured API key for agent/model access.",
+          checkedAt: "2026-05-01T12:00:00.000Z",
+        };
+      }
+      return null;
+    });
+    try {
+      const result = await buildProviderConnections(mergeCliStatuses([]));
+      expect(result.cursor.authAvailable).toBe(true);
+      expect(result.cursor.runtimeAvailable).toBe(false);
+      expect(result.cursor.usageAvailable).toBe(true);
+      expect(result.cursor.blocker).toBe("Cursor rejected the configured API key for agent/model access.");
+    } finally {
+      if (prevKey === undefined) delete process.env.CURSOR_API_KEY;
+      else process.env.CURSOR_API_KEY = prevKey;
+      if (prevAdminKey === undefined) delete process.env.CURSOR_ADMIN_API_KEY;
+      else process.env.CURSOR_ADMIN_API_KEY = prevAdminKey;
+    }
+  });
 });
