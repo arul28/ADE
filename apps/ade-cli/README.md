@@ -91,6 +91,12 @@ ade --socket macos-vm click --lane lane-id --x 120 --y 420 --text
 ade --socket update status --text
 ade --socket update check --text
 ade --socket update install --text
+ade usage snapshot --text
+ade usage refresh --text
+ade usage budget get --text
+ade usage budget set --from-file budget.json
+ade usage budget check --provider claude --scope global
+ade usage budget cumulative --scope global --text
 ade actions list
 ade actions run git.stageFile --arg laneId=lane-id --arg path=src/index.ts
 ade cursor cloud agents list --text

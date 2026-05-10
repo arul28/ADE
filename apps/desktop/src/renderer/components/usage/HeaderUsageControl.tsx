@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { CaretDown, CaretRight, Gauge, X } from "@phosphor-icons/react";
 import type {
   BudgetCapConfig,
@@ -73,11 +73,7 @@ export function HeaderUsageControl() {
     });
     return () => {
       cancelled = true;
-      try {
-        unsubscribe();
-      } catch {
-        // noop
-      }
+      unsubscribe();
     };
   }, []);
 
@@ -124,7 +120,7 @@ export function HeaderUsageControl() {
 
   const percent = summaryPercent(snapshot);
   const hasErrors = (snapshot?.errors.length ?? 0) > 0;
-  const tone = useMemo(() => usageTone(percent, hasErrors), [hasErrors, percent]);
+  const tone = usageTone(percent, hasErrors);
   const title = summaryTitle(snapshot, percent, hasErrors);
   const showDot = percent > 0 || hasErrors;
 

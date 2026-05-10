@@ -130,14 +130,8 @@ export function UsageQuotaPanel({
   useEffect(() => {
     void load();
     if (!window.ade?.usage) return;
-    const unsubscribe = window.ade.usage.onUpdate((nextSnapshot) => applySnapshot(nextSnapshot));
-    return () => {
-      try {
-        unsubscribe();
-      } catch {
-        // noop
-      }
-    };
+    const unsubscribe = window.ade.usage.onUpdate(applySnapshot);
+    return unsubscribe;
   }, [applySnapshot, load]);
 
   useEffect(() => {
@@ -306,7 +300,9 @@ function ExtraUsageCard({ extra }: { extra: ExtraUsage }) {
   const usedUsd = extra.usedCreditsUsd;
   const limitUsd = extra.monthlyLimitUsd;
   const percent = limitUsd > 0 ? Math.min(100, (usedUsd / limitUsd) * 100) : 0;
-  const fillColor = percent > 90 ? "#EF4444" : percent > 70 ? "#F59E0B" : meta.color;
+  let fillColor = meta.color;
+  if (percent > 90) fillColor = "#EF4444";
+  else if (percent > 70) fillColor = "#F59E0B";
 
   const formatUsd = (v: number) => v.toLocaleString("en-US", { style: "currency", currency: extra.currency.toUpperCase() });
 
@@ -353,11 +349,15 @@ function AuthChip({
   label: string;
   entry: AiProviderConnectionStatus | null;
 }) {
-  const tone = entry?.runtimeAvailable
-    ? { border: "rgba(34,197,94,0.3)", bg: "rgba(34,197,94,0.12)", text: "#22C55E", copy: "runtime ready" }
-    : entry?.authAvailable
-      ? { border: "rgba(59,130,246,0.3)", bg: "rgba(59,130,246,0.12)", text: "#60A5FA", copy: entry.runtimeDetected ? "sign-in required" : "auth found locally" }
-      : { border: "rgba(113,113,122,0.3)", bg: "rgba(113,113,122,0.12)", text: "#A1A1AA", copy: "not detected" };
+  let tone: { border: string; bg: string; text: string; copy: string };
+  if (entry?.runtimeAvailable) {
+    tone = { border: "rgba(34,197,94,0.3)", bg: "rgba(34,197,94,0.12)", text: "#22C55E", copy: "runtime ready" };
+  } else if (entry?.authAvailable) {
+    const copy = entry.runtimeDetected ? "sign-in required" : "auth found locally";
+    tone = { border: "rgba(59,130,246,0.3)", bg: "rgba(59,130,246,0.12)", text: "#60A5FA", copy };
+  } else {
+    tone = { border: "rgba(113,113,122,0.3)", bg: "rgba(113,113,122,0.12)", text: "#A1A1AA", copy: "not detected" };
+  }
 
   return (
     <div

@@ -3696,10 +3696,12 @@ function buildUsagePlan(args: string[]): CliPlan {
     }
     if (mode === "set" || mode === "update") {
       const text = readFileTextInput(args);
-      let parsed: unknown = null;
-      if (text != null && text.trim().length > 0) {
-        try { parsed = JSON.parse(text); }
-        catch (error) {
+      const hasInlineBody = text != null && text.trim().length > 0;
+      let parsed: unknown;
+      if (hasInlineBody) {
+        try {
+          parsed = JSON.parse(text);
+        } catch (error) {
           throw new CliUsageError(`Failed to parse budget config: ${error instanceof Error ? error.message : String(error)}`);
         }
       } else {

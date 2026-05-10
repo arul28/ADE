@@ -2754,4 +2754,89 @@ describe("ADE CLI", () => {
     expect((summarized as any).visual).toContain("\\- main (id: main) [main]");
     expect((summarized as any).visual).toContain("\\- child (id: child) [feature]");
   });
+
+  it("usage snapshot routes to the usage.getUsageSnapshot action with no args", () => {
+    const plan = buildCliPlan(["usage", "snapshot"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.label).toBe("usage snapshot");
+    expect(plan.steps).toHaveLength(1);
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "usage", action: "getUsageSnapshot", args: {} },
+    });
+
+    // The `quota`/`quotas` aliases must dispatch to the same plan.
+    const aliased = buildCliPlan(["quota", "snapshot"]);
+    expect(aliased.kind).toBe("execute");
+    if (aliased.kind !== "execute") return;
+    expect(aliased.steps[0]?.params).toEqual(plan.steps[0]?.params);
+  });
+
+  it("usage refresh routes to the usage.forceRefresh action", () => {
+    const plan = buildCliPlan(["usage", "refresh"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.label).toBe("usage refresh");
+    expect(plan.steps).toHaveLength(1);
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "usage", action: "forceRefresh", args: {} },
+    });
+    // `poll` is the documented alias.
+    const polled = buildCliPlan(["usage", "poll"]);
+    expect(polled.kind).toBe("execute");
+    if (polled.kind !== "execute") return;
+    expect(polled.steps[0]?.params).toEqual(plan.steps[0]?.params);
+  });
+
+  it("usage budget get routes to the budget.getConfig action", () => {
+    const plan = buildCliPlan(["usage", "budget", "get"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.label).toBe("usage budget get");
+    expect(plan.steps).toHaveLength(1);
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "budget", action: "getConfig", args: {} },
+    });
+  });
+
+  it("usage budget set --from-file parses the JSON body and forwards it as args", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-usage-budget-"));
+    const budgetPath = path.join(root, "budget.json");
+    const config = { caps: [{ provider: "claude", scope: "global", limitUsd: 25 }] };
+    fs.writeFileSync(budgetPath, JSON.stringify(config));
+
+    const plan = buildCliPlan(["usage", "budget", "set", "--from-file", budgetPath]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.label).toBe("usage budget update");
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "budget", action: "updateConfig", args: config },
+    });
+
+    // Empty body must surface as a CLI usage error, not silently send `{}`.
+    expect(() => buildCliPlan(["usage", "budget", "set", "--text", "[1,2,3]"]))
+      .toThrow(/must be a JSON object/i);
+  });
+
+  it("usage budget check defaults scope to global and forwards --provider", () => {
+    const plan = buildCliPlan(["usage", "budget", "check", "--provider", "claude"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.label).toBe("usage budget check");
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "budget",
+        action: "checkBudget",
+        args: { scope: "global", scopeId: null, provider: "claude" },
+      },
+    });
+
+    expect(() => buildCliPlan(["usage", "budget", "bogus"]))
+      .toThrow(/usage budget supports get, set, check, or cumulative/);
+  });
 });

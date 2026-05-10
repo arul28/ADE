@@ -285,10 +285,13 @@ function getCursorApiKey(): { key: string; source: "cursor-admin-env" | "cursor-
   return null;
 }
 
+function finiteOrZero(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
 function addOneMonth(timestampMs: number): number {
-  const date = new Date(timestampMs);
-  if (!Number.isFinite(date.getTime())) return 0;
-  const next = new Date(date.getTime());
+  const next = new Date(timestampMs);
+  if (!Number.isFinite(next.getTime())) return 0;
   next.setMonth(next.getMonth() + 1);
   return next.getTime();
 }
@@ -300,40 +303,30 @@ function parseCursorSpendUsage(data: CursorSpendResponse): {
   const members = Array.isArray(data.teamMemberSpend) ? data.teamMemberSpend : [];
   if (members.length === 0) return { windows: [], extraUsage: null };
 
+  // overallSpendCents = on-demand + included usage (the real total spend);
+  // spendCents alone captures only on-demand pay-as-you-go.
   const memberSpendCents = (member: CursorSpendMember): number => {
-    // overallSpendCents = on-demand + included usage (the real total spend)
-    // spendCents alone captures only on-demand pay-as-you-go.
-    const overall = typeof member.overallSpendCents === "number" && Number.isFinite(member.overallSpendCents)
-      ? member.overallSpendCents
-      : null;
-    if (overall != null) return overall;
-    return typeof member.spendCents === "number" && Number.isFinite(member.spendCents) ? member.spendCents : 0;
+    if (typeof member.overallSpendCents === "number" && Number.isFinite(member.overallSpendCents)) {
+      return member.overallSpendCents;
+    }
+    return finiteOrZero(member.spendCents);
   };
+  // hardLimitOverrideDollars is the per-user override; fall back to the
+  // team-wide monthlyLimitDollars when no override is configured.
   const memberLimitCents = (member: CursorSpendMember): number => {
-    // hardLimitOverrideDollars is the per-user override; fall back to the
-    // team-wide monthlyLimitDollars when no override is configured.
-    const override =
-      typeof member.hardLimitOverrideDollars === "number" && Number.isFinite(member.hardLimitOverrideDollars) && member.hardLimitOverrideDollars > 0
-        ? member.hardLimitOverrideDollars
-        : 0;
-    if (override > 0) return override * 100;
-    const monthly =
-      typeof member.monthlyLimitDollars === "number" && Number.isFinite(member.monthlyLimitDollars) && member.monthlyLimitDollars > 0
-        ? member.monthlyLimitDollars
-        : 0;
-    return monthly > 0 ? monthly * 100 : 0;
+    const overrideDollars = finiteOrZero(member.hardLimitOverrideDollars);
+    if (overrideDollars > 0) return overrideDollars * 100;
+    const monthlyDollars = finiteOrZero(member.monthlyLimitDollars);
+    return monthlyDollars > 0 ? monthlyDollars * 100 : 0;
   };
 
   const totalSpendCents = members.reduce((sum, member) => sum + memberSpendCents(member), 0);
   const totalLimitCents = members.reduce((sum, member) => sum + memberLimitCents(member), 0);
 
-  const cycleStartMs =
-    typeof data.subscriptionCycleStart === "number" && Number.isFinite(data.subscriptionCycleStart)
-      ? data.subscriptionCycleStart
-      : 0;
+  const cycleStartMs = finiteOrZero(data.subscriptionCycleStart);
   const resetMs = cycleStartMs > 0 ? addOneMonth(cycleStartMs) : 0;
   const resetsAt = resetMs > 0 ? new Date(resetMs).toISOString() : "";
-  const windowDurationMs = resetMs > 0 && cycleStartMs > 0 ? Math.max(0, resetMs - cycleStartMs) : undefined;
+  const windowDurationMs = resetMs > 0 ? Math.max(0, resetMs - cycleStartMs) : undefined;
 
   const windows: UsageWindow[] = [];
   const utilization = totalLimitCents > 0 ? Math.min(100, (totalSpendCents / totalLimitCents) * 100) : null;
