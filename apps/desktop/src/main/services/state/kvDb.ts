@@ -3489,7 +3489,11 @@ function migrate(db: MigrationDb) {
          and auto_agent_confidence_threshold is null
          and (ptm_defaults_backfilled_version is null or ptm_defaults_backfilled_version <> 'ptm-defaults-v1')
     `);
-  } catch {}
+  } catch (err) {
+    // Backfill failure leaves existing rows on the legacy defaults while new
+    // rows pick up the new defaults — surface this so the split is visible.
+    console.warn("kvDb.migrate.ptm_defaults_backfill_failed", err);
+  }
 
   db.run(`
     create table if not exists pr_convergence_state (

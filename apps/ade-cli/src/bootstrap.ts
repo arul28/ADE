@@ -721,15 +721,20 @@ export async function createAdeRuntime(args: {
       getDirtyFileTextForPath: () => undefined,
     });
     if (typeof (headlessLinearServices.prService as { setAgentChatService?: (svc: unknown) => void }).setAgentChatService === "function") {
-      (headlessLinearServices.prService as { setAgentChatService: (svc: unknown) => void }).setAgentChatService(agentChatService as never);
+      (headlessLinearServices.prService as { setAgentChatService: (svc: unknown) => void }).setAgentChatService(agentChatService);
     }
   }
   agentChatServiceHolder.current = agentChatService;
+  // The headless agent-chat stub returns less-typed payloads than the full
+  // agentChatService. Cast through the orchestrator's expected shape (rather
+  // than `never`) so that any future tightening of PathToMergeDeps surfaces
+  // as a type error here.
+  type PathToMergeAgentChatService = Parameters<typeof createPathToMergeOrchestrator>[0]["agentChatService"];
   const pathToMergeOrchestrator = createPathToMergeOrchestrator({
     logger,
     prService: headlessLinearServices.prService,
     laneService,
-    agentChatService: headlessLinearServices.agentChatService as never,
+    agentChatService: headlessLinearServices.agentChatService as unknown as PathToMergeAgentChatService,
     sessionService,
     issueInventoryService,
     conflictService,

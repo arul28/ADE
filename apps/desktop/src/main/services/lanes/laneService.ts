@@ -971,9 +971,17 @@ export function createLaneService({
     branchName?: string | null;
     linearIssue?: LaneLinearIssue | null;
   }): Promise<string> => {
-    const suggested = args.branchName?.trim()
-      || (args.linearIssue ? linearIssueBranchName(args.linearIssue) : "");
+    const explicitBranch = args.branchName?.trim() ?? "";
+    const linearBranch = !explicitBranch && args.linearIssue
+      ? linearIssueBranchName(args.linearIssue)
+      : "";
+    const suggested = explicitBranch || linearBranch;
     const isCustomBranch = suggested.length > 0;
+    const branchSource: "explicit" | "linear" | "fallback" = explicitBranch
+      ? "explicit"
+      : linearBranch
+        ? "linear"
+        : "fallback";
     const slug = slugify(args.name);
     const fallback = `ade/${slug}-${args.laneId.slice(0, 8)}`;
     const branchRef = suggested
@@ -996,13 +1004,17 @@ export function createLaneService({
       throw new Error(`Branch "${branchRef}" already exists locally.`);
     }
 
+    const remoteCollisionMessage = branchSource === "linear"
+      ? `Branch "origin/${branchRef}" already exists on the remote. Detach the Linear issue or choose one whose branch name is unused.`
+      : `Branch "origin/${branchRef}" already exists on the remote. Choose a different branch name.`;
+
     if (isCustomBranch) {
       const remoteTrackingExists = await runGit(["show-ref", "--verify", "--quiet", `refs/remotes/origin/${branchRef}`], {
         cwd: projectRoot,
         timeoutMs: 8_000,
       }).then((res) => res.exitCode === 0);
       if (remoteTrackingExists) {
-        throw new Error(`Branch "origin/${branchRef}" already exists. Detach the Linear issue or choose a different issue.`);
+        throw new Error(remoteCollisionMessage);
       }
 
       const remoteExists = await runGit(["ls-remote", "--heads", "origin", branchRef], {
@@ -1010,7 +1022,7 @@ export function createLaneService({
         timeoutMs: 15_000,
       }).then((res) => res.exitCode === 0 && res.stdout.trim().length > 0);
       if (remoteExists) {
-        throw new Error(`Branch "origin/${branchRef}" already exists. Detach the Linear issue or choose a different issue.`);
+        throw new Error(remoteCollisionMessage);
       }
     }
 
