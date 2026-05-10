@@ -386,7 +386,6 @@ async function pollCursorUsage(): Promise<{ windows: UsageWindow[]; extraUsage: 
     }
 
     const response = result.data as CursorSpendResponse;
-    const parsed = parseCursorSpendUsage(response);
     if (!Array.isArray(response.teamMemberSpend)) {
       return {
         windows: [],
@@ -394,6 +393,7 @@ async function pollCursorUsage(): Promise<{ windows: UsageWindow[]; extraUsage: 
         errors: ["cursor: usage response contained no recognized spend data"],
       };
     }
+    const parsed = parseCursorSpendUsage(response);
     return { ...parsed, errors: [] };
   } catch (err) {
     return {
