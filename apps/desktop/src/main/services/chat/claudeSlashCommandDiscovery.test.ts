@@ -42,7 +42,7 @@ describe("discoverClaudeSlashCommands", () => {
     ]);
   });
 
-  it("namespaces nested project command files like Claude Code", () => {
+  it("uses nested project command basenames like Claude Code and keeps scope in the description", () => {
     const commandsDir = path.join(tmpRoot, ".claude", "commands", "frontend");
     fs.mkdirSync(commandsDir, { recursive: true });
     fs.writeFileSync(path.join(commandsDir, "test.md"), [
@@ -56,8 +56,8 @@ describe("discoverClaudeSlashCommands", () => {
 
     expect(discoverClaudeSlashCommands(tmpRoot)).toMatchObject([
       {
-        name: "/frontend:test",
-        description: "Run frontend tests",
+        name: "/test",
+        description: "frontend: Run frontend tests",
       },
     ]);
   });
@@ -86,10 +86,40 @@ describe("discoverClaudeSlashCommands", () => {
 
     expect(discoverClaudeSlashCommands(tmpRoot)).toMatchObject([
       {
-        name: "/level-0:level-1:level-2:level-3:level-4:level-5:level-6:level-7:level-8:level-9:visible",
-        description: "Visible nested command",
+        name: "/visible",
+        description: "level-0:level-1:level-2:level-3:level-4:level-5:level-6:level-7:level-8:level-9: Visible nested command",
       },
     ]);
+  });
+
+  it("preserves command filename casing and dedupes case variants by project precedence", () => {
+    fs.mkdirSync(path.join(homeRoot, ".claude", "commands"), { recursive: true });
+    fs.mkdirSync(path.join(tmpRoot, ".claude", "commands"), { recursive: true });
+    fs.writeFileSync(path.join(homeRoot, ".claude", "commands", "shipLane.md"), [
+      "---",
+      "description: Personal ship lane",
+      "---",
+      "",
+      "Personal.",
+      "",
+    ].join("\n"));
+    fs.writeFileSync(path.join(tmpRoot, ".claude", "commands", "shipLane.md"), [
+      "---",
+      "description: Project ship lane",
+      "---",
+      "",
+      "Project.",
+      "",
+    ].join("\n"));
+
+    const commands = discoverClaudeSlashCommands(tmpRoot);
+    expect(commands.filter((command) => command.name.toLowerCase() === "/shiplane")).toHaveLength(1);
+    expect(commands).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: "/shipLane",
+        description: "Project ship lane",
+      }),
+    ]));
   });
 
   it("discovers invocable skills and hides non-user-invocable skills", () => {
@@ -164,6 +194,17 @@ describe("discoverClaudeSlashCommands", () => {
 
     expect(resolveClaudeSlashCommandInvocation(laneWorktree, "/audit the model pane")?.promptText)
       .toBe("Audit the model pane.");
+  });
+
+  it("resolves nested commands by basename and keeps legacy colon names working", () => {
+    const nestedCommands = path.join(tmpRoot, ".claude", "commands", "frontend");
+    fs.mkdirSync(nestedCommands, { recursive: true });
+    fs.writeFileSync(path.join(nestedCommands, "component.md"), "Build component $ARGUMENTS.\n");
+
+    expect(resolveClaudeSlashCommandInvocation(tmpRoot, "/component button")?.promptText)
+      .toBe("Build component button.");
+    expect(resolveClaudeSlashCommandInvocation(tmpRoot, "/frontend:component button")?.promptText)
+      .toBe("Build component button.");
   });
 
   it("includes personal commands and lets project commands with the same name win", () => {

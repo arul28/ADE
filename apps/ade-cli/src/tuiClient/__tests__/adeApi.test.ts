@@ -1,7 +1,25 @@
-import { describe, expect, it } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope } from "../../../../desktop/src/shared/types/chat";
-import { createChatSession, DEFAULT_CODEX_REASONING_EFFORT, latestTokenStats, sendChatMessage } from "../adeApi";
+import { createChatSession, DEFAULT_CODEX_REASONING_EFFORT, discoverProjectSlashCommands, latestTokenStats, sendChatMessage } from "../adeApi";
 import type { AdeCodeConnection } from "../types";
+
+const tmpPaths: string[] = [];
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  for (const tmpPath of tmpPaths.splice(0)) {
+    fs.rmSync(tmpPath, { recursive: true, force: true });
+  }
+});
+
+function makeTmpRoot(prefix: string): string {
+  const tmpPath = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  tmpPaths.push(tmpPath);
+  return tmpPath;
+}
 
 function envelope(
   sequence: number,
@@ -75,6 +93,36 @@ describe("latestTokenStats", () => {
       }),
     ];
     expect(latestTokenStats(events).percent).toBeNull();
+  });
+});
+
+describe("discoverProjectSlashCommands", () => {
+  it("prefers project .claude command metadata over same-named global Codex prompts", () => {
+    const projectRoot = makeTmpRoot("ade-code-project-commands-");
+    const homeRoot = makeTmpRoot("ade-code-home-prompts-");
+    vi.spyOn(os, "homedir").mockReturnValue(homeRoot);
+    const commandsDir = path.join(projectRoot, ".claude", "commands");
+    const promptsDir = path.join(homeRoot, ".codex", "prompts");
+    fs.mkdirSync(commandsDir, { recursive: true });
+    fs.mkdirSync(promptsDir, { recursive: true });
+    fs.writeFileSync(path.join(commandsDir, "automate.md"), [
+      "---",
+      "description: Project ADE automate",
+      "---",
+      "",
+      "Run project automate.",
+      "",
+    ].join("\n"));
+    fs.writeFileSync(path.join(promptsDir, "automate.md"), "# Global Codex automate\n");
+
+    const commands = discoverProjectSlashCommands(projectRoot);
+    expect(commands.filter((command) => command.name.toLowerCase() === "/automate")).toHaveLength(1);
+    expect(commands).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: "/automate",
+        description: "Project ADE automate",
+      }),
+    ]));
   });
 });
 

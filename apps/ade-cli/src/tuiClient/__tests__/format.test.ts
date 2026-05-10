@@ -1,7 +1,30 @@
 import { describe, expect, it } from "vitest";
-import { latestExpandableFailureId, renderChatLines, renderObject } from "../format";
+import { latestExpandableFailureId, parseAssistantMarkdown, renderChatLines, renderObject } from "../format";
 
 describe("renderChatLines", () => {
+  it("parses assistant markdown into stable blocks", () => {
+    expect(parseAssistantMarkdown([
+      "# Heading",
+      "",
+      "Paragraph text",
+      "",
+      "- Bullet",
+      "1. Numbered",
+      "> Quote",
+      "",
+      "```sh",
+      "npm test",
+      "```",
+    ].join("\n"))).toEqual([
+      { kind: "heading", level: 1, text: "Heading" },
+      { kind: "paragraph", text: "Paragraph text" },
+      { kind: "bullet", text: "Bullet" },
+      { kind: "numbered", number: "1", text: "Numbered" },
+      { kind: "quote", text: "Quote" },
+      { kind: "code", language: "sh", lines: ["npm test"] },
+    ]);
+  });
+
   it("renders compact rule-separated chat turns", () => {
     const lines = renderChatLines({
       activeSession: null,
@@ -200,6 +223,9 @@ describe("renderChatLines", () => {
     expect(lines).toHaveLength(1);
     expect(lines[0]?.tone).toBe("assistant");
     expect(lines[0]?.body).toBe("I'm Codex, running as a GPT-5 based software engineering agent.");
+    expect(lines[0]?.blocks).toEqual([
+      { kind: "paragraph", text: "I'm Codex, running as a GPT-5 based software engineering agent." },
+    ]);
     expect(lines[0]?.header).toMatch(/^Codex /);
   });
 

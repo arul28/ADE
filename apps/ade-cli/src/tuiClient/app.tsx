@@ -27,6 +27,7 @@ import {
   DEFAULT_CODEX_REASONING_EFFORT,
   approveToolUse,
   createChatSession,
+  discoverProjectSlashCommands,
   getAvailableModels,
   getAiSettingsStatus,
   getChatHistory,
@@ -50,7 +51,7 @@ import { connectToAde } from "./connection";
 import { Drawer } from "./components/Drawer";
 import { ChatView } from "./components/ChatView";
 import { Header } from "./components/Header";
-import { RightPane } from "./components/RightPane";
+import { LANE_DETAIL_ACTIONS, RightPane } from "./components/RightPane";
 import { SlashPalette } from "./components/SlashPalette";
 import { MentionPalette } from "./components/MentionPalette";
 import { ApprovalPrompt } from "./components/ApprovalPrompt";
@@ -60,6 +61,7 @@ import { theme } from "./theme";
 import { chooseInitialLane } from "./project";
 import { latestExpandableFailureId, renderObject, summarizeDiffChanges } from "./format";
 import { startTuiHeartbeat, type TuiHeartbeat } from "./heartbeat";
+import { loadAdeCodeState, saveAdeCodeState } from "./state";
 import { buildLinearToolRequest } from "./linearCommands";
 import { buildPendingInputAnswers, latestPendingApproval } from "./pendingInput";
 import type {
@@ -656,6 +658,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const [streaming, setStreaming] = useState(false);
   const [clearedAt, setClearedAt] = useState<string | null>(null);
   const [expandedLineIds, setExpandedLineIds] = useState<Set<string>>(() => new Set());
+  const [chatScrollOffsetRows, setChatScrollOffsetRows] = useState(0);
   const [mentionSuggestions, setMentionSuggestions] = useState<MentionSuggestion[]>([]);
   const [mentionIndex, setMentionIndex] = useState(0);
   const [selectedMentions, setSelectedMentions] = useState<MentionSuggestion[]>([]);
@@ -680,29 +683,62 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const promptRef = useRef("");
   const lastLocalSendAtRef = useRef<number>(0);
   const eventCountRef = useRef<number>(0);
+  const chatScrollOffsetRowsRef = useRef(0);
   const heartbeatRef = useRef<TuiHeartbeat | null>(null);
   const draftSeededFromHistoryRef = useRef(false);
   const attachProbeInFlightRef = useRef(false);
+  const lastChatByLaneRef = useRef<Map<string, string>>(new Map(Object.entries(loadAdeCodeState().lastChatByLane)));
+  const lastChatByLaneWriteTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  const selectActiveLaneId = useCallback((laneId: string | null) => {
-    activeLaneIdRef.current = laneId;
-    setActiveLaneId(laneId);
+  const persistLastChatByLane = useCallback(() => {
+    if (lastChatByLaneWriteTimerRef.current) {
+      clearTimeout(lastChatByLaneWriteTimerRef.current);
+    }
+    lastChatByLaneWriteTimerRef.current = setTimeout(() => {
+      lastChatByLaneWriteTimerRef.current = null;
+      const lastChatByLane: Record<string, string> = {};
+      for (const [laneId, sessionId] of lastChatByLaneRef.current) {
+        lastChatByLane[laneId] = sessionId;
+      }
+      saveAdeCodeState({ lastChatByLane });
+    }, 500);
   }, []);
 
+  const setChatScrollOffset = useCallback((value: number | ((previous: number) => number)) => {
+    setChatScrollOffsetRows((previous) => {
+      const next = Math.max(0, typeof value === "function" ? value(previous) : value);
+      chatScrollOffsetRowsRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const selectActiveLaneId = useCallback((laneId: string | null) => {
+    if (activeLaneIdRef.current !== laneId) setChatScrollOffset(0);
+    activeLaneIdRef.current = laneId;
+    setActiveLaneId(laneId);
+  }, [setChatScrollOffset]);
+
   const selectActiveSessionId = useCallback((sessionId: string | null) => {
+    if (activeSessionIdRef.current !== sessionId) setChatScrollOffset(0);
     if (sessionId) {
       draftChatActiveRef.current = false;
       setDraftChatActive(false);
       setSelectedDrawerChatAction(null);
+      const laneId = activeLaneIdRef.current;
+      if (laneId && lastChatByLaneRef.current.get(laneId) !== sessionId) {
+        lastChatByLaneRef.current.set(laneId, sessionId);
+        persistLastChatByLane();
+      }
     }
     activeSessionIdRef.current = sessionId;
     setActiveSessionId(sessionId);
-  }, []);
+  }, [persistLastChatByLane, setChatScrollOffset]);
 
   const setDraftChatMode = useCallback((active: boolean) => {
+    setChatScrollOffset(0);
     draftChatActiveRef.current = active;
     setDraftChatActive(active);
-  }, []);
+  }, [setChatScrollOffset]);
 
   const setPaneFocus = useCallback((pane: PaneFocus) => {
     activePaneRef.current = pane;
@@ -894,6 +930,119 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         : prev);
     }
   }, [activeLane?.name, activeLaneId, aiStatusCheckedAt, mode, modelSetupRows, modelState.provider, newChatSetupRows, providerReadinessRows, rightPane.kind]);
+
+  useEffect(() => {
+    if (activePane !== "details" || !rightOpen) return;
+    if (!activeLane || !activeLaneId) return;
+    if (rightPane.kind !== "empty" && rightPane.kind !== "lane-details") return;
+
+    let cancelled = false;
+    const lane = activeLane;
+    const laneId = activeLaneId;
+
+    const refresh = async () => {
+      const conn = connectionRef.current;
+      if (!conn) return;
+      try {
+        const [syncRes, changesRes, prsRes] = await Promise.all([
+          conn.action<{ ahead?: number; behind?: number; upstreamRef?: string | null }>("git", "getSyncStatus", { laneId }).catch(() => null),
+          conn.actionList<{ staged: { path: string; kind: string }[]; unstaged: { path: string; kind: string }[] }>("diff", "getChanges", [laneId]).catch(() => null),
+          conn.action<Array<Record<string, unknown>>>("pr", "listAll", { laneId }).catch(() => [] as Array<Record<string, unknown>>),
+        ]);
+        if (cancelled) return;
+
+        const ahead = typeof syncRes?.ahead === "number" ? syncRes.ahead : 0;
+        const behind = typeof syncRes?.behind === "number" ? syncRes.behind : 0;
+        const remote = typeof syncRes?.upstreamRef === "string" ? syncRes.upstreamRef : null;
+
+        const staged = changesRes?.staged ?? [];
+        const unstaged = changesRes?.unstaged ?? [];
+        const fileMap = new Map<string, { path: string; status: "M" | "A" | "D" | "?"; staged: boolean }>();
+        const toStatus = (kind: string): "M" | "A" | "D" | "?" => {
+          if (kind === "added" || kind === "untracked") return kind === "untracked" ? "?" : "A";
+          if (kind === "deleted") return "D";
+          if (kind === "modified" || kind === "renamed") return "M";
+          return "?";
+        };
+        for (const file of staged) {
+          fileMap.set(file.path, { path: file.path, status: toStatus(file.kind), staged: true });
+        }
+        for (const file of unstaged) {
+          if (!fileMap.has(file.path)) {
+            fileMap.set(file.path, { path: file.path, status: toStatus(file.kind), staged: false });
+          }
+        }
+        const files = [...fileMap.values()];
+
+        const activePr = prsRes[0] ?? null;
+        let pr: { number: number; state: "open" | "closed" | "merged"; url: string; checksPassed: number; checksTotal: number } | null = null;
+        if (activePr) {
+          const number = typeof activePr.githubPrNumber === "number"
+            ? activePr.githubPrNumber
+            : typeof activePr.number === "number"
+              ? activePr.number
+              : null;
+          const url = typeof activePr.githubUrl === "string"
+            ? activePr.githubUrl
+            : typeof activePr.url === "string"
+              ? activePr.url
+              : "";
+          const rawState = typeof activePr.state === "string" ? activePr.state : "open";
+          const state: "open" | "closed" | "merged" =
+            rawState === "merged" ? "merged" : rawState === "closed" ? "closed" : "open";
+          const prId = typeof activePr.id === "string" ? activePr.id : typeof activePr.prId === "string" ? activePr.prId : "";
+          let checksPassed = 0;
+          let checksTotal = 0;
+          if (prId) {
+            const checks = await conn.actionList<Array<{ status?: string; conclusion?: string | null }>>("pr", "getChecks", [prId]).catch(() => null);
+            if (!cancelled && Array.isArray(checks)) {
+              checksTotal = checks.length;
+              checksPassed = checks.filter((check) => check.status === "completed" && check.conclusion === "success").length;
+            }
+          }
+          if (number != null && url) {
+            pr = { number, state, url, checksPassed, checksTotal };
+          }
+        }
+
+        if (cancelled) return;
+        setRightPane((prev) => {
+          if (cancelled) return prev;
+          if (prev.kind !== "lane-details" && prev.kind !== "empty") return prev;
+          const previousIndex = prev.kind === "lane-details" ? prev.selectedActionIndex : 0;
+          const previousShowFiles = prev.kind === "lane-details" ? prev.showFiles : false;
+          const maxIndex = LANE_DETAIL_ACTIONS.length - 1 + (pr ? 1 : 0);
+          return {
+            kind: "lane-details",
+            lane,
+            git: {
+              staged: staged.length,
+              unstaged: unstaged.length,
+              total: files.length,
+              ahead,
+              behind,
+              remote,
+            },
+            files,
+            pr,
+            showFiles: previousShowFiles,
+            selectedActionIndex: Math.max(0, Math.min(previousIndex, maxIndex)),
+          };
+        });
+      } catch {
+        // best-effort — leave the existing pane content alone on transient errors
+      }
+    };
+
+    void refresh();
+    const interval = setInterval(() => {
+      void refresh();
+    }, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [activeLane, activeLaneId, activePane, rightOpen, rightPane.kind]);
 
   useEffect(() => {
     if (!drawerLaneId || !lanes.some((lane) => lane.id === drawerLaneId)) {
@@ -1183,7 +1332,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     }
     const configSession = nextSession ?? (!draftSeededFromHistoryRef.current ? seedSession : null);
     const nextProvider = configSession?.provider ?? modelState.provider ?? "codex";
-    const nextCommands = await getSlashCommands(conn, nextSessionId).catch(() => []);
+    const commandSessionId = nextSessionId ?? configSession?.sessionId ?? null;
+    const remoteCommands = commandSessionId ? await getSlashCommands(conn, commandSessionId).catch(() => []) : [];
+    const projectCommands = discoverProjectSlashCommands(project.workspaceRoot);
+    const nextCommands = remoteCommands.length ? remoteCommands : projectCommands;
     const nextModels = await getAvailableModels(conn, nextProvider).catch(() => []);
     const activeModel = nextModels.find((model) => model.modelId === configSession?.modelId || model.id === configSession?.modelId)
       ?? nextModels.find((model) => model.isDefault)
@@ -1273,6 +1425,15 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       cancelled = true;
       heartbeatRef.current?.stop();
       heartbeatRef.current = null;
+      if (lastChatByLaneWriteTimerRef.current) {
+        clearTimeout(lastChatByLaneWriteTimerRef.current);
+        lastChatByLaneWriteTimerRef.current = null;
+        const lastChatByLane: Record<string, string> = {};
+        for (const [laneId, sessionId] of lastChatByLaneRef.current) {
+          lastChatByLane[laneId] = sessionId;
+        }
+        saveAdeCodeState({ lastChatByLane });
+      }
       const conn = connectionRef.current;
       connectionRef.current = null;
       void conn?.close().catch(() => {});
@@ -1798,7 +1959,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         : result;
       setRightPane({ kind: "details", title: `ADE ${domain}.${action}`, body: renderObject(body, 24) });
     }
-  }, [activeLane?.name, activeSession?.sessionId, activeSession?.title, addNotice, ensureActiveSession, focusDetails, lanes, mode, modelState.modelId, models, openForm, openModelSetup, openNewChatSetup, openNewLaneForm, project, refreshState, selectActiveLaneId, selectActiveSessionId, sessions]);
+  }, [activeLane?.name, activeSession?.sessionId, activeSession?.title, addNotice, ensureActiveSession, focusDetails, lanes, mode, modelState.modelId, models, openForm, openModelSetup, openNewChatSetup, openNewLaneForm, project, refreshState, selectActiveLaneId, selectActiveSessionId, sessions, setChatScrollOffset]);
 
   const runInlineCommand = useCallback(async (name: string, args: string) => {
     const conn = connectionRef.current;
@@ -1812,6 +1973,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     if (name === "/clear") {
       setClearedAt(new Date().toISOString());
       setEvents([]);
+      setChatScrollOffset(0);
       addNotice("Local transcript view cleared. The durable chat remains in ADE.", "info");
       return;
     }
@@ -1884,6 +2046,24 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       addNotice(`Push complete: ${renderObject(result, 4).replace(/\n/g, " ")}`, "success");
       return;
     }
+    if (name === "/pull") {
+      if (!laneId) {
+        addNotice("No active lane is selected.", "error");
+        return;
+      }
+      const result = await conn.action("git", "pull", { laneId });
+      addNotice(`Pull complete: ${renderObject(result, 4).replace(/\n/g, " ")}`, "success");
+      return;
+    }
+    if (name === "/stage all") {
+      if (!laneId) {
+        addNotice("No active lane is selected.", "error");
+        return;
+      }
+      const result = await conn.action("git", "stageAll", { laneId });
+      addNotice(`Stage all complete: ${renderObject(result, 4).replace(/\n/g, " ")}`, "success");
+      return;
+    }
     if (name === "/remember") {
       if (!args) {
         addNotice("Usage: /remember <durable fact>", "error");
@@ -1943,7 +2123,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         addNotice(result.message ?? "Desktop route unavailable from this runtime.", "error");
       }
     }
-  }, [activeSession?.provider, addNotice, exit, loadProviderModels, modelState.provider, project, refreshAiSetupStatus, refreshState, socketPath]);
+  }, [activeSession?.provider, addNotice, exit, loadProviderModels, modelState.provider, project, refreshAiSetupStatus, refreshState, setChatScrollOffset, socketPath]);
 
   const submitRightForm = useCallback(async (
     form: Extract<RightPaneContent, { kind: "form" }>,
@@ -2030,6 +2210,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       }
       setPrompt("");
       promptRef.current = "";
+      setChatScrollOffset(0);
       if (activePaneRef.current === "chat") {
         chatDraftRef.current = "";
       }
@@ -2124,7 +2305,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       setError(message);
       addNotice(message, "error");
     }
-  }, [activeFormField, addNotice, answerPendingInput, ensureActiveSession, formValues, pendingApproval, refreshState, resolvePendingApproval, rightPane, runInlineCommand, runRightCommand, selectedMentions, slashCommands, slashIndex, slashRows, streaming, submitRightForm]);
+  }, [activeFormField, addNotice, answerPendingInput, ensureActiveSession, formValues, pendingApproval, refreshState, resolvePendingApproval, rightPane, runInlineCommand, runRightCommand, selectedMentions, setChatScrollOffset, slashCommands, slashIndex, slashRows, streaming, submitRightForm]);
 
   const insertMention = useCallback((suggestion: MentionSuggestion) => {
     const range = activeMention(prompt);
@@ -2452,6 +2633,70 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       return;
     }
 
+    if (pane === "details" && rightOpen && rightPane.kind === "lane-details") {
+      const laneDetails = rightPane;
+      const maxIndex = LANE_DETAIL_ACTIONS.length - 1 + (laneDetails.pr ? 1 : 0);
+      if (key.upArrow) {
+        setRightPane((prev) => prev.kind === "lane-details"
+          ? { ...prev, selectedActionIndex: Math.max(0, prev.selectedActionIndex - 1) }
+          : prev);
+        return;
+      }
+      if (key.downArrow) {
+        setRightPane((prev) => prev.kind === "lane-details"
+          ? { ...prev, selectedActionIndex: Math.min(maxIndex, prev.selectedActionIndex + 1) }
+          : prev);
+        return;
+      }
+      if (input === "t" && !key.ctrl && !key.meta) {
+        setRightPane((prev) => prev.kind === "lane-details" ? { ...prev, showFiles: !prev.showFiles } : prev);
+        return;
+      }
+      if (key.return) {
+        const index = laneDetails.selectedActionIndex;
+        if (index < LANE_DETAIL_ACTIONS.length) {
+          const action = LANE_DETAIL_ACTIONS[index];
+          if (action) {
+            const text = action.slashCommand === "/commit" ? `${action.slashCommand} ` : action.slashCommand;
+            setPrompt(text);
+            promptRef.current = text;
+            chatDraftRef.current = text;
+            focusChat();
+          }
+          return;
+        }
+        if (laneDetails.pr) {
+          const url = laneDetails.pr.url;
+          const bridge = (globalThis as { window?: { ade?: { app?: { openExternal?: (url: string) => unknown } } } }).window;
+          const opener = bridge?.ade?.app?.openExternal;
+          if (typeof opener === "function") {
+            try {
+              opener(url);
+              addNotice("Opening PR in browser…", "info");
+              return;
+            } catch {
+              // fall through to platform open
+            }
+          }
+          if (process.platform === "darwin" && url) {
+            spawn("open", [url], { stdio: "ignore", detached: true }).unref();
+            addNotice("Opening PR in browser…", "info");
+            return;
+          }
+          if (process.platform === "linux" && url) {
+            spawn("xdg-open", [url], { stdio: "ignore", detached: true }).unref();
+            addNotice("Opening PR in browser…", "info");
+            return;
+          }
+          setPrompt("/pr open");
+          promptRef.current = "/pr open";
+          void submitPrompt("/pr open");
+          return;
+        }
+        return;
+      }
+    }
+
     if (pane === "details" && rightOpen && (rightPane.kind === "models" || rightPane.kind === "effort" || (rightPane.kind === "list" && rightPane.action)) && key.upArrow) {
       const max = rightPane.kind === "models"
         ? rightPane.models.length
@@ -2539,6 +2784,30 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       return;
     }
 
+    const pageUp = Boolean((key as { pageUp?: boolean }).pageUp);
+    const pageDown = Boolean((key as { pageDown?: boolean }).pageDown);
+    const home = Boolean((key as { home?: boolean }).home);
+    const end = Boolean((key as { end?: boolean }).end);
+    if (pane === "chat" && !activeMentionRange && !slashRows.length) {
+      const pageRows = Math.max(1, chatRowBudget - 2);
+      if (pageUp || (key.ctrl && input === "u")) {
+        setChatScrollOffset((offset) => offset + (key.ctrl ? Math.max(1, Math.floor(pageRows / 2)) : pageRows));
+        return;
+      }
+      if (pageDown || (key.ctrl && input === "d")) {
+        setChatScrollOffset((offset) => offset - (key.ctrl ? Math.max(1, Math.floor(pageRows / 2)) : pageRows));
+        return;
+      }
+      if (home) {
+        setChatScrollOffset((offset) => Math.max(offset, 100_000));
+        return;
+      }
+      if (end) {
+        setChatScrollOffset(0);
+        return;
+      }
+    }
+
     if (pane === "chat" && key.upArrow && activeMentionRange && mentionSuggestions.length) {
       setMentionIndex((index) => (index <= 0 ? mentionSuggestions.length - 1 : index - 1));
       return;
@@ -2579,6 +2848,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         const lane = drawerLaneRows[nextIndex] ?? null;
         setSelectedDrawerLaneAction(lane ? null : "new-lane");
         setSelectedDrawerLaneId(lane?.id ?? null);
+      } else if (selectedChatIndex <= 0) {
+        setDrawerSection("lanes");
+        const lastLane = drawerLaneRows[drawerLaneRows.length - 1] ?? null;
+        setSelectedDrawerLaneAction("new-lane");
+        setSelectedDrawerLaneId(lastLane?.id ?? null);
       } else {
         const nextIndex = Math.max(0, selectedChatIndex - 1);
         const session = drawerLaneSessions[nextIndex] ?? null;
@@ -2589,10 +2863,17 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     }
     if (pane === "drawer" && drawerOpen && key.downArrow) {
       if (drawerSection === "lanes") {
-        const nextIndex = Math.min(drawerLaneRows.length, selectedLaneIndex + 1);
-        const lane = drawerLaneRows[nextIndex] ?? null;
-        setSelectedDrawerLaneAction(lane ? null : "new-lane");
-        setSelectedDrawerLaneId(lane?.id ?? null);
+        if (selectedLaneIndex >= drawerLaneRows.length) {
+          setDrawerSection("chats");
+          const firstSession = drawerLaneSessions[0] ?? null;
+          setSelectedDrawerChatAction(firstSession ? null : "new-chat");
+          setSelectedDrawerChatId(firstSession?.sessionId ?? null);
+        } else {
+          const nextIndex = Math.min(drawerLaneRows.length, selectedLaneIndex + 1);
+          const lane = drawerLaneRows[nextIndex] ?? null;
+          setSelectedDrawerLaneAction(lane ? null : "new-lane");
+          setSelectedDrawerLaneId(lane?.id ?? null);
+        }
       } else {
         const nextIndex = Math.min(drawerLaneSessions.length, selectedChatIndex + 1);
         const session = drawerLaneSessions[nextIndex] ?? null;
@@ -2614,11 +2895,15 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           setDrawerLaneId(lane.id);
           setSelectedDrawerLaneId(lane.id);
           setSelectedDrawerLaneAction(null);
-          const session = newestSession(sessions.filter((entry) => entry.laneId === lane.id));
+          const laneSessions = sessions.filter((entry) => entry.laneId === lane.id);
+          const lastSessionId = lastChatByLaneRef.current.get(lane.id);
+          const session =
+            laneSessions.find((s) => s.sessionId === lastSessionId)
+            ?? newestSession(laneSessions);
           selectActiveSessionId(session?.sessionId ?? null);
           setSelectedDrawerChatId(session?.sessionId ?? null);
-          setSelectedDrawerChatAction(null);
-          setDrawerSection(session ? "chats" : "lanes");
+          setSelectedDrawerChatAction(session ? null : "new-chat");
+          setDrawerSection("chats");
           addNotice(`Switched to lane ${lane.name}.`, "success");
         }
       } else {
@@ -2736,6 +3021,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
                 lane={activeLane}
                 expandedLineIds={expandedLineIds}
                 maxRows={chatRowBudget}
+                scrollOffsetRows={chatScrollOffsetRows}
+                width={centerWidth}
               />
               <ApprovalPrompt approval={pendingApproval} />
             </>

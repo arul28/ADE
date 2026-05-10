@@ -9,6 +9,13 @@ const STATUS_DOT: Record<ProviderReadinessRow["status"], string> = {
   unavailable: "○",
 };
 
+export const LANE_DETAIL_ACTIONS: ReadonlyArray<{ label: string; slashCommand: string }> = [
+  { label: "stage all", slashCommand: "/stage all" },
+  { label: "commit", slashCommand: "/commit" },
+  { label: "push", slashCommand: "/push" },
+  { label: "pull", slashCommand: "/pull" },
+];
+
 function statusColor(status: ProviderReadinessRow["status"]): string {
   if (status === "ready") return theme.color.success;
   if (status === "unknown") return theme.color.warning;
@@ -48,9 +55,10 @@ export function RightPane({
   selectedIndex?: number;
   focused?: boolean;
 }) {
+  const paneTitle = content.kind === "lane-details" ? content.lane.name.toUpperCase() : "SETUP";
   return (
     <Box width={38} flexDirection="column" borderStyle="single" borderColor={focused ? "#A78BFA" : "gray"} paddingX={1}>
-      <Text bold color={focused ? "#A78BFA" : undefined}>SETUP{focused ? " · focused" : ""}</Text>
+      <Text bold color={focused ? "#A78BFA" : undefined}>{paneTitle}{focused ? " · focused" : ""}</Text>
       {content.kind === "empty" ? (
         <Text dimColor>Run /status, /diff, /model, or /help.</Text>
       ) : null}
@@ -100,6 +108,54 @@ export function RightPane({
             </Text>
           ))}
           <Text dimColor>arrows move · enter applies</Text>
+        </Box>
+      ) : null}
+      {content.kind === "lane-details" ? (
+        <Box flexDirection="column">
+          <Text dimColor>{content.lane.branchRef}</Text>
+          <Text>
+            {content.git.staged + content.git.unstaged > 0 ? "DIRTY" : "CLEAN"}  ↑{content.git.ahead} ↓{content.git.behind}
+          </Text>
+          {content.git.remote ? <Text dimColor>{content.git.remote}</Text> : null}
+
+          <Box marginTop={1} flexDirection="column">
+            <Text>
+              <Text bold>Changes</Text>
+              <Text dimColor>  (t to toggle)</Text>
+            </Text>
+            {content.showFiles ? (
+              content.files.length ? (
+                content.files.slice(0, 8).map((file) => (
+                  <Text key={file.path}>  {file.status} {file.path.slice(0, 26)}{file.staged ? " ●" : ""}</Text>
+                ))
+              ) : (
+                <Text dimColor>  No changes.</Text>
+              )
+            ) : (
+              <>
+                <Text>  {content.git.staged} staged · {content.git.unstaged} unstaged</Text>
+                <Text dimColor>  {content.git.total} files total</Text>
+              </>
+            )}
+          </Box>
+
+          <Box marginTop={1} flexDirection="column">
+            <Text bold>Actions</Text>
+            {LANE_DETAIL_ACTIONS.map((action, index) => (
+              <Text key={action.label} color={index === content.selectedActionIndex ? "#A78BFA" : undefined}>
+                {index === content.selectedActionIndex ? "›" : " "} {action.label}
+              </Text>
+            ))}
+          </Box>
+
+          {content.pr ? (
+            <Box marginTop={1} flexDirection="column">
+              <Text bold>Pull request</Text>
+              <Text color={content.selectedActionIndex === LANE_DETAIL_ACTIONS.length ? "#A78BFA" : undefined}>
+                {content.selectedActionIndex === LANE_DETAIL_ACTIONS.length ? "›" : " "} #{content.pr.number} {content.pr.state}  {content.pr.checksPassed}/{content.pr.checksTotal} ✓
+              </Text>
+            </Box>
+          ) : null}
         </Box>
       ) : null}
       {content.kind === "effort" ? (

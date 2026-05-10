@@ -17,7 +17,10 @@ const session: AgentChatSessionSummary = {
   summary: null,
 };
 
-function renderEvents(events: AgentChatEventEnvelope[]): string {
+function renderEvents(
+  events: AgentChatEventEnvelope[],
+  options: { maxRows?: number; scrollOffsetRows?: number; width?: number } = {},
+): string {
   const result = render(
     <ChatView
       events={events}
@@ -25,6 +28,9 @@ function renderEvents(events: AgentChatEventEnvelope[]): string {
       activeSession={session}
       projectName="ADE"
       laneName="Primary"
+      maxRows={options.maxRows}
+      scrollOffsetRows={options.scrollOffsetRows}
+      width={options.width}
     />,
   );
   return result.lastFrame() ?? "";
@@ -34,13 +40,15 @@ describe("ChatView", () => {
   it("renders a bordered hero card with the ADE wordmark when the chat is empty", () => {
     const frame = renderEvents([]);
     expect(frame).toMatch(/[╭╮╯╰]/);
-    expect(frame).toContain("█▀█");
+    expect(frame).toContain("██████");
     expect(frame).toContain("ade code");
     expect(frame).toContain("v0.1");
+    expect(frame).toContain("Project");
+    expect(frame).toContain("Lane");
+    expect(frame).toContain("Branch");
     expect(frame).toContain("Primary");
     expect(frame).toContain("type to chat");
-    expect(frame).toContain("›");
-    expect(frame).toContain("inspect the current diff");
+    expect(frame).toContain("commands");
   });
 
   it("right-aligns user messages inside an accent-bordered bubble", () => {
@@ -78,6 +86,66 @@ describe("ChatView", () => {
     expect(frame).not.toMatch(/[╭╮╯╰]/);
   });
 
+  it("renders markdown-like assistant output into readable blocks", () => {
+    const frame = renderEvents([
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: {
+          type: "text",
+          text: [
+            "## Fix plan",
+            "",
+            "- Trace commands",
+            "1. Patch renderer",
+            "",
+            "```ts",
+            "const ok = true;",
+            "```",
+          ].join("\n"),
+        },
+      },
+    ], { width: 60 });
+    expect(frame).toContain("Fix plan");
+    expect(frame).toContain("• Trace commands");
+    expect(frame).toContain("1. Patch renderer");
+    expect(frame).toContain("│ const ok = true;");
+  });
+
+  it("wraps long assistant paragraphs to the supplied width", () => {
+    const frame = renderEvents([
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: { type: "text", text: "This paragraph should wrap cleanly across more than one terminal row instead of flattening into an unreadable single line." },
+      },
+    ], { width: 42 });
+    expect(frame).toContain("This paragraph should wrap cleanly");
+    expect(frame).toContain("across more than one terminal row");
+  });
+
+  it("shows the bottom viewport by default and older rows when scrolled", () => {
+    const events = Array.from({ length: 12 }, (_, index): AgentChatEventEnvelope => ({
+      sessionId: "s1",
+      timestamp: `2026-01-01T12:00:${String(index).padStart(2, "0")}.000Z`,
+      sequence: index + 1,
+      event: index % 2 === 0
+        ? { type: "user_message", text: `user row ${index + 1}` }
+        : { type: "text", text: `assistant row ${index + 1}` },
+    }));
+    const bottom = renderEvents(events, { maxRows: 5, width: 80 });
+    expect(bottom).toContain("assistant row 12");
+    expect(bottom).not.toContain("user row 1");
+    expect(bottom).toContain("↑ older messages");
+
+    const older = renderEvents(events, { maxRows: 5, scrollOffsetRows: 8, width: 80 });
+    expect(older).toContain("row");
+    expect(older).toContain("↓ newer messages");
+    expect(older).not.toContain("assistant row 12");
+  });
+
   it("indents tool call output", () => {
     const frame = renderEvents([
       {
@@ -90,7 +158,7 @@ describe("ChatView", () => {
     const lines = frame.split(/\r?\n/).filter((line) => line.includes("run git branch"));
     expect(lines.length).toBeGreaterThan(0);
     for (const line of lines) {
-      expect(line.startsWith("   ")).toBe(true);
+      expect(line.startsWith("  ")).toBe(true);
     }
   });
 });

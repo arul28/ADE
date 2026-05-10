@@ -146,6 +146,15 @@ export type RightPaneContent =
         placeholder?: string;
         initialValue?: string;
       }>;
+    }
+  | {
+      kind: "lane-details";
+      lane: LaneSummary;
+      git: { staged: number; unstaged: number; total: number; ahead: number; behind: number; remote: string | null };
+      files: { path: string; status: "M" | "A" | "D" | "?"; staged: boolean }[];
+      pr: { number: number; state: "open" | "closed" | "merged"; url: string; checksPassed: number; checksTotal: number } | null;
+      showFiles: boolean;
+      selectedActionIndex: number;
     };
 
 export type LocalNotice = {

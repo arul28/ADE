@@ -85,6 +85,21 @@ describe("commands", () => {
     expect(clearRows[0]?.description).toBe("Start a new conversation with empty context");
   });
 
+  it("dedupes slash command case variants and keeps runtime casing", () => {
+    const rows = paletteCommands("/ship", [
+      { name: "/shipLane", description: "Ship the lane", source: "sdk" },
+      { name: "/shiplane", description: "Duplicate lower-case command", source: "sdk" },
+    ]);
+    expect(rows.filter((row) => row.name.toLowerCase() === "/shiplane")).toHaveLength(1);
+    expect(rows.find((row) => row.name.toLowerCase() === "/shiplane")?.name).toBe("/shiplane");
+
+    const parsed = parseCommand("/shipLane now", [
+      { name: "/shiplane", description: "Ship the lane", source: "sdk" },
+    ]);
+    expect(parsed?.userCommand?.name).toBe("/shiplane");
+    expect(parsed?.args).toBe("now");
+  });
+
   it("returns more than 9 results for empty/short queries", () => {
     const userCommands = Array.from({ length: 20 }, (_, i) => ({
       name: `/sdk-cmd-${i}`,

@@ -566,9 +566,13 @@ const CLAUDE_BUILT_IN_SLASH_COMMANDS: AgentChatSlashCommand[] = [
   { name: "/usage", description: "Show session cost, plan usage limits, and activity stats.", source: "sdk" },
 ];
 
-const CODEX_BUILT_IN_SLASH_COMMAND_NAMES = new Set(CODEX_BUILT_IN_SLASH_COMMANDS.map((command) => command.name));
-const CLAUDE_BUILT_IN_SLASH_COMMAND_NAMES = new Set(CLAUDE_BUILT_IN_SLASH_COMMANDS.map((command) => command.name));
+const CODEX_BUILT_IN_SLASH_COMMAND_NAMES = new Set(CODEX_BUILT_IN_SLASH_COMMANDS.map((command) => slashCommandKey(command.name)));
+const CLAUDE_BUILT_IN_SLASH_COMMAND_NAMES = new Set(CLAUDE_BUILT_IN_SLASH_COMMANDS.map((command) => slashCommandKey(command.name)));
 const CLAUDE_LOGIN_NOT_SDK_COMMAND = "ADE Claude chat is hosted through the Claude Agent SDK, and /login is not an SDK-dispatchable command. Run `claude auth login` in a terminal or configure ANTHROPIC_API_KEY, then refresh AI settings.";
+
+function slashCommandKey(value: string): string {
+  return value.trim().toLowerCase();
+}
 
 function isDispatchableClaudeSdkSlashCommand(command: { name: string }): boolean {
   return command.name !== "/login";
@@ -11686,7 +11690,7 @@ export function createAgentChatService(args: {
     runtime: ClaudeRuntime,
     commands: Array<string | { name?: string; description?: string; argumentHint?: string }>,
   ): void => {
-    const existing = new Map(runtime.slashCommands.map((command) => [command.name, command]));
+    const existing = new Map(runtime.slashCommands.map((command) => [slashCommandKey(command.name), command]));
     for (const command of commands
       .map((command) => {
         if (typeof command === "string") {
@@ -11706,12 +11710,13 @@ export function createAgentChatService(args: {
         };
       })
       .filter((command): command is { name: string; description: string; argumentHint?: string } => Boolean(command))) {
-      existing.set(command.name, {
-        ...existing.get(command.name),
+      const key = slashCommandKey(command.name);
+      existing.set(key, {
+        ...existing.get(key),
         ...command,
       });
     }
-    runtime.slashCommands = [...existing.values()].sort((a, b) => a.name.localeCompare(b.name));
+    runtime.slashCommands = [...existing.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
   };
 
   const deliverNextQueuedSteer = async (
@@ -12816,10 +12821,10 @@ export function createAgentChatService(args: {
     const providerHasPersistentGuidance = managed.session.provider === "claude";
     const shouldInjectGuidance = !providerHasPersistentGuidance;
     const claudeRuntimeSlashCommandNames = managed.runtime?.kind === "claude"
-      ? new Set(managed.runtime.slashCommands.map((command) => command.name))
+      ? new Set(managed.runtime.slashCommands.map((command) => slashCommandKey(command.name)))
       : new Set<string>();
     const codexRuntimeSlashCommandNames = managed.runtime?.kind === "codex"
-      ? new Set((managed.runtime as { slashCommands?: Array<{ name: string }> }).slashCommands?.map((command) => command.name) ?? [])
+      ? new Set((managed.runtime as { slashCommands?: Array<{ name: string }> }).slashCommands?.map((command) => slashCommandKey(command.name)) ?? [])
       : new Set<string>();
     const expandedClaudeSlashCommand = providerSlashCommand
       && managed.session.provider === "claude"
@@ -12828,18 +12833,26 @@ export function createAgentChatService(args: {
       && !claudeRuntimeSlashCommandNames.has(slashCommand)
       ? resolveClaudeSlashCommandInvocation(managed.laneWorktreePath, trimmed)
       : null;
+    const expandedClaudeProjectSlashCommandForCodex = providerSlashCommand
+      && managed.session.provider === "codex"
+      && slashCommand != null
+      && !CODEX_BUILT_IN_SLASH_COMMAND_NAMES.has(slashCommand)
+      && !codexRuntimeSlashCommandNames.has(slashCommand)
+      ? resolveClaudeSlashCommandInvocation(managed.laneWorktreePath, trimmed)
+      : null;
     const expandedCodexSlashCommand = providerSlashCommand
       && managed.session.provider === "codex"
       && slashCommand != null
       && !CODEX_BUILT_IN_SLASH_COMMAND_NAMES.has(slashCommand)
       && !codexRuntimeSlashCommandNames.has(slashCommand)
+      && expandedClaudeProjectSlashCommandForCodex == null
       ? resolveCodexSlashCommandInvocation(managed.laneWorktreePath, trimmed)
       : null;
     const contextAttachmentPrompt = providerSlashCommand
       ? ""
       : buildChatContextAttachmentPrompt(publicContextAttachments);
     const promptText = providerSlashCommand
-      ? expandedClaudeSlashCommand?.promptText ?? expandedCodexSlashCommand?.promptText ?? trimmed
+      ? expandedClaudeSlashCommand?.promptText ?? expandedCodexSlashCommand?.promptText ?? expandedClaudeProjectSlashCommandForCodex?.promptText ?? trimmed
       : composeLaunchDirectives(trimmed, [
           shouldInjectLaneDirective
             ? buildLaneWorktreeDirective({
@@ -12856,7 +12869,7 @@ export function createAgentChatService(args: {
           contextAttachmentPrompt || null,
         ]);
     const autoTitleSeed = providerSlashCommand
-      ? expandedClaudeSlashCommand?.promptText ?? expandedCodexSlashCommand?.promptText ?? null
+      ? expandedClaudeSlashCommand?.promptText ?? expandedCodexSlashCommand?.promptText ?? expandedClaudeProjectSlashCommandForCodex?.promptText ?? null
       : visibleText;
     if (!managed.autoTitleSeed && autoTitleSeed) {
       managed.autoTitleSeed = autoTitleSeed;
@@ -18409,10 +18422,10 @@ export function createAgentChatService(args: {
       const merged = new Map<string, AgentChatSlashCommand>();
       for (const group of groups) {
         for (const command of group) {
-          merged.set(command.name, command);
+          merged.set(slashCommandKey(command.name), command);
         }
       }
-      return [...merged.values()].sort((a, b) => a.name.localeCompare(b.name));
+      return [...merged.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
     };
 
     // Claude SDK commands plus filesystem-backed Claude Code commands/skills.
@@ -18451,7 +18464,15 @@ export function createAgentChatService(args: {
         argumentHint: cmd.argumentHint,
         source: "sdk" as const,
       }));
-      return mergeSlashCommands([promptCommands, CODEX_BUILT_IN_SLASH_COMMANDS, dynamicCommands]);
+      const claudeProjectCommands: AgentChatSlashCommand[] = discoverClaudeSlashCommands(managed.laneWorktreePath)
+        .filter(isDispatchableClaudeSdkSlashCommand)
+        .map((cmd: { name: string; description: string; argumentHint?: string }) => ({
+          name: cmd.name,
+          description: cmd.description,
+          argumentHint: cmd.argumentHint,
+          source: "sdk" as const,
+        }));
+      return mergeSlashCommands([promptCommands, claudeProjectCommands, CODEX_BUILT_IN_SLASH_COMMANDS, dynamicCommands]);
     }
 
     // OpenCode / Cursor — only local commands

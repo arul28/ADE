@@ -12,6 +12,8 @@ export type BuiltinCommand = {
 export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/commit", description: "Commit lane changes", placement: "inline", argumentHint: "[message]" },
   { name: "/push", description: "Push the active lane branch", placement: "inline" },
+  { name: "/pull", description: "Pull the active lane branch", placement: "inline" },
+  { name: "/stage all", description: "Stage all changes in the active lane", placement: "inline" },
   { name: "/clear", description: "Clear the local terminal transcript view", placement: "inline" },
   { name: "/end", description: "End the active chat runtime", placement: "inline" },
   { name: "/login", description: "Sign in to the active CLI-backed provider from this terminal", placement: "inline" },
@@ -68,10 +70,15 @@ function normalizeSlashName(value: string): string {
   return value.trim().replace(/\s+/g, " ");
 }
 
+function slashCommandKey(value: string): string {
+  return normalizeSlashName(value).toLowerCase();
+}
+
 export function parseCommand(input: string, userCommands: AgentChatSlashCommand[] = []): ParsedCommand | null {
   const trimmed = input.trim();
   if (!trimmed.startsWith("/")) return null;
   const [first = ""] = trimmed.split(/\s+/, 1);
+  const firstKey = slashCommandKey(first);
   const candidates = [...BUILTIN_COMMANDS]
     .sort((left, right) => right.name.length - left.name.length);
 
@@ -89,13 +96,13 @@ export function parseCommand(input: string, userCommands: AgentChatSlashCommand[
     }
   }
 
-  const exactUserCommand = userCommands.find((command) => command.name === first) ?? null;
+  const exactUserCommand = userCommands.find((command) => slashCommandKey(command.name) === firstKey) ?? null;
   const adeOwnedSingleWordCommand = candidates.find((command) =>
-    command.name === first && ADE_OWNED_SINGLE_WORD_COMMANDS.has(command.name)
+    slashCommandKey(command.name) === firstKey && ADE_OWNED_SINGLE_WORD_COMMANDS.has(command.name)
   );
   if (adeOwnedSingleWordCommand) {
     return {
-      name: first,
+      name: adeOwnedSingleWordCommand.name,
       args: trimmed.slice(first.length).trim(),
       spec: adeOwnedSingleWordCommand,
       userCommand: null,
@@ -104,7 +111,7 @@ export function parseCommand(input: string, userCommands: AgentChatSlashCommand[
 
   if (exactUserCommand) {
     return {
-      name: first,
+      name: exactUserCommand.name,
       args: trimmed.slice(first.length).trim(),
       spec: null,
       userCommand: exactUserCommand,
@@ -123,10 +130,10 @@ export function parseCommand(input: string, userCommands: AgentChatSlashCommand[
     }
   }
 
-  const userCommand = userCommands.find((command) => command.name === first) ?? null;
+  const userCommand = userCommands.find((command) => slashCommandKey(command.name) === firstKey) ?? null;
   if (userCommand) {
     return {
-      name: first,
+      name: userCommand.name,
       args: trimmed.slice(first.length).trim(),
       spec: null,
       userCommand,
@@ -162,8 +169,8 @@ export function paletteCommands(
   // Dedupe by name: when both ADE and a runtime/user catalog define the same
   // command, prefer the runtime/user entry so SDK-native behavior wins.
   const byName = new Map<string, { name: string; description: string; source: "ade" | "user"; argumentHint?: string }>();
-  for (const command of builtins) byName.set(command.name, command);
-  for (const command of users) byName.set(command.name, command);
+  for (const command of builtins) byName.set(slashCommandKey(command.name), command);
+  for (const command of users) byName.set(slashCommandKey(command.name), command);
   const merged = [...byName.values()];
   const filtered = !queryToken
     ? merged

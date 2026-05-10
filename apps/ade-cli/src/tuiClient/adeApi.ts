@@ -25,6 +25,8 @@ import type {
 } from "../../../desktop/src/shared/types/chat";
 import type { AiSettingsStatus, OpenCodeRuntimeSnapshot } from "../../../desktop/src/shared/types/config";
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
+import { discoverClaudeSlashCommands } from "../../../desktop/src/main/services/chat/claudeSlashCommandDiscovery";
+import { discoverCodexSlashCommands } from "../../../desktop/src/main/services/chat/codexSlashCommandDiscovery";
 import type { AdeCodeConnection, ChatHistorySnapshot, CreatedChat, NavigateRequest, NavigateResult } from "./types";
 
 export const DEFAULT_CODEX_REASONING_EFFORT = "low";
@@ -58,6 +60,28 @@ export async function getSlashCommands(
 ): Promise<AgentChatSlashCommand[]> {
   if (!sessionId) return [];
   return await connection.action<AgentChatSlashCommand[]>("chat", "getSlashCommands", { sessionId });
+}
+
+function slashCommandKey(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+export function discoverProjectSlashCommands(workspaceRoot: string): AgentChatSlashCommand[] {
+  const byName = new Map<string, AgentChatSlashCommand>();
+  const add = (command: { name: string; description: string; argumentHint?: string }) => {
+    if (command.name === "/login") return;
+    const key = slashCommandKey(command.name);
+    if (byName.has(key)) return;
+    byName.set(key, {
+      name: command.name,
+      description: command.description,
+      argumentHint: command.argumentHint,
+      source: "sdk",
+    });
+  };
+  for (const command of discoverClaudeSlashCommands(workspaceRoot)) add(command);
+  for (const command of discoverCodexSlashCommands(workspaceRoot)) add(command);
+  return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
 }
 
 export async function getAvailableModels(

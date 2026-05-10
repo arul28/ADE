@@ -1,5 +1,5 @@
 import React from "react";
-import { Box, Text } from "ink";
+import { Box, Text, useStdout } from "ink";
 import type { AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
 import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
 import { formatLaneLabel, formatSessionLabel } from "../format";
@@ -26,33 +26,47 @@ export function Drawer({
   selectedChatIndex: number;
   focused?: boolean;
 }) {
-  const browsingLane = lanes.find((lane) => lane.id === browsingLaneId) ?? null;
+  const { stdout } = useStdout();
+  const panelHeight = stdout?.rows ?? 40;
   const laneSessions = sessions.filter((session) => session.laneId === browsingLaneId).slice(0, 12);
-  const laneRows = lanes.slice(0, 10);
+  // Adaptive 50% cap: LANES section uses up to half the column height (header + rows + "+ new lane").
+  const lanesMaxRows = Math.max(2, Math.floor(panelHeight / 2) - 3);
+  const laneRows = lanes.slice(0, Math.min(10, lanesMaxRows));
   return (
     <Box width={28} flexDirection="column" borderStyle="single" borderColor={focused ? PURPLE : "gray"} paddingX={1}>
-      <Text bold color={focused ? PURPLE : undefined}>LANES{focused ? " · focused" : ""}</Text>
-      {laneRows.map((lane, index) => (
-        <Text key={lane.id} color={lane.id === activeLaneId ? AMBER : lane.id === browsingLaneId ? "white" : undefined}>
-          {index === selectedLaneIndex ? "›" : " "} {lane.id === activeLaneId ? "●" : lane.id === browsingLaneId ? "◐" : "○"} {formatLaneLabel(lane).slice(0, 20)}
+      <Box flexDirection="column" flexShrink={1}>
+        <Text bold color={focused ? PURPLE : undefined}>LANES</Text>
+        {laneRows.map((lane, index) => (
+          <Text key={lane.id} color={lane.id === activeLaneId ? AMBER : lane.id === browsingLaneId ? "white" : undefined}>
+            {index === selectedLaneIndex ? "›" : " "} {lane.id === activeLaneId ? "●" : lane.id === browsingLaneId ? "◐" : "○"} {formatLaneLabel(lane).slice(0, 20)}
+          </Text>
+        ))}
+        <Text color={selectedLaneIndex === laneRows.length ? PURPLE : undefined} dimColor={selectedLaneIndex !== laneRows.length}>
+          {selectedLaneIndex === laneRows.length ? "›" : " "} + new lane
         </Text>
-      ))}
-      <Text color={selectedLaneIndex === laneRows.length ? PURPLE : undefined} dimColor={selectedLaneIndex !== laneRows.length}>
-        {selectedLaneIndex === laneRows.length ? "›" : " "} + new lane
-      </Text>
-      <Text dimColor>{"─".repeat(24)}</Text>
-      <Text bold>CHATS · {browsingLane?.name ?? "no lane"}</Text>
-      {laneSessions.length === 0 ? (
-        <Text dimColor>No chats in lane.</Text>
-      ) : laneSessions.map((session, index) => (
-        <Text key={session.sessionId} color={session.sessionId === activeSessionId ? PURPLE : undefined}>
-          {index === selectedChatIndex ? "›" : " "} {session.sessionId === activeSessionId ? "●" : " "} {formatSessionLabel(session).slice(0, 20)}
+      </Box>
+      <Box
+        flexDirection="column"
+        flexGrow={1}
+        borderStyle="single"
+        borderTop
+        borderLeft={false}
+        borderRight={false}
+        borderBottom={false}
+        borderColor="gray"
+      >
+        <Text bold>CHATS</Text>
+        {laneSessions.length === 0 ? (
+          <Text dimColor>No chats in lane.</Text>
+        ) : laneSessions.map((session, index) => (
+          <Text key={session.sessionId} color={session.sessionId === activeSessionId ? PURPLE : undefined}>
+            {index === selectedChatIndex ? "›" : " "} {formatSessionLabel(session).slice(0, 22)}
+          </Text>
+        ))}
+        <Text color={selectedChatIndex === laneSessions.length ? PURPLE : undefined} dimColor={selectedChatIndex !== laneSessions.length}>
+          {selectedChatIndex === laneSessions.length ? "›" : " "} + new chat
         </Text>
-      ))}
-      <Text color={selectedChatIndex === laneSessions.length ? PURPLE : undefined} dimColor={selectedChatIndex !== laneSessions.length}>
-        {selectedChatIndex === laneSessions.length ? "›" : " "} + new chat
-      </Text>
-      <Text dimColor>enter switches · + opens details</Text>
+      </Box>
     </Box>
   );
 }

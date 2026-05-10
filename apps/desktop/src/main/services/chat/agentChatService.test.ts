@@ -1245,6 +1245,32 @@ describe("createAgentChatService", () => {
       expect(opts?.systemPrompt?.append).toContain("clean up old, stale, or finished processes");
     });
 
+    it("keeps Claude SDK project and user setting sources enabled for filesystem skills", async () => {
+      vi.mocked(unstable_v2_createSession).mockReturnValue({
+        send: vi.fn(),
+        stream: vi.fn(async function* () {
+          return;
+        }),
+        close: vi.fn(),
+        sessionId: "sdk-session-skills",
+      } as any);
+
+      const { service } = createService();
+      await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await vi.waitFor(() => {
+        expect(unstable_v2_createSession).toHaveBeenCalled();
+      });
+
+      const opts = vi.mocked(unstable_v2_createSession).mock.calls[0]?.[0] as { settingSources?: string[]; skills?: string[] } | undefined;
+      expect(opts?.settingSources).toEqual(expect.arrayContaining(["user", "project"]));
+      expect(opts?.skills).toBeUndefined();
+    });
+
     it("appends discovered project slash commands to the Claude system prompt", async () => {
       const commandsDir = path.join(tmpRoot, ".claude", "commands");
       fs.mkdirSync(commandsDir, { recursive: true });
@@ -1287,7 +1313,7 @@ describe("createAgentChatService", () => {
 
       const opts = vi.mocked(unstable_v2_createSession).mock.calls[0]?.[0] as { systemPrompt?: { append?: string } } | undefined;
       expect(opts?.systemPrompt?.append).toContain("## Project slash commands");
-      expect(opts?.systemPrompt?.append).toContain("auto-expands the command body");
+      expect(opts?.systemPrompt?.append).toContain("pre-expands the file's body");
       expect(opts?.systemPrompt?.append).toContain("/audit — Audit recent work for bugs and gaps");
       expect(opts?.systemPrompt?.append).toContain("/ship-lane — Drive a lane through CI + review");
     });
@@ -3204,6 +3230,39 @@ describe("createAgentChatService", () => {
         }),
       ]));
     });
+
+    it("includes project Claude command files for Codex-backed sessions", async () => {
+      const commandsDir = path.join(tmpRoot, ".claude", "commands");
+      const promptsDir = path.join(tmpRoot, ".codex", "prompts");
+      fs.mkdirSync(commandsDir, { recursive: true });
+      fs.mkdirSync(promptsDir, { recursive: true });
+      fs.writeFileSync(path.join(commandsDir, "shipLane.md"), [
+        "---",
+        "description: Ship the active lane",
+        "---",
+        "",
+        "Ship lane.",
+        "",
+      ].join("\n"));
+      fs.writeFileSync(path.join(promptsDir, "shipLane.md"), "# Codex ship lane prompt\n");
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      const commands = service.getSlashCommands({ sessionId: session.id });
+      expect(commands.filter((command: any) => command.name.toLowerCase() === "/shiplane")).toHaveLength(1);
+      expect(commands).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          name: "/shipLane",
+          description: "Ship the active lane",
+          source: "sdk",
+        }),
+      ]));
+    });
   });
 
   it("sends Claude provider slash commands as the raw SDK prompt", async () => {
@@ -3381,6 +3440,53 @@ describe("createAgentChatService", () => {
       expect.objectContaining({
         type: "text",
         text: "Audit the Codex chat work.\n\nFocus: command menus",
+      }),
+    ]));
+  });
+
+  it("expands project Claude command files before sending to Codex", async () => {
+    const commandsDir = path.join(tmpRoot, ".claude", "commands");
+    const promptsDir = path.join(tmpRoot, ".codex", "prompts");
+    fs.mkdirSync(commandsDir, { recursive: true });
+    fs.mkdirSync(promptsDir, { recursive: true });
+    fs.writeFileSync(path.join(commandsDir, "audit.md"), [
+      "---",
+      "description: Audit recent work",
+      "---",
+      "",
+      "Audit the work.",
+      "",
+      "Focus: $ARGUMENTS",
+      "",
+    ].join("\n"));
+    fs.writeFileSync(path.join(promptsDir, "audit.md"), [
+      "Audit the Codex prompt.",
+      "",
+      "Focus: $ARGUMENTS",
+      "",
+    ].join("\n"));
+
+    const { service } = createService();
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.5",
+      modelId: "openai/gpt-5.5",
+    });
+
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "/audit command rendering",
+    }, { awaitDispatch: true });
+
+    await vi.waitFor(() => {
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+    });
+    const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start") as any;
+    expect(turnStartRequest.params.input).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "text",
+        text: "Audit the work.\n\nFocus: command rendering",
       }),
     ]));
   });

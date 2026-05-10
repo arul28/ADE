@@ -50,11 +50,21 @@ export type RenderedChatLine = {
   tone: "user" | "assistant" | "tool" | "error" | "notice" | "reasoning" | "approval";
   header?: string;
   body: string;
+  blocks?: AssistantMarkdownBlock[];
 };
 
 type TimelineEntry =
   | { kind: "notice"; timestamp: string; index: number; notice: LocalNotice }
   | { kind: "event"; timestamp: string; index: number; envelope: AgentChatEventEnvelope };
+
+export type AssistantMarkdownBlock =
+  | { kind: "paragraph"; text: string }
+  | { kind: "heading"; level: number; text: string }
+  | { kind: "bullet"; text: string }
+  | { kind: "numbered"; number: string; text: string }
+  | { kind: "quote"; text: string }
+  | { kind: "code"; language?: string; lines: string[] }
+  | { kind: "hr" };
 
 export function chatEventLineId(envelope: AgentChatEventEnvelope, index = 0): string {
   return `${envelope.sequence ?? index}:${envelope.event.type}:${envelope.timestamp}`;
@@ -93,6 +103,101 @@ function sessionModelLabel(session: AgentChatSessionSummary | null): string {
 function multiLine(value: unknown, maxLines = 18): string {
   if (typeof value === "string") return value.split(/\r?\n/).slice(0, maxLines).join("\n");
   return renderObject(value, maxLines);
+}
+
+function isMarkdownBoundary(line: string): boolean {
+  const trimmed = line.trim();
+  return (
+    trimmed.length === 0
+    || /^```/.test(trimmed)
+    || /^#{1,6}\s+/.test(trimmed)
+    || /^>\s?/.test(trimmed)
+    || /^[-*+]\s+/.test(trimmed)
+    || /^\d+[.)]\s+/.test(trimmed)
+    || /^([-*_])(?:\s*\1){2,}\s*$/.test(trimmed)
+  );
+}
+
+export function parseAssistantMarkdown(text: string): AssistantMarkdownBlock[] {
+  const sourceLines = text.replace(/\r\n/g, "\n").split("\n");
+  const blocks: AssistantMarkdownBlock[] = [];
+  let paragraph: string[] = [];
+
+  const flushParagraph = () => {
+    const value = paragraph.join(" ").replace(/\s+/g, " ").trim();
+    if (value.length) blocks.push({ kind: "paragraph", text: value });
+    paragraph = [];
+  };
+
+  for (let index = 0; index < sourceLines.length; index += 1) {
+    const line = sourceLines[index] ?? "";
+    const trimmed = line.trim();
+
+    if (!trimmed.length) {
+      flushParagraph();
+      continue;
+    }
+
+    const fence = /^```([\w.+-]*)\s*$/.exec(trimmed);
+    if (fence) {
+      flushParagraph();
+      const codeLines: string[] = [];
+      const language = fence[1]?.trim() || undefined;
+      index += 1;
+      for (; index < sourceLines.length; index += 1) {
+        const codeLine = sourceLines[index] ?? "";
+        if (/^```\s*$/.test(codeLine.trim())) break;
+        codeLines.push(codeLine.replace(/\s+$/g, ""));
+      }
+      blocks.push({ kind: "code", ...(language ? { language } : {}), lines: codeLines });
+      continue;
+    }
+
+    const heading = /^(#{1,6})\s+(.+)$/.exec(trimmed);
+    if (heading) {
+      flushParagraph();
+      blocks.push({ kind: "heading", level: heading[1]?.length ?? 1, text: heading[2]?.trim() ?? "" });
+      continue;
+    }
+
+    if (/^([-*_])(?:\s*\1){2,}\s*$/.test(trimmed)) {
+      flushParagraph();
+      blocks.push({ kind: "hr" });
+      continue;
+    }
+
+    const quote = /^>\s?(.*)$/.exec(trimmed);
+    if (quote) {
+      flushParagraph();
+      blocks.push({ kind: "quote", text: quote[1]?.trim() ?? "" });
+      continue;
+    }
+
+    const bullet = /^[-*+]\s+(.+)$/.exec(trimmed);
+    if (bullet) {
+      flushParagraph();
+      blocks.push({ kind: "bullet", text: bullet[1]?.trim() ?? "" });
+      continue;
+    }
+
+    const numbered = /^(\d+)[.)]\s+(.+)$/.exec(trimmed);
+    if (numbered) {
+      flushParagraph();
+      blocks.push({ kind: "numbered", number: numbered[1] ?? "1", text: numbered[2]?.trim() ?? "" });
+      continue;
+    }
+
+    if (paragraph.length && isMarkdownBoundary(sourceLines[index - 1] ?? "")) {
+      flushParagraph();
+    }
+    paragraph.push(trimmed);
+  }
+
+  flushParagraph();
+  if (!blocks.length && text.trim().length) {
+    blocks.push({ kind: "paragraph", text: text.trim() });
+  }
+  return blocks;
 }
 
 export function latestExpandableFailureId(events: AgentChatEventEnvelope[]): string | null {
@@ -165,6 +270,7 @@ export function renderChatLines(args: {
         tone: "assistant",
         header: `${providerEventLabel(args.activeSession?.provider)} · ${timeLabel(envelope.timestamp)} · ${sessionModelLabel(args.activeSession)}`,
         body: event.text,
+        blocks: parseAssistantMarkdown(event.text),
       });
       continue;
     }
@@ -272,7 +378,8 @@ function coalesceLines(lines: RenderedChatLine[]): RenderedChatLine[] {
       && last.tone === "assistant"
       && headerSpeakerKey(line.header) === headerSpeakerKey(last.header)
     ) {
-      out[out.length - 1] = { ...last, body: smartConcat(last.body, line.body) };
+      const body = smartConcat(last.body, line.body);
+      out[out.length - 1] = { ...last, body, blocks: parseAssistantMarkdown(body) };
       continue;
     }
     out.push(line);
