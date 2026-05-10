@@ -6,6 +6,7 @@ export function UsageMeter({
   sublabel,
   modelBreakdown,
   mode = "used",
+  toneColor = "#A78BFA",
   className,
 }: {
   label: string;
@@ -13,6 +14,7 @@ export function UsageMeter({
   sublabel?: string;
   modelBreakdown?: Record<string, number>;
   mode?: "used" | "remaining";
+  toneColor?: string;
   className?: string;
 }) {
   const clamped = Math.max(0, Math.min(100, percent));
@@ -29,7 +31,7 @@ export function UsageMeter({
         ? "#EF4444"
         : clamped > 70
           ? "#F59E0B"
-          : "#A78BFA";
+          : toneColor;
 
   return (
     <div className={cn("space-y-1.5", className)}>
@@ -43,20 +45,35 @@ export function UsageMeter({
       </div>
 
       <div
-        className="relative h-2 w-full overflow-hidden"
+        className="relative h-2 w-full overflow-hidden rounded-sm"
         style={{ background: "#1A1720", border: "1px solid #1E1B26" }}
       >
-        {hasBreakdown ? (
-          <StackedBar entries={breakdownEntries} total={clamped} />
-        ) : (
-          <div
-            className="absolute inset-y-0 left-0 transition-all duration-500 ease-out"
-            style={{
-              width: `${clamped}%`,
-              background: fillColor,
-            }}
-          />
-        )}
+        <div
+          className="absolute inset-y-0 left-0 transition-all duration-500 ease-out"
+          style={{
+            width: `${clamped}%`,
+            background: fillColor,
+          }}
+        />
+        {hasBreakdown
+          ? breakdownEntries.map(([model, pct], i) => {
+              const subClamped = Math.max(0, Math.min(100, pct));
+              if (subClamped <= 0) return null;
+              const tickLeft = Math.min(99, subClamped);
+              return (
+                <span
+                  key={`tick-${model}`}
+                  className="absolute top-0 bottom-0 w-px"
+                  style={{
+                    left: `${tickLeft}%`,
+                    background: i === 0 ? toneColor : MODEL_COLORS[i % MODEL_COLORS.length],
+                    opacity: 0.85,
+                  }}
+                  aria-hidden
+                />
+              );
+            })
+          : null}
       </div>
 
       {sublabel && (
@@ -69,7 +86,7 @@ export function UsageMeter({
             <div key={model} className="flex items-center gap-1.5">
               <div
                 className="h-1.5 w-1.5"
-                style={{ background: MODEL_COLORS[i % MODEL_COLORS.length] }}
+                style={{ background: i === 0 ? toneColor : MODEL_COLORS[i % MODEL_COLORS.length] }}
               />
               <span className="font-mono text-[9px] text-[#8B8B9A]">
                 {model} {pct.toFixed(1)}% {mode}
@@ -83,33 +100,3 @@ export function UsageMeter({
 }
 
 const MODEL_COLORS = ["#A78BFA", "#7C3AED", "#C4B5FD", "#6D28D9"];
-
-function StackedBar({
-  entries,
-  total,
-}: {
-  entries: [string, number][];
-  total: number;
-}) {
-  let offset = 0;
-  return (
-    <>
-      {entries.map(([model, pct], i) => {
-        const width = total > 0 ? (pct / 100) * 100 : 0;
-        const left = offset;
-        offset += width;
-        return (
-          <div
-            key={model}
-            className="absolute inset-y-0 transition-all duration-500 ease-out"
-            style={{
-              left: `${left}%`,
-              width: `${width}%`,
-              background: MODEL_COLORS[i % MODEL_COLORS.length],
-            }}
-          />
-        );
-      })}
-    </>
-  );
-}

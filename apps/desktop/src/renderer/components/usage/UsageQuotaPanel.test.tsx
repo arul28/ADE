@@ -4,20 +4,47 @@ import React from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UsageSnapshot } from "../../../shared/types";
-import { UsageGuardrailsSection } from "./UsageGuardrailsSection";
+import { UsageQuotaPanel } from "./UsageQuotaPanel";
 
 function makeSnapshot(): UsageSnapshot {
   return {
-    windows: [],
+    windows: [
+      {
+        provider: "codex",
+        windowType: "weekly",
+        percentUsed: 63,
+        resetsAt: "2099-05-15T07:00:00.000Z",
+        resetsInMs: 86_400_000,
+      },
+      {
+        provider: "claude",
+        windowType: "weekly",
+        percentUsed: 20,
+        resetsAt: "2099-05-15T07:00:00.000Z",
+        resetsInMs: 86_400_000,
+      },
+    ],
     pacing: {
       status: "on-track",
-      projectedWeeklyPercent: 0,
-      weekElapsedPercent: 0,
-      expectedPercent: 0,
-      deltaPercent: 0,
+      projectedWeeklyPercent: 63,
+      weekElapsedPercent: 50,
+      expectedPercent: 50,
+      deltaPercent: 13,
       etaHours: null,
       willLastToReset: true,
-      resetsInHours: 0,
+      resetsInHours: 24,
+    },
+    pacingByProvider: {
+      codex: {
+        status: "ahead",
+        projectedWeeklyPercent: 70,
+        weekElapsedPercent: 50,
+        expectedPercent: 50,
+        deltaPercent: 13,
+        etaHours: null,
+        willLastToReset: true,
+        resetsInHours: 24,
+      },
     },
     costs: [],
     extraUsage: [],
@@ -26,14 +53,15 @@ function makeSnapshot(): UsageSnapshot {
   };
 }
 
-describe("UsageGuardrailsSection", () => {
+describe("UsageQuotaPanel", () => {
   const originalAde = globalThis.window.ade;
 
   beforeEach(() => {
+    const snapshot = makeSnapshot();
     globalThis.window.ade = {
       usage: {
-        getSnapshot: vi.fn().mockResolvedValue(makeSnapshot()),
-        refresh: vi.fn().mockResolvedValue(makeSnapshot()),
+        getSnapshot: vi.fn().mockResolvedValue(snapshot),
+        refresh: vi.fn().mockResolvedValue(snapshot),
         getBudgetConfig: vi.fn().mockResolvedValue({}),
         saveBudgetConfig: vi.fn().mockResolvedValue({}),
         onUpdate: vi.fn(() => () => {}),
@@ -56,18 +84,16 @@ describe("UsageGuardrailsSection", () => {
     globalThis.window.ade = originalAde;
   });
 
-  it("hydrates from the cached snapshot on mount instead of forcing a live usage poll", async () => {
-    render(<UsageGuardrailsSection />);
+  it("shows Codex as percent used, not percent remaining", async () => {
+    render(<UsageQuotaPanel />);
 
-    await waitFor(() => {
-      expect(window.ade.usage.getSnapshot).toHaveBeenCalledTimes(1);
-      expect(window.ade.usage.getBudgetConfig).toHaveBeenCalledTimes(1);
-    });
-    expect(window.ade.usage.refresh).not.toHaveBeenCalled();
+    expect((await screen.findAllByText("Codex")).length).toBeGreaterThan(0);
+    expect(await screen.findByText("63.0% used")).toBeTruthy();
+    expect(screen.queryByText("37.0% remaining")).toBeNull();
   });
 
   it("keeps live provider polling available through the manual refresh button", async () => {
-    render(<UsageGuardrailsSection />);
+    render(<UsageQuotaPanel />);
 
     await waitFor(() => {
       const refreshButton = screen.getByRole("button", { name: /refresh/i }) as HTMLButtonElement;

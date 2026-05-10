@@ -30,7 +30,7 @@ Automations never duplicate Linear issue intake — the CTO owns that. Automatio
   - `RuleHistoryPanel.tsx` — per-rule run history (replaces the old cross-rule `HistoryTab`).
   - `TemplatesTab.tsx` / `AutomationsTemplatesPage.tsx` — template picker that seeds a new draft on `/automations` via router state.
   - `EmptyStateHint.tsx` — empty-state copy shared across tabs.
-- `apps/desktop/src/renderer/components/settings/` — usage/budget/cost UI for automations and missions (shared with Settings > Usage). `UsageGuardrailsSection`, `BudgetCapEditor`, `CostSummaryCard`, `UsageMeter`, `UsagePacingBadge` all live here; they no longer sit on the Automations page.
+- `apps/desktop/src/renderer/components/usage/` — header Usage popup (`HeaderUsageControl`, `UsageQuotaPanel`) that hosts live provider quotas + the collapsible automation guardrails. `BudgetCapEditor`, `UsageMeter`, `UsagePacingBadge`, and `CostSummaryCard` continue to live under `components/settings/` but are rendered from the popup; Settings no longer has a Usage tab.
 - `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx` — agent-session execution surfaces as a chat thread filtered by automation owner.
 
 ### IPC
@@ -159,7 +159,7 @@ Automations route outputs based on `outputs.disposition`:
 
 - `memory.mode` controls scope: `automation-plus-project` (default), `automation-only`, `project-only`.
 - `memory.ruleScopeKey` defaults to the rule id.
-- Budget caps come from Settings > Usage (shared with Missions). Rule-level caps via `guardrails.maxDurationMin` prevent runaway runs.
+- Budget caps come from the header Usage popup → Automation guardrails (shared with Missions). Rule-level caps via `guardrails.maxDurationMin` prevent runaway runs.
 - Usage telemetry respects `billingCode` so operators can slice spend per rule.
 
 ## Boundaries

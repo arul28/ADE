@@ -1067,7 +1067,7 @@ export function RuleEditorPanel({
                 />
                 <div className="rounded-md border border-[#35506B]/40 bg-[#0F1B2A]/60 px-2.5 py-2 text-[10px] leading-relaxed text-[#9FB2C7]">
                   <CloudArrowUp size={10} weight="regular" className="mr-1 inline-block align-text-bottom" />
-                  Budget caps live in <span className="text-[#D8E3F2]">Settings → Usage</span> and apply to every rule.
+                  Budget caps live in the <span className="text-[#D8E3F2]">header Usage popup → Automation guardrails</span> and apply to every rule.
                 </div>
               </div>
             </Section>

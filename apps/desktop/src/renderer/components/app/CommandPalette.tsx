@@ -298,7 +298,6 @@ export function CommandPalette({
       { id: "go-settings-ai", title: "Go to AI Settings", hint: "Providers, models, AI defaults", group: "Settings", run: () => navigate("/settings?tab=ai") },
       { id: "go-settings-integrations", title: "Go to Integrations", hint: "GitHub, Linear, computer use", group: "Settings", run: () => navigate("/settings?tab=integrations") },
       { id: "go-settings-workspace", title: "Go to Workspace Settings", hint: "Project health and docs generation", group: "Settings", run: () => navigate("/settings?tab=workspace") },
-      { id: "go-settings-usage", title: "Go to Usage", hint: "Token usage, cost breakdown", group: "Settings", run: () => navigate("/settings?tab=usage") },
       {
         id: "action-create-lane",
         title: "Create Lane",

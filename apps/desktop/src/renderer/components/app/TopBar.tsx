@@ -21,6 +21,7 @@ import { HelpMenu } from "../onboarding/HelpMenu";
 import { LinearQuickViewButton } from "./LinearQuickViewButton";
 import { PublishToGitHubDialog } from "../projects/PublishToGitHubDialog";
 import { SyncDevicesSection } from "../settings/SyncDevicesSection";
+import { HeaderUsageControl } from "../usage/HeaderUsageControl";
 
 const RUNNING_LANE_PROCESS_STATES: ProcessRuntime["status"][] = ["starting", "running", "degraded"];
 
@@ -1155,6 +1156,8 @@ export function TopBar() {
           </div>
         </div>
       ) : null}
+
+      <HeaderUsageControl />
 
       <AutoUpdateControl />
 

@@ -446,6 +446,7 @@ function CompactUsageMeter() {
 
   const claudeWindows = snapshot.windows.filter((w) => w.provider === "claude");
   const codexWindows = snapshot.windows.filter((w) => w.provider === "codex");
+  const cursorWindows = snapshot.windows.filter((w) => w.provider === "cursor");
 
   // Hide the meter entirely when all windows report 0% and there's no mission cost — it's not useful yet
   const allZero = snapshot.windows.every((w) => w.percentUsed === 0) && perMissionCost <= 0;
@@ -463,6 +464,9 @@ function CompactUsageMeter() {
       ))}
       {codexWindows.map((w) => (
         <UsageWindowBadge key={`codex-${w.windowType}`} provider="Codex" windowType={w.windowType} pct={w.percentUsed} resetsInMs={w.resetsInMs} />
+      ))}
+      {cursorWindows.map((w) => (
+        <UsageWindowBadge key={`cursor-${w.windowType}`} provider="Cursor" windowType={w.windowType} pct={w.percentUsed} resetsInMs={w.resetsInMs} />
       ))}
       {/* Per-mission cost from missionBudgetService (VAL-USAGE-005) */}
       {perMissionCost > 0 && (
@@ -490,13 +494,13 @@ function UsageWindowBadge({
   resetsInMs: number;
 }) {
   const color = usagePercentColor(pct);
-  const windowLabel = windowType === "five_hour" ? "5h" : "wk";
+  const windowLabel = windowType === "five_hour" ? "5h" : windowType === "monthly" ? "mo" : "wk";
   const resetLabel = resetsInMs > 0 ? formatResetCountdown(resetsInMs) : null;
   return (
     <span
       className="text-[10px] whitespace-nowrap"
       style={{ color, fontFamily: MONO_FONT }}
-      title={`${provider} ${windowType === "five_hour" ? "5-hour" : "weekly"}: ${pct.toFixed(1)}%${resetLabel ? ` — ${resetLabel}` : ""}`}
+      title={`${provider} ${windowType === "five_hour" ? "5-hour" : windowType === "monthly" ? "monthly" : "weekly"}: ${pct.toFixed(1)}%${resetLabel ? ` — ${resetLabel}` : ""}`}
     >
       {provider[0]}/{windowLabel} {Math.round(pct)}%
       {/* Reset countdown shown inline (VAL-USAGE-004 scrutiny fix) */}

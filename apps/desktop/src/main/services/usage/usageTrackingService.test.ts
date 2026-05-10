@@ -30,6 +30,8 @@ const {
   isTokenExpiredOrExpiring,
   parseClaudeWindows,
   parseCodexRateLimitWindows,
+  parseCursorSpendUsage,
+  calculatePacingByProvider,
   pollCodexViaCliRpc,
   resolveTokenPrice,
 } = _testing;
@@ -456,6 +458,70 @@ describe("parseCodexRateLimitWindows", () => {
   });
 });
 
+describe("parseCursorSpendUsage", () => {
+  it("normalizes Cursor team spend into a monthly used-percent window", () => {
+    const cycleStart = Date.UTC(2026, 4, 1);
+    const result = parseCursorSpendUsage({
+      subscriptionCycleStart: cycleStart,
+      teamMemberSpend: [
+        { spendCents: 2500, hardLimitOverrideDollars: 100, fastPremiumRequests: 50 },
+        { spendCents: 500, hardLimitOverrideDollars: 50, fastPremiumRequests: 20 },
+      ],
+    });
+
+    expect(result.windows).toHaveLength(1);
+    expect(result.windows[0]?.provider).toBe("cursor");
+    expect(result.windows[0]?.windowType).toBe("monthly");
+    expect(result.windows[0]?.percentUsed).toBe(20);
+    expect(result.windows[0]?.windowDurationMs).toBeGreaterThan(0);
+    expect(result.extraUsage?.usedCreditsUsd).toBe(30);
+    expect(result.extraUsage?.monthlyLimitUsd).toBe(150);
+    expect(result.extraUsage?.utilization).toBe(20);
+  });
+
+  it("keeps Cursor spend as extra usage when no monthly limit is configured", () => {
+    const result = parseCursorSpendUsage({
+      teamMemberSpend: [
+        { spendCents: 1250, hardLimitOverrideDollars: 0, fastPremiumRequests: 10 },
+      ],
+    });
+
+    expect(result.windows).toEqual([]);
+    expect(result.extraUsage?.provider).toBe("cursor");
+    expect(result.extraUsage?.usedCreditsUsd).toBe(12.5);
+    expect(result.extraUsage?.monthlyLimitUsd).toBe(0);
+    expect(result.extraUsage?.utilization).toBeNull();
+  });
+
+  it("prefers overallSpendCents over on-demand spendCents when both are present", () => {
+    const cycleStart = Date.UTC(2026, 4, 1);
+    const result = parseCursorSpendUsage({
+      subscriptionCycleStart: cycleStart,
+      teamMemberSpend: [
+        { spendCents: 1000, overallSpendCents: 5000, hardLimitOverrideDollars: 100 },
+      ],
+    });
+
+    expect(result.extraUsage?.usedCreditsUsd).toBe(50);
+    expect(result.windows[0]?.percentUsed).toBe(50);
+  });
+
+  it("falls back to monthlyLimitDollars when no hard-limit override is set", () => {
+    const cycleStart = Date.UTC(2026, 4, 1);
+    const result = parseCursorSpendUsage({
+      subscriptionCycleStart: cycleStart,
+      teamMemberSpend: [
+        { overallSpendCents: 2500, monthlyLimitDollars: 100 },
+        { overallSpendCents: 0, monthlyLimitDollars: 100 },
+      ],
+    });
+
+    expect(result.extraUsage?.monthlyLimitUsd).toBe(200);
+    expect(result.extraUsage?.usedCreditsUsd).toBe(25);
+    expect(result.windows[0]?.percentUsed).toBe(12.5);
+  });
+});
+
 describe("pollCodexViaCliRpc", () => {
   const originalPlatform = process.platform;
   const originalComSpec = process.env.ComSpec;
@@ -598,6 +664,7 @@ describe("createUsageTrackingService", () => {
   const createFastDependencies = () => ({
     pollClaudeUsage: vi.fn(async () => ({ windows: [] as never[], extraUsage: null, errors: [] as never[] })),
     pollCodexUsage: vi.fn(async () => ({ windows: [] as never[], errors: [] as never[] })),
+    pollCursorUsage: vi.fn(async () => ({ windows: [] as never[], extraUsage: null, errors: [] as never[] })),
     scanClaudeLogs: vi.fn(async () => [] as never[]),
     scanCodexLogs: vi.fn(async () => [] as never[]),
   });
@@ -650,6 +717,25 @@ describe("createUsageTrackingService", () => {
     expect(onUpdate).toHaveBeenCalledWith(expect.objectContaining({ lastPolledAt: expect.any(String) }));
 
     service.dispose();
+  });
+
+  it("calculates pacing separately for Claude, Codex, and Cursor windows", async () => {
+    const now = Date.now();
+    const weeklyResetMs = 3.5 * 24 * 60 * 60 * 1000;
+    const monthlyResetMs = 24 * 24 * 60 * 60 * 1000;
+    const weeklyReset = new Date(now + weeklyResetMs).toISOString();
+    const monthlyReset = new Date(now + monthlyResetMs).toISOString();
+    const windows = [
+      { provider: "claude" as const, windowType: "weekly" as const, percentUsed: 40, resetsAt: weeklyReset, resetsInMs: weeklyResetMs },
+      { provider: "codex" as const, windowType: "weekly" as const, percentUsed: 65, resetsAt: weeklyReset, resetsInMs: weeklyResetMs },
+      { provider: "cursor" as const, windowType: "monthly" as const, percentUsed: 15, resetsAt: monthlyReset, resetsInMs: monthlyResetMs, windowDurationMs: 30 * 24 * 60 * 60 * 1000 },
+    ];
+
+    const pacing = calculatePacingByProvider(windows);
+
+    expect(pacing?.claude?.status).toBe("behind");
+    expect(pacing?.codex?.status).toBe("far-ahead");
+    expect(pacing?.cursor?.status).toBe("slightly-behind");
   });
 
   it("forceRefresh invalidates cost cache and re-polls", async () => {

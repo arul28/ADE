@@ -174,6 +174,7 @@ export async function buildProviderConnections(
 
   const cursorCli = cliStatuses.find((entry) => entry.cli === "cursor") ?? null;
   const cursorEnvAuth = Boolean(process.env.CURSOR_API_KEY?.trim());
+  const cursorAdminEnvAuth = Boolean(process.env.CURSOR_ADMIN_API_KEY?.trim());
   let cursorStoredAuth = false;
   let cursorStoreUnavailable = false;
   try {
@@ -184,6 +185,7 @@ export async function buildProviderConnections(
     cursorStoreUnavailable = true;
   }
   const cursorSdkAuth = Boolean(cursorEnvAuth || cursorStoredAuth);
+  const cursorUsageAuth = Boolean(cursorSdkAuth || cursorAdminEnvAuth);
   let cursorCredsSource: "cursor-env" | "cursor-api-key-store" | undefined;
   if (cursorEnvAuth) cursorCredsSource = "cursor-env";
   else if (cursorStoredAuth) cursorCredsSource = "cursor-api-key-store";
@@ -193,13 +195,15 @@ export async function buildProviderConnections(
     runtimeDetected: true,
     cliAuthenticated: false,
     cliExplicitlyUnauthenticated: false,
-    localCredsDetected: cursorSdkAuth,
-    authAvailable: cursorSdkAuth,
+    localCredsDetected: cursorUsageAuth,
+    authAvailable: cursorUsageAuth,
     runtimeAvailable: cursorSdkAuth,
   };
 
   const cursorBlocker: string | null = cursorSdkAuth
     ? null
+    : cursorAdminEnvAuth
+      ? "Cursor Admin API key is configured for usage; add a Cursor agent API key for Cursor runtime access."
     : cursorStoreUnavailable
       ? "ADE could not read the Cursor API key store yet. Retry after the key store is ready."
       : "Enter a Cursor API key from https://cursor.com/dashboard/integrations.";
@@ -209,13 +213,13 @@ export async function buildProviderConnections(
     authAvailable: cursorFlags.authAvailable,
     runtimeDetected: cursorFlags.runtimeDetected,
     runtimeAvailable: cursorFlags.runtimeAvailable,
-    usageAvailable: cursorFlags.runtimeAvailable,
+    usageAvailable: cursorUsageAuth,
     path: "@cursor/sdk",
     sources: [
       {
         kind: "local-credentials",
-        detected: cursorSdkAuth,
-        source: cursorCredsSource,
+        detected: cursorUsageAuth,
+        source: cursorCredsSource ?? (cursorAdminEnvAuth ? "cursor-admin-env" : undefined),
       },
       {
         kind: "cli",

@@ -135,7 +135,7 @@ Mission-execution rules inherit the mission runtime's sandbox (`WorkerSandboxCon
 
 ## Budget caps
 
-Shared with Missions via Settings > Usage. The usage/budget UI (`UsageGuardrailsSection`, `BudgetCapEditor`, `CostSummaryCard`, `UsageMeter`, `UsagePacingBadge`) lives under `apps/desktop/src/renderer/components/settings/` — it is not rendered from the Automations page. The Automations page focuses on rules, history, and ingress.
+Shared with Missions via the top-bar Usage popup. The popup (`HeaderUsageControl`, `UsageQuotaPanel`) renders the live provider quotas plus a collapsible Automation guardrails section that mounts `BudgetCapEditor`. Supporting widgets (`CostSummaryCard`, `UsageMeter`, `UsagePacingBadge`) still live under `apps/desktop/src/renderer/components/settings/` but are reused from the popup. Settings no longer has a Usage tab; the Automations page continues to focus on rules, history, and ingress.
 
 Automations also support rule-level caps:
 
