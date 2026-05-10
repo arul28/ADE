@@ -148,18 +148,16 @@ function assertRuntimeArtifacts(repoRoot, target) {
 
 function ensureHostRuntimeResources(repoRoot, options) {
   const target = currentTarget();
-  const runtimeRoot = path.join(repoRoot, "apps", "desktop", "resources", "runtime");
+  const env = {
+    ...process.env,
+    ADE_RUNTIME_RESOURCES_ALLOW_HOST_ONLY: "1",
+  };
   run("npm", [
     "--prefix",
-    "apps/ade-cli",
+    "apps/desktop",
     "run",
-    "build:static",
-    "--",
-    "--target",
-    target,
-    "--out-dir",
-    runtimeRoot,
-  ], { cwd: repoRoot, dryRun: options.dryRun });
+    "materialize:runtime-resources",
+  ], { cwd: repoRoot, env, dryRun: options.dryRun });
   if (!options.dryRun) assertRuntimeArtifacts(repoRoot, target);
   cleanRuntimeBuildIntermediates(repoRoot, target, options);
 }
