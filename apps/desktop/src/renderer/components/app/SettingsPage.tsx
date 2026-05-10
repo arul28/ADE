@@ -1,13 +1,12 @@
 import React, { useState, useCallback, useEffect } from "react";
 import { useSearchParams, useLocation } from "react-router-dom";
-import { Brain, GearSix, Lightning, Stack, Database, FolderSimple, Plus, Plugs, Palette, DeviceMobile } from "@phosphor-icons/react";
+import { Brain, GearSix, Stack, Database, FolderSimple, Plus, Plugs, Palette, DeviceMobile } from "@phosphor-icons/react";
 import { GeneralSection } from "../settings/GeneralSection";
 import { AppearanceSection } from "../settings/AppearanceSection";
 import { LaneTemplatesSection } from "../settings/LaneTemplatesSection";
 import { LaneBehaviorSection } from "../settings/LaneBehaviorSection";
 import { MemoryHealthTab } from "../settings/MemoryHealthTab";
 import { AiSettingsSection } from "../settings/AiSettingsSection";
-import { SettingsUsageSection } from "../settings/SettingsUsageSection";
 import { WorkspaceSettingsSection } from "../settings/WorkspaceSettingsSection";
 import { IntegrationsSettingsSection } from "../settings/IntegrationsSettingsSection";
 import { MobilePushPanel } from "../settings/MobilePushPanel";
@@ -25,7 +24,6 @@ const SECTIONS = [
   { id: "integrations", label: "Integrations", icon: Plugs },
   { id: "memory", label: "Memory", icon: Database },
   { id: "lane-templates", label: "Lane Templates", icon: Stack },
-  { id: "usage", label: "Usage", icon: Lightning },
 ] as const;
 
 type SectionId = (typeof SECTIONS)[number]["id"];
@@ -44,6 +42,7 @@ const TAB_ALIASES: Record<string, SectionId> = {
   onboarding: "general",
   help: "general",
   tours: "general",
+  usage: "general",
 };
 
 function padIndex(i: number): string {
@@ -575,7 +574,6 @@ export function SettingsPage() {
             <LaneBehaviorSection />
           </div>
         )}
-        {section === "usage" && <SettingsUsageSection />}
       </div>
     </div>
   );

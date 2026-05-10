@@ -984,6 +984,7 @@ export type AiProviderCredentialSource =
   | "macos-keychain"
   | "claude-credentials-file"
   | "codex-auth-file"
+  | "cursor-admin-env"
   | "cursor-env"
   | "cursor-api-key-store"
   | "factory-env";

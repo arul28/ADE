@@ -13,6 +13,10 @@ export function commandExists(command: string): boolean {
   }
 }
 
+export function isCursorAdminApiKey(value: string | null | undefined): boolean {
+  return Boolean(value?.trim().startsWith("key_"));
+}
+
 export function extractFirstJsonObject(text: string): string | null {
   const raw = String(text ?? "").trim();
   if (!raw) return null;

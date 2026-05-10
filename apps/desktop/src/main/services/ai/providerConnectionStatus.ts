@@ -7,6 +7,7 @@ import {
 } from "./providerCredentialSources";
 import { getAllApiKeys } from "./apiKeyStore";
 import { getProviderRuntimeHealth } from "./providerRuntimeHealth";
+import { isCursorAdminApiKey } from "./utils";
 import { nowIso } from "../shared/utils";
 
 function createUnavailableStatus(
@@ -94,7 +95,9 @@ export async function buildProviderConnections(
     if (!health) return;
     if (health.state === "auth-failed" || health.state === "runtime-failed") {
       status.runtimeAvailable = false;
-      status.usageAvailable = false;
+      if (status.provider !== "cursor") {
+        status.usageAvailable = false;
+      }
       status.blocker = health.message
         ?? (health.state === "auth-failed"
           ? `${status.provider} runtime was detected, but ADE chat reported that login is still required.`
@@ -102,7 +105,6 @@ export async function buildProviderConnections(
     } else if (health.state === "ready") {
       status.runtimeAvailable = true;
       status.authAvailable = true;
-      if (status.provider === "cursor") status.usageAvailable = true;
       status.blocker = null;
     }
   }
@@ -173,48 +175,66 @@ export async function buildProviderConnections(
   });
 
   const cursorCli = cliStatuses.find((entry) => entry.cli === "cursor") ?? null;
-  const cursorEnvAuth = Boolean(process.env.CURSOR_API_KEY?.trim());
+  const cursorEnvKey = process.env.CURSOR_API_KEY?.trim() ?? "";
+  const cursorAdminEnvKey = process.env.CURSOR_ADMIN_API_KEY?.trim() ?? "";
+  const cursorEnvAuth = Boolean(cursorEnvKey);
+  const cursorEnvUsageAuth = isCursorAdminApiKey(cursorEnvKey);
+  const cursorAdminEnvAuth = Boolean(cursorAdminEnvKey);
+  const cursorAdminUsageAuth = isCursorAdminApiKey(cursorAdminEnvKey);
   let cursorStoredAuth = false;
+  let cursorStoredUsageAuth = false;
   let cursorStoreUnavailable = false;
   try {
-    cursorStoredAuth = Boolean(getAllApiKeys().cursor?.trim());
+    const storedCursorKey = getAllApiKeys().cursor?.trim() ?? "";
+    cursorStoredAuth = Boolean(storedCursorKey);
+    cursorStoredUsageAuth = isCursorAdminApiKey(storedCursorKey);
   } catch {
     // API key store may not be initialized yet (or read failed); surface as a
     // distinct state so the blocker copy doesn't lie about the absence of a key.
     cursorStoreUnavailable = true;
   }
   const cursorSdkAuth = Boolean(cursorEnvAuth || cursorStoredAuth);
-  let cursorCredsSource: "cursor-env" | "cursor-api-key-store" | undefined;
+  const cursorUsageAuth = Boolean(cursorEnvUsageAuth || cursorStoredUsageAuth || cursorAdminUsageAuth);
+  const cursorAuthAvailable = Boolean(cursorSdkAuth || cursorUsageAuth);
+  let cursorCredsSource: "cursor-env" | "cursor-api-key-store" | "cursor-admin-env" | undefined;
   if (cursorEnvAuth) cursorCredsSource = "cursor-env";
   else if (cursorStoredAuth) cursorCredsSource = "cursor-api-key-store";
+  else if (cursorAdminEnvAuth) cursorCredsSource = "cursor-admin-env";
   // Runtime is bundled with the app — it always exists. Only auth-related
   // fields should depend on whether a Cursor API key is present.
   const cursorFlags = {
     runtimeDetected: true,
     cliAuthenticated: false,
     cliExplicitlyUnauthenticated: false,
-    localCredsDetected: cursorSdkAuth,
-    authAvailable: cursorSdkAuth,
+    localCredsDetected: cursorAuthAvailable,
+    authAvailable: cursorAuthAvailable,
     runtimeAvailable: cursorSdkAuth,
   };
 
-  const cursorBlocker: string | null = cursorSdkAuth
-    ? null
-    : cursorStoreUnavailable
-      ? "ADE could not read the Cursor API key store yet. Retry after the key store is ready."
-      : "Enter a Cursor API key from https://cursor.com/dashboard/integrations.";
+  let cursorBlocker: string | null;
+  if (cursorSdkAuth) {
+    cursorBlocker = null;
+  } else if (cursorAdminUsageAuth) {
+    cursorBlocker = "Cursor Admin API key is configured for usage; add a Cursor agent API key for Cursor runtime access.";
+  } else if (cursorAdminEnvAuth) {
+    cursorBlocker = "CURSOR_ADMIN_API_KEY is set but does not look like a Cursor Admin API key.";
+  } else if (cursorStoreUnavailable) {
+    cursorBlocker = "ADE could not read the Cursor API key store yet. Retry after the key store is ready.";
+  } else {
+    cursorBlocker = "Enter a Cursor API key from https://cursor.com/dashboard/integrations.";
+  }
 
   const cursor: AiProviderConnectionStatus = {
     ...createUnavailableStatus("cursor", checkedAt),
     authAvailable: cursorFlags.authAvailable,
     runtimeDetected: cursorFlags.runtimeDetected,
     runtimeAvailable: cursorFlags.runtimeAvailable,
-    usageAvailable: cursorFlags.runtimeAvailable,
+    usageAvailable: cursorUsageAuth,
     path: "@cursor/sdk",
     sources: [
       {
         kind: "local-credentials",
-        detected: cursorSdkAuth,
+        detected: cursorAuthAvailable,
         source: cursorCredsSource,
       },
       {

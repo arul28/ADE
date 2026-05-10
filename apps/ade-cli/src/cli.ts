@@ -369,6 +369,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade macos-vm status | start | guide          Run lane-tied macOS VMs for agent work
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade memory add | search | pin                 Use ADE memory
+    $ ade usage snapshot | refresh | budget         Read provider quota usage and edit automation guardrails
     $ ade settings action <method>                  Call project config actions
     $ ade update status | check | install | dismiss Read auto-update state and drive install
     $ ade actions list | run | status               Escape hatch for every ADE service action
@@ -1143,6 +1144,23 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade memory search -q "release process" --text
     $ ade memory pin <memory-id>
     $ ade memory core --arg projectSummary="Current focus"
+`,
+  usage: `${ADE_BANNER}
+  Usage and provider quotas
+
+  Reads live provider quota usage (Claude five-hour + weekly, Codex five-hour +
+  weekly, Cursor monthly via the team Admin API), pacing, costs, and budget
+  guardrails. The desktop app surfaces this same data in the top-bar Usage popup.
+
+    $ ade usage snapshot --text                     Cached snapshot (windows, pacing, costs, errors)
+    $ ade usage refresh --text                      Force a fresh poll (invalidates cost cache)
+    $ ade usage budget get --text                   Read automation guardrail config
+    $ ade usage budget set --from-file budget.json  Save automation guardrail config
+    $ ade usage budget check --provider claude --scope global
+    $ ade usage budget cumulative --scope global    Cumulative spend for the current week
+
+  Cursor uses the Admin API (https://api.cursor.com/teams/spend) — set
+  CURSOR_ADMIN_API_KEY (or CURSOR_API_KEY) so the poll can authenticate.
 `,
   cto: `${ADE_BANNER}
   CTO and Work state
@@ -3661,6 +3679,60 @@ function buildSettingsPlan(args: string[]): CliPlan {
   return { kind: "execute", label: `settings ${sub}`, steps: [actionStep("result", "project_config", sub, collectGenericObjectArgs(args))] };
 }
 
+function buildUsagePlan(args: string[]): CliPlan {
+  const sub = firstPositional(args) ?? "snapshot";
+  if (sub === "actions") return { kind: "execute", label: "usage actions", steps: [listActionsStep("actions", "usage")] };
+  if (sub === "action") return { kind: "execute", label: "usage action", steps: [buildActionRunStep(["usage", ...args])] };
+  if (sub === "snapshot" || sub === "get" || sub === "status") {
+    return { kind: "execute", label: "usage snapshot", steps: [actionStep("result", "usage", "getUsageSnapshot", {})] };
+  }
+  if (sub === "refresh" || sub === "poll") {
+    return { kind: "execute", label: "usage refresh", steps: [actionStep("result", "usage", "forceRefresh", {})] };
+  }
+  if (sub === "budget") {
+    const mode = firstPositional(args) ?? "get";
+    if (mode === "get") {
+      return { kind: "execute", label: "usage budget get", steps: [actionStep("result", "budget", "getConfig", {})] };
+    }
+    if (mode === "set" || mode === "update") {
+      const text = readFileTextInput(args);
+      let parsed: unknown;
+      if (text != null) {
+        const trimmed = text.trim();
+        if (!trimmed.length) {
+          throw new CliUsageError("Budget config must be a non-empty JSON object.");
+        }
+        try {
+          parsed = JSON.parse(trimmed);
+        } catch (error) {
+          throw new CliUsageError(`Failed to parse budget config: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      } else {
+        parsed = collectGenericObjectArgs(args);
+      }
+      if (!isRecord(parsed)) throw new CliUsageError("Budget config must be a JSON object.");
+      if (Object.keys(parsed).length === 0) throw new CliUsageError("Budget config must contain at least one field.");
+      return { kind: "execute", label: "usage budget update", steps: [actionStep("result", "budget", "updateConfig", parsed as JsonObject)] };
+    }
+    if (mode === "check") {
+      return { kind: "execute", label: "usage budget check", steps: [actionStep("result", "budget", "checkBudget", collectGenericObjectArgs(args, {
+        scope: readValue(args, ["--scope"]) ?? "global",
+        scopeId: readValue(args, ["--scope-id"]),
+        provider: readValue(args, ["--provider"]) ?? "any",
+      }))] };
+    }
+    if (mode === "cumulative" || mode === "totals") {
+      return { kind: "execute", label: "usage budget cumulative", steps: [actionStep("result", "budget", "getCumulativeUsage", collectGenericObjectArgs(args, {
+        scope: readValue(args, ["--scope"]) ?? "global",
+        scopeId: readValue(args, ["--scope-id"]),
+        provider: readValue(args, ["--provider"]),
+      }))] };
+    }
+    throw new CliUsageError("usage budget supports get, set, check, or cumulative.");
+  }
+  return { kind: "execute", label: `usage ${sub}`, steps: [actionStep("result", "usage", sub, collectGenericObjectArgs(args))] };
+}
+
 function buildActionsPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "list";
   if (sub === "list" || sub === "ls") return { kind: "execute", label: "actions list", steps: [listActionsStep("result", readValue(args, ["--domain"]) ?? firstPositional(args) ?? undefined)] };
@@ -4183,6 +4255,8 @@ function buildCliPlan(command: string[]): CliPlan {
     automation: "automations",
     "auto-update": "update",
     updates: "update",
+    quota: "usage",
+    quotas: "usage",
   };
   const primaryHelpKey = aliases[primary] ?? primary;
   if (hasHelpFlag(args)) {
@@ -4272,6 +4346,7 @@ function buildCliPlan(command: string[]): CliPlan {
   if (primary === "macos-vm" || primary === "macos" || primary === "mac-vm" || primary === "macvm") return buildMacosVmPlan(args);
   if (primary === "browser" || primary === "ade-browser" || primary === "built-in-browser" || primary === "builtin-browser") return buildBrowserPlan(args);
   if (primary === "memory") return buildMemoryPlan(args);
+  if (primary === "usage" || primary === "quota" || primary === "quotas") return buildUsagePlan(args);
   if (primary === "settings" || primary === "config" || primary === "setting") return buildSettingsPlan(args);
   if (primary === "actions" || primary === "action") return buildActionsPlan(args);
   if (primary === "update" || primary === "auto-update" || primary === "updates") return buildUpdatePlan(args);
