@@ -23,6 +23,23 @@ function createRegistry() {
   return { root, projectRoot, registry };
 }
 
+function makeRuntime(label: string) {
+  return {
+    operationService: {
+      start: vi.fn(() => ({ operationId: `${label}-operation`, startedAt: "2026-05-10T00:00:00.000Z" })),
+      finish: vi.fn(),
+    },
+    laneService: {
+      list: vi.fn(async () => [{ id: `${label}-lane`, name: label }]),
+    },
+    syncService: {
+      getStatus: vi.fn(async () => ({ role: "brain", label })),
+    },
+    eventBuffer: createEventBuffer(),
+    dispose: vi.fn(),
+  };
+}
+
 describe("multi-project RPC server", () => {
   it("exposes runtime-scoped project registry methods", async () => {
     const { projectRoot, registry } = createRegistry();
@@ -234,6 +251,86 @@ describe("multi-project RPC server", () => {
     expect(syncService.updateLocalDevice).toHaveBeenCalledWith({ name: "Mac Studio" });
     expect(syncService.forgetDevice).toHaveBeenCalledWith("phone-1");
     expect(syncService.setActiveLanePresence).toHaveBeenCalledWith(["lane-1", "lane-2"]);
+
+    handler.dispose();
+  });
+
+  it("drops cached project handlers when the backing project scope is disposed", async () => {
+    const { projectRoot, registry } = createRegistry();
+    const added = registry.add(projectRoot);
+    const firstRuntime = makeRuntime("first");
+    const secondRuntime = makeRuntime("second");
+    let disposeListener: ((projectId: string) => void) | null = null;
+    let getCount = 0;
+    const scopeRegistry = {
+      get: vi.fn(async () => ({
+        registryProjectId: added.projectId,
+        record: added,
+        runtime: getCount++ === 0 ? firstRuntime : secondRuntime,
+        dispose: vi.fn(),
+      })),
+      ensureSyncHost: vi.fn(async () => {
+        disposeListener?.(added.projectId);
+        return {
+          registryProjectId: added.projectId,
+          record: added,
+          runtime: secondRuntime,
+          dispose: vi.fn(),
+        };
+      }),
+      dispose: vi.fn(),
+      disposeAll: vi.fn(),
+      onDispose: vi.fn((listener: (projectId: string) => void) => {
+        disposeListener = listener;
+        return () => {
+          disposeListener = null;
+        };
+      }),
+    } as unknown as ProjectScopeRegistry;
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: registry,
+      scopeRegistry,
+    });
+
+    await handler({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "ade/initialize",
+      params: {},
+    });
+
+    const first = await handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "ade/actions/call",
+      params: {
+        projectId: added.projectId,
+        name: "run_ade_action",
+        arguments: { domain: "lane", action: "list" },
+      },
+    }) as { result: Array<{ id: string }> };
+    expect(first.result[0]?.id).toBe("first-lane");
+
+    await handler({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "sync.getStatus",
+      params: { projectId: added.projectId },
+    });
+
+    const second = await handler({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "ade/actions/call",
+      params: {
+        projectId: added.projectId,
+        name: "run_ade_action",
+        arguments: { domain: "lane", action: "list" },
+      },
+    }) as { result: Array<{ id: string }> };
+    expect(second.result[0]?.id).toBe("second-lane");
+    expect(scopeRegistry.get).toHaveBeenCalledTimes(2);
 
     handler.dispose();
   });

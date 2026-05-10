@@ -24,6 +24,7 @@ type BuildSshConfigOptions = {
   env?: NodeJS.ProcessEnv;
   sshConfigPath?: string | null;
   homeDir?: string;
+  usernameOverride?: string;
 };
 
 const DEFAULT_IDENTITY_FILES = [
@@ -133,7 +134,7 @@ export function buildSshConfig(target: RemoteRuntimeTarget, options: BuildSshCon
   const hostConfig = readOpenSshHostConfig(target, options);
   const host = hostConfig.hostName ?? target.hostname;
   const port = target.port && target.port > 0 ? target.port : hostConfig.port ?? 22;
-  const username = target.sshUser?.trim() || hostConfig.user || os.userInfo().username;
+  const username = (options.usernameOverride ?? target.sshUser?.trim()) || hostConfig.user || os.userInfo().username;
   const homeDir = options.homeDir ?? os.homedir();
   const config: ConnectConfig = {
     host,
@@ -154,13 +155,59 @@ export function buildSshConfig(target: RemoteRuntimeTarget, options: BuildSshCon
   return config;
 }
 
-export function connectSsh(target: RemoteRuntimeTarget): Promise<Client> {
+function uniqueUsernames(values: Array<string | null | undefined>): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const username = value?.trim();
+    if (!username || seen.has(username)) continue;
+    seen.add(username);
+    result.push(username);
+  }
+  return result;
+}
+
+export function buildSshUsernameCandidates(target: RemoteRuntimeTarget, options: BuildSshConfigOptions = {}): string[] {
+  const hostConfig = readOpenSshHostConfig(target, options);
+  const explicitUser = target.sshUser?.trim() || hostConfig.user;
+  const localUser = os.userInfo().username;
+  if (explicitUser) return [explicitUser];
+  return uniqueUsernames([localUser, "admin"]);
+}
+
+export function buildSshConfigCandidates(target: RemoteRuntimeTarget, options: BuildSshConfigOptions = {}): ConnectConfig[] {
+  return buildSshUsernameCandidates(target, options).map((username) =>
+    buildSshConfig(target, { ...options, usernameOverride: username }));
+}
+
+function isSshAuthenticationFailure(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as { level?: unknown; message?: unknown };
+  return candidate.level === "client-authentication" ||
+    (typeof candidate.message === "string" && /authentication/i.test(candidate.message));
+}
+
+function connectSshWithConfig(config: ConnectConfig): Promise<Client> {
   return new Promise((resolve, reject) => {
     const client = new Client();
     client.once("ready", () => resolve(client));
     client.once("error", reject);
-    client.connect(buildSshConfig(target));
+    client.connect(config);
   });
+}
+
+export async function connectSsh(target: RemoteRuntimeTarget): Promise<Client> {
+  const configs = buildSshConfigCandidates(target);
+  let lastError: unknown = null;
+  for (const [index, config] of configs.entries()) {
+    try {
+      return await connectSshWithConfig(config);
+    } catch (error) {
+      lastError = error;
+      if (index >= configs.length - 1 || !isSshAuthenticationFailure(error)) throw error;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError ?? "SSH connection failed."));
 }
 
 export function execSsh(client: Client, command: string): Promise<SshExecResult> {

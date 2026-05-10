@@ -105,11 +105,26 @@ export function createMultiProjectRpcRequestHandler(
   options: MultiProjectRpcHandlerOptions,
 ): JsonRpcHandler & { dispose: () => void; setNotifier: (notify: JsonRpcNotifier | null) => void } {
   const projectRegistry = options.projectRegistry ?? new ProjectRegistry();
+  const handlers = new Map<ProjectId, Promise<HandlerEntry>>();
+  const eventSubscriptions = new Map<string, RuntimeEventSubscription>();
+  const disposeProjectRuntimeCaches = (projectId: ProjectId): void => {
+    const cached = handlers.get(projectId);
+    handlers.delete(projectId);
+    if (cached) {
+      void cached.then((entry) => entry.handler.dispose?.()).catch(() => {});
+    }
+    for (const subscription of [...eventSubscriptions.values()]) {
+      if (subscription.projectId !== projectId) continue;
+      subscription.unsubscribe();
+      eventSubscriptions.delete(subscription.id);
+    }
+  };
   const scopeRegistry = options.scopeRegistry ?? new ProjectScopeRegistry(projectRegistry, {
     runtimeCapabilities: options.runtimeCapabilities,
   });
-  const handlers = new Map<ProjectId, Promise<HandlerEntry>>();
-  const eventSubscriptions = new Map<string, RuntimeEventSubscription>();
+  const removeScopeDisposeListener = typeof (scopeRegistry as Partial<ProjectScopeRegistry>).onDispose === "function"
+    ? scopeRegistry.onDispose(disposeProjectRuntimeCaches)
+    : null;
   let initializedParams: Record<string, unknown> | null = null;
   let notifier: JsonRpcNotifier | null = null;
   let nextSubscriptionId = 1;
@@ -396,6 +411,7 @@ export function createMultiProjectRpcRequestHandler(
       void cached.then((entry) => entry.handler.dispose?.()).catch(() => {});
     }
     handlers.clear();
+    removeScopeDisposeListener?.();
     if (options.disposeScopesOnDispose ?? !options.scopeRegistry) {
       void scopeRegistry.disposeAll();
     }

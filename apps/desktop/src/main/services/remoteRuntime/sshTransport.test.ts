@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { RemoteRuntimeTarget } from "../../../shared/types/remoteRuntime";
-import { buildSshConfig, parseOpenSshHostConfig } from "./sshTransport";
+import { buildSshConfig, buildSshConfigCandidates, buildSshUsernameCandidates, parseOpenSshHostConfig } from "./sshTransport";
 
 const target: RemoteRuntimeTarget = {
   id: "target-1",
@@ -82,6 +82,50 @@ describe("buildSshConfig", () => {
       port: 22,
       username: os.userInfo().username,
     });
+  });
+
+  it("builds an admin retry candidate when no SSH user is configured", () => {
+    expect(buildSshUsernameCandidates({
+      ...target,
+      hostname: "100.75.20.63",
+      sshUser: null,
+      port: null,
+    }, {
+      sshConfigPath: null,
+    })).toEqual(Array.from(new Set([os.userInfo().username, "admin"])));
+  });
+
+  it("does not add username retries when SSH config provides a user", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-ssh-config-"));
+    const configPath = path.join(dir, "config");
+    fs.writeFileSync(configPath, [
+      "Host studio",
+      "  User remote-user",
+    ].join("\n"), "utf8");
+
+    expect(buildSshUsernameCandidates({
+      ...target,
+      hostname: "studio",
+      sshUser: null,
+      port: null,
+    }, {
+      sshConfigPath: configPath,
+    })).toEqual(["remote-user"]);
+  });
+
+  it("builds retry configs with distinct SSH usernames", () => {
+    const configs = buildSshConfigCandidates({
+      ...target,
+      hostname: "100.75.20.63",
+      sshUser: null,
+      port: null,
+    }, {
+      env: {},
+      sshConfigPath: null,
+    });
+
+    expect(configs.map((config) => config.username)).toEqual(Array.from(new Set([os.userInfo().username, "admin"])));
+    expect(configs.every((config) => config.host === "100.75.20.63" && config.port === 22)).toBe(true);
   });
 
   it("uses the first readable OpenSSH default identity when no explicit key is configured", () => {

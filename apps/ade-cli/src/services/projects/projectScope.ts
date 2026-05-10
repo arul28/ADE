@@ -24,6 +24,7 @@ export class ProjectScope {
 
 export class ProjectScopeRegistry {
   private readonly scopes = new Map<ProjectId, Promise<ProjectScope>>();
+  private readonly disposeListeners = new Set<(projectId: ProjectId) => void>();
   private syncHostProjectId: ProjectId | null = null;
   private readonly remoteCommandExecutor = {
     execute: async (payload: SyncCommandPayload): Promise<unknown> => {
@@ -38,8 +39,16 @@ export class ProjectScopeRegistry {
       runtimeCapabilities?: {
         memory?: boolean;
       };
+      onDisposeProject?: (projectId: ProjectId) => void;
     } = {},
   ) {}
+
+  onDispose(listener: (projectId: ProjectId) => void): () => void {
+    this.disposeListeners.add(listener);
+    return () => {
+      this.disposeListeners.delete(listener);
+    };
+  }
 
   async get(projectId: ProjectId): Promise<ProjectScope> {
     const cached = this.scopes.get(projectId);
@@ -88,6 +97,10 @@ export class ProjectScopeRegistry {
     scope?.dispose();
     if (this.syncHostProjectId === projectId) {
       this.syncHostProjectId = null;
+    }
+    this.options.onDisposeProject?.(projectId);
+    for (const listener of this.disposeListeners) {
+      listener(projectId);
     }
   }
 

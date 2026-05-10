@@ -141,10 +141,12 @@ describe("ProjectScopeRegistry", () => {
     const { registry, first, second } = createRegistry();
     const firstDispose = vi.fn();
     const secondDispose = vi.fn();
+    const onDisposeProject = vi.fn();
     createAdeRuntimeMock
       .mockResolvedValueOnce({ dispose: firstDispose })
       .mockResolvedValueOnce({ dispose: secondDispose });
     const scopeRegistry = new ProjectScopeRegistry(registry, {
+      onDisposeProject,
       syncRuntime: {
         enabled: true,
         hostStartupEnabled: true,
@@ -158,6 +160,7 @@ describe("ProjectScopeRegistry", () => {
     await scopeRegistry.ensureSyncHost(second.projectId);
 
     expect(firstDispose).toHaveBeenCalledTimes(1);
+    expect(onDisposeProject).toHaveBeenCalledWith(first.projectId);
     expect(createAdeRuntimeMock).toHaveBeenCalledTimes(2);
     expect(createAdeRuntimeMock.mock.calls[1]?.[0]).toMatchObject({
       projectRoot: second.rootPath,

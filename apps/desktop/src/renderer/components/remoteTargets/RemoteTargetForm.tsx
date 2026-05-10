@@ -4,11 +4,14 @@ import type { RemoteRuntimeTargetInput } from "../../../shared/types";
 
 export type RemoteTargetFormPrefill = Partial<RemoteRuntimeTargetInput> & {
   key: string;
+  targetId?: string | null;
 };
 
 type RemoteTargetFormProps = {
   busy?: boolean;
+  busyLabel?: string;
   prefill?: RemoteTargetFormPrefill | null;
+  submitLabel?: string;
   onSubmit: (input: RemoteRuntimeTargetInput) => void | Promise<void>;
 };
 
@@ -25,7 +28,13 @@ const fieldStyle: CSSProperties = {
   outline: "none",
 };
 
-export function RemoteTargetForm({ busy = false, onSubmit, prefill = null }: RemoteTargetFormProps) {
+export function RemoteTargetForm({
+  busy = false,
+  busyLabel = "Connecting...",
+  onSubmit,
+  prefill = null,
+  submitLabel = "Connect",
+}: RemoteTargetFormProps) {
   const [name, setName] = useState("");
   const [hostname, setHostname] = useState("");
   const [sshUser, setSshUser] = useState("");
@@ -137,7 +146,7 @@ export function RemoteTargetForm({ busy = false, onSubmit, prefill = null }: Rem
             opacity: canSubmit && !busy ? 1 : 0.55,
           }}
         >
-          {busy ? "Connecting..." : "Connect"}
+          {busy ? busyLabel : submitLabel}
         </button>
       </div>
     </form>

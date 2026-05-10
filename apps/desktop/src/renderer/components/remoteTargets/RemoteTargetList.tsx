@@ -80,11 +80,30 @@ function discoveredRoute(machine: RemoteRuntimeDiscoveredMachine): string | null
   return machine.primaryRoute ?? machine.tailscaleAddress ?? machine.hostName ?? machine.addresses[0] ?? null;
 }
 
+function targetFormPrefill(target: RemoteRuntimeTarget): RemoteTargetFormPrefill {
+  return {
+    key: `target:${target.id}:${target.lastConnectedAt ?? "never"}:${target.sshUser ?? ""}:${target.port ?? ""}:${target.sshKeyPath ?? ""}`,
+    targetId: target.id,
+    name: target.name,
+    hostname: target.hostname,
+    sshUser: target.sshUser,
+    port: target.port,
+    sshKeyPath: target.sshKeyPath,
+  };
+}
+
 function targetConnectionLabel(target: RemoteRuntimeTarget): string {
   const userPrefix = target.sshUser ? `${target.sshUser}@` : "";
   const portSuffix = target.port ? `:${target.port}` : "";
-  const configHint = target.sshUser && target.port ? "" : " (SSH config)";
-  return `${userPrefix}${target.hostname}${portSuffix}${configHint}`;
+  let defaultHint = "";
+  if (!target.sshUser && !target.port) {
+    defaultHint = " (SSH defaults)";
+  } else if (!target.sshUser) {
+    defaultHint = " (default SSH user)";
+  } else if (!target.port) {
+    defaultHint = " (default port)";
+  }
+  return `${userPrefix}${target.hostname}${portSuffix}${defaultHint}`;
 }
 
 export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
@@ -111,6 +130,9 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
     () => targets.find((target) => target.id === selectedId) ?? null,
     [selectedId, targets],
   );
+  const editingSavedTarget = formPrefill?.targetId
+    ? targets.find((target) => target.id === formPrefill.targetId) ?? null
+    : null;
 
   const loadTargets = useCallback(async () => {
     setLoading(true);
@@ -129,6 +151,11 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
   useEffect(() => {
     void loadTargets();
   }, [loadTargets]);
+
+  useEffect(() => {
+    if (!selectedTarget) return;
+    setFormPrefill(targetFormPrefill(selectedTarget));
+  }, [selectedTarget]);
 
   const loadDiscoveredMachines = useCallback(async () => {
     setLoadingDiscovered(true);
@@ -152,9 +179,10 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
     if (!route) return;
     setFormPrefill({
       key: `${machine.id}:${machine.lastSeenAt}`,
+      targetId: null,
       name: machine.machineName,
       hostname: route.replace(/\.$/, ""),
-      sshUser: "",
+      sshUser: null,
       port: null,
       sshKeyPath: null,
     });
@@ -182,9 +210,17 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
   const saveAndConnect = useCallback(async (input: RemoteRuntimeTargetInput) => {
     setSaving(true);
     try {
+      const replacedTargetId = formPrefill?.targetId ?? null;
       const target = await window.ade.remoteRuntime.saveTarget(input);
-      setTargets((current) => [target, ...current.filter((entry) => entry.id !== target.id)]);
+      if (replacedTargetId && replacedTargetId !== target.id) {
+        await window.ade.remoteRuntime.removeTarget(replacedTargetId);
+      }
+      setTargets((current) => [
+        target,
+        ...current.filter((entry) => entry.id !== target.id && entry.id !== replacedTargetId),
+      ]);
       setSelectedId(target.id);
+      setFormPrefill(targetFormPrefill(target));
       setError(null);
       await connectTarget(target.id);
     } catch (err) {
@@ -192,7 +228,7 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
     } finally {
       setSaving(false);
     }
-  }, [connectTarget]);
+  }, [connectTarget, formPrefill?.targetId]);
 
   const removeTarget = useCallback(async (targetId: string) => {
     setBusyId(targetId);
@@ -205,6 +241,7 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
         setConnected(null);
         setProjectInspections({});
       }
+      if (formPrefill?.targetId === targetId) setFormPrefill(null);
       setPendingOpen((current) => current?.targetId === targetId ? null : current);
       setError(null);
     } catch (err) {
@@ -212,7 +249,7 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
     } finally {
       setBusyId(null);
     }
-  }, [selectedId]);
+  }, [formPrefill?.targetId, selectedId]);
 
   const refreshProjects = useCallback(async () => {
     if (!selectedTarget) return;
@@ -351,6 +388,7 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
                       type="button"
                       onClick={() => {
                         setSelectedId(target.id);
+                        setFormPrefill(targetFormPrefill(target));
                         setProjects([]);
                         setConnected(null);
                         setProjectInspections({});
@@ -415,7 +453,7 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
               <div style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 12 }}>Scanning nearby machines...</div>
             ) : discoveredMachines.length === 0 ? (
               <div style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 13 }}>
-                No nearby ADE machines found.
+                No LAN ADE services or Tailscale peers found.
               </div>
             ) : (
               <div style={{ display: "grid", gap: 8 }}>
@@ -468,12 +506,17 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
 
         <div style={sectionStyle}>
           <div>
-            <div style={{ ...LABEL_STYLE, color: COLORS.textMuted }}>ADD MACHINE</div>
+            <div style={{ ...LABEL_STYLE, color: COLORS.textMuted }}>{editingSavedTarget ? "EDIT MACHINE" : "ADD MACHINE"}</div>
             <div style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 14, fontWeight: 600 }}>
-              SSH target
+              {editingSavedTarget ? editingSavedTarget.name : "SSH target"}
             </div>
           </div>
-          <RemoteTargetForm busy={saving || busyId != null} prefill={formPrefill} onSubmit={saveAndConnect} />
+          <RemoteTargetForm
+            busy={saving || busyId != null}
+            prefill={formPrefill}
+            submitLabel={editingSavedTarget ? "Save and connect" : "Connect"}
+            onSubmit={saveAndConnect}
+          />
         </div>
       </div>
 
