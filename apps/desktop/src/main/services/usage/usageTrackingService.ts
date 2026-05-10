@@ -30,6 +30,7 @@ import {
   refreshClaudeCredentials,
 } from "../ai/providerCredentialSources";
 import { getAllApiKeys } from "../ai/apiKeyStore";
+import { isCursorAdminApiKey } from "../ai/utils";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
 import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/processExecution";
 
@@ -269,10 +270,6 @@ type CursorSpendResponse = {
   teamMemberSpend?: CursorSpendMember[];
   subscriptionCycleStart?: number;
 };
-
-function isCursorAdminApiKey(value: string | null | undefined): boolean {
-  return Boolean(value?.trim().startsWith("key_"));
-}
 
 function getCursorApiKey(): { key: string; source: "cursor-admin-env" | "cursor-env" | "cursor-api-key-store" } | null {
   const adminEnvKey = process.env.CURSOR_ADMIN_API_KEY?.trim();

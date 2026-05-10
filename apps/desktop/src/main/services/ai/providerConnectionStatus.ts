@@ -7,6 +7,7 @@ import {
 } from "./providerCredentialSources";
 import { getAllApiKeys } from "./apiKeyStore";
 import { getProviderRuntimeHealth } from "./providerRuntimeHealth";
+import { isCursorAdminApiKey } from "./utils";
 import { nowIso } from "../shared/utils";
 
 function createUnavailableStatus(
@@ -24,10 +25,6 @@ function createUnavailableStatus(
     lastCheckedAt: checkedAt,
     sources: [],
   };
-}
-
-function isCursorAdminApiKey(value: string | null | undefined): boolean {
-  return Boolean(value?.trim().startsWith("key_"));
 }
 
 export async function buildProviderConnections(
