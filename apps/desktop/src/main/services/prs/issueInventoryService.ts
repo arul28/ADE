@@ -56,6 +56,7 @@ const KNOWN_BOT_ALIASES: Record<string, IssueSource> = {
   "ade-review": "ade",
   "greptile-review": "greptile",
   "greptile": "greptile",
+  "greptile-apps": "greptile",
   "seer-code-review": "seer",
   "seer": "seer",
 };
@@ -81,6 +82,10 @@ const CONVERGENCE_POLLER_STATUS_VALUES = new Set<ConvergenceRuntimeState["poller
   "waiting_for_comments",
   "paused",
   "stopped",
+]);
+
+const CONVERGENCE_MERGE_WAIT_KIND_VALUES = new Set<NonNullable<ConvergenceRuntimeState["mergeWaitKind"]>>([
+  "github_auto_merge_armed",
 ]);
 
 export function detectSource(author: string | null | undefined): IssueSource {
@@ -164,6 +169,26 @@ function extractHeadline(body: string | null | undefined, fallback: string): str
     return firstLine.length > 120 ? `${firstLine.slice(0, 117)}...` : firstLine;
   }
   return fallback;
+}
+
+function isReviewThreadMetadataComment(comment: PrReviewThread["comments"][number] | null | undefined): boolean {
+  const body = (comment?.body ?? "").trim();
+  if (!body) return false;
+  return /^>\s*Skipped:\s*comment is from another GitHub bot\./i.test(body)
+    && /auto-generated reply by CodeRabbit/i.test(body);
+}
+
+function latestInventoryReviewComment(thread: PrReviewThread): PrReviewThread["comments"][number] | null {
+  for (let index = thread.comments.length - 1; index >= 0; index--) {
+    const comment = thread.comments[index];
+    if (!isReviewThreadMetadataComment(comment)) return comment;
+  }
+  return thread.comments.at(-1) ?? null;
+}
+
+function countInventoryReviewComments(thread: PrReviewThread): number {
+  const actionableCount = thread.comments.filter((comment) => !isReviewThreadMetadataComment(comment)).length;
+  return actionableCount > 0 ? actionableCount : thread.comments.length;
 }
 
 // ---------------------------------------------------------------------------
@@ -285,6 +310,7 @@ type ConvergenceRuntimeRow = {
   auto_converge_enabled: number;
   status: string;
   poller_status: string;
+  merge_wait_kind: string | null;
   current_round: number;
   active_session_id: string | null;
   active_lane_id: string | null;
@@ -295,6 +321,8 @@ type ConvergenceRuntimeRow = {
   ci_retry_attempts_used: number | null;
   wait_for_ci_started_at: string | null;
   last_dispatch_head_sha: string | null;
+  last_bot_ping_head_sha: string | null;
+  last_bot_ping_at: string | null;
   pause_repeat_count: number | null;
   last_pause_reason_hash: string | null;
   last_started_at: string | null;
@@ -337,6 +365,11 @@ function validateConvergenceRuntimeState(state: Partial<ConvergenceRuntimeState>
       throw new Error(`Invalid convergence poller status: ${JSON.stringify(state.pollerStatus)}`);
     }
   }
+  if (state.mergeWaitKind !== undefined && state.mergeWaitKind !== null) {
+    if (typeof state.mergeWaitKind !== "string" || !CONVERGENCE_MERGE_WAIT_KIND_VALUES.has(state.mergeWaitKind as NonNullable<ConvergenceRuntimeState["mergeWaitKind"]>)) {
+      throw new Error(`Invalid convergence merge wait kind: ${JSON.stringify(state.mergeWaitKind)}`);
+    }
+  }
   if (state.currentRound !== undefined) {
     if (typeof state.currentRound !== "number" || !Number.isFinite(state.currentRound)) {
       throw new Error(`Invalid currentRound: expected a finite number, got ${JSON.stringify(state.currentRound)}`);
@@ -363,6 +396,8 @@ function validateConvergenceRuntimeState(state: Partial<ConvergenceRuntimeState>
     "errorMessage",
     "waitForCiStartedAt",
     "lastDispatchHeadSha",
+    "lastBotPingHeadSha",
+    "lastBotPingAt",
     "lastPauseReasonHash",
     "lastStartedAt",
     "lastPolledAt",
@@ -389,12 +424,18 @@ function sanitizeConvergenceRuntimeState(
   state: ConvergenceRuntimeState,
 ): ConvergenceRuntimeState {
   const now = nowIso();
+  const mergeWaitKind = state.mergeWaitKind && CONVERGENCE_MERGE_WAIT_KIND_VALUES.has(state.mergeWaitKind)
+    ? state.mergeWaitKind
+    : null;
   return {
     prId,
     autoConvergeEnabled: state.autoConvergeEnabled,
     pathToMergeActive: state.pathToMergeActive,
     status: state.status,
     pollerStatus: state.pollerStatus,
+    mergeWaitKind: state.status === "converged" && state.pollerStatus === "waiting_for_checks"
+      ? mergeWaitKind
+      : null,
     currentRound: state.currentRound,
     activeSessionId: trimOrNull(state.activeSessionId),
     activeLaneId: trimOrNull(state.activeLaneId),
@@ -405,6 +446,8 @@ function sanitizeConvergenceRuntimeState(
     ciRetryAttemptsUsed: Math.max(0, Math.floor(state.ciRetryAttemptsUsed)),
     waitForCiStartedAt: trimOrNull(state.waitForCiStartedAt),
     lastDispatchHeadSha: trimOrNull(state.lastDispatchHeadSha),
+    lastBotPingHeadSha: trimOrNull(state.lastBotPingHeadSha),
+    lastBotPingAt: trimOrNull(state.lastBotPingAt),
     pauseRepeatCount: Math.max(0, Math.floor(state.pauseRepeatCount)),
     lastPauseReasonHash: trimOrNull(state.lastPauseReasonHash),
     lastStartedAt: trimOrNull(state.lastStartedAt),
@@ -423,6 +466,7 @@ function rowToConvergenceRuntime(row: ConvergenceRuntimeRow): ConvergenceRuntime
     pathToMergeActive: false,
     status: row.status as ConvergenceRuntimeState["status"],
     pollerStatus: row.poller_status as ConvergenceRuntimeState["pollerStatus"],
+    mergeWaitKind: row.merge_wait_kind as ConvergenceRuntimeState["mergeWaitKind"],
     currentRound: row.current_round,
     activeSessionId: row.active_session_id,
     activeLaneId: row.active_lane_id,
@@ -433,6 +477,8 @@ function rowToConvergenceRuntime(row: ConvergenceRuntimeRow): ConvergenceRuntime
     ciRetryAttemptsUsed: row.ci_retry_attempts_used ?? 0,
     waitForCiStartedAt: row.wait_for_ci_started_at,
     lastDispatchHeadSha: row.last_dispatch_head_sha,
+    lastBotPingHeadSha: row.last_bot_ping_head_sha,
+    lastBotPingAt: row.last_bot_ping_at,
     pauseRepeatCount: row.pause_repeat_count ?? 0,
     lastPauseReasonHash: row.last_pause_reason_hash,
     lastStartedAt: row.last_started_at,
@@ -771,17 +817,19 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
 
     db.run(
       `insert into pr_convergence_state
-         (pr_id, auto_converge_enabled, status, poller_status, current_round, active_session_id,
+         (pr_id, auto_converge_enabled, status, poller_status, merge_wait_kind, current_round, active_session_id,
           active_lane_id, active_href, pause_reason, error_message,
           force_finalize_used, ci_retry_attempts_used, wait_for_ci_started_at,
-          last_dispatch_head_sha, pause_repeat_count, last_pause_reason_hash,
+          last_dispatch_head_sha, last_bot_ping_head_sha, last_bot_ping_at,
+          pause_repeat_count, last_pause_reason_hash,
           last_started_at, last_polled_at, last_paused_at, last_stopped_at,
           created_at, updated_at)
-       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        on conflict(pr_id) do update set
          auto_converge_enabled = excluded.auto_converge_enabled,
          status = excluded.status,
          poller_status = excluded.poller_status,
+         merge_wait_kind = excluded.merge_wait_kind,
          current_round = excluded.current_round,
          active_session_id = excluded.active_session_id,
          active_lane_id = excluded.active_lane_id,
@@ -792,6 +840,8 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
          ci_retry_attempts_used = excluded.ci_retry_attempts_used,
          wait_for_ci_started_at = excluded.wait_for_ci_started_at,
          last_dispatch_head_sha = excluded.last_dispatch_head_sha,
+         last_bot_ping_head_sha = excluded.last_bot_ping_head_sha,
+         last_bot_ping_at = excluded.last_bot_ping_at,
          pause_repeat_count = excluded.pause_repeat_count,
          last_pause_reason_hash = excluded.last_pause_reason_hash,
          last_started_at = excluded.last_started_at,
@@ -804,6 +854,7 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
         merged.autoConvergeEnabled ? 1 : 0,
         merged.status,
         merged.pollerStatus,
+        merged.mergeWaitKind,
         merged.currentRound,
         merged.activeSessionId,
         merged.activeLaneId,
@@ -814,6 +865,8 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
         merged.ciRetryAttemptsUsed,
         merged.waitForCiStartedAt,
         merged.lastDispatchHeadSha,
+        merged.lastBotPingHeadSha,
+        merged.lastBotPingAt,
         merged.pauseRepeatCount,
         merged.lastPauseReasonHash,
         merged.lastStartedAt,
@@ -900,8 +953,8 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
       // Sync review threads using the latest reply in the conversation.
       for (const thread of reviewThreads) {
         const externalId = `thread:${thread.id}`;
-        const latestComment = thread.comments.at(-1) ?? null;
-        const commentCount = thread.comments.length;
+        const latestComment = latestInventoryReviewComment(thread);
+        const commentCount = countInventoryReviewComments(thread);
         const author = latestComment?.author ?? null;
         const body = latestComment?.body ?? null;
         const source = detectSource(author);
@@ -981,25 +1034,38 @@ export function createIssueInventoryService(deps: { db: AdeDb }) {
         });
       }
 
-      for (const comment of comments) {
-        if (comment.source !== "issue") continue;
-        if (isNoisyIssueComment(comment)) continue;
-        const body = comment.body ?? "";
-        upsertItem(prId, `comment:${comment.id}`, {
-          source: detectSource(comment.author),
-          type: "issue_comment",
+	      const noisyIssueCommentIds = new Set<string>();
+	      for (const comment of comments) {
+	        if (comment.source !== "issue") continue;
+	        if (isNoisyIssueComment(comment)) {
+	          noisyIssueCommentIds.add(`comment:${comment.id}`);
+	          continue;
+	        }
+	        const body = comment.body ?? "";
+	        upsertItem(prId, `comment:${comment.id}`, {
+	          source: detectSource(comment.author),
+	          type: "issue_comment",
           filePath: comment.path,
           line: comment.line,
           severity: extractSeverity(body),
           headline: extractHeadline(body, `Comment by ${comment.author}`),
           body,
           author: comment.author,
-          url: comment.url,
-        });
-      }
+	          url: comment.url,
+	        });
+	      }
+	      for (const existing of existingRows) {
+	        if (existing.type !== "issue_comment") continue;
+	        if (!noisyIssueCommentIds.has(existing.external_id)) continue;
+	        if (existing.state === "fixed" || existing.state === "dismissed") continue;
+	        db.run(
+	          "update pr_issue_inventory set state = 'fixed', updated_at = ? where id = ?",
+	          [nowIso(), existing.id],
+	        );
+	      }
 
-      return buildSnapshot(prId);
-    },
+	      return buildSnapshot(prId);
+	    },
 
     getInventory(prId: string): IssueInventorySnapshot {
       return buildSnapshot(prId);

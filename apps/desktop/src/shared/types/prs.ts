@@ -243,6 +243,7 @@ export type CreatePrFromLaneArgs = {
   reviewers?: string[];
   allowDirtyWorktree?: boolean;
   strategy?: PrCreationStrategy;
+  closeLinearIssueOnMerge?: boolean;
 };
 
 export type LinkPrToLaneArgs = {
@@ -255,6 +256,7 @@ export type DraftPrDescriptionArgs = {
   model?: string;
   reasoningEffort?: string | null;
   baseBranch?: string;
+  closeLinearIssueOnMerge?: boolean;
 };
 
 export type UpdatePrDescriptionArgs = {
@@ -1344,15 +1346,15 @@ export type PipelineSettings = {
 };
 
 export const DEFAULT_PIPELINE_SETTINGS: PipelineSettings = {
-  autoMerge: false,
+  autoMerge: true,
   mergeMethod: "repo_default",
   maxRounds: 5,
   onRebaseNeeded: "pause",
   conflictStrategy: "pause",
   autoAgentSettings: { ...DEFAULT_AUTO_CONFLICT_AGENT_SETTINGS },
-  forceFinalizeMode: "off",
+  forceFinalizeMode: "conditional",
   forceFinalizeRequireNoCiFailures: true,
-  atCapPolicy: "stop",
+  atCapPolicy: "ci_retry_once",
   atCapWaitMinutes: 30,
   atCapCiRetryMax: 3,
   forceMergeRequiresConfirmation: true,
@@ -1402,6 +1404,9 @@ export type ConvergencePollerStatus =
   | "paused"
   | "stopped";
 
+export type ConvergenceMergeWaitKind =
+  | "github_auto_merge_armed";
+
 export type ConvergenceRuntimeState = {
   prId: string;
   autoConvergeEnabled: boolean;
@@ -1409,6 +1414,7 @@ export type ConvergenceRuntimeState = {
   pathToMergeActive: boolean;
   status: ConvergenceRuntimeStatus;
   pollerStatus: ConvergencePollerStatus;
+  mergeWaitKind: ConvergenceMergeWaitKind | null;
   currentRound: number;
   activeSessionId: string | null;
   activeLaneId: string | null;
@@ -1419,6 +1425,8 @@ export type ConvergenceRuntimeState = {
   ciRetryAttemptsUsed: number;
   waitForCiStartedAt: string | null;
   lastDispatchHeadSha: string | null;
+  lastBotPingHeadSha: string | null;
+  lastBotPingAt: string | null;
   pauseRepeatCount: number;
   lastPauseReasonHash: string | null;
   lastStartedAt: string | null;
@@ -1506,6 +1514,7 @@ export const DEFAULT_CONVERGENCE_RUNTIME_STATE: Omit<ConvergenceRuntimeState, "p
   pathToMergeActive: false,
   status: "idle",
   pollerStatus: "idle",
+  mergeWaitKind: null,
   currentRound: 0,
   activeSessionId: null,
   activeLaneId: null,
@@ -1516,6 +1525,8 @@ export const DEFAULT_CONVERGENCE_RUNTIME_STATE: Omit<ConvergenceRuntimeState, "p
   ciRetryAttemptsUsed: 0,
   waitForCiStartedAt: null,
   lastDispatchHeadSha: null,
+  lastBotPingHeadSha: null,
+  lastBotPingAt: null,
   pauseRepeatCount: 0,
   lastPauseReasonHash: null,
   lastStartedAt: null,

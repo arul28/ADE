@@ -138,6 +138,17 @@ describe("parallel launch helpers", () => {
     expect(result.sendText).toBe("Please review the attached files.");
   });
 
+  it("uses an issue-context prompt for context-only parallel launches", () => {
+    const result = buildParallelLaunchPrompt({
+      text: "",
+      attachmentCount: 0,
+      contextAttachmentCount: 1,
+    });
+
+    expect(result.displayText).toBe("Use the attached issue context.");
+    expect(result.sendText).toBe("Use the attached issue context.");
+  });
+
   it("force-cleans transient lanes and refreshes lane state after rollback", async () => {
     const deleteLane = vi.fn()
       .mockResolvedValueOnce(undefined)

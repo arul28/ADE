@@ -65,6 +65,7 @@ export function LinearSection() {
     if (!connection?.authMode) return null;
     return connection.authMode === "oauth" ? "OAuth" : "API key";
   }, [connection?.authMode]);
+  const workspaceLabel = connection?.organizationName?.trim() || connection?.organizationUrlKey?.trim() || null;
 
   /* ── Load helpers ── */
   const loadProjects = useCallback(async (requestIdArg?: number) => {
@@ -287,25 +288,72 @@ export function LinearSection() {
                 <div style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textSecondary, marginTop: 2 }}>
                   {connection?.viewerName ? `Signed in as ${connection.viewerName}` : "Signed in"}
                   {authModeLabel ? ` via ${authModeLabel}` : ""}
+                  {workspaceLabel ? ` · ${workspaceLabel}` : ""}
                   {connection?.projectCount ? ` · ${connection.projectCount} project${connection.projectCount === 1 ? "" : "s"}` : ""}
                 </div>
               </div>
             </div>
-            <button
-              type="button"
-              onClick={() => void handleDisconnect()}
-              style={{
-                background: "none", border: "none", cursor: "pointer",
-                fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textDim,
-                padding: "4px 8px", borderRadius: 6,
-                transition: "color 0.15s",
-              }}
-              onMouseEnter={(e) => { e.currentTarget.style.color = COLORS.danger; }}
-              onMouseLeave={(e) => { e.currentTarget.style.color = COLORS.textDim; }}
-            >
-              Disconnect
-            </button>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", flexWrap: "wrap", gap: 8 }}>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => void handleStartOAuth()}
+                disabled={oauthStarting || validating || connection?.oauthAvailable === false}
+              >
+                {oauthStarting ? <CircleNotch size={12} className="animate-spin" /> : null}
+                {oauthStarting ? "Waiting for Linear..." : "Reconnect current workspace"}
+              </Button>
+              <button
+                type="button"
+                onClick={() => void handleDisconnect()}
+                disabled={oauthStarting}
+                style={{
+                  background: "none", border: "none", cursor: oauthStarting ? "default" : "pointer",
+                  fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textDim,
+                  padding: "4px 8px", borderRadius: 6,
+                  transition: "color 0.15s",
+                  opacity: oauthStarting ? 0.55 : 1,
+                }}
+                onMouseEnter={(e) => { if (!oauthStarting) e.currentTarget.style.color = COLORS.danger; }}
+                onMouseLeave={(e) => { e.currentTarget.style.color = COLORS.textDim; }}
+              >
+                Disconnect
+              </button>
+            </div>
           </div>
+
+          {workspaceLabel ? (
+            <div style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              flexWrap: "wrap",
+              gap: 12,
+              padding: "10px 12px",
+              marginBottom: 14,
+              borderRadius: 8,
+              background: "color-mix(in srgb, var(--color-fg) 4%, transparent)",
+              border: `1px solid ${COLORS.border}`,
+            }}>
+              <div>
+                <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textDim, marginBottom: 2 }}>
+                  Workspace
+                </div>
+                <div style={{ fontSize: 13, fontWeight: 600, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
+                  {workspaceLabel}
+                </div>
+              </div>
+              {connection?.organizationUrlKey ? (
+                <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
+                  {connection.organizationUrlKey}
+                </div>
+              ) : null}
+              <div style={{ flexBasis: "100%", fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
+                To connect a different workspace, switch workspaces in Linear first, then reconnect here.
+              </div>
+            </div>
+          ) : null}
 
           {/* Project list */}
           {projects.length > 0 ? (
@@ -369,7 +417,7 @@ export function LinearSection() {
                   Sign in with Linear
                 </div>
                 <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: "17px" }}>
-                  Opens Linear in your browser for a secure OAuth flow. No keys to manage.
+                  Connects the workspace currently selected in Linear.
                 </div>
               </div>
               <Button

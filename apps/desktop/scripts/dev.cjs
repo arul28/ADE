@@ -8,6 +8,8 @@ const path = require("node:path");
 const projectRoot = path.resolve(__dirname, "..");
 const distMainFile = path.join(projectRoot, "dist", "main", "main.cjs");
 const npxCommand = "npx";
+const forceViteOptimize =
+  process.argv.includes("--force-vite") || process.env.ADE_VITE_FORCE_OPTIMIZE === "1";
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -248,7 +250,9 @@ async function main() {
   process.on("SIGTERM", () => teardown("SIGTERM"));
   process.on("exit", () => teardown("SIGTERM"));
 
-  const vite = spawnProcess("renderer", npxCommand, ["vite", "--port", String(devPort), "--strictPort", "--force"]);
+  const viteArgs = ["vite", "--port", String(devPort), "--strictPort"];
+  if (forceViteOptimize) viteArgs.push("--force");
+  const vite = spawnProcess("renderer", npxCommand, viteArgs);
   const main = spawnProcess("main", npxCommand, ["tsup", "--watch"]);
   children.add(vite);
   children.add(main);

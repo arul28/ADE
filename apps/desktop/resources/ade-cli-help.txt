@@ -268,6 +268,7 @@ _    ____  _____
     $ ade lanes list --text                         Show lane stack graph and branch names
     $ ade lanes show <lane> --text                  Inspect one lane status
     $ ade lanes create --name <name>                Create a lane from the current project context
+    $ ade lanes create --linear-issue-json '{...}'  Create a lane linked to a Linear issue
     $ ade lanes child --lane <parent> --name <name> Create a child lane under a parent
     $ ade lanes import --branch <branch>            Register an existing branch/worktree
     $ ade lanes archive <lane>                      Archive a lane in ADE
@@ -291,7 +292,7 @@ _    ____  _____
     $ ade git stage --lane <lane> src/file.ts       Stage one file
     $ ade git stage-all --lane <lane>               Stage all current changes
     $ ade git unstage --lane <lane> src/file.ts     Unstage one file
-    $ ade git commit --lane <lane> [-m <message>]   Commit, generating a message when omitted
+    $ ade git commit --lane <lane> [-m <message>]   Commit, adding Refs <issue-id> on linked Linear lanes
     $ ade git push --lane <lane> --set-upstream     Push through ADE
     $ ade git branches --lane <lane> --text         List branches with last-commit metadata
     $ ade git user-identity --lane <lane> --text    Read lane checkout's git user.name/email
@@ -349,6 +350,7 @@ _    ____  _____
     $ ade prs list --text                           List PRs known to ADE
     $ ade prs list-open --text                      List every open GitHub PR in the repo, keyed by head branch
     $ ade prs create --lane <lane> --base main      Open and map a GitHub PR from a lane
+    $ ade prs create --lane <lane> --close-linear-issue-on-merge
     $ ade prs link --lane <lane> --url <pr-url>     Map an existing GitHub PR to a lane
     $ ade prs checks <pr> --text                    Show check status
     $ ade prs comments <pr> --text                  Show unresolved review work
@@ -477,6 +479,7 @@ _    ____  _____
 
   Linear workflows
 
+    $ ade linear quick-view --text                 Show connected workspace, projects, and issues
     $ ade linear workflows --text                   List configured workflows
     $ ade linear sync dashboard --text              Show sync dashboard
     $ ade linear sync run                           Trigger a sync run

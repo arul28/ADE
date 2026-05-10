@@ -129,6 +129,41 @@ describe("ADE CLI", () => {
     ]);
   });
 
+  it("builds a diff patch invocation with an explicit path flag", () => {
+    const parsed = parseCliArgs(["diff", "patch", "--lane", "main", "--path", "file.txt", "--text"]);
+    expect(parsed.options.text).toBe(true);
+
+    const plan = buildCliPlan(parsed.command);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+
+    expect(plan).toEqual({
+      kind: "execute",
+      label: "diff patch",
+      steps: [
+        {
+          key: "result",
+          method: "ade/actions/call",
+          params: {
+            name: "run_ade_action",
+            arguments: {
+              domain: "diff",
+              action: "getFilePatch",
+              args: {
+                filePath: "file.txt",
+                mode: "unstaged",
+                compareRef: null,
+                compareTo: null,
+                laneId: "main",
+              },
+            },
+          },
+          unwrapToolResult: true,
+        },
+      ],
+    });
+  });
+
   it("builds the stdio MCP server command", () => {
     expect(buildCliPlan(["mcp"])).toEqual({ kind: "mcp" });
     expect(buildCliPlan(["mcp-server"])).toEqual({ kind: "mcp" });
@@ -619,11 +654,15 @@ describe("ADE CLI", () => {
       },
     });
     expect(plan.steps[1]?.params).toEqual({
-      name: "pr_start_issue_resolution",
+      name: "run_ade_action",
       arguments: {
-        prId: "pr-1",
-        scope: "both",
-        modelId: "gpt-5.4",
+        domain: "path_to_merge",
+        action: "startPathToMerge",
+        args: {
+          prId: "pr-1",
+          scope: "both",
+          modelId: "gpt-5.4",
+        },
       },
     });
   });
@@ -671,11 +710,15 @@ describe("ADE CLI", () => {
       },
     });
     expect(plan.steps[1]?.params).toEqual({
-      name: "pr_start_issue_resolution",
+      name: "run_ade_action",
       arguments: {
-        prId: "pr-2",
-        scope: "both",
-        modelId: "gpt-5.4",
+        domain: "path_to_merge",
+        action: "startPathToMerge",
+        args: {
+          prId: "pr-2",
+          scope: "both",
+          modelId: "gpt-5.4",
+        },
       },
     });
   });
@@ -731,6 +774,7 @@ describe("ADE CLI", () => {
     expect(() => buildCliPlan(["lanes", "create"])).toThrow(/name is required/);
     expect(() => buildCliPlan(["lanes", "child", "--name", "child"])).toThrow(/parent lane is required/);
     expect(() => buildCliPlan(["diff", "file", "--lane", "main"])).toThrow(/path is required/);
+    expect(() => buildCliPlan(["diff", "patch", "--lane", "main"])).toThrow(/path is required/);
     expect(() => buildCliPlan(["files", "write", "src/index.ts"])).toThrow(/--text, --from-file, or --stdin/);
     expect(() => buildCliPlan(["chat", "send", "hello"])).toThrow(/message text is required/);
     expect(() => buildCliPlan(["agent", "spawn", "--prompt", "fix it"])).toThrow(/laneId is required/);
@@ -1178,6 +1222,119 @@ describe("ADE CLI", () => {
     // Regression: --text as output flag must not swallow --help.
     const lanesHelp = buildCliPlan(["lanes", "list", "--text", "--help"]);
     expect(lanesHelp.kind).toBe("help");
+  });
+
+  it("maps PR create Linear close flag to the typed RPC tool", () => {
+    const plan = buildCliPlan([
+      "prs",
+      "create",
+      "--lane",
+      "lane-1",
+      "--title",
+      "Linked PR",
+      "--body",
+      "Body",
+      "--close-linear-issue-on-merge",
+    ]);
+
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toEqual({
+      name: "create_pr_from_lane",
+      arguments: {
+        laneId: "lane-1",
+        title: "Linked PR",
+        body: "Body",
+        draft: false,
+        closeLinearIssueOnMerge: true,
+      },
+    });
+  });
+
+  it("maps lane create Linear issue JSON to the typed RPC tool", () => {
+    const plan = buildCliPlan([
+      "lanes",
+      "create",
+      "--name",
+      "Linked lane",
+      "--base",
+      "main",
+      "--branch-name",
+      "ade-123-linked-lane",
+      "--linear-issue-json",
+      "{\"id\":\"issue-1\",\"identifier\":\"ADE-123\",\"title\":\"Linked lane\"}",
+    ]);
+
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toEqual({
+      name: "create_lane",
+      arguments: {
+        name: "Linked lane",
+        baseBranch: "main",
+        branchName: "ade-123-linked-lane",
+        linearIssue: {
+          id: "issue-1",
+          identifier: "ADE-123",
+          title: "Linked lane",
+        },
+      },
+    });
+  });
+
+  it("maps Linear quick view to the typed RPC tool", () => {
+    const plan = buildCliPlan(["linear", "quick-view", "--text"]);
+
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.label).toBe("Linear quick view");
+    expect(plan.formatter).toBe("linear-quick-view");
+    expect(plan.steps[0]?.params).toEqual({
+      name: "getLinearQuickView",
+      arguments: {},
+    });
+  });
+
+  it("maps Linear picker data to the typed RPC tool", () => {
+    const plan = buildCliPlan(["linear", "picker-data", "--text"]);
+
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.label).toBe("Linear picker data");
+    expect(plan.steps[0]?.params).toEqual({
+      name: "getLinearIssuePickerData",
+      arguments: {},
+    });
+  });
+
+  it("maps Linear search-issues filters to the typed RPC tool", () => {
+    const plan = buildCliPlan([
+      "linear",
+      "search-issues",
+      "--project-id",
+      "proj-1",
+      "--state-type",
+      "started,unstarted",
+      "--query",
+      "auth",
+      "--first",
+      "25",
+      "--include-archived",
+    ]);
+
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.label).toBe("Linear search issues");
+    expect(plan.steps[0]?.params).toEqual({
+      name: "searchLinearIssues",
+      arguments: {
+        projectId: "proj-1",
+        stateTypes: ["started", "unstarted"],
+        query: "auth",
+        first: 25,
+        includeArchived: true,
+      },
+    });
   });
 
   it("shows focused ios-sim help for subcommand help flags", () => {

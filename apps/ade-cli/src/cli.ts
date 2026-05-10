@@ -58,6 +58,7 @@ type FormatterId =
   | "status"
   | "doctor"
   | "auth"
+  | "linear-quick-view"
   | "lanes"
   | "lane-detail"
   | "git-status"
@@ -350,7 +351,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade doctor                                    Inspect project, socket, runtime, and tool availability
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
     $ ade git status | commit | push | stash        Run ADE-aware git operations
-    $ ade diff changes | file                       Inspect lane diffs
+    $ ade diff changes | file | patch               Inspect lane diffs (including raw git patch text)
     $ ade files tree | read | write | search        Read and edit lane workspaces
     $ ade missions launch | watch | graph           Create, start, and inspect mission runs
     $ ade prs list | create | path-to-merge         Manage PRs, queues, and Path to Merge repair rounds
@@ -774,6 +775,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade lanes list --text                         Show lane stack graph and branch names
     $ ade lanes show <lane> --text                  Inspect one lane status
     $ ade lanes create --name <name>                Create a lane from the current project context
+    $ ade lanes create --linear-issue-json '{...}'  Create a lane linked to a Linear issue
+    $ ade lanes create --branch-name <branch>       Override the auto-generated branch name
     $ ade lanes child --lane <parent> --name <name> Create a child lane under a parent
     $ ade lanes import --branch <branch>            Register an existing branch/worktree
     $ ade lanes archive <lane>                      Archive a lane in ADE
@@ -791,7 +794,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade git stage --lane <lane> src/file.ts       Stage one file
     $ ade git stage-all --lane <lane>               Stage all current changes
     $ ade git unstage --lane <lane> src/file.ts     Unstage one file
-    $ ade git commit --lane <lane> [-m <message>]   Commit, generating a message when omitted
+    $ ade git commit --lane <lane> [-m <message>]   Commit, adding Refs <issue-id> on linked Linear lanes
     $ ade git push --lane <lane> --set-upstream     Push through ADE
     $ ade git branches --lane <lane> --text         List branches with last-commit metadata
     $ ade git user-identity --lane <lane> --text    Read lane checkout's git user.name/email
@@ -803,7 +806,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Diffs
 
     $ ade diff changes --lane <lane> --text         Summarize staged/unstaged file changes
-    $ ade diff file --lane <lane> <path> --text     Show one file diff
+    $ ade diff file --lane <lane> <path> --text     Show one file diff (side-by-side text)
+    $ ade diff patch --lane <lane> <path> --text    Raw unified diff / patch for one file
     $ ade diff file --mode staged <path>            Inspect staged diff for one file
     $ ade diff actions --text                       List diff service actions
 `,
@@ -816,6 +820,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade prs list --text                           List PRs known to ADE
     $ ade prs list-open --text                      List every open GitHub PR in the repo, keyed by head branch
     $ ade prs create --lane <lane> --base main      Open and map a GitHub PR from a lane
+    $ ade prs create --lane <lane> --close-linear-issue-on-merge
     $ ade prs link --lane <lane> --url <pr-url>     Map an existing GitHub PR to a lane
     $ ade prs checks <pr> --text                    Show check status
     $ ade prs comments <pr> --text                  Show unresolved review work
@@ -1165,6 +1170,10 @@ const HELP_BY_COMMAND: Record<string, string> = {
   linear: `${ADE_BANNER}
   Linear workflows
 
+    $ ade --role cto linear quick-view --text      Show connected workspace, projects, and issues
+    $ ade --role cto linear picker-data --text     Read projects/users/states for the issue picker
+    $ ade --role cto linear search-issues --query "auth" --state-type started,unstarted --first 50
+                                                    Search issues for the lane Linear-issue picker
     $ ade linear workflows --text                   List configured workflows
     $ ade linear sync dashboard --text              Show sync dashboard
     $ ade linear sync run                           Trigger a sync run
@@ -1998,6 +2007,16 @@ function buildLanePlan(args: string[]): CliPlan {
     input.name = requireValue(name, "name");
     maybePut(input, "description", readValue(args, ["--description", "--desc"]));
     maybePut(input, "parentLaneId", readValue(args, ["--parent", "--parent-lane", "--parent-lane-id"]) ?? (sub === "child" ? readLaneId(args) : null));
+    maybePut(input, "baseBranch", readValue(args, ["--base", "--base-branch"]));
+    maybePut(input, "branchName", readValue(args, ["--branch-name"]));
+    const linearIssueJson = readValue(args, ["--linear-issue-json"]);
+    if (linearIssueJson) {
+      const parsed = parseJson(linearIssueJson, "--linear-issue-json");
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new CliUsageError("--linear-issue-json must decode to a non-null JSON object");
+      }
+      input.linearIssue = parsed as JsonObject;
+    }
     if (sub === "child" && !input.parentLaneId) throw new CliUsageError("parent lane is required. Use --lane <parent> or --parent <parent>.");
     return { kind: "execute", label: "lane create", steps: [actionCallStep("result", "create_lane", collectGenericObjectArgs(args, input))] };
   }
@@ -2212,6 +2231,19 @@ function buildDiffPlan(args: string[]): CliPlan {
       }))],
     };
   }
+  if (sub === "patch") {
+    const filePath = requireValue(readValue(args, ["--path"]) ?? firstPositional(args), "path");
+    return {
+      kind: "execute",
+      label: "diff patch",
+      steps: [actionStep("result", "diff", "getFilePatch", withLane({
+        filePath,
+        mode: readValue(args, ["--mode"]) ?? "unstaged",
+        compareRef: readValue(args, ["--compare-ref", "--base"]),
+        compareTo: readValue(args, ["--compare-to", "--head"]),
+      }))],
+    };
+  }
   return { kind: "execute", label: `diff ${sub}`, steps: [actionStep("result", "diff", sub, withLane())] };
 }
 
@@ -2240,6 +2272,11 @@ function buildPrPlan(args: string[]): CliPlan {
     maybePut(input, "title", readValue(args, ["--title"]));
     maybePut(input, "body", readValue(args, ["--body"]));
     input.draft = readFlag(args, ["--draft"]);
+    input.closeLinearIssueOnMerge = readFlag(args, [
+      "--close-linear-issue-on-merge",
+      "--close-linear",
+      "--fixes-linear-issue",
+    ]);
     return { kind: "execute", label: "PR create", steps: [actionCallStep("result", "create_pr_from_lane", collectGenericObjectArgs(args, input))] };
   }
   if (sub === "health") return { kind: "execute", label: "PR health", steps: [actionCallStep("result", "get_pr_health", withPr({ prId: prId ?? firstPositional(args) }))] };
@@ -2374,7 +2411,11 @@ function buildPrPlan(args: string[]): CliPlan {
         pipelinePatch,
       ]));
     }
-    steps.push(actionCallStep("result", mode === "preview" ? "pr_preview_issue_resolution_prompt" : "pr_start_issue_resolution", collectGenericObjectArgs(args, input)));
+    if (mode === "preview") {
+      steps.push(actionCallStep("result", "pr_preview_issue_resolution_prompt", collectGenericObjectArgs(args, input)));
+    } else {
+      steps.push(actionStep("result", "path_to_merge", "startPathToMerge", collectGenericObjectArgs(args, input)));
+    }
     return { kind: "execute", label: `PR path-to-merge ${mode}`, steps };
   }
 
@@ -3933,6 +3974,32 @@ function buildAutomationsPlan(args: string[]): CliPlan {
 
 function buildLinearPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "workflows";
+  if (sub === "quick-view" || sub === "quick" || sub === "overview") {
+    return { kind: "execute", label: "Linear quick view", formatter: "linear-quick-view", steps: [actionCallStep("result", "getLinearQuickView", collectGenericObjectArgs(args))] };
+  }
+  if (sub === "picker-data" || sub === "picker") {
+    return { kind: "execute", label: "Linear picker data", steps: [actionCallStep("result", "getLinearIssuePickerData", collectGenericObjectArgs(args))] };
+  }
+  if (sub === "search-issues" || sub === "search") {
+    const stateTypesValue = readValue(args, ["--state-type", "--state-types", "--state"]);
+    const stateTypes = stateTypesValue
+      ? stateTypesValue.split(",").map((entry) => entry.trim()).filter(Boolean)
+      : [];
+    const input: JsonObject = {};
+    maybePut(input, "projectId", readValue(args, ["--project-id"]));
+    maybePut(input, "projectSlug", readValue(args, ["--project-slug", "--project"]));
+    maybePut(input, "teamKey", readValue(args, ["--team-key", "--team"]));
+    if (stateTypes.length) input.stateTypes = stateTypes;
+    maybePut(input, "assigneeId", readValue(args, ["--assignee", "--assignee-id"]));
+    const priority = readNumberOption(args, ["--priority"]);
+    if (priority !== undefined) input.priority = priority;
+    maybePut(input, "query", readValue(args, ["--query", "-q"]));
+    const first = readNumberOption(args, ["--first", "--limit"]);
+    if (first !== undefined) input.first = first;
+    maybePut(input, "after", readValue(args, ["--after", "--cursor"]));
+    if (readFlag(args, ["--include-archived"])) input.includeArchived = true;
+    return { kind: "execute", label: "Linear search issues", steps: [actionCallStep("result", "searchLinearIssues", collectGenericObjectArgs(args, input))] };
+  }
   if (sub === "workflows") return { kind: "execute", label: "Linear workflows", steps: [actionCallStep("result", "listLinearWorkflows", collectGenericObjectArgs(args))] };
   if (sub === "run") {
     const mode = firstPositional(args) ?? "status";
@@ -6286,6 +6353,53 @@ function formatTerminalRead(value: unknown): string {
   return data.length ? `${header}\n\n${data}` : `${header}\n\n(no output)`;
 }
 
+function formatLinearQuickView(value: unknown): string {
+  if (!isRecord(value)) return JSON.stringify(value, null, 2);
+  const connection = isRecord(value.connection) ? value.connection : {};
+  const organization = isRecord(value.organization) ? value.organization : null;
+  const viewer = isRecord(value.viewer) ? value.viewer : null;
+  const projects = firstArray(value, ["projects"]);
+  const assignedIssues = firstArray(value, ["assignedIssues"]);
+  const recentIssues = firstArray(value, ["recentIssues"]);
+  const teams = firstArray(value, ["teams"]);
+  const header = renderKeyValues("Linear quick view", [
+    ["connected", connection.connected],
+    ["auth", connection.authMode],
+    ["workspace", organization?.name ?? organization?.urlKey],
+    ["viewer", viewer?.displayName ?? viewer?.name ?? connection.viewerName],
+    ["projects", projects.length],
+    ["teams", teams.length],
+    ["assigned issues", assignedIssues.length],
+    ["recent issues", recentIssues.length],
+    ["checked", value.fetchedAt ?? connection.checkedAt],
+    ["message", connection.message],
+  ]);
+  const projectRows = projects.map((project) => [
+    project.name,
+    project.statusName ?? project.statusType,
+    typeof project.progress === "number" ? `${Math.round(project.progress * 100)}%` : "",
+    project.issueCount,
+  ]);
+  const issueRows = [...assignedIssues, ...recentIssues]
+    .filter((issue, index, all) => all.findIndex((candidate) => candidate.id === issue.id) === index)
+    .slice(0, 12)
+    .map((issue) => [
+      issue.identifier,
+      issue.title,
+      issue.stateName,
+      issue.projectName ?? issue.teamName ?? issue.teamKey,
+    ]);
+  return [
+    header,
+    "",
+    "Projects",
+    renderTable(["project", "status", "progress", "issues"], projectRows, "(no projects)"),
+    "",
+    "Issues",
+    renderTable(["id", "title", "state", "area"], issueRows, "(no issues)"),
+  ].join("\n");
+}
+
 function formatAppControlSelection(value: unknown): string {
   const item = firstRecord(value, ["item", "selection"]) ?? (isRecord(value) ? value : {});
   const metadata = isRecord(item.metadata) ? item.metadata : {};
@@ -6367,6 +6481,8 @@ function formatTextOutput(value: unknown, formatter: FormatterId | undefined): s
           ["note", isRecord(value) ? value.note : null],
         ]);
       }
+    case "linear-quick-view":
+      return formatLinearQuickView(value);
     case "lanes":
       return renderLaneGraph(value);
     case "lane-detail":

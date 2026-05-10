@@ -221,6 +221,7 @@ import type {
   GetLaneConflictStatusArgs,
   GetDiffChangesArgs,
   GetFileDiffArgs,
+  GetFilePatchArgs,
   GetProcessLogTailArgs,
   GetTestLogTailArgs,
   ExportHistoryArgs,
@@ -525,6 +526,10 @@ import type {
   CtoClearAgentTaskSessionArgs,
   CtoGetLinearOAuthSessionArgs,
   CtoGetLinearOAuthSessionResult,
+  CtoGetLinearIssuePickerDataResult,
+  CtoLinearQuickView,
+  CtoSearchLinearIssuesArgs,
+  CtoSearchLinearIssuesResult,
   CtoRunProjectScanResult,
   CtoStartLinearOAuthResult,
   LinearConnectionStatus,
@@ -1675,6 +1680,10 @@ async function buildLinearConnectionStatus(
     connected: status.connected,
     viewerId: status.viewerId,
     viewerName: status.viewerName,
+    organizationId: status.organizationId,
+    organizationName: status.organizationName,
+    organizationUrlKey: status.organizationUrlKey,
+    organizationLogoUrl: status.organizationLogoUrl,
     projectCount: undefined,
     projectPreview: undefined,
     checkedAt: nowIso(),
@@ -5455,6 +5464,8 @@ export function registerIpc({
       description: arg.description,
       parentLaneId: arg.parentLaneId,
       baseBranch: arg.baseBranch,
+      branchName: arg.branchName,
+      linearIssue: arg.linearIssue ?? null,
     });
     await ensureLanePortLease(ctx, lane.id);
     notifyLaneCreated(ctx, lane);
@@ -7242,7 +7253,9 @@ export function registerIpc({
 
   ipcMain.handle(IPC.diffGetChanges, async (_event, arg: GetDiffChangesArgs) => {
     const ctx = getCtx();
-    return await ctx.diffService.getChanges(arg.laneId);
+    return await withIpcTiming(ctx, "diff.getChanges", async () => await ctx.diffService.getChanges(arg.laneId), {
+      laneId: arg.laneId,
+    });
   });
 
   ipcMain.handle(IPC.diffGetFile, async (_event, arg: GetFileDiffArgs) => {
@@ -7251,6 +7264,26 @@ export function registerIpc({
       ctx,
       "diff.getFile",
       async () => await ctx.diffService.getFileDiff({
+        laneId: arg.laneId,
+        filePath: arg.path,
+        mode: arg.mode,
+        compareRef: arg.compareRef,
+        compareTo: arg.compareTo
+      }),
+      {
+        laneId: arg.laneId,
+        mode: arg.mode,
+        pathLength: arg.path.length,
+      }
+    );
+  });
+
+  ipcMain.handle(IPC.diffGetFilePatch, async (_event, arg: GetFilePatchArgs) => {
+    const ctx = getCtx();
+    return await withIpcTiming(
+      ctx,
+      "diff.getFilePatch",
+      async () => await ctx.diffService.getFilePatch({
         laneId: arg.laneId,
         filePath: arg.path,
         mode: arg.mode,
@@ -9598,6 +9631,56 @@ export function registerIpc({
       return [];
     }
   });
+
+  ipcMain.handle(IPC.ctoGetLinearQuickView, async (): Promise<CtoLinearQuickView> => {
+    const ctx = getCtx();
+    const tokenStored = Boolean(ctx.linearCredentialService?.getStatus().tokenStored);
+    const connection = await buildLinearConnectionStatus(ctx, tokenStored);
+    if (!connection.connected || !ctx.linearIssueTracker) {
+      return {
+        connection,
+        organization: null,
+        viewer: null,
+        projects: [],
+        teams: [],
+        assignedIssues: [],
+        recentIssues: [],
+        fetchedAt: nowIso(),
+        sdk: {
+          packageName: "@linear/sdk",
+          surfaces: [],
+        },
+      };
+    }
+    return ctx.linearIssueTracker.getQuickView(connection);
+  });
+
+  ipcMain.handle(IPC.ctoGetLinearIssuePickerData, async (): Promise<CtoGetLinearIssuePickerDataResult> => {
+    const ctx = getCtx();
+    // When Linear is not configured, return an empty payload so the renderer
+    // can render a graceful empty state instead of having to handle a thrown
+    // error — matches the behavior the picker expects when Linear is offline.
+    if (!ctx.linearIssueTracker) {
+      return { projects: [], users: [], states: [] };
+    }
+    const [projects, users, states] = await Promise.all([
+      ctx.linearIssueTracker.listProjects().catch(() => []),
+      ctx.linearIssueTracker.listUsers().catch(() => []),
+      ctx.linearIssueTracker.listWorkflowStates().catch(() => []),
+    ]);
+    return { projects, users, states };
+  });
+
+  ipcMain.handle(
+    IPC.ctoSearchLinearIssues,
+    async (_event, arg: CtoSearchLinearIssuesArgs = {}): Promise<CtoSearchLinearIssuesResult> => {
+      const ctx = getCtx();
+      if (!ctx.linearIssueTracker) {
+        return { issues: [], pageInfo: { hasNextPage: false, endCursor: null } };
+      }
+      return ctx.linearIssueTracker.searchIssues(arg);
+    }
+  );
 
   ipcMain.handle(IPC.ctoRunProjectScan, async (): Promise<CtoRunProjectScanResult> => {
     const ctx = getCtx();

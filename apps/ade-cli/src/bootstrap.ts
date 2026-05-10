@@ -38,6 +38,7 @@ import type { createPrService } from "../../desktop/src/main/services/prs/prServ
 import type { createPrSummaryService } from "../../desktop/src/main/services/prs/prSummaryService";
 import type { createQueueLandingService } from "../../desktop/src/main/services/prs/queueLandingService";
 import { createIssueInventoryService } from "../../desktop/src/main/services/prs/issueInventoryService";
+import { createPathToMergeOrchestrator } from "../../desktop/src/main/services/prs/pathToMergeOrchestrator";
 import { createMemoryService } from "../../desktop/src/main/services/memory/memoryService";
 import { createCtoStateService } from "../../desktop/src/main/services/cto/ctoStateService";
 import { createWorkerAgentService } from "../../desktop/src/main/services/cto/workerAgentService";
@@ -93,7 +94,7 @@ import {
   getAdeActionDomainServices,
   isAllowedAdeAction,
 } from "../../desktop/src/main/services/adeActions/registry";
-import type { LaneWorktreeLockService } from "../../desktop/src/main/services/lanes/laneWorktreeLockService";
+import { createLaneWorktreeLockService, type LaneWorktreeLockService } from "../../desktop/src/main/services/lanes/laneWorktreeLockService";
 import { createHeadlessLinearServices } from "./headlessLinearServices";
 import { createEventBuffer, type BufferedEvent, type EventBuffer } from "./eventBuffer";
 
@@ -156,6 +157,7 @@ export type AdeRuntime = {
   prSummaryService?: ReturnType<typeof createPrSummaryService> | null;
   queueLandingService?: ReturnType<typeof createQueueLandingService> | null;
   issueInventoryService: ReturnType<typeof createIssueInventoryService>;
+  pathToMergeOrchestrator?: ReturnType<typeof createPathToMergeOrchestrator> | null;
   fileService?: ReturnType<typeof createFileService> | null;
   memoryService: ReturnType<typeof createMemoryService>;
   ctoStateService: ReturnType<typeof createCtoStateService>;
@@ -421,6 +423,7 @@ export async function createAdeRuntime(args: {
     broadcastEvent: () => {}
   });
   const issueInventoryService = createIssueInventoryService({ db });
+  const laneWorktreeLockService = createLaneWorktreeLockService({ db, logger });
   const eventBuffer = createEventBuffer();
 
   function pushEvent(category: BufferedEvent["category"], payload: Record<string, unknown>): void {
@@ -718,10 +721,27 @@ export async function createAdeRuntime(args: {
       getDirtyFileTextForPath: () => undefined,
     });
     if (typeof (headlessLinearServices.prService as { setAgentChatService?: (svc: unknown) => void }).setAgentChatService === "function") {
-      (headlessLinearServices.prService as { setAgentChatService: (svc: unknown) => void }).setAgentChatService(agentChatService as never);
+      (headlessLinearServices.prService as { setAgentChatService: (svc: unknown) => void }).setAgentChatService(agentChatService);
     }
   }
   agentChatServiceHolder.current = agentChatService;
+  // The headless agent-chat stub returns less-typed payloads than the full
+  // agentChatService. Cast through the orchestrator's expected shape (rather
+  // than `never`) so that any future tightening of PathToMergeDeps surfaces
+  // as a type error here.
+  type PathToMergeAgentChatService = Parameters<typeof createPathToMergeOrchestrator>[0]["agentChatService"];
+  const pathToMergeOrchestrator = createPathToMergeOrchestrator({
+    logger,
+    prService: headlessLinearServices.prService,
+    laneService,
+    agentChatService: headlessLinearServices.agentChatService as unknown as PathToMergeAgentChatService,
+    sessionService,
+    issueInventoryService,
+    conflictService,
+    laneWorktreeLockService,
+    defaultModelId: null,
+    defaultReasoningEffort: null,
+  });
   const automationService = createAutomationService({
     db,
     logger,
@@ -762,11 +782,13 @@ export async function createAdeRuntime(args: {
     diffService,
     missionService,
     missionBudgetService,
+    laneWorktreeLockService,
     ptyService,
     testService,
     aiIntegrationService,
     agentChatService,
     issueInventoryService,
+    pathToMergeOrchestrator,
     memoryService,
     ctoStateService,
     workerAgentService,
@@ -796,6 +818,7 @@ export async function createAdeRuntime(args: {
     dispose: () => {
       const swallow = (fn: () => void) => { try { fn(); } catch { /* ignore */ } };
       swallow(() => automationService.dispose());
+      swallow(() => pathToMergeOrchestrator.dispose());
       swallow(() => processService.disposeAll());
       swallow(() => iosSimulatorService?.dispose());
       swallow(() => appControlService?.dispose());

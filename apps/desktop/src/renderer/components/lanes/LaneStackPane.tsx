@@ -1,12 +1,13 @@
 import React from "react";
 import { ArrowSquareOut, GitMerge } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
-import type { LaneSummary } from "../../../shared/types";
+import type { LaneLinearIssue, LaneSummary } from "../../../shared/types";
 import type { IntegrationLaneSource } from "../../lib/integrationLanes";
 import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, outlineButton } from "./laneDesignTokens";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { LaneAccentDot } from "./LaneAccentDot";
+import { LinearIssueBadge } from "./LinearIssueBadge";
 
 const TREE_ROW_H = 34;
 const TREE_INDENT = 22;
@@ -73,12 +74,14 @@ function StackGraph({
   onSelect,
   runtimeByLaneId,
   integrationSourcesByLaneId,
+  onStartChatWithLinearIssue,
 }: {
   lanes: LaneSummary[];
   selectedLaneId: string | null;
   onSelect: (id: string) => void;
   runtimeByLaneId: LaneRuntimeMap;
   integrationSourcesByLaneId: Map<string, IntegrationLaneSource[]>;
+  onStartChatWithLinearIssue?: (laneId: string, issue: LaneLinearIssue) => void;
 }) {
   const layout = React.useMemo(() => {
     const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
@@ -258,6 +261,13 @@ function StackGraph({
             >
               <LaneRuntimeDot bucket={runtimeByLaneId.get(lane.id)?.bucket ?? "none"} />
               {lane.color ? <LaneAccentDot lane={lane} size={7} /> : null}
+              {lane.linearIssue ? (
+                <LinearIssueBadge
+                  issue={lane.linearIssue}
+                  compact
+                  onStartChatWithIssue={() => onStartChatWithLinearIssue?.(lane.id, lane.linearIssue!)}
+                />
+              ) : null}
               <span className="flex flex-col items-start min-w-0" style={{
                 maxWidth: integrationSources.length > 0 ? 120 : 160,
                 lineHeight: 1.05,
@@ -307,12 +317,14 @@ export function LaneStackPane({
   onSelect,
   runtimeByLaneId,
   integrationSourcesByLaneId,
+  onStartChatWithLinearIssue,
 }: {
   lanes: LaneSummary[];
   selectedLaneId: string | null;
   onSelect: (id: string) => void;
   runtimeByLaneId: LaneRuntimeMap;
   integrationSourcesByLaneId?: Map<string, IntegrationLaneSource[]>;
+  onStartChatWithLinearIssue?: (laneId: string, issue: LaneLinearIssue) => void;
 }) {
   const navigate = useNavigate();
   React.useEffect(() => {
@@ -393,6 +405,7 @@ export function LaneStackPane({
         onSelect={onSelect}
         runtimeByLaneId={runtimeByLaneId}
         integrationSourcesByLaneId={effectiveIntegrationSourcesByLaneId}
+        onStartChatWithLinearIssue={onStartChatWithLinearIssue}
       />
     </div>
   );

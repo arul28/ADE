@@ -170,6 +170,7 @@ type HeadlessLinearServices = {
       truncated: boolean;
       totalEntries: number;
     }>;
+    previewSessionToolNames: (args?: { sessionId?: string | null }) => Promise<string[]>;
     createSession: (args: { laneId: string; title?: string }) => Promise<HeadlessAgentChatSession>;
     updateSession: (args: { sessionId: string; title?: string | null }) => Promise<HeadlessAgentChatSession>;
     sendMessage: (args: { sessionId: string; text: string }) => Promise<void>;
@@ -523,6 +524,9 @@ function createHeadlessAgentChatService(projectRoot: string): HeadlessLinearServ
         truncated: source.length > entries.length || entries.some((entry) => entry.text.length >= safeMaxChars),
         totalEntries: source.length,
       };
+    },
+    async previewSessionToolNames() {
+      return [];
     },
     async createSession(args: { laneId: string; title?: string }) {
       return ensureSession({ laneId: args.laneId, title: args.title });

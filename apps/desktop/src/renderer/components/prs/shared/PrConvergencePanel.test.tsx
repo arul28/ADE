@@ -162,6 +162,38 @@ describe("PrConvergencePanel", () => {
     expect(props.onAutoConvergeChange).toHaveBeenCalledWith(true);
   });
 
+  it("disables Path to Merge at max rounds unless it can merge only", async () => {
+    const user = userEvent.setup();
+    const props = renderPanel({
+      items: [makeItem()],
+      checks: [makeCheck({ conclusion: "failure" })],
+      convergence: makeConvergence({ currentRound: 5, maxRounds: 5 }),
+    });
+
+    await user.click(screen.getByRole("button", { name: "Auto-Converge" }));
+
+    const startButton = screen.getByRole("button", { name: "Start Path to Merge" }) as HTMLButtonElement;
+    expect(startButton.disabled).toBe(true);
+    expect(startButton.getAttribute("title")).toBe("Maximum rounds reached");
+
+    await user.click(startButton);
+    expect(props.onAutoConvergeChange).not.toHaveBeenCalled();
+  });
+
+  it("allows the merge-only Path to Merge path at max rounds when checks are green", async () => {
+    const user = userEvent.setup();
+    const props = renderPanel({
+      checks: [makeCheck({ conclusion: "success" })],
+      convergence: makeConvergence({ currentRound: 5, maxRounds: 5 }),
+      pipelineSettings: { ...defaultPipelineSettings, autoMerge: true },
+    });
+
+    await user.click(screen.getByRole("button", { name: "Auto-Converge" }));
+    await user.click(screen.getByRole("button", { name: "Start Path to Merge" }));
+
+    expect(props.onAutoConvergeChange).toHaveBeenCalledWith(true);
+  });
+
   it("does not show stale round progress when auto-converge mode is selected but stopped", async () => {
     const user = userEvent.setup();
     renderPanel({

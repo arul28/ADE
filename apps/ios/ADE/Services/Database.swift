@@ -2245,7 +2245,7 @@ final class DatabaseService {
     try exec("create index if not exists idx_lane_detail_snapshots_updated_at on lane_detail_snapshots(updated_at)")
     try ensurePullRequestProjectionTables()
     try ensureColumn(tableName: "pr_pipeline_settings", columnName: "conflict_strategy", definition: "text not null default 'pause'")
-    try ensureColumn(tableName: "pr_pipeline_settings", columnName: "force_finalize_mode", definition: "text not null default 'off'")
+    try ensureColumn(tableName: "pr_pipeline_settings", columnName: "force_finalize_mode", definition: "text not null default 'conditional'")
     try ensureColumn(tableName: "pr_pipeline_settings", columnName: "force_finalize_require_no_ci_failures", definition: "integer not null default 1")
     try ensureColumn(tableName: "pr_pipeline_settings", columnName: "early_merge_on_green", definition: "integer not null default 1")
     try ensureColumn(tableName: "pr_pipeline_settings", columnName: "auto_agent_provider", definition: "text")
@@ -2253,15 +2253,46 @@ final class DatabaseService {
     try ensureColumn(tableName: "pr_pipeline_settings", columnName: "auto_agent_reasoning_effort", definition: "text")
     try ensureColumn(tableName: "pr_pipeline_settings", columnName: "auto_agent_permission_mode", definition: "text")
     try ensureColumn(tableName: "pr_pipeline_settings", columnName: "auto_agent_confidence_threshold", definition: "real")
-    try ensureColumn(tableName: "pr_pipeline_settings", columnName: "at_cap_policy", definition: "text")
+    try ensureColumn(tableName: "pr_pipeline_settings", columnName: "at_cap_policy", definition: "text default 'ci_retry_once'")
     try ensureColumn(tableName: "pr_pipeline_settings", columnName: "at_cap_wait_minutes", definition: "integer")
     try ensureColumn(tableName: "pr_pipeline_settings", columnName: "at_cap_ci_retry_max", definition: "integer")
     try ensureColumn(tableName: "pr_pipeline_settings", columnName: "force_merge_requires_confirmation", definition: "integer")
+    try ensureColumn(tableName: "pr_pipeline_settings", columnName: "ptm_defaults_backfilled_version", definition: "text")
+    if hasTable(named: "pr_pipeline_settings") {
+      try exec("""
+        update pr_pipeline_settings
+           set auto_merge = 1,
+               force_finalize_mode = 'conditional',
+               at_cap_policy = 'ci_retry_once',
+               ptm_defaults_backfilled_version = 'ptm-defaults-v1'
+         where auto_merge = 0
+           and merge_method = 'repo_default'
+           and max_rounds = 5
+           and on_rebase_needed = 'pause'
+           and coalesce(conflict_strategy, 'pause') = 'pause'
+           and coalesce(force_finalize_mode, 'off') = 'off'
+           and coalesce(force_finalize_require_no_ci_failures, 1) = 1
+           and coalesce(early_merge_on_green, 1) = 1
+           and (at_cap_policy is null or at_cap_policy = 'stop')
+           and (at_cap_wait_minutes is null or at_cap_wait_minutes = 30)
+           and (at_cap_ci_retry_max is null or at_cap_ci_retry_max = 3)
+           and coalesce(force_merge_requires_confirmation, 1) = 1
+           and auto_agent_provider is null
+           and auto_agent_model is null
+           and auto_agent_reasoning_effort is null
+           and auto_agent_permission_mode is null
+           and auto_agent_confidence_threshold is null
+           and (ptm_defaults_backfilled_version is null or ptm_defaults_backfilled_version <> 'ptm-defaults-v1')
+      """)
+    }
     try ensureColumn(tableName: "pr_convergence_state", columnName: "ptm_args_json", definition: "text")
     try ensureColumn(tableName: "pr_convergence_state", columnName: "force_finalize_used", definition: "integer not null default 0")
     try ensureColumn(tableName: "pr_convergence_state", columnName: "ci_retry_attempts_used", definition: "integer not null default 0")
     try ensureColumn(tableName: "pr_convergence_state", columnName: "wait_for_ci_started_at", definition: "text")
     try ensureColumn(tableName: "pr_convergence_state", columnName: "last_dispatch_head_sha", definition: "text")
+    try ensureColumn(tableName: "pr_convergence_state", columnName: "last_bot_ping_head_sha", definition: "text")
+    try ensureColumn(tableName: "pr_convergence_state", columnName: "last_bot_ping_at", definition: "text")
+    try ensureColumn(tableName: "pr_convergence_state", columnName: "merge_wait_kind", definition: "text")
     try ensureColumn(tableName: "pr_convergence_state", columnName: "pause_repeat_count", definition: "integer not null default 0")
     try ensureColumn(tableName: "pr_convergence_state", columnName: "last_pause_reason_hash", definition: "text")
 

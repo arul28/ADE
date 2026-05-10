@@ -793,6 +793,59 @@ describe("prService.createFromLane", () => {
     );
   });
 
+  it("adds a non-closing Linear reference when creating a PR from a linked lane", async () => {
+    const ghService = makeGithubService({
+      apiRequest: vi.fn().mockRejectedValue(new Error("stop after payload capture")),
+    });
+    const laneService = makeLaneService([
+      makeFakeLane({
+        linearIssue: {
+          id: "issue-1",
+          identifier: "ADE-123",
+          title: "Connect Linear PR linking",
+          description: null,
+          url: "https://linear.app/ade/issue/ADE-123/connect-linear-pr-linking",
+          projectId: "project-1",
+          projectSlug: "ade",
+          teamId: "team-1",
+          teamKey: "ADE",
+          stateId: "state-1",
+          stateName: "In Progress",
+          stateType: "started",
+          priority: 0,
+          priorityLabel: "none",
+          labels: [],
+          assigneeId: null,
+          assigneeName: null,
+          createdAt: "2026-05-08T00:00:00.000Z",
+          updatedAt: "2026-05-08T00:00:00.000Z",
+        },
+      }),
+    ]);
+
+    const { service } = buildService({ githubService: ghService, laneService });
+
+    await expect(
+      service.createFromLane({
+        laneId: LANE_ID,
+        title: "My PR",
+        body: "description",
+        draft: false,
+        allowDirtyWorktree: true,
+      }),
+    ).rejects.toThrow('Failed to create pull request for "my-feature" → "main": stop after payload capture');
+
+    expect(ghService.apiRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "POST",
+        body: expect.objectContaining({
+          title: "My PR",
+          body: "Refs ADE-123\n\ndescription",
+        }),
+      }),
+    );
+  });
+
   it("blocks PR creation when the remote branch has newer commits", async () => {
     const ghService = makeGithubService({
       apiRequest: vi.fn().mockRejectedValue(new Error("should not create")),

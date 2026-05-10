@@ -139,9 +139,11 @@ export type DiffMode = "unstaged" | "staged" | "commit";
 
 export type FileChange = {
   path: string;
+  oldPath?: string;
   kind: "modified" | "added" | "deleted" | "renamed" | "untracked" | "unknown";
   additions?: number;
   deletions?: number;
+  isBinary?: boolean;
 };
 
 export type DiffChanges = {
@@ -161,11 +163,26 @@ export type GetFileDiffArgs = {
   compareTo?: "worktree" | "parent";
 };
 
+export type GetFilePatchArgs = GetFileDiffArgs;
+
 export type DiffSide = {
   exists: boolean;
   text: string;
   size?: number;
   isTruncated?: boolean;
+};
+
+export type FilePatch = {
+  path: string;
+  oldPath?: string;
+  mode: DiffMode;
+  patch: string;
+  additions?: number;
+  deletions?: number;
+  status?: FileChange["kind"];
+  isBinary?: boolean;
+  isTruncated?: boolean;
+  size?: number;
 };
 
 export type FileDiff = {

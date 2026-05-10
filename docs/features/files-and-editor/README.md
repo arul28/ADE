@@ -38,27 +38,46 @@ Shared types and IPC:
 - `apps/desktop/src/shared/types/files.ts` — `FilesWorkspace`,
   `FileTreeNode`, `FileContent`, `FilesQuickOpenItem`,
   `FilesSearchTextMatch`, the IPC arg shapes.
-- `apps/desktop/src/shared/ipc.ts` — channels `ade.files.*`.
+- `apps/desktop/src/shared/types/git.ts` (and related shared types) —
+  `FileDiff`, `FilePatch`, and other shapes returned by `diffService`
+  for the diff viewer.
+- `apps/desktop/src/shared/ipc.ts` — channels `ade.files.*` and
+  `ade.diff.getChanges` / `ade.diff.getFile` / `ade.diff.getFilePatch`
+  (lane-scoped diff lists and per-file payloads).
 - `apps/desktop/src/main/services/ipc/registerIpc.ts` — handler
   registrations (`filesListWorkspaces`, `filesListTree`, `filesReadFile`,
   `filesWriteTextAtomic`, `filesWriteText`, `filesCreateFile`,
   `filesCreateDirectory`, `filesRename`, `filesDelete`, `filesQuickOpen`,
-  `filesSearchText`, `filesWatchChanges`, `filesStopWatching`).
+  `filesSearchText`, `filesWatchChanges`, `filesStopWatching`, plus
+  `diffGetChanges`, `diffGetFile`, `diffGetFilePatch`).
 
 Preload bridge:
 
-- `apps/desktop/src/preload/preload.ts` — `window.ade.files` surface.
+- `apps/desktop/src/preload/preload.ts` — `window.ade.files` and
+  `window.ade.diff` (`getChanges`, `getFile`, `getFilePatch`; changes
+  list is short-cached per lane).
 
 Renderer:
 
-- `apps/desktop/src/renderer/components/files/FilesPage.tsx` — entire
-  Files tab in a single ~2,570-line component. File explorer, Monaco
-  editor host, tab bar, diff mode, conflict mode, quick open, text
-  search, workspace switcher, trust warnings. Accepts optional
-  `preferredLaneId` and `embedded` props so the same component can be
-  mounted inside the Work right-edge sidebar against the active lane;
-  in `embedded` mode the page renders a compact header (only the
-  workspace selector and read-only badge) so it fits a narrow column.
+- `apps/desktop/src/renderer/components/files/FilesPage.tsx` — Files
+  tab shell (~2,720 lines): workspace chrome, tab bar, Monaco edit host,
+  diff and conflict modes, quick open, text search, trust warnings. It
+  composes the virtualized tree below and mounts `AdeDiffViewer` for diff
+  tabs. Accepts optional `preferredLaneId` and `embedded` props so the
+  same component can mount inside the Work right-edge sidebar; in
+  `embedded` mode the header is compact (workspace selector and
+  read-only badge only).
+- `apps/desktop/src/renderer/components/files/FilesExplorer.tsx` —
+  virtualized file tree (`@tanstack/react-virtual`), inline rename/create,
+  explorer search, and context-menu wiring; git status coloring uses
+  helpers from `filePresentation.tsx`.
+- `apps/desktop/src/renderer/components/files/filePresentation.tsx` —
+  file-type icons and `changeStatus*` helpers shared with the explorer.
+- `apps/desktop/src/renderer/components/shared/AdeDiffViewer.tsx` —
+  shared read-only diff chrome (`@pierre/diffs` `MultiFileDiff` /
+  `PatchDiff` with split/unified, wrap, line numbers); editable working-tree
+  diffs delegate to `MonacoDiffView`. Also used from `LaneDiffPane`,
+  `ChatFileChangesPanel`, and `PrDetailPane`.
 - `apps/desktop/src/renderer/components/files/FilesPage.test.tsx` —
   renderer tests.
 - `apps/ios/ADE/Views/Files/FilesRootScreen.swift` — mobile Files
@@ -110,10 +129,10 @@ mode concept):
 
 - **Edit** — Monaco with read/write semantics, syntax highlighting,
   Cmd+S saves atomically.
-- **Diff** — side-by-side Monaco diff viewer. Read-only by default,
-  optionally editable on the right pane. Sources: staged vs working
-  tree, HEAD vs working tree, or commit-to-commit. Driven by
-  `diffService`.
+- **Diff** — `AdeDiffViewer` backed by `diffService`. Read-only views
+  use `@pierre/diffs`; editable working-tree views use `MonacoDiffView`.
+  Sources: staged vs working tree, HEAD vs working tree, or
+  commit-to-commit.
 - **Conflict** — 3-way merge. Base / Ours / Theirs / Result panes.
   Interactive "Accept Ours", "Accept Theirs", "Accept Both". Resolves
   via `conflictService`.
@@ -188,10 +207,11 @@ whether a directory should show the "has changes" dot.
 ## Trust boundary
 
 The preload bridge (`apps/desktop/src/preload/preload.ts`) exposes
-only the `window.ade.files` surface; nothing from `node:fs` or
-`node:path` leaks into the renderer. All path resolution happens in
-the main process through `resolvePathWithinRoot`, which refuses
-`..` escapes, null bytes, and `.git` internals.
+`window.ade.files` and `window.ade.diff`; nothing from `node:fs` or
+`node:path` leaks into the renderer. All path resolution for file
+writes and workspace roots happens in the main process through
+`resolvePathWithinRoot`, which refuses `..` escapes, null bytes, and
+`.git` internals.
 
 For deeper detail on the watcher + trust boundary, see
 [file-watcher-and-trust.md](./file-watcher-and-trust.md).

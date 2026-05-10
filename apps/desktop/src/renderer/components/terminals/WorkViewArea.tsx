@@ -19,7 +19,7 @@ import {
   Terminal,
   X,
 } from "@phosphor-icons/react";
-import type { AgentChatSession, LaneSummary, TerminalSessionSummary } from "../../../shared/types";
+import type { AgentChatSession, LaneLinearIssue, LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import type { WorkDraftKind, WorkViewMode } from "../../state/appStore";
 import { TerminalView } from "./TerminalView";
 import { ToolLogo } from "./ToolLogos";
@@ -436,6 +436,8 @@ export function WorkViewArea({
   sessionsListLoading = false,
   workSidebarOpen = false,
   onToggleWorkSidebar,
+  initialLinearIssueContext = null,
+  onInitialLinearIssueContextConsumed,
 }: {
   gridLayoutId: string;
   lanes: LaneSummary[];
@@ -473,6 +475,8 @@ export function WorkViewArea({
   sessionsListLoading?: boolean;
   workSidebarOpen?: boolean;
   onToggleWorkSidebar?: () => void;
+  initialLinearIssueContext?: LaneLinearIssue | null;
+  onInitialLinearIssueContextConsumed?: () => void;
 }) {
   const expandSessionsProps: SessionsPaneExpandAffordanceProps = {
     show: Boolean(sessionsPaneCollapsed && onExpandSessionsPane),
@@ -626,6 +630,8 @@ export function WorkViewArea({
                 lanes={lanes}
                 onOpenChatSession={onOpenChatSession}
                 onLaunchPtySession={onLaunchPtySession}
+                initialLinearIssueContext={initialLinearIssueContext}
+                onInitialLinearIssueContextConsumed={onInitialLinearIssueContextConsumed}
               />
             </div>
           </div>
@@ -688,6 +694,8 @@ export function WorkViewArea({
               lanes={lanes}
               onOpenChatSession={onOpenChatSession}
               onLaunchPtySession={onLaunchPtySession}
+              initialLinearIssueContext={initialLinearIssueContext}
+              onInitialLinearIssueContextConsumed={onInitialLinearIssueContextConsumed}
             />
           </div>
         </div>

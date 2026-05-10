@@ -191,6 +191,79 @@ describe("gitOperationsService stash item commands", () => {
   });
 });
 
+describe("gitOperationsService.commit", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("prefixes commits from linked Linear lanes with a non-closing reference", async () => {
+    mockGit.getHeadSha.mockResolvedValueOnce("before").mockResolvedValueOnce("after");
+    mockGit.runGitOrThrow.mockResolvedValue(undefined);
+    const mockStart = vi.fn().mockReturnValue({ operationId: "op-1" });
+    const service = createGitOperationsService({
+      laneService: {
+        getLaneBaseAndBranch: vi.fn().mockReturnValue({
+          baseRef: "main",
+          branchRef: "ade-123-linked-commit",
+          worktreePath: "/tmp/ade-lane",
+          laneType: "worktree",
+          linearIssue: {
+            id: "issue-1",
+            identifier: "ADE-123",
+            title: "Linked commit",
+            description: null,
+            url: null,
+            projectId: "project-1",
+            projectSlug: "ade",
+            teamId: "team-1",
+            teamKey: "ADE",
+            stateId: "state-1",
+            stateName: "In Progress",
+            stateType: "started",
+            priority: 0,
+            priorityLabel: "none",
+            labels: [],
+            assigneeId: null,
+            assigneeName: null,
+            createdAt: "2026-05-08T00:00:00.000Z",
+            updatedAt: "2026-05-08T00:00:00.000Z",
+          },
+        }),
+      } as any,
+      operationService: {
+        start: mockStart,
+        finish: vi.fn(),
+      } as any,
+      projectConfigService: {
+        get: () => ({ effective: { ai: {} } }),
+      } as any,
+      aiIntegrationService: {
+        getFeatureFlag: () => false,
+        getStatus: vi.fn(async () => ({ availableModelIds: [] })),
+        generateCommitMessage: vi.fn(),
+      } as any,
+      logger: {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+        debug: vi.fn(),
+      } as any,
+    });
+
+    await service.commit({ laneId: "lane-1", message: "Update git service" });
+
+    expect(mockGit.runGitOrThrow).toHaveBeenCalledWith(
+      ["commit", "-m", "Refs ADE-123: Update git service"],
+      { cwd: "/tmp/ade-lane", timeoutMs: 30_000 },
+    );
+    expect(mockStart).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({ message: "Refs ADE-123: Update git service" }),
+      }),
+    );
+  });
+});
+
 describe("gitOperationsService.generateCommitMessage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -294,6 +367,98 @@ describe("gitOperationsService.generateCommitMessage", () => {
       ["show", "--name-status", "--format=", "--find-renames", "HEAD"],
       ["diff", "--cached", "--no-color", "-U2", "--find-renames"],
     ]);
+  });
+
+  it("prefixes generated commit messages with a Linear reference for linked lanes", async () => {
+    mockGit.runGit.mockImplementation(async (args: string[]) => {
+      if (args[0] === "diff") {
+        return {
+          exitCode: 0,
+          stdout: "M\tapps/desktop/src/main/foo.ts\n",
+          stderr: "",
+        };
+      }
+      if (args[0] === "show") {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      return { exitCode: 1, stdout: "", stderr: `unexpected git command: ${args.join(" ")}` };
+    });
+
+    const service = createGitOperationsService({
+      laneService: {
+        getLaneBaseAndBranch: () => ({
+          baseRef: "main",
+          branchRef: "ade-123-connect-linear-commits",
+          worktreePath: "/tmp/ade-lane",
+          laneType: "worktree",
+          linearIssue: {
+            id: "issue-1",
+            identifier: "ADE-123",
+            title: "Connect Linear commits",
+            description: null,
+            url: null,
+            projectId: "project-1",
+            projectSlug: "ade",
+            teamId: "team-1",
+            teamKey: "ADE",
+            stateId: "state-1",
+            stateName: "In Progress",
+            stateType: "started",
+            priority: 0,
+            priorityLabel: "none",
+            labels: [],
+            assigneeId: null,
+            assigneeName: null,
+            createdAt: "2026-05-08T00:00:00.000Z",
+            updatedAt: "2026-05-08T00:00:00.000Z",
+          },
+        }),
+      } as any,
+      operationService: {
+        start: vi.fn(),
+        finish: vi.fn(),
+      } as any,
+      projectConfigService: {
+        get: () => ({
+          effective: {
+            ai: {
+              featureModelOverrides: {
+                commit_messages: "anthropic/claude-haiku-4-5",
+              },
+            },
+          },
+        }),
+      } as any,
+      aiIntegrationService: {
+        getFeatureFlag: () => true,
+        getStatus: vi.fn(async () => ({
+          availableModelIds: ["anthropic/claude-haiku-4-5"],
+        })),
+        generateCommitMessage: vi.fn(async () => ({
+          text: "Update git service.",
+          structuredOutput: null,
+          provider: "anthropic",
+          model: null,
+          sessionId: null,
+          inputTokens: null,
+          outputTokens: null,
+          durationMs: 5,
+        })),
+      } as any,
+      logger: {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+        debug: vi.fn(),
+      } as any,
+    });
+
+    const result = await service.generateCommitMessage({ laneId: "lane-1" });
+
+    expect(result).toEqual({
+      message: "Refs ADE-123: Update git service",
+      model: "anthropic/claude-haiku-4-5",
+    });
   });
 });
 

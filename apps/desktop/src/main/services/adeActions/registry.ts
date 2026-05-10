@@ -31,6 +31,7 @@ export const ADE_ACTION_DOMAIN_NAMES = [
   "operation",
   "project_config",
   "issue_inventory",
+  "path_to_merge",
   "flow_policy",
   "linear_credentials",
   "linear_dispatcher",
@@ -70,6 +71,7 @@ export type AdeActionRole = "cto" | "orchestrator" | "agent" | "external" | "eva
  * must be listed here.
  */
 export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly string[]>> = {
+  path_to_merge: ["startPathToMerge", "stopPathToMerge"],
   linear_credentials: [
     "setToken",
     "setOAuthToken",
@@ -159,7 +161,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "unstageFile",
     "unstagePaths",
   ],
-  diff: ["getChanges", "getFileDiff"],
+  diff: ["getChanges", "getFileDiff", "getFilePatch"],
   conflicts: ["getLaneStatus", "listOverlaps", "rebaseLane", "runPrediction"],
   pr: [
     "addComment",
@@ -305,6 +307,10 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "saveConvergenceRuntime",
     "savePipelineSettings",
     "syncFromPrData",
+  ],
+  path_to_merge: [
+    "startPathToMerge",
+    "stopPathToMerge",
   ],
   flow_policy: [
     "diffPolicyPaths",
@@ -631,6 +637,7 @@ export function getAdeActionDomainServices(
     operation: toService(runtime.operationService),
     project_config: toService(runtime.projectConfigService),
     issue_inventory: toService(runtime.issueInventoryService),
+    path_to_merge: toService(runtime.pathToMergeOrchestrator),
     flow_policy: toService(runtime.flowPolicyService),
     linear_credentials: toService(runtime.linearCredentialService),
     linear_dispatcher: toService(runtime.linearDispatcherService),

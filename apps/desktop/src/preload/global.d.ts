@@ -41,6 +41,7 @@ import type {
   FileChangeEvent,
   FileContent,
   FileDiff,
+  FilePatch,
   FileTreeNode,
   FilesCreateDirectoryArgs,
   FilesCreateFileArgs,
@@ -59,6 +60,7 @@ import type {
   GetLaneConflictStatusArgs,
   GetDiffChangesArgs,
   GetFileDiffArgs,
+  GetFilePatchArgs,
   GetProcessLogTailArgs,
   GetTestLogTailArgs,
   ExportHistoryArgs,
@@ -207,6 +209,10 @@ import type {
   CtoOnboardingState,
   CtoSystemPromptPreview,
   CtoLinearProject,
+  CtoLinearQuickView,
+  CtoGetLinearIssuePickerDataResult,
+  CtoSearchLinearIssuesArgs,
+  CtoSearchLinearIssuesResult,
   CtoSetLinearOAuthClientArgs,
   CtoStartLinearOAuthResult,
   CtoGetLinearOAuthSessionArgs,
@@ -1489,6 +1495,7 @@ declare global {
       diff: {
         getChanges: (args: GetDiffChangesArgs) => Promise<DiffChanges>;
         getFile: (args: GetFileDiffArgs) => Promise<FileDiff>;
+        getFilePatch: (args: GetFilePatchArgs) => Promise<FilePatch>;
       };
       files: {
         writeTextAtomic: (args: WriteTextAtomicArgs) => Promise<void>;
@@ -2090,6 +2097,11 @@ declare global {
           identityOverride?: Record<string, unknown>;
         }) => Promise<CtoSystemPromptPreview>;
         getLinearProjects: () => Promise<CtoLinearProject[]>;
+        getLinearQuickView: () => Promise<CtoLinearQuickView>;
+        getLinearIssuePickerData: () => Promise<CtoGetLinearIssuePickerDataResult>;
+        searchLinearIssues: (
+          args?: CtoSearchLinearIssuesArgs,
+        ) => Promise<CtoSearchLinearIssuesResult>;
         setLinearOAuthClient: (
           args: CtoSetLinearOAuthClientArgs,
         ) => Promise<LinearConnectionStatus>;

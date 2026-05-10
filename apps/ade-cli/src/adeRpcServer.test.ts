@@ -695,7 +695,52 @@ function createRuntime() {
       resolveRunAction: vi.fn(async (runId: string, action: string) => ({ id: runId, status: action })),
       cancelRun: vi.fn(async () => {}),
     } as any,
+    linearCredentialService: {
+      getStatus: vi.fn(() => ({
+        tokenStored: true,
+        authMode: "manual",
+        tokenExpiresAt: null,
+        refreshTokenStored: false,
+        oauthConfigured: true,
+      })),
+    } as any,
     linearIssueTracker: {
+      getConnectionStatus: vi.fn(async () => ({
+        connected: true,
+        viewerId: "user-1",
+        viewerName: "Arul",
+        message: null,
+      })),
+      getQuickView: vi.fn(async (connection: unknown) => ({
+        connection,
+        organization: {
+          id: "org-1",
+          name: "ADE",
+          urlKey: "ade",
+          logoUrl: null,
+          gitBranchFormat: null,
+          createdIssueCount: 12,
+          roadmapEnabled: true,
+          customersEnabled: false,
+          releasesEnabled: false,
+        },
+        viewer: {
+          id: "user-1",
+          name: "Arul",
+          displayName: "Arul",
+          email: "arul@example.com",
+          avatarUrl: null,
+          admin: true,
+          guest: false,
+          url: null,
+        },
+        projects: [],
+        teams: [],
+        assignedIssues: [],
+        recentIssues: [],
+        fetchedAt: "2026-03-17T19:11:00.000Z",
+        sdk: { packageName: "@linear/sdk", surfaces: ["viewer", "organization"] },
+      })),
       fetchIssueById: vi.fn(async (issueId: string) => ({
         id: issueId,
         identifier: "LIN-1",
@@ -711,6 +756,13 @@ function createRuntime() {
       createComment: vi.fn(async () => ({ id: "comment-1" })),
       fetchWorkflowStates: vi.fn(async () => [{ id: "state-done", name: "Done" }]),
       updateIssueState: vi.fn(async () => {}),
+      listProjects: vi.fn(async () => [{ id: "proj-1", name: "ADE", slug: "ade", teamName: "ADE", teamKey: "ADE" }]),
+      listUsers: vi.fn(async () => [{ id: "user-1", name: "Arul", displayName: "Arul" }]),
+      listWorkflowStates: vi.fn(async () => [{ id: "state-1", name: "Todo", type: "unstarted", teamId: "team-1", teamKey: "ADE" }]),
+      searchIssues: vi.fn(async (query: any) => ({
+        issues: [{ id: "issue-1", identifier: "ADE-123", title: "Test", _query: query }],
+        pageInfo: { hasNextPage: false, endCursor: null },
+      })),
     } as any,
     linearSyncService: {
       getDashboard: vi.fn(() => ({ enabled: true, running: false, ingressMode: "webhook-first", reconciliationIntervalSec: 60, lastPollAt: null, lastSuccessAt: null, lastError: null, queue: { queued: 1, blocked: 0, failed: 0 }, workflowRuns: { active: 1, waiting: 0 }, recentIssues: [] })),
@@ -1534,6 +1586,7 @@ describe("adeRpcServer", () => {
         "pr_rerun_failed_checks",
         "pr_reply_to_review_thread",
         "pr_resolve_review_thread",
+        "getLinearQuickView",
         "listLinearWorkflows",
         "getLinearRunStatus",
         "getLinearSyncDashboard",
@@ -1588,6 +1641,78 @@ describe("adeRpcServer", () => {
       expect.objectContaining({
         enabled: true,
         ingressMode: "webhook-first",
+      }),
+    );
+  });
+
+  it("returns the Linear quick view for cto callers", async () => {
+    const { runtime } = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "cto-1", role: "cto" });
+    const result = await callTool(handler, "getLinearQuickView", {});
+
+    expect((runtime.linearIssueTracker as any).getConnectionStatus).toHaveBeenCalled();
+    expect((runtime.linearIssueTracker as any).getQuickView).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connected: true,
+        tokenStored: true,
+        viewerId: "user-1",
+      }),
+    );
+    expect(result.structuredContent).toEqual(
+      expect.objectContaining({
+        organization: expect.objectContaining({ name: "ADE" }),
+        sdk: expect.objectContaining({ packageName: "@linear/sdk" }),
+      }),
+    );
+  });
+
+  it("returns the Linear issue picker data for cto callers", async () => {
+    const { runtime } = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "cto-1", role: "cto" });
+    const result = await callTool(handler, "getLinearIssuePickerData", {});
+
+    expect((runtime.linearIssueTracker as any).listProjects).toHaveBeenCalled();
+    expect((runtime.linearIssueTracker as any).listUsers).toHaveBeenCalled();
+    expect((runtime.linearIssueTracker as any).listWorkflowStates).toHaveBeenCalled();
+    expect(result.structuredContent).toEqual(
+      expect.objectContaining({
+        projects: expect.any(Array),
+        users: expect.any(Array),
+        states: expect.any(Array),
+      }),
+    );
+  });
+
+  it("forwards search filters when calling searchLinearIssues", async () => {
+    const { runtime } = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "cto-1", role: "cto" });
+    const result = await callTool(handler, "searchLinearIssues", {
+      projectId: "proj-1",
+      stateTypes: ["started", "unstarted"],
+      query: "auth",
+      first: 25,
+      includeArchived: true,
+    });
+
+    expect((runtime.linearIssueTracker as any).searchIssues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: "proj-1",
+        stateTypes: ["started", "unstarted"],
+        query: "auth",
+        first: 25,
+        includeArchived: true,
+      }),
+    );
+    expect(result.structuredContent).toEqual(
+      expect.objectContaining({
+        issues: expect.any(Array),
+        pageInfo: expect.objectContaining({ hasNextPage: false }),
       }),
     );
   });
@@ -3934,6 +4059,7 @@ describe("adeRpcServer", () => {
       title: "My PR",
       body: "Body text",
       draft: true,
+      closeLinearIssueOnMerge: true,
     });
     expect(created?.isError).toBeUndefined();
     expect(fixture.runtime.prService.createFromLane).toHaveBeenCalledWith({
@@ -3942,6 +4068,7 @@ describe("adeRpcServer", () => {
       title: "My PR",
       body: "Body text",
       draft: true,
+      closeLinearIssueOnMerge: true,
     });
 
     const drafted = await callTool(handler, "create_pr_from_lane", {
@@ -4326,6 +4453,65 @@ describe("adeRpcServer", () => {
     expect(fixture.runtime.laneService.create).toHaveBeenCalledWith(
       expect.objectContaining({ name: "new-feature" })
     );
+  });
+
+  it("passes branch and Linear issue data through create_lane", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    const linearIssue = {
+      id: "issue-1",
+      identifier: "ADE-123",
+      title: "Create linked lane",
+      description: null,
+      url: "https://linear.app/ade/issue/ADE-123/create-linked-lane",
+      projectId: "project-1",
+      projectSlug: "ade",
+      projectName: "ADE",
+      teamId: "team-1",
+      teamKey: "ADE",
+      teamName: "ADE",
+      stateId: "state-1",
+      stateName: "Todo",
+      stateType: "unstarted",
+      priority: 2,
+      priorityLabel: "high",
+      labels: ["desktop"],
+      assigneeId: null,
+      assigneeName: null,
+      creatorId: null,
+      creatorName: null,
+      dueDate: null,
+      estimate: null,
+      branchName: "ade-123-create-linked-lane",
+      createdAt: "2026-05-08T00:00:00.000Z",
+      updatedAt: "2026-05-08T00:00:00.000Z",
+      secretToken: "do-not-forward",
+    };
+
+    await initialize(handler, { callerId: "orchestrator", role: "orchestrator" });
+    const response = await callTool(handler, "create_lane", {
+      name: "new-feature",
+      baseBranch: "main",
+      branchName: "ade-123-create-linked-lane",
+      linearIssue,
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fixture.runtime.laneService.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "new-feature",
+        baseBranch: "main",
+        branchName: "ade-123-create-linked-lane",
+        linearIssue: expect.objectContaining({
+          id: "issue-1",
+          identifier: "ADE-123",
+          title: "Create linked lane",
+          projectId: "project-1",
+          priorityLabel: "high",
+        }),
+      })
+    );
+    expect((fixture.runtime.laneService.create as any).mock.calls[0][0].linearIssue).not.toHaveProperty("secretToken");
   });
 
   it("routes simulate_integration as a read-only dry-merge", async () => {

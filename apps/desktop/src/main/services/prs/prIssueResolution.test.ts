@@ -134,6 +134,7 @@ function makeRuntimeRow(overrides: Record<string, unknown> = {}) {
     auto_converge_enabled: 1,
     status: "running",
     poller_status: "waiting_for_comments",
+    merge_wait_kind: null,
     current_round: 2,
     active_session_id: "session-1",
     active_lane_id: "lane-1",
@@ -144,6 +145,8 @@ function makeRuntimeRow(overrides: Record<string, unknown> = {}) {
     ci_retry_attempts_used: 0,
     wait_for_ci_started_at: null,
     last_dispatch_head_sha: null,
+    last_bot_ping_head_sha: null,
+    last_bot_ping_at: null,
     pause_repeat_count: 0,
     last_pause_reason_hash: null,
     last_started_at: "2026-03-23T12:00:00.000Z",
@@ -687,6 +690,51 @@ describe("issueInventoryService", () => {
       expect(args[2]).toBe("greptile"); // source — known alias
     });
 
+    it("ignores CodeRabbit skipped-bot metadata when selecting the review thread issue", () => {
+      const db = makeMockDb();
+      db.get.mockReturnValue(null);
+      db.all.mockReturnValue([]);
+
+      const service = createIssueInventoryService({ db });
+      service.syncFromPrData(
+        PR_ID,
+        [],
+        [makeReviewThread({
+          comments: [
+            {
+              id: "greptile-1",
+              author: "greptile-apps",
+              authorAvatarUrl: null,
+              body: "**Greptile/CodeRabbit pings can duplicate when Copilot comment fails**\n\nFix this issue.",
+              url: null,
+              createdAt: "2026-03-23T12:00:00.000Z",
+              updatedAt: "2026-03-23T12:00:00.000Z",
+            },
+            {
+              id: "coderabbit-skip-1",
+              author: "coderabbitai",
+              authorAvatarUrl: null,
+              body: "> Skipped: comment is from another GitHub bot.\n\n<!-- This is an auto-generated reply by CodeRabbit -->",
+              url: null,
+              createdAt: "2026-03-23T12:05:00.000Z",
+              updatedAt: "2026-03-23T12:05:00.000Z",
+            },
+          ],
+        })],
+        [],
+      );
+
+      const insertCalls = db.run.mock.calls.filter(
+        (call: unknown[]) => typeof call[0] === "string" && (call[0] as string).includes("insert into pr_issue_inventory"),
+      );
+      const args = insertCalls[0][1] as unknown[];
+      expect(args[2]).toBe("greptile");
+      expect(args[10]).toBe("Greptile/CodeRabbit pings can duplicate when Copilot comment fails");
+      expect(args[12]).toBe("greptile-apps");
+      expect(args[16]).toBe(1);
+      expect(args[17]).toBe("greptile-1");
+    });
+
     it("extracts severity from bold keywords (Critical/Major/Minor)", () => {
       const db = makeMockDb();
       db.get.mockReturnValue(null);
@@ -947,6 +995,60 @@ describe("issueInventoryService", () => {
         (call: unknown[]) => typeof call[0] === "string" && (call[0] as string).includes("insert into pr_issue_inventory"),
       );
       expect(insertCalls.length).toBe(0);
+    });
+
+    it("filters Capy auto-review spend-limit notices", () => {
+      const db = makeMockDb();
+      db.get.mockReturnValue(null);
+      db.all.mockReturnValue([]);
+
+      const service = createIssueInventoryService({ db });
+      service.syncFromPrData(
+        PR_ID,
+        [],
+        [],
+        [makeComment({
+          id: "ic-capy",
+          author: "capy-ai[bot]",
+          body: "<!-- capy:auto-review-spend-limit -->\nCapy auto-review is paused for this organization because the monthly auto-review limit has been reached.",
+          source: "issue",
+        })],
+      );
+
+      const insertCalls = db.run.mock.calls.filter(
+        (call: unknown[]) => typeof call[0] === "string" && (call[0] as string).includes("insert into pr_issue_inventory"),
+      );
+      expect(insertCalls.length).toBe(0);
+    });
+
+    it("marks previously inventoried noisy issue comments as fixed", () => {
+      const db = makeMockDb();
+      db.get.mockReturnValue(null);
+      db.all.mockReturnValue([makeFakeRow({
+        id: "capy-item",
+        external_id: "comment:ic-capy",
+        type: "issue_comment",
+        state: "new",
+      })]);
+
+      const service = createIssueInventoryService({ db });
+      service.syncFromPrData(
+        PR_ID,
+        [],
+        [],
+        [makeComment({
+          id: "ic-capy",
+          author: "capy-ai[bot]",
+          body: "<!-- capy:auto-review-spend-limit -->\nCapy auto-review is paused for this organization because the monthly auto-review limit has been reached.",
+          source: "issue",
+        })],
+      );
+
+      const fixedCalls = db.run.mock.calls.filter(
+        (call: unknown[]) => typeof call[0] === "string" && (call[0] as string).includes("set state = 'fixed'"),
+      );
+      expect(fixedCalls).toHaveLength(1);
+      expect((fixedCalls[0][1] as unknown[])[1]).toBe("capy-item");
     });
 
     it("skips comments with source !== issue", () => {
@@ -1365,6 +1467,8 @@ describe("issueInventoryService", () => {
             ci_retry_attempts_used: 2,
             wait_for_ci_started_at: "2026-03-23T12:02:00.000Z",
             last_dispatch_head_sha: "abc123",
+            last_bot_ping_head_sha: "def456",
+            last_bot_ping_at: "2026-03-23T12:03:00.000Z",
             pause_repeat_count: 3,
             last_pause_reason_hash: "hash-1",
           });
@@ -1384,6 +1488,8 @@ describe("issueInventoryService", () => {
         ciRetryAttemptsUsed: 2,
         waitForCiStartedAt: "2026-03-23T12:02:00.000Z",
         lastDispatchHeadSha: "abc123",
+        lastBotPingHeadSha: "def456",
+        lastBotPingAt: "2026-03-23T12:03:00.000Z",
         pauseRepeatCount: 3,
         lastPauseReasonHash: "hash-1",
       }));
@@ -1452,6 +1558,8 @@ describe("issueInventoryService", () => {
         ciRetryAttemptsUsed: 2,
         waitForCiStartedAt: "2026-03-23T12:02:00.000Z",
         lastDispatchHeadSha: "abc123",
+        lastBotPingHeadSha: "def456",
+        lastBotPingAt: "2026-03-23T12:03:00.000Z",
         pauseRepeatCount: 3,
         lastPauseReasonHash: "hash-1",
       });
@@ -1467,14 +1575,17 @@ describe("issueInventoryService", () => {
       expect(params[1]).toBe(1);
       expect(params[2]).toBe("running");
       expect(params[3]).toBe("scheduled");
-      expect(params[4]).toBe(3);
-      expect(params[5]).toBe("session-9");
-      expect(params[10]).toBe(1);
-      expect(params[11]).toBe(2);
-      expect(params[12]).toBe("2026-03-23T12:02:00.000Z");
-      expect(params[13]).toBe("abc123");
-      expect(params[14]).toBe(3);
-      expect(params[15]).toBe("hash-1");
+      expect(params[4]).toBeNull();
+      expect(params[5]).toBe(3);
+      expect(params[6]).toBe("session-9");
+      expect(params[11]).toBe(1);
+      expect(params[12]).toBe(2);
+      expect(params[13]).toBe("2026-03-23T12:02:00.000Z");
+      expect(params[14]).toBe("abc123");
+      expect(params[15]).toBe("def456");
+      expect(params[16]).toBe("2026-03-23T12:03:00.000Z");
+      expect(params[17]).toBe(3);
+      expect(params[18]).toBe("hash-1");
     });
 
     it("reconciles active convergence sessions when a tracked chat exits", () => {
@@ -1536,7 +1647,7 @@ describe("issueInventoryService", () => {
       const settings = service.getPipelineSettings(PR_ID);
 
       expect(settings).toEqual({
-        autoMerge: false,
+        autoMerge: true,
         mergeMethod: "repo_default",
         maxRounds: 5,
         onRebaseNeeded: "pause",
@@ -1548,9 +1659,9 @@ describe("issueInventoryService", () => {
           permissionMode: null,
           confidenceThreshold: null,
         },
-        forceFinalizeMode: "off",
+        forceFinalizeMode: "conditional",
         forceFinalizeRequireNoCiFailures: true,
-        atCapPolicy: "stop",
+        atCapPolicy: "ci_retry_once",
         atCapWaitMinutes: 30,
         atCapCiRetryMax: 3,
         forceMergeRequiresConfirmation: true,
@@ -2113,6 +2224,16 @@ describe("issueInventoryService", () => {
       ).toThrow(/Invalid convergence poller status/);
     });
 
+    it("rejects an unknown mergeWaitKind value", () => {
+      const db = makeMockDb();
+      db.get.mockReturnValue(null);
+
+      const service = createIssueInventoryService({ db });
+      expect(() =>
+        service.saveConvergenceRuntime(PR_ID, { mergeWaitKind: "made_up" as any }),
+      ).toThrow(/Invalid convergence merge wait kind/);
+    });
+
     it("rejects a negative currentRound", () => {
       const db = makeMockDb();
       db.get.mockReturnValue(null);
@@ -2168,11 +2289,14 @@ describe("issueInventoryService", () => {
         service.saveConvergenceRuntime(PR_ID, {
           status: "running",
           pollerStatus: "polling",
+          mergeWaitKind: null,
           currentRound: 3,
           forceFinalizeUsed: true,
           ciRetryAttemptsUsed: 1,
           waitForCiStartedAt: "2026-03-23T12:02:00.000Z",
           lastDispatchHeadSha: "abc123",
+          lastBotPingHeadSha: "def456",
+          lastBotPingAt: "2026-03-23T12:03:00.000Z",
           pauseRepeatCount: 2,
           lastPauseReasonHash: "hash-1",
         }),
@@ -2351,6 +2475,7 @@ describe("detectSource", () => {
     expect(detectSource("ade-review[bot]")).toBe("ade");
     expect(detectSource("greptile[bot]")).toBe("greptile");
     expect(detectSource("greptile-review[bot]")).toBe("greptile");
+    expect(detectSource("greptile-apps")).toBe("greptile");
     expect(detectSource("seer[bot]")).toBe("seer");
     expect(detectSource("seer-code-review[bot]")).toBe("seer");
   });
