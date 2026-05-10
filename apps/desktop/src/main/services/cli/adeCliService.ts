@@ -545,13 +545,14 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
     const hostPathEnv: NodeJS.ProcessEnv = {};
     if (hostPathSnapshot) setPathEnvValue(hostPathEnv, hostPathSnapshot);
     const agentPathReady = bundledAvailable && pathContainsDir(getPathEnvValue(agentEnv(hostPathEnv)), resolved.binDir);
-    const installAvailable = resolved.source === "packaged" && isExecutable(resolved.installerPath);
+    const packagedInstallAvailable = resolved.source === "packaged" && isExecutable(resolved.installerPath);
+    const installAvailable = packagedInstallAvailable || (resolved.source === "dev" && bundledAvailable);
     const message = statusMessage({
       commandName,
       terminalInstalled,
       bundledAvailable,
       agentPathReady,
-      installAvailable: installAvailable || (resolved.source === "dev" && bundledAvailable),
+      installAvailable,
       isPackaged: args.isPackaged,
     });
 
@@ -566,7 +567,7 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
       agentPathReady,
       terminalInstalled,
       terminalCommandPath,
-      installAvailable: installAvailable || (resolved.source === "dev" && bundledAvailable),
+      installAvailable,
       installTargetPath: targetPath,
       installTargetDirOnPath: pathContainsDir(hostPathSnapshot, targetDir),
       message: message.message,

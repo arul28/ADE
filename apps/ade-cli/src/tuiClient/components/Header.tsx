@@ -20,7 +20,9 @@ export function Header({
   mode: RuntimeMode | "connecting";
   tuiCount: number;
 }) {
-  const modeColor = mode === "attached" ? "green" : mode === "embedded" ? "yellow" : "gray";
+  let modeColor: string = "gray";
+  if (mode === "attached") modeColor = "green";
+  else if (mode === "embedded") modeColor = "yellow";
   return (
     <Box borderStyle="single" borderColor="gray" paddingX={1}>
       <Text color={PURPLE}>▌ ADE</Text>

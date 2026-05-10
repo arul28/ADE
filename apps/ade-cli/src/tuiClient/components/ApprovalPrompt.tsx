@@ -11,6 +11,17 @@ export function ApprovalPrompt({
 }) {
   if (!approval) return null;
   const question = approval.request?.questions[0] ?? null;
+
+  let title: string;
+  if (approval.mode === "question") title = "Input requested";
+  else if (approval.highStakes) title = "High-stakes approval required";
+  else title = "Approval required";
+
+  let footer: string;
+  if (approval.mode === "question") footer = "Type an answer, option number/value, deny, or cancel.";
+  else if (approval.highStakes) footer = "Type approve or deny, then press enter.";
+  else footer = "Press a to approve, d to deny.";
+
   const card = (
     <Box
       borderStyle="single"
@@ -20,13 +31,7 @@ export function ApprovalPrompt({
       flexDirection="column"
       width={modal ? 60 : undefined}
     >
-      <Text color={approval.highStakes ? "red" : "yellow"}>
-        {approval.mode === "question"
-          ? "Input requested"
-          : approval.highStakes
-            ? "High-stakes approval required"
-            : "Approval required"}
-      </Text>
+      <Text color={approval.highStakes ? "red" : "yellow"}>{title}</Text>
       <Text>{question?.question ?? approval.description}</Text>
       {question?.options?.length ? (
         <Box flexDirection="column">
@@ -37,13 +42,7 @@ export function ApprovalPrompt({
           ))}
         </Box>
       ) : null}
-      {approval.mode === "question" ? (
-        <Text dimColor>Type an answer, option number/value, deny, or cancel.</Text>
-      ) : approval.highStakes ? (
-        <Text dimColor>Type approve or deny, then press enter.</Text>
-      ) : (
-        <Text dimColor>Press a to approve, d to deny.</Text>
-      )}
+      <Text dimColor>{footer}</Text>
     </Box>
   );
   if (!modal) return card;

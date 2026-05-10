@@ -8170,6 +8170,53 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(model.questionId, "only")
     XCTAssertEqual(model.options.count, 1)
   }
+
+  // MARK: - LinearConnectionStatus contract parity
+
+  func testLinearConnectionStatusDecodesNewOrganizationFields() throws {
+    let json = """
+    {
+      "connected": true,
+      "viewerId": "vw_1",
+      "viewerName": "Ada",
+      "organizationId": "org_1",
+      "organizationName": "Acme",
+      "organizationUrlKey": "acme",
+      "organizationLogoUrl": "https://example.invalid/logo.png",
+      "projectCount": 3,
+      "checkedAt": "2026-05-10T00:00:00Z",
+      "authMode": "oauth"
+    }
+    """.data(using: .utf8)!
+
+    let status = try JSONDecoder().decode(LinearConnectionStatus.self, from: json)
+
+    XCTAssertTrue(status.connected)
+    XCTAssertEqual(status.viewerName, "Ada")
+    XCTAssertEqual(status.organizationId, "org_1")
+    XCTAssertEqual(status.organizationName, "Acme")
+    XCTAssertEqual(status.organizationUrlKey, "acme")
+    XCTAssertEqual(status.organizationLogoUrl, "https://example.invalid/logo.png")
+  }
+
+  /// Older hosts won't return the organization fields. The mirror must still
+  /// decode without throwing, leaving them nil.
+  func testLinearConnectionStatusDecodesWithoutOrganizationFields() throws {
+    let json = """
+    {
+      "connected": false,
+      "checkedAt": null
+    }
+    """.data(using: .utf8)!
+
+    let status = try JSONDecoder().decode(LinearConnectionStatus.self, from: json)
+
+    XCTAssertFalse(status.connected)
+    XCTAssertNil(status.organizationId)
+    XCTAssertNil(status.organizationName)
+    XCTAssertNil(status.organizationUrlKey)
+    XCTAssertNil(status.organizationLogoUrl)
+  }
 }
 
 private extension Collection {

@@ -2908,7 +2908,7 @@ function getPrAiRuntimeBridge(runtime: AdeRuntime): PrAiRuntimeBridge {
           reasoningEffort: reasoning,
           permissionMode,
           additionalInstructions,
-          originSurface: context.sourceTab === "integration" ? "integration" : context.sourceTab === "rebase" ? "rebase" : "manual",
+          originSurface: context.sourceTab === "integration" || context.sourceTab === "rebase" ? context.sourceTab : "manual",
         });
         runId = prep.runId;
         if (prep.status === "blocked") {

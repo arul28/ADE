@@ -115,16 +115,20 @@ async function loadEmbeddedAdeCli(): Promise<{
   };
 }
 
-function unwrapActionResult<T>(payload: RpcResponseEnvelope<unknown>, domain: string, action: string): T {
-  if (payload && typeof payload === "object" && "ok" in payload && payload.ok === false) {
-    const error = (payload as { error?: { message?: string } }).error;
-    const message = typeof error?.message === "string"
-      ? error.message
-      : `ADE action failed: ${domain}.${action}`;
-    throw new Error(message);
+function failedEnvelopeMessage(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object" || !("ok" in payload) || (payload as { ok?: unknown }).ok !== false) {
+    return null;
   }
-  const record = payload as { result?: unknown };
-  return record.result as T;
+  const error = (payload as { error?: { message?: string } }).error;
+  return typeof error?.message === "string" ? error.message : "";
+}
+
+function unwrapActionResult<T>(payload: RpcResponseEnvelope<unknown>, domain: string, action: string): T {
+  const errorMessage = failedEnvelopeMessage(payload);
+  if (errorMessage !== null) {
+    throw new Error(errorMessage || `ADE action failed: ${domain}.${action}`);
+  }
+  return (payload as { result?: unknown }).result as T;
 }
 
 function createAdeActionHelpers(request: AdeRpcRequest): AdeActionHelpers {
@@ -134,10 +138,9 @@ function createAdeActionHelpers(request: AdeRpcRequest): AdeActionHelpers {
         name,
         arguments: toolArgs ?? {},
       });
-      if (payload && typeof payload === "object" && "ok" in payload && payload.ok === false) {
-        const error = (payload as { error?: { message?: string } }).error;
-        const message = typeof error?.message === "string" ? error.message : `ADE tool failed: ${name}`;
-        throw new Error(message);
+      const errorMessage = failedEnvelopeMessage(payload);
+      if (errorMessage !== null) {
+        throw new Error(errorMessage || `ADE tool failed: ${name}`);
       }
       return payload as T;
     },
@@ -188,6 +191,10 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function isMultiProjectRuntime(result: InitializeResult): boolean {
@@ -330,11 +337,10 @@ export async function connectToAde(args: {
         delayMs: 0,
       });
     } catch (error) {
+      const message = errorMessage(error);
       if (args.requireSocket) {
-        const message = error instanceof Error ? error.message : String(error);
         throw new Error(`ADE RPC socket is required but unavailable at ${explicitSocketPath}: ${message}`);
       }
-      const message = error instanceof Error ? error.message : String(error);
       throw new Error(
         `ADE RPC socket is unavailable at ${explicitSocketPath}: ${message}. ` +
         "Start ade serve or run ade code --embedded to use the legacy embedded fallback.",
@@ -376,15 +382,13 @@ export async function connectToAde(args: {
           });
         } catch (projectError) {
           if (args.requireSocket) {
-            const message = projectError instanceof Error ? projectError.message : String(projectError);
-            throw new Error(`ADE RPC socket is required but unavailable at ${projectSocketPath}: ${message}`);
+            throw new Error(`ADE RPC socket is required but unavailable at ${projectSocketPath}: ${errorMessage(projectError)}`);
           }
           attachError = projectError;
         }
       }
       if (args.requireSocket) {
-        const message = firstError instanceof Error ? firstError.message : String(firstError);
-        throw new Error(`ADE RPC socket is required but unavailable at ${machineSocketPath}: ${message}`);
+        throw new Error(`ADE RPC socket is required but unavailable at ${machineSocketPath}: ${errorMessage(firstError)}`);
       }
       attachError ??= firstError;
     }

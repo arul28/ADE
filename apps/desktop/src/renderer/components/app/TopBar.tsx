@@ -178,12 +178,11 @@ function fallbackProjectName(rootPath: string): string {
   return rootPath.split(/[\\/]/).filter(Boolean).pop() ?? rootPath;
 }
 
-function confirmProjectTabRemoval(projectName: string, isCurrent: boolean, isMissing: boolean): boolean {
+function confirmProjectTabRemoval(projectName: string): boolean {
   const label = projectName.trim() || "this project";
-  const action = isCurrent && !isMissing
-    ? `Close "${label}" project tab?`
-    : `Close "${label}" project tab?`;
-  return window.confirm(`${action}\n\nThis does not remove it from Recent Projects or delete any files on disk.`);
+  return window.confirm(
+    `Close "${label}" project tab?\n\nThis does not remove it from Recent Projects or delete any files on disk.`,
+  );
 }
 
 function deriveSyncLabel(snapshot: SyncRoleSnapshot | null): string | null {
@@ -559,11 +558,8 @@ export function TopBar() {
 
   useEffect(() => {
     let cancelled = false;
-    const getWindowSession = (window as unknown as {
-      ade?: { app?: { getWindowSession?: typeof window.ade.app.getWindowSession } };
-    }).ade?.app?.getWindowSession;
-    if (typeof getWindowSession !== "function") return undefined;
-    getWindowSession()
+    window.ade.app
+      .getWindowSession()
       .then((session) => {
         if (!cancelled) setWindowId(session.windowId);
       })
@@ -710,11 +706,7 @@ export function TopBar() {
     void (async () => {
       const target = projectTabs.find((entry) => entry.rootPath === rootPath);
       const fallbackName = fallbackProjectName(rootPath);
-      const confirmed = confirmProjectTabRemoval(
-        target?.displayName ?? fallbackName,
-        project?.rootPath === rootPath,
-        target?.exists === false,
-      );
+      const confirmed = confirmProjectTabRemoval(target?.displayName ?? fallbackName);
       if (!confirmed) return;
 
       const shouldClose = await checkForActiveWorkloads(rootPath);
@@ -881,14 +873,14 @@ export function TopBar() {
           ?? fallbackProjectName(projectTransition.rootPath)
           ?? "project")
       : "project";
-  const projectTransitionLabel =
-    projectTransition == null
-      ? null
-      : projectTransition.kind === "opening"
-        ? "Opening project…"
-        : projectTransition.kind === "switching"
-          ? `Switching to ${transitionTargetName}…`
-          : "Closing project…";
+  let projectTransitionLabel: string | null = null;
+  if (projectTransition != null) {
+    switch (projectTransition.kind) {
+      case "opening": projectTransitionLabel = "Opening project…"; break;
+      case "switching": projectTransitionLabel = `Switching to ${transitionTargetName}…`; break;
+      case "closing": projectTransitionLabel = "Closing project…"; break;
+    }
+  }
 
   return (
     <header

@@ -49,28 +49,25 @@ export type ServiceManagerSpawnSync = (
   options?: SpawnSyncOptions,
 ) => ServiceManagerProcessResult;
 
+const RUNTIME_ENV_PASSTHROUGH = [
+  "NODE_PATH",
+  "ADE_HOME",
+  "ADE_PACKAGE_CHANNEL",
+  "ADE_DESKTOP_APP_NAME",
+  "ADE_DISABLE_RUNTIME_SERVICE_INSTALL",
+  "ADE_RUNTIME_SERVICE_NAME",
+] as const;
+
 function runtimeEnvironment(): Record<string, string> | undefined {
   const env: Record<string, string> = {};
   if (process.versions.electron) {
     env.ELECTRON_RUN_AS_NODE = "1";
   }
-  if (process.env.NODE_PATH?.trim()) {
-    env.NODE_PATH = process.env.NODE_PATH;
-  }
-  if (process.env.ADE_HOME?.trim()) {
-    env.ADE_HOME = process.env.ADE_HOME;
-  }
-  if (process.env.ADE_PACKAGE_CHANNEL?.trim()) {
-    env.ADE_PACKAGE_CHANNEL = process.env.ADE_PACKAGE_CHANNEL;
-  }
-  if (process.env.ADE_DESKTOP_APP_NAME?.trim()) {
-    env.ADE_DESKTOP_APP_NAME = process.env.ADE_DESKTOP_APP_NAME;
-  }
-  if (process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL?.trim()) {
-    env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL = process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL;
-  }
-  if (process.env.ADE_RUNTIME_SERVICE_NAME?.trim()) {
-    env.ADE_RUNTIME_SERVICE_NAME = process.env.ADE_RUNTIME_SERVICE_NAME;
+  for (const key of RUNTIME_ENV_PASSTHROUGH) {
+    const value = process.env[key];
+    if (value?.trim()) {
+      env[key] = value;
+    }
   }
   return Object.keys(env).length > 0 ? env : undefined;
 }
@@ -109,16 +106,12 @@ export function renderCommand(command: AdeServiceCommand): string {
   return [command.command, ...command.args].map(shellQuote).join(" ");
 }
 
+function streamToText(value: string | Buffer | null | undefined): string {
+  if (typeof value === "string") return value.trim();
+  if (Buffer.isBuffer(value)) return value.toString("utf8").trim();
+  return "";
+}
+
 export function serviceManagerResultText(result: ServiceManagerProcessResult): string {
-  const stdout = typeof result.stdout === "string"
-    ? result.stdout.trim()
-    : Buffer.isBuffer(result.stdout)
-      ? result.stdout.toString("utf8").trim()
-      : "";
-  const stderr = typeof result.stderr === "string"
-    ? result.stderr.trim()
-    : Buffer.isBuffer(result.stderr)
-      ? result.stderr.toString("utf8").trim()
-      : "";
-  return stderr || stdout;
+  return streamToText(result.stderr) || streamToText(result.stdout);
 }

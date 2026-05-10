@@ -226,7 +226,9 @@ function parseAgentChatFileRefs(value: unknown): AgentChatFileRef[] | undefined 
   for (const entry of value) {
     if (!isRecord(entry)) continue;
     const path = asTrimmedString(entry.path);
-    const type = entry.type === "image" ? "image" : entry.type === "file" ? "file" : null;
+    let type: "image" | "file" | null = null;
+    if (entry.type === "image") type = "image";
+    else if (entry.type === "file") type = "file";
     if (!path || !type) continue;
     attachments.push({ path, type });
   }
@@ -981,7 +983,7 @@ function parseDraftPrDescriptionArgs(value: Record<string, unknown>): DraftPrDes
     laneId: requireString(value.laneId, "prs.draftDescription requires laneId."),
     ...(asTrimmedString(value.model) ? { model: asTrimmedString(value.model)! } : {}),
     ...("reasoningEffort" in value
-      ? { reasoningEffort: value.reasoningEffort == null ? null : asTrimmedString(value.reasoningEffort) ?? null }
+      ? { reasoningEffort: value.reasoningEffort == null ? null : (asTrimmedString(value.reasoningEffort) ?? null) }
       : {}),
     ...(asTrimmedString(value.baseBranch) ? { baseBranch: asTrimmedString(value.baseBranch)! } : {}),
     ...(typeof value.closeLinearIssueOnMerge === "boolean" ? { closeLinearIssueOnMerge: value.closeLinearIssueOnMerge } : {}),
@@ -2273,10 +2275,16 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   register("prs.refresh", { viewerAllowed: true }, async (payload) => {
     const prId = asTrimmedString(payload.prId);
     const prIds = asStringArray(payload.prIds);
-    await args.prService.refresh(prId ? { prId } : prIds.length > 0 ? { prIds } : {});
+    let refreshArgs: { prId?: string; prIds?: string[] } = {};
+    if (prId) refreshArgs = { prId };
+    else if (prIds.length > 0) refreshArgs = { prIds };
+    await args.prService.refresh(refreshArgs);
     const prs = await args.prService.listAll();
+    let refreshedCount = prs.length;
+    if (prId) refreshedCount = 1;
+    else if (prIds.length > 0) refreshedCount = prIds.length;
     return {
-      refreshedCount: prId ? 1 : prIds.length > 0 ? prIds.length : prs.length,
+      refreshedCount,
       prs,
       snapshots: args.prService.listSnapshots(),
     };

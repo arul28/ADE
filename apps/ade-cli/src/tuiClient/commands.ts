@@ -132,7 +132,5 @@ export function paletteCommands(
 }
 
 export function commandPlacement(command: ParsedCommand): CommandPlacement {
-  if (command.spec) return command.spec.placement;
-  if (command.userCommand) return "chat";
-  return "chat";
+  return command.spec?.placement ?? "chat";
 }

@@ -894,6 +894,10 @@ struct LinearConnectionStatus: Codable, Hashable {
   var connected: Bool
   var viewerId: String?
   var viewerName: String?
+  var organizationId: String?
+  var organizationName: String?
+  var organizationUrlKey: String?
+  var organizationLogoUrl: String?
   var projectCount: Int?
   var projectPreview: [String]?
   var checkedAt: String?

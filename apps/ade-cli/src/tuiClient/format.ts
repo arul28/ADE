@@ -202,7 +202,9 @@ export function formatLaneLabel(lane: LaneSummary | null): string {
 
 export function formatSessionLabel(session: AgentChatSessionSummary): string {
   const label = (session.title ?? session.goal ?? session.summary ?? session.sessionId).trim();
-  const state = session.awaitingInput ? " ?" : session.status === "active" ? " ●" : "";
+  let state = "";
+  if (session.awaitingInput) state = " ?";
+  else if (session.status === "active") state = " ●";
   return `${label}${state}`;
 }
 
@@ -218,7 +220,9 @@ export function renderObject(value: unknown, maxLines = 24): string {
 
 export function summarizeDiffChanges(value: unknown): Array<{ path: string; additions?: number; deletions?: number; body?: string }> {
   const record = value && typeof value === "object" ? value as Record<string, unknown> : {};
-  const files = Array.isArray(record.files) ? record.files : Array.isArray(record.changes) ? record.changes : [];
+  let files: unknown[] = [];
+  if (Array.isArray(record.files)) files = record.files;
+  else if (Array.isArray(record.changes)) files = record.changes;
   return files
     .map((entry) => {
       const item = entry && typeof entry === "object" ? entry as Record<string, unknown> : {};

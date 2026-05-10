@@ -114,4 +114,4 @@ On desktop, phone pairing and sync status are managed by the local `ade serve` d
 - [Internal architecture](./internal-architecture.md) — protocol shape, bootstrap sequence, sync command scoping.
 - [ADE CLI](../../../apps/ade-cli/README.md) — runtime modes, service manager, machine layout.
 - [ADE Code](../ade-code/README.md) — terminal client that uses the same runtime.
-- [Sync](../sync/README.md) — phone pairing and multi-device sync (hosted by the same daemon).
+- [Sync and Multi-Device](../sync-and-multi-device/README.md) — phone pairing and multi-device sync (hosted by the same daemon).

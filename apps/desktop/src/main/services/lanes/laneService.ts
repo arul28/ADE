@@ -977,11 +977,7 @@ export function createLaneService({
       : "";
     const suggested = explicitBranch || linearBranch;
     const isCustomBranch = suggested.length > 0;
-    const branchSource: "explicit" | "linear" | "fallback" = explicitBranch
-      ? "explicit"
-      : linearBranch
-        ? "linear"
-        : "fallback";
+    const isLinearBranch = !explicitBranch && linearBranch.length > 0;
     const slug = slugify(args.name);
     const fallback = `ade/${slug}-${args.laneId.slice(0, 8)}`;
     const branchRef = suggested
@@ -1004,7 +1000,7 @@ export function createLaneService({
       throw new Error(`Branch "${branchRef}" already exists locally.`);
     }
 
-    const remoteCollisionMessage = branchSource === "linear"
+    const remoteCollisionMessage = isLinearBranch
       ? `Branch "origin/${branchRef}" already exists on the remote. Detach the Linear issue or choose one whose branch name is unused.`
       : `Branch "origin/${branchRef}" already exists on the remote. Choose a different branch name.`;
 

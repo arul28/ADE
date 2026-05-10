@@ -51,11 +51,17 @@ function projectLabel(project: RemoteRuntimeProjectRecord): string {
 
 function discoveredRuntimeLabel(machine: RemoteRuntimeDiscoveredMachine): string {
   const kind = (machine.runtimeKind ?? "").toLowerCase();
-  const label = kind === "daemon" || kind === "headless"
-    ? "Background ADE"
-    : kind === "desktop" || kind === "desktop-embedded"
-      ? "ADE app"
-      : "ADE service";
+  let label: string;
+  switch (kind) {
+    case "daemon":
+    case "headless":
+      label = "Background ADE"; break;
+    case "desktop":
+    case "desktop-embedded":
+      label = "ADE app"; break;
+    default:
+      label = "ADE service";
+  }
   return machine.runtimeVersion ? `${label} ${machine.runtimeVersion}` : label;
 }
 

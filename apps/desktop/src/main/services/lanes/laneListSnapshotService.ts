@@ -106,13 +106,11 @@ function summarizeLaneRuntime(
     else endedCount += 1;
   }
 
-  const bucket = awaitingInputCount > 0
-    ? "awaiting-input"
-    : runningCount > 0
-      ? "running"
-      : endedCount > 0
-        ? "ended"
-        : "none";
+  let bucket: LaneRuntimeSummary["bucket"];
+  if (awaitingInputCount > 0) bucket = "awaiting-input";
+  else if (runningCount > 0) bucket = "running";
+  else if (endedCount > 0) bucket = "ended";
+  else bucket = "none";
 
   return {
     bucket,

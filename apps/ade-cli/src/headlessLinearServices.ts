@@ -1333,31 +1333,12 @@ export function createHeadlessLinearServices(args: HeadlessLinearDeps): Headless
     workerTaskSessionService,
     workerHeartbeatService,
     dispose: () => {
-      try {
-        syncService.dispose();
-      } catch {
-        // ignore
-      }
-      try {
-        ingressService.dispose();
-      } catch {
-        // ignore
-      }
-      try {
-        fileService.dispose();
-      } catch {
-        // ignore
-      }
-      try {
-        processService.disposeAll();
-      } catch {
-        // ignore
-      }
-      try {
-        workerHeartbeatService.dispose();
-      } catch {
-        // ignore
-      }
+      const swallow = (fn: () => void) => { try { fn(); } catch { /* ignore */ } };
+      swallow(() => syncService.dispose());
+      swallow(() => ingressService.dispose());
+      swallow(() => fileService.dispose());
+      swallow(() => processService.disposeAll());
+      swallow(() => workerHeartbeatService.dispose());
     },
   };
 }

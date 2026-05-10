@@ -36,15 +36,16 @@ export class JsonRpcClient {
 
   static connect(socketPath: string): Promise<JsonRpcClient> {
     return new Promise((resolve, reject) => {
-      const socket = socketPath.startsWith("tcp://")
-        ? (() => {
-            const parsed = new URL(socketPath);
-            return net.createConnection({
-              host: parsed.hostname || "127.0.0.1",
-              port: Number.parseInt(parsed.port, 10),
-            });
-          })()
-        : net.createConnection(socketPath);
+      let socket: net.Socket;
+      if (socketPath.startsWith("tcp://")) {
+        const parsed = new URL(socketPath);
+        socket = net.createConnection({
+          host: parsed.hostname || "127.0.0.1",
+          port: Number.parseInt(parsed.port, 10),
+        });
+      } else {
+        socket = net.createConnection(socketPath);
+      }
       const cleanup = () => {
         socket.off("connect", onConnect);
         socket.off("error", onError);
@@ -138,11 +139,9 @@ export class JsonRpcClient {
 
     const crlfBoundary = this.buffer.indexOf("\r\n\r\n");
     const lfBoundary = this.buffer.indexOf("\n\n");
-    const boundary = crlfBoundary >= 0
-      ? { index: crlfBoundary, length: 4 }
-      : lfBoundary >= 0
-        ? { index: lfBoundary, length: 2 }
-        : null;
+    let boundary: { index: number; length: number } | null = null;
+    if (crlfBoundary >= 0) boundary = { index: crlfBoundary, length: 4 };
+    else if (lfBoundary >= 0) boundary = { index: lfBoundary, length: 2 };
     if (!boundary) return null;
     const header = this.buffer.subarray(0, boundary.index).toString("ascii");
     const match = /^content-length\s*:\s*(\d+)\s*$/im.exec(header);

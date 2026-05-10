@@ -183,11 +183,12 @@ export function latestTokenStats(events: AgentChatEventEnvelope[]): TokenStats {
     if (event.type === "tokens") {
       inputTokens = typeof event.inputTokens === "number" ? event.inputTokens : inputTokens;
       outputTokens = typeof event.outputTokens === "number" ? event.outputTokens : outputTokens;
-      const used = typeof event.totalTokens === "number"
-        ? event.totalTokens
-        : inputTokens != null || outputTokens != null
-          ? (inputTokens ?? 0) + (outputTokens ?? 0)
-          : null;
+      let used: number | null = null;
+      if (typeof event.totalTokens === "number") {
+        used = event.totalTokens;
+      } else if (inputTokens != null || outputTokens != null) {
+        used = (inputTokens ?? 0) + (outputTokens ?? 0);
+      }
       const limit = typeof event.contextWindow === "number" ? event.contextWindow : null;
       if (used != null && limit != null && limit > 0) {
         percent = Math.max(0, Math.min(100, Math.round((used / limit) * 100)));

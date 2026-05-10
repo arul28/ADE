@@ -58,6 +58,13 @@ function writeFileAtomic(filePath: string, contents: string | Buffer): void {
   ensureMode600(filePath);
 }
 
+function isEnoent(error: unknown): boolean {
+  return typeof error === "object"
+    && error !== null
+    && "code" in error
+    && (error as { code?: unknown }).code === "ENOENT";
+}
+
 function readJsonObject(filePath: string): Record<string, unknown> | null {
   try {
     const raw = fs.readFileSync(filePath, "utf8");
@@ -65,9 +72,7 @@ function readJsonObject(filePath: string): Record<string, unknown> | null {
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
     return parsed as Record<string, unknown>;
   } catch (error: unknown) {
-    if (typeof error === "object" && error && "code" in error && (error as { code?: unknown }).code === "ENOENT") {
-      return {};
-    }
+    if (isEnoent(error)) return {};
     throw error;
   }
 }
@@ -120,9 +125,7 @@ function readOrCreateMachineKey(machineKeyPath: string): Buffer {
     if (key.length === 32) return key;
     throw new Error("ADE credential machine key is invalid.");
   } catch (error: unknown) {
-    if (!(typeof error === "object" && error && "code" in error && (error as { code?: unknown }).code === "ENOENT")) {
-      throw error;
-    }
+    if (!isEnoent(error)) throw error;
   }
   const key = crypto.randomBytes(32);
   writeFileAtomic(machineKeyPath, `${key.toString("base64")}\n`);
@@ -249,9 +252,7 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
       }
       return out;
     } catch (error: unknown) {
-      if (typeof error === "object" && error && "code" in error && (error as { code?: unknown }).code === "ENOENT") {
-        return {};
-      }
+      if (isEnoent(error)) return {};
       throw error;
     }
   }

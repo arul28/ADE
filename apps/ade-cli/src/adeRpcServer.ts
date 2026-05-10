@@ -6882,8 +6882,20 @@ async function runTool(args: {
         commandPreviewParts.push("--sandbox", "workspace-write", "--ask-for-approval", "untrusted");
       }
     } else {
-      const claudePermission =
-        permissionMode === "plan" ? "plan" : permissionMode === "full-auto" ? "bypassPermissions" : permissionMode === "edit" ? "acceptEdits" : "default";
+      let claudePermission: string;
+      switch (permissionMode) {
+        case "plan":
+          claudePermission = "plan";
+          break;
+        case "full-auto":
+          claudePermission = "bypassPermissions";
+          break;
+        case "edit":
+          claudePermission = "acceptEdits";
+          break;
+        default:
+          claudePermission = "default";
+      }
       commandArgs.push("--permission-mode", claudePermission);
       commandPreviewParts.push("--permission-mode", previewShellEscapeArg(claudePermission));
 

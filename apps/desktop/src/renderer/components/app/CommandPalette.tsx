@@ -860,18 +860,15 @@ export function CommandPalette({
     onOpenChange(false);
   }, [onOpenChange]);
 
-  const addFlowTitle =
-    mode === "project-add"
-      ? "Add a project"
-      : mode === "project-create"
-      ? "Create a new project"
-      : mode === "project-clone"
-      ? "Clone from GitHub"
-      : mode === "project-remote"
-      ? "Connect to a machine"
-      : actionOutcome
-      ? `${actionOutcome.verb}!`
-      : "";
+  let addFlowTitle = "";
+  switch (mode) {
+    case "project-add": addFlowTitle = "Add a project"; break;
+    case "project-create": addFlowTitle = "Create a new project"; break;
+    case "project-clone": addFlowTitle = "Clone from GitHub"; break;
+    case "project-remote": addFlowTitle = "Connect to a machine"; break;
+    default:
+      if (actionOutcome) addFlowTitle = `${actionOutcome.verb}!`;
+  }
 
   const showAddFlowBack =
     mode === "project-create" || mode === "project-clone" || mode === "project-remote" || mode === "project-success";
