@@ -1,0 +1,168 @@
+import { Bonjour, type Browser, type Service as BonjourService } from "bonjour-service";
+import type { RemoteRuntimeDiscoveredMachine } from "../../../shared/types/remoteRuntime";
+
+export const ADE_SYNC_MDNS_SERVICE_TYPE = "ade-sync";
+
+type BonjourServiceLike = Partial<BonjourService> & {
+  rawTxt?: unknown;
+};
+
+type TxtRecord = Record<string, string>;
+
+function trimmed(value: unknown): string | null {
+  if (value == null || value === false) return null;
+  const text = Buffer.isBuffer(value) ? value.toString("utf8") : String(value);
+  const next = text.trim();
+  return next.length > 0 ? next : null;
+}
+
+function normalizeTxtRecord(value: unknown): TxtRecord {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const record: TxtRecord = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    const normalizedKey = trimmed(key);
+    const normalizedValue = trimmed(entry);
+    if (!normalizedKey || normalizedValue == null) continue;
+    record[normalizedKey] = normalizedValue;
+  }
+  return record;
+}
+
+function splitCsv(value: string | null): string[] {
+  if (!value) return [];
+  return value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function parsePositiveInteger(value: unknown): number | null {
+  const text = trimmed(value);
+  if (!text) return null;
+  const parsed = Number.parseInt(text, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const next = trimmed(value);
+    if (!next || seen.has(next)) continue;
+    seen.add(next);
+    result.push(next);
+  }
+  return result;
+}
+
+function isLoopbackRoute(host: string): boolean {
+  const lower = host.toLowerCase();
+  return lower === "localhost" || lower === "::1" || lower === "0.0.0.0" || lower.startsWith("127.");
+}
+
+function isTailscaleRoute(host: string): boolean {
+  const lower = host.toLowerCase().replace(/\.$/, "");
+  if (lower.endsWith(".ts.net")) return true;
+  const match = /^100\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(lower);
+  if (!match) return false;
+  const second = Number.parseInt(match[1] ?? "", 10);
+  return second >= 64 && second <= 127;
+}
+
+function orderAddresses(addresses: string[]): string[] {
+  const nonLoopback = addresses.filter((host) => !isLoopbackRoute(host));
+  const loopback = addresses.filter(isLoopbackRoute);
+  return [...nonLoopback, ...loopback];
+}
+
+function firstNonEmpty(values: Array<unknown>): string | null {
+  for (const value of values) {
+    const next = trimmed(value);
+    if (next) return next;
+  }
+  return null;
+}
+
+export function discoveredRuntimeFromBonjourService(
+  service: BonjourServiceLike,
+  nowMs = Date.now(),
+): RemoteRuntimeDiscoveredMachine | null {
+  const txt = normalizeTxtRecord(service.txt);
+  const serviceName = firstNonEmpty([service.name, service.fqdn, "ADE Sync"]) ?? "ADE Sync";
+  const servicePort = parsePositiveInteger(service.port) ?? parsePositiveInteger(txt.port);
+  const serviceKey = firstNonEmpty([
+    service.fqdn,
+    `${serviceName}@${firstNonEmpty([service.host, txt.host]) ?? "unknown"}:${servicePort ?? ""}`,
+  ]) ?? serviceName;
+  const hostName = firstNonEmpty([service.host]);
+  const machineName = firstNonEmpty([txt.deviceName, hostName, serviceName]) ?? serviceName;
+  const hostIdentity = firstNonEmpty([txt.deviceId]);
+  const port = servicePort ?? 8787;
+  const announcedAddresses = splitCsv(txt.addresses);
+  const tailscaleAddress = firstNonEmpty(
+    [txt.tailscaleDnsName, txt.tailscaleIp].filter((value): value is string => Boolean(value && isTailscaleRoute(value))),
+  );
+  const addresses = orderAddresses(uniqueStrings([
+    txt.host,
+    ...(service.addresses ?? []),
+    ...announcedAddresses,
+    txt.tailscaleIp,
+  ]));
+  const primaryRoute = firstNonEmpty([
+    addresses.find((address) => !isLoopbackRoute(address) && !isTailscaleRoute(address)),
+    tailscaleAddress,
+    addresses.find((address) => !isLoopbackRoute(address)),
+    hostName,
+    addresses[0],
+  ]);
+  const projectIds = splitCsv(txt.projects);
+  const projectCount = parsePositiveInteger(txt.projectCount) ?? (projectIds.length > 0 ? projectIds.length : null);
+
+  return {
+    id: hostIdentity ? `${hostIdentity}::${serviceKey}` : serviceKey,
+    serviceName,
+    machineName,
+    hostIdentity,
+    hostName,
+    port,
+    addresses,
+    primaryRoute,
+    tailscaleAddress,
+    runtimeKind: firstNonEmpty([txt.runtimeKind]),
+    runtimeVersion: firstNonEmpty([txt.runtimeVersion]),
+    projectIds,
+    projectCount,
+    lastSeenAt: nowMs,
+  };
+}
+
+export async function discoverLanRuntimes(timeoutMs = 1_200): Promise<RemoteRuntimeDiscoveredMachine[]> {
+  const bonjour = new Bonjour();
+  const discovered = new Map<string, RemoteRuntimeDiscoveredMachine>();
+  let browser: Browser | null = null;
+
+  const remember = (service: BonjourService): void => {
+    const machine = discoveredRuntimeFromBonjourService(service);
+    if (!machine) return;
+    discovered.set(machine.id, machine);
+  };
+
+  try {
+    browser = bonjour.find({ type: ADE_SYNC_MDNS_SERVICE_TYPE });
+    browser.on("up", remember);
+    browser.on("txt-update", remember);
+    await new Promise((resolve) => setTimeout(resolve, Math.max(100, timeoutMs)));
+  } finally {
+    browser?.stop();
+    await new Promise<void>((resolve) => {
+      bonjour.destroy(() => resolve());
+      setTimeout(resolve, 250);
+    });
+  }
+
+  return [...discovered.values()].sort((a, b) => {
+    const name = a.machineName.localeCompare(b.machineName);
+    if (name !== 0) return name;
+    return a.serviceName.localeCompare(b.serviceName);
+  });
+}

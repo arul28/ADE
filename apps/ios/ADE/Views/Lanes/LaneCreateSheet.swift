@@ -232,7 +232,7 @@ struct LaneCreateSheet: View {
 
           if let notice = queuedNotice {
             ADENoticeCard(
-              title: "Queued on host",
+              title: "Queued on machine",
               message: notice,
               icon: "arrow.trianglehead.2.clockwise.rotate.90",
               tint: ADEColor.warning,

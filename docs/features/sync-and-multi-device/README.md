@@ -1,7 +1,7 @@
 # Sync and Multi-Device
 
-ADE syncs live runtime state across a host desktop and any connected
-controllers (other desktops, iPhones) using **cr-sqlite** as a CRDT-backed
+ADE syncs live runtime state across a host ADE machine and any connected
+controllers (other Macs, iPhones) using **cr-sqlite** as a CRDT-backed
 replication layer over a **WebSocket** transport. The design is local-first,
 peer-to-peer, and has zero cloud dependency — two machines on the same LAN
 (or Tailscale tailnet) converge their application state directly.
@@ -18,10 +18,11 @@ does and does not travel, and the layers that implement it. Deep-dives:
 
 ## Who participates
 
-- **Host** — a desktop-class machine running ADE's full Electron main
-  process. It owns agent execution, PTYs, worktrees, worker heartbeats,
-  and the orchestrator. There is **one** host per live sync cluster at a
-  time.
+- **Host** — a reachable ADE machine running the local runtime, either
+  through the desktop app's daemon-backed runtime or headless
+  `ade serve`. It owns agent execution, PTYs, worktrees, worker
+  heartbeats, and the orchestrator. There is **one** host per live sync
+  cluster at a time.
 - **Controllers** — other connected devices. Phones are always
   controllers (they cannot be hosts). A second Mac can either be
   independent (Git-only, its own local ADE runtime) or deliberately
@@ -264,9 +265,10 @@ is not supported.
 
 ## Device discovery
 
-- **Desktop-to-desktop**: manual host/port/bootstrap-token entry in
-  Settings > Sync. The bootstrap token lives at
-  `.ade/secrets/sync-bootstrap-token`.
+- **Machine-to-machine**: manual host/port/bootstrap-token entry in
+  Settings > Sync. The machine bootstrap token lives under
+  `~/.ade/secrets` and legacy project-local tokens are migrated there
+  on startup.
 - **Project switch handoff carries auth.** `SyncProjectConnectionPayload`
   now distinguishes `authKind: "bootstrap" | "paired"` and may carry a
   `pairedDeviceId` instead of a raw `token`. When a phone follows a
@@ -294,10 +296,19 @@ is not supported.
   Tailscale IP, and `127.0.0.1` (`SyncAddressCandidateKind` now
   includes `loopback`).
 - **mDNS**: `publishLanDiscovery` builds a TXT record whose
-  `addresses` CSV includes the Tailscale IP alongside LAN IPs. The
-  host keeps a signature of `{ hostName, port, txt }` and re-publishes
-  the announcement only when the signature changes, to avoid churn
-  while IP addresses fluctuate.
+  `addresses` CSV includes the Tailscale IP alongside LAN IPs. It also
+  advertises `runtimeKind`, `runtimeVersion`, `projects`, and
+  `projectCount`, so mobile can show a machine-first picker before it
+  hydrates the full project catalog over the paired WebSocket. The host
+  keeps a signature of `{ hostName, port, txt }` and re-publishes the
+  announcement only when the signature changes, to avoid churn while IP
+  addresses fluctuate.
+- **Machine-scoped pairing state**: phone pairing files live under the
+  machine ADE home (`~/.ade/secrets/`): `sync-device-id`,
+  `sync-bootstrap-token`, `sync-pin.json`, and
+  `sync-paired-devices.json`. On upgrade, legacy per-project copies
+  under `<project>/.ade/secrets/` are copied or merged into the machine
+  store, with paired devices deduped by `deviceId`.
 - **Tailscale Serve tailnet discovery**: when the host sees a usable
   `tailscale` CLI (via the `ADE_TAILSCALE_CLI` env override or the
   default macOS path `/Applications/Tailscale.app/Contents/MacOS/Tailscale`),
@@ -420,8 +431,8 @@ current branch modifications to `syncRemoteCommandService.ts`.
 
 ## Security model
 
-- **Pairing**: two independent paths. Desktop-to-desktop uses the
-  shared bootstrap token from `.ade/secrets/sync-bootstrap-token`.
+- **Pairing**: two independent paths. Machine-to-machine pairing uses
+  the shared bootstrap token from the machine secrets directory.
   Phone pairing uses a **user-set 6-digit PIN** stored in
   `.ade/secrets/sync-pin.json` on the host. The host never auto-rotates
   or TTLs the PIN; the user sets it through Settings > Sync and clears

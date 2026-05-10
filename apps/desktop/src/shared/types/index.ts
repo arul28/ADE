@@ -13,7 +13,6 @@ export * from "./files";
 export * from "./sessions";
 export * from "./chat";
 export * from "./cto";
-export * from "./openclaw";
 export * from "./computerUseArtifacts";
 export * from "./iosSimulator";
 export * from "./appControl";
@@ -33,6 +32,7 @@ export * from "./projectState";
 export * from "./sync";
 export * from "./devTools";
 export * from "./adeCli";
+export * from "./remoteRuntime";
 
 export * from "./linearSync";
 export * from "./feedback";

@@ -1,9 +1,10 @@
 # iOS Companion
 
 The ADE iOS app is a native SwiftUI companion that acts as a **controller**
-for a desktop or VPS host running the full ADE Electron app. The phone
-never runs agents; it reads synced state from a local SQLite DB and sends
-execution commands to the host over WebSocket.
+for a reachable ADE machine, including the desktop app's daemon-backed
+runtime or a headless `ade serve` host. The phone never runs agents; it
+reads synced state from a local SQLite DB and sends execution commands
+to the host over WebSocket.
 
 This doc summarises the architecture at a level useful for understanding
 the sync surface. For the full roadmap, see Phase 6 and Phase 7 plans in
@@ -170,13 +171,13 @@ to the same Settings sheet the dot opens.
 `SettingsConnectionHeader` distinguishes the four states explicitly:
 
 - Connected, normal load → "Live · ready to sync".
-- Connected, strained load → "Live · host responding slowly".
+- Connected, strained load → "Live · machine responding slowly".
 - Connected with `connectionState == .syncing` → "Live · syncing
   changes".
-- `connecting` → "Connecting to saved host".
-- `unreachable` → "Unable to reach your Mac" plus the
+- `connecting` → "Connecting to saved machine".
+- `unreachable` → "Unable to reach your machine" plus the
   `lastFailureMessage` banner.
-- `disconnected` → reconnect / pair-different-host CTA depending on
+- `disconnected` → reconnect / pair-different-machine CTA depending on
   whether a saved Tailscale address candidate is present.
 
 `SettingsConnectionPresentation.statusLabel` returns "Connected, slow"
@@ -286,8 +287,8 @@ Implemented envelope types on iOS:
 |---|---|---|
 | `hello` / `hello_ok` / `hello_error` | Bidirectional | Handshake |
 | `pairing_request` / `pairing_result` | Phone → host / host → phone | 6-digit PIN pairing |
-| `project_catalog_request` / `project_catalog` | Phone → host / host → phone | Refresh recent/available desktop projects |
-| `project_switch_request` / `project_switch_result` | Phone → host / host → phone | Prepare a sync connection for a selected desktop project |
+| `project_catalog_request` / `project_catalog` | Phone → host / host → phone | Refresh recent/available machine projects |
+| `project_switch_request` / `project_switch_result` | Phone → host / host → phone | Prepare a sync connection for a selected machine project |
 | `changeset_batch` | Bidirectional | cr-sqlite changeset batch |
 | `changeset_ack` | Bidirectional | Per-batch apply confirmation (or error code); the sender retransmits on timeout |
 | `command` | Phone → host | Execution request |
@@ -355,19 +356,19 @@ yet arrived in the catchup batch.
   `device:<hostIdentity>`, `route:<host>:<port>`, or
   `name:<hostName>:<port>`. `SyncService` keeps a parallel
   `ade.sync.hostProfiles` `UserDefaults` blob so a phone that has
-  paired with multiple desktops can re-resolve the right token when
-  the desktop initiates a project switch without re-bundling
+  paired with multiple machines can re-resolve the right token when
+  the host initiates a project switch without re-bundling
   credentials.
 - Uses iOS Keychain Services API (`SecItemAdd` / `SecItemCopyMatching`
   / `SecItemUpdate` / `SecItemDelete`).
 
 ### PIN pairing flow
 
-1. User opens Settings > Sync on the host desktop and sets a 6-digit
-   PIN. The desktop writes `.ade/secrets/sync-pin.json` (chmod `0600`)
+1. User opens Settings > Sync on the host machine and sets a 6-digit
+   PIN. The host writes the PIN under `~/.ade/secrets` (chmod `0600`)
    and surfaces it on the Settings > Sync sheet for the duration the
    user wants to accept pairings.
-2. Phone opens Settings > Pairing, either scans the desktop QR (which
+2. Phone opens Settings > Pairing, either scans the machine QR (which
    carries address candidates + port only) or enters host/port
    manually, then types the same PIN the user set.
 3. Phone sends a `pairing_request` envelope with the PIN. The host's
@@ -585,7 +586,7 @@ Before the tabs render, `ProjectHomeView` can take over the root screen
 when no active project is selected or the user taps the Projects toolbar
 button. It merges the host-provided catalog with projects already present
 in the local replicated DB, marks cached/unavailable rows, and requests a
-fresh bootstrap connection for the selected desktop project through
+fresh bootstrap connection for the selected machine project through
 `project_switch_request`. Each tile renders `MobileProjectSummary.iconDataUrl`
 when the host's `projectIconResolver` found a favicon for the project,
 falling back to the brand glyph otherwise. The host pre-renders icons
@@ -615,13 +616,13 @@ All lane, file, Work, and PR projections are scoped through
 `Database.currentProjectId()`. The iOS app stores the active project id
 in `UserDefaults`, mirrors it into `DatabaseService`, and falls back to
 the project home if no selected project row has arrived yet. Project
-switches reset the remote DB version. The desktop runs at most one sync
-host at a time — pinned to the active project — so when the phone asks
-the desktop to switch projects, the desktop activates the requested
+switches reset the remote DB version. The host machine runs at most one
+sync host at a time — pinned to the active project — so when the phone
+asks the host to switch projects, the host activates the requested
 project locally, returns `connection: null`, and the phone reuses its
 existing pairing credentials to reconnect against the now-active host.
-If the desktop is offline at switch time, it still records the requested
-project as active and the phone reconnects when the desktop returns.
+If the host is offline at switch time, it still records the requested
+project as active and the phone reconnects when the host returns.
 
 Rather than reconstructing lane detail surfaces client-side from
 primitive rows, the iOS app persists richer projections the host
@@ -718,8 +719,8 @@ reflected in the phone's UI on the next descriptor read.
 | WebSocket client | Implemented |
 | PIN pairing flow | Implemented |
 | QR pairing payload (v2, address candidates + port) | Implemented |
-| Project home + desktop project switching | Implemented |
-| Lanes tab | Implemented to live desktop parity (with `devicesOpen`, multi-attach, stack canvas, and template environment progress) |
+| Project home + machine project switching | Implemented |
+| Lanes tab | Implemented to live machine parity (with `devicesOpen`, multi-attach, stack canvas, and template environment progress) |
 | Files tab | Implemented with `mobileReadOnly` workspace gate and capped search/quick-open result rendering |
 | Work tab | Implemented; live chat-event push from host, subscribed terminal input/resize control with `terminal_unsubscribe` on view disappear, in-app CLI session launcher (`work.startCliSession`), tap-to-resume on ended PTY rows |
 | PRs tab | Implemented; driven by `prs.getMobileSnapshot` |
@@ -744,8 +745,8 @@ reflected in the phone's UI on the next descriptor read.
   is a CRR, make sure writes land in a table the phone reads), not
   on the phone. Avoid adding host-only caches that the phone has no
   way to observe.
-- **Project selection gates hydration.** A phone paired to a host can
-  know about multiple desktop projects, but lane/file/Work/PR reads must
+- **Project selection gates hydration.** A phone paired to a machine can
+  know about multiple machine projects, but lane/file/Work/PR reads must
   stay scoped to the active project id. If a switch fails, roll back the
   active project id, host profile, token, and remote DB version together.
 - **Keychain items survive app uninstall on some iOS builds.**

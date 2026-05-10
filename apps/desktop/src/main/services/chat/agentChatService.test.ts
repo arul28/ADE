@@ -2449,7 +2449,7 @@ describe("createAgentChatService", () => {
       const persisted = readPersistedChatState(session.id);
       writePersistedChatState(session.id, {
         ...persisted,
-        continuitySummary: "- Keep the OpenClaw bridge runtime state in machine-local cache.",
+        continuitySummary: "- Keep runtime cache state machine-local.",
         continuitySummaryUpdatedAt: new Date().toISOString(),
         recentConversationEntries: [
           { role: "user", text: "What lane should frontend use?" },
@@ -2471,7 +2471,7 @@ describe("createAgentChatService", () => {
       expect(result.sessionId).toBe(session.id);
       expect(send).toHaveBeenCalledTimes(1);
       expect(send).toHaveBeenCalledWith(expect.stringContaining("Continuity Summary"));
-      expect(send).toHaveBeenCalledWith(expect.stringContaining("Keep the OpenClaw bridge runtime state in machine-local cache."));
+      expect(send).toHaveBeenCalledWith(expect.stringContaining("Keep runtime cache state machine-local."));
       expect(send).toHaveBeenCalledWith(expect.stringContaining("User: What lane should frontend use?"));
       expect(send).toHaveBeenCalledWith(expect.stringContaining("Assistant: Use the primary-hosted coordinator first."));
     });
@@ -2727,7 +2727,7 @@ describe("createAgentChatService", () => {
 
       const result = await service.runSessionTurn({
         sessionId: session.id,
-        text: "Please keep the OpenClaw bridge state private.",
+        text: "Please keep the runtime bridge state private.",
         timeoutMs: 15_000,
       });
       await new Promise((resolve) => setTimeout(resolve, 25));
@@ -2736,7 +2736,7 @@ describe("createAgentChatService", () => {
       expect(result.outputText).toContain("Partial answer");
       expect(persisted.sdkSessionId).toBe("sdk-session-2");
       expect(persisted.continuitySummary).toContain("Recent continuity snapshot:");
-      expect(persisted.continuitySummary).toContain("User: Please keep the OpenClaw bridge state private.");
+      expect(persisted.continuitySummary).toContain("User: Please keep the runtime bridge state private.");
       expect(persisted.continuitySummary).toContain("Assistant: Partial answer");
       expect(unstable_v2_createSession).toHaveBeenCalledTimes(2);
       expect(recoverySend).toHaveBeenCalledWith("System initialization check. Respond with only the word READY.");

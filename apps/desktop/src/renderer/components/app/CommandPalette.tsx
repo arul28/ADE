@@ -28,13 +28,15 @@ import { AddProjectChooser } from "../projects/AddProjectChooser";
 import { CloneProjectForm } from "../projects/CloneProjectForm";
 import { CreateProjectForm } from "../projects/CreateProjectForm";
 import { ProjectActionSuccess } from "../projects/ProjectActionSuccess";
+import { RemoteTargetList } from "../remoteTargets/RemoteTargetList";
 
 export type CommandPaletteIntent =
   | "default"
   | "project-browse"
   | "project-add"
   | "project-create"
-  | "project-clone";
+  | "project-clone"
+  | "project-remote";
 
 type CommandPaletteMode = CommandPaletteIntent | "project-success";
 
@@ -209,6 +211,11 @@ export function CommandPalette({
     setActionOutcome(null);
   }, []);
 
+  const startProjectRemote = useCallback(() => {
+    setMode("project-remote");
+    setActionOutcome(null);
+  }, []);
+
   useEffect(() => {
     if (!open) {
       setMode("default");
@@ -242,11 +249,16 @@ export function CommandPalette({
       return;
     }
 
+    if (intent === "project-remote") {
+      startProjectRemote();
+      return;
+    }
+
     setMode("default");
     setQ("");
     setSelectedIdx(0);
     setBrowseError(null);
-  }, [intent, open, startProjectAdd, startProjectBrowse, startProjectClone, startProjectCreate]);
+  }, [intent, open, startProjectAdd, startProjectBrowse, startProjectClone, startProjectCreate, startProjectRemote]);
 
   useEffect(() => {
     if (!open || mode !== "project-browse") return;
@@ -282,6 +294,14 @@ export function CommandPalette({
         group: "Projects",
         closeOnRun: false,
         run: startProjectClone,
+      },
+      {
+        id: "project-remote",
+        title: "Connect to remote machine",
+        hint: "Register an SSH target and list its ADE projects",
+        group: "Projects",
+        closeOnRun: false,
+        run: startProjectRemote,
       },
       { id: "go-project", title: "Go to Run", shortcut: "G 1", group: "Navigation", run: () => navigate("/project") },
       { id: "go-lanes", title: "Go to Lanes", shortcut: "G L", group: "Navigation", run: () => navigate("/lanes") },
@@ -388,6 +408,7 @@ export function CommandPalette({
           command.id === "project-browse" ||
           command.id === "project-create" ||
           command.id === "project-clone" ||
+          command.id === "project-remote" ||
           command.id === "go-project" ||
           command.id === "ping",
       );
@@ -404,6 +425,7 @@ export function CommandPalette({
     startProjectBrowse,
     startProjectClone,
     startProjectCreate,
+    startProjectRemote,
   ]);
 
   const filtered = useMemo(() => {
@@ -789,8 +811,9 @@ export function CommandPalette({
     mode === "project-add" ||
     mode === "project-create" ||
     mode === "project-clone" ||
+    mode === "project-remote" ||
     mode === "project-success";
-  const isWideAddFlow = mode === "project-clone";
+  const isWideAddFlow = mode === "project-clone" || mode === "project-remote";
   const resultHeightClass = isBrowsing
     ? "h-[620px] max-h-[86vh]"
     : isAddFlow
@@ -844,12 +867,14 @@ export function CommandPalette({
       ? "Create a new project"
       : mode === "project-clone"
       ? "Clone from GitHub"
+      : mode === "project-remote"
+      ? "Connect to a machine"
       : actionOutcome
       ? `${actionOutcome.verb}!`
       : "";
 
   const showAddFlowBack =
-    mode === "project-create" || mode === "project-clone" || mode === "project-success";
+    mode === "project-create" || mode === "project-clone" || mode === "project-remote" || mode === "project-success";
 
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -936,7 +961,7 @@ export function CommandPalette({
                   {mode === "project-browse"
                     ? "Browse folders in ADE and open a Git repository without leaving the app."
                     : isAddFlow
-                    ? "Open, create, or clone a project."
+                    ? "Open, create, clone, or connect to a project."
                     : "Search ADE commands and jump to actions quickly."}
                 </Dialog.Description>
 
@@ -1023,8 +1048,10 @@ export function CommandPalette({
                             startProjectBrowse();
                           } else if (choice === "create") {
                             startProjectCreate();
-                          } else {
+                          } else if (choice === "clone") {
                             startProjectClone();
+                          } else {
+                            startProjectRemote();
                           }
                         }}
                       />
@@ -1038,6 +1065,8 @@ export function CommandPalette({
                         onCancel={() => setMode("project-add")}
                         onCloned={(result) => handleProjectActionSuccess("Cloned", result)}
                       />
+                    ) : mode === "project-remote" ? (
+                      <RemoteTargetList />
                     ) : mode === "project-success" && actionOutcome ? (
                       <ProjectActionSuccess
                         verb={actionOutcome.verb}

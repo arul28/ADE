@@ -2142,6 +2142,12 @@ const ALL_TOOL_SPECS: ToolSpec[] = [
   ...COORDINATOR_TOOL_SPECS,
 ];
 const COORDINATOR_TOOL_NAMES = new Set(COORDINATOR_TOOL_SPECS.map((tool) => tool.name));
+const MEMORY_TOOL_NAMES = new Set([
+  "memory_add",
+  "memory_update_core",
+  "memory_search",
+  "memory_pin",
+]);
 
 const READ_ONLY_TOOLS = new Set([
   "check_conflicts",
@@ -3455,6 +3461,7 @@ function isLocalComputerUseAllowed(callerCtx: CallerContext): boolean {
 
 async function listToolSpecsForSession(runtime: AdeRuntime, session: SessionState): Promise<ToolSpec[]> {
   const callerCtx = await resolveEffectiveCallerContext(runtime, session);
+  const memoryAllowed = runtime.capabilities?.memory !== false;
   const externalComputerUseAvailable = runtime.computerUseArtifactBrokerService
     ?.getBackendStatus()
     ?.backends.some((backend) => backend.available) ?? false;
@@ -3464,6 +3471,7 @@ async function listToolSpecsForSession(runtime: AdeRuntime, session: SessionStat
   const keepVisibleTool = (tool: ToolSpec): boolean => (
     (!shouldHideLocalComputerUse || !LOCAL_COMPUTER_USE_TOOL_NAMES.has(tool.name))
     && (macosVmAllowed || !MACOS_VM_TOOL_NAMES.has(tool.name))
+    && (memoryAllowed || !MEMORY_TOOL_NAMES.has(tool.name))
   );
   const visibleBaseTools = TOOL_SPECS.filter(keepVisibleTool);
   const visibleCoordinatorTools = COORDINATOR_TOOL_SPECS.filter(keepVisibleTool);
@@ -4623,6 +4631,9 @@ async function runTool(args: {
 }): Promise<unknown> {
   const { runtime, session, name, toolArgs } = args;
   const callerCtx = await resolveEffectiveCallerContext(runtime, session);
+  if (runtime.capabilities?.memory === false && MEMORY_TOOL_NAMES.has(name)) {
+    throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Tool not available in this runtime: ${name}`);
+  }
   if (isToolHiddenForStandaloneChat(name, callerCtx)) {
     throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported tool: ${name}`);
   }
@@ -7638,6 +7649,66 @@ export function createAdeRpcRequestHandler(args: {
 
     if (method === "ping") {
       return { pong: true, at: nowIso() };
+    }
+
+    if (method.startsWith("sync.")) {
+      const syncService = runtime.syncService;
+      if (!syncService) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, "Sync service is not available.");
+      }
+      if (method === "sync.getStatus") {
+        return await syncService.getStatus({
+          includeTransferReadiness: params.includeTransferReadiness === true,
+          forceTransferReadiness: params.forceTransferReadiness === true,
+        });
+      }
+      if (method === "sync.refreshDiscovery") {
+        return await syncService.refreshDiscovery();
+      }
+      if (method === "sync.listDevices") {
+        return await syncService.listDevices();
+      }
+      if (method === "sync.updateLocalDevice") {
+        const name = typeof params.name === "string" ? params.name : undefined;
+        const deviceType = typeof params.deviceType === "string" ? params.deviceType : undefined;
+        return await syncService.updateLocalDevice({
+          ...(name !== undefined ? { name } : {}),
+          ...(deviceType !== undefined ? { deviceType: deviceType as never } : {}),
+        });
+      }
+      if (method === "sync.connectToBrain") {
+        return await syncService.connectToBrain(params as Parameters<typeof syncService.connectToBrain>[0]);
+      }
+      if (method === "sync.disconnectFromBrain") {
+        return await syncService.disconnectFromBrain();
+      }
+      if (method === "sync.forgetDevice") {
+        const deviceId = typeof params.deviceId === "string" ? params.deviceId : "";
+        return await syncService.forgetDevice(deviceId);
+      }
+      if (method === "sync.getTransferReadiness") {
+        return await syncService.getTransferReadiness();
+      }
+      if (method === "sync.transferBrainToLocal") {
+        return await syncService.transferBrainToLocal();
+      }
+      if (method === "sync.getPin") {
+        return { pin: syncService.getPin() };
+      }
+      if (method === "sync.setPin") {
+        const pin = typeof params.pin === "string" ? params.pin : "";
+        return await syncService.setPin(pin);
+      }
+      if (method === "sync.clearPin") {
+        return await syncService.clearPin();
+      }
+      if (method === "sync.setActiveLanePresence") {
+        const laneIds = Array.isArray(params.laneIds)
+          ? params.laneIds.filter((laneId): laneId is string => typeof laneId === "string")
+          : [];
+        await syncService.setActiveLanePresence(laneIds);
+        return null;
+      }
     }
 
     if (method === "ade/actions/list") {

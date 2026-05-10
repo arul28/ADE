@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowSquareOut, ChatCircleDots, CircleNotch, DeviceMobile, Folder, FolderOpen, Plus, Minus, Trash, UploadSimple, X } from "@phosphor-icons/react";
+import { ArrowSquareOut, ChatCircleDots, CircleNotch, DesktopTower, DeviceMobile, Folder, FolderOpen, Plus, Minus, Trash, UploadSimple, X } from "@phosphor-icons/react";
 import * as Dialog from "@radix-ui/react-dialog";
 
 import { useAppStore } from "../../state/appStore";
@@ -192,7 +192,8 @@ function deriveSyncLabel(snapshot: SyncRoleSnapshot | null): string | null {
   if (snapshot.role === "brain") {
     const count = snapshot.connectedPeers.length;
     if (count > 0) {
-      return `${count} phone${count === 1 ? "" : "s"} connected`;
+      const machineName = snapshot.localDevice.name.trim() || "this machine";
+      return `${count} phone${count === 1 ? "" : "s"} connected to ${machineName}`;
     }
     return "Phone sync ready";
   }
@@ -454,6 +455,7 @@ function ProjectTabIcon({
 
 export function TopBar() {
   const project = useAppStore((s) => s.project);
+  const projectBinding = useAppStore((s) => s.projectBinding);
   const projectHydrated = useAppStore((s) => s.projectHydrated);
   const showWelcome = useAppStore((s) => s.showWelcome);
   const closeProject = useAppStore((s) => s.closeProject);
@@ -481,11 +483,13 @@ export function TopBar() {
   const phoneSyncPanelRef = useRef<HTMLDivElement | null>(null);
   const dragCounterRef = useRef(0);
   const isProjectBusy = projectTransition != null || relocatingPath != null;
+  const remoteBinding = projectBinding?.kind === "remote" ? projectBinding : null;
   const workspaceProjectOpen =
     projectHydrated === true &&
     showWelcome !== true &&
     isNewTabOpen !== true &&
-    Boolean(project?.rootPath);
+    Boolean(project?.rootPath) &&
+    !remoteBinding;
 
   const projectRootForRemote = workspaceProjectOpen ? project?.rootPath ?? null : null;
   const { hasGitHubRemote, hasOrigin, refresh: refreshRemote } =
@@ -528,14 +532,14 @@ export function TopBar() {
 
   useEffect(() => {
     const rootPath = project?.rootPath ?? null;
-    if (!rootPath) {
+    if (!rootPath || remoteBinding) {
       setOpenProjectTabRoots([]);
       return;
     }
     setOpenProjectTabRoots((prev) =>
       prev.includes(rootPath) ? prev : [...prev, rootPath]
     );
-  }, [project?.rootPath]);
+  }, [project?.rootPath, remoteBinding]);
 
   const projectTabs = useMemo<RecentProjectSummary[]>(() =>
     openProjectTabRoots.map((rootPath) => {
@@ -595,7 +599,7 @@ export function TopBar() {
   useEffect(() => {
     let cancelled = false;
     let statusRequestVersion = 0;
-    if (!project?.rootPath) {
+    if (!project?.rootPath || remoteBinding) {
       setSyncSnapshot(null);
       setPhoneSyncOpen(false);
       return () => {
@@ -628,7 +632,7 @@ export function TopBar() {
     // them to the active project), so we re-run this effect on rootPath change
     // to force an immediate refetch. Focus refresh covers state changes that
     // happen while ADE is not active.
-  }, [project?.rootPath]);
+  }, [project?.rootPath, remoteBinding]);
 
   const checkForActiveWorkloads = useCallback(async (projectRootPath: string): Promise<boolean> => {
     if (project?.rootPath !== projectRootPath) return true;
@@ -732,6 +736,11 @@ export function TopBar() {
       }
     })().catch(() => { });
   }, [checkForActiveWorkloads, closeProject, openProjectTabRoots, project?.rootPath, projectTabs, switchProjectToPath]);
+
+  const handleCloseRemoteTab = useCallback(() => {
+    if (isProjectBusy) return;
+    closeProject().catch(() => { });
+  }, [closeProject, isProjectBusy]);
 
   const handleRelocate = useCallback((oldPath: string) => {
     setRelocatingPath(oldPath);
@@ -904,8 +913,47 @@ export function TopBar() {
         onDragOver={handleProjectTabDragOver}
         onDrop={handleProjectTabDrop}
       >
-        {projectTabs.length > 0 || isNewTabOpen ? (
+        {remoteBinding || projectTabs.length > 0 || isNewTabOpen ? (
           <>
+            {remoteBinding ? (
+              <div
+                key={remoteBinding.key}
+                role="button"
+                tabIndex={0}
+                data-state="active"
+                aria-current="true"
+                className={cn(
+                  "ade-shell-project-tab group inline-flex w-[clamp(154px,18vw,240px)] max-w-[240px] min-w-0 shrink-0 items-center gap-2 px-3 py-0.5",
+                  "font-semibold transition-[background-color,color,border-color,box-shadow,opacity] duration-150"
+                )}
+                style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+                title={`${remoteBinding.runtimeName}: ${remoteBinding.rootPath}`}
+              >
+                <DesktopTower size={14} weight="duotone" className="shrink-0 text-accent" />
+                <span className="min-w-0 flex-1 truncate text-[12px]">
+                  {remoteBinding.displayName}
+                </span>
+                <span className="max-w-[72px] shrink truncate text-[10px] font-medium text-muted-fg">
+                  {remoteBinding.runtimeName}
+                </span>
+                <button
+                  type="button"
+                  className={cn(
+                    "ade-shell-control ml-auto inline-flex h-5 w-5 shrink-0 items-center justify-center text-current",
+                    "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150"
+                  )}
+                  data-variant="ghost"
+                  disabled={isProjectBusy}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleCloseRemoteTab();
+                  }}
+                  title="Close remote project"
+                >
+                  <X size={13} weight="regular" />
+                </button>
+              </div>
+            ) : null}
             {projectTabs.map((rp, idx) => {
               const isCurrent = project?.rootPath === rp.rootPath;
               const isMissing = !rp.exists;
@@ -1204,7 +1252,7 @@ export function TopBar() {
           )}
           data-variant="ghost"
           style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-          title="Connect a phone to this computer"
+          title="Connect a phone to this machine"
           aria-expanded={phoneSyncOpen}
           onClick={() => setPhoneSyncOpen((open) => !open)}
         >

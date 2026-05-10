@@ -8,6 +8,7 @@ import {
   findProjectRoots,
   formatOutput,
   graphWaitState,
+  isFailedServiceManagerResult,
   parseCliArgs,
   renderLaneGraph,
   resolveRoots,
@@ -55,6 +56,110 @@ describe("ADE CLI", () => {
 
     const plan = buildCliPlan(parsed.command);
     expect(plan).toEqual({ kind: "ade-code", rest: ["--print-state"] });
+  });
+
+  it("defaults bare ade to the terminal Work chat launcher", () => {
+    expect(buildCliPlan([])).toEqual({ kind: "ade-code", rest: [] });
+  });
+
+  it("keeps global help on the help surface", () => {
+    const plan = buildCliPlan(["--help"]);
+    expect(plan.kind).toBe("help");
+  });
+
+  it("keeps global version on the version surface", () => {
+    expect(buildCliPlan(["--version"])).toEqual({ kind: "help", text: "ade 0.0.0\n" });
+    expect(buildCliPlan(["-v"])).toEqual({ kind: "help", text: "ade 0.0.0\n" });
+  });
+
+  it("builds runtime daemon and stdio RPC commands", () => {
+    expect(buildCliPlan(["serve", "--socket", "/tmp/ade.sock", "--port", "7777"])).toEqual({
+      kind: "serve",
+      rest: ["--socket", "/tmp/ade.sock", "--port", "7777"],
+    });
+    expect(buildCliPlan(["serve", "--service-status"])).toEqual({
+      kind: "serve",
+      rest: ["--service-status"],
+    });
+    expect(buildCliPlan(["rpc", "--stdio"])).toEqual({ kind: "rpc-stdio", rest: [] });
+    expect(buildCliPlan(["rpc", "stdio", "--trace"])).toEqual({ kind: "rpc-stdio", rest: ["--trace"] });
+  });
+
+  it("marks failed service manager results as CLI failures", () => {
+    expect(isFailedServiceManagerResult({
+      ok: false,
+      serviceName: "com.ade.runtime",
+      action: "install",
+      path: "/tmp/com.ade.runtime.plist",
+      message: "launchctl failed",
+    })).toBe(true);
+    expect(isFailedServiceManagerResult({
+      ok: true,
+      serviceName: "com.ade.runtime",
+      action: "install",
+      path: "/tmp/com.ade.runtime.plist",
+      message: "installed",
+    })).toBe(false);
+  });
+
+  it("builds project init command", () => {
+    expect(buildCliPlan(["init", "/tmp/project"])).toEqual({
+      kind: "init",
+      targetPath: "/tmp/project",
+    });
+    expect(buildCliPlan(["init"])).toEqual({
+      kind: "init",
+      targetPath: null,
+    });
+  });
+
+  it("builds machine project registry commands", () => {
+    expect(buildCliPlan(["projects", "list"])).toEqual({
+      kind: "execute",
+      label: "projects list",
+      formatter: "projects-list",
+      steps: [{ key: "result", method: "projects.list" }],
+    });
+    expect(buildCliPlan(["project", "add", "/tmp/project"])).toEqual({
+      kind: "execute",
+      label: "projects add",
+      formatter: "projects-list",
+      steps: [{ key: "result", method: "projects.add", params: { rootPath: "/tmp/project" } }],
+    });
+    expect(buildCliPlan(["projects", "remove", "project_abc"])).toEqual({
+      kind: "execute",
+      label: "projects remove",
+      steps: [{ key: "result", method: "projects.remove", params: { projectId: "project_abc" } }],
+    });
+    expect(buildCliPlan(["projects", "touch", "--project-id", "project_abc"])).toEqual({
+      kind: "execute",
+      label: "projects touch",
+      formatter: "projects-list",
+      steps: [{ key: "result", method: "projects.touch", params: { projectId: "project_abc" } }],
+    });
+  });
+
+  it("builds sync status and pairing PIN commands", () => {
+    const status = buildCliPlan(["sync", "status", "--include-transfer-readiness"]);
+    expect(status.kind).toBe("execute");
+    if (status.kind !== "execute") return;
+    expect(status.steps).toEqual([{
+      key: "result",
+      method: "sync.getStatus",
+      params: {
+        includeTransferReadiness: true,
+        forceTransferReadiness: false,
+      },
+    }]);
+
+    const setPin = buildCliPlan(["sync", "pin", "set", "123456"]);
+    expect(setPin.kind).toBe("execute");
+    if (setPin.kind !== "execute") return;
+    expect(setPin.steps).toEqual([{
+      key: "result",
+      method: "sync.setPin",
+      params: { pin: "123456" },
+    }]);
   });
 
   it("forwards resolved roots and socket intent to ade code", () => {

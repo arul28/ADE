@@ -21,7 +21,7 @@ docs/
 │   └── ship-lane.md                       # autonomous PR-to-merge driver
 └── features/
     ├── agents/                            # agent identity, tools, personas
-    ├── ade-code/                          # terminal Ink Work chat client (ade-code)
+    ├── ade-code/                          # terminal Ink Work chat client (`ade code`)
     ├── automations/                       # rule triggers + actions + guardrails
     ├── chat/                              # multi-provider agent chat
     ├── computer-use/                      # proof control plane, backends, broker
@@ -37,6 +37,7 @@ docs/
     ├── onboarding-and-settings/           # first-run, schema, settings tabs
     ├── project-home/                      # welcome + per-lane dashboard
     ├── pull-requests/                     # stacking, queue, conflict simulation
+    ├── remote-runtime/                    # local daemon + SSH remote machines
     ├── sync-and-multi-device/             # cr-sqlite CRDT, iOS, remote commands
     ├── terminals-and-sessions/            # PTY, sessions, processes, UI surfaces
     └── workspace-graph/                   # React Flow canvas + data sources

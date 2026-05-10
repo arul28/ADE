@@ -36,7 +36,7 @@ struct SettingsPinSheet: View {
         .accessibilityLabel("Pairing PIN")
         .accessibilityValue(pin.isEmpty ? "No digits entered" : "\(pin.count) of 6 digits entered")
 
-        Text("Shown on your Mac under Settings → Sync.")
+        Text("Shown on your machine under Settings → Sync.")
           .font(.footnote)
           .foregroundStyle(ADEColor.textSecondary)
 

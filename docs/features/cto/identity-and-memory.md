@@ -104,7 +104,7 @@ When a CTO or worker session undergoes context compaction, `refreshReconstructio
 - Identity YAML (`identity.yaml` layout) is part of the shared ADE scaffold and intended to survive a clone/pull.
 - Core memory schema is git-tracked; the live content in `MEMORY.md` / `CURRENT.md` is local/ADE-sync.
 - Daily logs and session logs are operational history — local/ADE-sync only.
-- Runtime memory files, openclaw bridge cache, generated docs remain local.
+- Runtime memory files and generated docs remain local.
 
 This split is why a fresh clone recovers the CTO identity layer but not recent subordinate activity or session logs.
 

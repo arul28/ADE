@@ -274,8 +274,6 @@ wizard:
    onboarding with or without Linear. Fastest path is a personal API
    key; OAuth is available but not the default recommendation.
 
-OpenClaw is intentionally excluded from first-run setup.
-
 ## Settings responsibilities
 
 Top-level tabs, organized to match the kind of thing the user is

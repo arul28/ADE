@@ -226,7 +226,7 @@ struct PrActivityTab: View {
         ADEEmptyStateView(
           symbol: "bubble.left.and.bubble.right",
           title: "No reviews yet",
-          message: "Review threads and reviewer responses will appear here once the host syncs them."
+          message: "Review threads and reviewer responses will appear here once the machine syncs them."
         )
       }
 
@@ -246,7 +246,7 @@ struct PrActivityTab: View {
       )
 
       if !canAddComment {
-        Text("Posting comments requires a host that exposes PR comment actions to mobile.")
+        Text("Posting comments requires a machine that exposes PR comment actions to mobile.")
           .font(.caption)
           .foregroundStyle(ADEColor.textSecondary)
       }

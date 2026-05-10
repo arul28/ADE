@@ -44,7 +44,7 @@ const { createSyncHostServiceMock } = vi.hoisted(() => ({
 
 // Prevent real WebSocket servers from binding to port 8787 during tests.
 // Tests only exercise role/transfer/pairing logic, not the sync transport.
-vi.mock("./syncHostService", () => ({
+vi.mock("../../../../../ade-cli/src/services/sync/syncHostService", () => ({
   createSyncHostService: createSyncHostServiceMock,
   SYNC_TAILNET_DISCOVERY_SERVICE_NAME: "svc:ade-sync",
   SYNC_TAILNET_DISCOVERY_SERVICE_PORT: 8787,

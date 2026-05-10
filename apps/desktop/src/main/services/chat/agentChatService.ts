@@ -31,6 +31,7 @@ type ClaudeV2Session = {
 import { buildClaudeV2Message, inferAttachmentMediaType } from "./buildClaudeV2Message";
 import { discoverClaudeSlashCommands, resolveClaudeSlashCommandInvocation } from "./claudeSlashCommandDiscovery";
 import { discoverCodexSlashCommands, resolveCodexSlashCommandInvocation } from "./codexSlashCommandDiscovery";
+import { classifyAgentCliError } from "../../../../../ade-cli/src/services/agentRegistry";
 import type {
   RuntimeFilePart as FilePart,
   RuntimeImagePart as ImagePart,
@@ -6721,21 +6722,49 @@ export function createAgentChatService(args: {
     setSessionPreview(managed, event.text);
   };
 
-  const commitChatEvent = (managed: ManagedChatSession, event: AgentChatEvent): void => {
-    managed.session.lastActivityAt = nowIso();
-    trackSubagentEvent(managed, event);
-    appendRecentConversationEntry(managed, event);
+  const decorateAgentCliError = (
+    managed: ManagedChatSession,
+    event: Extract<AgentChatEvent, { type: "error" }>,
+  ): Extract<AgentChatEvent, { type: "error" }> => {
+    const existingInfo = typeof event.errorInfo === "object" && event.errorInfo ? event.errorInfo : null;
+    if (existingInfo?.agentCli) return event;
 
-    if (event.type === "text") {
-      updatePreviewFromText(managed, event);
-    } else if (event.type === "command") {
-      setSessionPreview(managed, event.output);
-    } else if (event.type === "error") {
-      setSessionPreview(managed, event.message);
-    } else if (event.type === "completion_report") {
-      managed.session.completion = event.report;
-      if (event.report.summary.trim().length > 0) {
-        setSessionPreview(managed, event.report.summary);
+    const match = classifyAgentCliError(`${event.message}\n${event.detail ?? ""}`, managed.session.provider);
+    if (!match) return event;
+
+    return {
+      ...event,
+      errorInfo: {
+        category: match.category === "missing" ? "agent_cli_missing" : "agent_cli_auth",
+        ...(existingInfo?.provider ? { provider: existingInfo.provider } : { provider: match.displayName }),
+        ...(existingInfo?.model ? { model: existingInfo.model } : {}),
+        agentCli: {
+          agent: match.agent,
+          displayName: match.displayName,
+          category: match.category,
+          installCommand: match.installCommand,
+          authCommand: match.authCommand,
+        },
+      },
+    };
+  };
+
+  const commitChatEvent = (managed: ManagedChatSession, event: AgentChatEvent): void => {
+    const storedEvent = event.type === "error" ? decorateAgentCliError(managed, event) : event;
+    managed.session.lastActivityAt = nowIso();
+    trackSubagentEvent(managed, storedEvent);
+    appendRecentConversationEntry(managed, storedEvent);
+
+    if (storedEvent.type === "text") {
+      updatePreviewFromText(managed, storedEvent);
+    } else if (storedEvent.type === "command") {
+      setSessionPreview(managed, storedEvent.output);
+    } else if (storedEvent.type === "error") {
+      setSessionPreview(managed, storedEvent.message);
+    } else if (storedEvent.type === "completion_report") {
+      managed.session.completion = storedEvent.report;
+      if (storedEvent.report.summary.trim().length > 0) {
+        setSessionPreview(managed, storedEvent.report.summary);
       }
     }
 
@@ -6745,7 +6774,7 @@ export function createAgentChatService(args: {
     const envelope: AgentChatEventEnvelope = {
       sessionId: managed.session.id,
       timestamp: nowIso(),
-      event,
+      event: storedEvent,
       sequence: ++managed.eventSequence,
     };
 
@@ -6766,24 +6795,24 @@ export function createAgentChatService(args: {
     const collector = sessionTurnCollectors.get(managed.session.id);
     if (!collector) return;
 
-    if (event.type === "text") {
-      collector.outputText += event.text;
+    if (storedEvent.type === "text") {
+      collector.outputText += storedEvent.text;
       return;
     }
 
-    if (event.type === "error") {
-      collector.lastError = event.message;
+    if (storedEvent.type === "error") {
+      collector.lastError = storedEvent.message;
       return;
     }
 
-    if (event.type === "status" && event.turnStatus === "failed" && event.message) {
-      collector.lastError = event.message;
+    if (storedEvent.type === "status" && storedEvent.turnStatus === "failed" && storedEvent.message) {
+      collector.lastError = storedEvent.message;
       return;
     }
 
-    if (event.type !== "done") return;
+    if (storedEvent.type !== "done") return;
 
-    collector.usage = event.usage;
+    collector.usage = storedEvent.usage;
     if (collector.timeout) {
       clearTimeout(collector.timeout);
     }
@@ -6795,7 +6824,7 @@ export function createAgentChatService(args: {
       ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
       outputText: collector.outputText.trim() || managed.preview?.trim() || "",
       ...(collector.usage ? { usage: collector.usage } : {}),
-      ...(event.turnId ? { turnId: event.turnId } : {}),
+      ...(storedEvent.turnId ? { turnId: storedEvent.turnId } : {}),
       ...(managed.session.threadId ? { threadId: managed.session.threadId } : {}),
       ...(managed.runtime?.kind === "claude" ? { sdkSessionId: managed.runtime.sdkSessionId ?? null } : {}),
     });
@@ -17066,7 +17095,7 @@ export function createAgentChatService(args: {
     const providerFromPreference: AgentChatProvider = (() => {
       if (workerIdentity?.adapterType === "claude-local") return "claude";
       if (workerIdentity?.adapterType === "codex-local") return "codex";
-      if (workerIdentity?.adapterType === "openclaw-webhook" || workerIdentity?.adapterType === "process") return "opencode";
+      if (workerIdentity?.adapterType === "process") return "opencode";
       if (preferredProviderRaw.includes("codex") || preferredProviderRaw.includes("openai")) return "codex";
       if (preferredProviderRaw.includes("claude") || preferredProviderRaw.includes("anthropic")) return "claude";
       if (preferredProviderRaw.includes("droid") || preferredProviderRaw.includes("factory")) return "droid";

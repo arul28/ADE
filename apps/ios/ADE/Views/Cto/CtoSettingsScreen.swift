@@ -12,8 +12,8 @@ struct CtoSettingsScreen: View {
   @State private var syncNotice: String?
   @State private var showingIdentityEditor = false
   @State private var showingBriefEditor = false
-  @State private var showingDesktopOnlySheet = false
-  @State private var desktopOnlyTitle: String = ""
+  @State private var showingMachineOnlySheet = false
+  @State private var machineOnlyTitle: String = ""
 
   var body: some View {
     ScrollView {
@@ -69,8 +69,8 @@ struct CtoSettingsScreen: View {
         self.snapshot = updated
       }
     }
-    .sheet(isPresented: $showingDesktopOnlySheet) {
-      DesktopOnlySheet(title: desktopOnlyTitle)
+    .sheet(isPresented: $showingMachineOnlySheet) {
+      MachineOnlySheet(title: machineOnlyTitle)
         .presentationDetents([.fraction(0.3), .medium])
     }
   }
@@ -271,8 +271,6 @@ struct CtoSettingsScreen: View {
           .accessibilityLabel("Sync Linear now")
         }
         Sep()
-        IntegrationRow(name: "OpenClaw", subtitle: "—", connected: false)
-        Sep()
         IntegrationRow(name: "External MCP", subtitle: "off", connected: false)
       }
       .adeListCard(padding: 0)
@@ -303,18 +301,18 @@ struct CtoSettingsScreen: View {
       SectionHeader(title: "Advanced")
       VStack(spacing: 0) {
         RowItem(label: "Re-run onboarding", value: "") {
-          desktopOnlyTitle = "Re-run onboarding"
-          showingDesktopOnlySheet = true
+          machineOnlyTitle = "Re-run onboarding"
+          showingMachineOnlySheet = true
         }
         Sep()
         RowItem(label: "Re-scan project", value: "") {
-          desktopOnlyTitle = "Re-scan project"
-          showingDesktopOnlySheet = true
+          machineOnlyTitle = "Re-scan project"
+          showingMachineOnlySheet = true
         }
         Sep()
         RowItem(label: "Reset memory", value: "", danger: true) {
-          desktopOnlyTitle = "Reset memory"
-          showingDesktopOnlySheet = true
+          machineOnlyTitle = "Reset memory"
+          showingMachineOnlySheet = true
         }
       }
       .adeListCard(padding: 0)
@@ -322,7 +320,7 @@ struct CtoSettingsScreen: View {
   }
 
   private var linearSubtitle: String {
-    guard let linearStatus else { return "Manage from desktop" }
+    guard let linearStatus else { return "Manage in ADE" }
     if linearStatus.connected {
       if let name = linearStatus.viewerName, !name.isEmpty { return "Connected · \(name)" }
       return "Connected"
@@ -512,7 +510,7 @@ enum CtoPresetSummary {
     case "minimal":
       return "Minimal voice. Short, surgical replies with no filler."
     case "custom":
-      return "Custom identity. Configure the system prompt extension from the desktop app."
+      return "Custom identity. Configure the system prompt extension from ADE on your machine."
     default:
       return "Pragmatic senior engineer who holds the mental model so workers don't have to."
     }
@@ -665,9 +663,9 @@ private struct Sep: View {
   }
 }
 
-// MARK: - Desktop-only sheet
+// MARK: - Machine-only sheet
 
-private struct DesktopOnlySheet: View {
+private struct MachineOnlySheet: View {
   @Environment(\.dismiss) private var dismiss
   let title: String
 
@@ -677,10 +675,10 @@ private struct DesktopOnlySheet: View {
         .font(.system(size: 36, weight: .semibold))
         .foregroundStyle(ADEColor.accent)
         .padding(.top, 24)
-      Text(title.isEmpty ? "Desktop only" : title)
+      Text(title.isEmpty ? "Manage in ADE" : title)
         .font(.headline)
         .foregroundStyle(ADEColor.textPrimary)
-      Text("Manage from desktop for now.")
+      Text("Manage this from ADE on your machine for now.")
         .font(.subheadline)
         .foregroundStyle(ADEColor.textSecondary)
         .multilineTextAlignment(.center)

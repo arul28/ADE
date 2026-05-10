@@ -1,8 +1,8 @@
 # ADE CLI
 
-`apps/ade-cli` owns the `ade` command-line entry point for agents and local automation.
+`apps/ade-cli` owns the `ade` command-line entry point, the machine ADE service, and the terminal UI.
 
-The CLI is the primary agent interface. It prefers the live ADE desktop socket at `.ade/ade.sock` so commands operate against the same lanes, chats, PR state, process runtime, and proof artifacts as the UI. If the desktop app is not running, it falls back to a short-lived headless runtime for actions that can safely run without Electron.
+The CLI prefers the machine-scoped ADE service socket under `~/.ade/sock/ade.sock`. If that service is not running, commands try to start `ade serve` and attach to it so lanes, chats, PR state, process state, sync, and proof artifacts live in the same per-machine runtime that desktop and mobile use. Commands that can safely run without shared live state still support `--headless` as an explicit fallback.
 
 ## Scripts
 
@@ -33,6 +33,16 @@ cd apps/ade-cli
 npm pack
 npm install -g ./ade-cli-*.tgz
 ```
+
+Release builds also publish standalone macOS/Linux runtime binaries. On a
+headless machine, install the latest runtime with:
+
+```bash
+curl -fsSL https://github.com/arul28/ADE/releases/latest/download/install.sh | sh
+```
+
+Use `ADE_VERSION=vX.Y.Z` for a pinned release or `ADE_INSTALL_DIR` to choose
+the destination directory.
 
 The desktop macOS build also bundles the CLI at:
 
@@ -76,6 +86,7 @@ ade shell start-cli codex --lane lane-id --permission-mode edit --message "fix f
 ade shell start-cli --provider claude --lane lane-id --permission-mode default
 ade chat create --lane lane-id --model gpt-5.5
 ade code
+ade code --embedded
 ade --socket /path/to/ade.sock code
 ade tests run --lane lane-id --suite unit --wait
 ade proof list --arg ownerKind=chat --arg ownerId=session-id
@@ -102,7 +113,7 @@ ade cursor cloud me
 
 Use typed commands first. They validate common arguments and provide stable JSON fields or readable text summaries. Use `ade help <command> <subcommand>` for exact flags, `ade actions list --text` to discover the full service-backed action catalog, and `ade actions run <domain.action>` only when there is no typed command for the workflow yet.
 
-**`ade code`** starts the terminal Work chat client (`apps/ade-code`). Build it with `npm run build` inside that directory, install the `ade-code` package, or point **`ADE_CODE_EXECUTABLE`** at `dist/cli.js`. Unlike other commands that auto-pick the desktop socket from the project layout during `executePlan`, **`ade code` only forwards `--socket` when you pass global `--socket` to `ade`** (for example `ade --socket /path/to/ade.sock code`). Without that, the TUI runs in **embedded** headless mode instead of opening a socket implicitly.
+**`ade code`** starts the terminal Work chat client built into this package. By default it attaches to the machine ADE service, starting `ade serve` when the socket is missing. Pass `ade --socket /path/to/ade.sock code` to require a specific socket, or `ade code --embedded` / `ade --headless code` when you intentionally want the legacy embedded runtime fallback.
 
 The `prs path-to-merge` and `prs pipeline save` commands persist a partial `PipelineSettings` patch via `issue_inventory.savePipelineSettings` before launching the resolver. The Path to Merge orchestrator reads these from saved settings, so the same flags work either way:
 
@@ -147,7 +158,7 @@ ADE CLI auth is local project access, not a separate cloud login. `ade auth stat
 `ade doctor` reports local-only readiness metadata by default:
 
 - CLI version, Node/runtime version, project root, workspace root, `.ade` initialization, and config file presence.
-- Desktop socket path, whether the socket exists, and whether this invocation is actually using `desktop-socket` or `headless` mode.
+- Machine socket path, whether the socket exists, and whether this invocation is using `runtime-socket`, legacy `desktop-socket`, or `headless` mode.
 - RPC tool count, ADE service action count, and action counts by domain.
 - Git repository readiness and GitHub readiness signals from local remotes, `gh` availability, and token environment presence.
 - Linear readiness from local encrypted token presence or headless environment variables.

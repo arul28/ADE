@@ -2,7 +2,7 @@
 
 The CTO is ADE's persistent, project-level operator identity. One identity per project, not a family of rotating chats or a constantly running daemon. It owns persistent identity, shared project understanding, worker management, Linear dispatch and sync, and the operator-facing chat surface.
 
-The runtime is organized around one contract: the CTO tab should be usable as a daily chat surface without forcing every optional subsystem (Linear, OpenClaw, realtime ingress, budget telemetry) to fully hydrate on mount.
+The runtime is organized around one contract: the CTO tab should be usable as a daily chat surface without forcing every optional subsystem (Linear, realtime ingress, budget telemetry) to fully hydrate on mount.
 
 ## Source file map
 
@@ -14,7 +14,7 @@ The runtime is organized around one contract: the CTO tab should be usable as a 
 - `workerBudgetService.ts` — budget snapshots per worker and CTO org.
 - `workerRevisionService.ts` — worker config revision history.
 - `workerTaskSessionService.ts` — task-scoped worker sessions.
-- `workerAdapterRuntimeService.ts` — adapter lifecycle for claude-local / codex-local / process / openclaw-webhook.
+- `workerAdapterRuntimeService.ts` — adapter lifecycle for claude-local / codex-local / process.
 - `linearCredentialService.ts` — personal API key storage, token status.
 - `linearOAuthService.ts` — PKCE loopback OAuth flow on port 19836.
 - `linearClient.ts` — Linear GraphQL client (shared by desktop and headless ADE CLI).
@@ -29,7 +29,6 @@ The runtime is organized around one contract: the CTO tab should be usable as a 
 - `linearDispatcherService.ts` — launches target runs (employee_session, worker_run, mission, pr_resolution, review_gate), tracks run state, emits events.
 - `linearCloseoutService.ts` — success/failure Linear state transitions, comments, proof attachment.
 - `linearOutboundService.ts` — outbound Linear writes (state, comments, assignees).
-- `openclawBridgeService.ts` — optional OpenClaw device pairing and bridge runtime state.
 
 ### Headless parity
 
@@ -48,7 +47,6 @@ The runtime is organized around one contract: the CTO tab should be usable as a 
 - `WorkerActivityFeed.tsx` — recent worker sessions and runs.
 - `LinearConnectionPanel.tsx` — API key and OAuth connect surface.
 - `LinearSyncPanel.tsx` / `LinearSyncPanel.test.ts` — workflow list, sync dashboard, run timeline, "Watch It Live" monitor.
-- `OpenclawConnectionPanel.tsx` — advanced-only OpenClaw pairing.
 - `identityPresets.ts` — re-exports from `shared/ctoPersonalityPresets`.
 - `shared/designTokens.ts` — CTO-wide class patterns (`cardCls`, `stageCardCls`, `pipelineCanvasCls`, ACCENT palette, `WORKER_TEMPLATES`).
 - `shared/AgentStatusBadge.tsx`, `shared/ConnectionStatusDot.tsx`, `shared/StepWizard.tsx`, `shared/TimelineEntry.tsx` — shared visual building blocks.
@@ -91,12 +89,6 @@ On disk under `.ade/cto/`:
 - `MEMORY.md` — long-term CTO brief (summary, conventions, preferences, active focus, notes).
 - `CURRENT.md` — current working context (recent sessions, worker activity).
 - `daily/YYYY-MM-DD.md` — append-only daily logs via `appendDailyLog`, `readDailyLog`, `listDailyLogs`.
-- `openclaw-device.json` — durable paired-device identity (if OpenClaw connected).
-
-Under `.ade/cache/openclaw/` (runtime, not git-tracked):
-
-- bridge history, outbox, route cache, idempotency data.
-
 Portability rule (Phase 6 W3): identity YAML and the project memory schema are git-tracked; runtime memory files, daily logs, and session state are local or ADE-sync only.
 
 ### Tab model (`CtoPage.tsx`)
@@ -106,7 +98,7 @@ Portability rule (Phase 6 W3): identity YAML and the project memory schema are g
 | Chat | CTO session, subordinate activity summary | Immediate |
 | Team | Agents, revisions, worker core memory, worker runs | On tab activation |
 | Workflows | `LinearSyncPanel` (dashboard + run detail + pipeline) | On tab activation; refresh debounced |
-| Settings | Identity, core memory, session logs, external-ADE CLI registry, OpenClaw | On tab activation |
+| Settings | Identity, core memory, session logs, external-ADE CLI registry | On tab activation |
 
 The sidebar worker tree is precomputed and memoized. The budget footer is isolated so a budget refresh does not rerender the tree.
 
@@ -152,7 +144,6 @@ The environment knowledge block inside the system prompt teaches intent-to-tool 
 - Linear sync short-circuits when no workflows are enabled and no runs are active.
 - Ingress only auto-starts when realtime config is actually present.
 - Management surfaces (Team, Workflows, Settings) hydrate lazily without weakening persistent identity.
-- OpenClaw is advanced config, not first-run.
 - Headless ADE CLI uses the same Linear services, not a read-only fake.
 
 ## Gotchas and fragile areas
@@ -161,4 +152,3 @@ The environment knowledge block inside the system prompt teaches intent-to-tool 
 - **Identity re-injection after compaction** happens inside `refreshReconstructionContext()` — changes to the doctrine / personality / memory model or capability manifest must keep the preview and runtime in sync. The capability manifest is the single place to keep aligned with tool registrations.
 - **Workflow match precedence** runs by `priority` descending; values inside a trigger group are OR-ed, populated groups are AND-ed. A `watchOnly` route logs a match without launching.
 - **Dynamic employee delegation** — when routing resolves no employee, runs enter `awaiting_delegation` instead of dispatching to an invalid target. Do not assume dispatch always happens.
-- **OpenClaw runtime migration** — legacy repo-visible runtime files are migrated into `.ade/cache/openclaw/` on startup. Keep the bridge service tolerant of missing-but-migratable files.

@@ -712,11 +712,14 @@ export type SyncRemoteCommandPolicy = {
 
 export type SyncRemoteCommandDescriptor = {
   action: SyncRemoteCommandAction | (string & {});
+  scope: "runtime" | "project";
   policy: SyncRemoteCommandPolicy;
 };
 
 export type SyncCommandPayload = {
   commandId: string;
+  projectId?: string | null;
+  projectRootPath?: string | null;
   action: SyncRemoteCommandAction | (string & {});
   args: Record<string, unknown>;
 };
@@ -901,6 +904,7 @@ export type SyncInAppNotificationPayload = {
 type SyncEnvelopeBase<TType extends string> = {
   version: SyncProtocolVersion;
   type: TType;
+  projectId?: string | null;
   requestId?: string | null;
 };
 

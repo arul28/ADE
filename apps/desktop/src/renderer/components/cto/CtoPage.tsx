@@ -20,7 +20,6 @@ import type {
   AgentChatSessionSummary,
   ChatSurfacePresentation,
   HeartbeatPolicy,
-  OpenclawBridgeStatus,
   WorkerAgentRun,
 } from "../../../shared/types";
 import { AgentChatPane } from "../chat/AgentChatPane";
@@ -85,7 +84,6 @@ export function CtoPage() {
   const [ctoIdentity, setCtoIdentity] = useState<CtoIdentity | null>(null);
   const [coreMemory, setCoreMemory] = useState<CtoCoreMemory | null>(null);
   const [sessionLogs, setSessionLogs] = useState<CtoSessionLogEntry[]>([]);
-  const [openclawStatus, setOpenclawStatus] = useState<OpenclawBridgeStatus | null>(null);
 
   useEffect(() => {
     const onTourTab = (event: Event) => {
@@ -236,13 +234,6 @@ export function CtoPage() {
     void loadCtoHistory();
   }, [activeTab, loadCtoHistory]);
 
-  useEffect(() => {
-    const unsubscribe = window.ade?.cto?.onOpenclawConnectionStatus?.((status) => {
-      setOpenclawStatus(status);
-    });
-    return () => unsubscribe?.();
-  }, []);
-
   // Load revisions when worker selected
   useEffect(() => {
     if (!window.ade?.cto || !selectedAgentId) { setRevisions([]); return; }
@@ -367,9 +358,7 @@ export function CtoPage() {
     try {
       const at = workerDraft.adapterType;
       const adapterConfig: Record<string, unknown> =
-        at === "openclaw-webhook"
-          ? { url: workerDraft.webhookUrl, ...(workerDraft.authHeader.trim() ? { headers: { Authorization: workerDraft.authHeader.trim() } } : {}) }
-          : at === "process"
+        at === "process"
             ? { command: workerDraft.processCommand }
             : { ...(workerDraft.model.trim() ? { model: workerDraft.model.trim() } : {}) };
 

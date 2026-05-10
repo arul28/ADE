@@ -1771,7 +1771,7 @@ private struct PrMergeStrategySheet: View {
               .tracking(-0.2)
             Text(canAttemptBlockedMerge
               ? "ADE sees merge blockers, but this will still ask GitHub to merge. GitHub may reject unless your account can bypass requirements."
-              : "Host rules may override your choice. All checks will be verified before merging.")
+              : "Machine rules may override your choice. All checks will be verified before merging.")
               .font(.system(size: 11))
               .foregroundStyle(Color(red: 0xA8 / 255, green: 0xA8 / 255, blue: 0xB4 / 255))
               .fixedSize(horizontal: false, vertical: true)
@@ -1860,7 +1860,7 @@ private struct PrCleanupConfirmationSheet: View {
   private var message: String {
     choice == .archive
       ? "This keeps the lane for history but removes it from the active stack."
-      : "This removes the lane from ADE and asks the host to delete the branch as part of cleanup. This cannot be undone."
+      : "This removes the lane from ADE and asks the machine to delete the branch as part of cleanup. This cannot be undone."
   }
 
   private var confirmTitle: String { choice == .archive ? "Archive" : "Delete" }

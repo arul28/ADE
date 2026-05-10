@@ -18,7 +18,7 @@ struct LanesOfflineEmptyState: View {
         Text("Not connected")
           .font(.title3.weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)
-        Text("Connect to a host to see your lanes")
+        Text("Connect to a machine to see your lanes")
           .font(.subheadline)
           .foregroundStyle(ADEColor.textSecondary)
           .multilineTextAlignment(.center)
@@ -27,7 +27,7 @@ struct LanesOfflineEmptyState: View {
       Button {
         syncService.settingsPresented = true
       } label: {
-        Text("Connect to host")
+        Text("Connect to machine")
           .font(.subheadline.weight(.semibold))
           .padding(.horizontal, 18)
           .padding(.vertical, 10)
@@ -42,6 +42,6 @@ struct LanesOfflineEmptyState: View {
     .padding(.horizontal, 32)
     .adeScreenBackground()
     .accessibilityElement(children: .combine)
-    .accessibilityLabel("Not connected. Tap Connect to host to open settings.")
+    .accessibilityLabel("Not connected. Tap Connect to machine to open settings.")
   }
 }

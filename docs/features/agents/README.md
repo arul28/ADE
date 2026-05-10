@@ -18,7 +18,7 @@ registry / ADE CLI integration that all three share.
 | `apps/desktop/src/main/services/cto/workerHeartbeatService.ts` | Heartbeat scheduling for workers (wake-on-demand + periodic intervals). |
 | `apps/desktop/src/main/services/cto/workerBudgetService.ts` | Monthly budget tracking (`budgetMonthlyCents`, `spentMonthlyCents`). |
 | `apps/desktop/src/main/services/cto/flowPolicyService.ts` | Worker flow policies (guardrails, approval requirements). |
-| `apps/desktop/src/main/services/cto/workerAgentService.ts` | Worker adapter configs: Claude-local, Codex-local, OpenClaw webhook, raw process. |
+| `apps/desktop/src/main/services/cto/workerAgentService.ts` | Worker adapter configs: Claude-local, Codex-local, raw process. |
 | `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` | CTO-only tools (spawnChat, mission control, worker management, Linear dispatch). |
 | `apps/desktop/src/main/services/agentTools/agentToolsService.ts` | Detects external CLI tools (Claude Code, Codex, Cursor, Aider, Continue) on PATH. |
 | `apps/ade-cli/src/cli.ts` | Agent-focused `ade` command surface and text/JSON output formatters. Includes the `ade ios-sim` (alias `ade ios`, `ade simulator`) family — see [iOS Simulator feature](../ios-simulator/README.md), the `ade --socket app-control ...` driver for live Electron apps, and the `ade --socket browser ...` driver for the in-app browser (`browser panel`, `browser open <url> [--no-panel]`, `browser new-tab --background`, `browser switch`, `browser close`, plus selection / inspect commands). `ade chat create --provider codex --model <id> --fast` opts a new Codex session into the fast service tier; `ade shell start --lane <id> --chat-session <chatId>` (or `ADE_CHAT_SESSION_ID` from the env) attaches a tracked shell to an existing chat so `ade --socket terminal read --chat-session "$ADE_CHAT_SESSION_ID" --text` resolves to it. |
@@ -80,7 +80,6 @@ type CtoIdentity = {
   };
   constraints?: string[];
   systemPromptExtension?: string;
-  openclawContextPolicy?: OpenclawContextPolicy;
   onboardingState?: CtoOnboardingState;
   modelPreferences: {
     provider: string;
@@ -135,7 +134,7 @@ type AgentIdentity = {
   reportsTo: string | null;
   capabilities: string[];
   status: "idle" | "active" | "paused" | "running";
-  adapterType: "claude-local" | "codex-local" | "openclaw-webhook" | "process";
+  adapterType: "claude-local" | "codex-local" | "process";
   adapterConfig: AgentAdapterConfig;        // adapter-specific
   runtimeConfig: {
     heartbeat?: HeartbeatPolicy;
@@ -181,7 +180,6 @@ Workers dispatch through one of four adapter types:
 |---|---|---|
 | `claude-local` | `ClaudeLocalAdapterConfig` (model, cwd, cliArgs, instructions, timeout) | Spawns `claude` CLI locally. |
 | `codex-local` | `CodexLocalAdapterConfig` (model, cwd, cliArgs, reasoningEffort, timeout) | Spawns `codex` CLI locally. |
-| `openclaw-webhook` | `OpenclawWebhookAdapterConfig` (URL, method, headers, bodyTemplate, timeout) | POSTs to an external service and waits for a response. |
 | `process` | `ProcessAdapterConfig` (command, args, cwd, env, timeout, shell) | Generic subprocess. |
 
 The worker service forwards the correct adapter config to the

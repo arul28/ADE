@@ -78,13 +78,13 @@ struct WorkSessionSettingsSheet: View {
         WorkRuntimeOption(id: "default", title: "Default permissions", subtitle: "Workspace-write with approval on request."),
         WorkRuntimeOption(id: "plan", title: "Plan mode", subtitle: "Read-only browsing with approval on request."),
         WorkRuntimeOption(id: "full-auto", title: "Full access", subtitle: "No sandbox and no approval prompts."),
-        WorkRuntimeOption(id: "config-toml", title: "Custom (config.toml)", subtitle: "Use the Codex config on the host."),
+        WorkRuntimeOption(id: "config-toml", title: "Custom (config.toml)", subtitle: "Use the Codex config on the machine."),
       ]
     case "opencode":
       return [
-        WorkRuntimeOption(id: "plan", title: "Plan", subtitle: "Read-first runtime mode."),
+        WorkRuntimeOption(id: "plan", title: "Plan", subtitle: "Read-first access mode."),
         WorkRuntimeOption(id: "edit", title: "Edit", subtitle: "Normal edit loop."),
-        WorkRuntimeOption(id: "full-auto", title: "Full auto", subtitle: "Let the runtime operate freely."),
+        WorkRuntimeOption(id: "full-auto", title: "Full auto", subtitle: "Let the agent operate freely."),
       ]
     default:
       return []
@@ -273,7 +273,7 @@ struct WorkSessionSettingsSheet: View {
               }
             }
           } else if !runtimeOptions.isEmpty {
-            GlassSection(title: "Runtime mode") {
+            GlassSection(title: "Access mode") {
               VStack(alignment: .leading, spacing: 12) {
                 ForEach(runtimeOptions) { option in
                   Button {

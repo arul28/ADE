@@ -336,7 +336,7 @@ extension WorkSessionDestinationView {
       } else if let image = try? await ADEImageCache.shared.loadRemoteImage(from: directURL, cacheKey: cacheKey) {
         artifactContent[artifact.id] = .image(image)
       } else {
-        artifactContent[artifact.id] = .error("The host returned an unreadable image preview.")
+        artifactContent[artifact.id] = .error("The machine returned an unreadable image preview.")
       }
       return
     }
@@ -351,7 +351,7 @@ extension WorkSessionDestinationView {
       }
 
       guard let data else {
-        artifactContent[artifact.id] = .error("The host returned an artifact payload that could not be decoded.")
+        artifactContent[artifact.id] = .error("The machine returned an artifact payload that could not be decoded.")
         return
       }
 

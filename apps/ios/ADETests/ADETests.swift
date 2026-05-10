@@ -114,6 +114,80 @@ final class ADETests: XCTestCase {
     }
   }
 
+  func testCommandEnvelopePayloadIncludesProjectScope() throws {
+    let payload = syncCommandEnvelopePayload(
+      commandId: "cmd-1",
+      action: "lanes.create",
+      args: ["name": "Feature lane"],
+      projectId: " project-1 ",
+      projectRootPath: " /tmp/project-one/ "
+    )
+
+    XCTAssertEqual(payload["commandId"] as? String, "cmd-1")
+    XCTAssertEqual(payload["action"] as? String, "lanes.create")
+    XCTAssertEqual(payload["projectId"] as? String, "project-1")
+    XCTAssertEqual(payload["projectRootPath"] as? String, "/tmp/project-one")
+    let args = try XCTUnwrap(payload["args"] as? [String: Any])
+    XCTAssertEqual(args["name"] as? String, "Feature lane")
+  }
+
+  func testCommandEnvelopePayloadOmitsBlankProjectScope() {
+    let payload = syncCommandEnvelopePayload(
+      commandId: "cmd-1",
+      action: "lanes.list",
+      args: [:],
+      projectId: "  ",
+      projectRootPath: "  "
+    )
+
+    XCTAssertNil(payload["projectId"])
+    XCTAssertNil(payload["projectRootPath"])
+  }
+
+  func testProjectScopedOutboundEnvelopeTypesIncludeActiveProjectId() {
+    let projectScopedTypes = [
+      "changeset_batch",
+      "changeset_ack",
+      "command",
+      "file_request",
+      "terminal_subscribe",
+      "terminal_unsubscribe",
+      "terminal_input",
+      "terminal_resize",
+      "chat_subscribe",
+      "chat_unsubscribe",
+    ]
+
+    for type in projectScopedTypes {
+      XCTAssertEqual(
+        syncOutboundEnvelopeProjectId(type: type, activeProjectId: " project-1 "),
+        "project-1",
+        "\(type) should carry the active project id"
+      )
+    }
+  }
+
+  func testRuntimeScopedOutboundEnvelopeTypesRemainProjectless() {
+    let runtimeScopedTypes = [
+      "hello",
+      "pairing_request",
+      "project_catalog_request",
+      "project_switch_request",
+      "heartbeat",
+      "register_push_token",
+      "notification_prefs",
+      "send_test_push",
+    ]
+
+    for type in runtimeScopedTypes {
+      XCTAssertNil(
+        syncOutboundEnvelopeProjectId(type: type, activeProjectId: "project-1"),
+        "\(type) should not inherit the active project id"
+      )
+    }
+    XCTAssertNil(syncOutboundEnvelopeProjectId(type: "file_request", activeProjectId: "  "))
+  }
+
   func testDecodeHydrationPayloadWrapsMalformedHostData() {
     XCTAssertThrowsError(
       try decodeHydrationPayload(
@@ -123,7 +197,7 @@ final class ADETests: XCTestCase {
         decoder: JSONDecoder()
       )
     ) { error in
-      XCTAssertEqual((error as NSError).localizedDescription, "The host returned incomplete lane data. Pull to retry or reconnect the host.")
+      XCTAssertEqual((error as NSError).localizedDescription, "The machine returned incomplete lane data. Pull to retry or reconnect the machine.")
     }
   }
 
@@ -185,7 +259,7 @@ final class ADETests: XCTestCase {
 
   func testSyncRequestTimeoutUsesThirtySecondFriendlyReconnectMessage() {
     XCTAssertEqual(SyncRequestTimeout.defaultTimeoutNanoseconds, 30_000_000_000)
-    XCTAssertEqual(SyncRequestTimeout.error().localizedDescription, "The host took too long to respond. Reconnecting now.")
+    XCTAssertEqual(SyncRequestTimeout.error().localizedDescription, "The machine took too long to respond. Reconnecting now.")
   }
 
   func testSyncRequestTimeoutOnlyReconnectsAfterSocketSilence() {
@@ -299,6 +373,169 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(syncIsTailscaleRoute("192.168.68.102"))
     XCTAssertFalse(syncIsTailscaleRoute("mac.local"))
     XCTAssertFalse(syncIsTailscaleRoute("not-ts.net.example.com"))
+  }
+
+  func testBonjourHostParsesHeadlessRuntimeProjectTxtFields() {
+    let host = syncDiscoveredHostFromBonjour(
+      serviceKey: "local|_ade-sync._tcp.|ADE Sync studio",
+      serviceName: "ADE Sync studio",
+      serviceHostName: "studio.local.",
+      servicePort: 0,
+      txtRecord: [
+        "host": "192.168.1.240",
+        "addresses": "127.0.0.1, 100.75.20.63",
+        "deviceName": "studio",
+        "deviceId": "device-1",
+        "runtimeKind": "headless",
+        "runtimeVersion": "0.0.0",
+        "projects": "project-a, project-b",
+        "projectNames": "ADE, Website",
+        "projectCount": "2",
+        "tailscaleDnsName": "macbook.tailnet.ts.net",
+        "tailscaleIp": "100.75.20.63",
+        "port": "8787",
+      ],
+      resolvedAddresses: ["127.0.0.1", "192.168.1.240"],
+      lastResolvedAt: "2026-05-10T10:00:00.000Z"
+    )
+
+    XCTAssertEqual(host.id, "device-1::local|_ade-sync._tcp.|ADE Sync studio")
+    XCTAssertEqual(host.hostName, "studio")
+    XCTAssertEqual(host.hostIdentity, "device-1")
+    XCTAssertEqual(host.port, 8787)
+    XCTAssertEqual(host.runtimeKind, "headless")
+    XCTAssertEqual(host.runtimeVersion, "0.0.0")
+    XCTAssertEqual(host.projectIds, ["project-a", "project-b"])
+    XCTAssertEqual(host.projectNames, ["ADE", "Website"])
+    XCTAssertEqual(host.projectCount, 2)
+    XCTAssertEqual(host.tailscaleAddress, "macbook.tailnet.ts.net")
+    XCTAssertEqual(host.addresses, ["192.168.1.240", "100.75.20.63", "127.0.0.1"])
+  }
+
+  func testBonjourHostFallsBackForOlderDesktopTxtRecords() {
+    let host = syncDiscoveredHostFromBonjour(
+      serviceKey: "local|_ade-sync._tcp.|ADE Sync legacy",
+      serviceName: "ADE Sync legacy",
+      serviceHostName: nil,
+      servicePort: 0,
+      txtRecord: [
+        "deviceName": "  ",
+        "deviceId": "  ",
+        "runtimeKind": "  ",
+        "runtimeVersion": "  ",
+        "projects": "  ",
+        "projectNames": "  ",
+        "projectCount": "unknown",
+        "addresses": "  ",
+      ],
+      resolvedAddresses: [],
+      lastResolvedAt: "2026-05-10T10:00:00.000Z"
+    )
+
+    XCTAssertEqual(host.id, "local|_ade-sync._tcp.|ADE Sync legacy")
+    XCTAssertEqual(host.hostName, "ADE Sync legacy")
+    XCTAssertEqual(host.port, 8787)
+    XCTAssertNil(host.hostIdentity)
+    XCTAssertNil(host.runtimeKind)
+    XCTAssertNil(host.runtimeVersion)
+    XCTAssertTrue(host.projectIds.isEmpty)
+    XCTAssertTrue(host.projectNames.isEmpty)
+    XCTAssertNil(host.projectCount)
+    XCTAssertTrue(host.addresses.isEmpty)
+  }
+
+  func testSavedDiscoveredHostsDisplayLiveRuntimeMetadata() {
+    let savedHost = DiscoveredSyncHost(
+      id: "saved-device-1",
+      serviceName: "Saved ADE",
+      hostName: "Mac Studio",
+      hostIdentity: "device-1",
+      port: 8787,
+      addresses: ["192.168.1.240"],
+      tailscaleAddress: nil,
+      lastResolvedAt: "2026-05-10T09:59:00.000Z"
+    )
+    let liveHost = DiscoveredSyncHost(
+      id: "device-1",
+      serviceName: "ADE Sync studio",
+      hostName: "Mac Studio",
+      hostIdentity: "device-1",
+      port: 8787,
+      addresses: ["192.168.1.240", "127.0.0.1"],
+      tailscaleAddress: "macbook.tailnet.ts.net",
+      runtimeKind: "headless",
+      runtimeVersion: "0.0.0",
+      projectIds: ["project-a", "project-b"],
+      projectNames: ["ADE", "Website"],
+      projectCount: 2,
+      lastResolvedAt: "2026-05-10T10:00:00.000Z"
+    )
+
+    let displayed = syncDiscoveredHostsForDisplay(savedHosts: [savedHost], liveHosts: [liveHost])
+
+    XCTAssertTrue(displayed.liveHosts.isEmpty)
+    XCTAssertEqual(displayed.savedHosts.count, 1)
+    XCTAssertEqual(displayed.savedHosts[0].runtimeKind, "headless")
+    XCTAssertEqual(displayed.savedHosts[0].runtimeVersion, "0.0.0")
+    XCTAssertEqual(displayed.savedHosts[0].projectIds, ["project-a", "project-b"])
+    XCTAssertEqual(displayed.savedHosts[0].projectNames, ["ADE", "Website"])
+    XCTAssertEqual(displayed.savedHosts[0].projectCount, 2)
+    XCTAssertEqual(displayed.savedHosts[0].tailscaleAddress, "macbook.tailnet.ts.net")
+    XCTAssertEqual(
+      syncDiscoveredHostDetailText(host: displayed.savedHosts[0], detailPrefix: "Saved"),
+      "Background ADE 0.0.0 · 2 projects: ADE, Website · Saved: 192.168.1.240"
+    )
+  }
+
+  @MainActor
+  func testSyncMergesDuplicateBonjourHostsByDeviceIdentityWithProjectMetadata() {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    let olderHost = DiscoveredSyncHost(
+      id: "device-1::local|_ade-sync._tcp.|ADE Sync studio 8787",
+      serviceName: "ADE Sync studio 8787",
+      hostName: "Studio",
+      hostIdentity: "device-1",
+      port: 8787,
+      addresses: ["192.168.1.240"],
+      tailscaleAddress: nil,
+      runtimeKind: "daemon",
+      runtimeVersion: "1.0.0",
+      projectIds: ["project-a"],
+      projectNames: ["ADE"],
+      projectCount: 1,
+      lastResolvedAt: "2026-05-10T10:00:00.000Z"
+    )
+    let newerHost = DiscoveredSyncHost(
+      id: "device-1::local|_ade-sync._tcp.|ADE Sync studio 8788",
+      serviceName: "ADE Sync studio 8788",
+      hostName: "Studio",
+      hostIdentity: "device-1",
+      port: 8788,
+      addresses: ["10.0.0.8", "192.168.1.240"],
+      tailscaleAddress: "macbook.tailnet.ts.net",
+      runtimeKind: "headless",
+      runtimeVersion: "2.0.0",
+      projectIds: ["project-b", "project-a"],
+      projectNames: ["Website", "ADE"],
+      projectCount: 2,
+      lastResolvedAt: "2026-05-10T10:00:01.000Z"
+    )
+
+    service.applyDiscoveredHostsForTesting([olderHost, newerHost])
+
+    XCTAssertEqual(service.discoveredHosts.count, 1)
+    let merged = service.discoveredHosts[0]
+    XCTAssertEqual(merged.id, "device-1")
+    XCTAssertEqual(merged.hostIdentity, "device-1")
+    XCTAssertEqual(merged.port, 8788)
+    XCTAssertEqual(merged.addresses, ["10.0.0.8", "192.168.1.240"])
+    XCTAssertEqual(merged.tailscaleAddress, "macbook.tailnet.ts.net")
+    XCTAssertEqual(merged.runtimeKind, "headless")
+    XCTAssertEqual(merged.runtimeVersion, "2.0.0")
+    XCTAssertEqual(merged.projectIds, ["project-b", "project-a"])
+    XCTAssertEqual(merged.projectNames, ["Website", "ADE"])
+    XCTAssertEqual(merged.projectCount, 2)
+    XCTAssertEqual(merged.lastResolvedAt, "2026-05-10T10:00:01.000Z")
   }
 
   func testSyncParsesManualRouteEndpointInputs() throws {
@@ -726,14 +963,14 @@ final class ADETests: XCTestCase {
       code: 2,
       userInfo: [NSLocalizedDescriptionKey: "The host is offline."]
     )
-    XCTAssertEqual(SyncUserFacingError.message(for: offlineError), "The host is offline. Reconnect, then try again.")
+    XCTAssertEqual(SyncUserFacingError.message(for: offlineError), "The machine is offline. Reconnect, then try again.")
 
     let authError = NSError(
       domain: "ADE",
       code: 3,
       userInfo: [NSLocalizedDescriptionKey: "Authentication failed.", "ADEErrorCode": "auth_failed"]
     )
-    XCTAssertEqual(SyncUserFacingError.message(for: authError), "This phone is no longer paired with the host. Pair again from Settings.")
+    XCTAssertEqual(SyncUserFacingError.message(for: authError), "This phone is no longer paired with this machine. Pair again from Settings.")
 
     let ambiguousTailnetAuthError = NSError(
       domain: "ADE",
@@ -746,7 +983,7 @@ final class ADETests: XCTestCase {
     )
     XCTAssertEqual(
       SyncUserFacingError.message(for: ambiguousTailnetAuthError),
-      "Reached an ADE host over Tailnet, but it did not match this saved computer. ADE kept the pairing and will keep trying other routes."
+      "Reached an ADE machine over Tailscale, but it did not match this saved machine. ADE kept the pairing and will keep trying other routes."
     )
 
     let invalidHelloError = NSError(
@@ -754,7 +991,7 @@ final class ADETests: XCTestCase {
       code: 4,
       userInfo: [NSLocalizedDescriptionKey: "Invalid hello response."]
     )
-    XCTAssertEqual(SyncUserFacingError.message(for: invalidHelloError), "The host replied with unexpected pairing data. Reconnect and try again.")
+    XCTAssertEqual(SyncUserFacingError.message(for: invalidHelloError), "The machine replied with unexpected pairing data. Reconnect and try again.")
 
     let queuedOperationError = NSError(
       domain: "ADE",
@@ -768,7 +1005,7 @@ final class ADETests: XCTestCase {
       code: 6,
       userInfo: [NSLocalizedDescriptionKey: "Unable to decode compressed sync payload."]
     )
-    XCTAssertEqual(SyncUserFacingError.message(for: compressedPayloadError), "The host sent unreadable sync data. Reconnect and try again.")
+    XCTAssertEqual(SyncUserFacingError.message(for: compressedPayloadError), "The machine sent unreadable sync data. Reconnect and try again.")
   }
 
   @MainActor
@@ -1520,7 +1757,7 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(service.shouldShowProjectHome)
     XCTAssertEqual(
       service.lastError,
-      "That project has not been cached on this phone yet. Connect to the ADE desktop app before opening it."
+      "That project has not been cached on this phone yet. Connect to the ADE machine before opening it."
     )
 
     database.close()
@@ -1609,14 +1846,17 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
-  func testSyncServicePrefersRemoteCatalogProjectOverStaleCachedSelection() throws {
+  func testSyncServiceClearsStaleCachedSelectionUntilUserChoosesRemoteProject() throws {
     let activeProjectIdKey = "ade.sync.activeProjectId"
     let activeProjectRootPathKey = "ade.sync.activeProjectRootPath"
+    let activeProjectHostIdentityKey = "ade.sync.activeProjectHostIdentity"
     UserDefaults.standard.set("old-project", forKey: activeProjectIdKey)
     UserDefaults.standard.set("/tmp/old-project", forKey: activeProjectRootPathKey)
+    UserDefaults.standard.set("host-old", forKey: activeProjectHostIdentityKey)
     defer {
       UserDefaults.standard.removeObject(forKey: activeProjectIdKey)
       UserDefaults.standard.removeObject(forKey: activeProjectRootPathKey)
+      UserDefaults.standard.removeObject(forKey: activeProjectHostIdentityKey)
     }
 
     let database = makeControllerHydrationDatabase(baseURL: makeTemporaryDirectory())
@@ -1649,9 +1889,63 @@ final class ADETests: XCTestCase {
       ]],
     ])
 
-    XCTAssertEqual(service.activeProjectId, "new-project")
-    XCTAssertEqual(service.activeProjectRootPath, "/tmp/new-project")
-    XCTAssertEqual(database.currentProjectId(), "new-project")
+    XCTAssertNil(service.activeProjectId)
+    XCTAssertNil(service.activeProjectRootPath)
+    XCTAssertNotEqual(database.currentProjectId(), "new-project")
+    XCTAssertTrue(service.shouldShowProjectHome)
+    XCTAssertTrue(service.projects.contains { $0.id == "new-project" })
+
+    database.close()
+  }
+
+  @MainActor
+  func testSyncServiceClearsMatchingProjectIdWhenMachineIdentityChanges() throws {
+    let activeProjectIdKey = "ade.sync.activeProjectId"
+    let activeProjectRootPathKey = "ade.sync.activeProjectRootPath"
+    let activeProjectHostIdentityKey = "ade.sync.activeProjectHostIdentity"
+    UserDefaults.standard.set("project-1", forKey: activeProjectIdKey)
+    UserDefaults.standard.set("/tmp/project-one", forKey: activeProjectRootPathKey)
+    UserDefaults.standard.set("host-old", forKey: activeProjectHostIdentityKey)
+    defer {
+      UserDefaults.standard.removeObject(forKey: activeProjectIdKey)
+      UserDefaults.standard.removeObject(forKey: activeProjectRootPathKey)
+      UserDefaults.standard.removeObject(forKey: activeProjectHostIdentityKey)
+    }
+
+    let database = makeControllerHydrationDatabase(baseURL: makeTemporaryDirectory())
+    try database.executeSqlForTesting("""
+      insert into projects (
+        id, root_path, display_name, default_base_ref, created_at, last_opened_at
+      ) values
+        ('project-1', '/tmp/project-one', 'Project One', 'main', '2026-04-22T00:00:00.000Z', '2026-04-22T01:00:00.000Z');
+    """)
+    let service = SyncService(database: database)
+    XCTAssertEqual(service.activeProjectId, "project-1")
+
+    try service.applyHelloPayloadForTesting([
+      "brain": [
+        "deviceId": "host-new",
+        "deviceName": "New Mac",
+      ],
+      "features": [
+        "projectCatalog": true,
+      ],
+      "projects": [[
+        "id": "project-1",
+        "displayName": "Project One",
+        "rootPath": "/tmp/project-one",
+        "defaultBaseRef": "main",
+        "lastOpenedAt": "2026-04-22T02:00:00.000Z",
+        "laneCount": 2,
+        "isAvailable": true,
+        "isCached": false,
+      ]],
+    ])
+
+    XCTAssertNil(service.activeProjectId)
+    XCTAssertNil(service.activeProjectRootPath)
+    XCTAssertTrue(service.shouldShowProjectHome)
+    XCTAssertTrue(service.projects.contains { $0.id == "project-1" })
 
     database.close()
   }
@@ -3217,7 +3511,7 @@ final class ADETests: XCTestCase {
       _ = try await service.refreshLaneDetail(laneId: "lane-child")
       XCTFail("Expected live-only lane detail refresh to fail while offline.")
     } catch {
-      XCTAssertEqual((error as NSError).localizedDescription, "This action requires a live connection to the host.")
+      XCTAssertEqual((error as NSError).localizedDescription, "This action requires a live connection to the machine.")
     }
   }
 
@@ -3636,7 +3930,7 @@ final class ADETests: XCTestCase {
     )
 
     XCTAssertEqual(emptyState?.title, "Pair to load lanes")
-    XCTAssertEqual(emptyState?.actionTitle, "Pair with host")
+    XCTAssertEqual(emptyState?.actionTitle, "Pair with machine")
     XCTAssertEqual(emptyState?.action, .openSettings)
   }
 
@@ -3705,9 +3999,9 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(discard.id.hasPrefix("discard:"))
 
     let restore = LaneFileConfirmation.restoreStaged(file)
-    XCTAssertEqual(restore.title, "Restore staged file?")
-    XCTAssertEqual(restore.confirmTitle, "Restore")
-    XCTAssertEqual(restore.actionLabel, "restore staged file")
+    XCTAssertEqual(restore.title, "Discard staged changes?")
+    XCTAssertEqual(restore.confirmTitle, "Discard staged")
+    XCTAssertEqual(restore.actionLabel, "discard staged file")
     XCTAssertEqual(restore.file?.path, file.path)
     XCTAssertTrue(restore.id.hasPrefix("restore:"))
   }

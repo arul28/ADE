@@ -39,7 +39,7 @@ struct FilesDirectoryContentsView: View {
         ADEEmptyStateView(
           symbol: parentPath.isEmpty ? "folder" : "folder.badge.minus",
           title: parentPath.isEmpty ? "Workspace is empty" : "Folder is empty",
-          message: isLive ? "This directory does not have any files to preview on iPhone yet." : "Reconnect to refresh files from the host."
+          message: isLive ? "This directory does not have any files to preview on iPhone yet." : "Reconnect to refresh files from the machine."
         )
       } else {
         ForEach(filesSortedNodes(nodes)) { node in

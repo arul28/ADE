@@ -87,7 +87,7 @@ struct PerSessionOverrideView: View {
       Text("No active sessions")
         .font(.subheadline.weight(.semibold))
         .foregroundStyle(ADEColor.textPrimary)
-      Text("Sessions appear here once your Mac starts syncing them.")
+      Text("Sessions appear here once your paired machine starts syncing them.")
         .font(.caption)
         .foregroundStyle(ADEColor.textSecondary)
         .multilineTextAlignment(.center)

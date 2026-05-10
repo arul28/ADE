@@ -249,7 +249,7 @@ struct LanesTabView: View {
     .buttonStyle(.plain)
     .opacity(canRunLiveActions ? 1 : 0.55)
     .accessibilityLabel("Add lane")
-    .accessibilityHint(canRunLiveActions ? "Opens lane creation options" : "Reconnect to desktop before creating lanes")
+    .accessibilityHint(canRunLiveActions ? "Opens lane creation options" : "Reconnect to machine before creating lanes")
   }
 
   @ViewBuilder

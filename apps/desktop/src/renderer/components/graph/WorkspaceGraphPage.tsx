@@ -124,6 +124,7 @@ function GraphInner() {
   const [searchParams, setSearchParams] = useSearchParams();
   const reactFlow = useReactFlow<Node<GraphNodeData>, Edge<GraphEdgeData>>();
   const project = useAppStore((s) => s.project);
+  const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
   const lanes = useAppStore((s) => s.lanes);
   const lanesKey = React.useMemo(() => lanes.map((l) => l.id).join(","), [lanes]);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
@@ -2439,6 +2440,8 @@ function GraphInner() {
           navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}&focus=single`);
         } else if (action === "open-folder") {
           await window.ade.lanes.openFolder({ laneId: lane.id });
+        } else if (action === "copy-remote-path") {
+          await window.ade.app.writeClipboardText(lane.worktreePath);
         } else if (action === "view-pr") {
           const overlay = buildGraphOverlayForLane(lane.id, lanePr);
           if (!overlay) return;
@@ -3450,7 +3453,9 @@ function GraphInner() {
                 title: "Navigate",
                 items: [
                   { key: "open-lane", label: "Open Lane" },
-                  { key: "open-folder", label: "Open Folder" },
+                  isRemoteProject
+                    ? { key: "copy-remote-path", label: "Copy Remote Path" }
+                    : { key: "open-folder", label: "Open Folder" },
                   { key: "view-pr", label: "Open PR", disabled: !hasPr, reason: "No linked PR for this lane." },
                   { key: "create-pr", label: hasPr ? "Open PR Workflow" : "Create PR", disabled: !canCreatePr, reason: "Primary lanes cannot open PRs." },
                 ]

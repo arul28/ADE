@@ -121,7 +121,7 @@ function connectionColor(state: SyncDeviceRuntimeState["connectionState"]): stri
 function deviceConnectionLabel(device: SyncDeviceRuntimeState): string {
   switch (device.connectionState) {
     case "self":
-      return "This desktop";
+      return "This machine";
     case "connected":
       return "Connected";
     default:
@@ -372,7 +372,7 @@ function tailnetStatusCopy(status: SyncTailnetDiscoveryStatus, args: {
         color: COLORS.success,
         title: "Phones can connect through Tailscale",
         detail: [
-          "The QR code includes this Mac's normal Tailscale address, so pairing can work without extra setup.",
+          "The QR code includes this machine's normal Tailscale address, so pairing can work without extra setup.",
           "Only the optional stable shortcut is blocked by Tailscale policy.",
         ].join(" "),
         canRetry: false,
@@ -385,7 +385,7 @@ function tailnetStatusCopy(status: SyncTailnetDiscoveryStatus, args: {
       detail: [
         "ADE tried to create a stable Tailscale address that phones can find automatically.",
         "Tailscale only allows that on computers configured by a tailnet admin for service hosting.",
-        "Local pairing still works; retry after service hosting is enabled for this Mac.",
+        "Local pairing still works; retry after service hosting is enabled for this machine.",
       ].join(" "),
       canRetry: true,
     };
@@ -420,7 +420,7 @@ function tailnetStatusCopy(status: SyncTailnetDiscoveryStatus, args: {
         label: "Tailscale not available",
         color: COLORS.warning,
         title: `Cannot publish ${host}`,
-        detail: status.stderr || status.error || "Install or open Tailscale on this desktop, then retry.",
+        detail: status.stderr || status.error || "Install or open Tailscale on this machine, then retry.",
         canRetry: true,
       };
     case "failed":
@@ -435,7 +435,7 @@ function tailnetStatusCopy(status: SyncTailnetDiscoveryStatus, args: {
       return {
         label: "Not active",
         color: COLORS.textMuted,
-        title: args.isLocalHost ? `Not published as ${host}` : "Only the host desktop publishes tailnet discovery",
+        title: args.isLocalHost ? `Not published as ${host}` : "Only the host machine publishes tailnet discovery",
         detail: status.error || "Start phone sync hosting to publish tailnet discovery.",
         canRetry: false,
       };
@@ -641,7 +641,7 @@ function ViewerPairingNotice() {
         Phone pairing lives on the host
       </div>
       <div style={helperTextStyle}>
-        Open Sync settings on the host desktop to set the phone PIN and show the QR code.
+        Open Sync settings on the host machine to set the phone PIN and show the QR code.
       </div>
     </div>
   );
@@ -920,7 +920,7 @@ function ThisComputerDetails({
             value={name}
             onChange={(event) => setName(event.target.value)}
             style={inputStyle}
-            placeholder="This Mac"
+            placeholder="This machine"
           />
         </label>
         <button

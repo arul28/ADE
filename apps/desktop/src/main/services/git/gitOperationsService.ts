@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import path from "node:path";
 import { getHeadSha, runGit, runGitOrThrow } from "./git";
 import { detectConflictKind, parseNameOnly } from "./gitConflictState";
@@ -57,6 +58,18 @@ type CachedReadEntry<T> = {
   expiresAt: number;
   value?: T;
   promise?: Promise<T>;
+};
+
+type GitOriginRemoteSummary = {
+  remoteUrl: string | null;
+  branch: string | null;
+};
+
+type GitOpenPrSummary = {
+  prUrl: string | null;
+  prNumber: number | null;
+  title: string | null;
+  headRefName: string | null;
 };
 
 function localBranchNameFromRemoteRef(ref: string): string {
@@ -1241,6 +1254,87 @@ export function createGitOperationsService({
       };
       const [name, email] = await Promise.all([readConfig("user.name"), readConfig("user.email")]);
       return { name, email };
+    },
+
+    async getOriginRemote(args: { laneId: string }): Promise<GitOriginRemoteSummary> {
+      const fallback: GitOriginRemoteSummary = { remoteUrl: null, branch: null };
+      const laneId = args.laneId.trim();
+      if (!laneId) return fallback;
+      const lane = laneService.getLaneBaseAndBranch(laneId);
+      const [remoteRes, branchRes] = await Promise.all([
+        runGit(["remote", "get-url", "origin"], { cwd: lane.worktreePath, timeoutMs: 8_000 }).catch(() => null),
+        lane.branchRef?.trim()
+          ? Promise.resolve(null)
+          : runGit(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: lane.worktreePath, timeoutMs: 8_000 }).catch(() => null),
+      ]);
+      const rawRemote = remoteRes?.exitCode === 0 ? remoteRes.stdout.trim() || null : null;
+      const remoteUrl = ((): string | null => {
+        if (!rawRemote) return rawRemote;
+        try {
+          const parsed = new URL(rawRemote);
+          if (parsed.username || parsed.password) {
+            parsed.username = "";
+            parsed.password = "";
+            return parsed.toString();
+          }
+          return rawRemote;
+        } catch {
+          return rawRemote;
+        }
+      })();
+      let branch = lane.branchRef?.trim() || null;
+      if (!branch && branchRes?.exitCode === 0) {
+        const out = branchRes.stdout.trim();
+        branch = out && out !== "HEAD" ? out : null;
+      }
+      return { remoteUrl, branch };
+    },
+
+    async getOpenPrForBranch(args: { laneId: string; branch?: string }): Promise<GitOpenPrSummary> {
+      const fallback: GitOpenPrSummary = { prUrl: null, prNumber: null, title: null, headRefName: null };
+      const laneId = args.laneId.trim();
+      if (!laneId) return fallback;
+      const lane = laneService.getLaneBaseAndBranch(laneId);
+      const branch = args.branch?.trim() || lane.branchRef?.trim() || "";
+      if (!branch) return fallback;
+
+      try {
+        const stdout = await new Promise<string>((resolve) => {
+          let settled = false;
+          let out = "";
+          const child = spawn("gh", ["pr", "list", "--head", branch, "--state", "open", "--json", "url,number,title,headRefName", "--limit", "1"], {
+            cwd: lane.worktreePath,
+            env: process.env,
+            stdio: ["ignore", "pipe", "pipe"],
+          });
+          const finish = (value: string) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            try { child.kill("SIGKILL"); } catch { /* noop */ }
+            resolve(value);
+          };
+          const timer = setTimeout(() => finish(""), 8_000);
+          child.stdout.on("data", (d: Buffer | string) => {
+            out += Buffer.isBuffer(d) ? d.toString("utf8") : String(d);
+          });
+          child.stderr.on("data", () => { /* swallow auth state */ });
+          child.on("error", () => finish(""));
+          child.on("close", (code) => finish(code === 0 ? out : ""));
+        });
+        if (!stdout.trim()) return fallback;
+        const parsed: unknown = JSON.parse(stdout);
+        if (!Array.isArray(parsed) || parsed.length === 0) return fallback;
+        const entry = parsed[0] as Record<string, unknown>;
+        return {
+          prUrl: typeof entry.url === "string" && entry.url ? entry.url : null,
+          prNumber: typeof entry.number === "number" ? entry.number : null,
+          title: typeof entry.title === "string" && entry.title ? entry.title : null,
+          headRefName: typeof entry.headRefName === "string" && entry.headRefName ? entry.headRefName : null,
+        };
+      } catch {
+        return fallback;
+      }
     },
 
     async checkoutBranch(args: GitCheckoutBranchArgs): Promise<GitActionResult> {

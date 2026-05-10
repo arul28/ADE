@@ -106,6 +106,34 @@ async function loadStoreModule() {
   return mod;
 }
 
+class MemoryCredentialStore {
+  readonly values = new Map<string, string>();
+
+  async get(key: string): Promise<string | null> {
+    return this.getSync(key);
+  }
+
+  async set(key: string, value: string): Promise<void> {
+    this.setSync(key, value);
+  }
+
+  async delete(key: string): Promise<void> {
+    this.deleteSync(key);
+  }
+
+  getSync(key: string): string | null {
+    return this.values.get(key) ?? null;
+  }
+
+  setSync(key: string, value: string): void {
+    this.values.set(key, value);
+  }
+
+  deleteSync(key: string): void {
+    this.values.delete(key);
+  }
+}
+
 describe("apiKeyStore", () => {
   let tempRoot: string;
   let keychain: Map<string, string>;
@@ -275,5 +303,71 @@ describe("apiKeyStore", () => {
       "__ade_provider_index__",
     ]);
     expect(securityAccountsFor("add-generic-password")).toContain("__ade_provider_index__");
+  });
+
+  it("stores, lists, returns, and deletes API keys through a provided credential store", async () => {
+    delete process.env.OPENAI_API_KEY;
+    const credentialStore = new MemoryCredentialStore();
+    const store = await loadStoreModule();
+    store.initApiKeyStore(tempRoot, { credentialStore });
+
+    store.storeApiKey(" OpenAI ", " sk-test-key ");
+    store.storeApiKey("CURSOR", " crsr_test_key ");
+
+    expect(store.getApiKey("openai")).toBe("sk-test-key");
+    expect(store.getAllApiKeys()).toEqual({
+      cursor: "crsr_test_key",
+      openai: "sk-test-key",
+    });
+    expect(store.listStoredProviders().sort()).toEqual(["cursor", "openai"]);
+    expect(credentialStore.values.get("ai.api_key.openai.v1")).toBe("sk-test-key");
+    expect(credentialStore.values.get("ai.api_key.cursor.v1")).toBe("crsr_test_key");
+    expect(JSON.parse(credentialStore.values.get("ai.api_key.index.v1") ?? "[]")).toEqual(["cursor", "openai"]);
+    expect(keychain.size).toBe(0);
+
+    store.deleteApiKey("OPENAI");
+
+    expect(store.getApiKey("openai")).toBeNull();
+    expect(store.getAllApiKeys()).toEqual({ cursor: "crsr_test_key" });
+    expect(store.listStoredProviders()).toEqual(["cursor"]);
+    expect(credentialStore.values.has("ai.api_key.openai.v1")).toBe(false);
+    expect(JSON.parse(credentialStore.values.get("ai.api_key.index.v1") ?? "[]")).toEqual(["cursor"]);
+  });
+
+  it("reads an unindexed credential-store provider on demand and updates the index", async () => {
+    const credentialStore = new MemoryCredentialStore();
+    credentialStore.setSync("ai.api_key.openai.v1", "sk-unindexed-key");
+    const store = await loadStoreModule();
+    store.initApiKeyStore(tempRoot, { credentialStore });
+
+    expect(store.listStoredProviders()).toEqual([]);
+    expect(store.getApiKey("OPENAI")).toBe("sk-unindexed-key");
+
+    expect(store.listStoredProviders()).toEqual(["openai"]);
+    expect(JSON.parse(credentialStore.values.get("ai.api_key.index.v1") ?? "[]")).toEqual(["openai"]);
+  });
+
+  it("can use the ADE CLI encrypted credential store without persisting the raw key", async () => {
+    process.env.ADE_API_KEY_STORE_DISABLE_KEYCHAIN = "1";
+    const credentialsPath = path.join(tempRoot, "credentials.json.enc");
+    const machineKeyPath = path.join(tempRoot, ".machine-key");
+    const { EncryptedFileCredentialStore } = await import("../../../../../ade-cli/src/services/credentials/credentialStore");
+    const credentialStore = new EncryptedFileCredentialStore({ credentialsPath, machineKeyPath });
+    const store = await loadStoreModule();
+    store.initApiKeyStore(tempRoot, { credentialStore });
+
+    store.storeApiKey("OpenAI", "sk-raw-secret-value");
+
+    expect(store.getApiKey("openai")).toBe("sk-raw-secret-value");
+    expect(store.listStoredProviders()).toEqual(["openai"]);
+    const persisted = fs.readFileSync(credentialsPath, "utf8");
+    expect(persisted).toContain("ciphertext");
+    expect(persisted).not.toContain("sk-raw-secret-value");
+    expect(fs.existsSync(path.join(tempRoot, ".ade", "secrets", "api-keys.v1.bin"))).toBe(false);
+    expect(store.getApiKeyStoreStatus()).toMatchObject({
+      secureStorageAvailable: true,
+      encryptedStorePath: null,
+      decryptionFailed: false,
+    });
   });
 });

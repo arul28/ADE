@@ -35,7 +35,9 @@ jobs:
           git merge-base --is-ancestor HEAD refs/remotes/origin/main
 
   build-mac-release:
-    needs: verify
+    needs:
+      - verify
+      - build-runtime-binaries
     runs-on: macos-15
     concurrency:
       group: release-${{ inputs.release_tag }}-mac
@@ -59,6 +61,18 @@ jobs:
 
       - name: Install ADE CLI dependencies
         run: cd apps/ade-cli && npm ci
+
+      - name: Download ADE runtime binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ade-runtime-*
+          path: apps/desktop/resources/runtime
+          merge-multiple: true
+
+      - name: Materialize ADE runtime resources
+        env:
+          ADE_RUNTIME_ARTIFACTS_DIR: ${{ github.workspace }}/apps/desktop/resources/runtime
+        run: cd apps/desktop && npm run materialize:runtime-resources
 
       - name: Stamp release version
         env:
@@ -121,7 +135,9 @@ jobs:
           if-no-files-found: error
 
   build-win-release:
-    needs: verify
+    needs:
+      - verify
+      - build-runtime-binaries
     runs-on: windows-latest
     concurrency:
       group: release-${{ inputs.release_tag }}-win
@@ -145,6 +161,18 @@ jobs:
 
       - name: Install ADE CLI dependencies
         run: cd apps/ade-cli && npm ci
+
+      - name: Download ADE runtime binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ade-runtime-*
+          path: apps/desktop/resources/runtime
+          merge-multiple: true
+
+      - name: Materialize ADE runtime resources
+        env:
+          ADE_RUNTIME_ARTIFACTS_DIR: ${{ github.workspace }}\apps\desktop\resources\runtime
+        run: cd apps/desktop && npm run materialize:runtime-resources
 
       - name: Stamp release version
         env:
@@ -175,13 +203,130 @@ jobs:
             apps/desktop/release/latest.yml
           if-no-files-found: error
 
+  build-runtime-binaries:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            os: macos-15
+          - target: darwin-x64
+            os: macos-13
+          - target: linux-x64
+            os: ubuntu-latest
+          - target: linux-arm64
+            os: ubuntu-24.04-arm
+    runs-on: ${{ matrix.os }}
+    concurrency:
+      group: release-${{ inputs.release_tag }}-runtime-${{ matrix.target }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target_ref }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/ade-cli/package-lock.json
+
+      - name: Install ADE CLI dependencies
+        run: cd apps/ade-cli && npm ci
+
+      - name: Stamp runtime release version
+        env:
+          ADE_RELEASE_TAG: ${{ inputs.release_tag }}
+        run: cd apps/desktop && npm run version:release
+
+      - name: Build ADE runtime binary
+        run: cd apps/ade-cli && npm run build:static -- --target ${{ matrix.target }}
+
+      - name: Materialize runtime notarization API key
+        if: ${{ startsWith(matrix.target, 'darwin-') }}
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+        run: |
+          if [ -z "$APPLE_API_KEY_P8" ] || [ -z "$APPLE_API_KEY_ID" ]; then
+            echo "::error::Missing APPLE_API_KEY_P8 or APPLE_API_KEY_ID GitHub secret."
+            exit 1
+          fi
+
+          KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+          printf '%s' "$APPLE_API_KEY_P8" > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+          echo "APPLE_API_KEY=$KEY_PATH" >> "$GITHUB_ENV"
+
+      - name: Import runtime Developer ID certificate
+        if: ${{ startsWith(matrix.target, 'darwin-') }}
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+        run: |
+          if [ -z "$CSC_LINK" ] || [ -z "$CSC_KEY_PASSWORD" ]; then
+            echo "::error::Missing CSC_LINK or CSC_KEY_PASSWORD GitHub secret."
+            exit 1
+          fi
+
+          CERT_PATH="$RUNNER_TEMP/runtime-signing.p12"
+          if [ -f "$CSC_LINK" ]; then
+            cp "$CSC_LINK" "$CERT_PATH"
+          elif [[ "$CSC_LINK" == file://* ]]; then
+            cp "${CSC_LINK#file://}" "$CERT_PATH"
+          elif [[ "$CSC_LINK" == http://* || "$CSC_LINK" == https://* ]]; then
+            curl -fsSL "$CSC_LINK" -o "$CERT_PATH"
+          else
+            printf '%s' "$CSC_LINK" | base64 --decode > "$CERT_PATH"
+          fi
+
+          KEYCHAIN="$RUNNER_TEMP/runtime-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          EXISTING_KEYCHAINS="$(security list-keychains -d user | tr -d '\"' | xargs)"
+          security list-keychains -d user -s "$KEYCHAIN" $EXISTING_KEYCHAINS
+          security default-keychain -s "$KEYCHAIN"
+          security import "$CERT_PATH" -k "$KEYCHAIN" -P "$CSC_KEY_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+
+      - name: Sign and notarize ADE runtime binary
+        if: ${{ startsWith(matrix.target, 'darwin-') }}
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: cd apps/ade-cli && npm run notarize:static -- --binary=dist-static/ade-${{ matrix.target }}
+
+      - name: Smoke test ADE runtime binary
+        run: |
+          apps/ade-cli/dist-static/ade-${{ matrix.target }} --version
+          tar -tzf apps/ade-cli/dist-static/ade-${{ matrix.target }}.native.tar.gz | grep -q '^\./node_modules/'
+
+      - name: Upload ADE runtime binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ade-runtime-${{ matrix.target }}
+          path: |
+            apps/ade-cli/dist-static/ade-${{ matrix.target }}
+            apps/ade-cli/dist-static/ade-${{ matrix.target }}.native.tar.gz
+          if-no-files-found: error
+
   publish-release:
     if: ${{ inputs.publish }}
     needs:
+      - build-runtime-binaries
       - build-mac-release
       - build-win-release
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target_ref }}
+          fetch-depth: 1
+
       - name: Download macOS release artifacts
         uses: actions/download-artifact@v4
         with:
@@ -193,6 +338,18 @@ jobs:
         with:
           name: ade-win-release-${{ inputs.release_tag }}
           path: release-assets/win
+
+      - name: Download ADE runtime binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ade-runtime-*
+          path: release-assets/runtime
+          merge-multiple: true
+
+      - name: Add standalone runtime installer
+        run: |
+          cp apps/ade-cli/scripts/install-runtime.sh release-assets/runtime/install.sh
+          chmod 755 release-assets/runtime/install.sh
 
       - name: Create or update draft GitHub release
         env:
@@ -210,6 +367,8 @@ jobs:
             release-assets/win/*.exe
             release-assets/win/*.exe.blockmap
             release-assets/win/latest.yml
+            release-assets/runtime/install.sh
+            release-assets/runtime/ade-*
           )
 
           if [ "${#files[@]}" -eq 0 ]; then

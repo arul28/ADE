@@ -31,6 +31,7 @@ import type { createWorkerHeartbeatService } from "../../desktop/src/main/servic
 import type { createAutomationSecretService } from "../../desktop/src/main/services/automations/automationSecretService";
 import type { ComputerUseArtifactBrokerService } from "../../desktop/src/main/services/computerUse/computerUseArtifactBrokerService";
 import { getModelById, getRuntimeModelRefForDescriptor, resolveModelAlias } from "../../desktop/src/shared/modelRegistry";
+import { getGitHubTokenAccessState, parseGitHubScopeHeaders } from "../../desktop/src/shared/githubScopes";
 import type { AdeRuntimePaths } from "./bootstrap";
 import { createLinearClient as createLinearClientImpl } from "../../desktop/src/main/services/cto/linearClient";
 import { createLinearIssueTracker as createLinearIssueTrackerImpl } from "../../desktop/src/main/services/cto/linearIssueTracker";
@@ -49,6 +50,7 @@ import { createFileService as createFileServiceImpl } from "../../desktop/src/ma
 import { createProcessService as createProcessServiceImpl } from "../../desktop/src/main/services/processes/processService";
 import { createPrService as createPrServiceImpl } from "../../desktop/src/main/services/prs/prService";
 import { createAutomationSecretService as createAutomationSecretServiceImpl } from "../../desktop/src/main/services/automations/automationSecretService";
+import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
 
 type HeadlessLinearCredentialService = {
   getStatus: () => {
@@ -60,10 +62,24 @@ type HeadlessLinearCredentialService = {
     scopes: string[];
     checkedAt: string | null;
     authMode?: "manual" | "oauth" | null;
+    tokenExpiresAt?: string | null;
+    refreshTokenStored?: boolean;
+    oauthConfigured?: boolean;
   };
   getTokenOrThrow: () => string;
   setToken: (token: string) => void;
+  setOAuthToken: (args: {
+    accessToken: string;
+    refreshToken?: string | null;
+    expiresAt?: string | null;
+  }) => void;
   clearToken: () => void;
+  setOAuthClientCredentials: (args: {
+    clientId: string;
+    clientSecret?: string | null;
+  }) => void;
+  clearOAuthClientCredentials: () => void;
+  getOAuthClientCredentials: () => { clientId: string; clientSecret: string | null } | null;
 };
 
 type HeadlessGitHubStatus = {
@@ -72,13 +88,17 @@ type HeadlessGitHubStatus = {
   storageScope: "app";
   tokenType?: "classic" | "fine-grained" | "unknown";
   repo: { owner: string; name: string } | null;
+  hasOrigin: boolean;
   userLogin: string | null;
   scopes: string[];
   checkedAt: string | null;
+  repoAccessOk: boolean | null;
+  repoAccessError: string | null;
+  connected: boolean;
 };
 
 type HeadlessGitHubService = {
-  getStatus: () => Promise<HeadlessGitHubStatus>;
+  getStatus: (opts?: { forceRefresh?: boolean }) => Promise<HeadlessGitHubStatus>;
   detectRepo: () => Promise<{ owner: string; name: string } | null>;
   getRepoOrThrow: () => Promise<{ owner: string; name: string }>;
   getTokenOrThrow: () => string;
@@ -89,6 +109,11 @@ type HeadlessGitHubService = {
     body?: unknown;
     token?: string;
   }) => Promise<{ data: T; response: Response | null }>;
+  setToken: (token: string) => void;
+  clearToken: () => void;
+  listRepoLabels: (owner: string, name: string) => Promise<unknown[]>;
+  listRepoCollaborators: (owner: string, name: string) => Promise<unknown[]>;
+  publishCurrentProject: (args: { name: string; description?: string; isPrivate: boolean }) => Promise<{ state: "pushed" | "remote_added"; htmlUrl: string }>;
   addIssueComment: (owner: string, name: string, number: number, body: string) => Promise<unknown>;
   setIssueLabels: (owner: string, name: string, number: number, labels: string[]) => Promise<unknown>;
   closeIssue: (owner: string, name: string, number: number, reason?: "completed" | "not_planned") => Promise<unknown>;
@@ -200,6 +225,10 @@ function envToken(...names: string[]): string | null {
   return null;
 }
 
+function asString(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
 function ghAuthToken(): string | null {
   try {
     const result = spawnSync("gh", ["auth", "token"], { encoding: "utf8", timeout: 5_000 });
@@ -211,12 +240,38 @@ function ghAuthToken(): string | null {
   }
 }
 
-function detectGitHubRepo(projectRoot: string): { owner: string; name: string } | null {
+function readGitOrigin(projectRoot: string): string | null {
   const result = spawnSync("git", ["remote", "get-url", "origin"], {
     cwd: projectRoot,
     encoding: "utf8",
   });
   const remote = typeof result.stdout === "string" ? result.stdout.trim() : "";
+  return remote.length > 0 ? remote : null;
+}
+
+function runGitHeadless(projectRoot: string, args: string[], timeoutMs: number): { exitCode: number; stdout: string; stderr: string } {
+  try {
+    const result = spawnSync("git", args, {
+      cwd: projectRoot,
+      encoding: "utf8",
+      timeout: timeoutMs,
+    });
+    return {
+      exitCode: result.status ?? 1,
+      stdout: typeof result.stdout === "string" ? result.stdout : "",
+      stderr: typeof result.stderr === "string" ? result.stderr : "",
+    };
+  } catch (error) {
+    return {
+      exitCode: 1,
+      stdout: "",
+      stderr: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function detectGitHubRepo(projectRoot: string): { owner: string; name: string } | null {
+  const remote = readGitOrigin(projectRoot) ?? "";
   if (!remote) return null;
   const ssh = remote.match(/^git@github\.com:(.+)$/i);
   if (ssh) {
@@ -235,15 +290,115 @@ function detectGitHubRepo(projectRoot: string): { owner: string; name: string } 
   }
 }
 
+function parseNextGitHubLink(linkHeader: string | null): string | null {
+  if (!linkHeader) return null;
+  for (const part of linkHeader.split(",")) {
+    const match = part.match(/<([^>]+)>;\s*rel="([^"]+)"/);
+    if (match?.[2] === "next") return match[1] ?? null;
+  }
+  return null;
+}
+
 function createHeadlessGitHubService(projectRoot: string, logger: Logger): HeadlessGitHubService {
+  const credentialStore = new EncryptedFileCredentialStore();
+  const tokenKey = "github.token.v1";
   let cachedStatus: Awaited<ReturnType<HeadlessGitHubService["getStatus"]>> | null = null;
   let cachedAt = 0;
+  let tokenOverride: string | null = null;
+  let tokenDecryptionFailed = false;
 
-  const getToken = (): string => envToken("ADE_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN") ?? ghAuthToken() ?? "";
+  const readStoredToken = (): string | null => {
+    if (tokenOverride != null) return tokenOverride;
+    try {
+      const stored = credentialStore.getSync(tokenKey);
+      tokenDecryptionFailed = false;
+      if (stored?.trim()) return stored.trim();
+    } catch {
+      tokenDecryptionFailed = true;
+    }
+    return null;
+  };
+  const getToken = (): string =>
+    readStoredToken()
+    ?? envToken("ADE_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN")
+    ?? ghAuthToken()
+    ?? "";
   const getTokenType = (token: string): HeadlessGitHubStatus["tokenType"] => {
     if (token.startsWith("github_pat_")) return "fine-grained";
     if (token.startsWith("ghp_")) return "classic";
     return "unknown";
+  };
+  const readApiMessage = (payload: unknown, fallback: string): string => {
+    if (payload && typeof payload === "object" && "message" in payload && typeof (payload as { message?: unknown }).message === "string") {
+      return String((payload as { message: string }).message);
+    }
+    return fallback;
+  };
+  const computeConnected = (args: {
+    tokenStored: boolean;
+    userLogin: string | null;
+    tokenType: HeadlessGitHubStatus["tokenType"];
+    scopes: string[];
+    repo: { owner: string; name: string } | null;
+    repoAccessOk: boolean | null;
+  }): boolean => {
+    if (!args.tokenStored || !args.userLogin) return false;
+    if (args.tokenType === "fine-grained") {
+      return args.repo ? args.repoAccessOk === true : true;
+    }
+    if (args.tokenType === "classic") {
+      return getGitHubTokenAccessState(args.scopes).hasRequiredAccess;
+    }
+    return true;
+  };
+  const validateToken = async (token: string): Promise<{
+    userLogin: string | null;
+    scopes: string[];
+    tokenType: HeadlessGitHubStatus["tokenType"];
+  }> => {
+    const response = await fetch("https://api.github.com/user", {
+      method: "GET",
+      headers: {
+        accept: "application/vnd.github+json",
+        authorization: `Bearer ${token}`,
+        "user-agent": "ade-cli",
+      },
+    });
+    const scopes = parseGitHubScopeHeaders(response.headers);
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(readApiMessage(payload, `GitHub token validation failed (HTTP ${response.status})`));
+    }
+    const userLogin = payload && typeof payload === "object" && typeof (payload as { login?: unknown }).login === "string"
+      ? (payload as { login: string }).login
+      : null;
+    return { userLogin, scopes, tokenType: getTokenType(token) };
+  };
+  const probeRepoAccess = async (
+    token: string,
+    repo: { owner: string; name: string },
+  ): Promise<{ ok: boolean; error: string | null }> => {
+    try {
+      const response = await fetch(
+        `https://api.github.com/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}`,
+        {
+          method: "GET",
+          headers: {
+            accept: "application/vnd.github+json",
+            authorization: `Bearer ${token}`,
+            "user-agent": "ade-cli",
+          },
+        },
+      );
+      if (response.ok) return { ok: true, error: null };
+      const payload = await response.json().catch(() => ({}));
+      return {
+        ok: false,
+        error: `${response.status}: ${readApiMessage(payload, `HTTP ${response.status}`)}`,
+      };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
   };
 
   const apiRequest: HeadlessGitHubService["apiRequest"] = async (args) => {
@@ -283,25 +438,188 @@ function createHeadlessGitHubService(projectRoot: string, logger: Logger): Headl
     return { data: data as never, response };
   };
 
+  const apiRequestAllPages = async <T>(args: {
+    path: string;
+    query?: Record<string, string | number | boolean | undefined | null>;
+    token?: string;
+  }): Promise<T[]> => {
+    const first = await apiRequest<T[]>({ method: "GET", ...args });
+    const out = Array.isArray(first.data) ? [...first.data] : [];
+    let nextUrl = parseNextGitHubLink(first.response?.headers.get("link") ?? null);
+    while (nextUrl) {
+      const url = new URL(nextUrl);
+      const next = await apiRequest<T[]>({
+        method: "GET",
+        path: `${url.pathname}${url.search}`,
+        token: args.token,
+      });
+      if (Array.isArray(next.data)) out.push(...next.data);
+      nextUrl = parseNextGitHubLink(next.response?.headers.get("link") ?? null);
+    }
+    return out;
+  };
+
+  const createRepository = async (args: {
+    name: string;
+    description?: string;
+    isPrivate: boolean;
+  }): Promise<{ cloneUrl: string; sshUrl: string; htmlUrl: string; defaultBranch: string }> => {
+    const body: Record<string, unknown> = {
+      name: args.name,
+      private: args.isPrivate,
+      auto_init: false,
+    };
+    if (args.description != null && args.description.trim().length > 0) {
+      body.description = args.description.trim();
+    }
+    const { data } = await apiRequest<Record<string, unknown>>({
+      method: "POST",
+      path: "/user/repos",
+      body,
+    });
+    return {
+      cloneUrl: asString(data.clone_url),
+      sshUrl: asString(data.ssh_url),
+      htmlUrl: asString(data.html_url),
+      defaultBranch: asString(data.default_branch) || "main",
+    };
+  };
+
+  const getRepository = async (
+    owner: string,
+    name: string,
+  ): Promise<{
+    cloneUrl: string;
+    sshUrl: string;
+    htmlUrl: string;
+    defaultBranch: string;
+    size: number;
+  }> => {
+    const { data } = await apiRequest<Record<string, unknown>>({
+      method: "GET",
+      path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`,
+    });
+    return {
+      cloneUrl: asString(data.clone_url),
+      sshUrl: asString(data.ssh_url),
+      htmlUrl: asString(data.html_url),
+      defaultBranch: asString(data.default_branch) || "main",
+      size: typeof data.size === "number" ? data.size : 0,
+    };
+  };
+
   return {
-    async getStatus() {
+    async getStatus(opts: { forceRefresh?: boolean } = {}) {
+      if (opts.forceRefresh) {
+        cachedStatus = null;
+        cachedAt = 0;
+      }
       const now = Date.now();
-      if (cachedStatus && now - cachedAt < 30_000) return { ...cachedStatus, repo: detectGitHubRepo(projectRoot) };
       const repo = detectGitHubRepo(projectRoot);
-      const tokenStored = Boolean(getToken());
-      const status: HeadlessGitHubStatus = {
-        tokenStored,
-        tokenDecryptionFailed: false,
-        storageScope: "app",
-        tokenType: tokenStored ? getTokenType(getToken()) : "unknown",
-        repo,
-        userLogin: null,
-        scopes: [],
-        checkedAt: tokenStored ? new Date(now).toISOString() : null,
-      };
-      cachedStatus = status;
-      cachedAt = now;
-      return status;
+      const hasOrigin = Boolean(readGitOrigin(projectRoot));
+      if (cachedStatus && now - cachedAt < 30_000) {
+        const repoChanged =
+          (cachedStatus.repo?.owner ?? null) !== (repo?.owner ?? null) ||
+          (cachedStatus.repo?.name ?? null) !== (repo?.name ?? null);
+        const repoAccessOk = repoChanged ? null : cachedStatus.repoAccessOk;
+        const repoAccessError = repoChanged ? null : cachedStatus.repoAccessError;
+        return {
+          ...cachedStatus,
+          repo,
+          hasOrigin,
+          repoAccessOk,
+          repoAccessError,
+          connected: computeConnected({
+            tokenStored: cachedStatus.tokenStored,
+            userLogin: cachedStatus.userLogin,
+            tokenType: cachedStatus.tokenType,
+            scopes: cachedStatus.scopes,
+            repo,
+            repoAccessOk,
+          }),
+        };
+      }
+      const token = getToken();
+      if (!token) {
+        const status: HeadlessGitHubStatus = {
+          tokenStored: false,
+          tokenDecryptionFailed,
+          storageScope: "app",
+          tokenType: "unknown",
+          repo,
+          hasOrigin,
+          userLogin: null,
+          scopes: [],
+          checkedAt: null,
+          repoAccessOk: null,
+          repoAccessError: null,
+          connected: false,
+        };
+        cachedStatus = status;
+        cachedAt = now;
+        return status;
+      }
+
+      try {
+        const validated = await validateToken(token);
+        let repoAccessOk: boolean | null = null;
+        let repoAccessError: string | null = null;
+        if (repo) {
+          const probe = await probeRepoAccess(token, repo);
+          repoAccessOk = probe.ok;
+          repoAccessError = probe.error;
+          if (!probe.ok) {
+            logger.warn("github.repo_probe_failed", {
+              repo: `${repo.owner}/${repo.name}`,
+              tokenType: validated.tokenType,
+              error: probe.error,
+            });
+          }
+        }
+        const status: HeadlessGitHubStatus = {
+          tokenStored: true,
+          tokenDecryptionFailed: false,
+          storageScope: "app",
+          tokenType: validated.tokenType,
+          repo,
+          hasOrigin,
+          userLogin: validated.userLogin,
+          scopes: validated.scopes,
+          checkedAt: new Date(now).toISOString(),
+          repoAccessOk,
+          repoAccessError,
+          connected: computeConnected({
+            tokenStored: true,
+            userLogin: validated.userLogin,
+            tokenType: validated.tokenType,
+            scopes: validated.scopes,
+            repo,
+            repoAccessOk,
+          }),
+        };
+        cachedStatus = status;
+        cachedAt = now;
+        return status;
+      } catch (error) {
+        logger.warn("github.token_validation_failed", { error: error instanceof Error ? error.message : String(error) });
+        const status: HeadlessGitHubStatus = {
+          tokenStored: true,
+          tokenDecryptionFailed: false,
+          storageScope: "app",
+          tokenType: getTokenType(token),
+          repo,
+          hasOrigin,
+          userLogin: null,
+          scopes: [],
+          checkedAt: new Date(now).toISOString(),
+          repoAccessOk: null,
+          repoAccessError: null,
+          connected: false,
+        };
+        cachedStatus = status;
+        cachedAt = now;
+        return status;
+      }
     },
     async detectRepo() {
       return detectGitHubRepo(projectRoot);
@@ -316,7 +634,104 @@ function createHeadlessGitHubService(projectRoot: string, logger: Logger): Headl
       if (!token) throw new Error("GitHub token missing. Set ADE_GITHUB_TOKEN or GITHUB_TOKEN, or run `gh auth login`.");
       return token;
     },
+    setToken(nextToken: string) {
+      tokenOverride = nextToken.trim();
+      credentialStore.setSync(tokenKey, tokenOverride);
+      tokenDecryptionFailed = false;
+      cachedStatus = null;
+      cachedAt = 0;
+    },
+    clearToken() {
+      tokenOverride = "";
+      credentialStore.deleteSync(tokenKey);
+      tokenDecryptionFailed = false;
+      cachedStatus = null;
+      cachedAt = 0;
+    },
     apiRequest,
+    async listRepoLabels(owner, name) {
+      return apiRequestAllPages({
+        path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/labels`,
+        query: { per_page: 100 },
+      });
+    },
+    async listRepoCollaborators(owner, name) {
+      return apiRequestAllPages({
+        path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/collaborators`,
+        query: { per_page: 100 },
+      });
+    },
+    async publishCurrentProject(args) {
+      const token = getToken();
+      if (!token) {
+        const err = new Error("GitHub is not connected. Add a token in Settings.") as Error & { code?: string };
+        err.code = "github_not_connected";
+        throw err;
+      }
+
+      const existingRemote = runGitHeadless(projectRoot, ["remote", "get-url", "origin"], 8_000);
+      if (existingRemote.exitCode === 0 && existingRemote.stdout.trim().length > 0) {
+        const err = new Error("This project already has a GitHub remote named 'origin'.") as Error & { code?: string };
+        err.code = "remote_already_exists";
+        throw err;
+      }
+
+      let created: { cloneUrl: string; sshUrl: string; htmlUrl: string; defaultBranch: string };
+      try {
+        created = await createRepository(args);
+      } catch (createErr) {
+        const message = createErr instanceof Error ? createErr.message : String(createErr);
+        const isNameTaken = /already exists/i.test(message);
+        if (!isNameTaken) throw createErr;
+
+        const validated = await validateToken(token).catch(() => ({ userLogin: null as string | null }));
+        const owner = validated.userLogin;
+        if (!owner) throw createErr;
+
+        const existing = await getRepository(owner, args.name);
+        if (existing.size > 0) {
+          const taken = new Error(
+            `A GitHub repo named '${args.name}' already exists on your account and contains commits. Pick a different name.`,
+          ) as Error & { code?: string };
+          taken.code = "repo_name_taken";
+          throw taken;
+        }
+        created = {
+          cloneUrl: existing.cloneUrl,
+          sshUrl: existing.sshUrl,
+          htmlUrl: existing.htmlUrl,
+          defaultBranch: existing.defaultBranch,
+        };
+      }
+
+      const cleanupLocalOrigin = (): void => {
+        runGitHeadless(projectRoot, ["remote", "remove", "origin"], 8_000);
+      };
+
+      const remoteAddRes = runGitHeadless(projectRoot, ["remote", "add", "origin", created.cloneUrl], 8_000);
+      if (remoteAddRes.exitCode !== 0) {
+        cleanupLocalOrigin();
+        throw new Error(`Failed to add origin remote: ${remoteAddRes.stderr.trim() || `exit ${remoteAddRes.exitCode}`}`);
+      }
+
+      const headRes = runGitHeadless(projectRoot, ["rev-parse", "--verify", "HEAD"], 5_000);
+      let resultState: "pushed" | "remote_added";
+      if (headRes.exitCode === 0) {
+        const pushRes = runGitHeadless(projectRoot, ["push", "-u", "origin", "HEAD"], 5 * 60_000);
+        if (pushRes.exitCode !== 0) {
+          cleanupLocalOrigin();
+          throw new Error(`Failed to push to origin: ${pushRes.stderr.trim() || `exit ${pushRes.exitCode}`}`);
+        }
+        resultState = "pushed";
+      } else {
+        resultState = "remote_added";
+      }
+
+      cachedStatus = null;
+      cachedAt = 0;
+
+      return { state: resultState, htmlUrl: created.htmlUrl };
+    },
     async addIssueComment(owner, name, number, body) {
       return (await apiRequest({
         method: "POST",
@@ -363,31 +778,130 @@ function createHeadlessGitHubService(projectRoot: string, logger: Logger): Headl
 }
 
 function createHeadlessLinearCredentialService(): HeadlessLinearCredentialService {
-  let token = envToken("ADE_LINEAR_API", "LINEAR_API_KEY", "ADE_LINEAR_TOKEN", "LINEAR_TOKEN") ?? "";
+  const credentialStore = new EncryptedFileCredentialStore();
+  const tokenKey = "linear.token.v1";
+  const authModeKey = "linear.authMode.v1";
+  const tokenExpiresAtKey = "linear.tokenExpiresAt.v1";
+  const refreshTokenKey = "linear.refreshToken.v1";
+  const oauthClientKey = "linear.oauthClient.v1";
+  let tokenOverride: string | null = null;
+  let tokenDecryptionFailed = false;
+
+  const readCredential = (key: string): string | null => {
+    try {
+      const stored = credentialStore.getSync(key);
+      tokenDecryptionFailed = false;
+      return stored?.trim() || null;
+    } catch {
+      tokenDecryptionFailed = true;
+      return null;
+    }
+  };
+
+  const writeCredential = (key: string, value: string | null | undefined): void => {
+    if (value?.trim()) {
+      credentialStore.setSync(key, value.trim());
+    } else {
+      credentialStore.deleteSync(key);
+    }
+    tokenDecryptionFailed = false;
+  };
+
+  const readToken = (): { token: string; source: "stored" | "env" | "override" | null } => {
+    if (tokenOverride != null) {
+      return { token: tokenOverride, source: tokenOverride.trim().length > 0 ? "override" : null };
+    }
+    const stored = readCredential(tokenKey);
+    if (stored) return { token: stored, source: "stored" };
+    const envValue = envToken("ADE_LINEAR_API", "LINEAR_API_KEY", "ADE_LINEAR_TOKEN", "LINEAR_TOKEN") ?? "";
+    return { token: envValue, source: envValue.trim().length > 0 ? "env" : null };
+  };
+
+  const readOAuthClientCredentials = (): { clientId: string; clientSecret: string | null } | null => {
+    const raw = readCredential(oauthClientKey);
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+      const record = parsed as Record<string, unknown>;
+      const clientId = typeof record.clientId === "string" ? record.clientId.trim() : "";
+      if (!clientId) return null;
+      return {
+        clientId,
+        clientSecret: typeof record.clientSecret === "string" && record.clientSecret.trim().length > 0
+          ? record.clientSecret.trim()
+          : null,
+      };
+    } catch {
+      return null;
+    }
+  };
+
   return {
     getStatus() {
+      const { token, source } = readToken();
+      const authMode = source === "stored" || source === "override"
+        ? (readCredential(authModeKey) === "oauth" ? "oauth" : "manual")
+        : token.trim().length > 0
+          ? "manual"
+          : null;
       return {
         tokenStored: token.trim().length > 0,
-        tokenDecryptionFailed: false,
+        tokenDecryptionFailed,
         storageScope: "app",
         repo: null,
         userLogin: null,
         scopes: [],
         checkedAt: token.trim().length > 0 ? new Date().toISOString() : null,
-        authMode: token.trim().length > 0 ? "manual" : null,
+        authMode,
+        tokenExpiresAt: readCredential(tokenExpiresAtKey),
+        refreshTokenStored: Boolean(readCredential(refreshTokenKey)),
+        oauthConfigured: readOAuthClientCredentials() != null,
       };
     },
     getTokenOrThrow() {
+      const { token } = readToken();
       if (!token.trim()) {
         throw new Error("Linear token missing. Set ADE_LINEAR_API, LINEAR_API_KEY, ADE_LINEAR_TOKEN, or LINEAR_TOKEN for headless mode.");
       }
       return token.trim();
     },
     setToken(nextToken: string) {
-      token = nextToken.trim();
+      tokenOverride = nextToken.trim();
+      writeCredential(tokenKey, tokenOverride);
+      writeCredential(authModeKey, "manual");
+      writeCredential(refreshTokenKey, null);
+      writeCredential(tokenExpiresAtKey, null);
+    },
+    setOAuthToken(args: { accessToken: string; refreshToken?: string | null; expiresAt?: string | null }) {
+      tokenOverride = args.accessToken.trim();
+      writeCredential(tokenKey, tokenOverride);
+      writeCredential(authModeKey, "oauth");
+      writeCredential(refreshTokenKey, args.refreshToken);
+      writeCredential(tokenExpiresAtKey, args.expiresAt);
     },
     clearToken() {
-      token = "";
+      tokenOverride = "";
+      writeCredential(tokenKey, null);
+      writeCredential(authModeKey, null);
+      writeCredential(refreshTokenKey, null);
+      writeCredential(tokenExpiresAtKey, null);
+    },
+    setOAuthClientCredentials(args: { clientId: string; clientSecret?: string | null }) {
+      const clientId = args.clientId.trim();
+      if (!clientId.length) {
+        throw new Error("A Linear OAuth client ID is required.");
+      }
+      writeCredential(oauthClientKey, JSON.stringify({
+        clientId,
+        clientSecret: args.clientSecret?.trim() || null,
+      }));
+    },
+    clearOAuthClientCredentials() {
+      writeCredential(oauthClientKey, null);
+    },
+    getOAuthClientCredentials() {
+      return readOAuthClientCredentials();
     },
   };
 }

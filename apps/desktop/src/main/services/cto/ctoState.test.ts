@@ -61,7 +61,6 @@ describe("ctoStateService", () => {
     expect(buildAdeGitignore()).toContain("!cto/identity.yaml");
     expect(buildAdeGitignore()).not.toContain("cto/core-memory.json");
     expect(buildAdeGitignore()).not.toContain("cto/CURRENT.md");
-    expect(buildAdeGitignore()).not.toContain("cto/openclaw-history.json");
 
     fixture.db.close();
   });

@@ -216,7 +216,7 @@ func prComputeMergeGate(
     if let blockedReason, !blockedReason.isEmpty, parts.isEmpty {
       parts.append(blockedReason)
     }
-    let subline = parts.isEmpty ? (blockedReason ?? "Merge blocked by host") : parts.joined(separator: " · ")
+    let subline = parts.isEmpty ? (blockedReason ?? "Merge blocked by machine") : parts.joined(separator: " · ")
     let target: PrMergeGateTarget = (failing > 0 || conflicts) ? .checks : .reviews
     return PrMergeGateInfo(tone: .red, subline: subline, target: target)
   }

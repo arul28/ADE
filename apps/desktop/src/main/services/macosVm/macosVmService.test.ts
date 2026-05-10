@@ -118,7 +118,6 @@ describe("createMacosVmService", () => {
     expect(commands.some(({ command, args }) => command === "rsync" && args.includes("--delete-excluded"))).toBe(true);
     expect(commands.some(({ command, args }) => command === "rsync" && args.includes("--exclude") && args.includes("/.ade/secrets/***"))).toBe(true);
     expect(commands.some(({ command, args }) => command === "rsync" && args.includes("--exclude") && args.includes("/.ade/ade.db*"))).toBe(true);
-    expect(commands.some(({ command, args }) => command === "rsync" && args.includes("--exclude") && args.includes("/.ade/cto/openclaw-*.json"))).toBe(true);
     expect(commands.filter(({ command }) => command === "rsync")).toHaveLength(1);
     expect(commands.some(({ command, args }) =>
       path.basename(command) === "lume" && JSON.stringify(args) === JSON.stringify(["run", started.name, "--shared-dir", policy.hostPath]),

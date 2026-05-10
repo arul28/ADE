@@ -113,9 +113,9 @@ func laneListEmptyStateMessage(scope: LaneListScope, searchText: String, hasFilt
     return "Try clearing the current filters."
   }
   switch scope {
-  case .active: return "Create a new lane or connect to a host."
+  case .active: return "Create a new lane or connect to a machine."
   case .archived: return "Archived lanes will appear here."
-  case .all: return "No lanes yet. Create a lane or connect to a host."
+  case .all: return "No lanes yet. Create a lane or connect to a machine."
   }
 }
 
@@ -340,6 +340,6 @@ func conflictSummary(_ status: ConflictStatus) -> String {
   case "merge-ready":
     return "Conflict prediction clear. Merge-ready."
   default:
-    return "Conflict status available from host."
+    return "Conflict status available from machine."
   }
 }

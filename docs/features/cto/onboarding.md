@@ -1,6 +1,6 @@
 # CTO Onboarding
 
-The first-run flow for a project. Intentionally short: the CTO is usable before Linear is connected, before workers are hired, and before OpenClaw is paired. The wizard exists to pick a personality overlay — everything else is deferred.
+The first-run flow for a project. Intentionally short: the CTO is usable before Linear is connected and before workers are hired. The wizard exists to pick a personality overlay — everything else is deferred.
 
 ## Source file map
 
@@ -56,7 +56,7 @@ The first-run flow for a project. Intentionally short: the CTO is usable before 
 5. On "Finish" the wizard calls `window.ade.cto.updateIdentity({ patch: { name: "CTO", personality, customPersonality, persona } })` where `persona` is either the custom text or the preset-derived sentence `"Persistent project CTO with <label> personality."`.
 6. On success, the wizard calls `onComplete()` which the container wires to `updateOnboardingState({ completedSteps: [...existing, "identity"] })`.
 
-There is no separate step for model selection, Linear connection, worker hiring, or OpenClaw pairing. Those happen lazily from Settings and the relevant tabs.
+There is no separate step for model selection, Linear connection, or worker hiring. Those happen lazily from Settings and the relevant tabs.
 
 ## Identity editor (post-onboarding)
 

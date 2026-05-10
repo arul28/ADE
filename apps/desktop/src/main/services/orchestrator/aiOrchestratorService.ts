@@ -800,7 +800,7 @@ export function createAiOrchestratorService(args: {
     logger,
     missionService,
     orchestratorService,
-    agentChatService,
+    agentChatService: initialAgentChatService,
     laneService,
     projectConfigService,
     aiIntegrationService,
@@ -814,6 +814,7 @@ export function createAiOrchestratorService(args: {
     onDagMutation,
     hookCommandRunner = runOrchestratorHookCommand
   } = args;
+  let agentChatService = initialAgentChatService ?? null;
   const plannerMemoryService = createMemoryService(db);
   const syncLocks = new Set<string>();
   const workerStates = new Map<string, OrchestratorWorkerState>();
@@ -880,7 +881,7 @@ export function createAiOrchestratorService(args: {
     logger,
     missionService,
     orchestratorService,
-    agentChatService: agentChatService ?? null,
+    agentChatService,
     laneService: laneService ?? null,
     projectConfigService: projectConfigService ?? null,
     aiIntegrationService: aiIntegrationService ?? null,
@@ -7819,8 +7820,9 @@ Check all worker statuses and continue managing the mission from here. Read work
     let interruptedSessions = 0;
     let disposedSessions = 0;
 
-    if (agentChatService) {
-      if (typeof agentChatService.sendMessage === "function") {
+    const chatService = agentChatService;
+    if (chatService) {
+      if (typeof chatService.sendMessage === "function") {
         const outcomes = await Promise.all(
           targets.map(async (target) => ({
             sessionId: target.sessionId,
@@ -7844,13 +7846,13 @@ Check all worker statuses and continue managing the mission from here. Read work
         }
       }
 
-      if (typeof agentChatService.interrupt === "function") {
+      if (typeof chatService.interrupt === "function") {
         const outcomes = await Promise.all(
           targets.map(async (target) => ({
             sessionId: target.sessionId,
             outcome: await runBestEffortWithTimeout({
               timeoutMs: GRACEFUL_CANCEL_INTERRUPT_TIMEOUT_MS,
-              work: () => agentChatService.interrupt({ sessionId: target.sessionId })
+              work: () => chatService.interrupt({ sessionId: target.sessionId })
             })
           }))
         );
@@ -7868,13 +7870,13 @@ Check all worker statuses and continue managing the mission from here. Read work
         }
       }
 
-      if (typeof agentChatService.dispose === "function") {
+      if (typeof chatService.dispose === "function") {
         const outcomes = await Promise.all(
           targets.map(async (target) => ({
             sessionId: target.sessionId,
             outcome: await runBestEffortWithTimeout({
               timeoutMs: GRACEFUL_CANCEL_DISPOSE_TIMEOUT_MS,
-              work: () => agentChatService.dispose({ sessionId: target.sessionId })
+              work: () => chatService.dispose({ sessionId: target.sessionId })
             })
           }))
         );
@@ -11123,6 +11125,10 @@ Check all worker statuses and continue managing the mission from here. Read work
     runHealthSweep: (reason = "manual") => runHealthSweep(reason),
     getMissionLogs,
     exportMissionLogs,
+    setAgentChatService: (service: ReturnType<typeof createAgentChatService> | null) => {
+      agentChatService = service;
+      ctx.agentChatService = service;
+    },
     dispose: () => {
       disposed = true;
       disposedRef.current = true;

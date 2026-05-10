@@ -5,6 +5,7 @@ describe("syncProtocol", () => {
   it("preserves request ids and leaves small payloads uncompressed", () => {
     const encoded = encodeSyncEnvelope({
       type: "heartbeat",
+      projectId: " project-1 ",
       requestId: "req-1",
       payload: {
         kind: "ping",
@@ -16,6 +17,7 @@ describe("syncProtocol", () => {
 
     const parsed = parseSyncEnvelope(encoded);
     expect(parsed.type).toBe("heartbeat");
+    expect(parsed.projectId).toBe("project-1");
     expect(parsed.requestId).toBe("req-1");
     expect(parsed.compression).toBe("none");
     expect(parsed.payload).toEqual({
@@ -55,6 +57,7 @@ describe("syncProtocol", () => {
     expect(wire.payloadEncoding).toBe("base64");
 
     const parsed = parseSyncEnvelope(encoded);
+    expect(parsed.projectId).toBe(null);
     expect(parsed.requestId).toBe("req-large");
     expect(parsed.compression).toBe("gzip");
     expect(parsed.payload).toEqual(payload);

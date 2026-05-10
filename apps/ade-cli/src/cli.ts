@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { Buffer } from "node:buffer";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import YAML from "yaml";
 import {
   CURSOR_CLOUD_HELP,
@@ -27,6 +28,11 @@ import {
   validateLaunchProfilePermissionMode,
   type LaunchProfile,
 } from "../../desktop/src/shared/cliLaunch";
+import type {
+  SyncMobileProjectSummary,
+  SyncProjectSwitchRequestPayload,
+  SyncProjectSwitchResultPayload,
+} from "../../desktop/src/shared/types/sync";
 
 type JsonObject = Record<string, unknown>;
 
@@ -58,6 +64,7 @@ type FormatterId =
   | "status"
   | "doctor"
   | "auth"
+  | "projects-list"
   | "linear-quick-view"
   | "lanes"
   | "lane-detail"
@@ -106,11 +113,14 @@ type CliPlan =
   | { kind: "help"; text: string }
   | { kind: "execute"; label: string; steps: InvocationStep[]; visualizer?: "lanes"; summary?: "status" | "doctor" | "auth"; formatter?: FormatterId; preferHeadless?: boolean }
   | { kind: "ade-code"; rest: string[] }
+  | { kind: "serve"; rest: string[] }
+  | { kind: "rpc-stdio"; rest: string[] }
+  | { kind: "init"; targetPath: string | null }
   | { kind: "cursor-cloud"; rest: string[] }
   | { kind: "mcp" };
 
 type CliConnection = {
-  mode: "desktop-socket" | "headless";
+  mode: "desktop-socket" | "runtime-socket" | "headless";
   projectRoot: string;
   workspaceRoot: string;
   socketPath: string;
@@ -146,7 +156,12 @@ type ReadinessCheck = {
   details?: JsonObject;
 };
 
-const VERSION = "0.0.0";
+declare const __ADE_VERSION__: string | undefined;
+
+const VERSION =
+  typeof __ADE_VERSION__ === "string" && __ADE_VERSION__.trim()
+    ? __ADE_VERSION__
+    : process.env.ADE_CLI_VERSION?.trim() || "0.0.0";
 const PROTOCOL_VERSION = "2025-06-18";
 const SOURCE_FALLBACK_ENV = "ADE_CLI_SOURCE_FALLBACK_ACTIVE";
 const CLI_ENTRY_PATH = typeof process.argv[1] === "string" ? path.resolve(process.argv[1]) : "";
@@ -341,13 +356,18 @@ const ADE_BANNER = String.raw`
 const TOP_LEVEL_HELP = `${ADE_BANNER}
   Agent-focused command-line interface for ADE.
 
-  ADE CLI commands operate on the same project database and live desktop socket
-  used by the ADE app. By default the CLI connects to the app socket when it is
-  running; otherwise it falls back to a headless runtime for local-safe actions.
+  ADE CLI commands operate through the machine ADE runtime daemon by default.
+  If the daemon is not running, the CLI starts it, registers the selected
+  project, and routes project actions through that runtime.
 
     $ ade help <command...>                         Display help for a command
     $ ade auth status                               Check local ADE CLI readiness
     $ ade code                                      Open ADE Work chat in the terminal
+    $ ade serve                                     Run the ADE runtime daemon in foreground
+    $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
+    $ ade init [path]                               Register a project with this machine runtime
+    $ ade projects list                             List projects registered on this machine
+    $ ade sync status | pin set 123456              Manage machine sync and phone pairing
     $ ade doctor                                    Inspect project, socket, runtime, and tool availability
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
     $ ade git status | commit | push | stash        Run ADE-aware git operations
@@ -381,8 +401,8 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
   Global options:
     --project-root <path>   ADE project root. Inside .ade/worktrees/<lane>, this resolves to the parent project.
     --workspace-root <path> Lane/worktree to treat as the active workspace.
-    --headless              Skip the desktop socket and run an in-process ADE runtime.
-    --socket                Require the desktop socket; fail instead of falling back to headless.
+    --headless              Skip the runtime daemon and run an in-process ADE runtime.
+    --socket                Require a live ADE socket; fail instead of falling back to headless.
     --json                  Print machine-readable JSON. This is the default output mode.
     --text                  Print a compact human-readable summary when a formatter exists.
     --timeout-ms <ms>       Per-request timeout. Long agent/PR workflows may need several minutes.
@@ -755,6 +775,52 @@ const IOS_SIMULATOR_HELP_ALIASES: Record<string, string> = {
 };
 
 const HELP_BY_COMMAND: Record<string, string> = {
+  serve: `${ADE_BANNER}
+  ADE Runtime Daemon
+
+  Runs the machine-scoped ADE runtime in the foreground. The daemon listens on
+  a local socket and can lazily serve any project registered with "ade init".
+
+    $ ade serve
+    $ ade serve --socket ~/.ade/sock/ade.sock
+    $ ade serve --port 8787
+
+  Flags:
+    --socket <path>         Unix socket or Windows named pipe to listen on.
+    --port <n>              Also listen for local TCP JSON-RPC on 127.0.0.1:n.
+    --no-sync               Disable machine sync discovery for this daemon run.
+    --install-service       Register the per-user login service and exit.
+    --uninstall-service     Remove the per-user login service and exit.
+    --service-status        Print per-user login service status and exit.
+`,
+  rpc: `${ADE_BANNER}
+  ADE JSON-RPC
+
+  Attaches to the machine runtime daemon and speaks ADE JSON-RPC over stdio.
+  If the daemon is not running, ADE starts it before accepting requests. This
+  mode is used by SSH transports.
+
+    $ ade rpc --stdio
+`,
+  init: `${ADE_BANNER}
+  ADE Project Init
+
+  Registers a project with this machine runtime and creates its .ade directory
+  if needed.
+
+    $ ade init
+    $ ade init /path/to/project
+`,
+  projects: `${ADE_BANNER}
+  ADE projects
+
+  Manage the machine-scoped ADE project registry used by the runtime daemon.
+
+    $ ade projects list --text
+    $ ade projects add /path/to/project
+    $ ade projects remove <project-id>
+    $ ade projects touch <project-id>
+`,
   code: `${ADE_BANNER}
   ADE Code
 
@@ -866,8 +932,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
   run: `${ADE_BANNER}
   Run tab
 
-  Run tab commands mirror ADE desktop process definitions and runtime state.
-  They require the desktop socket when live process state is needed.
+  Run tab commands mirror ADE process definitions and runtime state. They use
+  the machine runtime daemon when live process state is needed.
 
     $ ade run defs --text                           List configured run commands
     $ ade run ps --lane <lane> --text               List process runtime state
@@ -896,7 +962,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Chat terminal
 
   Terminal commands control the active in-chat terminal for an ADE chat. Use
-  desktop socket mode when you want the same terminal the user sees in the app.
+  attached runtime mode when you want the same terminal the app is viewing.
 
     $ ade terminal list --chat-session <id> --text  List terminals for a chat
     $ ade terminal active --chat-session <id> --text Show the active chat terminal
@@ -924,7 +990,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Work chats
 
   Chat commands use ADE agent chat sessions. Live provider-backed chat normally
-  requires the desktop socket because the app owns provider/session state.
+  requires an attached runtime because the daemon owns provider/session state.
 
     $ ade chat list --text                          List chat sessions
     $ ade chat create --lane <lane> --provider codex --model <model> [--fast]
@@ -948,8 +1014,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Prefer screenshots/images, screen recordings, and browser captures/traces.
   Console logs are supporting diagnostics, not a replacement for visual proof.
   Local screenshot/video fallback is macOS-only and runs headless by default
-  unless --socket is explicitly requested. Desktop socket mode has the best
-  parity for UI-owned proof state.
+  unless --socket is explicitly requested. Runtime socket mode has the best
+  parity for shared proof state.
 
     $ ade proof status --text                       Show proof backend capabilities
     $ ade proof list --text                         List captured artifacts
@@ -964,7 +1030,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
 
   iOS simulator commands build, launch, mirror, inspect, and control the ADE
   drawer simulator. Aliases: \`ade ios\` and \`ade simulator\` route to the same
-  surface. For drawer/shared session state, prefer desktop socket mode
+  surface. For drawer/shared session state, prefer runtime socket mode
   (--socket) so launch/select/tap operate on the same long-lived ADE service.
   Launch is headless by default; use --foreground only when you
   need the native Simulator window in front. idb is optional for direct
@@ -1017,7 +1083,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
 
   macOS VM commands provision and control lane-tied Apple silicon macOS
   guests through Lume. ADE mounts the lane worktree into the guest with a
-  shared directory so host and guest edits stay in sync. Use desktop socket
+  shared directory so host and guest edits stay in sync. Use runtime socket
   mode when the Work sidebar and agents should observe the same live VM state.
 
   Discovery and lifecycle:
@@ -4155,8 +4221,17 @@ function hasHelpFlag(args: string[]): boolean {
 
 function buildCliPlan(command: string[]): CliPlan {
   const args = [...command];
+  if (args[0] === "--version" || args[0] === "-v") {
+    return { kind: "help", text: `ade ${VERSION}\n` };
+  }
   const primary = firstPositional(args);
-  if (!primary || primary === "-h" || primary === "--help") {
+  if (!primary) {
+    if (hasHelpFlag(args)) {
+      return { kind: "help", text: TOP_LEVEL_HELP };
+    }
+    return { kind: "ade-code", rest: [] };
+  }
+  if (primary === "-h" || primary === "--help") {
     return { kind: "help", text: TOP_LEVEL_HELP };
   }
   const aliases: Record<string, string> = {
@@ -4196,6 +4271,7 @@ function buildCliPlan(command: string[]): CliPlan {
     automation: "automations",
     "auto-update": "update",
     updates: "update",
+    project: "projects",
   };
   const primaryHelpKey = aliases[primary] ?? primary;
   if (hasHelpFlag(args)) {
@@ -4230,6 +4306,25 @@ function buildCliPlan(command: string[]): CliPlan {
   if (primary === "code") {
     const rest = args;
     return { kind: "ade-code", rest };
+  }
+  if (primary === "serve") {
+    return { kind: "serve", rest: args };
+  }
+  if (primary === "rpc") {
+    const sub = firstPositional(args);
+    if (sub === "stdio" || readFlag(args, ["--stdio"])) {
+      return { kind: "rpc-stdio", rest: args };
+    }
+    throw new CliUsageError("rpc currently supports only --stdio.");
+  }
+  if (primary === "init") {
+    return { kind: "init", targetPath: firstPositional(args) };
+  }
+  if (primary === "projects" || primary === "project") {
+    return buildProjectsPlan(args);
+  }
+  if (primary === "sync") {
+    return buildSyncPlan(args);
   }
   if (primary === "status") {
     return { kind: "execute", label: "status", summary: "status", steps: [{ key: "ping", method: "ping" }] };
@@ -4395,22 +4490,6 @@ function commandExists(command: string): boolean {
   return result.status === 0 && result.stdout.trim().length > 0;
 }
 
-function resolveAdeCodeLaunch(): { command: string; args: string[] } {
-  const explicit = process.env.ADE_CODE_EXECUTABLE?.trim();
-  if (explicit) return { command: explicit, args: [] };
-
-  const siblingDist = path.resolve(CLI_PACKAGE_ROOT, "..", "ade-code", "dist", "cli.js");
-  if (fs.existsSync(siblingDist)) {
-    return { command: process.execPath, args: [siblingDist] };
-  }
-
-  if (commandExists("ade-code")) {
-    return { command: "ade-code", args: [] };
-  }
-
-  throw new CliUsageError("ade code could not find ade-code. Build apps/ade-code or install the ade-code binary.");
-}
-
 function resolveAdeCodeSocketPath(projectRoot: string): string {
   return process.env.ADE_RPC_URL?.trim()
     || process.env.ADE_RPC_SOCKET_PATH?.trim()
@@ -4430,19 +4509,15 @@ function buildAdeCodeArgs(rest: string[], options: GlobalOptions): string[] {
   ];
 }
 
-function runAdeCode(rest: string[], options: GlobalOptions): { output: string; exitCode: number } {
-  const launch = resolveAdeCodeLaunch();
-  const args = [
-    ...launch.args,
-    ...buildAdeCodeArgs(rest, options),
-  ];
-  const result = spawnSync(launch.command, args, {
-    cwd: process.cwd(),
-    env: process.env,
-    stdio: "inherit",
-  });
-  if (result.error) throw result.error;
-  return { output: "", exitCode: typeof result.status === "number" ? result.status : 1 };
+async function runAdeCode(rest: string[], options: GlobalOptions): Promise<{ output: string; exitCode: number }> {
+  const sourceModule = path.join(CLI_PACKAGE_ROOT, "src", "tuiClient", "cli.tsx");
+  const builtModule = CLI_ENTRY_PATH
+    ? path.join(path.dirname(CLI_ENTRY_PATH), "tuiClient", "cli.mjs")
+    : path.join(CLI_PACKAGE_ROOT, "dist", "tuiClient", "cli.mjs");
+  const modulePath = fs.existsSync(builtModule) ? builtModule : sourceModule;
+  const { runAdeCodeCli } = await import(pathToFileURL(modulePath).href);
+  const exitCode = await runAdeCodeCli(buildAdeCodeArgs(rest, options));
+  return { output: "", exitCode };
 }
 
 function runLocalCommand(command: string, args: string[], cwd: string): { ok: boolean; stdout: string; stderr: string } {
@@ -4665,9 +4740,10 @@ function buildReadinessSnapshot(args: {
   const adeDir = path.join(connection.projectRoot, ".ade");
   const sharedConfigPath = path.join(adeDir, "ade.yaml");
   const localConfigPath = path.join(adeDir, "local.yaml");
+  const attachedSocketAvailable = connection.mode === "runtime-socket" || connection.mode === "desktop-socket";
   const desktopSocketAvailable = connection.mode === "desktop-socket";
   const socketExists = isAdeMcpNamedPipePath(connection.socketPath)
-    ? desktopSocketAvailable
+    ? attachedSocketAvailable
     : fs.existsSync(connection.socketPath);
   const checks = {
     git: checkGitReadiness(connection.projectRoot),
@@ -4680,8 +4756,8 @@ function buildReadinessSnapshot(args: {
   const recommendations = Object.entries(checks)
     .filter(([, check]) => check.nextAction)
     .map(([key, check]) => `${key}: ${check.nextAction}`);
-  if (!desktopSocketAvailable) {
-    recommendations.unshift("desktop: Start ADE desktop or pass --socket when Work chat, Path to Merge, Run tab state, or UI-owned proof state is required.");
+  if (!attachedSocketAvailable) {
+    recommendations.unshift("runtime: Start ADE runtime or remove --headless when Work chat, Path to Merge, Run tab state, or shared proof state is required.");
   }
   const projectInitialized = fs.existsSync(adeDir);
   if (!projectInitialized) {
@@ -4696,7 +4772,11 @@ function buildReadinessSnapshot(args: {
     protocolVersion: PROTOCOL_VERSION,
     mode: connection.mode,
     selectedMode: connection.mode,
-    requestedMode: desktopSocketAvailable ? "desktop-socket" : "headless",
+    requestedMode: connection.mode === "runtime-socket"
+      ? "runtime-socket"
+      : desktopSocketAvailable
+        ? "desktop-socket"
+        : "headless",
     runtime: {
       node: process.version,
       execPath: process.execPath,
@@ -4719,12 +4799,15 @@ function buildReadinessSnapshot(args: {
     desktop: {
       socketPath: connection.socketPath,
       socketExists,
-      socketAvailable: desktopSocketAvailable,
-      message: desktopSocketAvailable
-        ? "Connected to live ADE desktop socket."
+      socketAvailable: attachedSocketAvailable,
+      socketMode: connection.mode,
+      message: connection.mode === "runtime-socket"
+        ? "Connected to ADE runtime daemon socket."
+        : desktopSocketAvailable
+          ? "Connected to legacy ADE desktop socket."
         : socketExists
           ? "Socket path exists but CLI is running in headless mode; the socket may be stale or unavailable."
-          : "No live ADE desktop socket was detected.",
+          : "No live ADE socket was detected.",
     },
     actions: {
       rpcActionCount: rpcActions.length,
@@ -4747,78 +4830,92 @@ function buildReadinessSnapshot(args: {
       message: "Default doctor/auth checks do not call provider, GitHub, or Linear networks.",
     },
     recommendations,
-    recommendation: recommendations[0] ?? (connection.mode === "desktop-socket"
-      ? "Using live ADE desktop state."
-      : "Headless mode is ready for local ADE actions; start ADE desktop for UI-owned runtime state."),
+    recommendation: recommendations[0] ?? (attachedSocketAvailable
+      ? "Using live ADE runtime state."
+      : "Headless mode is ready for local ADE actions; start ADE runtime for shared runtime state."),
     summary,
   };
+}
+
+function createSocketConnection(socketPath: string): net.Socket {
+  if (socketPath.startsWith("tcp://")) {
+    const parsed = new URL(socketPath);
+    return net.createConnection({
+      host: parsed.hostname,
+      port: Number(parsed.port),
+    });
+  }
+  return net.createConnection(socketPath);
+}
+
+function isRetryableSocketConnectError(error: NodeJS.ErrnoException): boolean {
+  return error.code === "ENOENT" || error.code === "ECONNREFUSED" || error.code === "EACCES" || error.code === "EPERM";
+}
+
+function connectSocket(socketPath: string, timeoutMs: number, label: string): Promise<net.Socket> {
+  return new Promise((resolve, reject) => {
+    const connectTimeoutMs = Math.min(timeoutMs, 5000);
+    const deadline = Date.now() + connectTimeoutMs;
+    const attempt = () => {
+      const socket = createSocketConnection(socketPath);
+      let settled = false;
+      let connectTimer: ReturnType<typeof setTimeout> | null = null;
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        if (connectTimer) clearTimeout(connectTimer);
+        fn();
+      };
+      connectTimer = setTimeout(() => {
+        finish(() => {
+          socket.destroy();
+          reject(new Error(`Timed out connecting to ${label} after ${connectTimeoutMs}ms.`));
+        });
+      }, Math.max(1, deadline - Date.now()));
+      socket.once("connect", () => {
+        finish(() => resolve(socket));
+      });
+      socket.once("error", (error: NodeJS.ErrnoException) => {
+        finish(() => {
+          socket.destroy();
+          if (isRetryableSocketConnectError(error) && Date.now() < deadline) {
+            setTimeout(attempt, 100);
+            return;
+          }
+          reject(error);
+        });
+      });
+    };
+    attempt();
+  });
 }
 
 class SocketJsonRpcClient {
   private buffer: Buffer = Buffer.alloc(0);
   private nextId = 1;
+  private closedError: Error | null = null;
   private pending = new Map<number, {
     resolve: (value: unknown) => void;
     reject: (error: Error) => void;
     timer: ReturnType<typeof setTimeout>;
   }>();
+  private notificationHandlers = new Map<string, Set<(params: unknown) => void>>();
+  private anyNotificationHandlers = new Set<(method: string, params: unknown) => void>();
+  private closeHandlers = new Set<(error: Error) => void>();
 
   private constructor(private readonly socket: net.Socket, private readonly timeoutMs: number) {
     socket.on("data", (chunk) => this.onData(Buffer.from(chunk)));
     socket.on("error", (error) => this.rejectAll(error instanceof Error ? error : new Error(String(error))));
-    socket.on("close", () => this.rejectAll(new Error("ADE desktop socket closed.")));
+    socket.on("close", () => this.failConnection(new Error("ADE socket closed.")));
   }
 
-  static connect(socketPath: string, timeoutMs: number): Promise<SocketJsonRpcClient> {
-    return new Promise((resolve, reject) => {
-      const connectTimeoutMs = Math.min(timeoutMs, 5000);
-      const deadline = Date.now() + connectTimeoutMs;
-      const retryable = (error: NodeJS.ErrnoException) =>
-        error.code === "ENOENT" || error.code === "ECONNREFUSED" || error.code === "EACCES" || error.code === "EPERM";
-      const attempt = () => {
-        const socket = (() => {
-          if (socketPath.startsWith("tcp://")) {
-            const parsed = new URL(socketPath);
-            return net.createConnection({
-              host: parsed.hostname,
-              port: Number(parsed.port),
-            });
-          }
-          return net.createConnection(socketPath);
-        })();
-        let settled = false;
-        let connectTimer: ReturnType<typeof setTimeout> | null = null;
-        const finish = (fn: () => void) => {
-          if (settled) return;
-          settled = true;
-          if (connectTimer) clearTimeout(connectTimer);
-          fn();
-        };
-        connectTimer = setTimeout(() => {
-          finish(() => {
-            socket.destroy();
-            reject(new Error(`Timed out connecting to ADE desktop socket after ${connectTimeoutMs}ms.`));
-          });
-        }, Math.max(1, deadline - Date.now()));
-        socket.once("connect", () => {
-          finish(() => resolve(new SocketJsonRpcClient(socket, timeoutMs)));
-        });
-        socket.once("error", (error: NodeJS.ErrnoException) => {
-          finish(() => {
-            socket.destroy();
-            if (retryable(error) && Date.now() < deadline) {
-              setTimeout(attempt, 100);
-              return;
-            }
-            reject(error);
-          });
-        });
-      };
-      attempt();
-    });
+  static async connect(socketPath: string, timeoutMs: number, label = "ADE socket"): Promise<SocketJsonRpcClient> {
+    const socket = await connectSocket(socketPath, timeoutMs, label);
+    return new SocketJsonRpcClient(socket, timeoutMs);
   }
 
-  request(method: string, params?: JsonObject): Promise<unknown> {
+  request(method: string, params?: unknown): Promise<unknown> {
+    if (this.closedError) return Promise.reject(this.closedError);
     const id = this.nextId;
     this.nextId += 1;
     const payload: JsonRpcRequest = {
@@ -4841,6 +4938,45 @@ class SocketJsonRpcClient {
         reject(error);
       });
     });
+  }
+
+  notify(method: string, params?: unknown): void {
+    if (this.closedError) return;
+    const payload: JsonRpcRequest = {
+      jsonrpc: "2.0",
+      method,
+      ...(params !== undefined ? { params } : {}),
+    };
+    this.socket.write(`${JSON.stringify(payload)}\n`, "utf8");
+  }
+
+  onClose(handler: (error: Error) => void): () => void {
+    if (this.closedError) {
+      const error = this.closedError;
+      queueMicrotask(() => handler(error));
+      return () => {};
+    }
+    this.closeHandlers.add(handler);
+    return () => {
+      this.closeHandlers.delete(handler);
+    };
+  }
+
+  onNotification(method: string, handler: (params: unknown) => void): () => void {
+    const handlers = this.notificationHandlers.get(method) ?? new Set<(params: unknown) => void>();
+    handlers.add(handler);
+    this.notificationHandlers.set(method, handlers);
+    return () => {
+      handlers.delete(handler);
+      if (handlers.size === 0) this.notificationHandlers.delete(method);
+    };
+  }
+
+  onAnyNotification(handler: (method: string, params: unknown) => void): () => void {
+    this.anyNotificationHandlers.add(handler);
+    return () => {
+      this.anyNotificationHandlers.delete(handler);
+    };
   }
 
   close(): void {
@@ -4869,7 +5005,17 @@ class SocketJsonRpcClient {
     }
     if (!isRecord(parsed)) return;
     const id = typeof parsed.id === "number" ? parsed.id : null;
-    if (id == null) return;
+    if (id == null) {
+      const method = asString(parsed.method);
+      if (!method) return;
+      for (const handler of this.notificationHandlers.get(method) ?? []) {
+        handler(parsed.params);
+      }
+      for (const handler of this.anyNotificationHandlers) {
+        handler(method, parsed.params);
+      }
+      return;
+    }
     const pending = this.pending.get(id);
     if (!pending) return;
     this.pending.delete(id);
@@ -4887,6 +5033,16 @@ class SocketJsonRpcClient {
       clearTimeout(pending.timer);
       pending.reject(error);
     }
+  }
+
+  private failConnection(error: Error): void {
+    if (this.closedError) return;
+    this.closedError = error;
+    this.rejectAll(error);
+    for (const handler of this.closeHandlers) {
+      handler(error);
+    }
+    this.closeHandlers.clear();
   }
 }
 
@@ -4986,6 +5142,10 @@ type HeadlessRpcServerState = {
   server: net.Server;
 };
 
+type NotifiableJsonRpcHandler = JsonRpcHandler & {
+  setNotifier?: (notify: ((method: string, params?: unknown) => void) | null) => void;
+};
+
 function createHeadlessRpcServer(createHandler: () => JsonRpcHandler & { dispose?: () => void }): HeadlessRpcServerState {
   const activeConnections = new Set<net.Socket>();
   const activeStops = new Set<ReturnType<typeof startJsonRpcServer>>();
@@ -5004,6 +5164,7 @@ function createHeadlessRpcServer(createHandler: () => JsonRpcHandler & { dispose
       },
     };
     const stop = startJsonRpcServer(handler, transport, { nonFatal: true });
+    (handler as NotifiableJsonRpcHandler).setNotifier?.((method, params) => stop.notify(method, params));
     activeStops.add(stop);
     let cleanedUp = false;
     const cleanup = () => {
@@ -5116,20 +5277,164 @@ async function initializeConnection(connection: CliConnection, options: GlobalOp
   await connection.request("ade/initialize", buildInitializeParams(options, "ade-cli"));
 }
 
+function isMachineRuntimeScopedMethod(method: string): boolean {
+  return method === "ade/initialize"
+    || method === "ade/initialized"
+    || method === "ping"
+    || method === "shutdown"
+    || method === "exit"
+    || method === "runtime/info"
+    || method === "machineInfo.get"
+    || method.startsWith("projects.");
+}
+
+function buildSyncPlan(args: string[]): CliPlan {
+  const sub = firstPositional(args) ?? "status";
+  if (sub === "help") {
+    return {
+      kind: "help",
+      text: `${ADE_BANNER}
+Usage:
+  ade sync status [--include-transfer-readiness]
+  ade sync refresh
+  ade sync devices
+  ade sync pin get
+  ade sync pin set <6-digit-pin>
+  ade sync pin clear
+`,
+    };
+  }
+  if (sub === "status") {
+    return {
+      kind: "execute",
+      label: "sync status",
+      steps: [{
+        key: "result",
+        method: "sync.getStatus",
+        params: {
+          includeTransferReadiness: readFlag(args, ["--include-transfer-readiness"]),
+          forceTransferReadiness: readFlag(args, ["--force-transfer-readiness"]),
+        },
+      }],
+    };
+  }
+  if (sub === "refresh" || sub === "refresh-discovery") {
+    return { kind: "execute", label: "sync refresh", steps: [{ key: "result", method: "sync.refreshDiscovery" }] };
+  }
+  if (sub === "devices" || sub === "list-devices") {
+    return { kind: "execute", label: "sync devices", steps: [{ key: "result", method: "sync.listDevices" }] };
+  }
+  if (sub === "pin") {
+    const action = firstPositional(args) ?? "get";
+    if (action === "get" || action === "show") {
+      return { kind: "execute", label: "sync pin get", steps: [{ key: "result", method: "sync.getPin" }] };
+    }
+    if (action === "set") {
+      const pin = requireValue(readValue(args, ["--pin"]) ?? firstPositional(args), "pin");
+      return { kind: "execute", label: "sync pin set", steps: [{ key: "result", method: "sync.setPin", params: { pin } }] };
+    }
+    if (action === "clear" || action === "remove") {
+      return { kind: "execute", label: "sync pin clear", steps: [{ key: "result", method: "sync.clearPin" }] };
+    }
+    throw new CliUsageError(`Unsupported sync pin action: ${action}`);
+  }
+  throw new CliUsageError(`Unsupported sync command: ${sub}`);
+}
+
+function buildProjectsPlan(args: string[]): CliPlan {
+  const sub = firstPositional(args) ?? "list";
+  if (sub === "list" || sub === "ls") {
+    return {
+      kind: "execute",
+      label: "projects list",
+      formatter: "projects-list",
+      steps: [{ key: "result", method: "projects.list" }],
+    };
+  }
+  if (sub === "add" || sub === "register") {
+    const rootPath = requireValue(readValue(args, ["--path", "--root"]) ?? firstPositional(args), "project path");
+    return {
+      kind: "execute",
+      label: "projects add",
+      formatter: "projects-list",
+      steps: [{ key: "result", method: "projects.add", params: { rootPath } }],
+    };
+  }
+  if (sub === "remove" || sub === "rm" || sub === "delete") {
+    const projectId = requireValue(readValue(args, ["--project-id", "--id"]) ?? firstPositional(args), "project id");
+    return {
+      kind: "execute",
+      label: "projects remove",
+      steps: [{ key: "result", method: "projects.remove", params: { projectId } }],
+    };
+  }
+  if (sub === "touch") {
+    const projectId = requireValue(readValue(args, ["--project-id", "--id"]) ?? firstPositional(args), "project id");
+    return {
+      kind: "execute",
+      label: "projects touch",
+      formatter: "projects-list",
+      steps: [{ key: "result", method: "projects.touch", params: { projectId } }],
+    };
+  }
+  throw new CliUsageError(`projects supports list, add, remove, or touch; got '${sub}'.`);
+}
+
+function withProjectId(params: JsonObject | undefined, projectId: string): JsonObject {
+  return {
+    ...(params ?? {}),
+    projectId,
+  };
+}
+
 async function createConnection(options: GlobalOptions): Promise<CliConnection> {
   const roots = resolveRoots(options);
   const { resolveAdeLayout } = await import("../../desktop/src/shared/adeLayout");
   const layout = resolveAdeLayout(roots.projectRoot);
-  const socketPath = process.env.ADE_RPC_URL?.trim() || process.env.ADE_RPC_SOCKET_PATH?.trim() || layout.socketPath;
+  const legacySocketPath = process.env.ADE_RPC_URL?.trim() || process.env.ADE_RPC_SOCKET_PATH?.trim() || layout.socketPath;
 
-  if (!options.headless && (shouldAttemptDesktopSocketConnection(socketPath) || options.requireSocket)) {
+  if (!options.headless) {
+    let socketClient: SocketJsonRpcClient | null = null;
     try {
-      const socketClient = await SocketJsonRpcClient.connect(socketPath, options.timeoutMs);
+      const machineSocketPath = await resolveMachineRuntimeSocketPath();
+      socketClient = await connectMachineRuntimeDaemon(options);
+      let activeProjectId: string | null = null;
+      const connection: CliConnection = {
+        mode: "runtime-socket",
+        projectRoot: roots.projectRoot,
+        workspaceRoot: roots.workspaceRoot,
+        socketPath: machineSocketPath,
+        request: (method, params) => socketClient!.request(
+          method,
+          activeProjectId && !isMachineRuntimeScopedMethod(method)
+            ? withProjectId(params, activeProjectId)
+            : params,
+        ),
+        close: () => socketClient?.close(),
+      };
+      const registered = await connection.request("projects.add", { rootPath: roots.projectRoot });
+      const registeredProjectId = isRecord(registered) ? asString(registered.projectId) : null;
+      if (!registeredProjectId) {
+        throw new Error("Machine runtime did not return a projectId from projects.add.");
+      }
+      activeProjectId = registeredProjectId;
+      return connection;
+    } catch (error) {
+      try { socketClient?.close(); } catch {}
+      if (options.requireSocket && !shouldAttemptDesktopSocketConnection(legacySocketPath)) {
+        throw error;
+      }
+    }
+  }
+
+  if (!options.headless && (shouldAttemptDesktopSocketConnection(legacySocketPath) || options.requireSocket)) {
+    try {
+      const socketClient = await SocketJsonRpcClient.connect(legacySocketPath, options.timeoutMs);
       const connection: CliConnection = {
         mode: "desktop-socket",
         projectRoot: roots.projectRoot,
         workspaceRoot: roots.workspaceRoot,
-        socketPath,
+        socketPath: legacySocketPath,
         request: (method, params) => socketClient.request(method, params),
         close: () => socketClient.close(),
       };
@@ -5141,7 +5446,7 @@ async function createConnection(options: GlobalOptions): Promise<CliConnection> 
   }
 
   if (options.requireSocket) {
-    throw new Error(`ADE desktop socket is not available at ${socketPath}.`);
+    throw new Error(`ADE socket is not available at ${legacySocketPath}.`);
   }
 
   const previousRole = process.env.ADE_DEFAULT_ROLE;
@@ -5170,7 +5475,7 @@ async function createConnection(options: GlobalOptions): Promise<CliConnection> 
   try {
     stopHeadlessSocket = await startHeadlessRpcSocketServers({
       projectRoot: roots.projectRoot,
-      socketPath,
+      socketPath: legacySocketPath,
       createHandler,
     });
   } catch {
@@ -5182,7 +5487,7 @@ async function createConnection(options: GlobalOptions): Promise<CliConnection> 
     mode: "headless",
     projectRoot: roots.projectRoot,
     workspaceRoot: roots.workspaceRoot,
-    socketPath,
+    socketPath: legacySocketPath,
     request: (method, params) => inProcess.request(method, params),
     close: () => {
       try { stopHeadlessSocket?.(); } catch {}
@@ -5386,6 +5691,421 @@ async function runMcpServer(options: GlobalOptions): Promise<void> {
   try { runtime.dispose(); } catch {}
   if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
   else process.env.ADE_DEFAULT_ROLE = previousRole;
+}
+
+function parseOptionalPort(value: string | null, label: string): number | null {
+  if (value == null) return null;
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 65_535) {
+    throw new CliUsageError(`${label} must be a TCP port between 1 and 65535.`);
+  }
+  return parsed;
+}
+
+function normalizeRuntimeSocketPath(rawSocketPath: string): string {
+  return rawSocketPath.startsWith("tcp://") || isAdeMcpNamedPipePath(rawSocketPath)
+    ? rawSocketPath
+    : path.resolve(rawSocketPath);
+}
+
+async function resolveMachineRuntimeSocketPath(): Promise<string> {
+  const { resolveMachineAdeLayout } = await import("./services/projects/machineLayout");
+  const rawSocketPath = process.env.ADE_RUNTIME_SOCKET_PATH?.trim() || resolveMachineAdeLayout().socketPath;
+  return normalizeRuntimeSocketPath(rawSocketPath);
+}
+
+function readRuntimeInfoVersion(value: unknown): string | null {
+  if (!isRecord(value) || !isRecord(value.runtimeInfo)) return null;
+  return asString(value.runtimeInfo.version);
+}
+
+async function initializeMachineRuntimeDaemon(client: SocketJsonRpcClient, options: GlobalOptions): Promise<string | null> {
+  const result = await client.request("ade/initialize", buildInitializeParams(options, "ade-rpc-stdio-proxy"));
+  return readRuntimeInfoVersion(result);
+}
+
+async function shutdownMachineRuntimeDaemon(client: SocketJsonRpcClient): Promise<void> {
+  try {
+    await client.request("shutdown");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!message.includes("socket closed")) throw error;
+  } finally {
+    try { client.close(); } catch {}
+  }
+}
+
+async function spawnMachineRuntimeDaemon(socketPath: string, options: GlobalOptions): Promise<boolean> {
+  if (socketPath.startsWith("tcp://")) return false;
+
+  const { resolveAdeServeCommand } = await import("./serviceManager/common");
+  const serviceCommand = resolveAdeServeCommand();
+  const args = [...serviceCommand.args];
+  if (
+    serviceCommand.command === process.execPath
+    && args.length === 1
+    && args[0] === "serve"
+    && fs.existsSync(CLI_DIST_PATH)
+  ) {
+    args.splice(0, 1, CLI_DIST_PATH, "serve");
+  }
+  args.push("--socket", socketPath);
+
+  const child = spawn(serviceCommand.command, args, {
+    detached: true,
+    stdio: "ignore",
+    env: {
+      ...process.env,
+      ...(serviceCommand.env ?? {}),
+      ADE_DEFAULT_ROLE: options.role,
+      ADE_RPC_SOCKET_PATH: socketPath,
+      ADE_RUNTIME_SOCKET_PATH: socketPath,
+    },
+  });
+  child.once("error", () => {});
+  child.unref();
+  return true;
+}
+
+async function connectMachineRuntimeDaemon(options: GlobalOptions): Promise<SocketJsonRpcClient> {
+  const socketPath = await resolveMachineRuntimeSocketPath();
+  const label = "ADE runtime daemon socket";
+  try {
+    const client = await SocketJsonRpcClient.connect(socketPath, options.timeoutMs, label);
+    const runtimeVersion = await initializeMachineRuntimeDaemon(client, options);
+    if (runtimeVersion && runtimeVersion !== VERSION) {
+      await shutdownMachineRuntimeDaemon(client);
+      const spawned = await spawnMachineRuntimeDaemon(socketPath, options);
+      if (!spawned) {
+        throw new Error(`ADE runtime daemon version ${runtimeVersion} does not match CLI version ${VERSION}.`);
+      }
+      const restarted = await SocketJsonRpcClient.connect(socketPath, options.timeoutMs, label);
+      await initializeMachineRuntimeDaemon(restarted, options);
+      return restarted;
+    }
+    return client;
+  } catch (firstError) {
+    const spawned = await spawnMachineRuntimeDaemon(socketPath, options);
+    if (!spawned) throw firstError;
+    try {
+      const client = await SocketJsonRpcClient.connect(socketPath, options.timeoutMs, label);
+      await initializeMachineRuntimeDaemon(client, options);
+      return client;
+    } catch (secondError) {
+      const firstMessage = firstError instanceof Error ? firstError.message : String(firstError);
+      const secondMessage = secondError instanceof Error ? secondError.message : String(secondError);
+      throw new Error(`Unable to attach to ADE runtime daemon at ${socketPath}: ${secondMessage} (initial attempt: ${firstMessage})`);
+    }
+  }
+}
+
+async function runNativeRpcStdio(options: GlobalOptions): Promise<void> {
+  const previousRole = process.env.ADE_DEFAULT_ROLE;
+  process.env.ADE_DEFAULT_ROLE = options.role;
+  const [{ createStdioTransport }] = await Promise.all([
+    import("./transports/stdioTransport"),
+  ]);
+  let client: SocketJsonRpcClient | null = null;
+  let stop: ReturnType<typeof startJsonRpcServer> | null = null;
+  let unsubscribeNotifications: (() => void) | null = null;
+  try {
+    client = await connectMachineRuntimeDaemon(options);
+    const handler: JsonRpcHandler = async (request) => {
+      const method = typeof request.method === "string" ? request.method : "";
+      if (!method) return null;
+      if (request.id === undefined) {
+        client?.notify(method, request.params);
+        return null;
+      }
+      if (!client) {
+        throw new Error("ADE runtime daemon is not connected.");
+      }
+      try {
+        return await client.request(method, request.params);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if ((method === "shutdown" || method === "exit") && message.includes("socket closed")) {
+          return {};
+        }
+        throw error;
+      }
+    };
+    stop = startJsonRpcServer(handler, createStdioTransport(), { nonFatal: true });
+    unsubscribeNotifications = client.onAnyNotification((method, params) => stop?.notify(method, params));
+    await new Promise<void>((resolve) => {
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        resolve();
+      };
+      client?.onClose(finish);
+      process.stdin.once("end", finish);
+      process.stdin.once("close", finish);
+    });
+  } finally {
+    unsubscribeNotifications?.();
+    try { stop?.(); } catch {}
+    try { client?.close(); } catch {}
+    if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
+    else process.env.ADE_DEFAULT_ROLE = previousRole;
+  }
+}
+
+async function runServe(rest: string[], options: GlobalOptions): Promise<unknown | null> {
+  const args = [...rest];
+  if (readFlag(args, ["--install-service"])) {
+    const { installRuntimeService } = await import("./serviceManager");
+    return installRuntimeService();
+  }
+  if (readFlag(args, ["--uninstall-service"])) {
+    const { uninstallRuntimeService } = await import("./serviceManager");
+    return uninstallRuntimeService();
+  }
+  if (readFlag(args, ["--service-status"])) {
+    const { getRuntimeServiceStatus } = await import("./serviceManager");
+    return getRuntimeServiceStatus();
+  }
+  const [{ resolveMachineAdeLayout }, { ProjectRegistry }, { ProjectScopeRegistry }, { createMultiProjectRpcRequestHandler }] = await Promise.all([
+    import("./services/projects/machineLayout"),
+    import("./services/projects/projectRegistry"),
+    import("./services/projects/projectScope"),
+    import("./multiProjectRpcServer"),
+  ]);
+
+  const layout = resolveMachineAdeLayout();
+  const rawSocketPath = readValue(args, ["--socket"]) ?? process.env.ADE_RPC_SOCKET_PATH?.trim() ?? layout.socketPath;
+  const socketPath = isAdeMcpNamedPipePath(rawSocketPath) ? rawSocketPath : path.resolve(rawSocketPath);
+  const port = parseOptionalPort(readValue(args, ["--port"]), "--port");
+  const syncEnabled = !readFlag(args, ["--no-sync"]);
+  const projectRegistry = new ProjectRegistry(layout);
+  type ProjectRecord = ReturnType<InstanceType<typeof ProjectRegistry>["list"]>[number];
+  const toMobileProjectSummary = (
+    record: ProjectRecord,
+    overrides: Partial<SyncMobileProjectSummary> = {},
+  ): SyncMobileProjectSummary => ({
+    id: record.projectId,
+    displayName: record.displayName,
+    rootPath: record.rootPath,
+    defaultBaseRef: null,
+    lastOpenedAt: record.lastOpenedAt > 0 ? new Date(record.lastOpenedAt).toISOString() : null,
+    laneCount: 0,
+    isAvailable: true,
+    isCached: true,
+    isOpen: false,
+    ...overrides,
+  });
+  let scopeRegistry: InstanceType<typeof ProjectScopeRegistry>;
+  scopeRegistry = new ProjectScopeRegistry(projectRegistry, {
+    syncRuntime: {
+      enabled: syncEnabled,
+      hostStartupEnabled: true,
+      hostDiscoveryEnabled: true,
+      forceHostRole: true,
+      runtimeKind: "headless",
+      appVersion: VERSION,
+      localDeviceIdPath: path.join(layout.secretsDir, "sync-device-id"),
+      phonePairingStateDir: layout.secretsDir,
+      projectCatalogProvider: {
+        listProjects: async () => ({
+          projects: projectRegistry.list().map((record) => toMobileProjectSummary(record)),
+        }),
+        prepareProjectConnection: async (
+          request: SyncProjectSwitchRequestPayload,
+        ): Promise<SyncProjectSwitchResultPayload> => {
+          const requestedId = typeof request.projectId === "string" ? request.projectId.trim() : "";
+          const requestedRootPath = typeof request.rootPath === "string" ? path.resolve(request.rootPath) : "";
+          const record = projectRegistry.list().find((candidate) =>
+            (requestedId.length > 0 && candidate.projectId === requestedId)
+            || (requestedRootPath.length > 0 && path.resolve(candidate.rootPath) === requestedRootPath)
+          ) ?? null;
+          const project = record ? toMobileProjectSummary(record, { isOpen: true }) : null;
+          if (!record) {
+            return {
+              ok: false,
+              message: "That project is not registered on this ADE machine.",
+              project,
+            };
+          }
+          try {
+            const scope = await scopeRegistry.ensureSyncHost(record.projectId);
+            const syncService = scope?.runtime.syncService ?? null;
+            if (!scope || !syncService) {
+              return {
+                ok: false,
+                message: "Phone sync is not available for that project.",
+                project,
+              };
+            }
+            syncService.setHostDiscoveryEnabled?.(true);
+            await syncService.setHostStartupEnabled?.(true);
+            await syncService.initialize();
+            const lanes = await scope.runtime.laneService
+              .list({ includeArchived: false, includeStatus: false })
+              .catch(() => []);
+            const laneCount = lanes.length;
+            const readyProject = toMobileProjectSummary(record, {
+              isOpen: true,
+              laneCount,
+            });
+            const status = await syncService.getStatus();
+            const connectInfo = status.pairingConnectInfo;
+            if (!connectInfo) {
+              return {
+                ok: false,
+                message: "Phone sync is not ready for that project yet.",
+                project: readyProject,
+              };
+            }
+            return {
+              ok: true,
+              project: readyProject,
+              connection: {
+                authKind: "paired",
+                token: null,
+                pairedDeviceId: null,
+                hostIdentity: connectInfo.hostIdentity,
+                port: connectInfo.port,
+                addressCandidates: connectInfo.addressCandidates,
+              },
+            };
+          } catch (error) {
+            return {
+              ok: false,
+              message: error instanceof Error ? error.message : "Unable to prepare phone sync for that project.",
+              project,
+            };
+          }
+        },
+        completeProjectConnection: async (
+          request: SyncProjectSwitchRequestPayload,
+          result: SyncProjectSwitchResultPayload,
+        ): Promise<void> => {
+          if (!result.ok) return;
+          const projectId = typeof result.project?.id === "string" && result.project.id.trim()
+            ? result.project.id.trim()
+            : typeof request.projectId === "string" && request.projectId.trim()
+              ? request.projectId.trim()
+              : null;
+          if (!projectId) return;
+          try {
+            projectRegistry.touch(projectId);
+          } catch {
+            // The mobile handoff already succeeded; a stale registry touch should
+            // not fail the sync protocol completion.
+          }
+        },
+      },
+    },
+  });
+  const previousRole = process.env.ADE_DEFAULT_ROLE;
+  process.env.ADE_DEFAULT_ROLE = options.role;
+
+  const states: HeadlessRpcServerState[] = [];
+  let done = false;
+  let resolveDone: (() => void) | null = null;
+
+  const finish = () => {
+    if (done) return;
+    done = true;
+    resolveDone?.();
+  };
+
+  const createHandler = () => createMultiProjectRpcRequestHandler({
+    serverVersion: VERSION,
+    projectRegistry,
+    scopeRegistry,
+    disposeScopesOnDispose: false,
+    onShutdown: finish,
+  });
+
+  const listen = async (server: net.Server, target: string | { port: number; host: string }): Promise<void> => {
+    await new Promise<void>((resolve, reject) => {
+      const handleListening = () => {
+        server.off("error", handleError);
+        resolve();
+      };
+      const handleError = (error: Error) => {
+        server.off("listening", handleListening);
+        reject(error);
+      };
+      server.once("listening", handleListening);
+      server.once("error", handleError);
+      if (typeof target === "string") {
+        server.listen(target);
+      } else {
+        server.listen(target.port, target.host);
+      }
+    });
+  };
+
+  fs.mkdirSync(layout.adeDir, { recursive: true, mode: 0o700 });
+  if (!isAdeMcpNamedPipePath(socketPath)) {
+    fs.mkdirSync(path.dirname(socketPath), { recursive: true, mode: 0o700 });
+    try { fs.unlinkSync(socketPath); } catch {}
+  }
+
+  const socketState = createHeadlessRpcServer(createHandler);
+  states.push(socketState);
+  await listen(socketState.server, socketPath);
+  if (!isAdeMcpNamedPipePath(socketPath)) {
+    try { fs.chmodSync(socketPath, 0o600); } catch {}
+  }
+
+  let tcpUrl: string | null = null;
+  if (port != null) {
+    const tcpState = createHeadlessRpcServer(createHandler);
+    states.push(tcpState);
+    await listen(tcpState.server, { port, host: "127.0.0.1" });
+    tcpUrl = `tcp://127.0.0.1:${port}`;
+  }
+
+  if (syncEnabled) {
+    void scopeRegistry.ensureSyncHost().catch((error: unknown) => {
+      process.stderr.write(`ade serve sync host failed: ${error instanceof Error ? error.message : String(error)}\n`);
+    });
+  }
+
+  process.stderr.write(`ade serve listening on ${socketPath}${tcpUrl ? ` and ${tcpUrl}` : ""}\n`);
+
+  await new Promise<void>((resolve) => {
+    resolveDone = resolve;
+    process.once("SIGINT", finish);
+    process.once("SIGTERM", finish);
+  });
+
+  for (const state of states) {
+    stopHeadlessRpcServer(state);
+  }
+  await scopeRegistry.disposeAll();
+  if (!isAdeMcpNamedPipePath(socketPath)) {
+    try { fs.unlinkSync(socketPath); } catch {}
+  }
+  if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
+  else process.env.ADE_DEFAULT_ROLE = previousRole;
+  return null;
+}
+
+function isFailedServiceManagerResult(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return record.ok === false
+    && (record.action === "install" || record.action === "uninstall")
+    && typeof record.serviceName === "string";
+}
+
+async function runInit(targetPath: string | null): Promise<{ project: unknown; registryPath: string }> {
+  const [{ resolveMachineAdeLayout }, { ProjectRegistry }] = await Promise.all([
+    import("./services/projects/machineLayout"),
+    import("./services/projects/projectRegistry"),
+  ]);
+  const layout = resolveMachineAdeLayout();
+  const registry = new ProjectRegistry(layout);
+  const project = registry.add(path.resolve(targetPath ?? process.cwd()));
+  return {
+    project,
+    registryPath: registry.path,
+  };
 }
 
 function unwrapToolResult(result: unknown): unknown {
@@ -6353,6 +7073,27 @@ function formatTerminalRead(value: unknown): string {
   return data.length ? `${header}\n\n${data}` : `${header}\n\n(no output)`;
 }
 
+function formatProjectsList(value: unknown): string {
+  const projects = Array.isArray(value)
+    ? value.filter(isRecord)
+    : isRecord(value) && value.projectId
+      ? [value]
+      : firstArray(value, ["projects", "items"]);
+  return renderTable(
+    ["project", "name", "path", "git origin", "last opened"],
+    projects.map((project) => [
+      project.projectId,
+      project.displayName,
+      project.rootPath,
+      project.gitOriginUrl,
+      typeof project.lastOpenedAt === "number" && project.lastOpenedAt > 0
+        ? new Date(project.lastOpenedAt).toISOString()
+        : "",
+    ]),
+    "ADE projects\n(no projects registered)",
+  );
+}
+
 function formatLinearQuickView(value: unknown): string {
   if (!isRecord(value)) return JSON.stringify(value, null, 2);
   const connection = isRecord(value.connection) ? value.connection : {};
@@ -6446,7 +7187,7 @@ function formatTextOutput(value: unknown, formatter: FormatterId | undefined): s
             ["project", isRecord(value) ? value.projectRoot : null],
             ["workspace", isRecord(value) ? value.workspaceRoot : null],
             ["project initialized", project.projectInitialized],
-            ["desktop socket", desktop.socketAvailable],
+            ["runtime socket", desktop.socketAvailable],
             ["socket path", desktop.socketPath],
             ["rpc actions", actions.rpcActionCount],
             ["service actions", actions.actionCount],
@@ -6481,6 +7222,8 @@ function formatTextOutput(value: unknown, formatter: FormatterId | undefined): s
           ["note", isRecord(value) ? value.note : null],
         ]);
       }
+    case "projects-list":
+      return formatProjectsList(value);
     case "linear-quick-view":
       return formatLinearQuickView(value);
     case "lanes":
@@ -6577,6 +7320,7 @@ function inferFormatter(plan: CliPlan & { kind: "execute" }): FormatterId | unde
   if (plan.summary) return plan.summary;
   if (plan.visualizer === "lanes") return "lanes";
   const label = plan.label.toLowerCase();
+  if (label === "projects list" || label === "projects add" || label === "projects touch") return "projects-list";
   if (label === "lane status") return "lane-detail";
   if (label === "git status") return "git-status";
   if (label === "diff changes") return "diff-summary";
@@ -6832,7 +7576,7 @@ async function executePlan(plan: CliPlan & { kind: "execute" }, options: GlobalO
     } catch {
       // Keep the conventional Unix fallback if shared layout loading fails.
     }
-    const requestedMode = connectionOptions.requireSocket ? "desktop-socket" : connectionOptions.headless ? "headless" : "auto";
+    const requestedMode = connectionOptions.requireSocket ? "socket" : connectionOptions.headless ? "headless" : "auto";
     const cause = error instanceof Error ? error.message : String(error);
     const sourceRuntimeInterop = isSourceRuntimeInteropError(cause);
     throw new CliExecutionError(`Failed to initialize ADE CLI connection for ${plan.label}.`, {
@@ -6842,7 +7586,7 @@ async function executePlan(plan: CliPlan & { kind: "execute" }, options: GlobalO
       workspaceRoot: roots.workspaceRoot,
       socketPath,
       nextAction: options.requireSocket
-        ? "Start ADE desktop for this project or remove --socket to allow headless mode."
+        ? "Start the ADE runtime for this project or remove --socket to allow headless mode."
         : sourceRuntimeInterop
           ? "Run `npm --prefix apps/ade-cli run build` and retry, or use `npm --prefix apps/ade-cli run cli:dev -- ...`."
           : "Verify --project-root points at an ADE project and run ade doctor --json.",
@@ -6933,8 +7677,23 @@ async function runCli(argv: string[]): Promise<{ output: string; exitCode: numbe
       await runMcpServer({ ...parsed.options, headless: true, requireSocket: false });
       return { output: "", exitCode: 0 };
     }
+    if (plan.kind === "rpc-stdio") {
+      await runNativeRpcStdio(parsed.options);
+      return { output: "", exitCode: 0 };
+    }
+    if (plan.kind === "serve") {
+      const result = await runServe(plan.rest, parsed.options);
+      return {
+        output: result == null ? "" : formatOutput(result, parsed.options, undefined),
+        exitCode: isFailedServiceManagerResult(result) ? 1 : 0,
+      };
+    }
+    if (plan.kind === "init") {
+      const result = await runInit(plan.targetPath);
+      return { output: formatOutput(result, parsed.options, undefined), exitCode: 0 };
+    }
     if (plan.kind === "ade-code") {
-      return runAdeCode(plan.rest, parsed.options);
+      return await runAdeCode(plan.rest, parsed.options);
     }
     const result = await executePlan(plan, parsed.options);
     return { output: formatOutput(result, parsed.options, inferFormatter(plan)), exitCode: 0 };
@@ -6998,6 +7757,7 @@ export {
   findProjectRoots,
   formatOutput,
   graphWaitState,
+  isFailedServiceManagerResult,
   parseCliArgs,
   renderLaneGraph,
   resolveRoots,

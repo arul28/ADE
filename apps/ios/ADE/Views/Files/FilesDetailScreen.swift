@@ -55,9 +55,9 @@ struct FilesDetailScreen: View {
 
   var readOnlyTagline: String {
     if workspace.laneId != nil {
-      return "Read-only on iPhone. Preview, diff, and metadata are available here; edit on desktop."
+      return "Read-only on iPhone. Preview, diff, and metadata are available here; edit on the machine."
     }
-    return "Read-only on iPhone. Preview and metadata are available here; edit on desktop."
+    return "Read-only on iPhone. Preview and metadata are available here; edit on the machine."
   }
 
   var body: some View {
@@ -238,13 +238,13 @@ struct FilesDetailScreen: View {
         FilesContentFallback(
           symbol: "photo",
           title: "Image preview pending",
-          message: "The host returned metadata only. Reconnect to stream the full bytes."
+          message: "The machine returned metadata only. Reconnect to stream the full bytes."
         )
       } else {
         FilesContentFallback(
           symbol: "doc.fill",
           title: "Binary file",
-          message: "iPhone keeps this read-only. Use desktop ADE to open with a local tool."
+          message: "iPhone keeps this read-only. Use ADE on the machine to open with a local tool."
         )
       }
     } else {
@@ -287,7 +287,7 @@ struct FilesDetailScreen: View {
       FilesContentFallback(
         symbol: "doc.badge.gearshape",
         title: "Binary diff",
-        message: "The host reported a binary diff that cannot be rendered inline."
+        message: "The machine reported a binary diff that cannot be rendered inline."
       )
     } else if let diff, !filesDiffHasChanges(diff) {
       FilesContentFallback(

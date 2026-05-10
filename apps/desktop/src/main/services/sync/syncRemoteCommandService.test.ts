@@ -609,6 +609,7 @@ describe("createSyncRemoteCommandService", () => {
       expect(descriptors).toHaveLength(actions.length);
       for (const desc of descriptors) {
         expect(desc).toHaveProperty("action");
+        expect(desc.scope).toBe("project");
         expect(desc).toHaveProperty("policy");
         expect(desc.policy).toHaveProperty("viewerAllowed");
       }
@@ -638,6 +639,21 @@ describe("createSyncRemoteCommandService", () => {
     it("returns null for an unknown action", () => {
       const policy = service.getPolicy("totally.unknown.action");
       expect(policy).toBeNull();
+    });
+  });
+
+  describe("getDescriptor", () => {
+    it("returns scope and policy for a known action", () => {
+      const descriptor = service.getDescriptor("lanes.list");
+      expect(descriptor).toEqual(expect.objectContaining({
+        action: "lanes.list",
+        scope: "project",
+        policy: expect.objectContaining({ viewerAllowed: true }),
+      }));
+    });
+
+    it("returns null for an unknown action", () => {
+      expect(service.getDescriptor("totally.unknown.action")).toBeNull();
     });
   });
 

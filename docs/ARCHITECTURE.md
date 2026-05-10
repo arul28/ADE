@@ -32,13 +32,9 @@ ADE ships as five coordinated apps:
 │  │                                ▼      │                          │
 │  │                ┌──────────────────────┐                          │
 │  │                │ apps/ade-cli         │◀──── headless mode ──────┤
-│  │                │ (JSON-RPC over stdio │                          │
-│  │                │  or .ade/ade.sock)   │                          │
-│  │                └──────────────────────┘                          │
-│  │                ┌──────────────────────┐                          │
-│  │                │ apps/ade-code        │◀──── terminal Work chat ─┤
-│  │                │ (Ink TUI, same RPC   │                          │
-│  │                │  socket or embedded) │                          │
+│  │                │ (JSON-RPC over stdio │◀──── terminal Work chat ─┤
+│  │                │  or .ade/ade.sock,   │                          │
+│  │                │  plus Ink TUI)       │                          │
 │  │                └──────────────────────┘                          │
 │  │                                                                   │
 │  └── spawns CLI runtimes:                                             │
@@ -53,7 +49,7 @@ ADE ships as five coordinated apps:
                        └─────────────────────────┘
 ```
 
-Live runtime state is replicated between connected devices through cr-sqlite changesets carried over WebSocket. Source code crosses desktops through plain git. The iOS app is always a controller attached to a desktop host.
+Live runtime state is replicated between connected devices through cr-sqlite changesets carried over WebSocket. Source code crosses machines through plain git. The iOS app is a controller attached to a reachable ADE machine, which may be the desktop app's local runtime or a headless `ade serve` runtime on the network. Desktop can also bind a window to a remote machine over SSH; that path starts `ade rpc --stdio` on the remote and routes project actions through the same JSON-RPC runtime surface. See [features/remote-runtime/README.md](./features/remote-runtime/README.md).
 
 Product positioning and workflows live in [`docs/PRD.md`](../docs/PRD.md). This document is strictly technical.
 
@@ -63,7 +59,7 @@ Product positioning and workflows live in [`docs/PRD.md`](../docs/PRD.md). This 
 
 ### 2.1 Electron desktop (`apps/desktop/`)
 
-The desktop app is the execution host. It owns the trusted main process, a narrow typed preload bridge, the React renderer, and shared contracts.
+The desktop app is the primary local client. It owns the trusted main process, a narrow typed preload bridge, the React renderer, and shared contracts; runtime work is being moved behind the ADE runtime daemon so desktop, TUI, and mobile can address the same machine/project model.
 
 | Directory | Role |
 |-----------|------|
@@ -96,6 +92,14 @@ bridge.
   same JSON-RPC framing.
 - **Headless mode** — with `--headless`, the CLI bootstraps the same
   project services directly from the repository.
+- **Machine runtime mode** — `ade serve` starts the per-machine runtime
+  daemon, exposes the multi-project registry (`projects.*`) over the
+  machine socket, and can install or remove the login service with
+  `--install-service` / `--uninstall-service`.
+- **Remote stdio mode** — `ade rpc --stdio` runs a single-session
+  JSON-RPC runtime over stdin/stdout for SSH-backed remote targets.
+  It exits when the SSH channel closes and does not expose remote memory
+  features.
 - **Windows packaging** — the installer lays down `ade-cli-windows-wrapper.cmd`
   plus an `ade-cli-install-path.cmd` helper alongside the bundled Electron
   Node runtime. The helper installs `%LOCALAPPDATA%\ADE\bin\ade.cmd`, updates
@@ -139,7 +143,7 @@ bridge.
   `app_control` (every public method on `AppControlService`) and
   `terminal` (`list`, `read`, `write`, `signal`, `activeForChat`
   against `ptyService`).
-- **`ade code`** — launches the terminal-native Work chat client (`apps/ade-code`, Ink + React). Uses the desktop JSON-RPC socket when `--socket` is set on the parent `ade` invocation (same path as other socket-backed commands); otherwise the TUI runs embedded against the headless runtime (`--embedded`) without implying the global auto-socket discovery used by `executePlan`. Override the binary with `ADE_CODE_EXECUTABLE` or a sibling `apps/ade-code/dist/cli.js` after `npm run build` in that package.
+- **`ade code`** — launches the terminal-native Work chat client built into `apps/ade-cli` (Ink + React). By default it attaches to the machine ADE service socket and starts `ade serve` when the socket is missing. `ade --socket /path/to/ade.sock code` requires a specific socket, while `ade code --embedded` keeps the legacy in-process fallback explicit.
 - **Proof subcommands** — `ade proof capture` (alias of `screenshot`),
   `ade proof attach <path>`, `ade proof record`, `ade proof launch`,
   `ade proof interact`, `ade proof list/status/environment/ingest`.
@@ -151,9 +155,9 @@ bridge.
   `--owner-id` (with `chat` and `pr` aliases) to layer an explicit
   owner on top of the inferred session identity.
 
-### 2.3 ADE Code (`apps/ade-code/`)
+### 2.3 ADE Code (`ade code`)
 
-Terminal-native **Work** chat client (Ink + React) for agents and power users who live in a shell. It speaks the same ADE JSON-RPC surface as the desktop app and `ade-cli`: **attached** mode connects to `.ade/ade.sock` (or the Windows named pipe from `adeMcpIpc`) when a socket is present; **embedded** mode loads `createAdeRuntime` / `createAdeRpcRequestHandler` from `apps/ade-cli` at runtime so headless services run in-process without Electron. Shared chat DTOs are imported from `apps/desktop/src/shared/types/*` (never the renderer barrel) so `npm run typecheck` in this package stays isolated. Entry: `src/cli.tsx` → `dist/cli.js` (`ade-code` bin). Launched from the desktop shell via `ade code` (see §2.2). Multi-window navigation from the TUI uses the `app/navigate` JSON-RPC method when a desktop socket is attached.
+Terminal-native **Work** chat client (Ink + React) for agents and power users who live in a shell. It speaks the same ADE JSON-RPC surface as the desktop app and `ade-cli`: **attached** mode connects to the machine ADE service socket at `~/.ade/sock/ade.sock` by default, or to an explicit socket passed on the parent `ade` invocation. **Embedded** mode runs the shared `apps/ade-cli` headless services in-process without Electron and is only used when explicitly requested with `--embedded` / `--headless`. Shared chat DTOs are imported from `apps/desktop/src/shared/types/*` (never the renderer barrel) so `npm run typecheck` in `apps/ade-cli` covers both typed commands and the TUI. Entry: `apps/ade-cli/src/tuiClient/cli.tsx` → `apps/ade-cli/dist/tuiClient/cli.mjs`, loaded by `ade code`. Multi-window navigation from the TUI uses the `app/navigate` JSON-RPC method when a legacy desktop socket is attached.
 
 ### 2.4 Web app (`apps/web/`)
 
@@ -461,7 +465,7 @@ Every service lives under `apps/desktop/src/main/services/<domain>/`. Summary:
 | `computerUse/` | `computerUseArtifactBrokerService.ts`, `controlPlane.ts`, `localComputerUse.ts`, `agentBrowserArtifactAdapter.ts`, `syntheticToolResult.ts` | Proof-artifact broker (ingests, owner links, review state, routing), control-plane snapshot helpers, macOS capture capability descriptor, agent-browser payload parser, and the synthetic-tool-result helper used by the Claude compaction path. `proofObserver.ts` was removed in the rebuild — there is no passive auto-ingest. |
 | `config/` | `projectConfigService.ts`, `laneOverlayMatcher.ts` | Load/save `.ade/ade.yaml` + `local.yaml`; trust enforcement; lane overlays. |
 | `conflicts/` | `conflictService.ts` | Pairwise dry-merge simulation, risk matrix, proposal generation. |
-| `cto/` | `ctoStateService.ts`, `workerAgentService.ts`, `workerBudgetService.ts`, `workerHeartbeatService.ts`, `linearSyncService.ts`, `linearIngressService.ts`, `linearOAuthService.ts`, `linearRoutingService.ts`, `linearDispatcherService.ts`, `linearCloseoutService.ts`, `openclawBridgeService.ts`, `flowPolicyService.ts` | CTO identity + core memory; worker agents; Linear sync/ingress/OAuth/routing/dispatcher/closeout; OpenClaw bridge. |
+| `cto/` | `ctoStateService.ts`, `workerAgentService.ts`, `workerBudgetService.ts`, `workerHeartbeatService.ts`, `linearSyncService.ts`, `linearIngressService.ts`, `linearOAuthService.ts`, `linearRoutingService.ts`, `linearDispatcherService.ts`, `linearCloseoutService.ts`, `flowPolicyService.ts` | CTO identity + core memory; worker agents; Linear sync/ingress/OAuth/routing/dispatcher/closeout. |
 | `devTools/` | `devToolsService.ts` | Probe for git + `gh` CLI availability. |
 | `diffs/` | `diffService.ts` | Diff computation for file panes. |
 | `feedback/` | `feedbackReporterService.ts` | In-app feedback reporting. Two-stage: `prepareDraft` generates a structured issue title + labels (AI-assisted when a model is selected, deterministic fallback otherwise) so the user can review before posting; `submitPreparedDraft` files the GitHub issue. Each submission records `generationMode` and a `generationWarning` so the UI can flag deterministic drafts. |
@@ -475,6 +479,7 @@ Every service lives under `apps/desktop/src/main/services/<domain>/`. Summary:
 | `keybindings/` | `keybindingsService.ts` | User keybindings read/write. |
 | `lanes/` | `laneService.ts`, `laneEnvironmentService.ts`, `laneTemplateService.ts`, `laneProxyService.ts`, `portAllocationService.ts`, `autoRebaseService.ts`, `rebaseSuggestionService.ts`, `laneLaunchContext.ts`, `oauthRedirectService.ts`, `runtimeDiagnosticsService.ts` | Worktree lifecycle, env bootstrap, templates, reverse proxy, port leases, auto-rebase, suggestions, OAuth redirect, diagnostics. |
 | `logging/` | `logger.ts` | File-backed structured logger. |
+| `localRuntime/` | `localRuntimeConnectionPool.ts` | Desktop-side client for the local `ade serve` daemon. Spawns or attaches to the machine socket, registers local projects with `projects.add`, dispatches local runtime actions, and installs the background service best-effort in packaged builds. |
 | `macosVm/` | `macosVmService.ts`, `rfbDirectClient.ts` | Lane-tied macOS VM lifecycle and GUI control. Uses Lume, stores VM records in `.ade/cache`, stores VNC credentials in `.ade/secrets`, mounts direct lane roots when safe, otherwise keeps a sanitized rsync mirror, and exposes screenshot/click/type/select through headless VNC or visible-window fallbacks. |
 | `memory/` | `unifiedMemoryService.ts` (canonical; listed under `memory/memoryService.ts`), `memoryBriefingService.ts`, `memoryLifecycleService.ts`, `batchConsolidationService.ts`, `embeddingService.ts`, `embeddingWorkerService.ts`, `hybridSearchService.ts`, `episodicSummaryService.ts`, `knowledgeCaptureService.ts`, `humanWorkDigestService.ts`, `proceduralLearningService.ts`, `compactionFlushPrompt.ts`, `skillRegistryService.ts`, `memoryFilesService.ts`, `memoryRepairService.ts`, `missionMemoryLifecycleService.ts` | Unified memory subsystem — see §10. |
 | `missions/` | `missionService.ts`, `missionPreflightService.ts`, `phaseEngine.ts` | Mission CRUD, preflight validation, phase lifecycle. |
@@ -485,6 +490,7 @@ Every service lives under `apps/desktop/src/main/services/<domain>/`. Summary:
 | `projects/` | `adeProjectService.ts`, `configReloadService.ts`, `projectService.ts`, `logIntegrityService.ts`, `recentProjectSummary.ts`, `projectBrowserService.ts`, `projectDetailService.ts` | Project detection + `.ade` repair/bootstrap, reload on config change, recent-project metadata. `projectBrowserService` is the in-app directory autocomplete used by the Command Palette project browser (typed-path completion, `.git` detection, home expansion, system-picker fallback); `projectDetailService` returns repo metadata (branch, dirty count, ahead/behind, last commit, README excerpt, language mix, lane count, last-opened) for the palette's preview pane. |
 | `prs/` | `prService.ts`, `prPollingService.ts`, `prSummaryService.ts`, `queueLandingService.ts`, `issueInventoryService.ts`, `prIssueResolver.ts`, `prRebaseResolver.ts`, `integrationPlanning.ts`, `integrationValidation.ts` | PR CRUD, polling (with per-PR `last_polled_at` cursor), AI summary cache keyed by `(prId, head_sha)`, stacked-queue landing, issue inventory, AI-assisted resolution, integration planning, and merge-into-existing-lane proposal adoption. |
 | `pty/` | `ptyService.ts` | `node-pty` spawn, PTY I/O bridging, transcript writing. |
+| `remoteRuntime/` | `remoteTargetRegistry.ts`, `sshTransport.ts`, `remoteBootstrap.ts`, `remoteConnectionPool.ts`, `runtimeRpcClient.ts` | Saved SSH machines, ssh-agent/key based transport, first-connect runtime upload/version verification, remote project catalog, action dispatch, and reconnect/eviction for remote runtime bindings. |
 | `runtime/` | `tempCleanupService.ts` | Runtime temp cleanup. |
 | `sessions/` | `sessionService.ts`, `sessionDeltaService.ts` | Terminal session CRUD, post-session delta computation. |
 | `shared/` | `utils.ts`, `queueRebase.ts`, `packLegacyUtils.ts`, `transcriptInsights.ts` | Cross-domain utilities. |
@@ -918,8 +924,7 @@ Full detail: [`docs/architecture/MULTI_DEVICE_SYNC.md`](../docs/architecture/MUL
 ADE/
 ├── apps/
 │   ├── desktop/        # Electron main/preload/renderer (primary product)
-│   ├── ade-cli/        # Headless ADE CLI (Node, JSON-RPC over stdio)
-│   ├── ade-code/       # Terminal Ink TUI for Work chat (socket or embedded headless)
+│   ├── ade-cli/        # Headless ADE CLI and terminal Work chat TUI
 │   ├── web/            # Marketing + download landing (Vite + React)
 │   └── ios/            # Native SwiftUI controller
 ├── docs/
@@ -950,8 +955,7 @@ Per-app scripts:
 | App | Key scripts |
 |-----|-------------|
 | `apps/desktop` | `dev`, `build` (tsup + vite), `typecheck`, `test` (vitest), `lint` (ESLint), `dist:mac`, `dist:mac:universal:signed:zip`, `notarize:mac:dmg`, `validate:mac:artifacts`, `rebuild:native`, `version:ci`, `version:release`, `ade:dev`, `ade:build`, `ade:test`. |
-| `apps/ade-cli` | `dev`, `build`, `typecheck`, `test`. |
-| `apps/ade-code` | `dev`, `build`, `typecheck`, `test` (Ink TUI; uses granular imports from `apps/desktop/src/shared/types/*`). |
+| `apps/ade-cli` | `dev`, `build`, `typecheck`, `test` (typed CLI commands, headless runtime, and Ink Work chat TUI). |
 | `apps/web` | `dev`, `build`, `preview`, `typecheck`. |
 | `apps/ios` | Xcode project; tests via `xcodebuild test` / Xcode. |
 
@@ -959,18 +963,16 @@ Per-app scripts:
 
 Stages:
 
-1. **Install** (`install` job) — checkout, setup Node 22, parallel `npm ci` across desktop, ade-cli, web, and ade-code with a shared cache keyed on all four lockfiles.
+1. **Install** (`install` job) — checkout, setup Node 22, parallel `npm ci` across desktop, ade-cli, and web with a shared cache keyed on those lockfiles.
 2. **Parallel checks**:
    - `secret-scan` — gitleaks on full history.
    - `typecheck-desktop` — `cd apps/desktop && npm run typecheck`.
    - `typecheck-ade-cli` — `cd apps/ade-cli && npm run typecheck`.
    - `typecheck-web` — `cd apps/web && npm run typecheck`.
-   - `typecheck-ade-code` — `cd apps/ade-code && npm run typecheck`.
    - `lint-desktop` — ESLint on `src/**/*.{ts,tsx}`.
    - `test-desktop` — **8-way shard matrix**: `npx vitest run --shard=${{ matrix.shard }}/8` across shards 1–8.
    - `test-ade-cli` — full ade-cli vitest.
-   - `test-ade-code` — ade-code vitest.
-   - `build` — all four apps built sequentially after install.
+   - `build` — desktop, ade-cli, and web built sequentially after install.
    - `validate-docs` — `node scripts/validate-docs.mjs`.
 3. **Gate** (`ci-pass`) — all required jobs must pass (`if: always()` with failure/cancelled detection).
 

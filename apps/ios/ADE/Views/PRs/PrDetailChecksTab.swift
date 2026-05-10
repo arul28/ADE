@@ -121,7 +121,7 @@ struct PrChecksTab: View {
       }
 
       if !canRerunChecks {
-        Text("This host has not exposed PR check reruns to the mobile sync channel yet.")
+        Text("This machine has not exposed PR check reruns to the mobile sync channel yet.")
           .font(.caption)
           .foregroundStyle(ADEColor.textSecondary)
       }

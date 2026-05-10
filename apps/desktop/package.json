@@ -15,15 +15,17 @@
     "dev:vite": "vite --port 5173 --strictPort",
     "export:browser-mock-ade": "node ./scripts/export-browser-mock-ade-snapshot.mjs",
     "build": "tsup && vite build",
-    "dist:win": "npm run validate:win:artifacts && npm run build && electron-builder --win --x64 --publish never && npm run validate:win:release",
-    "dist:mac": "npm run build && electron-builder --mac --publish never",
-    "dist:mac:dir": "npm run build && electron-builder --dir --mac --publish never -c.mac.identity=null -c.mac.notarize=false",
-    "dist:mac:signed": "node ./scripts/require-macos-release-secrets.cjs && npm run build && electron-builder --mac --publish never",
+    "dist:win": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run validate:win:artifacts && npm run build && electron-builder --win --x64 --publish never && npm run validate:win:release",
+    "dist:mac": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run build && electron-builder --mac --publish never",
+    "dist:mac:dir": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run build && electron-builder --dir --mac --publish never -c.mac.identity=null -c.mac.notarize=false",
+    "dist:mac:signed": "node ./scripts/require-macos-release-secrets.cjs && npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run build && electron-builder --mac --publish never",
     "prepare:mac:universal": "node ./scripts/prepare-universal-mac-inputs.mjs",
-    "dist:mac:universal:signed": "node ./scripts/require-macos-release-secrets.cjs && npm run build && electron-builder --mac --universal --publish never",
-    "dist:mac:universal:signed:zip": "node ./scripts/require-macos-release-secrets.cjs && npm run build && electron-builder --mac zip --universal --publish never",
+    "dist:mac:universal:signed": "node ./scripts/require-macos-release-secrets.cjs && npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run build && electron-builder --mac --universal --publish never",
+    "dist:mac:universal:signed:zip": "node ./scripts/require-macos-release-secrets.cjs && npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run build && electron-builder --mac zip --universal --publish never",
     "notarize:mac:dmg": "node ./scripts/notarize-mac-dmg.mjs",
     "validate:mac:artifacts": "node ./scripts/validate-mac-artifacts.mjs",
+    "materialize:runtime-resources": "node ./scripts/materialize-runtime-resources.mjs",
+    "validate:runtime-resources": "node ./scripts/validate-runtime-resources.mjs",
     "validate:win:artifacts": "node ./scripts/validate-win-artifacts.mjs --mode=preflight",
     "validate:win:release": "node ./scripts/validate-win-artifacts.mjs --mode=release",
     "release:mac:local": "node ./scripts/release-mac-local.mjs",
@@ -67,6 +69,7 @@
     "@radix-ui/react-tabs": "^1.1.13",
     "@tanstack/react-virtual": "^3.13.21",
     "@types/canvas-confetti": "^1.9.0",
+    "@types/ssh2": "^1.15.5",
     "@wize-logic/nodejs-rfb": "^4.2.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-webgl": "^0.19.0",
@@ -101,6 +104,7 @@
     "remark-gfm": "^4.0.1",
     "shiki": "^4.0.2",
     "sql.js": "^1.13.0",
+    "ssh2": "^1.17.0",
     "tailwind-merge": "^3.4.0",
     "ws": "^8.19.0",
     "yaml": "^2.8.2",
@@ -176,6 +180,18 @@
         "to": "ade-cli/cli.cjs"
       },
       {
+        "from": "../ade-cli/dist/bootstrap.cjs",
+        "to": "ade-cli/bootstrap.cjs"
+      },
+      {
+        "from": "../ade-cli/dist/adeRpcServer.cjs",
+        "to": "ade-cli/adeRpcServer.cjs"
+      },
+      {
+        "from": "../ade-cli/dist/tuiClient",
+        "to": "ade-cli/tuiClient"
+      },
+      {
         "from": "scripts/ade-cli-macos-wrapper.sh",
         "to": "ade-cli/bin/ade"
       },
@@ -190,6 +206,13 @@
       {
         "from": "scripts/ade-cli-install-path.cmd",
         "to": "ade-cli/install-path.cmd"
+      },
+      {
+        "from": "resources/runtime",
+        "to": "runtime",
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "afterPack": "./scripts/after-pack-runtime-fixes.cjs",

@@ -789,7 +789,7 @@ struct CreatePrWizardView: View {
   private var finalReviewSection: some View {
     VStack(spacing: 0) {
       PrSectionHdr(title: "Final review") {
-        PrMonoText(text: "host action", color: ADEColor.warning, size: 10)
+        PrMonoText(text: "machine action", color: ADEColor.warning, size: 10)
       }
       VStack(spacing: 0) {
         let steps = buildNextSteps()

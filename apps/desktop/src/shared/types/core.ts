@@ -2,6 +2,46 @@
 // Core / project-wide types
 // ---------------------------------------------------------------------------
 
+export type LocalRuntimeServiceInstallState =
+  | "not_attempted"
+  | "installing"
+  | "installed"
+  | "failed"
+  | "skipped";
+
+export type LocalRuntimeServiceHealthState =
+  | "unknown"
+  | "not_installed"
+  | "installed"
+  | "running"
+  | "error"
+  | "unsupported";
+
+export type LocalRuntimeConnectionState =
+  | "idle"
+  | "connecting"
+  | "connected";
+
+export type LocalRuntimeStatus = {
+  connectionState: LocalRuntimeConnectionState;
+  serviceInstall: {
+    state: LocalRuntimeServiceInstallState;
+    attempted: boolean;
+    path: string | null;
+    message: string | null;
+    exitCode: number | null;
+    updatedAt: string | null;
+  };
+  serviceHealth: {
+    state: LocalRuntimeServiceHealthState;
+    installed: boolean | null;
+    running: boolean | null;
+    path: string | null;
+    message: string | null;
+    checkedAt: string | null;
+  };
+};
+
 export type AppInfo = {
   appVersion: string;
   isPackaged: boolean;
@@ -17,6 +57,7 @@ export type AppInfo = {
     nodeEnv?: string;
     viteDevServerUrl?: string;
   };
+  localRuntime: LocalRuntimeStatus | null;
 };
 
 export type RecentlyInstalledUpdate = {
@@ -44,6 +85,23 @@ export type ProjectInfo = {
   displayName: string;
   baseRef: string;
 };
+
+export type OpenProjectBinding =
+  | {
+      kind: "local";
+      key: string;
+      rootPath: string;
+      displayName: string;
+    }
+  | {
+      kind: "remote";
+      key: string;
+      targetId: string;
+      runtimeName: string;
+      projectId: string;
+      rootPath: string;
+      displayName: string;
+    };
 
 export type AppNavigationTarget =
   | {

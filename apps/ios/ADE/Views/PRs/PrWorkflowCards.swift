@@ -25,9 +25,9 @@ private enum WorkflowLandingConfirmation {
   var message: String {
     switch self {
     case .activePr:
-      return "This asks the host to merge the active queue pull request using the selected strategy. GitHub may merge into the target branch if checks pass."
+      return "This asks the machine to merge the active queue pull request using the selected strategy. GitHub may merge into the target branch if checks pass."
     case .queueNext:
-      return "This asks the host to merge the next queued pull request using the selected strategy. GitHub may merge into the target branch if checks pass."
+      return "This asks the machine to merge the next queued pull request using the selected strategy. GitHub may merge into the target branch if checks pass."
     }
   }
 }
@@ -201,7 +201,7 @@ struct QueueWorkflowCard: View {
         landingConfirmation = nil
       }
     } message: {
-      Text(landingConfirmation?.message ?? "This will ask the host to merge the selected pull request.")
+      Text(landingConfirmation?.message ?? "This will ask the machine to merge the selected pull request.")
     }
   }
 
@@ -327,7 +327,7 @@ struct PrMobileWorkflowCardView: View {
         landingConfirmation = nil
       }
     } message: {
-      Text(landingConfirmation?.message ?? "This will ask the host to merge the selected pull request.")
+      Text(landingConfirmation?.message ?? "This will ask the machine to merge the selected pull request.")
     }
   }
 

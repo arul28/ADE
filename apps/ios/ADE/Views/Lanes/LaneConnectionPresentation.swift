@@ -35,7 +35,7 @@ func laneRootEmptyState(
     return LaneEmptyStatePresentation(
       symbol: "exclamationmark.triangle.fill",
       title: "Lane hydration unavailable",
-      message: laneStatus.lastError ?? "Retry lane sync or reconnect the host.",
+      message: laneStatus.lastError ?? "Retry lane sync or reconnect the machine.",
       actionTitle: "Retry",
       action: .retry
     )
@@ -47,8 +47,8 @@ func laneRootEmptyState(
       symbol: "square.stack.3d.up",
       title: hasHostProfile ? "Reconnect to load lanes" : "Pair to load lanes",
       message: hasHostProfile
-        ? "Reconnect to the host before triaging or creating lanes from iPhone."
-        : "Pair with a host from Settings to load the current lane graph.",
+        ? "Reconnect to the machine before triaging or creating lanes from iPhone."
+        : "Pair with a machine from Settings to load the current lane graph.",
       actionTitle: offlineAction?.title,
       action: offlineAction?.action
     )
@@ -79,7 +79,7 @@ func laneDetailEmptyState(
       title: hasHostProfile ? "Reconnect for live lane detail" : "Pair to load lane detail",
       message: hasHostProfile
         ? "No cached lane detail is available yet. Reconnect to load git status, conflicts, and stack context."
-        : "Pair with a host from Settings to load lane detail on iPhone.",
+        : "Pair with a machine from Settings to load lane detail on iPhone.",
       actionTitle: offlineAction?.title,
       action: offlineAction?.action
     )
@@ -107,8 +107,8 @@ func laneLiveActionNotice(
       symbol: hasHostProfile ? "wifi.slash" : "link.badge.plus",
       title: hasHostProfile ? "Cached lanes shown" : "Pair to run lane actions",
       message: hasHostProfile
-        ? "Reconnect to desktop before creating, editing, rebasing, pushing, or archiving lanes from iPhone."
-        : "Pair with a desktop host before creating, editing, rebasing, pushing, or archiving lanes from iPhone.",
+        ? "Reconnect to machine before creating, editing, rebasing, pushing, or archiving lanes from iPhone."
+        : "Pair with a machine before creating, editing, rebasing, pushing, or archiving lanes from iPhone.",
       actionTitle: offlineAction?.title,
       action: offlineAction?.action
     )
@@ -118,7 +118,7 @@ func laneLiveActionNotice(
     return LaneEmptyStatePresentation(
       symbol: "arrow.triangle.2.circlepath",
       title: "Waiting for live lane actions",
-      message: "Cached lanes are visible now. Lane actions unlock after desktop connection and lane sync are ready.",
+      message: "Cached lanes are visible now. Lane actions unlock after machine connection and lane sync are ready.",
       actionTitle: "Retry",
       action: .retry
     )
@@ -137,5 +137,5 @@ private func laneOfflineAction(
   if hasHostProfile {
     return ("Reconnect", .reconnect)
   }
-  return ("Pair with host", .openSettings)
+  return ("Pair with machine", .openSettings)
 }

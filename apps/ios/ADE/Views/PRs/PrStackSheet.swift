@@ -85,8 +85,8 @@ struct PrStackSheet: View {
               symbol: syncService.connectionState.isHostUnreachable ? "wifi.exclamationmark" : "list.number",
               title: syncService.connectionState.isHostUnreachable ? "Offline" : "No stack members",
               message: syncService.connectionState.isHostUnreachable
-                ? "Reconnect to the desktop host to load this PR stack."
-                : "The host did not sync any PR chain members for this workflow yet."
+                ? "Reconnect to the machine to load this PR stack."
+                : "The machine did not sync any PR chain members for this workflow yet."
             )
             .padding(16)
           }

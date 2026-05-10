@@ -218,13 +218,6 @@ import type {
   CtoGetLinearOAuthSessionArgs,
   CtoGetLinearOAuthSessionResult,
   CtoRunProjectScanResult,
-  CtoGetOpenclawStateResult,
-  CtoUpdateOpenclawConfigArgs,
-  CtoTestOpenclawConnectionArgs,
-  CtoTestOpenclawConnectionResult,
-  CtoListOpenclawMessagesArgs,
-  CtoListOpenclawMessagesResult,
-  CtoSendOpenclawMessageArgs,
   LinearConnectionStatus,
   CtoSetLinearTokenArgs,
   CtoSaveFlowPolicyArgs,
@@ -244,7 +237,6 @@ import type {
   CtoEnsureLinearWebhookArgs,
   CtoListLinearIngressEventsArgs,
   LinearWorkflowConfig,
-  OpenclawBridgeStatus,
   AddMissionArtifactArgs,
   AddMissionInterventionArgs,
   KeybindingOverride,
@@ -413,6 +405,7 @@ import type {
   ProjectConfigTrust,
   ProjectConfigValidationResult,
   ProjectInfo,
+  OpenProjectBinding,
   CreateProjectInput,
   CreateProjectResult,
   CloneProjectInput,
@@ -700,6 +693,16 @@ import type {
   MacosVmStopArgs,
   MacosVmTypeTextArgs,
   MacosVmWindowTarget,
+  RemoteRuntimeActionRequest,
+  RemoteRuntimeActionResult,
+  RemoteRuntimeConnectResult,
+  RemoteRuntimeDiscoveredMachine,
+  RemoteRuntimeLocalWorkCheckResult,
+  RemoteRuntimeProjectRecord,
+  RemoteRuntimeStreamEventsRequest,
+  RemoteRuntimeStreamEventsResult,
+  RemoteRuntimeTarget,
+  RemoteRuntimeTargetInput,
   ChatTerminalActiveForChatArgs,
   ChatTerminalListArgs,
   ChatTerminalReadArgs,
@@ -726,6 +729,7 @@ declare global {
         getWindowSession: () => Promise<{
           windowId: number | null;
           project: ProjectInfo | null;
+          binding: OpenProjectBinding | null;
         }>;
         newWindow: () => Promise<{ windowId: number | null }>;
         openProjectInNewWindow: (
@@ -734,6 +738,9 @@ declare global {
         closeWindow: (windowId?: number | null) => Promise<{ closed: boolean }>;
         onProjectChanged: (
           cb: (project: ProjectInfo | null) => void,
+        ) => () => void;
+        onProjectBindingChanged: (
+          cb: (binding: OpenProjectBinding | null) => void,
         ) => () => void;
         onNavigate: (
           cb: (request: AppNavigationRequest) => void,
@@ -789,6 +796,20 @@ declare global {
         runIntegrityCheck: () => Promise<AdeCleanupResult>;
         onMissing: (cb: (data: { rootPath: string }) => void) => () => void;
         onStateEvent: (cb: (event: AdeProjectEvent) => void) => () => void;
+      };
+      remoteRuntime: {
+        listTargets: () => Promise<RemoteRuntimeTarget[]>;
+        listDiscoveredMachines: () => Promise<RemoteRuntimeDiscoveredMachine[]>;
+        saveTarget: (input: RemoteRuntimeTargetInput) => Promise<RemoteRuntimeTarget>;
+        removeTarget: (id: string) => Promise<{ removed: boolean }>;
+        connect: (id: string) => Promise<RemoteRuntimeConnectResult>;
+        listProjects: (id: string) => Promise<RemoteRuntimeProjectRecord[]>;
+        addProject: (id: string, rootPath: string) => Promise<RemoteRuntimeProjectRecord>;
+        openProject: (id: string, projectId: string) => Promise<OpenProjectBinding>;
+        callAction: (id: string, projectId: string, request: RemoteRuntimeActionRequest) => Promise<RemoteRuntimeActionResult>;
+        streamEvents: (id: string, projectId: string, request?: RemoteRuntimeStreamEventsRequest) => Promise<RemoteRuntimeStreamEventsResult>;
+        checkLocalWork: (project: RemoteRuntimeProjectRecord) => Promise<RemoteRuntimeLocalWorkCheckResult>;
+        disconnect: (id: string) => Promise<{ disconnected: boolean }>;
       };
       keybindings: {
         get: () => Promise<KeybindingsSnapshot>;
@@ -1998,22 +2019,6 @@ declare global {
           args?: CtoListSessionLogsArgs,
         ) => Promise<CtoSessionLogEntry[]>;
         updateIdentity: (args: CtoUpdateIdentityArgs) => Promise<CtoSnapshot>;
-        getOpenclawState: () => Promise<CtoGetOpenclawStateResult>;
-        updateOpenclawConfig: (
-          args: CtoUpdateOpenclawConfigArgs,
-        ) => Promise<CtoGetOpenclawStateResult>;
-        testOpenclawConnection: (
-          args?: CtoTestOpenclawConnectionArgs,
-        ) => Promise<CtoTestOpenclawConnectionResult>;
-        listOpenclawMessages: (
-          args?: CtoListOpenclawMessagesArgs,
-        ) => Promise<CtoListOpenclawMessagesResult>;
-        sendOpenclawMessage: (
-          args: CtoSendOpenclawMessageArgs,
-        ) => Promise<CtoListOpenclawMessagesResult[number]>;
-        onOpenclawConnectionStatus: (
-          cb: (status: OpenclawBridgeStatus) => void,
-        ) => () => void;
         listAgents: (args?: CtoListAgentsArgs) => Promise<AgentIdentity[]>;
         saveAgent: (args: CtoSaveAgentArgs) => Promise<AgentIdentity>;
         removeAgent: (args: CtoRemoveAgentArgs) => Promise<void>;

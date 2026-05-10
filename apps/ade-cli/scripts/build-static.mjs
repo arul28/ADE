@@ -1,0 +1,287 @@
+import { execFile } from "node:child_process";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
+const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const defaultOutDir = path.join(packageRoot, "dist-static");
+const fuse = "NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2";
+
+function parseArgs(argv) {
+  const args = {
+    target: currentTarget(),
+    outDir: defaultOutDir,
+    skipBuild: false,
+    skipNativeDeps: false,
+  };
+  for (let i = 0; i < argv.length; i += 1) {
+    const token = argv[i];
+    if (token === "--target") {
+      args.target = argv[++i] ?? "";
+    } else if (token === "--out-dir") {
+      args.outDir = path.resolve(argv[++i] ?? "");
+    } else if (token === "--skip-build") {
+      args.skipBuild = true;
+    } else if (token === "--skip-native-deps") {
+      args.skipNativeDeps = true;
+    } else if (token === "--help" || token === "-h") {
+      printHelp();
+      process.exit(0);
+    } else {
+      throw new Error(`Unknown argument: ${token}`);
+    }
+  }
+  validateTarget(args.target);
+  return args;
+}
+
+function printHelp() {
+  process.stdout.write([
+    "Usage: node scripts/build-static.mjs [--target darwin-arm64] [--out-dir dist-static]",
+    "",
+    "Builds an ADE runtime executable with Node SEA. Cross-target builds require",
+    "ADE_STATIC_NODE_BINARY to point at a matching Node executable.",
+    "",
+  ].join("\n"));
+}
+
+function currentTarget() {
+  const platform = process.platform === "darwin" ? "darwin" : process.platform === "linux" ? "linux" : process.platform;
+  const arch = process.arch === "x64" ? "x64" : process.arch === "arm64" ? "arm64" : process.arch;
+  return `${platform}-${arch}`;
+}
+
+function validateTarget(target) {
+  if (!/^(darwin|linux)-(arm64|x64)$/.test(target)) {
+    throw new Error(`Unsupported runtime target '${target}'. Expected darwin-arm64, darwin-x64, linux-arm64, or linux-x64.`);
+  }
+}
+
+async function assertHostOrExplicitBinary(target) {
+  if (target === currentTarget() || process.env.ADE_STATIC_NODE_BINARY) return;
+  throw new Error(`Cannot build ${target} from ${currentTarget()} without ADE_STATIC_NODE_BINARY.`);
+}
+
+async function run(command, args, options = {}) {
+  let stdout = "";
+  let stderr = "";
+  try {
+    const result = await execFileAsync(command, args, {
+      cwd: packageRoot,
+      env: process.env,
+      maxBuffer: 50 * 1024 * 1024,
+      ...options,
+    });
+    stdout = result.stdout;
+    stderr = result.stderr;
+  } catch (error) {
+    stdout = typeof error?.stdout === "string" ? error.stdout : "";
+    stderr = typeof error?.stderr === "string" ? error.stderr : "";
+    if (stdout) process.stdout.write(stdout);
+    if (stderr) process.stderr.write(stderr);
+    throw error;
+  }
+  if (stdout) process.stdout.write(stdout);
+  if (stderr) process.stderr.write(stderr);
+}
+
+async function assertSeaCapableNodeBinary(binaryPath) {
+  const contents = await fs.readFile(binaryPath);
+  if (contents.includes(Buffer.from(fuse))) return;
+  throw new Error([
+    `Node binary '${binaryPath}' is not SEA-capable; it does not contain ${fuse}.`,
+    "Use an official Node.js release binary for this target, or set ADE_STATIC_NODE_BINARY to one before running build:static.",
+  ].join(" "));
+}
+
+async function removeSignatureIfNeeded(binaryPath) {
+  if (process.platform !== "darwin") return;
+  try {
+    await run("codesign", ["--remove-signature", binaryPath]);
+  } catch {
+    // Some Node builds are unsigned. postject can proceed in that case.
+  }
+}
+
+async function adHocSignIfNeeded(binaryPath) {
+  if (process.platform !== "darwin") return;
+  await run("codesign", ["--sign", "-", binaryPath]);
+}
+
+async function writeSeaEntry(workDir) {
+  const cliPath = path.join(packageRoot, "dist", "cli.cjs");
+  const seaEntryPath = path.join(workDir, "cli-sea.cjs");
+  const cliSource = await fs.readFile(cliPath, "utf8");
+  const banner = `\
+var __adeSeaOriginalRequire = require;
+var __adeSeaModule = __adeSeaOriginalRequire("module");
+var __adeSeaPath = __adeSeaOriginalRequire("path");
+var __adeSeaOs = __adeSeaOriginalRequire("os");
+var __adeSeaFs = __adeSeaOriginalRequire("fs");
+function __adeSeaTargetLabel() {
+  var platform = process.platform === "darwin" ? "darwin" : process.platform === "linux" ? "linux" : process.platform;
+  var arch = process.arch === "x64" ? "x64" : process.arch === "arm64" ? "arm64" : process.arch;
+  return platform + "-" + arch;
+}
+function __adeSeaRuntimeRootFromNodeModules(value) {
+  if (!value) return null;
+  return __adeSeaPath.basename(value) === "node_modules" ? __adeSeaPath.dirname(value) : value;
+}
+function __adeSeaDirectoryExists(value) {
+  try {
+    return __adeSeaFs.statSync(value).isDirectory();
+  } catch {
+    return false;
+  }
+}
+function __adeSeaCandidateRuntimeRoots() {
+  var target = __adeSeaTargetLabel();
+  var roots = [];
+  var explicitRoot = process.env.ADE_RUNTIME_ROOT;
+  var explicitNodeModules = process.env.ADE_RUNTIME_NODE_MODULES;
+  if (explicitRoot) roots.push(explicitRoot);
+  if (explicitNodeModules) roots.push(__adeSeaRuntimeRootFromNodeModules(explicitNodeModules));
+  if (process.env.NODE_PATH) {
+    process.env.NODE_PATH.split(__adeSeaPath.delimiter).forEach(function (entry) {
+      roots.push(__adeSeaRuntimeRootFromNodeModules(entry));
+    });
+  }
+  roots.push(__adeSeaPath.join(__adeSeaPath.dirname(process.execPath), "ade-" + target + ".native"));
+  roots.push(__adeSeaPath.dirname(process.execPath));
+  roots.push(__adeSeaPath.join(__adeSeaPath.dirname(process.execPath), "..", "runtime", target));
+  roots.push(__adeSeaPath.join(__adeSeaOs.homedir(), ".ade", "runtime", target));
+  return roots.filter(function (entry, index) {
+    return Boolean(entry) && roots.indexOf(entry) === index;
+  });
+}
+function __adeSeaResolveRuntimeRoot() {
+  var roots = __adeSeaCandidateRuntimeRoots();
+  for (var index = 0; index < roots.length; index += 1) {
+    var root = roots[index];
+    if (__adeSeaDirectoryExists(__adeSeaPath.join(root, "node_modules"))) return root;
+  }
+  return null;
+}
+var __adeSeaRuntimeRoot = __adeSeaResolveRuntimeRoot();
+if (__adeSeaRuntimeRoot) {
+  var __adeSeaRuntimeNodeModules = __adeSeaPath.join(__adeSeaRuntimeRoot, "node_modules");
+  var __adeSeaNodePath = process.env.NODE_PATH || "";
+  var __adeSeaNodePathParts = __adeSeaNodePath.split(__adeSeaPath.delimiter).filter(Boolean);
+  if (!__adeSeaNodePathParts.includes(__adeSeaRuntimeNodeModules)) {
+    process.env.NODE_PATH = [__adeSeaRuntimeNodeModules].concat(__adeSeaNodePathParts).join(__adeSeaPath.delimiter);
+    if (typeof __adeSeaModule._initPaths === "function") __adeSeaModule._initPaths();
+  }
+}
+var __adeSeaFilesystemRequire = __adeSeaModule.createRequire(
+  __adeSeaRuntimeRoot ? __adeSeaPath.join(__adeSeaRuntimeRoot, ".ade-runtime.cjs") : process.execPath
+);
+function __adeSeaRequire(id) {
+  try {
+    return __adeSeaOriginalRequire(id);
+  } catch (error) {
+    if (error && (error.code === "ERR_UNKNOWN_BUILTIN_MODULE" || error.code === "MODULE_NOT_FOUND")) {
+      return __adeSeaFilesystemRequire(id);
+    }
+    throw error;
+  }
+}
+Object.assign(__adeSeaRequire, __adeSeaOriginalRequire);
+__adeSeaRequire.resolve = function __adeSeaRequireResolve(id, options) {
+  try {
+    return __adeSeaOriginalRequire.resolve(id, options);
+  } catch (error) {
+    if (error && (error.code === "ERR_UNKNOWN_BUILTIN_MODULE" || error.code === "MODULE_NOT_FOUND")) {
+      return __adeSeaFilesystemRequire.resolve(id, options);
+    }
+    throw error;
+  }
+};
+require = __adeSeaRequire;
+var __adeSeaArgv1 = process.argv[1] || "";
+if (!/(^|[/\\\\])cli\\.(?:ts|js|cjs)$/.test(__adeSeaArgv1)) {
+  if (__adeSeaArgv1 === process.execPath || /(^|[/\\\\])ade(?:[-.]|$)/.test(__adeSeaArgv1)) {
+    process.argv[1] = "cli.cjs";
+  } else {
+    process.argv.splice(1, 0, "cli.cjs");
+  }
+}
+`;
+  const source = cliSource.startsWith("#!")
+    ? cliSource.replace(/^#!.*\n/u, "")
+    : cliSource;
+  await fs.writeFile(seaEntryPath, `${banner}\n${source}`, "utf8");
+  return seaEntryPath;
+}
+
+async function main() {
+  const args = parseArgs(process.argv.slice(2));
+  await assertHostOrExplicitBinary(args.target);
+  await fs.mkdir(args.outDir, { recursive: true });
+
+  if (!args.skipBuild) {
+    await run(process.platform === "win32" ? "npm.cmd" : "npm", ["run", "build"]);
+  }
+
+  const workDir = path.join(args.outDir, ".sea", args.target);
+  await fs.rm(workDir, { recursive: true, force: true });
+  await fs.mkdir(workDir, { recursive: true });
+  const seaEntryPath = await writeSeaEntry(workDir);
+
+  const seaConfigPath = path.join(workDir, "sea-config.json");
+  const blobPath = path.join(workDir, "ade.blob");
+  const seaConfig = {
+    main: seaEntryPath,
+    output: blobPath,
+    disableExperimentalSEAWarning: true,
+    useCodeCache: false,
+    useSnapshot: false,
+  };
+  await fs.writeFile(seaConfigPath, `${JSON.stringify(seaConfig, null, 2)}\n`, "utf8");
+  await run(process.execPath, ["--experimental-sea-config", seaConfigPath]);
+
+  const sourceNodeBinary = process.env.ADE_STATIC_NODE_BINARY || process.execPath;
+  await assertSeaCapableNodeBinary(sourceNodeBinary);
+  const binaryName = `ade-${args.target}${process.platform === "win32" ? ".exe" : ""}`;
+  const binaryPath = path.join(args.outDir, binaryName);
+  await fs.copyFile(sourceNodeBinary, binaryPath);
+  await fs.chmod(binaryPath, 0o755);
+  await removeSignatureIfNeeded(binaryPath);
+
+  const postjectArgs = [
+    binaryPath,
+    "NODE_SEA_BLOB",
+    blobPath,
+    "--sentinel-fuse",
+    fuse,
+  ];
+  if (args.target.startsWith("darwin-")) {
+    postjectArgs.push("--macho-segment-name", "NODE_SEA");
+  }
+  await run(path.join(packageRoot, "node_modules", ".bin", process.platform === "win32" ? "postject.cmd" : "postject"), postjectArgs);
+  await adHocSignIfNeeded(binaryPath);
+
+  let nativeArchivePath = null;
+  if (!args.skipNativeDeps) {
+    await run(process.execPath, [
+      path.join(packageRoot, "scripts", "package-native-deps.mjs"),
+      "--target",
+      args.target,
+      "--out-dir",
+      args.outDir,
+    ]);
+    nativeArchivePath = path.join(args.outDir, `ade-${args.target}.native.tar.gz`);
+  }
+
+  process.stdout.write(`${JSON.stringify({
+    target: args.target,
+    binaryPath,
+    nativeArchivePath,
+  }, null, 2)}\n`);
+}
+
+main().catch((error) => {
+  process.stderr.write(`[build-static] ${error instanceof Error ? error.message : String(error)}\n`);
+  process.exit(1);
+});

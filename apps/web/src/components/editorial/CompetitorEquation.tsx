@@ -11,7 +11,6 @@ const COMPETITORS = [
   { name: "Conductor", short: "Cond.", logo: "/images/competitors/conductor.png" },
   { name: "Factory", short: "Factory", logo: "/images/competitors/factory.png" },
   { name: "Paperclip", short: "Paperc.", logo: "/images/competitors/paperclip.png" },
-  { name: "OpenClaw", short: "OpenClaw", logo: "/images/competitors/openclaw.png" },
   { name: "GitHub", short: "GitHub", logo: "/images/competitors/github.png" },
 ] as const;
 
