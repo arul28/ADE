@@ -4,7 +4,17 @@ Every non-primary lane lives in its own git worktree. This is the
 mechanism that lets ADE hold dozens of branches checked out
 simultaneously without thrashing a single working directory.
 
-Source: `apps/desktop/src/main/services/lanes/laneService.ts`.
+Worktree creation, removal, and the `git worktree …` shell-outs that
+back them are owned by the **active ADE runtime** — the local daemon
+(`ade serve`) for local-bound windows, or the SSH-attached remote
+runtime for remote-bound windows. The desktop main process exposes
+`apps/desktop/src/main/services/lanes/laneService.ts` as a fallback
+target with the same interface so older callers and tests keep
+working, but the canonical lifecycle lives in the runtime daemon.
+Remote-bound windows therefore create worktrees on the remote
+machine: the desktop UX is identical, but the worktree directory,
+the per-lane state, and every git command for the lane all live on
+the remote host.
 
 ## Worktree placement
 
@@ -100,9 +110,14 @@ persisted in the SQLite KV/tables, not on disk.
 
 ## Worktree interactions with git operations
 
-All git commands are routed through
-`apps/desktop/src/main/services/git/git.ts` with `cwd` pinned to the
-lane's `worktree_path`. This matters because:
+All git commands run inside the active runtime — not in the Electron
+main process — with `cwd` pinned to the lane's `worktree_path`. The
+runtime spawns `git` directly on the host that owns the worktree
+(local daemon spawns on the desktop machine; the remote runtime spawns
+on the remote machine over SSH). The desktop fallback path uses
+`apps/desktop/src/main/services/git/git.ts` (same shell-out shape) so
+the legacy IPC handlers behave identically when the runtime is not
+present. This matters because:
 
 - Stashes, rebases, merges, and cherry-picks are worktree-local —
   nothing bleeds into other lanes.

@@ -993,6 +993,14 @@ const allowLocalRuntimeFallback =
   process.env.ADE_LOCAL_RUNTIME_FALLBACK === "1" ||
   process.env.ADE_DISABLE_LOCAL_RUNTIME_DAEMON === "1";
 
+function isSafeLocalRuntimeFallbackError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /\b(ECONNREFUSED|ECONNRESET|EPIPE|ENOENT|ETIMEDOUT)\b/i.test(message)
+    || /Local runtime daemon is not available/i.test(message)
+    || /ADE service connection (?:closed|failed)/i.test(message)
+    || /Timed out connecting to ADE service socket/i.test(message);
+}
+
 let currentProjectBinding: OpenProjectBinding | null = null;
 let projectBindingGeneration = 0;
 
@@ -1068,7 +1076,7 @@ async function callLocalProjectActionIfBound<T>(
     }) as RemoteRuntimeActionResult;
     return { handled: true, result: response.result as T };
   } catch (error) {
-    if (!allowLocalRuntimeFallback) {
+    if (!allowLocalRuntimeFallback || !isSafeLocalRuntimeFallbackError(error)) {
       throw error;
     }
     console.warn("Local ADE service action failed; using in-process fallback.", error);
@@ -1124,7 +1132,7 @@ async function callLocalProjectSyncIfBound<T>(
     }) as T;
     return { handled: true, result };
   } catch (error) {
-    if (!allowLocalRuntimeFallback) {
+    if (!allowLocalRuntimeFallback || !isSafeLocalRuntimeFallbackError(error)) {
       throw error;
     }
     console.warn("Local ADE service sync call failed; using in-process fallback.", error);

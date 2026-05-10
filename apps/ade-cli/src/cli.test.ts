@@ -58,8 +58,8 @@ describe("ADE CLI", () => {
     expect(plan).toEqual({ kind: "ade-code", rest: ["--print-state"] });
   });
 
-  it("defaults bare ade to the terminal Work chat launcher", () => {
-    expect(buildCliPlan([])).toEqual({ kind: "ade-code", rest: [] });
+  it("shows help for bare ade invocations", () => {
+    expect(buildCliPlan([])).toEqual({ kind: "help", text: expect.stringContaining("Agent-focused command-line interface for ADE") });
   });
 
   it("keeps global help on the help surface", () => {
@@ -73,6 +73,18 @@ describe("ADE CLI", () => {
   });
 
   it("builds runtime daemon and stdio RPC commands", () => {
+    expect(buildCliPlan(["runtime", "status"])).toEqual({
+      kind: "runtime",
+      rest: ["status"],
+    });
+    expect(buildCliPlan(["runtime", "start", "--socket", "/tmp/ade.sock"])).toEqual({
+      kind: "runtime",
+      rest: ["start", "--socket", "/tmp/ade.sock"],
+    });
+    expect(buildCliPlan(["desktop"])).toEqual({
+      kind: "desktop",
+      rest: [],
+    });
     expect(buildCliPlan(["serve", "--socket", "/tmp/ade.sock", "--port", "7777"])).toEqual({
       kind: "serve",
       rest: ["--socket", "/tmp/ade.sock", "--port", "7777"],
@@ -163,24 +175,31 @@ describe("ADE CLI", () => {
   });
 
   it("forwards resolved roots and socket intent to ade code", () => {
-    const args = buildAdeCodeArgs(["--print-state"], {
-      ...baseResolveOpts(),
-      projectRoot: "/tmp/project",
-      workspaceRoot: null,
-      headless: false,
-      requireSocket: true,
-    });
+    const previous = process.env.ADE_RUNTIME_SOCKET_PATH;
+    process.env.ADE_RUNTIME_SOCKET_PATH = "/tmp/ade-runtime.sock";
+    try {
+      const args = buildAdeCodeArgs(["--print-state"], {
+        ...baseResolveOpts(),
+        projectRoot: "/tmp/project",
+        workspaceRoot: null,
+        headless: false,
+        requireSocket: true,
+      });
 
-    expect(args).toEqual([
-      "--project-root",
-      "/tmp/project",
-      "--workspace-root",
-      "/tmp/project",
-      "--socket",
-      "/tmp/project/.ade/ade.sock",
-      "--require-socket",
-      "--print-state",
-    ]);
+      expect(args).toEqual([
+        "--project-root",
+        "/tmp/project",
+        "--workspace-root",
+        "/tmp/project",
+        "--socket",
+        "/tmp/ade-runtime.sock",
+        "--require-socket",
+        "--print-state",
+      ]);
+    } finally {
+      if (previous === undefined) delete process.env.ADE_RUNTIME_SOCKET_PATH;
+      else process.env.ADE_RUNTIME_SOCKET_PATH = previous;
+    }
   });
 
   it("preserves command-local value flags that overlap global flags", () => {
@@ -1146,6 +1165,85 @@ describe("ADE CLI", () => {
     expect(openPrs.steps[0]?.params).toEqual({
       name: "prs_list_open",
       arguments: {},
+    });
+  });
+
+  it("maps discoverable git status, sync, and conflict helpers to existing actions", () => {
+    const fullStatus = buildCliPlan(["git", "status", "--full", "--lane", "lane-1"]);
+    expect(fullStatus.kind).toBe("execute");
+    if (fullStatus.kind !== "execute") return;
+    expect(fullStatus.label).toBe("lane status");
+    expect(fullStatus.steps[0]?.params).toEqual({
+      name: "get_lane_status",
+      arguments: { laneId: "lane-1" },
+    });
+
+    const sync = buildCliPlan(["git", "sync", "--lane", "lane-1", "--rebase", "--base", "main"]);
+    expect(sync.kind).toBe("execute");
+    if (sync.kind !== "execute") return;
+    expect(sync.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "git",
+        action: "sync",
+        args: { laneId: "lane-1", mode: "rebase", baseRef: "main" },
+      },
+    });
+
+    const conflictShow = buildCliPlan(["git", "conflict", "show", "--lane", "lane-1"]);
+    expect(conflictShow.kind).toBe("execute");
+    if (conflictShow.kind !== "execute") return;
+    expect(conflictShow.steps[0]?.params).toEqual({
+      name: "get_lane_conflict_state",
+      arguments: { laneId: "lane-1" },
+    });
+
+    const conflictResolve = buildCliPlan(["git", "conflict", "resolve", "--lane", "lane-1", "--kind", "rebase"]);
+    expect(conflictResolve.kind).toBe("execute");
+    if (conflictResolve.kind !== "execute") return;
+    expect(conflictResolve.steps[0]?.params).toEqual({
+      name: "rebase_continue",
+      arguments: { laneId: "lane-1" },
+    });
+
+    const push = buildCliPlan(["git", "push", "--lane", "lane-1", "--set-upstream", "--force-with-lease"]);
+    expect(push.kind).toBe("execute");
+    if (push.kind !== "execute") return;
+    expect(push.steps[0]?.params).toEqual({
+      name: "git_push",
+      arguments: { laneId: "lane-1", forceWithLease: true, setUpstream: true },
+    });
+  });
+
+  it("preserves the public git push --set-upstream flag", () => {
+    const plan = buildCliPlan(["git", "push", "--lane", "lane-1", "--set-upstream", "--force-with-lease"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toEqual({
+      name: "git_push",
+      arguments: {
+        laneId: "lane-1",
+        forceWithLease: true,
+        setUpstream: true,
+      },
+    });
+  });
+
+  it("maps action and operation wait aliases to the ADE status poller", () => {
+    const actionWait = buildCliPlan(["actions", "wait", "--operation", "op-1", "--previous-hash", "abc"]);
+    expect(actionWait.kind).toBe("execute");
+    if (actionWait.kind !== "execute") return;
+    expect(actionWait.steps[0]?.params).toEqual({
+      name: "get_ade_action_status",
+      arguments: { operationId: "op-1", previousHash: "abc", waitForMs: 30_000 },
+    });
+
+    const operationStatus = buildCliPlan(["operations", "status", "--test-run", "test-1", "--wait-ms", "5000"]);
+    expect(operationStatus.kind).toBe("execute");
+    if (operationStatus.kind !== "execute") return;
+    expect(operationStatus.steps[0]?.params).toEqual({
+      name: "get_ade_action_status",
+      arguments: { testRunId: "test-1", waitForMs: 5000 },
     });
   });
 

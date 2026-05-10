@@ -294,7 +294,7 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
         if (connectionDraft) {
           connectionDraft.lastRemoteDbVersion = latestRemoteDbVersion;
         }
-        outboundLocalDbVersion = Math.min(outboundLocalDbVersion, args.db.sync.getDbVersion());
+        outboundLocalDbVersion = Math.max(outboundLocalDbVersion, args.db.sync.getDbVersion());
         emitStatus();
         startRelay();
         startHeartbeatFallback();

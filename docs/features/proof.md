@@ -8,6 +8,12 @@ The old system sat upstream of the agent and tried to normalize every backend. I
 
 The result: one interface for all models, no backend matrix, no coverage math. A proof set is a handful of captioned screenshots a reviewer can skim in under a minute.
 
+## Runtime ownership
+
+Proof storage and the broker are owned by the runtime daemon (`ade serve`) that owns the project. Artifacts on disk live under the runtime host's `.ade/artifacts/computer-use/` directory; the SQLite rows live in that runtime's `.ade/ade.db`. For local projects that is the user's machine; for remote projects it is the remote host. The desktop renderer and the headless ADE CLI both call into the broker over JSON-RPC; nothing about the proof pipeline lives in the renderer or in a separate host process.
+
+That means: proof captured during a remote-runtime session lives on the remote host. The desktop drawer fetches preview bytes through the same SSH-tunneled JSON-RPC channel as the rest of the remote project surface; raw artifact files are not synced back to the desktop machine, and proof is only viewable while the runtime that captured it is reachable.
+
 ---
 
 ## CLI reference
@@ -98,17 +104,17 @@ Explicit owners are added in addition to the session identity inferred from `ADE
 
 ## Storage
 
-Images live on disk under the project's `.ade/` scaffold:
+Images live on disk under the project's `.ade/` scaffold on the runtime host:
 
 ```
-.ade/artifacts/computer-use/<uuid>.<ext>
+<runtime host>/<project root>/.ade/artifacts/computer-use/<uuid>.<ext>
 ```
 
 (Path will move to `.ade/artifacts/proof/` in a future phase.)
 
 Metadata is a single SQLite row per capture in `computer_use_artifacts`, with ownership links in `computer_use_artifact_links`. The columns relevant to the new system are a small subset of what the table carries today: `id`, `kind` (always `screenshot` for captures; `image` for attaches), `uri`, `mime_type`, `caption`, `created_at`, plus the owner link row.
 
-There is no retention policy — captures persist until the project is cleaned up. Disk is the budget; nothing ages out automatically.
+There is no retention policy — captures persist until the project is cleaned up. Disk is the budget; nothing ages out automatically. For remote-runtime projects, the disk being filled is the remote host's, not the desktop machine's.
 
 ---
 
@@ -149,32 +155,34 @@ Headless-browser screenshots *are* supported — use `ade proof attach` with the
 ## Architecture
 
 ```
-  agent (any model)
+  agent (any model, any runtime host)
       │
       │  shell invocation
       ▼
   ade proof capture --caption "…"
       │
-      │  JSON-RPC over .ade/ade.sock
+      │  JSON-RPC over .ade/ade.sock (runtime daemon)
       ▼
-  proof action (main-process)
+  proof action (runtime: ade serve)
       │
-      ├── screencapture  ─► .ade/artifacts/computer-use/<uuid>.png
+      ├── screencapture  ─► <runtime host>/.ade/artifacts/computer-use/<uuid>.png
       │
       └── computerUseArtifactBrokerService
               │
-              │  SQLite insert
+              │  SQLite insert into <runtime host>/.ade/ade.db
               ▼
           computer_use_artifacts + …_artifact_links
                                      │
                                      ▼
-                          drawer UI (chat / mission)
+                          drawer UI (renderer reads via
+                          window.ade.proof.* → preload →
+                          local or remote runtime RPC)
 ```
 
-The broker (`apps/desktop/src/main/services/computerUse/computerUseArtifactBrokerService.ts`) is the only ingest path — both the `ade proof` CLI and any in-process call go through it. Supporting modules in the same directory:
+The broker (`apps/desktop/src/main/services/computerUse/computerUseArtifactBrokerService.ts`) is the only ingest path — both the `ade proof` CLI and any in-process call go through it. The same module is loaded by the desktop main process for local projects and by the standalone `ade serve` runtime for headless / remote use. Supporting modules in the same directory:
 
 - `controlPlane.ts` builds owner snapshots + backend status for the UI.
-- `localComputerUse.ts` reports macOS-only proof-capture capabilities (`screencapture`, app launch, GUI interaction).
+- `localComputerUse.ts` reports macOS-only proof-capture capabilities (`screencapture`, app launch, GUI interaction). Reflects the runtime host's environment, not the desktop machine's.
 - `agentBrowserArtifactAdapter.ts` parses agent-browser output into `ComputerUseArtifactInput[]`.
 - `syntheticToolResult.ts` produces tool-result stubs for the Claude compaction path.
 

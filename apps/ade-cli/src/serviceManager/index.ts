@@ -1,4 +1,5 @@
 import type { ServiceManagerResult, ServiceManagerStatusResult } from "./common";
+import { ADE_RUNTIME_SERVICE_NAME } from "./common";
 import { getLaunchdServiceStatus, installLaunchdService, uninstallLaunchdService } from "./installLaunchd";
 import { getSystemdServiceStatus, installSystemdService, uninstallSystemdService } from "./installSystemd";
 import { getWindowsServiceStatus, installWindowsService, uninstallWindowsService } from "./installWindows";
@@ -11,7 +12,7 @@ export function installRuntimeService(): ServiceManagerResult {
   if (process.platform === "win32") return installWindowsService();
   return {
     ok: false,
-    serviceName: "com.ade.runtime",
+    serviceName: ADE_RUNTIME_SERVICE_NAME,
     action: "install",
     path: null,
     message: `ADE service installation is not supported on ${process.platform}.`,
@@ -24,7 +25,7 @@ export function uninstallRuntimeService(): ServiceManagerResult {
   if (process.platform === "win32") return uninstallWindowsService();
   return {
     ok: false,
-    serviceName: "com.ade.runtime",
+    serviceName: ADE_RUNTIME_SERVICE_NAME,
     action: "uninstall",
     path: null,
     message: `ADE service removal is not supported on ${process.platform}.`,
@@ -37,7 +38,7 @@ export function getRuntimeServiceStatus(): ServiceManagerStatusResult {
   if (process.platform === "win32") return getWindowsServiceStatus();
   return {
     ok: false,
-    serviceName: "com.ade.runtime",
+    serviceName: ADE_RUNTIME_SERVICE_NAME,
     action: "status",
     installed: null,
     running: null,

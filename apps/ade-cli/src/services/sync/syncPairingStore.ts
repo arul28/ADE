@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { SyncPeerMetadata } from "../../../../desktop/src/shared/types";
 import { nowIso, safeJsonParse, writeTextAtomic } from "../../../../desktop/src/main/services/shared/utils";
 import type { SyncPinStore } from "./syncPinStore";
@@ -23,6 +23,16 @@ type SyncPairingStoreArgs = {
 
 function hashSecret(secret: string): string {
   return createHash("sha256").update(secret).digest("hex");
+}
+
+function safeHashEquals(expectedHash: string, actualHash: string): boolean {
+  const expected = Buffer.from(expectedHash, "utf8");
+  const actual = Buffer.from(actualHash, "utf8");
+  if (expected.length !== actual.length) {
+    timingSafeEqual(expected, Buffer.alloc(expected.length));
+    return false;
+  }
+  return timingSafeEqual(expected, actual);
 }
 
 function pairingError(code: "pin_not_set" | "invalid_pin", message: string): Error {
@@ -75,10 +85,12 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
     },
 
     authenticate(deviceId: string, secret: string): boolean {
+      const normalized = deviceId.trim();
+      if (!normalized) return false;
       const records = readRecords();
-      const entry = records[deviceId];
+      const entry = records[normalized];
       if (!entry) return false;
-      if (entry.secretHash !== hashSecret(secret)) return false;
+      if (!safeHashEquals(entry.secretHash, hashSecret(secret))) return false;
       entry.lastUsedAt = nowIso();
       writeRecords(records);
       return true;

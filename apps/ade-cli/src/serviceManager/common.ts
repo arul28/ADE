@@ -26,7 +26,16 @@ export type AdeServiceCommand = {
   env?: Record<string, string>;
 };
 
-export const ADE_RUNTIME_SERVICE_NAME = "com.ade.runtime";
+function resolveRuntimeServiceName(env: NodeJS.ProcessEnv = process.env): string {
+  const explicit = env.ADE_RUNTIME_SERVICE_NAME?.trim();
+  if (explicit) return explicit;
+  const channel = env.ADE_PACKAGE_CHANNEL?.trim().toLowerCase();
+  if (channel === "alpha") return "com.ade.runtime.alpha";
+  if (channel === "beta") return "com.ade.runtime.beta";
+  return "com.ade.runtime";
+}
+
+export const ADE_RUNTIME_SERVICE_NAME = resolveRuntimeServiceName();
 
 export type ServiceManagerProcessResult = {
   status: number | null;
@@ -51,6 +60,18 @@ function runtimeEnvironment(): Record<string, string> | undefined {
   if (process.env.ADE_HOME?.trim()) {
     env.ADE_HOME = process.env.ADE_HOME;
   }
+  if (process.env.ADE_PACKAGE_CHANNEL?.trim()) {
+    env.ADE_PACKAGE_CHANNEL = process.env.ADE_PACKAGE_CHANNEL;
+  }
+  if (process.env.ADE_DESKTOP_APP_NAME?.trim()) {
+    env.ADE_DESKTOP_APP_NAME = process.env.ADE_DESKTOP_APP_NAME;
+  }
+  if (process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL?.trim()) {
+    env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL = process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL;
+  }
+  if (process.env.ADE_RUNTIME_SERVICE_NAME?.trim()) {
+    env.ADE_RUNTIME_SERVICE_NAME = process.env.ADE_RUNTIME_SERVICE_NAME;
+  }
   return Object.keys(env).length > 0 ? env : undefined;
 }
 
@@ -67,6 +88,13 @@ export function resolveAdeServeCommand(): AdeServiceCommand {
     return {
       command: process.execPath,
       args: [entry, "serve"],
+      env: runtimeEnvironment(),
+    };
+  }
+  if (entry && fs.existsSync(entry)) {
+    return {
+      command: entry,
+      args: ["serve"],
       env: runtimeEnvironment(),
     };
   }

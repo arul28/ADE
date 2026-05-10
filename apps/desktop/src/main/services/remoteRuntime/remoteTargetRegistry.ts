@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -37,8 +37,9 @@ function coerceTarget(value: unknown): RemoteRuntimeTarget | null {
   const hostname = typeof record.hostname === "string" ? record.hostname.trim() : "";
   const sshUser = typeof record.sshUser === "string" && record.sshUser.trim() ? record.sshUser.trim() : null;
   if (!hostname) return null;
+  const fallbackInput: RemoteRuntimeTargetInput = { hostname, sshUser, port: normalizePort(typeof record.port === "number" ? record.port : null) };
   return {
-    id: typeof record.id === "string" && record.id.trim() ? record.id.trim() : randomUUID(),
+    id: typeof record.id === "string" && record.id.trim() ? record.id.trim() : stableTargetId(fallbackInput),
     name: typeof record.name === "string" && record.name.trim() ? record.name.trim() : hostname,
     hostname,
     sshUser,

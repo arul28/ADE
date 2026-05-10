@@ -50,7 +50,9 @@ export function RemoteTargetForm({ busy = false, onSubmit, prefill = null }: Rem
   const canSubmit = useMemo(() => {
     if (!hostname.trim()) return false;
     if (!port.trim()) return true;
-    return Number.parseInt(port, 10) > 0;
+    if (!/^\d+$/.test(port.trim())) return false;
+    const parsedPort = Number.parseInt(port, 10);
+    return Number.isInteger(parsedPort) && parsedPort >= 1 && parsedPort <= 65_535;
   }, [hostname, port]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {

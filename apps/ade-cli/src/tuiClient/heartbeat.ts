@@ -29,7 +29,13 @@ function safeUnlink(filePath: string): void {
 
 function cleanupAndCount(dir: string, now = Date.now()): number {
   let count = 0;
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+  for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
     const filePath = path.join(dir, entry.name);
     try {
@@ -98,11 +104,15 @@ export function startTuiHeartbeat(projectRoot: string): TuiHeartbeat {
   const filePath = path.join(dir, `${process.pid}.json`);
   const startedAt = new Date().toISOString();
   const write = () => {
-    fs.writeFileSync(filePath, JSON.stringify({
-      pid: process.pid,
-      startedAt,
-      updatedAt: Date.now(),
-    }), "utf8");
+    try {
+      fs.writeFileSync(filePath, JSON.stringify({
+        pid: process.pid,
+        startedAt,
+        updatedAt: Date.now(),
+      }), "utf8");
+    } catch (error) {
+      console.error("ADE TUI heartbeat write failed", { filePath, error });
+    }
   };
   write();
   const timer = setInterval(() => {

@@ -11,6 +11,7 @@ import {
   CursorCloudUsageError,
   runCursorCloud,
 } from "./cursorCloud";
+import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import {
   JsonRpcError,
   JsonRpcErrorCode,
@@ -113,6 +114,8 @@ type CliPlan =
   | { kind: "help"; text: string }
   | { kind: "execute"; label: string; steps: InvocationStep[]; visualizer?: "lanes"; summary?: "status" | "doctor" | "auth"; formatter?: FormatterId; preferHeadless?: boolean }
   | { kind: "ade-code"; rest: string[] }
+  | { kind: "desktop"; rest: string[] }
+  | { kind: "runtime"; rest: string[] }
   | { kind: "serve"; rest: string[] }
   | { kind: "rpc-stdio"; rest: string[] }
   | { kind: "init"; targetPath: string | null }
@@ -363,6 +366,8 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade help <command...>                         Display help for a command
     $ ade auth status                               Check local ADE CLI readiness
     $ ade code                                      Open ADE Work chat in the terminal
+    $ ade desktop                                   Launch the installed desktop app
+    $ ade runtime start | stop | status             Manage the machine runtime daemon
     $ ade serve                                     Run the ADE runtime daemon in foreground
     $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
     $ ade init [path]                               Register a project with this machine runtime
@@ -371,6 +376,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade doctor                                    Inspect project, socket, runtime, and tool availability
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
     $ ade git status | commit | push | stash        Run ADE-aware git operations
+    $ ade operations status | wait                  Poll operation/test/chat/run/mission status
     $ ade diff changes | file | patch               Inspect lane diffs (including raw git patch text)
     $ ade files tree | read | write | search        Read and edit lane workspaces
     $ ade missions launch | watch | graph           Create, start, and inspect mission runs
@@ -393,7 +399,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade memory add | search | pin                 Use ADE memory
     $ ade settings action <method>                  Call project config actions
     $ ade update status | check | install | dismiss Read auto-update state and drive install
-    $ ade actions list | run | status               Escape hatch for every ADE service action
+    $ ade actions list | run | status | wait        Escape hatch for every ADE service action
     $ ade mcp                                      Expose ADE actions over stdio MCP
     $ ade cursor cloud agents | runs | artifacts | repos | models | me
                                                     Drive Cursor Cloud agents via @cursor/sdk
@@ -412,6 +418,8 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade lanes list --text
     $ ade lanes create --name fix-login --description "Repair login redirect"
     $ ade git status --lane <lane> --text
+    $ ade git status --full --lane <lane> --text
+    $ ade git sync --lane <lane> --rebase --base main
     $ ade git stage --lane <lane> src/index.ts
     $ ade git commit --lane <lane> -m "Fix login redirect"
     $ ade missions launch --prompt "Fix onboarding" --manual --text
@@ -775,6 +783,34 @@ const IOS_SIMULATOR_HELP_ALIASES: Record<string, string> = {
 };
 
 const HELP_BY_COMMAND: Record<string, string> = {
+  desktop: `${ADE_BANNER}
+  ADE Desktop
+
+  Launch the installed ADE desktop app. The desktop app attaches to the normal
+  machine runtime and starts it if needed.
+
+    $ ade desktop
+    $ ade desktop open
+
+  Flags:
+    --app-name <name>       macOS app name to open. Defaults to ADE, ADE Beta,
+                            or ADE Alpha based on the installed CLI wrapper.
+`,
+  runtime: `${ADE_BANNER}
+  ADE Runtime
+
+  Manage the normal machine ADE runtime daemon used by desktop, ade code, and
+  socket-backed CLI commands.
+
+    $ ade runtime status --text
+    $ ade runtime start
+    $ ade runtime stop
+
+  Notes:
+    "start" launches the daemon in the background if it is missing.
+    "stop" shuts down the daemon on the selected socket.
+    Use "ade serve" when you want to run the runtime in the foreground.
+`,
   serve: `${ADE_BANNER}
   ADE Runtime Daemon
 
@@ -857,16 +893,39 @@ const HELP_BY_COMMAND: Record<string, string> = {
   refresh lane state. Use --lane for anything other than the active workspace.
 
     $ ade git status --lane <lane> --text           Show ADE-aware sync status
+    $ ade git status --full --lane <lane> --text    Show full lane status, diff, and conflict state
+    $ ade git fetch --lane <lane>                   Fetch remote refs
+    $ ade git pull --lane <lane>                    Pull with ADE's ff-only lane operation
+    $ ade git sync --lane <lane> --rebase --base main
+                                                    Sync the lane with its base branch
     $ ade git stage --lane <lane> src/file.ts       Stage one file
     $ ade git stage-all --lane <lane>               Stage all current changes
     $ ade git unstage --lane <lane> src/file.ts     Unstage one file
     $ ade git commit --lane <lane> [-m <message>]   Commit, adding Refs <issue-id> on linked Linear lanes
     $ ade git push --lane <lane> --set-upstream     Push through ADE
+    $ ade git push --lane <lane> --force-with-lease Force-push through ADE with lease
     $ ade git branches --lane <lane> --text         List branches with last-commit metadata
     $ ade git user-identity --lane <lane> --text    Read lane checkout's git user.name/email
     $ ade git stash push|list|apply|pop             Use ADE lane stash actions
     $ ade git rebase --lane <lane> --ai             Rebase with ADE conflict support
+    $ ade git rebase continue --lane <lane>         Continue an in-progress rebase
+    $ ade git conflict show --lane <lane> --text    Inspect merge/rebase conflict state
+    $ ade git conflict resolve --kind rebase        Continue after manual conflict resolution
     $ ade diff changes --lane <lane> --text         Inspect changed files
+`,
+  operations: `${ADE_BANNER}
+  Operations
+
+  Poll status for long-running ADE operations that returned an operation,
+  test run, chat session, run graph, mission, or PR id.
+
+    $ ade operations status --operation <id> --text
+    $ ade operations wait --operation <id> --wait-ms 30000 --text
+    $ ade actions wait --test-run <id> --wait-ms 30000 --text
+
+  Generic operation logs are not persisted by the operation table. Use
+  "ade tests logs", "ade run logs", or terminal/app-control log commands for
+  surfaces that own logs.
 `,
   diff: `${ADE_BANNER}
   Diffs
@@ -2153,9 +2212,34 @@ function buildGitPlan(args: string[]): CliPlan {
   const laneId = readLaneId(args);
   const withLane = (base: JsonObject = {}) => collectGenericObjectArgs(args, { ...base, ...(laneId ? { laneId } : {}) });
 
-  if (sub === "status" || sub === "sync-status") return { kind: "execute", label: "git status", steps: [actionCallStep("result", "git_get_sync_status", withLane())] };
+  if (sub === "status" || sub === "sync-status") {
+    const full = readFlag(args, ["--full"]) || peekFirstPositional(args) === "full";
+    if (full && peekFirstPositional(args) === "full") firstPositional(args);
+    if (full) return { kind: "execute", label: "lane status", steps: [actionCallStep("result", "get_lane_status", withLane())] };
+    return { kind: "execute", label: "git status", steps: [actionCallStep("result", "git_get_sync_status", withLane())] };
+  }
   if (sub === "fetch") return { kind: "execute", label: "git fetch", steps: [actionCallStep("result", "git_fetch", withLane())] };
   if (sub === "pull") return { kind: "execute", label: "git pull", steps: [actionCallStep("result", "git_pull", withLane())] };
+  if (sub === "sync") {
+    const explicitMode = readValue(args, ["--mode"]);
+    const mode = readFlag(args, ["--rebase"])
+      ? "rebase"
+      : readFlag(args, ["--merge"])
+        ? "merge"
+        : explicitMode;
+    if (mode && mode !== "merge" && mode !== "rebase") {
+      throw new CliUsageError("--mode must be either merge or rebase.");
+    }
+    const baseRef = readValue(args, ["--base", "--base-ref"]);
+    return {
+      kind: "execute",
+      label: "git sync",
+      steps: [actionStep("result", "git", "sync", withLane({
+        ...(mode ? { mode } : {}),
+        ...(baseRef ? { baseRef } : {}),
+      }))]
+    };
+  }
   if (sub === "push") {
     const forceWithLease = readFlag(args, ["--force", "--force-with-lease"]);
     const setUpstream = readFlag(args, ["--set-upstream", "-u"]);
@@ -2193,7 +2277,25 @@ function buildGitPlan(args: string[]): CliPlan {
       }))]
     };
   }
-  if (sub === "conflicts") return { kind: "execute", label: "git conflicts", steps: [actionCallStep("result", "get_lane_conflict_state", withLane())] };
+  if (sub === "conflict" || sub === "conflicts") {
+    const action = firstPositional(args) ?? "show";
+    if (action === "show" || action === "status") {
+      return { kind: "execute", label: "git conflicts", steps: [actionCallStep("result", "get_lane_conflict_state", withLane())] };
+    }
+    if (action === "resolve" || action === "continue") {
+      const kind = readValue(args, ["--kind"]) ?? (readFlag(args, ["--merge"]) ? "merge" : readFlag(args, ["--rebase"]) ? "rebase" : null);
+      if (kind === "rebase") return { kind: "execute", label: "rebase continue", steps: [actionCallStep("result", "rebase_continue", withLane())] };
+      if (kind === "merge") return { kind: "execute", label: "merge continue", steps: [actionStep("result", "git", "mergeContinue", withLane())] };
+      throw new CliUsageError("git conflict resolve requires --kind rebase or --kind merge.");
+    }
+    if (action === "abort") {
+      const kind = readValue(args, ["--kind"]) ?? (readFlag(args, ["--merge"]) ? "merge" : readFlag(args, ["--rebase"]) ? "rebase" : null);
+      if (kind === "rebase") return { kind: "execute", label: "rebase abort", steps: [actionCallStep("result", "rebase_abort", withLane())] };
+      if (kind === "merge") return { kind: "execute", label: "merge abort", steps: [actionStep("result", "git", "mergeAbort", withLane())] };
+      throw new CliUsageError("git conflict abort requires --kind rebase or --kind merge.");
+    }
+    throw new CliUsageError("git conflict supports show, resolve, continue, or abort.");
+  }
   if (sub === "rebase") {
     const mode = firstPositional(args);
     if (mode === "continue") return { kind: "execute", label: "rebase continue", steps: [actionCallStep("result", "rebase_continue", withLane())] };
@@ -3740,6 +3842,34 @@ function buildSettingsPlan(args: string[]): CliPlan {
   return { kind: "execute", label: `settings ${sub}`, steps: [actionStep("result", "project_config", sub, collectGenericObjectArgs(args))] };
 }
 
+function buildActionStatusArgs(args: string[], defaults: { waitForMs?: number } = {}): JsonObject {
+  const input: JsonObject = {};
+  maybePut(input, "operationId", readValue(args, ["--operation", "--operation-id"]));
+  maybePut(input, "testRunId", readValue(args, ["--test-run", "--test-run-id"]));
+  maybePut(input, "chatSessionId", readValue(args, ["--chat-session", "--chat-session-id"]));
+  maybePut(input, "runId", readValue(args, ["--run", "--run-id"]));
+  maybePut(input, "missionId", readValue(args, ["--mission", "--mission-id"]));
+  maybePut(input, "prId", readValue(args, ["--pr", "--pr-id"]));
+  maybePut(input, "previousHash", readValue(args, ["--previous-hash"]));
+  maybePut(input, "waitForMs", readIntOption(args, ["--wait-ms"], defaults.waitForMs));
+  maybePut(input, "pollIntervalMs", readIntOption(args, ["--poll-interval-ms"]));
+  return collectGenericObjectArgs(args, input);
+}
+
+function buildOperationsPlan(args: string[]): CliPlan {
+  const sub = firstPositional(args) ?? "status";
+  if (sub === "status" || sub === "show") {
+    return { kind: "execute", label: "action status", steps: [actionCallStep("result", "get_ade_action_status", buildActionStatusArgs(args))] };
+  }
+  if (sub === "wait" || sub === "watch") {
+    return { kind: "execute", label: "action status", steps: [actionCallStep("result", "get_ade_action_status", buildActionStatusArgs(args, { waitForMs: 30_000 }))] };
+  }
+  if (sub === "logs" || sub === "log") {
+    throw new CliUsageError("Generic operation logs are not available; use tests logs, run logs, terminal read, or app-control logs for log-owning surfaces.");
+  }
+  throw new CliUsageError("operations supports status or wait.");
+}
+
 function buildActionsPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "list";
   if (sub === "list" || sub === "ls") return { kind: "execute", label: "actions list", steps: [listActionsStep("result", readValue(args, ["--domain"]) ?? firstPositional(args) ?? undefined)] };
@@ -3748,8 +3878,9 @@ function buildActionsPlan(args: string[]): CliPlan {
     return { kind: "execute", label: "action call", steps: [actionCallStep("result", toolName, collectGenericObjectArgs(args))] };
   }
   if (sub === "run") return { kind: "execute", label: "action run", steps: [buildActionRunStep(args)] };
-  if (sub === "status") return { kind: "execute", label: "action status", steps: [actionCallStep("result", "get_ade_action_status", collectGenericObjectArgs(args))] };
-  throw new CliUsageError("actions supports list, run, call, or status.");
+  if (sub === "status") return { kind: "execute", label: "action status", steps: [actionCallStep("result", "get_ade_action_status", buildActionStatusArgs(args))] };
+  if (sub === "wait" || sub === "watch") return { kind: "execute", label: "action status", steps: [actionCallStep("result", "get_ade_action_status", buildActionStatusArgs(args, { waitForMs: 30_000 }))] };
+  throw new CliUsageError("actions supports list, run, call, status, or wait.");
 }
 
 function buildAgentPlan(args: string[]): CliPlan {
@@ -4226,10 +4357,7 @@ function buildCliPlan(command: string[]): CliPlan {
   }
   const primary = firstPositional(args);
   if (!primary) {
-    if (hasHelpFlag(args)) {
-      return { kind: "help", text: TOP_LEVEL_HELP };
-    }
-    return { kind: "ade-code", rest: [] };
+    return { kind: "help", text: TOP_LEVEL_HELP };
   }
   if (primary === "-h" || primary === "--help") {
     return { kind: "help", text: TOP_LEVEL_HELP };
@@ -4271,6 +4399,7 @@ function buildCliPlan(command: string[]): CliPlan {
     automation: "automations",
     "auto-update": "update",
     updates: "update",
+    operation: "operations",
     project: "projects",
   };
   const primaryHelpKey = aliases[primary] ?? primary;
@@ -4306,6 +4435,12 @@ function buildCliPlan(command: string[]): CliPlan {
   if (primary === "code") {
     const rest = args;
     return { kind: "ade-code", rest };
+  }
+  if (primary === "desktop") {
+    return { kind: "desktop", rest: args };
+  }
+  if (primary === "runtime") {
+    return { kind: "runtime", rest: args };
   }
   if (primary === "serve") {
     return { kind: "serve", rest: args };
@@ -4385,6 +4520,7 @@ function buildCliPlan(command: string[]): CliPlan {
   if (primary === "browser" || primary === "ade-browser" || primary === "built-in-browser" || primary === "builtin-browser") return buildBrowserPlan(args);
   if (primary === "memory") return buildMemoryPlan(args);
   if (primary === "settings" || primary === "config" || primary === "setting") return buildSettingsPlan(args);
+  if (primary === "operation" || primary === "operations") return buildOperationsPlan(args);
   if (primary === "actions" || primary === "action") return buildActionsPlan(args);
   if (primary === "update" || primary === "auto-update" || primary === "updates") return buildUpdatePlan(args);
   if (primary === "mcp" || primary === "mcp-server") return { kind: "mcp" };
@@ -4493,6 +4629,8 @@ function commandExists(command: string): boolean {
 function resolveAdeCodeSocketPath(projectRoot: string): string {
   return process.env.ADE_RPC_URL?.trim()
     || process.env.ADE_RPC_SOCKET_PATH?.trim()
+    || process.env.ADE_RUNTIME_SOCKET_PATH?.trim()
+    || resolveMachineAdeLayout().socketPath
     || path.join(projectRoot, ".ade", "ade.sock");
 }
 
@@ -5285,6 +5423,7 @@ function isMachineRuntimeScopedMethod(method: string): boolean {
     || method === "exit"
     || method === "runtime/info"
     || method === "machineInfo.get"
+    || method.startsWith("sync.")
     || method.startsWith("projects.");
 }
 
@@ -5708,9 +5847,9 @@ function normalizeRuntimeSocketPath(rawSocketPath: string): string {
     : path.resolve(rawSocketPath);
 }
 
-async function resolveMachineRuntimeSocketPath(): Promise<string> {
+async function resolveMachineRuntimeSocketPath(rawOverride?: string | null): Promise<string> {
   const { resolveMachineAdeLayout } = await import("./services/projects/machineLayout");
-  const rawSocketPath = process.env.ADE_RUNTIME_SOCKET_PATH?.trim() || resolveMachineAdeLayout().socketPath;
+  const rawSocketPath = rawOverride?.trim() || process.env.ADE_RUNTIME_SOCKET_PATH?.trim() || resolveMachineAdeLayout().socketPath;
   return normalizeRuntimeSocketPath(rawSocketPath);
 }
 
@@ -5767,8 +5906,8 @@ async function spawnMachineRuntimeDaemon(socketPath: string, options: GlobalOpti
   return true;
 }
 
-async function connectMachineRuntimeDaemon(options: GlobalOptions): Promise<SocketJsonRpcClient> {
-  const socketPath = await resolveMachineRuntimeSocketPath();
+async function connectMachineRuntimeDaemon(options: GlobalOptions, socketPathOverride?: string | null): Promise<SocketJsonRpcClient> {
+  const socketPath = await resolveMachineRuntimeSocketPath(socketPathOverride);
   const label = "ADE runtime daemon socket";
   try {
     const client = await SocketJsonRpcClient.connect(socketPath, options.timeoutMs, label);
@@ -5780,7 +5919,11 @@ async function connectMachineRuntimeDaemon(options: GlobalOptions): Promise<Sock
         throw new Error(`ADE runtime daemon version ${runtimeVersion} does not match CLI version ${VERSION}.`);
       }
       const restarted = await SocketJsonRpcClient.connect(socketPath, options.timeoutMs, label);
-      await initializeMachineRuntimeDaemon(restarted, options);
+      const restartedVersion = await initializeMachineRuntimeDaemon(restarted, options);
+      if (restartedVersion && restartedVersion !== VERSION) {
+        await shutdownMachineRuntimeDaemon(restarted);
+        throw new Error(`ADE runtime daemon version ${restartedVersion} does not match CLI version ${VERSION}.`);
+      }
       return restarted;
     }
     return client;
@@ -5789,7 +5932,11 @@ async function connectMachineRuntimeDaemon(options: GlobalOptions): Promise<Sock
     if (!spawned) throw firstError;
     try {
       const client = await SocketJsonRpcClient.connect(socketPath, options.timeoutMs, label);
-      await initializeMachineRuntimeDaemon(client, options);
+      const runtimeVersion = await initializeMachineRuntimeDaemon(client, options);
+      if (runtimeVersion && runtimeVersion !== VERSION) {
+        await shutdownMachineRuntimeDaemon(client);
+        throw new Error(`ADE runtime daemon version ${runtimeVersion} does not match CLI version ${VERSION}.`);
+      }
       return client;
     } catch (secondError) {
       const firstMessage = firstError instanceof Error ? firstError.message : String(firstError);
@@ -5797,6 +5944,136 @@ async function connectMachineRuntimeDaemon(options: GlobalOptions): Promise<Sock
       throw new Error(`Unable to attach to ADE runtime daemon at ${socketPath}: ${secondMessage} (initial attempt: ${firstMessage})`);
     }
   }
+}
+
+async function runRuntimeCommand(rest: string[], options: GlobalOptions): Promise<unknown> {
+  const args = [...rest];
+  const sub = firstPositional(args) ?? "status";
+  const socketOverride = readValue(args, ["--socket"]);
+  const socketPath = await resolveMachineRuntimeSocketPath(socketOverride);
+
+  if (sub === "status") {
+    try {
+      const client = await SocketJsonRpcClient.connect(socketPath, Math.min(options.timeoutMs, 3_000), "ADE runtime daemon socket");
+      try {
+        const runtimeVersion = await initializeMachineRuntimeDaemon(client, options);
+        return {
+          ok: true,
+          running: true,
+          socketPath,
+          version: runtimeVersion,
+          message: "ADE runtime daemon is running.",
+        };
+      } finally {
+        client.close();
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        running: false,
+        socketPath,
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  if (sub === "start") {
+    const client = await connectMachineRuntimeDaemon(options, socketOverride);
+    try {
+      const runtimeVersion = await initializeMachineRuntimeDaemon(client, options).catch(() => null);
+      return {
+        ok: true,
+        running: true,
+        socketPath,
+        version: runtimeVersion,
+        message: "ADE runtime daemon is running.",
+      };
+    } finally {
+      client.close();
+    }
+  }
+
+  if (sub === "stop" || sub === "shutdown") {
+    try {
+      const client = await SocketJsonRpcClient.connect(socketPath, Math.min(options.timeoutMs, 3_000), "ADE runtime daemon socket");
+      try {
+        await initializeMachineRuntimeDaemon(client, options).catch(() => null);
+        await shutdownMachineRuntimeDaemon(client);
+      } finally {
+        client.close();
+      }
+      return {
+        ok: true,
+        running: false,
+        socketPath,
+        message: "ADE runtime daemon stopped.",
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        running: false,
+        socketPath,
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  if (sub === "install-service") {
+    const { installRuntimeService } = await import("./serviceManager");
+    return installRuntimeService();
+  }
+  if (sub === "uninstall-service") {
+    const { uninstallRuntimeService } = await import("./serviceManager");
+    return uninstallRuntimeService();
+  }
+  if (sub === "service-status") {
+    const { getRuntimeServiceStatus } = await import("./serviceManager");
+    return getRuntimeServiceStatus();
+  }
+
+  throw new CliUsageError("runtime supports status, start, stop, install-service, uninstall-service, or service-status.");
+}
+
+async function runDesktopCommand(rest: string[]): Promise<unknown> {
+  const args = [...rest];
+  const sub = firstPositional(args) ?? "open";
+  const appName = readValue(args, ["--app-name"]) ?? resolveDefaultDesktopAppName();
+  if (sub !== "open" && sub !== "launch" && sub !== "start") {
+    throw new CliUsageError("desktop supports open.");
+  }
+
+  if (process.platform === "darwin") {
+    const result = spawnSync("open", ["-a", appName], { encoding: "utf8" });
+    const detail = typeof result.stderr === "string" && result.stderr.trim()
+      ? result.stderr.trim()
+      : typeof result.stdout === "string" && result.stdout.trim()
+        ? result.stdout.trim()
+        : `Unable to open ${appName}.`;
+    return {
+      ok: result.status === 0,
+      platform: process.platform,
+      appName,
+      message: result.status === 0
+        ? `Opened ${appName}.`
+        : detail,
+    };
+  }
+
+  return {
+    ok: false,
+    platform: process.platform,
+    appName,
+    message: "Launching ADE desktop from the CLI is currently supported on macOS.",
+  };
+}
+
+function resolveDefaultDesktopAppName(): string {
+  const explicit = process.env.ADE_DESKTOP_APP_NAME?.trim();
+  if (explicit) return explicit;
+  const channel = process.env.ADE_PACKAGE_CHANNEL?.trim().toLowerCase();
+  if (channel === "alpha") return "ADE Alpha";
+  if (channel === "beta") return "ADE Beta";
+  return "ADE";
 }
 
 async function runNativeRpcStdio(options: GlobalOptions): Promise<void> {
@@ -7680,6 +7957,20 @@ async function runCli(argv: string[]): Promise<{ output: string; exitCode: numbe
     if (plan.kind === "rpc-stdio") {
       await runNativeRpcStdio(parsed.options);
       return { output: "", exitCode: 0 };
+    }
+    if (plan.kind === "desktop") {
+      const result = await runDesktopCommand(plan.rest);
+      return {
+        output: formatOutput(result, parsed.options, undefined),
+        exitCode: isRecord(result) && result.ok === false ? 1 : 0,
+      };
+    }
+    if (plan.kind === "runtime") {
+      const result = await runRuntimeCommand(plan.rest, parsed.options);
+      return {
+        output: formatOutput(result, parsed.options, undefined),
+        exitCode: isRecord(result) && result.ok === false ? 1 : 0,
+      };
     }
     if (plan.kind === "serve") {
       const result = await runServe(plan.rest, parsed.options);

@@ -68,15 +68,67 @@ export function validateRemoteRuntimeInitializeResult(args: {
   }
 }
 
-const REMOTE_RUNTIME_PATH_PREFIX = 'PATH="$HOME/.ade/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}"';
+type RemoteRuntimeChannel = "alpha" | "beta" | null;
+
+type RemoteRuntimeLayout = {
+  channel: RemoteRuntimeChannel;
+  homeDirName: ".ade" | ".ade-alpha" | ".ade-beta";
+  homeDirExpr: string;
+  binDirExpr: string;
+  binDirRelative: string;
+  runtimeDirExpr: string;
+  runtimeDirRelative: string;
+  binaryExpr: string;
+  binaryRelative: string;
+  versionExpr: string;
+};
+
+function normalizeRemoteRuntimeChannel(value: unknown): RemoteRuntimeChannel {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (normalized === "alpha" || normalized === "beta") return normalized;
+  return null;
+}
+
+export function resolveRemoteRuntimeLayout(env: NodeJS.ProcessEnv = process.env): RemoteRuntimeLayout {
+  const channel = normalizeRemoteRuntimeChannel(env.ADE_PACKAGE_CHANNEL);
+  const homeDirName = channel === "alpha"
+    ? ".ade-alpha"
+    : channel === "beta"
+      ? ".ade-beta"
+      : ".ade";
+  const homeDirExpr = `$HOME/${homeDirName}`;
+  const binDirExpr = `${homeDirExpr}/bin`;
+  const runtimeDirExpr = `${homeDirExpr}/runtime`;
+  return {
+    channel,
+    homeDirName,
+    homeDirExpr,
+    binDirExpr,
+    binDirRelative: `${homeDirName}/bin`,
+    runtimeDirExpr,
+    runtimeDirRelative: `${homeDirName}/runtime`,
+    binaryExpr: `${binDirExpr}/ade`,
+    binaryRelative: `${homeDirName}/bin/ade`,
+    versionExpr: `${binDirExpr}/ade.version`,
+  };
+}
 
 export function buildRemoteRuntimeEnvironmentPrefix(args: {
   archLabel: string;
   nativeDepsReady: boolean;
+  layout?: RemoteRuntimeLayout;
 }): string {
-  const parts = [REMOTE_RUNTIME_PATH_PREFIX];
+  const layout = args.layout ?? resolveRemoteRuntimeLayout();
+  const parts = [
+    `ADE_HOME="${layout.homeDirExpr}"`,
+    `PATH="${layout.binDirExpr}:$HOME/.local/bin:$HOME/.npm-global/bin${"${PATH:+:$PATH}"}"`,
+  ];
+  if (layout.channel) {
+    parts.push(`ADE_PACKAGE_CHANNEL="${layout.channel}"`);
+    parts.push("ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1");
+  }
   if (args.nativeDepsReady) {
-    parts.push(`NODE_PATH="$HOME/.ade/runtime/${args.archLabel}/node_modules${"${NODE_PATH:+:$NODE_PATH}"}"`);
+    parts.push(`NODE_PATH="${layout.runtimeDirExpr}/${args.archLabel}/node_modules${"${NODE_PATH:+:$NODE_PATH}"}"`);
   }
   return `${parts.join(" ")} `;
 }
@@ -116,15 +168,15 @@ function bundledNativeDepsPath(resourcesPath: string, archLabel: string): string
   }) ?? null;
 }
 
-async function uploadRuntimeBinary(client: Client, localPath: string, appVersion: string): Promise<void> {
-  await execSsh(client, "mkdir -p ~/.ade/bin");
+async function uploadRuntimeBinary(client: Client, layout: RemoteRuntimeLayout, localPath: string, appVersion: string): Promise<void> {
+  await execSsh(client, `mkdir -p ${layout.binDirExpr}`);
   await new Promise<void>((resolve, reject) => {
     client.sftp((error, sftp) => {
       if (error) {
         reject(error);
         return;
       }
-      sftp.fastPut(localPath, ".ade/bin/ade", {}, (putError) => {
+      sftp.fastPut(localPath, layout.binaryRelative, {}, (putError) => {
         sftp.end();
         if (putError) reject(putError);
         else resolve();
@@ -132,16 +184,16 @@ async function uploadRuntimeBinary(client: Client, localPath: string, appVersion
     });
   });
   await execSsh(client, [
-    "chmod 700 ~/.ade/bin",
-    "chmod +x ~/.ade/bin/ade",
-    `printf '%s\\n' ${shellQuote(appVersion)} > ~/.ade/bin/ade.version`,
-    "chmod 600 ~/.ade/bin/ade.version",
+    `chmod 700 ${layout.binDirExpr}`,
+    `chmod +x ${layout.binaryExpr}`,
+    `printf '%s\\n' ${shellQuote(appVersion)} > ${layout.versionExpr}`,
+    `chmod 600 ${layout.versionExpr}`,
   ].join(" && "));
 }
 
-async function uploadNativeDepsBundle(client: Client, archLabel: string, localPath: string, appVersion: string): Promise<void> {
-  await execSsh(client, "mkdir -p ~/.ade/runtime");
-  const remoteArchive = `.ade/runtime/ade-${archLabel}.native.tar.gz`;
+async function uploadNativeDepsBundle(client: Client, layout: RemoteRuntimeLayout, archLabel: string, localPath: string, appVersion: string): Promise<void> {
+  await execSsh(client, `mkdir -p ${layout.runtimeDirExpr}`);
+  const remoteArchive = `${layout.runtimeDirRelative}/ade-${archLabel}.native.tar.gz`;
   await new Promise<void>((resolve, reject) => {
     client.sftp((error, sftp) => {
       if (error) {
@@ -156,10 +208,10 @@ async function uploadNativeDepsBundle(client: Client, archLabel: string, localPa
     });
   });
   const extract = await execSsh(client, [
-    `rm -rf ~/.ade/runtime/${archLabel}`,
-    `mkdir -p ~/.ade/runtime/${archLabel}`,
-    `tar -xzf ~/.ade/runtime/ade-${archLabel}.native.tar.gz -C ~/.ade/runtime/${archLabel}`,
-    `printf '%s\\n' ${shellQuote(appVersion)} > ~/.ade/runtime/${archLabel}/.ade-version`,
+    `rm -rf ${layout.runtimeDirExpr}/${archLabel}`,
+    `mkdir -p ${layout.runtimeDirExpr}/${archLabel}`,
+    `tar -xzf ${layout.runtimeDirExpr}/ade-${archLabel}.native.tar.gz -C ${layout.runtimeDirExpr}/${archLabel}`,
+    `printf '%s\\n' ${shellQuote(appVersion)} > ${layout.runtimeDirExpr}/${archLabel}/.ade-version`,
   ].join(" && "));
   if (extract.code !== 0) {
     throw new Error(extract.stderr.trim() || "Unable to unpack ADE service native dependencies on the remote machine.");
@@ -198,9 +250,10 @@ export async function bootstrapRemoteRuntime(args: {
       throw new Error(uname.stderr.trim() || "Unable to detect remote architecture.");
     }
     const arch = normalizeRemoteArch(uname.stdout.trim());
-    const binaryMarkerCheck = await execSsh(ssh, "cat ~/.ade/bin/ade.version 2>/dev/null || true");
+    const layout = resolveRemoteRuntimeLayout();
+    const binaryMarkerCheck = await execSsh(ssh, `cat ${layout.versionExpr} 2>/dev/null || true`);
     const markedRuntimeVersion = normalizeRuntimeVersion(binaryMarkerCheck.stdout);
-    const versionCheck = await execSsh(ssh, "test -x ~/.ade/bin/ade && ~/.ade/bin/ade --version || true");
+    const versionCheck = await execSsh(ssh, `test -x ${layout.binaryExpr} && ${layout.binaryExpr} --version || true`);
     const executableRuntimeVersion = normalizeRuntimeVersion(versionCheck.stdout);
     let runtimeVersion = selectRemoteRuntimeVersion({
       markerVersion: markedRuntimeVersion,
@@ -214,7 +267,7 @@ export async function bootstrapRemoteRuntime(args: {
       executableVersion: executableRuntimeVersion,
       appVersion: args.appVersion,
     })) {
-      await uploadRuntimeBinary(ssh, localBinary, args.appVersion);
+      await uploadRuntimeBinary(ssh, layout, localBinary, args.appVersion);
       runtimeUploaded = true;
       runtimeVersion = args.appVersion;
     }
@@ -222,13 +275,13 @@ export async function bootstrapRemoteRuntime(args: {
     let nativeDepsReady = false;
     if (nativeDepsBundle) {
       const nativeDepsCheck = await execSsh(ssh, [
-        `test -d ~/.ade/runtime/${arch.label}/node_modules`,
-        `test "$(cat ~/.ade/runtime/${arch.label}/.ade-version 2>/dev/null)" = ${shellQuote(args.appVersion)}`,
+        `test -d ${layout.runtimeDirExpr}/${arch.label}/node_modules`,
+        `test "$(cat ${layout.runtimeDirExpr}/${arch.label}/.ade-version 2>/dev/null)" = ${shellQuote(args.appVersion)}`,
         "echo ok",
       ].join(" && ") + " || true");
       const shouldUploadNativeDeps = runtimeUploaded || nativeDepsCheck.stdout.trim() !== "ok";
       if (shouldUploadNativeDeps) {
-        await uploadNativeDepsBundle(ssh, arch.label, nativeDepsBundle, args.appVersion);
+        await uploadNativeDepsBundle(ssh, layout, arch.label, nativeDepsBundle, args.appVersion);
       }
       nativeDepsReady = true;
     }
@@ -236,10 +289,11 @@ export async function bootstrapRemoteRuntime(args: {
     const runtimeEnvPrefix = buildRemoteRuntimeEnvironmentPrefix({
       archLabel: arch.label,
       nativeDepsReady,
+      layout,
     });
 
     if (runtimeUploaded) {
-      const uploadedVersionCheck = await execSsh(ssh, `${runtimeEnvPrefix}~/.ade/bin/ade --version`);
+      const uploadedVersionCheck = await execSsh(ssh, `${runtimeEnvPrefix}${layout.binaryExpr} --version`);
       const uploadedVersion = normalizeRuntimeVersion(uploadedVersionCheck.stdout);
       if (uploadedVersionCheck.code !== 0 || !uploadedVersion) {
         throw new Error(
@@ -262,7 +316,7 @@ export async function bootstrapRemoteRuntime(args: {
     }
 
     const command = localBinary || runtimeUploaded
-      ? `${runtimeEnvPrefix}~/.ade/bin/ade rpc --stdio`
+      ? `${runtimeEnvPrefix}${layout.binaryExpr} rpc --stdio`
       : `${runtimeEnvPrefix}ade rpc --stdio`;
     const transport = await openSshRuntimeTransport(ssh, command);
     const client = new RuntimeRpcClient(transport);

@@ -1,10 +1,12 @@
 # Orchestration
 
-The orchestrator is the runtime that drives missions. It owns runs, steps, attempts, claims, artifacts, gate reports, timeline events, and the coordinator-agent session that turns a natural-language goal into a multi-step plan and execution DAG.
+The orchestrator is the in-runtime engine that drives missions. It owns runs, steps, attempts, claims, artifacts, gate reports, timeline events, and the coordinator-agent session that turns a natural-language goal into a multi-step plan and execution DAG. Every part of the orchestrator runs inside whichever runtime daemon owns the project (local `ade serve` for local projects, the remote runtime over SSH for remote projects); the desktop UI is a viewer over the runtime's RPC surface.
+
+Worker spawn paths use whatever provider CLIs are installed on the runtime host. A remote Linux runtime can spawn `claude-local` and `codex-local` workers but cannot spawn anything that needs macOS-only tooling (e.g. iOS simulator drivers); plan accordingly when authoring missions for remote-hosted projects.
 
 ## Source file map
 
-All in `apps/desktop/src/main/services/orchestrator/`.
+All in `apps/desktop/src/main/services/orchestrator/`. Files in this directory are loaded by the runtime daemon's project scope (and by the desktop main process for local projects); the path reflects the source tree, not the host process.
 
 - `orchestratorService.ts` — row-level persistence and the low-level run state machine. `tickRun`, `completeAttempt`, claim acquisition, gate reports. ~8000 LOC. The most delicate file in the service layer.
 - `aiOrchestratorService.ts` — the façade used by the rest of the app and by the AI surfaces. Wires mission + orchestrator + AI integration + memory + budget + conflict services. Owns top-level flows: `pauseMissionWithIntervention`, `steerMission`, run finalization, recovery.

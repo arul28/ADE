@@ -33,6 +33,47 @@ function requireFile(filePath, label) {
   }
 }
 
+function normalizePackageChannel(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return normalized === "alpha" || normalized === "beta" ? normalized : null;
+}
+
+function resolvePackageChannel(context) {
+  const explicit = normalizePackageChannel(process.env.ADE_PACKAGE_CHANNEL);
+  if (explicit) return explicit;
+  const appInfo = context?.packager?.appInfo;
+  const candidates = [
+    appInfo?.productName,
+    appInfo?.productFilename,
+    appInfo?.id,
+  ];
+  for (const candidate of candidates) {
+    const text = String(candidate || "").toLowerCase();
+    if (text.includes("alpha")) return "alpha";
+    if (text.includes("beta")) return "beta";
+  }
+  return null;
+}
+
+function channelCliName(channel) {
+  if (channel === "alpha") return "ade-alpha";
+  if (channel === "beta") return "ade-beta";
+  return "ade";
+}
+
+function materializeChannelCliWrapper(resourcesRoot, channel) {
+  if (!channel) return null;
+  const cliRoot = path.join(resourcesRoot, "ade-cli");
+  const binRoot = path.join(cliRoot, "bin");
+  const sourcePath = path.join(binRoot, "ade");
+  const targetPath = path.join(binRoot, channelCliName(channel));
+  requireFile(sourcePath, "bundled ADE CLI wrapper");
+  fs.copyFileSync(sourcePath, targetPath);
+  fs.chmodSync(targetPath, 0o755);
+  fs.writeFileSync(path.join(cliRoot, "channel"), `${channel}\n`);
+  return targetPath;
+}
+
 function removeIfPresent(rootPath, relativePath) {
   const targetPath = path.join(rootPath, relativePath);
   if (!fs.existsSync(targetPath)) return false;
@@ -111,6 +152,7 @@ function pruneUnneededRuntimePayload(runtimeRoot, platform) {
 
 module.exports = async function afterPack(context) {
   const platform = context?.electronPlatformName;
+  const packageChannel = resolvePackageChannel(context);
   const { runtimeRoot, appBundlePath } = resolveUnpackedRuntimeRoot(context);
   if (!fs.existsSync(runtimeRoot)) {
     throw new Error(`[afterPack] Missing unpacked runtime payload: ${runtimeRoot}`);
@@ -139,6 +181,10 @@ module.exports = async function afterPack(context) {
     fs.chmodSync(bundledCliBinPath, 0o755);
     fs.chmodSync(bundledCliInstallerPath, 0o755);
     fs.chmodSync(iosSimHelperBuildScript, 0o755);
+    const channelWrapperPath = materializeChannelCliWrapper(resourcesRoot, packageChannel);
+    if (channelWrapperPath) {
+      console.log(`[afterPack] Added channel CLI wrapper: ${path.basename(channelWrapperPath)}`);
+    }
   } else if (platform === "win32") {
     requireFile(path.join(resourcesRoot, "ade-cli", "bin", "ade.cmd"), "bundled ADE CLI Windows wrapper");
     requireFile(path.join(resourcesRoot, "ade-cli", "install-path.cmd"), "bundled ADE CLI Windows PATH installer");

@@ -4,6 +4,16 @@ A mission is ADE's structured, multi-step execution primitive. It wraps a user g
 
 The runtime is feature-rich but the mission launcher and page shell now follow a staged-load model so the surface stays responsive even while orchestrator metadata warms up.
 
+## Runtime ownership
+
+Missions live in whichever runtime daemon owns the project. The coordinator agent loop, planner workers, implementation/testing/validation workers, intervention queue, recovery loop, and result-lane finalization all execute inside `ade serve`. For local projects that is the local daemon; for remote projects it is the remote runtime over SSH-tunneled JSON-RPC. The desktop renderer's mission UI (`MissionsPage`, `MissionDetailView`, chat channels, plan editor) is purely a view: it reads runs/steps/attempts/events through the active runtime binding, sends control RPCs (start, cancel, steer, intervene, approve), and renders coordinator/worker chat threads.
+
+Caveats that follow from "runtime owns missions":
+
+- Worker provider availability follows the runtime host. A remote Linux runtime cannot launch a worker that requires the macOS-only iOS Simulator; that worker has to run on a Mac runtime.
+- Mission artifacts (including computer-use proof) write to the runtime host's project artifacts directory. Remote runs store proof on the remote machine.
+- Memory and embedding-backed retrieval are disabled on remote bindings (the static remote build does not bundle `onnxruntime-node`); mission preflight knowledge-sync degrades to lexical fallbacks for remote-hosted runs.
+
 ## Source file map
 
 ### Core services (apps/desktop/src/main/services/)
@@ -35,7 +45,8 @@ The runtime is feature-rich but the mission launcher and page shell now follow a
 - `orchestrator/teamRuntimeConfig.ts` / `teamRuntimeState.ts` — team manifest and runtime state.
 - `orchestrator/permissionMapping.ts` — mission permission config to provider-specific tool permissions.
 - `orchestrator/orchestratorQueries.ts` — row types, helpers for mapping DB rows to typed objects, normalization.
-- `apps/ade-cli/src/cli.ts` — typed `ade missions` command group (`list`, `create`, `launch`, `start`, `resume`, `show`, `runs`, `graph`, `watch`) plus phase/planned-step JSON payload options for headless or socket-backed mission operations.
+- `apps/ade-cli/src/cli.ts` — typed `ade missions` command group (`list`, `create`, `launch`, `start`, `resume`, `show`, `runs`, `graph`, `watch`) plus phase/planned-step JSON payload options for headless or socket-backed mission operations. Routes through the active runtime daemon; with `--socket` it talks to the desktop's local daemon, otherwise it spins up a headless project scope.
+- `apps/ade-cli/src/multiProjectRpcServer.ts` — exposes mission lifecycle and run-graph reads as project-scoped JSON-RPC actions consumed by both the desktop preload bridge (for remote bindings) and the CLI.
 
 ### Renderer
 

@@ -5,9 +5,31 @@ parallel dev environment: its own port range, its own `.localhost`
 hostname, its own OAuth callback routing, its own health signals, and
 optional per-lane env init. Shipped as Phase 5 workstreams W1–W6.
 
+## Where this runs
+
+Every service below executes inside the **active runtime** for the
+window's project binding — the local ADE daemon (`ade serve`) for
+local-bound windows or the SSH-attached remote runtime for
+remote-bound windows. Port leases, proxy hostname routing, OAuth
+callback handling, env init, and runtime diagnostics all run on the
+machine that owns the lane's worktree. The desktop main-process copies
+under `apps/desktop/src/main/services/lanes/` are kept as fallback
+implementations only; the canonical ones now live alongside the runtime
+services in `apps/ade-cli/`. The renderer's `window.ade.lanes.*` APIs
+that touch this subsystem (`initEnv`, `getEnvStatus`, `port.*`,
+`proxy.*`, `oauth.*`, `diagnostics.*`) are routed through preload's
+`callProjectRuntimeActionOr("lane", …)` helper, which prefers the
+runtime daemon and only falls back to in-process handlers when no
+runtime is bound.
+
+For remote-bound windows the listening sockets, the `*.localhost`
+proxy, and the OAuth callback URL all live on the remote host. Preview
+URLs reflect that hostname.
+
 ## Services
 
-Main process services in `apps/desktop/src/main/services/lanes/`:
+Services keyed by workstream. Code paths shown for the desktop
+fallback target; the runtime daemon hosts the canonical instances.
 
 | Service | Workstream | Responsibility |
 |---------|-----------|----------------|

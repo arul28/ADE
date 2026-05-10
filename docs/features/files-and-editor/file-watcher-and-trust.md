@@ -1,21 +1,33 @@
 # File Watcher and Trust Boundary
 
-Detail reference for the main-process file services — how filesystem
-access is gated, how `chokidar` is shared across subscriptions, and
-how external changes propagate to open editor tabs without racing
-against user edits.
+Detail reference for the file services — how filesystem access is
+gated, how `chokidar` is shared across subscriptions, and how external
+changes propagate to open editor tabs without racing against user
+edits.
+
+The canonical file services run inside the **active ADE runtime**
+(local daemon for local-bound windows, SSH-attached remote runtime for
+remote-bound windows). The desktop main process also hosts the same
+services as fallback targets for the legacy IPC path; both code paths
+share the same source files and behavior. Remote-bound windows
+therefore execute every file read, atomic write, watcher subscription,
+and search index update on the remote machine.
 
 ## Trust boundary
 
-The file services run exclusively in the main process. The renderer
-has no direct `node:fs` or `node:path` access (those come from the
-node runtime, not Electron). All filesystem operations go through:
+The renderer never touches `node:fs` or `node:path` directly (those
+come from the node runtime, not Electron). All filesystem operations
+go through:
 
 1. `window.ade.files.*` from the preload bridge
-   (`apps/desktop/src/preload/preload.ts`)
+   (`apps/desktop/src/preload/preload.ts`), which calls
+   `callProjectRuntimeActionIfBound("file", …)` first for the active
+   runtime route, then falls through to the in-process IPC handler.
 2. `ade.files.*` IPC channels registered in
-   `apps/desktop/src/main/services/ipc/registerIpc.ts`
-3. `fileService` methods, which:
+   `apps/desktop/src/main/services/ipc/registerIpc.ts` (fallback
+   path for the desktop's local in-process implementation).
+3. `fileService` methods (run on the runtime host; in fallback mode
+   they run inside the desktop main process), which:
    - resolve every path against the workspace root via
      `resolvePathWithinRoot`
    - refuse any path that contains `.git` at any segment
@@ -24,10 +36,10 @@ node runtime, not Electron). All filesystem operations go through:
    - refuse paths that are not inside the workspace root after
      normalization
 
-The renderer never sees an absolute host path until the main process
-has validated it. `FileContent.languageId` is a Monaco hint; it is
-derived from the extension by `languageIdFromPath`, not from any path
-metadata.
+The renderer never sees an absolute host path until the active runtime
+(or, on the fallback path, the desktop main process) has validated it.
+`FileContent.languageId` is a Monaco hint; it is derived from the
+extension by `languageIdFromPath`, not from any path metadata.
 
 ### Path safety invariants
 
@@ -199,9 +211,13 @@ Rename detection on the renderer side: because watcher events come as
 renderer inspects the modified timestamp and file size to correlate
 them when possible.
 
-## IPC surface (main-process handlers)
+## IPC surface
 
-All registered in `registerIpc.ts`:
+The primary route is the runtime daemon's `file` action domain.
+`preload.ts` calls `callProjectRuntimeActionIfBound("file", …)` first
+and only falls back to the in-process IPC handler when no runtime is
+bound. Both paths share the same handler shapes; the desktop fallback
+handlers are registered in `registerIpc.ts`:
 
 | Channel | Handler behavior |
 |---|---|

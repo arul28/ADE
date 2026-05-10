@@ -1,10 +1,12 @@
 # iOS Companion
 
-The ADE iOS app is a native SwiftUI companion that acts as a **controller**
-for a reachable ADE machine, including the desktop app's daemon-backed
-runtime or a headless `ade serve` host. The phone never runs agents; it
+The ADE iOS app is a native SwiftUI companion that acts as a
+**controller** for an ADE runtime daemon (`ade serve`). The daemon may
+be running on a Mac that also has the desktop app open or on a headless
+host — the phone does not care, and the desktop renderer is just
+another controller of the same daemon. The phone never runs agents; it
 reads synced state from a local SQLite DB and sends execution commands
-to the host over WebSocket.
+to the daemon over WebSocket.
 
 This doc summarises the architecture at a level useful for understanding
 the sync surface. For the full roadmap, see Phase 6 and Phase 7 plans in

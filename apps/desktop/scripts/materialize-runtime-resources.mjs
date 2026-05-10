@@ -16,6 +16,7 @@ const runtimeRoot = path.join(desktopRoot, "resources", "runtime");
 const cliDistStaticRoot = path.join(cliRoot, "dist-static");
 const targets = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"];
 const seaFuse = "NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2";
+const allowHostOnlyRuntimeResources = process.env.ADE_RUNTIME_RESOURCES_ALLOW_HOST_ONLY === "1";
 
 function currentTarget() {
   const platform = process.platform === "darwin" ? "darwin" : process.platform === "linux" ? "linux" : process.platform;
@@ -321,6 +322,15 @@ async function main() {
 
   const missing = await missingArtifacts();
   if (missing.length > 0) {
+    if (allowHostOnlyRuntimeResources) {
+      console.warn(
+        "[runtime-resources] Host-only local package mode is enabled; missing remote runtime artifact(s):\n" +
+          `${formatMissing(missing)}\n` +
+          "\nRemote runtime bootstrap to those targets will be unavailable in this local package. " +
+          "Release builds still require the full runtime artifact set."
+      );
+      return;
+    }
     throw new Error(
       "[runtime-resources] Missing remote ADE runtime artifact(s):\n" +
         `${formatMissing(missing)}\n` +

@@ -11,7 +11,7 @@ Workers are named agent identities that ADE can wake for delegated work. The CTO
 - `workerHeartbeatService.ts` — heartbeat policy (interval, pause threshold), liveness reporting, activity feed updates.
 - `workerRevisionService.ts` — config revision history; every identity change lands as a new `AgentConfigRevision`.
 - `workerTaskSessionService.ts` — short-lived task session records that tie a worker to a lane/issue/run.
-- `workerAdapterRuntimeService.ts` — adapter lifecycle management for `claude-local`, `codex-local`, `process`.
+- `workerAdapterRuntimeService.ts` — adapter lifecycle management for the three worker adapter types: `claude-local`, `codex-local`, and `process`.
 
 ### Renderer (apps/desktop/src/renderer/components/cto/)
 
@@ -71,12 +71,19 @@ The heartbeat policy lets the operator toggle "always running" vs idle-on-demand
 
 ## Adapter types
 
-`workerAdapterRuntimeService.ts` owns the lifecycle for each adapter:
+`workerAdapterRuntimeService.ts` owns the lifecycle for the three
+supported adapters:
 
 - `claude-local` — Claude CLI subprocess. Uses `resolveClaudeCliModel`.
 - `codex-local` — Codex CLI subprocess. Uses `resolveCodexCliModel`.
-- `process` — generic managed process (e.g. for running a long-lived worker bin).
-Adapter config is validated for env-reference-only secrets — the service refuses to persist raw API keys in config fields and requires `${env:VAR}` references instead.
+- `process` — generic managed process (e.g. for running a long-lived worker binary or wrapping an out-of-tree agent runtime).
+
+There are no other adapter types. `AdapterType` is `"claude-local" |
+"codex-local" | "process"` in `apps/desktop/src/shared/types/agents.ts`,
+and `workerAgentService` enforces that allowlist when persisting an
+identity (`ALLOWED_ADAPTER_TYPES`). Adapter config is validated for
+env-reference-only secrets — the service refuses to persist raw API
+keys in config fields and requires `${env:VAR}` references instead.
 
 ## Budgets
 

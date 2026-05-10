@@ -5,20 +5,31 @@ session, and operation state into `GraphNodeData` / `GraphEdgeData`.
 The renderer stages data loading in layers so the canvas is
 interactive before every overlay finishes.
 
+Every data feed below is served by the **active ADE runtime** for the
+window's project binding (local daemon for local-bound windows,
+SSH-attached remote runtime for remote-bound windows). The renderer
+goes through `apps/desktop/src/preload/preload.ts`, which prefers the
+runtime route via `callProjectRuntimeActionOr(...)` and falls back to
+the legacy in-process IPC handler when no runtime is bound. The IPC
+channel names below are the renderer-facing API; the runtime serves
+each one through its corresponding action domain
+(`lane`, `conflicts`, `pr`, `operation`, `process`, `session`,
+`graph_state`).
+
 Source: `apps/desktop/src/renderer/components/graph/WorkspaceGraphPage.tsx`.
 
 ## Data feeds
 
-| Source | Feeds | IPC / store path |
-|--------|-------|------------------|
-| Lane list | Node positions, node data (`lane`) | `appStore.lanes`, `appStore.refreshLanes()` |
-| Conflict status + risk matrix | Node `status`, edge `riskLevel`, matrix | `ade.conflicts.getBatchAssessment` |
+| Source | Feeds | Renderer call (runtime-routed) |
+|--------|-------|--------------------------------|
+| Lane list | Node positions, node data (`lane`) | `appStore.lanes`, `appStore.refreshLanes()` (→ `lane` action) |
+| Conflict status + risk matrix | Node `status`, edge `riskLevel`, matrix | `ade.conflicts.getBatchAssessment` (→ `conflicts` action) |
 | Sync status | Node `remoteSync` badge | `ade.git.getLaneUpstreamSync` (batched) |
-| Auto-rebase status | Node `autoRebaseStatus` badge | `ade.lanes.listAutoRebaseStatuses` |
-| Sessions | Active session counts, activity score, last-activity timestamps | `renderer/lib/sessionListCache.ts` (cached list + PTY event stream) |
-| Operations | Activity score (git commits) | `ade.history.listOperations` |
-| PRs | Node `pr` overlay, PR edges | `ade.prs.listWithConflicts` |
-| Integration proposals | Proposal nodes | `ade.prs.listProposals` |
+| Auto-rebase status | Node `autoRebaseStatus` badge | `ade.lanes.listAutoRebaseStatuses` (→ `lane` action) |
+| Sessions | Active session counts, activity score, last-activity timestamps | `renderer/lib/sessionListCache.ts` (cached list + runtime event stream) |
+| Operations | Activity score (git commits) | `ade.history.listOperations` (→ `operation` action) |
+| PRs | Node `pr` overlay, PR edges | `ade.prs.listWithConflicts` (→ `pr` action) |
+| Integration proposals | Proposal nodes | `ade.prs.listProposals` (→ `pr` action) |
 | Environment mappings | Environment coloring per lane | `ade.project.listEnvironmentMappings` |
 
 ## Initial hydration sequence
@@ -122,8 +133,9 @@ on every chunk.
 
 ## Event-driven refreshes
 
-The page subscribes to several main-process event streams and
-schedules refreshes accordingly:
+The page subscribes to several runtime event streams (delivered
+through the preload runtime event pump for both local and remote
+runtimes) and schedules refreshes accordingly:
 
 - `ade.prs.onEvent(event)` — when `event.type === "prs-updated"` →
   `scheduleRefreshPrs()`.
@@ -217,14 +229,16 @@ PR edges:
 
 ## Persistence
 
-Two storage paths:
+Two storage paths, both routed to the active runtime via preload's
+`graph_state` action domain (with the legacy in-process IPC handler
+as fallback):
 
 - **Per-view session snapshot** (`GraphSessionState`): node
   positions, collapsed state, filters. Persisted per view mode so
   switching modes preserves the user's layout.
 - **Global preferences** (`GraphPersistedState`): `lastViewMode`
-  only. Written via `ade.workspace.saveGraphPreferences` (or
-  similar IPC name — consult `preload.ts`).
+  only. Written via `window.ade.graphState.set(projectId, state)`
+  → runtime `graph_state.set` → fallback `ade.graphState.set` IPC.
 
 `normalizeGraphPreferences(state)` reads either the current or
 legacy (`presets: […]`) format. If `migrated: true`, the caller

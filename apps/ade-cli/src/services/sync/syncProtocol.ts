@@ -5,6 +5,7 @@ import { safeJsonParse } from "../../../../desktop/src/main/services/shared/util
 export const SYNC_PROTOCOL_VERSION: SyncProtocolVersion = 1;
 export const DEFAULT_SYNC_HOST_PORT = 8787;
 export const DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES = 4 * 1024;
+export const MAX_UNCOMPRESSED_SYNC_ENVELOPE_BYTES = 25 * 1024 * 1024;
 
 export function mapPlatform(platform: NodeJS.Platform): SyncPeerPlatform {
   switch (platform) {
@@ -104,7 +105,22 @@ export function parseSyncEnvelope(rawText: string): ParsedSyncEnvelope {
     if (decoded.payloadEncoding !== "base64" || typeof decoded.payload !== "string") {
       throw new Error("Compressed sync envelopes must use base64 payload encoding.");
     }
-    const uncompressed = gunzipSync(Buffer.from(decoded.payload, "base64")).toString("utf8");
+    let uncompressedBuffer: Buffer;
+    try {
+      uncompressedBuffer = gunzipSync(Buffer.from(decoded.payload, "base64"));
+    } catch (error) {
+      throw new Error(`Failed to decode gzip sync envelope${requestId ? ` ${requestId}` : ""}${projectId ? ` for project ${projectId}` : ""}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (uncompressedBuffer.byteLength > MAX_UNCOMPRESSED_SYNC_ENVELOPE_BYTES) {
+      throw new Error(`Decoded sync envelope exceeds ${MAX_UNCOMPRESSED_SYNC_ENVELOPE_BYTES} bytes.`);
+    }
+    if (
+      typeof decoded.uncompressedBytes === "number"
+      && decoded.uncompressedBytes !== uncompressedBuffer.byteLength
+    ) {
+      throw new Error("Decoded sync envelope size does not match declared uncompressedBytes.");
+    }
+    const uncompressed = uncompressedBuffer.toString("utf8");
     return {
       version: decoded.version,
       type: decoded.type,

@@ -173,6 +173,49 @@ import type { Logger } from "./services/logging/logger";
 
 const AUTO_UPDATER_CACHE_DIR_NAME = "ade-desktop-updater";
 const ADE_BROWSER_WEBVIEW_PARTITION = "persist:ade-browser";
+type AdePackageChannel = "alpha" | "beta";
+
+function normalizeAdePackageChannel(value: unknown): AdePackageChannel | null {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return normalized === "alpha" || normalized === "beta" ? normalized : null;
+}
+
+function readBundledAdePackageChannel(): AdePackageChannel | null {
+  const envChannel = normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL);
+  if (envChannel) return envChannel;
+
+  try {
+    const packageJsonPath = path.join(app.getAppPath(), "package.json");
+    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8")) as {
+      adePackageChannel?: unknown;
+      productName?: unknown;
+    };
+    const packageChannel = normalizeAdePackageChannel(packageJson.adePackageChannel);
+    if (packageChannel) return packageChannel;
+    const productName = typeof packageJson.productName === "string" ? packageJson.productName : "";
+    if (/\balpha\b/i.test(productName)) return "alpha";
+    if (/\bbeta\b/i.test(productName)) return "beta";
+  } catch {
+    // Dev builds and older packaged apps do not need channel metadata.
+  }
+
+  const appName = app.getName();
+  if (/\balpha\b/i.test(appName)) return "alpha";
+  if (/\bbeta\b/i.test(appName)) return "beta";
+  return null;
+}
+
+function applyPackagedChannelDefaults(): void {
+  const channel = readBundledAdePackageChannel();
+  if (!channel) return;
+
+  process.env.ADE_PACKAGE_CHANNEL = process.env.ADE_PACKAGE_CHANNEL || channel;
+  process.env.ADE_DESKTOP_APP_NAME = process.env.ADE_DESKTOP_APP_NAME || (channel === "alpha" ? "ADE Alpha" : "ADE Beta");
+  process.env.ADE_HOME = process.env.ADE_HOME || path.join(os.homedir(), `.ade-${channel}`);
+  process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL = process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL || "1";
+}
+
+applyPackagedChannelDefaults();
 
 function resolveAutoUpdaterCacheDir(): string {
   const homeDir = os.homedir();
@@ -213,6 +256,27 @@ function fixElectronShellPath(): void {
 
 // Must run before any service or child process is created.
 fixElectronShellPath();
+
+function installAdeCliForTerminalInBackground(
+  adeCliService: ReturnType<typeof createAdeCliService>,
+  logger: Logger,
+): void {
+  if (process.env.ADE_DISABLE_CLI_AUTO_INSTALL === "1") return;
+  void adeCliService.installForUser()
+    .then((result) => {
+      logger.info("ade_cli.auto_install", {
+        ok: result.ok,
+        command: result.status.command,
+        installTargetPath: result.status.installTargetPath,
+        message: result.message,
+      });
+    })
+    .catch((error) => {
+      logger.warn("ade_cli.auto_install_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+}
 
 const disableHardwareAcceleration =
   process.env.ADE_DISABLE_HARDWARE_ACCEL === "1";
@@ -1581,6 +1645,7 @@ app.whenReady().then(async () => {
       logger,
     });
     adeCliService.applyToProcessEnv();
+    installAdeCliForTerminalInBackground(adeCliService, logger);
     const devToolsService = createDevToolsService({ logger });
 
     const project = toProjectInfo(projectRoot, baseRef);
@@ -4178,13 +4243,7 @@ app.whenReady().then(async () => {
       projectId: runtimeProject.projectId,
       adeDir: adePaths.adeDir,
       hasUserSelectedProject: userSelectedProject,
-      adeCliService: createAdeCliService({
-        isPackaged: app.isPackaged,
-        resourcesPath: process.resourcesPath,
-        userDataPath: app.getPath("userData"),
-        appExecutablePath: process.execPath,
-        logger,
-      }),
+      adeCliService: shellContext.adeCliService,
       builtInBrowserService,
     } as AppContext;
   };
@@ -4214,6 +4273,15 @@ app.whenReady().then(async () => {
       logger,
       githubService: dormantGithubService,
     });
+    const adeCliService = createAdeCliService({
+      isPackaged: app.isPackaged,
+      resourcesPath: process.resourcesPath,
+      userDataPath: app.getPath("userData"),
+      appExecutablePath: process.execPath,
+      logger,
+    });
+    adeCliService.applyToProcessEnv();
+    installAdeCliForTerminalInBackground(adeCliService, logger);
     return {
       db: null,
       logger,
@@ -4225,13 +4293,7 @@ app.whenReady().then(async () => {
       disposeHeadWatcher: () => {},
       keybindingsService: null,
       agentToolsService: null,
-      adeCliService: createAdeCliService({
-        isPackaged: app.isPackaged,
-        resourcesPath: process.resourcesPath,
-        userDataPath: app.getPath("userData"),
-        appExecutablePath: process.execPath,
-        logger,
-      }),
+      adeCliService,
       devToolsService: null,
       onboardingService: null,
       laneService: null,

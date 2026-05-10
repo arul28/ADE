@@ -1,11 +1,16 @@
 # Conflict detection
 
-The conflict prediction engine lives in
-`apps/desktop/src/main/services/conflicts/conflictService.ts`. It
-runs `git merge-tree` to predict whether a merge or rebase would
-produce conflicts — without actually performing the merge. Results
-are cached in `conflict_predictions` and surfaced as lane status
-badges, risk matrix cells, overlap chips, and rebase needs.
+The conflict prediction engine runs inside the **active ADE runtime**
+(local daemon or SSH-attached remote runtime) using the implementation
+in `apps/desktop/src/main/services/conflicts/conflictService.ts` (the
+desktop fallback target also points at the same source). It runs
+`git merge-tree` on the host that owns the worktrees to predict
+whether a merge or rebase would produce conflicts — without actually
+performing the merge. Results are cached in `conflict_predictions`
+and surfaced as lane status badges, risk matrix cells, overlap chips,
+and rebase needs. For remote-bound windows the entire prediction loop
+runs on the remote host; the desktop renderer subscribes to events
+through preload's runtime event pump and never spawns git itself.
 
 ## `git merge-tree` primer
 

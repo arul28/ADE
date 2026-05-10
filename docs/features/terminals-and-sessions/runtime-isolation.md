@@ -6,6 +6,14 @@ system encodes that as a hard invariant: `laneId` is required on
 `PtyCreateArgs`, the lane's worktree directory is the only legal
 spawn cwd, and resume flows will not cross lanes.
 
+The lane gate runs inside the **active ADE runtime** for the window's
+project binding (local daemon for local-bound windows, SSH-attached
+remote runtime for remote-bound windows). For remote-bound windows
+the lane gate executes on the remote host — `resolveLaneLaunchContext`
+calls `fs.realpathSync` against the remote filesystem and refuses to
+spawn outside the remote worktree. The desktop renderer never bypasses
+the runtime to spawn directly.
+
 This document covers the gating, fallback behavior, and per-mission
 scoping that makes "which work runs where" a deterministic answer.
 

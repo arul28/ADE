@@ -14,7 +14,7 @@ The runtime is organized around one contract: the CTO tab should be usable as a 
 - `workerBudgetService.ts` — budget snapshots per worker and CTO org.
 - `workerRevisionService.ts` — worker config revision history.
 - `workerTaskSessionService.ts` — task-scoped worker sessions.
-- `workerAdapterRuntimeService.ts` — adapter lifecycle for claude-local / codex-local / process.
+- `workerAdapterRuntimeService.ts` — adapter lifecycle for the three supported worker adapters: `claude-local`, `codex-local`, and `process`.
 - `linearCredentialService.ts` — personal API key storage, token status.
 - `linearOAuthService.ts` — PKCE loopback OAuth flow on port 19836.
 - `linearClient.ts` — Linear GraphQL client (shared by desktop and headless ADE CLI).
@@ -30,17 +30,17 @@ The runtime is organized around one contract: the CTO tab should be usable as a 
 - `linearCloseoutService.ts` — success/failure Linear state transitions, comments, proof attachment.
 - `linearOutboundService.ts` — outbound Linear writes (state, comments, assignees).
 
-### Headless parity
+### Runtime daemon parity
 
-- `apps/ade-cli/src/headlessLinearServices.ts` — wires the same CTO Linear services (client, tracker, template, workflow file, flow policy, routing, intake, outbound, closeout, dispatcher, sync, ingress) into the headless ADE CLI so `ADE CLI` acts as a drop-in Linear-capable runtime, not a read-only stub.
+- `apps/ade-cli/src/headlessLinearServices.ts` — wires the same CTO Linear services (client, tracker, template, workflow file, flow policy, routing, intake, outbound, closeout, dispatcher, sync, ingress) into the `ade serve` runtime daemon, plus a headless `workerHeartbeatService`, `workerTaskSessionService`, and the supporting `fileService` / `processService` / `prService` / `automationSecretService` instances the dispatcher needs to actually launch targets. The CTO is no longer "desktop-only" — every Linear capability runs identically inside the daemon, so a headless host can intake issues, dispatch worker runs, and close out tickets with the same code path the desktop renderer drives.
 
 ### Renderer (apps/desktop/src/renderer/components/cto/)
 
-- `CtoPage.tsx` — the `/cto` shell. Four tabs: Chat, Team, Workflows, Settings. Lazy-loads history, budget, and external-ADE CLI registry.
+- `CtoPage.tsx` — the `/cto` shell. Four tabs: Chat, Team, Workflows, Settings. Lazy-loads history and budget data.
 - `AgentSidebar.tsx` — memoized worker tree; budget footer isolated so budget refresh does not rerender siblings.
 - `OnboardingBanner.tsx` / `OnboardingWizard.tsx` — minimal first-run flow: personality preset only.
 - `IdentityEditor.tsx` — editable identity surface (personality preset + custom overlay + model). No longer a full identity-prompt editor.
-- `CtoSettingsPanel.tsx` — identity, core memory (project summary / conventions / preferences / focus / notes), external-ADE CLI access policy, onboarding reset.
+- `CtoSettingsPanel.tsx` — identity, core memory (project summary / conventions / preferences / focus / notes), onboarding reset.
 - `CtoPromptPreview.tsx` — three-section prompt preview: doctrine, personality overlay, memory model.
 - `TeamPanel.tsx` — worker editor and detail view.
 - `WorkerCreationWizard.tsx` — two-step wizard: template selection then configure.
@@ -98,7 +98,7 @@ Portability rule (Phase 6 W3): identity YAML and the project memory schema are g
 | Chat | CTO session, subordinate activity summary | Immediate |
 | Team | Agents, revisions, worker core memory, worker runs | On tab activation |
 | Workflows | `LinearSyncPanel` (dashboard + run detail + pipeline) | On tab activation; refresh debounced |
-| Settings | Identity, core memory, session logs, external-ADE CLI registry | On tab activation |
+| Settings | Identity, core memory, session logs | On tab activation |
 
 The sidebar worker tree is precomputed and memoized. The budget footer is isolated so a budget refresh does not rerender the tree.
 
@@ -144,7 +144,8 @@ The environment knowledge block inside the system prompt teaches intent-to-tool 
 - Linear sync short-circuits when no workflows are enabled and no runs are active.
 - Ingress only auto-starts when realtime config is actually present.
 - Management surfaces (Team, Workflows, Settings) hydrate lazily without weakening persistent identity.
-- Headless ADE CLI uses the same Linear services, not a read-only fake.
+- The `ade serve` runtime daemon uses the same Linear services as the desktop renderer; the CTO is not a desktop-only feature.
+- Worker adapter type is one of `claude-local`, `codex-local`, or `process`. There are no other adapter types — anything that needs to wrap an external service does so as a `process` adapter.
 
 ## Gotchas and fragile areas
 

@@ -33,6 +33,7 @@ export default defineConfig([
       options.alias = {
         ...(options.alias ?? {}),
         sqlite: "node:sqlite",
+        "react-devtools-core": path.join(packageRoot, "src", "tuiClient", "reactDevtoolsStub.ts"),
       };
     },
   },
@@ -46,6 +47,11 @@ export default defineConfig([
     outDir: "dist",
     sourcemap: true,
     clean: false,
+    splitting: false,
+    noExternal: ["ink", "ink-text-input", "react", "react/jsx-runtime"],
+    banner: {
+      js: "import { createRequire as __adeCreateRequire } from 'node:module'; const require = __adeCreateRequire(import.meta.url);",
+    },
     outExtension: () => ({
       js: ".mjs"
     }),
@@ -58,6 +64,7 @@ export default defineConfig([
       options.alias = {
         ...(options.alias ?? {}),
         sqlite: "node:sqlite",
+        "react-devtools-core": path.join(packageRoot, "src", "tuiClient", "reactDevtoolsStub.ts"),
       };
     },
   },

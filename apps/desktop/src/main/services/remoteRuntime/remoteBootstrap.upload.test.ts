@@ -79,8 +79,11 @@ function createRegistry() {
 
 describe("bootstrapRemoteRuntime upload flow", () => {
   let cleanupResources: (() => void) | null = null;
+  const originalPackageChannel = process.env.ADE_PACKAGE_CHANNEL;
 
   beforeEach(() => {
+    if (originalPackageChannel === undefined) delete process.env.ADE_PACKAGE_CHANNEL;
+    else process.env.ADE_PACKAGE_CHANNEL = originalPackageChannel;
     connectSshMock.mockReset();
     execSshMock.mockReset();
     openSshRuntimeTransportMock.mockReset();
@@ -120,6 +123,8 @@ describe("bootstrapRemoteRuntime upload flow", () => {
   });
 
   afterEach(() => {
+    if (originalPackageChannel === undefined) delete process.env.ADE_PACKAGE_CHANNEL;
+    else process.env.ADE_PACKAGE_CHANNEL = originalPackageChannel;
     cleanupResources?.();
   });
 
@@ -133,11 +138,11 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     execSshMock.mockImplementation(async (_client: Client, command: string) => {
       commands.push(command);
       if (command === "uname -sm") return ok("Linux x86_64\n");
-      if (command === "cat ~/.ade/bin/ade.version 2>/dev/null || true") return ok("");
-      if (command === "test -x ~/.ade/bin/ade && ~/.ade/bin/ade --version || true") return ok("");
-      if (command === "mkdir -p ~/.ade/bin") return ok("");
-      if (command.includes("printf '%s\\n' '2.0.0' > ~/.ade/bin/ade.version")) return ok("");
-      if (command.includes("~/.ade/bin/ade --version")) return ok("ade 2.0.0\n");
+      if (command === "cat $HOME/.ade/bin/ade.version 2>/dev/null || true") return ok("");
+      if (command === "test -x $HOME/.ade/bin/ade && $HOME/.ade/bin/ade --version || true") return ok("");
+      if (command === "mkdir -p $HOME/.ade/bin") return ok("");
+      if (command.includes("printf '%s\\n' '2.0.0' > $HOME/.ade/bin/ade.version")) return ok("");
+      if (command.includes("$HOME/.ade/bin/ade --version")) return ok("ade 2.0.0\n");
       throw new Error(`Unexpected SSH command: ${command}`);
     });
 
@@ -152,15 +157,15 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     expect(fakeSsh.fastPut).toHaveBeenCalledWith(resources.binaryPath, ".ade/bin/ade", {}, expect.any(Function));
     expect(commands).toEqual([
       "uname -sm",
-      "cat ~/.ade/bin/ade.version 2>/dev/null || true",
-      "test -x ~/.ade/bin/ade && ~/.ade/bin/ade --version || true",
-      "mkdir -p ~/.ade/bin",
-      "chmod 700 ~/.ade/bin && chmod +x ~/.ade/bin/ade && printf '%s\\n' '2.0.0' > ~/.ade/bin/ade.version && chmod 600 ~/.ade/bin/ade.version",
-      'PATH="$HOME/.ade/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ~/.ade/bin/ade --version',
+      "cat $HOME/.ade/bin/ade.version 2>/dev/null || true",
+      "test -x $HOME/.ade/bin/ade && $HOME/.ade/bin/ade --version || true",
+      "mkdir -p $HOME/.ade/bin",
+      "chmod 700 $HOME/.ade/bin && chmod +x $HOME/.ade/bin/ade && printf '%s\\n' '2.0.0' > $HOME/.ade/bin/ade.version && chmod 600 $HOME/.ade/bin/ade.version",
+      'ADE_HOME="$HOME/.ade" PATH="$HOME/.ade/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" $HOME/.ade/bin/ade --version',
     ]);
     expect(openSshRuntimeTransportMock).toHaveBeenCalledWith(
       fakeSsh.ssh,
-      'PATH="$HOME/.ade/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ~/.ade/bin/ade rpc --stdio',
+      'ADE_HOME="$HOME/.ade" PATH="$HOME/.ade/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" $HOME/.ade/bin/ade rpc --stdio',
     );
     expect(initializeMock).toHaveBeenCalledWith("ade-desktop-remote", APP_VERSION);
     expect(callMock).toHaveBeenCalledWith("projects.list", {});
@@ -185,11 +190,11 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     connectSshMock.mockResolvedValue(fakeSsh.ssh);
     execSshMock.mockImplementation(async (_client: Client, command: string) => {
       if (command === "uname -sm") return ok("Linux x86_64\n");
-      if (command === "cat ~/.ade/bin/ade.version 2>/dev/null || true") return ok("");
-      if (command === "test -x ~/.ade/bin/ade && ~/.ade/bin/ade --version || true") return ok("");
-      if (command === "mkdir -p ~/.ade/bin") return ok("");
-      if (command.includes("printf '%s\\n' '2.0.0' > ~/.ade/bin/ade.version")) return ok("");
-      if (command.includes("~/.ade/bin/ade --version")) return ok("ade 1.9.0\n");
+      if (command === "cat $HOME/.ade/bin/ade.version 2>/dev/null || true") return ok("");
+      if (command === "test -x $HOME/.ade/bin/ade && $HOME/.ade/bin/ade --version || true") return ok("");
+      if (command === "mkdir -p $HOME/.ade/bin") return ok("");
+      if (command.includes("printf '%s\\n' '2.0.0' > $HOME/.ade/bin/ade.version")) return ok("");
+      if (command.includes("$HOME/.ade/bin/ade --version")) return ok("ade 1.9.0\n");
       throw new Error(`Unexpected SSH command: ${command}`);
     });
 
@@ -198,12 +203,43 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       registry,
       resourcesPath: resources.resourcesPath,
       appVersion: APP_VERSION,
-    })).rejects.toThrow(/uploaded ade runtime version mismatch/i);
+    })).rejects.toThrow(/uploaded ade service version mismatch/i);
 
     expect(fakeSsh.fastPut).toHaveBeenCalledWith(resources.binaryPath, ".ade/bin/ade", {}, expect.any(Function));
     expect(openSshRuntimeTransportMock).not.toHaveBeenCalled();
     expect(initializeMock).not.toHaveBeenCalled();
     expect(registry.update).not.toHaveBeenCalled();
     expect(fakeSsh.end).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the matching isolated remote home for Alpha channel bootstrap", async () => {
+    process.env.ADE_PACKAGE_CHANNEL = "alpha";
+    const resources = createTempResources();
+    cleanupResources = resources.cleanup;
+    const fakeSsh = createFakeSsh();
+    const registry = createRegistry();
+    connectSshMock.mockResolvedValue(fakeSsh.ssh);
+    execSshMock.mockImplementation(async (_client: Client, command: string) => {
+      if (command === "uname -sm") return ok("Linux x86_64\n");
+      if (command === "cat $HOME/.ade-alpha/bin/ade.version 2>/dev/null || true") return ok("");
+      if (command === "test -x $HOME/.ade-alpha/bin/ade && $HOME/.ade-alpha/bin/ade --version || true") return ok("");
+      if (command === "mkdir -p $HOME/.ade-alpha/bin") return ok("");
+      if (command.includes("printf '%s\\n' '2.0.0' > $HOME/.ade-alpha/bin/ade.version")) return ok("");
+      if (command.includes("$HOME/.ade-alpha/bin/ade --version")) return ok("ade 2.0.0\n");
+      throw new Error(`Unexpected SSH command: ${command}`);
+    });
+
+    await bootstrapRemoteRuntime({
+      target,
+      registry,
+      resourcesPath: resources.resourcesPath,
+      appVersion: APP_VERSION,
+    });
+
+    expect(fakeSsh.fastPut).toHaveBeenCalledWith(resources.binaryPath, ".ade-alpha/bin/ade", {}, expect.any(Function));
+    expect(openSshRuntimeTransportMock).toHaveBeenCalledWith(
+      fakeSsh.ssh,
+      'ADE_HOME="$HOME/.ade-alpha" PATH="$HOME/.ade-alpha/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_PACKAGE_CHANNEL="alpha" ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1 $HOME/.ade-alpha/bin/ade rpc --stdio',
+    );
   });
 });

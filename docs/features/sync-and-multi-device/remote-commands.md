@@ -2,13 +2,15 @@
 
 Remote commands are the execution channel for controllers. A controller
 (another desktop acting as a peer, or the iOS app) sends a `command`
-envelope to the host; the host resolves it through
-`syncRemoteCommandService`, runs the underlying action against the
-host-side services, and replies with `command_ack` and then
-`command_result`.
+envelope to the host (the `ade serve` runtime daemon); the host
+resolves it through `syncRemoteCommandService`, runs the underlying
+action against its in-process services, and replies with `command_ack`
+and then `command_result`.
 
-Source file: `apps/desktop/src/main/services/sync/syncRemoteCommandService.ts`
-(~2,030 lines).
+Source file: `apps/ade-cli/src/services/sync/syncRemoteCommandService.ts`
+(~2,520 lines). The desktop tree's
+`apps/desktop/src/main/services/sync/syncRemoteCommandService.ts` is a
+one-line re-export of the canonical module.
 
 ## Shape
 
@@ -55,11 +57,18 @@ The host responds in two envelopes:
 }
 ```
 
-### Per-action policy
+### Per-action descriptor
 
-Every action carries a `SyncRemoteCommandPolicy`:
+Every action carries a `SyncRemoteCommandDescriptor` with both a
+**scope** and a **policy**:
 
 ```ts
+type SyncRemoteCommandDescriptor = {
+  action: SyncRemoteCommandAction;
+  scope: "runtime" | "project";
+  policy: SyncRemoteCommandPolicy;
+};
+
 type SyncRemoteCommandPolicy = {
   viewerAllowed: boolean;       // can a read-only controller invoke?
   requiresApproval?: boolean;   // host prompts operator before executing
@@ -68,18 +77,34 @@ type SyncRemoteCommandPolicy = {
 };
 ```
 
-Controllers read `SyncRemoteCommandDescriptor` from the host (via a
-metadata channel or cached descriptor bundle) and gate UI accordingly
-— the host policy is always authoritative.
+The scope label matters because the daemon hosts **multiple projects**
+at once. `runtime`-scoped commands (machine-wide diagnostics, project
+catalog reads, settings) run without a project binding. `project`-scoped
+commands (everything that mutates lane / chat / PR state inside a
+project) require the host to have an active project AND the caller to
+have bundled a matching `projectId` on the envelope. The host enforces
+this with explicit error codes:
+
+- `code: missing_project` — host has a project open but the command did
+  not include `projectId`. Re-select the project on the controller and
+  retry.
+- `code: project_not_open` — caller asked for a project the host does
+  not currently have open. Drive a `project_switch_request` first.
+
+Controllers read `SyncRemoteCommandDescriptor`s from the host (via the
+`getSupportedActions` / `getDescriptors` surface) and gate UI
+accordingly — the host policy and scope are always authoritative.
 
 ## Registry
 
-Commands are registered by calling `register(action, policy, handler)`
-inside `createSyncRemoteCommandService`. The registry is a `Map<string,
-RegisteredRemoteCommand>` built at service construction. Handlers
-receive parsed-and-validated args and either return a result or
-throw; thrown errors are wrapped into the `command_result.error`
-envelope.
+Commands are registered by calling `register(action, policy, handler,
+scope = "project")` inside `createSyncRemoteCommandService`. The
+registry is a `Map<SyncRemoteCommandAction, RegisteredRemoteCommand>`
+built at service construction. Handlers receive parsed-and-validated
+args and either return a result or throw; thrown errors are wrapped
+into the `command_result.error` envelope. The default scope is
+`"project"` because most actions need an open project to make sense;
+runtime-scoped registrations are explicit.
 
 ### Action categories
 
@@ -284,9 +309,10 @@ services:
 
 Optional services that are missing cause their dependent actions to
 throw `"<service> not available."` at call time. The `requireService`
-helper centralises that check. This pattern lets the headless ADE CLI
-server construct a narrower service set without crashing at command
-registration.
+helper centralises that check. This pattern lets a narrower runtime
+construct only the services it can actually back without crashing at
+command registration — useful for headless `ade serve` setups that, for
+example, intentionally skip the chat service.
 
 ## Supported-action discovery
 
@@ -383,15 +409,15 @@ see the chat README for the passive/active contract.
   reconnect. Be aware when reasoning about "why did this lane
   disappear" — check the command queue, not just the local DB.
 - **`prs.createFromLane` requires the host's GitHub token.** On a
-  headless ADE CLI host with no `ADE_GITHUB_TOKEN` /
+  headless `ade serve` host with no `ADE_GITHUB_TOKEN` /
   `GITHUB_TOKEN` / `GH_TOKEN`, the command fails with a clear
   error before reaching GitHub. This is deliberate fail-fast behavior.
 - **`work.runQuickCommand` always creates a PTY.** There is no
   "run a command, give me just the output" variant; the controller
   must subscribe to the terminal stream and tear down with
-  `work.closeSession`. This is why headless ADE CLI mode provides a
-  stub PTY service that throws on `.create` — the action is not
-  supported there.
+  `work.closeSession`. A daemon configured without a real PTY service
+  (rare; only used in some headless test harnesses) will surface
+  `pty service not available` for this command.
 - **`work.startCliSession` provider list is host-controlled.** The
   controller cannot pass `command` / `args` / `startupCommand`
   overrides — the host derives those from the provider name through

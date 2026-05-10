@@ -11,6 +11,7 @@ import {
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import { ProjectRegistry, type ProjectId } from "./services/projects/projectRegistry";
 import { ProjectScopeRegistry } from "./services/projects/projectScope";
+import type { SyncPeerDeviceType } from "../../desktop/src/shared/types";
 
 type HandlerEntry = {
   handler: JsonRpcHandler & { dispose?: () => void };
@@ -305,10 +306,10 @@ export function createMultiProjectRpcRequestHandler(
 
     if (method === "sync.updateLocalDevice") {
       const name = typeof params.name === "string" ? params.name : undefined;
-      const deviceType = typeof params.deviceType === "string" ? params.deviceType : undefined;
+      const deviceType = typeof params.deviceType === "string" ? params.deviceType as SyncPeerDeviceType : undefined;
       return await (await getSyncService(params)).updateLocalDevice({
         ...(name !== undefined ? { name } : {}),
-        ...(deviceType !== undefined ? { deviceType: deviceType as never } : {}),
+        ...(deviceType !== undefined ? { deviceType } : {}),
       });
     }
 

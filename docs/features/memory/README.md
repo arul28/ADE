@@ -6,6 +6,37 @@ a unified store with three scopes (project, agent, mission), three tiers
 and promotes entries over time. Memory operates automatically in the
 background; agents and the user rarely touch the raw store.
 
+## Runtime ownership
+
+Memory is owned by the runtime daemon that owns the project. The unified
+store, embedding worker, hybrid search, lifecycle sweep, batch
+consolidation, knowledge capture, episodic summaries, procedural
+learning, and skill export all run inside `ade serve` for that project.
+Writes from the desktop renderer and ADE CLI go through the runtime's
+JSON-RPC surface; the renderer is a viewer over `ade.memory.*`
+channels.
+
+**Remote runtimes have memory and embeddings disabled in v1.** The
+static remote runtime build does not bundle `onnxruntime-node`, so the
+embedding model cannot load and the hybrid search service refuses to
+run. Remote-bound projects therefore:
+
+- Have no `unified_memories` writes from agents on the remote host —
+  `memoryAdd` returns rejected, and the turn-level memory guard treats
+  `required` turns as if no embeddings exist.
+- Cannot consolidate, decay, or promote — lifecycle and consolidation
+  jobs are no-ops.
+- Cannot run procedural learning or compaction-flush hooks for memory.
+- Skip `.ade/memory/MEMORY.md` regeneration.
+
+For projects that round-trip between a local Mac runtime and a remote
+Linux runtime, all memory state lives in the local runtime's database.
+The remote runtime's `unified_memories` table is empty by design.
+
+Memory shown in Settings -> Memory always reflects the runtime that
+owns the active project binding. Switching to a remote project hides
+embedding-dependent surfaces.
+
 ## Source file map
 
 | Path | Role |

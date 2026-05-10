@@ -13,12 +13,11 @@ registry / ADE CLI integration that all three share.
 | Path | Role |
 |---|---|
 | `apps/desktop/src/main/services/cto/ctoStateService.ts` | CTO identity, core memory, session logs, subordinate activity, immutable doctrine, personality overlays. The CTO's everything. |
-| `apps/desktop/src/main/services/cto/workerAgentService.ts` | Worker identity and core memory CRUD. Persists `agent_identities` rows and `.ade/agents/<slug>/` files. |
-| `apps/desktop/src/main/services/cto/workerAgentService.ts` (same file) | Also owns heartbeat, budget, and runtime policy hooks. |
+| `apps/desktop/src/main/services/cto/workerAgentService.ts` | Worker identity and core memory CRUD; validates `adapterType` against the three-entry allowlist (`claude-local`, `codex-local`, `process`). Persists `agent_identities` rows and `.ade/agents/<slug>/` files. |
 | `apps/desktop/src/main/services/cto/workerHeartbeatService.ts` | Heartbeat scheduling for workers (wake-on-demand + periodic intervals). |
 | `apps/desktop/src/main/services/cto/workerBudgetService.ts` | Monthly budget tracking (`budgetMonthlyCents`, `spentMonthlyCents`). |
 | `apps/desktop/src/main/services/cto/flowPolicyService.ts` | Worker flow policies (guardrails, approval requirements). |
-| `apps/desktop/src/main/services/cto/workerAgentService.ts` | Worker adapter configs: Claude-local, Codex-local, raw process. |
+| `apps/desktop/src/main/services/cto/workerAdapterRuntimeService.ts` | Adapter lifecycle for the three supported worker adapter types. |
 | `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` | CTO-only tools (spawnChat, mission control, worker management, Linear dispatch). |
 | `apps/desktop/src/main/services/agentTools/agentToolsService.ts` | Detects external CLI tools (Claude Code, Codex, Cursor, Aider, Continue) on PATH. |
 | `apps/ade-cli/src/cli.ts` | Agent-focused `ade` command surface and text/JSON output formatters. Includes the `ade ios-sim` (alias `ade ios`, `ade simulator`) family — see [iOS Simulator feature](../ios-simulator/README.md), the `ade --socket app-control ...` driver for live Electron apps, and the `ade --socket browser ...` driver for the in-app browser (`browser panel`, `browser open <url> [--no-panel]`, `browser new-tab --background`, `browser switch`, `browser close`, plus selection / inspect commands). `ade chat create --provider codex --model <id> --fast` opts a new Codex session into the fast service tier; `ade shell start --lane <id> --chat-session <chatId>` (or `ADE_CHAT_SESSION_ID` from the env) attaches a tracked shell to an existing chat so `ade --socket terminal read --chat-session "$ADE_CHAT_SESSION_ID" --text` resolves to it. |
@@ -63,6 +62,40 @@ core memory -- the session state lives in the chat transcript and
 resumes across restarts but has no long-term persona. The CTO and
 workers are just identity sessions layered on top of the same chat
 runtime.
+
+## Agent CLI install / auth from chat
+
+When a chat session targets a provider whose CLI (Claude, Codex,
+Cursor, Droid) is missing or not authenticated on the active runtime,
+the chat surfaces an inline **AgentCliAuthCard**
+(`apps/desktop/src/renderer/components/chat/AgentCliAuthCard.tsx`).
+The card carries an `AgentCliAuthCardInfo` payload built by the chat
+service via `classifyAgentCliError` from
+`apps/ade-cli/src/services/agentRegistry.ts` — the same registry the
+runtime uses to recognise "binary not on PATH" vs "needs login"
+patterns from a CLI's stderr.
+
+The card renders two action rows: an Install row when the CLI is
+missing, and an Authenticate row in either case. Each row has:
+
+- A copy-to-clipboard chip for the canonical install / auth command
+  (e.g. `claude /login`, `codex login`, `cursor-agent login`).
+- A **Run** button that opens a tracked PTY in the active lane
+  (`window.ade.pty.create`) with `startupCommand` set to that command
+  and `tracked: true` so the new terminal lands in the chat's
+  terminal drawer.
+
+The crucial property is that the install/login command runs in the
+**active runtime** — the runtime the chat session is bound to. A
+desktop window bound to a remote `ade serve` daemon launches the
+install/auth in a PTY on that remote machine, not locally. So a user
+pairing with a remote runtime sets up `claude` / `codex` / `cursor` on
+the remote host without leaving the chat or SSHing in.
+
+The card also shows the runtime name (when known) in its body copy
+("Authenticate the CLI on `darwin-mini`, then retry the chat.") so the
+operator can see which machine the install will land on before
+clicking Run.
 
 ## Agent identity (CTO)
 
@@ -174,13 +207,15 @@ Persisted at:
 
 ## Adapter types
 
-Workers dispatch through one of four adapter types:
+Workers dispatch through one of three adapter types — there are no
+others, and `apps/desktop/src/shared/types/agents.ts` types
+`AdapterType` as exactly `"claude-local" | "codex-local" | "process"`:
 
 | Adapter | Config | Purpose |
 |---|---|---|
 | `claude-local` | `ClaudeLocalAdapterConfig` (model, cwd, cliArgs, instructions, timeout) | Spawns `claude` CLI locally. |
 | `codex-local` | `CodexLocalAdapterConfig` (model, cwd, cliArgs, reasoningEffort, timeout) | Spawns `codex` CLI locally. |
-| `process` | `ProcessAdapterConfig` (command, args, cwd, env, timeout, shell) | Generic subprocess. |
+| `process` | `ProcessAdapterConfig` (command, args, cwd, env, timeout, shell) | Generic managed subprocess; the catch-all for wrapping anything that isn't `claude` / `codex`. |
 
 The worker service forwards the correct adapter config to the
 orchestrator when the worker is activated.

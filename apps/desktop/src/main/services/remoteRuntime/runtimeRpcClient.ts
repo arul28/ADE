@@ -11,6 +11,8 @@ type PendingRequest = {
   timer: ReturnType<typeof setTimeout>;
 };
 
+const MAX_RPC_BUFFER_CHARS = 16 * 1024 * 1024;
+
 export class RuntimeRpcClient {
   private nextId = 1;
   private buffer = "";
@@ -104,6 +106,10 @@ export class RuntimeRpcClient {
   private onData(chunk: string): void {
     if (this.closedError) return;
     this.buffer += chunk;
+    if (this.buffer.length > MAX_RPC_BUFFER_CHARS) {
+      this.failConnection(new Error("Remote ADE service response buffer exceeded 16 MiB."));
+      return;
+    }
     while (true) {
       const newline = this.buffer.indexOf("\n");
       if (newline < 0) break;
@@ -119,7 +125,7 @@ export class RuntimeRpcClient {
     try {
       parsed = JSON.parse(line);
     } catch (error) {
-      this.rejectAll(new Error(`Failed to parse remote ADE service response: ${error instanceof Error ? error.message : String(error)}`));
+      this.failConnection(new Error(`Failed to parse remote ADE service response: ${error instanceof Error ? error.message : String(error)}`));
       return;
     }
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
@@ -129,7 +135,11 @@ export class RuntimeRpcClient {
       const method = typeof response.method === "string" ? response.method : "";
       if (!method) return;
       for (const handler of this.notificationHandlers.get(method) ?? []) {
-        handler(response.params);
+        try {
+          handler(response.params);
+        } catch (error) {
+          console.error("Remote ADE notification handler failed", { method, error });
+        }
       }
       return;
     }

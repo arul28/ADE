@@ -3,6 +3,7 @@ import {
   buildRemoteRuntimeEnvironmentPrefix,
   normalizeRemoteArch,
   normalizeRuntimeVersion,
+  resolveRemoteRuntimeLayout,
   selectRemoteRuntimeVersion,
   shouldUploadBundledRuntime,
   validateRemoteRuntimeInitializeResult,
@@ -91,7 +92,7 @@ describe("buildRemoteRuntimeEnvironmentPrefix", () => {
     expect(buildRemoteRuntimeEnvironmentPrefix({
       archLabel: "linux-x64",
       nativeDepsReady: false,
-    })).toBe('PATH="$HOME/.ade/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ');
+    })).toBe('ADE_HOME="$HOME/.ade" PATH="$HOME/.ade/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ');
   });
 
   it("adds the uploaded native dependency bundle to NODE_PATH", () => {
@@ -99,6 +100,27 @@ describe("buildRemoteRuntimeEnvironmentPrefix", () => {
       archLabel: "darwin-arm64",
       nativeDepsReady: true,
     })).toContain('NODE_PATH="$HOME/.ade/runtime/darwin-arm64/node_modules${NODE_PATH:+:$NODE_PATH}"');
+  });
+
+  it("uses isolated remote paths for Alpha and Beta channels", () => {
+    const alphaLayout = resolveRemoteRuntimeLayout({ ADE_PACKAGE_CHANNEL: "alpha" } as NodeJS.ProcessEnv);
+    const betaLayout = resolveRemoteRuntimeLayout({ ADE_PACKAGE_CHANNEL: "beta" } as NodeJS.ProcessEnv);
+
+    expect(alphaLayout).toMatchObject({
+      homeDirName: ".ade-alpha",
+      binaryRelative: ".ade-alpha/bin/ade",
+      versionExpr: "$HOME/.ade-alpha/bin/ade.version",
+    });
+    expect(buildRemoteRuntimeEnvironmentPrefix({
+      archLabel: "darwin-arm64",
+      nativeDepsReady: true,
+      layout: alphaLayout,
+    })).toBe('ADE_HOME="$HOME/.ade-alpha" PATH="$HOME/.ade-alpha/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_PACKAGE_CHANNEL="alpha" ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1 NODE_PATH="$HOME/.ade-alpha/runtime/darwin-arm64/node_modules${NODE_PATH:+:$NODE_PATH}" ');
+    expect(betaLayout).toMatchObject({
+      homeDirName: ".ade-beta",
+      binaryRelative: ".ade-beta/bin/ade",
+      versionExpr: "$HOME/.ade-beta/bin/ade.version",
+    });
   });
 });
 

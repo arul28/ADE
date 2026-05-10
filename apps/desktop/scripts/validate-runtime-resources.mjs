@@ -5,7 +5,17 @@ import { fileURLToPath } from "node:url";
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const desktopRoot = path.resolve(scriptDir, "..");
 const runtimeRoot = path.join(desktopRoot, "resources", "runtime");
-const targets = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"];
+const allTargets = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"];
+
+function currentTarget() {
+  const platform = process.platform === "darwin" ? "darwin" : process.platform === "linux" ? "linux" : process.platform;
+  const arch = process.arch === "x64" ? "x64" : process.arch === "arm64" ? "arm64" : process.arch;
+  return `${platform}-${arch}`;
+}
+
+const targets = process.env.ADE_RUNTIME_RESOURCES_ALLOW_HOST_ONLY === "1"
+  ? [currentTarget()]
+  : allTargets;
 
 function fail(message) {
   throw new Error(`[runtime-resources] ${message}`);
@@ -43,7 +53,8 @@ async function main() {
     );
   }
 
-  console.log(`[runtime-resources] Found ${targets.length} remote ADE service binaries and native archives.`);
+  const mode = process.env.ADE_RUNTIME_RESOURCES_ALLOW_HOST_ONLY === "1" ? "host-only local" : "full";
+  console.log(`[runtime-resources] Found ${targets.length} ${mode} ADE service binaries and native archives.`);
 }
 
 main().catch((error) => {
@@ -55,7 +66,8 @@ main().catch((error) => {
       "Run `npm --prefix apps/desktop run materialize:runtime-resources` to copy downloaded artifacts " +
       "or build the local host target. For a direct local same-platform build, run " +
       "`npm --prefix apps/ade-cli run build:static -- --target <target> --out-dir ../desktop/resources/runtime`; " +
-      "release CI uses the artifact download step.",
+      "release CI uses the artifact download step. Local channel packages may set " +
+      "ADE_RUNTIME_RESOURCES_ALLOW_HOST_ONLY=1 to validate only the host target.",
   );
   process.exit(1);
 });

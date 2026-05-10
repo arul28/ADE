@@ -412,8 +412,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     const nextLaneId = nextLane?.id ?? null;
     const nextSessions = await listChatSessions(conn);
     const laneSessions = nextSessions.filter((session) => session.laneId === nextLaneId);
-    const nextSession = nextSessions.find((session) => session.sessionId === activeSessionIdRef.current)
-      ?? newestSession(laneSessions);
+    const activeSessionId = activeSessionIdRef.current;
+    const nextSession = activeSessionId
+      ? nextSessions.find((session) => session.sessionId === activeSessionId) ?? null
+      : null;
     const nextSessionId = nextSession?.sessionId ?? null;
     let nextEvents: AgentChatEventEnvelope[] = [];
     if (nextSessionId) {
@@ -1457,6 +1459,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
 
   const centerWidth = Math.max(40, columns - (drawerOpen ? 30 : 0) - (rightOpen ? 40 : 0));
   const laneName = activeLane?.name ?? "main";
+  const chromeRows = 5
+    + (desktopDriving ? 1 : 0)
+    + (streaming ? 1 : 0)
+    + (contextPercent != null ? 1 : 0)
+    + (pendingApproval && !pendingApproval.highStakes ? 3 : 0)
+    + (error ? 1 : 0);
+  const chatMaxRows = Math.max(4, rows - chromeRows);
 
   if (error && !connection) {
     return (
@@ -1512,6 +1521,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
                 projectName={projectName}
                 laneName={laneName}
                 expandedLineIds={expandedLineIds}
+                maxRows={chatMaxRows}
               />
               <ApprovalPrompt approval={pendingApproval} />
             </>

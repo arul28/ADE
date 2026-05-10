@@ -11,6 +11,8 @@ export type SshExecResult = {
   code: number | null;
 };
 
+const MAX_SSH_EXEC_OUTPUT_BYTES = 8 * 1024 * 1024;
+
 type OpenSshHostConfig = {
   hostName?: string;
   user?: string;
@@ -148,11 +150,25 @@ export function execSsh(client: Client, command: string): Promise<SshExecResult>
       }
       let stdout = "";
       let stderr = "";
+      let stdoutBytes = 0;
+      let stderrBytes = 0;
       let code: number | null = null;
       stream.on("data", (chunk: Buffer) => {
+        stdoutBytes += chunk.byteLength;
+        if (stdoutBytes > MAX_SSH_EXEC_OUTPUT_BYTES) {
+          reject(new Error(`SSH command stdout exceeded ${MAX_SSH_EXEC_OUTPUT_BYTES} bytes.`));
+          stream.close();
+          return;
+        }
         stdout += chunk.toString("utf8");
       });
       stream.stderr.on("data", (chunk: Buffer) => {
+        stderrBytes += chunk.byteLength;
+        if (stderrBytes > MAX_SSH_EXEC_OUTPUT_BYTES) {
+          reject(new Error(`SSH command stderr exceeded ${MAX_SSH_EXEC_OUTPUT_BYTES} bytes.`));
+          stream.close();
+          return;
+        }
         stderr += chunk.toString("utf8");
       });
       stream.on("exit", (exitCode: number | null) => {

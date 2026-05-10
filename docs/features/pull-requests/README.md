@@ -13,9 +13,34 @@ This folder documents:
 - [`conflict-simulation.md`](./conflict-simulation.md) — how ADE predicts PR merge conflicts before the user hits Merge.
 - [`path-to-merge.md`](./path-to-merge.md) — the Path-to-Merge orchestrator: phase delays, terminal-state gate, conflict strategy switch, force-finalize, merge ladder, and Queue Automate Merging.
 
+## Where this runs
+
+PR CRUD, GitHub polling, queue landing, integration proposal
+simulation, the Path-to-Merge orchestrator, and the issue/rebase
+resolver agent dispatch all run inside the **active ADE runtime**
+(local daemon for local-bound windows, SSH-attached remote runtime
+for remote-bound windows). The renderer's `window.ade.prs.*` surface
+in `apps/desktop/src/preload/preload.ts` routes every PR call through
+`callProjectRuntimeActionOr("pr", …)` and falls back to the legacy
+in-process IPC handlers only when no runtime is bound. PR polling
+fingerprints, the `prsRouteState.ts` URL-state helper, and the
+PR detail panes are renderer-only — they hold no service state.
+
+For remote-bound windows, GitHub polling, the queue automation loop,
+and the Path-to-Merge orchestrator all execute on the remote machine.
+The git operations that back PR merges, rebases, and conflict
+resolution use the worktrees on the remote host. Stop / start /
+status reads work exactly the same as local; the desktop window just
+sends every action through the SSH-tunneled JSON-RPC instead of the
+local socket.
+
 ## Source file map
 
-Main-process services (`apps/desktop/src/main/services/prs/`):
+Services. The canonical implementations run inside the runtime
+daemon; the desktop main-process files below stay as fallback targets
+for the legacy in-process IPC path.
+
+Service files (`apps/desktop/src/main/services/prs/`):
 
 | File | Responsibility |
 |------|---------------|
@@ -164,8 +189,9 @@ involving the current user, sorted by creation date. A scope filter
 
 Caching layers:
 
-1. **Main process cache** — GitHub snapshot is cached for a short TTL
-   inside `prService`; repeated in-flight snapshot requests are
+1. **Runtime cache** — GitHub snapshot is cached for a short TTL
+   inside `prService` on the active runtime (local daemon or
+   remote-attached); repeated in-flight snapshot requests are
    deduplicated.
 2. **Renderer cache** — `PrsContext` holds the last snapshot so
    revisiting the tab renders immediately.

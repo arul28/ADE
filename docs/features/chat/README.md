@@ -41,6 +41,25 @@ machinery layered on top.
 | `apps/desktop/src/main/services/ipc/registerIpc.ts` | Validates chat IPC args, exposes `agentChat.*` handlers, and persists/retrieves parallel launch recovery state in `kv`. |
 | `apps/desktop/src/shared/ipc.ts` | `ade.agentChat.*` IPC channel constants. |
 
+## Where the chat service runs
+
+The chat service is constructed once per project, inside whichever
+runtime owns that project. The desktop renderer talks to it through
+the runtime IPC bridge — never directly. When a window is bound to the
+local machine, that means the Electron main process's chat service;
+when bound to a remote runtime, the **remote `ade serve` daemon**
+constructs its own `agentChatService` and the renderer is just a
+client. The headless `ade serve` bootstrap in
+`apps/ade-cli/src/bootstrap.ts` wires the same `createAgentChatService`
+the desktop main process uses, so the surface is identical whether
+the host is local Electron or a remote daemon. The iOS app also
+reaches the chat service over the same channel (via the sync command
+surface), again as a client.
+
+This is the framing to internalise: chat sessions are runtime-owned,
+not desktop-owned. The renderer can render them, and the iOS app can
+render them, but neither one *runs* them.
+
 ## Key concepts
 
 - **Provider-agnostic sessions.** `AgentChatProvider` is one of `claude`,
@@ -78,6 +97,17 @@ machinery layered on top.
   `"agent:<id>"`) are filtered out of the Work tab list and rendered by
   dedicated surfaces (CTO tab, worker detail). See [Agent Routing and
   Identity](agent-routing.md).
+- **Inline agent CLI install / auth.** When a chat targets a provider
+  whose CLI (Claude, Codex, Cursor, Droid) is missing or
+  unauthenticated, the service decorates the resulting error envelope
+  with an `agentCli` payload (built via `classifyAgentCliError` from
+  `apps/ade-cli/src/services/agentRegistry.ts`). The renderer renders
+  that as an `AgentCliAuthCard` inline in the transcript: a copy chip
+  for the install / auth command and a Run button that opens a
+  tracked PTY in the active lane via `window.ade.pty.create`. The
+  command runs in the **active runtime** — a remote-bound desktop
+  window installs / logs in on the remote machine. See
+  [Agents](../agents/README.md#agent-cli-install--auth-from-chat).
 - **Parallel multi-model launch.** From an empty embedded Work composer,
   the user can enable parallel mode, select two or more model/control
   slots, and send one prompt. ADE creates child lanes, starts one chat
