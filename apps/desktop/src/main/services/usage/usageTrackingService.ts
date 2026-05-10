@@ -385,8 +385,9 @@ async function pollCursorUsage(): Promise<{ windows: UsageWindow[]; extraUsage: 
       };
     }
 
-    const parsed = parseCursorSpendUsage(result.data as CursorSpendResponse);
-    if (parsed.windows.length === 0 && !parsed.extraUsage) {
+    const response = result.data as CursorSpendResponse;
+    const parsed = parseCursorSpendUsage(response);
+    if (!Array.isArray(response.teamMemberSpend)) {
       return {
         windows: [],
         extraUsage: null,

@@ -132,4 +132,69 @@ describe("UsageQuotaPanel", () => {
     expect(await screen.findByText("usage auth only")).toBeTruthy();
     expect(screen.queryByText("sign-in required")).toBeNull();
   });
+
+  it("keeps the empty-window warning hidden when Cursor extra usage exists", async () => {
+    const snapshot: UsageSnapshot = {
+      ...makeSnapshot(),
+      windows: [],
+      extraUsage: [{
+        provider: "cursor",
+        isEnabled: true,
+        usedCreditsUsd: 12.5,
+        monthlyLimitUsd: 0,
+        utilization: null,
+        currency: "usd",
+      }],
+    };
+    vi.mocked(window.ade.usage.getSnapshot).mockResolvedValue(snapshot);
+    vi.mocked(window.ade.ai.getStatus).mockResolvedValue({
+      providerConnections: {
+        claude: null,
+        codex: null,
+        droid: null,
+        cursor: {
+          provider: "cursor",
+          authAvailable: true,
+          runtimeDetected: true,
+          runtimeAvailable: false,
+          usageAvailable: true,
+          path: null,
+          blocker: null,
+          sources: [],
+          lastCheckedAt: "2026-05-08T07:00:00.000Z",
+        },
+      },
+    } as any);
+
+    render(<UsageQuotaPanel />);
+
+    expect(await screen.findByText("Cursor extra usage")).toBeTruthy();
+    expect(screen.queryByText(/Restart ADE/)).toBeNull();
+  });
+
+  it("keeps sign-in copy for non-Cursor auth failures", async () => {
+    vi.mocked(window.ade.ai.getStatus).mockResolvedValue({
+      providerConnections: {
+        codex: null,
+        cursor: null,
+        droid: null,
+        claude: {
+          provider: "claude",
+          authAvailable: true,
+          runtimeDetected: true,
+          runtimeAvailable: false,
+          usageAvailable: false,
+          path: null,
+          blocker: "Claude runtime reported that login is still required.",
+          sources: [],
+          lastCheckedAt: "2026-05-08T07:00:00.000Z",
+        },
+      },
+    } as any);
+
+    render(<UsageQuotaPanel />);
+
+    expect(await screen.findByText("sign-in required")).toBeTruthy();
+    expect(screen.queryByText("usage auth only")).toBeNull();
+  });
 });

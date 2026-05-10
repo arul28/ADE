@@ -31,6 +31,7 @@ const {
   parseClaudeWindows,
   parseCodexRateLimitWindows,
   parseCursorSpendUsage,
+  pollCursorUsage,
   calculatePacingByProvider,
   pollCodexViaCliRpc,
   resolveTokenPrice,
@@ -519,6 +520,50 @@ describe("parseCursorSpendUsage", () => {
     expect(result.extraUsage?.monthlyLimitUsd).toBe(200);
     expect(result.extraUsage?.usedCreditsUsd).toBe(25);
     expect(result.windows[0]?.percentUsed).toBe(12.5);
+  });
+
+  it("allows quota-only Cursor member responses without spend data", async () => {
+    const originalFetch = globalThis.fetch;
+    const prevAdminKey = process.env.CURSOR_ADMIN_API_KEY;
+    process.env.CURSOR_ADMIN_API_KEY = "key_cursor_admin_test";
+    globalThis.fetch = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        teamMemberSpend: [
+          { fastPremiumRequests: 250, spendCents: 0, overallSpendCents: 0 },
+        ],
+      }),
+    } as Response));
+    try {
+      const result = await pollCursorUsage();
+      expect(result.windows).toEqual([]);
+      expect(result.extraUsage).toBeNull();
+      expect(result.errors).toEqual([]);
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (prevAdminKey === undefined) delete process.env.CURSOR_ADMIN_API_KEY;
+      else process.env.CURSOR_ADMIN_API_KEY = prevAdminKey;
+    }
+  });
+
+  it("reports malformed Cursor spend responses with no member array", async () => {
+    const originalFetch = globalThis.fetch;
+    const prevAdminKey = process.env.CURSOR_ADMIN_API_KEY;
+    process.env.CURSOR_ADMIN_API_KEY = "key_cursor_admin_test";
+    globalThis.fetch = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ subscriptionCycleStart: Date.UTC(2026, 4, 1) }),
+    } as Response));
+    try {
+      const result = await pollCursorUsage();
+      expect(result.errors).toEqual(["cursor: usage response contained no recognized spend data"]);
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (prevAdminKey === undefined) delete process.env.CURSOR_ADMIN_API_KEY;
+      else process.env.CURSOR_ADMIN_API_KEY = prevAdminKey;
+    }
   });
 });
 
