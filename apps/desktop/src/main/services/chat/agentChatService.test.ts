@@ -3101,7 +3101,7 @@ describe("createAgentChatService", () => {
       expect(clearCmd!.source).toBe("local");
     });
 
-    it("includes /login command for claude sessions", async () => {
+    it("does not advertise /login as a Claude SDK command", async () => {
       const { service } = createService();
       const session = await service.createSession({
         laneId: "lane-1",
@@ -3111,8 +3111,7 @@ describe("createAgentChatService", () => {
 
       const commands = service.getSlashCommands({ sessionId: session.id });
       const loginCmd = commands.find((c: any) => c.name === "/login");
-      expect(loginCmd).toBeDefined();
-      expect(loginCmd!.source).toBe("sdk");
+      expect(loginCmd).toBeUndefined();
     });
 
     it("includes project Claude Code command files before SDK init completes", async () => {
@@ -3146,7 +3145,7 @@ describe("createAgentChatService", () => {
       ]));
     });
 
-    it("keeps reserved local Claude commands ahead of filesystem commands", async () => {
+    it("does not let a filesystem /login command replace provider auth guidance", async () => {
       const commandsDir = path.join(tmpRoot, ".claude", "commands");
       fs.mkdirSync(commandsDir, { recursive: true });
       fs.writeFileSync(path.join(commandsDir, "login.md"), [
@@ -3167,10 +3166,7 @@ describe("createAgentChatService", () => {
 
       const commands = service.getSlashCommands({ sessionId: session.id });
       const loginCmd = commands.find((c: any) => c.name === "/login");
-      expect(loginCmd).toMatchObject({
-        description: "Sign in to Claude Code for this chat runtime",
-        source: "sdk",
-      });
+      expect(loginCmd).toBeUndefined();
     });
 
     it("does not include /login for opencode sessions", async () => {
@@ -3258,6 +3254,38 @@ describe("createAgentChatService", () => {
     await vi.waitFor(() => {
       expect(send).toHaveBeenLastCalledWith("/automate chat slash commands");
     });
+  });
+
+  it("does not forward Claude /login into the Agent SDK", async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(unstable_v2_createSession).mockReturnValue({
+      send,
+      stream: vi.fn(() => (async function* () {
+        yield {
+          type: "system",
+          subtype: "init",
+          session_id: "sdk-session-login-command",
+          slash_commands: ["/login"],
+        };
+      })()),
+      close: vi.fn(),
+      sessionId: "sdk-session-login-command",
+      setPermissionMode: vi.fn().mockResolvedValue(undefined),
+    } as any);
+
+    const { service } = createService();
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      modelId: "anthropic/claude-sonnet-4-6",
+    });
+
+    await expect(service.sendMessage({
+      sessionId: session.id,
+      text: "/login",
+    })).rejects.toThrow("/login is not an SDK-dispatchable command");
+    expect(send).not.toHaveBeenCalledWith("/login");
   });
 
   it("expands project Claude command files before sending to the SDK", async () => {

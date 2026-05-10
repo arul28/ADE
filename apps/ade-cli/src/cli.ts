@@ -883,8 +883,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
   code: `${ADE_BANNER}
   ADE Code
 
-  Launch the terminal-native ADE Work chat. It shares lanes, chat sessions,
-  transcript state, and slash commands with desktop ADE.
+  Launch the terminal-native ADE Work chat. It uses the same project lanes,
+  chat sessions, transcript state, and slash commands as desktop ADE, but it
+  does not require the desktop app to be running.
 
     $ ade code                                      Start the TUI for the current project
     $ ade code --print-state                       Smoke-test attach/embed state

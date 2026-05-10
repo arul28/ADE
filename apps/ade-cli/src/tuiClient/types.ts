@@ -1,7 +1,17 @@
 import type { AppNavigationRequest, AppNavigationResult } from "../../../desktop/src/shared/types/core";
 import type {
+  AgentChatClaudePermissionMode,
+  AgentChatCodexApprovalPolicy,
+  AgentChatCodexConfigSource,
+  AgentChatCodexSandbox,
+  AgentChatCursorConfigValue,
+  AgentChatDroidPermissionMode,
   AgentChatEventEnvelope,
+  AgentChatInteractionMode,
   AgentChatModelInfo,
+  AgentChatOpenCodePermissionMode,
+  AgentChatPermissionMode,
+  AgentChatProvider,
   AgentChatSession,
   AgentChatSessionSummary,
   AgentChatSlashCommand,
@@ -36,6 +46,7 @@ export type AdeCodeConnection = {
   projectRoot: string;
   workspaceRoot: string;
   socketPath: string | null;
+  fallbackReason?: string | null;
   request<T = unknown>(method: string, params?: unknown): Promise<T>;
   tool<T = unknown>(name: string, args?: Record<string, unknown>): Promise<T>;
   action<T = unknown>(domain: string, action: string, args?: Record<string, unknown>): Promise<T>;
@@ -44,12 +55,52 @@ export type AdeCodeConnection = {
   close(): Promise<void>;
 };
 
+export type AdeCodeProvider = Extract<AgentChatProvider, "codex" | "claude" | "opencode" | "cursor" | "droid">;
+
 export type AdeCodeModelState = {
-  provider: "codex" | "claude" | "opencode" | "cursor" | "droid";
+  provider: AdeCodeProvider;
   model: string;
   modelId: string | null;
   displayName: string;
   reasoningEffort: string | null;
+  codexFastMode: boolean;
+  permissionMode: AgentChatPermissionMode;
+  interactionMode: AgentChatInteractionMode;
+  claudePermissionMode: AgentChatClaudePermissionMode;
+  codexApprovalPolicy: AgentChatCodexApprovalPolicy;
+  codexSandbox: AgentChatCodexSandbox;
+  codexConfigSource: AgentChatCodexConfigSource;
+  opencodePermissionMode: AgentChatOpenCodePermissionMode;
+  droidPermissionMode: AgentChatDroidPermissionMode;
+  cursorModeId: string | null;
+  cursorConfigValues: Record<string, AgentChatCursorConfigValue>;
+};
+
+export type ProviderReadinessRow = {
+  provider: AdeCodeProvider;
+  label: string;
+  status: "ready" | "unavailable" | "unknown";
+  detail: string;
+  modelCount: number;
+};
+
+export type SetupPaneRowKind =
+  | "provider"
+  | "model"
+  | "reasoning"
+  | "permission"
+  | "codex-fast"
+  | "refresh-status"
+  | "open-settings"
+  | "apply";
+
+export type SetupPaneRow = {
+  kind: SetupPaneRowKind;
+  label: string;
+  value: string;
+  detail?: string;
+  disabled?: boolean;
+  cyclable?: boolean;
 };
 
 export type RightPaneContent =
@@ -71,9 +122,23 @@ export type RightPaneContent =
   | { kind: "models"; models: AgentChatModelInfo[]; activeModelId: string | null }
   | { kind: "effort"; efforts: string[]; activeEffort: string | null }
   | {
+      kind: "new-chat-setup";
+      laneId: string;
+      laneLabel: string;
+      rows: SetupPaneRow[];
+    }
+  | {
+      kind: "model-setup";
+      rows: SetupPaneRow[];
+      providerRows: ProviderReadinessRow[];
+      activeProvider: AdeCodeProvider;
+      checkedAt: string | null;
+      desktopAttached: boolean;
+    }
+  | {
       kind: "form";
       title: string;
-      command: "new-chat" | "new-lane" | "rename" | "pr-open";
+      command: "new-lane" | "rename" | "pr-open";
       fields: Array<{
         name: string;
         label: string;
@@ -119,9 +184,7 @@ export type ShellData = {
   models: AgentChatModelInfo[];
   modelState: AdeCodeModelState;
   rightPane: RightPaneContent;
-  tuiCount: number;
   contextPercent: number | null;
-  desktopDriving: boolean;
   streaming: boolean;
 };
 

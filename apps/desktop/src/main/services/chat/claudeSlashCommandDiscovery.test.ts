@@ -33,7 +33,7 @@ describe("discoverClaudeSlashCommands", () => {
       "",
     ].join("\n"));
 
-    expect(discoverClaudeSlashCommands(tmpRoot)).toEqual([
+    expect(discoverClaudeSlashCommands(tmpRoot)).toMatchObject([
       {
         name: "/automate",
         description: "Generate comprehensive test suites",
@@ -54,7 +54,7 @@ describe("discoverClaudeSlashCommands", () => {
       "",
     ].join("\n"));
 
-    expect(discoverClaudeSlashCommands(tmpRoot)).toEqual([
+    expect(discoverClaudeSlashCommands(tmpRoot)).toMatchObject([
       {
         name: "/frontend:test",
         description: "Run frontend tests",
@@ -84,7 +84,7 @@ describe("discoverClaudeSlashCommands", () => {
       "",
     ].join("\n"));
 
-    expect(discoverClaudeSlashCommands(tmpRoot)).toEqual([
+    expect(discoverClaudeSlashCommands(tmpRoot)).toMatchObject([
       {
         name: "/level-0:level-1:level-2:level-3:level-4:level-5:level-6:level-7:level-8:level-9:visible",
         description: "Visible nested command",
@@ -117,12 +117,53 @@ describe("discoverClaudeSlashCommands", () => {
       "",
     ].join("\n"));
 
-    expect(discoverClaudeSlashCommands(tmpRoot)).toEqual([
+    expect(discoverClaudeSlashCommands(tmpRoot)).toMatchObject([
       {
         name: "/fix-issue",
         description: "Fix a GitHub issue",
       },
     ]);
+  });
+
+  it("walks up parent directories to discover .claude/commands at workspace root from a lane subdir", () => {
+    const workspaceCommands = path.join(tmpRoot, ".claude", "commands");
+    fs.mkdirSync(workspaceCommands, { recursive: true });
+    fs.writeFileSync(path.join(workspaceCommands, "audit.md"), [
+      "---",
+      "description: Workspace-root audit",
+      "---",
+      "",
+      "Audit.",
+      "",
+    ].join("\n"));
+    const laneWorktree = path.join(tmpRoot, "lanes", "feature-x", "worktree");
+    fs.mkdirSync(laneWorktree, { recursive: true });
+
+    expect(discoverClaudeSlashCommands(laneWorktree)).toMatchObject([
+      {
+        name: "/audit",
+        description: "Workspace-root audit",
+        source: "command",
+      },
+    ]);
+  });
+
+  it("walks up parent directories for resolveClaudeSlashCommandInvocation as well", () => {
+    const workspaceCommands = path.join(tmpRoot, ".claude", "commands");
+    fs.mkdirSync(workspaceCommands, { recursive: true });
+    fs.writeFileSync(path.join(workspaceCommands, "audit.md"), [
+      "---",
+      "description: Workspace-root audit",
+      "---",
+      "",
+      "Audit $ARGUMENTS.",
+      "",
+    ].join("\n"));
+    const laneWorktree = path.join(tmpRoot, "lanes", "feature-y", "worktree");
+    fs.mkdirSync(laneWorktree, { recursive: true });
+
+    expect(resolveClaudeSlashCommandInvocation(laneWorktree, "/audit the model pane")?.promptText)
+      .toBe("Audit the model pane.");
   });
 
   it("includes personal commands and lets project commands with the same name win", () => {
@@ -145,7 +186,7 @@ describe("discoverClaudeSlashCommands", () => {
       "",
     ].join("\n"));
 
-    expect(discoverClaudeSlashCommands(tmpRoot)).toEqual([
+    expect(discoverClaudeSlashCommands(tmpRoot)).toMatchObject([
       {
         name: "/ship",
         description: "Project ship",
@@ -188,5 +229,78 @@ describe("resolveClaudeSlashCommandInvocation", () => {
   it("returns null for built-in commands and unknown command files", () => {
     expect(resolveClaudeSlashCommandInvocation(tmpRoot, "/help")).toBeNull();
     expect(resolveClaudeSlashCommandInvocation(tmpRoot, "/missing")).toBeNull();
+  });
+
+  it("falls back to a skill SKILL.md when no command file matches", () => {
+    const skillDir = path.join(tmpRoot, ".claude", "skills", "audit");
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, "SKILL.md"), [
+      "---",
+      "name: audit",
+      "description: Audit recent work",
+      "---",
+      "",
+      "Audit the work for $ARGUMENTS.",
+      "",
+    ].join("\n"));
+
+    expect(resolveClaudeSlashCommandInvocation(tmpRoot, "/audit slash menu")?.promptText)
+      .toBe("Audit the work for slash menu.");
+  });
+
+  it("prefers a command file over a same-named skill", () => {
+    const cmdDir = path.join(tmpRoot, ".claude", "commands");
+    const skillDir = path.join(tmpRoot, ".claude", "skills", "ship");
+    fs.mkdirSync(cmdDir, { recursive: true });
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(cmdDir, "ship.md"), "Command body $ARGUMENTS\n");
+    fs.writeFileSync(path.join(skillDir, "SKILL.md"), [
+      "---",
+      "name: ship",
+      "description: Ship",
+      "---",
+      "",
+      "Skill body $ARGUMENTS",
+      "",
+    ].join("\n"));
+
+    expect(resolveClaudeSlashCommandInvocation(tmpRoot, "/ship now")?.promptText)
+      .toBe("Command body now");
+  });
+
+  it("walks up ancestors to resolve a skill at workspace root from a lane subdir", () => {
+    const skillDir = path.join(tmpRoot, ".claude", "skills", "audit");
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, "SKILL.md"), [
+      "---",
+      "name: audit",
+      "description: Audit",
+      "---",
+      "",
+      "Run audit on $ARGUMENTS.",
+      "",
+    ].join("\n"));
+    const lane = path.join(tmpRoot, "lanes", "feat", "wt");
+    fs.mkdirSync(lane, { recursive: true });
+
+    expect(resolveClaudeSlashCommandInvocation(lane, "/audit X")?.promptText)
+      .toBe("Run audit on X.");
+  });
+
+  it("ignores skills marked user-invocable: false", () => {
+    const skillDir = path.join(tmpRoot, ".claude", "skills", "internal");
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, "SKILL.md"), [
+      "---",
+      "name: internal",
+      "description: Internal",
+      "user-invocable: false",
+      "---",
+      "",
+      "Hidden body.",
+      "",
+    ].join("\n"));
+
+    expect(resolveClaudeSlashCommandInvocation(tmpRoot, "/internal")).toBeNull();
   });
 });

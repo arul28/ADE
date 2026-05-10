@@ -1,13 +1,32 @@
 import React from "react";
 import { Box, Text } from "ink";
-import type { RightPaneContent } from "../types";
+import type { ProviderReadinessRow, RightPaneContent } from "../types";
+import { theme } from "../theme";
+
+const STATUS_DOT: Record<ProviderReadinessRow["status"], string> = {
+  ready: "●",
+  unknown: "◐",
+  unavailable: "○",
+};
+
+function statusColor(status: ProviderReadinessRow["status"]): string {
+  if (status === "ready") return theme.color.success;
+  if (status === "unknown") return theme.color.warning;
+  return theme.color.mutedFg;
+}
+
+function tailTruncate(value: string, max: number): string {
+  if (value.length <= max) return value;
+  return `…${value.slice(value.length - (max - 1))}`;
+}
 
 function HelpPane() {
   return (
     <Box flexDirection="column">
       <Text bold>Help</Text>
-      <Text dimColor>ctrl-b toggles lanes and chats</Text>
-      <Text dimColor>ctrl-j toggles this pane</Text>
+      <Text dimColor>ctrl-o opens or focuses lanes and chats</Text>
+      <Text dimColor>ctrl-p opens or focuses setup</Text>
+      <Text dimColor>shift-tab cycles pane focus</Text>
       <Text dimColor>esc closes the active side pane</Text>
       <Text dimColor>ctrl-c interrupts a running chat; press again to quit</Text>
       <Text dimColor>/ opens commands, @ opens references, tab inserts selected</Text>
@@ -21,14 +40,17 @@ export function RightPane({
   formValues = {},
   activeFormField = 0,
   selectedIndex = 0,
+  focused = false,
 }: {
   content: RightPaneContent;
   formValues?: Record<string, string>;
   activeFormField?: number;
   selectedIndex?: number;
+  focused?: boolean;
 }) {
   return (
-    <Box width={38} flexDirection="column" borderStyle="single" borderColor="gray" paddingX={1}>
+    <Box width={38} flexDirection="column" borderStyle="single" borderColor={focused ? "#A78BFA" : "gray"} paddingX={1}>
+      <Text bold color={focused ? "#A78BFA" : undefined}>SETUP{focused ? " · focused" : ""}</Text>
       {content.kind === "empty" ? (
         <Text dimColor>Run /status, /diff, /model, or /help.</Text>
       ) : null}
@@ -91,6 +113,120 @@ export function RightPane({
           <Text dimColor>arrows move · enter applies</Text>
         </Box>
       ) : null}
+      {content.kind === "new-chat-setup" ? (
+        <Box flexDirection="column">
+          <Text bold>New chat</Text>
+          <Text dimColor>Lane: {content.laneLabel}</Text>
+          <Box flexDirection="column" marginTop={1}>
+            {content.rows.map((row, index) => (
+              <Box key={`${row.kind}:${row.label}`} flexDirection="column">
+                <Text color={index === selectedIndex ? "#A78BFA" : row.disabled ? "gray" : undefined}>
+                  {index === selectedIndex ? "›" : " "} {row.label}: {row.value}
+                </Text>
+                {index === selectedIndex && row.detail ? <Text dimColor>  {row.detail}</Text> : null}
+              </Box>
+            ))}
+          </Box>
+          <Text dimColor>up/down rows · left/right change · enter activates</Text>
+        </Box>
+      ) : null}
+      {content.kind === "model-setup" ? (
+        <Box flexDirection="column">
+          <Box marginTop={1}>
+            <Text bold color={theme.color.accent}>MODEL</Text>
+          </Box>
+          {content.rows.filter((row) => row.cyclable === true).map((row) => {
+            const index = content.rows.indexOf(row);
+            const selected = index === selectedIndex;
+            const labelColor = selected ? theme.color.accent : row.disabled ? "gray" : undefined;
+            const isProviderRow = row.kind === "provider";
+            const valueColor = isProviderRow
+              ? theme.provider(content.activeProvider).color
+              : row.disabled
+                ? "gray"
+                : undefined;
+            const rightHint = row.disabled ? null : "‹ ›";
+            const cursorGlyph = selected ? "›" : " ";
+            const paddedLabel = row.label.padEnd(12, " ");
+            return (
+              <Box key={`${row.kind}:${row.label}`} flexDirection="column">
+                <Box justifyContent="space-between">
+                  <Text>
+                    <Text color={labelColor} bold={selected}>{cursorGlyph} {paddedLabel}</Text>
+                    <Text color={valueColor} bold={isProviderRow}>
+                      {isProviderRow ? `${theme.provider(content.activeProvider).glyph} ` : ""}{row.value}
+                    </Text>
+                  </Text>
+                  {rightHint ? (
+                    <Text color={selected ? theme.color.accent : theme.color.mutedFg} dimColor={!selected}>
+                      {rightHint}
+                    </Text>
+                  ) : null}
+                </Box>
+                {selected && row.detail ? <Text dimColor>  {row.detail}</Text> : null}
+              </Box>
+            );
+          })}
+          <Box flexDirection="column" marginTop={1}>
+            {content.rows.filter((row) => row.cyclable !== true).map((row) => {
+              const index = content.rows.indexOf(row);
+              const selected = index === selectedIndex;
+              const glyph = row.kind === "refresh-status" ? "↻" : row.kind === "open-settings" ? "↗" : "→";
+              const labelColor = selected ? theme.color.accent : row.disabled ? "gray" : undefined;
+              const valueColor = row.disabled ? "gray" : theme.color.mutedFg;
+              const cursorGlyph = selected ? "›" : " ";
+              const showRunValue = row.kind !== "refresh-status";
+              return (
+                <Box key={`${row.kind}:${row.label}`} flexDirection="column">
+                  <Box justifyContent="space-between">
+                    <Text>
+                      <Text color={labelColor} bold={selected}>{cursorGlyph} {glyph} {row.label}</Text>
+                      {showRunValue ? <Text color={valueColor}>  {row.value}</Text> : null}
+                    </Text>
+                    {row.disabled ? null : (
+                      <Text color={selected ? theme.color.accent : theme.color.mutedFg} dimColor={!selected}>↵</Text>
+                    )}
+                  </Box>
+                  {selected && row.detail ? <Text dimColor>  {row.detail}</Text> : null}
+                </Box>
+              );
+            })}
+          </Box>
+          <Box flexDirection="column" marginTop={1}>
+            <Text bold color={theme.color.accent}>PROVIDERS</Text>
+            {content.providerRows.map((row, providerIdx) => {
+              const absoluteIndex = content.rows.length + providerIdx;
+              const providerSelected = absoluteIndex === selectedIndex;
+              const brand = theme.provider(row.provider);
+              const isActive = row.provider === content.activeProvider;
+              const cursorGlyph = providerSelected ? "›" : " ";
+              return (
+                <Box key={row.provider} flexDirection="column">
+                  <Box justifyContent="space-between">
+                    <Text>
+                      <Text color={providerSelected ? theme.color.accent : undefined} bold={providerSelected}>{cursorGlyph} </Text>
+                      <Text color={brand.color} bold={isActive || providerSelected}>{brand.glyph} {row.label}</Text>
+                      {isActive ? <Text dimColor>  active</Text> : null}
+                    </Text>
+                    <Text color={statusColor(row.status)}>{STATUS_DOT[row.status]}</Text>
+                  </Box>
+                  {providerSelected ? (
+                    <Box flexDirection="column">
+                      <Text dimColor>    {row.modelCount} models</Text>
+                      <Text dimColor>    {row.status === "ready" ? tailTruncate(row.detail, 30) : row.detail}</Text>
+                    </Box>
+                  ) : null}
+                </Box>
+              );
+            })}
+          </Box>
+          <Box marginTop={1}>
+            <Text dimColor>
+              ↑↓ ←→ enter{content.checkedAt ? `  ·  ${content.checkedAt.slice(11, 19)}` : ""}
+            </Text>
+          </Box>
+        </Box>
+      ) : null}
       {content.kind === "form" ? (
         <Box flexDirection="column">
           <Text bold>{content.title}</Text>
@@ -103,7 +239,7 @@ export function RightPane({
               </Text>
             );
           })}
-          <Text dimColor>tab moves fields · enter submits · / runs a command</Text>
+          <Text dimColor>arrows move fields · enter submits · esc cancels</Text>
         </Box>
       ) : null}
     </Box>

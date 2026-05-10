@@ -48,8 +48,10 @@ Usage:
   ade code --print-state
 
 Keys:
-  ctrl-b   toggle lanes and chats
-  ctrl-j   toggle right pane
+  ctrl-o   open or focus lanes and chats
+  ctrl-p   open or focus details
+  shift-tab cycle pane focus
+  esc      return or cancel the active pane
   ?        help when it is the first and only prompt character
   /        command palette
 `);

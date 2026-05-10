@@ -596,7 +596,7 @@ describe("runtime AI actions", () => {
     } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
     const aiService = getAdeActionDomainServices(runtime).ai as Record<string, unknown>;
 
-    for (const action of ["getStatus", "storeApiKey", "deleteApiKey", "listApiKeys"]) {
+    for (const action of ["getStatus", "getOpenCodeRuntimeDiagnostics", "storeApiKey", "deleteApiKey", "listApiKeys"]) {
       expect(aiService[action]).toEqual(expect.any(Function));
       expect(listAllowedAdeActionNames("ai", aiService)).toContain(action);
     }

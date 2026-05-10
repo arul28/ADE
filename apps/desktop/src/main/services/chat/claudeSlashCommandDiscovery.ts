@@ -7,6 +7,8 @@ export type DiscoveredClaudeSlashCommand = {
   name: string;
   description: string;
   argumentHint?: string;
+  source: "command" | "skill";
+  filePath: string;
 };
 
 export type ResolvedClaudeSlashCommandInvocation = {
@@ -109,6 +111,8 @@ function discoverLegacyCommands(commandsDir: string): DiscoveredClaudeSlashComma
         name,
         description: maybeString(frontmatter.description) ?? firstMarkdownParagraph(content),
         argumentHint: maybeArgumentHint(frontmatter["argument-hint"]) ?? maybeArgumentHint(frontmatter.argumentHint),
+        source: "command",
+        filePath: entryPath,
       });
     }
   };
@@ -195,16 +199,39 @@ function discoverSkills(skillsDir: string): DiscoveredClaudeSlashCommand[] {
       name,
       description: maybeString(frontmatter.description) ?? firstMarkdownParagraph(content),
       argumentHint: maybeArgumentHint(frontmatter["argument-hint"]) ?? maybeArgumentHint(frontmatter.argumentHint),
+      source: "skill",
+      filePath: skillPath,
     });
   }
 
   return commands;
 }
 
+function ancestorClaudeRoots(cwd: string): string[] {
+  const roots: string[] = [];
+  const seen = new Set<string>();
+  const home = os.homedir();
+  let current = path.resolve(cwd);
+  let depth = 0;
+  while (depth < 25) {
+    const candidate = path.join(current, ".claude");
+    if (!seen.has(candidate)) {
+      seen.add(candidate);
+      roots.push(candidate);
+    }
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    if (current === home) break;
+    current = parent;
+    depth += 1;
+  }
+  return roots;
+}
+
 export function discoverClaudeSlashCommands(cwd: string): DiscoveredClaudeSlashCommand[] {
   const roots = [
     path.join(os.homedir(), ".claude"),
-    path.join(cwd, ".claude"),
+    ...ancestorClaudeRoots(cwd),
   ];
   const byName = new Map<string, DiscoveredClaudeSlashCommand>();
 
@@ -221,6 +248,43 @@ export function discoverClaudeSlashCommands(cwd: string): DiscoveredClaudeSlashC
   return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
+function resolveSkillFile(skillsDir: string, commandName: string): string | null {
+  if (!fs.existsSync(skillsDir)) return null;
+  const target = commandName.replace(/^\//, "").toLowerCase();
+  if (!target.length) return null;
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(skillsDir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const skillPath = path.join(skillsDir, entry.name, "SKILL.md");
+    if (!fs.existsSync(skillPath)) continue;
+    let content = "";
+    try {
+      content = fs.readFileSync(skillPath, "utf8");
+    } catch {
+      continue;
+    }
+    const frontmatter = readFrontmatter(content) as { name?: unknown; "user-invocable"?: unknown; userInvocable?: unknown };
+    if (frontmatter["user-invocable"] === false || frontmatter.userInvocable === false) continue;
+    const declaredName = maybeString(frontmatter.name);
+    const candidateNames = new Set<string>();
+    const dirNormalized = normalizeSlashCommandName(entry.name);
+    if (dirNormalized) candidateNames.add(dirNormalized.toLowerCase());
+    if (declaredName) {
+      const fmNormalized = normalizeSlashCommandName(declaredName);
+      if (fmNormalized) candidateNames.add(fmNormalized.toLowerCase());
+    }
+    if (candidateNames.has(`/${target}`) || candidateNames.has(target)) {
+      return skillPath;
+    }
+  }
+  return null;
+}
+
 export function resolveClaudeSlashCommandInvocation(
   cwd: string,
   input: string,
@@ -234,17 +298,23 @@ export function resolveClaudeSlashCommandInvocation(
   const argumentsText = match[2]?.trim() ?? "";
   const roots = [
     path.join(os.homedir(), ".claude"),
-    path.join(cwd, ".claude"),
+    ...ancestorClaudeRoots(cwd),
   ];
 
-  let commandFile: string | null = null;
+  // Prefer command files; fall back to user-invocable skills (SKILL.md).
+  let resolvedFile: string | null = null;
   for (const root of roots) {
-    commandFile = resolveLegacyCommandFile(path.join(root, "commands"), name) ?? commandFile;
+    resolvedFile = resolveLegacyCommandFile(path.join(root, "commands"), name) ?? resolvedFile;
   }
-  if (!commandFile) return null;
+  if (!resolvedFile) {
+    for (const root of roots) {
+      resolvedFile = resolveSkillFile(path.join(root, "skills"), name) ?? resolvedFile;
+    }
+  }
+  if (!resolvedFile) return null;
 
   try {
-    const content = fs.readFileSync(commandFile, "utf8");
+    const content = fs.readFileSync(resolvedFile, "utf8");
     const body = stripFrontmatter(content).trim();
     if (!body.length) return null;
     const hasPlaceholder = /\$ARGUMENTS/.test(body);

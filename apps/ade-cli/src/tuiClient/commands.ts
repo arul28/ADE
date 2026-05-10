@@ -14,6 +14,7 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/push", description: "Push the active lane branch", placement: "inline" },
   { name: "/clear", description: "Clear the local terminal transcript view", placement: "inline" },
   { name: "/end", description: "End the active chat runtime", placement: "inline" },
+  { name: "/login", description: "Sign in to the active CLI-backed provider from this terminal", placement: "inline" },
   { name: "/open", description: "Open this ADE context in desktop", placement: "inline" },
   { name: "/quit", description: "Exit ade code", placement: "inline" },
   { name: "/remember", description: "Write durable ADE memory", placement: "inline", argumentHint: "<fact>" },
@@ -50,6 +51,12 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/ade", description: "Run an ADE action or force a TUI command", placement: "right", argumentHint: "<domain.action|command> [json]" },
 ];
 
+const ADE_OWNED_SINGLE_WORD_COMMANDS = new Set(
+  BUILTIN_COMMANDS
+    .filter((command) => command.placement === "inline" && !command.name.includes(" "))
+    .map((command) => command.name),
+);
+
 export type ParsedCommand = {
   name: string;
   args: string;
@@ -83,6 +90,18 @@ export function parseCommand(input: string, userCommands: AgentChatSlashCommand[
   }
 
   const exactUserCommand = userCommands.find((command) => command.name === first) ?? null;
+  const adeOwnedSingleWordCommand = candidates.find((command) =>
+    command.name === first && ADE_OWNED_SINGLE_WORD_COMMANDS.has(command.name)
+  );
+  if (adeOwnedSingleWordCommand) {
+    return {
+      name: first,
+      args: trimmed.slice(first.length).trim(),
+      spec: adeOwnedSingleWordCommand,
+      userCommand: null,
+    };
+  }
+
   if (exactUserCommand) {
     return {
       name: first,
@@ -127,6 +146,7 @@ export function paletteCommands(
   userCommands: AgentChatSlashCommand[] = [],
 ): Array<{ name: string; description: string; source: "ade" | "user"; argumentHint?: string }> {
   const normalizedQuery = query.trim().toLowerCase();
+  const queryToken = normalizedQuery.replace(/^\//, "");
   const builtins = BUILTIN_COMMANDS.map((command) => ({
     name: command.name,
     description: command.description,
@@ -139,12 +159,27 @@ export function paletteCommands(
     source: "user" as const,
     argumentHint: command.argumentHint,
   }));
-  return [...builtins, ...users]
-    .filter((command) => {
-      if (!normalizedQuery || normalizedQuery === "/") return true;
-      return `${command.name} ${command.description}`.toLowerCase().includes(normalizedQuery.replace(/^\//, ""));
-    })
-    .slice(0, 9);
+  // Dedupe by name: when both ADE and a runtime/user catalog define the same
+  // command, prefer the runtime/user entry so SDK-native behavior wins.
+  const byName = new Map<string, { name: string; description: string; source: "ade" | "user"; argumentHint?: string }>();
+  for (const command of builtins) byName.set(command.name, command);
+  for (const command of users) byName.set(command.name, command);
+  const merged = [...byName.values()];
+  const filtered = !queryToken
+    ? merged
+    : merged.filter((command) => `${command.name} ${command.description}`.toLowerCase().includes(queryToken));
+  // Rank: name-prefix matches first, then name-substring, then description matches, then alphabetical.
+  filtered.sort((a, b) => {
+    if (queryToken) {
+      const aName = a.name.toLowerCase();
+      const bName = b.name.toLowerCase();
+      const aPrefix = aName.startsWith(`/${queryToken}`) ? 0 : aName.includes(queryToken) ? 1 : 2;
+      const bPrefix = bName.startsWith(`/${queryToken}`) ? 0 : bName.includes(queryToken) ? 1 : 2;
+      if (aPrefix !== bPrefix) return aPrefix - bPrefix;
+    }
+    return a.name.localeCompare(b.name);
+  });
+  return filtered.slice(0, 30);
 }
 
 export function commandPlacement(command: ParsedCommand): CommandPlacement {

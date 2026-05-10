@@ -545,7 +545,6 @@ const CLAUDE_BUILT_IN_SLASH_COMMANDS: AgentChatSlashCommand[] = [
   { name: "/hooks", description: "View hook configurations for tool events.", source: "sdk" },
   { name: "/ide", description: "Manage IDE integrations and show status.", source: "sdk" },
   { name: "/init", description: "Initialize project with a CLAUDE.md guide.", source: "sdk" },
-  { name: "/login", description: "Sign in to Claude Code for this chat runtime", source: "sdk" },
   { name: "/logout", description: "Sign out from Anthropic.", source: "sdk" },
   { name: "/mcp", description: "Manage MCP server connections and OAuth authentication.", source: "sdk" },
   { name: "/memory", description: "Edit CLAUDE.md memory files and memory settings.", source: "sdk" },
@@ -569,6 +568,11 @@ const CLAUDE_BUILT_IN_SLASH_COMMANDS: AgentChatSlashCommand[] = [
 
 const CODEX_BUILT_IN_SLASH_COMMAND_NAMES = new Set(CODEX_BUILT_IN_SLASH_COMMANDS.map((command) => command.name));
 const CLAUDE_BUILT_IN_SLASH_COMMAND_NAMES = new Set(CLAUDE_BUILT_IN_SLASH_COMMANDS.map((command) => command.name));
+const CLAUDE_LOGIN_NOT_SDK_COMMAND = "ADE Claude chat is hosted through the Claude Agent SDK, and /login is not an SDK-dispatchable command. Run `claude auth login` in a terminal or configure ANTHROPIC_API_KEY, then refresh AI settings.";
+
+function isDispatchableClaudeSdkSlashCommand(command: { name: string }): boolean {
+  return command.name !== "/login";
+}
 
 type PendingOpenCodeApproval = {
   category: "bash" | "write";
@@ -11433,22 +11437,39 @@ export function createAgentChatService(args: {
       };
       const projectSlashCommands = (() => {
         try {
-          return discoverClaudeSlashCommands(managed.laneWorktreePath);
+          return discoverClaudeSlashCommands(managed.laneWorktreePath).filter(isDispatchableClaudeSdkSlashCommand);
         } catch {
           return [];
         }
       })();
+      const projectCommandFiles = projectSlashCommands.filter((cmd) => cmd.source === "command");
+      const projectSkillFiles = projectSlashCommands.filter((cmd) => cmd.source === "skill");
       const slashCommandsSection = projectSlashCommands.length
         ? [
           "",
-          "## Project slash commands",
-          "The user can invoke custom slash commands defined in `.claude/commands/*.md` (project scope) and `~/.claude/commands/*.md` (user scope). When the user sends a message that is exactly `/<name>` or `/<name> <args>`, ADE auto-expands the command body into the message before it reaches you — so in that case you will already see the expanded instructions, not the literal `/<name>`.",
-          "When the user references a command mid-sentence (e.g. \"please run /audit\", \"can you do a /security-review\") the message is not auto-expanded. In that case, read the matching file at `.claude/commands/<name>.md` (prefer project scope; fall back to user scope) and follow its instructions as if the user had run it.",
-          "Available commands in this workspace:",
-          ...projectSlashCommands.map((cmd) => {
-            const desc = cmd.description.trim();
-            return desc.length ? `- ${cmd.name} — ${desc}` : `- ${cmd.name}`;
-          }),
+          "## Project slash commands and skills",
+          "ADE walks up from the lane worktree to discover `.claude/commands/*.md` (slash commands) and `.claude/skills/<name>/SKILL.md` (skills) at every ancestor directory plus `~/.claude/`. The Claude Agent SDK only auto-discovers `<cwd>/.claude/` and `~/.claude/`, so ADE injects the rest here.",
+          "**User-invoked (`/<name>`):** When the user sends a message that is exactly `/<name>` or `/<name> <args>`, ADE pre-expands the file's body (commands take precedence over same-named skills) and substitutes `$ARGUMENTS` before it reaches you. You'll see the expanded instructions, not the literal `/<name>`.",
+          "**Mid-sentence reference:** When the user mentions a command/skill mid-sentence (e.g. \"please /audit this\", \"can you do a /security-review\") the message is NOT auto-expanded. Read the file at the path below and follow it.",
+          "**Autonomous skill use:** If, while working on a task, you decide a discovered skill applies (its description matches the situation), Read its SKILL.md file and follow it as if it had been invoked. Don't ask the user — just use the skill when warranted.",
+          ...(projectCommandFiles.length ? [
+            "",
+            "Commands (file-backed prompts):",
+            ...projectCommandFiles.map((cmd) => {
+              const desc = cmd.description.trim();
+              const head = desc.length ? `- ${cmd.name} — ${desc}` : `- ${cmd.name}`;
+              return `${head}\n  file: ${cmd.filePath}`;
+            }),
+          ] : []),
+          ...(projectSkillFiles.length ? [
+            "",
+            "Skills (autonomously usable when relevant):",
+            ...projectSkillFiles.map((cmd) => {
+              const desc = cmd.description.trim();
+              const head = desc.length ? `- ${cmd.name} — ${desc}` : `- ${cmd.name}`;
+              return `${head}\n  file: ${cmd.filePath}`;
+            }),
+          ] : []),
         ]
         : [];
       opts.systemPrompt = {
@@ -12740,14 +12761,15 @@ export function createAgentChatService(args: {
         );
       }
     });
-    const allowClaudeLoginCommand = managed.session.provider === "claude" && slashCommand === "/login";
+    if (managed.session.provider === "claude" && slashCommand === "/login") {
+      throw new Error(CLAUDE_LOGIN_NOT_SDK_COMMAND);
+    }
     const claudeRuntimeHealth = managed.session.provider === "claude"
       ? getProviderRuntimeHealth("claude")
       : null;
     if (
       managed.session.provider === "claude"
       && claudeRuntimeHealth?.state === "auth-failed"
-      && !allowClaudeLoginCommand
     ) {
       throw new Error(claudeRuntimeHealth.message ?? CLAUDE_RUNTIME_AUTH_ERROR);
     }
@@ -18395,18 +18417,22 @@ export function createAgentChatService(args: {
 
     // Claude SDK commands plus filesystem-backed Claude Code commands/skills.
     if (provider === "claude") {
-      const runtimeCommands: AgentChatSlashCommand[] = (managed.runtime?.kind === "claude" ? managed.runtime.slashCommands : []).map((cmd: { name: string; description: string; argumentHint?: string }) => ({
-        name: cmd.name,
-        description: cmd.description,
-        argumentHint: cmd.argumentHint,
-        source: "sdk" as const,
-      }));
-      const projectCommands: AgentChatSlashCommand[] = discoverClaudeSlashCommands(managed.laneWorktreePath).map((cmd: { name: string; description: string; argumentHint?: string }) => ({
-        name: cmd.name,
-        description: cmd.description,
-        argumentHint: cmd.argumentHint,
-        source: "sdk" as const,
-      }));
+      const runtimeCommands: AgentChatSlashCommand[] = (managed.runtime?.kind === "claude" ? managed.runtime.slashCommands : [])
+        .filter(isDispatchableClaudeSdkSlashCommand)
+        .map((cmd: { name: string; description: string; argumentHint?: string }) => ({
+          name: cmd.name,
+          description: cmd.description,
+          argumentHint: cmd.argumentHint,
+          source: "sdk" as const,
+        }));
+      const projectCommands: AgentChatSlashCommand[] = discoverClaudeSlashCommands(managed.laneWorktreePath)
+        .filter(isDispatchableClaudeSdkSlashCommand)
+        .map((cmd: { name: string; description: string; argumentHint?: string }) => ({
+          name: cmd.name,
+          description: cmd.description,
+          argumentHint: cmd.argumentHint,
+          source: "sdk" as const,
+        }));
       return mergeSlashCommands([projectCommands, CLAUDE_BUILT_IN_SLASH_COMMANDS, runtimeCommands]);
     }
 

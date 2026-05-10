@@ -17,7 +17,7 @@ It is a client. The runtime, lanes, chats, transcripts, PRs, processes, and proo
 | `apps/ade-cli/src/tuiClient/commands.ts` / `linearCommands.ts` | Slash command catalog and routing. |
 | `apps/ade-cli/src/tuiClient/format.ts` | Transcript rendering helpers for the TUI. |
 | `apps/ade-cli/src/tuiClient/types.ts` | `AdeCodeConnection`, `ProjectLaunchContext`, navigation DTOs aligned with `apps/desktop/src/shared/types`. |
-| `apps/ade-cli/src/tuiClient/components/` | `Drawer`, `ChatView`, `Header`, `RightPane`, `SlashPalette`, `MentionPalette`, `ApprovalPrompt`. |
+| `apps/ade-cli/src/tuiClient/components/` | `AdeWordmark`, `Drawer`, `ChatView`, `Header`, `RightPane`, `SlashPalette`, `MentionPalette`, `ApprovalPrompt`, `ModelStatus`, `FooterControls`. |
 | `apps/desktop/src/shared/types/chat.ts` | Canonical chat DTOs (`AgentChatEventEnvelope`, sessions, pending input). Imported per-module so ade-cli typecheck stays scoped. |
 | `apps/desktop/src/shared/modelRegistry.ts` | Default model selection for new sessions (`getDefaultModelDescriptor`). |
 | `apps/desktop/src/shared/adeLayout.ts` | Resolves project-scoped `.ade` paths. |
@@ -63,7 +63,7 @@ For the embedded runtime there is no `projects.add` step — the in-process runt
 
 `apps/ade-cli/src/tuiClient/app.tsx` is the Ink root. Layout:
 
-- **Header** — project name, active lane, chat session, model + reasoning effort badge, token / cost counter (`latestTokenStats`).
+- **Header** — project name, active lane, branch, and the terminal client frame.
 - **Drawer** (toggled with the configured shortcut) — two sections: Lanes and Chats. Selecting a lane in the Lanes pane switches the active lane and filters the Chats pane to that lane's sessions. Lane and chat selection drive the right pane's context.
 - **ChatView** — the main transcript. Renders user, assistant, tool, and system events from `chat/event` notifications. Tool calls collapse into expandable blocks; the most recent expandable failure id is tracked so `Enter` can drill into it.
 - **Composer** — multi-line input with mention completion (`@…`) sourced from `MentionPalette` and slash command completion from `SlashPalette`. Pending tool approvals surface as `ApprovalPrompt`.
@@ -146,6 +146,13 @@ ade --socket /tmp/ade-runtime-dev.sock code
 ```
 
 After local changes, run `npm run build` inside `apps/ade-cli` so both `dist/cli.cjs` and `dist/tuiClient/cli.mjs` exist for packaged and linked use. During repo development, `npm run dev:code` runs the source TUI against the shared dev runtime at `/tmp/ade-runtime-dev.sock`.
+
+## Chat setup
+
+- `+ new chat` opens a draft setup view in the details pane; it does not create a backend chat until the first prompt is sent from the middle composer.
+- `/model` opens the model setup view. It can switch provider, model, reasoning, and permission settings, refresh provider readiness through `ai.getStatus`, and open desktop Settings > AI Providers for full configuration.
+- `/login` delegates only to provider CLIs that can authenticate in the current terminal: Claude (`claude auth login`), Codex (`codex login`), and OpenCode (`opencode auth login`). Cursor chat is `@cursor/sdk` and needs `CURSOR_API_KEY` or desktop Settings > AI Providers. Droid chat runs Factory Droid over ACP and needs `FACTORY_API_KEY` or Factory's interactive `droid` login.
+- The middle composer shows the selected provider, model, reasoning, and permission mode under the prompt so draft changes on the right are visible before the chat starts.
 
 ## Related docs
 

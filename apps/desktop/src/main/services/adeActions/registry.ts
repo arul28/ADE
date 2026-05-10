@@ -441,6 +441,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   keybindings: ["get", "set"],
   ai: [
     "getStatus",
+    "getOpenCodeRuntimeDiagnostics",
     "verifyApiKeyConnection",
     "storeApiKey",
     "deleteApiKey",
@@ -2351,6 +2352,10 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
   return {
     getStatus: (args?: { force?: boolean; refreshOpenCodeInventory?: boolean }) =>
       buildAiSettingsStatus(aiIntegrationService, args),
+    getOpenCodeRuntimeDiagnostics: async () => {
+      const { getOpenCodeRuntimeSnapshot } = await import("../opencode/openCodeRuntime");
+      return getOpenCodeRuntimeSnapshot();
+    },
     verifyApiKeyConnection: (args?: { provider?: string }) =>
       aiIntegrationService.verifyApiKeyConnection(requireNonEmptyString(args?.provider, "provider")),
     storeApiKey: (args?: { provider?: string; key?: string }) =>

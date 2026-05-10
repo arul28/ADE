@@ -11,7 +11,7 @@ import { resolveClaudeCodeExecutable } from "./claudeCodeExecutable";
 const PROBE_TIMEOUT_MS = 20_000;
 const PROBE_CACHE_TTL_MS = 30_000;
 export const CLAUDE_RUNTIME_AUTH_ERROR =
-  "Claude Code is detected, but ADE chat could not authenticate it. Run /login in chat or sign in with `claude auth login`, then refresh AI settings.";
+  "Claude Code is detected, but ADE chat could not authenticate it. Run `claude auth login` in a terminal or configure ANTHROPIC_API_KEY, then refresh AI settings.";
 const DEFAULT_RUNTIME_FAILURE =
   "Claude Code is installed, but ADE could not confirm that the Claude chat runtime can start from this app session.";
 

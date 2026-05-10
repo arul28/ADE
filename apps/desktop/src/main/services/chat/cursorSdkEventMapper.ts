@@ -281,6 +281,7 @@ export type CursorSdkTurnEndedTokensMeta = {
   turnId: string;
   itemId?: string;
   runtime?: AgentChatRuntime;
+  contextWindow?: number;
 };
 
 export function mapTurnEndedTokensToEvent(
@@ -311,5 +312,6 @@ export function mapTurnEndedTokensToEvent(
     ...(outputTokens != null ? { outputTokens } : {}),
     ...(cacheReadTokens != null ? { cacheReadTokens } : {}),
     ...(cacheWriteTokens != null ? { cacheWriteTokens } : {}),
+    ...(meta.contextWindow != null ? { contextWindow: meta.contextWindow } : {}),
   };
 }

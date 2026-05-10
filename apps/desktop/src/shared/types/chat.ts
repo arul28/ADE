@@ -307,6 +307,7 @@ export type AgentChatEvent =
       outputTokens?: number;
       cacheReadTokens?: number;
       cacheWriteTokens?: number;
+      contextWindow?: number;
     }
   | {
       type: "cloud_artifact";

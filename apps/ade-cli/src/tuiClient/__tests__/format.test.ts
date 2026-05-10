@@ -23,7 +23,65 @@ describe("renderChatLines", () => {
     });
     expect(lines.map((line) => line.tone)).toEqual(["user", "assistant"]);
     expect(lines[0]?.header).toContain("you");
-    expect(lines[1]?.header).toContain("ade");
+    expect(lines[1]?.header).toContain("ADE");
+  });
+
+  it("orders local notices and chat events by timestamp", () => {
+    const lines = renderChatLines({
+      activeSession: null,
+      notices: [
+        {
+          id: "notice-1",
+          timestamp: "2026-01-01T12:00:02.000Z",
+          tone: "success",
+          text: "Auth completed.",
+        },
+      ],
+      events: [
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:01.000Z",
+          sequence: 1,
+          event: { type: "user_message", text: "hello" },
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:03.000Z",
+          sequence: 2,
+          event: { type: "text", text: "hi" },
+        },
+      ],
+    });
+
+    expect(lines.map((line) => line.body)).toEqual(["hello", "Auth completed.", "hi"]);
+  });
+
+  it("keeps terminal formatting artifacts out of model labels", () => {
+    const lines = renderChatLines({
+      activeSession: {
+        sessionId: "s1",
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-opus-4-7[1m]",
+        status: "idle",
+        startedAt: "2026-01-01T12:00:00.000Z",
+        endedAt: null,
+        lastActivityAt: "2026-01-01T12:00:00.000Z",
+        lastOutputPreview: null,
+        summary: null,
+      },
+      notices: [],
+      events: [
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:01.000Z",
+          sequence: 1,
+          event: { type: "text", text: "hi" },
+        },
+      ],
+    });
+
+    expect(lines[0]?.header).toMatch(/^Claude · .* · claude-opus-4-7$/);
   });
 
   it("renders non-JSON-safe objects without throwing", () => {
@@ -100,6 +158,92 @@ describe("renderChatLines", () => {
     }));
     expect(lines[0]?.body).toContain("↵ expands");
     expect(latestExpandableFailureId([...events])).toBe("1:command:2026-01-01T12:00:00.000Z");
+  });
+
+  it("coalesces consecutive streamed text events from the same provider into one line", () => {
+    const session = {
+      sessionId: "s1",
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.5",
+      status: "idle",
+      startedAt: "2026-01-01T12:00:00.000Z",
+      endedAt: null,
+      lastActivityAt: "2026-01-01T12:00:00.000Z",
+      lastOutputPreview: null,
+      summary: null,
+    } as const;
+    const lines = renderChatLines({
+      activeSession: session,
+      notices: [],
+      events: [
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:01.000Z",
+          sequence: 1,
+          event: { type: "text", text: "I'm Codex," },
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:02.000Z",
+          sequence: 2,
+          event: { type: "text", text: " running as a GPT-5 based" },
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:03.000Z",
+          sequence: 3,
+          event: { type: "text", text: " software engineering agent." },
+        },
+      ],
+    });
+    expect(lines).toHaveLength(1);
+    expect(lines[0]?.tone).toBe("assistant");
+    expect(lines[0]?.body).toBe("I'm Codex, running as a GPT-5 based software engineering agent.");
+    expect(lines[0]?.header).toMatch(/^Codex /);
+  });
+
+  it("does not coalesce assistant text across a tool call", () => {
+    const session = {
+      sessionId: "s1",
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.5",
+      status: "idle",
+      startedAt: "2026-01-01T12:00:00.000Z",
+      endedAt: null,
+      lastActivityAt: "2026-01-01T12:00:00.000Z",
+      lastOutputPreview: null,
+      summary: null,
+    } as const;
+    const lines = renderChatLines({
+      activeSession: session,
+      notices: [],
+      events: [
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:01.000Z",
+          sequence: 1,
+          event: { type: "text", text: "I'll check the branch." },
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:02.000Z",
+          sequence: 2,
+          event: { type: "tool_call", tool: "shell", args: { command: "git branch" }, itemId: "tool-1" },
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:03.000Z",
+          sequence: 3,
+          event: { type: "text", text: "We're on main." },
+        },
+      ],
+    });
+    expect(lines.map((line) => line.tone)).toEqual(["assistant", "tool", "assistant"]);
+    expect(lines[0]?.body).toBe("I'll check the branch.");
+    expect(lines[2]?.body).toBe("We're on main.");
+    expect(lines[2]?.header).toMatch(/^Codex /);
   });
 
   it("renders expanded failed tool output when requested", () => {

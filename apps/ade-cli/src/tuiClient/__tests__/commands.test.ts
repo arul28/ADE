@@ -33,6 +33,24 @@ describe("commands", () => {
     expect(parsed ? commandPlacement(parsed) : null).toBe("chat");
   });
 
+  it("keeps provider login as an ADE-code terminal command", () => {
+    const parsed = parseCommand("/login", [
+      { name: "/login", description: "Claude SDK login", source: "sdk" },
+    ]);
+    expect(parsed?.spec?.name).toBe("/login");
+    expect(parsed?.userCommand).toBeNull();
+    expect(parsed ? commandPlacement(parsed) : null).toBe("inline");
+  });
+
+  it("keeps terminal control commands in ADE Code", () => {
+    const parsed = parseCommand("/quit", [
+      { name: "/quit", description: "Runtime quit", source: "sdk" },
+    ]);
+    expect(parsed?.spec?.name).toBe("/quit");
+    expect(parsed?.userCommand).toBeNull();
+    expect(parsed ? commandPlacement(parsed) : null).toBe("inline");
+  });
+
   it("keeps multi-word ADE commands ahead of first-token runtime commands", () => {
     const parsed = parseCommand("/new lane perf-pass", [
       { name: "/new", description: "Start a new runtime chat", source: "sdk" },
@@ -47,5 +65,41 @@ describe("commands", () => {
       { name: "/ship", description: "Ship it", source: "sdk" },
     ]);
     expect(rows).toContainEqual(expect.objectContaining({ name: "/ship", source: "user" }));
+  });
+
+  it("surfaces SDK commands like /compact when filtering", () => {
+    const rows = paletteCommands("/comp", [
+      { name: "/compact", description: "Free up context by summarizing", source: "sdk" },
+    ]);
+    expect(rows.find((row) => row.name === "/compact")).toBeTruthy();
+  });
+
+  it("prefers SDK/user entry when same command exists in ADE builtins (dedupe)", () => {
+    // /clear is in ADE BUILTIN_COMMANDS; the SDK also exposes /clear.
+    const rows = paletteCommands("/clear", [
+      { name: "/clear", description: "Start a new conversation with empty context", source: "sdk" },
+    ]);
+    const clearRows = rows.filter((row) => row.name === "/clear");
+    expect(clearRows).toHaveLength(1);
+    expect(clearRows[0]?.source).toBe("user");
+    expect(clearRows[0]?.description).toBe("Start a new conversation with empty context");
+  });
+
+  it("returns more than 9 results for empty/short queries", () => {
+    const userCommands = Array.from({ length: 20 }, (_, i) => ({
+      name: `/sdk-cmd-${i}`,
+      description: `SDK command ${i}`,
+      source: "sdk" as const,
+    }));
+    const rows = paletteCommands("/", userCommands);
+    expect(rows.length).toBeGreaterThan(20);
+  });
+
+  it("ranks prefix matches above substring matches", () => {
+    const rows = paletteCommands("/compact", [
+      { name: "/compact", description: "Free up context", source: "sdk" },
+      { name: "/something-compact-related", description: "Other", source: "sdk" },
+    ]);
+    expect(rows[0]?.name).toBe("/compact");
   });
 });
