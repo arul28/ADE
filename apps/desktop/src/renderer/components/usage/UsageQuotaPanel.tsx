@@ -299,6 +299,7 @@ function ExtraUsageCard({ extra }: { extra: ExtraUsage }) {
   if (!extra.isEnabled) return null;
 
   const meta = PROVIDER_META[extra.provider];
+  const title = extra.provider === "cursor" ? `${meta.label} monthly spend` : `${meta.label} extra usage`;
   const usedUsd = extra.usedCreditsUsd;
   const limitUsd = extra.monthlyLimitUsd;
   const percent = limitUsd > 0 ? Math.min(100, (usedUsd / limitUsd) * 100) : 0;
@@ -313,7 +314,7 @@ function ExtraUsageCard({ extra }: { extra: ExtraUsage }) {
       <div className="flex items-center gap-2">
         <span className="h-2 w-2 rounded-full" style={{ background: meta.color }} />
         <span className="text-[12px] font-bold tracking-[-0.2px] text-[#FAFAFA]">
-          {meta.label} extra usage
+          {title}
         </span>
       </div>
 

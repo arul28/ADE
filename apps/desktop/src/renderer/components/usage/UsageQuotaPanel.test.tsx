@@ -3,8 +3,22 @@
 import React from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { UsageSnapshot } from "../../../shared/types";
+import type {
+  AiProviderConnectionStatus,
+  AiProviderConnections,
+  AiSettingsStatus,
+  BudgetCapConfig,
+  UsageSnapshot,
+} from "../../../shared/types";
 import { UsageQuotaPanel } from "./UsageQuotaPanel";
+
+type UsageQuotaPanelTestBridge = {
+  usage: Pick<
+    Window["ade"]["usage"],
+    "getSnapshot" | "refresh" | "getBudgetConfig" | "saveBudgetConfig" | "onUpdate"
+  >;
+  ai: Pick<Window["ade"]["ai"], "getStatus">;
+};
 
 function makeSnapshot(): UsageSnapshot {
   return {
@@ -53,30 +67,68 @@ function makeSnapshot(): UsageSnapshot {
   };
 }
 
+function makeProviderConnection(
+  provider: AiProviderConnectionStatus["provider"],
+  overrides: Partial<AiProviderConnectionStatus> = {},
+): AiProviderConnectionStatus {
+  return {
+    provider,
+    authAvailable: false,
+    runtimeDetected: false,
+    runtimeAvailable: false,
+    usageAvailable: false,
+    path: null,
+    blocker: null,
+    lastCheckedAt: "2026-05-08T07:00:00.000Z",
+    sources: [],
+    ...overrides,
+  };
+}
+
+function makeAiStatus(providerConnections: Partial<AiProviderConnections> = {}): AiSettingsStatus {
+  return {
+    mode: "guest",
+    availableProviders: {
+      claude: false,
+      codex: false,
+      cursor: false,
+      droid: false,
+    },
+    models: {
+      claude: [],
+      codex: [],
+      cursor: [],
+      droid: [],
+    },
+    features: [],
+    providerConnections: {
+      claude: makeProviderConnection("claude"),
+      codex: makeProviderConnection("codex"),
+      cursor: makeProviderConnection("cursor"),
+      droid: makeProviderConnection("droid"),
+      ...providerConnections,
+    },
+  };
+}
+
 describe("UsageQuotaPanel", () => {
   const originalAde = globalThis.window.ade;
 
   beforeEach(() => {
     const snapshot = makeSnapshot();
-    globalThis.window.ade = {
+    const bridge = {
       usage: {
-        getSnapshot: vi.fn().mockResolvedValue(snapshot),
-        refresh: vi.fn().mockResolvedValue(snapshot),
-        getBudgetConfig: vi.fn().mockResolvedValue({}),
-        saveBudgetConfig: vi.fn().mockResolvedValue({}),
-        onUpdate: vi.fn(() => () => {}),
+        getSnapshot: vi.fn<[], Promise<UsageSnapshot | null>>(async () => snapshot),
+        refresh: vi.fn<[], Promise<UsageSnapshot | null>>(async () => snapshot),
+        getBudgetConfig: vi.fn<[], Promise<BudgetCapConfig>>(async () => ({})),
+        saveBudgetConfig: vi.fn<[BudgetCapConfig], Promise<BudgetCapConfig>>(async (config) => config),
+        onUpdate: vi.fn<[(snapshot: UsageSnapshot) => void], () => void>(() => () => {}),
       },
       ai: {
-        getStatus: vi.fn().mockResolvedValue({
-          providerConnections: {
-            claude: null,
-            codex: null,
-            cursor: null,
-            droid: null,
-          },
-        }),
+        getStatus: vi.fn<[], Promise<AiSettingsStatus>>(async () => makeAiStatus()),
       },
-    } as any;
+    } satisfies UsageQuotaPanelTestBridge;
+    Object.assign(globalThis.window, { ade: bridge });
   });
 
   afterEach(() => {
@@ -108,24 +160,14 @@ describe("UsageQuotaPanel", () => {
   });
 
   it("labels Cursor Admin API-only auth as usage auth", async () => {
-    vi.mocked(window.ade.ai.getStatus).mockResolvedValue({
-      providerConnections: {
-        claude: null,
-        codex: null,
-        droid: null,
-        cursor: {
-          provider: "cursor",
+    vi.mocked(window.ade.ai.getStatus).mockResolvedValue(makeAiStatus({
+      cursor: makeProviderConnection("cursor", {
           authAvailable: true,
           runtimeDetected: true,
           runtimeAvailable: false,
           usageAvailable: true,
-          path: null,
-          blocker: null,
-          sources: [],
-          lastCheckedAt: "2026-05-08T07:00:00.000Z",
-        },
-      },
-    } as any);
+      }),
+    }));
 
     render(<UsageQuotaPanel />);
 
@@ -147,50 +189,31 @@ describe("UsageQuotaPanel", () => {
       }],
     };
     vi.mocked(window.ade.usage.getSnapshot).mockResolvedValue(snapshot);
-    vi.mocked(window.ade.ai.getStatus).mockResolvedValue({
-      providerConnections: {
-        claude: null,
-        codex: null,
-        droid: null,
-        cursor: {
-          provider: "cursor",
+    vi.mocked(window.ade.ai.getStatus).mockResolvedValue(makeAiStatus({
+      cursor: makeProviderConnection("cursor", {
           authAvailable: true,
           runtimeDetected: true,
           runtimeAvailable: false,
           usageAvailable: true,
-          path: null,
-          blocker: null,
-          sources: [],
-          lastCheckedAt: "2026-05-08T07:00:00.000Z",
-        },
-      },
-    } as any);
+      }),
+    }));
 
     render(<UsageQuotaPanel />);
 
-    expect(await screen.findByText("Cursor extra usage")).toBeTruthy();
+    expect(await screen.findByText("Cursor monthly spend")).toBeTruthy();
     expect(screen.queryByText(/Restart ADE/)).toBeNull();
   });
 
   it("keeps sign-in copy for non-Cursor auth failures", async () => {
-    vi.mocked(window.ade.ai.getStatus).mockResolvedValue({
-      providerConnections: {
-        codex: null,
-        cursor: null,
-        droid: null,
-        claude: {
-          provider: "claude",
+    vi.mocked(window.ade.ai.getStatus).mockResolvedValue(makeAiStatus({
+      claude: makeProviderConnection("claude", {
           authAvailable: true,
           runtimeDetected: true,
           runtimeAvailable: false,
           usageAvailable: false,
-          path: null,
           blocker: "Claude runtime reported that login is still required.",
-          sources: [],
-          lastCheckedAt: "2026-05-08T07:00:00.000Z",
-        },
-      },
-    } as any);
+      }),
+    }));
 
     render(<UsageQuotaPanel />);
 

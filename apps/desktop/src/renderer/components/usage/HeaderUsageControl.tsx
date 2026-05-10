@@ -68,14 +68,18 @@ export function HeaderUsageControl() {
       .catch(() => {
         if (!cancelled) setSnapshot(null);
       });
-    const unsubscribe = window.ade.usage.onUpdate((nextSnapshot) => {
-      if (!cancelled) setSnapshot(nextSnapshot);
-    });
     return () => {
       cancelled = true;
-      unsubscribe();
     };
   }, []);
+
+  useEffect(() => {
+    if (open || !window.ade?.usage) return;
+    const unsubscribe = window.ade.usage.onUpdate((nextSnapshot) => {
+      setSnapshot(nextSnapshot);
+    });
+    return unsubscribe;
+  }, [open]);
 
   useEffect(() => {
     if (!open || !window.ade?.usage?.getBudgetConfig) return;
