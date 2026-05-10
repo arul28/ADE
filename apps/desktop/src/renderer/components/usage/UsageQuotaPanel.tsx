@@ -353,7 +353,7 @@ function AuthChip({
   if (entry?.runtimeAvailable) {
     tone = { border: "rgba(34,197,94,0.3)", bg: "rgba(34,197,94,0.12)", text: "#22C55E", copy: "runtime ready" };
   } else if (entry?.authAvailable) {
-    const copy = entry.runtimeDetected ? "sign-in required" : "auth found locally";
+    const copy = entry.runtimeDetected && !entry.runtimeAvailable ? "usage auth only" : "auth found locally";
     tone = { border: "rgba(59,130,246,0.3)", bg: "rgba(59,130,246,0.12)", text: "#60A5FA", copy };
   } else {
     tone = { border: "rgba(113,113,122,0.3)", bg: "rgba(113,113,122,0.12)", text: "#A1A1AA", copy: "not detected" };

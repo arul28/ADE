@@ -2820,6 +2820,8 @@ describe("ADE CLI", () => {
     // Empty body must surface as a CLI usage error, not silently send `{}`.
     expect(() => buildCliPlan(["usage", "budget", "set", "--text", "[1,2,3]"]))
       .toThrow(/must be a JSON object/i);
+    expect(() => buildCliPlan(["usage", "budget", "set", "--text", "   \n  "]))
+      .toThrow(/non-empty JSON object/i);
   });
 
   it("usage budget check defaults scope to global and forwards --provider", () => {
@@ -2838,5 +2840,44 @@ describe("ADE CLI", () => {
 
     expect(() => buildCliPlan(["usage", "budget", "bogus"]))
       .toThrow(/usage budget supports get, set, check, or cumulative/);
+  });
+
+  it("usage budget cumulative routes with scope parameters", () => {
+    const plan = buildCliPlan(["usage", "budget", "cumulative", "--scope", "global"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.label).toBe("usage budget cumulative");
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "budget",
+        action: "getCumulativeUsage",
+        args: { scope: "global", scopeId: null, provider: null },
+      },
+    });
+
+    const aliased = buildCliPlan(["quota", "budget", "totals", "--provider", "cursor"]);
+    expect(aliased.kind).toBe("execute");
+    if (aliased.kind !== "execute") return;
+    expect(aliased.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "budget",
+        action: "getCumulativeUsage",
+        args: { scope: "global", scopeId: null, provider: "cursor" },
+      },
+    });
+  });
+
+  it("usage command aliases resolve to usage help", () => {
+    const direct = buildCliPlan(["usage", "--help"]);
+    const quota = buildCliPlan(["quota", "--help"]);
+    const helpQuota = buildCliPlan(["help", "quota"]);
+    expect(direct.kind).toBe("help");
+    expect(quota.kind).toBe("help");
+    expect(helpQuota.kind).toBe("help");
+    if (direct.kind !== "help" || quota.kind !== "help" || helpQuota.kind !== "help") return;
+    expect(quota.text).toBe(direct.text);
+    expect(helpQuota.text).toBe(direct.text);
   });
 });

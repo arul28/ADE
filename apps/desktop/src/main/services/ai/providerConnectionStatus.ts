@@ -26,6 +26,10 @@ function createUnavailableStatus(
   };
 }
 
+function isCursorAdminApiKey(value: string | null | undefined): boolean {
+  return Boolean(value?.trim().startsWith("key_"));
+}
+
 export async function buildProviderConnections(
   cliStatuses: CliAuthStatus[],
 ): Promise<AiProviderConnections> {
@@ -102,7 +106,6 @@ export async function buildProviderConnections(
     } else if (health.state === "ready") {
       status.runtimeAvailable = true;
       status.authAvailable = true;
-      if (status.provider === "cursor") status.usageAvailable = true;
       status.blocker = null;
     }
   }
@@ -173,19 +176,27 @@ export async function buildProviderConnections(
   });
 
   const cursorCli = cliStatuses.find((entry) => entry.cli === "cursor") ?? null;
-  const cursorEnvAuth = Boolean(process.env.CURSOR_API_KEY?.trim());
-  const cursorAdminEnvAuth = Boolean(process.env.CURSOR_ADMIN_API_KEY?.trim());
+  const cursorEnvKey = process.env.CURSOR_API_KEY?.trim() ?? "";
+  const cursorAdminEnvKey = process.env.CURSOR_ADMIN_API_KEY?.trim() ?? "";
+  const cursorEnvAuth = Boolean(cursorEnvKey);
+  const cursorEnvUsageAuth = isCursorAdminApiKey(cursorEnvKey);
+  const cursorAdminEnvAuth = Boolean(cursorAdminEnvKey);
+  const cursorAdminUsageAuth = isCursorAdminApiKey(cursorAdminEnvKey);
   let cursorStoredAuth = false;
+  let cursorStoredUsageAuth = false;
   let cursorStoreUnavailable = false;
   try {
-    cursorStoredAuth = Boolean(getAllApiKeys().cursor?.trim());
+    const storedCursorKey = getAllApiKeys().cursor?.trim() ?? "";
+    cursorStoredAuth = Boolean(storedCursorKey);
+    cursorStoredUsageAuth = isCursorAdminApiKey(storedCursorKey);
   } catch {
     // API key store may not be initialized yet (or read failed); surface as a
     // distinct state so the blocker copy doesn't lie about the absence of a key.
     cursorStoreUnavailable = true;
   }
   const cursorSdkAuth = Boolean(cursorEnvAuth || cursorStoredAuth);
-  const cursorUsageAuth = Boolean(cursorSdkAuth || cursorAdminEnvAuth);
+  const cursorUsageAuth = Boolean(cursorEnvUsageAuth || cursorStoredUsageAuth || cursorAdminUsageAuth);
+  const cursorAuthAvailable = Boolean(cursorSdkAuth || cursorUsageAuth);
   let cursorCredsSource: "cursor-env" | "cursor-api-key-store" | "cursor-admin-env" | undefined;
   if (cursorEnvAuth) cursorCredsSource = "cursor-env";
   else if (cursorStoredAuth) cursorCredsSource = "cursor-api-key-store";
@@ -196,16 +207,18 @@ export async function buildProviderConnections(
     runtimeDetected: true,
     cliAuthenticated: false,
     cliExplicitlyUnauthenticated: false,
-    localCredsDetected: cursorUsageAuth,
-    authAvailable: cursorUsageAuth,
+    localCredsDetected: cursorAuthAvailable,
+    authAvailable: cursorAuthAvailable,
     runtimeAvailable: cursorSdkAuth,
   };
 
   let cursorBlocker: string | null;
   if (cursorSdkAuth) {
     cursorBlocker = null;
-  } else if (cursorAdminEnvAuth) {
+  } else if (cursorAdminUsageAuth) {
     cursorBlocker = "Cursor Admin API key is configured for usage; add a Cursor agent API key for Cursor runtime access.";
+  } else if (cursorAdminEnvAuth) {
+    cursorBlocker = "CURSOR_ADMIN_API_KEY is set but does not look like a Cursor Admin API key.";
   } else if (cursorStoreUnavailable) {
     cursorBlocker = "ADE could not read the Cursor API key store yet. Retry after the key store is ready.";
   } else {
@@ -222,7 +235,7 @@ export async function buildProviderConnections(
     sources: [
       {
         kind: "local-credentials",
-        detected: cursorUsageAuth,
+        detected: cursorAuthAvailable,
         source: cursorCredsSource,
       },
       {

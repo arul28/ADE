@@ -3696,11 +3696,14 @@ function buildUsagePlan(args: string[]): CliPlan {
     }
     if (mode === "set" || mode === "update") {
       const text = readFileTextInput(args);
-      const hasInlineBody = text != null && text.trim().length > 0;
       let parsed: unknown;
-      if (hasInlineBody) {
+      if (text != null) {
+        const trimmed = text.trim();
+        if (!trimmed.length) {
+          throw new CliUsageError("Budget config must be a non-empty JSON object.");
+        }
         try {
-          parsed = JSON.parse(text);
+          parsed = JSON.parse(trimmed);
         } catch (error) {
           throw new CliUsageError(`Failed to parse budget config: ${error instanceof Error ? error.message : String(error)}`);
         }
@@ -4251,6 +4254,8 @@ function buildCliPlan(command: string[]): CliPlan {
     automation: "automations",
     "auto-update": "update",
     updates: "update",
+    quota: "usage",
+    quotas: "usage",
   };
   const primaryHelpKey = aliases[primary] ?? primary;
   if (hasHelpFlag(args)) {

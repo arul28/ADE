@@ -42,6 +42,7 @@ const TAB_ALIASES: Record<string, SectionId> = {
   onboarding: "general",
   help: "general",
   tours: "general",
+  usage: "general",
 };
 
 function padIndex(i: number): string {

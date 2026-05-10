@@ -231,7 +231,9 @@ describe("buildProviderConnections", () => {
 
   it("marks Cursor runtime available through the SDK when an env API key is set", async () => {
     const prevKey = process.env.CURSOR_API_KEY;
+    const prevAdminKey = process.env.CURSOR_ADMIN_API_KEY;
     process.env.CURSOR_API_KEY = "test-key";
+    delete process.env.CURSOR_ADMIN_API_KEY;
     try {
       const result = await buildProviderConnections(
         mergeCliStatuses([
@@ -247,17 +249,40 @@ describe("buildProviderConnections", () => {
       expect(result.cursor.authAvailable).toBe(true);
       expect(result.cursor.runtimeDetected).toBe(true);
       expect(result.cursor.runtimeAvailable).toBe(true);
+      expect(result.cursor.usageAvailable).toBe(false);
       expect(result.cursor.path).toBe("@cursor/sdk");
       expect(result.cursor.blocker).toBeNull();
     } finally {
       if (prevKey === undefined) delete process.env.CURSOR_API_KEY;
       else process.env.CURSOR_API_KEY = prevKey;
+      if (prevAdminKey === undefined) delete process.env.CURSOR_ADMIN_API_KEY;
+      else process.env.CURSOR_ADMIN_API_KEY = prevAdminKey;
+    }
+  });
+
+  it("marks Cursor usage available only for Admin API-shaped keys", async () => {
+    const prevKey = process.env.CURSOR_API_KEY;
+    const prevAdminKey = process.env.CURSOR_ADMIN_API_KEY;
+    process.env.CURSOR_API_KEY = "key_cursor_admin_test";
+    delete process.env.CURSOR_ADMIN_API_KEY;
+    try {
+      const result = await buildProviderConnections(mergeCliStatuses([]));
+      expect(result.cursor.authAvailable).toBe(true);
+      expect(result.cursor.runtimeAvailable).toBe(true);
+      expect(result.cursor.usageAvailable).toBe(true);
+    } finally {
+      if (prevKey === undefined) delete process.env.CURSOR_API_KEY;
+      else process.env.CURSOR_API_KEY = prevKey;
+      if (prevAdminKey === undefined) delete process.env.CURSOR_ADMIN_API_KEY;
+      else process.env.CURSOR_ADMIN_API_KEY = prevAdminKey;
     }
   });
 
   it("downgrades Cursor runtime availability when SDK model access rejects the key", async () => {
     const prevKey = process.env.CURSOR_API_KEY;
+    const prevAdminKey = process.env.CURSOR_ADMIN_API_KEY;
     process.env.CURSOR_API_KEY = "test-key";
+    delete process.env.CURSOR_ADMIN_API_KEY;
     mockState.getProviderRuntimeHealth.mockImplementation((provider: string) => {
       if (provider === "cursor") {
         return {
@@ -278,6 +303,8 @@ describe("buildProviderConnections", () => {
     } finally {
       if (prevKey === undefined) delete process.env.CURSOR_API_KEY;
       else process.env.CURSOR_API_KEY = prevKey;
+      if (prevAdminKey === undefined) delete process.env.CURSOR_ADMIN_API_KEY;
+      else process.env.CURSOR_ADMIN_API_KEY = prevAdminKey;
     }
   });
 });

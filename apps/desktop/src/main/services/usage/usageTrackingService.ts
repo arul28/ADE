@@ -270,14 +270,18 @@ type CursorSpendResponse = {
   subscriptionCycleStart?: number;
 };
 
+function isCursorAdminApiKey(value: string | null | undefined): boolean {
+  return Boolean(value?.trim().startsWith("key_"));
+}
+
 function getCursorApiKey(): { key: string; source: "cursor-admin-env" | "cursor-env" | "cursor-api-key-store" } | null {
   const adminEnvKey = process.env.CURSOR_ADMIN_API_KEY?.trim();
-  if (adminEnvKey) return { key: adminEnvKey, source: "cursor-admin-env" };
+  if (isCursorAdminApiKey(adminEnvKey)) return { key: adminEnvKey!, source: "cursor-admin-env" };
   const envKey = process.env.CURSOR_API_KEY?.trim();
-  if (envKey?.startsWith("key_")) return { key: envKey, source: "cursor-env" };
+  if (isCursorAdminApiKey(envKey)) return { key: envKey!, source: "cursor-env" };
   try {
     const stored = getAllApiKeys().cursor?.trim();
-    if (stored?.startsWith("key_")) return { key: stored, source: "cursor-api-key-store" };
+    if (isCursorAdminApiKey(stored)) return { key: stored!, source: "cursor-api-key-store" };
   } catch {
     // The API key store can be unavailable during early startup. Treat this as
     // "no key" for usage polling; provider status surfaces the store issue.
@@ -312,7 +316,7 @@ function parseCursorSpendUsage(data: CursorSpendResponse): {
     return finiteOrZero(member.spendCents);
   };
   // hardLimitOverrideDollars is the per-user override; fall back to the
-  // team-wide monthlyLimitDollars when no override is configured.
+  // per-member default monthlyLimitDollars when no override is configured.
   const memberLimitCents = (member: CursorSpendMember): number => {
     const overrideDollars = finiteOrZero(member.hardLimitOverrideDollars);
     if (overrideDollars > 0) return overrideDollars * 100;
@@ -323,6 +327,7 @@ function parseCursorSpendUsage(data: CursorSpendResponse): {
   const totalSpendCents = members.reduce((sum, member) => sum + memberSpendCents(member), 0);
   const totalLimitCents = members.reduce((sum, member) => sum + memberLimitCents(member), 0);
 
+  // Cursor documents subscriptionCycleStart as epoch milliseconds.
   const cycleStartMs = finiteOrZero(data.subscriptionCycleStart);
   const resetMs = cycleStartMs > 0 ? addOneMonth(cycleStartMs) : 0;
   const resetsAt = resetMs > 0 ? new Date(resetMs).toISOString() : "";

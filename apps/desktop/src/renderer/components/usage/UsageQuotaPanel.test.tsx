@@ -106,4 +106,30 @@ describe("UsageQuotaPanel", () => {
       expect(window.ade.usage.refresh).toHaveBeenCalledTimes(1);
     });
   });
+
+  it("labels Cursor Admin API-only auth as usage auth", async () => {
+    vi.mocked(window.ade.ai.getStatus).mockResolvedValue({
+      providerConnections: {
+        claude: null,
+        codex: null,
+        droid: null,
+        cursor: {
+          provider: "cursor",
+          authAvailable: true,
+          runtimeDetected: true,
+          runtimeAvailable: false,
+          usageAvailable: true,
+          path: null,
+          blocker: null,
+          sources: [],
+          lastCheckedAt: "2026-05-08T07:00:00.000Z",
+        },
+      },
+    } as any);
+
+    render(<UsageQuotaPanel />);
+
+    expect(await screen.findByText("usage auth only")).toBeTruthy();
+    expect(screen.queryByText("sign-in required")).toBeNull();
+  });
 });
