@@ -344,6 +344,27 @@ Steers accept `sessionId`, `text`, and `attachments`. Controllers
 specify reasoning / execution / interaction modes remotely; the
 host-side `agentChatService` consumes the same shape end-to-end.
 
+## Lane and PR Linear-issue payload shape
+
+`parseCreateLaneArgs` / `parseCreateChildLaneArgs` accept an optional
+`linearIssue: LaneLinearIssue | null` so a controller can create a
+lane already attached to a Linear ticket; `laneService.create`
+derives the branch name (`linearIssueBranchName`) and persists the
+issue into `lane_linear_issues`.
+
+`parseCreatePrArgs` and `parseDraftPrDescriptionArgs` accept
+`closeLinearIssueOnMerge: boolean`. When the lane has a connected
+issue, this flag drives whether `prService` injects `Fixes IDENT`
+(closes the issue when the PR merges) or `Refs IDENT` (links
+without closing) into the PR body via `ensureLinearPrReference`.
+
+`brain_status` envelopes carry the host's `LinearConnectionStatus`,
+which now includes optional `organizationId`, `organizationName`,
+`organizationUrlKey`, and `organizationLogoUrl` fields populated by
+the host when the Linear workspace is connected. Controllers use
+these to render the workspace brand on Linear-related surfaces
+without fetching them separately.
+
 `parseChatModelsArgs` accepts `{ provider, activateRuntime? }`. When
 `chat.create` is missing an explicit model, `resolveChatCreateArgs`
 forwards `activateRuntime: true` only for the `opencode` provider so

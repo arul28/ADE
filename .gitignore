@@ -60,6 +60,7 @@ ios-signing/
 .pnpm-store/
 /apps/desktop/.ade
 /.ade/shipLane/
+/.ade/logs/
 /.playwright-mcp
 /.codex-derived-data
 package-lock.json

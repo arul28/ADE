@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ADE_ACTION_ALLOWLIST,
+  isCtoOnlyAdeAction,
   isAllowedAdeAction,
   listAllowedAdeActionNames,
   type AdeActionDomain,
@@ -95,6 +96,13 @@ describe("listAllowedAdeActionNames", () => {
     const service = { someUnrelated: () => undefined } as Record<string, unknown>;
     const names = listAllowedAdeActionNames("git", service);
     expect(names).toEqual([]);
+  });
+});
+
+describe("isCtoOnlyAdeAction", () => {
+  it("keeps Path to Merge actions CTO-only", () => {
+    expect(isCtoOnlyAdeAction("path_to_merge", "startPathToMerge")).toBe(true);
+    expect(isCtoOnlyAdeAction("path_to_merge", "stopPathToMerge")).toBe(true);
   });
 });
 

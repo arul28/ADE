@@ -7,17 +7,19 @@ for edit, diff, and conflict modes.
 
 Path: `apps/desktop/src/renderer/components/files/FilesPage.tsx`
 
-A single large component (~2,570 lines), parameterized by optional
+A single large component (~2,720 lines), parameterized by optional
 `preferredLaneId` (selects a lane worktree as the default workspace)
 and `embedded` (compact chrome for the Work sidebar mount). It owns:
 
 - workspace selection (dropdown synced to `laneService` workspaces)
-- file explorer tree with lazy loading, context menu, and drag/drop
-  placeholder
+- file explorer via `FilesExplorer.tsx` (virtualized rows, lazy-loaded
+  directories, context menu, drag/drop placeholder) with icons and git
+  status labels from `filePresentation.tsx`
 - tab bar with reorderable tabs, dirty indicators, middle-click close
 - file path breadcrumb under the tab bar
 - Monaco host for edit mode
-- Monaco diff editor for diff mode
+- diff mode via `AdeDiffViewer` (read-only: `@pierre/diffs`; editable
+  right pane: `MonacoDiffView` inside `AdeDiffViewer`)
 - 3-way merge layout for conflict mode
 - quick open modal (Cmd+P)
 - cross-file search panel (Cmd+Shift+F)
@@ -60,14 +62,16 @@ workspace is pinned first. Switching workspaces:
 
 ## File explorer tree
 
-`FileTreeNode[]` from `files.listTree`. Lazy loading: each directory
-is fetched only when expanded, with a `depth: 1` request. The tree
-uses sorted output (directories first, then files, alphabetical).
+Implementation: `FilesExplorer.tsx` over `FileTreeNode[]` from
+`files.listTree`. Lazy loading: each directory is fetched only when
+expanded, with a `depth: 1` request. The tree uses sorted output
+(directories first, then files, alphabetical).
 
 Visual indicators per node:
 
-- file icons by extension (Phosphor icon map or inline SVG fallbacks)
-- change status badge (`M` orange, `A` green, `D` red)
+- file icons by extension via `filePresentation.tsx` (Phosphor)
+- change status badge (modified / added / deleted coloring from the same
+  helpers)
 - "has changes" dot on directories that contain any changed descendant
 
 Context menu (right-click):
@@ -135,23 +139,22 @@ Protection rails:
 
 ## Diff mode
 
-Uses `DiffEditor` from Monaco. Sources come from `diffService`:
+`FilesPage` mounts `AdeDiffViewer` for diff tabs. Payloads come from
+`diffService` via `window.ade.diff` (`getFile` / `getFilePatch` as
+appropriate for the tab’s comparison mode).
 
-- **Staged vs unstaged** — shows working tree changes that have not
-  been staged.
-- **HEAD vs working tree** — shows everything since the last commit.
-- **Commit to commit** — arbitrary sha comparison.
+- **Read-only** — `@pierre/diffs` renders `MultiFileDiff` (old/new text)
+  or `PatchDiff` (unified patch text) with a small toolbar: split vs
+  unified layout, wrap vs scroll overflow, line numbers, copy path.
+- **Editable working-tree** — when the user enables editing on the
+  modified side, `AdeDiffViewer` switches to `MonacoDiffView` so changes
+  save through the same Monaco path as before.
 
-Features:
+Comparison sources (staged vs unstaged, HEAD vs working tree,
+commit-to-commit) are unchanged at the service layer.
 
-- side-by-side by default, toggleable to inline
-- "Next change" / "Previous change" navigation
-- read-only left pane (old)
-- right pane is read-only by default; users can toggle to editable to
-  apply changes directly to the working tree
-
-Save behavior in diff mode writes only when the right pane is
-editable; the temp model is written atomically via `files.writeTextAtomic`.
+Save behavior in diff mode writes only when the modified side is
+editable; content is written atomically via `files.writeTextAtomic`.
 
 ## Conflict mode
 

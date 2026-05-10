@@ -54,6 +54,37 @@ create index if not exists idx_lanes_project_mission on lanes(project_id, missio
 
 create index if not exists idx_lanes_project_role on lanes(project_id, lane_role);
 
+create table if not exists lane_linear_issues (
+      id text primary key,
+      project_id text not null,
+      lane_id text not null,
+      issue_id text not null,
+      issue_json text not null,
+      created_at text not null,
+      updated_at text not null,
+      foreign key(project_id) references projects(id) on delete cascade,
+      foreign key(lane_id) references lanes(id) on delete cascade
+    );
+
+create index if not exists idx_lane_linear_issues_lane on lane_linear_issues(project_id, lane_id);
+
+create index if not exists idx_lane_linear_issues_issue on lane_linear_issues(project_id, issue_id);
+
+drop index if exists uniq_lane_linear_issues_lane;
+
+delete from lane_linear_issues
+      where rowid not in (
+        select rowid from lane_linear_issues as keep
+        where keep.id = (
+          select id from lane_linear_issues inner_p
+          where inner_p.project_id = keep.project_id
+            and inner_p.lane_id = keep.lane_id
+          order by inner_p.updated_at desc,
+                   inner_p.id asc
+          limit 1
+        )
+      );
+
 create table if not exists lane_branch_profiles (
       id text primary key,
       project_id text not null,
@@ -2575,7 +2606,7 @@ create index if not exists idx_inventory_pr_state on pr_issue_inventory(pr_id, s
 
 create table if not exists pr_pipeline_settings (
       pr_id text primary key,
-      auto_merge integer not null default 0,
+      auto_merge integer not null default 1,
       merge_method text not null default 'repo_default',
       max_rounds integer not null default 5,
       on_rebase_needed text not null default 'pause',
@@ -2585,7 +2616,7 @@ create table if not exists pr_pipeline_settings (
 
 alter table pr_pipeline_settings add column conflict_strategy text not null default 'pause';
 
-alter table pr_pipeline_settings add column force_finalize_mode text not null default 'off';
+alter table pr_pipeline_settings add column force_finalize_mode text not null default 'conditional';
 
 alter table pr_pipeline_settings add column force_finalize_require_no_ci_failures integer not null default 1;
 
@@ -2601,13 +2632,39 @@ alter table pr_pipeline_settings add column auto_agent_permission_mode text;
 
 alter table pr_pipeline_settings add column auto_agent_confidence_threshold real;
 
-alter table pr_pipeline_settings add column at_cap_policy text;
+alter table pr_pipeline_settings add column at_cap_policy text default 'ci_retry_once';
 
 alter table pr_pipeline_settings add column at_cap_wait_minutes integer;
 
 alter table pr_pipeline_settings add column at_cap_ci_retry_max integer;
 
 alter table pr_pipeline_settings add column force_merge_requires_confirmation integer;
+
+alter table pr_pipeline_settings add column ptm_defaults_backfilled_version text;
+
+update pr_pipeline_settings
+         set auto_merge = 1,
+             force_finalize_mode = 'conditional',
+             at_cap_policy = 'ci_retry_once',
+             ptm_defaults_backfilled_version = 'ptm-defaults-v1'
+       where auto_merge = 0
+         and merge_method = 'repo_default'
+         and max_rounds = 5
+         and on_rebase_needed = 'pause'
+         and coalesce(conflict_strategy, 'pause') = 'pause'
+         and coalesce(force_finalize_mode, 'off') = 'off'
+         and coalesce(force_finalize_require_no_ci_failures, 1) = 1
+         and coalesce(early_merge_on_green, 1) = 1
+         and (at_cap_policy is null or at_cap_policy = 'stop')
+         and (at_cap_wait_minutes is null or at_cap_wait_minutes = 30)
+         and (at_cap_ci_retry_max is null or at_cap_ci_retry_max = 3)
+         and coalesce(force_merge_requires_confirmation, 1) = 1
+         and auto_agent_provider is null
+         and auto_agent_model is null
+         and auto_agent_reasoning_effort is null
+         and auto_agent_permission_mode is null
+         and auto_agent_confidence_threshold is null
+         and (ptm_defaults_backfilled_version is null or ptm_defaults_backfilled_version <> 'ptm-defaults-v1');
 
 create table if not exists pr_convergence_state (
       pr_id text primary key,
@@ -2638,6 +2695,12 @@ alter table pr_convergence_state add column ci_retry_attempts_used integer not n
 alter table pr_convergence_state add column wait_for_ci_started_at text;
 
 alter table pr_convergence_state add column last_dispatch_head_sha text;
+
+alter table pr_convergence_state add column last_bot_ping_head_sha text;
+
+alter table pr_convergence_state add column last_bot_ping_at text;
+
+alter table pr_convergence_state add column merge_wait_kind text;
 
 alter table pr_convergence_state add column pause_repeat_count integer not null default 0;
 

@@ -111,6 +111,10 @@ import type {
   CtoOnboardingState,
   CtoSystemPromptPreview,
   CtoLinearProject,
+  CtoLinearQuickView,
+  CtoGetLinearIssuePickerDataResult,
+  CtoSearchLinearIssuesArgs,
+  CtoSearchLinearIssuesResult,
   CtoStartLinearOAuthResult,
   CtoGetLinearOAuthSessionArgs,
   CtoGetLinearOAuthSessionResult,
@@ -166,6 +170,7 @@ import type {
   FileChangeEvent,
   FileContent,
   FileDiff,
+  FilePatch,
   FileTreeNode,
   FilesCreateDirectoryArgs,
   FilesCreateFileArgs,
@@ -266,6 +271,7 @@ import type {
   GetDiffChangesArgs,
   GetLaneConflictStatusArgs,
   GetFileDiffArgs,
+  GetFilePatchArgs,
   GetProcessLogTailArgs,
   GetTestLogTailArgs,
   ExportHistoryArgs,
@@ -2630,6 +2636,8 @@ contextBridge.exposeInMainWorld("ade", {
       diffChangesCache.get(serializeIpcCacheArgs(args)),
     getFile: async (args: GetFileDiffArgs): Promise<FileDiff> =>
       ipcRenderer.invoke(IPC.diffGetFile, args),
+    getFilePatch: async (args: GetFilePatchArgs): Promise<FilePatch> =>
+      ipcRenderer.invoke(IPC.diffGetFilePatch, args),
   },
   files: {
     writeTextAtomic: async (args: WriteTextAtomicArgs): Promise<void> =>
@@ -3685,6 +3693,14 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.ctoPreviewSystemPrompt, args),
     getLinearProjects: async (): Promise<CtoLinearProject[]> =>
       ipcRenderer.invoke(IPC.ctoGetLinearProjects),
+    getLinearQuickView: async (): Promise<CtoLinearQuickView> =>
+      ipcRenderer.invoke(IPC.ctoGetLinearQuickView),
+    getLinearIssuePickerData: async (): Promise<CtoGetLinearIssuePickerDataResult> =>
+      ipcRenderer.invoke(IPC.ctoGetLinearIssuePickerData),
+    searchLinearIssues: async (
+      args: CtoSearchLinearIssuesArgs = {},
+    ): Promise<CtoSearchLinearIssuesResult> =>
+      ipcRenderer.invoke(IPC.ctoSearchLinearIssues, args),
     setLinearOAuthClient: async (
       args: CtoSetLinearOAuthClientArgs,
     ): Promise<LinearConnectionStatus> =>

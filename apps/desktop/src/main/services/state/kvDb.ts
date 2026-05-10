@@ -782,6 +782,60 @@ function migrate(db: MigrationDb) {
   db.run("create index if not exists idx_lanes_project_role on lanes(project_id, lane_role)");
 
   db.run(`
+    create table if not exists lane_linear_issues (
+      id text primary key,
+      project_id text not null,
+      lane_id text not null,
+      issue_id text not null,
+      issue_json text not null,
+      created_at text not null,
+      updated_at text not null,
+      foreign key(project_id) references projects(id) on delete cascade,
+      foreign key(lane_id) references lanes(id) on delete cascade
+    )
+  `);
+  db.run("create index if not exists idx_lane_linear_issues_lane on lane_linear_issues(project_id, lane_id)");
+  db.run("create index if not exists idx_lane_linear_issues_issue on lane_linear_issues(project_id, issue_id)");
+  // Drop a previously-created UNIQUE index on (project_id, lane_id) — it
+  // existed briefly in development builds but conflicts with cr-sqlite's
+  // `crsql_as_crr` requirement that CRR tables carry no unique indices
+  // besides the primary key.
+  try {
+    db.run("drop index if exists uniq_lane_linear_issues_lane");
+  } catch {
+    // best-effort cleanup
+  }
+  // Each lane is linked to at most one Linear issue. CRR-converted tables
+  // cannot carry UNIQUE indices besides the primary key (`crsql_as_crr`
+  // rejects them with "Table … has unique indices besides the primary key.
+  // This is not allowed for CRRs"), so uniqueness on (project_id, lane_id)
+  // is enforced at the application layer inside `attachLinearIssue`
+  // (delete-then-insert in a transaction). Coalesce duplicates from older
+  // dev builds — keep the most recently updated row per (project, lane)
+  // and delete the rest. This runs on every bootstrap so the app-layer
+  // guarantee has a clean slate even after a multi-writer race produced
+  // extras.
+  try {
+    db.run(`
+      delete from lane_linear_issues
+      where rowid not in (
+        select rowid from lane_linear_issues as keep
+        where keep.id = (
+          select id from lane_linear_issues inner_p
+          where inner_p.project_id = keep.project_id
+            and inner_p.lane_id = keep.lane_id
+          order by inner_p.updated_at desc,
+                   inner_p.id asc
+          limit 1
+        )
+      )
+    `);
+  } catch {
+    // best-effort migration; duplicates will be coalesced on the next
+    // upsert via the existing delete-then-insert path.
+  }
+
+  db.run(`
     create table if not exists lane_branch_profiles (
       id text primary key,
       project_id text not null,
@@ -3387,7 +3441,7 @@ function migrate(db: MigrationDb) {
   db.run(`
     create table if not exists pr_pipeline_settings (
       pr_id text primary key,
-      auto_merge integer not null default 0,
+      auto_merge integer not null default 1,
       merge_method text not null default 'repo_default',
       max_rounds integer not null default 5,
       on_rebase_needed text not null default 'pause',
@@ -3396,7 +3450,7 @@ function migrate(db: MigrationDb) {
     )
   `);
   try { db.run("alter table pr_pipeline_settings add column conflict_strategy text not null default 'pause'"); } catch {}
-  try { db.run("alter table pr_pipeline_settings add column force_finalize_mode text not null default 'off'"); } catch {}
+  try { db.run("alter table pr_pipeline_settings add column force_finalize_mode text not null default 'conditional'"); } catch {}
   try { db.run("alter table pr_pipeline_settings add column force_finalize_require_no_ci_failures integer not null default 1"); } catch {}
   try { db.run("alter table pr_pipeline_settings add column early_merge_on_green integer not null default 1"); } catch {}
   try { db.run("alter table pr_pipeline_settings add column auto_agent_provider text"); } catch {}
@@ -3404,10 +3458,38 @@ function migrate(db: MigrationDb) {
   try { db.run("alter table pr_pipeline_settings add column auto_agent_reasoning_effort text"); } catch {}
   try { db.run("alter table pr_pipeline_settings add column auto_agent_permission_mode text"); } catch {}
   try { db.run("alter table pr_pipeline_settings add column auto_agent_confidence_threshold real"); } catch {}
-  try { db.run("alter table pr_pipeline_settings add column at_cap_policy text"); } catch {}
+  try { db.run("alter table pr_pipeline_settings add column at_cap_policy text default 'ci_retry_once'"); } catch {}
   try { db.run("alter table pr_pipeline_settings add column at_cap_wait_minutes integer"); } catch {}
   try { db.run("alter table pr_pipeline_settings add column at_cap_ci_retry_max integer"); } catch {}
   try { db.run("alter table pr_pipeline_settings add column force_merge_requires_confirmation integer"); } catch {}
+  try { db.run("alter table pr_pipeline_settings add column ptm_defaults_backfilled_version text"); } catch {}
+  try {
+    db.run(`
+      update pr_pipeline_settings
+         set auto_merge = 1,
+             force_finalize_mode = 'conditional',
+             at_cap_policy = 'ci_retry_once',
+             ptm_defaults_backfilled_version = 'ptm-defaults-v1'
+       where auto_merge = 0
+         and merge_method = 'repo_default'
+         and max_rounds = 5
+         and on_rebase_needed = 'pause'
+         and coalesce(conflict_strategy, 'pause') = 'pause'
+         and coalesce(force_finalize_mode, 'off') = 'off'
+         and coalesce(force_finalize_require_no_ci_failures, 1) = 1
+         and coalesce(early_merge_on_green, 1) = 1
+         and (at_cap_policy is null or at_cap_policy = 'stop')
+         and (at_cap_wait_minutes is null or at_cap_wait_minutes = 30)
+         and (at_cap_ci_retry_max is null or at_cap_ci_retry_max = 3)
+         and coalesce(force_merge_requires_confirmation, 1) = 1
+         and auto_agent_provider is null
+         and auto_agent_model is null
+         and auto_agent_reasoning_effort is null
+         and auto_agent_permission_mode is null
+         and auto_agent_confidence_threshold is null
+         and (ptm_defaults_backfilled_version is null or ptm_defaults_backfilled_version <> 'ptm-defaults-v1')
+    `);
+  } catch {}
 
   db.run(`
     create table if not exists pr_convergence_state (
@@ -3438,6 +3520,9 @@ function migrate(db: MigrationDb) {
   try { db.run("alter table pr_convergence_state add column ci_retry_attempts_used integer not null default 0"); } catch {}
   try { db.run("alter table pr_convergence_state add column wait_for_ci_started_at text"); } catch {}
   try { db.run("alter table pr_convergence_state add column last_dispatch_head_sha text"); } catch {}
+  try { db.run("alter table pr_convergence_state add column last_bot_ping_head_sha text"); } catch {}
+  try { db.run("alter table pr_convergence_state add column last_bot_ping_at text"); } catch {}
+  try { db.run("alter table pr_convergence_state add column merge_wait_kind text"); } catch {}
   try { db.run("alter table pr_convergence_state add column pause_repeat_count integer not null default 0"); } catch {}
   try { db.run("alter table pr_convergence_state add column last_pause_reason_hash text"); } catch {}
 

@@ -13,6 +13,7 @@ import type {
   PrWithConflicts, PrCheck, PrReview, PrComment, PrStatus, PrDetail,
   PrFile, PrCommit, PrActionRun, PrActivityEvent, AiReviewSummary, PrReviewThread,
   LaneSummary, MergeMethod, LandResult,
+  FilePatch,
   IssueInventorySnapshot,
   PipelineSettings,
   PrConvergenceState,
@@ -25,6 +26,7 @@ import { PrDetailTimelineRails as TimelineRailsOverview, type PrDetailTimelineRa
 import { DEFAULT_PIPELINE_SETTINGS } from "../../../../shared/types";
 import { defaultPrIssueResolutionScope, getPrIssueResolutionAvailability } from "../../../../shared/prIssueResolution";
 import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, cardStyle, inlineBadge, outlineButton, primaryButton, dangerButton } from "../../lanes/laneDesignTokens";
+import { AdeDiffViewer } from "../../shared/AdeDiffViewer";
 import { getPrChecksBadge, getPrReviewsBadge, getPrStateBadge, InlinePrBadge, PrCiRunningIndicator } from "../shared/prVisuals";
 import { PrIssueResolverModal } from "../shared/PrIssueResolverModal";
 import { PrConvergencePanel } from "../shared/PrConvergencePanel";
@@ -739,6 +741,7 @@ export function PrDetailPane({
   // expandedRun state removed — the unified ChecksTab manages its own expand state
   const [expandedFile, setExpandedFile] = React.useState<string | null>(null);
   const detailLoadSeqRef = React.useRef(0);
+  const detailStatusRefreshKeyRef = React.useRef<string | null>(null);
   const inventoryLoadSeqRef = React.useRef(0);
 
   const loadDetail = React.useCallback(async () => {
@@ -825,24 +828,48 @@ export function PrDetailPane({
     };
   }, [applyConvergenceRuntime, loadConvergenceState, loadDetail, pr.id]);
 
-  // Poll actionRuns + activity + reviewThreads every 60s so CI data stays fresh.
-  // PrsContext polls checks/status/reviews/comments, but action runs are only loaded
-  // in PrDetailPane and would otherwise go stale after the initial fetch.
   React.useEffect(() => {
+    const key = [
+      pr.id,
+      pr.checksStatus ?? "",
+      pr.reviewStatus ?? "",
+      pr.updatedAt ?? "",
+    ].join("|");
+    const prev = detailStatusRefreshKeyRef.current;
+    if (!prev || !prev.startsWith(`${pr.id}|`)) {
+      detailStatusRefreshKeyRef.current = key;
+      return;
+    }
+    if (prev === key) return;
+    detailStatusRefreshKeyRef.current = key;
+    void loadDetail();
+    void refreshReviewThreads();
+  }, [loadDetail, pr.checksStatus, pr.id, pr.reviewStatus, pr.updatedAt, refreshReviewThreads]);
+
+  // Poll checks + actionRuns + activity + reviewThreads every 60s so the
+  // Path to Merge readiness panel stays fresh without requiring a manual refresh.
+  React.useEffect(() => {
+    let cancelled = false;
     const id = window.setInterval(() => {
-      const reqId = detailLoadSeqRef.current;
       Promise.allSettled([
+        window.ade.prs.getChecks(pr.id),
         window.ade.prs.getActionRuns(pr.id),
         window.ade.prs.getActivity(pr.id),
         window.ade.prs.getReviewThreads(pr.id),
-      ]).then(([arResult, actResult, thrResult]) => {
-        if (reqId !== detailLoadSeqRef.current) return;
+      ]).then(([checksResult, arResult, actResult, thrResult]) => {
+        if (cancelled) return;
+        if (checksResult.status === "fulfilled" && checksResult.value.length > 0) {
+          setConvergenceChecks(checksResult.value);
+        }
         if (arResult.status === "fulfilled") setActionRuns(arResult.value);
         if (actResult.status === "fulfilled") setActivity(actResult.value);
         if (thrResult.status === "fulfilled") setReviewThreads(thrResult.value);
       });
     }, 60_000);
-    return () => window.clearInterval(id);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
   }, [pr.id]);
 
   React.useEffect(() => {
@@ -1054,9 +1081,10 @@ export function PrDetailPane({
     }
     const requestId = ++inventoryLoadSeqRef.current;
     try {
-      const [snapshot, freshChecks] = await Promise.all([
+      const [snapshot, freshChecks, freshActionRuns] = await Promise.all([
         window.ade.prs.issueInventorySync(pr.id),
         window.ade.prs.getChecks(pr.id).catch(() => checks),
+        window.ade.prs.getActionRuns(pr.id).catch(() => null),
       ]);
       if (requestId !== inventoryLoadSeqRef.current) return null;
       setInventorySnapshot(snapshot);
@@ -1065,6 +1093,9 @@ export function PrDetailPane({
       // API failure or rate-limit.
       if (freshChecks.length > 0) {
         setConvergenceChecks(freshChecks);
+      }
+      if (freshActionRuns && freshActionRuns.length > 0) {
+        setActionRuns(freshActionRuns);
       }
       return snapshot;
     } catch {
@@ -1387,13 +1418,17 @@ export function PrDetailPane({
         if (!autoConvergeRef.current) { stopAutoConvergePoller(); return; }
         try {
           // Poll checks and inventory
-          const [freshChecks, snapshot] = await Promise.all([
+          const [freshChecks, snapshot, freshActionRuns] = await Promise.all([
             window.ade.prs.getChecks(pr.id),
             window.ade.prs.issueInventorySync(pr.id),
+            window.ade.prs.getActionRuns(pr.id).catch(() => null),
           ]);
           setInventorySnapshot(snapshot);
           if (freshChecks.length > 0) {
             setConvergenceChecks(freshChecks);
+          }
+          if (freshActionRuns && freshActionRuns.length > 0) {
+            setActionRuns(freshActionRuns);
           }
 
           // Skip rebase logic while an agent session is still active
@@ -1715,6 +1750,33 @@ export function PrDetailPane({
     }
   }, [autoConverge, autoConvergeWaitState.phase, convergenceSessionId, pathToMergeActive, startAutoConvergePoller, stopAutoConvergePoller]);
 
+  React.useEffect(() => {
+    if (!pathToMergeActive) return;
+    let cancelled = false;
+    let inFlight = false;
+    const pollRuntime = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const runtime = await loadConvergenceState(pr.id, { force: true });
+        if (cancelled) return;
+        applyConvergenceRuntime(runtime);
+      } catch {
+        // Keep the last known PtM runtime and retry on the next interval.
+      } finally {
+        inFlight = false;
+      }
+    };
+    const id = window.setInterval(() => {
+      void pollRuntime();
+    }, 10_000);
+    void pollRuntime();
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [applyConvergenceRuntime, loadConvergenceState, pathToMergeActive, pr.id]);
+
   // Cleanup poller on unmount
   React.useEffect(() => {
     return () => {
@@ -1829,10 +1891,6 @@ export function PrDetailPane({
   const handleAutoConvergeToggle = React.useCallback(async (enabled: boolean) => {
     if (!enabled) {
       const previousSessionHref = convergenceSessionHrefRef.current;
-      setAutoConverge(false);
-      autoConvergeRef.current = false;
-      setPathToMergeActive(false);
-      pathToMergeActiveRef.current = false;
       pathToMergeActionSeqRef.current += 1;
       // Tear down the orchestrator's per-PR scheduling so a re-enable starts
       // fresh instead of resuming with stale args.
@@ -1840,10 +1898,15 @@ export function PrDetailPane({
         const stopped = await window.ade.prs.pathToMergeStop({ prId: pr.id, reason: "user disabled auto-converge" });
         applyConvergenceRuntime(stopped.runtime);
       } catch (err: unknown) {
-        // Non-fatal — the renderer-side stop below still clears UI state.
-        // eslint-disable-next-line no-console
-        console.warn("pathToMergeStop failed", err);
+        setActionError(`Failed to stop Path to Merge: ${err instanceof Error ? err.message : String(err)}`);
+        const runtime = await loadConvergenceState(pr.id, { force: true }).catch(() => null);
+        applyConvergenceRuntime(runtime);
+        return;
       }
+      setAutoConverge(false);
+      autoConvergeRef.current = false;
+      setPathToMergeActive(false);
+      pathToMergeActiveRef.current = false;
       stopAutoConvergePoller();
       const activeSessionId = convergenceSessionIdRef.current;
       if (activeSessionId) {
@@ -1961,7 +2024,7 @@ export function PrDetailPane({
         );
       }
     }
-  }, [applyConvergenceRuntime, pr.id, resolverModel, resolverPermissionMode, resolverReasoningLevel, resolveIssueScope, saveConvergenceRuntime, stopAutoConvergePoller]);
+  }, [applyConvergenceRuntime, loadConvergenceState, pr.id, resolverModel, resolverPermissionMode, resolverReasoningLevel, resolveIssueScope, saveConvergenceRuntime, stopAutoConvergePoller]);
 
   const handleMarkDismissed = React.useCallback(async (itemIds: string[], reason: string) => {
     try {
@@ -3403,6 +3466,23 @@ function OverviewTab(props: OverviewTabProps) {
 function FilesTab({ files, expandedFile, setExpandedFile }: { files: PrFile[]; expandedFile: string | null; setExpandedFile: (f: string | null) => void }) {
   const totalAdd = files.reduce((s, f) => s + f.additions, 0);
   const totalDel = files.reduce((s, f) => s + f.deletions, 0);
+  const toPatchStatus = (status: PrFile["status"]): FilePatch["status"] => {
+    if (status === "removed") return "deleted";
+    if (status === "copied") return "added";
+    return status;
+  };
+  const toPatch = (file: PrFile): FilePatch | null => {
+    if (!file.patch) return null;
+    return {
+      path: file.filename,
+      oldPath: file.previousFilename ?? undefined,
+      mode: "commit",
+      patch: file.patch,
+      additions: file.additions,
+      deletions: file.deletions,
+      status: toPatchStatus(file.status),
+    };
+  };
 
   return (
     <div style={{ padding: 20 }}>
@@ -3420,6 +3500,7 @@ function FilesTab({ files, expandedFile, setExpandedFile }: { files: PrFile[]; e
           {files.map((file, idx) => {
             const isExpanded = expandedFile === file.filename;
             const statusCol = fileStatusColor(file.status);
+            const filePatch = toPatch(file);
             return (
               <div key={file.filename}>
                 <button
@@ -3451,24 +3532,24 @@ function FilesTab({ files, expandedFile, setExpandedFile }: { files: PrFile[]; e
                   <span style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.success, fontWeight: 600 }}>+{file.additions}</span>
                   <span style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.danger, fontWeight: 600 }}>-{file.deletions}</span>
                 </button>
-                {isExpanded && file.patch && (
-                  <div style={{ background: "rgba(0,0,0,0.2)", borderBottom: `1px solid ${COLORS.border}`, overflow: "auto", maxHeight: 500 }}>
-                    <pre style={{ fontFamily: MONO_FONT, fontSize: 11, lineHeight: 1.7, margin: 0, padding: 0 }}>
-                      {file.patch.split("\n").map((line, i) => {
-                        let color: string = COLORS.textSecondary;
-                        let bg: string = "transparent";
-                        if (line.startsWith("+")) { color = "#4ade80"; bg = "rgba(34,197,94,0.12)"; }
-                        else if (line.startsWith("-")) { color = "#f87171"; bg = "rgba(239,68,68,0.12)"; }
-                        else if (line.startsWith("@@")) { color = COLORS.accent; bg = "color-mix(in srgb, var(--color-accent) 4%, transparent)"; }
-                        return (
-                            <div key={i} style={{ color, background: bg, padding: "1px 14px", minHeight: "1.7em", borderLeft: line.startsWith("+") ? "3px solid color-mix(in srgb, var(--color-success) 50%, transparent)" : line.startsWith("-") ? "3px solid color-mix(in srgb, var(--color-error) 50%, transparent)" : "3px solid transparent" }}>
-                            {line}
-                          </div>
-                        );
-                      })}
-                    </pre>
+                {isExpanded && filePatch ? (
+                  <div style={{ borderBottom: `1px solid ${COLORS.border}`, height: 500 }}>
+                    <AdeDiffViewer patch={filePatch} editable={false} className="h-full rounded-none border-0" />
                   </div>
-                )}
+                ) : isExpanded ? (
+                  <div
+                    style={{
+                      borderBottom: `1px solid ${COLORS.border}`,
+                      padding: "10px 14px",
+                      fontFamily: MONO_FONT,
+                      fontSize: 11,
+                      color: COLORS.textDim,
+                      background: COLORS.recessedBg,
+                    }}
+                  >
+                    Patch unavailable for this file.
+                  </div>
+                ) : null}
               </div>
             );
           })}

@@ -378,6 +378,7 @@ ade.lanes.*                  # lane list/create/delete/stack/template/env/port/p
                              # delete pipeline: ade.lanes.delete + ade.lanes.delete.cancel
                              # + ade.lanes.delete.risk preflight + ade.lanes.delete.event push
 ade.files.*                  # file tree, read, write, search, watch
+ade.diff.*                   # lane-scoped change list + per-file diff / patch (diffService)
 ade.pty.*                    # PTY spawn/write/kill, data/exit events
 ade.git.*                    # stage/commit/push/sync/revert/cherry-pick/stash
 ade.github.*                 # PR list, review, merge, checks

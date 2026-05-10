@@ -22,6 +22,7 @@ import { ManageLaneDialog } from "./ManageLaneDialog";
 import { LaneContextMenu } from "./LaneContextMenu";
 import { getLaneAccent } from "./laneColorPalette";
 import { LaneRebaseBanner } from "./LaneRebaseBanner";
+import { LinearIssueBadge } from "./LinearIssueBadge";
 import { HelpChip } from "../onboarding/HelpChip";
 import { useOnboardingStore } from "../../state/onboardingStore";
 import { useDialogBus } from "../../lib/useDialogBus";
@@ -50,6 +51,7 @@ import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
 import { getProjectConfigCached } from "../../lib/projectConfigCache";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { branchNameFromLaneRef } from "../../../shared/laneBaseResolution";
+import { linearIssueBranchName, linearIssueLaneName } from "../../../shared/linearIssueBranch";
 import type {
   BranchPullRequest,
   ConflictChip,
@@ -59,6 +61,7 @@ import type {
   LaneEnvInitProgress,
   LaneBranchActiveWorkItem,
   LaneListSnapshot,
+  LaneLinearIssue,
   LaneSummary,
   PrSummary,
   RebaseRun,
@@ -324,6 +327,7 @@ export function LanesPage() {
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const setLaneInspectorTab = useAppStore((s) => s.setLaneInspectorTab);
   const clearLaneInspectorTab = useAppStore((s) => s.clearLaneInspectorTab);
+  const setLaneWorkViewState = useAppStore((s) => s.setLaneWorkViewState);
   const keybindings = useAppStore((s) => s.keybindings);
   const project = useAppStore((s) => s.project);
   const activeTourId = useOnboardingStore((s) => s.activeTourId);
@@ -356,6 +360,8 @@ export function LanesPage() {
   const [templates, setTemplates] = useState<LaneTemplate[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
   const [createSelectedColor, setCreateSelectedColor] = useState<string | null>(null);
+  const [createSelectedLinearIssue, setCreateSelectedLinearIssue] = useState<LaneLinearIssue | null>(null);
+  const createLinearIssueAutoNameRef = useRef<string | null>(null);
   const [multiAttachOpen, setMultiAttachOpen] = useState(false);
   const [attachOpen, setAttachOpen] = useState(false);
   const [attachName, setAttachName] = useState("");
@@ -439,6 +445,11 @@ export function LanesPage() {
   const [expandedGitActionsLaneId, setExpandedGitActionsLaneId] = useState<string | null>(null);
   const [integrationProposals, setIntegrationProposals] = useState<IntegrationProposal[]>([]);
   const [lanePrTags, setLanePrTags] = useState<PrSummary[]>([]);
+  const [linearIssueChatContextRequest, setLinearIssueChatContextRequest] = useState<{
+    laneId: string;
+    issue: LaneLinearIssue;
+    requestedAt: number;
+  } | null>(null);
   const laneSnapshots = useAppStore((s) => s.laneSnapshots);
   const consumedLaneIdsDeepLinkSignatureRef = useRef<string | null>(null);
 
@@ -1526,6 +1537,27 @@ export function LanesPage() {
     selectLane(laneId);
   }, [deletingLaneIds, lanesById, pinnedLaneIds, activeWithPins, selectLane]);
 
+  const handleStartChatWithLinearIssue = useCallback((laneId: string, issue: LaneLinearIssue) => {
+    if (deletingLaneIds.has(laneId) || !lanesById.has(laneId)) return;
+    const pinned = Array.from(pinnedLaneIds).filter((id) => id !== laneId && lanesById.has(id) && !deletingLaneIds.has(id));
+    setActiveLaneIds(mergeUnique([laneId], pinned));
+    selectLane(laneId);
+    setStackGraphHeaderOpen(false);
+    setLaneWorkViewState(project?.rootPath ?? null, laneId, (prev) => ({
+      ...prev,
+      draftKind: "chat",
+      viewMode: "tabs",
+      activeItemId: null,
+      selectedItemId: null,
+    }));
+    setLinearIssueChatContextRequest({
+      laneId,
+      issue,
+      requestedAt: Date.now(),
+    });
+    navigate(`/lanes?laneId=${encodeURIComponent(laneId)}`);
+  }, [deletingLaneIds, lanesById, navigate, pinnedLaneIds, project?.rootPath, selectLane, setLaneWorkViewState]);
+
   const removeSplitLane = useCallback((laneId: string) => {
     if (pinnedLaneIds.has(laneId)) return;
     const pinned = Array.from(pinnedLaneIds).filter((id) => lanesById.has(id) && !deletingLaneIds.has(id));
@@ -1815,6 +1847,8 @@ export function LanesPage() {
     setCreateEnvInitProgress(null);
     setSelectedTemplateId("");
     setCreateSelectedColor(null);
+    setCreateSelectedLinearIssue(null);
+    createLinearIssueAutoNameRef.current = null;
   }, []);
 
   const prepareCreateDialog = useCallback(() => {
@@ -1827,6 +1861,8 @@ export function LanesPage() {
     setCreateBranches([]);
     setCreateBranchPullRequests([]);
     setCreateGitUserName("");
+    setCreateSelectedLinearIssue(null);
+    createLinearIssueAutoNameRef.current = null;
     setCreateBranchesLoading(false);
     setCreateBranchPullRequestsLoading(false);
     setLaneCreated(false);
@@ -1975,6 +2011,25 @@ export function LanesPage() {
     setCreateBaseBranch(v);
   }, []);
 
+  const handleSetCreateLinearIssue = useCallback((issue: LaneLinearIssue | null) => {
+    setCreateSelectedLinearIssue(issue);
+    if (!issue) return;
+
+    const nextName = linearIssueLaneName(issue);
+    setCreateLaneName((current) => {
+      const trimmed = current.trim();
+      const previousAutoName = createLinearIssueAutoNameRef.current;
+      if (!trimmed || (previousAutoName && trimmed === previousAutoName)) {
+        createLinearIssueAutoNameRef.current = nextName;
+        return nextName;
+      }
+      createLinearIssueAutoNameRef.current = nextName;
+      return current;
+    });
+    setCreateImportBranch("");
+    setCreateMode((mode) => mode === "existing" ? "primary" : mode);
+  }, []);
+
   /** Run only the environment-setup phase (applyTemplate / initEnv) for a lane
    *  that has already been created.  Used as the retry path when env setup fails. */
   const runEnvSetupForCreatedLane = useCallback(async (laneId: string) => {
@@ -2015,6 +2070,10 @@ export function LanesPage() {
     if (createMode === "child" && !createParentLaneId) return;
     if (createMode === "primary" && !createBaseBranch) return;
     if (createMode === "existing" && !createImportBranch) return;
+    if (createSelectedLinearIssue && createMode === "existing") {
+      setCreateError("Detach the Linear issue before importing an existing branch.");
+      return;
+    }
     if (selectedTemplateId && !templates.some((template) => template.id === selectedTemplateId)) {
       setCreateError("The selected lane template no longer exists. Refresh templates or choose a different option.");
       return;
@@ -2032,6 +2091,15 @@ export function LanesPage() {
         createBaseBranch,
         createImportBranch,
       });
+      const linearIssueArgs = createSelectedLinearIssue
+        ? {
+          linearIssue: {
+            ...createSelectedLinearIssue,
+            branchName: linearIssueBranchName(createSelectedLinearIssue),
+          },
+          branchName: linearIssueBranchName(createSelectedLinearIssue),
+        }
+        : {};
       let lane: LaneSummary;
       if (request.kind === "import") {
         lane = await window.ade.lanes.importBranch(request.args);
@@ -2044,11 +2112,11 @@ export function LanesPage() {
           return;
         }
         const childArgs = trimmedBase && trimmedBase !== parentLane.branchRef
-          ? { ...request.args, baseBranchRef: trimmedBase }
-          : request.args;
+          ? { ...request.args, baseBranchRef: trimmedBase, ...linearIssueArgs }
+          : { ...request.args, ...linearIssueArgs };
         lane = await window.ade.lanes.createChild(childArgs);
       } else {
-        lane = await window.ade.lanes.create(request.args);
+        lane = await window.ade.lanes.create({ ...request.args, ...linearIssueArgs });
       }
 
       // Lane created successfully — record its id so retries skip creation.
@@ -2072,7 +2140,7 @@ export function LanesPage() {
       setCreateError(err instanceof Error ? err.message : String(err));
       setCreateBusy(false);
     }
-  }, [createLaneName, createMode, createParentLaneId, createBaseBranch, createImportBranch, createChildBaseBranch, lanes, createBusy, navigate, refreshLanes, runEnvSetupForCreatedLane, selectedTemplateId, templates, createSelectedColor]);
+  }, [createLaneName, createMode, createParentLaneId, createBaseBranch, createImportBranch, createChildBaseBranch, lanes, createBusy, navigate, refreshLanes, runEnvSetupForCreatedLane, selectedTemplateId, templates, createSelectedColor, createSelectedLinearIssue]);
 
   const handleAttachSubmit = useCallback(async () => {
     const name = attachName.trim();
@@ -2148,6 +2216,10 @@ export function LanesPage() {
   const getPaneConfigs = useCallback((laneId: string | null) => {
     const laneDetail = laneId ? lanePaneDetails[laneId] ?? EMPTY_LANE_PANE_DETAIL : EMPTY_LANE_PANE_DETAIL;
     const laneSnapshot = laneId ? laneSnapshotByLaneId.get(laneId) ?? null : null;
+    const pendingLinearIssueContext =
+      laneId && linearIssueChatContextRequest?.laneId === laneId
+        ? linearIssueChatContextRequest
+        : null;
     return {
       "git-actions": {
         title: "Git Actions",
@@ -2206,7 +2278,22 @@ export function LanesPage() {
         hideHeaderWhenExpanded: true,
         children: (
           <DeferredLanePane cacheKey={`work:${laneId ?? "none"}`} label="work">
-            <LaneWorkPane laneId={laneId} />
+            <LaneWorkPane
+              laneId={laneId}
+              initialLinearIssueContext={pendingLinearIssueContext?.issue ?? null}
+              onInitialLinearIssueContextConsumed={
+                pendingLinearIssueContext
+                  ? () => {
+                    setLinearIssueChatContextRequest((current) => (
+                      current?.laneId === pendingLinearIssueContext.laneId
+                      && current.requestedAt === pendingLinearIssueContext.requestedAt
+                        ? null
+                        : current
+                    ));
+                  }
+                  : undefined
+              }
+            />
           </DeferredLanePane>
         )
       },
@@ -2214,6 +2301,7 @@ export function LanesPage() {
   }, [
     lanePaneDetails,
     laneSnapshotByLaneId,
+    linearIssueChatContextRequest,
     expandedGitActionsLaneId,
     autoRebaseEnabled,
     openAutoRebaseSettings,
@@ -2755,6 +2843,7 @@ export function LanesPage() {
                   }}
                   runtimeByLaneId={laneRuntimeById}
                   integrationSourcesByLaneId={integrationSourcesByLaneId}
+                  onStartChatWithLinearIssue={handleStartChatWithLinearIssue}
                 />
               </div>
             ) : null}
@@ -2970,6 +3059,13 @@ export function LanesPage() {
                 fontWeight: isSelected ? 600 : 500,
                 color: isSelected ? COLORS.textPrimary : COLORS.textMuted,
               }}>{lane.name}</span>
+              {!isDeleting && lane.linearIssue ? (
+                <LinearIssueBadge
+                  issue={lane.linearIssue}
+                  compact
+                  onStartChatWithIssue={() => handleStartChatWithLinearIssue(lane.id, lane.linearIssue!)}
+                />
+              ) : null}
               {!isDeleting && lanePr ? (
                 <button
                   type="button"
@@ -3368,6 +3464,8 @@ export function LanesPage() {
         setSelectedTemplateId={setSelectedTemplateId}
         selectedColor={createSelectedColor}
         setSelectedColor={setCreateSelectedColor}
+        selectedLinearIssue={createSelectedLinearIssue}
+        setSelectedLinearIssue={handleSetCreateLinearIssue}
         branchPullRequests={createBranchPullRequests}
         currentGitUserName={createGitUserName}
         loadingBranches={createBranchesLoading}

@@ -94,6 +94,7 @@ import type {
   AgentChatExecutionMode,
   AgentChatEvent,
   AgentChatEventEnvelope,
+  AgentChatContextAttachment,
   AgentChatFileRef,
   AgentChatHandoffArgs,
   AgentChatHandoffResult,
@@ -134,6 +135,10 @@ import type {
   TerminalToolType,
   CtoCapabilityMode,
 } from "../../../shared/types";
+import {
+  buildChatContextAttachmentPrompt,
+  normalizeChatContextAttachments,
+} from "../../../shared/chatContextAttachments";
 import {
   getDefaultModelDescriptor,
   getDynamicOpenCodeModelDescriptors,
@@ -361,6 +366,7 @@ type PersistedPendingSteer = {
   steerId: string;
   text: string;
   attachments?: AgentChatFileRef[];
+  contextAttachments?: AgentChatContextAttachment[];
 };
 
 type PendingRpc = {
@@ -437,6 +443,7 @@ type QueuedSteer = {
   steerId: string;
   text: string;
   attachments: AgentChatFileRef[];
+  contextAttachments: AgentChatContextAttachment[];
   resolvedAttachments: ResolvedAgentChatFileRef[];
 };
 
@@ -1170,6 +1177,7 @@ type PreparedSendMessage = {
   promptText: string;
   visibleText: string;
   attachments: AgentChatFileRef[];
+  contextAttachments: AgentChatContextAttachment[];
   resolvedAttachments: ResolvedAgentChatFileRef[];
   reasoningEffort?: string | null;
   interactionMode?: AgentChatInteractionMode | null;
@@ -6318,6 +6326,7 @@ export function createAgentChatService(args: {
               steerId: s.steerId,
               text: s.text,
               ...(s.attachments.length ? { attachments: s.attachments } : {}),
+              ...(s.contextAttachments.length ? { contextAttachments: s.contextAttachments } : {}),
             })),
           }
         : prevPersisted?.pendingSteers?.length ? { pendingSteers: prevPersisted.pendingSteers } : {}),
@@ -7540,6 +7549,7 @@ export function createAgentChatService(args: {
       text: string;
       displayText?: string;
       attachments: AgentChatFileRef[];
+      contextAttachments: AgentChatContextAttachment[];
       turnId?: string;
       laneDirectiveKey?: string | null;
       onDispatched?: () => void;
@@ -7552,6 +7562,7 @@ export function createAgentChatService(args: {
         ? { displayText: args.displayText.trim() }
         : {}),
       attachments: args.attachments,
+      ...(args.contextAttachments.length ? { contextAttachments: args.contextAttachments } : {}),
       ...(args.turnId ? { turnId: args.turnId } : {}),
     });
     args.onDispatched?.();
@@ -7578,6 +7589,7 @@ export function createAgentChatService(args: {
       userText?: string;
       displayText?: string;
       attachments?: AgentChatFileRef[];
+      contextAttachments?: AgentChatContextAttachment[];
       resolvedAttachments?: ResolvedAgentChatFileRef[];
       laneDirectiveKey?: string | null;
       providerSlashCommand?: boolean;
@@ -7597,6 +7609,7 @@ export function createAgentChatService(args: {
     }
     const runtime = managed.runtime;
     const attachments = args.attachments ?? [];
+    const contextAttachments = args.contextAttachments ?? [];
     const resolvedAttachments = args.resolvedAttachments ?? attachments.map((attachment) => ({
       ...attachment,
       _resolvedPath: attachment.path,
@@ -7617,6 +7630,7 @@ export function createAgentChatService(args: {
         text: userText,
         displayText,
         attachments,
+        contextAttachments,
         laneDirectiveKey: args.laneDirectiveKey,
         onDispatched: markDispatched,
       });
@@ -7865,6 +7879,7 @@ export function createAgentChatService(args: {
       userText?: string;
       displayText?: string;
       attachments?: AgentChatFileRef[];
+      contextAttachments?: AgentChatContextAttachment[];
       resolvedAttachments?: ResolvedAgentChatFileRef[];
       laneDirectiveKey?: string | null;
       providerSlashCommand?: boolean;
@@ -7891,6 +7906,7 @@ export function createAgentChatService(args: {
     setSessionActive(managed);
 
     const attachments = args.attachments ?? [];
+    const contextAttachments = args.contextAttachments ?? [];
     const resolvedAttachments = args.resolvedAttachments ?? attachments.map((attachment) => ({
       ...attachment,
       _resolvedPath: attachment.path,
@@ -7902,6 +7918,7 @@ export function createAgentChatService(args: {
       text: userText,
       displayText,
       attachments,
+      contextAttachments,
       turnId,
       laneDirectiveKey: args.laneDirectiveKey,
       onDispatched: args.onDispatched,
@@ -8960,6 +8977,7 @@ export function createAgentChatService(args: {
       userText?: string;
       displayText?: string;
       attachments?: AgentChatFileRef[];
+      contextAttachments?: AgentChatContextAttachment[];
       resolvedAttachments?: ResolvedAgentChatFileRef[];
       laneDirectiveKey?: string | null;
       providerSlashCommand?: boolean;
@@ -8987,6 +9005,7 @@ export function createAgentChatService(args: {
     runtime.interrupted = false;
     setSessionActive(managed);
     const attachments = args.attachments ?? [];
+    const contextAttachments = args.contextAttachments ?? [];
     const resolvedAttachments = args.resolvedAttachments ?? attachments.map((attachment) => ({
       ...attachment,
       _resolvedPath: attachment.path,
@@ -8998,6 +9017,7 @@ export function createAgentChatService(args: {
       text: userText,
       displayText,
       attachments,
+      contextAttachments,
       turnId,
       laneDirectiveKey: args.laneDirectiveKey,
       onDispatched: args.onDispatched,
@@ -11685,6 +11705,7 @@ export function createAgentChatService(args: {
             laneWorktreePath: executionContext.laneWorktreePath,
           })
         : null,
+      buildChatContextAttachmentPrompt(nextSteer.contextAttachments) || null,
     ]);
 
     if (runtime.kind === "claude") {
@@ -11692,6 +11713,7 @@ export function createAgentChatService(args: {
         promptText,
         displayText: trimmed,
         attachments: nextSteer.attachments,
+        contextAttachments: nextSteer.contextAttachments,
         resolvedAttachments: nextSteer.resolvedAttachments,
         laneDirectiveKey: shouldInjectLaneDirective ? laneDirectiveKey : null,
       });
@@ -11700,6 +11722,7 @@ export function createAgentChatService(args: {
         promptText,
         displayText: trimmed,
         attachments: nextSteer.attachments,
+        contextAttachments: nextSteer.contextAttachments,
         resolvedAttachments: nextSteer.resolvedAttachments,
         laneDirectiveKey: shouldInjectLaneDirective ? laneDirectiveKey : null,
       });
@@ -11708,6 +11731,7 @@ export function createAgentChatService(args: {
         promptText,
         displayText: trimmed,
         attachments: [],
+        contextAttachments: nextSteer.contextAttachments,
         resolvedAttachments: [],
         laneDirectiveKey: shouldInjectLaneDirective ? laneDirectiveKey : null,
       });
@@ -11716,6 +11740,7 @@ export function createAgentChatService(args: {
         promptText,
         displayText: trimmed,
         attachments: nextSteer.attachments,
+        contextAttachments: nextSteer.contextAttachments,
         resolvedAttachments: nextSteer.resolvedAttachments,
         laneDirectiveKey: shouldInjectLaneDirective ? laneDirectiveKey : null,
       });
@@ -11732,6 +11757,7 @@ export function createAgentChatService(args: {
     steerId: string,
     text: string,
     attachments: AgentChatFileRef[] = [],
+    contextAttachments: AgentChatContextAttachment[] = [],
     resolvedAttachments: ResolvedAgentChatFileRef[] = [],
   ): boolean => {
     if (runtime.pendingSteers.length >= MAX_PENDING_STEERS) {
@@ -11744,11 +11770,12 @@ export function createAgentChatService(args: {
       });
       return false;
     }
-    runtime.pendingSteers.push({ steerId, text, attachments, resolvedAttachments });
+    runtime.pendingSteers.push({ steerId, text, attachments, contextAttachments, resolvedAttachments });
     emitChatEvent(managed, {
       type: "user_message",
       text,
       ...(attachments.length ? { attachments } : {}),
+      ...(contextAttachments.length ? { contextAttachments } : {}),
       steerId,
       turnId: runtime.activeTurnId ?? undefined,
       deliveryState: "queued",
@@ -11933,6 +11960,7 @@ export function createAgentChatService(args: {
             && typeof (a as AgentChatFileRef).path === "string"
             && ((a as AgentChatFileRef).type === "file" || (a as AgentChatFileRef).type === "image"))
         : [];
+      const contextAttachments = normalizeChatContextAttachments(entry.contextAttachments);
       let resolvedAttachments: ResolvedAgentChatFileRef[] = [];
       try {
         resolvedAttachments = attachments.map((attachment) => {
@@ -11952,7 +11980,7 @@ export function createAgentChatService(args: {
         });
         continue;
       }
-      out.push({ steerId: entry.steerId, text, attachments, resolvedAttachments });
+      out.push({ steerId: entry.steerId, text, attachments, contextAttachments, resolvedAttachments });
       if (out.length >= MAX_PENDING_STEERS) break;
     }
     return out;
@@ -12633,6 +12661,7 @@ export function createAgentChatService(args: {
     text,
     displayText,
     attachments = [],
+    contextAttachments = [],
     reasoningEffort,
     executionMode,
     interactionMode,
@@ -12640,7 +12669,11 @@ export function createAgentChatService(args: {
     cloudOverrides,
     allowActiveSession = false,
   }: AgentChatSendArgs & { allowActiveSession?: boolean }): PreparedSendMessage | null => {
-    const trimmed = text.trim();
+    const publicContextAttachments = normalizeChatContextAttachments(contextAttachments);
+    const trimmedText = text.trim();
+    const trimmed = trimmedText.length || !publicContextAttachments.length
+      ? trimmedText
+      : "Use the attached issue context.";
     if (!trimmed.length) return null;
     const slashCommand = extractLeadingSlashCommand(trimmed);
     const providerSlashCommand = isProviderSlashCommandInput(trimmed);
@@ -12751,6 +12784,9 @@ export function createAgentChatService(args: {
       && !codexRuntimeSlashCommandNames.has(slashCommand)
       ? resolveCodexSlashCommandInvocation(managed.laneWorktreePath, trimmed)
       : null;
+    const contextAttachmentPrompt = providerSlashCommand
+      ? ""
+      : buildChatContextAttachmentPrompt(publicContextAttachments);
     const promptText = providerSlashCommand
       ? expandedClaudeSlashCommand?.promptText ?? expandedCodexSlashCommand?.promptText ?? trimmed
       : composeLaunchDirectives(trimmed, [
@@ -12766,6 +12802,7 @@ export function createAgentChatService(args: {
           buildComputerUseDirective(
             computerUseArtifactBrokerRef?.getBackendStatus() ?? null,
           ),
+          contextAttachmentPrompt || null,
         ]);
     const autoTitleSeed = providerSlashCommand
       ? expandedClaudeSlashCommand?.promptText ?? expandedCodexSlashCommand?.promptText ?? null
@@ -12790,6 +12827,7 @@ export function createAgentChatService(args: {
       promptText,
       visibleText,
       attachments: publicAttachments,
+      contextAttachments: publicContextAttachments,
       resolvedAttachments,
       reasoningEffort,
       interactionMode: managed.session.provider === "claude" ? managed.session.interactionMode ?? "default" : null,
@@ -13175,6 +13213,7 @@ export function createAgentChatService(args: {
         promptText: text,
         displayText: "",
         attachments: [],
+        contextAttachments: [],
         resolvedAttachments: [],
         optimisticCursorTurnStart: true,
       });
@@ -14250,6 +14289,7 @@ export function createAgentChatService(args: {
       userText?: string;
       displayText: string;
       attachments: AgentChatFileRef[];
+      contextAttachments: AgentChatContextAttachment[];
       resolvedAttachments: ResolvedAgentChatFileRef[];
       laneDirectiveKey?: string | null;
       turnId?: string;
@@ -14277,6 +14317,7 @@ export function createAgentChatService(args: {
         text: userText,
         displayText,
         attachments: args.attachments,
+        contextAttachments: args.contextAttachments,
         turnId,
         laneDirectiveKey: args.laneDirectiveKey,
         onDispatched: args.onDispatched,
@@ -14608,6 +14649,7 @@ export function createAgentChatService(args: {
       userText?: string;
       displayText: string;
       attachments: AgentChatFileRef[];
+      contextAttachments: AgentChatContextAttachment[];
       resolvedAttachments: ResolvedAgentChatFileRef[];
       laneDirectiveKey?: string | null;
       turnId?: string;
@@ -14641,6 +14683,7 @@ export function createAgentChatService(args: {
         text: userText,
         displayText,
         attachments: args.attachments,
+        contextAttachments: args.contextAttachments,
         turnId,
         laneDirectiveKey: args.laneDirectiveKey,
         onDispatched: args.onDispatched,
@@ -14891,6 +14934,7 @@ export function createAgentChatService(args: {
       promptText: trimmedPrompt,
       displayText: trimmedPrompt,
       attachments: [],
+      contextAttachments: [],
       resolvedAttachments: [],
     });
     const last = matched.runtime?.kind === "cursor" ? matched.runtime.activeCloudRunId : null;
@@ -15338,6 +15382,7 @@ export function createAgentChatService(args: {
       userText?: string;
       displayText: string;
       attachments: AgentChatFileRef[];
+      contextAttachments: AgentChatContextAttachment[];
       resolvedAttachments: ResolvedAgentChatFileRef[];
       laneDirectiveKey?: string | null;
       turnId?: string;
@@ -15383,6 +15428,7 @@ export function createAgentChatService(args: {
         text: userText,
         displayText,
         attachments: args.attachments,
+        contextAttachments: args.contextAttachments,
         turnId,
         laneDirectiveKey: args.laneDirectiveKey,
         onDispatched: args.onDispatched,
@@ -15622,6 +15668,7 @@ export function createAgentChatService(args: {
       promptText,
       visibleText,
       attachments,
+      contextAttachments,
       resolvedAttachments,
       reasoningEffort,
       laneDirectiveKey,
@@ -15662,6 +15709,7 @@ export function createAgentChatService(args: {
         userText: submittedText,
         displayText: visibleText,
         attachments,
+        contextAttachments,
         resolvedAttachments,
         laneDirectiveKey,
         providerSlashCommand,
@@ -15688,6 +15736,7 @@ export function createAgentChatService(args: {
           userText: submittedText,
           displayText: visibleText,
           attachments,
+          contextAttachments,
           resolvedAttachments,
           laneDirectiveKey,
           turnId,
@@ -15702,6 +15751,7 @@ export function createAgentChatService(args: {
         userText: submittedText,
         displayText: visibleText,
         attachments,
+        contextAttachments,
         resolvedAttachments,
         laneDirectiveKey,
         turnId,
@@ -15723,6 +15773,7 @@ export function createAgentChatService(args: {
         userText: submittedText,
         displayText: visibleText,
         attachments,
+        contextAttachments,
         resolvedAttachments,
         laneDirectiveKey,
         turnId,
@@ -15846,6 +15897,7 @@ export function createAgentChatService(args: {
         userText: submittedText,
         displayText: visibleText,
         attachments,
+        contextAttachments,
         resolvedAttachments,
         laneDirectiveKey,
         providerSlashCommand,
@@ -15870,6 +15922,7 @@ export function createAgentChatService(args: {
       userText: submittedText,
       displayText: visibleText,
       attachments,
+      contextAttachments,
       resolvedAttachments,
       laneDirectiveKey,
       providerSlashCommand,
@@ -15916,6 +15969,7 @@ export function createAgentChatService(args: {
         text: prepared.submittedText,
         ...(prepared.visibleText !== prepared.submittedText ? { displayText: prepared.visibleText } : {}),
         attachments: prepared.attachments,
+        ...(prepared.contextAttachments.length ? { contextAttachments: prepared.contextAttachments } : {}),
         turnId,
       });
       emitChatEvent(prepared.managed, { type: "status", turnStatus: "started", turnId });
@@ -15939,6 +15993,7 @@ export function createAgentChatService(args: {
         text: prepared.submittedText,
         displayText: prepared.visibleText,
         attachments: prepared.attachments,
+        contextAttachments: prepared.contextAttachments,
         laneDirectiveKey: prepared.laneDirectiveKey,
       });
       emitChatEvent(prepared.managed, { type: "status", turnStatus: "started" });
@@ -15973,10 +16028,12 @@ export function createAgentChatService(args: {
     }
   };
 
-  const steer = async ({ sessionId, text, attachments = [] }: AgentChatSteerArgs): Promise<AgentChatSteerResult> => {
+  const steer = async ({ sessionId, text, attachments = [], contextAttachments = [] }: AgentChatSteerArgs): Promise<AgentChatSteerResult> => {
     const trimmed = text.trim();
     const steerId = randomUUID();
-    if (!trimmed.length) {
+    // Allow context-only steers: if text is empty but issue context attachments
+    // are present, prepareSendMessage will substitute a fallback prompt.
+    if (!trimmed.length && contextAttachments.length === 0) {
       return { steerId, queued: false };
     }
 
@@ -15994,6 +16051,7 @@ export function createAgentChatService(args: {
           text: trimmed,
           displayText: trimmed,
           attachments,
+          contextAttachments,
         });
         if (!preparedSteer) {
           return { steerId, queued: false };
@@ -16005,6 +16063,7 @@ export function createAgentChatService(args: {
           steerId,
           preparedSteer.visibleText,
           preparedSteer.attachments,
+          preparedSteer.contextAttachments,
           preparedSteer.resolvedAttachments,
         );
         return { steerId, queued: true };
@@ -16014,6 +16073,7 @@ export function createAgentChatService(args: {
         text: trimmed,
         displayText: trimmed,
         attachments,
+        contextAttachments,
       });
       if (!preparedSteer) {
         return { steerId, queued: false };
@@ -16030,6 +16090,7 @@ export function createAgentChatService(args: {
           text: trimmed,
           displayText: trimmed,
           attachments,
+          contextAttachments,
           allowActiveSession: true,
         });
         if (!preparedSteer) {
@@ -16049,12 +16110,14 @@ export function createAgentChatService(args: {
           steerId,
           text: preparedSteer.visibleText,
           attachments: preparedSteer.attachments,
+          contextAttachments: preparedSteer.contextAttachments,
           resolvedAttachments: preparedSteer.resolvedAttachments,
         });
         emitChatEvent(managed, {
           type: "user_message",
           text: preparedSteer.visibleText,
           ...(preparedSteer.attachments.length ? { attachments: preparedSteer.attachments } : {}),
+          ...(preparedSteer.contextAttachments.length ? { contextAttachments: preparedSteer.contextAttachments } : {}),
           steerId,
           turnId: rt.activeTurnId ?? undefined,
           deliveryState: "queued",
@@ -16074,6 +16137,7 @@ export function createAgentChatService(args: {
         text: trimmed,
         displayText: trimmed,
         attachments,
+        contextAttachments,
       });
       if (!preparedSteer) {
         return { steerId, queued: false };
@@ -16085,6 +16149,17 @@ export function createAgentChatService(args: {
     if (managed.session.provider === "droid") {
       if (managed.runtime?.kind === "droid" && managed.runtime.busy) {
         const rt = managed.runtime;
+        const preparedSteer = prepareSendMessage({
+          sessionId,
+          text: trimmed,
+          displayText: trimmed,
+          attachments: [],
+          contextAttachments,
+          allowActiveSession: true,
+        });
+        if (!preparedSteer) {
+          return { steerId, queued: false };
+        }
         if (rt.pendingSteers.length >= MAX_PENDING_STEERS) {
           logger.warn("agent_chat.steer_queue_full", { sessionId, queueSize: rt.pendingSteers.length });
           emitChatEvent(managed, {
@@ -16095,10 +16170,17 @@ export function createAgentChatService(args: {
           });
           return { steerId, queued: false };
         }
-        rt.pendingSteers.push({ steerId, text: trimmed, attachments: [], resolvedAttachments: [] });
+        rt.pendingSteers.push({
+          steerId,
+          text: preparedSteer.submittedText,
+          attachments: [],
+          contextAttachments: preparedSteer.contextAttachments,
+          resolvedAttachments: [],
+        });
         emitChatEvent(managed, {
           type: "user_message",
-          text: trimmed,
+          text: preparedSteer.visibleText,
+          ...(preparedSteer.contextAttachments.length ? { contextAttachments: preparedSteer.contextAttachments } : {}),
           steerId,
           turnId: rt.activeTurnId ?? undefined,
           deliveryState: "queued",
@@ -16118,6 +16200,7 @@ export function createAgentChatService(args: {
         text: trimmed,
         displayText: trimmed,
         attachments: [],
+        contextAttachments,
       });
       if (!preparedSteer) {
         return { steerId, queued: false };
@@ -16138,6 +16221,7 @@ export function createAgentChatService(args: {
         text: trimmed,
         displayText: trimmed,
         attachments,
+        contextAttachments,
       });
       if (!preparedSteer) {
         return { steerId, queued: false };
@@ -16146,10 +16230,18 @@ export function createAgentChatService(args: {
       const input: Array<Record<string, unknown>> = [
         {
           type: "text",
-          text: trimmed,
+          text: preparedSteer.submittedText,
           text_elements: [],
         },
       ];
+      const contextPrompt = buildChatContextAttachmentPrompt(preparedSteer.contextAttachments);
+      if (contextPrompt) {
+        input.unshift({
+          type: "text",
+          text: contextPrompt,
+          text_elements: [],
+        });
+      }
       for (const attachment of preparedSteer.resolvedAttachments) {
         const stagedPath = stageAttachmentForCodexInput(attachment);
         if (attachment.type === "image") {
@@ -16169,6 +16261,7 @@ export function createAgentChatService(args: {
         type: "user_message",
         text: preparedSteer.visibleText,
         ...(preparedSteer.attachments.length ? { attachments: preparedSteer.attachments } : {}),
+        ...(preparedSteer.contextAttachments.length ? { contextAttachments: preparedSteer.contextAttachments } : {}),
         steerId,
         deliveryState: "delivered",
         turnId: runtime.activeTurnId,
@@ -16182,6 +16275,7 @@ export function createAgentChatService(args: {
       text: trimmed,
       displayText: trimmed,
       attachments,
+      contextAttachments,
     });
     if (!preparedSteer) {
       return { steerId, queued: false };
@@ -16194,6 +16288,7 @@ export function createAgentChatService(args: {
         steerId,
         preparedSteer.visibleText,
         preparedSteer.attachments,
+        preparedSteer.contextAttachments,
         preparedSteer.resolvedAttachments,
       );
       return { steerId, queued: true };
@@ -16296,6 +16391,7 @@ export function createAgentChatService(args: {
           text: steer.text,
           displayText: steer.text,
           attachments: steer.attachments,
+          contextAttachments: steer.contextAttachments,
         });
         if (!prepared) {
           logger.warn("agent_chat.dispatch_steer_inline_drop_skipped", {
@@ -16315,7 +16411,9 @@ export function createAgentChatService(args: {
       // to the in-flight transcript and the model picks it up at the next
       // thinking step (verified in the V2 mid-turn spike, test C).
       const dispatchUuid = randomUUID();
-      const sdkMsg = buildClaudeV2Message(steer.text, steer.resolvedAttachments, {
+      const contextPrompt = buildChatContextAttachmentPrompt(steer.contextAttachments);
+      const inlineSteerText = contextPrompt ? `${contextPrompt}\n\n${steer.text}` : steer.text;
+      const sdkMsg = buildClaudeV2Message(inlineSteerText, steer.resolvedAttachments, {
         baseDir: managed.laneWorktreePath,
         sessionId: runtime.sdkSessionId ?? null,
         forceUserMessage: true,
@@ -16342,6 +16440,7 @@ export function createAgentChatService(args: {
         type: "user_message",
         text: steer.text,
         ...(steer.attachments.length ? { attachments: steer.attachments } : {}),
+        ...(steer.contextAttachments.length ? { contextAttachments: steer.contextAttachments } : {}),
         steerId,
         deliveryState: "inline",
         turnId: runtime.activeTurnId ?? undefined,

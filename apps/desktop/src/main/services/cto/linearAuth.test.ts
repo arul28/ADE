@@ -371,22 +371,37 @@ describe("linearOAuthService", () => {
     expect(session.error).toContain("User declined");
   });
 
-  it("handles OAuth callback with state mismatch", async () => {
+  it("rejects stale OAuth callbacks without failing the active session", async () => {
     const credentials = createCredentialsMock();
+    const mockFetch = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ access_token: "linear-access-token-123" }),
+    })) as any;
     const service = createLinearOAuthService({
       credentials: credentials as any,
       logger: createLogger(),
+      fetchImpl: mockFetch,
     });
     activeServices.push(service);
 
-    const { sessionId, redirectUri } = await service.startSession();
+    const { sessionId, authUrl, redirectUri } = await service.startSession();
+    const stateParam = new URL(authUrl).searchParams.get("state")!;
 
-    const callbackUrl = `${redirectUri}?code=test-code&state=wrong-state`;
+    const staleCallbackUrl = `${redirectUri}?code=stale-code&state=wrong-state`;
+    const staleResponse = await httpGet(staleCallbackUrl);
+
+    expect(staleResponse.statusCode).toBe(400);
+    expect(service.getSession(sessionId).status).toBe("pending");
+    expect(credentials.setOAuthToken).not.toHaveBeenCalled();
+
+    const callbackUrl = `${redirectUri}?code=test-code&state=${stateParam}`;
     await httpGet(callbackUrl);
 
-    await waitForSessionStatus(service, sessionId, "failed");
-    const session = service.getSession(sessionId);
-    expect(session.error).toContain("state did not match");
+    await waitForSessionStatus(service, sessionId, "completed");
+    expect(credentials.setOAuthToken).toHaveBeenCalledWith(expect.objectContaining({
+      accessToken: "linear-access-token-123",
+    }));
   });
 
   it("handles OAuth callback without authorization code", async () => {
@@ -623,6 +638,44 @@ describe("linearClient", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
+  it("loads connection identity with the authorized Linear workspace", async () => {
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      expect(init?.headers).toMatchObject({ authorization: "Bearer test-token" });
+      return new Response(
+        JSON.stringify({
+          data: {
+            viewer: { id: "viewer-1", displayName: "Alex" },
+            organization: {
+              id: "org-1",
+              name: "Acme Workspace",
+              urlKey: "acme",
+              logoUrl: "https://linear.app/acme/logo.png",
+            },
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    });
+
+    const client = createLinearClient({
+      credentials: {
+        getTokenOrThrow: () => "Bearer test-token",
+        getStatus: () => ({ authMode: "oauth" }),
+      } as any,
+      fetchImpl: fetchImpl as any,
+      logger: null,
+    });
+
+    await expect(client.getConnectionIdentity()).resolves.toEqual({
+      viewerId: "viewer-1",
+      viewerName: "Alex",
+      organizationId: "org-1",
+      organizationName: "Acme Workspace",
+      organizationUrlKey: "acme",
+      organizationLogoUrl: "https://linear.app/acme/logo.png",
+    });
+  });
+
   it("lists projects with their owning team names", async () => {
     const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body ?? "{}")) as { query?: string };
@@ -663,6 +716,66 @@ describe("linearClient", () => {
     await expect(client.listProjects()).resolves.toEqual([
       { id: "project-1", name: "App Platform", slug: "app-platform", teamName: "Platform" },
     ]);
+  });
+
+  it("searches issues with picker filters and pagination", async () => {
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { query?: string; variables?: Record<string, unknown> };
+      if (!body.query?.includes("SearchIssues")) {
+        return new Response(JSON.stringify({ data: {} }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      expect(body.query).toContain("$filter: IssueFilter");
+      expect(body.variables).toMatchObject({
+        first: 25,
+        after: "cursor-1",
+        includeArchived: false,
+        filter: {
+          project: { id: { eq: "project-1" } },
+          state: { type: { in: ["unstarted", "started"] } },
+          assignee: { id: { eq: "user-1" } },
+          priority: { eq: 2 },
+          or: [
+            { title: { containsIgnoreCase: "auth" } },
+            { description: { containsIgnoreCase: "auth" } },
+            { identifier: { containsIgnoreCase: "auth" } },
+          ],
+        },
+      });
+      return new Response(
+        JSON.stringify({
+          data: {
+            issues: {
+              pageInfo: { hasNextPage: true, endCursor: "cursor-2" },
+              nodes: [makeIssueNode("7", "2026-03-05T00:07:00.000Z")],
+            },
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    });
+
+    const client = createLinearClient({
+      credentials: {
+        getTokenOrThrow: () => "lin_api_test",
+        getStatus: () => ({ authMode: "manual" }),
+      } as any,
+      fetchImpl: fetchImpl as any,
+      logger: null,
+    });
+
+    const result = await client.searchIssues({
+      projectId: "project-1",
+      stateTypes: ["unstarted", "started"],
+      assigneeId: "user-1",
+      priority: 2,
+      query: "auth",
+      first: 25,
+      after: "cursor-1",
+    });
+
+    expect(result.pageInfo).toEqual({ hasNextPage: true, endCursor: "cursor-2" });
+    expect(result.issues).toHaveLength(1);
+    expect(result.issues[0]?.identifier).toBe("ABC-7");
   });
 
   it("strips a pasted bearer prefix from manual API keys", async () => {

@@ -27,13 +27,16 @@ export function LaneDialogShell({
   return (
     <Dialog.Root open={open} onOpenChange={(next) => { if (!busy || next) onOpenChange(next); }}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm" />
+        <Dialog.Overlay className="fixed inset-0 z-50 bg-black/55 backdrop-blur-sm" />
         <Dialog.Content
           className={`fixed left-1/2 top-[14%] z-50 -translate-x-1/2 focus:outline-none ${widthClassName ?? "w-[min(680px,calc(100vw-24px))]"}`}
           onCloseAutoFocus={onCloseAutoFocus}
         >
           <BorderBeam size="md" colorVariant="mono" duration={25} strength={0.85} borderRadius={12}>
-            <div className="relative rounded-xl border border-white/[0.06] bg-bg/80 p-4 shadow-float backdrop-blur-xl">
+            <div
+              className="relative isolate rounded-xl border border-white/[0.08] p-4 shadow-float"
+              style={{ backgroundColor: "var(--color-modal-bg, var(--color-card, #1A1830))" }}
+            >
               <div className="pointer-events-none absolute inset-x-6 top-0 h-px bg-gradient-to-r from-transparent via-accent/40 to-transparent" />
               <div className="mb-4 flex items-start justify-between gap-3">
                 <div className="min-w-0">

@@ -1,7 +1,13 @@
 import React from "react";
 import { CaretDown, CaretRight, GitBranch, GitFork, Plus, StackSimple, Tag } from "@phosphor-icons/react";
 import { Button } from "../ui/Button";
-import type { BranchPullRequest, LaneSummary, LaneEnvInitProgress, LaneTemplate } from "../../../shared/types";
+import type {
+  BranchPullRequest,
+  LaneLinearIssue,
+  LaneSummary,
+  LaneEnvInitProgress,
+  LaneTemplate,
+} from "../../../shared/types";
 import type { LaneBranchOption } from "./laneUtils";
 import { LaneEnvInitProgressPanel } from "./LaneEnvInitProgress";
 import { LaneDialogShell } from "./LaneDialogShell";
@@ -9,6 +15,13 @@ import { LaneColorPicker } from "./LaneColorPicker";
 import { colorsInUse, nextAvailableColor } from "./laneColorPalette";
 import { BranchPickerView } from "./BranchPickerView";
 import { formatRelativeTime } from "./branchPickerSearch";
+import { linearIssueBranchName } from "../../../shared/linearIssueBranch";
+import {
+  LinearIssuePickerView,
+  LinearIssueSummaryCard,
+  branchExistsForLinearIssue,
+} from "./LinearIssuePicker";
+import { LinearMark, LINEAR_BRAND } from "./linearBrand";
 import {
   SECTION_CLASS_NAME,
   LABEL_CLASS_NAME,
@@ -90,6 +103,8 @@ export function CreateLaneDialog({
   importBranchWarning,
   selectedColor,
   setSelectedColor,
+  selectedLinearIssue,
+  setSelectedLinearIssue,
   branchPullRequests,
   currentGitUserName,
   loadingBranches,
@@ -125,6 +140,8 @@ export function CreateLaneDialog({
   importBranchWarning?: string | null;
   selectedColor: string | null;
   setSelectedColor: (c: string | null) => void;
+  selectedLinearIssue: LaneLinearIssue | null;
+  setSelectedLinearIssue: (issue: LaneLinearIssue | null) => void;
   /** Open PRs in the project's GitHub repo, keyed by head branch. */
   branchPullRequests?: BranchPullRequest[];
   /** Local git user.name — used by the picker to resolve `mine` / `author:me`. */
@@ -138,14 +155,25 @@ export function CreateLaneDialog({
   const usedColors = React.useMemo(() => colorsInUse(lanes), [lanes]);
 
   const [pickerOpen, setPickerOpen] = React.useState(false);
+  const [issuePickerOpen, setIssuePickerOpen] = React.useState(false);
 
   React.useEffect(() => {
-    if (!open) setPickerOpen(false);
+    if (!open) {
+      setPickerOpen(false);
+      setIssuePickerOpen(false);
+    }
   }, [open]);
 
   React.useEffect(() => {
     if (createMode !== "existing") setPickerOpen(false);
   }, [createMode]);
+
+  React.useEffect(() => {
+    if (selectedLinearIssue && createMode === "existing") {
+      setCreateMode("primary");
+      setCreateImportBranch("");
+    }
+  }, [createMode, selectedLinearIssue, setCreateImportBranch, setCreateMode]);
 
   const prByBranch = React.useMemo(() => {
     const map = new Map<string, BranchPullRequest>();
@@ -169,6 +197,11 @@ export function CreateLaneDialog({
   else if (allBranches.length === 0) branchPickerPlaceholder = "No branches found";
   else branchPickerPlaceholder = "Pick a branch…";
 
+  const selectedLinearBranchName = selectedLinearIssue ? linearIssueBranchName(selectedLinearIssue) : "";
+  const selectedLinearBranchConflict = selectedLinearIssue
+    ? branchExistsForLinearIssue(selectedLinearBranchName, createBranches)
+    : false;
+
   React.useEffect(() => {
     if (open && selectedColor === null) {
       const next = nextAvailableColor(lanes);
@@ -182,20 +215,21 @@ export function CreateLaneDialog({
       || !createLaneName.trim()
       || (createMode === "child" && !createParentLaneId)
       || (createMode === "primary" && !createBaseBranch)
-      || (createMode === "existing" && !createImportBranch));
-
-  const hasAdvanced = templates.length > 0 || !!onNavigateToTemplates;
+      || (createMode === "existing" && !createImportBranch)
+      || selectedLinearBranchConflict);
 
   return (
     <LaneDialogShell
       open={open}
       onOpenChange={onOpenChange}
-      title={pickerOpen ? "Pick branch" : "Create lane"}
-      description={pickerOpen
-        ? "Search by name, PR, author, or staleness."
-        : "Create a lane from Primary, an existing branch, or another lane."}
-      icon={Plus}
-      widthClassName="w-[min(560px,calc(100vw-24px))]"
+      title={issuePickerOpen ? "Connect Linear issue" : pickerOpen ? "Pick branch" : "Create lane"}
+      description={issuePickerOpen
+        ? undefined
+        : pickerOpen
+          ? "Search by name, PR, author, or staleness."
+          : "Create a lane from Primary, an existing branch, or another lane."}
+      icon={issuePickerOpen ? LinearMark : Plus}
+      widthClassName={issuePickerOpen ? "w-[min(920px,calc(100vw-24px))]" : "w-[min(560px,calc(100vw-24px))]"}
       busy={busy}
       onCloseAutoFocus={(event) => {
         event.preventDefault();
@@ -205,7 +239,14 @@ export function CreateLaneDialog({
         target?.focus?.();
       }}
     >
-      {pickerOpen ? (
+      {issuePickerOpen ? (
+        <LinearIssuePickerView
+          selectedIssue={selectedLinearIssue}
+          onSelect={setSelectedLinearIssue}
+          onBack={() => setIssuePickerOpen(false)}
+          busy={busy || laneCreated}
+        />
+      ) : pickerOpen ? (
         <BranchPickerView
           branches={createBranches}
           pullRequests={branchPullRequests ?? []}
@@ -256,6 +297,8 @@ export function CreateLaneDialog({
               const meta = MODE_META[mode];
               const Icon = meta.icon;
               const active = createMode === mode;
+              const disabledByLinearIssue = Boolean(selectedLinearIssue && mode === "existing");
+              const disabled = Boolean(busy || laneCreated || disabledByLinearIssue);
               const cardClass = active
                 ? `${CARD_CLASS_NAME} ${CARD_ACTIVE_CLASS_NAME}`
                 : CARD_CLASS_NAME;
@@ -264,7 +307,8 @@ export function CreateLaneDialog({
                   key={mode}
                   type="button"
                   aria-pressed={active}
-                  disabled={busy || laneCreated}
+                  disabled={disabled}
+                  title={disabledByLinearIssue ? "Detach the Linear issue before importing an existing branch." : undefined}
                   {...(mode === "primary"
                     ? { "data-tour": "lanes.createDialog.primaryTab" }
                     : mode === "existing"
@@ -288,7 +332,7 @@ export function CreateLaneDialog({
                     </div>
                   </div>
                   <div className="mt-1.5 line-clamp-2 text-[11px] leading-snug text-muted-fg/70">
-                    {meta.description}
+                    {disabledByLinearIssue ? "Unavailable while a Linear issue is connected" : meta.description}
                   </div>
                 </button>
               );
@@ -443,9 +487,8 @@ export function CreateLaneDialog({
           </div>
         </section>
 
-        {/* Advanced — template (collapsed by default) */}
-        {hasAdvanced ? (
-          <details className="group rounded-xl border border-white/[0.06] bg-white/[0.02] open:bg-white/[0.03]">
+        {/* Advanced — Linear issue + template */}
+        <details open className="group rounded-xl border border-white/[0.06] bg-white/[0.02] open:bg-white/[0.03]">
             <summary className="flex cursor-pointer select-none items-center justify-between gap-3 rounded-xl px-4 py-2.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-fg/70 transition-colors hover:text-fg [&::-webkit-details-marker]:hidden">
               <span className="flex items-center gap-2">
                 <CaretDown size={10} weight="bold" className="transition-transform group-open:rotate-0 -rotate-90" />
@@ -468,6 +511,60 @@ export function CreateLaneDialog({
               ) : null}
             </summary>
             <div className="space-y-3 px-4 pb-4 pt-1">
+              <div>
+                <span className={LABEL_CLASS_NAME}>Linear issue</span>
+                {selectedLinearIssue ? (
+                  <>
+                    <LinearIssueSummaryCard
+                      issue={selectedLinearIssue}
+                      branchName={selectedLinearBranchName}
+                      branchConflict={selectedLinearBranchConflict}
+                      onClear={() => setSelectedLinearIssue(null)}
+                    />
+                    <div className="mt-2 flex justify-end">
+                      <button
+                        type="button"
+                        disabled={busy || laneCreated}
+                        onClick={() => setIssuePickerOpen(true)}
+                        className="inline-flex h-7 items-center gap-1.5 rounded-md border px-2.5 text-[11px] font-medium transition-colors disabled:opacity-50"
+                        style={{
+                          borderColor: LINEAR_BRAND.borderSubtle,
+                          background: LINEAR_BRAND.surface,
+                          color: LINEAR_BRAND.text,
+                        }}
+                      >
+                        <LinearMark size={11} />
+                        Change issue
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setIssuePickerOpen(true)}
+                    disabled={busy || laneCreated}
+                    className="mt-2 flex w-full items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+                    style={{
+                      borderColor: LINEAR_BRAND.borderSubtle,
+                      background: LINEAR_BRAND.surface,
+                    }}
+                  >
+                    <span
+                      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md"
+                      style={{ background: LINEAR_BRAND.surfaceHover, color: LINEAR_BRAND.primaryBright }}
+                    >
+                      <LinearMark size={15} />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-sm font-semibold text-fg">Connect a Linear issue</span>
+                      <span className="mt-0.5 block text-[11px] text-muted-fg/65">
+                        Auto-names the branch and links the lane to your ticket.
+                      </span>
+                    </span>
+                    <CaretRight size={14} className="shrink-0" style={{ color: LINEAR_BRAND.textMuted }} />
+                  </button>
+                )}
+              </div>
               <div>
                 <span className={LABEL_CLASS_NAME}>Template</span>
                 {templates.length > 0 ? (
@@ -498,7 +595,6 @@ export function CreateLaneDialog({
               </div>
             </div>
           </details>
-        ) : null}
 
         {error ? (
           <div className="rounded-xl border border-red-500/25 bg-red-500/10 px-3 py-2 text-sm text-red-200">
@@ -519,6 +615,7 @@ export function CreateLaneDialog({
               setCreateImportBranch("");
               setCreateChildBaseBranch("");
               setSelectedColor(null);
+              setSelectedLinearIssue(null);
             }}
           >
             Cancel

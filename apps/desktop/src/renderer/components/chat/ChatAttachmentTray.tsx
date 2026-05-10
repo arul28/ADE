@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { createPortal } from "react-dom";
 import { Copy, File, Image, X } from "@phosphor-icons/react";
-import type { AgentChatFileRef, ChatSurfaceMode } from "../../../shared/types";
+import type { AgentChatContextAttachment, AgentChatFileRef, ChatSurfaceMode } from "../../../shared/types";
+import { chatContextAttachmentKey } from "../../../shared/chatContextAttachments";
 import { cn } from "../ui/cn";
+import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
 
 function attachmentName(path: string): string {
   // Split on both POSIX and Windows separators so a Windows path
@@ -10,6 +12,73 @@ function attachmentName(path: string): string {
   // full path.
   const segments = path.split(/[/\\]/);
   return segments.pop() || path;
+}
+
+function LinearIssueContextChip({
+  attachment,
+  onRemove,
+}: {
+  attachment: AgentChatContextAttachment;
+  onRemove?: (key: string) => void;
+}) {
+  const issue = attachment.issue;
+  const projectLabel = issue.projectName?.trim() || issue.projectSlug || issue.teamKey || null;
+  const title = [
+    attachment.issue.identifier,
+    attachment.issue.title,
+    projectLabel,
+    attachment.issue.stateName,
+  ].filter(Boolean).join(" - ");
+
+  return (
+    <span
+      className={cn(
+        "ade-liquid-glass-pill group inline-flex max-w-full items-center gap-2 rounded-[var(--chat-radius-pill)] border px-2.5 py-1.5 text-[10px] transition-colors",
+      )}
+      style={{
+        borderColor: LINEAR_BRAND.borderSubtle,
+        background: LINEAR_BRAND.surface,
+        color: LINEAR_BRAND.text,
+      }}
+      title={title}
+      data-testid="linear-issue-context-chip"
+    >
+      <span
+        className="flex h-4 w-4 shrink-0 items-center justify-center rounded"
+        style={{ background: LINEAR_BRAND.surfaceHover, color: LINEAR_BRAND.primaryBright }}
+      >
+        <LinearMark size={9} />
+      </span>
+      <span
+        className="shrink-0 rounded font-mono text-[10px] font-semibold"
+        style={{ background: "rgba(255,255,255,0.08)", color: LINEAR_BRAND.text, padding: "1px 4px" }}
+      >
+        {attachment.issue.identifier}
+      </span>
+      <span className="min-w-0 max-w-[240px] truncate font-sans text-[11px] font-medium text-fg/90">
+        {attachment.issue.title}
+      </span>
+      {projectLabel ? (
+        <span
+          className="hidden shrink-0 rounded font-mono text-[9px] sm:inline"
+          style={{ background: "rgba(255,255,255,0.05)", color: LINEAR_BRAND.textMuted, padding: "1px 4px" }}
+        >
+          {projectLabel}
+        </span>
+      ) : null}
+      {onRemove ? (
+        <button
+          type="button"
+          className="rounded-full text-current/55 transition-colors hover:bg-white/[0.06] hover:text-current"
+          title={`Remove ${attachment.issue.identifier}`}
+          aria-label={`Remove ${attachment.issue.identifier}`}
+          onClick={() => onRemove(chatContextAttachmentKey(attachment))}
+        >
+          <X size={10} weight="bold" />
+        </button>
+      ) : null}
+    </span>
+  );
 }
 
 function ImageAttachmentPreview({
@@ -244,16 +313,20 @@ function ImageLightbox({
 
 export function ChatAttachmentTray({
   attachments,
+  contextAttachments = [],
   mode,
   onRemove,
+  onRemoveContext,
   className,
 }: {
   attachments: AgentChatFileRef[];
+  contextAttachments?: AgentChatContextAttachment[];
   mode: ChatSurfaceMode;
   onRemove?: (path: string) => void;
+  onRemoveContext?: (key: string) => void;
   className?: string;
 }) {
-  if (!attachments.length) return null;
+  if (!attachments.length && !contextAttachments.length) return null;
 
   let chipTone: string;
   switch (mode) {
@@ -273,6 +346,13 @@ export function ChatAttachmentTray({
 
   return (
     <div className={cn("flex flex-wrap items-center gap-2 px-4 py-3", className)}>
+      {contextAttachments.map((attachment) => (
+        <LinearIssueContextChip
+          key={chatContextAttachmentKey(attachment)}
+          attachment={attachment}
+          onRemove={onRemoveContext}
+        />
+      ))}
       {attachments.map((attachment) => {
         if (attachment.type === "image") {
           return (

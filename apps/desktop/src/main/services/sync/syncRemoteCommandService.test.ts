@@ -812,12 +812,14 @@ describe("createSyncRemoteCommandService", () => {
         title: "My PR",
         body: "Description",
         draft: true,
+        closeLinearIssueOnMerge: true,
       }));
       expect(prService.createFromLane).toHaveBeenCalledWith({
         laneId: "lane-1",
         title: "My PR",
         body: "Description",
         draft: true,
+        closeLinearIssueOnMerge: true,
       });
     });
 

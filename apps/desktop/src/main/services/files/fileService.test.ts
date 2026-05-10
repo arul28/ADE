@@ -322,6 +322,33 @@ describe("fileService", () => {
     }
   });
 
+  it("preserves distinct git status labels in tree listings", async () => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-status-"));
+    const { execSync } = await import("node:child_process");
+    execSync("git init", { cwd: rootPath, stdio: "ignore" });
+    execSync("git config user.email test@example.com && git config user.name Test", { cwd: rootPath, stdio: "ignore" });
+    const laneService = createLaneServiceStub(rootPath);
+    const service = createFileService({ laneService });
+
+    try {
+      fs.writeFileSync(path.join(rootPath, "package.json"), "{\n  \"name\": \"fixture\"\n}\n", "utf8");
+      execSync("git add package.json && git commit -m init", { cwd: rootPath, stdio: "ignore" });
+      execSync("git mv package.json package-renamed.json", { cwd: rootPath, stdio: "ignore" });
+      fs.writeFileSync(path.join(rootPath, "scratch.ts"), "export const value = 1;\n", "utf8");
+
+      const rootNodes = await service.listTree({
+        workspaceId: "workspace-1",
+        depth: 1,
+        includeIgnored: true,
+      });
+
+      expect(rootNodes.find((node) => node.path === "package-renamed.json")?.changeStatus).toBe("renamed");
+      expect(rootNodes.find((node) => node.path === "scratch.ts")?.changeStatus).toBe("untracked");
+    } finally {
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
   it("returns the primary workspace first", () => {
     const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-workspaces-"));
     const laneService = {

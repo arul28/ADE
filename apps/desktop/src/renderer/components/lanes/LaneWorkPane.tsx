@@ -1,5 +1,6 @@
 import { useEffect, useMemo } from "react";
 import { ChatCircleText, Command, Terminal } from "@phosphor-icons/react";
+import type { LaneLinearIssue } from "../../../shared/types";
 import type { WorkDraftKind } from "../../state/appStore";
 import { EmptyState } from "../ui/EmptyState";
 import { SmartTooltip } from "../ui/SmartTooltip";
@@ -50,8 +51,12 @@ const ENTRY_OPTIONS: Array<{
 
 export function LaneWorkPane({
   laneId,
+  initialLinearIssueContext = null,
+  onInitialLinearIssueContextConsumed,
 }: {
   laneId: string | null;
+  initialLinearIssueContext?: LaneLinearIssue | null;
+  onInitialLinearIssueContextConsumed?: () => void;
 }) {
   const work = useLaneWorkSessions(laneId);
   const laneList = work.lane ? [work.lane] : [];
@@ -161,6 +166,8 @@ export function LaneWorkPane({
           onLaunchPtySession={work.launchPtySession}
           onShowDraftKind={work.showDraftKind}
           closingPtyIds={work.closingPtyIds}
+          initialLinearIssueContext={initialLinearIssueContext}
+          onInitialLinearIssueContextConsumed={onInitialLinearIssueContextConsumed}
         />
       </div>
     </div>

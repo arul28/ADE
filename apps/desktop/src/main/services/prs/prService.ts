@@ -137,6 +137,10 @@ import { fetchRemoteTrackingBranch } from "../shared/queueRebase";
 import { asNumber, asString, getErrorMessage, normalizeBranchName, nowIso, resolvePathWithinRoot } from "../shared/utils";
 import { branchNameFromLaneRef, resolveStableLaneBaseBranch } from "../../../shared/laneBaseResolution";
 import { normalizePrCreationStrategy, resolvePrRebaseMode } from "../../../shared/prStrategy";
+import {
+  buildLinearPrTitle,
+  ensureLinearPrReference,
+} from "../../../shared/linearMagicWords";
 
 type CreatePrFromLaneInternalArgs = CreatePrFromLaneArgs & {
   skipBranchPush?: boolean;
@@ -2790,19 +2794,32 @@ export function createPrService({
       branchRef: lane.branchRef,
       baseRef: baseRefForDiff,
       parentLaneId: lane.parentLaneId,
+      linearIssue: lane.linearIssue,
       commits,
       packBody,
       prTemplate: template
     };
 
     const providerMode = projectConfigService.get().effective.providerMode ?? "guest";
-    const defaultTitle = lane.name.replace(/[-_/]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()).trim() || lane.name;
+    const defaultTitle = lane.linearIssue
+      ? buildLinearPrTitle(lane.linearIssue)
+      : lane.name.replace(/[-_/]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()).trim() || lane.name;
+    const finalizeDraft = (draft: { title: string; body: string }): { title: string; body: string } => {
+      if (!lane.linearIssue) return draft;
+      const escapedIdentifier = lane.linearIssue.identifier.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const hasExactIdentifier = new RegExp(`(^|[^A-Za-z0-9])${escapedIdentifier}([^A-Za-z0-9]|$)`, "i").test(draft.title);
+      return {
+        title: hasExactIdentifier ? draft.title : defaultTitle,
+        body: ensureLinearPrReference(draft.body, lane.linearIssue, args.closeLinearIssueOnMerge === true),
+      };
+    };
 
     if (providerMode !== "guest" && aiIntegrationService) {
       const prompt = [
         "You are ADE's PR drafting assistant. Keep content factual and concise.",
         "Return JSON only with shape: {\"title\": string, \"body\": string}.",
         "The body must be GitHub-flavored markdown with sections: Summary, What Changed, Validation, Risks.",
+        "If Linear issue context is present, include the exact Linear issue identifier in the title and include a non-closing Linear reference in the body.",
         "",
         "PR Context JSON:",
         JSON.stringify(context, null, 2)
@@ -2817,13 +2834,13 @@ export function createPrService({
           ...(reasoningEffort ? { reasoningEffort } : {})
         });
         const parsed = parsePrDraftJson(draft.text);
-        if (parsed) return parsed;
+        if (parsed) return finalizeDraft(parsed);
 
         if (draft.text.trim().length) {
-          return {
+          return finalizeDraft({
             title: defaultTitle,
             body: `${draft.text.trim()}\n`
-          };
+          });
         }
       } catch (error) {
         logger.warn("prs.draft.ai_failed", {
@@ -2856,10 +2873,10 @@ export function createPrService({
       lines.push("");
       lines.push(template);
     }
-    return {
+    return finalizeDraft({
       title: defaultTitle || lane.name,
       body: `${lines.join("\n")}\n`
-    };
+    });
   };
 
   const createFromLane = async (args: CreatePrFromLaneInternalArgs): Promise<PrSummary> => {
@@ -2890,6 +2907,9 @@ export function createPrService({
     if (!baseBranch) {
       throw new Error("Choose a target branch before creating the PR.");
     }
+    const prBody = lane.linearIssue
+      ? ensureLinearPrReference(args.body, lane.linearIssue, args.closeLinearIssueOnMerge === true, { preserveExisting: false })
+      : args.body;
 
     if (!args.skipBranchPush) {
       await pushLaneBranchForPr(lane, headBranch);
@@ -2906,7 +2926,7 @@ export function createPrService({
           title: args.title,
           head: headBranch,
           base: baseBranch,
-          body: args.body,
+          body: prBody,
           draft: Boolean(args.draft)
         }
       });
@@ -2929,6 +2949,37 @@ export function createPrService({
         : null;
       if (existingPr) {
         logger.info("prs.create_existing_mapped", { headBranch, baseBranch, prNumber: Number(existingPr?.number) || null });
+        // When we adopt an already-existing PR, ensure its body carries the
+        // Linear `Refs`/`Fixes` reference so close-on-merge / linkage works
+        // even though we couldn't inject it via the initial POST /pulls call.
+        if (lane.linearIssue) {
+          const existingPrNumber = Number(existingPr?.number);
+          if (Number.isFinite(existingPrNumber) && existingPrNumber > 0) {
+            const existingBody = typeof existingPr?.body === "string" ? existingPr.body : "";
+            const closeOnMerge = args.closeLinearIssueOnMerge === true;
+            const patchedBody = ensureLinearPrReference(
+              existingBody,
+              lane.linearIssue,
+              closeOnMerge,
+              closeOnMerge ? { preserveExisting: false } : undefined,
+            );
+            if (patchedBody !== existingBody) {
+              try {
+                await githubService.apiRequest({
+                  method: "PATCH",
+                  path: `/repos/${repo.owner}/${repo.name}/pulls/${existingPrNumber}`,
+                  body: { body: patchedBody },
+                });
+                existingPr.body = patchedBody;
+              } catch (patchError) {
+                logger.warn("prs.adopt_linear_body_patch_failed", {
+                  prNumber: existingPrNumber,
+                  error: patchError instanceof Error ? patchError.message : String(patchError),
+                });
+              }
+            }
+          }
+        }
         created = { data: existingPr, response: null };
       } else {
         throw new Error(
