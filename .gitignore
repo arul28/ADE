@@ -66,4 +66,5 @@ ios-signing/
 package-lock.json
 !/apps/ade-code/package-lock.json
 /apps/desktop/release-alpha
+/apps/desktop/release-beta
 apps/desktop/resources/runtime/ade-*

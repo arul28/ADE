@@ -35,11 +35,11 @@ function usage() {
     "",
     "Channels:",
     "  alpha    Builds the current checkout as ADE Alpha.",
-    "  beta     Builds origin/main in a temporary worktree as ADE Beta.",
+    "  beta     Fetches origin/main, fast-forwards local main, and builds it as ADE Beta.",
     "",
     "Options:",
     "  --skip-install       Do not run app-local npm install before building.",
-    "  --skip-fetch         For beta, do not fetch origin/main before creating the worktree.",
+    "  --skip-fetch         For beta, do not fetch origin/main before the fast-forward check.",
     "  --dry-run            Print the commands without running them.",
     "  --repo <path>        Internal/debug: build the selected channel from an existing repo path.",
     "  --help               Show this help.",
@@ -115,6 +115,20 @@ function run(command, args, options = {}) {
     if (options.allowFailure) return;
     throw new Error(`${printable} exited with ${result.status ?? "unknown status"}`);
   }
+}
+
+function gitOutput(args, options = {}) {
+  const cwd = options.cwd ?? currentRepoRoot;
+  const result = spawnSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(result.stderr.trim() || `git ${args.join(" ")} exited with ${result.status ?? "unknown status"}`);
+  }
+  return result.stdout.trim();
 }
 
 function removePath(targetPath, dryRun) {
@@ -211,22 +225,29 @@ function assertPackageChannelPrereqs(repoRoot, channel, options) {
   throw new Error("apps/ade-cli/package.json is missing the build:static script required for local channel packages.");
 }
 
-function prepareBetaWorktree(options) {
-  const worktreeRoot = path.join(currentRepoRoot, ".ade", "build-worktrees", "beta");
+function prepareBetaCheckout(options) {
   if (!options.skipFetch) {
     run("git", ["fetch", "origin", "main"], { cwd: currentRepoRoot, dryRun: options.dryRun });
   }
-  run("git", ["worktree", "remove", "--force", worktreeRoot], {
-    cwd: currentRepoRoot,
-    dryRun: options.dryRun,
-    allowFailure: true,
-  });
-  removePath(worktreeRoot, options.dryRun);
-  run("git", ["worktree", "add", "--force", "--detach", worktreeRoot, "origin/main"], {
-    cwd: currentRepoRoot,
-    dryRun: options.dryRun,
-  });
-  return worktreeRoot;
+  if (options.dryRun) {
+    run("git", ["merge", "--ff-only", "origin/main"], { cwd: currentRepoRoot, dryRun: true });
+    return currentRepoRoot;
+  }
+  const branch = gitOutput(["branch", "--show-current"]);
+  if (branch !== "main") {
+    fail("package:beta builds the local main checkout after fetching origin/main. Check out main first, or use --repo <path> for an explicit source.");
+  }
+  run("git", ["merge", "--ff-only", "origin/main"], { cwd: currentRepoRoot });
+  const status = gitOutput(["status", "--porcelain"]);
+  if (status) {
+    process.stdout.write("[ade] Warning: building beta with local working tree changes. Commit or stash first for a byte-for-byte clean origin/main beta.\n");
+  }
+  const aheadBehind = gitOutput(["rev-list", "--left-right", "--count", "HEAD...origin/main"]);
+  const [ahead = "0"] = aheadBehind.split(/\s+/);
+  if (Number(ahead) > 0) {
+    process.stdout.write("[ade] Warning: local main has commits not on origin/main. Push first for a remote-main-only beta.\n");
+  }
+  return currentRepoRoot;
 }
 
 function installApps(repoRoot, options) {
@@ -285,7 +306,8 @@ function buildChannel(repoRoot, channel, options) {
   const config = CHANNELS[channel];
   ensureRepoRoot(repoRoot, options);
   const desktopRoot = path.join(repoRoot, "apps", "desktop");
-  const outputRoot = path.join(desktopRoot, config.outputDir);
+  const outputRepoRoot = channel === "beta" && !options.repo ? currentRepoRoot : repoRoot;
+  const outputRoot = path.join(outputRepoRoot, "apps", "desktop", config.outputDir);
   const appVersion = readDesktopVersion(repoRoot);
   const env = {
     ...process.env,
@@ -314,7 +336,7 @@ function buildChannel(repoRoot, channel, options) {
     `-c.appId=${config.appId}`,
     `-c.productName=${config.productName}`,
     `-c.mac.icon=build/icon.${channel}.icns`,
-    `-c.directories.output=${config.outputDir}`,
+    `-c.directories.output=${outputRoot}`,
     `-c.extraMetadata.adePackageChannel=${channel}`,
     `-c.extraMetadata.adeCliName=${config.cliName}`,
     `-c.mac.extendInfo.LSEnvironment.ADE_PACKAGE_CHANNEL=${channel}`,
@@ -342,16 +364,9 @@ try {
   selectedRepoRoot = parsedOptions.repo
     ? parsedOptions.repo
     : parsedOptions.channel === "beta"
-      ? prepareBetaWorktree(parsedOptions)
+      ? prepareBetaCheckout(parsedOptions)
       : currentRepoRoot;
   buildChannel(selectedRepoRoot, parsedOptions.channel, parsedOptions);
 } catch (error) {
-  if (parsedOptions?.channel === "beta" && !parsedOptions.repo && selectedRepoRoot && !parsedOptions.dryRun) {
-    spawnSync("git", ["worktree", "remove", "--force", selectedRepoRoot], {
-      cwd: currentRepoRoot,
-      stdio: "ignore",
-    });
-    fs.rmSync(selectedRepoRoot, { recursive: true, force: true });
-  }
   fail(error instanceof Error ? error.message : String(error));
 }
