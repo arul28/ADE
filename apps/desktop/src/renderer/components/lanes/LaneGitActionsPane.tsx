@@ -725,7 +725,11 @@ export function LaneGitActionsPane({
         // best effort
       }
     }
-    await Promise.all([refreshChanges(targetLaneId), refreshLanes(), refreshGitMeta(targetLaneId)]);
+    await Promise.all([
+      refreshChanges(targetLaneId),
+      refreshLanes({ includeStatus: true, includeSnapshots: false }),
+      refreshGitMeta(targetLaneId),
+    ]);
     if (isViewingLane(targetLaneId)) {
       setCommitTimelineKey((prev) => prev + 1);
     }
@@ -843,7 +847,11 @@ export function LaneGitActionsPane({
   };
 
   const completeCommitRefresh = useCallback(async (targetLaneId: string) => {
-    await Promise.all([refreshChanges(targetLaneId), refreshLanes(), refreshGitMeta(targetLaneId)]);
+    await Promise.all([
+      refreshChanges(targetLaneId),
+      refreshLanes({ includeStatus: true, includeSnapshots: false }),
+      refreshGitMeta(targetLaneId),
+    ]);
     if (isViewingLane(targetLaneId)) {
       setCommitTimelineKey((prev) => prev + 1);
       setCommitMessage("");

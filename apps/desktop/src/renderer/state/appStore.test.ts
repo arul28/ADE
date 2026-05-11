@@ -300,6 +300,84 @@ describe("appStore", () => {
       expect(useAppStore.getState().lanes).toEqual(lanes);
     });
 
+    it("refreshLanes preserves prior git status for statusless lane refreshes", async () => {
+      useAppStore.setState({
+        lanes: [{ id: "lane-lite", name: "Lane lite", status: { dirty: true }, parentStatus: { ahead: 1 } }] as any[],
+      });
+      (window.ade.lanes.list as any).mockResolvedValueOnce([{ id: "lane-lite", name: "Lane lite", color: "#7dd3fc" }] as any[]);
+
+      await useAppStore.getState().refreshLanes({ includeStatus: false });
+
+      expect(window.ade.lanes.list).toHaveBeenCalledWith({
+        includeArchived: false,
+        includeStatus: false,
+      });
+      expect(useAppStore.getState().lanes[0]).toEqual(
+        expect.objectContaining({
+          id: "lane-lite",
+          color: "#7dd3fc",
+          status: { dirty: true },
+          parentStatus: { ahead: 1 },
+        }),
+      );
+    });
+
+    it("refreshLanes can update lane git status without snapshot decorations", async () => {
+      const lanes = [{ id: "lane-status", name: "Lane status", status: { dirty: true } }] as any[];
+      (window.ade.lanes.list as any).mockResolvedValueOnce(lanes);
+
+      await useAppStore.getState().refreshLanes({ includeStatus: true, includeSnapshots: false });
+
+      expect(window.ade.lanes.list).toHaveBeenCalledWith({
+        includeArchived: false,
+        includeStatus: true,
+      });
+      expect(window.ade.lanes.listSnapshots).not.toHaveBeenCalled();
+      expect(useAppStore.getState().lanes).toEqual(lanes);
+    });
+
+    it("refreshLanes can update runtime snapshots without recomputing lane git status", async () => {
+      useAppStore.setState({
+        lanes: [{ id: "lane-1", name: "Lane 1", status: { dirty: true }, parentStatus: { dirty: false } }] as any[],
+      });
+      const snapshots = [
+        {
+          lane: { id: "lane-1", name: "Lane 1", status: { dirty: false }, parentStatus: null },
+          runtime: {
+            bucket: "running",
+            runningCount: 1,
+            awaitingInputCount: 0,
+            endedCount: 0,
+            sessionCount: 1,
+          },
+          rebaseSuggestion: null,
+          autoRebaseStatus: null,
+          conflictStatus: null,
+          stateSnapshot: null,
+          adoptableAttached: false,
+        },
+      ] as any[];
+      (window.ade.lanes.listSnapshots as any).mockResolvedValueOnce(snapshots);
+
+      await useAppStore.getState().refreshLanes({
+        includeStatus: false,
+        includeSnapshots: true,
+        includeConflictStatus: false,
+        includeRebaseSuggestions: false,
+        includeAutoRebaseStatus: false,
+      });
+
+      expect(window.ade.lanes.listSnapshots).toHaveBeenCalledWith({
+        includeArchived: false,
+        includeStatus: false,
+        includeConflictStatus: false,
+        includeRebaseSuggestions: false,
+        includeAutoRebaseStatus: false,
+      });
+      expect(useAppStore.getState().laneSnapshots[0].runtime.bucket).toBe("running");
+      expect(useAppStore.getState().lanes[0].status).toEqual({ dirty: true });
+    });
+
     it("refreshLanes can skip conflict status for cheaper warmup snapshots", async () => {
       (window.ade.lanes.listSnapshots as any).mockResolvedValueOnce([]);
 

@@ -987,7 +987,8 @@ export function LanesPage() {
     let timer: ReturnType<typeof setTimeout> | null = null;
     const refreshRuntimeOnly = () =>
       refreshLanes({
-        includeStatus: true,
+        includeStatus: false,
+        includeSnapshots: true,
         includeConflictStatus: false,
         includeRebaseSuggestions: false,
         includeAutoRebaseStatus: false,
@@ -3416,7 +3417,7 @@ export function LanesPage() {
             setActiveLaneIds(allIds);
           }}
           onBatchManage={openBatchManage}
-          onAppearanceChanged={() => refreshLanes().catch(() => {})}
+          onAppearanceChanged={() => refreshLanes({ includeStatus: false }).catch(() => {})}
         />
       ) : null}
 
@@ -3447,7 +3448,7 @@ export function LanesPage() {
         }}
         onArchive={() => { archiveManagedLanes().catch(() => {}); }}
         onDelete={() => { deleteManagedLanes().catch(() => {}); }}
-        onAppearanceChanged={() => refreshLanes().catch(() => {})}
+        onAppearanceChanged={() => refreshLanes({ includeStatus: false }).catch(() => {})}
       />
 
 
