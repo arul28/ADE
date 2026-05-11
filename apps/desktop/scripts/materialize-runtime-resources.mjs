@@ -17,6 +17,7 @@ const cliDistStaticRoot = path.join(cliRoot, "dist-static");
 const targets = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"];
 const seaFuse = "NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2";
 const allowHostOnlyRuntimeResources = process.env.ADE_RUNTIME_RESOURCES_ALLOW_HOST_ONLY === "1";
+const maxDownloadRedirects = 10;
 
 function currentTarget() {
   const platform = process.platform === "darwin" ? "darwin" : process.platform === "linux" ? "linux" : process.platform;
@@ -84,7 +85,7 @@ function nodeArchiveCandidates(version, target) {
   ];
 }
 
-async function downloadFile(url, destinationPath) {
+async function downloadFile(url, destinationPath, redirectsRemaining = maxDownloadRedirects) {
   await fs.mkdir(path.dirname(destinationPath), { recursive: true });
   await new Promise((resolve, reject) => {
     const request = https.get(url, (response) => {
@@ -95,7 +96,15 @@ async function downloadFile(url, destinationPath) {
         response.headers.location
       ) {
         response.resume();
-        downloadFile(new URL(response.headers.location, url).toString(), destinationPath).then(resolve, reject);
+        if (redirectsRemaining <= 0) {
+          reject(new Error(`Too many redirects while downloading ${url}`));
+          return;
+        }
+        downloadFile(
+          new URL(response.headers.location, url).toString(),
+          destinationPath,
+          redirectsRemaining - 1
+        ).then(resolve, reject);
         return;
       }
       if (response.statusCode !== 200) {

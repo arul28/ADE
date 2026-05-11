@@ -266,7 +266,7 @@ jobs:
 
       - name: Materialize ADE runtime resources
         env:
-          ADE_RUNTIME_ARTIFACTS_DIR: ${{ github.workspace }}/apps/desktop/resources/runtime
+          ADE_RUNTIME_ARTIFACTS_DIR: ${{ github.workspace }}\apps\desktop\resources\runtime
         run: cd apps/desktop && npm run materialize:runtime-resources
 
       - name: Reset release output

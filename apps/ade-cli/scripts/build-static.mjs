@@ -18,7 +18,9 @@ function parseArgs(argv) {
   };
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i];
-    if (token === "--target") {
+    if (token === "--") {
+      continue;
+    } else if (token === "--target") {
       args.target = argv[++i] ?? "";
     } else if (token === "--out-dir") {
       args.outDir = path.resolve(argv[++i] ?? "");

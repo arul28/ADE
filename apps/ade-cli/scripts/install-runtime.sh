@@ -46,6 +46,22 @@ download() {
   fi
 }
 
+try_install_service() {
+  service_log="$tmp_dir/install-service.log"
+  if "$dest_dir/ade" serve --install-service >"$service_log" 2>&1; then
+    return 0
+  fi
+
+  status="$?"
+  printf 'ade install: warning: runtime service install failed with exit status %s; ADE was installed but the login service was not registered.\n' "$status" >&2
+  if [ -s "$service_log" ]; then
+    while IFS= read -r line; do
+      printf 'ade install: service: %s\n' "$line" >&2
+    done < "$service_log"
+  fi
+  return 0
+}
+
 asset_url() {
   name="$1"
   if [ "$version" = "latest" ]; then
@@ -96,9 +112,9 @@ export NODE_PATH="$runtime_dir/node_modules${NODE_PATH:+:$NODE_PATH}"
 "$dest_dir/ade" --version >/dev/null || die "installed ade binary failed to run"
 
 if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
-  "$dest_dir/ade" serve --install-service >/dev/null 2>&1 || true
+  try_install_service
 elif [ "$(uname -s)" = "Darwin" ]; then
-  "$dest_dir/ade" serve --install-service >/dev/null 2>&1 || true
+  try_install_service
 fi
 
 printf 'ADE runtime installed: %s\n' "$dest_dir/ade"

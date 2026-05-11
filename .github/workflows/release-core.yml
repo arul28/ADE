@@ -104,6 +104,15 @@ jobs:
           cd apps/desktop
           npm run prepare:mac:universal
 
+      - name: Reject insecure macOS signing certificate URL
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+        run: |
+          if [[ "$CSC_LINK" == http://* ]]; then
+            echo "::error::CSC_LINK must use HTTPS, a local path, or an encoded certificate payload."
+            exit 1
+          fi
+
       - name: Build signed universal macOS release
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
