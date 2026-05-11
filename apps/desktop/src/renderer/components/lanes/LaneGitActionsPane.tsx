@@ -720,7 +720,7 @@ export function LaneGitActionsPane({
   const refreshLaneGitState = useCallback(async (targetLaneId: string | null) => {
     await Promise.all([
       refreshChanges(targetLaneId),
-      refreshLanes({ includeStatus: true, includeSnapshots: false }),
+      refreshLanes({ includeStatus: true, includeSnapshots: true }),
       refreshGitMeta(targetLaneId),
     ]);
   }, [refreshChanges, refreshGitMeta, refreshLanes]);
