@@ -901,7 +901,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     esc           Return or cancel the active pane
     ?             Help when it is the first prompt character
     /             Command palette
-	`,
+  `,
   lanes: `${ADE_BANNER}
   Lanes
 
