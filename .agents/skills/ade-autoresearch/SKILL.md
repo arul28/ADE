@@ -1,16 +1,17 @@
 ---
 name: ade-autoresearch
 description: Iteratively optimize an ADE tab's CPU/memory/IPC/render performance.
-  Runs predefined scenarios, identifies bottlenecks from JSONL metrics, makes ONE
-  targeted code change per iteration, gates on tests + smoke, keeps wins on a
-  branch, and distills patterns into per-tab perf skills. Invoke when the user
-  says "optimize <tab>", "autoresearch <tab>", or "perf pass on <tab>". Drives
-  ADE pointed at the perf-pass throwaway repo; full liberty inside that repo.
-  Uses Codex/GPT models for any in-ADE AI activity unless a scenario opts into
-  Claude.
+  Drives the real UI, builds tab-specific probes from the visible product and
+  perf-pass repo, identifies bottlenecks from JSONL metrics, makes ONE targeted
+  code change per iteration, gates on tests + smoke, keeps wins on a branch, and
+  distills patterns into per-tab perf skills. Invoke when the user says
+  "optimize <tab>", "autoresearch <tab>", or "perf pass on <tab>". Drives ADE
+  pointed at the perf-pass throwaway repo; full liberty inside that repo. Uses
+  Codex/GPT models for in-ADE AI activity unless the run explicitly opts into
+  another configured provider for comparison.
 metadata:
   author: ADE
-  version: 0.2.0
+  version: 0.3.0
 ---
 
 # ade-autoresearch
@@ -24,7 +25,12 @@ A Karpathy-style autoresearch loop for ADE perf. You (the agent) ARE the loop ru
 
 ## Real UI audit is the primary loop
 
-The job is to find what a person actually feels in the tab. Deterministic scenarios are guardrails and regression checks, not a substitute for driving the product.
+The job is to find what a person actually feels in the tab. Fixed canned
+scenario suites are optional guardrails, not the contract and not a constraint on
+the run. Build the measurement plan from the live UI, source, and perf-pass repo;
+then create whatever repeatable probes, scripts, seeded repo states, or tests are
+needed to show load-time, CPU, heap, IPC, render, and interaction deltas for the
+surfaces the user actually exercises.
 
 Use this order:
 
@@ -49,12 +55,19 @@ Use this order:
 
 4. **Use direct IPC only for setup, cleanup, and analysis.** It is fine to create fixture data, reset a throwaway repo, query status, or extract metrics through IPC/shell. Do not replace a UI audit action with `window.ade.*` unless the UI is genuinely impossible to drive; if you must, say so in the run notes.
 
-5. **Run deterministic scenarios after UI findings.** Scenarios catch regressions and quantify broad fitness. They do not prove the tab is clean unless the UI action inventory was also covered.
+5. **Create UI-derived probes after findings.** If existing scenarios cover a
+   surface, you may run them. If they do not, write a tab-specific probe,
+   scenario, fixture, or test that reproduces the measured workflow against the
+   perf-pass repo. The probe is evidence, not a product requirement: it exists to
+   quantify a real UI bottleneck and compare before/after behavior.
 
 ## Setup (do once at start of run)
 
 1. **Read prior wins** at `.agents/skills/ade-perf-<tab>/SKILL.md` if it exists. These are optional best-practice notes from earlier audits, not prerequisites. If no per-tab skill exists, derive the checklist from the tab UI and source and create the per-tab skill only during codification after you have measured real behavior.
-2. **Read scenario definitions** at `apps/desktop/src/renderer/perf/scenarios/<tab>.ts`. These are the *contract*. Do NOT edit them.
+2. **Inspect existing perf probes** under `apps/desktop/src/renderer/perf/scenarios/`,
+   scripts, and tab tests. Reuse what matches the tab, but do not treat missing or
+   incomplete scenarios as a blocker. It is acceptable to add new tab-specific
+   scenarios/probes when they help quantify a real UI workflow.
 3. **Verify perf-pass repo** exists, has a seed tag, and can exercise real GitHub paths when needed:
    ```bash
    scripts/reset-perf-pass.sh
@@ -68,32 +81,29 @@ Use this order:
 
 ## Baseline (iteration 0)
 
-Start with one deterministic scenario sweep so you know the existing guardrail fitness, then do the real UI inventory. The baseline is not complete until both exist.
+Start with the real UI inventory. The baseline is complete when every safe tab
+surface has been exercised or explicitly marked unsafe/external/destructive, and
+each measured segment has corresponding perf evidence.
 
-Run all scenarios for the tab. For lanes that's:
+For each important workflow, capture at least one of:
 
-```bash
-node scripts/run-perf-scenario.mjs lanes.cold-list   baseline-cold
-node scripts/run-perf-scenario.mjs lanes.switch-rapid baseline-switch
-node scripts/run-perf-scenario.mjs lanes.idle-at-rest baseline-idle
-node scripts/run-perf-scenario.mjs lanes.scroll-list  baseline-scroll
-node scripts/run-perf-scenario.mjs lanes.stress-poll  baseline-stress
-```
+- A real UI perf-launch run with `manualStep` markers in
+  `~/.ade/perf-runs/<runId>/events.jsonl`
+- A purpose-built probe or scenario that drives the workflow against the
+  perf-pass repo and writes `summary.json` / `events.jsonl`
+- A focused unit/component/integration test that reproduces the expensive derive,
+  mount, or IPC behavior
+- A shell/IPC setup script only for fixture creation and cleanup
 
-For boot (which has a mix of project-loaded and no-project scenarios):
+Record `baseline_metrics` as a small table, not a single mandatory fitness
+score. Include the metrics that matter to the surface: route/load time, segment
+duration, main CPU p95, renderer CPU or long tasks, heap growth, IPC count/p95,
+render-on-scroll time, or panel mount cost. If an existing scenario reports a
+fitness score, keep it as one data point; do not let it override real UI evidence.
 
-```bash
-node scripts/run-perf-scenario.mjs boot.cold-paint     baseline-paint   --no-project
-node scripts/run-perf-scenario.mjs boot.recent-projects baseline-recent --no-project
-node scripts/run-perf-scenario.mjs boot.open-project    baseline-open   --no-project
-node scripts/run-perf-scenario.mjs boot.remote-runtime  baseline-remote
-node scripts/run-perf-scenario.mjs boot.idle-welcome    baseline-idle   --no-project
-node scripts/run-perf-scenario.mjs boot.stress-launch   baseline-stress --no-project
-```
-
-Each writes `~/.ade/perf-runs/<runId>/summary.json`. Read all summaries. Compute the **per-tab fitness** as the sum of all scenario fitness scores. Record this as `baseline_fitness`. Also record per-component breakdown so you can target the worst component.
-
-Then launch the real tab with `perf-launch`, drive the action inventory, and analyze `~/.ade/perf-runs/<runId>/events.jsonl` by manualStep segments. Record the worst UI segment, the slow IPC channels inside it, and whether the cost is expected work (for example network push/fetch) or avoidable tab work.
+Then analyze `events.jsonl` by manualStep segment. Record the worst UI segment,
+the slow IPC channels inside it, and whether the cost is expected work (for
+example network push/fetch) or avoidable tab work.
 
 Tag the baseline commit:
 ```bash
@@ -102,20 +112,25 @@ git tag perf-baseline-<tab>-$(date +%Y%m%d)
 
 ## Iteration loop
 
-Stop conditions: **no fitness improvement for 10 consecutive iterations** OR user kills the run OR 50 iterations OR 4 hours wall-clock.
+Stop conditions: **no measurable improvement on the current bottleneck for 10
+consecutive attempts** OR user kills the run OR 50 iterations OR 4 hours
+wall-clock.
 
 For each iteration:
 
 ### 1. Analyze
-- Read the latest scenario summaries and the latest real-UI `events.jsonl`.
-- Pick the **#1 bottleneck**: the avoidable cost that appears in real UI segments or scenario summaries. Tie-break by user-visible workflow first, then reproducibility across scenarios.
+- Read the latest real-UI `events.jsonl`, probe outputs, scenario summaries, and
+  focused test results.
+- Pick the **#1 bottleneck**: the avoidable cost that appears in real UI segments
+  or repeatable probes. Tie-break by user-visible workflow first, then
+  reproducibility and metric severity.
 - Common bottleneck categories:
   - **Slow IPC channel**: a channel in `summary.ipc.slowChannels` with p95 ≥ 120ms
   - **Long task spam**: `webVitals.longTaskCount` > 5 per minute
-  - **Memory growth**: `process.rendererHeapGrowthMB` > 10 over a scenario
+  - **Memory growth**: `process.rendererHeapGrowthMB` > 10 over a measured workflow
   - **Render-on-scroll cost**: `marks.scroll.*` p95 high
   - **Route transition cost**: `marks.nav.*` or `marks.switch.*` p95 high
-  - **Main CPU**: `process.mainCpuPercentP95` > 30 during idle scenarios → background pollers
+  - **Main CPU**: `process.mainCpuPercentP95` > 30 during idle or panel-open probes → background pollers
 - UI segment waste: heavy refreshes, duplicate mounted panes, hidden pollers, repeated global status checks, or expensive dialog prefetches that are not needed for the action the user took
 - Read the code that owns the bottleneck. Form a hypothesis.
 
@@ -136,12 +151,23 @@ Legal moves (examples — not exhaustive):
 
 **Forbidden moves:**
 - Editing anything under `apps/desktop/src/main/services/perf/**`
-- Editing anything under `apps/desktop/src/renderer/perf/**`
-- Editing `scripts/run-perf-scenario.mjs` or `scripts/reset-perf-pass.sh`
+- Editing metrics plumbing under `apps/desktop/src/renderer/perf/harness/**`,
+  `apps/desktop/src/renderer/perf/markers.ts`, or
+  `apps/desktop/src/renderer/perf/webVitals.ts` to make results look better
+- Editing `scripts/run-perf-scenario.mjs` or `scripts/reset-perf-pass.sh` to
+  weaken measurement or setup
 - Editing test files to make them pass
 - Disabling polling/sync features outright (only debounce/throttle)
-- Removing UI features or hiding elements to bypass scenarios
-- Changing fitness weights or scenario definitions
+- Removing UI features or hiding elements to bypass measured workflows
+- Changing metric weights, summaries, or existing probes to mask a regression
+
+Allowed measurement moves:
+- Add new tab-specific scenarios/probes under `apps/desktop/src/renderer/perf/scenarios/`
+  when they drive a real UI-derived workflow.
+- Add scripts under `scripts/` or tests under the touched feature area to seed the
+  perf-pass repo or reproduce an expensive UI path.
+- Expand a probe to cover a newly discovered tab surface, provided it remains
+  honest about what it measures.
 
 ### 3. Apply the change
 One commit, focused. Conventional message: `perf(<tab>): <one-line description>`.
@@ -155,14 +181,27 @@ npm --prefix apps/desktop run test -- --run path/to/affected.test.ts
 If tests fail: **revert** the commit (`git reset --hard HEAD~1`), do NOT count toward plateau, try a different change targeting the same or next bottleneck.
 
 ### 5. Measure
-First re-drive the same UI segment with the same markers and compare the IPC/render/memory delta. Then re-run the smallest scenario subset that covers the changed surface. Re-run all scenarios before declaring the run done.
+First re-drive the same UI segment with the same markers and compare the
+IPC/render/memory/load/CPU delta. Then re-run the smallest probe, scenario, or
+test that covers the changed surface. Before declaring the run done, re-run the
+final measured sweep that covers the audited surfaces; this can be a mix of real
+UI markers, custom probes, and existing scenarios.
 
 ### 6. Smoke gate
-For each scenario's summary, check `summary.scenarios.<id>.ok === true` and `smokeFailures.length === 0`. If any scenario failed smoke: **revert**, increment plateau counter.
+For each probe or scenario that writes a summary, check
+`summary.scenarios.<id>.ok === true` when present and `smokeFailures.length === 0`.
+For tests, require the targeted tests to pass. If the workflow breaks or smoke
+fails because of the code change: **revert**, increment the missed-attempt
+counter.
 
 ### 7. Decide
-- Improvement threshold: `new_fitness < best_fitness * 0.98` (≥2% better)
-- If improvement: **keep**. Update best. Reset plateau to 0. Amend the commit message with `fitness <old> → <new>`.
+- Improvement threshold: at least one primary metric for the bottleneck improves
+  by ≥2% without regressing the surrounding smoke metrics. Use the most relevant
+  metric for the workflow (duration, CPU p95, heap, long tasks, IPC count/p95,
+  render cost), not a mandatory global fitness score.
+- If improvement: **keep**. Update best. Reset plateau to 0. Amend the commit
+  message with the metric delta, e.g. `work open 1840ms → 1210ms` or
+  `ipc p95 160ms → 70ms`.
 - Else: **revert** (`git reset --hard HEAD~1`). Plateau += 1.
 
 ### 8. Soft iteration cap
@@ -171,7 +210,8 @@ If this iteration has been running >15 minutes wall clock (build loops, scenario
 ## Termination
 
 When stop condition hits:
-1. Print run summary: starting fitness, final fitness, %-improvement, list of kept commits (sha + message + fitness delta).
+1. Print run summary: baseline metrics, final metrics, %-improvement for each
+   kept bottleneck, and list of kept commits (sha + message + metric delta).
 2. Suggest the user merge the working branch into main via PR.
 3. Proceed to codification (next section).
 
@@ -185,13 +225,22 @@ Read all kept commits (`git log --oneline perf-baseline-<tab>-... HEAD`). For ea
   - **Why it helped**: which bottleneck it addressed, with the metric delta from the summary.
   - **How to recognize when to apply**: signs in future code that the same pattern is needed.
   - **Anti-pattern to avoid**: what NOT to do.
-  - **Verification**: which scenario + metric this affected.
+  - **Verification**: which UI segment, probe, scenario, or test metric this affected.
 - Preserve proven history, but keep the top of the file readable as best practices for future code changes.
 
 ## Notes on agent behavior
 
 - **Stay focused.** One bottleneck at a time. Resist the urge to "while I'm here also fix..." — that breaks attribution.
-- **Trust the metric.** If fitness went up but you "feel" the code is better, revert anyway. The metric is the contract.
-- **The perf-pass repo is your sandbox.** Inside it, you may create lanes, open chats, push/pull throwaway branches, run automations, stash changes, and delete fixtures when needed to exercise ADE. Scenarios are guardrails; real UI audit coverage is required before you call the tab optimized. You may extend scenarios ONLY by adding new scenarios in `apps/desktop/src/renderer/perf/scenarios/<tab>.ts` — never by editing existing ones.
-- **Codex model only.** If a scenario invokes an in-ADE chat, that chat uses the `ADE_MODEL_OVERRIDE` model (gpt-5-codex by default). Scenarios opting into Claude must declare `requiresClaude: true` and you must set `ADE_PERF_ALLOW_CLAUDE=1` for them.
+- **Trust the metric.** If the relevant measured workflow does not improve, revert
+  even when the code feels cleaner. The metric-backed user workflow is the
+  contract.
+- **The perf-pass repo is your sandbox.** Inside it, you may create lanes, open
+  chats, push/pull throwaway branches, run automations, stash changes, and delete
+  fixtures when needed to exercise ADE. Purpose-built probes are encouraged when
+  fixed scenarios do not cover the tab. Real UI audit coverage is required before
+  you call the tab optimized.
+- **Codex model preference.** If a probe or in-ADE action invokes chat/agent work,
+  use the `ADE_MODEL_OVERRIDE` model (gpt-5-codex by default) for the majority of
+  chat work and for deep performance-fix work. Other configured providers may be
+  sampled for comparison when the user asks for broad coverage.
 - **Concurrency**: only one perf run on the machine at a time. If `~/.ade/perf-runs/` contains a `<runId>/lock` file with a live pid, refuse to start.
