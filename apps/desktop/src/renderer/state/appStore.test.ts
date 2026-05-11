@@ -407,11 +407,17 @@ describe("appStore", () => {
       });
     });
 
-    it("refreshLanes preserves compatible lane snapshots during lightweight refresh", async () => {
+    it("refreshLanes syncs retained snapshots to statusless lane metadata during lightweight refresh", async () => {
       useAppStore.setState({
         laneSnapshots: [
           {
-            lane: { id: "lane-1", name: "Lane 1" },
+            lane: {
+              id: "lane-1",
+              name: "Lane 1",
+              color: "#0f172a",
+              status: { dirty: true },
+              parentStatus: { ahead: 1 },
+            },
             runtime: {
               bucket: "running",
               runningCount: 1,
@@ -442,13 +448,22 @@ describe("appStore", () => {
           },
         ] as any[],
       });
-      (window.ade.lanes.list as any).mockResolvedValueOnce([{ id: "lane-1", name: "Lane 1" }] as any[]);
+      (window.ade.lanes.list as any).mockResolvedValueOnce([
+        { id: "lane-1", name: "Lane 1", color: "#7dd3fc" },
+      ] as any[]);
 
       await useAppStore.getState().refreshLanes({ includeStatus: false });
 
+      expect(window.ade.lanes.listSnapshots).not.toHaveBeenCalled();
       expect(useAppStore.getState().laneSnapshots).toEqual([
         expect.objectContaining({
-          lane: expect.objectContaining({ id: "lane-1" }),
+          lane: expect.objectContaining({
+            id: "lane-1",
+            color: "#7dd3fc",
+            status: { dirty: true },
+            parentStatus: { ahead: 1 },
+          }),
+          runtime: expect.objectContaining({ bucket: "running" }),
         }),
       ]);
     });

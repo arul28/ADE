@@ -1026,7 +1026,6 @@ export const useAppStore = create<AppState>((set, get) => ({
           prev.laneSnapshots
             .filter((snapshot) => allowed.has(snapshot.lane.id))
             .map((snapshot) => {
-              if (!currentRequest.includeStatus) return snapshot;
               const nextLane = lanesById.get(snapshot.lane.id);
               return nextLane ? { ...snapshot, lane: nextLane } : snapshot;
             });
