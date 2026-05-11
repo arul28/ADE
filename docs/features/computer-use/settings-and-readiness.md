@@ -1,14 +1,16 @@
 # Settings and Readiness
 
-The `Settings > Computer Use` panel is the operator's entry point for configuring and monitoring the computer-use control plane. It shows backend readiness, policy, and a capability matrix mapping proof kinds to backends. Readiness detection runs on demand and is cached in the broker's backend status.
+This doc describes the pre-rebuild `Settings > Computer Use` panel and its policy/readiness model. That panel was removed with the proof rebuild; readiness now appears inside the broader `IntegrationsSettingsSection`, and `ComputerUsePolicy` (with its `off`/`auto`/`enabled` modes, `allowLocalFallback`, etc.) is gone. Use this doc for historical context on what the matrix used to express.
+
+The active broker still runs inside the runtime daemon that owns the project (`computerUseArtifactBrokerService.getBackendStatus` reflects backends installed on the runtime host's `PATH`).
 
 ## Source file map
 
-- `apps/desktop/src/main/services/computerUse/controlPlane.ts` — `buildComputerUseSettingsSnapshot`, `buildGhostOsCheck`, `buildCapabilityMatrix`, `selectPreferredBackend`, `summarizePolicy`, `buildComputerUseOwnerSnapshot`.
-- `apps/desktop/src/main/services/computerUse/localComputerUse.ts` — `getLocalComputerUseCapabilities`, `getGhostDoctorProcessHealth`, `parseGhostDoctorProcessHealth`.
+- `apps/desktop/src/main/services/computerUse/controlPlane.ts` — pre-rebuild `buildComputerUseSettingsSnapshot`, `buildGhostOsCheck`, `buildCapabilityMatrix`, `selectPreferredBackend`, `summarizePolicy`. Only `buildComputerUseOwnerSnapshot` is still wired into the live UI.
+- `apps/desktop/src/main/services/computerUse/localComputerUse.ts` — `getLocalComputerUseCapabilities`, `createComputerUseArtifactPath`.
 - `apps/desktop/src/main/services/computerUse/computerUseArtifactBrokerService.ts` — `getBackendStatus`.
-- `apps/desktop/src/main/services/ipc/registerIpc.ts` — IPC surface for `computerUse:*` channels.
-- Renderer Settings surface — `apps/desktop/src/renderer/components/settings/` (look for `ComputerUsePanel.tsx` or similar).
+- `apps/desktop/src/main/services/ipc/registerIpc.ts` — IPC surface; channels live under `ade.proof.*` today (the `computerUse:*` namespace was renamed during the rebuild).
+- Renderer Settings surface — `apps/desktop/src/renderer/components/settings/IntegrationsSettingsSection.tsx` (the dedicated `ComputerUsePanel.tsx` was deleted).
 
 ## Settings snapshot
 

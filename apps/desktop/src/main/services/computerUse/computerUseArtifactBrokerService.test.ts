@@ -117,6 +117,32 @@ describe("computerUseArtifactBrokerService", () => {
     ]);
   });
 
+  it("reads image previews only from the project artifact directory", async () => {
+    const missionService = { addArtifact: vi.fn() } as any;
+    const orchestratorService = { registerArtifact: vi.fn() } as any;
+    const broker = createComputerUseArtifactBrokerService({
+      db,
+      projectId: "project-1",
+      projectRoot,
+      missionService,
+      orchestratorService,
+      logger: createLogger(),
+    });
+    const artifactDir = path.join(projectRoot, ".ade", "artifacts", "computer-use");
+    fs.mkdirSync(artifactDir, { recursive: true });
+    const artifactPath = path.join(artifactDir, "preview.png");
+    const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+    fs.writeFileSync(artifactPath, bytes);
+
+    await expect(broker.readArtifactPreview({
+      uri: "ade-artifact://project/.ade/artifacts/computer-use/preview.png",
+    })).resolves.toBe(`data:image/png;base64,${bytes.toString("base64")}`);
+
+    const outsidePath = path.join(projectRoot, "outside.png");
+    fs.writeFileSync(outsidePath, bytes);
+    await expect(broker.readArtifactPreview({ uri: outsidePath })).resolves.toBeNull();
+  });
+
   it("rejects local file imports outside allowed artifact roots", () => {
     const missionService = { addArtifact: vi.fn() } as any;
     const orchestratorService = { registerArtifact: vi.fn() } as any;

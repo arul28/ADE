@@ -216,7 +216,6 @@ The 40-45 services currently in `apps/desktop/src/main/services/` that are not y
 - `services/automation/*` (automationSecretService, automationIngressService — bring into ade-cli)
 - `services/missions/missionPreflightService.ts`, `sessionDeltaService.ts`
 - `services/memory/embeddingService.ts`, `embeddingWorkerService.ts`, `hybridSearchService.ts`, `memoryLifecycleService.ts`, `memoryBriefingService.ts`, `missionMemoryLifecycleService.ts`, `episodicSummaryService.ts`, `humanWorkDigestService.ts`, `proceduralLearningService.ts`, `knowledgeCaptureService.ts`, `skillRegistryService.ts` — desktop-only in v1 (see D16); not moved, but their interfaces should be defined so the desktop can keep them while remote runtimes simply don't expose memory RPC methods.
-- `services/cto/openclawBridgeService.ts`
 - `services/github/githubPollingService.ts`
 - `services/usage/usageTrackingService.ts`, `services/budget/budgetCapService.ts`
 - `services/agents/agentToolsService.ts`
@@ -440,7 +439,7 @@ const stdioTransport: JsonRpcTransport = {
 startJsonRpcServer(handler, stdioTransport);
 ```
 
-Plus a single-runtime constraint: `ade rpc --stdio` boots a runtime in-process for this session (no daemon, no service install). Disconnects → process exits. This is correct because each SSH connection wants its own runtime instance.
+Implementation note: the current `ade rpc --stdio` transport is a stdio bridge to the per-machine daemon. If the daemon is missing, it starts `ade serve`, then proxies JSON-RPC over the SSH exec channel. Disconnecting the SSH channel closes only that bridge; the daemon remains alive so missions, project registry state, and mobile pairing can survive desktop/client exits. This supersedes the earlier single in-process runtime sketch and matches the Phase 2 daemon persistence requirement.
 
 #### 3.2 SSH transport on the desktop side
 

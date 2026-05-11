@@ -1254,7 +1254,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
       title: z.string().optional(),
       reportsTo: z.string().nullable().optional(),
       capabilities: z.array(z.string()).optional(),
-      adapterType: z.enum(["claude-local", "codex-local", "openclaw-webhook", "process"]).default("claude-local"),
+      adapterType: z.enum(["claude-local", "codex-local", "process"]).default("claude-local"),
       modelId: z.string().optional(),
       budgetMonthlyCents: z.number().int().nonnegative().optional(),
     }),

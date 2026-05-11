@@ -10,6 +10,22 @@ import { getGitHubTokenAccessState, parseGitHubScopeHeaders } from "../../../sha
 import { nowIso, asString } from "../shared/utils";
 
 const AUTH_STORE_FILE_NAME = "github-token.v1.bin";
+const GITHUB_API_TIMEOUT_MS = 20_000;
+
+async function fetchGitHub(input: string | URL, init: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), GITHUB_API_TIMEOUT_MS);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error("GitHub API request timed out. Check network access on this machine.");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 function detectGitHubTokenType(token: string): GitHubStatus["tokenType"] {
   if (token.startsWith("github_pat_")) return "fine-grained";
@@ -195,7 +211,7 @@ export function createGithubService({
   };
 
   const validateToken = async (token: string): Promise<{ userLogin: string | null; scopes: string[]; tokenType: GitHubStatus["tokenType"] }> => {
-    const response = await fetch("https://api.github.com/user", {
+    const response = await fetchGitHub("https://api.github.com/user", {
       method: "GET",
       headers: {
         accept: "application/vnd.github+json",
@@ -229,7 +245,7 @@ export function createGithubService({
     repo: GitHubRepoRef,
   ): Promise<{ ok: boolean; error: string | null }> => {
     try {
-      const response = await fetch(
+      const response = await fetchGitHub(
         `https://api.github.com/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}`,
         {
           method: "GET",
@@ -290,7 +306,7 @@ export function createGithubService({
       }
     }
 
-    const response = await fetch(url.toString(), {
+    const response = await fetchGitHub(url.toString(), {
       method: args.method,
       headers,
       body: args.body != null ? JSON.stringify(args.body) : undefined

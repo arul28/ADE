@@ -65,3 +65,5 @@ ios-signing/
 /.codex-derived-data
 package-lock.json
 !/apps/ade-code/package-lock.json
+/apps/desktop/release-alpha
+apps/desktop/resources/runtime/ade-*

@@ -15,6 +15,7 @@ import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, cardStyle, outlineButton, pr
 import { ConfirmDialog, PromptDialog, useConfirmDialog, usePromptDialog } from "../shared/InlineDialogs";
 import type { PhaseProfile, PhaseCard } from "../../../shared/types";
 import { PhaseCardEditor } from "../missions/PhaseCardEditor";
+import { useAppStore } from "../../state/appStore";
 
 const SECTIONS = [
   { id: "general", label: "General", icon: GearSix },
@@ -448,10 +449,16 @@ function PhaseProfilesSection() {
 export function SettingsPage() {
   const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
+  const projectBinding = useAppStore((s) => s.projectBinding);
+  const memoryAvailable = projectBinding?.kind !== "remote";
+  const visibleSections = memoryAvailable
+    ? SECTIONS
+    : SECTIONS.filter((entry) => entry.id !== "memory");
   const tabParam = searchParams.get("tab");
-  const canonicalTab = tabParam && SECTIONS.some((s) => s.id === tabParam)
+  const canonicalTab = tabParam && visibleSections.some((s) => s.id === tabParam)
     ? (tabParam as SectionId)
     : tabParam && TAB_ALIASES[tabParam]
+      && (TAB_ALIASES[tabParam] !== "memory" || memoryAvailable)
       ? TAB_ALIASES[tabParam]
       : null;
   const validTab = canonicalTab;
@@ -463,7 +470,10 @@ export function SettingsPage() {
     if (validTab && validTab !== section) {
       setSection(validTab);
     }
-  }, [validTab, section]);
+    if (!memoryAvailable && section === "memory") {
+      setSection("general");
+    }
+  }, [memoryAvailable, validTab, section]);
 
   useEffect(() => {
     if (!tabParam || !canonicalTab || tabParam === canonicalTab) return;
@@ -508,7 +518,7 @@ export function SettingsPage() {
           SETTINGS
         </div>
 
-        {SECTIONS.map((s, i) => {
+        {visibleSections.map((s, i) => {
           const isActive = section === s.id;
           const isHovered = hoveredId === s.id;
 

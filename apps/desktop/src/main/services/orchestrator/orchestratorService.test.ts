@@ -6195,8 +6195,8 @@ describe("orchestratorService", () => {
         transcriptPath,
         [
           "ADE_MISSION_ID='mission-1' ADE_RUN_ID='run-1' exec claude --model 'sonnet' --permission-mode 'default'",
-          "/Users/admin/.zshrc:3: no such file or directory: /Users/admin/.openclaw/get-codex-token.sh",
-          "/Users/admin/.openclaw/completions/openclaw.zsh:3803: command not found: compdef",
+          "/Users/admin/.zshrc:3: no such file or directory: /Users/admin/.legacy-cli/get-codex-token.sh",
+          "/Users/admin/.legacy-cli/completions/legacy.zsh:3803: command not found: compdef",
           "admin@Mac test-10-f4bb12de %",
           "-p \"$(cat '/Users/admin/Projects/ADE/.ade/orchestrator/worker-prompts/worker-123.txt')\"",
         ].join("\n"),

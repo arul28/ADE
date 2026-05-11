@@ -8,6 +8,8 @@ import type {
   AdePathEntry,
   AdeProjectSnapshot,
   AdeSyncAction,
+  ClearLocalAdeDataArgs,
+  ClearLocalAdeDataResult,
 } from "../../../shared/types";
 import { buildAdeGitignore, ADE_LAYOUT_DEFINITIONS, resolveAdeLayout, type AdeLayoutPaths } from "../../../shared/adeLayout";
 import type { Logger } from "../logging/logger";
@@ -74,10 +76,6 @@ const DEFAULT_CTO_IDENTITY = YAML.stringify(
       compactionThreshold: 0.7,
       preCompactionFlush: true,
       temporalDecayHalfLifeDays: 30,
-    },
-    openclawContextPolicy: {
-      shareMode: "filtered",
-      blockedCategories: ["secret", "token", "system_prompt"],
     },
     updatedAt: "1970-01-01T00:00:00.000Z",
   },
@@ -290,10 +288,6 @@ function repairLegacyPaths(paths: AdeLayoutPaths, actions: AdeSyncAction[]): voi
   moveIfExists(path.join(paths.adeDir, "log-bundles"), paths.logBundlesDir, "artifacts/log-bundles", actions);
   moveIfExists(path.join(paths.adeDir, "github"), paths.githubSecretsDir, "secrets/github", actions);
   moveIfExists(path.join(paths.adeDir, "api-keys.json"), path.join(paths.secretsDir, "api-keys.json"), "secrets/api-keys.json", actions);
-  moveIfExists(path.join(paths.ctoDir, "openclaw-history.json"), path.join(paths.cacheDir, "openclaw", "openclaw-history.json"), "cache/openclaw/openclaw-history.json", actions);
-  moveIfExists(path.join(paths.ctoDir, "openclaw-idempotency.json"), path.join(paths.cacheDir, "openclaw", "openclaw-idempotency.json"), "cache/openclaw/openclaw-idempotency.json", actions);
-  moveIfExists(path.join(paths.ctoDir, "openclaw-outbox.json"), path.join(paths.cacheDir, "openclaw", "openclaw-outbox.json"), "cache/openclaw/openclaw-outbox.json", actions);
-  moveIfExists(path.join(paths.ctoDir, "openclaw-routes.json"), path.join(paths.cacheDir, "openclaw", "openclaw-routes.json"), "cache/openclaw/openclaw-routes.json", actions);
 
   const legacyFiles = fs.existsSync(paths.adeDir) ? fs.readdirSync(paths.adeDir) : [];
   for (const fileName of legacyFiles) {
@@ -366,7 +360,6 @@ export function initializeOrRepairAdeProject(projectRoot: string, options: Repai
   ensureDir(paths.chatSessionsDir, "cache/chat-sessions", actions);
   ensureDir(paths.chatTranscriptsDir, "transcripts/chat", actions);
   ensureDir(paths.orchestratorCacheDir, "cache/orchestrator", actions);
-  ensureDir(path.join(paths.cacheDir, "openclaw"), "cache/openclaw", actions);
   ensureDir(paths.missionStateDir, "cache/mission-state", actions);
   ensureDir(paths.packsDir, "artifacts/packs", actions);
   ensureDir(paths.logBundlesDir, "artifacts/log-bundles", actions);
@@ -475,6 +468,28 @@ export function createAdeProjectService(args: AdeProjectServiceArgs) {
     return { changed: actions.length > 0, actions };
   };
 
+  const clearLocalData = (options: ClearLocalAdeDataArgs = {}): ClearLocalAdeDataResult => {
+    const clearedAt = new Date().toISOString();
+    const deletedPaths: string[] = [];
+
+    const rmrf = (absPath: string) => {
+      const resolved = path.resolve(absPath);
+      const allowedRoot = path.resolve(repair.paths.adeDir) + path.sep;
+      if (!resolved.startsWith(allowedRoot)) {
+        throw new Error("Refusing to delete outside .ade directory");
+      }
+      if (!fs.existsSync(resolved)) return;
+      fs.rmSync(resolved, { recursive: true, force: true });
+      deletedPaths.push(resolved);
+    };
+
+    if (options.packs) rmrf(repair.paths.artifactsDir);
+    if (options.logs) rmrf(repair.paths.logsDir);
+    if (options.transcripts) rmrf(repair.paths.transcriptsDir);
+
+    return { deletedPaths, clearedAt };
+  };
+
   const getSnapshot = (): AdeProjectSnapshot => {
     const configSnapshot = args.projectConfigService.get();
     const configValidation = configSnapshot.validation;
@@ -528,6 +543,7 @@ export function createAdeProjectService(args: AdeProjectServiceArgs) {
     getSnapshot,
     initializeOrRepair: () => initializeOrRepairAdeProject(args.projectRoot, { logger: args.logger, mode: "shared" }).cleanup,
     runIntegrityCheck,
+    clearLocalData,
     logIntegrityService,
   };
 }

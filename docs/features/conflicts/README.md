@@ -14,9 +14,30 @@ is projected into the surfaces where it matters:
 - **PRs**: blocked/manual rebase UIs, integration (merge-plan)
   pairwise simulation, issue resolution.
 
+## Where this runs
+
+Conflict prediction (`git merge-tree` runs), pairwise risk
+computation, the prediction job engine, AI proposal preparation /
+dispatch / apply, and external CLI resolver runs all execute inside
+the **active ADE runtime** for the window's project binding — the
+local daemon for local-bound windows or the SSH-attached remote
+runtime for remote-bound windows. The renderer routes
+`window.ade.conflicts.*` calls through
+`callProjectRuntimeActionOr("conflicts", …)` in
+`apps/desktop/src/preload/preload.ts` and only falls back to the
+desktop's in-process IPC handlers when no runtime is bound. Remote-
+bound windows therefore predict conflicts, run merge simulations,
+and execute external CLI resolvers on the remote machine — the
+worktrees and pack artifacts they read are on the remote host. The
+`ConflictPanel` and `RiskMatrix` renderer components only hold view
+state; they call out to the runtime for every prediction or
+proposal action.
+
 ## Source file map
 
-Main-process:
+Service files (canonical implementations live in the runtime daemon;
+the paths below are the desktop fallback targets that share the
+behavior):
 
 | File | Responsibility |
 |------|---------------|

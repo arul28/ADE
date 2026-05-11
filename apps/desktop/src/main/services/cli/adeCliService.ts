@@ -34,6 +34,7 @@ type DevCliEntry = {
 };
 
 const PATH_DELIMITER = path.delimiter;
+const VALID_COMMAND_NAME = /^ade(?:-[a-z0-9][a-z0-9-]*)?$/;
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
@@ -43,8 +44,8 @@ function pathDelimiter(): string {
   return process.platform === "win32" ? ";" : PATH_DELIMITER;
 }
 
-function commandFileName(): "ade" | "ade.cmd" {
-  return process.platform === "win32" ? "ade.cmd" : "ade";
+function commandFileName(commandName: string): string {
+  return process.platform === "win32" ? `${commandName}.cmd` : commandName;
 }
 
 function installerFileName(): "install-path.sh" | "install-path.cmd" {
@@ -62,6 +63,24 @@ function isExecutable(filePath: string | null | undefined): boolean {
   } catch {
     return false;
   }
+}
+
+function normalizePackageChannel(value: unknown): "alpha" | "beta" | null {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return normalized === "alpha" || normalized === "beta" ? normalized : null;
+}
+
+function sanitizeCommandName(value: unknown): string | null {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  return VALID_COMMAND_NAME.test(normalized) ? normalized : null;
+}
+
+function resolveCommandName(args: CreateAdeCliServiceArgs): string {
+  const explicit = sanitizeCommandName(args.env?.ADE_CLI_INSTALL_NAME ?? process.env.ADE_CLI_INSTALL_NAME);
+  if (explicit) return explicit;
+  const channel = normalizePackageChannel(args.env?.ADE_PACKAGE_CHANNEL ?? process.env.ADE_PACKAGE_CHANNEL);
+  if (channel) return `ade-${channel}`;
+  return args.isPackaged ? "ade" : "ade-dev";
 }
 
 function splitPathEntries(value: string | null | undefined): string[] {
@@ -268,6 +287,7 @@ function resolveDevCliEntry(devRepoRoot?: string | null): DevCliEntry | null {
 }
 
 function writeDevShim(args: {
+  commandName: string;
   cliJsPath: string;
   entryKind: "built" | "source";
   tsxBinPath: string | null;
@@ -277,7 +297,7 @@ function writeDevShim(args: {
   logger: Logger;
 }): { commandPath: string; binDir: string } | null {
   const binDir = path.join(args.userDataPath, "ade-cli", "bin");
-  const commandPath = path.join(binDir, commandFileName());
+  const commandPath = path.join(binDir, commandFileName(args.commandName));
   const script = process.platform === "win32" ? createWindowsShimScript(args) : [
     "#!/bin/sh",
     "set -eu",
@@ -348,16 +368,17 @@ function writeDevShim(args: {
   }
 }
 
-function resolveCliPaths(args: CreateAdeCliServiceArgs): ResolvedCliPaths {
+function resolveCliPaths(args: CreateAdeCliServiceArgs, commandName: string): ResolvedCliPaths {
   const resourcesPath = args.resourcesPath ? path.resolve(args.resourcesPath) : null;
   const packagedBinDir = resourcesPath ? path.join(resourcesPath, "ade-cli", "bin") : null;
-  const packagedCommandPath = packagedBinDir ? path.join(packagedBinDir, commandFileName()) : null;
+  const packagedCommandPath = packagedBinDir ? path.join(packagedBinDir, commandFileName(commandName)) : null;
+  const fallbackPackagedCommandPath = packagedBinDir && commandName !== "ade" ? path.join(packagedBinDir, commandFileName("ade")) : null;
   const packagedCliJsPath = resourcesPath ? path.join(resourcesPath, "ade-cli", "cli.cjs") : null;
   const packagedInstallerPath = resourcesPath ? path.join(resourcesPath, "ade-cli", installerFileName()) : null;
 
-  if (args.isPackaged && isExecutable(packagedCommandPath)) {
+  if (args.isPackaged && (isExecutable(packagedCommandPath) || isExecutable(fallbackPackagedCommandPath))) {
     return {
-      commandPath: packagedCommandPath,
+      commandPath: isExecutable(packagedCommandPath) ? packagedCommandPath : fallbackPackagedCommandPath,
       binDir: packagedBinDir,
       installerPath: isExecutable(packagedInstallerPath) ? packagedInstallerPath : null,
       cliJsPath: fs.existsSync(packagedCliJsPath ?? "") ? packagedCliJsPath : null,
@@ -368,6 +389,7 @@ function resolveCliPaths(args: CreateAdeCliServiceArgs): ResolvedCliPaths {
   const devCli = resolveDevCliEntry(args.devRepoRoot);
   if (devCli) {
     const shim = writeDevShim({
+      commandName,
       cliJsPath: devCli.cliPath,
       entryKind: devCli.entryKind,
       tsxBinPath: path.join(devCli.repoRoot, "apps", "ade-cli", "node_modules", ".bin", process.platform === "win32" ? "tsx.cmd" : "tsx"),
@@ -403,12 +425,12 @@ function homeDir(env: NodeJS.ProcessEnv = process.env): string {
   return env.HOME?.trim() || os.homedir();
 }
 
-function installTargetPath(env: NodeJS.ProcessEnv = process.env): string {
+function installTargetPath(commandName: string, env: NodeJS.ProcessEnv = process.env): string {
   if (process.platform === "win32") {
     const localAppData = env.LOCALAPPDATA?.trim() || path.join(homeDir(env), "AppData", "Local");
-    return path.join(localAppData, "ADE", "bin", "ade.cmd");
+    return path.join(localAppData, "ADE", "bin", `${commandName}.cmd`);
   }
-  return path.join(homeDir(env), ".local", "bin", "ade");
+  return path.join(homeDir(env), ".local", "bin", commandName);
 }
 
 type ShellProfile = { path: string; flavor: "posix" | "fish" };
@@ -454,6 +476,7 @@ function ensureUserBinOnShellPath(
 }
 
 function statusMessage(args: {
+  commandName: string;
   terminalInstalled: boolean;
   bundledAvailable: boolean;
   agentPathReady: boolean;
@@ -462,27 +485,27 @@ function statusMessage(args: {
 }): { message: string; nextAction: string | null } {
   if (args.terminalInstalled && args.agentPathReady) {
     return {
-      message: "The ade command is available to Terminal and ADE-launched agents.",
+      message: `The ${args.commandName} command is available to Terminal and ADE-launched agents.`,
       nextAction: null,
     };
   }
   if (args.agentPathReady && args.bundledAvailable) {
     return {
-      message: "ADE-launched agents can use ade. Terminal access is not installed yet.",
+      message: `ADE-launched agents can use ${args.commandName}. Terminal access is not installed yet.`,
       nextAction: args.installAvailable
-        ? "Install the ade command for Terminal access."
+        ? `Install the ${args.commandName} command for Terminal access.`
         : "Run npm link in apps/ade-cli for local development.",
     };
   }
   if (args.bundledAvailable) {
     return {
-      message: "The bundled ade command is present, but it is not on the agent PATH yet.",
+      message: `The bundled ${args.commandName} command is present, but it is not on the agent PATH yet.`,
       nextAction: "Restart ADE so new agent sessions receive the bundled CLI path.",
     };
   }
   return {
     message: args.isPackaged
-      ? "The bundled ade command is missing from this app build."
+      ? `The bundled ${args.commandName} command is missing from this app build.`
       : "The local ADE CLI build was not found.",
     nextAction: args.isPackaged
       ? "Reinstall or update ADE."
@@ -491,7 +514,8 @@ function statusMessage(args: {
 }
 
 export function createAdeCliService(args: CreateAdeCliServiceArgs) {
-  const resolved = resolveCliPaths(args);
+  const commandName = resolveCommandName(args);
+  const resolved = resolveCliPaths(args, commandName);
   const envSnapshot = args.env ?? process.env;
   const hostPathSnapshot = getPathEnvValue(envSnapshot);
 
@@ -513,16 +537,18 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
   };
 
   const getStatus = async (): Promise<AdeCliStatus> => {
-    const terminalCommandPath = resolveCommandOnPath("ade", hostPathSnapshot, envSnapshot);
-    const targetPath = installTargetPath(envSnapshot);
+    const terminalCommandPath = resolveCommandOnPath(commandName, hostPathSnapshot, envSnapshot);
+    const targetPath = installTargetPath(commandName, envSnapshot);
     const targetDir = path.dirname(targetPath);
     const terminalInstalled = Boolean(terminalCommandPath);
     const bundledAvailable = Boolean(resolved.commandPath && isExecutable(resolved.commandPath));
     const hostPathEnv: NodeJS.ProcessEnv = {};
     if (hostPathSnapshot) setPathEnvValue(hostPathEnv, hostPathSnapshot);
     const agentPathReady = bundledAvailable && pathContainsDir(getPathEnvValue(agentEnv(hostPathEnv)), resolved.binDir);
-    const installAvailable = resolved.source === "packaged" && isExecutable(resolved.installerPath);
+    const packagedInstallAvailable = resolved.source === "packaged" && isExecutable(resolved.installerPath);
+    const installAvailable = packagedInstallAvailable || (resolved.source === "dev" && bundledAvailable);
     const message = statusMessage({
+      commandName,
       terminalInstalled,
       bundledAvailable,
       agentPathReady,
@@ -531,7 +557,7 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
     });
 
     return {
-      command: "ade",
+      command: commandName,
       platform: process.platform,
       isPackaged: args.isPackaged,
       bundledAvailable,
@@ -550,36 +576,44 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
   };
 
   const installForUser = async (): Promise<AdeCliInstallResult> => {
-    if (!isExecutable(resolved.installerPath)) {
+    const installDevCommand = resolved.source === "dev" && isExecutable(resolved.commandPath);
+    if (!isExecutable(resolved.installerPath) && !installDevCommand) {
       const status = await getStatus();
       return {
         ok: false,
         message: args.isPackaged
           ? "The ADE CLI installer is missing from this app build."
-          : "Terminal install is available from packaged ADE builds. For local development, run npm link in apps/ade-cli.",
+          : "The local ADE CLI build was not found.",
         status,
       };
     }
 
     try {
-      const result = await spawnAsync(resolved.installerPath!, []);
-      if (result.status !== 0) {
-        throw new Error(result.stderr.trim() || result.stdout.trim() || "ADE CLI installer failed.");
+      if (installDevCommand) {
+        const targetPath = installTargetPath(commandName, envSnapshot);
+        fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+        fs.rmSync(targetPath, { force: true });
+        fs.symlinkSync(resolved.commandPath!, targetPath);
+      } else {
+        const result = await spawnAsync(resolved.installerPath!, []);
+        if (result.status !== 0) {
+          throw new Error(result.stderr.trim() || result.stdout.trim() || "ADE CLI installer failed.");
+        }
       }
-      const targetDir = path.dirname(installTargetPath(envSnapshot));
+      const targetDir = path.dirname(installTargetPath(commandName, envSnapshot));
       const profileResult = ensureUserBinOnShellPath(targetDir, envSnapshot);
       const status = await getStatus();
       return {
         ok: true,
         message: process.platform === "win32"
-          ? `Installed ade for Terminal access and added ${targetDir} to the user PATH if it was missing. Open a new terminal, then run: ade doctor.`
+          ? `Installed ${commandName} for Terminal access and added ${targetDir} to the user PATH if it was missing. Open a new terminal, then run: ${commandName} doctor.`
           : profileResult
           ? profileResult.modified
-            ? `Installed ade for Terminal access and added ${targetDir} to ${profileResult.profilePath}. Open a new terminal or source that file.`
-            : `Installed ade for Terminal access. PATH entry already present in ${profileResult.profilePath}; open a new terminal or source that file.`
+            ? `Installed ${commandName} for Terminal access and added ${targetDir} to ${profileResult.profilePath}. Open a new terminal or source that file.`
+            : `Installed ${commandName} for Terminal access. PATH entry already present in ${profileResult.profilePath}; open a new terminal or source that file.`
           : status.installTargetDirOnPath
-          ? "Installed ade for Terminal access."
-          : `Installed ade at ${status.installTargetPath}. Add ${path.dirname(status.installTargetPath)} to PATH if your shell cannot find it.`,
+          ? `Installed ${commandName} for Terminal access.`
+          : `Installed ${commandName} at ${status.installTargetPath}. Add ${path.dirname(status.installTargetPath)} to PATH if your shell cannot find it.`,
         status,
       };
     } catch (error) {

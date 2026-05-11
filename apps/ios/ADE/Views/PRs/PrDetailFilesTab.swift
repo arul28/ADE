@@ -37,7 +37,7 @@ struct PrFilesTab: View {
         ADEEmptyStateView(
           symbol: "doc.text.magnifyingglass",
           title: "No changed files",
-          message: "The host has not synced any file diff data for this PR yet."
+          message: "The machine has not synced any file diff data for this PR yet."
         )
       } else {
         LazyVStack(spacing: 14) {

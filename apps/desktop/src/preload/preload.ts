@@ -38,10 +38,15 @@ import type {
   AutomationSimulateRequest,
   AutomationSimulateResult,
   ReviewEventPayload,
+  ReviewFeedbackRecord,
   ReviewLaunchContext,
   ReviewListRunsArgs,
+  ReviewListSuppressionsArgs,
+  ReviewQualityReport,
+  ReviewRecordFeedbackArgs,
   ReviewRun,
   ReviewRunDetail,
+  ReviewSuppression,
   ReviewStartRunArgs,
   AdeActionRegistryEntry,
   AdeCliInstallResult,
@@ -119,13 +124,6 @@ import type {
   CtoGetLinearOAuthSessionArgs,
   CtoGetLinearOAuthSessionResult,
   CtoRunProjectScanResult,
-  CtoGetOpenclawStateResult,
-  CtoUpdateOpenclawConfigArgs,
-  CtoTestOpenclawConnectionArgs,
-  CtoTestOpenclawConnectionResult,
-  CtoListOpenclawMessagesArgs,
-  CtoListOpenclawMessagesResult,
-  CtoSendOpenclawMessageArgs,
   LinearConnectionStatus,
   CtoSetLinearOAuthClientArgs,
   LinearIngressEventRecord,
@@ -146,7 +144,6 @@ import type {
   CtoEnsureLinearWebhookArgs,
   CtoListLinearIngressEventsArgs,
   LinearWorkflowConfig,
-  OpenclawBridgeStatus,
   AddMissionArtifactArgs,
   AddMissionInterventionArgs,
   AutomationsEventPayload,
@@ -349,6 +346,7 @@ import type {
   ProjectConfigTrust,
   ProjectConfigValidationResult,
   ProjectInfo,
+  OpenProjectBinding,
   CreateProjectInput,
   CreateProjectResult,
   CloneProjectInput,
@@ -705,6 +703,19 @@ import type {
   MacosVmStopArgs,
   MacosVmTypeTextArgs,
   MacosVmWindowTarget,
+  RemoteRuntimeActionRequest,
+  RemoteRuntimeActionResult,
+  RemoteRuntimeBufferedEvent,
+  RemoteRuntimeConnectionSnapshot,
+  RemoteRuntimeConnectResult,
+  RemoteRuntimeDiscoveredMachine,
+  RemoteRuntimeEventNotificationPayload,
+  RemoteRuntimeLocalWorkCheckResult,
+  RemoteRuntimeProjectRecord,
+  RemoteRuntimeStreamEventsRequest,
+  RemoteRuntimeStreamEventsResult,
+  RemoteRuntimeTarget,
+  RemoteRuntimeTargetInput,
   ChatTerminalActiveForChatArgs,
   ChatTerminalListArgs,
   ChatTerminalReadArgs,
@@ -724,7 +735,10 @@ type ShortIpcCache<T> = {
   get: (opts?: { force?: boolean }) => Promise<T>;
 };
 
-function createShortIpcCache<T>(loader: () => Promise<T>, ttlMs: number): ShortIpcCache<T> {
+function createShortIpcCache<T>(
+  loader: () => Promise<T>,
+  ttlMs: number,
+): ShortIpcCache<T> {
   let value: T | undefined;
   let promise: Promise<T> | null = null;
   let expiresAt = 0;
@@ -842,39 +856,54 @@ const aiStatusCache = (() => {
   };
 
   const get = async (key: string): Promise<AiSettingsStatus> => {
-    const args = parseIpcCacheArgs<{ refreshOpenCodeInventory?: boolean }>(key, {});
+    const args = parseIpcCacheArgs<{ refreshOpenCodeInventory?: boolean }>(
+      key,
+      {},
+    );
     const wantsOpenCodeInventory = args.refreshOpenCodeInventory === true;
     const now = Date.now();
     if (
-      value !== undefined
-      && expiresAt > now
-      && (!wantsOpenCodeInventory || includesOpenCodeInventory)
+      value !== undefined &&
+      expiresAt > now &&
+      (!wantsOpenCodeInventory || includesOpenCodeInventory)
     ) {
       return value;
     }
     if (
-      promise
-      && (!wantsOpenCodeInventory || promiseIncludesOpenCodeInventory)
+      promise &&
+      (!wantsOpenCodeInventory || promiseIncludesOpenCodeInventory)
     ) {
       return promise;
     }
 
     promiseIncludesOpenCodeInventory = wantsOpenCodeInventory;
-    const request = ipcRenderer.invoke(IPC.aiGetStatus, {
-      refreshOpenCodeInventory: wantsOpenCodeInventory,
-    }).then((status: AiSettingsStatus) => {
-      if (promise === request) {
-        value = status;
-        expiresAt = Date.now() + 10_000;
-        includesOpenCodeInventory = wantsOpenCodeInventory;
-      }
-      return status;
-    }).finally(() => {
-      if (promise === request) {
-        promise = null;
-        promiseIncludesOpenCodeInventory = false;
-      }
-    });
+    const request = callProjectRuntimeActionOr(
+      "ai",
+      "getStatus",
+      {
+        args: {
+          refreshOpenCodeInventory: wantsOpenCodeInventory,
+        },
+      },
+      () =>
+        ipcRenderer.invoke(IPC.aiGetStatus, {
+          refreshOpenCodeInventory: wantsOpenCodeInventory,
+        }),
+    )
+      .then((status: AiSettingsStatus) => {
+        if (promise === request) {
+          value = status;
+          expiresAt = Date.now() + 10_000;
+          includesOpenCodeInventory = wantsOpenCodeInventory;
+        }
+        return status;
+      })
+      .finally(() => {
+        if (promise === request) {
+          promise = null;
+          promiseIncludesOpenCodeInventory = false;
+        }
+      });
     promise = request;
     return request;
   };
@@ -888,37 +917,61 @@ const githubStatusCache = createShortIpcCache<GitHubStatus>(
 );
 
 const lanesListCache = createKeyedShortIpcCache<LaneSummary[]>(
-  (key) => ipcRenderer.invoke(IPC.lanesList, parseIpcCacheArgs<ListLanesArgs>(key, {})),
+  (key) =>
+    ipcRenderer.invoke(
+      IPC.lanesList,
+      parseIpcCacheArgs<ListLanesArgs>(key, {}),
+    ),
   2_000,
 );
 
 const lanesListSnapshotsCache = createKeyedShortIpcCache<LaneListSnapshot[]>(
-  (key) => ipcRenderer.invoke(IPC.lanesListSnapshots, parseIpcCacheArgs<ListLanesArgs>(key, {})),
+  (key) =>
+    ipcRenderer.invoke(
+      IPC.lanesListSnapshots,
+      parseIpcCacheArgs<ListLanesArgs>(key, {}),
+    ),
   2_000,
 );
 
 const sessionDeltaCache = createKeyedShortIpcCache<SessionDeltaSummary | null>(
-  (sessionId) => ipcRenderer.invoke(IPC.sessionsGetDelta, { sessionId }),
+  (sessionId) =>
+    callProjectRuntimeActionOr(
+      "session",
+      "getDelta",
+      { args: { sessionId } },
+      () => ipcRenderer.invoke(IPC.sessionsGetDelta, { sessionId }),
+    ),
   1_000,
 );
 
-const agentChatSummaryCache = createKeyedShortIpcCache<AgentChatSessionSummary | null>(
-  (sessionId) => ipcRenderer.invoke(IPC.agentChatGetSummary, { sessionId }),
-  1_000,
-);
+const agentChatSummaryCache =
+  createKeyedShortIpcCache<AgentChatSessionSummary | null>(
+    (sessionId) => ipcRenderer.invoke(IPC.agentChatGetSummary, { sessionId }),
+    1_000,
+  );
 
 const iosSimulatorStatusCache = createShortIpcCache<IosSimulatorStatus>(
-  () => ipcRenderer.invoke(IPC.iosSimulatorGetStatus),
+  () =>
+    callProjectRuntimeActionOr("ios_simulator", "getStatus", {}, () =>
+      ipcRenderer.invoke(IPC.iosSimulatorGetStatus),
+    ),
   2_000,
 );
 
 const iosSimulatorDevicesCache = createShortIpcCache<IosSimulatorDevice[]>(
-  () => ipcRenderer.invoke(IPC.iosSimulatorListDevices),
+  () =>
+    callProjectRuntimeActionOr("ios_simulator", "listDevices", {}, () =>
+      ipcRenderer.invoke(IPC.iosSimulatorListDevices),
+    ),
   2_000,
 );
 
 const appControlStatusCache = createShortIpcCache<AppControlStatus>(
-  () => ipcRenderer.invoke(IPC.appControlGetStatus),
+  () =>
+    callProjectRuntimeActionOr("app_control", "getStatus", {}, () =>
+      ipcRenderer.invoke(IPC.appControlGetStatus),
+    ),
   1_000,
 );
 
@@ -927,18 +980,26 @@ const builtInBrowserStatusCache = createShortIpcCache<BuiltInBrowserStatus>(
   500,
 );
 
-const macosVmStatusCache = createKeyedShortIpcCache<MacosVmStatus>(
-  (key) => ipcRenderer.invoke(IPC.macosVmGetStatus, parseIpcCacheArgs<MacosVmStatusArgs>(key, {})),
-  750,
-);
+const macosVmStatusCache = createKeyedShortIpcCache<MacosVmStatus>((key) => {
+  const args = parseIpcCacheArgs<MacosVmStatusArgs>(key, {});
+  return callProjectRuntimeActionOr("macos_vm", "getStatus", { args }, () =>
+    ipcRenderer.invoke(IPC.macosVmGetStatus, args),
+  );
+}, 750);
 
-const computerUseOwnerSnapshotCache = createKeyedShortIpcCache<ComputerUseOwnerSnapshot>(
-  (key) => ipcRenderer.invoke(
-    IPC.computerUseGetOwnerSnapshot,
-    parseIpcCacheArgs<ComputerUseOwnerSnapshotArgs>(key, {} as ComputerUseOwnerSnapshotArgs),
-  ),
-  2_000,
-);
+const computerUseOwnerSnapshotCache =
+  createKeyedShortIpcCache<ComputerUseOwnerSnapshot>((key) => {
+    const args = parseIpcCacheArgs<ComputerUseOwnerSnapshotArgs>(
+      key,
+      {} as ComputerUseOwnerSnapshotArgs,
+    );
+    return callProjectRuntimeActionOr(
+      "computer_use_artifacts",
+      "getOwnerSnapshot",
+      { args },
+      () => ipcRenderer.invoke(IPC.computerUseGetOwnerSnapshot, args),
+    );
+  }, 2_000);
 
 const imageDataUrlCache = createKeyedShortIpcCache<{ dataUrl: string }>(
   (path) => ipcRenderer.invoke(IPC.appGetImageDataUrl, { path }),
@@ -951,14 +1012,1210 @@ const projectIconCache = createKeyedShortIpcCache<ProjectIcon>(
 );
 
 const diffChangesCache = createKeyedShortIpcCache<DiffChanges>(
-  (key) => ipcRenderer.invoke(IPC.diffGetChanges, parseIpcCacheArgs<GetDiffChangesArgs>(key, {} as GetDiffChangesArgs)),
+  (key) =>
+    ipcRenderer.invoke(
+      IPC.diffGetChanges,
+      parseIpcCacheArgs<GetDiffChangesArgs>(key, {} as GetDiffChangesArgs),
+    ),
   2_000,
 );
 
 const gitBranchesCache = createKeyedShortIpcCache<GitBranchSummary[]>(
-  (key) => ipcRenderer.invoke(IPC.gitListBranches, parseIpcCacheArgs<GitListBranchesArgs>(key, {} as GitListBranchesArgs)),
+  (key) =>
+    ipcRenderer.invoke(
+      IPC.gitListBranches,
+      parseIpcCacheArgs<GitListBranchesArgs>(key, {} as GitListBranchesArgs),
+    ),
   2_000,
 );
+
+const allowLocalRuntimeFallback =
+  process.env.ADE_LOCAL_RUNTIME_FALLBACK !== "0" &&
+  (
+    process.env.ADE_LOCAL_RUNTIME_FALLBACK === "1" ||
+    process.env.ADE_DISABLE_LOCAL_RUNTIME_DAEMON === "1" ||
+    process.env.ADE_PACKAGE_CHANNEL === "alpha"
+  );
+
+function isSafeLocalRuntimeFallbackError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    /\b(ECONNREFUSED|ECONNRESET|EPIPE|ENOENT|ETIMEDOUT)\b/i.test(message) ||
+    /Local runtime daemon is not available/i.test(message) ||
+    /ADE service connection (?:closed|failed)/i.test(message) ||
+    /Timed out connecting to ADE service socket/i.test(message) ||
+    /Unsupported database value/i.test(message) ||
+    /UNIQUE constraint failed: process_definitions\.id/i.test(message) ||
+    /no such function: crsql_internal_sync_bit/i.test(message) ||
+    /database is not open/i.test(message)
+  );
+}
+
+let currentProjectBinding: OpenProjectBinding | null = null;
+let projectBindingGeneration = 0;
+
+function rememberProjectBinding(binding: OpenProjectBinding | null): void {
+  const previousKey = currentProjectBinding?.key ?? null;
+  const nextKey = binding?.key ?? null;
+  currentProjectBinding = binding;
+  if (previousKey !== nextKey) {
+    projectBindingGeneration += 1;
+    resetRemoteRuntimeEventDedup(nextKey);
+  }
+  if (binding?.kind === "remote" || binding?.kind === "local") {
+    ensureRemoteRuntimeEventPump();
+  }
+}
+
+async function getRemoteProjectBinding(): Promise<Extract<
+  OpenProjectBinding,
+  { kind: "remote" }
+> | null> {
+  if (currentProjectBinding) {
+    return currentProjectBinding.kind === "remote"
+      ? currentProjectBinding
+      : null;
+  }
+  const session = (await ipcRenderer.invoke(IPC.appGetWindowSession)) as {
+    binding?: OpenProjectBinding | null;
+  } | null;
+  rememberProjectBinding(session?.binding ?? null);
+  return session?.binding?.kind === "remote" ? session.binding : null;
+}
+
+async function getLocalProjectBinding(): Promise<Extract<
+  OpenProjectBinding,
+  { kind: "local" }
+> | null> {
+  if (currentProjectBinding) {
+    return currentProjectBinding.kind === "local"
+      ? currentProjectBinding
+      : null;
+  }
+  const session = (await ipcRenderer.invoke(IPC.appGetWindowSession)) as {
+    binding?: OpenProjectBinding | null;
+  } | null;
+  rememberProjectBinding(session?.binding ?? null);
+  return session?.binding?.kind === "local" ? session.binding : null;
+}
+
+async function getProjectRuntimeBinding(): Promise<OpenProjectBinding | null> {
+  if (currentProjectBinding) return currentProjectBinding;
+  const session = (await ipcRenderer.invoke(IPC.appGetWindowSession)) as {
+    binding?: OpenProjectBinding | null;
+  } | null;
+  rememberProjectBinding(session?.binding ?? null);
+  return session?.binding ?? null;
+}
+
+async function callRemoteProjectActionIfBound<T>(
+  domain: string,
+  action: string,
+  request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
+): Promise<{ handled: true; result: T } | { handled: false }> {
+  const binding = await getRemoteProjectBinding();
+  if (!binding) return { handled: false };
+  const response = (await ipcRenderer.invoke(IPC.remoteRuntimeCallAction, {
+    id: binding.targetId,
+    projectId: binding.projectId,
+    request: { domain, action, ...request },
+  })) as RemoteRuntimeActionResult;
+  return { handled: true, result: response.result as T };
+}
+
+async function callLocalProjectActionIfBound<T>(
+  domain: string,
+  action: string,
+  request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
+): Promise<{ handled: true; result: T } | { handled: false }> {
+  const binding = await getLocalProjectBinding();
+  if (!binding) return { handled: false };
+  try {
+    const response = (await ipcRenderer.invoke(IPC.localRuntimeCallAction, {
+      request: { domain, action, ...request },
+    })) as RemoteRuntimeActionResult;
+    return { handled: true, result: response.result as T };
+  } catch (error) {
+    if (!allowLocalRuntimeFallback || !isSafeLocalRuntimeFallbackError(error)) {
+      throw error;
+    }
+    console.warn(
+      "Local ADE service action failed; using in-process fallback.",
+      error,
+    );
+    return { handled: false };
+  }
+}
+
+async function callProjectRuntimeActionIfBound<T>(
+  domain: string,
+  action: string,
+  request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
+): Promise<{ handled: true; result: T } | { handled: false }> {
+  const remote = await callRemoteProjectActionIfBound<T>(
+    domain,
+    action,
+    request,
+  );
+  if (remote.handled) return remote;
+  return callLocalProjectActionIfBound<T>(domain, action, request);
+}
+
+async function callProjectRuntimeActionOr<T>(
+  domain: string,
+  action: string,
+  request: Omit<RemoteRuntimeActionRequest, "domain" | "action">,
+  local: () => Promise<T>,
+): Promise<T> {
+  const runtime = await callProjectRuntimeActionIfBound<T>(
+    domain,
+    action,
+    request,
+  );
+  return runtime.handled ? runtime.result : local();
+}
+
+async function callRemoteProjectSyncIfBound<T>(
+  method: string,
+  params: Record<string, unknown> = {},
+): Promise<{ handled: true; result: T } | { handled: false }> {
+  const binding = await getRemoteProjectBinding();
+  if (!binding) return { handled: false };
+  const result = (await ipcRenderer.invoke(IPC.remoteRuntimeCallSync, {
+    id: binding.targetId,
+    projectId: binding.projectId,
+    method,
+    params,
+  })) as T;
+  return { handled: true, result };
+}
+
+async function callLocalProjectSyncIfBound<T>(
+  method: string,
+  params: Record<string, unknown> = {},
+): Promise<{ handled: true; result: T } | { handled: false }> {
+  const binding = await getLocalProjectBinding();
+  if (!binding) return { handled: false };
+  try {
+    const result = (await ipcRenderer.invoke(IPC.localRuntimeCallSync, {
+      method,
+      params,
+    })) as T;
+    return { handled: true, result };
+  } catch (error) {
+    if (!allowLocalRuntimeFallback || !isSafeLocalRuntimeFallbackError(error)) {
+      throw error;
+    }
+    console.warn(
+      "Local ADE service sync call failed; using in-process fallback.",
+      error,
+    );
+    return { handled: false };
+  }
+}
+
+async function callProjectRuntimeSyncOr<T>(
+  method: string,
+  params: Record<string, unknown>,
+  local: () => Promise<T>,
+): Promise<T> {
+  const remote = await callRemoteProjectSyncIfBound<T>(method, params);
+  if (remote.handled) return remote.result;
+  const localRuntime = await callLocalProjectSyncIfBound<T>(method, params);
+  return localRuntime.handled ? localRuntime.result : local();
+}
+
+const remoteAgentChatEventCallbacks = new Set<
+  (payload: AgentChatEventEnvelope) => void
+>();
+const remoteSessionChangedCallbacks = new Set<
+  (payload: TerminalSessionChangedEvent) => void
+>();
+const remoteLaneDeleteEventCallbacks = new Set<
+  (payload: LaneDeleteEvent) => void
+>();
+const remoteLaneRebaseEventCallbacks = new Set<
+  (payload: RebaseRunEventPayload) => void
+>();
+const remoteLaneRebaseSuggestionsEventCallbacks = new Set<
+  (payload: RebaseSuggestionsEventPayload) => void
+>();
+const remoteLaneAutoRebaseEventCallbacks = new Set<
+  (payload: AutoRebaseEventPayload) => void
+>();
+const remoteLaneEnvEventCallbacks = new Set<
+  (payload: LaneEnvInitEvent) => void
+>();
+const remoteLanePortEventCallbacks = new Set<
+  (payload: PortAllocationEvent) => void
+>();
+const remoteLaneProxyEventCallbacks = new Set<
+  (payload: LaneProxyEvent) => void
+>();
+const remoteLaneOAuthEventCallbacks = new Set<
+  (payload: OAuthRedirectEvent) => void
+>();
+const remoteLaneDiagnosticsEventCallbacks = new Set<
+  (payload: RuntimeDiagnosticsEvent) => void
+>();
+const remotePtyDataEventCallbacks = new Set<(payload: PtyDataEvent) => void>();
+const remotePtyExitEventCallbacks = new Set<(payload: PtyExitEvent) => void>();
+const remoteProcessEventCallbacks = new Set<(payload: ProcessEvent) => void>();
+const remoteTestEventCallbacks = new Set<(payload: TestEvent) => void>();
+const remoteFileChangeEventCallbacks = new Set<
+  (payload: FileChangeEvent) => void
+>();
+const remotePrEventCallbacks = new Set<(payload: PrEventPayload) => void>();
+const remotePrAiResolutionEventCallbacks = new Set<
+  (payload: PrAiResolutionEventPayload) => void
+>();
+const remoteProjectStateEventCallbacks = new Set<
+  (payload: AdeProjectEvent) => void
+>();
+const remoteMissionEventCallbacks = new Set<
+  (payload: MissionsEventPayload) => void
+>();
+const remoteOrchestratorEventCallbacks = new Set<
+  (payload: OrchestratorRuntimeEvent) => void
+>();
+const remoteOrchestratorThreadEventCallbacks = new Set<
+  (payload: OrchestratorThreadEvent) => void
+>();
+const remoteDagMutationEventCallbacks = new Set<
+  (payload: DagMutationEvent) => void
+>();
+const remoteSyncStatusEventCallbacks = new Set<
+  (payload: SyncStatusEventPayload) => void
+>();
+const remoteReviewEventCallbacks = new Set<
+  (payload: ReviewEventPayload) => void
+>();
+let remoteRuntimeEventTimer: ReturnType<typeof setTimeout> | null = null;
+let remoteRuntimeEventInFlight = false;
+let remoteRuntimeEventCursor = 0;
+let remoteRuntimeEventBindingKey: string | null = null;
+let remoteRuntimeEventGeneration = -1;
+let remoteRuntimeEventStartedAtMs = 0;
+let remoteRuntimeSeenEventBindingKey: string | null = null;
+const remoteRuntimeSeenEventIds = new Set<number>();
+
+function resetRemoteRuntimeEventDedup(bindingKey: string | null): void {
+  remoteRuntimeSeenEventBindingKey = bindingKey;
+  remoteRuntimeSeenEventIds.clear();
+}
+
+function shouldDispatchRemoteRuntimeEvent(
+  bindingKey: string,
+  event: RemoteRuntimeBufferedEvent,
+): boolean {
+  if (remoteRuntimeSeenEventBindingKey !== bindingKey) {
+    resetRemoteRuntimeEventDedup(bindingKey);
+  }
+  if (remoteRuntimeSeenEventIds.has(event.id)) return false;
+  remoteRuntimeSeenEventIds.add(event.id);
+  while (remoteRuntimeSeenEventIds.size > 1_000) {
+    const oldest = remoteRuntimeSeenEventIds.values().next().value;
+    if (typeof oldest !== "number") break;
+    remoteRuntimeSeenEventIds.delete(oldest);
+  }
+  remoteRuntimeEventCursor = Math.max(remoteRuntimeEventCursor, event.id);
+  return true;
+}
+
+function hasRemoteRuntimeEventSubscribers(): boolean {
+  return (
+    remoteAgentChatEventCallbacks.size > 0 ||
+    remoteMissionEventCallbacks.size > 0 ||
+    remoteOrchestratorEventCallbacks.size > 0 ||
+    remoteOrchestratorThreadEventCallbacks.size > 0 ||
+    remoteDagMutationEventCallbacks.size > 0 ||
+    remoteSyncStatusEventCallbacks.size > 0 ||
+    remoteReviewEventCallbacks.size > 0 ||
+    remoteSessionChangedCallbacks.size > 0 ||
+    remoteLaneDeleteEventCallbacks.size > 0 ||
+    remoteLaneRebaseEventCallbacks.size > 0 ||
+    remoteLaneRebaseSuggestionsEventCallbacks.size > 0 ||
+    remoteLaneAutoRebaseEventCallbacks.size > 0 ||
+    remoteLaneEnvEventCallbacks.size > 0 ||
+    remoteLanePortEventCallbacks.size > 0 ||
+    remoteLaneProxyEventCallbacks.size > 0 ||
+    remoteLaneOAuthEventCallbacks.size > 0 ||
+    remoteLaneDiagnosticsEventCallbacks.size > 0 ||
+    remotePtyDataEventCallbacks.size > 0 ||
+    remotePtyExitEventCallbacks.size > 0 ||
+    remoteProcessEventCallbacks.size > 0 ||
+    remoteTestEventCallbacks.size > 0 ||
+    remoteFileChangeEventCallbacks.size > 0 ||
+    remotePrEventCallbacks.size > 0 ||
+    remoteProjectStateEventCallbacks.size > 0 ||
+    remotePrAiResolutionEventCallbacks.size > 0
+  );
+}
+
+function ensureRemoteRuntimeEventPump(): void {
+  if (!hasRemoteRuntimeEventSubscribers()) return;
+  if (remoteRuntimeEventTimer || remoteRuntimeEventInFlight) return;
+  remoteRuntimeEventTimer = setTimeout(() => {
+    remoteRuntimeEventTimer = null;
+    void pollRemoteRuntimeEvents();
+  }, 0);
+}
+
+function scheduleRemoteRuntimeEventPoll(delayMs: number): void {
+  if (!hasRemoteRuntimeEventSubscribers()) return;
+  if (remoteRuntimeEventTimer || remoteRuntimeEventInFlight) return;
+  remoteRuntimeEventTimer = setTimeout(() => {
+    remoteRuntimeEventTimer = null;
+    void pollRemoteRuntimeEvents();
+  }, delayMs);
+}
+
+async function pollRemoteRuntimeEvents(): Promise<void> {
+  if (remoteRuntimeEventInFlight || !hasRemoteRuntimeEventSubscribers()) return;
+  remoteRuntimeEventInFlight = true;
+  let nextDelayMs: number | null = null;
+  try {
+    const binding = await getProjectRuntimeBinding();
+    if (!binding || (binding.kind !== "remote" && binding.kind !== "local")) {
+      remoteRuntimeEventCursor = 0;
+      remoteRuntimeEventBindingKey = null;
+      remoteRuntimeEventGeneration = projectBindingGeneration;
+      remoteRuntimeEventStartedAtMs = 0;
+      resetRemoteRuntimeEventDedup(null);
+      return;
+    }
+
+    if (
+      remoteRuntimeEventBindingKey !== binding.key ||
+      remoteRuntimeEventGeneration !== projectBindingGeneration
+    ) {
+      remoteRuntimeEventCursor = 0;
+      remoteRuntimeEventBindingKey = binding.key;
+      remoteRuntimeEventGeneration = projectBindingGeneration;
+      remoteRuntimeEventStartedAtMs = Date.now();
+      resetRemoteRuntimeEventDedup(binding.key);
+    }
+
+    const request = {
+      cursor: remoteRuntimeEventCursor,
+      limit: 100,
+      category: "runtime",
+    } satisfies RemoteRuntimeStreamEventsRequest;
+    const batch =
+      binding.kind === "remote"
+        ? ((await ipcRenderer.invoke(IPC.remoteRuntimeStreamEvents, {
+            id: binding.targetId,
+            projectId: binding.projectId,
+            request,
+          })) as RemoteRuntimeStreamEventsResult)
+        : ((await ipcRenderer.invoke(IPC.localRuntimeStreamEvents, {
+            request,
+          })) as RemoteRuntimeStreamEventsResult);
+
+    remoteRuntimeEventCursor = Number.isFinite(batch.nextCursor)
+      ? Math.max(0, Math.floor(batch.nextCursor))
+      : remoteRuntimeEventCursor;
+
+    for (const event of batch.events) {
+      const eventTime = Date.parse(event.timestamp);
+      if (
+        remoteRuntimeEventStartedAtMs > 0 &&
+        Number.isFinite(eventTime) &&
+        eventTime < remoteRuntimeEventStartedAtMs - 1_000
+      ) {
+        continue;
+      }
+      if (!shouldDispatchRemoteRuntimeEvent(binding.key, event)) continue;
+      dispatchRemoteRuntimeEventPayload(event.payload);
+    }
+    nextDelayMs = batch.hasMore ? 50 : 750;
+  } catch (error) {
+    console.warn("Remote ADE service event polling failed", error);
+    nextDelayMs = 2_000;
+  } finally {
+    remoteRuntimeEventInFlight = false;
+    if (
+      nextDelayMs != null &&
+      hasRemoteRuntimeEventSubscribers() &&
+      (currentProjectBinding?.kind === "remote" ||
+        currentProjectBinding?.kind === "local") &&
+      !remoteRuntimeEventTimer
+    ) {
+      scheduleRemoteRuntimeEventPoll(nextDelayMs);
+    }
+  }
+}
+
+function handleRemoteRuntimeEventNotification(value: unknown): void {
+  const payload = toRemoteRuntimeEventNotificationPayload(value);
+  const binding = currentProjectBinding;
+  if (!payload || !binding || payload.bindingKey !== binding.key) return;
+  const eventTime = Date.parse(payload.event.timestamp);
+  if (
+    remoteRuntimeEventStartedAtMs > 0 &&
+    Number.isFinite(eventTime) &&
+    eventTime < remoteRuntimeEventStartedAtMs - 1_000
+  ) {
+    return;
+  }
+  if (!shouldDispatchRemoteRuntimeEvent(payload.bindingKey, payload.event))
+    return;
+  dispatchRemoteRuntimeEventPayload(payload.event.payload);
+}
+
+function toRemoteRuntimeEventNotificationPayload(
+  value: unknown,
+): RemoteRuntimeEventNotificationPayload | null {
+  if (!isRecord(value)) return null;
+  const bindingKey =
+    typeof value.bindingKey === "string" ? value.bindingKey : "";
+  const event = toRemoteRuntimeBufferedEvent(value.event);
+  if (!bindingKey || !event) return null;
+  return { bindingKey, event };
+}
+
+function toRemoteRuntimeBufferedEvent(
+  value: unknown,
+): RemoteRuntimeBufferedEvent | null {
+  if (!isRecord(value)) return null;
+  if (typeof value.id !== "number" || !Number.isFinite(value.id)) return null;
+  if (typeof value.timestamp !== "string") return null;
+  const category = value.category;
+  if (
+    category !== "orchestrator" &&
+    category !== "dag_mutation" &&
+    category !== "runtime" &&
+    category !== "mission"
+  ) {
+    return null;
+  }
+  const payload = isRecord(value.payload) ? value.payload : {};
+  return {
+    id: Math.max(0, Math.floor(value.id)),
+    timestamp: value.timestamp,
+    category,
+    payload,
+  };
+}
+
+ipcRenderer.on(IPC.runtimeEvent, (_event, payload: unknown) => {
+  handleRemoteRuntimeEventNotification(payload);
+});
+
+function dispatchRemoteRuntimeEventPayload(
+  payload: Record<string, unknown>,
+): void {
+  if (payload.type === "missions-updated") {
+    for (const cb of [...remoteMissionEventCallbacks]) {
+      try {
+        cb(payload as MissionsEventPayload);
+      } catch (error) {
+        console.error("preload remote mission listener failed", error);
+      }
+    }
+  }
+
+  if (payload.type === "sync-status" && isRecord(payload.snapshot)) {
+    for (const cb of [...remoteSyncStatusEventCallbacks]) {
+      try {
+        cb(payload as SyncStatusEventPayload);
+      } catch (error) {
+        console.error("preload remote sync listener failed", error);
+      }
+    }
+  }
+
+  const reviewEvent = toWrappedEvent<ReviewEventPayload>(
+    payload,
+    "review_event",
+  );
+  if (reviewEvent) {
+    for (const cb of [...remoteReviewEventCallbacks]) {
+      try {
+        cb(reviewEvent);
+      } catch (error) {
+        console.error("preload remote review listener failed", error);
+      }
+    }
+  }
+
+  if (
+    payload.type === "orchestrator-run-updated" ||
+    payload.type === "orchestrator-step-updated" ||
+    payload.type === "orchestrator-attempt-updated" ||
+    payload.type === "orchestrator-claim-updated"
+  ) {
+    for (const cb of [...remoteOrchestratorEventCallbacks]) {
+      try {
+        cb(payload as OrchestratorRuntimeEvent);
+      } catch (error) {
+        console.error("preload remote orchestrator listener failed", error);
+      }
+    }
+  }
+
+  if (
+    payload.type === "thread_updated" ||
+    payload.type === "message_appended" ||
+    payload.type === "message_updated" ||
+    payload.type === "metrics_updated" ||
+    payload.type === "worker_digest_updated" ||
+    payload.type === "worker_replay"
+  ) {
+    for (const cb of [...remoteOrchestratorThreadEventCallbacks]) {
+      try {
+        cb(payload as OrchestratorThreadEvent);
+      } catch (error) {
+        console.error(
+          "preload remote orchestrator thread listener failed",
+          error,
+        );
+      }
+    }
+  }
+
+  if (
+    typeof payload.runId === "string" &&
+    isRecord(payload.mutation) &&
+    typeof payload.timestamp === "string"
+  ) {
+    for (const cb of [...remoteDagMutationEventCallbacks]) {
+      try {
+        cb(payload as DagMutationEvent);
+      } catch (error) {
+        console.error("preload remote DAG mutation listener failed", error);
+      }
+    }
+  }
+
+  const chatEvent = toAgentChatEventEnvelope(payload);
+  if (chatEvent) {
+    agentChatSummaryCache.clear();
+    for (const cb of [...remoteAgentChatEventCallbacks]) {
+      try {
+        cb(chatEvent);
+      } catch (error) {
+        console.error("preload remote agent chat listener failed", error);
+      }
+    }
+  }
+
+  const sessionChanged = toTerminalSessionChangedEvent(payload);
+  if (sessionChanged) {
+    sessionDeltaCache.clear();
+    for (const cb of [...remoteSessionChangedCallbacks]) {
+      try {
+        cb(sessionChanged);
+      } catch (error) {
+        console.error("preload remote session listener failed", error);
+      }
+    }
+  }
+
+  const laneDeleteEvent = toWrappedEvent<LaneDeleteEvent>(
+    payload,
+    "lane_delete_event",
+  );
+  if (laneDeleteEvent) {
+    clearGitReadCaches();
+    for (const cb of [...remoteLaneDeleteEventCallbacks]) {
+      try {
+        cb(laneDeleteEvent);
+      } catch (error) {
+        console.error("preload remote lane delete listener failed", error);
+      }
+    }
+  }
+
+  const laneRebaseEvent = toWrappedEvent<RebaseRunEventPayload>(
+    payload,
+    "lane_rebase_event",
+  );
+  if (laneRebaseEvent) {
+    clearGitReadCaches();
+    for (const cb of [...remoteLaneRebaseEventCallbacks]) {
+      try {
+        cb(laneRebaseEvent);
+      } catch (error) {
+        console.error("preload remote lane rebase listener failed", error);
+      }
+    }
+  }
+
+  const rebaseSuggestionsEvent = toWrappedEvent<RebaseSuggestionsEventPayload>(
+    payload,
+    "lane_rebase_suggestions_event",
+  );
+  if (rebaseSuggestionsEvent) {
+    for (const cb of [...remoteLaneRebaseSuggestionsEventCallbacks]) {
+      try {
+        cb(rebaseSuggestionsEvent);
+      } catch (error) {
+        console.error(
+          "preload remote rebase suggestions listener failed",
+          error,
+        );
+      }
+    }
+  }
+
+  const autoRebaseEvent = toWrappedEvent<AutoRebaseEventPayload>(
+    payload,
+    "lane_auto_rebase_event",
+  );
+  if (autoRebaseEvent) {
+    for (const cb of [...remoteLaneAutoRebaseEventCallbacks]) {
+      try {
+        cb(autoRebaseEvent);
+      } catch (error) {
+        console.error("preload remote auto rebase listener failed", error);
+      }
+    }
+  }
+
+  const envEvent = toWrappedEvent<LaneEnvInitEvent>(payload, "lane_env_event");
+  if (envEvent) {
+    for (const cb of [...remoteLaneEnvEventCallbacks]) {
+      try {
+        cb(envEvent);
+      } catch (error) {
+        console.error("preload remote lane env listener failed", error);
+      }
+    }
+  }
+
+  const portEvent = toWrappedEvent<PortAllocationEvent>(
+    payload,
+    "lane_port_event",
+  );
+  if (portEvent) {
+    for (const cb of [...remoteLanePortEventCallbacks]) {
+      try {
+        cb(portEvent);
+      } catch (error) {
+        console.error("preload remote lane port listener failed", error);
+      }
+    }
+  }
+
+  const proxyEvent = toWrappedEvent<LaneProxyEvent>(
+    payload,
+    "lane_proxy_event",
+  );
+  if (proxyEvent) {
+    for (const cb of [...remoteLaneProxyEventCallbacks]) {
+      try {
+        cb(proxyEvent);
+      } catch (error) {
+        console.error("preload remote lane proxy listener failed", error);
+      }
+    }
+  }
+
+  const oauthEvent = toWrappedEvent<OAuthRedirectEvent>(
+    payload,
+    "lane_oauth_event",
+  );
+  if (oauthEvent) {
+    for (const cb of [...remoteLaneOAuthEventCallbacks]) {
+      try {
+        cb(oauthEvent);
+      } catch (error) {
+        console.error("preload remote lane OAuth listener failed", error);
+      }
+    }
+  }
+
+  const diagnosticsEvent = toWrappedEvent<RuntimeDiagnosticsEvent>(
+    payload,
+    "lane_diagnostics_event",
+  );
+  if (diagnosticsEvent) {
+    for (const cb of [...remoteLaneDiagnosticsEventCallbacks]) {
+      try {
+        cb(diagnosticsEvent);
+      } catch (error) {
+        console.error("preload remote lane diagnostics listener failed", error);
+      }
+    }
+  }
+
+  if (isRecord(payload) && payload.type === "lane_head_changed") {
+    clearGitReadCaches();
+  }
+
+  const ptyDataEvent = toWrappedEvent<PtyDataEvent>(payload, "pty_data");
+  if (ptyDataEvent) {
+    for (const cb of [...remotePtyDataEventCallbacks]) {
+      try {
+        cb(ptyDataEvent);
+      } catch (error) {
+        console.error("preload remote pty data listener failed", error);
+      }
+    }
+  }
+
+  const ptyExitEvent = toWrappedEvent<PtyExitEvent>(payload, "pty_exit");
+  if (ptyExitEvent) {
+    for (const cb of [...remotePtyExitEventCallbacks]) {
+      try {
+        cb(ptyExitEvent);
+      } catch (error) {
+        console.error("preload remote pty exit listener failed", error);
+      }
+    }
+  }
+
+  const processEvent = toProcessEvent(payload);
+  if (processEvent) {
+    for (const cb of [...remoteProcessEventCallbacks]) {
+      try {
+        cb(processEvent);
+      } catch (error) {
+        console.error("preload remote process listener failed", error);
+      }
+    }
+  }
+
+  const testEvent = toTestEvent(payload);
+  if (testEvent) {
+    for (const cb of [...remoteTestEventCallbacks]) {
+      try {
+        cb(testEvent);
+      } catch (error) {
+        console.error("preload remote test listener failed", error);
+      }
+    }
+  }
+
+  const fileChangeEvent = toWrappedEvent<FileChangeEvent>(
+    payload,
+    "file_change",
+  );
+  if (fileChangeEvent) {
+    clearGitReadCaches();
+    for (const cb of [...remoteFileChangeEventCallbacks]) {
+      try {
+        cb(fileChangeEvent);
+      } catch (error) {
+        console.error("preload remote file change listener failed", error);
+      }
+    }
+  }
+
+  const prAiResolutionEvent = toWrappedEvent<PrAiResolutionEventPayload>(
+    payload,
+    "pr_ai_resolution_event",
+  );
+  if (prAiResolutionEvent) {
+    for (const cb of [...remotePrAiResolutionEventCallbacks]) {
+      try {
+        cb(prAiResolutionEvent);
+      } catch (error) {
+        console.error("preload remote PR AI resolution listener failed", error);
+      }
+    }
+  }
+
+  const prEvent = toWrappedEvent<PrEventPayload>(payload, "pr_event");
+  if (prEvent) {
+    for (const cb of [...remotePrEventCallbacks]) {
+      try {
+        cb(prEvent);
+      } catch (error) {
+        console.error("preload remote PR listener failed", error);
+      }
+    }
+  }
+
+  const projectStateEvent = toWrappedEvent<AdeProjectEvent>(
+    payload,
+    "project_state_event",
+  );
+  if (projectStateEvent) {
+    for (const cb of [...remoteProjectStateEventCallbacks]) {
+      try {
+        cb(projectStateEvent);
+      } catch (error) {
+        console.error("preload remote project state listener failed", error);
+      }
+    }
+  }
+}
+
+function subscribeRemoteAgentChatEvents(
+  cb: (payload: AgentChatEventEnvelope) => void,
+): () => void {
+  remoteAgentChatEventCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remoteAgentChatEventCallbacks.delete(cb);
+  };
+}
+
+function subscribeRemoteMissionEvents(
+  cb: (payload: MissionsEventPayload) => void,
+): () => void {
+  remoteMissionEventCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remoteMissionEventCallbacks.delete(cb);
+  };
+}
+
+function subscribeRemoteOrchestratorEvents(
+  cb: (payload: OrchestratorRuntimeEvent) => void,
+): () => void {
+  remoteOrchestratorEventCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remoteOrchestratorEventCallbacks.delete(cb);
+  };
+}
+
+function subscribeRemoteOrchestratorThreadEvents(
+  cb: (payload: OrchestratorThreadEvent) => void,
+): () => void {
+  remoteOrchestratorThreadEventCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remoteOrchestratorThreadEventCallbacks.delete(cb);
+  };
+}
+
+function subscribeRemoteDagMutationEvents(
+  cb: (payload: DagMutationEvent) => void,
+): () => void {
+  remoteDagMutationEventCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remoteDagMutationEventCallbacks.delete(cb);
+  };
+}
+
+function subscribeRemoteSyncStatusEvents(
+  cb: (payload: SyncStatusEventPayload) => void,
+): () => void {
+  remoteSyncStatusEventCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remoteSyncStatusEventCallbacks.delete(cb);
+  };
+}
+
+function subscribeRemoteReviewEvents(
+  cb: (payload: ReviewEventPayload) => void,
+): () => void {
+  remoteReviewEventCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remoteReviewEventCallbacks.delete(cb);
+  };
+}
+
+function subscribeRemoteSessionChangedEvents(
+  cb: (payload: TerminalSessionChangedEvent) => void,
+): () => void {
+  remoteSessionChangedCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remoteSessionChangedCallbacks.delete(cb);
+  };
+}
+
+function subscribeRemoteLaneDeleteEvents(
+  cb: (payload: LaneDeleteEvent) => void,
+): () => void {
+  remoteLaneDeleteEventCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remoteLaneDeleteEventCallbacks.delete(cb);
+  };
+}
+
+function subscribeRemoteLaneRebaseEvents(
+  cb: (payload: RebaseRunEventPayload) => void,
+): () => void {
+  remoteLaneRebaseEventCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remoteLaneRebaseEventCallbacks.delete(cb);
+  };
+}
+
+function subscribeRemoteLaneRebaseSuggestionsEvents(
+  cb: (payload: RebaseSuggestionsEventPayload) => void,
+): () => void {
+  remoteLaneRebaseSuggestionsEventCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remoteLaneRebaseSuggestionsEventCallbacks.delete(cb);
+  };
+}
+
+function subscribeRemoteLaneAutoRebaseEvents(
+  cb: (payload: AutoRebaseEventPayload) => void,
+): () => void {
+  remoteLaneAutoRebaseEventCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remoteLaneAutoRebaseEventCallbacks.delete(cb);
+  };
+}
+
+function subscribeRemoteLaneEnvEvents(
+  cb: (payload: LaneEnvInitEvent) => void,
+): () => void {
+  remoteLaneEnvEventCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remoteLaneEnvEventCallbacks.delete(cb);
+  };
+}
+
+function subscribeRemoteLanePortEvents(
+  cb: (payload: PortAllocationEvent) => void,
+): () => void {
+  remoteLanePortEventCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remoteLanePortEventCallbacks.delete(cb);
+  };
+}
+
+function subscribeRemoteLaneProxyEvents(
+  cb: (payload: LaneProxyEvent) => void,
+): () => void {
+  remoteLaneProxyEventCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remoteLaneProxyEventCallbacks.delete(cb);
+  };
+}
+
+function subscribeRemoteLaneOAuthEvents(
+  cb: (payload: OAuthRedirectEvent) => void,
+): () => void {
+  remoteLaneOAuthEventCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remoteLaneOAuthEventCallbacks.delete(cb);
+  };
+}
+
+function subscribeRemoteLaneDiagnosticsEvents(
+  cb: (payload: RuntimeDiagnosticsEvent) => void,
+): () => void {
+  remoteLaneDiagnosticsEventCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remoteLaneDiagnosticsEventCallbacks.delete(cb);
+  };
+}
+
+function subscribeRemotePtyDataEvents(
+  cb: (payload: PtyDataEvent) => void,
+): () => void {
+  remotePtyDataEventCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remotePtyDataEventCallbacks.delete(cb);
+  };
+}
+
+function subscribeRemotePtyExitEvents(
+  cb: (payload: PtyExitEvent) => void,
+): () => void {
+  remotePtyExitEventCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remotePtyExitEventCallbacks.delete(cb);
+  };
+}
+
+function subscribeRemoteProcessEvents(
+  cb: (payload: ProcessEvent) => void,
+): () => void {
+  remoteProcessEventCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remoteProcessEventCallbacks.delete(cb);
+  };
+}
+
+function subscribeRemoteTestEvents(
+  cb: (payload: TestEvent) => void,
+): () => void {
+  remoteTestEventCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remoteTestEventCallbacks.delete(cb);
+  };
+}
+
+function subscribeRemoteFileChangeEvents(
+  cb: (payload: FileChangeEvent) => void,
+): () => void {
+  remoteFileChangeEventCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remoteFileChangeEventCallbacks.delete(cb);
+  };
+}
+
+function subscribeRemotePrAiResolutionEvents(
+  cb: (payload: PrAiResolutionEventPayload) => void,
+): () => void {
+  remotePrAiResolutionEventCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remotePrAiResolutionEventCallbacks.delete(cb);
+  };
+}
+
+function subscribeRemotePrEvents(
+  cb: (payload: PrEventPayload) => void,
+): () => void {
+  remotePrEventCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remotePrEventCallbacks.delete(cb);
+  };
+}
+
+function subscribeRemoteProjectStateEvents(
+  cb: (payload: AdeProjectEvent) => void,
+): () => void {
+  remoteProjectStateEventCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remoteProjectStateEventCallbacks.delete(cb);
+  };
+}
+
+function subscribeAgentChatEvents(
+  cb: (payload: AgentChatEventEnvelope) => void,
+): () => void {
+  const removeLocal = agentChatEventFanout(cb);
+  const removeRemote = subscribeRemoteAgentChatEvents(cb);
+  return () => {
+    removeRemote();
+    removeLocal();
+  };
+}
+
+function subscribePtyDataEvents(
+  cb: (payload: PtyDataEvent) => void,
+): () => void {
+  const removeLocal = ptyDataEventFanout(cb);
+  const removeRemote = subscribeRemotePtyDataEvents(cb);
+  return () => {
+    removeRemote();
+    removeLocal();
+  };
+}
+
+function subscribePtyExitEvents(
+  cb: (payload: PtyExitEvent) => void,
+): () => void {
+  const removeLocal = ptyExitEventFanout(cb);
+  const removeRemote = subscribeRemotePtyExitEvents(cb);
+  return () => {
+    removeRemote();
+    removeLocal();
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function toAgentChatEventEnvelope(
+  payload: unknown,
+): AgentChatEventEnvelope | null {
+  if (!isRecord(payload)) return null;
+  if (typeof payload.sessionId !== "string") return null;
+  if (typeof payload.timestamp !== "string") return null;
+  if (!isRecord(payload.event) || typeof payload.event.type !== "string")
+    return null;
+  return payload as unknown as AgentChatEventEnvelope;
+}
+
+function toTerminalSessionChangedEvent(
+  payload: unknown,
+): TerminalSessionChangedEvent | null {
+  if (!isRecord(payload) || payload.type !== "terminal_session_changed")
+    return null;
+  const event = payload.event;
+  if (!isRecord(event)) return null;
+  if (typeof event.sessionId !== "string") return null;
+  if (
+    event.reason !== "meta-updated" &&
+    event.reason !== "deleted" &&
+    event.reason !== "created"
+  )
+    return null;
+  return {
+    sessionId: event.sessionId,
+    reason: event.reason,
+  };
+}
+
+function toWrappedEvent<T>(payload: unknown, type: string): T | null {
+  if (!isRecord(payload) || payload.type !== type || !isRecord(payload.event))
+    return null;
+  return payload.event as T;
+}
+
+function toProcessEvent(payload: unknown): ProcessEvent | null {
+  if (!isRecord(payload) || typeof payload.type !== "string") return null;
+  if (payload.type === "runtime") {
+    const runtime = payload.runtime;
+    if (!isRecord(runtime)) return null;
+    if (
+      typeof runtime.laneId !== "string" ||
+      typeof runtime.processId !== "string"
+    )
+      return null;
+    return payload as unknown as ProcessEvent;
+  }
+  if (payload.type === "log") {
+    if (typeof payload.runId !== "string") return null;
+    if (
+      typeof payload.laneId !== "string" ||
+      typeof payload.processId !== "string"
+    )
+      return null;
+    if (payload.stream !== "stdout" && payload.stream !== "stderr") return null;
+    if (typeof payload.chunk !== "string" || typeof payload.ts !== "string")
+      return null;
+    return payload as unknown as ProcessEvent;
+  }
+  return null;
+}
+
+function toTestEvent(payload: unknown): TestEvent | null {
+  if (!isRecord(payload) || typeof payload.type !== "string") return null;
+  if (payload.type === "run") {
+    const run = payload.run;
+    if (!isRecord(run)) return null;
+    if (typeof run.id !== "string" || typeof run.suiteId !== "string")
+      return null;
+    return payload as unknown as TestEvent;
+  }
+  if (payload.type === "log") {
+    if (
+      typeof payload.runId !== "string" ||
+      typeof payload.suiteId !== "string"
+    )
+      return null;
+    if (payload.stream !== "stdout" && payload.stream !== "stderr") return null;
+    if (typeof payload.chunk !== "string" || typeof payload.ts !== "string")
+      return null;
+    return payload as unknown as TestEvent;
+  }
+  return null;
+}
 
 function clearGitReadCaches(): void {
   diffChangesCache.clear();
@@ -982,13 +2239,18 @@ function clearIosSimulatorStatusCaches(): void {
   iosSimulatorDevicesCache.clear();
 }
 
-function getAiStatusCacheKey(args?: { refreshOpenCodeInventory?: boolean }): string {
+function getAiStatusCacheKey(args?: {
+  refreshOpenCodeInventory?: boolean;
+}): string {
   return serializeIpcCacheArgs({
     refreshOpenCodeInventory: args?.refreshOpenCodeInventory === true,
   });
 }
 
-async function clearAround<T>(clear: () => void, action: () => Promise<T>): Promise<T> {
+async function clearAround<T>(
+  clear: () => void,
+  action: () => Promise<T>,
+): Promise<T> {
   clear();
   try {
     return await action();
@@ -1011,7 +2273,10 @@ function createIpcEventFanout<T>(
       try {
         cb(payload);
       } catch (error) {
-        console.error(`preload IPC fanout listener failed for ${channel}`, error);
+        console.error(
+          `preload IPC fanout listener failed for ${channel}`,
+          error,
+        );
       }
     }
   };
@@ -1050,13 +2315,17 @@ const appControlEventFanout = createIpcEventFanout<AppControlEventPayload>(
   IPC.appControlEvent,
   () => appControlStatusCache.clear(),
 );
-const builtInBrowserEventFanout = createIpcEventFanout<BuiltInBrowserEventPayload>(
-  IPC.builtInBrowserEvent,
-  () => builtInBrowserStatusCache.clear(),
-);
+const builtInBrowserEventFanout =
+  createIpcEventFanout<BuiltInBrowserEventPayload>(
+    IPC.builtInBrowserEvent,
+    () => builtInBrowserStatusCache.clear(),
+  );
 const macosVmEventFanout = createIpcEventFanout<MacosVmEventPayload>(
   IPC.macosVmEvent,
   () => macosVmStatusCache.clear(),
+);
+const projectStateEventFanout = createIpcEventFanout<AdeProjectEvent>(
+  IPC.projectStateEvent,
 );
 const ptyDataEventFanout = createIpcEventFanout<PtyDataEvent>(IPC.ptyData);
 const ptyExitEventFanout = createIpcEventFanout<PtyExitEvent>(IPC.ptyExit);
@@ -1067,15 +2336,28 @@ contextBridge.exposeInMainWorld("ade", {
     getInfo: async (): Promise<AppInfo> => ipcRenderer.invoke(IPC.appGetInfo),
     getProject: async (): Promise<ProjectInfo | null> =>
       ipcRenderer.invoke(IPC.appGetProject),
-    getWindowSession: async (): Promise<{ windowId: number | null; project: ProjectInfo | null }> =>
-      ipcRenderer.invoke(IPC.appGetWindowSession),
+    getWindowSession: async (): Promise<{
+      windowId: number | null;
+      project: ProjectInfo | null;
+      binding: OpenProjectBinding | null;
+    }> => {
+      const session = (await ipcRenderer.invoke(IPC.appGetWindowSession)) as {
+        windowId: number | null;
+        project: ProjectInfo | null;
+        binding: OpenProjectBinding | null;
+      };
+      rememberProjectBinding(session.binding);
+      return session;
+    },
     newWindow: async (): Promise<{ windowId: number | null }> =>
       ipcRenderer.invoke(IPC.appNewWindow),
     openProjectInNewWindow: async (
       rootPath: string,
     ): Promise<{ windowId: number | null; project: ProjectInfo | null }> =>
       ipcRenderer.invoke(IPC.appOpenProjectInNewWindow, { rootPath }),
-    closeWindow: async (windowId?: number | null): Promise<{ closed: boolean }> =>
+    closeWindow: async (
+      windowId?: number | null,
+    ): Promise<{ closed: boolean }> =>
       ipcRenderer.invoke(IPC.appCloseWindow, { windowId: windowId ?? null }),
     onProjectChanged: (cb: (project: ProjectInfo | null) => void) => {
       const listener = (
@@ -1087,6 +2369,21 @@ contextBridge.exposeInMainWorld("ade", {
       };
       ipcRenderer.on(IPC.appProjectChanged, listener);
       return () => ipcRenderer.removeListener(IPC.appProjectChanged, listener);
+    },
+    onProjectBindingChanged: (
+      cb: (binding: OpenProjectBinding | null) => void,
+    ) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        payload: OpenProjectBinding | null,
+      ) => {
+        rememberProjectBinding(payload);
+        clearProjectScopedReadCaches();
+        cb(payload);
+      };
+      ipcRenderer.on(IPC.appProjectBindingChanged, listener);
+      return () =>
+        ipcRenderer.removeListener(IPC.appProjectBindingChanged, listener);
     },
     onNavigate: (cb: (request: AppNavigationRequest) => void) => {
       const listener = (
@@ -1106,8 +2403,11 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.appWriteClipboardText, { text }),
     hasClipboardImage: async (): Promise<boolean> =>
       ipcRenderer.invoke(IPC.appHasClipboardImage),
-    readClipboardImage: async (): Promise<{ data: string; filename: string; mimeType: string } | null> =>
-      ipcRenderer.invoke(IPC.appReadClipboardImage),
+    readClipboardImage: async (): Promise<{
+      data: string;
+      filename: string;
+      mimeType: string;
+    } | null> => ipcRenderer.invoke(IPC.appReadClipboardImage),
     getImageDataUrl: async (path: string): Promise<{ dataUrl: string }> =>
       imageDataUrlCache.get(path),
     writeClipboardImage: async (path: string): Promise<void> =>
@@ -1117,12 +2417,17 @@ contextBridge.exposeInMainWorld("ade", {
       relativePath?: string;
       target: "default" | "finder" | "vscode" | "cursor" | "zed";
     }): Promise<void> => ipcRenderer.invoke(IPC.appOpenPathInEditor, args),
-    logDebugEvent: (event: string, payload: Record<string, unknown> = {}): void =>
-      ipcRenderer.send(IPC.appLogDebugEvent, { event, payload }),
+    logDebugEvent: (
+      event: string,
+      payload: Record<string, unknown> = {},
+    ): void => ipcRenderer.send(IPC.appLogDebugEvent, { event, payload }),
   },
   project: {
     openRepo: async (): Promise<ProjectInfo | null> =>
-      clearAround(() => clearProjectScopedReadCaches(), () => ipcRenderer.invoke(IPC.projectOpenRepo)),
+      clearAround(
+        () => clearProjectScopedReadCaches(),
+        () => ipcRenderer.invoke(IPC.projectOpenRepo),
+      ),
     chooseDirectory: async (
       args: { title?: string; defaultPath?: string } = {},
     ): Promise<string | null> =>
@@ -1136,15 +2441,21 @@ contextBridge.exposeInMainWorld("ade", {
     resolveIcon: async (rootPath: string): Promise<ProjectIcon> =>
       projectIconCache.get(rootPath),
     chooseIcon: async (rootPath: string): Promise<ProjectIcon | null> =>
-      clearAround(() => {
-        imageDataUrlCache.clear();
-        projectIconCache.clear(rootPath);
-      }, () => ipcRenderer.invoke(IPC.projectChooseIcon, { rootPath })),
+      clearAround(
+        () => {
+          imageDataUrlCache.clear();
+          projectIconCache.clear(rootPath);
+        },
+        () => ipcRenderer.invoke(IPC.projectChooseIcon, { rootPath }),
+      ),
     removeIcon: async (rootPath: string): Promise<ProjectIcon> =>
-      clearAround(() => {
-        imageDataUrlCache.clear();
-        projectIconCache.clear(rootPath);
-      }, () => ipcRenderer.invoke(IPC.projectRemoveIcon, { rootPath })),
+      clearAround(
+        () => {
+          imageDataUrlCache.clear();
+          projectIconCache.clear(rootPath);
+        },
+        () => ipcRenderer.invoke(IPC.projectRemoveIcon, { rootPath }),
+      ),
     getDroppedPath: (file: File): string => {
       try {
         return webUtils.getPathForFile(file);
@@ -1157,31 +2468,60 @@ contextBridge.exposeInMainWorld("ade", {
     clearLocalData: async (
       args: ClearLocalAdeDataArgs = {},
     ): Promise<ClearLocalAdeDataResult> =>
-      clearAround(() => clearProjectScopedReadCaches(), () => ipcRenderer.invoke(IPC.projectClearLocalData, args)),
+      clearAround(
+        () => clearProjectScopedReadCaches(),
+        () =>
+          callProjectRuntimeActionOr(
+            "ade_project",
+            "clearLocalData",
+            { args },
+            () => ipcRenderer.invoke(IPC.projectClearLocalData, args),
+          ),
+      ),
     listRecent: async (): Promise<RecentProjectSummary[]> =>
       ipcRenderer.invoke(IPC.projectListRecent),
     closeCurrent: async (): Promise<void> =>
-      clearAround(() => clearProjectScopedReadCaches(), () => ipcRenderer.invoke(IPC.projectCloseCurrent)),
+      clearAround(
+        () => {
+          rememberProjectBinding(null);
+          clearProjectScopedReadCaches();
+        },
+        () => ipcRenderer.invoke(IPC.projectCloseCurrent),
+      ),
     switchToPath: async (rootPath: string): Promise<ProjectInfo> =>
-      clearAround(() => clearProjectScopedReadCaches(), () => ipcRenderer.invoke(IPC.projectSwitchToPath, { rootPath })),
+      clearAround(
+        () => {
+          rememberProjectBinding(null);
+          clearProjectScopedReadCaches();
+        },
+        () => ipcRenderer.invoke(IPC.projectSwitchToPath, { rootPath }),
+      ),
     forgetRecent: async (rootPath: string): Promise<RecentProjectSummary[]> =>
       ipcRenderer.invoke(IPC.projectForgetRecent, { rootPath }),
     reorderRecent: async (
       orderedPaths: string[],
     ): Promise<RecentProjectSummary[]> =>
       ipcRenderer.invoke(IPC.projectReorderRecent, { orderedPaths }),
-    createLocal: async (input: CreateProjectInput): Promise<CreateProjectResult> =>
+    createLocal: async (
+      input: CreateProjectInput,
+    ): Promise<CreateProjectResult> =>
       ipcRenderer.invoke(IPC.projectCreateLocal, input),
     clone: async (input: CloneProjectInput): Promise<CloneProjectResult> =>
       ipcRenderer.invoke(IPC.projectClone, input),
     getDefaultParentDir: async (): Promise<string> =>
       ipcRenderer.invoke(IPC.projectGetDefaultParentDir),
     getSnapshot: async (): Promise<AdeProjectSnapshot> =>
-      ipcRenderer.invoke(IPC.projectStateGetSnapshot),
+      callProjectRuntimeActionOr("ade_project", "getSnapshot", {}, () =>
+        ipcRenderer.invoke(IPC.projectStateGetSnapshot),
+      ),
     initializeOrRepair: async (): Promise<AdeCleanupResult> =>
-      ipcRenderer.invoke(IPC.projectStateInitializeOrRepair),
+      callProjectRuntimeActionOr("ade_project", "initializeOrRepair", {}, () =>
+        ipcRenderer.invoke(IPC.projectStateInitializeOrRepair),
+      ),
     runIntegrityCheck: async (): Promise<AdeCleanupResult> =>
-      ipcRenderer.invoke(IPC.projectStateRunIntegrityCheck),
+      callProjectRuntimeActionOr("ade_project", "runIntegrityCheck", {}, () =>
+        ipcRenderer.invoke(IPC.projectStateRunIntegrityCheck),
+      ),
     onMissing: (cb: (data: { rootPath: string }) => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,
@@ -1191,73 +2531,257 @@ contextBridge.exposeInMainWorld("ade", {
       return () => ipcRenderer.removeListener(IPC.projectMissing, listener);
     },
     onStateEvent: (cb: (event: AdeProjectEvent) => void) => {
+      const removeLocal = projectStateEventFanout(cb);
+      const removeRemote = subscribeRemoteProjectStateEvents(cb);
+      return () => {
+        removeRemote();
+        removeLocal();
+      };
+    },
+  },
+  remoteRuntime: {
+    listTargets: async (): Promise<RemoteRuntimeTarget[]> =>
+      ipcRenderer.invoke(IPC.remoteRuntimeListTargets),
+    getConnectionSnapshot: async (): Promise<RemoteRuntimeConnectionSnapshot> =>
+      ipcRenderer.invoke(IPC.remoteRuntimeGetConnectionSnapshot),
+    onConnectionSnapshotChanged: (
+      cb: (snapshot: RemoteRuntimeConnectionSnapshot) => void,
+    ) => {
       const listener = (
         _event: Electron.IpcRendererEvent,
-        payload: AdeProjectEvent,
+        payload: RemoteRuntimeConnectionSnapshot,
       ) => cb(payload);
-      ipcRenderer.on(IPC.projectStateEvent, listener);
-      return () => ipcRenderer.removeListener(IPC.projectStateEvent, listener);
+      ipcRenderer.on(IPC.remoteRuntimeConnectionSnapshotChanged, listener);
+      return () =>
+        ipcRenderer.removeListener(
+          IPC.remoteRuntimeConnectionSnapshotChanged,
+          listener,
+        );
     },
+    listDiscoveredMachines: async (): Promise<
+      RemoteRuntimeDiscoveredMachine[]
+    > => ipcRenderer.invoke(IPC.remoteRuntimeListDiscoveredMachines),
+    saveTarget: async (
+      input: RemoteRuntimeTargetInput,
+    ): Promise<RemoteRuntimeTarget> =>
+      ipcRenderer.invoke(IPC.remoteRuntimeSaveTarget, input),
+    removeTarget: async (id: string): Promise<{ removed: boolean }> =>
+      ipcRenderer.invoke(IPC.remoteRuntimeRemoveTarget, { id }),
+    connect: async (id: string): Promise<RemoteRuntimeConnectResult> =>
+      ipcRenderer.invoke(IPC.remoteRuntimeConnect, { id }),
+    listProjects: async (id: string): Promise<RemoteRuntimeProjectRecord[]> =>
+      ipcRenderer.invoke(IPC.remoteRuntimeListProjects, { id }),
+    addProject: async (
+      id: string,
+      rootPath: string,
+    ): Promise<RemoteRuntimeProjectRecord> =>
+      ipcRenderer.invoke(IPC.remoteRuntimeAddProject, { id, rootPath }),
+    browseDirectories: async (
+      id: string,
+      args: ProjectBrowseInput = {},
+    ): Promise<ProjectBrowseResult> =>
+      ipcRenderer.invoke(IPC.remoteRuntimeBrowseDirectories, { id, args }),
+    getProjectDetail: async (
+      id: string,
+      rootPath: string,
+    ): Promise<ProjectDetail> =>
+      ipcRenderer.invoke(IPC.remoteRuntimeGetProjectDetail, { id, rootPath }),
+    getDefaultParentDir: async (id: string): Promise<string> =>
+      ipcRenderer.invoke(IPC.remoteRuntimeGetDefaultParentDir, { id }),
+    createProject: async (
+      id: string,
+      input: CreateProjectInput,
+    ): Promise<RemoteRuntimeProjectRecord> =>
+      ipcRenderer.invoke(IPC.remoteRuntimeCreateProject, { id, input }),
+    cloneProject: async (
+      id: string,
+      input: CloneProjectInput,
+    ): Promise<RemoteRuntimeProjectRecord> =>
+      ipcRenderer.invoke(IPC.remoteRuntimeCloneProject, { id, input }),
+    listMyGitHubRepos: async (
+      id: string,
+      input: ListMyGitHubReposInput = {},
+    ): Promise<ListMyGitHubReposResult> =>
+      ipcRenderer.invoke(IPC.remoteRuntimeListMyGitHubRepos, { id, input }),
+    openProject: async (
+      id: string,
+      projectId: string,
+    ): Promise<OpenProjectBinding> => {
+      const binding = (await ipcRenderer.invoke(IPC.remoteRuntimeOpenProject, {
+        id,
+        projectId,
+      })) as OpenProjectBinding;
+      rememberProjectBinding(binding);
+      return binding;
+    },
+    callAction: async (
+      id: string,
+      projectId: string,
+      request: RemoteRuntimeActionRequest,
+    ): Promise<RemoteRuntimeActionResult> =>
+      ipcRenderer.invoke(IPC.remoteRuntimeCallAction, {
+        id,
+        projectId,
+        request,
+      }),
+    streamEvents: async (
+      id: string,
+      projectId: string,
+      request: RemoteRuntimeStreamEventsRequest = {},
+    ): Promise<RemoteRuntimeStreamEventsResult> =>
+      ipcRenderer.invoke(IPC.remoteRuntimeStreamEvents, {
+        id,
+        projectId,
+        request,
+      }),
+    checkLocalWork: async (
+      id: string,
+      project: RemoteRuntimeProjectRecord,
+    ): Promise<RemoteRuntimeLocalWorkCheckResult> =>
+      ipcRenderer.invoke(IPC.remoteRuntimeCheckLocalWork, { id, project }),
+    disconnect: async (id: string): Promise<{ disconnected: boolean }> =>
+      ipcRenderer.invoke(IPC.remoteRuntimeDisconnect, { id }),
   },
   keybindings: {
     get: async (): Promise<KeybindingsSnapshot> =>
-      ipcRenderer.invoke(IPC.keybindingsGet),
+      callProjectRuntimeActionOr("keybindings", "get", {}, () =>
+        ipcRenderer.invoke(IPC.keybindingsGet),
+      ),
     set: async (
       overrides: KeybindingOverride[],
     ): Promise<KeybindingsSnapshot> =>
-      ipcRenderer.invoke(IPC.keybindingsSet, { overrides }),
+      callProjectRuntimeActionOr(
+        "keybindings",
+        "set",
+        { args: { overrides } },
+        () => ipcRenderer.invoke(IPC.keybindingsSet, { overrides }),
+      ),
   },
   ai: {
-    getStatus: async (args?: { force?: boolean; refreshOpenCodeInventory?: boolean }): Promise<AiSettingsStatus> => {
+    getStatus: async (args?: {
+      force?: boolean;
+      refreshOpenCodeInventory?: boolean;
+    }): Promise<AiSettingsStatus> => {
       const cacheKey = getAiStatusCacheKey(args);
       if (args?.force === true) {
         aiStatusCache.clear();
-        return ipcRenderer.invoke(IPC.aiGetStatus, args);
+        return callProjectRuntimeActionOr("ai", "getStatus", { args }, () =>
+          ipcRenderer.invoke(IPC.aiGetStatus, args),
+        );
       }
       return aiStatusCache.get(cacheKey);
     },
     getOpenCodeRuntimeDiagnostics: async (): Promise<OpenCodeRuntimeSnapshot> =>
       ipcRenderer.invoke(IPC.aiGetOpenCodeRuntimeDiagnostics),
     storeApiKey: async (provider: string, key: string): Promise<void> =>
-      clearAround(() => aiStatusCache.clear(), () => ipcRenderer.invoke(IPC.aiStoreApiKey, { provider, key })),
+      clearAround(
+        () => aiStatusCache.clear(),
+        () =>
+          callProjectRuntimeActionOr(
+            "ai",
+            "storeApiKey",
+            { args: { provider, key } },
+            () => ipcRenderer.invoke(IPC.aiStoreApiKey, { provider, key }),
+          ),
+      ),
     deleteApiKey: async (provider: string): Promise<void> =>
-      clearAround(() => aiStatusCache.clear(), () => ipcRenderer.invoke(IPC.aiDeleteApiKey, { provider })),
+      clearAround(
+        () => aiStatusCache.clear(),
+        () =>
+          callProjectRuntimeActionOr(
+            "ai",
+            "deleteApiKey",
+            { args: { provider } },
+            () => ipcRenderer.invoke(IPC.aiDeleteApiKey, { provider }),
+          ),
+      ),
     listApiKeys: async (): Promise<string[]> =>
-      ipcRenderer.invoke(IPC.aiListApiKeys),
+      callProjectRuntimeActionOr("ai", "listApiKeys", {}, () =>
+        ipcRenderer.invoke(IPC.aiListApiKeys),
+      ),
     verifyApiKey: async (
       provider: string,
     ): Promise<AiApiKeyVerificationResult> =>
-      clearAround(() => aiStatusCache.clear(), () => ipcRenderer.invoke(IPC.aiVerifyApiKey, { provider })),
+      clearAround(
+        () => aiStatusCache.clear(),
+        () =>
+          callProjectRuntimeActionOr(
+            "ai",
+            "verifyApiKeyConnection",
+            { args: { provider } },
+            () => ipcRenderer.invoke(IPC.aiVerifyApiKey, { provider }),
+          ),
+      ),
     updateConfig: async (config: Partial<AiConfig>): Promise<void> =>
-      clearAround(() => aiStatusCache.clear(), () => ipcRenderer.invoke(IPC.aiUpdateConfig, config)),
+      clearAround(
+        () => aiStatusCache.clear(),
+        () =>
+          callProjectRuntimeActionOr(
+            "ai",
+            "updateConfig",
+            { args: config },
+            () => ipcRenderer.invoke(IPC.aiUpdateConfig, config),
+          ),
+      ),
     cursorCloudListRepositories: async (): Promise<CursorCloudRepository[]> =>
-      ipcRenderer.invoke(IPC.aiCursorCloudListRepositories),
+      callProjectRuntimeActionOr("ai", "listCursorCloudRepositories", {}, () =>
+        ipcRenderer.invoke(IPC.aiCursorCloudListRepositories),
+      ),
     cursorCloudListAgents: async (args?: {
       includeArchived?: boolean;
       limit?: number;
       cursor?: string | null;
     }): Promise<CursorCloudListAgentsResult> =>
-      ipcRenderer.invoke(IPC.aiCursorCloudListAgents, args ?? {}),
+      callProjectRuntimeActionOr(
+        "ai",
+        "listCursorCloudAgents",
+        { args: args ?? {} },
+        () => ipcRenderer.invoke(IPC.aiCursorCloudListAgents, args ?? {}),
+      ),
     cursorCloudListRuns: async (args: {
       agentId: string;
       limit?: number;
       cursor?: string | null;
     }): Promise<CursorCloudListRunsResult> =>
-      ipcRenderer.invoke(IPC.aiCursorCloudListRuns, args),
+      callProjectRuntimeActionOr("ai", "listCursorCloudRuns", { args }, () =>
+        ipcRenderer.invoke(IPC.aiCursorCloudListRuns, args),
+      ),
     cursorCloudCreateRun: async (
       args: CursorCloudCreateRunRequest,
     ): Promise<CursorCloudCreateRunResult> =>
-      ipcRenderer.invoke(IPC.aiCursorCloudCreateRun, args),
+      callProjectRuntimeActionOr("ai", "createCursorCloudRun", { args }, () =>
+        ipcRenderer.invoke(IPC.aiCursorCloudCreateRun, args),
+      ),
     cursorCloudArchiveAgent: async (agentId: string): Promise<void> =>
-      ipcRenderer.invoke(IPC.aiCursorCloudArchiveAgent, { agentId }),
+      callProjectRuntimeActionOr(
+        "ai",
+        "archiveCursorCloudAgent",
+        { args: { agentId } },
+        () => ipcRenderer.invoke(IPC.aiCursorCloudArchiveAgent, { agentId }),
+      ),
     cursorCloudUnarchiveAgent: async (agentId: string): Promise<void> =>
-      ipcRenderer.invoke(IPC.aiCursorCloudUnarchiveAgent, { agentId }),
+      callProjectRuntimeActionOr(
+        "ai",
+        "unarchiveCursorCloudAgent",
+        { args: { agentId } },
+        () => ipcRenderer.invoke(IPC.aiCursorCloudUnarchiveAgent, { agentId }),
+      ),
     cursorCloudDeleteAgent: async (agentId: string): Promise<void> =>
-      ipcRenderer.invoke(IPC.aiCursorCloudDeleteAgent, { agentId }),
+      callProjectRuntimeActionOr(
+        "ai",
+        "deleteCursorCloudAgent",
+        { args: { agentId } },
+        () => ipcRenderer.invoke(IPC.aiCursorCloudDeleteAgent, { agentId }),
+      ),
     cursorCloudGetAgent: async (
       agentId: string,
     ): Promise<CursorCloudAgentSummary | null> =>
-      ipcRenderer.invoke(IPC.aiCursorCloudGetAgent, { agentId }),
+      callProjectRuntimeActionOr(
+        "ai",
+        "getCursorCloudAgent",
+        { args: { agentId } },
+        () => ipcRenderer.invoke(IPC.aiCursorCloudGetAgent, { agentId }),
+      ),
     cursorCloudStreamRun: async (
       args: CursorCloudStreamRunRequest,
     ): Promise<CursorCloudStreamRunResult> =>
@@ -1266,75 +2790,129 @@ contextBridge.exposeInMainWorld("ade", {
       agentId: string;
       runId: string;
     }): Promise<void> =>
-      ipcRenderer.invoke(IPC.aiCursorCloudCancelRun, args),
+      callProjectRuntimeActionOr("ai", "cancelCursorCloudRun", { args }, () =>
+        ipcRenderer.invoke(IPC.aiCursorCloudCancelRun, args),
+      ),
     cursorCloudFollowUp: async (
       args: CursorCloudFollowUpRequest,
     ): Promise<CursorCloudFollowUpResult> =>
-      ipcRenderer.invoke(IPC.aiCursorCloudFollowUp, args),
+      callProjectRuntimeActionOr("ai", "cursorCloudFollowUp", { args }, () =>
+        ipcRenderer.invoke(IPC.aiCursorCloudFollowUp, args),
+      ),
     cursorCloudListArtifacts: async (
       agentId: string,
     ): Promise<CursorCloudArtifactSummary[]> =>
-      ipcRenderer.invoke(IPC.aiCursorCloudListArtifacts, { agentId }),
+      callProjectRuntimeActionOr(
+        "ai",
+        "listCursorCloudArtifacts",
+        { args: { agentId } },
+        () => ipcRenderer.invoke(IPC.aiCursorCloudListArtifacts, { agentId }),
+      ),
     cursorCloudDownloadArtifact: async (args: {
       agentId: string;
       path: string;
     }): Promise<CursorCloudArtifactDownload> =>
-      ipcRenderer.invoke(IPC.aiCursorCloudDownloadArtifact, args),
+      callProjectRuntimeActionOr(
+        "ai",
+        "downloadCursorCloudArtifact",
+        { args },
+        () => ipcRenderer.invoke(IPC.aiCursorCloudDownloadArtifact, args),
+      ),
     cursorCloudOpenChat: async (
       args: CursorCloudOpenChatRequest,
     ): Promise<CursorCloudOpenChatResult> =>
-      ipcRenderer.invoke(IPC.aiCursorCloudOpenChat, args),
+      callProjectRuntimeActionOr("ai", "openCursorCloudChat", { args }, () =>
+        ipcRenderer.invoke(IPC.aiCursorCloudOpenChat, args),
+      ),
   },
   sync: {
     getStatus: async (args?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> =>
-      ipcRenderer.invoke(IPC.syncGetStatus, args),
+      callProjectRuntimeSyncOr("sync.getStatus", args ?? {}, () =>
+        ipcRenderer.invoke(IPC.syncGetStatus, args),
+      ),
     refreshDiscovery: async (): Promise<SyncRoleSnapshot> =>
-      ipcRenderer.invoke(IPC.syncRefreshDiscovery),
+      callProjectRuntimeSyncOr("sync.refreshDiscovery", {}, () =>
+        ipcRenderer.invoke(IPC.syncRefreshDiscovery),
+      ),
     listDevices: async (): Promise<SyncDeviceRuntimeState[]> =>
-      ipcRenderer.invoke(IPC.syncListDevices),
+      callProjectRuntimeSyncOr("sync.listDevices", {}, () =>
+        ipcRenderer.invoke(IPC.syncListDevices),
+      ),
     updateLocalDevice: async (args: {
       name?: string;
       deviceType?: SyncPeerDeviceType;
     }): Promise<SyncDeviceRecord> =>
-      ipcRenderer.invoke(IPC.syncUpdateLocalDevice, args),
+      callProjectRuntimeSyncOr("sync.updateLocalDevice", args, () =>
+        ipcRenderer.invoke(IPC.syncUpdateLocalDevice, args),
+      ),
     connectToBrain: async (
       draft: SyncDesktopConnectionDraft,
     ): Promise<SyncRoleSnapshot> =>
-      ipcRenderer.invoke(IPC.syncConnectToBrain, draft),
+      callProjectRuntimeSyncOr(
+        "sync.connectToBrain",
+        draft as unknown as Record<string, unknown>,
+        () => ipcRenderer.invoke(IPC.syncConnectToBrain, draft),
+      ),
     disconnectFromBrain: async (): Promise<SyncRoleSnapshot> =>
-      ipcRenderer.invoke(IPC.syncDisconnectFromBrain),
+      callProjectRuntimeSyncOr("sync.disconnectFromBrain", {}, () =>
+        ipcRenderer.invoke(IPC.syncDisconnectFromBrain),
+      ),
     forgetDevice: async (deviceId: string): Promise<SyncRoleSnapshot> =>
-      ipcRenderer.invoke(IPC.syncForgetDevice, { deviceId }),
+      callProjectRuntimeSyncOr("sync.forgetDevice", { deviceId }, () =>
+        ipcRenderer.invoke(IPC.syncForgetDevice, { deviceId }),
+      ),
     getTransferReadiness: async (): Promise<SyncTransferReadiness> =>
-      ipcRenderer.invoke(IPC.syncGetTransferReadiness),
+      callProjectRuntimeSyncOr("sync.getTransferReadiness", {}, () =>
+        ipcRenderer.invoke(IPC.syncGetTransferReadiness),
+      ),
     transferBrainToLocal: async (): Promise<SyncRoleSnapshot> =>
-      ipcRenderer.invoke(IPC.syncTransferBrainToLocal),
+      callProjectRuntimeSyncOr("sync.transferBrainToLocal", {}, () =>
+        ipcRenderer.invoke(IPC.syncTransferBrainToLocal),
+      ),
     getPin: async (): Promise<{ pin: string | null }> =>
-      ipcRenderer.invoke(IPC.syncGetPin),
+      callProjectRuntimeSyncOr("sync.getPin", {}, () =>
+        ipcRenderer.invoke(IPC.syncGetPin),
+      ),
     setPin: async (pin: string): Promise<SyncRoleSnapshot> =>
-      ipcRenderer.invoke(IPC.syncSetPin, pin),
+      callProjectRuntimeSyncOr("sync.setPin", { pin }, () =>
+        ipcRenderer.invoke(IPC.syncSetPin, pin),
+      ),
+    generatePin: async (): Promise<SyncRoleSnapshot> =>
+      callProjectRuntimeSyncOr("sync.generatePin", {}, () =>
+        ipcRenderer.invoke(IPC.syncGeneratePin),
+      ),
     clearPin: async (): Promise<SyncRoleSnapshot> =>
-      ipcRenderer.invoke(IPC.syncClearPin),
-    setActiveLanePresence: async (args: {
-      laneIds: string[];
-    }): Promise<void> =>
-      ipcRenderer.invoke(IPC.syncSetActiveLanePresence, args),
+      callProjectRuntimeSyncOr("sync.clearPin", {}, () =>
+        ipcRenderer.invoke(IPC.syncClearPin),
+      ),
+    setActiveLanePresence: async (args: { laneIds: string[] }): Promise<void> =>
+      callProjectRuntimeSyncOr("sync.setActiveLanePresence", args, () =>
+        ipcRenderer.invoke(IPC.syncSetActiveLanePresence, args),
+      ),
     onEvent: (cb: (event: SyncStatusEventPayload) => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,
         payload: SyncStatusEventPayload,
       ) => cb(payload);
       ipcRenderer.on(IPC.syncEvent, listener);
-      return () => ipcRenderer.removeListener(IPC.syncEvent, listener);
+      const removeRemote = subscribeRemoteSyncStatusEvents(cb);
+      return () => {
+        removeRemote();
+        ipcRenderer.removeListener(IPC.syncEvent, listener);
+      };
     },
   },
   notifications: {
     apns: {
       getStatus: async (): Promise<ApnsBridgeStatus> =>
         ipcRenderer.invoke(IPC.notificationsApnsGetStatus),
-      saveConfig: async (args: ApnsBridgeSaveConfigArgs): Promise<ApnsBridgeStatus> =>
+      saveConfig: async (
+        args: ApnsBridgeSaveConfigArgs,
+      ): Promise<ApnsBridgeStatus> =>
         ipcRenderer.invoke(IPC.notificationsApnsSaveConfig, args),
-      uploadKey: async (args: ApnsBridgeUploadKeyArgs): Promise<ApnsBridgeStatus> =>
+      uploadKey: async (
+        args: ApnsBridgeUploadKeyArgs,
+      ): Promise<ApnsBridgeStatus> =>
         ipcRenderer.invoke(IPC.notificationsApnsUploadKey, args),
       clearKey: async (): Promise<ApnsBridgeStatus> =>
         ipcRenderer.invoke(IPC.notificationsApnsClearKey),
@@ -1360,114 +2938,290 @@ contextBridge.exposeInMainWorld("ade", {
   },
   onboarding: {
     getStatus: async (): Promise<OnboardingStatus> =>
-      ipcRenderer.invoke(IPC.onboardingGetStatus),
+      callProjectRuntimeActionOr("onboarding", "getStatus", {}, () =>
+        ipcRenderer.invoke(IPC.onboardingGetStatus),
+      ),
     detectDefaults: async (): Promise<OnboardingDetectionResult> =>
-      ipcRenderer.invoke(IPC.onboardingDetectDefaults),
+      callProjectRuntimeActionOr("onboarding", "detectDefaults", {}, () =>
+        ipcRenderer.invoke(IPC.onboardingDetectDefaults),
+      ),
     detectExistingLanes: async (): Promise<OnboardingExistingLaneCandidate[]> =>
-      ipcRenderer.invoke(IPC.onboardingDetectExistingLanes),
+      callProjectRuntimeActionOr("onboarding", "detectExistingLanes", {}, () =>
+        ipcRenderer.invoke(IPC.onboardingDetectExistingLanes),
+      ),
     setDismissed: async (dismissed: boolean): Promise<OnboardingStatus> =>
-      ipcRenderer.invoke(IPC.onboardingSetDismissed, { dismissed }),
+      callProjectRuntimeActionOr(
+        "onboarding",
+        "setDismissed",
+        { arg: dismissed },
+        () => ipcRenderer.invoke(IPC.onboardingSetDismissed, { dismissed }),
+      ),
     complete: async (): Promise<OnboardingStatus> =>
-      ipcRenderer.invoke(IPC.onboardingComplete),
+      callProjectRuntimeActionOr("onboarding", "complete", {}, () =>
+        ipcRenderer.invoke(IPC.onboardingComplete),
+      ),
     getTourProgress: async (): Promise<OnboardingTourProgress> =>
-      ipcRenderer.invoke(IPC.onboardingGetTourProgress),
+      callProjectRuntimeActionOr("onboarding", "getTourProgress", {}, () =>
+        ipcRenderer.invoke(IPC.onboardingGetTourProgress),
+      ),
     markWizardCompleted: async (): Promise<OnboardingTourProgress> =>
-      ipcRenderer.invoke(IPC.onboardingMarkWizardCompleted),
+      callProjectRuntimeActionOr("onboarding", "markWizardCompleted", {}, () =>
+        ipcRenderer.invoke(IPC.onboardingMarkWizardCompleted),
+      ),
     markWizardDismissed: async (): Promise<OnboardingTourProgress> =>
-      ipcRenderer.invoke(IPC.onboardingMarkWizardDismissed),
-    markTourCompleted: async (tourId: string): Promise<OnboardingTourProgress> =>
-      ipcRenderer.invoke(IPC.onboardingMarkTourCompleted, { tourId }),
-    markTourDismissed: async (tourId: string): Promise<OnboardingTourProgress> =>
-      ipcRenderer.invoke(IPC.onboardingMarkTourDismissed, { tourId }),
-    updateTourStep: async (tourId: string, index: number): Promise<OnboardingTourProgress> =>
-      ipcRenderer.invoke(IPC.onboardingUpdateTourStep, { tourId, index }),
-    markGlossaryTermSeen: async (termId: string): Promise<OnboardingTourProgress> =>
-      ipcRenderer.invoke(IPC.onboardingMarkGlossaryTermSeen, { termId }),
-    resetTourProgress: async (tourId?: string): Promise<OnboardingTourProgress> =>
-      ipcRenderer.invoke(IPC.onboardingResetTourProgress, { tourId }),
+      callProjectRuntimeActionOr("onboarding", "markWizardDismissed", {}, () =>
+        ipcRenderer.invoke(IPC.onboardingMarkWizardDismissed),
+      ),
+    markTourCompleted: async (
+      tourId: string,
+    ): Promise<OnboardingTourProgress> =>
+      callProjectRuntimeActionOr(
+        "onboarding",
+        "markTourCompleted",
+        { arg: tourId },
+        () => ipcRenderer.invoke(IPC.onboardingMarkTourCompleted, { tourId }),
+      ),
+    markTourDismissed: async (
+      tourId: string,
+    ): Promise<OnboardingTourProgress> =>
+      callProjectRuntimeActionOr(
+        "onboarding",
+        "markTourDismissed",
+        { arg: tourId },
+        () => ipcRenderer.invoke(IPC.onboardingMarkTourDismissed, { tourId }),
+      ),
+    updateTourStep: async (
+      tourId: string,
+      index: number,
+    ): Promise<OnboardingTourProgress> =>
+      callProjectRuntimeActionOr(
+        "onboarding",
+        "updateTourStep",
+        { argsList: [tourId, index] },
+        () =>
+          ipcRenderer.invoke(IPC.onboardingUpdateTourStep, { tourId, index }),
+      ),
+    markGlossaryTermSeen: async (
+      termId: string,
+    ): Promise<OnboardingTourProgress> =>
+      callProjectRuntimeActionOr(
+        "onboarding",
+        "markGlossaryTermSeen",
+        { arg: termId },
+        () =>
+          ipcRenderer.invoke(IPC.onboardingMarkGlossaryTermSeen, { termId }),
+      ),
+    resetTourProgress: async (
+      tourId?: string,
+    ): Promise<OnboardingTourProgress> =>
+      callProjectRuntimeActionOr(
+        "onboarding",
+        "resetTourProgress",
+        { arg: tourId },
+        () => ipcRenderer.invoke(IPC.onboardingResetTourProgress, { tourId }),
+      ),
     markTourCompletedVariant: async (
       tourId: string,
       variant: OnboardingTourVariant,
     ): Promise<OnboardingTourProgress> =>
-      ipcRenderer.invoke(IPC.onboardingMarkTourCompletedVariant, { tourId, variant }),
+      callProjectRuntimeActionOr(
+        "onboarding",
+        "markTourCompleted",
+        { argsList: [tourId, variant] },
+        () =>
+          ipcRenderer.invoke(IPC.onboardingMarkTourCompletedVariant, {
+            tourId,
+            variant,
+          }),
+      ),
     markTourDismissedVariant: async (
       tourId: string,
       variant: OnboardingTourVariant,
     ): Promise<OnboardingTourProgress> =>
-      ipcRenderer.invoke(IPC.onboardingMarkTourDismissedVariant, { tourId, variant }),
+      callProjectRuntimeActionOr(
+        "onboarding",
+        "markTourDismissed",
+        { argsList: [tourId, variant] },
+        () =>
+          ipcRenderer.invoke(IPC.onboardingMarkTourDismissedVariant, {
+            tourId,
+            variant,
+          }),
+      ),
     updateTourStepVariant: async (
       tourId: string,
       variant: OnboardingTourVariant,
       index: number,
     ): Promise<OnboardingTourProgress> =>
-      ipcRenderer.invoke(IPC.onboardingUpdateTourStepVariant, { tourId, variant, index }),
+      callProjectRuntimeActionOr(
+        "onboarding",
+        "updateTourStep",
+        { argsList: [tourId, index, variant] },
+        () =>
+          ipcRenderer.invoke(IPC.onboardingUpdateTourStepVariant, {
+            tourId,
+            variant,
+            index,
+          }),
+      ),
     tutorial: {
       start: async (): Promise<OnboardingTourProgress> =>
-        ipcRenderer.invoke(IPC.onboardingTutorialStart),
+        callProjectRuntimeActionOr(
+          "onboarding",
+          "markTutorialStarted",
+          {},
+          () => ipcRenderer.invoke(IPC.onboardingTutorialStart),
+        ),
       dismiss: async (permanent: boolean): Promise<OnboardingTourProgress> =>
-        ipcRenderer.invoke(IPC.onboardingTutorialDismiss, { permanent }),
+        callProjectRuntimeActionOr(
+          "onboarding",
+          "markTutorialDismissed",
+          { arg: permanent },
+          () =>
+            ipcRenderer.invoke(IPC.onboardingTutorialDismiss, { permanent }),
+        ),
       complete: async (): Promise<OnboardingTourProgress> =>
-        ipcRenderer.invoke(IPC.onboardingTutorialComplete),
+        callProjectRuntimeActionOr(
+          "onboarding",
+          "markTutorialCompleted",
+          {},
+          () => ipcRenderer.invoke(IPC.onboardingTutorialComplete),
+        ),
       updateAct: async (
         actIndex: number,
         ctxSnapshot?: Record<string, unknown>,
       ): Promise<OnboardingTourProgress> =>
-        ipcRenderer.invoke(IPC.onboardingTutorialUpdateAct, { actIndex, ctxSnapshot }),
+        callProjectRuntimeActionOr(
+          "onboarding",
+          "updateTutorialAct",
+          { argsList: [actIndex, ctxSnapshot] },
+          () =>
+            ipcRenderer.invoke(IPC.onboardingTutorialUpdateAct, {
+              actIndex,
+              ctxSnapshot,
+            }),
+        ),
       setSilenced: async (silenced: boolean): Promise<OnboardingTourProgress> =>
-        ipcRenderer.invoke(IPC.onboardingTutorialSetSilenced, { silenced }),
+        callProjectRuntimeActionOr(
+          "onboarding",
+          "setTutorialSilenced",
+          { arg: silenced },
+          () =>
+            ipcRenderer.invoke(IPC.onboardingTutorialSetSilenced, { silenced }),
+        ),
       clearSessionDismissal: async (): Promise<OnboardingTourProgress> =>
-        ipcRenderer.invoke(IPC.onboardingTutorialClearSessionDismissal),
+        callProjectRuntimeActionOr(
+          "onboarding",
+          "clearTutorialSessionDismissal",
+          {},
+          () => ipcRenderer.invoke(IPC.onboardingTutorialClearSessionDismissal),
+        ),
       shouldPrompt: async (): Promise<boolean> =>
-        ipcRenderer.invoke(IPC.onboardingTutorialShouldPrompt),
+        callProjectRuntimeActionOr(
+          "onboarding",
+          "shouldPromptTutorial",
+          {},
+          () => ipcRenderer.invoke(IPC.onboardingTutorialShouldPrompt),
+        ),
     },
   },
   automations: {
     list: async (): Promise<AutomationRuleSummary[]> =>
-      ipcRenderer.invoke(IPC.automationsList),
+      callProjectRuntimeActionOr("automations", "list", {}, () =>
+        ipcRenderer.invoke(IPC.automationsList),
+      ),
     toggle: async (args: {
       id: string;
       enabled: boolean;
     }): Promise<AutomationRuleSummary[]> =>
-      ipcRenderer.invoke(IPC.automationsToggle, args),
+      callProjectRuntimeActionOr("automations", "toggleRule", { args }, () =>
+        ipcRenderer.invoke(IPC.automationsToggle, args),
+      ),
     deleteRule: async (
       args: AutomationDeleteRuleRequest,
     ): Promise<AutomationRuleSummary[]> =>
-      ipcRenderer.invoke(IPC.automationsDeleteRule, args),
+      callProjectRuntimeActionOr("automations", "deleteRule", { args }, () =>
+        ipcRenderer.invoke(IPC.automationsDeleteRule, args),
+      ),
     triggerManually: async (
       args: AutomationManualTriggerRequest,
     ): Promise<AutomationRun> =>
-      ipcRenderer.invoke(IPC.automationsTriggerManually, args),
+      callProjectRuntimeActionOr(
+        "automations",
+        "triggerManually",
+        { args },
+        () => ipcRenderer.invoke(IPC.automationsTriggerManually, args),
+      ),
     getHistory: async (args: {
       id: string;
       limit?: number;
     }): Promise<AutomationRun[]> =>
-      ipcRenderer.invoke(IPC.automationsGetHistory, args),
+      callProjectRuntimeActionOr("automations", "getHistory", { args }, () =>
+        ipcRenderer.invoke(IPC.automationsGetHistory, args),
+      ),
     listRuns: async (args?: AutomationRunListArgs): Promise<AutomationRun[]> =>
-      ipcRenderer.invoke(IPC.automationsListRuns, args ?? {}),
+      callProjectRuntimeActionOr(
+        "automations",
+        "listRuns",
+        { args: args ?? {} },
+        () => ipcRenderer.invoke(IPC.automationsListRuns, args ?? {}),
+      ),
     getRunDetail: async (runId: string): Promise<AutomationRunDetail | null> =>
-      ipcRenderer.invoke(IPC.automationsGetRunDetail, { runId }),
+      callProjectRuntimeActionOr(
+        "automations",
+        "getRunDetail",
+        { args: { runId } },
+        () => ipcRenderer.invoke(IPC.automationsGetRunDetail, { runId }),
+      ),
     getIngressStatus: async (): Promise<AutomationIngressStatus> =>
-      ipcRenderer.invoke(IPC.automationsGetIngressStatus),
+      callProjectRuntimeActionOr("automations", "getIngressStatus", {}, () =>
+        ipcRenderer.invoke(IPC.automationsGetIngressStatus),
+      ),
     listIngressEvents: async (args?: {
       limit?: number;
     }): Promise<AutomationIngressEventRecord[]> =>
-      ipcRenderer.invoke(IPC.automationsListIngressEvents, args ?? {}),
+      callProjectRuntimeActionOr(
+        "automations",
+        "listIngressEvents",
+        { args: args ?? {} },
+        () => ipcRenderer.invoke(IPC.automationsListIngressEvents, args ?? {}),
+      ),
     parseNaturalLanguage: async (
       req: AutomationParseNaturalLanguageRequest,
     ): Promise<AutomationParseNaturalLanguageResult> =>
-      ipcRenderer.invoke(IPC.automationsParseNaturalLanguage, req),
+      callProjectRuntimeActionOr(
+        "automation_planner",
+        "parseNaturalLanguage",
+        { args: req },
+        () => ipcRenderer.invoke(IPC.automationsParseNaturalLanguage, req),
+      ),
     validateDraft: async (
       req: AutomationValidateDraftRequest,
     ): Promise<AutomationValidateDraftResult> =>
-      ipcRenderer.invoke(IPC.automationsValidateDraft, req),
+      callProjectRuntimeActionOr(
+        "automation_planner",
+        "validateDraft",
+        { args: req },
+        () => ipcRenderer.invoke(IPC.automationsValidateDraft, req),
+      ),
     saveDraft: async (
       req: AutomationSaveDraftRequest,
     ): Promise<AutomationSaveDraftResult> =>
-      ipcRenderer.invoke(IPC.automationsSaveDraft, req),
+      callProjectRuntimeActionOr(
+        "automation_planner",
+        "saveDraft",
+        { args: req },
+        () => ipcRenderer.invoke(IPC.automationsSaveDraft, req),
+      ),
     simulate: async (
       req: AutomationSimulateRequest,
     ): Promise<AutomationSimulateResult> =>
-      ipcRenderer.invoke(IPC.automationsSimulate, req),
+      callProjectRuntimeActionOr(
+        "automation_planner",
+        "simulate",
+        { args: req },
+        () => ipcRenderer.invoke(IPC.automationsSimulate, req),
+      ),
     onEvent: (cb: (ev: AutomationsEventPayload) => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,
@@ -1479,33 +3233,70 @@ contextBridge.exposeInMainWorld("ade", {
   },
   review: {
     listLaunchContext: async (): Promise<ReviewLaunchContext> =>
-      ipcRenderer.invoke(IPC.reviewListLaunchContext),
+      callProjectRuntimeActionOr("review", "listLaunchContext", {}, () =>
+        ipcRenderer.invoke(IPC.reviewListLaunchContext),
+      ),
     listRuns: async (args: ReviewListRunsArgs = {}): Promise<ReviewRun[]> =>
-      ipcRenderer.invoke(IPC.reviewListRuns, args),
+      callProjectRuntimeActionOr("review", "listRuns", { args }, () =>
+        ipcRenderer.invoke(IPC.reviewListRuns, args),
+      ),
     getRunDetail: async (runId: string): Promise<ReviewRunDetail | null> =>
-      ipcRenderer.invoke(IPC.reviewGetRunDetail, { runId }),
+      callProjectRuntimeActionOr(
+        "review",
+        "getRunDetail",
+        { args: { runId } },
+        () => ipcRenderer.invoke(IPC.reviewGetRunDetail, { runId }),
+      ),
     startRun: async (args: ReviewStartRunArgs): Promise<ReviewRun> =>
-      ipcRenderer.invoke(IPC.reviewStartRun, args),
+      callProjectRuntimeActionOr("review", "startRun", { args }, () =>
+        ipcRenderer.invoke(IPC.reviewStartRun, args),
+      ),
     rerun: async (runId: string): Promise<ReviewRun> =>
-      ipcRenderer.invoke(IPC.reviewRerun, { runId }),
+      callProjectRuntimeActionOr("review", "rerun", { arg: runId }, () =>
+        ipcRenderer.invoke(IPC.reviewRerun, { runId }),
+      ),
     cancelRun: async (runId: string): Promise<ReviewRun | null> =>
-      ipcRenderer.invoke(IPC.reviewCancelRun, { runId }),
+      callProjectRuntimeActionOr(
+        "review",
+        "cancelRun",
+        { args: { runId } },
+        () => ipcRenderer.invoke(IPC.reviewCancelRun, { runId }),
+      ),
     recordFeedback: async (
-      args: import("../shared/types").ReviewRecordFeedbackArgs,
-    ): Promise<import("../shared/types").ReviewFeedbackRecord> =>
-      ipcRenderer.invoke(IPC.reviewRecordFeedback, args),
+      args: ReviewRecordFeedbackArgs,
+    ): Promise<ReviewFeedbackRecord> =>
+      callProjectRuntimeActionOr("review", "recordFeedback", { args }, () =>
+        ipcRenderer.invoke(IPC.reviewRecordFeedback, args),
+      ),
     listSuppressions: async (
-      args: import("../shared/types").ReviewListSuppressionsArgs = {},
-    ): Promise<import("../shared/types").ReviewSuppression[]> =>
-      ipcRenderer.invoke(IPC.reviewListSuppressions, args),
+      args: ReviewListSuppressionsArgs = {},
+    ): Promise<ReviewSuppression[]> =>
+      callProjectRuntimeActionOr("review", "listSuppressions", { args }, () =>
+        ipcRenderer.invoke(IPC.reviewListSuppressions, args),
+      ),
     deleteSuppression: async (suppressionId: string): Promise<boolean> =>
-      ipcRenderer.invoke(IPC.reviewDeleteSuppression, { suppressionId }),
-    qualityReport: async (): Promise<import("../shared/types").ReviewQualityReport> =>
-      ipcRenderer.invoke(IPC.reviewQualityReport),
+      callProjectRuntimeActionOr(
+        "review",
+        "deleteSuppression",
+        { args: { suppressionId } },
+        () =>
+          ipcRenderer.invoke(IPC.reviewDeleteSuppression, { suppressionId }),
+      ),
+    qualityReport: async (): Promise<ReviewQualityReport> =>
+      callProjectRuntimeActionOr("review", "qualityReport", {}, () =>
+        ipcRenderer.invoke(IPC.reviewQualityReport),
+      ),
     onEvent: (cb: (ev: ReviewEventPayload) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, payload: ReviewEventPayload) => cb(payload);
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        payload: ReviewEventPayload,
+      ) => cb(payload);
       ipcRenderer.on(IPC.reviewEvent, listener);
-      return () => ipcRenderer.removeListener(IPC.reviewEvent, listener);
+      const removeRemote = subscribeRemoteReviewEvents(cb);
+      return () => {
+        removeRemote();
+        ipcRenderer.removeListener(IPC.reviewEvent, listener);
+      };
     },
   },
   actions: {
@@ -1514,15 +3305,21 @@ contextBridge.exposeInMainWorld("ade", {
   },
   usage: {
     getSnapshot: async (): Promise<UsageSnapshot | null> =>
-      ipcRenderer.invoke(IPC.usageGetSnapshot),
+      callProjectRuntimeActionOr("usage", "getUsageSnapshot", {}, () =>
+        ipcRenderer.invoke(IPC.usageGetSnapshot),
+      ),
     refresh: async (): Promise<UsageSnapshot | null> =>
-      ipcRenderer.invoke(IPC.usageRefresh),
+      callProjectRuntimeActionOr("usage", "forceRefresh", {}, () =>
+        ipcRenderer.invoke(IPC.usageRefresh),
+      ),
     checkBudget: async (args: {
       scope: BudgetCapScope;
       scopeId?: string;
       provider: BudgetCapProvider;
     }): Promise<BudgetCheckResult> =>
-      ipcRenderer.invoke(IPC.usageCheckBudget, args),
+      callProjectRuntimeActionOr("budget", "checkBudget", { args }, () =>
+        ipcRenderer.invoke(IPC.usageCheckBudget, args),
+      ),
     getCumulativeUsage: async (args: {
       scope: BudgetCapScope;
       scopeId?: string;
@@ -1531,13 +3328,23 @@ contextBridge.exposeInMainWorld("ade", {
       totalTokens: number;
       totalCostUsd: number;
       weekKey: string;
-    }> => ipcRenderer.invoke(IPC.usageGetCumulativeUsage, args),
+    }> =>
+      callProjectRuntimeActionOr("budget", "getCumulativeUsage", { args }, () =>
+        ipcRenderer.invoke(IPC.usageGetCumulativeUsage, args),
+      ),
     getBudgetConfig: async (): Promise<BudgetCapConfig> =>
-      ipcRenderer.invoke(IPC.usageGetBudgetConfig),
+      callProjectRuntimeActionOr("budget", "getConfig", {}, () =>
+        ipcRenderer.invoke(IPC.usageGetBudgetConfig),
+      ),
     saveBudgetConfig: async (
       config: BudgetCapConfig,
     ): Promise<BudgetCapConfig> =>
-      ipcRenderer.invoke(IPC.usageSaveBudgetConfig, config),
+      callProjectRuntimeActionOr(
+        "budget",
+        "updateConfig",
+        { args: config },
+        () => ipcRenderer.invoke(IPC.usageSaveBudgetConfig, config),
+      ),
     onUpdate: (cb: (snapshot: UsageSnapshot) => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,
@@ -1549,87 +3356,158 @@ contextBridge.exposeInMainWorld("ade", {
   },
   missions: {
     list: async (args: ListMissionsArgs = {}): Promise<MissionSummary[]> =>
-      ipcRenderer.invoke(IPC.missionsList, args),
+      callProjectRuntimeActionOr("mission", "list", { args }, () =>
+        ipcRenderer.invoke(IPC.missionsList, args),
+      ),
     get: async (missionId: string): Promise<MissionDetail | null> =>
-      ipcRenderer.invoke(IPC.missionsGet, { missionId }),
+      callProjectRuntimeActionOr("mission", "get", { arg: missionId }, () =>
+        ipcRenderer.invoke(IPC.missionsGet, { missionId }),
+      ),
     create: async (args: CreateMissionArgs): Promise<MissionDetail> =>
-      ipcRenderer.invoke(IPC.missionsCreate, args),
+      callProjectRuntimeActionOr("mission", "create", { args }, () =>
+        ipcRenderer.invoke(IPC.missionsCreate, args),
+      ),
     update: async (args: UpdateMissionArgs): Promise<MissionDetail> =>
-      ipcRenderer.invoke(IPC.missionsUpdate, args),
+      callProjectRuntimeActionOr("mission", "update", { args }, () =>
+        ipcRenderer.invoke(IPC.missionsUpdate, args),
+      ),
     archive: async (args: ArchiveMissionArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.missionsArchive, args),
+      callProjectRuntimeActionOr("mission", "archive", { args }, () =>
+        ipcRenderer.invoke(IPC.missionsArchive, args),
+      ),
     delete: async (args: DeleteMissionArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.missionsDelete, args),
+      callProjectRuntimeActionOr("mission", "delete", { args }, () =>
+        ipcRenderer.invoke(IPC.missionsDelete, args),
+      ),
     updateStep: async (args: UpdateMissionStepArgs): Promise<MissionStep> =>
-      ipcRenderer.invoke(IPC.missionsUpdateStep, args),
+      callProjectRuntimeActionOr("mission", "updateStep", { args }, () =>
+        ipcRenderer.invoke(IPC.missionsUpdateStep, args),
+      ),
     addArtifact: async (
       args: AddMissionArtifactArgs,
     ): Promise<MissionArtifact> =>
-      ipcRenderer.invoke(IPC.missionsAddArtifact, args),
+      callProjectRuntimeActionOr("mission", "addArtifact", { args }, () =>
+        ipcRenderer.invoke(IPC.missionsAddArtifact, args),
+      ),
     addIntervention: async (
       args: AddMissionInterventionArgs,
     ): Promise<MissionIntervention> =>
-      ipcRenderer.invoke(IPC.missionsAddIntervention, args),
+      callProjectRuntimeActionOr("mission", "addIntervention", { args }, () =>
+        ipcRenderer.invoke(IPC.missionsAddIntervention, args),
+      ),
     resolveIntervention: async (
       args: ResolveMissionInterventionArgs,
     ): Promise<MissionIntervention> =>
-      ipcRenderer.invoke(IPC.missionsResolveIntervention, args),
+      callProjectRuntimeActionOr(
+        "mission",
+        "resolveIntervention",
+        { args },
+        () => ipcRenderer.invoke(IPC.missionsResolveIntervention, args),
+      ),
     listPhaseItems: async (
       args: ListPhaseItemsArgs = {},
     ): Promise<PhaseCard[]> =>
-      ipcRenderer.invoke(IPC.missionsListPhaseItems, args),
+      callProjectRuntimeActionOr("mission", "listPhaseItems", { args }, () =>
+        ipcRenderer.invoke(IPC.missionsListPhaseItems, args),
+      ),
     savePhaseItem: async (args: SavePhaseItemArgs): Promise<PhaseCard> =>
-      ipcRenderer.invoke(IPC.missionsSavePhaseItem, args),
+      callProjectRuntimeActionOr("mission", "savePhaseItem", { args }, () =>
+        ipcRenderer.invoke(IPC.missionsSavePhaseItem, args),
+      ),
     deletePhaseItem: async (args: DeletePhaseItemArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.missionsDeletePhaseItem, args),
+      callProjectRuntimeActionOr("mission", "deletePhaseItem", { args }, () =>
+        ipcRenderer.invoke(IPC.missionsDeletePhaseItem, args),
+      ).then(() => undefined),
     importPhaseItems: async (
       args: ImportPhaseItemsArgs,
     ): Promise<PhaseCard[]> =>
-      ipcRenderer.invoke(IPC.missionsImportPhaseItems, args),
+      callProjectRuntimeActionOr("mission", "importPhaseItems", { args }, () =>
+        ipcRenderer.invoke(IPC.missionsImportPhaseItems, args),
+      ),
     exportPhaseItems: async (
       args: ExportPhaseItemsArgs = {},
     ): Promise<ExportPhaseItemsResult> =>
-      ipcRenderer.invoke(IPC.missionsExportPhaseItems, args),
+      callProjectRuntimeActionOr("mission", "exportPhaseItems", { args }, () =>
+        ipcRenderer.invoke(IPC.missionsExportPhaseItems, args),
+      ),
     listPhaseProfiles: async (
       args: ListPhaseProfilesArgs = {},
     ): Promise<PhaseProfile[]> =>
-      ipcRenderer.invoke(IPC.missionsListPhaseProfiles, args),
+      callProjectRuntimeActionOr("mission", "listPhaseProfiles", { args }, () =>
+        ipcRenderer.invoke(IPC.missionsListPhaseProfiles, args),
+      ),
     savePhaseProfile: async (
       args: SavePhaseProfileArgs,
     ): Promise<PhaseProfile> =>
-      ipcRenderer.invoke(IPC.missionsSavePhaseProfile, args),
+      callProjectRuntimeActionOr("mission", "savePhaseProfile", { args }, () =>
+        ipcRenderer.invoke(IPC.missionsSavePhaseProfile, args),
+      ),
     deletePhaseProfile: async (args: DeletePhaseProfileArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.missionsDeletePhaseProfile, args),
+      callProjectRuntimeActionOr(
+        "mission",
+        "deletePhaseProfile",
+        { args },
+        () => ipcRenderer.invoke(IPC.missionsDeletePhaseProfile, args),
+      ).then(() => undefined),
     clonePhaseProfile: async (
       args: ClonePhaseProfileArgs,
     ): Promise<PhaseProfile> =>
-      ipcRenderer.invoke(IPC.missionsClonePhaseProfile, args),
+      callProjectRuntimeActionOr("mission", "clonePhaseProfile", { args }, () =>
+        ipcRenderer.invoke(IPC.missionsClonePhaseProfile, args),
+      ),
     exportPhaseProfile: async (
       args: ExportPhaseProfileArgs,
     ): Promise<ExportPhaseProfileResult> =>
-      ipcRenderer.invoke(IPC.missionsExportPhaseProfile, args),
+      callProjectRuntimeActionOr(
+        "mission",
+        "exportPhaseProfile",
+        { args },
+        () => ipcRenderer.invoke(IPC.missionsExportPhaseProfile, args),
+      ),
     importPhaseProfile: async (
       args: ImportPhaseProfileArgs,
     ): Promise<PhaseProfile> =>
-      ipcRenderer.invoke(IPC.missionsImportPhaseProfile, args),
+      callProjectRuntimeActionOr(
+        "mission",
+        "importPhaseProfile",
+        { args },
+        () => ipcRenderer.invoke(IPC.missionsImportPhaseProfile, args),
+      ),
     getPhaseConfiguration: async (
       missionId: string,
     ): Promise<MissionPhaseConfiguration | null> =>
-      ipcRenderer.invoke(IPC.missionsGetPhaseConfiguration, { missionId }),
+      callProjectRuntimeActionOr(
+        "mission",
+        "getPhaseConfiguration",
+        { arg: missionId },
+        () =>
+          ipcRenderer.invoke(IPC.missionsGetPhaseConfiguration, { missionId }),
+      ),
     getDashboard: async (): Promise<MissionDashboardSnapshot> =>
-      ipcRenderer.invoke(IPC.missionsGetDashboard),
+      callProjectRuntimeActionOr("mission", "getDashboard", {}, () =>
+        ipcRenderer.invoke(IPC.missionsGetDashboard),
+      ),
     getFullMissionView: async (
       args: GetFullMissionViewArgs,
     ): Promise<FullMissionViewResult> =>
-      ipcRenderer.invoke(IPC.missionsGetFullMissionView, args),
+      callProjectRuntimeActionOr(
+        "mission",
+        "getFullMissionView",
+        { args },
+        () => ipcRenderer.invoke(IPC.missionsGetFullMissionView, args),
+      ),
     preflight: async (
       args: MissionPreflightRequest,
     ): Promise<MissionPreflightResult> =>
-      ipcRenderer.invoke(IPC.missionsPreflight, args),
+      callProjectRuntimeActionOr("mission", "preflight", { args }, () =>
+        ipcRenderer.invoke(IPC.missionsPreflight, args),
+      ),
     getRunView: async (
       args: GetMissionRunViewArgs,
     ): Promise<MissionRunView | null> =>
-      ipcRenderer.invoke(IPC.missionsGetRunView, args),
+      callProjectRuntimeActionOr("mission", "getRunView", { args }, () =>
+        ipcRenderer.invoke(IPC.missionsGetRunView, args),
+      ),
     subscribeRunView: (
       args: GetMissionRunViewArgs,
       cb: (view: MissionRunView | null) => void,
@@ -1645,17 +3523,21 @@ contextBridge.exposeInMainWorld("ade", {
           return;
         }
         inFlight = true;
-        void ipcRenderer.invoke(IPC.missionsGetRunView, args).then(
-          (view: MissionRunView | null) => {
-            if (!disposed) cb(view);
-          },
-          () => {},
-        ).finally(() => {
-          inFlight = false;
-          if (disposed || !pending) return;
-          pending = false;
-          scheduleRefresh(350);
-        });
+        void callProjectRuntimeActionOr("mission", "getRunView", { args }, () =>
+          ipcRenderer.invoke(IPC.missionsGetRunView, args),
+        )
+          .then(
+            (view: MissionRunView | null) => {
+              if (!disposed) cb(view);
+            },
+            () => {},
+          )
+          .finally(() => {
+            inFlight = false;
+            if (disposed || !pending) return;
+            pending = false;
+            scheduleRefresh(350);
+          });
       };
       const scheduleRefresh = (delayMs = 650) => {
         if (disposed) return;
@@ -1698,10 +3580,35 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.on(IPC.orchestratorEvent, runtimeListener);
       ipcRenderer.on(IPC.orchestratorThreadEvent, threadListener);
       ipcRenderer.on(IPC.orchestratorDagMutation, dagListener);
+      const removeRemoteMission = subscribeRemoteMissionEvents((payload) => {
+        if (payload.missionId !== args.missionId) return;
+        scheduleRefresh();
+      });
+      const removeRemoteOrchestrator = subscribeRemoteOrchestratorEvents(
+        (payload) => {
+          if (args.runId && payload.runId !== args.runId) return;
+          scheduleRefresh();
+        },
+      );
+      const removeRemoteThread = subscribeRemoteOrchestratorThreadEvents(
+        (payload) => {
+          if (payload.missionId !== args.missionId) return;
+          if (args.runId && payload.runId !== args.runId) return;
+          scheduleRefresh(750);
+        },
+      );
+      const removeRemoteDag = subscribeRemoteDagMutationEvents((payload) => {
+        if (args.runId && payload.runId !== args.runId) return;
+        scheduleRefresh(750);
+      });
       refresh();
       return () => {
         disposed = true;
         if (refreshTimer) clearTimeout(refreshTimer);
+        removeRemoteMission();
+        removeRemoteOrchestrator();
+        removeRemoteThread();
+        removeRemoteDag();
         ipcRenderer.removeListener(IPC.missionsEvent, missionListener);
         ipcRenderer.removeListener(IPC.orchestratorEvent, runtimeListener);
         ipcRenderer.removeListener(IPC.orchestratorThreadEvent, threadListener);
@@ -1714,202 +3621,461 @@ contextBridge.exposeInMainWorld("ade", {
         payload: MissionsEventPayload,
       ) => cb(payload);
       ipcRenderer.on(IPC.missionsEvent, listener);
-      return () => ipcRenderer.removeListener(IPC.missionsEvent, listener);
+      const removeRemote = subscribeRemoteMissionEvents(cb);
+      return () => {
+        removeRemote();
+        ipcRenderer.removeListener(IPC.missionsEvent, listener);
+      };
     },
   },
   orchestrator: {
     listRuns: async (
       args: ListOrchestratorRunsArgs = {},
     ): Promise<OrchestratorRun[]> =>
-      ipcRenderer.invoke(IPC.orchestratorListRuns, args),
+      callProjectRuntimeActionOr(
+        "orchestrator_core",
+        "listRuns",
+        { args },
+        () => ipcRenderer.invoke(IPC.orchestratorListRuns, args),
+      ),
     getRunGraph: async (
       args: GetOrchestratorRunGraphArgs,
     ): Promise<OrchestratorRunGraph> =>
-      ipcRenderer.invoke(IPC.orchestratorGetRunGraph, args),
+      callProjectRuntimeActionOr(
+        "orchestrator_core",
+        "getRunGraph",
+        { args },
+        () => ipcRenderer.invoke(IPC.orchestratorGetRunGraph, args),
+      ),
     startRun: async (
       args: StartOrchestratorRunArgs,
     ): Promise<{ run: OrchestratorRun; steps: OrchestratorStep[] }> =>
-      ipcRenderer.invoke(IPC.orchestratorStartRun, args),
+      callProjectRuntimeActionOr(
+        "orchestrator_core",
+        "startRun",
+        { args },
+        () => ipcRenderer.invoke(IPC.orchestratorStartRun, args),
+      ),
     startRunFromMission: async (
       args: StartOrchestratorRunFromMissionArgs,
-    ): Promise<{ run: OrchestratorRun; steps: OrchestratorStep[] }> =>
-      ipcRenderer.invoke(IPC.orchestratorStartRunFromMission, args),
+    ): Promise<{ run: OrchestratorRun; steps: OrchestratorStep[] }> => {
+      const launch =
+        await callProjectRuntimeActionOr<StartMissionRunWithAIResult>(
+          "orchestrator",
+          "startMissionRun",
+          {
+            args: {
+              missionId: args.missionId,
+              runMode: args.runMode,
+              autopilotOwnerId: args.autopilotOwnerId,
+              defaultExecutorKind: args.defaultExecutorKind,
+              defaultRetryLimit: args.defaultRetryLimit,
+              metadata: args.metadata ?? null,
+              plannerProvider: args.plannerProvider ?? undefined,
+            },
+          },
+          () =>
+            ipcRenderer.invoke(IPC.orchestratorStartMissionRun, {
+              missionId: args.missionId,
+              runMode: args.runMode,
+              autopilotOwnerId: args.autopilotOwnerId,
+              defaultExecutorKind: args.defaultExecutorKind,
+              defaultRetryLimit: args.defaultRetryLimit,
+              metadata: args.metadata ?? null,
+              plannerProvider: args.plannerProvider ?? undefined,
+            }),
+        );
+      if (!launch.started) {
+        throw new Error("Mission run did not produce a runnable execution.");
+      }
+      return launch.started;
+    },
     startAttempt: async (
       args: StartOrchestratorAttemptArgs,
     ): Promise<OrchestratorAttempt> =>
-      ipcRenderer.invoke(IPC.orchestratorStartAttempt, args),
+      callProjectRuntimeActionOr(
+        "orchestrator_core",
+        "startAttempt",
+        { args },
+        () => ipcRenderer.invoke(IPC.orchestratorStartAttempt, args),
+      ),
     completeAttempt: async (
       args: CompleteOrchestratorAttemptArgs,
     ): Promise<OrchestratorAttempt> =>
-      ipcRenderer.invoke(IPC.orchestratorCompleteAttempt, args),
+      callProjectRuntimeActionOr(
+        "orchestrator_core",
+        "completeAttempt",
+        { args },
+        () => ipcRenderer.invoke(IPC.orchestratorCompleteAttempt, args),
+      ),
     tickRun: async (args: TickOrchestratorRunArgs): Promise<OrchestratorRun> =>
-      ipcRenderer.invoke(IPC.orchestratorTickRun, args),
+      callProjectRuntimeActionOr("orchestrator_core", "tick", { args }, () =>
+        ipcRenderer.invoke(IPC.orchestratorTickRun, args),
+      ),
     pauseRun: async (
       args: PauseOrchestratorRunArgs,
     ): Promise<OrchestratorRun> =>
-      ipcRenderer.invoke(IPC.orchestratorPauseRun, args),
+      callProjectRuntimeActionOr(
+        "orchestrator_core",
+        "pauseRun",
+        {
+          args: {
+            runId: args.runId,
+            reason: args.reason ?? "Paused from Missions UI.",
+          },
+        },
+        () => ipcRenderer.invoke(IPC.orchestratorPauseRun, args),
+      ),
     resumeRun: async (
       args: ResumeOrchestratorRunArgs,
     ): Promise<OrchestratorRun> =>
-      ipcRenderer.invoke(IPC.orchestratorResumeRun, args),
+      callProjectRuntimeActionOr("orchestrator", "resumeRun", { args }, () =>
+        ipcRenderer.invoke(IPC.orchestratorResumeRun, args),
+      ),
     cancelRun: async (
       args: CancelOrchestratorRunArgs,
     ): Promise<OrchestratorRun> =>
-      ipcRenderer.invoke(IPC.orchestratorCancelRun, args),
+      callProjectRuntimeActionOr(
+        "orchestrator",
+        "cancelRunGracefully",
+        { args },
+        () => ipcRenderer.invoke(IPC.orchestratorCancelRun, args),
+      ),
     cleanupTeamResources: async (
       args: CleanupOrchestratorTeamResourcesArgs,
     ): Promise<CleanupOrchestratorTeamResourcesResult> =>
-      ipcRenderer.invoke(IPC.orchestratorCleanupTeamResources, args),
+      callProjectRuntimeActionOr(
+        "orchestrator",
+        "cleanupTeamResources",
+        { args },
+        () => ipcRenderer.invoke(IPC.orchestratorCleanupTeamResources, args),
+      ),
     heartbeatClaims: async (
       args: HeartbeatOrchestratorClaimsArgs,
     ): Promise<number> =>
-      ipcRenderer.invoke(IPC.orchestratorHeartbeatClaims, args),
+      callProjectRuntimeActionOr(
+        "orchestrator_core",
+        "heartbeatClaims",
+        { args },
+        () => ipcRenderer.invoke(IPC.orchestratorHeartbeatClaims, args),
+      ),
     listTimeline: async (
       args: ListOrchestratorTimelineArgs,
     ): Promise<OrchestratorTimelineEvent[]> =>
-      ipcRenderer.invoke(IPC.orchestratorListTimeline, args),
+      callProjectRuntimeActionOr(
+        "orchestrator_core",
+        "listTimeline",
+        { args },
+        () => ipcRenderer.invoke(IPC.orchestratorListTimeline, args),
+      ),
     getMissionLogs: async (
       args: GetMissionLogsArgs,
     ): Promise<GetMissionLogsResult> =>
-      ipcRenderer.invoke(IPC.orchestratorGetMissionLogs, args),
+      callProjectRuntimeActionOr(
+        "orchestrator",
+        "getMissionLogs",
+        { args },
+        () => ipcRenderer.invoke(IPC.orchestratorGetMissionLogs, args),
+      ),
     exportMissionLogs: async (
       args: ExportMissionLogsArgs,
     ): Promise<ExportMissionLogsResult> =>
-      ipcRenderer.invoke(IPC.orchestratorExportMissionLogs, args),
+      callProjectRuntimeActionOr(
+        "orchestrator",
+        "exportMissionLogs",
+        { args },
+        () => ipcRenderer.invoke(IPC.orchestratorExportMissionLogs, args),
+      ),
     getGateReport: async (
       args: GetOrchestratorGateReportArgs = {},
     ): Promise<OrchestratorGateReport> =>
-      ipcRenderer.invoke(IPC.orchestratorGetGateReport, args),
+      callProjectRuntimeActionOr(
+        "orchestrator_core",
+        "getLatestGateReport",
+        { args },
+        () => ipcRenderer.invoke(IPC.orchestratorGetGateReport, args),
+      ),
     getWorkerStates: async (
       args: GetOrchestratorWorkerStatesArgs,
     ): Promise<OrchestratorWorkerState[]> =>
-      ipcRenderer.invoke(IPC.orchestratorGetWorkerStates, args),
+      callProjectRuntimeActionOr(
+        "orchestrator",
+        "getWorkerStates",
+        { args },
+        () => ipcRenderer.invoke(IPC.orchestratorGetWorkerStates, args),
+      ),
     startMissionRun: async (
       args: StartMissionRunWithAIArgs,
     ): Promise<StartMissionRunWithAIResult> =>
-      ipcRenderer.invoke(IPC.orchestratorStartMissionRun, args),
+      callProjectRuntimeActionOr(
+        "orchestrator",
+        "startMissionRun",
+        { args },
+        () => ipcRenderer.invoke(IPC.orchestratorStartMissionRun, args),
+      ),
     steerMission: async (args: SteerMissionArgs): Promise<SteerMissionResult> =>
-      ipcRenderer.invoke(IPC.orchestratorSteerMission, args),
+      callProjectRuntimeActionOr("orchestrator", "steerMission", { args }, () =>
+        ipcRenderer.invoke(IPC.orchestratorSteerMission, args),
+      ),
     getModelCapabilities: async (): Promise<GetModelCapabilitiesResult> =>
-      ipcRenderer.invoke(IPC.orchestratorGetModelCapabilities),
+      callProjectRuntimeActionOr(
+        "orchestrator",
+        "getModelCapabilities",
+        {},
+        () => ipcRenderer.invoke(IPC.orchestratorGetModelCapabilities),
+      ),
     getTeamMembers: async (
       args: GetTeamMembersArgs,
     ): Promise<OrchestratorTeamMember[]> =>
-      ipcRenderer.invoke(IPC.orchestratorGetTeamMembers, args),
+      callProjectRuntimeActionOr(
+        "orchestrator",
+        "getTeamMembers",
+        { args },
+        () => ipcRenderer.invoke(IPC.orchestratorGetTeamMembers, args),
+      ),
     getTeamRuntimeState: async (
       args: GetTeamRuntimeStateArgs,
     ): Promise<OrchestratorTeamRuntimeState | null> =>
-      ipcRenderer.invoke(IPC.orchestratorGetTeamRuntimeState, args),
+      callProjectRuntimeActionOr(
+        "orchestrator_core",
+        "getRunState",
+        { arg: args.runId },
+        () => ipcRenderer.invoke(IPC.orchestratorGetTeamRuntimeState, args),
+      ),
     finalizeRun: async (args: FinalizeRunArgs): Promise<FinalizeRunResult> =>
-      ipcRenderer.invoke(IPC.orchestratorFinalizeRun, args),
+      callProjectRuntimeActionOr("orchestrator", "finalizeRun", { args }, () =>
+        ipcRenderer.invoke(IPC.orchestratorFinalizeRun, args),
+      ),
     sendChat: async (
       args: SendOrchestratorChatArgs,
     ): Promise<OrchestratorChatMessage> =>
-      ipcRenderer.invoke(IPC.orchestratorSendChat, args),
+      callProjectRuntimeActionOr("orchestrator", "sendChat", { args }, () =>
+        ipcRenderer.invoke(IPC.orchestratorSendChat, args),
+      ),
     getChat: async (
       args: GetOrchestratorChatArgs,
     ): Promise<OrchestratorChatMessage[]> =>
-      ipcRenderer.invoke(IPC.orchestratorGetChat, args),
+      callProjectRuntimeActionOr("orchestrator", "getChat", { args }, () =>
+        ipcRenderer.invoke(IPC.orchestratorGetChat, args),
+      ),
     listChatThreads: async (
       args: ListOrchestratorChatThreadsArgs,
     ): Promise<OrchestratorChatThread[]> =>
-      ipcRenderer.invoke(IPC.orchestratorListChatThreads, args),
+      callProjectRuntimeActionOr(
+        "orchestrator",
+        "listChatThreads",
+        { args },
+        () => ipcRenderer.invoke(IPC.orchestratorListChatThreads, args),
+      ),
     getThreadMessages: async (
       args: GetOrchestratorThreadMessagesArgs,
     ): Promise<OrchestratorChatMessage[]> =>
-      ipcRenderer.invoke(IPC.orchestratorGetThreadMessages, args),
+      callProjectRuntimeActionOr(
+        "orchestrator",
+        "getThreadMessages",
+        { args },
+        () => ipcRenderer.invoke(IPC.orchestratorGetThreadMessages, args),
+      ),
     sendThreadMessage: async (
       args: SendOrchestratorThreadMessageArgs,
     ): Promise<OrchestratorChatMessage> =>
-      ipcRenderer.invoke(IPC.orchestratorSendThreadMessage, args),
+      callProjectRuntimeActionOr(
+        "orchestrator",
+        "sendThreadMessage",
+        { args },
+        () => ipcRenderer.invoke(IPC.orchestratorSendThreadMessage, args),
+      ),
     getWorkerDigest: async (
       args: GetOrchestratorWorkerDigestArgs,
     ): Promise<OrchestratorWorkerDigest | null> =>
-      ipcRenderer.invoke(IPC.orchestratorGetWorkerDigest, args),
+      callProjectRuntimeActionOr(
+        "orchestrator",
+        "getWorkerDigest",
+        { args },
+        () => ipcRenderer.invoke(IPC.orchestratorGetWorkerDigest, args),
+      ),
     listWorkerDigests: async (
       args: ListOrchestratorWorkerDigestsArgs,
     ): Promise<OrchestratorWorkerDigest[]> =>
-      ipcRenderer.invoke(IPC.orchestratorListWorkerDigests, args),
+      callProjectRuntimeActionOr(
+        "orchestrator",
+        "listWorkerDigests",
+        { args },
+        () => ipcRenderer.invoke(IPC.orchestratorListWorkerDigests, args),
+      ),
     getContextCheckpoint: async (
       args: GetOrchestratorContextCheckpointArgs,
     ): Promise<OrchestratorContextCheckpoint | null> =>
-      ipcRenderer.invoke(IPC.orchestratorGetContextCheckpoint, args),
+      callProjectRuntimeActionOr(
+        "orchestrator",
+        "getContextCheckpoint",
+        { args },
+        () => ipcRenderer.invoke(IPC.orchestratorGetContextCheckpoint, args),
+      ),
     listLaneDecisions: async (
       args: ListOrchestratorLaneDecisionsArgs,
     ): Promise<OrchestratorLaneDecision[]> =>
-      ipcRenderer.invoke(IPC.orchestratorListLaneDecisions, args),
+      callProjectRuntimeActionOr(
+        "orchestrator",
+        "listLaneDecisions",
+        { args },
+        () => ipcRenderer.invoke(IPC.orchestratorListLaneDecisions, args),
+      ),
     getMissionMetrics: async (
       args: GetMissionMetricsArgs,
     ): Promise<{
       config: MissionMetricsConfig | null;
       samples: MissionMetricSample[];
-    }> => ipcRenderer.invoke(IPC.orchestratorGetMissionMetrics, args),
+    }> =>
+      callProjectRuntimeActionOr(
+        "orchestrator",
+        "getMissionMetrics",
+        { args },
+        () => ipcRenderer.invoke(IPC.orchestratorGetMissionMetrics, args),
+      ),
     setMissionMetricsConfig: async (
       args: SetMissionMetricsConfigArgs,
     ): Promise<MissionMetricsConfig> =>
-      ipcRenderer.invoke(IPC.orchestratorSetMissionMetricsConfig, args),
+      callProjectRuntimeActionOr(
+        "orchestrator",
+        "setMissionMetricsConfig",
+        { args },
+        () => ipcRenderer.invoke(IPC.orchestratorSetMissionMetricsConfig, args),
+      ),
     getExecutionPlanPreview: async (args: {
       runId: string;
     }): Promise<ExecutionPlanPreview | null> =>
-      ipcRenderer.invoke(IPC.orchestratorGetExecutionPlanPreview, args),
+      callProjectRuntimeActionOr(
+        "orchestrator",
+        "getExecutionPlanPreview",
+        { args },
+        () => ipcRenderer.invoke(IPC.orchestratorGetExecutionPlanPreview, args),
+      ),
     getMissionStateDocument: async (
       args: GetMissionStateDocumentArgs,
     ): Promise<MissionStateDocument | null> =>
-      ipcRenderer.invoke(IPC.orchestratorGetMissionStateDocument, args),
+      callProjectRuntimeActionOr(
+        "orchestrator",
+        "getMissionStateDocument",
+        { args },
+        () => ipcRenderer.invoke(IPC.orchestratorGetMissionStateDocument, args),
+      ),
     listArtifacts: async (
       args: ListOrchestratorArtifactsArgs,
     ): Promise<OrchestratorArtifact[]> =>
-      ipcRenderer.invoke(IPC.orchestratorListArtifacts, args),
+      callProjectRuntimeActionOr(
+        "orchestrator",
+        "listArtifacts",
+        { args },
+        () => ipcRenderer.invoke(IPC.orchestratorListArtifacts, args),
+      ),
     listWorkerCheckpoints: async (
       args: ListOrchestratorWorkerCheckpointsArgs,
     ): Promise<OrchestratorWorkerCheckpoint[]> =>
-      ipcRenderer.invoke(IPC.orchestratorListWorkerCheckpoints, args),
+      callProjectRuntimeActionOr(
+        "orchestrator",
+        "listWorkerCheckpoints",
+        { args },
+        () => ipcRenderer.invoke(IPC.orchestratorListWorkerCheckpoints, args),
+      ),
     getPromptInspector: async (
       args: GetOrchestratorPromptInspectorArgs,
     ): Promise<OrchestratorPromptInspector | null> =>
-      ipcRenderer.invoke(IPC.orchestratorGetPromptInspector, args),
+      callProjectRuntimeActionOr(
+        "orchestrator",
+        "getPromptInspector",
+        { args },
+        () => ipcRenderer.invoke(IPC.orchestratorGetPromptInspector, args),
+      ),
     getPlanningPromptPreview: async (
       args: GetPlanningPromptPreviewArgs,
     ): Promise<OrchestratorPromptInspector | null> =>
-      ipcRenderer.invoke(IPC.orchestratorGetPlanningPromptPreview, args),
+      callProjectRuntimeActionOr(
+        "orchestrator",
+        "getPlanningPromptPreview",
+        { args },
+        () =>
+          ipcRenderer.invoke(IPC.orchestratorGetPlanningPromptPreview, args),
+      ),
     getCheckpointStatus: async (args: {
       runId: string;
     }): Promise<{
       savedAt: string;
       turnCount: number;
       compactionCount: number;
-    } | null> => ipcRenderer.invoke(IPC.orchestratorGetCheckpointStatus, args),
+    } | null> =>
+      callProjectRuntimeActionOr(
+        "orchestrator",
+        "getCheckpointStatus",
+        { args },
+        () => ipcRenderer.invoke(IPC.orchestratorGetCheckpointStatus, args),
+      ),
     getMissionBudgetStatus: async (
       args: GetMissionBudgetStatusArgs,
     ): Promise<MissionBudgetSnapshot> =>
-      ipcRenderer.invoke(IPC.orchestratorGetMissionBudgetStatus, args),
+      callProjectRuntimeActionOr(
+        "mission_budget",
+        "getMissionBudgetStatus",
+        { args },
+        () => ipcRenderer.invoke(IPC.orchestratorGetMissionBudgetStatus, args),
+      ),
     getMissionBudgetTelemetry: async (
       args: GetMissionBudgetTelemetryArgs,
     ): Promise<MissionBudgetTelemetrySnapshot> =>
-      ipcRenderer.invoke(IPC.orchestratorGetMissionBudgetTelemetry, args),
+      callProjectRuntimeActionOr(
+        "mission_budget",
+        "getMissionBudgetTelemetry",
+        { args },
+        () =>
+          ipcRenderer.invoke(IPC.orchestratorGetMissionBudgetTelemetry, args),
+      ),
     sendAgentMessage: async (
       args: SendAgentMessageArgs,
     ): Promise<OrchestratorChatMessage> =>
-      ipcRenderer.invoke(IPC.orchestratorSendAgentMessage, args),
+      callProjectRuntimeActionOr(
+        "orchestrator",
+        "sendAgentMessage",
+        { args },
+        () => ipcRenderer.invoke(IPC.orchestratorSendAgentMessage, args),
+      ),
     getGlobalChat: async (
       args: GetGlobalChatArgs,
     ): Promise<OrchestratorChatMessage[]> =>
-      ipcRenderer.invoke(IPC.orchestratorGetGlobalChat, args),
+      callProjectRuntimeActionOr(
+        "orchestrator",
+        "getGlobalChat",
+        { args },
+        () => ipcRenderer.invoke(IPC.orchestratorGetGlobalChat, args),
+      ),
     getActiveAgents: async (
       args: GetActiveAgentsArgs,
     ): Promise<ActiveAgentInfo[]> =>
-      ipcRenderer.invoke(IPC.orchestratorGetActiveAgents, args),
+      callProjectRuntimeActionOr(
+        "orchestrator",
+        "getActiveAgents",
+        { args },
+        () => ipcRenderer.invoke(IPC.orchestratorGetActiveAgents, args),
+      ),
     getAggregatedUsage: async (
       args: GetAggregatedUsageArgs,
     ): Promise<AggregatedUsageStats> =>
-      ipcRenderer.invoke(IPC.getAggregatedUsage, args),
+      callProjectRuntimeActionOr(
+        "orchestrator",
+        "getAggregatedUsage",
+        { args },
+        () => ipcRenderer.invoke(IPC.getAggregatedUsage, args),
+      ),
     onEvent: (cb: (ev: OrchestratorRuntimeEvent) => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,
         payload: OrchestratorRuntimeEvent,
       ) => cb(payload);
       ipcRenderer.on(IPC.orchestratorEvent, listener);
-      return () => ipcRenderer.removeListener(IPC.orchestratorEvent, listener);
+      const removeRemote = subscribeRemoteOrchestratorEvents(cb);
+      return () => {
+        removeRemote();
+        ipcRenderer.removeListener(IPC.orchestratorEvent, listener);
+      };
     },
     onThreadEvent: (cb: (ev: OrchestratorThreadEvent) => void) => {
       const listener = (
@@ -1917,8 +4083,11 @@ contextBridge.exposeInMainWorld("ade", {
         payload: OrchestratorThreadEvent,
       ) => cb(payload);
       ipcRenderer.on(IPC.orchestratorThreadEvent, listener);
-      return () =>
+      const removeRemote = subscribeRemoteOrchestratorThreadEvents(cb);
+      return () => {
+        removeRemote();
         ipcRenderer.removeListener(IPC.orchestratorThreadEvent, listener);
+      };
     },
     onDagMutation: (cb: (ev: DagMutationEvent) => void) => {
       const listener = (
@@ -1926,136 +4095,258 @@ contextBridge.exposeInMainWorld("ade", {
         payload: DagMutationEvent,
       ) => cb(payload);
       ipcRenderer.on(IPC.orchestratorDagMutation, listener);
-      return () =>
+      const removeRemote = subscribeRemoteDagMutationEvents(cb);
+      return () => {
+        removeRemote();
         ipcRenderer.removeListener(IPC.orchestratorDagMutation, listener);
+      };
     },
   },
   lanes: {
-    list: async (args: ListLanesArgs = {}): Promise<LaneSummary[]> =>
-      lanesListCache.get(serializeIpcCacheArgs(args)),
+    list: async (args: ListLanesArgs = {}): Promise<LaneSummary[]> => {
+      const runtime = await callProjectRuntimeActionIfBound<LaneSummary[]>(
+        "lane",
+        "list",
+        { args },
+      );
+      if (runtime.handled) return runtime.result;
+      return lanesListCache.get(serializeIpcCacheArgs(args));
+    },
     listSnapshots: async (
       args: ListLanesArgs = {},
-    ): Promise<LaneListSnapshot[]> =>
-      lanesListSnapshotsCache.get(serializeIpcCacheArgs(args)),
+    ): Promise<LaneListSnapshot[]> => {
+      const runtime = await callProjectRuntimeActionIfBound<LaneListSnapshot[]>(
+        "lane",
+        "listSnapshots",
+        { args },
+      );
+      if (runtime.handled) return runtime.result;
+      return lanesListSnapshotsCache.get(serializeIpcCacheArgs(args));
+    },
     create: async (args: CreateLaneArgs): Promise<LaneSummary> => {
       clearGitReadCaches();
-      const lane = await ipcRenderer.invoke(IPC.lanesCreate, args);
+      const lane = await callProjectRuntimeActionOr<LaneSummary>(
+        "lane",
+        "create",
+        { args },
+        () => ipcRenderer.invoke(IPC.lanesCreate, args),
+      );
       clearGitReadCaches();
-      return lane;
+      return lane as LaneSummary;
     },
     createChild: async (args: CreateChildLaneArgs): Promise<LaneSummary> => {
       clearGitReadCaches();
-      const lane = await ipcRenderer.invoke(IPC.lanesCreateChild, args);
+      const lane = await callProjectRuntimeActionOr<LaneSummary>(
+        "lane",
+        "createChild",
+        { args },
+        () => ipcRenderer.invoke(IPC.lanesCreateChild, args),
+      );
       clearGitReadCaches();
-      return lane;
+      return lane as LaneSummary;
     },
     createFromUnstaged: async (
       args: CreateLaneFromUnstagedArgs,
     ): Promise<LaneSummary> => {
       clearGitReadCaches();
-      const lane = await ipcRenderer.invoke(IPC.lanesCreateFromUnstaged, args);
+      const lane = await callProjectRuntimeActionOr<LaneSummary>(
+        "lane",
+        "createFromUnstaged",
+        { args },
+        () => ipcRenderer.invoke(IPC.lanesCreateFromUnstaged, args),
+      );
       clearGitReadCaches();
-      return lane;
+      return lane as LaneSummary;
     },
     importBranch: async (args: ImportBranchLaneArgs): Promise<LaneSummary> => {
       clearGitReadCaches();
-      const lane = await ipcRenderer.invoke(IPC.lanesImportBranch, args);
+      const lane = await callProjectRuntimeActionOr<LaneSummary>(
+        "lane",
+        "importBranch",
+        { args },
+        () => ipcRenderer.invoke(IPC.lanesImportBranch, args),
+      );
       clearGitReadCaches();
-      return lane;
+      return lane as LaneSummary;
     },
     previewBranchSwitch: async (
       args: LaneBranchSwitchArgs,
     ): Promise<LaneBranchSwitchPreview> =>
-      ipcRenderer.invoke(IPC.lanesPreviewBranchSwitch, args),
+      callProjectRuntimeActionOr("lane", "previewBranchSwitch", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesPreviewBranchSwitch, args),
+      ),
     switchBranch: async (
       args: LaneBranchSwitchArgs,
     ): Promise<LaneBranchSwitchResult> => {
       clearGitReadCaches();
-      const result = await ipcRenderer.invoke(IPC.lanesSwitchBranch, args);
+      const result = await callProjectRuntimeActionOr<LaneBranchSwitchResult>(
+        "lane",
+        "switchBranch",
+        { args },
+        () => ipcRenderer.invoke(IPC.lanesSwitchBranch, args),
+      );
       clearGitReadCaches();
-      return result;
+      return result as LaneBranchSwitchResult;
     },
     attach: async (args: AttachLaneArgs): Promise<LaneSummary> => {
       clearGitReadCaches();
-      const lane = await ipcRenderer.invoke(IPC.lanesAttach, args);
+      const lane = await callProjectRuntimeActionOr<LaneSummary>(
+        "lane",
+        "attach",
+        { args },
+        () => ipcRenderer.invoke(IPC.lanesAttach, args),
+      );
       clearGitReadCaches();
-      return lane;
+      return lane as LaneSummary;
     },
     listUnregisteredWorktrees: async (): Promise<UnregisteredLaneCandidate[]> =>
-      ipcRenderer.invoke(IPC.lanesListUnregisteredWorktrees),
-    adoptAttached: async (args: AdoptAttachedLaneArgs): Promise<LaneSummary> => {
+      callProjectRuntimeActionOr("lane", "listUnregisteredWorktrees", {}, () =>
+        ipcRenderer.invoke(IPC.lanesListUnregisteredWorktrees),
+      ),
+    adoptAttached: async (
+      args: AdoptAttachedLaneArgs,
+    ): Promise<LaneSummary> => {
       clearGitReadCaches();
-      const lane = await ipcRenderer.invoke(IPC.lanesAdoptAttached, args);
+      const lane = await callProjectRuntimeActionOr<LaneSummary>(
+        "lane",
+        "adoptAttached",
+        { args },
+        () => ipcRenderer.invoke(IPC.lanesAdoptAttached, args),
+      );
       clearGitReadCaches();
-      return lane;
+      return lane as LaneSummary;
     },
     rename: async (args: RenameLaneArgs): Promise<void> => {
       clearGitReadCaches();
-      await ipcRenderer.invoke(IPC.lanesRename, args);
+      await callProjectRuntimeActionOr("lane", "rename", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesRename, args),
+      );
       clearGitReadCaches();
     },
     reparent: async (args: ReparentLaneArgs): Promise<ReparentLaneResult> => {
       clearGitReadCaches();
-      const result = await ipcRenderer.invoke(IPC.lanesReparent, args);
+      const result = await callProjectRuntimeActionOr<ReparentLaneResult>(
+        "lane",
+        "reparent",
+        { args },
+        () => ipcRenderer.invoke(IPC.lanesReparent, args),
+      );
       clearGitReadCaches();
-      return result;
+      return result as ReparentLaneResult;
     },
     updateAppearance: async (args: UpdateLaneAppearanceArgs): Promise<void> => {
       clearGitReadCaches();
-      await ipcRenderer.invoke(IPC.lanesUpdateAppearance, args);
+      await callProjectRuntimeActionOr(
+        "lane",
+        "updateAppearance",
+        { args },
+        () => ipcRenderer.invoke(IPC.lanesUpdateAppearance, args),
+      );
       clearGitReadCaches();
     },
     archive: async (args: ArchiveLaneArgs): Promise<void> => {
       clearGitReadCaches();
-      await ipcRenderer.invoke(IPC.lanesArchive, args);
+      await callProjectRuntimeActionOr("lane", "archive", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesArchive, args),
+      );
       clearGitReadCaches();
     },
     delete: async (args: DeleteLaneArgs): Promise<void> => {
       clearGitReadCaches();
-      await ipcRenderer.invoke(IPC.lanesDelete, args);
+      await callProjectRuntimeActionOr("lane", "delete", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesDelete, args),
+      );
       clearGitReadCaches();
     },
-    cancelDelete: async (args: { laneId: string }): Promise<{ cancelled: boolean; reason?: string }> =>
-      ipcRenderer.invoke(IPC.lanesDeleteCancel, args),
+    cancelDelete: async (args: {
+      laneId: string;
+    }): Promise<{ cancelled: boolean; reason?: string }> =>
+      callProjectRuntimeActionOr(
+        "lane",
+        "cancelDelete",
+        { arg: args.laneId },
+        () => ipcRenderer.invoke(IPC.lanesDeleteCancel, args),
+      ),
     getDeleteRisk: async (args: { laneId: string }): Promise<LaneDeleteRisk> =>
-      ipcRenderer.invoke(IPC.lanesGetDeleteRisk, args),
+      callProjectRuntimeActionOr(
+        "lane",
+        "getDeleteRisk",
+        { arg: args.laneId },
+        () => ipcRenderer.invoke(IPC.lanesGetDeleteRisk, args),
+      ),
     onDeleteEvent: (cb: (ev: LaneDeleteEvent) => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,
         payload: LaneDeleteEvent,
       ) => cb(payload);
       ipcRenderer.on(IPC.lanesDeleteEvent, listener);
-      return () => ipcRenderer.removeListener(IPC.lanesDeleteEvent, listener);
+      const removeRemote = subscribeRemoteLaneDeleteEvents(cb);
+      return () => {
+        removeRemote();
+        ipcRenderer.removeListener(IPC.lanesDeleteEvent, listener);
+      };
     },
     getStackChain: async (laneId: string): Promise<StackChainItem[]> =>
-      ipcRenderer.invoke(IPC.lanesGetStackChain, { laneId }),
+      callProjectRuntimeActionOr("lane", "getStackChain", { arg: laneId }, () =>
+        ipcRenderer.invoke(IPC.lanesGetStackChain, { laneId }),
+      ),
     getChildren: async (laneId: string): Promise<LaneSummary[]> =>
-      ipcRenderer.invoke(IPC.lanesGetChildren, { laneId }),
+      callProjectRuntimeActionOr("lane", "getChildren", { arg: laneId }, () =>
+        ipcRenderer.invoke(IPC.lanesGetChildren, { laneId }),
+      ),
     rebaseStart: async (args: RebaseStartArgs): Promise<RebaseStartResult> =>
-      ipcRenderer.invoke(IPC.lanesRebaseStart, args),
+      callProjectRuntimeActionOr("lane", "rebaseStart", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesRebaseStart, args),
+      ),
     rebasePush: async (args: RebasePushArgs): Promise<RebaseRun> =>
-      ipcRenderer.invoke(IPC.lanesRebasePush, args),
+      callProjectRuntimeActionOr("lane", "rebasePush", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesRebasePush, args),
+      ),
     rebaseRollback: async (args: RebaseRollbackArgs): Promise<RebaseRun> =>
-      ipcRenderer.invoke(IPC.lanesRebaseRollback, args),
+      callProjectRuntimeActionOr("lane", "rebaseRollback", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesRebaseRollback, args),
+      ),
     rebaseAbort: async (args: RebaseAbortArgs): Promise<RebaseRun> =>
-      ipcRenderer.invoke(IPC.lanesRebaseAbort, args),
+      callProjectRuntimeActionOr("lane", "rebaseAbort", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesRebaseAbort, args),
+      ),
     rebaseSubscribe: (cb: (ev: RebaseRunEventPayload) => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,
         payload: RebaseRunEventPayload,
       ) => cb(payload);
       ipcRenderer.on(IPC.lanesRebaseEvent, listener);
-      return () => ipcRenderer.removeListener(IPC.lanesRebaseEvent, listener);
+      const removeRemote = subscribeRemoteLaneRebaseEvents(cb);
+      return () => {
+        removeRemote();
+        ipcRenderer.removeListener(IPC.lanesRebaseEvent, listener);
+      };
     },
     listRebaseSuggestions: async (): Promise<RebaseSuggestion[]> =>
-      ipcRenderer.invoke(IPC.lanesListRebaseSuggestions),
-    dismissRebaseSuggestion: async (args: { laneId: string }): Promise<void> =>
-      ipcRenderer.invoke(IPC.lanesDismissRebaseSuggestion, args),
+      callProjectRuntimeActionOr("lane", "listRebaseSuggestions", {}, () =>
+        ipcRenderer.invoke(IPC.lanesListRebaseSuggestions),
+      ),
+    dismissRebaseSuggestion: async (args: {
+      laneId: string;
+    }): Promise<void> => {
+      await callProjectRuntimeActionOr(
+        "lane",
+        "dismissRebaseSuggestion",
+        { args },
+        () => ipcRenderer.invoke(IPC.lanesDismissRebaseSuggestion, args),
+      );
+    },
     deferRebaseSuggestion: async (args: {
       laneId: string;
       minutes: number;
-    }): Promise<void> =>
-      ipcRenderer.invoke(IPC.lanesDeferRebaseSuggestion, args),
+    }): Promise<void> => {
+      await callProjectRuntimeActionOr(
+        "lane",
+        "deferRebaseSuggestion",
+        { args },
+        () => ipcRenderer.invoke(IPC.lanesDeferRebaseSuggestion, args),
+      );
+    },
     onRebaseSuggestionsEvent: (
       cb: (ev: RebaseSuggestionsEventPayload) => void,
     ) => {
@@ -2064,173 +4355,383 @@ contextBridge.exposeInMainWorld("ade", {
         payload: RebaseSuggestionsEventPayload,
       ) => cb(payload);
       ipcRenderer.on(IPC.lanesRebaseSuggestionsEvent, listener);
-      return () =>
+      const removeRemote = subscribeRemoteLaneRebaseSuggestionsEvents(cb);
+      return () => {
+        removeRemote();
         ipcRenderer.removeListener(IPC.lanesRebaseSuggestionsEvent, listener);
+      };
     },
     listAutoRebaseStatuses: async (): Promise<AutoRebaseLaneStatus[]> =>
-      ipcRenderer.invoke(IPC.lanesListAutoRebaseStatuses),
-    dismissAutoRebaseStatus: async (args: { laneId: string }): Promise<void> =>
-      ipcRenderer.invoke(IPC.lanesDismissAutoRebaseStatus, args),
+      callProjectRuntimeActionOr("lane", "listAutoRebaseStatuses", {}, () =>
+        ipcRenderer.invoke(IPC.lanesListAutoRebaseStatuses),
+      ),
+    dismissAutoRebaseStatus: async (args: {
+      laneId: string;
+    }): Promise<void> => {
+      await callProjectRuntimeActionOr(
+        "lane",
+        "dismissAutoRebaseStatus",
+        { args },
+        () => ipcRenderer.invoke(IPC.lanesDismissAutoRebaseStatus, args),
+      );
+    },
     onAutoRebaseEvent: (cb: (ev: AutoRebaseEventPayload) => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,
         payload: AutoRebaseEventPayload,
       ) => cb(payload);
       ipcRenderer.on(IPC.lanesAutoRebaseEvent, listener);
-      return () =>
+      const removeRemote = subscribeRemoteLaneAutoRebaseEvents(cb);
+      return () => {
+        removeRemote();
         ipcRenderer.removeListener(IPC.lanesAutoRebaseEvent, listener);
+      };
     },
-    openFolder: async (args: { laneId: string }): Promise<void> =>
-      ipcRenderer.invoke(IPC.lanesOpenFolder, args),
+    openFolder: async (args: { laneId: string }): Promise<void> => {
+      const binding = await getRemoteProjectBinding();
+      if (binding) {
+        throw new Error(
+          "Remote lane folders cannot be opened on this machine. Copy the remote path instead.",
+        );
+      }
+      await ipcRenderer.invoke(IPC.lanesOpenFolder, args);
+    },
     initEnv: async (args: InitLaneEnvArgs): Promise<LaneEnvInitProgress> =>
-      ipcRenderer.invoke(IPC.lanesInitEnv, args),
+      callProjectRuntimeActionOr("lane", "initEnv", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesInitEnv, args),
+      ),
     getEnvStatus: async (
       args: GetLaneEnvStatusArgs,
     ): Promise<LaneEnvInitProgress | null> =>
-      ipcRenderer.invoke(IPC.lanesGetEnvStatus, args),
+      callProjectRuntimeActionOr("lane", "getEnvStatus", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesGetEnvStatus, args),
+      ),
     getOverlay: async (
       args: GetLaneOverlayArgs,
     ): Promise<LaneOverlayOverrides> =>
-      ipcRenderer.invoke(IPC.lanesGetOverlay, args),
+      callProjectRuntimeActionOr("lane", "getOverlay", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesGetOverlay, args),
+      ),
     onEnvEvent: (cb: (ev: LaneEnvInitEvent) => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,
         payload: LaneEnvInitEvent,
       ) => cb(payload);
       ipcRenderer.on(IPC.lanesEnvEvent, listener);
-      return () => ipcRenderer.removeListener(IPC.lanesEnvEvent, listener);
+      const removeRemote = subscribeRemoteLaneEnvEvents(cb);
+      return () => {
+        removeRemote();
+        ipcRenderer.removeListener(IPC.lanesEnvEvent, listener);
+      };
     },
     listTemplates: async (): Promise<LaneTemplate[]> =>
-      ipcRenderer.invoke(IPC.lanesListTemplates),
+      callProjectRuntimeActionOr("lane", "listTemplates", {}, () =>
+        ipcRenderer.invoke(IPC.lanesListTemplates),
+      ),
     getTemplate: async (
       args: GetLaneTemplateArgs,
     ): Promise<LaneTemplate | null> =>
-      ipcRenderer.invoke(IPC.lanesGetTemplate, args),
+      callProjectRuntimeActionOr("lane", "getTemplate", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesGetTemplate, args),
+      ),
     getDefaultTemplate: async (): Promise<string | null> =>
-      ipcRenderer.invoke(IPC.lanesGetDefaultTemplate),
+      callProjectRuntimeActionOr("lane", "getDefaultTemplate", {}, () =>
+        ipcRenderer.invoke(IPC.lanesGetDefaultTemplate),
+      ),
     setDefaultTemplate: async (
       args: SetDefaultLaneTemplateArgs,
-    ): Promise<void> => ipcRenderer.invoke(IPC.lanesSetDefaultTemplate, args),
+    ): Promise<void> => {
+      await callProjectRuntimeActionOr(
+        "lane",
+        "setDefaultTemplate",
+        { args },
+        () => ipcRenderer.invoke(IPC.lanesSetDefaultTemplate, args),
+      );
+    },
     applyTemplate: async (
       args: ApplyLaneTemplateArgs,
     ): Promise<LaneEnvInitProgress> =>
-      ipcRenderer.invoke(IPC.lanesApplyTemplate, args),
-    saveTemplate: async (args: SaveLaneTemplateArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.lanesSaveTemplate, args),
-    deleteTemplate: async (args: DeleteLaneTemplateArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.lanesDeleteTemplate, args),
+      callProjectRuntimeActionOr("lane", "applyTemplate", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesApplyTemplate, args),
+      ),
+    saveTemplate: async (args: SaveLaneTemplateArgs): Promise<void> => {
+      await callProjectRuntimeActionOr("lane", "saveTemplate", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesSaveTemplate, args),
+      );
+    },
+    deleteTemplate: async (args: DeleteLaneTemplateArgs): Promise<void> => {
+      await callProjectRuntimeActionOr("lane", "deleteTemplate", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesDeleteTemplate, args),
+      );
+    },
     portGetLease: async (args: GetPortLeaseArgs): Promise<PortLease | null> =>
-      ipcRenderer.invoke(IPC.lanesPortGetLease, args),
+      callProjectRuntimeActionOr("lane", "portGetLease", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesPortGetLease, args),
+      ),
     portListLeases: async (): Promise<PortLease[]> =>
-      ipcRenderer.invoke(IPC.lanesPortListLeases),
+      callProjectRuntimeActionOr("lane", "portListLeases", {}, () =>
+        ipcRenderer.invoke(IPC.lanesPortListLeases),
+      ),
     portAcquire: async (args: AcquirePortLeaseArgs): Promise<PortLease> =>
-      ipcRenderer.invoke(IPC.lanesPortAcquire, args),
-    portRelease: async (args: ReleasePortLeaseArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.lanesPortRelease, args),
+      callProjectRuntimeActionOr("lane", "portAcquire", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesPortAcquire, args),
+      ),
+    portRelease: async (args: ReleasePortLeaseArgs): Promise<void> => {
+      await callProjectRuntimeActionOr("lane", "portRelease", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesPortRelease, args),
+      );
+    },
     portListConflicts: async (): Promise<PortConflict[]> =>
-      ipcRenderer.invoke(IPC.lanesPortListConflicts),
+      callProjectRuntimeActionOr("lane", "portListConflicts", {}, () =>
+        ipcRenderer.invoke(IPC.lanesPortListConflicts),
+      ),
     portRecoverOrphans: async (): Promise<PortLease[]> =>
-      ipcRenderer.invoke(IPC.lanesPortRecoverOrphans),
+      callProjectRuntimeActionOr("lane", "portRecoverOrphans", {}, () =>
+        ipcRenderer.invoke(IPC.lanesPortRecoverOrphans),
+      ),
     onPortEvent: (cb: (ev: PortAllocationEvent) => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,
         payload: PortAllocationEvent,
       ) => cb(payload);
       ipcRenderer.on(IPC.lanesPortEvent, listener);
-      return () => ipcRenderer.removeListener(IPC.lanesPortEvent, listener);
+      const removeRemote = subscribeRemoteLanePortEvents(cb);
+      return () => {
+        removeRemote();
+        ipcRenderer.removeListener(IPC.lanesPortEvent, listener);
+      };
     },
     proxyGetStatus: async (): Promise<ProxyStatus> =>
-      ipcRenderer.invoke(IPC.lanesProxyGetStatus),
+      callProjectRuntimeActionOr("lane", "proxyGetStatus", {}, () =>
+        ipcRenderer.invoke(IPC.lanesProxyGetStatus),
+      ),
     proxyStart: async (args?: StartProxyArgs): Promise<ProxyStatus> =>
-      ipcRenderer.invoke(IPC.lanesProxyStart, args),
-    proxyStop: async (): Promise<void> =>
-      ipcRenderer.invoke(IPC.lanesProxyStop),
+      callProjectRuntimeActionOr("lane", "proxyStart", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesProxyStart, args),
+      ),
+    proxyStop: async (): Promise<void> => {
+      await callProjectRuntimeActionOr("lane", "proxyStop", {}, () =>
+        ipcRenderer.invoke(IPC.lanesProxyStop),
+      );
+    },
     proxyAddRoute: async (args: AddProxyRouteArgs): Promise<ProxyRoute> =>
-      ipcRenderer.invoke(IPC.lanesProxyAddRoute, args),
-    proxyRemoveRoute: async (args: RemoveProxyRouteArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.lanesProxyRemoveRoute, args),
+      callProjectRuntimeActionOr("lane", "proxyAddRoute", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesProxyAddRoute, args),
+      ),
+    proxyRemoveRoute: async (args: RemoveProxyRouteArgs): Promise<void> => {
+      await callProjectRuntimeActionOr(
+        "lane",
+        "proxyRemoveRoute",
+        { args },
+        () => ipcRenderer.invoke(IPC.lanesProxyRemoveRoute, args),
+      );
+    },
     proxyGetPreviewInfo: async (
       args: GetPreviewInfoArgs,
     ): Promise<LanePreviewInfo | null> =>
-      ipcRenderer.invoke(IPC.lanesProxyGetPreviewInfo, args),
-    proxyOpenPreview: async (args: OpenPreviewArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.lanesProxyOpenPreview, args),
+      callProjectRuntimeActionOr("lane", "proxyGetPreviewInfo", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesProxyGetPreviewInfo, args),
+      ),
+    proxyOpenPreview: async (args: OpenPreviewArgs): Promise<void> => {
+      const binding = await getProjectRuntimeBinding();
+      if (binding) {
+        const runtime =
+          await callProjectRuntimeActionIfBound<LanePreviewInfo | null>(
+            "lane",
+            "proxyGetPreviewInfo",
+            { args },
+          );
+        if (!runtime.handled) {
+          await ipcRenderer.invoke(IPC.lanesProxyOpenPreview, args);
+          return;
+        }
+        const info = runtime.result;
+        if (!info) throw new Error(`No preview route for lane: ${args.laneId}`);
+        await ipcRenderer.invoke(IPC.appOpenExternal, { url: info.previewUrl });
+        return;
+      }
+      await ipcRenderer.invoke(IPC.lanesProxyOpenPreview, args);
+    },
     onProxyEvent: (cb: (ev: LaneProxyEvent) => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,
         payload: LaneProxyEvent,
       ) => cb(payload);
       ipcRenderer.on(IPC.lanesProxyEvent, listener);
-      return () => ipcRenderer.removeListener(IPC.lanesProxyEvent, listener);
+      const removeRemote = subscribeRemoteLaneProxyEvents(cb);
+      return () => {
+        removeRemote();
+        ipcRenderer.removeListener(IPC.lanesProxyEvent, listener);
+      };
     },
     oauthGetStatus: async (): Promise<OAuthRedirectStatus> =>
-      ipcRenderer.invoke(IPC.lanesOAuthGetStatus),
+      callProjectRuntimeActionOr("lane", "oauthGetStatus", {}, () =>
+        ipcRenderer.invoke(IPC.lanesOAuthGetStatus),
+      ),
     oauthUpdateConfig: async (
       args: UpdateOAuthRedirectConfigArgs,
-    ): Promise<void> => ipcRenderer.invoke(IPC.lanesOAuthUpdateConfig, args),
+    ): Promise<void> => {
+      await callProjectRuntimeActionOr(
+        "lane",
+        "oauthUpdateConfig",
+        { args },
+        () => ipcRenderer.invoke(IPC.lanesOAuthUpdateConfig, args),
+      );
+    },
     oauthGenerateRedirectUris: async (
       args: GenerateRedirectUrisArgs,
     ): Promise<RedirectUriInfo[]> =>
-      ipcRenderer.invoke(IPC.lanesOAuthGenerateRedirectUris, args),
+      callProjectRuntimeActionOr(
+        "lane",
+        "oauthGenerateRedirectUris",
+        { args },
+        () => ipcRenderer.invoke(IPC.lanesOAuthGenerateRedirectUris, args),
+      ),
     oauthEncodeState: async (args: EncodeOAuthStateArgs): Promise<string> =>
-      ipcRenderer.invoke(IPC.lanesOAuthEncodeState, args),
+      callProjectRuntimeActionOr("lane", "oauthEncodeState", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesOAuthEncodeState, args),
+      ),
     oauthDecodeState: async (
       args: DecodeOAuthStateArgs,
     ): Promise<DecodeOAuthStateResult> =>
-      ipcRenderer.invoke(IPC.lanesOAuthDecodeState, args),
+      callProjectRuntimeActionOr("lane", "oauthDecodeState", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesOAuthDecodeState, args),
+      ),
     oauthListSessions: async (): Promise<OAuthSession[]> =>
-      ipcRenderer.invoke(IPC.lanesOAuthListSessions),
+      callProjectRuntimeActionOr("lane", "oauthListSessions", {}, () =>
+        ipcRenderer.invoke(IPC.lanesOAuthListSessions),
+      ),
     onOAuthEvent: (cb: (ev: OAuthRedirectEvent) => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,
         payload: OAuthRedirectEvent,
       ) => cb(payload);
       ipcRenderer.on(IPC.lanesOAuthEvent, listener);
-      return () => ipcRenderer.removeListener(IPC.lanesOAuthEvent, listener);
+      const removeRemote = subscribeRemoteLaneOAuthEvents(cb);
+      return () => {
+        removeRemote();
+        ipcRenderer.removeListener(IPC.lanesOAuthEvent, listener);
+      };
     },
     diagnosticsGetStatus: async (): Promise<RuntimeDiagnosticsStatus> =>
-      ipcRenderer.invoke(IPC.lanesDiagnosticsGetStatus),
+      callProjectRuntimeActionOr("lane", "diagnosticsGetStatus", {}, () =>
+        ipcRenderer.invoke(IPC.lanesDiagnosticsGetStatus),
+      ),
     diagnosticsGetLaneHealth: async (
       args: GetLaneHealthArgs,
     ): Promise<LaneHealthCheck | null> =>
-      ipcRenderer.invoke(IPC.lanesDiagnosticsGetLaneHealth, args),
+      callProjectRuntimeActionOr(
+        "lane",
+        "diagnosticsGetLaneHealth",
+        { args },
+        () => ipcRenderer.invoke(IPC.lanesDiagnosticsGetLaneHealth, args),
+      ),
     diagnosticsRunHealthCheck: async (
       args: RunHealthCheckArgs,
     ): Promise<LaneHealthCheck> =>
-      ipcRenderer.invoke(IPC.lanesDiagnosticsRunHealthCheck, args),
+      callProjectRuntimeActionOr(
+        "lane",
+        "diagnosticsRunHealthCheck",
+        { args },
+        () => ipcRenderer.invoke(IPC.lanesDiagnosticsRunHealthCheck, args),
+      ),
     diagnosticsRunFullCheck: async (): Promise<LaneHealthCheck[]> =>
-      ipcRenderer.invoke(IPC.lanesDiagnosticsRunFullCheck),
+      callProjectRuntimeActionOr("lane", "diagnosticsRunFullCheck", {}, () =>
+        ipcRenderer.invoke(IPC.lanesDiagnosticsRunFullCheck),
+      ),
     diagnosticsActivateFallback: async (
       args: ActivateFallbackArgs,
-    ): Promise<void> =>
-      ipcRenderer.invoke(IPC.lanesDiagnosticsActivateFallback, args),
+    ): Promise<void> => {
+      await callProjectRuntimeActionOr(
+        "lane",
+        "diagnosticsActivateFallback",
+        { args },
+        () => ipcRenderer.invoke(IPC.lanesDiagnosticsActivateFallback, args),
+      );
+    },
     diagnosticsDeactivateFallback: async (
       args: DeactivateFallbackArgs,
-    ): Promise<void> =>
-      ipcRenderer.invoke(IPC.lanesDiagnosticsDeactivateFallback, args),
+    ): Promise<void> => {
+      await callProjectRuntimeActionOr(
+        "lane",
+        "diagnosticsDeactivateFallback",
+        { args },
+        () => ipcRenderer.invoke(IPC.lanesDiagnosticsDeactivateFallback, args),
+      );
+    },
     onDiagnosticsEvent: (cb: (ev: RuntimeDiagnosticsEvent) => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,
         payload: RuntimeDiagnosticsEvent,
       ) => cb(payload);
       ipcRenderer.on(IPC.lanesDiagnosticsEvent, listener);
-      return () =>
+      const removeRemote = subscribeRemoteLaneDiagnosticsEvents(cb);
+      return () => {
+        removeRemote();
         ipcRenderer.removeListener(IPC.lanesDiagnosticsEvent, listener);
+      };
     },
   },
   sessions: {
     list: async (
       args: ListSessionsArgs = {},
-    ): Promise<TerminalSessionSummary[]> =>
-      ipcRenderer.invoke(IPC.sessionsList, args),
-    get: async (sessionId: string): Promise<TerminalSessionDetail | null> =>
-      ipcRenderer.invoke(IPC.sessionsGet, { sessionId }),
-    delete: async (args: DeleteSessionArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.sessionsDelete, args),
-    updateMeta: async (args: UpdateSessionMetaArgs): Promise<TerminalSessionSummary | null> =>
-      ipcRenderer.invoke(IPC.sessionsUpdateMeta, args),
-    readTranscriptTail: async (args: ReadTranscriptTailArgs): Promise<string> =>
-      ipcRenderer.invoke(IPC.sessionsReadTranscriptTail, args),
+    ): Promise<TerminalSessionSummary[]> => {
+      const runtime = await callProjectRuntimeActionIfBound<
+        TerminalSessionSummary[]
+      >("session", "list", { args });
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.sessionsList, args);
+    },
+    get: async (sessionId: string): Promise<TerminalSessionDetail | null> => {
+      const runtime =
+        await callProjectRuntimeActionIfBound<TerminalSessionDetail | null>(
+          "session",
+          "get",
+          { arg: sessionId },
+        );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.sessionsGet, { sessionId });
+    },
+    delete: async (args: DeleteSessionArgs): Promise<void> => {
+      sessionDeltaCache.clear();
+      const runtime = await callProjectRuntimeActionIfBound<boolean>(
+        "session",
+        "deleteSession",
+        { arg: args.sessionId },
+      );
+      if (!runtime.handled) await ipcRenderer.invoke(IPC.sessionsDelete, args);
+      sessionDeltaCache.clear();
+    },
+    updateMeta: async (
+      args: UpdateSessionMetaArgs,
+    ): Promise<TerminalSessionSummary | null> => {
+      sessionDeltaCache.clear();
+      const runtime =
+        await callProjectRuntimeActionIfBound<TerminalSessionSummary | null>(
+          "session",
+          "updateMeta",
+          { args },
+        );
+      const updated = runtime.handled
+        ? runtime.result
+        : await ipcRenderer.invoke(IPC.sessionsUpdateMeta, args);
+      sessionDeltaCache.clear();
+      return updated as TerminalSessionSummary | null;
+    },
+    readTranscriptTail: async (
+      args: ReadTranscriptTailArgs,
+    ): Promise<string> => {
+      const runtime = await callProjectRuntimeActionIfBound<string>(
+        "session",
+        "readTranscriptTail",
+        { args },
+      );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.sessionsReadTranscriptTail, args);
+    },
     getDelta: async (sessionId: string): Promise<SessionDeltaSummary | null> =>
       sessionDeltaCache.get(sessionId),
     onChanged: (cb: (ev: TerminalSessionChangedEvent) => void) => {
@@ -2239,161 +4740,346 @@ contextBridge.exposeInMainWorld("ade", {
         payload: TerminalSessionChangedEvent,
       ) => cb(payload);
       ipcRenderer.on(IPC.sessionsChanged, listener);
-      return () => ipcRenderer.removeListener(IPC.sessionsChanged, listener);
+      const removeRemote = subscribeRemoteSessionChangedEvents(cb);
+      return () => {
+        removeRemote();
+        ipcRenderer.removeListener(IPC.sessionsChanged, listener);
+      };
     },
   },
   agentChat: {
     list: async (
       args: AgentChatListArgs = {},
-    ): Promise<AgentChatSessionSummary[]> =>
-      ipcRenderer.invoke(IPC.agentChatList, args),
+    ): Promise<AgentChatSessionSummary[]> => {
+      const runtime = await callProjectRuntimeActionIfBound<
+        AgentChatSessionSummary[]
+      >("chat", "listSessions", {
+        argsList: [
+          args.laneId,
+          { includeAutomation: args.includeAutomation === true },
+        ],
+      });
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.agentChatList, args);
+    },
     getSummary: async (
       args: AgentChatGetSummaryArgs,
     ): Promise<AgentChatSessionSummary | null> => {
-      const sessionId = typeof args?.sessionId === "string" ? args.sessionId.trim() : "";
+      const sessionId =
+        typeof args?.sessionId === "string" ? args.sessionId.trim() : "";
       if (!sessionId) return ipcRenderer.invoke(IPC.agentChatGetSummary, args);
-      return agentChatSummaryCache.get(sessionId);
+      const runtime =
+        await callProjectRuntimeActionIfBound<AgentChatSessionSummary | null>(
+          "chat",
+          "getSessionSummary",
+          { arg: sessionId },
+        );
+      return runtime.handled
+        ? runtime.result
+        : agentChatSummaryCache.get(sessionId);
     },
     create: async (args: AgentChatCreateArgs): Promise<AgentChatSession> => {
       agentChatSummaryCache.clear();
-      return ipcRenderer.invoke(IPC.agentChatCreate, args);
+      const runtime = await callProjectRuntimeActionIfBound<AgentChatSession>(
+        "chat",
+        "createSession",
+        { args },
+      );
+      const session = runtime.handled
+        ? runtime.result
+        : await ipcRenderer.invoke(IPC.agentChatCreate, args);
+      agentChatSummaryCache.clear();
+      return session as AgentChatSession;
     },
-    suggestLaneName: async (args: AgentChatSuggestLaneNameArgs): Promise<string> =>
-      ipcRenderer.invoke(IPC.agentChatSuggestLaneName, args),
+    suggestLaneName: async (
+      args: AgentChatSuggestLaneNameArgs,
+    ): Promise<string> =>
+      callProjectRuntimeActionOr(
+        "chat",
+        "suggestLaneNameFromPrompt",
+        { args },
+        () => ipcRenderer.invoke(IPC.agentChatSuggestLaneName, args),
+      ),
     parallelLaunchState: {
-      get: async (args: AgentChatParallelLaunchStateArgs): Promise<AgentChatParallelLaunchState | null> =>
-        ipcRenderer.invoke(IPC.agentChatParallelLaunchStateGet, args),
+      get: async (
+        args: AgentChatParallelLaunchStateArgs,
+      ): Promise<AgentChatParallelLaunchState | null> =>
+        callProjectRuntimeActionOr(
+          "chat",
+          "getParallelLaunchState",
+          { args },
+          () => ipcRenderer.invoke(IPC.agentChatParallelLaunchStateGet, args),
+        ),
       set: async (args: AgentChatSetParallelLaunchStateArgs): Promise<void> =>
-        ipcRenderer.invoke(IPC.agentChatParallelLaunchStateSet, args),
+        callProjectRuntimeActionOr(
+          "chat",
+          "setParallelLaunchState",
+          { args },
+          () => ipcRenderer.invoke(IPC.agentChatParallelLaunchStateSet, args),
+        ),
     },
     handoff: async (
       args: AgentChatHandoffArgs,
     ): Promise<AgentChatHandoffResult> =>
-      ipcRenderer.invoke(IPC.agentChatHandoff, args),
+      callProjectRuntimeActionOr("chat", "handoffSession", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatHandoff, args),
+      ),
     send: async (args: AgentChatSendArgs): Promise<void> => {
       agentChatSummaryCache.clear();
-      await ipcRenderer.invoke(IPC.agentChatSend, args);
+      const runtime = await callProjectRuntimeActionIfBound<void>(
+        "chat",
+        "sendMessage",
+        { args },
+      );
+      if (!runtime.handled) await ipcRenderer.invoke(IPC.agentChatSend, args);
       agentChatSummaryCache.clear();
     },
     steer: async (args: AgentChatSteerArgs): Promise<void> => {
       agentChatSummaryCache.clear();
-      await ipcRenderer.invoke(IPC.agentChatSteer, args);
+      await callProjectRuntimeActionOr("chat", "steer", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatSteer, args),
+      );
       agentChatSummaryCache.clear();
     },
     cancelSteer: async (args: AgentChatCancelSteerArgs): Promise<void> => {
       agentChatSummaryCache.clear();
-      await ipcRenderer.invoke(IPC.agentChatCancelSteer, args);
+      await callProjectRuntimeActionOr("chat", "cancelSteer", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatCancelSteer, args),
+      );
       agentChatSummaryCache.clear();
     },
     editSteer: async (args: AgentChatEditSteerArgs): Promise<void> => {
       agentChatSummaryCache.clear();
-      await ipcRenderer.invoke(IPC.agentChatEditSteer, args);
+      await callProjectRuntimeActionOr("chat", "editSteer", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatEditSteer, args),
+      );
       agentChatSummaryCache.clear();
     },
-    dispatchSteer: async (args: AgentChatDispatchSteerArgs): Promise<AgentChatDispatchSteerResult> => {
+    dispatchSteer: async (
+      args: AgentChatDispatchSteerArgs,
+    ): Promise<AgentChatDispatchSteerResult> => {
       agentChatSummaryCache.clear();
-      const result = await ipcRenderer.invoke(IPC.agentChatDispatchSteer, args);
+      const result = await callProjectRuntimeActionOr(
+        "chat",
+        "dispatchSteer",
+        { args },
+        () => ipcRenderer.invoke(IPC.agentChatDispatchSteer, args),
+      );
       agentChatSummaryCache.clear();
       return result;
     },
-    cancelDispatchedSteer: async (args: AgentChatCancelDispatchedSteerArgs): Promise<AgentChatCancelDispatchedSteerResult> => {
+    cancelDispatchedSteer: async (
+      args: AgentChatCancelDispatchedSteerArgs,
+    ): Promise<AgentChatCancelDispatchedSteerResult> => {
       agentChatSummaryCache.clear();
-      const result = await ipcRenderer.invoke(IPC.agentChatCancelDispatchedSteer, args);
+      const result = await callProjectRuntimeActionOr(
+        "chat",
+        "cancelDispatchedSteer",
+        { args },
+        () => ipcRenderer.invoke(IPC.agentChatCancelDispatchedSteer, args),
+      );
       agentChatSummaryCache.clear();
       return result;
     },
     interrupt: async (args: AgentChatInterruptArgs): Promise<void> => {
       agentChatSummaryCache.clear();
-      await ipcRenderer.invoke(IPC.agentChatInterrupt, args);
+      const runtime = await callProjectRuntimeActionIfBound<void>(
+        "chat",
+        "interrupt",
+        { args },
+      );
+      if (!runtime.handled)
+        await ipcRenderer.invoke(IPC.agentChatInterrupt, args);
       agentChatSummaryCache.clear();
     },
     resume: async (args: AgentChatResumeArgs): Promise<AgentChatSession> => {
       agentChatSummaryCache.clear();
-      const session = await ipcRenderer.invoke(IPC.agentChatResume, args);
+      const runtime = await callProjectRuntimeActionIfBound<AgentChatSession>(
+        "chat",
+        "resumeSession",
+        { args },
+      );
+      const session = runtime.handled
+        ? runtime.result
+        : await ipcRenderer.invoke(IPC.agentChatResume, args);
       agentChatSummaryCache.clear();
-      return session;
+      return session as AgentChatSession;
     },
     approve: async (args: AgentChatApproveArgs): Promise<void> => {
       agentChatSummaryCache.clear();
-      await ipcRenderer.invoke(IPC.agentChatApprove, args);
+      const runtime = await callProjectRuntimeActionIfBound<void>(
+        "chat",
+        "approveToolUse",
+        { args },
+      );
+      if (!runtime.handled)
+        await ipcRenderer.invoke(IPC.agentChatApprove, args);
       agentChatSummaryCache.clear();
     },
-    respondToInput: async (args: AgentChatRespondToInputArgs): Promise<void> => {
+    respondToInput: async (
+      args: AgentChatRespondToInputArgs,
+    ): Promise<void> => {
       agentChatSummaryCache.clear();
-      await ipcRenderer.invoke(IPC.agentChatRespondToInput, args);
+      const runtime = await callProjectRuntimeActionIfBound<void>(
+        "chat",
+        "respondToInput",
+        { args },
+      );
+      if (!runtime.handled)
+        await ipcRenderer.invoke(IPC.agentChatRespondToInput, args);
       agentChatSummaryCache.clear();
     },
-    models: async (args: AgentChatModelsArgs): Promise<AgentChatModelInfo[]> =>
-      ipcRenderer.invoke(IPC.agentChatModels, args),
+    models: async (
+      args: AgentChatModelsArgs,
+    ): Promise<AgentChatModelInfo[]> => {
+      const runtime = await callProjectRuntimeActionIfBound<
+        AgentChatModelInfo[]
+      >("chat", "getAvailableModels", { args });
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.agentChatModels, args);
+    },
     dispose: async (args: AgentChatDisposeArgs): Promise<void> => {
       agentChatSummaryCache.clear();
-      await ipcRenderer.invoke(IPC.agentChatDispose, args);
+      const runtime = await callProjectRuntimeActionIfBound<void>(
+        "chat",
+        "dispose",
+        { args },
+      );
+      if (!runtime.handled)
+        await ipcRenderer.invoke(IPC.agentChatDispose, args);
       agentChatSummaryCache.clear();
     },
     archive: async (args: AgentChatArchiveArgs): Promise<void> => {
       agentChatSummaryCache.clear();
-      await ipcRenderer.invoke(IPC.agentChatArchive, args);
+      const runtime = await callProjectRuntimeActionIfBound<void>(
+        "chat",
+        "archiveSession",
+        { args },
+      );
+      if (!runtime.handled)
+        await ipcRenderer.invoke(IPC.agentChatArchive, args);
       agentChatSummaryCache.clear();
     },
     unarchive: async (args: AgentChatArchiveArgs): Promise<void> => {
       agentChatSummaryCache.clear();
-      await ipcRenderer.invoke(IPC.agentChatUnarchive, args);
+      const runtime = await callProjectRuntimeActionIfBound<void>(
+        "chat",
+        "unarchiveSession",
+        { args },
+      );
+      if (!runtime.handled)
+        await ipcRenderer.invoke(IPC.agentChatUnarchive, args);
       agentChatSummaryCache.clear();
     },
     delete: async (args: AgentChatDeleteArgs): Promise<void> => {
       agentChatSummaryCache.clear();
-      await ipcRenderer.invoke(IPC.agentChatDelete, args);
+      const runtime = await callProjectRuntimeActionIfBound<void>(
+        "chat",
+        "deleteSession",
+        { args },
+      );
+      if (!runtime.handled) await ipcRenderer.invoke(IPC.agentChatDelete, args);
       agentChatSummaryCache.clear();
     },
     updateSession: async (
       args: AgentChatUpdateSessionArgs,
     ): Promise<AgentChatSession> => {
       agentChatSummaryCache.clear();
-      const session = await ipcRenderer.invoke(IPC.agentChatUpdateSession, args);
+      const runtime = await callProjectRuntimeActionIfBound<AgentChatSession>(
+        "chat",
+        "updateSession",
+        { args },
+      );
+      const session = runtime.handled
+        ? runtime.result
+        : await ipcRenderer.invoke(IPC.agentChatUpdateSession, args);
       agentChatSummaryCache.clear();
-      return session;
+      return session as AgentChatSession;
     },
     warmupModel: async (args: {
       sessionId: string;
       modelId: string;
-    }): Promise<void> => ipcRenderer.invoke(IPC.agentChatWarmupModel, args),
-    onEvent: agentChatEventFanout,
+    }): Promise<void> =>
+      callProjectRuntimeActionOr("chat", "warmupModel", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatWarmupModel, args),
+      ),
+    onEvent: subscribeAgentChatEvents,
     slashCommands: async (
       args: AgentChatSlashCommandsArgs,
-    ): Promise<AgentChatSlashCommand[]> =>
-      ipcRenderer.invoke(IPC.agentChatSlashCommands, args),
+    ): Promise<AgentChatSlashCommand[]> => {
+      const runtime = await callProjectRuntimeActionIfBound<
+        AgentChatSlashCommand[]
+      >("chat", "getSlashCommands", { args });
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.agentChatSlashCommands, args);
+    },
     fileSearch: async (
       args: AgentChatFileSearchArgs,
     ): Promise<AgentChatFileSearchResult[]> =>
-      ipcRenderer.invoke(IPC.agentChatFileSearch, args),
+      callProjectRuntimeActionOr("chat", "fileSearch", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatFileSearch, args),
+      ),
     getTurnFileDiff: async (
       args: AgentChatGetTurnFileDiffArgs,
     ): Promise<AgentChatTurnFileDiff | null> =>
-      ipcRenderer.invoke(IPC.agentChatGetTurnFileDiff, args),
+      callProjectRuntimeActionOr("chat", "getTurnFileDiff", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatGetTurnFileDiff, args),
+      ),
     listSubagents: async (
       args: AgentChatSubagentListArgs,
     ): Promise<AgentChatSubagentSnapshot[]> =>
-      ipcRenderer.invoke(IPC.agentChatListSubagents, args),
+      callProjectRuntimeActionOr("chat", "listSubagents", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatListSubagents, args),
+      ),
     getSessionCapabilities: async (
       args: AgentChatSessionCapabilitiesArgs,
     ): Promise<AgentChatSessionCapabilities> =>
-      ipcRenderer.invoke(IPC.agentChatGetSessionCapabilities, args),
+      callProjectRuntimeActionOr(
+        "chat",
+        "getSessionCapabilities",
+        { args },
+        () => ipcRenderer.invoke(IPC.agentChatGetSessionCapabilities, args),
+      ),
     saveTempAttachment: async (args: {
       data: string;
       filename: string;
     }): Promise<{ path: string }> =>
-      ipcRenderer.invoke(IPC.agentChatSaveTempAttachment, args),
+      callProjectRuntimeActionOr("chat", "saveTempAttachment", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatSaveTempAttachment, args),
+      ),
     getEventHistory: async (args: {
       sessionId: string;
       maxEvents?: number;
-    }): Promise<{ sessionId: string; events: AgentChatEventEnvelope[]; truncated: boolean }> =>
-      ipcRenderer.invoke(IPC.agentChatGetEventHistory, args),
+    }): Promise<{
+      sessionId: string;
+      events: AgentChatEventEnvelope[];
+      truncated: boolean;
+    }> => {
+      const runtime = await callProjectRuntimeActionIfBound<{
+        sessionId: string;
+        events: AgentChatEventEnvelope[];
+        truncated: boolean;
+      }>("chat", "getChatEventHistory", {
+        argsList: [args.sessionId, { maxEvents: args.maxEvents }],
+      });
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.agentChatGetEventHistory, args);
+    },
   },
   computerUse: {
     listArtifacts: async (
       args: ComputerUseArtifactListArgs = {},
     ): Promise<ComputerUseArtifactView[]> =>
-      ipcRenderer.invoke(IPC.computerUseListArtifacts, args),
+      callProjectRuntimeActionOr(
+        "computer_use_artifacts",
+        "listArtifacts",
+        { args },
+        () => ipcRenderer.invoke(IPC.computerUseListArtifacts, args),
+      ),
     getOwnerSnapshot: async (
       args: ComputerUseOwnerSnapshotArgs,
     ): Promise<ComputerUseOwnerSnapshot> =>
@@ -2403,19 +5089,36 @@ contextBridge.exposeInMainWorld("ade", {
     ): Promise<ComputerUseArtifactView> =>
       clearAround(
         () => computerUseOwnerSnapshotCache.clear(),
-        () => ipcRenderer.invoke(IPC.computerUseRouteArtifact, args),
+        () =>
+          callProjectRuntimeActionOr(
+            "computer_use_artifacts",
+            "routeArtifact",
+            { args },
+            () => ipcRenderer.invoke(IPC.computerUseRouteArtifact, args),
+          ),
       ),
     updateArtifactReview: async (
       args: ComputerUseArtifactReviewArgs,
     ): Promise<ComputerUseArtifactView> =>
       clearAround(
         () => computerUseOwnerSnapshotCache.clear(),
-        () => ipcRenderer.invoke(IPC.computerUseUpdateArtifactReview, args),
+        () =>
+          callProjectRuntimeActionOr(
+            "computer_use_artifacts",
+            "updateArtifactReview",
+            { args },
+            () => ipcRenderer.invoke(IPC.computerUseUpdateArtifactReview, args),
+          ),
       ),
     readArtifactPreview: async (args: {
       uri: string;
     }): Promise<string | null> =>
-      ipcRenderer.invoke(IPC.computerUseReadArtifactPreview, args),
+      callProjectRuntimeActionOr(
+        "computer_use_artifacts",
+        "readArtifactPreview",
+        { args },
+        () => ipcRenderer.invoke(IPC.computerUseReadArtifactPreview, args),
+      ),
     onEvent: computerUseEventFanout,
   },
   iosSimulator: {
@@ -2423,52 +5126,141 @@ contextBridge.exposeInMainWorld("ade", {
       iosSimulatorStatusCache.get(),
     listDevices: async (): Promise<IosSimulatorDevice[]> =>
       iosSimulatorDevicesCache.get(),
-    listLaunchTargets: async (args: IosSimulatorListLaunchTargetsArgs = {}): Promise<IosSimulatorLaunchTarget[]> =>
-      ipcRenderer.invoke(IPC.iosSimulatorListLaunchTargets, args),
-    launch: async (args: IosSimulatorLaunchArgs = {}): Promise<IosSimulatorSession> => {
+    listLaunchTargets: async (
+      args: IosSimulatorListLaunchTargetsArgs = {},
+    ): Promise<IosSimulatorLaunchTarget[]> =>
+      callProjectRuntimeActionOr(
+        "ios_simulator",
+        "listLaunchTargets",
+        { args },
+        () => ipcRenderer.invoke(IPC.iosSimulatorListLaunchTargets, args),
+      ),
+    launch: async (
+      args: IosSimulatorLaunchArgs = {},
+    ): Promise<IosSimulatorSession> => {
       clearIosSimulatorStatusCaches();
       try {
-        return await ipcRenderer.invoke(IPC.iosSimulatorLaunch, args);
+        return await callProjectRuntimeActionOr(
+          "ios_simulator",
+          "launch",
+          { args },
+          () => ipcRenderer.invoke(IPC.iosSimulatorLaunch, args),
+        );
       } finally {
         clearIosSimulatorStatusCaches();
       }
     },
-    attachToChatSession: async (args: { chatSessionId: string | null; callerChatSessionId?: string | null }): Promise<IosSimulatorSession | null> => {
+    attachToChatSession: async (args: {
+      chatSessionId: string | null;
+      callerChatSessionId?: string | null;
+    }): Promise<IosSimulatorSession | null> => {
       clearIosSimulatorStatusCaches();
       try {
-        return await ipcRenderer.invoke(IPC.iosSimulatorAttachToChatSession, args);
+        return await callProjectRuntimeActionOr(
+          "ios_simulator",
+          "attachToChatSession",
+          { argsList: [args.chatSessionId, args.callerChatSessionId] },
+          () => ipcRenderer.invoke(IPC.iosSimulatorAttachToChatSession, args),
+        );
       } finally {
         clearIosSimulatorStatusCaches();
       }
     },
-    shutdown: async (args: IosSimulatorShutdownArgs = {}): Promise<IosSimulatorShutdownResult> => {
+    shutdown: async (
+      args: IosSimulatorShutdownArgs = {},
+    ): Promise<IosSimulatorShutdownResult> => {
       clearIosSimulatorStatusCaches();
       try {
-        return await ipcRenderer.invoke(IPC.iosSimulatorShutdown, args);
+        return await callProjectRuntimeActionOr(
+          "ios_simulator",
+          "shutdown",
+          { args },
+          () => ipcRenderer.invoke(IPC.iosSimulatorShutdown, args),
+        );
       } finally {
         clearIosSimulatorStatusCaches();
       }
     },
-    screenshot: async (args: { deviceUdid?: string | null } = {}): Promise<IosSimulatorScreenshot> =>
-      ipcRenderer.invoke(IPC.iosSimulatorScreenshot, args),
-    getScreenSnapshot: async (args: IosScreenSnapshotArgs = {}): Promise<IosScreenSnapshot> =>
-      ipcRenderer.invoke(IPC.iosSimulatorGetScreenSnapshot, args),
-    getInspectorSnapshot: async (args: { deviceUdid?: string | null } = {}): Promise<IosInspectorSnapshot | null> =>
-      ipcRenderer.invoke(IPC.iosSimulatorGetInspectorSnapshot, args),
-    inspectPoint: async (args: IosSimulatorInspectPointArgs): Promise<IosSimulatorInspectResult> =>
-      ipcRenderer.invoke(IPC.iosSimulatorInspectPoint, args),
-    getPreviewCapability: async (args: IosSimulatorListPreviewsArgs = {}): Promise<IosSimulatorPreviewCapability> =>
-      ipcRenderer.invoke(IPC.iosSimulatorGetPreviewCapability, args),
-    listPreviewTargets: async (args: IosSimulatorListPreviewsArgs = {}): Promise<IosSimulatorPreviewTarget[]> =>
-      ipcRenderer.invoke(IPC.iosSimulatorListPreviewTargets, args),
-    renderPreview: async (args: IosSimulatorRenderPreviewArgs): Promise<IosSimulatorRenderPreviewResult> =>
-      ipcRenderer.invoke(IPC.iosSimulatorRenderPreview, args),
-    openPreviewWorkspace: async (args: IosSimulatorOpenPreviewWorkspaceArgs = {}): Promise<{ ok: true; path: string }> =>
-      ipcRenderer.invoke(IPC.iosSimulatorOpenPreviewWorkspace, args),
-    startStream: async (args: IosSimulatorStartStreamArgs = {}): Promise<IosSimulatorStreamStatus> => {
+    screenshot: async (
+      args: { deviceUdid?: string | null } = {},
+    ): Promise<IosSimulatorScreenshot> =>
+      callProjectRuntimeActionOr("ios_simulator", "screenshot", { args }, () =>
+        ipcRenderer.invoke(IPC.iosSimulatorScreenshot, args),
+      ),
+    getScreenSnapshot: async (
+      args: IosScreenSnapshotArgs = {},
+    ): Promise<IosScreenSnapshot> =>
+      callProjectRuntimeActionOr(
+        "ios_simulator",
+        "getScreenSnapshot",
+        { args },
+        () => ipcRenderer.invoke(IPC.iosSimulatorGetScreenSnapshot, args),
+      ),
+    getInspectorSnapshot: async (
+      args: { deviceUdid?: string | null } = {},
+    ): Promise<IosInspectorSnapshot | null> =>
+      callProjectRuntimeActionOr(
+        "ios_simulator",
+        "getInspectorSnapshot",
+        { args },
+        () => ipcRenderer.invoke(IPC.iosSimulatorGetInspectorSnapshot, args),
+      ),
+    inspectPoint: async (
+      args: IosSimulatorInspectPointArgs,
+    ): Promise<IosSimulatorInspectResult> =>
+      callProjectRuntimeActionOr(
+        "ios_simulator",
+        "inspectPoint",
+        { args },
+        () => ipcRenderer.invoke(IPC.iosSimulatorInspectPoint, args),
+      ),
+    getPreviewCapability: async (
+      args: IosSimulatorListPreviewsArgs = {},
+    ): Promise<IosSimulatorPreviewCapability> =>
+      callProjectRuntimeActionOr(
+        "ios_simulator",
+        "getPreviewCapability",
+        { args },
+        () => ipcRenderer.invoke(IPC.iosSimulatorGetPreviewCapability, args),
+      ),
+    listPreviewTargets: async (
+      args: IosSimulatorListPreviewsArgs = {},
+    ): Promise<IosSimulatorPreviewTarget[]> =>
+      callProjectRuntimeActionOr(
+        "ios_simulator",
+        "listPreviewTargets",
+        { args },
+        () => ipcRenderer.invoke(IPC.iosSimulatorListPreviewTargets, args),
+      ),
+    renderPreview: async (
+      args: IosSimulatorRenderPreviewArgs,
+    ): Promise<IosSimulatorRenderPreviewResult> =>
+      callProjectRuntimeActionOr(
+        "ios_simulator",
+        "renderPreview",
+        { args },
+        () => ipcRenderer.invoke(IPC.iosSimulatorRenderPreview, args),
+      ),
+    openPreviewWorkspace: async (
+      args: IosSimulatorOpenPreviewWorkspaceArgs = {},
+    ): Promise<{ ok: true; path: string }> =>
+      callProjectRuntimeActionOr(
+        "ios_simulator",
+        "openPreviewWorkspace",
+        { args },
+        () => ipcRenderer.invoke(IPC.iosSimulatorOpenPreviewWorkspace, args),
+      ),
+    startStream: async (
+      args: IosSimulatorStartStreamArgs = {},
+    ): Promise<IosSimulatorStreamStatus> => {
       clearIosSimulatorStatusCaches();
       try {
-        return await ipcRenderer.invoke(IPC.iosSimulatorStartStream, args);
+        return await callProjectRuntimeActionOr(
+          "ios_simulator",
+          "startStream",
+          { args },
+          () => ipcRenderer.invoke(IPC.iosSimulatorStartStream, args),
+        );
       } finally {
         clearIosSimulatorStatusCaches();
       }
@@ -2476,441 +5268,1209 @@ contextBridge.exposeInMainWorld("ade", {
     stopStream: async (): Promise<IosSimulatorStreamStatus> => {
       clearIosSimulatorStatusCaches();
       try {
-        return await ipcRenderer.invoke(IPC.iosSimulatorStopStream);
+        return await callProjectRuntimeActionOr(
+          "ios_simulator",
+          "stopStream",
+          {},
+          () => ipcRenderer.invoke(IPC.iosSimulatorStopStream),
+        );
       } finally {
         clearIosSimulatorStatusCaches();
       }
     },
     getStreamStatus: async (): Promise<IosSimulatorStreamStatus> =>
-      ipcRenderer.invoke(IPC.iosSimulatorGetStreamStatus),
+      callProjectRuntimeActionOr("ios_simulator", "getStreamStatus", {}, () =>
+        ipcRenderer.invoke(IPC.iosSimulatorGetStreamStatus),
+      ),
     getSimulatorWindowState: async (): Promise<IosSimulatorWindowState> =>
       ipcRenderer.invoke(IPC.iosSimulatorGetWindowState),
-    listSimulatorWindowSources: async (): Promise<IosSimulatorWindowSource[]> => {
+    listSimulatorWindowSources: async (): Promise<
+      IosSimulatorWindowSource[]
+    > => {
       return ipcRenderer.invoke(IPC.iosSimulatorListWindowSources);
     },
-    tap: async (args: { deviceUdid?: string | null; projectRoot?: string | null; x: number; y: number }): Promise<{ ok: true }> =>
-      ipcRenderer.invoke(IPC.iosSimulatorTap, args),
-    typeText: async (args: { deviceUdid?: string | null; projectRoot?: string | null; text: string }): Promise<{ ok: true }> =>
-      ipcRenderer.invoke(IPC.iosSimulatorTypeText, args),
+    tap: async (args: {
+      deviceUdid?: string | null;
+      projectRoot?: string | null;
+      x: number;
+      y: number;
+    }): Promise<{ ok: true }> =>
+      callProjectRuntimeActionOr("ios_simulator", "tap", { args }, () =>
+        ipcRenderer.invoke(IPC.iosSimulatorTap, args),
+      ),
+    typeText: async (args: {
+      deviceUdid?: string | null;
+      projectRoot?: string | null;
+      text: string;
+    }): Promise<{ ok: true }> =>
+      callProjectRuntimeActionOr("ios_simulator", "typeText", { args }, () =>
+        ipcRenderer.invoke(IPC.iosSimulatorTypeText, args),
+      ),
     drag: async (args: IosSimulatorDragArgs): Promise<{ ok: true }> =>
-      ipcRenderer.invoke(IPC.iosSimulatorDrag, args),
+      callProjectRuntimeActionOr("ios_simulator", "drag", { args }, () =>
+        ipcRenderer.invoke(IPC.iosSimulatorDrag, args),
+      ),
     swipe: async (args: IosSimulatorDragArgs): Promise<{ ok: true }> =>
-      ipcRenderer.invoke(IPC.iosSimulatorSwipe, args),
-    selectPoint: async (args: { deviceUdid?: string | null; projectRoot?: string | null; x: number; y: number }): Promise<IosSimulatorSelectResult> =>
-      ipcRenderer.invoke(IPC.iosSimulatorSelectPoint, args),
+      callProjectRuntimeActionOr("ios_simulator", "swipe", { args }, () =>
+        ipcRenderer.invoke(IPC.iosSimulatorSwipe, args),
+      ),
+    selectPoint: async (args: {
+      deviceUdid?: string | null;
+      projectRoot?: string | null;
+      x: number;
+      y: number;
+    }): Promise<IosSimulatorSelectResult> =>
+      callProjectRuntimeActionOr("ios_simulator", "selectPoint", { args }, () =>
+        ipcRenderer.invoke(IPC.iosSimulatorSelectPoint, args),
+      ),
     onEvent: iosSimulatorEventFanout,
   },
   appControl: {
     getStatus: async (): Promise<AppControlStatus> =>
       appControlStatusCache.get(),
-    launch: async (args: AppControlLaunchArgs = {}): Promise<AppControlSession> =>
-      clearAround(() => appControlStatusCache.clear(), () => ipcRenderer.invoke(IPC.appControlLaunch, args)),
-    launchInTerminal: async (args: AppControlLaunchArgs = {}): Promise<AppControlSession> =>
-      clearAround(() => appControlStatusCache.clear(), () => ipcRenderer.invoke(IPC.appControlLaunchInTerminal, args)),
+    launch: async (
+      args: AppControlLaunchArgs = {},
+    ): Promise<AppControlSession> =>
+      clearAround(
+        () => appControlStatusCache.clear(),
+        () =>
+          callProjectRuntimeActionOr("app_control", "launch", { args }, () =>
+            ipcRenderer.invoke(IPC.appControlLaunch, args),
+          ),
+      ),
+    launchInTerminal: async (
+      args: AppControlLaunchArgs = {},
+    ): Promise<AppControlSession> =>
+      clearAround(
+        () => appControlStatusCache.clear(),
+        () =>
+          callProjectRuntimeActionOr(
+            "app_control",
+            "launchInTerminal",
+            { args },
+            () => ipcRenderer.invoke(IPC.appControlLaunchInTerminal, args),
+          ),
+      ),
     connect: async (args: AppControlConnectArgs): Promise<AppControlSession> =>
-      clearAround(() => appControlStatusCache.clear(), () => ipcRenderer.invoke(IPC.appControlConnect, args)),
-    stop: async (args: AppControlStopArgs = {}): Promise<{ ok: true; previousSession: AppControlSession | null }> =>
-      clearAround(() => appControlStatusCache.clear(), () => ipcRenderer.invoke(IPC.appControlStop, args)),
+      clearAround(
+        () => appControlStatusCache.clear(),
+        () =>
+          callProjectRuntimeActionOr("app_control", "connect", { args }, () =>
+            ipcRenderer.invoke(IPC.appControlConnect, args),
+          ),
+      ),
+    stop: async (
+      args: AppControlStopArgs = {},
+    ): Promise<{ ok: true; previousSession: AppControlSession | null }> =>
+      clearAround(
+        () => appControlStatusCache.clear(),
+        () =>
+          callProjectRuntimeActionOr("app_control", "stop", { args }, () =>
+            ipcRenderer.invoke(IPC.appControlStop, args),
+          ),
+      ),
     screenshot: async (): Promise<AppControlScreenshot> =>
-      ipcRenderer.invoke(IPC.appControlScreenshot),
-    getSnapshot: async (args: AppControlSnapshotArgs = {}): Promise<AppControlSnapshot> =>
-      ipcRenderer.invoke(IPC.appControlGetSnapshot, args),
-    inspectPoint: async (args: AppControlInspectPointArgs): Promise<AppControlInspectResult> =>
-      ipcRenderer.invoke(IPC.appControlInspectPoint, args),
-    selectPoint: async (args: AppControlInspectPointArgs): Promise<AppControlSelectResult> =>
-      ipcRenderer.invoke(IPC.appControlSelectPoint, args),
+      callProjectRuntimeActionOr("app_control", "screenshot", {}, () =>
+        ipcRenderer.invoke(IPC.appControlScreenshot),
+      ),
+    getSnapshot: async (
+      args: AppControlSnapshotArgs = {},
+    ): Promise<AppControlSnapshot> =>
+      callProjectRuntimeActionOr("app_control", "getSnapshot", { args }, () =>
+        ipcRenderer.invoke(IPC.appControlGetSnapshot, args),
+      ),
+    inspectPoint: async (
+      args: AppControlInspectPointArgs,
+    ): Promise<AppControlInspectResult> =>
+      callProjectRuntimeActionOr("app_control", "inspectPoint", { args }, () =>
+        ipcRenderer.invoke(IPC.appControlInspectPoint, args),
+      ),
+    selectPoint: async (
+      args: AppControlInspectPointArgs,
+    ): Promise<AppControlSelectResult> =>
+      callProjectRuntimeActionOr("app_control", "selectPoint", { args }, () =>
+        ipcRenderer.invoke(IPC.appControlSelectPoint, args),
+      ),
     click: async (args: AppControlClickArgs): Promise<{ ok: true }> =>
-      ipcRenderer.invoke(IPC.appControlClick, args),
+      callProjectRuntimeActionOr("app_control", "click", { args }, () =>
+        ipcRenderer.invoke(IPC.appControlClick, args),
+      ),
     typeText: async (args: AppControlTypeTextArgs): Promise<{ ok: true }> =>
-      ipcRenderer.invoke(IPC.appControlTypeText, args),
-    scroll: async (args: { x: number; y: number; deltaX: number; deltaY: number; scale?: number | null }): Promise<{ ok: true }> =>
-      ipcRenderer.invoke(IPC.appControlScroll, args),
+      callProjectRuntimeActionOr("app_control", "typeText", { args }, () =>
+        ipcRenderer.invoke(IPC.appControlTypeText, args),
+      ),
+    scroll: async (args: {
+      x: number;
+      y: number;
+      deltaX: number;
+      deltaY: number;
+      scale?: number | null;
+    }): Promise<{ ok: true }> =>
+      callProjectRuntimeActionOr("app_control", "scroll", { args }, () =>
+        ipcRenderer.invoke(IPC.appControlScroll, args),
+      ),
     dispatchKey: async (args: {
       type: "keyDown" | "keyUp" | "rawKeyDown" | "char";
       key?: string | null;
       code?: string | null;
       text?: string | null;
       modifiers?: number | null;
-    }): Promise<{ ok: true }> => ipcRenderer.invoke(IPC.appControlDispatchKey, args),
+    }): Promise<{ ok: true }> =>
+      callProjectRuntimeActionOr("app_control", "dispatchKey", { args }, () =>
+        ipcRenderer.invoke(IPC.appControlDispatchKey, args),
+      ),
     listTargets: async (): Promise<AppControlTarget[]> =>
-      ipcRenderer.invoke(IPC.appControlListTargets),
-    attachToTarget: async (args: { targetId: string }): Promise<AppControlSession> =>
-      clearAround(() => appControlStatusCache.clear(), () => ipcRenderer.invoke(IPC.appControlAttachToTarget, args)),
+      callProjectRuntimeActionOr("app_control", "listTargets", {}, () =>
+        ipcRenderer.invoke(IPC.appControlListTargets),
+      ),
+    attachToTarget: async (args: {
+      targetId: string;
+    }): Promise<AppControlSession> =>
+      clearAround(
+        () => appControlStatusCache.clear(),
+        () =>
+          callProjectRuntimeActionOr(
+            "app_control",
+            "attachToTarget",
+            { args },
+            () => ipcRenderer.invoke(IPC.appControlAttachToTarget, args),
+          ),
+      ),
     onEvent: appControlEventFanout,
   },
   builtInBrowser: {
     getStatus: async (): Promise<BuiltInBrowserStatus> =>
       builtInBrowserStatusCache.get(),
-    showPanel: async (args: BuiltInBrowserOpenPanelArgs = {}): Promise<BuiltInBrowserStatus> =>
-      clearAround(() => builtInBrowserStatusCache.clear(), () => ipcRenderer.invoke(IPC.builtInBrowserShowPanel, args)),
-    setBounds: async (args: BuiltInBrowserBoundsArgs): Promise<BuiltInBrowserStatus> =>
-      clearAround(() => builtInBrowserStatusCache.clear(), () => ipcRenderer.invoke(IPC.builtInBrowserSetBounds, args)),
-    attachWebview: async (args: BuiltInBrowserAttachWebviewArgs): Promise<BuiltInBrowserStatus> =>
-      clearAround(() => builtInBrowserStatusCache.clear(), () => ipcRenderer.invoke(IPC.builtInBrowserAttachWebview, args)),
-    navigate: async (args: BuiltInBrowserNavigateArgs): Promise<BuiltInBrowserStatus> =>
-      clearAround(() => builtInBrowserStatusCache.clear(), () => ipcRenderer.invoke(IPC.builtInBrowserNavigate, args)),
-    createTab: async (args: BuiltInBrowserCreateTabArgs = {}): Promise<BuiltInBrowserStatus> =>
-      clearAround(() => builtInBrowserStatusCache.clear(), () => ipcRenderer.invoke(IPC.builtInBrowserCreateTab, args)),
-    switchTab: async (args: BuiltInBrowserTabArgs): Promise<BuiltInBrowserStatus> =>
-      clearAround(() => builtInBrowserStatusCache.clear(), () => ipcRenderer.invoke(IPC.builtInBrowserSwitchTab, args)),
-    closeTab: async (args: BuiltInBrowserTabArgs): Promise<BuiltInBrowserStatus> =>
-      clearAround(() => builtInBrowserStatusCache.clear(), () => ipcRenderer.invoke(IPC.builtInBrowserCloseTab, args)),
+    showPanel: async (
+      args: BuiltInBrowserOpenPanelArgs = {},
+    ): Promise<BuiltInBrowserStatus> =>
+      clearAround(
+        () => builtInBrowserStatusCache.clear(),
+        () => ipcRenderer.invoke(IPC.builtInBrowserShowPanel, args),
+      ),
+    setBounds: async (
+      args: BuiltInBrowserBoundsArgs,
+    ): Promise<BuiltInBrowserStatus> =>
+      clearAround(
+        () => builtInBrowserStatusCache.clear(),
+        () => ipcRenderer.invoke(IPC.builtInBrowserSetBounds, args),
+      ),
+    attachWebview: async (
+      args: BuiltInBrowserAttachWebviewArgs,
+    ): Promise<BuiltInBrowserStatus> =>
+      clearAround(
+        () => builtInBrowserStatusCache.clear(),
+        () => ipcRenderer.invoke(IPC.builtInBrowserAttachWebview, args),
+      ),
+    navigate: async (
+      args: BuiltInBrowserNavigateArgs,
+    ): Promise<BuiltInBrowserStatus> =>
+      clearAround(
+        () => builtInBrowserStatusCache.clear(),
+        () => ipcRenderer.invoke(IPC.builtInBrowserNavigate, args),
+      ),
+    createTab: async (
+      args: BuiltInBrowserCreateTabArgs = {},
+    ): Promise<BuiltInBrowserStatus> =>
+      clearAround(
+        () => builtInBrowserStatusCache.clear(),
+        () => ipcRenderer.invoke(IPC.builtInBrowserCreateTab, args),
+      ),
+    switchTab: async (
+      args: BuiltInBrowserTabArgs,
+    ): Promise<BuiltInBrowserStatus> =>
+      clearAround(
+        () => builtInBrowserStatusCache.clear(),
+        () => ipcRenderer.invoke(IPC.builtInBrowserSwitchTab, args),
+      ),
+    closeTab: async (
+      args: BuiltInBrowserTabArgs,
+    ): Promise<BuiltInBrowserStatus> =>
+      clearAround(
+        () => builtInBrowserStatusCache.clear(),
+        () => ipcRenderer.invoke(IPC.builtInBrowserCloseTab, args),
+      ),
     reload: async (): Promise<BuiltInBrowserStatus> =>
-      clearAround(() => builtInBrowserStatusCache.clear(), () => ipcRenderer.invoke(IPC.builtInBrowserReload)),
+      clearAround(
+        () => builtInBrowserStatusCache.clear(),
+        () => ipcRenderer.invoke(IPC.builtInBrowserReload),
+      ),
     goBack: async (): Promise<BuiltInBrowserStatus> =>
-      clearAround(() => builtInBrowserStatusCache.clear(), () => ipcRenderer.invoke(IPC.builtInBrowserGoBack)),
+      clearAround(
+        () => builtInBrowserStatusCache.clear(),
+        () => ipcRenderer.invoke(IPC.builtInBrowserGoBack),
+      ),
     goForward: async (): Promise<BuiltInBrowserStatus> =>
-      clearAround(() => builtInBrowserStatusCache.clear(), () => ipcRenderer.invoke(IPC.builtInBrowserGoForward)),
+      clearAround(
+        () => builtInBrowserStatusCache.clear(),
+        () => ipcRenderer.invoke(IPC.builtInBrowserGoForward),
+      ),
     stop: async (): Promise<BuiltInBrowserStatus> =>
-      clearAround(() => builtInBrowserStatusCache.clear(), () => ipcRenderer.invoke(IPC.builtInBrowserStop)),
+      clearAround(
+        () => builtInBrowserStatusCache.clear(),
+        () => ipcRenderer.invoke(IPC.builtInBrowserStop),
+      ),
     startInspect: async (): Promise<BuiltInBrowserStatus> =>
-      clearAround(() => builtInBrowserStatusCache.clear(), () => ipcRenderer.invoke(IPC.builtInBrowserStartInspect)),
+      clearAround(
+        () => builtInBrowserStatusCache.clear(),
+        () => ipcRenderer.invoke(IPC.builtInBrowserStartInspect),
+      ),
     stopInspect: async (): Promise<BuiltInBrowserStatus> =>
-      clearAround(() => builtInBrowserStatusCache.clear(), () => ipcRenderer.invoke(IPC.builtInBrowserStopInspect)),
+      clearAround(
+        () => builtInBrowserStatusCache.clear(),
+        () => ipcRenderer.invoke(IPC.builtInBrowserStopInspect),
+      ),
     captureScreenshot: async (): Promise<BuiltInBrowserScreenshot> =>
       ipcRenderer.invoke(IPC.builtInBrowserCaptureScreenshot),
-    selectPoint: async (args: BuiltInBrowserSelectPointArgs): Promise<BuiltInBrowserSelectResult> =>
+    selectPoint: async (
+      args: BuiltInBrowserSelectPointArgs,
+    ): Promise<BuiltInBrowserSelectResult> =>
       ipcRenderer.invoke(IPC.builtInBrowserSelectPoint, args),
     selectCurrent: async (): Promise<BuiltInBrowserSelectResult> =>
       ipcRenderer.invoke(IPC.builtInBrowserSelectCurrent),
     clearSelection: async (): Promise<{ ok: true }> =>
-      clearAround(() => builtInBrowserStatusCache.clear(), () => ipcRenderer.invoke(IPC.builtInBrowserClearSelection)),
+      clearAround(
+        () => builtInBrowserStatusCache.clear(),
+        () => ipcRenderer.invoke(IPC.builtInBrowserClearSelection),
+      ),
     onEvent: builtInBrowserEventFanout,
   },
   macosVm: {
     getStatus: async (args: MacosVmStatusArgs = {}): Promise<MacosVmStatus> =>
       macosVmStatusCache.get(serializeIpcCacheArgs(args)),
     provision: async (args: MacosVmProvisionArgs): Promise<MacosVmRecord> =>
-      clearAround(() => macosVmStatusCache.clear(), () => ipcRenderer.invoke(IPC.macosVmProvision, args)),
+      clearAround(
+        () => macosVmStatusCache.clear(),
+        () =>
+          callProjectRuntimeActionOr("macos_vm", "provision", { args }, () =>
+            ipcRenderer.invoke(IPC.macosVmProvision, args),
+          ),
+      ),
     start: async (args: MacosVmStartArgs): Promise<MacosVmRecord> =>
-      clearAround(() => macosVmStatusCache.clear(), () => ipcRenderer.invoke(IPC.macosVmStart, args)),
+      clearAround(
+        () => macosVmStatusCache.clear(),
+        () =>
+          callProjectRuntimeActionOr("macos_vm", "start", { args }, () =>
+            ipcRenderer.invoke(IPC.macosVmStart, args),
+          ),
+      ),
     stop: async (args: MacosVmStopArgs): Promise<MacosVmRecord | null> =>
-      clearAround(() => macosVmStatusCache.clear(), () => ipcRenderer.invoke(IPC.macosVmStop, args)),
-    delete: async (args: MacosVmDeleteArgs): Promise<{ deleted: boolean; previous: MacosVmRecord | null }> =>
-      clearAround(() => macosVmStatusCache.clear(), () => ipcRenderer.invoke(IPC.macosVmDelete, args)),
-    getAgentGuide: async (args: MacosVmAgentGuideArgs): Promise<MacosVmAgentGuide> =>
-      ipcRenderer.invoke(IPC.macosVmGetAgentGuide, args),
-    focusWindow: async (args: MacosVmFocusWindowArgs): Promise<MacosVmWindowTarget> =>
-      ipcRenderer.invoke(IPC.macosVmFocusWindow, args),
-    captureScreenshot: async (args: MacosVmCaptureScreenshotArgs): Promise<MacosVmCaptureScreenshotResult> =>
-      ipcRenderer.invoke(IPC.macosVmCaptureScreenshot, args),
-    selectPoint: async (args: MacosVmSelectPointArgs): Promise<MacosVmSelectPointResult> =>
-      ipcRenderer.invoke(IPC.macosVmSelectPoint, args),
-    click: async (args: MacosVmClickArgs): Promise<{ ok: true; window: MacosVmWindowTarget; x: number; y: number }> =>
-      ipcRenderer.invoke(IPC.macosVmClick, args),
-    typeText: async (args: MacosVmTypeTextArgs): Promise<{ ok: true; window: MacosVmWindowTarget }> =>
-      ipcRenderer.invoke(IPC.macosVmTypeText, args),
+      clearAround(
+        () => macosVmStatusCache.clear(),
+        () =>
+          callProjectRuntimeActionOr("macos_vm", "stop", { args }, () =>
+            ipcRenderer.invoke(IPC.macosVmStop, args),
+          ),
+      ),
+    delete: async (
+      args: MacosVmDeleteArgs,
+    ): Promise<{ deleted: boolean; previous: MacosVmRecord | null }> =>
+      clearAround(
+        () => macosVmStatusCache.clear(),
+        () =>
+          callProjectRuntimeActionOr("macos_vm", "delete", { args }, () =>
+            ipcRenderer.invoke(IPC.macosVmDelete, args),
+          ),
+      ),
+    getAgentGuide: async (
+      args: MacosVmAgentGuideArgs,
+    ): Promise<MacosVmAgentGuide> =>
+      callProjectRuntimeActionOr("macos_vm", "getAgentGuide", { args }, () =>
+        ipcRenderer.invoke(IPC.macosVmGetAgentGuide, args),
+      ),
+    focusWindow: async (
+      args: MacosVmFocusWindowArgs,
+    ): Promise<MacosVmWindowTarget> =>
+      callProjectRuntimeActionOr("macos_vm", "focusWindow", { args }, () =>
+        ipcRenderer.invoke(IPC.macosVmFocusWindow, args),
+      ),
+    captureScreenshot: async (
+      args: MacosVmCaptureScreenshotArgs,
+    ): Promise<MacosVmCaptureScreenshotResult> =>
+      callProjectRuntimeActionOr(
+        "macos_vm",
+        "captureScreenshot",
+        { args },
+        () => ipcRenderer.invoke(IPC.macosVmCaptureScreenshot, args),
+      ),
+    selectPoint: async (
+      args: MacosVmSelectPointArgs,
+    ): Promise<MacosVmSelectPointResult> =>
+      callProjectRuntimeActionOr("macos_vm", "selectPoint", { args }, () =>
+        ipcRenderer.invoke(IPC.macosVmSelectPoint, args),
+      ),
+    click: async (
+      args: MacosVmClickArgs,
+    ): Promise<{
+      ok: true;
+      window: MacosVmWindowTarget;
+      x: number;
+      y: number;
+    }> =>
+      callProjectRuntimeActionOr("macos_vm", "click", { args }, () =>
+        ipcRenderer.invoke(IPC.macosVmClick, args),
+      ),
+    typeText: async (
+      args: MacosVmTypeTextArgs,
+    ): Promise<{ ok: true; window: MacosVmWindowTarget }> =>
+      callProjectRuntimeActionOr("macos_vm", "typeText", { args }, () =>
+        ipcRenderer.invoke(IPC.macosVmTypeText, args),
+      ),
     onEvent: macosVmEventFanout,
   },
   terminal: {
-    list: async (args: ChatTerminalListArgs = {}): Promise<ChatTerminalSession[]> =>
-      ipcRenderer.invoke(IPC.terminalList, args),
-    read: async (args: ChatTerminalReadArgs = {}): Promise<ChatTerminalReadResult> =>
-      ipcRenderer.invoke(IPC.terminalRead, args),
-    write: async (args: ChatTerminalWriteArgs): Promise<{ ok: true }> =>
-      ipcRenderer.invoke(IPC.terminalWrite, args),
-    signal: async (args: ChatTerminalSignalArgs): Promise<{ ok: true }> =>
-      ipcRenderer.invoke(IPC.terminalSignal, args),
-    activeForChat: async (args: ChatTerminalActiveForChatArgs): Promise<ChatTerminalSession | null> =>
-      ipcRenderer.invoke(IPC.terminalActiveForChat, args),
+    list: async (
+      args: ChatTerminalListArgs = {},
+    ): Promise<ChatTerminalSession[]> => {
+      const runtime = await callProjectRuntimeActionIfBound<
+        ChatTerminalSession[]
+      >("terminal", "list", { args });
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.terminalList, args);
+    },
+    read: async (
+      args: ChatTerminalReadArgs = {},
+    ): Promise<ChatTerminalReadResult> => {
+      const runtime =
+        await callProjectRuntimeActionIfBound<ChatTerminalReadResult>(
+          "terminal",
+          "read",
+          { args },
+        );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.terminalRead, args);
+    },
+    write: async (args: ChatTerminalWriteArgs): Promise<{ ok: true }> => {
+      const runtime = await callProjectRuntimeActionIfBound<{ ok: true }>(
+        "terminal",
+        "write",
+        { args },
+      );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.terminalWrite, args);
+    },
+    signal: async (args: ChatTerminalSignalArgs): Promise<{ ok: true }> => {
+      const runtime = await callProjectRuntimeActionIfBound<{ ok: true }>(
+        "terminal",
+        "signal",
+        { args },
+      );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.terminalSignal, args);
+    },
+    activeForChat: async (
+      args: ChatTerminalActiveForChatArgs,
+    ): Promise<ChatTerminalSession | null> => {
+      const runtime =
+        await callProjectRuntimeActionIfBound<ChatTerminalSession | null>(
+          "terminal",
+          "activeForChat",
+          { args },
+        );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.terminalActiveForChat, args);
+    },
   },
   pty: {
-    create: async (args: PtyCreateArgs): Promise<PtyCreateResult> =>
-      ipcRenderer.invoke(IPC.ptyCreate, args),
-    write: async (arg: { ptyId: string; data: string }): Promise<void> =>
-      ipcRenderer.invoke(IPC.ptyWrite, arg),
+    create: async (args: PtyCreateArgs): Promise<PtyCreateResult> => {
+      const runtime = await callProjectRuntimeActionIfBound<PtyCreateResult>(
+        "pty",
+        "create",
+        { args },
+      );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.ptyCreate, args);
+    },
+    write: async (arg: { ptyId: string; data: string }): Promise<void> => {
+      const runtime = await callProjectRuntimeActionIfBound<void>(
+        "pty",
+        "write",
+        { args: arg },
+      );
+      if (!runtime.handled) await ipcRenderer.invoke(IPC.ptyWrite, arg);
+    },
     resize: async (arg: {
       ptyId: string;
       cols: number;
       rows: number;
-    }): Promise<void> => ipcRenderer.invoke(IPC.ptyResize, arg),
+    }): Promise<void> => {
+      const runtime = await callProjectRuntimeActionIfBound<void>(
+        "pty",
+        "resize",
+        { args: arg },
+      );
+      if (!runtime.handled) await ipcRenderer.invoke(IPC.ptyResize, arg);
+    },
     dispose: async (arg: {
       ptyId: string;
       sessionId?: string;
-    }): Promise<void> => ipcRenderer.invoke(IPC.ptyDispose, arg),
-    onData: ptyDataEventFanout,
-    onExit: ptyExitEventFanout,
+    }): Promise<void> => {
+      const runtime = await callProjectRuntimeActionIfBound<void>(
+        "pty",
+        "dispose",
+        { args: arg },
+      );
+      if (!runtime.handled) await ipcRenderer.invoke(IPC.ptyDispose, arg);
+    },
+    onData: subscribePtyDataEvents,
+    onExit: subscribePtyExitEvents,
   },
   diff: {
-    getChanges: async (args: GetDiffChangesArgs): Promise<DiffChanges> =>
-      diffChangesCache.get(serializeIpcCacheArgs(args)),
-    getFile: async (args: GetFileDiffArgs): Promise<FileDiff> =>
-      ipcRenderer.invoke(IPC.diffGetFile, args),
-    getFilePatch: async (args: GetFilePatchArgs): Promise<FilePatch> =>
-      ipcRenderer.invoke(IPC.diffGetFilePatch, args),
+    getChanges: async (args: GetDiffChangesArgs): Promise<DiffChanges> => {
+      const runtime = await callProjectRuntimeActionIfBound<DiffChanges>(
+        "diff",
+        "getChanges",
+        { arg: args.laneId },
+      );
+      if (runtime.handled) return runtime.result;
+      return diffChangesCache.get(serializeIpcCacheArgs(args));
+    },
+    getFile: async (args: GetFileDiffArgs): Promise<FileDiff> => {
+      const runtime = await callProjectRuntimeActionIfBound<FileDiff>(
+        "diff",
+        "getFileDiff",
+        {
+          args: {
+            laneId: args.laneId,
+            filePath: args.path,
+            mode: args.mode,
+            compareRef: args.compareRef,
+            compareTo: args.compareTo,
+          },
+        },
+      );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.diffGetFile, args);
+    },
+    getFilePatch: async (args: GetFilePatchArgs): Promise<FilePatch> => {
+      const runtime = await callProjectRuntimeActionIfBound<FilePatch>(
+        "diff",
+        "getFilePatch",
+        {
+          args: {
+            laneId: args.laneId,
+            filePath: args.path,
+            mode: args.mode,
+            compareRef: args.compareRef,
+            compareTo: args.compareTo,
+          },
+        },
+      );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.diffGetFilePatch, args);
+    },
   },
   files: {
-    writeTextAtomic: async (args: WriteTextAtomicArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.filesWriteTextAtomic, args),
+    writeTextAtomic: async (args: WriteTextAtomicArgs): Promise<void> => {
+      const runtime = await callProjectRuntimeActionIfBound<void>(
+        "file",
+        "writeTextAtomic",
+        { args },
+      );
+      if (!runtime.handled)
+        await ipcRenderer.invoke(IPC.filesWriteTextAtomic, args);
+    },
     listWorkspaces: async (
       args: FilesListWorkspacesArgs = {},
-    ): Promise<FilesWorkspace[]> =>
-      ipcRenderer.invoke(IPC.filesListWorkspaces, args),
-    listTree: async (args: FilesListTreeArgs): Promise<FileTreeNode[]> =>
-      ipcRenderer.invoke(IPC.filesListTree, args),
-    readFile: async (args: FilesReadFileArgs): Promise<FileContent> =>
-      ipcRenderer.invoke(IPC.filesReadFile, args),
-    writeText: async (args: FilesWriteTextArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.filesWriteText, args),
-    createFile: async (args: FilesCreateFileArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.filesCreateFile, args),
-    createDirectory: async (args: FilesCreateDirectoryArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.filesCreateDirectory, args),
-    rename: async (args: FilesRenameArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.filesRename, args),
-    delete: async (args: FilesDeleteArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.filesDelete, args),
-    watchChanges: async (args: FilesWatchArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.filesWatchChanges, args),
-    stopWatching: async (args: FilesWatchArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.filesStopWatching, args),
+    ): Promise<FilesWorkspace[]> => {
+      const runtime = await callProjectRuntimeActionIfBound<FilesWorkspace[]>(
+        "file",
+        "listWorkspaces",
+        { args },
+      );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.filesListWorkspaces, args);
+    },
+    listTree: async (args: FilesListTreeArgs): Promise<FileTreeNode[]> => {
+      const runtime = await callProjectRuntimeActionIfBound<FileTreeNode[]>(
+        "file",
+        "listTree",
+        { args },
+      );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.filesListTree, args);
+    },
+    readFile: async (args: FilesReadFileArgs): Promise<FileContent> => {
+      const runtime = await callProjectRuntimeActionIfBound<FileContent>(
+        "file",
+        "readFile",
+        { args },
+      );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.filesReadFile, args);
+    },
+    writeText: async (args: FilesWriteTextArgs): Promise<void> => {
+      const runtime = await callProjectRuntimeActionIfBound<void>(
+        "file",
+        "writeWorkspaceText",
+        { args },
+      );
+      if (!runtime.handled) await ipcRenderer.invoke(IPC.filesWriteText, args);
+    },
+    createFile: async (args: FilesCreateFileArgs): Promise<void> => {
+      const runtime = await callProjectRuntimeActionIfBound<void>(
+        "file",
+        "createFile",
+        { args },
+      );
+      if (!runtime.handled) await ipcRenderer.invoke(IPC.filesCreateFile, args);
+    },
+    createDirectory: async (args: FilesCreateDirectoryArgs): Promise<void> => {
+      const runtime = await callProjectRuntimeActionIfBound<void>(
+        "file",
+        "createDirectory",
+        { args },
+      );
+      if (!runtime.handled)
+        await ipcRenderer.invoke(IPC.filesCreateDirectory, args);
+    },
+    rename: async (args: FilesRenameArgs): Promise<void> => {
+      const runtime = await callProjectRuntimeActionIfBound<void>(
+        "file",
+        "rename",
+        { args },
+      );
+      if (!runtime.handled) await ipcRenderer.invoke(IPC.filesRename, args);
+    },
+    delete: async (args: FilesDeleteArgs): Promise<void> => {
+      const runtime = await callProjectRuntimeActionIfBound<void>(
+        "file",
+        "deletePath",
+        { args },
+      );
+      if (!runtime.handled) await ipcRenderer.invoke(IPC.filesDelete, args);
+    },
+    watchChanges: async (args: FilesWatchArgs): Promise<void> => {
+      const runtime = await callProjectRuntimeActionIfBound<void>(
+        "file",
+        "watchWorkspace",
+        { args },
+      );
+      if (!runtime.handled)
+        await ipcRenderer.invoke(IPC.filesWatchChanges, args);
+    },
+    stopWatching: async (args: FilesWatchArgs): Promise<void> => {
+      const runtime = await callProjectRuntimeActionIfBound<void>(
+        "file",
+        "stopWatching",
+        { args },
+      );
+      if (!runtime.handled)
+        await ipcRenderer.invoke(IPC.filesStopWatching, args);
+    },
     quickOpen: async (
       args: FilesQuickOpenArgs,
-    ): Promise<FilesQuickOpenItem[]> =>
-      ipcRenderer.invoke(IPC.filesQuickOpen, args),
+    ): Promise<FilesQuickOpenItem[]> => {
+      const runtime = await callProjectRuntimeActionIfBound<
+        FilesQuickOpenItem[]
+      >("file", "quickOpen", { args });
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.filesQuickOpen, args);
+    },
     searchText: async (
       args: FilesSearchTextArgs,
-    ): Promise<FilesSearchTextMatch[]> =>
-      ipcRenderer.invoke(IPC.filesSearchText, args),
+    ): Promise<FilesSearchTextMatch[]> => {
+      const runtime = await callProjectRuntimeActionIfBound<
+        FilesSearchTextMatch[]
+      >("file", "searchText", { args });
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.filesSearchText, args);
+    },
     onChange: (cb: (ev: FileChangeEvent) => void) => {
+      const unsubscribeRuntime = subscribeRemoteFileChangeEvents(cb);
       const listener = (
         _event: Electron.IpcRendererEvent,
         payload: FileChangeEvent,
       ) => cb(payload);
       ipcRenderer.on(IPC.filesChange, listener);
-      return () => ipcRenderer.removeListener(IPC.filesChange, listener);
+      return () => {
+        unsubscribeRuntime();
+        ipcRenderer.removeListener(IPC.filesChange, listener);
+      };
     },
   },
   git: {
     stageFile: async (args: GitFileActionArgs): Promise<GitActionResult> => {
       clearGitReadCaches();
-      const result = await ipcRenderer.invoke(IPC.gitStageFile, args);
+      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+        "git",
+        "stageFile",
+        { args },
+      );
+      const result = runtime.handled
+        ? runtime.result
+        : await ipcRenderer.invoke(IPC.gitStageFile, args);
       clearGitReadCaches();
-      return result;
+      return result as GitActionResult;
     },
-    stageAll: async (args: GitBatchFileActionArgs): Promise<GitActionResult> => {
+    stageAll: async (
+      args: GitBatchFileActionArgs,
+    ): Promise<GitActionResult> => {
       clearGitReadCaches();
-      const result = await ipcRenderer.invoke(IPC.gitStageAll, args);
+      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+        "git",
+        "stageAll",
+        { args },
+      );
+      const result = runtime.handled
+        ? runtime.result
+        : await ipcRenderer.invoke(IPC.gitStageAll, args);
       clearGitReadCaches();
-      return result;
+      return result as GitActionResult;
     },
     unstageFile: async (args: GitFileActionArgs): Promise<GitActionResult> => {
       clearGitReadCaches();
-      const result = await ipcRenderer.invoke(IPC.gitUnstageFile, args);
+      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+        "git",
+        "unstageFile",
+        { args },
+      );
+      const result = runtime.handled
+        ? runtime.result
+        : await ipcRenderer.invoke(IPC.gitUnstageFile, args);
       clearGitReadCaches();
-      return result;
+      return result as GitActionResult;
     },
     unstageAll: async (
       args: GitBatchFileActionArgs,
     ): Promise<GitActionResult> => {
       clearGitReadCaches();
-      const result = await ipcRenderer.invoke(IPC.gitUnstageAll, args);
+      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+        "git",
+        "unstageAll",
+        { args },
+      );
+      const result = runtime.handled
+        ? runtime.result
+        : await ipcRenderer.invoke(IPC.gitUnstageAll, args);
       clearGitReadCaches();
-      return result;
+      return result as GitActionResult;
     },
     discardFile: async (args: GitFileActionArgs): Promise<GitActionResult> => {
       clearGitReadCaches();
-      const result = await ipcRenderer.invoke(IPC.gitDiscardFile, args);
+      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+        "git",
+        "discardFile",
+        { args },
+      );
+      const result = runtime.handled
+        ? runtime.result
+        : await ipcRenderer.invoke(IPC.gitDiscardFile, args);
       clearGitReadCaches();
-      return result;
+      return result as GitActionResult;
     },
     restoreStagedFile: async (
       args: GitFileActionArgs,
     ): Promise<GitActionResult> => {
       clearGitReadCaches();
-      const result = await ipcRenderer.invoke(IPC.gitRestoreStagedFile, args);
+      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+        "git",
+        "restoreStagedFile",
+        { args },
+      );
+      const result = runtime.handled
+        ? runtime.result
+        : await ipcRenderer.invoke(IPC.gitRestoreStagedFile, args);
       clearGitReadCaches();
-      return result;
+      return result as GitActionResult;
     },
     commit: async (args: GitCommitArgs): Promise<GitActionResult> => {
       clearGitReadCaches();
-      const result = await ipcRenderer.invoke(IPC.gitCommit, args);
+      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+        "git",
+        "commit",
+        { args },
+      );
+      const result = runtime.handled
+        ? runtime.result
+        : await ipcRenderer.invoke(IPC.gitCommit, args);
       clearGitReadCaches();
-      return result;
+      return result as GitActionResult;
     },
     generateCommitMessage: async (
       args: GitGenerateCommitMessageArgs,
-    ): Promise<GitGenerateCommitMessageResult> =>
-      ipcRenderer.invoke(IPC.gitGenerateCommitMessage, args),
+    ): Promise<GitGenerateCommitMessageResult> => {
+      const runtime =
+        await callProjectRuntimeActionIfBound<GitGenerateCommitMessageResult>(
+          "git",
+          "generateCommitMessage",
+          { args },
+        );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.gitGenerateCommitMessage, args);
+    },
     listRecentCommits: async (args: {
       laneId: string;
       limit?: number;
-    }): Promise<GitCommitSummary[]> =>
-      ipcRenderer.invoke(IPC.gitListRecentCommits, args),
-    listCommitFiles: async (args: GitListCommitFilesArgs): Promise<string[]> =>
-      ipcRenderer.invoke(IPC.gitListCommitFiles, args),
-    getCommitMessage: async (args: GitGetCommitMessageArgs): Promise<string> =>
-      ipcRenderer.invoke(IPC.gitGetCommitMessage, args),
+    }): Promise<GitCommitSummary[]> => {
+      const runtime = await callProjectRuntimeActionIfBound<GitCommitSummary[]>(
+        "git",
+        "listRecentCommits",
+        { args },
+      );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.gitListRecentCommits, args);
+    },
+    listCommitFiles: async (
+      args: GitListCommitFilesArgs,
+    ): Promise<string[]> => {
+      const runtime = await callProjectRuntimeActionIfBound<string[]>(
+        "git",
+        "listCommitFiles",
+        { args },
+      );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.gitListCommitFiles, args);
+    },
+    getCommitMessage: async (
+      args: GitGetCommitMessageArgs,
+    ): Promise<string> => {
+      const runtime = await callProjectRuntimeActionIfBound<string>(
+        "git",
+        "getCommitMessage",
+        { args },
+      );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.gitGetCommitMessage, args);
+    },
     revertCommit: async (args: GitRevertArgs): Promise<GitActionResult> => {
       clearGitReadCaches();
-      const result = await ipcRenderer.invoke(IPC.gitRevertCommit, args);
+      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+        "git",
+        "revertCommit",
+        { args },
+      );
+      const result = runtime.handled
+        ? runtime.result
+        : await ipcRenderer.invoke(IPC.gitRevertCommit, args);
       clearGitReadCaches();
-      return result;
+      return result as GitActionResult;
     },
     cherryPickCommit: async (
       args: GitCherryPickArgs,
     ): Promise<GitActionResult> => {
       clearGitReadCaches();
-      const result = await ipcRenderer.invoke(IPC.gitCherryPickCommit, args);
+      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+        "git",
+        "cherryPickCommit",
+        { args },
+      );
+      const result = runtime.handled
+        ? runtime.result
+        : await ipcRenderer.invoke(IPC.gitCherryPickCommit, args);
       clearGitReadCaches();
-      return result;
+      return result as GitActionResult;
     },
     stashPush: async (args: GitStashPushArgs): Promise<GitActionResult> => {
       clearGitReadCaches();
-      const result = await ipcRenderer.invoke(IPC.gitStashPush, args);
+      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+        "git",
+        "stashPush",
+        { args },
+      );
+      const result = runtime.handled
+        ? runtime.result
+        : await ipcRenderer.invoke(IPC.gitStashPush, args);
       clearGitReadCaches();
-      return result;
+      return result as GitActionResult;
     },
-    stashList: async (args: { laneId: string }): Promise<GitStashSummary[]> =>
-      ipcRenderer.invoke(IPC.gitStashList, args),
+    stashList: async (args: { laneId: string }): Promise<GitStashSummary[]> => {
+      const runtime = await callProjectRuntimeActionIfBound<GitStashSummary[]>(
+        "git",
+        "listStashes",
+        { args },
+      );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.gitStashList, args);
+    },
     stashApply: async (args: GitStashRefArgs): Promise<GitActionResult> => {
       clearGitReadCaches();
-      const result = await ipcRenderer.invoke(IPC.gitStashApply, args);
+      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+        "git",
+        "stashApply",
+        { args },
+      );
+      const result = runtime.handled
+        ? runtime.result
+        : await ipcRenderer.invoke(IPC.gitStashApply, args);
       clearGitReadCaches();
-      return result;
+      return result as GitActionResult;
     },
     stashPop: async (args: GitStashRefArgs): Promise<GitActionResult> => {
       clearGitReadCaches();
-      const result = await ipcRenderer.invoke(IPC.gitStashPop, args);
+      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+        "git",
+        "stashPop",
+        { args },
+      );
+      const result = runtime.handled
+        ? runtime.result
+        : await ipcRenderer.invoke(IPC.gitStashPop, args);
       clearGitReadCaches();
-      return result;
+      return result as GitActionResult;
     },
     stashDrop: async (args: GitStashRefArgs): Promise<GitActionResult> => {
       clearGitReadCaches();
-      const result = await ipcRenderer.invoke(IPC.gitStashDrop, args);
+      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+        "git",
+        "stashDrop",
+        { args },
+      );
+      const result = runtime.handled
+        ? runtime.result
+        : await ipcRenderer.invoke(IPC.gitStashDrop, args);
       clearGitReadCaches();
-      return result;
+      return result as GitActionResult;
     },
     stashClear: async (args: { laneId: string }): Promise<GitActionResult> => {
       clearGitReadCaches();
-      const result = await ipcRenderer.invoke(IPC.gitStashClear, args);
+      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+        "git",
+        "stashClear",
+        { args },
+      );
+      const result = runtime.handled
+        ? runtime.result
+        : await ipcRenderer.invoke(IPC.gitStashClear, args);
       clearGitReadCaches();
-      return result;
+      return result as GitActionResult;
     },
     fetch: async (args: { laneId: string }): Promise<GitActionResult> => {
       clearGitReadCaches();
-      const result = await ipcRenderer.invoke(IPC.gitFetch, args);
+      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+        "git",
+        "fetch",
+        { args },
+      );
+      const result = runtime.handled
+        ? runtime.result
+        : await ipcRenderer.invoke(IPC.gitFetch, args);
       clearGitReadCaches();
-      return result;
+      return result as GitActionResult;
     },
     pull: async (args: { laneId: string }): Promise<GitActionResult> => {
       clearGitReadCaches();
-      const result = await ipcRenderer.invoke(IPC.gitPull, args);
+      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+        "git",
+        "pull",
+        { args },
+      );
+      const result = runtime.handled
+        ? runtime.result
+        : await ipcRenderer.invoke(IPC.gitPull, args);
       clearGitReadCaches();
-      return result;
+      return result as GitActionResult;
     },
     getSyncStatus: async (args: {
       laneId: string;
-    }): Promise<GitUpstreamSyncStatus> =>
-      ipcRenderer.invoke(IPC.gitGetSyncStatus, args),
-    getOriginRemote: async (args: { laneId: string }): Promise<{ remoteUrl: string | null; branch: string | null }> =>
-      ipcRenderer.invoke(IPC.gitGetOriginRemote, args),
-    getOpenPrForBranch: async (args: { laneId: string; branch?: string }): Promise<{ prUrl: string | null; prNumber: number | null; title: string | null; headRefName: string | null }> =>
-      ipcRenderer.invoke(IPC.gitGetOpenPrForBranch, args),
+    }): Promise<GitUpstreamSyncStatus> => {
+      const runtime =
+        await callProjectRuntimeActionIfBound<GitUpstreamSyncStatus>(
+          "git",
+          "getSyncStatus",
+          { args },
+        );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.gitGetSyncStatus, args);
+    },
+    getOriginRemote: async (args: {
+      laneId: string;
+    }): Promise<{ remoteUrl: string | null; branch: string | null }> => {
+      const runtime = await callProjectRuntimeActionIfBound<{
+        remoteUrl: string | null;
+        branch: string | null;
+      }>("git", "getOriginRemote", { args });
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.gitGetOriginRemote, args);
+    },
+    getOpenPrForBranch: async (args: {
+      laneId: string;
+      branch?: string;
+    }): Promise<{
+      prUrl: string | null;
+      prNumber: number | null;
+      title: string | null;
+      headRefName: string | null;
+    }> => {
+      const runtime = await callProjectRuntimeActionIfBound<{
+        prUrl: string | null;
+        prNumber: number | null;
+        title: string | null;
+        headRefName: string | null;
+      }>("git", "getOpenPrForBranch", { args });
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.gitGetOpenPrForBranch, args);
+    },
     sync: async (args: GitSyncArgs): Promise<GitActionResult> => {
       clearGitReadCaches();
-      const result = await ipcRenderer.invoke(IPC.gitSync, args);
+      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+        "git",
+        "sync",
+        { args },
+      );
+      const result = runtime.handled
+        ? runtime.result
+        : await ipcRenderer.invoke(IPC.gitSync, args);
       clearGitReadCaches();
-      return result;
+      return result as GitActionResult;
     },
     push: async (args: GitPushArgs): Promise<GitActionResult> => {
       clearGitReadCaches();
-      const result = await ipcRenderer.invoke(IPC.gitPush, args);
+      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+        "git",
+        "push",
+        { args },
+      );
+      const result = runtime.handled
+        ? runtime.result
+        : await ipcRenderer.invoke(IPC.gitPush, args);
       clearGitReadCaches();
-      return result;
+      return result as GitActionResult;
     },
-    getConflictState: async (laneId: string): Promise<GitConflictState> =>
-      ipcRenderer.invoke(IPC.gitGetConflictState, { laneId }),
-    rebaseContinue: async (laneId: string): Promise<GitActionResult> =>
-      ipcRenderer.invoke(IPC.gitRebaseContinue, { laneId }),
-    rebaseAbort: async (laneId: string): Promise<GitActionResult> =>
-      ipcRenderer.invoke(IPC.gitRebaseAbort, { laneId }),
-    mergeContinue: async (laneId: string): Promise<GitActionResult> =>
-      ipcRenderer.invoke(IPC.gitMergeContinue, { laneId }),
-    mergeAbort: async (laneId: string): Promise<GitActionResult> =>
-      ipcRenderer.invoke(IPC.gitMergeAbort, { laneId }),
+    getConflictState: async (laneId: string): Promise<GitConflictState> => {
+      const runtime = await callProjectRuntimeActionIfBound<GitConflictState>(
+        "git",
+        "getConflictState",
+        { args: { laneId } },
+      );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.gitGetConflictState, { laneId });
+    },
+    rebaseContinue: async (laneId: string): Promise<GitActionResult> => {
+      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+        "git",
+        "rebaseContinue",
+        { args: { laneId } },
+      );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.gitRebaseContinue, { laneId });
+    },
+    rebaseAbort: async (laneId: string): Promise<GitActionResult> => {
+      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+        "git",
+        "rebaseAbort",
+        { args: { laneId } },
+      );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.gitRebaseAbort, { laneId });
+    },
+    mergeContinue: async (laneId: string): Promise<GitActionResult> => {
+      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+        "git",
+        "mergeContinue",
+        { args: { laneId } },
+      );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.gitMergeContinue, { laneId });
+    },
+    mergeAbort: async (laneId: string): Promise<GitActionResult> => {
+      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+        "git",
+        "mergeAbort",
+        { args: { laneId } },
+      );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.gitMergeAbort, { laneId });
+    },
     listBranches: async (
       args: GitListBranchesArgs,
-    ): Promise<GitBranchSummary[]> =>
-      gitBranchesCache.get(serializeIpcCacheArgs(args)),
+    ): Promise<GitBranchSummary[]> => {
+      const runtime = await callProjectRuntimeActionIfBound<GitBranchSummary[]>(
+        "git",
+        "listBranches",
+        { args },
+      );
+      if (runtime.handled) return runtime.result;
+      return gitBranchesCache.get(serializeIpcCacheArgs(args));
+    },
     getUserIdentity: async (
       args: GitGetUserIdentityArgs,
-    ): Promise<GitUserIdentity> =>
-      ipcRenderer.invoke(IPC.gitGetUserIdentity, args),
+    ): Promise<GitUserIdentity> => {
+      const runtime = await callProjectRuntimeActionIfBound<GitUserIdentity>(
+        "git",
+        "getUserIdentity",
+        { args },
+      );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.gitGetUserIdentity, args);
+    },
     checkoutBranch: async (
       args: GitCheckoutBranchArgs,
-    ): Promise<GitActionResult> =>
-      ipcRenderer.invoke(IPC.gitCheckoutBranch, args),
+    ): Promise<GitActionResult> => {
+      clearGitReadCaches();
+      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+        "git",
+        "checkoutBranch",
+        { args },
+      );
+      const result = runtime.handled
+        ? runtime.result
+        : await ipcRenderer.invoke(IPC.gitCheckoutBranch, args);
+      clearGitReadCaches();
+      return result as GitActionResult;
+    },
   },
   conflicts: {
     getLaneStatus: async (
       args: GetLaneConflictStatusArgs,
     ): Promise<ConflictStatus> =>
-      ipcRenderer.invoke(IPC.conflictsGetLaneStatus, args),
+      callProjectRuntimeActionOr("conflicts", "getLaneStatus", { args }, () =>
+        ipcRenderer.invoke(IPC.conflictsGetLaneStatus, args),
+      ),
     listOverlaps: async (args: ListOverlapsArgs): Promise<ConflictOverlap[]> =>
-      ipcRenderer.invoke(IPC.conflictsListOverlaps, args),
+      callProjectRuntimeActionOr("conflicts", "listOverlaps", { args }, () =>
+        ipcRenderer.invoke(IPC.conflictsListOverlaps, args),
+      ),
     getRiskMatrix: async (): Promise<RiskMatrixEntry[]> =>
-      ipcRenderer.invoke(IPC.conflictsGetRiskMatrix),
+      callProjectRuntimeActionOr("conflicts", "getRiskMatrix", {}, () =>
+        ipcRenderer.invoke(IPC.conflictsGetRiskMatrix),
+      ),
     simulateMerge: async (
       args: MergeSimulationArgs,
     ): Promise<MergeSimulationResult> =>
-      ipcRenderer.invoke(IPC.conflictsSimulateMerge, args),
+      callProjectRuntimeActionOr("conflicts", "simulateMerge", { args }, () =>
+        ipcRenderer.invoke(IPC.conflictsSimulateMerge, args),
+      ),
     runPrediction: async (
       args: RunConflictPredictionArgs = {},
     ): Promise<BatchAssessmentResult> =>
-      ipcRenderer.invoke(IPC.conflictsRunPrediction, args),
+      callProjectRuntimeActionOr("conflicts", "runPrediction", { args }, () =>
+        ipcRenderer.invoke(IPC.conflictsRunPrediction, args),
+      ),
     getBatchAssessment: async (): Promise<BatchAssessmentResult> =>
-      ipcRenderer.invoke(IPC.conflictsGetBatchAssessment),
+      callProjectRuntimeActionOr("conflicts", "getBatchAssessment", {}, () =>
+        ipcRenderer.invoke(IPC.conflictsGetBatchAssessment),
+      ),
     listProposals: async (laneId: string): Promise<ConflictProposal[]> =>
-      ipcRenderer.invoke(IPC.conflictsListProposals, { laneId }),
+      callProjectRuntimeActionOr(
+        "conflicts",
+        "listProposals",
+        { args: { laneId } },
+        () => ipcRenderer.invoke(IPC.conflictsListProposals, { laneId }),
+      ),
     prepareProposal: async (
       args: PrepareConflictProposalArgs,
     ): Promise<ConflictProposalPreview> =>
-      ipcRenderer.invoke(IPC.conflictsPrepareProposal, args),
+      callProjectRuntimeActionOr("conflicts", "prepareProposal", { args }, () =>
+        ipcRenderer.invoke(IPC.conflictsPrepareProposal, args),
+      ),
     requestProposal: async (
       args: RequestConflictProposalArgs,
     ): Promise<ConflictProposal> =>
-      ipcRenderer.invoke(IPC.conflictsRequestProposal, args),
+      callProjectRuntimeActionOr("conflicts", "requestProposal", { args }, () =>
+        ipcRenderer.invoke(IPC.conflictsRequestProposal, args),
+      ),
     applyProposal: async (
       args: ApplyConflictProposalArgs,
     ): Promise<ConflictProposal> =>
-      ipcRenderer.invoke(IPC.conflictsApplyProposal, args),
+      callProjectRuntimeActionOr("conflicts", "applyProposal", { args }, () =>
+        ipcRenderer.invoke(IPC.conflictsApplyProposal, args),
+      ),
     undoProposal: async (
       args: UndoConflictProposalArgs,
     ): Promise<ConflictProposal> =>
-      ipcRenderer.invoke(IPC.conflictsUndoProposal, args),
+      callProjectRuntimeActionOr("conflicts", "undoProposal", { args }, () =>
+        ipcRenderer.invoke(IPC.conflictsUndoProposal, args),
+      ),
     runExternalResolver: async (
       args: RunExternalConflictResolverArgs,
     ): Promise<ConflictExternalResolverRunSummary> =>
-      ipcRenderer.invoke(IPC.conflictsRunExternalResolver, args),
+      callProjectRuntimeActionOr(
+        "conflicts",
+        "runExternalResolver",
+        { args },
+        () => ipcRenderer.invoke(IPC.conflictsRunExternalResolver, args),
+      ),
     listExternalResolverRuns: async (
       args: ListExternalConflictResolverRunsArgs = {},
     ): Promise<ConflictExternalResolverRunSummary[]> =>
-      ipcRenderer.invoke(IPC.conflictsListExternalResolverRuns, args),
+      callProjectRuntimeActionOr(
+        "conflicts",
+        "listExternalResolverRuns",
+        { args },
+        () => ipcRenderer.invoke(IPC.conflictsListExternalResolverRuns, args),
+      ),
     commitExternalResolverRun: async (
       args: CommitExternalConflictResolverRunArgs,
     ): Promise<CommitExternalConflictResolverRunResult> =>
-      ipcRenderer.invoke(IPC.conflictsCommitExternalResolverRun, args),
-    prepareResolverSession: (
+      callProjectRuntimeActionOr(
+        "conflicts",
+        "commitExternalResolverRun",
+        { args },
+        () => ipcRenderer.invoke(IPC.conflictsCommitExternalResolverRun, args),
+      ),
+    prepareResolverSession: async (
       args: PrepareResolverSessionArgs,
     ): Promise<PrepareResolverSessionResult> =>
-      ipcRenderer.invoke(IPC.conflictsPrepareResolverSession, args),
-    attachResolverSession: (
+      callProjectRuntimeActionOr(
+        "conflicts",
+        "prepareResolverSession",
+        { args },
+        () => ipcRenderer.invoke(IPC.conflictsPrepareResolverSession, args),
+      ),
+    attachResolverSession: async (
       args: AttachResolverSessionArgs,
     ): Promise<ConflictExternalResolverRunSummary> =>
-      ipcRenderer.invoke(IPC.conflictsAttachResolverSession, args),
-    finalizeResolverSession: (
+      callProjectRuntimeActionOr(
+        "conflicts",
+        "attachResolverSession",
+        { args },
+        () => ipcRenderer.invoke(IPC.conflictsAttachResolverSession, args),
+      ),
+    finalizeResolverSession: async (
       args: FinalizeResolverSessionArgs,
     ): Promise<ConflictExternalResolverRunSummary> =>
-      ipcRenderer.invoke(IPC.conflictsFinalizeResolverSession, args),
-    cancelResolverSession: (
+      callProjectRuntimeActionOr(
+        "conflicts",
+        "finalizeResolverSession",
+        { args },
+        () => ipcRenderer.invoke(IPC.conflictsFinalizeResolverSession, args),
+      ),
+    cancelResolverSession: async (
       args: CancelResolverSessionArgs,
     ): Promise<ConflictExternalResolverRunSummary> =>
-      ipcRenderer.invoke(IPC.conflictsCancelResolverSession, args),
-    suggestResolverTarget: (
+      callProjectRuntimeActionOr(
+        "conflicts",
+        "cancelResolverSession",
+        { args },
+        () => ipcRenderer.invoke(IPC.conflictsCancelResolverSession, args),
+      ),
+    suggestResolverTarget: async (
       args: SuggestResolverTargetArgs,
     ): Promise<SuggestResolverTargetResult> =>
-      ipcRenderer.invoke(IPC.conflictsSuggestResolverTarget, args),
+      callProjectRuntimeActionOr(
+        "conflicts",
+        "suggestResolverTarget",
+        { args },
+        () => ipcRenderer.invoke(IPC.conflictsSuggestResolverTarget, args),
+      ),
     onEvent: (cb: (ev: ConflictEventPayload) => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,
@@ -2921,12 +6481,25 @@ contextBridge.exposeInMainWorld("ade", {
     },
   },
   feedback: {
-    prepareDraft: async (args: FeedbackPrepareDraftArgs): Promise<FeedbackPreparedDraft> =>
-      ipcRenderer.invoke(IPC.feedbackPrepareDraft, args),
-    submitDraft: async (args: FeedbackSubmitDraftArgs): Promise<FeedbackSubmission> =>
-      ipcRenderer.invoke(IPC.feedbackSubmitDraft, args),
+    prepareDraft: async (
+      args: FeedbackPrepareDraftArgs,
+    ): Promise<FeedbackPreparedDraft> =>
+      callProjectRuntimeActionOr("feedback", "prepareDraft", { args }, () =>
+        ipcRenderer.invoke(IPC.feedbackPrepareDraft, args),
+      ),
+    submitDraft: async (
+      args: FeedbackSubmitDraftArgs,
+    ): Promise<FeedbackSubmission> =>
+      callProjectRuntimeActionOr(
+        "feedback",
+        "submitPreparedDraft",
+        { args },
+        () => ipcRenderer.invoke(IPC.feedbackSubmitDraft, args),
+      ),
     list: async (): Promise<FeedbackSubmission[]> =>
-      ipcRenderer.invoke(IPC.feedbackList),
+      callProjectRuntimeActionOr("feedback", "list", {}, () =>
+        ipcRenderer.invoke(IPC.feedbackList),
+      ),
     onUpdate: (cb: (event: FeedbackSubmissionEvent) => void): (() => void) => {
       const handler = (
         _event: Electron.IpcRendererEvent,
@@ -2937,190 +6510,412 @@ contextBridge.exposeInMainWorld("ade", {
     },
   },
   github: {
-    getStatus: async (opts?: { forceRefresh?: boolean }): Promise<GitHubStatus> =>
-      opts?.forceRefresh
-        ? clearAround(() => githubStatusCache.clear(), () => ipcRenderer.invoke(IPC.githubGetStatus, opts ?? {}))
-        : githubStatusCache.get(),
+    getStatus: async (opts?: {
+      forceRefresh?: boolean;
+    }): Promise<GitHubStatus> => {
+      if (opts?.forceRefresh) githubStatusCache.clear();
+      return callProjectRuntimeActionOr(
+        "github",
+        "getStatus",
+        { args: opts ?? {} },
+        () =>
+          opts?.forceRefresh
+            ? clearAround(
+                () => githubStatusCache.clear(),
+                () => ipcRenderer.invoke(IPC.githubGetStatus, opts ?? {}),
+              )
+            : githubStatusCache.get(),
+      );
+    },
     setToken: async (token: string): Promise<GitHubStatus> =>
-      clearAround(() => githubStatusCache.clear(), () => ipcRenderer.invoke(IPC.githubSetToken, { token })),
+      clearAround(
+        () => githubStatusCache.clear(),
+        () =>
+          callProjectRuntimeActionOr("github", "setToken", { arg: token }, () =>
+            ipcRenderer.invoke(IPC.githubSetToken, { token }),
+          ),
+      ),
     clearToken: async (): Promise<GitHubStatus> =>
-      clearAround(() => githubStatusCache.clear(), () => ipcRenderer.invoke(IPC.githubClearToken)),
+      clearAround(
+        () => githubStatusCache.clear(),
+        () =>
+          callProjectRuntimeActionOr("github", "clearToken", {}, () =>
+            ipcRenderer.invoke(IPC.githubClearToken),
+          ),
+      ),
     detectRepo: async (): Promise<{ owner: string; name: string } | null> => {
+      const runtime = await callProjectRuntimeActionIfBound<{
+        owner: string;
+        name: string;
+      } | null>("github", "detectRepo", {});
+      if (runtime.handled) return runtime.result;
       const status = await githubStatusCache.get();
       return status.repo;
     },
-    listRepoLabels: async (args: { owner: string; name: string }): Promise<Array<{ name: string; color?: string }>> =>
-      ipcRenderer.invoke(IPC.githubListRepoLabels, args),
-    listRepoCollaborators: async (args: { owner: string; name: string }): Promise<Array<{ login: string; avatarUrl?: string }>> =>
-      ipcRenderer.invoke(IPC.githubListRepoCollaborators, args),
-    listMyRepos: async (input: ListMyGitHubReposInput = {}): Promise<ListMyGitHubReposResult> =>
+    listRepoLabels: async (args: {
+      owner: string;
+      name: string;
+    }): Promise<Array<{ name: string; color?: string }>> =>
+      callProjectRuntimeActionOr("github", "listRepoLabels", { args }, () =>
+        ipcRenderer.invoke(IPC.githubListRepoLabels, args),
+      ),
+    listRepoCollaborators: async (args: {
+      owner: string;
+      name: string;
+    }): Promise<Array<{ login: string; avatarUrl?: string }>> =>
+      callProjectRuntimeActionOr(
+        "github",
+        "listRepoCollaborators",
+        { args },
+        () => ipcRenderer.invoke(IPC.githubListRepoCollaborators, args),
+      ),
+    listMyRepos: async (
+      input: ListMyGitHubReposInput = {},
+    ): Promise<ListMyGitHubReposResult> =>
       ipcRenderer.invoke(IPC.githubListMyRepos, input),
-    publishCurrentProject: async (input: PublishProjectInput): Promise<PublishProjectResult> =>
-      clearAround(() => githubStatusCache.clear(), () => ipcRenderer.invoke(IPC.githubPublishCurrentProject, input)),
+    publishCurrentProject: async (
+      input: PublishProjectInput,
+    ): Promise<PublishProjectResult> =>
+      clearAround(
+        () => githubStatusCache.clear(),
+        () =>
+          callProjectRuntimeActionOr(
+            "github",
+            "publishCurrentProject",
+            { args: input },
+            () => ipcRenderer.invoke(IPC.githubPublishCurrentProject, input),
+          ),
+      ),
     onStatusChanged: (cb: (status: GitHubStatus) => void): (() => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, payload: GitHubStatus) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        payload: GitHubStatus,
+      ) => {
         githubStatusCache.clear();
         cb(payload);
       };
       ipcRenderer.on(IPC.githubStatusChanged, listener);
-      return () => ipcRenderer.removeListener(IPC.githubStatusChanged, listener);
+      return () =>
+        ipcRenderer.removeListener(IPC.githubStatusChanged, listener);
     },
   },
   prs: {
     createFromLane: async (args: CreatePrFromLaneArgs): Promise<PrSummary> =>
-      ipcRenderer.invoke(IPC.prsCreateFromLane, args),
+      callProjectRuntimeActionOr("pr", "createFromLane", { args }, () =>
+        ipcRenderer.invoke(IPC.prsCreateFromLane, args),
+      ),
     linkToLane: async (args: LinkPrToLaneArgs): Promise<PrSummary> =>
-      ipcRenderer.invoke(IPC.prsLinkToLane, args),
+      callProjectRuntimeActionOr("pr", "linkToLane", { args }, () =>
+        ipcRenderer.invoke(IPC.prsLinkToLane, args),
+      ),
     getForLane: async (laneId: string): Promise<PrSummary | null> =>
-      ipcRenderer.invoke(IPC.prsGetForLane, { laneId }),
+      callProjectRuntimeActionOr("pr", "getForLane", { arg: laneId }, () =>
+        ipcRenderer.invoke(IPC.prsGetForLane, { laneId }),
+      ),
     listAll: async (): Promise<PrSummary[]> =>
-      ipcRenderer.invoke(IPC.prsListAll),
+      callProjectRuntimeActionOr("pr", "listAll", { args: {} }, () =>
+        ipcRenderer.invoke(IPC.prsListAll),
+      ),
     listOpenForRepo: async (): Promise<BranchPullRequest[]> =>
-      ipcRenderer.invoke(IPC.prsListOpenForRepo),
+      callProjectRuntimeActionOr("pr", "listOpenPullRequests", {}, () =>
+        ipcRenderer.invoke(IPC.prsListOpenForRepo),
+      ),
     refresh: async (
       args: { prId?: string; prIds?: string[] } = {},
-    ): Promise<PrSummary[]> => ipcRenderer.invoke(IPC.prsRefresh, args),
+    ): Promise<PrSummary[]> =>
+      callProjectRuntimeActionOr("pr", "refresh", { args }, () =>
+        ipcRenderer.invoke(IPC.prsRefresh, args),
+      ),
     getStatus: async (prId: string): Promise<PrStatus | null> =>
-      ipcRenderer.invoke(IPC.prsGetStatus, { prId }),
+      callProjectRuntimeActionOr("pr", "getStatus", { arg: prId }, () =>
+        ipcRenderer.invoke(IPC.prsGetStatus, { prId }),
+      ),
     getChecks: async (prId: string): Promise<PrCheck[]> =>
-      ipcRenderer.invoke(IPC.prsGetChecks, { prId }),
+      callProjectRuntimeActionOr("pr", "getChecks", { arg: prId }, () =>
+        ipcRenderer.invoke(IPC.prsGetChecks, { prId }),
+      ),
     getComments: async (prId: string): Promise<PrComment[]> =>
-      ipcRenderer.invoke(IPC.prsGetComments, { prId }),
+      callProjectRuntimeActionOr("pr", "getComments", { arg: prId }, () =>
+        ipcRenderer.invoke(IPC.prsGetComments, { prId }),
+      ),
     getReviews: async (prId: string): Promise<PrReview[]> =>
-      ipcRenderer.invoke(IPC.prsGetReviews, { prId }),
+      callProjectRuntimeActionOr("pr", "getReviews", { arg: prId }, () =>
+        ipcRenderer.invoke(IPC.prsGetReviews, { prId }),
+      ),
     getReviewThreads: async (prId: string): Promise<PrReviewThread[]> =>
-      ipcRenderer.invoke(IPC.prsGetReviewThreads, { prId }),
+      callProjectRuntimeActionOr("pr", "getReviewThreads", { arg: prId }, () =>
+        ipcRenderer.invoke(IPC.prsGetReviewThreads, { prId }),
+      ),
     updateDescription: async (args: UpdatePrDescriptionArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.prsUpdateDescription, args),
+      callProjectRuntimeActionOr("pr", "updateDescription", { args }, () =>
+        ipcRenderer.invoke(IPC.prsUpdateDescription, args),
+      ),
     delete: async (args: DeletePrArgs): Promise<DeletePrResult> =>
-      ipcRenderer.invoke(IPC.prsDelete, args),
+      callProjectRuntimeActionOr("pr", "delete", { args }, () =>
+        ipcRenderer.invoke(IPC.prsDelete, args),
+      ),
     draftDescription: async (
       args: DraftPrDescriptionArgs,
     ): Promise<{ title: string; body: string }> =>
-      ipcRenderer.invoke(IPC.prsDraftDescription, args),
+      callProjectRuntimeActionOr("pr", "draftDescription", { args }, () =>
+        ipcRenderer.invoke(IPC.prsDraftDescription, args),
+      ),
     land: async (args: LandPrArgs): Promise<LandResult> =>
-      ipcRenderer.invoke(IPC.prsLand, args),
+      callProjectRuntimeActionOr("pr", "land", { args }, () =>
+        ipcRenderer.invoke(IPC.prsLand, args),
+      ),
     landStack: async (args: LandStackArgs): Promise<LandResult[]> =>
-      ipcRenderer.invoke(IPC.prsLandStack, args),
-    retargetBase: async (args: { prId: string; baseBranch: string }): Promise<void> =>
-      ipcRenderer.invoke(IPC.prsRetargetBase, args),
-    openInGitHub: async (prId: string): Promise<void> =>
-      ipcRenderer.invoke(IPC.prsOpenInGitHub, { prId }),
+      callProjectRuntimeActionOr("pr", "landStack", { args }, () =>
+        ipcRenderer.invoke(IPC.prsLandStack, args),
+      ),
+    retargetBase: async (args: {
+      prId: string;
+      baseBranch: string;
+    }): Promise<void> =>
+      callProjectRuntimeActionOr(
+        "pr",
+        "retargetBase",
+        { argsList: [args.prId, args.baseBranch] },
+        () => ipcRenderer.invoke(IPC.prsRetargetBase, args),
+      ),
+    openInGitHub: async (prId: string): Promise<void> => {
+      const runtime = await callProjectRuntimeActionIfBound<PrSummary[]>(
+        "pr",
+        "listAll",
+        { args: {} },
+      );
+      if (runtime.handled) {
+        const pr = runtime.result.find((entry) => entry.id === prId);
+        if (pr?.githubUrl) {
+          await ipcRenderer.invoke(IPC.appOpenExternal, { url: pr.githubUrl });
+          return;
+        }
+      }
+      await ipcRenderer.invoke(IPC.prsOpenInGitHub, { prId });
+    },
     createQueue: (args: CreateQueuePrsArgs): Promise<CreateQueuePrsResult> =>
-      ipcRenderer.invoke(IPC.prsCreateQueue, args),
+      callProjectRuntimeActionOr("pr", "createQueuePrs", { args }, () =>
+        ipcRenderer.invoke(IPC.prsCreateQueue, args),
+      ),
     createIntegration: (
       args: CreateIntegrationPrArgs,
     ): Promise<CreateIntegrationPrResult> =>
-      ipcRenderer.invoke(IPC.prsCreateIntegration, args),
+      callProjectRuntimeActionOr("pr", "createIntegrationPr", { args }, () =>
+        ipcRenderer.invoke(IPC.prsCreateIntegration, args),
+      ),
     simulateIntegration: (
       args: SimulateIntegrationArgs,
     ): Promise<IntegrationProposal> =>
-      ipcRenderer.invoke(IPC.prsSimulateIntegration, args),
+      callProjectRuntimeActionOr("pr", "simulateIntegration", { args }, () =>
+        ipcRenderer.invoke(IPC.prsSimulateIntegration, args),
+      ),
     commitIntegration: (
       args: CommitIntegrationArgs,
     ): Promise<CreateIntegrationPrResult> =>
-      ipcRenderer.invoke(IPC.prsCommitIntegration, args),
+      callProjectRuntimeActionOr("pr", "commitIntegration", { args }, () =>
+        ipcRenderer.invoke(IPC.prsCommitIntegration, args),
+      ),
     listProposals: (): Promise<IntegrationProposal[]> =>
-      ipcRenderer.invoke(IPC.prsListProposals),
+      callProjectRuntimeActionOr("pr", "listIntegrationProposals", {}, () =>
+        ipcRenderer.invoke(IPC.prsListProposals),
+      ),
     updateProposal: (args: UpdateIntegrationProposalArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.prsUpdateProposal, args),
+      callProjectRuntimeActionOr(
+        "pr",
+        "updateIntegrationProposal",
+        { args },
+        () => ipcRenderer.invoke(IPC.prsUpdateProposal, args),
+      ),
     deleteProposal: (
       args: DeleteIntegrationProposalArgs,
     ): Promise<DeleteIntegrationProposalResult> =>
-      ipcRenderer.invoke(IPC.prsDeleteProposal, args),
+      callProjectRuntimeActionOr(
+        "pr",
+        "deleteIntegrationProposal",
+        { args },
+        () => ipcRenderer.invoke(IPC.prsDeleteProposal, args),
+      ),
     landStackEnhanced: (args: LandStackEnhancedArgs): Promise<LandResult[]> =>
-      ipcRenderer.invoke(IPC.prsLandStackEnhanced, args),
+      callProjectRuntimeActionOr("pr", "landStackEnhanced", { args }, () =>
+        ipcRenderer.invoke(IPC.prsLandStackEnhanced, args),
+      ),
     landQueueNext: (args: LandQueueNextArgs): Promise<LandResult> =>
-      ipcRenderer.invoke(IPC.prsLandQueueNext, args),
+      callProjectRuntimeActionOr("pr", "landQueueNext", { args }, () =>
+        ipcRenderer.invoke(IPC.prsLandQueueNext, args),
+      ),
     startQueueAutomation: (
       args: StartQueueAutomationArgs,
     ): Promise<QueueLandingState> =>
-      ipcRenderer.invoke(IPC.prsStartQueueAutomation, args),
+      callProjectRuntimeActionOr("pr", "startQueueAutomation", { args }, () =>
+        ipcRenderer.invoke(IPC.prsStartQueueAutomation, args),
+      ),
     pauseQueueAutomation: (
       queueId: string,
     ): Promise<QueueLandingState | null> =>
-      ipcRenderer.invoke(IPC.prsPauseQueueAutomation, { queueId }),
+      callProjectRuntimeActionOr(
+        "pr",
+        "pauseQueueAutomation",
+        { arg: queueId },
+        () => ipcRenderer.invoke(IPC.prsPauseQueueAutomation, { queueId }),
+      ),
     resumeQueueAutomation: (
       args: ResumeQueueAutomationArgs,
     ): Promise<QueueLandingState | null> =>
-      ipcRenderer.invoke(IPC.prsResumeQueueAutomation, args),
+      callProjectRuntimeActionOr("pr", "resumeQueueAutomation", { args }, () =>
+        ipcRenderer.invoke(IPC.prsResumeQueueAutomation, args),
+      ),
     cancelQueueAutomation: (
       queueId: string,
     ): Promise<QueueLandingState | null> =>
-      ipcRenderer.invoke(IPC.prsCancelQueueAutomation, { queueId }),
+      callProjectRuntimeActionOr(
+        "pr",
+        "cancelQueueAutomation",
+        { arg: queueId },
+        () => ipcRenderer.invoke(IPC.prsCancelQueueAutomation, { queueId }),
+      ),
     reorderQueuePrs: (args: ReorderQueuePrsArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.prsReorderQueue, args),
+      callProjectRuntimeActionOr("pr", "reorderQueuePrs", { args }, () =>
+        ipcRenderer.invoke(IPC.prsReorderQueue, args),
+      ),
     getHealth: (prId: string): Promise<PrHealth> =>
-      ipcRenderer.invoke(IPC.prsGetHealth, { prId }),
+      callProjectRuntimeActionOr("pr", "getPrHealth", { arg: prId }, () =>
+        ipcRenderer.invoke(IPC.prsGetHealth, { prId }),
+      ),
     getQueueState: (groupId: string): Promise<QueueLandingState | null> =>
-      ipcRenderer.invoke(IPC.prsGetQueueState, { groupId }),
+      callProjectRuntimeActionOr("pr", "getQueueState", { arg: groupId }, () =>
+        ipcRenderer.invoke(IPC.prsGetQueueState, { groupId }),
+      ),
     listQueueStates: (args?: {
       includeCompleted?: boolean;
       limit?: number;
     }): Promise<QueueLandingState[]> =>
-      ipcRenderer.invoke(IPC.prsListQueueStates, args ?? {}),
+      callProjectRuntimeActionOr(
+        "pr",
+        "listQueueStates",
+        { args: args ?? {} },
+        () => ipcRenderer.invoke(IPC.prsListQueueStates, args ?? {}),
+      ),
     getConflictAnalysis: (prId: string): Promise<PrConflictAnalysis> =>
-      ipcRenderer.invoke(IPC.prsGetConflictAnalysis, { prId }),
+      callProjectRuntimeActionOr(
+        "pr",
+        "getConflictAnalysis",
+        { arg: prId },
+        () => ipcRenderer.invoke(IPC.prsGetConflictAnalysis, { prId }),
+      ),
     getMergeContext: (prId: string): Promise<PrMergeContext> =>
-      ipcRenderer.invoke(IPC.prsGetMergeContext, { prId }),
+      callProjectRuntimeActionOr("pr", "getMergeContext", { arg: prId }, () =>
+        ipcRenderer.invoke(IPC.prsGetMergeContext, { prId }),
+      ),
     listWithConflicts: (): Promise<PrWithConflicts[]> =>
-      ipcRenderer.invoke(IPC.prsListWithConflicts),
+      callProjectRuntimeActionOr("pr", "listWithConflicts", {}, () =>
+        ipcRenderer.invoke(IPC.prsListWithConflicts),
+      ),
     getGitHubSnapshot: (args?: {
       force?: boolean;
     }): Promise<GitHubPrSnapshot> =>
-      ipcRenderer.invoke(IPC.prsGetGitHubSnapshot, args ?? {}),
+      callProjectRuntimeActionOr(
+        "pr",
+        "getGithubSnapshot",
+        { args: args ?? {} },
+        () => ipcRenderer.invoke(IPC.prsGetGitHubSnapshot, args ?? {}),
+      ),
     listIntegrationWorkflows: (
       args: ListIntegrationWorkflowsArgs = {},
     ): Promise<IntegrationProposal[]> =>
-      ipcRenderer.invoke(IPC.prsListIntegrationWorkflows, args),
+      callProjectRuntimeActionOr(
+        "pr",
+        "listIntegrationWorkflows",
+        { args },
+        () => ipcRenderer.invoke(IPC.prsListIntegrationWorkflows, args),
+      ),
     createIntegrationLaneForProposal: (
       args: CreateIntegrationLaneForProposalArgs,
     ): Promise<CreateIntegrationLaneForProposalResult> =>
-      ipcRenderer.invoke(IPC.prsCreateIntegrationLaneForProposal, args),
+      callProjectRuntimeActionOr(
+        "pr",
+        "createIntegrationLaneForProposal",
+        { args },
+        () => ipcRenderer.invoke(IPC.prsCreateIntegrationLaneForProposal, args),
+      ),
     startIntegrationResolution: (
       args: StartIntegrationResolutionArgs,
     ): Promise<StartIntegrationResolutionResult> =>
-      ipcRenderer.invoke(IPC.prsStartIntegrationResolution, args),
+      callProjectRuntimeActionOr(
+        "pr",
+        "startIntegrationResolution",
+        { args },
+        () => ipcRenderer.invoke(IPC.prsStartIntegrationResolution, args),
+      ),
     getIntegrationResolutionState: (
       proposalId: string,
     ): Promise<IntegrationResolutionState | null> =>
-      ipcRenderer.invoke(IPC.prsGetIntegrationResolutionState, { proposalId }),
+      callProjectRuntimeActionOr(
+        "pr",
+        "getIntegrationResolutionState",
+        { arg: proposalId },
+        () =>
+          ipcRenderer.invoke(IPC.prsGetIntegrationResolutionState, {
+            proposalId,
+          }),
+      ),
     recheckIntegrationStep: (
       args: RecheckIntegrationStepArgs,
     ): Promise<RecheckIntegrationStepResult> =>
-      ipcRenderer.invoke(IPC.prsRecheckIntegrationStep, args),
+      callProjectRuntimeActionOr("pr", "recheckIntegrationStep", { args }, () =>
+        ipcRenderer.invoke(IPC.prsRecheckIntegrationStep, args),
+      ),
     aiResolutionStart: (
       args: PrAiResolutionStartArgs,
     ): Promise<PrAiResolutionStartResult> =>
-      ipcRenderer.invoke(IPC.prsAiResolutionStart, args),
+      callProjectRuntimeActionOr("pr", "aiResolutionStart", { args }, () =>
+        ipcRenderer.invoke(IPC.prsAiResolutionStart, args),
+      ),
     aiResolutionGetSession: (
       args: PrAiResolutionGetSessionArgs,
     ): Promise<PrAiResolutionGetSessionResult> =>
-      ipcRenderer.invoke(IPC.prsAiResolutionGetSession, args),
+      callProjectRuntimeActionOr("pr", "aiResolutionGetSession", { args }, () =>
+        ipcRenderer.invoke(IPC.prsAiResolutionGetSession, args),
+      ),
     aiResolutionInput: (args: PrAiResolutionInputArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.prsAiResolutionInput, args),
+      callProjectRuntimeActionOr("pr", "aiResolutionInput", { args }, () =>
+        ipcRenderer.invoke(IPC.prsAiResolutionInput, args),
+      ),
     aiResolutionStop: (args: PrAiResolutionStopArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.prsAiResolutionStop, args),
+      callProjectRuntimeActionOr("pr", "aiResolutionStop", { args }, () =>
+        ipcRenderer.invoke(IPC.prsAiResolutionStop, args),
+      ),
     issueResolutionStart: (
       args: PrIssueResolutionStartArgs,
     ): Promise<PrIssueResolutionStartResult> =>
-      ipcRenderer.invoke(IPC.prsIssueResolutionStart, args),
+      callProjectRuntimeActionOr("pr", "issueResolutionStart", { args }, () =>
+        ipcRenderer.invoke(IPC.prsIssueResolutionStart, args),
+      ),
     issueResolutionPreviewPrompt: (
       args: PrIssueResolutionPromptPreviewArgs,
     ): Promise<PrIssueResolutionPromptPreviewResult> =>
-      ipcRenderer.invoke(IPC.prsIssueResolutionPreviewPrompt, args),
+      callProjectRuntimeActionOr(
+        "pr",
+        "issueResolutionPreviewPrompt",
+        { args },
+        () => ipcRenderer.invoke(IPC.prsIssueResolutionPreviewPrompt, args),
+      ),
     rebaseResolutionStart: (
       args: RebaseResolutionStartArgs,
     ): Promise<RebaseResolutionStartResult> =>
-      ipcRenderer.invoke(IPC.prsRebaseResolutionStart, args),
+      callProjectRuntimeActionOr("pr", "rebaseResolutionStart", { args }, () =>
+        ipcRenderer.invoke(IPC.prsRebaseResolutionStart, args),
+      ),
     onAiResolutionEvent: (cb: (ev: PrAiResolutionEventPayload) => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,
         payload: PrAiResolutionEventPayload,
       ) => cb(payload);
       ipcRenderer.on(IPC.prsAiResolutionEvent, listener);
-      return () =>
+      const unsubscribeRemote = subscribeRemotePrAiResolutionEvents(cb);
+      return () => {
+        unsubscribeRemote();
         ipcRenderer.removeListener(IPC.prsAiResolutionEvent, listener);
+      };
     },
     onEvent: (cb: (ev: PrEventPayload) => void) => {
       const listener = (
@@ -3128,76 +6923,224 @@ contextBridge.exposeInMainWorld("ade", {
         payload: PrEventPayload,
       ) => cb(payload);
       ipcRenderer.on(IPC.prsEvent, listener);
-      return () => ipcRenderer.removeListener(IPC.prsEvent, listener);
+      const unsubscribeRemote = subscribeRemotePrEvents(cb);
+      return () => {
+        unsubscribeRemote();
+        ipcRenderer.removeListener(IPC.prsEvent, listener);
+      };
     },
     getDetail: async (prId: string): Promise<PrDetail> =>
-      ipcRenderer.invoke(IPC.prsGetDetail, { prId }),
+      callProjectRuntimeActionOr("pr", "getDetail", { arg: prId }, () =>
+        ipcRenderer.invoke(IPC.prsGetDetail, { prId }),
+      ),
     getFiles: async (prId: string): Promise<PrFile[]> =>
-      ipcRenderer.invoke(IPC.prsGetFiles, { prId }),
+      callProjectRuntimeActionOr("pr", "getFiles", { arg: prId }, () =>
+        ipcRenderer.invoke(IPC.prsGetFiles, { prId }),
+      ),
     getCommits: async (prId: string): Promise<PrCommit[]> =>
-      ipcRenderer.invoke(IPC.prsGetCommits, { prId }),
+      callProjectRuntimeActionOr("pr", "getCommits", { arg: prId }, () =>
+        ipcRenderer.invoke(IPC.prsGetCommits, { prId }),
+      ),
     getActionRuns: async (prId: string): Promise<PrActionRun[]> =>
-      ipcRenderer.invoke(IPC.prsGetActionRuns, { prId }),
+      callProjectRuntimeActionOr("pr", "getActionRuns", { arg: prId }, () =>
+        ipcRenderer.invoke(IPC.prsGetActionRuns, { prId }),
+      ),
     getActivity: async (prId: string): Promise<PrActivityEvent[]> =>
-      ipcRenderer.invoke(IPC.prsGetActivity, { prId }),
+      callProjectRuntimeActionOr("pr", "getActivity", { arg: prId }, () =>
+        ipcRenderer.invoke(IPC.prsGetActivity, { prId }),
+      ),
     addComment: async (args: AddPrCommentArgs): Promise<PrComment> =>
-      ipcRenderer.invoke(IPC.prsAddComment, args),
+      callProjectRuntimeActionOr("pr", "addComment", { args }, () =>
+        ipcRenderer.invoke(IPC.prsAddComment, args),
+      ),
     replyToReviewThread: async (
       args: ReplyToPrReviewThreadArgs,
     ): Promise<PrReviewThreadComment> =>
-      ipcRenderer.invoke(IPC.prsReplyToReviewThread, args),
-    resolveReviewThread: async (args: ResolvePrReviewThreadArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.prsResolveReviewThread, args),
-    updateTitle: async (args: UpdatePrTitleArgs): Promise<void> => ipcRenderer.invoke(IPC.prsUpdateTitle, args),
-    updateBody: async (args: UpdatePrBodyArgs): Promise<void> => ipcRenderer.invoke(IPC.prsUpdateBody, args),
-    setLabels: async (args: SetPrLabelsArgs): Promise<void> => ipcRenderer.invoke(IPC.prsSetLabels, args),
-    requestReviewers: async (args: RequestPrReviewersArgs): Promise<void> => ipcRenderer.invoke(IPC.prsRequestReviewers, args),
-    submitReview: async (args: SubmitPrReviewArgs): Promise<SubmitPrReviewResult> => ipcRenderer.invoke(IPC.prsSubmitReview, args),
-    close: async (args: ClosePrArgs): Promise<void> => ipcRenderer.invoke(IPC.prsClose, args),
-    reopen: async (args: ReopenPrArgs): Promise<void> => ipcRenderer.invoke(IPC.prsReopen, args),
-    rerunChecks: async (args: RerunPrChecksArgs): Promise<void> => ipcRenderer.invoke(IPC.prsRerunChecks, args),
-    aiReviewSummary: async (args: AiReviewSummaryArgs): Promise<AiReviewSummary> => ipcRenderer.invoke(IPC.prsAiReviewSummary, args),
-    issueInventorySync: async (prId: string): Promise<IssueInventorySnapshot> =>
-      ipcRenderer.invoke(IPC.prsIssueInventorySync, { prId }),
+      callProjectRuntimeActionOr("pr", "replyToReviewThread", { args }, () =>
+        ipcRenderer.invoke(IPC.prsReplyToReviewThread, args),
+      ),
+    resolveReviewThread: async (
+      args: ResolvePrReviewThreadArgs,
+    ): Promise<void> =>
+      callProjectRuntimeActionOr("pr", "resolveReviewThread", { args }, () =>
+        ipcRenderer.invoke(IPC.prsResolveReviewThread, args),
+      ),
+    updateTitle: async (args: UpdatePrTitleArgs): Promise<void> =>
+      callProjectRuntimeActionOr("pr", "updateTitle", { args }, () =>
+        ipcRenderer.invoke(IPC.prsUpdateTitle, args),
+      ),
+    updateBody: async (args: UpdatePrBodyArgs): Promise<void> =>
+      callProjectRuntimeActionOr("pr", "updateBody", { args }, () =>
+        ipcRenderer.invoke(IPC.prsUpdateBody, args),
+      ),
+    setLabels: async (args: SetPrLabelsArgs): Promise<void> =>
+      callProjectRuntimeActionOr("pr", "setLabels", { args }, () =>
+        ipcRenderer.invoke(IPC.prsSetLabels, args),
+      ),
+    requestReviewers: async (args: RequestPrReviewersArgs): Promise<void> =>
+      callProjectRuntimeActionOr("pr", "requestReviewers", { args }, () =>
+        ipcRenderer.invoke(IPC.prsRequestReviewers, args),
+      ),
+    submitReview: async (
+      args: SubmitPrReviewArgs,
+    ): Promise<SubmitPrReviewResult> =>
+      callProjectRuntimeActionOr("pr", "submitReview", { args }, () =>
+        ipcRenderer.invoke(IPC.prsSubmitReview, args),
+      ),
+    close: async (args: ClosePrArgs): Promise<void> =>
+      callProjectRuntimeActionOr("pr", "closePr", { args }, () =>
+        ipcRenderer.invoke(IPC.prsClose, args),
+      ),
+    reopen: async (args: ReopenPrArgs): Promise<void> =>
+      callProjectRuntimeActionOr("pr", "reopenPr", { args }, () =>
+        ipcRenderer.invoke(IPC.prsReopen, args),
+      ),
+    rerunChecks: async (args: RerunPrChecksArgs): Promise<void> =>
+      callProjectRuntimeActionOr("pr", "rerunChecks", { args }, () =>
+        ipcRenderer.invoke(IPC.prsRerunChecks, args),
+      ),
+    aiReviewSummary: async (
+      args: AiReviewSummaryArgs,
+    ): Promise<AiReviewSummary> =>
+      callProjectRuntimeActionOr("pr", "aiReviewSummary", { args }, () =>
+        ipcRenderer.invoke(IPC.prsAiReviewSummary, args),
+      ),
+    issueInventorySync: async (
+      prId: string,
+    ): Promise<IssueInventorySnapshot> => {
+      const checks = await callProjectRuntimeActionIfBound<PrCheck[]>(
+        "pr",
+        "getChecks",
+        { arg: prId },
+      );
+      const reviewThreads = checks.handled
+        ? await callProjectRuntimeActionIfBound<PrReviewThread[]>(
+            "pr",
+            "getReviewThreads",
+            { arg: prId },
+          )
+        : ({ handled: false } as const);
+      const comments =
+        checks.handled && reviewThreads.handled
+          ? await callProjectRuntimeActionIfBound<PrComment[]>(
+              "pr",
+              "getComments",
+              { arg: prId },
+            )
+          : ({ handled: false } as const);
+      if (checks.handled && reviewThreads.handled && comments.handled) {
+        const runtime =
+          await callProjectRuntimeActionIfBound<IssueInventorySnapshot>(
+            "issue_inventory",
+            "syncFromPrData",
+            {
+              argsList: [
+                prId,
+                checks.result,
+                reviewThreads.result,
+                comments.result,
+              ],
+            },
+          );
+        if (runtime.handled) return runtime.result;
+      }
+      return ipcRenderer.invoke(IPC.prsIssueInventorySync, { prId });
+    },
     issueInventoryGet: async (prId: string): Promise<IssueInventorySnapshot> =>
-      ipcRenderer.invoke(IPC.prsIssueInventoryGet, { prId }),
+      callProjectRuntimeActionOr(
+        "issue_inventory",
+        "getInventory",
+        { arg: prId },
+        () => ipcRenderer.invoke(IPC.prsIssueInventoryGet, { prId }),
+      ),
     issueInventoryGetNew: async (prId: string): Promise<IssueInventoryItem[]> =>
-      ipcRenderer.invoke(IPC.prsIssueInventoryGetNew, { prId }),
+      callProjectRuntimeActionOr(
+        "issue_inventory",
+        "getNewItems",
+        { arg: prId },
+        () => ipcRenderer.invoke(IPC.prsIssueInventoryGetNew, { prId }),
+      ),
     issueInventoryMarkFixed: async (
       prId: string,
       itemIds: string[],
     ): Promise<void> =>
-      ipcRenderer.invoke(IPC.prsIssueInventoryMarkFixed, { prId, itemIds }),
+      callProjectRuntimeActionOr(
+        "issue_inventory",
+        "markFixed",
+        { argsList: [prId, itemIds] },
+        () =>
+          ipcRenderer.invoke(IPC.prsIssueInventoryMarkFixed, { prId, itemIds }),
+      ),
     issueInventoryMarkDismissed: async (
       prId: string,
       itemIds: string[],
       reason: string,
     ): Promise<void> =>
-      ipcRenderer.invoke(IPC.prsIssueInventoryMarkDismissed, {
-        prId,
-        itemIds,
-        reason,
-      }),
+      callProjectRuntimeActionOr(
+        "issue_inventory",
+        "markDismissed",
+        { argsList: [prId, itemIds, reason] },
+        () =>
+          ipcRenderer.invoke(IPC.prsIssueInventoryMarkDismissed, {
+            prId,
+            itemIds,
+            reason,
+          }),
+      ),
     issueInventoryMarkEscalated: async (
       prId: string,
       itemIds: string[],
     ): Promise<void> =>
-      ipcRenderer.invoke(IPC.prsIssueInventoryMarkEscalated, { prId, itemIds }),
+      callProjectRuntimeActionOr(
+        "issue_inventory",
+        "markEscalated",
+        { argsList: [prId, itemIds] },
+        () =>
+          ipcRenderer.invoke(IPC.prsIssueInventoryMarkEscalated, {
+            prId,
+            itemIds,
+          }),
+      ),
     issueInventoryGetConvergence: async (
       prId: string,
     ): Promise<ConvergenceStatus> =>
-      ipcRenderer.invoke(IPC.prsIssueInventoryGetConvergence, { prId }),
+      callProjectRuntimeActionOr(
+        "issue_inventory",
+        "getConvergenceStatus",
+        { arg: prId },
+        () => ipcRenderer.invoke(IPC.prsIssueInventoryGetConvergence, { prId }),
+      ),
     issueInventoryReset: async (prId: string): Promise<void> =>
-      ipcRenderer.invoke(IPC.prsIssueInventoryReset, { prId }),
+      callProjectRuntimeActionOr(
+        "issue_inventory",
+        "resetInventory",
+        { arg: prId },
+        () => ipcRenderer.invoke(IPC.prsIssueInventoryReset, { prId }),
+      ),
     convergenceStateGet: async (prId: string): Promise<PrConvergenceState> =>
-      ipcRenderer.invoke(IPC.prsConvergenceStateGet, { prId }),
+      callProjectRuntimeActionOr(
+        "issue_inventory",
+        "getConvergenceRuntime",
+        { arg: prId },
+        () => ipcRenderer.invoke(IPC.prsConvergenceStateGet, { prId }),
+      ),
     convergenceStateSave: async (
       prId: string,
       state: PrConvergenceStatePatch,
     ): Promise<PrConvergenceState> =>
-      ipcRenderer.invoke(IPC.prsConvergenceStateSave, { prId, state }),
+      callProjectRuntimeActionOr(
+        "issue_inventory",
+        "saveConvergenceRuntime",
+        { argsList: [prId, state] },
+        () => ipcRenderer.invoke(IPC.prsConvergenceStateSave, { prId, state }),
+      ),
     convergenceStateDelete: async (prId: string): Promise<void> =>
-      ipcRenderer.invoke(IPC.prsConvergenceStateDelete, { prId }),
+      callProjectRuntimeActionOr(
+        "issue_inventory",
+        "resetConvergenceRuntime",
+        { arg: prId },
+        () => ipcRenderer.invoke(IPC.prsConvergenceStateDelete, { prId }),
+      ),
     pathToMergeStart: async (args: {
       prId: string;
       modelId?: string | null;
@@ -3206,65 +7149,145 @@ contextBridge.exposeInMainWorld("ade", {
       scope?: "checks" | "comments" | "both";
       additionalInstructions?: string | null;
     }): Promise<PathToMergeStartResult> =>
-      ipcRenderer.invoke(IPC.prsPathToMergeStart, args),
+      callProjectRuntimeActionOr(
+        "path_to_merge",
+        "startPathToMerge",
+        { args },
+        () => ipcRenderer.invoke(IPC.prsPathToMergeStart, args),
+      ),
     pathToMergeStop: async (args: {
       prId: string;
       reason?: string | null;
     }): Promise<PathToMergeStopResult> =>
-      ipcRenderer.invoke(IPC.prsPathToMergeStop, args),
+      callProjectRuntimeActionOr(
+        "path_to_merge",
+        "stopPathToMerge",
+        { args },
+        () => ipcRenderer.invoke(IPC.prsPathToMergeStop, args),
+      ),
     pipelineSettingsGet: async (prId: string): Promise<PipelineSettings> =>
-      ipcRenderer.invoke(IPC.prsPipelineSettingsGet, { prId }),
+      callProjectRuntimeActionOr(
+        "issue_inventory",
+        "getPipelineSettings",
+        { arg: prId },
+        () => ipcRenderer.invoke(IPC.prsPipelineSettingsGet, { prId }),
+      ),
     pipelineSettingsSave: async (
       prId: string,
       settings: Partial<PipelineSettings>,
     ): Promise<void> =>
-      ipcRenderer.invoke(IPC.prsPipelineSettingsSave, { prId, settings }),
+      callProjectRuntimeActionOr(
+        "issue_inventory",
+        "savePipelineSettings",
+        { argsList: [prId, settings] },
+        () =>
+          ipcRenderer.invoke(IPC.prsPipelineSettingsSave, { prId, settings }),
+      ),
     pipelineSettingsDelete: async (prId: string): Promise<void> =>
-      ipcRenderer.invoke(IPC.prsPipelineSettingsDelete, { prId }),
+      callProjectRuntimeActionOr(
+        "issue_inventory",
+        "deletePipelineSettings",
+        { arg: prId },
+        () => ipcRenderer.invoke(IPC.prsPipelineSettingsDelete, { prId }),
+      ),
     dismissIntegrationCleanup: async (
       args: DismissIntegrationCleanupArgs,
     ): Promise<IntegrationProposal> =>
-      ipcRenderer.invoke(IPC.prsDismissIntegrationCleanup, args),
+      callProjectRuntimeActionOr(
+        "pr",
+        "dismissIntegrationCleanup",
+        { args },
+        () => ipcRenderer.invoke(IPC.prsDismissIntegrationCleanup, args),
+      ),
     cleanupIntegrationWorkflow: async (
       args: CleanupIntegrationWorkflowArgs,
     ): Promise<CleanupIntegrationWorkflowResult> =>
-      ipcRenderer.invoke(IPC.prsCleanupIntegrationWorkflow, args),
+      callProjectRuntimeActionOr(
+        "pr",
+        "cleanupIntegrationWorkflow",
+        { args },
+        () => ipcRenderer.invoke(IPC.prsCleanupIntegrationWorkflow, args),
+      ),
     getDeployments: async (prId: string): Promise<PrDeployment[]> =>
-      ipcRenderer.invoke(IPC.prsGetDeployments, { prId }),
+      callProjectRuntimeActionOr("pr", "getDeployments", { arg: prId }, () =>
+        ipcRenderer.invoke(IPC.prsGetDeployments, { prId }),
+      ),
     getAiSummary: async (prId: string): Promise<PrAiSummary | null> =>
-      ipcRenderer.invoke(IPC.prsGetAiSummary, { prId }),
+      callProjectRuntimeActionOr("pr", "getAiSummary", { arg: prId }, () =>
+        ipcRenderer.invoke(IPC.prsGetAiSummary, { prId }),
+      ),
     regenerateAiSummary: async (prId: string): Promise<PrAiSummary> =>
-      ipcRenderer.invoke(IPC.prsRegenerateAiSummary, { prId }),
+      callProjectRuntimeActionOr(
+        "pr",
+        "regenerateAiSummary",
+        { arg: prId },
+        () => ipcRenderer.invoke(IPC.prsRegenerateAiSummary, { prId }),
+      ),
     postReviewComment: async (
       args: PostPrReviewCommentArgs,
     ): Promise<PrReviewThreadComment> =>
-      ipcRenderer.invoke(IPC.prsPostReviewComment, args),
+      callProjectRuntimeActionOr("pr", "postReviewComment", { args }, () =>
+        ipcRenderer.invoke(IPC.prsPostReviewComment, args),
+      ),
     setReviewThreadResolved: async (
       args: SetPrReviewThreadResolvedArgs,
     ): Promise<SetPrReviewThreadResolvedResult> =>
-      ipcRenderer.invoke(IPC.prsSetReviewThreadResolved, args),
+      callProjectRuntimeActionOr(
+        "pr",
+        "setReviewThreadResolved",
+        { args },
+        () => ipcRenderer.invoke(IPC.prsSetReviewThreadResolved, args),
+      ),
     reactToComment: async (args: ReactToPrCommentArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.prsReactToComment, args),
+      callProjectRuntimeActionOr("pr", "reactToComment", { args }, () =>
+        ipcRenderer.invoke(IPC.prsReactToComment, args),
+      ),
     launchIssueResolutionFromThread: async (
       args: LaunchPrIssueResolutionFromThreadArgs,
     ): Promise<LaunchPrIssueResolutionFromThreadResult> =>
-      ipcRenderer.invoke(IPC.prsLaunchIssueResolutionFromThread, args),
+      callProjectRuntimeActionOr(
+        "pr",
+        "launchIssueResolutionFromThread",
+        { args },
+        () => ipcRenderer.invoke(IPC.prsLaunchIssueResolutionFromThread, args),
+      ),
     cleanupBranch: async (
       args: CleanupPrBranchArgs,
     ): Promise<CleanupPrBranchResult> =>
-      ipcRenderer.invoke(IPC.prsCleanupBranch, args),
+      callProjectRuntimeActionOr("pr", "cleanupBranch", { args }, () =>
+        ipcRenderer.invoke(IPC.prsCleanupBranch, args),
+      ),
   },
   rebase: {
     scanNeeds: async (): Promise<RebaseNeed[]> =>
-      ipcRenderer.invoke(IPC.rebaseScanNeeds),
+      callProjectRuntimeActionOr("conflicts", "scanRebaseNeeds", {}, () =>
+        ipcRenderer.invoke(IPC.rebaseScanNeeds),
+      ),
     getNeed: async (laneId: string): Promise<RebaseNeed | null> =>
-      ipcRenderer.invoke(IPC.rebaseGetNeed, { laneId }),
+      callProjectRuntimeActionOr(
+        "conflicts",
+        "getRebaseNeed",
+        { arg: laneId },
+        () => ipcRenderer.invoke(IPC.rebaseGetNeed, { laneId }),
+      ),
     dismiss: async (laneId: string): Promise<void> =>
-      ipcRenderer.invoke(IPC.rebaseDismiss, { laneId }),
+      callProjectRuntimeActionOr(
+        "conflicts",
+        "dismissRebase",
+        { arg: laneId },
+        () => ipcRenderer.invoke(IPC.rebaseDismiss, { laneId }),
+      ).then(() => undefined),
     defer: async (laneId: string, until: string): Promise<void> =>
-      ipcRenderer.invoke(IPC.rebaseDefer, { laneId, until }),
+      callProjectRuntimeActionOr(
+        "conflicts",
+        "deferRebase",
+        { argsList: [laneId, until] },
+        () => ipcRenderer.invoke(IPC.rebaseDefer, { laneId, until }),
+      ).then(() => undefined),
     execute: async (args: RebaseLaneArgs): Promise<RebaseResult> =>
-      ipcRenderer.invoke(IPC.rebaseExecute, args),
+      callProjectRuntimeActionOr("conflicts", "rebaseLane", { args }, () =>
+        ipcRenderer.invoke(IPC.rebaseExecute, args),
+      ),
     onEvent: (cb: (ev: RebaseEventPayload) => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,
@@ -3278,103 +7301,346 @@ contextBridge.exposeInMainWorld("ade", {
     listOperations: async (
       args: ListOperationsArgs = {},
     ): Promise<OperationRecord[]> =>
-      ipcRenderer.invoke(IPC.historyListOperations, args),
+      callProjectRuntimeActionOr("operation", "list", { args }, () =>
+        ipcRenderer.invoke(IPC.historyListOperations, args),
+      ),
     exportOperations: async (
       args: ExportHistoryArgs,
-    ): Promise<ExportHistoryResult> =>
-      ipcRenderer.invoke(IPC.historyExportOperations, args),
+    ): Promise<ExportHistoryResult> => {
+      const listArgs: ListOperationsArgs = {
+        ...(typeof args?.laneId === "string" ? { laneId: args.laneId } : {}),
+        ...(typeof args?.kind === "string" ? { kind: args.kind } : {}),
+        limit: typeof args?.limit === "number" ? args.limit : 1000,
+      };
+      const runtime = await callProjectRuntimeActionIfBound<OperationRecord[]>(
+        "operation",
+        "list",
+        { args: listArgs },
+      );
+      if (!runtime.handled) {
+        return ipcRenderer.invoke(IPC.historyExportOperations, args);
+      }
+      const binding = await getProjectRuntimeBinding();
+      return ipcRenderer.invoke(IPC.historyExportOperations, {
+        ...args,
+        rows: runtime.result,
+        project: binding
+          ? {
+              rootPath: binding.rootPath,
+              displayName: binding.displayName,
+            }
+          : null,
+      });
+    },
   },
   layout: {
     get: async (layoutId: string): Promise<DockLayout | null> =>
-      ipcRenderer.invoke(IPC.layoutGet, { layoutId }),
+      callProjectRuntimeActionOr("layout", "get", { args: { layoutId } }, () =>
+        ipcRenderer.invoke(IPC.layoutGet, { layoutId }),
+      ),
     set: async (layoutId: string, layout: DockLayout): Promise<void> =>
-      ipcRenderer.invoke(IPC.layoutSet, { layoutId, layout }),
+      callProjectRuntimeActionOr(
+        "layout",
+        "set",
+        { args: { layoutId, layout } },
+        () => ipcRenderer.invoke(IPC.layoutSet, { layoutId, layout }),
+      ).then(() => undefined),
   },
   tilingTree: {
     get: async (layoutId: string): Promise<unknown> =>
-      ipcRenderer.invoke(IPC.tilingTreeGet, { layoutId }),
+      callProjectRuntimeActionOr(
+        "tiling_tree",
+        "get",
+        { args: { layoutId } },
+        () => ipcRenderer.invoke(IPC.tilingTreeGet, { layoutId }),
+      ),
     set: async (layoutId: string, tree: unknown): Promise<void> =>
-      ipcRenderer.invoke(IPC.tilingTreeSet, { layoutId, tree }),
+      callProjectRuntimeActionOr(
+        "tiling_tree",
+        "set",
+        { args: { layoutId, tree } },
+        () => ipcRenderer.invoke(IPC.tilingTreeSet, { layoutId, tree }),
+      ).then(() => undefined),
   },
   graphState: {
     get: async (projectId: string): Promise<GraphPersistedState | null> =>
-      ipcRenderer.invoke(IPC.graphStateGet, { projectId }),
+      callProjectRuntimeActionOr("graph_state", "get", {}, () =>
+        ipcRenderer.invoke(IPC.graphStateGet, { projectId }),
+      ),
     set: async (projectId: string, state: GraphPersistedState): Promise<void> =>
-      ipcRenderer.invoke(IPC.graphStateSet, { projectId, state }),
+      callProjectRuntimeActionOr(
+        "graph_state",
+        "set",
+        { args: { state } },
+        () => ipcRenderer.invoke(IPC.graphStateSet, { projectId, state }),
+      ).then(() => undefined),
   },
   processes: {
-    listDefinitions: async (): Promise<ProcessDefinition[]> =>
-      ipcRenderer.invoke(IPC.processesListDefinitions),
-    listRuntime: async (laneId: string): Promise<ProcessRuntime[]> =>
-      ipcRenderer.invoke(IPC.processesListRuntime, { laneId }),
-    start: async (args: ProcessActionArgs): Promise<ProcessRuntime> =>
-      ipcRenderer.invoke(IPC.processesStart, args),
-    stop: async (args: ProcessActionArgs): Promise<ProcessRuntime | null> =>
-      ipcRenderer.invoke(IPC.processesStop, args),
-    restart: async (args: ProcessActionArgs): Promise<ProcessRuntime> =>
-      ipcRenderer.invoke(IPC.processesRestart, args),
-    kill: async (args: ProcessActionArgs): Promise<ProcessRuntime | null> =>
-      ipcRenderer.invoke(IPC.processesKill, args),
-    startStack: async (args: ProcessStackArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.processesStartStack, args),
-    stopStack: async (args: ProcessStackArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.processesStopStack, args),
-    restartStack: async (args: ProcessStackArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.processesRestartStack, args),
-    startGroup: async (args: ProcessGroupArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.processesStartGroup, args),
-    stopGroup: async (args: ProcessGroupArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.processesStopGroup, args),
-    restartGroup: async (args: ProcessGroupArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.processesRestartGroup, args),
-    startAll: async (args: { laneId: string }): Promise<void> =>
-      ipcRenderer.invoke(IPC.processesStartAll, args),
-    stopAll: async (args: { laneId: string }): Promise<void> =>
-      ipcRenderer.invoke(IPC.processesStopAll, args),
-    getLogTail: async (args: GetProcessLogTailArgs): Promise<string> =>
-      ipcRenderer.invoke(IPC.processesGetLogTail, args),
+    listDefinitions: async (): Promise<ProcessDefinition[]> => {
+      const runtime = await callProjectRuntimeActionIfBound<
+        ProcessDefinition[]
+      >("process", "listDefinitions");
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.processesListDefinitions);
+    },
+    listRuntime: async (laneId: string): Promise<ProcessRuntime[]> => {
+      const runtime = await callProjectRuntimeActionIfBound<ProcessRuntime[]>(
+        "process",
+        "listRuntime",
+        { arg: laneId },
+      );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.processesListRuntime, { laneId });
+    },
+    start: async (args: ProcessActionArgs): Promise<ProcessRuntime> => {
+      const runtime = await callProjectRuntimeActionIfBound<ProcessRuntime>(
+        "process",
+        "start",
+        { args },
+      );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.processesStart, args);
+    },
+    stop: async (args: ProcessActionArgs): Promise<ProcessRuntime | null> => {
+      const runtime =
+        await callProjectRuntimeActionIfBound<ProcessRuntime | null>(
+          "process",
+          "stop",
+          { args },
+        );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.processesStop, args);
+    },
+    restart: async (args: ProcessActionArgs): Promise<ProcessRuntime> => {
+      const runtime = await callProjectRuntimeActionIfBound<ProcessRuntime>(
+        "process",
+        "restart",
+        { args },
+      );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.processesRestart, args);
+    },
+    kill: async (args: ProcessActionArgs): Promise<ProcessRuntime | null> => {
+      const runtime =
+        await callProjectRuntimeActionIfBound<ProcessRuntime | null>(
+          "process",
+          "kill",
+          { args },
+        );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.processesKill, args);
+    },
+    startStack: async (args: ProcessStackArgs): Promise<void> => {
+      const runtime = await callProjectRuntimeActionIfBound<void>(
+        "process",
+        "startStack",
+        { args },
+      );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.processesStartStack, args);
+    },
+    stopStack: async (args: ProcessStackArgs): Promise<void> => {
+      const runtime = await callProjectRuntimeActionIfBound<void>(
+        "process",
+        "stopStack",
+        { args },
+      );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.processesStopStack, args);
+    },
+    restartStack: async (args: ProcessStackArgs): Promise<void> => {
+      const runtime = await callProjectRuntimeActionIfBound<void>(
+        "process",
+        "restartStack",
+        { args },
+      );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.processesRestartStack, args);
+    },
+    startGroup: async (args: ProcessGroupArgs): Promise<void> => {
+      const runtime = await callProjectRuntimeActionIfBound<void>(
+        "process",
+        "startGroup",
+        { args },
+      );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.processesStartGroup, args);
+    },
+    stopGroup: async (args: ProcessGroupArgs): Promise<void> => {
+      const runtime = await callProjectRuntimeActionIfBound<void>(
+        "process",
+        "stopGroup",
+        { args },
+      );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.processesStopGroup, args);
+    },
+    restartGroup: async (args: ProcessGroupArgs): Promise<void> => {
+      const runtime = await callProjectRuntimeActionIfBound<void>(
+        "process",
+        "restartGroup",
+        { args },
+      );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.processesRestartGroup, args);
+    },
+    startAll: async (args: { laneId: string }): Promise<void> => {
+      const runtime = await callProjectRuntimeActionIfBound<void>(
+        "process",
+        "startAll",
+        { args },
+      );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.processesStartAll, args);
+    },
+    stopAll: async (args: { laneId: string }): Promise<void> => {
+      const runtime = await callProjectRuntimeActionIfBound<void>(
+        "process",
+        "stopAll",
+        { args },
+      );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.processesStopAll, args);
+    },
+    getLogTail: async (args: GetProcessLogTailArgs): Promise<string> => {
+      const runtime = await callProjectRuntimeActionIfBound<string>(
+        "process",
+        "getLogTail",
+        { args },
+      );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.processesGetLogTail, args);
+    },
     onEvent: (cb: (ev: ProcessEvent) => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,
         payload: ProcessEvent,
       ) => cb(payload);
       ipcRenderer.on(IPC.processesEvent, listener);
-      return () => ipcRenderer.removeListener(IPC.processesEvent, listener);
+      const unsubscribeRemote = subscribeRemoteProcessEvents(cb);
+      return () => {
+        unsubscribeRemote();
+        ipcRenderer.removeListener(IPC.processesEvent, listener);
+      };
     },
   },
   tests: {
-    listSuites: async (): Promise<TestSuiteDefinition[]> =>
-      ipcRenderer.invoke(IPC.testsListSuites),
-    run: async (args: RunTestSuiteArgs): Promise<TestRunSummary> =>
-      ipcRenderer.invoke(IPC.testsRun, args),
-    stop: async (args: StopTestRunArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.testsStop, args),
-    listRuns: async (args: ListTestRunsArgs = {}): Promise<TestRunSummary[]> =>
-      ipcRenderer.invoke(IPC.testsListRuns, args),
-    getLogTail: async (args: GetTestLogTailArgs): Promise<string> =>
-      ipcRenderer.invoke(IPC.testsGetLogTail, args),
+    listSuites: async (): Promise<TestSuiteDefinition[]> => {
+      const runtime = await callProjectRuntimeActionIfBound<
+        TestSuiteDefinition[]
+      >("tests", "listSuites");
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.testsListSuites);
+    },
+    run: async (args: RunTestSuiteArgs): Promise<TestRunSummary> => {
+      const runtime = await callProjectRuntimeActionIfBound<TestRunSummary>(
+        "tests",
+        "run",
+        { args },
+      );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.testsRun, args);
+    },
+    stop: async (args: StopTestRunArgs): Promise<void> => {
+      const runtime = await callProjectRuntimeActionIfBound<void>(
+        "tests",
+        "stop",
+        { args },
+      );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.testsStop, args);
+    },
+    listRuns: async (
+      args: ListTestRunsArgs = {},
+    ): Promise<TestRunSummary[]> => {
+      const runtime = await callProjectRuntimeActionIfBound<TestRunSummary[]>(
+        "tests",
+        "listRuns",
+        { args },
+      );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.testsListRuns, args);
+    },
+    getLogTail: async (args: GetTestLogTailArgs): Promise<string> => {
+      const runtime = await callProjectRuntimeActionIfBound<string>(
+        "tests",
+        "getLogTail",
+        { args },
+      );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.testsGetLogTail, args);
+    },
     onEvent: (cb: (ev: TestEvent) => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,
         payload: TestEvent,
       ) => cb(payload);
       ipcRenderer.on(IPC.testsEvent, listener);
-      return () => ipcRenderer.removeListener(IPC.testsEvent, listener);
+      const unsubscribeRemote = subscribeRemoteTestEvents(cb);
+      return () => {
+        unsubscribeRemote();
+        ipcRenderer.removeListener(IPC.testsEvent, listener);
+      };
     },
   },
   projectConfig: {
-    get: async (): Promise<ProjectConfigSnapshot> =>
-      projectConfigSnapshotCache.get(),
+    get: async (): Promise<ProjectConfigSnapshot> => {
+      const runtime =
+        await callProjectRuntimeActionIfBound<ProjectConfigSnapshot>(
+          "project_config",
+          "get",
+        );
+      return runtime.handled
+        ? runtime.result
+        : projectConfigSnapshotCache.get();
+    },
     validate: async (
       candidate: ProjectConfigCandidate,
-    ): Promise<ProjectConfigValidationResult> =>
-      ipcRenderer.invoke(IPC.projectConfigValidate, { candidate }),
+    ): Promise<ProjectConfigValidationResult> => {
+      const runtime =
+        await callProjectRuntimeActionIfBound<ProjectConfigValidationResult>(
+          "project_config",
+          "validate",
+          { args: candidate },
+        );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.projectConfigValidate, { candidate });
+    },
     save: async (
       candidate: ProjectConfigCandidate,
     ): Promise<ProjectConfigSnapshot> => {
       projectConfigSnapshotCache.clear();
       try {
-        const snapshot = await ipcRenderer.invoke(IPC.projectConfigSave, { candidate });
+        const runtime =
+          await callProjectRuntimeActionIfBound<ProjectConfigSnapshot>(
+            "project_config",
+            "save",
+            { args: candidate },
+          );
+        const snapshot = runtime.handled
+          ? runtime.result
+          : await ipcRenderer.invoke(IPC.projectConfigSave, { candidate });
         projectConfigSnapshotCache.clear();
         return snapshot;
       } catch (error) {
@@ -3382,14 +7648,29 @@ contextBridge.exposeInMainWorld("ade", {
         throw error;
       }
     },
-    diffAgainstDisk: async (): Promise<ProjectConfigDiff> =>
-      ipcRenderer.invoke(IPC.projectConfigDiffAgainstDisk),
+    diffAgainstDisk: async (): Promise<ProjectConfigDiff> => {
+      const runtime = await callProjectRuntimeActionIfBound<ProjectConfigDiff>(
+        "project_config",
+        "diffAgainstDisk",
+      );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.projectConfigDiffAgainstDisk);
+    },
     confirmTrust: async (
       arg: { sharedHash?: string } = {},
     ): Promise<ProjectConfigTrust> => {
       projectConfigSnapshotCache.clear();
       try {
-        return await ipcRenderer.invoke(IPC.projectConfigConfirmTrust, arg);
+        const runtime =
+          await callProjectRuntimeActionIfBound<ProjectConfigTrust>(
+            "project_config",
+            "confirmTrust",
+            { args: arg },
+          );
+        return runtime.handled
+          ? runtime.result
+          : ipcRenderer.invoke(IPC.projectConfigConfirmTrust, arg);
       } finally {
         projectConfigSnapshotCache.clear();
       }
@@ -3415,11 +7696,21 @@ contextBridge.exposeInMainWorld("ade", {
       content: string;
       importance?: "low" | "medium" | "high";
       sourceRunId?: string;
-    }): Promise<unknown> => ipcRenderer.invoke(IPC.memoryAdd, args),
+    }): Promise<unknown> =>
+      callProjectRuntimeActionOr("memory", "add", { args }, () =>
+        ipcRenderer.invoke(IPC.memoryAdd, args),
+      ),
     pin: async (args: { id: string }): Promise<void> =>
-      ipcRenderer.invoke(IPC.memoryPin, args),
+      callProjectRuntimeActionOr("memory", "pin", { args }, () =>
+        ipcRenderer.invoke(IPC.memoryPin, args),
+      ),
     updateCore: async (args: CtoUpdateCoreMemoryArgs): Promise<CtoSnapshot> =>
-      ipcRenderer.invoke(IPC.memoryUpdateCore, args),
+      callProjectRuntimeActionOr(
+        "cto_state",
+        "updateCoreMemory",
+        { args: args.patch ?? {} },
+        () => ipcRenderer.invoke(IPC.memoryUpdateCore, args),
+      ),
     getBudget: async (
       args: {
         projectId?: string;
@@ -3427,19 +7718,34 @@ contextBridge.exposeInMainWorld("ade", {
         scope?: "user" | "project" | "lane" | "mission" | "agent";
         scopeOwnerId?: string;
       } = {},
-    ): Promise<unknown[]> => ipcRenderer.invoke(IPC.memoryGetBudget, args),
+    ): Promise<unknown[]> =>
+      callProjectRuntimeActionOr("memory", "getBudget", { args }, () =>
+        ipcRenderer.invoke(IPC.memoryGetBudget, args),
+      ),
     getCandidates: async (
       args: { projectId?: string; limit?: number } = {},
-    ): Promise<unknown[]> => ipcRenderer.invoke(IPC.memoryGetCandidates, args),
+    ): Promise<unknown[]> =>
+      callProjectRuntimeActionOr("memory", "getCandidates", { args }, () =>
+        ipcRenderer.invoke(IPC.memoryGetCandidates, args),
+      ),
     promote: async (args: { id: string }): Promise<void> =>
-      ipcRenderer.invoke(IPC.memoryPromote, args),
+      callProjectRuntimeActionOr("memory", "promote", { args }, () =>
+        ipcRenderer.invoke(IPC.memoryPromote, args),
+      ),
     promoteMissionEntry: async (args: {
       id: string;
       missionId: string;
     }): Promise<MemoryEntryDto | null> =>
-      ipcRenderer.invoke(IPC.memoryPromoteMissionEntry, args),
+      callProjectRuntimeActionOr(
+        "memory",
+        "promoteMissionEntry",
+        { args },
+        () => ipcRenderer.invoke(IPC.memoryPromoteMissionEntry, args),
+      ),
     archive: async (args: { id: string }): Promise<void> =>
-      ipcRenderer.invoke(IPC.memoryArchive, args),
+      callProjectRuntimeActionOr("memory", "archive", { args }, () =>
+        ipcRenderer.invoke(IPC.memoryArchive, args),
+      ),
     search: async (args: {
       query: string;
       projectId?: string;
@@ -3448,7 +7754,10 @@ contextBridge.exposeInMainWorld("ade", {
       limit?: number;
       mode?: "lexical" | "hybrid";
       status?: "promoted" | "candidate" | "archived" | "all";
-    }): Promise<unknown[]> => ipcRenderer.invoke(IPC.memorySearch, args),
+    }): Promise<unknown[]> =>
+      callProjectRuntimeActionOr("memory", "search", { args }, () =>
+        ipcRenderer.invoke(IPC.memorySearch, args),
+      ),
     list: async (
       args: {
         scope?: "project" | "agent" | "mission";
@@ -3456,13 +7765,18 @@ contextBridge.exposeInMainWorld("ade", {
         status?: "promoted" | "candidate" | "archived" | "all";
         limit?: number;
       } = {},
-    ): Promise<MemoryEntryDto[]> => ipcRenderer.invoke(IPC.memoryList, args),
+    ): Promise<MemoryEntryDto[]> =>
+      callProjectRuntimeActionOr("memory", "list", { args }, () =>
+        ipcRenderer.invoke(IPC.memoryList, args),
+      ),
     listMissionEntries: async (args: {
       missionId: string;
       runId?: string | null;
       status?: "promoted" | "candidate" | "archived" | "all";
     }): Promise<MemoryEntryDto[]> =>
-      ipcRenderer.invoke(IPC.memoryListMissionEntries, args),
+      callProjectRuntimeActionOr("memory", "listMissionEntries", { args }, () =>
+        ipcRenderer.invoke(IPC.memoryListMissionEntries, args),
+      ),
     listProcedures: async (
       args: {
         status?: "promoted" | "candidate" | "archived" | "all";
@@ -3470,32 +7784,55 @@ contextBridge.exposeInMainWorld("ade", {
         query?: string;
       } = {},
     ): Promise<ProcedureListItem[]> =>
-      ipcRenderer.invoke(IPC.memoryListProcedures, args),
+      callProjectRuntimeActionOr("memory", "listProcedures", { args }, () =>
+        ipcRenderer.invoke(IPC.memoryListProcedures, args),
+      ),
     getProcedureDetail: async (args: {
       id: string;
     }): Promise<ProcedureDetail | null> =>
-      ipcRenderer.invoke(IPC.memoryGetProcedureDetail, args),
+      callProjectRuntimeActionOr("memory", "getProcedureDetail", { args }, () =>
+        ipcRenderer.invoke(IPC.memoryGetProcedureDetail, args),
+      ),
     exportProcedureSkill: async (args: {
       id: string;
       name?: string;
     }): Promise<{ path: string; skill: SkillIndexEntry | null } | null> =>
-      ipcRenderer.invoke(IPC.memoryExportProcedureSkill, args),
+      callProjectRuntimeActionOr(
+        "memory",
+        "exportProcedureSkill",
+        { args },
+        () => ipcRenderer.invoke(IPC.memoryExportProcedureSkill, args),
+      ),
     listIndexedSkills: async (): Promise<SkillIndexEntry[]> =>
-      ipcRenderer.invoke(IPC.memoryListIndexedSkills),
+      callProjectRuntimeActionOr("memory", "listIndexedSkills", {}, () =>
+        ipcRenderer.invoke(IPC.memoryListIndexedSkills),
+      ),
     reindexSkills: async (
       args: { paths?: string[] } = {},
     ): Promise<SkillIndexEntry[]> =>
-      ipcRenderer.invoke(IPC.memoryReindexSkills, args),
+      callProjectRuntimeActionOr("memory", "reindexSkills", { args }, () =>
+        ipcRenderer.invoke(IPC.memoryReindexSkills, args),
+      ),
     syncKnowledge: async (): Promise<ChangeDigest | null> =>
-      ipcRenderer.invoke(IPC.memorySyncKnowledge),
+      callProjectRuntimeActionOr("memory", "syncKnowledge", {}, () =>
+        ipcRenderer.invoke(IPC.memorySyncKnowledge),
+      ),
     getKnowledgeSyncStatus: async (): Promise<KnowledgeSyncStatus> =>
-      ipcRenderer.invoke(IPC.memoryGetKnowledgeSyncStatus),
+      callProjectRuntimeActionOr("memory", "getKnowledgeSyncStatus", {}, () =>
+        ipcRenderer.invoke(IPC.memoryGetKnowledgeSyncStatus),
+      ),
     getHealthStats: async (): Promise<MemoryHealthStats> =>
-      ipcRenderer.invoke(IPC.memoryHealthStats),
+      callProjectRuntimeActionOr("memory", "getHealthStats", {}, () =>
+        ipcRenderer.invoke(IPC.memoryHealthStats),
+      ),
     downloadEmbeddingModel: async (): Promise<MemoryHealthStats> =>
-      ipcRenderer.invoke(IPC.memoryDownloadEmbeddingModel),
+      callProjectRuntimeActionOr("memory", "downloadEmbeddingModel", {}, () =>
+        ipcRenderer.invoke(IPC.memoryDownloadEmbeddingModel),
+      ),
     runSweep: async (): Promise<MemoryLifecycleSweepResult> =>
-      ipcRenderer.invoke(IPC.memoryRunSweep),
+      callProjectRuntimeActionOr("memory", "runSweep", {}, () =>
+        ipcRenderer.invoke(IPC.memoryRunSweep),
+      ),
     onSweepStatus: (cb: (payload: MemorySweepStatusEventPayload) => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,
@@ -3505,7 +7842,9 @@ contextBridge.exposeInMainWorld("ade", {
       return () => ipcRenderer.removeListener(IPC.memorySweepStatus, listener);
     },
     runConsolidation: async (): Promise<MemoryConsolidationResult> =>
-      ipcRenderer.invoke(IPC.memoryRunConsolidation),
+      callProjectRuntimeActionOr("memory", "runConsolidation", {}, () =>
+        ipcRenderer.invoke(IPC.memoryRunConsolidation),
+      ),
     onConsolidationStatus: (
       cb: (payload: MemoryConsolidationStatusEventPayload) => void,
     ) => {
@@ -3520,145 +7859,292 @@ contextBridge.exposeInMainWorld("ade", {
   },
   cto: {
     getState: async (args: CtoGetStateArgs = {}): Promise<CtoSnapshot> =>
-      ipcRenderer.invoke(IPC.ctoGetState, args),
+      callProjectRuntimeActionOr(
+        "cto_state",
+        "getSnapshot",
+        { arg: args.recentLimit ?? 20 },
+        () => ipcRenderer.invoke(IPC.ctoGetState, args),
+      ),
     ensureSession: async (
       args: CtoEnsureSessionArgs = {},
     ): Promise<AgentChatSession> =>
-      ipcRenderer.invoke(IPC.ctoEnsureSession, args),
+      callProjectRuntimeActionOr("chat", "ensureCtoSession", { args }, () =>
+        ipcRenderer.invoke(IPC.ctoEnsureSession, args),
+      ),
     updateCoreMemory: async (
       args: CtoUpdateCoreMemoryArgs,
     ): Promise<CtoSnapshot> =>
-      ipcRenderer.invoke(IPC.ctoUpdateCoreMemory, args),
+      callProjectRuntimeActionOr(
+        "cto_state",
+        "updateCoreMemory",
+        { arg: args.patch ?? {} },
+        () => ipcRenderer.invoke(IPC.ctoUpdateCoreMemory, args),
+      ),
     listSessionLogs: async (
       args: CtoListSessionLogsArgs = {},
     ): Promise<CtoSessionLogEntry[]> =>
-      ipcRenderer.invoke(IPC.ctoListSessionLogs, args),
+      callProjectRuntimeActionOr(
+        "cto_state",
+        "getSessionLogs",
+        { arg: args.limit ?? 40 },
+        () => ipcRenderer.invoke(IPC.ctoListSessionLogs, args),
+      ),
     updateIdentity: async (args: CtoUpdateIdentityArgs): Promise<CtoSnapshot> =>
-      ipcRenderer.invoke(IPC.ctoUpdateIdentity, args),
-    getOpenclawState: async (): Promise<CtoGetOpenclawStateResult> =>
-      ipcRenderer.invoke(IPC.ctoGetOpenclawState),
-    updateOpenclawConfig: async (
-      args: CtoUpdateOpenclawConfigArgs,
-    ): Promise<CtoGetOpenclawStateResult> =>
-      ipcRenderer.invoke(IPC.ctoUpdateOpenclawConfig, args),
-    testOpenclawConnection: async (
-      args: CtoTestOpenclawConnectionArgs = {},
-    ): Promise<CtoTestOpenclawConnectionResult> =>
-      ipcRenderer.invoke(IPC.ctoTestOpenclawConnection, args),
-    listOpenclawMessages: async (
-      args: CtoListOpenclawMessagesArgs = {},
-    ): Promise<CtoListOpenclawMessagesResult> =>
-      ipcRenderer.invoke(IPC.ctoListOpenclawMessages, args),
-    sendOpenclawMessage: async (
-      args: CtoSendOpenclawMessageArgs,
-    ): Promise<CtoListOpenclawMessagesResult[number]> =>
-      ipcRenderer.invoke(IPC.ctoSendOpenclawMessage, args),
-    onOpenclawConnectionStatus: (
-      cb: (status: OpenclawBridgeStatus) => void,
-    ) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        payload: OpenclawBridgeStatus,
-      ) => cb(payload);
-      ipcRenderer.on(IPC.openclawConnectionStatus, listener);
-      return () =>
-        ipcRenderer.removeListener(IPC.openclawConnectionStatus, listener);
-    },
+      callProjectRuntimeActionOr(
+        "cto_state",
+        "updateIdentity",
+        { arg: args.patch ?? {} },
+        () => ipcRenderer.invoke(IPC.ctoUpdateIdentity, args),
+      ),
     listAgents: async (
       args: CtoListAgentsArgs = {},
-    ): Promise<AgentIdentity[]> => ipcRenderer.invoke(IPC.ctoListAgents, args),
+    ): Promise<AgentIdentity[]> =>
+      callProjectRuntimeActionOr("worker_agent", "listAgents", { args }, () =>
+        ipcRenderer.invoke(IPC.ctoListAgents, args),
+      ),
     saveAgent: async (args: CtoSaveAgentArgs): Promise<AgentIdentity> =>
-      ipcRenderer.invoke(IPC.ctoSaveAgent, args),
+      callProjectRuntimeActionOr("worker_agent", "saveAgent", { args }, () =>
+        ipcRenderer.invoke(IPC.ctoSaveAgent, args),
+      ),
     removeAgent: async (args: CtoRemoveAgentArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.ctoRemoveAgent, args),
+      callProjectRuntimeActionOr("worker_agent", "removeAgent", { args }, () =>
+        ipcRenderer.invoke(IPC.ctoRemoveAgent, args),
+      ),
     setAgentStatus: async (args: CtoSetAgentStatusArgs): Promise<void> =>
-      ipcRenderer.invoke(IPC.ctoSetAgentStatus, args),
+      callProjectRuntimeActionOr(
+        "worker_agent",
+        "setAgentStatus",
+        { args },
+        () => ipcRenderer.invoke(IPC.ctoSetAgentStatus, args),
+      ),
     listAgentRevisions: async (
       args: CtoListAgentRevisionsArgs,
     ): Promise<AgentConfigRevision[]> =>
-      ipcRenderer.invoke(IPC.ctoListAgentRevisions, args),
+      callProjectRuntimeActionOr(
+        "worker_agent",
+        "listAgentRevisions",
+        { args },
+        () => ipcRenderer.invoke(IPC.ctoListAgentRevisions, args),
+      ),
     rollbackAgentRevision: async (
       args: CtoRollbackAgentRevisionArgs,
     ): Promise<AgentIdentity> =>
-      ipcRenderer.invoke(IPC.ctoRollbackAgentRevision, args),
+      callProjectRuntimeActionOr(
+        "worker_agent",
+        "rollbackAgentRevision",
+        { args },
+        () => ipcRenderer.invoke(IPC.ctoRollbackAgentRevision, args),
+      ),
     ensureAgentSession: async (
       args: CtoEnsureAgentSessionArgs,
     ): Promise<AgentChatSession> =>
-      ipcRenderer.invoke(IPC.ctoEnsureAgentSession, args),
+      callProjectRuntimeActionOr(
+        "chat",
+        "ensureAgentIdentitySession",
+        { args },
+        () => ipcRenderer.invoke(IPC.ctoEnsureAgentSession, args),
+      ),
     getBudgetSnapshot: async (
       args: CtoGetBudgetSnapshotArgs = {},
     ): Promise<AgentBudgetSnapshot> =>
-      ipcRenderer.invoke(IPC.ctoGetBudgetSnapshot, args),
+      callProjectRuntimeActionOr(
+        "worker_agent",
+        "getBudgetSnapshot",
+        { args },
+        () => ipcRenderer.invoke(IPC.ctoGetBudgetSnapshot, args),
+      ),
     triggerAgentWakeup: async (
       args: CtoTriggerAgentWakeupArgs,
     ): Promise<CtoTriggerAgentWakeupResult> =>
-      ipcRenderer.invoke(IPC.ctoTriggerAgentWakeup, args),
+      callProjectRuntimeActionOr(
+        "worker_agent",
+        "triggerWakeup",
+        { args },
+        () => ipcRenderer.invoke(IPC.ctoTriggerAgentWakeup, args),
+      ),
     listAgentRuns: async (
       args: CtoListAgentRunsArgs = {},
     ): Promise<WorkerAgentRun[]> =>
-      ipcRenderer.invoke(IPC.ctoListAgentRuns, args),
+      callProjectRuntimeActionOr(
+        "worker_agent",
+        "listAgentRuns",
+        { args },
+        () => ipcRenderer.invoke(IPC.ctoListAgentRuns, args),
+      ),
     getAgentCoreMemory: async (
       args: CtoGetAgentCoreMemoryArgs,
     ): Promise<AgentCoreMemory> =>
-      ipcRenderer.invoke(IPC.ctoGetAgentCoreMemory, args),
+      callProjectRuntimeActionOr(
+        "worker_agent",
+        "getCoreMemory",
+        { arg: args.agentId },
+        () => ipcRenderer.invoke(IPC.ctoGetAgentCoreMemory, args),
+      ),
     updateAgentCoreMemory: async (
       args: CtoUpdateAgentCoreMemoryArgs,
     ): Promise<AgentCoreMemory> =>
-      ipcRenderer.invoke(IPC.ctoUpdateAgentCoreMemory, args),
+      callProjectRuntimeActionOr(
+        "worker_agent",
+        "updateCoreMemory",
+        { argsList: [args.agentId, args.patch ?? {}] },
+        () => ipcRenderer.invoke(IPC.ctoUpdateAgentCoreMemory, args),
+      ),
     listAgentSessionLogs: async (
       args: CtoListAgentSessionLogsArgs,
     ): Promise<AgentSessionLogEntry[]> =>
-      ipcRenderer.invoke(IPC.ctoListAgentSessionLogs, args),
+      callProjectRuntimeActionOr(
+        "worker_agent",
+        "listSessionLogs",
+        { argsList: [args.agentId, args.limit ?? 40] },
+        () => ipcRenderer.invoke(IPC.ctoListAgentSessionLogs, args),
+      ),
     getLinearConnectionStatus: async (): Promise<LinearConnectionStatus> =>
-      ipcRenderer.invoke(IPC.ctoGetLinearConnectionStatus),
+      callProjectRuntimeActionOr(
+        "linear_issue_tracker",
+        "getConnectionStatus",
+        {},
+        () => ipcRenderer.invoke(IPC.ctoGetLinearConnectionStatus),
+      ),
     setLinearToken: async (
       args: CtoSetLinearTokenArgs,
-    ): Promise<LinearConnectionStatus> =>
-      ipcRenderer.invoke(IPC.ctoSetLinearToken, args),
-    clearLinearToken: async (): Promise<LinearConnectionStatus> =>
-      ipcRenderer.invoke(IPC.ctoClearLinearToken),
+    ): Promise<LinearConnectionStatus> => {
+      const runtime = await callProjectRuntimeActionIfBound<void>(
+        "linear_credentials",
+        "setToken",
+        { arg: args.token },
+      );
+      if (runtime.handled) {
+        return callProjectRuntimeActionOr(
+          "linear_issue_tracker",
+          "getConnectionStatus",
+          {},
+          () => ipcRenderer.invoke(IPC.ctoSetLinearToken, args),
+        );
+      }
+      return ipcRenderer.invoke(IPC.ctoSetLinearToken, args);
+    },
+    clearLinearToken: async (): Promise<LinearConnectionStatus> => {
+      const runtime = await callProjectRuntimeActionIfBound<void>(
+        "linear_credentials",
+        "clearToken",
+        {},
+      );
+      if (runtime.handled) {
+        return callProjectRuntimeActionOr(
+          "linear_issue_tracker",
+          "getConnectionStatus",
+          {},
+          () => ipcRenderer.invoke(IPC.ctoClearLinearToken),
+        );
+      }
+      return ipcRenderer.invoke(IPC.ctoClearLinearToken);
+    },
     getFlowPolicy: async (): Promise<LinearWorkflowConfig> =>
-      ipcRenderer.invoke(IPC.ctoGetFlowPolicy),
+      callProjectRuntimeActionOr("flow_policy", "getPolicy", {}, () =>
+        ipcRenderer.invoke(IPC.ctoGetFlowPolicy),
+      ),
     saveFlowPolicy: async (
       args: CtoSaveFlowPolicyArgs,
     ): Promise<LinearWorkflowConfig> =>
-      ipcRenderer.invoke(IPC.ctoSaveFlowPolicy, args),
+      callProjectRuntimeActionOr(
+        "flow_policy",
+        "savePolicy",
+        { argsList: [args.policy, args.actor ?? "user"] },
+        () => ipcRenderer.invoke(IPC.ctoSaveFlowPolicy, args),
+      ),
     listFlowPolicyRevisions: async (): Promise<CtoFlowPolicyRevision[]> =>
-      ipcRenderer.invoke(IPC.ctoListFlowPolicyRevisions),
+      callProjectRuntimeActionOr(
+        "flow_policy",
+        "listRevisions",
+        { arg: 50 },
+        () => ipcRenderer.invoke(IPC.ctoListFlowPolicyRevisions),
+      ),
     rollbackFlowPolicyRevision: async (
       args: CtoRollbackFlowPolicyRevisionArgs,
     ): Promise<LinearWorkflowConfig> =>
-      ipcRenderer.invoke(IPC.ctoRollbackFlowPolicyRevision, args),
+      callProjectRuntimeActionOr(
+        "flow_policy",
+        "rollbackRevision",
+        { argsList: [args.revisionId, args.actor ?? "user"] },
+        () => ipcRenderer.invoke(IPC.ctoRollbackFlowPolicyRevision, args),
+      ),
     simulateFlowRoute: async (
       args: CtoSimulateFlowRouteArgs,
     ): Promise<LinearRouteDecision> =>
-      ipcRenderer.invoke(IPC.ctoSimulateFlowRoute, args),
+      callProjectRuntimeActionOr(
+        "linear_routing",
+        "simulateRoute",
+        { args },
+        () => ipcRenderer.invoke(IPC.ctoSimulateFlowRoute, args),
+      ),
     getLinearWorkflowCatalog: async (): Promise<LinearWorkflowCatalog> =>
-      ipcRenderer.invoke(IPC.ctoGetLinearWorkflowCatalog),
+      callProjectRuntimeActionOr(
+        "linear_issue_tracker",
+        "getWorkflowCatalog",
+        {},
+        () => ipcRenderer.invoke(IPC.ctoGetLinearWorkflowCatalog),
+      ),
     getLinearSyncDashboard: async (): Promise<LinearSyncDashboard> =>
-      ipcRenderer.invoke(IPC.ctoGetLinearSyncDashboard),
+      callProjectRuntimeActionOr("linear_sync", "getDashboard", {}, () =>
+        ipcRenderer.invoke(IPC.ctoGetLinearSyncDashboard),
+      ),
     runLinearSyncNow: async (): Promise<LinearSyncDashboard> =>
-      ipcRenderer.invoke(IPC.ctoRunLinearSyncNow),
+      callProjectRuntimeActionOr("linear_sync", "runSyncNow", {}, () =>
+        ipcRenderer.invoke(IPC.ctoRunLinearSyncNow),
+      ),
     listLinearSyncQueue: async (): Promise<LinearSyncQueueItem[]> =>
-      ipcRenderer.invoke(IPC.ctoListLinearSyncQueue),
+      callProjectRuntimeActionOr(
+        "linear_sync",
+        "listQueue",
+        { args: { limit: 300 } },
+        () => ipcRenderer.invoke(IPC.ctoListLinearSyncQueue),
+      ),
     getLinearWorkflowRunDetail: async (
       args: CtoGetLinearWorkflowRunDetailArgs,
     ): Promise<LinearWorkflowRunDetail | null> =>
-      ipcRenderer.invoke(IPC.ctoGetLinearWorkflowRunDetail, args),
+      callProjectRuntimeActionOr("linear_sync", "getRunDetail", { args }, () =>
+        ipcRenderer.invoke(IPC.ctoGetLinearWorkflowRunDetail, args),
+      ),
     resolveLinearSyncQueueItem: async (
       args: CtoResolveLinearSyncQueueItemArgs,
     ): Promise<LinearSyncQueueItem | null> =>
-      ipcRenderer.invoke(IPC.ctoResolveLinearSyncQueueItem, args),
+      callProjectRuntimeActionOr(
+        "linear_sync",
+        "resolveQueueItem",
+        { args },
+        () => ipcRenderer.invoke(IPC.ctoResolveLinearSyncQueueItem, args),
+      ),
     getLinearIngressStatus: async (): Promise<LinearIngressStatus> =>
-      ipcRenderer.invoke(IPC.ctoGetLinearIngressStatus),
+      callProjectRuntimeActionOr("linear_ingress", "getStatus", {}, () =>
+        ipcRenderer.invoke(IPC.ctoGetLinearIngressStatus),
+      ),
     listLinearIngressEvents: async (
       args: CtoListLinearIngressEventsArgs = {},
     ): Promise<LinearIngressEventRecord[]> =>
-      ipcRenderer.invoke(IPC.ctoListLinearIngressEvents, args),
+      callProjectRuntimeActionOr(
+        "linear_ingress",
+        "listRecentEvents",
+        { arg: args.limit ?? 20 },
+        () => ipcRenderer.invoke(IPC.ctoListLinearIngressEvents, args),
+      ),
     ensureLinearWebhook: async (
       args: CtoEnsureLinearWebhookArgs = {},
-    ): Promise<LinearIngressStatus> =>
-      ipcRenderer.invoke(IPC.ctoEnsureLinearWebhook, args),
+    ): Promise<LinearIngressStatus> => {
+      const runtime = await callProjectRuntimeActionIfBound<void>(
+        "linear_ingress",
+        "ensureRelayWebhook",
+        { arg: args.force === true },
+      );
+      if (runtime.handled) {
+        return callProjectRuntimeActionOr(
+          "linear_ingress",
+          "getStatus",
+          {},
+          () => ipcRenderer.invoke(IPC.ctoEnsureLinearWebhook, args),
+        );
+      }
+      return ipcRenderer.invoke(IPC.ctoEnsureLinearWebhook, args);
+    },
     onLinearWorkflowEvent: (
       cb: (event: LinearWorkflowEventPayload) => void,
     ) => {
@@ -3673,53 +8159,139 @@ contextBridge.exposeInMainWorld("ade", {
     listAgentTaskSessions: async (
       args: CtoListAgentTaskSessionsArgs,
     ): Promise<AgentTaskSession[]> =>
-      ipcRenderer.invoke(IPC.ctoListAgentTaskSessions, args),
+      callProjectRuntimeActionOr(
+        "worker_agent",
+        "listAgentTaskSessions",
+        { args },
+        () => ipcRenderer.invoke(IPC.ctoListAgentTaskSessions, args),
+      ),
     clearAgentTaskSession: async (
       args: CtoClearAgentTaskSessionArgs,
-    ): Promise<void> => ipcRenderer.invoke(IPC.ctoClearAgentTaskSession, args),
+    ): Promise<void> =>
+      callProjectRuntimeActionOr(
+        "worker_agent",
+        "clearAgentTaskSession",
+        { args },
+        () => ipcRenderer.invoke(IPC.ctoClearAgentTaskSession, args),
+      ),
     getOnboardingState: async (): Promise<CtoOnboardingState> =>
-      ipcRenderer.invoke(IPC.ctoGetOnboardingState),
+      callProjectRuntimeActionOr("cto_state", "getOnboardingState", {}, () =>
+        ipcRenderer.invoke(IPC.ctoGetOnboardingState),
+      ),
     completeOnboardingStep: async (args: {
       stepId: string;
     }): Promise<CtoOnboardingState> =>
-      ipcRenderer.invoke(IPC.ctoCompleteOnboardingStep, args),
+      callProjectRuntimeActionOr(
+        "cto_state",
+        "completeOnboardingStep",
+        { arg: args.stepId },
+        () => ipcRenderer.invoke(IPC.ctoCompleteOnboardingStep, args),
+      ),
     dismissOnboarding: async (): Promise<CtoOnboardingState> =>
-      ipcRenderer.invoke(IPC.ctoDismissOnboarding),
+      callProjectRuntimeActionOr("cto_state", "dismissOnboarding", {}, () =>
+        ipcRenderer.invoke(IPC.ctoDismissOnboarding),
+      ),
     resetOnboarding: async (): Promise<CtoOnboardingState> =>
-      ipcRenderer.invoke(IPC.ctoResetOnboarding),
+      callProjectRuntimeActionOr("cto_state", "resetOnboarding", {}, () =>
+        ipcRenderer.invoke(IPC.ctoResetOnboarding),
+      ),
     previewSystemPrompt: async (
       args: { identityOverride?: Record<string, unknown> } = {},
     ): Promise<CtoSystemPromptPreview> =>
-      ipcRenderer.invoke(IPC.ctoPreviewSystemPrompt, args),
+      callProjectRuntimeActionOr(
+        "cto_state",
+        "previewSystemPrompt",
+        { arg: args.identityOverride },
+        () => ipcRenderer.invoke(IPC.ctoPreviewSystemPrompt, args),
+      ),
     getLinearProjects: async (): Promise<CtoLinearProject[]> =>
-      ipcRenderer.invoke(IPC.ctoGetLinearProjects),
+      callProjectRuntimeActionOr(
+        "linear_issue_tracker",
+        "listProjects",
+        {},
+        () => ipcRenderer.invoke(IPC.ctoGetLinearProjects),
+      ),
     getLinearQuickView: async (): Promise<CtoLinearQuickView> =>
-      ipcRenderer.invoke(IPC.ctoGetLinearQuickView),
-    getLinearIssuePickerData: async (): Promise<CtoGetLinearIssuePickerDataResult> =>
-      ipcRenderer.invoke(IPC.ctoGetLinearIssuePickerData),
+      callProjectRuntimeActionOr(
+        "linear_issue_tracker",
+        "getQuickView",
+        {},
+        () => ipcRenderer.invoke(IPC.ctoGetLinearQuickView),
+      ),
+    getLinearIssuePickerData:
+      async (): Promise<CtoGetLinearIssuePickerDataResult> =>
+        callProjectRuntimeActionOr(
+          "linear_issue_tracker",
+          "getIssuePickerData",
+          {},
+          () => ipcRenderer.invoke(IPC.ctoGetLinearIssuePickerData),
+        ),
     searchLinearIssues: async (
       args: CtoSearchLinearIssuesArgs = {},
     ): Promise<CtoSearchLinearIssuesResult> =>
-      ipcRenderer.invoke(IPC.ctoSearchLinearIssues, args),
+      callProjectRuntimeActionOr(
+        "linear_issue_tracker",
+        "searchIssues",
+        { args },
+        () => ipcRenderer.invoke(IPC.ctoSearchLinearIssues, args),
+      ),
     setLinearOAuthClient: async (
       args: CtoSetLinearOAuthClientArgs,
-    ): Promise<LinearConnectionStatus> =>
-      ipcRenderer.invoke(IPC.ctoSetLinearOAuthClient, args),
-    clearLinearOAuthClient: async (): Promise<LinearConnectionStatus> =>
-      ipcRenderer.invoke(IPC.ctoClearLinearOAuthClient),
+    ): Promise<LinearConnectionStatus> => {
+      const runtime = await callProjectRuntimeActionIfBound<void>(
+        "linear_credentials",
+        "setOAuthClientCredentials",
+        { args },
+      );
+      if (runtime.handled) {
+        return callProjectRuntimeActionOr(
+          "linear_issue_tracker",
+          "getConnectionStatus",
+          {},
+          () => ipcRenderer.invoke(IPC.ctoSetLinearOAuthClient, args),
+        );
+      }
+      return ipcRenderer.invoke(IPC.ctoSetLinearOAuthClient, args);
+    },
+    clearLinearOAuthClient: async (): Promise<LinearConnectionStatus> => {
+      const runtime = await callProjectRuntimeActionIfBound<void>(
+        "linear_credentials",
+        "clearOAuthClientCredentials",
+        {},
+      );
+      if (runtime.handled) {
+        return callProjectRuntimeActionOr(
+          "linear_issue_tracker",
+          "getConnectionStatus",
+          {},
+          () => ipcRenderer.invoke(IPC.ctoClearLinearOAuthClient),
+        );
+      }
+      return ipcRenderer.invoke(IPC.ctoClearLinearOAuthClient);
+    },
     startLinearOAuth: async (): Promise<CtoStartLinearOAuthResult> =>
-      ipcRenderer.invoke(IPC.ctoStartLinearOAuth),
+      callProjectRuntimeActionOr("linear_oauth", "startSession", {}, () =>
+        ipcRenderer.invoke(IPC.ctoStartLinearOAuth),
+      ),
     getLinearOAuthSession: async (
       args: CtoGetLinearOAuthSessionArgs,
     ): Promise<CtoGetLinearOAuthSessionResult> =>
-      ipcRenderer.invoke(IPC.ctoGetLinearOAuthSession, args),
+      callProjectRuntimeActionOr(
+        "linear_oauth",
+        "getSession",
+        { arg: args.sessionId },
+        () => ipcRenderer.invoke(IPC.ctoGetLinearOAuthSession, args),
+      ),
     runProjectScan: async (): Promise<CtoRunProjectScanResult> =>
-      ipcRenderer.invoke(IPC.ctoRunProjectScan),
+      callProjectRuntimeActionOr("cto_state", "runProjectScan", {}, () =>
+        ipcRenderer.invoke(IPC.ctoRunProjectScan),
+      ),
   },
   updateCheckForUpdates: () => ipcRenderer.invoke(IPC.updateCheckForUpdates),
   updateGetState: (): Promise<AutoUpdateSnapshot> =>
     ipcRenderer.invoke(IPC.updateGetState),
-  updateQuitAndInstall: (): Promise<boolean> => ipcRenderer.invoke(IPC.updateQuitAndInstall),
+  updateQuitAndInstall: (): Promise<boolean> =>
+    ipcRenderer.invoke(IPC.updateQuitAndInstall),
   updateDismissInstalledNotice: () =>
     ipcRenderer.invoke(IPC.updateDismissInstalledNotice),
   onUpdateEvent: (cb: (snapshot: AutoUpdateSnapshot) => void) => {

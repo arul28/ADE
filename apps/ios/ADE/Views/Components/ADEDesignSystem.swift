@@ -375,7 +375,7 @@ final class ADEImageCache {
       throw NSError(
         domain: "ADE",
         code: 301,
-        userInfo: [NSLocalizedDescriptionKey: "The host returned an unreadable image preview."]
+        userInfo: [NSLocalizedDescriptionKey: "The machine returned an unreadable image preview."]
       )
     }
 
@@ -447,7 +447,7 @@ struct ADEStatusPill: View {
   }
 }
 
-/// Single source of truth for the "computer connection" presentation
+/// Single source of truth for the "machine connection" presentation
 /// (status-dot tint, glow, accessibility label, truncated host name).
 ///
 /// The view-model is computed from the same inputs the underlying views read
@@ -520,7 +520,7 @@ struct ConnectionHealthPresentation {
     case .connected:
       if let name = truncatedHostName {
         if health.load == .strained {
-          return "Connected to \(name). Host is responding slowly"
+          return "Connected to \(name). Machine is responding slowly"
         }
         if connectionState == .syncing {
           return "Connected to \(name). Syncing changes"
@@ -528,18 +528,18 @@ struct ConnectionHealthPresentation {
         return "Connected to \(name)"
       }
       if health.load == .strained {
-        return "Connected. Host is responding slowly"
+        return "Connected. Machine is responding slowly"
       }
       if connectionState == .syncing {
         return "Connected. Syncing changes"
       }
       return "Connected"
     case .connecting:
-      return "Connecting to host"
+      return "Connecting to machine"
     case .unreachable:
       return "Connection error\(errorSuffix)"
     case .disconnected:
-      return "Disconnected from host"
+      return "Disconnected from machine"
     }
   }
 }
@@ -565,7 +565,7 @@ struct ADEConnectionDot: View {
   var body: some View {
     Button(action: openSettings) {
       Label {
-        Text("Computer connection")
+        Text("Machine connection")
       } icon: {
         PrsGlassDisc(tint: tint, isAlive: showsConnectedGlow) {
           Image(systemName: "laptopcomputer")
@@ -578,13 +578,13 @@ struct ADEConnectionDot: View {
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
-    .accessibilityLabel("Computer connection · \(accessibilityLabel)")
-    .accessibilityHint("Opens computer connection settings.")
+    .accessibilityLabel("Machine connection · \(accessibilityLabel)")
+    .accessibilityHint("Opens machine connection settings.")
     .accessibilityShowsLargeContentViewer()
     .adeInspectable(
       "Root.Toolbar.ConnectionButton",
       metadata: [
-        "label": "Computer connection · \(accessibilityLabel)",
+        "label": "Machine connection · \(accessibilityLabel)",
         "role": "button"
       ]
     )
@@ -596,7 +596,7 @@ struct ADEConnectionDot: View {
 
   fileprivate var iconTint: Color { tint }
   fileprivate var isAlive: Bool { showsConnectedGlow }
-  fileprivate var a11yLabel: String { "Computer connection · \(accessibilityLabel)" }
+  fileprivate var a11yLabel: String { "Machine connection · \(accessibilityLabel)" }
 }
 
 struct ADEProjectHomeButton: View {
@@ -635,7 +635,7 @@ struct ADEProjectHomeButton: View {
   }
 }
 
-/// Root toolbar control cluster: computer connection, project switching, and
+/// Root toolbar control cluster: machine connection, project switching, and
 /// attention bell collapsed into one floating liquid-glass capsule so the PRs
 /// (and every root tab) top-bar reads as a single glass chip rather than three
 /// disjointed discs.
@@ -669,7 +669,7 @@ struct ADERootToolbarControls: View {
   private var connectionTint: Color { presentation.tint }
   private var connectionIsAlive: Bool { presentation.showsConnectedGlow }
   private var connectionAccessibilityLabel: String {
-    "Computer connection · \(presentation.accessibilityLabel)"
+    "Machine connection · \(presentation.accessibilityLabel)"
   }
 
   private var hasUnread: Bool { drawer.unreadCount > 0 }

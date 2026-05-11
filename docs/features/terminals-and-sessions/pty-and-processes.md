@@ -1,17 +1,35 @@
 # PTY, Sessions, and Managed Processes
 
-Lifecycle and wiring for the three main-process services that back the
+Lifecycle and wiring for the three services that back the
 terminal/session system:
 
 - `apps/desktop/src/main/services/pty/ptyService.ts`
 - `apps/desktop/src/main/services/sessions/sessionService.ts`
 - `apps/desktop/src/main/services/processes/processService.ts`
 
-All three are large and carry a lot of cross-wiring through `main.ts`
-and `registerIpc.ts`. Re-read them before any non-trivial change.
-The most recent structural shift was in `processService`: runtime
-entries are now keyed by `runId` so a single `(laneId, processId)`
-pair can have multiple concurrent and historical runs simultaneously.
+These services run inside the **active ADE runtime** (local daemon for
+local-bound windows, SSH-attached remote runtime for remote-bound
+windows). The same source files are also loaded by the desktop main
+process for the legacy in-process IPC fallback path; both paths share
+identical behavior. PTY data and exit events flow over the runtime's
+event stream and the renderer subscribes via the preload runtime event
+pump. Remote-bound windows therefore have their PTYs spawn on the
+remote machine — `node-pty` runs on the remote host, the bytes stream
+back over SSH, and per-process readiness checks (TCP port probes) hit
+ports on the remote host as well.
+
+All three are large and carry a lot of cross-wiring through the
+runtime daemon's project boot and `registerIpc.ts`. Re-read them before
+any non-trivial change. The most recent structural shift was in
+`processService`: runtime entries are now keyed by `runId` so a single
+`(laneId, processId)` pair can have multiple concurrent and historical
+runs simultaneously.
+
+Adjacent: the `apps/desktop/src/main/services/computerUse/`
+directory hosts the computer-use control plane and its broker
+service (`computerUseArtifactBrokerService.ts`, with companion
+test). It is local-only — controlling a real desktop is gated to the
+local ADE runtime.
 
 ---
 

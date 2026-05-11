@@ -15,7 +15,7 @@ type DatabaseSyncConstructor = new (dbPath: string, options?: { allowExtension?:
 const require = createRequire(path.join(process.cwd(), "ade-runtime.cjs"));
 const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: DatabaseSyncConstructor };
 
-export type SqlValue = string | number | null | Uint8Array;
+export type SqlValue = string | number | boolean | null | Uint8Array;
 
 export type AdeDbSyncApi = {
   isAvailable?: () => boolean;
@@ -80,9 +80,27 @@ function openRawDatabase(dbPath: string): DatabaseSyncType {
   return db;
 }
 
-function toDbValue(value: SqlValue | SyncScalar): string | number | null | Uint8Array {
+function describeUnsupportedDbValue(value: unknown): string {
+  const kind = value === undefined
+    ? "undefined"
+    : value === null
+      ? "null"
+      : Array.isArray(value)
+        ? "array"
+        : typeof value;
+  const ctor =
+    value && typeof value === "object" && !Array.isArray(value)
+      ? (value as { constructor?: { name?: string } }).constructor?.name
+      : null;
+  return ctor && ctor !== "Object" ? `${kind} (${ctor})` : kind;
+}
+
+function toDbValue(value: SqlValue | SyncScalar, index?: number): string | number | null | Uint8Array {
   if (value == null || typeof value === "string" || typeof value === "number") {
     return value;
+  }
+  if (typeof value === "boolean") {
+    return value ? 1 : 0;
   }
   if (value instanceof Uint8Array) {
     return value;
@@ -90,12 +108,13 @@ function toDbValue(value: SqlValue | SyncScalar): string | number | null | Uint8
   if (typeof value === "object" && "type" in value && value.type === "bytes") {
     return Buffer.from(value.base64, "base64");
   }
-  throw new Error("Unsupported database value");
+  const suffix = typeof index === "number" ? ` at parameter ${index + 1}` : "";
+  throw new Error(`Unsupported database value${suffix}: ${describeUnsupportedDbValue(value)}`);
 }
 
 function runStatement(db: DatabaseSyncType, sql: string, params: Array<SqlValue | SyncScalar> = []): { changes: number } {
   try {
-    return db.prepare(sql).run(...params.map((param) => toDbValue(param))) as { changes: number };
+    return db.prepare(sql).run(...params.map((param, index) => toDbValue(param, index))) as { changes: number };
   } catch (error) {
     const statement = sql.replace(/\s+/g, " ").trim();
     const message = error instanceof Error ? error.message : String(error);
@@ -104,11 +123,23 @@ function runStatement(db: DatabaseSyncType, sql: string, params: Array<SqlValue 
 }
 
 function getRow<T>(db: DatabaseSyncType, sql: string, params: Array<SqlValue | SyncScalar> = []): T | null {
-  return (db.prepare(sql).get(...params.map((param) => toDbValue(param))) as T | undefined) ?? null;
+  try {
+    return (db.prepare(sql).get(...params.map((param, index) => toDbValue(param, index))) as T | undefined) ?? null;
+  } catch (error) {
+    const statement = sql.replace(/\s+/g, " ").trim();
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${message} [sql=${statement}]`);
+  }
 }
 
 function allRows<T>(db: DatabaseSyncType, sql: string, params: Array<SqlValue | SyncScalar> = []): T[] {
-  return db.prepare(sql).all(...params.map((param) => toDbValue(param))) as T[];
+  try {
+    return db.prepare(sql).all(...params.map((param, index) => toDbValue(param, index))) as T[];
+  } catch (error) {
+    const statement = sql.replace(/\s+/g, " ").trim();
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${message} [sql=${statement}]`);
+  }
 }
 
 function rawHasTable(db: DatabaseSyncType, tableName: string): boolean {
@@ -416,6 +447,16 @@ function hasCrsqlMetadata(db: DatabaseSyncType): boolean {
   );
 }
 
+function isCrsqliteRuntimeUsable(db: DatabaseSyncType): boolean {
+  try {
+    getRow(db, "select crsql_db_version() as db_version");
+    getRow(db, "select crsql_internal_sync_bit() as sync_bit");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const PHONE_CRITICAL_CRR_TABLES = [
   "lanes",
   "lane_state_snapshots",
@@ -442,6 +483,49 @@ function tableNeedsCrrRepair(db: DatabaseSyncType, tableName: string): { baseRow
 
   const pkRowCount = countTableRows(db, pksTable);
   return pkRowCount === baseRowCount ? null : { baseRowCount, pkRowCount };
+}
+
+function listCrrTriggers(db: DatabaseSyncType, tableName: string): string[] {
+  return allRows<{ name: string }>(
+    db,
+    `select name
+       from sqlite_master
+      where type = 'trigger'
+        and tbl_name = ?
+        and name like ?`,
+    [tableName, `${tableName}__crsql_%trig`],
+  ).map((row) => row.name);
+}
+
+function tableNeedsCrrTriggerRepair(db: DatabaseSyncType, tableName: string): boolean {
+  if (!rawHasTable(db, `${tableName}__crsql_clock`)) {
+    return false;
+  }
+  return listCrrTriggers(db, tableName).length < 3;
+}
+
+function disableCrrTriggersForUnavailableRuntime(db: DatabaseSyncType, logger?: Logger): void {
+  const triggers = allRows<{ name: string; tbl_name: string }>(
+    db,
+    `select name, tbl_name
+       from sqlite_master
+      where type = 'trigger'
+        and name like '%__crsql_%trig'`,
+  );
+  for (const trigger of triggers) {
+    try {
+      runStatement(db, `drop trigger if exists ${quoteIdentifier(trigger.name)}`);
+    } catch (error) {
+      logger?.warn("db.crsqlite_trigger_disable_failed", {
+        tableName: trigger.tbl_name,
+        triggerName: trigger.name,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  if (triggers.length > 0) {
+    logger?.warn("db.crsqlite_triggers_disabled", { triggerCount: triggers.length });
+  }
 }
 
 function rebuildCrrTableWithBackfill(db: DatabaseSyncType, tableName: string): void {
@@ -507,6 +591,9 @@ function ensureCrrTables(db: DatabaseSyncType, logger?: Logger): void {
   const repairTargets = new Set<string>(PHONE_CRITICAL_CRR_TABLES);
   for (const tableName of listEligibleCrrTables(db)) {
     if (rawHasTable(db, `${tableName}__crsql_clock`)) {
+      if (tableNeedsCrrTriggerRepair(db, tableName)) {
+        getRow(db, "select crsql_as_crr(?) as ok", [tableName]);
+      }
       if (!repairTargets.has(tableName)) {
         continue;
       }
@@ -3579,10 +3666,24 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
   const existedBeforeOpen = fs.existsSync(dbPath);
   let db = openRawDatabase(dbPath);
   let crsqliteLoaded = false;
-  const loadCrsqliteIfAvailable = (): void => {
-    if (!extensionPath || crsqliteLoaded) return;
-    loadCrsqlite(db, extensionPath);
-    crsqliteLoaded = true;
+  const loadCrsqliteIfAvailable = (): boolean => {
+    if (crsqliteLoaded) return true;
+    if (!extensionPath) return false;
+    try {
+      loadCrsqlite(db, extensionPath);
+      crsqliteLoaded = isCrsqliteRuntimeUsable(db);
+      if (!crsqliteLoaded) {
+        logger.warn("db.crsqlite_unavailable", { dbPath, reason: "extension loaded but required functions are unavailable" });
+      }
+    } catch (error) {
+      crsqliteLoaded = false;
+      logger.warn("db.crsqlite_unavailable", {
+        dbPath,
+        reason: "extension failed to load",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    return crsqliteLoaded;
   };
 
   repairMalformedUnifiedMemoryFtsSchema(db);
@@ -3594,6 +3695,9 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
     // updates can touch those tables in source-mode CLI and desktop startup.
     loadCrsqliteIfAvailable();
     const hadCrsqlMetadata = hasCrsqlMetadata(db);
+    if (hadCrsqlMetadata && !crsqliteLoaded) {
+      disableCrrTriggersForUnavailableRuntime(db, logger);
+    }
 
     // Build a CRR-aware run wrapper: when crsqlite is loaded and a table has
     // been converted to a CRR, ALTER TABLE statements must be wrapped with
@@ -3641,6 +3745,9 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
       db = openRawDatabase(dbPath);
       crsqliteLoaded = false;
       loadCrsqliteIfAvailable();
+      if (hasCrsqlMetadata(db) && !crsqliteLoaded) {
+        disableCrrTriggersForUnavailableRuntime(db, logger);
+      }
       const remigrateDb = makeMigrateDb();
       repairUnifiedMemoryFtsSchemaForRuntime(remigrateDb);
       migrate(remigrateDb);
@@ -3648,7 +3755,7 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
 
     let retrofittedForeignKeySchema = false;
     try {
-      retrofittedForeignKeySchema = retrofitForeignKeyCascadeActions(db, hasCrsqlite);
+      retrofittedForeignKeySchema = retrofitForeignKeyCascadeActions(db, crsqliteLoaded);
     } catch (error) {
       if (!isReadonlyDatabaseError(error)) throw error;
     }
@@ -3657,12 +3764,15 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
       db = openRawDatabase(dbPath);
       crsqliteLoaded = false;
       loadCrsqliteIfAvailable();
+      if (hasCrsqlMetadata(db) && !crsqliteLoaded) {
+        disableCrrTriggersForUnavailableRuntime(db, logger);
+      }
       const remigrateDb = makeMigrateDb();
       repairUnifiedMemoryFtsSchemaForRuntime(remigrateDb);
       migrate(remigrateDb);
     }
 
-    if (hasCrsqlite) {
+    if (crsqliteLoaded) {
       loadCrsqliteIfAvailable();
       ensureCrrTables(db, logger);
       forceSiteId(db, desiredSiteId);
@@ -3672,10 +3782,18 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
         db = openRawDatabase(dbPath);
         crsqliteLoaded = false;
         loadCrsqliteIfAvailable();
-        forceSiteId(db, desiredSiteId);
+        if (hasCrsqlMetadata(db) && !crsqliteLoaded) {
+          disableCrrTriggersForUnavailableRuntime(db, logger);
+        }
+        if (crsqliteLoaded) {
+          forceSiteId(db, desiredSiteId);
+        }
       }
     } else {
-      logger.warn("db.crsqlite_unavailable", { dbPath, reason: "extension not found for this platform" });
+      logger.warn("db.crsqlite_unavailable", {
+        dbPath,
+        reason: hasCrsqlite ? "extension not usable for this runtime" : "extension not found for this platform",
+      });
     }
   } catch (err) {
     try {
@@ -3698,7 +3816,7 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
 
   const run = (sql: string, params: SqlValue[] = []) => {
     const alterTable = parseAlterTableTarget(sql);
-    if (hasCrsqlite && alterTable && rawHasTable(db, `${alterTable}__crsql_clock`)) {
+    if (crsqliteLoaded && alterTable && rawHasTable(db, `${alterTable}__crsql_clock`)) {
       getRow(db, "select crsql_begin_alter(?) as ok", [alterTable]);
       try {
         runStatement(db, sql, params);
@@ -3720,15 +3838,15 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
   };
 
   const sync: AdeDbSyncApi = {
-    isAvailable: () => hasCrsqlite,
+    isAvailable: () => crsqliteLoaded,
     getSiteId: () => desiredSiteId,
     getDbVersion: () => {
-      if (!hasCrsqlite) return 0;
+      if (!crsqliteLoaded) return 0;
       const row = get<{ db_version: number }>("select crsql_db_version() as db_version");
       return Number(row?.db_version ?? 0);
     },
     exportChangesSince: (version: number) => {
-      if (!hasCrsqlite) return [];
+      if (!crsqliteLoaded) return [];
       const rows = allRows<{
         table_name: string;
         pk: unknown;
@@ -3769,7 +3887,7 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
       }));
     },
     applyChanges: (changes: CrsqlChangeRow[]) => {
-      if (!hasCrsqlite) return { appliedCount: 0, dbVersion: 0, touchedTables: [], rebuiltFts: false };
+      if (!crsqliteLoaded) return { appliedCount: 0, dbVersion: 0, touchedTables: [], rebuiltFts: false };
       let appliedCount = 0;
       const touchedTables = new Set<string>();
       runStatement(db, "begin");

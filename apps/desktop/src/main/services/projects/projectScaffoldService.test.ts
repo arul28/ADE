@@ -420,6 +420,34 @@ describe("cloneRepository", () => {
     ]);
   });
 
+  it("uses an explicit one-shot GitHub auth header for remote clone requests", async () => {
+    runGitMock.mockResolvedValue(gitOk());
+    const parentDir = makeTempDir("ade-scaffold-clone-explicit-auth-");
+    const service = createProjectScaffoldService({
+      logger: makeLogger(),
+      githubService: makeGithubServiceStub({
+        getTokenOrThrow: vi.fn(() => {
+          throw new Error("No local token on this machine.");
+        }),
+      }),
+    });
+
+    await service.cloneRepository({
+      url: "https://github.com/octocat/Hello-World",
+      parentDir,
+      githubAuthHeader: "basic one-shot",
+    });
+
+    const cloneCall = runGitMock.mock.calls.find((c) => (c[0] as string[])[0] === "clone");
+    expect(cloneCall?.[0]).toEqual([
+      "clone",
+      "-c",
+      "http.https://github.com/.extraheader=AUTHORIZATION: basic one-shot",
+      "https://github.com/octocat/Hello-World",
+      path.join(parentDir, "Hello-World"),
+    ]);
+  });
+
   it("falls back to a plain clone (no extraheader) when no token is stored", async () => {
     runGitMock.mockResolvedValue(gitOk());
     const parentDir = makeTempDir("ade-scaffold-clone-no-token-");

@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import QRCode from "qrcode";
 import type {
+  SyncAddressCandidate,
   SyncDeviceRecord,
   SyncDeviceRuntimeState,
+  SyncPairingConnectInfo,
   SyncRoleSnapshot,
   SyncTailnetDiscoveryStatus,
 } from "../../../shared/types";
@@ -93,6 +94,27 @@ function formatEndpoint(host: string | null | undefined, port: number | null | u
   return port ? `${host}:${port}` : host;
 }
 
+function addressKindLabel(kind: SyncAddressCandidate["kind"]): string {
+  switch (kind) {
+    case "tailscale":
+      return "Tailscale";
+    case "lan":
+      return "LAN";
+    case "loopback":
+      return "Loopback";
+    default:
+      return "Manual";
+  }
+}
+
+function primaryPairingCandidate(connectInfo: SyncPairingConnectInfo | null): SyncAddressCandidate | null {
+  const candidates = connectInfo?.addressCandidates ?? [];
+  return candidates.find((candidate) => candidate.kind === "tailscale")
+    ?? candidates.find((candidate) => candidate.kind === "lan")
+    ?? candidates[0]
+    ?? null;
+}
+
 function formatTimestamp(value: string | null | undefined): string {
   if (!value) return "Never";
   try {
@@ -121,7 +143,7 @@ function connectionColor(state: SyncDeviceRuntimeState["connectionState"]): stri
 function deviceConnectionLabel(device: SyncDeviceRuntimeState): string {
   switch (device.connectionState) {
     case "self":
-      return "This desktop";
+      return "This machine";
     case "connected":
       return "Connected";
     default:
@@ -206,6 +228,11 @@ export function SyncDevicesSection() {
     setNotice("PIN removed. Phones can no longer pair.");
   }), [runAction]);
 
+  const handleGeneratePin = useCallback(() => runAction(async () => {
+    await window.ade.sync.generatePin();
+    setNotice("PIN generated.");
+  }), [runAction]);
+
   const handleRenameLocal = useCallback((name: string) => runAction(async () => {
     if (!name.trim()) throw new Error("Name cannot be empty.");
     await window.ade.sync.updateLocalDevice({ name: name.trim() });
@@ -247,11 +274,12 @@ export function SyncDevicesSection() {
 
       {isLocalHost ? (
         <PairPhoneCard
-          qrPayloadText={status.pairingConnectInfo?.qrPayloadText ?? null}
+          connectInfo={status.pairingConnectInfo}
           pin={status.pairingPin}
           pinConfigured={status.pairingPinConfigured}
           busy={busy}
           onSavePin={handleSetPin}
+          onGeneratePin={handleGeneratePin}
           onClearPin={handleClearPin}
         />
       ) : (
@@ -372,7 +400,7 @@ function tailnetStatusCopy(status: SyncTailnetDiscoveryStatus, args: {
         color: COLORS.success,
         title: "Phones can connect through Tailscale",
         detail: [
-          "The QR code includes this Mac's normal Tailscale address, so pairing can work without extra setup.",
+          "The runtime address list includes this machine's normal Tailscale address, so pairing can work without extra setup.",
           "Only the optional stable shortcut is blocked by Tailscale policy.",
         ].join(" "),
         canRetry: false,
@@ -385,7 +413,7 @@ function tailnetStatusCopy(status: SyncTailnetDiscoveryStatus, args: {
       detail: [
         "ADE tried to create a stable Tailscale address that phones can find automatically.",
         "Tailscale only allows that on computers configured by a tailnet admin for service hosting.",
-        "Local pairing still works; retry after service hosting is enabled for this Mac.",
+        "Manual address pairing still works; retry after service hosting is enabled for this machine.",
       ].join(" "),
       canRetry: true,
     };
@@ -420,7 +448,7 @@ function tailnetStatusCopy(status: SyncTailnetDiscoveryStatus, args: {
         label: "Tailscale not available",
         color: COLORS.warning,
         title: `Cannot publish ${host}`,
-        detail: status.stderr || status.error || "Install or open Tailscale on this desktop, then retry.",
+        detail: status.stderr || status.error || "Install or open Tailscale on this machine, then retry.",
         canRetry: true,
       };
     case "failed":
@@ -435,7 +463,7 @@ function tailnetStatusCopy(status: SyncTailnetDiscoveryStatus, args: {
       return {
         label: "Not active",
         color: COLORS.textMuted,
-        title: args.isLocalHost ? `Not published as ${host}` : "Only the host desktop publishes tailnet discovery",
+        title: args.isLocalHost ? `Not published as ${host}` : "Only the host machine publishes tailnet discovery",
         detail: status.error || "Start phone sync hosting to publish tailnet discovery.",
         canRetry: false,
       };
@@ -493,47 +521,28 @@ function TailnetDiscoveryPanel({
 }
 
 function PairPhoneCard({
-  qrPayloadText,
+  connectInfo,
   pin,
   pinConfigured,
   busy,
   onSavePin,
+  onGeneratePin,
   onClearPin,
 }: {
-  qrPayloadText: string | null;
+  connectInfo: SyncPairingConnectInfo | null;
   pin: string | null;
   pinConfigured: boolean;
   busy: boolean;
   onSavePin: (pin: string) => Promise<void>;
+  onGeneratePin: () => Promise<void>;
   onClearPin: () => Promise<void>;
 }) {
   const [editing, setEditing] = useState(false);
   const [pinError, setPinError] = useState<string | null>(null);
-  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    if (!qrPayloadText) {
-      setQrDataUrl(null);
-      return;
-    }
-    void QRCode.toDataURL(qrPayloadText, {
-      width: 240,
-      margin: 1,
-      errorCorrectionLevel: "M",
-      color: { dark: "#F4F7FB", light: "#11151A" },
-    }).then((url) => {
-      if (!cancelled) setQrDataUrl(url);
-    }).catch(() => {
-      if (!cancelled) setQrDataUrl(null);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [qrPayloadText]);
 
   const pinMissing = !pinConfigured;
-  const qrDimmed = pinMissing;
+  const primaryCandidate = primaryPairingCandidate(connectInfo);
+  const primaryEndpoint = formatEndpoint(primaryCandidate?.host, connectInfo?.port ?? 8787);
 
   const handleSave = async (value: string) => {
     setPinError(null);
@@ -551,48 +560,16 @@ function PairPhoneCard({
         Pair a phone
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "240px minmax(220px, 1fr)", gap: 20, alignItems: "center" }}>
-        <div
-          style={{
-            position: "relative",
-            width: 240,
-            height: 240,
-            borderRadius: 12,
-            overflow: "hidden",
-            border: `1px solid ${COLORS.border}`,
-            background: "#11151A",
-          }}
-        >
-          {qrDataUrl ? (
-            <img
-              src={qrDataUrl}
-              alt="Phone pairing QR code"
-              style={{ display: "block", width: "100%", height: "100%", opacity: qrDimmed ? 0.25 : 1 }}
-            />
-          ) : (
-            <div style={{ ...helperTextStyle, display: "grid", placeItems: "center", height: "100%" }}>
-              Generating QR...
-            </div>
-          )}
-          {qrDimmed ? (
-            <div
-              style={{
-                position: "absolute",
-                inset: 0,
-                display: "grid",
-                placeItems: "center",
-                padding: 12,
-                textAlign: "center",
-                color: COLORS.textSecondary,
-                fontFamily: SANS_FONT,
-                fontSize: 12,
-                fontWeight: 500,
-                background: "rgba(10,10,14,0.55)",
-              }}
-            >
-              Set a PIN to enable pairing
-            </div>
-          ) : null}
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(240px, 1.15fr) minmax(220px, 0.85fr)", gap: 18, alignItems: "start" }}>
+        <div style={{ ...panelStyle, gap: 10 }}>
+          <div style={LABEL_STYLE}>Runtime address</div>
+          <div style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT, fontSize: 15, overflowWrap: "anywhere" }}>
+            {primaryEndpoint}
+          </div>
+          <div style={helperTextStyle}>
+            Choose this machine in ADE mobile discovery. If it does not appear, enter one of these addresses manually.
+          </div>
+          <EndpointList connectInfo={connectInfo} />
         </div>
 
         <div style={{ display: "grid", gap: 10 }}>
@@ -605,18 +582,24 @@ function PairPhoneCard({
               error={pinError}
             />
           ) : pinMissing ? (
-            <EmptyPinBlock onSet={() => { setPinError(null); setEditing(true); }} />
+            <EmptyPinBlock
+              busy={busy}
+              onSet={() => { setPinError(null); setEditing(true); }}
+              onGenerate={() => { void onGeneratePin(); }}
+            />
           ) : pin ? (
             <PinDisplay
               pin={pin}
               busy={busy}
               onChange={() => { setPinError(null); setEditing(true); }}
+              onGenerate={() => { void onGeneratePin(); }}
               onRemove={() => { void onClearPin(); }}
             />
           ) : (
             <SavedPinBlock
               busy={busy}
               onChange={() => { setPinError(null); setEditing(true); }}
+              onGenerate={() => { void onGeneratePin(); }}
               onRemove={() => { void onClearPin(); }}
             />
           )}
@@ -627,9 +610,39 @@ function PairPhoneCard({
         {pinMissing
           ? "No PIN set. Phones cannot pair."
           : pin
-            ? "Scan on your phone and enter this PIN to pair."
-            : "Scan on your phone and enter the saved PIN, or set a new one."}
+            ? "Select this runtime on your phone and enter this PIN to pair."
+            : "Select this runtime on your phone and enter the saved PIN, or set a new one."}
       </div>
+    </div>
+  );
+}
+
+function EndpointList({ connectInfo }: { connectInfo: SyncPairingConnectInfo | null }) {
+  const candidates = connectInfo?.addressCandidates ?? [];
+  if (candidates.length === 0) {
+    return <div style={helperTextStyle}>No runtime addresses are published yet.</div>;
+  }
+  return (
+    <div style={{ display: "grid", gap: 6 }}>
+      {candidates.map((candidate) => (
+        <div
+          key={`${candidate.kind}:${candidate.host}`}
+          style={{
+            display: "grid",
+            gridTemplateColumns: "76px minmax(0, 1fr)",
+            gap: 8,
+            alignItems: "baseline",
+            minWidth: 0,
+          }}
+        >
+          <span style={tagStyle(candidate.kind === "tailscale" ? COLORS.success : COLORS.textMuted)}>
+            {addressKindLabel(candidate.kind)}
+          </span>
+          <span style={{ ...codeValueStyle, overflowWrap: "anywhere" }}>
+            {formatEndpoint(candidate.host, connectInfo?.port ?? 8787)}
+          </span>
+        </div>
+      ))}
     </div>
   );
 }
@@ -641,7 +654,7 @@ function ViewerPairingNotice() {
         Phone pairing lives on the host
       </div>
       <div style={helperTextStyle}>
-        Open Sync settings on the host desktop to set the phone PIN and show the QR code.
+        Open Sync settings on the host machine to set the phone PIN and copy a runtime address.
       </div>
     </div>
   );
@@ -651,11 +664,13 @@ function PinDisplay({
   pin,
   busy,
   onChange,
+  onGenerate,
   onRemove,
 }: {
   pin: string;
   busy: boolean;
   onChange: () => void;
+  onGenerate: () => void;
   onRemove: () => void;
 }) {
   const digits = pin.padEnd(6, " ").slice(0, 6).split("");
@@ -689,6 +704,9 @@ function PinDisplay({
         <button type="button" style={outlineButton()} disabled={busy} onClick={onChange}>
           Change
         </button>
+        <button type="button" style={outlineButton()} disabled={busy} onClick={onGenerate}>
+          Generate
+        </button>
         <button type="button" style={dangerButton()} disabled={busy} onClick={onRemove}>
           Remove
         </button>
@@ -697,16 +715,27 @@ function PinDisplay({
   );
 }
 
-function EmptyPinBlock({ onSet }: { onSet: () => void }) {
+function EmptyPinBlock({
+  busy,
+  onSet,
+  onGenerate,
+}: {
+  busy: boolean;
+  onSet: () => void;
+  onGenerate: () => void;
+}) {
   return (
     <div style={{ display: "grid", gap: 12 }}>
       <div style={LABEL_STYLE}>PIN</div>
       <div style={{ color: COLORS.textSecondary, fontFamily: SANS_FONT, fontSize: 13 }}>
         No PIN set yet.
       </div>
-      <div>
-        <button type="button" style={primaryButton()} onClick={onSet}>
-          Set a 6-digit PIN
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <button type="button" style={primaryButton()} disabled={busy} onClick={onGenerate}>
+          Generate PIN
+        </button>
+        <button type="button" style={outlineButton()} disabled={busy} onClick={onSet}>
+          Set manually
         </button>
       </div>
     </div>
@@ -716,10 +745,12 @@ function EmptyPinBlock({ onSet }: { onSet: () => void }) {
 function SavedPinBlock({
   busy,
   onChange,
+  onGenerate,
   onRemove,
 }: {
   busy: boolean;
   onChange: () => void;
+  onGenerate: () => void;
   onRemove: () => void;
 }) {
   return (
@@ -731,6 +762,9 @@ function SavedPinBlock({
       <div style={{ display: "flex", gap: 8 }}>
         <button type="button" style={outlineButton()} disabled={busy} onClick={onChange}>
           Set new PIN
+        </button>
+        <button type="button" style={outlineButton()} disabled={busy} onClick={onGenerate}>
+          Generate
         </button>
         <button type="button" style={dangerButton()} disabled={busy} onClick={onRemove}>
           Remove
@@ -920,7 +954,7 @@ function ThisComputerDetails({
             value={name}
             onChange={(event) => setName(event.target.value)}
             style={inputStyle}
-            placeholder="This Mac"
+            placeholder="This machine"
           />
         </label>
         <button

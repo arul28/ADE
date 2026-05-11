@@ -11,6 +11,27 @@ This document describes the shape of the integration: who participates, which
 services own what, which tables store state, and how the desktop app and the
 headless ADE CLI run the same pipeline.
 
+## Runtime ownership
+
+The full Linear stack — credential service, GraphQL client, issue tracker,
+template service, workflow file loader, flow policy, routing, intake,
+outbound, dispatcher, sync, ingress, and closeout — runs inside the
+runtime daemon that owns the project. The desktop renderer is a viewer
+over `window.ade.cto.linear*` IPC channels, and the headless ADE CLI
+hosts the same services through `apps/ade-cli/src/headlessLinearServices.ts`
+so Linear-driven workflows can run in `ade serve` without the desktop
+app open.
+
+Both the desktop main process (for local projects) and the standalone
+`ade serve` daemon load the same service modules out of
+`apps/desktop/src/main/services/cto/`; the path reflects the source
+tree, not where execution happens.
+
+The webhook HTTP listener (`linearIngressService`), the relay poller,
+and the reconciliation timer (`linearSyncService`) all bind on the
+runtime host. A remote runtime behind a NAT therefore needs the relay
+path even if the desktop machine has a public webhook URL.
+
 ## Who uses it
 
 The integration is used by four distinct consumers:

@@ -5,14 +5,6 @@ import type {
   LinearConnectionStatus,
   NormalizedLinearIssue,
 } from "./linearSync";
-import type {
-  OpenclawBridgeConfig,
-  OpenclawBridgeState,
-  OpenclawBridgeStatus,
-  OpenclawContextPolicy,
-  OpenclawMessageRecord,
-  OpenclawOutboundEnvelope,
-} from "./openclaw";
 
 export type CtoCapabilityMode = "full_tooling" | "fallback";
 
@@ -33,7 +25,6 @@ export type CtoIdentity = {
   communicationStyle?: CtoCommunicationStyle;
   constraints?: string[];
   systemPromptExtension?: string;
-  openclawContextPolicy?: OpenclawContextPolicy;
   onboardingState?: CtoOnboardingState;
   modelPreferences: {
     provider: string;
@@ -283,23 +274,3 @@ export type CtoRunProjectScanResult = {
   coreMemoryPatch: Partial<Omit<CtoCoreMemory, "version" | "updatedAt">>;
   createdMemoryIds: string[];
 };
-
-export type CtoGetOpenclawStateArgs = Record<string, never>;
-
-export type CtoUpdateOpenclawConfigArgs = {
-  patch: Partial<OpenclawBridgeConfig>;
-};
-
-export type CtoTestOpenclawConnectionArgs = {
-  reconnect?: boolean;
-};
-
-export type CtoListOpenclawMessagesArgs = {
-  limit?: number;
-};
-
-export type CtoSendOpenclawMessageArgs = OpenclawOutboundEnvelope;
-
-export type CtoGetOpenclawStateResult = OpenclawBridgeState;
-export type CtoTestOpenclawConnectionResult = OpenclawBridgeStatus;
-export type CtoListOpenclawMessagesResult = OpenclawMessageRecord[];

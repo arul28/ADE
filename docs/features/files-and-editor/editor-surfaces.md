@@ -134,8 +134,9 @@ Protection rails:
   banner above the editor: "You have active lanes. Saving here writes
   to main." The user must click "I understand" to dismiss for the
   session.
-- Saving a file marked read-only fails at the main-process boundary
-  and the tab displays the error.
+- Saving a file marked read-only fails at the runtime boundary (or
+  the main-process boundary on the fallback path) and the tab displays
+  the error.
 
 ## Diff mode
 

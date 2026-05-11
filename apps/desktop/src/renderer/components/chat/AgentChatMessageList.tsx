@@ -78,6 +78,7 @@ import {
   type ChatTranscriptRenderEnvelope as TranscriptRenderEnvelope,
 } from "./chatTranscriptRows";
 import { ChatUserMinimap } from "./ChatUserMinimap";
+import { AgentCliAuthCard, type AgentCliAuthCardInfo } from "./AgentCliAuthCard";
 import {
   CHAT_TIMELINE_ROW_GAP_PX,
   buildMinimapDisplayEntries,
@@ -1920,7 +1921,10 @@ function renderEvent(
     respondingApprovalIds?: Set<string>;
     pendingApprovalIds?: Set<string>;
     resolvedInputStates?: Map<string, PendingInputResolution>;
+    laneId?: string | null;
     sessionId?: string | null;
+    runtimeName?: string | null;
+    onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
   }
 ) {
   const event = envelope.event;
@@ -2764,6 +2768,10 @@ function renderEvent(
 
   /* ── Error ── */
   if (event.type === "error") {
+    const agentCliInfo: AgentCliAuthCardInfo | null =
+      typeof event.errorInfo === "object" && event.errorInfo?.agentCli
+        ? event.errorInfo.agentCli
+        : null;
     const errorCopyValue = event.detail?.trim().length
       ? `${event.message}\n\n${event.detail}`
       : event.message;
@@ -2791,7 +2799,16 @@ function renderEvent(
               {event.detail}
             </div>
           ) : null}
-          {event.errorInfo ? (
+          {agentCliInfo ? (
+            <AgentCliAuthCard
+              agentCli={agentCliInfo}
+              laneId={options?.laneId}
+              chatSessionId={options?.sessionId}
+              runtimeName={options?.runtimeName}
+              onRevealTerminal={options?.onRevealChatTerminal}
+            />
+          ) : null}
+          {event.errorInfo && !agentCliInfo ? (
             <div className="mt-2 font-mono text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/40">
               {typeof event.errorInfo === "string" ? event.errorInfo : `${event.errorInfo.provider ? `${event.errorInfo.provider}` : ""}${event.errorInfo.model ? ` / ${event.errorInfo.model}` : ""}`}
             </div>
@@ -3314,7 +3331,9 @@ type EventRowProps = {
   respondingApprovalIds?: Set<string>;
   pendingApprovalIds?: Set<string>;
   resolvedInputStates?: Map<string, PendingInputResolution>;
+  laneId?: string | null;
   sessionId?: string | null;
+  runtimeName?: string | null;
 };
 
 const EventRow = React.memo(function EventRow({
@@ -3337,7 +3356,9 @@ const EventRow = React.memo(function EventRow({
   respondingApprovalIds,
   pendingApprovalIds,
   resolvedInputStates,
+  laneId,
   sessionId,
+  runtimeName,
 }: EventRowProps) {
   const workLogAnimate = Boolean(turnActive)
     && !sessionEnded
@@ -3385,7 +3406,10 @@ const EventRow = React.memo(function EventRow({
             respondingApprovalIds,
             pendingApprovalIds,
             resolvedInputStates,
+            laneId,
             sessionId,
+            runtimeName,
+            onRevealChatTerminal,
           })}
     </div>
   );
@@ -3542,6 +3566,7 @@ export function AgentChatMessageList({
   onOpenWorkspacePath,
   respondingApprovalIds,
   pendingApprovalIds,
+  laneId,
   sessionId,
   onInsertDraft,
   onRevealChatTerminal,
@@ -3559,10 +3584,12 @@ export function AgentChatMessageList({
   onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
   respondingApprovalIds?: Set<string>;
   pendingApprovalIds?: Set<string>;
+  laneId?: string | null;
   sessionId?: string | null;
   sessionEnded?: boolean;
 }) {
   const chatTranscriptDensity = useAppStore((s) => s.chatTranscriptDensity);
+  const runtimeName = useAppStore((s) => s.projectBinding?.kind === "remote" ? s.projectBinding.runtimeName : null);
   const timelineRowGapPx = useMemo(() => transcriptRowGapPx(chatTranscriptDensity), [chatTranscriptDensity]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const contentWrapperRef = useRef<HTMLDivElement | null>(null);
@@ -3971,7 +3998,9 @@ export function AgentChatMessageList({
           respondingApprovalIds={respondingApprovalIds}
           pendingApprovalIds={pendingApprovalIds}
           resolvedInputStates={resolvedInputStates}
+          laneId={laneId}
           sessionId={sessionId}
+          runtimeName={runtimeName}
         />
       );
     }
@@ -3998,10 +4027,12 @@ export function AgentChatMessageList({
         respondingApprovalIds={respondingApprovalIds}
         pendingApprovalIds={pendingApprovalIds}
         resolvedInputStates={resolvedInputStates}
+        laneId={laneId}
         sessionId={sessionId}
+        runtimeName={runtimeName}
       />
     );
-  }, [activeTurnId, assistantLabel, surfaceMode, surfaceProfile, groupedRows, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onInsertDraft, onRevealChatTerminal, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, sessionId, sessionEnded]);
+  }, [activeTurnId, assistantLabel, surfaceMode, surfaceProfile, groupedRows, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onInsertDraft, onRevealChatTerminal, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, laneId, sessionId, sessionEnded, runtimeName]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {

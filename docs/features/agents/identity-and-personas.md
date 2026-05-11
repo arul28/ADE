@@ -172,9 +172,8 @@ configuration surface:
 - **Role** (`AgentRole`) -- `engineer`, `qa`, `designer`, `devops`,
   `researcher`, `general`. Used for prompt context, Linear routing,
   and UI grouping. `cto` is reserved.
-- **Adapter** -- one of `claude-local`, `codex-local`,
-  `openclaw-webhook`, `process`. Determines how the worker is
-  activated.
+- **Adapter** -- one of `claude-local`, `codex-local`, `process`.
+  Determines how the worker is activated.
 - **Runtime config** -- heartbeat policy, max concurrent runs.
 - **Budget** -- monthly cents cap + current spend.
 - **Linear identity** -- optional mapping to Linear user ids,

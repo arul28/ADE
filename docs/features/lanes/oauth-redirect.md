@@ -1,11 +1,21 @@
 # OAuth redirect service
 
-`apps/desktop/src/main/services/lanes/oauthRedirectService.ts` routes
-OAuth callbacks back to the correct lane when many lanes share an
-OAuth provider configuration. This is a fragile subsystem: it sits
-inline on the proxy request path, owns three state machines, and has
-recently been hardened in ways tests now pin directly. Treat it with
-care.
+The OAuth redirect service routes OAuth callbacks back to the correct
+lane when many lanes share an OAuth provider configuration. It runs
+inside the **active runtime** (local ADE daemon for local-bound windows,
+SSH-attached remote runtime for remote-bound windows) and sits inline on
+the lane proxy request path on whichever host owns the proxy. This is a
+fragile subsystem: it owns three state machines and has recently been
+hardened in ways tests now pin directly. Treat it with care.
+
+Source files:
+
+- Canonical implementation lives alongside the runtime daemon's lane
+  isolation services and is exercised through the same code that
+  `apps/desktop/src/main/services/lanes/oauthRedirectService.ts`
+  retains as a fallback target. The desktop file (and its companion
+  `oauthRedirectService.test.ts`) is the file you edit when making
+  changes — both runtime and fallback consume it.
 
 > **This branch touches this service heavily.** The current branch
 > changes include direct modifications to `oauthRedirectService.ts`

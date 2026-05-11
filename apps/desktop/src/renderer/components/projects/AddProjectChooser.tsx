@@ -63,7 +63,7 @@ export function AddProjectChooser({ onChoose }: AddProjectChooserProps) {
     <div
       style={{
         display: "grid",
-        gridTemplateColumns: "repeat(3, 1fr)",
+        gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
         gap: 16,
         width: "100%",
       }}
@@ -104,7 +104,8 @@ function ChooserTile({
         ? `color-mix(in srgb, ${tile.hue} 65%, transparent)`
         : "color-mix(in srgb, var(--color-border) 80%, transparent)"
     }`,
-    transition: "transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease, background 180ms ease",
+    transition:
+      "transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease, background 180ms ease",
     transform: hover ? "translateY(-3px)" : "translateY(0)",
     boxShadow: hover
       ? `0 22px 48px -18px color-mix(in srgb, ${tile.hue} 55%, transparent), 0 0 0 1px color-mix(in srgb, ${tile.hue} 35%, transparent), inset 0 1px 0 0 color-mix(in srgb, ${tile.hue} 30%, transparent)`

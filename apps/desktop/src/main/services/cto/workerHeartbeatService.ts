@@ -636,7 +636,7 @@ export function createWorkerHeartbeatService(args: WorkerHeartbeatServiceArgs) {
           run.task_key ? `Task: ${run.task_key}.` : "",
           run.issue_key ? `Issue: ${run.issue_key}.` : "",
           runtimeResult.ok ? "Adapter run completed." : "Adapter run failed.",
-          runtimeResult.effectiveSurface !== "process" && runtimeResult.effectiveSurface !== "openclaw_webhook"
+          runtimeResult.effectiveSurface !== "process"
             ? `Resumed via ${runtimeResult.effectiveSurface}.`
             : "",
           heartbeatOk ? "No action required." : outputPreview || "No output.",
@@ -650,7 +650,7 @@ export function createWorkerHeartbeatService(args: WorkerHeartbeatServiceArgs) {
       provider: runtimeResult.provider ?? agent.adapterType,
       modelId: adapterModelId,
       capabilityMode:
-        runtimeResult.effectiveSurface === "process" || runtimeResult.effectiveSurface === "openclaw_webhook"
+        runtimeResult.effectiveSurface === "process"
           ? "fallback"
           : "full_tooling",
     });

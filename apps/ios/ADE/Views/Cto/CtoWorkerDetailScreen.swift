@@ -913,10 +913,10 @@ struct CtoWorkerQuickEditSheet: View {
             Image(systemName: "desktopcomputer")
               .foregroundStyle(ADEColor.textMuted)
             VStack(alignment: .leading, spacing: 2) {
-              Text("More settings on desktop")
+              Text("More settings in ADE")
                 .font(.subheadline.weight(.medium))
                 .foregroundStyle(ADEColor.textPrimary)
-              Text("Budget cap, adapter config, Linear identity, and heartbeat policy are managed from the desktop CTO tab.")
+              Text("Budget cap, adapter config, Linear identity, and heartbeat policy are managed from ADE on your machine.")
                 .font(.caption)
                 .foregroundStyle(ADEColor.textSecondary)
             }

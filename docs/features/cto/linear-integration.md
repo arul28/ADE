@@ -45,9 +45,9 @@ Detailed wiring lives in [`../linear-integration/README.md`](../linear-integrati
 - `apps/desktop/src/shared/types/linearSync.ts` — `LinearWorkflowDefinition`, `LinearWorkflowTarget`, `LinearWorkflowTrigger`, `LinearWorkflowStep`, run status, closeout types.
 - `apps/desktop/src/shared/linearWorkflowPresets.ts` — visual plan translation.
 
-### Headless
+### Runtime daemon
 
-- `apps/ade-cli/src/headlessLinearServices.ts` — wires the same set of Linear services into the ADE CLI so `ADE CLI` is first-class for Linear, not a read-only stub.
+- `apps/ade-cli/src/headlessLinearServices.ts` — instantiates the full Linear service stack inside the `ade serve` runtime daemon. The daemon is first-class for Linear, not a read-only stub: it can intake issues, dispatch worker runs / missions / employee sessions, and close out tickets with the same code path the desktop renderer drives.
 
 ## Connection model
 
@@ -170,16 +170,20 @@ The LinearSyncPanel debounces follow-up refreshes so active sync stays observabl
   - From absolute paths to external files (temporary screenshots, e.g. Ghost OS captures).
   - From broker-managed computer-use artifacts (see `../computer-use/README.md`).
 
-## Headless parity
+## Runtime daemon parity
 
-`headlessLinearServices.ts` instantiates the same services in the ADE CLI:
+`headlessLinearServices.ts` instantiates the same services inside the
+`ade serve` runtime daemon:
 
 - `linearClient`, `linearIssueTracker`, `linearTemplateService`, `linearWorkflowFileService`.
 - `flowPolicyService`, `linearRoutingService`, `linearIntakeService`, `linearOutboundService`, `linearCloseoutService`.
 - `linearDispatcherService`, `linearSyncService`, `linearIngressService`.
-- Plus `workerTaskSessionService`, `fileService`, `processService`, `prService`, `automationSecretService` so the dispatcher's target launches actually work.
+- Plus `workerHeartbeatService`, `workerTaskSessionService`, `fileService`, `processService`, `prService`, and `automationSecretService` so the dispatcher's target launches actually run.
 
-Headless employee-session targets create reusable continuity chats but are manual shells unless a live agent runtime is attached. Worker-backed headless targets fail fast with explicit errors when no worker runtime is available, instead of stalling in a queued state.
+Daemon-side employee-session targets create reusable continuity chats
+but are manual shells unless a live agent runtime is attached.
+Worker-backed daemon targets fail fast with explicit errors when no
+worker runtime is available, instead of stalling in a queued state.
 
 ## Simulation
 

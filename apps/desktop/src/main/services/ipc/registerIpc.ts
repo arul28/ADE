@@ -270,7 +270,6 @@ import type {
   AgentChatFileSearchResult,
   AgentChatGetTurnFileDiffArgs,
   AgentTool,
-  DeviceMarker,
   KeybindingOverride,
   KeybindingsSnapshot,
   ImportBranchLaneArgs,
@@ -280,7 +279,6 @@ import type {
   OnboardingTourProgress,
   OnboardingTourVariant,
   LaneListSnapshot,
-  LaneRuntimeSummary,
   LaneSummary,
   ListOperationsArgs,
   ListOverlapsArgs,
@@ -307,6 +305,7 @@ import type {
   ProjectDetail,
   ProjectIcon,
   ProjectInfo,
+  OpenProjectBinding,
   CreateProjectInput,
   CreateProjectResult,
   CloneProjectInput,
@@ -438,13 +437,6 @@ import type {
   CtoUpdateIdentityArgs,
   CtoUpdateCoreMemoryArgs,
   CtoListSessionLogsArgs,
-  CtoGetOpenclawStateResult,
-  CtoUpdateOpenclawConfigArgs,
-  CtoTestOpenclawConnectionArgs,
-  CtoTestOpenclawConnectionResult,
-  CtoListOpenclawMessagesArgs,
-  CtoListOpenclawMessagesResult,
-  CtoSendOpenclawMessageArgs,
   CtoSnapshot,
   CtoSessionLogEntry,
   GetOrchestratorWorkerStatesArgs,
@@ -654,7 +646,6 @@ import type { createOrchestratorService } from "../orchestrator/orchestratorServ
 import type { createAiOrchestratorService } from "../orchestrator/aiOrchestratorService";
 import { readCoordinatorCheckpoint } from "../orchestrator/missionStateDoc";
 import type { createMemoryService } from "../memory/memoryService";
-import type { createOpenclawBridgeService } from "../cto/openclawBridgeService";
 import type { createBatchConsolidationService } from "../memory/batchConsolidationService";
 import type { createMemoryLifecycleService } from "../memory/memoryLifecycleService";
 import type { createMemoryBriefingService } from "../memory/memoryBriefingService";
@@ -673,6 +664,8 @@ import type { createWorkerHeartbeatService } from "../cto/workerHeartbeatService
 import type { createWorkerTaskSessionService } from "../cto/workerTaskSessionService";
 import type { createLinearCredentialService } from "../cto/linearCredentialService";
 import { createLinearOAuthService, type LinearOAuthService } from "../cto/linearOAuthService";
+import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
+import { registerRuntimeBridge } from "./runtimeBridge";
 import type { createFlowPolicyService } from "../cto/flowPolicyService";
 import type { createLinearRoutingService } from "../cto/linearRoutingService";
 import type { createLinearIngressService } from "../cto/linearIngressService";
@@ -682,6 +675,11 @@ import type { createUsageTrackingService } from "../usage/usageTrackingService";
 import type { createBudgetCapService } from "../usage/budgetCapService";
 import type { createSyncHostService } from "../sync/syncHostService";
 import type { createSyncService } from "../sync/syncService";
+import {
+  buildLaneListSnapshots,
+  buildLanePresenceByLaneId,
+  decorateLaneSummariesWithPresence,
+} from "../lanes/laneListSnapshotService";
 import type { createFeedbackReporterService } from "../feedback/feedbackReporterService";
 import type { AdeProjectService } from "../projects/adeProjectService";
 import type { ConfigReloadService } from "../projects/configReloadService";
@@ -689,7 +687,6 @@ import type { createProjectScaffoldService } from "../projects/projectScaffoldSe
 import type { createAdeCliService } from "../cli/adeCliService";
 import { getErrorMessage, isRecord, nowIso, resolvePathWithinRoot, toMemoryEntryDto } from "../shared/utils";
 import { quoteWindowsCmdArg } from "../shared/processExecution";
-import { resolveAdeLayout } from "../../../shared/adeLayout";
 
 export type AppContext = {
   db: AdeDb;
@@ -764,7 +761,6 @@ export type AppContext = {
   embeddingService?: ReturnType<typeof createEmbeddingService> | null;
   embeddingWorkerService?: ReturnType<typeof createEmbeddingWorkerService> | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
-  openclawBridgeService?: ReturnType<typeof createOpenclawBridgeService> | null;
   workerAgentService?: ReturnType<typeof createWorkerAgentService> | null;
   adeProjectService?: AdeProjectService | null;
   workerRevisionService?: ReturnType<typeof createWorkerRevisionService> | null;
@@ -812,204 +808,6 @@ function clampLayout(layout: DockLayout): DockLayout {
 function escapeCsvCell(value: string | null | undefined): string {
   const input = value ?? "";
   return /[",\r\n]/.test(input) ? `"${input.replace(/"/g, "\"\"")}"` : input;
-}
-
-function sessionStatusBucket(args: {
-  status: string;
-  lastOutputPreview: string | null | undefined;
-  runtimeState?: string | null;
-}): "running" | "awaiting-input" | "ended" {
-  if (args.status === "running") {
-    if (args.runtimeState === "waiting-input") return "awaiting-input";
-    const preview = args.lastOutputPreview ?? "";
-    if (/\b(?:waiting|awaiting)\b.{0,28}\b(?:input|confirmation|response|prompt)\b/i.test(preview)) {
-      return "awaiting-input";
-    }
-    if (/\((?:y\/n|yes\/no)\)/i.test(preview) || /\[(?:y\/n|yes\/no)\]/i.test(preview)) {
-      return "awaiting-input";
-    }
-    return "running";
-  }
-  return "ended";
-}
-
-function summarizeLaneRuntime(
-  laneId: string,
-  sessions: Array<{
-    laneId: string;
-    status: string;
-    lastOutputPreview: string | null;
-    runtimeState?: string | null;
-  }>,
-): LaneRuntimeSummary {
-  let runningCount = 0;
-  let awaitingInputCount = 0;
-  let endedCount = 0;
-  let sessionCount = 0;
-
-  for (const session of sessions) {
-    if (session.laneId !== laneId) continue;
-    sessionCount += 1;
-    const bucket = sessionStatusBucket(session);
-    if (bucket === "running") runningCount += 1;
-    else if (bucket === "awaiting-input") awaitingInputCount += 1;
-    else endedCount += 1;
-  }
-
-  const bucket = awaitingInputCount > 0
-    ? "awaiting-input"
-    : runningCount > 0
-      ? "running"
-      : endedCount > 0
-        ? "ended"
-        : "none";
-
-  return {
-    bucket,
-    runningCount,
-    awaitingInputCount,
-    endedCount,
-    sessionCount,
-  };
-}
-
-function buildLanePresenceByLaneId(syncService: ReturnType<typeof createSyncService> | null | undefined): Map<string, DeviceMarker[]> {
-  const hostService = syncService?.getHostService?.() ?? null;
-  const snapshot = hostService?.getLanePresenceSnapshot?.() ?? [];
-  return new Map(snapshot.map((entry) => [entry.laneId, entry.devicesOpen] as const));
-}
-
-function decorateLaneSummaryWithPresence(
-  lane: LaneSummary,
-  devicesOpenByLaneId: Map<string, DeviceMarker[]>,
-): LaneSummary {
-  const devicesOpen = devicesOpenByLaneId.get(lane.id) ?? [];
-  return { ...lane, devicesOpen: devicesOpen.length > 0 ? devicesOpen : undefined };
-}
-
-function decorateLaneSummariesWithPresence(
-  lanes: LaneSummary[],
-  devicesOpenByLaneId: Map<string, DeviceMarker[]>,
-): LaneSummary[] {
-  return lanes.map((lane) => decorateLaneSummaryWithPresence(lane, devicesOpenByLaneId));
-}
-
-async function enrichSessionsForLaneList(
-  args: Pick<AppContext, "sessionService" | "ptyService" | "agentChatService">,
-): Promise<TerminalSessionSummary[]> {
-  let sessions = args.ptyService.enrichSessions(args.sessionService.list({}));
-  let allChats: AgentChatSessionSummary[] = [];
-  try {
-    allChats = await args.agentChatService.listSessions(undefined, { includeIdentity: true });
-  } catch {
-    allChats = [];
-  }
-  const identitySessionIds = new Set(
-    allChats
-      .filter((chat) => Boolean(chat.identityKey))
-      .map((chat) => chat.sessionId),
-  );
-  if (identitySessionIds.size > 0) {
-    sessions = sessions.filter((session) => !identitySessionIds.has(session.id));
-  }
-  const chats = allChats.filter((chat) => !chat.identityKey);
-  if (chats.length === 0) return sessions;
-  const chatSummaryBySessionId = new Map(chats.map((chat) => [chat.sessionId, chat] as const));
-  return sessions.map((session) => {
-    if (!isChatToolType(session.toolType)) return session;
-    if (session.status !== "running") return session;
-    const chat = chatSummaryBySessionId.get(session.id);
-    if (!chat) return session;
-    if (chat.awaitingInput) return { ...session, runtimeState: "waiting-input" as const, chatIdleSinceAt: null };
-    if (chat.status === "active") return { ...session, runtimeState: "running" as const, chatIdleSinceAt: null };
-    if (chat.status === "idle") return { ...session, runtimeState: "idle" as const, chatIdleSinceAt: chat.idleSinceAt ?? null };
-    return session;
-  });
-}
-
-async function buildLaneListSnapshots(
-  args: Pick<AppContext, "laneService" | "sessionService" | "ptyService" | "agentChatService" | "rebaseSuggestionService" | "autoRebaseService" | "conflictService" | "logger"> & {
-    syncService?: ReturnType<typeof createSyncService> | null;
-  },
-  lanes: LaneSummary[],
-  options: { includeConflictStatus?: boolean; includeRebaseSuggestions?: boolean; includeAutoRebaseStatus?: boolean } = {},
-): Promise<LaneListSnapshot[]> {
-  const startedAt = Date.now();
-  const phases: Array<{ phase: string; durationMs: number }> = [];
-  const timePhase = async <T>(phase: string, work: () => Promise<T> | T): Promise<T> => {
-    const phaseStartedAt = Date.now();
-    try {
-      return await work();
-    } finally {
-      const durationMs = Date.now() - phaseStartedAt;
-      phases.push({ phase, durationMs });
-      if (durationMs >= 120) {
-        args.logger.info("lanes.listSnapshots.phase", {
-          phase,
-          durationMs,
-          laneCount: lanes.length,
-          includeConflictStatus: options.includeConflictStatus !== false,
-          includeRebaseSuggestions: options.includeRebaseSuggestions !== false,
-          includeAutoRebaseStatus: options.includeAutoRebaseStatus !== false,
-        });
-      }
-    }
-  };
-
-  const [sessions, rebaseSuggestions, autoRebaseStatuses, stateSnapshots, batchAssessment] = await Promise.all([
-    timePhase("sessions", () => enrichSessionsForLaneList(args)),
-    options.includeRebaseSuggestions === false
-      ? Promise.resolve([])
-      : timePhase("rebase_suggestions", () =>
-          Promise.resolve()
-            .then(() => args.rebaseSuggestionService?.listSuggestions({ lanes }) ?? [])
-            .catch(() => [])),
-    options.includeAutoRebaseStatus === false
-      ? Promise.resolve([])
-      : timePhase("auto_rebase_statuses", () =>
-          Promise.resolve()
-            .then(() => args.autoRebaseService?.listStatuses({ lanes }) ?? [])
-            .catch(() => [])),
-    timePhase("state_snapshots", () =>
-      Promise.resolve()
-        .then(() => args.laneService.listStateSnapshots())
-        .catch(() => [])),
-    options.includeConflictStatus === false
-      ? Promise.resolve(null)
-      : timePhase("conflict_assessment", () =>
-          Promise.resolve()
-            .then(() => args.conflictService?.getBatchAssessment({ lanes }) ?? null)
-            .catch(() => null)),
-  ]);
-  const durationMs = Date.now() - startedAt;
-  if (durationMs >= 120) {
-    args.logger.info("lanes.listSnapshots.summary", {
-      durationMs,
-      laneCount: lanes.length,
-      includeConflictStatus: options.includeConflictStatus !== false,
-      includeRebaseSuggestions: options.includeRebaseSuggestions !== false,
-      includeAutoRebaseStatus: options.includeAutoRebaseStatus !== false,
-      phases: phases
-        .filter((phase) => phase.durationMs >= 10)
-        .sort((left, right) => right.durationMs - left.durationMs),
-    });
-  }
-
-  const rebaseByLaneId = new Map(rebaseSuggestions.map((entry) => [entry.laneId, entry] as const));
-  const autoRebaseByLaneId = new Map(autoRebaseStatuses.map((entry) => [entry.laneId, entry] as const));
-  const stateByLaneId = new Map(stateSnapshots.map((entry) => [entry.laneId, entry] as const));
-  const conflictByLaneId = new Map((batchAssessment?.lanes ?? []).map((entry) => [entry.laneId, entry] as const));
-  const devicesOpenByLaneId = buildLanePresenceByLaneId(args.syncService);
-
-  return lanes.map((lane) => ({
-    lane: decorateLaneSummaryWithPresence(lane, devicesOpenByLaneId),
-    runtime: summarizeLaneRuntime(lane.id, sessions),
-    rebaseSuggestion: rebaseByLaneId.get(lane.id) ?? null,
-    autoRebaseStatus: autoRebaseByLaneId.get(lane.id) ?? null,
-    conflictStatus: conflictByLaneId.get(lane.id) ?? null,
-    stateSnapshot: stateByLaneId.get(lane.id) ?? null,
-    adoptableAttached: lane.laneType === "attached" && lane.archivedAt == null,
-  }));
 }
 
 const AI_USAGE_FEATURE_KEYS: AiFeatureKey[] = [
@@ -1690,8 +1488,23 @@ async function buildLinearConnectionStatus(
     authMode: credentialStatus.authMode,
     oauthAvailable: credentialStatus.oauthConfigured,
     tokenExpiresAt: credentialStatus.tokenExpiresAt,
-    message: status.message,
+    message: formatLinearConnectionMessage(status.message, credentialStatus.authMode),
   };
+}
+
+function formatLinearConnectionMessage(
+  message: string | null | undefined,
+  authMode: "manual" | "oauth" | null | undefined,
+): string | null {
+  const trimmed = message?.trim();
+  if (
+    authMode === "manual"
+    && trimmed
+    && /authentication required|not authenticated/i.test(trimmed)
+  ) {
+    return "Linear rejected the API key. Paste a Linear personal API key from linear.app/settings/api; it should start with lin_api_.";
+  }
+  return trimmed || null;
 }
 
 function summarizeProjectScan(result: OnboardingDetectionResult | null): Partial<{
@@ -1915,6 +1728,8 @@ export function registerIpc({
   resolveSyncService,
   runWithIpcWindow,
   getWindowSession,
+  bindRemoteProject,
+  localRuntimeConnectionPool,
   createWindow,
   closeWindow,
   switchProjectFromDialog,
@@ -1927,7 +1742,9 @@ export function registerIpc({
   getSyncService?: () => ReturnType<typeof createSyncService> | null | undefined;
   resolveSyncService?: () => Promise<ReturnType<typeof createSyncService> | null | undefined>;
   runWithIpcWindow?: <T>(event: { sender: Electron.WebContents }, fn: () => T | Promise<T>) => T | Promise<T>;
-  getWindowSession?: (windowId: number | null) => { windowId: number | null; project: ProjectInfo | null };
+  getWindowSession?: (windowId: number | null) => { windowId: number | null; project: ProjectInfo | null; binding: OpenProjectBinding | null };
+  bindRemoteProject?: (windowId: number | null, binding: OpenProjectBinding & { kind: "remote" }) => void;
+  localRuntimeConnectionPool?: LocalRuntimeConnectionPool | null;
   createWindow?: (args?: { projectRoot?: string | null }) => Promise<{ windowId: number | null; project: ProjectInfo | null }>;
   closeWindow?: (windowId: number | null) => Promise<{ closed: boolean }>;
   switchProjectFromDialog: (selectedPath: string) => Promise<ProjectInfo>;
@@ -1947,6 +1764,9 @@ export function registerIpc({
     if (getSyncService) return getSyncService() ?? null;
     return getCtx().syncService ?? null;
   };
+  const allowLocalRuntimeFallback =
+    process.env.ADE_LOCAL_RUNTIME_FALLBACK === "1" ||
+    process.env.ADE_DISABLE_LOCAL_RUNTIME_DAEMON === "1";
 
   const requireSyncService = async (): Promise<ReturnType<typeof createSyncService>> => {
     const service = resolveSyncService
@@ -1956,6 +1776,32 @@ export function registerIpc({
       throw new Error("Sync service is not available.");
     }
     return service;
+  };
+
+  const getLocalRuntimeRootForEvent = (event: { sender: Electron.WebContents }): string | null => {
+    if (!getWindowSession) return null;
+    const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
+    const session = getWindowSession(windowId);
+    const binding = session?.binding;
+    if (binding?.kind === "local") return binding.rootPath;
+    return session?.project?.rootPath ?? null;
+  };
+
+  const tryLocalRuntimeSync = async <T>(
+    event: { sender: Electron.WebContents },
+    action: (pool: LocalRuntimeConnectionPool, rootPath: string) => Promise<T>,
+  ): Promise<T | null> => {
+    if (!localRuntimeConnectionPool) return null;
+    const rootPath = getLocalRuntimeRootForEvent(event);
+    if (!rootPath) return null;
+    try {
+      return await action(localRuntimeConnectionPool, rootPath);
+    } catch (error) {
+      if (!allowLocalRuntimeFallback) {
+        throw error;
+      }
+      return null;
+    }
   };
 
   // Backend services use Error.code for known failures (e.g.
@@ -3242,6 +3088,14 @@ export function registerIpc({
     return {
       windowId,
       project: ctx.hasUserSelectedProject ? ctx.project : null,
+      binding: ctx.hasUserSelectedProject
+        ? {
+          kind: "local",
+          key: `local:${ctx.project.rootPath}`,
+          rootPath: ctx.project.rootPath,
+          displayName: ctx.project.displayName,
+        }
+        : null,
     };
   });
 
@@ -3656,7 +3510,8 @@ export function registerIpc({
       env: {
         nodeEnv: process.env.NODE_ENV,
         viteDevServerUrl: process.env.VITE_DEV_SERVER_URL
-      }
+      },
+      localRuntime: localRuntimeConnectionPool?.getStatus() ?? null
     };
   });
 
@@ -3821,7 +3676,10 @@ export function registerIpc({
 
   ipcMain.handle(IPC.projectClearLocalData, async (_event, arg: ClearLocalAdeDataArgs = {}): Promise<ClearLocalAdeDataResult> => {
     const ctx = getCtx();
-    const adePaths = ctx.adeProjectService?.paths;
+    if (ctx.adeProjectService) {
+      return ctx.adeProjectService.clearLocalData(arg);
+    }
+
     const clearedAt = nowIso();
     const deletedPaths: string[] = [];
 
@@ -3836,9 +3694,9 @@ export function registerIpc({
       deletedPaths.push(resolved);
     };
 
-    if (arg.packs) rmrf(adePaths?.artifactsDir ?? path.join(ctx.adeDir, "artifacts"));
-    if (arg.logs) rmrf(adePaths?.logsDir ?? path.join(ctx.adeDir, "transcripts", "logs"));
-    if (arg.transcripts) rmrf(adePaths?.transcriptsDir ?? path.join(ctx.adeDir, "transcripts"));
+    if (arg.packs) rmrf(path.join(ctx.adeDir, "artifacts"));
+    if (arg.logs) rmrf(path.join(ctx.adeDir, "transcripts", "logs"));
+    if (arg.transcripts) rmrf(path.join(ctx.adeDir, "transcripts"));
 
     return { deletedPaths, clearedAt };
   });
@@ -3846,6 +3704,21 @@ export function registerIpc({
   ipcMain.handle(IPC.projectListRecent, async (): Promise<RecentProjectSummary[]> => {
     const state = readGlobalState(globalStatePath);
     return (state.recentProjects ?? []).map(toRecentProjectSummary);
+  });
+
+  registerRuntimeBridge({
+    appVersion: app.getVersion(),
+    bindRemoteProject,
+    getGitHubTokenForRemoteClone: () => {
+      try {
+        return getCtx().githubService.getTokenOrThrow();
+      } catch {
+        return null;
+      }
+    },
+    getWindowSession,
+    globalStatePath,
+    localRuntimeConnectionPool,
   });
 
   ipcMain.handle(
@@ -4187,27 +4060,46 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(IPC.syncGetStatus, async (_event, arg?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> => {
+  ipcMain.handle(IPC.syncGetStatus, async (event, arg?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> => {
+    const runtimeStatus = await tryLocalRuntimeSync(event, (pool, rootPath) =>
+      pool.syncStatusForRoot(rootPath, arg ?? {})
+    );
+    if (runtimeStatus) return runtimeStatus;
     return await (await requireSyncService()).getStatus({
       includeTransferReadiness: arg?.includeTransferReadiness,
       forceTransferReadiness: arg?.forceTransferReadiness,
     });
   });
 
-  ipcMain.handle(IPC.syncRefreshDiscovery, async (): Promise<SyncRoleSnapshot> => {
+  ipcMain.handle(IPC.syncRefreshDiscovery, async (event): Promise<SyncRoleSnapshot> => {
+    const runtimeStatus = await tryLocalRuntimeSync(event, (pool, rootPath) =>
+      pool.refreshSyncDiscoveryForRoot(rootPath)
+    );
+    if (runtimeStatus) return runtimeStatus;
     return await (await requireSyncService()).refreshDiscovery();
   });
 
-  ipcMain.handle(IPC.syncListDevices, async (): Promise<SyncDeviceRuntimeState[]> => {
+  ipcMain.handle(IPC.syncListDevices, async (event): Promise<SyncDeviceRuntimeState[]> => {
+    const runtimeDevices = await tryLocalRuntimeSync(event, (pool, rootPath) =>
+      pool.syncDevicesForRoot(rootPath)
+    );
+    if (runtimeDevices) return runtimeDevices;
     return await (await requireSyncService()).listDevices();
   });
 
   ipcMain.handle(
     IPC.syncUpdateLocalDevice,
     async (
-      _event,
+      event,
       arg: { name?: string; deviceType?: SyncPeerDeviceType },
     ): Promise<SyncDeviceRecord> => {
+      const runtimeDevice = await tryLocalRuntimeSync(event, (pool, rootPath) =>
+        pool.updateSyncLocalDeviceForRoot(rootPath, {
+          name: typeof arg?.name === "string" ? arg.name : undefined,
+          deviceType: arg?.deviceType,
+        })
+      );
+      if (runtimeDevice) return runtimeDevice;
       return await (await requireSyncService()).updateLocalDevice({
         name: typeof arg?.name === "string" ? arg.name : undefined,
         deviceType: arg?.deviceType,
@@ -4217,44 +4109,102 @@ export function registerIpc({
 
   ipcMain.handle(
     IPC.syncConnectToBrain,
-    async (_event, arg: SyncDesktopConnectionDraft): Promise<SyncRoleSnapshot> => {
+    async (event, arg: SyncDesktopConnectionDraft): Promise<SyncRoleSnapshot> => {
+      const runtimeStatus = await tryLocalRuntimeSync(event, (pool, rootPath) =>
+        pool.callSyncForRoot<SyncRoleSnapshot>(
+          rootPath,
+          "sync.connectToBrain",
+          (arg ?? {}) as unknown as Record<string, unknown>,
+        )
+      );
+      if (runtimeStatus) return runtimeStatus;
       return await (await requireSyncService()).connectToBrain(arg);
     },
   );
 
-  ipcMain.handle(IPC.syncDisconnectFromBrain, async (): Promise<SyncRoleSnapshot> => {
+  ipcMain.handle(IPC.syncDisconnectFromBrain, async (event): Promise<SyncRoleSnapshot> => {
+    const runtimeStatus = await tryLocalRuntimeSync(event, (pool, rootPath) =>
+      pool.callSyncForRoot<SyncRoleSnapshot>(rootPath, "sync.disconnectFromBrain")
+    );
+    if (runtimeStatus) return runtimeStatus;
     return await (await requireSyncService()).disconnectFromBrain();
   });
 
-  ipcMain.handle(IPC.syncForgetDevice, async (_event, arg: { deviceId: string }): Promise<SyncRoleSnapshot> => {
-    return await (await requireSyncService()).forgetDevice(typeof arg?.deviceId === "string" ? arg.deviceId : "");
+  ipcMain.handle(IPC.syncForgetDevice, async (event, arg: { deviceId: string }): Promise<SyncRoleSnapshot> => {
+    const deviceId = typeof arg?.deviceId === "string" ? arg.deviceId : "";
+    const runtimeStatus = await tryLocalRuntimeSync(event, (pool, rootPath) =>
+      pool.forgetSyncDeviceForRoot(rootPath, deviceId)
+    );
+    if (runtimeStatus) return runtimeStatus;
+    return await (await requireSyncService()).forgetDevice(deviceId);
   });
 
-  ipcMain.handle(IPC.syncGetTransferReadiness, async (): Promise<SyncTransferReadiness> => {
+  ipcMain.handle(IPC.syncGetTransferReadiness, async (event): Promise<SyncTransferReadiness> => {
+    const runtimeReadiness = await tryLocalRuntimeSync(event, (pool, rootPath) =>
+      pool.callSyncForRoot<SyncTransferReadiness>(rootPath, "sync.getTransferReadiness")
+    );
+    if (runtimeReadiness) return runtimeReadiness;
     return await (await requireSyncService()).getTransferReadiness();
   });
 
-  ipcMain.handle(IPC.syncTransferBrainToLocal, async (): Promise<SyncRoleSnapshot> => {
+  ipcMain.handle(IPC.syncTransferBrainToLocal, async (event): Promise<SyncRoleSnapshot> => {
+    const runtimeStatus = await tryLocalRuntimeSync(event, (pool, rootPath) =>
+      pool.callSyncForRoot<SyncRoleSnapshot>(rootPath, "sync.transferBrainToLocal")
+    );
+    if (runtimeStatus) return runtimeStatus;
     return await (await requireSyncService()).transferBrainToLocal();
   });
 
-  ipcMain.handle(IPC.syncGetPin, async (): Promise<{ pin: string | null }> => {
+  ipcMain.handle(IPC.syncGetPin, async (event): Promise<{ pin: string | null }> => {
+    const runtimePin = await tryLocalRuntimeSync(event, (pool, rootPath) =>
+      pool.syncPinForRoot(rootPath)
+    );
+    if (runtimePin) return runtimePin;
     return { pin: (await requireSyncService()).getPin() };
   });
 
-  ipcMain.handle(IPC.syncSetPin, async (_event, pin: string): Promise<SyncRoleSnapshot> => {
-    return await (await requireSyncService()).setPin(typeof pin === "string" ? pin : "");
+  ipcMain.handle(IPC.syncSetPin, async (event, pin: string): Promise<SyncRoleSnapshot> => {
+    const normalizedPin = typeof pin === "string" ? pin : "";
+    const runtimeStatus = await tryLocalRuntimeSync(event, (pool, rootPath) =>
+      pool.setSyncPinForRoot(rootPath, normalizedPin)
+    );
+    if (runtimeStatus) return runtimeStatus;
+    return await (await requireSyncService()).setPin(normalizedPin);
   });
 
-  ipcMain.handle(IPC.syncClearPin, async (): Promise<SyncRoleSnapshot> => {
+  ipcMain.handle(IPC.syncGeneratePin, async (event): Promise<SyncRoleSnapshot> => {
+    const runtimeStatus = await tryLocalRuntimeSync(event, (pool, rootPath) =>
+      pool.generateSyncPinForRoot(rootPath)
+    );
+    if (runtimeStatus) return runtimeStatus;
+    return await (await requireSyncService()).generatePin();
+  });
+
+  ipcMain.handle(IPC.syncClearPin, async (event): Promise<SyncRoleSnapshot> => {
+    const runtimeStatus = await tryLocalRuntimeSync(event, (pool, rootPath) =>
+      pool.clearSyncPinForRoot(rootPath)
+    );
+    if (runtimeStatus) return runtimeStatus;
     return await (await requireSyncService()).clearPin();
   });
 
   ipcMain.handle(
     IPC.syncSetActiveLanePresence,
-    async (_event, arg: { laneIds?: string[] | null }): Promise<void> => {
+    async (event, arg: { laneIds?: string[] | null }): Promise<void> => {
+      const laneIds = Array.isArray(arg?.laneIds) ? arg.laneIds : [];
+      const rootPath = getLocalRuntimeRootForEvent(event);
+      if (localRuntimeConnectionPool && rootPath) {
+        try {
+          await localRuntimeConnectionPool.callSyncForRoot(rootPath, "sync.setActiveLanePresence", { laneIds });
+          return;
+        } catch (error) {
+          if (!allowLocalRuntimeFallback) {
+            throw error;
+          }
+        }
+      }
       await (await requireSyncService()).setActiveLanePresence(
-        Array.isArray(arg?.laneIds) ? arg.laneIds : [],
+        laneIds,
       );
     },
   );
@@ -6585,41 +6535,8 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.computerUseReadArtifactPreview, async (_event, arg: { uri: string }): Promise<string | null> => {
-    const ctx = getCtx();
-    const projectRoot = ctx.project.rootPath;
-    const layout = resolveAdeLayout(projectRoot);
-    // Only allow files under artifactsDir — consistent with the ade-artifact:// protocol
-    // handler in main.ts which validates exclusively against currentArtifactsDir.
-    const allowedRoots = [layout.artifactsDir];
-
-    const filePath = resolveRendererSuppliedPath(arg.uri, projectRoot);
-    // Canonicalize and verify the resolved path is inside an allowed artifact root.
-    const canonical = path.normalize(path.resolve(filePath));
-    const inside = allowedRoots.some((root) => {
-      try {
-        resolvePathWithinRoot(root, canonical);
-        return true;
-      } catch {
-        return false;
-      }
-    });
-    if (!inside) return null;
-
-    // Cap preview size to 10 MB to avoid loading arbitrarily large files into memory.
-    const PREVIEW_SIZE_CAP = 10 * 1024 * 1024;
-    try {
-      const stat = await fs.promises.stat(canonical);
-      if (!stat.isFile()) return null;
-      if (stat.size > PREVIEW_SIZE_CAP) return null;
-      const buf = await fs.promises.readFile(canonical);
-      const ext = path.extname(canonical).replace(/^\./, "").toLowerCase();
-      const mimeMap: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif", bmp: "image/bmp", svg: "image/svg+xml" };
-      const mime = mimeMap[ext];
-      if (!mime) return null;
-      return `data:${mime};base64,${buf.toString("base64")}`;
-    } catch {
-      return null;
-    }
+    const ctx = ensureComputerUseBroker();
+    return ctx.computerUseArtifactBrokerService.readArtifactPreview(arg);
   });
 
   ipcMain.handle(IPC.iosSimulatorGetStatus, async () => ensureIosSimulator().getStatus());
@@ -8679,27 +8596,47 @@ export function registerIpc({
     return ctx.operationService.list(arg);
   });
 
-  ipcMain.handle(IPC.historyExportOperations, async (event, arg: ExportHistoryArgs): Promise<ExportHistoryResult> => {
+  type HistoryExportIpcArgs = ExportHistoryArgs & {
+    rows?: OperationRecord[];
+    project?: {
+      rootPath?: string | null;
+      displayName?: string | null;
+    } | null;
+  };
+
+  ipcMain.handle(IPC.historyExportOperations, async (event, arg: HistoryExportIpcArgs): Promise<ExportHistoryResult> => {
     const ctx = getCtx();
     const format: "csv" | "json" = arg?.format === "csv" ? "csv" : "json";
     const laneId = typeof arg?.laneId === "string" && arg.laneId.trim().length > 0 ? arg.laneId.trim() : undefined;
     const kind = typeof arg?.kind === "string" && arg.kind.trim().length > 0 ? arg.kind.trim() : undefined;
     const status = arg?.status;
 
-    const rows = ctx.operationService.list({
-      laneId,
-      kind,
-      limit: typeof arg?.limit === "number" ? arg.limit : 1000
-    });
+    const rows = Array.isArray(arg?.rows)
+      ? arg.rows
+      : ctx.operationService.list({
+          laneId,
+          kind,
+          limit: typeof arg?.limit === "number" ? arg.limit : 1000
+        });
     const filteredRows =
       status && status !== "all"
         ? rows.filter((row) => row.status === status)
         : rows;
 
     const exportedAt = nowIso();
-    const projectSlug = ctx.project.displayName.replace(/[^a-zA-Z0-9._-]+/g, "_");
+    const exportProject = arg?.project;
+    const projectDisplayName =
+      typeof exportProject?.displayName === "string" && exportProject.displayName.trim()
+        ? exportProject.displayName.trim()
+        : ctx.project.displayName;
+    const projectRoot =
+      typeof exportProject?.rootPath === "string" && exportProject.rootPath.trim()
+        ? exportProject.rootPath.trim()
+        : ctx.project.rootPath;
+    const projectSlug = projectDisplayName.replace(/[^a-zA-Z0-9._-]+/g, "_");
     const dateStamp = exportedAt.slice(0, 10);
-    const defaultPath = path.join(ctx.project.rootPath, `ade-history-${projectSlug}-${dateStamp}.${format}`);
+    const defaultDir = fs.existsSync(projectRoot) ? projectRoot : app.getPath("documents");
+    const defaultPath = path.join(defaultDir, `ade-history-${projectSlug}-${dateStamp}.${format}`);
 
     const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
     const result = win
@@ -8732,8 +8669,8 @@ export function registerIpc({
         {
           exportedAt,
           project: {
-            rootPath: ctx.project.rootPath,
-            displayName: ctx.project.displayName
+            rootPath: projectRoot,
+            displayName: projectDisplayName
           },
           filters: {
             laneId: laneId ?? null,
@@ -9305,36 +9242,6 @@ export function registerIpc({
     const ctx = getCtx();
     if (!ctx.ctoStateService) throw new Error("CTO state service is not available.");
     return ctx.ctoStateService.updateIdentity(arg.patch ?? {});
-  });
-
-  ipcMain.handle(IPC.ctoGetOpenclawState, async (): Promise<CtoGetOpenclawStateResult> => {
-    const ctx = getCtx();
-    if (!ctx.openclawBridgeService) throw new Error("OpenClaw bridge service is not available.");
-    return ctx.openclawBridgeService.getState();
-  });
-
-  ipcMain.handle(IPC.ctoUpdateOpenclawConfig, async (_event, arg: CtoUpdateOpenclawConfigArgs): Promise<CtoGetOpenclawStateResult> => {
-    const ctx = getCtx();
-    if (!ctx.openclawBridgeService) throw new Error("OpenClaw bridge service is not available.");
-    return await ctx.openclawBridgeService.updateConfig(arg.patch ?? {});
-  });
-
-  ipcMain.handle(IPC.ctoTestOpenclawConnection, async (_event, _arg: CtoTestOpenclawConnectionArgs = {}): Promise<CtoTestOpenclawConnectionResult> => {
-    const ctx = getCtx();
-    if (!ctx.openclawBridgeService) throw new Error("OpenClaw bridge service is not available.");
-    return await ctx.openclawBridgeService.testConnection();
-  });
-
-  ipcMain.handle(IPC.ctoListOpenclawMessages, async (_event, arg: CtoListOpenclawMessagesArgs = {}): Promise<CtoListOpenclawMessagesResult> => {
-    const ctx = getCtx();
-    if (!ctx.openclawBridgeService) throw new Error("OpenClaw bridge service is not available.");
-    return ctx.openclawBridgeService.listMessages(arg.limit ?? 40);
-  });
-
-  ipcMain.handle(IPC.ctoSendOpenclawMessage, async (_event, arg: CtoSendOpenclawMessageArgs): Promise<CtoListOpenclawMessagesResult[number]> => {
-    const ctx = getCtx();
-    if (!ctx.openclawBridgeService) throw new Error("OpenClaw bridge service is not available.");
-    return await ctx.openclawBridgeService.sendMessage(arg);
   });
 
   // -- W3: Heartbeat & Activation --

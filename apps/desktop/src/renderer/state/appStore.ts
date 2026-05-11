@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { KeybindingsSnapshot, LaneListSnapshot, LaneSummary, ProjectInfo, ProviderMode } from "../../shared/types";
+import type { KeybindingsSnapshot, LaneListSnapshot, LaneSummary, OpenProjectBinding, ProjectInfo, ProviderMode } from "../../shared/types";
 import { MODEL_REGISTRY, type ModelDescriptor } from "../../shared/modelRegistry";
 import { extractError } from "../lib/format";
 import { getAiStatusCached, invalidateAiDiscoveryCache } from "../lib/aiDiscoveryCache";
@@ -519,6 +519,7 @@ export type SessionDismissMap = Record<string, true>;
 
 type AppState = {
   project: ProjectInfo | null;
+  projectBinding: OpenProjectBinding | null;
   projectHydrated: boolean;
   /** True when the user removed all projects — forces welcome screen even though backend still has a project loaded. */
   showWelcome: boolean;
@@ -562,6 +563,7 @@ type AppState = {
   dismissedGithubBannerRoots: SessionDismissMap;
 
   setProject: (project: ProjectInfo | null) => void;
+  setProjectBinding: (binding: OpenProjectBinding | null) => void;
   setProjectHydrated: (hydrated: boolean) => void;
   setShowWelcome: (show: boolean) => void;
   clearProjectTransitionError: () => void;
@@ -622,6 +624,7 @@ type AppState = {
   }) => Promise<void>;
   openRepo: () => Promise<ProjectInfo | null>;
   switchProjectToPath: (rootPath: string) => Promise<void>;
+  switchRemoteProject: (targetId: string, projectId: string) => Promise<OpenProjectBinding>;
   closeProject: () => Promise<void>;
 };
 
@@ -704,6 +707,7 @@ function formatProjectTransitionError(
 
 export const useAppStore = create<AppState>((set, get) => ({
   project: null,
+  projectBinding: null,
   projectHydrated: false,
   showWelcome: true,
   projectTransition: null,
@@ -744,10 +748,19 @@ export const useAppStore = create<AppState>((set, get) => ({
       const nextProjectRoot = project?.rootPath ?? null;
       return {
         project,
+        projectBinding: project
+          ? {
+            kind: "local",
+            key: `local:${project.rootPath}`,
+            rootPath: project.rootPath,
+            displayName: project.displayName,
+          }
+          : null,
         projectRevision:
           previousProjectRoot !== nextProjectRoot ? prev.projectRevision + 1 : prev.projectRevision,
       };
     }),
+  setProjectBinding: (projectBinding) => set({ projectBinding }),
   setProjectHydrated: (projectHydrated) => set({ projectHydrated }),
   setShowWelcome: (showWelcome) => set({ showWelcome }),
   clearProjectTransitionError: () => set({ projectTransitionError: null }),
@@ -1189,6 +1202,50 @@ export const useAppStore = create<AppState>((set, get) => ({
           dismissedGithubBannerRoots: pickDismissMapForRoots(prev.dismissedGithubBannerRoots, retainedRoots),
         };
       });
+    } catch (error) {
+      set({
+        projectTransition: null,
+        projectTransitionError: formatProjectTransitionError("switching", error),
+      });
+      throw error;
+    }
+  },
+
+  switchRemoteProject: async (targetId: string, projectId: string) => {
+    ++laneRefreshVersion;
+    set({
+      projectTransition: {
+        kind: "switching",
+        rootPath: null,
+        startedAtMs: Date.now(),
+      },
+      projectTransitionError: null,
+    });
+    try {
+      const binding = await window.ade.remoteRuntime.openProject(targetId, projectId);
+      set({
+        project: {
+          rootPath: binding.rootPath,
+          displayName: binding.displayName,
+          baseRef: "main",
+        },
+        projectBinding: binding,
+        projectRevision: get().projectRevision + 1,
+        projectHydrated: true,
+        showWelcome: false,
+        projectTransition: null,
+        projectTransitionError: null,
+        isNewTabOpen: false,
+        laneSnapshots: [],
+        lanes: [],
+        selectedLaneId: null,
+        focusedSessionId: null,
+        laneInspectorTabs: {},
+        keybindings: null,
+        terminalAttention: EMPTY_TERMINAL_ATTENTION,
+      });
+      void get().refreshLanes({ includeStatus: false });
+      return binding;
     } catch (error) {
       set({
         projectTransition: null,

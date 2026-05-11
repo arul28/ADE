@@ -28,10 +28,6 @@ describe("CtoSettingsPanel (file group)", () => {
     )),
   }));
 
-  vi.mock("./OpenclawConnectionPanel", () => ({
-    OpenclawConnectionPanel: vi.fn(() => <div data-testid="openclaw-panel" />),
-  }));
-
   vi.mock("./CtoPromptPreview", () => ({
     CtoPromptPreview: vi.fn(() => <div data-testid="prompt-preview" />),
   }));
@@ -270,7 +266,6 @@ describe("CtoSettingsPanel (file group)", () => {
       );
       expect(screen.getByRole("button", { name: "Identity" })).toBeTruthy();
       expect(screen.getByRole("button", { name: "Brief" })).toBeTruthy();
-      expect(screen.getByRole("button", { name: "Integrations" })).toBeTruthy();
     });
 
     it("shows session history timeline entries in the Brief tab", () => {

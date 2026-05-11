@@ -10,8 +10,13 @@ the schema implications that fall out of the CRR retrofit.
 
 The entire CRDT layer lives inside the shared DB adapter:
 `apps/desktop/src/main/services/state/kvDb.ts` exposes an `AdeDb` with
-an `AdeDb.sync` object. Every other desktop service talks to plain
-SQLite (`run`, `get`, `all`, `prepare`); `AdeDb.sync` exposes:
+an `AdeDb.sync` object. The same module is consumed both by the
+Electron main process and by the **ade-cli runtime daemon** (`ade
+serve`); both open the same `.ade/ade.db` and use the same `AdeDb.sync`
+surface, so a change in either place is wire-compatible with the other.
+
+Every other service talks to plain SQLite (`run`, `get`, `all`,
+`prepare`); `AdeDb.sync` exposes:
 
 - `getSiteId(): string` — the local cr-sqlite site identifier.
 - `getDbVersion(): number` — the monotonic replication version.
@@ -20,16 +25,19 @@ SQLite (`run`, `get`, `all`, `prepare`); `AdeDb.sync` exposes:
 - `applyChanges(rows: CrsqlChangeRow[]): ApplyRemoteChangesResult` —
   apply remote changes locally.
 
-`syncHostService` and `syncPeerService` use those four primitives
-plus `syncProtocol.ts` envelope encoding to do the actual wire
-exchange.
+The canonical `syncHostService` and `syncPeerService`
+(`apps/ade-cli/src/services/sync/`) use those four primitives plus
+`syncProtocol.ts` envelope encoding to do the actual wire exchange.
+The desktop tree's matching files are one-line re-exports of the
+ade-cli modules — there is no second implementation to keep in sync.
 
-## Desktop: native loadable extension
+## Desktop / daemon: native loadable extension
 
-Desktop opens SQLite through `node:sqlite` and loads a vendored
-`crsqlite.dylib` (macOS) / `.so` (linux) as a loadable extension. A
-fresh connection runs `SELECT load_extension(...)` once, then `AdeDb`
-marks every eligible non-virtual table as a CRR at startup:
+Both the Electron main process and the `ade serve` daemon open SQLite
+through `node:sqlite` and load a vendored `crsqlite.dylib` (macOS) /
+`.so` (linux) as a loadable extension. A fresh connection runs
+`SELECT load_extension(...)` once, then `AdeDb` marks every eligible
+non-virtual table as a CRR at startup:
 
 ```sql
 SELECT crsql_as_crr('table_name');
@@ -266,7 +274,7 @@ After apply, ADE runs post-hooks:
 
 | Piece | Status |
 |---|---|
-| Desktop extension loading + CRR marking | Implemented |
+| Desktop / daemon extension loading + CRR marking | Implemented |
 | iOS pure-SQL emulation | Implemented, wire-compatible |
 | Dynamic CRR discovery | Implemented |
 | `ALTER TABLE ADD COLUMN` support | Implemented (wrapped) |

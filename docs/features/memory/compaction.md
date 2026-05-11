@@ -4,6 +4,14 @@ Memory is not write-only: ADE actively synthesises new entries, merges
 similar ones, and invalidates stale state. This doc covers the services
 that keep the memory store healthy.
 
+All of these services run inside the runtime daemon that owns the
+project (local `ade serve` for local bindings). On remote bindings the
+embedding-backed paths (consolidation, procedural learning,
+embedding-dependent capture) are disabled along with embeddings;
+intervention/PR-feedback capture and the daily sweep can still write
+rows, but they have no semantic-search target and no consolidation
+pass.
+
 ## Source file map
 
 | Path | Role |

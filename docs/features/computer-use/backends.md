@@ -1,13 +1,15 @@
 # Computer-Use Backends
 
-Three supported backend styles. ADE's job is to discover them, report their readiness, and ingest their output. ADE does not wrap or replace the backends themselves.
+Backend discovery runs on the runtime host that owns the project (the runtime daemon's `commandExists("ghost")` / `commandExists("agent-browser")` checks reflect that machine's `PATH`). ADE's job is to discover backends locally to that runtime, report their readiness, and ingest their output. ADE does not wrap or replace the backends themselves.
+
+This doc describes the historical Ghost OS / agent-browser / local-fallback model. The current shipping broker (`computerUseArtifactBrokerService.getBackendStatus`) reports the same backend names but the policy + readiness machinery (`buildComputerUseSettingsSnapshot`, `buildGhostOsCheck`, capability matrix) was retired with the proof rebuild and the Settings > Computer Use panel was folded into Integrations. Use this doc for context on backend semantics, not for the current operator UI.
 
 ## Source file map
 
-- `apps/desktop/src/main/services/computerUse/controlPlane.ts` — `buildGhostOsCheck`, `buildCapabilityMatrix`, `selectPreferredBackend`, `buildComputerUseSettingsSnapshot`. Ghost OS detection via `ghost status` / `ghost doctor`.
-- `apps/desktop/src/main/services/computerUse/localComputerUse.ts` — `getLocalComputerUseCapabilities`, `getGhostDoctorProcessHealth`, `parseGhostDoctorProcessHealth`. CLI detection (`screencapture`, `open`, `swift`, `osascript`).
-- `apps/desktop/src/main/services/computerUse/agentBrowserArtifactAdapter.ts` — `parseAgentBrowserArtifactPayload`, `loadAgentBrowserArtifactPayloadFromFile`. Parses agent-browser output manifests.
-- `apps/desktop/src/main/services/computerUse/computerUseArtifactBrokerService.ts` — `getBackendStatus` (emits `ComputerUseBackendStatus`), backend registration, `inferSupportedKindsFromExternalTool`.
+- `apps/desktop/src/main/services/computerUse/controlPlane.ts` — pre-rebuild `buildComputerUseOwnerSnapshot` + capability/Ghost-OS helpers. The current build keeps the snapshot assembly path; the policy/Ghost-OS readiness helpers are vestigial.
+- `apps/desktop/src/main/services/computerUse/localComputerUse.ts` — `getLocalComputerUseCapabilities`, `createComputerUseArtifactPath`, `toProjectArtifactUri`. Capability detection (`screencapture`, `open`, `swift`, `osascript`) reflects the runtime host's environment.
+- `apps/desktop/src/main/services/computerUse/agentBrowserArtifactAdapter.ts` — `parseAgentBrowserArtifactPayload`, `loadAgentBrowserArtifactPayloadFromFile`. Parses agent-browser output manifests on the runtime host.
+- `apps/desktop/src/main/services/computerUse/computerUseArtifactBrokerService.ts` — `getBackendStatus` (emits `ComputerUseBackendStatus`), `secureCopyFromDescriptor` (symlink-safe path-based ingest), backend enumeration.
 ## Ghost OS
 
 **Transport:** external CLI. ADE detects `ghost` on `PATH` and reads `ghost status` / `ghost doctor` for readiness.
@@ -33,7 +35,7 @@ Three supported backend styles. ADE's job is to discover them, report their read
   - `"stale"` when more than one process is reported (stale instances remaining) or `[FAIL] Processes:` matches.
   - `"unknown"` when the pattern isn't matchable.
 
-**Tool scope:** Ghost OS exposes a large perception + interaction tool set (see `proofObserver.ts` `GHOST_ARTIFACT_TOOLS` for the perception subset ADE auto-ingests). All tools run over ADE CLI — ADE calls them via the ADE CLI service.
+**Tool scope:** Ghost OS exposes a large perception + interaction tool set. The pre-rebuild `proofObserver` auto-ingested a curated `GHOST_ARTIFACT_TOOLS` subset on tool-result events; the observer has been deleted, so today an agent capturing Ghost OS evidence must call `ade proof capture/attach` (or the broker's `ingest_computer_use_artifacts` RPC tool) to file it.
 
 **Shell-out constraints:**
 
@@ -134,7 +136,7 @@ To register a new external backend:
 1. Add it to the ADE CLI list (if ADE CLI) or define a CLI-detection check.
 2. Extend `buildComputerUseSettingsSnapshot` or the broker's backend enumeration to include it.
 3. Register supported proof kinds — via explicit declaration or by letting `inferSupportedKindsFromExternalTool` match from the tool descriptions.
-4. Update `proofObserver.ts` if the backend's tool names should be auto-observed.
+4. (Pre-rebuild only.) The historical `proofObserver` auto-ingested specific tool names; since the observer was deleted, new backends ingest exclusively through explicit `ade proof attach` / `ingest_computer_use_artifacts` calls.
 5. Add the backend's output root to the broker's `allowedImportRoots` if it writes files outside existing trusted locations.
 6. Document the setup flow in Settings > Computer Use guidance.
 

@@ -215,19 +215,22 @@ export function createProjectScaffoldService({
     // clones work in environments without a system credential helper. Using
     // the basic-auth shape (x-access-token:<token>) is the GitHub-recommended
     // form and avoids leaking the token via the URL in process listings.
-    let storedToken: string | null = null;
-    try {
-      storedToken = githubService.getTokenOrThrow();
-    } catch {
-      storedToken = null;
+    let authHeader = (input.githubAuthHeader ?? "").trim();
+    if (!authHeader) {
+      try {
+        const storedToken = githubService.getTokenOrThrow();
+        const basic = Buffer.from(`x-access-token:${storedToken}`, "utf8").toString("base64");
+        authHeader = `basic ${basic}`;
+      } catch {
+        authHeader = "";
+      }
     }
 
     const cloneArgs: string[] = ["clone"];
-    if (storedToken) {
-      const basic = Buffer.from(`x-access-token:${storedToken}`, "utf8").toString("base64");
+    if (authHeader) {
       cloneArgs.push(
         "-c",
-        `http.https://github.com/.extraheader=AUTHORIZATION: basic ${basic}`,
+        `http.https://github.com/.extraheader=AUTHORIZATION: ${authHeader}`,
       );
     }
     cloneArgs.push(url, rootPath);

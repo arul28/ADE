@@ -42,7 +42,7 @@ struct SettingsConnectionHeader: View {
           .foregroundStyle(ADEColor.textSecondary)
           .fixedSize(horizontal: false, vertical: true)
       } else {
-        Text("Pair a computer to start syncing lanes, work, and files.")
+        Text("Pair a machine to start syncing lanes, work, and files.")
           .font(.subheadline)
           .foregroundStyle(ADEColor.textSecondary)
           .fixedSize(horizontal: false, vertical: true)
@@ -136,24 +136,24 @@ struct SettingsConnectionHeader: View {
     switch health.transport {
     case .connected:
       if health.load == .strained {
-        return "Live · host responding slowly"
+        return "Live · machine responding slowly"
       }
       if syncService.connectionState == .syncing {
         return "Live · syncing changes"
       }
       return "Live · ready to sync"
     case .connecting:
-      return "Connecting to saved host"
+      return "Connecting to saved machine"
     case .unreachable:
-      return "Unable to reach your Mac"
+      return "Unable to reach your machine"
     case .disconnected:
       if syncService.savedReconnectHost?.tailscaleAddress != nil {
-        return "Saved host · Tailscale route ready"
+        return "Saved machine · Tailscale route ready"
       }
       if syncService.canReconnectToSavedHost {
-        return "Saved host · not connected"
+        return "Saved machine · not connected"
       }
-      return "No paired host"
+      return "No paired machine"
     }
   }
 
@@ -162,7 +162,7 @@ struct SettingsConnectionHeader: View {
     case .connecting:
       return "Reaching \(hostName)..."
     case .unreachable:
-      return "Tap reconnect to try \(hostName) again, or pair a different host below."
+      return "Tap reconnect to try \(hostName) again, or pair a different machine below."
     default:
       return "Reaching \(hostName)..."
     }
@@ -222,7 +222,7 @@ private struct SettingsConnectionQuickAction: View {
       ) {
         syncService.disconnect()
       }
-      .accessibilityLabel("Disconnect from host")
+      .accessibilityLabel("Disconnect from machine")
 
     case .connecting:
       HStack(spacing: 6) {
@@ -250,7 +250,7 @@ private struct SettingsConnectionQuickAction: View {
             )
           }
         }
-        .accessibilityLabel("Reconnect to saved host")
+        .accessibilityLabel("Reconnect to saved machine")
       }
     }
   }

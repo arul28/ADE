@@ -1,6 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { BrowserWindow } from "electron";
-import { IPC } from "../../../shared/ipc";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
@@ -247,14 +245,18 @@ function normalizeStoredSubmission(submission: FeedbackSubmission): FeedbackSubm
   };
 }
 
-function emitUpdate(submission: FeedbackSubmission): void {
-  const event: FeedbackSubmissionEvent = {
+function toSubmissionUpdateEvent(submission: FeedbackSubmission): FeedbackSubmissionEvent {
+  return {
     type: "feedback-submission-updated",
     submission,
   };
-  for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send(IPC.feedbackOnUpdate, event);
-  }
+}
+
+function emitUpdate(
+  submission: FeedbackSubmission,
+  onSubmissionUpdated: ((event: FeedbackSubmissionEvent) => void) | undefined,
+): void {
+  onSubmissionUpdated?.(toSubmissionUpdateEvent(submission));
 }
 
 const METADATA_SYSTEM_PROMPT = `You help convert structured ADE feedback into GitHub issue metadata.
@@ -343,12 +345,14 @@ export function createFeedbackReporterService({
   projectRoot,
   aiIntegrationService,
   githubService,
+  onSubmissionUpdated,
 }: {
   db: AdeDb;
   logger: Logger;
   projectRoot: string;
   aiIntegrationService: ReturnType<typeof createAiIntegrationService>;
   githubService: ReturnType<typeof createGithubService>;
+  onSubmissionUpdated?: (event: FeedbackSubmissionEvent) => void;
 }) {
   function loadAll(): FeedbackSubmission[] {
     return (db.getJson<FeedbackSubmission[]>(DB_KEY) ?? []).map(normalizeStoredSubmission);
@@ -461,7 +465,7 @@ export function createFeedbackReporterService({
     };
 
     save(submission);
-    emitUpdate(submission);
+    emitUpdate(submission, onSubmissionUpdated);
 
     try {
       const { data } = await githubService.apiRequest<{
@@ -483,7 +487,7 @@ export function createFeedbackReporterService({
       submission.status = "posted";
       submission.completedAt = nowIso();
       save(submission);
-      emitUpdate(submission);
+      emitUpdate(submission, onSubmissionUpdated);
 
       logger.info("feedback.posted", {
         id: submission.id,
@@ -495,7 +499,7 @@ export function createFeedbackReporterService({
       submission.error = `Posting failed: ${message}`;
       submission.completedAt = nowIso();
       save(submission);
-      emitUpdate(submission);
+      emitUpdate(submission, onSubmissionUpdated);
 
       logger.error("feedback.failed", {
         id: submission.id,

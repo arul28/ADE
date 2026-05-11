@@ -123,13 +123,13 @@ struct ContentView: View {
 private struct ProjectHomeView: View {
   @EnvironmentObject private var syncService: SyncService
 
-  private var attachedComputerLabel: String {
+  private var attachedMachineLabel: String {
     let trimmedHost = syncService.hostName?.trimmingCharacters(in: .whitespacesAndNewlines)
     let host = (trimmedHost?.isEmpty == false) ? trimmedHost! : nil
     switch syncService.connectionState {
     case .connected, .syncing:
       if let host { return "Attached to \(host)" }
-      return "Attached to computer"
+      return "Attached to machine"
     case .connecting:
       if let host { return "Connecting to \(host)…" }
       return "Connecting…"
@@ -137,11 +137,11 @@ private struct ProjectHomeView: View {
       if let host { return "Cannot reach \(host)" }
       return "Connection error"
     case .disconnected:
-      return "No computer attached"
+      return "No machine attached"
     }
   }
 
-  private var attachedComputerTint: Color {
+  private var attachedMachineTint: Color {
     let health = syncService.connectionHealth
     switch health.transport {
     case .connected:
@@ -165,7 +165,7 @@ private struct ProjectHomeView: View {
         ScrollView {
           VStack(spacing: 30) {
             welcomeHero
-            attachedComputerBanner
+            attachedMachineBanner
             projectSection
           }
           .frame(maxWidth: 520)
@@ -215,18 +215,18 @@ private struct ProjectHomeView: View {
       .accessibilityLabel("ADE")
   }
 
-  private var attachedComputerBanner: some View {
+  private var attachedMachineBanner: some View {
     Button {
       syncService.settingsPresented = true
     } label: {
       HStack(spacing: 10) {
         Circle()
-          .fill(attachedComputerTint)
+          .fill(attachedMachineTint)
           .frame(width: 8, height: 8)
         Image(systemName: "desktopcomputer")
           .font(.system(size: 13, weight: .semibold))
           .foregroundStyle(ADEColor.textSecondary)
-        Text(attachedComputerLabel)
+        Text(attachedMachineLabel)
           .font(.system(.footnote, design: .rounded).weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
@@ -242,13 +242,13 @@ private struct ProjectHomeView: View {
       )
     }
     .buttonStyle(.plain)
-    .accessibilityLabel(attachedComputerLabel)
-    .accessibilityHint("Opens computer connection settings.")
+    .accessibilityLabel(attachedMachineLabel)
+    .accessibilityHint("Opens machine connection settings.")
   }
 
-private var projectSection: some View {
+  private var projectSection: some View {
     VStack(spacing: 14) {
-      Text("DESKTOP TABS")
+      Text("PROJECTS")
         .font(.system(.caption, design: .rounded).weight(.semibold))
         .foregroundStyle(ADEColor.textMuted)
         .tracking(0.8)
@@ -305,18 +305,18 @@ private var projectSection: some View {
 
   private var emptyProjectsTitle: String {
     switch syncService.connectionState {
-    case .connected, .syncing: return "No projects on desktop"
-    case .connecting: return "Connecting to desktop"
-    case .error, .disconnected: return "Connect ADE desktop"
+    case .connected, .syncing: return "No projects on machine"
+    case .connecting: return "Connecting to machine"
+    case .error, .disconnected: return "Connect ADE machine"
     }
   }
 
   private var emptyProjectsSubtitle: String {
     switch syncService.connectionState {
     case .connected, .syncing:
-      return "Open a project on \(syncService.hostName ?? "your computer")"
+      return "Open a project on \(syncService.hostName ?? "your machine")"
     case .connecting, .error, .disconnected:
-      return syncService.hostName ?? "Pair a computer to see your tabs"
+      return syncService.hostName ?? "Pair a machine to see your projects"
     }
   }
 }

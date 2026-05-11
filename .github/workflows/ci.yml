@@ -27,8 +27,7 @@ jobs:
             apps/desktop/node_modules
             apps/ade-cli/node_modules
             apps/web/node_modules
-            apps/ade-code/node_modules
-          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/ade-code/package-lock.json') }}
+          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json') }}
 
       - name: Install all dependencies (parallel)
         if: steps.cache.outputs.cache-hit != 'true'
@@ -36,7 +35,6 @@ jobs:
           cd apps/desktop   && npm ci &
           cd apps/ade-cli && npm ci &
           cd apps/web        && npm ci &
-          cd apps/ade-code && npm ci &
           wait
 
   # ── Secret scanning (no deps needed) ───────────────────────────────────
@@ -65,8 +63,7 @@ jobs:
             apps/desktop/node_modules
             apps/ade-cli/node_modules
             apps/web/node_modules
-            apps/ade-code/node_modules
-          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/ade-code/package-lock.json') }}
+          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json') }}
       - run: cd apps/desktop && npm run typecheck
 
   typecheck-ade-cli:
@@ -83,8 +80,7 @@ jobs:
             apps/desktop/node_modules
             apps/ade-cli/node_modules
             apps/web/node_modules
-            apps/ade-code/node_modules
-          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/ade-code/package-lock.json') }}
+          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json') }}
       - run: cd apps/ade-cli && npm run typecheck
 
   typecheck-web:
@@ -101,27 +97,8 @@ jobs:
             apps/desktop/node_modules
             apps/ade-cli/node_modules
             apps/web/node_modules
-            apps/ade-code/node_modules
-          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/ade-code/package-lock.json') }}
+          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json') }}
       - run: cd apps/web && npm run typecheck
-
-  typecheck-ade-code:
-    needs: install
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - uses: actions/cache/restore@v4
-        with:
-          path: |
-            apps/desktop/node_modules
-            apps/ade-cli/node_modules
-            apps/web/node_modules
-            apps/ade-code/node_modules
-          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/ade-code/package-lock.json') }}
-      - run: cd apps/ade-code && npm run typecheck
 
   lint-desktop:
     needs: install
@@ -137,8 +114,7 @@ jobs:
             apps/desktop/node_modules
             apps/ade-cli/node_modules
             apps/web/node_modules
-            apps/ade-code/node_modules
-          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/ade-code/package-lock.json') }}
+          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json') }}
       - run: cd apps/desktop && npm run lint
 
   test-desktop:
@@ -159,8 +135,7 @@ jobs:
             apps/desktop/node_modules
             apps/ade-cli/node_modules
             apps/web/node_modules
-            apps/ade-code/node_modules
-          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/ade-code/package-lock.json') }}
+          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json') }}
       - run: cd apps/desktop && npx vitest run --shard=${{ matrix.shard }}/8
 
   test-ade-cli:
@@ -177,27 +152,8 @@ jobs:
             apps/desktop/node_modules
             apps/ade-cli/node_modules
             apps/web/node_modules
-            apps/ade-code/node_modules
-          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/ade-code/package-lock.json') }}
+          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json') }}
       - run: cd apps/ade-cli && npm test
-
-  test-ade-code:
-    needs: install
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - uses: actions/cache/restore@v4
-        with:
-          path: |
-            apps/desktop/node_modules
-            apps/ade-cli/node_modules
-            apps/web/node_modules
-            apps/ade-code/node_modules
-          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/ade-code/package-lock.json') }}
-      - run: cd apps/ade-code && npm test
 
   build:
     needs: install
@@ -213,12 +169,52 @@ jobs:
             apps/desktop/node_modules
             apps/ade-cli/node_modules
             apps/web/node_modules
-            apps/ade-code/node_modules
-          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/ade-code/package-lock.json') }}
+          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json') }}
       - run: cd apps/desktop && npm run build
       - run: cd apps/ade-cli && npm run build
       - run: cd apps/web && npm run build
-      - run: cd apps/ade-code && npm run build
+
+  build-runtime-binaries:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            os: macos-15
+          - target: darwin-x64
+            os: macos-13
+          - target: linux-x64
+            os: ubuntu-latest
+          - target: linux-arm64
+            os: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/ade-cli/package-lock.json
+
+      - name: Install ADE CLI dependencies
+        run: cd apps/ade-cli && npm ci
+
+      - name: Build ADE runtime binary
+        run: cd apps/ade-cli && npm run build:static -- --target ${{ matrix.target }}
+
+      - name: Smoke test ADE runtime binary
+        run: |
+          apps/ade-cli/dist-static/ade-${{ matrix.target }} --version
+          tar -tzf apps/ade-cli/dist-static/ade-${{ matrix.target }}.native.tar.gz | grep -q '^\./node_modules/'
+
+      - name: Upload ADE runtime binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ade-runtime-${{ matrix.target }}
+          path: |
+            apps/ade-cli/dist-static/ade-${{ matrix.target }}
+            apps/ade-cli/dist-static/ade-${{ matrix.target }}.native.tar.gz
+          if-no-files-found: error
 
   validate-docs:
     needs: install
@@ -234,8 +230,7 @@ jobs:
             apps/desktop/node_modules
             apps/ade-cli/node_modules
             apps/web/node_modules
-            apps/ade-code/node_modules
-          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/ade-code/package-lock.json') }}
+          key: nm-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json') }}
       - run: node scripts/validate-docs.mjs
 
   # ── Windows build smoke (self-contained — no shared cache) ────────────
@@ -244,6 +239,7 @@ jobs:
   # time. Self-contained because windows-latest node_modules contain
   # platform-specific native binaries that can't share a Linux cache.
   build-win:
+    needs: build-runtime-binaries
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -260,6 +256,18 @@ jobs:
 
       - name: Install ADE CLI dependencies
         run: cd apps/ade-cli && npm ci
+
+      - name: Download ADE runtime binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ade-runtime-*
+          path: apps/desktop/resources/runtime
+          merge-multiple: true
+
+      - name: Materialize ADE runtime resources
+        env:
+          ADE_RUNTIME_ARTIFACTS_DIR: ${{ github.workspace }}/apps/desktop/resources/runtime
+        run: cd apps/desktop && npm run materialize:runtime-resources
 
       - name: Reset release output
         shell: pwsh
@@ -282,12 +290,11 @@ jobs:
       - typecheck-desktop
       - typecheck-ade-cli
       - typecheck-web
-      - typecheck-ade-code
       - lint-desktop
       - test-desktop
       - test-ade-cli
-      - test-ade-code
       - build
+      - build-runtime-binaries
       - validate-docs
       - build-win
     runs-on: ubuntu-latest

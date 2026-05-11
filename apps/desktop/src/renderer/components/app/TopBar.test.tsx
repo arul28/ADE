@@ -53,6 +53,8 @@ function makeSyncSnapshot(overrides: Record<string, unknown> = {}) {
       ipAddresses: [],
       metadata: {},
     },
+    projectHydrated: true,
+    showWelcome: false,
     currentBrain: null,
     clusterState: null,
     bootstrapToken: "bootstrap-token",
@@ -82,6 +84,12 @@ function makeSyncSnapshot(overrides: Record<string, unknown> = {}) {
 function resetStore() {
   useAppStore.setState({
     project: { rootPath: "/Users/arul/ADE", name: "ADE" } as any,
+    projectBinding: {
+      kind: "local",
+      key: "local:/Users/arul/ADE",
+      rootPath: "/Users/arul/ADE",
+      displayName: "ADE",
+    },
     terminalAttention: {
       runningCount: 0,
       activeCount: 0,
@@ -98,6 +106,15 @@ function resetStore() {
     projectTransitionError: null,
     clearProjectTransitionError: vi.fn(),
     switchProjectToPath: vi.fn(async () => undefined),
+    switchRemoteProject: vi.fn(async (targetId: string, projectId: string) => ({
+      kind: "remote",
+      key: `remote:${targetId}:${projectId}`,
+      targetId,
+      runtimeName: "Mac Studio",
+      projectId,
+      rootPath: "/srv/ade/remote-app",
+      displayName: "Remote App",
+    })),
   } as any);
 }
 
@@ -158,6 +175,22 @@ describe("TopBar", () => {
         getStatus: vi.fn(async () => makeSyncSnapshot()),
         onEvent: vi.fn(() => () => {}),
       },
+      github: {
+        getStatus: vi.fn(async () => ({
+          tokenStored: false,
+          tokenDecryptionFailed: false,
+          storageScope: "app",
+          repo: { owner: "acme", name: "ade", url: "https://github.com/acme/ade" },
+          hasOrigin: true,
+          userLogin: null,
+          scopes: [],
+          checkedAt: "2026-04-22T00:00:00.000Z",
+          repoAccessOk: true,
+          repoAccessError: null,
+          connected: false,
+        })),
+        onStatusChanged: vi.fn(() => () => {}),
+      },
       zoom: {
         setLevel: vi.fn(),
       },
@@ -187,7 +220,7 @@ describe("TopBar", () => {
     await waitFor(() => {
       expect(globalThis.window.ade.project.listRecent).toHaveBeenCalled();
     });
-    expect(screen.queryByText("1 phone connected")).toBeNull();
+    expect(screen.queryByText("1 phone connected to ADE Desktop")).toBeNull();
     expect(globalThis.window.ade.sync.getStatus).not.toHaveBeenCalled();
   });
 
@@ -203,6 +236,61 @@ describe("TopBar", () => {
     await new Promise((resolve) => setTimeout(resolve, 850));
 
     expect(globalThis.window.ade.project.resolveIcon).not.toHaveBeenCalled();
+  });
+
+  it("renders a remote project tab without local sync polling", async () => {
+    useAppStore.setState({
+      project: { rootPath: "/srv/ade/remote-app", displayName: "Remote App", baseRef: "main" },
+      projectBinding: {
+        kind: "remote",
+        key: "remote:studio:project-1",
+        targetId: "studio",
+        runtimeName: "Mac Studio",
+        projectId: "project-1",
+        rootPath: "/srv/ade/remote-app",
+        displayName: "Remote App",
+      },
+      projectHydrated: true,
+      showWelcome: false,
+    } as any);
+
+    render(<TopBar />);
+
+    expect(await screen.findByTitle("Mac Studio: /srv/ade/remote-app")).toBeTruthy();
+    expect(screen.getByText("Remote App")).toBeTruthy();
+    expect(screen.getByText("Mac Studio")).toBeTruthy();
+    expect(globalThis.window.ade.sync.getStatus).not.toHaveBeenCalled();
+    expect(screen.queryByTitle("Connect a phone to this machine")).toBeNull();
+  });
+
+  it("keeps local tabs visible when a remote project is active", async () => {
+    render(<TopBar />);
+
+    const localTab = await screen.findByTitle("/Users/arul/ADE");
+
+    await act(async () => {
+      useAppStore.setState({
+        project: { rootPath: "/srv/ade/remote-app", displayName: "Remote App", baseRef: "main" },
+        projectBinding: {
+          kind: "remote",
+          key: "remote:studio:project-1",
+          targetId: "studio",
+          runtimeName: "Mac Studio",
+          projectId: "project-1",
+          rootPath: "/srv/ade/remote-app",
+          displayName: "Remote App",
+        },
+        projectHydrated: true,
+        showWelcome: false,
+      } as any);
+    });
+
+    expect(await screen.findByTitle("Mac Studio: /srv/ade/remote-app")).toBeTruthy();
+    expect(screen.getByTitle("/Users/arul/ADE")).toBeTruthy();
+
+    fireEvent.click(localTab);
+
+    expect(useAppStore.getState().switchProjectToPath).toHaveBeenCalledWith("/Users/arul/ADE");
   });
 
   it("opens a blank ADE window from the top bar", async () => {
@@ -255,13 +343,13 @@ describe("TopBar", () => {
   it("opens the phone sync drawer from the host status control", async () => {
     render(<TopBar />);
 
-    expect(await screen.findByText("1 phone connected")).toBeTruthy();
+    expect(await screen.findByText("1 phone connected to ADE Desktop")).toBeTruthy();
 
-    fireEvent.click(screen.getByTitle("Connect a phone to this computer"));
+    fireEvent.click(screen.getByTitle("Connect a phone to this machine"));
 
     expect(screen.getByText("Connect to the ADE mobile app")).toBeTruthy();
     expect(screen.getByTestId("sync-devices-section")).toBeTruthy();
-    expect(screen.getByTitle("Connect a phone to this computer").getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByTitle("Connect a phone to this machine").getAttribute("aria-expanded")).toBe("true");
 
     fireEvent.click(screen.getByTitle("Close phone sync"));
 
@@ -297,7 +385,7 @@ describe("TopBar", () => {
       });
     });
 
-    expect(await screen.findByText("1 phone connected")).toBeTruthy();
+    expect(await screen.findByText("1 phone connected to ADE Desktop")).toBeTruthy();
   });
 
   it("does not refresh phone sync status on an idle interval", async () => {
@@ -339,7 +427,7 @@ describe("TopBar", () => {
       window.dispatchEvent(new Event("focus"));
     });
 
-    expect(await screen.findByText("1 phone connected")).toBeTruthy();
+    expect(await screen.findByText("1 phone connected to ADE Desktop")).toBeTruthy();
     expect(getStatus).toHaveBeenCalledTimes(2);
   });
 

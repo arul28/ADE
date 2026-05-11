@@ -2,11 +2,19 @@
 
 Automations are rule-based background workflows. Each rule has a trigger, a target execution surface, a prompt/mission template, an optional tool palette, an optional output contract, and guardrails. Automations sit between the CTO (heavy, stateful, chat-driven) and raw cron (deterministic, no AI). The execution surface choice is the key control point.
 
-Automations never duplicate Linear issue intake — the CTO owns that. Automations can consume Linear as context or write to it as an action, but the canonical intake and routing logic lives in CTO services.
+Automations never duplicate Linear issue intake — the CTO owns that. Automations can consume Linear as context or write to it as an action, but the canonical intake and routing logic lives in the CTO/Linear services hosted by the runtime daemon.
+
+## Runtime ownership
+
+The automation rule engine, cron scheduler, file watcher, ingress endpoints (webhook listener, GitHub relay/polling, Linear relay), and built-in action runner all execute inside the runtime daemon (`ade serve`) that owns the project. For local project bindings the local daemon hosts them; for remote project bindings the remote runtime hosts them. The desktop renderer is a view: it edits rules, watches run history, and triggers manual fires through `window.ade.automations`, but it does not own scheduling, ingress, or dispatch state.
+
+Caveat: GitHub-polling and webhook ingress only work on a runtime that can reach the public internet (or your relay). A remote runtime behind a firewall may need the relay path even if the local desktop is internet-reachable.
 
 ## Source file map
 
 ### Services (apps/desktop/src/main/services/automations/)
+
+These services are loaded by the runtime daemon's project scope (and by the desktop main process when it hosts a local project) — the path reflects the source tree, not where the code "runs".
 
 - `automationService.ts` — main service. Rule CRUD, execution dispatch (`mission`, `agent-session`, `built-in`), cron scheduling (via `node-cron`), file-change watching (via `chokidar`), queue management, run history, confidence scoring, billing codes, ingress cursor storage.
 - `automationPlannerService.ts` — natural-language rule authoring. `parseNaturalLanguage`, `validateDraft`, `saveDraft`, `simulate`. Runs a planner subprocess (Claude or Codex) to turn a free-text brief into an `AutomationRuleDraft`.
@@ -33,10 +41,11 @@ Automations never duplicate Linear issue intake — the CTO owns that. Automatio
 - `apps/desktop/src/renderer/components/settings/` — usage/budget/cost UI for automations and missions (shared with Settings > Usage). `UsageGuardrailsSection`, `BudgetCapEditor`, `CostSummaryCard`, `UsageMeter`, `UsagePacingBadge` all live here; they no longer sit on the Automations page.
 - `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx` — agent-session execution surfaces as a chat thread filtered by automation owner.
 
-### IPC
+### IPC and runtime RPC
 
 - `apps/desktop/src/preload/global.d.ts` — `window.ade.automations` surface (now includes `pollGithubNow`).
-- `apps/desktop/src/main/services/ipc/registerIpc.ts` — registers `automations:*` channels including the ADE Actions registry read, GitHub polling trigger, and the registry-backed `runAdeAction` dispatch.
+- `apps/desktop/src/main/services/ipc/registerIpc.ts` — registers `automations:*` channels including the ADE Actions registry read, GitHub polling trigger, and the registry-backed `runAdeAction` dispatch. Each call routes through the active project binding's runtime connection (local daemon for local projects, SSH-tunneled JSON-RPC for remote projects) so the same automation rule edits or run-history reads apply to whichever runtime owns the project.
+- `apps/ade-cli/src/multiProjectRpcServer.ts` — exposes the same automation surface as JSON-RPC actions so the headless ADE CLI can manage rules, fire manual runs, and read run history without the desktop UI.
 
 ## Core model
 

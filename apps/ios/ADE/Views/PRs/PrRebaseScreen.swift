@@ -292,7 +292,7 @@ struct PrRebaseScreen: View {
             }
           }
         } else {
-          Text("Commit details unavailable on this host.")
+          Text("Commit details unavailable on this machine.")
             .font(.system(size: 11, design: .monospaced))
             .foregroundStyle(ADEColor.textMuted)
             .padding(14)

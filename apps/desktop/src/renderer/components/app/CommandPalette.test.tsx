@@ -91,12 +91,8 @@ describe("CommandPalette", () => {
 
     render(
       <MemoryRouter>
-        <CommandPalette
-          open
-          intent="project-browse"
-          onOpenChange={vi.fn()}
-        />
-      </MemoryRouter>
+        <CommandPalette open intent="project-browse" onOpenChange={vi.fn()} />
+      </MemoryRouter>,
     );
 
     await waitFor(() => {
@@ -107,7 +103,9 @@ describe("CommandPalette", () => {
       });
     });
 
-    expect(await screen.findByRole("button", { name: /open directory/i })).toBeTruthy();
+    expect(
+      await screen.findByRole("button", { name: /open directory/i }),
+    ).toBeTruthy();
     expect(screen.getByText("Versic")).toBeTruthy();
   });
 
@@ -127,12 +125,8 @@ describe("CommandPalette", () => {
 
     render(
       <MemoryRouter>
-        <CommandPalette
-          open
-          intent="project-browse"
-          onOpenChange={vi.fn()}
-        />
-      </MemoryRouter>
+        <CommandPalette open intent="project-browse" onOpenChange={vi.fn()} />
+      </MemoryRouter>,
     );
 
     await waitFor(() => {
@@ -142,7 +136,9 @@ describe("CommandPalette", () => {
         limit: 200,
       });
     });
-    const button = await screen.findByRole("button", { name: /open directory/i });
+    const button = await screen.findByRole("button", {
+      name: /open directory/i,
+    });
     fireEvent.click(button);
 
     await waitFor(() => {
@@ -151,7 +147,7 @@ describe("CommandPalette", () => {
         defaultPath: "/Users/admin/Projects",
       });
       expect(switchProjectToPath).toHaveBeenCalledWith(
-        "/Users/admin/Projects/Versic"
+        "/Users/admin/Projects/Versic",
       );
     });
   });
@@ -175,11 +171,13 @@ describe("CommandPalette", () => {
           intent="project-browse"
           onOpenChange={onOpenChange}
         />
-      </MemoryRouter>
+      </MemoryRouter>,
     );
 
     await waitFor(() => {
-      expect(document.querySelector('[data-tour="project.browser"]')).toBeTruthy();
+      expect(
+        document.querySelector('[data-tour="project.browser"]'),
+      ).toBeTruthy();
     });
     window.dispatchEvent(new CustomEvent(PROJECT_BROWSER_CLOSE_EVENT));
 
@@ -222,12 +220,8 @@ describe("CommandPalette", () => {
 
     render(
       <MemoryRouter>
-        <CommandPalette
-          open
-          intent="project-browse"
-          onOpenChange={vi.fn()}
-        />
-      </MemoryRouter>
+        <CommandPalette open intent="project-browse" onOpenChange={vi.fn()} />
+      </MemoryRouter>,
     );
 
     await waitFor(() => {
@@ -237,7 +231,9 @@ describe("CommandPalette", () => {
         limit: 200,
       });
     });
-    const inputs = await screen.findAllByPlaceholderText(/paste a path, type to filter, or drop a folder anywhere/i);
+    const inputs = await screen.findAllByPlaceholderText(
+      /paste a path, type to filter, or drop a folder anywhere/i,
+    );
     const input = inputs.at(-1) as HTMLInputElement;
     fireEvent.drop(input, {
       dataTransfer: { files: [new File(["stale"], "stale")] },
@@ -266,9 +262,135 @@ describe("CommandPalette", () => {
     });
 
     await waitFor(() => {
-      expect(switchProjectToPath).toHaveBeenCalledWith("/Users/admin/Projects/FreshFolder");
+      expect(switchProjectToPath).toHaveBeenCalledWith(
+        "/Users/admin/Projects/FreshFolder",
+      );
       expect(switchProjectToPath).toHaveBeenCalledTimes(1);
       expect(browseDirectories).toHaveBeenCalledTimes(3);
     });
+  });
+
+  it("warns before opening a remote project when matching local work is dirty", async () => {
+    const switchRemoteProject = vi.fn(async () => {});
+    seedStore({
+      projectBinding: null,
+      switchRemoteProject,
+    });
+    const remoteProject = {
+      projectId: "project-remote-ade",
+      rootPath: "/remote/ADE",
+      displayName: "ADE",
+      addedAt: 1,
+      lastOpenedAt: 2,
+      gitOriginUrl: "git@github.com:example/ade.git",
+    };
+    const remoteRuntime = {
+      getConnectionSnapshot: vi.fn(async () => ({
+        connectedCount: 1,
+        updatedAt: Date.now(),
+        connections: [
+          {
+            target: {
+              id: "target-1",
+              name: "Mac Studio",
+              hostname: "studio.tailnet.ts.net",
+              sshUser: "admin",
+              port: 22,
+              sshKeyPath: null,
+              lastSeenArch: "darwin-arm64",
+              runtimeBinaryVersion: "1.0.0",
+              lastConnectedAt: Date.now(),
+            },
+            state: "connected",
+            arch: "darwin-arm64",
+            version: "1.0.0",
+            projects: [],
+            lastError: null,
+            lastAttemptedAt: Date.now(),
+            connectedAt: Date.now(),
+          },
+        ],
+      })),
+      onConnectionSnapshotChanged: vi.fn(() => () => {}),
+      browseDirectories: vi.fn(async () => ({
+        inputPath: "~/",
+        resolvedPath: "/remote/ADE",
+        directoryPath: "/remote/ADE",
+        parentPath: "/remote",
+        exactDirectoryPath: "/remote/ADE",
+        openableProjectRoot: "/remote/ADE",
+        entries: [],
+      })),
+      getProjectDetail: vi.fn(async () => ({
+        rootPath: "/remote/ADE",
+        isGitRepo: true,
+        branchName: "main",
+        dirtyCount: 0,
+        aheadBehind: null,
+        lastCommit: null,
+        readmeExcerpt: null,
+        languages: [],
+        laneCount: null,
+        lastOpenedAt: null,
+        subdirectoryCount: null,
+      })),
+      addProject: vi.fn(async () => remoteProject),
+      checkLocalWork: vi.fn(async () => ({
+        remoteProjectId: remoteProject.projectId,
+        remoteDisplayName: remoteProject.displayName,
+        remoteGitOriginUrl: remoteProject.gitOriginUrl,
+        hasDirtyWork: true,
+        matches: [
+          {
+            rootPath: "/Users/admin/Projects/ADE",
+            displayName: "ADE",
+            gitOriginUrl: "git@github.com:example/ade.git",
+            dirtyCount: 3,
+          },
+        ],
+      })),
+    };
+    globalThis.window.ade = {
+      ...globalThis.window.ade,
+      remoteRuntime,
+    } as any;
+
+    render(
+      <MemoryRouter>
+        <CommandPalette open intent="project-add" onOpenChange={vi.fn()} />
+      </MemoryRouter>,
+    );
+
+    const machineButton = await screen.findByRole("button", {
+      name: /Mac Studio/i,
+    });
+    fireEvent.click(machineButton);
+    fireEvent.click(await screen.findByRole("button", { name: /OPEN/i }));
+
+    await waitFor(() =>
+      expect(remoteRuntime.browseDirectories).toHaveBeenCalledWith("target-1", {
+        partialPath: "~/",
+        cwd: null,
+        limit: 200,
+      }),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: /Open ADE/i }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("dialog", { name: "Open remote tab?" }),
+      ).toBeTruthy(),
+    );
+    expect(screen.getByText("3 changed files")).toBeTruthy();
+    expect(screen.getAllByText("/Users/admin/Projects/ADE").length).toBeGreaterThan(0);
+    expect(switchRemoteProject).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Open remote tab" }));
+    await waitFor(() =>
+      expect(switchRemoteProject).toHaveBeenCalledWith(
+        "target-1",
+        "project-remote-ade",
+      ),
+    );
   });
 });

@@ -722,7 +722,7 @@ struct PRsTabView: View {
         symbol: searchText.isEmpty ? "arrow.triangle.pull" : "magnifyingglass",
         title: searchText.isEmpty ? "No pull requests for these filters" : "No PRs match this search",
         message: searchText.isEmpty
-          ? "Try a different status or scope, or refresh GitHub state from the host."
+          ? "Try a different status or scope, or refresh GitHub state from the machine."
           : "Try a broader query or switch the status and scope filters."
       )
       .prListRow()
@@ -867,7 +867,7 @@ struct PRsTabView: View {
       ADEEmptyStateView(
         symbol: "point.3.filled.connected.trianglepath.dotted",
         title: "No active PR workflows",
-        message: "Queue, integration, and rebase work appears here once the host syncs workflow state."
+        message: "Queue, integration, and rebase work appears here once the machine syncs workflow state."
       )
       .prListRow()
     } else {
@@ -1709,7 +1709,7 @@ private struct PrLaneLinkSheet: View {
             Image(systemName: "wifi.exclamationmark")
               .font(.system(size: 13, weight: .semibold))
               .foregroundStyle(PrGlassPalette.warning)
-            Text("Reconnect to a host that supports PR lane linking.")
+            Text("Reconnect to a machine that supports PR lane linking.")
               .font(.system(size: 11))
               .foregroundStyle(PrGlassPalette.warning)
               .fixedSize(horizontal: false, vertical: true)

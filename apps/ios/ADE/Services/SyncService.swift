@@ -130,7 +130,7 @@ func decodeHydrationPayload<T: Decodable>(_ raw: Any, as type: T.Type, domainLab
       domain: "ADE",
       code: 18,
       userInfo: [
-        NSLocalizedDescriptionKey: "The host returned incomplete \(domainLabel) data. Pull to retry or reconnect the host.",
+        NSLocalizedDescriptionKey: "The machine returned incomplete \(domainLabel) data. Pull to retry or reconnect the machine.",
         NSUnderlyingErrorKey: error,
       ]
     )
@@ -210,14 +210,14 @@ enum InitialHydrationGate {
     throw NSError(
       domain: "ADE",
       code: 22,
-      userInfo: [NSLocalizedDescriptionKey: SyncHydrationMessaging.projectDataTimeout]
+      userInfo: [NSLocalizedDescriptionKey: "Timed out waiting for the machine to sync project data. Try reconnecting."]
     )
   }
 }
 
 enum SyncRequestTimeout {
   static let defaultTimeoutNanoseconds: UInt64 = 30_000_000_000
-  static let message = "The host took too long to respond. Reconnecting now."
+  static let message = "The machine took too long to respond. Reconnecting now."
 
   static func error(message: String = Self.message, underlyingError: Error? = nil) -> NSError {
     var userInfo: [String: Any] = [NSLocalizedDescriptionKey: message]
@@ -555,29 +555,29 @@ enum SyncUserFacingError {
   static func message(for error: Error) -> String {
     let nsError = error as NSError
     if nsError.userInfo[syncAmbiguousRouteAuthFailureKey] as? Bool == true {
-      return "Reached an ADE host over Tailnet, but it did not match this saved computer. ADE kept the pairing and will keep trying other routes."
+      return "Reached an ADE machine over Tailscale, but it did not match this saved machine. ADE kept the pairing and will keep trying other routes."
     }
     if let code = nsError.userInfo["ADEErrorCode"] as? String, code == "auth_failed" {
-      return "This phone is no longer paired with the host. Pair again from Settings."
+      return "This phone is no longer paired with this machine. Pair again from Settings."
     }
 
     let rawMessage = nsError.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !rawMessage.isEmpty else {
-      return "Something interrupted sync. Reconnect to the host and try again."
+      return "Something interrupted sync. Reconnect to the machine and try again."
     }
 
     let lowered = rawMessage.lowercased()
     if lowered.contains("timed out waiting for host to sync project data") {
-      return SyncHydrationMessaging.projectDataTimeout
+      return "Timed out waiting for the machine to sync project data. Try reconnecting."
     }
     if lowered.contains("no project row") || lowered.contains("project data") {
-      return SyncHydrationMessaging.waitingForProjectData
+      return "Waiting for the machine to sync project data..."
     }
     if lowered.contains("host took too long to respond") {
       return SyncRequestTimeout.message
     }
     if lowered.contains("heartbeat") && lowered.contains("reconnect") {
-      return "The host stopped responding. Reconnecting now."
+      return "The machine stopped responding. Reconnecting now."
     }
     if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorAppTransportSecurityRequiresSecureConnection ||
         lowered.contains("app transport security") ||
@@ -588,31 +588,31 @@ enum SyncUserFacingError {
         lowered.contains("socket is not connected") ||
         lowered.contains("network connection was lost") ||
         lowered.contains("cancelled") {
-      return "The connection to the host was interrupted. Reconnecting now."
+      return "The connection to the machine was interrupted. Reconnecting now."
     }
     if lowered.contains("unable to reach the saved ade host") ||
         lowered.contains("could not connect to the server") ||
         lowered.contains("network is unreachable") ||
         lowered.contains("cannot connect to host") {
-      return "Can't reach the saved host right now. Make sure ADE is running on the host, then retry."
+      return "Can't reach the saved machine right now. Make sure ADE is running there, then retry. Away from the LAN, connect both devices through Tailscale or your VPN."
     }
     if lowered.contains("no saved address is available for this host") {
-      return "This phone no longer has a saved address for the host. Open Settings to rediscover it or pair again."
+      return "This phone no longer has a saved address for this machine. Open Settings to rediscover it or pair again."
     }
     if lowered.contains("the host is offline") || lowered.contains("requires a live connection to the host") {
-      return "The host is offline. Reconnect, then try again."
+      return "The machine is offline. Reconnect, then try again."
     }
     if lowered.contains("the host returned incomplete") {
-      return "The host sent incomplete sync data. Retry the affected area or reconnect the host."
+      return "The machine sent incomplete sync data. Retry the affected area or reconnect the machine."
     }
     if lowered.contains("pairing secret missing from response") || lowered.contains("invalid hello response") {
-      return "The host replied with unexpected pairing data. Reconnect and try again."
+      return "The machine replied with unexpected pairing data. Reconnect and try again."
     }
     if lowered.contains("authentication failed") {
-      return "This phone is no longer paired with the host. Pair again from Settings."
+      return "This phone is no longer paired with this machine. Pair again from Settings."
     }
     if lowered.contains("invalid host address") {
-      return "The host address looks invalid. Check it and try again."
+      return "The machine address looks invalid. Check it and try again."
     }
     if lowered.contains("invalid queued operation payload") ||
         lowered.contains("queued operation payload is invalid") ||
@@ -620,16 +620,16 @@ enum SyncUserFacingError {
       return "Queued sync work on this phone became unreadable. Reconnect and try the action again."
     }
     if lowered.contains("remote command rejected") {
-      return "The host couldn't accept that request right now. Try again in a moment."
+      return "The machine couldn't accept that request right now. Try again in a moment."
     }
     if lowered.contains("file request failed") {
-      return "The host couldn't finish that file request. Try again."
+      return "The machine couldn't finish that file request. Try again."
     }
     if lowered.contains("unable to start gzip decoder") || lowered.contains("unable to decode compressed sync payload") {
-      return "The host sent unreadable sync data. Reconnect and try again."
+      return "The machine sent unreadable sync data. Reconnect and try again."
     }
     if lowered.contains("message too long") {
-      return "The desktop sent too much sync data in one message. Update ADE on the desktop, then reconnect."
+      return "The machine sent too much sync data in one message. Update ADE on the machine, then reconnect."
     }
 
     return rawMessage
@@ -721,8 +721,61 @@ struct QueuedRemoteCommandError: LocalizedError {
   let action: String
 
   var errorDescription: String? {
-    "That action is queued on the host and will run when the desktop reconnects."
+    "That action is queued for this project and will run when the machine reconnects."
   }
+}
+
+private func syncNormalizedCommandScopeValue(_ value: String?) -> String? {
+  guard let normalized = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+        !normalized.isEmpty
+  else { return nil }
+  return normalized
+}
+
+func syncNormalizedProjectRootScope(_ rootPath: String?) -> String? {
+  guard var root = syncNormalizedCommandScopeValue(rootPath) else { return nil }
+  while root.count > 1, root.hasSuffix("/") {
+    root.removeLast()
+  }
+  return root
+}
+
+func syncCommandEnvelopePayload(
+  commandId: String,
+  action: String,
+  args: [String: Any],
+  projectId: String?,
+  projectRootPath: String?
+) -> [String: Any] {
+  var payload: [String: Any] = [
+    "commandId": commandId,
+    "action": action,
+    "args": args,
+  ]
+  if let projectId = syncNormalizedCommandScopeValue(projectId) {
+    payload["projectId"] = projectId
+  }
+  if let projectRootPath = syncNormalizedProjectRootScope(projectRootPath) {
+    payload["projectRootPath"] = projectRootPath
+  }
+  return payload
+}
+
+func syncOutboundEnvelopeProjectId(type: String, activeProjectId: String?) -> String? {
+  let projectScopedTypes: Set<String> = [
+    "changeset_batch",
+    "changeset_ack",
+    "command",
+    "file_request",
+    "terminal_subscribe",
+    "terminal_unsubscribe",
+    "terminal_input",
+    "terminal_resize",
+    "chat_subscribe",
+    "chat_unsubscribe",
+  ]
+  guard projectScopedTypes.contains(type) else { return nil }
+  return syncNormalizedCommandScopeValue(activeProjectId)
 }
 
 @MainActor
@@ -733,6 +786,7 @@ final class SyncService: ObservableObject {
   @Published private(set) var projects: [MobileProjectSummary] = []
   @Published private(set) var activeProjectId: String?
   @Published private(set) var activeProjectRootPath: String?
+  private var activeProjectHostIdentity: String?
   @Published private(set) var projectSwitchInFlightRootPath: String?
   @Published private(set) var discoveredHosts: [DiscoveredSyncHost] = []
   @Published private(set) var domainStatuses: [SyncDomain: SyncDomainStatus] = Dictionary(
@@ -791,6 +845,7 @@ final class SyncService: ObservableObject {
   private let autoReconnectPausedKey = "ade.sync.autoReconnectPausedByUser"
   private let activeProjectIdKey = "ade.sync.activeProjectId"
   private let activeProjectRootPathKey = "ade.sync.activeProjectRootPath"
+  private let activeProjectHostIdentityKey = "ade.sync.activeProjectHostIdentity"
   private let pendingOperationsKey = "ade.sync.pendingOperations"
   private let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
   private let outboundSyncCursorsKey = "ade.sync.outboundSyncCursors"
@@ -1023,13 +1078,13 @@ final class SyncService: ObservableObject {
     }
 
     guard project.isCached || database.hasProject(id: project.id) else {
-      lastError = "That project has not been cached on this phone yet. Connect to the ADE desktop app before opening it."
+      lastError = "That project has not been cached on this phone yet. Connect to the ADE machine before opening it."
       setDomainStatus(SyncDomain.allCases, phase: .failed, error: lastError)
       return
     }
 
     guard connectionState != .connected && connectionState != .syncing else {
-      lastError = "This computer connection does not support project switching. Reconnect to a current ADE desktop app before opening another project."
+      lastError = "This machine connection does not support project switching. Reconnect to a current ADE machine before opening another project."
       setDomainStatus(SyncDomain.allCases, phase: .failed, error: lastError)
       return
     }
@@ -1171,7 +1226,7 @@ final class SyncService: ObservableObject {
 
   private func applyRemoteProjectCatalog(_ catalog: MobileProjectCatalogPayload) {
     remoteProjectCatalog = catalog.projects
-    refreshProjectCatalog(preferRemoteSelection: true)
+    refreshProjectCatalog()
   }
 
   private func applyRemoteProjectCatalogChunk(
@@ -1200,7 +1255,7 @@ final class SyncService: ObservableObject {
       let raw = try await awaitResponse(
         requestId: requestId,
         disconnectOnTimeout: false,
-        timeoutMessage: "Timed out waiting for the desktop project list."
+        timeoutMessage: "Timed out waiting for the machine project list."
       ) {
         self.sendEnvelope(type: "project_catalog_request", requestId: requestId, payload: [:])
       }
@@ -1226,7 +1281,7 @@ final class SyncService: ObservableObject {
     let result = try decode(raw, as: MobileProjectSwitchResultPayload.self)
     guard result.ok else {
       throw NSError(domain: "ADE", code: 24, userInfo: [
-        NSLocalizedDescriptionKey: result.message ?? "The desktop could not open that project for phone sync."
+        NSLocalizedDescriptionKey: result.message ?? "The machine could not open that project for phone sync."
       ])
     }
     guard isCurrentProjectSelection(selectionGeneration) else {
@@ -1266,7 +1321,7 @@ final class SyncService: ObservableObject {
       lastError = nil
       let hadLiveSocket = connectionState == .connected || connectionState == .syncing
       if hadLiveSocket {
-        teardownSocket(reason: "Switching desktop project.")
+        teardownSocket(reason: "Switching project.")
       }
       connectionState = .connecting
       setDomainStatus(SyncDomain.allCases, phase: .syncingInitialData)
@@ -1283,7 +1338,7 @@ final class SyncService: ObservableObject {
     )
     guard !addressCandidates.isEmpty else {
       throw NSError(domain: "ADE", code: 25, userInfo: [
-        NSLocalizedDescriptionKey: "The desktop did not provide an address for that project."
+        NSLocalizedDescriptionKey: "The machine did not provide an address for that project."
       ])
     }
 
@@ -1292,7 +1347,7 @@ final class SyncService: ObservableObject {
     let resolvedToken = hasBundledToken ? bundledToken : previousToken
     guard let resolvedToken else {
       throw NSError(domain: "ADE", code: 26, userInfo: [
-        NSLocalizedDescriptionKey: "The desktop did not provide credentials for that project, and this phone has no saved pairing for the host."
+        NSLocalizedDescriptionKey: "The machine did not provide credentials for that project, and this phone has no saved pairing for that machine."
       ])
     }
     let resolvedAuthKind = hasBundledToken ? connection.authKind : (previousProfile?.authKind ?? connection.authKind)
@@ -1324,7 +1379,7 @@ final class SyncService: ObservableObject {
       keychain.saveToken(resolvedToken)
       keychain.saveToken(resolvedToken, hostKey: profileStorageKey(profile))
       saveProfile(profile)
-      teardownSocket(reason: "Switching desktop project.")
+      teardownSocket(reason: "Switching project.")
       let connectedEndpoint = try await connectUsingProfile(
         profile,
         token: resolvedToken,
@@ -1407,6 +1462,19 @@ final class SyncService: ObservableObject {
     } else {
       UserDefaults.standard.removeObject(forKey: activeProjectRootPathKey)
     }
+    if projectId != nil {
+      let hostIdentity = syncNormalizedCommandScopeValue(activeHostProfile?.hostIdentity)
+        ?? syncNormalizedCommandScopeValue(activeHostProfile?.lastHostDeviceId)
+      activeProjectHostIdentity = hostIdentity
+      if let hostIdentity {
+        UserDefaults.standard.set(hostIdentity, forKey: activeProjectHostIdentityKey)
+      } else {
+        UserDefaults.standard.removeObject(forKey: activeProjectHostIdentityKey)
+      }
+    } else {
+      activeProjectHostIdentity = nil
+      UserDefaults.standard.removeObject(forKey: activeProjectHostIdentityKey)
+    }
     if scopeChanged {
       resetOutboundCursorStateForActiveProject()
     }
@@ -1441,13 +1509,7 @@ final class SyncService: ObservableObject {
   }
 
   private func normalizedProjectRoot(_ rootPath: String?) -> String? {
-    guard var root = rootPath?.trimmingCharacters(in: .whitespacesAndNewlines),
-          !root.isEmpty
-    else { return nil }
-    while root.count > 1, root.hasSuffix("/") {
-      root.removeLast()
-    }
-    return root
+    syncNormalizedProjectRootScope(rootPath)
   }
 
   private let queueableFileActions: Set<String> = [
@@ -1495,6 +1557,7 @@ final class SyncService: ObservableObject {
     }
     activeProjectId = UserDefaults.standard.string(forKey: activeProjectIdKey)
     activeProjectRootPath = normalizedProjectRoot(UserDefaults.standard.string(forKey: activeProjectRootPathKey))
+    activeProjectHostIdentity = UserDefaults.standard.string(forKey: activeProjectHostIdentityKey)
     database.setActiveProjectId(activeProjectId)
     projects = database.listMobileProjects()
     outboundLocalDbVersion = loadOutboundCursorVersionForActiveProject(defaultVersion: database.currentDbVersion())
@@ -1638,14 +1701,20 @@ final class SyncService: ObservableObject {
       migrateTokenIfNeeded(for: profile)
       return profile
     }
-    guard let data = UserDefaults.standard.data(forKey: legacyDraftKey),
-          let draft = try? decoder.decode(ConnectionDraft.self, from: data) else {
-      return nil
+    if let data = UserDefaults.standard.data(forKey: legacyDraftKey),
+       let draft = try? decoder.decode(ConnectionDraft.self, from: data) {
+      let migrated = HostConnectionProfile(legacy: draft)
+      saveProfile(migrated)
+      UserDefaults.standard.removeObject(forKey: legacyDraftKey)
+      return migrated
     }
-    let migrated = HostConnectionProfile(legacy: draft)
-    saveProfile(migrated)
-    UserDefaults.standard.removeObject(forKey: legacyDraftKey)
-    return migrated
+
+    if let fallback = mostRecentSavedProfileWithCredentials() {
+      saveProfile(fallback)
+      syncConnectLog.info("Selected most recent saved ADE machine for automatic reconnect: \(syncLogProfileSummary(fallback), privacy: .public)")
+      return fallback
+    }
+    return nil
   }
 
   private func profileStorageKey(_ profile: HostConnectionProfile) -> String? {
@@ -1772,6 +1841,18 @@ final class SyncService: ObservableObject {
     keychain.saveToken(legacyToken, hostKey: key)
   }
 
+  private func storedTokenForSavedProfile(_ profile: HostConnectionProfile) -> String? {
+    guard let key = profileStorageKey(profile) else { return nil }
+    return keychain.loadToken(hostKey: key)
+  }
+
+  private func mostRecentSavedProfileWithCredentials() -> HostConnectionProfile? {
+    loadSavedProfilesRaw().values
+      .filter { storedTokenForSavedProfile($0) != nil }
+      .sorted { shouldPreferProfile($0, over: $1) }
+      .first
+  }
+
   private func tokenForProfile(_ profile: HostConnectionProfile?) -> String? {
     guard let profile else { return nil }
     if let key = profileStorageKey(profile), let token = keychain.loadToken(hostKey: key) {
@@ -1824,12 +1905,17 @@ final class SyncService: ObservableObject {
     let routeId = tailscaleAddress ?? addresses.first ?? "saved"
     return DiscoveredSyncHost(
       id: "saved-\(identity?.isEmpty == false ? identity! : routeId)",
-      serviceName: "Saved ADE host",
+      serviceName: "Saved ADE machine",
       hostName: displayName?.isEmpty == false ? displayName! : routeId,
       hostIdentity: identity?.isEmpty == false ? identity : nil,
       port: profile.port,
       addresses: addresses,
       tailscaleAddress: tailscaleAddress,
+      runtimeKind: nil,
+      runtimeVersion: nil,
+      projectIds: [],
+      projectNames: [],
+      projectCount: nil,
       lastResolvedAt: profile.updatedAt
     )
   }
@@ -1847,7 +1933,7 @@ final class SyncService: ObservableObject {
     }
     guard let profile = candidates.sorted(by: { $0.updatedAt > $1.updatedAt }).first,
           tokenForProfile(profile) != nil else {
-      lastError = "This saved computer no longer has pairing credentials. Pair again from Settings."
+      lastError = "This saved machine no longer has pairing credentials. Pair again from Settings."
       connectionState = .error
       return
     }
@@ -2212,7 +2298,7 @@ final class SyncService: ObservableObject {
         }
       }
       guard let preferredAddress = openedAddress, let preferredPort = openedPort else {
-        throw lastOpenError ?? NSError(domain: "ADE", code: 19, userInfo: [NSLocalizedDescriptionKey: "Unable to reach the host."])
+        throw lastOpenError ?? NSError(domain: "ADE", code: 19, userInfo: [NSLocalizedDescriptionKey: "Unable to reach the machine. Check LAN, Tailscale, or VPN, then try again."])
       }
       let requestId = makeRequestId()
       let raw = try await awaitResponse(requestId: requestId) {
@@ -2276,31 +2362,6 @@ final class SyncService: ObservableObject {
     }
   }
 
-  func decodePairingQrPayload(from rawValue: String) throws -> SyncPairingQrPayload {
-    let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-    if let url = URL(string: trimmed), let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-       let payloadValue = components.queryItems?.first(where: { $0.name == "payload" })?.value {
-      let json = payloadValue.removingPercentEncoding ?? payloadValue
-      if let data = json.data(using: .utf8), let payload = try? decodeCurrentPairingQrPayload(from: data) {
-        return payload
-      }
-    }
-
-    throw NSError(domain: "ADE", code: 22, userInfo: [NSLocalizedDescriptionKey: "That QR code is not a valid ADE pairing payload."])
-  }
-
-  private func decodeCurrentPairingQrPayload(from data: Data) throws -> SyncPairingQrPayload {
-    let payload = try decoder.decode(SyncPairingQrPayload.self, from: data)
-    guard payload.version == 2 else {
-      throw NSError(
-        domain: "ADE",
-        code: 22,
-        userInfo: [NSLocalizedDescriptionKey: "That QR code uses an unsupported ADE pairing format."]
-      )
-    }
-    return payload
-  }
-
   private func friendlyPairingFailureMessage(_ raw: Any) -> String {
     let error = (raw as? [String: Any])?["error"] as? [String: Any]
     let code = error?["code"] as? String
@@ -2310,7 +2371,7 @@ final class SyncService: ObservableObject {
     case "invalid_pin":
       return "Incorrect PIN."
     case "pin_not_set":
-      return "No PIN set on that computer. Set one in the desktop app's Sync settings."
+      return "No PIN set on that machine. Set one in ADE's Sync settings on the machine."
     default:
       return message ?? "Pairing failed."
     }
@@ -4287,11 +4348,23 @@ final class SyncService: ObservableObject {
       }
       activeHostProfile = profile
       hostName = profile.hostName
+      if activeProjectId != nil {
+        let hostIdentity = syncNormalizedCommandScopeValue(profile.hostIdentity)
+          ?? syncNormalizedCommandScopeValue(profile.lastHostDeviceId)
+        activeProjectHostIdentity = hostIdentity
+        if let hostIdentity {
+          UserDefaults.standard.set(hostIdentity, forKey: activeProjectHostIdentityKey)
+        } else {
+          UserDefaults.standard.removeObject(forKey: activeProjectHostIdentityKey)
+        }
+      }
     } else {
       UserDefaults.standard.removeObject(forKey: profileKey)
       UserDefaults.standard.removeObject(forKey: legacyDraftKey)
       activeHostProfile = nil
       hostName = nil
+      activeProjectHostIdentity = nil
+      UserDefaults.standard.removeObject(forKey: activeProjectHostIdentityKey)
     }
   }
 
@@ -4734,7 +4807,7 @@ final class SyncService: ObservableObject {
         action: action,
         args: ["laneId": laneId],
         disconnectOnTimeout: false,
-        timeoutMessage: "The host did not acknowledge lane presence in time."
+        timeoutMessage: "The machine did not acknowledge lane presence in time."
       )
       if refreshSnapshots {
         try? await refreshLaneSnapshots()
@@ -4748,8 +4821,12 @@ final class SyncService: ObservableObject {
   }
 
   private func deduplicatedAddresses(_ addresses: [String]) -> [String] {
+    deduplicatedStrings(addresses)
+  }
+
+  private func deduplicatedStrings(_ values: [String]) -> [String] {
     var seen = Set<String>()
-    return addresses
+    return values
       .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
       .filter { !$0.isEmpty }
       .filter { seen.insert($0).inserted }
@@ -4813,7 +4890,7 @@ final class SyncService: ObservableObject {
       domain: "ADE",
       code: 24,
       userInfo: [
-        NSLocalizedDescriptionKey: "No ADE host address is available. Scan the pairing QR again or enter the host address manually.",
+        NSLocalizedDescriptionKey: "No ADE machine address is available. Choose a discovered machine or enter the runtime address manually.",
       ]
     )
   }
@@ -5036,7 +5113,7 @@ final class SyncService: ObservableObject {
     )
     guard !addresses.isEmpty else {
       if rawAddresses.isEmpty {
-        throw NSError(domain: "ADE", code: 18, userInfo: [NSLocalizedDescriptionKey: "No saved address is available for this host."])
+        throw NSError(domain: "ADE", code: 18, userInfo: [NSLocalizedDescriptionKey: "No saved address is available for this machine."])
       }
       throw noConnectableAddressError()
     }
@@ -5086,7 +5163,7 @@ final class SyncService: ObservableObject {
       }
     }
 
-    throw lastFailure ?? NSError(domain: "ADE", code: 19, userInfo: [NSLocalizedDescriptionKey: "Unable to reach the saved ADE host."])
+    throw lastFailure ?? NSError(domain: "ADE", code: 19, userInfo: [NSLocalizedDescriptionKey: "Unable to reach the saved ADE machine."])
   }
 
   private func handleReconnectFailure(
@@ -5154,6 +5231,32 @@ final class SyncService: ObservableObject {
     return NSError(domain: nsError.domain, code: nsError.code, userInfo: userInfo)
   }
 
+  private func profileByApplyingDiscoveredRoutes(
+    _ profile: HostConnectionProfile,
+    matching: [DiscoveredSyncHost]
+  ) -> HostConnectionProfile {
+    var next = profile
+    let liveLanAddresses = deduplicatedAddresses(matching.flatMap(\.addresses))
+    let liveTailscaleAddress = matching.compactMap(\.tailscaleAddress).first ?? profile.tailscaleAddress
+    next.discoveredLanAddresses = liveLanAddresses
+    next.tailscaleAddress = liveTailscaleAddress
+    next.savedAddressCandidates = Array(
+      deduplicatedAddresses(
+        (profile.lastSuccessfulAddress.map { [$0] } ?? [])
+        + liveLanAddresses
+        + (liveTailscaleAddress.map { [$0] } ?? [])
+        + profile.savedAddressCandidates
+      ).prefix(6)
+    )
+    if next.hostIdentity == nil {
+      next.hostIdentity = matching.compactMap(\.hostIdentity).first
+    }
+    if next.hostName == nil {
+      next.hostName = matching.first?.hostName
+    }
+    return next
+  }
+
   private func applyDiscoveredHosts(_ hosts: [DiscoveredSyncHost]) {
     var mergedByIdentity: [String: DiscoveredSyncHost] = [:]
     var noIdentity: [DiscoveredSyncHost] = []
@@ -5177,6 +5280,11 @@ final class SyncService: ObservableObject {
           port: port,
           addresses: addresses,
           tailscaleAddress: tailscale,
+          runtimeKind: preferred.runtimeKind ?? fallback.runtimeKind,
+          runtimeVersion: preferred.runtimeVersion ?? fallback.runtimeVersion,
+          projectIds: deduplicatedStrings(preferred.projectIds + fallback.projectIds),
+          projectNames: deduplicatedStrings(preferred.projectNames + fallback.projectNames),
+          projectCount: preferred.projectCount ?? fallback.projectCount,
           lastResolvedAt: host.lastResolvedAt > existing.lastResolvedAt ? host.lastResolvedAt : existing.lastResolvedAt
         )
       } else {
@@ -5191,29 +5299,14 @@ final class SyncService: ObservableObject {
     }
     let merged = identifiedHosts + filteredNoIdentity
     discoveredHosts = merged.sorted { $0.hostName.localizedCaseInsensitiveCompare($1.hostName) == .orderedAscending }
+    refreshSavedProfilesFromDiscovery()
     guard let profile = activeHostProfile else { return }
     let matching = discoveredHosts.filter { discovered in
       matchesDiscoveredHost(discovered, profile: profile)
     }
     guard !matching.isEmpty else { return }
     updateProfile { profile in
-      let liveLanAddresses = deduplicatedAddresses(matching.flatMap(\.addresses))
-      let liveTailscaleAddress = matching.compactMap(\.tailscaleAddress).first ?? profile.tailscaleAddress
-      profile.discoveredLanAddresses = liveLanAddresses
-      profile.tailscaleAddress = liveTailscaleAddress
-      profile.savedAddressCandidates = Array(
-        deduplicatedAddresses(
-          (profile.lastSuccessfulAddress.map { [$0] } ?? [])
-          + liveLanAddresses
-          + (liveTailscaleAddress.map { [$0] } ?? [])
-        ).prefix(6)
-      )
-      if profile.hostIdentity == nil {
-        profile.hostIdentity = matching.compactMap(\.hostIdentity).first
-      }
-      if profile.hostName == nil {
-        profile.hostName = matching.first?.hostName
-      }
+      profile = profileByApplyingDiscoveredRoutes(profile, matching: matching)
     }
     guard autoReconnectAwaitingLiveDiscovery,
           allowAutoReconnect,
@@ -5228,6 +5321,26 @@ final class SyncService: ObservableObject {
     autoReconnectAwaitingLiveDiscovery = false
     Task { @MainActor [weak self] in
       await self?.reconnectIfPossible()
+    }
+  }
+
+  private func refreshSavedProfilesFromDiscovery() {
+    var profiles = loadSavedProfilesRaw()
+    guard !profiles.isEmpty, !discoveredHosts.isEmpty else { return }
+    var changed = false
+    for (key, profile) in profiles {
+      let matching = discoveredHosts.filter { discovered in
+        matchesDiscoveredHost(discovered, profile: profile)
+      }
+      guard !matching.isEmpty else { continue }
+      let updated = profileByApplyingDiscoveredRoutes(profile, matching: matching)
+      guard updated != profile else { continue }
+      profiles.removeValue(forKey: key)
+      profiles[profileStorageKey(updated) ?? key] = updated
+      changed = true
+    }
+    if changed {
+      saveSavedProfiles(profiles)
     }
   }
 
@@ -5280,7 +5393,7 @@ final class SyncService: ObservableObject {
 
     guard let urlString = syncWebSocketURLString(host: socketHost, port: socketPort),
           let url = URL(string: urlString) else {
-      throw NSError(domain: "ADE", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid host address."])
+      throw NSError(domain: "ADE", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid machine address."])
     }
     let task = socketSession.webSocketTask(with: url)
     socket = task
@@ -5427,6 +5540,18 @@ final class SyncService: ObservableObject {
     let brain = payload["brain"] as? [String: Any]
     let remoteHostIdentity = brain?["deviceId"] as? String
     let remoteHostName = brain?["deviceName"] as? String
+    let incomingHostIdentity = syncNormalizedCommandScopeValue(remoteHostIdentity)
+      ?? syncNormalizedCommandScopeValue(expectedHostIdentity)
+    if activeProjectId != nil,
+       let incomingHostIdentity,
+       (
+         syncNormalizedCommandScopeValue(activeProjectHostIdentity)
+           ?? syncNormalizedCommandScopeValue(activeHostProfile?.hostIdentity)
+           ?? syncNormalizedCommandScopeValue(activeHostProfile?.lastHostDeviceId)
+       ) != incomingHostIdentity {
+      setActiveProjectId(nil)
+      projectHomePresented = true
+    }
     if let expectedHostIdentity, let remoteHostIdentity, expectedHostIdentity != remoteHostIdentity {
       disconnect(clearCredentials: false, suspendAutoReconnect: false)
       remoteProjectCatalog = []
@@ -5434,7 +5559,7 @@ final class SyncService: ObservableObject {
       throw NSError(
         domain: "ADE",
         code: 20,
-        userInfo: [NSLocalizedDescriptionKey: "The saved pairing belongs to a different ADE host. Pair again with the current host."]
+        userInfo: [NSLocalizedDescriptionKey: "The saved pairing belongs to a different ADE machine. Pair again with the current machine."]
       )
     }
 
@@ -5621,7 +5746,7 @@ final class SyncService: ObservableObject {
               failure = NSError(
                 domain: "ADE",
                 code: 24,
-                userInfo: [NSLocalizedDescriptionKey: "The host stopped responding. Reconnecting now."]
+                userInfo: [NSLocalizedDescriptionKey: "The machine stopped responding. Reconnecting now."]
               )
             } else {
               failure = error
@@ -5886,14 +6011,14 @@ final class SyncService: ObservableObject {
       return
     }
     guard pending.retryCount < maxChangesetAckRetries else {
-      failPendingOutboundChangeset("The desktop stopped accepting phone changes. Reconnecting now.")
+      failPendingOutboundChangeset("The machine stopped accepting phone changes. Reconnecting now.")
       return
     }
     pending.retryCount += 1
     pending.sentAt = ProcessInfo.processInfo.systemUptime
     pendingOutboundChangeset = pending
     persistPendingOutboundChangesetForActiveProject(pending)
-    lastError = ack.error?.message ?? "The desktop could not apply the latest phone changes."
+    lastError = ack.error?.message ?? "The machine could not apply the latest phone changes."
   }
 
   private func sendOutboundChangeset(_ pending: PendingOutboundChangeset) {
@@ -5915,7 +6040,7 @@ final class SyncService: ObservableObject {
       }
       if now - pending.sentAt >= 10 {
         guard pending.retryCount < maxChangesetAckRetries else {
-          failPendingOutboundChangeset("The desktop did not acknowledge phone changes in time. Reconnecting now.")
+          failPendingOutboundChangeset("The machine did not acknowledge phone changes in time. Reconnecting now.")
           return
         }
         pending.sentAt = now
@@ -6036,6 +6161,9 @@ final class SyncService: ObservableObject {
     if let requestId, !requestId.isEmpty {
       envelope["requestId"] = requestId
     }
+    if let projectId = syncOutboundEnvelopeProjectId(type: type, activeProjectId: activeProjectId) {
+      envelope["projectId"] = projectId
+    }
 
     guard let data = try? adeJSONData(withJSONObject: envelope),
           let text = String(data: data, encoding: .utf8)
@@ -6067,7 +6195,7 @@ final class SyncService: ObservableObject {
             NSError(
               domain: "ADE",
               code: 25,
-              userInfo: [NSLocalizedDescriptionKey: "Timed out waiting for the host connection to open."]
+              userInfo: [NSLocalizedDescriptionKey: "Timed out waiting for the machine connection to open."]
             )
           )
         )
@@ -6177,7 +6305,7 @@ final class SyncService: ObservableObject {
       let resolvedError: NSError
       if disconnectOnTimeout {
         resolvedError = SyncRequestTimeout.error(
-          message: "The host took too long to respond. Try again."
+          message: "The machine took too long to respond. Try again."
         )
       } else {
         resolvedError = timeoutError
@@ -6323,7 +6451,7 @@ final class SyncService: ObservableObject {
         switch operation.kind {
         case "command":
           guard commandPolicy(for: operation.action) != nil else {
-            throw NSError(domain: "ADE", code: 16, userInfo: [NSLocalizedDescriptionKey: "Queued action \(operation.action) is no longer available on this host."])
+            throw NSError(domain: "ADE", code: 16, userInfo: [NSLocalizedDescriptionKey: "Queued action \(operation.action) is no longer available on this machine."])
           }
           _ = try await performCommandRequest(action: operation.action, args: args, commandId: operation.id)
         case "file":
@@ -6358,7 +6486,7 @@ final class SyncService: ObservableObject {
     timeoutMessage: String = SyncRequestTimeout.message
   ) async throws -> Any {
     guard canSendLiveRequests() else {
-      throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: "The host is offline."])
+      throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: "The machine is offline."])
     }
     let requestId = commandId ?? makeRequestId()
     let raw = try await awaitResponse(
@@ -6366,11 +6494,17 @@ final class SyncService: ObservableObject {
       disconnectOnTimeout: disconnectOnTimeout,
       timeoutMessage: timeoutMessage
     ) {
-      self.sendEnvelope(type: "command", requestId: requestId, payload: [
-        "commandId": requestId,
-        "action": action,
-        "args": args,
-      ])
+      self.sendEnvelope(
+        type: "command",
+        requestId: requestId,
+        payload: syncCommandEnvelopePayload(
+          commandId: requestId,
+          action: action,
+          args: args,
+          projectId: self.activeProjectId,
+          projectRootPath: self.activeProjectRootPath
+        )
+      )
     }
     return try unwrapSyncCommandResponse(raw)
   }
@@ -6391,10 +6525,10 @@ final class SyncService: ObservableObject {
       }
     }
     guard let policy = commandPolicy(for: action) else {
-      throw NSError(domain: "ADE", code: 15, userInfo: [NSLocalizedDescriptionKey: "This action is not available for the current host. Reconnect to refresh lane capabilities."])
+      throw NSError(domain: "ADE", code: 15, userInfo: [NSLocalizedDescriptionKey: "This action is not available for the current machine. Reconnect to refresh lane capabilities."])
     }
     guard policy.queueable == true else {
-      throw NSError(domain: "ADE", code: 15, userInfo: [NSLocalizedDescriptionKey: "This action requires a live connection to the host."])
+      throw NSError(domain: "ADE", code: 15, userInfo: [NSLocalizedDescriptionKey: "This action requires a live connection to the machine."])
     }
     try enqueueOperation(kind: "command", action: action, args: args)
     return ["queued": true]
@@ -6581,7 +6715,16 @@ final class SyncService: ObservableObject {
         currentProjectId: {
           guard let activeProjectId = self.activeProjectId else {
             let cachedProjects = self.database.listMobileProjects()
-            return cachedProjects.count == 1 ? cachedProjects[0].id : nil
+            guard cachedProjects.count == 1, let onlyProject = cachedProjects.first else {
+              return nil
+            }
+            if self.supportsProjectCatalog {
+              guard self.remoteProjectCatalog.count == 1,
+                    self.remoteProjectCatalog.first?.id == onlyProject.id else {
+                return nil
+              }
+            }
+            return onlyProject.id
           }
           return self.database.hasProject(id: activeProjectId) ? activeProjectId : nil
         },
@@ -6605,6 +6748,13 @@ final class SyncService: ObservableObject {
     if activeProjectId == nil {
       let cachedProjects = database.listMobileProjects()
       if cachedProjects.count == 1, let onlyProject = cachedProjects.first {
+        if supportsProjectCatalog {
+          guard remoteProjectCatalog.count == 1,
+                remoteProjectCatalog.first?.id == onlyProject.id else {
+            refreshProjectCatalog()
+            return
+          }
+        }
         setActiveProjectId(onlyProject.id, rootPath: onlyProject.rootPath)
       } else {
         refreshProjectCatalog()
@@ -6651,7 +6801,7 @@ final class SyncService: ObservableObject {
 
   private func performFileRequest(action: String, args: [String: Any]) async throws -> Any {
     guard canSendLiveRequests() else {
-      throw NSError(domain: "ADE", code: 16, userInfo: [NSLocalizedDescriptionKey: "The host is offline."])
+      throw NSError(domain: "ADE", code: 16, userInfo: [NSLocalizedDescriptionKey: "The machine is offline."])
     }
     let requestId = makeRequestId()
     let raw = try await awaitResponse(requestId: requestId) {
@@ -6675,7 +6825,7 @@ final class SyncService: ObservableObject {
       return try await performFileRequest(action: action, args: args)
     }
     guard queueableFileActions.contains(action) else {
-      throw NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: "This file action requires a live connection to the host."])
+      throw NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: "This file action requires a live connection to the machine."])
     }
     try enqueueOperation(kind: "file", action: action, args: args)
     return ["queued": true]
@@ -7171,6 +7321,11 @@ private final class SyncTailnetProbe {
           port: port,
           addresses: isTailnetRoute ? [] : [routeHost],
           tailscaleAddress: isTailnetRoute ? routeHost : nil,
+          runtimeKind: nil,
+          runtimeVersion: nil,
+          projectIds: [],
+          projectNames: [],
+          projectCount: nil,
           lastResolvedAt: ISO8601DateFormatter().string(from: Date())
         )
         break
@@ -7212,6 +7367,81 @@ private final class SyncTailnetProbe {
       }
     }
   }
+}
+
+func syncDiscoveredHostFromBonjour(
+  serviceKey: String,
+  serviceName: String,
+  serviceHostName: String?,
+  servicePort: Int,
+  txtRecord: [String: String],
+  resolvedAddresses: [String],
+  lastResolvedAt: String = ISO8601DateFormatter().string(from: Date())
+) -> DiscoveredSyncHost {
+  let preferredHost = txtRecord["host"]?
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+  let announcedAddresses = txtRecord["addresses"]?
+    .split(separator: ",")
+    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+    .filter { !$0.isEmpty } ?? []
+  let addresses = ([preferredHost]
+    .compactMap { $0 }
+    .filter { !$0.isEmpty })
+    + resolvedAddresses.filter { !$0.isEmpty }
+    + announcedAddresses
+  let port = servicePort > 0 ? servicePort : Int(txtRecord["port"] ?? "") ?? 8787
+  let hostName = [txtRecord["deviceName"], serviceHostName, serviceName]
+    .compactMap(syncNormalizedCommandScopeValue)
+    .first ?? serviceName
+  let hostIdentity = syncNormalizedCommandScopeValue(txtRecord["deviceId"])
+  let runtimeKind = txtRecord["runtimeKind"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+  let runtimeVersion = txtRecord["runtimeVersion"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+  let projectIds = txtRecord["projects"]?
+    .split(separator: ",")
+    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+    .filter { !$0.isEmpty } ?? []
+  let projectNames = txtRecord["projectNames"]?
+    .split(separator: ",")
+    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+    .filter { !$0.isEmpty } ?? []
+  let projectCount = txtRecord["projectCount"].flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+  let tailscaleDnsName = txtRecord["tailscaleDnsName"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+  let tailscaleIp = txtRecord["tailscaleIp"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+  let tailscaleAddress = [tailscaleDnsName, tailscaleIp]
+    .compactMap { value -> String? in
+      guard let value, !value.isEmpty, syncIsTailscaleRoute(value) else { return nil }
+      return value
+    }
+    .first
+  let id: String
+  if let hostIdentity, !hostIdentity.isEmpty {
+    id = "\(hostIdentity)::\(serviceKey)"
+  } else {
+    id = serviceKey
+  }
+  var seen = Set<String>()
+  var ordered: [String] = []
+  for host in addresses where seen.insert(host).inserted {
+    ordered.append(host)
+  }
+  let isLoopback = { (host: String) -> Bool in host == "127.0.0.1" || host == "::1" }
+  let nonLoopback = ordered.filter { !isLoopback($0) }
+  let loopback = ordered.filter(isLoopback)
+  return DiscoveredSyncHost(
+    id: id,
+    serviceName: serviceName,
+    hostName: hostName,
+    hostIdentity: hostIdentity,
+    port: port,
+    addresses: nonLoopback + loopback,
+    tailscaleAddress: tailscaleAddress,
+    runtimeKind: runtimeKind?.isEmpty == false ? runtimeKind : nil,
+    runtimeVersion: runtimeVersion?.isEmpty == false ? runtimeVersion : nil,
+    projectIds: projectIds,
+    projectNames: projectNames,
+    projectCount: projectCount,
+    lastResolvedAt: lastResolvedAt
+  )
 }
 
 private final class SyncBonjourBrowser: NSObject, NetServiceBrowserDelegate, NetServiceDelegate {
@@ -7415,59 +7645,17 @@ private final class SyncBonjourBrowser: NSObject, NetServiceBrowserDelegate, Net
 
   private func makeHost(from service: NetService) -> DiscoveredSyncHost? {
     let txtRecord = decodedTxtRecord(from: service)
-    let preferredHost = txtRecord["host"]?
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-    let announcedAddresses = txtRecord["addresses"]?
-      .split(separator: ",")
-      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) } ?? []
     let resolvedAddresses = service.addresses?
       .compactMap(parseHost(from:))
       .filter { !$0.isEmpty } ?? []
-    let addresses = ([preferredHost]
-      .compactMap { $0 }
-      .filter { !$0.isEmpty })
-      + resolvedAddresses
-      + announcedAddresses
-    let port = service.port > 0 ? service.port : Int(txtRecord["port"] ?? "") ?? 8787
-    let hostName = txtRecord["deviceName"] ?? service.hostName ?? service.name
-    let hostIdentity = txtRecord["deviceId"]
-    let tailscaleDnsName = txtRecord["tailscaleDnsName"]?.trimmingCharacters(in: .whitespacesAndNewlines)
-    let tailscaleIp = txtRecord["tailscaleIp"]?.trimmingCharacters(in: .whitespacesAndNewlines)
-    let tailscaleAddress = [tailscaleDnsName, tailscaleIp]
-      .compactMap { value -> String? in
-        guard let value, !value.isEmpty, syncIsTailscaleRoute(value) else { return nil }
-        return value
-      }
-      .first
     let sk = serviceKey(for: service)
-    // Stable unique row id for SwiftUI: same `deviceId` can appear on multiple Bonjour rows.
-    let id: String
-    if let hostIdentity, !hostIdentity.isEmpty {
-      id = "\(hostIdentity)::\(sk)"
-    } else {
-      id = sk
-    }
-    // Preserve source order (TXT-preferred first, resolved next), dedup, and
-    // force any loopback candidate to the tail — a simulator sharing the host's
-    // loopback can use it, but a physical device would waste a roundtrip if it
-    // tried 127.0.0.1 first.
-    var seen = Set<String>()
-    var ordered: [String] = []
-    for host in addresses where seen.insert(host).inserted {
-      ordered.append(host)
-    }
-    let isLoopback = { (host: String) -> Bool in host == "127.0.0.1" || host == "::1" }
-    let nonLoopback = ordered.filter { !isLoopback($0) }
-    let loopback = ordered.filter(isLoopback)
-    return DiscoveredSyncHost(
-      id: id,
+    return syncDiscoveredHostFromBonjour(
+      serviceKey: sk,
       serviceName: service.name,
-      hostName: hostName,
-      hostIdentity: hostIdentity,
-      port: port,
-      addresses: nonLoopback + loopback,
-      tailscaleAddress: tailscaleAddress,
-      lastResolvedAt: ISO8601DateFormatter().string(from: Date())
+      serviceHostName: service.hostName,
+      servicePort: service.port,
+      txtRecord: txtRecord,
+      resolvedAddresses: resolvedAddresses
     )
   }
 

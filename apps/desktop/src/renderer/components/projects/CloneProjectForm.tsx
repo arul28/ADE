@@ -18,7 +18,16 @@ import {
 } from "@phosphor-icons/react";
 import { motion, AnimatePresence } from "motion/react";
 import { extractError } from "../../lib/format";
-import type { GitHubStatus, MyGitHubRepoSummary } from "../../../shared/types";
+import type {
+  CloneProjectInput,
+  CloneProjectResult,
+  GitHubStatus,
+  ListMyGitHubReposInput,
+  ListMyGitHubReposResult,
+  MyGitHubRepoSummary,
+  ProjectBrowseInput,
+  ProjectBrowseResult,
+} from "../../../shared/types";
 import {
   COLORS,
   LABEL_STYLE,
@@ -32,7 +41,29 @@ import {
 
 export type CloneProjectFormProps = {
   onCancel: () => void;
-  onCloned: (result: { rootPath: string; displayName: string }) => void;
+  onCloned: (result: {
+    rootPath: string;
+    displayName: string;
+    projectId?: string;
+  }) => void;
+  machineName?: string;
+  getDefaultParentDir?: () => Promise<string>;
+  browseDirectories?: (
+    input: ProjectBrowseInput,
+  ) => Promise<ProjectBrowseResult>;
+  chooseDirectory?:
+    | ((args: {
+        title: string;
+        defaultPath?: string;
+      }) => Promise<string | null>)
+    | null;
+  cloneProject?: (
+    input: CloneProjectInput,
+  ) => Promise<CloneProjectResult & { projectId?: string }>;
+  listMyRepos?: (
+    input?: ListMyGitHubReposInput,
+  ) => Promise<ListMyGitHubReposResult>;
+  allowTokenSetup?: boolean;
 };
 
 type Tab = "url" | "my-repos";
@@ -55,7 +86,10 @@ function isGitHubRepoUrl(raw: string): boolean {
     try {
       const url = new URL(trimmed);
       if (!/github\.com$/i.test(url.hostname)) return false;
-      const parts = url.pathname.replace(/^\/+/, "").replace(/\.git$/i, "").split("/");
+      const parts = url.pathname
+        .replace(/^\/+/, "")
+        .replace(/\.git$/i, "")
+        .split("/");
       return Boolean(parts[0]?.trim() && parts[1]?.trim());
     } catch {
       return false;
@@ -88,7 +122,10 @@ function deriveSlug(url: string): string {
 function joinPath(parent: string, name: string): string {
   if (!parent) return name;
   const sep = parent.includes("\\") ? "\\" : "/";
-  const trimmed = parent.endsWith("/") || parent.endsWith("\\") ? parent.slice(0, -1) : parent;
+  const trimmed =
+    parent.endsWith("/") || parent.endsWith("\\")
+      ? parent.slice(0, -1)
+      : parent;
   if (!name) return trimmed;
   return `${trimmed}${sep}${name}`;
 }
@@ -112,14 +149,60 @@ function relativeFromNow(iso: string | null | undefined): string {
   return `${years}y ago`;
 }
 
-export function CloneProjectForm({ onCancel, onCloned }: CloneProjectFormProps) {
+function withRepoListDeadline(
+  promise: Promise<ListMyGitHubReposResult>,
+): Promise<ListMyGitHubReposResult> {
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      reject(
+        new Error(
+          "Timed out loading repositories. Check GitHub auth and network access on the selected machine.",
+        ),
+      );
+    }, 15_000);
+    promise.then(
+      (value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        window.clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+type ChooseDirectory =
+  | ((args: { title: string; defaultPath?: string }) => Promise<string | null>)
+  | null;
+
+export function CloneProjectForm({
+  onCancel,
+  onCloned,
+  machineName,
+  getDefaultParentDir,
+  browseDirectories,
+  chooseDirectory,
+  cloneProject,
+  listMyRepos,
+  allowTokenSetup = true,
+}: CloneProjectFormProps) {
   const [tab, setTab] = useState<Tab>("url");
   const [defaultParentDir, setDefaultParentDir] = useState<string>("");
+  const loadDefaultParentDir =
+    getDefaultParentDir ?? window.ade.project.getDefaultParentDir;
+  const browse = browseDirectories ?? window.ade.project.browseDirectories;
+  const pickDirectory: ChooseDirectory =
+    chooseDirectory === undefined
+      ? window.ade.project.chooseDirectory
+      : chooseDirectory;
+  const clone = cloneProject ?? window.ade.project.clone;
+  const loadRepos = listMyRepos ?? window.ade.github.listMyRepos;
 
   useEffect(() => {
     let cancelled = false;
-    void window.ade.project
-      .getDefaultParentDir()
+    void loadDefaultParentDir()
       .then((value) => {
         if (cancelled) return;
         setDefaultParentDir(value);
@@ -128,20 +211,38 @@ export function CloneProjectForm({ onCancel, onCloned }: CloneProjectFormProps) 
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [loadDefaultParentDir]);
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 14, width: "100%" }}>
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 14,
+        width: "100%",
+      }}
+    >
       <TabBar tab={tab} onChange={setTab} />
+      {machineName ? (
+        <InlineHint tone="muted">Target: {machineName}</InlineHint>
+      ) : null}
       {tab === "url" ? (
         <UrlTab
           defaultParentDir={defaultParentDir}
+          browseDirectories={browse}
+          chooseDirectory={pickDirectory}
+          cloneProject={clone}
           onCancel={onCancel}
           onCloned={onCloned}
         />
       ) : (
         <MyReposTab
           defaultParentDir={defaultParentDir}
+          browseDirectories={browse}
+          chooseDirectory={pickDirectory}
+          cloneProject={clone}
+          listMyRepos={loadRepos}
+          allowTokenSetup={allowTokenSetup}
           onCancel={onCancel}
           onCloned={onCloned}
         />
@@ -166,7 +267,10 @@ function TabBar({ tab, onChange }: { tab: Tab; onChange: (tab: Tab) => void }) {
       <TabButton active={tab === "url"} onClick={() => onChange("url")}>
         URL
       </TabButton>
-      <TabButton active={tab === "my-repos"} onClick={() => onChange("my-repos")}>
+      <TabButton
+        active={tab === "my-repos"}
+        onClick={() => onChange("my-repos")}
+      >
         My repos
       </TabButton>
     </div>
@@ -209,12 +313,26 @@ function TabButton({
 
 function UrlTab({
   defaultParentDir,
+  browseDirectories,
+  chooseDirectory,
+  cloneProject,
   onCancel,
   onCloned,
 }: {
   defaultParentDir: string;
+  browseDirectories: (
+    input: ProjectBrowseInput,
+  ) => Promise<ProjectBrowseResult>;
+  chooseDirectory: ChooseDirectory;
+  cloneProject: (
+    input: CloneProjectInput,
+  ) => Promise<CloneProjectResult & { projectId?: string }>;
   onCancel: () => void;
-  onCloned: (result: { rootPath: string; displayName: string }) => void;
+  onCloned: (result: {
+    rootPath: string;
+    displayName: string;
+    projectId?: string;
+  }) => void;
 }) {
   const [url, setUrl] = useState("");
   const [name, setName] = useState("");
@@ -246,8 +364,7 @@ function UrlTab({
     }
     const requestId = ++checkRequestRef.current;
     const timeout = window.setTimeout(() => {
-      void window.ade.project
-        .browseDirectories({ partialPath: previewPath })
+      void browseDirectories({ partialPath: previewPath })
         .then((result) => {
           if (checkRequestRef.current !== requestId) return;
           setPathExists(result.exactDirectoryPath === previewPath);
@@ -258,7 +375,7 @@ function UrlTab({
         });
     }, 220);
     return () => window.clearTimeout(timeout);
-  }, [previewPath]);
+  }, [browseDirectories, previewPath]);
 
   const handleUrlBlur = useCallback(() => {
     if (nameTouched) return;
@@ -267,10 +384,11 @@ function UrlTab({
   }, [nameTouched, trimmedUrl]);
 
   const handleChooseParent = useCallback(async () => {
+    if (!chooseDirectory) return;
     setPickerPending(true);
     setError(null);
     try {
-      const selected = await window.ade.project.chooseDirectory({
+      const selected = await chooseDirectory({
         title: "Choose parent directory",
         defaultPath: parentDir || undefined,
       });
@@ -280,28 +398,36 @@ function UrlTab({
     } finally {
       setPickerPending(false);
     }
-  }, [parentDir]);
+  }, [chooseDirectory, parentDir]);
 
   const canSubmit =
-    urlValid && trimmedName.length > 0 && parentDir.length > 0 && !pathExists && !pending;
+    urlValid &&
+    trimmedName.length > 0 &&
+    parentDir.length > 0 &&
+    !pathExists &&
+    !pending;
 
   const handleSubmit = useCallback(async () => {
     if (!canSubmit) return;
     setPending(true);
     setError(null);
     try {
-      const result = await window.ade.project.clone({
+      const result = await cloneProject({
         url: trimmedUrl,
         parentDir,
         name: trimmedName,
       });
-      onCloned({ rootPath: result.rootPath, displayName: trimmedName });
+      onCloned({
+        rootPath: result.rootPath,
+        displayName: trimmedName,
+        projectId: result.projectId,
+      });
     } catch (err) {
       setError(extractError(err));
     } finally {
       setPending(false);
     }
-  }, [canSubmit, onCloned, parentDir, trimmedName, trimmedUrl]);
+  }, [canSubmit, cloneProject, onCloned, parentDir, trimmedName, trimmedUrl]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -318,7 +444,8 @@ function UrlTab({
         />
         {url.length > 0 && !urlValid ? (
           <InlineHint tone="danger">
-            Enter a GitHub URL like https://github.com/owner/repo or git@github.com:owner/repo.git
+            Enter a GitHub URL like https://github.com/owner/repo or
+            git@github.com:owner/repo.git
           </InlineHint>
         ) : null}
       </Field>
@@ -339,38 +466,38 @@ function UrlTab({
 
       <Field label="PARENT DIRECTORY">
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <div
+          <input
+            type="text"
+            value={parentDir}
+            onChange={(event) => setParentDir(event.target.value)}
+            placeholder="Parent directory"
             style={{
               ...inputStyle,
-              display: "flex",
-              alignItems: "center",
               fontFamily: MONO_FONT,
               fontSize: 12,
               color: parentDir ? COLORS.textPrimary : COLORS.textMuted,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
               flex: 1,
             }}
             title={parentDir}
-          >
-            {parentDir || "No parent directory selected"}
-          </div>
-          <button
-            type="button"
-            style={outlineButton({ minWidth: 44 })}
-            disabled={pickerPending || pending}
-            onClick={() => {
-              void handleChooseParent();
-            }}
-            aria-label="Choose parent directory"
-          >
-            {pickerPending ? (
-              <CircleNotch size={12} weight="bold" className="animate-spin" />
-            ) : (
-              <FolderOpen size={12} weight="regular" />
-            )}
-          </button>
+            disabled={pending}
+          />
+          {chooseDirectory ? (
+            <button
+              type="button"
+              style={outlineButton({ minWidth: 44 })}
+              disabled={pickerPending || pending}
+              onClick={() => {
+                void handleChooseParent();
+              }}
+              aria-label="Choose parent directory"
+            >
+              {pickerPending ? (
+                <CircleNotch size={12} weight="bold" className="animate-spin" />
+              ) : (
+                <FolderOpen size={12} weight="regular" />
+              )}
+            </button>
+          ) : null}
         </div>
       </Field>
 
@@ -378,8 +505,20 @@ function UrlTab({
 
       {error ? <InlineHint tone="danger">{error}</InlineHint> : null}
 
-      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
-        <button type="button" style={outlineButton()} onClick={onCancel} disabled={pending}>
+      <div
+        style={{
+          display: "flex",
+          gap: 8,
+          justifyContent: "flex-end",
+          marginTop: 4,
+        }}
+      >
+        <button
+          type="button"
+          style={outlineButton()}
+          onClick={onCancel}
+          disabled={pending}
+        >
           Cancel
         </button>
         <button
@@ -410,12 +549,32 @@ function UrlTab({
 
 function MyReposTab({
   defaultParentDir,
+  browseDirectories,
+  chooseDirectory,
+  cloneProject,
+  listMyRepos,
+  allowTokenSetup,
   onCancel,
   onCloned,
 }: {
   defaultParentDir: string;
+  browseDirectories: (
+    input: ProjectBrowseInput,
+  ) => Promise<ProjectBrowseResult>;
+  chooseDirectory: ChooseDirectory;
+  cloneProject: (
+    input: CloneProjectInput,
+  ) => Promise<CloneProjectResult & { projectId?: string }>;
+  listMyRepos: (
+    input?: ListMyGitHubReposInput,
+  ) => Promise<ListMyGitHubReposResult>;
+  allowTokenSetup: boolean;
   onCancel: () => void;
-  onCloned: (result: { rootPath: string; displayName: string }) => void;
+  onCloned: (result: {
+    rootPath: string;
+    displayName: string;
+    projectId?: string;
+  }) => void;
 }) {
   const [status, setStatus] = useState<GitHubStatus | null>(null);
   const [statusLoading, setStatusLoading] = useState(true);
@@ -435,10 +594,30 @@ function MyReposTab({
   }, []);
 
   useEffect(() => {
+    if (!allowTokenSetup) {
+      setStatusLoading(false);
+      return;
+    }
     void loadStatus();
-  }, [loadStatus]);
+  }, [allowTokenSetup, loadStatus]);
 
-  const isConnected = Boolean(status?.tokenStored && !status?.tokenDecryptionFailed);
+  if (!allowTokenSetup) {
+    return (
+      <ConnectedRepoBrowser
+        defaultParentDir={defaultParentDir}
+        browseDirectories={browseDirectories}
+        chooseDirectory={chooseDirectory}
+        cloneProject={cloneProject}
+        listMyRepos={listMyRepos}
+        onCancel={onCancel}
+        onCloned={onCloned}
+      />
+    );
+  }
+
+  const isConnected = Boolean(
+    status?.tokenStored && !status?.tokenDecryptionFailed,
+  );
 
   if (statusLoading && !status) {
     return (
@@ -474,6 +653,10 @@ function MyReposTab({
   return (
     <ConnectedRepoBrowser
       defaultParentDir={defaultParentDir}
+      browseDirectories={browseDirectories}
+      chooseDirectory={chooseDirectory}
+      cloneProject={cloneProject}
+      listMyRepos={listMyRepos}
       onCancel={onCancel}
       onCloned={onCloned}
     />
@@ -529,7 +712,8 @@ function ConnectGithubPrompt({
             width: 32,
             height: 32,
             borderRadius: 8,
-            background: "color-mix(in srgb, var(--color-accent) 15%, transparent)",
+            background:
+              "color-mix(in srgb, var(--color-accent) 15%, transparent)",
             color: COLORS.accent,
           }}
         >
@@ -560,7 +744,9 @@ function ConnectGithubPrompt({
       </div>
 
       <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        <span style={{ ...LABEL_STYLE, letterSpacing: "0.08em" }}>PERSONAL ACCESS TOKEN</span>
+        <span style={{ ...LABEL_STYLE, letterSpacing: "0.08em" }}>
+          PERSONAL ACCESS TOKEN
+        </span>
         <input
           type="password"
           value={token}
@@ -577,12 +763,17 @@ function ConnectGithubPrompt({
         />
       </label>
 
-      {(error || statusError) ? (
+      {error || statusError ? (
         <InlineHint tone="danger">{error ?? statusError}</InlineHint>
       ) : null}
 
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-        <button type="button" style={outlineButton()} onClick={onCancel} disabled={pending}>
+        <button
+          type="button"
+          style={outlineButton()}
+          onClick={onCancel}
+          disabled={pending}
+        >
           Cancel
         </button>
         <button
@@ -612,12 +803,30 @@ function ConnectGithubPrompt({
 
 function ConnectedRepoBrowser({
   defaultParentDir,
+  browseDirectories,
+  chooseDirectory,
+  cloneProject,
+  listMyRepos,
   onCancel,
   onCloned,
 }: {
   defaultParentDir: string;
+  browseDirectories: (
+    input: ProjectBrowseInput,
+  ) => Promise<ProjectBrowseResult>;
+  chooseDirectory: ChooseDirectory;
+  cloneProject: (
+    input: CloneProjectInput,
+  ) => Promise<CloneProjectResult & { projectId?: string }>;
+  listMyRepos: (
+    input?: ListMyGitHubReposInput,
+  ) => Promise<ListMyGitHubReposResult>;
   onCancel: () => void;
-  onCloned: (result: { rootPath: string; displayName: string }) => void;
+  onCloned: (result: {
+    rootPath: string;
+    displayName: string;
+    projectId?: string;
+  }) => void;
 }) {
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
@@ -627,6 +836,11 @@ function ConnectedRepoBrowser({
   const [expandedFullName, setExpandedFullName] = useState<string | null>(null);
 
   const requestRef = useRef(0);
+  const listMyReposRef = useRef(listMyRepos);
+
+  useEffect(() => {
+    listMyReposRef.current = listMyRepos;
+  }, [listMyRepos]);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
@@ -639,8 +853,9 @@ function ConnectedRepoBrowser({
     const requestId = ++requestRef.current;
     setLoading(true);
     setError(null);
-    void window.ade.github
-      .listMyRepos({ search: debouncedSearch || undefined })
+    void withRepoListDeadline(
+      listMyReposRef.current({ search: debouncedSearch || undefined }),
+    )
       .then((result) => {
         if (requestRef.current !== requestId) return;
         const sorted = [...result.repos].sort((a, b) => {
@@ -696,7 +911,9 @@ function ConnectedRepoBrowser({
             fontSize: 13,
           }}
         />
-        {loading ? <CircleNotch size={12} weight="bold" className="animate-spin" /> : null}
+        {loading ? (
+          <CircleNotch size={12} weight="bold" className="animate-spin" />
+        ) : null}
       </div>
 
       {error ? <InlineHint tone="danger">{error}</InlineHint> : null}
@@ -723,7 +940,9 @@ function ConnectedRepoBrowser({
               textAlign: "center",
             }}
           >
-            {debouncedSearch ? "No repositories match." : "No repositories found."}
+            {debouncedSearch
+              ? "No repositories match."
+              : "No repositories found."}
           </div>
         ) : (
           repos.map((repo) => (
@@ -732,16 +951,28 @@ function ConnectedRepoBrowser({
               repo={repo}
               expanded={expandedFullName === repo.fullName}
               onToggle={() =>
-                setExpandedFullName((prev) => (prev === repo.fullName ? null : repo.fullName))
+                setExpandedFullName((prev) =>
+                  prev === repo.fullName ? null : repo.fullName,
+                )
               }
               defaultParentDir={defaultParentDir}
+              browseDirectories={browseDirectories}
+              chooseDirectory={chooseDirectory}
+              cloneProject={cloneProject}
               onCloned={onCloned}
             />
           ))
         )}
       </div>
 
-      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 2 }}>
+      <div
+        style={{
+          display: "flex",
+          gap: 8,
+          justifyContent: "flex-end",
+          marginTop: 2,
+        }}
+      >
         <button type="button" style={outlineButton()} onClick={onCancel}>
           Cancel
         </button>
@@ -755,13 +986,27 @@ function RepoRow({
   expanded,
   onToggle,
   defaultParentDir,
+  browseDirectories,
+  chooseDirectory,
+  cloneProject,
   onCloned,
 }: {
   repo: MyGitHubRepoSummary;
   expanded: boolean;
   onToggle: () => void;
   defaultParentDir: string;
-  onCloned: (result: { rootPath: string; displayName: string }) => void;
+  browseDirectories: (
+    input: ProjectBrowseInput,
+  ) => Promise<ProjectBrowseResult>;
+  chooseDirectory: ChooseDirectory;
+  cloneProject: (
+    input: CloneProjectInput,
+  ) => Promise<CloneProjectResult & { projectId?: string }>;
+  onCloned: (result: {
+    rootPath: string;
+    displayName: string;
+    projectId?: string;
+  }) => void;
 }) {
   const [parentDir, setParentDir] = useState(defaultParentDir);
   const [name, setName] = useState(repo.name);
@@ -776,7 +1021,8 @@ function RepoRow({
 
   const checkRequestRef = useRef(0);
   const trimmedName = name.trim();
-  const previewPath = parentDir && trimmedName ? joinPath(parentDir, trimmedName) : "";
+  const previewPath =
+    parentDir && trimmedName ? joinPath(parentDir, trimmedName) : "";
 
   useEffect(() => {
     if (!expanded || !previewPath) {
@@ -785,8 +1031,7 @@ function RepoRow({
     }
     const requestId = ++checkRequestRef.current;
     const timeout = window.setTimeout(() => {
-      void window.ade.project
-        .browseDirectories({ partialPath: previewPath })
+      void browseDirectories({ partialPath: previewPath })
         .then((result) => {
           if (checkRequestRef.current !== requestId) return;
           setPathExists(result.exactDirectoryPath === previewPath);
@@ -797,13 +1042,14 @@ function RepoRow({
         });
     }, 220);
     return () => window.clearTimeout(timeout);
-  }, [expanded, previewPath]);
+  }, [browseDirectories, expanded, previewPath]);
 
   const handleChooseParent = useCallback(async () => {
+    if (!chooseDirectory) return;
     setPickerPending(true);
     setError(null);
     try {
-      const selected = await window.ade.project.chooseDirectory({
+      const selected = await chooseDirectory({
         title: "Choose parent directory",
         defaultPath: parentDir || undefined,
       });
@@ -813,7 +1059,7 @@ function RepoRow({
     } finally {
       setPickerPending(false);
     }
-  }, [parentDir]);
+  }, [chooseDirectory, parentDir]);
 
   const canClone =
     trimmedName.length > 0 && parentDir.length > 0 && !pathExists && !pending;
@@ -823,18 +1069,22 @@ function RepoRow({
     setPending(true);
     setError(null);
     try {
-      const result = await window.ade.project.clone({
+      const result = await cloneProject({
         url: repo.cloneUrl,
         parentDir,
         name: trimmedName,
       });
-      onCloned({ rootPath: result.rootPath, displayName: trimmedName });
+      onCloned({
+        rootPath: result.rootPath,
+        displayName: trimmedName,
+        projectId: result.projectId,
+      });
     } catch (err) {
       setError(extractError(err));
     } finally {
       setPending(false);
     }
-  }, [canClone, onCloned, parentDir, repo.cloneUrl, trimmedName]);
+  }, [canClone, cloneProject, onCloned, parentDir, repo.cloneUrl, trimmedName]);
 
   const visibilityChip: CSSProperties = repo.isPrivate
     ? inlineBadge(COLORS.accent, { padding: "2px 6px", fontSize: 10 })
@@ -875,7 +1125,15 @@ function RepoRow({
           minHeight: 56,
         }}
       >
-        <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 2 }}>
+        <div
+          style={{
+            flex: 1,
+            minWidth: 0,
+            display: "flex",
+            flexDirection: "column",
+            gap: 2,
+          }}
+        >
           <div
             style={{
               fontFamily: MONO_FONT,
@@ -901,7 +1159,11 @@ function RepoRow({
             <span style={visibilityChip}>
               {repo.isPrivate ? (
                 <>
-                  <LockSimple size={9} weight="fill" style={{ marginRight: 3 }} />
+                  <LockSimple
+                    size={9}
+                    weight="fill"
+                    style={{ marginRight: 3 }}
+                  />
                   Private
                 </>
               ) : (
@@ -930,7 +1192,8 @@ function RepoRow({
                 gap: 10,
                 padding: "10px 12px 12px",
                 borderTop: `1px solid ${COLORS.border}`,
-                background: "color-mix(in srgb, var(--color-bg) 40%, transparent)",
+                background:
+                  "color-mix(in srgb, var(--color-bg) 40%, transparent)",
               }}
             >
               <Field label="FOLDER NAME">
@@ -945,38 +1208,42 @@ function RepoRow({
 
               <Field label="PARENT DIRECTORY">
                 <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  <div
+                  <input
+                    type="text"
+                    value={parentDir}
+                    onChange={(event) => setParentDir(event.target.value)}
+                    placeholder="Parent directory"
                     style={{
                       ...inputStyle,
-                      display: "flex",
-                      alignItems: "center",
                       fontFamily: MONO_FONT,
                       fontSize: 12,
                       color: parentDir ? COLORS.textPrimary : COLORS.textMuted,
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
                       flex: 1,
                     }}
                     title={parentDir}
-                  >
-                    {parentDir || "Choose a parent directory"}
-                  </div>
-                  <button
-                    type="button"
-                    style={outlineButton({ minWidth: 44 })}
-                    disabled={pickerPending || pending}
-                    onClick={() => {
-                      void handleChooseParent();
-                    }}
-                    aria-label="Choose parent directory"
-                  >
-                    {pickerPending ? (
-                      <CircleNotch size={12} weight="bold" className="animate-spin" />
-                    ) : (
-                      <FolderOpen size={12} weight="regular" />
-                    )}
-                  </button>
+                    disabled={pending}
+                  />
+                  {chooseDirectory ? (
+                    <button
+                      type="button"
+                      style={outlineButton({ minWidth: 44 })}
+                      disabled={pickerPending || pending}
+                      onClick={() => {
+                        void handleChooseParent();
+                      }}
+                      aria-label="Choose parent directory"
+                    >
+                      {pickerPending ? (
+                        <CircleNotch
+                          size={12}
+                          weight="bold"
+                          className="animate-spin"
+                        />
+                      ) : (
+                        <FolderOpen size={12} weight="regular" />
+                      )}
+                    </button>
+                  ) : null}
                 </div>
               </Field>
 
@@ -984,7 +1251,9 @@ function RepoRow({
 
               {error ? <InlineHint tone="danger">{error}</InlineHint> : null}
 
-              <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <div
+                style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}
+              >
                 <button
                   type="button"
                   style={outlineButton()}
@@ -1007,7 +1276,11 @@ function RepoRow({
                 >
                   {pending ? (
                     <>
-                      <CircleNotch size={12} weight="bold" className="animate-spin" />
+                      <CircleNotch
+                        size={12}
+                        weight="bold"
+                        className="animate-spin"
+                      />
                       Cloning…
                     </>
                   ) : (
@@ -1041,15 +1314,29 @@ function RepoSkeleton() {
       aria-live="polite"
     >
       <CircleNotch size={22} weight="bold" className="animate-spin" />
-      <div style={{ fontFamily: SANS_FONT, fontSize: 12 }}>Loading your repositories…</div>
+      <div style={{ fontFamily: SANS_FONT, fontSize: 12 }}>
+        Loading your repositories…
+      </div>
     </div>
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
   return (
     <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-      <span style={{ ...LABEL_STYLE, letterSpacing: "0.08em", textTransform: "uppercase" }}>
+      <span
+        style={{
+          ...LABEL_STYLE,
+          letterSpacing: "0.08em",
+          textTransform: "uppercase",
+        }}
+      >
         {label}
       </span>
       {children}
@@ -1068,7 +1355,9 @@ function PathPreview({ path, exists }: { path: string; exists: boolean }) {
           ? "color-mix(in srgb, var(--color-error) 8%, transparent)"
           : "color-mix(in srgb, var(--color-fg) 3%, transparent)",
         border: `1px solid ${
-          exists ? "color-mix(in srgb, var(--color-error) 40%, var(--color-border))" : COLORS.border
+          exists
+            ? "color-mix(in srgb, var(--color-error) 40%, var(--color-border))"
+            : COLORS.border
         }`,
       }}
     >

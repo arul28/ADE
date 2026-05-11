@@ -214,16 +214,3 @@ cto:
     - Click **Dissolve** to terminate the worker and return the task to the CTO queue
   </Accordion>
 </AccordionGroup>
-
----
-
-## OpenClaw Bridge
-
-If you have an OpenClaw account or a compatible external agent platform, you can connect it to ADE. The CTO acts as the designated router for inbound requests from OpenClaw:
-
-1. In **Settings > CTO > External Connections**, enable **OpenClaw Bridge**
-2. ADE generates a local RPC endpoint URL for OpenClaw to connect to
-3. OpenClaw sends development requests to ADE by addressing them to the CTO via the `cto.request` RPC action
-
-The CTO receives these requests in its chat thread (tagged as external), evaluates them, and routes them to the appropriate internal workflow: mission launch, worker delegation, or human escalation.
-

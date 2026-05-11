@@ -19,6 +19,32 @@ function isSafeExternalUrl(value: string | null | undefined): value is string {
   }
 }
 
+type CopyState = "idle" | "copied" | "error";
+
+function copyButtonColor(state: CopyState): string {
+  switch (state) {
+    case "error": return "#FCA5A5";
+    case "copied": return "#86EFAC";
+    default: return "rgba(199,205,245,0.85)";
+  }
+}
+
+function copyButtonIcon(state: CopyState): React.ReactNode {
+  switch (state) {
+    case "copied": return <Check size={11} weight="bold" />;
+    case "error": return <WarningCircle size={11} weight="bold" />;
+    default: return <Clipboard size={11} />;
+  }
+}
+
+function copyButtonLabel(state: CopyState): string {
+  switch (state) {
+    case "copied": return "Copied";
+    case "error": return "Copy failed";
+    default: return "Copy link";
+  }
+}
+
 export function LinearIssueBadge({
   issue,
   compact = false,
@@ -28,7 +54,7 @@ export function LinearIssueBadge({
   compact?: boolean;
   onStartChatWithIssue?: () => void;
 }) {
-  const [copyState, setCopyState] = React.useState<"idle" | "copied" | "error">("idle");
+  const [copyState, setCopyState] = React.useState<CopyState>("idle");
   const project = issue.projectName?.trim() || issue.projectSlug;
 
   React.useEffect(() => {
@@ -201,7 +227,7 @@ export function LinearIssueBadge({
                   type="button"
                   className="inline-flex h-6 items-center gap-1 rounded px-2 text-[10.5px] font-medium transition-colors hover:bg-white/[0.06]"
                   style={{
-                    color: copyState === "error" ? "#FCA5A5" : copyState === "copied" ? "#86EFAC" : "rgba(199,205,245,0.85)",
+                    color: copyButtonColor(copyState),
                     background: copyState === "copied" ? "rgba(34,197,94,0.10)" : "transparent",
                   }}
                   title="Copy Linear issue link"
@@ -211,8 +237,8 @@ export function LinearIssueBadge({
                   }}
                   onClick={handleCopyIssueLink}
                 >
-                  {copyState === "copied" ? <Check size={11} weight="bold" /> : copyState === "error" ? <WarningCircle size={11} weight="bold" /> : <Clipboard size={11} />}
-                  {copyState === "copied" ? "Copied" : copyState === "error" ? "Copy failed" : "Copy link"}
+                  {copyButtonIcon(copyState)}
+                  {copyButtonLabel(copyState)}
                 </button>
                 <button
                   type="button"

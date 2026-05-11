@@ -260,9 +260,16 @@ export type AgentChatEvent =
       turnId?: string;
       itemId?: string;
       errorInfo?: string | {
-        category: "auth" | "rate_limit" | "budget" | "network" | "unknown";
+        category: "auth" | "rate_limit" | "budget" | "network" | "unknown" | "agent_cli_missing" | "agent_cli_auth";
         provider?: string;
         model?: string;
+        agentCli?: {
+          agent: string;
+          displayName: string;
+          category: "missing" | "unauthenticated";
+          installCommand: string;
+          authCommand: string;
+        };
       };
       runtime?: AgentChatRuntime;
     }

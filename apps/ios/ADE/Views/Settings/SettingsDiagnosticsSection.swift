@@ -17,7 +17,7 @@ struct SettingsDiagnosticsSection: View {
         if let identity = syncService.activeHostProfile?.hostIdentity {
           SettingsDetailRow(
             symbol: "desktopcomputer.and.arrow.down",
-            label: "Paired host",
+            label: "Paired machine",
             value: Self.shortIdentity(identity)
           )
         }

@@ -12,7 +12,7 @@ export type AgentRole =
 
 export type AgentStatus = "idle" | "active" | "paused" | "running";
 
-export type AdapterType = "claude-local" | "codex-local" | "openclaw-webhook" | "process";
+export type AdapterType = "claude-local" | "codex-local" | "process";
 
 export type HeartbeatPolicy = {
   enabled: boolean;
@@ -43,14 +43,6 @@ export type CodexLocalAdapterConfig = {
   timeoutMs?: number;
 };
 
-export type OpenclawWebhookAdapterConfig = {
-  url: string;
-  method?: "POST";
-  headers?: Record<string, string>;
-  timeoutMs?: number;
-  bodyTemplate?: string;
-};
-
 export type ProcessAdapterConfig = {
   command: string;
   args?: string[];
@@ -63,7 +55,6 @@ export type ProcessAdapterConfig = {
 export type AgentAdapterConfig =
   | ClaudeLocalAdapterConfig
   | CodexLocalAdapterConfig
-  | OpenclawWebhookAdapterConfig
   | ProcessAdapterConfig
   | Record<string, unknown>;
 
@@ -207,8 +198,7 @@ export type WorkerRuntimeSurface =
   | "claude_sdk"
   | "codex_app_server"
   | "unified_chat"
-  | "process"
-  | "openclaw_webhook";
+  | "process";
 
 export type WorkerContinuationHandle = {
   surface: WorkerRuntimeSurface;

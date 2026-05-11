@@ -394,7 +394,7 @@ extension WorkRootScreen {
       }
       await reload(refreshRemote: true)
       if let refreshed = mergedSessions.first(where: { $0.id == session.id }), refreshed.status == session.status, isChatSession(session) {
-        errorMessage = "This host keeps chat runtimes alive until the turn finishes. Reconnect and try again if the status does not update."
+        errorMessage = "This machine keeps chat sessions alive until the turn finishes. Reconnect and try again if the status does not update."
       }
     } catch {
       errorMessage = error.localizedDescription

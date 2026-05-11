@@ -143,10 +143,10 @@ struct WorkChatSessionView: View {
 
   var composerFeedback: String? {
     if sending {
-      return sendWillQueue ? "Queueing message for desktop..." : "Sending message to host..."
+      return sendWillQueue ? "Queueing message for machine..." : "Sending message to machine..."
     }
     if sendWillQueue {
-      return "Desktop is reconnecting. Send will queue until it is back."
+      return "Machine is reconnecting. Send will queue until it is back."
     }
     if !canSendMessages {
       return "Reconnect to send messages."
@@ -204,7 +204,7 @@ struct WorkChatSessionView: View {
       ADEEmptyStateView(
         symbol: "bubble.left.and.bubble.right",
         title: "No chat messages yet",
-        message: isLive ? "Send a message to start streaming the transcript." : "Reconnect to load the latest chat history from the host."
+        message: isLive ? "Send a message to start streaming the transcript." : "Reconnect to load the latest chat history from the machine."
       )
     } else {
       if hiddenTimelineCount > 0 {
