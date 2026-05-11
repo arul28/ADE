@@ -76,6 +76,26 @@ export function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
+export function cmdQuote(value: string): string {
+  if (value.includes("\"")) {
+    throw new Error("Windows service command arguments cannot contain double quotes.");
+  }
+  let quoted = "\"";
+  let backslashes = 0;
+  for (const char of value) {
+    if (char === "\\") {
+      backslashes += 1;
+      continue;
+    }
+    quoted += "\\".repeat(backslashes);
+    quoted += char;
+    backslashes = 0;
+  }
+  quoted += "\\".repeat(backslashes * 2);
+  quoted += "\"";
+  return quoted;
+}
+
 export function resolveAdeServeCommand(): AdeServiceCommand {
   const entry = typeof process.argv[1] === "string" && process.argv[1].trim()
     ? path.resolve(process.argv[1])
@@ -104,6 +124,10 @@ export function resolveAdeServeCommand(): AdeServiceCommand {
 
 export function renderCommand(command: AdeServiceCommand): string {
   return [command.command, ...command.args].map(shellQuote).join(" ");
+}
+
+export function renderWindowsCommand(command: AdeServiceCommand): string {
+  return [command.command, ...command.args].map(cmdQuote).join(" ");
 }
 
 function streamToText(value: string | Buffer | null | undefined): string {

@@ -221,7 +221,7 @@ jobs:
           - target: darwin-arm64
             os: macos-15
           - target: darwin-x64
-            os: macos-13
+            os: macos-15-intel
           - target: linux-x64
             os: ubuntu-latest
           - target: linux-arm64
@@ -290,8 +290,11 @@ jobs:
             cp "$CSC_LINK" "$CERT_PATH"
           elif [[ "$CSC_LINK" == file://* ]]; then
             cp "${CSC_LINK#file://}" "$CERT_PATH"
-          elif [[ "$CSC_LINK" == http://* || "$CSC_LINK" == https://* ]]; then
+          elif [[ "$CSC_LINK" == https://* ]]; then
             curl -fsSL "$CSC_LINK" -o "$CERT_PATH"
+          elif [[ "$CSC_LINK" == http://* ]]; then
+            echo "::error::CSC_LINK must use HTTPS, a local path, or an encoded certificate payload."
+            exit 1
           else
             printf '%s' "$CSC_LINK" | base64 --decode > "$CERT_PATH"
           fi

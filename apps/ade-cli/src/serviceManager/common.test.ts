@@ -5,21 +5,24 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   ADE_RUNTIME_SERVICE_NAME,
   renderCommand,
+  renderWindowsCommand,
   resolveAdeServeCommand,
   type AdeServiceCommand,
   type ServiceManagerProcessResult,
   type ServiceManagerSpawnSync,
 } from "./common";
 import { installLaunchdService, isLaunchdPrintRunning, launchAgentPath, renderLaunchdPlist } from "./installLaunchd";
-import { installSystemdService, renderSystemdUnit, servicePath as systemdServicePath } from "./installSystemd";
+import { installSystemdService, renderSystemdEnvironment, renderSystemdUnit, servicePath as systemdServicePath } from "./installSystemd";
 import {
   buildWindowsCreateTaskArgs,
+  buildWindowsDeleteTaskArgs,
   buildWindowsQueryTaskArgs,
   buildWindowsRunTaskArgs,
   installWindowsService,
   isSchtasksOutputRunning,
   parseSchtasksListStatus,
   TASK_NAME,
+  uninstallWindowsService,
 } from "./installWindows";
 
 const originalArgv = [...process.argv];
@@ -177,12 +180,13 @@ describe("systemd service rendering", () => {
     );
   });
 
-  it("renders unit content with quoted ExecStart and escaped percent environment values", () => {
+  it("renders unit content with quoted ExecStart and escaped environment values", () => {
     const unit = renderSystemdUnit({
       command: "/opt/ADE CLI/node",
       args: ["/opt/ade/cli.cjs", "serve"],
       env: {
-        NODE_PATH: "/tmp/100%/node_modules",
+        NODE_PATH: "/tmp/100%/node modules",
+        ADE_HOME: "/home/example/ade path\\with\"quotes",
       },
     });
 
@@ -190,8 +194,15 @@ describe("systemd service rendering", () => {
     expect(unit).toContain("Type=simple");
     expect(unit).toContain("ExecStart='/opt/ADE CLI/node' '/opt/ade/cli.cjs' 'serve'");
     expect(unit).toContain("Restart=always");
-    expect(unit).toContain("Environment=NODE_PATH=/tmp/100%%/node_modules");
+    expect(unit).toContain("Environment=\"NODE_PATH=/tmp/100%%/node modules\"");
+    expect(unit).toContain("Environment=\"ADE_HOME=/home/example/ade path\\\\with\\\"quotes\"");
     expect(unit).toContain("WantedBy=default.target");
+  });
+
+  it("quotes systemd environment assignments for whitespace, backslashes, quotes, and percent signs", () => {
+    expect(renderSystemdEnvironment("NODE_PATH", "C:\\ADE deps\\100% \"runtime\"")).toBe(
+      "Environment=\"NODE_PATH=C:\\\\ADE deps\\\\100%% \\\"runtime\\\"\"",
+    );
   });
 });
 
@@ -267,8 +278,8 @@ describe("Windows scheduled task helpers", () => {
     args: ["serve"],
   };
 
-  it("builds schtasks create, run, and query arguments without invoking schtasks", () => {
-    const renderedCommand = renderCommand(serviceCommand);
+  it("builds schtasks create, run, query, and delete arguments without invoking schtasks", () => {
+    const renderedCommand = renderWindowsCommand(serviceCommand);
 
     expect(buildWindowsCreateTaskArgs(renderedCommand)).toEqual([
       "/Create",
@@ -282,6 +293,22 @@ describe("Windows scheduled task helpers", () => {
     ]);
     expect(buildWindowsRunTaskArgs()).toEqual(["/Run", "/TN", TASK_NAME]);
     expect(buildWindowsQueryTaskArgs()).toEqual(["/Query", "/TN", TASK_NAME, "/FO", "LIST", "/V"]);
+    expect(buildWindowsDeleteTaskArgs()).toEqual(["/Delete", "/TN", TASK_NAME, "/F"]);
+  });
+
+  it("renders Windows scheduled task commands with double-quoted argv tokens", () => {
+    expect(renderWindowsCommand({
+      command: "C:\\Program Files\\ADE\\ade.exe",
+      args: ["serve", "--root", "C:\\path with space\\"],
+    })).toBe("\"C:\\Program Files\\ADE\\ade.exe\" \"serve\" \"--root\" \"C:\\path with space\\\\\"");
+    expect(renderCommand(serviceCommand)).toBe("'C:\\Program Files\\ADE\\ade.exe' 'serve'");
+  });
+
+  it("rejects embedded double quotes in Windows scheduled task command tokens", () => {
+    expect(() => renderWindowsCommand({
+      command: "C:\\Program Files\\ADE\\ade.exe",
+      args: ["serve", "--name", "quoted \"value\""],
+    })).toThrow("Windows service command arguments cannot contain double quotes.");
   });
 
   it("starts the scheduled task immediately after a successful create", () => {
@@ -301,7 +328,7 @@ describe("Windows scheduled task helpers", () => {
       message: "ADE service scheduled task installed and started.",
     });
     expect(calls).toEqual([
-      { command: "schtasks.exe", args: buildWindowsCreateTaskArgs(renderCommand(serviceCommand)) },
+      { command: "schtasks.exe", args: buildWindowsCreateTaskArgs(renderWindowsCommand(serviceCommand)) },
       { command: "schtasks.exe", args: buildWindowsRunTaskArgs() },
     ]);
   });
@@ -318,7 +345,7 @@ describe("Windows scheduled task helpers", () => {
     expect(result.ok).toBe(false);
     expect(result.message).toBe("ADE service scheduled task installed, but failed to start: ERROR: access is denied");
     expect(calls.map((call) => call.args)).toEqual([
-      buildWindowsCreateTaskArgs(renderCommand(serviceCommand)),
+      buildWindowsCreateTaskArgs(renderWindowsCommand(serviceCommand)),
       buildWindowsRunTaskArgs(),
     ]);
   });
@@ -334,6 +361,41 @@ describe("Windows scheduled task helpers", () => {
     expect(result.ok).toBe(false);
     expect(result.message).toBe("ERROR: create failed");
     expect(calls).toHaveLength(1);
+  });
+
+  it("reports successful scheduled task removal", () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const spawnSync = spawnSequence(calls, [
+      { status: 0, stdout: "SUCCESS: deleted", stderr: "" },
+    ]);
+
+    const result = uninstallWindowsService({ spawnSync });
+
+    expect(result).toMatchObject({
+      ok: true,
+      serviceName: ADE_RUNTIME_SERVICE_NAME,
+      action: "uninstall",
+      path: TASK_NAME,
+      message: "ADE service scheduled task removed.",
+    });
+    expect(calls).toEqual([
+      { command: "schtasks.exe", args: buildWindowsDeleteTaskArgs() },
+    ]);
+  });
+
+  it("surfaces scheduled task removal failures", () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const spawnSync = spawnSequence(calls, [
+      { status: 1, stdout: "", stderr: "ERROR: The system cannot find the file specified." },
+    ]);
+
+    const result = uninstallWindowsService({ spawnSync });
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toBe("ERROR: The system cannot find the file specified.");
+    expect(calls).toEqual([
+      { command: "schtasks.exe", args: buildWindowsDeleteTaskArgs() },
+    ]);
   });
 });
 

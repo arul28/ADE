@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import {
   ADE_RUNTIME_SERVICE_NAME,
   type AdeServiceCommand,
-  renderCommand,
+  renderWindowsCommand,
   resolveAdeServeCommand,
   serviceManagerResultText,
   type ServiceManagerResult,
@@ -38,6 +38,10 @@ export function buildWindowsQueryTaskArgs(): string[] {
   return ["/Query", "/TN", TASK_NAME, "/FO", "LIST", "/V"];
 }
 
+export function buildWindowsDeleteTaskArgs(): string[] {
+  return ["/Delete", "/TN", TASK_NAME, "/F"];
+}
+
 export function parseSchtasksListStatus(output: string): string | null {
   const match = /^\s*Status:\s*(.*?)\s*$/im.exec(output);
   return match?.[1] ?? null;
@@ -49,7 +53,7 @@ export function isSchtasksOutputRunning(output: string): boolean {
 
 export function installWindowsService(deps: WindowsServiceManagerDeps = {}): ServiceManagerResult {
   const run = deps.spawnSync ?? spawnSync;
-  const command = renderCommand(deps.command ?? resolveAdeServeCommand());
+  const command = renderWindowsCommand(deps.command ?? resolveAdeServeCommand());
   const result = run("schtasks.exe", buildWindowsCreateTaskArgs(command), { encoding: "utf8" });
   if (result.status !== 0) {
     return {
@@ -79,8 +83,18 @@ export function installWindowsService(deps: WindowsServiceManagerDeps = {}): Ser
   };
 }
 
-export function uninstallWindowsService(): ServiceManagerResult {
-  spawnSync("schtasks.exe", ["/Delete", "/TN", TASK_NAME, "/F"], { stdio: "ignore" });
+export function uninstallWindowsService(deps: Pick<WindowsServiceManagerDeps, "spawnSync"> = {}): ServiceManagerResult {
+  const run = deps.spawnSync ?? spawnSync;
+  const result = run("schtasks.exe", buildWindowsDeleteTaskArgs(), { encoding: "utf8" });
+  if (result.status !== 0) {
+    return {
+      ok: false,
+      serviceName: ADE_RUNTIME_SERVICE_NAME,
+      action: "uninstall",
+      path: TASK_NAME,
+      message: serviceManagerResultText(result) || "schtasks delete failed.",
+    };
+  }
   return {
     ok: true,
     serviceName: ADE_RUNTIME_SERVICE_NAME,

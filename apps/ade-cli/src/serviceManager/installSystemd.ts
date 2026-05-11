@@ -23,9 +23,20 @@ export function servicePath(homeDir = os.homedir()): string {
   return path.join(homeDir, ".config", "systemd", "user", "ade-runtime.service");
 }
 
+function escapeSystemdQuotedValue(value: string): string {
+  return value
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, "\\\"")
+    .replace(/%/g, "%%");
+}
+
+export function renderSystemdEnvironment(key: string, value: string): string {
+  return `Environment="${key}=${escapeSystemdQuotedValue(value)}"`;
+}
+
 export function renderSystemdUnit(command: AdeServiceCommand): string {
   const envLines = Object.entries(command.env ?? {})
-    .map(([key, value]) => `Environment=${key}=${value.replace(/%/g, "%%")}`)
+    .map(([key, value]) => renderSystemdEnvironment(key, value))
     .join("\n");
   return `[Unit]
 Description=ADE service daemon

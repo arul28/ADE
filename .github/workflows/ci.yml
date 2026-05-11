@@ -183,7 +183,7 @@ jobs:
           - target: darwin-arm64
             os: macos-15
           - target: darwin-x64
-            os: macos-13
+            os: macos-15-intel
           - target: linux-x64
             os: ubuntu-latest
           - target: linux-arm64
@@ -194,7 +194,12 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: apps/ade-cli/package-lock.json
+          cache-dependency-path: |
+            apps/desktop/package-lock.json
+            apps/ade-cli/package-lock.json
+
+      - name: Install desktop dependencies
+        run: cd apps/desktop && npm ci
 
       - name: Install ADE CLI dependencies
         run: cd apps/ade-cli && npm ci
