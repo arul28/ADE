@@ -3106,75 +3106,86 @@ export function createProjectConfigService({
   const syncSnapshots = (effective: EffectiveProjectConfig) => {
     const now = new Date().toISOString();
 
-    db.run("delete from process_definitions where project_id = ?", [projectId]);
-    db.run("delete from stack_buttons where project_id = ?", [projectId]);
-    db.run("delete from test_suites where project_id = ?", [projectId]);
+    db.run("BEGIN IMMEDIATE");
+    try {
+      db.run("delete from process_definitions where project_id = ?", [projectId]);
+      db.run("delete from stack_buttons where project_id = ?", [projectId]);
+      db.run("delete from test_suites where project_id = ?", [projectId]);
 
-    for (const proc of effective.processes) {
-      db.run(
-        `
-          insert into process_definitions(
-            id, project_id, key, name, command_json, cwd, env_json, autostart,
-            restart_policy, graceful_shutdown_ms, depends_on_json, readiness_json, updated_at
-          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `,
-        [
-          createDefId(projectId, `proc:${proc.id}`),
-          projectId,
-          proc.id,
-          proc.name,
-          JSON.stringify(proc.command),
-          proc.cwd,
-          JSON.stringify(proc.env),
-          proc.autostart ? 1 : 0,
-          proc.restart,
-          proc.gracefulShutdownMs,
-          JSON.stringify(proc.dependsOn),
-          JSON.stringify(proc.readiness),
-          now
-        ]
-      );
-    }
+      for (const proc of effective.processes) {
+        db.run(
+          `
+            insert into process_definitions(
+              id, project_id, key, name, command_json, cwd, env_json, autostart,
+              restart_policy, graceful_shutdown_ms, depends_on_json, readiness_json, updated_at
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+          [
+            createDefId(projectId, `proc:${proc.id}`),
+            projectId,
+            proc.id,
+            proc.name,
+            JSON.stringify(proc.command),
+            proc.cwd,
+            JSON.stringify(proc.env),
+            proc.autostart ? 1 : 0,
+            proc.restart,
+            proc.gracefulShutdownMs,
+            JSON.stringify(proc.dependsOn),
+            JSON.stringify(proc.readiness),
+            now
+          ]
+        );
+      }
 
-    for (const stack of effective.stackButtons) {
-      db.run(
-        `
-          insert into stack_buttons(
-            id, project_id, key, name, process_keys_json, start_order, updated_at
-          ) values (?, ?, ?, ?, ?, ?, ?)
-        `,
-        [
-          createDefId(projectId, `stack:${stack.id}`),
-          projectId,
-          stack.id,
-          stack.name,
-          JSON.stringify(stack.processIds),
-          stack.startOrder,
-          now
-        ]
-      );
-    }
+      for (const stack of effective.stackButtons) {
+        db.run(
+          `
+            insert into stack_buttons(
+              id, project_id, key, name, process_keys_json, start_order, updated_at
+            ) values (?, ?, ?, ?, ?, ?, ?)
+          `,
+          [
+            createDefId(projectId, `stack:${stack.id}`),
+            projectId,
+            stack.id,
+            stack.name,
+            JSON.stringify(stack.processIds),
+            stack.startOrder,
+            now
+          ]
+        );
+      }
 
-    for (const suite of effective.testSuites) {
-      db.run(
-        `
-          insert into test_suites(
-            id, project_id, key, name, command_json, cwd, env_json, timeout_ms, tags_json, updated_at
-          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `,
-        [
-          createDefId(projectId, `suite:${suite.id}`),
-          projectId,
-          suite.id,
-          suite.name,
-          JSON.stringify(suite.command),
-          suite.cwd,
-          JSON.stringify(suite.env),
-          suite.timeoutMs,
-          JSON.stringify(suite.tags),
-          now
-        ]
-      );
+      for (const suite of effective.testSuites) {
+        db.run(
+          `
+            insert into test_suites(
+              id, project_id, key, name, command_json, cwd, env_json, timeout_ms, tags_json, updated_at
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+          [
+            createDefId(projectId, `suite:${suite.id}`),
+            projectId,
+            suite.id,
+            suite.name,
+            JSON.stringify(suite.command),
+            suite.cwd,
+            JSON.stringify(suite.env),
+            suite.timeoutMs,
+            JSON.stringify(suite.tags),
+            now
+          ]
+        );
+      }
+      db.run("COMMIT");
+    } catch (error) {
+      try {
+        db.run("ROLLBACK");
+      } catch {
+        // Preserve the original snapshot failure.
+      }
+      throw error;
     }
   };
 

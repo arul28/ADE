@@ -48,6 +48,7 @@ import { LinearQuickViewButton } from "./LinearQuickViewButton";
 import { PublishToGitHubDialog } from "../projects/PublishToGitHubDialog";
 import { RemoteTargetList } from "../remoteTargets/RemoteTargetList";
 import { SyncDevicesSection } from "../settings/SyncDevicesSection";
+import { HeaderUsageControl } from "../usage/HeaderUsageControl";
 
 const RUNNING_LANE_PROCESS_STATES: ProcessRuntime["status"][] = [
   "starting",
@@ -1912,6 +1913,8 @@ export function TopBar() {
           </div>
         </div>
       ) : null}
+
+      <HeaderUsageControl />
 
       <AutoUpdateControl />
 

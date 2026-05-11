@@ -99,6 +99,49 @@ describe("machine state migration", () => {
     expect(fs.existsSync(path.join(layout.adeDir, MACHINE_STATE_MIGRATION_MARKER))).toBe(false);
   });
 
+  it("seeds channel registries from stable machine projects", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-machine-migration-"));
+    const stableLayout = makeLayout(path.join(root, ".ade"));
+    const alphaLayout = makeLayout(path.join(root, ".ade-alpha"));
+    const projectA = makeProject(root, "project-a");
+    const projectB = makeProject(root, "project-b");
+    fs.mkdirSync(stableLayout.adeDir, { recursive: true });
+    fs.writeFileSync(
+      stableLayout.projectsPath,
+      `${JSON.stringify({
+        version: 1,
+        projects: [
+          {
+            projectId: "project_a",
+            rootPath: projectA,
+            displayName: "Project A",
+            addedAt: Date.parse("2026-05-10T00:00:00.000Z"),
+            lastOpenedAt: Date.parse("2026-05-10T00:00:00.000Z"),
+          },
+          {
+            projectId: "project_b",
+            rootPath: projectB,
+            displayName: "Project B",
+            addedAt: Date.parse("2026-05-10T00:00:01.000Z"),
+            lastOpenedAt: Date.parse("2026-05-10T00:00:01.000Z"),
+          },
+        ],
+      })}\n`,
+      "utf8",
+    );
+    const add = vi.fn();
+
+    const result = runMachineStateMigration({
+      layout: alphaLayout,
+      recentProjects: [],
+      projectRegistry: { add },
+    });
+
+    expect(result).toMatchObject({ didRun: true, shouldShowNotice: true });
+    expect(add).toHaveBeenCalledWith(projectA);
+    expect(add).toHaveBeenCalledWith(projectB);
+  });
+
   it("marks migration complete only when explicitly requested", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-machine-migration-"));
     const layout = makeLayout(path.join(root, ".ade-home"));

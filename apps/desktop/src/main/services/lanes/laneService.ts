@@ -145,6 +145,52 @@ function normAbs(p: string): string {
   return path.resolve(p);
 }
 
+type GitWorktreeInfo = UnregisteredLaneCandidate & {
+  isBare: boolean;
+};
+
+function worktreeStdout(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (
+    value &&
+    typeof value === "object" &&
+    "stdout" in value &&
+    typeof (value as { stdout?: unknown }).stdout === "string"
+  ) {
+    return (value as { stdout: string }).stdout;
+  }
+  return "";
+}
+
+function parseGitWorktreePorcelain(stdout: string): GitWorktreeInfo[] {
+  const blocks = stdout.split(/\n\n+/).filter(Boolean);
+  const worktrees: GitWorktreeInfo[] = [];
+
+  for (const block of blocks) {
+    const lines = block.split(/\r?\n/);
+    let wtPath = "";
+    let branch = "";
+    let isBare = false;
+    for (const line of lines) {
+      if (line.startsWith("worktree ")) wtPath = line.slice("worktree ".length).trim();
+      if (line.startsWith("branch ")) branch = line.slice("branch ".length).trim().replace(/^refs\/heads\//, "");
+      if (line === "bare") isBare = true;
+    }
+    if (!wtPath) continue;
+    worktrees.push({ path: normAbs(wtPath), branch, isBare });
+  }
+
+  return worktrees;
+}
+
+function inferLaneNameFromManagedWorktree(candidate: UnregisteredLaneCandidate): string {
+  const basename = path.basename(candidate.path).trim();
+  const branchSlug = candidate.branch.trim().replace(/^ade\//, "");
+  const slug = (branchSlug || basename).replace(/-[0-9a-f]{8}$/i, "");
+  const name = slug.replace(/[-_]+/g, " ").trim();
+  return name || basename || "Recovered lane";
+}
+
 function parseLaneIcon(value: string | null): LaneIcon {
   if (!value) return null;
   if (value === "star" || value === "flag" || value === "bolt" || value === "shield" || value === "tag") {
@@ -1176,6 +1222,7 @@ export function createLaneService({
   };
 
   const normalizedProjectRoot = normAbs(projectRoot);
+  const normalizedWorktreesDir = normAbs(worktreesDir);
 
   const getGitTopLevel = async (cwd: string): Promise<string> => {
     const top = await runGitOrThrow(["rev-parse", "--path-format=absolute", "--show-toplevel"], { cwd, timeoutMs: 10_000 });
@@ -1185,6 +1232,92 @@ export function createLaneService({
   const getGitCommonDir = async (cwd: string): Promise<string> => {
     const commonDir = await runGitOrThrow(["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd, timeoutMs: 10_000 });
     return normAbs(commonDir.trim());
+  };
+
+  const listGitWorktrees = async (): Promise<GitWorktreeInfo[]> => {
+    const result = await runGitOrThrow(
+      ["worktree", "list", "--porcelain"],
+      { cwd: projectRoot, timeoutMs: 15_000 }
+    );
+    return parseGitWorktreePorcelain(worktreeStdout(result));
+  };
+
+  const findGitWorktreeForBranch = async (branchRef: string): Promise<GitWorktreeInfo | null> => {
+    const normalizedBranch = normalizeBranchKey(branchRef);
+    if (!normalizedBranch) return null;
+    const worktrees = await listGitWorktrees();
+    return worktrees.find((wt) => !wt.isBare && normalizeBranchKey(wt.branch) === normalizedBranch) ?? null;
+  };
+
+  const listUnregisteredWorktreeCandidates = async (): Promise<UnregisteredLaneCandidate[]> => {
+    const worktrees = await listGitWorktrees();
+    const registeredPaths = new Set(
+      db.all<{ worktree_path: string }>(
+        "select worktree_path from lanes where project_id = ?",
+        [projectId]
+      ).map((row) => normAbs(row.worktree_path))
+    );
+
+    return worktrees.filter(
+      (wt) => !wt.isBare && wt.path !== normalizedProjectRoot && !registeredPaths.has(wt.path)
+    );
+  };
+
+  const recoverManagedWorktreeRows = async (): Promise<number> => {
+    const candidates = await listUnregisteredWorktreeCandidates();
+    let recoveredCount = 0;
+
+    for (const candidate of candidates) {
+      const worktreePath = normAbs(candidate.path);
+      const branchRef = candidate.branch.trim();
+      if (!branchRef) continue;
+      if (path.dirname(worktreePath) !== normalizedWorktreesDir) continue;
+
+      const existingPath = db.get<{ id: string }>(
+        "select id from lanes where project_id = ? and worktree_path = ? limit 1",
+        [projectId, worktreePath]
+      );
+      if (existingPath?.id) continue;
+
+      const existingBranch = db.get<{ id: string }>(
+        "select id from lanes where project_id = ? and branch_ref = ? limit 1",
+        [projectId, branchRef]
+      );
+      if (existingBranch?.id) continue;
+
+      const laneId = randomUUID();
+      const now = new Date().toISOString();
+      const displayName = inferLaneNameFromManagedWorktree(candidate);
+      db.run(
+        `
+          insert into lanes(
+            id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+            attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+          )
+          values(?, ?, ?, null, 'worktree', ?, ?, ?, null, 0, null, null, null, null, 'active', ?, null)
+        `,
+        [laneId, projectId, displayName, defaultBaseRef, branchRef, worktreePath, now]
+      );
+
+      const row = getLaneRow(laneId);
+      if (row) {
+        upsertBranchProfileForRow(row, {
+          branchRef,
+          baseRef: defaultBaseRef,
+          parentLaneId: null,
+        });
+      }
+      recoveredCount += 1;
+    }
+
+    if (recoveredCount > 0) {
+      invalidateLaneListCache();
+      logger.info("laneService.recovered_managed_worktrees", {
+        projectRoot,
+        count: recoveredCount,
+      });
+    }
+    return recoveredCount;
   };
 
   const ensureAttachableWorktreeRoot = async (candidatePath: string): Promise<void> => {
@@ -1386,6 +1519,11 @@ export function createLaneService({
       repairLegacyPrimaryBaseRootLanes();
     } catch (err) {
       logger.warn("laneService.repairLegacyPrimaryBaseRootLanes_failed", { error: err instanceof Error ? err.message : String(err) });
+    }
+    try {
+      await recoverManagedWorktreeRows();
+    } catch (err) {
+      logger.warn("laneService.recoverManagedWorktreeRows_failed", { error: err instanceof Error ? err.message : String(err) });
     }
     try {
       backfillLaneBranchProfiles();
@@ -1735,6 +1873,73 @@ export function createLaneService({
     }
   };
 
+  const cleanupLaneDatabaseRows = (laneId: string): void => {
+    db.run("update lanes set parent_lane_id = null where parent_lane_id = ? and project_id = ?", [laneId, projectId]);
+    db.run("update lane_branch_profiles set parent_lane_id = null where parent_lane_id = ? and project_id = ?", [laneId, projectId]);
+    db.run("update pr_convergence_state set active_lane_id = null where active_lane_id = ?", [laneId]);
+    db.run("update linear_workflow_runs set execution_lane_id = null where execution_lane_id = ? and project_id = ?", [laneId, projectId]);
+    db.run(
+      `
+        update missions
+        set lane_id = case when lane_id = ? then null else lane_id end,
+            mission_lane_id = case when mission_lane_id = ? then null else mission_lane_id end,
+            result_lane_id = case when result_lane_id = ? then null else result_lane_id end
+        where project_id = ?
+          and (lane_id = ? or mission_lane_id = ? or result_lane_id = ?)
+      `,
+      [laneId, laneId, laneId, projectId, laneId, laneId, laneId],
+    );
+    db.run("update mission_steps set lane_id = null where lane_id = ? and project_id = ?", [laneId, projectId]);
+    db.run("update mission_artifacts set lane_id = null where lane_id = ? and project_id = ?", [laneId, projectId]);
+    db.run("update mission_interventions set lane_id = null where lane_id = ? and project_id = ?", [laneId, projectId]);
+    db.run("update orchestrator_steps set lane_id = null where lane_id = ? and project_id = ?", [laneId, projectId]);
+    db.run("update orchestrator_chat_threads set lane_id = null where lane_id = ? and project_id = ?", [laneId, projectId]);
+    db.run("update orchestrator_chat_messages set lane_id = null where lane_id = ? and project_id = ?", [laneId, projectId]);
+    db.run("update orchestrator_worker_digests set lane_id = null where lane_id = ? and project_id = ?", [laneId, projectId]);
+    db.run("update orchestrator_lane_decisions set lane_id = null where lane_id = ? and project_id = ?", [laneId, projectId]);
+    db.run("update integration_proposals set integration_lane_id = null where integration_lane_id = ? and project_id = ?", [laneId, projectId]);
+    db.run("update integration_proposals set preferred_integration_lane_id = null where preferred_integration_lane_id = ? and project_id = ?", [laneId, projectId]);
+
+    db.run("delete from pr_group_members where lane_id = ?", [laneId]);
+    db.run("delete from pr_group_members where pr_id in (select id from pull_requests where lane_id = ? and project_id = ?)", [laneId, projectId]);
+    db.run("delete from pull_request_ai_summaries where pr_id in (select id from pull_requests where lane_id = ? and project_id = ?)", [laneId, projectId]);
+    db.run("delete from pull_request_snapshots where pr_id in (select id from pull_requests where lane_id = ? and project_id = ?)", [laneId, projectId]);
+    db.run("delete from pr_convergence_state where pr_id in (select id from pull_requests where lane_id = ? and project_id = ?)", [laneId, projectId]);
+    db.run("delete from pr_pipeline_settings where pr_id in (select id from pull_requests where lane_id = ? and project_id = ?)", [laneId, projectId]);
+    db.run("delete from pr_issue_inventory where pr_id in (select id from pull_requests where lane_id = ? and project_id = ?)", [laneId, projectId]);
+    db.run("delete from pull_requests where lane_id = ? and project_id = ?", [laneId, projectId]);
+
+    db.run("delete from review_run_publications where run_id in (select id from review_runs where lane_id = ? and project_id = ?)", [laneId, projectId]);
+    db.run("delete from review_finding_feedback where run_id in (select id from review_runs where lane_id = ? and project_id = ?)", [laneId, projectId]);
+    db.run("delete from review_run_artifacts where run_id in (select id from review_runs where lane_id = ? and project_id = ?)", [laneId, projectId]);
+    db.run("delete from review_findings where run_id in (select id from review_runs where lane_id = ? and project_id = ?)", [laneId, projectId]);
+    db.run("delete from review_runs where lane_id = ? and project_id = ?", [laneId, projectId]);
+
+    db.run("delete from file_directory_snapshots where workspace_id in (select id from files_workspaces where lane_id = ?)", [laneId]);
+    db.run("delete from file_content_snapshots where workspace_id in (select id from files_workspaces where lane_id = ?)", [laneId]);
+    db.run("delete from file_diff_snapshots where workspace_id in (select id from files_workspaces where lane_id = ?)", [laneId]);
+    db.run("delete from file_history_snapshots where workspace_id in (select id from files_workspaces where lane_id = ?)", [laneId]);
+    db.run("delete from files_workspaces where lane_id = ?", [laneId]);
+
+    db.run("delete from conflict_proposals where project_id = ? and (lane_id = ? or peer_lane_id = ?)", [projectId, laneId, laneId]);
+    db.run("delete from conflict_predictions where project_id = ? and (lane_a_id = ? or lane_b_id = ?)", [projectId, laneId, laneId]);
+    db.run("delete from checkpoints where lane_id = ? and project_id = ?", [laneId, projectId]);
+    db.run("delete from session_deltas where lane_id = ? and project_id = ?", [laneId, projectId]);
+    db.run("delete from terminal_sessions where lane_id = ?", [laneId]);
+    db.run("delete from operations where lane_id = ? and project_id = ?", [laneId, projectId]);
+    db.run("delete from packs_index where lane_id = ? and project_id = ?", [laneId, projectId]);
+    db.run("delete from process_runtime where lane_id = ? and project_id = ?", [laneId, projectId]);
+    db.run("delete from process_runs where lane_id = ? and project_id = ?", [laneId, projectId]);
+    db.run("delete from test_runs where lane_id = ? and project_id = ?", [laneId, projectId]);
+    db.run("delete from rebase_deferred where lane_id = ? and project_id = ?", [laneId, projectId]);
+    db.run("delete from rebase_dismissed where lane_id = ? and project_id = ?", [laneId, projectId]);
+    db.run("delete from lane_state_snapshots where lane_id = ?", [laneId]);
+    db.run("delete from lane_branch_profiles where lane_id = ? and project_id = ?", [laneId, projectId]);
+    db.run("delete from lane_worktree_locks where lane_id = ?", [laneId]);
+    db.run("delete from lane_linear_issues where lane_id = ? and project_id = ?", [laneId, projectId]);
+    db.run("delete from lanes where id = ? and project_id = ?", [laneId, projectId]);
+  };
+
   return {
     async ensurePrimaryLane(): Promise<void> {
       await ensurePrimaryLane();
@@ -1745,39 +1950,7 @@ export function createLaneService({
     },
 
     async listUnregisteredWorktrees(): Promise<UnregisteredLaneCandidate[]> {
-      const stdout = await runGitOrThrow(
-        ["worktree", "list", "--porcelain"],
-        { cwd: projectRoot, timeoutMs: 15_000 }
-      );
-
-      const blocks = stdout.split(/\n\n+/).filter(Boolean);
-      const worktrees: UnregisteredLaneCandidate[] = [];
-
-      for (const block of blocks) {
-        const lines = block.split(/\r?\n/);
-        let wtPath = "";
-        let branch = "";
-        let isBare = false;
-        for (const line of lines) {
-          if (line.startsWith("worktree ")) wtPath = line.slice("worktree ".length).trim();
-          if (line.startsWith("branch ")) branch = line.slice("branch ".length).trim().replace(/^refs\/heads\//, "");
-          if (line === "bare") isBare = true;
-        }
-        if (!wtPath || isBare) continue;
-        worktrees.push({ path: normAbs(wtPath), branch });
-      }
-
-      // Filter out primary worktree and worktrees already tracked as lanes
-      const registeredPaths = new Set(
-        db.all<{ worktree_path: string }>(
-          "select worktree_path from lanes where project_id = ?",
-          [projectId]
-        ).map((row) => normAbs(row.worktree_path))
-      );
-
-      return worktrees.filter(
-        (wt) => wt.path !== normalizedProjectRoot && !registeredPaths.has(wt.path)
-      );
+      return listUnregisteredWorktreeCandidates();
     },
 
     getStateSnapshot(laneId: string): LaneStateSnapshotSummary | null {
@@ -2172,6 +2345,12 @@ export function createLaneService({
         remoteRefToTrack = localExists ? null : resolved.remoteRef;
       }
 
+      try {
+        await recoverManagedWorktreeRows();
+      } catch (err) {
+        logger.warn("laneService.importBranch.recoverManagedWorktreeRows_failed", { error: err instanceof Error ? err.message : String(err) });
+      }
+
       // Prevent duplicates.
       const existing = db.get<{ id: string }>(
         "select id from lanes where project_id = ? and branch_ref = ? limit 1",
@@ -2179,6 +2358,18 @@ export function createLaneService({
       );
       if (existing?.id) {
         throw new Error(`Lane already exists for branch '${branchRef}'`);
+      }
+
+      try {
+        const checkedOutWorktree = await findGitWorktreeForBranch(branchRef);
+        if (checkedOutWorktree && checkedOutWorktree.path !== normalizedProjectRoot) {
+          throw new Error(
+            `Branch '${branchRef}' is already checked out at '${checkedOutWorktree.path}'. Use Add existing worktrees to attach it as a lane, or remove/prune that worktree before importing again.`
+          );
+        }
+      } catch (err) {
+        if (err instanceof Error && err.message.includes("already checked out at")) throw err;
+        logger.warn("laneService.importBranch.worktree_ownership_check_failed", { branchRef, error: err instanceof Error ? err.message : String(err) });
       }
 
       const laneId = randomUUID();
@@ -3563,27 +3754,7 @@ export function createLaneService({
         await runStep("database_cleanup", async () => {
           db.run("begin immediate");
           try {
-            db.run("update lanes set parent_lane_id = null where parent_lane_id = ? and project_id = ?", [laneId, projectId]);
-            db.run("delete from pr_group_members where lane_id = ?", [laneId]);
-            // Explicit cascade — CRR conversion can strip checked FKs, leaving orphaned rows.
-            db.run("delete from pr_convergence_state where pr_id in (select id from pull_requests where lane_id = ? and project_id = ?)", [laneId, projectId]);
-            db.run("delete from pr_pipeline_settings where pr_id in (select id from pull_requests where lane_id = ? and project_id = ?)", [laneId, projectId]);
-            db.run("delete from pr_issue_inventory where pr_id in (select id from pull_requests where lane_id = ? and project_id = ?)", [laneId, projectId]);
-            db.run("delete from pull_requests where lane_id = ? and project_id = ?", [laneId, projectId]);
-            db.run("delete from review_run_publications where run_id in (select id from review_runs where lane_id = ? and project_id = ?)", [laneId, projectId]);
-            db.run("delete from review_finding_feedback where run_id in (select id from review_runs where lane_id = ? and project_id = ?)", [laneId, projectId]);
-            db.run("delete from review_findings where run_id in (select id from review_runs where lane_id = ? and project_id = ?)", [laneId, projectId]);
-            db.run("delete from review_run_artifacts where run_id in (select id from review_runs where lane_id = ? and project_id = ?)", [laneId, projectId]);
-            db.run("delete from review_runs where lane_id = ? and project_id = ?", [laneId, projectId]);
-            db.run("delete from session_deltas where lane_id = ?", [laneId]);
-            db.run("delete from terminal_sessions where lane_id = ?", [laneId]);
-            db.run("delete from operations where lane_id = ?", [laneId]);
-            db.run("delete from packs_index where lane_id = ?", [laneId]);
-            db.run("delete from process_runtime where lane_id = ?", [laneId]);
-            db.run("delete from process_runs where lane_id = ?", [laneId]);
-            db.run("delete from test_runs where lane_id = ?", [laneId]);
-            db.run("delete from lane_linear_issues where lane_id = ? and project_id = ?", [laneId, projectId]);
-            db.run("delete from lanes where id = ? and project_id = ?", [laneId, projectId]);
+            cleanupLaneDatabaseRows(laneId);
             db.run("commit");
           } catch (error) {
             try {

@@ -90,6 +90,46 @@ describe("projectConfigService process groups", () => {
     expect(byId.get("frontend")!.name).toBe("Web");
   });
 
+  it("rolls back config-derived row refreshes when a snapshot write fails", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-project-config-rollback-"));
+    tempDirs.push(root);
+
+    const adeDir = path.join(root, ".ade");
+    fs.mkdirSync(adeDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(adeDir, "ade.yaml"),
+      YAML.stringify({
+        version: 1,
+        processes: [],
+        processGroups: [],
+        stackButtons: [],
+        testSuites: [],
+        laneOverlayPolicies: [],
+        automations: [],
+      }),
+      "utf8",
+    );
+    const db = makeDb();
+    db.run.mockImplementation((sql: string) => {
+      if (/delete from stack_buttons/i.test(sql)) {
+        throw new Error("delete failed");
+      }
+    });
+    const service = createProjectConfigService({
+      projectRoot: root,
+      adeDir,
+      projectId: "project-rollback",
+      db,
+      logger: makeLogger(),
+    });
+
+    expect(() => service.get()).toThrow("delete failed");
+    const statements = db.run.mock.calls.map((call: unknown[]) => String(call[0]).trim());
+    expect(statements[0]).toBe("BEGIN IMMEDIATE");
+    expect(statements).toContain("ROLLBACK");
+    expect(statements).not.toContain("COMMIT");
+  });
+
   it("falls back to id when an effective processGroup has no name", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-project-config-groups-fallback-"));
     tempDirs.push(root);

@@ -190,7 +190,7 @@ function buildCtoEnvironmentKnowledge(): string {
   "  /graph — Workspace dependency graph visualization showing lane relationships.",
   "  /history — Operation history timeline showing all past actions.",
   "  /automations — Automation rule builder: create rules triggered by events (PR opened, test failed, etc.).",
-  "  /settings — App settings: AI providers, GitHub token, Linear integration, keybindings, usage budgets, and external connectors.",
+  "  /settings — App settings: AI providers, GitHub token, Linear integration, keybindings, and external connectors. Live provider usage and automation guardrails are now in the header usage popup.",
   "  When an action should be opened in ADE, return a navigation suggestion. Never silently switch tabs.",
   "",
   ...buildCtoModelSelectionKnowledge(),

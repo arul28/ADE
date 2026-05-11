@@ -206,12 +206,13 @@ Renderer — settings:
   the Tailscale MagicDNS discovery status (`svc:ade-sync` publication
   via `tailscale serve`), and the per-device connection panel used to
   forget paired phones.
-- `apps/desktop/src/renderer/components/settings/SettingsUsageSection.tsx`
-  and `UsageGuardrailsSection.tsx` — cost and usage. The guardrails
-  section's mount-time hydrate calls `ade.usage.getSnapshot` (cached
-  read), not `ade.usage.refresh` (which forces a recompute); the user
-  still gets the live numbers via the section's explicit Refresh
-  control.
+- `apps/desktop/src/renderer/components/usage/HeaderUsageControl.tsx`
+  and `UsageQuotaPanel.tsx` — header usage popup. Live provider quotas
+  for Claude / Codex / Cursor and the automation budget guardrails are
+  now consolidated here; Settings no longer has a Usage tab. The popup
+  hydrates from `ade.usage.getSnapshot` and re-fetches via the explicit
+  Refresh control. Budget caps round-trip through
+  `ade.usage.getBudgetConfig` / `saveBudgetConfig`.
 - `apps/desktop/src/renderer/components/settings/ProxyAndPreviewSection.tsx`
   — proxy/preview configuration UI.
 - `apps/desktop/src/renderer/components/settings/DiagnosticsDashboardSection.tsx`
@@ -361,7 +362,9 @@ changing rather than which service backs it:
 | Integrations | `IntegrationsSettingsSection.tsx`, `GitHubSection.tsx`, `LinearSection.tsx` | GitHub, Linear, and computer-use backend readiness. The GitHub section reads `status.connected` (the backend's single "GitHub is usable" gate) to decide between CONNECTED / LIMITED ACCESS / NOT CONNECTED, surfaces a dedicated repo-probe error when a fine-grained token authenticates as a user but cannot access the active repo, and the REFRESH button calls `getStatus({ forceRefresh: true })` so users who fix permissions on github.com see the change immediately. See [`pull-requests/README.md`](../pull-requests/README.md#github-connectivity-model) for the full status-shape and `connected` derivation. |
 | Memory | `MemoryHealthTab.tsx` | Memory health, browser, embedding health |
 | Lane Templates | `LaneTemplatesSection.tsx`, `LaneBehaviorSection.tsx` | Lane init recipes and lane lifecycle policy |
-| Usage | `SettingsUsageSection.tsx`, `UsageGuardrailsSection.tsx` | Cost visibility and guardrails |
+
+> Live provider usage and automation guardrails moved out of Settings. They are now in the top-bar Usage popup (`HeaderUsageControl.tsx` → `UsageQuotaPanel.tsx` + collapsible `BudgetCapEditor`).
+
 
 The Settings page itself (`SettingsPage.tsx`) has a legacy alias
 table (`TAB_ALIASES`) that forwards deep links (`?tab=context`,

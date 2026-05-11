@@ -17,12 +17,21 @@ export function resolveMachineAdeDir(env: NodeJS.ProcessEnv = process.env): stri
   return path.join(os.homedir(), ".ade");
 }
 
-export function resolveMachineAdeLayout(env: NodeJS.ProcessEnv = process.env): MachineAdeLayout {
+function windowsPipePathForAdeDir(adeDir: string): string {
+  const homeName = path.basename(adeDir).replace(/[^a-zA-Z0-9_-]+/g, "-");
+  if (!homeName || homeName === "-ade") return "\\\\.\\pipe\\ade-runtime";
+  return `\\\\.\\pipe\\ade-runtime-${homeName.replace(/^-+/, "")}`;
+}
+
+export function resolveMachineAdeLayout(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): MachineAdeLayout {
   const adeDir = resolveMachineAdeDir(env);
   const secretsDir = path.join(adeDir, "secrets");
   const sockDir = path.join(adeDir, "sock");
-  const socketPath = process.platform === "win32"
-    ? "\\\\.\\pipe\\ade-runtime"
+  const socketPath = platform === "win32"
+    ? windowsPipePathForAdeDir(adeDir)
     : path.join(sockDir, "ade.sock");
   return {
     adeDir,

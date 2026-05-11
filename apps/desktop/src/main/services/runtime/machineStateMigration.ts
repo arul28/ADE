@@ -19,6 +19,28 @@ type MachineStateMigrationArgs = {
   projectRegistry?: Pick<ProjectRegistryType, "add">;
 };
 
+function buildMachineLayout(adeDir: string): MachineAdeLayout {
+  const secretsDir = path.join(adeDir, "secrets");
+  const sockDir = path.join(adeDir, "sock");
+  return {
+    adeDir,
+    projectsPath: path.join(adeDir, "projects.json"),
+    secretsDir,
+    sockDir,
+    socketPath: path.join(sockDir, "ade.sock"),
+    binDir: path.join(adeDir, "bin"),
+    runtimeDir: path.join(adeDir, "runtime"),
+  };
+}
+
+function stableLayoutForChannelHome(layout: MachineAdeLayout): MachineAdeLayout | null {
+  const homeName = path.basename(layout.adeDir);
+  if (homeName !== ".ade-alpha" && homeName !== ".ade-beta") return null;
+  const stableAdeDir = path.join(path.dirname(layout.adeDir), ".ade");
+  if (path.resolve(stableAdeDir) === path.resolve(layout.adeDir)) return null;
+  return buildMachineLayout(stableAdeDir);
+}
+
 function readObjectFile(filePath: string): Record<string, unknown> {
   try {
     const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
@@ -78,22 +100,52 @@ function mergePairedDevices(args: {
   }
 }
 
+function stableRegistryProjectsForChannelHome(layout: MachineAdeLayout): RecentProject[] {
+  const stableLayout = stableLayoutForChannelHome(layout);
+  if (!stableLayout || !fs.existsSync(stableLayout.projectsPath)) return [];
+  try {
+    return new ProjectRegistry(stableLayout).list().map((project) => ({
+      rootPath: project.rootPath,
+      displayName: project.displayName,
+      lastOpenedAt: new Date(project.lastOpenedAt).toISOString(),
+    }));
+  } catch {
+    return [];
+  }
+}
+
+function uniqueProjects(projects: RecentProject[]): RecentProject[] {
+  const seen = new Set<string>();
+  const unique: RecentProject[] = [];
+  for (const project of projects) {
+    const rootPath = path.resolve(project.rootPath);
+    if (seen.has(rootPath)) continue;
+    seen.add(rootPath);
+    unique.push({ ...project, rootPath });
+  }
+  return unique;
+}
+
 export function runMachineStateMigration(args: MachineStateMigrationArgs): MachineStateMigrationResult {
   const marker = markerPath(args.layout);
   if (fs.existsSync(marker)) {
     return { didRun: false, shouldShowNotice: false, markerPath: marker };
   }
 
+  const migrationProjects = uniqueProjects([
+    ...args.recentProjects,
+    ...stableRegistryProjectsForChannelHome(args.layout),
+  ]);
   const hadExistingUserState =
-    args.recentProjects.length > 0 || fs.existsSync(args.layout.secretsDir);
+    migrationProjects.length > 0 || fs.existsSync(args.layout.secretsDir);
   fs.mkdirSync(args.layout.secretsDir, { recursive: true, mode: 0o700 });
 
-  copyFirstLegacySecret({ layout: args.layout, recentProjects: args.recentProjects, fileName: "sync-bootstrap-token" });
-  copyFirstLegacySecret({ layout: args.layout, recentProjects: args.recentProjects, fileName: "sync-pin.json" });
-  mergePairedDevices({ layout: args.layout, recentProjects: args.recentProjects });
+  copyFirstLegacySecret({ layout: args.layout, recentProjects: migrationProjects, fileName: "sync-bootstrap-token" });
+  copyFirstLegacySecret({ layout: args.layout, recentProjects: migrationProjects, fileName: "sync-pin.json" });
+  mergePairedDevices({ layout: args.layout, recentProjects: migrationProjects });
 
   const projectRegistry = args.projectRegistry ?? new ProjectRegistry(args.layout);
-  for (const project of args.recentProjects) {
+  for (const project of migrationProjects) {
     if (!fs.existsSync(path.join(project.rootPath, ".ade"))) continue;
     try {
       projectRegistry.add(project.rootPath);

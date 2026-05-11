@@ -1,9 +1,9 @@
 /**
  * usageTrackingService.ts
  *
- * Polls live usage data from Claude and Codex providers.
+ * Polls live usage data from Claude, Codex, and Cursor providers.
  * Scans local JSONL logs for cost/token aggregation.
- * Computes pacing relative to weekly reset windows.
+ * Computes pacing relative to provider reset windows.
  */
 
 import fs from "node:fs";
@@ -29,6 +29,8 @@ import {
   readCodexCredentials,
   refreshClaudeCredentials,
 } from "../ai/providerCredentialSources";
+import { getAllApiKeys } from "../ai/apiKeyStore";
+import { isCursorAdminApiKey } from "../ai/utils";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
 import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/processExecution";
 
@@ -49,6 +51,7 @@ function isBenignStdinCloseError(error: unknown): boolean {
 
 const CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 const CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
+const CURSOR_SPEND_URL = "https://api.cursor.com/teams/spend";
 
 // Per-million token prices for cost estimation
 const TOKEN_PRICES: Record<string, { input: number; output: number }> = {
@@ -65,14 +68,16 @@ const TOKEN_PRICES: Record<string, { input: number; output: number }> = {
 async function fetchJson(
   url: string,
   headers: Record<string, string>,
-  timeoutMs = 15_000
+  timeoutMs = 15_000,
+  init?: { method?: string; body?: string },
 ): Promise<{ ok: boolean; status: number; data: unknown }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const resp = await fetch(url, {
-      method: "GET",
+      method: init?.method ?? "GET",
       headers,
+      ...(init?.body != null ? { body: init.body } : {}),
       signal: controller.signal,
     });
     const data = await resp.json();
@@ -249,6 +254,154 @@ function parseCodexRateLimitWindows(data: Record<string, unknown>): UsageWindow[
   }
 
   return windows;
+}
+
+// ── Cursor Usage Polling ─────────────────────────────────────────
+
+type CursorSpendMember = {
+  spendCents?: number;
+  overallSpendCents?: number;
+  fastPremiumRequests?: number;
+  hardLimitOverrideDollars?: number;
+  monthlyLimitDollars?: number;
+};
+
+type CursorSpendResponse = {
+  teamMemberSpend?: CursorSpendMember[];
+  subscriptionCycleStart?: number;
+};
+
+function getCursorApiKey(): { key: string; source: "cursor-admin-env" | "cursor-env" | "cursor-api-key-store" } | null {
+  const adminEnvKey = process.env.CURSOR_ADMIN_API_KEY?.trim();
+  if (isCursorAdminApiKey(adminEnvKey)) return { key: adminEnvKey!, source: "cursor-admin-env" };
+  const envKey = process.env.CURSOR_API_KEY?.trim();
+  if (isCursorAdminApiKey(envKey)) return { key: envKey!, source: "cursor-env" };
+  try {
+    const stored = getAllApiKeys().cursor?.trim();
+    if (isCursorAdminApiKey(stored)) return { key: stored!, source: "cursor-api-key-store" };
+  } catch {
+    // The API key store can be unavailable during early startup. Treat this as
+    // "no key" for usage polling; provider status surfaces the store issue.
+  }
+  return null;
+}
+
+function finiteOrZero(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function addOneMonth(timestampMs: number): number {
+  const next = new Date(timestampMs);
+  if (!Number.isFinite(next.getTime())) return 0;
+  next.setMonth(next.getMonth() + 1);
+  return next.getTime();
+}
+
+function parseCursorSpendUsage(data: CursorSpendResponse): {
+  windows: UsageWindow[];
+  extraUsage: ExtraUsage | null;
+} {
+  const members = Array.isArray(data.teamMemberSpend) ? data.teamMemberSpend : [];
+  if (members.length === 0) return { windows: [], extraUsage: null };
+
+  // overallSpendCents = on-demand + included usage (the real total spend);
+  // spendCents alone captures only on-demand pay-as-you-go.
+  const memberSpendCents = (member: CursorSpendMember): number => {
+    if (typeof member.overallSpendCents === "number" && Number.isFinite(member.overallSpendCents)) {
+      return member.overallSpendCents;
+    }
+    return finiteOrZero(member.spendCents);
+  };
+  // hardLimitOverrideDollars is the per-user override; fall back to the
+  // per-member default monthlyLimitDollars when no override is configured.
+  const memberLimitCents = (member: CursorSpendMember): number => {
+    const overrideDollars = finiteOrZero(member.hardLimitOverrideDollars);
+    if (overrideDollars > 0) return overrideDollars * 100;
+    const monthlyDollars = finiteOrZero(member.monthlyLimitDollars);
+    return monthlyDollars > 0 ? monthlyDollars * 100 : 0;
+  };
+
+  const totalSpendCents = members.reduce((sum, member) => sum + memberSpendCents(member), 0);
+  const totalLimitCents = members.reduce((sum, member) => sum + memberLimitCents(member), 0);
+
+  // Cursor documents subscriptionCycleStart as epoch milliseconds.
+  const cycleStartMs = finiteOrZero(data.subscriptionCycleStart);
+  const resetMs = cycleStartMs > 0 ? addOneMonth(cycleStartMs) : 0;
+  const resetsAt = resetMs > 0 ? new Date(resetMs).toISOString() : "";
+  const windowDurationMs = resetMs > 0 ? Math.max(0, resetMs - cycleStartMs) : undefined;
+
+  const windows: UsageWindow[] = [];
+  const utilization = totalLimitCents > 0 ? Math.min(100, (totalSpendCents / totalLimitCents) * 100) : null;
+  if (utilization != null) {
+    windows.push({
+      provider: "cursor",
+      windowType: "monthly",
+      percentUsed: Math.round(utilization * 10) / 10,
+      resetsAt,
+      resetsInMs: computeResetsInMs(resetsAt),
+      ...(windowDurationMs ? { windowDurationMs } : {}),
+    });
+  }
+
+  const extraUsage: ExtraUsage | null =
+    totalSpendCents > 0 || totalLimitCents > 0
+      ? {
+          provider: "cursor",
+          isEnabled: true,
+          usedCreditsUsd: Math.round(totalSpendCents) / 100,
+          monthlyLimitUsd: Math.round(totalLimitCents) / 100,
+          utilization,
+          currency: "usd",
+        }
+      : null;
+
+  return { windows, extraUsage };
+}
+
+async function pollCursorUsage(): Promise<{ windows: UsageWindow[]; extraUsage: ExtraUsage | null; errors: string[] }> {
+  const credential = getCursorApiKey();
+  if (!credential) {
+    return { windows: [], extraUsage: null, errors: [] };
+  }
+
+  try {
+    const auth = Buffer.from(`${credential.key}:`, "utf8").toString("base64");
+    const result = await fetchJson(
+      CURSOR_SPEND_URL,
+      {
+        Authorization: `Basic ${auth}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      15_000,
+      { method: "POST", body: JSON.stringify({ pageSize: 100 }) },
+    );
+
+    if (!result.ok) {
+      return {
+        windows: [],
+        extraUsage: null,
+        errors: [`cursor: Admin API returned ${result.status}`],
+      };
+    }
+
+    const response = result.data as CursorSpendResponse;
+    if (!Array.isArray(response.teamMemberSpend)) {
+      return {
+        windows: [],
+        extraUsage: null,
+        errors: ["cursor: usage response contained no recognized spend data"],
+      };
+    }
+    const parsed = parseCursorSpendUsage(response);
+    return { ...parsed, errors: [] };
+  } catch (err) {
+    return {
+      windows: [],
+      extraUsage: null,
+      errors: [`cursor: ${getErrorMessage(err)}`],
+    };
+  }
 }
 
 async function pollClaudeUsage(logger: Logger): Promise<{ windows: UsageWindow[]; extraUsage: ExtraUsage | null; errors: string[] }> {
@@ -724,8 +877,8 @@ function aggregateCosts(
 
 // ── Pacing Calculation ───────────────────────────────────────────
 
-function calculatePacing(windows: UsageWindow[]): UsagePacing {
-  const empty: UsagePacing = {
+function emptyPacing(): UsagePacing {
+  return {
     status: "on-track",
     projectedWeeklyPercent: 0,
     weekElapsedPercent: 0,
@@ -735,70 +888,80 @@ function calculatePacing(windows: UsageWindow[]): UsagePacing {
     willLastToReset: true,
     resetsInHours: 0,
   };
+}
 
-  // Find the weekly window (prefer Claude, then Codex)
-  const weeklyWindow =
-    windows.find((w) => w.windowType === "weekly" && w.provider === "claude") ??
-    windows.find((w) => w.windowType === "weekly");
+function defaultWindowDurationMs(windowType: UsageWindow["windowType"]): number {
+  switch (windowType) {
+    case "five_hour":
+      return 5 * 60 * 60 * 1000;
+    case "monthly":
+      return 30 * 24 * 60 * 60 * 1000;
+    case "weekly":
+    case "weekly_oauth_apps":
+    case "weekly_cowork":
+    default:
+      return 7 * 24 * 60 * 60 * 1000;
+  }
+}
 
-  if (!weeklyWindow) return empty;
+function selectPacingWindow(windows: UsageWindow[]): UsageWindow | null {
+  return (
+    windows.find((w) => w.windowType === "weekly") ??
+    windows.find((w) => w.windowType === "monthly") ??
+    windows.find((w) => w.windowType === "five_hour") ??
+    windows.find((w) => w.resetsInMs > 0) ??
+    null
+  );
+}
 
-  const totalWindowMs = 7 * 24 * 60 * 60 * 1000;
-  const elapsedMs = totalWindowMs - weeklyWindow.resetsInMs;
+function stageForDelta(deltaPercent: number): UsagePacing["status"] {
+  const absDelta = Math.abs(deltaPercent);
+  if (absDelta <= 2) return "on-track";
+  if (absDelta <= 6) return deltaPercent >= 0 ? "slightly-ahead" : "slightly-behind";
+  if (absDelta <= 12) return deltaPercent >= 0 ? "ahead" : "behind";
+  return deltaPercent >= 0 ? "far-ahead" : "far-behind";
+}
+
+function calculatePacingForWindow(window: UsageWindow): UsagePacing {
+  if (!window.resetsAt || window.resetsInMs <= 0) return emptyPacing();
+
+  const totalWindowMs = window.windowDurationMs && window.windowDurationMs > 0
+    ? window.windowDurationMs
+    : defaultWindowDurationMs(window.windowType);
+  const elapsedMs = totalWindowMs - window.resetsInMs;
   const weekElapsedPercent = Math.min(100, Math.max(0, (elapsedMs / totalWindowMs) * 100));
-  const resetsInHours = weeklyWindow.resetsInMs / 3_600_000;
+  const resetsInHours = window.resetsInMs / 3_600_000;
 
-  // Expected usage if consumption were perfectly linear over the week
-  const expectedPercent = weekElapsedPercent; // 100% budget / 100% time = linear
+  const expectedPercent = weekElapsedPercent;
+  const deltaPercent = window.percentUsed - expectedPercent;
 
-  // Delta: positive = consuming faster than pace, negative = under pace
-  const deltaPercent = weeklyWindow.percentUsed - expectedPercent;
-
-  // Project usage to end of week
+  // Project usage to the end of the tracked quota window.
   let projectedWeeklyPercent: number;
   let etaHours: number | null = null;
   let willLastToReset = true;
 
   if (weekElapsedPercent < 1) {
-    projectedWeeklyPercent = weeklyWindow.percentUsed;
+    projectedWeeklyPercent = window.percentUsed;
   } else {
-    const ratePerMs = weeklyWindow.percentUsed / elapsedMs;
+    const ratePerMs = window.percentUsed / elapsedMs;
     projectedWeeklyPercent = Math.min(300, ratePerMs * totalWindowMs);
 
-    // ETA to 100% at current rate
+    // ETA to 100% at current rate.
     if (ratePerMs > 0) {
-      const remainingPercent = 100 - weeklyWindow.percentUsed;
+      const remainingPercent = 100 - window.percentUsed;
       if (remainingPercent <= 0) {
         etaHours = 0; // Already exhausted
         willLastToReset = false;
       } else {
         const msTo100 = remainingPercent / ratePerMs;
         etaHours = Math.round((msTo100 / 3_600_000) * 10) / 10;
-        willLastToReset = msTo100 >= weeklyWindow.resetsInMs;
+        willLastToReset = msTo100 >= window.resetsInMs;
       }
     }
   }
 
-  // Status with more granularity (based on delta)
-  let status: UsagePacing["status"];
-  if (deltaPercent <= -20) {
-    status = "far-behind";
-  } else if (deltaPercent <= -10) {
-    status = "behind";
-  } else if (deltaPercent <= -4) {
-    status = "slightly-behind";
-  } else if (deltaPercent <= 4) {
-    status = "on-track";
-  } else if (deltaPercent <= 10) {
-    status = "slightly-ahead";
-  } else if (deltaPercent <= 20) {
-    status = "ahead";
-  } else {
-    status = "far-ahead";
-  }
-
   return {
-    status,
+    status: stageForDelta(deltaPercent),
     projectedWeeklyPercent: Math.round(projectedWeeklyPercent * 10) / 10,
     weekElapsedPercent: Math.round(weekElapsedPercent * 10) / 10,
     expectedPercent: Math.round(expectedPercent * 10) / 10,
@@ -809,6 +972,28 @@ function calculatePacing(windows: UsageWindow[]): UsagePacing {
   };
 }
 
+function calculatePacing(windows: UsageWindow[]): UsagePacing {
+  // Preserve the legacy aggregate preference for consumers that still expect a
+  // single app-level badge, then expose per-provider pacing separately below.
+  const legacyWindow =
+    windows.find((w) => w.windowType === "weekly" && w.provider === "claude") ??
+    windows.find((w) => w.windowType === "weekly") ??
+    windows.find((w) => w.windowType === "monthly") ??
+    windows.find((w) => w.windowType === "five_hour") ??
+    null;
+  return legacyWindow ? calculatePacingForWindow(legacyWindow) : emptyPacing();
+}
+
+function calculatePacingByProvider(windows: UsageWindow[]): UsageSnapshot["pacingByProvider"] {
+  const providers = Array.from(new Set(windows.map((window) => window.provider)));
+  const out: UsageSnapshot["pacingByProvider"] = {};
+  for (const provider of providers) {
+    const selected = selectPacingWindow(windows.filter((window) => window.provider === provider));
+    if (selected) out[provider] = calculatePacingForWindow(selected);
+  }
+  return out;
+}
+
 // ── Service Factory ──────────────────────────────────────────────
 
 export type UsageTrackingService = ReturnType<typeof createUsageTrackingService>;
@@ -816,6 +1001,7 @@ export type UsageTrackingService = ReturnType<typeof createUsageTrackingService>
 type UsageTrackingDependencies = {
   pollClaudeUsage?: () => Promise<{ windows: UsageWindow[]; extraUsage: ExtraUsage | null; errors: string[] }>;
   pollCodexUsage?: () => Promise<{ windows: UsageWindow[]; errors: string[] }>;
+  pollCursorUsage?: () => Promise<{ windows: UsageWindow[]; extraUsage: ExtraUsage | null; errors: string[] }>;
   scanClaudeLogs?: () => Promise<TokenEntry[]>;
   scanCodexLogs?: () => Promise<TokenEntry[]>;
 };
@@ -843,12 +1029,14 @@ export function createUsageTrackingService({
   let inFlightPoll: Promise<UsageSnapshot> | null = null;
   const runClaudeUsagePoll = dependencies?.pollClaudeUsage ?? (() => pollClaudeUsage(logger));
   const runCodexUsagePoll = dependencies?.pollCodexUsage ?? (() => pollCodexUsage(logger));
+  const runCursorUsagePoll = dependencies?.pollCursorUsage ?? pollCursorUsage;
   const scanClaudeCostLogs = dependencies?.scanClaudeLogs ?? scanClaudeLogs;
   const scanCodexCostLogs = dependencies?.scanCodexLogs ?? scanCodexLogs;
 
   const emptySnapshot = (): UsageSnapshot => ({
     windows: [],
-    pacing: { status: "on-track", projectedWeeklyPercent: 0, weekElapsedPercent: 0, expectedPercent: 0, deltaPercent: 0, etaHours: null, willLastToReset: true, resetsInHours: 0 },
+    pacing: emptyPacing(),
+    pacingByProvider: {},
     costs: [],
     extraUsage: [],
     lastPolledAt: nowIso(),
@@ -891,7 +1079,7 @@ export function createUsageTrackingService({
       let allWindows: UsageWindow[] = [];
 
       try {
-        const [claudeResult, codexResult, costs] = await Promise.all([
+        const [claudeResult, codexResult, cursorResult, costs] = await Promise.all([
           runClaudeUsagePoll().catch((err) => {
             const msg = `claude: poll failed: ${getErrorMessage(err)}`;
             logger.warn("usage.poll.claude_failed", { error: msg });
@@ -902,19 +1090,27 @@ export function createUsageTrackingService({
             logger.warn("usage.poll.codex_failed", { error: msg });
             return { windows: [] as UsageWindow[], errors: [msg] };
           }),
+          runCursorUsagePoll().catch((err) => {
+            const msg = `cursor: poll failed: ${getErrorMessage(err)}`;
+            logger.warn("usage.poll.cursor_failed", { error: msg });
+            return { windows: [] as UsageWindow[], extraUsage: null as ExtraUsage | null, errors: [msg] };
+          }),
           pollCosts(),
         ]);
 
-        allWindows = [...claudeResult.windows, ...codexResult.windows];
-        errors.push(...claudeResult.errors, ...codexResult.errors);
+        allWindows = [...claudeResult.windows, ...codexResult.windows, ...cursorResult.windows];
+        errors.push(...claudeResult.errors, ...codexResult.errors, ...cursorResult.errors);
 
         const pacing = calculatePacing(allWindows);
+        const pacingByProvider = calculatePacingByProvider(allWindows);
         const extraUsage: ExtraUsage[] = [];
         if (claudeResult.extraUsage) extraUsage.push(claudeResult.extraUsage);
+        if (cursorResult.extraUsage) extraUsage.push(cursorResult.extraUsage);
 
         const snapshot: UsageSnapshot = {
           windows: allWindows,
           pacing,
+          pacingByProvider,
           costs,
           extraUsage,
           lastPolledAt: nowIso(),
@@ -1001,12 +1197,16 @@ export const _testing = {
   refreshClaudeCredentials,
   parseClaudeWindows,
   parseCodexRateLimitWindows,
+  parseCursorSpendUsage,
   pollClaudeUsage,
   pollCodexUsage,
+  pollCursorUsage,
   scanClaudeLogs,
   scanCodexLogs,
   aggregateCosts,
   calculatePacing,
+  calculatePacingByProvider,
+  calculatePacingForWindow,
   fetchJson,
   findJsonlFiles,
   resolveTokenPrice,

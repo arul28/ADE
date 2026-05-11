@@ -62,12 +62,12 @@ export type GetAggregatedUsageArgs = {
 };
 
 // ---------------------------------------------------------------------------
-// Live usage tracking types (Claude + Codex provider polling)
+// Live usage tracking types (Claude, Codex, and Cursor provider polling)
 // ---------------------------------------------------------------------------
 
-export type UsageProvider = "claude" | "codex";
+export type UsageProvider = "claude" | "codex" | "cursor";
 
-export type UsageWindowType = "five_hour" | "weekly" | "weekly_oauth_apps" | "weekly_cowork";
+export type UsageWindowType = "five_hour" | "weekly" | "monthly" | "weekly_oauth_apps" | "weekly_cowork";
 
 export type UsageWindow = {
   provider: UsageProvider;
@@ -76,6 +76,7 @@ export type UsageWindow = {
   percentUsed: number;
   resetsAt: string;
   resetsInMs: number;
+  windowDurationMs?: number;
 };
 
 export type UsagePacingStatus =
@@ -89,9 +90,9 @@ export type UsagePacingStatus =
 
 export type UsagePacing = {
   status: UsagePacingStatus;
-  /** Projected usage % at end of the weekly window */
+  /** Projected usage % at the end of the tracked quota window. */
   projectedWeeklyPercent: number;
-  /** % of the weekly window that has elapsed */
+  /** % of the tracked quota window that has elapsed. */
   weekElapsedPercent: number;
   /** Expected usage % at this point if usage were perfectly linear */
   expectedPercent: number;
@@ -99,11 +100,13 @@ export type UsagePacing = {
   deltaPercent: number;
   /** Hours until 100% at current rate, null if rate is ~0 */
   etaHours: number | null;
-  /** Whether current rate will last until the weekly reset */
+  /** Whether current rate will last until the tracked reset */
   willLastToReset: boolean;
-  /** Hours until the weekly window resets */
+  /** Hours until the tracked window resets */
   resetsInHours: number;
 };
+
+export type UsagePacingByProvider = Partial<Record<UsageProvider, UsagePacing>>;
 
 export type CostSnapshot = {
   provider: UsageProvider;
@@ -124,6 +127,7 @@ export type ExtraUsage = {
 export type UsageSnapshot = {
   windows: UsageWindow[];
   pacing: UsagePacing;
+  pacingByProvider?: UsagePacingByProvider;
   costs: CostSnapshot[];
   extraUsage: ExtraUsage[];
   lastPolledAt: string;

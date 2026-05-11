@@ -57,6 +57,7 @@ import {
 } from "./services/projects/projectService";
 import { inspectRecentProject, type RecentProjectInspection } from "./services/projects/recentProjectSummary";
 import { resolveProjectIcon } from "./services/projects/projectIconResolver";
+import { resolveStartupProject } from "./services/projects/startupProjectResolver";
 import { createAdeProjectService } from "./services/projects/adeProjectService";
 import { createConfigReloadService } from "./services/projects/configReloadService";
 import { IPC } from "../shared/ipc";
@@ -1031,6 +1032,7 @@ app.whenReady().then(async () => {
     && process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL !== "1";
   const shouldShowRuntimeMigrationNotice =
     shouldAttemptRuntimeServiceInstall && machineStateMigration.shouldShowNotice;
+  const packagedChannel = normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL);
 
   const envRoot = process.env.ADE_PROJECT_ROOT;
   const pendingStartupProjectRoot =
@@ -1042,17 +1044,14 @@ app.whenReady().then(async () => {
       (filePath) => normalizeProjectPath(filePath) !== pendingStartupProjectRoot,
     );
   }
-  const devFallbackProject = process.env.VITE_DEV_SERVER_URL
-    ? path.resolve(process.cwd(), "..", "..")
-    : fallbackProjectRoot;
-
-  const startupUserSelected = Boolean((envRoot && envRoot.trim().length) || pendingStartupProjectRoot);
-  const initialCandidate =
-    envRoot && envRoot.trim().length
-      ? normalizeProjectPath(envRoot)
-      : pendingStartupProjectRoot
-        ? pendingStartupProjectRoot
-      : devFallbackProject;
+  const startupProject = resolveStartupProject({
+    envRoot,
+    pendingStartupProjectRoot,
+    validLastProjectRoot,
+    recentProjects: cleanedRecentProjects,
+    normalizeProjectPath,
+  });
+  const shouldOpenStartupProject = startupProject.rootPath != null;
 
   const broadcast = (channel: string, payload: unknown) => {
     for (const win of BrowserWindow.getAllWindows()) {
@@ -1107,6 +1106,9 @@ app.whenReady().then(async () => {
     localRuntimePool.noteServiceInstallSkipped("Background service migration already completed.");
   } else if (process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL === "1") {
     localRuntimePool.noteServiceInstallSkipped("Background service installation is disabled by ADE_DISABLE_RUNTIME_SERVICE_INSTALL.");
+    if (machineStateMigration.didRun && app.isPackaged && packagedChannel) {
+      markMachineStateMigrationComplete({ layout: machineAdeLayout });
+    }
   } else if (!app.isPackaged) {
     localRuntimePool.noteServiceInstallSkipped("Background service installation is skipped in dev builds.");
   } else if (process.env.NODE_ENV === "test") {
@@ -5574,19 +5576,18 @@ app.whenReady().then(async () => {
     builtInBrowserService,
   });
 
-  // Dogfood and other explicit ADE_PROJECT_ROOT launches need the project
-  // context ready before the renderer boots, otherwise the window can paint
-  // the welcome state and swallow project selection into a confusing no-op.
-  if (startupUserSelected) {
+  // Restore the startup project before the renderer boots so packaged launches
+  // do not flash into the welcome state and lose the previous project context.
+  if (shouldOpenStartupProject && startupProject.rootPath) {
     try {
-      await switchProjectFromDialog(initialCandidate);
+      await switchProjectFromDialog(startupProject.rootPath);
     } catch {
       setForegroundProject(null);
       dormantContext = createDormantProjectContext();
     }
   }
 
-  const initialWindowProjectRoot = startupUserSelected ? activeProjectRoot : null;
+  const initialWindowProjectRoot = shouldOpenStartupProject ? activeProjectRoot : null;
   const initialWindow = await createWindow({
     logger: getActiveContext().logger,
     onCreated: (createdWindow) => registerWindowSession(createdWindow, initialWindowProjectRoot),

@@ -1024,7 +1024,7 @@ Post-packaging hardening (`apps/desktop/scripts/`):
 - **IPC tracing** — every handler emits `ipc.invoke.begin` / `ipc.invoke.done` / `ipc.invoke.failed` with call ID, channel, window ID, duration, summarized args. Mandatory for new handlers.
 - **Renderer lifecycle** — `renderer.route_change`, `renderer.tab_change`, `renderer.window_error`, `renderer.unhandled_rejection`, `renderer.event_loop_stall`. Mandatory for new surfaces that introduce novel lifecycle transitions.
 - **Startup tasks** — `project.startup_task_enabled`, `project.startup_task_skipped`, `project.startup_task_begin`, `project.startup_task_done` with durations.
-- **Usage tracking** — `usageTrackingService.ts` + `budgetCapService.ts` account for tokens and cost per provider/model/call-type; surfaced in Missions UI + Settings.
+- **Usage tracking** — `usageTrackingService.ts` + `budgetCapService.ts` account for tokens and cost per provider/model/call-type; surfaced in Missions UI and the top-bar Usage popup (`HeaderUsageControl` → `UsageQuotaPanel` + collapsible `BudgetCapEditor`).
 - **No external telemetry** — ADE does not ship analytics to any cloud service. All telemetry is local.
 
 ### 15.3 Error surfaces

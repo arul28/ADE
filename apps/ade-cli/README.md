@@ -232,6 +232,7 @@ ade --role cto linear search-issues --query "auth" --state-type started,unstarte
 ade git commit --lane lane-id
 ade git push --lane lane-id
 ade git branches --lane lane-id --text
+ade git user-identity --lane lane-id --text
 ade diff patch --lane lane-id --path src/file.ts --text
 ade prs create --lane lane-id --base main --title "Fix checkout flow"
 ade prs create --lane lane-id --base main --close-linear-issue-on-merge
@@ -258,6 +259,14 @@ ade --socket browser open http://localhost:5173 --new-tab --text
 ade --socket macos-vm status --lane lane-id --text
 ade --socket macos-vm start --lane lane-id --create --no-display --text
 ade --socket update status --text
+ade --socket update check --text
+ade --socket update install --text
+ade usage snapshot --text
+ade usage refresh --text
+ade usage budget get --text
+ade usage budget set --from-file budget.json
+ade usage budget check --provider claude --scope global
+ade usage budget cumulative --scope global --text
 ade actions list
 ade actions run git.stageFile --arg laneId=lane-id --arg path=src/index.ts
 ade cursor cloud agents list --text
