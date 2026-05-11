@@ -10,7 +10,7 @@ description: Iteratively optimize an ADE tab's CPU/memory/IPC/render performance
   Claude.
 metadata:
   author: ADE
-  version: 0.1.0
+  version: 0.2.0
 ---
 
 # ade-autoresearch
@@ -22,44 +22,44 @@ A Karpathy-style autoresearch loop for ADE perf. You (the agent) ARE the loop ru
 - `<tab>`: the tab to optimize. Must be one of: `boot`, `lanes`, `missions`, `prs`, `work`, `files`, `run`, `graph`, `review`, `history`, `automations`, `cto`, `settings`. (`boot` = cold launch + welcome + project open + remote runtime + iOS pairing — the "main ADE screen" surface above any specific tab.)
 - `<perf-pass-dir>`: throwaway git repo path. Defaults to `/Users/admin/Projects/perf pass` (note the space — quote it). Must exist, must be a git repo, must have a `perf-pass-seed` tag (or you create one on first run). Override via `ADE_PERF_PASS_DIR` env var.
 
-## Shortcuts — prefer IPC and direct launch over computer use
+## Real UI audit is the primary loop
 
-Computer use (screenshots + clicks) is slow and noisy. Always prefer these in this order:
+The job is to find what a person actually feels in the tab. Deterministic scenarios are guardrails and regression checks, not a substitute for driving the product.
 
-1. **Direct IPC calls** in scenarios. Most ADE actions are exposed on `window.ade.*` — call them directly instead of clicking buttons. Examples:
+Use this order:
+
+1. **Warm launch the real Electron UI on the target tab** and keep it open while auditing:
+   ```bash
+   NO_DEVTOOLS=1 ADE_DISABLE_LOCAL_RUNTIME_DAEMON=1 ADE_LOCAL_RUNTIME_FALLBACK=1 ADE_MODEL_OVERRIDE=gpt-5-codex \
+     node scripts/perf-launch.mjs --tab <tab> --run-id <tab>-ui-audit-$(date +%Y%m%d-%H%M)
+   ```
+   Confirm the Electron surface is on the requested tab. The visible active tab must match `<tab>`; do not audit a related embedded surface from another tab.
+
+2. **Build an action inventory from the visible UI and source.** Start with the tab's actual first screen, then cover every safe user action, subpane, menu, picker, dialog, mode switch, list interaction, empty state, error/preflight state, expand/minimize/fullscreen state, keyboard/search/filter path, and tab-specific destructive/external preflight. For destructive or externally visible actions, open and measure the prompt/preflight unless the user has explicitly allowed final execution.
+
+   The inventory must be tab-derived. For example, a Work pass should cover Work sidebar/session list, chat/CLI/shell start surfaces, session tabs/grid/layout controls, running/ended session actions, model/attachment/command/parallel pickers, terminal/chat panes, context menus, filters/search, and ADE tools drawers because those are Work-tab surfaces. A Lanes pass should cover lane list, stack graph, lane dialogs, Git Actions, and lane Work panes because those are Lanes-tab surfaces.
+
+3. **Mark each UI segment in the perf log** before and after exercising it:
    ```ts
-   await window.ade.project.openRepo({ rootPath: "/some/repo" });
-   await window.ade.lanes.create({ name: "x", ... });
-   await window.ade.project.listRecent();
-   await window.ade.remoteRuntime.listTargets();
+   window.ade.perf.recordEvent({ kind: "manualStep", ts: Date.now(), name: "git-actions-stage", phase: "start" });
+   // drive the visible UI
+   window.ade.perf.recordEvent({ kind: "manualStep", ts: Date.now(), name: "git-actions-stage", phase: "end" });
    ```
-   Read `apps/desktop/src/preload/global.d.ts` for the full IPC surface.
+   Segment names should describe the workflow, not the implementation detail.
 
-2. **Warm launch on a specific tab** without running any scenario:
-   ```bash
-   node scripts/perf-launch.mjs --tab lanes
-   node scripts/perf-launch.mjs --tab boot --no-project
-   node scripts/perf-launch.mjs --route /settings/integrations
-   ```
-   This boots ADE with perf instrumentation, navigates to the target route, and stays open. Ideal for hands-on inspection of metrics as they stream into `~/.ade/perf-runs/<runId>/events.jsonl`.
+4. **Use direct IPC only for setup, cleanup, and analysis.** It is fine to create fixture data, reset a throwaway repo, query status, or extract metrics through IPC/shell. Do not replace a UI audit action with `window.ade.*` unless the UI is genuinely impossible to drive; if you must, say so in the run notes.
 
-3. **Single-scenario run** for a measured cycle:
-   ```bash
-   node scripts/run-perf-scenario.mjs lanes.cold-list run-id
-   node scripts/run-perf-scenario.mjs boot.idle-welcome run-id --no-project
-   ```
-
-4. **Computer use is the last resort.** Use only when no IPC exists and a click is unavoidable. Even then, prefer adding a `data-testid` and a `clickTestId` step in the scenario instead of pixel coordinates.
+5. **Run deterministic scenarios after UI findings.** Scenarios catch regressions and quantify broad fitness. They do not prove the tab is clean unless the UI action inventory was also covered.
 
 ## Setup (do once at start of run)
 
-1. **Read prior wins** at `.agents/skills/ade-perf-<tab>/SKILL.md` if it exists. These are patterns past runs discovered — do not redo them, and prefer NOT to undo them. If conflict, prefer the prior win unless your new change strictly improves on it.
+1. **Read prior wins** at `.agents/skills/ade-perf-<tab>/SKILL.md` if it exists. These are optional best-practice notes from earlier audits, not prerequisites. If no per-tab skill exists, derive the checklist from the tab UI and source and create the per-tab skill only during codification after you have measured real behavior.
 2. **Read scenario definitions** at `apps/desktop/src/renderer/perf/scenarios/<tab>.ts`. These are the *contract*. Do NOT edit them.
-3. **Verify perf-pass repo** is clean and on its seed tag:
+3. **Verify perf-pass repo** exists, has a seed tag, and can exercise real GitHub paths when needed:
    ```bash
    scripts/reset-perf-pass.sh
    ```
-   Refuse to start if perf-pass doesn't exist — instruct the user to create it.
+   Refuse to start if perf-pass doesn't exist. If the tab uses GitHub behavior, publish the repo as a private `perf-pass` remote before measuring push/pull/fetch UI.
 4. **Create a working branch** off main:
    ```bash
    git checkout -b autoresearch/<tab>-$(date +%Y%m%d-%H%M)
@@ -67,6 +67,8 @@ Computer use (screenshots + clicks) is slow and noisy. Always prefer these in th
 5. **Set the model override** for all in-ADE AI activity: export `ADE_MODEL_OVERRIDE=gpt-5-codex` (or another GPT/Codex model id available in ADE). Don't touch this during the run.
 
 ## Baseline (iteration 0)
+
+Start with one deterministic scenario sweep so you know the existing guardrail fitness, then do the real UI inventory. The baseline is not complete until both exist.
 
 Run all scenarios for the tab. For lanes that's:
 
@@ -91,6 +93,8 @@ node scripts/run-perf-scenario.mjs boot.stress-launch   baseline-stress --no-pro
 
 Each writes `~/.ade/perf-runs/<runId>/summary.json`. Read all summaries. Compute the **per-tab fitness** as the sum of all scenario fitness scores. Record this as `baseline_fitness`. Also record per-component breakdown so you can target the worst component.
 
+Then launch the real tab with `perf-launch`, drive the action inventory, and analyze `~/.ade/perf-runs/<runId>/events.jsonl` by manualStep segments. Record the worst UI segment, the slow IPC channels inside it, and whether the cost is expected work (for example network push/fetch) or avoidable tab work.
+
 Tag the baseline commit:
 ```bash
 git tag perf-baseline-<tab>-$(date +%Y%m%d)
@@ -103,8 +107,8 @@ Stop conditions: **no fitness improvement for 10 consecutive iterations** OR use
 For each iteration:
 
 ### 1. Analyze
-- Read the latest set of `summary.json` files for this tab.
-- Pick the **#1 bottleneck**: the component contributing most to fitness. Tie-break by reproducibility (the bottleneck that appears across multiple scenarios > single-scenario).
+- Read the latest scenario summaries and the latest real-UI `events.jsonl`.
+- Pick the **#1 bottleneck**: the avoidable cost that appears in real UI segments or scenario summaries. Tie-break by user-visible workflow first, then reproducibility across scenarios.
 - Common bottleneck categories:
   - **Slow IPC channel**: a channel in `summary.ipc.slowChannels` with p95 ≥ 120ms
   - **Long task spam**: `webVitals.longTaskCount` > 5 per minute
@@ -112,6 +116,7 @@ For each iteration:
   - **Render-on-scroll cost**: `marks.scroll.*` p95 high
   - **Route transition cost**: `marks.nav.*` or `marks.switch.*` p95 high
   - **Main CPU**: `process.mainCpuPercentP95` > 30 during idle scenarios → background pollers
+- UI segment waste: heavy refreshes, duplicate mounted panes, hidden pollers, repeated global status checks, or expensive dialog prefetches that are not needed for the action the user took
 - Read the code that owns the bottleneck. Form a hypothesis.
 
 ### 2. Propose ONE change
@@ -150,7 +155,7 @@ npm --prefix apps/desktop run test -- --run path/to/affected.test.ts
 If tests fail: **revert** the commit (`git reset --hard HEAD~1`), do NOT count toward plateau, try a different change targeting the same or next bottleneck.
 
 ### 5. Measure
-Re-run all scenarios for the tab. Compute new per-tab fitness.
+First re-drive the same UI segment with the same markers and compare the IPC/render/memory delta. Then re-run the smallest scenario subset that covers the changed surface. Re-run all scenarios before declaring the run done.
 
 ### 6. Smoke gate
 For each scenario's summary, check `summary.scenarios.<id>.ok === true` and `smokeFailures.length === 0`. If any scenario failed smoke: **revert**, increment plateau counter.
@@ -174,19 +179,19 @@ When stop condition hits:
 
 Read all kept commits (`git log --oneline perf-baseline-<tab>-... HEAD`). For each, extract the **pattern** (the technique used, not the literal change). Update `.agents/skills/ade-perf-<tab>/SKILL.md`:
 
-- One entry per pattern. If a similar pattern already exists, append a refinement instead of duplicating.
+- Write this as future engineering guidance for agents editing that tab, not as an audit transcript. One entry per pattern. If a similar pattern already exists, append a refinement instead of duplicating.
 - Each entry:
   - **Pattern**: one-line name (e.g. "Debounce git-status pollers behind window visibility").
   - **Why it helped**: which bottleneck it addressed, with the metric delta from the summary.
   - **How to recognize when to apply**: signs in future code that the same pattern is needed.
   - **Anti-pattern to avoid**: what NOT to do.
   - **Verification**: which scenario + metric this affected.
-- Append-only. Do not delete prior entries.
+- Preserve proven history, but keep the top of the file readable as best practices for future code changes.
 
 ## Notes on agent behavior
 
 - **Stay focused.** One bottleneck at a time. Resist the urge to "while I'm here also fix..." — that breaks attribution.
 - **Trust the metric.** If fitness went up but you "feel" the code is better, revert anyway. The metric is the contract.
-- **The perf-pass repo is your sandbox.** Inside it, you may create lanes, open chats, run automations, anything that exercises ADE. The scenarios already drive this; you may extend them ONLY by adding new scenarios in `apps/desktop/src/renderer/perf/scenarios/<tab>.ts` — never by editing existing ones.
+- **The perf-pass repo is your sandbox.** Inside it, you may create lanes, open chats, push/pull throwaway branches, run automations, stash changes, and delete fixtures when needed to exercise ADE. Scenarios are guardrails; real UI audit coverage is required before you call the tab optimized. You may extend scenarios ONLY by adding new scenarios in `apps/desktop/src/renderer/perf/scenarios/<tab>.ts` — never by editing existing ones.
 - **Codex model only.** If a scenario invokes an in-ADE chat, that chat uses the `ADE_MODEL_OVERRIDE` model (gpt-5-codex by default). Scenarios opting into Claude must declare `requiresClaude: true` and you must set `ADE_PERF_ALLOW_CLAUDE=1` for them.
 - **Concurrency**: only one perf run on the machine at a time. If `~/.ade/perf-runs/` contains a `<runId>/lock` file with a live pid, refuse to start.
