@@ -3,7 +3,19 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
-const external = ["node-pty", "sql.js", "node:sqlite", "@cursor/sdk", "sqlite3"];
+const external = [
+  "@agentclientprotocol/sdk",
+  "@anthropic-ai/claude-agent-sdk",
+  "@cursor/sdk",
+  "@opencode-ai/sdk",
+  "@wize-logic/nodejs-rfb",
+  "chokidar",
+  "node-pty",
+  "node:sqlite",
+  "sql.js",
+  "sqlite3",
+  "zod",
+];
 const packageRoot = path.dirname(fileURLToPath(import.meta.url));
 const packageJson = JSON.parse(readFileSync(path.join(packageRoot, "package.json"), "utf8")) as { version?: string };
 const version = process.env.ADE_CLI_VERSION?.trim() || packageJson.version || "0.0.0";
