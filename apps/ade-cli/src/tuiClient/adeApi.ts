@@ -69,8 +69,8 @@ function slashCommandKey(value: string): string {
 export function discoverProjectSlashCommands(workspaceRoot: string): AgentChatSlashCommand[] {
   const byName = new Map<string, AgentChatSlashCommand>();
   const add = (command: { name: string; description: string; argumentHint?: string }) => {
-    if (command.name === "/login") return;
     const key = slashCommandKey(command.name);
+    if (key === "/login") return;
     if (byName.has(key)) return;
     byName.set(key, {
       name: command.name,

@@ -124,6 +124,27 @@ describe("discoverProjectSlashCommands", () => {
       }),
     ]));
   });
+
+  it("hides login commands regardless of project command filename casing", () => {
+    const projectRoot = makeTmpRoot("ade-code-login-command-");
+    const commandsDir = path.join(projectRoot, ".claude", "commands");
+    fs.mkdirSync(commandsDir, { recursive: true });
+    fs.writeFileSync(path.join(commandsDir, "Login.md"), [
+      "---",
+      "description: Case variant login",
+      "---",
+      "",
+      "Login.",
+      "",
+    ].join("\n"));
+    fs.writeFileSync(path.join(commandsDir, "ship.md"), "Ship.\n");
+
+    const commands = discoverProjectSlashCommands(projectRoot);
+    expect(commands.some((command) => command.name.toLowerCase() === "/login")).toBe(false);
+    expect(commands).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "/ship" }),
+    ]));
+  });
 });
 
 describe("createChatSession", () => {
