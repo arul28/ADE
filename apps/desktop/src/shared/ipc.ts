@@ -773,6 +773,10 @@ export const IPC = {
   notificationsApnsUploadKey: "ade.notifications.apns.uploadKey",
   notificationsApnsClearKey: "ade.notifications.apns.clearKey",
   notificationsApnsSendTestPush: "ade.notifications.apns.sendTestPush",
+  perfGetConfig: "ade.perf.getConfig",
+  perfRecordEvent: "ade.perf.recordEvent",
+  perfFinalize: "ade.perf.finalize",
+  perfScenarioComplete: "ade.perf.scenarioComplete",
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];

@@ -8398,4 +8398,15 @@ contextBridge.exposeInMainWorld("ade", {
     ipcRenderer.on(IPC.updateEvent, listener);
     return () => ipcRenderer.removeListener(IPC.updateEvent, listener);
   },
+  perf: {
+    getConfig: () => ipcRenderer.invoke(IPC.perfGetConfig),
+    recordEvent: (event: { kind: string; ts?: number; [k: string]: unknown }) =>
+      ipcRenderer.invoke(IPC.perfRecordEvent, event),
+    scenarioComplete: (args: {
+      scenario: string;
+      ok: boolean;
+      smokeFailures?: string[];
+    }) => ipcRenderer.invoke(IPC.perfScenarioComplete, args),
+    finalize: () => ipcRenderer.invoke(IPC.perfFinalize),
+  },
 });

@@ -2395,6 +2395,27 @@ declare global {
       updateQuitAndInstall: () => Promise<boolean>;
       updateDismissInstalledNotice: () => Promise<void>;
       onUpdateEvent: (cb: (snapshot: AutoUpdateSnapshot) => void) => () => void;
+      perf: {
+        getConfig: () => Promise<{
+          active: boolean;
+          runId: string | null;
+          scenario: string | null;
+          initialRoute: string | null;
+          allowClaude: boolean;
+          modelOverride: string | null;
+        }>;
+        recordEvent: (event: {
+          kind: string;
+          ts?: number;
+          [key: string]: unknown;
+        }) => Promise<{ ok: boolean; reason?: string }>;
+        scenarioComplete: (args: {
+          scenario: string;
+          ok: boolean;
+          smokeFailures?: string[];
+        }) => Promise<{ ok: boolean; reason?: string }>;
+        finalize: () => Promise<{ ok: boolean; reason?: string; summary?: unknown }>;
+      };
     };
   }
 }

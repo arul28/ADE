@@ -9,6 +9,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { IPC } from "../../../shared/ipc";
 import { getModelById } from "../../../shared/modelRegistry";
+import { appendEvent as perfAppend, isRunActive as isPerfRunActive } from "../perf/perfLog";
 import { buildPrAiResolutionContextKey } from "../../../shared/types";
 import { launchPrIssueResolutionChat, previewPrIssueResolutionPrompt } from "../prs/prIssueResolver";
 import { launchRebaseResolutionChat } from "../prs/prRebaseResolver";
@@ -2072,6 +2073,16 @@ export function registerIpc({
     durationMs: number;
     failed: boolean;
   }) => {
+    if (isPerfRunActive()) {
+      perfAppend({
+        ts: Date.now(),
+        kind: "ipcInvoke",
+        channel: input.channel,
+        winId: input.winId,
+        durationMs: input.durationMs,
+        failed: input.failed,
+      });
+    }
     const key = `${input.winId ?? "none"}:${input.channel}`;
     const existing = ipcInvokeAggregates.get(key) ?? {
       channel: input.channel,
