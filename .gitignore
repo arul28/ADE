@@ -66,5 +66,4 @@ ios-signing/
 package-lock.json
 !/apps/ade-code/package-lock.json
 /apps/desktop/release-alpha
-apps/desktop/resources/runtime/ade-darwin-arm64.native.tar.gz
-apps/desktop/resources/runtime/ade-darwin-arm64
+apps/desktop/resources/runtime/ade-*

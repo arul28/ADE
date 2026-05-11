@@ -93,11 +93,7 @@ rm -rf "$runtime_dir/node_modules"
 tar -xzf "$tmp_dir/native.tar.gz" -C "$runtime_dir"
 export NODE_PATH="$runtime_dir/node_modules${NODE_PATH:+:$NODE_PATH}"
 
-if command -v "$dest_dir/ade" >/dev/null 2>&1; then
-  "$dest_dir/ade" --version >/dev/null
-else
-  "$dest_dir/ade" --version >/dev/null
-fi
+"$dest_dir/ade" --version >/dev/null || die "installed ade binary failed to run"
 
 if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
   "$dest_dir/ade" serve --install-service >/dev/null 2>&1 || true
