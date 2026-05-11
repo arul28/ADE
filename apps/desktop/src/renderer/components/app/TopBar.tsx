@@ -1,5 +1,24 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowSquareOut, ChatCircleDots, CircleNotch, DesktopTower, DeviceMobile, Folder, FolderOpen, Plus, Minus, Trash, UploadSimple, X } from "@phosphor-icons/react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import {
+  ArrowSquareOut,
+  ChatCircleDots,
+  CircleNotch,
+  DesktopTower,
+  DeviceMobile,
+  Folder,
+  FolderOpen,
+  Plus,
+  Minus,
+  Trash,
+  UploadSimple,
+  X,
+} from "@phosphor-icons/react";
 import * as Dialog from "@radix-ui/react-dialog";
 
 import { useAppStore } from "../../state/appStore";
@@ -14,15 +33,26 @@ import {
 } from "../../lib/zoom";
 import { cn } from "../ui/cn";
 import { SmartTooltip } from "../ui/SmartTooltip";
-import type { ProcessRuntime, ProjectIcon, RecentProjectSummary, SyncRoleSnapshot } from "../../../shared/types";
+import type {
+  ProcessRuntime,
+  ProjectIcon,
+  RecentProjectSummary,
+  RemoteRuntimeConnectionSnapshot,
+  SyncRoleSnapshot,
+} from "../../../shared/types";
 import { AutoUpdateControl } from "./AutoUpdateControl";
 import { FeedbackReporterModal } from "./FeedbackReporterModal";
 import { HelpMenu } from "../onboarding/HelpMenu";
 import { LinearQuickViewButton } from "./LinearQuickViewButton";
 import { PublishToGitHubDialog } from "../projects/PublishToGitHubDialog";
+import { RemoteTargetList } from "../remoteTargets/RemoteTargetList";
 import { SyncDevicesSection } from "../settings/SyncDevicesSection";
 
-const RUNNING_LANE_PROCESS_STATES: ProcessRuntime["status"][] = ["starting", "running", "degraded"];
+const RUNNING_LANE_PROCESS_STATES: ProcessRuntime["status"][] = [
+  "starting",
+  "running",
+  "degraded",
+];
 const ADE_PROJECT_TAB_ROOT_MIME = "application/x-ade-project-root";
 const ADE_PROJECT_TAB_WINDOW_MIME = "application/x-ade-window-id";
 
@@ -53,7 +83,10 @@ function setProjectIconCache(rootPath: string, icon: ProjectIcon): void {
   }
   projectIconCache.set(rootPath, icon);
 }
-function setProjectIconAccentCache(cacheKey: string, color: string | null): void {
+function setProjectIconAccentCache(
+  cacheKey: string,
+  color: string | null,
+): void {
   if (projectIconAccentCache.has(cacheKey)) {
     projectIconAccentCache.delete(cacheKey);
   } else if (projectIconAccentCache.size >= PROJECT_ICON_ACCENT_CACHE_MAX) {
@@ -64,7 +97,9 @@ function setProjectIconAccentCache(cacheKey: string, color: string | null): void
 }
 
 function toHexByte(value: number): string {
-  return Math.max(0, Math.min(255, Math.round(value))).toString(16).padStart(2, "0");
+  return Math.max(0, Math.min(255, Math.round(value)))
+    .toString(16)
+    .padStart(2, "0");
 }
 
 function balancedAccentColor(red: number, green: number, blue: number): string {
@@ -83,8 +118,10 @@ function balancedAccentColor(red: number, green: number, blue: number): string {
 }
 
 async function deriveIconAccentColor(dataUrl: string): Promise<string | null> {
-  if (projectIconAccentCache.has(dataUrl)) return projectIconAccentCache.get(dataUrl) ?? null;
-  if (typeof document === "undefined" || typeof Image === "undefined") return null;
+  if (projectIconAccentCache.has(dataUrl))
+    return projectIconAccentCache.get(dataUrl) ?? null;
+  if (typeof document === "undefined" || typeof Image === "undefined")
+    return null;
 
   const color = await new Promise<string | null>((resolve) => {
     const image = new Image();
@@ -92,8 +129,14 @@ async function deriveIconAccentColor(dataUrl: string): Promise<string | null> {
     image.onload = () => {
       try {
         const canvas = document.createElement("canvas");
-        const width = Math.max(1, Math.min(24, image.naturalWidth || image.width || 24));
-        const height = Math.max(1, Math.min(24, image.naturalHeight || image.height || 24));
+        const width = Math.max(
+          1,
+          Math.min(24, image.naturalWidth || image.width || 24),
+        );
+        const height = Math.max(
+          1,
+          Math.min(24, image.naturalHeight || image.height || 24),
+        );
         canvas.width = width;
         canvas.height = height;
         const ctx = canvas.getContext("2d", { willReadFrequently: true });
@@ -118,7 +161,8 @@ async function deriveIconAccentColor(dataUrl: string): Promise<string | null> {
           const min = Math.min(red, green, blue);
           const saturation = max === 0 ? 0 : (max - min) / max;
           const luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue;
-          if (saturation < 0.08 && (luminance < 28 || luminance > 230)) continue;
+          if (saturation < 0.08 && (luminance < 28 || luminance > 230))
+            continue;
           const weight = alpha * (0.18 + saturation * 1.65);
           redTotal += red * weight;
           greenTotal += green * weight;
@@ -129,7 +173,13 @@ async function deriveIconAccentColor(dataUrl: string): Promise<string | null> {
           resolve(null);
           return;
         }
-        resolve(balancedAccentColor(redTotal / weightTotal, greenTotal / weightTotal, blueTotal / weightTotal));
+        resolve(
+          balancedAccentColor(
+            redTotal / weightTotal,
+            greenTotal / weightTotal,
+            blueTotal / weightTotal,
+          ),
+        );
       } catch {
         resolve(null);
       }
@@ -147,21 +197,24 @@ const PHONE_SYNC_FOCUSABLE_SELECTOR = [
   "textarea:not([disabled])",
   "input:not([disabled])",
   "select:not([disabled])",
-  "[tabindex]:not([tabindex=\"-1\"])",
+  '[tabindex]:not([tabindex="-1"])',
 ].join(",");
 
 function getFocusableElements(root: HTMLElement): HTMLElement[] {
-  return Array.from(root.querySelectorAll<HTMLElement>(PHONE_SYNC_FOCUSABLE_SELECTOR))
-    .filter((element) =>
-      element.getAttribute("aria-hidden") !== "true"
-      && !element.hasAttribute("disabled")
-      && element.tabIndex >= 0
-    );
+  return Array.from(
+    root.querySelectorAll<HTMLElement>(PHONE_SYNC_FOCUSABLE_SELECTOR),
+  ).filter(
+    (element) =>
+      element.getAttribute("aria-hidden") !== "true" &&
+      !element.hasAttribute("disabled") &&
+      element.tabIndex >= 0,
+  );
 }
 
 function syncDotClass(snapshot: SyncRoleSnapshot): string {
   if (snapshot.client.state === "error") return "ade-status-dot-error";
-  if (snapshot.client.state === "connected" || snapshot.role === "brain") return "ade-status-dot-active";
+  if (snapshot.client.state === "connected" || snapshot.role === "brain")
+    return "ade-status-dot-active";
   return "ade-status-dot-warning";
 }
 
@@ -221,7 +274,7 @@ function ProjectTabIcon({
   onAccentColorChange?: (rootPath: string, color: string | null) => void;
 }) {
   const [icon, setIcon] = useState<ProjectIcon | null>(() =>
-    disabled ? null : getProjectIconFromCache(rootPath) ?? null
+    disabled ? null : (getProjectIconFromCache(rootPath) ?? null),
   );
   const [failed, setFailed] = useState(false);
   const [iconDialogOpen, setIconDialogOpen] = useState(false);
@@ -250,13 +303,16 @@ function ProjectTabIcon({
 
     let cancelled = false;
     const timer = window.setTimeout(() => {
-      window.ade.project.resolveIcon(rootPath).then((nextIcon) => {
-        if (cancelled) return;
-        setProjectIconCache(rootPath, nextIcon);
-        setIcon(nextIcon);
-      }).catch(() => {
-        if (!cancelled) setIcon(null);
-      });
+      window.ade.project
+        .resolveIcon(rootPath)
+        .then((nextIcon) => {
+          if (cancelled) return;
+          setProjectIconCache(rootPath, nextIcon);
+          setIcon(nextIcon);
+        })
+        .catch(() => {
+          if (!cancelled) setIcon(null);
+        });
     }, 100);
     return () => {
       cancelled = true;
@@ -273,11 +329,13 @@ function ProjectTabIcon({
         cancelled = true;
       };
     }
-    deriveIconAccentColor(dataUrl).then((color) => {
-      if (!cancelled) onAccentColorChange?.(rootPath, color);
-    }).catch(() => {
-      if (!cancelled) onAccentColorChange?.(rootPath, null);
-    });
+    deriveIconAccentColor(dataUrl)
+      .then((color) => {
+        if (!cancelled) onAccentColorChange?.(rootPath, color);
+      })
+      .catch(() => {
+        if (!cancelled) onAccentColorChange?.(rootPath, null);
+      });
     return () => {
       cancelled = true;
     };
@@ -295,19 +353,22 @@ function ProjectTabIcon({
     />
   );
 
-  const iconNode = !icon?.dataUrl || failed ? fallbackIcon : (
-    <img
-      src={icon.dataUrl}
-      alt=""
-      className={cn(
-        "h-[18px] w-[18px] shrink-0 rounded-[4px] object-contain transition-opacity duration-150",
-        isCurrent ? "opacity-95" : "opacity-75",
-        animate && "animate-pulse",
-      )}
-      draggable={false}
-      onError={() => setFailed(true)}
-    />
-  );
+  const iconNode =
+    !icon?.dataUrl || failed ? (
+      fallbackIcon
+    ) : (
+      <img
+        src={icon.dataUrl}
+        alt=""
+        className={cn(
+          "h-[18px] w-[18px] shrink-0 rounded-[4px] object-contain transition-opacity duration-150",
+          isCurrent ? "opacity-95" : "opacity-75",
+          animate && "animate-pulse",
+        )}
+        draggable={false}
+        onError={() => setFailed(true)}
+      />
+    );
 
   const handleChooseIcon = useCallback(async () => {
     if (disabled || choosing) return;
@@ -322,7 +383,9 @@ function ProjectTabIcon({
         if (nextIcon.dataUrl) {
           setIconDialogOpen(false);
         } else {
-          setIconError("ADE saved the path, but the image could not be rendered as a project icon.");
+          setIconError(
+            "ADE saved the path, but the image could not be rendered as a project icon.",
+          );
         }
       }
     } catch (error) {
@@ -374,7 +437,15 @@ function ProjectTabIcon({
           onKeyDown={(event) => event.stopPropagation()}
           onMouseDown={(event) => event.stopPropagation()}
         >
-          {choosing || removing ? <CircleNotch size={15} weight="bold" className="animate-spin opacity-80" /> : iconNode}
+          {choosing || removing ? (
+            <CircleNotch
+              size={15}
+              weight="bold"
+              className="animate-spin opacity-80"
+            />
+          ) : (
+            iconNode
+          )}
         </button>
       </Dialog.Trigger>
       <Dialog.Portal>
@@ -388,7 +459,9 @@ function ProjectTabIcon({
         >
           <div className="flex items-start justify-between gap-3">
             <div>
-              <Dialog.Title className="text-sm font-semibold">Project icon</Dialog.Title>
+              <Dialog.Title className="text-sm font-semibold">
+                Project icon
+              </Dialog.Title>
               <Dialog.Description className="sr-only">
                 Preview and manage this project's shared icon.
               </Dialog.Description>
@@ -433,7 +506,13 @@ function ProjectTabIcon({
               disabled={choosing || removing}
               onClick={handleRemoveIcon}
             >
-              {removing ? <CircleNotch size={13} weight="bold" className="mr-1.5 animate-spin" /> : null}
+              {removing ? (
+                <CircleNotch
+                  size={13}
+                  weight="bold"
+                  className="mr-1.5 animate-spin"
+                />
+              ) : null}
               Remove
             </button>
             <button
@@ -442,7 +521,13 @@ function ProjectTabIcon({
               disabled={choosing || removing}
               onClick={handleChooseIcon}
             >
-              {choosing ? <CircleNotch size={13} weight="bold" className="mr-1.5 animate-spin" /> : null}
+              {choosing ? (
+                <CircleNotch
+                  size={13}
+                  weight="bold"
+                  className="mr-1.5 animate-spin"
+                />
+              ) : null}
               Replace
             </button>
           </div>
@@ -465,14 +550,25 @@ export function TopBar() {
   const cancelNewTab = useAppStore((s) => s.cancelNewTab);
   const projectTransition = useAppStore((s) => s.projectTransition);
   const projectTransitionError = useAppStore((s) => s.projectTransitionError);
-  const clearProjectTransitionError = useAppStore((s) => s.clearProjectTransitionError);
+  const clearProjectTransitionError = useAppStore(
+    (s) => s.clearProjectTransitionError,
+  );
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
-  const [recentProjects, setRecentProjects] = useState<RecentProjectSummary[]>([]);
-  const [projectAccentColors, setProjectAccentColors] = useState<Record<string, string | null>>({});
+  const [recentProjects, setRecentProjects] = useState<RecentProjectSummary[]>(
+    [],
+  );
+  const [projectAccentColors, setProjectAccentColors] = useState<
+    Record<string, string | null>
+  >({});
   const [relocatingPath, setRelocatingPath] = useState<string | null>(null);
   const [zoom, setZoom] = useState(getStoredZoomLevel);
-  const [syncSnapshot, setSyncSnapshot] = useState<SyncRoleSnapshot | null>(null);
+  const [syncSnapshot, setSyncSnapshot] = useState<SyncRoleSnapshot | null>(
+    null,
+  );
   const [phoneSyncOpen, setPhoneSyncOpen] = useState(false);
+  const [remotePanelOpen, setRemotePanelOpen] = useState(false);
+  const [remoteSnapshot, setRemoteSnapshot] =
+    useState<RemoteRuntimeConnectionSnapshot | null>(null);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [publishOpen, setPublishOpen] = useState(false);
   const [openProjectTabRoots, setOpenProjectTabRoots] = useState<string[]>([]);
@@ -480,9 +576,11 @@ export function TopBar() {
   const [dropIdx, setDropIdx] = useState<number | null>(null);
   const [windowId, setWindowId] = useState<number | null>(null);
   const phoneSyncPanelRef = useRef<HTMLDivElement | null>(null);
+  const remotePanelRef = useRef<HTMLDivElement | null>(null);
   const dragCounterRef = useRef(0);
   const isProjectBusy = projectTransition != null || relocatingPath != null;
-  const remoteBinding = projectBinding?.kind === "remote" ? projectBinding : null;
+  const remoteBinding =
+    projectBinding?.kind === "remote" ? projectBinding : null;
   const workspaceProjectOpen =
     projectHydrated === true &&
     showWelcome !== true &&
@@ -490,9 +588,14 @@ export function TopBar() {
     Boolean(project?.rootPath) &&
     !remoteBinding;
 
-  const projectRootForRemote = workspaceProjectOpen ? project?.rootPath ?? null : null;
-  const { hasGitHubRemote, hasOrigin, refresh: refreshRemote } =
-    useGithubProjectRemote(projectRootForRemote);
+  const projectRootForRemote = workspaceProjectOpen
+    ? (project?.rootPath ?? null)
+    : null;
+  const {
+    hasGitHubRemote,
+    hasOrigin,
+    refresh: refreshRemote,
+  } = useGithubProjectRemote(projectRootForRemote);
   const publishDefaultName = useMemo(() => {
     const root = project?.rootPath;
     if (!root) return "";
@@ -507,6 +610,9 @@ export function TopBar() {
     Boolean(project?.rootPath) &&
     hasGitHubRemote === false &&
     hasOrigin === false;
+  const connectedRemoteCount = remoteSnapshot?.connectedCount ?? 0;
+  const remoteButtonLabel =
+    connectedRemoteCount > 0 ? `Remote ${connectedRemoteCount}` : "Remote";
 
   const applyZoom = useCallback((pct: number) => {
     const clamped = Math.max(MIN_ZOOM_LEVEL, Math.min(MAX_ZOOM_LEVEL, pct));
@@ -522,7 +628,7 @@ export function TopBar() {
     window.ade.project
       .listRecent()
       .then((rows) => setRecentProjects(rows))
-      .catch(() => { });
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -536,25 +642,29 @@ export function TopBar() {
       return;
     }
     setOpenProjectTabRoots((prev) =>
-      prev.includes(rootPath) ? prev : [...prev, rootPath]
+      prev.includes(rootPath) ? prev : [...prev, rootPath],
     );
   }, [project?.rootPath, remoteBinding]);
 
-  const projectTabs = useMemo<RecentProjectSummary[]>(() =>
-    openProjectTabRoots.map((rootPath) => {
-      const recent = recentProjects.find((entry) => entry.rootPath === rootPath);
-      if (recent) return recent;
-      return {
-        rootPath,
-        displayName:
-          project?.rootPath === rootPath
-            ? project.displayName ?? fallbackProjectName(rootPath)
-            : fallbackProjectName(rootPath),
-        exists: true,
-        lastOpenedAt: "",
-      };
-    }),
-  [openProjectTabRoots, project, recentProjects]);
+  const projectTabs = useMemo<RecentProjectSummary[]>(
+    () =>
+      openProjectTabRoots.map((rootPath) => {
+        const recent = recentProjects.find(
+          (entry) => entry.rootPath === rootPath,
+        );
+        if (recent) return recent;
+        return {
+          rootPath,
+          displayName:
+            project?.rootPath === rootPath
+              ? (project.displayName ?? fallbackProjectName(rootPath))
+              : fallbackProjectName(rootPath),
+          exists: true,
+          lastOpenedAt: "",
+        };
+      }),
+    [openProjectTabRoots, project, recentProjects],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -578,6 +688,36 @@ export function TopBar() {
     });
     return () => window.cancelAnimationFrame(frame);
   }, [phoneSyncOpen]);
+
+  useEffect(() => {
+    const remoteRuntime = window.ade.remoteRuntime;
+    if (!remoteRuntime?.getConnectionSnapshot) return;
+    let cancelled = false;
+    void remoteRuntime
+      .getConnectionSnapshot()
+      .then((snapshot) => {
+        if (!cancelled) setRemoteSnapshot(snapshot);
+      })
+      .catch(() => {
+        if (!cancelled) setRemoteSnapshot(null);
+      });
+    const unsubscribe =
+      remoteRuntime.onConnectionSnapshotChanged?.((snapshot) => {
+        if (!cancelled) setRemoteSnapshot(snapshot);
+      }) ?? (() => {});
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!remotePanelOpen) return;
+    const frame = window.requestAnimationFrame(() => {
+      remotePanelRef.current?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [remotePanelOpen]);
 
   // Re-fetch when app regains focus (catches external deletions).
   useEffect(() => {
@@ -604,11 +744,16 @@ export function TopBar() {
     }
     const refreshSyncStatus = () => {
       const requestVersion = ++statusRequestVersion;
-      void window.ade.sync.getStatus({ includeTransferReadiness: false }).then((snapshot) => {
-        if (!cancelled && requestVersion === statusRequestVersion) setSyncSnapshot(snapshot);
-      }).catch(() => {
-        if (!cancelled && requestVersion === statusRequestVersion) setSyncSnapshot(null);
-      });
+      void window.ade.sync
+        .getStatus({ includeTransferReadiness: false })
+        .then((snapshot) => {
+          if (!cancelled && requestVersion === statusRequestVersion)
+            setSyncSnapshot(snapshot);
+        })
+        .catch(() => {
+          if (!cancelled && requestVersion === statusRequestVersion)
+            setSyncSnapshot(null);
+        });
     };
     setSyncSnapshot(null);
     refreshSyncStatus();
@@ -630,58 +775,79 @@ export function TopBar() {
     // happen while ADE is not active.
   }, [project?.rootPath, remoteBinding]);
 
-  const checkForActiveWorkloads = useCallback(async (projectRootPath: string): Promise<boolean> => {
-    if (project?.rootPath !== projectRootPath) return true;
+  const checkForActiveWorkloads = useCallback(
+    async (projectRootPath: string): Promise<boolean> => {
+      if (project?.rootPath !== projectRootPath) return true;
 
-    try {
-      const [lanes, runningSessions, agentChats, activeMissions] = await Promise.all([
-        window.ade.lanes.list({ includeArchived: false }),
-        window.ade.sessions.list({ status: "running" }),
-        window.ade.agentChat.list(),
-        window.ade.missions.list({ status: "active" })
-      ]);
+      try {
+        const [lanes, runningSessions, agentChats, activeMissions] =
+          await Promise.all([
+            window.ade.lanes.list({ includeArchived: false }),
+            window.ade.sessions.list({ status: "running" }),
+            window.ade.agentChat.list(),
+            window.ade.missions.list({ status: "active" }),
+          ]);
 
-      const laneRuntimes = await Promise.all(
-        lanes.map((lane) => window.ade.processes.listRuntime(lane.id).catch(() => [] as ProcessRuntime[]))
-      );
+        const laneRuntimes = await Promise.all(
+          lanes.map((lane) =>
+            window.ade.processes
+              .listRuntime(lane.id)
+              .catch(() => [] as ProcessRuntime[]),
+          ),
+        );
 
-      const activeProcesses = laneRuntimes
-        .flat()
-        .filter((runtime) => RUNNING_LANE_PROCESS_STATES.includes(runtime.status));
-      const activeSessionCount = runningSessions.filter(
-        (session) => session.status === "running" && !isRunOwnedSession(session),
-      ).length;
-      const activeChatCount = agentChats.filter((chat) => chat.status === "active").length;
+        const activeProcesses = laneRuntimes
+          .flat()
+          .filter((runtime) =>
+            RUNNING_LANE_PROCESS_STATES.includes(runtime.status),
+          );
+        const activeSessionCount = runningSessions.filter(
+          (session) =>
+            session.status === "running" && !isRunOwnedSession(session),
+        ).length;
+        const activeChatCount = agentChats.filter(
+          (chat) => chat.status === "active",
+        ).length;
 
-      const warnings: string[] = [];
-      if (activeProcesses.length > 0) {
-        warnings.push(`${activeProcesses.length} running lane process${activeProcesses.length === 1 ? "" : "es"}`);
+        const warnings: string[] = [];
+        if (activeProcesses.length > 0) {
+          warnings.push(
+            `${activeProcesses.length} running lane process${activeProcesses.length === 1 ? "" : "es"}`,
+          );
+        }
+        if (activeSessionCount > 0) {
+          warnings.push(
+            `${activeSessionCount} running terminal session${activeSessionCount === 1 ? "" : "s"}`,
+          );
+        }
+        if (activeChatCount > 0) {
+          warnings.push(
+            `${activeChatCount} active chat${activeChatCount === 1 ? "" : "s"}`,
+          );
+        }
+        if (activeMissions.length > 0) {
+          warnings.push(
+            `${activeMissions.length} active mission${activeMissions.length === 1 ? "" : "s"}`,
+          );
+        }
+
+        if (warnings.length === 0) return true;
+
+        const message = [
+          "You are about to close this project.",
+          "The following active work items will be terminated:",
+          ...warnings.map((line) => `- ${line}`),
+          "",
+          "Do you want to continue?",
+        ].join("\n");
+
+        return window.confirm(message);
+      } catch {
+        return true;
       }
-      if (activeSessionCount > 0) {
-        warnings.push(`${activeSessionCount} running terminal session${activeSessionCount === 1 ? "" : "s"}`);
-      }
-      if (activeChatCount > 0) {
-        warnings.push(`${activeChatCount} active chat${activeChatCount === 1 ? "" : "s"}`);
-      }
-      if (activeMissions.length > 0) {
-        warnings.push(`${activeMissions.length} active mission${activeMissions.length === 1 ? "" : "s"}`);
-      }
-
-      if (warnings.length === 0) return true;
-
-      const message = [
-        "You are about to close this project.",
-        "The following active work items will be terminated:",
-        ...warnings.map((line) => `- ${line}`),
-        "",
-        "Do you want to continue?"
-      ].join("\n");
-
-      return window.confirm(message);
-    } catch {
-      return true;
-    }
-  }, [project?.rootPath]);
+    },
+    [project?.rootPath],
+  );
 
   const handleOpenNew = useCallback(() => {
     if (isProjectBusy) return;
@@ -693,67 +859,94 @@ export function TopBar() {
     window.ade.app.newWindow().catch(() => {});
   }, [isProjectBusy]);
 
-  const handleSwitchProject = useCallback((rootPath: string) => {
-    if (isProjectBusy) return;
-    if (project?.rootPath === rootPath) {
-      cancelNewTab();
-      return;
-    }
-    switchProjectToPath(rootPath).catch(() => { });
-  }, [cancelNewTab, isProjectBusy, project?.rootPath, switchProjectToPath]);
-
-  const handleRemoveTab = useCallback((rootPath: string) => {
-    void (async () => {
-      const target = projectTabs.find((entry) => entry.rootPath === rootPath);
-      const fallbackName = fallbackProjectName(rootPath);
-      const confirmed = confirmProjectTabRemoval(target?.displayName ?? fallbackName);
-      if (!confirmed) return;
-
-      const shouldClose = await checkForActiveWorkloads(rootPath);
-      if (!shouldClose) return;
-
-      const currentIndex = openProjectTabRoots.indexOf(rootPath);
-      const nextTabRoots = openProjectTabRoots.filter((entry) => entry !== rootPath);
-      setOpenProjectTabRoots(nextTabRoots);
+  const handleSwitchProject = useCallback(
+    (rootPath: string) => {
+      if (isProjectBusy) return;
       if (project?.rootPath === rootPath) {
-        const nextRoot =
-          nextTabRoots[currentIndex]
-          ?? nextTabRoots[currentIndex - 1]
-          ?? null;
-        if (nextRoot) {
-          switchProjectToPath(nextRoot).catch(() => { });
-        } else {
-          closeProject().catch(() => { });
-        }
+        cancelNewTab();
+        return;
       }
-    })().catch(() => { });
-  }, [checkForActiveWorkloads, closeProject, openProjectTabRoots, project?.rootPath, projectTabs, switchProjectToPath]);
+      switchProjectToPath(rootPath).catch(() => {});
+    },
+    [cancelNewTab, isProjectBusy, project?.rootPath, switchProjectToPath],
+  );
+
+  const handleRemoveTab = useCallback(
+    (rootPath: string) => {
+      void (async () => {
+        const target = projectTabs.find((entry) => entry.rootPath === rootPath);
+        const fallbackName = fallbackProjectName(rootPath);
+        const confirmed = confirmProjectTabRemoval(
+          target?.displayName ?? fallbackName,
+        );
+        if (!confirmed) return;
+
+        const shouldClose = await checkForActiveWorkloads(rootPath);
+        if (!shouldClose) return;
+
+        const currentIndex = openProjectTabRoots.indexOf(rootPath);
+        const nextTabRoots = openProjectTabRoots.filter(
+          (entry) => entry !== rootPath,
+        );
+        setOpenProjectTabRoots(nextTabRoots);
+        if (project?.rootPath === rootPath) {
+          const nextRoot =
+            nextTabRoots[currentIndex] ??
+            nextTabRoots[currentIndex - 1] ??
+            null;
+          if (nextRoot) {
+            switchProjectToPath(nextRoot).catch(() => {});
+          } else {
+            closeProject().catch(() => {});
+          }
+        }
+      })().catch(() => {});
+    },
+    [
+      checkForActiveWorkloads,
+      closeProject,
+      openProjectTabRoots,
+      project?.rootPath,
+      projectTabs,
+      switchProjectToPath,
+    ],
+  );
 
   const handleCloseRemoteTab = useCallback(() => {
     if (isProjectBusy) return;
-    closeProject().catch(() => { });
+    closeProject().catch(() => {});
   }, [closeProject, isProjectBusy]);
 
-  const handleRelocate = useCallback((oldPath: string) => {
-    setRelocatingPath(oldPath);
-    void (async () => {
-      const newProject = await openRepo().catch(() => null);
-      if (!newProject) return;
-      const nextRows = await window.ade.project.forgetRecent(oldPath).catch(() => null);
-      if (nextRows) setRecentProjects(nextRows);
-    })().catch(() => { }).finally(() => setRelocatingPath(null));
-  }, [openRepo]);
+  const handleRelocate = useCallback(
+    (oldPath: string) => {
+      setRelocatingPath(oldPath);
+      void (async () => {
+        const newProject = await openRepo().catch(() => null);
+        if (!newProject) return;
+        const nextRows = await window.ade.project
+          .forgetRecent(oldPath)
+          .catch(() => null);
+        if (nextRows) setRecentProjects(nextRows);
+      })()
+        .catch(() => {})
+        .finally(() => setRelocatingPath(null));
+    },
+    [openRepo],
+  );
 
-  const handleDragStart = useCallback((e: React.DragEvent, idx: number, rootPath: string) => {
-    setDragIdx(idx);
-    dragCounterRef.current = 0;
-    e.dataTransfer.effectAllowed = "move";
-    e.dataTransfer.setData("text/plain", String(idx));
-    e.dataTransfer.setData(ADE_PROJECT_TAB_ROOT_MIME, rootPath);
-    if (windowId != null) {
-      e.dataTransfer.setData(ADE_PROJECT_TAB_WINDOW_MIME, String(windowId));
-    }
-  }, [windowId]);
+  const handleDragStart = useCallback(
+    (e: React.DragEvent, idx: number, rootPath: string) => {
+      setDragIdx(idx);
+      dragCounterRef.current = 0;
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", String(idx));
+      e.dataTransfer.setData(ADE_PROJECT_TAB_ROOT_MIME, rootPath);
+      if (windowId != null) {
+        e.dataTransfer.setData(ADE_PROJECT_TAB_WINDOW_MIME, String(windowId));
+      }
+    },
+    [windowId],
+  );
 
   const handleDragOver = useCallback((e: React.DragEvent, idx: number) => {
     e.preventDefault();
@@ -765,49 +958,64 @@ export function TopBar() {
     setDropIdx(null);
   }, []);
 
-  const handleDrop = useCallback((e: React.DragEvent, targetIdx: number) => {
-    if (dragIdx === null && Array.from(e.dataTransfer.types).includes(ADE_PROJECT_TAB_ROOT_MIME)) {
-      return;
-    }
-    e.preventDefault();
-    e.stopPropagation();
-    setDropIdx(null);
-    if (dragIdx === null || dragIdx === targetIdx) {
-      setDragIdx(null);
-      return;
-    }
-    const items = [...openProjectTabRoots];
-    const [moved] = items.splice(dragIdx, 1);
-    items.splice(targetIdx, 0, moved);
-    setOpenProjectTabRoots(items);
-    setDragIdx(null);
-  }, [dragIdx, openProjectTabRoots]);
-
-  const handleProjectTabDrop = useCallback((e: React.DragEvent) => {
-    const rootPath = e.dataTransfer.getData(ADE_PROJECT_TAB_ROOT_MIME);
-    if (!rootPath) return;
-    e.preventDefault();
-    setDropIdx(null);
-    setDragIdx(null);
-
-    const sourceWindowIdRaw = e.dataTransfer.getData(ADE_PROJECT_TAB_WINDOW_MIME);
-    const parsedSourceWindowId = sourceWindowIdRaw ? Number(sourceWindowIdRaw) : null;
-    const sourceWindowId = parsedSourceWindowId != null && Number.isFinite(parsedSourceWindowId)
-      ? parsedSourceWindowId
-      : null;
-    if (sourceWindowId != null && sourceWindowId === windowId) return;
-
-    if (project?.rootPath === rootPath) {
-      if (sourceWindowId != null) {
-        window.ade.app.closeWindow(sourceWindowId).catch(() => {});
+  const handleDrop = useCallback(
+    (e: React.DragEvent, targetIdx: number) => {
+      if (
+        dragIdx === null &&
+        Array.from(e.dataTransfer.types).includes(ADE_PROJECT_TAB_ROOT_MIME)
+      ) {
+        return;
       }
-      return;
-    }
-    switchProjectToPath(rootPath).catch(() => {});
-  }, [project?.rootPath, switchProjectToPath, windowId]);
+      e.preventDefault();
+      e.stopPropagation();
+      setDropIdx(null);
+      if (dragIdx === null || dragIdx === targetIdx) {
+        setDragIdx(null);
+        return;
+      }
+      const items = [...openProjectTabRoots];
+      const [moved] = items.splice(dragIdx, 1);
+      items.splice(targetIdx, 0, moved);
+      setOpenProjectTabRoots(items);
+      setDragIdx(null);
+    },
+    [dragIdx, openProjectTabRoots],
+  );
+
+  const handleProjectTabDrop = useCallback(
+    (e: React.DragEvent) => {
+      const rootPath = e.dataTransfer.getData(ADE_PROJECT_TAB_ROOT_MIME);
+      if (!rootPath) return;
+      e.preventDefault();
+      setDropIdx(null);
+      setDragIdx(null);
+
+      const sourceWindowIdRaw = e.dataTransfer.getData(
+        ADE_PROJECT_TAB_WINDOW_MIME,
+      );
+      const parsedSourceWindowId = sourceWindowIdRaw
+        ? Number(sourceWindowIdRaw)
+        : null;
+      const sourceWindowId =
+        parsedSourceWindowId != null && Number.isFinite(parsedSourceWindowId)
+          ? parsedSourceWindowId
+          : null;
+      if (sourceWindowId != null && sourceWindowId === windowId) return;
+
+      if (project?.rootPath === rootPath) {
+        if (sourceWindowId != null) {
+          window.ade.app.closeWindow(sourceWindowId).catch(() => {});
+        }
+        return;
+      }
+      switchProjectToPath(rootPath).catch(() => {});
+    },
+    [project?.rootPath, switchProjectToPath, windowId],
+  );
 
   const handleProjectTabDragOver = useCallback((e: React.DragEvent) => {
-    if (!Array.from(e.dataTransfer.types).includes(ADE_PROJECT_TAB_ROOT_MIME)) return;
+    if (!Array.from(e.dataTransfer.types).includes(ADE_PROJECT_TAB_ROOT_MIME))
+      return;
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
   }, []);
@@ -819,7 +1027,8 @@ export function TopBar() {
         e.clientY < 0 ||
         e.clientX > window.innerWidth ||
         e.clientY > window.innerHeight);
-    const droppedOnAdeTarget = e.dataTransfer.dropEffect && e.dataTransfer.dropEffect !== "none";
+    const droppedOnAdeTarget =
+      e.dataTransfer.dropEffect && e.dataTransfer.dropEffect !== "none";
     setDragIdx(null);
     setDropIdx(null);
     if (draggedOutside && !droppedOnAdeTarget) {
@@ -827,58 +1036,107 @@ export function TopBar() {
     }
   }, []);
 
-  const handleProjectAccentColorChange = useCallback((rootPath: string, color: string | null) => {
-    setProjectAccentColors((prev) => {
-      if ((prev[rootPath] ?? null) === color) return prev;
-      return { ...prev, [rootPath]: color };
-    });
-  }, []);
+  const handleProjectAccentColorChange = useCallback(
+    (rootPath: string, color: string | null) => {
+      setProjectAccentColors((prev) => {
+        if ((prev[rootPath] ?? null) === color) return prev;
+        return { ...prev, [rootPath]: color };
+      });
+    },
+    [],
+  );
 
-  const handlePhoneSyncDialogKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      setPhoneSyncOpen(false);
-      return;
-    }
-    if (event.key !== "Tab") return;
+  const handlePhoneSyncDialogKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setPhoneSyncOpen(false);
+        return;
+      }
+      if (event.key !== "Tab") return;
 
-    const panel = phoneSyncPanelRef.current;
-    if (!panel) return;
-    const focusable = getFocusableElements(panel);
-    if (focusable.length === 0) {
-      event.preventDefault();
-      panel.focus();
-      return;
-    }
+      const panel = phoneSyncPanelRef.current;
+      if (!panel) return;
+      const focusable = getFocusableElements(panel);
+      if (focusable.length === 0) {
+        event.preventDefault();
+        panel.focus();
+        return;
+      }
 
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    if (document.activeElement === panel) {
-      event.preventDefault();
-      (event.shiftKey ? last : first).focus();
-    } else if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
-  }, []);
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (document.activeElement === panel) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      } else if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    },
+    [],
+  );
+
+  const handleRemotePanelKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setRemotePanelOpen(false);
+        return;
+      }
+      if (event.key !== "Tab") return;
+
+      const panel = remotePanelRef.current;
+      if (!panel) return;
+      const focusable = getFocusableElements(panel);
+      if (focusable.length === 0) {
+        event.preventDefault();
+        panel.focus();
+        return;
+      }
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (document.activeElement === panel) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      } else if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    },
+    [],
+  );
 
   const syncLabel = deriveSyncLabel(syncSnapshot);
-  const transitionTargetName =
-    projectTransition?.rootPath
-        ? (projectTabs.find((entry) => entry.rootPath === projectTransition.rootPath)?.displayName
-          ?? recentProjects.find((entry) => entry.rootPath === projectTransition.rootPath)?.displayName
-          ?? fallbackProjectName(projectTransition.rootPath)
-          ?? "project")
-      : "project";
+  const transitionTargetName = projectTransition?.rootPath
+    ? (projectTabs.find(
+        (entry) => entry.rootPath === projectTransition.rootPath,
+      )?.displayName ??
+      recentProjects.find(
+        (entry) => entry.rootPath === projectTransition.rootPath,
+      )?.displayName ??
+      fallbackProjectName(projectTransition.rootPath) ??
+      "project")
+    : "project";
   let projectTransitionLabel: string | null = null;
   if (projectTransition != null) {
     switch (projectTransition.kind) {
-      case "opening": projectTransitionLabel = "Opening project…"; break;
-      case "switching": projectTransitionLabel = `Switching to ${transitionTargetName}…`; break;
-      case "closing": projectTransitionLabel = "Closing project…"; break;
+      case "opening":
+        projectTransitionLabel = "Opening project…";
+        break;
+      case "switching":
+        projectTransitionLabel = `Switching to ${transitionTargetName}…`;
+        break;
+      case "closing":
+        projectTransitionLabel = "Closing project…";
+        break;
     }
   }
 
@@ -916,12 +1174,16 @@ export function TopBar() {
                 aria-current="true"
                 className={cn(
                   "ade-shell-project-tab group inline-flex w-[clamp(154px,18vw,240px)] max-w-[240px] min-w-0 shrink-0 items-center gap-2 px-3 py-0.5",
-                  "font-semibold transition-[background-color,color,border-color,box-shadow,opacity] duration-150"
+                  "font-semibold transition-[background-color,color,border-color,box-shadow,opacity] duration-150",
                 )}
                 style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
                 title={`${remoteBinding.runtimeName}: ${remoteBinding.rootPath}`}
               >
-                <DesktopTower size={14} weight="duotone" className="shrink-0 text-accent" />
+                <DesktopTower
+                  size={14}
+                  weight="duotone"
+                  className="shrink-0 text-accent"
+                />
                 <span className="min-w-0 flex-1 truncate text-[12px]">
                   {remoteBinding.displayName}
                 </span>
@@ -932,7 +1194,7 @@ export function TopBar() {
                   type="button"
                   className={cn(
                     "ade-shell-control ml-auto inline-flex h-5 w-5 shrink-0 items-center justify-center text-current",
-                    "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150"
+                    "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150",
                   )}
                   data-variant="ghost"
                   disabled={isProjectBusy}
@@ -951,15 +1213,19 @@ export function TopBar() {
               const isMissing = !rp.exists;
               const isRelocating = relocatingPath === rp.rootPath;
               const isSwitchTarget =
-                projectTransition?.kind === "switching" && projectTransition.rootPath === rp.rootPath;
+                projectTransition?.kind === "switching" &&
+                projectTransition.rootPath === rp.rootPath;
               const isClosingTarget =
                 projectTransition?.kind === "closing" && isCurrent;
               const isDragging = dragIdx === idx;
               const isDropTarget = dropIdx === idx && dragIdx !== idx;
-              const projectAccentColor = projectAccentColors[rp.rootPath] ?? null;
+              const projectAccentColor =
+                projectAccentColors[rp.rootPath] ?? null;
               const projectTabStyle = {
                 WebkitAppRegion: "no-drag",
-                ...(projectAccentColor ? { "--project-tab-accent": projectAccentColor } : {}),
+                ...(projectAccentColor
+                  ? { "--project-tab-accent": projectAccentColor }
+                  : {}),
               } as React.CSSProperties;
               let projectTabState: string | undefined;
               if (isRelocating) projectTabState = "open";
@@ -972,9 +1238,15 @@ export function TopBar() {
                   role={isMissing ? undefined : "button"}
                   tabIndex={isMissing ? -1 : 0}
                   data-state={projectTabState}
-                  data-tour={isCurrent && workspaceProjectOpen ? "project.activeTab" : undefined}
+                  data-tour={
+                    isCurrent && workspaceProjectOpen
+                      ? "project.activeTab"
+                      : undefined
+                  }
                   aria-current={isCurrent ? "true" : undefined}
-                  aria-disabled={isRelocating || isProjectBusy ? true : undefined}
+                  aria-disabled={
+                    isRelocating || isProjectBusy ? true : undefined
+                  }
                   draggable={!isMissing && !isRelocating && !isProjectBusy}
                   onDragStart={(e) => handleDragStart(e, idx, rp.rootPath)}
                   onDragOver={(e) => handleDragOver(e, idx)}
@@ -987,9 +1259,10 @@ export function TopBar() {
                     !isMissing && "cursor-pointer",
                     isCurrent && "font-semibold",
                     isRelocating && "pointer-events-none opacity-80",
-                    (isSwitchTarget || isClosingTarget) && "pointer-events-none opacity-80",
+                    (isSwitchTarget || isClosingTarget) &&
+                      "pointer-events-none opacity-80",
                     isDragging && "opacity-40",
-                    isDropTarget && "ring-1 ring-accent/50"
+                    isDropTarget && "ring-1 ring-accent/50",
                   )}
                   style={projectTabStyle}
                   onClick={() => {
@@ -1012,7 +1285,11 @@ export function TopBar() {
                     onAccentColorChange={handleProjectAccentColorChange}
                   />
                   {isSwitchTarget || isClosingTarget ? (
-                    <CircleNotch size={12} weight="bold" className="shrink-0 animate-spin opacity-80" />
+                    <CircleNotch
+                      size={12}
+                      weight="bold"
+                      className="shrink-0 animate-spin opacity-80"
+                    />
                   ) : null}
                   {isCurrent && indicator != null && indicator !== "none" ? (
                     <span
@@ -1025,14 +1302,14 @@ export function TopBar() {
                         "ade-status-dot h-1.5 w-1.5 shrink-0",
                         indicator === "running-needs-attention"
                           ? "ade-status-dot-warning"
-                          : "ade-status-dot-active"
+                          : "ade-status-dot-active",
                       )}
                     />
                   ) : null}
                   <span
                     className={cn(
                       "min-w-0 flex-1 truncate",
-                      isMissing && "line-through"
+                      isMissing && "line-through",
                     )}
                   >
                     {rp.displayName}
@@ -1052,7 +1329,11 @@ export function TopBar() {
                         }}
                         title="Relocate project"
                       >
-                        <FolderOpen size={13} weight="regular" className={cn(isRelocating && "animate-pulse")} />
+                        <FolderOpen
+                          size={13}
+                          weight="regular"
+                          className={cn(isRelocating && "animate-pulse")}
+                        />
                       </button>
                       <button
                         type="button"
@@ -1074,7 +1355,7 @@ export function TopBar() {
                       type="button"
                       className={cn(
                         "ade-shell-control ml-auto inline-flex h-5 w-5 shrink-0 items-center justify-center text-current",
-                        "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150"
+                        "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150",
                       )}
                       data-variant="ghost"
                       disabled={isProjectBusy}
@@ -1096,24 +1377,35 @@ export function TopBar() {
                 className={cn(
                   "ade-shell-project-tab group inline-flex w-[clamp(128px,16vw,220px)] max-w-[220px] min-w-0 items-center gap-2 px-3 py-0.5",
                   "transition-[background-color,color,border-color,box-shadow] duration-150",
-                  "font-semibold"
+                  "font-semibold",
                 )}
                 data-state="active"
                 style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
               >
                 {projectTransition?.kind === "opening" ? (
-                  <CircleNotch size={13} weight="bold" className="animate-spin" />
+                  <CircleNotch
+                    size={13}
+                    weight="bold"
+                    className="animate-spin"
+                  />
                 ) : (
-                  <img src="./logo.png" alt="" style={{ height: 16, width: 34, objectFit: "contain" }} draggable={false} />
+                  <img
+                    src="./logo.png"
+                    alt=""
+                    style={{ height: 16, width: 34, objectFit: "contain" }}
+                    draggable={false}
+                  />
                 )}
                 <span className="min-w-0 flex-1 truncate text-[12px]">
-                  {projectTransition?.kind === "opening" ? "Opening…" : "New Tab"}
+                  {projectTransition?.kind === "opening"
+                    ? "Opening…"
+                    : "New Tab"}
                 </span>
                 <button
                   type="button"
                   className={cn(
                     "ade-shell-control ml-auto inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-sm",
-                    "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150"
+                    "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150",
                   )}
                   data-variant="ghost"
                   disabled={isProjectBusy}
@@ -1137,13 +1429,29 @@ export function TopBar() {
           data-tour="project.addProject"
           className={cn(
             "ade-shell-control inline-flex h-5.5 w-5.5 shrink-0 items-center justify-center",
-            "transition-[background-color,color,border-color,box-shadow] duration-150"
+            "transition-[background-color,color,border-color,box-shadow] duration-150",
           )}
           data-variant="ghost"
           onClick={handleOpenNew}
           disabled={isProjectBusy}
-          title="Open another project"
-          style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+          title={
+            connectedRemoteCount > 0
+              ? `${connectedRemoteCount} remote device${connectedRemoteCount === 1 ? "" : "s"} available`
+              : "Open another project"
+          }
+          style={
+            {
+              WebkitAppRegion: "no-drag",
+              ...(connectedRemoteCount > 0
+                ? {
+                    color: "#FBBF24",
+                    borderColor: "rgba(245,158,11,0.58)",
+                    boxShadow:
+                      "0 0 0 1px rgba(245,158,11,0.20), 0 0 16px -8px rgba(245,158,11,0.9)",
+                  }
+                : {}),
+            } as React.CSSProperties
+          }
         >
           <Plus size={12} weight="regular" />
         </button>
@@ -1151,7 +1459,7 @@ export function TopBar() {
           type="button"
           className={cn(
             "ade-shell-control inline-flex h-5.5 w-5.5 shrink-0 items-center justify-center",
-            "transition-[background-color,color,border-color,box-shadow] duration-150"
+            "transition-[background-color,color,border-color,box-shadow] duration-150",
           )}
           data-variant="ghost"
           onClick={handleOpenNewWindow}
@@ -1185,8 +1493,10 @@ export function TopBar() {
               letterSpacing: "0.08em",
               textTransform: "uppercase",
               color: "var(--color-accent)",
-              background: "color-mix(in srgb, var(--color-accent) 18%, transparent)",
-              border: "1px solid color-mix(in srgb, var(--color-accent) 36%, transparent)",
+              background:
+                "color-mix(in srgb, var(--color-accent) 18%, transparent)",
+              border:
+                "1px solid color-mix(in srgb, var(--color-accent) 36%, transparent)",
               borderRadius: 6,
               cursor: isProjectBusy ? "not-allowed" : "pointer",
               opacity: isProjectBusy ? 0.55 : 1,
@@ -1202,13 +1512,15 @@ export function TopBar() {
         <div
           className={cn(
             "ade-shell-control shrink-0 inline-flex items-center gap-1.5 rounded-md px-2.5 py-1",
-            "text-[11px] font-medium"
+            "text-[11px] font-medium",
           )}
           style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
           title={projectTransitionLabel}
         >
           <CircleNotch size={12} weight="bold" className="animate-spin" />
-          <span className="max-w-[240px] truncate">{projectTransitionLabel}</span>
+          <span className="max-w-[240px] truncate">
+            {projectTransitionLabel}
+          </span>
         </div>
       ) : null}
 
@@ -1216,12 +1528,14 @@ export function TopBar() {
         <div
           className={cn(
             "ade-shell-control shrink-0 inline-flex items-center gap-1.5 rounded-md px-2.5 py-1",
-            "text-[11px] font-medium text-red-300"
+            "text-[11px] font-medium text-red-300",
           )}
           style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
           title={projectTransitionError}
         >
-          <span className="max-w-[320px] truncate">{projectTransitionError}</span>
+          <span className="max-w-[320px] truncate">
+            {projectTransitionError}
+          </span>
           <button
             type="button"
             className="inline-flex h-4 w-4 items-center justify-center rounded-sm text-current opacity-80 transition-opacity hover:opacity-100"
@@ -1235,12 +1549,51 @@ export function TopBar() {
 
       <LinearQuickViewButton />
 
+      <button
+        type="button"
+        className={cn(
+          "ade-shell-control shrink-0 inline-flex items-center gap-1.5 rounded-md px-2.5 py-1",
+          "text-[11px] font-medium transition-colors duration-150",
+        )}
+        style={
+          {
+            WebkitAppRegion: "no-drag",
+            color: "#FBBF24",
+            background:
+              connectedRemoteCount > 0
+                ? "rgba(245,158,11,0.16)"
+                : "rgba(245,158,11,0.08)",
+            border: "1px solid rgba(245,158,11,0.34)",
+            boxShadow:
+              connectedRemoteCount > 0
+                ? "0 0 18px -8px rgba(245,158,11,0.9)"
+                : undefined,
+          } as React.CSSProperties
+        }
+        title="Manage remote machines"
+        aria-expanded={remotePanelOpen}
+        onClick={() => setRemotePanelOpen((open) => !open)}
+      >
+        <DesktopTower
+          size={12}
+          weight="regular"
+          className="shrink-0 opacity-90"
+        />
+        <span
+          className={cn(
+            "ade-status-dot h-1.5 w-1.5 shrink-0",
+            connectedRemoteCount > 0 ? "bg-emerald-400" : "bg-amber-400/65",
+          )}
+        />
+        {remoteButtonLabel}
+      </button>
+
       {syncSnapshot && syncLabel ? (
         <button
           type="button"
           className={cn(
             "ade-shell-control shrink-0 inline-flex items-center gap-1.5 rounded-md px-2.5 py-1",
-            "text-[11px] font-medium transition-colors duration-150"
+            "text-[11px] font-medium transition-colors duration-150",
           )}
           data-variant="ghost"
           style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
@@ -1248,7 +1601,11 @@ export function TopBar() {
           aria-expanded={phoneSyncOpen}
           onClick={() => setPhoneSyncOpen((open) => !open)}
         >
-          <DeviceMobile size={12} weight="regular" className="shrink-0 opacity-85" />
+          <DeviceMobile
+            size={12}
+            weight="regular"
+            className="shrink-0 opacity-85"
+          />
           <span
             className={cn(
               "ade-status-dot h-1.5 w-1.5 shrink-0",
@@ -1257,6 +1614,61 @@ export function TopBar() {
           />
           {syncLabel}
         </button>
+      ) : null}
+
+      {remotePanelOpen ? (
+        <div
+          className="fixed inset-0 z-[80]"
+          style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+          onClick={() => setRemotePanelOpen(false)}
+        >
+          <div
+            ref={remotePanelRef}
+            className={cn(
+              "absolute right-3 top-10 max-h-[calc(100vh-72px)] w-[min(820px,calc(100vw-24px))] overflow-y-auto",
+              "rounded-xl border border-white/10 bg-[color:var(--ade-shell-surface,#121019)] shadow-2xl shadow-black/45",
+            )}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="remote-connections-title"
+            tabIndex={-1}
+            onClick={(event) => event.stopPropagation()}
+            onKeyDown={handleRemotePanelKeyDown}
+          >
+            <div className="sticky top-0 z-10 flex items-center justify-between border-b border-white/10 bg-[color:var(--ade-shell-surface,#121019)] px-4 py-3">
+              <div className="flex min-w-0 items-center gap-2">
+                <DesktopTower
+                  size={16}
+                  weight="regular"
+                  className="shrink-0 text-[#FBBF24]"
+                />
+                <div className="min-w-0">
+                  <div
+                    id="remote-connections-title"
+                    className="truncate text-[13px] font-semibold"
+                  >
+                    Remote machines
+                  </div>
+                  <div className="truncate text-[11px] text-white/55">
+                    {connectedRemoteCount} connected
+                  </div>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="ade-shell-control inline-flex h-7 w-7 items-center justify-center rounded-md"
+                data-variant="ghost"
+                onClick={() => setRemotePanelOpen(false)}
+                title="Close remote machines"
+              >
+                <X size={13} weight="regular" />
+              </button>
+            </div>
+            <div className="p-4">
+              <RemoteTargetList />
+            </div>
+          </div>
+        </div>
       ) : null}
 
       {phoneSyncOpen ? (
@@ -1269,7 +1681,7 @@ export function TopBar() {
             ref={phoneSyncPanelRef}
             className={cn(
               "absolute right-3 top-10 max-h-[calc(100vh-72px)] w-[min(620px,calc(100vw-24px))] overflow-y-auto",
-              "rounded-xl border border-white/10 bg-[color:var(--ade-shell-surface,#121019)] shadow-2xl shadow-black/45"
+              "rounded-xl border border-white/10 bg-[color:var(--ade-shell-surface,#121019)] shadow-2xl shadow-black/45",
             )}
             role="dialog"
             aria-modal="true"
@@ -1280,12 +1692,21 @@ export function TopBar() {
           >
             <div className="sticky top-0 z-10 flex items-center justify-between border-b border-white/10 bg-[color:var(--ade-shell-surface,#121019)] px-4 py-3">
               <div className="flex min-w-0 items-center gap-2">
-                <DeviceMobile size={16} weight="regular" className="shrink-0 opacity-85" />
+                <DeviceMobile
+                  size={16}
+                  weight="regular"
+                  className="shrink-0 opacity-85"
+                />
                 <div className="min-w-0">
-                  <div id="phone-sync-title" className="truncate text-[13px] font-semibold">
+                  <div
+                    id="phone-sync-title"
+                    className="truncate text-[13px] font-semibold"
+                  >
                     Connect to the ADE mobile app
                   </div>
-                  <div className="truncate text-[11px] text-white/55">{syncLabel}</div>
+                  <div className="truncate text-[11px] text-white/55">
+                    {syncLabel}
+                  </div>
                 </div>
               </div>
               <button
@@ -1313,7 +1734,7 @@ export function TopBar() {
         type="button"
         className={cn(
           "ade-shell-control inline-flex h-[20px] w-[20px] items-center justify-center",
-          "transition-[background-color,color,border-color,box-shadow] duration-150"
+          "transition-[background-color,color,border-color,box-shadow] duration-150",
         )}
         onClick={() => setFeedbackOpen(true)}
         title="Report bug or suggest feature"
@@ -1322,7 +1743,10 @@ export function TopBar() {
         <ChatCircleDots size={12} weight="regular" />
       </button>
 
-      <FeedbackReporterModal open={feedbackOpen} onOpenChange={setFeedbackOpen} />
+      <FeedbackReporterModal
+        open={feedbackOpen}
+        onOpenChange={setFeedbackOpen}
+      />
 
       <PublishToGitHubDialog
         open={publishOpen}
@@ -1342,7 +1766,7 @@ export function TopBar() {
           type="button"
           className={cn(
             "ade-shell-control inline-flex h-[20px] w-[20px] items-center justify-center",
-            "transition-[background-color,color,border-color,box-shadow] duration-150"
+            "transition-[background-color,color,border-color,box-shadow] duration-150",
           )}
           onClick={zoomOut}
           title="Zoom out"
@@ -1353,7 +1777,7 @@ export function TopBar() {
           className={cn(
             "ade-shell-control-kbd inline-flex h-[20px] items-center justify-center border-x-0 px-1.5",
             "text-[10px] font-mono select-none",
-            "min-w-[36px] text-center"
+            "min-w-[36px] text-center",
           )}
         >
           {zoom}%
@@ -1362,7 +1786,7 @@ export function TopBar() {
           type="button"
           className={cn(
             "ade-shell-control inline-flex h-[20px] w-[20px] items-center justify-center",
-            "transition-[background-color,color,border-color,box-shadow] duration-150"
+            "transition-[background-color,color,border-color,box-shadow] duration-150",
           )}
           onClick={zoomIn}
           title="Zoom in"

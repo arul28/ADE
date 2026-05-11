@@ -1,6 +1,16 @@
-import {
-  createAdeRpcRequestHandler,
-} from "./adeRpcServer";
+import { createAdeRpcRequestHandler } from "./adeRpcServer";
+import os from "node:os";
+import path from "node:path";
+import { browseProjectDirectories } from "../../desktop/src/main/services/projects/projectBrowserService";
+import { getProjectDetail } from "../../desktop/src/main/services/projects/projectDetailService";
+import { createProjectScaffoldService } from "../../desktop/src/main/services/projects/projectScaffoldService";
+import type { Logger } from "../../desktop/src/main/services/logging/logger";
+import type {
+  CloneProjectInput,
+  CreateProjectInput,
+  ListMyGitHubReposInput,
+  ProjectBrowseInput,
+} from "../../desktop/src/shared/types";
 import type { BufferedEvent } from "./eventBuffer";
 import {
   JsonRpcError,
@@ -9,8 +19,12 @@ import {
   type JsonRpcRequest,
 } from "./jsonrpc";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
-import { ProjectRegistry, type ProjectId } from "./services/projects/projectRegistry";
+import {
+  ProjectRegistry,
+  type ProjectId,
+} from "./services/projects/projectRegistry";
 import { ProjectScopeRegistry } from "./services/projects/projectScope";
+import { createHeadlessGitHubService } from "./headlessLinearServices";
 import type { SyncPeerDeviceType } from "../../desktop/src/shared/types";
 
 type HandlerEntry = {
@@ -48,6 +62,12 @@ const RUNTIME_METHODS = new Set([
   "projects.add",
   "projects.remove",
   "projects.touch",
+  "projects.browseDirectories",
+  "projects.getDetail",
+  "projects.getDefaultParentDir",
+  "projects.create",
+  "projects.clone",
+  "projects.listMyGitHubRepos",
   "runtimeEvents.subscribe",
   "runtimeEvents.unsubscribe",
   "sync.getStatus",
@@ -73,18 +93,111 @@ function safeParams(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : {};
 }
 
-function readProjectId(params: Record<string, unknown>): ProjectId | null {
-  const value = params.projectId;
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+const machineProjectLogger: Logger = {
+  debug: () => {},
+  info: () => {},
+  warn: () => {},
+  error: () => {},
+};
+
+function readOptionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : undefined;
 }
 
-function omitProjectId(params: Record<string, unknown>): Record<string, unknown> {
+function readProjectBrowseInput(
+  params: Record<string, unknown>,
+): ProjectBrowseInput {
+  const input: ProjectBrowseInput = {};
+  const partialPath = readOptionalString(params.partialPath);
+  if (partialPath) input.partialPath = partialPath;
+  if (typeof params.cwd === "string") input.cwd = params.cwd.trim() || null;
+  if (typeof params.limit === "number" && Number.isFinite(params.limit))
+    input.limit = params.limit;
+  return input;
+}
+
+function readCreateProjectInput(
+  params: Record<string, unknown>,
+): CreateProjectInput {
+  const name = readOptionalString(params.name);
+  const parentDir = readOptionalString(params.parentDir);
+  if (!name)
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      "projects.create requires name.",
+    );
+  if (!parentDir)
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      "projects.create requires parentDir.",
+    );
+  return { name, parentDir };
+}
+
+function readCloneProjectInput(
+  params: Record<string, unknown>,
+): CloneProjectInput {
+  const url = readOptionalString(params.url);
+  const parentDir = readOptionalString(params.parentDir);
+  const name = readOptionalString(params.name);
+  if (!url)
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      "projects.clone requires url.",
+    );
+  if (!parentDir)
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      "projects.clone requires parentDir.",
+    );
+  return { url, parentDir, ...(name ? { name } : {}) };
+}
+
+function readListMyReposInput(
+  params: Record<string, unknown>,
+): ListMyGitHubReposInput {
+  const search = readOptionalString(params.search);
+  return search ? { search } : {};
+}
+
+function createMachineProjectScaffoldService() {
+  const githubService = createHeadlessGitHubService(
+    process.cwd(),
+    machineProjectLogger,
+  );
+  return createProjectScaffoldService({
+    logger: machineProjectLogger,
+    githubService: githubService as never,
+  });
+}
+
+function defaultParentDir(projectRegistry: ProjectRegistry): string {
+  const first = projectRegistry.list()[0]?.rootPath;
+  if (first) return path.dirname(first);
+  return path.join(os.homedir(), "Projects");
+}
+
+function readProjectId(params: Record<string, unknown>): ProjectId | null {
+  const value = params.projectId;
+  return typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : null;
+}
+
+function omitProjectId(
+  params: Record<string, unknown>,
+): Record<string, unknown> {
   const { projectId: _projectId, ...rest } = params;
   return rest;
 }
 
 function readEventCategory(value: unknown): RuntimeEventCategory | null {
-  return value === "orchestrator" || value === "dag_mutation" || value === "runtime" || value === "mission"
+  return value === "orchestrator" ||
+    value === "dag_mutation" ||
+    value === "runtime" ||
+    value === "mission"
     ? value
     : null;
 }
@@ -103,7 +216,10 @@ function readLimit(value: unknown): number {
 
 export function createMultiProjectRpcRequestHandler(
   options: MultiProjectRpcHandlerOptions,
-): JsonRpcHandler & { dispose: () => void; setNotifier: (notify: JsonRpcNotifier | null) => void } {
+): JsonRpcHandler & {
+  dispose: () => void;
+  setNotifier: (notify: JsonRpcNotifier | null) => void;
+} {
   const projectRegistry = options.projectRegistry ?? new ProjectRegistry();
   const handlers = new Map<ProjectId, Promise<HandlerEntry>>();
   const eventSubscriptions = new Map<string, RuntimeEventSubscription>();
@@ -119,17 +235,25 @@ export function createMultiProjectRpcRequestHandler(
       eventSubscriptions.delete(subscription.id);
     }
   };
-  const scopeRegistry = options.scopeRegistry ?? new ProjectScopeRegistry(projectRegistry, {
-    runtimeCapabilities: options.runtimeCapabilities,
-  });
-  const removeScopeDisposeListener = typeof (scopeRegistry as Partial<ProjectScopeRegistry>).onDispose === "function"
-    ? scopeRegistry.onDispose(disposeProjectRuntimeCaches)
-    : null;
+  const scopeRegistry =
+    options.scopeRegistry ??
+    new ProjectScopeRegistry(projectRegistry, {
+      runtimeCapabilities: options.runtimeCapabilities,
+    });
+  const removeScopeDisposeListener =
+    typeof (scopeRegistry as Partial<ProjectScopeRegistry>).onDispose ===
+    "function"
+      ? scopeRegistry.onDispose(disposeProjectRuntimeCaches)
+      : null;
   let initializedParams: Record<string, unknown> | null = null;
   let notifier: JsonRpcNotifier | null = null;
   let nextSubscriptionId = 1;
 
-  const emitRuntimeEvent = (subscriptionId: string, projectId: ProjectId, event: BufferedEvent): void => {
+  const emitRuntimeEvent = (
+    subscriptionId: string,
+    projectId: ProjectId,
+    event: BufferedEvent,
+  ): void => {
     notifier?.("runtime/event", {
       subscriptionId,
       projectId,
@@ -137,7 +261,9 @@ export function createMultiProjectRpcRequestHandler(
     });
   };
 
-  const getProjectHandler = async (projectId: ProjectId): Promise<HandlerEntry> => {
+  const getProjectHandler = async (
+    projectId: ProjectId,
+  ): Promise<HandlerEntry> => {
     const cached = handlers.get(projectId);
     if (cached) return await cached;
 
@@ -171,25 +297,39 @@ export function createMultiProjectRpcRequestHandler(
   const subscribeRuntimeEvents = async (params: Record<string, unknown>) => {
     const projectId = readProjectId(params);
     if (!projectId) {
-      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "runtimeEvents.subscribe requires projectId.");
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        "runtimeEvents.subscribe requires projectId.",
+      );
     }
-    const category = params.category == null ? null : readEventCategory(params.category);
+    const category =
+      params.category == null ? null : readEventCategory(params.category);
     if (params.category != null && !category) {
-      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "runtimeEvents.subscribe category is invalid.");
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        "runtimeEvents.subscribe category is invalid.",
+      );
     }
     const cursor = readCursor(params.cursor);
     const limit = readLimit(params.limit);
     const scope = await scopeRegistry.get(projectId);
     const subscriptionId = `runtime-events-${nextSubscriptionId++}`;
-    const shouldForward = (event: BufferedEvent): boolean => !category || event.category === category;
+    const shouldForward = (event: BufferedEvent): boolean =>
+      !category || event.category === category;
     const unsubscribe = scope.runtime.eventBuffer.subscribe((event) => {
-      if (shouldForward(event)) emitRuntimeEvent(subscriptionId, projectId, event);
+      if (shouldForward(event))
+        emitRuntimeEvent(subscriptionId, projectId, event);
     });
-    eventSubscriptions.set(subscriptionId, { id: subscriptionId, projectId, unsubscribe });
+    eventSubscriptions.set(subscriptionId, {
+      id: subscriptionId,
+      projectId,
+      unsubscribe,
+    });
 
     const replay = scope.runtime.eventBuffer.drain(cursor, limit);
     for (const event of replay.events) {
-      if (shouldForward(event)) emitRuntimeEvent(subscriptionId, projectId, event);
+      if (shouldForward(event))
+        emitRuntimeEvent(subscriptionId, projectId, event);
     }
     return {
       subscriptionId,
@@ -199,9 +339,15 @@ export function createMultiProjectRpcRequestHandler(
   };
 
   const unsubscribeRuntimeEvents = (params: Record<string, unknown>) => {
-    const subscriptionId = typeof params.subscriptionId === "string" ? params.subscriptionId.trim() : "";
+    const subscriptionId =
+      typeof params.subscriptionId === "string"
+        ? params.subscriptionId.trim()
+        : "";
     if (!subscriptionId) {
-      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "runtimeEvents.unsubscribe requires subscriptionId.");
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        "runtimeEvents.unsubscribe requires subscriptionId.",
+      );
     }
     const subscription = eventSubscriptions.get(subscriptionId);
     if (!subscription) return { removed: false };
@@ -215,7 +361,10 @@ export function createMultiProjectRpcRequestHandler(
     const scope = await scopeRegistry.ensureSyncHost(projectId ?? undefined);
     const syncService = scope?.runtime.syncService ?? null;
     if (!syncService) {
-      throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, "Sync service is not available. Register a project first.");
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidRequest,
+        "Sync service is not available. Register a project first.",
+      );
     }
     return syncService;
   };
@@ -227,7 +376,10 @@ export function createMultiProjectRpcRequestHandler(
     if (method === "ade/initialize") {
       initializedParams = params;
       return {
-        protocolVersion: typeof params.protocolVersion === "string" ? params.protocolVersion : "2025-06-18",
+        protocolVersion:
+          typeof params.protocolVersion === "string"
+            ? params.protocolVersion
+            : "2025-06-18",
         runtimeInfo: {
           name: "ade-rpc",
           version: options.serverVersion,
@@ -247,7 +399,10 @@ export function createMultiProjectRpcRequestHandler(
     }
 
     if (!initializedParams) {
-      throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, "Server must be initialized first.");
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidRequest,
+        "Server must be initialized first.",
+      );
     }
 
     if (method === "ping") {
@@ -270,9 +425,13 @@ export function createMultiProjectRpcRequestHandler(
     }
 
     if (method === "projects.add") {
-      const rootPath = typeof params.rootPath === "string" ? params.rootPath.trim() : "";
+      const rootPath =
+        typeof params.rootPath === "string" ? params.rootPath.trim() : "";
       if (!rootPath) {
-        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "projects.add requires rootPath.");
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          "projects.add requires rootPath.",
+        );
       }
       return projectRegistry.add(rootPath);
     }
@@ -280,7 +439,10 @@ export function createMultiProjectRpcRequestHandler(
     if (method === "projects.remove") {
       const projectId = readProjectId(params);
       if (!projectId) {
-        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "projects.remove requires projectId.");
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          "projects.remove requires projectId.",
+        );
       }
       await scopeRegistry.dispose(projectId);
       handlers.delete(projectId);
@@ -290,9 +452,53 @@ export function createMultiProjectRpcRequestHandler(
     if (method === "projects.touch") {
       const projectId = readProjectId(params);
       if (!projectId) {
-        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "projects.touch requires projectId.");
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          "projects.touch requires projectId.",
+        );
       }
       return projectRegistry.touch(projectId);
+    }
+
+    if (method === "projects.browseDirectories") {
+      return await browseProjectDirectories(readProjectBrowseInput(params));
+    }
+
+    if (method === "projects.getDetail") {
+      const rootPath = readOptionalString(params.rootPath);
+      if (!rootPath) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          "projects.getDetail requires rootPath.",
+        );
+      }
+      return await getProjectDetail(rootPath);
+    }
+
+    if (method === "projects.getDefaultParentDir") {
+      return defaultParentDir(projectRegistry);
+    }
+
+    if (method === "projects.create") {
+      const result =
+        await createMachineProjectScaffoldService().createLocalProject(
+          readCreateProjectInput(params),
+        );
+      return projectRegistry.add(result.rootPath);
+    }
+
+    if (method === "projects.clone") {
+      const result =
+        await createMachineProjectScaffoldService().cloneRepository(
+          readCloneProjectInput(params),
+        );
+      return projectRegistry.add(result.rootPath);
+    }
+
+    if (method === "projects.listMyGitHubRepos") {
+      return await createMachineProjectScaffoldService().listMyGitHubRepos(
+        readListMyReposInput(params),
+      );
     }
 
     if (method === "runtimeEvents.subscribe") {
@@ -321,8 +527,13 @@ export function createMultiProjectRpcRequestHandler(
 
     if (method === "sync.updateLocalDevice") {
       const name = typeof params.name === "string" ? params.name : undefined;
-      const deviceType = typeof params.deviceType === "string" ? params.deviceType as SyncPeerDeviceType : undefined;
-      return await (await getSyncService(params)).updateLocalDevice({
+      const deviceType =
+        typeof params.deviceType === "string"
+          ? (params.deviceType as SyncPeerDeviceType)
+          : undefined;
+      return await (
+        await getSyncService(params)
+      ).updateLocalDevice({
         ...(name !== undefined ? { name } : {}),
         ...(deviceType !== undefined ? { deviceType } : {}),
       });
@@ -331,7 +542,9 @@ export function createMultiProjectRpcRequestHandler(
     if (method === "sync.connectToBrain") {
       const syncService = await getSyncService(params);
       return await syncService.connectToBrain(
-        omitProjectId(params) as Parameters<typeof syncService.connectToBrain>[0],
+        omitProjectId(params) as Parameters<
+          typeof syncService.connectToBrain
+        >[0],
       );
     }
 
@@ -340,7 +553,8 @@ export function createMultiProjectRpcRequestHandler(
     }
 
     if (method === "sync.forgetDevice") {
-      const deviceId = typeof params.deviceId === "string" ? params.deviceId : "";
+      const deviceId =
+        typeof params.deviceId === "string" ? params.deviceId : "";
       return await (await getSyncService(params)).forgetDevice(deviceId);
     }
 
@@ -367,7 +581,9 @@ export function createMultiProjectRpcRequestHandler(
 
     if (method === "sync.setActiveLanePresence") {
       const laneIds = Array.isArray(params.laneIds)
-        ? params.laneIds.filter((laneId): laneId is string => typeof laneId === "string")
+        ? params.laneIds.filter(
+            (laneId): laneId is string => typeof laneId === "string",
+          )
         : [];
       await (await getSyncService(params)).setActiveLanePresence(laneIds);
       return null;
@@ -384,7 +600,10 @@ export function createMultiProjectRpcRequestHandler(
     }
 
     if (RUNTIME_METHODS.has(method)) {
-      throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Method not found: ${method}`);
+      throw new JsonRpcError(
+        JsonRpcErrorCode.methodNotFound,
+        `Method not found: ${method}`,
+      );
     }
 
     const projectId = readProjectId(params);
@@ -400,7 +619,10 @@ export function createMultiProjectRpcRequestHandler(
       ...request,
       params: omitProjectId(params),
     });
-  }) as JsonRpcHandler & { dispose: () => void; setNotifier: (notify: JsonRpcNotifier | null) => void };
+  }) as JsonRpcHandler & {
+    dispose: () => void;
+    setNotifier: (notify: JsonRpcNotifier | null) => void;
+  };
 
   handler.dispose = () => {
     for (const subscription of eventSubscriptions.values()) {

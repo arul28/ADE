@@ -1,4 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -7,6 +13,7 @@ import {
   ArrowRight,
   CircleNotch,
   Clock,
+  DesktopTower,
   Folder,
   FolderOpen,
   GitBranch,
@@ -17,7 +24,15 @@ import {
 } from "@phosphor-icons/react";
 import { motion, AnimatePresence } from "motion/react";
 import { useNavigate } from "react-router-dom";
-import type { ProjectBrowseResult, ProjectDetail } from "../../../shared/types";
+import type {
+  ProjectBrowseInput,
+  ProjectBrowseResult,
+  ProjectDetail,
+  RemoteRuntimeConnectionSnapshot,
+  RemoteRuntimeConnectionStatus,
+  RemoteRuntimeLocalWorkCheckResult,
+  RemoteRuntimeProjectRecord,
+} from "../../../shared/types";
 import { extractError } from "../../lib/format";
 import { fadeScale } from "../../lib/motion";
 import { PROJECT_BROWSER_CLOSE_EVENT } from "../../lib/projectBrowserEvents";
@@ -28,6 +43,7 @@ import { AddProjectChooser } from "../projects/AddProjectChooser";
 import { CloneProjectForm } from "../projects/CloneProjectForm";
 import { CreateProjectForm } from "../projects/CreateProjectForm";
 import { ProjectActionSuccess } from "../projects/ProjectActionSuccess";
+import { RemoteProjectOpenDialog } from "../projects/RemoteProjectOpenDialog";
 import { RemoteTargetList } from "../remoteTargets/RemoteTargetList";
 
 export type CommandPaletteIntent =
@@ -44,6 +60,15 @@ type ProjectActionOutcome = {
   verb: "Created" | "Cloned";
   displayName: string;
   rootPath: string;
+  location: ProjectLocation;
+  projectId?: string;
+};
+
+type PendingRemoteProjectOpen = {
+  targetId: string;
+  runtimeName: string;
+  project: RemoteRuntimeProjectRecord;
+  localWork: RemoteRuntimeLocalWorkCheckResult;
 };
 
 type Command = {
@@ -65,11 +90,23 @@ type BrowseRow = {
   isGitRepo: boolean;
 };
 
+type ProjectLocation =
+  | { kind: "local"; id: "local"; name: string }
+  | { kind: "remote"; targetId: string; name: string };
+
+const LOCAL_PROJECT_LOCATION: ProjectLocation = {
+  kind: "local",
+  id: "local",
+  name: "This Mac",
+};
+
 function stripTrailingSeparator(input: string): string {
   if (input.length <= 1) return input;
   if (/^[a-z]:[\\/]$/i.test(input)) return input;
   if (/^[/\\]{2}[^/\\]+[/\\][^/\\]+[/\\]?$/i.test(input)) return input;
-  return input.endsWith("/") || input.endsWith("\\") ? input.slice(0, -1) : input;
+  return input.endsWith("/") || input.endsWith("\\")
+    ? input.slice(0, -1)
+    : input;
 }
 
 function relativeFromNow(iso: string | null | undefined): string | null {
@@ -160,16 +197,23 @@ export function CommandPalette({
   const lanes = useAppStore((s) => s.lanes);
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
   const project = useAppStore((s) => s.project);
+  const projectBinding = useAppStore((s) => s.projectBinding);
   const selectLane = useAppStore((s) => s.selectLane);
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
+  const switchRemoteProject = useAppStore((s) => s.switchRemoteProject);
   const hasActiveProject = Boolean(project?.rootPath);
 
   const [mode, setMode] = useState<CommandPaletteMode>("default");
-  const [actionOutcome, setActionOutcome] = useState<ProjectActionOutcome | null>(null);
+  const [actionOutcome, setActionOutcome] =
+    useState<ProjectActionOutcome | null>(null);
   const [q, setQ] = useState("");
   const [selectedIdx, setSelectedIdx] = useState(0);
-  const [browseInput, setBrowseInput] = useState(defaultBrowseInput(project?.rootPath));
-  const [browseResult, setBrowseResult] = useState<ProjectBrowseResult | null>(null);
+  const [browseInput, setBrowseInput] = useState(
+    defaultBrowseInput(project?.rootPath),
+  );
+  const [browseResult, setBrowseResult] = useState<ProjectBrowseResult | null>(
+    null,
+  );
   const [browseSelectedIdx, setBrowseSelectedIdx] = useState(0);
   const [browseLoading, setBrowseLoading] = useState(false);
   const [browseError, setBrowseError] = useState<string | null>(null);
@@ -179,26 +223,114 @@ export function CommandPalette({
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailPath, setDetailPath] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [selectedProjectLocation, setSelectedProjectLocation] =
+    useState<ProjectLocation | null>(null);
+  const [remoteSnapshot, setRemoteSnapshot] =
+    useState<RemoteRuntimeConnectionSnapshot | null>(null);
+  const [pendingRemoteOpen, setPendingRemoteOpen] =
+    useState<PendingRemoteProjectOpen | null>(null);
+  const [openingPendingRemote, setOpeningPendingRemote] = useState(false);
 
   const listRef = useRef<HTMLUListElement>(null);
   const browseRequestRef = useRef(0);
   const detailRequestRef = useRef(0);
   const dragCounterRef = useRef(0);
+  const openIntentRef = useRef<{
+    open: boolean;
+    intent: CommandPaletteIntent;
+  } | null>(null);
+
+  const remoteLocations = useMemo(
+    () =>
+      (remoteSnapshot?.connections ?? [])
+        .filter((connection) => connection.state === "connected")
+        .map(
+          (
+            connection,
+          ): ProjectLocation & { status: RemoteRuntimeConnectionStatus } => ({
+            kind: "remote",
+            targetId: connection.target.id,
+            name: connection.target.name,
+            status: connection,
+          }),
+        ),
+    [remoteSnapshot],
+  );
+
+  const activeProjectLocation =
+    selectedProjectLocation ?? LOCAL_PROJECT_LOCATION;
+  const activeRemoteTargetId =
+    activeProjectLocation.kind === "remote"
+      ? activeProjectLocation.targetId
+      : null;
+  const activeBrowseRoot = activeRemoteTargetId
+    ? projectBinding?.kind === "remote" &&
+      projectBinding.targetId === activeRemoteTargetId
+      ? projectBinding.rootPath
+      : null
+    : (project?.rootPath ?? null);
+  const browseMachineName = activeProjectLocation.name;
+
+  const browseDirectoriesForActiveLocation = useCallback(
+    (input: ProjectBrowseInput) =>
+      activeRemoteTargetId
+        ? window.ade.remoteRuntime.browseDirectories(
+            activeRemoteTargetId,
+            input,
+          )
+        : window.ade.project.browseDirectories(input),
+    [activeRemoteTargetId],
+  );
+
+  const getProjectDetailForActiveLocation = useCallback(
+    (rootPath: string) =>
+      activeRemoteTargetId
+        ? window.ade.remoteRuntime.getProjectDetail(
+            activeRemoteTargetId,
+            rootPath,
+          )
+        : window.ade.project.getDetail(rootPath),
+    [activeRemoteTargetId],
+  );
+
+  useEffect(() => {
+    if (!open) return;
+    const remoteRuntime = window.ade.remoteRuntime;
+    if (!remoteRuntime?.getConnectionSnapshot) return;
+    let cancelled = false;
+    void remoteRuntime
+      .getConnectionSnapshot()
+      .then((snapshot) => {
+        if (!cancelled) setRemoteSnapshot(snapshot);
+      })
+      .catch(() => {
+        if (!cancelled) setRemoteSnapshot(null);
+      });
+    const unsubscribe =
+      remoteRuntime.onConnectionSnapshotChanged?.((snapshot) => {
+        if (!cancelled) setRemoteSnapshot(snapshot);
+      }) ?? (() => {});
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [open]);
 
   const startProjectBrowse = useCallback(() => {
     setMode("project-browse");
     setQ("");
     setSelectedIdx(0);
-    setBrowseInput(defaultBrowseInput(project?.rootPath));
+    setBrowseInput(defaultBrowseInput(activeBrowseRoot));
     setBrowseResult(null);
     setBrowseError(null);
     setBrowseSelectedIdx(0);
-  }, [project?.rootPath]);
+  }, [activeBrowseRoot]);
 
   const startProjectAdd = useCallback(() => {
     setMode("project-add");
     setQ("");
     setActionOutcome(null);
+    setSelectedProjectLocation(null);
   }, []);
 
   const startProjectCreate = useCallback(() => {
@@ -217,6 +349,12 @@ export function CommandPalette({
   }, []);
 
   useEffect(() => {
+    const previous = openIntentRef.current;
+    const changed =
+      previous == null || previous.open !== open || previous.intent !== intent;
+    openIntentRef.current = { open, intent };
+    if (!changed) return;
+
     if (!open) {
       setMode("default");
       setQ("");
@@ -226,6 +364,9 @@ export function CommandPalette({
       setOpenProjectPending(false);
       setSystemPickerPending(false);
       setActionOutcome(null);
+      setSelectedProjectLocation(null);
+      setPendingRemoteOpen(null);
+      setOpeningPendingRemote(false);
       return;
     }
 
@@ -258,7 +399,15 @@ export function CommandPalette({
     setQ("");
     setSelectedIdx(0);
     setBrowseError(null);
-  }, [intent, open, startProjectAdd, startProjectBrowse, startProjectClone, startProjectCreate, startProjectRemote]);
+  }, [
+    intent,
+    open,
+    startProjectAdd,
+    startProjectBrowse,
+    startProjectClone,
+    startProjectCreate,
+    startProjectRemote,
+  ]);
 
   useEffect(() => {
     if (!open || mode !== "project-browse") return;
@@ -266,7 +415,8 @@ export function CommandPalette({
       onOpenChange(false);
     };
     window.addEventListener(PROJECT_BROWSER_CLOSE_EVENT, closeBrowser);
-    return () => window.removeEventListener(PROJECT_BROWSER_CLOSE_EVENT, closeBrowser);
+    return () =>
+      window.removeEventListener(PROJECT_BROWSER_CLOSE_EVENT, closeBrowser);
   }, [mode, onOpenChange, open]);
 
   const commands: Command[] = useMemo(() => {
@@ -303,22 +453,118 @@ export function CommandPalette({
         closeOnRun: false,
         run: startProjectRemote,
       },
-      { id: "go-project", title: "Go to Run", shortcut: "G 1", group: "Navigation", run: () => navigate("/project") },
-      { id: "go-lanes", title: "Go to Lanes", shortcut: "G L", group: "Navigation", run: () => navigate("/lanes") },
-      { id: "go-files", title: "Go to Files", shortcut: "G F", group: "Navigation", run: () => navigate("/files") },
-      { id: "go-work", title: "Go to Work", shortcut: "G T", group: "Navigation", run: () => navigate("/work") },
-      { id: "go-graph", title: "Go to Graph", shortcut: "G G", group: "Navigation", run: () => navigate("/graph") },
-      { id: "go-prs", title: "Go to PRs", shortcut: "G R", group: "Navigation", run: () => navigate(readStoredPrsRoute(project?.rootPath) ?? "/prs") },
-      { id: "go-history", title: "Go to History", shortcut: "G H", group: "Navigation", run: () => navigate("/history") },
-      { id: "go-missions", title: "Go to Missions", shortcut: "G M", group: "Navigation", run: () => navigate("/missions") },
-      { id: "go-automations", title: "Go to Automations", hint: "Automation rules and agent workflows", group: "Navigation", run: () => navigate("/automations") },
-      { id: "go-settings", title: "Go to Settings", shortcut: "G S", group: "Navigation", run: () => navigate("/settings") },
-      { id: "go-settings-general", title: "Go to General Settings", hint: "Setup reminder, app info", group: "Settings", run: () => navigate("/settings?tab=general") },
-      { id: "go-settings-appearance", title: "Go to Appearance", hint: "Theme, chat font size, chat notifications", group: "Settings", run: () => navigate("/settings?tab=appearance") },
-      { id: "go-settings-ai", title: "Go to AI Settings", hint: "Providers, models, AI defaults", group: "Settings", run: () => navigate("/settings?tab=ai") },
-      { id: "go-settings-integrations", title: "Go to Integrations", hint: "GitHub, Linear, computer use", group: "Settings", run: () => navigate("/settings?tab=integrations") },
-      { id: "go-settings-workspace", title: "Go to Workspace Settings", hint: "Project health and docs generation", group: "Settings", run: () => navigate("/settings?tab=workspace") },
-      { id: "go-settings-usage", title: "Go to Usage", hint: "Token usage, cost breakdown", group: "Settings", run: () => navigate("/settings?tab=usage") },
+      {
+        id: "go-project",
+        title: "Go to Run",
+        shortcut: "G 1",
+        group: "Navigation",
+        run: () => navigate("/project"),
+      },
+      {
+        id: "go-lanes",
+        title: "Go to Lanes",
+        shortcut: "G L",
+        group: "Navigation",
+        run: () => navigate("/lanes"),
+      },
+      {
+        id: "go-files",
+        title: "Go to Files",
+        shortcut: "G F",
+        group: "Navigation",
+        run: () => navigate("/files"),
+      },
+      {
+        id: "go-work",
+        title: "Go to Work",
+        shortcut: "G T",
+        group: "Navigation",
+        run: () => navigate("/work"),
+      },
+      {
+        id: "go-graph",
+        title: "Go to Graph",
+        shortcut: "G G",
+        group: "Navigation",
+        run: () => navigate("/graph"),
+      },
+      {
+        id: "go-prs",
+        title: "Go to PRs",
+        shortcut: "G R",
+        group: "Navigation",
+        run: () => navigate(readStoredPrsRoute(project?.rootPath) ?? "/prs"),
+      },
+      {
+        id: "go-history",
+        title: "Go to History",
+        shortcut: "G H",
+        group: "Navigation",
+        run: () => navigate("/history"),
+      },
+      {
+        id: "go-missions",
+        title: "Go to Missions",
+        shortcut: "G M",
+        group: "Navigation",
+        run: () => navigate("/missions"),
+      },
+      {
+        id: "go-automations",
+        title: "Go to Automations",
+        hint: "Automation rules and agent workflows",
+        group: "Navigation",
+        run: () => navigate("/automations"),
+      },
+      {
+        id: "go-settings",
+        title: "Go to Settings",
+        shortcut: "G S",
+        group: "Navigation",
+        run: () => navigate("/settings"),
+      },
+      {
+        id: "go-settings-general",
+        title: "Go to General Settings",
+        hint: "Setup reminder, app info",
+        group: "Settings",
+        run: () => navigate("/settings?tab=general"),
+      },
+      {
+        id: "go-settings-appearance",
+        title: "Go to Appearance",
+        hint: "Theme, chat font size, chat notifications",
+        group: "Settings",
+        run: () => navigate("/settings?tab=appearance"),
+      },
+      {
+        id: "go-settings-ai",
+        title: "Go to AI Settings",
+        hint: "Providers, models, AI defaults",
+        group: "Settings",
+        run: () => navigate("/settings?tab=ai"),
+      },
+      {
+        id: "go-settings-integrations",
+        title: "Go to Integrations",
+        hint: "GitHub, Linear, computer use",
+        group: "Settings",
+        run: () => navigate("/settings?tab=integrations"),
+      },
+      {
+        id: "go-settings-workspace",
+        title: "Go to Workspace Settings",
+        hint: "Project health and docs generation",
+        group: "Settings",
+        run: () => navigate("/settings?tab=workspace"),
+      },
+      {
+        id: "go-settings-usage",
+        title: "Go to Usage",
+        hint: "Token usage, cost breakdown",
+        group: "Settings",
+        run: () => navigate("/settings?tab=usage"),
+      },
       {
         id: "action-create-lane",
         title: "Create Lane",
@@ -354,8 +600,11 @@ export function CommandPalette({
         group: "Lanes",
         run: () => {
           if (!lanes.length) return;
-          const currentIdx = lanes.findIndex((lane) => lane.id === selectedLaneId);
-          const nextLane = lanes[(currentIdx + 1 + lanes.length) % lanes.length];
+          const currentIdx = lanes.findIndex(
+            (lane) => lane.id === selectedLaneId,
+          );
+          const nextLane =
+            lanes[(currentIdx + 1 + lanes.length) % lanes.length];
           if (!nextLane) return;
           selectLane(nextLane.id);
           navigate(`/lanes?laneId=${encodeURIComponent(nextLane.id)}`);
@@ -368,8 +617,11 @@ export function CommandPalette({
         group: "Lanes",
         run: () => {
           if (!lanes.length) return;
-          const currentIdx = lanes.findIndex((lane) => lane.id === selectedLaneId);
-          const nextLane = lanes[(currentIdx - 1 + lanes.length) % lanes.length];
+          const currentIdx = lanes.findIndex(
+            (lane) => lane.id === selectedLaneId,
+          );
+          const nextLane =
+            lanes[(currentIdx - 1 + lanes.length) % lanes.length];
           if (!nextLane) return;
           selectLane(nextLane.id);
           navigate(`/lanes?laneId=${encodeURIComponent(nextLane.id)}`);
@@ -394,7 +646,7 @@ export function CommandPalette({
       {
         id: "ping",
         title: "Ping preload bridge",
-        hint: "Expect \"pong\"",
+        hint: 'Expect "pong"',
         group: "Debug",
         run: async () => {
           await window.ade.app.ping();
@@ -431,8 +683,10 @@ export function CommandPalette({
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
     if (!needle) return commands;
-    return commands.filter((command) =>
-      command.title.toLowerCase().includes(needle) || (command.hint ?? "").toLowerCase().includes(needle)
+    return commands.filter(
+      (command) =>
+        command.title.toLowerCase().includes(needle) ||
+        (command.hint ?? "").toLowerCase().includes(needle),
     );
   }, [commands, q]);
 
@@ -478,31 +732,44 @@ export function CommandPalette({
   }, [browseResult]);
 
   const openableProjectRoot = browseResult?.openableProjectRoot ?? null;
-  const isCurrentProjectTarget = Boolean(openableProjectRoot && project?.rootPath === openableProjectRoot);
-  const canOpenProject = Boolean(openableProjectRoot) && !isCurrentProjectTarget;
+  const isCurrentProjectTarget = Boolean(
+    openableProjectRoot && activeBrowseRoot === openableProjectRoot,
+  );
+  const canOpenProject =
+    Boolean(openableProjectRoot) && !isCurrentProjectTarget;
   const openProjectLabel = isCurrentProjectTarget ? "Already open" : "Open";
 
-  const highlightedRow = browseSelectedIdx >= 0 ? (browseRows[browseSelectedIdx] ?? null) : null;
+  const highlightedRow =
+    browseSelectedIdx >= 0 ? (browseRows[browseSelectedIdx] ?? null) : null;
   const highlightedPath = useMemo(() => {
     if (highlightedRow && highlightedRow.kind === "directory") {
       return stripTrailingSeparator(highlightedRow.path);
     }
     if (openableProjectRoot) return openableProjectRoot;
-    if (browseResult?.exactDirectoryPath) return browseResult.exactDirectoryPath;
+    if (browseResult?.exactDirectoryPath)
+      return browseResult.exactDirectoryPath;
     return null;
   }, [browseResult?.exactDirectoryPath, highlightedRow, openableProjectRoot]);
 
-  const highlightedIsRepo = highlightedRow?.kind === "directory"
-    ? highlightedRow.isGitRepo
-    : Boolean(openableProjectRoot && highlightedPath && highlightedPath === openableProjectRoot);
+  const highlightedIsRepo =
+    highlightedRow?.kind === "directory"
+      ? highlightedRow.isGitRepo
+      : Boolean(
+          openableProjectRoot &&
+          highlightedPath &&
+          highlightedPath === openableProjectRoot,
+        );
 
   const detailTarget = highlightedPath;
-  const openTarget = highlightedIsRepo && highlightedRow?.kind === "directory" && highlightedPath
-    ? highlightedPath
-    : openableProjectRoot;
+  const openTarget =
+    highlightedIsRepo && highlightedRow?.kind === "directory" && highlightedPath
+      ? highlightedPath
+      : openableProjectRoot;
   const openTargetLabel = openTarget ? pathLabel(openTarget) : null;
-  const canOpenHighlighted = Boolean(openTarget) && openTarget !== project?.rootPath;
-  const isMac = typeof navigator !== "undefined" && /mac/i.test(navigator.platform);
+  const canOpenHighlighted =
+    Boolean(openTarget) && openTarget !== activeBrowseRoot;
+  const isMac =
+    typeof navigator !== "undefined" && /mac/i.test(navigator.platform);
   const openShortcutLabel = `${isMac ? "⌘" : "Ctrl"}↵`;
 
   useEffect(() => {
@@ -511,16 +778,26 @@ export function CommandPalette({
     setBrowseLoading(true);
     setBrowseError(null);
     const timeout = globalThis.setTimeout(() => {
-      void window.ade.project
-        .browseDirectories({
-          partialPath: browseInput,
-          cwd: project?.rootPath ?? null,
-          limit: 200,
-        })
+      void Promise.resolve()
+        .then(() =>
+          browseDirectoriesForActiveLocation({
+            partialPath: browseInput,
+            cwd: activeBrowseRoot,
+            limit: 200,
+          }),
+        )
         .then((result) => {
           if (browseRequestRef.current !== requestId) return;
+          if (!result)
+            throw new Error("Project browser did not return a result.");
           setBrowseResult(result);
-          setBrowseSelectedIdx(result.openableProjectRoot ? -1 : (result.parentPath || result.entries.length > 0 ? 0 : -1));
+          setBrowseSelectedIdx(
+            result.openableProjectRoot
+              ? -1
+              : result.parentPath || result.entries.length > 0
+                ? 0
+                : -1,
+          );
         })
         .catch((error) => {
           if (browseRequestRef.current !== requestId) return;
@@ -536,7 +813,13 @@ export function CommandPalette({
     return () => {
       globalThis.clearTimeout(timeout);
     };
-  }, [browseInput, mode, open, project?.rootPath]);
+  }, [
+    activeBrowseRoot,
+    browseDirectoriesForActiveLocation,
+    browseInput,
+    mode,
+    open,
+  ]);
 
   useEffect(() => {
     if (mode !== "default") return;
@@ -567,7 +850,7 @@ export function CommandPalette({
     setDetailPath(detailTarget);
     const timeout = globalThis.setTimeout(() => {
       void Promise.resolve()
-        .then(() => window.ade.project.getDetail(detailTarget))
+        .then(() => getProjectDetailForActiveLocation(detailTarget))
         .then((result) => {
           if (detailRequestRef.current !== requestId) return;
           setDetail(result);
@@ -584,7 +867,14 @@ export function CommandPalette({
     return () => {
       globalThis.clearTimeout(timeout);
     };
-  }, [detail, detailTarget, highlightedIsRepo, mode, open]);
+  }, [
+    detail,
+    detailTarget,
+    getProjectDetailForActiveLocation,
+    highlightedIsRepo,
+    mode,
+    open,
+  ]);
 
   useEffect(() => {
     if (mode !== "project-browse") return;
@@ -596,12 +886,18 @@ export function CommandPalette({
       setBrowseSelectedIdx(-1);
       return;
     }
-    if (!openableProjectRoot && browseSelectedIdx < 0 && browseRows.length > 0) {
+    if (
+      !openableProjectRoot &&
+      browseSelectedIdx < 0 &&
+      browseRows.length > 0
+    ) {
       setBrowseSelectedIdx(0);
       return;
     }
     if (browseSelectedIdx >= browseRows.length) {
-      setBrowseSelectedIdx(openableProjectRoot ? -1 : Math.max(0, browseRows.length - 1));
+      setBrowseSelectedIdx(
+        openableProjectRoot ? -1 : Math.max(0, browseRows.length - 1),
+      );
     }
   }, [browseRows.length, browseSelectedIdx, mode, openableProjectRoot]);
 
@@ -609,7 +905,10 @@ export function CommandPalette({
     if (!listRef.current || idx < 0) return;
     const items = listRef.current.querySelectorAll("[data-cmd-item]");
     const target = items[idx];
-    if (target instanceof HTMLElement && typeof target.scrollIntoView === "function") {
+    if (
+      target instanceof HTMLElement &&
+      typeof target.scrollIntoView === "function"
+    ) {
       target.scrollIntoView({ block: "nearest" });
     }
   }, []);
@@ -633,7 +932,7 @@ export function CommandPalette({
           console.error("Command palette command failed", error);
         });
     },
-    [onOpenChange]
+    [onOpenChange],
   );
 
   const activateBrowseRow = useCallback((row: BrowseRow) => {
@@ -643,12 +942,35 @@ export function CommandPalette({
 
   const handleOpenProject = useCallback(
     async (targetPath: string | null | undefined) => {
-      const nextTarget = typeof targetPath === "string" ? targetPath.trim() : "";
+      const nextTarget =
+        typeof targetPath === "string" ? targetPath.trim() : "";
       if (!nextTarget) return;
       setBrowseError(null);
       setOpenProjectPending(true);
       try {
-        await switchProjectToPath(nextTarget);
+        if (activeRemoteTargetId) {
+          const remoteProject = await window.ade.remoteRuntime.addProject(
+            activeRemoteTargetId,
+            nextTarget,
+          );
+          const localWork =
+            await window.ade.remoteRuntime.checkLocalWork(remoteProject);
+          if (localWork.hasDirtyWork) {
+            setPendingRemoteOpen({
+              targetId: activeRemoteTargetId,
+              runtimeName: browseMachineName,
+              project: remoteProject,
+              localWork,
+            });
+            return;
+          }
+          await switchRemoteProject(
+            activeRemoteTargetId,
+            remoteProject.projectId,
+          );
+        } else {
+          await switchProjectToPath(nextTarget);
+        }
         onOpenChange(false);
       } catch (error) {
         setBrowseError(extractError(error));
@@ -656,8 +978,32 @@ export function CommandPalette({
         setOpenProjectPending(false);
       }
     },
-    [onOpenChange, switchProjectToPath]
+    [
+      activeRemoteTargetId,
+      browseMachineName,
+      onOpenChange,
+      switchProjectToPath,
+      switchRemoteProject,
+    ],
   );
+
+  const confirmPendingRemoteOpen = useCallback(async () => {
+    if (!pendingRemoteOpen) return;
+    setOpeningPendingRemote(true);
+    setBrowseError(null);
+    try {
+      await switchRemoteProject(
+        pendingRemoteOpen.targetId,
+        pendingRemoteOpen.project.projectId,
+      );
+      setPendingRemoteOpen(null);
+      onOpenChange(false);
+    } catch (error) {
+      setBrowseError(extractError(error));
+    } finally {
+      setOpeningPendingRemote(false);
+    }
+  }, [onOpenChange, pendingRemoteOpen, switchRemoteProject]);
 
   const handleChooseInSystemPicker = useCallback(async () => {
     setBrowseError(null);
@@ -665,7 +1011,10 @@ export function CommandPalette({
     try {
       const selected = await window.ade.project.chooseDirectory({
         title: "Open project",
-        defaultPath: browseResult?.exactDirectoryPath ?? browseResult?.directoryPath ?? undefined,
+        defaultPath:
+          browseResult?.exactDirectoryPath ??
+          browseResult?.directoryPath ??
+          undefined,
       });
       if (!selected) return;
       await handleOpenProject(selected);
@@ -674,7 +1023,11 @@ export function CommandPalette({
     } finally {
       setSystemPickerPending(false);
     }
-  }, [browseResult?.directoryPath, browseResult?.exactDirectoryPath, handleOpenProject]);
+  }, [
+    browseResult?.directoryPath,
+    browseResult?.exactDirectoryPath,
+    handleOpenProject,
+  ]);
 
   const handleDefaultKeyDown = useCallback(
     (event: React.KeyboardEvent) => {
@@ -687,7 +1040,9 @@ export function CommandPalette({
       if (event.key === "ArrowUp") {
         if (filtered.length === 0) return;
         event.preventDefault();
-        setSelectedIdx((prev) => (prev - 1 + filtered.length) % filtered.length);
+        setSelectedIdx(
+          (prev) => (prev - 1 + filtered.length) % filtered.length,
+        );
         return;
       }
       if (event.key === "Enter") {
@@ -697,7 +1052,7 @@ export function CommandPalette({
         runCommand(command);
       }
     },
-    [filtered, runCommand, selectedIdx]
+    [filtered, runCommand, selectedIdx],
   );
 
   const handleBrowseKeyDown = useCallback(
@@ -737,7 +1092,15 @@ export function CommandPalette({
         }
       }
     },
-    [activateBrowseRow, browseRows, browseSelectedIdx, canOpenProject, handleOpenProject, openTarget, openableProjectRoot]
+    [
+      activateBrowseRow,
+      browseRows,
+      browseSelectedIdx,
+      canOpenProject,
+      handleOpenProject,
+      openTarget,
+      openableProjectRoot,
+    ],
   );
 
   const handleDragEnter = useCallback((event: React.DragEvent) => {
@@ -775,19 +1138,23 @@ export function CommandPalette({
       const requestId = ++browseRequestRef.current;
       setBrowseLoading(true);
       setBrowseError(null);
-      void window.ade.project
-        .browseDirectories({
-          partialPath: nextBrowseInput,
-          cwd: project?.rootPath ?? null,
-          limit: 200,
-        })
+      void Promise.resolve()
+        .then(() =>
+          browseDirectoriesForActiveLocation({
+            partialPath: nextBrowseInput,
+            cwd: activeBrowseRoot,
+            limit: 200,
+          }),
+        )
         .then((result) => {
           if (browseRequestRef.current !== requestId) return;
+          if (!result)
+            throw new Error("Project browser did not return a result.");
           const nextTarget =
-            result.openableProjectRoot
-            ?? result.exactDirectoryPath
-            ?? result.directoryPath
-            ?? droppedPath;
+            result.openableProjectRoot ??
+            result.exactDirectoryPath ??
+            result.directoryPath ??
+            droppedPath;
           if (nextTarget) {
             void handleOpenProject(nextTarget);
             return;
@@ -803,7 +1170,7 @@ export function CommandPalette({
           setBrowseLoading(false);
         });
     },
-    [handleOpenProject, project?.rootPath]
+    [activeBrowseRoot, browseDirectoriesForActiveLocation, handleOpenProject],
   );
 
   const isBrowsing = mode === "project-browse";
@@ -817,30 +1184,41 @@ export function CommandPalette({
   const resultHeightClass = isBrowsing
     ? "h-[620px] max-h-[86vh]"
     : isAddFlow
-    ? "max-h-[86vh]"
-    : "max-h-[400px]";
+      ? "max-h-[86vh]"
+      : "max-h-[400px]";
   const widthClass = isBrowsing
     ? "w-[1080px]"
     : isWideAddFlow
-    ? "w-[820px]"
-    : isAddFlow
-    ? "w-[640px]"
-    : "w-[680px]";
+      ? "w-[820px]"
+      : isAddFlow
+        ? "w-[640px]"
+        : "w-[680px]";
   const positionClass = isBrowsing
     ? "fixed inset-0 z-[130] m-auto"
     : isAddFlow
-    ? "fixed inset-0 z-[130] m-auto h-fit"
-    : "fixed left-1/2 top-[12%] z-[130] -translate-x-1/2";
+      ? "fixed inset-0 z-[130] m-auto h-fit"
+      : "fixed left-1/2 top-[12%] z-[130] -translate-x-1/2";
   const inputPlaceholder = isBrowsing
-    ? "Paste a path, type to filter, or drop a folder anywhere…"
+    ? activeRemoteTargetId
+      ? `Browse ${browseMachineName} by path…`
+      : "Paste a path, type to filter, or drop a folder anywhere…"
     : "Search commands...";
 
   const handleProjectActionSuccess = useCallback(
-    (verb: "Created" | "Cloned", result: { rootPath: string; displayName: string }) => {
-      setActionOutcome({ verb, displayName: result.displayName, rootPath: result.rootPath });
+    (
+      verb: "Created" | "Cloned",
+      result: { rootPath: string; displayName: string; projectId?: string },
+    ) => {
+      setActionOutcome({
+        verb,
+        displayName: result.displayName,
+        rootPath: result.rootPath,
+        projectId: result.projectId,
+        location: activeProjectLocation,
+      });
       setMode("project-success");
     },
-    [],
+    [activeProjectLocation],
   );
 
   const handleSuccessOpen = useCallback(async () => {
@@ -849,12 +1227,19 @@ export function CommandPalette({
       return;
     }
     try {
-      await switchProjectToPath(actionOutcome.rootPath);
+      if (actionOutcome.location.kind === "remote" && actionOutcome.projectId) {
+        await switchRemoteProject(
+          actionOutcome.location.targetId,
+          actionOutcome.projectId,
+        );
+      } else {
+        await switchProjectToPath(actionOutcome.rootPath);
+      }
     } catch (error) {
       console.error("Failed to open new project", error);
     }
     onOpenChange(false);
-  }, [actionOutcome, onOpenChange, switchProjectToPath]);
+  }, [actionOutcome, onOpenChange, switchProjectToPath, switchRemoteProject]);
 
   const handleSuccessStay = useCallback(() => {
     onOpenChange(false);
@@ -862,16 +1247,30 @@ export function CommandPalette({
 
   let addFlowTitle = "";
   switch (mode) {
-    case "project-add": addFlowTitle = "Add a project"; break;
-    case "project-create": addFlowTitle = "Create a new project"; break;
-    case "project-clone": addFlowTitle = "Clone from GitHub"; break;
-    case "project-remote": addFlowTitle = "Connect to a machine"; break;
+    case "project-add":
+      addFlowTitle = selectedProjectLocation
+        ? `Add a project on ${browseMachineName}`
+        : "Add a project";
+      break;
+    case "project-create":
+      addFlowTitle = `Create a new project${activeRemoteTargetId ? ` on ${browseMachineName}` : ""}`;
+      break;
+    case "project-clone":
+      addFlowTitle = `Clone from GitHub${activeRemoteTargetId ? ` on ${browseMachineName}` : ""}`;
+      break;
+    case "project-remote":
+      addFlowTitle = "Connect to a machine";
+      break;
     default:
       if (actionOutcome) addFlowTitle = `${actionOutcome.verb}!`;
   }
 
   const showAddFlowBack =
-    mode === "project-create" || mode === "project-clone" || mode === "project-remote" || mode === "project-success";
+    (mode === "project-add" && selectedProjectLocation !== null) ||
+    mode === "project-create" ||
+    mode === "project-clone" ||
+    mode === "project-remote" ||
+    mode === "project-success";
 
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -909,7 +1308,7 @@ export function CommandPalette({
                   "max-w-[96vw]",
                   resultHeightClass,
                   "overflow-hidden rounded-2xl",
-                  "flex flex-col focus:outline-none"
+                  "flex flex-col focus:outline-none",
                 )}
                 style={{
                   background:
@@ -927,10 +1326,24 @@ export function CommandPalette({
                 initial="initial"
                 animate="animate"
                 exit="exit"
-                onDragEnter={isBrowsing ? handleDragEnter : undefined}
-                onDragOver={isBrowsing ? handleDragOver : undefined}
-                onDragLeave={isBrowsing ? handleDragLeave : undefined}
-                onDrop={isBrowsing ? handleDrop : undefined}
+                onDragEnter={
+                  isBrowsing && !activeRemoteTargetId
+                    ? handleDragEnter
+                    : undefined
+                }
+                onDragOver={
+                  isBrowsing && !activeRemoteTargetId
+                    ? handleDragOver
+                    : undefined
+                }
+                onDragLeave={
+                  isBrowsing && !activeRemoteTargetId
+                    ? handleDragLeave
+                    : undefined
+                }
+                onDrop={
+                  isBrowsing && !activeRemoteTargetId ? handleDrop : undefined
+                }
               >
                 {isBrowsing && (
                   <div
@@ -941,7 +1354,8 @@ export function CommandPalette({
                       background:
                         "linear-gradient(135deg, rgba(167,139,250,0.55), rgba(167,139,250,0.08) 55%, rgba(167,139,250,0.45))",
                       mask: "linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0)",
-                      WebkitMask: "linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0)",
+                      WebkitMask:
+                        "linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0)",
                       maskComposite: "exclude",
                       WebkitMaskComposite: "xor",
                     }}
@@ -951,15 +1365,15 @@ export function CommandPalette({
                   {mode === "project-browse"
                     ? "Project browser"
                     : isAddFlow
-                    ? addFlowTitle
-                    : "Command palette"}
+                      ? addFlowTitle
+                      : "Command palette"}
                 </Dialog.Title>
                 <Dialog.Description className="sr-only">
                   {mode === "project-browse"
                     ? "Browse folders in ADE and open a Git repository without leaving the app."
                     : isAddFlow
-                    ? "Open, create, clone, or connect to a project."
-                    : "Search ADE commands and jump to actions quickly."}
+                      ? "Open, create, clone, or connect to a project."
+                      : "Search ADE commands and jump to actions quickly."}
                 </Dialog.Description>
 
                 {isAddFlow ? (
@@ -977,7 +1391,11 @@ export function CommandPalette({
                         type="button"
                         onClick={() => {
                           setActionOutcome(null);
-                          setMode("project-add");
+                          if (mode === "project-add") {
+                            setSelectedProjectLocation(null);
+                          } else {
+                            setMode("project-add");
+                          }
                         }}
                         className="inline-flex h-8 items-center justify-center gap-1.5 rounded-md border border-transparent px-2 text-xs font-medium text-[var(--color-muted-fg)] transition-colors hover:border-[var(--color-border)] hover:bg-[var(--color-muted)] hover:text-[var(--color-fg)]"
                         aria-label="Back to chooser"
@@ -1005,13 +1423,21 @@ export function CommandPalette({
                   <div
                     className="relative flex items-center gap-3 border-b px-4"
                     style={{
-                      background: "color-mix(in srgb, var(--color-surface-recessed) 92%, rgba(167,139,250,0.08))",
-                      borderColor: "color-mix(in srgb, var(--color-accent) 14%, var(--color-border))",
+                      background:
+                        "color-mix(in srgb, var(--color-surface-recessed) 92%, rgba(167,139,250,0.08))",
+                      borderColor:
+                        "color-mix(in srgb, var(--color-accent) 14%, var(--color-border))",
                     }}
                   >
-                    <MagnifyingGlass size={18} weight="regular" className="shrink-0 text-[var(--color-muted-fg)]" />
+                    <MagnifyingGlass
+                      size={18}
+                      weight="regular"
+                      className="shrink-0 text-[var(--color-muted-fg)]"
+                    />
                     <input
-                      data-tour={isBrowsing ? "project.browserInput" : undefined}
+                      data-tour={
+                        isBrowsing ? "project.browserInput" : undefined
+                      }
                       value={isBrowsing ? browseInput : q}
                       onChange={(event) => {
                         if (isBrowsing) {
@@ -1022,11 +1448,13 @@ export function CommandPalette({
                         setQ(event.target.value);
                         setSelectedIdx(0);
                       }}
-                      onKeyDown={isBrowsing ? handleBrowseKeyDown : handleDefaultKeyDown}
+                      onKeyDown={
+                        isBrowsing ? handleBrowseKeyDown : handleDefaultKeyDown
+                      }
                       placeholder={inputPlaceholder}
                       className={cn(
                         "h-[56px] w-full bg-transparent text-[15px] text-[var(--color-fg)] outline-none placeholder:text-[var(--color-muted-fg)]",
-                        !isBrowsing && "font-mono"
+                        !isBrowsing && "font-mono",
                       )}
                       autoFocus
                     />
@@ -1039,28 +1467,114 @@ export function CommandPalette({
                 {isAddFlow ? (
                   <div className="flex-1 overflow-auto p-6">
                     {mode === "project-add" ? (
-                      <AddProjectChooser
-                        onChoose={(choice) => {
-                          if (choice === "open") {
-                            startProjectBrowse();
-                          } else if (choice === "create") {
-                            startProjectCreate();
-                          } else if (choice === "clone") {
-                            startProjectClone();
-                          } else {
-                            startProjectRemote();
-                          }
-                        }}
-                      />
+                      selectedProjectLocation === null &&
+                      remoteLocations.length > 0 ? (
+                        <ProjectLocationChooser
+                          remoteLocations={remoteLocations}
+                          onChoose={(location) => {
+                            setSelectedProjectLocation(location);
+                          }}
+                        />
+                      ) : (
+                        <AddProjectChooser
+                          onChoose={(choice) => {
+                            if (choice === "open") {
+                              startProjectBrowse();
+                            } else if (choice === "create") {
+                              startProjectCreate();
+                            } else {
+                              startProjectClone();
+                            }
+                          }}
+                        />
+                      )
                     ) : mode === "project-create" ? (
                       <CreateProjectForm
+                        machineName={
+                          activeRemoteTargetId ? browseMachineName : undefined
+                        }
+                        getDefaultParentDir={
+                          activeRemoteTargetId
+                            ? () =>
+                                window.ade.remoteRuntime.getDefaultParentDir(
+                                  activeRemoteTargetId,
+                                )
+                            : undefined
+                        }
+                        browseDirectories={
+                          activeRemoteTargetId
+                            ? (input) =>
+                                window.ade.remoteRuntime.browseDirectories(
+                                  activeRemoteTargetId,
+                                  input,
+                                )
+                            : undefined
+                        }
+                        chooseDirectory={
+                          activeRemoteTargetId ? null : undefined
+                        }
+                        createProject={
+                          activeRemoteTargetId
+                            ? (input) =>
+                                window.ade.remoteRuntime.createProject(
+                                  activeRemoteTargetId,
+                                  input,
+                                )
+                            : undefined
+                        }
                         onCancel={() => setMode("project-add")}
-                        onCreated={(result) => handleProjectActionSuccess("Created", result)}
+                        onCreated={(result) =>
+                          handleProjectActionSuccess("Created", result)
+                        }
                       />
                     ) : mode === "project-clone" ? (
                       <CloneProjectForm
+                        machineName={
+                          activeRemoteTargetId ? browseMachineName : undefined
+                        }
+                        getDefaultParentDir={
+                          activeRemoteTargetId
+                            ? () =>
+                                window.ade.remoteRuntime.getDefaultParentDir(
+                                  activeRemoteTargetId,
+                                )
+                            : undefined
+                        }
+                        browseDirectories={
+                          activeRemoteTargetId
+                            ? (input) =>
+                                window.ade.remoteRuntime.browseDirectories(
+                                  activeRemoteTargetId,
+                                  input,
+                                )
+                            : undefined
+                        }
+                        chooseDirectory={
+                          activeRemoteTargetId ? null : undefined
+                        }
+                        cloneProject={
+                          activeRemoteTargetId
+                            ? (input) =>
+                                window.ade.remoteRuntime.cloneProject(
+                                  activeRemoteTargetId,
+                                  input,
+                                )
+                            : undefined
+                        }
+                        listMyRepos={
+                          activeRemoteTargetId
+                            ? (input) =>
+                                window.ade.remoteRuntime.listMyGitHubRepos(
+                                  activeRemoteTargetId,
+                                  input ?? {},
+                                )
+                            : undefined
+                        }
+                        allowTokenSetup={!activeRemoteTargetId}
                         onCancel={() => setMode("project-add")}
-                        onCloned={(result) => handleProjectActionSuccess("Cloned", result)}
+                        onCloned={(result) =>
+                          handleProjectActionSuccess("Cloned", result)
+                        }
                       />
                     ) : mode === "project-remote" ? (
                       <RemoteTargetList />
@@ -1085,7 +1599,11 @@ export function CommandPalette({
                       >
                         {browseLoading && !browseResult ? (
                           <div className="flex items-center gap-2 px-4 py-6 text-sm text-[var(--color-muted-fg)]">
-                            <CircleNotch size={14} weight="bold" className="animate-spin" />
+                            <CircleNotch
+                              size={14}
+                              weight="bold"
+                              className="animate-spin"
+                            />
                             Scanning folders…
                           </div>
                         ) : browseRows.length === 0 ? (
@@ -1105,7 +1623,7 @@ export function CommandPalette({
                                       "mx-2 flex w-[calc(100%-1rem)] items-center justify-between gap-3 rounded-lg border px-3 py-2 text-left transition-all duration-150",
                                       isSelected
                                         ? "border-[var(--color-accent)] bg-[color-mix(in_srgb,var(--color-accent)_14%,transparent)] -translate-y-[0.5px]"
-                                        : "border-transparent hover:border-[color-mix(in_srgb,var(--color-accent)_20%,var(--color-border))] hover:bg-[color-mix(in_srgb,var(--color-accent)_5%,transparent)]"
+                                        : "border-transparent hover:border-[color-mix(in_srgb,var(--color-accent)_20%,var(--color-border))] hover:bg-[color-mix(in_srgb,var(--color-accent)_5%,transparent)]",
                                     )}
                                     style={
                                       isSelected
@@ -1115,7 +1633,9 @@ export function CommandPalette({
                                           }
                                         : undefined
                                     }
-                                    onMouseEnter={() => setBrowseSelectedIdx(index)}
+                                    onMouseEnter={() =>
+                                      setBrowseSelectedIdx(index)
+                                    }
                                     onClick={() => activateBrowseRow(row)}
                                   >
                                     <div className="flex min-w-0 items-center gap-2.5">
@@ -1131,18 +1651,29 @@ export function CommandPalette({
                                           style={{
                                             background:
                                               "linear-gradient(135deg, rgba(167,139,250,0.30), rgba(167,139,250,0.08))",
-                                            boxShadow: "0 0 0 1px rgba(167,139,250,0.30) inset",
+                                            boxShadow:
+                                              "0 0 0 1px rgba(167,139,250,0.30) inset",
                                           }}
                                         >
-                                          <GitBranch size={12} weight="bold" className="text-[var(--color-accent)]" />
+                                          <GitBranch
+                                            size={12}
+                                            weight="bold"
+                                            className="text-[var(--color-accent)]"
+                                          />
                                         </span>
                                       ) : (
                                         <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-[var(--color-border)]">
-                                          <Folder size={12} weight="regular" className="text-[var(--color-muted-fg)]" />
+                                          <Folder
+                                            size={12}
+                                            weight="regular"
+                                            className="text-[var(--color-muted-fg)]"
+                                          />
                                         </span>
                                       )}
                                       <div className="min-w-0">
-                                        <div className="truncate text-sm font-medium text-[var(--color-fg)]">{row.title}</div>
+                                        <div className="truncate text-sm font-medium text-[var(--color-fg)]">
+                                          {row.title}
+                                        </div>
                                         <div className="mt-0.5 truncate font-mono text-[11px] text-[var(--color-muted-fg)]">
                                           {row.hint}
                                         </div>
@@ -1153,7 +1684,9 @@ export function CommandPalette({
                                       weight="regular"
                                       className={cn(
                                         "shrink-0 transition-opacity",
-                                        isSelected ? "opacity-100 text-[var(--color-accent)]" : "opacity-40 text-[var(--color-muted-fg)]"
+                                        isSelected
+                                          ? "opacity-100 text-[var(--color-accent)]"
+                                          : "opacity-40 text-[var(--color-muted-fg)]",
                                       )}
                                     />
                                   </button>
@@ -1171,7 +1704,7 @@ export function CommandPalette({
                         highlightedPath={highlightedPath}
                         highlightedIsRepo={highlightedIsRepo}
                         browseResult={browseResult}
-                        activeProjectPath={project?.rootPath ?? null}
+                        activeProjectPath={activeBrowseRoot}
                       />
                     </div>
 
@@ -1184,7 +1717,11 @@ export function CommandPalette({
                         }}
                       >
                         <div className="flex items-center gap-3 rounded-full border border-[var(--color-accent)] bg-[var(--color-popup-bg)]/90 px-5 py-2.5 text-sm font-medium text-[var(--color-fg)] shadow-lg">
-                          <FolderOpen size={18} weight="fill" className="text-[var(--color-accent)]" />
+                          <FolderOpen
+                            size={18}
+                            weight="fill"
+                            className="text-[var(--color-accent)]"
+                          />
                           Drop to open
                         </div>
                       </div>
@@ -1195,7 +1732,8 @@ export function CommandPalette({
                       style={{
                         background:
                           "linear-gradient(180deg, color-mix(in srgb, var(--color-surface-recessed) 92%, rgba(167,139,250,0.06)), var(--color-surface-recessed))",
-                        borderColor: "color-mix(in srgb, var(--color-accent) 12%, var(--color-border))",
+                        borderColor:
+                          "color-mix(in srgb, var(--color-accent) 12%, var(--color-border))",
                       }}
                     >
                       <div className="flex min-w-0 flex-1 items-center gap-2 text-[11px] text-[var(--color-muted-fg)]">
@@ -1208,33 +1746,45 @@ export function CommandPalette({
                           <span>Already open.</span>
                         ) : (
                           <>
-                            <kbd className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-1.5 py-0.5 font-mono text-[10px]">↑↓</kbd>
+                            <kbd className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-1.5 py-0.5 font-mono text-[10px]">
+                              ↑↓
+                            </kbd>
                             <span>navigate</span>
-                            <kbd className="ml-2 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-1.5 py-0.5 font-mono text-[10px]">↵</kbd>
+                            <kbd className="ml-2 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-1.5 py-0.5 font-mono text-[10px]">
+                              ↵
+                            </kbd>
                             <span>step in</span>
-                            <kbd className="ml-2 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-1.5 py-0.5 font-mono text-[10px]">{openShortcutLabel}</kbd>
+                            <kbd className="ml-2 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-1.5 py-0.5 font-mono text-[10px]">
+                              {openShortcutLabel}
+                            </kbd>
                             <span>open directory</span>
                           </>
                         )}
                       </div>
 
                       <div className="flex shrink-0 items-center gap-2">
-                        <button
-                          type="button"
-                          data-tour="project.browserSystemPicker"
-                          className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-[var(--color-border)] bg-transparent px-3 text-xs font-medium text-[var(--color-muted-fg)] transition-colors hover:bg-[var(--color-muted)] hover:text-[var(--color-fg)] disabled:cursor-not-allowed disabled:opacity-50"
-                          disabled={systemPickerPending || openProjectPending}
-                          onClick={() => {
-                            void handleChooseInSystemPicker();
-                          }}
-                        >
-                          {systemPickerPending ? (
-                            <CircleNotch size={14} weight="bold" className="animate-spin" />
-                          ) : (
-                            <FolderOpen size={14} weight="regular" />
-                          )}
-                          Open directory…
-                        </button>
+                        {!activeRemoteTargetId ? (
+                          <button
+                            type="button"
+                            data-tour="project.browserSystemPicker"
+                            className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-[var(--color-border)] bg-transparent px-3 text-xs font-medium text-[var(--color-muted-fg)] transition-colors hover:bg-[var(--color-muted)] hover:text-[var(--color-fg)] disabled:cursor-not-allowed disabled:opacity-50"
+                            disabled={systemPickerPending || openProjectPending}
+                            onClick={() => {
+                              void handleChooseInSystemPicker();
+                            }}
+                          >
+                            {systemPickerPending ? (
+                              <CircleNotch
+                                size={14}
+                                weight="bold"
+                                className="animate-spin"
+                              />
+                            ) : (
+                              <FolderOpen size={14} weight="regular" />
+                            )}
+                            Open directory…
+                          </button>
+                        ) : null}
                         <button
                           type="button"
                           data-tour="project.browserOpenButton"
@@ -1245,17 +1795,27 @@ export function CommandPalette({
                                 ? "0 10px 24px -12px rgba(167,139,250,0.8), 0 0 0 1px rgba(167,139,250,0.35)"
                                 : undefined,
                           }}
-                          disabled={!canOpenHighlighted || openProjectPending || systemPickerPending}
+                          disabled={
+                            !canOpenHighlighted ||
+                            openProjectPending ||
+                            systemPickerPending
+                          }
                           onClick={() => {
                             void handleOpenProject(openTarget);
                           }}
                         >
                           {openProjectPending ? (
-                            <CircleNotch size={14} weight="bold" className="animate-spin" />
+                            <CircleNotch
+                              size={14}
+                              weight="bold"
+                              className="animate-spin"
+                            />
                           ) : (
                             <ArrowRight size={14} weight="bold" />
                           )}
-                          {openTargetLabel ? `${openProjectLabel} ${openTargetLabel}` : openProjectLabel}
+                          {openTargetLabel
+                            ? `${openProjectLabel} ${openTargetLabel}`
+                            : openProjectLabel}
                         </button>
                       </div>
                     </div>
@@ -1263,7 +1823,9 @@ export function CommandPalette({
                 ) : (
                   <div className="flex-1 overflow-auto">
                     {filtered.length === 0 ? (
-                      <div className="px-4 py-6 text-sm text-[var(--color-muted-fg)]">No matches.</div>
+                      <div className="px-4 py-6 text-sm text-[var(--color-muted-fg)]">
+                        No matches.
+                      </div>
                     ) : (
                       <ul ref={listRef} className="py-2">
                         {(() => {
@@ -1286,9 +1848,11 @@ export function CommandPalette({
                                           "mx-2 flex w-[calc(100%-1rem)] items-center justify-between gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors",
                                           isSelected
                                             ? "border-[var(--color-accent)] bg-[var(--color-accent-muted)]"
-                                            : "border-transparent hover:border-[var(--color-border)] hover:bg-[var(--color-muted)]"
+                                            : "border-transparent hover:border-[var(--color-border)] hover:bg-[var(--color-muted)]",
                                         )}
-                                        onMouseEnter={() => setSelectedIdx(index)}
+                                        onMouseEnter={() =>
+                                          setSelectedIdx(index)
+                                        }
                                         onClick={() => runCommand(command)}
                                       >
                                         <div className="min-w-0">
@@ -1296,7 +1860,9 @@ export function CommandPalette({
                                             {command.title}
                                           </div>
                                           {command.hint ? (
-                                            <div className="mt-0.5 truncate text-xs text-[var(--color-muted-fg)]">{command.hint}</div>
+                                            <div className="mt-0.5 truncate text-xs text-[var(--color-muted-fg)]">
+                                              {command.hint}
+                                            </div>
                                           ) : null}
                                         </div>
                                         <div className="flex items-center gap-2">
@@ -1305,7 +1871,11 @@ export function CommandPalette({
                                               {command.shortcut}
                                             </span>
                                           ) : null}
-                                          <ArrowRight size={14} weight="regular" className="text-[var(--color-muted-fg)]" />
+                                          <ArrowRight
+                                            size={14}
+                                            weight="regular"
+                                            className="text-[var(--color-muted-fg)]"
+                                          />
                                         </div>
                                       </button>
                                     </li>
@@ -1319,12 +1889,94 @@ export function CommandPalette({
                     )}
                   </div>
                 )}
+                {pendingRemoteOpen ? (
+                  <RemoteProjectOpenDialog
+                    project={pendingRemoteOpen.project}
+                    localWork={pendingRemoteOpen.localWork}
+                    runtimeName={pendingRemoteOpen.runtimeName}
+                    busy={openingPendingRemote}
+                    onCancel={() => setPendingRemoteOpen(null)}
+                    onContinue={() => {
+                      void confirmPendingRemoteOpen();
+                    }}
+                  />
+                ) : null}
               </motion.div>
             </Dialog.Content>
           </Dialog.Portal>
         )}
       </AnimatePresence>
     </Dialog.Root>
+  );
+}
+
+function ProjectLocationChooser({
+  remoteLocations,
+  onChoose,
+}: {
+  remoteLocations: Array<
+    ProjectLocation & { status: RemoteRuntimeConnectionStatus }
+  >;
+  onChoose: (location: ProjectLocation) => void;
+}) {
+  const locations: Array<
+    ProjectLocation & { status?: RemoteRuntimeConnectionStatus }
+  > = [LOCAL_PROJECT_LOCATION, ...remoteLocations];
+  return (
+    <div className="grid w-full grid-cols-1 gap-3 sm:grid-cols-2">
+      {locations.map((location) => {
+        const isRemote = location.kind === "remote";
+        const key = isRemote ? location.targetId : location.id;
+        const status = isRemote ? location.status : null;
+        return (
+          <button
+            key={key}
+            type="button"
+            className="group flex min-h-[118px] items-center gap-4 rounded-xl border border-[var(--color-border)] bg-[color-mix(in_srgb,var(--color-card)_92%,transparent)] p-4 text-left transition-all hover:-translate-y-0.5 hover:border-[var(--color-accent)] hover:bg-[color-mix(in_srgb,var(--color-accent)_6%,var(--color-card))]"
+            onClick={() => onChoose(location)}
+          >
+            <span
+              className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg border"
+              style={{
+                borderColor: isRemote
+                  ? "color-mix(in srgb, #F59E0B 45%, var(--color-border))"
+                  : "color-mix(in srgb, var(--color-accent) 45%, var(--color-border))",
+                background: isRemote
+                  ? "color-mix(in srgb, #F59E0B 12%, transparent)"
+                  : "color-mix(in srgb, var(--color-accent) 12%, transparent)",
+                color: isRemote ? "#F59E0B" : "var(--color-accent)",
+              }}
+            >
+              {isRemote ? (
+                <DesktopTower size={22} weight="duotone" />
+              ) : (
+                <FolderOpen size={22} weight="duotone" />
+              )}
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-sm font-semibold text-[var(--color-fg)]">
+                {location.name}
+              </span>
+              <span className="mt-1 block truncate font-mono text-[11px] text-[var(--color-muted-fg)]">
+                {isRemote
+                  ? `${status?.target.hostname ?? "remote"}${status?.version ? ` · ADE ${status.version}` : ""}`
+                  : "Local filesystem"}
+              </span>
+              {isRemote ? (
+                <span className="mt-2 inline-flex rounded-full border border-[#F59E0B66] bg-[#F59E0B1A] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#FBBF24]">
+                  Connected
+                </span>
+              ) : null}
+            </span>
+            <ArrowRight
+              size={15}
+              weight="bold"
+              className="shrink-0 text-[var(--color-muted-fg)] transition-transform group-hover:translate-x-0.5 group-hover:text-[var(--color-accent)]"
+            />
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
@@ -1348,14 +2000,19 @@ function BrowsePreview({
   activeProjectPath,
 }: BrowsePreviewProps) {
   const showingDetailForPath = detailPath === highlightedPath ? detail : null;
-  const isLoading = detailLoading && detailPath === highlightedPath && !showingDetailForPath;
+  const isLoading =
+    detailLoading && detailPath === highlightedPath && !showingDetailForPath;
 
   if (!highlightedPath) {
     return (
       <div className="relative flex min-h-0 flex-1 items-center justify-center p-8">
         <div className="max-w-[300px] text-center text-sm text-[var(--color-muted-fg)]">
           <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)]/60">
-            <Folder size={24} weight="regular" className="text-[var(--color-muted-fg)]" />
+            <Folder
+              size={24}
+              weight="regular"
+              className="text-[var(--color-muted-fg)]"
+            />
           </div>
           <p>Pick a folder to see its repo details, or drop one here.</p>
         </div>
@@ -1389,21 +2046,33 @@ function BrowsePreview({
                   boxShadow: "0 0 0 1px rgba(167,139,250,0.35) inset",
                 }}
               >
-                <GitBranch size={16} weight="bold" className="text-[var(--color-accent)]" />
+                <GitBranch
+                  size={16}
+                  weight="bold"
+                  className="text-[var(--color-accent)]"
+                />
               </span>
             ) : (
               <span className="flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--color-border)]">
-                <Folder size={16} weight="regular" className="text-[var(--color-muted-fg)]" />
+                <Folder
+                  size={16}
+                  weight="regular"
+                  className="text-[var(--color-muted-fg)]"
+                />
               </span>
             )}
-            <h2 className="truncate text-xl font-semibold text-[var(--color-fg)]">{displayName}</h2>
+            <h2 className="truncate text-xl font-semibold text-[var(--color-fg)]">
+              {displayName}
+            </h2>
             {isActiveProject && (
               <span className="ml-auto rounded-full border border-[var(--color-accent)]/40 bg-[var(--color-accent)]/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-accent)]">
                 Open now
               </span>
             )}
           </div>
-          <div className="truncate font-mono text-[11px] text-[var(--color-muted-fg)]">{highlightedPath}</div>
+          <div className="truncate font-mono text-[11px] text-[var(--color-muted-fg)]">
+            {highlightedPath}
+          </div>
         </div>
 
         {isLoading ? (
@@ -1423,29 +2092,39 @@ function BrowsePreview({
 }
 
 function RepoDetailBlocks({ detail }: { detail: ProjectDetail }) {
-  const lastCommitRelative = detail.lastCommit ? relativeFromNow(detail.lastCommit.isoDate) : null;
+  const lastCommitRelative = detail.lastCommit
+    ? relativeFromNow(detail.lastCommit.isoDate)
+    : null;
   const lastOpenedRelative = relativeFromNow(detail.lastOpenedAt);
 
   return (
     <>
       <div className="flex flex-wrap items-center gap-2">
         {detail.branchName && (
-          <StatusChip icon={<GitBranch size={11} weight="bold" />} tone="accent">
+          <StatusChip
+            icon={<GitBranch size={11} weight="bold" />}
+            tone="accent"
+          >
             {detail.branchName}
           </StatusChip>
         )}
-        {detail.aheadBehind && (detail.aheadBehind.ahead > 0 || detail.aheadBehind.behind > 0) && (
-          <StatusChip tone="muted">
-            {detail.aheadBehind.ahead > 0 ? `↑${detail.aheadBehind.ahead} ` : ""}
-            {detail.aheadBehind.behind > 0 ? `↓${detail.aheadBehind.behind}` : ""}
-          </StatusChip>
-        )}
+        {detail.aheadBehind &&
+          (detail.aheadBehind.ahead > 0 || detail.aheadBehind.behind > 0) && (
+            <StatusChip tone="muted">
+              {detail.aheadBehind.ahead > 0
+                ? `↑${detail.aheadBehind.ahead} `
+                : ""}
+              {detail.aheadBehind.behind > 0
+                ? `↓${detail.aheadBehind.behind}`
+                : ""}
+            </StatusChip>
+          )}
         {typeof detail.dirtyCount === "number" && detail.dirtyCount > 0 && (
           <StatusChip tone="warn">{detail.dirtyCount} uncommitted</StatusChip>
         )}
-        {typeof detail.dirtyCount === "number" && detail.dirtyCount === 0 && detail.branchName && (
-          <StatusChip tone="muted">clean</StatusChip>
-        )}
+        {typeof detail.dirtyCount === "number" &&
+          detail.dirtyCount === 0 &&
+          detail.branchName && <StatusChip tone="muted">clean</StatusChip>}
         {typeof detail.laneCount === "number" && detail.laneCount > 0 && (
           <StatusChip icon={<Stack size={11} weight="bold" />} tone="muted">
             {detail.laneCount} lane{detail.laneCount === 1 ? "" : "s"}
@@ -1463,7 +2142,9 @@ function RepoDetailBlocks({ detail }: { detail: ProjectDetail }) {
           <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-muted-fg)]">
             Last commit
           </div>
-          <div className="truncate text-sm text-[var(--color-fg)]">{detail.lastCommit.subject}</div>
+          <div className="truncate text-sm text-[var(--color-fg)]">
+            {detail.lastCommit.subject}
+          </div>
           <div className="mt-1 flex items-center gap-2 text-[11px] text-[var(--color-muted-fg)]">
             <span className="font-mono">{detail.lastCommit.shortSha}</span>
             {lastCommitRelative && <span>· {lastCommitRelative}</span>}
@@ -1487,13 +2168,17 @@ function RepoDetailBlocks({ detail }: { detail: ProjectDetail }) {
           </div>
           <div className="flex items-center gap-2">
             {detail.languages.map((lang) => {
-              const color = LANGUAGE_SWATCHES[lang.name] ?? "var(--color-accent)";
+              const color =
+                LANGUAGE_SWATCHES[lang.name] ?? "var(--color-accent)";
               return (
                 <span
                   key={lang.name}
                   className="inline-flex items-center gap-1.5 rounded-full border border-[var(--color-border)] bg-[var(--color-surface)]/50 px-2.5 py-1 text-[11px] text-[var(--color-fg)]"
                 >
-                  <span className="h-2 w-2 rounded-full" style={{ backgroundColor: color }} />
+                  <span
+                    className="h-2 w-2 rounded-full"
+                    style={{ backgroundColor: color }}
+                  />
                   {lang.name}
                   <span className="text-[var(--color-muted-fg)]">
                     {Math.round(lang.fraction * 100)}%
@@ -1517,19 +2202,24 @@ function PlainDirectoryBlock({
   highlightedPath: string;
   detail: ProjectDetail | null;
 }) {
-  const subCount = detail?.subdirectoryCount ?? (browseResult?.exactDirectoryPath === highlightedPath
-    ? browseResult.entries.length
-    : null);
+  const subCount =
+    detail?.subdirectoryCount ??
+    (browseResult?.exactDirectoryPath === highlightedPath
+      ? browseResult.entries.length
+      : null);
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         <StatusChip tone="muted">Plain folder</StatusChip>
         {typeof subCount === "number" && (
-          <StatusChip tone="muted">{subCount} subfolder{subCount === 1 ? "" : "s"}</StatusChip>
+          <StatusChip tone="muted">
+            {subCount} subfolder{subCount === 1 ? "" : "s"}
+          </StatusChip>
         )}
       </div>
       <p className="text-[13px] leading-relaxed text-[var(--color-muted-fg)]">
-        No git repository here. Step into a subfolder, paste a path, or drop a folder to force-open.
+        No git repository here. Step into a subfolder, paste a path, or drop a
+        folder to force-open.
       </p>
     </div>
   );
@@ -1537,20 +2227,36 @@ function PlainDirectoryBlock({
 
 const README_COMPONENTS: Components = {
   h1: ({ children }) => (
-    <h3 className="mt-3 mb-1.5 text-[13px] font-semibold text-[var(--color-fg)] first:mt-0">{children}</h3>
+    <h3 className="mt-3 mb-1.5 text-[13px] font-semibold text-[var(--color-fg)] first:mt-0">
+      {children}
+    </h3>
   ),
   h2: ({ children }) => (
-    <h4 className="mt-3 mb-1.5 text-[12px] font-semibold text-[var(--color-fg)] first:mt-0">{children}</h4>
+    <h4 className="mt-3 mb-1.5 text-[12px] font-semibold text-[var(--color-fg)] first:mt-0">
+      {children}
+    </h4>
   ),
   h3: ({ children }) => (
-    <h5 className="mt-2.5 mb-1 text-[11px] font-semibold uppercase tracking-wide text-[var(--color-muted-fg)] first:mt-0">{children}</h5>
+    <h5 className="mt-2.5 mb-1 text-[11px] font-semibold uppercase tracking-wide text-[var(--color-muted-fg)] first:mt-0">
+      {children}
+    </h5>
   ),
   h4: ({ children }) => (
-    <h6 className="mt-2 mb-1 text-[11px] font-semibold text-[var(--color-muted-fg)] first:mt-0">{children}</h6>
+    <h6 className="mt-2 mb-1 text-[11px] font-semibold text-[var(--color-muted-fg)] first:mt-0">
+      {children}
+    </h6>
   ),
   p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
-  ul: ({ children }) => <ul className="mb-2 list-disc pl-5 last:mb-0 marker:text-[var(--color-muted-fg)]">{children}</ul>,
-  ol: ({ children }) => <ol className="mb-2 list-decimal pl-5 last:mb-0 marker:text-[var(--color-muted-fg)]">{children}</ol>,
+  ul: ({ children }) => (
+    <ul className="mb-2 list-disc pl-5 last:mb-0 marker:text-[var(--color-muted-fg)]">
+      {children}
+    </ul>
+  ),
+  ol: ({ children }) => (
+    <ol className="mb-2 list-decimal pl-5 last:mb-0 marker:text-[var(--color-muted-fg)]">
+      {children}
+    </ol>
+  ),
   li: ({ children }) => <li className="mb-0.5">{children}</li>,
   a: ({ children, href }) => (
     <a
@@ -1591,9 +2297,15 @@ const README_COMPONENTS: Components = {
     </div>
   ),
   th: ({ children }) => (
-    <th className="border-b border-[var(--color-border)] bg-black/20 px-2 py-1 font-semibold">{children}</th>
+    <th className="border-b border-[var(--color-border)] bg-black/20 px-2 py-1 font-semibold">
+      {children}
+    </th>
   ),
-  td: ({ children }) => <td className="border-b border-[var(--color-border)] px-2 py-1 align-top">{children}</td>,
+  td: ({ children }) => (
+    <td className="border-b border-[var(--color-border)] px-2 py-1 align-top">
+      {children}
+    </td>
+  ),
   img: () => null,
 };
 
@@ -1637,8 +2349,10 @@ function StatusChip({
   const toneStyle =
     tone === "accent"
       ? {
-          background: "color-mix(in srgb, var(--color-accent) 14%, transparent)",
-          borderColor: "color-mix(in srgb, var(--color-accent) 40%, var(--color-border))",
+          background:
+            "color-mix(in srgb, var(--color-accent) 14%, transparent)",
+          borderColor:
+            "color-mix(in srgb, var(--color-accent) 40%, var(--color-border))",
           color: "var(--color-accent)",
         }
       : tone === "warn"

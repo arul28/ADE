@@ -1,9 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { IPC } from "../../../shared/ipc";
-import type { OpenProjectBinding, RemoteRuntimeTarget } from "../../../shared/types";
+import type {
+  OpenProjectBinding,
+  RemoteRuntimeTarget,
+} from "../../../shared/types";
 
-const ipcHandlers = vi.hoisted(() => new Map<string, (...args: any[]) => unknown>());
+const ipcHandlers = vi.hoisted(
+  () => new Map<string, (...args: any[]) => unknown>(),
+);
 const browserWindowFromWebContents = vi.hoisted(() => vi.fn());
+const browserWindowGetAllWindows = vi.hoisted(() => vi.fn(() => []));
 const remoteRegistryGetMock = vi.hoisted(() => vi.fn());
 const remoteRegistryListMock = vi.hoisted(() => vi.fn(() => []));
 const remoteRegistrySaveMock = vi.hoisted(() => vi.fn());
@@ -12,11 +18,13 @@ const remoteConnectMock = vi.hoisted(() => vi.fn());
 const remoteProjectsForTargetMock = vi.hoisted(() => vi.fn());
 const remoteCallActionForTargetMock = vi.hoisted(() => vi.fn());
 const remoteCallSyncForTargetMock = vi.hoisted(() => vi.fn());
+const remoteCallMachineForTargetMock = vi.hoisted(() => vi.fn());
 const remoteDisconnectMock = vi.hoisted(() => vi.fn());
 
 vi.mock("electron", () => ({
   BrowserWindow: {
     fromWebContents: browserWindowFromWebContents,
+    getAllWindows: browserWindowGetAllWindows,
   },
   ipcMain: {
     handle: vi.fn((channel: string, handler: (...args: any[]) => unknown) => {
@@ -40,6 +48,7 @@ vi.mock("../remoteRuntime/remoteConnectionPool", () => ({
     projectsForTarget: remoteProjectsForTargetMock,
     callActionForTarget: remoteCallActionForTargetMock,
     callSyncForTarget: remoteCallSyncForTargetMock,
+    callMachineForTarget: remoteCallMachineForTargetMock,
     disconnect: remoteDisconnectMock,
   })),
 }));
@@ -92,14 +101,21 @@ describe("registerRuntimeBridge", () => {
   beforeEach(() => {
     ipcHandlers.clear();
     browserWindowFromWebContents.mockReset();
+    browserWindowGetAllWindows.mockReset().mockReturnValue([]);
     remoteRegistryGetMock.mockReset();
     remoteRegistryListMock.mockReset().mockReturnValue([]);
     remoteRegistrySaveMock.mockReset();
     remoteRegistryRemoveMock.mockReset();
-    remoteConnectMock.mockReset();
+    remoteConnectMock.mockReset().mockResolvedValue({
+      target,
+      arch: "darwin-arm64",
+      version: null,
+      projects: [],
+    });
     remoteProjectsForTargetMock.mockReset();
     remoteCallActionForTargetMock.mockReset();
     remoteCallSyncForTargetMock.mockReset();
+    remoteCallMachineForTargetMock.mockReset();
     remoteDisconnectMock.mockReset();
     browserWindowFromWebContents.mockReturnValue({ id: 7 });
   });
@@ -125,27 +141,40 @@ describe("registerRuntimeBridge", () => {
       }),
     });
 
-    await expect(ipcHandlers.get(IPC.localRuntimeCallAction)?.(eventForSender(sender(101)), {
-      request: {
+    await expect(
+      ipcHandlers.get(IPC.localRuntimeCallAction)?.(
+        eventForSender(sender(101)),
+        {
+          request: {
+            domain: "file",
+            action: "watchWorkspace",
+            args: { workspaceId: "main" },
+          },
+        },
+      ),
+    ).resolves.toMatchObject({ result: { ok: true } });
+
+    expect(localRuntimeConnectionPool.callActionForRoot).toHaveBeenCalledWith(
+      "/repo",
+      {
         domain: "file",
         action: "watchWorkspace",
-        args: { workspaceId: "main" },
+        args: {
+          workspaceId: "main",
+          __adeRuntimeClientId: 101,
+        },
       },
-    })).resolves.toMatchObject({ result: { ok: true } });
-
-    expect(localRuntimeConnectionPool.callActionForRoot).toHaveBeenCalledWith("/repo", {
-      domain: "file",
-      action: "watchWorkspace",
-      args: {
-        workspaceId: "main",
-        __adeRuntimeClientId: 101,
-      },
-    });
+    );
   });
 
   it("forwards remote project runtime actions through the selected target and project", async () => {
     remoteRegistryGetMock.mockReturnValue(target);
-    remoteConnectMock.mockResolvedValue({ target, arch: "linux-x64", version: "1.0.0", projects: [] });
+    remoteConnectMock.mockResolvedValue({
+      target,
+      arch: "linux-x64",
+      version: "1.0.0",
+      projects: [],
+    });
     remoteCallActionForTargetMock.mockResolvedValue({
       ok: true,
       domain: "pty",
@@ -158,22 +187,31 @@ describe("registerRuntimeBridge", () => {
       globalStatePath: "/tmp/ade-state.json",
     });
 
-    await expect(ipcHandlers.get(IPC.remoteRuntimeCallAction)?.(eventForSender(sender(202)), {
-      id: "target-1",
-      projectId: "project-1",
-      request: {
+    await expect(
+      ipcHandlers.get(IPC.remoteRuntimeCallAction)?.(
+        eventForSender(sender(202)),
+        {
+          id: "target-1",
+          projectId: "project-1",
+          request: {
+            domain: "pty",
+            action: "create",
+            args: { startupCommand: "codex login" },
+          },
+        },
+      ),
+    ).resolves.toMatchObject({ result: { ptyId: "pty-1" } });
+
+    expect(remoteConnectMock).toHaveBeenCalledWith(target);
+    expect(remoteCallActionForTargetMock).toHaveBeenCalledWith(
+      target,
+      "project-1",
+      {
         domain: "pty",
         action: "create",
         args: { startupCommand: "codex login" },
       },
-    })).resolves.toMatchObject({ result: { ptyId: "pty-1" } });
-
-    expect(remoteConnectMock).toHaveBeenCalledWith(target);
-    expect(remoteCallActionForTargetMock).toHaveBeenCalledWith(target, "project-1", {
-      domain: "pty",
-      action: "create",
-      args: { startupCommand: "codex login" },
-    });
+    );
   });
 
   it("rejects unexposed sync methods before calling local or remote runtimes", async () => {
@@ -192,16 +230,20 @@ describe("registerRuntimeBridge", () => {
     });
     remoteRegistryGetMock.mockReturnValue(target);
 
-    await expect(ipcHandlers.get(IPC.localRuntimeCallSync)?.(eventForSender(), {
-      method: "git.status",
-      params: {},
-    })).rejects.toThrow(/not exposed/i);
-    await expect(ipcHandlers.get(IPC.remoteRuntimeCallSync)?.(eventForSender(), {
-      id: "target-1",
-      projectId: "project-1",
-      method: "git.status",
-      params: {},
-    })).rejects.toThrow(/not exposed/i);
+    await expect(
+      ipcHandlers.get(IPC.localRuntimeCallSync)?.(eventForSender(), {
+        method: "git.status",
+        params: {},
+      }),
+    ).rejects.toThrow(/not exposed/i);
+    await expect(
+      ipcHandlers.get(IPC.remoteRuntimeCallSync)?.(eventForSender(), {
+        id: "target-1",
+        projectId: "project-1",
+        method: "git.status",
+        params: {},
+      }),
+    ).rejects.toThrow(/not exposed/i);
 
     expect(localRuntimeConnectionPool.callSyncForRoot).not.toHaveBeenCalled();
     expect(remoteCallSyncForTargetMock).not.toHaveBeenCalled();
@@ -215,16 +257,23 @@ describe("registerRuntimeBridge", () => {
       globalStatePath: "/tmp/ade-state.json",
     });
 
-    await expect(ipcHandlers.get(IPC.remoteRuntimeCallSync)?.(eventForSender(), {
-      id: "target-1",
-      projectId: "project-1",
-      method: "sync.getStatus",
-      params: { includeTransferReadiness: true },
-    })).resolves.toEqual({ connectedPeers: [] });
+    await expect(
+      ipcHandlers.get(IPC.remoteRuntimeCallSync)?.(eventForSender(), {
+        id: "target-1",
+        projectId: "project-1",
+        method: "sync.getStatus",
+        params: { includeTransferReadiness: true },
+      }),
+    ).resolves.toEqual({ connectedPeers: [] });
 
-    expect(remoteCallSyncForTargetMock).toHaveBeenCalledWith(target, "project-1", "sync.getStatus", {
-      includeTransferReadiness: true,
-    });
+    expect(remoteCallSyncForTargetMock).toHaveBeenCalledWith(
+      target,
+      "project-1",
+      "sync.getStatus",
+      {
+        includeTransferReadiness: true,
+      },
+    );
   });
 
   it("opens a remote project after refreshing a stale connect project list", async () => {
@@ -238,7 +287,12 @@ describe("registerRuntimeBridge", () => {
     };
     const bindRemoteProject = vi.fn();
     remoteRegistryGetMock.mockReturnValue(target);
-    remoteConnectMock.mockResolvedValue({ target, arch: "linux-x64", version: "1.0.0", projects: [] });
+    remoteConnectMock.mockResolvedValue({
+      target,
+      arch: "linux-x64",
+      version: "1.0.0",
+      projects: [],
+    });
     remoteProjectsForTargetMock.mockResolvedValue([project]);
     registerRuntimeBridge({
       appVersion: "1.0.0",
@@ -246,10 +300,15 @@ describe("registerRuntimeBridge", () => {
       bindRemoteProject,
     });
 
-    await expect(ipcHandlers.get(IPC.remoteRuntimeOpenProject)?.(eventForSender(sender(303)), {
-      id: " target-1 ",
-      projectId: " project-1 ",
-    })).resolves.toEqual({
+    await expect(
+      ipcHandlers.get(IPC.remoteRuntimeOpenProject)?.(
+        eventForSender(sender(303)),
+        {
+          id: " target-1 ",
+          projectId: " project-1 ",
+        },
+      ),
+    ).resolves.toEqual({
       kind: "remote",
       key: "remote:target-1:project-1",
       targetId: "target-1",

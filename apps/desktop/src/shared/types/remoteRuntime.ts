@@ -51,6 +51,29 @@ export type RemoteRuntimeConnectResult = {
   projects: RemoteRuntimeProjectRecord[];
 };
 
+export type RemoteRuntimeConnectionState =
+  | "idle"
+  | "connecting"
+  | "connected"
+  | "error";
+
+export type RemoteRuntimeConnectionStatus = {
+  target: RemoteRuntimeTarget;
+  state: RemoteRuntimeConnectionState;
+  arch: string | null;
+  version: string | null;
+  projects: RemoteRuntimeProjectRecord[];
+  lastError: string | null;
+  lastAttemptedAt: number | null;
+  connectedAt: number | null;
+};
+
+export type RemoteRuntimeConnectionSnapshot = {
+  connections: RemoteRuntimeConnectionStatus[];
+  connectedCount: number;
+  updatedAt: number;
+};
+
 export type RemoteRuntimeActionRequest = {
   domain: string;
   action: string;
@@ -66,7 +89,11 @@ export type RemoteRuntimeActionResult = {
   statusHints: Record<string, unknown>;
 };
 
-export type RemoteRuntimeEventCategory = "orchestrator" | "dag_mutation" | "runtime" | "mission";
+export type RemoteRuntimeEventCategory =
+  | "orchestrator"
+  | "dag_mutation"
+  | "runtime"
+  | "mission";
 
 export type RemoteRuntimeBufferedEvent = {
   id: number;

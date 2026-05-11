@@ -2,7 +2,12 @@ import fs from "node:fs";
 import path from "node:path";
 import type { PathLike } from "node:fs";
 
-const TAILSCALE_CLI_MACOS_PATH = "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
+const TAILSCALE_CLI_MACOS_STANDALONE_PATHS = [
+  "/opt/homebrew/bin/tailscale",
+  "/usr/local/bin/tailscale",
+];
+const TAILSCALE_CLI_MACOS_APP_PATH =
+  "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
 
 function windowsTailscaleExeCandidates(env: NodeJS.ProcessEnv): string[] {
   const programFiles = env.ProgramFiles?.trim();
@@ -16,7 +21,10 @@ function windowsTailscaleExeCandidates(env: NodeJS.ProcessEnv): string[] {
     out.push(winJoin(programFilesX86, "Tailscale", "tailscale.exe"));
   }
   if (out.length === 0) {
-    out.push("C:\\Program Files\\Tailscale\\tailscale.exe", "C:\\Program Files (x86)\\Tailscale\\tailscale.exe");
+    out.push(
+      "C:\\Program Files\\Tailscale\\tailscale.exe",
+      "C:\\Program Files (x86)\\Tailscale\\tailscale.exe",
+    );
   }
   return out;
 }
@@ -30,17 +38,25 @@ export type ResolveTailscaleCliPathOptions = {
 
 /**
  * Resolves the Tailscale CLI for `status`, `serve`, etc.
- * Precedence: `ADE_TAILSCALE_CLI`, known macOS bundle path, known Windows
- * install paths, then `tailscale` (PATH lookup).
+ * Precedence: `ADE_TAILSCALE_CLI`, known standalone macOS CLI paths, known
+ * macOS app bundle path, known Windows install paths, then `tailscale` (PATH
+ * lookup).
  */
-export function resolveTailscaleCliPath(options?: ResolveTailscaleCliPathOptions): string {
+export function resolveTailscaleCliPath(
+  options?: ResolveTailscaleCliPathOptions,
+): string {
   const env = options?.env ?? process.env;
   const platform = options?.platform ?? process.platform;
   const exists = options?.existsSync ?? ((p: PathLike) => fs.existsSync(p));
   const configured = env.ADE_TAILSCALE_CLI?.trim();
   if (configured) return configured;
-  if (platform === "darwin" && exists(TAILSCALE_CLI_MACOS_PATH)) {
-    return TAILSCALE_CLI_MACOS_PATH;
+  if (platform === "darwin") {
+    for (const candidate of TAILSCALE_CLI_MACOS_STANDALONE_PATHS) {
+      if (exists(candidate)) return candidate;
+    }
+    if (exists(TAILSCALE_CLI_MACOS_APP_PATH)) {
+      return TAILSCALE_CLI_MACOS_APP_PATH;
+    }
   }
   if (platform === "win32") {
     for (const candidate of windowsTailscaleExeCandidates(env)) {

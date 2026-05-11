@@ -1,8 +1,8 @@
 import React, { useState, type CSSProperties, type KeyboardEvent } from "react";
-import { DesktopTower, FolderOpen, GithubLogo, Sparkle } from "@phosphor-icons/react";
+import { FolderOpen, GithubLogo, Sparkle } from "@phosphor-icons/react";
 import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
 
-export type AddProjectChooserMode = "open" | "create" | "clone" | "remote";
+export type AddProjectChooserMode = "open" | "create" | "clone";
 
 export type AddProjectChooserProps = {
   onChoose: (mode: AddProjectChooserMode) => void;
@@ -56,17 +56,6 @@ const TILES: readonly Tile[] = [
     bgFrom: "rgba(52,211,153,0.18)",
     bgTo: "rgba(52,211,153,0.04)",
   },
-  {
-    mode: "remote",
-    label: "REMOTE",
-    tagline: "connect by SSH",
-    Icon: DesktopTower,
-    iconWeight: "duotone",
-    iconSize: 38,
-    hue: "#F59E0B",
-    bgFrom: "rgba(245,158,11,0.18)",
-    bgTo: "rgba(245,158,11,0.04)",
-  },
 ] as const;
 
 export function AddProjectChooser({ onChoose }: AddProjectChooserProps) {
@@ -74,7 +63,7 @@ export function AddProjectChooser({ onChoose }: AddProjectChooserProps) {
     <div
       style={{
         display: "grid",
-        gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+        gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
         gap: 16,
         width: "100%",
       }}
@@ -115,7 +104,8 @@ function ChooserTile({
         ? `color-mix(in srgb, ${tile.hue} 65%, transparent)`
         : "color-mix(in srgb, var(--color-border) 80%, transparent)"
     }`,
-    transition: "transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease, background 180ms ease",
+    transition:
+      "transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease, background 180ms ease",
     transform: hover ? "translateY(-3px)" : "translateY(0)",
     boxShadow: hover
       ? `0 22px 48px -18px color-mix(in srgb, ${tile.hue} 55%, transparent), 0 0 0 1px color-mix(in srgb, ${tile.hue} 35%, transparent), inset 0 1px 0 0 color-mix(in srgb, ${tile.hue} 30%, transparent)`

@@ -3,8 +3,16 @@ import fs from "node:fs";
 import path from "node:path";
 import { IPC } from "../../../shared/ipc";
 import type {
+  CloneProjectInput,
+  CreateProjectInput,
+  ListMyGitHubReposInput,
+  ListMyGitHubReposResult,
   OpenProjectBinding,
   ProjectInfo,
+  ProjectBrowseInput,
+  ProjectBrowseResult,
+  ProjectDetail,
+  RemoteRuntimeConnectionSnapshot,
   RemoteRuntimeActionRequest,
   RemoteRuntimeActionResult,
   RemoteRuntimeBufferedEvent,
@@ -20,6 +28,7 @@ import type {
 } from "../../../shared/types";
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
 import { RemoteConnectionPool } from "../remoteRuntime/remoteConnectionPool";
+import { RemoteConnectionService } from "../remoteRuntime/remoteConnectionService";
 import { discoverLanRuntimes } from "../remoteRuntime/runtimeDiscovery";
 import { RemoteTargetRegistry } from "../remoteRuntime/remoteTargetRegistry";
 import { runGit } from "../git/git";
@@ -29,8 +38,15 @@ import { readGlobalState } from "../state/globalState";
 type RuntimeBridgeArgs = {
   appVersion: string;
   globalStatePath: string;
-  getWindowSession?: (windowId: number | null) => { windowId: number | null; project: ProjectInfo | null; binding: OpenProjectBinding | null };
-  bindRemoteProject?: (windowId: number | null, binding: OpenProjectBinding & { kind: "remote" }) => void;
+  getWindowSession?: (windowId: number | null) => {
+    windowId: number | null;
+    project: ProjectInfo | null;
+    binding: OpenProjectBinding | null;
+  };
+  bindRemoteProject?: (
+    windowId: number | null,
+    binding: OpenProjectBinding & { kind: "remote" },
+  ) => void;
   localRuntimeConnectionPool?: LocalRuntimeConnectionPool | null;
 };
 
@@ -75,7 +91,8 @@ function withRuntimeActionClientMetadata(
 ): RemoteRuntimeActionRequest {
   if (
     request.domain !== "file" ||
-    (request.action !== "watchWorkspace" && request.action !== "stopWatching") ||
+    (request.action !== "watchWorkspace" &&
+      request.action !== "stopWatching") ||
     !Number.isInteger(senderId) ||
     senderId <= 0
   ) {
@@ -92,7 +109,9 @@ function withRuntimeActionClientMetadata(
   };
 }
 
-function normalizeGitRemoteForComparison(value: string | null | undefined): string | null {
+function normalizeGitRemoteForComparison(
+  value: string | null | undefined,
+): string | null {
   const trimmed = typeof value === "string" ? value.trim() : "";
   if (!trimmed) return null;
   const withoutGitSuffix = trimmed.replace(/\.git$/i, "");
@@ -116,14 +135,23 @@ async function inspectLocalWorkForRemoteOrigin(args: {
   remoteOriginKey: string;
 }): Promise<RemoteRuntimeLocalWorkCheckResult["matches"][number] | null> {
   if (!fs.existsSync(args.rootPath)) return null;
-  const origin = await runGit(["remote", "get-url", "origin"], { cwd: args.rootPath, timeoutMs: 8_000 });
+  const origin = await runGit(["remote", "get-url", "origin"], {
+    cwd: args.rootPath,
+    timeoutMs: 8_000,
+  });
   if (origin.exitCode !== 0) return null;
   const originUrl = origin.stdout.trim();
-  if (normalizeGitRemoteForComparison(originUrl) !== args.remoteOriginKey) return null;
-  const dirty = await runGit(["status", "--porcelain=v1", "--untracked-files=all"], { cwd: args.rootPath, timeoutMs: 8_000 });
-  const dirtyCount = dirty.exitCode === 0
-    ? dirty.stdout.split(/\r?\n/).filter((line) => line.trim().length > 0).length
-    : 0;
+  if (normalizeGitRemoteForComparison(originUrl) !== args.remoteOriginKey)
+    return null;
+  const dirty = await runGit(
+    ["status", "--porcelain=v1", "--untracked-files=all"],
+    { cwd: args.rootPath, timeoutMs: 8_000 },
+  );
+  const dirtyCount =
+    dirty.exitCode === 0
+      ? dirty.stdout.split(/\r?\n/).filter((line) => line.trim().length > 0)
+          .length
+      : 0;
   if (dirtyCount <= 0) return null;
   return {
     rootPath: args.rootPath,
@@ -141,9 +169,33 @@ export function registerRuntimeBridge({
   localRuntimeConnectionPool,
 }: RuntimeBridgeArgs): void {
   const remoteTargetRegistry = new RemoteTargetRegistry();
-  const remoteConnectionPool = new RemoteConnectionPool(remoteTargetRegistry, appVersion);
-  const runtimeEventSubscriptions = new Map<number, RuntimeEventWindowSubscription>();
+  const remoteConnectionPool = new RemoteConnectionPool(
+    remoteTargetRegistry,
+    appVersion,
+  );
+  const remoteConnectionService = new RemoteConnectionService(
+    remoteTargetRegistry,
+    remoteConnectionPool,
+  );
+  const runtimeEventSubscriptions = new Map<
+    number,
+    RuntimeEventWindowSubscription
+  >();
   const runtimeEventWatchedSenders = new Set<number>();
+
+  remoteConnectionService.onSnapshotChanged((snapshot) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (window.webContents.isDestroyed()) continue;
+      window.webContents.send(
+        IPC.remoteRuntimeConnectionSnapshotChanged,
+        snapshot,
+      );
+    }
+  });
+  const autoconnectTimer = setTimeout(() => {
+    remoteConnectionService.startAutoconnect();
+  }, 0);
+  autoconnectTimer.unref?.();
 
   const cleanupRuntimeEventSubscription = (senderId: number): void => {
     const existing = runtimeEventSubscriptions.get(senderId);
@@ -170,8 +222,12 @@ export function registerRuntimeBridge({
     event: RemoteRuntimeBufferedEvent,
   ): void => {
     const existing = runtimeEventSubscriptions.get(sender.id);
-    if (!existing || existing.bindingKey !== bindingKey || sender.isDestroyed()) return;
-    const payload: RemoteRuntimeEventNotificationPayload = { bindingKey, event };
+    if (!existing || existing.bindingKey !== bindingKey || sender.isDestroyed())
+      return;
+    const payload: RemoteRuntimeEventNotificationPayload = {
+      bindingKey,
+      event,
+    };
     try {
       sender.send(IPC.runtimeEvent, payload);
     } catch {
@@ -195,10 +251,17 @@ export function registerRuntimeBridge({
         runtimeEventSubscriptions.delete(sender.id);
       }
     };
-    void subscribe((event) => sendRuntimeEvent(sender, bindingKey, event), onEnded)
+    void subscribe(
+      (event) => sendRuntimeEvent(sender, bindingKey, event),
+      onEnded,
+    )
       .then((cleanup) => {
         const current = runtimeEventSubscriptions.get(sender.id);
-        if (!current || current.bindingKey !== bindingKey || sender.isDestroyed()) {
+        if (
+          !current ||
+          current.bindingKey !== bindingKey ||
+          sender.isDestroyed()
+        ) {
           cleanup();
           return;
         }
@@ -213,18 +276,34 @@ export function registerRuntimeBridge({
       });
   };
 
-  ipcMain.handle(IPC.remoteRuntimeListTargets, async (): Promise<RemoteRuntimeTarget[]> => {
-    return remoteTargetRegistry.list();
-  });
+  ipcMain.handle(
+    IPC.remoteRuntimeListTargets,
+    async (): Promise<RemoteRuntimeTarget[]> => {
+      return remoteConnectionService.listTargets();
+    },
+  );
 
-  ipcMain.handle(IPC.remoteRuntimeListDiscoveredMachines, async (): Promise<RemoteRuntimeDiscoveredMachine[]> => {
-    return discoverLanRuntimes();
-  });
+  ipcMain.handle(
+    IPC.remoteRuntimeGetConnectionSnapshot,
+    async (): Promise<RemoteRuntimeConnectionSnapshot> => {
+      return remoteConnectionService.snapshot();
+    },
+  );
+
+  ipcMain.handle(
+    IPC.remoteRuntimeListDiscoveredMachines,
+    async (): Promise<RemoteRuntimeDiscoveredMachine[]> => {
+      return discoverLanRuntimes();
+    },
+  );
 
   ipcMain.handle(
     IPC.remoteRuntimeSaveTarget,
-    async (_event, arg: RemoteRuntimeTargetInput): Promise<RemoteRuntimeTarget> => {
-      return remoteTargetRegistry.save(arg);
+    async (
+      _event,
+      arg: RemoteRuntimeTargetInput,
+    ): Promise<RemoteRuntimeTarget> => {
+      return remoteConnectionService.saveTarget(arg);
     },
   );
 
@@ -233,62 +312,151 @@ export function registerRuntimeBridge({
     async (_event, arg: { id: string }): Promise<{ removed: boolean }> => {
       const id = typeof arg?.id === "string" ? arg.id.trim() : "";
       if (!id) return { removed: false };
-      remoteConnectionPool.disconnect(id);
-      return { removed: remoteTargetRegistry.remove(id) };
+      return { removed: remoteConnectionService.removeTarget(id) };
     },
   );
 
   ipcMain.handle(
     IPC.remoteRuntimeConnect,
-    async (_event, arg: { id: string }): Promise<RemoteRuntimeConnectResult> => {
+    async (
+      _event,
+      arg: { id: string },
+    ): Promise<RemoteRuntimeConnectResult> => {
       const id = typeof arg?.id === "string" ? arg.id.trim() : "";
-      const target = id ? remoteTargetRegistry.get(id) : null;
-      if (!target) throw new Error("Remote target was not found.");
-      return await remoteConnectionPool.connect(target);
+      return await remoteConnectionService.connect(id);
     },
   );
 
   ipcMain.handle(
     IPC.remoteRuntimeListProjects,
-    async (_event, arg: { id: string }): Promise<RemoteRuntimeProjectRecord[]> => {
+    async (
+      _event,
+      arg: { id: string },
+    ): Promise<RemoteRuntimeProjectRecord[]> => {
       const id = typeof arg?.id === "string" ? arg.id.trim() : "";
       if (!id) return [];
-      const target = remoteTargetRegistry.get(id);
-      if (!target) throw new Error("Remote target was not found.");
-      const value = await remoteConnectionPool.projectsForTarget(target);
-      return Array.isArray(value) ? value as RemoteRuntimeProjectRecord[] : [];
+      return await remoteConnectionService.projects(id);
     },
   );
 
   ipcMain.handle(
     IPC.remoteRuntimeAddProject,
-    async (_event, arg: { id: string; rootPath: string }): Promise<RemoteRuntimeProjectRecord> => {
+    async (
+      _event,
+      arg: { id: string; rootPath: string },
+    ): Promise<RemoteRuntimeProjectRecord> => {
       const id = typeof arg?.id === "string" ? arg.id.trim() : "";
-      const rootPath = typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
-      const target = id ? remoteTargetRegistry.get(id) : null;
-      if (!target) throw new Error("Remote target was not found.");
+      const rootPath =
+        typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
       if (!rootPath) throw new Error("Remote project path is required.");
-      return await remoteConnectionPool.addProjectForTarget(target, rootPath);
+      return await remoteConnectionService.addProject(id, rootPath);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.remoteRuntimeBrowseDirectories,
+    async (
+      _event,
+      arg: { id: string; args?: ProjectBrowseInput },
+    ): Promise<ProjectBrowseResult> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      return await remoteConnectionService.browseDirectories(
+        id,
+        arg?.args ?? {},
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC.remoteRuntimeGetProjectDetail,
+    async (
+      _event,
+      arg: { id: string; rootPath: string },
+    ): Promise<ProjectDetail> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      const rootPath =
+        typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
+      if (!rootPath) throw new Error("Remote project path is required.");
+      return await remoteConnectionService.getProjectDetail(id, rootPath);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.remoteRuntimeGetDefaultParentDir,
+    async (_event, arg: { id: string }): Promise<string> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      return await remoteConnectionService.getDefaultParentDir(id);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.remoteRuntimeCreateProject,
+    async (
+      _event,
+      arg: { id: string; input?: CreateProjectInput },
+    ): Promise<RemoteRuntimeProjectRecord> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      return await remoteConnectionService.createProject(
+        id,
+        arg?.input ?? { name: "", parentDir: "" },
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC.remoteRuntimeCloneProject,
+    async (
+      _event,
+      arg: { id: string; input?: CloneProjectInput },
+    ): Promise<RemoteRuntimeProjectRecord> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      return await remoteConnectionService.cloneProject(
+        id,
+        arg?.input ?? { url: "", parentDir: "" },
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC.remoteRuntimeListMyGitHubRepos,
+    async (
+      _event,
+      arg: { id: string; input?: ListMyGitHubReposInput },
+    ): Promise<ListMyGitHubReposResult> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      return await remoteConnectionService.listMyGitHubRepos(
+        id,
+        arg?.input ?? {},
+      );
     },
   );
 
   ipcMain.handle(
     IPC.remoteRuntimeOpenProject,
-    async (event, arg: { id: string; projectId: string }): Promise<OpenProjectBinding & { kind: "remote" }> => {
+    async (
+      event,
+      arg: { id: string; projectId: string },
+    ): Promise<OpenProjectBinding & { kind: "remote" }> => {
       const id = typeof arg?.id === "string" ? arg.id.trim() : "";
-      const projectId = typeof arg?.projectId === "string" ? arg.projectId.trim() : "";
-      const target = id ? remoteTargetRegistry.get(id) : null;
+      const projectId =
+        typeof arg?.projectId === "string" ? arg.projectId.trim() : "";
+      const target = id ? remoteConnectionService.getTarget(id) : null;
       if (!target) throw new Error("Remote target was not found.");
       if (!projectId) throw new Error("Remote project is required.");
 
-      const connection = await remoteConnectionPool.connect(target);
-      let project = connection.projects.find((candidate) => candidate.projectId === projectId) ?? null;
+      const connection = await remoteConnectionService.connect(target.id);
+      let project =
+        connection.projects.find(
+          (candidate) => candidate.projectId === projectId,
+        ) ?? null;
       if (!project) {
-        const value = await remoteConnectionPool.projectsForTarget(target);
-        const projects = Array.isArray(value) ? value as RemoteRuntimeProjectRecord[] : [];
-        project = projects.find((candidate) => candidate.projectId === projectId) ?? null;
+        const projects = await remoteConnectionService.projects(target.id);
+        project =
+          projects.find((candidate) => candidate.projectId === projectId) ??
+          null;
       }
-      if (!project) throw new Error("Remote project was not found on this runtime.");
+      if (!project)
+        throw new Error("Remote project was not found on this runtime.");
 
       const binding: OpenProjectBinding & { kind: "remote" } = {
         kind: "remote",
@@ -299,169 +467,277 @@ export function registerRuntimeBridge({
         rootPath: project.rootPath,
         displayName: project.displayName || path.basename(project.rootPath),
       };
-      bindRemoteProject?.(BrowserWindow.fromWebContents(event.sender)?.id ?? null, binding);
+      bindRemoteProject?.(
+        BrowserWindow.fromWebContents(event.sender)?.id ?? null,
+        binding,
+      );
       return binding;
     },
   );
 
   ipcMain.handle(
     IPC.remoteRuntimeCallAction,
-    async (event, arg: { id: string; projectId: string; request: RemoteRuntimeActionRequest }): Promise<RemoteRuntimeActionResult> => {
+    async (
+      event,
+      arg: {
+        id: string;
+        projectId: string;
+        request: RemoteRuntimeActionRequest;
+      },
+    ): Promise<RemoteRuntimeActionResult> => {
       const id = typeof arg?.id === "string" ? arg.id.trim() : "";
-      const projectId = typeof arg?.projectId === "string" ? arg.projectId.trim() : "";
-      const request = arg?.request && typeof arg.request === "object" && !Array.isArray(arg.request) ? arg.request : null;
-      const target = id ? remoteTargetRegistry.get(id) : null;
-      const domain = typeof request?.domain === "string" ? request.domain.trim() : "";
-      const action = typeof request?.action === "string" ? request.action.trim() : "";
+      const projectId =
+        typeof arg?.projectId === "string" ? arg.projectId.trim() : "";
+      const request =
+        arg?.request &&
+        typeof arg.request === "object" &&
+        !Array.isArray(arg.request)
+          ? arg.request
+          : null;
+      const target = id ? remoteConnectionService.getTarget(id) : null;
+      const domain =
+        typeof request?.domain === "string" ? request.domain.trim() : "";
+      const action =
+        typeof request?.action === "string" ? request.action.trim() : "";
       if (!target) throw new Error("Remote target was not found.");
       if (!projectId) throw new Error("Remote project is required.");
-      if (!domain || !action) throw new Error("Remote action domain and action are required.");
-      await remoteConnectionPool.connect(target);
+      if (!domain || !action)
+        throw new Error("Remote action domain and action are required.");
+      await remoteConnectionService.connect(target.id);
       const actionRequest = withRuntimeActionClientMetadata(
         { ...request!, domain, action },
         event.sender.id,
       );
-      return await remoteConnectionPool.callActionForTarget(target, projectId, actionRequest);
+      return await remoteConnectionPool.callActionForTarget(
+        target,
+        projectId,
+        actionRequest,
+      );
     },
   );
 
   ipcMain.handle(
     IPC.remoteRuntimeCallSync,
-    async (_event, arg: { id: string; projectId: string; method: string; params?: Record<string, unknown> }): Promise<unknown> => {
+    async (
+      _event,
+      arg: {
+        id: string;
+        projectId: string;
+        method: string;
+        params?: Record<string, unknown>;
+      },
+    ): Promise<unknown> => {
       const id = typeof arg?.id === "string" ? arg.id.trim() : "";
-      const projectId = typeof arg?.projectId === "string" ? arg.projectId.trim() : "";
+      const projectId =
+        typeof arg?.projectId === "string" ? arg.projectId.trim() : "";
       const method = typeof arg?.method === "string" ? arg.method.trim() : "";
       const params = isObjectRecord(arg?.params) ? arg.params : {};
-      const target = id ? remoteTargetRegistry.get(id) : null;
+      const target = id ? remoteConnectionService.getTarget(id) : null;
       if (!target) throw new Error("Remote target was not found.");
       if (!projectId) throw new Error("Remote project is required.");
-      if (!isRemoteRuntimeSyncMethod(method)) throw new Error("Remote sync method is not exposed.");
-      return await remoteConnectionPool.callSyncForTarget(target, projectId, method, params);
+      if (!isRemoteRuntimeSyncMethod(method))
+        throw new Error("Remote sync method is not exposed.");
+      await remoteConnectionService.connect(target.id);
+      return await remoteConnectionPool.callSyncForTarget(
+        target,
+        projectId,
+        method,
+        params,
+      );
     },
   );
 
   ipcMain.handle(
     IPC.localRuntimeCallAction,
-    async (event, arg: { request: RemoteRuntimeActionRequest }): Promise<RemoteRuntimeActionResult> => {
+    async (
+      event,
+      arg: { request: RemoteRuntimeActionRequest },
+    ): Promise<RemoteRuntimeActionResult> => {
       if (!localRuntimeConnectionPool) {
         throw new Error("Local runtime daemon is not available.");
       }
-      const request = arg?.request && typeof arg.request === "object" && !Array.isArray(arg.request) ? arg.request : null;
-      const domain = typeof request?.domain === "string" ? request.domain.trim() : "";
-      const action = typeof request?.action === "string" ? request.action.trim() : "";
-      if (!domain || !action) throw new Error("Local runtime action domain and action are required.");
+      const request =
+        arg?.request &&
+        typeof arg.request === "object" &&
+        !Array.isArray(arg.request)
+          ? arg.request
+          : null;
+      const domain =
+        typeof request?.domain === "string" ? request.domain.trim() : "";
+      const action =
+        typeof request?.action === "string" ? request.action.trim() : "";
+      if (!domain || !action)
+        throw new Error("Local runtime action domain and action are required.");
 
       const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
-      const session = getWindowSession
-        ? getWindowSession(windowId)
-        : null;
+      const session = getWindowSession ? getWindowSession(windowId) : null;
       const binding = session?.binding;
-      const rootPath = binding?.kind === "local"
-        ? binding.rootPath
-        : session?.project?.rootPath ?? null;
+      const rootPath =
+        binding?.kind === "local"
+          ? binding.rootPath
+          : (session?.project?.rootPath ?? null);
       if (!rootPath) {
-        throw new Error("Local runtime project is not available for this window.");
+        throw new Error(
+          "Local runtime project is not available for this window.",
+        );
       }
       const actionRequest = withRuntimeActionClientMetadata(
         { ...request!, domain, action },
         event.sender.id,
       );
-      return await localRuntimeConnectionPool.callActionForRoot(rootPath, actionRequest);
+      return await localRuntimeConnectionPool.callActionForRoot(
+        rootPath,
+        actionRequest,
+      );
     },
   );
 
   ipcMain.handle(
     IPC.localRuntimeCallSync,
-    async (event, arg: { method: string; params?: Record<string, unknown> }): Promise<unknown> => {
+    async (
+      event,
+      arg: { method: string; params?: Record<string, unknown> },
+    ): Promise<unknown> => {
       if (!localRuntimeConnectionPool) {
         throw new Error("Local runtime daemon is not available.");
       }
       const method = typeof arg?.method === "string" ? arg.method.trim() : "";
       const params = isObjectRecord(arg?.params) ? arg.params : {};
-      if (!isRemoteRuntimeSyncMethod(method)) throw new Error("Local sync method is not exposed.");
+      if (!isRemoteRuntimeSyncMethod(method))
+        throw new Error("Local sync method is not exposed.");
 
       const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
-      const session = getWindowSession
-        ? getWindowSession(windowId)
-        : null;
+      const session = getWindowSession ? getWindowSession(windowId) : null;
       const binding = session?.binding;
-      const rootPath = binding?.kind === "local"
-        ? binding.rootPath
-        : session?.project?.rootPath ?? null;
+      const rootPath =
+        binding?.kind === "local"
+          ? binding.rootPath
+          : (session?.project?.rootPath ?? null);
       if (!rootPath) {
-        throw new Error("Local runtime project is not available for this window.");
+        throw new Error(
+          "Local runtime project is not available for this window.",
+        );
       }
-      return await localRuntimeConnectionPool.callSyncForRoot(rootPath, method, params);
+      return await localRuntimeConnectionPool.callSyncForRoot(
+        rootPath,
+        method,
+        params,
+      );
     },
   );
 
   ipcMain.handle(
     IPC.localRuntimeStreamEvents,
-    async (event, arg: { request?: RemoteRuntimeStreamEventsRequest }): Promise<RemoteRuntimeStreamEventsResult> => {
+    async (
+      event,
+      arg: { request?: RemoteRuntimeStreamEventsRequest },
+    ): Promise<RemoteRuntimeStreamEventsResult> => {
       if (!localRuntimeConnectionPool) {
         throw new Error("Local runtime daemon is not available.");
       }
 
       const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
-      const session = getWindowSession
-        ? getWindowSession(windowId)
-        : null;
+      const session = getWindowSession ? getWindowSession(windowId) : null;
       const binding = session?.binding;
-      const rootPath = binding?.kind === "local"
-        ? binding.rootPath
-        : session?.project?.rootPath ?? null;
+      const rootPath =
+        binding?.kind === "local"
+          ? binding.rootPath
+          : (session?.project?.rootPath ?? null);
       if (!rootPath) {
         return { events: [], nextCursor: 0, hasMore: false };
       }
       if (binding?.kind === "local") {
-        ensureRuntimeEventSubscription(event.sender, binding.key, (onEvent, onEnded) =>
-          localRuntimeConnectionPool.subscribeEventsForRoot(rootPath, {
-            cursor: arg?.request?.cursor,
-            limit: arg?.request?.limit,
-            category: "runtime",
-          }, onEvent, onEnded),
+        ensureRuntimeEventSubscription(
+          event.sender,
+          binding.key,
+          (onEvent, onEnded) =>
+            localRuntimeConnectionPool.subscribeEventsForRoot(
+              rootPath,
+              {
+                cursor: arg?.request?.cursor,
+                limit: arg?.request?.limit,
+                category: "runtime",
+              },
+              onEvent,
+              onEnded,
+            ),
         );
       }
-      return await localRuntimeConnectionPool.streamEventsForRoot(rootPath, arg?.request ?? {});
+      return await localRuntimeConnectionPool.streamEventsForRoot(
+        rootPath,
+        arg?.request ?? {},
+      );
     },
   );
 
   ipcMain.handle(
     IPC.remoteRuntimeStreamEvents,
-    async (event, arg: { id: string; projectId: string; request?: RemoteRuntimeStreamEventsRequest }): Promise<RemoteRuntimeStreamEventsResult> => {
+    async (
+      event,
+      arg: {
+        id: string;
+        projectId: string;
+        request?: RemoteRuntimeStreamEventsRequest;
+      },
+    ): Promise<RemoteRuntimeStreamEventsResult> => {
       const id = typeof arg?.id === "string" ? arg.id.trim() : "";
-      const projectId = typeof arg?.projectId === "string" ? arg.projectId.trim() : "";
+      const projectId =
+        typeof arg?.projectId === "string" ? arg.projectId.trim() : "";
       if (!id) throw new Error("Remote target id is required.");
       if (!projectId) throw new Error("Remote project id is required.");
-      const target = remoteTargetRegistry.get(id);
+      const target = remoteConnectionService.getTarget(id);
       if (!target) throw new Error("Remote target was not found.");
-      ensureRuntimeEventSubscription(event.sender, `remote:${target.id}:${projectId}`, (onEvent, onEnded) =>
-        remoteConnectionPool.subscribeEventsForTarget(target, projectId, {
-          cursor: arg?.request?.cursor,
-          limit: arg?.request?.limit,
-          category: "runtime",
-        }, onEvent, onEnded),
+      await remoteConnectionService.connect(target.id);
+      ensureRuntimeEventSubscription(
+        event.sender,
+        `remote:${target.id}:${projectId}`,
+        (onEvent, onEnded) =>
+          remoteConnectionPool.subscribeEventsForTarget(
+            target,
+            projectId,
+            {
+              cursor: arg?.request?.cursor,
+              limit: arg?.request?.limit,
+              category: "runtime",
+            },
+            onEvent,
+            onEnded,
+          ),
       );
-      return remoteConnectionPool.streamEventsForTarget(target, projectId, arg?.request ?? {});
+      return remoteConnectionPool.streamEventsForTarget(
+        target,
+        projectId,
+        arg?.request ?? {},
+      );
     },
   );
 
   ipcMain.handle(
     IPC.remoteRuntimeCheckLocalWork,
-    async (_event, arg: { project?: RemoteRuntimeProjectRecord }): Promise<RemoteRuntimeLocalWorkCheckResult> => {
-      const project = arg?.project && typeof arg.project === "object" && !Array.isArray(arg.project)
-        ? arg.project
-        : null;
-      const remoteProjectId = typeof project?.projectId === "string" ? project.projectId : "";
-      const remoteDisplayName = typeof project?.displayName === "string" && project.displayName.trim()
-        ? project.displayName.trim()
-        : typeof project?.rootPath === "string"
-          ? path.basename(project.rootPath)
-          : "remote project";
-      const remoteGitOriginUrl = typeof project?.gitOriginUrl === "string" && project.gitOriginUrl.trim()
-        ? project.gitOriginUrl.trim()
-        : null;
-      const remoteOriginKey = normalizeGitRemoteForComparison(remoteGitOriginUrl);
+    async (
+      _event,
+      arg: { project?: RemoteRuntimeProjectRecord },
+    ): Promise<RemoteRuntimeLocalWorkCheckResult> => {
+      const project =
+        arg?.project &&
+        typeof arg.project === "object" &&
+        !Array.isArray(arg.project)
+          ? arg.project
+          : null;
+      const remoteProjectId =
+        typeof project?.projectId === "string" ? project.projectId : "";
+      const remoteDisplayName =
+        typeof project?.displayName === "string" && project.displayName.trim()
+          ? project.displayName.trim()
+          : typeof project?.rootPath === "string"
+            ? path.basename(project.rootPath)
+            : "remote project";
+      const remoteGitOriginUrl =
+        typeof project?.gitOriginUrl === "string" && project.gitOriginUrl.trim()
+          ? project.gitOriginUrl.trim()
+          : null;
+      const remoteOriginKey =
+        normalizeGitRemoteForComparison(remoteGitOriginUrl);
       if (!remoteOriginKey) {
         return {
           remoteProjectId,
@@ -473,14 +749,21 @@ export function registerRuntimeBridge({
       }
 
       const state = readGlobalState(globalStatePath);
-      const recents = (state.recentProjects ?? []).slice(0, 100).map((entry) => ({
-        rootPath: entry.rootPath,
-        displayName: toRecentProjectSummary(entry).displayName,
-      }));
+      const recents = (state.recentProjects ?? [])
+        .slice(0, 100)
+        .map((entry) => ({
+          rootPath: entry.rootPath,
+          displayName: toRecentProjectSummary(entry).displayName,
+        }));
       const localRuntimeProjects = localRuntimeConnectionPool
-        ? await localRuntimeConnectionPool.projects().catch(() => [] as RemoteRuntimeProjectRecord[])
+        ? await localRuntimeConnectionPool
+            .projects()
+            .catch(() => [] as RemoteRuntimeProjectRecord[])
         : [];
-      const entriesByRoot = new Map<string, { rootPath: string; displayName: string }>();
+      const entriesByRoot = new Map<
+        string,
+        { rootPath: string; displayName: string }
+      >();
       for (const entry of recents) {
         if (!entry.rootPath) continue;
         entriesByRoot.set(path.resolve(entry.rootPath), entry);
@@ -495,12 +778,21 @@ export function registerRuntimeBridge({
         });
       }
       const matches = (
-        await Promise.all([...entriesByRoot.values()].map((entry) => inspectLocalWorkForRemoteOrigin({
-          rootPath: entry.rootPath,
-          displayName: entry.displayName,
-          remoteOriginKey,
-        })))
-      ).filter((entry): entry is RemoteRuntimeLocalWorkCheckResult["matches"][number] => entry != null);
+        await Promise.all(
+          [...entriesByRoot.values()].map((entry) =>
+            inspectLocalWorkForRemoteOrigin({
+              rootPath: entry.rootPath,
+              displayName: entry.displayName,
+              remoteOriginKey,
+            }),
+          ),
+        )
+      ).filter(
+        (
+          entry,
+        ): entry is RemoteRuntimeLocalWorkCheckResult["matches"][number] =>
+          entry != null,
+      );
 
       return {
         remoteProjectId,
@@ -512,10 +804,13 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(IPC.remoteRuntimeDisconnect, async (_event, arg: { id: string }): Promise<{ disconnected: boolean }> => {
-    const id = typeof arg?.id === "string" ? arg.id.trim() : "";
-    if (!id) return { disconnected: false };
-    remoteConnectionPool.disconnect(id);
-    return { disconnected: true };
-  });
+  ipcMain.handle(
+    IPC.remoteRuntimeDisconnect,
+    async (_event, arg: { id: string }): Promise<{ disconnected: boolean }> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      if (!id) return { disconnected: false };
+      remoteConnectionService.disconnect(id);
+      return { disconnected: true };
+    },
+  );
 }

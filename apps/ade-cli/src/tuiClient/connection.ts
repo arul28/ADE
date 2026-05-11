@@ -17,7 +17,10 @@ type RpcResponseEnvelope<T> =
 
 type AdeRpcRequest = <T>(method: string, params?: unknown) => Promise<T>;
 
-type AdeActionHelpers = Pick<AdeCodeConnection, "tool" | "action" | "actionList">;
+type AdeActionHelpers = Pick<
+  AdeCodeConnection,
+  "tool" | "action" | "actionList"
+>;
 
 type InitializeResult = {
   runtimeInfo?: {
@@ -35,7 +38,9 @@ type ProjectRecord = {
 type EmbeddedRuntime = {
   dispose: () => void;
   agentChatService?: {
-    subscribeToEvents?: (callback: (event: AgentChatEventEnvelope) => void) => () => void;
+    subscribeToEvents?: (
+      callback: (event: AgentChatEventEnvelope) => void,
+    ) => () => void;
   };
 };
 
@@ -51,7 +56,10 @@ type CreateEmbeddedRuntime = (args: {
   runtimeProfile: "chat";
 }) => Promise<EmbeddedRuntime>;
 
-type CreateEmbeddedRpcRequestHandler = (args: { runtime: EmbeddedRuntime; serverVersion: string }) => DirectHandler;
+type CreateEmbeddedRpcRequestHandler = (args: {
+  runtime: EmbeddedRuntime;
+  serverVersion: string;
+}) => DirectHandler;
 
 const MULTI_PROJECT_RUNTIME_METHODS = new Set([
   "ade/initialize",
@@ -65,13 +73,22 @@ const MULTI_PROJECT_RUNTIME_METHODS = new Set([
   "projects.add",
   "projects.remove",
   "projects.touch",
+  "projects.browseDirectories",
+  "projects.getDetail",
+  "projects.getDefaultParentDir",
+  "projects.create",
+  "projects.clone",
+  "projects.listMyGitHubRepos",
 ]);
 
 async function importRuntimeModule<T>(specifier: string): Promise<T> {
-  return await import(specifier) as T;
+  return (await import(specifier)) as T;
 }
 
-function resolveBuiltRuntimeModules(): { bootstrap: string; rpc: string } | null {
+function resolveBuiltRuntimeModules(): {
+  bootstrap: string;
+  rpc: string;
+} | null {
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
   const candidates = [
     {
@@ -106,24 +123,39 @@ async function loadEmbeddedAdeCli(): Promise<{
 }> {
   const builtModules = resolveBuiltRuntimeModules();
   const [bootstrap, rpc] = await Promise.all([
-    importRuntimeModule<typeof import("../bootstrap")>(builtModules?.bootstrap ?? "../bootstrap"),
-    importRuntimeModule<typeof import("../adeRpcServer")>(builtModules?.rpc ?? "../adeRpcServer"),
+    importRuntimeModule<typeof import("../bootstrap")>(
+      builtModules?.bootstrap ?? "../bootstrap",
+    ),
+    importRuntimeModule<typeof import("../adeRpcServer")>(
+      builtModules?.rpc ?? "../adeRpcServer",
+    ),
   ]);
   return {
-    createAdeRuntime: bootstrap.createAdeRuntime as unknown as CreateEmbeddedRuntime,
-    createAdeRpcRequestHandler: rpc.createAdeRpcRequestHandler as unknown as CreateEmbeddedRpcRequestHandler,
+    createAdeRuntime:
+      bootstrap.createAdeRuntime as unknown as CreateEmbeddedRuntime,
+    createAdeRpcRequestHandler:
+      rpc.createAdeRpcRequestHandler as unknown as CreateEmbeddedRpcRequestHandler,
   };
 }
 
 function failedEnvelopeMessage(payload: unknown): string | null {
-  if (!payload || typeof payload !== "object" || !("ok" in payload) || (payload as { ok?: unknown }).ok !== false) {
+  if (
+    !payload ||
+    typeof payload !== "object" ||
+    !("ok" in payload) ||
+    (payload as { ok?: unknown }).ok !== false
+  ) {
     return null;
   }
   const error = (payload as { error?: { message?: string } }).error;
   return typeof error?.message === "string" ? error.message : "";
 }
 
-function unwrapActionResult<T>(payload: RpcResponseEnvelope<unknown>, domain: string, action: string): T {
+function unwrapActionResult<T>(
+  payload: RpcResponseEnvelope<unknown>,
+  domain: string,
+  action: string,
+): T {
   const errorMessage = failedEnvelopeMessage(payload);
   if (errorMessage !== null) {
     throw new Error(errorMessage || `ADE action failed: ${domain}.${action}`);
@@ -133,7 +165,10 @@ function unwrapActionResult<T>(payload: RpcResponseEnvelope<unknown>, domain: st
 
 function createAdeActionHelpers(request: AdeRpcRequest): AdeActionHelpers {
   return {
-    tool: async <T>(name: string, toolArgs?: Record<string, unknown>): Promise<T> => {
+    tool: async <T>(
+      name: string,
+      toolArgs?: Record<string, unknown>,
+    ): Promise<T> => {
       const payload = await request<unknown>("ade/actions/call", {
         name,
         arguments: toolArgs ?? {},
@@ -144,14 +179,22 @@ function createAdeActionHelpers(request: AdeRpcRequest): AdeActionHelpers {
       }
       return payload as T;
     },
-    action: async <T>(domain: string, action: string, actionArgs?: Record<string, unknown>): Promise<T> => {
+    action: async <T>(
+      domain: string,
+      action: string,
+      actionArgs?: Record<string, unknown>,
+    ): Promise<T> => {
       const payload = await request<unknown>("ade/actions/call", {
         name: "run_ade_action",
         arguments: { domain, action, args: actionArgs ?? {} },
       });
       return unwrapActionResult<T>(payload, domain, action);
     },
-    actionList: async <T>(domain: string, action: string, argsList: unknown[]): Promise<T> => {
+    actionList: async <T>(
+      domain: string,
+      action: string,
+      argsList: unknown[],
+    ): Promise<T> => {
       const payload = await request<unknown>("ade/actions/call", {
         name: "run_ade_action",
         arguments: { domain, action, argsList },
@@ -174,7 +217,11 @@ async function initialize(request: AdeRpcRequest): Promise<InitializeResult> {
   return result;
 }
 
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  message: string,
+): Promise<T> {
   let timer: NodeJS.Timeout | null = null;
   try {
     return await Promise.race([
@@ -198,15 +245,23 @@ function errorMessage(error: unknown): string {
 }
 
 function isMultiProjectRuntime(result: InitializeResult): boolean {
-  return result.runtimeInfo?.multiProject === true || result.capabilities?.projects === true;
+  return (
+    result.runtimeInfo?.multiProject === true ||
+    result.capabilities?.projects === true
+  );
 }
 
-function withProjectId(method: string, params: unknown, projectId: string): unknown {
+function withProjectId(
+  method: string,
+  params: unknown,
+  projectId: string,
+): unknown {
   if (MULTI_PROJECT_RUNTIME_METHODS.has(method)) return params;
   if (isRecord(params)) {
-    const existing = typeof params.projectId === "string" && params.projectId.trim().length > 0
-      ? params.projectId.trim()
-      : null;
+    const existing =
+      typeof params.projectId === "string" && params.projectId.trim().length > 0
+        ? params.projectId.trim()
+        : null;
     return existing ? params : { ...params, projectId };
   }
   return { projectId };
@@ -219,11 +274,15 @@ function resolveCliEntrypoint(): string | null {
     path.join(moduleDir, "..", "cli.js"),
     path.join(moduleDir, "..", "cli.mjs"),
     process.argv[1],
-  ].filter((candidate): candidate is string => typeof candidate === "string" && candidate.trim().length > 0);
+  ].filter(
+    (candidate): candidate is string =>
+      typeof candidate === "string" && candidate.trim().length > 0,
+  );
   for (const candidate of candidates) {
     try {
       const resolved = path.resolve(candidate);
-      if (fs.existsSync(resolved) && fs.statSync(resolved).isFile()) return resolved;
+      if (fs.existsSync(resolved) && fs.statSync(resolved).isFile())
+        return resolved;
     } catch {
       // Try the next candidate.
     }
@@ -234,14 +293,18 @@ function resolveCliEntrypoint(): string | null {
 function spawnDaemon(socketPath: string): boolean {
   const cliEntrypoint = resolveCliEntrypoint();
   if (!cliEntrypoint) return false;
-  const child = spawn(process.execPath, [cliEntrypoint, "serve", "--socket", socketPath], {
-    detached: true,
-    stdio: "ignore",
-    env: {
-      ...process.env,
-      ADE_RPC_SOCKET_PATH: socketPath,
+  const child = spawn(
+    process.execPath,
+    [cliEntrypoint, "serve", "--socket", socketPath],
+    {
+      detached: true,
+      stdio: "ignore",
+      env: {
+        ...process.env,
+        ADE_RPC_SOCKET_PATH: socketPath,
+      },
     },
-  });
+  );
   child.unref();
   return true;
 }
@@ -250,10 +313,13 @@ async function connectAttachedSocket(args: {
   socketPath: string;
   project: ProjectLaunchContext;
 }): Promise<AdeCodeConnection> {
-  let client: JsonRpcClient | null = await JsonRpcClient.connect(args.socketPath);
+  let client: JsonRpcClient | null = await JsonRpcClient.connect(
+    args.socketPath,
+  );
   try {
     const connectedClient = client;
-    const rawRequest: AdeRpcRequest = <T>(method: string, params?: unknown) => connectedClient.request<T>(method, params);
+    const rawRequest: AdeRpcRequest = <T>(method: string, params?: unknown) =>
+      connectedClient.request<T>(method, params);
     const initializeResult = await withTimeout(
       initialize(rawRequest),
       3000,
@@ -261,12 +327,18 @@ async function connectAttachedSocket(args: {
     );
     let request = rawRequest;
     if (isMultiProjectRuntime(initializeResult)) {
-      const project = await rawRequest<ProjectRecord>("projects.add", { rootPath: args.project.projectRoot });
-      const projectId = typeof project.projectId === "string" && project.projectId.trim().length > 0
-        ? project.projectId.trim()
-        : null;
+      const project = await rawRequest<ProjectRecord>("projects.add", {
+        rootPath: args.project.projectRoot,
+      });
+      const projectId =
+        typeof project.projectId === "string" &&
+        project.projectId.trim().length > 0
+          ? project.projectId.trim()
+          : null;
       if (!projectId) {
-        throw new Error("ADE daemon did not return a projectId for this project.");
+        throw new Error(
+          "ADE daemon did not return a projectId for this project.",
+        );
       }
       request = <T>(method: string, params?: unknown) =>
         rawRequest<T>(method, withProjectId(method, params, projectId));
@@ -280,9 +352,10 @@ async function connectAttachedSocket(args: {
       socketPath: args.socketPath,
       request,
       ...createAdeActionHelpers(request),
-      onChatEvent: (callback: (event: AgentChatEventEnvelope) => void) => (
-        attachedClient.onNotification("chat/event", (params) => callback(params as AgentChatEventEnvelope))
-      ),
+      onChatEvent: (callback: (event: AgentChatEventEnvelope) => void) =>
+        attachedClient.onNotification("chat/event", (params) =>
+          callback(params as AgentChatEventEnvelope),
+        ),
       close: async () => attachedClient.close(),
     };
   } catch (error) {
@@ -320,7 +393,8 @@ export async function connectToAde(args: {
   socketPath?: string | null;
 }): Promise<AdeCodeConnection> {
   const layout = resolveAdeLayout(args.project.projectRoot);
-  const explicitSocketPath = args.socketPath?.trim() || process.env.ADE_RPC_SOCKET_PATH?.trim() || null;
+  const explicitSocketPath =
+    args.socketPath?.trim() || process.env.ADE_RPC_SOCKET_PATH?.trim() || null;
   const machineSocketPath = resolveMachineAdeLayout().socketPath;
   const socketPath = explicitSocketPath ?? machineSocketPath;
 
@@ -339,25 +413,26 @@ export async function connectToAde(args: {
     } catch (error) {
       const message = errorMessage(error);
       if (args.requireSocket) {
-        throw new Error(`ADE RPC socket is required but unavailable at ${explicitSocketPath}: ${message}`);
+        throw new Error(
+          `ADE RPC socket is required but unavailable at ${explicitSocketPath}: ${message}`,
+        );
       }
       throw new Error(
         `ADE RPC socket is unavailable at ${explicitSocketPath}: ${message}. ` +
-        "Start ade serve or run ade code --embedded to use the legacy embedded fallback.",
+          "Start ade serve or run ade code --embedded to use the legacy embedded fallback.",
       );
     }
   }
 
   let attachError: unknown = null;
   if (!args.forceEmbedded && !explicitSocketPath) {
-    const tryDaemon = async (attempts: number): Promise<AdeCodeConnection> => (
+    const tryDaemon = async (attempts: number): Promise<AdeCodeConnection> =>
       connectAttachedSocketWithRetry({
         socketPath: machineSocketPath,
         project: args.project,
         attempts,
         delayMs: 200,
-      })
-    );
+      });
     try {
       if (!fs.existsSync(machineSocketPath)) {
         const spawned = spawnDaemon(machineSocketPath);
@@ -372,7 +447,10 @@ export async function connectToAde(args: {
         attachError = error;
       }
       const projectSocketPath = layout.socketPath;
-      if (projectSocketPath && (args.requireSocket || fs.existsSync(projectSocketPath))) {
+      if (
+        projectSocketPath &&
+        (args.requireSocket || fs.existsSync(projectSocketPath))
+      ) {
         try {
           return await connectAttachedSocketWithRetry({
             socketPath: projectSocketPath,
@@ -382,27 +460,33 @@ export async function connectToAde(args: {
           });
         } catch (projectError) {
           if (args.requireSocket) {
-            throw new Error(`ADE RPC socket is required but unavailable at ${projectSocketPath}: ${errorMessage(projectError)}`);
+            throw new Error(
+              `ADE RPC socket is required but unavailable at ${projectSocketPath}: ${errorMessage(projectError)}`,
+            );
           }
           attachError = projectError;
         }
       }
       if (args.requireSocket) {
-        throw new Error(`ADE RPC socket is required but unavailable at ${machineSocketPath}: ${errorMessage(firstError)}`);
+        throw new Error(
+          `ADE RPC socket is required but unavailable at ${machineSocketPath}: ${errorMessage(firstError)}`,
+        );
       }
       attachError ??= firstError;
     }
   }
 
   if (!args.forceEmbedded) {
-    const message = attachError instanceof Error ? ` Last error: ${attachError.message}` : "";
+    const message =
+      attachError instanceof Error ? ` Last error: ${attachError.message}` : "";
     throw new Error(
       `Unable to attach to the ADE service at ${socketPath}.${message} ` +
-      "Start ade serve or run ade code --embedded to use the legacy embedded fallback.",
+        "Start ade serve or run ade code --embedded to use the legacy embedded fallback.",
     );
   }
 
-  const { createAdeRuntime, createAdeRpcRequestHandler } = await loadEmbeddedAdeCli();
+  const { createAdeRuntime, createAdeRpcRequestHandler } =
+    await loadEmbeddedAdeCli();
   const runtime = await createAdeRuntime({
     projectRoot: args.project.projectRoot,
     workspaceRoot: args.project.workspaceRoot,
@@ -414,18 +498,24 @@ export async function connectToAde(args: {
     serverVersion: "ade-code",
   });
   let nextRequestId = 1;
-  const request: AdeRpcRequest = async <T>(method: string, params?: unknown): Promise<T> => {
-    return await handler({
+  const request: AdeRpcRequest = async <T>(
+    method: string,
+    params?: unknown,
+  ): Promise<T> => {
+    return (await handler({
       jsonrpc: "2.0",
       id: nextRequestId++,
       method,
       params,
-    }) as T;
+    })) as T;
   };
   await initialize(request);
-  const chatEvents = typeof runtime.agentChatService?.subscribeToEvents === "function"
-    ? runtime.agentChatService.subscribeToEvents.bind(runtime.agentChatService)
-    : (() => () => {});
+  const chatEvents =
+    typeof runtime.agentChatService?.subscribeToEvents === "function"
+      ? runtime.agentChatService.subscribeToEvents.bind(
+          runtime.agentChatService,
+        )
+      : () => () => {};
 
   return {
     mode: "embedded",

@@ -1,8 +1,13 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { useAppStore } from "../../state/appStore";
 import { RemoteTargetList } from "./RemoteTargetList";
 
 const remoteRuntimeMock = {
@@ -40,15 +45,6 @@ describe("RemoteTargetList", () => {
     cleanup();
     vi.restoreAllMocks();
     vi.clearAllMocks();
-    useAppStore.setState({
-      project: null,
-      projectBinding: null,
-      projectTransition: null,
-      projectTransitionError: null,
-      showWelcome: true,
-      lanes: [],
-      selectedLaneId: null,
-    });
     Reflect.deleteProperty(window, "ade");
   });
 
@@ -78,17 +74,22 @@ describe("RemoteTargetList", () => {
 
     await waitFor(() => expect(screen.getByText("Studio")).toBeTruthy());
     expect(screen.getByText("192.168.1.42:8787")).toBeTruthy();
-    expect(screen.getByText("Background ADE 0.0.0 | 2 projects advertised")).toBeTruthy();
+    expect(
+      screen.getByText("Background ADE 0.0.0 | 2 projects advertised"),
+    ).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Use host" }));
 
-    expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("Studio");
-    expect((screen.getByLabelText("Host") as HTMLInputElement).value).toBe("192.168.1.42");
+    expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe(
+      "Studio",
+    );
+    expect((screen.getByLabelText("Host") as HTMLInputElement).value).toBe(
+      "192.168.1.42",
+    );
     expect((screen.getByLabelText("Port") as HTMLInputElement).value).toBe("");
   });
 
-  it("warns in-app before opening a remote project when matching local work is dirty", async () => {
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+  it("connects a saved machine without listing remote projects in the connection manager", async () => {
     const target = {
       id: "target-1",
       name: "Mac Studio",
@@ -116,57 +117,25 @@ describe("RemoteTargetList", () => {
       version: "1.0.0",
       projects: [project],
     });
-    remoteRuntimeMock.checkLocalWork.mockResolvedValue({
-      remoteProjectId: "project-1",
-      remoteDisplayName: "ADE",
-      remoteGitOriginUrl: "git@github.com:example/ade.git",
-      hasDirtyWork: true,
-      matches: [
-        {
-          rootPath: "/Users/admin/Projects/ADE",
-          displayName: "ADE",
-          gitOriginUrl: "git@github.com:example/ade.git",
-          dirtyCount: 3,
-        },
-      ],
-    });
-    remoteRuntimeMock.openProject.mockResolvedValue({
-      kind: "remote",
-      key: "remote:target-1:project-1",
-      targetId: "target-1",
-      runtimeName: "Mac Studio",
-      projectId: "project-1",
-      rootPath: "/remote/ADE",
-      displayName: "ADE",
-    });
     lanesMock.list.mockResolvedValue([]);
     installAdeMock();
 
     render(<RemoteTargetList />);
 
-    await waitFor(() => expect(screen.getAllByText("Mac Studio").length).toBeGreaterThan(0));
-    const connectButton = screen.getAllByRole("button", { name: "Connect" })
+    await waitFor(() =>
+      expect(screen.getAllByText("Mac Studio").length).toBeGreaterThan(0),
+    );
+    const connectButton = screen
+      .getAllByRole("button", { name: "Connect" })
       .find((button) => !button.hasAttribute("disabled"));
     expect(connectButton).toBeTruthy();
     fireEvent.click(connectButton!);
-    await waitFor(() => expect(screen.getByText("/remote/ADE")).toBeTruthy());
-
-    fireEvent.click(screen.getByRole("button", { name: "Open" }));
-
-    await waitFor(() => expect(screen.getByRole("dialog", { name: "Local work found" })).toBeTruthy());
-    expect(confirmSpy).not.toHaveBeenCalled();
-    expect(screen.getByText("3 changed files")).toBeTruthy();
-    expect(screen.getByText("/Users/admin/Projects/ADE")).toBeTruthy();
-    expect(remoteRuntimeMock.openProject).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Local work found" })).toBeNull());
-    expect(remoteRuntimeMock.openProject).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole("button", { name: "Open" }));
-    await waitFor(() => expect(screen.getByRole("dialog", { name: "Local work found" })).toBeTruthy());
-    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-
-    await waitFor(() => expect(remoteRuntimeMock.openProject).toHaveBeenCalledWith("target-1", "project-1"));
+    await waitFor(() =>
+      expect(remoteRuntimeMock.connect).toHaveBeenCalledWith("target-1"),
+    );
+    expect(screen.getByText("Connected")).toBeTruthy();
+    expect(screen.getByText("ADE service 1.0.0 on darwin-arm64.")).toBeTruthy();
+    expect(screen.queryByText("/remote/ADE")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Open" })).toBeNull();
   });
 });

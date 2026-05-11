@@ -1,27 +1,33 @@
 import { describe, expect, it } from "vitest";
-import { discoveredRuntimeFromBonjourService, discoveredRuntimesFromTailscaleStatus } from "./runtimeDiscovery";
+import {
+  discoveredRuntimeFromBonjourService,
+  discoveredRuntimesFromTailscaleStatus,
+} from "./runtimeDiscovery";
 
 describe("runtimeDiscovery", () => {
   it("parses ADE sync Bonjour metadata into a discovered machine", () => {
-    const discovered = discoveredRuntimeFromBonjourService({
-      name: "ADE Sync Studio 8787",
-      fqdn: "ADE Sync Studio 8787._ade-sync._tcp.local",
-      host: "studio.local",
-      port: 8787,
-      addresses: ["127.0.0.1", "192.168.1.42"],
-      txt: {
-        deviceId: "device-123",
-        deviceName: "Studio",
-        runtimeKind: "daemon",
-        runtimeVersion: "0.0.0",
-        projects: "project-a, project-b",
-        projectCount: "2",
-        host: "192.168.1.42",
-        addresses: "127.0.0.1,100.75.20.63",
-        tailscaleDnsName: "studio.tailnet.ts.net",
-        tailscaleIp: "100.75.20.63",
+    const discovered = discoveredRuntimeFromBonjourService(
+      {
+        name: "ADE Sync Studio 8787",
+        fqdn: "ADE Sync Studio 8787._ade-sync._tcp.local",
+        host: "studio.local",
+        port: 8787,
+        addresses: ["127.0.0.1", "192.168.1.42"],
+        txt: {
+          deviceId: "device-123",
+          deviceName: "Studio",
+          runtimeKind: "daemon",
+          runtimeVersion: "0.0.0",
+          projects: "project-a, project-b",
+          projectCount: "2",
+          host: "192.168.1.42",
+          addresses: "127.0.0.1,100.75.20.63",
+          tailscaleDnsName: "studio.tailnet.ts.net",
+          tailscaleIp: "100.75.20.63",
+        },
       },
-    }, 1234);
+      1234,
+    );
 
     expect(discovered).toMatchObject({
       id: "device-123::ADE Sync Studio 8787._ade-sync._tcp.local",
@@ -42,16 +48,19 @@ describe("runtimeDiscovery", () => {
   });
 
   it("falls back to service metadata when TXT identity is partial", () => {
-    const discovered = discoveredRuntimeFromBonjourService({
-      name: "ADE Sync Laptop 8787",
-      host: "laptop.local",
-      port: 0,
-      addresses: ["127.0.0.1"],
-      txt: {
-        port: "8787",
-        runtimeKind: "",
+    const discovered = discoveredRuntimeFromBonjourService(
+      {
+        name: "ADE Sync Laptop 8787",
+        host: "laptop.local",
+        port: 0,
+        addresses: ["127.0.0.1"],
+        txt: {
+          port: "8787",
+          runtimeKind: "",
+        },
       },
-    }, 5678);
+      5678,
+    );
 
     expect(discovered).toMatchObject({
       id: "ADE Sync Laptop 8787@laptop.local:8787",
@@ -70,18 +79,21 @@ describe("runtimeDiscovery", () => {
   });
 
   it("turns Tailscale peers into SSH discovery targets", () => {
-    const discovered = discoveredRuntimesFromTailscaleStatus({
-      Peer: {
-        "nodekey:abc": {
-          ID: "peer-1",
-          HostName: "aruls-mac-studio",
-          DNSName: "aruls-mac-studio.tail7497a6.ts.net.",
-          OS: "macOS",
-          TailscaleIPs: ["100.75.20.63", "fd7a:115c:a1e0::1"],
-          Online: true,
+    const discovered = discoveredRuntimesFromTailscaleStatus(
+      {
+        Peer: {
+          "nodekey:abc": {
+            ID: "peer-1",
+            HostName: "aruls-mac-studio",
+            DNSName: "aruls-mac-studio.tail7497a6.ts.net.",
+            OS: "macOS",
+            TailscaleIPs: ["100.75.20.63", "fd7a:115c:a1e0::1"],
+            Online: true,
+          },
         },
       },
-    }, 9012);
+      9012,
+    );
 
     expect(discovered).toHaveLength(1);
     expect(discovered[0]).toMatchObject({
@@ -100,5 +112,34 @@ describe("runtimeDiscovery", () => {
       projectCount: null,
       lastSeenAt: 9012,
     });
+  });
+
+  it("skips mobile Tailscale peers in the SSH discovery list", () => {
+    const discovered = discoveredRuntimesFromTailscaleStatus(
+      {
+        Peer: {
+          "nodekey:iphone": {
+            ID: "peer-phone",
+            HostName: "iPhone",
+            DNSName: "iphone.tail7497a6.ts.net.",
+            OS: "iOS",
+            TailscaleIPs: ["100.75.20.64"],
+            Online: true,
+          },
+          "nodekey:mac": {
+            ID: "peer-mac",
+            HostName: "studio",
+            DNSName: "studio.tail7497a6.ts.net.",
+            OS: "macOS",
+            TailscaleIPs: ["100.75.20.63"],
+            Online: true,
+          },
+        },
+      },
+      123,
+    );
+
+    expect(discovered).toHaveLength(1);
+    expect(discovered[0]?.machineName).toBe("studio");
   });
 });

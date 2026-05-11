@@ -1,6 +1,9 @@
 import type { Client } from "ssh2";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { RemoteRuntimeConnectResult, RemoteRuntimeTarget } from "../../../shared/types/remoteRuntime";
+import type {
+  RemoteRuntimeConnectResult,
+  RemoteRuntimeTarget,
+} from "../../../shared/types/remoteRuntime";
 import type { RuntimeRpcClient } from "./runtimeRpcClient";
 import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
 
@@ -62,7 +65,10 @@ function connectResult(version: string): RemoteRuntimeConnectResult {
 
 function createClient(): FakeRuntimeRpcClient {
   const listeners = new Set<DisconnectListener>();
-  const notificationListeners = new Map<string, Set<(params: unknown) => void>>();
+  const notificationListeners = new Map<
+    string,
+    Set<(params: unknown) => void>
+  >();
   const client = {
     call: vi.fn(),
     close: vi.fn(() => {
@@ -76,24 +82,28 @@ function createClient(): FakeRuntimeRpcClient {
         listeners.delete(callback);
       };
     }),
-    onNotification: vi.fn((method: string, callback: (params: unknown) => void) => {
-      const existing = notificationListeners.get(method) ?? new Set<(params: unknown) => void>();
-      existing.add(callback);
-      notificationListeners.set(method, existing);
-      return () => {
-        existing.delete(callback);
-        if (existing.size === 0) {
-          notificationListeners.delete(method);
-        }
-      };
-    }),
+    onNotification: vi.fn(
+      (method: string, callback: (params: unknown) => void) => {
+        const existing =
+          notificationListeners.get(method) ??
+          new Set<(params: unknown) => void>();
+        existing.add(callback);
+        notificationListeners.set(method, existing);
+        return () => {
+          existing.delete(callback);
+          if (existing.size === 0) {
+            notificationListeners.delete(method);
+          }
+        };
+      },
+    ),
     emitDisconnect(error = new Error("lost")) {
       for (const listener of [...listeners]) {
         listener(error);
       }
     },
     emitNotification(method: string, params: unknown) {
-      for (const listener of [...notificationListeners.get(method) ?? []]) {
+      for (const listener of [...(notificationListeners.get(method) ?? [])]) {
         listener(params);
       }
     },
@@ -110,18 +120,18 @@ function createSsh(): FakeSshClient {
   };
   fake.end = vi.fn();
   fake.once = vi.fn((event: string, callback: SshListener): FakeSshClient => {
-      const existing = listeners.get(event) ?? [];
-      existing.push(callback);
-      listeners.set(event, existing);
-      return fake as unknown as FakeSshClient;
-    });
+    const existing = listeners.get(event) ?? [];
+    existing.push(callback);
+    listeners.set(event, existing);
+    return fake as unknown as FakeSshClient;
+  });
   fake.emitOnce = (event: "close" | "error", ...args: unknown[]): void => {
-      const callbacks = listeners.get(event) ?? [];
-      listeners.delete(event);
-      for (const callback of callbacks) {
-        callback(...args);
-      }
-    };
+    const callbacks = listeners.get(event) ?? [];
+    listeners.delete(event);
+    for (const callback of callbacks) {
+      callback(...args);
+    }
+  };
   return fake as unknown as FakeSshClient;
 }
 
@@ -141,7 +151,9 @@ describe("RemoteConnectionPool", () => {
     });
     const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
 
-    await expect(pool.connect(target)).resolves.toMatchObject({ version: "1.0.0" });
+    await expect(pool.connect(target)).resolves.toMatchObject({
+      version: "1.0.0",
+    });
     firstClient.emitDisconnect(new Error("stream closed"));
 
     expect(firstSsh.end).toHaveBeenCalledTimes(1);
@@ -154,7 +166,9 @@ describe("RemoteConnectionPool", () => {
       result: connectResult("1.0.1"),
     });
 
-    await expect(pool.connect(target)).resolves.toMatchObject({ version: "1.0.1" });
+    await expect(pool.connect(target)).resolves.toMatchObject({
+      version: "1.0.1",
+    });
     expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);
   });
 
@@ -180,7 +194,9 @@ describe("RemoteConnectionPool", () => {
       result: connectResult("1.0.1"),
     });
 
-    await expect(pool.connect(target)).resolves.toMatchObject({ version: "1.0.1" });
+    await expect(pool.connect(target)).resolves.toMatchObject({
+      version: "1.0.1",
+    });
     expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);
   });
 
@@ -188,7 +204,14 @@ describe("RemoteConnectionPool", () => {
     const firstClient = createClient();
     firstClient.call.mockResolvedValueOnce({
       ok: true,
-      events: [{ id: 1, timestamp: "2026-05-10T00:00:00.000Z", category: "runtime", payload: {} }],
+      events: [
+        {
+          id: 1,
+          timestamp: "2026-05-10T00:00:00.000Z",
+          category: "runtime",
+          payload: {},
+        },
+      ],
       nextCursor: 2,
       hasMore: false,
     });
@@ -199,7 +222,9 @@ describe("RemoteConnectionPool", () => {
     });
     const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
 
-    await expect(pool.streamEventsForTarget(target, "project-1", { cursor: 1, limit: 10 })).resolves.toMatchObject({
+    await expect(
+      pool.streamEventsForTarget(target, "project-1", { cursor: 1, limit: 10 }),
+    ).resolves.toMatchObject({
       nextCursor: 2,
       events: [{ id: 1, category: "runtime" }],
     });
@@ -227,7 +252,9 @@ describe("RemoteConnectionPool", () => {
       result: connectResult("1.0.1"),
     });
 
-    await expect(pool.streamEventsForTarget(target, "project-1", { cursor: 2 })).resolves.toMatchObject({
+    await expect(
+      pool.streamEventsForTarget(target, "project-1", { cursor: 2 }),
+    ).resolves.toMatchObject({
       nextCursor: 2,
       events: [],
     });
@@ -237,7 +264,9 @@ describe("RemoteConnectionPool", () => {
   it("retries idempotent reads once when the connection closes during the request", async () => {
     const firstClient = createClient();
     const firstSsh = createSsh();
-    firstClient.call.mockRejectedValueOnce(new Error("Remote runtime connection closed."));
+    firstClient.call.mockRejectedValueOnce(
+      new Error("Remote runtime connection closed."),
+    );
     bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
       client: firstClient,
       ssh: firstSsh,
@@ -278,9 +307,11 @@ describe("RemoteConnectionPool", () => {
     expect(secondClient.call).toHaveBeenCalledWith("projects.list", {});
   });
 
-  it("reconnects after interrupted mutating actions and asks the caller to retry", async () => {
+  it("does not replay non-idempotent machine calls after a connection interruption", async () => {
     const firstClient = createClient();
-    firstClient.call.mockRejectedValueOnce(new Error("Remote runtime connection failed: channel closed"));
+    firstClient.call.mockRejectedValueOnce(
+      new Error("Remote ADE service connection closed."),
+    );
     bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
       client: firstClient,
       ssh: createSsh(),
@@ -294,11 +325,48 @@ describe("RemoteConnectionPool", () => {
     });
     const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
 
-    await expect(pool.callActionForTarget(target, "project-1", {
-      domain: "lane",
-      action: "create",
-      args: { name: "work" },
-    })).rejects.toThrow(/retry the action/i);
+    await expect(
+      pool.callMachineForTarget(
+        target,
+        "projects.clone",
+        { url: "https://github.com/acme/app", parentDir: "/srv" },
+        { retryOnConnectionError: false },
+      ),
+    ).rejects.toThrow(/retry the action/i);
+
+    expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);
+    expect(firstClient.call).toHaveBeenCalledWith("projects.clone", {
+      url: "https://github.com/acme/app",
+      parentDir: "/srv",
+    });
+    expect(secondClient.call).not.toHaveBeenCalled();
+  });
+
+  it("reconnects after interrupted mutating actions and asks the caller to retry", async () => {
+    const firstClient = createClient();
+    firstClient.call.mockRejectedValueOnce(
+      new Error("Remote runtime connection failed: channel closed"),
+    );
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client: firstClient,
+      ssh: createSsh(),
+      result: connectResult("1.0.0"),
+    });
+    const secondClient = createClient();
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client: secondClient,
+      ssh: createSsh(),
+      result: connectResult("1.0.1"),
+    });
+    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+
+    await expect(
+      pool.callActionForTarget(target, "project-1", {
+        domain: "lane",
+        action: "create",
+        args: { name: "work" },
+      }),
+    ).rejects.toThrow(/retry the action/i);
 
     expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);
     expect(secondClient.call).not.toHaveBeenCalled();
@@ -313,7 +381,9 @@ describe("RemoteConnectionPool", () => {
     });
     const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
 
-    await expect(pool.connect(target)).resolves.toMatchObject({ version: "1.0.0" });
+    await expect(pool.connect(target)).resolves.toMatchObject({
+      version: "1.0.0",
+    });
     firstClient.emitDisconnect(new Error("lost"));
 
     const secondClient = createClient();
@@ -330,10 +400,12 @@ describe("RemoteConnectionPool", () => {
       result: connectResult("1.0.1"),
     });
 
-    await expect(pool.callActionForTarget(target, "project-1", {
-      domain: "lane",
-      action: "list",
-    })).resolves.toEqual({
+    await expect(
+      pool.callActionForTarget(target, "project-1", {
+        domain: "lane",
+        action: "list",
+      }),
+    ).resolves.toEqual({
       domain: "lane",
       action: "list",
       result: [{ id: "lane-main" }],
@@ -354,7 +426,10 @@ describe("RemoteConnectionPool", () => {
 
   it("calls project-scoped sync methods on the connected runtime", async () => {
     const client = createClient();
-    client.call.mockResolvedValueOnce({ pairingPin: "123456", connectedPeers: [] });
+    client.call.mockResolvedValueOnce({
+      pairingPin: "123456",
+      connectedPeers: [],
+    });
     bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
       client,
       ssh: createSsh(),
@@ -362,9 +437,11 @@ describe("RemoteConnectionPool", () => {
     });
     const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
 
-    await expect(pool.callSyncForTarget(target, "project-1", "sync.getStatus", {
-      includeTransferReadiness: true,
-    })).resolves.toEqual({ pairingPin: "123456", connectedPeers: [] });
+    await expect(
+      pool.callSyncForTarget(target, "project-1", "sync.getStatus", {
+        includeTransferReadiness: true,
+      }),
+    ).resolves.toEqual({ pairingPin: "123456", connectedPeers: [] });
 
     expect(client.call).toHaveBeenCalledWith("sync.getStatus", {
       projectId: "project-1",
@@ -396,7 +473,11 @@ describe("RemoteConnectionPool", () => {
             payload: { type: "other_subscription" },
           },
         });
-        return { subscriptionId: "runtime-events-7", nextCursor: 13, hasMore: false };
+        return {
+          subscriptionId: "runtime-events-7",
+          nextCursor: 13,
+          hasMore: false,
+        };
       }
       if (method === "runtimeEvents.unsubscribe") {
         return { removed: true };
@@ -411,11 +492,16 @@ describe("RemoteConnectionPool", () => {
     const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
     const onEvent = vi.fn();
 
-    const cleanup = await pool.subscribeEventsForTarget(target, "project-1", {
-      cursor: 5,
-      limit: 10,
-      category: "runtime",
-    }, onEvent);
+    const cleanup = await pool.subscribeEventsForTarget(
+      target,
+      "project-1",
+      {
+        cursor: 5,
+        limit: 10,
+        category: "runtime",
+      },
+      onEvent,
+    );
 
     expect(client.call).toHaveBeenCalledWith("runtimeEvents.subscribe", {
       projectId: "project-1",
@@ -444,7 +530,9 @@ describe("RemoteConnectionPool", () => {
     expect(onEvent).toHaveBeenCalledTimes(2);
 
     cleanup();
-    expect(client.call).toHaveBeenCalledWith("runtimeEvents.unsubscribe", { subscriptionId: "runtime-events-7" });
+    expect(client.call).toHaveBeenCalledWith("runtimeEvents.unsubscribe", {
+      subscriptionId: "runtime-events-7",
+    });
     client.emitNotification("runtime/event", {
       subscriptionId: "runtime-events-7",
       projectId: "project-1",

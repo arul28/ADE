@@ -112,7 +112,15 @@ type FormatterId =
 
 type CliPlan =
   | { kind: "help"; text: string }
-  | { kind: "execute"; label: string; steps: InvocationStep[]; visualizer?: "lanes"; summary?: "status" | "doctor" | "auth"; formatter?: FormatterId; preferHeadless?: boolean }
+  | {
+      kind: "execute";
+      label: string;
+      steps: InvocationStep[];
+      visualizer?: "lanes";
+      summary?: "status" | "doctor" | "auth";
+      formatter?: FormatterId;
+      preferHeadless?: boolean;
+    }
   | { kind: "ade-code"; rest: string[] }
   | { kind: "desktop"; rest: string[] }
   | { kind: "runtime"; rest: string[] }
@@ -167,7 +175,8 @@ const VERSION =
     : process.env.ADE_CLI_VERSION?.trim() || "0.0.0";
 const PROTOCOL_VERSION = "2025-06-18";
 const SOURCE_FALLBACK_ENV = "ADE_CLI_SOURCE_FALLBACK_ACTIVE";
-const CLI_ENTRY_PATH = typeof process.argv[1] === "string" ? path.resolve(process.argv[1]) : "";
+const CLI_ENTRY_PATH =
+  typeof process.argv[1] === "string" ? path.resolve(process.argv[1]) : "";
 const CLI_PACKAGE_ROOT = resolveCliPackageRoot(CLI_ENTRY_PATH);
 const CLI_DIST_PATH = path.join(CLI_PACKAGE_ROOT, "dist", "cli.cjs");
 const COORDINATOR_MCP_TOOL_NAMES = new Set([
@@ -223,10 +232,7 @@ const WORKER_MISSION_TOOL_CLI_NAMES = new Set([
 
 function resolveCliPackageRoot(entryPath: string): string {
   const seen = new Set<string>();
-  const starts = [
-    entryPath ? path.dirname(entryPath) : null,
-    process.cwd(),
-  ];
+  const starts = [entryPath ? path.dirname(entryPath) : null, process.cwd()];
   for (const start of starts) {
     if (!start) continue;
     let cursor = path.resolve(start);
@@ -250,19 +256,25 @@ function isSourceCliEntryPath(modulePath: string): boolean {
 }
 
 function isSourceRuntimeInteropError(value: unknown): boolean {
-  const message = typeof value === "string"
-    ? value
-    : value instanceof Error
-      ? value.message
-      : "";
+  const message =
+    typeof value === "string"
+      ? value
+      : value instanceof Error
+        ? value.message
+        : "";
   if (!message.length) return false;
   const lower = message.toLowerCase();
-  return lower.includes("__filename is not defined in es module scope")
-    || lower.includes("__filename is not defined")
-    || lower.includes("__dirname is not defined");
+  return (
+    lower.includes("__filename is not defined in es module scope") ||
+    lower.includes("__filename is not defined") ||
+    lower.includes("__dirname is not defined")
+  );
 }
 
-function formatSpawnFailure(result: ReturnType<typeof spawnSync>, fallbackCommand: string): string {
+function formatSpawnFailure(
+  result: ReturnType<typeof spawnSync>,
+  fallbackCommand: string,
+): string {
   if (result.error) {
     return result.error.message;
   }
@@ -307,11 +319,17 @@ function isBuiltCliFresh(): boolean {
   }
 }
 
-function maybeRunBuiltCliFallback(error: unknown, argv: string[]): { stdout: string; stderr: string; exitCode: number } | null {
+function maybeRunBuiltCliFallback(
+  error: unknown,
+  argv: string[],
+): { stdout: string; stderr: string; exitCode: number } | null {
   if (!(error instanceof CliExecutionError)) return null;
   if (process.env[SOURCE_FALLBACK_ENV] === "1") return null;
   if (!isSourceCliEntryPath(CLI_ENTRY_PATH)) return null;
-  if (!isSourceRuntimeInteropError(asString(error.details.cause) ?? error.message)) return null;
+  if (
+    !isSourceRuntimeInteropError(asString(error.details.cause) ?? error.message)
+  )
+    return null;
 
   if (!isBuiltCliFresh()) {
     const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
@@ -321,8 +339,12 @@ function maybeRunBuiltCliFallback(error: unknown, argv: string[]): { stdout: str
       encoding: "utf8",
     });
     if (buildResult.error || buildResult.status !== 0 || !isBuiltCliFresh()) {
-      error.details.nextAction = "Run `npm --prefix apps/ade-cli run build` and retry the command.";
-      error.details.fallback = formatSpawnFailure(buildResult, "npm run build --silent");
+      error.details.nextAction =
+        "Run `npm --prefix apps/ade-cli run build` and retry the command.";
+      error.details.fallback = formatSpawnFailure(
+        buildResult,
+        "npm run build --silent",
+      );
       return null;
     }
   }
@@ -336,7 +358,8 @@ function maybeRunBuiltCliFallback(error: unknown, argv: string[]): { stdout: str
     encoding: "utf8",
   });
   if (rerun.error) {
-    error.details.nextAction = "Run `node apps/ade-cli/dist/cli.cjs ...` directly to inspect the runtime failure.";
+    error.details.nextAction =
+      "Run `node apps/ade-cli/dist/cli.cjs ...` directly to inspect the runtime failure.";
     error.details.fallback = rerun.error.message;
     return null;
   }
@@ -1403,7 +1426,9 @@ function isRecord(value: unknown): value is JsonObject {
 }
 
 function asString(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+  return typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : null;
 }
 
 function parseBooleanEnv(value: string | undefined): boolean {
@@ -1427,7 +1452,9 @@ function parseJson(value: string, label: string): unknown {
   try {
     return JSON.parse(value);
   } catch (error) {
-    throw new CliUsageError(`${label} must be valid JSON: ${error instanceof Error ? error.message : String(error)}`);
+    throw new CliUsageError(
+      `${label} must be valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 }
 
@@ -1439,7 +1466,10 @@ function parseObjectJson(value: string, label: string): JsonObject {
   return parsed;
 }
 
-function parseAssignment(value: string, label: string): { key: string; value: string } {
+function parseAssignment(
+  value: string,
+  label: string,
+): { key: string; value: string } {
   const index = value.indexOf("=");
   if (index <= 0) {
     throw new CliUsageError(`${label} must use key=value syntax.`);
@@ -1451,16 +1481,25 @@ function parseAssignment(value: string, label: string): { key: string; value: st
   return { key, value: value.slice(index + 1) };
 }
 
-const UNSAFE_ARG_PATH_SEGMENTS = new Set(["__proto__", "constructor", "prototype"]);
+const UNSAFE_ARG_PATH_SEGMENTS = new Set([
+  "__proto__",
+  "constructor",
+  "prototype",
+]);
 
 function setPath(target: JsonObject, key: string, value: unknown): void {
-  const parts = key.split(".").map((part) => part.trim()).filter(Boolean);
+  const parts = key
+    .split(".")
+    .map((part) => part.trim())
+    .filter(Boolean);
   if (parts.length === 0) {
     throw new CliUsageError("Argument key cannot be empty.");
   }
   const unsafePart = parts.find((part) => UNSAFE_ARG_PATH_SEGMENTS.has(part));
   if (unsafePart) {
-    throw new CliUsageError(`Argument key segment "${unsafePart}" is not allowed.`);
+    throw new CliUsageError(
+      `Argument key segment "${unsafePart}" is not allowed.`,
+    );
   }
   let cursor: JsonObject = target;
   for (const part of parts.slice(0, -1)) {
@@ -1480,7 +1519,9 @@ function readValue(args: string[], names: string[]): string | null {
   for (let index = 0; index < args.length; index += 1) {
     const token = args[index];
     if (!token) continue;
-    const matchedName = names.find((name) => token === name || token.startsWith(`${name}=`));
+    const matchedName = names.find(
+      (name) => token === name || token.startsWith(`${name}=`),
+    );
     if (!matchedName) continue;
     if (token.includes("=")) {
       args.splice(index, 1);
@@ -1509,7 +1550,9 @@ function readCommandTextValue(args: string[], names: string[]): string | null {
   for (let index = 0; index < args.length; index += 1) {
     const token = args[index];
     if (!token) continue;
-    const matchedName = names.find((name) => token === name || token.startsWith(`${name}=`));
+    const matchedName = names.find(
+      (name) => token === name || token.startsWith(`${name}=`),
+    );
     if (!matchedName) continue;
     if (token.includes("=")) {
       args.splice(index, 1);
@@ -1542,8 +1585,11 @@ function firstStandalonePositional(args: string[]): string | null {
       continue;
     }
     if (token.startsWith("-")) {
-      const flagName = token.includes("=") ? token.slice(0, token.indexOf("=")) : token;
-      previousTokenWasValueCarrier = !token.includes("=") && VALUE_CARRIER_FLAGS.has(flagName);
+      const flagName = token.includes("=")
+        ? token.slice(0, token.indexOf("="))
+        : token;
+      previousTokenWasValueCarrier =
+        !token.includes("=") && VALUE_CARRIER_FLAGS.has(flagName);
       continue;
     }
     const [value] = args.splice(index, 1);
@@ -1576,17 +1622,28 @@ function buildCursorHelp(args: string[]): string {
     positionals.push(token.toLowerCase());
   }
   // Drop a leading "cursor" / "cloud" if present so we land on the group token.
-  while (positionals.length && (positionals[0] === "cursor" || positionals[0] === "cloud")) {
+  while (
+    positionals.length &&
+    (positionals[0] === "cursor" || positionals[0] === "cloud")
+  ) {
     positionals.shift();
   }
   const group = positionals[0];
   const aliasMap: Record<string, string> = {
-    agents: "agents", agent: "agents",
-    runs: "runs", run: "runs",
-    artifacts: "artifacts", artifact: "artifacts",
-    repos: "repos", repo: "repos", repositories: "repos",
-    models: "models", model: "models",
-    me: "me", whoami: "me", user: "me",
+    agents: "agents",
+    agent: "agents",
+    runs: "runs",
+    run: "runs",
+    artifacts: "artifacts",
+    artifact: "artifacts",
+    repos: "repos",
+    repo: "repos",
+    repositories: "repos",
+    models: "models",
+    model: "models",
+    me: "me",
+    whoami: "me",
+    user: "me",
   };
   if (group && aliasMap[group] && CURSOR_CLOUD_HELP[aliasMap[group]]) {
     return `${ADE_BANNER}${CURSOR_CLOUD_HELP[aliasMap[group]]}`;
@@ -1597,7 +1654,7 @@ function buildCursorHelp(args: string[]): string {
 function buildIosSimulatorHelp(args: string[]): string {
   const rawSubcommand = peekFirstPositional(args)?.toLowerCase() ?? "";
   const canonical = rawSubcommand
-    ? IOS_SIMULATOR_HELP_ALIASES[rawSubcommand] ?? rawSubcommand
+    ? (IOS_SIMULATOR_HELP_ALIASES[rawSubcommand] ?? rawSubcommand)
     : "";
   if (canonical && IOS_SIMULATOR_SUBCOMMAND_HELP[canonical]) {
     return IOS_SIMULATOR_SUBCOMMAND_HELP[canonical];
@@ -1620,10 +1677,17 @@ function buildAppControlHelp(args: string[]): string {
   return focused;
 }
 
-function collectGenericObjectArgs(args: string[], base: JsonObject = {}): JsonObject {
+function collectGenericObjectArgs(
+  args: string[],
+  base: JsonObject = {},
+): JsonObject {
   const input: JsonObject = { ...base };
   while (true) {
-    const inputJson = readValue(args, ["--input-json", "--json-input", "--input"]);
+    const inputJson = readValue(args, [
+      "--input-json",
+      "--json-input",
+      "--input",
+    ]);
     if (inputJson != null) {
       Object.assign(input, parseObjectJson(inputJson, "--input-json"));
       continue;
@@ -1656,7 +1720,11 @@ function readPrId(args: string[]): string | null {
   return readValue(args, ["--pr", "--pr-id"]) ?? null;
 }
 
-function readIntOption(args: string[], names: string[], fallback?: number): number | undefined {
+function readIntOption(
+  args: string[],
+  names: string[],
+  fallback?: number,
+): number | undefined {
   const value = readValue(args, names);
   if (value == null) return fallback;
   const parsed = Number.parseInt(value, 10);
@@ -1666,7 +1734,11 @@ function readIntOption(args: string[], names: string[], fallback?: number): numb
   return parsed;
 }
 
-function readNumberOption(args: string[], names: string[], fallback?: number): number | undefined {
+function readNumberOption(
+  args: string[],
+  names: string[],
+  fallback?: number,
+): number | undefined {
   const value = readValue(args, names);
   if (value == null) return fallback;
   const parsed = Number(value);
@@ -1676,12 +1748,20 @@ function readNumberOption(args: string[], names: string[], fallback?: number): n
   return parsed;
 }
 
-function readJsonOption(args: string[], names: string[], label: string): unknown | undefined {
+function readJsonOption(
+  args: string[],
+  names: string[],
+  label: string,
+): unknown | undefined {
   const value = readValue(args, names);
   return value == null ? undefined : parseJson(value, label);
 }
 
-function readJsonFileOption(args: string[], names: string[], label: string): unknown | undefined {
+function readJsonFileOption(
+  args: string[],
+  names: string[],
+  label: string,
+): unknown | undefined {
   const filePath = readValue(args, names);
   if (filePath == null) return undefined;
   const resolvedPath = path.resolve(filePath);
@@ -1690,16 +1770,25 @@ function readJsonFileOption(args: string[], names: string[], label: string): unk
     text = fs.readFileSync(resolvedPath, "utf8");
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new CliUsageError(`Could not read ${names[0]} file '${filePath}': ${message}`);
+    throw new CliUsageError(
+      `Could not read ${names[0]} file '${filePath}': ${message}`,
+    );
   }
   return parseJson(text, label);
 }
 
-function readJsonPayloadOption(args: string[], jsonNames: string[], fileNames: string[], label: string): unknown | undefined {
+function readJsonPayloadOption(
+  args: string[],
+  jsonNames: string[],
+  fileNames: string[],
+  label: string,
+): unknown | undefined {
   const inline = readJsonOption(args, jsonNames, label);
   const fromFile = readJsonFileOption(args, fileNames, label);
   if (inline !== undefined && fromFile !== undefined) {
-    throw new CliUsageError(`Use either ${jsonNames[0]} or ${fileNames[0]}, not both.`);
+    throw new CliUsageError(
+      `Use either ${jsonNames[0]} or ${fileNames[0]}, not both.`,
+    );
   }
   return inline ?? fromFile;
 }
@@ -1713,7 +1802,11 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function isCommandTextValue(argv: string[], index: number, command: string[]): boolean {
+function isCommandTextValue(
+  argv: string[],
+  index: number,
+  command: string[],
+): boolean {
   if (command.length === 0) return false;
   const token = argv[index];
   if (token?.startsWith("--text=")) return true;
@@ -1753,10 +1846,10 @@ function readPipelineSettingsPatch(args: string[]): JsonObject {
   const conflictStrategy = readValue(args, ["--conflict-strategy"]);
   if (conflictStrategy) {
     if (
-      conflictStrategy !== "pause"
-      && conflictStrategy !== "rebase"
-      && conflictStrategy !== "merge"
-      && conflictStrategy !== "auto"
+      conflictStrategy !== "pause" &&
+      conflictStrategy !== "rebase" &&
+      conflictStrategy !== "merge" &&
+      conflictStrategy !== "auto"
     ) {
       throw new CliUsageError(
         "--conflict-strategy must be one of pause, rebase, merge, or auto.",
@@ -1768,20 +1861,21 @@ function readPipelineSettingsPatch(args: string[]): JsonObject {
   const forceFinalize = readValue(args, ["--force-finalize"]);
   if (forceFinalize) {
     if (
-      forceFinalize !== "off"
-      && forceFinalize !== "conditional"
-      && forceFinalize !== "unconditional"
+      forceFinalize !== "off" &&
+      forceFinalize !== "conditional" &&
+      forceFinalize !== "unconditional"
     ) {
       throw new CliUsageError(
         "--force-finalize must be one of off, conditional, or unconditional.",
       );
     }
     patch.forceFinalizeMode = forceFinalize;
-    patch.atCapPolicy = forceFinalize === "off"
-      ? "stop"
-      : forceFinalize === "unconditional"
-        ? "force_merge"
-        : "ci_retry_once";
+    patch.atCapPolicy =
+      forceFinalize === "off"
+        ? "stop"
+        : forceFinalize === "unconditional"
+          ? "force_merge"
+          : "ci_retry_once";
   }
 
   const requireNoCi = readFlag(args, ["--force-finalize-require-no-ci"]);
@@ -1799,40 +1893,48 @@ function readPipelineSettingsPatch(args: string[]): JsonObject {
   const atCapPolicy = readValue(args, ["--at-cap-policy"]);
   if (atCapPolicy) {
     if (
-      atCapPolicy !== "stop"
-      && atCapPolicy !== "wait_for_ci"
-      && atCapPolicy !== "ci_retry_once"
-      && atCapPolicy !== "ci_retry_loop"
-      && atCapPolicy !== "force_merge"
+      atCapPolicy !== "stop" &&
+      atCapPolicy !== "wait_for_ci" &&
+      atCapPolicy !== "ci_retry_once" &&
+      atCapPolicy !== "ci_retry_loop" &&
+      atCapPolicy !== "force_merge"
     ) {
       throw new CliUsageError(
         "--at-cap-policy must be one of stop, wait_for_ci, ci_retry_once, ci_retry_loop, or force_merge.",
       );
     }
     patch.atCapPolicy = atCapPolicy;
-    patch.forceFinalizeMode = atCapPolicy === "stop"
-      ? "off"
-      : atCapPolicy === "force_merge"
-        ? "unconditional"
-        : "conditional";
+    patch.forceFinalizeMode =
+      atCapPolicy === "stop"
+        ? "off"
+        : atCapPolicy === "force_merge"
+          ? "unconditional"
+          : "conditional";
   }
 
   const atCapWaitMinutes = readIntOption(args, ["--at-cap-wait-minutes"]);
   if (atCapWaitMinutes != null) {
-    if (atCapWaitMinutes < 1) throw new CliUsageError("--at-cap-wait-minutes must be at least 1.");
+    if (atCapWaitMinutes < 1)
+      throw new CliUsageError("--at-cap-wait-minutes must be at least 1.");
     patch.atCapWaitMinutes = atCapWaitMinutes;
   }
 
   const atCapCiRetryMax = readIntOption(args, ["--at-cap-ci-retry-max"]);
   if (atCapCiRetryMax != null) {
-    if (atCapCiRetryMax < 1) throw new CliUsageError("--at-cap-ci-retry-max must be at least 1.");
+    if (atCapCiRetryMax < 1)
+      throw new CliUsageError("--at-cap-ci-retry-max must be at least 1.");
     patch.atCapCiRetryMax = atCapCiRetryMax;
   }
 
-  const forceMergeConfirm = readFlag(args, ["--force-merge-requires-confirmation"]);
-  const noForceMergeConfirm = readFlag(args, ["--no-force-merge-requires-confirmation"]);
+  const forceMergeConfirm = readFlag(args, [
+    "--force-merge-requires-confirmation",
+  ]);
+  const noForceMergeConfirm = readFlag(args, [
+    "--no-force-merge-requires-confirmation",
+  ]);
   if (forceMergeConfirm || noForceMergeConfirm) {
-    patch.forceMergeRequiresConfirmation = forceMergeConfirm && !noForceMergeConfirm;
+    patch.forceMergeRequiresConfirmation =
+      forceMergeConfirm && !noForceMergeConfirm;
   }
 
   return patch;
@@ -1843,7 +1945,10 @@ function parseCliArgs(argv: string[]): ParsedCli {
   const options: GlobalOptions = {
     projectRoot: null,
     workspaceRoot: null,
-    role: (asString(process.env.ADE_DEFAULT_ROLE) as GlobalOptions["role"] | null) ?? "agent",
+    role:
+      (asString(process.env.ADE_DEFAULT_ROLE) as
+        | GlobalOptions["role"]
+        | null) ?? "agent",
     headless: parseBooleanEnv(process.env.ADE_CLI_HEADLESS),
     requireSocket: false,
     pretty: true,
@@ -1859,21 +1964,32 @@ function parseCliArgs(argv: string[]): ParsedCli {
       break;
     }
     if (inGlobalPrefix && token === "--project-root") {
-      options.projectRoot = path.resolve(requireValue(argv[index + 1] ?? null, "--project-root"));
+      options.projectRoot = path.resolve(
+        requireValue(argv[index + 1] ?? null, "--project-root"),
+      );
       index += 1;
       continue;
     }
     if (inGlobalPrefix && token.startsWith("--project-root=")) {
-      options.projectRoot = path.resolve(requireValue(token.slice("--project-root=".length), "--project-root"));
+      options.projectRoot = path.resolve(
+        requireValue(token.slice("--project-root=".length), "--project-root"),
+      );
       continue;
     }
     if (inGlobalPrefix && token === "--workspace-root") {
-      options.workspaceRoot = path.resolve(requireValue(argv[index + 1] ?? null, "--workspace-root"));
+      options.workspaceRoot = path.resolve(
+        requireValue(argv[index + 1] ?? null, "--workspace-root"),
+      );
       index += 1;
       continue;
     }
     if (inGlobalPrefix && token.startsWith("--workspace-root=")) {
-      options.workspaceRoot = path.resolve(requireValue(token.slice("--workspace-root=".length), "--workspace-root"));
+      options.workspaceRoot = path.resolve(
+        requireValue(
+          token.slice("--workspace-root=".length),
+          "--workspace-root",
+        ),
+      );
       continue;
     }
     if (inGlobalPrefix && token === "--role") {
@@ -1882,7 +1998,9 @@ function parseCliArgs(argv: string[]): ParsedCli {
       continue;
     }
     if (inGlobalPrefix && token.startsWith("--role=")) {
-      options.role = parseRole(requireValue(token.slice("--role=".length), "--role"));
+      options.role = parseRole(
+        requireValue(token.slice("--role=".length), "--role"),
+      );
       continue;
     }
     if (inGlobalPrefix && (token === "--headless" || token === "--no-socket")) {
@@ -1915,7 +2033,10 @@ function parseCliArgs(argv: string[]): ParsedCli {
       continue;
     }
     if (inGlobalPrefix && token === "--timeout-ms") {
-      const parsed = Number.parseInt(requireValue(argv[index + 1] ?? null, "--timeout-ms"), 10);
+      const parsed = Number.parseInt(
+        requireValue(argv[index + 1] ?? null, "--timeout-ms"),
+        10,
+      );
       if (!Number.isFinite(parsed) || parsed <= 0) {
         throw new CliUsageError("--timeout-ms must be a positive integer.");
       }
@@ -1924,7 +2045,10 @@ function parseCliArgs(argv: string[]): ParsedCli {
       continue;
     }
     if (inGlobalPrefix && token.startsWith("--timeout-ms=")) {
-      const parsed = Number.parseInt(requireValue(token.slice("--timeout-ms=".length), "--timeout-ms"), 10);
+      const parsed = Number.parseInt(
+        requireValue(token.slice("--timeout-ms=".length), "--timeout-ms"),
+        10,
+      );
       if (!Number.isFinite(parsed) || parsed <= 0) {
         throw new CliUsageError("--timeout-ms must be a positive integer.");
       }
@@ -1938,10 +2062,18 @@ function parseCliArgs(argv: string[]): ParsedCli {
 }
 
 function parseRole(value: string): GlobalOptions["role"] {
-  if (value === "cto" || value === "orchestrator" || value === "agent" || value === "external" || value === "evaluator") {
+  if (
+    value === "cto" ||
+    value === "orchestrator" ||
+    value === "agent" ||
+    value === "external" ||
+    value === "evaluator"
+  ) {
     return value;
   }
-  throw new CliUsageError("--role must be one of cto, orchestrator, agent, external, or evaluator.");
+  throw new CliUsageError(
+    "--role must be one of cto, orchestrator, agent, external, or evaluator.",
+  );
 }
 
 function shellEscapeToken(value: string): string {
@@ -1950,7 +2082,11 @@ function shellEscapeToken(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
-function actionCallStep(key: string, name: string, args: JsonObject = {}): InvocationStep {
+function actionCallStep(
+  key: string,
+  name: string,
+  args: JsonObject = {},
+): InvocationStep {
   return {
     key,
     method: "ade/actions/call",
@@ -1959,15 +2095,30 @@ function actionCallStep(key: string, name: string, args: JsonObject = {}): Invoc
   };
 }
 
-function actionStep(key: string, domain: string, action: string, args: JsonObject = {}): InvocationStep {
+function actionStep(
+  key: string,
+  domain: string,
+  action: string,
+  args: JsonObject = {},
+): InvocationStep {
   return actionCallStep(key, "run_ade_action", { domain, action, args });
 }
 
-function actionArgsListStep(key: string, domain: string, action: string, argsList: unknown[]): InvocationStep {
+function actionArgsListStep(
+  key: string,
+  domain: string,
+  action: string,
+  argsList: unknown[],
+): InvocationStep {
   return actionCallStep(key, "run_ade_action", { domain, action, argsList });
 }
 
-function actionScalarStep(key: string, domain: string, action: string, arg: unknown): InvocationStep {
+function actionScalarStep(
+  key: string,
+  domain: string,
+  action: string,
+  arg: unknown,
+): InvocationStep {
   return actionCallStep(key, "run_ade_action", { domain, action, arg });
 }
 
@@ -1978,8 +2129,12 @@ function waitRunGraphStep(args: {
   timelineLimit: number;
   untilTerminal: boolean;
 }): InvocationStep | null {
-  if ((args.waitMs == null || args.waitMs <= 0) && !args.untilTerminal) return null;
-  const waitMs = Math.min(30 * 60 * 1000, Math.max(0, Math.floor(args.waitMs ?? 30 * 60 * 1000)));
+  if ((args.waitMs == null || args.waitMs <= 0) && !args.untilTerminal)
+    return null;
+  const waitMs = Math.min(
+    30 * 60 * 1000,
+    Math.max(0, Math.floor(args.waitMs ?? 30 * 60 * 1000)),
+  );
   return {
     key: args.key,
     method: "ade-cli/wait-run-graph",
@@ -1998,7 +2153,10 @@ function listActionsStep(key: string, domain?: string): InvocationStep {
 
 function buildActionRunStep(args: string[]): InvocationStep {
   const target = firstPositional(args);
-  if (!target) throw new CliUsageError("actions run requires <domain.action> or <domain> <action>.");
+  if (!target)
+    throw new CliUsageError(
+      "actions run requires <domain.action> or <domain> <action>.",
+    );
 
   let domain: string;
   let action: string;
@@ -2014,18 +2172,31 @@ function buildActionRunStep(args: string[]): InvocationStep {
   const argsListJson = readValue(args, ["--args-list-json", "--params-json"]);
   if (argsListJson != null) {
     const argsList = parseJson(argsListJson, "--args-list-json");
-    if (!Array.isArray(argsList)) throw new CliUsageError("--args-list-json must be a JSON array.");
-    return actionCallStep("result", "run_ade_action", { domain, action, argsList });
+    if (!Array.isArray(argsList))
+      throw new CliUsageError("--args-list-json must be a JSON array.");
+    return actionCallStep("result", "run_ade_action", {
+      domain,
+      action,
+      argsList,
+    });
   }
 
   const scalarJson = readValue(args, ["--scalar-json", "--arg-value-json"]);
   if (scalarJson != null) {
-    return actionCallStep("result", "run_ade_action", { domain, action, arg: parseJson(scalarJson, "--scalar-json") });
+    return actionCallStep("result", "run_ade_action", {
+      domain,
+      action,
+      arg: parseJson(scalarJson, "--scalar-json"),
+    });
   }
 
   const scalar = readValue(args, ["--scalar", "--arg-value"]);
   if (scalar != null) {
-    return actionCallStep("result", "run_ade_action", { domain, action, arg: parsePrimitive(scalar) });
+    return actionCallStep("result", "run_ade_action", {
+      domain,
+      action,
+      arg: parsePrimitive(scalar),
+    });
   }
 
   return actionStep("result", domain, action, collectGenericObjectArgs(args));
@@ -2070,12 +2241,26 @@ function buildWorkerMissionToolPlan(name: string, args: string[]): CliPlan {
       });
     }
     if (name === "message_worker") {
-      const toWorkerId = readValue(args, ["--to-worker", "--to-worker-id", "--worker", "--worker-id", "--to"])
-        ?? firstPositional(args);
-      const content = readValue(args, ["--content", "--message", "--body"])
-        ?? args.filter((entry) => entry !== "--" && !entry.startsWith("-")).join(" ").trim();
+      const toWorkerId =
+        readValue(args, [
+          "--to-worker",
+          "--to-worker-id",
+          "--worker",
+          "--worker-id",
+          "--to",
+        ]) ?? firstPositional(args);
+      const content =
+        readValue(args, ["--content", "--message", "--body"]) ??
+        args
+          .filter((entry) => entry !== "--" && !entry.startsWith("-"))
+          .join(" ")
+          .trim();
       return collectGenericObjectArgs(args, {
-        fromWorkerId: readValue(args, ["--from-worker", "--from-worker-id", "--from"]),
+        fromWorkerId: readValue(args, [
+          "--from-worker",
+          "--from-worker-id",
+          "--from",
+        ]),
         toWorkerId,
         content,
         priority: readValue(args, ["--priority"]) ?? "normal",
@@ -2094,10 +2279,18 @@ function buildWorkerMissionToolPlan(name: string, args: string[]): CliPlan {
 function buildLanePlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "list";
   if (sub === "actions") {
-    return { kind: "execute", label: "lane actions", steps: [listActionsStep("actions", "lane")] };
+    return {
+      kind: "execute",
+      label: "lane actions",
+      steps: [listActionsStep("actions", "lane")],
+    };
   }
   if (sub === "action") {
-    return { kind: "execute", label: "lane action", steps: [buildActionRunStep(["lane", ...args])] };
+    return {
+      kind: "execute",
+      label: "lane action",
+      steps: [buildActionRunStep(["lane", ...args])],
+    };
   }
   if (sub === "list" || sub === "ls") {
     const input = collectGenericObjectArgs(args, {
@@ -2113,113 +2306,418 @@ function buildLanePlan(args: string[]): CliPlan {
     };
   }
   if (sub === "show" || sub === "status") {
-    const laneId = requireValue(readLaneId(args) ?? firstPositional(args), "laneId");
-    return { kind: "execute", label: "lane status", steps: [actionCallStep("result", "get_lane_status", { laneId })] };
+    const laneId = requireValue(
+      readLaneId(args) ?? firstPositional(args),
+      "laneId",
+    );
+    return {
+      kind: "execute",
+      label: "lane status",
+      steps: [actionCallStep("result", "get_lane_status", { laneId })],
+    };
   }
   if (sub === "merge") {
-    const laneId = requireValue(readLaneId(args) ?? firstPositional(args), "laneId");
-    return { kind: "execute", label: "lane merge", steps: [actionCallStep("result", "merge_lane", collectGenericObjectArgs(args, { laneId, message: readValue(args, ["--message", "-m"]), deleteSourceLane: readFlag(args, ["--delete-source-lane", "--delete-source"]) }))] };
+    const laneId = requireValue(
+      readLaneId(args) ?? firstPositional(args),
+      "laneId",
+    );
+    return {
+      kind: "execute",
+      label: "lane merge",
+      steps: [
+        actionCallStep(
+          "result",
+          "merge_lane",
+          collectGenericObjectArgs(args, {
+            laneId,
+            message: readValue(args, ["--message", "-m"]),
+            deleteSourceLane: readFlag(args, [
+              "--delete-source-lane",
+              "--delete-source",
+            ]),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "conflicts") {
     const mode = firstPositional(args) ?? "check";
-    if (mode !== "check") return { kind: "execute", label: `lane conflicts ${mode}`, steps: [actionStep("result", "conflicts", mode, collectGenericObjectArgs(args, { laneId: readLaneId(args) }))] };
+    if (mode !== "check")
+      return {
+        kind: "execute",
+        label: `lane conflicts ${mode}`,
+        steps: [
+          actionStep(
+            "result",
+            "conflicts",
+            mode,
+            collectGenericObjectArgs(args, { laneId: readLaneId(args) }),
+          ),
+        ],
+      };
     const ids = args.filter((entry) => !entry.startsWith("-"));
-    return { kind: "execute", label: "lane conflicts check", steps: [actionCallStep("result", "check_conflicts", collectGenericObjectArgs(args, { laneId: readLaneId(args), ...(ids.length ? { laneIds: ids } : {}), force: readFlag(args, ["--force"]) }))] };
+    return {
+      kind: "execute",
+      label: "lane conflicts check",
+      steps: [
+        actionCallStep(
+          "result",
+          "check_conflicts",
+          collectGenericObjectArgs(args, {
+            laneId: readLaneId(args),
+            ...(ids.length ? { laneIds: ids } : {}),
+            force: readFlag(args, ["--force"]),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "create" || sub === "child") {
     const name = readValue(args, ["--name"]) ?? firstPositional(args);
     const input: JsonObject = {};
     input.name = requireValue(name, "name");
-    maybePut(input, "description", readValue(args, ["--description", "--desc"]));
-    maybePut(input, "parentLaneId", readValue(args, ["--parent", "--parent-lane", "--parent-lane-id"]) ?? (sub === "child" ? readLaneId(args) : null));
+    maybePut(
+      input,
+      "description",
+      readValue(args, ["--description", "--desc"]),
+    );
+    maybePut(
+      input,
+      "parentLaneId",
+      readValue(args, ["--parent", "--parent-lane", "--parent-lane-id"]) ??
+        (sub === "child" ? readLaneId(args) : null),
+    );
     maybePut(input, "baseBranch", readValue(args, ["--base", "--base-branch"]));
     maybePut(input, "branchName", readValue(args, ["--branch-name"]));
     const linearIssueJson = readValue(args, ["--linear-issue-json"]);
     if (linearIssueJson) {
       const parsed = parseJson(linearIssueJson, "--linear-issue-json");
-      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-        throw new CliUsageError("--linear-issue-json must decode to a non-null JSON object");
+      if (
+        parsed === null ||
+        typeof parsed !== "object" ||
+        Array.isArray(parsed)
+      ) {
+        throw new CliUsageError(
+          "--linear-issue-json must decode to a non-null JSON object",
+        );
       }
       input.linearIssue = parsed as JsonObject;
     }
-    if (sub === "child" && !input.parentLaneId) throw new CliUsageError("parent lane is required. Use --lane <parent> or --parent <parent>.");
-    return { kind: "execute", label: "lane create", steps: [actionCallStep("result", "create_lane", collectGenericObjectArgs(args, input))] };
+    if (sub === "child" && !input.parentLaneId)
+      throw new CliUsageError(
+        "parent lane is required. Use --lane <parent> or --parent <parent>.",
+      );
+    return {
+      kind: "execute",
+      label: "lane create",
+      steps: [
+        actionCallStep(
+          "result",
+          "create_lane",
+          collectGenericObjectArgs(args, input),
+        ),
+      ],
+    };
   }
   if (sub === "children") {
-    const laneId = requireValue(readLaneId(args) ?? firstPositional(args), "laneId");
-    return { kind: "execute", label: "lane children", steps: [actionArgsListStep("result", "lane", "getChildren", [laneId])] };
+    const laneId = requireValue(
+      readLaneId(args) ?? firstPositional(args),
+      "laneId",
+    );
+    return {
+      kind: "execute",
+      label: "lane children",
+      steps: [actionArgsListStep("result", "lane", "getChildren", [laneId])],
+    };
   }
   if (sub === "stack") {
-    const laneId = requireValue(readLaneId(args) ?? firstPositional(args), "laneId");
-    return { kind: "execute", label: "lane stack", steps: [actionArgsListStep("result", "lane", "getStackChain", [laneId])] };
+    const laneId = requireValue(
+      readLaneId(args) ?? firstPositional(args),
+      "laneId",
+    );
+    return {
+      kind: "execute",
+      label: "lane stack",
+      steps: [actionArgsListStep("result", "lane", "getStackChain", [laneId])],
+    };
   }
   if (sub === "refresh") {
-    return { kind: "execute", label: "lane refresh", steps: [actionStep("result", "lane", "refreshSnapshots", collectGenericObjectArgs(args, { includeArchived: readFlag(args, ["--archived", "--include-archived"]) }))] };
+    return {
+      kind: "execute",
+      label: "lane refresh",
+      steps: [
+        actionStep(
+          "result",
+          "lane",
+          "refreshSnapshots",
+          collectGenericObjectArgs(args, {
+            includeArchived: readFlag(args, [
+              "--archived",
+              "--include-archived",
+            ]),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "rename") {
-    const laneId = requireValue(readLaneId(args) ?? firstPositional(args), "laneId");
-    return { kind: "execute", label: "lane rename", steps: [actionStep("result", "lane", "rename", collectGenericObjectArgs(args, { laneId, name: readValue(args, ["--name"]) ?? firstPositional(args) }))] };
+    const laneId = requireValue(
+      readLaneId(args) ?? firstPositional(args),
+      "laneId",
+    );
+    return {
+      kind: "execute",
+      label: "lane rename",
+      steps: [
+        actionStep(
+          "result",
+          "lane",
+          "rename",
+          collectGenericObjectArgs(args, {
+            laneId,
+            name: readValue(args, ["--name"]) ?? firstPositional(args),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "reparent") {
-    const laneId = requireValue(readLaneId(args) ?? firstPositional(args), "laneId");
-    return { kind: "execute", label: "lane reparent", steps: [actionStep("result", "lane", "reparent", collectGenericObjectArgs(args, { laneId, newParentLaneId: readValue(args, ["--parent", "--parent-lane", "--parent-lane-id"]) ?? firstPositional(args) }))] };
+    const laneId = requireValue(
+      readLaneId(args) ?? firstPositional(args),
+      "laneId",
+    );
+    return {
+      kind: "execute",
+      label: "lane reparent",
+      steps: [
+        actionStep(
+          "result",
+          "lane",
+          "reparent",
+          collectGenericObjectArgs(args, {
+            laneId,
+            newParentLaneId:
+              readValue(args, [
+                "--parent",
+                "--parent-lane",
+                "--parent-lane-id",
+              ]) ?? firstPositional(args),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "appearance") {
-    const laneId = requireValue(readLaneId(args) ?? firstPositional(args), "laneId");
-    return { kind: "execute", label: "lane appearance", steps: [actionStep("result", "lane", "updateAppearance", collectGenericObjectArgs(args, { laneId, color: readValue(args, ["--color"]), icon: readValue(args, ["--icon"]) }))] };
+    const laneId = requireValue(
+      readLaneId(args) ?? firstPositional(args),
+      "laneId",
+    );
+    return {
+      kind: "execute",
+      label: "lane appearance",
+      steps: [
+        actionStep(
+          "result",
+          "lane",
+          "updateAppearance",
+          collectGenericObjectArgs(args, {
+            laneId,
+            color: readValue(args, ["--color"]),
+            icon: readValue(args, ["--icon"]),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "archive" || sub === "unarchive") {
-    const laneId = requireValue(readLaneId(args) ?? firstPositional(args), "laneId");
-    return { kind: "execute", label: `lane ${sub}`, steps: [actionStep("result", "lane", sub, collectGenericObjectArgs(args, { laneId }))] };
+    const laneId = requireValue(
+      readLaneId(args) ?? firstPositional(args),
+      "laneId",
+    );
+    return {
+      kind: "execute",
+      label: `lane ${sub}`,
+      steps: [
+        actionStep(
+          "result",
+          "lane",
+          sub,
+          collectGenericObjectArgs(args, { laneId }),
+        ),
+      ],
+    };
   }
   if (sub === "delete" || sub === "rm") {
-    const laneId = requireValue(readLaneId(args) ?? firstPositional(args), "laneId");
-    return { kind: "execute", label: "lane delete", steps: [actionStep("result", "lane", "delete", collectGenericObjectArgs(args, { laneId, force: readFlag(args, ["--force"]), deleteBranch: readFlag(args, ["--delete-branch"]), deleteRemoteBranch: readFlag(args, ["--delete-remote-branch"]) }))] };
+    const laneId = requireValue(
+      readLaneId(args) ?? firstPositional(args),
+      "laneId",
+    );
+    return {
+      kind: "execute",
+      label: "lane delete",
+      steps: [
+        actionStep(
+          "result",
+          "lane",
+          "delete",
+          collectGenericObjectArgs(args, {
+            laneId,
+            force: readFlag(args, ["--force"]),
+            deleteBranch: readFlag(args, ["--delete-branch"]),
+            deleteRemoteBranch: readFlag(args, ["--delete-remote-branch"]),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "attach") {
-    return { kind: "execute", label: "lane attach", steps: [actionStep("result", "lane", "attach", collectGenericObjectArgs(args, { worktreePath: readValue(args, ["--path"]) ?? firstPositional(args), name: readValue(args, ["--name"]) }))] };
+    return {
+      kind: "execute",
+      label: "lane attach",
+      steps: [
+        actionStep(
+          "result",
+          "lane",
+          "attach",
+          collectGenericObjectArgs(args, {
+            worktreePath: readValue(args, ["--path"]) ?? firstPositional(args),
+            name: readValue(args, ["--name"]),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "adopt-attached") {
-    const laneId = requireValue(readLaneId(args) ?? firstPositional(args), "laneId");
-    return { kind: "execute", label: "lane adopt attached", steps: [actionStep("result", "lane", "adoptAttached", collectGenericObjectArgs(args, { laneId }))] };
+    const laneId = requireValue(
+      readLaneId(args) ?? firstPositional(args),
+      "laneId",
+    );
+    return {
+      kind: "execute",
+      label: "lane adopt attached",
+      steps: [
+        actionStep(
+          "result",
+          "lane",
+          "adoptAttached",
+          collectGenericObjectArgs(args, { laneId }),
+        ),
+      ],
+    };
   }
   if (sub === "split-unstaged") {
-    return { kind: "execute", label: "lane split unstaged", steps: [actionStep("result", "lane", "createFromUnstaged", collectGenericObjectArgs(args, { sourceLaneId: readValue(args, ["--source", "--source-lane"]) ?? readLaneId(args), name: readValue(args, ["--name"]) ?? firstPositional(args) }))] };
+    return {
+      kind: "execute",
+      label: "lane split unstaged",
+      steps: [
+        actionStep(
+          "result",
+          "lane",
+          "createFromUnstaged",
+          collectGenericObjectArgs(args, {
+            sourceLaneId:
+              readValue(args, ["--source", "--source-lane"]) ??
+              readLaneId(args),
+            name: readValue(args, ["--name"]) ?? firstPositional(args),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "import" || sub === "import-branch") {
     const input: JsonObject = {};
-    input.branchRef = requireValue(readValue(args, ["--branch", "--branch-ref"]) ?? firstPositional(args), "branchRef");
+    input.branchRef = requireValue(
+      readValue(args, ["--branch", "--branch-ref"]) ?? firstPositional(args),
+      "branchRef",
+    );
     maybePut(input, "name", readValue(args, ["--name"]));
-    maybePut(input, "description", readValue(args, ["--description", "--desc"]));
+    maybePut(
+      input,
+      "description",
+      readValue(args, ["--description", "--desc"]),
+    );
     maybePut(input, "baseBranch", readValue(args, ["--base", "--base-branch"]));
-    return { kind: "execute", label: "lane import", steps: [actionCallStep("result", "import_lane", collectGenericObjectArgs(args, input))] };
+    return {
+      kind: "execute",
+      label: "lane import",
+      steps: [
+        actionCallStep(
+          "result",
+          "import_lane",
+          collectGenericObjectArgs(args, input),
+        ),
+      ],
+    };
   }
   if (sub === "unregistered" || sub === "list-unregistered") {
-    return { kind: "execute", label: "unregistered lanes", steps: [actionCallStep("result", "list_unregistered_lanes", collectGenericObjectArgs(args))] };
+    return {
+      kind: "execute",
+      label: "unregistered lanes",
+      steps: [
+        actionCallStep(
+          "result",
+          "list_unregistered_lanes",
+          collectGenericObjectArgs(args),
+        ),
+      ],
+    };
   }
-  return { kind: "execute", label: `lane ${sub}`, steps: [actionStep("result", "lane", sub, collectGenericObjectArgs(args))] };
+  return {
+    kind: "execute",
+    label: `lane ${sub}`,
+    steps: [actionStep("result", "lane", sub, collectGenericObjectArgs(args))],
+  };
 }
 
 function buildGitPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "status";
   if (sub === "actions") {
-    return { kind: "execute", label: "git actions", steps: [listActionsStep("actions", "git")] };
+    return {
+      kind: "execute",
+      label: "git actions",
+      steps: [listActionsStep("actions", "git")],
+    };
   }
   if (sub === "action") {
-    return { kind: "execute", label: "git action", steps: [buildActionRunStep(["git", ...args])] };
+    return {
+      kind: "execute",
+      label: "git action",
+      steps: [buildActionRunStep(["git", ...args])],
+    };
   }
 
   const laneId = readLaneId(args);
-  const withLane = (base: JsonObject = {}) => collectGenericObjectArgs(args, { ...base, ...(laneId ? { laneId } : {}) });
+  const withLane = (base: JsonObject = {}) =>
+    collectGenericObjectArgs(args, { ...base, ...(laneId ? { laneId } : {}) });
 
   if (sub === "status" || sub === "sync-status") {
-    const full = readFlag(args, ["--full"]) || peekFirstPositional(args) === "full";
+    const full =
+      readFlag(args, ["--full"]) || peekFirstPositional(args) === "full";
     if (full && peekFirstPositional(args) === "full") firstPositional(args);
-    if (full) return { kind: "execute", label: "lane status", steps: [actionCallStep("result", "get_lane_status", withLane())] };
-    return { kind: "execute", label: "git status", steps: [actionCallStep("result", "git_get_sync_status", withLane())] };
+    if (full)
+      return {
+        kind: "execute",
+        label: "lane status",
+        steps: [actionCallStep("result", "get_lane_status", withLane())],
+      };
+    return {
+      kind: "execute",
+      label: "git status",
+      steps: [actionCallStep("result", "git_get_sync_status", withLane())],
+    };
   }
-  if (sub === "fetch") return { kind: "execute", label: "git fetch", steps: [actionCallStep("result", "git_fetch", withLane())] };
-  if (sub === "pull") return { kind: "execute", label: "git pull", steps: [actionCallStep("result", "git_pull", withLane())] };
+  if (sub === "fetch")
+    return {
+      kind: "execute",
+      label: "git fetch",
+      steps: [actionCallStep("result", "git_fetch", withLane())],
+    };
+  if (sub === "pull")
+    return {
+      kind: "execute",
+      label: "git pull",
+      steps: [actionCallStep("result", "git_pull", withLane())],
+    };
   if (sub === "sync") {
     const explicitMode = readValue(args, ["--mode"]);
     const mode = readFlag(args, ["--rebase"])
@@ -2234,33 +2732,76 @@ function buildGitPlan(args: string[]): CliPlan {
     return {
       kind: "execute",
       label: "git sync",
-      steps: [actionStep("result", "git", "sync", withLane({
-        ...(mode ? { mode } : {}),
-        ...(baseRef ? { baseRef } : {}),
-      }))]
+      steps: [
+        actionStep(
+          "result",
+          "git",
+          "sync",
+          withLane({
+            ...(mode ? { mode } : {}),
+            ...(baseRef ? { baseRef } : {}),
+          }),
+        ),
+      ],
     };
   }
   if (sub === "push") {
     const forceWithLease = readFlag(args, ["--force", "--force-with-lease"]);
     const setUpstream = readFlag(args, ["--set-upstream", "-u"]);
-    return { kind: "execute", label: "git push", steps: [actionCallStep("result", "git_push", withLane({ forceWithLease, setUpstream }))] };
+    return {
+      kind: "execute",
+      label: "git push",
+      steps: [
+        actionCallStep(
+          "result",
+          "git_push",
+          withLane({ forceWithLease, setUpstream }),
+        ),
+      ],
+    };
   }
   if (sub === "commit") {
     const input: JsonObject = {};
     maybePut(input, "message", readValue(args, ["--message", "-m"]));
     maybePut(input, "amend", readFlag(args, ["--amend"]));
     input.stageAll = !readFlag(args, ["--no-stage-all"]);
-    return { kind: "execute", label: "git commit", steps: [actionCallStep("result", "commit_changes", withLane(input))] };
+    return {
+      kind: "execute",
+      label: "git commit",
+      steps: [actionCallStep("result", "commit_changes", withLane(input))],
+    };
   }
   if (sub === "generate-message") {
-    return { kind: "execute", label: "git commit message", steps: [actionCallStep("result", "generate_commit_message", withLane({ amend: readFlag(args, ["--amend"]) }))] };
+    return {
+      kind: "execute",
+      label: "git commit message",
+      steps: [
+        actionCallStep(
+          "result",
+          "generate_commit_message",
+          withLane({ amend: readFlag(args, ["--amend"]) }),
+        ),
+      ],
+    };
   }
-  if (sub === "branches" || sub === "branch") return { kind: "execute", label: "git branches", steps: [actionCallStep("result", "git_list_branches", withLane())] };
+  if (sub === "branches" || sub === "branch")
+    return {
+      kind: "execute",
+      label: "git branches",
+      steps: [actionCallStep("result", "git_list_branches", withLane())],
+    };
   if (sub === "user-identity" || sub === "user" || sub === "identity") {
-    return { kind: "execute", label: "git user identity", steps: [actionCallStep("result", "git_get_user_identity", withLane())] };
+    return {
+      kind: "execute",
+      label: "git user identity",
+      steps: [actionCallStep("result", "git_get_user_identity", withLane())],
+    };
   }
   if (sub === "checkout") {
-    const branchName = requireValue(readValue(args, ["--branch", "--branch-name"]) ?? firstPositional(args), "branchName");
+    const branchName = requireValue(
+      readValue(args, ["--branch", "--branch-name"]) ?? firstPositional(args),
+      "branchName",
+    );
     const create = readFlag(args, ["--create", "-b"]);
     const startPoint = readValue(args, ["--start-point", "--from"]);
     const baseRef = readValue(args, ["--base", "--base-ref"]);
@@ -2268,48 +2809,131 @@ function buildGitPlan(args: string[]): CliPlan {
     return {
       kind: "execute",
       label: "git checkout",
-      steps: [actionCallStep("result", "git_checkout_branch", withLane({
-        branchName,
-        mode: create ? "create" : "existing",
-        ...(startPoint ? { startPoint } : {}),
-        ...(baseRef ? { baseRef } : {}),
-        acknowledgeActiveWork,
-      }))]
+      steps: [
+        actionCallStep(
+          "result",
+          "git_checkout_branch",
+          withLane({
+            branchName,
+            mode: create ? "create" : "existing",
+            ...(startPoint ? { startPoint } : {}),
+            ...(baseRef ? { baseRef } : {}),
+            acknowledgeActiveWork,
+          }),
+        ),
+      ],
     };
   }
   if (sub === "conflict" || sub === "conflicts") {
     const action = firstPositional(args) ?? "show";
     if (action === "show" || action === "status") {
-      return { kind: "execute", label: "git conflicts", steps: [actionCallStep("result", "get_lane_conflict_state", withLane())] };
+      return {
+        kind: "execute",
+        label: "git conflicts",
+        steps: [
+          actionCallStep("result", "get_lane_conflict_state", withLane()),
+        ],
+      };
     }
     if (action === "resolve" || action === "continue") {
-      const kind = readValue(args, ["--kind"]) ?? (readFlag(args, ["--merge"]) ? "merge" : readFlag(args, ["--rebase"]) ? "rebase" : null);
-      if (kind === "rebase") return { kind: "execute", label: "rebase continue", steps: [actionCallStep("result", "rebase_continue", withLane())] };
-      if (kind === "merge") return { kind: "execute", label: "merge continue", steps: [actionStep("result", "git", "mergeContinue", withLane())] };
-      throw new CliUsageError("git conflict resolve requires --kind rebase or --kind merge.");
+      const kind =
+        readValue(args, ["--kind"]) ??
+        (readFlag(args, ["--merge"])
+          ? "merge"
+          : readFlag(args, ["--rebase"])
+            ? "rebase"
+            : null);
+      if (kind === "rebase")
+        return {
+          kind: "execute",
+          label: "rebase continue",
+          steps: [actionCallStep("result", "rebase_continue", withLane())],
+        };
+      if (kind === "merge")
+        return {
+          kind: "execute",
+          label: "merge continue",
+          steps: [actionStep("result", "git", "mergeContinue", withLane())],
+        };
+      throw new CliUsageError(
+        "git conflict resolve requires --kind rebase or --kind merge.",
+      );
     }
     if (action === "abort") {
-      const kind = readValue(args, ["--kind"]) ?? (readFlag(args, ["--merge"]) ? "merge" : readFlag(args, ["--rebase"]) ? "rebase" : null);
-      if (kind === "rebase") return { kind: "execute", label: "rebase abort", steps: [actionCallStep("result", "rebase_abort", withLane())] };
-      if (kind === "merge") return { kind: "execute", label: "merge abort", steps: [actionStep("result", "git", "mergeAbort", withLane())] };
-      throw new CliUsageError("git conflict abort requires --kind rebase or --kind merge.");
+      const kind =
+        readValue(args, ["--kind"]) ??
+        (readFlag(args, ["--merge"])
+          ? "merge"
+          : readFlag(args, ["--rebase"])
+            ? "rebase"
+            : null);
+      if (kind === "rebase")
+        return {
+          kind: "execute",
+          label: "rebase abort",
+          steps: [actionCallStep("result", "rebase_abort", withLane())],
+        };
+      if (kind === "merge")
+        return {
+          kind: "execute",
+          label: "merge abort",
+          steps: [actionStep("result", "git", "mergeAbort", withLane())],
+        };
+      throw new CliUsageError(
+        "git conflict abort requires --kind rebase or --kind merge.",
+      );
     }
-    throw new CliUsageError("git conflict supports show, resolve, continue, or abort.");
+    throw new CliUsageError(
+      "git conflict supports show, resolve, continue, or abort.",
+    );
   }
   if (sub === "rebase") {
     const mode = firstPositional(args);
-    if (mode === "continue") return { kind: "execute", label: "rebase continue", steps: [actionCallStep("result", "rebase_continue", withLane())] };
-    if (mode === "abort") return { kind: "execute", label: "rebase abort", steps: [actionCallStep("result", "rebase_abort", withLane())] };
-    return { kind: "execute", label: "rebase lane", steps: [actionCallStep("result", "rebase_lane", withLane({ aiAssisted: readFlag(args, ["--ai", "--ai-assisted"]) }))] };
+    if (mode === "continue")
+      return {
+        kind: "execute",
+        label: "rebase continue",
+        steps: [actionCallStep("result", "rebase_continue", withLane())],
+      };
+    if (mode === "abort")
+      return {
+        kind: "execute",
+        label: "rebase abort",
+        steps: [actionCallStep("result", "rebase_abort", withLane())],
+      };
+    return {
+      kind: "execute",
+      label: "rebase lane",
+      steps: [
+        actionCallStep(
+          "result",
+          "rebase_lane",
+          withLane({ aiAssisted: readFlag(args, ["--ai", "--ai-assisted"]) }),
+        ),
+      ],
+    };
   }
   if (sub === "merge") {
     const mode = requireValue(firstPositional(args), "merge action");
-    if (mode !== "continue" && mode !== "abort") throw new CliUsageError("git merge supports continue or abort.");
-    return { kind: "execute", label: `merge ${mode}`, steps: [actionStep("result", "git", mode === "continue" ? "mergeContinue" : "mergeAbort", withLane())] };
+    if (mode !== "continue" && mode !== "abort")
+      throw new CliUsageError("git merge supports continue or abort.");
+    return {
+      kind: "execute",
+      label: `merge ${mode}`,
+      steps: [
+        actionStep(
+          "result",
+          "git",
+          mode === "continue" ? "mergeContinue" : "mergeAbort",
+          withLane(),
+        ),
+      ],
+    };
   }
   if (sub === "stash") {
     const action = firstPositional(args) ?? "list";
-    const stashRef = readValue(args, ["--ref", "--stash-ref"]) ?? firstPositional(args);
+    const stashRef =
+      readValue(args, ["--ref", "--stash-ref"]) ?? firstPositional(args);
     const message = readValue(args, ["--message", "-m"]);
     const common = withLane({
       ...(stashRef ? { stashRef } : {}),
@@ -2328,58 +2952,158 @@ function buildGitPlan(args: string[]): CliPlan {
     };
     const toolName = toolNameByAction[action];
     if (!toolName) throw new CliUsageError(`Unknown stash action '${action}'.`);
-    return { kind: "execute", label: `git stash ${action}`, steps: [actionCallStep("result", toolName, common)] };
+    return {
+      kind: "execute",
+      label: `git stash ${action}`,
+      steps: [actionCallStep("result", toolName, common)],
+    };
   }
   if (sub === "diff") {
     return buildDiffPlan([...(laneId ? ["--lane", laneId] : []), ...args]);
   }
 
-  if (sub === "stage" || sub === "unstage" || sub === "discard" || sub === "restore") {
-    const pathArg = requireValue(readValue(args, ["--path"]) ?? firstPositional(args), "path");
+  if (
+    sub === "stage" ||
+    sub === "unstage" ||
+    sub === "discard" ||
+    sub === "restore"
+  ) {
+    const pathArg = requireValue(
+      readValue(args, ["--path"]) ?? firstPositional(args),
+      "path",
+    );
     const actionBySub: Record<string, string> = {
       stage: "stageFile",
       unstage: "unstageFile",
       discard: "discardFile",
       restore: "restoreStagedFile",
     };
-    return { kind: "execute", label: `git ${sub}`, steps: [actionStep("result", "git", actionBySub[sub]!, withLane({ path: pathArg }))] };
+    return {
+      kind: "execute",
+      label: `git ${sub}`,
+      steps: [
+        actionStep(
+          "result",
+          "git",
+          actionBySub[sub]!,
+          withLane({ path: pathArg }),
+        ),
+      ],
+    };
   }
   if (sub === "stage-all" || sub === "unstage-all") {
     const paths = args.filter((entry) => !entry.startsWith("-"));
     const action = sub === "stage-all" ? "stageAll" : "unstageAll";
-    return { kind: "execute", label: `git ${sub}`, steps: [actionStep("result", "git", action, withLane({ paths }))] };
+    return {
+      kind: "execute",
+      label: `git ${sub}`,
+      steps: [actionStep("result", "git", action, withLane({ paths }))],
+    };
   }
   if (sub === "files" || sub === "commit-files") {
-    const commitSha = requireValue(readValue(args, ["--commit", "--sha"]) ?? firstPositional(args), "commitSha");
-    return { kind: "execute", label: "git commit files", steps: [actionStep("result", "git", "listCommitFiles", withLane({ commitSha }))] };
+    const commitSha = requireValue(
+      readValue(args, ["--commit", "--sha"]) ?? firstPositional(args),
+      "commitSha",
+    );
+    return {
+      kind: "execute",
+      label: "git commit files",
+      steps: [
+        actionStep("result", "git", "listCommitFiles", withLane({ commitSha })),
+      ],
+    };
   }
   if (sub === "message" || sub === "commit-message" || sub === "show-message") {
-    const commitSha = readValue(args, ["--commit", "--sha"]) ?? firstPositional(args);
-    if (commitSha) return { kind: "execute", label: "git commit message", steps: [actionStep("result", "git", "getCommitMessage", withLane({ commitSha }))] };
-    return { kind: "execute", label: "git commit message", steps: [actionCallStep("result", "generate_commit_message", withLane({ amend: readFlag(args, ["--amend"]) }))] };
+    const commitSha =
+      readValue(args, ["--commit", "--sha"]) ?? firstPositional(args);
+    if (commitSha)
+      return {
+        kind: "execute",
+        label: "git commit message",
+        steps: [
+          actionStep(
+            "result",
+            "git",
+            "getCommitMessage",
+            withLane({ commitSha }),
+          ),
+        ],
+      };
+    return {
+      kind: "execute",
+      label: "git commit message",
+      steps: [
+        actionCallStep(
+          "result",
+          "generate_commit_message",
+          withLane({ amend: readFlag(args, ["--amend"]) }),
+        ),
+      ],
+    };
   }
   if (sub === "history" || sub === "file-history") {
-    const filePath = requireValue(readValue(args, ["--path"]) ?? firstPositional(args), "path");
-    return { kind: "execute", label: "git file history", steps: [actionStep("result", "git", "getFileHistory", withLane({ path: filePath, limit: readIntOption(args, ["--limit"]) }))] };
+    const filePath = requireValue(
+      readValue(args, ["--path"]) ?? firstPositional(args),
+      "path",
+    );
+    return {
+      kind: "execute",
+      label: "git file history",
+      steps: [
+        actionStep(
+          "result",
+          "git",
+          "getFileHistory",
+          withLane({ path: filePath, limit: readIntOption(args, ["--limit"]) }),
+        ),
+      ],
+    };
   }
   if (sub === "revert" || sub === "cherry-pick") {
-    const commitSha = requireValue(readValue(args, ["--commit", "--sha"]) ?? firstPositional(args), "commitSha");
-    return { kind: "execute", label: `git ${sub}`, steps: [actionStep("result", "git", sub === "revert" ? "revertCommit" : "cherryPickCommit", withLane({ commitSha }))] };
+    const commitSha = requireValue(
+      readValue(args, ["--commit", "--sha"]) ?? firstPositional(args),
+      "commitSha",
+    );
+    return {
+      kind: "execute",
+      label: `git ${sub}`,
+      steps: [
+        actionStep(
+          "result",
+          "git",
+          sub === "revert" ? "revertCommit" : "cherryPickCommit",
+          withLane({ commitSha }),
+        ),
+      ],
+    };
   }
   const actionAliases: Record<string, string> = {
     commits: "listRecentCommits",
     sync: "sync",
   };
-  return { kind: "execute", label: `git ${sub}`, steps: [actionStep("result", "git", actionAliases[sub] ?? sub, withLane())] };
+  return {
+    kind: "execute",
+    label: `git ${sub}`,
+    steps: [actionStep("result", "git", actionAliases[sub] ?? sub, withLane())],
+  };
 }
 
 function buildDiffPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "changes";
-  if (sub === "actions") return { kind: "execute", label: "diff actions", steps: [listActionsStep("actions", "diff")] };
+  if (sub === "actions")
+    return {
+      kind: "execute",
+      label: "diff actions",
+      steps: [listActionsStep("actions", "diff")],
+    };
   const laneId = readLaneId(args);
-  const withLane = (base: JsonObject = {}) => collectGenericObjectArgs(args, { ...base, ...(laneId ? { laneId } : {}) });
+  const withLane = (base: JsonObject = {}) =>
+    collectGenericObjectArgs(args, { ...base, ...(laneId ? { laneId } : {}) });
   if (sub === "changes" || sub === "summary") {
-    const id = requireValue(laneId ?? readValue(args, ["--lane", "--lane-id"]), "laneId");
+    const id = requireValue(
+      laneId ?? readValue(args, ["--lane", "--lane-id"]),
+      "laneId",
+    );
     return {
       kind: "execute",
       label: "diff changes",
@@ -2387,51 +3111,113 @@ function buildDiffPlan(args: string[]): CliPlan {
     };
   }
   if (sub === "file") {
-    const filePath = requireValue(readValue(args, ["--path"]) ?? firstPositional(args), "path");
+    const filePath = requireValue(
+      readValue(args, ["--path"]) ?? firstPositional(args),
+      "path",
+    );
     return {
       kind: "execute",
       label: "diff file",
-      steps: [actionStep("result", "diff", "getFileDiff", withLane({
-        filePath,
-        mode: readValue(args, ["--mode"]) ?? "unstaged",
-        compareRef: readValue(args, ["--compare-ref", "--base"]),
-        compareTo: readValue(args, ["--compare-to", "--head"]),
-      }))],
+      steps: [
+        actionStep(
+          "result",
+          "diff",
+          "getFileDiff",
+          withLane({
+            filePath,
+            mode: readValue(args, ["--mode"]) ?? "unstaged",
+            compareRef: readValue(args, ["--compare-ref", "--base"]),
+            compareTo: readValue(args, ["--compare-to", "--head"]),
+          }),
+        ),
+      ],
     };
   }
   if (sub === "patch") {
-    const filePath = requireValue(readValue(args, ["--path"]) ?? firstPositional(args), "path");
+    const filePath = requireValue(
+      readValue(args, ["--path"]) ?? firstPositional(args),
+      "path",
+    );
     return {
       kind: "execute",
       label: "diff patch",
-      steps: [actionStep("result", "diff", "getFilePatch", withLane({
-        filePath,
-        mode: readValue(args, ["--mode"]) ?? "unstaged",
-        compareRef: readValue(args, ["--compare-ref", "--base"]),
-        compareTo: readValue(args, ["--compare-to", "--head"]),
-      }))],
+      steps: [
+        actionStep(
+          "result",
+          "diff",
+          "getFilePatch",
+          withLane({
+            filePath,
+            mode: readValue(args, ["--mode"]) ?? "unstaged",
+            compareRef: readValue(args, ["--compare-ref", "--base"]),
+            compareTo: readValue(args, ["--compare-to", "--head"]),
+          }),
+        ),
+      ],
     };
   }
-  return { kind: "execute", label: `diff ${sub}`, steps: [actionStep("result", "diff", sub, withLane())] };
+  return {
+    kind: "execute",
+    label: `diff ${sub}`,
+    steps: [actionStep("result", "diff", sub, withLane())],
+  };
 }
 
 function buildPrPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "list";
-  if (sub === "actions") return { kind: "execute", label: "PR actions", steps: [listActionsStep("actions", "pr")] };
-  if (sub === "action") return { kind: "execute", label: "PR action", steps: [buildActionRunStep(["pr", ...args])] };
+  if (sub === "actions")
+    return {
+      kind: "execute",
+      label: "PR actions",
+      steps: [listActionsStep("actions", "pr")],
+    };
+  if (sub === "action")
+    return {
+      kind: "execute",
+      label: "PR action",
+      steps: [buildActionRunStep(["pr", ...args])],
+    };
 
   const prId = readPrId(args);
-  const withPr = (base: JsonObject = {}) => collectGenericObjectArgs(args, { ...base, ...(prId ? { prId } : {}) });
+  const withPr = (base: JsonObject = {}) =>
+    collectGenericObjectArgs(args, { ...base, ...(prId ? { prId } : {}) });
 
-  if (sub === "list" || sub === "ls") return { kind: "execute", label: "PR list", steps: [actionStep("result", "pr", "listAll", collectGenericObjectArgs(args))] };
+  if (sub === "list" || sub === "ls")
+    return {
+      kind: "execute",
+      label: "PR list",
+      steps: [
+        actionStep("result", "pr", "listAll", collectGenericObjectArgs(args)),
+      ],
+    };
   if (sub === "list-open" || sub === "open" || sub === "list-repo-open") {
-    return { kind: "execute", label: "PR list open", steps: [actionCallStep("result", "prs_list_open", {})] };
+    return {
+      kind: "execute",
+      label: "PR list open",
+      steps: [actionCallStep("result", "prs_list_open", {})],
+    };
   }
   if (sub === "show" || sub === "detail" || sub === "view") {
     const id = requireValue(prId ?? firstPositional(args), "prId");
-    return { kind: "execute", label: "PR detail", steps: [actionArgsListStep("result", "pr", "getDetail", [id])] };
+    return {
+      kind: "execute",
+      label: "PR detail",
+      steps: [actionArgsListStep("result", "pr", "getDetail", [id])],
+    };
   }
-  if (sub === "refresh") return { kind: "execute", label: "PR refresh", steps: [actionStep("result", "pr", "refresh", withPr({ prId: prId ?? firstPositional(args) }))] };
+  if (sub === "refresh")
+    return {
+      kind: "execute",
+      label: "PR refresh",
+      steps: [
+        actionStep(
+          "result",
+          "pr",
+          "refresh",
+          withPr({ prId: prId ?? firstPositional(args) }),
+        ),
+      ],
+    };
   if (sub === "create") {
     const laneId = readLaneId(args) ?? readValue(args, ["--lane-id"]);
     const input: JsonObject = {};
@@ -2445,30 +3231,163 @@ function buildPrPlan(args: string[]): CliPlan {
       "--close-linear",
       "--fixes-linear-issue",
     ]);
-    return { kind: "execute", label: "PR create", steps: [actionCallStep("result", "create_pr_from_lane", collectGenericObjectArgs(args, input))] };
+    return {
+      kind: "execute",
+      label: "PR create",
+      steps: [
+        actionCallStep(
+          "result",
+          "create_pr_from_lane",
+          collectGenericObjectArgs(args, input),
+        ),
+      ],
+    };
   }
-  if (sub === "health") return { kind: "execute", label: "PR health", steps: [actionCallStep("result", "get_pr_health", withPr({ prId: prId ?? firstPositional(args) }))] };
-  if (sub === "checks") return { kind: "execute", label: "PR checks", steps: [actionCallStep("result", "pr_get_checks", withPr({ prId: requireValue(prId ?? firstPositional(args), "prId") }))] };
-  if (sub === "comments" || sub === "review-comments") return { kind: "execute", label: "PR comments", steps: [actionCallStep("result", "pr_get_review_comments", withPr({ prId: requireValue(prId ?? firstPositional(args), "prId") }))] };
-  if (sub === "rerun" || sub === "rerun-failed-checks") return { kind: "execute", label: "PR rerun failed checks", steps: [actionCallStep("result", "pr_rerun_failed_checks", withPr({ prId: prId ?? firstPositional(args) }))] };
-  if (sub === "comment") return { kind: "execute", label: "PR comment", steps: [actionCallStep("result", "pr_add_comment", withPr({ prId: prId ?? firstPositional(args), body: readValue(args, ["--body"]) }))] };
-  if (sub === "reply") return { kind: "execute", label: "PR thread reply", steps: [actionCallStep("result", "pr_reply_to_review_thread", withPr({ prId: prId ?? firstPositional(args), threadId: readValue(args, ["--thread", "--thread-id"]), body: readValue(args, ["--body"]) }))] };
-  if (sub === "resolve-thread") return { kind: "execute", label: "PR resolve thread", steps: [actionCallStep("result", "pr_resolve_review_thread", withPr({ prId: requireValue(prId ?? firstPositional(args), "prId"), threadId: requireValue(readValue(args, ["--thread", "--thread-id"]), "threadId") }))] };
-  if (sub === "title" || sub === "update-title") return { kind: "execute", label: "PR update title", steps: [actionCallStep("result", "pr_update_title", withPr({ prId: prId ?? firstPositional(args), title: readValue(args, ["--title"]) }))] };
-  if (sub === "body" || sub === "update-body") return { kind: "execute", label: "PR update body", steps: [actionCallStep("result", "pr_update_body", withPr({ prId: prId ?? firstPositional(args), body: readValue(args, ["--body"]) ?? "" }))] };
+  if (sub === "health")
+    return {
+      kind: "execute",
+      label: "PR health",
+      steps: [
+        actionCallStep(
+          "result",
+          "get_pr_health",
+          withPr({ prId: prId ?? firstPositional(args) }),
+        ),
+      ],
+    };
+  if (sub === "checks")
+    return {
+      kind: "execute",
+      label: "PR checks",
+      steps: [
+        actionCallStep(
+          "result",
+          "pr_get_checks",
+          withPr({ prId: requireValue(prId ?? firstPositional(args), "prId") }),
+        ),
+      ],
+    };
+  if (sub === "comments" || sub === "review-comments")
+    return {
+      kind: "execute",
+      label: "PR comments",
+      steps: [
+        actionCallStep(
+          "result",
+          "pr_get_review_comments",
+          withPr({ prId: requireValue(prId ?? firstPositional(args), "prId") }),
+        ),
+      ],
+    };
+  if (sub === "rerun" || sub === "rerun-failed-checks")
+    return {
+      kind: "execute",
+      label: "PR rerun failed checks",
+      steps: [
+        actionCallStep(
+          "result",
+          "pr_rerun_failed_checks",
+          withPr({ prId: prId ?? firstPositional(args) }),
+        ),
+      ],
+    };
+  if (sub === "comment")
+    return {
+      kind: "execute",
+      label: "PR comment",
+      steps: [
+        actionCallStep(
+          "result",
+          "pr_add_comment",
+          withPr({
+            prId: prId ?? firstPositional(args),
+            body: readValue(args, ["--body"]),
+          }),
+        ),
+      ],
+    };
+  if (sub === "reply")
+    return {
+      kind: "execute",
+      label: "PR thread reply",
+      steps: [
+        actionCallStep(
+          "result",
+          "pr_reply_to_review_thread",
+          withPr({
+            prId: prId ?? firstPositional(args),
+            threadId: readValue(args, ["--thread", "--thread-id"]),
+            body: readValue(args, ["--body"]),
+          }),
+        ),
+      ],
+    };
+  if (sub === "resolve-thread")
+    return {
+      kind: "execute",
+      label: "PR resolve thread",
+      steps: [
+        actionCallStep(
+          "result",
+          "pr_resolve_review_thread",
+          withPr({
+            prId: requireValue(prId ?? firstPositional(args), "prId"),
+            threadId: requireValue(
+              readValue(args, ["--thread", "--thread-id"]),
+              "threadId",
+            ),
+          }),
+        ),
+      ],
+    };
+  if (sub === "title" || sub === "update-title")
+    return {
+      kind: "execute",
+      label: "PR update title",
+      steps: [
+        actionCallStep(
+          "result",
+          "pr_update_title",
+          withPr({
+            prId: prId ?? firstPositional(args),
+            title: readValue(args, ["--title"]),
+          }),
+        ),
+      ],
+    };
+  if (sub === "body" || sub === "update-body")
+    return {
+      kind: "execute",
+      label: "PR update body",
+      steps: [
+        actionCallStep(
+          "result",
+          "pr_update_body",
+          withPr({
+            prId: prId ?? firstPositional(args),
+            body: readValue(args, ["--body"]) ?? "",
+          }),
+        ),
+      ],
+    };
   if (sub === "link") {
     const laneId = readLaneId(args) ?? firstPositional(args);
     const prUrlOrNumber =
-      readValue(args, ["--url", "--pr-url", "--number", "--pr-number"])
-      ?? firstPositional(args);
+      readValue(args, ["--url", "--pr-url", "--number", "--pr-number"]) ??
+      firstPositional(args);
     return {
       kind: "execute",
       label: "PR link",
       steps: [
-        actionStep("result", "pr", "linkToLane", collectGenericObjectArgs(args, {
-          laneId: requireValue(laneId, "laneId"),
-          prUrlOrNumber: requireValue(prUrlOrNumber, "prUrlOrNumber"),
-        })),
+        actionStep(
+          "result",
+          "pr",
+          "linkToLane",
+          collectGenericObjectArgs(args, {
+            laneId: requireValue(laneId, "laneId"),
+            prUrlOrNumber: requireValue(prUrlOrNumber, "prUrlOrNumber"),
+          }),
+        ),
       ],
     };
   }
@@ -2487,69 +3406,290 @@ function buildPrPlan(args: string[]): CliPlan {
   };
   if (scalarPrActions[sub]) {
     const id = requireValue(prId ?? firstPositional(args), "prId");
-    return { kind: "execute", label: `PR ${sub}`, steps: [actionArgsListStep("result", "pr", scalarPrActions[sub]!, [id])] };
+    return {
+      kind: "execute",
+      label: `PR ${sub}`,
+      steps: [actionArgsListStep("result", "pr", scalarPrActions[sub]!, [id])],
+    };
   }
-  if (sub === "draft-description") return { kind: "execute", label: "PR draft description", steps: [actionStep("result", "pr", "draftDescription", collectGenericObjectArgs(args, { laneId: readLaneId(args) ?? firstPositional(args) }))] };
-  if (sub === "update-description") return { kind: "execute", label: "PR update description", steps: [actionStep("result", "pr", "updateDescription", withPr({ prId: prId ?? firstPositional(args), title: readValue(args, ["--title"]), body: readValue(args, ["--body"]) }))] };
-  if (sub === "delete" || sub === "land" || sub === "close" || sub === "reopen") {
+  if (sub === "draft-description")
+    return {
+      kind: "execute",
+      label: "PR draft description",
+      steps: [
+        actionStep(
+          "result",
+          "pr",
+          "draftDescription",
+          collectGenericObjectArgs(args, {
+            laneId: readLaneId(args) ?? firstPositional(args),
+          }),
+        ),
+      ],
+    };
+  if (sub === "update-description")
+    return {
+      kind: "execute",
+      label: "PR update description",
+      steps: [
+        actionStep(
+          "result",
+          "pr",
+          "updateDescription",
+          withPr({
+            prId: prId ?? firstPositional(args),
+            title: readValue(args, ["--title"]),
+            body: readValue(args, ["--body"]),
+          }),
+        ),
+      ],
+    };
+  if (
+    sub === "delete" ||
+    sub === "land" ||
+    sub === "close" ||
+    sub === "reopen"
+  ) {
     const id = requireValue(prId ?? firstPositional(args), "prId");
-    const actionBySub: Record<string, string> = { delete: "delete", land: "land", close: "closePr", reopen: "reopenPr" };
-    return { kind: "execute", label: `PR ${sub}`, steps: [actionStep("result", "pr", actionBySub[sub]!, collectGenericObjectArgs(args, { prId: id, method: readValue(args, ["--method"]) }))] };
+    const actionBySub: Record<string, string> = {
+      delete: "delete",
+      land: "land",
+      close: "closePr",
+      reopen: "reopenPr",
+    };
+    return {
+      kind: "execute",
+      label: `PR ${sub}`,
+      steps: [
+        actionStep(
+          "result",
+          "pr",
+          actionBySub[sub]!,
+          collectGenericObjectArgs(args, {
+            prId: id,
+            method: readValue(args, ["--method"]),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "land-stack" || sub === "land-stack-enhanced") {
-    return { kind: "execute", label: `PR ${sub}`, steps: [actionStep("result", "pr", sub === "land-stack" ? "landStack" : "landStackEnhanced", collectGenericObjectArgs(args, { rootLaneId: readValue(args, ["--root", "--root-lane"]) ?? firstPositional(args) }))] };
+    return {
+      kind: "execute",
+      label: `PR ${sub}`,
+      steps: [
+        actionStep(
+          "result",
+          "pr",
+          sub === "land-stack" ? "landStack" : "landStackEnhanced",
+          collectGenericObjectArgs(args, {
+            rootLaneId:
+              readValue(args, ["--root", "--root-lane"]) ??
+              firstPositional(args),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "labels") {
     const mode = firstPositional(args) ?? "set";
     if (mode !== "set") throw new CliUsageError("prs labels supports set.");
     const id = requireValue(prId ?? firstPositional(args), "prId");
-    return { kind: "execute", label: "PR labels set", steps: [actionStep("result", "pr", "setLabels", collectGenericObjectArgs(args, { prId: id, labels: args.filter((entry) => !entry.startsWith("-")) }))] };
+    return {
+      kind: "execute",
+      label: "PR labels set",
+      steps: [
+        actionStep(
+          "result",
+          "pr",
+          "setLabels",
+          collectGenericObjectArgs(args, {
+            prId: id,
+            labels: args.filter((entry) => !entry.startsWith("-")),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "reviewers") {
     const mode = firstPositional(args) ?? "request";
-    if (mode !== "request") throw new CliUsageError("prs reviewers supports request.");
+    if (mode !== "request")
+      throw new CliUsageError("prs reviewers supports request.");
     const id = requireValue(prId ?? firstPositional(args), "prId");
-    return { kind: "execute", label: "PR reviewers request", steps: [actionStep("result", "pr", "requestReviewers", collectGenericObjectArgs(args, { prId: id, reviewers: args.filter((entry) => !entry.startsWith("-")) }))] };
+    return {
+      kind: "execute",
+      label: "PR reviewers request",
+      steps: [
+        actionStep(
+          "result",
+          "pr",
+          "requestReviewers",
+          collectGenericObjectArgs(args, {
+            prId: id,
+            reviewers: args.filter((entry) => !entry.startsWith("-")),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "review") {
     const mode = firstPositional(args) ?? "submit";
-    if (mode !== "submit") throw new CliUsageError("prs review supports submit.");
+    if (mode !== "submit")
+      throw new CliUsageError("prs review supports submit.");
     const id = requireValue(prId ?? firstPositional(args), "prId");
-    return { kind: "execute", label: "PR review submit", steps: [actionStep("result", "pr", "submitReview", collectGenericObjectArgs(args, { prId: id, event: readValue(args, ["--event"]) ?? "comment", body: readValue(args, ["--body"]) ?? "" }))] };
+    return {
+      kind: "execute",
+      label: "PR review submit",
+      steps: [
+        actionStep(
+          "result",
+          "pr",
+          "submitReview",
+          collectGenericObjectArgs(args, {
+            prId: id,
+            event: readValue(args, ["--event"]) ?? "comment",
+            body: readValue(args, ["--body"]) ?? "",
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "comment-react") {
     const id = requireValue(prId ?? firstPositional(args), "prId");
-    return { kind: "execute", label: "PR comment react", steps: [actionStep("result", "pr", "reactToComment", collectGenericObjectArgs(args, { prId: id, commentId: readValue(args, ["--comment", "--comment-id"]), content: readValue(args, ["--content"]) }))] };
+    return {
+      kind: "execute",
+      label: "PR comment react",
+      steps: [
+        actionStep(
+          "result",
+          "pr",
+          "reactToComment",
+          collectGenericObjectArgs(args, {
+            prId: id,
+            commentId: readValue(args, ["--comment", "--comment-id"]),
+            content: readValue(args, ["--content"]),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "review-comment") {
     const mode = firstPositional(args) ?? "post";
-    if (mode !== "post") throw new CliUsageError("prs review-comment supports post.");
+    if (mode !== "post")
+      throw new CliUsageError("prs review-comment supports post.");
     const id = requireValue(prId ?? firstPositional(args), "prId");
-    return { kind: "execute", label: "PR review comment post", steps: [actionStep("result", "pr", "postReviewComment", collectGenericObjectArgs(args, { prId: id, threadId: readValue(args, ["--thread", "--thread-id"]), body: readValue(args, ["--body"]) }))] };
+    return {
+      kind: "execute",
+      label: "PR review comment post",
+      steps: [
+        actionStep(
+          "result",
+          "pr",
+          "postReviewComment",
+          collectGenericObjectArgs(args, {
+            prId: id,
+            threadId: readValue(args, ["--thread", "--thread-id"]),
+            body: readValue(args, ["--body"]),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "thread") {
     const mode = firstPositional(args) ?? "set-resolved";
-    if (mode !== "set-resolved") throw new CliUsageError("prs thread supports set-resolved.");
+    if (mode !== "set-resolved")
+      throw new CliUsageError("prs thread supports set-resolved.");
     const id = requireValue(prId ?? firstPositional(args), "prId");
-    return { kind: "execute", label: "PR thread set resolved", steps: [actionStep("result", "pr", "setReviewThreadResolved", collectGenericObjectArgs(args, { prId: id, threadId: readValue(args, ["--thread", "--thread-id"]), resolved: !readFlag(args, ["--unresolved"]) }))] };
+    return {
+      kind: "execute",
+      label: "PR thread set resolved",
+      steps: [
+        actionStep(
+          "result",
+          "pr",
+          "setReviewThreadResolved",
+          collectGenericObjectArgs(args, {
+            prId: id,
+            threadId: readValue(args, ["--thread", "--thread-id"]),
+            resolved: !readFlag(args, ["--unresolved"]),
+          }),
+        ),
+      ],
+    };
   }
-  if (sub === "ai-review-summary") return { kind: "execute", label: "PR AI review summary", steps: [actionStep("result", "pr", "aiReviewSummary", withPr({ prId: prId ?? firstPositional(args) }))] };
-  if (sub === "mobile-snapshot") return { kind: "execute", label: "PR mobile snapshot", steps: [actionArgsListStep("result", "pr", "getMobileSnapshot", [])] };
+  if (sub === "ai-review-summary")
+    return {
+      kind: "execute",
+      label: "PR AI review summary",
+      steps: [
+        actionStep(
+          "result",
+          "pr",
+          "aiReviewSummary",
+          withPr({ prId: prId ?? firstPositional(args) }),
+        ),
+      ],
+    };
+  if (sub === "mobile-snapshot")
+    return {
+      kind: "execute",
+      label: "PR mobile snapshot",
+      steps: [actionArgsListStep("result", "pr", "getMobileSnapshot", [])],
+    };
   if (sub === "snapshots") {
     const mode = firstPositional(args) ?? "list";
     const action = mode === "refresh" ? "refreshSnapshots" : "listSnapshots";
-    return { kind: "execute", label: `PR snapshots ${mode}`, steps: [actionStep("result", "pr", action, withPr({ prId: prId ?? firstPositional(args) }))] };
+    return {
+      kind: "execute",
+      label: `PR snapshots ${mode}`,
+      steps: [
+        actionStep(
+          "result",
+          "pr",
+          action,
+          withPr({ prId: prId ?? firstPositional(args) }),
+        ),
+      ],
+    };
   }
-  if (sub === "github-snapshot") return { kind: "execute", label: "PR GitHub snapshot", steps: [actionStep("result", "pr", "getGithubSnapshot", collectGenericObjectArgs(args, { force: readFlag(args, ["--force"]) }))] };
+  if (sub === "github-snapshot")
+    return {
+      kind: "execute",
+      label: "PR GitHub snapshot",
+      steps: [
+        actionStep(
+          "result",
+          "pr",
+          "getGithubSnapshot",
+          collectGenericObjectArgs(args, {
+            force: readFlag(args, ["--force"]),
+          }),
+        ),
+      ],
+    };
   if (sub === "conflicts") {
     const mode = firstPositional(args) ?? "list";
-    if (mode === "list") return { kind: "execute", label: "PR conflicts list", steps: [actionArgsListStep("result", "pr", "listWithConflicts", [])] };
+    if (mode === "list")
+      return {
+        kind: "execute",
+        label: "PR conflicts list",
+        steps: [actionArgsListStep("result", "pr", "listWithConflicts", [])],
+      };
     const id = requireValue(prId ?? firstPositional(args), "prId");
-    const action = mode === "analysis" ? "getConflictAnalysis" : "getMergeContext";
-    return { kind: "execute", label: `PR conflicts ${mode}`, steps: [actionArgsListStep("result", "pr", action, [id])] };
+    const action =
+      mode === "analysis" ? "getConflictAnalysis" : "getMergeContext";
+    return {
+      kind: "execute",
+      label: `PR conflicts ${mode}`,
+      steps: [actionArgsListStep("result", "pr", action, [id])],
+    };
   }
 
-  if (sub === "path-to-merge" || sub === "resolve" || sub === "issue-resolution") {
+  if (
+    sub === "path-to-merge" ||
+    sub === "resolve" ||
+    sub === "issue-resolution"
+  ) {
     let mode = "start";
     let positionalPrId = firstPositional(args);
     if (positionalPrId === "start" || positionalPrId === "preview") {
@@ -2558,15 +3698,26 @@ function buildPrPlan(args: string[]): CliPlan {
     }
     const id = requireValue(prId ?? positionalPrId, "prId");
     const scope = readValue(args, ["--scope"]) ?? "both";
-    const modelId = requireValue(readValue(args, ["--model", "--model-id"]), "--model");
+    const modelId = requireValue(
+      readValue(args, ["--model", "--model-id"]),
+      "--model",
+    );
     const input: JsonObject = {
       prId: id,
       scope,
       modelId,
     };
     maybePut(input, "reasoning", readValue(args, ["--reasoning"]));
-    maybePut(input, "permissionMode", readValue(args, ["--permission-mode", "--permissions"]));
-    maybePut(input, "additionalInstructions", readValue(args, ["--instructions", "--additional-instructions"]));
+    maybePut(
+      input,
+      "permissionMode",
+      readValue(args, ["--permission-mode", "--permissions"]),
+    );
+    maybePut(
+      input,
+      "additionalInstructions",
+      readValue(args, ["--instructions", "--additional-instructions"]),
+    );
     // Path to Merge orchestrator reads conflictStrategy / forceFinalizeMode /
     // earlyMergeOnGreen / autoMerge / maxRounds / mergeMethod from saved
     // PipelineSettings, not from the launch args. Persist any user-supplied
@@ -2574,15 +3725,32 @@ function buildPrPlan(args: string[]): CliPlan {
     const pipelinePatch = readPipelineSettingsPatch(args);
     const steps: InvocationStep[] = [];
     if (Object.keys(pipelinePatch).length > 0) {
-      steps.push(actionArgsListStep("pipelineSettings", "issue_inventory", "savePipelineSettings", [
-        id,
-        pipelinePatch,
-      ]));
+      steps.push(
+        actionArgsListStep(
+          "pipelineSettings",
+          "issue_inventory",
+          "savePipelineSettings",
+          [id, pipelinePatch],
+        ),
+      );
     }
     if (mode === "preview") {
-      steps.push(actionCallStep("result", "pr_preview_issue_resolution_prompt", collectGenericObjectArgs(args, input)));
+      steps.push(
+        actionCallStep(
+          "result",
+          "pr_preview_issue_resolution_prompt",
+          collectGenericObjectArgs(args, input),
+        ),
+      );
     } else {
-      steps.push(actionStep("result", "path_to_merge", "startPathToMerge", collectGenericObjectArgs(args, input)));
+      steps.push(
+        actionStep(
+          "result",
+          "path_to_merge",
+          "startPathToMerge",
+          collectGenericObjectArgs(args, input),
+        ),
+      );
     }
     return { kind: "execute", label: `PR path-to-merge ${mode}`, steps };
   }
@@ -2590,25 +3758,117 @@ function buildPrPlan(args: string[]): CliPlan {
   if (sub === "pipeline") {
     const mode = firstPositional(args) ?? "get";
     const id = requireValue(prId ?? firstPositional(args), "prId");
-    if (mode === "get") return { kind: "execute", label: "PR pipeline", steps: [actionArgsListStep("result", "issue_inventory", "getPipelineSettings", [id])] };
-    if (mode === "delete") return { kind: "execute", label: "PR pipeline delete", steps: [actionArgsListStep("result", "issue_inventory", "deletePipelineSettings", [id])] };
-    const settings = collectGenericObjectArgs(args, readPipelineSettingsPatch(args));
-    return { kind: "execute", label: "PR pipeline save", steps: [actionArgsListStep("result", "issue_inventory", "savePipelineSettings", [id, settings])] };
+    if (mode === "get")
+      return {
+        kind: "execute",
+        label: "PR pipeline",
+        steps: [
+          actionArgsListStep(
+            "result",
+            "issue_inventory",
+            "getPipelineSettings",
+            [id],
+          ),
+        ],
+      };
+    if (mode === "delete")
+      return {
+        kind: "execute",
+        label: "PR pipeline delete",
+        steps: [
+          actionArgsListStep(
+            "result",
+            "issue_inventory",
+            "deletePipelineSettings",
+            [id],
+          ),
+        ],
+      };
+    const settings = collectGenericObjectArgs(
+      args,
+      readPipelineSettingsPatch(args),
+    );
+    return {
+      kind: "execute",
+      label: "PR pipeline save",
+      steps: [
+        actionArgsListStep(
+          "result",
+          "issue_inventory",
+          "savePipelineSettings",
+          [id, settings],
+        ),
+      ],
+    };
   }
 
   if (sub === "queue") {
     const mode = firstPositional(args) ?? "create";
     if (mode === "state" || mode === "list") {
-      const groupId = requireValue(readValue(args, ["--group", "--group-id"]) ?? firstPositional(args), "groupId");
-      return { kind: "execute", label: `queue ${mode}`, steps: [actionArgsListStep("result", "pr", mode === "state" ? "getQueueState" : "listGroupPrs", [groupId])] };
+      const groupId = requireValue(
+        readValue(args, ["--group", "--group-id"]) ?? firstPositional(args),
+        "groupId",
+      );
+      return {
+        kind: "execute",
+        label: `queue ${mode}`,
+        steps: [
+          actionArgsListStep(
+            "result",
+            "pr",
+            mode === "state" ? "getQueueState" : "listGroupPrs",
+            [groupId],
+          ),
+        ],
+      };
     }
     if (mode === "reorder") {
-      return { kind: "execute", label: "queue reorder", steps: [actionStep("result", "pr", "reorderQueuePrs", collectGenericObjectArgs(args, { groupId: readValue(args, ["--group", "--group-id"]) ?? firstPositional(args) }))] };
+      return {
+        kind: "execute",
+        label: "queue reorder",
+        steps: [
+          actionStep(
+            "result",
+            "pr",
+            "reorderQueuePrs",
+            collectGenericObjectArgs(args, {
+              groupId:
+                readValue(args, ["--group", "--group-id"]) ??
+                firstPositional(args),
+            }),
+          ),
+        ],
+      };
     }
     if (mode === "land-next") {
-      return { kind: "execute", label: "queue land next", steps: [actionCallStep("result", "land_queue_next", collectGenericObjectArgs(args, { groupId: readValue(args, ["--group", "--group-id"]) ?? firstPositional(args), method: readValue(args, ["--method"]) ?? "squash" }))] };
+      return {
+        kind: "execute",
+        label: "queue land next",
+        steps: [
+          actionCallStep(
+            "result",
+            "land_queue_next",
+            collectGenericObjectArgs(args, {
+              groupId:
+                readValue(args, ["--group", "--group-id"]) ??
+                firstPositional(args),
+              method: readValue(args, ["--method"]) ?? "squash",
+            }),
+          ),
+        ],
+      };
     }
-    return { kind: "execute", label: "queue create", steps: [actionCallStep("result", "create_queue", collectGenericObjectArgs(args))] };
+    return {
+      kind: "execute",
+      label: "queue create",
+      steps: [
+        actionCallStep(
+          "result",
+          "create_queue",
+          collectGenericObjectArgs(args),
+        ),
+      ],
+    };
   }
 
   if (sub === "integration") {
@@ -2624,28 +3884,88 @@ function buildPrPlan(args: string[]): CliPlan {
       "recheck-step": "recheckIntegrationStep",
     };
     if (integrationMap[mode]) {
-      return { kind: "execute", label: `integration ${mode}`, steps: [actionStep("result", "pr", integrationMap[mode]!, collectGenericObjectArgs(args))] };
+      return {
+        kind: "execute",
+        label: `integration ${mode}`,
+        steps: [
+          actionStep(
+            "result",
+            "pr",
+            integrationMap[mode]!,
+            collectGenericObjectArgs(args),
+          ),
+        ],
+      };
     }
     if (mode === "lane") {
       const laneMode = firstPositional(args) ?? "create";
-      if (laneMode !== "create") throw new CliUsageError("prs integration lane supports create.");
-      return { kind: "execute", label: "integration lane create", steps: [actionStep("result", "pr", "createIntegrationLane", collectGenericObjectArgs(args))] };
+      if (laneMode !== "create")
+        throw new CliUsageError("prs integration lane supports create.");
+      return {
+        kind: "execute",
+        label: "integration lane create",
+        steps: [
+          actionStep(
+            "result",
+            "pr",
+            "createIntegrationLane",
+            collectGenericObjectArgs(args),
+          ),
+        ],
+      };
     }
     if (mode === "cleanup") {
       const cleanupMode = firstPositional(args) ?? "run";
-      return { kind: "execute", label: `integration cleanup ${cleanupMode}`, steps: [actionStep("result", "pr", cleanupMode === "dismiss" ? "dismissIntegrationCleanup" : "cleanupIntegrationWorkflow", collectGenericObjectArgs(args))] };
+      return {
+        kind: "execute",
+        label: `integration cleanup ${cleanupMode}`,
+        steps: [
+          actionStep(
+            "result",
+            "pr",
+            cleanupMode === "dismiss"
+              ? "dismissIntegrationCleanup"
+              : "cleanupIntegrationWorkflow",
+            collectGenericObjectArgs(args),
+          ),
+        ],
+      };
     }
-    const tool = mode === "create" ? "create_integration" : "simulate_integration";
-    return { kind: "execute", label: `integration ${mode}`, steps: [actionCallStep("result", tool, collectGenericObjectArgs(args))] };
+    const tool =
+      mode === "create" ? "create_integration" : "simulate_integration";
+    return {
+      kind: "execute",
+      label: `integration ${mode}`,
+      steps: [actionCallStep("result", tool, collectGenericObjectArgs(args))],
+    };
   }
 
   if (sub === "inventory") {
     const first = firstPositional(args);
-    const knownModes = new Set(["refresh", "get", "new", "mark-sent", "mark-fixed", "dismiss", "escalate", "reset"]);
+    const knownModes = new Set([
+      "refresh",
+      "get",
+      "new",
+      "mark-sent",
+      "mark-fixed",
+      "dismiss",
+      "escalate",
+      "reset",
+    ]);
     const mode = first && knownModes.has(first) ? first : "refresh";
     const positionalPrId = mode === "refresh" ? first : firstPositional(args);
     if (mode === "refresh") {
-      return { kind: "execute", label: "PR inventory", steps: [actionCallStep("result", "pr_refresh_issue_inventory", withPr({ prId: requireValue(prId ?? positionalPrId, "prId") }))] };
+      return {
+        kind: "execute",
+        label: "PR inventory",
+        steps: [
+          actionCallStep(
+            "result",
+            "pr_refresh_issue_inventory",
+            withPr({ prId: requireValue(prId ?? positionalPrId, "prId") }),
+          ),
+        ],
+      };
     }
     const actionByMode: Record<string, string> = {
       get: "getInventory",
@@ -2657,19 +3977,38 @@ function buildPrPlan(args: string[]): CliPlan {
       reset: "resetInventory",
     };
     const action = actionByMode[mode];
-    if (!action) throw new CliUsageError("prs inventory supports get, new, mark-sent, mark-fixed, dismiss, escalate, or reset.");
+    if (!action)
+      throw new CliUsageError(
+        "prs inventory supports get, new, mark-sent, mark-fixed, dismiss, escalate, or reset.",
+      );
     const id = requireValue(prId ?? positionalPrId, "prId");
     const itemIds = args.filter((entry) => !entry.startsWith("-"));
     const argsListByMode: Record<string, unknown[]> = {
       get: [id],
       new: [id],
-      "mark-sent": [id, itemIds, readValue(args, ["--session", "--session-id"]) ?? "", readIntOption(args, ["--round"], 0) ?? 0],
+      "mark-sent": [
+        id,
+        itemIds,
+        readValue(args, ["--session", "--session-id"]) ?? "",
+        readIntOption(args, ["--round"], 0) ?? 0,
+      ],
       "mark-fixed": [id, itemIds],
       dismiss: [id, itemIds, readValue(args, ["--reason"]) ?? ""],
       escalate: [id, itemIds],
       reset: [id],
     };
-    return { kind: "execute", label: `PR inventory ${mode}`, steps: [actionArgsListStep("result", "issue_inventory", action, argsListByMode[mode] ?? [id])] };
+    return {
+      kind: "execute",
+      label: `PR inventory ${mode}`,
+      steps: [
+        actionArgsListStep(
+          "result",
+          "issue_inventory",
+          action,
+          argsListByMode[mode] ?? [id],
+        ),
+      ],
+    };
   }
 
   if (sub === "convergence") {
@@ -2683,21 +4022,55 @@ function buildPrPlan(args: string[]): CliPlan {
       reconcile: "reconcileConvergenceSessionExit",
     };
     const action = actionByMode[mode];
-    if (!action) throw new CliUsageError("prs convergence supports status, runtime, save, reset, or reconcile.");
+    if (!action)
+      throw new CliUsageError(
+        "prs convergence supports status, runtime, save, reset, or reconcile.",
+      );
     const id = requireValue(prId ?? firstPositional(args), "prId");
     if (mode === "save") {
-      return { kind: "execute", label: "PR convergence save", steps: [actionArgsListStep("result", "issue_inventory", action, [id, collectGenericObjectArgs(args)])] };
+      return {
+        kind: "execute",
+        label: "PR convergence save",
+        steps: [
+          actionArgsListStep("result", "issue_inventory", action, [
+            id,
+            collectGenericObjectArgs(args),
+          ]),
+        ],
+      };
     }
     if (mode === "reconcile") {
-      return { kind: "execute", label: "PR convergence reconcile", steps: [actionStep("result", "issue_inventory", action, collectGenericObjectArgs(args, { prId: id }))] };
+      return {
+        kind: "execute",
+        label: "PR convergence reconcile",
+        steps: [
+          actionStep(
+            "result",
+            "issue_inventory",
+            action,
+            collectGenericObjectArgs(args, { prId: id }),
+          ),
+        ],
+      };
     }
-    return { kind: "execute", label: `PR convergence ${mode}`, steps: [actionArgsListStep("result", "issue_inventory", action, [id])] };
+    return {
+      kind: "execute",
+      label: `PR convergence ${mode}`,
+      steps: [actionArgsListStep("result", "issue_inventory", action, [id])],
+    };
   }
 
-  return { kind: "execute", label: `PR ${sub}`, steps: [actionStep("result", "pr", sub, withPr())] };
+  return {
+    kind: "execute",
+    label: `PR ${sub}`,
+    steps: [actionStep("result", "pr", sub, withPr())],
+  };
 }
 
-function collectMissionCreateArgs(args: string[], base: JsonObject = {}): JsonObject {
+function collectMissionCreateArgs(
+  args: string[],
+  base: JsonObject = {},
+): JsonObject {
   const noAutostart = readFlag(args, ["--no-autostart", "--no-start"]);
   const autostartFlag = readFlag(args, ["--autostart"]);
   const manual = readFlag(args, ["--manual"]);
@@ -2713,79 +4086,163 @@ function collectMissionCreateArgs(args: string[], base: JsonObject = {}): JsonOb
     laneId: readLaneId(args),
     priority: readValue(args, ["--priority"]),
     executionMode: readValue(args, ["--execution-mode"]),
-    targetMachineId: readValue(args, ["--target-machine", "--target-machine-id"]),
+    targetMachineId: readValue(args, [
+      "--target-machine",
+      "--target-machine-id",
+    ]),
     plannerEngine: readValue(args, ["--planner", "--planner-engine"]),
     planningTimeoutMs: readIntOption(args, ["--planning-timeout-ms"]),
-    launchMode: readValue(args, ["--launch-mode", "--run-mode"]) ?? createBase.launchMode,
-    autopilotExecutor: readValue(args, ["--executor", "--autopilot-executor", "--default-executor"]),
+    launchMode:
+      readValue(args, ["--launch-mode", "--run-mode"]) ?? createBase.launchMode,
+    autopilotExecutor: readValue(args, [
+      "--executor",
+      "--autopilot-executor",
+      "--default-executor",
+    ]),
     autostart: createBase.autostart,
     phaseProfileId: readValue(args, ["--phase-profile", "--phase-profile-id"]),
-    employeeAgentId: readValue(args, ["--employee-agent", "--employee-agent-id"]),
+    employeeAgentId: readValue(args, [
+      "--employee-agent",
+      "--employee-agent-id",
+    ]),
   });
 
-  const phaseOverride = readJsonPayloadOption(args, ["--phase-override-json"], ["--phase-override-file"], "--phase-override-json");
+  const phaseOverride = readJsonPayloadOption(
+    args,
+    ["--phase-override-json"],
+    ["--phase-override-file"],
+    "--phase-override-json",
+  );
   if (phaseOverride !== undefined) {
-    if (!Array.isArray(phaseOverride)) throw new CliUsageError("--phase-override-json must be a JSON array.");
+    if (!Array.isArray(phaseOverride))
+      throw new CliUsageError("--phase-override-json must be a JSON array.");
     input.phaseOverride = phaseOverride;
   }
 
-  const plannedSteps = readJsonPayloadOption(args, ["--planned-steps-json"], ["--planned-steps-file"], "--planned-steps-json");
+  const plannedSteps = readJsonPayloadOption(
+    args,
+    ["--planned-steps-json"],
+    ["--planned-steps-file"],
+    "--planned-steps-json",
+  );
   if (plannedSteps !== undefined) {
-    if (!Array.isArray(plannedSteps)) throw new CliUsageError("--planned-steps-json must be a JSON array.");
+    if (!Array.isArray(plannedSteps))
+      throw new CliUsageError("--planned-steps-json must be a JSON array.");
     input.plannedSteps = plannedSteps;
   }
 
   const jsonObjects: Array<[string, string[], string[], string]> = [
-    ["modelConfig", ["--model-config-json"], ["--model-config-file"], "--model-config-json"],
-    ["executionPolicy", ["--execution-policy-json"], ["--execution-policy-file"], "--execution-policy-json"],
-    ["recoveryLoop", ["--recovery-loop-json"], ["--recovery-loop-file"], "--recovery-loop-json"],
-    ["teamRuntime", ["--team-runtime-json"], ["--team-runtime-file"], "--team-runtime-json"],
-    ["agentRuntime", ["--agent-runtime-json"], ["--agent-runtime-file"], "--agent-runtime-json"],
-    ["permissionConfig", ["--permission-config-json"], ["--permission-config-file"], "--permission-config-json"],
+    [
+      "modelConfig",
+      ["--model-config-json"],
+      ["--model-config-file"],
+      "--model-config-json",
+    ],
+    [
+      "executionPolicy",
+      ["--execution-policy-json"],
+      ["--execution-policy-file"],
+      "--execution-policy-json",
+    ],
+    [
+      "recoveryLoop",
+      ["--recovery-loop-json"],
+      ["--recovery-loop-file"],
+      "--recovery-loop-json",
+    ],
+    [
+      "teamRuntime",
+      ["--team-runtime-json"],
+      ["--team-runtime-file"],
+      "--team-runtime-json",
+    ],
+    [
+      "agentRuntime",
+      ["--agent-runtime-json"],
+      ["--agent-runtime-file"],
+      "--agent-runtime-json",
+    ],
+    [
+      "permissionConfig",
+      ["--permission-config-json"],
+      ["--permission-config-file"],
+      "--permission-config-json",
+    ],
   ];
   for (const [key, inlineNames, fileNames, label] of jsonObjects) {
     const value = readJsonPayloadOption(args, inlineNames, fileNames, label);
     if (value === undefined) continue;
-    if (!isRecord(value)) throw new CliUsageError(`${label} must be a JSON object.`);
+    if (!isRecord(value))
+      throw new CliUsageError(`${label} must be a JSON object.`);
     input[key] = value;
   }
 
   if (!asString(input.prompt)) {
-    const positionalPrompt = args.filter((entry) => entry !== "--" && !entry.startsWith("-")).join(" ").trim();
+    const positionalPrompt = args
+      .filter((entry) => entry !== "--" && !entry.startsWith("-"))
+      .join(" ")
+      .trim();
     if (positionalPrompt.length > 0) input.prompt = positionalPrompt;
   }
   input.prompt = requireValue(asString(input.prompt) ?? null, "prompt");
   return input;
 }
 
-function collectMissionStartArgs(args: string[], base: JsonObject = {}): JsonObject {
+function collectMissionStartArgs(
+  args: string[],
+  base: JsonObject = {},
+): JsonObject {
   const manual = readFlag(args, ["--manual"]);
-  const runMode = manual ? "manual" : readValue(args, ["--run-mode", "--launch-mode"]);
-  const executor = readValue(args, ["--executor", "--default-executor", "--executor-kind"]);
+  const runMode = manual
+    ? "manual"
+    : readValue(args, ["--run-mode", "--launch-mode"]);
+  const executor = readValue(args, [
+    "--executor",
+    "--default-executor",
+    "--executor-kind",
+  ]);
   const owner = readValue(args, ["--owner", "--owner-id", "--autopilot-owner"]);
   const input: JsonObject = { ...base };
   if (runMode) input.runMode = runMode;
-  if (executor ?? base.defaultExecutorKind) input.defaultExecutorKind = executor ?? base.defaultExecutorKind;
+  if (executor ?? base.defaultExecutorKind)
+    input.defaultExecutorKind = executor ?? base.defaultExecutorKind;
   if (owner) input.autopilotOwnerId = owner;
   return collectGenericObjectArgs(args, input);
 }
 
 function buildMissionsPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "list";
-  if (sub === "actions") return { kind: "execute", label: "mission actions", steps: [listActionsStep("actions", "mission")] };
-  if (sub === "action") return { kind: "execute", label: "mission action", steps: [buildActionRunStep(["mission", ...args])] };
+  if (sub === "actions")
+    return {
+      kind: "execute",
+      label: "mission actions",
+      steps: [listActionsStep("actions", "mission")],
+    };
+  if (sub === "action")
+    return {
+      kind: "execute",
+      label: "mission action",
+      steps: [buildActionRunStep(["mission", ...args])],
+    };
 
   if (sub === "list" || sub === "ls") {
     return {
       kind: "execute",
       label: "mission list",
       formatter: "mission-list",
-      steps: [actionStep("result", "mission", "list", collectGenericObjectArgs(args, {
-        status: readValue(args, ["--status"]),
-        laneId: readLaneId(args),
-        limit: readIntOption(args, ["--limit"]),
-        includeArchived: readFlag(args, ["--include-archived"]),
-      }))],
+      steps: [
+        actionStep(
+          "result",
+          "mission",
+          "list",
+          collectGenericObjectArgs(args, {
+            status: readValue(args, ["--status"]),
+            laneId: readLaneId(args),
+            limit: readIntOption(args, ["--limit"]),
+            includeArchived: readFlag(args, ["--include-archived"]),
+          }),
+        ),
+      ],
     };
   }
 
@@ -2794,13 +4251,28 @@ function buildMissionsPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "mission create",
       formatter: "mission-detail",
-      steps: [actionStep("result", "mission", "create", collectMissionCreateArgs(args))],
+      steps: [
+        actionStep(
+          "result",
+          "mission",
+          "create",
+          collectMissionCreateArgs(args),
+        ),
+      ],
     };
   }
 
   if (sub === "launch") {
-    const waitUntilTerminal = readFlag(args, ["--wait", "--until-terminal", "--wait-until-terminal"]);
-    const waitMs = readIntOption(args, ["--wait-ms", "--hold-ms", "--wait-for-ms"], waitUntilTerminal ? 30 * 60 * 1000 : undefined);
+    const waitUntilTerminal = readFlag(args, [
+      "--wait",
+      "--until-terminal",
+      "--wait-until-terminal",
+    ]);
+    const waitMs = readIntOption(
+      args,
+      ["--wait-ms", "--hold-ms", "--wait-for-ms"],
+      waitUntilTerminal ? 30 * 60 * 1000 : undefined,
+    );
     const timelineLimit = readIntOption(args, ["--timeline-limit"], 120) ?? 120;
     const createArgs = collectMissionCreateArgs(args, { autostart: false });
     const startArgs = collectMissionStartArgs(args, {
@@ -2809,7 +4281,11 @@ function buildMissionsPlan(args: string[]): CliPlan {
     });
     const waitGraphStep = waitRunGraphStep({
       key: "graph",
-      runId: (values) => requireValue(asString(runFromStartResult(values.started)?.id) ?? null, "run id"),
+      runId: (values) =>
+        requireValue(
+          asString(runFromStartResult(values.started)?.id) ?? null,
+          "run id",
+        ),
       waitMs,
       untilTerminal: waitUntilTerminal,
       timelineLimit,
@@ -2855,17 +4331,30 @@ function buildMissionsPlan(args: string[]): CliPlan {
   }
 
   if (sub === "start" || sub === "run") {
-    const missionId = requireValue(readValue(args, ["--mission", "--mission-id"]) ?? firstPositional(args), "missionId");
+    const missionId = requireValue(
+      readValue(args, ["--mission", "--mission-id"]) ?? firstPositional(args),
+      "missionId",
+    );
     return {
       kind: "execute",
       label: "mission start",
       formatter: "mission-watch",
-      steps: [actionStep("result", "orchestrator", "startMissionRun", collectMissionStartArgs(args, { missionId }))],
+      steps: [
+        actionStep(
+          "result",
+          "orchestrator",
+          "startMissionRun",
+          collectMissionStartArgs(args, { missionId }),
+        ),
+      ],
     };
   }
 
   if (sub === "show" || sub === "get" || sub === "view") {
-    const missionId = requireValue(readValue(args, ["--mission", "--mission-id"]) ?? firstPositional(args), "missionId");
+    const missionId = requireValue(
+      readValue(args, ["--mission", "--mission-id"]) ?? firstPositional(args),
+      "missionId",
+    );
     return {
       kind: "execute",
       label: "mission show",
@@ -2875,42 +4364,75 @@ function buildMissionsPlan(args: string[]): CliPlan {
   }
 
   if (sub === "runs" || sub === "attempts") {
-    const missionId = readValue(args, ["--mission", "--mission-id"]) ?? firstPositional(args);
+    const missionId =
+      readValue(args, ["--mission", "--mission-id"]) ?? firstPositional(args);
     return {
       kind: "execute",
       label: "mission runs",
       formatter: "mission-runs",
-      steps: [actionStep("result", "orchestrator_core", "listRuns", collectGenericObjectArgs(args, {
-        missionId: missionId ?? undefined,
-        status: readValue(args, ["--status"]),
-        limit: readIntOption(args, ["--limit"], 20),
-      }))],
+      steps: [
+        actionStep(
+          "result",
+          "orchestrator_core",
+          "listRuns",
+          collectGenericObjectArgs(args, {
+            missionId: missionId ?? undefined,
+            status: readValue(args, ["--status"]),
+            limit: readIntOption(args, ["--limit"], 20),
+          }),
+        ),
+      ],
     };
   }
 
   if (sub === "graph" || sub === "run-graph") {
-    const runId = requireValue(readValue(args, ["--run", "--run-id"]) ?? firstPositional(args), "runId");
+    const runId = requireValue(
+      readValue(args, ["--run", "--run-id"]) ?? firstPositional(args),
+      "runId",
+    );
     return {
       kind: "execute",
       label: "mission graph",
       formatter: "mission-graph",
-      steps: [actionStep("result", "orchestrator_core", "getRunGraph", collectGenericObjectArgs(args, {
-        runId,
-        timelineLimit: readIntOption(args, ["--timeline-limit"], 80),
-      }))],
+      steps: [
+        actionStep(
+          "result",
+          "orchestrator_core",
+          "getRunGraph",
+          collectGenericObjectArgs(args, {
+            runId,
+            timelineLimit: readIntOption(args, ["--timeline-limit"], 80),
+          }),
+        ),
+      ],
     };
   }
 
   if (sub === "watch" || sub === "monitor") {
-    const waitUntilTerminal = readFlag(args, ["--wait", "--until-terminal", "--wait-until-terminal"]);
-    const waitMs = readIntOption(args, ["--wait-ms", "--hold-ms", "--wait-for-ms"], waitUntilTerminal ? 30 * 60 * 1000 : undefined);
+    const waitUntilTerminal = readFlag(args, [
+      "--wait",
+      "--until-terminal",
+      "--wait-until-terminal",
+    ]);
+    const waitMs = readIntOption(
+      args,
+      ["--wait-ms", "--hold-ms", "--wait-for-ms"],
+      waitUntilTerminal ? 30 * 60 * 1000 : undefined,
+    );
     const runId = readValue(args, ["--run", "--run-id"]);
-    const missionId = readValue(args, ["--mission", "--mission-id"]) ?? (runId ? null : firstPositional(args));
+    const missionId =
+      readValue(args, ["--mission", "--mission-id"]) ??
+      (runId ? null : firstPositional(args));
     const timelineLimit = readIntOption(args, ["--timeline-limit"], 80) ?? 80;
     const steps: InvocationStep[] = [];
     if (missionId) {
       steps.push(actionScalarStep("mission", "mission", "get", missionId));
-      steps.push(actionStep("runs", "orchestrator_core", "listRuns", { missionId, limit: readIntOption(args, ["--limit"], 20) }));
+      steps.push(
+        actionStep("runs", "orchestrator_core", "listRuns", {
+          missionId,
+          limit: readIntOption(args, ["--limit"], 20),
+        }),
+      );
     }
     const waitGraphStep = waitRunGraphStep({
       key: "graph",
@@ -2947,16 +4469,50 @@ function buildMissionsPlan(args: string[]): CliPlan {
   }
 
   if (sub === "pause") {
-    const runId = requireValue(readValue(args, ["--run", "--run-id"]) ?? firstPositional(args), "runId");
-    return { kind: "execute", label: "mission pause", formatter: "mission-graph", steps: [actionStep("result", "orchestrator_core", "pauseRun", collectGenericObjectArgs(args, { runId, reason: readValue(args, ["--reason"]) }))] };
+    const runId = requireValue(
+      readValue(args, ["--run", "--run-id"]) ?? firstPositional(args),
+      "runId",
+    );
+    return {
+      kind: "execute",
+      label: "mission pause",
+      formatter: "mission-graph",
+      steps: [
+        actionStep(
+          "result",
+          "orchestrator_core",
+          "pauseRun",
+          collectGenericObjectArgs(args, {
+            runId,
+            reason: readValue(args, ["--reason"]),
+          }),
+        ),
+      ],
+    };
   }
 
   if (sub === "resume") {
-    const runId = requireValue(readValue(args, ["--run", "--run-id"]) ?? firstPositional(args), "runId");
-    const waitUntilTerminal = readFlag(args, ["--wait", "--until-terminal", "--wait-until-terminal"]);
-    const waitMs = readIntOption(args, ["--wait-ms", "--hold-ms", "--wait-for-ms"], waitUntilTerminal ? 30 * 60 * 1000 : undefined);
+    const runId = requireValue(
+      readValue(args, ["--run", "--run-id"]) ?? firstPositional(args),
+      "runId",
+    );
+    const waitUntilTerminal = readFlag(args, [
+      "--wait",
+      "--until-terminal",
+      "--wait-until-terminal",
+    ]);
+    const waitMs = readIntOption(
+      args,
+      ["--wait-ms", "--hold-ms", "--wait-for-ms"],
+      waitUntilTerminal ? 30 * 60 * 1000 : undefined,
+    );
     const steps: InvocationStep[] = [
-      actionStep("result", "orchestrator", "resumeRun", collectGenericObjectArgs(args, { runId })),
+      actionStep(
+        "result",
+        "orchestrator",
+        "resumeRun",
+        collectGenericObjectArgs(args, { runId }),
+      ),
     ];
     const waitGraphStep = waitRunGraphStep({
       key: "graph",
@@ -2975,52 +4531,187 @@ function buildMissionsPlan(args: string[]): CliPlan {
   }
 
   if (sub === "cancel") {
-    const runId = requireValue(readValue(args, ["--run", "--run-id"]) ?? readValue(args, ["--mission", "--mission-id"]) ?? firstPositional(args), "runId");
-    return { kind: "execute", label: "mission cancel", formatter: "mission-detail", steps: [actionStep("result", "orchestrator", "cancelRunGracefully", collectGenericObjectArgs(args, { runId, reason: readValue(args, ["--reason"]) }))] };
+    const runId = requireValue(
+      readValue(args, ["--run", "--run-id"]) ??
+        readValue(args, ["--mission", "--mission-id"]) ??
+        firstPositional(args),
+      "runId",
+    );
+    return {
+      kind: "execute",
+      label: "mission cancel",
+      formatter: "mission-detail",
+      steps: [
+        actionStep(
+          "result",
+          "orchestrator",
+          "cancelRunGracefully",
+          collectGenericObjectArgs(args, {
+            runId,
+            reason: readValue(args, ["--reason"]),
+          }),
+        ),
+      ],
+    };
   }
 
-  return { kind: "execute", label: `mission ${sub}`, steps: [actionStep("result", "mission", sub, collectGenericObjectArgs(args))] };
+  return {
+    kind: "execute",
+    label: `mission ${sub}`,
+    steps: [
+      actionStep("result", "mission", sub, collectGenericObjectArgs(args)),
+    ],
+  };
 }
 
 function buildRunPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "ps";
-  if (sub === "actions") return { kind: "execute", label: "run actions", steps: [listActionsStep("actions", "process")] };
-  if (sub === "action") return { kind: "execute", label: "run action", steps: [buildActionRunStep(["process", ...args])] };
-  if (sub === "defs" || sub === "definitions") return { kind: "execute", label: "process definitions", steps: [actionStep("result", "process", "listDefinitions", collectGenericObjectArgs(args))] };
+  if (sub === "actions")
+    return {
+      kind: "execute",
+      label: "run actions",
+      steps: [listActionsStep("actions", "process")],
+    };
+  if (sub === "action")
+    return {
+      kind: "execute",
+      label: "run action",
+      steps: [buildActionRunStep(["process", ...args])],
+    };
+  if (sub === "defs" || sub === "definitions")
+    return {
+      kind: "execute",
+      label: "process definitions",
+      steps: [
+        actionStep(
+          "result",
+          "process",
+          "listDefinitions",
+          collectGenericObjectArgs(args),
+        ),
+      ],
+    };
   const laneId = readLaneId(args);
-  const processId = readValue(args, ["--process", "--process-id"]) ?? firstPositional(args);
+  const processId =
+    readValue(args, ["--process", "--process-id"]) ?? firstPositional(args);
   const runId = readValue(args, ["--run", "--run-id"]);
-  const withProcess = (base: JsonObject = {}) => collectGenericObjectArgs(args, {
-    ...base,
-    ...(laneId ? { laneId } : {}),
-    ...(processId ? { processId } : {}),
-    ...(runId ? { runId } : {}),
-  });
+  const withProcess = (base: JsonObject = {}) =>
+    collectGenericObjectArgs(args, {
+      ...base,
+      ...(laneId ? { laneId } : {}),
+      ...(processId ? { processId } : {}),
+      ...(runId ? { runId } : {}),
+    });
   if (sub === "ps" || sub === "list" || sub === "runtime") {
     const id = requireValue(laneId, "laneId");
-    return { kind: "execute", label: "process runtime", steps: [actionArgsListStep("result", "process", "listRuntime", [id])] };
+    return {
+      kind: "execute",
+      label: "process runtime",
+      steps: [actionArgsListStep("result", "process", "listRuntime", [id])],
+    };
   }
-  if (sub === "start" || sub === "stop" || sub === "restart" || sub === "kill") {
-    return { kind: "execute", label: `process ${sub}`, steps: [actionStep("result", "process", sub, withProcess({ laneId: requireValue(laneId, "laneId"), processId: requireValue(processId, "processId") }))] };
+  if (
+    sub === "start" ||
+    sub === "stop" ||
+    sub === "restart" ||
+    sub === "kill"
+  ) {
+    return {
+      kind: "execute",
+      label: `process ${sub}`,
+      steps: [
+        actionStep(
+          "result",
+          "process",
+          sub,
+          withProcess({
+            laneId: requireValue(laneId, "laneId"),
+            processId: requireValue(processId, "processId"),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "logs" || sub === "log") {
-    return { kind: "execute", label: "process logs", steps: [actionStep("result", "process", "getLogTail", withProcess({ laneId: requireValue(laneId, "laneId"), processId: requireValue(processId, "processId"), maxBytes: readIntOption(args, ["--max-bytes", "--tail-bytes"], 80_000) }))] };
+    return {
+      kind: "execute",
+      label: "process logs",
+      steps: [
+        actionStep(
+          "result",
+          "process",
+          "getLogTail",
+          withProcess({
+            laneId: requireValue(laneId, "laneId"),
+            processId: requireValue(processId, "processId"),
+            maxBytes: readIntOption(
+              args,
+              ["--max-bytes", "--tail-bytes"],
+              80_000,
+            ),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "stack") {
     const mode = requireValue(firstPositional(args), "stack action");
-    const stackId = requireValue(readValue(args, ["--stack", "--stack-id"]) ?? firstPositional(args), "stackId");
-    const methodByMode: Record<string, string> = { start: "startStack", stop: "stopStack", restart: "restartStack" };
+    const stackId = requireValue(
+      readValue(args, ["--stack", "--stack-id"]) ?? firstPositional(args),
+      "stackId",
+    );
+    const methodByMode: Record<string, string> = {
+      start: "startStack",
+      stop: "stopStack",
+      restart: "restartStack",
+    };
     const method = methodByMode[mode];
-    if (!method) throw new CliUsageError("run stack supports start, stop, or restart.");
-    return { kind: "execute", label: `stack ${mode}`, steps: [actionStep("result", "process", method, collectGenericObjectArgs(args, { laneId: requireValue(laneId, "laneId"), stackId }))] };
+    if (!method)
+      throw new CliUsageError("run stack supports start, stop, or restart.");
+    return {
+      kind: "execute",
+      label: `stack ${mode}`,
+      steps: [
+        actionStep(
+          "result",
+          "process",
+          method,
+          collectGenericObjectArgs(args, {
+            laneId: requireValue(laneId, "laneId"),
+            stackId,
+          }),
+        ),
+      ],
+    };
   }
-  if (sub === "start-all" || sub === "stop-all") return { kind: "execute", label: `process ${sub}`, steps: [actionStep("result", "process", sub === "start-all" ? "startAll" : "stopAll", collectGenericObjectArgs(args, { ...(laneId ? { laneId } : {}) }))] };
-  return { kind: "execute", label: `process ${sub}`, steps: [actionStep("result", "process", sub, withProcess())] };
+  if (sub === "start-all" || sub === "stop-all")
+    return {
+      kind: "execute",
+      label: `process ${sub}`,
+      steps: [
+        actionStep(
+          "result",
+          "process",
+          sub === "start-all" ? "startAll" : "stopAll",
+          collectGenericObjectArgs(args, { ...(laneId ? { laneId } : {}) }),
+        ),
+      ],
+    };
+  return {
+    kind: "execute",
+    label: `process ${sub}`,
+    steps: [actionStep("result", "process", sub, withProcess())],
+  };
 }
 
 function buildShellPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "start";
-  if (sub === "actions") return { kind: "execute", label: "shell actions", steps: [listActionsStep("actions", "pty")] };
+  if (sub === "actions")
+    return {
+      kind: "execute",
+      label: "shell actions",
+      steps: [listActionsStep("actions", "pty")],
+    };
   if (sub === "start-cli" || sub === "cli" || sub === "agent-cli") {
     return buildCliSessionStartPlan(args);
   }
@@ -3031,8 +4722,12 @@ function buildShellPlan(args: string[]): CliPlan {
     }
     const laneId = readLaneId(args);
     const chatSessionId = asString(
-      readValue(args, ["--chat-session", "--chat-session-id", "--session", "--session-id"])
-      ?? process.env.ADE_CHAT_SESSION_ID,
+      readValue(args, [
+        "--chat-session",
+        "--chat-session-id",
+        "--session",
+        "--session-id",
+      ]) ?? process.env.ADE_CHAT_SESSION_ID,
     );
     const startupCommandArgs = takeArgsAfterTerminator(args);
     const startupCommand = startupCommandArgs
@@ -3049,31 +4744,104 @@ function buildShellPlan(args: string[]): CliPlan {
       rows: readIntOption(args, ["--rows"], 36),
       tracked: !readFlag(args, ["--untracked"]),
     });
-    return { kind: "execute", label: "shell start", steps: [actionStep("result", "pty", "create", input)] };
+    return {
+      kind: "execute",
+      label: "shell start",
+      steps: [actionStep("result", "pty", "create", input)],
+    };
   }
-  if (sub === "write") return { kind: "execute", label: "shell write", steps: [actionStep("result", "pty", "write", collectGenericObjectArgs(args, { ptyId: requireValue(readValue(args, ["--pty", "--pty-id"]) ?? firstPositional(args), "ptyId"), data: readValue(args, ["--data"]) ?? "" }))] };
-  if (sub === "resize") return { kind: "execute", label: "shell resize", steps: [actionStep("result", "pty", "resize", collectGenericObjectArgs(args, { ptyId: requireValue(readValue(args, ["--pty", "--pty-id"]) ?? firstPositional(args), "ptyId"), cols: readIntOption(args, ["--cols"], 120), rows: readIntOption(args, ["--rows"], 36) }))] };
-  if (sub === "close" || sub === "dispose") return { kind: "execute", label: "shell close", steps: [actionStep("result", "pty", "dispose", collectGenericObjectArgs(args, { ptyId: requireValue(readValue(args, ["--pty", "--pty-id"]) ?? firstPositional(args), "ptyId"), sessionId: readValue(args, ["--session", "--session-id"]) }))] };
-  return { kind: "execute", label: `shell ${sub}`, steps: [actionStep("result", "pty", sub, collectGenericObjectArgs(args))] };
+  if (sub === "write")
+    return {
+      kind: "execute",
+      label: "shell write",
+      steps: [
+        actionStep(
+          "result",
+          "pty",
+          "write",
+          collectGenericObjectArgs(args, {
+            ptyId: requireValue(
+              readValue(args, ["--pty", "--pty-id"]) ?? firstPositional(args),
+              "ptyId",
+            ),
+            data: readValue(args, ["--data"]) ?? "",
+          }),
+        ),
+      ],
+    };
+  if (sub === "resize")
+    return {
+      kind: "execute",
+      label: "shell resize",
+      steps: [
+        actionStep(
+          "result",
+          "pty",
+          "resize",
+          collectGenericObjectArgs(args, {
+            ptyId: requireValue(
+              readValue(args, ["--pty", "--pty-id"]) ?? firstPositional(args),
+              "ptyId",
+            ),
+            cols: readIntOption(args, ["--cols"], 120),
+            rows: readIntOption(args, ["--rows"], 36),
+          }),
+        ),
+      ],
+    };
+  if (sub === "close" || sub === "dispose")
+    return {
+      kind: "execute",
+      label: "shell close",
+      steps: [
+        actionStep(
+          "result",
+          "pty",
+          "dispose",
+          collectGenericObjectArgs(args, {
+            ptyId: requireValue(
+              readValue(args, ["--pty", "--pty-id"]) ?? firstPositional(args),
+              "ptyId",
+            ),
+            sessionId: readValue(args, ["--session", "--session-id"]),
+          }),
+        ),
+      ],
+    };
+  return {
+    kind: "execute",
+    label: `shell ${sub}`,
+    steps: [actionStep("result", "pty", sub, collectGenericObjectArgs(args))],
+  };
 }
 
-function buildCliSessionStartPlan(args: string[], providerArg?: string): CliPlan {
+function buildCliSessionStartPlan(
+  args: string[],
+  providerArg?: string,
+): CliPlan {
   const laneId = requireValue(readLaneId(args), "laneId");
   const rawProvider = requireValue(
-    providerArg ?? readValue(args, ["--provider", "--profile"]) ?? firstStandalonePositional(args),
+    providerArg ??
+      readValue(args, ["--provider", "--profile"]) ??
+      firstStandalonePositional(args),
     "provider",
   );
   if (!isLaunchProfile(rawProvider)) {
-    throw new CliUsageError("provider must be one of claude, codex, cursor, droid, opencode, or shell.");
+    throw new CliUsageError(
+      "provider must be one of claude, codex, cursor, droid, opencode, or shell.",
+    );
   }
   const provider: LaunchProfile = rawProvider;
   const promptArgs = takeArgsAfterTerminator(args);
   const initialInput = promptArgs
     ? promptArgs.join(" ").trim()
     : readValue(args, ["--message", "--prompt", "--initial-input"]);
-  const permissionMode = readValue(args, ["--permission-mode", "--permissions"]) ?? "default";
+  const permissionMode =
+    readValue(args, ["--permission-mode", "--permissions"]) ?? "default";
   if (!isTrackedCliPermissionMode(permissionMode)) {
-    throw new CliUsageError("permissionMode must be one of default, plan, edit, full-auto, or config-toml.");
+    throw new CliUsageError(
+      "permissionMode must be one of default, plan, edit, full-auto, or config-toml.",
+    );
   }
   validateLaunchProfilePermissionMode(provider, permissionMode);
 
@@ -3081,113 +4849,360 @@ function buildCliSessionStartPlan(args: string[], providerArg?: string): CliPlan
     laneId,
     provider,
     permissionMode,
-    title: readValue(args, ["--title"]) ?? LAUNCH_PROFILE_TITLE[provider] ?? undefined,
+    title:
+      readValue(args, ["--title"]) ??
+      LAUNCH_PROFILE_TITLE[provider] ??
+      undefined,
     initialInput,
     cols: readIntOption(args, ["--cols"], 120),
     rows: readIntOption(args, ["--rows"], 36),
     cwd: readValue(args, ["--cwd"]),
     chatSessionId: readValue(args, ["--chat-session", "--chat-session-id"]),
-    resumeSessionId: readValue(args, ["--resume-session", "--resume-session-id"]),
-    resumeTargetId: readValue(args, ["--resume-target", "--resume-target-id", "--target"]),
+    resumeSessionId: readValue(args, [
+      "--resume-session",
+      "--resume-session-id",
+    ]),
+    resumeTargetId: readValue(args, [
+      "--resume-target",
+      "--resume-target-id",
+      "--target",
+    ]),
     tracked: !readFlag(args, ["--untracked"]),
   });
 
-  return { kind: "execute", label: "shell start cli", steps: [actionCallStep("result", "start_cli_session", input)] };
+  return {
+    kind: "execute",
+    label: "shell start cli",
+    steps: [actionCallStep("result", "start_cli_session", input)],
+  };
 }
 
 function buildTerminalPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "active";
-  if (sub === "actions") return { kind: "execute", label: "terminal actions", steps: [listActionsStep("actions", "terminal")] };
-  const chatSessionId = () => readValue(args, ["--chat-session", "--chat-session-id", "--session", "--session-id"]) ?? process.env.ADE_CHAT_SESSION_ID ?? null;
+  if (sub === "actions")
+    return {
+      kind: "execute",
+      label: "terminal actions",
+      steps: [listActionsStep("actions", "terminal")],
+    };
+  const chatSessionId = () =>
+    readValue(args, [
+      "--chat-session",
+      "--chat-session-id",
+      "--session",
+      "--session-id",
+    ]) ??
+    process.env.ADE_CHAT_SESSION_ID ??
+    null;
   if (sub === "list" || sub === "ls") {
-    return { kind: "execute", label: "terminal list", steps: [actionStep("result", "terminal", "list", collectGenericObjectArgs(args, {
-      chatSessionId: chatSessionId(),
-      laneId: readValue(args, ["--lane", "--lane-id"]),
-      limit: readIntOption(args, ["--limit"], undefined),
-    }))] };
+    return {
+      kind: "execute",
+      label: "terminal list",
+      steps: [
+        actionStep(
+          "result",
+          "terminal",
+          "list",
+          collectGenericObjectArgs(args, {
+            chatSessionId: chatSessionId(),
+            laneId: readValue(args, ["--lane", "--lane-id"]),
+            limit: readIntOption(args, ["--limit"], undefined),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "active" || sub === "current") {
-    return { kind: "execute", label: "terminal active", steps: [actionStep("result", "terminal", "activeForChat", collectGenericObjectArgs(args, {
-      chatSessionId: requireValue(chatSessionId(), "chatSessionId"),
-    }))] };
+    return {
+      kind: "execute",
+      label: "terminal active",
+      steps: [
+        actionStep(
+          "result",
+          "terminal",
+          "activeForChat",
+          collectGenericObjectArgs(args, {
+            chatSessionId: requireValue(chatSessionId(), "chatSessionId"),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "read" || sub === "tail" || sub === "scrollback") {
     const terminal = readValue(args, ["--terminal", "--terminal-id"]);
     const chat = chatSessionId();
     const maxBytes = readIntOption(args, ["--max-bytes"], undefined);
     const since = readIntOption(args, ["--since"], undefined);
-    return { kind: "execute", label: "terminal read", steps: [actionStep("result", "terminal", "read", collectGenericObjectArgs(args, {
-      terminalId: terminal ?? firstPositional(args),
-      chatSessionId: chat,
-      maxBytes,
-      since,
-    }))] };
+    return {
+      kind: "execute",
+      label: "terminal read",
+      steps: [
+        actionStep(
+          "result",
+          "terminal",
+          "read",
+          collectGenericObjectArgs(args, {
+            terminalId: terminal ?? firstPositional(args),
+            chatSessionId: chat,
+            maxBytes,
+            since,
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "write" || sub === "send" || sub === "input") {
     const terminal = readValue(args, ["--terminal", "--terminal-id"]);
     const ptyId = readValue(args, ["--pty", "--pty-id"]);
     const chat = chatSessionId();
-    const data = readValue(args, ["--data", "--value", "--text"]) ?? args.join(" ");
+    const data =
+      readValue(args, ["--data", "--value", "--text"]) ?? args.join(" ");
     if (!data.length) throw new CliUsageError("data is required.");
-    return { kind: "execute", label: "terminal write", steps: [actionStep("result", "terminal", "write", collectGenericObjectArgs(args, {
-      terminalId: terminal ?? firstPositional(args),
-      ptyId,
-      chatSessionId: chat,
-      data,
-    }))] };
+    return {
+      kind: "execute",
+      label: "terminal write",
+      steps: [
+        actionStep(
+          "result",
+          "terminal",
+          "write",
+          collectGenericObjectArgs(args, {
+            terminalId: terminal ?? firstPositional(args),
+            ptyId,
+            chatSessionId: chat,
+            data,
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "signal" || sub === "interrupt" || sub === "stop") {
     const terminal = readValue(args, ["--terminal", "--terminal-id"]);
     const ptyId = readValue(args, ["--pty", "--pty-id"]);
     const chat = chatSessionId();
-    const signal = readValue(args, ["--signal"]) ?? (sub === "stop" ? "SIGTERM" : "SIGINT");
-    return { kind: "execute", label: "terminal signal", steps: [actionStep("result", "terminal", "signal", collectGenericObjectArgs(args, {
-      terminalId: terminal ?? firstPositional(args),
-      ptyId,
-      chatSessionId: chat,
-      signal,
-    }))] };
+    const signal =
+      readValue(args, ["--signal"]) ?? (sub === "stop" ? "SIGTERM" : "SIGINT");
+    return {
+      kind: "execute",
+      label: "terminal signal",
+      steps: [
+        actionStep(
+          "result",
+          "terminal",
+          "signal",
+          collectGenericObjectArgs(args, {
+            terminalId: terminal ?? firstPositional(args),
+            ptyId,
+            chatSessionId: chat,
+            signal,
+          }),
+        ),
+      ],
+    };
   }
-  return { kind: "execute", label: `terminal ${sub}`, steps: [actionStep("result", "terminal", sub, collectGenericObjectArgs(args))] };
+  return {
+    kind: "execute",
+    label: `terminal ${sub}`,
+    steps: [
+      actionStep("result", "terminal", sub, collectGenericObjectArgs(args)),
+    ],
+  };
 }
 
 function buildChatPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "list";
-  if (sub === "actions") return { kind: "execute", label: "chat actions", steps: [listActionsStep("actions", "chat")] };
-  const sessionId = readValue(args, ["--session", "--session-id"]) ?? (sub !== "create" && sub !== "list" ? firstPositional(args) : null);
-  const withSession = (base: JsonObject = {}) => collectGenericObjectArgs(args, { ...base, ...(sessionId ? { sessionId } : {}) });
-  if (sub === "list" || sub === "ls") return { kind: "execute", label: "chat list", steps: [actionStep("result", "chat", "listSessions", collectGenericObjectArgs(args))] };
-  if (sub === "show" || sub === "status") return { kind: "execute", label: "chat status", steps: [actionArgsListStep("result", "chat", "getSessionSummary", [requireValue(sessionId, "sessionId")])] };
+  if (sub === "actions")
+    return {
+      kind: "execute",
+      label: "chat actions",
+      steps: [listActionsStep("actions", "chat")],
+    };
+  const sessionId =
+    readValue(args, ["--session", "--session-id"]) ??
+    (sub !== "create" && sub !== "list" ? firstPositional(args) : null);
+  const withSession = (base: JsonObject = {}) =>
+    collectGenericObjectArgs(args, {
+      ...base,
+      ...(sessionId ? { sessionId } : {}),
+    });
+  if (sub === "list" || sub === "ls")
+    return {
+      kind: "execute",
+      label: "chat list",
+      steps: [
+        actionStep(
+          "result",
+          "chat",
+          "listSessions",
+          collectGenericObjectArgs(args),
+        ),
+      ],
+    };
+  if (sub === "show" || sub === "status")
+    return {
+      kind: "execute",
+      label: "chat status",
+      steps: [
+        actionArgsListStep("result", "chat", "getSessionSummary", [
+          requireValue(sessionId, "sessionId"),
+        ]),
+      ],
+    };
   if (sub === "create" || sub === "spawn") {
     const modelArg = readValue(args, ["--model", "--model-id"]);
     const fastRequested = readFlag(args, ["--fast", "--codex-fast"]);
-    const standardRequested = readFlag(args, ["--standard", "--no-fast", "--no-codex-fast"]);
+    const standardRequested = readFlag(args, [
+      "--standard",
+      "--no-fast",
+      "--no-codex-fast",
+    ]);
     if (fastRequested && standardRequested) {
       throw new CliUsageError(
         "Use either --fast/--codex-fast or --standard/--no-fast/--no-codex-fast, not both.",
       );
     }
-    const codexFastMode: boolean | undefined = fastRequested ? true : standardRequested ? false : undefined;
-    return { kind: "execute", label: "chat create", steps: [actionStep("result", "chat", "createSession", collectGenericObjectArgs(args, { laneId: readLaneId(args), provider: readValue(args, ["--provider"]), model: modelArg, modelId: modelArg, permissionMode: readValue(args, ["--permission-mode", "--permissions"]), droidPermissionMode: readValue(args, ["--droid-permission-mode", "--droid-autonomy", "--autonomy"]), title: readValue(args, ["--title"]), surface: readValue(args, ["--surface"]) ?? "work", ...(codexFastMode !== undefined ? { codexFastMode } : {}) }))] };
+    const codexFastMode: boolean | undefined = fastRequested
+      ? true
+      : standardRequested
+        ? false
+        : undefined;
+    return {
+      kind: "execute",
+      label: "chat create",
+      steps: [
+        actionStep(
+          "result",
+          "chat",
+          "createSession",
+          collectGenericObjectArgs(args, {
+            laneId: readLaneId(args),
+            provider: readValue(args, ["--provider"]),
+            model: modelArg,
+            modelId: modelArg,
+            permissionMode: readValue(args, [
+              "--permission-mode",
+              "--permissions",
+            ]),
+            droidPermissionMode: readValue(args, [
+              "--droid-permission-mode",
+              "--droid-autonomy",
+              "--autonomy",
+            ]),
+            title: readValue(args, ["--title"]),
+            surface: readValue(args, ["--surface"]) ?? "work",
+            ...(codexFastMode !== undefined ? { codexFastMode } : {}),
+          }),
+        ),
+      ],
+    };
   }
-  if (sub === "send") return { kind: "execute", label: "chat send", steps: [actionStep("result", "chat", "sendMessage", withSession({ sessionId: requireValue(sessionId, "sessionId"), text: requireValue(readValue(args, ["--text", "--message"]) ?? args.join(" "), "message text") }))] };
-  if (sub === "interrupt") return { kind: "execute", label: "chat interrupt", steps: [actionStep("result", "chat", "interrupt", withSession({ sessionId: requireValue(sessionId, "sessionId") }))] };
-  if (sub === "resume") return { kind: "execute", label: "chat resume", steps: [actionStep("result", "chat", "resumeSession", withSession())] };
-  if (sub === "delete" || sub === "rm") return { kind: "execute", label: "chat delete", steps: [actionStep("result", "chat", "deleteSession", withSession())] };
-  if (sub === "models") return { kind: "execute", label: "chat models", steps: [actionStep("result", "chat", "getAvailableModels", collectGenericObjectArgs(args))] };
-  if (sub === "slash") return { kind: "execute", label: "chat slash commands", steps: [actionStep("result", "chat", "getSlashCommands", collectGenericObjectArgs(args))] };
-  return { kind: "execute", label: `chat ${sub}`, steps: [actionStep("result", "chat", sub, withSession())] };
+  if (sub === "send")
+    return {
+      kind: "execute",
+      label: "chat send",
+      steps: [
+        actionStep(
+          "result",
+          "chat",
+          "sendMessage",
+          withSession({
+            sessionId: requireValue(sessionId, "sessionId"),
+            text: requireValue(
+              readValue(args, ["--text", "--message"]) ?? args.join(" "),
+              "message text",
+            ),
+          }),
+        ),
+      ],
+    };
+  if (sub === "interrupt")
+    return {
+      kind: "execute",
+      label: "chat interrupt",
+      steps: [
+        actionStep(
+          "result",
+          "chat",
+          "interrupt",
+          withSession({ sessionId: requireValue(sessionId, "sessionId") }),
+        ),
+      ],
+    };
+  if (sub === "resume")
+    return {
+      kind: "execute",
+      label: "chat resume",
+      steps: [actionStep("result", "chat", "resumeSession", withSession())],
+    };
+  if (sub === "delete" || sub === "rm")
+    return {
+      kind: "execute",
+      label: "chat delete",
+      steps: [actionStep("result", "chat", "deleteSession", withSession())],
+    };
+  if (sub === "models")
+    return {
+      kind: "execute",
+      label: "chat models",
+      steps: [
+        actionStep(
+          "result",
+          "chat",
+          "getAvailableModels",
+          collectGenericObjectArgs(args),
+        ),
+      ],
+    };
+  if (sub === "slash")
+    return {
+      kind: "execute",
+      label: "chat slash commands",
+      steps: [
+        actionStep(
+          "result",
+          "chat",
+          "getSlashCommands",
+          collectGenericObjectArgs(args),
+        ),
+      ],
+    };
+  return {
+    kind: "execute",
+    label: `chat ${sub}`,
+    steps: [actionStep("result", "chat", sub, withSession())],
+  };
 }
 
 function buildTestsPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "list";
-  if (sub === "actions") return { kind: "execute", label: "test actions", steps: [listActionsStep("actions", "tests")] };
-  if (sub === "list" || sub === "suites") return { kind: "execute", label: "test suites", steps: [actionStep("result", "tests", "listSuites", collectGenericObjectArgs(args))] };
+  if (sub === "actions")
+    return {
+      kind: "execute",
+      label: "test actions",
+      steps: [listActionsStep("actions", "tests")],
+    };
+  if (sub === "list" || sub === "suites")
+    return {
+      kind: "execute",
+      label: "test suites",
+      steps: [
+        actionStep(
+          "result",
+          "tests",
+          "listSuites",
+          collectGenericObjectArgs(args),
+        ),
+      ],
+    };
   if (sub === "run") {
     const laneId = requireValue(readLaneId(args), "laneId");
-    const suiteId = readValue(args, ["--suite", "--suite-id"]) ?? firstPositional(args);
+    const suiteId =
+      readValue(args, ["--suite", "--suite-id"]) ?? firstPositional(args);
     const command = readValue(args, ["--command", "-c"]);
-    if (!suiteId && !command) throw new CliUsageError("tests run requires --suite <id> or --command <command>.");
+    if (!suiteId && !command)
+      throw new CliUsageError(
+        "tests run requires --suite <id> or --command <command>.",
+      );
     const input = collectGenericObjectArgs(args, {
       laneId,
       suiteId,
@@ -3196,12 +5211,71 @@ function buildTestsPlan(args: string[]): CliPlan {
       timeoutMs: readIntOption(args, ["--timeout-ms"]),
       maxLogBytes: readIntOption(args, ["--max-log-bytes"]),
     });
-    return { kind: "execute", label: "test run", steps: [actionCallStep("result", "run_tests", input)] };
+    return {
+      kind: "execute",
+      label: "test run",
+      steps: [actionCallStep("result", "run_tests", input)],
+    };
   }
-  if (sub === "stop") return { kind: "execute", label: "test stop", steps: [actionStep("result", "tests", "stop", collectGenericObjectArgs(args, { runId: requireValue(readValue(args, ["--run", "--run-id"]) ?? firstPositional(args), "runId") }))] };
-  if (sub === "runs") return { kind: "execute", label: "test runs", steps: [actionStep("result", "tests", "listRuns", collectGenericObjectArgs(args, { laneId: readLaneId(args), suiteId: readValue(args, ["--suite", "--suite-id"]), limit: readIntOption(args, ["--limit"]) }))] };
-  if (sub === "logs" || sub === "log") return { kind: "execute", label: "test logs", steps: [actionStep("result", "tests", "getLogTail", collectGenericObjectArgs(args, { runId: requireValue(readValue(args, ["--run", "--run-id"]) ?? firstPositional(args), "runId"), maxBytes: readIntOption(args, ["--max-bytes"], 220_000) }))] };
-  return { kind: "execute", label: `tests ${sub}`, steps: [actionStep("result", "tests", sub, collectGenericObjectArgs(args))] };
+  if (sub === "stop")
+    return {
+      kind: "execute",
+      label: "test stop",
+      steps: [
+        actionStep(
+          "result",
+          "tests",
+          "stop",
+          collectGenericObjectArgs(args, {
+            runId: requireValue(
+              readValue(args, ["--run", "--run-id"]) ?? firstPositional(args),
+              "runId",
+            ),
+          }),
+        ),
+      ],
+    };
+  if (sub === "runs")
+    return {
+      kind: "execute",
+      label: "test runs",
+      steps: [
+        actionStep(
+          "result",
+          "tests",
+          "listRuns",
+          collectGenericObjectArgs(args, {
+            laneId: readLaneId(args),
+            suiteId: readValue(args, ["--suite", "--suite-id"]),
+            limit: readIntOption(args, ["--limit"]),
+          }),
+        ),
+      ],
+    };
+  if (sub === "logs" || sub === "log")
+    return {
+      kind: "execute",
+      label: "test logs",
+      steps: [
+        actionStep(
+          "result",
+          "tests",
+          "getLogTail",
+          collectGenericObjectArgs(args, {
+            runId: requireValue(
+              readValue(args, ["--run", "--run-id"]) ?? firstPositional(args),
+              "runId",
+            ),
+            maxBytes: readIntOption(args, ["--max-bytes"], 220_000),
+          }),
+        ),
+      ],
+    };
+  return {
+    kind: "execute",
+    label: `tests ${sub}`,
+    steps: [actionStep("result", "tests", sub, collectGenericObjectArgs(args))],
+  };
 }
 
 function readFileTextInput(args: string[]): string | undefined {
@@ -3215,43 +5289,216 @@ function readFileTextInput(args: string[]): string | undefined {
 
 function buildFilesPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "workspaces";
-  if (sub === "actions") return { kind: "execute", label: "file actions", steps: [listActionsStep("actions", "file")] };
+  if (sub === "actions")
+    return {
+      kind: "execute",
+      label: "file actions",
+      steps: [listActionsStep("actions", "file")],
+    };
   const workspaceId = readValue(args, ["--workspace", "--workspace-id"]);
-  const withWorkspace = (base: JsonObject = {}) => collectGenericObjectArgs(args, { ...base, ...(workspaceId ? { workspaceId } : {}) });
+  const withWorkspace = (base: JsonObject = {}) =>
+    collectGenericObjectArgs(args, {
+      ...base,
+      ...(workspaceId ? { workspaceId } : {}),
+    });
 
   if (sub === "workspaces" || sub === "workspace" || sub === "roots") {
-    return { kind: "execute", label: "file workspaces", steps: [actionStep("result", "file", "listWorkspaces", collectGenericObjectArgs(args, { laneId: readLaneId(args) }))] };
+    return {
+      kind: "execute",
+      label: "file workspaces",
+      steps: [
+        actionStep(
+          "result",
+          "file",
+          "listWorkspaces",
+          collectGenericObjectArgs(args, { laneId: readLaneId(args) }),
+        ),
+      ],
+    };
   }
   if (sub === "tree" || sub === "ls") {
-    return { kind: "execute", label: "file tree", steps: [actionStep("result", "file", "listTree", withWorkspace({ parentPath: readValue(args, ["--path"]) ?? firstPositional(args), depth: readIntOption(args, ["--depth"]), includeIgnored: readFlag(args, ["--include-ignored"]) }))] };
+    return {
+      kind: "execute",
+      label: "file tree",
+      steps: [
+        actionStep(
+          "result",
+          "file",
+          "listTree",
+          withWorkspace({
+            parentPath: readValue(args, ["--path"]) ?? firstPositional(args),
+            depth: readIntOption(args, ["--depth"]),
+            includeIgnored: readFlag(args, ["--include-ignored"]),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "read" || sub === "cat") {
-    return { kind: "execute", label: "file read", steps: [actionStep("result", "file", "readFile", withWorkspace({ path: requireValue(readValue(args, ["--path"]) ?? firstPositional(args), "path") }))] };
+    return {
+      kind: "execute",
+      label: "file read",
+      steps: [
+        actionStep(
+          "result",
+          "file",
+          "readFile",
+          withWorkspace({
+            path: requireValue(
+              readValue(args, ["--path"]) ?? firstPositional(args),
+              "path",
+            ),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "write") {
     const text = readFileTextInput(args);
-    if (text == null) throw new CliUsageError("files write requires --text, --from-file, or --stdin.");
-    return { kind: "execute", label: "file write", steps: [actionStep("result", "file", "writeWorkspaceText", withWorkspace({ path: requireValue(readValue(args, ["--path"]) ?? firstPositional(args), "path"), text }))] };
+    if (text == null)
+      throw new CliUsageError(
+        "files write requires --text, --from-file, or --stdin.",
+      );
+    return {
+      kind: "execute",
+      label: "file write",
+      steps: [
+        actionStep(
+          "result",
+          "file",
+          "writeWorkspaceText",
+          withWorkspace({
+            path: requireValue(
+              readValue(args, ["--path"]) ?? firstPositional(args),
+              "path",
+            ),
+            text,
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "create") {
-    return { kind: "execute", label: "file create", steps: [actionStep("result", "file", "createFile", withWorkspace({ path: requireValue(readValue(args, ["--path"]) ?? firstPositional(args), "path"), content: readFileTextInput(args) ?? "" }))] };
+    return {
+      kind: "execute",
+      label: "file create",
+      steps: [
+        actionStep(
+          "result",
+          "file",
+          "createFile",
+          withWorkspace({
+            path: requireValue(
+              readValue(args, ["--path"]) ?? firstPositional(args),
+              "path",
+            ),
+            content: readFileTextInput(args) ?? "",
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "mkdir") {
-    return { kind: "execute", label: "file mkdir", steps: [actionStep("result", "file", "createDirectory", withWorkspace({ path: requireValue(readValue(args, ["--path"]) ?? firstPositional(args), "path") }))] };
+    return {
+      kind: "execute",
+      label: "file mkdir",
+      steps: [
+        actionStep(
+          "result",
+          "file",
+          "createDirectory",
+          withWorkspace({
+            path: requireValue(
+              readValue(args, ["--path"]) ?? firstPositional(args),
+              "path",
+            ),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "rename" || sub === "mv") {
-    return { kind: "execute", label: "file rename", steps: [actionStep("result", "file", "rename", withWorkspace({ oldPath: readValue(args, ["--old", "--old-path"]) ?? firstPositional(args), newPath: readValue(args, ["--new", "--new-path"]) ?? firstPositional(args) }))] };
+    return {
+      kind: "execute",
+      label: "file rename",
+      steps: [
+        actionStep(
+          "result",
+          "file",
+          "rename",
+          withWorkspace({
+            oldPath:
+              readValue(args, ["--old", "--old-path"]) ?? firstPositional(args),
+            newPath:
+              readValue(args, ["--new", "--new-path"]) ?? firstPositional(args),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "delete" || sub === "rm") {
-    return { kind: "execute", label: "file delete", steps: [actionStep("result", "file", "deletePath", withWorkspace({ path: requireValue(readValue(args, ["--path"]) ?? firstPositional(args), "path") }))] };
+    return {
+      kind: "execute",
+      label: "file delete",
+      steps: [
+        actionStep(
+          "result",
+          "file",
+          "deletePath",
+          withWorkspace({
+            path: requireValue(
+              readValue(args, ["--path"]) ?? firstPositional(args),
+              "path",
+            ),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "quick-open") {
-    return { kind: "execute", label: "file quick-open", steps: [actionStep("result", "file", "quickOpen", withWorkspace({ query: readValue(args, ["--query", "-q"]) ?? args.join(" "), limit: readIntOption(args, ["--limit"]), includeIgnored: readFlag(args, ["--include-ignored"]) }))] };
+    return {
+      kind: "execute",
+      label: "file quick-open",
+      steps: [
+        actionStep(
+          "result",
+          "file",
+          "quickOpen",
+          withWorkspace({
+            query: readValue(args, ["--query", "-q"]) ?? args.join(" "),
+            limit: readIntOption(args, ["--limit"]),
+            includeIgnored: readFlag(args, ["--include-ignored"]),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "search") {
-    return { kind: "execute", label: "file search", steps: [actionStep("result", "file", "searchText", withWorkspace({ query: requireValue(readValue(args, ["--query", "-q"]) ?? args.join(" "), "query"), limit: readIntOption(args, ["--limit"]), includeIgnored: readFlag(args, ["--include-ignored"]) }))] };
+    return {
+      kind: "execute",
+      label: "file search",
+      steps: [
+        actionStep(
+          "result",
+          "file",
+          "searchText",
+          withWorkspace({
+            query: requireValue(
+              readValue(args, ["--query", "-q"]) ?? args.join(" "),
+              "query",
+            ),
+            limit: readIntOption(args, ["--limit"]),
+            includeIgnored: readFlag(args, ["--include-ignored"]),
+          }),
+        ),
+      ],
+    };
   }
-  return { kind: "execute", label: `files ${sub}`, steps: [actionStep("result", "file", sub, withWorkspace())] };
+  return {
+    kind: "execute",
+    label: `files ${sub}`,
+    steps: [actionStep("result", "file", sub, withWorkspace())],
+  };
 }
 
 function buildProofPlan(args: string[]): CliPlan {
@@ -3266,193 +5513,664 @@ function buildProofPlan(args: string[]): CliPlan {
   };
   const inferAttachedProofKind = (filePath: string): string => {
     const ext = path.extname(filePath).replace(/^\./, "").toLowerCase();
-    if (["png", "jpg", "jpeg", "webp", "gif", "heic", "heif", "tif", "tiff"].includes(ext)) return "screenshot";
+    if (
+      [
+        "png",
+        "jpg",
+        "jpeg",
+        "webp",
+        "gif",
+        "heic",
+        "heif",
+        "tif",
+        "tiff",
+      ].includes(ext)
+    )
+      return "screenshot";
     if (["mov", "mp4", "m4v", "webm"].includes(ext)) return "video_recording";
     if (["zip", "har"].includes(ext)) return "browser_trace";
     return "browser_verification";
   };
-  if (sub === "actions") return { kind: "execute", label: "proof actions", steps: [listActionsStep("actions", "computer_use_artifacts")] };
-  if (sub === "status" || sub === "backends") return { kind: "execute", label: "proof backend status", steps: [actionCallStep("result", "get_computer_use_backend_status", collectGenericObjectArgs(args))] };
-  if (sub === "environment") return { kind: "execute", label: "computer-use environment", steps: [actionCallStep("result", "get_environment_info", collectGenericObjectArgs(args, proofOwnerBase()))], preferHeadless: true };
-  if (sub === "list" || sub === "ls") return { kind: "execute", label: "proof list", steps: [actionCallStep("result", "list_computer_use_artifacts", collectGenericObjectArgs(args))] };
-  if (sub === "ingest") return { kind: "execute", label: "proof ingest", steps: [actionCallStep("result", "ingest_computer_use_artifacts", collectGenericObjectArgs(args))] };
+  if (sub === "actions")
+    return {
+      kind: "execute",
+      label: "proof actions",
+      steps: [listActionsStep("actions", "computer_use_artifacts")],
+    };
+  if (sub === "status" || sub === "backends")
+    return {
+      kind: "execute",
+      label: "proof backend status",
+      steps: [
+        actionCallStep(
+          "result",
+          "get_computer_use_backend_status",
+          collectGenericObjectArgs(args),
+        ),
+      ],
+    };
+  if (sub === "environment")
+    return {
+      kind: "execute",
+      label: "computer-use environment",
+      steps: [
+        actionCallStep(
+          "result",
+          "get_environment_info",
+          collectGenericObjectArgs(args, proofOwnerBase()),
+        ),
+      ],
+      preferHeadless: true,
+    };
+  if (sub === "list" || sub === "ls")
+    return {
+      kind: "execute",
+      label: "proof list",
+      steps: [
+        actionCallStep(
+          "result",
+          "list_computer_use_artifacts",
+          collectGenericObjectArgs(args),
+        ),
+      ],
+    };
+  if (sub === "ingest")
+    return {
+      kind: "execute",
+      label: "proof ingest",
+      steps: [
+        actionCallStep(
+          "result",
+          "ingest_computer_use_artifacts",
+          collectGenericObjectArgs(args),
+        ),
+      ],
+    };
   if (sub === "attach") {
     const caption = readValue(args, ["--caption", "--description", "--desc"]);
-    const attachedPath = requireValue(readValue(args, ["--path"]) ?? firstPositional(args), "path");
-    const title = readValue(args, ["--title", "--name"]) ?? caption ?? path.basename(attachedPath);
+    const attachedPath = requireValue(
+      readValue(args, ["--path"]) ?? firstPositional(args),
+      "path",
+    );
+    const title =
+      readValue(args, ["--title", "--name"]) ??
+      caption ??
+      path.basename(attachedPath);
     return {
       kind: "execute",
       label: "proof attach",
-      steps: [actionCallStep("result", "ingest_computer_use_artifacts", collectGenericObjectArgs(args, {
-        backendStyle: "manual",
-        backendName: "ade-cli",
-        toolName: "proof attach",
-        ...proofOwnerBase(),
-        inputs: [{
-          kind: inferAttachedProofKind(attachedPath),
-          title,
-          ...(caption ? { description: caption } : {}),
-          path: attachedPath,
-        }],
-      }))],
+      steps: [
+        actionCallStep(
+          "result",
+          "ingest_computer_use_artifacts",
+          collectGenericObjectArgs(args, {
+            backendStyle: "manual",
+            backendName: "ade-cli",
+            toolName: "proof attach",
+            ...proofOwnerBase(),
+            inputs: [
+              {
+                kind: inferAttachedProofKind(attachedPath),
+                title,
+                ...(caption ? { description: caption } : {}),
+                path: attachedPath,
+              },
+            ],
+          }),
+        ),
+      ],
     };
   }
   if (sub === "screenshot" || sub === "capture") {
     const caption = readValue(args, ["--caption", "--description", "--desc"]);
-    return { kind: "execute", label: "computer-use screenshot", steps: [actionCallStep("result", "screenshot_environment", collectGenericObjectArgs(args, { ...proofOwnerBase(), name: readValue(args, ["--name", "--title"]) ?? caption }))], preferHeadless: true };
+    return {
+      kind: "execute",
+      label: "computer-use screenshot",
+      steps: [
+        actionCallStep(
+          "result",
+          "screenshot_environment",
+          collectGenericObjectArgs(args, {
+            ...proofOwnerBase(),
+            name: readValue(args, ["--name", "--title"]) ?? caption,
+          }),
+        ),
+      ],
+      preferHeadless: true,
+    };
   }
-  if (sub === "record") return { kind: "execute", label: "computer-use record", steps: [actionCallStep("result", "record_environment", collectGenericObjectArgs(args, { ...proofOwnerBase(), name: readValue(args, ["--name", "--title"]) ?? readValue(args, ["--caption", "--description", "--desc"]), durationSec: readNumberOption(args, ["--seconds", "--duration-sec"]) }))], preferHeadless: true };
-  if (sub === "launch") return { kind: "execute", label: "computer-use launch", steps: [actionCallStep("result", "launch_app", collectGenericObjectArgs(args, { app: readValue(args, ["--app"]) ?? firstPositional(args) }))], preferHeadless: true };
-  if (sub === "interact") return { kind: "execute", label: "computer-use interact", steps: [actionCallStep("result", "interact_gui", collectGenericObjectArgs(args, proofOwnerBase()))], preferHeadless: true };
-  return { kind: "execute", label: `proof ${sub}`, steps: [actionStep("result", "computer_use_artifacts", sub, collectGenericObjectArgs(args))] };
+  if (sub === "record")
+    return {
+      kind: "execute",
+      label: "computer-use record",
+      steps: [
+        actionCallStep(
+          "result",
+          "record_environment",
+          collectGenericObjectArgs(args, {
+            ...proofOwnerBase(),
+            name:
+              readValue(args, ["--name", "--title"]) ??
+              readValue(args, ["--caption", "--description", "--desc"]),
+            durationSec: readNumberOption(args, [
+              "--seconds",
+              "--duration-sec",
+            ]),
+          }),
+        ),
+      ],
+      preferHeadless: true,
+    };
+  if (sub === "launch")
+    return {
+      kind: "execute",
+      label: "computer-use launch",
+      steps: [
+        actionCallStep(
+          "result",
+          "launch_app",
+          collectGenericObjectArgs(args, {
+            app: readValue(args, ["--app"]) ?? firstPositional(args),
+          }),
+        ),
+      ],
+      preferHeadless: true,
+    };
+  if (sub === "interact")
+    return {
+      kind: "execute",
+      label: "computer-use interact",
+      steps: [
+        actionCallStep(
+          "result",
+          "interact_gui",
+          collectGenericObjectArgs(args, proofOwnerBase()),
+        ),
+      ],
+      preferHeadless: true,
+    };
+  return {
+    kind: "execute",
+    label: `proof ${sub}`,
+    steps: [
+      actionStep(
+        "result",
+        "computer_use_artifacts",
+        sub,
+        collectGenericObjectArgs(args),
+      ),
+    ],
+  };
 }
 
 function buildIosSimulatorPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "status";
-  if (sub === "help") return { kind: "help", text: buildIosSimulatorHelp(args) };
-  const numericPositionals = () => args.filter((value) => /^\d+(\.\d+)?$/.test(value));
+  if (sub === "help")
+    return { kind: "help", text: buildIosSimulatorHelp(args) };
+  const numericPositionals = () =>
+    args.filter((value) => /^\d+(\.\d+)?$/.test(value));
   const readCoordinate = (flag: string, index: number): number => {
-    const value = readNumberOption(args, [flag]) ?? Number(numericPositionals()[index]);
-    if (!Number.isFinite(value)) throw new CliUsageError(`${flag} is required and must be a number.`);
+    const value =
+      readNumberOption(args, [flag]) ?? Number(numericPositionals()[index]);
+    if (!Number.isFinite(value))
+      throw new CliUsageError(`${flag} is required and must be a number.`);
     return value;
   };
-  if (sub === "actions") return { kind: "execute", label: "iOS simulator actions", steps: [listActionsStep("actions", "ios_simulator")] };
-  if (sub === "status") return { kind: "execute", label: "iOS simulator status", steps: [actionStep("result", "ios_simulator", "getStatus", collectGenericObjectArgs(args))] };
-  if (sub === "devices" || sub === "list" || sub === "ls") return { kind: "execute", label: "iOS simulator devices", steps: [actionStep("result", "ios_simulator", "listDevices", collectGenericObjectArgs(args))] };
-  if (sub === "apps" || sub === "targets" || sub === "launchable" || sub === "launchables") {
-    return { kind: "execute", label: "iOS simulator launchable apps", steps: [actionStep("result", "ios_simulator", "listLaunchTargets", collectGenericObjectArgs(args, { deviceUdid: readValue(args, ["--device", "--udid"]), projectRoot: readValue(args, ["--project-root", "--root"]) }))] };
+  if (sub === "actions")
+    return {
+      kind: "execute",
+      label: "iOS simulator actions",
+      steps: [listActionsStep("actions", "ios_simulator")],
+    };
+  if (sub === "status")
+    return {
+      kind: "execute",
+      label: "iOS simulator status",
+      steps: [
+        actionStep(
+          "result",
+          "ios_simulator",
+          "getStatus",
+          collectGenericObjectArgs(args),
+        ),
+      ],
+    };
+  if (sub === "devices" || sub === "list" || sub === "ls")
+    return {
+      kind: "execute",
+      label: "iOS simulator devices",
+      steps: [
+        actionStep(
+          "result",
+          "ios_simulator",
+          "listDevices",
+          collectGenericObjectArgs(args),
+        ),
+      ],
+    };
+  if (
+    sub === "apps" ||
+    sub === "targets" ||
+    sub === "launchable" ||
+    sub === "launchables"
+  ) {
+    return {
+      kind: "execute",
+      label: "iOS simulator launchable apps",
+      steps: [
+        actionStep(
+          "result",
+          "ios_simulator",
+          "listLaunchTargets",
+          collectGenericObjectArgs(args, {
+            deviceUdid: readValue(args, ["--device", "--udid"]),
+            projectRoot: readValue(args, ["--project-root", "--root"]),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "launch" || sub === "open") {
     return {
       kind: "execute",
       label: "iOS simulator launch",
-      steps: [actionStep("result", "ios_simulator", "launch", collectGenericObjectArgs(args, {
-        deviceUdid: readValue(args, ["--device", "--udid"]),
-        projectRoot: readValue(args, ["--project-root", "--root"]),
-        laneId: readValue(args, ["--lane", "--lane-id"]),
-        targetId: readValue(args, ["--target", "--target-id"]),
-        bundleId: readValue(args, ["--bundle-id", "--bundle"]),
-        appBundlePath: readValue(args, ["--app-bundle", "--app"]),
-        projectPath: readValue(args, ["--project", "--xcodeproj"]),
-        scheme: readValue(args, ["--scheme"]),
-        chatSessionId: readValue(args, ["--chat-session", "--session"]) ?? process.env.ADE_CHAT_SESSION_ID,
-        build: !readFlag(args, ["--no-build"]),
-        mode: readValue(args, ["--mode"]) ?? "live",
-        keepSimulatorInBackground: !readFlag(args, ["--foreground"]),
-      }))],
+      steps: [
+        actionStep(
+          "result",
+          "ios_simulator",
+          "launch",
+          collectGenericObjectArgs(args, {
+            deviceUdid: readValue(args, ["--device", "--udid"]),
+            projectRoot: readValue(args, ["--project-root", "--root"]),
+            laneId: readValue(args, ["--lane", "--lane-id"]),
+            targetId: readValue(args, ["--target", "--target-id"]),
+            bundleId: readValue(args, ["--bundle-id", "--bundle"]),
+            appBundlePath: readValue(args, ["--app-bundle", "--app"]),
+            projectPath: readValue(args, ["--project", "--xcodeproj"]),
+            scheme: readValue(args, ["--scheme"]),
+            chatSessionId:
+              readValue(args, ["--chat-session", "--session"]) ??
+              process.env.ADE_CHAT_SESSION_ID,
+            build: !readFlag(args, ["--no-build"]),
+            mode: readValue(args, ["--mode"]) ?? "live",
+            keepSimulatorInBackground: !readFlag(args, ["--foreground"]),
+          }),
+        ),
+      ],
     };
   }
   if (sub === "screenshot" || sub === "capture") {
-    return { kind: "execute", label: "iOS simulator screenshot", steps: [actionStep("result", "ios_simulator", "screenshot", collectGenericObjectArgs(args, { deviceUdid: readValue(args, ["--device", "--udid"]) }))] };
+    return {
+      kind: "execute",
+      label: "iOS simulator screenshot",
+      steps: [
+        actionStep(
+          "result",
+          "ios_simulator",
+          "screenshot",
+          collectGenericObjectArgs(args, {
+            deviceUdid: readValue(args, ["--device", "--udid"]),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "inspector") {
-    return { kind: "execute", label: "iOS simulator inspector snapshot", steps: [actionStep("result", "ios_simulator", "getInspectorSnapshot", collectGenericObjectArgs(args, { deviceUdid: readValue(args, ["--device", "--udid"]) }))] };
+    return {
+      kind: "execute",
+      label: "iOS simulator inspector snapshot",
+      steps: [
+        actionStep(
+          "result",
+          "ios_simulator",
+          "getInspectorSnapshot",
+          collectGenericObjectArgs(args, {
+            deviceUdid: readValue(args, ["--device", "--udid"]),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "preview-status" || sub === "preview-doctor") {
-    return { kind: "execute", label: "iOS simulator preview status", steps: [actionStep("result", "ios_simulator", "getPreviewCapability", collectGenericObjectArgs(args, { projectRoot: readValue(args, ["--project-root", "--root"]), sourceFile: readValue(args, ["--source", "--file"]), sourceLine: readNumberOption(args, ["--line"]) }))] };
+    return {
+      kind: "execute",
+      label: "iOS simulator preview status",
+      steps: [
+        actionStep(
+          "result",
+          "ios_simulator",
+          "getPreviewCapability",
+          collectGenericObjectArgs(args, {
+            projectRoot: readValue(args, ["--project-root", "--root"]),
+            sourceFile: readValue(args, ["--source", "--file"]),
+            sourceLine: readNumberOption(args, ["--line"]),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "previews" || sub === "preview-list" || sub === "list-previews") {
-    return { kind: "execute", label: "iOS simulator previews", steps: [actionStep("result", "ios_simulator", "listPreviewTargets", collectGenericObjectArgs(args, { projectRoot: readValue(args, ["--project-root", "--root"]), sourceFile: readValue(args, ["--source", "--file"]), sourceLine: readNumberOption(args, ["--line"]) }))] };
+    return {
+      kind: "execute",
+      label: "iOS simulator previews",
+      steps: [
+        actionStep(
+          "result",
+          "ios_simulator",
+          "listPreviewTargets",
+          collectGenericObjectArgs(args, {
+            projectRoot: readValue(args, ["--project-root", "--root"]),
+            sourceFile: readValue(args, ["--source", "--file"]),
+            sourceLine: readNumberOption(args, ["--line"]),
+          }),
+        ),
+      ],
+    };
   }
-  if (sub === "preview-render" || sub === "render-preview" || sub === "preview") {
-    return { kind: "execute", label: "iOS simulator preview render", steps: [actionStep("result", "ios_simulator", "renderPreview", collectGenericObjectArgs(args, {
-      projectRoot: readValue(args, ["--project-root", "--root"]),
-      sourceFilePath: requireValue(readValue(args, ["--source", "--file"]), "sourceFilePath"),
-      previewDefinitionIndexInFile: readNumberOption(args, ["--index"], 0),
-      tabIdentifier: readValue(args, ["--tab", "--tab-identifier"]),
-      timeoutSec: readNumberOption(args, ["--timeout"], 120),
-    }))] };
+  if (
+    sub === "preview-render" ||
+    sub === "render-preview" ||
+    sub === "preview"
+  ) {
+    return {
+      kind: "execute",
+      label: "iOS simulator preview render",
+      steps: [
+        actionStep(
+          "result",
+          "ios_simulator",
+          "renderPreview",
+          collectGenericObjectArgs(args, {
+            projectRoot: readValue(args, ["--project-root", "--root"]),
+            sourceFilePath: requireValue(
+              readValue(args, ["--source", "--file"]),
+              "sourceFilePath",
+            ),
+            previewDefinitionIndexInFile: readNumberOption(
+              args,
+              ["--index"],
+              0,
+            ),
+            tabIdentifier: readValue(args, ["--tab", "--tab-identifier"]),
+            timeoutSec: readNumberOption(args, ["--timeout"], 120),
+          }),
+        ),
+      ],
+    };
   }
-  if (sub === "preview-open" || sub === "open-preview-workspace" || sub === "open-xcode") {
-    return { kind: "execute", label: "iOS simulator preview open", steps: [actionStep("result", "ios_simulator", "openPreviewWorkspace", collectGenericObjectArgs(args, { projectRoot: readValue(args, ["--project-root", "--root"]) }))] };
+  if (
+    sub === "preview-open" ||
+    sub === "open-preview-workspace" ||
+    sub === "open-xcode"
+  ) {
+    return {
+      kind: "execute",
+      label: "iOS simulator preview open",
+      steps: [
+        actionStep(
+          "result",
+          "ios_simulator",
+          "openPreviewWorkspace",
+          collectGenericObjectArgs(args, {
+            projectRoot: readValue(args, ["--project-root", "--root"]),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "snapshot" || sub === "screen" || sub === "elements") {
-    return { kind: "execute", label: "iOS simulator screen snapshot", steps: [actionStep("result", "ios_simulator", "getScreenSnapshot", collectGenericObjectArgs(args, { deviceUdid: readValue(args, ["--device", "--udid"]), projectRoot: readValue(args, ["--project-root", "--root"]) }))] };
+    return {
+      kind: "execute",
+      label: "iOS simulator screen snapshot",
+      steps: [
+        actionStep(
+          "result",
+          "ios_simulator",
+          "getScreenSnapshot",
+          collectGenericObjectArgs(args, {
+            deviceUdid: readValue(args, ["--device", "--udid"]),
+            projectRoot: readValue(args, ["--project-root", "--root"]),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "inspect" || sub === "hit-test" || sub === "hover") {
-    return { kind: "execute", label: "iOS simulator inspect point", steps: [actionStep("result", "ios_simulator", "inspectPoint", collectGenericObjectArgs(args, {
-      deviceUdid: readValue(args, ["--device", "--udid"]),
-      projectRoot: readValue(args, ["--project-root", "--root"]),
-      x: readCoordinate("--x", 0),
-      y: readCoordinate("--y", 1),
-      includeScreenshot: readFlag(args, ["--screenshot", "--include-screenshot"]),
-    }))] };
+    return {
+      kind: "execute",
+      label: "iOS simulator inspect point",
+      steps: [
+        actionStep(
+          "result",
+          "ios_simulator",
+          "inspectPoint",
+          collectGenericObjectArgs(args, {
+            deviceUdid: readValue(args, ["--device", "--udid"]),
+            projectRoot: readValue(args, ["--project-root", "--root"]),
+            x: readCoordinate("--x", 0),
+            y: readCoordinate("--y", 1),
+            includeScreenshot: readFlag(args, [
+              "--screenshot",
+              "--include-screenshot",
+            ]),
+          }),
+        ),
+      ],
+    };
   }
-  if (sub === "stream-start" || sub === "start-stream" || sub === "stream" || sub === "preview-start" || sub === "start-preview" || sub === "live-start" || sub === "start-live" || sub === "window-start" || sub === "start-window" || sub === "mirror-start" || sub === "start-mirror") {
-    const forcedBackend = sub === "preview-start" || sub === "start-preview"
-      ? "simctl-screenshot-poll"
-      : sub === "window-start" || sub === "start-window" || sub === "mirror-start" || sub === "start-mirror"
+  if (
+    sub === "stream-start" ||
+    sub === "start-stream" ||
+    sub === "stream" ||
+    sub === "preview-start" ||
+    sub === "start-preview" ||
+    sub === "live-start" ||
+    sub === "start-live" ||
+    sub === "window-start" ||
+    sub === "start-window" ||
+    sub === "mirror-start" ||
+    sub === "start-mirror"
+  ) {
+    const forcedBackend =
+      sub === "preview-start" || sub === "start-preview"
+        ? "simctl-screenshot-poll"
+        : sub === "window-start" ||
+            sub === "start-window" ||
+            sub === "mirror-start" ||
+            sub === "start-mirror"
+          ? "simulator-window-capture"
+          : sub === "live-start" || sub === "start-live"
+            ? "auto"
+            : undefined;
+    const requestedBackend =
+      forcedBackend ??
+      (readFlag(args, ["--window", "--mirror"])
         ? "simulator-window-capture"
-        : sub === "live-start" || sub === "start-live"
-        ? "auto"
-        : undefined;
-    const requestedBackend = forcedBackend
-      ?? (readFlag(args, ["--window", "--mirror"]) ? "simulator-window-capture" : readFlag(args, ["--idb", "--live"]) ? "auto" : readFlag(args, ["--simctl", "--preview"]) ? "simctl-screenshot-poll" : readValue(args, ["--backend"]) ?? "auto");
-    const defaultFps = requestedBackend === "simulator-window-capture"
-      ? 60
-      : requestedBackend === "iosurface-indigo" || requestedBackend === "idb-mjpeg" || requestedBackend === "idb-h264-ffmpeg-mjpeg"
-        ? 30
-        : requestedBackend === "simctl-screenshot-poll"
-          ? 8
-          : undefined;
-    return { kind: "execute", label: "iOS simulator stream start", steps: [actionStep("result", "ios_simulator", "startStream", collectGenericObjectArgs(args, {
-      deviceUdid: readValue(args, ["--device", "--udid"]),
-      fps: readNumberOption(args, ["--fps"], defaultFps),
-      backend: requestedBackend,
-    }))] };
+        : readFlag(args, ["--idb", "--live"])
+          ? "auto"
+          : readFlag(args, ["--simctl", "--preview"])
+            ? "simctl-screenshot-poll"
+            : (readValue(args, ["--backend"]) ?? "auto"));
+    const defaultFps =
+      requestedBackend === "simulator-window-capture"
+        ? 60
+        : requestedBackend === "iosurface-indigo" ||
+            requestedBackend === "idb-mjpeg" ||
+            requestedBackend === "idb-h264-ffmpeg-mjpeg"
+          ? 30
+          : requestedBackend === "simctl-screenshot-poll"
+            ? 8
+            : undefined;
+    return {
+      kind: "execute",
+      label: "iOS simulator stream start",
+      steps: [
+        actionStep(
+          "result",
+          "ios_simulator",
+          "startStream",
+          collectGenericObjectArgs(args, {
+            deviceUdid: readValue(args, ["--device", "--udid"]),
+            fps: readNumberOption(args, ["--fps"], defaultFps),
+            backend: requestedBackend,
+          }),
+        ),
+      ],
+    };
   }
-  if (sub === "stream-stop" || sub === "stop-stream" || sub === "preview-stop" || sub === "stop-preview" || sub === "live-stop" || sub === "stop-live") {
-    return { kind: "execute", label: "iOS simulator stream stop", steps: [actionStep("result", "ios_simulator", "stopStream", collectGenericObjectArgs(args))] };
+  if (
+    sub === "stream-stop" ||
+    sub === "stop-stream" ||
+    sub === "preview-stop" ||
+    sub === "stop-preview" ||
+    sub === "live-stop" ||
+    sub === "stop-live"
+  ) {
+    return {
+      kind: "execute",
+      label: "iOS simulator stream stop",
+      steps: [
+        actionStep(
+          "result",
+          "ios_simulator",
+          "stopStream",
+          collectGenericObjectArgs(args),
+        ),
+      ],
+    };
   }
   if (sub === "stream-status") {
-    return { kind: "execute", label: "iOS simulator stream status", steps: [actionStep("result", "ios_simulator", "getStreamStatus", collectGenericObjectArgs(args))] };
+    return {
+      kind: "execute",
+      label: "iOS simulator stream status",
+      steps: [
+        actionStep(
+          "result",
+          "ios_simulator",
+          "getStreamStatus",
+          collectGenericObjectArgs(args),
+        ),
+      ],
+    };
   }
   if (sub === "tap") {
-    return { kind: "execute", label: "iOS simulator tap", steps: [actionStep("result", "ios_simulator", "tap", collectGenericObjectArgs(args, {
-      deviceUdid: readValue(args, ["--device", "--udid"]),
-      projectRoot: readValue(args, ["--project-root", "--root"]),
-      x: readCoordinate("--x", 0),
-      y: readCoordinate("--y", 1),
-    }))] };
+    return {
+      kind: "execute",
+      label: "iOS simulator tap",
+      steps: [
+        actionStep(
+          "result",
+          "ios_simulator",
+          "tap",
+          collectGenericObjectArgs(args, {
+            deviceUdid: readValue(args, ["--device", "--udid"]),
+            projectRoot: readValue(args, ["--project-root", "--root"]),
+            x: readCoordinate("--x", 0),
+            y: readCoordinate("--y", 1),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "drag" || sub === "swipe") {
-    return { kind: "execute", label: `iOS simulator ${sub}`, steps: [actionStep("result", "ios_simulator", sub, collectGenericObjectArgs(args, {
-      deviceUdid: readValue(args, ["--device", "--udid"]),
-      projectRoot: readValue(args, ["--project-root", "--root"]),
-      startX: readCoordinate("--start-x", 0),
-      startY: readCoordinate("--start-y", 1),
-      endX: readCoordinate("--end-x", 2),
-      endY: readCoordinate("--end-y", 3),
-      durationMs: readNumberOption(args, ["--duration-ms", "--duration"]),
-    }))] };
+    return {
+      kind: "execute",
+      label: `iOS simulator ${sub}`,
+      steps: [
+        actionStep(
+          "result",
+          "ios_simulator",
+          sub,
+          collectGenericObjectArgs(args, {
+            deviceUdid: readValue(args, ["--device", "--udid"]),
+            projectRoot: readValue(args, ["--project-root", "--root"]),
+            startX: readCoordinate("--start-x", 0),
+            startY: readCoordinate("--start-y", 1),
+            endX: readCoordinate("--end-x", 2),
+            endY: readCoordinate("--end-y", 3),
+            durationMs: readNumberOption(args, ["--duration-ms", "--duration"]),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "select") {
-    return { kind: "execute", label: "iOS simulator select", steps: [actionStep("result", "ios_simulator", "selectPoint", collectGenericObjectArgs(args, {
-      deviceUdid: readValue(args, ["--device", "--udid"]),
-      projectRoot: readValue(args, ["--project-root", "--root"]),
-      x: readCoordinate("--x", 0),
-      y: readCoordinate("--y", 1),
-    }))] };
+    return {
+      kind: "execute",
+      label: "iOS simulator select",
+      steps: [
+        actionStep(
+          "result",
+          "ios_simulator",
+          "selectPoint",
+          collectGenericObjectArgs(args, {
+            deviceUdid: readValue(args, ["--device", "--udid"]),
+            projectRoot: readValue(args, ["--project-root", "--root"]),
+            x: readCoordinate("--x", 0),
+            y: readCoordinate("--y", 1),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "type" || sub === "text") {
-    return { kind: "execute", label: "iOS simulator type", steps: [actionStep("result", "ios_simulator", "typeText", collectGenericObjectArgs(args, {
-      deviceUdid: readValue(args, ["--device", "--udid"]),
-      projectRoot: readValue(args, ["--project-root", "--root"]),
-      text: requireValue(
-        readValue(args, ["--value", "--message", "--input-text"])
-          ?? readCommandTextValue(args, ["--text"])
-          ?? args.filter((arg) => arg !== "--text").join(" "),
-        "text",
+    return {
+      kind: "execute",
+      label: "iOS simulator type",
+      steps: [
+        actionStep(
+          "result",
+          "ios_simulator",
+          "typeText",
+          collectGenericObjectArgs(args, {
+            deviceUdid: readValue(args, ["--device", "--udid"]),
+            projectRoot: readValue(args, ["--project-root", "--root"]),
+            text: requireValue(
+              readValue(args, ["--value", "--message", "--input-text"]) ??
+                readCommandTextValue(args, ["--text"]) ??
+                args.filter((arg) => arg !== "--text").join(" "),
+              "text",
+            ),
+          }),
+        ),
+      ],
+    };
+  }
+  if (
+    sub === "shutdown" ||
+    sub === "stop" ||
+    sub === "teardown" ||
+    sub === "end" ||
+    sub === "end-session"
+  ) {
+    return {
+      kind: "execute",
+      label: "iOS simulator shutdown",
+      steps: [
+        actionStep(
+          "result",
+          "ios_simulator",
+          "shutdown",
+          collectGenericObjectArgs(args, {
+            deviceUdid: readValue(args, ["--device", "--udid"]),
+            force: readFlag(args, ["--force", "-f"]) ? true : undefined,
+          }),
+        ),
+      ],
+    };
+  }
+  return {
+    kind: "execute",
+    label: `ios-sim ${sub}`,
+    steps: [
+      actionStep(
+        "result",
+        "ios_simulator",
+        sub,
+        collectGenericObjectArgs(args),
       ),
-    }))] };
-  }
-  if (sub === "shutdown" || sub === "stop" || sub === "teardown" || sub === "end" || sub === "end-session") {
-    return { kind: "execute", label: "iOS simulator shutdown", steps: [actionStep("result", "ios_simulator", "shutdown", collectGenericObjectArgs(args, {
-      deviceUdid: readValue(args, ["--device", "--udid"]),
-      force: readFlag(args, ["--force", "-f"]) ? true : undefined,
-    }))] };
-  }
-  return { kind: "execute", label: `ios-sim ${sub}`, steps: [actionStep("result", "ios_simulator", sub, collectGenericObjectArgs(args))] };
+    ],
+  };
 }
 
 function readTrailingCommand(args: string[]): string | null {
@@ -3472,39 +6190,108 @@ function readTrailingCommand(args: string[]): string | null {
 function buildAppControlPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "status";
   if (sub === "help") return { kind: "help", text: buildAppControlHelp(args) };
-  const numericPositionals = () => args.filter((value) => /^\d+(\.\d+)?$/.test(value));
+  const numericPositionals = () =>
+    args.filter((value) => /^\d+(\.\d+)?$/.test(value));
   const readCoordinate = (flag: string, index: number): number => {
-    const value = readNumberOption(args, [flag]) ?? Number(numericPositionals()[index]);
-    if (!Number.isFinite(value)) throw new CliUsageError(`${flag} is required and must be a number.`);
+    const value =
+      readNumberOption(args, [flag]) ?? Number(numericPositionals()[index]);
+    if (!Number.isFinite(value))
+      throw new CliUsageError(`${flag} is required and must be a number.`);
     return value;
   };
-  if (sub === "actions") return { kind: "execute", label: "App Control actions", steps: [listActionsStep("actions", "app_control")] };
-  if (sub === "status") return { kind: "execute", label: "App Control status", steps: [actionStep("result", "app_control", "getStatus", collectGenericObjectArgs(args))] };
+  if (sub === "actions")
+    return {
+      kind: "execute",
+      label: "App Control actions",
+      steps: [listActionsStep("actions", "app_control")],
+    };
+  if (sub === "status")
+    return {
+      kind: "execute",
+      label: "App Control status",
+      steps: [
+        actionStep(
+          "result",
+          "app_control",
+          "getStatus",
+          collectGenericObjectArgs(args),
+        ),
+      ],
+    };
   if (sub === "logs" || sub === "log" || sub === "read" || sub === "tail") {
-    return { kind: "execute", label: "terminal read", steps: [actionStep("result", "app_control", "readTerminal", collectGenericObjectArgs(args, {
-      maxBytes: readIntOption(args, ["--max-bytes"], undefined),
-      since: readIntOption(args, ["--since"], undefined),
-    }))] };
+    return {
+      kind: "execute",
+      label: "terminal read",
+      steps: [
+        actionStep(
+          "result",
+          "app_control",
+          "readTerminal",
+          collectGenericObjectArgs(args, {
+            maxBytes: readIntOption(args, ["--max-bytes"], undefined),
+            since: readIntOption(args, ["--since"], undefined),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "terminal") {
     const mode = firstPositional(args) ?? "read";
     if (mode === "read" || mode === "logs" || mode === "tail") {
-      return { kind: "execute", label: "terminal read", steps: [actionStep("result", "app_control", "readTerminal", collectGenericObjectArgs(args, {
-        maxBytes: readIntOption(args, ["--max-bytes"], undefined),
-        since: readIntOption(args, ["--since"], undefined),
-      }))] };
+      return {
+        kind: "execute",
+        label: "terminal read",
+        steps: [
+          actionStep(
+            "result",
+            "app_control",
+            "readTerminal",
+            collectGenericObjectArgs(args, {
+              maxBytes: readIntOption(args, ["--max-bytes"], undefined),
+              since: readIntOption(args, ["--since"], undefined),
+            }),
+          ),
+        ],
+      };
     }
     if (mode === "write" || mode === "send" || mode === "input") {
-      const data = readValue(args, ["--data", "--value", "--text"]) ?? args.join(" ");
+      const data =
+        readValue(args, ["--data", "--value", "--text"]) ?? args.join(" ");
       if (!data.length) throw new CliUsageError("data is required.");
-      return { kind: "execute", label: "terminal write", steps: [actionStep("result", "app_control", "writeTerminal", collectGenericObjectArgs(args, { data }))] };
+      return {
+        kind: "execute",
+        label: "terminal write",
+        steps: [
+          actionStep(
+            "result",
+            "app_control",
+            "writeTerminal",
+            collectGenericObjectArgs(args, { data }),
+          ),
+        ],
+      };
     }
     if (mode === "signal" || mode === "interrupt" || mode === "stop") {
-      return { kind: "execute", label: "terminal signal", steps: [actionStep("result", "app_control", "signalTerminal", collectGenericObjectArgs(args, {
-        signal: readValue(args, ["--signal"]) ?? (mode === "stop" ? "SIGTERM" : "SIGINT"),
-      }))] };
+      return {
+        kind: "execute",
+        label: "terminal signal",
+        steps: [
+          actionStep(
+            "result",
+            "app_control",
+            "signalTerminal",
+            collectGenericObjectArgs(args, {
+              signal:
+                readValue(args, ["--signal"]) ??
+                (mode === "stop" ? "SIGTERM" : "SIGINT"),
+            }),
+          ),
+        ],
+      };
     }
-    throw new CliUsageError("app-control terminal supports read, write, or signal.");
+    throw new CliUsageError(
+      "app-control terminal supports read, write, or signal.",
+    );
   }
   if (sub === "launch" || sub === "open" || sub === "start") {
     const trailingCommand = readTrailingCommand(args);
@@ -3516,120 +6303,299 @@ function buildAppControlPlan(args: string[]): CliPlan {
     const debugPort = readNumberOption(args, ["--debug-port", "--port"]);
     const cdpPort = readNumberOption(args, ["--cdp-port"]);
     const label = readValue(args, ["--label", "--name"]);
-    const chatSessionId = readValue(args, ["--chat-session", "--chat-session-id", "--session", "--session-id"]) ?? process.env.ADE_CHAT_SESSION_ID;
+    const chatSessionId =
+      readValue(args, [
+        "--chat-session",
+        "--chat-session-id",
+        "--session",
+        "--session-id",
+      ]) ?? process.env.ADE_CHAT_SESSION_ID;
     const force = readFlag(args, ["--force", "-f"]) ? true : undefined;
-    const positionalCommand = args.filter((arg) => arg !== "--" && !arg.startsWith("-")).join(" ").trim();
-    const launchCommand = command ?? (positionalCommand.length ? positionalCommand : null);
-    if (!launchCommand) throw new CliUsageError("app-control launch requires a command, for example: ade app-control launch --command \"pnpm dev\".");
+    const positionalCommand = args
+      .filter((arg) => arg !== "--" && !arg.startsWith("-"))
+      .join(" ")
+      .trim();
+    const launchCommand =
+      command ?? (positionalCommand.length ? positionalCommand : null);
+    if (!launchCommand)
+      throw new CliUsageError(
+        'app-control launch requires a command, for example: ade app-control launch --command "pnpm dev".',
+      );
     return {
       kind: "execute",
       label: "App Control launch",
-      steps: [actionStep("result", "app_control", "launch", collectGenericObjectArgs(args, {
-        appKind,
-        projectRoot,
-        laneId,
-        command: launchCommand,
-        cwd,
-        debugPort,
-        cdpPort,
-        label,
-        chatSessionId,
-        force,
-      }))],
+      steps: [
+        actionStep(
+          "result",
+          "app_control",
+          "launch",
+          collectGenericObjectArgs(args, {
+            appKind,
+            projectRoot,
+            laneId,
+            command: launchCommand,
+            cwd,
+            debugPort,
+            cdpPort,
+            label,
+            chatSessionId,
+            force,
+          }),
+        ),
+      ],
     };
   }
   if (sub === "connect" || sub === "attach") {
-    return { kind: "execute", label: "App Control connect", steps: [actionStep("result", "app_control", "connect", collectGenericObjectArgs(args, {
-      appKind: readValue(args, ["--kind", "--app-kind"]) ?? "electron",
-      projectRoot: readValue(args, ["--project-root", "--root"]),
-      laneId: readValue(args, ["--lane", "--lane-id"]),
-      cdpPort: readNumberOption(args, ["--cdp-port", "--port"]) ?? Number(numericPositionals()[0]),
-      label: readValue(args, ["--label", "--name"]),
-      chatSessionId: readValue(args, ["--chat-session", "--session"]) ?? process.env.ADE_CHAT_SESSION_ID,
-      force: readFlag(args, ["--force", "-f"]) ? true : undefined,
-    }))] };
+    return {
+      kind: "execute",
+      label: "App Control connect",
+      steps: [
+        actionStep(
+          "result",
+          "app_control",
+          "connect",
+          collectGenericObjectArgs(args, {
+            appKind: readValue(args, ["--kind", "--app-kind"]) ?? "electron",
+            projectRoot: readValue(args, ["--project-root", "--root"]),
+            laneId: readValue(args, ["--lane", "--lane-id"]),
+            cdpPort:
+              readNumberOption(args, ["--cdp-port", "--port"]) ??
+              Number(numericPositionals()[0]),
+            label: readValue(args, ["--label", "--name"]),
+            chatSessionId:
+              readValue(args, ["--chat-session", "--session"]) ??
+              process.env.ADE_CHAT_SESSION_ID,
+            force: readFlag(args, ["--force", "-f"]) ? true : undefined,
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "targets" || sub === "list-targets") {
-    return { kind: "execute", label: "App Control targets", steps: [actionStep("result", "app_control", "listTargets", collectGenericObjectArgs(args))] };
+    return {
+      kind: "execute",
+      label: "App Control targets",
+      steps: [
+        actionStep(
+          "result",
+          "app_control",
+          "listTargets",
+          collectGenericObjectArgs(args),
+        ),
+      ],
+    };
   }
   if (sub === "attach-target" || sub === "target") {
-    const targetId = requireValue(readValue(args, ["--target", "--target-id"]) ?? firstPositional(args), "targetId");
-    return { kind: "execute", label: "App Control attach target", steps: [actionArgsListStep("result", "app_control", "attachToTarget", [targetId])] };
+    const targetId = requireValue(
+      readValue(args, ["--target", "--target-id"]) ?? firstPositional(args),
+      "targetId",
+    );
+    return {
+      kind: "execute",
+      label: "App Control attach target",
+      steps: [
+        actionArgsListStep("result", "app_control", "attachToTarget", [
+          targetId,
+        ]),
+      ],
+    };
   }
-  if (sub === "stop" || sub === "shutdown" || sub === "teardown" || sub === "close") {
-    return { kind: "execute", label: "App Control stop", steps: [actionStep("result", "app_control", "stop", collectGenericObjectArgs(args, { force: readFlag(args, ["--force", "-f"]) ? true : undefined }))] };
+  if (
+    sub === "stop" ||
+    sub === "shutdown" ||
+    sub === "teardown" ||
+    sub === "close"
+  ) {
+    return {
+      kind: "execute",
+      label: "App Control stop",
+      steps: [
+        actionStep(
+          "result",
+          "app_control",
+          "stop",
+          collectGenericObjectArgs(args, {
+            force: readFlag(args, ["--force", "-f"]) ? true : undefined,
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "screenshot" || sub === "capture") {
-    return { kind: "execute", label: "App Control screenshot", steps: [actionStep("result", "app_control", "screenshot", collectGenericObjectArgs(args))] };
+    return {
+      kind: "execute",
+      label: "App Control screenshot",
+      steps: [
+        actionStep(
+          "result",
+          "app_control",
+          "screenshot",
+          collectGenericObjectArgs(args),
+        ),
+      ],
+    };
   }
   if (sub === "snapshot" || sub === "screen" || sub === "elements") {
-    return { kind: "execute", label: "App Control snapshot", steps: [actionStep("result", "app_control", "getSnapshot", collectGenericObjectArgs(args, { projectRoot: readValue(args, ["--project-root", "--root"]) }))] };
+    return {
+      kind: "execute",
+      label: "App Control snapshot",
+      steps: [
+        actionStep(
+          "result",
+          "app_control",
+          "getSnapshot",
+          collectGenericObjectArgs(args, {
+            projectRoot: readValue(args, ["--project-root", "--root"]),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "inspect" || sub === "hit-test" || sub === "hover") {
-    return { kind: "execute", label: "App Control inspect point", steps: [actionStep("result", "app_control", "inspectPoint", collectGenericObjectArgs(args, {
-      projectRoot: readValue(args, ["--project-root", "--root"]),
-      x: readCoordinate("--x", 0),
-      y: readCoordinate("--y", 1),
-      includeScreenshot: readFlag(args, ["--screenshot", "--include-screenshot"]),
-    }))] };
+    return {
+      kind: "execute",
+      label: "App Control inspect point",
+      steps: [
+        actionStep(
+          "result",
+          "app_control",
+          "inspectPoint",
+          collectGenericObjectArgs(args, {
+            projectRoot: readValue(args, ["--project-root", "--root"]),
+            x: readCoordinate("--x", 0),
+            y: readCoordinate("--y", 1),
+            includeScreenshot: readFlag(args, [
+              "--screenshot",
+              "--include-screenshot",
+            ]),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "select") {
-    return { kind: "execute", label: "App Control select", steps: [actionStep("result", "app_control", "selectPoint", collectGenericObjectArgs(args, {
-      projectRoot: readValue(args, ["--project-root", "--root"]),
-      x: readCoordinate("--x", 0),
-      y: readCoordinate("--y", 1),
-    }))] };
+    return {
+      kind: "execute",
+      label: "App Control select",
+      steps: [
+        actionStep(
+          "result",
+          "app_control",
+          "selectPoint",
+          collectGenericObjectArgs(args, {
+            projectRoot: readValue(args, ["--project-root", "--root"]),
+            x: readCoordinate("--x", 0),
+            y: readCoordinate("--y", 1),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "click" || sub === "tap") {
-    return { kind: "execute", label: "App Control click", steps: [actionStep("result", "app_control", "click", collectGenericObjectArgs(args, {
-      x: readCoordinate("--x", 0),
-      y: readCoordinate("--y", 1),
-    }))] };
+    return {
+      kind: "execute",
+      label: "App Control click",
+      steps: [
+        actionStep(
+          "result",
+          "app_control",
+          "click",
+          collectGenericObjectArgs(args, {
+            x: readCoordinate("--x", 0),
+            y: readCoordinate("--y", 1),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "scroll" || sub === "wheel") {
-    return { kind: "execute", label: "App Control scroll", steps: [actionStep("result", "app_control", "scroll", collectGenericObjectArgs(args, {
-      x: readCoordinate("--x", 0),
-      y: readCoordinate("--y", 1),
-      deltaX: readNumberOption(args, ["--delta-x", "--dx"]) ?? 0,
-      deltaY: readNumberOption(args, ["--delta-y", "--dy"]) ?? 0,
-      scale: readNumberOption(args, ["--scale"]),
-    }))] };
+    return {
+      kind: "execute",
+      label: "App Control scroll",
+      steps: [
+        actionStep(
+          "result",
+          "app_control",
+          "scroll",
+          collectGenericObjectArgs(args, {
+            x: readCoordinate("--x", 0),
+            y: readCoordinate("--y", 1),
+            deltaX: readNumberOption(args, ["--delta-x", "--dx"]) ?? 0,
+            deltaY: readNumberOption(args, ["--delta-y", "--dy"]) ?? 0,
+            scale: readNumberOption(args, ["--scale"]),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "key" || sub === "dispatch-key") {
     const key = readValue(args, ["--key"]) ?? firstPositional(args);
-    return { kind: "execute", label: "App Control key", steps: [actionStep("result", "app_control", "dispatchKey", collectGenericObjectArgs(args, {
-      type: readValue(args, ["--event-type", "--type"]) ?? "keyDown",
-      key: requireValue(key, "key"),
-      code: readValue(args, ["--code"]),
-      text: readValue(args, ["--text"]),
-      modifiers: readNumberOption(args, ["--modifiers"]),
-    }))] };
+    return {
+      kind: "execute",
+      label: "App Control key",
+      steps: [
+        actionStep(
+          "result",
+          "app_control",
+          "dispatchKey",
+          collectGenericObjectArgs(args, {
+            type: readValue(args, ["--event-type", "--type"]) ?? "keyDown",
+            key: requireValue(key, "key"),
+            code: readValue(args, ["--code"]),
+            text: readValue(args, ["--text"]),
+            modifiers: readNumberOption(args, ["--modifiers"]),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "type" || sub === "text") {
-    return { kind: "execute", label: "App Control type", steps: [actionStep("result", "app_control", "typeText", collectGenericObjectArgs(args, {
-      text: requireValue(
-        readValue(args, ["--value", "--message", "--input-text"])
-          ?? readCommandTextValue(args, ["--text"])
-          ?? args.filter((arg) => arg !== "--text").join(" "),
-        "text",
-      ),
-    }))] };
+    return {
+      kind: "execute",
+      label: "App Control type",
+      steps: [
+        actionStep(
+          "result",
+          "app_control",
+          "typeText",
+          collectGenericObjectArgs(args, {
+            text: requireValue(
+              readValue(args, ["--value", "--message", "--input-text"]) ??
+                readCommandTextValue(args, ["--text"]) ??
+                args.filter((arg) => arg !== "--text").join(" "),
+              "text",
+            ),
+          }),
+        ),
+      ],
+    };
   }
-  return { kind: "execute", label: `app-control ${sub}`, steps: [actionStep("result", "app_control", sub, collectGenericObjectArgs(args))] };
+  return {
+    kind: "execute",
+    label: `app-control ${sub}`,
+    steps: [
+      actionStep("result", "app_control", sub, collectGenericObjectArgs(args)),
+    ],
+  };
 }
 
 function buildMacosVmPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "status";
-  if (sub === "help") return { kind: "help", text: HELP_BY_COMMAND["macos-vm"] };
-  const numericPositionals = () => args.filter((value) => /^\d+(\.\d+)?$/.test(value));
+  if (sub === "help")
+    return { kind: "help", text: HELP_BY_COMMAND["macos-vm"] };
+  const numericPositionals = () =>
+    args.filter((value) => /^\d+(\.\d+)?$/.test(value));
   const readCoordinate = (flag: string, index: number): number => {
-    const value = readNumberOption(args, [flag]) ?? Number(numericPositionals()[index]);
-    if (!Number.isFinite(value)) throw new CliUsageError(`${flag} is required and must be a number.`);
+    const value =
+      readNumberOption(args, [flag]) ?? Number(numericPositionals()[index]);
+    if (!Number.isFinite(value))
+      throw new CliUsageError(`${flag} is required and must be a number.`);
     return value;
   };
 
   const readVmLaneId = (required: boolean): string | null => {
-    const laneId = readValue(args, ["--lane", "--lane-id"]) ?? firstPositional(args);
+    const laneId =
+      readValue(args, ["--lane", "--lane-id"]) ?? firstPositional(args);
     if (required) return requireValue(laneId, "laneId");
     return laneId;
   };
@@ -3644,242 +6610,822 @@ function buildMacosVmPlan(args: string[]): CliPlan {
       mode: readValue(args, ["--mode"]),
       ipsw: readValue(args, ["--ipsw"]),
       sourceImage: readValue(args, ["--image", "--source-image"]),
-      unattendedPreset: readValue(args, ["--unattended", "--unattended-preset"]),
+      unattendedPreset: readValue(args, [
+        "--unattended",
+        "--unattended-preset",
+      ]),
     };
-    return Object.fromEntries(Object.entries(options).filter(([, value]) => value !== undefined && value !== null && value !== ""));
+    return Object.fromEntries(
+      Object.entries(options).filter(
+        ([, value]) => value !== undefined && value !== null && value !== "",
+      ),
+    );
   };
 
-  if (sub === "actions") return { kind: "execute", label: "macOS VM actions", steps: [listActionsStep("actions", "macos_vm")] };
+  if (sub === "actions")
+    return {
+      kind: "execute",
+      label: "macOS VM actions",
+      steps: [listActionsStep("actions", "macos_vm")],
+    };
   if (sub === "status" || sub === "list" || sub === "ls") {
-    return { kind: "execute", label: "macOS VM status", steps: [actionStep("result", "macos_vm", "getStatus", collectGenericObjectArgs(args, { laneId: readVmLaneId(false) }))] };
+    return {
+      kind: "execute",
+      label: "macOS VM status",
+      steps: [
+        actionStep(
+          "result",
+          "macos_vm",
+          "getStatus",
+          collectGenericObjectArgs(args, { laneId: readVmLaneId(false) }),
+        ),
+      ],
+    };
   }
   if (sub === "share" || sub === "share-policy") {
-    return { kind: "execute", label: "macOS VM share policy", steps: [actionStep("result", "macos_vm", "getSharePolicy", collectGenericObjectArgs(args, { laneId: readVmLaneId(true) }))] };
+    return {
+      kind: "execute",
+      label: "macOS VM share policy",
+      steps: [
+        actionStep(
+          "result",
+          "macos_vm",
+          "getSharePolicy",
+          collectGenericObjectArgs(args, { laneId: readVmLaneId(true) }),
+        ),
+      ],
+    };
   }
   if (sub === "provision" || sub === "create" || sub === "pull") {
     const provisionOptions = readProvisionOptions();
-    const mode = sub === "create" ? "create" : sub === "pull" ? "pull-image" : provisionOptions.mode;
-    return { kind: "execute", label: "macOS VM provision", steps: [actionStep("result", "macos_vm", "provision", collectGenericObjectArgs(args, {
-      laneId: readVmLaneId(true),
-      ...provisionOptions,
-      mode,
-      force: readFlag(args, ["--force", "-f"]) ? true : undefined,
-    }))] };
+    const mode =
+      sub === "create"
+        ? "create"
+        : sub === "pull"
+          ? "pull-image"
+          : provisionOptions.mode;
+    return {
+      kind: "execute",
+      label: "macOS VM provision",
+      steps: [
+        actionStep(
+          "result",
+          "macos_vm",
+          "provision",
+          collectGenericObjectArgs(args, {
+            laneId: readVmLaneId(true),
+            ...provisionOptions,
+            mode,
+            force: readFlag(args, ["--force", "-f"]) ? true : undefined,
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "start" || sub === "run" || sub === "open") {
     const noDisplay = readFlag(args, ["--no-display", "--headless"]);
-    const openDisplay = noDisplay ? false : readFlag(args, ["--open-display", "--display-window"]) ? true : undefined;
-    return { kind: "execute", label: "macOS VM start", steps: [actionStep("result", "macos_vm", "start", collectGenericObjectArgs(args, {
-      laneId: readVmLaneId(true),
-      ...readProvisionOptions(),
-      openDisplay,
-      createIfMissing: readFlag(args, ["--create", "--create-if-missing"]) ? true : undefined,
-    }))] };
+    const openDisplay = noDisplay
+      ? false
+      : readFlag(args, ["--open-display", "--display-window"])
+        ? true
+        : undefined;
+    return {
+      kind: "execute",
+      label: "macOS VM start",
+      steps: [
+        actionStep(
+          "result",
+          "macos_vm",
+          "start",
+          collectGenericObjectArgs(args, {
+            laneId: readVmLaneId(true),
+            ...readProvisionOptions(),
+            openDisplay,
+            createIfMissing: readFlag(args, ["--create", "--create-if-missing"])
+              ? true
+              : undefined,
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "stop" || sub === "shutdown") {
-    return { kind: "execute", label: "macOS VM stop", steps: [actionStep("result", "macos_vm", "stop", collectGenericObjectArgs(args, {
-      laneId: readVmLaneId(true),
-      force: readFlag(args, ["--force", "-f"]) ? true : undefined,
-    }))] };
+    return {
+      kind: "execute",
+      label: "macOS VM stop",
+      steps: [
+        actionStep(
+          "result",
+          "macos_vm",
+          "stop",
+          collectGenericObjectArgs(args, {
+            laneId: readVmLaneId(true),
+            force: readFlag(args, ["--force", "-f"]) ? true : undefined,
+          }),
+        ),
+      ],
+    };
   }
-  if (sub === "delete" || sub === "rm" || sub === "remove" || sub === "destroy") {
-    return { kind: "execute", label: "macOS VM delete", steps: [actionStep("result", "macos_vm", "delete", collectGenericObjectArgs(args, {
-      laneId: readVmLaneId(true),
-      force: readFlag(args, ["--force", "-f"]) ? true : undefined,
-    }))] };
+  if (
+    sub === "delete" ||
+    sub === "rm" ||
+    sub === "remove" ||
+    sub === "destroy"
+  ) {
+    return {
+      kind: "execute",
+      label: "macOS VM delete",
+      steps: [
+        actionStep(
+          "result",
+          "macos_vm",
+          "delete",
+          collectGenericObjectArgs(args, {
+            laneId: readVmLaneId(true),
+            force: readFlag(args, ["--force", "-f"]) ? true : undefined,
+          }),
+        ),
+      ],
+    };
   }
-  if (sub === "guide" || sub === "agent-guide" || sub === "handoff" || sub === "target") {
-    return { kind: "execute", label: "macOS VM guide", steps: [actionStep("result", "macos_vm", "getAgentGuide", collectGenericObjectArgs(args, { laneId: readVmLaneId(true) }))] };
+  if (
+    sub === "guide" ||
+    sub === "agent-guide" ||
+    sub === "handoff" ||
+    sub === "target"
+  ) {
+    return {
+      kind: "execute",
+      label: "macOS VM guide",
+      steps: [
+        actionStep(
+          "result",
+          "macos_vm",
+          "getAgentGuide",
+          collectGenericObjectArgs(args, { laneId: readVmLaneId(true) }),
+        ),
+      ],
+    };
   }
   if (sub === "focus" || sub === "focus-window") {
-    return { kind: "execute", label: "macOS VM focus", steps: [actionStep("result", "macos_vm", "focusWindow", collectGenericObjectArgs(args, {
-      laneId: readVmLaneId(true),
-      windowTitleQuery: readValue(args, ["--window-title", "--title-query"]),
-    }))] };
+    return {
+      kind: "execute",
+      label: "macOS VM focus",
+      steps: [
+        actionStep(
+          "result",
+          "macos_vm",
+          "focusWindow",
+          collectGenericObjectArgs(args, {
+            laneId: readVmLaneId(true),
+            windowTitleQuery: readValue(args, [
+              "--window-title",
+              "--title-query",
+            ]),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "screenshot" || sub === "capture") {
-    return { kind: "execute", label: "macOS VM screenshot", steps: [actionStep("result", "macos_vm", "captureScreenshot", collectGenericObjectArgs(args, {
-      laneId: readVmLaneId(true),
-      windowTitleQuery: readValue(args, ["--window-title", "--title-query"]),
-      outputPath: readValue(args, ["--output", "--path"]),
-    }))] };
+    return {
+      kind: "execute",
+      label: "macOS VM screenshot",
+      steps: [
+        actionStep(
+          "result",
+          "macos_vm",
+          "captureScreenshot",
+          collectGenericObjectArgs(args, {
+            laneId: readVmLaneId(true),
+            windowTitleQuery: readValue(args, [
+              "--window-title",
+              "--title-query",
+            ]),
+            outputPath: readValue(args, ["--output", "--path"]),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "select" || sub === "select-point" || sub === "inspect") {
-    return { kind: "execute", label: "macOS VM select", steps: [actionStep("result", "macos_vm", "selectPoint", collectGenericObjectArgs(args, {
-      laneId: readVmLaneId(true),
-      x: readCoordinate("--x", 0),
-      y: readCoordinate("--y", 1),
-      coordinateSpace: readValue(args, ["--coordinate-space", "--coords"]),
-      windowTitleQuery: readValue(args, ["--window-title", "--title-query"]),
-      includeScreenshot: readFlag(args, ["--no-screenshot"]) ? false : undefined,
-    }))] };
+    return {
+      kind: "execute",
+      label: "macOS VM select",
+      steps: [
+        actionStep(
+          "result",
+          "macos_vm",
+          "selectPoint",
+          collectGenericObjectArgs(args, {
+            laneId: readVmLaneId(true),
+            x: readCoordinate("--x", 0),
+            y: readCoordinate("--y", 1),
+            coordinateSpace: readValue(args, [
+              "--coordinate-space",
+              "--coords",
+            ]),
+            windowTitleQuery: readValue(args, [
+              "--window-title",
+              "--title-query",
+            ]),
+            includeScreenshot: readFlag(args, ["--no-screenshot"])
+              ? false
+              : undefined,
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "click" || sub === "tap") {
-    return { kind: "execute", label: "macOS VM click", steps: [actionStep("result", "macos_vm", "click", collectGenericObjectArgs(args, {
-      laneId: readVmLaneId(true),
-      x: readCoordinate("--x", 0),
-      y: readCoordinate("--y", 1),
-      coordinateSpace: readValue(args, ["--coordinate-space", "--coords"]),
-      windowTitleQuery: readValue(args, ["--window-title", "--title-query"]),
-    }))] };
+    return {
+      kind: "execute",
+      label: "macOS VM click",
+      steps: [
+        actionStep(
+          "result",
+          "macos_vm",
+          "click",
+          collectGenericObjectArgs(args, {
+            laneId: readVmLaneId(true),
+            x: readCoordinate("--x", 0),
+            y: readCoordinate("--y", 1),
+            coordinateSpace: readValue(args, [
+              "--coordinate-space",
+              "--coords",
+            ]),
+            windowTitleQuery: readValue(args, [
+              "--window-title",
+              "--title-query",
+            ]),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "type" || sub === "text") {
-    return { kind: "execute", label: "macOS VM type", steps: [actionStep("result", "macos_vm", "typeText", collectGenericObjectArgs(args, {
-      laneId: readVmLaneId(true),
-      text: requireValue(
-        readValue(args, ["--value", "--message", "--input-text"])
-          ?? readCommandTextValue(args, ["--text"])
-          ?? args.filter((arg) => arg !== "--text").join(" "),
-        "text",
-      ),
-      windowTitleQuery: readValue(args, ["--window-title", "--title-query"]),
-    }))] };
+    return {
+      kind: "execute",
+      label: "macOS VM type",
+      steps: [
+        actionStep(
+          "result",
+          "macos_vm",
+          "typeText",
+          collectGenericObjectArgs(args, {
+            laneId: readVmLaneId(true),
+            text: requireValue(
+              readValue(args, ["--value", "--message", "--input-text"]) ??
+                readCommandTextValue(args, ["--text"]) ??
+                args.filter((arg) => arg !== "--text").join(" "),
+              "text",
+            ),
+            windowTitleQuery: readValue(args, [
+              "--window-title",
+              "--title-query",
+            ]),
+          }),
+        ),
+      ],
+    };
   }
-  return { kind: "execute", label: `macos-vm ${sub}`, steps: [actionStep("result", "macos_vm", sub, collectGenericObjectArgs(args))] };
+  return {
+    kind: "execute",
+    label: `macos-vm ${sub}`,
+    steps: [
+      actionStep("result", "macos_vm", sub, collectGenericObjectArgs(args)),
+    ],
+  };
 }
 
 function buildBrowserPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "status";
   if (sub === "help") return { kind: "help", text: HELP_BY_COMMAND.browser };
-  if (sub === "actions") return { kind: "execute", label: "browser actions", steps: [listActionsStep("actions", "built_in_browser")] };
+  if (sub === "actions")
+    return {
+      kind: "execute",
+      label: "browser actions",
+      steps: [listActionsStep("actions", "built_in_browser")],
+    };
   if (sub === "status" || sub === "tabs" || sub === "list") {
-    return { kind: "execute", label: "browser status", steps: [actionStep("result", "built_in_browser", "getStatus", collectGenericObjectArgs(args))] };
+    return {
+      kind: "execute",
+      label: "browser status",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "getStatus",
+          collectGenericObjectArgs(args),
+        ),
+      ],
+    };
   }
-  if (sub === "panel" || sub === "show" || sub === "open-panel" || sub === "reveal") {
+  if (
+    sub === "panel" ||
+    sub === "show" ||
+    sub === "open-panel" ||
+    sub === "reveal"
+  ) {
     const panelArgs: JsonObject = {};
     maybePut(panelArgs, "url", readValue(args, ["--url"]));
     maybePut(panelArgs, "tabId", readValue(args, ["--tab", "--tab-id"]));
-    return { kind: "execute", label: "browser panel", steps: [actionStep("result", "built_in_browser", "showPanel", collectGenericObjectArgs(args, panelArgs))] };
+    return {
+      kind: "execute",
+      label: "browser panel",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "showPanel",
+          collectGenericObjectArgs(args, panelArgs),
+        ),
+      ],
+    };
   }
   if (sub === "open" || sub === "navigate" || sub === "go") {
     const explicitUrl = readValue(args, ["--url"]);
     const tabId = readValue(args, ["--tab", "--tab-id"]);
-    const activeTab = readFlag(args, ["--active-tab", "--current-tab", "--same-tab"]);
+    const activeTab = readFlag(args, [
+      "--active-tab",
+      "--current-tab",
+      "--same-tab",
+    ]);
     const newTab = readFlag(args, ["--new-tab"]);
     const noPanel = readFlag(args, ["--no-panel", "--hidden"]);
     const genericArgs = collectGenericObjectArgs(args);
-    const genericUrl = typeof genericArgs.url === "string" ? genericArgs.url : null;
+    const genericUrl =
+      typeof genericArgs.url === "string" ? genericArgs.url : null;
     const url = explicitUrl ?? genericUrl ?? args.join(" ");
     if (!url.trim()) throw new CliUsageError("browser open requires a URL.");
-    return { kind: "execute", label: "browser open", steps: [actionStep("result", "built_in_browser", "navigate", {
-      url,
-      tabId,
-      newTab: newTab && !activeTab ? true : undefined,
-      openPanel: !noPanel,
-      ...genericArgs,
-    })] };
+    return {
+      kind: "execute",
+      label: "browser open",
+      steps: [
+        actionStep("result", "built_in_browser", "navigate", {
+          url,
+          tabId,
+          newTab: newTab && !activeTab ? true : undefined,
+          openPanel: !noPanel,
+          ...genericArgs,
+        }),
+      ],
+    };
   }
   if (sub === "new-tab" || sub === "tab" || sub === "new") {
     const background = readFlag(args, ["--background"]);
     const noPanel = readFlag(args, ["--no-panel", "--hidden"]);
     const explicitUrl = readValue(args, ["--url"]);
     const genericArgs = collectGenericObjectArgs(args);
-    const genericUrl = typeof genericArgs.url === "string" ? genericArgs.url : null;
-    const url = explicitUrl ?? genericUrl ?? (args.length ? args.join(" ") : undefined);
-    return { kind: "execute", label: "browser new tab", steps: [actionStep("result", "built_in_browser", "createTab", {
-      url,
-      activate: background ? false : undefined,
-      openPanel: !noPanel,
-      ...genericArgs,
-    })] };
+    const genericUrl =
+      typeof genericArgs.url === "string" ? genericArgs.url : null;
+    const url =
+      explicitUrl ?? genericUrl ?? (args.length ? args.join(" ") : undefined);
+    return {
+      kind: "execute",
+      label: "browser new tab",
+      steps: [
+        actionStep("result", "built_in_browser", "createTab", {
+          url,
+          activate: background ? false : undefined,
+          openPanel: !noPanel,
+          ...genericArgs,
+        }),
+      ],
+    };
   }
   if (sub === "switch" || sub === "activate") {
     const noPanel = readFlag(args, ["--no-panel", "--hidden"]);
     const explicitTabId = readValue(args, ["--tab", "--tab-id"]);
     const genericArgs = collectGenericObjectArgs(args);
-    const genericTabId = typeof genericArgs.tabId === "string" ? genericArgs.tabId : null;
-    return { kind: "execute", label: "browser switch", steps: [actionStep("result", "built_in_browser", "switchTab", {
-      tabId: requireValue(explicitTabId ?? genericTabId ?? firstPositional(args), "tabId"),
-      openPanel: !noPanel,
-      ...genericArgs,
-    })] };
+    const genericTabId =
+      typeof genericArgs.tabId === "string" ? genericArgs.tabId : null;
+    return {
+      kind: "execute",
+      label: "browser switch",
+      steps: [
+        actionStep("result", "built_in_browser", "switchTab", {
+          tabId: requireValue(
+            explicitTabId ?? genericTabId ?? firstPositional(args),
+            "tabId",
+          ),
+          openPanel: !noPanel,
+          ...genericArgs,
+        }),
+      ],
+    };
   }
   if (sub === "close" || sub === "close-tab") {
     const explicitTabId = readValue(args, ["--tab", "--tab-id"]);
     const genericArgs = collectGenericObjectArgs(args);
-    const genericTabId = typeof genericArgs.tabId === "string" ? genericArgs.tabId : null;
-    return { kind: "execute", label: "browser close", steps: [actionStep("result", "built_in_browser", "closeTab", {
-      tabId: requireValue(explicitTabId ?? genericTabId ?? firstPositional(args), "tabId"),
-      ...genericArgs,
-    })] };
+    const genericTabId =
+      typeof genericArgs.tabId === "string" ? genericArgs.tabId : null;
+    return {
+      kind: "execute",
+      label: "browser close",
+      steps: [
+        actionStep("result", "built_in_browser", "closeTab", {
+          tabId: requireValue(
+            explicitTabId ?? genericTabId ?? firstPositional(args),
+            "tabId",
+          ),
+          ...genericArgs,
+        }),
+      ],
+    };
   }
-  if (sub === "reload" || sub === "refresh") return { kind: "execute", label: "browser reload", steps: [actionStep("result", "built_in_browser", "reload", collectGenericObjectArgs(args))] };
-  if (sub === "back") return { kind: "execute", label: "browser back", steps: [actionStep("result", "built_in_browser", "goBack", collectGenericObjectArgs(args))] };
-  if (sub === "forward") return { kind: "execute", label: "browser forward", steps: [actionStep("result", "built_in_browser", "goForward", collectGenericObjectArgs(args))] };
-  if (sub === "stop") return { kind: "execute", label: "browser stop", steps: [actionStep("result", "built_in_browser", "stop", collectGenericObjectArgs(args))] };
-  if (sub === "screenshot" || sub === "capture") return { kind: "execute", label: "browser screenshot", steps: [actionStep("result", "built_in_browser", "captureScreenshot", collectGenericObjectArgs(args))] };
+  if (sub === "reload" || sub === "refresh")
+    return {
+      kind: "execute",
+      label: "browser reload",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "reload",
+          collectGenericObjectArgs(args),
+        ),
+      ],
+    };
+  if (sub === "back")
+    return {
+      kind: "execute",
+      label: "browser back",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "goBack",
+          collectGenericObjectArgs(args),
+        ),
+      ],
+    };
+  if (sub === "forward")
+    return {
+      kind: "execute",
+      label: "browser forward",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "goForward",
+          collectGenericObjectArgs(args),
+        ),
+      ],
+    };
+  if (sub === "stop")
+    return {
+      kind: "execute",
+      label: "browser stop",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "stop",
+          collectGenericObjectArgs(args),
+        ),
+      ],
+    };
+  if (sub === "screenshot" || sub === "capture")
+    return {
+      kind: "execute",
+      label: "browser screenshot",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "captureScreenshot",
+          collectGenericObjectArgs(args),
+        ),
+      ],
+    };
   if (sub === "select" || sub === "select-point" || sub === "point") {
     const x = readNumberOption(args, ["--x"]);
     const y = readNumberOption(args, ["--y"]);
-    if (x == null || y == null) throw new CliUsageError("browser select requires --x and --y.");
-    return { kind: "execute", label: "browser selection", steps: [actionStep("result", "built_in_browser", "selectPoint", collectGenericObjectArgs(args, {
-      x,
-      y,
-      includeScreenshot: readFlag(args, ["--no-screenshot"]) ? false : undefined,
-    }))] };
+    if (x == null || y == null)
+      throw new CliUsageError("browser select requires --x and --y.");
+    return {
+      kind: "execute",
+      label: "browser selection",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "selectPoint",
+          collectGenericObjectArgs(args, {
+            x,
+            y,
+            includeScreenshot: readFlag(args, ["--no-screenshot"])
+              ? false
+              : undefined,
+          }),
+        ),
+      ],
+    };
   }
-  if (sub === "inspect-start" || sub === "start-inspect" || sub === "inspect") return { kind: "execute", label: "browser inspect start", steps: [actionStep("result", "built_in_browser", "startInspect", collectGenericObjectArgs(args))] };
-  if (sub === "inspect-stop" || sub === "stop-inspect") return { kind: "execute", label: "browser inspect stop", steps: [actionStep("result", "built_in_browser", "stopInspect", collectGenericObjectArgs(args))] };
-  if (sub === "select-current" || sub === "selection" || sub === "selected") return { kind: "execute", label: "browser selection", steps: [actionStep("result", "built_in_browser", "selectCurrent", collectGenericObjectArgs(args))] };
-  if (sub === "clear-selection" || sub === "clear") return { kind: "execute", label: "browser clear selection", steps: [actionStep("result", "built_in_browser", "clearSelection", collectGenericObjectArgs(args))] };
-  return { kind: "execute", label: `browser ${sub}`, steps: [actionStep("result", "built_in_browser", sub, collectGenericObjectArgs(args))] };
+  if (sub === "inspect-start" || sub === "start-inspect" || sub === "inspect")
+    return {
+      kind: "execute",
+      label: "browser inspect start",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "startInspect",
+          collectGenericObjectArgs(args),
+        ),
+      ],
+    };
+  if (sub === "inspect-stop" || sub === "stop-inspect")
+    return {
+      kind: "execute",
+      label: "browser inspect stop",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "stopInspect",
+          collectGenericObjectArgs(args),
+        ),
+      ],
+    };
+  if (sub === "select-current" || sub === "selection" || sub === "selected")
+    return {
+      kind: "execute",
+      label: "browser selection",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "selectCurrent",
+          collectGenericObjectArgs(args),
+        ),
+      ],
+    };
+  if (sub === "clear-selection" || sub === "clear")
+    return {
+      kind: "execute",
+      label: "browser clear selection",
+      steps: [
+        actionStep(
+          "result",
+          "built_in_browser",
+          "clearSelection",
+          collectGenericObjectArgs(args),
+        ),
+      ],
+    };
+  return {
+    kind: "execute",
+    label: `browser ${sub}`,
+    steps: [
+      actionStep(
+        "result",
+        "built_in_browser",
+        sub,
+        collectGenericObjectArgs(args),
+      ),
+    ],
+  };
 }
 
 function buildMemoryPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "search";
-  if (sub === "actions") return { kind: "execute", label: "memory actions", steps: [listActionsStep("actions", "memory")] };
-  if (sub === "add") return { kind: "execute", label: "memory add", steps: [actionCallStep("result", "memory_add", collectGenericObjectArgs(args, { content: requireValue(readValue(args, ["--content"]) ?? args.join(" "), "content"), category: requireValue(readValue(args, ["--category"]), "category"), scope: readValue(args, ["--scope"]) }))] };
-  if (sub === "search") return { kind: "execute", label: "memory search", steps: [actionCallStep("result", "memory_search", collectGenericObjectArgs(args, { query: requireValue(readValue(args, ["--query", "-q"]) ?? args.join(" "), "query") }))] };
-  if (sub === "pin") return { kind: "execute", label: "memory pin", steps: [actionCallStep("result", "memory_pin", collectGenericObjectArgs(args, { id: requireValue(readValue(args, ["--memory", "--memory-id", "--id"]) ?? firstPositional(args), "memory id") }))] };
-  if (sub === "core") return { kind: "execute", label: "memory core", steps: [actionCallStep("result", "memory_update_core", collectGenericObjectArgs(args))] };
-  return { kind: "execute", label: `memory ${sub}`, steps: [actionStep("result", "memory", sub, collectGenericObjectArgs(args))] };
+  if (sub === "actions")
+    return {
+      kind: "execute",
+      label: "memory actions",
+      steps: [listActionsStep("actions", "memory")],
+    };
+  if (sub === "add")
+    return {
+      kind: "execute",
+      label: "memory add",
+      steps: [
+        actionCallStep(
+          "result",
+          "memory_add",
+          collectGenericObjectArgs(args, {
+            content: requireValue(
+              readValue(args, ["--content"]) ?? args.join(" "),
+              "content",
+            ),
+            category: requireValue(readValue(args, ["--category"]), "category"),
+            scope: readValue(args, ["--scope"]),
+          }),
+        ),
+      ],
+    };
+  if (sub === "search")
+    return {
+      kind: "execute",
+      label: "memory search",
+      steps: [
+        actionCallStep(
+          "result",
+          "memory_search",
+          collectGenericObjectArgs(args, {
+            query: requireValue(
+              readValue(args, ["--query", "-q"]) ?? args.join(" "),
+              "query",
+            ),
+          }),
+        ),
+      ],
+    };
+  if (sub === "pin")
+    return {
+      kind: "execute",
+      label: "memory pin",
+      steps: [
+        actionCallStep(
+          "result",
+          "memory_pin",
+          collectGenericObjectArgs(args, {
+            id: requireValue(
+              readValue(args, ["--memory", "--memory-id", "--id"]) ??
+                firstPositional(args),
+              "memory id",
+            ),
+          }),
+        ),
+      ],
+    };
+  if (sub === "core")
+    return {
+      kind: "execute",
+      label: "memory core",
+      steps: [
+        actionCallStep(
+          "result",
+          "memory_update_core",
+          collectGenericObjectArgs(args),
+        ),
+      ],
+    };
+  return {
+    kind: "execute",
+    label: `memory ${sub}`,
+    steps: [
+      actionStep("result", "memory", sub, collectGenericObjectArgs(args)),
+    ],
+  };
 }
 
 function buildSettingsPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "get";
-  if (sub === "actions") return { kind: "execute", label: "settings actions", steps: [listActionsStep("actions", "project_config")] };
-  if (sub === "action") return { kind: "execute", label: "settings action", steps: [buildActionRunStep(["project_config", ...args])] };
-  return { kind: "execute", label: `settings ${sub}`, steps: [actionStep("result", "project_config", sub, collectGenericObjectArgs(args))] };
+  if (sub === "actions")
+    return {
+      kind: "execute",
+      label: "settings actions",
+      steps: [listActionsStep("actions", "project_config")],
+    };
+  if (sub === "action")
+    return {
+      kind: "execute",
+      label: "settings action",
+      steps: [buildActionRunStep(["project_config", ...args])],
+    };
+  return {
+    kind: "execute",
+    label: `settings ${sub}`,
+    steps: [
+      actionStep(
+        "result",
+        "project_config",
+        sub,
+        collectGenericObjectArgs(args),
+      ),
+    ],
+  };
 }
 
-function buildActionStatusArgs(args: string[], defaults: { waitForMs?: number } = {}): JsonObject {
+function buildActionStatusArgs(
+  args: string[],
+  defaults: { waitForMs?: number } = {},
+): JsonObject {
   const input: JsonObject = {};
-  maybePut(input, "operationId", readValue(args, ["--operation", "--operation-id"]));
-  maybePut(input, "testRunId", readValue(args, ["--test-run", "--test-run-id"]));
-  maybePut(input, "chatSessionId", readValue(args, ["--chat-session", "--chat-session-id"]));
+  maybePut(
+    input,
+    "operationId",
+    readValue(args, ["--operation", "--operation-id"]),
+  );
+  maybePut(
+    input,
+    "testRunId",
+    readValue(args, ["--test-run", "--test-run-id"]),
+  );
+  maybePut(
+    input,
+    "chatSessionId",
+    readValue(args, ["--chat-session", "--chat-session-id"]),
+  );
   maybePut(input, "runId", readValue(args, ["--run", "--run-id"]));
   maybePut(input, "missionId", readValue(args, ["--mission", "--mission-id"]));
   maybePut(input, "prId", readValue(args, ["--pr", "--pr-id"]));
   maybePut(input, "previousHash", readValue(args, ["--previous-hash"]));
-  maybePut(input, "waitForMs", readIntOption(args, ["--wait-ms"], defaults.waitForMs));
-  maybePut(input, "pollIntervalMs", readIntOption(args, ["--poll-interval-ms"]));
+  maybePut(
+    input,
+    "waitForMs",
+    readIntOption(args, ["--wait-ms"], defaults.waitForMs),
+  );
+  maybePut(
+    input,
+    "pollIntervalMs",
+    readIntOption(args, ["--poll-interval-ms"]),
+  );
   return collectGenericObjectArgs(args, input);
 }
 
 function buildOperationsPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "status";
   if (sub === "status" || sub === "show") {
-    return { kind: "execute", label: "action status", steps: [actionCallStep("result", "get_ade_action_status", buildActionStatusArgs(args))] };
+    return {
+      kind: "execute",
+      label: "action status",
+      steps: [
+        actionCallStep(
+          "result",
+          "get_ade_action_status",
+          buildActionStatusArgs(args),
+        ),
+      ],
+    };
   }
   if (sub === "wait" || sub === "watch") {
-    return { kind: "execute", label: "action status", steps: [actionCallStep("result", "get_ade_action_status", buildActionStatusArgs(args, { waitForMs: 30_000 }))] };
+    return {
+      kind: "execute",
+      label: "action status",
+      steps: [
+        actionCallStep(
+          "result",
+          "get_ade_action_status",
+          buildActionStatusArgs(args, { waitForMs: 30_000 }),
+        ),
+      ],
+    };
   }
   if (sub === "logs" || sub === "log") {
-    throw new CliUsageError("Generic operation logs are not available; use tests logs, run logs, terminal read, or app-control logs for log-owning surfaces.");
+    throw new CliUsageError(
+      "Generic operation logs are not available; use tests logs, run logs, terminal read, or app-control logs for log-owning surfaces.",
+    );
   }
   throw new CliUsageError("operations supports status or wait.");
 }
 
 function buildActionsPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "list";
-  if (sub === "list" || sub === "ls") return { kind: "execute", label: "actions list", steps: [listActionsStep("result", readValue(args, ["--domain"]) ?? firstPositional(args) ?? undefined)] };
+  if (sub === "list" || sub === "ls")
+    return {
+      kind: "execute",
+      label: "actions list",
+      steps: [
+        listActionsStep(
+          "result",
+          readValue(args, ["--domain"]) ?? firstPositional(args) ?? undefined,
+        ),
+      ],
+    };
   if (sub === "call" || sub === "direct" || sub === "tool") {
     const toolName = requireValue(firstPositional(args), "toolName");
-    return { kind: "execute", label: "action call", steps: [actionCallStep("result", toolName, collectGenericObjectArgs(args))] };
+    return {
+      kind: "execute",
+      label: "action call",
+      steps: [
+        actionCallStep("result", toolName, collectGenericObjectArgs(args)),
+      ],
+    };
   }
-  if (sub === "run") return { kind: "execute", label: "action run", steps: [buildActionRunStep(args)] };
-  if (sub === "status") return { kind: "execute", label: "action status", steps: [actionCallStep("result", "get_ade_action_status", buildActionStatusArgs(args))] };
-  if (sub === "wait" || sub === "watch") return { kind: "execute", label: "action status", steps: [actionCallStep("result", "get_ade_action_status", buildActionStatusArgs(args, { waitForMs: 30_000 }))] };
+  if (sub === "run")
+    return {
+      kind: "execute",
+      label: "action run",
+      steps: [buildActionRunStep(args)],
+    };
+  if (sub === "status")
+    return {
+      kind: "execute",
+      label: "action status",
+      steps: [
+        actionCallStep(
+          "result",
+          "get_ade_action_status",
+          buildActionStatusArgs(args),
+        ),
+      ],
+    };
+  if (sub === "wait" || sub === "watch")
+    return {
+      kind: "execute",
+      label: "action status",
+      steps: [
+        actionCallStep(
+          "result",
+          "get_ade_action_status",
+          buildActionStatusArgs(args, { waitForMs: 30_000 }),
+        ),
+      ],
+    };
   throw new CliUsageError("actions supports list, run, call, status, or wait.");
 }
 
@@ -3887,36 +7433,74 @@ function buildAgentPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "spawn";
   if (sub === "spawn" || sub === "start") {
     const toolWhitelist = args
-      .filter((entry) => entry.startsWith("--tool=") || entry.startsWith("--allow-tool="))
+      .filter(
+        (entry) =>
+          entry.startsWith("--tool=") || entry.startsWith("--allow-tool="),
+      )
       .map((entry) => entry.slice(entry.indexOf("=") + 1).trim())
       .filter(Boolean);
     const laneId = requireValue(readLaneId(args), "laneId");
-    const prompt = requireValue(readValue(args, ["--prompt"]) ?? args.join(" "), "prompt");
+    const prompt = requireValue(
+      readValue(args, ["--prompt"]) ?? args.join(" "),
+      "prompt",
+    );
     return {
       kind: "execute",
       label: "agent spawn",
-      steps: [actionCallStep("result", "spawn_agent", collectGenericObjectArgs(args, {
-        laneId,
-        provider: readValue(args, ["--provider"]) ?? "codex",
-        model: readValue(args, ["--model"]),
-        title: readValue(args, ["--title"]),
-        prompt,
-        permissionMode: readValue(args, ["--permission-mode", "--permissions"]),
-        contextFilePath: readValue(args, ["--context-file"]),
-        runId: readValue(args, ["--run", "--run-id"]),
-        stepId: readValue(args, ["--step", "--step-id"]),
-        attemptId: readValue(args, ["--attempt", "--attempt-id"]),
-        maxPromptChars: readIntOption(args, ["--max-prompt-chars"]),
-        ...(toolWhitelist.length ? { toolWhitelist } : {}),
-      }))],
+      steps: [
+        actionCallStep(
+          "result",
+          "spawn_agent",
+          collectGenericObjectArgs(args, {
+            laneId,
+            provider: readValue(args, ["--provider"]) ?? "codex",
+            model: readValue(args, ["--model"]),
+            title: readValue(args, ["--title"]),
+            prompt,
+            permissionMode: readValue(args, [
+              "--permission-mode",
+              "--permissions",
+            ]),
+            contextFilePath: readValue(args, ["--context-file"]),
+            runId: readValue(args, ["--run", "--run-id"]),
+            stepId: readValue(args, ["--step", "--step-id"]),
+            attemptId: readValue(args, ["--attempt", "--attempt-id"]),
+            maxPromptChars: readIntOption(args, ["--max-prompt-chars"]),
+            ...(toolWhitelist.length ? { toolWhitelist } : {}),
+          }),
+        ),
+      ],
     };
   }
-  return { kind: "execute", label: `agent ${sub}`, steps: [actionCallStep("result", sub.replace(/-/g, "_"), collectGenericObjectArgs(args))] };
+  return {
+    kind: "execute",
+    label: `agent ${sub}`,
+    steps: [
+      actionCallStep(
+        "result",
+        sub.replace(/-/g, "_"),
+        collectGenericObjectArgs(args),
+      ),
+    ],
+  };
 }
 
 function buildCtoPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "state";
-  if (sub === "state") return { kind: "execute", label: "CTO state", steps: [actionCallStep("result", "get_cto_state", collectGenericObjectArgs(args, { recentLimit: readIntOption(args, ["--recent-limit", "--limit"]) }))] };
+  if (sub === "state")
+    return {
+      kind: "execute",
+      label: "CTO state",
+      steps: [
+        actionCallStep(
+          "result",
+          "get_cto_state",
+          collectGenericObjectArgs(args, {
+            recentLimit: readIntOption(args, ["--recent-limit", "--limit"]),
+          }),
+        ),
+      ],
+    };
   if (sub === "chats" || sub === "chat") {
     const mode = firstPositional(args) ?? "list";
     const toolByMode: Record<string, string> = {
@@ -3930,16 +7514,49 @@ function buildCtoPlan(args: string[]): CliPlan {
       end: "endChat",
     };
     const tool = toolByMode[mode];
-    if (!tool) throw new CliUsageError("cto chats supports list, spawn, status, transcript, send, interrupt, resume, or end.");
-    return { kind: "execute", label: `CTO chats ${mode}`, steps: [actionCallStep("result", tool, collectGenericObjectArgs(args, { sessionId: readValue(args, ["--session", "--session-id"]) ?? firstPositional(args), text: readValue(args, ["--text", "--message"]) ?? args.join(" "), laneId: readLaneId(args), modelId: readValue(args, ["--model", "--model-id"]), initialPrompt: readValue(args, ["--prompt"]) }))] };
+    if (!tool)
+      throw new CliUsageError(
+        "cto chats supports list, spawn, status, transcript, send, interrupt, resume, or end.",
+      );
+    return {
+      kind: "execute",
+      label: `CTO chats ${mode}`,
+      steps: [
+        actionCallStep(
+          "result",
+          tool,
+          collectGenericObjectArgs(args, {
+            sessionId:
+              readValue(args, ["--session", "--session-id"]) ??
+              firstPositional(args),
+            text: readValue(args, ["--text", "--message"]) ?? args.join(" "),
+            laneId: readLaneId(args),
+            modelId: readValue(args, ["--model", "--model-id"]),
+            initialPrompt: readValue(args, ["--prompt"]),
+          }),
+        ),
+      ],
+    };
   }
-  return { kind: "execute", label: `CTO ${sub}`, steps: [actionCallStep("result", sub.replace(/-/g, "_"), collectGenericObjectArgs(args))] };
+  return {
+    kind: "execute",
+    label: `CTO ${sub}`,
+    steps: [
+      actionCallStep(
+        "result",
+        sub.replace(/-/g, "_"),
+        collectGenericObjectArgs(args),
+      ),
+    ],
+  };
 }
 
 function parseDraftInput(args: string[]): JsonObject {
   const text = readFileTextInput(args);
   if (text == null) {
-    throw new CliUsageError("Provide a rule body via --from-file, --stdin, or --text.");
+    throw new CliUsageError(
+      "Provide a rule body via --from-file, --stdin, or --text.",
+    );
   }
   const trimmed = text.trim();
   if (!trimmed.length) {
@@ -3947,11 +7564,14 @@ function parseDraftInput(args: string[]): JsonObject {
   }
   let parsed: unknown;
   try {
-    parsed = trimmed.startsWith("{") || trimmed.startsWith("[")
-      ? JSON.parse(trimmed)
-      : YAML.parse(trimmed);
+    parsed =
+      trimmed.startsWith("{") || trimmed.startsWith("[")
+        ? JSON.parse(trimmed)
+        : YAML.parse(trimmed);
   } catch (error) {
-    throw new CliUsageError(`Failed to parse rule body: ${error instanceof Error ? error.message : String(error)}`);
+    throw new CliUsageError(
+      `Failed to parse rule body: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
   if (!isRecord(parsed)) {
     throw new CliUsageError("Rule body must be an object.");
@@ -3959,12 +7579,30 @@ function parseDraftInput(args: string[]): JsonObject {
   return parsed;
 }
 
-const AUTOMATION_LANE_MODES = ["create", "reuse", "require-on-trigger"] as const;
-const AUTOMATION_LANE_NAME_PRESETS = ["issue-title", "issue-num-title", "pr-title-author", "custom"] as const;
-const AUTOMATION_RUN_STATUSES = ["queued", "running", "succeeded", "failed", "cancelled", "paused", "all"] as const;
+const AUTOMATION_LANE_MODES = [
+  "create",
+  "reuse",
+  "require-on-trigger",
+] as const;
+const AUTOMATION_LANE_NAME_PRESETS = [
+  "issue-title",
+  "issue-num-title",
+  "pr-title-author",
+  "custom",
+] as const;
+const AUTOMATION_RUN_STATUSES = [
+  "queued",
+  "running",
+  "succeeded",
+  "failed",
+  "cancelled",
+  "paused",
+  "all",
+] as const;
 
 type AutomationLaneModeFlag = (typeof AUTOMATION_LANE_MODES)[number];
-type AutomationLaneNamePresetFlag = (typeof AUTOMATION_LANE_NAME_PRESETS)[number];
+type AutomationLaneNamePresetFlag =
+  (typeof AUTOMATION_LANE_NAME_PRESETS)[number];
 
 function readEnumOption<T extends string>(
   args: string[],
@@ -3981,31 +7619,56 @@ function readEnumOption<T extends string>(
 }
 
 function applyLaneFlagsToDraft(draft: JsonObject, args: string[]): JsonObject {
-  const laneMode = readEnumOption<AutomationLaneModeFlag>(args, ["--lane-mode"], AUTOMATION_LANE_MODES, "--lane-mode");
+  const laneMode = readEnumOption<AutomationLaneModeFlag>(
+    args,
+    ["--lane-mode"],
+    AUTOMATION_LANE_MODES,
+    "--lane-mode",
+  );
   const laneId = readLaneId(args);
-  const preset = readEnumOption<AutomationLaneNamePresetFlag>(args, ["--lane-name-preset"], AUTOMATION_LANE_NAME_PRESETS, "--lane-name-preset");
+  const preset = readEnumOption<AutomationLaneNamePresetFlag>(
+    args,
+    ["--lane-name-preset"],
+    AUTOMATION_LANE_NAME_PRESETS,
+    "--lane-name-preset",
+  );
   const template = readValue(args, ["--lane-name-template"]);
 
-  if (laneMode == null && laneId == null && preset == null && template == null) {
+  if (
+    laneMode == null &&
+    laneId == null &&
+    preset == null &&
+    template == null
+  ) {
     return draft;
   }
 
   const existingExecution = isRecord(draft.execution) ? draft.execution : {};
   const effectiveLaneMode =
-    laneMode
-    ?? (asString(existingExecution.laneMode) as AutomationLaneModeFlag | null);
+    laneMode ??
+    (asString(existingExecution.laneMode) as AutomationLaneModeFlag | null);
 
-  if (laneId != null && effectiveLaneMode != null && effectiveLaneMode !== "reuse") {
+  if (
+    laneId != null &&
+    effectiveLaneMode != null &&
+    effectiveLaneMode !== "reuse"
+  ) {
     throw new CliUsageError("--lane is only valid with --lane-mode reuse.");
   }
   if (preset != null && effectiveLaneMode !== "create") {
-    throw new CliUsageError("--lane-name-preset is only valid with --lane-mode create.");
+    throw new CliUsageError(
+      "--lane-name-preset is only valid with --lane-mode create.",
+    );
   }
   if (template != null && preset != null && preset !== "custom") {
-    throw new CliUsageError("--lane-name-template is only valid with --lane-name-preset custom.");
+    throw new CliUsageError(
+      "--lane-name-template is only valid with --lane-name-preset custom.",
+    );
   }
   if (template != null && preset == null && effectiveLaneMode !== "create") {
-    throw new CliUsageError("--lane-name-template requires --lane-mode create (with --lane-name-preset custom).");
+    throw new CliUsageError(
+      "--lane-name-template requires --lane-mode create (with --lane-name-preset custom).",
+    );
   }
 
   const execution: JsonObject = { ...existingExecution };
@@ -4017,18 +7680,26 @@ function applyLaneFlagsToDraft(draft: JsonObject, args: string[]): JsonObject {
   return { ...draft, execution };
 }
 
-function migrateLegacyCreateLane(draft: JsonObject, opts: { allowLegacy: boolean }): JsonObject {
+function migrateLegacyCreateLane(
+  draft: JsonObject,
+  opts: { allowLegacy: boolean },
+): JsonObject {
   const actions = Array.isArray(draft.actions) ? draft.actions : null;
   if (!actions || actions.length === 0) return draft;
   const first = actions[0];
   if (!isRecord(first) || first.type !== "create-lane") return draft;
   if (opts.allowLegacy) return draft;
   const execution = isRecord(draft.execution) ? draft.execution : {};
-  const template = typeof first.laneNameTemplate === "string" ? first.laneNameTemplate : undefined;
+  const template =
+    typeof first.laneNameTemplate === "string"
+      ? first.laneNameTemplate
+      : undefined;
   const migratedExecution: JsonObject = {
     ...execution,
     laneMode: "create",
-    ...(template ? { laneNamePreset: "custom", laneNameTemplate: template } : {}),
+    ...(template
+      ? { laneNamePreset: "custom", laneNameTemplate: template }
+      : {}),
   };
   return { ...draft, execution: migratedExecution, actions: actions.slice(1) };
 }
@@ -4067,12 +7738,23 @@ function buildAutomationsPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "list";
 
   if (sub === "list") {
-    return { kind: "execute", label: "automations list", steps: [actionStep("result", "automations", "list")] };
+    return {
+      kind: "execute",
+      label: "automations list",
+      steps: [actionStep("result", "automations", "list")],
+    };
   }
 
   if (sub === "show" || sub === "get") {
-    const id = requireValue(readValue(args, ["--id"]) ?? firstPositional(args), "rule id");
-    return { kind: "execute", label: `automations show ${id}`, steps: [actionStep("result", "automations", "get", { id })] };
+    const id = requireValue(
+      readValue(args, ["--id"]) ?? firstPositional(args),
+      "rule id",
+    );
+    return {
+      kind: "execute",
+      label: `automations show ${id}`,
+      steps: [actionStep("result", "automations", "get", { id })],
+    };
   }
 
   if (sub === "example") {
@@ -4082,7 +7764,10 @@ function buildAutomationsPlan(args: string[]): CliPlan {
   if (sub === "create") {
     const allowLegacy = readFlag(args, ["--allow-legacy"]);
     const raw = parseDraftInput(args);
-    const draft = applyLaneFlagsToDraft(migrateLegacyCreateLane(raw, { allowLegacy }), args);
+    const draft = applyLaneFlagsToDraft(
+      migrateLegacyCreateLane(raw, { allowLegacy }),
+      args,
+    );
     return {
       kind: "execute",
       label: "automations create",
@@ -4091,71 +7776,112 @@ function buildAutomationsPlan(args: string[]): CliPlan {
   }
 
   if (sub === "update") {
-    const id = requireValue(readValue(args, ["--id"]) ?? firstPositional(args), "rule id");
+    const id = requireValue(
+      readValue(args, ["--id"]) ?? firstPositional(args),
+      "rule id",
+    );
     const allowLegacy = readFlag(args, ["--allow-legacy"]);
     const raw = parseDraftInput(args);
-    const draft = applyLaneFlagsToDraft(migrateLegacyCreateLane(raw, { allowLegacy }), args);
+    const draft = applyLaneFlagsToDraft(
+      migrateLegacyCreateLane(raw, { allowLegacy }),
+      args,
+    );
     return {
       kind: "execute",
       label: `automations update ${id}`,
-      steps: [actionStep("result", "automations", "saveRule", { draft: { ...draft, id } })],
+      steps: [
+        actionStep("result", "automations", "saveRule", {
+          draft: { ...draft, id },
+        }),
+      ],
     };
   }
 
   if (sub === "delete") {
-    const id = requireValue(readValue(args, ["--id"]) ?? firstPositional(args), "rule id");
-    return { kind: "execute", label: `automations delete ${id}`, steps: [actionStep("result", "automations", "deleteRule", { id })] };
+    const id = requireValue(
+      readValue(args, ["--id"]) ?? firstPositional(args),
+      "rule id",
+    );
+    return {
+      kind: "execute",
+      label: `automations delete ${id}`,
+      steps: [actionStep("result", "automations", "deleteRule", { id })],
+    };
   }
 
   if (sub === "toggle") {
-    const id = requireValue(readValue(args, ["--id"]) ?? firstPositional(args), "rule id");
+    const id = requireValue(
+      readValue(args, ["--id"]) ?? firstPositional(args),
+      "rule id",
+    );
     const enabledRaw = readValue(args, ["--enabled"]);
     if (enabledRaw == null) {
-      throw new CliUsageError("automations toggle requires --enabled <true|false>.");
+      throw new CliUsageError(
+        "automations toggle requires --enabled <true|false>.",
+      );
     }
     if (enabledRaw !== "true" && enabledRaw !== "false") {
-      throw new CliUsageError("automations toggle --enabled must be true or false.");
+      throw new CliUsageError(
+        "automations toggle --enabled must be true or false.",
+      );
     }
     const enabled = enabledRaw === "true";
     return {
       kind: "execute",
       label: `automations toggle ${id}`,
-      steps: [actionStep("result", "automations", "toggleRule", { id, enabled })],
+      steps: [
+        actionStep("result", "automations", "toggleRule", { id, enabled }),
+      ],
     };
   }
 
   if (sub === "run" || sub === "trigger") {
-    const id = requireValue(readValue(args, ["--id"]) ?? firstPositional(args), "rule id");
+    const id = requireValue(
+      readValue(args, ["--id"]) ?? firstPositional(args),
+      "rule id",
+    );
     const dryRun = readFlag(args, ["--dry-run"]);
     const laneId = readLaneId(args);
     return {
       kind: "execute",
       label: `automations run ${id}`,
-      steps: [actionStep("result", "automations", "triggerManually", {
-        id,
-        ...(dryRun ? { dryRun: true } : {}),
-        ...(laneId ? { laneId } : {}),
-      })],
+      steps: [
+        actionStep("result", "automations", "triggerManually", {
+          id,
+          ...(dryRun ? { dryRun: true } : {}),
+          ...(laneId ? { laneId } : {}),
+        }),
+      ],
     };
   }
 
   if (sub === "runs") {
     const automationId = readValue(args, ["--rule", "--automation", "--id"]);
     const limit = readIntOption(args, ["--limit"]);
-    const status = readEnumOption(args, ["--status"], AUTOMATION_RUN_STATUSES, "--status");
+    const status = readEnumOption(
+      args,
+      ["--status"],
+      AUTOMATION_RUN_STATUSES,
+      "--status",
+    );
     return {
       kind: "execute",
       label: "automations runs",
-      steps: [actionStep("result", "automations", "listRuns", {
-        ...(automationId ? { automationId } : {}),
-        ...(typeof limit === "number" ? { limit } : {}),
-        ...(status ? { status } : {}),
-      })],
+      steps: [
+        actionStep("result", "automations", "listRuns", {
+          ...(automationId ? { automationId } : {}),
+          ...(typeof limit === "number" ? { limit } : {}),
+          ...(status ? { status } : {}),
+        }),
+      ],
     };
   }
 
   if (sub === "run-show" || sub === "run-detail") {
-    const runId = requireValue(readValue(args, ["--run", "--run-id"]) ?? firstPositional(args), "run id");
+    const runId = requireValue(
+      readValue(args, ["--run", "--run-id"]) ?? firstPositional(args),
+      "run id",
+    );
     return {
       kind: "execute",
       label: `automations run-show ${runId}`,
@@ -4172,22 +7898,58 @@ function buildAutomationsPlan(args: string[]): CliPlan {
 function buildLinearPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "workflows";
   if (sub === "quick-view" || sub === "quick" || sub === "overview") {
-    return { kind: "execute", label: "Linear quick view", formatter: "linear-quick-view", steps: [actionCallStep("result", "getLinearQuickView", collectGenericObjectArgs(args))] };
+    return {
+      kind: "execute",
+      label: "Linear quick view",
+      formatter: "linear-quick-view",
+      steps: [
+        actionCallStep(
+          "result",
+          "getLinearQuickView",
+          collectGenericObjectArgs(args),
+        ),
+      ],
+    };
   }
   if (sub === "picker-data" || sub === "picker") {
-    return { kind: "execute", label: "Linear picker data", steps: [actionCallStep("result", "getLinearIssuePickerData", collectGenericObjectArgs(args))] };
+    return {
+      kind: "execute",
+      label: "Linear picker data",
+      steps: [
+        actionCallStep(
+          "result",
+          "getLinearIssuePickerData",
+          collectGenericObjectArgs(args),
+        ),
+      ],
+    };
   }
   if (sub === "search-issues" || sub === "search") {
-    const stateTypesValue = readValue(args, ["--state-type", "--state-types", "--state"]);
+    const stateTypesValue = readValue(args, [
+      "--state-type",
+      "--state-types",
+      "--state",
+    ]);
     const stateTypes = stateTypesValue
-      ? stateTypesValue.split(",").map((entry) => entry.trim()).filter(Boolean)
+      ? stateTypesValue
+          .split(",")
+          .map((entry) => entry.trim())
+          .filter(Boolean)
       : [];
     const input: JsonObject = {};
     maybePut(input, "projectId", readValue(args, ["--project-id"]));
-    maybePut(input, "projectSlug", readValue(args, ["--project-slug", "--project"]));
+    maybePut(
+      input,
+      "projectSlug",
+      readValue(args, ["--project-slug", "--project"]),
+    );
     maybePut(input, "teamKey", readValue(args, ["--team-key", "--team"]));
     if (stateTypes.length) input.stateTypes = stateTypes;
-    maybePut(input, "assigneeId", readValue(args, ["--assignee", "--assignee-id"]));
+    maybePut(
+      input,
+      "assigneeId",
+      readValue(args, ["--assignee", "--assignee-id"]),
+    );
     const priority = readNumberOption(args, ["--priority"]);
     if (priority !== undefined) input.priority = priority;
     maybePut(input, "query", readValue(args, ["--query", "-q"]));
@@ -4195,9 +7957,30 @@ function buildLinearPlan(args: string[]): CliPlan {
     if (first !== undefined) input.first = first;
     maybePut(input, "after", readValue(args, ["--after", "--cursor"]));
     if (readFlag(args, ["--include-archived"])) input.includeArchived = true;
-    return { kind: "execute", label: "Linear search issues", steps: [actionCallStep("result", "searchLinearIssues", collectGenericObjectArgs(args, input))] };
+    return {
+      kind: "execute",
+      label: "Linear search issues",
+      steps: [
+        actionCallStep(
+          "result",
+          "searchLinearIssues",
+          collectGenericObjectArgs(args, input),
+        ),
+      ],
+    };
   }
-  if (sub === "workflows") return { kind: "execute", label: "Linear workflows", steps: [actionCallStep("result", "listLinearWorkflows", collectGenericObjectArgs(args))] };
+  if (sub === "workflows")
+    return {
+      kind: "execute",
+      label: "Linear workflows",
+      steps: [
+        actionCallStep(
+          "result",
+          "listLinearWorkflows",
+          collectGenericObjectArgs(args),
+        ),
+      ],
+    };
   if (sub === "run") {
     const mode = firstPositional(args) ?? "status";
     const toolByMode: Record<string, string> = {
@@ -4207,8 +7990,24 @@ function buildLinearPlan(args: string[]): CliPlan {
       reroute: "rerouteLinearRun",
     };
     const tool = toolByMode[mode];
-    if (!tool) throw new CliUsageError("linear run supports status, resolve, cancel, or reroute.");
-    return { kind: "execute", label: `Linear run ${mode}`, steps: [actionCallStep("result", tool, collectGenericObjectArgs(args, { runId: readValue(args, ["--run", "--run-id"]) ?? firstPositional(args) }))] };
+    if (!tool)
+      throw new CliUsageError(
+        "linear run supports status, resolve, cancel, or reroute.",
+      );
+    return {
+      kind: "execute",
+      label: `Linear run ${mode}`,
+      steps: [
+        actionCallStep(
+          "result",
+          tool,
+          collectGenericObjectArgs(args, {
+            runId:
+              readValue(args, ["--run", "--run-id"]) ?? firstPositional(args),
+          }),
+        ),
+      ],
+    };
   }
   if (sub === "route") {
     const mode = firstPositional(args) ?? "cto";
@@ -4218,8 +8017,13 @@ function buildLinearPlan(args: string[]): CliPlan {
       worker: "routeLinearIssueToWorker",
     };
     const tool = toolByMode[mode];
-    if (!tool) throw new CliUsageError("linear route supports cto, mission, or worker.");
-    return { kind: "execute", label: `Linear route ${mode}`, steps: [actionCallStep("result", tool, collectGenericObjectArgs(args))] };
+    if (!tool)
+      throw new CliUsageError("linear route supports cto, mission, or worker.");
+    return {
+      kind: "execute",
+      label: `Linear route ${mode}`,
+      steps: [actionCallStep("result", tool, collectGenericObjectArgs(args))],
+    };
   }
   if (sub === "sync") {
     const mode = firstPositional(args) ?? "dashboard";
@@ -4231,8 +8035,15 @@ function buildLinearPlan(args: string[]): CliPlan {
       detail: "getLinearWorkflowRunDetail",
     };
     const tool = toolByMode[mode];
-    if (!tool) throw new CliUsageError("linear sync supports dashboard, run, queue, resolve, or detail.");
-    return { kind: "execute", label: `Linear sync ${mode}`, steps: [actionCallStep("result", tool, collectGenericObjectArgs(args))] };
+    if (!tool)
+      throw new CliUsageError(
+        "linear sync supports dashboard, run, queue, resolve, or detail.",
+      );
+    return {
+      kind: "execute",
+      label: `Linear sync ${mode}`,
+      steps: [actionCallStep("result", tool, collectGenericObjectArgs(args))],
+    };
   }
   if (sub === "ingress") {
     const mode = firstPositional(args) ?? "status";
@@ -4242,15 +8053,45 @@ function buildLinearPlan(args: string[]): CliPlan {
       webhook: "ensureLinearWebhook",
     };
     const tool = toolByMode[mode];
-    if (!tool) throw new CliUsageError("linear ingress supports status, events, or webhook.");
-    return { kind: "execute", label: `Linear ingress ${mode}`, steps: [actionCallStep("result", tool, collectGenericObjectArgs(args))] };
+    if (!tool)
+      throw new CliUsageError(
+        "linear ingress supports status, events, or webhook.",
+      );
+    return {
+      kind: "execute",
+      label: `Linear ingress ${mode}`,
+      steps: [actionCallStep("result", tool, collectGenericObjectArgs(args))],
+    };
   }
-  return { kind: "execute", label: `Linear ${sub}`, steps: [actionStep("result", "linear_dispatcher", sub, collectGenericObjectArgs(args))] };
+  return {
+    kind: "execute",
+    label: `Linear ${sub}`,
+    steps: [
+      actionStep(
+        "result",
+        "linear_dispatcher",
+        sub,
+        collectGenericObjectArgs(args),
+      ),
+    ],
+  };
 }
 
 function buildFlowPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "policy";
-  if (sub !== "policy") return { kind: "execute", label: `flow ${sub}`, steps: [actionStep("result", "flow_policy", sub, collectGenericObjectArgs(args))] };
+  if (sub !== "policy")
+    return {
+      kind: "execute",
+      label: `flow ${sub}`,
+      steps: [
+        actionStep(
+          "result",
+          "flow_policy",
+          sub,
+          collectGenericObjectArgs(args),
+        ),
+      ],
+    };
   const mode = firstPositional(args) ?? "get";
   const actionByMode: Record<string, string> = {
     get: "getPolicy",
@@ -4262,79 +8103,327 @@ function buildFlowPlan(args: string[]): CliPlan {
     diff: "diffPolicyPaths",
   };
   const action = actionByMode[mode];
-  if (!action) throw new CliUsageError("flow policy supports get, save, validate, normalize, revisions, rollback, or diff.");
-  return { kind: "execute", label: `flow policy ${mode}`, steps: [actionStep("result", "flow_policy", action, collectGenericObjectArgs(args))] };
+  if (!action)
+    throw new CliUsageError(
+      "flow policy supports get, save, validate, normalize, revisions, rollback, or diff.",
+    );
+  return {
+    kind: "execute",
+    label: `flow policy ${mode}`,
+    steps: [
+      actionStep(
+        "result",
+        "flow_policy",
+        action,
+        collectGenericObjectArgs(args),
+      ),
+    ],
+  };
 }
 
 function buildCoordinatorPlan(args: string[]): CliPlan {
-  const toolName = requireValue(firstPositional(args), "coordinator tool").replace(/-/g, "_");
-  return { kind: "execute", label: `coordinator ${toolName}`, steps: [actionCallStep("result", toolName, collectGenericObjectArgs(args))] };
+  const toolName = requireValue(
+    firstPositional(args),
+    "coordinator tool",
+  ).replace(/-/g, "_");
+  return {
+    kind: "execute",
+    label: `coordinator ${toolName}`,
+    steps: [actionCallStep("result", toolName, collectGenericObjectArgs(args))],
+  };
 }
 
 function buildUpdatePlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "status";
-  if (sub === "actions") return { kind: "execute", label: "update actions", steps: [listActionsStep("actions", "update")] };
-  if (sub === "status" || sub === "state" || sub === "snapshot" || sub === "show") {
-    return { kind: "execute", label: "update status", steps: [actionStep("result", "update", "getSnapshot", collectGenericObjectArgs(args))] };
+  if (sub === "actions")
+    return {
+      kind: "execute",
+      label: "update actions",
+      steps: [listActionsStep("actions", "update")],
+    };
+  if (
+    sub === "status" ||
+    sub === "state" ||
+    sub === "snapshot" ||
+    sub === "show"
+  ) {
+    return {
+      kind: "execute",
+      label: "update status",
+      steps: [
+        actionStep(
+          "result",
+          "update",
+          "getSnapshot",
+          collectGenericObjectArgs(args),
+        ),
+      ],
+    };
   }
   if (sub === "check" || sub === "check-for-updates" || sub === "check-now") {
-    return { kind: "execute", label: "update check", steps: [actionStep("result", "update", "checkForUpdates", collectGenericObjectArgs(args))] };
+    return {
+      kind: "execute",
+      label: "update check",
+      steps: [
+        actionStep(
+          "result",
+          "update",
+          "checkForUpdates",
+          collectGenericObjectArgs(args),
+        ),
+      ],
+    };
   }
   if (sub === "install" || sub === "quit-and-install" || sub === "apply") {
-    return { kind: "execute", label: "update install", steps: [actionStep("result", "update", "quitAndInstall", collectGenericObjectArgs(args))] };
+    return {
+      kind: "execute",
+      label: "update install",
+      steps: [
+        actionStep(
+          "result",
+          "update",
+          "quitAndInstall",
+          collectGenericObjectArgs(args),
+        ),
+      ],
+    };
   }
-  if (sub === "dismiss" || sub === "dismiss-installed" || sub === "dismiss-installed-notice") {
-    return { kind: "execute", label: "update dismiss", steps: [actionStep("result", "update", "dismissInstalledNotice", collectGenericObjectArgs(args))] };
+  if (
+    sub === "dismiss" ||
+    sub === "dismiss-installed" ||
+    sub === "dismiss-installed-notice"
+  ) {
+    return {
+      kind: "execute",
+      label: "update dismiss",
+      steps: [
+        actionStep(
+          "result",
+          "update",
+          "dismissInstalledNotice",
+          collectGenericObjectArgs(args),
+        ),
+      ],
+    };
   }
-  return { kind: "execute", label: `update ${sub}`, steps: [actionStep("result", "update", sub, collectGenericObjectArgs(args))] };
+  return {
+    kind: "execute",
+    label: `update ${sub}`,
+    steps: [
+      actionStep("result", "update", sub, collectGenericObjectArgs(args)),
+    ],
+  };
 }
 
 const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   // Only flags that actually take a following value (readValue / readIntOption
   // callers) belong here. Boolean-only flags consumed via readFlag must be
   // excluded, otherwise the next positional would be swallowed as their value.
-  "-b", "-m", "-q", "-t",
-  "--additional-instructions", "--app", "--app-bundle", "--arg", "--arg-json", "--arg-value",
-  "--arg-value-json", "--args-list-json", "--attempt", "--attempt-id",
-  "--automation", "--autonomy", "--backend", "--base", "--base-branch", "--base-ref", "--body", "--branch",
-  "--branch-name", "--branch-ref", "--bundle", "--bundle-id", "--category", "--color", "--cols",
-  "--command", "--comment", "--comment-id", "--commit", "--compare-ref",
-  "--caption", "--cdp-port", "--chat-session", "--chat-session-id", "--compare-to", "--content", "--context-file", "--cwd", "--data",
-  "--cpu", "--cpu-cores",
+  "-b",
+  "-m",
+  "-q",
+  "-t",
+  "--additional-instructions",
+  "--app",
+  "--app-bundle",
+  "--arg",
+  "--arg-json",
+  "--arg-value",
+  "--arg-value-json",
+  "--args-list-json",
+  "--attempt",
+  "--attempt-id",
+  "--automation",
+  "--autonomy",
+  "--backend",
+  "--base",
+  "--base-branch",
+  "--base-ref",
+  "--body",
+  "--branch",
+  "--branch-name",
+  "--branch-ref",
+  "--bundle",
+  "--bundle-id",
+  "--category",
+  "--color",
+  "--cols",
+  "--command",
+  "--comment",
+  "--comment-id",
+  "--commit",
+  "--compare-ref",
+  "--caption",
+  "--cdp-port",
+  "--chat-session",
+  "--chat-session-id",
+  "--compare-to",
+  "--content",
+  "--context-file",
+  "--cwd",
+  "--data",
+  "--cpu",
+  "--cpu-cores",
   "--debug-port",
-  "--depth", "--desc", "--device", "--disk", "--disk-size", "--display", "--duration", "--duration-ms",
-  "--description", "--domain", "--droid-autonomy", "--droid-permission-mode",
-  "--duration-sec", "--enabled", "--event",
-  "--end-x", "--end-y", "--file", "--fps", "--from", "--from-file", "--group", "--group-id", "--head", "--icon", "--id",
-  "--image", "--index", "--initial-input", "--input", "--input-json", "--input-text", "--instructions",
-  "--ipsw", "--kind",
-  "--json-input", "--lane", "--lane-id", "--limit", "--max-bytes",
+  "--depth",
+  "--desc",
+  "--device",
+  "--disk",
+  "--disk-size",
+  "--display",
+  "--duration",
+  "--duration-ms",
+  "--description",
+  "--domain",
+  "--droid-autonomy",
+  "--droid-permission-mode",
+  "--duration-sec",
+  "--enabled",
+  "--event",
+  "--end-x",
+  "--end-y",
+  "--file",
+  "--fps",
+  "--from",
+  "--from-file",
+  "--group",
+  "--group-id",
+  "--head",
+  "--icon",
+  "--id",
+  "--image",
+  "--index",
+  "--initial-input",
+  "--input",
+  "--input-json",
+  "--input-text",
+  "--instructions",
+  "--ipsw",
+  "--kind",
+  "--json-input",
+  "--lane",
+  "--lane-id",
+  "--limit",
+  "--max-bytes",
   "--line",
-  "--max-log-bytes", "--max-prompt-chars", "--max-rounds", "--memory",
-  "--memory-id", "--merge-method", "--message", "--method", "--mode", "--model",
-  "--model-id", "--name", "--new", "--new-path", "--number", "--old",
-  "--old-path", "--owner", "--owner-id", "--owner-kind",
+  "--max-log-bytes",
+  "--max-prompt-chars",
+  "--max-rounds",
+  "--memory",
+  "--memory-id",
+  "--merge-method",
+  "--message",
+  "--method",
+  "--mode",
+  "--model",
+  "--model-id",
+  "--name",
+  "--new",
+  "--new-path",
+  "--number",
+  "--old",
+  "--old-path",
+  "--owner",
+  "--owner-id",
+  "--owner-kind",
   "--output",
-  "--params-json", "--parent", "--parent-lane", "--parent-lane-id",
-  "--path", "--permission-mode", "--permissions", "--port", "--pr", "--pr-id",
-  "--pr-number", "--pr-url", "--process", "--process-id", "--project-root",
-  "--prompt", "--provider", "--pty", "--pty-id", "--query", "--question",
-  "--reason", "--reasoning", "--recent-limit", "--ref", "--resume-session", "--resume-session-id",
-  "--resume-target", "--resume-target-id", "--role", "--root",
-  "--root-lane", "--round", "--rounds", "--rows", "--rule", "--run", "--run-id", "--scalar",
-  "--scalar-json", "--scope", "--seconds", "--session", "--session-id", "--set",
-  "--set-json", "--sha", "--signal", "--since", "--source", "--source-lane", "--stack", "--stack-id",
-  "--scheme", "--start-point", "--start-x", "--start-y", "--stash-ref", "--step", "--step-id", "--suite", "--suite-id", "--surface",
-  "--tab", "--tab-identifier", "--target", "--target-id", "--terminal", "--terminal-id", "--thread", "--thread-id", "--timeout", "--timeout-ms", "--title", "--tool-type",
+  "--params-json",
+  "--parent",
+  "--parent-lane",
+  "--parent-lane-id",
+  "--path",
+  "--permission-mode",
+  "--permissions",
+  "--port",
+  "--pr",
+  "--pr-id",
+  "--pr-number",
+  "--pr-url",
+  "--process",
+  "--process-id",
+  "--project-root",
+  "--prompt",
+  "--provider",
+  "--pty",
+  "--pty-id",
+  "--query",
+  "--question",
+  "--reason",
+  "--reasoning",
+  "--recent-limit",
+  "--ref",
+  "--resume-session",
+  "--resume-session-id",
+  "--resume-target",
+  "--resume-target-id",
+  "--role",
+  "--root",
+  "--root-lane",
+  "--round",
+  "--rounds",
+  "--rows",
+  "--rule",
+  "--run",
+  "--run-id",
+  "--scalar",
+  "--scalar-json",
+  "--scope",
+  "--seconds",
+  "--session",
+  "--session-id",
+  "--set",
+  "--set-json",
+  "--sha",
+  "--signal",
+  "--since",
+  "--source",
+  "--source-lane",
+  "--stack",
+  "--stack-id",
+  "--scheme",
+  "--start-point",
+  "--start-x",
+  "--start-y",
+  "--stash-ref",
+  "--step",
+  "--step-id",
+  "--suite",
+  "--suite-id",
+  "--surface",
+  "--tab",
+  "--tab-identifier",
+  "--target",
+  "--target-id",
+  "--terminal",
+  "--terminal-id",
+  "--thread",
+  "--thread-id",
+  "--timeout",
+  "--timeout-ms",
+  "--title",
+  "--tool-type",
   "--title-query",
-  "--udid", "--unattended", "--unattended-preset", "--url", "--value", "--vm-name", "--window-title", "--workspace", "--workspace-id", "--workspace-root",
-  "--coordinate-space", "--coords",
-  "--x", "--xcodeproj", "--y",
+  "--udid",
+  "--unattended",
+  "--unattended-preset",
+  "--url",
+  "--value",
+  "--vm-name",
+  "--window-title",
+  "--workspace",
+  "--workspace-id",
+  "--workspace-root",
+  "--coordinate-space",
+  "--coords",
+  "--x",
+  "--xcodeproj",
+  "--y",
 ]);
 
 function hasHelpFlag(args: string[]): boolean {
   const terminatorIndex = args.indexOf("--");
-  const searchable = terminatorIndex >= 0 ? args.slice(0, terminatorIndex) : args;
+  const searchable =
+    terminatorIndex >= 0 ? args.slice(0, terminatorIndex) : args;
   const valueCarrierFlags = VALUE_CARRIER_FLAGS;
   for (let i = 0; i < searchable.length; i++) {
     const token = searchable[i]!;
@@ -4413,7 +8502,10 @@ function buildCliPlan(command: string[]): CliPlan {
     if (primaryHelpKey === "app-control") {
       return { kind: "help", text: buildAppControlHelp(args) };
     }
-    return { kind: "help", text: HELP_BY_COMMAND[primaryHelpKey] ?? TOP_LEVEL_HELP };
+    return {
+      kind: "help",
+      text: HELP_BY_COMMAND[primaryHelpKey] ?? TOP_LEVEL_HELP,
+    };
   }
   if (primary === "help") {
     const topic = (firstPositional(args) ?? "").toLowerCase();
@@ -4427,7 +8519,10 @@ function buildCliPlan(command: string[]): CliPlan {
     if (key === "app-control") {
       return { kind: "help", text: buildAppControlHelp(args) };
     }
-    return { kind: "help", text: key && HELP_BY_COMMAND[key] ? HELP_BY_COMMAND[key] : TOP_LEVEL_HELP };
+    return {
+      kind: "help",
+      text: key && HELP_BY_COMMAND[key] ? HELP_BY_COMMAND[key] : TOP_LEVEL_HELP,
+    };
   }
   if (primary === "version" || primary === "--version" || primary === "-v") {
     return { kind: "help", text: `ade ${VERSION}\n` };
@@ -4462,7 +8557,12 @@ function buildCliPlan(command: string[]): CliPlan {
     return buildSyncPlan(args);
   }
   if (primary === "status") {
-    return { kind: "execute", label: "status", summary: "status", steps: [{ key: "ping", method: "ping" }] };
+    return {
+      kind: "execute",
+      label: "status",
+      summary: "status",
+      steps: [{ key: "ping", method: "ping" }],
+    };
   }
   if (primary === "doctor") {
     return {
@@ -4473,20 +8573,27 @@ function buildCliPlan(command: string[]): CliPlan {
         { key: "ping", method: "ping" },
         { key: "rpcActions", method: "ade/actions/list" },
         listActionsStep("actions"),
-        { ...actionStep("projectConfig", "project_config", "get"), optional: true },
+        {
+          ...actionStep("projectConfig", "project_config", "get"),
+          optional: true,
+        },
       ],
     };
   }
   if (primary === "auth") {
     const sub = firstPositional(args) ?? "status";
-    if (sub !== "status") throw new CliUsageError("auth currently supports status.");
+    if (sub !== "status")
+      throw new CliUsageError("auth currently supports status.");
     return {
       kind: "execute",
       label: "auth status",
       summary: "auth",
       steps: [
         { key: "actions", method: "ade/actions/list" },
-        { ...actionStep("projectConfig", "project_config", "get"), optional: true },
+        {
+          ...actionStep("projectConfig", "project_config", "get"),
+          optional: true,
+        },
       ],
     };
   }
@@ -4497,32 +8604,85 @@ function buildCliPlan(command: string[]): CliPlan {
   if (primary === "git") return buildGitPlan(args);
   if (primary === "diff" || primary === "diffs") return buildDiffPlan(args);
   if (primary === "files" || primary === "file") return buildFilesPlan(args);
-  if (primary === "missions" || primary === "mission") return buildMissionsPlan(args);
+  if (primary === "missions" || primary === "mission")
+    return buildMissionsPlan(args);
   if (primary === "prs" || primary === "pr") return buildPrPlan(args);
-  if (primary === "run" || primary === "process" || primary === "processes") return buildRunPlan(args);
+  if (primary === "run" || primary === "process" || primary === "processes")
+    return buildRunPlan(args);
   if (primary === "shell" || primary === "pty") return buildShellPlan(args);
-  if (primary === "terminal" || primary === "term") return buildTerminalPlan(args);
-  if (primary === "chat" || primary === "chats" || primary === "work") return buildChatPlan(args);
+  if (primary === "terminal" || primary === "term")
+    return buildTerminalPlan(args);
+  if (primary === "chat" || primary === "chats" || primary === "work")
+    return buildChatPlan(args);
   if (primary === "agent" || primary === "agents") return buildAgentPlan(args);
   if (primary === "cto") return buildCtoPlan(args);
   if (primary === "linear") return buildLinearPlan(args);
-  if (primary === "automations" || primary === "automation") return buildAutomationsPlan(args);
+  if (primary === "automations" || primary === "automation")
+    return buildAutomationsPlan(args);
   if (primary === "flow") return buildFlowPlan(args);
-  if (primary === "coordinator" || primary === "coord") return buildCoordinatorPlan(args);
-  if (primary === "ask") return { kind: "execute", label: "ask user", steps: [actionCallStep("result", "ask_user", collectGenericObjectArgs(args, { title: readValue(args, ["--title"]) ?? "ADE question", body: readValue(args, ["--body", "--question"]) ?? args.join(" ") }))] };
+  if (primary === "coordinator" || primary === "coord")
+    return buildCoordinatorPlan(args);
+  if (primary === "ask")
+    return {
+      kind: "execute",
+      label: "ask user",
+      steps: [
+        actionCallStep(
+          "result",
+          "ask_user",
+          collectGenericObjectArgs(args, {
+            title: readValue(args, ["--title"]) ?? "ADE question",
+            body: readValue(args, ["--body", "--question"]) ?? args.join(" "),
+          }),
+        ),
+      ],
+    };
   if (primary === "tests" || primary === "test") return buildTestsPlan(args);
-  if (primary === "proof" || primary === "computer-use" || primary === "artifacts" || primary === "computer" || primary === "artifact") {
+  if (
+    primary === "proof" ||
+    primary === "computer-use" ||
+    primary === "artifacts" ||
+    primary === "computer" ||
+    primary === "artifact"
+  ) {
     return buildProofPlan(args);
   }
-  if (primary === "ios-sim" || primary === "ios" || primary === "simulator") return buildIosSimulatorPlan(args);
-  if (primary === "app-control" || primary === "app" || primary === "apps" || primary === "electron") return buildAppControlPlan(args);
-  if (primary === "macos-vm" || primary === "macos" || primary === "mac-vm" || primary === "macvm") return buildMacosVmPlan(args);
-  if (primary === "browser" || primary === "ade-browser" || primary === "built-in-browser" || primary === "builtin-browser") return buildBrowserPlan(args);
+  if (primary === "ios-sim" || primary === "ios" || primary === "simulator")
+    return buildIosSimulatorPlan(args);
+  if (
+    primary === "app-control" ||
+    primary === "app" ||
+    primary === "apps" ||
+    primary === "electron"
+  )
+    return buildAppControlPlan(args);
+  if (
+    primary === "macos-vm" ||
+    primary === "macos" ||
+    primary === "mac-vm" ||
+    primary === "macvm"
+  )
+    return buildMacosVmPlan(args);
+  if (
+    primary === "browser" ||
+    primary === "ade-browser" ||
+    primary === "built-in-browser" ||
+    primary === "builtin-browser"
+  )
+    return buildBrowserPlan(args);
   if (primary === "memory") return buildMemoryPlan(args);
-  if (primary === "settings" || primary === "config" || primary === "setting") return buildSettingsPlan(args);
-  if (primary === "operation" || primary === "operations") return buildOperationsPlan(args);
-  if (primary === "actions" || primary === "action") return buildActionsPlan(args);
-  if (primary === "update" || primary === "auto-update" || primary === "updates") return buildUpdatePlan(args);
+  if (primary === "settings" || primary === "config" || primary === "setting")
+    return buildSettingsPlan(args);
+  if (primary === "operation" || primary === "operations")
+    return buildOperationsPlan(args);
+  if (primary === "actions" || primary === "action")
+    return buildActionsPlan(args);
+  if (
+    primary === "update" ||
+    primary === "auto-update" ||
+    primary === "updates"
+  )
+    return buildUpdatePlan(args);
   if (primary === "mcp" || primary === "mcp-server") return { kind: "mcp" };
   if (primary === "cursor") return buildCursorPlan(args);
   throw new CliUsageError(`Unknown command '${primary}'. Run 'ade help'.`);
@@ -4535,7 +8695,9 @@ function buildCursorPlan(args: string[]): CliPlan {
     return { kind: "help", text: HELP_BY_COMMAND.cursor ?? TOP_LEVEL_HELP };
   }
   if (surface !== "cloud") {
-    throw new CliUsageError(`Unknown 'ade cursor' surface '${surface}'. The only supported surface is 'cloud'.`);
+    throw new CliUsageError(
+      `Unknown 'ade cursor' surface '${surface}'. The only supported surface is 'cloud'.`,
+    );
   }
   if (hasHelpFlag(args)) {
     const group = peekFirstPositional(args)?.toLowerCase();
@@ -4547,7 +8709,9 @@ function buildCursorPlan(args: string[]): CliPlan {
   return { kind: "cursor-cloud", rest: args };
 }
 
-function findAdeManagedWorktreeRoot(startDir: string): { projectRoot: string; workspaceRoot: string } | null {
+function findAdeManagedWorktreeRoot(
+  startDir: string,
+): { projectRoot: string; workspaceRoot: string } | null {
   let resolved = path.resolve(startDir);
   try {
     resolved = fs.realpathSync.native(resolved);
@@ -4556,18 +8720,26 @@ function findAdeManagedWorktreeRoot(startDir: string): { projectRoot: string; wo
   }
   const segments = resolved.split(path.sep);
   for (let index = segments.length - 2; index >= 0; index -= 1) {
-    if (segments[index] !== ".ade" || segments[index + 1] !== "worktrees") continue;
+    if (segments[index] !== ".ade" || segments[index + 1] !== "worktrees")
+      continue;
     const projectRoot = segments.slice(0, index).join(path.sep) || path.sep;
     const worktreeName = segments[index + 2];
     if (!worktreeName) continue;
-    const workspaceRoot = segments.slice(0, index + 3).join(path.sep) || path.sep;
+    const workspaceRoot =
+      segments.slice(0, index + 3).join(path.sep) || path.sep;
     if (!fs.existsSync(path.join(projectRoot, ".ade"))) continue;
-    return { projectRoot: path.resolve(projectRoot), workspaceRoot: path.resolve(workspaceRoot) };
+    return {
+      projectRoot: path.resolve(projectRoot),
+      workspaceRoot: path.resolve(workspaceRoot),
+    };
   }
   return null;
 }
 
-function findProjectRoots(startDir: string): { projectRoot: string; workspaceRoot: string } {
+function findProjectRoots(startDir: string): {
+  projectRoot: string;
+  workspaceRoot: string;
+} {
   let canonicalStart = path.resolve(startDir);
   try {
     canonicalStart = fs.realpathSync.native(canonicalStart);
@@ -4597,7 +8769,10 @@ function findProjectRoots(startDir: string): { projectRoot: string; workspaceRoo
   return { projectRoot: fallback, workspaceRoot: fallback };
 }
 
-function resolveRoots(options: GlobalOptions): { projectRoot: string; workspaceRoot: string } {
+function resolveRoots(options: GlobalOptions): {
+  projectRoot: string;
+  workspaceRoot: string;
+} {
   const discovered = findProjectRoots(process.cwd());
   const projectFromEnv = process.env.ADE_PROJECT_ROOT?.trim()
     ? path.resolve(process.env.ADE_PROJECT_ROOT.trim())
@@ -4606,13 +8781,15 @@ function resolveRoots(options: GlobalOptions): { projectRoot: string; workspaceR
     ? path.resolve(process.env.ADE_WORKSPACE_ROOT.trim())
     : null;
 
-  const projectRoot = options.projectRoot ?? projectFromEnv ?? discovered.projectRoot;
-  const projectExplicitlyOverridden = options.projectRoot != null || projectFromEnv != null;
+  const projectRoot =
+    options.projectRoot ?? projectFromEnv ?? discovered.projectRoot;
+  const projectExplicitlyOverridden =
+    options.projectRoot != null || projectFromEnv != null;
 
   const workspaceRoot =
-    options.workspaceRoot
-    ?? workspaceFromEnv
-    ?? (projectExplicitlyOverridden ? projectRoot : discovered.workspaceRoot);
+    options.workspaceRoot ??
+    workspaceFromEnv ??
+    (projectExplicitlyOverridden ? projectRoot : discovered.workspaceRoot);
 
   return { projectRoot, workspaceRoot };
 }
@@ -4627,11 +8804,13 @@ function commandExists(command: string): boolean {
 }
 
 function resolveAdeCodeSocketPath(projectRoot: string): string {
-  return process.env.ADE_RPC_URL?.trim()
-    || process.env.ADE_RPC_SOCKET_PATH?.trim()
-    || process.env.ADE_RUNTIME_SOCKET_PATH?.trim()
-    || resolveMachineAdeLayout().socketPath
-    || path.join(projectRoot, ".ade", "ade.sock");
+  return (
+    process.env.ADE_RPC_URL?.trim() ||
+    process.env.ADE_RPC_SOCKET_PATH?.trim() ||
+    process.env.ADE_RUNTIME_SOCKET_PATH?.trim() ||
+    resolveMachineAdeLayout().socketPath ||
+    path.join(projectRoot, ".ade", "ade.sock")
+  );
 }
 
 function buildAdeCodeArgs(rest: string[], options: GlobalOptions): string[] {
@@ -4642,13 +8821,27 @@ function buildAdeCodeArgs(rest: string[], options: GlobalOptions): string[] {
     "--workspace-root",
     roots.workspaceRoot,
     ...(options.headless ? ["--embedded"] : []),
-    ...(options.requireSocket ? ["--socket", resolveAdeCodeSocketPath(roots.projectRoot), "--require-socket"] : []),
+    ...(options.requireSocket
+      ? [
+          "--socket",
+          resolveAdeCodeSocketPath(roots.projectRoot),
+          "--require-socket",
+        ]
+      : []),
     ...rest,
   ];
 }
 
-async function runAdeCode(rest: string[], options: GlobalOptions): Promise<{ output: string; exitCode: number }> {
-  const sourceModule = path.join(CLI_PACKAGE_ROOT, "src", "tuiClient", "cli.tsx");
+async function runAdeCode(
+  rest: string[],
+  options: GlobalOptions,
+): Promise<{ output: string; exitCode: number }> {
+  const sourceModule = path.join(
+    CLI_PACKAGE_ROOT,
+    "src",
+    "tuiClient",
+    "cli.tsx",
+  );
   const builtModule = CLI_ENTRY_PATH
     ? path.join(path.dirname(CLI_ENTRY_PATH), "tuiClient", "cli.mjs")
     : path.join(CLI_PACKAGE_ROOT, "dist", "tuiClient", "cli.mjs");
@@ -4658,7 +8851,11 @@ async function runAdeCode(rest: string[], options: GlobalOptions): Promise<{ out
   return { output: "", exitCode };
 }
 
-function runLocalCommand(command: string, args: string[], cwd: string): { ok: boolean; stdout: string; stderr: string } {
+function runLocalCommand(
+  command: string,
+  args: string[],
+  cwd: string,
+): { ok: boolean; stdout: string; stderr: string } {
   const result = spawnSync(command, args, {
     cwd,
     encoding: "utf8",
@@ -4681,7 +8878,11 @@ function checkGitReadiness(projectRoot: string): ReadinessCheck {
       nextAction: "Install git and rerun ade doctor.",
     };
   }
-  const inside = runLocalCommand("git", ["rev-parse", "--is-inside-work-tree"], projectRoot);
+  const inside = runLocalCommand(
+    "git",
+    ["rev-parse", "--is-inside-work-tree"],
+    projectRoot,
+  );
   if (!inside.ok || inside.stdout !== "true") {
     return {
       ready: false,
@@ -4690,8 +8891,16 @@ function checkGitReadiness(projectRoot: string): ReadinessCheck {
       nextAction: "Run ade with --project-root pointing at a git repository.",
     };
   }
-  const root = runLocalCommand("git", ["rev-parse", "--show-toplevel"], projectRoot);
-  const branch = runLocalCommand("git", ["branch", "--show-current"], projectRoot);
+  const root = runLocalCommand(
+    "git",
+    ["rev-parse", "--show-toplevel"],
+    projectRoot,
+  );
+  const branch = runLocalCommand(
+    "git",
+    ["branch", "--show-current"],
+    projectRoot,
+  );
   return {
     ready: true,
     status: "ready",
@@ -4704,7 +8913,11 @@ function checkGitReadiness(projectRoot: string): ReadinessCheck {
 }
 
 function getGitRemote(projectRoot: string): string | null {
-  const remote = runLocalCommand("git", ["config", "--get", "remote.origin.url"], projectRoot);
+  const remote = runLocalCommand(
+    "git",
+    ["config", "--get", "remote.origin.url"],
+    projectRoot,
+  );
   return remote.ok && remote.stdout ? remote.stdout : null;
 }
 
@@ -4712,7 +8925,9 @@ function checkGitHubReadiness(projectRoot: string): ReadinessCheck {
   const remote = getGitRemote(projectRoot);
   const hasGitHubRemote = Boolean(remote && /github\.com[:/]/i.test(remote));
   const ghInstalled = commandExists("gh");
-  const envTokenPresent = Boolean(process.env.ADE_GITHUB_TOKEN?.trim() || process.env.GITHUB_TOKEN?.trim());
+  const envTokenPresent = Boolean(
+    process.env.ADE_GITHUB_TOKEN?.trim() || process.env.GITHUB_TOKEN?.trim(),
+  );
   const ready = hasGitHubRemote && (ghInstalled || envTokenPresent);
   return {
     ready,
@@ -4738,12 +8953,14 @@ function checkGitHubReadiness(projectRoot: string): ReadinessCheck {
 function checkLinearReadiness(projectRoot: string): ReadinessCheck {
   const { resolveAdeLayout } = requireAdeLayout();
   const layout = resolveAdeLayout(projectRoot);
-  const encryptedTokenPresent = fs.existsSync(path.join(layout.secretsDir, "linear-token.v1.bin"));
+  const encryptedTokenPresent = fs.existsSync(
+    path.join(layout.secretsDir, "linear-token.v1.bin"),
+  );
   const envTokenPresent = Boolean(
-    process.env.ADE_LINEAR_API?.trim()
-    || process.env.LINEAR_API_KEY?.trim()
-    || process.env.ADE_LINEAR_TOKEN?.trim()
-    || process.env.LINEAR_TOKEN?.trim()
+    process.env.ADE_LINEAR_API?.trim() ||
+    process.env.LINEAR_API_KEY?.trim() ||
+    process.env.ADE_LINEAR_TOKEN?.trim() ||
+    process.env.LINEAR_TOKEN?.trim(),
   );
   const ready = encryptedTokenPresent || envTokenPresent;
   return {
@@ -4763,8 +8980,12 @@ function checkLinearReadiness(projectRoot: string): ReadinessCheck {
 }
 
 function checkProviderReadiness(value: unknown): ReadinessCheck {
-  const configResult = isRecord(value) && isRecord(value.result) ? value.result : value;
-  const effective = isRecord(configResult) && isRecord(configResult.effective) ? configResult.effective : {};
+  const configResult =
+    isRecord(value) && isRecord(value.result) ? value.result : value;
+  const effective =
+    isRecord(configResult) && isRecord(configResult.effective)
+      ? configResult.effective
+      : {};
   const ai = isRecord(effective.ai) ? effective.ai : {};
   const defaultProvider = asString(ai.defaultProvider) ?? asString(ai.mode);
   const defaultModel = asString(ai.defaultModel);
@@ -4776,8 +8997,15 @@ function checkProviderReadiness(value: unknown): ReadinessCheck {
     cursor: commandExists("agent") || commandExists("cursor-agent"),
     droid: commandExists("droid"),
   };
-  const apiKeyProviders = Object.keys(apiKeys).filter((key) => Boolean(asString(apiKeys[key])));
-  const ready = Boolean(defaultProvider || defaultModel || apiKeyProviders.length || Object.values(cliProviders).some(Boolean));
+  const apiKeyProviders = Object.keys(apiKeys).filter((key) =>
+    Boolean(asString(apiKeys[key])),
+  );
+  const ready = Boolean(
+    defaultProvider ||
+    defaultModel ||
+    apiKeyProviders.length ||
+    Object.values(cliProviders).some(Boolean),
+  );
   return {
     ready,
     status: ready ? "ready" : "warning",
@@ -4800,7 +9028,8 @@ function checkComputerUseReadiness(): ReadinessCheck {
   const isDarwin = process.platform === "darwin";
   const screenshotReady = isDarwin && commandExists("screencapture");
   const appLaunchReady = isDarwin && commandExists("open");
-  const guiReady = isDarwin && (commandExists("swift") || commandExists("osascript"));
+  const guiReady =
+    isDarwin && (commandExists("swift") || commandExists("osascript"));
   const ready = isDarwin && screenshotReady && appLaunchReady && guiReady;
   return {
     ready,
@@ -4825,16 +9054,22 @@ function checkComputerUseReadiness(): ReadinessCheck {
 }
 
 function checkPathReadiness(): ReadinessCheck {
-  const lookup = process.platform === "win32"
-    ? runLocalCommand("where", ["ade"], process.cwd())
-    : runLocalCommand("which", ["ade"], process.cwd());
+  const lookup =
+    process.platform === "win32"
+      ? runLocalCommand("where", ["ade"], process.cwd())
+      : runLocalCommand("which", ["ade"], process.cwd());
   const current = path.resolve(process.argv[1] ?? "");
-  const whichPath = lookup.ok && lookup.stdout ? path.resolve(lookup.stdout.split(/\r?\n/)[0]!) : null;
+  const whichPath =
+    lookup.ok && lookup.stdout
+      ? path.resolve(lookup.stdout.split(/\r?\n/)[0]!)
+      : null;
   const onPath = Boolean(whichPath);
   return {
     ready: onPath,
     status: onPath ? "ready" : "warning",
-    message: onPath ? "ade is available on PATH." : "ade is not available on PATH.",
+    message: onPath
+      ? "ade is available on PATH."
+      : "ade is not available on PATH.",
     nextAction: onPath
       ? undefined
       : process.platform === "win32"
@@ -4851,14 +9086,23 @@ function checkPathReadiness(): ReadinessCheck {
   };
 }
 
-function requireAdeLayout(): { resolveAdeLayout: (projectRoot: string) => { secretsDir: string } } {
+function requireAdeLayout(): {
+  resolveAdeLayout: (projectRoot: string) => { secretsDir: string };
+} {
   // The CLI loads the shared layout dynamically elsewhere; this CommonJS fallback
   // keeps readiness checks synchronous and local-only.
-  return { resolveAdeLayout: (projectRoot: string) => ({ secretsDir: path.join(projectRoot, ".ade", "secrets") }) };
+  return {
+    resolveAdeLayout: (projectRoot: string) => ({
+      secretsDir: path.join(projectRoot, ".ade", "secrets"),
+    }),
+  };
 }
 
 function actionDomainCounts(value: unknown): Record<string, number> {
-  const actions = isRecord(value) && Array.isArray(value.actions) ? value.actions.filter(isRecord) : [];
+  const actions =
+    isRecord(value) && Array.isArray(value.actions)
+      ? value.actions.filter(isRecord)
+      : [];
   return actions.reduce<Record<string, number>>((acc, action) => {
     const domain = asString(action.domain) ?? "core";
     acc[domain] = (acc[domain] ?? 0) + 1;
@@ -4872,13 +9116,21 @@ function buildReadinessSnapshot(args: {
   summary: "doctor" | "auth";
 }): JsonObject {
   const { connection, values, summary } = args;
-  const rpcActions = isRecord(values.rpcActions) && Array.isArray(values.rpcActions.actions) ? values.rpcActions.actions : [];
-  const actions = isRecord(values.actions) && Array.isArray(values.actions.actions) ? values.actions.actions : [];
+  const rpcActions =
+    isRecord(values.rpcActions) && Array.isArray(values.rpcActions.actions)
+      ? values.rpcActions.actions
+      : [];
+  const actions =
+    isRecord(values.actions) && Array.isArray(values.actions.actions)
+      ? values.actions.actions
+      : [];
   const projectConfig = values.projectConfig;
   const adeDir = path.join(connection.projectRoot, ".ade");
   const sharedConfigPath = path.join(adeDir, "ade.yaml");
   const localConfigPath = path.join(adeDir, "local.yaml");
-  const attachedSocketAvailable = connection.mode === "runtime-socket" || connection.mode === "desktop-socket";
+  const attachedSocketAvailable =
+    connection.mode === "runtime-socket" ||
+    connection.mode === "desktop-socket";
   const desktopSocketAvailable = connection.mode === "desktop-socket";
   const socketExists = isAdeMcpNamedPipePath(connection.socketPath)
     ? attachedSocketAvailable
@@ -4895,11 +9147,15 @@ function buildReadinessSnapshot(args: {
     .filter(([, check]) => check.nextAction)
     .map(([key, check]) => `${key}: ${check.nextAction}`);
   if (!attachedSocketAvailable) {
-    recommendations.unshift("runtime: Start ADE runtime or remove --headless when Work chat, Path to Merge, Run tab state, or shared proof state is required.");
+    recommendations.unshift(
+      "runtime: Start ADE runtime or remove --headless when Work chat, Path to Merge, Run tab state, or shared proof state is required.",
+    );
   }
   const projectInitialized = fs.existsSync(adeDir);
   if (!projectInitialized) {
-    recommendations.unshift("project: Run ade doctor from an ADE project or pass --project-root <repo>.");
+    recommendations.unshift(
+      "project: Run ade doctor from an ADE project or pass --project-root <repo>.",
+    );
   }
   const actionCountsByDomain = actionDomainCounts(values.actions);
   const ready = projectInitialized && checks.git.ready && actions.length > 0;
@@ -4910,11 +9166,12 @@ function buildReadinessSnapshot(args: {
     protocolVersion: PROTOCOL_VERSION,
     mode: connection.mode,
     selectedMode: connection.mode,
-    requestedMode: connection.mode === "runtime-socket"
-      ? "runtime-socket"
-      : desktopSocketAvailable
-        ? "desktop-socket"
-        : "headless",
+    requestedMode:
+      connection.mode === "runtime-socket"
+        ? "runtime-socket"
+        : desktopSocketAvailable
+          ? "desktop-socket"
+          : "headless",
     runtime: {
       node: process.version,
       execPath: process.execPath,
@@ -4939,13 +9196,14 @@ function buildReadinessSnapshot(args: {
       socketExists,
       socketAvailable: attachedSocketAvailable,
       socketMode: connection.mode,
-      message: connection.mode === "runtime-socket"
-        ? "Connected to ADE runtime daemon socket."
-        : desktopSocketAvailable
-          ? "Connected to legacy ADE desktop socket."
-        : socketExists
-          ? "Socket path exists but CLI is running in headless mode; the socket may be stale or unavailable."
-          : "No live ADE socket was detected.",
+      message:
+        connection.mode === "runtime-socket"
+          ? "Connected to ADE runtime daemon socket."
+          : desktopSocketAvailable
+            ? "Connected to legacy ADE desktop socket."
+            : socketExists
+              ? "Socket path exists but CLI is running in headless mode; the socket may be stale or unavailable."
+              : "No live ADE socket was detected.",
     },
     actions: {
       rpcActionCount: rpcActions.length,
@@ -4965,12 +9223,15 @@ function buildReadinessSnapshot(args: {
     },
     networkChecks: {
       performed: false,
-      message: "Default doctor/auth checks do not call provider, GitHub, or Linear networks.",
+      message:
+        "Default doctor/auth checks do not call provider, GitHub, or Linear networks.",
     },
     recommendations,
-    recommendation: recommendations[0] ?? (attachedSocketAvailable
-      ? "Using live ADE runtime state."
-      : "Headless mode is ready for local ADE actions; start ADE runtime for shared runtime state."),
+    recommendation:
+      recommendations[0] ??
+      (attachedSocketAvailable
+        ? "Using live ADE runtime state."
+        : "Headless mode is ready for local ADE actions; start ADE runtime for shared runtime state."),
     summary,
   };
 }
@@ -4987,10 +9248,19 @@ function createSocketConnection(socketPath: string): net.Socket {
 }
 
 function isRetryableSocketConnectError(error: NodeJS.ErrnoException): boolean {
-  return error.code === "ENOENT" || error.code === "ECONNREFUSED" || error.code === "EACCES" || error.code === "EPERM";
+  return (
+    error.code === "ENOENT" ||
+    error.code === "ECONNREFUSED" ||
+    error.code === "EACCES" ||
+    error.code === "EPERM"
+  );
 }
 
-function connectSocket(socketPath: string, timeoutMs: number, label: string): Promise<net.Socket> {
+function connectSocket(
+  socketPath: string,
+  timeoutMs: number,
+  label: string,
+): Promise<net.Socket> {
   return new Promise((resolve, reject) => {
     const connectTimeoutMs = Math.min(timeoutMs, 5000);
     const deadline = Date.now() + connectTimeoutMs;
@@ -5004,12 +9274,19 @@ function connectSocket(socketPath: string, timeoutMs: number, label: string): Pr
         if (connectTimer) clearTimeout(connectTimer);
         fn();
       };
-      connectTimer = setTimeout(() => {
-        finish(() => {
-          socket.destroy();
-          reject(new Error(`Timed out connecting to ${label} after ${connectTimeoutMs}ms.`));
-        });
-      }, Math.max(1, deadline - Date.now()));
+      connectTimer = setTimeout(
+        () => {
+          finish(() => {
+            socket.destroy();
+            reject(
+              new Error(
+                `Timed out connecting to ${label} after ${connectTimeoutMs}ms.`,
+              ),
+            );
+          });
+        },
+        Math.max(1, deadline - Date.now()),
+      );
       socket.once("connect", () => {
         finish(() => resolve(socket));
       });
@@ -5032,22 +9309,41 @@ class SocketJsonRpcClient {
   private buffer: Buffer = Buffer.alloc(0);
   private nextId = 1;
   private closedError: Error | null = null;
-  private pending = new Map<number, {
-    resolve: (value: unknown) => void;
-    reject: (error: Error) => void;
-    timer: ReturnType<typeof setTimeout>;
-  }>();
-  private notificationHandlers = new Map<string, Set<(params: unknown) => void>>();
-  private anyNotificationHandlers = new Set<(method: string, params: unknown) => void>();
+  private pending = new Map<
+    number,
+    {
+      resolve: (value: unknown) => void;
+      reject: (error: Error) => void;
+      timer: ReturnType<typeof setTimeout>;
+    }
+  >();
+  private notificationHandlers = new Map<
+    string,
+    Set<(params: unknown) => void>
+  >();
+  private anyNotificationHandlers = new Set<
+    (method: string, params: unknown) => void
+  >();
   private closeHandlers = new Set<(error: Error) => void>();
 
-  private constructor(private readonly socket: net.Socket, private readonly timeoutMs: number) {
+  private constructor(
+    private readonly socket: net.Socket,
+    private readonly timeoutMs: number,
+  ) {
     socket.on("data", (chunk) => this.onData(Buffer.from(chunk)));
-    socket.on("error", (error) => this.rejectAll(error instanceof Error ? error : new Error(String(error))));
-    socket.on("close", () => this.failConnection(new Error("ADE socket closed.")));
+    socket.on("error", (error) =>
+      this.rejectAll(error instanceof Error ? error : new Error(String(error))),
+    );
+    socket.on("close", () =>
+      this.failConnection(new Error("ADE socket closed.")),
+    );
   }
 
-  static async connect(socketPath: string, timeoutMs: number, label = "ADE socket"): Promise<SocketJsonRpcClient> {
+  static async connect(
+    socketPath: string,
+    timeoutMs: number,
+    label = "ADE socket",
+  ): Promise<SocketJsonRpcClient> {
     const socket = await connectSocket(socketPath, timeoutMs, label);
     return new SocketJsonRpcClient(socket, timeoutMs);
   }
@@ -5100,8 +9396,13 @@ class SocketJsonRpcClient {
     };
   }
 
-  onNotification(method: string, handler: (params: unknown) => void): () => void {
-    const handlers = this.notificationHandlers.get(method) ?? new Set<(params: unknown) => void>();
+  onNotification(
+    method: string,
+    handler: (params: unknown) => void,
+  ): () => void {
+    const handlers =
+      this.notificationHandlers.get(method) ??
+      new Set<(params: unknown) => void>();
     handlers.add(handler);
     this.notificationHandlers.set(method, handlers);
     return () => {
@@ -5110,7 +9411,9 @@ class SocketJsonRpcClient {
     };
   }
 
-  onAnyNotification(handler: (method: string, params: unknown) => void): () => void {
+  onAnyNotification(
+    handler: (method: string, params: unknown) => void,
+  ): () => void {
     this.anyNotificationHandlers.add(handler);
     return () => {
       this.anyNotificationHandlers.delete(handler);
@@ -5122,7 +9425,9 @@ class SocketJsonRpcClient {
   }
 
   private onData(chunk: Buffer): void {
-    this.buffer = this.buffer.length ? Buffer.concat([this.buffer, chunk]) : chunk;
+    this.buffer = this.buffer.length
+      ? Buffer.concat([this.buffer, chunk])
+      : chunk;
     while (true) {
       const newline = this.buffer.indexOf(0x0a);
       if (newline < 0) break;
@@ -5138,7 +9443,11 @@ class SocketJsonRpcClient {
     try {
       parsed = JSON.parse(line);
     } catch (error) {
-      this.rejectAll(new Error(`Failed to parse ADE socket response: ${error instanceof Error ? error.message : String(error)}`));
+      this.rejectAll(
+        new Error(
+          `Failed to parse ADE socket response: ${error instanceof Error ? error.message : String(error)}`,
+        ),
+      );
       return;
     }
     if (!isRecord(parsed)) return;
@@ -5159,7 +9468,11 @@ class SocketJsonRpcClient {
     this.pending.delete(id);
     clearTimeout(pending.timer);
     if (isRecord(parsed.error)) {
-      pending.reject(new Error(asString(parsed.error.message) ?? "ADE JSON-RPC request failed."));
+      pending.reject(
+        new Error(
+          asString(parsed.error.message) ?? "ADE JSON-RPC request failed.",
+        ),
+      );
       return;
     }
     pending.resolve(parsed.result);
@@ -5205,8 +9518,12 @@ class InProcessJsonRpcClient {
   }
 
   close(): void {
-    try { this.handler.dispose?.(); } catch {}
-    try { this.runtime.dispose(); } catch {}
+    try {
+      this.handler.dispose?.();
+    } catch {}
+    try {
+      this.runtime.dispose();
+    } catch {}
     if (this.previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
     else process.env.ADE_DEFAULT_ROLE = this.previousRole;
   }
@@ -5216,7 +9533,10 @@ async function startHeadlessRpcSocketServer(args: {
   socketPath: string;
   createHandler: () => JsonRpcHandler & { dispose?: () => void };
 }): Promise<(() => void) | null> {
-  if (isAdeMcpNamedPipePath(args.socketPath) || fs.existsSync(args.socketPath)) {
+  if (
+    isAdeMcpNamedPipePath(args.socketPath) ||
+    fs.existsSync(args.socketPath)
+  ) {
     return null;
   }
   fs.mkdirSync(path.dirname(args.socketPath), { recursive: true });
@@ -5239,7 +9559,9 @@ async function startHeadlessRpcSocketServer(args: {
 
   return () => {
     stopHeadlessRpcServer(serverState);
-    try { fs.unlinkSync(args.socketPath); } catch {}
+    try {
+      fs.unlinkSync(args.socketPath);
+    } catch {}
   };
 }
 
@@ -5253,7 +9575,11 @@ async function startHeadlessRpcTcpServer(args: {
     const handleListening = () => {
       server.off("error", handleError);
       const address = server.address();
-      if (typeof address === "object" && address && typeof address.port === "number") {
+      if (
+        typeof address === "object" &&
+        address &&
+        typeof address.port === "number"
+      ) {
         resolve(address.port);
       } else {
         reject(new Error("Headless RPC TCP server did not expose a port."));
@@ -5281,10 +9607,14 @@ type HeadlessRpcServerState = {
 };
 
 type NotifiableJsonRpcHandler = JsonRpcHandler & {
-  setNotifier?: (notify: ((method: string, params?: unknown) => void) | null) => void;
+  setNotifier?: (
+    notify: ((method: string, params?: unknown) => void) | null,
+  ) => void;
 };
 
-function createHeadlessRpcServer(createHandler: () => JsonRpcHandler & { dispose?: () => void }): HeadlessRpcServerState {
+function createHeadlessRpcServer(
+  createHandler: () => JsonRpcHandler & { dispose?: () => void },
+): HeadlessRpcServerState {
   const activeConnections = new Set<net.Socket>();
   const activeStops = new Set<ReturnType<typeof startJsonRpcServer>>();
   const server = net.createServer((conn) => {
@@ -5292,7 +9622,9 @@ function createHeadlessRpcServer(createHandler: () => JsonRpcHandler & { dispose
     const handler = createHandler();
     const transport: JsonRpcTransport = {
       onData(callback) {
-        conn.on("data", (chunk) => callback(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+        conn.on("data", (chunk) =>
+          callback(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)),
+        );
       },
       write(data) {
         conn.write(data);
@@ -5302,7 +9634,9 @@ function createHeadlessRpcServer(createHandler: () => JsonRpcHandler & { dispose
       },
     };
     const stop = startJsonRpcServer(handler, transport, { nonFatal: true });
-    (handler as NotifiableJsonRpcHandler).setNotifier?.((method, params) => stop.notify(method, params));
+    (handler as NotifiableJsonRpcHandler).setNotifier?.((method, params) =>
+      stop.notify(method, params),
+    );
     activeStops.add(stop);
     let cleanedUp = false;
     const cleanup = () => {
@@ -5310,8 +9644,12 @@ function createHeadlessRpcServer(createHandler: () => JsonRpcHandler & { dispose
       cleanedUp = true;
       activeConnections.delete(conn);
       activeStops.delete(stop);
-      try { stop(); } catch {}
-      try { handler.dispose?.(); } catch {}
+      try {
+        stop();
+      } catch {}
+      try {
+        handler.dispose?.();
+      } catch {}
     };
     conn.once("close", cleanup);
     conn.once("end", cleanup);
@@ -5323,12 +9661,18 @@ function createHeadlessRpcServer(createHandler: () => JsonRpcHandler & { dispose
 
 function stopHeadlessRpcServer(state: HeadlessRpcServerState): void {
   for (const conn of state.activeConnections) {
-    try { conn.destroy(); } catch {}
+    try {
+      conn.destroy();
+    } catch {}
   }
   for (const stop of state.activeStops) {
-    try { stop(); } catch {}
+    try {
+      stop();
+    } catch {}
   }
-  try { state.server.close(); } catch {}
+  try {
+    state.server.close();
+  } catch {}
 }
 
 function discoverHeadlessWorktreeSocketPaths(projectRoot: string): string[] {
@@ -5388,7 +9732,11 @@ async function startHeadlessRpcSocketServers(args: {
 
   const scan = async () => {
     await ensure(args.socketPath);
-    await Promise.all(discoverHeadlessWorktreeSocketPaths(args.projectRoot).map((socketPath) => ensure(socketPath)));
+    await Promise.all(
+      discoverHeadlessWorktreeSocketPaths(args.projectRoot).map((socketPath) =>
+        ensure(socketPath),
+      ),
+    );
   };
 
   await scan();
@@ -5401,30 +9749,48 @@ async function startHeadlessRpcSocketServers(args: {
     stopped = true;
     clearInterval(interval);
     for (const stop of stops.values()) {
-      try { stop(); } catch {}
+      try {
+        stop();
+      } catch {}
     }
     stops.clear();
   };
 }
 
-export function shouldAttemptDesktopSocketConnection(socketPath: string): boolean {
+export function shouldAttemptDesktopSocketConnection(
+  socketPath: string,
+): boolean {
   return isAdeMcpNamedPipePath(socketPath) || fs.existsSync(socketPath);
 }
 
-async function initializeConnection(connection: CliConnection, options: GlobalOptions): Promise<void> {
-  await connection.request("ade/initialize", buildInitializeParams(options, "ade-cli"));
+async function initializeConnection(
+  connection: CliConnection,
+  options: GlobalOptions,
+): Promise<void> {
+  await connection.request(
+    "ade/initialize",
+    buildInitializeParams(options, "ade-cli"),
+  );
 }
 
 function isMachineRuntimeScopedMethod(method: string): boolean {
-  return method === "ade/initialize"
-    || method === "ade/initialized"
-    || method === "ping"
-    || method === "shutdown"
-    || method === "exit"
-    || method === "runtime/info"
-    || method === "machineInfo.get"
-    || method.startsWith("sync.")
-    || method.startsWith("projects.");
+  return (
+    method === "ade/initialize" ||
+    method === "ade/initialized" ||
+    method === "ping" ||
+    method === "shutdown" ||
+    method === "exit" ||
+    method === "runtime/info" ||
+    method === "machineInfo.get" ||
+    method.startsWith("sync.") ||
+    method.startsWith("projects.")
+  );
+}
+
+export function shouldAutoRegisterProjectForPlan(
+  plan: CliPlan & { kind: "execute" },
+): boolean {
+  return plan.steps.some((step) => !isMachineRuntimeScopedMethod(step.method));
 }
 
 function buildSyncPlan(args: string[]): CliPlan {
@@ -5447,33 +9813,62 @@ Usage:
     return {
       kind: "execute",
       label: "sync status",
-      steps: [{
-        key: "result",
-        method: "sync.getStatus",
-        params: {
-          includeTransferReadiness: readFlag(args, ["--include-transfer-readiness"]),
-          forceTransferReadiness: readFlag(args, ["--force-transfer-readiness"]),
+      steps: [
+        {
+          key: "result",
+          method: "sync.getStatus",
+          params: {
+            includeTransferReadiness: readFlag(args, [
+              "--include-transfer-readiness",
+            ]),
+            forceTransferReadiness: readFlag(args, [
+              "--force-transfer-readiness",
+            ]),
+          },
         },
-      }],
+      ],
     };
   }
   if (sub === "refresh" || sub === "refresh-discovery") {
-    return { kind: "execute", label: "sync refresh", steps: [{ key: "result", method: "sync.refreshDiscovery" }] };
+    return {
+      kind: "execute",
+      label: "sync refresh",
+      steps: [{ key: "result", method: "sync.refreshDiscovery" }],
+    };
   }
   if (sub === "devices" || sub === "list-devices") {
-    return { kind: "execute", label: "sync devices", steps: [{ key: "result", method: "sync.listDevices" }] };
+    return {
+      kind: "execute",
+      label: "sync devices",
+      steps: [{ key: "result", method: "sync.listDevices" }],
+    };
   }
   if (sub === "pin") {
     const action = firstPositional(args) ?? "get";
     if (action === "get" || action === "show") {
-      return { kind: "execute", label: "sync pin get", steps: [{ key: "result", method: "sync.getPin" }] };
+      return {
+        kind: "execute",
+        label: "sync pin get",
+        steps: [{ key: "result", method: "sync.getPin" }],
+      };
     }
     if (action === "set") {
-      const pin = requireValue(readValue(args, ["--pin"]) ?? firstPositional(args), "pin");
-      return { kind: "execute", label: "sync pin set", steps: [{ key: "result", method: "sync.setPin", params: { pin } }] };
+      const pin = requireValue(
+        readValue(args, ["--pin"]) ?? firstPositional(args),
+        "pin",
+      );
+      return {
+        kind: "execute",
+        label: "sync pin set",
+        steps: [{ key: "result", method: "sync.setPin", params: { pin } }],
+      };
     }
     if (action === "clear" || action === "remove") {
-      return { kind: "execute", label: "sync pin clear", steps: [{ key: "result", method: "sync.clearPin" }] };
+      return {
+        kind: "execute",
+        label: "sync pin clear",
+        steps: [{ key: "result", method: "sync.clearPin" }],
+      };
     }
     throw new CliUsageError(`Unsupported sync pin action: ${action}`);
   }
@@ -5491,7 +9886,10 @@ function buildProjectsPlan(args: string[]): CliPlan {
     };
   }
   if (sub === "add" || sub === "register") {
-    const rootPath = requireValue(readValue(args, ["--path", "--root"]) ?? firstPositional(args), "project path");
+    const rootPath = requireValue(
+      readValue(args, ["--path", "--root"]) ?? firstPositional(args),
+      "project path",
+    );
     return {
       kind: "execute",
       label: "projects add",
@@ -5500,37 +9898,60 @@ function buildProjectsPlan(args: string[]): CliPlan {
     };
   }
   if (sub === "remove" || sub === "rm" || sub === "delete") {
-    const projectId = requireValue(readValue(args, ["--project-id", "--id"]) ?? firstPositional(args), "project id");
+    const projectId = requireValue(
+      readValue(args, ["--project-id", "--id"]) ?? firstPositional(args),
+      "project id",
+    );
     return {
       kind: "execute",
       label: "projects remove",
-      steps: [{ key: "result", method: "projects.remove", params: { projectId } }],
+      steps: [
+        { key: "result", method: "projects.remove", params: { projectId } },
+      ],
     };
   }
   if (sub === "touch") {
-    const projectId = requireValue(readValue(args, ["--project-id", "--id"]) ?? firstPositional(args), "project id");
+    const projectId = requireValue(
+      readValue(args, ["--project-id", "--id"]) ?? firstPositional(args),
+      "project id",
+    );
     return {
       kind: "execute",
       label: "projects touch",
       formatter: "projects-list",
-      steps: [{ key: "result", method: "projects.touch", params: { projectId } }],
+      steps: [
+        { key: "result", method: "projects.touch", params: { projectId } },
+      ],
     };
   }
-  throw new CliUsageError(`projects supports list, add, remove, or touch; got '${sub}'.`);
+  throw new CliUsageError(
+    `projects supports list, add, remove, or touch; got '${sub}'.`,
+  );
 }
 
-function withProjectId(params: JsonObject | undefined, projectId: string): JsonObject {
+function withProjectId(
+  params: JsonObject | undefined,
+  projectId: string,
+): JsonObject {
   return {
     ...(params ?? {}),
     projectId,
   };
 }
 
-async function createConnection(options: GlobalOptions): Promise<CliConnection> {
+async function createConnection(
+  options: GlobalOptions,
+  args: { autoRegisterProject?: boolean } = {},
+): Promise<CliConnection> {
   const roots = resolveRoots(options);
-  const { resolveAdeLayout } = await import("../../desktop/src/shared/adeLayout");
+  const { resolveAdeLayout } =
+    await import("../../desktop/src/shared/adeLayout");
   const layout = resolveAdeLayout(roots.projectRoot);
-  const legacySocketPath = process.env.ADE_RPC_URL?.trim() || process.env.ADE_RPC_SOCKET_PATH?.trim() || layout.socketPath;
+  const legacySocketPath =
+    process.env.ADE_RPC_URL?.trim() ||
+    process.env.ADE_RPC_SOCKET_PATH?.trim() ||
+    layout.socketPath;
+  const autoRegisterProject = args.autoRegisterProject ?? true;
 
   if (!options.headless) {
     let socketClient: SocketJsonRpcClient | null = null;
@@ -5543,32 +9964,53 @@ async function createConnection(options: GlobalOptions): Promise<CliConnection> 
         projectRoot: roots.projectRoot,
         workspaceRoot: roots.workspaceRoot,
         socketPath: machineSocketPath,
-        request: (method, params) => socketClient!.request(
-          method,
-          activeProjectId && !isMachineRuntimeScopedMethod(method)
-            ? withProjectId(params, activeProjectId)
-            : params,
-        ),
+        request: (method, params) =>
+          socketClient!.request(
+            method,
+            activeProjectId && !isMachineRuntimeScopedMethod(method)
+              ? withProjectId(params, activeProjectId)
+              : params,
+          ),
         close: () => socketClient?.close(),
       };
-      const registered = await connection.request("projects.add", { rootPath: roots.projectRoot });
-      const registeredProjectId = isRecord(registered) ? asString(registered.projectId) : null;
-      if (!registeredProjectId) {
-        throw new Error("Machine runtime did not return a projectId from projects.add.");
+      if (autoRegisterProject) {
+        const registered = await connection.request("projects.add", {
+          rootPath: roots.projectRoot,
+        });
+        const registeredProjectId = isRecord(registered)
+          ? asString(registered.projectId)
+          : null;
+        if (!registeredProjectId) {
+          throw new Error(
+            "Machine runtime did not return a projectId from projects.add.",
+          );
+        }
+        activeProjectId = registeredProjectId;
       }
-      activeProjectId = registeredProjectId;
       return connection;
     } catch (error) {
-      try { socketClient?.close(); } catch {}
-      if (options.requireSocket && !shouldAttemptDesktopSocketConnection(legacySocketPath)) {
+      try {
+        socketClient?.close();
+      } catch {}
+      if (
+        options.requireSocket &&
+        !shouldAttemptDesktopSocketConnection(legacySocketPath)
+      ) {
         throw error;
       }
     }
   }
 
-  if (!options.headless && (shouldAttemptDesktopSocketConnection(legacySocketPath) || options.requireSocket)) {
+  if (
+    !options.headless &&
+    (shouldAttemptDesktopSocketConnection(legacySocketPath) ||
+      options.requireSocket)
+  ) {
     try {
-      const socketClient = await SocketJsonRpcClient.connect(legacySocketPath, options.timeoutMs);
+      const socketClient = await SocketJsonRpcClient.connect(
+        legacySocketPath,
+        options.timeoutMs,
+      );
       const connection: CliConnection = {
         mode: "desktop-socket",
         projectRoot: roots.projectRoot,
@@ -5590,16 +10032,18 @@ async function createConnection(options: GlobalOptions): Promise<CliConnection> 
 
   const previousRole = process.env.ADE_DEFAULT_ROLE;
   process.env.ADE_DEFAULT_ROLE = options.role;
-  const [{ createAdeRuntime }, { createAdeRpcRequestHandler }] = await Promise.all([
-    import("./bootstrap"),
-    import("./adeRpcServer"),
-  ]);
-  const runtime = await createAdeRuntime({ projectRoot: roots.projectRoot, workspaceRoot: roots.workspaceRoot });
-  const createHandler = () => createAdeRpcRequestHandler({
-    runtime,
-    serverVersion: VERSION,
-    onActionsListChanged: () => {},
+  const [{ createAdeRuntime }, { createAdeRpcRequestHandler }] =
+    await Promise.all([import("./bootstrap"), import("./adeRpcServer")]);
+  const runtime = await createAdeRuntime({
+    projectRoot: roots.projectRoot,
+    workspaceRoot: roots.workspaceRoot,
   });
+  const createHandler = () =>
+    createAdeRpcRequestHandler({
+      runtime,
+      serverVersion: VERSION,
+      onActionsListChanged: () => {},
+    });
   const handler = createHandler();
   const previousRpcUrl = process.env.ADE_RPC_URL;
   let stopHeadlessSocket: (() => void) | null = null;
@@ -5629,8 +10073,12 @@ async function createConnection(options: GlobalOptions): Promise<CliConnection> 
     socketPath: legacySocketPath,
     request: (method, params) => inProcess.request(method, params),
     close: () => {
-      try { stopHeadlessSocket?.(); } catch {}
-      try { stopHeadlessTcp?.(); } catch {}
+      try {
+        stopHeadlessSocket?.();
+      } catch {}
+      try {
+        stopHeadlessTcp?.();
+      } catch {}
       if (previousRpcUrl == null) delete process.env.ADE_RPC_URL;
       else process.env.ADE_RPC_URL = previousRpcUrl;
       inProcess.close();
@@ -5640,7 +10088,10 @@ async function createConnection(options: GlobalOptions): Promise<CliConnection> 
   return connection;
 }
 
-function buildInitializeParams(options: GlobalOptions, clientName: string): JsonObject {
+function buildInitializeParams(
+  options: GlobalOptions,
+  clientName: string,
+): JsonObject {
   const envChatSessionId = asString(process.env.ADE_CHAT_SESSION_ID);
   const envMissionId = asString(process.env.ADE_MISSION_ID);
   const envRunId = asString(process.env.ADE_RUN_ID);
@@ -5651,7 +10102,8 @@ function buildInitializeParams(options: GlobalOptions, clientName: string): Json
     protocolVersion: PROTOCOL_VERSION,
     clientInfo: { name: clientName, version: VERSION },
     identity: {
-      callerId: envChatSessionId ?? envAttemptId ?? `${clientName}:${process.pid}`,
+      callerId:
+        envChatSessionId ?? envAttemptId ?? `${clientName}:${process.pid}`,
       role: options.role,
       ...(envChatSessionId ? { chatSessionId: envChatSessionId } : {}),
       ...(envMissionId ? { missionId: envMissionId } : {}),
@@ -5683,7 +10135,9 @@ function normalizeMcpAdeToolName(name: string): string {
 }
 
 function mcpToolScope(): "all" | "coordinator" {
-  return process.env.ADE_MCP_TOOL_SCOPE === "coordinator" ? "coordinator" : "all";
+  return process.env.ADE_MCP_TOOL_SCOPE === "coordinator"
+    ? "coordinator"
+    : "all";
 }
 
 function isMcpToolVisible(name: string): boolean {
@@ -5701,14 +10155,19 @@ function formatMcpToolText(value: unknown): string {
 }
 
 async function runMcpServer(options: GlobalOptions): Promise<void> {
-  const roots = resolveRoots({ ...options, headless: true, requireSocket: false });
+  const roots = resolveRoots({
+    ...options,
+    headless: true,
+    requireSocket: false,
+  });
   const previousRole = process.env.ADE_DEFAULT_ROLE;
   process.env.ADE_DEFAULT_ROLE = options.role;
-  const [{ createAdeRuntime }, { createAdeRpcRequestHandler }] = await Promise.all([
-    import("./bootstrap"),
-    import("./adeRpcServer"),
-  ]);
-  const runtime = await createAdeRuntime({ projectRoot: roots.projectRoot, workspaceRoot: roots.workspaceRoot });
+  const [{ createAdeRuntime }, { createAdeRpcRequestHandler }] =
+    await Promise.all([import("./bootstrap"), import("./adeRpcServer")]);
+  const runtime = await createAdeRuntime({
+    projectRoot: roots.projectRoot,
+    workspaceRoot: roots.workspaceRoot,
+  });
   const adeHandler = createAdeRpcRequestHandler({
     runtime,
     serverVersion: VERSION,
@@ -5716,7 +10175,10 @@ async function runMcpServer(options: GlobalOptions): Promise<void> {
   });
   let initialized = false;
   let nextAdeRequestId = 1;
-  const callAde = async (method: string, params?: JsonObject): Promise<unknown> => {
+  const callAde = async (
+    method: string,
+    params?: JsonObject,
+  ): Promise<unknown> => {
     return await adeHandler({
       jsonrpc: "2.0",
       id: nextAdeRequestId++,
@@ -5735,7 +10197,8 @@ async function runMcpServer(options: GlobalOptions): Promise<void> {
     const params = isRecord(request.params) ? request.params : {};
     if (method === "initialize") {
       await ensureInitialized();
-      const requestedVersion = asString(params.protocolVersion) ?? PROTOCOL_VERSION;
+      const requestedVersion =
+        asString(params.protocolVersion) ?? PROTOCOL_VERSION;
       return {
         protocolVersion: requestedVersion,
         capabilities: {
@@ -5756,26 +10219,37 @@ async function runMcpServer(options: GlobalOptions): Promise<void> {
     await ensureInitialized();
     if (method === "tools/list") {
       const listed = await callAde("ade/actions/list");
-      const actions = isRecord(listed) && Array.isArray(listed.actions)
-        ? listed.actions.filter(isRecord)
-        : [];
+      const actions =
+        isRecord(listed) && Array.isArray(listed.actions)
+          ? listed.actions.filter(isRecord)
+          : [];
       return {
         tools: actions
           .map((action) => ({
             name: asString(action.name) ?? "",
             description: asString(action.description) ?? "",
-            inputSchema: isRecord(action.inputSchema) ? action.inputSchema : { type: "object", properties: {} },
+            inputSchema: isRecord(action.inputSchema)
+              ? action.inputSchema
+              : { type: "object", properties: {} },
           }))
-          .filter((tool) => tool.name.length > 0 && isMcpToolVisible(tool.name)),
+          .filter(
+            (tool) => tool.name.length > 0 && isMcpToolVisible(tool.name),
+          ),
       };
     }
     if (method === "tools/call") {
       const rawName = asString(params.name);
       if (!rawName) {
-        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "tools/call requires a tool name.");
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          "tools/call requires a tool name.",
+        );
       }
       if (!isMcpToolVisible(rawName)) {
-        throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Tool not available in this MCP scope: ${rawName}`);
+        throw new JsonRpcError(
+          JsonRpcErrorCode.methodNotFound,
+          `Tool not available in this MCP scope: ${rawName}`,
+        );
       }
       const result = await callAde("ade/actions/call", {
         name: normalizeMcpAdeToolName(rawName),
@@ -5800,12 +10274,17 @@ async function runMcpServer(options: GlobalOptions): Promise<void> {
       process.nextTick(() => process.exit(0));
       return {};
     }
-    throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Method not found: ${method}`);
+    throw new JsonRpcError(
+      JsonRpcErrorCode.methodNotFound,
+      `Method not found: ${method}`,
+    );
   };
 
   const transport: JsonRpcTransport = {
     onData(callback) {
-      process.stdin.on("data", (chunk) => callback(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+      process.stdin.on("data", (chunk) =>
+        callback(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)),
+      );
     },
     write(data) {
       process.stdout.write(data);
@@ -5826,8 +10305,12 @@ async function runMcpServer(options: GlobalOptions): Promise<void> {
     process.stdin.once("close", finish);
   });
   stop();
-  try { adeHandler.dispose?.(); } catch {}
-  try { runtime.dispose(); } catch {}
+  try {
+    adeHandler.dispose?.();
+  } catch {}
+  try {
+    runtime.dispose();
+  } catch {}
   if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
   else process.env.ADE_DEFAULT_ROLE = previousRole;
 }
@@ -5842,14 +10325,21 @@ function parseOptionalPort(value: string | null, label: string): number | null {
 }
 
 function normalizeRuntimeSocketPath(rawSocketPath: string): string {
-  return rawSocketPath.startsWith("tcp://") || isAdeMcpNamedPipePath(rawSocketPath)
+  return rawSocketPath.startsWith("tcp://") ||
+    isAdeMcpNamedPipePath(rawSocketPath)
     ? rawSocketPath
     : path.resolve(rawSocketPath);
 }
 
-async function resolveMachineRuntimeSocketPath(rawOverride?: string | null): Promise<string> {
-  const { resolveMachineAdeLayout } = await import("./services/projects/machineLayout");
-  const rawSocketPath = rawOverride?.trim() || process.env.ADE_RUNTIME_SOCKET_PATH?.trim() || resolveMachineAdeLayout().socketPath;
+async function resolveMachineRuntimeSocketPath(
+  rawOverride?: string | null,
+): Promise<string> {
+  const { resolveMachineAdeLayout } =
+    await import("./services/projects/machineLayout");
+  const rawSocketPath =
+    rawOverride?.trim() ||
+    process.env.ADE_RUNTIME_SOCKET_PATH?.trim() ||
+    resolveMachineAdeLayout().socketPath;
   return normalizeRuntimeSocketPath(rawSocketPath);
 }
 
@@ -5858,33 +10348,46 @@ function readRuntimeInfoVersion(value: unknown): string | null {
   return asString(value.runtimeInfo.version);
 }
 
-async function initializeMachineRuntimeDaemon(client: SocketJsonRpcClient, options: GlobalOptions): Promise<string | null> {
-  const result = await client.request("ade/initialize", buildInitializeParams(options, "ade-rpc-stdio-proxy"));
+async function initializeMachineRuntimeDaemon(
+  client: SocketJsonRpcClient,
+  options: GlobalOptions,
+): Promise<string | null> {
+  const result = await client.request(
+    "ade/initialize",
+    buildInitializeParams(options, "ade-rpc-stdio-proxy"),
+  );
   return readRuntimeInfoVersion(result);
 }
 
-async function shutdownMachineRuntimeDaemon(client: SocketJsonRpcClient): Promise<void> {
+async function shutdownMachineRuntimeDaemon(
+  client: SocketJsonRpcClient,
+): Promise<void> {
   try {
     await client.request("shutdown");
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (!message.includes("socket closed")) throw error;
   } finally {
-    try { client.close(); } catch {}
+    try {
+      client.close();
+    } catch {}
   }
 }
 
-async function spawnMachineRuntimeDaemon(socketPath: string, options: GlobalOptions): Promise<boolean> {
+async function spawnMachineRuntimeDaemon(
+  socketPath: string,
+  options: GlobalOptions,
+): Promise<boolean> {
   if (socketPath.startsWith("tcp://")) return false;
 
   const { resolveAdeServeCommand } = await import("./serviceManager/common");
   const serviceCommand = resolveAdeServeCommand();
   const args = [...serviceCommand.args];
   if (
-    serviceCommand.command === process.execPath
-    && args.length === 1
-    && args[0] === "serve"
-    && fs.existsSync(CLI_DIST_PATH)
+    serviceCommand.command === process.execPath &&
+    args.length === 1 &&
+    args[0] === "serve" &&
+    fs.existsSync(CLI_DIST_PATH)
   ) {
     args.splice(0, 1, CLI_DIST_PATH, "serve");
   }
@@ -5906,23 +10409,44 @@ async function spawnMachineRuntimeDaemon(socketPath: string, options: GlobalOpti
   return true;
 }
 
-async function connectMachineRuntimeDaemon(options: GlobalOptions, socketPathOverride?: string | null): Promise<SocketJsonRpcClient> {
+async function connectMachineRuntimeDaemon(
+  options: GlobalOptions,
+  socketPathOverride?: string | null,
+): Promise<SocketJsonRpcClient> {
   const socketPath = await resolveMachineRuntimeSocketPath(socketPathOverride);
   const label = "ADE runtime daemon socket";
   try {
-    const client = await SocketJsonRpcClient.connect(socketPath, options.timeoutMs, label);
-    const runtimeVersion = await initializeMachineRuntimeDaemon(client, options);
+    const client = await SocketJsonRpcClient.connect(
+      socketPath,
+      options.timeoutMs,
+      label,
+    );
+    const runtimeVersion = await initializeMachineRuntimeDaemon(
+      client,
+      options,
+    );
     if (runtimeVersion && runtimeVersion !== VERSION) {
       await shutdownMachineRuntimeDaemon(client);
       const spawned = await spawnMachineRuntimeDaemon(socketPath, options);
       if (!spawned) {
-        throw new Error(`ADE runtime daemon version ${runtimeVersion} does not match CLI version ${VERSION}.`);
+        throw new Error(
+          `ADE runtime daemon version ${runtimeVersion} does not match CLI version ${VERSION}.`,
+        );
       }
-      const restarted = await SocketJsonRpcClient.connect(socketPath, options.timeoutMs, label);
-      const restartedVersion = await initializeMachineRuntimeDaemon(restarted, options);
+      const restarted = await SocketJsonRpcClient.connect(
+        socketPath,
+        options.timeoutMs,
+        label,
+      );
+      const restartedVersion = await initializeMachineRuntimeDaemon(
+        restarted,
+        options,
+      );
       if (restartedVersion && restartedVersion !== VERSION) {
         await shutdownMachineRuntimeDaemon(restarted);
-        throw new Error(`ADE runtime daemon version ${restartedVersion} does not match CLI version ${VERSION}.`);
+        throw new Error(
+          `ADE runtime daemon version ${restartedVersion} does not match CLI version ${VERSION}.`,
+        );
       }
       return restarted;
     }
@@ -5931,22 +10455,40 @@ async function connectMachineRuntimeDaemon(options: GlobalOptions, socketPathOve
     const spawned = await spawnMachineRuntimeDaemon(socketPath, options);
     if (!spawned) throw firstError;
     try {
-      const client = await SocketJsonRpcClient.connect(socketPath, options.timeoutMs, label);
-      const runtimeVersion = await initializeMachineRuntimeDaemon(client, options);
+      const client = await SocketJsonRpcClient.connect(
+        socketPath,
+        options.timeoutMs,
+        label,
+      );
+      const runtimeVersion = await initializeMachineRuntimeDaemon(
+        client,
+        options,
+      );
       if (runtimeVersion && runtimeVersion !== VERSION) {
         await shutdownMachineRuntimeDaemon(client);
-        throw new Error(`ADE runtime daemon version ${runtimeVersion} does not match CLI version ${VERSION}.`);
+        throw new Error(
+          `ADE runtime daemon version ${runtimeVersion} does not match CLI version ${VERSION}.`,
+        );
       }
       return client;
     } catch (secondError) {
-      const firstMessage = firstError instanceof Error ? firstError.message : String(firstError);
-      const secondMessage = secondError instanceof Error ? secondError.message : String(secondError);
-      throw new Error(`Unable to attach to ADE runtime daemon at ${socketPath}: ${secondMessage} (initial attempt: ${firstMessage})`);
+      const firstMessage =
+        firstError instanceof Error ? firstError.message : String(firstError);
+      const secondMessage =
+        secondError instanceof Error
+          ? secondError.message
+          : String(secondError);
+      throw new Error(
+        `Unable to attach to ADE runtime daemon at ${socketPath}: ${secondMessage} (initial attempt: ${firstMessage})`,
+      );
     }
   }
 }
 
-async function runRuntimeCommand(rest: string[], options: GlobalOptions): Promise<unknown> {
+async function runRuntimeCommand(
+  rest: string[],
+  options: GlobalOptions,
+): Promise<unknown> {
   const args = [...rest];
   const sub = firstPositional(args) ?? "status";
   const socketOverride = readValue(args, ["--socket"]);
@@ -5954,9 +10496,16 @@ async function runRuntimeCommand(rest: string[], options: GlobalOptions): Promis
 
   if (sub === "status") {
     try {
-      const client = await SocketJsonRpcClient.connect(socketPath, Math.min(options.timeoutMs, 3_000), "ADE runtime daemon socket");
+      const client = await SocketJsonRpcClient.connect(
+        socketPath,
+        Math.min(options.timeoutMs, 3_000),
+        "ADE runtime daemon socket",
+      );
       try {
-        const runtimeVersion = await initializeMachineRuntimeDaemon(client, options);
+        const runtimeVersion = await initializeMachineRuntimeDaemon(
+          client,
+          options,
+        );
         return {
           ok: true,
           running: true,
@@ -5980,7 +10529,10 @@ async function runRuntimeCommand(rest: string[], options: GlobalOptions): Promis
   if (sub === "start") {
     const client = await connectMachineRuntimeDaemon(options, socketOverride);
     try {
-      const runtimeVersion = await initializeMachineRuntimeDaemon(client, options).catch(() => null);
+      const runtimeVersion = await initializeMachineRuntimeDaemon(
+        client,
+        options,
+      ).catch(() => null);
       return {
         ok: true,
         running: true,
@@ -5995,7 +10547,11 @@ async function runRuntimeCommand(rest: string[], options: GlobalOptions): Promis
 
   if (sub === "stop" || sub === "shutdown") {
     try {
-      const client = await SocketJsonRpcClient.connect(socketPath, Math.min(options.timeoutMs, 3_000), "ADE runtime daemon socket");
+      const client = await SocketJsonRpcClient.connect(
+        socketPath,
+        Math.min(options.timeoutMs, 3_000),
+        "ADE runtime daemon socket",
+      );
       try {
         await initializeMachineRuntimeDaemon(client, options).catch(() => null);
         await shutdownMachineRuntimeDaemon(client);
@@ -6031,31 +10587,33 @@ async function runRuntimeCommand(rest: string[], options: GlobalOptions): Promis
     return getRuntimeServiceStatus();
   }
 
-  throw new CliUsageError("runtime supports status, start, stop, install-service, uninstall-service, or service-status.");
+  throw new CliUsageError(
+    "runtime supports status, start, stop, install-service, uninstall-service, or service-status.",
+  );
 }
 
 async function runDesktopCommand(rest: string[]): Promise<unknown> {
   const args = [...rest];
   const sub = firstPositional(args) ?? "open";
-  const appName = readValue(args, ["--app-name"]) ?? resolveDefaultDesktopAppName();
+  const appName =
+    readValue(args, ["--app-name"]) ?? resolveDefaultDesktopAppName();
   if (sub !== "open" && sub !== "launch" && sub !== "start") {
     throw new CliUsageError("desktop supports open.");
   }
 
   if (process.platform === "darwin") {
     const result = spawnSync("open", ["-a", appName], { encoding: "utf8" });
-    const detail = typeof result.stderr === "string" && result.stderr.trim()
-      ? result.stderr.trim()
-      : typeof result.stdout === "string" && result.stdout.trim()
-        ? result.stdout.trim()
-        : `Unable to open ${appName}.`;
+    const detail =
+      typeof result.stderr === "string" && result.stderr.trim()
+        ? result.stderr.trim()
+        : typeof result.stdout === "string" && result.stdout.trim()
+          ? result.stdout.trim()
+          : `Unable to open ${appName}.`;
     return {
       ok: result.status === 0,
       platform: process.platform,
       appName,
-      message: result.status === 0
-        ? `Opened ${appName}.`
-        : detail,
+      message: result.status === 0 ? `Opened ${appName}.` : detail,
     };
   }
 
@@ -6063,7 +10621,8 @@ async function runDesktopCommand(rest: string[]): Promise<unknown> {
     ok: false,
     platform: process.platform,
     appName,
-    message: "Launching ADE desktop from the CLI is currently supported on macOS.",
+    message:
+      "Launching ADE desktop from the CLI is currently supported on macOS.",
   };
 }
 
@@ -6101,14 +10660,21 @@ async function runNativeRpcStdio(options: GlobalOptions): Promise<void> {
         return await client.request(method, request.params);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        if ((method === "shutdown" || method === "exit") && message.includes("socket closed")) {
+        if (
+          (method === "shutdown" || method === "exit") &&
+          message.includes("socket closed")
+        ) {
           return {};
         }
         throw error;
       }
     };
-    stop = startJsonRpcServer(handler, createStdioTransport(), { nonFatal: true });
-    unsubscribeNotifications = client.onAnyNotification((method, params) => stop?.notify(method, params));
+    stop = startJsonRpcServer(handler, createStdioTransport(), {
+      nonFatal: true,
+    });
+    unsubscribeNotifications = client.onAnyNotification((method, params) =>
+      stop?.notify(method, params),
+    );
     await new Promise<void>((resolve) => {
       let done = false;
       const finish = () => {
@@ -6122,14 +10688,21 @@ async function runNativeRpcStdio(options: GlobalOptions): Promise<void> {
     });
   } finally {
     unsubscribeNotifications?.();
-    try { stop?.(); } catch {}
-    try { client?.close(); } catch {}
+    try {
+      stop?.();
+    } catch {}
+    try {
+      client?.close();
+    } catch {}
     if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
     else process.env.ADE_DEFAULT_ROLE = previousRole;
   }
 }
 
-async function runServe(rest: string[], options: GlobalOptions): Promise<unknown | null> {
+async function runServe(
+  rest: string[],
+  options: GlobalOptions,
+): Promise<unknown | null> {
   const args = [...rest];
   if (readFlag(args, ["--install-service"])) {
     const { installRuntimeService } = await import("./serviceManager");
@@ -6143,7 +10716,12 @@ async function runServe(rest: string[], options: GlobalOptions): Promise<unknown
     const { getRuntimeServiceStatus } = await import("./serviceManager");
     return getRuntimeServiceStatus();
   }
-  const [{ resolveMachineAdeLayout }, { ProjectRegistry }, { ProjectScopeRegistry }, { createMultiProjectRpcRequestHandler }] = await Promise.all([
+  const [
+    { resolveMachineAdeLayout },
+    { ProjectRegistry },
+    { ProjectScopeRegistry },
+    { createMultiProjectRpcRequestHandler },
+  ] = await Promise.all([
     import("./services/projects/machineLayout"),
     import("./services/projects/projectRegistry"),
     import("./services/projects/projectScope"),
@@ -6151,12 +10729,19 @@ async function runServe(rest: string[], options: GlobalOptions): Promise<unknown
   ]);
 
   const layout = resolveMachineAdeLayout();
-  const rawSocketPath = readValue(args, ["--socket"]) ?? process.env.ADE_RPC_SOCKET_PATH?.trim() ?? layout.socketPath;
-  const socketPath = isAdeMcpNamedPipePath(rawSocketPath) ? rawSocketPath : path.resolve(rawSocketPath);
+  const rawSocketPath =
+    readValue(args, ["--socket"]) ??
+    process.env.ADE_RPC_SOCKET_PATH?.trim() ??
+    layout.socketPath;
+  const socketPath = isAdeMcpNamedPipePath(rawSocketPath)
+    ? rawSocketPath
+    : path.resolve(rawSocketPath);
   const port = parseOptionalPort(readValue(args, ["--port"]), "--port");
   const syncEnabled = !readFlag(args, ["--no-sync"]);
   const projectRegistry = new ProjectRegistry(layout);
-  type ProjectRecord = ReturnType<InstanceType<typeof ProjectRegistry>["list"]>[number];
+  type ProjectRecord = ReturnType<
+    InstanceType<typeof ProjectRegistry>["list"]
+  >[number];
   const toMobileProjectSummary = (
     record: ProjectRecord,
     overrides: Partial<SyncMobileProjectSummary> = {},
@@ -6165,7 +10750,10 @@ async function runServe(rest: string[], options: GlobalOptions): Promise<unknown
     displayName: record.displayName,
     rootPath: record.rootPath,
     defaultBaseRef: null,
-    lastOpenedAt: record.lastOpenedAt > 0 ? new Date(record.lastOpenedAt).toISOString() : null,
+    lastOpenedAt:
+      record.lastOpenedAt > 0
+        ? new Date(record.lastOpenedAt).toISOString()
+        : null,
     laneCount: 0,
     isAvailable: true,
     isCached: true,
@@ -6185,18 +10773,34 @@ async function runServe(rest: string[], options: GlobalOptions): Promise<unknown
       phonePairingStateDir: layout.secretsDir,
       projectCatalogProvider: {
         listProjects: async () => ({
-          projects: projectRegistry.list().map((record) => toMobileProjectSummary(record)),
+          projects: projectRegistry
+            .list()
+            .map((record) => toMobileProjectSummary(record)),
         }),
         prepareProjectConnection: async (
           request: SyncProjectSwitchRequestPayload,
         ): Promise<SyncProjectSwitchResultPayload> => {
-          const requestedId = typeof request.projectId === "string" ? request.projectId.trim() : "";
-          const requestedRootPath = typeof request.rootPath === "string" ? path.resolve(request.rootPath) : "";
-          const record = projectRegistry.list().find((candidate) =>
-            (requestedId.length > 0 && candidate.projectId === requestedId)
-            || (requestedRootPath.length > 0 && path.resolve(candidate.rootPath) === requestedRootPath)
-          ) ?? null;
-          const project = record ? toMobileProjectSummary(record, { isOpen: true }) : null;
+          const requestedId =
+            typeof request.projectId === "string"
+              ? request.projectId.trim()
+              : "";
+          const requestedRootPath =
+            typeof request.rootPath === "string"
+              ? path.resolve(request.rootPath)
+              : "";
+          const record =
+            projectRegistry
+              .list()
+              .find(
+                (candidate) =>
+                  (requestedId.length > 0 &&
+                    candidate.projectId === requestedId) ||
+                  (requestedRootPath.length > 0 &&
+                    path.resolve(candidate.rootPath) === requestedRootPath),
+              ) ?? null;
+          const project = record
+            ? toMobileProjectSummary(record, { isOpen: true })
+            : null;
           if (!record) {
             return {
               ok: false,
@@ -6249,7 +10853,10 @@ async function runServe(rest: string[], options: GlobalOptions): Promise<unknown
           } catch (error) {
             return {
               ok: false,
-              message: error instanceof Error ? error.message : "Unable to prepare phone sync for that project.",
+              message:
+                error instanceof Error
+                  ? error.message
+                  : "Unable to prepare phone sync for that project.",
               project,
             };
           }
@@ -6259,11 +10866,13 @@ async function runServe(rest: string[], options: GlobalOptions): Promise<unknown
           result: SyncProjectSwitchResultPayload,
         ): Promise<void> => {
           if (!result.ok) return;
-          const projectId = typeof result.project?.id === "string" && result.project.id.trim()
-            ? result.project.id.trim()
-            : typeof request.projectId === "string" && request.projectId.trim()
-              ? request.projectId.trim()
-              : null;
+          const projectId =
+            typeof result.project?.id === "string" && result.project.id.trim()
+              ? result.project.id.trim()
+              : typeof request.projectId === "string" &&
+                  request.projectId.trim()
+                ? request.projectId.trim()
+                : null;
           if (!projectId) return;
           try {
             projectRegistry.touch(projectId);
@@ -6288,15 +10897,19 @@ async function runServe(rest: string[], options: GlobalOptions): Promise<unknown
     resolveDone?.();
   };
 
-  const createHandler = () => createMultiProjectRpcRequestHandler({
-    serverVersion: VERSION,
-    projectRegistry,
-    scopeRegistry,
-    disposeScopesOnDispose: false,
-    onShutdown: finish,
-  });
+  const createHandler = () =>
+    createMultiProjectRpcRequestHandler({
+      serverVersion: VERSION,
+      projectRegistry,
+      scopeRegistry,
+      disposeScopesOnDispose: false,
+      onShutdown: finish,
+    });
 
-  const listen = async (server: net.Server, target: string | { port: number; host: string }): Promise<void> => {
+  const listen = async (
+    server: net.Server,
+    target: string | { port: number; host: string },
+  ): Promise<void> => {
     await new Promise<void>((resolve, reject) => {
       const handleListening = () => {
         server.off("error", handleError);
@@ -6319,14 +10932,18 @@ async function runServe(rest: string[], options: GlobalOptions): Promise<unknown
   fs.mkdirSync(layout.adeDir, { recursive: true, mode: 0o700 });
   if (!isAdeMcpNamedPipePath(socketPath)) {
     fs.mkdirSync(path.dirname(socketPath), { recursive: true, mode: 0o700 });
-    try { fs.unlinkSync(socketPath); } catch {}
+    try {
+      fs.unlinkSync(socketPath);
+    } catch {}
   }
 
   const socketState = createHeadlessRpcServer(createHandler);
   states.push(socketState);
   await listen(socketState.server, socketPath);
   if (!isAdeMcpNamedPipePath(socketPath)) {
-    try { fs.chmodSync(socketPath, 0o600); } catch {}
+    try {
+      fs.chmodSync(socketPath, 0o600);
+    } catch {}
   }
 
   let tcpUrl: string | null = null;
@@ -6339,11 +10956,15 @@ async function runServe(rest: string[], options: GlobalOptions): Promise<unknown
 
   if (syncEnabled) {
     void scopeRegistry.ensureSyncHost().catch((error: unknown) => {
-      process.stderr.write(`ade serve sync host failed: ${error instanceof Error ? error.message : String(error)}\n`);
+      process.stderr.write(
+        `ade serve sync host failed: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
     });
   }
 
-  process.stderr.write(`ade serve listening on ${socketPath}${tcpUrl ? ` and ${tcpUrl}` : ""}\n`);
+  process.stderr.write(
+    `ade serve listening on ${socketPath}${tcpUrl ? ` and ${tcpUrl}` : ""}\n`,
+  );
 
   await new Promise<void>((resolve) => {
     resolveDone = resolve;
@@ -6356,7 +10977,9 @@ async function runServe(rest: string[], options: GlobalOptions): Promise<unknown
   }
   await scopeRegistry.disposeAll();
   if (!isAdeMcpNamedPipePath(socketPath)) {
-    try { fs.unlinkSync(socketPath); } catch {}
+    try {
+      fs.unlinkSync(socketPath);
+    } catch {}
   }
   if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
   else process.env.ADE_DEFAULT_ROLE = previousRole;
@@ -6366,12 +10989,16 @@ async function runServe(rest: string[], options: GlobalOptions): Promise<unknown
 function isFailedServiceManagerResult(value: unknown): boolean {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
-  return record.ok === false
-    && (record.action === "install" || record.action === "uninstall")
-    && typeof record.serviceName === "string";
+  return (
+    record.ok === false &&
+    (record.action === "install" || record.action === "uninstall") &&
+    typeof record.serviceName === "string"
+  );
 }
 
-async function runInit(targetPath: string | null): Promise<{ project: unknown; registryPath: string }> {
+async function runInit(
+  targetPath: string | null,
+): Promise<{ project: unknown; registryPath: string }> {
   const [{ resolveMachineAdeLayout }, { ProjectRegistry }] = await Promise.all([
     import("./services/projects/machineLayout"),
     import("./services/projects/projectRegistry"),
@@ -6389,9 +11016,10 @@ function unwrapToolResult(result: unknown): unknown {
   if (!isRecord(result)) return result;
   if (result.isError === true) {
     const structured = result.structuredContent;
-    const message = isRecord(structured) && isRecord(structured.error)
-      ? asString(structured.error.message) ?? "ADE tool call failed."
-      : "ADE tool call failed.";
+    const message =
+      isRecord(structured) && isRecord(structured.error)
+        ? (asString(structured.error.message) ?? "ADE tool call failed.")
+        : "ADE tool call failed.";
     throw new CliToolError(message, structured ?? result);
   }
   if (result.ok === false && isRecord(result.error)) {
@@ -6407,8 +11035,10 @@ function unwrapToolResult(result: unknown): unknown {
 function unwrapActionEnvelope(value: unknown): unknown {
   if (!isRecord(value)) return value;
   if (
-    Object.prototype.hasOwnProperty.call(value, "result")
-    && (asString(value.domain) || asString(value.action) || Object.prototype.hasOwnProperty.call(value, "statusHint"))
+    Object.prototype.hasOwnProperty.call(value, "result") &&
+    (asString(value.domain) ||
+      asString(value.action) ||
+      Object.prototype.hasOwnProperty.call(value, "statusHint"))
   ) {
     return value.result;
   }
@@ -6418,7 +11048,8 @@ function unwrapActionEnvelope(value: unknown): unknown {
 function missionIdFromCreateResult(value: unknown): string {
   const result = unwrapActionEnvelope(value);
   const mission = firstRecord(result, ["mission"]);
-  const id = asString(mission?.id) ?? (isRecord(result) ? asString(result.id) : null);
+  const id =
+    asString(mission?.id) ?? (isRecord(result) ? asString(result.id) : null);
   return requireValue(id ?? null, "created mission id");
 }
 
@@ -6426,11 +11057,14 @@ function newestRunFromListResult(value: unknown): JsonObject | null {
   const result = unwrapActionEnvelope(value);
   const runs = firstArray(result, ["runs", "items", "results"]);
   if (runs.length === 0) return null;
-  return [...runs].sort((left, right) => {
-    const leftAt = asString(left.startedAt) ?? asString(left.createdAt) ?? "";
-    const rightAt = asString(right.startedAt) ?? asString(right.createdAt) ?? "";
-    return rightAt.localeCompare(leftAt);
-  })[0] ?? null;
+  return (
+    [...runs].sort((left, right) => {
+      const leftAt = asString(left.startedAt) ?? asString(left.createdAt) ?? "";
+      const rightAt =
+        asString(right.startedAt) ?? asString(right.createdAt) ?? "";
+      return rightAt.localeCompare(leftAt);
+    })[0] ?? null
+  );
 }
 
 function runFromStartResult(value: unknown): JsonObject | null {
@@ -6457,7 +11091,10 @@ function graphFromResult(value: unknown): JsonObject | null {
   if (!isRecord(result)) return null;
   if (hasRunGraphShape(result)) return result;
   const nestedGraph = isRecord(result.graph) ? result.graph : null;
-  const graph = nestedGraph && hasRunGraphShape(nestedGraph) ? nestedGraph : nestedGraph ?? result;
+  const graph =
+    nestedGraph && hasRunGraphShape(nestedGraph)
+      ? nestedGraph
+      : (nestedGraph ?? result);
   return isRecord(graph) ? graph : null;
 }
 
@@ -6467,11 +11104,12 @@ function runFromGraphResult(value: unknown): JsonObject | null {
 }
 
 function hasRunGraphShape(value: unknown): boolean {
-  return isRecord(value) && (
-    isRecord(value.run)
-    || Array.isArray(value.steps)
-    || Array.isArray(value.attempts)
-    || Array.isArray(value.timeline)
+  return (
+    isRecord(value) &&
+    (isRecord(value.run) ||
+      Array.isArray(value.steps) ||
+      Array.isArray(value.attempts) ||
+      Array.isArray(value.timeline))
   );
 }
 
@@ -6487,7 +11125,8 @@ function runIdFromWatchValues(values: JsonObject): string {
 }
 
 function renderLaneGraph(result: unknown): string {
-  const lanesRaw = isRecord(result) && Array.isArray(result.lanes) ? result.lanes : [];
+  const lanesRaw =
+    isRecord(result) && Array.isArray(result.lanes) ? result.lanes : [];
   const lanes = lanesRaw.filter(isRecord);
   if (lanes.length === 0) return "ADE lanes\n(no lanes)";
 
@@ -6507,10 +11146,14 @@ function renderLaneGraph(result: unknown): string {
   }
   for (const children of byParent.values()) {
     children.sort((left, right) => {
-      const leftDepth = typeof left.stackDepth === "number" ? left.stackDepth : 0;
-      const rightDepth = typeof right.stackDepth === "number" ? right.stackDepth : 0;
+      const leftDepth =
+        typeof left.stackDepth === "number" ? left.stackDepth : 0;
+      const rightDepth =
+        typeof right.stackDepth === "number" ? right.stackDepth : 0;
       if (leftDepth !== rightDepth) return leftDepth - rightDepth;
-      return String(left.name ?? left.id ?? "").localeCompare(String(right.name ?? right.id ?? ""));
+      return String(left.name ?? left.id ?? "").localeCompare(
+        String(right.name ?? right.id ?? ""),
+      );
     });
   }
 
@@ -6522,9 +11165,17 @@ function renderLaneGraph(result: unknown): string {
     const archived = asString(lane.archivedAt) ? " archived" : "";
     const id = asString(lane.id);
     const idSuffix = id ? ` (id: ${id})` : "";
-    lines.push(`${prefix}${isLast ? "\\- " : "|- "}${name}${idSuffix}${branch ? ` [${branch}]` : ""}${status ? ` ${status}` : ""}${archived}`);
-    const children = id ? byParent.get(id) ?? [] : [];
-    children.forEach((child, index) => visit(child, `${prefix}${isLast ? "   " : "|  "}`, index === children.length - 1));
+    lines.push(
+      `${prefix}${isLast ? "\\- " : "|- "}${name}${idSuffix}${branch ? ` [${branch}]` : ""}${status ? ` ${status}` : ""}${archived}`,
+    );
+    const children = id ? (byParent.get(id) ?? []) : [];
+    children.forEach((child, index) =>
+      visit(
+        child,
+        `${prefix}${isLast ? "   " : "|  "}`,
+        index === children.length - 1,
+      ),
+    );
   };
   const roots = byParent.get("") ?? [];
   roots.forEach((lane, index) => visit(lane, "", index === roots.length - 1));
@@ -6541,12 +11192,23 @@ function truncateCell(value: string, width = 42): string {
 function cell(value: unknown, width = 42): string {
   if (value == null) return "";
   if (typeof value === "boolean") return value ? "yes" : "no";
-  if (typeof value === "number") return Number.isFinite(value) ? String(value) : "";
+  if (typeof value === "number")
+    return Number.isFinite(value) ? String(value) : "";
   if (typeof value === "string") return truncateCell(value, width);
-  if (Array.isArray(value)) return truncateCell(value.map((entry) => cell(entry, 18)).filter(Boolean).join(", "), width);
+  if (Array.isArray(value))
+    return truncateCell(
+      value
+        .map((entry) => cell(entry, 18))
+        .filter(Boolean)
+        .join(", "),
+      width,
+    );
   if (isRecord(value)) {
-    const id = asString(value.id) ?? asString(value.name) ?? asString(value.title);
-    return id ? truncateCell(id, width) : truncateCell(JSON.stringify(value), width);
+    const id =
+      asString(value.id) ?? asString(value.name) ?? asString(value.title);
+    return id
+      ? truncateCell(id, width)
+      : truncateCell(JSON.stringify(value), width);
   }
   return truncateCell(String(value), width);
 }
@@ -6556,7 +11218,9 @@ function formatAutomationRunDetail(value: unknown): string {
   const run = isRecord(value.run) ? value.run : value;
   const actions = Array.isArray(value.actions)
     ? value.actions
-    : Array.isArray(run.actions) ? run.actions : [];
+    : Array.isArray(run.actions)
+      ? run.actions
+      : [];
   const header = renderKeyValues("ADE automation run", [
     ["id", run.id],
     ["rule", run.automationId ?? run.ruleId],
@@ -6569,15 +11233,21 @@ function formatAutomationRunDetail(value: unknown): string {
   const rows = actions
     .filter((action): action is JsonObject => isRecord(action))
     .map((action) => {
-      const kind = typeof action.kind === "string" ? action.kind
-        : typeof action.type === "string" ? action.type
-        : "action";
+      const kind =
+        typeof action.kind === "string"
+          ? action.kind
+          : typeof action.type === "string"
+            ? action.type
+            : "action";
       const status = typeof action.status === "string" ? action.status : "?";
-      const error = typeof action.errorMessage === "string" ? action.errorMessage : "";
+      const error =
+        typeof action.errorMessage === "string" ? action.errorMessage : "";
       const output = typeof action.output === "string" ? action.output : "";
       const isLaneSetup = kind === "lane-setup";
       const note = error
-        ? (isLaneSetup ? `FAILED: ${error}` : error)
+        ? isLaneSetup
+          ? `FAILED: ${error}`
+          : error
         : isLaneSetup && output
           ? `created lane: ${output}`
           : output;
@@ -6588,22 +11258,46 @@ function formatAutomationRunDetail(value: unknown): string {
   return [header, "", "Actions", table].join("\n");
 }
 
-function renderKeyValues(title: string, entries: Array<[string, unknown]>): string {
-  const rows = entries.filter(([, value]) => value !== undefined && value !== null && value !== "");
+function renderKeyValues(
+  title: string,
+  entries: Array<[string, unknown]>,
+): string {
+  const rows = entries.filter(
+    ([, value]) => value !== undefined && value !== null && value !== "",
+  );
   const labelWidth = Math.max(0, ...rows.map(([label]) => label.length));
   return [
     title,
-    ...rows.map(([label, value]) => `${label.padEnd(labelWidth)}  ${cell(value, 96)}`),
+    ...rows.map(
+      ([label, value]) => `${label.padEnd(labelWidth)}  ${cell(value, 96)}`,
+    ),
   ].join("\n");
 }
 
-function renderTable(headers: string[], rows: unknown[][], emptyMessage: string): string {
+function renderTable(
+  headers: string[],
+  rows: unknown[][],
+  emptyMessage: string,
+): string {
   if (rows.length === 0) return emptyMessage;
-  const widths = headers.map((header, index) => Math.max(
-    header.length,
-    ...rows.map((row) => cell(row[index], index === headers.length - 1 ? 64 : 28).length),
-  ));
-  const renderRow = (row: unknown[]) => row.map((entry, index) => cell(entry, index === headers.length - 1 ? 64 : 28).padEnd(widths[index] ?? 0)).join("  ").trimEnd();
+  const widths = headers.map((header, index) =>
+    Math.max(
+      header.length,
+      ...rows.map(
+        (row) =>
+          cell(row[index], index === headers.length - 1 ? 64 : 28).length,
+      ),
+    ),
+  );
+  const renderRow = (row: unknown[]) =>
+    row
+      .map((entry, index) =>
+        cell(entry, index === headers.length - 1 ? 64 : 28).padEnd(
+          widths[index] ?? 0,
+        ),
+      )
+      .join("  ")
+      .trimEnd();
   return [
     renderRow(headers),
     widths.map((width) => "-".repeat(width)).join("  "),
@@ -6633,35 +11327,63 @@ function firstRecord(value: unknown, keys: string[]): JsonObject | null {
 function statusWord(value: unknown): string {
   const raw = cell(value, 24).toLowerCase();
   if (!raw) return "";
-  if (["success", "passing", "passed", "completed", "ready", "clean", "ok"].includes(raw)) return "OK";
-  if (["failure", "failed", "failing", "error", "blocked", "dirty"].includes(raw)) return "FAIL";
-  if (["pending", "running", "in_progress", "queued", "active"].includes(raw)) return "WAIT";
+  if (
+    [
+      "success",
+      "passing",
+      "passed",
+      "completed",
+      "ready",
+      "clean",
+      "ok",
+    ].includes(raw)
+  )
+    return "OK";
+  if (
+    ["failure", "failed", "failing", "error", "blocked", "dirty"].includes(raw)
+  )
+    return "FAIL";
+  if (["pending", "running", "in_progress", "queued", "active"].includes(raw))
+    return "WAIT";
   return raw.toUpperCase();
 }
 
 function formatActionsList(value: unknown): string {
-  const actionResult = isRecord(value) && isRecord(value.actions) ? value.actions : value;
+  const actionResult =
+    isRecord(value) && isRecord(value.actions) ? value.actions : value;
   const actions = firstArray(actionResult, ["actions"]);
   if (actions.length === 0) return "ADE actions\n(no actions)";
   const byDomain = new Map<string, JsonObject[]>();
   for (const action of actions) {
     const name = asString(action.name);
-    const domain = asString(action.domain) ?? (name?.includes(".") ? name.split(".")[0] : null) ?? "core";
+    const domain =
+      asString(action.domain) ??
+      (name?.includes(".") ? name.split(".")[0] : null) ??
+      "core";
     const list = byDomain.get(domain) ?? [];
     list.push(action);
     byDomain.set(domain, list);
   }
   const lines = [
     "ADE actions",
-    "Use: ade actions run <domain.action> --input-json '{\"key\":\"value\"}'",
-    "For multi-parameter methods: --args-list-json '[\"first\",{\"second\":true}]'",
+    'Use: ade actions run <domain.action> --input-json \'{"key":"value"}\'',
+    'For multi-parameter methods: --args-list-json \'["first",{"second":true}]\'',
   ];
-  for (const [domain, list] of [...byDomain.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+  for (const [domain, list] of [...byDomain.entries()].sort(([left], [right]) =>
+    left.localeCompare(right),
+  )) {
     lines.push("", `${domain}:`);
-    for (const action of list.sort((left, right) => cell(left.action ?? left.name).localeCompare(cell(right.action ?? right.name)))) {
-      const name = asString(action.action) ?? asString(action.name) ?? "(unknown)";
+    for (const action of list.sort((left, right) =>
+      cell(left.action ?? left.name).localeCompare(
+        cell(right.action ?? right.name),
+      ),
+    )) {
+      const name =
+        asString(action.action) ?? asString(action.name) ?? "(unknown)";
       const description = asString(action.description) ?? "";
-      lines.push(`  ${name}${description ? ` - ${truncateCell(description, 86)}` : ""}`);
+      lines.push(
+        `  ${name}${description ? ` - ${truncateCell(description, 86)}` : ""}`,
+      );
     }
   }
   return lines.join("\n");
@@ -6698,7 +11420,9 @@ function formatPrList(value: unknown): string {
 function formatPrChecks(value: unknown): string {
   const checks = firstArray(value, ["checks", "items"]);
   const summary = isRecord(value) ? value.summary : null;
-  const header = summary ? `ADE PR checks - ${cell(summary, 80)}` : "ADE PR checks";
+  const header = summary
+    ? `ADE PR checks - ${cell(summary, 80)}`
+    : "ADE PR checks";
   return `${header}\n${renderTable(
     ["status", "name", "details"],
     checks.map((check) => [
@@ -6715,46 +11439,67 @@ function formatPrComments(value: unknown): string {
   const comments = firstArray(value, ["comments", "issueComments"]);
   const lines = ["ADE PR comments"];
   if (threads.length > 0) {
-    lines.push("", renderTable(
-      ["thread", "state", "file", "comment"],
-      threads.map((thread) => {
-        const threadComments = Array.isArray(thread.comments) ? thread.comments.filter(isRecord) : [];
-        const first = threadComments[0] ?? {};
-        return [
-          thread.id,
-          thread.isResolved ? "resolved" : "open",
-          `${cell(thread.path, 34)}${thread.line ? `:${thread.line}` : ""}`,
-          first.body ?? thread.body,
-        ];
-      }),
-      "(no review threads)",
-    ));
+    lines.push(
+      "",
+      renderTable(
+        ["thread", "state", "file", "comment"],
+        threads.map((thread) => {
+          const threadComments = Array.isArray(thread.comments)
+            ? thread.comments.filter(isRecord)
+            : [];
+          const first = threadComments[0] ?? {};
+          return [
+            thread.id,
+            thread.isResolved ? "resolved" : "open",
+            `${cell(thread.path, 34)}${thread.line ? `:${thread.line}` : ""}`,
+            first.body ?? thread.body,
+          ];
+        }),
+        "(no review threads)",
+      ),
+    );
   }
   if (comments.length > 0) {
-    lines.push("", renderTable(
-      ["id", "author", "comment"],
-      comments.map((comment) => [comment.id, comment.author ?? comment.user, comment.body]),
-      "(no issue comments)",
-    ));
+    lines.push(
+      "",
+      renderTable(
+        ["id", "author", "comment"],
+        comments.map((comment) => [
+          comment.id,
+          comment.author ?? comment.user,
+          comment.body,
+        ]),
+        "(no issue comments)",
+      ),
+    );
   }
-  if (threads.length === 0 && comments.length === 0) lines.push("(no comments)");
+  if (threads.length === 0 && comments.length === 0)
+    lines.push("(no comments)");
   return lines.join("\n");
 }
 
 function phaseKeysFromMission(mission: JsonObject): string {
   const metadata = isRecord(mission.metadata) ? mission.metadata : {};
-  const phaseConfiguration = isRecord(metadata.phaseConfiguration) ? metadata.phaseConfiguration : {};
+  const phaseConfiguration = isRecord(metadata.phaseConfiguration)
+    ? metadata.phaseConfiguration
+    : {};
   const phaseKeys = Array.isArray(phaseConfiguration.phaseKeys)
     ? phaseConfiguration.phaseKeys
     : Array.isArray(phaseConfiguration.phases)
-      ? phaseConfiguration.phases.filter(isRecord).map((phase) => phase.phaseKey)
+      ? phaseConfiguration.phases
+          .filter(isRecord)
+          .map((phase) => phase.phaseKey)
       : [];
-  return phaseKeys.map((key) => cell(key, 24)).filter(Boolean).join(" -> ");
+  return phaseKeys
+    .map((key) => cell(key, 24))
+    .filter(Boolean)
+    .join(" -> ");
 }
 
 function formatMissionDetail(value: unknown): string {
   const result = unwrapActionEnvelope(value);
-  const mission = firstRecord(result, ["mission"]) ?? (isRecord(result) ? result : {});
+  const mission =
+    firstRecord(result, ["mission"]) ?? (isRecord(result) ? result : {});
   const steps = firstArray(mission, ["steps"]);
   const phaseKeys = phaseKeysFromMission(mission);
   return [
@@ -6776,13 +11521,16 @@ function formatMissionDetail(value: unknown): string {
           steps.map((step) => [
             step.index ?? step.stepIndex,
             step.status,
-            step.phaseKey ?? (isRecord(step.metadata) ? step.metadata.phaseKey : null),
+            step.phaseKey ??
+              (isRecord(step.metadata) ? step.metadata.phaseKey : null),
             step.title,
           ]),
           "(no steps)",
         )}`
       : "",
-  ].filter(Boolean).join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 function formatMissionList(value: unknown): string {
@@ -6822,7 +11570,8 @@ function formatMissionRuns(value: unknown): string {
 
 function formatMissionGraph(value: unknown): string {
   const result = unwrapActionEnvelope(value);
-  const graph = isRecord(result) && isRecord(result.graph) ? result.graph : result;
+  const graph =
+    isRecord(result) && isRecord(result.graph) ? result.graph : result;
   const run = firstRecord(graph, ["run"]) ?? {};
   const steps = firstArray(graph, ["steps"]);
   const attempts = firstArray(graph, ["attempts"]);
@@ -6844,25 +11593,30 @@ function formatMissionGraph(value: unknown): string {
           steps.map((step) => [
             step.id ?? step.stepKey,
             step.status,
-            step.phaseKey ?? (isRecord(step.metadata) ? step.metadata.phaseKey : null),
+            step.phaseKey ??
+              (isRecord(step.metadata) ? step.metadata.phaseKey : null),
             step.title,
           ]),
           "(no steps)",
         )}`
       : "",
-  ].filter(Boolean).join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 function formatMissionWatch(value: unknown): string {
   const result = isRecord(value) ? value : {};
   const created = unwrapActionEnvelope(result.created);
   const started = unwrapActionEnvelope(result.started ?? result.result);
-  const mission = missionFromResult(result.mission)
-    ?? missionFromResult(created)
-    ?? missionFromResult(started)
-    ?? {};
+  const mission =
+    missionFromResult(result.mission) ??
+    missionFromResult(created) ??
+    missionFromResult(started) ??
+    {};
   const runsResult = unwrapActionEnvelope(result.runs);
-  const newestRun = newestRunFromListResult(runsResult) ?? runFromStartResult(started);
+  const newestRun =
+    newestRunFromListResult(runsResult) ?? runFromStartResult(started);
   const graphResult = unwrapActionEnvelope(result.graph);
   const graph = graphFromResult(graphResult) ?? {};
   const wait = firstRecord(graphResult, ["wait"]);
@@ -6884,16 +11638,20 @@ function formatMissionWatch(value: unknown): string {
     ]),
   ];
   if (graphSteps.length > 0) {
-    parts.push("", renderTable(
-      ["step", "status", "phase", "title"],
-      graphSteps.map((step) => [
-        step.id ?? step.stepKey,
-        step.status,
-        step.phaseKey ?? (isRecord(step.metadata) ? step.metadata.phaseKey : null),
-        step.title,
-      ]),
-      "(no steps)",
-    ));
+    parts.push(
+      "",
+      renderTable(
+        ["step", "status", "phase", "title"],
+        graphSteps.map((step) => [
+          step.id ?? step.stepKey,
+          step.status,
+          step.phaseKey ??
+            (isRecord(step.metadata) ? step.metadata.phaseKey : null),
+          step.title,
+        ]),
+        "(no steps)",
+      ),
+    );
   }
   return parts.join("\n");
 }
@@ -6902,7 +11660,11 @@ function formatFileTree(value: unknown): string {
   const entries = firstArray(value, ["entries", "nodes", "items", "children"]);
   return renderTable(
     ["type", "path", "size"],
-    entries.map((entry) => [entry.type ?? (entry.isDirectory ? "dir" : "file"), entry.path ?? entry.name, entry.sizeBytes ?? entry.size]),
+    entries.map((entry) => [
+      entry.type ?? (entry.isDirectory ? "dir" : "file"),
+      entry.path ?? entry.name,
+      entry.sizeBytes ?? entry.size,
+    ]),
     "ADE files\n(no entries)",
   );
 }
@@ -6910,7 +11672,12 @@ function formatFileTree(value: unknown): string {
 function formatFileRead(value: unknown): string {
   if (typeof value === "string") return value;
   if (!isRecord(value)) return JSON.stringify(value, null, 2);
-  const text = typeof value.text === "string" ? value.text : typeof value.content === "string" ? value.content : null;
+  const text =
+    typeof value.text === "string"
+      ? value.text
+      : typeof value.content === "string"
+        ? value.content
+        : null;
   return text ?? JSON.stringify(value, null, 2);
 }
 
@@ -6918,7 +11685,11 @@ function formatFilesSearch(value: unknown): string {
   const matches = firstArray(value, ["matches", "results", "items"]);
   return renderTable(
     ["file", "line", "match"],
-    matches.map((match) => [match.path ?? match.filePath, match.line ?? match.lineNumber, match.preview ?? match.text ?? match.match]),
+    matches.map((match) => [
+      match.path ?? match.filePath,
+      match.line ?? match.lineNumber,
+      match.preview ?? match.text ?? match.match,
+    ]),
     "ADE file search\n(no matches)",
   );
 }
@@ -6938,7 +11709,13 @@ function formatDiffSummary(value: unknown): string {
 }
 
 function formatRunTable(value: unknown, title: string): string {
-  const rows = firstArray(value, ["processes", "definitions", "runtime", "runs", "items"]);
+  const rows = firstArray(value, [
+    "processes",
+    "definitions",
+    "runtime",
+    "runs",
+    "items",
+  ]);
   return `${title}\n${renderTable(
     ["id", "status", "lane", "command"],
     rows.map((row) => [
@@ -6955,7 +11732,12 @@ function formatChatList(value: unknown): string {
   const sessions = firstArray(value, ["sessions", "chats", "items"]);
   return renderTable(
     ["session", "provider", "lane", "title"],
-    sessions.map((session) => [session.id ?? session.sessionId, session.provider ?? session.modelId, session.laneId, session.title]),
+    sessions.map((session) => [
+      session.id ?? session.sessionId,
+      session.provider ?? session.modelId,
+      session.laneId,
+      session.title,
+    ]),
     "ADE chats\n(no sessions)",
   );
 }
@@ -6964,7 +11746,12 @@ function formatTestsRuns(value: unknown): string {
   const runs = firstArray(value, ["runs", "items"]);
   return renderTable(
     ["run", "status", "suite", "duration"],
-    runs.map((run) => [run.id ?? run.runId, statusWord(run.status), run.suiteId ?? run.suiteName, run.durationMs]),
+    runs.map((run) => [
+      run.id ?? run.runId,
+      statusWord(run.status),
+      run.suiteId ?? run.suiteName,
+      run.durationMs,
+    ]),
     "ADE test runs\n(no runs)",
   );
 }
@@ -6973,21 +11760,35 @@ function formatProofList(value: unknown): string {
   const artifacts = firstArray(value, ["artifacts", "items"]);
   return renderTable(
     ["kind", "created", "title", "path"],
-    artifacts.map((artifact) => [artifact.kind ?? artifact.type, artifact.createdAt, artifact.title ?? artifact.name, artifact.path ?? artifact.uri]),
+    artifacts.map((artifact) => [
+      artifact.kind ?? artifact.type,
+      artifact.createdAt,
+      artifact.title ?? artifact.name,
+      artifact.path ?? artifact.uri,
+    ]),
     "ADE proof artifacts\n(no artifacts)",
   );
 }
 
 function formatIosSimStatus(value: unknown): string {
   const status = isRecord(value) ? value : {};
-  const tools = Array.isArray(status.tools) ? status.tools.filter(isRecord) : [];
+  const tools = Array.isArray(status.tools)
+    ? status.tools.filter(isRecord)
+    : [];
   const activeDevice = isRecord(status.activeDevice) ? status.activeDevice : {};
-  const activeSession = isRecord(status.activeSession) ? status.activeSession : {};
+  const activeSession = isRecord(status.activeSession)
+    ? status.activeSession
+    : {};
   return [
     renderKeyValues("ADE iOS simulator", [
       ["supported", status.supported],
       ["platform", status.platform],
-      ["active device", activeDevice.name ? `${activeDevice.name} (${activeDevice.state})` : null],
+      [
+        "active device",
+        activeDevice.name
+          ? `${activeDevice.name} (${activeDevice.state})`
+          : null,
+      ],
       ["active app", activeSession.bundleId],
       ["mode", activeSession.mode],
       ["chat session", activeSession.chatSessionId],
@@ -6995,26 +11796,44 @@ function formatIosSimStatus(value: unknown): string {
     "",
     renderTable(
       ["tool", "ready", "detail"],
-      tools.map((tool) => [tool.name, tool.available ? "yes" : "no", tool.detail]),
+      tools.map((tool) => [
+        tool.name,
+        tool.available ? "yes" : "no",
+        tool.detail,
+      ]),
       "Tools\n(none)",
     ),
   ].join("\n");
 }
 
 function formatIosSimDevices(value: unknown): string {
-  const devices = Array.isArray(value) ? value.filter(isRecord) : firstArray(value, ["devices", "items"]);
+  const devices = Array.isArray(value)
+    ? value.filter(isRecord)
+    : firstArray(value, ["devices", "items"]);
   return renderTable(
     ["udid", "device", "runtime", "state"],
-    devices.map((device) => [device.udid, device.name, device.runtime, device.state]),
+    devices.map((device) => [
+      device.udid,
+      device.name,
+      device.runtime,
+      device.state,
+    ]),
     "ADE iOS simulators\n(no installed simulators)",
   );
 }
 
 function formatIosSimApps(value: unknown): string {
-  const targets = Array.isArray(value) ? value.filter(isRecord) : firstArray(value, ["targets", "apps", "items"]);
+  const targets = Array.isArray(value)
+    ? value.filter(isRecord)
+    : firstArray(value, ["targets", "apps", "items"]);
   return renderTable(
     ["target", "kind", "name", "bundle"],
-    targets.map((target) => [target.id, target.kind, target.name, target.bundleId ?? target.detail]),
+    targets.map((target) => [
+      target.id,
+      target.kind,
+      target.name,
+      target.bundleId ?? target.detail,
+    ]),
     "ADE iOS launchable apps\n(no apps)",
   );
 }
@@ -7045,17 +11864,38 @@ function formatIosSimStream(value: unknown): string {
 
 function formatIosSimSnapshot(value: unknown): string {
   const snapshot = isRecord(value) ? value : {};
-  const screenshot = isRecord(snapshot.screenshot) ? snapshot.screenshot : snapshot;
+  const screenshot = isRecord(snapshot.screenshot)
+    ? snapshot.screenshot
+    : snapshot;
   const screen = isRecord(snapshot.screen) ? snapshot.screen : {};
-  const providers = Array.isArray(snapshot.providers) ? snapshot.providers.filter(isRecord) : [];
-  const elements = Array.isArray(snapshot.elements) ? snapshot.elements.filter(isRecord) : [];
-  const providerSummary = providers.map((provider) => `${provider.source}:${provider.available ? provider.elementCount ?? "ok" : "unavailable"}`).join(", ");
+  const providers = Array.isArray(snapshot.providers)
+    ? snapshot.providers.filter(isRecord)
+    : [];
+  const elements = Array.isArray(snapshot.elements)
+    ? snapshot.elements.filter(isRecord)
+    : [];
+  const providerSummary = providers
+    .map(
+      (provider) =>
+        `${provider.source}:${provider.available ? (provider.elementCount ?? "ok") : "unavailable"}`,
+    )
+    .join(", ");
   return [
     renderKeyValues("ADE iOS simulator snapshot", [
       ["device", snapshot.deviceUdid],
       ["captured", snapshot.capturedAt],
-      ["screenshot", screenshot.width && screenshot.height ? `${screenshot.width}x${screenshot.height}` : null],
-      ["screen", screen.width && screen.height ? `${screen.width}x${screen.height} @${screen.scale ?? 1}x` : null],
+      [
+        "screenshot",
+        screenshot.width && screenshot.height
+          ? `${screenshot.width}x${screenshot.height}`
+          : null,
+      ],
+      [
+        "screen",
+        screen.width && screen.height
+          ? `${screen.width}x${screen.height} @${screen.scale ?? 1}x`
+          : null,
+      ],
       ["elements", elements.length],
       ["providers", providerSummary],
     ]),
@@ -7063,25 +11903,42 @@ function formatIosSimSnapshot(value: unknown): string {
     elements.length
       ? renderTable(
           ["id", "source", "label", "source file"],
-          elements.slice(0, 20).map((element) => [
-            element.id,
-            element.source,
-            element.label ?? element.identifier ?? element.componentId,
-            element.sourceFile ? `${element.sourceFile}${element.sourceLine ? `:${element.sourceLine}` : ""}` : "",
-          ]),
+          elements
+            .slice(0, 20)
+            .map((element) => [
+              element.id,
+              element.source,
+              element.label ?? element.identifier ?? element.componentId,
+              element.sourceFile
+                ? `${element.sourceFile}${element.sourceLine ? `:${element.sourceLine}` : ""}`
+                : "",
+            ]),
           "",
         )
       : "",
-  ].filter(Boolean).join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 function formatIosSimSelection(value: unknown): string {
-  const item = firstRecord(value, ["item", "selection"]) ?? (isRecord(value) ? value : {});
+  const item =
+    firstRecord(value, ["item", "selection"]) ?? (isRecord(value) ? value : {});
   const metadata = isRecord(item.metadata) ? item.metadata : {};
   return renderKeyValues("ADE iOS simulator selection", [
     ["component", item.componentId],
-    ["source", isRecord(value) ? value.source ?? metadata.screenElementSource : metadata.screenElementSource],
-    ["file", item.sourceFile ? `${item.sourceFile}${item.sourceLine ? `:${item.sourceLine}` : ""}` : null],
+    [
+      "source",
+      isRecord(value)
+        ? (value.source ?? metadata.screenElementSource)
+        : metadata.screenElementSource,
+    ],
+    [
+      "file",
+      item.sourceFile
+        ? `${item.sourceFile}${item.sourceLine ? `:${item.sourceLine}` : ""}`
+        : null,
+    ],
     ["identifier", item.accessibilityIdentifier],
     ["chat session", metadata.chatSessionId],
     ["selected", item.selectedAt],
@@ -7093,14 +11950,23 @@ function formatIosSimPreview(value: unknown): string {
     const targets = value.filter(isRecord);
     return renderTable(
       ["index", "title", "file", "kind"],
-      targets.map((target) => [target.previewDefinitionIndexInFile, target.title, target.sourceFilePath ?? target.sourceFile, target.kind]),
+      targets.map((target) => [
+        target.previewDefinitionIndexInFile,
+        target.title,
+        target.sourceFilePath ?? target.sourceFile,
+        target.kind,
+      ]),
       "ADE iOS previews\n(no #Preview definitions found)",
     );
   }
   const record = isRecord(value) ? value : {};
   const capability = isRecord(record.capability) ? record.capability : record;
-  const steps = Array.isArray(capability.setupSteps) ? capability.setupSteps.join("; ") : null;
-  const selectedWindow = isRecord(capability.selectedWindow) ? capability.selectedWindow : {};
+  const steps = Array.isArray(capability.setupSteps)
+    ? capability.setupSteps.join("; ")
+    : null;
+  const selectedWindow = isRecord(capability.selectedWindow)
+    ? capability.selectedWindow
+    : {};
   return renderKeyValues("ADE iOS Preview Lab", [
     ["supported", capability.supported ?? record.ok],
     ["xcode", capability.xcodeVersion],
@@ -7133,7 +11999,9 @@ function formatMacosVmStatus(value: unknown): string {
     ]);
   }
   const provider = isRecord(status.activeProvider) ? status.activeProvider : {};
-  const tools = Array.isArray(status.tools) ? status.tools.filter(isRecord) : [];
+  const tools = Array.isArray(status.tools)
+    ? status.tools.filter(isRecord)
+    : [];
   const laneVm = isRecord(status.laneVm) ? status.laneVm : null;
   const vms = Array.isArray(status.vms) ? status.vms.filter(isRecord) : [];
   const lines = [
@@ -7144,7 +12012,12 @@ function formatMacosVmStatus(value: unknown): string {
       ["provider", provider.kind],
       ["provider ready", provider.available],
       ["provider detail", provider.detail],
-      ["lane VM", laneVm ? `${laneVm.name ?? laneVm.id} (${laneVm.state ?? "unknown"})` : null],
+      [
+        "lane VM",
+        laneVm
+          ? `${laneVm.name ?? laneVm.id} (${laneVm.state ?? "unknown"})`
+          : null,
+      ],
       ["guest path", laneVm?.guestSharedPath],
       ["host path", laneVm?.sharedDirectory ?? laneVm?.laneRoot],
       ["ssh", laneVm?.sshCommand],
@@ -7153,13 +12026,22 @@ function formatMacosVmStatus(value: unknown): string {
     "",
     renderTable(
       ["lane", "vm", "state", "host path"],
-      vms.map((vm) => [vm.laneName ?? vm.laneId, vm.name, vm.state, vm.sharedDirectory ?? vm.laneRoot]),
+      vms.map((vm) => [
+        vm.laneName ?? vm.laneId,
+        vm.name,
+        vm.state,
+        vm.sharedDirectory ?? vm.laneRoot,
+      ]),
       "Lane VMs\n(none)",
     ),
     "",
     renderTable(
       ["tool", "ready", "detail"],
-      tools.map((tool) => [tool.name, tool.available ? "yes" : "no", tool.detail]),
+      tools.map((tool) => [
+        tool.name,
+        tool.available ? "yes" : "no",
+        tool.detail,
+      ]),
       "Tools\n(none)",
     ),
   ];
@@ -7168,7 +12050,9 @@ function formatMacosVmStatus(value: unknown): string {
 
 function formatMacosVmSharePolicy(value: unknown): string {
   const policy = isRecord(value) ? value : {};
-  const excludedPaths = Array.isArray(policy.excludedPaths) ? policy.excludedPaths.filter((entry) => typeof entry === "string") : [];
+  const excludedPaths = Array.isArray(policy.excludedPaths)
+    ? policy.excludedPaths.filter((entry) => typeof entry === "string")
+    : [];
   return renderKeyValues("ADE macOS VM share policy", [
     ["allowed", policy.allowed],
     ["mode", policy.syncMode],
@@ -7185,7 +12069,10 @@ function formatMacosVmSharePolicy(value: unknown): string {
 
 function formatMacosVmGuide(value: unknown): string {
   if (isRecord(value) && typeof value.text === "string") return value.text;
-  return renderKeyValues("ADE macOS VM guide", Object.entries(isRecord(value) ? value : {}).slice(0, 24));
+  return renderKeyValues(
+    "ADE macOS VM guide",
+    Object.entries(isRecord(value) ? value : {}).slice(0, 24),
+  );
 }
 
 function formatMacosVmCapture(value: unknown): string {
@@ -7200,7 +12087,10 @@ function formatMacosVmCapture(value: unknown): string {
     ["mode", capture.captureMode],
     ["window", window.windowTitle],
     ["process", window.processName],
-    ["frame", frame ? `${frame.x},${frame.y} ${frame.width}x${frame.height}` : null],
+    [
+      "frame",
+      frame ? `${frame.x},${frame.y} ${frame.width}x${frame.height}` : null,
+    ],
     ["captured", capture.capturedAt],
     ["image data", capture.dataUrl ? "included" : null],
   ]);
@@ -7210,13 +12100,20 @@ function formatMacosVmSelection(value: unknown): string {
   const result = isRecord(value) ? value : {};
   const item = isRecord(result.item) ? result.item : {};
   const metadata = isRecord(item.metadata) ? item.metadata : {};
-  const selectedPoint = isRecord(metadata.selectedPoint) ? metadata.selectedPoint : {};
+  const selectedPoint = isRecord(metadata.selectedPoint)
+    ? metadata.selectedPoint
+    : {};
   const screenshot = isRecord(result.screenshot) ? result.screenshot : {};
   return renderKeyValues("ADE macOS VM selection", [
     ["source", result.source],
     ["lane", item.laneId],
     ["vm", item.vmName],
-    ["point", selectedPoint.x != null && selectedPoint.y != null ? `${selectedPoint.x},${selectedPoint.y}` : null],
+    [
+      "point",
+      selectedPoint.x != null && selectedPoint.y != null
+        ? `${selectedPoint.x},${selectedPoint.y}`
+        : null,
+    ],
     ["coordinate space", selectedPoint.coordinateSpace],
     ["guest path", item.guestLanePath],
     ["host path", item.hostLanePath],
@@ -7227,10 +12124,14 @@ function formatMacosVmSelection(value: unknown): string {
 
 function formatAppControlStatus(value: unknown): string {
   const status = isRecord(value) ? value : {};
-  const providers = Array.isArray(status.providers) ? status.providers.filter(isRecord) : [];
+  const providers = Array.isArray(status.providers)
+    ? status.providers.filter(isRecord)
+    : [];
   const session = isRecord(status.activeSession)
     ? status.activeSession
-    : typeof status.status === "string" && status.label ? status : {};
+    : typeof status.status === "string" && status.label
+      ? status
+      : {};
   return [
     renderKeyValues("ADE App Control", [
       ["supported", status.supported],
@@ -7249,7 +12150,11 @@ function formatAppControlStatus(value: unknown): string {
     "",
     renderTable(
       ["provider", "ready", "detail"],
-      providers.map((provider) => [provider.provider, provider.available ? "yes" : "no", provider.detail]),
+      providers.map((provider) => [
+        provider.provider,
+        provider.available ? "yes" : "no",
+        provider.detail,
+      ]),
       "Providers\n(none)",
     ),
   ].join("\n");
@@ -7288,18 +12193,39 @@ function formatBrowserStatus(value: unknown): string {
 
 function formatAppControlSnapshot(value: unknown): string {
   const snapshot = isRecord(value) ? value : {};
-  const screenshot = isRecord(snapshot.screenshot) ? snapshot.screenshot : snapshot;
+  const screenshot = isRecord(snapshot.screenshot)
+    ? snapshot.screenshot
+    : snapshot;
   const screen = isRecord(snapshot.screen) ? snapshot.screen : {};
-  const providers = Array.isArray(snapshot.providers) ? snapshot.providers.filter(isRecord) : [];
-  const elements = Array.isArray(snapshot.elements) ? snapshot.elements.filter(isRecord) : [];
-  const providerSummary = providers.map((provider) => `${provider.provider}:${provider.available ? provider.elementCount ?? "ok" : "unavailable"}`).join(", ");
+  const providers = Array.isArray(snapshot.providers)
+    ? snapshot.providers.filter(isRecord)
+    : [];
+  const elements = Array.isArray(snapshot.elements)
+    ? snapshot.elements.filter(isRecord)
+    : [];
+  const providerSummary = providers
+    .map(
+      (provider) =>
+        `${provider.provider}:${provider.available ? (provider.elementCount ?? "ok") : "unavailable"}`,
+    )
+    .join(", ");
   return [
     renderKeyValues("ADE App Control snapshot", [
       ["title", snapshot.title],
       ["url", snapshot.url],
       ["captured", snapshot.capturedAt],
-      ["screenshot", screenshot.width && screenshot.height ? `${screenshot.width}x${screenshot.height}` : null],
-      ["screen", screen.width && screen.height ? `${screen.width}x${screen.height} @${screen.scale ?? 1}x` : null],
+      [
+        "screenshot",
+        screenshot.width && screenshot.height
+          ? `${screenshot.width}x${screenshot.height}`
+          : null,
+      ],
+      [
+        "screen",
+        screen.width && screen.height
+          ? `${screen.width}x${screen.height} @${screen.scale ?? 1}x`
+          : null,
+      ],
       ["elements", elements.length],
       ["providers", providerSummary],
     ]),
@@ -7307,16 +12233,20 @@ function formatAppControlSnapshot(value: unknown): string {
     elements.length
       ? renderTable(
           ["ref", "role", "label", "selector"],
-          elements.slice(0, 24).map((element) => [
-            element.ref ?? element.id,
-            element.role ?? element.tagName,
-            element.label ?? element.value ?? element.testId,
-            element.selector,
-          ]),
+          elements
+            .slice(0, 24)
+            .map((element) => [
+              element.ref ?? element.id,
+              element.role ?? element.tagName,
+              element.label ?? element.value ?? element.testId,
+              element.selector,
+            ]),
           "",
         )
       : "",
-  ].filter(Boolean).join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 function formatTerminalList(value: unknown): string {
@@ -7395,11 +12325,16 @@ function formatLinearQuickView(value: unknown): string {
   const projectRows = projects.map((project) => [
     project.name,
     project.statusName ?? project.statusType,
-    typeof project.progress === "number" ? `${Math.round(project.progress * 100)}%` : "",
+    typeof project.progress === "number"
+      ? `${Math.round(project.progress * 100)}%`
+      : "",
     project.issueCount,
   ]);
   const issueRows = [...assignedIssues, ...recentIssues]
-    .filter((issue, index, all) => all.findIndex((candidate) => candidate.id === issue.id) === index)
+    .filter(
+      (issue, index, all) =>
+        all.findIndex((candidate) => candidate.id === issue.id) === index,
+    )
     .slice(0, 12)
     .map((issue) => [
       issue.identifier,
@@ -7411,7 +12346,11 @@ function formatLinearQuickView(value: unknown): string {
     header,
     "",
     "Projects",
-    renderTable(["project", "status", "progress", "issues"], projectRows, "(no projects)"),
+    renderTable(
+      ["project", "status", "progress", "issues"],
+      projectRows,
+      "(no projects)",
+    ),
     "",
     "Issues",
     renderTable(["id", "title", "state", "area"], issueRows, "(no issues)"),
@@ -7419,22 +12358,41 @@ function formatLinearQuickView(value: unknown): string {
 }
 
 function formatAppControlSelection(value: unknown): string {
-  const item = firstRecord(value, ["item", "selection"]) ?? (isRecord(value) ? value : {});
+  const item =
+    firstRecord(value, ["item", "selection"]) ?? (isRecord(value) ? value : {});
   const metadata = isRecord(item.metadata) ? item.metadata : {};
-  const selected = isRecord(metadata.selectedElement) ? metadata.selectedElement : {};
+  const selected = isRecord(metadata.selectedElement)
+    ? metadata.selectedElement
+    : {};
   return renderKeyValues("ADE App Control selection", [
     ["component", item.componentId],
-    ["source", isRecord(value) ? value.source ?? item.provider : item.provider],
-    ["file", item.sourceFile ? `${item.sourceFile}${item.sourceLine ? `:${item.sourceLine}` : ""}` : null],
+    [
+      "source",
+      isRecord(value) ? (value.source ?? item.provider) : item.provider,
+    ],
+    [
+      "file",
+      item.sourceFile
+        ? `${item.sourceFile}${item.sourceLine ? `:${item.sourceLine}` : ""}`
+        : null,
+    ],
     ["selector", selected.selector],
     ["label", selected.label ?? metadata.label],
     ["selected", item.selectedAt],
   ]);
 }
 
-function formatTextOutput(value: unknown, formatter: FormatterId | undefined): string {
+function formatTextOutput(
+  value: unknown,
+  formatter: FormatterId | undefined,
+): string {
   if (typeof value === "string") return value;
-  if (isRecord(value) && typeof value.visual === "string" && (!formatter || formatter === "lanes")) return value.visual;
+  if (
+    isRecord(value) &&
+    typeof value.visual === "string" &&
+    (!formatter || formatter === "lanes")
+  )
+    return value.visual;
   switch (formatter) {
     case "status":
       return renderKeyValues("ADE status", [
@@ -7444,61 +12402,77 @@ function formatTextOutput(value: unknown, formatter: FormatterId | undefined): s
         ["workspace", isRecord(value) ? value.workspaceRoot : null],
         ["socket", isRecord(value) ? value.socketPath : null],
       ]);
-    case "doctor":
-      {
-        const project = isRecord(value) && isRecord(value.project) ? value.project : {};
-        const desktop = isRecord(value) && isRecord(value.desktop) ? value.desktop : {};
-        const actions = isRecord(value) && isRecord(value.actions) ? value.actions : {};
-        const git = isRecord(value) && isRecord(value.git) ? value.git : {};
-        const github = isRecord(value) && isRecord(value.github) ? value.github : {};
-        const linear = isRecord(value) && isRecord(value.linear) ? value.linear : {};
-        const providers = isRecord(value) && isRecord(value.providers) ? value.providers : {};
-        const computerUse = isRecord(value) && isRecord(value.computerUse) ? value.computerUse : {};
-        const pathStatus = isRecord(value) && isRecord(value.path) ? value.path : {};
-        const recommendations = isRecord(value) && Array.isArray(value.recommendations) ? value.recommendations : [];
-        return [
-          renderKeyValues("ADE doctor", [
-            ["ok", isRecord(value) ? value.ok : null],
-            ["cli version", isRecord(value) ? value.cliVersion : null],
-            ["mode", isRecord(value) ? value.mode : null],
-            ["project", isRecord(value) ? value.projectRoot : null],
-            ["workspace", isRecord(value) ? value.workspaceRoot : null],
-            ["project initialized", project.projectInitialized],
-            ["runtime socket", desktop.socketAvailable],
-            ["socket path", desktop.socketPath],
-            ["rpc actions", actions.rpcActionCount],
-            ["service actions", actions.actionCount],
-            ["git", git.message],
-            ["github", github.message],
-            ["linear", linear.message],
-            ["providers", providers.message],
-            ["computer use", computerUse.message],
-            ["path", pathStatus.message],
-            ["recommendation", isRecord(value) ? value.recommendation : null],
-          ]),
-          ...(recommendations.length ? ["", "Next actions", ...recommendations.map((entry) => `- ${cell(entry, 120)}`)] : []),
-        ].join("\n");
-      }
-    case "auth":
-      {
-        const checks = isRecord(value) && isRecord(value.checks) ? value.checks : {};
-        const git = isRecord(checks.git) ? checks.git : {};
-        const github = isRecord(checks.github) ? checks.github : {};
-        const linear = isRecord(checks.linear) ? checks.linear : {};
-        const providers = isRecord(checks.providers) ? checks.providers : {};
-        return renderKeyValues("ADE auth", [
-          ["authenticated", isRecord(value) ? value.authenticated : null],
-          ["mode", isRecord(value) ? value.authMode : null],
-          ["role", isRecord(value) ? value.role : null],
+    case "doctor": {
+      const project =
+        isRecord(value) && isRecord(value.project) ? value.project : {};
+      const desktop =
+        isRecord(value) && isRecord(value.desktop) ? value.desktop : {};
+      const actions =
+        isRecord(value) && isRecord(value.actions) ? value.actions : {};
+      const git = isRecord(value) && isRecord(value.git) ? value.git : {};
+      const github =
+        isRecord(value) && isRecord(value.github) ? value.github : {};
+      const linear =
+        isRecord(value) && isRecord(value.linear) ? value.linear : {};
+      const providers =
+        isRecord(value) && isRecord(value.providers) ? value.providers : {};
+      const computerUse =
+        isRecord(value) && isRecord(value.computerUse) ? value.computerUse : {};
+      const pathStatus =
+        isRecord(value) && isRecord(value.path) ? value.path : {};
+      const recommendations =
+        isRecord(value) && Array.isArray(value.recommendations)
+          ? value.recommendations
+          : [];
+      return [
+        renderKeyValues("ADE doctor", [
+          ["ok", isRecord(value) ? value.ok : null],
+          ["cli version", isRecord(value) ? value.cliVersion : null],
+          ["mode", isRecord(value) ? value.mode : null],
           ["project", isRecord(value) ? value.projectRoot : null],
-          ["actions", isRecord(value) ? value.availableActionCount : null],
+          ["workspace", isRecord(value) ? value.workspaceRoot : null],
+          ["project initialized", project.projectInitialized],
+          ["runtime socket", desktop.socketAvailable],
+          ["socket path", desktop.socketPath],
+          ["rpc actions", actions.rpcActionCount],
+          ["service actions", actions.actionCount],
           ["git", git.message],
           ["github", github.message],
           ["linear", linear.message],
           ["providers", providers.message],
-          ["note", isRecord(value) ? value.note : null],
-        ]);
-      }
+          ["computer use", computerUse.message],
+          ["path", pathStatus.message],
+          ["recommendation", isRecord(value) ? value.recommendation : null],
+        ]),
+        ...(recommendations.length
+          ? [
+              "",
+              "Next actions",
+              ...recommendations.map((entry) => `- ${cell(entry, 120)}`),
+            ]
+          : []),
+      ].join("\n");
+    }
+    case "auth": {
+      const checks =
+        isRecord(value) && isRecord(value.checks) ? value.checks : {};
+      const git = isRecord(checks.git) ? checks.git : {};
+      const github = isRecord(checks.github) ? checks.github : {};
+      const linear = isRecord(checks.linear) ? checks.linear : {};
+      const providers = isRecord(checks.providers) ? checks.providers : {};
+      return renderKeyValues("ADE auth", [
+        ["authenticated", isRecord(value) ? value.authenticated : null],
+        ["mode", isRecord(value) ? value.authMode : null],
+        ["role", isRecord(value) ? value.role : null],
+        ["project", isRecord(value) ? value.projectRoot : null],
+        ["actions", isRecord(value) ? value.availableActionCount : null],
+        ["git", git.message],
+        ["github", github.message],
+        ["linear", linear.message],
+        ["providers", providers.message],
+        ["note", isRecord(value) ? value.note : null],
+      ]);
+    }
     case "projects-list":
       return formatProjectsList(value);
     case "linear-quick-view":
@@ -7508,7 +12482,10 @@ function formatTextOutput(value: unknown, formatter: FormatterId | undefined): s
     case "lane-detail":
       return formatLaneDetail(value);
     case "git-status":
-      return renderKeyValues("ADE git status", Object.entries(isRecord(value) ? value : {}));
+      return renderKeyValues(
+        "ADE git status",
+        Object.entries(isRecord(value) ? value : {}),
+      );
     case "diff-summary":
       return formatDiffSummary(value);
     case "file-read":
@@ -7520,7 +12497,13 @@ function formatTextOutput(value: unknown, formatter: FormatterId | undefined): s
     case "prs-list":
       return formatPrList(value);
     case "pr-detail":
-      return renderKeyValues("ADE pull request", Object.entries(firstRecord(value, ["pr", "detail"]) ?? (isRecord(value) ? value : {})).slice(0, 16));
+      return renderKeyValues(
+        "ADE pull request",
+        Object.entries(
+          firstRecord(value, ["pr", "detail"]) ??
+            (isRecord(value) ? value : {}),
+        ).slice(0, 16),
+      );
     case "pr-checks":
       return formatPrChecks(value);
     case "pr-comments":
@@ -7587,23 +12570,35 @@ function formatTextOutput(value: unknown, formatter: FormatterId | undefined): s
       return formatAutomationRunDetail(value);
     case "action-result":
     default:
-      if (isRecord(value)) return renderKeyValues("ADE result", Object.entries(value).slice(0, 24));
+      if (isRecord(value))
+        return renderKeyValues(
+          "ADE result",
+          Object.entries(value).slice(0, 24),
+        );
       return JSON.stringify(value, null, 2);
   }
 }
 
-function inferFormatter(plan: CliPlan & { kind: "execute" }): FormatterId | undefined {
+function inferFormatter(
+  plan: CliPlan & { kind: "execute" },
+): FormatterId | undefined {
   if (plan.formatter) return plan.formatter;
   if (plan.summary) return plan.summary;
   if (plan.visualizer === "lanes") return "lanes";
   const label = plan.label.toLowerCase();
-  if (label === "projects list" || label === "projects add" || label === "projects touch") return "projects-list";
+  if (
+    label === "projects list" ||
+    label === "projects add" ||
+    label === "projects touch"
+  )
+    return "projects-list";
   if (label === "lane status") return "lane-detail";
   if (label === "git status") return "git-status";
   if (label === "diff changes") return "diff-summary";
   if (label === "file read") return "file-read";
   if (label === "file tree" || label === "file workspaces") return "files-tree";
-  if (label === "file search" || label === "file quick-open") return "files-search";
+  if (label === "file search" || label === "file quick-open")
+    return "files-search";
   if (label === "pr list" || label === "pr list open") return "prs-list";
   if (label === "pr detail" || label === "pr health") return "pr-detail";
   if (label === "pr checks") return "pr-checks";
@@ -7616,20 +12611,64 @@ function inferFormatter(plan: CliPlan & { kind: "execute" }): FormatterId | unde
   if (label === "ios simulator status") return "ios-sim-status";
   if (label === "ios simulator devices") return "ios-sim-devices";
   if (label === "ios simulator launchable apps") return "ios-sim-apps";
-  if (label === "ios simulator stream start" || label === "ios simulator stream status" || label === "ios simulator stream stop") return "ios-sim-stream";
-  if (label === "ios simulator screen snapshot" || label === "ios simulator inspector snapshot" || label === "ios simulator screenshot") return "ios-sim-snapshot";
-  if (label === "ios simulator select" || label === "ios simulator inspect point") return "ios-sim-selection";
-  if (label === "ios simulator preview status" || label === "ios simulator previews" || label === "ios simulator preview render" || label === "ios simulator preview open") return "ios-sim-preview";
-  if (label === "app control status" || label === "app control launch" || label === "app control connect" || label === "app control stop") return "app-control-status";
-  if (label === "app control snapshot" || label === "app control screenshot") return "app-control-snapshot";
-  if (label === "app control select" || label === "app control inspect point") return "app-control-selection";
-  if (label === "browser status" || label === "browser panel" || label === "browser open" || label === "browser new tab" || label === "browser switch" || label === "browser close") return "browser-status";
-  if (label === "macos vm status" || label === "macos vm start" || label === "macos vm stop" || label === "macos vm provision" || label === "macos vm delete") return "macos-vm-status";
+  if (
+    label === "ios simulator stream start" ||
+    label === "ios simulator stream status" ||
+    label === "ios simulator stream stop"
+  )
+    return "ios-sim-stream";
+  if (
+    label === "ios simulator screen snapshot" ||
+    label === "ios simulator inspector snapshot" ||
+    label === "ios simulator screenshot"
+  )
+    return "ios-sim-snapshot";
+  if (
+    label === "ios simulator select" ||
+    label === "ios simulator inspect point"
+  )
+    return "ios-sim-selection";
+  if (
+    label === "ios simulator preview status" ||
+    label === "ios simulator previews" ||
+    label === "ios simulator preview render" ||
+    label === "ios simulator preview open"
+  )
+    return "ios-sim-preview";
+  if (
+    label === "app control status" ||
+    label === "app control launch" ||
+    label === "app control connect" ||
+    label === "app control stop"
+  )
+    return "app-control-status";
+  if (label === "app control snapshot" || label === "app control screenshot")
+    return "app-control-snapshot";
+  if (label === "app control select" || label === "app control inspect point")
+    return "app-control-selection";
+  if (
+    label === "browser status" ||
+    label === "browser panel" ||
+    label === "browser open" ||
+    label === "browser new tab" ||
+    label === "browser switch" ||
+    label === "browser close"
+  )
+    return "browser-status";
+  if (
+    label === "macos vm status" ||
+    label === "macos vm start" ||
+    label === "macos vm stop" ||
+    label === "macos vm provision" ||
+    label === "macos vm delete"
+  )
+    return "macos-vm-status";
   if (label === "macos vm share policy") return "macos-vm-share-policy";
   if (label === "macos vm guide") return "macos-vm-guide";
   if (label === "macos vm screenshot") return "macos-vm-capture";
   if (label === "macos vm select") return "macos-vm-selection";
-  if (label === "terminal list" || label === "terminal active") return "terminal-list";
+  if (label === "terminal list" || label === "terminal active")
+    return "terminal-list";
   if (label === "terminal read") return "terminal-read";
   if (label === "actions list") return "actions-list";
   if (label.endsWith("actions")) return "actions-list";
@@ -7656,12 +12695,21 @@ function summarizeExecution(args: {
     return buildReadinessSnapshot({ connection, values, summary: "doctor" });
   }
   if (plan.summary === "auth") {
-    const readiness = buildReadinessSnapshot({ connection, values, summary: "auth" });
+    const readiness = buildReadinessSnapshot({
+      connection,
+      values,
+      summary: "auth",
+    });
     const actions = isRecord(readiness.actions) ? readiness.actions : {};
     return {
       ok: readiness.ok,
-      authenticated: isRecord(readiness.auth) ? readiness.auth.localProjectAccess : false,
-      authMode: connection.mode === "desktop-socket" ? "local-desktop-socket" : "local-headless-project",
+      authenticated: isRecord(readiness.auth)
+        ? readiness.auth.localProjectAccess
+        : false,
+      authMode:
+        connection.mode === "desktop-socket"
+          ? "local-desktop-socket"
+          : "local-headless-project",
       role: process.env.ADE_DEFAULT_ROLE ?? "agent",
       projectRoot: connection.projectRoot,
       workspaceRoot: connection.workspaceRoot,
@@ -7676,7 +12724,9 @@ function summarizeExecution(args: {
         path: readiness.path,
       },
       recommendations: readiness.recommendations,
-      note: isRecord(readiness.auth) ? readiness.auth.note : "ADE CLI auth is local project access.",
+      note: isRecord(readiness.auth)
+        ? readiness.auth.note
+        : "ADE CLI auth is local project access.",
     };
   }
 
@@ -7688,7 +12738,11 @@ function summarizeExecution(args: {
     return {
       created,
       started,
-      mission: refreshedMission ?? missionFromResult(started) ?? missionFromResult(created) ?? created,
+      mission:
+        refreshedMission ??
+        missionFromResult(started) ??
+        missionFromResult(created) ??
+        created,
       run: runFromGraphResult(graph) ?? runFromStartResult(started),
       graph,
     };
@@ -7721,12 +12775,12 @@ function summarizeExecution(args: {
 
   const result = values.result ?? values;
   if (
-    isRecord(result)
-    && Object.prototype.hasOwnProperty.call(result, "result")
-    && asString(result.domain)
-    && asString(result.action)
-    && !plan.label.toLowerCase().startsWith("action ")
-    && !plan.label.toLowerCase().endsWith(" action")
+    isRecord(result) &&
+    Object.prototype.hasOwnProperty.call(result, "result") &&
+    asString(result.domain) &&
+    asString(result.action) &&
+    !plan.label.toLowerCase().startsWith("action ") &&
+    !plan.label.toLowerCase().endsWith(" action")
   ) {
     return result.result;
   }
@@ -7739,17 +12793,29 @@ function summarizeExecution(args: {
   return result;
 }
 
-const TERMINAL_MISSION_RUN_STATUSES = new Set(["succeeded", "failed", "canceled", "cancelled"]);
+const TERMINAL_MISSION_RUN_STATUSES = new Set([
+  "succeeded",
+  "failed",
+  "canceled",
+  "cancelled",
+]);
 const HEADLESS_ACTIVE_ATTEMPT_DRAIN_MS = 30 * 60 * 1000;
 
-function graphWaitState(value: unknown): { status: string; activeCount: number } {
+function graphWaitState(value: unknown): {
+  status: string;
+  activeCount: number;
+} {
   const graph = graphFromResult(value) ?? {};
   const run = firstRecord(graph, ["run"]) ?? {};
   const status = (asString(run.status) ?? "").trim().toLowerCase();
   const steps = firstArray(graph, ["steps"]);
   const attempts = firstArray(graph, ["attempts"]);
-  const activeStepCount = steps.filter((step) => asString(step.status)?.trim().toLowerCase() === "running").length;
-  const activeAttemptCount = attempts.filter((attempt) => asString(attempt.status)?.trim().toLowerCase() === "running").length;
+  const activeStepCount = steps.filter(
+    (step) => asString(step.status)?.trim().toLowerCase() === "running",
+  ).length;
+  const activeAttemptCount = attempts.filter(
+    (attempt) => asString(attempt.status)?.trim().toLowerCase() === "running",
+  ).length;
   return {
     status,
     activeCount: Math.max(activeStepCount, activeAttemptCount),
@@ -7804,9 +12870,9 @@ async function waitForRunGraph(args: {
     if (pastDeadline) {
       timedOut = true;
       const shouldDrainActiveHeadlessWork =
-        args.connection.mode === "headless"
-        && waitState.activeCount > 0
-        && now < headlessDrainDeadline;
+        args.connection.mode === "headless" &&
+        waitState.activeCount > 0 &&
+        now < headlessDrainDeadline;
       if (!shouldDrainActiveHeadlessWork) break;
       extendedForActiveHeadlessWork = true;
     }
@@ -7832,52 +12898,81 @@ async function waitForRunGraph(args: {
   };
 }
 
-async function executePlan(plan: CliPlan & { kind: "execute" }, options: GlobalOptions): Promise<unknown> {
+async function executePlan(
+  plan: CliPlan & { kind: "execute" },
+  options: GlobalOptions,
+): Promise<unknown> {
   let connection: CliConnection;
   const isWorkerMissionToolPlan = plan.label.startsWith("worker mission tool ");
   const workerRpcUrl = process.env.ADE_RPC_URL?.trim();
   const workerSocketOverride = process.env.ADE_RPC_SOCKET_PATH?.trim();
-  const connectionOptions = isWorkerMissionToolPlan && !options.requireSocket
-    ? { ...options, headless: false, requireSocket: Boolean(workerRpcUrl || workerSocketOverride) }
-    : plan.preferHeadless && !options.requireSocket
-    ? { ...options, headless: true }
-    : options;
+  const connectionOptions =
+    isWorkerMissionToolPlan && !options.requireSocket
+      ? {
+          ...options,
+          headless: false,
+          requireSocket: Boolean(workerRpcUrl || workerSocketOverride),
+        }
+      : plan.preferHeadless && !options.requireSocket
+        ? { ...options, headless: true }
+        : options;
   try {
-    connection = await createConnection(connectionOptions);
+    connection = await createConnection(connectionOptions, {
+      autoRegisterProject: shouldAutoRegisterProjectForPlan(plan),
+    });
   } catch (error) {
     const roots = resolveRoots(options);
     let socketPath = path.join(roots.projectRoot, ".ade", "ade.sock");
     try {
-      const { resolveAdeLayout } = await import("../../desktop/src/shared/adeLayout");
+      const { resolveAdeLayout } =
+        await import("../../desktop/src/shared/adeLayout");
       socketPath = resolveAdeLayout(roots.projectRoot).socketPath;
     } catch {
       // Keep the conventional Unix fallback if shared layout loading fails.
     }
-    const requestedMode = connectionOptions.requireSocket ? "socket" : connectionOptions.headless ? "headless" : "auto";
+    const requestedMode = connectionOptions.requireSocket
+      ? "socket"
+      : connectionOptions.headless
+        ? "headless"
+        : "auto";
     const cause = error instanceof Error ? error.message : String(error);
     const sourceRuntimeInterop = isSourceRuntimeInteropError(cause);
-    throw new CliExecutionError(`Failed to initialize ADE CLI connection for ${plan.label}.`, {
-      cause,
-      requestedMode,
-      projectRoot: roots.projectRoot,
-      workspaceRoot: roots.workspaceRoot,
-      socketPath,
-      nextAction: options.requireSocket
-        ? "Start the ADE runtime for this project or remove --socket to allow headless mode."
-        : sourceRuntimeInterop
-          ? "Run `npm --prefix apps/ade-cli run build` and retry, or use `npm --prefix apps/ade-cli run cli:dev -- ...`."
-          : "Verify --project-root points at an ADE project and run ade doctor --json.",
-    });
+    throw new CliExecutionError(
+      `Failed to initialize ADE CLI connection for ${plan.label}.`,
+      {
+        cause,
+        requestedMode,
+        projectRoot: roots.projectRoot,
+        workspaceRoot: roots.workspaceRoot,
+        socketPath,
+        nextAction: options.requireSocket
+          ? "Start the ADE runtime for this project or remove --socket to allow headless mode."
+          : sourceRuntimeInterop
+            ? "Run `npm --prefix apps/ade-cli run build` and retry, or use `npm --prefix apps/ade-cli run cli:dev -- ...`."
+            : "Verify --project-root points at an ADE project and run ade doctor --json.",
+      },
+    );
   }
   try {
     const values: JsonObject = {};
     for (const step of plan.steps) {
       try {
-        const params = typeof step.params === "function" ? step.params(values) : step.params;
+        const params =
+          typeof step.params === "function" ? step.params(values) : step.params;
         if (step.method === "ade-cli/wait-run-graph") {
           const runId = requireValue(asString(params?.runId) ?? null, "run id");
-          const waitMs = Math.max(0, Math.floor(typeof params?.waitMs === "number" ? params.waitMs : 0));
-          const timelineLimit = Math.max(0, Math.floor(typeof params?.timelineLimit === "number" ? params.timelineLimit : 120));
+          const waitMs = Math.max(
+            0,
+            Math.floor(typeof params?.waitMs === "number" ? params.waitMs : 0),
+          );
+          const timelineLimit = Math.max(
+            0,
+            Math.floor(
+              typeof params?.timelineLimit === "number"
+                ? params.timelineLimit
+                : 120,
+            ),
+          );
           values[step.key] = await waitForRunGraph({
             connection,
             runId,
@@ -7899,40 +12994,58 @@ async function executePlan(plan: CliPlan & { kind: "execute" }, options: GlobalO
     }
     return summarizeExecution({ plan, connection, values });
   } catch (error) {
-    if (error instanceof CliToolError || error instanceof CliUsageError || error instanceof CliExecutionError) throw error;
+    if (
+      error instanceof CliToolError ||
+      error instanceof CliUsageError ||
+      error instanceof CliExecutionError
+    )
+      throw error;
     throw new CliExecutionError(`Failed while running ${plan.label}.`, {
       cause: error instanceof Error ? error.message : String(error),
       mode: connection.mode,
       projectRoot: connection.projectRoot,
       workspaceRoot: connection.workspaceRoot,
       socketPath: connection.socketPath,
-      nextAction: connection.mode === "desktop-socket"
-        ? "Check ADE desktop logs or retry with --headless if the workflow does not need UI-owned state."
-        : "Run ade doctor --json to inspect local project readiness, or start ADE desktop and retry with --socket.",
+      nextAction:
+        connection.mode === "desktop-socket"
+          ? "Check ADE desktop logs or retry with --headless if the workflow does not need UI-owned state."
+          : "Run ade doctor --json to inspect local project readiness, or start ADE desktop and retry with --socket.",
     });
   } finally {
     await connection.close();
   }
 }
 
-function formatOutput(value: unknown, options: GlobalOptions, formatter?: FormatterId): string {
+function formatOutput(
+  value: unknown,
+  options: GlobalOptions,
+  formatter?: FormatterId,
+): string {
   if (options.text) {
     return `${formatTextOutput(value, formatter)}\n`;
   }
   return `${JSON.stringify(value, null, options.pretty ? 2 : 0)}\n`;
 }
 
-async function runCli(argv: string[]): Promise<{ output: string; exitCode: number }> {
+async function runCli(
+  argv: string[],
+): Promise<{ output: string; exitCode: number }> {
   const parsed = parseCliArgs(argv);
   const plan = buildCliPlan(parsed.command);
-  if (plan.kind === "help") return { output: plan.text.endsWith("\n") ? plan.text : `${plan.text}\n`, exitCode: 0 };
+  if (plan.kind === "help")
+    return {
+      output: plan.text.endsWith("\n") ? plan.text : `${plan.text}\n`,
+      exitCode: 0,
+    };
   const originalConsole = {
     log: console.log,
     info: console.info,
     warn: console.warn,
   };
   const writeDiagnostic = (...args: unknown[]) => {
-    process.stderr.write(`${args.map((arg) => typeof arg === "string" ? arg : JSON.stringify(arg)).join(" ")}\n`);
+    process.stderr.write(
+      `${args.map((arg) => (typeof arg === "string" ? arg : JSON.stringify(arg))).join(" ")}\n`,
+    );
   };
   console.log = writeDiagnostic;
   console.info = writeDiagnostic;
@@ -7943,15 +13056,23 @@ async function runCli(argv: string[]): Promise<{ output: string; exitCode: numbe
       // RPC. The function handles its own --json/--text/--compact parsing on
       // the remaining tokens.
       try {
-        const result = await runCursorCloud(plan.rest, parsed.options.text ? "text" : "json");
+        const result = await runCursorCloud(
+          plan.rest,
+          parsed.options.text ? "text" : "json",
+        );
         return result;
       } catch (error) {
-        if (error instanceof CursorCloudUsageError) throw new CliUsageError(error.message);
+        if (error instanceof CursorCloudUsageError)
+          throw new CliUsageError(error.message);
         throw error;
       }
     }
     if (plan.kind === "mcp") {
-      await runMcpServer({ ...parsed.options, headless: true, requireSocket: false });
+      await runMcpServer({
+        ...parsed.options,
+        headless: true,
+        requireSocket: false,
+      });
       return { output: "", exitCode: 0 };
     }
     if (plan.kind === "rpc-stdio") {
@@ -7975,19 +13096,26 @@ async function runCli(argv: string[]): Promise<{ output: string; exitCode: numbe
     if (plan.kind === "serve") {
       const result = await runServe(plan.rest, parsed.options);
       return {
-        output: result == null ? "" : formatOutput(result, parsed.options, undefined),
+        output:
+          result == null ? "" : formatOutput(result, parsed.options, undefined),
         exitCode: isFailedServiceManagerResult(result) ? 1 : 0,
       };
     }
     if (plan.kind === "init") {
       const result = await runInit(plan.targetPath);
-      return { output: formatOutput(result, parsed.options, undefined), exitCode: 0 };
+      return {
+        output: formatOutput(result, parsed.options, undefined),
+        exitCode: 0,
+      };
     }
     if (plan.kind === "ade-code") {
       return await runAdeCode(plan.rest, parsed.options);
     }
     const result = await executePlan(plan, parsed.options);
-    return { output: formatOutput(result, parsed.options, inferFormatter(plan)), exitCode: 0 };
+    return {
+      output: formatOutput(result, parsed.options, inferFormatter(plan)),
+      exitCode: 0,
+    };
   } finally {
     console.log = originalConsole.log;
     console.info = originalConsole.info;
@@ -7997,7 +13125,9 @@ async function runCli(argv: string[]): Promise<{ output: string; exitCode: numbe
 
 async function main(): Promise<void> {
   const writeDiagnostic = (...args: unknown[]) => {
-    process.stderr.write(`${args.map((arg) => typeof arg === "string" ? arg : JSON.stringify(arg)).join(" ")}\n`);
+    process.stderr.write(
+      `${args.map((arg) => (typeof arg === "string" ? arg : JSON.stringify(arg))).join(" ")}\n`,
+    );
   };
   console.log = writeDiagnostic;
   console.info = writeDiagnostic;
@@ -8033,7 +13163,9 @@ async function main(): Promise<void> {
       process.exitCode = 1;
       return;
     }
-    process.stderr.write(`ade: ${error instanceof Error ? error.stack || error.message : String(error)}\n`);
+    process.stderr.write(
+      `ade: ${error instanceof Error ? error.stack || error.message : String(error)}\n`,
+    );
     process.exitCode = 1;
   }
 }

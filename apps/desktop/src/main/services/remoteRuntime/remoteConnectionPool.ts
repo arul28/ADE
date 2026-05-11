@@ -30,7 +30,9 @@ type RuntimeEventNotification = {
 
 function isRemoteRuntimeConnectionError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return /remote (?:runtime|ADE service) connection (?:closed|failed)|stream closed|channel closed|connection lost|socket closed/i.test(message);
+  return /remote (?:runtime|ADE service) connection (?:closed|failed)|stream closed|channel closed|connection lost|socket closed/i.test(
+    message,
+  );
 }
 
 export class RemoteConnectionPool {
@@ -41,7 +43,9 @@ export class RemoteConnectionPool {
     private readonly appVersion: string,
   ) {}
 
-  async connect(target: RemoteRuntimeTarget): Promise<RemoteRuntimeConnectResult> {
+  async connect(
+    target: RemoteRuntimeTarget,
+  ): Promise<RemoteRuntimeConnectResult> {
     return (await this.connectEntry(target)).result;
   }
 
@@ -82,17 +86,40 @@ export class RemoteConnectionPool {
     );
   }
 
-  async addProject(targetId: string, rootPath: string): Promise<RemoteRuntimeProjectRecord> {
+  async callMachineForTarget(
+    target: RemoteRuntimeTarget,
+    method: string,
+    params: Record<string, unknown> = {},
+    options: { retryOnConnectionError?: boolean } = {},
+  ): Promise<unknown> {
+    return await this.withEntryForTarget(
+      target,
+      (entry) => entry.client.call(method, params),
+      { retryOnConnectionError: options.retryOnConnectionError ?? true },
+    );
+  }
+
+  async addProject(
+    targetId: string,
+    rootPath: string,
+  ): Promise<RemoteRuntimeProjectRecord> {
     const entry = await this.requireEntry(targetId);
     return await this.addProjectWithEntry(entry, rootPath);
   }
 
-  async addProjectForTarget(target: RemoteRuntimeTarget, rootPath: string): Promise<RemoteRuntimeProjectRecord> {
+  async addProjectForTarget(
+    target: RemoteRuntimeTarget,
+    rootPath: string,
+  ): Promise<RemoteRuntimeProjectRecord> {
     const entry = await this.connectEntry(target);
     return await this.addProjectWithEntry(entry, rootPath);
   }
 
-  async callAction(targetId: string, projectId: string, request: RemoteRuntimeActionRequest): Promise<RemoteRuntimeActionResult> {
+  async callAction(
+    targetId: string,
+    projectId: string,
+    request: RemoteRuntimeActionRequest,
+  ): Promise<RemoteRuntimeActionResult> {
     const entry = await this.requireEntry(targetId);
     return await this.callActionWithEntry(entry, projectId, request);
   }
@@ -122,11 +149,16 @@ export class RemoteConnectionPool {
     });
   }
 
-  private async addProjectWithEntry(entry: PoolEntry, rootPath: string): Promise<RemoteRuntimeProjectRecord> {
+  private async addProjectWithEntry(
+    entry: PoolEntry,
+    rootPath: string,
+  ): Promise<RemoteRuntimeProjectRecord> {
     const project = await ensureRemoteProject(entry.client, rootPath);
     entry.result.projects = [
       project,
-      ...entry.result.projects.filter((candidate) => candidate.projectId !== project.projectId),
+      ...entry.result.projects.filter(
+        (candidate) => candidate.projectId !== project.projectId,
+      ),
     ];
     return project;
   }
@@ -143,7 +175,9 @@ export class RemoteConnectionPool {
         domain: request.domain,
         action: request.action,
         ...(request.args ? { args: request.args } : {}),
-        ...(Object.prototype.hasOwnProperty.call(request, "arg") ? { arg: request.arg } : {}),
+        ...(Object.prototype.hasOwnProperty.call(request, "arg")
+          ? { arg: request.arg }
+          : {}),
         ...(request.argsList ? { argsList: request.argsList } : {}),
       },
     });
@@ -151,18 +185,30 @@ export class RemoteConnectionPool {
     if (value && typeof value === "object" && !Array.isArray(value)) {
       const record = value as Record<string, unknown>;
       if (record.ok === false) {
-        const error = record.error && typeof record.error === "object" && !Array.isArray(record.error)
-          ? record.error as Record<string, unknown>
-          : {};
-        throw new Error(typeof error.message === "string" ? error.message : "Remote ADE service action failed.");
+        const error =
+          record.error &&
+          typeof record.error === "object" &&
+          !Array.isArray(record.error)
+            ? (record.error as Record<string, unknown>)
+            : {};
+        throw new Error(
+          typeof error.message === "string"
+            ? error.message
+            : "Remote ADE service action failed.",
+        );
       }
       return {
-        domain: typeof record.domain === "string" ? record.domain : request.domain,
-        action: typeof record.action === "string" ? record.action : request.action,
+        domain:
+          typeof record.domain === "string" ? record.domain : request.domain,
+        action:
+          typeof record.action === "string" ? record.action : request.action,
         result: record.result,
-        statusHints: record.statusHints && typeof record.statusHints === "object" && !Array.isArray(record.statusHints)
-          ? record.statusHints as Record<string, unknown>
-          : {},
+        statusHints:
+          record.statusHints &&
+          typeof record.statusHints === "object" &&
+          !Array.isArray(record.statusHints)
+            ? (record.statusHints as Record<string, unknown>)
+            : {},
       };
     }
 
@@ -194,26 +240,41 @@ export class RemoteConnectionPool {
       arguments: {
         cursor: clampCursor(request.cursor),
         limit: clampLimit(request.limit),
-        ...(isRemoteRuntimeEventCategory(request.category) ? { category: request.category } : {}),
+        ...(isRemoteRuntimeEventCategory(request.category)
+          ? { category: request.category }
+          : {}),
       },
     });
 
     if (value && typeof value === "object" && !Array.isArray(value)) {
       const record = value as Record<string, unknown>;
       if (record.ok === false) {
-        const error = record.error && typeof record.error === "object" && !Array.isArray(record.error)
-          ? record.error as Record<string, unknown>
-          : {};
-        throw new Error(typeof error.message === "string" ? error.message : "Remote ADE service event stream failed.");
+        const error =
+          record.error &&
+          typeof record.error === "object" &&
+          !Array.isArray(record.error)
+            ? (record.error as Record<string, unknown>)
+            : {};
+        throw new Error(
+          typeof error.message === "string"
+            ? error.message
+            : "Remote ADE service event stream failed.",
+        );
       }
 
       return {
         events: Array.isArray(record.events)
-          ? record.events.map(normalizeBufferedEvent).filter((event): event is RemoteRuntimeBufferedEvent => event != null)
+          ? record.events
+              .map(normalizeBufferedEvent)
+              .filter(
+                (event): event is RemoteRuntimeBufferedEvent => event != null,
+              )
           : [],
-        nextCursor: typeof record.nextCursor === "number" && Number.isFinite(record.nextCursor)
-          ? Math.max(0, Math.floor(record.nextCursor))
-          : clampCursor(request.cursor),
+        nextCursor:
+          typeof record.nextCursor === "number" &&
+          Number.isFinite(record.nextCursor)
+            ? Math.max(0, Math.floor(record.nextCursor))
+            : clampCursor(request.cursor),
         hasMore: record.hasMore === true,
       };
     }
@@ -245,7 +306,13 @@ export class RemoteConnectionPool {
     onEnded?: () => void,
   ): Promise<() => void> {
     const entry = await this.requireEntry(targetId);
-    return await subscribeToRuntimeEvents(entry.client, projectId, request, onEvent, onEnded);
+    return await subscribeToRuntimeEvents(
+      entry.client,
+      projectId,
+      request,
+      onEvent,
+      onEnded,
+    );
   }
 
   async subscribeEventsForTarget(
@@ -257,7 +324,14 @@ export class RemoteConnectionPool {
   ): Promise<() => void> {
     return await this.withEntryForTarget(
       target,
-      (entry) => subscribeToRuntimeEvents(entry.client, projectId, request, onEvent, onEnded),
+      (entry) =>
+        subscribeToRuntimeEvents(
+          entry.client,
+          projectId,
+          request,
+          onEvent,
+          onEnded,
+        ),
       { retryOnConnectionError: true },
     );
   }
@@ -265,14 +339,20 @@ export class RemoteConnectionPool {
   disconnect(targetId: string): void {
     const existing = this.entries.get(targetId);
     this.entries.delete(targetId);
-    void existing?.then((entry) => {
-      if (entry.dispose) {
-        entry.dispose(true);
-        return;
-      }
-      try { entry.client.close(); } catch {}
-      try { entry.ssh.end(); } catch {}
-    }).catch(() => {});
+    void existing
+      ?.then((entry) => {
+        if (entry.dispose) {
+          entry.dispose(true);
+          return;
+        }
+        try {
+          entry.client.close();
+        } catch {}
+        try {
+          entry.ssh.end();
+        } catch {}
+      })
+      .catch(() => {});
   }
 
   dispose(): void {
@@ -304,12 +384,16 @@ export class RemoteConnectionPool {
       }
       throw new Error(
         "Remote ADE service connection was interrupted before ADE could confirm the action result. " +
-        "ADE reconnected to the machine; retry the action if it is still needed.",
+          "ADE reconnected to the machine; retry the action if it is still needed.",
       );
     }
   }
 
-  private attachEntryLifecycle(targetId: string, entryPromise: Promise<PoolEntry>, entry: PoolEntry): void {
+  private attachEntryLifecycle(
+    targetId: string,
+    entryPromise: Promise<PoolEntry>,
+    entry: PoolEntry,
+  ): void {
     let cleanedUp = false;
     const evict = (closeClient: boolean) => {
       if (this.entries.get(targetId) === entryPromise) {
@@ -318,9 +402,13 @@ export class RemoteConnectionPool {
       if (cleanedUp) return;
       cleanedUp = true;
       if (closeClient) {
-        try { entry.client.close(); } catch {}
+        try {
+          entry.client.close();
+        } catch {}
       }
-      try { entry.ssh.end(); } catch {}
+      try {
+        entry.ssh.end();
+      } catch {}
     };
 
     entry.client.onDisconnect(() => evict(false));
@@ -342,19 +430,31 @@ function clampLimit(value: unknown): number {
     : 100;
 }
 
-function isRemoteRuntimeEventCategory(value: unknown): value is RemoteRuntimeEventCategory {
-  return value === "orchestrator" || value === "dag_mutation" || value === "runtime" || value === "mission";
+function isRemoteRuntimeEventCategory(
+  value: unknown,
+): value is RemoteRuntimeEventCategory {
+  return (
+    value === "orchestrator" ||
+    value === "dag_mutation" ||
+    value === "runtime" ||
+    value === "mission"
+  );
 }
 
-function normalizeBufferedEvent(value: unknown): RemoteRuntimeBufferedEvent | null {
+function normalizeBufferedEvent(
+  value: unknown,
+): RemoteRuntimeBufferedEvent | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
   if (typeof record.id !== "number" || !Number.isFinite(record.id)) return null;
   if (typeof record.timestamp !== "string") return null;
   if (!isRemoteRuntimeEventCategory(record.category)) return null;
-  const payload = record.payload && typeof record.payload === "object" && !Array.isArray(record.payload)
-    ? record.payload as Record<string, unknown>
-    : {};
+  const payload =
+    record.payload &&
+    typeof record.payload === "object" &&
+    !Array.isArray(record.payload)
+      ? (record.payload as Record<string, unknown>)
+      : {};
   return {
     id: Math.max(0, Math.floor(record.id)),
     timestamp: record.timestamp,
@@ -374,18 +474,21 @@ async function subscribeToRuntimeEvents(
   let closed = false;
   let subscriptionId: string | null = null;
 
-  const removeNotificationListener = client.onNotification("runtime/event", (params) => {
-    if (closed) return;
-    const notification = normalizeRuntimeEventNotification(params);
-    if (!notification || notification.projectId !== projectId) return;
-    if (subscriptionId == null) {
-      pendingNotifications.push(notification);
-      return;
-    }
-    if (notification.subscriptionId === subscriptionId) {
-      onEvent(notification.event);
-    }
-  });
+  const removeNotificationListener = client.onNotification(
+    "runtime/event",
+    (params) => {
+      if (closed) return;
+      const notification = normalizeRuntimeEventNotification(params);
+      if (!notification || notification.projectId !== projectId) return;
+      if (subscriptionId == null) {
+        pendingNotifications.push(notification);
+        return;
+      }
+      if (notification.subscriptionId === subscriptionId) {
+        onEvent(notification.event);
+      }
+    },
+  );
   const removeDisconnectListener = client.onDisconnect(() => {
     if (closed) return;
     closed = true;
@@ -398,7 +501,9 @@ async function subscribeToRuntimeEvents(
       projectId,
       cursor: clampCursor(request.cursor),
       limit: clampLimit(request.limit),
-      ...(isRemoteRuntimeEventCategory(request.category) ? { category: request.category } : {}),
+      ...(isRemoteRuntimeEventCategory(request.category)
+        ? { category: request.category }
+        : {}),
     });
     subscriptionId = readSubscriptionId(value);
     for (const notification of pendingNotifications) {
@@ -421,29 +526,39 @@ async function subscribeToRuntimeEvents(
     removeDisconnectListener();
     const id = subscriptionId;
     if (id != null) {
-      void client.call("runtimeEvents.unsubscribe", { subscriptionId: id }).catch(() => {});
+      void client
+        .call("runtimeEvents.unsubscribe", { subscriptionId: id })
+        .catch(() => {});
     }
   };
 }
 
 function readSubscriptionId(value: unknown): string {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("ADE service event subscription did not return a subscription id.");
+    throw new Error(
+      "ADE service event subscription did not return a subscription id.",
+    );
   }
   const id = (value as Record<string, unknown>).subscriptionId;
   if (typeof id !== "string" || !id.trim()) {
-    throw new Error("ADE service event subscription did not return a subscription id.");
+    throw new Error(
+      "ADE service event subscription did not return a subscription id.",
+    );
   }
   return id.trim();
 }
 
-function normalizeRuntimeEventNotification(value: unknown): RuntimeEventNotification | null {
+function normalizeRuntimeEventNotification(
+  value: unknown,
+): RuntimeEventNotification | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
-  const subscriptionId = typeof record.subscriptionId === "string" && record.subscriptionId.trim()
-    ? record.subscriptionId.trim()
-    : null;
-  const projectId = typeof record.projectId === "string" ? record.projectId : "";
+  const subscriptionId =
+    typeof record.subscriptionId === "string" && record.subscriptionId.trim()
+      ? record.subscriptionId.trim()
+      : null;
+  const projectId =
+    typeof record.projectId === "string" ? record.projectId : "";
   const event = normalizeBufferedEvent(record.event);
   if (subscriptionId == null || !projectId || !event) return null;
   return { subscriptionId, projectId, event };

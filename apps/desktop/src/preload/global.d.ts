@@ -695,6 +695,7 @@ import type {
   MacosVmWindowTarget,
   RemoteRuntimeActionRequest,
   RemoteRuntimeActionResult,
+  RemoteRuntimeConnectionSnapshot,
   RemoteRuntimeConnectResult,
   RemoteRuntimeDiscoveredMachine,
   RemoteRuntimeLocalWorkCheckResult,
@@ -742,15 +743,17 @@ declare global {
         onProjectBindingChanged: (
           cb: (binding: OpenProjectBinding | null) => void,
         ) => () => void;
-        onNavigate: (
-          cb: (request: AppNavigationRequest) => void,
-        ) => () => void;
+        onNavigate: (cb: (request: AppNavigationRequest) => void) => () => void;
         openExternal: (url: string) => Promise<void>;
         revealPath: (path: string) => Promise<void>;
         openPath: (path: string) => Promise<void>;
         writeClipboardText: (text: string) => Promise<void>;
         hasClipboardImage: () => Promise<boolean>;
-        readClipboardImage: () => Promise<{ data: string; filename: string; mimeType: string } | null>;
+        readClipboardImage: () => Promise<{
+          data: string;
+          filename: string;
+          mimeType: string;
+        } | null>;
         getImageDataUrl: (path: string) => Promise<{ dataUrl: string }>;
         writeClipboardImage: (path: string) => Promise<void>;
         openPathInEditor: (args: {
@@ -788,7 +791,9 @@ declare global {
         reorderRecent: (
           orderedPaths: string[],
         ) => Promise<RecentProjectSummary[]>;
-        createLocal: (input: CreateProjectInput) => Promise<CreateProjectResult>;
+        createLocal: (
+          input: CreateProjectInput,
+        ) => Promise<CreateProjectResult>;
         clone: (input: CloneProjectInput) => Promise<CloneProjectResult>;
         getDefaultParentDir: () => Promise<string>;
         getSnapshot: () => Promise<AdeProjectSnapshot>;
@@ -799,16 +804,59 @@ declare global {
       };
       remoteRuntime: {
         listTargets: () => Promise<RemoteRuntimeTarget[]>;
+        getConnectionSnapshot: () => Promise<RemoteRuntimeConnectionSnapshot>;
+        onConnectionSnapshotChanged: (
+          cb: (snapshot: RemoteRuntimeConnectionSnapshot) => void,
+        ) => () => void;
         listDiscoveredMachines: () => Promise<RemoteRuntimeDiscoveredMachine[]>;
-        saveTarget: (input: RemoteRuntimeTargetInput) => Promise<RemoteRuntimeTarget>;
+        saveTarget: (
+          input: RemoteRuntimeTargetInput,
+        ) => Promise<RemoteRuntimeTarget>;
         removeTarget: (id: string) => Promise<{ removed: boolean }>;
         connect: (id: string) => Promise<RemoteRuntimeConnectResult>;
         listProjects: (id: string) => Promise<RemoteRuntimeProjectRecord[]>;
-        addProject: (id: string, rootPath: string) => Promise<RemoteRuntimeProjectRecord>;
-        openProject: (id: string, projectId: string) => Promise<OpenProjectBinding>;
-        callAction: (id: string, projectId: string, request: RemoteRuntimeActionRequest) => Promise<RemoteRuntimeActionResult>;
-        streamEvents: (id: string, projectId: string, request?: RemoteRuntimeStreamEventsRequest) => Promise<RemoteRuntimeStreamEventsResult>;
-        checkLocalWork: (project: RemoteRuntimeProjectRecord) => Promise<RemoteRuntimeLocalWorkCheckResult>;
+        addProject: (
+          id: string,
+          rootPath: string,
+        ) => Promise<RemoteRuntimeProjectRecord>;
+        browseDirectories: (
+          id: string,
+          args?: ProjectBrowseInput,
+        ) => Promise<ProjectBrowseResult>;
+        getProjectDetail: (
+          id: string,
+          rootPath: string,
+        ) => Promise<ProjectDetail>;
+        getDefaultParentDir: (id: string) => Promise<string>;
+        createProject: (
+          id: string,
+          input: CreateProjectInput,
+        ) => Promise<RemoteRuntimeProjectRecord>;
+        cloneProject: (
+          id: string,
+          input: CloneProjectInput,
+        ) => Promise<RemoteRuntimeProjectRecord>;
+        listMyGitHubRepos: (
+          id: string,
+          input?: ListMyGitHubReposInput,
+        ) => Promise<ListMyGitHubReposResult>;
+        openProject: (
+          id: string,
+          projectId: string,
+        ) => Promise<OpenProjectBinding>;
+        callAction: (
+          id: string,
+          projectId: string,
+          request: RemoteRuntimeActionRequest,
+        ) => Promise<RemoteRuntimeActionResult>;
+        streamEvents: (
+          id: string,
+          projectId: string,
+          request?: RemoteRuntimeStreamEventsRequest,
+        ) => Promise<RemoteRuntimeStreamEventsResult>;
+        checkLocalWork: (
+          project: RemoteRuntimeProjectRecord,
+        ) => Promise<RemoteRuntimeLocalWorkCheckResult>;
         disconnect: (id: string) => Promise<{ disconnected: boolean }>;
       };
       keybindings: {
@@ -816,7 +864,10 @@ declare global {
         set: (overrides: KeybindingOverride[]) => Promise<KeybindingsSnapshot>;
       };
       ai: {
-        getStatus: (args?: { force?: boolean; refreshOpenCodeInventory?: boolean }) => Promise<AiSettingsStatus>;
+        getStatus: (args?: {
+          force?: boolean;
+          refreshOpenCodeInventory?: boolean;
+        }) => Promise<AiSettingsStatus>;
         getOpenCodeRuntimeDiagnostics: () => Promise<OpenCodeRuntimeSnapshot>;
         storeApiKey: (provider: string, key: string) => Promise<void>;
         deleteApiKey: (provider: string) => Promise<void>;
@@ -834,17 +885,35 @@ declare global {
           limit?: number;
           cursor?: string | null;
         }) => Promise<CursorCloudListRunsResult>;
-        cursorCloudCreateRun: (args: CursorCloudCreateRunRequest) => Promise<CursorCloudCreateRunResult>;
+        cursorCloudCreateRun: (
+          args: CursorCloudCreateRunRequest,
+        ) => Promise<CursorCloudCreateRunResult>;
         cursorCloudArchiveAgent: (agentId: string) => Promise<void>;
         cursorCloudUnarchiveAgent: (agentId: string) => Promise<void>;
         cursorCloudDeleteAgent: (agentId: string) => Promise<void>;
-        cursorCloudGetAgent: (agentId: string) => Promise<CursorCloudAgentSummary | null>;
-        cursorCloudStreamRun: (args: CursorCloudStreamRunRequest) => Promise<CursorCloudStreamRunResult>;
-        cursorCloudCancelRun: (args: { agentId: string; runId: string }) => Promise<void>;
-        cursorCloudFollowUp: (args: CursorCloudFollowUpRequest) => Promise<CursorCloudFollowUpResult>;
-        cursorCloudListArtifacts: (agentId: string) => Promise<CursorCloudArtifactSummary[]>;
-        cursorCloudDownloadArtifact: (args: { agentId: string; path: string }) => Promise<CursorCloudArtifactDownload>;
-        cursorCloudOpenChat: (args: CursorCloudOpenChatRequest) => Promise<CursorCloudOpenChatResult>;
+        cursorCloudGetAgent: (
+          agentId: string,
+        ) => Promise<CursorCloudAgentSummary | null>;
+        cursorCloudStreamRun: (
+          args: CursorCloudStreamRunRequest,
+        ) => Promise<CursorCloudStreamRunResult>;
+        cursorCloudCancelRun: (args: {
+          agentId: string;
+          runId: string;
+        }) => Promise<void>;
+        cursorCloudFollowUp: (
+          args: CursorCloudFollowUpRequest,
+        ) => Promise<CursorCloudFollowUpResult>;
+        cursorCloudListArtifacts: (
+          agentId: string,
+        ) => Promise<CursorCloudArtifactSummary[]>;
+        cursorCloudDownloadArtifact: (args: {
+          agentId: string;
+          path: string;
+        }) => Promise<CursorCloudArtifactDownload>;
+        cursorCloudOpenChat: (
+          args: CursorCloudOpenChatRequest,
+        ) => Promise<CursorCloudOpenChatResult>;
       };
       sync: {
         getStatus: (args?: SyncGetStatusArgs) => Promise<SyncRoleSnapshot>;
@@ -864,16 +933,18 @@ declare global {
         getPin: () => Promise<{ pin: string | null }>;
         setPin: (pin: string) => Promise<SyncRoleSnapshot>;
         clearPin: () => Promise<SyncRoleSnapshot>;
-        setActiveLanePresence: (args: {
-          laneIds: string[];
-        }) => Promise<void>;
+        setActiveLanePresence: (args: { laneIds: string[] }) => Promise<void>;
         onEvent: (cb: (event: SyncStatusEventPayload) => void) => () => void;
       };
       notifications: {
         apns: {
           getStatus: () => Promise<ApnsBridgeStatus>;
-          saveConfig: (args: ApnsBridgeSaveConfigArgs) => Promise<ApnsBridgeStatus>;
-          uploadKey: (args: ApnsBridgeUploadKeyArgs) => Promise<ApnsBridgeStatus>;
+          saveConfig: (
+            args: ApnsBridgeSaveConfigArgs,
+          ) => Promise<ApnsBridgeStatus>;
+          uploadKey: (
+            args: ApnsBridgeUploadKeyArgs,
+          ) => Promise<ApnsBridgeStatus>;
           clearKey: () => Promise<ApnsBridgeStatus>;
           sendTestPush: (
             args: ApnsBridgeSendTestPushArgs,
@@ -901,8 +972,13 @@ declare global {
         markWizardDismissed: () => Promise<OnboardingTourProgress>;
         markTourCompleted: (tourId: string) => Promise<OnboardingTourProgress>;
         markTourDismissed: (tourId: string) => Promise<OnboardingTourProgress>;
-        updateTourStep: (tourId: string, index: number) => Promise<OnboardingTourProgress>;
-        markGlossaryTermSeen: (termId: string) => Promise<OnboardingTourProgress>;
+        updateTourStep: (
+          tourId: string,
+          index: number,
+        ) => Promise<OnboardingTourProgress>;
+        markGlossaryTermSeen: (
+          termId: string,
+        ) => Promise<OnboardingTourProgress>;
         resetTourProgress: (tourId?: string) => Promise<OnboardingTourProgress>;
         markTourCompletedVariant: (
           tourId: string,
@@ -980,7 +1056,9 @@ declare global {
           args?: import("../shared/types").ReviewListSuppressionsArgs,
         ) => Promise<import("../shared/types").ReviewSuppression[]>;
         deleteSuppression: (suppressionId: string) => Promise<boolean>;
-        qualityReport: () => Promise<import("../shared/types").ReviewQualityReport>;
+        qualityReport: () => Promise<
+          import("../shared/types").ReviewQualityReport
+        >;
         onEvent: (cb: (ev: ReviewEventPayload) => void) => () => void;
       };
       actions: {
@@ -1226,7 +1304,9 @@ declare global {
         updateAppearance: (args: UpdateLaneAppearanceArgs) => Promise<void>;
         archive: (args: ArchiveLaneArgs) => Promise<void>;
         delete: (args: DeleteLaneArgs) => Promise<void>;
-        cancelDelete: (args: { laneId: string }) => Promise<{ cancelled: boolean; reason?: string }>;
+        cancelDelete: (args: {
+          laneId: string;
+        }) => Promise<{ cancelled: boolean; reason?: string }>;
         getDeleteRisk: (args: { laneId: string }) => Promise<LaneDeleteRisk>;
         onDeleteEvent: (cb: (ev: LaneDeleteEvent) => void) => () => void;
         getStackChain: (laneId: string) => Promise<StackChainItem[]>;
@@ -1322,10 +1402,14 @@ declare global {
         list: (args?: ListSessionsArgs) => Promise<TerminalSessionSummary[]>;
         get: (sessionId: string) => Promise<TerminalSessionDetail | null>;
         delete: (args: DeleteSessionArgs) => Promise<void>;
-        updateMeta: (args: UpdateSessionMetaArgs) => Promise<TerminalSessionSummary | null>;
+        updateMeta: (
+          args: UpdateSessionMetaArgs,
+        ) => Promise<TerminalSessionSummary | null>;
         readTranscriptTail: (args: ReadTranscriptTailArgs) => Promise<string>;
         getDelta: (sessionId: string) => Promise<SessionDeltaSummary | null>;
-        onChanged: (cb: (ev: TerminalSessionChangedEvent) => void) => () => void;
+        onChanged: (
+          cb: (ev: TerminalSessionChangedEvent) => void,
+        ) => () => void;
       };
       agentChat: {
         list: (args?: AgentChatListArgs) => Promise<AgentChatSessionSummary[]>;
@@ -1333,9 +1417,13 @@ declare global {
           args: AgentChatGetSummaryArgs,
         ) => Promise<AgentChatSessionSummary | null>;
         create: (args: AgentChatCreateArgs) => Promise<AgentChatSession>;
-        suggestLaneName: (args: AgentChatSuggestLaneNameArgs) => Promise<string>;
+        suggestLaneName: (
+          args: AgentChatSuggestLaneNameArgs,
+        ) => Promise<string>;
         parallelLaunchState: {
-          get: (args: AgentChatParallelLaunchStateArgs) => Promise<AgentChatParallelLaunchState | null>;
+          get: (
+            args: AgentChatParallelLaunchStateArgs,
+          ) => Promise<AgentChatParallelLaunchState | null>;
           set: (args: AgentChatSetParallelLaunchStateArgs) => Promise<void>;
         };
         handoff: (
@@ -1345,8 +1433,12 @@ declare global {
         steer: (args: AgentChatSteerArgs) => Promise<void>;
         cancelSteer: (args: AgentChatCancelSteerArgs) => Promise<void>;
         editSteer: (args: AgentChatEditSteerArgs) => Promise<void>;
-        dispatchSteer: (args: AgentChatDispatchSteerArgs) => Promise<AgentChatDispatchSteerResult>;
-        cancelDispatchedSteer: (args: AgentChatCancelDispatchedSteerArgs) => Promise<AgentChatCancelDispatchedSteerResult>;
+        dispatchSteer: (
+          args: AgentChatDispatchSteerArgs,
+        ) => Promise<AgentChatDispatchSteerResult>;
+        cancelDispatchedSteer: (
+          args: AgentChatCancelDispatchedSteerArgs,
+        ) => Promise<AgentChatCancelDispatchedSteerResult>;
         interrupt: (args: AgentChatInterruptArgs) => Promise<void>;
         resume: (args: AgentChatResumeArgs) => Promise<AgentChatSession>;
         approve: (args: AgentChatApproveArgs) => Promise<void>;
@@ -1411,43 +1503,98 @@ declare global {
       iosSimulator: {
         getStatus: () => Promise<IosSimulatorStatus>;
         listDevices: () => Promise<IosSimulatorDevice[]>;
-        listLaunchTargets: (args?: IosSimulatorListLaunchTargetsArgs) => Promise<IosSimulatorLaunchTarget[]>;
+        listLaunchTargets: (
+          args?: IosSimulatorListLaunchTargetsArgs,
+        ) => Promise<IosSimulatorLaunchTarget[]>;
         launch: (args?: IosSimulatorLaunchArgs) => Promise<IosSimulatorSession>;
-        attachToChatSession: (args: { chatSessionId: string | null; callerChatSessionId?: string | null }) => Promise<IosSimulatorSession | null>;
-        shutdown: (args?: IosSimulatorShutdownArgs) => Promise<IosSimulatorShutdownResult>;
-        screenshot: (args?: { deviceUdid?: string | null }) => Promise<IosSimulatorScreenshot>;
-        getScreenSnapshot: (args?: IosScreenSnapshotArgs) => Promise<IosScreenSnapshot>;
-        getInspectorSnapshot: (args?: { deviceUdid?: string | null }) => Promise<IosInspectorSnapshot | null>;
-        inspectPoint: (args: IosSimulatorInspectPointArgs) => Promise<IosSimulatorInspectResult>;
-        getPreviewCapability: (args?: IosSimulatorListPreviewsArgs) => Promise<IosSimulatorPreviewCapability>;
-        listPreviewTargets: (args?: IosSimulatorListPreviewsArgs) => Promise<IosSimulatorPreviewTarget[]>;
-        renderPreview: (args: IosSimulatorRenderPreviewArgs) => Promise<IosSimulatorRenderPreviewResult>;
-        openPreviewWorkspace: (args?: IosSimulatorOpenPreviewWorkspaceArgs) => Promise<{ ok: true; path: string }>;
-        startStream: (args?: IosSimulatorStartStreamArgs) => Promise<IosSimulatorStreamStatus>;
+        attachToChatSession: (args: {
+          chatSessionId: string | null;
+          callerChatSessionId?: string | null;
+        }) => Promise<IosSimulatorSession | null>;
+        shutdown: (
+          args?: IosSimulatorShutdownArgs,
+        ) => Promise<IosSimulatorShutdownResult>;
+        screenshot: (args?: {
+          deviceUdid?: string | null;
+        }) => Promise<IosSimulatorScreenshot>;
+        getScreenSnapshot: (
+          args?: IosScreenSnapshotArgs,
+        ) => Promise<IosScreenSnapshot>;
+        getInspectorSnapshot: (args?: {
+          deviceUdid?: string | null;
+        }) => Promise<IosInspectorSnapshot | null>;
+        inspectPoint: (
+          args: IosSimulatorInspectPointArgs,
+        ) => Promise<IosSimulatorInspectResult>;
+        getPreviewCapability: (
+          args?: IosSimulatorListPreviewsArgs,
+        ) => Promise<IosSimulatorPreviewCapability>;
+        listPreviewTargets: (
+          args?: IosSimulatorListPreviewsArgs,
+        ) => Promise<IosSimulatorPreviewTarget[]>;
+        renderPreview: (
+          args: IosSimulatorRenderPreviewArgs,
+        ) => Promise<IosSimulatorRenderPreviewResult>;
+        openPreviewWorkspace: (
+          args?: IosSimulatorOpenPreviewWorkspaceArgs,
+        ) => Promise<{ ok: true; path: string }>;
+        startStream: (
+          args?: IosSimulatorStartStreamArgs,
+        ) => Promise<IosSimulatorStreamStatus>;
         stopStream: () => Promise<IosSimulatorStreamStatus>;
         getStreamStatus: () => Promise<IosSimulatorStreamStatus>;
         getSimulatorWindowState: () => Promise<IosSimulatorWindowState>;
         listSimulatorWindowSources: () => Promise<IosSimulatorWindowSource[]>;
-        tap: (args: { deviceUdid?: string | null; projectRoot?: string | null; x: number; y: number }) => Promise<{ ok: true }>;
-        typeText: (args: { deviceUdid?: string | null; projectRoot?: string | null; text: string }) => Promise<{ ok: true }>;
+        tap: (args: {
+          deviceUdid?: string | null;
+          projectRoot?: string | null;
+          x: number;
+          y: number;
+        }) => Promise<{ ok: true }>;
+        typeText: (args: {
+          deviceUdid?: string | null;
+          projectRoot?: string | null;
+          text: string;
+        }) => Promise<{ ok: true }>;
         drag: (args: IosSimulatorDragArgs) => Promise<{ ok: true }>;
         swipe: (args: IosSimulatorDragArgs) => Promise<{ ok: true }>;
-        selectPoint: (args: { deviceUdid?: string | null; projectRoot?: string | null; x: number; y: number }) => Promise<IosSimulatorSelectResult>;
+        selectPoint: (args: {
+          deviceUdid?: string | null;
+          projectRoot?: string | null;
+          x: number;
+          y: number;
+        }) => Promise<IosSimulatorSelectResult>;
         onEvent: (cb: (ev: IosSimulatorEventPayload) => void) => () => void;
       };
       appControl: {
         getStatus: () => Promise<AppControlStatus>;
         launch: (args?: AppControlLaunchArgs) => Promise<AppControlSession>;
-        launchInTerminal: (args?: AppControlLaunchArgs) => Promise<AppControlSession>;
+        launchInTerminal: (
+          args?: AppControlLaunchArgs,
+        ) => Promise<AppControlSession>;
         connect: (args: AppControlConnectArgs) => Promise<AppControlSession>;
-        stop: (args?: AppControlStopArgs) => Promise<{ ok: true; previousSession: AppControlSession | null }>;
+        stop: (
+          args?: AppControlStopArgs,
+        ) => Promise<{ ok: true; previousSession: AppControlSession | null }>;
         screenshot: () => Promise<AppControlScreenshot>;
-        getSnapshot: (args?: AppControlSnapshotArgs) => Promise<AppControlSnapshot>;
-        inspectPoint: (args: AppControlInspectPointArgs) => Promise<AppControlInspectResult>;
-        selectPoint: (args: AppControlInspectPointArgs) => Promise<AppControlSelectResult>;
+        getSnapshot: (
+          args?: AppControlSnapshotArgs,
+        ) => Promise<AppControlSnapshot>;
+        inspectPoint: (
+          args: AppControlInspectPointArgs,
+        ) => Promise<AppControlInspectResult>;
+        selectPoint: (
+          args: AppControlInspectPointArgs,
+        ) => Promise<AppControlSelectResult>;
         click: (args: AppControlClickArgs) => Promise<{ ok: true }>;
         typeText: (args: AppControlTypeTextArgs) => Promise<{ ok: true }>;
-        scroll: (args: { x: number; y: number; deltaX: number; deltaY: number; scale?: number | null }) => Promise<{ ok: true }>;
+        scroll: (args: {
+          x: number;
+          y: number;
+          deltaX: number;
+          deltaY: number;
+          scale?: number | null;
+        }) => Promise<{ ok: true }>;
         dispatchKey: (args: {
           type: "keyDown" | "keyUp" | "rawKeyDown" | "char";
           key?: string | null;
@@ -1456,18 +1603,34 @@ declare global {
           modifiers?: number | null;
         }) => Promise<{ ok: true }>;
         listTargets: () => Promise<AppControlTarget[]>;
-        attachToTarget: (args: { targetId: string }) => Promise<AppControlSession>;
+        attachToTarget: (args: {
+          targetId: string;
+        }) => Promise<AppControlSession>;
         onEvent: (cb: (ev: AppControlEventPayload) => void) => () => void;
       };
       builtInBrowser: {
         getStatus: () => Promise<BuiltInBrowserStatus>;
-        showPanel: (args?: BuiltInBrowserOpenPanelArgs) => Promise<BuiltInBrowserStatus>;
-        setBounds: (args: BuiltInBrowserBoundsArgs) => Promise<BuiltInBrowserStatus>;
-        attachWebview: (args: BuiltInBrowserAttachWebviewArgs) => Promise<BuiltInBrowserStatus>;
-        navigate: (args: BuiltInBrowserNavigateArgs) => Promise<BuiltInBrowserStatus>;
-        createTab: (args?: BuiltInBrowserCreateTabArgs) => Promise<BuiltInBrowserStatus>;
-        switchTab: (args: BuiltInBrowserTabArgs) => Promise<BuiltInBrowserStatus>;
-        closeTab: (args: BuiltInBrowserTabArgs) => Promise<BuiltInBrowserStatus>;
+        showPanel: (
+          args?: BuiltInBrowserOpenPanelArgs,
+        ) => Promise<BuiltInBrowserStatus>;
+        setBounds: (
+          args: BuiltInBrowserBoundsArgs,
+        ) => Promise<BuiltInBrowserStatus>;
+        attachWebview: (
+          args: BuiltInBrowserAttachWebviewArgs,
+        ) => Promise<BuiltInBrowserStatus>;
+        navigate: (
+          args: BuiltInBrowserNavigateArgs,
+        ) => Promise<BuiltInBrowserStatus>;
+        createTab: (
+          args?: BuiltInBrowserCreateTabArgs,
+        ) => Promise<BuiltInBrowserStatus>;
+        switchTab: (
+          args: BuiltInBrowserTabArgs,
+        ) => Promise<BuiltInBrowserStatus>;
+        closeTab: (
+          args: BuiltInBrowserTabArgs,
+        ) => Promise<BuiltInBrowserStatus>;
         reload: () => Promise<BuiltInBrowserStatus>;
         goBack: () => Promise<BuiltInBrowserStatus>;
         goForward: () => Promise<BuiltInBrowserStatus>;
@@ -1475,7 +1638,9 @@ declare global {
         startInspect: () => Promise<BuiltInBrowserStatus>;
         stopInspect: () => Promise<BuiltInBrowserStatus>;
         captureScreenshot: () => Promise<BuiltInBrowserScreenshot>;
-        selectPoint: (args: BuiltInBrowserSelectPointArgs) => Promise<BuiltInBrowserSelectResult>;
+        selectPoint: (
+          args: BuiltInBrowserSelectPointArgs,
+        ) => Promise<BuiltInBrowserSelectResult>;
         selectCurrent: () => Promise<BuiltInBrowserSelectResult>;
         clearSelection: () => Promise<{ ok: true }>;
         onEvent: (cb: (ev: BuiltInBrowserEventPayload) => void) => () => void;
@@ -1485,13 +1650,32 @@ declare global {
         provision: (args: MacosVmProvisionArgs) => Promise<MacosVmRecord>;
         start: (args: MacosVmStartArgs) => Promise<MacosVmRecord>;
         stop: (args: MacosVmStopArgs) => Promise<MacosVmRecord | null>;
-        delete: (args: MacosVmDeleteArgs) => Promise<{ deleted: boolean; previous: MacosVmRecord | null }>;
-        getAgentGuide: (args: MacosVmAgentGuideArgs) => Promise<MacosVmAgentGuide>;
-        focusWindow: (args: MacosVmFocusWindowArgs) => Promise<MacosVmWindowTarget>;
-        captureScreenshot: (args: MacosVmCaptureScreenshotArgs) => Promise<MacosVmCaptureScreenshotResult>;
-        selectPoint: (args: MacosVmSelectPointArgs) => Promise<MacosVmSelectPointResult>;
-        click: (args: MacosVmClickArgs) => Promise<{ ok: true; window: MacosVmWindowTarget; x: number; y: number }>;
-        typeText: (args: MacosVmTypeTextArgs) => Promise<{ ok: true; window: MacosVmWindowTarget }>;
+        delete: (
+          args: MacosVmDeleteArgs,
+        ) => Promise<{ deleted: boolean; previous: MacosVmRecord | null }>;
+        getAgentGuide: (
+          args: MacosVmAgentGuideArgs,
+        ) => Promise<MacosVmAgentGuide>;
+        focusWindow: (
+          args: MacosVmFocusWindowArgs,
+        ) => Promise<MacosVmWindowTarget>;
+        captureScreenshot: (
+          args: MacosVmCaptureScreenshotArgs,
+        ) => Promise<MacosVmCaptureScreenshotResult>;
+        selectPoint: (
+          args: MacosVmSelectPointArgs,
+        ) => Promise<MacosVmSelectPointResult>;
+        click: (
+          args: MacosVmClickArgs,
+        ) => Promise<{
+          ok: true;
+          window: MacosVmWindowTarget;
+          x: number;
+          y: number;
+        }>;
+        typeText: (
+          args: MacosVmTypeTextArgs,
+        ) => Promise<{ ok: true; window: MacosVmWindowTarget }>;
         onEvent: (cb: (ev: MacosVmEventPayload) => void) => () => void;
       };
       terminal: {
@@ -1499,7 +1683,9 @@ declare global {
         read: (args?: ChatTerminalReadArgs) => Promise<ChatTerminalReadResult>;
         write: (args: ChatTerminalWriteArgs) => Promise<{ ok: true }>;
         signal: (args: ChatTerminalSignalArgs) => Promise<{ ok: true }>;
-        activeForChat: (args: ChatTerminalActiveForChatArgs) => Promise<ChatTerminalSession | null>;
+        activeForChat: (
+          args: ChatTerminalActiveForChatArgs,
+        ) => Promise<ChatTerminalSession | null>;
       };
       pty: {
         create: (args: PtyCreateArgs) => Promise<PtyCreateResult>;
@@ -1570,8 +1756,18 @@ declare global {
         getSyncStatus: (args: {
           laneId: string;
         }) => Promise<GitUpstreamSyncStatus>;
-        getOriginRemote: (args: { laneId: string }) => Promise<{ remoteUrl: string | null; branch: string | null }>;
-        getOpenPrForBranch: (args: { laneId: string; branch?: string }) => Promise<{ prUrl: string | null; prNumber: number | null; title: string | null; headRefName: string | null }>;
+        getOriginRemote: (args: {
+          laneId: string;
+        }) => Promise<{ remoteUrl: string | null; branch: string | null }>;
+        getOpenPrForBranch: (args: {
+          laneId: string;
+          branch?: string;
+        }) => Promise<{
+          prUrl: string | null;
+          prNumber: number | null;
+          title: string | null;
+          headRefName: string | null;
+        }>;
         sync: (args: GitSyncArgs) => Promise<GitActionResult>;
         push: (args: GitPushArgs) => Promise<GitActionResult>;
         getConflictState: (laneId: string) => Promise<GitConflictState>;
@@ -1642,8 +1838,12 @@ declare global {
         onEvent: (cb: (ev: ConflictEventPayload) => void) => () => void;
       };
       feedback: {
-        prepareDraft: (args: FeedbackPrepareDraftArgs) => Promise<FeedbackPreparedDraft>;
-        submitDraft: (args: FeedbackSubmitDraftArgs) => Promise<FeedbackSubmission>;
+        prepareDraft: (
+          args: FeedbackPrepareDraftArgs,
+        ) => Promise<FeedbackPreparedDraft>;
+        submitDraft: (
+          args: FeedbackSubmitDraftArgs,
+        ) => Promise<FeedbackSubmission>;
         list: () => Promise<FeedbackSubmission[]>;
         onUpdate: (cb: (event: FeedbackSubmissionEvent) => void) => () => void;
       };
@@ -1652,10 +1852,20 @@ declare global {
         setToken: (token: string) => Promise<GitHubStatus>;
         clearToken: () => Promise<GitHubStatus>;
         detectRepo: () => Promise<{ owner: string; name: string } | null>;
-        listRepoLabels: (args: { owner: string; name: string }) => Promise<Array<{ name: string; color?: string }>>;
-        listRepoCollaborators: (args: { owner: string; name: string }) => Promise<Array<{ login: string; avatarUrl?: string }>>;
-        listMyRepos: (input?: ListMyGitHubReposInput) => Promise<ListMyGitHubReposResult>;
-        publishCurrentProject: (input: PublishProjectInput) => Promise<PublishProjectResult>;
+        listRepoLabels: (args: {
+          owner: string;
+          name: string;
+        }) => Promise<Array<{ name: string; color?: string }>>;
+        listRepoCollaborators: (args: {
+          owner: string;
+          name: string;
+        }) => Promise<Array<{ login: string; avatarUrl?: string }>>;
+        listMyRepos: (
+          input?: ListMyGitHubReposInput,
+        ) => Promise<ListMyGitHubReposResult>;
+        publishCurrentProject: (
+          input: PublishProjectInput,
+        ) => Promise<PublishProjectResult>;
         onStatusChanged: (cb: (status: GitHubStatus) => void) => () => void;
       };
       prs: {
@@ -1680,7 +1890,10 @@ declare global {
         ) => Promise<{ title: string; body: string }>;
         land: (args: LandPrArgs) => Promise<LandResult>;
         landStack: (args: LandStackArgs) => Promise<LandResult[]>;
-        retargetBase: (args: { prId: string; baseBranch: string }) => Promise<void>;
+        retargetBase: (args: {
+          prId: string;
+          baseBranch: string;
+        }) => Promise<void>;
         openInGitHub: (prId: string) => Promise<void>;
         createQueue: (
           args: CreateQueuePrsArgs,
@@ -1778,7 +1991,9 @@ declare global {
         updateBody: (args: UpdatePrBodyArgs) => Promise<void>;
         setLabels: (args: SetPrLabelsArgs) => Promise<void>;
         requestReviewers: (args: RequestPrReviewersArgs) => Promise<void>;
-        submitReview: (args: SubmitPrReviewArgs) => Promise<SubmitPrReviewResult>;
+        submitReview: (
+          args: SubmitPrReviewArgs,
+        ) => Promise<SubmitPrReviewResult>;
         close: (args: ClosePrArgs) => Promise<void>;
         reopen: (args: ReopenPrArgs) => Promise<void>;
         rerunChecks: (args: RerunPrChecksArgs) => Promise<void>;
