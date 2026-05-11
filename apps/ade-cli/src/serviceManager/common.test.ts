@@ -21,6 +21,7 @@ import {
   installWindowsService,
   isSchtasksOutputRunning,
   parseSchtasksListStatus,
+  resolveWindowsTaskUser,
   TASK_NAME,
   uninstallWindowsService,
 } from "./installWindows";
@@ -277,11 +278,12 @@ describe("Windows scheduled task helpers", () => {
     command: "C:\\Program Files\\ADE\\ade.exe",
     args: ["serve"],
   };
+  const taskUser = "ADEBOX\\arul";
 
   it("builds schtasks create, run, query, and delete arguments without invoking schtasks", () => {
     const renderedCommand = renderWindowsCommand(serviceCommand);
 
-    expect(buildWindowsCreateTaskArgs(renderedCommand)).toEqual([
+    expect(buildWindowsCreateTaskArgs(renderedCommand, taskUser)).toEqual([
       "/Create",
       "/SC",
       "ONLOGON",
@@ -289,11 +291,20 @@ describe("Windows scheduled task helpers", () => {
       TASK_NAME,
       "/TR",
       renderedCommand,
+      "/RU",
+      taskUser,
+      "/IT",
       "/F",
     ]);
     expect(buildWindowsRunTaskArgs()).toEqual(["/Run", "/TN", TASK_NAME]);
     expect(buildWindowsQueryTaskArgs()).toEqual(["/Query", "/TN", TASK_NAME, "/FO", "LIST", "/V"]);
     expect(buildWindowsDeleteTaskArgs()).toEqual(["/Delete", "/TN", TASK_NAME, "/F"]);
+  });
+
+  it("resolves the Windows scheduled task user from domain and username environment values", () => {
+    expect(resolveWindowsTaskUser({ USERDOMAIN: "ADEBOX", USERNAME: "arul" })).toBe("ADEBOX\\arul");
+    expect(resolveWindowsTaskUser({ USERNAME: "LOCALUSER" })).toBe("LOCALUSER");
+    expect(resolveWindowsTaskUser({ USERDOMAIN: "ADEBOX", USERNAME: "ADEBOX\\arul" })).toBe("ADEBOX\\arul");
   });
 
   it("renders Windows scheduled task commands with double-quoted argv tokens", () => {
@@ -318,7 +329,7 @@ describe("Windows scheduled task helpers", () => {
       { status: 0, stdout: "SUCCESS: attempted to run", stderr: "" },
     ]);
 
-    const result = installWindowsService({ command: serviceCommand, spawnSync });
+    const result = installWindowsService({ command: serviceCommand, spawnSync, userName: taskUser });
 
     expect(result).toMatchObject({
       ok: true,
@@ -328,7 +339,7 @@ describe("Windows scheduled task helpers", () => {
       message: "ADE service scheduled task installed and started.",
     });
     expect(calls).toEqual([
-      { command: "schtasks.exe", args: buildWindowsCreateTaskArgs(renderWindowsCommand(serviceCommand)) },
+      { command: "schtasks.exe", args: buildWindowsCreateTaskArgs(renderWindowsCommand(serviceCommand), taskUser) },
       { command: "schtasks.exe", args: buildWindowsRunTaskArgs() },
     ]);
   });
@@ -340,12 +351,12 @@ describe("Windows scheduled task helpers", () => {
       { status: 1, stdout: "", stderr: "ERROR: access is denied" },
     ]);
 
-    const result = installWindowsService({ command: serviceCommand, spawnSync });
+    const result = installWindowsService({ command: serviceCommand, spawnSync, userName: taskUser });
 
     expect(result.ok).toBe(false);
     expect(result.message).toBe("ADE service scheduled task installed, but failed to start: ERROR: access is denied");
     expect(calls.map((call) => call.args)).toEqual([
-      buildWindowsCreateTaskArgs(renderWindowsCommand(serviceCommand)),
+      buildWindowsCreateTaskArgs(renderWindowsCommand(serviceCommand), taskUser),
       buildWindowsRunTaskArgs(),
     ]);
   });
@@ -356,7 +367,7 @@ describe("Windows scheduled task helpers", () => {
       { status: 1, stdout: "", stderr: "ERROR: create failed" },
     ]);
 
-    const result = installWindowsService({ command: serviceCommand, spawnSync });
+    const result = installWindowsService({ command: serviceCommand, spawnSync, userName: taskUser });
 
     expect(result.ok).toBe(false);
     expect(result.message).toBe("ERROR: create failed");

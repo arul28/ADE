@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import os from "node:os";
 import {
   ADE_RUNTIME_SERVICE_NAME,
   type AdeServiceCommand,
@@ -15,9 +16,22 @@ export const TASK_NAME = "ADE Runtime";
 type WindowsServiceManagerDeps = {
   command?: AdeServiceCommand;
   spawnSync?: ServiceManagerSpawnSync;
+  userName?: string;
 };
 
-export function buildWindowsCreateTaskArgs(command: string): string[] {
+export function resolveWindowsTaskUser(env: NodeJS.ProcessEnv = process.env): string {
+  const username = env.USERNAME?.trim() || os.userInfo().username.trim();
+  if (!username) {
+    throw new Error("Unable to resolve current Windows user for scheduled task registration.");
+  }
+  const domain = env.USERDOMAIN?.trim();
+  if (domain && !username.includes("\\")) {
+    return `${domain}\\${username}`;
+  }
+  return username;
+}
+
+export function buildWindowsCreateTaskArgs(command: string, userName = resolveWindowsTaskUser()): string[] {
   return [
     "/Create",
     "/SC",
@@ -26,6 +40,9 @@ export function buildWindowsCreateTaskArgs(command: string): string[] {
     TASK_NAME,
     "/TR",
     command,
+    "/RU",
+    userName,
+    "/IT",
     "/F",
   ];
 }
@@ -54,7 +71,19 @@ export function isSchtasksOutputRunning(output: string): boolean {
 export function installWindowsService(deps: WindowsServiceManagerDeps = {}): ServiceManagerResult {
   const run = deps.spawnSync ?? spawnSync;
   const command = renderWindowsCommand(deps.command ?? resolveAdeServeCommand());
-  const result = run("schtasks.exe", buildWindowsCreateTaskArgs(command), { encoding: "utf8" });
+  let userName: string;
+  try {
+    userName = deps.userName ?? resolveWindowsTaskUser();
+  } catch (error) {
+    return {
+      ok: false,
+      serviceName: ADE_RUNTIME_SERVICE_NAME,
+      action: "install",
+      path: TASK_NAME,
+      message: error instanceof Error ? error.message : "Unable to resolve current Windows user.",
+    };
+  }
+  const result = run("schtasks.exe", buildWindowsCreateTaskArgs(command, userName), { encoding: "utf8" });
   if (result.status !== 0) {
     return {
       ok: false,
