@@ -237,6 +237,7 @@ Step 2: Map changed source to internal docs
 | apps/desktop/src/shared/                           | docs/ARCHITECTURE.md + touching feature's doc      |
 | apps/desktop/src/renderer/components/<area>/       | docs/features/<same-area>/                         |
 | apps/desktop/src/renderer/state/                   | docs/ARCHITECTURE.md (UI framework)                |
+| apps/ade-cli/src/tuiClient/                        | docs/features/ade-code/README.md + docs/ARCHITECTURE.md (ADE CLI / Build/Test/Deploy) |
 | apps/ade-cli/                                      | docs/ARCHITECTURE.md (ADE CLI / Build/Test/Deploy) + docs/features/agents/ |
 | .github/workflows/                                 | docs/ARCHITECTURE.md (Build/Test/Deploy)           |
 | apps/ios/                                          | docs/features/sync-and-multi-device/ios-companion.md |
@@ -427,7 +428,7 @@ Step 2: Identify TUI-relevant changes. Treat as candidates:
 - apps/ade-cli/src/adeRpcServer.ts new actions — should appear in BUILTIN_COMMANDS or via /ade.
 - New IPC handlers in window.ade.git/.lanes/.app/.prs — TUI may want a slash command + right-pane action wrapper.
 
-Step 3: Map to ade-code surface
+Step 3: Map to the TUI surface
 - Slash commands: apps/ade-cli/src/tuiClient/commands.ts BUILTIN_COMMANDS.
 - Slash dispatch: apps/ade-cli/src/tuiClient/app.tsx (search by name pattern, e.g. `if (name === "/push")`).
 - Sidebar rendering: apps/ade-cli/src/tuiClient/components/Drawer.tsx.
@@ -466,7 +467,7 @@ Wait for all four parity agents to complete before moving to Verification.
 
 ## Verification
 
-After all three passes:
+After all seven passes:
 
 1. **Run the affected shards**, not the full suite (`/finalize` runs everything):
    ```bash

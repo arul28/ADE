@@ -48,7 +48,7 @@ import {
 } from "./adeApi";
 import { paletteCommands, parseCommand } from "./commands";
 import { connectToAde } from "./connection";
-import { Drawer } from "./components/Drawer";
+import { Drawer, visibleDrawerChatCount, visibleDrawerLaneCount } from "./components/Drawer";
 import { ChatView } from "./components/ChatView";
 import { Header } from "./components/Header";
 import { LANE_DETAIL_ACTIONS, RightPane } from "./components/RightPane";
@@ -689,6 +689,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const attachProbeInFlightRef = useRef(false);
   const lastChatByLaneRef = useRef<Map<string, string>>(new Map(Object.entries(loadAdeCodeState().lastChatByLane)));
   const lastChatByLaneWriteTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const pendingNewChatTitleRef = useRef<string | null>(null);
 
   const persistLastChatByLane = useCallback(() => {
     if (lastChatByLaneWriteTimerRef.current) {
@@ -858,10 +859,17 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     [activeSessionId, sessions],
   );
   const latestFailedLineId = useMemo(() => latestExpandableFailureId(events), [events]);
-  const drawerLaneRows = useMemo(() => lanes.slice(0, 10), [lanes]);
+  const drawerLaneRows = useMemo(
+    () => lanes.slice(0, visibleDrawerLaneCount(rows, lanes.length)),
+    [lanes, rows],
+  );
   const drawerLaneSessions = useMemo(
     () => sessions.filter((session) => session.laneId === drawerLaneId),
     [drawerLaneId, sessions],
+  );
+  const drawerVisibleLaneSessions = useMemo(
+    () => drawerLaneSessions.slice(0, visibleDrawerChatCount(drawerLaneSessions.length)),
+    [drawerLaneSessions],
   );
   const selectedLaneIndex = useMemo(() => {
     if (selectedDrawerLaneAction === "new-lane") return drawerLaneRows.length;
@@ -870,12 +878,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     return index >= 0 ? index : 0;
   }, [activeLaneId, drawerLaneId, drawerLaneRows, selectedDrawerLaneAction, selectedDrawerLaneId]);
   const selectedChatIndex = useMemo(() => {
-    if (selectedDrawerChatAction === "new-chat") return drawerLaneSessions.length;
+    if (selectedDrawerChatAction === "new-chat") return drawerVisibleLaneSessions.length;
     const targetId = selectedDrawerChatId
       ?? (drawerLaneId === activeLaneId ? activeSessionId : null);
-    const index = drawerLaneSessions.findIndex((session) => session.sessionId === targetId);
+    const index = drawerVisibleLaneSessions.findIndex((session) => session.sessionId === targetId);
     return index >= 0 ? index : 0;
-  }, [activeLaneId, activeSessionId, drawerLaneId, drawerLaneSessions, selectedDrawerChatAction, selectedDrawerChatId]);
+  }, [activeLaneId, activeSessionId, drawerLaneId, drawerVisibleLaneSessions, selectedDrawerChatAction, selectedDrawerChatId]);
   const activeMentionRange = useMemo(() => (
     activePane === "chat" ? activeMention(prompt) : null
   ), [activePane, prompt]);
@@ -1063,10 +1071,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       setSelectedDrawerChatAction("new-chat");
       return;
     }
-    if (selectedDrawerChatId && drawerLaneSessions.some((session) => session.sessionId === selectedDrawerChatId)) return;
-    const activeChatInDrawer = drawerLaneSessions.find((session) => session.sessionId === activeSessionId);
-    setSelectedDrawerChatId(activeChatInDrawer?.sessionId ?? drawerLaneSessions[0]?.sessionId ?? null);
-  }, [activeLaneId, activeSessionId, draftChatActive, drawerLaneId, drawerLaneSessions, selectedDrawerChatAction, selectedDrawerChatId]);
+    if (selectedDrawerChatId && drawerVisibleLaneSessions.some((session) => session.sessionId === selectedDrawerChatId)) return;
+    const activeChatInDrawer = drawerVisibleLaneSessions.find((session) => session.sessionId === activeSessionId);
+    setSelectedDrawerChatId(activeChatInDrawer?.sessionId ?? drawerVisibleLaneSessions[0]?.sessionId ?? null);
+  }, [activeLaneId, activeSessionId, draftChatActive, drawerLaneId, drawerVisibleLaneSessions, selectedDrawerChatAction, selectedDrawerChatId]);
 
   useEffect(() => {
     setSlashIndex(0);
@@ -1140,12 +1148,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     });
   }, [openForm]);
 
-  const openNewChatSetup = useCallback(() => {
+  const openNewChatSetup = useCallback((title?: string | null) => {
     if (!activeLaneIdRef.current) {
       setRightPane({ kind: "details", title: "New chat", body: "No active lane is available." });
       focusDetails();
       return;
     }
+    const trimmedTitle = title?.trim() || null;
+    pendingNewChatTitleRef.current = trimmedTitle;
     draftSeededFromHistoryRef.current = true;
     const previousPane = activePaneRef.current;
     stashActiveInput();
@@ -1334,7 +1344,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     const nextProvider = configSession?.provider ?? modelState.provider ?? "codex";
     const commandSessionId = nextSessionId ?? configSession?.sessionId ?? null;
     const remoteCommands = commandSessionId ? await getSlashCommands(conn, commandSessionId).catch(() => []) : [];
-    const projectCommands = discoverProjectSlashCommands(project.workspaceRoot);
+    const projectCommands = discoverProjectSlashCommands(nextLane?.worktreePath || project.workspaceRoot);
     const nextCommands = remoteCommands.length ? remoteCommands : projectCommands;
     const nextModels = await getAvailableModels(conn, nextProvider).catch(() => []);
     const activeModel = nextModels.find((model) => model.modelId === configSession?.modelId || model.id === configSession?.modelId)
@@ -1512,6 +1522,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     const created = await createChatSession({
       connection: conn,
       laneId,
+      title: pendingNewChatTitleRef.current,
       provider: normalized.provider,
       modelId: normalized.modelId,
       reasoningEffort: normalized.reasoningEffort,
@@ -1527,6 +1538,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       cursorModeId: normalized.cursorModeId,
       cursorConfigValues: normalized.cursorConfigValues,
     });
+    pendingNewChatTitleRef.current = null;
     setDraftChatMode(false);
     selectActiveSessionId(created.id);
     await refreshState();
@@ -1610,10 +1622,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         setRightPane({ kind: "details", title: "New chat", body: "No active lane is available." });
         return;
       }
-      if (args) {
-        chatDraftRef.current = args;
-      }
-      openNewChatSetup();
+      openNewChatSetup(args);
       return;
     }
     if (name === "/new lane") {
@@ -2855,7 +2864,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         setSelectedDrawerLaneId(lastLane?.id ?? null);
       } else {
         const nextIndex = Math.max(0, selectedChatIndex - 1);
-        const session = drawerLaneSessions[nextIndex] ?? null;
+        const session = drawerVisibleLaneSessions[nextIndex] ?? null;
         setSelectedDrawerChatAction(session ? null : "new-chat");
         setSelectedDrawerChatId(session?.sessionId ?? null);
       }
@@ -2865,7 +2874,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       if (drawerSection === "lanes") {
         if (selectedLaneIndex >= drawerLaneRows.length) {
           setDrawerSection("chats");
-          const firstSession = drawerLaneSessions[0] ?? null;
+          const firstSession = drawerVisibleLaneSessions[0] ?? null;
           setSelectedDrawerChatAction(firstSession ? null : "new-chat");
           setSelectedDrawerChatId(firstSession?.sessionId ?? null);
         } else {
@@ -2875,8 +2884,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           setSelectedDrawerLaneId(lane?.id ?? null);
         }
       } else {
-        const nextIndex = Math.min(drawerLaneSessions.length, selectedChatIndex + 1);
-        const session = drawerLaneSessions[nextIndex] ?? null;
+        const nextIndex = Math.min(drawerVisibleLaneSessions.length, selectedChatIndex + 1);
+        const session = drawerVisibleLaneSessions[nextIndex] ?? null;
         setSelectedDrawerChatAction(session ? null : "new-chat");
         setSelectedDrawerChatId(session?.sessionId ?? null);
       }
@@ -2907,12 +2916,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           addNotice(`Switched to lane ${lane.name}.`, "success");
         }
       } else {
-        if (selectedDrawerChatAction === "new-chat" || selectedChatIndex >= drawerLaneSessions.length) {
+        if (selectedDrawerChatAction === "new-chat" || selectedChatIndex >= drawerVisibleLaneSessions.length) {
           openNewChatSetup();
           setRightOpen(true);
           return;
         }
-        const session = drawerLaneSessions[selectedChatIndex];
+        const session = drawerVisibleLaneSessions[selectedChatIndex];
         if (session) {
           selectActiveLaneId(session.laneId);
           setDrawerLaneId(session.laneId);
@@ -3004,6 +3013,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
             browsingLaneId={drawerLaneId ?? activeLaneId}
             selectedLaneIndex={drawerSection === "lanes" ? selectedLaneIndex : -1}
             selectedChatIndex={drawerSection === "chats" ? selectedChatIndex : -1}
+            panelHeight={rows}
             focused={activePane === "drawer"}
           />
         ) : null}

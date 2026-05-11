@@ -62,14 +62,12 @@ describe("ChatView", () => {
     ]);
     const lines = frame.split(/\r?\n/);
     const bubbleLine = lines.find((line) => line.includes("hello"));
-    expect(bubbleLine).toBeTruthy();
+    expect(bubbleLine, "expected the rendered frame to include the user message").toBeDefined();
     // Round border characters wrap the bubble; verify presence so layout stays a bubble.
     expect(frame).toMatch(/[╭╮╯╰]/);
     // Bubble is right-aligned: the content sits past the half-width of the frame.
-    if (bubbleLine) {
-      const helloIndex = bubbleLine.indexOf("hello");
-      expect(helloIndex).toBeGreaterThan(0);
-    }
+    const helloIndex = (bubbleLine ?? "").indexOf("hello");
+    expect(helloIndex).toBeGreaterThan(0);
   });
 
   it("renders assistant messages flat without the bubble border", () => {

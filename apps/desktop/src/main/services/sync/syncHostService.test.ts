@@ -267,12 +267,16 @@ function createStubChatService() {
 async function sendCommand(ws: WebSocket, queue: ReturnType<typeof createMessageQueue>, payload: {
   commandId: string;
   action: string;
+  projectId?: string | null;
   args: Record<string, unknown>;
 }) {
   ws.send(encodeSyncEnvelope({
     type: "command",
     requestId: payload.commandId,
-    payload,
+    payload: {
+      projectId: "project-1",
+      ...payload,
+    },
   }));
   const ack = await queue.next("command_ack");
   const result = await queue.next("command_result");
@@ -690,6 +694,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     const host = createSyncHostService({
       db: brainDb,
       logger: createLogger() as any,
+      projectId: "project-1",
       projectRoot,
       port: 0,
       pinStore: createStubPinStore(),
@@ -821,6 +826,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     const host = createSyncHostService({
       db: brainDb,
       logger: createLogger() as any,
+      projectId: "project-1",
       projectRoot,
       port: 0,
       pinStore: createStubPinStore(),
@@ -944,6 +950,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     const host = createSyncHostService({
       db: brainDb,
       logger: createLogger() as any,
+      projectId: "project-1",
       projectRoot,
       port: 0,
       pinStore: createStubPinStore(),
@@ -1147,6 +1154,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     const host = createSyncHostService({
       db: brainDb,
       logger: createLogger() as any,
+      projectId: "project-1",
       projectRoot,
       port: 0,
       pinStore: createStubPinStore(),
@@ -1388,6 +1396,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     const host = createSyncHostService({
       db: brainDb,
       logger: createLogger() as any,
+      projectId: "project-1",
       projectRoot,
       port: 0,
       pinStore: createStubPinStore(),
@@ -1596,6 +1605,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       payload: {
         commandId: "cmd-quick-run",
         action: "work.runQuickCommand",
+        projectId: "project-1",
         args: {
           laneId: "lane-1",
           title: "Run tests",
@@ -1622,6 +1632,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       payload: {
         commandId: "cmd-quick-run",
         action: "work.runQuickCommand",
+        projectId: "project-1",
         args: {
           laneId: "lane-1",
           title: "Run tests",
@@ -1641,6 +1652,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       payload: {
         commandId: "cmd-quick-run",
         action: "work.runQuickCommand",
+        projectId: "project-1",
         args: {
           laneId: "lane-2",
           title: "Run a different command",
@@ -1660,6 +1672,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       payload: {
         commandId: "cmd-start-cli",
         action: "work.startCliSession",
+        projectId: "project-1",
         args: {
           laneId: "lane-1",
           provider: "codex",
@@ -1696,6 +1709,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       payload: {
         commandId: "cmd-start-cli",
         action: "work.startCliSession",
+        projectId: "project-1",
         args: {
           laneId: "lane-1",
           provider: "codex",
@@ -1725,6 +1739,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       payload: {
         commandId: "cmd-work-list",
         action: "work.listSessions",
+        projectId: "project-1",
         args: {},
       },
     }));
@@ -1743,6 +1758,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       payload: {
         commandId: "cmd-pr-refresh",
         action: "prs.refresh",
+        projectId: "project-1",
         args: {},
       },
     }));
@@ -1767,6 +1783,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       payload: {
         commandId: "cmd-unsupported",
         action: "prs.create",
+        projectId: "project-1",
         args: {},
       },
     }));
@@ -1787,6 +1804,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     const host = createSyncHostService({
       db: brainDb,
       logger: createLogger() as any,
+      projectId: "project-1",
       projectRoot,
       port: 0,
       fileService: createStubFileService(workspaceRoot) as any,
@@ -1933,6 +1951,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     const host = createSyncHostService({
       db: brainDb,
       logger: createLogger() as any,
+      projectId: "project-1",
       projectRoot,
       port: 0,
       fileService: createStubFileService(workspaceRoot) as any,

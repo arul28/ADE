@@ -7,6 +7,15 @@ import { formatLaneLabel, formatSessionLabel } from "../format";
 const PURPLE = "#A78BFA";
 const AMBER = "#F59E0B";
 
+export function visibleDrawerLaneCount(panelHeight: number, laneCount: number): number {
+  const lanesMaxRows = Math.max(2, Math.floor(panelHeight / 2) - 3);
+  return Math.min(laneCount, 10, lanesMaxRows);
+}
+
+export function visibleDrawerChatCount(chatCount: number): number {
+  return Math.min(chatCount, 12);
+}
+
 export function Drawer({
   lanes,
   sessions,
@@ -15,6 +24,7 @@ export function Drawer({
   browsingLaneId,
   selectedLaneIndex,
   selectedChatIndex,
+  panelHeight,
   focused = false,
 }: {
   lanes: LaneSummary[];
@@ -24,14 +34,15 @@ export function Drawer({
   browsingLaneId: string | null;
   selectedLaneIndex: number;
   selectedChatIndex: number;
+  panelHeight?: number;
   focused?: boolean;
 }) {
   const { stdout } = useStdout();
-  const panelHeight = stdout?.rows ?? 40;
-  const laneSessions = sessions.filter((session) => session.laneId === browsingLaneId).slice(0, 12);
-  // Adaptive 50% cap: LANES section uses up to half the column height (header + rows + "+ new lane").
-  const lanesMaxRows = Math.max(2, Math.floor(panelHeight / 2) - 3);
-  const laneRows = lanes.slice(0, Math.min(10, lanesMaxRows));
+  const resolvedPanelHeight = panelHeight ?? stdout?.rows ?? 40;
+  const laneSessions = sessions
+    .filter((session) => session.laneId === browsingLaneId)
+    .slice(0, visibleDrawerChatCount(sessions.length));
+  const laneRows = lanes.slice(0, visibleDrawerLaneCount(resolvedPanelHeight, lanes.length));
   return (
     <Box width={28} flexDirection="column" borderStyle="single" borderColor={focused ? PURPLE : "gray"} paddingX={1}>
       <Box flexDirection="column" flexShrink={1}>

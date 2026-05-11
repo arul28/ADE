@@ -346,6 +346,23 @@ describe("CommandPalette", () => {
             displayName: "ADE",
             gitOriginUrl: "git@github.com:example/ade.git",
             dirtyCount: 3,
+            workSummary: {
+              rootPath: "/Users/admin/Projects/ADE",
+              laneCount: 1,
+              checkedLaneCount: 1,
+              dirtyLaneCount: 1,
+              dirtyFileCount: 3,
+              primaryDirtyCount: 3,
+              lanes: [
+                {
+                  rootPath: "/Users/admin/Projects/ADE",
+                  name: "main",
+                  branchName: "main",
+                  dirtyCount: 3,
+                  isPrimary: true,
+                },
+              ],
+            },
           },
         ],
       })),
@@ -378,14 +395,17 @@ describe("CommandPalette", () => {
 
     await waitFor(() =>
       expect(
-        screen.getByRole("dialog", { name: "Open remote tab?" }),
+        screen.getByRole("dialog", {
+          name: "You already work on this repo locally",
+        }),
       ).toBeTruthy(),
     );
-    expect(screen.getByText("3 changed files")).toBeTruthy();
-    expect(screen.getAllByText("/Users/admin/Projects/ADE").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Changes").length).toBeGreaterThan(0);
+    expect(screen.getByTitle(/Primary.*3 files/)).toBeTruthy();
+    expect(screen.getAllByTitle("/Users/admin/Projects/ADE").length).toBeGreaterThan(0);
     expect(switchRemoteProject).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole("button", { name: "Open remote tab" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open on Mac Studio" }));
     await waitFor(() =>
       expect(switchRemoteProject).toHaveBeenCalledWith(
         "target-1",

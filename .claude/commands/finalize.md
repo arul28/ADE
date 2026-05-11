@@ -1,6 +1,6 @@
 ---
 name: finalize
-description: 'Final gate: simplify code, update docs, and run local CI checks before pushing'
+description: 'Final gate: simplify code, validate docs, and run local CI checks before pushing'
 ---
 
 # Finalize Command
@@ -9,7 +9,7 @@ This command is the final gate before pushing and opening a PR.
 
 It guarantees three outcomes:
 1. Code quality cleanup is complete
-2. Docs are current
+2. Docs changed by `/automate` are still valid
 3. Local CI checks pass
 
 It does **not** guarantee that remote PR review is complete after a push. GitHub's

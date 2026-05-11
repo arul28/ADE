@@ -890,8 +890,18 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade code                                      Start the TUI for the current project
     $ ade code --print-state                       Smoke-test attach/embed state
     $ ade code --embedded                          Force the embedded runtime fallback
+    $ ade code --require-socket                    Fail instead of embedding when no socket exists
+    $ ade code --socket /tmp/ade.sock              Attach to a specific runtime socket
     $ ade --project-root <path> code                Launch against a specific ADE project
-`,
+
+  Keys:
+    ctrl-o        Open or focus lanes and chats
+    ctrl-p        Open or focus details
+    shift-tab     Cycle pane focus
+    esc           Return or cancel the active pane
+    ?             Help when it is the first prompt character
+    /             Command palette
+	`,
   lanes: `${ADE_BANNER}
   Lanes
 

@@ -56,7 +56,7 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
 const ADE_OWNED_SINGLE_WORD_COMMANDS = new Set(
   BUILTIN_COMMANDS
     .filter((command) => command.placement === "inline" && !command.name.includes(" "))
-    .map((command) => command.name),
+    .map((command) => command.name.toLowerCase()),
 );
 
 export type ParsedCommand = {
@@ -98,7 +98,7 @@ export function parseCommand(input: string, userCommands: AgentChatSlashCommand[
 
   const exactUserCommand = userCommands.find((command) => slashCommandKey(command.name) === firstKey) ?? null;
   const adeOwnedSingleWordCommand = candidates.find((command) =>
-    slashCommandKey(command.name) === firstKey && ADE_OWNED_SINGLE_WORD_COMMANDS.has(command.name)
+    slashCommandKey(command.name) === firstKey && ADE_OWNED_SINGLE_WORD_COMMANDS.has(slashCommandKey(command.name))
   );
   if (adeOwnedSingleWordCommand) {
     return {
@@ -166,11 +166,15 @@ export function paletteCommands(
     source: "user" as const,
     argumentHint: command.argumentHint,
   }));
-  // Dedupe by name: when both ADE and a runtime/user catalog define the same
-  // command, prefer the runtime/user entry so SDK-native behavior wins.
+  // Dedupe by name. Most runtime/user commands win over ADE built-ins, but
+  // ADE-owned inline terminal controls must match parseCommand dispatch.
   const byName = new Map<string, { name: string; description: string; source: "ade" | "user"; argumentHint?: string }>();
   for (const command of builtins) byName.set(slashCommandKey(command.name), command);
-  for (const command of users) byName.set(slashCommandKey(command.name), command);
+  for (const command of users) {
+    const key = slashCommandKey(command.name);
+    if (ADE_OWNED_SINGLE_WORD_COMMANDS.has(key)) continue;
+    byName.set(key, command);
+  }
   const merged = [...byName.values()];
   const filtered = !queryToken
     ? merged

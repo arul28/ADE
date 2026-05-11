@@ -71,18 +71,28 @@ describe("commands", () => {
     const rows = paletteCommands("/comp", [
       { name: "/compact", description: "Free up context by summarizing", source: "sdk" },
     ]);
-    expect(rows.find((row) => row.name === "/compact")).toBeTruthy();
+    expect(rows).toContainEqual(expect.objectContaining({
+      name: "/compact",
+      source: "user",
+      description: "Free up context by summarizing",
+    }));
   });
 
-  it("prefers SDK/user entry when same command exists in ADE builtins (dedupe)", () => {
-    // /clear is in ADE BUILTIN_COMMANDS; the SDK also exposes /clear.
+  it("keeps ADE-owned inline commands aligned with dispatch when deduping", () => {
+    // /clear is an ADE terminal control, so the palette must not advertise the SDK command.
     const rows = paletteCommands("/clear", [
       { name: "/clear", description: "Start a new conversation with empty context", source: "sdk" },
     ]);
     const clearRows = rows.filter((row) => row.name === "/clear");
     expect(clearRows).toHaveLength(1);
-    expect(clearRows[0]?.source).toBe("user");
-    expect(clearRows[0]?.description).toBe("Start a new conversation with empty context");
+    expect(clearRows[0]?.source).toBe("ade");
+    expect(clearRows[0]?.description).toBe("Clear the local terminal transcript view");
+
+    const parsed = parseCommand("/clear", [
+      { name: "/clear", description: "Start a new conversation with empty context", source: "sdk" },
+    ]);
+    expect(parsed?.spec?.name).toBe("/clear");
+    expect(parsed?.userCommand).toBeNull();
   });
 
   it("dedupes slash command case variants and keeps runtime casing", () => {
