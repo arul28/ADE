@@ -42,7 +42,7 @@ describe("discoverClaudeSlashCommands", () => {
     ]);
   });
 
-  it("uses nested project command basenames like Claude Code and keeps scope in the description", () => {
+  it("uses nested project command paths for unambiguous discovery", () => {
     const commandsDir = path.join(tmpRoot, ".claude", "commands", "frontend");
     fs.mkdirSync(commandsDir, { recursive: true });
     fs.writeFileSync(path.join(commandsDir, "test.md"), [
@@ -56,8 +56,8 @@ describe("discoverClaudeSlashCommands", () => {
 
     expect(discoverClaudeSlashCommands(tmpRoot)).toMatchObject([
       {
-        name: "/test",
-        description: "frontend: Run frontend tests",
+        name: "/frontend:test",
+        description: "Run frontend tests",
       },
     ]);
   });
@@ -86,8 +86,8 @@ describe("discoverClaudeSlashCommands", () => {
 
     expect(discoverClaudeSlashCommands(tmpRoot)).toMatchObject([
       {
-        name: "/visible",
-        description: "level-0:level-1:level-2:level-3:level-4:level-5:level-6:level-7:level-8:level-9: Visible nested command",
+        name: "/level-0:level-1:level-2:level-3:level-4:level-5:level-6:level-7:level-8:level-9:visible",
+        description: "Visible nested command",
       },
     ]);
   });
@@ -234,6 +234,35 @@ describe("discoverClaudeSlashCommands", () => {
       },
     ]);
   });
+
+  it("does not let home commands override project commands when the project is under home", () => {
+    const projectRoot = path.join(homeRoot, "workspace", "project");
+    fs.mkdirSync(path.join(homeRoot, ".claude", "commands"), { recursive: true });
+    fs.mkdirSync(path.join(projectRoot, ".claude", "commands"), { recursive: true });
+    fs.writeFileSync(path.join(homeRoot, ".claude", "commands", "audit.md"), "Personal audit.\n");
+    fs.writeFileSync(path.join(projectRoot, ".claude", "commands", "audit.md"), "Project audit.\n");
+
+    expect(discoverClaudeSlashCommands(projectRoot)).toMatchObject([
+      {
+        name: "/audit",
+        description: "Project audit.",
+      },
+    ]);
+  });
+
+  it("keeps nested commands with the same basename distinct", () => {
+    const frontendCommands = path.join(tmpRoot, ".claude", "commands", "frontend");
+    const backendCommands = path.join(tmpRoot, ".claude", "commands", "backend");
+    fs.mkdirSync(frontendCommands, { recursive: true });
+    fs.mkdirSync(backendCommands, { recursive: true });
+    fs.writeFileSync(path.join(frontendCommands, "button.md"), "Frontend button.\n");
+    fs.writeFileSync(path.join(backendCommands, "button.md"), "Backend button.\n");
+
+    expect(discoverClaudeSlashCommands(tmpRoot)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "/backend:button", description: "Backend button." }),
+      expect.objectContaining({ name: "/frontend:button", description: "Frontend button." }),
+    ]));
+  });
 });
 
 describe("resolveClaudeSlashCommandInvocation", () => {
@@ -265,6 +294,31 @@ describe("resolveClaudeSlashCommandInvocation", () => {
     fs.writeFileSync(path.join(tmpRoot, ".claude", "commands", "ship.md"), "Project $ARGUMENTS\n");
 
     expect(resolveClaudeSlashCommandInvocation(tmpRoot, "/ship now")?.promptText).toBe("Project now");
+  });
+
+  it("lets project command files under home override same-named personal command files", () => {
+    const projectRoot = path.join(homeRoot, "workspace", "project");
+    fs.mkdirSync(path.join(homeRoot, ".claude", "commands"), { recursive: true });
+    fs.mkdirSync(path.join(projectRoot, ".claude", "commands"), { recursive: true });
+    fs.writeFileSync(path.join(homeRoot, ".claude", "commands", "ship.md"), "Personal $ARGUMENTS\n");
+    fs.writeFileSync(path.join(projectRoot, ".claude", "commands", "ship.md"), "Project $ARGUMENTS\n");
+
+    expect(resolveClaudeSlashCommandInvocation(projectRoot, "/ship now")?.promptText).toBe("Project now");
+  });
+
+  it("requires colon paths when nested command basenames are ambiguous", () => {
+    const frontendCommands = path.join(tmpRoot, ".claude", "commands", "frontend");
+    const backendCommands = path.join(tmpRoot, ".claude", "commands", "backend");
+    fs.mkdirSync(frontendCommands, { recursive: true });
+    fs.mkdirSync(backendCommands, { recursive: true });
+    fs.writeFileSync(path.join(frontendCommands, "button.md"), "Frontend $ARGUMENTS\n");
+    fs.writeFileSync(path.join(backendCommands, "button.md"), "Backend $ARGUMENTS\n");
+
+    expect(resolveClaudeSlashCommandInvocation(tmpRoot, "/button primary")).toBeNull();
+    expect(resolveClaudeSlashCommandInvocation(tmpRoot, "/frontend:button primary")?.promptText)
+      .toBe("Frontend primary");
+    expect(resolveClaudeSlashCommandInvocation(tmpRoot, "/backend:button primary")?.promptText)
+      .toBe("Backend primary");
   });
 
   it("returns null for built-in commands and unknown command files", () => {

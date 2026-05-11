@@ -102,7 +102,7 @@ function discoverLegacyCommands(commandsDir: string): DiscoveredClaudeSlashComma
       if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
       const relative = path.relative(commandsDir, entryPath).replace(/\.md$/i, "");
       const parts = relative.split(path.sep).filter(Boolean);
-      const commandName = parts[parts.length - 1] ?? "";
+      const commandName = parts.join(":");
       const name = normalizeSlashCommandName(commandName);
       if (!name) continue;
       let content = "";
@@ -112,11 +112,10 @@ function discoverLegacyCommands(commandsDir: string): DiscoveredClaudeSlashComma
         continue;
       }
       const frontmatter = readFrontmatter(content) as CommandFrontmatter;
-      const scope = parts.slice(0, -1).join(":");
       const description = maybeString(frontmatter.description) ?? firstMarkdownParagraph(content);
       commands.push({
         name,
-        description: scope && description ? `${scope}: ${description}` : description,
+        description,
         argumentHint: maybeArgumentHint(frontmatter["argument-hint"]) ?? maybeArgumentHint(frontmatter.argumentHint),
         source: "command",
         filePath: entryPath,
@@ -145,13 +144,13 @@ function resolveLegacyCommandFile(commandsDir: string, commandName: string): str
   }
   // Slow path: discovery normalizes filenames (lowercase + slugified), so a
   // file like `My Command.md` is exposed as `/My-Command` but the literal
-  // path above won't find it. Nested Claude commands are invoked by basename
-  // (`commands/frontend/component.md` -> `/component`), but keep the legacy
-  // colon path accepted for older ADE command references.
+  // path above won't find it. Unique basename lookup is accepted for older ADE
+  // command references, but duplicate basenames must use their colon path.
   const targetName = slashCommandKey(commandName);
-  let match: string | null = null;
+  const pathMatches: string[] = [];
+  const baseMatches: string[] = [];
   const visit = (dir: string, prefix: string[], depth: number): void => {
-    if (match || depth > MAX_LEGACY_COMMAND_DEPTH) return;
+    if (depth > MAX_LEGACY_COMMAND_DEPTH) return;
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -159,7 +158,6 @@ function resolveLegacyCommandFile(commandsDir: string, commandName: string): str
       return;
     }
     for (const entry of entries) {
-      if (match) return;
       const entryPath = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         visit(entryPath, [...prefix, entry.name], depth + 1);
@@ -169,17 +167,13 @@ function resolveLegacyCommandFile(commandsDir: string, commandName: string): str
       const commandPath = [...prefix, entry.name].join(":");
       const normalizedPath = normalizeSlashCommandName(commandPath);
       const normalizedBase = normalizeSlashCommandName(entry.name);
-      if (
-        (normalizedPath && slashCommandKey(normalizedPath) === targetName)
-        || (normalizedBase && slashCommandKey(normalizedBase) === targetName)
-      ) {
-        match = entryPath;
-        return;
-      }
+      if (normalizedPath && slashCommandKey(normalizedPath) === targetName) pathMatches.push(entryPath);
+      if (normalizedBase && slashCommandKey(normalizedBase) === targetName) baseMatches.push(entryPath);
     }
   };
   visit(commandsDir, [], 0);
-  return match;
+  if (pathMatches.length > 0) return pathMatches[0] ?? null;
+  return baseMatches.length === 1 ? baseMatches[0] ?? null : null;
 }
 
 function discoverSkills(skillsDir: string): DiscoveredClaudeSlashCommand[] {
@@ -222,7 +216,7 @@ function discoverSkills(skillsDir: string): DiscoveredClaudeSlashCommand[] {
 function ancestorClaudeRoots(cwd: string): string[] {
   const roots: string[] = [];
   const seen = new Set<string>();
-  const home = os.homedir();
+  const home = path.resolve(os.homedir());
   let current = path.resolve(cwd);
   let depth = 0;
   while (depth < 25) {
@@ -240,11 +234,25 @@ function ancestorClaudeRoots(cwd: string): string[] {
   return roots;
 }
 
+function claudeRootsByPrecedence(cwd: string): string[] {
+  const roots: string[] = [];
+  const seen = new Set<string>();
+  const home = path.resolve(os.homedir());
+  const addRoot = (root: string): void => {
+    if (seen.has(root)) return;
+    seen.add(root);
+    roots.push(root);
+  };
+
+  for (const root of ancestorClaudeRoots(cwd)) {
+    addRoot(root);
+  }
+  addRoot(path.join(home, ".claude"));
+  return roots;
+}
+
 export function discoverClaudeSlashCommands(cwd: string): DiscoveredClaudeSlashCommand[] {
-  const roots = [
-    path.join(os.homedir(), ".claude"),
-    ...ancestorClaudeRoots(cwd),
-  ];
+  const roots = claudeRootsByPrecedence(cwd);
   const byName = new Map<string, DiscoveredClaudeSlashCommand>();
 
   for (const root of roots) {
@@ -253,7 +261,8 @@ export function discoverClaudeSlashCommands(cwd: string): DiscoveredClaudeSlashC
       ...discoverSkills(path.join(root, "skills")),
     ];
     for (const command of discovered) {
-      byName.set(slashCommandKey(command.name), command);
+      const key = slashCommandKey(command.name);
+      if (!byName.has(key)) byName.set(key, command);
     }
   }
 
@@ -308,19 +317,18 @@ export function resolveClaudeSlashCommandInvocation(
   const name = match[1];
   if (!name) return null;
   const argumentsText = match[2]?.trim() ?? "";
-  const roots = [
-    path.join(os.homedir(), ".claude"),
-    ...ancestorClaudeRoots(cwd),
-  ];
+  const roots = claudeRootsByPrecedence(cwd);
 
   // Prefer command files; fall back to user-invocable skills (SKILL.md).
   let resolvedFile: string | null = null;
   for (const root of roots) {
-    resolvedFile = resolveLegacyCommandFile(path.join(root, "commands"), name) ?? resolvedFile;
+    resolvedFile = resolveLegacyCommandFile(path.join(root, "commands"), name);
+    if (resolvedFile) break;
   }
   if (!resolvedFile) {
     for (const root of roots) {
-      resolvedFile = resolveSkillFile(path.join(root, "skills"), name) ?? resolvedFile;
+      resolvedFile = resolveSkillFile(path.join(root, "skills"), name);
+      if (resolvedFile) break;
     }
   }
   if (!resolvedFile) return null;
