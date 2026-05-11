@@ -441,6 +441,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   keybindings: ["get", "set"],
   ai: [
     "getStatus",
+    "getOpenCodeRuntimeDiagnostics",
     "verifyApiKeyConnection",
     "storeApiKey",
     "deleteApiKey",
@@ -2351,6 +2352,10 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
   return {
     getStatus: (args?: { force?: boolean; refreshOpenCodeInventory?: boolean }) =>
       buildAiSettingsStatus(aiIntegrationService, args),
+    getOpenCodeRuntimeDiagnostics: async () => {
+      const { getOpenCodeRuntimeSnapshot } = await import("../opencode/openCodeRuntime");
+      return getOpenCodeRuntimeSnapshot();
+    },
     verifyApiKeyConnection: (args?: { provider?: string }) =>
       aiIntegrationService.verifyApiKeyConnection(requireNonEmptyString(args?.provider, "provider")),
     storeApiKey: (args?: { provider?: string; key?: string }) =>
@@ -3211,8 +3216,22 @@ function buildLinearIssueTrackerDomainService(runtime: AdeRuntime): OpaqueServic
   if (!tracker) return null;
   return {
     ...(tracker as unknown as OpaqueService),
+    async getStatus() {
+      return buildRuntimeLinearConnectionStatus(runtime);
+    },
     async getConnectionStatus() {
       return buildRuntimeLinearConnectionStatus(runtime);
+    },
+    async listIssues(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      const issues = await tracker.fetchCandidateIssues({
+        projectSlugs: asStringArray(actionArgs.projectSlugs ?? actionArgs.projectSlug ?? actionArgs.projects ?? actionArgs.project),
+        stateTypes: asStringArray(actionArgs.stateTypes ?? actionArgs.stateType ?? actionArgs.states ?? actionArgs.state),
+      });
+      const limit = typeof actionArgs.limit === "number" && Number.isFinite(actionArgs.limit)
+        ? Math.max(1, Math.min(100, Math.floor(actionArgs.limit)))
+        : 20;
+      return issues.slice(0, limit);
     },
     async getQuickView(connection?: LinearConnectionStatus): Promise<CtoLinearQuickView> {
       const nextConnection = connection ?? await buildRuntimeLinearConnectionStatus(runtime);
@@ -3247,6 +3266,17 @@ function buildLinearIssueTrackerDomainService(runtime: AdeRuntime): OpaqueServic
       return { projects, users, states };
     },
   };
+}
+
+function asStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+      .map((entry) => entry.trim());
+  }
+  if (typeof value === "string" && value.trim().length) {
+    return value.split(",").map((entry) => entry.trim()).filter(Boolean);
+  }
+  return [];
 }
 
 async function buildRuntimeLinearConnectionStatus(runtime: AdeRuntime): Promise<LinearConnectionStatus> {

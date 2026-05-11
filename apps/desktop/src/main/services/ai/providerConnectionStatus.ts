@@ -152,7 +152,7 @@ export async function buildProviderConnections(
     cli: claudeCli,
     localCreds: claudeLocalCreds,
     label: "Claude",
-    loginHint: "claude auth login",
+    loginHint: "claude auth login or set ANTHROPIC_API_KEY",
     health: claudeRuntimeHealth,
   });
 

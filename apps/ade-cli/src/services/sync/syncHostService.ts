@@ -755,16 +755,21 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       return [];
     }
   };
+  const commandLedgerScopeKey = (): string =>
+    toOptionalString(args.projectId) ?? args.projectRoot;
+  const commandLedgerKeyPrefix = (): string => `${commandLedgerScopeKey()}:`;
+  const commandLedgerLegacyRootPrefix = (): string => `${args.projectRoot}:`;
   const writePersistedCommandLedger = (): void => {
     const nowMs = Date.now();
     const commands: PersistedMobileCommand[] = [];
+    const prefix = commandLedgerKeyPrefix();
     for (const [key, record] of mobileCommandResultCache) {
       if (!record.result || record.completedAtMs == null) continue;
       const persistedResult = persistedMobileCommandResult(record.action, record.result);
       if (!persistedResult) continue;
-      if (!key.startsWith(`${args.projectRoot}:`)) continue;
+      if (!key.startsWith(prefix)) continue;
       if (nowMs - record.completedAtMs > MOBILE_COMMAND_RESULT_CACHE_TTL_MS) continue;
-      const deviceId = key.slice(`${args.projectRoot}:`.length).split(":")[0] ?? "";
+      const deviceId = key.slice(prefix.length).split(":")[0] ?? "";
       commands.push({
         key,
         projectRoot: args.projectRoot,
@@ -795,7 +800,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         ? mobileCommandArgsFingerprint(legacyArgsKey)
         : null;
       if (!argsFingerprint) continue;
-      mobileCommandResultCache.set(command.key, {
+      const key =
+        command.key.startsWith(commandLedgerLegacyRootPrefix()) &&
+        commandLedgerScopeKey() !== args.projectRoot
+          ? `${commandLedgerKeyPrefix()}${command.key.slice(commandLedgerLegacyRootPrefix().length)}`
+          : command.key;
+      mobileCommandResultCache.set(key, {
         commandId: command.commandId,
         action: command.action,
         argsKey: argsFingerprint,
@@ -809,10 +819,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   };
   const commandLedgerSizeForProject = (): number =>
-    [...mobileCommandResultCache.keys()].filter((key) => key.startsWith(`${args.projectRoot}:`)).length;
+    [...mobileCommandResultCache.keys()].filter((key) =>
+      key.startsWith(commandLedgerKeyPrefix()),
+    ).length;
   const dropInFlightCommandRecordsForProject = (): void => {
     for (const [key, record] of mobileCommandResultCache) {
-      if (!key.startsWith(`${args.projectRoot}:`)) continue;
+      if (!key.startsWith(commandLedgerKeyPrefix())) continue;
       if (record.result == null) mobileCommandResultCache.delete(key);
     }
   };

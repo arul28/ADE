@@ -158,9 +158,316 @@ Fix until passing before moving to the next.
 
 ---
 
+## Parity Passes (4–7)
+
+After the test-suite work above, run four parity reviewers that keep docs, iOS, the CLI, and the TUI in lockstep with the desktop changes on this branch. They are independent of one another and of Passes 1–3.
+
+**Preferred: TeamCreate** for these four passes so progress is tracked and a single completion event surfaces the batch. Per the global git-worktrees policy, do not pass worktree isolation. Fallback: parallel `Agent` calls in a single tool-call round if TeamCreate is unavailable.
+
+---
+
+## Pass 4: DOCS
+
+The internal docs live under `docs/` with this structure (rebuilt; do NOT confuse with the public Mintlify site at repo root `docs.json` + `*.mdx`):
+
+```
+docs/
+├── README.md                          # navigation map
+├── PRD.md                             # product entry point — links to every feature
+├── ARCHITECTURE.md                    # consolidated system architecture
+├── OPTIMIZATION_OPPORTUNITIES.md      # backlog (append-only)
+└── features/
+    ├── agents/              ├── memory/
+    ├── automations/         ├── missions/
+    ├── chat/                ├── onboarding-and-settings/
+    ├── computer-use/        ├── project-home/
+    ├── conflicts/           ├── pull-requests/
+    ├── context-packs/       ├── sync-and-multi-device/
+    ├── cto/                 ├── terminals-and-sessions/
+    ├── files-and-editor/    └── workspace-graph/
+    ├── history/
+    ├── lanes/
+    └── linear-integration/
+```
+
+Each `features/<name>/` contains a `README.md` (overview + source file map at top) plus 1–4 detail `*.md` files.
+
+Spawn a general-purpose agent with this prompt:
+
+```
+You are the documentation updater for the ADE project.
+
+Analyze all changes on the current branch vs main and update relevant internal
+docs under `docs/`. The public Mintlify site (docs.json + root-level .mdx files)
+is out of scope — do NOT touch it.
+
+Step 1: Get changed files
+  git diff main --name-only
+  git diff main --stat | tail -30
+
+Step 2: Map changed source to internal docs
+
+| Source Directory                                   | Doc Location                                       |
+|----------------------------------------------------|----------------------------------------------------|
+| apps/desktop/src/main/services/orchestrator/       | docs/features/missions/                            |
+| apps/desktop/src/main/services/projects/           | docs/features/project-home/                        |
+| apps/desktop/src/main/services/proof/              | docs/features/proof.md                             |
+| apps/desktop/src/main/services/review/             | docs/features/pull-requests/                       |
+| apps/desktop/src/main/services/prs/                | docs/features/pull-requests/                       |
+| apps/desktop/src/main/services/lanes/              | docs/features/lanes/                               |
+| apps/desktop/src/main/services/memory/             | docs/features/memory/                              |
+| apps/desktop/src/main/services/cto/                | docs/features/cto/ (+ linear-integration/)         |
+| apps/desktop/src/main/services/ai/                 | docs/features/chat/ + features/agents/             |
+| apps/desktop/src/main/services/chat/               | docs/features/chat/                                |
+| apps/desktop/src/main/services/automations/        | docs/features/automations/                         |
+| apps/desktop/src/main/services/computerUse/        | docs/features/computer-use/                        |
+| apps/desktop/src/main/services/context/            | docs/features/context-packs/                       |
+| apps/desktop/src/main/services/conflicts/          | docs/features/conflicts/                           |
+| apps/desktop/src/main/services/files/              | docs/features/files-and-editor/                    |
+| apps/desktop/src/main/services/history/            | docs/features/history/                             |
+| apps/desktop/src/main/services/onboarding/         | docs/features/onboarding-and-settings/             |
+| apps/desktop/src/main/services/pty/                | docs/features/terminals-and-sessions/              |
+| apps/desktop/src/main/services/sessions/           | docs/features/terminals-and-sessions/              |
+| apps/desktop/src/main/services/processes/          | docs/features/terminals-and-sessions/              |
+| apps/desktop/src/main/services/sync/               | docs/features/sync-and-multi-device/               |
+| apps/desktop/src/main/services/config/             | docs/features/onboarding-and-settings/             |
+| apps/desktop/src/main/services/ipc/                | docs/ARCHITECTURE.md (IPC section)                 |
+| apps/desktop/src/main/services/git/                | docs/ARCHITECTURE.md (Git engine section) + lanes/ |
+| apps/desktop/src/preload/                          | docs/ARCHITECTURE.md (IPC contract)                |
+| apps/desktop/src/shared/                           | docs/ARCHITECTURE.md + touching feature's doc      |
+| apps/desktop/src/renderer/components/<area>/       | docs/features/<same-area>/                         |
+| apps/desktop/src/renderer/state/                   | docs/ARCHITECTURE.md (UI framework)                |
+| apps/ade-cli/src/tuiClient/                        | docs/features/ade-code/README.md + docs/ARCHITECTURE.md (ADE CLI / Build/Test/Deploy) |
+| apps/ade-cli/                                      | docs/ARCHITECTURE.md (ADE CLI / Build/Test/Deploy) + docs/features/agents/ |
+| .github/workflows/                                 | docs/ARCHITECTURE.md (Build/Test/Deploy)           |
+| apps/ios/                                          | docs/features/sync-and-multi-device/ios-companion.md |
+| apps/web/                                          | docs/ARCHITECTURE.md (Apps & Processes)            |
+
+Step 3: Update docs in place
+- Prefer editing existing docs over creating new ones.
+- If a feature gets a genuinely new sub-concept worth its own page, add a new detail doc inside the existing features/<name>/ folder.
+- Keep each README.md's "Source file map" section current — it is the primary way an agent orients itself.
+- Rewrite prose to reflect current reality (not a changelog of what changed).
+- Remove outdated information.
+- Do NOT add changelog sections, "Updated on X" notes, or dated markers.
+- Do NOT modify docs/OPTIMIZATION_OPPORTUNITIES.md via this agent — it is append-only and human-curated.
+
+Step 4: Run doc validation
+  node scripts/validate-docs.mjs
+
+This validator only covers the Mintlify site. For internal docs, self-check:
+  - Every features/<name>/README.md still has a "Source file map" section.
+  - PRD.md links resolve (grep for broken relative links).
+
+Report what docs were updated and what was changed.
+```
+
+---
+
+## Pass 5: MOBILE parity
+
+Spawn a general-purpose agent with this prompt:
+
+```
+You are the mobile parity reviewer for the ADE project.
+
+Analyze all work on the current branch vs main, including changes that are
+already under review and any simplifications made during `/finalize`. Determine
+whether the iOS companion app under `apps/ios/` needs matching updates.
+
+Step 1: Get branch context
+  git diff main --name-only
+  git diff main --stat | tail -30
+  git log main..HEAD --oneline
+
+Step 2: Identify cross-platform changes
+- Shared contracts: apps/desktop/src/shared/**, preload IPC types, sync payloads,
+  PR mobile snapshots, chat/session models, lane summaries, config schemas.
+- Desktop behavior with a mobile surface: PR workflows, lanes, Work chat,
+  files, sync/multi-device, settings exposed on iOS, model/session controls.
+- Renderer-only desktop preferences are only mobile-applicable when the iOS app
+  has the same user-facing concept and a native implementation path.
+
+Step 3: Inspect iOS equivalents
+- Search `apps/ios/ADE` and `apps/ios/ADETests` for the affected model, view,
+  service, or workflow names.
+- If the branch adds or changes a host/mobile contract, update Swift Codable
+  models and iOS tests as needed.
+- If the branch changes user-facing behavior that iOS already exposes, update
+  the SwiftUI view using native iOS controls and existing ADE design patterns.
+- If the change is not applicable to iOS, explain why in the report.
+
+Step 4: Apply required iOS updates
+- Keep edits scoped to `apps/ios/` unless a shared contract fix is required.
+- Prefer existing SwiftUI patterns and native controls.
+- Preserve Dynamic Type, VoiceOver labels, and 44x44 tap targets.
+- Add or update targeted tests in `apps/ios/ADETests` for contract changes.
+
+Step 5: Validate what you touched
+- At minimum: `xcrun swiftc -parse <changed swift files>` when a full Xcode
+  build/test run is unavailable.
+- Prefer an iOS build/test when the local simulator/runtime environment supports it.
+
+Report:
+- iOS files changed, or "No iOS changes required"
+- Why each desktop/shared change was applicable or not applicable to mobile
+- Validation run and any environment limitations
+```
+
+---
+
+## Pass 6: CLI parity
+
+The `apps/ade-cli/` package is the agent-facing surface for ADE. Every desktop
+action should be reachable either through a typed subcommand (`ade lanes …`,
+`ade prs …`, `ade chat …`, `ade tests …`, `ade run …`, `ade proof …`) or
+through the generic `ade actions run <domain.action>` registry exposed by
+`adeRpcServer.ts`. When a feature branch adds, renames, or removes a desktop
+feature, the CLI silently drifts unless someone updates it in the same PR.
+This agent closes that gap.
+
+Spawn a general-purpose agent with this prompt:
+
+```
+You are the ADE CLI parity reviewer.
+
+The ADE CLI (apps/ade-cli) is the primary agent-facing interface to the ADE
+desktop app. Its goal is to surface every meaningful action inside ADE
+desktop — either as a typed subcommand or via the generic
+`ade actions run <domain.action>` registry. When desktop changes, the CLI
+must change with it. Your job is to detect drift on this branch and patch
+apps/ade-cli/ so the CLI stays in lockstep with desktop.
+
+Step 1: Get branch context
+  git diff main --name-only
+  git diff main --stat | tail -30
+  git log main..HEAD --oneline
+
+Step 2: Identify CLI-relevant desktop changes
+Treat anything under these paths as a candidate for new / changed / removed
+CLI surface:
+- apps/desktop/src/main/services/**  (each service is a candidate action
+  domain — lanes, prs, chat, tests, proof, run, git, files, missions,
+  automations, computerUse, context, conflicts, history, memory, onboarding,
+  pty, sessions, processes, sync, config, cto, ai)
+- apps/desktop/src/preload/**  and  apps/desktop/src/shared/**  (IPC and
+  shared contracts the CLI ultimately calls through)
+- New domains/actions registered with the action registry on either side
+
+Step 3: Map each candidate to the CLI
+- Typed subcommands live in apps/ade-cli/src/cli.ts (~3300 lines), a
+  case-based dispatcher. Existing cases include lanes, git-status, prs-list,
+  chat-list, tests-runs, proof-list, actions-list, action-result, etc.
+  Locate the closest existing case block and either extend it or add a
+  sibling case alongside it.
+- The RPC + actions-registry surface lives in
+  apps/ade-cli/src/adeRpcServer.ts (~6500 lines), with a no-desktop fallback
+  in apps/ade-cli/src/headlessLinearServices.ts. New service actions usually
+  need wiring in one or both so `ade actions run <domain.action>` resolves
+  them whether or not the desktop socket is up.
+- The user-facing inventory lives in apps/ade-cli/README.md under
+  "CLI surface". Keep it accurate whenever a typed command is added,
+  renamed, or removed.
+
+Step 4: Apply auto-fix edits — scoped to apps/ade-cli/ only
+- New feature: add a typed subcommand if the desktop feature is a distinct
+  user-facing workflow (lane / PR / chat / test / run / proof / mission /
+  automation / etc.). If it is just a new low-level service action, ensure
+  it is reachable via the actions registry and skip a typed wrapper.
+- Renamed or behavior-changed feature: update the existing case to match
+  new parameters, IPC names, or output shape. Keep flag names stable when
+  possible — flag any breaking renames in the report.
+- Removed feature: delete the dead case and any registry wiring. Do NOT
+  leave a stub. Drop the corresponding README line.
+- Reuse existing patterns: match surrounding cases for argv parsing,
+  --text / --json output mode, error formatting, and --lane / --project-root
+  argument handling. Do not invent new dispatch styles.
+
+Step 5: Validate locally before reporting
+  cd apps/ade-cli && npm run typecheck
+  cd apps/ade-cli && npm test
+
+If tests fail in files you did not touch, leave them — Phase 3 handles
+test-suite drift. Do not rewrite unrelated tests.
+
+Out of scope:
+- Do NOT edit anything under apps/desktop/.
+- Do NOT touch docs/ — the docs agent owns that.
+- Do NOT refactor unrelated CLI code.
+
+Report:
+- apps/ade-cli/ files changed (or "no CLI changes required")
+- For each branch change: desktop change → CLI change, or why not applicable
+- Any breaking flag / command renames
+- typecheck and test results
+```
+
+---
+
+## Pass 7: TUI parity
+
+`apps/ade-cli/src/tuiClient/` is the terminal client for `ade code`. It surfaces lanes, chats, git state, and slash commands in a 28-col Drawer + 38-col RightPane Ink UI. When desktop or ade-cli changes, the TUI must stay in lockstep — most commonly because a new git/lane/PR action becomes available, a slash command is renamed, or a lane summary field is added.
+
+Spawn a general-purpose agent with this prompt:
+
+```
+You are the ADE TUI parity reviewer.
+
+`apps/ade-cli/src/tuiClient/` is the terminal client for `ade code`. It surfaces lanes, chats, git
+state, and slash commands in a 28-col Drawer + 38-col RightPane Ink UI.
+When desktop or ade-cli changes, the TUI must stay in lockstep — most
+commonly because a new git/lane/PR action becomes available, a slash
+command is renamed, or a lane summary field is added.
+
+Step 1: Get branch context
+  git diff main --name-only
+  git diff main --stat | tail -30
+
+Step 2: Identify TUI-relevant changes. Treat as candidates:
+- apps/desktop/src/shared/types/lanes.ts, /chat, /sync — TUI imports these directly.
+- apps/ade-cli/src/adeRpcServer.ts new actions — should appear in BUILTIN_COMMANDS or via /ade.
+- New IPC handlers in window.ade.git/.lanes/.app/.prs — TUI may want a slash command + right-pane action wrapper.
+
+Step 3: Map to the TUI surface
+- Slash commands: apps/ade-cli/src/tuiClient/commands.ts BUILTIN_COMMANDS.
+- Slash dispatch: apps/ade-cli/src/tuiClient/app.tsx (search by name pattern, e.g. `if (name === "/push")`).
+- Sidebar rendering: apps/ade-cli/src/tuiClient/components/Drawer.tsx.
+- Right pane content kinds: apps/ade-cli/src/tuiClient/components/RightPane.tsx + types.ts (RightPaneContent union).
+- ADE API calls: apps/ade-cli/src/tuiClient/adeApi.ts.
+
+Step 4: Apply auto-fix edits — scoped to apps/ade-cli/src/tuiClient/ only.
+- New action: add a BUILTIN_COMMANDS entry + dispatch case. Mirror existing
+  shape (placement, argumentHint).
+- Renamed action: rename in commands.ts and the dispatch handler. Keep the
+  user-facing slash name stable when possible — flag breaking renames.
+- Removed action: delete the BUILTIN_COMMANDS entry and its dispatch case.
+- New LaneSummary or AgentChatSessionSummary fields: surface in Drawer.tsx
+  if relevant to lane/chat list rendering, or in lane-details RightPane
+  block if relevant to status.
+
+Step 5: Validate
+  cd apps/ade-cli && npm run typecheck
+  cd apps/ade-cli && npx vitest run src/tuiClient
+
+Out of scope:
+- Do NOT edit apps/desktop/ or apps/ios/.
+- Do NOT edit unrelated apps/ade-cli code unless the `ade code` launcher in apps/ade-cli/src/cli.ts must change with the TUI.
+- Do NOT touch docs/ — the docs agent owns that.
+
+Report:
+- apps/ade-cli/src/tuiClient/ files changed (or "no TUI changes required")
+- For each branch change: source change → TUI change, or why not applicable
+- Any breaking slash-command renames
+- typecheck and test results
+```
+
+Wait for all four parity agents to complete before moving to Verification.
+
+---
+
 ## Verification
 
-After all three passes:
+After all seven passes:
 
 1. **Run the affected shards**, not the full suite (`/finalize` runs everything):
    ```bash
@@ -240,6 +547,13 @@ Consolidated:
 Added:
 - <new file or extended file> — <N tests covering: contract A, contract B>
 - Or "none — feature was visual / fully covered by consolidation"
+
+Parity:
+- Docs: <files updated, or "none required"> — validation PASS / blocked
+- Mobile: <iOS files changed, or "none required"> — validation PASS / blocked
+- CLI: <apps/ade-cli files changed, or "none required"> — typecheck + tests PASS / blocked
+- TUI: <apps/ade-cli/src/tuiClient files changed, or "none required"> — typecheck + tests PASS / blocked
+- Breaking flag/command/slash renames: <list, or "none">
 
 Verification:
 - Affected files: PASS (<N> tests)

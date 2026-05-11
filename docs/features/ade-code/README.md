@@ -13,11 +13,13 @@ It is a client. The runtime, lanes, chats, transcripts, PRs, processes, and proo
 | `apps/ade-cli/src/tuiClient/app.tsx` | Primary Ink/React surface: navigation, composer, drawers, right pane, session lifecycle, slash command dispatch. |
 | `apps/ade-cli/src/tuiClient/connection.ts` | Resolves attached vs embedded mode, runs the `ade/initialize` handshake, registers the project with `projects.add`, wraps subsequent requests with `projectId`. |
 | `apps/ade-cli/src/tuiClient/jsonRpcClient.ts` | Socket client: connect, request/response, `chat/event` notifications. |
-| `apps/ade-cli/src/tuiClient/adeApi.ts` | Typed wrappers over `AdeCodeConnection.action` / `actionList` for lanes, chat, models, navigation. |
+| `apps/ade-cli/src/tuiClient/adeApi.ts` | Typed wrappers over `AdeCodeConnection.action` / `actionList` for lanes, chat, models, navigation, provider readiness, API-key status, OpenCode diagnostics, and project slash-command discovery. |
 | `apps/ade-cli/src/tuiClient/commands.ts` / `linearCommands.ts` | Slash command catalog and routing. |
 | `apps/ade-cli/src/tuiClient/format.ts` | Transcript rendering helpers for the TUI. |
+| `apps/ade-cli/src/tuiClient/state.ts` | Persists terminal-client state such as the last selected chat per lane under the project `.ade/cache` layout. |
+| `apps/ade-cli/src/tuiClient/theme.ts` | Shared Ink color and status tokens used by the header, model setup pane, transcript, and controls. |
 | `apps/ade-cli/src/tuiClient/types.ts` | `AdeCodeConnection`, `ProjectLaunchContext`, navigation DTOs aligned with `apps/desktop/src/shared/types`. |
-| `apps/ade-cli/src/tuiClient/components/` | `Drawer`, `ChatView`, `Header`, `RightPane`, `SlashPalette`, `MentionPalette`, `ApprovalPrompt`. |
+| `apps/ade-cli/src/tuiClient/components/` | `AdeWordmark`, `Drawer`, `ChatView`, `Header`, `RightPane`, `SlashPalette`, `MentionPalette`, `ApprovalPrompt`, `ModelStatus`, `FooterControls`. |
 | `apps/desktop/src/shared/types/chat.ts` | Canonical chat DTOs (`AgentChatEventEnvelope`, sessions, pending input). Imported per-module so ade-cli typecheck stays scoped. |
 | `apps/desktop/src/shared/modelRegistry.ts` | Default model selection for new sessions (`getDefaultModelDescriptor`). |
 | `apps/desktop/src/shared/adeLayout.ts` | Resolves project-scoped `.ade` paths. |
@@ -63,7 +65,7 @@ For the embedded runtime there is no `projects.add` step — the in-process runt
 
 `apps/ade-cli/src/tuiClient/app.tsx` is the Ink root. Layout:
 
-- **Header** — project name, active lane, chat session, model + reasoning effort badge, token / cost counter (`latestTokenStats`).
+- **Header** — project name, active lane, branch, and the terminal client frame.
 - **Drawer** (toggled with the configured shortcut) — two sections: Lanes and Chats. Selecting a lane in the Lanes pane switches the active lane and filters the Chats pane to that lane's sessions. Lane and chat selection drive the right pane's context.
 - **ChatView** — the main transcript. Renders user, assistant, tool, and system events from `chat/event` notifications. Tool calls collapse into expandable blocks; the most recent expandable failure id is tracked so `Enter` can drill into it.
 - **Composer** — multi-line input with mention completion (`@…`) sourced from `MentionPalette` and slash command completion from `SlashPalette`. Pending tool approvals surface as `ApprovalPrompt`.
@@ -73,7 +75,7 @@ Heartbeats are kept alive with `startTuiHeartbeat` so the runtime knows the chat
 
 ## Slash commands
 
-`commands.ts` exports the built-in slash command catalog. `placement` decides whether the command runs inline in the chat or opens the right pane. Server-provided `AgentChatSlashCommand`s from the active runtime are merged in via `getSlashCommands` (responses with `source: "local"` win over built-ins).
+`commands.ts` exports the built-in slash command catalog. `placement` decides whether the command runs inline in the chat or opens the right pane. The TUI also discovers project command files and Codex prompts before a chat exists, then refreshes against server-provided `AgentChatSlashCommand`s from the active runtime via `getSlashCommands`. Provider/runtime commands win over same-named built-ins except for local terminal controls such as `/login`, `/quit`, `/clear`, and `/end`.
 
 Inline (acts on chat or shell):
 
@@ -146,6 +148,13 @@ ade --socket /tmp/ade-runtime-dev.sock code
 ```
 
 After local changes, run `npm run build` inside `apps/ade-cli` so both `dist/cli.cjs` and `dist/tuiClient/cli.mjs` exist for packaged and linked use. During repo development, `npm run dev:code` runs the source TUI against the shared dev runtime at `/tmp/ade-runtime-dev.sock`.
+
+## Chat setup
+
+- `+ new chat` opens a draft setup view in the details pane; it does not create a backend chat until the first prompt is sent from the middle composer.
+- `/model` opens the model setup view. It can switch provider, model, reasoning, and permission settings, refresh provider readiness through `ai.getStatus`, and open desktop Settings > AI Providers for full configuration.
+- `/login` delegates only to provider CLIs that can authenticate in the current terminal: Claude (`claude auth login`), Codex (`codex login`), and OpenCode (`opencode auth login`). Cursor chat is `@cursor/sdk` and needs `CURSOR_API_KEY` or desktop Settings > AI Providers. Droid chat runs Factory Droid over ACP and needs `FACTORY_API_KEY` or Factory's interactive `droid` login.
+- The middle composer shows the selected provider, model, reasoning, and permission mode under the prompt so draft changes on the right are visible before the chat starts.
 
 ## Related docs
 

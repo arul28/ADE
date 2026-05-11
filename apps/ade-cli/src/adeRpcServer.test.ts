@@ -225,6 +225,41 @@ function createRuntime() {
       list: vi.fn(() => [{ id: "op-1", kind: "git_push", status: "running" }]),
     },
     projectConfigService: {} as any,
+    aiIntegrationService: {
+      getStatus: vi.fn(async () => ({
+        mode: "subscription",
+        availableProviders: {
+          claude: true,
+          codex: true,
+          cursor: false,
+          droid: false,
+        },
+        models: {
+          claude: [],
+          codex: [],
+          cursor: [],
+          droid: [],
+        },
+        detectedAuth: [
+          { type: "cli-subscription", cli: "codex", authenticated: true },
+        ],
+        providerConnections: {},
+        runtimeConnections: {},
+        availableModelIds: ["openai/gpt-5.5"],
+        opencodeBinaryInstalled: true,
+        opencodeBinarySource: "bundled",
+        opencodeInventoryError: null,
+        opencodeProviders: [],
+        apiKeyStore: {
+          secureStorageAvailable: true,
+          legacyPlaintextDetected: false,
+          decryptionFailed: false,
+        },
+      })),
+      getDailyUsageBatch: vi.fn(() => new Map()),
+      getFeatureFlag: vi.fn(() => true),
+      getDailyBudgetLimit: vi.fn(() => null),
+    } as any,
     conflictService: {
       runPrediction: vi.fn(async () => ({ lanes: [], matrix: [], overlaps: [] })),
       getLaneStatus: vi.fn(async ({ laneId }: { laneId: string }) => ({ laneId, status: "merge-ready" })),
@@ -4113,6 +4148,7 @@ describe("adeRpcServer", () => {
     const allDomains = await callTool(handler, "list_ade_actions", { domain: "all" });
     expect(allDomains?.isError).toBeUndefined();
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "memory")).toBe(true);
+    expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "ai")).toBe(true);
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "mission")).toBe(true);
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "orchestrator")).toBe(true);
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "orchestrator_core")).toBe(true);
@@ -4186,6 +4222,18 @@ describe("adeRpcServer", () => {
     });
     expect(keybindings?.isError).toBeUndefined();
     expect(fixture.runtime.keybindingsService.get).toHaveBeenCalled();
+
+    const aiStatus = await callTool(handler, "run_ade_action", {
+      domain: "ai",
+      action: "getStatus",
+      args: { refreshOpenCodeInventory: true },
+    });
+    expect(aiStatus?.isError).toBeUndefined();
+    expect(fixture.runtime.aiIntegrationService.getStatus).toHaveBeenCalledWith({
+      force: false,
+      refreshOpenCodeInventory: true,
+    });
+    expect(aiStatus.structuredContent.result.availableModelIds).toContain("openai/gpt-5.5");
 
     const layoutSet = await callTool(handler, "run_ade_action", {
       domain: "layout",

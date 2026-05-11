@@ -73,6 +73,15 @@ describe("ADE CLI", () => {
     expect(plan).toEqual({ kind: "ade-code", rest: ["--print-state"] });
   });
 
+  it("shows socket-aware TUI help for ade code --help", () => {
+    const plan = buildCliPlan(["code", "--help"]);
+    expect(plan.kind).toBe("help");
+    if (plan.kind !== "help") return;
+    expect(plan.text).toContain("ade code --socket /tmp/ade.sock");
+    expect(plan.text).toContain("ade code --require-socket");
+    expect(plan.text).toContain("Command palette");
+  });
+
   it("shows help for bare ade invocations", () => {
     expect(buildCliPlan([])).toEqual({
       kind: "help",

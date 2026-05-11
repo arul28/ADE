@@ -285,6 +285,10 @@ Service entry points live under `apps/desktop/src/main/services/ai/`. The subsys
   - `providerRuntimeHealth.ts` — per-provider health (`ready`, `auth-failed`, `runtime-failed`).
   - `claudeRuntimeProbe.ts` — lightweight SDK probe on force-refresh to confirm the Claude CLI + ADE CLI path can actually start.
   - `modelsDevService.ts` — non-blocking 6-hour refresh that enriches pricing and context-window metadata in the registry from `models.dev`.
+- **ADE action status surface**: `ai.getStatus`, `ai.listApiKeys`, and
+  `ai.getOpenCodeRuntimeDiagnostics` expose the same provider readiness,
+  stored-key, and OpenCode runtime health data to renderer settings and
+  `ade code` model setup through the shared ADE action registry.
 - **Fallback**: if no usable provider is present, ADE runs in **guest mode** — deterministic features (packs, diffs, conflicts) continue; AI surfaces are disabled with explanatory UI.
 
 ### 4.2 Permission modes (provider-native + ADE)
