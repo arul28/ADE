@@ -395,7 +395,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
     $ ade init [path]                               Register a project with this machine runtime
     $ ade projects list                             List projects registered on this machine
-    $ ade sync status | pin set 123456              Manage machine sync and phone pairing
+    $ ade sync status | pin generate                Manage machine sync and phone pairing
     $ ade doctor                                    Inspect project, socket, runtime, and tool availability
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
     $ ade git status | commit | push | stash        Run ADE-aware git operations
@@ -9804,6 +9804,7 @@ Usage:
   ade sync refresh
   ade sync devices
   ade sync pin get
+  ade sync pin generate
   ade sync pin set <6-digit-pin>
   ade sync pin clear
 `,
@@ -9861,6 +9862,13 @@ Usage:
         kind: "execute",
         label: "sync pin set",
         steps: [{ key: "result", method: "sync.setPin", params: { pin } }],
+      };
+    }
+    if (action === "generate" || action === "new") {
+      return {
+        kind: "execute",
+        label: "sync pin generate",
+        steps: [{ key: "result", method: "sync.generatePin" }],
       };
     }
     if (action === "clear" || action === "remove") {

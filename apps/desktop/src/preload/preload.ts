@@ -1030,8 +1030,12 @@ const gitBranchesCache = createKeyedShortIpcCache<GitBranchSummary[]>(
 );
 
 const allowLocalRuntimeFallback =
-  process.env.ADE_LOCAL_RUNTIME_FALLBACK === "1" ||
-  process.env.ADE_DISABLE_LOCAL_RUNTIME_DAEMON === "1";
+  process.env.ADE_LOCAL_RUNTIME_FALLBACK !== "0" &&
+  (
+    process.env.ADE_LOCAL_RUNTIME_FALLBACK === "1" ||
+    process.env.ADE_DISABLE_LOCAL_RUNTIME_DAEMON === "1" ||
+    process.env.ADE_PACKAGE_CHANNEL === "alpha"
+  );
 
 function isSafeLocalRuntimeFallbackError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
@@ -1039,7 +1043,11 @@ function isSafeLocalRuntimeFallbackError(error: unknown): boolean {
     /\b(ECONNREFUSED|ECONNRESET|EPIPE|ENOENT|ETIMEDOUT)\b/i.test(message) ||
     /Local runtime daemon is not available/i.test(message) ||
     /ADE service connection (?:closed|failed)/i.test(message) ||
-    /Timed out connecting to ADE service socket/i.test(message)
+    /Timed out connecting to ADE service socket/i.test(message) ||
+    /Unsupported database value/i.test(message) ||
+    /UNIQUE constraint failed: process_definitions\.id/i.test(message) ||
+    /no such function: crsql_internal_sync_bit/i.test(message) ||
+    /database is not open/i.test(message)
   );
 }
 
@@ -2627,9 +2635,10 @@ contextBridge.exposeInMainWorld("ade", {
         request,
       }),
     checkLocalWork: async (
+      id: string,
       project: RemoteRuntimeProjectRecord,
     ): Promise<RemoteRuntimeLocalWorkCheckResult> =>
-      ipcRenderer.invoke(IPC.remoteRuntimeCheckLocalWork, { project }),
+      ipcRenderer.invoke(IPC.remoteRuntimeCheckLocalWork, { id, project }),
     disconnect: async (id: string): Promise<{ disconnected: boolean }> =>
       ipcRenderer.invoke(IPC.remoteRuntimeDisconnect, { id }),
   },
@@ -2867,6 +2876,10 @@ contextBridge.exposeInMainWorld("ade", {
     setPin: async (pin: string): Promise<SyncRoleSnapshot> =>
       callProjectRuntimeSyncOr("sync.setPin", { pin }, () =>
         ipcRenderer.invoke(IPC.syncSetPin, pin),
+      ),
+    generatePin: async (): Promise<SyncRoleSnapshot> =>
+      callProjectRuntimeSyncOr("sync.generatePin", {}, () =>
+        ipcRenderer.invoke(IPC.syncGeneratePin),
       ),
     clearPin: async (): Promise<SyncRoleSnapshot> =>
       callProjectRuntimeSyncOr("sync.clearPin", {}, () =>
@@ -5713,7 +5726,7 @@ contextBridge.exposeInMainWorld("ade", {
       const runtime = await callProjectRuntimeActionIfBound<DiffChanges>(
         "diff",
         "getChanges",
-        { args },
+        { arg: args.laneId },
       );
       if (runtime.handled) return runtime.result;
       return diffChangesCache.get(serializeIpcCacheArgs(args));
@@ -5722,7 +5735,15 @@ contextBridge.exposeInMainWorld("ade", {
       const runtime = await callProjectRuntimeActionIfBound<FileDiff>(
         "diff",
         "getFileDiff",
-        { args },
+        {
+          args: {
+            laneId: args.laneId,
+            filePath: args.path,
+            mode: args.mode,
+            compareRef: args.compareRef,
+            compareTo: args.compareTo,
+          },
+        },
       );
       return runtime.handled
         ? runtime.result
@@ -5732,7 +5753,15 @@ contextBridge.exposeInMainWorld("ade", {
       const runtime = await callProjectRuntimeActionIfBound<FilePatch>(
         "diff",
         "getFilePatch",
-        { args },
+        {
+          args: {
+            laneId: args.laneId,
+            filePath: args.path,
+            mode: args.mode,
+            compareRef: args.compareRef,
+            compareTo: args.compareTo,
+          },
+        },
       );
       return runtime.handled
         ? runtime.result

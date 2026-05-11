@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -99,7 +100,19 @@ describe("shouldUploadBundledRuntime", () => {
       localBinaryAvailable: true,
       executableVersion: "1.0.0",
       appVersion: "1.0.0",
+      localBinarySha256: "abc",
+      remoteBinarySha256: "abc",
     })).toBe(false);
+  });
+
+  it("uploads when the executable version matches but the binary hash changed", () => {
+    expect(shouldUploadBundledRuntime({
+      localBinaryAvailable: true,
+      executableVersion: "1.0.0",
+      appVersion: "1.0.0",
+      localBinarySha256: "new",
+      remoteBinarySha256: "old",
+    })).toBe(true);
   });
 
   it("does not upload when no bundled runtime exists for the remote architecture", () => {
@@ -116,7 +129,7 @@ describe("buildRemoteRuntimeEnvironmentPrefix", () => {
     expect(buildRemoteRuntimeEnvironmentPrefix({
       archLabel: "linux-x64",
       nativeDepsReady: false,
-    })).toBe('ADE_HOME="$HOME/.ade" PATH="$HOME/.ade/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ');
+    })).toBe('ADE_HOME="$HOME/.ade" PATH="$HOME/.ade/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_DEFAULT_ROLE="cto" ');
   });
 
   it("adds the uploaded native dependency bundle to NODE_PATH", () => {
@@ -139,7 +152,7 @@ describe("buildRemoteRuntimeEnvironmentPrefix", () => {
       archLabel: "darwin-arm64",
       nativeDepsReady: true,
       layout: alphaLayout,
-    })).toBe('ADE_HOME="$HOME/.ade-alpha" PATH="$HOME/.ade-alpha/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_PACKAGE_CHANNEL="alpha" ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1 NODE_PATH="$HOME/.ade-alpha/runtime/darwin-arm64/node_modules${NODE_PATH:+:$NODE_PATH}" ');
+    })).toBe('ADE_HOME="$HOME/.ade-alpha" PATH="$HOME/.ade-alpha/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_DEFAULT_ROLE="cto" ADE_PACKAGE_CHANNEL="alpha" ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1 NODE_PATH="$HOME/.ade-alpha/runtime/darwin-arm64/node_modules${NODE_PATH:+:$NODE_PATH}" ');
     expect(betaLayout).toMatchObject({
       homeDirName: ".ade-beta",
       binaryRelative: ".ade-beta/bin/ade",
@@ -154,7 +167,18 @@ describe("validateRemoteRuntimeInitializeResult", () => {
       expectedVersion: "1.0.0",
       result: {
         runtimeInfo: { version: "1.0.0", multiProject: true },
-        capabilities: { projects: true },
+        capabilities: {
+          projects: true,
+          machineProjects: {
+            browseDirectories: true,
+            getDetail: true,
+            getWorkSummary: true,
+            getDefaultParentDir: true,
+            create: true,
+            clone: true,
+            listMyGitHubRepos: true,
+          },
+        },
       },
     })).not.toThrow();
   });
@@ -169,12 +193,33 @@ describe("validateRemoteRuntimeInitializeResult", () => {
     })).toThrow(/multi-project/i);
   });
 
+  it("rejects a multi-project runtime that cannot handle machine-level project operations", () => {
+    expect(() => validateRemoteRuntimeInitializeResult({
+      expectedVersion: "1.0.0",
+      result: {
+        runtimeInfo: { version: "1.0.0", multiProject: true },
+        capabilities: { projects: true },
+      },
+    })).toThrow(/missing project capability/i);
+  });
+
   it("rejects a bundled runtime with the wrong reported version", () => {
     expect(() => validateRemoteRuntimeInitializeResult({
       expectedVersion: "1.0.0",
       result: {
         runtimeInfo: { version: "0.9.0", multiProject: true },
-        capabilities: { projects: true },
+        capabilities: {
+          projects: true,
+          machineProjects: {
+            browseDirectories: true,
+            getDetail: true,
+            getWorkSummary: true,
+            getDefaultParentDir: true,
+            create: true,
+            clone: true,
+            listMyGitHubRepos: true,
+          },
+        },
       },
     })).toThrow(/version mismatch/i);
   });
@@ -198,15 +243,17 @@ function ok(stdout = "") {
   return { stdout, stderr: "", code: 0 };
 }
 
-function createTempResources(): { resourcesPath: string; binaryPath: string; cleanup: () => void } {
+function createTempResources(archLabel = "linux-x64"): { resourcesPath: string; binaryPath: string; binarySha256: string; cleanup: () => void } {
   const resourcesPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-remote-runtime-"));
   const runtimeDir = path.join(resourcesPath, "runtime");
   fs.mkdirSync(runtimeDir, { recursive: true });
-  const binaryPath = path.join(runtimeDir, "ade-linux-x64");
+  const binaryPath = path.join(runtimeDir, `ade-${archLabel}`);
   fs.writeFileSync(binaryPath, "#!/bin/sh\n");
+  const binarySha256 = crypto.createHash("sha256").update(fs.readFileSync(binaryPath)).digest("hex");
   return {
     resourcesPath,
     binaryPath,
+    binarySha256,
     cleanup: () => fs.rmSync(resourcesPath, { recursive: true, force: true }),
   };
 }
@@ -251,6 +298,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     runtimeRpcClientMock.mockImplementation(() => ({
       initialize: initializeMock,
       call: callMock,
+      close: vi.fn(),
     }));
     openSshRuntimeTransportMock.mockResolvedValue({
       onData: vi.fn(),
@@ -261,7 +309,18 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     });
     initializeMock.mockResolvedValue({
       runtimeInfo: { version: APP_VERSION, multiProject: true },
-      capabilities: { projects: true },
+      capabilities: {
+        projects: true,
+        machineProjects: {
+          browseDirectories: true,
+          getDetail: true,
+          getWorkSummary: true,
+          getDefaultParentDir: true,
+          create: true,
+          clone: true,
+          listMyGitHubRepos: true,
+        },
+      },
     });
     callMock.mockImplementation(async (method: string) => {
       if (method === "projects.list") {
@@ -295,10 +354,12 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       commands.push(command);
       if (command === "uname -sm") return ok("Linux x86_64\n");
       if (command === "cat $HOME/.ade/bin/ade.version 2>/dev/null || true") return ok("");
+      if (command === "cat $HOME/.ade/bin/ade.sha256 2>/dev/null || true") return ok("");
       if (command === "test -x $HOME/.ade/bin/ade && $HOME/.ade/bin/ade --version || true") return ok("");
       if (command === "mkdir -p $HOME/.ade/bin") return ok("");
       if (command.includes("printf '%s\\n' '2.0.0' > $HOME/.ade/bin/ade.version")) return ok("");
       if (command.includes("$HOME/.ade/bin/ade --version")) return ok("ade 2.0.0\n");
+      if (command.includes("$HOME/.ade/bin/ade runtime stop --text")) return ok("");
       throw new Error(`Unexpected SSH command: ${command}`);
     });
 
@@ -314,14 +375,16 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     expect(commands).toEqual([
       "uname -sm",
       "cat $HOME/.ade/bin/ade.version 2>/dev/null || true",
+      "cat $HOME/.ade/bin/ade.sha256 2>/dev/null || true",
       "test -x $HOME/.ade/bin/ade && $HOME/.ade/bin/ade --version || true",
       "mkdir -p $HOME/.ade/bin",
-      "chmod 700 $HOME/.ade/bin && chmod +x $HOME/.ade/bin/ade && printf '%s\\n' '2.0.0' > $HOME/.ade/bin/ade.version && chmod 600 $HOME/.ade/bin/ade.version",
-      'ADE_HOME="$HOME/.ade" PATH="$HOME/.ade/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" $HOME/.ade/bin/ade --version',
+      `chmod 700 $HOME/.ade/bin && chmod +x $HOME/.ade/bin/ade && printf '%s\\n' '2.0.0' > $HOME/.ade/bin/ade.version && printf '%s\\n' '${resources.binarySha256}' > $HOME/.ade/bin/ade.sha256 && chmod 600 $HOME/.ade/bin/ade.version && chmod 600 $HOME/.ade/bin/ade.sha256`,
+      'ADE_HOME="$HOME/.ade" PATH="$HOME/.ade/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_DEFAULT_ROLE="cto" $HOME/.ade/bin/ade --version',
+      'ADE_HOME="$HOME/.ade" PATH="$HOME/.ade/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_DEFAULT_ROLE="cto" $HOME/.ade/bin/ade runtime stop --text >/dev/null 2>&1 || true',
     ]);
     expect(openSshRuntimeTransportMock).toHaveBeenCalledWith(
       fakeSsh.ssh,
-      'ADE_HOME="$HOME/.ade" PATH="$HOME/.ade/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" $HOME/.ade/bin/ade rpc --stdio',
+      'ADE_HOME="$HOME/.ade" PATH="$HOME/.ade/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_DEFAULT_ROLE="cto" $HOME/.ade/bin/ade rpc --stdio',
     );
     expect(initializeMock).toHaveBeenCalledWith("ade-desktop-remote", APP_VERSION);
     expect(callMock).toHaveBeenCalledWith("projects.list", {});
@@ -347,6 +410,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     execSshMock.mockImplementation(async (_client: Client, command: string) => {
       if (command === "uname -sm") return ok("Linux x86_64\n");
       if (command === "cat $HOME/.ade/bin/ade.version 2>/dev/null || true") return ok("");
+      if (command === "cat $HOME/.ade/bin/ade.sha256 2>/dev/null || true") return ok("");
       if (command === "test -x $HOME/.ade/bin/ade && $HOME/.ade/bin/ade --version || true") return ok("");
       if (command === "mkdir -p $HOME/.ade/bin") return ok("");
       if (command.includes("printf '%s\\n' '2.0.0' > $HOME/.ade/bin/ade.version")) return ok("");
@@ -370,18 +434,24 @@ describe("bootstrapRemoteRuntime upload flow", () => {
 
   it("uses the matching isolated remote home for Alpha channel bootstrap", async () => {
     process.env.ADE_PACKAGE_CHANNEL = "alpha";
-    const resources = createTempResources();
+    const resources = createTempResources("darwin-arm64");
     cleanupResources = resources.cleanup;
     const fakeSsh = createFakeSsh();
     const registry = createRegistry();
     connectSshMock.mockResolvedValue(fakeSsh.ssh);
     execSshMock.mockImplementation(async (_client: Client, command: string) => {
-      if (command === "uname -sm") return ok("Linux x86_64\n");
+      if (command === "uname -sm") return ok("Darwin arm64\n");
       if (command === "cat $HOME/.ade-alpha/bin/ade.version 2>/dev/null || true") return ok("");
+      if (command === "cat $HOME/.ade-alpha/bin/ade.sha256 2>/dev/null || true") return ok("");
       if (command === "test -x $HOME/.ade-alpha/bin/ade && $HOME/.ade-alpha/bin/ade --version || true") return ok("");
       if (command === "mkdir -p $HOME/.ade-alpha/bin") return ok("");
+      if (command === "mkdir -p $HOME/.ade-alpha/runtime") return ok("");
       if (command.includes("printf '%s\\n' '2.0.0' > $HOME/.ade-alpha/bin/ade.version")) return ok("");
+      if (command.includes("test -d $HOME/.ade-alpha/runtime/darwin-arm64/node_modules")) return ok("ok\n");
+      if (command.includes("tar -xzf $HOME/.ade-alpha/runtime/ade-darwin-arm64.native.tar.gz")) return ok("");
+      if (command === "codesign --force --sign - $HOME/.ade-alpha/bin/ade") return ok("");
       if (command.includes("$HOME/.ade-alpha/bin/ade --version")) return ok("ade 2.0.0\n");
+      if (command.includes("$HOME/.ade-alpha/bin/ade runtime stop --text")) return ok("");
       throw new Error(`Unexpected SSH command: ${command}`);
     });
 
@@ -393,9 +463,66 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     });
 
     expect(fakeSsh.fastPut).toHaveBeenCalledWith(resources.binaryPath, ".ade-alpha/bin/ade", {}, expect.any(Function));
+    expect(execSshMock).toHaveBeenCalledWith(fakeSsh.ssh, "codesign --force --sign - $HOME/.ade-alpha/bin/ade");
     expect(openSshRuntimeTransportMock).toHaveBeenCalledWith(
       fakeSsh.ssh,
-      'ADE_HOME="$HOME/.ade-alpha" PATH="$HOME/.ade-alpha/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_PACKAGE_CHANNEL="alpha" ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1 $HOME/.ade-alpha/bin/ade rpc --stdio',
+      'ADE_HOME="$HOME/.ade-alpha" PATH="$HOME/.ade-alpha/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_DEFAULT_ROLE="cto" ADE_PACKAGE_CHANNEL="alpha" ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1 NODE_PATH="$HOME/.ade-alpha/runtime/darwin-arm64/node_modules${NODE_PATH:+:$NODE_PATH}" $HOME/.ade-alpha/bin/ade rpc --stdio',
+    );
+  });
+
+  it("restarts and retries a same-version runtime daemon that is missing machine project capabilities", async () => {
+    const resources = createTempResources();
+    cleanupResources = resources.cleanup;
+    const fakeSsh = createFakeSsh();
+    const registry = createRegistry();
+    connectSshMock.mockResolvedValue(fakeSsh.ssh);
+    const commands: string[] = [];
+    execSshMock.mockImplementation(async (_client: Client, command: string) => {
+      commands.push(command);
+      if (command === "uname -sm") return ok("Linux x86_64\n");
+      if (command === "cat $HOME/.ade/bin/ade.version 2>/dev/null || true") return ok("2.0.0\n");
+      if (command === "cat $HOME/.ade/bin/ade.sha256 2>/dev/null || true") return ok(`${resources.binarySha256}\n`);
+      if (command === "test -x $HOME/.ade/bin/ade && $HOME/.ade/bin/ade --version || true") return ok("ade 2.0.0\n");
+      if (command.includes("$HOME/.ade/bin/ade runtime stop --text")) return ok("");
+      throw new Error(`Unexpected SSH command: ${command}`);
+    });
+    initializeMock
+      .mockResolvedValueOnce({
+        runtimeInfo: { version: APP_VERSION, multiProject: true },
+        capabilities: { projects: true },
+      })
+      .mockResolvedValueOnce({
+        runtimeInfo: { version: APP_VERSION, multiProject: true },
+        capabilities: {
+          projects: true,
+          machineProjects: {
+            browseDirectories: true,
+            getDetail: true,
+            getWorkSummary: true,
+            getDefaultParentDir: true,
+            create: true,
+            clone: true,
+            listMyGitHubRepos: true,
+          },
+        },
+      });
+
+    await expect(bootstrapRemoteRuntime({
+      target: uploadTarget,
+      registry,
+      resourcesPath: resources.resourcesPath,
+      appVersion: APP_VERSION,
+    })).resolves.toMatchObject({
+      result: {
+        arch: "linux-x64",
+        version: APP_VERSION,
+      },
+    });
+
+    expect(fakeSsh.fastPut).not.toHaveBeenCalled();
+    expect(openSshRuntimeTransportMock).toHaveBeenCalledTimes(2);
+    expect(commands).toContain(
+      'ADE_HOME="$HOME/.ade" PATH="$HOME/.ade/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_DEFAULT_ROLE="cto" $HOME/.ade/bin/ade runtime stop --text >/dev/null 2>&1 || true',
     );
   });
 });

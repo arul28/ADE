@@ -79,14 +79,6 @@ struct ConnectionSettingsView: View {
       .environmentObject(syncService)
       .presentationDetents([.medium, .large])
 
-    case .qr:
-      ScanQRSheet { payload in
-        presentedSheet = nil
-        pinPreset = .qr(payload)
-      }
-      .environmentObject(syncService)
-      .presentationDetents([.large])
-
     case .manual:
       ManualEntrySheet { host, port in
         presentedSheet = nil

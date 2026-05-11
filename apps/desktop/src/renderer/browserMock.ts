@@ -3047,7 +3047,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         statusHints: {},
       }),
       streamEvents: resolvedArg({ events: [], nextCursor: 0, hasMore: false }),
-      checkLocalWork: async (project: {
+      checkLocalWork: async (_id: string, project: {
         projectId: string;
         displayName: string;
         gitOriginUrl: string | null;
@@ -3080,6 +3080,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       transferBrainToLocal: resolved(BROWSER_MOCK_SYNC_SNAPSHOT),
       getPin: resolved({ pin: null }),
       setPin: resolvedArg(BROWSER_MOCK_SYNC_SNAPSHOT),
+      generatePin: resolved(BROWSER_MOCK_SYNC_SNAPSHOT),
       clearPin: resolved(BROWSER_MOCK_SYNC_SNAPSHOT),
       setActiveLanePresence: resolvedArg(undefined),
       onEvent: () => () => {},

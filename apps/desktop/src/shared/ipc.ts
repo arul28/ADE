@@ -471,6 +471,7 @@ export const IPC = {
   syncTransferBrainToLocal: "ade.sync.transferBrainToLocal",
   syncGetPin: "ade.sync.getPin",
   syncSetPin: "ade.sync.setPin",
+  syncGeneratePin: "ade.sync.generatePin",
   syncClearPin: "ade.sync.clearPin",
   syncSetActiveLanePresence: "ade.sync.setActiveLanePresence",
   syncEvent: "ade.sync.event",

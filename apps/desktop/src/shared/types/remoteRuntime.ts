@@ -124,12 +124,32 @@ export type RemoteRuntimeLocalWorkMatch = {
   displayName: string;
   gitOriginUrl: string;
   dirtyCount: number;
+  workSummary?: RemoteRuntimeProjectWorkSummary | null;
+};
+
+export type RemoteRuntimeProjectWorktreeSummary = {
+  rootPath: string;
+  name: string;
+  branchName: string | null;
+  dirtyCount: number;
+  isPrimary: boolean;
+};
+
+export type RemoteRuntimeProjectWorkSummary = {
+  rootPath: string;
+  laneCount: number;
+  checkedLaneCount: number;
+  dirtyLaneCount: number;
+  dirtyFileCount: number;
+  primaryDirtyCount: number;
+  lanes: RemoteRuntimeProjectWorktreeSummary[];
 };
 
 export type RemoteRuntimeLocalWorkCheckResult = {
   remoteProjectId: string;
   remoteDisplayName: string;
   remoteGitOriginUrl: string | null;
+  remoteWorkSummary?: RemoteRuntimeProjectWorkSummary | null;
   matches: RemoteRuntimeLocalWorkMatch[];
   hasDirtyWork: boolean;
 };

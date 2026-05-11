@@ -330,4 +330,46 @@ describe("registerRuntimeBridge", () => {
       displayName: "ADE",
     });
   });
+
+  it("forwards a one-shot local GitHub auth header for remote clones", async () => {
+    remoteRegistryGetMock.mockReturnValue(target);
+    remoteCallMachineForTargetMock.mockResolvedValue({
+      projectId: "project-cloned",
+      rootPath: "/srv/ADE",
+      displayName: "ADE",
+      addedAt: 1,
+      lastOpenedAt: 1,
+      gitOriginUrl: "https://github.com/example/ADE.git",
+    });
+    registerRuntimeBridge({
+      appVersion: "1.0.0",
+      globalStatePath: "/tmp/ade-state.json",
+      getGitHubTokenForRemoteClone: () => "ghp_local_secret",
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.remoteRuntimeCloneProject)?.(eventForSender(), {
+        id: "target-1",
+        input: {
+          url: "https://github.com/example/ADE.git",
+          parentDir: "/srv",
+        },
+      }),
+    ).resolves.toMatchObject({ rootPath: "/srv/ADE" });
+
+    const expectedBasic = Buffer.from(
+      "x-access-token:ghp_local_secret",
+      "utf8",
+    ).toString("base64");
+    expect(remoteCallMachineForTargetMock).toHaveBeenCalledWith(
+      target,
+      "projects.clone",
+      {
+        url: "https://github.com/example/ADE.git",
+        parentDir: "/srv",
+        githubAuthHeader: `basic ${expectedBasic}`,
+      },
+      { retryOnConnectionError: false },
+    );
+  });
 });

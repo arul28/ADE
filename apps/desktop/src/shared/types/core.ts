@@ -217,6 +217,7 @@ export type CloneProjectInput = {
   url: string;
   parentDir: string;
   name?: string;
+  githubAuthHeader?: string;
 };
 
 export type CloneProjectResult = {

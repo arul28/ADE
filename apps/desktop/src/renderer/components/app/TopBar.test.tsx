@@ -106,6 +106,15 @@ function resetStore() {
     projectTransitionError: null,
     clearProjectTransitionError: vi.fn(),
     switchProjectToPath: vi.fn(async () => undefined),
+    switchRemoteProject: vi.fn(async (targetId: string, projectId: string) => ({
+      kind: "remote",
+      key: `remote:${targetId}:${projectId}`,
+      targetId,
+      runtimeName: "Mac Studio",
+      projectId,
+      rootPath: "/srv/ade/remote-app",
+      displayName: "Remote App",
+    })),
   } as any);
 }
 
@@ -252,6 +261,36 @@ describe("TopBar", () => {
     expect(screen.getByText("Mac Studio")).toBeTruthy();
     expect(globalThis.window.ade.sync.getStatus).not.toHaveBeenCalled();
     expect(screen.queryByTitle("Connect a phone to this machine")).toBeNull();
+  });
+
+  it("keeps local tabs visible when a remote project is active", async () => {
+    render(<TopBar />);
+
+    const localTab = await screen.findByTitle("/Users/arul/ADE");
+
+    await act(async () => {
+      useAppStore.setState({
+        project: { rootPath: "/srv/ade/remote-app", displayName: "Remote App", baseRef: "main" },
+        projectBinding: {
+          kind: "remote",
+          key: "remote:studio:project-1",
+          targetId: "studio",
+          runtimeName: "Mac Studio",
+          projectId: "project-1",
+          rootPath: "/srv/ade/remote-app",
+          displayName: "Remote App",
+        },
+        projectHydrated: true,
+        showWelcome: false,
+      } as any);
+    });
+
+    expect(await screen.findByTitle("Mac Studio: /srv/ade/remote-app")).toBeTruthy();
+    expect(screen.getByTitle("/Users/arul/ADE")).toBeTruthy();
+
+    fireEvent.click(localTab);
+
+    expect(useAppStore.getState().switchProjectToPath).toHaveBeenCalledWith("/Users/arul/ADE");
   });
 
   it("opens a blank ADE window from the top bar", async () => {

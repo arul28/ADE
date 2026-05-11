@@ -378,14 +378,14 @@ describe("CommandPalette", () => {
 
     await waitFor(() =>
       expect(
-        screen.getByRole("dialog", { name: "Local work found" }),
+        screen.getByRole("dialog", { name: "Open remote tab?" }),
       ).toBeTruthy(),
     );
     expect(screen.getByText("3 changed files")).toBeTruthy();
-    expect(screen.getByText("/Users/admin/Projects/ADE")).toBeTruthy();
+    expect(screen.getAllByText("/Users/admin/Projects/ADE").length).toBeGreaterThan(0);
     expect(switchRemoteProject).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open remote tab" }));
     await waitFor(() =>
       expect(switchRemoteProject).toHaveBeenCalledWith(
         "target-1",

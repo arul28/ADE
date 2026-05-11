@@ -1,6 +1,13 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { ProjectDetail, ProjectLanguageShare, ProjectLastCommit, RecentProjectSummary } from "../../../shared/types";
+import type {
+  ProjectDetail,
+  ProjectLanguageShare,
+  ProjectLastCommit,
+  RecentProjectSummary,
+  RemoteRuntimeProjectWorkSummary,
+  RemoteRuntimeProjectWorktreeSummary,
+} from "../../../shared/types";
 import { runGit } from "../git/git";
 import { readGlobalState } from "../state/globalState";
 import { toRecentProjectSummary } from "./recentProjectSummary";
@@ -199,6 +206,52 @@ async function readGitMetadata(rootPath: string): Promise<Pick<ProjectDetail, "b
   return { branchName, dirtyCount, lastCommit, aheadBehind };
 }
 
+async function readWorktreeSummary(args: {
+  rootPath: string;
+  name: string;
+  isPrimary: boolean;
+}): Promise<RemoteRuntimeProjectWorktreeSummary | null> {
+  const isRepo = await isGitRepo(args.rootPath);
+  if (!isRepo) return null;
+  const [branchRes, dirtyRes] = await Promise.all([
+    runGit(["rev-parse", "--abbrev-ref", "HEAD"], {
+      cwd: args.rootPath,
+      timeoutMs: 5_000,
+    }),
+    runGit(["status", "--porcelain=v1", "--untracked-files=all"], {
+      cwd: args.rootPath,
+      timeoutMs: 8_000,
+    }),
+  ]);
+  return {
+    rootPath: args.rootPath,
+    name: args.name,
+    branchName: branchRes.exitCode === 0 ? branchRes.stdout.trim() || null : null,
+    dirtyCount:
+      dirtyRes.exitCode === 0
+        ? dirtyRes.stdout
+            .split(/\r?\n/)
+            .filter((line) => line.trim().length > 0).length
+        : 0,
+    isPrimary: args.isPrimary,
+  };
+}
+
+async function listAdeWorktreeRoots(rootPath: string): Promise<Array<{ rootPath: string; name: string }>> {
+  const worktreesPath = path.join(rootPath, ".ade", "worktrees");
+  try {
+    const dirents = await fs.readdir(worktreesPath, { withFileTypes: true });
+    return dirents
+      .filter((dirent) => dirent.isDirectory())
+      .map((dirent) => ({
+        rootPath: path.join(worktreesPath, dirent.name),
+        name: dirent.name,
+      }));
+  } catch {
+    return [];
+  }
+}
+
 export type GetProjectDetailOptions = {
   globalStatePath?: string | null;
 };
@@ -282,6 +335,40 @@ export async function getProjectDetail(rootPath: string, options: GetProjectDeta
     laneCount: recent?.laneCount ?? null,
     lastOpenedAt: recent?.lastOpenedAt ?? null,
     subdirectoryCount,
+  };
+}
+
+export async function getProjectWorkSummary(rootPath: string): Promise<RemoteRuntimeProjectWorkSummary> {
+  const { requestedRoot, scanRoot } = await resolveProjectDetailScanRoot(rootPath);
+  const worktrees = await listAdeWorktreeRoots(scanRoot);
+  const summaries = (
+    await Promise.all([
+      readWorktreeSummary({
+        rootPath: scanRoot,
+        name: "Primary",
+        isPrimary: true,
+      }),
+      ...worktrees.map((worktree) =>
+        readWorktreeSummary({
+          rootPath: worktree.rootPath,
+          name: worktree.name,
+          isPrimary: false,
+        }),
+      ),
+    ])
+  ).filter((entry): entry is RemoteRuntimeProjectWorktreeSummary => entry != null);
+  const primary = summaries.find((summary) => summary.isPrimary);
+  return {
+    rootPath: requestedRoot,
+    laneCount: summaries.length,
+    checkedLaneCount: summaries.length,
+    dirtyLaneCount: summaries.filter((summary) => summary.dirtyCount > 0).length,
+    dirtyFileCount: summaries.reduce((sum, summary) => sum + summary.dirtyCount, 0),
+    primaryDirtyCount: primary?.dirtyCount ?? 0,
+    lanes: summaries.map((summary) => ({
+      ...summary,
+      rootPath: summary.isPrimary ? requestedRoot : summary.rootPath,
+    })),
   };
 }
 

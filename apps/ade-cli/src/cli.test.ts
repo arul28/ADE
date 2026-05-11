@@ -249,6 +249,16 @@ describe("ADE CLI", () => {
         params: { pin: "123456" },
       },
     ]);
+
+    const generatePin = buildCliPlan(["sync", "pin", "generate"]);
+    expect(generatePin.kind).toBe("execute");
+    if (generatePin.kind !== "execute") return;
+    expect(generatePin.steps).toEqual([
+      {
+        key: "result",
+        method: "sync.generatePin",
+      },
+    ]);
   });
 
   it("forwards resolved roots and socket intent to ade code", () => {

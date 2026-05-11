@@ -3285,7 +3285,7 @@ async function buildRuntimeLinearConnectionStatus(runtime: AdeRuntime): Promise<
       authMode: credentialStatus.authMode,
       oauthAvailable: credentialStatus.oauthConfigured,
       tokenExpiresAt: credentialStatus.tokenExpiresAt,
-      message: status.message,
+      message: formatLinearConnectionMessage(status.message, credentialStatus.authMode),
     };
   } catch (error) {
     return {
@@ -3297,9 +3297,27 @@ async function buildRuntimeLinearConnectionStatus(runtime: AdeRuntime): Promise<
       authMode: credentialStatus.authMode,
       oauthAvailable: credentialStatus.oauthConfigured,
       tokenExpiresAt: credentialStatus.tokenExpiresAt,
-      message: getErrorMessage(error) || "Linear connection check failed.",
+      message: formatLinearConnectionMessage(
+        getErrorMessage(error) || "Linear connection check failed.",
+        credentialStatus.authMode,
+      ),
     };
   }
+}
+
+function formatLinearConnectionMessage(
+  message: string | null | undefined,
+  authMode: "manual" | "oauth" | null | undefined,
+): string | null {
+  const trimmed = message?.trim();
+  if (
+    authMode === "manual"
+    && trimmed
+    && /authentication required|not authenticated/i.test(trimmed)
+  ) {
+    return "Linear rejected the API key. Paste a Linear personal API key from linear.app/settings/api; it should start with lin_api_.";
+  }
+  return trimmed || null;
 }
 
 function buildLinearOAuthDomainService(runtime: AdeRuntime): OpaqueService | null {

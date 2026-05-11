@@ -2,7 +2,10 @@ import { createAdeRpcRequestHandler } from "./adeRpcServer";
 import os from "node:os";
 import path from "node:path";
 import { browseProjectDirectories } from "../../desktop/src/main/services/projects/projectBrowserService";
-import { getProjectDetail } from "../../desktop/src/main/services/projects/projectDetailService";
+import {
+  getProjectDetail,
+  getProjectWorkSummary,
+} from "../../desktop/src/main/services/projects/projectDetailService";
 import { createProjectScaffoldService } from "../../desktop/src/main/services/projects/projectScaffoldService";
 import type { Logger } from "../../desktop/src/main/services/logging/logger";
 import type {
@@ -64,6 +67,7 @@ const RUNTIME_METHODS = new Set([
   "projects.touch",
   "projects.browseDirectories",
   "projects.getDetail",
+  "projects.getWorkSummary",
   "projects.getDefaultParentDir",
   "projects.create",
   "projects.clone",
@@ -81,6 +85,7 @@ const RUNTIME_METHODS = new Set([
   "sync.transferBrainToLocal",
   "sync.getPin",
   "sync.setPin",
+  "sync.generatePin",
   "sync.clearPin",
   "sync.setActiveLanePresence",
 ]);
@@ -142,6 +147,7 @@ function readCloneProjectInput(
   const url = readOptionalString(params.url);
   const parentDir = readOptionalString(params.parentDir);
   const name = readOptionalString(params.name);
+  const githubAuthHeader = readOptionalString(params.githubAuthHeader);
   if (!url)
     throw new JsonRpcError(
       JsonRpcErrorCode.invalidParams,
@@ -152,7 +158,12 @@ function readCloneProjectInput(
       JsonRpcErrorCode.invalidParams,
       "projects.clone requires parentDir.",
     );
-  return { url, parentDir, ...(name ? { name } : {}) };
+  return {
+    url,
+    parentDir,
+    ...(name ? { name } : {}),
+    ...(githubAuthHeader ? { githubAuthHeader } : {}),
+  };
 }
 
 function readListMyReposInput(
@@ -383,6 +394,11 @@ export function createMultiProjectRpcRequestHandler(
         runtimeInfo: {
           name: "ade-rpc",
           version: options.serverVersion,
+          buildHash:
+            typeof process.env.ADE_RUNTIME_BUILD_HASH === "string" &&
+            process.env.ADE_RUNTIME_BUILD_HASH.trim()
+              ? process.env.ADE_RUNTIME_BUILD_HASH.trim()
+              : null,
           multiProject: true,
         },
         capabilities: {
@@ -390,6 +406,15 @@ export function createMultiProjectRpcRequestHandler(
             listChanged: true,
           },
           projects: true,
+          machineProjects: {
+            browseDirectories: true,
+            getDetail: true,
+            getWorkSummary: true,
+            getDefaultParentDir: true,
+            create: true,
+            clone: true,
+            listMyGitHubRepos: true,
+          },
         },
       };
     }
@@ -473,6 +498,17 @@ export function createMultiProjectRpcRequestHandler(
         );
       }
       return await getProjectDetail(rootPath);
+    }
+
+    if (method === "projects.getWorkSummary") {
+      const rootPath = readOptionalString(params.rootPath);
+      if (!rootPath) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          "projects.getWorkSummary requires rootPath.",
+        );
+      }
+      return await getProjectWorkSummary(rootPath);
     }
 
     if (method === "projects.getDefaultParentDir") {
@@ -573,6 +609,10 @@ export function createMultiProjectRpcRequestHandler(
     if (method === "sync.setPin") {
       const pin = typeof params.pin === "string" ? params.pin : "";
       return await (await getSyncService(params)).setPin(pin);
+    }
+
+    if (method === "sync.generatePin") {
+      return await (await getSyncService(params)).generatePin();
     }
 
     if (method === "sync.clearPin") {

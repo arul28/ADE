@@ -1,6 +1,4 @@
 import SwiftUI
-import UIKit
-import VisionKit
 
 struct SettingsPairingSection: View {
   @EnvironmentObject private var syncService: SyncService
@@ -24,17 +22,9 @@ struct SettingsPairingSection: View {
           }
 
           SettingsPairActionRow(
-            icon: "qrcode.viewfinder",
-            title: "Scan pairing QR",
-            subtitle: "Show on your machine under Settings → Sync"
-          ) {
-            presentedSheet = .qr
-          }
-
-          SettingsPairActionRow(
             icon: "keyboard",
             title: "Enter machine details",
-            subtitle: "Machine address and port"
+            subtitle: "Runtime address and port"
           ) {
             presentedSheet = .manual
           }
@@ -474,67 +464,6 @@ private struct DiscoveredHostRow: View {
   }
 }
 
-// MARK: - Scan QR sheet
-
-struct ScanQRSheet: View {
-  @EnvironmentObject private var syncService: SyncService
-  @Environment(\.dismiss) private var dismiss
-
-  let onDecoded: (SyncPairingQrPayload) -> Void
-
-  @State private var scanError: String?
-
-  var body: some View {
-    NavigationStack {
-      Group {
-        if DataScannerViewController.isSupported && DataScannerViewController.isAvailable {
-          ZStack(alignment: .bottom) {
-            PairingQrScannerRepresentable { scannedValue in
-              handle(scannedValue: scannedValue)
-            }
-            .ignoresSafeArea()
-
-            if let scanError {
-              Text(scanError)
-                .font(.footnote)
-                .foregroundStyle(.white)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(ADEColor.danger.opacity(0.85), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .padding(.horizontal, 24)
-                .padding(.bottom, 48)
-            }
-          }
-        } else {
-          ContentUnavailableView(
-            "Camera scanning unavailable",
-            systemImage: "camera.metering.unknown",
-            description: Text("Use Discover or Enter details to pair from this device.")
-          )
-        }
-      }
-      .navigationTitle("Scan QR code")
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        ToolbarItem(placement: .cancellationAction) {
-          Button("Close") { dismiss() }
-        }
-      }
-      .adeNavigationGlass()
-    }
-  }
-
-  private func handle(scannedValue: String) {
-    do {
-      let payload = try syncService.decodePairingQrPayload(from: scannedValue)
-      scanError = nil
-      onDecoded(payload)
-    } catch {
-      scanError = error.localizedDescription
-    }
-  }
-}
-
 // MARK: - Manual entry sheet
 
 struct ManualEntrySheet: View {
@@ -552,7 +481,7 @@ struct ManualEntrySheet: View {
           Text("Reach your machine directly")
             .font(.headline)
             .foregroundStyle(ADEColor.textPrimary)
-          Text("Use this when your network blocks Bonjour discovery.")
+          Text("Use a runtime address from ADE sync status or Tailscale.")
             .font(.caption)
             .foregroundStyle(ADEColor.textSecondary)
 
@@ -616,53 +545,5 @@ private struct ManualEntryFieldModifier: ViewModifier {
 private extension View {
   func manualEntryField() -> some View {
     modifier(ManualEntryFieldModifier())
-  }
-}
-
-// MARK: - QR scanner bridge
-
-private struct PairingQrScannerRepresentable: UIViewControllerRepresentable {
-  let onScan: (String) -> Void
-
-  func makeCoordinator() -> Coordinator {
-    Coordinator(onScan: onScan)
-  }
-
-  func makeUIViewController(context: Context) -> DataScannerViewController {
-    let controller = DataScannerViewController(
-      recognizedDataTypes: [.barcode(symbologies: [.qr])],
-      qualityLevel: .fast,
-      recognizesMultipleItems: false,
-      isHighFrameRateTrackingEnabled: false,
-      isPinchToZoomEnabled: true,
-      isGuidanceEnabled: true,
-      isHighlightingEnabled: false
-    )
-    controller.delegate = context.coordinator
-    try? controller.startScanning()
-    return controller
-  }
-
-  func updateUIViewController(_ uiViewController: DataScannerViewController, context: Context) {}
-
-  final class Coordinator: NSObject, DataScannerViewControllerDelegate {
-    private let onScan: (String) -> Void
-    private var didEmit = false
-
-    init(onScan: @escaping (String) -> Void) {
-      self.onScan = onScan
-    }
-
-    func dataScanner(_ dataScanner: DataScannerViewController, didAdd addedItems: [RecognizedItem], allItems: [RecognizedItem]) {
-      guard !didEmit else { return }
-      for item in addedItems {
-        if case .barcode(let barcode) = item, let payload = barcode.payloadStringValue {
-          didEmit = true
-          onScan(payload)
-          dataScanner.stopScanning()
-          break
-        }
-      }
-    }
   }
 }

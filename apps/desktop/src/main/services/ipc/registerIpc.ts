@@ -1488,8 +1488,23 @@ async function buildLinearConnectionStatus(
     authMode: credentialStatus.authMode,
     oauthAvailable: credentialStatus.oauthConfigured,
     tokenExpiresAt: credentialStatus.tokenExpiresAt,
-    message: status.message,
+    message: formatLinearConnectionMessage(status.message, credentialStatus.authMode),
   };
+}
+
+function formatLinearConnectionMessage(
+  message: string | null | undefined,
+  authMode: "manual" | "oauth" | null | undefined,
+): string | null {
+  const trimmed = message?.trim();
+  if (
+    authMode === "manual"
+    && trimmed
+    && /authentication required|not authenticated/i.test(trimmed)
+  ) {
+    return "Linear rejected the API key. Paste a Linear personal API key from linear.app/settings/api; it should start with lin_api_.";
+  }
+  return trimmed || null;
 }
 
 function summarizeProjectScan(result: OnboardingDetectionResult | null): Partial<{
@@ -3694,6 +3709,13 @@ export function registerIpc({
   registerRuntimeBridge({
     appVersion: app.getVersion(),
     bindRemoteProject,
+    getGitHubTokenForRemoteClone: () => {
+      try {
+        return getCtx().githubService.getTokenOrThrow();
+      } catch {
+        return null;
+      }
+    },
     getWindowSession,
     globalStatePath,
     localRuntimeConnectionPool,
@@ -4148,6 +4170,14 @@ export function registerIpc({
     );
     if (runtimeStatus) return runtimeStatus;
     return await (await requireSyncService()).setPin(normalizedPin);
+  });
+
+  ipcMain.handle(IPC.syncGeneratePin, async (event): Promise<SyncRoleSnapshot> => {
+    const runtimeStatus = await tryLocalRuntimeSync(event, (pool, rootPath) =>
+      pool.generateSyncPinForRoot(rootPath)
+    );
+    if (runtimeStatus) return runtimeStatus;
+    return await (await requireSyncService()).generatePin();
   });
 
   ipcMain.handle(IPC.syncClearPin, async (event): Promise<SyncRoleSnapshot> => {

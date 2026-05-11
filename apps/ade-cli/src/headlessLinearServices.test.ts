@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockState = vi.hoisted(() => ({
@@ -409,6 +412,26 @@ describe("headlessLinearServices", () => {
     expect(typeof services.dispose).toBe("function");
 
     services.dispose();
+  });
+
+  it("exposes bundled Linear OAuth credentials in headless runtime", () => {
+    const previousAdeHome = process.env.ADE_HOME;
+    process.env.ADE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ade-headless-linear-oauth-"));
+    const services = createHeadlessLinearServices(createDeps());
+    try {
+      expect(services.linearCredentialService.getStatus().oauthConfigured).toBe(true);
+      expect(services.linearCredentialService.getOAuthClientCredentials()).toEqual({
+        clientId: expect.any(String),
+        clientSecret: null,
+      });
+    } finally {
+      services.dispose();
+      if (previousAdeHome == null) {
+        delete process.env.ADE_HOME;
+      } else {
+        process.env.ADE_HOME = previousAdeHome;
+      }
+    }
   });
 
   it("assigns CTO default title for cto identityKey", async () => {

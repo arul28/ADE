@@ -15,6 +15,7 @@ import {
   buildLocalRuntimeNodeEnv,
   buildLocalRuntimeNodePath,
   buildLocalRuntimeServeArgs,
+  computeLocalRuntimeBuildHash,
   LocalRuntimeConnectionPool,
   parseRuntimeServiceManagerOutput,
 } from "./localRuntimeConnectionPool";
@@ -196,6 +197,7 @@ describe("local runtime connection pool", () => {
       { resourcesPath: "/Applications/ADE.app/Contents/Resources", platform: "darwin", arch: "x64" },
     );
 
+    expect(env.ADE_DEFAULT_ROLE).toBe("cto");
     expect(env.ELECTRON_RUN_AS_NODE).toBe("1");
     expect(env.ADE_CLI_VERSION).toBe("1.2.3");
     expect(env.NODE_PATH).toContain("app-x64.asar.unpacked");
@@ -420,6 +422,96 @@ describe("local runtime connection pool", () => {
         expect(initialized).toMatchObject({
           runtimeInfo: {
             version: "2.0.0",
+          },
+        });
+      } finally {
+        client.close();
+      }
+    } finally {
+      pool?.dispose();
+      await shutdownRuntime(socketPath);
+      if (!oldDaemon.killed) oldDaemon.kill();
+      if (originalEnv.ADE_CLI_JS === undefined) delete process.env.ADE_CLI_JS;
+      else process.env.ADE_CLI_JS = originalEnv.ADE_CLI_JS;
+      if (originalEnv.ADE_HOME === undefined) delete process.env.ADE_HOME;
+      else process.env.ADE_HOME = originalEnv.ADE_HOME;
+      if (originalEnv.ADE_RUNTIME_SOCKET_PATH === undefined) delete process.env.ADE_RUNTIME_SOCKET_PATH;
+      else process.env.ADE_RUNTIME_SOCKET_PATH = originalEnv.ADE_RUNTIME_SOCKET_PATH;
+      if (originalEnv.NODE_OPTIONS === undefined) delete process.env.NODE_OPTIONS;
+      else process.env.NODE_OPTIONS = originalEnv.NODE_OPTIONS;
+    }
+  }, 45_000);
+
+  it("restarts a same-version local daemon when the packaged runtime build changed", async () => {
+    const adeCliRoot = path.resolve(process.cwd(), "../ade-cli");
+    const cliPath = path.join(adeCliRoot, "src", "cli.ts");
+    const tsxLoaderPath = path.join(adeCliRoot, "node_modules", "tsx", "dist", "loader.mjs");
+    expect(fs.existsSync(cliPath)).toBe(true);
+    expect(fs.existsSync(tsxLoaderPath)).toBe(true);
+
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-build-"));
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-build-project-"));
+    const socketPath = path.join(adeHome, "sock", "ade.sock");
+    const originalEnv = {
+      ADE_CLI_JS: process.env.ADE_CLI_JS,
+      ADE_HOME: process.env.ADE_HOME,
+      ADE_RUNTIME_SOCKET_PATH: process.env.ADE_RUNTIME_SOCKET_PATH,
+      NODE_OPTIONS: process.env.NODE_OPTIONS,
+    };
+    const baseEnv = {
+      ...process.env,
+      ADE_HOME: adeHome,
+      ADE_RUNTIME_SOCKET_PATH: socketPath,
+      NODE_OPTIONS: withTsxNodeOptions(originalEnv.NODE_OPTIONS, tsxLoaderPath),
+    };
+    const oldDaemon = startServeProcess({
+      cliPath,
+      cwd: adeCliRoot,
+      env: {
+        ...baseEnv,
+        ADE_CLI_VERSION: "1.0.0",
+        ADE_RUNTIME_BUILD_HASH: "old-build",
+      },
+      socketPath,
+    });
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    let pool: LocalRuntimeConnectionPool | null = null;
+
+    try {
+      await waitForRuntimeSocket(socketPath);
+      process.env.ADE_CLI_JS = cliPath;
+      process.env.ADE_HOME = adeHome;
+      process.env.ADE_RUNTIME_SOCKET_PATH = socketPath;
+      process.env.NODE_OPTIONS = baseEnv.NODE_OPTIONS;
+
+      const expectedBuildHash = computeLocalRuntimeBuildHash(cliPath);
+      expect(expectedBuildHash).toBeTruthy();
+      pool = new LocalRuntimeConnectionPool("1.0.0", logger as never, { disableSync: true });
+      const registered = await pool.ensureProject(projectRoot);
+
+      expect(registered.rootPath).toBe(projectRoot);
+      expect(logger.info).toHaveBeenCalledWith("local_runtime.build_mismatch_restart", expect.objectContaining({
+        runtimeBuildHash: "old-build",
+        expectedBuildHash,
+      }));
+
+      pool.dispose();
+      const client = await RawRuntimeSocketClient.connect(socketPath);
+      try {
+        const initialized = await client.request("ade/initialize", {
+          protocolVersion: "2025-06-18",
+          clientName: "local-runtime-build-test",
+          identity: { role: "external", callerId: "local-runtime-build-test" },
+        });
+        expect(initialized).toMatchObject({
+          runtimeInfo: {
+            version: "1.0.0",
+            buildHash: expectedBuildHash,
           },
         });
       } finally {

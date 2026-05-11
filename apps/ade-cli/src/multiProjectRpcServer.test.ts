@@ -171,6 +171,7 @@ describe("multi-project RPC server", () => {
     const syncService = {
       getPin: vi.fn(() => "123456"),
       setPin: vi.fn(async (pin: string) => ({ role: "brain", pairingPin: pin })),
+      generatePin: vi.fn(async () => ({ role: "brain", pairingPin: "111222" })),
       clearPin: vi.fn(async () => ({ role: "brain", pairingPin: null })),
       getStatus: vi.fn(async () => ({ role: "brain" })),
       refreshDiscovery: vi.fn(),
@@ -217,36 +218,44 @@ describe("multi-project RPC server", () => {
       params: { projectId: added.projectId, pin: "654321" },
     })).toEqual({ role: "brain", pairingPin: "654321" });
 
-    await handler({
+    expect(await handler({
       jsonrpc: "2.0",
       id: 4,
+      method: "sync.generatePin",
+      params: { projectId: added.projectId },
+    })).toEqual({ role: "brain", pairingPin: "111222" });
+
+    await handler({
+      jsonrpc: "2.0",
+      id: 5,
       method: "sync.clearPin",
       params: { projectId: added.projectId },
     });
 
     expect(await handler({
       jsonrpc: "2.0",
-      id: 5,
+      id: 6,
       method: "sync.updateLocalDevice",
       params: { projectId: added.projectId, name: "Mac Studio" },
     })).toEqual({ deviceId: "machine-1", name: "Mac Studio" });
 
     expect(await handler({
       jsonrpc: "2.0",
-      id: 6,
+      id: 7,
       method: "sync.forgetDevice",
       params: { projectId: added.projectId, deviceId: "phone-1" },
     })).toEqual({ role: "brain", forgotten: "phone-1" });
 
     expect(await handler({
       jsonrpc: "2.0",
-      id: 7,
+      id: 8,
       method: "sync.setActiveLanePresence",
       params: { projectId: added.projectId, laneIds: ["lane-1", 42, "lane-2"] },
     })).toBeNull();
 
     expect(scopeRegistry.ensureSyncHost).toHaveBeenCalledWith(added.projectId);
     expect(syncService.setPin).toHaveBeenCalledWith("654321");
+    expect(syncService.generatePin).toHaveBeenCalledTimes(1);
     expect(syncService.clearPin).toHaveBeenCalledTimes(1);
     expect(syncService.updateLocalDevice).toHaveBeenCalledWith({ name: "Mac Studio" });
     expect(syncService.forgetDevice).toHaveBeenCalledWith("phone-1");

@@ -175,6 +175,10 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     // serviceB sees the same on-disk pin file but only the host that performed
     // the migration retains the plaintext PIN in memory; serviceB should not.
     expect(serviceB.getPin()).toBeNull();
+
+    const generated = await serviceA.generatePin();
+    expect(generated.pairingPin).toMatch(/^\d{6}$/);
+    expect(serviceA.getPin()).toBe(generated.pairingPin);
   });
 
   it("reports W3 transfer blockers while keeping paused and idle state survivable", async () => {
@@ -387,7 +391,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     expect(transferred.transferReadiness.ready).toBe(true);
   }, 30_000);
 
-  it("builds pairing QR payloads with LAN-first address candidates and tailscale fallback", async () => {
+  it("builds pairing runtime addresses with LAN-first address candidates and tailscale fallback", async () => {
     const projectRoot = makeProjectRoot("ade-sync-service-pairing-");
     const db = await openKvDb(
       path.join(projectRoot, ".ade", "ade.db"),
@@ -498,16 +502,8 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     expect(refreshedCandidates[0]?.kind).toBe("saved");
     expect(refreshedCandidates[0]?.host).toBe(refreshedStatus.localDevice.lastHost);
 
-    const encodedPayload =
-      status.pairingConnectInfo?.qrPayloadText.split("payload=")[1] ?? "";
-    const parsedPayload = JSON.parse(decodeURIComponent(encodedPayload)) as {
-      version: number;
-      hostIdentity: { deviceId: string };
-      addressCandidates: Array<{ host: string; kind: string }>;
-    };
-    expect(parsedPayload.version).toBe(2);
-    expect(parsedPayload.hostIdentity.deviceId).toBe(localDeviceId);
-    expect(parsedPayload.addressCandidates.some((c) => c.kind === "loopback" && c.host === "127.0.0.1")).toBe(true);
+    expect(status.pairingConnectInfo?.hostIdentity.deviceId).toBe(localDeviceId);
+    expect(addressCandidates.some((c) => c.kind === "loopback" && c.host === "127.0.0.1")).toBe(true);
   }, 30_000);
 
   it("does not start the sync host or expose pairing details when host startup is disabled", async () => {

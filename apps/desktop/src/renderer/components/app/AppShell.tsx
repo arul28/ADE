@@ -394,7 +394,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       if (currentIsNewTabOpen && nextProject && !projectChanged) {
         setProject(nextProject);
         setProjectBinding(nextBinding ?? null);
-        if (currentShowWelcome) setShowWelcome(false);
+        // Leave showWelcome alone — the user explicitly opened the new-tab
+        // UI; a stale project-changed event for the same root must not kick
+        // them back to the project content.
         return;
       }
 

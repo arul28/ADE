@@ -36,6 +36,7 @@ import { SmartTooltip } from "../ui/SmartTooltip";
 import type {
   ProcessRuntime,
   ProjectIcon,
+  OpenProjectBinding,
   RecentProjectSummary,
   RemoteRuntimeConnectionSnapshot,
   SyncRoleSnapshot,
@@ -63,6 +64,7 @@ const PROJECT_ICON_CACHE_MAX = 24;
 const projectIconCache = new Map<string, ProjectIcon>();
 const PROJECT_ICON_ACCENT_CACHE_MAX = 48;
 const projectIconAccentCache = new Map<string, string | null>();
+type RemoteProjectTab = Extract<OpenProjectBinding, { kind: "remote" }>;
 function getProjectIconFromCache(rootPath: string): ProjectIcon | undefined {
   const cached = projectIconCache.get(rootPath);
   if (cached === undefined) return undefined;
@@ -265,12 +267,14 @@ function ProjectTabIcon({
   isCurrent,
   animate,
   disabled,
+  readOnly = false,
   onAccentColorChange,
 }: {
   rootPath: string;
   isCurrent: boolean;
   animate: boolean;
   disabled: boolean;
+  readOnly?: boolean;
   onAccentColorChange?: (rootPath: string, color: string | null) => void;
 }) {
   const [icon, setIcon] = useState<ProjectIcon | null>(() =>
@@ -416,6 +420,23 @@ function ProjectTabIcon({
 
   if (disabled) return iconNode;
 
+  if (readOnly) {
+    return (
+      <span
+        aria-label="Project icon"
+        title="Project icon"
+        className={cn(
+          "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[5px] text-current",
+        )}
+        onClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => event.stopPropagation()}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        {iconNode}
+      </span>
+    );
+  }
+
   return (
     <Dialog.Root
       open={iconDialogOpen}
@@ -554,6 +575,7 @@ export function TopBar() {
     (s) => s.clearProjectTransitionError,
   );
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
+  const switchRemoteProject = useAppStore((s) => s.switchRemoteProject);
   const [recentProjects, setRecentProjects] = useState<RecentProjectSummary[]>(
     [],
   );
@@ -572,6 +594,9 @@ export function TopBar() {
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [publishOpen, setPublishOpen] = useState(false);
   const [openProjectTabRoots, setOpenProjectTabRoots] = useState<string[]>([]);
+  const [openRemoteProjectTabs, setOpenRemoteProjectTabs] = useState<
+    RemoteProjectTab[]
+  >([]);
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [dropIdx, setDropIdx] = useState<number | null>(null);
   const [windowId, setWindowId] = useState<number | null>(null);
@@ -637,14 +662,55 @@ export function TopBar() {
 
   useEffect(() => {
     const rootPath = project?.rootPath ?? null;
-    if (!rootPath || remoteBinding) {
-      setOpenProjectTabRoots([]);
+    if (!rootPath) {
+      // Only wipe local tabs when the user has explicitly closed the project
+      // (welcome screen visible, no remote binding, no transition in flight).
+      // Otherwise we'd nuke other tabs whenever `project` is briefly null mid
+      // open/switch/close.
+      if (
+        !remoteBinding &&
+        projectTransition == null &&
+        showWelcome === true
+      ) {
+        setOpenProjectTabRoots([]);
+      }
+      return;
+    }
+    if (remoteBinding) {
+      return;
+    }
+    // Skip while a transition targeting a *different* root is in flight.
+    // During switch/close, `project` briefly points at the OLD root before
+    // the await resolves; re-adding it here would resurrect a tab the user
+    // just removed via handleRemoveTab.
+    if (projectTransition != null && projectTransition.rootPath !== rootPath) {
       return;
     }
     setOpenProjectTabRoots((prev) =>
       prev.includes(rootPath) ? prev : [...prev, rootPath],
     );
-  }, [project?.rootPath, remoteBinding]);
+  }, [project?.rootPath, remoteBinding, projectTransition, showWelcome]);
+
+  useEffect(() => {
+    if (!remoteBinding) return;
+    setOpenRemoteProjectTabs((prev) => {
+      const existingIndex = prev.findIndex(
+        (entry) => entry.key === remoteBinding.key,
+      );
+      if (existingIndex === -1) return [...prev, remoteBinding];
+      const next = [...prev];
+      next[existingIndex] = remoteBinding;
+      return next;
+    });
+  }, [remoteBinding]);
+
+  useEffect(() => {
+    if (project || remoteBinding) return;
+    // Same guard as above: only wipe remote tabs on a true close, not while a
+    // transition is in flight or before the welcome screen is shown.
+    if (projectTransition != null || showWelcome !== true) return;
+    setOpenRemoteProjectTabs([]);
+  }, [project, remoteBinding, projectTransition, showWelcome]);
 
   const projectTabs = useMemo<RecentProjectSummary[]>(
     () =>
@@ -862,13 +928,36 @@ export function TopBar() {
   const handleSwitchProject = useCallback(
     (rootPath: string) => {
       if (isProjectBusy) return;
-      if (project?.rootPath === rootPath) {
+      if (!remoteBinding && project?.rootPath === rootPath) {
         cancelNewTab();
         return;
       }
       switchProjectToPath(rootPath).catch(() => {});
     },
-    [cancelNewTab, isProjectBusy, project?.rootPath, switchProjectToPath],
+    [
+      cancelNewTab,
+      isProjectBusy,
+      project?.rootPath,
+      remoteBinding,
+      switchProjectToPath,
+    ],
+  );
+
+  const handleSwitchRemoteProject = useCallback(
+    (binding: RemoteProjectTab) => {
+      if (isProjectBusy) return;
+      if (remoteBinding?.key === binding.key) {
+        cancelNewTab();
+        return;
+      }
+      switchRemoteProject(binding.targetId, binding.projectId).catch(() => {});
+    },
+    [
+      cancelNewTab,
+      isProjectBusy,
+      remoteBinding?.key,
+      switchRemoteProject,
+    ],
   );
 
   const handleRemoveTab = useCallback(
@@ -889,13 +978,18 @@ export function TopBar() {
           (entry) => entry !== rootPath,
         );
         setOpenProjectTabRoots(nextTabRoots);
-        if (project?.rootPath === rootPath) {
+        if (!remoteBinding && project?.rootPath === rootPath) {
           const nextRoot =
             nextTabRoots[currentIndex] ??
             nextTabRoots[currentIndex - 1] ??
             null;
           if (nextRoot) {
             switchProjectToPath(nextRoot).catch(() => {});
+          } else if (openRemoteProjectTabs[0]) {
+            switchRemoteProject(
+              openRemoteProjectTabs[0].targetId,
+              openRemoteProjectTabs[0].projectId,
+            ).catch(() => {});
           } else {
             closeProject().catch(() => {});
           }
@@ -906,16 +1000,51 @@ export function TopBar() {
       checkForActiveWorkloads,
       closeProject,
       openProjectTabRoots,
+      openRemoteProjectTabs,
       project?.rootPath,
       projectTabs,
+      remoteBinding,
       switchProjectToPath,
+      switchRemoteProject,
     ],
   );
 
-  const handleCloseRemoteTab = useCallback(() => {
+  const handleCloseRemoteTab = useCallback((binding: RemoteProjectTab) => {
     if (isProjectBusy) return;
-    closeProject().catch(() => {});
-  }, [closeProject, isProjectBusy]);
+    const closedIndex = openRemoteProjectTabs.findIndex(
+      (entry) => entry.key === binding.key,
+    );
+    const nextRemoteTabs = openRemoteProjectTabs.filter(
+      (entry) => entry.key !== binding.key,
+    );
+    setOpenRemoteProjectTabs(nextRemoteTabs);
+    if (remoteBinding?.key !== binding.key) return;
+
+    const nextRemoteTab =
+      nextRemoteTabs[closedIndex] ?? nextRemoteTabs[closedIndex - 1] ?? null;
+    if (nextRemoteTab) {
+      switchRemoteProject(nextRemoteTab.targetId, nextRemoteTab.projectId).catch(
+        () => {},
+      );
+      return;
+    }
+
+    const nextLocalRoot =
+      openProjectTabRoots[openProjectTabRoots.length - 1] ?? null;
+    if (nextLocalRoot) {
+      switchProjectToPath(nextLocalRoot).catch(() => {});
+    } else {
+      closeProject().catch(() => {});
+    }
+  }, [
+    closeProject,
+    isProjectBusy,
+    openProjectTabRoots,
+    openRemoteProjectTabs,
+    remoteBinding?.key,
+    switchProjectToPath,
+    switchRemoteProject,
+  ]);
 
   const handleRelocate = useCallback(
     (oldPath: string) => {
@@ -1020,21 +1149,58 @@ export function TopBar() {
     e.dataTransfer.dropEffect = "move";
   }, []);
 
-  const handleDragEnd = useCallback((e: React.DragEvent, rootPath?: string) => {
-    const draggedOutside =
-      rootPath &&
-      (e.clientX < 0 ||
-        e.clientY < 0 ||
-        e.clientX > window.innerWidth ||
-        e.clientY > window.innerHeight);
-    const droppedOnAdeTarget =
-      e.dataTransfer.dropEffect && e.dataTransfer.dropEffect !== "none";
-    setDragIdx(null);
-    setDropIdx(null);
-    if (draggedOutside && !droppedOnAdeTarget) {
+  const handleDragEnd = useCallback(
+    (e: React.DragEvent, rootPath?: string) => {
+      const draggedOutside =
+        rootPath &&
+        (e.clientX < 0 ||
+          e.clientY < 0 ||
+          e.clientX > window.innerWidth ||
+          e.clientY > window.innerHeight);
+      const droppedOnAdeTarget =
+        e.dataTransfer.dropEffect && e.dataTransfer.dropEffect !== "none";
+      setDragIdx(null);
+      setDropIdx(null);
+      if (!draggedOutside || droppedOnAdeTarget || !rootPath) return;
+
+      // Fire IPC immediately so the new window starts spawning while we
+      // optimistically clean up the source window's tab state.
       window.ade.app.openProjectInNewWindow(rootPath).catch(() => {});
-    }
-  }, []);
+
+      // Detach skips the confirmation + active workload checks intentionally:
+      // the user already committed to detaching by dragging the tab out, and
+      // the work is moving to a new window rather than terminating.
+      const currentIndex = openProjectTabRoots.indexOf(rootPath);
+      if (currentIndex === -1) return;
+      const nextTabRoots = openProjectTabRoots.filter(
+        (entry) => entry !== rootPath,
+      );
+      setOpenProjectTabRoots(nextTabRoots);
+      if (!remoteBinding && project?.rootPath === rootPath) {
+        const nextRoot =
+          nextTabRoots[currentIndex] ?? nextTabRoots[currentIndex - 1] ?? null;
+        if (nextRoot) {
+          switchProjectToPath(nextRoot).catch(() => {});
+        } else if (openRemoteProjectTabs[0]) {
+          switchRemoteProject(
+            openRemoteProjectTabs[0].targetId,
+            openRemoteProjectTabs[0].projectId,
+          ).catch(() => {});
+        } else {
+          closeProject().catch(() => {});
+        }
+      }
+    },
+    [
+      closeProject,
+      openProjectTabRoots,
+      openRemoteProjectTabs,
+      project?.rootPath,
+      remoteBinding,
+      switchProjectToPath,
+      switchRemoteProject,
+    ],
+  );
 
   const handleProjectAccentColorChange = useCallback(
     (rootPath: string, color: string | null) => {
@@ -1163,53 +1329,74 @@ export function TopBar() {
         onDragOver={handleProjectTabDragOver}
         onDrop={handleProjectTabDrop}
       >
-        {remoteBinding || projectTabs.length > 0 || isNewTabOpen ? (
+        {openRemoteProjectTabs.length > 0 ||
+        projectTabs.length > 0 ||
+        isNewTabOpen ? (
           <>
-            {remoteBinding ? (
-              <div
-                key={remoteBinding.key}
-                role="button"
-                tabIndex={0}
-                data-state="active"
-                aria-current="true"
-                className={cn(
-                  "ade-shell-project-tab group inline-flex w-[clamp(154px,18vw,240px)] max-w-[240px] min-w-0 shrink-0 items-center gap-2 px-3 py-0.5",
-                  "font-semibold transition-[background-color,color,border-color,box-shadow,opacity] duration-150",
-                )}
-                style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-                title={`${remoteBinding.runtimeName}: ${remoteBinding.rootPath}`}
-              >
-                <DesktopTower
-                  size={14}
-                  weight="duotone"
-                  className="shrink-0 text-accent"
-                />
-                <span className="min-w-0 flex-1 truncate text-[12px]">
-                  {remoteBinding.displayName}
-                </span>
-                <span className="max-w-[72px] shrink truncate text-[10px] font-medium text-muted-fg">
-                  {remoteBinding.runtimeName}
-                </span>
-                <button
-                  type="button"
+            {openRemoteProjectTabs.map((remoteTab) => {
+              const isCurrentRemote = remoteBinding?.key === remoteTab.key;
+              return (
+                <div
+                  key={remoteTab.key}
+                  role="button"
+                  tabIndex={0}
+                  data-state={isCurrentRemote ? "active" : undefined}
+                  aria-current={isCurrentRemote ? "true" : undefined}
                   className={cn(
-                    "ade-shell-control ml-auto inline-flex h-5 w-5 shrink-0 items-center justify-center text-current",
-                    "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150",
+                    "ade-shell-project-tab group inline-flex w-[clamp(128px,16vw,220px)] max-w-[220px] min-w-0 shrink-0 items-center gap-2 px-3 py-0.5",
+                    "font-semibold transition-[background-color,color,border-color,box-shadow,opacity] duration-150",
+                    "cursor-pointer border border-warning/40",
                   )}
-                  data-variant="ghost"
-                  disabled={isProjectBusy}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleCloseRemoteTab();
+                  style={
+                    { WebkitAppRegion: "no-drag" } as React.CSSProperties
+                  }
+                  title={`${remoteTab.runtimeName}: ${remoteTab.rootPath}`}
+                  onClick={() => handleSwitchRemoteProject(remoteTab)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      handleSwitchRemoteProject(remoteTab);
+                    }
                   }}
-                  title="Close remote project"
                 >
-                  <X size={13} weight="regular" />
-                </button>
-              </div>
-            ) : null}
+                  <ProjectTabIcon
+                    rootPath={remoteTab.rootPath}
+                    isCurrent={isCurrentRemote}
+                    animate={false}
+                    disabled={false}
+                    readOnly={true}
+                  />
+                  <span className="min-w-0 flex-1 truncate text-center text-[12px]">
+                    {remoteTab.displayName}
+                  </span>
+                  <DesktopTower
+                    size={11}
+                    weight="duotone"
+                    className="shrink-0 text-warning"
+                    aria-label={`Remote: ${remoteTab.runtimeName}`}
+                  />
+                  <button
+                    type="button"
+                    className={cn(
+                      "ade-shell-control ml-auto inline-flex h-5 w-5 shrink-0 items-center justify-center text-current",
+                      "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150",
+                    )}
+                    data-variant="ghost"
+                    disabled={isProjectBusy}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleCloseRemoteTab(remoteTab);
+                    }}
+                    title="Close remote project"
+                  >
+                    <X size={13} weight="regular" />
+                  </button>
+                </div>
+              );
+            })}
             {projectTabs.map((rp, idx) => {
-              const isCurrent = project?.rootPath === rp.rootPath;
+              const isCurrent =
+                !remoteBinding && project?.rootPath === rp.rootPath;
               const isMissing = !rp.exists;
               const isRelocating = relocatingPath === rp.rootPath;
               const isSwitchTarget =
@@ -1308,7 +1495,7 @@ export function TopBar() {
                   ) : null}
                   <span
                     className={cn(
-                      "min-w-0 flex-1 truncate",
+                      "min-w-0 flex-1 truncate text-center",
                       isMissing && "line-through",
                     )}
                   >

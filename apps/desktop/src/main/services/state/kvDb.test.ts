@@ -1,9 +1,12 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { createRequire } from "node:module";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { openKvDb } from "./kvDb";
 import { isCrsqliteAvailable } from "./crsqliteExtension";
+
+const require = createRequire(path.join(process.cwd(), "ade-runtime.cjs"));
 
 function createLogger() {
   return {
@@ -195,6 +198,29 @@ afterEach(async () => {
   }
 });
 
+describe("openKvDb SQL binding", () => {
+  it("binds boolean params and reports unsupported param types with context", async () => {
+    const projectRoot = makeProjectRoot("ade-kvdb-bind-values-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    activeDisposers.push(async () => db.close());
+
+    db.run("create table if not exists db_value_test(flag integer not null)");
+    db.run("insert into db_value_test(flag) values (?)", [true]);
+    expect(db.get<{ flag: number }>("select flag from db_value_test limit 1")?.flag).toBe(1);
+
+    expect(() =>
+      db.run("insert into db_value_test(flag) values (?)", [{} as any]),
+    ).toThrow(/Unsupported database value at parameter 1: object .*sql=insert into db_value_test/i);
+    expect(() =>
+      db.get("select flag from db_value_test where flag = ?", [{} as any]),
+    ).toThrow(/Unsupported database value at parameter 1: object .*sql=select flag from db_value_test/i);
+    expect(() =>
+      db.all("select flag from db_value_test where flag = ?", [{} as any]),
+    ).toThrow(/Unsupported database value at parameter 1: object .*sql=select flag from db_value_test/i);
+  });
+});
+
 describe.skipIf(!isCrsqliteAvailable())("openKvDb CRR repair", () => {
   it("backfills phone-critical tables whose rows predate CRR enablement", async () => {
     const projectRoot = makeProjectRoot("ade-kvdb-pre-crr-");
@@ -246,5 +272,49 @@ describe.skipIf(!isCrsqliteAvailable())("openKvDb CRR repair", () => {
         "select 1 as present from sqlite_master where type = 'index' and name = 'idx_terminal_sessions_started_at' limit 1",
       )?.present,
     ).toBe(1);
+  });
+});
+
+describe.skipIf(!isCrsqliteAvailable())("openKvDb with unavailable crsqlite runtime", () => {
+  it("drops stale CRR triggers before migration writes touch CRR tables", async () => {
+    const projectRoot = makeProjectRoot("ade-kvdb-crr-unavailable-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const first = await openKvDb(dbPath, createLogger() as any);
+    first.close();
+
+    const { DatabaseSync } = require("node:sqlite") as typeof import("node:sqlite");
+    const raw = new DatabaseSync(dbPath);
+    expect(
+      raw
+        .prepare(
+          "select 1 as present from sqlite_master where type = 'trigger' and name = 'unified_memories__crsql_utrig' limit 1",
+        )
+        .get(),
+    ).toBeTruthy();
+    raw.close();
+
+    vi.resetModules();
+    vi.doMock("./crsqliteExtension", () => ({
+      resolveCrsqliteExtensionPath: () => null,
+      isCrsqliteAvailable: () => false,
+    }));
+    const { openKvDb: openWithoutCrsqlite } = await import("./kvDb");
+    const reopened = await openWithoutCrsqlite(dbPath, createLogger() as any);
+    activeDisposers.push(async () => reopened.close());
+
+    expect(reopened.sync.isAvailable?.()).toBe(false);
+    expect(
+      reopened.get<{ present: number }>(
+        "select 1 as present from sqlite_master where type = 'trigger' and name = 'unified_memories__crsql_utrig' limit 1",
+      ),
+    ).toBeNull();
+    expect(
+      reopened.get<{ present: number }>(
+        "select 1 as present from sqlite_master where type = 'table' and name = 'unified_memories__crsql_clock' limit 1",
+      )?.present,
+    ).toBe(1);
+
+    vi.doUnmock("./crsqliteExtension");
+    vi.resetModules();
   });
 });

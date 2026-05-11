@@ -21,6 +21,7 @@ import type {
   RemoteRuntimeEventNotificationPayload,
   RemoteRuntimeLocalWorkCheckResult,
   RemoteRuntimeProjectRecord,
+  RemoteRuntimeProjectWorkSummary,
   RemoteRuntimeStreamEventsRequest,
   RemoteRuntimeStreamEventsResult,
   RemoteRuntimeTarget,
@@ -32,6 +33,7 @@ import { RemoteConnectionService } from "../remoteRuntime/remoteConnectionServic
 import { discoverLanRuntimes } from "../remoteRuntime/runtimeDiscovery";
 import { RemoteTargetRegistry } from "../remoteRuntime/remoteTargetRegistry";
 import { runGit } from "../git/git";
+import { getProjectWorkSummary } from "../projects/projectDetailService";
 import { toRecentProjectSummary } from "../projects/recentProjectSummary";
 import { readGlobalState } from "../state/globalState";
 
@@ -48,6 +50,7 @@ type RuntimeBridgeArgs = {
     binding: OpenProjectBinding & { kind: "remote" },
   ) => void;
   localRuntimeConnectionPool?: LocalRuntimeConnectionPool | null;
+  getGitHubTokenForRemoteClone?: (() => string | null) | null;
 };
 
 const RUNTIME_ACTION_CLIENT_ID_FIELD = "__adeRuntimeClientId";
@@ -63,6 +66,7 @@ const REMOTE_RUNTIME_SYNC_METHODS = new Set([
   "sync.transferBrainToLocal",
   "sync.getPin",
   "sync.setPin",
+  "sync.generatePin",
   "sync.clearPin",
   "sync.setActiveLanePresence",
 ]);
@@ -143,27 +147,42 @@ async function inspectLocalWorkForRemoteOrigin(args: {
   const originUrl = origin.stdout.trim();
   if (normalizeGitRemoteForComparison(originUrl) !== args.remoteOriginKey)
     return null;
-  const dirty = await runGit(
-    ["status", "--porcelain=v1", "--untracked-files=all"],
-    { cwd: args.rootPath, timeoutMs: 8_000 },
+  const workSummary = await getProjectWorkSummary(args.rootPath).catch(
+    () => null,
   );
-  const dirtyCount =
-    dirty.exitCode === 0
-      ? dirty.stdout.split(/\r?\n/).filter((line) => line.trim().length > 0)
-          .length
-      : 0;
+  const dirtyCount = workSummary?.dirtyFileCount ?? 0;
   if (dirtyCount <= 0) return null;
   return {
     rootPath: args.rootPath,
     displayName: args.displayName,
     gitOriginUrl: originUrl,
     dirtyCount,
+    workSummary,
   };
+}
+
+async function getRemoteProjectWorkSummary(args: {
+  targetId: string;
+  rootPath: string | null;
+  remoteConnectionService: RemoteConnectionService;
+}): Promise<RemoteRuntimeProjectWorkSummary | null> {
+  if (!args.targetId || !args.rootPath) return null;
+  return await args.remoteConnectionService
+    .getProjectWorkSummary(args.targetId, args.rootPath)
+    .catch(() => null);
+}
+
+function createGitHubAuthHeader(token: string | null | undefined): string | null {
+  const trimmed = token?.trim();
+  if (!trimmed) return null;
+  const basic = Buffer.from(`x-access-token:${trimmed}`, "utf8").toString("base64");
+  return `basic ${basic}`;
 }
 
 export function registerRuntimeBridge({
   appVersion,
   bindRemoteProject,
+  getGitHubTokenForRemoteClone,
   getWindowSession,
   globalStatePath,
   localRuntimeConnectionPool,
@@ -410,9 +429,20 @@ export function registerRuntimeBridge({
       arg: { id: string; input?: CloneProjectInput },
     ): Promise<RemoteRuntimeProjectRecord> => {
       const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      const input = arg?.input ?? { url: "", parentDir: "" };
+      let githubAuthHeader: string | null = null;
+      try {
+        githubAuthHeader = createGitHubAuthHeader(
+          getGitHubTokenForRemoteClone?.() ?? null,
+        );
+      } catch {
+        githubAuthHeader = null;
+      }
       return await remoteConnectionService.cloneProject(
         id,
-        arg?.input ?? { url: "", parentDir: "" },
+        githubAuthHeader && !input.githubAuthHeader
+          ? { ...input, githubAuthHeader }
+          : input,
       );
     },
   );
@@ -716,8 +746,9 @@ export function registerRuntimeBridge({
     IPC.remoteRuntimeCheckLocalWork,
     async (
       _event,
-      arg: { project?: RemoteRuntimeProjectRecord },
+      arg: { id?: string; project?: RemoteRuntimeProjectRecord },
     ): Promise<RemoteRuntimeLocalWorkCheckResult> => {
+      const targetId = typeof arg?.id === "string" ? arg.id.trim() : "";
       const project =
         arg?.project &&
         typeof arg.project === "object" &&
@@ -736,6 +767,14 @@ export function registerRuntimeBridge({
         typeof project?.gitOriginUrl === "string" && project.gitOriginUrl.trim()
           ? project.gitOriginUrl.trim()
           : null;
+      const remoteWorkSummary = await getRemoteProjectWorkSummary({
+        targetId,
+        rootPath:
+          typeof project?.rootPath === "string" && project.rootPath.trim()
+            ? project.rootPath.trim()
+            : null,
+        remoteConnectionService,
+      });
       const remoteOriginKey =
         normalizeGitRemoteForComparison(remoteGitOriginUrl);
       if (!remoteOriginKey) {
@@ -743,6 +782,7 @@ export function registerRuntimeBridge({
           remoteProjectId,
           remoteDisplayName,
           remoteGitOriginUrl,
+          remoteWorkSummary,
           matches: [],
           hasDirtyWork: false,
         };
@@ -798,6 +838,7 @@ export function registerRuntimeBridge({
         remoteProjectId,
         remoteDisplayName,
         remoteGitOriginUrl,
+        remoteWorkSummary,
         matches,
         hasDirtyWork: matches.length > 0,
       };

@@ -1701,14 +1701,20 @@ final class SyncService: ObservableObject {
       migrateTokenIfNeeded(for: profile)
       return profile
     }
-    guard let data = UserDefaults.standard.data(forKey: legacyDraftKey),
-          let draft = try? decoder.decode(ConnectionDraft.self, from: data) else {
-      return nil
+    if let data = UserDefaults.standard.data(forKey: legacyDraftKey),
+       let draft = try? decoder.decode(ConnectionDraft.self, from: data) {
+      let migrated = HostConnectionProfile(legacy: draft)
+      saveProfile(migrated)
+      UserDefaults.standard.removeObject(forKey: legacyDraftKey)
+      return migrated
     }
-    let migrated = HostConnectionProfile(legacy: draft)
-    saveProfile(migrated)
-    UserDefaults.standard.removeObject(forKey: legacyDraftKey)
-    return migrated
+
+    if let fallback = mostRecentSavedProfileWithCredentials() {
+      saveProfile(fallback)
+      syncConnectLog.info("Selected most recent saved ADE machine for automatic reconnect: \(syncLogProfileSummary(fallback), privacy: .public)")
+      return fallback
+    }
+    return nil
   }
 
   private func profileStorageKey(_ profile: HostConnectionProfile) -> String? {
@@ -1833,6 +1839,18 @@ final class SyncService: ObservableObject {
       return
     }
     keychain.saveToken(legacyToken, hostKey: key)
+  }
+
+  private func storedTokenForSavedProfile(_ profile: HostConnectionProfile) -> String? {
+    guard let key = profileStorageKey(profile) else { return nil }
+    return keychain.loadToken(hostKey: key)
+  }
+
+  private func mostRecentSavedProfileWithCredentials() -> HostConnectionProfile? {
+    loadSavedProfilesRaw().values
+      .filter { storedTokenForSavedProfile($0) != nil }
+      .sorted { shouldPreferProfile($0, over: $1) }
+      .first
   }
 
   private func tokenForProfile(_ profile: HostConnectionProfile?) -> String? {
@@ -2342,31 +2360,6 @@ final class SyncService: ObservableObject {
       connectionState = .error
       setDomainStatus(SyncDomain.allCases, phase: .failed, error: friendlyMessage)
     }
-  }
-
-  func decodePairingQrPayload(from rawValue: String) throws -> SyncPairingQrPayload {
-    let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-    if let url = URL(string: trimmed), let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-       let payloadValue = components.queryItems?.first(where: { $0.name == "payload" })?.value {
-      let json = payloadValue.removingPercentEncoding ?? payloadValue
-      if let data = json.data(using: .utf8), let payload = try? decodeCurrentPairingQrPayload(from: data) {
-        return payload
-      }
-    }
-
-    throw NSError(domain: "ADE", code: 22, userInfo: [NSLocalizedDescriptionKey: "That QR code is not a valid ADE pairing payload."])
-  }
-
-  private func decodeCurrentPairingQrPayload(from data: Data) throws -> SyncPairingQrPayload {
-    let payload = try decoder.decode(SyncPairingQrPayload.self, from: data)
-    guard payload.version == 2 else {
-      throw NSError(
-        domain: "ADE",
-        code: 22,
-        userInfo: [NSLocalizedDescriptionKey: "That QR code uses an unsupported ADE pairing format."]
-      )
-    }
-    return payload
   }
 
   private func friendlyPairingFailureMessage(_ raw: Any) -> String {
@@ -4897,7 +4890,7 @@ final class SyncService: ObservableObject {
       domain: "ADE",
       code: 24,
       userInfo: [
-        NSLocalizedDescriptionKey: "No ADE machine address is available. Scan the pairing QR again or enter the machine address manually.",
+        NSLocalizedDescriptionKey: "No ADE machine address is available. Choose a discovered machine or enter the runtime address manually.",
       ]
     )
   }
@@ -5238,6 +5231,32 @@ final class SyncService: ObservableObject {
     return NSError(domain: nsError.domain, code: nsError.code, userInfo: userInfo)
   }
 
+  private func profileByApplyingDiscoveredRoutes(
+    _ profile: HostConnectionProfile,
+    matching: [DiscoveredSyncHost]
+  ) -> HostConnectionProfile {
+    var next = profile
+    let liveLanAddresses = deduplicatedAddresses(matching.flatMap(\.addresses))
+    let liveTailscaleAddress = matching.compactMap(\.tailscaleAddress).first ?? profile.tailscaleAddress
+    next.discoveredLanAddresses = liveLanAddresses
+    next.tailscaleAddress = liveTailscaleAddress
+    next.savedAddressCandidates = Array(
+      deduplicatedAddresses(
+        (profile.lastSuccessfulAddress.map { [$0] } ?? [])
+        + liveLanAddresses
+        + (liveTailscaleAddress.map { [$0] } ?? [])
+        + profile.savedAddressCandidates
+      ).prefix(6)
+    )
+    if next.hostIdentity == nil {
+      next.hostIdentity = matching.compactMap(\.hostIdentity).first
+    }
+    if next.hostName == nil {
+      next.hostName = matching.first?.hostName
+    }
+    return next
+  }
+
   private func applyDiscoveredHosts(_ hosts: [DiscoveredSyncHost]) {
     var mergedByIdentity: [String: DiscoveredSyncHost] = [:]
     var noIdentity: [DiscoveredSyncHost] = []
@@ -5280,29 +5299,14 @@ final class SyncService: ObservableObject {
     }
     let merged = identifiedHosts + filteredNoIdentity
     discoveredHosts = merged.sorted { $0.hostName.localizedCaseInsensitiveCompare($1.hostName) == .orderedAscending }
+    refreshSavedProfilesFromDiscovery()
     guard let profile = activeHostProfile else { return }
     let matching = discoveredHosts.filter { discovered in
       matchesDiscoveredHost(discovered, profile: profile)
     }
     guard !matching.isEmpty else { return }
     updateProfile { profile in
-      let liveLanAddresses = deduplicatedAddresses(matching.flatMap(\.addresses))
-      let liveTailscaleAddress = matching.compactMap(\.tailscaleAddress).first ?? profile.tailscaleAddress
-      profile.discoveredLanAddresses = liveLanAddresses
-      profile.tailscaleAddress = liveTailscaleAddress
-      profile.savedAddressCandidates = Array(
-        deduplicatedAddresses(
-          (profile.lastSuccessfulAddress.map { [$0] } ?? [])
-          + liveLanAddresses
-          + (liveTailscaleAddress.map { [$0] } ?? [])
-        ).prefix(6)
-      )
-      if profile.hostIdentity == nil {
-        profile.hostIdentity = matching.compactMap(\.hostIdentity).first
-      }
-      if profile.hostName == nil {
-        profile.hostName = matching.first?.hostName
-      }
+      profile = profileByApplyingDiscoveredRoutes(profile, matching: matching)
     }
     guard autoReconnectAwaitingLiveDiscovery,
           allowAutoReconnect,
@@ -5317,6 +5321,26 @@ final class SyncService: ObservableObject {
     autoReconnectAwaitingLiveDiscovery = false
     Task { @MainActor [weak self] in
       await self?.reconnectIfPossible()
+    }
+  }
+
+  private func refreshSavedProfilesFromDiscovery() {
+    var profiles = loadSavedProfilesRaw()
+    guard !profiles.isEmpty, !discoveredHosts.isEmpty else { return }
+    var changed = false
+    for (key, profile) in profiles {
+      let matching = discoveredHosts.filter { discovered in
+        matchesDiscoveredHost(discovered, profile: profile)
+      }
+      guard !matching.isEmpty else { continue }
+      let updated = profileByApplyingDiscoveredRoutes(profile, matching: matching)
+      guard updated != profile else { continue }
+      profiles.removeValue(forKey: key)
+      profiles[profileStorageKey(updated) ?? key] = updated
+      changed = true
+    }
+    if changed {
+      saveSavedProfiles(profiles)
     }
   }
 

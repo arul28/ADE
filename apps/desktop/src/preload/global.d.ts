@@ -855,6 +855,7 @@ declare global {
           request?: RemoteRuntimeStreamEventsRequest,
         ) => Promise<RemoteRuntimeStreamEventsResult>;
         checkLocalWork: (
+          id: string,
           project: RemoteRuntimeProjectRecord,
         ) => Promise<RemoteRuntimeLocalWorkCheckResult>;
         disconnect: (id: string) => Promise<{ disconnected: boolean }>;
@@ -932,6 +933,7 @@ declare global {
         transferBrainToLocal: () => Promise<SyncRoleSnapshot>;
         getPin: () => Promise<{ pin: string | null }>;
         setPin: (pin: string) => Promise<SyncRoleSnapshot>;
+        generatePin: () => Promise<SyncRoleSnapshot>;
         clearPin: () => Promise<SyncRoleSnapshot>;
         setActiveLanePresence: (args: { laneIds: string[] }) => Promise<void>;
         onEvent: (cb: (event: SyncStatusEventPayload) => void) => () => void;

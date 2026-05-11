@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { randomInt } from "node:crypto";
 import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
 import type {
   SyncAddressCandidate,
@@ -7,7 +8,6 @@ import type {
   SyncDeviceRuntimeState,
   SyncGetStatusArgs,
   SyncPairingConnectInfo,
-  SyncPairingQrPayload,
   SyncProjectCatalogPayload,
   SyncProjectSwitchRequestPayload,
   SyncProjectSwitchResultPayload,
@@ -220,6 +220,10 @@ const SYNC_HOST_PORT_RETRY_WINDOW = 12;
 const LOCAL_LANE_PRESENCE_HEARTBEAT_MS = 30_000;
 const TRANSFER_READINESS_CACHE_MS = 15_000;
 
+function generatePairingPin(): string {
+  return randomInt(0, 1_000_000).toString().padStart(6, "0");
+}
+
 function buildSkippedTransferReadiness(): SyncTransferReadiness {
   return {
     ready: false,
@@ -314,19 +318,10 @@ function buildPairingConnectInfo(argsIn: {
     platform: argsIn.localDevice.platform,
     deviceType: argsIn.localDevice.deviceType,
   };
-  const qrPayload: SyncPairingQrPayload = {
-    version: 2,
-    hostIdentity,
-    port,
-    addressCandidates,
-  };
-  const qrPayloadText = `ade-sync://pair?payload=${encodeURIComponent(JSON.stringify(qrPayload))}`;
   return {
     hostIdentity,
     port,
     addressCandidates,
-    qrPayload,
-    qrPayloadText,
   };
 }
 
@@ -1050,6 +1045,10 @@ export function createSyncService(args: SyncServiceArgs) {
       const snapshot = await service.getStatus();
       args.onStatusChanged?.(snapshot);
       return snapshot;
+    },
+
+    async generatePin(): Promise<SyncRoleSnapshot> {
+      return await service.setPin(generatePairingPin());
     },
 
     async clearPin(): Promise<SyncRoleSnapshot> {

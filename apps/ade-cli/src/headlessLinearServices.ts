@@ -59,6 +59,11 @@ import { createPrService as createPrServiceImpl } from "../../desktop/src/main/s
 import { createAutomationSecretService as createAutomationSecretServiceImpl } from "../../desktop/src/main/services/automations/automationSecretService";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
 
+// Keep headless runtimes aligned with the desktop credential service so packaged
+// alpha builds can offer the same PKCE-based Linear sign-in flow.
+const BUNDLED_LINEAR_OAUTH_CLIENT_ID =
+  process.env.ADE_LINEAR_CLIENT_ID?.trim() || "432fb2ddb16f939ae5d5270e2c86571f";
+
 type HeadlessLinearCredentialService = {
   getStatus: () => {
     tokenStored: boolean;
@@ -385,6 +390,25 @@ function parseNextGitHubLink(linkHeader: string | null): string | null {
   return null;
 }
 
+const GITHUB_API_TIMEOUT_MS = 20_000;
+
+async function fetchGitHub(input: string | URL, init: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), GITHUB_API_TIMEOUT_MS);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error(
+        "GitHub API request timed out. Check network access on this machine.",
+      );
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export function createHeadlessGitHubService(
   projectRoot: string,
   logger: Logger,
@@ -454,7 +478,7 @@ export function createHeadlessGitHubService(
     scopes: string[];
     tokenType: HeadlessGitHubStatus["tokenType"];
   }> => {
-    const response = await fetch("https://api.github.com/user", {
+    const response = await fetchGitHub("https://api.github.com/user", {
       method: "GET",
       headers: {
         accept: "application/vnd.github+json",
@@ -485,7 +509,7 @@ export function createHeadlessGitHubService(
     repo: { owner: string; name: string },
   ): Promise<{ ok: boolean; error: string | null }> => {
     try {
-      const response = await fetch(
+      const response = await fetchGitHub(
         `https://api.github.com/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}`,
         {
           method: "GET",
@@ -522,7 +546,7 @@ export function createHeadlessGitHubService(
       if (value == null) continue;
       url.searchParams.set(key, String(value));
     }
-    const response = await fetch(url, {
+    const response = await fetchGitHub(url, {
       method: args.method,
       headers: {
         accept: "application/vnd.github+json",
@@ -1022,7 +1046,11 @@ function createHeadlessLinearCredentialService(): HeadlessLinearCredentialServic
     clientSecret: string | null;
   } | null => {
     const raw = readCredential(oauthClientKey);
-    if (!raw) return null;
+    if (!raw) {
+      return BUNDLED_LINEAR_OAUTH_CLIENT_ID
+        ? { clientId: BUNDLED_LINEAR_OAUTH_CLIENT_ID, clientSecret: null }
+        : null;
+    }
     try {
       const parsed = JSON.parse(raw) as unknown;
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))

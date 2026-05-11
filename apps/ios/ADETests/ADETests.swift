@@ -1950,33 +1950,6 @@ final class ADETests: XCTestCase {
     database.close()
   }
 
-  @MainActor
-  func testSyncPairingQrPayloadRoundTripFromDesktopLink() throws {
-    let payload = """
-    {"version":2,"hostIdentity":{"deviceId":"host-1","siteId":"site-1","name":"Mac Studio","platform":"macOS","deviceType":"desktop"},"port":8787,"addressCandidates":[{"host":"192.168.1.8","kind":"lan"},{"host":"100.101.102.103","kind":"tailscale"}]}
-    """
-    let url = "ade-sync://pair?payload=\(payload.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? payload)"
-
-    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
-    let decoded = try service.decodePairingQrPayload(from: url)
-
-    XCTAssertEqual(decoded.hostIdentity.deviceId, "host-1")
-    XCTAssertEqual(decoded.hostIdentity.name, "Mac Studio")
-    XCTAssertEqual(decoded.version, 2)
-    XCTAssertEqual(decoded.addressCandidates.map(\.host), ["192.168.1.8", "100.101.102.103"])
-  }
-
-  @MainActor
-  func testSyncPairingQrPayloadRejectsUnsupportedVersion() throws {
-    let payload = """
-    {"version":3,"hostIdentity":{"deviceId":"host-1","siteId":"site-1","name":"Mac Studio","platform":"macOS","deviceType":"desktop"},"port":8787,"addressCandidates":[{"host":"192.168.1.8","kind":"lan"}]}
-    """
-    let url = "ade-sync://pair?payload=\(payload.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? payload)"
-
-    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
-    XCTAssertThrowsError(try service.decodePairingQrPayload(from: url))
-  }
-
   func testDatabasePersistsStableSiteIdAcrossReopen() throws {
     let baseURL = makeTemporaryDirectory()
     let database = makeDatabase(baseURL: baseURL)

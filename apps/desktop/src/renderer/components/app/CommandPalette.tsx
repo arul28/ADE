@@ -953,8 +953,11 @@ export function CommandPalette({
             activeRemoteTargetId,
             nextTarget,
           );
-          const localWork =
-            await window.ade.remoteRuntime.checkLocalWork(remoteProject);
+	          const localWork =
+	            await window.ade.remoteRuntime.checkLocalWork(
+	              activeRemoteTargetId,
+	              remoteProject,
+	            );
           if (localWork.hasDirtyWork) {
             setPendingRemoteOpen({
               targetId: activeRemoteTargetId,
@@ -1561,16 +1564,7 @@ export function CommandPalette({
                                 )
                             : undefined
                         }
-                        listMyRepos={
-                          activeRemoteTargetId
-                            ? (input) =>
-                                window.ade.remoteRuntime.listMyGitHubRepos(
-                                  activeRemoteTargetId,
-                                  input ?? {},
-                                )
-                            : undefined
-                        }
-                        allowTokenSetup={!activeRemoteTargetId}
+                        allowTokenSetup={true}
                         onCancel={() => setMode("project-add")}
                         onCloned={(result) =>
                           handleProjectActionSuccess("Cloned", result)

@@ -6,6 +6,7 @@ import type {
   ProjectBrowseInput,
   ProjectBrowseResult,
   ProjectDetail,
+  RemoteRuntimeProjectWorkSummary,
   RemoteRuntimeConnectionSnapshot,
   RemoteRuntimeConnectionState,
   RemoteRuntimeConnectionStatus,
@@ -221,6 +222,17 @@ export class RemoteConnectionService {
       "projects.getDetail",
       { rootPath },
     )) as ProjectDetail;
+  }
+
+  async getProjectWorkSummary(
+    targetId: string,
+    rootPath: string,
+  ): Promise<RemoteRuntimeProjectWorkSummary> {
+    return (await this.callMachine(
+      this.requireTarget(targetId),
+      "projects.getWorkSummary",
+      { rootPath },
+    )) as RemoteRuntimeProjectWorkSummary;
   }
 
   async getDefaultParentDir(targetId: string): Promise<string> {

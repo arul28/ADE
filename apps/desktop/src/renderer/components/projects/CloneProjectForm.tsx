@@ -149,6 +149,30 @@ function relativeFromNow(iso: string | null | undefined): string {
   return `${years}y ago`;
 }
 
+function withRepoListDeadline(
+  promise: Promise<ListMyGitHubReposResult>,
+): Promise<ListMyGitHubReposResult> {
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      reject(
+        new Error(
+          "Timed out loading repositories. Check GitHub auth and network access on the selected machine.",
+        ),
+      );
+    }, 15_000);
+    promise.then(
+      (value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        window.clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
 type ChooseDirectory =
   | ((args: { title: string; defaultPath?: string }) => Promise<string | null>)
   | null;
@@ -812,6 +836,11 @@ function ConnectedRepoBrowser({
   const [expandedFullName, setExpandedFullName] = useState<string | null>(null);
 
   const requestRef = useRef(0);
+  const listMyReposRef = useRef(listMyRepos);
+
+  useEffect(() => {
+    listMyReposRef.current = listMyRepos;
+  }, [listMyRepos]);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
@@ -824,7 +853,9 @@ function ConnectedRepoBrowser({
     const requestId = ++requestRef.current;
     setLoading(true);
     setError(null);
-    void listMyRepos({ search: debouncedSearch || undefined })
+    void withRepoListDeadline(
+      listMyReposRef.current({ search: debouncedSearch || undefined }),
+    )
       .then((result) => {
         if (requestRef.current !== requestId) return;
         const sorted = [...result.repos].sort((a, b) => {
@@ -846,7 +877,7 @@ function ConnectedRepoBrowser({
         if (requestRef.current !== requestId) return;
         setLoading(false);
       });
-  }, [debouncedSearch, listMyRepos]);
+  }, [debouncedSearch]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>

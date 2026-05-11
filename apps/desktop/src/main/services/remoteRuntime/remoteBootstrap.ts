@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { Client } from "ssh2";
@@ -40,8 +41,15 @@ export function shouldUploadBundledRuntime(args: {
   localBinaryAvailable: boolean;
   executableVersion: string | null;
   appVersion: string;
+  localBinarySha256?: string | null;
+  remoteBinarySha256?: string | null;
 }): boolean {
-  return args.localBinaryAvailable && args.executableVersion !== args.appVersion;
+  if (!args.localBinaryAvailable) return false;
+  if (args.executableVersion !== args.appVersion) return true;
+  if (args.localBinarySha256) {
+    return args.remoteBinarySha256 !== args.localBinarySha256;
+  }
+  return false;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -59,6 +67,24 @@ export function validateRemoteRuntimeInitializeResult(args: {
   const capabilities = isRecord(args.result.capabilities) ? args.result.capabilities : {};
   if (runtimeInfo.multiProject !== true || capabilities.projects !== true) {
     throw new Error("Remote ADE service does not support multi-project mode. Update the ADE service on that machine.");
+  }
+  const machineProjects = isRecord(capabilities.machineProjects)
+    ? capabilities.machineProjects
+    : {};
+  const requiredMachineProjectCapabilities = [
+    "browseDirectories",
+    "getDetail",
+    "getWorkSummary",
+    "getDefaultParentDir",
+    "create",
+    "clone",
+  ];
+  const missingMachineProjectCapability =
+    requiredMachineProjectCapabilities.find((capability) => machineProjects[capability] !== true);
+  if (missingMachineProjectCapability) {
+    throw new Error(
+      `Remote ADE service is missing project capability '${missingMachineProjectCapability}'. Reconnect after rebuilding or reinstalling ADE on that machine.`,
+    );
   }
   const version = typeof runtimeInfo.version === "string" && runtimeInfo.version.trim()
     ? runtimeInfo.version.trim()
@@ -81,6 +107,7 @@ type RemoteRuntimeLayout = {
   binaryExpr: string;
   binaryRelative: string;
   versionExpr: string;
+  sha256Expr: string;
 };
 
 function normalizeRemoteRuntimeChannel(value: unknown): RemoteRuntimeChannel {
@@ -110,6 +137,7 @@ export function resolveRemoteRuntimeLayout(env: NodeJS.ProcessEnv = process.env)
     binaryExpr: `${binDirExpr}/ade`,
     binaryRelative: `${homeDirName}/bin/ade`,
     versionExpr: `${binDirExpr}/ade.version`,
+    sha256Expr: `${binDirExpr}/ade.sha256`,
   };
 }
 
@@ -122,6 +150,7 @@ export function buildRemoteRuntimeEnvironmentPrefix(args: {
   const parts = [
     `ADE_HOME="${layout.homeDirExpr}"`,
     `PATH="${layout.binDirExpr}:$HOME/.local/bin:$HOME/.npm-global/bin${"${PATH:+:$PATH}"}"`,
+    `ADE_DEFAULT_ROLE="cto"`,
   ];
   if (layout.channel) {
     parts.push(`ADE_PACKAGE_CHANNEL="${layout.channel}"`);
@@ -168,7 +197,11 @@ function bundledNativeDepsPath(resourcesPath: string, archLabel: string): string
   }) ?? null;
 }
 
-async function uploadRuntimeBinary(client: Client, layout: RemoteRuntimeLayout, localPath: string, appVersion: string): Promise<void> {
+function hashRuntimeBinary(localPath: string): string {
+  return crypto.createHash("sha256").update(fs.readFileSync(localPath)).digest("hex");
+}
+
+async function uploadRuntimeBinary(client: Client, layout: RemoteRuntimeLayout, localPath: string, appVersion: string, localBinarySha256: string): Promise<void> {
   await execSsh(client, `mkdir -p ${layout.binDirExpr}`);
   await new Promise<void>((resolve, reject) => {
     client.sftp((error, sftp) => {
@@ -187,8 +220,22 @@ async function uploadRuntimeBinary(client: Client, layout: RemoteRuntimeLayout, 
     `chmod 700 ${layout.binDirExpr}`,
     `chmod +x ${layout.binaryExpr}`,
     `printf '%s\\n' ${shellQuote(appVersion)} > ${layout.versionExpr}`,
+    `printf '%s\\n' ${shellQuote(localBinarySha256)} > ${layout.sha256Expr}`,
     `chmod 600 ${layout.versionExpr}`,
+    `chmod 600 ${layout.sha256Expr}`,
   ].join(" && "));
+}
+
+async function signUploadedRuntimeBinaryIfNeeded(client: Client, layout: RemoteRuntimeLayout, platform: string): Promise<void> {
+  if (platform !== "darwin") return;
+  const signed = await execSsh(client, `codesign --force --sign - ${layout.binaryExpr}`);
+  if (signed.code !== 0) {
+    throw new Error(
+      signed.stderr.trim() ||
+      signed.stdout.trim() ||
+      "Uploaded ADE service could not be signed on the remote Mac.",
+    );
+  }
 }
 
 async function uploadNativeDepsBundle(client: Client, layout: RemoteRuntimeLayout, archLabel: string, localPath: string, appVersion: string): Promise<void> {
@@ -215,6 +262,42 @@ async function uploadNativeDepsBundle(client: Client, layout: RemoteRuntimeLayou
   ].join(" && "));
   if (extract.code !== 0) {
     throw new Error(extract.stderr.trim() || "Unable to unpack ADE service native dependencies on the remote machine.");
+  }
+}
+
+async function stopRemoteRuntimeDaemon(client: Client, layout: RemoteRuntimeLayout, runtimeEnvPrefix: string): Promise<void> {
+  await execSsh(
+    client,
+    `${runtimeEnvPrefix}${layout.binaryExpr} runtime stop --text >/dev/null 2>&1 || true`,
+  );
+}
+
+function isMissingMachineProjectCapability(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /missing project capability/i.test(message);
+}
+
+async function openValidatedRuntimeClient(args: {
+  ssh: Client;
+  command: string;
+  appVersion: string;
+  expectedVersion: string | null;
+}): Promise<RuntimeRpcClient> {
+  const transport = await openSshRuntimeTransport(args.ssh, args.command);
+  const client = new RuntimeRpcClient(transport);
+  try {
+    const initializeResult = await client.initialize(
+      "ade-desktop-remote",
+      args.appVersion,
+    );
+    validateRemoteRuntimeInitializeResult({
+      result: initializeResult,
+      expectedVersion: args.expectedVersion,
+    });
+    return client;
+  } catch (error) {
+    client.close();
+    throw error;
   }
 }
 
@@ -253,6 +336,8 @@ export async function bootstrapRemoteRuntime(args: {
     const layout = resolveRemoteRuntimeLayout();
     const binaryMarkerCheck = await execSsh(ssh, `cat ${layout.versionExpr} 2>/dev/null || true`);
     const markedRuntimeVersion = normalizeRuntimeVersion(binaryMarkerCheck.stdout);
+    const binaryHashCheck = await execSsh(ssh, `cat ${layout.sha256Expr} 2>/dev/null || true`);
+    const remoteBinarySha256 = binaryHashCheck.stdout.trim() || null;
     const versionCheck = await execSsh(ssh, `test -x ${layout.binaryExpr} && ${layout.binaryExpr} --version || true`);
     const executableRuntimeVersion = normalizeRuntimeVersion(versionCheck.stdout);
     let runtimeVersion = selectRemoteRuntimeVersion({
@@ -260,14 +345,18 @@ export async function bootstrapRemoteRuntime(args: {
       executableVersion: executableRuntimeVersion,
     });
     const localBinary = bundledRuntimePath(args.resourcesPath, arch.label);
+    const localBinarySha256 = localBinary ? hashRuntimeBinary(localBinary) : null;
     const nativeDepsBundle = bundledNativeDepsPath(args.resourcesPath, arch.label);
     let runtimeUploaded = false;
-    if (localBinary && shouldUploadBundledRuntime({
+    if (localBinary && localBinarySha256 && shouldUploadBundledRuntime({
       localBinaryAvailable: true,
       executableVersion: executableRuntimeVersion,
       appVersion: args.appVersion,
+      localBinarySha256,
+      remoteBinarySha256,
     })) {
-      await uploadRuntimeBinary(ssh, layout, localBinary, args.appVersion);
+      await uploadRuntimeBinary(ssh, layout, localBinary, args.appVersion, localBinarySha256);
+      await signUploadedRuntimeBinaryIfNeeded(ssh, layout, arch.platform);
       runtimeUploaded = true;
       runtimeVersion = args.appVersion;
     }
@@ -307,6 +396,10 @@ export async function bootstrapRemoteRuntime(args: {
       runtimeVersion = uploadedVersion;
     }
 
+    if (runtimeUploaded) {
+      await stopRemoteRuntimeDaemon(ssh, layout, runtimeEnvPrefix);
+    }
+
     if (!runtimeVersion) {
       const pathVersionCheck = await execSsh(ssh, `${runtimeEnvPrefix}ade --version || true`);
       runtimeVersion = normalizeRuntimeVersion(pathVersionCheck.stdout);
@@ -318,13 +411,27 @@ export async function bootstrapRemoteRuntime(args: {
     const command = localBinary || runtimeUploaded
       ? `${runtimeEnvPrefix}${layout.binaryExpr} rpc --stdio`
       : `${runtimeEnvPrefix}ade rpc --stdio`;
-    const transport = await openSshRuntimeTransport(ssh, command);
-    const client = new RuntimeRpcClient(transport);
-    const initializeResult = await client.initialize("ade-desktop-remote", args.appVersion);
-    validateRemoteRuntimeInitializeResult({
-      result: initializeResult,
-      expectedVersion: localBinary || runtimeUploaded ? args.appVersion : null,
-    });
+    let client: RuntimeRpcClient;
+    const expectedVersion = localBinary || runtimeUploaded ? args.appVersion : null;
+    try {
+      client = await openValidatedRuntimeClient({
+        ssh,
+        command,
+        appVersion: args.appVersion,
+        expectedVersion,
+      });
+    } catch (error) {
+      if (!localBinary || !isMissingMachineProjectCapability(error)) {
+        throw error;
+      }
+      await stopRemoteRuntimeDaemon(ssh, layout, runtimeEnvPrefix);
+      client = await openValidatedRuntimeClient({
+        ssh,
+        command,
+        appVersion: args.appVersion,
+        expectedVersion,
+      });
+    }
     const projects = coerceProjects(await client.call("projects.list", {}));
     const updated = args.registry.update(args.target.id, {
       lastSeenArch: arch.label,

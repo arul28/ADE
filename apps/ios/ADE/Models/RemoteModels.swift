@@ -162,13 +162,6 @@ struct SyncPairingHostIdentity: Codable, Equatable {
   var deviceType: String
 }
 
-struct SyncPairingQrPayload: Codable, Equatable {
-  var version: Int
-  var hostIdentity: SyncPairingHostIdentity
-  var port: Int
-  var addressCandidates: [SyncAddressCandidate]
-}
-
 enum SyncDomain: String, CaseIterable, Hashable {
   case lanes
   case files

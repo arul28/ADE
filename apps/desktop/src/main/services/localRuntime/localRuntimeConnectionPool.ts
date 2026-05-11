@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
@@ -102,6 +103,7 @@ export function buildLocalRuntimeNodeEnv(
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     ...baseEnv,
+    ADE_DEFAULT_ROLE: "cto",
     ELECTRON_RUN_AS_NODE: "1",
     ADE_CLI_VERSION: appVersion,
   };
@@ -186,12 +188,29 @@ function openSocketTransport(socketPath: string, timeoutMs = 3_000): Promise<Run
   });
 }
 
-function readRuntimeInfoVersion(value: unknown): string | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+function readRuntimeInfo(value: unknown): { version: string | null; buildHash: string | null } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { version: null, buildHash: null };
+  }
   const runtimeInfo = (value as { runtimeInfo?: unknown }).runtimeInfo;
-  if (!runtimeInfo || typeof runtimeInfo !== "object" || Array.isArray(runtimeInfo)) return null;
+  if (!runtimeInfo || typeof runtimeInfo !== "object" || Array.isArray(runtimeInfo)) {
+    return { version: null, buildHash: null };
+  }
   const version = (runtimeInfo as { version?: unknown }).version;
-  return typeof version === "string" && version.trim() ? version.trim() : null;
+  const buildHash = (runtimeInfo as { buildHash?: unknown }).buildHash;
+  return {
+    version: typeof version === "string" && version.trim() ? version.trim() : null,
+    buildHash: typeof buildHash === "string" && buildHash.trim() ? buildHash.trim() : null,
+  };
+}
+
+export function computeLocalRuntimeBuildHash(cliPath = resolveCliScriptPath()): string | null {
+  try {
+    const content = fs.readFileSync(cliPath);
+    return createHash("sha256").update(content).digest("hex");
+  } catch {
+    return null;
+  }
 }
 
 async function shutdownRuntimeClient(client: RuntimeRpcClient): Promise<void> {
@@ -459,6 +478,10 @@ export class LocalRuntimeConnectionPool {
     return await this.callSyncForRoot<SyncRoleSnapshot>(rootPath, "sync.setPin", { pin });
   }
 
+  async generateSyncPinForRoot(rootPath: string): Promise<SyncRoleSnapshot> {
+    return await this.callSyncForRoot<SyncRoleSnapshot>(rootPath, "sync.generatePin");
+  }
+
   async clearSyncPinForRoot(rootPath: string): Promise<SyncRoleSnapshot> {
     return await this.callSyncForRoot<SyncRoleSnapshot>(rootPath, "sync.clearPin");
   }
@@ -621,15 +644,25 @@ export class LocalRuntimeConnectionPool {
     const transport = await openSocketTransport(socketPath);
     const client = new RuntimeRpcClient(transport);
     const initializeResult = await client.initialize("ade-desktop-local", this.appVersion);
-    const runtimeVersion = readRuntimeInfoVersion(initializeResult);
-    if (runtimeVersion && runtimeVersion !== this.appVersion) {
+    const runtimeInfo = readRuntimeInfo(initializeResult);
+    if (runtimeInfo.version && runtimeInfo.version !== this.appVersion) {
       this.logger.info("local_runtime.version_mismatch_restart", {
         socketPath,
-        runtimeVersion,
+        runtimeVersion: runtimeInfo.version,
         appVersion: this.appVersion,
       });
       await shutdownRuntimeClient(client);
-      throw new Error(`ADE service version ${runtimeVersion} does not match desktop version ${this.appVersion}.`);
+      throw new Error(`ADE service version ${runtimeInfo.version} does not match desktop version ${this.appVersion}.`);
+    }
+    const expectedBuildHash = computeLocalRuntimeBuildHash();
+    if (expectedBuildHash && runtimeInfo.buildHash !== expectedBuildHash) {
+      this.logger.info("local_runtime.build_mismatch_restart", {
+        socketPath,
+        runtimeBuildHash: runtimeInfo.buildHash,
+        expectedBuildHash,
+      });
+      await shutdownRuntimeClient(client);
+      throw new Error("ADE service build does not match the packaged desktop runtime.");
     }
     this.activeClient = client;
     client.onDisconnect((error) => {
@@ -649,8 +682,11 @@ export class LocalRuntimeConnectionPool {
     const cliPath = resolveCliScriptPath();
     const args = buildLocalRuntimeServeArgs(cliPath, socketPath, this.options);
     this.logger.info("local_runtime.spawn", { cliPath, socketPath, disableSync: this.options.disableSync === true });
+    const env = buildLocalRuntimeNodeEnv(this.appVersion);
+    const buildHash = computeLocalRuntimeBuildHash(cliPath);
+    if (buildHash) env.ADE_RUNTIME_BUILD_HASH = buildHash;
     const child = spawn(process.execPath, args, {
-      env: buildLocalRuntimeNodeEnv(this.appVersion),
+      env,
       stdio: "ignore",
       detached: true,
     });

@@ -7711,6 +7711,9 @@ export function createAdeRpcRequestHandler(args: {
         const pin = typeof params.pin === "string" ? params.pin : "";
         return await syncService.setPin(pin);
       }
+      if (method === "sync.generatePin") {
+        return await syncService.generatePin();
+      }
       if (method === "sync.clearPin") {
         return await syncService.clearPin();
       }
