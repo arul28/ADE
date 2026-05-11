@@ -13,6 +13,10 @@ import {
 } from "./cursorCloud";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import {
+  findAdeManagedWorktreeRoot,
+  realpathIfExists,
+} from "./services/projects/projectRoots";
+import {
   JsonRpcError,
   JsonRpcErrorCode,
   startJsonRpcServer,
@@ -8838,43 +8842,11 @@ function buildCursorPlan(args: string[]): CliPlan {
   return { kind: "cursor-cloud", rest: args };
 }
 
-function findAdeManagedWorktreeRoot(
-  startDir: string,
-): { projectRoot: string; workspaceRoot: string } | null {
-  let resolved = path.resolve(startDir);
-  try {
-    resolved = fs.realpathSync.native(resolved);
-  } catch {
-    // path may not yet exist on disk; use the lexical resolution.
-  }
-  const segments = resolved.split(path.sep);
-  for (let index = segments.length - 2; index >= 0; index -= 1) {
-    if (segments[index] !== ".ade" || segments[index + 1] !== "worktrees")
-      continue;
-    const projectRoot = segments.slice(0, index).join(path.sep) || path.sep;
-    const worktreeName = segments[index + 2];
-    if (!worktreeName) continue;
-    const workspaceRoot =
-      segments.slice(0, index + 3).join(path.sep) || path.sep;
-    if (!fs.existsSync(path.join(projectRoot, ".ade"))) continue;
-    return {
-      projectRoot: path.resolve(projectRoot),
-      workspaceRoot: path.resolve(workspaceRoot),
-    };
-  }
-  return null;
-}
-
 function findProjectRoots(startDir: string): {
   projectRoot: string;
   workspaceRoot: string;
 } {
-  let canonicalStart = path.resolve(startDir);
-  try {
-    canonicalStart = fs.realpathSync.native(canonicalStart);
-  } catch {
-    // path may not yet exist on disk; use the lexical resolution.
-  }
+  const canonicalStart = realpathIfExists(startDir);
   const managedWorktree = findAdeManagedWorktreeRoot(canonicalStart);
   if (managedWorktree) return managedWorktree;
 

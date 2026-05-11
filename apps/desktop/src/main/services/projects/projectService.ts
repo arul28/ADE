@@ -3,10 +3,16 @@ import { randomUUID } from "node:crypto";
 import { runGit, runGitOrThrow } from "../git/git";
 import type { AdeDb } from "../state/kvDb";
 import type { ProjectInfo } from "../../../shared/types";
+import {
+  findAdeManagedWorktreeRoot,
+  normalizeProjectRootPath,
+} from "../../../../../ade-cli/src/services/projects/projectRoots";
 
 export async function resolveRepoRoot(selectedPath: string): Promise<string> {
+  const managedWorktree = findAdeManagedWorktreeRoot(selectedPath);
+  if (managedWorktree) return managedWorktree.projectRoot;
   const out = await runGitOrThrow(["rev-parse", "--show-toplevel"], { cwd: selectedPath, timeoutMs: 10_000 });
-  return out.trim();
+  return normalizeProjectRootPath(out.trim());
 }
 
 export async function detectDefaultBaseRef(repoRoot: string): Promise<string> {
@@ -39,10 +45,16 @@ export function upsertProjectRow({
   baseRef: string;
 }): { projectId: string } {
   const now = new Date().toISOString();
-  const existing = db.get<{ id: string }>("select id from projects where root_path = ? limit 1", [repoRoot]);
+  const normalizedRepoRoot = normalizeProjectRootPath(repoRoot);
+  const exactExisting = db.get<{ id: string }>("select id from projects where root_path = ? limit 1", [normalizedRepoRoot]);
+  const aliasExisting = exactExisting ?? db
+    .all<{ id: string; root_path: string }>("select id, root_path from projects")
+    .find((row) => normalizeProjectRootPath(String(row.root_path)) === normalizedRepoRoot);
+  const existing = aliasExisting ? { id: aliasExisting.id } : null;
   const id = existing?.id ?? randomUUID();
   if (existing?.id) {
-    db.run("update projects set display_name = ?, default_base_ref = ?, last_opened_at = ? where id = ?", [
+    db.run("update projects set root_path = ?, display_name = ?, default_base_ref = ?, last_opened_at = ? where id = ?", [
+      normalizedRepoRoot,
       displayName,
       baseRef,
       now,
@@ -51,12 +63,13 @@ export function upsertProjectRow({
   } else {
     db.run(
       "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
-      [id, repoRoot, displayName, baseRef, now, now]
+      [id, normalizedRepoRoot, displayName, baseRef, now, now]
     );
   }
   return { projectId: id };
 }
 
 export function toProjectInfo(repoRoot: string, baseRef: string): ProjectInfo {
-  return { rootPath: repoRoot, displayName: path.basename(repoRoot), baseRef };
+  const normalizedRepoRoot = normalizeProjectRootPath(repoRoot);
+  return { rootPath: normalizedRepoRoot, displayName: path.basename(normalizedRepoRoot), baseRef };
 }

@@ -44,9 +44,10 @@ describe("ProjectRegistry", () => {
 
   it("filters already-persisted user home entries from project lists", () => {
     const homeDir = makeTempRoot("ade-project-registry-home-");
-    const projectRoot = path.join(homeDir, "Projects", "ADE");
+    const rawProjectRoot = path.join(homeDir, "Projects", "ADE");
     const registryDir = path.join(homeDir, ".ade-runtime");
-    fs.mkdirSync(projectRoot, { recursive: true });
+    fs.mkdirSync(rawProjectRoot, { recursive: true });
+    const projectRoot = fs.realpathSync.native(rawProjectRoot);
     fs.mkdirSync(registryDir, { recursive: true });
     vi.spyOn(os, "homedir").mockReturnValue(homeDir);
     const projectsPath = path.join(registryDir, "projects.json");
@@ -82,5 +83,41 @@ describe("ProjectRegistry", () => {
     expect(registry.list().map((project) => project.rootPath)).toEqual([
       projectRoot,
     ]);
+  });
+
+  it("registers an ADE-managed lane worktree as the parent project", () => {
+    const homeDir = makeTempRoot("ade-project-registry-worktree-");
+    const rawProjectRoot = path.join(homeDir, "ADE");
+    fs.mkdirSync(path.join(rawProjectRoot, ".ade"), { recursive: true });
+    const projectRoot = fs.realpathSync.native(rawProjectRoot);
+    const worktreeRoot = path.join(projectRoot, ".ade", "worktrees", "feature-a");
+    fs.mkdirSync(path.join(worktreeRoot, "apps", "desktop"), { recursive: true });
+    const registryDir = path.join(homeDir, ".ade-runtime");
+    const registry = new ProjectRegistry({
+      adeDir: registryDir,
+      projectsPath: path.join(registryDir, "projects.json"),
+      secretsDir: path.join(registryDir, "secrets"),
+      sockDir: path.join(registryDir, "sock"),
+      socketPath: path.join(registryDir, "sock", "ade.sock"),
+      binDir: path.join(registryDir, "bin"),
+      runtimeDir: path.join(registryDir, "runtime"),
+    });
+
+    const registered = registry.add(path.join(worktreeRoot, "apps", "desktop"));
+
+    expect(registered.rootPath).toBe(projectRoot);
+    expect(registered.projectId).toBe(deriveProjectId(projectRoot));
+    expect(fs.existsSync(path.join(worktreeRoot, ".ade"))).toBe(false);
+  });
+
+  it("derives the same project id for symlink aliases", () => {
+    const homeDir = makeTempRoot("ade-project-registry-alias-");
+    const rawProjectRoot = path.join(homeDir, "ADE");
+    const aliasRoot = path.join(homeDir, "ADE-link");
+    fs.mkdirSync(rawProjectRoot, { recursive: true });
+    const projectRoot = fs.realpathSync.native(rawProjectRoot);
+    fs.symlinkSync(projectRoot, aliasRoot, "dir");
+
+    expect(deriveProjectId(aliasRoot)).toBe(deriveProjectId(projectRoot));
   });
 });

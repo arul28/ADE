@@ -57,7 +57,7 @@ import {
 } from "./services/projects/projectService";
 import { inspectRecentProject, type RecentProjectInspection } from "./services/projects/recentProjectSummary";
 import { resolveProjectIcon } from "./services/projects/projectIconResolver";
-import { resolveStartupProject } from "./services/projects/startupProjectResolver";
+import { normalizeStartupProjectState, resolveStartupProject } from "./services/projects/startupProjectResolver";
 import { createAdeProjectService } from "./services/projects/adeProjectService";
 import { createConfigReloadService } from "./services/projects/configReloadService";
 import { IPC } from "../shared/ipc";
@@ -87,6 +87,7 @@ import {
 } from "../../../ade-cli/src/bootstrap";
 import { startJsonRpcServer, type JsonRpcTransport } from "../../../ade-cli/src/jsonrpc";
 import { resolveMachineAdeLayout } from "../../../ade-cli/src/services/projects/machineLayout";
+import { normalizeProjectRootPath } from "../../../ade-cli/src/services/projects/projectRoots";
 import { createKeybindingsService } from "./services/keybindings/keybindingsService";
 import { createAgentToolsService } from "./services/agentTools/agentToolsService";
 import { createAdeCliService } from "./services/cli/adeCliService";
@@ -107,7 +108,11 @@ import {
 } from "./services/adeActions/registry";
 import { createUsageTrackingService } from "./services/usage/usageTrackingService";
 import { createBudgetCapService } from "./services/usage/budgetCapService";
-import { markMachineStateMigrationComplete, runMachineStateMigration } from "./services/runtime/machineStateMigration";
+import {
+  markMachineStateMigrationComplete,
+  readMachineRegistryRecentProjects,
+  runMachineStateMigration,
+} from "./services/runtime/machineStateMigration";
 import { createRebaseSuggestionService } from "./services/lanes/rebaseSuggestionService";
 import { createAutoRebaseService } from "./services/lanes/autoRebaseService";
 import { createMissionService } from "./services/missions/missionService";
@@ -958,7 +963,7 @@ app.whenReady().then(async () => {
     app.getPath("userData"),
     "ade-project",
   );
-  const normalizeProjectPath = (value: string) => path.resolve(value);
+  const normalizeProjectPath = (value: string) => normalizeProjectRootPath(value);
   const isLikelyRepoRoot = (value: string) => {
     const resolved = normalizeProjectPath(value);
     return (
@@ -969,58 +974,20 @@ app.whenReady().then(async () => {
     );
   };
 
-  const cleanedRecentProjects = (saved.recentProjects ?? []).reduce(
-    (acc, entry) => {
-      const rootPath =
-        typeof entry?.rootPath === "string"
-          ? normalizeProjectPath(entry.rootPath)
-          : "";
-      if (!isLikelyRepoRoot(rootPath)) return acc;
-      if (acc.some((item) => item.rootPath === rootPath)) return acc;
-      const displayName =
-        typeof entry?.displayName === "string" &&
-        entry.displayName.trim().length > 0
-          ? entry.displayName
-          : path.basename(rootPath);
-      const lastOpenedAt =
-        typeof entry?.lastOpenedAt === "string" &&
-        entry.lastOpenedAt.trim().length > 0
-          ? entry.lastOpenedAt
-          : new Date().toISOString();
-      acc.push({ rootPath, displayName, lastOpenedAt });
-      return acc;
-    },
-    [] as Array<{
-      rootPath: string;
-      displayName: string;
-      lastOpenedAt: string;
-    }>,
-  );
-  const hadRecentProjectsChanges =
-    cleanedRecentProjects.length !== (saved.recentProjects ?? []).length;
-  const cleanedLastProjectRoot = saved.lastProjectRoot
-    ? normalizeProjectPath(saved.lastProjectRoot)
-    : "";
-  const validLastProjectRoot =
-    isLikelyRepoRoot(cleanedLastProjectRoot) &&
-    cleanedRecentProjects.some(
-      (project) => project.rootPath === cleanedLastProjectRoot,
-    )
-      ? cleanedLastProjectRoot
-      : "";
-  const hadLastProjectRootChanges =
-    saved.lastProjectRoot !== validLastProjectRoot;
-  const normalizedState = {
-    ...saved,
-    lastProjectRoot: validLastProjectRoot || undefined,
-    recentProjects: cleanedRecentProjects,
-  };
+  const machineAdeLayout = resolveMachineAdeLayout();
+  const startupState = normalizeStartupProjectState({
+    saved,
+    additionalRecentProjects: readMachineRegistryRecentProjects(machineAdeLayout),
+    isLikelyRepoRoot,
+    normalizeProjectPath,
+  });
+  const cleanedRecentProjects = startupState.recentProjects;
+  const validLastProjectRoot = startupState.validLastProjectRoot;
 
-  if (hadRecentProjectsChanges || hadLastProjectRootChanges) {
-    writeGlobalState(globalStatePath, normalizedState);
+  if (startupState.changed) {
+    writeGlobalState(globalStatePath, startupState.state);
   }
 
-  const machineAdeLayout = resolveMachineAdeLayout();
   const machineStateMigration = runMachineStateMigration({
     layout: machineAdeLayout,
     recentProjects: cleanedRecentProjects,
@@ -4995,7 +4962,8 @@ app.whenReady().then(async () => {
       ctx.hasUserSelectedProject = true;
       persistRecentProject(ctx.project, {
         recordLastProject: true,
-        recordRecent: false,
+        recordRecent: true,
+        preserveRecentOrder: isKnownRecentProject,
       });
       bindWindowToProject(currentIpcWindowId(), repoRoot, { emit: true, foreground: true });
       scheduleProjectContextRebalance();

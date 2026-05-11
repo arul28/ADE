@@ -8,6 +8,7 @@ import type { MachineAdeLayout } from "../../../../../ade-cli/src/services/proje
 import {
   MACHINE_STATE_MIGRATION_MARKER,
   markMachineStateMigrationComplete,
+  readMachineRegistryRecentProjects,
   runMachineStateMigration,
 } from "./machineStateMigration";
 
@@ -26,7 +27,7 @@ function makeLayout(root: string): MachineAdeLayout {
 function makeProject(root: string, name: string): string {
   const projectRoot = path.join(root, name);
   fs.mkdirSync(path.join(projectRoot, ".ade", "secrets"), { recursive: true });
-  return projectRoot;
+  return fs.realpathSync.native(projectRoot);
 }
 
 describe("machine state migration", () => {
@@ -140,6 +141,37 @@ describe("machine state migration", () => {
     expect(result).toMatchObject({ didRun: true, shouldShowNotice: true });
     expect(add).toHaveBeenCalledWith(projectA);
     expect(add).toHaveBeenCalledWith(projectB);
+  });
+
+  it("exposes machine registry projects as startup recents", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-machine-migration-"));
+    const layout = makeLayout(path.join(root, ".ade"));
+    const projectRoot = makeProject(root, "project-a");
+    fs.mkdirSync(layout.adeDir, { recursive: true });
+    fs.writeFileSync(
+      layout.projectsPath,
+      `${JSON.stringify({
+        version: 1,
+        projects: [
+          {
+            projectId: "project_a",
+            rootPath: projectRoot,
+            displayName: "Project A",
+            addedAt: Date.parse("2026-05-10T00:00:00.000Z"),
+            lastOpenedAt: Date.parse("2026-05-10T00:00:00.000Z"),
+          },
+        ],
+      })}\n`,
+      "utf8",
+    );
+
+    expect(readMachineRegistryRecentProjects(layout)).toEqual([
+      {
+        rootPath: projectRoot,
+        displayName: "Project A",
+        lastOpenedAt: "2026-05-10T00:00:00.000Z",
+      },
+    ]);
   });
 
   it("marks migration complete only when explicitly requested", () => {

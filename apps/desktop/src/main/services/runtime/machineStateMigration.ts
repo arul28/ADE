@@ -114,6 +114,27 @@ function stableRegistryProjectsForChannelHome(layout: MachineAdeLayout): RecentP
   }
 }
 
+export function readMachineRegistryRecentProjects(layout: MachineAdeLayout): RecentProject[] {
+  const projects = [
+    ...registryProjectsAsRecent(layout),
+    ...stableRegistryProjectsForChannelHome(layout),
+  ];
+  return uniqueProjects(projects);
+}
+
+function registryProjectsAsRecent(layout: MachineAdeLayout): RecentProject[] {
+  if (!fs.existsSync(layout.projectsPath)) return [];
+  try {
+    return new ProjectRegistry(layout).list().map((project) => ({
+      rootPath: project.rootPath,
+      displayName: project.displayName,
+      lastOpenedAt: new Date(project.lastOpenedAt).toISOString(),
+    }));
+  } catch {
+    return [];
+  }
+}
+
 function uniqueProjects(projects: RecentProject[]): RecentProject[] {
   const seen = new Set<string>();
   const unique: RecentProject[] = [];
@@ -134,7 +155,7 @@ export function runMachineStateMigration(args: MachineStateMigrationArgs): Machi
 
   const migrationProjects = uniqueProjects([
     ...args.recentProjects,
-    ...stableRegistryProjectsForChannelHome(args.layout),
+    ...readMachineRegistryRecentProjects(args.layout),
   ]);
   const hadExistingUserState =
     migrationProjects.length > 0 || fs.existsSync(args.layout.secretsDir);

@@ -7,6 +7,7 @@ import {
   resolveMachineAdeLayout,
   type MachineAdeLayout,
 } from "./machineLayout";
+import { normalizeProjectRootPath } from "./projectRoots";
 
 export type ProjectId = string;
 
@@ -25,7 +26,7 @@ type ProjectRegistryFile = {
 };
 
 function normalizeRoot(rootPath: string): string {
-  return path.resolve(rootPath);
+  return normalizeProjectRootPath(rootPath);
 }
 
 function isSamePath(left: string, right: string): boolean {
@@ -77,10 +78,7 @@ function coerceRecord(value: unknown): ProjectRecord | null {
     typeof record.rootPath === "string" ? normalizeRoot(record.rootPath) : "";
   if (!rootPath) return null;
   if (isDisallowedProjectRoot(rootPath)) return null;
-  const projectId =
-    typeof record.projectId === "string" && record.projectId.trim()
-      ? record.projectId.trim()
-      : deriveProjectId(rootPath);
+  const projectId = deriveProjectId(rootPath);
   const now = Date.now();
   return {
     projectId,
@@ -207,7 +205,15 @@ export class ProjectRegistry {
             .map(coerceRecord)
             .filter((entry): entry is ProjectRecord => entry != null)
         : [];
-      return { version: 1, projects };
+      const seen = new Set<string>();
+      return {
+        version: 1,
+        projects: projects.filter((project) => {
+          if (seen.has(project.rootPath)) return false;
+          seen.add(project.rootPath);
+          return true;
+        }),
+      };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT")
         return emptyFile();
