@@ -292,10 +292,12 @@ function resolveCliEntrypoint(): string | null {
 
 function spawnDaemon(socketPath: string): boolean {
   const cliEntrypoint = resolveCliEntrypoint();
-  if (!cliEntrypoint) return false;
+  const daemonArgs = cliEntrypoint
+    ? [cliEntrypoint, "serve", "--socket", socketPath]
+    : ["serve", "--socket", socketPath];
   const child = spawn(
     process.execPath,
-    [cliEntrypoint, "serve", "--socket", socketPath],
+    daemonArgs,
     {
       detached: true,
       stdio: "ignore",
