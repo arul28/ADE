@@ -32,10 +32,12 @@ Per-project state stays under `<project>/.ade/` and is governed by `projectConfi
 Channel builds use parallel state roots and binary names so Stable, Beta, and Alpha can coexist:
 
 ```text
-ADE.app        -> ade        -> ~/.ade
-ADE Beta.app   -> ade-beta   -> ~/.ade-beta
-ADE Alpha.app  -> ade-alpha  -> ~/.ade-alpha
+ADE.app        -> ade        -> ~/.ade        -> ade-desktop
+ADE Beta.app   -> ade-beta   -> ~/.ade-beta   -> ade-desktop-beta
+ADE Alpha.app  -> ade-alpha  -> ~/.ade-alpha  -> ade-desktop-alpha
 ```
+
+Source dev launches use the temp dev socket and `ade-desktop-dev` Electron profile instead of the installed app profile.
 
 ## Install paths
 
@@ -344,7 +346,7 @@ npm run package:alpha        # current checkout -> ADE Alpha.app, ade-alpha, ~/.
 npm run package:beta         # origin/main -> ADE Beta.app, ade-beta, ~/.ade-beta
 ```
 
-Use these when you want a production-shaped local app without going through the GitHub release workflow. Alpha builds from the current checkout under `apps/desktop/release-alpha`; beta fetches `origin/main`, fast-forwards the local `main` checkout when possible, and writes artifacts under `apps/desktop/release-beta`. Use the dev scripts when you want Vite/Electron live reload and the temp dev socket. Local channel packages include the host runtime binary for the build machine. GitHub release builds use and validate the full cross-platform runtime artifact set.
+Use these when you want a production-shaped local app without going through the GitHub release workflow. Alpha builds from the current checkout under `apps/desktop/release-alpha`; beta fetches `origin/main`, fast-forwards the local `main` checkout when possible, and writes artifacts under `apps/desktop/release-beta`. Use the dev scripts when you want Vite/Electron live reload, the temp dev socket, and the dev-only Electron profile. Local channel packages include the host runtime binary for the build machine. GitHub release builds use and validate the full cross-platform runtime artifact set.
 
 The `prs path-to-merge` and `prs pipeline save` commands persist a partial `PipelineSettings` patch via `issue_inventory.savePipelineSettings` before launching the resolver. The Path to Merge orchestrator reads these from saved settings, so the same flags work either way:
 

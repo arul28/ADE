@@ -170,10 +170,11 @@ npm run dev:stop             # stop the dev runtime
 npm stop dev                 # same as dev:stop
 ```
 
-The dev commands intentionally use a temp socket so they do not collide with the installed ADE app:
+The dev commands intentionally use a temp socket and a separate Electron profile so they do not collide with the installed ADE app:
 
 ```text
 /tmp/ade-runtime-dev.sock
+~/Library/Application Support/ade-desktop-dev
 ```
 
 Override it when needed:
@@ -200,7 +201,7 @@ npm run package:alpha        # current checkout -> ADE Alpha.app, ade-alpha, ~/.
 npm run package:beta         # origin/main -> ADE Beta.app, ade-beta, ~/.ade-beta
 ```
 
-These are unsigned local macOS app builds under `apps/desktop/release-alpha` and `apps/desktop/release-beta`. Beta fetches `origin/main`, fast-forwards the local `main` checkout when possible, and builds that checkout as `ADE Beta`. It does not create a packaging worktree. These builds do not replace the production `ADE.app`, production `ade`, or `~/.ade` runtime/state.
+These are unsigned local macOS app builds under `apps/desktop/release-alpha` and `apps/desktop/release-beta`. Beta fetches `origin/main`, fast-forwards the local `main` checkout when possible, and builds that checkout as `ADE Beta`. It does not create a packaging worktree. These builds do not replace the production `ADE.app`, production `ade`, or `~/.ade` runtime/state. Alpha and Beta also use separate Electron profile directories (`ade-desktop-alpha` / `ade-desktop-beta`) so their browser storage and window state do not collide with dev or stable.
 Local channel packages include the host runtime binary for this Mac. Release builds still require the full cross-platform runtime artifact set used by remote runtime bootstrap.
 
 Validate with `npm --prefix apps/desktop run typecheck` and `run test`. The desktop test suite is large — run the smallest relevant subset first.

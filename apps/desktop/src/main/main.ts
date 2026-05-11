@@ -176,6 +176,7 @@ import type { DeviceRegistryService } from "./services/sync/deviceRegistryServic
 import { createAutoUpdateService } from "./services/updates/autoUpdateService";
 import { cleanupStaleTempArtifacts } from "./services/runtime/tempCleanupService";
 import type { Logger } from "./services/logging/logger";
+import { resolveDesktopUserDataPath, resolveElectronAppDataPath } from "./desktopUserDataPath";
 
 const AUTO_UPDATER_CACHE_DIR_NAME = "ade-desktop-updater";
 const ADE_BROWSER_WEBVIEW_PARTITION = "persist:ade-browser";
@@ -222,6 +223,31 @@ function applyPackagedChannelDefaults(): void {
 }
 
 applyPackagedChannelDefaults();
+
+function configureDesktopUserDataPath(): void {
+  const appDataPath = (() => {
+    try {
+      return app.getPath("appData");
+    } catch {
+      return resolveElectronAppDataPath({
+        platform: process.platform,
+        env: process.env,
+        homeDir: os.homedir(),
+      });
+    }
+  })();
+  const userDataPath = resolveDesktopUserDataPath({
+    appDataPath,
+    channel: normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL),
+    isPackaged: app.isPackaged,
+    env: process.env,
+  });
+  if (userDataPath) {
+    app.setPath("userData", userDataPath);
+  }
+}
+
+configureDesktopUserDataPath();
 
 function resolveAutoUpdaterCacheDir(): string {
   const homeDir = os.homedir();
