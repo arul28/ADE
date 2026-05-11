@@ -243,12 +243,18 @@ function ok(stdout = "") {
   return { stdout, stderr: "", code: 0 };
 }
 
-function createTempResources(archLabel = "linux-x64"): { resourcesPath: string; binaryPath: string; binarySha256: string; cleanup: () => void } {
+function createTempResources(
+  archLabel = "linux-x64",
+  options: { nativeDeps?: boolean } = {},
+): { resourcesPath: string; binaryPath: string; binarySha256: string; cleanup: () => void } {
   const resourcesPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-remote-runtime-"));
   const runtimeDir = path.join(resourcesPath, "runtime");
   fs.mkdirSync(runtimeDir, { recursive: true });
   const binaryPath = path.join(runtimeDir, `ade-${archLabel}`);
   fs.writeFileSync(binaryPath, "#!/bin/sh\n");
+  if (options.nativeDeps) {
+    fs.writeFileSync(path.join(runtimeDir, `ade-${archLabel}.native.tar.gz`), "native deps fixture\n");
+  }
   const binarySha256 = crypto.createHash("sha256").update(fs.readFileSync(binaryPath)).digest("hex");
   return {
     resourcesPath,
@@ -434,7 +440,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
 
   it("uses the matching isolated remote home for Alpha channel bootstrap", async () => {
     process.env.ADE_PACKAGE_CHANNEL = "alpha";
-    const resources = createTempResources("darwin-arm64");
+    const resources = createTempResources("darwin-arm64", { nativeDeps: true });
     cleanupResources = resources.cleanup;
     const fakeSsh = createFakeSsh();
     const registry = createRegistry();
