@@ -7,6 +7,11 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(packageRoot, "dist", "cli.cjs");
+const bundledRuntimeEntryPaths = [
+  cliPath,
+  path.join(packageRoot, "dist", "bootstrap.cjs"),
+  path.join(packageRoot, "dist", "adeRpcServer.cjs"),
+];
 const packageJsonPath = path.join(packageRoot, "package.json");
 
 async function runHelp(command, args) {
@@ -44,6 +49,16 @@ if (!contents.startsWith("#!/usr/bin/env node")) {
 const normalized = contents.replace(/require\((["'])sqlite\1\)/g, 'require("node:sqlite")');
 if (normalized !== contents) {
   await fs.writeFile(cliPath, normalized, "utf8");
+}
+
+for (const entryPath of bundledRuntimeEntryPaths) {
+  const entryContents = await fs.readFile(entryPath, "utf8");
+  if (/require\((["'])@opencode-ai\/sdk\1\)/.test(entryContents)) {
+    throw new Error(
+      `[ade-cli:build] ${path.relative(packageRoot, entryPath)} contains a bare require("@opencode-ai/sdk"); ` +
+        "inline the ESM-only SDK in tsup instead.",
+    );
+  }
 }
 
 const stat = await fs.stat(cliPath);

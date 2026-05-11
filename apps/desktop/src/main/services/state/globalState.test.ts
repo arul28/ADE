@@ -19,7 +19,7 @@ describe("upsertRecentProject", () => {
       { preserveRecentOrder: true },
     );
 
-    expect(next.lastProjectRoot).toBe("/projects/b");
+    expect(next.lastProjectRoot).toBeUndefined();
     expect(next.recentProjects?.map((entry) => entry.rootPath)).toEqual([
       "/projects/a",
       "/projects/b",
@@ -49,5 +49,16 @@ describe("upsertRecentProject", () => {
       "/projects/b",
       "/projects/a",
     ]);
+    expect(next.lastProjectRoot).toBeUndefined();
+  });
+
+  it("records lastProjectRoot only when explicitly requested", () => {
+    const next = upsertRecentProject(
+      {},
+      { rootPath: "/projects/a", displayName: "A" },
+      { recordLastProject: true },
+    );
+
+    expect(next.lastProjectRoot).toBe("/projects/a");
   });
 });

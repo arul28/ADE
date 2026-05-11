@@ -54,8 +54,10 @@ export function upsertRecentProject(
 ): GlobalState {
   const next: GlobalState = { ...state };
   const now = new Date().toISOString();
-  if (options.recordLastProject ?? true) {
+  if (options.recordLastProject ?? false) {
     next.lastProjectRoot = proj.rootPath;
+  } else {
+    delete next.lastProjectRoot;
   }
   if (options.recordRecent === false) {
     return next;

@@ -200,7 +200,7 @@ npm run package:alpha        # current checkout -> ADE Alpha.app, ade-alpha, ~/.
 npm run package:beta         # origin/main -> ADE Beta.app, ade-beta, ~/.ade-beta
 ```
 
-These are unsigned local macOS app builds under `apps/desktop/release-alpha` and `apps/desktop/release-beta`. They do not replace the production `ADE.app`, production `ade`, or `~/.ade` runtime/state.
+These are unsigned local macOS app builds. Alpha builds from the current checkout under `apps/desktop/release-alpha`; beta builds `origin/main` in the detached packaging worktree under `.ade/build-worktrees/beta/apps/desktop/release-beta`. They do not replace the production `ADE.app`, production `ade`, or `~/.ade` runtime/state.
 Local channel packages include the host runtime binary for this Mac. Release builds still require the full cross-platform runtime artifact set used by remote runtime bootstrap.
 
 Validate with `npm --prefix apps/desktop run typecheck` and `run test`. The desktop test suite is large — run the smallest relevant subset first.

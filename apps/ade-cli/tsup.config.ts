@@ -7,7 +7,6 @@ const external = [
   "@agentclientprotocol/sdk",
   "@anthropic-ai/claude-agent-sdk",
   "@cursor/sdk",
-  "@opencode-ai/sdk",
   "@wize-logic/nodejs-rfb",
   "chokidar",
   "node-pty",
@@ -33,6 +32,10 @@ export default defineConfig([
     outDir: "dist",
     sourcemap: true,
     clean: true,
+    // @opencode-ai/sdk is ESM-only (no "require" export); force-inline it so
+    // the CJS runtime bundle does not emit a bare require() that packaged
+    // Electron-as-node cannot resolve.
+    noExternal: ["@opencode-ai/sdk"],
     outExtension: () => ({
       js: ".cjs"
     }),
@@ -60,7 +63,7 @@ export default defineConfig([
     sourcemap: true,
     clean: false,
     splitting: false,
-    noExternal: ["ink", "ink-text-input", "react", "react/jsx-runtime"],
+    noExternal: ["ink", "ink-text-input", "react", "react/jsx-runtime", "@opencode-ai/sdk"],
     banner: {
       js: "import { createRequire as __adeCreateRequire } from 'node:module'; const require = __adeCreateRequire(import.meta.url);",
     },

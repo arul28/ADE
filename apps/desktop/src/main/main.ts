@@ -982,7 +982,6 @@ app.whenReady().then(async () => {
     normalizeProjectPath,
   });
   const cleanedRecentProjects = startupState.recentProjects;
-  const validLastProjectRoot = startupState.validLastProjectRoot;
 
   if (startupState.changed) {
     writeGlobalState(globalStatePath, startupState.state);
@@ -1014,8 +1013,6 @@ app.whenReady().then(async () => {
   const startupProject = resolveStartupProject({
     envRoot,
     pendingStartupProjectRoot,
-    validLastProjectRoot,
-    recentProjects: cleanedRecentProjects,
     normalizeProjectPath,
   });
   const shouldOpenStartupProject = startupProject.rootPath != null;
@@ -1536,7 +1533,7 @@ app.whenReady().then(async () => {
     projectRoot,
     baseRef,
     ensureExclude,
-    recordLastProject = true,
+    recordLastProject = false,
     recordRecent = true,
     preserveRecentOrder = false,
     userSelectedProject = false,
@@ -4901,7 +4898,7 @@ app.whenReady().then(async () => {
       if (existing) {
         existing.hasUserSelectedProject = true;
         persistRecentProject(existing.project, {
-          recordLastProject: true,
+          recordLastProject: false,
           preserveRecentOrder: isKnownRecentProject,
         });
         bindWindowToProject(currentIpcWindowId(), repoRoot, { emit: true, foreground: true });
@@ -4932,7 +4929,7 @@ app.whenReady().then(async () => {
               projectRoot: repoRoot!,
               baseRef,
               ensureExclude: true,
-              recordLastProject: true,
+              recordLastProject: false,
               recordRecent: true,
               preserveRecentOrder: isKnownRecentProject,
               userSelectedProject: true,
@@ -4961,7 +4958,7 @@ app.whenReady().then(async () => {
       const ctx = await initPromise;
       ctx.hasUserSelectedProject = true;
       persistRecentProject(ctx.project, {
-        recordLastProject: true,
+        recordLastProject: false,
         recordRecent: true,
         preserveRecentOrder: isKnownRecentProject,
       });
@@ -5544,8 +5541,8 @@ app.whenReady().then(async () => {
     builtInBrowserService,
   });
 
-  // Restore the startup project before the renderer boots so packaged launches
-  // do not flash into the welcome state and lose the previous project context.
+  // Explicit project launches still bind a project before the renderer boots;
+  // normal launches stay on the welcome/recent-project surface.
   if (shouldOpenStartupProject && startupProject.rootPath) {
     try {
       await switchProjectFromDialog(startupProject.rootPath);

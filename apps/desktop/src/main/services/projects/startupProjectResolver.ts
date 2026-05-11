@@ -1,7 +1,7 @@
 import path from "node:path";
 import type { GlobalState, RecentProject } from "../state/globalState";
 
-export type StartupProjectSource = "env" | "pending-open" | "last-project" | "recent-project" | "none";
+export type StartupProjectSource = "env" | "pending-open" | "none";
 
 export type StartupProjectResolution = {
   rootPath: string | null;
@@ -10,7 +10,6 @@ export type StartupProjectResolution = {
 
 export type StartupProjectStateNormalization = {
   state: GlobalState;
-  validLastProjectRoot: string;
   recentProjects: RecentProject[];
   changed: boolean;
 };
@@ -74,16 +73,15 @@ export function normalizeStartupProjectState(args: {
         savedProject.displayName !== project.displayName ||
         savedProject.lastOpenedAt !== project.lastOpenedAt;
     });
-  const normalizedLastProjectRoot = validLastProjectRoot || undefined;
   const lastProjectRootChanged =
-    args.saved.lastProjectRoot !== normalizedLastProjectRoot;
+    args.saved.lastProjectRoot !== undefined;
+  const stateWithoutLastProject: GlobalState = { ...args.saved };
+  delete stateWithoutLastProject.lastProjectRoot;
   return {
     state: {
-      ...args.saved,
-      lastProjectRoot: normalizedLastProjectRoot,
+      ...stateWithoutLastProject,
       recentProjects,
     },
-    validLastProjectRoot,
     recentProjects,
     changed: recentProjectsChanged || lastProjectRootChanged,
   };
@@ -92,8 +90,6 @@ export function normalizeStartupProjectState(args: {
 export function resolveStartupProject(args: {
   envRoot?: string | null;
   pendingStartupProjectRoot?: string | null;
-  validLastProjectRoot?: string | null;
-  recentProjects: RecentProject[];
   normalizeProjectPath: (value: string) => string;
 }): StartupProjectResolution {
   const envRoot = typeof args.envRoot === "string" ? args.envRoot.trim() : "";
@@ -105,27 +101,6 @@ export function resolveStartupProject(args: {
     return {
       rootPath: args.normalizeProjectPath(args.pendingStartupProjectRoot),
       source: "pending-open",
-    };
-  }
-
-  const lastProjectRoot =
-    typeof args.validLastProjectRoot === "string"
-      ? args.validLastProjectRoot.trim()
-      : "";
-  if (lastProjectRoot) {
-    return {
-      rootPath: args.normalizeProjectPath(lastProjectRoot),
-      source: "last-project",
-    };
-  }
-
-  const recentProjectRoot = args.recentProjects.find(
-    (project) => typeof project.rootPath === "string" && project.rootPath.trim().length > 0,
-  )?.rootPath;
-  if (recentProjectRoot) {
-    return {
-      rootPath: args.normalizeProjectPath(recentProjectRoot),
-      source: "recent-project",
     };
   }
 

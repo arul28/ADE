@@ -10,42 +10,30 @@ describe("resolveStartupProject", () => {
     const result = resolveStartupProject({
       envRoot: "env-project",
       pendingStartupProjectRoot: "pending-project",
-      validLastProjectRoot: "last-project",
-      recentProjects: [
-        { rootPath: "recent-project", displayName: "Recent", lastOpenedAt: "2026-05-11T00:00:00.000Z" },
-      ],
       normalizeProjectPath,
     });
 
     expect(result).toEqual({ rootPath: "/env-project", source: "env" });
   });
 
-  it("restores the last valid project on normal packaged startup", () => {
+  it("opens a project passed by the OS before the renderer starts", () => {
     const result = resolveStartupProject({
       envRoot: "",
-      pendingStartupProjectRoot: null,
-      validLastProjectRoot: "last-project",
-      recentProjects: [
-        { rootPath: "recent-project", displayName: "Recent", lastOpenedAt: "2026-05-11T00:00:00.000Z" },
-      ],
+      pendingStartupProjectRoot: "pending-project",
       normalizeProjectPath,
     });
 
-    expect(result).toEqual({ rootPath: "/last-project", source: "last-project" });
+    expect(result).toEqual({ rootPath: "/pending-project", source: "pending-open" });
   });
 
-  it("falls back to the first recent project when lastProjectRoot is unavailable", () => {
+  it("does not restore a project on normal packaged startup", () => {
     const result = resolveStartupProject({
       envRoot: null,
       pendingStartupProjectRoot: null,
-      validLastProjectRoot: "",
-      recentProjects: [
-        { rootPath: "recent-project", displayName: "Recent", lastOpenedAt: "2026-05-11T00:00:00.000Z" },
-      ],
       normalizeProjectPath,
     });
 
-    expect(result).toEqual({ rootPath: "/recent-project", source: "recent-project" });
+    expect(result).toEqual({ rootPath: null, source: "none" });
   });
 });
 
@@ -53,7 +41,7 @@ describe("normalizeStartupProjectState", () => {
   const nowIso = "2026-05-11T12:00:00.000Z";
   const isLikelyRepoRoot = (value: string) => value !== "/missing";
 
-  it("keeps a valid last project even when older runtime-backed opens did not add it to recents", () => {
+  it("moves a legacy valid last project into recents without preserving reopen state", () => {
     const result = normalizeStartupProjectState({
       saved: {
         lastProjectRoot: "lost-project",
@@ -66,12 +54,11 @@ describe("normalizeStartupProjectState", () => {
       nowIso,
     });
 
-    expect(result.validLastProjectRoot).toBe("/lost-project");
     expect(result.recentProjects).toEqual([
       { rootPath: "/lost-project", displayName: "lost-project", lastOpenedAt: nowIso },
       { rootPath: "/other-project", displayName: "Other", lastOpenedAt: "2026-05-10T00:00:00.000Z" },
     ]);
-    expect(result.state.lastProjectRoot).toBe("/lost-project");
+    expect(result.state.lastProjectRoot).toBeUndefined();
     expect(result.changed).toBe(true);
   });
 
@@ -89,7 +76,6 @@ describe("normalizeStartupProjectState", () => {
       nowIso,
     });
 
-    expect(result.validLastProjectRoot).toBe("");
     expect(result.recentProjects).toEqual([
       { rootPath: "/valid-project", displayName: "valid-project", lastOpenedAt: nowIso },
     ]);
