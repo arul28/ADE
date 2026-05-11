@@ -15,11 +15,10 @@ import {
 // the history API is not tied to a normal origin.
 // Relying only on `__adeBrowserMock` breaks when the flag is not set at module-eval
 // time, which can strand Cursor's embedded browser on a single path.
-const Router =
+const usesBrowserRouter =
   typeof window !== "undefined" &&
-  (window.location.protocol === "http:" || window.location.protocol === "https:")
-    ? BrowserRouter
-    : HashRouter;
+  (window.location.protocol === "http:" || window.location.protocol === "https:");
+const Router = usesBrowserRouter ? BrowserRouter : HashRouter;
 import { AppShell } from "./AppShell";
 import { RunPage } from "../run/RunPage";
 import { ProjectSetupPage } from "../onboarding/ProjectSetupPage";
@@ -328,6 +327,24 @@ function AppNavigationBridge() {
   return null;
 }
 
+function BrowserHashRouteBridge() {
+  const navigate = useNavigate();
+
+  React.useEffect(() => {
+    if (!usesBrowserRouter) return;
+    const syncHashRoute = () => {
+      const hash = window.location.hash;
+      if (!hash.startsWith("#/")) return;
+      navigate(hash.slice(1), { replace: true });
+    };
+    syncHashRoute();
+    window.addEventListener("hashchange", syncHashRoute);
+    return () => window.removeEventListener("hashchange", syncHashRoute);
+  }, [navigate]);
+
+  return null;
+}
+
 export function App() {
   const theme = useAppStore((s) => s.theme);
   const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
@@ -356,6 +373,7 @@ export function App() {
       <div data-theme={theme} className="h-full bg-bg text-fg font-sans antialiased selection:bg-accent/30">
         <OnboardingBootstrap />
         <AppNavigationBridge />
+        <BrowserHashRouteBridge />
         <Routes>
           <Route path="/startup" element={<Navigate to="/work" replace />} />
           <Route element={<ShellLayout />}>
