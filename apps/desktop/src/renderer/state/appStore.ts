@@ -990,7 +990,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             includeArchived: false,
             includeStatus: currentRequest.includeStatus,
           });
-      const lanes = currentRequest.includeStatus
+      const lanes = laneSnapshots != null || currentRequest.includeStatus
         ? rawLanes
         : rawLanes.map((lane) => withPreservedLaneStatus(lane, previousLanesById, previousSnapshotsById));
       // Discard stale response: a newer refresh was issued while this one was in-flight

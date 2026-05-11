@@ -363,6 +363,7 @@ describe("appStore", () => {
       });
       expect(useAppStore.getState().laneSnapshots[0].runtime.bucket).toBe("running");
       expect(useAppStore.getState().lanes[0].status).toEqual({ dirty: true });
+      expect(useAppStore.getState().laneSnapshots[0].lane).toBe(useAppStore.getState().lanes[0]);
     });
 
     it("refreshLanes can skip conflict status for cheaper warmup snapshots", async () => {

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IPC } from "../../../shared/ipc";
 import type {
   OpenProjectBinding,
@@ -408,8 +408,14 @@ describe("registerIpc sync bridge", () => {
     browserWindowFromWebContents.mockReset().mockReturnValue({ id: 7 });
   });
 
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("returns an unavailable sync snapshot without probing local runtime when the daemon is disabled", async () => {
     process.env.ADE_DISABLE_LOCAL_RUNTIME_DAEMON = "1";
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-11T12:00:00.000Z"));
     const localRuntimeConnectionPool = {
       syncStatusForRoot: vi.fn(),
       callSyncForRoot: vi.fn(),
@@ -434,9 +440,18 @@ describe("registerIpc sync bridge", () => {
       eventForSender(),
       { includeTransferReadiness: true },
     ) as any;
+    vi.setSystemTime(new Date("2026-05-11T12:00:05.000Z"));
+    const secondSnapshot = await ipcHandlers.get(IPC.syncGetStatus)?.(
+      eventForSender(),
+      { includeTransferReadiness: true },
+    ) as any;
 
     expect(localRuntimeConnectionPool.syncStatusForRoot).not.toHaveBeenCalled();
+    expect(secondSnapshot).toBe(snapshot);
     expect(snapshot.mode).toBe("standalone");
+    expect(snapshot.localDevice.createdAt).toBe("2026-05-11T12:00:00.000Z");
+    expect(secondSnapshot.localDevice.updatedAt).toBe(snapshot.localDevice.updatedAt);
+    expect(secondSnapshot.localDevice.lastSeenAt).toBe(snapshot.localDevice.lastSeenAt);
     expect(snapshot.localDevice.metadata).toEqual({
       unavailableReason: "local_runtime_daemon_disabled",
     });
