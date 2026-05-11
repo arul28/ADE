@@ -8,6 +8,7 @@ import geistMonoVariableUrl from "../../node_modules/geist/dist/fonts/geist-mono
 import { App } from "./components/app/App";
 import { RendererErrorBoundary } from "./components/app/RendererErrorBoundary";
 import { logRendererDebugEvent } from "./lib/debugLog";
+import { initPerfRuntime } from "./perf/harness";
 
 (function injectFontFaces() {
   const style = document.createElement("style");
@@ -161,3 +162,5 @@ createRoot(document.getElementById("root")!).render(
     </RendererErrorBoundary>
   </RootWrapper>
 );
+
+void initPerfRuntime();
