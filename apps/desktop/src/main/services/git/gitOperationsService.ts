@@ -303,6 +303,17 @@ export function createGitOperationsService({
     return error instanceof Error ? error : new Error(message);
   }
 
+  function isMissingWorktreeError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    return /git working directory not found:/i.test(message);
+  }
+
+  function laneWorktreeMissingError(lane: LaneInfo): Error {
+    return new Error(
+      `Lane worktree is missing. Restore or recreate the lane worktree at ${lane.worktreePath} before viewing history.`,
+    );
+  }
+
   const runLaneOperation = async <T>({
     laneId,
     kind,
@@ -582,10 +593,16 @@ export function createGitOperationsService({
       const limit = typeof args.limit === "number" ? Math.max(1, Math.min(200, Math.floor(args.limit))) : 30;
       return readLaneCached(`recent-commits:${laneId}:${limit}`, 2_000, async () => {
         const lane = laneService.getLaneBaseAndBranch(laneId);
-        const out = await runGitOrThrow(
-          ["log", `-n${limit}`, "--date=iso-strict", "--pretty=format:%H%x1f%h%x1f%P%x1f%an%x1f%aI%x1f%s"],
-          { cwd: lane.worktreePath, timeoutMs: 15_000 }
-        );
+        let out: string;
+        try {
+          out = await runGitOrThrow(
+            ["log", `-n${limit}`, "--date=iso-strict", "--pretty=format:%H%x1f%h%x1f%P%x1f%an%x1f%aI%x1f%s"],
+            { cwd: lane.worktreePath, timeoutMs: 15_000 }
+          );
+        } catch (error) {
+          if (isMissingWorktreeError(error)) throw laneWorktreeMissingError(lane);
+          throw error;
+        }
 
         // Determine which commits are unpushed by comparing with upstream.
         let unpushedShas: Set<string> | null = null;

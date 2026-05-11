@@ -14,7 +14,10 @@ vi.mock("./git", () => ({
 
 import { createGitOperationsService } from "./gitOperationsService";
 
-function createTestGitOperationsService(branchRef = "feature/stash-test") {
+function createTestGitOperationsService(
+  branchRef = "feature/stash-test",
+  overrides: { worktreePath?: string } = {},
+) {
   const mockStart = vi.fn().mockReturnValue({ operationId: "op-1" });
   const mockFinish = vi.fn();
 
@@ -23,7 +26,7 @@ function createTestGitOperationsService(branchRef = "feature/stash-test") {
       getLaneBaseAndBranch: vi.fn().mockReturnValue({
         baseRef: "main",
         branchRef,
-        worktreePath: "/tmp/ade-lane",
+        worktreePath: overrides.worktreePath ?? "/tmp/ade-lane",
         laneType: "worktree",
       }),
     } as any,
@@ -529,6 +532,21 @@ describe("gitOperationsService cached lane reads", () => {
     expect(first).toEqual(second);
     expect(mockGit.runGitOrThrow).toHaveBeenCalledTimes(1);
     expect(mockGit.runGit).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a missing lane worktree as lane state for commit history", async () => {
+    mockGit.runGitOrThrow.mockRejectedValue(
+      new Error("git working directory not found: /tmp/missing-lane"),
+    );
+
+    const { service } = createTestGitOperationsService("feature/stash-test", {
+      worktreePath: "/tmp/missing-lane",
+    });
+
+    await expect(service.listRecentCommits({ laneId: "lane-1", limit: 20 })).rejects.toThrow(
+      "Lane worktree is missing. Restore or recreate the lane worktree at /tmp/missing-lane before viewing history.",
+    );
+    expect(mockGit.runGit).not.toHaveBeenCalled();
   });
 
   it("parses file history entries for modified and renamed files", async () => {
