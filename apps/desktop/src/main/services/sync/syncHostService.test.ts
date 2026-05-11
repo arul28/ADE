@@ -267,12 +267,16 @@ function createStubChatService() {
 async function sendCommand(ws: WebSocket, queue: ReturnType<typeof createMessageQueue>, payload: {
   commandId: string;
   action: string;
+  projectId?: string | null;
   args: Record<string, unknown>;
 }) {
   ws.send(encodeSyncEnvelope({
     type: "command",
     requestId: payload.commandId,
-    payload,
+    payload: {
+      projectId: "project-1",
+      ...payload,
+    },
   }));
   const ack = await queue.next("command_ack");
   const result = await queue.next("command_result");
@@ -690,6 +694,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     const host = createSyncHostService({
       db: brainDb,
       logger: createLogger() as any,
+      projectId: "project-1",
       projectRoot,
       port: 0,
       pinStore: createStubPinStore(),
@@ -821,6 +826,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     const host = createSyncHostService({
       db: brainDb,
       logger: createLogger() as any,
+      projectId: "project-1",
       projectRoot,
       port: 0,
       pinStore: createStubPinStore(),
@@ -944,6 +950,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     const host = createSyncHostService({
       db: brainDb,
       logger: createLogger() as any,
+      projectId: "project-1",
       projectRoot,
       port: 0,
       pinStore: createStubPinStore(),
@@ -1147,6 +1154,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     const host = createSyncHostService({
       db: brainDb,
       logger: createLogger() as any,
+      projectId: "project-1",
       projectRoot,
       port: 0,
       pinStore: createStubPinStore(),
@@ -1388,6 +1396,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     const host = createSyncHostService({
       db: brainDb,
       logger: createLogger() as any,
+      projectId: "project-1",
       projectRoot,
       port: 0,
       pinStore: createStubPinStore(),
@@ -1596,6 +1605,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       payload: {
         commandId: "cmd-quick-run",
         action: "work.runQuickCommand",
+        projectId: "project-1",
         args: {
           laneId: "lane-1",
           title: "Run tests",
@@ -1622,6 +1632,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       payload: {
         commandId: "cmd-quick-run",
         action: "work.runQuickCommand",
+        projectId: "project-1",
         args: {
           laneId: "lane-1",
           title: "Run tests",
@@ -1641,6 +1652,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       payload: {
         commandId: "cmd-quick-run",
         action: "work.runQuickCommand",
+        projectId: "project-1",
         args: {
           laneId: "lane-2",
           title: "Run a different command",
@@ -1660,6 +1672,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       payload: {
         commandId: "cmd-start-cli",
         action: "work.startCliSession",
+        projectId: "project-1",
         args: {
           laneId: "lane-1",
           provider: "codex",
@@ -1696,6 +1709,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       payload: {
         commandId: "cmd-start-cli",
         action: "work.startCliSession",
+        projectId: "project-1",
         args: {
           laneId: "lane-1",
           provider: "codex",
@@ -1725,6 +1739,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       payload: {
         commandId: "cmd-work-list",
         action: "work.listSessions",
+        projectId: "project-1",
         args: {},
       },
     }));
@@ -1743,6 +1758,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       payload: {
         commandId: "cmd-pr-refresh",
         action: "prs.refresh",
+        projectId: "project-1",
         args: {},
       },
     }));
@@ -1767,6 +1783,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       payload: {
         commandId: "cmd-unsupported",
         action: "prs.create",
+        projectId: "project-1",
         args: {},
       },
     }));
@@ -1787,6 +1804,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     const host = createSyncHostService({
       db: brainDb,
       logger: createLogger() as any,
+      projectId: "project-1",
       projectRoot,
       port: 0,
       fileService: createStubFileService(workspaceRoot) as any,
@@ -1933,6 +1951,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     const host = createSyncHostService({
       db: brainDb,
       logger: createLogger() as any,
+      projectId: "project-1",
       projectRoot,
       port: 0,
       fileService: createStubFileService(workspaceRoot) as any,
@@ -2304,6 +2323,148 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     expect(revokedPayload.code).toBe("auth_failed");
     revokedWs.close();
     await new Promise((resolve) => revokedWs.once("close", resolve));
+  });
+
+  it("rejects project-scoped commands without projectId when the host is project-bound", async () => {
+    const brainDb = await openKvDb(makeDbPath("ade-sync-command-project-scope-"), createLogger() as any);
+    const projectRoot = makeProjectRoot("ade-sync-command-project-scope-project-");
+    const workspaceRoot = path.join(projectRoot, "workspace");
+    fs.mkdirSync(workspaceRoot, { recursive: true });
+
+    const host = createSyncHostService({
+      db: brainDb,
+      logger: createLogger() as any,
+      projectId: "project-1",
+      projectRoot,
+      port: 0,
+      pinStore: createStubPinStore(),
+      fileService: createStubFileService(workspaceRoot) as any,
+      laneService: {
+        list: vi.fn().mockResolvedValue([]),
+        create: vi.fn(),
+        archive: vi.fn(),
+      } as any,
+      prService: {
+        listAll: vi.fn().mockResolvedValue([]),
+        refresh: vi.fn().mockResolvedValue([]),
+      } as any,
+      ptyService: {
+        create: vi.fn(),
+        enrichSessions: (rows: any[]) => rows,
+      } as any,
+      sessionService: { list: () => [] } as any,
+      computerUseArtifactBrokerService: {
+        listArtifacts: () => [],
+      } as any,
+    });
+    activeDisposers.push(async () => {
+      await host.dispose();
+      brainDb.close();
+    });
+
+    const client = await connectClient({
+      port: await host.waitUntilListening(),
+      token: host.getBootstrapToken(),
+      deviceId: "peer-project-scope",
+      deviceName: "Project Scope Phone",
+      siteId: brainDb.sync.getSiteId(),
+      dbVersion: brainDb.sync.getDbVersion(),
+      deviceType: "phone",
+    });
+    activeDisposers.push(client.close);
+
+    client.ws.send(encodeSyncEnvelope({
+      type: "command",
+      requestId: "cmd-missing-project",
+      payload: {
+        commandId: "cmd-missing-project",
+        action: "lanes.list",
+        args: {},
+      },
+    }));
+
+    const ack = await client.queue.next("command_ack");
+    expect((ack.payload as { accepted: boolean }).accepted).toBe(false);
+    const result = await client.queue.next("command_result");
+    expect((result.payload as { ok: boolean; error?: { code: string } }).ok).toBe(false);
+    expect((result.payload as { ok: boolean; error?: { code: string } }).error?.code).toBe("missing_project");
+  });
+
+  it("routes project-scoped commands for another registered project through the remote command executor", async () => {
+    const brainDb = await openKvDb(makeDbPath("ade-sync-command-project-route-"), createLogger() as any);
+    const projectRoot = makeProjectRoot("ade-sync-command-project-route-project-");
+    const workspaceRoot = path.join(projectRoot, "workspace");
+    fs.mkdirSync(workspaceRoot, { recursive: true });
+    const execute = vi.fn(async (payload: { projectId?: string | null; action?: string }) => ({
+      routedProjectId: payload.projectId,
+      routedAction: payload.action,
+    }));
+    const laneList = vi.fn().mockResolvedValue([]);
+
+    const host = createSyncHostService({
+      db: brainDb,
+      logger: createLogger() as any,
+      projectId: "project-1",
+      projectRoot,
+      port: 0,
+      pinStore: createStubPinStore(),
+      fileService: createStubFileService(workspaceRoot) as any,
+      laneService: {
+        list: laneList,
+        create: vi.fn(),
+        archive: vi.fn(),
+      } as any,
+      prService: {
+        listAll: vi.fn().mockResolvedValue([]),
+        refresh: vi.fn().mockResolvedValue([]),
+      } as any,
+      ptyService: {
+        create: vi.fn(),
+        enrichSessions: (rows: any[]) => rows,
+      } as any,
+      sessionService: { list: () => [] } as any,
+      computerUseArtifactBrokerService: {
+        listArtifacts: () => [],
+      } as any,
+      remoteCommandExecutor: { execute },
+    });
+    activeDisposers.push(async () => {
+      await host.dispose();
+      brainDb.close();
+    });
+
+    const client = await connectClient({
+      port: await host.waitUntilListening(),
+      token: host.getBootstrapToken(),
+      deviceId: "peer-project-route",
+      deviceName: "Project Route Phone",
+      siteId: brainDb.sync.getSiteId(),
+      dbVersion: brainDb.sync.getDbVersion(),
+      deviceType: "phone",
+    });
+    activeDisposers.push(client.close);
+
+    client.ws.send(encodeSyncEnvelope({
+      type: "command",
+      projectId: "project-2",
+      requestId: "cmd-other-project",
+      payload: {
+        commandId: "cmd-other-project",
+        action: "lanes.list",
+        args: {},
+      },
+    }));
+
+    const ack = await client.queue.next("command_ack");
+    expect((ack.payload as { accepted: boolean }).accepted).toBe(true);
+    const result = await client.queue.next("command_result");
+    expect((result.payload as { ok: boolean; result?: unknown }).ok).toBe(true);
+    expect((result.payload as { result: { routedProjectId: string; routedAction: string } }).result).toEqual({
+      routedProjectId: "project-2",
+      routedAction: "lanes.list",
+    });
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(laneList).not.toHaveBeenCalled();
   });
 
   it("clears prior PIN failures after a successful pair and still allows paired hello", async () => {

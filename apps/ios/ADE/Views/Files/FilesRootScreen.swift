@@ -103,8 +103,8 @@ struct FilesRootScreen: View {
               symbol: isDisconnected ? "wifi.slash" : "folder.badge.questionmark",
               title: isDisconnected ? "Files unavailable" : "No workspaces available",
               message: isDisconnected
-                ? "Files need a connected host. Reconnect or pair a host in Settings to browse workspaces."
-                : "This host does not currently expose any lane-backed workspaces for the mobile Files browser."
+                ? "Files need a connected machine. Reconnect or pair a machine in Settings to browse workspaces."
+                : "This machine does not currently expose any lane-backed workspaces for the mobile Files browser."
             ) {
               Button(syncService.activeHostProfile == nil ? "Open Settings" : "Refresh Files") {
                 if syncService.activeHostProfile == nil {

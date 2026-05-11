@@ -145,15 +145,18 @@ function normAbs(p: string): string {
   return path.resolve(p);
 }
 
-type GitWorktreeInfo = {
-  path: string;
-  branch: string;
+type GitWorktreeInfo = UnregisteredLaneCandidate & {
   isBare: boolean;
 };
 
 function worktreeStdout(value: unknown): string {
   if (typeof value === "string") return value;
-  if (value && typeof value === "object" && "stdout" in value && typeof (value as { stdout?: unknown }).stdout === "string") {
+  if (
+    value &&
+    typeof value === "object" &&
+    "stdout" in value &&
+    typeof (value as { stdout?: unknown }).stdout === "string"
+  ) {
     return (value as { stdout: string }).stdout;
   }
   return "";
@@ -180,15 +183,12 @@ function parseGitWorktreePorcelain(stdout: string): GitWorktreeInfo[] {
   return worktrees;
 }
 
-function laneNameFromRecoveredWorktree(worktreePath: string, branchRef: string): string {
-  const basename = path.basename(worktreePath).replace(/-[0-9a-f]{8}$/i, "");
-  const candidate = basename || branchRef.split("/").filter(Boolean).pop() || branchRef || "Recovered lane";
-  const words = candidate
-    .replace(/[-_]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!words) return "Recovered lane";
-  return words.charAt(0).toUpperCase() + words.slice(1);
+function inferLaneNameFromManagedWorktree(candidate: UnregisteredLaneCandidate): string {
+  const basename = path.basename(candidate.path).trim();
+  const branchSlug = candidate.branch.trim().replace(/^ade\//, "");
+  const slug = (branchSlug || basename).replace(/-[0-9a-f]{8}$/i, "");
+  const name = slug.replace(/[-_]+/g, " ").trim();
+  return name || basename || "Recovered lane";
 }
 
 function parseLaneIcon(value: string | null): LaneIcon {
@@ -825,9 +825,6 @@ export function createLaneService({
   const normalizeBranchKey = (ref: string): string =>
     normalizeBranchName(ref).trim();
 
-  const normalizedProjectRoot = normAbs(projectRoot);
-  const normalizedWorktreesDir = normAbs(worktreesDir);
-
   const toLaneBranchProfile = (row: LaneBranchProfileRow): LaneBranchProfile => ({
     id: row.id,
     laneId: row.lane_id,
@@ -1020,9 +1017,13 @@ export function createLaneService({
     branchName?: string | null;
     linearIssue?: LaneLinearIssue | null;
   }): Promise<string> => {
-    const suggested = args.branchName?.trim()
-      || (args.linearIssue ? linearIssueBranchName(args.linearIssue) : "");
+    const explicitBranch = args.branchName?.trim() ?? "";
+    const linearBranch = !explicitBranch && args.linearIssue
+      ? linearIssueBranchName(args.linearIssue)
+      : "";
+    const suggested = explicitBranch || linearBranch;
     const isCustomBranch = suggested.length > 0;
+    const isLinearBranch = !explicitBranch && linearBranch.length > 0;
     const slug = slugify(args.name);
     const fallback = `ade/${slug}-${args.laneId.slice(0, 8)}`;
     const branchRef = suggested
@@ -1045,13 +1046,17 @@ export function createLaneService({
       throw new Error(`Branch "${branchRef}" already exists locally.`);
     }
 
+    const remoteCollisionMessage = isLinearBranch
+      ? `Branch "origin/${branchRef}" already exists on the remote. Detach the Linear issue or choose one whose branch name is unused.`
+      : `Branch "origin/${branchRef}" already exists on the remote. Choose a different branch name.`;
+
     if (isCustomBranch) {
       const remoteTrackingExists = await runGit(["show-ref", "--verify", "--quiet", `refs/remotes/origin/${branchRef}`], {
         cwd: projectRoot,
         timeoutMs: 8_000,
       }).then((res) => res.exitCode === 0);
       if (remoteTrackingExists) {
-        throw new Error(`Branch "origin/${branchRef}" already exists. Detach the Linear issue or choose a different issue.`);
+        throw new Error(remoteCollisionMessage);
       }
 
       const remoteExists = await runGit(["ls-remote", "--heads", "origin", branchRef], {
@@ -1059,7 +1064,7 @@ export function createLaneService({
         timeoutMs: 15_000,
       }).then((res) => res.exitCode === 0 && res.stdout.trim().length > 0);
       if (remoteExists) {
-        throw new Error(`Branch "origin/${branchRef}" already exists. Detach the Linear issue or choose a different issue.`);
+        throw new Error(remoteCollisionMessage);
       }
     }
 
@@ -1216,22 +1221,25 @@ export function createLaneService({
     return run;
   };
 
+  const normalizedProjectRoot = normAbs(projectRoot);
+  const normalizedWorktreesDir = normAbs(worktreesDir);
+
   const getGitTopLevel = async (cwd: string): Promise<string> => {
     const top = await runGitOrThrow(["rev-parse", "--path-format=absolute", "--show-toplevel"], { cwd, timeoutMs: 10_000 });
     return normAbs(top.trim());
   };
 
+  const getGitCommonDir = async (cwd: string): Promise<string> => {
+    const commonDir = await runGitOrThrow(["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd, timeoutMs: 10_000 });
+    return normAbs(commonDir.trim());
+  };
+
   const listGitWorktrees = async (): Promise<GitWorktreeInfo[]> => {
     const result = await runGitOrThrow(
       ["worktree", "list", "--porcelain"],
-      { cwd: projectRoot, timeoutMs: 15_000 },
+      { cwd: projectRoot, timeoutMs: 15_000 }
     );
     return parseGitWorktreePorcelain(worktreeStdout(result));
-  };
-
-  const isManagedWorktreePath = (candidatePath: string): boolean => {
-    const resolvedPath = normAbs(candidatePath);
-    return resolvedPath !== normalizedWorktreesDir && isWithinDir(normalizedWorktreesDir, resolvedPath);
   };
 
   const findGitWorktreeForBranch = async (branchRef: string): Promise<GitWorktreeInfo | null> => {
@@ -1241,61 +1249,75 @@ export function createLaneService({
     return worktrees.find((wt) => !wt.isBare && normalizeBranchKey(wt.branch) === normalizedBranch) ?? null;
   };
 
-  const reconcileManagedWorktrees = async (): Promise<number> => {
-    const gitWorktrees = await listGitWorktrees();
-    const registeredRows = getAllLaneRows(true);
-    const registeredPaths = new Set(registeredRows.map((row) => normAbs(row.worktree_path)));
-    const registeredBranches = new Set(registeredRows.map((row) => normalizeBranchKey(row.branch_ref)).filter(Boolean));
+  const listUnregisteredWorktreeCandidates = async (): Promise<UnregisteredLaneCandidate[]> => {
+    const worktrees = await listGitWorktrees();
+    const registeredPaths = new Set(
+      db.all<{ worktree_path: string }>(
+        "select worktree_path from lanes where project_id = ?",
+        [projectId]
+      ).map((row) => normAbs(row.worktree_path))
+    );
 
-    let restoredCount = 0;
-    for (const wt of gitWorktrees) {
-      const branchRef = normalizeBranchKey(wt.branch);
-      if (wt.isBare || !branchRef) continue;
-      if (wt.path === normalizedProjectRoot) continue;
-      if (!isManagedWorktreePath(wt.path)) continue;
-      if (registeredPaths.has(wt.path) || registeredBranches.has(branchRef)) continue;
+    return worktrees.filter(
+      (wt) => !wt.isBare && wt.path !== normalizedProjectRoot && !registeredPaths.has(wt.path)
+    );
+  };
+
+  const recoverManagedWorktreeRows = async (): Promise<number> => {
+    const candidates = await listUnregisteredWorktreeCandidates();
+    let recoveredCount = 0;
+
+    for (const candidate of candidates) {
+      const worktreePath = normAbs(candidate.path);
+      const branchRef = candidate.branch.trim();
+      if (!branchRef) continue;
+      if (path.dirname(worktreePath) !== normalizedWorktreesDir) continue;
+
+      const existingPath = db.get<{ id: string }>(
+        "select id from lanes where project_id = ? and worktree_path = ? limit 1",
+        [projectId, worktreePath]
+      );
+      if (existingPath?.id) continue;
+
+      const existingBranch = db.get<{ id: string }>(
+        "select id from lanes where project_id = ? and branch_ref = ? limit 1",
+        [projectId, branchRef]
+      );
+      if (existingBranch?.id) continue;
 
       const laneId = randomUUID();
       const now = new Date().toISOString();
-      const name = laneNameFromRecoveredWorktree(wt.path, branchRef);
-
+      const displayName = inferLaneNameFromManagedWorktree(candidate);
       db.run(
         `
           insert into lanes(
             id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
             attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
           )
-          values(?, ?, ?, ?, 'worktree', ?, ?, ?, null, 0, null, null, null, null, 'active', ?, null)
+          values(?, ?, ?, null, 'worktree', ?, ?, ?, null, 0, null, null, null, null, 'active', ?, null)
         `,
-        [
-          laneId,
-          projectId,
-          name,
-          "Recovered from existing .ade worktree",
-          defaultBaseRef,
-          branchRef,
-          wt.path,
-          now,
-        ],
+        [laneId, projectId, displayName, defaultBaseRef, branchRef, worktreePath, now]
       );
 
       const row = getLaneRow(laneId);
-      if (row) ensureBranchProfileForRow(row);
-      registeredPaths.add(wt.path);
-      registeredBranches.add(branchRef);
-      restoredCount += 1;
+      if (row) {
+        upsertBranchProfileForRow(row, {
+          branchRef,
+          baseRef: defaultBaseRef,
+          parentLaneId: null,
+        });
+      }
+      recoveredCount += 1;
     }
 
-    if (restoredCount > 0) {
+    if (recoveredCount > 0) {
       invalidateLaneListCache();
-      logger.info("laneService.reconciled_managed_worktrees", { restoredCount });
+      logger.info("laneService.recovered_managed_worktrees", {
+        projectRoot,
+        count: recoveredCount,
+      });
     }
-    return restoredCount;
-  };
-
-  const getGitCommonDir = async (cwd: string): Promise<string> => {
-    const commonDir = await runGitOrThrow(["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd, timeoutMs: 10_000 });
-    return normAbs(commonDir.trim());
+    return recoveredCount;
   };
 
   const ensureAttachableWorktreeRoot = async (candidatePath: string): Promise<void> => {
@@ -1499,9 +1521,9 @@ export function createLaneService({
       logger.warn("laneService.repairLegacyPrimaryBaseRootLanes_failed", { error: err instanceof Error ? err.message : String(err) });
     }
     try {
-      await reconcileManagedWorktrees();
+      await recoverManagedWorktreeRows();
     } catch (err) {
-      logger.warn("laneService.reconcileManagedWorktrees_failed", { error: err instanceof Error ? err.message : String(err) });
+      logger.warn("laneService.recoverManagedWorktreeRows_failed", { error: err instanceof Error ? err.message : String(err) });
     }
     try {
       backfillLaneBranchProfiles();
@@ -1928,26 +1950,7 @@ export function createLaneService({
     },
 
     async listUnregisteredWorktrees(): Promise<UnregisteredLaneCandidate[]> {
-      try {
-        await reconcileManagedWorktrees();
-      } catch (err) {
-        logger.warn("laneService.listUnregisteredWorktrees.reconcile_failed", { error: err instanceof Error ? err.message : String(err) });
-      }
-      const worktrees = (await listGitWorktrees())
-        .filter((wt) => !wt.isBare)
-        .map((wt): UnregisteredLaneCandidate => ({ path: wt.path, branch: wt.branch }));
-
-      // Filter out primary worktree and worktrees already tracked as lanes
-      const registeredPaths = new Set(
-        db.all<{ worktree_path: string }>(
-          "select worktree_path from lanes where project_id = ?",
-          [projectId]
-        ).map((row) => normAbs(row.worktree_path))
-      );
-
-      return worktrees.filter(
-        (wt) => wt.path !== normalizedProjectRoot && !registeredPaths.has(wt.path)
-      );
+      return listUnregisteredWorktreeCandidates();
     },
 
     getStateSnapshot(laneId: string): LaneStateSnapshotSummary | null {
@@ -2343,9 +2346,9 @@ export function createLaneService({
       }
 
       try {
-        await reconcileManagedWorktrees();
+        await recoverManagedWorktreeRows();
       } catch (err) {
-        logger.warn("laneService.importBranch.reconcileManagedWorktrees_failed", { error: err instanceof Error ? err.message : String(err) });
+        logger.warn("laneService.importBranch.recoverManagedWorktreeRows_failed", { error: err instanceof Error ? err.message : String(err) });
       }
 
       // Prevent duplicates.

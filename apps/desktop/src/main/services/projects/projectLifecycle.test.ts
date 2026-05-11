@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildAdeGitignore, resolveAdeLayout } from "../../../shared/adeLayout";
-import { initializeOrRepairAdeProject } from "./adeProjectService";
+import { createAdeProjectService, initializeOrRepairAdeProject } from "./adeProjectService";
 import { browseProjectDirectories } from "./projectBrowserService";
 import { __internal, getProjectDetail } from "./projectDetailService";
 import { inspectRecentProject, toRecentProjectSummary } from "./recentProjectSummary";
@@ -144,8 +144,6 @@ describe("initializeOrRepairAdeProject", () => {
     fs.mkdirSync(path.join(root, ".ade", "chat-sessions"), { recursive: true });
     fs.writeFileSync(path.join(root, ".ade", "chat-sessions", "session-1.json"), "{\"id\":\"session-1\"}\n", "utf8");
     fs.writeFileSync(path.join(root, ".ade", "mission-state-run-1.json"), "{\"runId\":\"run-1\"}\n", "utf8");
-    fs.mkdirSync(path.join(root, ".ade", "cto"), { recursive: true });
-    fs.writeFileSync(path.join(root, ".ade", "cto", "openclaw-history.json"), "[]\n", "utf8");
 
     return root;
   }
@@ -173,10 +171,8 @@ describe("initializeOrRepairAdeProject", () => {
     expect(fs.existsSync(path.join(layout.logsDir, "main.jsonl"))).toBe(true);
     expect(fs.existsSync(path.join(layout.chatSessionsDir, "session-1.json"))).toBe(true);
     expect(fs.existsSync(path.join(layout.missionStateDir, "mission-state-run-1.json"))).toBe(true);
-    expect(fs.existsSync(path.join(layout.cacheDir, "openclaw", "openclaw-history.json"))).toBe(true);
     expect(fs.existsSync(path.join(layout.adeDir, "logs"))).toBe(false);
     expect(fs.existsSync(path.join(layout.adeDir, "chat-sessions"))).toBe(false);
-    expect(fs.existsSync(path.join(layout.ctoDir, "openclaw-history.json"))).toBe(false);
   });
 
   it("is idempotent once the canonical structure is in place", () => {
@@ -334,6 +330,46 @@ describe("initializeOrRepairAdeProject", () => {
     expect(fs.existsSync(layout.sharedConfigPath)).toBe(false);
     expect(fs.existsSync(layout.localConfigPath)).toBe(true);
     expect(git(root, ["status", "--porcelain=v1", "--untracked-files=all"]).trim()).toBe("");
+  });
+});
+
+describe("createAdeProjectService.clearLocalData", () => {
+  it("deletes only selected generated .ade data directories", () => {
+    const root = makeTempDir("ade-project-clear-local-data-");
+    const layout = resolveAdeLayout(root);
+    const service = createAdeProjectService({
+      projectRoot: root,
+      db: makeProjectConfigDb(),
+      projectId: "project-1",
+      logger: createLogger(),
+      projectConfigService: {
+        get: () => ({ validation: { ok: true, issues: [] } }),
+      },
+    });
+    fs.mkdirSync(layout.artifactsDir, { recursive: true });
+    fs.mkdirSync(layout.logsDir, { recursive: true });
+    fs.mkdirSync(layout.transcriptsDir, { recursive: true });
+    fs.mkdirSync(layout.cacheDir, { recursive: true });
+    fs.mkdirSync(layout.secretsDir, { recursive: true });
+    fs.writeFileSync(path.join(layout.artifactsDir, "pack.txt"), "pack", "utf8");
+    fs.writeFileSync(path.join(layout.logsDir, "run.log"), "log", "utf8");
+    fs.writeFileSync(path.join(layout.transcriptsDir, "chat.jsonl"), "chat", "utf8");
+    fs.writeFileSync(path.join(layout.cacheDir, "keep.json"), "cache", "utf8");
+    fs.writeFileSync(path.join(layout.secretsDir, "keep"), "secret", "utf8");
+
+    const result = service.clearLocalData({ packs: true, logs: true, transcripts: true });
+
+    expect(result.clearedAt).toEqual(expect.any(String));
+    expect(result.deletedPaths).toEqual(expect.arrayContaining([
+      path.resolve(layout.artifactsDir),
+      path.resolve(layout.logsDir),
+      path.resolve(layout.transcriptsDir),
+    ]));
+    expect(fs.existsSync(layout.artifactsDir)).toBe(false);
+    expect(fs.existsSync(layout.logsDir)).toBe(false);
+    expect(fs.existsSync(layout.transcriptsDir)).toBe(false);
+    expect(fs.readFileSync(path.join(layout.cacheDir, "keep.json"), "utf8")).toBe("cache");
+    expect(fs.readFileSync(path.join(layout.secretsDir, "keep"), "utf8")).toBe("secret");
   });
 });
 

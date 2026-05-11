@@ -1,0 +1,857 @@
+import { BrowserWindow, ipcMain, type WebContents } from "electron";
+import fs from "node:fs";
+import path from "node:path";
+import { IPC } from "../../../shared/ipc";
+import type {
+  CloneProjectInput,
+  CreateProjectInput,
+  ListMyGitHubReposInput,
+  ListMyGitHubReposResult,
+  OpenProjectBinding,
+  ProjectInfo,
+  ProjectBrowseInput,
+  ProjectBrowseResult,
+  ProjectDetail,
+  RemoteRuntimeConnectionSnapshot,
+  RemoteRuntimeActionRequest,
+  RemoteRuntimeActionResult,
+  RemoteRuntimeBufferedEvent,
+  RemoteRuntimeConnectResult,
+  RemoteRuntimeDiscoveredMachine,
+  RemoteRuntimeEventNotificationPayload,
+  RemoteRuntimeLocalWorkCheckResult,
+  RemoteRuntimeProjectRecord,
+  RemoteRuntimeProjectWorkSummary,
+  RemoteRuntimeStreamEventsRequest,
+  RemoteRuntimeStreamEventsResult,
+  RemoteRuntimeTarget,
+  RemoteRuntimeTargetInput,
+} from "../../../shared/types";
+import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
+import { RemoteConnectionPool } from "../remoteRuntime/remoteConnectionPool";
+import { RemoteConnectionService } from "../remoteRuntime/remoteConnectionService";
+import { discoverLanRuntimes } from "../remoteRuntime/runtimeDiscovery";
+import { RemoteTargetRegistry } from "../remoteRuntime/remoteTargetRegistry";
+import { runGit } from "../git/git";
+import { getProjectWorkSummary } from "../projects/projectDetailService";
+import { toRecentProjectSummary } from "../projects/recentProjectSummary";
+import { readGlobalState } from "../state/globalState";
+
+type RuntimeBridgeArgs = {
+  appVersion: string;
+  globalStatePath: string;
+  getWindowSession?: (windowId: number | null) => {
+    windowId: number | null;
+    project: ProjectInfo | null;
+    binding: OpenProjectBinding | null;
+  };
+  bindRemoteProject?: (
+    windowId: number | null,
+    binding: OpenProjectBinding & { kind: "remote" },
+  ) => void;
+  localRuntimeConnectionPool?: LocalRuntimeConnectionPool | null;
+  getGitHubTokenForRemoteClone?: (() => string | null) | null;
+};
+
+const RUNTIME_ACTION_CLIENT_ID_FIELD = "__adeRuntimeClientId";
+const REMOTE_RUNTIME_SYNC_METHODS = new Set([
+  "sync.getStatus",
+  "sync.refreshDiscovery",
+  "sync.listDevices",
+  "sync.updateLocalDevice",
+  "sync.connectToBrain",
+  "sync.disconnectFromBrain",
+  "sync.forgetDevice",
+  "sync.getTransferReadiness",
+  "sync.transferBrainToLocal",
+  "sync.getPin",
+  "sync.setPin",
+  "sync.generatePin",
+  "sync.clearPin",
+  "sync.setActiveLanePresence",
+]);
+
+type RuntimeEventWindowSubscription = {
+  bindingKey: string;
+  cleanup: (() => void) | null;
+};
+
+type RuntimeEventSubscribe = (
+  onEvent: (event: RemoteRuntimeBufferedEvent) => void,
+  onEnded: () => void,
+) => Promise<() => void>;
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isRemoteRuntimeSyncMethod(value: string): boolean {
+  return REMOTE_RUNTIME_SYNC_METHODS.has(value);
+}
+
+function withRuntimeActionClientMetadata(
+  request: RemoteRuntimeActionRequest,
+  senderId: number,
+): RemoteRuntimeActionRequest {
+  if (
+    request.domain !== "file" ||
+    (request.action !== "watchWorkspace" &&
+      request.action !== "stopWatching") ||
+    !Number.isInteger(senderId) ||
+    senderId <= 0
+  ) {
+    return request;
+  }
+
+  const args = isObjectRecord(request.args) ? request.args : {};
+  return {
+    ...request,
+    args: {
+      ...args,
+      [RUNTIME_ACTION_CLIENT_ID_FIELD]: senderId,
+    },
+  };
+}
+
+function normalizeGitRemoteForComparison(
+  value: string | null | undefined,
+): string | null {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  if (!trimmed) return null;
+  const withoutGitSuffix = trimmed.replace(/\.git$/i, "");
+  if (!withoutGitSuffix.includes("://")) {
+    const scpLike = /^(?:[^@/:]+@)?([^:]+):(.+)$/.exec(withoutGitSuffix);
+    if (scpLike?.[1] && scpLike[2]) {
+      return `${scpLike[1].toLowerCase()}/${scpLike[2].replace(/^\/+/, "")}`.toLowerCase();
+    }
+  }
+  try {
+    const parsed = new URL(withoutGitSuffix);
+    return `${parsed.hostname.toLowerCase()}/${parsed.pathname.replace(/^\/+/, "")}`.toLowerCase();
+  } catch {
+    return withoutGitSuffix.toLowerCase();
+  }
+}
+
+async function inspectLocalWorkForRemoteOrigin(args: {
+  rootPath: string;
+  displayName: string;
+  remoteOriginKey: string;
+}): Promise<RemoteRuntimeLocalWorkCheckResult["matches"][number] | null> {
+  if (!fs.existsSync(args.rootPath)) return null;
+  const origin = await runGit(["remote", "get-url", "origin"], {
+    cwd: args.rootPath,
+    timeoutMs: 8_000,
+  });
+  if (origin.exitCode !== 0) return null;
+  const originUrl = origin.stdout.trim();
+  if (normalizeGitRemoteForComparison(originUrl) !== args.remoteOriginKey)
+    return null;
+  const workSummary = await getProjectWorkSummary(args.rootPath).catch(
+    () => null,
+  );
+  const dirtyCount = workSummary?.dirtyFileCount ?? 0;
+  if (dirtyCount <= 0) return null;
+  return {
+    rootPath: args.rootPath,
+    displayName: args.displayName,
+    gitOriginUrl: originUrl,
+    dirtyCount,
+    workSummary,
+  };
+}
+
+async function getRemoteProjectWorkSummary(args: {
+  targetId: string;
+  rootPath: string | null;
+  remoteConnectionService: RemoteConnectionService;
+}): Promise<RemoteRuntimeProjectWorkSummary | null> {
+  if (!args.targetId || !args.rootPath) return null;
+  return await args.remoteConnectionService
+    .getProjectWorkSummary(args.targetId, args.rootPath)
+    .catch(() => null);
+}
+
+function createGitHubAuthHeader(token: string | null | undefined): string | null {
+  const trimmed = token?.trim();
+  if (!trimmed) return null;
+  const basic = Buffer.from(`x-access-token:${trimmed}`, "utf8").toString("base64");
+  return `basic ${basic}`;
+}
+
+export function registerRuntimeBridge({
+  appVersion,
+  bindRemoteProject,
+  getGitHubTokenForRemoteClone,
+  getWindowSession,
+  globalStatePath,
+  localRuntimeConnectionPool,
+}: RuntimeBridgeArgs): void {
+  const remoteTargetRegistry = new RemoteTargetRegistry();
+  const remoteConnectionPool = new RemoteConnectionPool(
+    remoteTargetRegistry,
+    appVersion,
+  );
+  const remoteConnectionService = new RemoteConnectionService(
+    remoteTargetRegistry,
+    remoteConnectionPool,
+  );
+  const runtimeEventSubscriptions = new Map<
+    number,
+    RuntimeEventWindowSubscription
+  >();
+  const runtimeEventWatchedSenders = new Set<number>();
+
+  remoteConnectionService.onSnapshotChanged((snapshot) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (window.webContents.isDestroyed()) continue;
+      window.webContents.send(
+        IPC.remoteRuntimeConnectionSnapshotChanged,
+        snapshot,
+      );
+    }
+  });
+  const autoconnectTimer = setTimeout(() => {
+    remoteConnectionService.startAutoconnect();
+  }, 0);
+  autoconnectTimer.unref?.();
+
+  const cleanupRuntimeEventSubscription = (senderId: number): void => {
+    const existing = runtimeEventSubscriptions.get(senderId);
+    runtimeEventSubscriptions.delete(senderId);
+    try {
+      existing?.cleanup?.();
+    } catch {
+      // Best-effort subscription cleanup.
+    }
+  };
+
+  const watchRuntimeEventSender = (sender: WebContents): void => {
+    if (runtimeEventWatchedSenders.has(sender.id)) return;
+    runtimeEventWatchedSenders.add(sender.id);
+    sender.once("destroyed", () => {
+      runtimeEventWatchedSenders.delete(sender.id);
+      cleanupRuntimeEventSubscription(sender.id);
+    });
+  };
+
+  const sendRuntimeEvent = (
+    sender: WebContents,
+    bindingKey: string,
+    event: RemoteRuntimeBufferedEvent,
+  ): void => {
+    const existing = runtimeEventSubscriptions.get(sender.id);
+    if (!existing || existing.bindingKey !== bindingKey || sender.isDestroyed())
+      return;
+    const payload: RemoteRuntimeEventNotificationPayload = {
+      bindingKey,
+      event,
+    };
+    try {
+      sender.send(IPC.runtimeEvent, payload);
+    } catch {
+      // Renderer may have gone away between the destroyed check and send.
+    }
+  };
+
+  const ensureRuntimeEventSubscription = (
+    sender: WebContents,
+    bindingKey: string,
+    subscribe: RuntimeEventSubscribe,
+  ): void => {
+    const existing = runtimeEventSubscriptions.get(sender.id);
+    if (existing?.bindingKey === bindingKey) return;
+    cleanupRuntimeEventSubscription(sender.id);
+    watchRuntimeEventSender(sender);
+    runtimeEventSubscriptions.set(sender.id, { bindingKey, cleanup: null });
+    const onEnded = () => {
+      const current = runtimeEventSubscriptions.get(sender.id);
+      if (current?.bindingKey === bindingKey) {
+        runtimeEventSubscriptions.delete(sender.id);
+      }
+    };
+    void subscribe(
+      (event) => sendRuntimeEvent(sender, bindingKey, event),
+      onEnded,
+    )
+      .then((cleanup) => {
+        const current = runtimeEventSubscriptions.get(sender.id);
+        if (
+          !current ||
+          current.bindingKey !== bindingKey ||
+          sender.isDestroyed()
+        ) {
+          cleanup();
+          return;
+        }
+        current.cleanup = cleanup;
+      })
+      .catch((error) => {
+        const current = runtimeEventSubscriptions.get(sender.id);
+        if (current?.bindingKey === bindingKey && !current.cleanup) {
+          runtimeEventSubscriptions.delete(sender.id);
+        }
+        console.warn("Runtime event subscription failed", error);
+      });
+  };
+
+  ipcMain.handle(
+    IPC.remoteRuntimeListTargets,
+    async (): Promise<RemoteRuntimeTarget[]> => {
+      return remoteConnectionService.listTargets();
+    },
+  );
+
+  ipcMain.handle(
+    IPC.remoteRuntimeGetConnectionSnapshot,
+    async (): Promise<RemoteRuntimeConnectionSnapshot> => {
+      return remoteConnectionService.snapshot();
+    },
+  );
+
+  ipcMain.handle(
+    IPC.remoteRuntimeListDiscoveredMachines,
+    async (): Promise<RemoteRuntimeDiscoveredMachine[]> => {
+      return discoverLanRuntimes();
+    },
+  );
+
+  ipcMain.handle(
+    IPC.remoteRuntimeSaveTarget,
+    async (
+      _event,
+      arg: RemoteRuntimeTargetInput,
+    ): Promise<RemoteRuntimeTarget> => {
+      return remoteConnectionService.saveTarget(arg);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.remoteRuntimeRemoveTarget,
+    async (_event, arg: { id: string }): Promise<{ removed: boolean }> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      if (!id) return { removed: false };
+      return { removed: remoteConnectionService.removeTarget(id) };
+    },
+  );
+
+  ipcMain.handle(
+    IPC.remoteRuntimeConnect,
+    async (
+      _event,
+      arg: { id: string },
+    ): Promise<RemoteRuntimeConnectResult> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      return await remoteConnectionService.connect(id);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.remoteRuntimeListProjects,
+    async (
+      _event,
+      arg: { id: string },
+    ): Promise<RemoteRuntimeProjectRecord[]> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      if (!id) return [];
+      return await remoteConnectionService.projects(id);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.remoteRuntimeAddProject,
+    async (
+      _event,
+      arg: { id: string; rootPath: string },
+    ): Promise<RemoteRuntimeProjectRecord> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      const rootPath =
+        typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
+      if (!rootPath) throw new Error("Remote project path is required.");
+      return await remoteConnectionService.addProject(id, rootPath);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.remoteRuntimeBrowseDirectories,
+    async (
+      _event,
+      arg: { id: string; args?: ProjectBrowseInput },
+    ): Promise<ProjectBrowseResult> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      return await remoteConnectionService.browseDirectories(
+        id,
+        arg?.args ?? {},
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC.remoteRuntimeGetProjectDetail,
+    async (
+      _event,
+      arg: { id: string; rootPath: string },
+    ): Promise<ProjectDetail> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      const rootPath =
+        typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
+      if (!rootPath) throw new Error("Remote project path is required.");
+      return await remoteConnectionService.getProjectDetail(id, rootPath);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.remoteRuntimeGetDefaultParentDir,
+    async (_event, arg: { id: string }): Promise<string> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      return await remoteConnectionService.getDefaultParentDir(id);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.remoteRuntimeCreateProject,
+    async (
+      _event,
+      arg: { id: string; input?: CreateProjectInput },
+    ): Promise<RemoteRuntimeProjectRecord> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      return await remoteConnectionService.createProject(
+        id,
+        arg?.input ?? { name: "", parentDir: "" },
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC.remoteRuntimeCloneProject,
+    async (
+      _event,
+      arg: { id: string; input?: CloneProjectInput },
+    ): Promise<RemoteRuntimeProjectRecord> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      const input = arg?.input ?? { url: "", parentDir: "" };
+      let githubAuthHeader: string | null = null;
+      try {
+        githubAuthHeader = createGitHubAuthHeader(
+          getGitHubTokenForRemoteClone?.() ?? null,
+        );
+      } catch {
+        githubAuthHeader = null;
+      }
+      return await remoteConnectionService.cloneProject(
+        id,
+        githubAuthHeader && !input.githubAuthHeader
+          ? { ...input, githubAuthHeader }
+          : input,
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC.remoteRuntimeListMyGitHubRepos,
+    async (
+      _event,
+      arg: { id: string; input?: ListMyGitHubReposInput },
+    ): Promise<ListMyGitHubReposResult> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      return await remoteConnectionService.listMyGitHubRepos(
+        id,
+        arg?.input ?? {},
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC.remoteRuntimeOpenProject,
+    async (
+      event,
+      arg: { id: string; projectId: string },
+    ): Promise<OpenProjectBinding & { kind: "remote" }> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      const projectId =
+        typeof arg?.projectId === "string" ? arg.projectId.trim() : "";
+      const target = id ? remoteConnectionService.getTarget(id) : null;
+      if (!target) throw new Error("Remote target was not found.");
+      if (!projectId) throw new Error("Remote project is required.");
+
+      const connection = await remoteConnectionService.connect(target.id);
+      let project =
+        connection.projects.find(
+          (candidate) => candidate.projectId === projectId,
+        ) ?? null;
+      if (!project) {
+        const projects = await remoteConnectionService.projects(target.id);
+        project =
+          projects.find((candidate) => candidate.projectId === projectId) ??
+          null;
+      }
+      if (!project)
+        throw new Error("Remote project was not found on this runtime.");
+
+      const binding: OpenProjectBinding & { kind: "remote" } = {
+        kind: "remote",
+        key: `remote:${target.id}:${project.projectId}`,
+        targetId: target.id,
+        runtimeName: target.name,
+        projectId: project.projectId,
+        rootPath: project.rootPath,
+        displayName: project.displayName || path.basename(project.rootPath),
+      };
+      bindRemoteProject?.(
+        BrowserWindow.fromWebContents(event.sender)?.id ?? null,
+        binding,
+      );
+      return binding;
+    },
+  );
+
+  ipcMain.handle(
+    IPC.remoteRuntimeCallAction,
+    async (
+      event,
+      arg: {
+        id: string;
+        projectId: string;
+        request: RemoteRuntimeActionRequest;
+      },
+    ): Promise<RemoteRuntimeActionResult> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      const projectId =
+        typeof arg?.projectId === "string" ? arg.projectId.trim() : "";
+      const request =
+        arg?.request &&
+        typeof arg.request === "object" &&
+        !Array.isArray(arg.request)
+          ? arg.request
+          : null;
+      const target = id ? remoteConnectionService.getTarget(id) : null;
+      const domain =
+        typeof request?.domain === "string" ? request.domain.trim() : "";
+      const action =
+        typeof request?.action === "string" ? request.action.trim() : "";
+      if (!target) throw new Error("Remote target was not found.");
+      if (!projectId) throw new Error("Remote project is required.");
+      if (!domain || !action)
+        throw new Error("Remote action domain and action are required.");
+      await remoteConnectionService.connect(target.id);
+      const actionRequest = withRuntimeActionClientMetadata(
+        { ...request!, domain, action },
+        event.sender.id,
+      );
+      return await remoteConnectionPool.callActionForTarget(
+        target,
+        projectId,
+        actionRequest,
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC.remoteRuntimeCallSync,
+    async (
+      _event,
+      arg: {
+        id: string;
+        projectId: string;
+        method: string;
+        params?: Record<string, unknown>;
+      },
+    ): Promise<unknown> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      const projectId =
+        typeof arg?.projectId === "string" ? arg.projectId.trim() : "";
+      const method = typeof arg?.method === "string" ? arg.method.trim() : "";
+      const params = isObjectRecord(arg?.params) ? arg.params : {};
+      const target = id ? remoteConnectionService.getTarget(id) : null;
+      if (!target) throw new Error("Remote target was not found.");
+      if (!projectId) throw new Error("Remote project is required.");
+      if (!isRemoteRuntimeSyncMethod(method))
+        throw new Error("Remote sync method is not exposed.");
+      await remoteConnectionService.connect(target.id);
+      return await remoteConnectionPool.callSyncForTarget(
+        target,
+        projectId,
+        method,
+        params,
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC.localRuntimeCallAction,
+    async (
+      event,
+      arg: { request: RemoteRuntimeActionRequest },
+    ): Promise<RemoteRuntimeActionResult> => {
+      if (!localRuntimeConnectionPool) {
+        throw new Error("Local runtime daemon is not available.");
+      }
+      const request =
+        arg?.request &&
+        typeof arg.request === "object" &&
+        !Array.isArray(arg.request)
+          ? arg.request
+          : null;
+      const domain =
+        typeof request?.domain === "string" ? request.domain.trim() : "";
+      const action =
+        typeof request?.action === "string" ? request.action.trim() : "";
+      if (!domain || !action)
+        throw new Error("Local runtime action domain and action are required.");
+
+      const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
+      const session = getWindowSession ? getWindowSession(windowId) : null;
+      const binding = session?.binding;
+      const rootPath =
+        binding?.kind === "local"
+          ? binding.rootPath
+          : (session?.project?.rootPath ?? null);
+      if (!rootPath) {
+        throw new Error(
+          "Local runtime project is not available for this window.",
+        );
+      }
+      const actionRequest = withRuntimeActionClientMetadata(
+        { ...request!, domain, action },
+        event.sender.id,
+      );
+      return await localRuntimeConnectionPool.callActionForRoot(
+        rootPath,
+        actionRequest,
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC.localRuntimeCallSync,
+    async (
+      event,
+      arg: { method: string; params?: Record<string, unknown> },
+    ): Promise<unknown> => {
+      if (!localRuntimeConnectionPool) {
+        throw new Error("Local runtime daemon is not available.");
+      }
+      const method = typeof arg?.method === "string" ? arg.method.trim() : "";
+      const params = isObjectRecord(arg?.params) ? arg.params : {};
+      if (!isRemoteRuntimeSyncMethod(method))
+        throw new Error("Local sync method is not exposed.");
+
+      const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
+      const session = getWindowSession ? getWindowSession(windowId) : null;
+      const binding = session?.binding;
+      const rootPath =
+        binding?.kind === "local"
+          ? binding.rootPath
+          : (session?.project?.rootPath ?? null);
+      if (!rootPath) {
+        throw new Error(
+          "Local runtime project is not available for this window.",
+        );
+      }
+      return await localRuntimeConnectionPool.callSyncForRoot(
+        rootPath,
+        method,
+        params,
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC.localRuntimeStreamEvents,
+    async (
+      event,
+      arg: { request?: RemoteRuntimeStreamEventsRequest },
+    ): Promise<RemoteRuntimeStreamEventsResult> => {
+      if (!localRuntimeConnectionPool) {
+        throw new Error("Local runtime daemon is not available.");
+      }
+
+      const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
+      const session = getWindowSession ? getWindowSession(windowId) : null;
+      const binding = session?.binding;
+      const rootPath =
+        binding?.kind === "local"
+          ? binding.rootPath
+          : (session?.project?.rootPath ?? null);
+      if (!rootPath) {
+        return { events: [], nextCursor: 0, hasMore: false };
+      }
+      if (binding?.kind === "local") {
+        ensureRuntimeEventSubscription(
+          event.sender,
+          binding.key,
+          (onEvent, onEnded) =>
+            localRuntimeConnectionPool.subscribeEventsForRoot(
+              rootPath,
+              {
+                cursor: arg?.request?.cursor,
+                limit: arg?.request?.limit,
+                category: "runtime",
+              },
+              onEvent,
+              onEnded,
+            ),
+        );
+      }
+      return await localRuntimeConnectionPool.streamEventsForRoot(
+        rootPath,
+        arg?.request ?? {},
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC.remoteRuntimeStreamEvents,
+    async (
+      event,
+      arg: {
+        id: string;
+        projectId: string;
+        request?: RemoteRuntimeStreamEventsRequest;
+      },
+    ): Promise<RemoteRuntimeStreamEventsResult> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      const projectId =
+        typeof arg?.projectId === "string" ? arg.projectId.trim() : "";
+      if (!id) throw new Error("Remote target id is required.");
+      if (!projectId) throw new Error("Remote project id is required.");
+      const target = remoteConnectionService.getTarget(id);
+      if (!target) throw new Error("Remote target was not found.");
+      await remoteConnectionService.connect(target.id);
+      ensureRuntimeEventSubscription(
+        event.sender,
+        `remote:${target.id}:${projectId}`,
+        (onEvent, onEnded) =>
+          remoteConnectionPool.subscribeEventsForTarget(
+            target,
+            projectId,
+            {
+              cursor: arg?.request?.cursor,
+              limit: arg?.request?.limit,
+              category: "runtime",
+            },
+            onEvent,
+            onEnded,
+          ),
+      );
+      return remoteConnectionPool.streamEventsForTarget(
+        target,
+        projectId,
+        arg?.request ?? {},
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC.remoteRuntimeCheckLocalWork,
+    async (
+      _event,
+      arg: { id?: string; project?: RemoteRuntimeProjectRecord },
+    ): Promise<RemoteRuntimeLocalWorkCheckResult> => {
+      const targetId = typeof arg?.id === "string" ? arg.id.trim() : "";
+      const project =
+        arg?.project &&
+        typeof arg.project === "object" &&
+        !Array.isArray(arg.project)
+          ? arg.project
+          : null;
+      const remoteProjectId =
+        typeof project?.projectId === "string" ? project.projectId : "";
+      const remoteDisplayName =
+        typeof project?.displayName === "string" && project.displayName.trim()
+          ? project.displayName.trim()
+          : typeof project?.rootPath === "string"
+            ? path.basename(project.rootPath)
+            : "remote project";
+      const remoteGitOriginUrl =
+        typeof project?.gitOriginUrl === "string" && project.gitOriginUrl.trim()
+          ? project.gitOriginUrl.trim()
+          : null;
+      const remoteWorkSummary = await getRemoteProjectWorkSummary({
+        targetId,
+        rootPath:
+          typeof project?.rootPath === "string" && project.rootPath.trim()
+            ? project.rootPath.trim()
+            : null,
+        remoteConnectionService,
+      });
+      const remoteOriginKey =
+        normalizeGitRemoteForComparison(remoteGitOriginUrl);
+      if (!remoteOriginKey) {
+        return {
+          remoteProjectId,
+          remoteDisplayName,
+          remoteGitOriginUrl,
+          remoteWorkSummary,
+          matches: [],
+          hasDirtyWork: false,
+        };
+      }
+
+      const state = readGlobalState(globalStatePath);
+      const recents = (state.recentProjects ?? [])
+        .slice(0, 100)
+        .map((entry) => ({
+          rootPath: entry.rootPath,
+          displayName: toRecentProjectSummary(entry).displayName,
+        }));
+      const localRuntimeProjects = localRuntimeConnectionPool
+        ? await localRuntimeConnectionPool
+            .projects()
+            .catch(() => [] as RemoteRuntimeProjectRecord[])
+        : [];
+      const entriesByRoot = new Map<
+        string,
+        { rootPath: string; displayName: string }
+      >();
+      for (const entry of recents) {
+        if (!entry.rootPath) continue;
+        entriesByRoot.set(path.resolve(entry.rootPath), entry);
+      }
+      for (const project of localRuntimeProjects) {
+        if (!project.rootPath) continue;
+        const rootPath = path.resolve(project.rootPath);
+        if (entriesByRoot.has(rootPath)) continue;
+        entriesByRoot.set(rootPath, {
+          rootPath: project.rootPath,
+          displayName: project.displayName || path.basename(project.rootPath),
+        });
+      }
+      const matches = (
+        await Promise.all(
+          [...entriesByRoot.values()].map((entry) =>
+            inspectLocalWorkForRemoteOrigin({
+              rootPath: entry.rootPath,
+              displayName: entry.displayName,
+              remoteOriginKey,
+            }),
+          ),
+        )
+      ).filter(
+        (
+          entry,
+        ): entry is RemoteRuntimeLocalWorkCheckResult["matches"][number] =>
+          entry != null,
+      );
+
+      return {
+        remoteProjectId,
+        remoteDisplayName,
+        remoteGitOriginUrl,
+        remoteWorkSummary,
+        matches,
+        hasDirtyWork: matches.length > 0,
+      };
+    },
+  );
+
+  ipcMain.handle(
+    IPC.remoteRuntimeDisconnect,
+    async (_event, arg: { id: string }): Promise<{ disconnected: boolean }> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      if (!id) return { disconnected: false };
+      remoteConnectionService.disconnect(id);
+      return { disconnected: true };
+    },
+  );
+}

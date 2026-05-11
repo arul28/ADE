@@ -112,7 +112,12 @@ Requirements: macOS 13+, git on `PATH`, Node 22+ for headless CLI workflows.
 ## CLI
 
 ```bash
+ade desktop
+ade runtime status --text
+ade runtime start
+ade runtime stop
 ade doctor --json
+ade code
 ade lanes create --name fix-checkout-flow
 ade prs checks 168 --text
 ade tests run --suite unit --wait
@@ -123,12 +128,12 @@ ade actions list --text   # discover every service action
 
 ## Architecture
 
-Local-first, on purpose. Runtime state lives under `.ade/` inside each project — SQLite db, worktree checkouts, proof artifacts, encrypted secrets.
+Local-first, on purpose. The center of ADE is the **runtime daemon** — a single per-machine `ade` service that owns projects, lanes, chats, processes, sync, and proof artifacts. Desktop, the terminal client, the iOS app, and SSH-attached desktop windows all attach to it as clients. Runtime state lives under `.ade/` inside each project (SQLite db, worktree checkouts, proof artifacts, encrypted secrets) and the machine-wide socket lives under `~/.ade/sock/ade.sock`.
 
 ```text
-apps/desktop   Electron host — SQLite, git, processes, AI runtimes, sync host
-apps/ade-cli   Node CLI over the desktop socket (or headless)
-apps/ios       SwiftUI companion that syncs with a desktop host
+apps/ade-cli   ADE runtime daemon (`ade serve`) + `ade` CLI + `ade code` terminal client
+apps/desktop   Electron client — multi-window, attaches to a local or SSH-bound runtime
+apps/ios       SwiftUI controller that attaches to a runtime over WebSocket
 apps/web       Public website and download surface
 docs/          Product and engineering docs
 ```
@@ -137,10 +142,66 @@ Deep reference: [ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Develop
 
+First-time setup:
+
 ```bash
-cd apps/desktop && npm install && npm run dev      # live Electron app
-cd apps/ade-cli && npm install && npm run build    # build the CLI
+npm run setup
 ```
+
+Daily desktop dev:
+
+```bash
+npm run dev
+```
+
+That aliases to `npm run dev:desktop`: it rebuilds `apps/ade-cli`, launches the Electron desktop app, and points it at the dev runtime socket `/tmp/ade-runtime-dev.sock`. If no dev runtime is listening, desktop is allowed to create it. This is the normal desktop-dev flow.
+
+Dev command matrix:
+
+```bash
+npm run dev:desktop          # desktop only; dev socket; desktop may auto-create runtime
+npm run dev:desktop:attach   # desktop only; fail if dev runtime is not already running
+npm run dev:desktop:clean    # desktop only; clear Vite cache before launch
+npm run dev:code             # terminal TUI only; starts dev runtime if missing
+npm run dev:code:attach      # terminal TUI only; fail if dev runtime is not already running
+npm run dev:runtime          # runtime only in the foreground
+npm run dev:all              # start shared dev runtime, then run desktop/code attach commands in separate terminals
+npm run dev:stop             # stop the dev runtime
+npm stop dev                 # same as dev:stop
+```
+
+The dev commands intentionally use a temp socket so they do not collide with the installed ADE app:
+
+```text
+/tmp/ade-runtime-dev.sock
+```
+
+Override it when needed:
+
+```bash
+npm run dev:desktop -- --socket /tmp/my-ade-dev.sock
+npm run dev:code -- --socket /tmp/my-ade-dev.sock
+ADE_DEV_RUNTIME_SOCKET_PATH=/tmp/my-ade-dev.sock npm run dev:runtime
+```
+
+To test auto-runtime creation, use the `:auto`/default commands after stopping the dev runtime:
+
+```bash
+npm run dev:stop
+npm run dev:desktop          # tests desktop creating the dev runtime
+npm run dev:stop
+npm run dev:code             # tests TUI wrapper creating the dev runtime
+```
+
+Local packaged builds:
+
+```bash
+npm run package:alpha        # current checkout -> ADE Alpha.app, ade-alpha, ~/.ade-alpha
+npm run package:beta         # origin/main -> ADE Beta.app, ade-beta, ~/.ade-beta
+```
+
+These are unsigned local macOS app builds under `apps/desktop/release-alpha` and `apps/desktop/release-beta`. They do not replace the production `ADE.app`, production `ade`, or `~/.ade` runtime/state.
+Local channel packages include the host runtime binary for this Mac. Release builds still require the full cross-platform runtime artifact set used by remote runtime bootstrap.
 
 Validate with `npm --prefix apps/desktop run typecheck` and `run test`. The desktop test suite is large — run the smallest relevant subset first.
 

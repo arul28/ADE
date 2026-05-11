@@ -277,6 +277,7 @@ function readShellPath(
       {
         encoding: "utf-8",
         env,
+        stdio: ["ignore", "pipe", "pipe"],
         timeout: timeoutMs,
       },
     );

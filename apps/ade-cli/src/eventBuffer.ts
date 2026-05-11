@@ -8,11 +8,13 @@ export type BufferedEvent = {
 export type EventBuffer = {
   push(event: Omit<BufferedEvent, "id">): void;
   drain(cursor: number, limit?: number): { events: BufferedEvent[]; nextCursor: number; hasMore: boolean };
+  subscribe(listener: (event: BufferedEvent) => void): () => void;
   size(): number;
 };
 
 export function createEventBuffer(capacity = 10_000): EventBuffer {
   const events: BufferedEvent[] = [];
+  const listeners = new Set<(event: BufferedEvent) => void>();
   let nextId = 1;
 
   return {
@@ -21,6 +23,13 @@ export function createEventBuffer(capacity = 10_000): EventBuffer {
       events.push(entry);
       while (events.length > capacity) {
         events.shift();
+      }
+      for (const listener of [...listeners]) {
+        try {
+          listener(entry);
+        } catch {
+          // Event delivery is best-effort; one subscriber must not break producers.
+        }
       }
     },
     drain(cursor, limit = 100) {
@@ -35,6 +44,12 @@ export function createEventBuffer(capacity = 10_000): EventBuffer {
         events: slice,
         nextCursor: lastId,
         hasMore: startIdx + clamped < events.length,
+      };
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
       };
     },
     size() {

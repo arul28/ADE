@@ -1,6 +1,4 @@
 import SwiftUI
-import UIKit
-import VisionKit
 
 struct SettingsPairingSection: View {
   @EnvironmentObject private var syncService: SyncService
@@ -9,7 +7,7 @@ struct SettingsPairingSection: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
       SettingsSectionHeader(
-        label: "PAIR A COMPUTER",
+        label: "PAIR A MACHINE",
         hint: pairingHint
       )
 
@@ -24,17 +22,9 @@ struct SettingsPairingSection: View {
           }
 
           SettingsPairActionRow(
-            icon: "qrcode.viewfinder",
-            title: "Scan pairing QR",
-            subtitle: "Show on your Mac under Settings → Sync"
-          ) {
-            presentedSheet = .qr
-          }
-
-          SettingsPairActionRow(
             icon: "keyboard",
-            title: "Enter host details",
-            subtitle: "Host address and port"
+            title: "Enter machine details",
+            subtitle: "Runtime address and port"
           ) {
             presentedSheet = .manual
           }
@@ -47,19 +37,19 @@ struct SettingsPairingSection: View {
     let count = syncService.discoveredHosts.count
     let savedCount = syncService.savedReconnectHosts.count
     if count == 0, savedCount > 0 {
-      return savedCount == 1 ? "1 saved host" : "\(savedCount) saved hosts"
+      return savedCount == 1 ? "1 saved machine" : "\(savedCount) saved machines"
     }
     if count == 0 {
       return "Looking nearby"
     }
-    return count == 1 ? "1 nearby host found" : "\(count) nearby hosts found"
+    return count == 1 ? "1 nearby machine found" : "\(count) nearby machines found"
   }
 
   private var pairingHint: String? {
     guard !syncService.savedReconnectHosts.isEmpty else {
-      return "Pick how to reach your Mac"
+      return "Pick how to reach your machine"
     }
-    return "Add another Mac or switch saved hosts"
+    return "Add another machine or switch saved machines"
   }
 }
 
@@ -212,6 +202,137 @@ struct SettingsPairActionRow: View {
 
 // MARK: - Discover hosts sheet
 
+func syncDiscoveredHostsForDisplay(
+  savedHosts: [DiscoveredSyncHost],
+  liveHosts: [DiscoveredSyncHost]
+) -> (savedHosts: [DiscoveredSyncHost], liveHosts: [DiscoveredSyncHost]) {
+  let saved = savedHosts.map { savedHost in
+    guard let liveHost = liveHosts.first(where: { syncDiscoveredHostsReferToSameMachine(savedHost, $0) }) else {
+      return savedHost
+    }
+    return syncMergeSavedDiscoveredHost(savedHost, withLiveHost: liveHost)
+  }
+  let live = liveHosts.filter { liveHost in
+    !savedHosts.contains { savedHost in
+      syncDiscoveredHostsReferToSameMachine(savedHost, liveHost)
+    }
+  }
+  return (savedHosts: saved, liveHosts: live)
+}
+
+func syncDiscoveredHostDetailText(host: DiscoveredSyncHost, detailPrefix: String?) -> String {
+  let route = syncDiscoveredHostPrimaryRoute(host: host, detailPrefix: detailPrefix)
+  let prefix = detailPrefix ?? syncDiscoveredHostInferredRoutePrefix(host: host, route: route)
+  let routeText = prefix.map { "\($0): \(route)" } ?? route
+  let projectList = syncDiscoveredHostProjectListText(host: host)
+  var parts: [String] = []
+  if let runtimeText = syncRuntimeText(kind: host.runtimeKind, version: host.runtimeVersion) {
+    parts.append(runtimeText)
+  }
+  if let projectList {
+    parts.append(projectList)
+  } else if let projectCount = host.projectCount {
+    parts.append(projectCount == 1 ? "1 project" : "\(projectCount) projects")
+  }
+  parts.append(routeText)
+  return parts.joined(separator: " · ")
+}
+
+private func syncDiscoveredHostProjectListText(host: DiscoveredSyncHost) -> String? {
+  let labels = syncUniqueNonEmptyStrings(host.projectNames.isEmpty ? host.projectIds : host.projectNames)
+  guard !labels.isEmpty else { return nil }
+  let visible = labels.prefix(3).joined(separator: ", ")
+  let remaining = labels.count - min(labels.count, 3)
+  let count = host.projectCount ?? labels.count
+  let countText = count == 1 ? "1 project" : "\(count) projects"
+  return remaining > 0 ? "\(countText): \(visible), +\(remaining)" : "\(countText): \(visible)"
+}
+
+private func syncDiscoveredHostsReferToSameMachine(
+  _ left: DiscoveredSyncHost,
+  _ right: DiscoveredSyncHost
+) -> Bool {
+  if let leftIdentity = syncTrimmedNonEmpty(left.hostIdentity),
+     let rightIdentity = syncTrimmedNonEmpty(right.hostIdentity) {
+    return leftIdentity == rightIdentity
+  }
+  return left.id == right.id
+}
+
+private func syncMergeSavedDiscoveredHost(
+  _ savedHost: DiscoveredSyncHost,
+  withLiveHost liveHost: DiscoveredSyncHost
+) -> DiscoveredSyncHost {
+  DiscoveredSyncHost(
+    id: savedHost.id,
+    serviceName: syncTrimmedNonEmpty(savedHost.serviceName) ?? liveHost.serviceName,
+    hostName: syncTrimmedNonEmpty(savedHost.hostName) ?? liveHost.hostName,
+    hostIdentity: syncTrimmedNonEmpty(savedHost.hostIdentity) ?? syncTrimmedNonEmpty(liveHost.hostIdentity),
+    port: savedHost.port > 0 ? savedHost.port : liveHost.port,
+    addresses: syncUniqueNonEmptyStrings(savedHost.addresses + liveHost.addresses),
+    tailscaleAddress: syncTrimmedNonEmpty(savedHost.tailscaleAddress) ?? syncTrimmedNonEmpty(liveHost.tailscaleAddress),
+    runtimeKind: syncTrimmedNonEmpty(savedHost.runtimeKind) ?? syncTrimmedNonEmpty(liveHost.runtimeKind),
+    runtimeVersion: syncTrimmedNonEmpty(savedHost.runtimeVersion) ?? syncTrimmedNonEmpty(liveHost.runtimeVersion),
+    projectIds: syncUniqueNonEmptyStrings(savedHost.projectIds + liveHost.projectIds),
+    projectNames: syncUniqueNonEmptyStrings(savedHost.projectNames + liveHost.projectNames),
+    projectCount: savedHost.projectCount ?? liveHost.projectCount,
+    lastResolvedAt: max(savedHost.lastResolvedAt, liveHost.lastResolvedAt)
+  )
+}
+
+private func syncRuntimeText(kind: String?, version: String?) -> String? {
+  guard let kind = syncTrimmedNonEmpty(kind) else { return nil }
+  let label: String
+  switch kind.lowercased() {
+  case "daemon", "headless":
+    label = "Background ADE"
+  case "desktop", "desktop-embedded":
+    label = "ADE app"
+  default:
+    label = "ADE service"
+  }
+  guard let version = syncTrimmedNonEmpty(version) else { return label }
+  return "\(label) \(version)"
+}
+
+private func syncDiscoveredHostPrimaryRoute(host: DiscoveredSyncHost, detailPrefix: String?) -> String {
+  if let tailscaleAddress = syncTrimmedNonEmpty(host.tailscaleAddress),
+     detailPrefix?.localizedCaseInsensitiveContains("tailscale") == true {
+    return tailscaleAddress
+  }
+  return host.addresses.first { address in
+    !syncIsLoopbackAddress(address) && !syncIsTailscaleRoute(address)
+  } ?? syncTrimmedNonEmpty(host.tailscaleAddress) ?? host.addresses.first ?? "No route"
+}
+
+private func syncDiscoveredHostInferredRoutePrefix(host: DiscoveredSyncHost, route: String) -> String? {
+  if syncIsTailscaleRoute(route) {
+    return "Tailscale"
+  }
+  if host.tailscaleAddress.map(syncIsTailscaleRoute) == true {
+    return "LAN + Tailscale"
+  }
+  return nil
+}
+
+private func syncTrimmedNonEmpty(_ value: String?) -> String? {
+  guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+    return nil
+  }
+  return value
+}
+
+private func syncUniqueNonEmptyStrings(_ values: [String]) -> [String] {
+  var seen = Set<String>()
+  return values
+    .compactMap(syncTrimmedNonEmpty)
+    .filter { seen.insert($0).inserted }
+}
+
+private func syncIsLoopbackAddress(_ address: String) -> Bool {
+  address == "127.0.0.1" || address == "::1"
+}
+
 struct DiscoverHostsSheet: View {
   @EnvironmentObject private var syncService: SyncService
   @Environment(\.dismiss) private var dismiss
@@ -222,21 +343,18 @@ struct DiscoverHostsSheet: View {
     NavigationStack {
       ScrollView {
         LazyVStack(spacing: 10) {
-          let savedHosts = syncService.savedReconnectHosts
-          let liveHosts = syncService.discoveredHosts.filter { host in
-            !savedHosts.contains { savedHost in
-              if let hostIdentity = host.hostIdentity, let savedIdentity = savedHost.hostIdentity {
-                return hostIdentity == savedIdentity
-              }
-              return host.id == savedHost.id
-            }
-          }
+          let displayedHosts = syncDiscoveredHostsForDisplay(
+            savedHosts: syncService.savedReconnectHosts,
+            liveHosts: syncService.discoveredHosts
+          )
+          let savedHosts = displayedHosts.savedHosts
+          let liveHosts = displayedHosts.liveHosts
 
           if savedHosts.isEmpty && liveHosts.isEmpty {
             VStack(spacing: 14) {
               ADESkeletonView(height: 56, cornerRadius: 14)
               ADESkeletonView(height: 56, cornerRadius: 14)
-              Text("Looking for ADE hosts on your network...")
+              Text("Looking for ADE machines on your network...")
                 .font(.caption)
                 .foregroundStyle(ADEColor.textSecondary)
                 .padding(.top, 4)
@@ -277,7 +395,7 @@ struct DiscoverHostsSheet: View {
       }
       .adeScreenBackground()
       .adeNavigationGlass()
-      .navigationTitle("Nearby hosts")
+      .navigationTitle("Nearby machines")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
         ToolbarItem(placement: .cancellationAction) {
@@ -308,7 +426,7 @@ private struct DiscoveredHostRow: View {
         Text(host.hostName)
           .font(.body.weight(.medium))
           .foregroundStyle(ADEColor.textPrimary)
-        Text(routeText)
+        Text(detailText)
           .font(.caption.monospaced())
           .foregroundStyle(ADEColor.textSecondary)
           .lineLimit(1)
@@ -341,96 +459,8 @@ private struct DiscoveredHostRow: View {
     )
   }
 
-  private var routeText: String {
-    let route = primaryRoute
-    let prefix = detailPrefix ?? inferredRoutePrefix(for: route)
-    guard let prefix else { return route }
-    return "\(prefix): \(route)"
-  }
-
-  private var primaryRoute: String {
-    if let tailscaleAddress = host.tailscaleAddress,
-       detailPrefix?.localizedCaseInsensitiveContains("tailscale") == true {
-      return tailscaleAddress
-    }
-    return host.addresses.first { address in
-      !isLoopback(address) && !syncIsTailscaleRoute(address)
-    } ?? host.tailscaleAddress ?? host.addresses.first ?? "No route"
-  }
-
-  private func inferredRoutePrefix(for route: String) -> String? {
-    if syncIsTailscaleRoute(route) {
-      return "Tailscale"
-    }
-    if host.tailscaleAddress.map(syncIsTailscaleRoute) == true {
-      return "LAN + Tailscale"
-    }
-    return nil
-  }
-
-  private func isLoopback(_ address: String) -> Bool {
-    address == "127.0.0.1" || address == "::1"
-  }
-}
-
-// MARK: - Scan QR sheet
-
-struct ScanQRSheet: View {
-  @EnvironmentObject private var syncService: SyncService
-  @Environment(\.dismiss) private var dismiss
-
-  let onDecoded: (SyncPairingQrPayload) -> Void
-
-  @State private var scanError: String?
-
-  var body: some View {
-    NavigationStack {
-      Group {
-        if DataScannerViewController.isSupported && DataScannerViewController.isAvailable {
-          ZStack(alignment: .bottom) {
-            PairingQrScannerRepresentable { scannedValue in
-              handle(scannedValue: scannedValue)
-            }
-            .ignoresSafeArea()
-
-            if let scanError {
-              Text(scanError)
-                .font(.footnote)
-                .foregroundStyle(.white)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(ADEColor.danger.opacity(0.85), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .padding(.horizontal, 24)
-                .padding(.bottom, 48)
-            }
-          }
-        } else {
-          ContentUnavailableView(
-            "Camera scanning unavailable",
-            systemImage: "camera.metering.unknown",
-            description: Text("Use Discover or Enter details to pair from this device.")
-          )
-        }
-      }
-      .navigationTitle("Scan QR code")
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        ToolbarItem(placement: .cancellationAction) {
-          Button("Close") { dismiss() }
-        }
-      }
-      .adeNavigationGlass()
-    }
-  }
-
-  private func handle(scannedValue: String) {
-    do {
-      let payload = try syncService.decodePairingQrPayload(from: scannedValue)
-      scanError = nil
-      onDecoded(payload)
-    } catch {
-      scanError = error.localizedDescription
-    }
+  private var detailText: String {
+    syncDiscoveredHostDetailText(host: host, detailPrefix: detailPrefix)
   }
 }
 
@@ -448,14 +478,14 @@ struct ManualEntrySheet: View {
     NavigationStack {
       ScrollView {
         VStack(alignment: .leading, spacing: 14) {
-          Text("Reach your Mac directly")
+          Text("Reach your machine directly")
             .font(.headline)
             .foregroundStyle(ADEColor.textPrimary)
-          Text("Use this when your network blocks Bonjour discovery.")
+          Text("Use a runtime address from ADE sync status or Tailscale.")
             .font(.caption)
             .foregroundStyle(ADEColor.textSecondary)
 
-          TextField("Host or IP address", text: $host)
+          TextField("Machine address or IP", text: $host)
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled()
             .keyboardType(.asciiCapable)
@@ -488,7 +518,7 @@ struct ManualEntrySheet: View {
       }
       .adeScreenBackground()
       .adeNavigationGlass()
-      .navigationTitle("Enter host details")
+      .navigationTitle("Enter machine details")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
         ToolbarItem(placement: .cancellationAction) {
@@ -515,53 +545,5 @@ private struct ManualEntryFieldModifier: ViewModifier {
 private extension View {
   func manualEntryField() -> some View {
     modifier(ManualEntryFieldModifier())
-  }
-}
-
-// MARK: - QR scanner bridge
-
-private struct PairingQrScannerRepresentable: UIViewControllerRepresentable {
-  let onScan: (String) -> Void
-
-  func makeCoordinator() -> Coordinator {
-    Coordinator(onScan: onScan)
-  }
-
-  func makeUIViewController(context: Context) -> DataScannerViewController {
-    let controller = DataScannerViewController(
-      recognizedDataTypes: [.barcode(symbologies: [.qr])],
-      qualityLevel: .fast,
-      recognizesMultipleItems: false,
-      isHighFrameRateTrackingEnabled: false,
-      isPinchToZoomEnabled: true,
-      isGuidanceEnabled: true,
-      isHighlightingEnabled: false
-    )
-    controller.delegate = context.coordinator
-    try? controller.startScanning()
-    return controller
-  }
-
-  func updateUIViewController(_ uiViewController: DataScannerViewController, context: Context) {}
-
-  final class Coordinator: NSObject, DataScannerViewControllerDelegate {
-    private let onScan: (String) -> Void
-    private var didEmit = false
-
-    init(onScan: @escaping (String) -> Void) {
-      self.onScan = onScan
-    }
-
-    func dataScanner(_ dataScanner: DataScannerViewController, didAdd addedItems: [RecognizedItem], allItems: [RecognizedItem]) {
-      guard !didEmit else { return }
-      for item in addedItems {
-        if case .barcode(let barcode) = item, let payload = barcode.payloadStringValue {
-          didEmit = true
-          onScan(payload)
-          dataScanner.stopScanning()
-          break
-        }
-      }
-    }
   }
 }

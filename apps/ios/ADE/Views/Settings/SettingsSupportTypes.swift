@@ -2,13 +2,11 @@ import SwiftUI
 
 enum SettingsPairSheetRoute: Identifiable {
   case discover
-  case qr
   case manual
 
   var id: String {
     switch self {
     case .discover: return "discover"
-    case .qr: return "qr"
     case .manual: return "manual"
     }
   }
@@ -16,15 +14,12 @@ enum SettingsPairSheetRoute: Identifiable {
 
 enum PinPreset: Identifiable {
   case discover(DiscoveredSyncHost)
-  case qr(SyncPairingQrPayload)
   case manual(host: String, port: Int)
 
   var id: String {
     switch self {
     case .discover(let host):
       return "discover-\(host.id)"
-    case .qr(let payload):
-      return "qr-\(payload.hostIdentity.deviceId)"
     case .manual(let host, let port):
       return "manual-\(host)-\(port)"
     }
@@ -34,8 +29,6 @@ enum PinPreset: Identifiable {
     switch self {
     case .discover(let host):
       return host.hostName
-    case .qr(let payload):
-      return payload.hostIdentity.name
     case .manual(let host, _):
       return host
     }

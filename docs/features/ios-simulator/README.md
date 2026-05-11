@@ -16,6 +16,30 @@ is hidden on non-darwin platforms, and `iosSimulatorService.launch`
 throws `"iOS Simulator control is only available on macOS."` when
 called from a non-darwin host.
 
+## Runtime ownership
+
+The iOS Simulator service runs on the runtime host that owns the project,
+because every operation it performs (`xcrun simctl`, `xcodebuild`,
+Simulator.app window control, IOSurface/Indigo helper compilation, idb
+companion lifecycle) needs the macOS toolchain on that machine.
+
+- A **local Mac runtime** (the desktop's local `ade serve`, or
+  `ade serve` started directly on a Mac) can drive the simulator. The
+  desktop renderer mounts the panel and streams MJPEG frames from the
+  runtime over IPC.
+- A **remote Mac runtime** (another Mac reached over SSH) can drive
+  its own simulator. The desktop renderer streams frames through the
+  SSH-tunneled JSON-RPC channel.
+- A **remote Linux runtime** cannot launch the simulator — the
+  service's tool-readiness check (`getStatus().supported`) returns
+  `false` on non-darwin hosts, the renderer hides the toggle, and
+  `ade ios-sim launch` rejects with the macOS-only error message.
+
+The MJPEG stream URL the renderer renders is allocated and bound on the
+runtime host. For remote bindings, frame bytes flow over the same
+runtime RPC channel as everything else; there is no direct browser →
+remote-localhost connection.
+
 ## Source file map
 
 | Path | Role |

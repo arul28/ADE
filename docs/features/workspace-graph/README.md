@@ -11,6 +11,27 @@ conflict, PR, and git service state the rest of the app uses into a
 spatial view. Data flows in staged layers so the canvas becomes
 usable before every overlay finishes loading.
 
+## Where this runs
+
+Every backing data feed (lane list, conflict batch assessment, sync
+status, auto-rebase status, PR list, integration proposals,
+operations) is served by the **active ADE runtime** for the window's
+project binding — the local ADE daemon for local-bound windows or the
+SSH-attached remote runtime for remote-bound windows. The renderer
+calls into the runtime through preload's
+`callProjectRuntimeActionOr(...)` helpers and falls back to the legacy
+in-process IPC handlers when no runtime is bound. Persisted graph
+preferences (node positions, view mode, filters) are stored through
+the runtime's `graph_state` action domain — they live in the runtime's
+state store so the layout follows the project binding (and survives
+across desktop windows pointed at the same project). The renderer
+itself owns no service state; it is purely a projection of runtime
+data.
+
+For remote-bound windows the entire data graph is computed on the
+remote machine; the desktop renderer just receives the snapshots and
+event deltas.
+
 ## Source file map
 
 Core renderer files (`apps/desktop/src/renderer/components/graph/`):

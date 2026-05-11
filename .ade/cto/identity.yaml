@@ -11,12 +11,6 @@ memoryPolicy:
   compactionThreshold: 0.7
   preCompactionFlush: true
   temporalDecayHalfLifeDays: 30
-openclawContextPolicy:
-  shareMode: filtered
-  blockedCategories:
-    - secret
-    - token
-    - system_prompt
 onboardingState:
   completedSteps:
     - identity

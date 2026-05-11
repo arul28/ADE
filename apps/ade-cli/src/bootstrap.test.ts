@@ -144,4 +144,43 @@ describe("createEventBuffer", () => {
       expect(result.events[i]!.payload).toEqual({ kind: categories[i] });
     }
   });
+
+  it("notifies subscribers for newly pushed events until unsubscribed", () => {
+    const buffer = createEventBuffer();
+    const seen: BufferedEvent[] = [];
+
+    const unsubscribe = buffer.subscribe((event) => seen.push(event));
+    buffer.push({ timestamp: "t1", category: "runtime", payload: { n: 1 } });
+    unsubscribe();
+    buffer.push({ timestamp: "t2", category: "runtime", payload: { n: 2 } });
+
+    expect(seen).toEqual([
+      expect.objectContaining({
+        id: 1,
+        category: "runtime",
+        payload: { n: 1 },
+      }),
+    ]);
+  });
+
+  it("keeps notifying subscribers when one listener throws", () => {
+    const buffer = createEventBuffer();
+    const seen: BufferedEvent[] = [];
+
+    buffer.subscribe(() => {
+      throw new Error("listener failed");
+    });
+    buffer.subscribe((event) => seen.push(event));
+
+    expect(() => {
+      buffer.push({ timestamp: "t1", category: "runtime", payload: { n: 1 } });
+    }).not.toThrow();
+    expect(seen).toEqual([
+      expect.objectContaining({
+        id: 1,
+        category: "runtime",
+        payload: { n: 1 },
+      }),
+    ]);
+  });
 });

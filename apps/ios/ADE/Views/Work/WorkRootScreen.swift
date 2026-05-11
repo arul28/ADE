@@ -531,7 +531,7 @@ struct WorkRootScreen: View {
         }
       } message: { session in
         Text(isChatSession(session)
-          ? "ADE will ask the host to stop this chat and keep the transcript available for review."
+          ? "ADE will ask the machine to stop this chat and keep the transcript available for review."
           : "ADE will stop streaming new terminal output for this session.")
       }
       }

@@ -1,13 +1,18 @@
 # ADE Inspector (Swift inspector kit)
 
-ADE Inspector is the bridge that lets the Electron iOS Simulator panel
-say "the user just tapped *that* SwiftUI view, defined at this file
+ADE Inspector is the bridge that lets the iOS Simulator panel say
+"the user just tapped *that* SwiftUI view, defined at this file
 and line, with these accessibility tags." It runs entirely inside the
 debug build of the iOS app under inspection, publishes a JSON snapshot
 of every annotated view's frame to a known path inside the app's data
-container, and the Electron service correlates that snapshot with a
-fresh simctl screenshot to produce `IosScreenSnapshot` and
+container, and the iOS Simulator service correlates that snapshot with
+a fresh simctl screenshot to produce `IosScreenSnapshot` and
 `IosElementContextItem` values.
+
+Snapshot reads happen inside whichever runtime daemon owns the active
+simulator session. Because the simulator is macOS-only, that runtime
+is always a Mac (local or remote-Mac); the renderer is purely a viewer
+over the resulting elements.
 
 The kit is **DEBUG-only**: under `#if DEBUG` the modifiers attach
 preference values and the snapshot host emits JSON; under release

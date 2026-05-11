@@ -203,9 +203,9 @@ struct LaneCommitSheet: View {
       .trimmingCharacters(in: .whitespacesAndNewlines)
       .lowercased()
     if lower.contains("are off") || lower.contains("turned off") {
-      return "AI commit messages are turned off on the desktop. Open desktop Settings → AI → Commit Messages to enable it."
+      return "AI commit messages are turned off on your ADE machine. Open ADE Settings → AI → Commit Messages to enable it."
     }
-    return "Pick a Commit Messages model on the desktop in Settings → AI → Commit Messages."
+    return "Pick a Commit Messages model in ADE Settings → AI → Commit Messages."
   }
 
   @ViewBuilder

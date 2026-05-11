@@ -1,5 +1,4 @@
 import SwiftUI
-import UIKit
 
 struct SettingsPinSheet: View {
   @Environment(\.dismiss) private var dismiss
@@ -36,7 +35,7 @@ struct SettingsPinSheet: View {
         .accessibilityLabel("Pairing PIN")
         .accessibilityValue(pin.isEmpty ? "No digits entered" : "\(pin.count) of 6 digits entered")
 
-        Text("Shown on your Mac under Settings → Sync.")
+        Text("Shown in ADE Sync settings or by `ade sync pin get`.")
           .font(.footnote)
           .foregroundStyle(ADEColor.textSecondary)
 
@@ -135,18 +134,6 @@ struct SettingsPinSheet: View {
           hostName: host.hostName,
           candidateAddresses: host.addresses,
           tailscaleAddress: host.tailscaleAddress
-        )
-
-      case .qr(let payload):
-        let candidateAddresses = payload.addressCandidates.map(\.host)
-        await syncService.pairAndConnect(
-          host: candidateAddresses.first ?? "127.0.0.1",
-          port: payload.port,
-          code: code,
-          hostIdentity: payload.hostIdentity.deviceId,
-          hostName: payload.hostIdentity.name,
-          candidateAddresses: candidateAddresses,
-          tailscaleAddress: payload.addressCandidates.first(where: { $0.kind == "tailscale" })?.host
         )
 
       case .manual(let host, let port):

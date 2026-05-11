@@ -2,10 +2,12 @@
 
 Automations publish effects — comments, PRs, Linear updates, external webhooks. Guardrails gate publishing so a low-confidence or unreviewed run doesn't write to external systems silently. This doc covers the review/verification path, confidence scoring, the queue that holds runs needing a human, and the permission/scope knobs that constrain what an automation can touch.
 
+Confidence scoring, queue evaluation, sandbox cwd checks, and secret resolution all run in the runtime daemon that owns the project — the renderer just edits and observes the gates.
+
 ## Source file map
 
 - `apps/desktop/src/main/services/automations/automationService.ts` — review queue, confidence scoring, verification gating, publish disposition, status mapping.
-- `apps/desktop/src/main/services/automations/automationSecretService.ts` — secret policy (env-ref only, same as CTO workers).
+- `apps/desktop/src/main/services/automations/automationSecretService.ts` — secret policy (env-ref only, same as CTO worker adapters). The runtime daemon resolves `${env:VAR}` at dispatch time from the runtime process environment, not from the desktop renderer.
 - `apps/desktop/src/main/services/automations/automationPlannerService.ts` — rule validation before persistence.
 
 ## Guardrail structure on a rule

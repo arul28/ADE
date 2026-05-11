@@ -4,6 +4,12 @@ Memory lives in SQLite (`kvDb.ts`), with a sidecar folder under
 `.ade/memory/` for bootstrap and topic files. This doc captures the
 schema, how entries move through it, and the key integrity rules.
 
+The schema is owned by the runtime daemon that owns the project. The
+local runtime hosts the canonical `unified_memories` table for local
+projects; for remote projects the same schema exists on the remote host
+but stays empty in v1 because the static remote runtime cannot load the
+embedding pipeline (see `embeddings.md`).
+
 ## Source file map
 
 | Path | Role |

@@ -7,11 +7,30 @@ checkpoints). The goal is traceability and debuggability, not just
 recorded in parallel tables owned by their respective features;
 history is the operations-level view that ties them together.
 
+## Where this runs
+
+Operation recording, the `operations` SQLite table, and the export
+pipeline all live inside the **active ADE runtime** (local daemon for
+local-bound windows, SSH-attached remote runtime for remote-bound
+windows). Every git operation runs through the runtime's
+`gitOperationsService` which brackets the command with
+`operationService.start` / `finish`, so the timeline records work
+performed on whichever host owns the lane's worktree. The renderer's
+`window.ade.history.listOperations` and `exportOperations` go through
+preload's `callProjectRuntimeActionOr("operation", …)` first and fall
+back to the legacy in-process IPC handlers when no runtime is bound.
+For remote-bound windows the operations database lives on the remote
+machine; the desktop simply renders rows it pulled through the
+runtime. The export-to-disk dialog itself still runs on the desktop
+because the file is saved on the user's local machine — the runtime
+returns the rows, then the desktop's IPC handler writes the CSV/JSON
+to disk through the native save dialog.
+
 ## Source file map
 
 | Path | Role |
 |---|---|
-| `apps/desktop/src/main/services/history/operationService.ts` | CRUD for `operations` rows; the canonical entry point for `record`, `start`, `finish`, `list`. |
+| `apps/desktop/src/main/services/history/operationService.ts` | CRUD for `operations` rows; the canonical entry point for `record`, `start`, `finish`, `list`. Same source backs the runtime daemon and the desktop fallback path. |
 | `apps/desktop/src/main/services/state/kvDb.ts` | Schema for `operations`, `checkpoints`, `pack_events`, `pack_versions`, `pack_heads`, `terminal_sessions`, `orchestrator_chat_threads`, `orchestrator_chat_messages`. |
 | `apps/desktop/src/main/services/git/gitOperationsService.ts` | Brackets every git operation with `operationService.start` / `finish`, capturing pre/post HEAD SHAs. |
 | `apps/desktop/src/main/services/prs/prService.ts` | Records PR creation as an operation. |

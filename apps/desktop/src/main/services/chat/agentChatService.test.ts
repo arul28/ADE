@@ -1245,6 +1245,32 @@ describe("createAgentChatService", () => {
       expect(opts?.systemPrompt?.append).toContain("clean up old, stale, or finished processes");
     });
 
+    it("keeps Claude SDK project and user setting sources enabled for filesystem skills", async () => {
+      vi.mocked(unstable_v2_createSession).mockReturnValue({
+        send: vi.fn(),
+        stream: vi.fn(async function* () {
+          return;
+        }),
+        close: vi.fn(),
+        sessionId: "sdk-session-skills",
+      } as any);
+
+      const { service } = createService();
+      await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await vi.waitFor(() => {
+        expect(unstable_v2_createSession).toHaveBeenCalled();
+      });
+
+      const opts = vi.mocked(unstable_v2_createSession).mock.calls[0]?.[0] as { settingSources?: string[]; skills?: string[] } | undefined;
+      expect(opts?.settingSources).toEqual(expect.arrayContaining(["user", "project"]));
+      expect(opts?.skills).toBeUndefined();
+    });
+
     it("appends discovered project slash commands to the Claude system prompt", async () => {
       const commandsDir = path.join(tmpRoot, ".claude", "commands");
       fs.mkdirSync(commandsDir, { recursive: true });
@@ -1287,7 +1313,7 @@ describe("createAgentChatService", () => {
 
       const opts = vi.mocked(unstable_v2_createSession).mock.calls[0]?.[0] as { systemPrompt?: { append?: string } } | undefined;
       expect(opts?.systemPrompt?.append).toContain("## Project slash commands");
-      expect(opts?.systemPrompt?.append).toContain("auto-expands the command body");
+      expect(opts?.systemPrompt?.append).toContain("pre-expands the file's body");
       expect(opts?.systemPrompt?.append).toContain("/audit — Audit recent work for bugs and gaps");
       expect(opts?.systemPrompt?.append).toContain("/ship-lane — Drive a lane through CI + review");
     });
@@ -2449,7 +2475,7 @@ describe("createAgentChatService", () => {
       const persisted = readPersistedChatState(session.id);
       writePersistedChatState(session.id, {
         ...persisted,
-        continuitySummary: "- Keep the OpenClaw bridge runtime state in machine-local cache.",
+        continuitySummary: "- Keep runtime cache state machine-local.",
         continuitySummaryUpdatedAt: new Date().toISOString(),
         recentConversationEntries: [
           { role: "user", text: "What lane should frontend use?" },
@@ -2471,7 +2497,7 @@ describe("createAgentChatService", () => {
       expect(result.sessionId).toBe(session.id);
       expect(send).toHaveBeenCalledTimes(1);
       expect(send).toHaveBeenCalledWith(expect.stringContaining("Continuity Summary"));
-      expect(send).toHaveBeenCalledWith(expect.stringContaining("Keep the OpenClaw bridge runtime state in machine-local cache."));
+      expect(send).toHaveBeenCalledWith(expect.stringContaining("Keep runtime cache state machine-local."));
       expect(send).toHaveBeenCalledWith(expect.stringContaining("User: What lane should frontend use?"));
       expect(send).toHaveBeenCalledWith(expect.stringContaining("Assistant: Use the primary-hosted coordinator first."));
     });
@@ -2727,7 +2753,7 @@ describe("createAgentChatService", () => {
 
       const result = await service.runSessionTurn({
         sessionId: session.id,
-        text: "Please keep the OpenClaw bridge state private.",
+        text: "Please keep the runtime bridge state private.",
         timeoutMs: 15_000,
       });
       await new Promise((resolve) => setTimeout(resolve, 25));
@@ -2736,7 +2762,7 @@ describe("createAgentChatService", () => {
       expect(result.outputText).toContain("Partial answer");
       expect(persisted.sdkSessionId).toBe("sdk-session-2");
       expect(persisted.continuitySummary).toContain("Recent continuity snapshot:");
-      expect(persisted.continuitySummary).toContain("User: Please keep the OpenClaw bridge state private.");
+      expect(persisted.continuitySummary).toContain("User: Please keep the runtime bridge state private.");
       expect(persisted.continuitySummary).toContain("Assistant: Partial answer");
       expect(unstable_v2_createSession).toHaveBeenCalledTimes(2);
       expect(recoverySend).toHaveBeenCalledWith("System initialization check. Respond with only the word READY.");
@@ -3101,7 +3127,7 @@ describe("createAgentChatService", () => {
       expect(clearCmd!.source).toBe("local");
     });
 
-    it("includes /login command for claude sessions", async () => {
+    it("does not advertise /login as a Claude SDK command", async () => {
       const { service } = createService();
       const session = await service.createSession({
         laneId: "lane-1",
@@ -3111,8 +3137,7 @@ describe("createAgentChatService", () => {
 
       const commands = service.getSlashCommands({ sessionId: session.id });
       const loginCmd = commands.find((c: any) => c.name === "/login");
-      expect(loginCmd).toBeDefined();
-      expect(loginCmd!.source).toBe("sdk");
+      expect(loginCmd).toBeUndefined();
     });
 
     it("includes project Claude Code command files before SDK init completes", async () => {
@@ -3146,7 +3171,7 @@ describe("createAgentChatService", () => {
       ]));
     });
 
-    it("keeps reserved local Claude commands ahead of filesystem commands", async () => {
+    it("does not let a filesystem /login command replace provider auth guidance", async () => {
       const commandsDir = path.join(tmpRoot, ".claude", "commands");
       fs.mkdirSync(commandsDir, { recursive: true });
       fs.writeFileSync(path.join(commandsDir, "login.md"), [
@@ -3167,10 +3192,7 @@ describe("createAgentChatService", () => {
 
       const commands = service.getSlashCommands({ sessionId: session.id });
       const loginCmd = commands.find((c: any) => c.name === "/login");
-      expect(loginCmd).toMatchObject({
-        description: "Sign in to Claude Code for this chat runtime",
-        source: "sdk",
-      });
+      expect(loginCmd).toBeUndefined();
     });
 
     it("does not include /login for opencode sessions", async () => {
@@ -3204,6 +3226,39 @@ describe("createAgentChatService", () => {
         expect.objectContaining({
           name: "/audit",
           description: "Audit recent work.",
+          source: "sdk",
+        }),
+      ]));
+    });
+
+    it("includes project Claude command files for Codex-backed sessions", async () => {
+      const commandsDir = path.join(tmpRoot, ".claude", "commands");
+      const promptsDir = path.join(tmpRoot, ".codex", "prompts");
+      fs.mkdirSync(commandsDir, { recursive: true });
+      fs.mkdirSync(promptsDir, { recursive: true });
+      fs.writeFileSync(path.join(commandsDir, "shipLane.md"), [
+        "---",
+        "description: Ship the active lane",
+        "---",
+        "",
+        "Ship lane.",
+        "",
+      ].join("\n"));
+      fs.writeFileSync(path.join(promptsDir, "shipLane.md"), "# Codex ship lane prompt\n");
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      const commands = service.getSlashCommands({ sessionId: session.id });
+      expect(commands.filter((command: any) => command.name.toLowerCase() === "/shiplane")).toHaveLength(1);
+      expect(commands).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          name: "/shipLane",
+          description: "Ship the active lane",
           source: "sdk",
         }),
       ]));
@@ -3258,6 +3313,38 @@ describe("createAgentChatService", () => {
     await vi.waitFor(() => {
       expect(send).toHaveBeenLastCalledWith("/automate chat slash commands");
     });
+  });
+
+  it("does not forward Claude /login into the Agent SDK", async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(unstable_v2_createSession).mockReturnValue({
+      send,
+      stream: vi.fn(() => (async function* () {
+        yield {
+          type: "system",
+          subtype: "init",
+          session_id: "sdk-session-login-command",
+          slash_commands: ["/login"],
+        };
+      })()),
+      close: vi.fn(),
+      sessionId: "sdk-session-login-command",
+      setPermissionMode: vi.fn().mockResolvedValue(undefined),
+    } as any);
+
+    const { service } = createService();
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      modelId: "anthropic/claude-sonnet-4-6",
+    });
+
+    await expect(service.sendMessage({
+      sessionId: session.id,
+      text: "/login",
+    })).rejects.toThrow("/login is not an SDK-dispatchable command");
+    expect(send).not.toHaveBeenCalledWith("/login");
   });
 
   it("expands project Claude command files before sending to the SDK", async () => {
@@ -3353,6 +3440,53 @@ describe("createAgentChatService", () => {
       expect.objectContaining({
         type: "text",
         text: "Audit the Codex chat work.\n\nFocus: command menus",
+      }),
+    ]));
+  });
+
+  it("expands project Claude command files before sending to Codex", async () => {
+    const commandsDir = path.join(tmpRoot, ".claude", "commands");
+    const promptsDir = path.join(tmpRoot, ".codex", "prompts");
+    fs.mkdirSync(commandsDir, { recursive: true });
+    fs.mkdirSync(promptsDir, { recursive: true });
+    fs.writeFileSync(path.join(commandsDir, "audit.md"), [
+      "---",
+      "description: Audit recent work",
+      "---",
+      "",
+      "Audit the work.",
+      "",
+      "Focus: $ARGUMENTS",
+      "",
+    ].join("\n"));
+    fs.writeFileSync(path.join(promptsDir, "audit.md"), [
+      "Audit the Codex prompt.",
+      "",
+      "Focus: $ARGUMENTS",
+      "",
+    ].join("\n"));
+
+    const { service } = createService();
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.5",
+      modelId: "openai/gpt-5.5",
+    });
+
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "/audit command rendering",
+    }, { awaitDispatch: true });
+
+    await vi.waitFor(() => {
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+    });
+    const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start") as any;
+    expect(turnStartRequest.params.input).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "text",
+        text: "Audit the work.\n\nFocus: command rendering",
       }),
     ]));
   });

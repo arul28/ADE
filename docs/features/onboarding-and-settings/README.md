@@ -2,10 +2,13 @@
 
 Two related but distinct flows:
 
-- **Onboarding** — the fastest path to a usable project. Detects dev
-  tools and stack signals, suggests a project config, optionally
-  imports existing git branches as lanes, and runs a short wizard for
-  AI providers, GitHub, and optional integrations.
+- **Onboarding** — the fastest path to a usable installation and a usable
+  project. Covers installing the per-machine ADE runtime daemon as a login
+  service, putting `ade` on `PATH`, registering the project with the runtime
+  so every client (desktop, `ade code`, iOS) sees it, then detecting dev tools
+  and stack signals, suggesting a project config, optionally importing
+  existing git branches as lanes, and walking the user through AI providers,
+  GitHub, and optional integrations.
 - **Settings** — long-lived configuration organized by tab. Persists
   to `.ade/ade.yaml` (shared) and `.ade/local.yaml` (local) through
   `projectConfigService`.
@@ -14,6 +17,24 @@ The runtime no longer assumes first-run setup must hydrate every
 service. Project open favors a cheap first pass; secondary hydration
 (full lane status, provider modes, semantic indexing) happens after
 the app is interactive.
+
+## Where state lives
+
+ADE state is split between the per-machine runtime root and per-project
+directories. Onboarding writes to both.
+
+| Scope | Location | Owner | Contents |
+|---|---|---|---|
+| Machine | `~/.ade/` (`ADE_HOME` overrides; channel builds use `~/.ade-alpha/` / `~/.ade-beta/`) | `ade serve` runtime daemon | Runtime socket (`sock/ade.sock`), project registry (`projects.json`), encrypted credential store (`secrets/`), bundled binary (`bin/ade`), native runtime deps (`runtime/<arch>/`), service log files. |
+| Project (shared) | `<project>/.ade/ade.yaml` | `projectConfigService` | Version-controlled team config: processes, stacks, tests, automations, lane templates, AI mode, providers, Linear sync. |
+| Project (local) | `<project>/.ade/local.yaml` | `projectConfigService` | Per-user, gitignored: ports, env vars, local-only processes. |
+| Project (data) | `<project>/.ade/` | various services | Lanes, attachments, kvDb, generated assets. The shared `.ade/.gitignore` whitelists only authored files. |
+
+The runtime daemon is the seam that ties machine and project scope
+together: it owns `~/.ade/projects.json`, lazily builds an `AdeRuntime`
+per project root on first project-scoped JSON-RPC call, and is the
+single host through which desktop, `ade code`, and SSH-attached
+desktops see live lanes / chats / processes.
 
 ## Source file map
 
@@ -153,11 +174,16 @@ Renderer — settings:
   Visual chat / theme controls now live in the dedicated Appearance
   tab (`AppearanceSection.tsx`).
 - `apps/desktop/src/renderer/components/settings/AdeCliSection.tsx`
-  — surfaces `ade.cli.getStatus` / `ade.cli.install` / `ade.cli.uninstall`.
-  In compact form (used by `GeneralSection` and the onboarding
-  `DevToolsSection`) it shows the current install path, an
-  Install / Repair button, and a "Add to PATH" hint when the install
-  target isn't on the user's `$PATH`.
+  — surfaces `window.ade.adeCli.getStatus()` / `installForUser()`.
+  Status carries `terminalInstalled`, `agentPathReady`,
+  `bundledAvailable`, and the resolved `installTargetPath` for the
+  bundled `ade` binary. In compact form (used by `GeneralSection` and
+  the onboarding `DevToolsSection`) it shows the current install
+  path, an Install / Repair button that runs the platform
+  install-path helper, and an "Add to PATH" hint when the install
+  target isn't on the user's `$PATH`. Agents launched by ADE always
+  get the bundled CLI automatically; this surface is what makes
+  `ade` available to the user's own terminals.
 - `apps/desktop/src/renderer/components/settings/WorkspaceSettingsSection.tsx`
   + `ProjectSection.tsx` — project identity, base ref, paths.
 - `apps/desktop/src/renderer/components/settings/AiSettingsSection.tsx`
@@ -245,6 +271,41 @@ Auto-update (top-bar control, not a settings tab):
 
 ## Onboarding responsibilities
 
+Onboarding covers two layers.
+
+### Machine layer (one-time per machine)
+
+Driven by `LocalRuntimeConnectionPool` on desktop launch and surfaced in
+the General settings tab via `AdeCliSection`:
+
+1. Bring up the runtime daemon. The pool tries to attach to
+   `~/.ade/sock/ade.sock`; if that fails it spawns
+   `ade serve --socket <path>` from the bundled CLI and waits for the
+   socket. A version mismatch between the running daemon and the desktop
+   build forces a clean restart.
+2. Register the runtime as a per-user login service so it survives
+   reboots. `installServiceBestEffort()` runs `ade serve --install-service`
+   once per session; the implementation lives in
+   `apps/ade-cli/src/serviceManager/` (launchd / systemd / schtasks).
+   The result is exposed as `LocalRuntimeStatus.serviceInstall` and
+   `serviceHealth` (`unsupported | not_installed | installed | running |
+   error | unknown`).
+3. Install the `ade` command on `PATH`. The `AdeCliSection` "ADE
+   command" card calls `window.ade.adeCli.installForUser()`, which
+   delegates to the platform helper script bundled with the desktop
+   (`/Applications/ADE.app/Contents/Resources/ade-cli/install-path.sh`
+   on macOS, equivalents on other platforms). The compact form embedded
+   in `GeneralSection` and the onboarding `DevToolsSection` shows the
+   current install path, an Install / Repair button, and an "Add to
+   PATH" hint when the install target is not on the user's `$PATH`.
+4. Register projects with the runtime. Opening a project on desktop
+   calls `LocalRuntimeConnectionPool.ensureProject(rootPath)`, which
+   issues `projects.add { rootPath }` against the daemon. The project
+   then appears in `projects.list` to every other client (`ade code`,
+   iOS, SSH-attached desktops) without an extra step.
+
+### Project layer (per project)
+
 Repository onboarding covers five things:
 
 1. detect dev tools (git, gh CLI) and report availability
@@ -262,6 +323,17 @@ Current behavior:
 - expensive background work is no longer gated on "must finish before
   the app feels usable"
 
+### Headless install
+
+For machines without a desktop install (CI workers, remote
+SSH-attached runtimes), the runtime daemon and `ade` CLI install via
+`curl -fsSL .../install.sh | sh`. The script downloads the static
+`ade-<platform-arch>` binary plus its native dependency archive, drops
+the binary in `$ADE_INSTALL_DIR` (or `~/.local/bin`), extracts native
+modules under `~/.ade/runtime/<arch>/`, and best-effort registers the
+login service. See [`apps/ade-cli/README.md`](../../../apps/ade-cli/README.md)
+for the full flow and environment overrides.
+
 ### CTO first-run setup
 
 CTO (the agent identity used in the Chat tab) has its own lightweight
@@ -275,8 +347,6 @@ wizard:
    onboarding with or without Linear. Fastest path is a personal API
    key; OAuth is available but not the default recommendation.
 
-OpenClaw is intentionally excluded from first-run setup.
-
 ## Settings responsibilities
 
 Top-level tabs, organized to match the kind of thing the user is
@@ -284,10 +354,10 @@ changing rather than which service backs it:
 
 | Tab | Section file | What lives here |
 |---|---|---|
-| General | `GeneralSection.tsx` (embeds `AdeCliSection` in compact form) | AI mode, task routing, terminal preferences (font size, line height, scrollback), keybindings link, and the `ade` CLI install / status surface. Receives the legacy `?tab=onboarding`, `?tab=help`, `?tab=tours`, and `?tab=keybindings` deep links via `TAB_ALIASES`. |
+| General | `GeneralSection.tsx` (embeds `AdeCliSection` in compact form) | AI mode, task routing, terminal preferences (font size, line height, scrollback), keybindings link, and the `ade` CLI install / status surface. The CLI card reports whether the bundled `ade-<platform-arch>` binary is on `PATH`, the resolved install target, and exposes one-click Install / Repair backed by the platform install-path helper. Receives the legacy `?tab=onboarding`, `?tab=help`, `?tab=tours`, and `?tab=keybindings` deep links via `TAB_ALIASES`. |
 | Appearance | `AppearanceSection.tsx` (renders `ChatAppearancePreview`) | Theme, code-block copy-button position, agent-turn completion sound + volume + quiet-when-focused, chat font size (`chatFontSizePx`), chat transcript density (`chatTranscriptDensity` — `compact` / `comfortable` / `spacious`), chat chrome tint (`chatChromeTint` — `colored` default vs `neutral` for monochrome chrome; the legacy `chatLaneAccentEmphasis` preset slug is still read so older user-pref blobs migrate cleanly), chat shell geometry (`chatShellGeometry` — `soft` / `default` / `sharp` corners), and the user-message minimap toggle (`chatUserMinimapEnabled` — drives the inline `ChatUserMinimap`). Persisted to `localStorage` under `ade.userPreferences.v1`. |
 | Workspace | `WorkspaceSettingsSection.tsx`, `ProjectSection.tsx` | Project identity, paths, skill files. (`SyncDevicesSection.tsx` — multi-device sync, host transfer, peer status, pairing PIN, Tailscale discovery — is mounted from the top bar's Sync popover, not as a Settings tab.) |
-| AI | `AiSettingsSection.tsx`, `AiFeaturesSection.tsx`, `ProvidersSection.tsx` | Provider CLIs, models, AI feature flags |
+| AI | `AiSettingsSection.tsx`, `AiFeaturesSection.tsx`, `ProvidersSection.tsx` | Provider CLIs, models, API-key status, provider readiness, OpenCode runtime diagnostics, and AI feature flags. The same status surface is exposed through ADE actions for `ade code` model setup. |
 | Mobile Push | `MobilePushPanel.tsx` | APNs registration, paired-device push tokens, per-category preferences |
 | Integrations | `IntegrationsSettingsSection.tsx`, `GitHubSection.tsx`, `LinearSection.tsx` | GitHub, Linear, and computer-use backend readiness. The GitHub section reads `status.connected` (the backend's single "GitHub is usable" gate) to decide between CONNECTED / LIMITED ACCESS / NOT CONNECTED, surfaces a dedicated repo-probe error when a fine-grained token authenticates as a user but cannot access the active repo, and the REFRESH button calls `getStatus({ forceRefresh: true })` so users who fix permissions on github.com see the change immediately. See [`pull-requests/README.md`](../pull-requests/README.md#github-connectivity-model) for the full status-shape and `connected` derivation. |
 | Memory | `MemoryHealthTab.tsx` | Memory health, browser, embedding health |

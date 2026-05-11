@@ -140,6 +140,11 @@ struct DiscoveredSyncHost: Codable, Equatable, Identifiable {
   var port: Int
   var addresses: [String]
   var tailscaleAddress: String?
+  var runtimeKind: String? = nil
+  var runtimeVersion: String? = nil
+  var projectIds: [String] = []
+  var projectNames: [String] = []
+  var projectCount: Int? = nil
   var lastResolvedAt: String
 }
 
@@ -157,13 +162,6 @@ struct SyncPairingHostIdentity: Codable, Equatable {
   var deviceType: String
 }
 
-struct SyncPairingQrPayload: Codable, Equatable {
-  var version: Int
-  var hostIdentity: SyncPairingHostIdentity
-  var port: Int
-  var addressCandidates: [SyncAddressCandidate]
-}
-
 enum SyncDomain: String, CaseIterable, Hashable {
   case lanes
   case files
@@ -173,8 +171,8 @@ enum SyncDomain: String, CaseIterable, Hashable {
 
 enum SyncHydrationMessaging {
   static let initialData = "Syncing initial data..."
-  static let waitingForProjectData = "Waiting for host to sync project data..."
-  static let projectDataTimeout = "Timed out waiting for host to sync project data. Try reconnecting."
+  static let waitingForProjectData = "Waiting for the machine to sync project data..."
+  static let projectDataTimeout = "Timed out waiting for the machine to sync project data. Try reconnecting."
 }
 
 enum SyncDomainPhase: String, Codable, Equatable {
@@ -889,6 +887,10 @@ struct LinearConnectionStatus: Codable, Hashable {
   var connected: Bool
   var viewerId: String?
   var viewerName: String?
+  var organizationId: String?
+  var organizationName: String?
+  var organizationUrlKey: String?
+  var organizationLogoUrl: String?
   var projectCount: Int?
   var projectPreview: [String]?
   var checkedAt: String?

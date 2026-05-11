@@ -84,8 +84,8 @@ struct CtoSessionDestinationView: View {
     if syncService.connectionState.isHostUnreachable {
       ADEEmptyStateView(
         symbol: "wifi.slash",
-        title: "Connect your Mac to open this chat",
-        message: "Tap the settings gear in the top right to reconnect to your desktop host."
+        title: "Connect your ADE machine to open this chat",
+        message: "Tap the settings gear in the top right to reconnect to your ADE machine."
       )
       .padding(16)
       .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)

@@ -1,0 +1,427 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { describe, expect, it, vi } from "vitest";
+import { createEventBuffer } from "./eventBuffer";
+import { createMultiProjectRpcRequestHandler } from "./multiProjectRpcServer";
+import { ProjectRegistry } from "./services/projects/projectRegistry";
+import { ProjectScopeRegistry } from "./services/projects/projectScope";
+
+function createRegistry() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-multi-project-rpc-"));
+  const projectRoot = path.join(root, "project");
+  fs.mkdirSync(projectRoot, { recursive: true });
+  const registry = new ProjectRegistry({
+    adeDir: path.join(root, "home"),
+    projectsPath: path.join(root, "home", "projects.json"),
+    secretsDir: path.join(root, "home", "secrets"),
+    sockDir: path.join(root, "home", "sock"),
+    socketPath: path.join(root, "home", "sock", "ade.sock"),
+    binDir: path.join(root, "home", "bin"),
+    runtimeDir: path.join(root, "home", "runtime"),
+  });
+  return { root, projectRoot, registry };
+}
+
+function makeRuntime(label: string) {
+  return {
+    operationService: {
+      start: vi.fn(() => ({ operationId: `${label}-operation`, startedAt: "2026-05-10T00:00:00.000Z" })),
+      finish: vi.fn(),
+    },
+    laneService: {
+      list: vi.fn(async () => [{ id: `${label}-lane`, name: label }]),
+    },
+    syncService: {
+      getStatus: vi.fn(async () => ({ role: "brain", label })),
+    },
+    eventBuffer: createEventBuffer(),
+    dispose: vi.fn(),
+  };
+}
+
+describe("multi-project RPC server", () => {
+  it("exposes runtime-scoped project registry methods", async () => {
+    const { projectRoot, registry } = createRegistry();
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: registry,
+    });
+
+    await handler({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "ade/initialize",
+      params: { protocolVersion: "test" },
+    });
+
+    const added = await handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "projects.add",
+      params: { rootPath: projectRoot },
+    });
+    expect(added).toMatchObject({
+      rootPath: projectRoot,
+      displayName: "project",
+      gitOriginUrl: null,
+    });
+
+    const listed = await handler({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "projects.list",
+      params: {},
+    });
+    expect(listed).toEqual([added]);
+
+    const projectId = (added as { projectId: string }).projectId;
+    const touched = await handler({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "projects.touch",
+      params: { projectId },
+    });
+    expect((touched as { projectId: string }).projectId).toBe(projectId);
+
+    await handler({
+      jsonrpc: "2.0",
+      id: 5,
+      method: "projects.remove",
+      params: { projectId },
+    });
+    expect(await handler({ jsonrpc: "2.0", id: 6, method: "projects.list", params: {} })).toEqual([]);
+
+    handler.dispose();
+  });
+
+  it("requires projectId for project-scoped methods", async () => {
+    const { registry } = createRegistry();
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: registry,
+    });
+
+    await handler({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "ade/initialize",
+      params: {},
+    });
+
+    await expect(handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "ade/actions/list",
+      params: {},
+    })).rejects.toThrow("requires params.projectId");
+
+    handler.dispose();
+  });
+
+  it("passes runtime capability flags into project scopes", async () => {
+    const { projectRoot, registry } = createRegistry();
+    const added = registry.add(projectRoot);
+    const runtime = {
+      capabilities: { memory: false },
+      dispose: vi.fn(),
+    };
+    const scopeRegistry = {
+      get: vi.fn(async () => ({
+        registryProjectId: added.projectId,
+        record: added,
+        runtime,
+        dispose: vi.fn(),
+      })),
+      dispose: vi.fn(),
+      disposeAll: vi.fn(),
+    } as unknown as ProjectScopeRegistry;
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: registry,
+      scopeRegistry,
+    });
+
+    const init = await handler({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "ade/initialize",
+      params: {},
+    });
+    expect(init).toMatchObject({
+      runtimeInfo: { multiProject: true },
+      capabilities: { projects: true },
+    });
+
+    const actions = await handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "ade/actions/list",
+      params: { projectId: added.projectId },
+    }) as { actions: Array<{ name: string }> };
+    expect(actions.actions.some((entry) => entry.name.startsWith("memory_"))).toBe(false);
+    expect(scopeRegistry.get).toHaveBeenCalledWith(added.projectId);
+
+    handler.dispose();
+  });
+
+  it("exposes runtime sync PIN methods through the selected sync host scope", async () => {
+    const { projectRoot, registry } = createRegistry();
+    const added = registry.add(projectRoot);
+    const syncService = {
+      getPin: vi.fn(() => "123456"),
+      setPin: vi.fn(async (pin: string) => ({ role: "brain", pairingPin: pin })),
+      generatePin: vi.fn(async () => ({ role: "brain", pairingPin: "111222" })),
+      clearPin: vi.fn(async () => ({ role: "brain", pairingPin: null })),
+      getStatus: vi.fn(async () => ({ role: "brain" })),
+      refreshDiscovery: vi.fn(),
+      listDevices: vi.fn(),
+      updateLocalDevice: vi.fn(async (args: { name?: string }) => ({ deviceId: "machine-1", name: args.name })),
+      forgetDevice: vi.fn(async (deviceId: string) => ({ role: "brain", forgotten: deviceId })),
+      setActiveLanePresence: vi.fn(async (_laneIds: string[]) => {}),
+    };
+    const scopeRegistry = {
+      get: vi.fn(),
+      ensureSyncHost: vi.fn(async () => ({
+        registryProjectId: added.projectId,
+        record: added,
+        runtime: { syncService },
+        dispose: vi.fn(),
+      })),
+      dispose: vi.fn(),
+      disposeAll: vi.fn(),
+    } as unknown as ProjectScopeRegistry;
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: registry,
+      scopeRegistry,
+    });
+
+    await handler({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "ade/initialize",
+      params: {},
+    });
+
+    expect(await handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "sync.getPin",
+      params: { projectId: added.projectId },
+    })).toEqual({ pin: "123456" });
+
+    expect(await handler({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "sync.setPin",
+      params: { projectId: added.projectId, pin: "654321" },
+    })).toEqual({ role: "brain", pairingPin: "654321" });
+
+    expect(await handler({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "sync.generatePin",
+      params: { projectId: added.projectId },
+    })).toEqual({ role: "brain", pairingPin: "111222" });
+
+    await handler({
+      jsonrpc: "2.0",
+      id: 5,
+      method: "sync.clearPin",
+      params: { projectId: added.projectId },
+    });
+
+    expect(await handler({
+      jsonrpc: "2.0",
+      id: 6,
+      method: "sync.updateLocalDevice",
+      params: { projectId: added.projectId, name: "Mac Studio" },
+    })).toEqual({ deviceId: "machine-1", name: "Mac Studio" });
+
+    expect(await handler({
+      jsonrpc: "2.0",
+      id: 7,
+      method: "sync.forgetDevice",
+      params: { projectId: added.projectId, deviceId: "phone-1" },
+    })).toEqual({ role: "brain", forgotten: "phone-1" });
+
+    expect(await handler({
+      jsonrpc: "2.0",
+      id: 8,
+      method: "sync.setActiveLanePresence",
+      params: { projectId: added.projectId, laneIds: ["lane-1", 42, "lane-2"] },
+    })).toBeNull();
+
+    expect(scopeRegistry.ensureSyncHost).toHaveBeenCalledWith(added.projectId);
+    expect(syncService.setPin).toHaveBeenCalledWith("654321");
+    expect(syncService.generatePin).toHaveBeenCalledTimes(1);
+    expect(syncService.clearPin).toHaveBeenCalledTimes(1);
+    expect(syncService.updateLocalDevice).toHaveBeenCalledWith({ name: "Mac Studio" });
+    expect(syncService.forgetDevice).toHaveBeenCalledWith("phone-1");
+    expect(syncService.setActiveLanePresence).toHaveBeenCalledWith(["lane-1", "lane-2"]);
+
+    handler.dispose();
+  });
+
+  it("drops cached project handlers when the backing project scope is disposed", async () => {
+    const { projectRoot, registry } = createRegistry();
+    const added = registry.add(projectRoot);
+    const firstRuntime = makeRuntime("first");
+    const secondRuntime = makeRuntime("second");
+    let disposeListener: ((projectId: string) => void) | null = null;
+    let getCount = 0;
+    const scopeRegistry = {
+      get: vi.fn(async () => ({
+        registryProjectId: added.projectId,
+        record: added,
+        runtime: getCount++ === 0 ? firstRuntime : secondRuntime,
+        dispose: vi.fn(),
+      })),
+      ensureSyncHost: vi.fn(async () => {
+        disposeListener?.(added.projectId);
+        return {
+          registryProjectId: added.projectId,
+          record: added,
+          runtime: secondRuntime,
+          dispose: vi.fn(),
+        };
+      }),
+      dispose: vi.fn(),
+      disposeAll: vi.fn(),
+      onDispose: vi.fn((listener: (projectId: string) => void) => {
+        disposeListener = listener;
+        return () => {
+          disposeListener = null;
+        };
+      }),
+    } as unknown as ProjectScopeRegistry;
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: registry,
+      scopeRegistry,
+    });
+
+    await handler({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "ade/initialize",
+      params: {},
+    });
+
+    const first = await handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "ade/actions/call",
+      params: {
+        projectId: added.projectId,
+        name: "run_ade_action",
+        arguments: { domain: "lane", action: "list" },
+      },
+    }) as { result: Array<{ id: string }> };
+    expect(first.result[0]?.id).toBe("first-lane");
+
+    await handler({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "sync.getStatus",
+      params: { projectId: added.projectId },
+    });
+
+    const second = await handler({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "ade/actions/call",
+      params: {
+        projectId: added.projectId,
+        name: "run_ade_action",
+        arguments: { domain: "lane", action: "list" },
+      },
+    }) as { result: Array<{ id: string }> };
+    expect(second.result[0]?.id).toBe("second-lane");
+    expect(scopeRegistry.get).toHaveBeenCalledTimes(2);
+
+    handler.dispose();
+  });
+
+  it("subscribes to project runtime events and emits JSON-RPC notifications", async () => {
+    const { projectRoot, registry } = createRegistry();
+    const added = registry.add(projectRoot);
+    const eventBuffer = createEventBuffer();
+    const scopeRegistry = {
+      get: vi.fn(async () => ({
+        registryProjectId: added.projectId,
+        record: added,
+        runtime: {
+          eventBuffer,
+          dispose: vi.fn(),
+        },
+        dispose: vi.fn(),
+      })),
+      ensureSyncHost: vi.fn(),
+      dispose: vi.fn(),
+      disposeAll: vi.fn(),
+    } as unknown as ProjectScopeRegistry;
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: registry,
+      scopeRegistry,
+    });
+    const notify = vi.fn();
+    handler.setNotifier(notify);
+
+    await handler({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "ade/initialize",
+      params: {},
+    });
+
+    const subscribed = await handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "runtimeEvents.subscribe",
+      params: {
+        projectId: added.projectId,
+        category: "runtime",
+      },
+    }) as { subscriptionId: string };
+
+    eventBuffer.push({
+      timestamp: "2026-05-10T00:00:00.000Z",
+      category: "runtime",
+      payload: { type: "file_change", event: { path: "README.md" } },
+    });
+    eventBuffer.push({
+      timestamp: "2026-05-10T00:00:01.000Z",
+      category: "mission",
+      payload: { type: "ignored" },
+    });
+
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledWith("runtime/event", {
+      subscriptionId: subscribed.subscriptionId,
+      projectId: added.projectId,
+      event: expect.objectContaining({
+        category: "runtime",
+        payload: { type: "file_change", event: { path: "README.md" } },
+      }),
+    });
+
+    expect(await handler({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "runtimeEvents.unsubscribe",
+      params: { subscriptionId: subscribed.subscriptionId },
+    })).toEqual({ removed: true });
+
+    eventBuffer.push({
+      timestamp: "2026-05-10T00:00:02.000Z",
+      category: "runtime",
+      payload: { type: "file_change", event: { path: "package.json" } },
+    });
+    expect(notify).toHaveBeenCalledTimes(1);
+
+    handler.dispose();
+  });
+});

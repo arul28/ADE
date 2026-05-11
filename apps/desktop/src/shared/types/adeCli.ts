@@ -1,5 +1,5 @@
 export type AdeCliStatus = {
-  command: "ade";
+  command: string;
   platform: NodeJS.Platform;
   isPackaged: boolean;
   bundledAvailable: boolean;

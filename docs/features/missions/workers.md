@@ -2,6 +2,8 @@
 
 Mission workers are transient, role-scoped agents spawned by the coordinator to execute specific phases of a mission. They are distinct from CTO "Team" workers (see `../cto/workers.md`) — Team workers are stable identities the operator configures; mission workers are ephemeral, spawned by `spawn_worker` with a role and a delegation contract that applies only to the current run.
 
+Workers always launch on the runtime that owns the mission. Provider availability follows the runtime host: a remote runtime that lacks the Claude CLI cannot spawn `claude-local` workers, and macOS-only capabilities (iOS Simulator, native screencapture) are only reachable when the runtime itself is on macOS.
+
 ## Source file map
 
 - `apps/desktop/src/main/services/orchestrator/coordinatorTools.ts` — `spawn_worker` tool, `classifyPlannerLaunchFailure`.
@@ -104,9 +106,9 @@ The coordinator respects:
 
 - **Claude CLI** — `resolveClaudeCliModel`, spawns the Claude Code CLI binary with `--model`, `--append-system-prompt`, and a tailored tool allowlist.
 - **Codex CLI** — `resolveCodexCliModel`, spawns the Codex CLI with a similar config.
-- **ADE CLI** — workers inherit ADE context env vars and can call the `ade` command for ADE operator actions.
+- **ADE CLI** — workers inherit ADE context env vars and can call the `ade` command for ADE operator actions against the same runtime daemon they were spawned by.
 
-Each launcher reads the `classifyWorkerExecutionPath(model)` classification from the model registry to decide between provider CLI and managed OpenCode execution.
+Each launcher reads the `classifyWorkerExecutionPath(model)` classification from the model registry to decide between provider CLI and managed in-runtime execution. CLI binaries are resolved on the runtime host's `PATH`; missing binaries surface as `startup_failure` rather than a silent fallback.
 
 ## File-claim scope
 

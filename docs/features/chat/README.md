@@ -12,10 +12,11 @@ machinery layered on top.
 | Path | Role |
 |---|---|
 | `apps/desktop/src/main/services/chat/agentChatService.ts` | Main service: session lifecycle, turn dispatch, event emission, provider adapters, steer queue, handoff, auto-title, and prompt-derived lane-name suggestions for parallel launch. Tracks Codex Fast Mode (`codexFastMode: boolean`) per session and forwards it as `serviceTier: "fast" \| null` on every Codex `thread/start` and `turn/start` JSON-RPC call (see [Agent Routing](agent-routing.md#codex-service-tiers-fast-mode)). Spawns Claude/Codex agent runtimes with `buildAgentRuntimeEnv(managed)` so every agent process inherits `ADE_CHAT_SESSION_ID`, `ADE_LANE_ID`, `ADE_PROJECT_ROOT`, and `ADE_WORKSPACE_ROOT` (used by the agent guidance to call `ade --socket app-control logs` / `terminal read --chat-session "$ADE_CHAT_SESSION_ID"` without resolving the chat ID itself). Large orchestrator file. |
+| `apps/ade-cli/src/tuiClient/` | Terminal **Work** chat TUI (Ink + React): same action/RPC contracts as desktop, **attached** (socket) or **embedded** (headless runtime via `ade-cli`). See [ADE Code](../ade-code/README.md). |
 | `apps/desktop/src/main/services/builtInBrowser/builtInBrowserService.ts` | Main-process broker for the in-app web browser. Owns a single `persist:ade-browser` partition, multiple `WebContentsView` tabs (cap 10), bounds + visibility against the renderer-supplied frame, debugger-protocol attachment for inspect-mode hit tests, screenshot capture, and emission of `BuiltInBrowserContextItem`s for selected page elements. Spoofs a desktop Chrome `User-Agent` and the matching `Sec-CH-UA*` client hints on every request through `webRequest.onBeforeSendHeaders` so external sign-in flows (Google, etc.) treat the embedded view as a normal desktop Chrome instead of refusing to load — the previous "open Google sign-in in the system browser" branch was removed because the spoofed UA stops Google from blocking the page in the first place. Window-open requests are forwarded into a fresh tab with `openPanel: true` so the Work sidebar Browser tab pops automatically. Backs the `ade.builtInBrowser.*` IPC surface and is consumed by both `ChatBuiltInBrowserPanel` (sidebar Browser tab) and `openExternal.ts` (links inside the renderer route through the built-in browser when the protocol is `http`/`https`/`about:blank`). |
 | `apps/desktop/src/shared/types/builtInBrowser.ts` | Cross-process types for the built-in browser: `BuiltInBrowserStatus`, `BuiltInBrowserTab`, `BuiltInBrowserContextItem` (`kind: "built_in_browser_element" | "built_in_browser_capture"`), `BuiltInBrowserSelectResult`, `BuiltInBrowserScreenshot`, `BuiltInBrowserOpenPanelArgs`, and the `BuiltInBrowserEventPayload` union (`status`, `open-request`, `selection`, `selection-cleared`, `error`). Navigate / create-tab / switch-tab args carry an optional `openPanel: boolean` so callers can ask for the Work sidebar Browser tab to flip open atomically with the navigation. |
 | `apps/desktop/src/main/services/chat/buildClaudeV2Message.ts` | Builds the message payload the Claude Agent SDK V2 session consumes. Handles base64 image content blocks and MIME inference. |
-| `apps/desktop/src/main/services/chat/claudeSlashCommandDiscovery.ts` | Discovers per-project (`.claude/commands/**`) and per-user (`~/.claude/commands/**`) slash commands, including `.md` command files and `.skill` user-invocable skills, parsing YAML frontmatter for description and argument hints. Consumed by `agentChatService` to enrich the `chat.slashCommands` response so the composer's picker lists local Claude commands alongside SDK-provided ones. |
+| `apps/desktop/src/main/services/chat/claudeSlashCommandDiscovery.ts` | Discovers project and user Claude slash surfaces by walking ancestor `.claude` roots, reading `.claude/commands/**/*.md`, `~/.claude/commands/**/*.md`, and `.claude/skills/*/SKILL.md` / `~/.claude/skills/*/SKILL.md` entries with command frontmatter. Consumed by `agentChatService` to enrich both the `chat.slashCommands` response and Claude system prompt with local command/skill metadata. |
 | `apps/desktop/src/main/services/chat/chatTextBatching.ts` | Batches streaming assistant text fragments (100 ms) before emission to reduce renderer re-renders. |
 | `apps/desktop/src/main/services/chat/sessionRecovery.ts` | Version-2 persisted-state reconstruction when sessions resume from disk. |
 | `apps/desktop/src/main/services/chat/cursorSdkPool.ts` | Cursor SDK adapter: spawns and pools `cursorSdkWorker.ts` Node workers per session, sends turns, brokers permission/hook callbacks, maps SDK events to chat events, and handles teardown. |
@@ -39,6 +40,25 @@ machinery layered on top.
 | `apps/desktop/src/main/services/ai/tools/` | Tool tiers consumed by the service when it provisions a Claude/Codex/OpenCode runtime (see [Tool System](tool-system.md)). |
 | `apps/desktop/src/main/services/ipc/registerIpc.ts` | Validates chat IPC args, exposes `agentChat.*` handlers, and persists/retrieves parallel launch recovery state in `kv`. |
 | `apps/desktop/src/shared/ipc.ts` | `ade.agentChat.*` IPC channel constants. |
+
+## Where the chat service runs
+
+The chat service is constructed once per project, inside whichever
+runtime owns that project. The desktop renderer talks to it through
+the runtime IPC bridge — never directly. When a window is bound to the
+local machine, that means the Electron main process's chat service;
+when bound to a remote runtime, the **remote `ade serve` daemon**
+constructs its own `agentChatService` and the renderer is just a
+client. The headless `ade serve` bootstrap in
+`apps/ade-cli/src/bootstrap.ts` wires the same `createAgentChatService`
+the desktop main process uses, so the surface is identical whether
+the host is local Electron or a remote daemon. The iOS app also
+reaches the chat service over the same channel (via the sync command
+surface), again as a client.
+
+This is the framing to internalise: chat sessions are runtime-owned,
+not desktop-owned. The renderer can render them, and the iOS app can
+render them, but neither one *runs* them.
 
 ## Key concepts
 
@@ -77,6 +97,17 @@ machinery layered on top.
   `"agent:<id>"`) are filtered out of the Work tab list and rendered by
   dedicated surfaces (CTO tab, worker detail). See [Agent Routing and
   Identity](agent-routing.md).
+- **Inline agent CLI install / auth.** When a chat targets a provider
+  whose CLI (Claude, Codex, Cursor, Droid) is missing or
+  unauthenticated, the service decorates the resulting error envelope
+  with an `agentCli` payload (built via `classifyAgentCliError` from
+  `apps/ade-cli/src/services/agentRegistry.ts`). The renderer renders
+  that as an `AgentCliAuthCard` inline in the transcript: a copy chip
+  for the install / auth command and a Run button that opens a
+  tracked PTY in the active lane via `window.ade.pty.create`. The
+  command runs in the **active runtime** — a remote-bound desktop
+  window installs / logs in on the remote machine. See
+  [Agents](../agents/README.md#agent-cli-install--auth-from-chat).
 - **Parallel multi-model launch.** From an empty embedded Work composer,
   the user can enable parallel mode, select two or more model/control
   slots, and send one prompt. ADE creates child lanes, starts one chat

@@ -635,7 +635,7 @@ struct FilesProofArtifactSheet: View {
       FilesContentFallback(
         symbol: "doc.badge.gearshape",
         title: "Preview unavailable",
-        message: "The host returned proof metadata, but iPhone could not render this artifact inline."
+        message: "The machine returned proof metadata, but iPhone could not render this artifact inline."
       )
     }
   }

@@ -12,7 +12,6 @@ import type { createAgentChatService } from "../chat/agentChatService";
 const ADE_CLI_WORKER_GUIDANCE = ADE_CLI_AGENT_GUIDANCE;
 
 type WorkerAdapterRuntimeServiceArgs = {
-  fetchImpl?: typeof fetch;
   spawnImpl?: typeof spawn;
   getAgentChatService?: () => Pick<ReturnType<typeof createAgentChatService>, "ensureIdentitySession" | "runSessionTurn"> | null;
 };
@@ -158,7 +157,6 @@ function runCommand(
 }
 
 export function createWorkerAdapterRuntimeService(args: WorkerAdapterRuntimeServiceArgs = {}) {
-  const fetchImpl = args.fetchImpl ?? fetch;
   const spawnImpl = args.spawnImpl ?? spawn;
 
   const run = async (input: WorkerAdapterRunArgs): Promise<WorkerAdapterRunResult> => {
@@ -239,76 +237,6 @@ export function createWorkerAdapterRuntimeService(args: WorkerAdapterRuntimeServ
             }
           : {}),
       };
-    }
-
-    if (adapterType === "openclaw-webhook") {
-      const url = String(config.url ?? "").trim();
-      if (!/^https?:\/\//i.test(url)) {
-        throw new Error("openclaw-webhook requires a valid http(s) URL.");
-      }
-      const method = String(config.method ?? "POST").toUpperCase();
-      if (method !== "POST") {
-        throw new Error("openclaw-webhook only supports POST.");
-      }
-      const headersRaw = config.headers && typeof config.headers === "object" ? config.headers as Record<string, unknown> : {};
-      const headers: Record<string, string> = {
-        "content-type": "application/json",
-      };
-      for (const [key, value] of Object.entries(headersRaw)) {
-        if (typeof value !== "string") continue;
-        headers[key] = value;
-      }
-      const timeoutMs = toPositiveTimeout(input.timeoutMs ?? config.timeoutMs, 60_000);
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), timeoutMs);
-      try {
-        const body = {
-          agentId: input.agent.id,
-          agentName: input.agent.name,
-          adapterType,
-          prompt,
-          context: input.context ?? {},
-          bodyTemplate: typeof config.bodyTemplate === "string" ? config.bodyTemplate : undefined,
-        };
-        const response = await fetchImpl(url, {
-          method,
-          headers,
-          body: JSON.stringify(body),
-          signal: controller.signal,
-        });
-        const text = await response.text();
-        let parsed: unknown = text;
-        try {
-          parsed = JSON.parse(text);
-        } catch {
-          // keep text payload
-        }
-        const outputText = typeof parsed === "string"
-          ? parsed
-          : (parsed && typeof parsed === "object" && typeof (parsed as { output?: unknown }).output === "string")
-            ? String((parsed as { output?: unknown }).output)
-            : text;
-        return {
-          adapterType,
-          effectiveSurface: "openclaw_webhook",
-          ok: response.ok,
-          statusCode: response.status,
-          outputText: outputText.trim(),
-          raw: parsed,
-          provider: null,
-          model: requestedModel,
-          modelId: requestedModelId,
-          continuation: {
-            surface: "openclaw_webhook",
-            provider: null,
-            model: requestedModel,
-            modelId: requestedModelId,
-            reasoningEffort: toOptionalString(config.reasoningEffort),
-          },
-        };
-      } finally {
-        clearTimeout(timeout);
-      }
     }
 
     if (adapterType === "process") {

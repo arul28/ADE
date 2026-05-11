@@ -67,7 +67,6 @@ const ALLOWED_STATUSES = new Set<AgentStatus>(["idle", "active", "paused", "runn
 const ALLOWED_ADAPTER_TYPES = new Set<AdapterType>([
   "claude-local",
   "codex-local",
-  "openclaw-webhook",
   "process",
 ]);
 
@@ -264,35 +263,6 @@ function normalizeAdapterConfig(adapterType: AdapterType, config: Record<string,
       result.reasoningEffort = null;
     }
     if (Number.isFinite(timeoutMs) && timeoutMs > 0) result.timeoutMs = Math.floor(timeoutMs);
-    return result;
-  }
-
-  if (adapterType === "openclaw-webhook") {
-    const url = typeof config.url === "string" ? config.url.trim() : "";
-    if (!/^https?:\/\//i.test(url)) {
-      throw new Error("openclaw-webhook adapter requires an absolute http(s) url.");
-    }
-    result.url = url;
-    if (config.method != null) {
-      const method = String(config.method).trim().toUpperCase();
-      if (method !== "POST") throw new Error("openclaw-webhook only supports method=POST.");
-      result.method = "POST";
-    }
-    if (config.headers != null) {
-      if (!config.headers || typeof config.headers !== "object" || Array.isArray(config.headers)) {
-        throw new Error("openclaw-webhook headers must be a key/value object.");
-      }
-      const headers: Record<string, string> = {};
-      for (const [key, value] of Object.entries(config.headers as Record<string, unknown>)) {
-        if (typeof value !== "string") continue;
-        headers[key] = value.trim();
-      }
-      result.headers = headers;
-    }
-    if (Number.isFinite(timeoutMs) && timeoutMs > 0) result.timeoutMs = Math.floor(timeoutMs);
-    if (typeof config.bodyTemplate === "string" && config.bodyTemplate.trim()) {
-      result.bodyTemplate = config.bodyTemplate;
-    }
     return result;
   }
 

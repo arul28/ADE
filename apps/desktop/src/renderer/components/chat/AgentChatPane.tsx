@@ -6150,6 +6150,7 @@ export function AgentChatPane({
                       assistantLabel={assistantLabel}
                       respondingApprovalIds={respondingApprovalIds}
                       pendingApprovalIds={pendingApprovalIds}
+                      laneId={laneId}
                       sessionId={selectedSessionId}
                       onInsertDraft={insertComposerDraft}
                       onRevealChatTerminal={(terminal) => {

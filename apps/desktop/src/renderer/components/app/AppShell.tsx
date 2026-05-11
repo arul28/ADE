@@ -31,6 +31,7 @@ import type {
   OnboardingStatus,
   PrEventPayload,
   ProjectInfo,
+  OpenProjectBinding,
   TerminalSessionSummary,
 } from "../../../shared/types";
 import {
@@ -238,6 +239,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate();
   const setProject = useAppStore((s) => s.setProject);
   const setProjectHydrated = useAppStore((s) => s.setProjectHydrated);
+  const setProjectBinding = useAppStore((s) => s.setProjectBinding);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const refreshProviderMode = useAppStore((s) => s.refreshProviderMode);
   const refreshKeybindings = useAppStore((s) => s.refreshKeybindings);
@@ -365,19 +367,36 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       }
     };
 
-    const applyProjectState = (nextProject: ProjectInfo | null) => {
-      const nextProjectRoot = nextProject?.rootPath ?? null;
+    const applyProjectState = (nextProject: ProjectInfo | null, nextBinding?: OpenProjectBinding | null) => {
+      const remoteBinding = nextBinding?.kind === "remote" ? nextBinding : null;
+      const nextProjectRoot = remoteBinding?.rootPath ?? nextProject?.rootPath ?? null;
       const currentProjectRoot =
         useAppStore.getState().project?.rootPath ?? null;
       const currentShowWelcome = useAppStore.getState().showWelcome;
       const currentIsNewTabOpen = useAppStore.getState().isNewTabOpen;
-      const hasStoredProject = Boolean(nextProject);
+      const hasStoredProject = Boolean(nextProject || remoteBinding);
       const projectChanged = nextProjectRoot !== currentProjectRoot;
       const welcomeChanged = currentShowWelcome === hasStoredProject;
 
+      if (remoteBinding) {
+        setProject({
+          rootPath: remoteBinding.rootPath,
+          displayName: remoteBinding.displayName,
+          baseRef: "main",
+        });
+        setProjectBinding(remoteBinding);
+        setShowWelcome(false);
+        clearScheduledRefreshes();
+        void refreshLanes({ includeStatus: false });
+        return;
+      }
+
       if (currentIsNewTabOpen && nextProject && !projectChanged) {
         setProject(nextProject);
-        if (currentShowWelcome) setShowWelcome(false);
+        setProjectBinding(nextBinding ?? null);
+        // Leave showWelcome alone — the user explicitly opened the new-tab
+        // UI; a stale project-changed event for the same root must not kick
+        // them back to the project content.
         return;
       }
 
@@ -386,6 +405,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         setShowWelcome(false);
       } else {
         setProject(null);
+        setProjectBinding(null);
         setShowWelcome(true);
       }
 
@@ -422,9 +442,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     const initializeProjectState = async () => {
       setProjectHydrated(false);
       try {
-        const nextProject = await window.ade.app.getProject();
+        const session = await window.ade.app.getWindowSession();
         if (cancelled) return;
-        applyProjectState(nextProject);
+        applyProjectState(session.project, session.binding);
       } catch {
         if (cancelled) return;
         setProject(null);
@@ -458,15 +478,24 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       applyProjectState(nextProject);
       setProjectHydrated(true);
     });
+    const disposeProjectBindingChanged = window.ade.app.onProjectBindingChanged((binding) => {
+      const state = useAppStore.getState();
+      if (state.projectTransition) return;
+      setProjectHydrated(false);
+      applyProjectState(binding?.kind === "local" ? state.project : null, binding);
+      setProjectHydrated(true);
+    });
 
     void initializeProjectState();
     return () => {
       cancelled = true;
       clearScheduledRefreshes();
       disposeProjectChanged();
+      disposeProjectBindingChanged();
     };
   }, [
     setProject,
+    setProjectBinding,
     setProjectHydrated,
     refreshLanes,
     refreshProviderMode,

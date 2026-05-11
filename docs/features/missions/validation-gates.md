@@ -4,6 +4,8 @@ Missions have a dedicated validation contract that lives outside the normal unit
 
 This document indexes the assertions by area and notes where the backing tests live. It is a pointer to the contract, not a replacement for it.
 
+The orchestrator that enforces these invariants runs inside the runtime daemon (local `ade serve` or remote runtime) — every VAL-XXX assertion is a runtime-side guarantee.
+
 ## Source file map
 
 - `docs/validation-contract-m1-m2.md` — the contract (366 lines, 19 assertions).

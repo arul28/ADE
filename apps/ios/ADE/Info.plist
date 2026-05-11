@@ -73,8 +73,6 @@
   <array>
     <string>_ade-sync._tcp</string>
   </array>
-  <key>NSCameraUsageDescription</key>
-  <string>Scan the ADE host QR code to pair this iPhone with your project host.</string>
   <key>NSLocalNetworkUsageDescription</key>
   <string>Discover ADE hosts on your local network and reconnect without rescanning.</string>
   <key>NSSupportsLiveActivities</key>

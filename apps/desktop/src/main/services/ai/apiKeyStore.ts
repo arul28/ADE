@@ -21,6 +21,19 @@ try {
 
 type StoredKeys = Record<string, string>;
 
+export type ApiKeyCredentialStore = {
+  get?: (key: string) => Promise<string | null> | string | null;
+  set?: (key: string, value: string) => Promise<void> | void;
+  delete?: (key: string) => Promise<void> | void;
+  getSync?: (key: string) => string | null;
+  setSync?: (key: string, value: string) => void;
+  deleteSync?: (key: string) => void;
+};
+
+export type InitApiKeyStoreOptions = {
+  credentialStore?: ApiKeyCredentialStore | null;
+};
+
 export type ApiKeyStoreStatus = {
   secureStorageAvailable: boolean;
   macosKeychainAvailable: boolean;
@@ -54,13 +67,16 @@ const MACOS_KEYCHAIN_MISSING_PATTERNS = [
   /the specified item could not be found/i,
 ];
 const SECURITY_TIMEOUT_MS = 5_000;
+const CREDENTIAL_PROVIDER_INDEX_KEY = "ai.api_key.index.v1";
 
 let storePath: string | null = null;
 let legacyStorePath: string | null = null;
+let credentialStore: ApiKeyCredentialStore | null = null;
 let cache: StoredKeys | null = null;
 let decryptionFailed = false;
 let macosKeychainError: string | null = null;
 let missingMacosKeychainProviders = new Set<string>();
+let missingCredentialProviders = new Set<string>();
 
 export function __setSafeStorageForTests(next: SafeStorage | null): void {
   safeStorage = next;
@@ -79,7 +95,12 @@ function isMacosKeychainAvailable(): boolean {
 }
 
 function isPersistentSecureStorageAvailable(): boolean {
+  if (credentialStore) return true;
   return isMacosKeychainAvailable() || isSecureStorageAvailable();
+}
+
+function normalizeProvider(provider: string): string {
+  return provider.trim().toLowerCase();
 }
 
 function normalizeStoredKeys(value: unknown): StoredKeys {
@@ -87,7 +108,7 @@ function normalizeStoredKeys(value: unknown): StoredKeys {
   const out: StoredKeys = {};
   for (const [provider, rawValue] of Object.entries(value as Record<string, unknown>)) {
     if (typeof rawValue !== "string") continue;
-    const normalizedProvider = provider.trim().toLowerCase();
+    const normalizedProvider = normalizeProvider(provider);
     const normalizedKey = rawValue.trim();
     if (!normalizedProvider.length || !normalizedKey.length) continue;
     out[normalizedProvider] = normalizedKey;
@@ -213,6 +234,77 @@ function normalizeProviderList(value: unknown): string[] {
   return Array.from(providers).sort();
 }
 
+function credentialProviderKey(provider: string): string {
+  return `ai.api_key.${provider}.v1`;
+}
+
+function getSyncCredentialStore(): Required<Pick<ApiKeyCredentialStore, "getSync" | "setSync" | "deleteSync">> | null {
+  if (!credentialStore) return null;
+  if (
+    typeof credentialStore.getSync === "function"
+    && typeof credentialStore.setSync === "function"
+    && typeof credentialStore.deleteSync === "function"
+  ) {
+    return credentialStore as Required<Pick<ApiKeyCredentialStore, "getSync" | "setSync" | "deleteSync">>;
+  }
+  throw new Error("API key credentialStore must provide getSync, setSync, and deleteSync.");
+}
+
+function readCredentialSecret(key: string): string | null {
+  const store = getSyncCredentialStore();
+  if (!store) return null;
+  try {
+    const value = store.getSync(key);
+    decryptionFailed = false;
+    if (typeof value !== "string") return null;
+    const trimmed = value.trim();
+    return trimmed.length ? trimmed : null;
+  } catch {
+    decryptionFailed = true;
+    return null;
+  }
+}
+
+function writeCredentialSecret(key: string, value: string): void {
+  const store = getSyncCredentialStore();
+  if (!store) return;
+  store.setSync(key, value);
+  decryptionFailed = false;
+}
+
+function deleteCredentialSecret(key: string): void {
+  const store = getSyncCredentialStore();
+  if (!store) return;
+  store.deleteSync(key);
+  decryptionFailed = false;
+}
+
+function readCredentialProviderIndex(): { exists: boolean; providers: string[] } {
+  const raw = readCredentialSecret(CREDENTIAL_PROVIDER_INDEX_KEY);
+  if (!raw) return { exists: false, providers: [] };
+  try {
+    return { exists: true, providers: normalizeProviderList(JSON.parse(raw)) };
+  } catch {
+    decryptionFailed = true;
+    return { exists: true, providers: [] };
+  }
+}
+
+function writeCredentialProviderIndex(providers: Iterable<string>): void {
+  writeCredentialSecret(CREDENTIAL_PROVIDER_INDEX_KEY, JSON.stringify(normalizeProviderList(Array.from(providers))));
+}
+
+function readCredentialStore(providerCandidates: Iterable<string>): StoredKeys {
+  const out: StoredKeys = {};
+  for (const provider of providerCandidates) {
+    const normalizedProvider = normalizeProvider(provider);
+    if (!normalizedProvider.length) continue;
+    const value = readCredentialSecret(credentialProviderKey(normalizedProvider));
+    if (value) out[normalizedProvider] = value;
+  }
+  return out;
+}
+
 function readMacosKeychainProviderIndex(): { exists: boolean; providers: string[] } {
   const raw = readMacosKeychainSecret(MACOS_KEYCHAIN_PROVIDER_INDEX_ACCOUNT);
   if (!raw) return { exists: false, providers: [] };
@@ -308,6 +400,12 @@ function ensureStore(): StoredKeys {
   if (cache) return cache;
   ensureInitialized();
 
+  if (credentialStore) {
+    const index = readCredentialProviderIndex();
+    cache = index.exists ? readCredentialStore(index.providers) : {};
+    return cache;
+  }
+
   const encryptedStore = loadEncryptedStore();
   if (isMacosKeychainAvailable()) {
     const indexBeforeMigration = readMacosKeychainProviderIndex();
@@ -352,14 +450,16 @@ function persistEncryptedStore(nextStore: StoredKeys = cache ?? {}): void {
   }
 }
 
-export function initApiKeyStore(projectRoot: string): void {
+export function initApiKeyStore(projectRoot: string, options: InitApiKeyStoreOptions = {}): void {
   const layout = resolveAdeLayout(projectRoot);
   storePath = layout.apiKeysPath;
   legacyStorePath = layout.legacyApiKeysPath;
+  credentialStore = options.credentialStore ?? null;
   cache = null;
   decryptionFailed = false;
   macosKeychainError = null;
   missingMacosKeychainProviders = new Set<string>();
+  missingCredentialProviders = new Set<string>();
 }
 
 export function getApiKeyStoreStatus(): ApiKeyStoreStatus {
@@ -380,7 +480,7 @@ export function getApiKeyStoreStatus(): ApiKeyStoreStatus {
     macosKeychainAvailable: isMacosKeychainAvailable(),
     macosKeychainService: isMacosKeychainAvailable() ? MACOS_KEYCHAIN_SERVICE : null,
     macosKeychainError,
-    encryptedStorePath: storePath,
+    encryptedStorePath: credentialStore ? null : storePath,
     legacyPlaintextDetected: Boolean(legacyStorePath && fs.existsSync(legacyStorePath)),
     legacyPlaintextPath: legacyStorePath && fs.existsSync(legacyStorePath) ? legacyStorePath : null,
     decryptionFailed,
@@ -388,12 +488,20 @@ export function getApiKeyStoreStatus(): ApiKeyStoreStatus {
 }
 
 export function storeApiKey(provider: string, key: string): void {
-  const normalizedProvider = provider.trim().toLowerCase();
+  const normalizedProvider = normalizeProvider(provider);
   const normalizedKey = key.trim();
   if (!normalizedProvider.length || !normalizedKey.length) {
     throw new Error("Provider and key are required.");
   }
   const store = ensureStore();
+  if (credentialStore) {
+    writeCredentialSecret(credentialProviderKey(normalizedProvider), normalizedKey);
+    store[normalizedProvider] = normalizedKey;
+    missingCredentialProviders.delete(normalizedProvider);
+    const index = readCredentialProviderIndex();
+    writeCredentialProviderIndex(new Set([...index.providers, normalizedProvider]));
+    return;
+  }
   if (isMacosKeychainAvailable()) {
     writeMacosKeychainSecret(normalizedProvider, normalizedKey);
     store[normalizedProvider] = normalizedKey;
@@ -408,11 +516,21 @@ export function storeApiKey(provider: string, key: string): void {
 }
 
 export function getApiKey(provider: string): string | null {
-  const normalizedProvider = provider.trim().toLowerCase();
+  const normalizedProvider = normalizeProvider(provider);
   if (!normalizedProvider.length) return null;
   const store = ensureStore();
   const stored = store[normalizedProvider];
   if (stored) return stored;
+  if (credentialStore && !missingCredentialProviders.has(normalizedProvider)) {
+    const credentialValue = readCredentialSecret(credentialProviderKey(normalizedProvider));
+    if (credentialValue) {
+      store[normalizedProvider] = credentialValue;
+      const index = readCredentialProviderIndex();
+      writeCredentialProviderIndex(new Set([...index.providers, normalizedProvider]));
+      return credentialValue;
+    }
+    missingCredentialProviders.add(normalizedProvider);
+  }
   if (isMacosKeychainAvailable() && !missingMacosKeychainProviders.has(normalizedProvider)) {
     const keychainValue = readMacosKeychainSecret(normalizedProvider);
     if (keychainValue) {
@@ -432,9 +550,17 @@ export function getApiKey(provider: string): string | null {
 }
 
 export function deleteApiKey(provider: string): void {
-  const normalizedProvider = provider.trim().toLowerCase();
+  const normalizedProvider = normalizeProvider(provider);
   if (!normalizedProvider.length) return;
   const store = ensureStore();
+  if (credentialStore) {
+    deleteCredentialSecret(credentialProviderKey(normalizedProvider));
+    delete store[normalizedProvider];
+    missingCredentialProviders.add(normalizedProvider);
+    const index = readCredentialProviderIndex();
+    writeCredentialProviderIndex(index.providers.filter((entry) => entry !== normalizedProvider));
+    return;
+  }
   if (isMacosKeychainAvailable()) {
     deleteMacosKeychainSecret(normalizedProvider);
     delete store[normalizedProvider];

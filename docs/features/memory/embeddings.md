@@ -5,6 +5,28 @@ meaning-based memory search and the consolidation clustering pipeline.
 Embeddings are produced in-process by a Transformers.js runtime; no
 memory data is sent externally for vectorisation.
 
+## Runtime availability
+
+Embeddings run inside the runtime daemon that owns the project.
+
+- **Local runtime (`ade serve` on the user's machine):** the embedding
+  service loads `Xenova/all-MiniLM-L6-v2` lazily and the worker drains
+  pending memories on schedule. This is the default path for local
+  project bindings.
+- **Remote runtime (static build deployed over SSH):** embeddings are
+  **disabled in v1**. The static remote build does not bundle
+  `onnxruntime-node`, so the Transformers.js pipeline cannot load. The
+  service reports `state: "unavailable"`, the worker stays idle, and
+  `hybridSearchService` throws `HybridSearchUnavailableError` on every
+  query (which `memoryService.search` catches and falls back to lexical
+  FTS — but with an empty `unified_memories` table on the remote host,
+  even FTS returns nothing).
+
+Practically: when a project is bound to a remote runtime, expect no
+semantic memory retrieval and no consolidation. The Settings -> Memory
+panel hides the model-download affordance and surfaces an
+"unavailable" state for the active binding.
+
 ## Source file map
 
 | Path | Role |

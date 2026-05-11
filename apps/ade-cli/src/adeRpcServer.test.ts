@@ -216,12 +216,50 @@ function createRuntime() {
       get: vi.fn(),
       readTranscriptTail: vi.fn(() => "")
     },
+    sessionDeltaService: {
+      getSessionDelta: vi.fn((sessionId: string) => ({ sessionId, filesChanged: 2 })),
+    },
     operationService: {
       start: operationStart,
       finish: operationFinish,
       list: vi.fn(() => [{ id: "op-1", kind: "git_push", status: "running" }]),
     },
     projectConfigService: {} as any,
+    aiIntegrationService: {
+      getStatus: vi.fn(async () => ({
+        mode: "subscription",
+        availableProviders: {
+          claude: true,
+          codex: true,
+          cursor: false,
+          droid: false,
+        },
+        models: {
+          claude: [],
+          codex: [],
+          cursor: [],
+          droid: [],
+        },
+        detectedAuth: [
+          { type: "cli-subscription", cli: "codex", authenticated: true },
+        ],
+        providerConnections: {},
+        runtimeConnections: {},
+        availableModelIds: ["openai/gpt-5.5"],
+        opencodeBinaryInstalled: true,
+        opencodeBinarySource: "bundled",
+        opencodeInventoryError: null,
+        opencodeProviders: [],
+        apiKeyStore: {
+          secureStorageAvailable: true,
+          legacyPlaintextDetected: false,
+          decryptionFailed: false,
+        },
+      })),
+      getDailyUsageBatch: vi.fn(() => new Map()),
+      getFeatureFlag: vi.fn(() => true),
+      getDailyBudgetLimit: vi.fn(() => null),
+    } as any,
     conflictService: {
       runPrediction: vi.fn(async () => ({ lanes: [], matrix: [], overlaps: [] })),
       getLaneStatus: vi.fn(async ({ laneId }: { laneId: string }) => ({ laneId, status: "merge-ready" })),
@@ -784,6 +822,7 @@ function createRuntime() {
       getBackendStatus: vi.fn(() => ({ backends: [] })),
       listArtifacts: vi.fn(() => []),
       ingest: vi.fn(() => ({ artifacts: [] })),
+      readArtifactPreview: vi.fn(async () => "data:image/png;base64,AAAA"),
     } as any,
     macosVmService: {
       getStatus: vi.fn(async ({ laneId }: { laneId?: string | null } = {}) => ({
@@ -1152,6 +1191,75 @@ function createFakePathExecutable(dir: string, name: string): string {
 }
 
 describe("adeRpcServer", () => {
+  it("routes app/navigate through the runtime navigation service", async () => {
+    const { runtime } = createRuntime();
+    const navigate = vi.fn(async () => ({ ok: true, mode: "desktop", windowId: 7 }));
+    runtime.appNavigationService = { navigate };
+    const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+    await initialize(handler, { role: "cto" });
+
+    const result = await handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "app/navigate",
+      params: {
+        source: "ade-code",
+        target: { kind: "lane", sessionId: "chat-1", laneId: "lane-1" },
+      },
+    });
+
+    expect(result).toEqual({ ok: true, mode: "desktop", windowId: 7 });
+    expect(navigate).toHaveBeenCalledWith({
+      source: "ade-code",
+      target: { kind: "lane", sessionId: "chat-1", laneId: "lane-1" },
+    });
+  });
+
+  it("reports app/navigate unavailable in headless runtime", async () => {
+    const { runtime } = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+    await initialize(handler, { role: "cto" });
+
+    const result = await handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "app/navigate",
+      params: {
+        source: "ade-code",
+        target: { kind: "work" },
+      },
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      mode: "unavailable",
+      message: "Desktop navigation is unavailable in this runtime.",
+    });
+  });
+
+  it("rejects malformed app/navigate targets before calling the runtime service", async () => {
+    const { runtime } = createRuntime();
+    const navigate = vi.fn(async () => ({ ok: true, mode: "desktop", windowId: 7 }));
+    runtime.appNavigationService = { navigate };
+    const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+    await initialize(handler, { role: "cto" });
+
+    await expect(handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "app/navigate",
+      params: {
+        source: "ade-code",
+        target: { kind: "lane" },
+      },
+    })).rejects.toMatchObject({
+      code: JsonRpcErrorCode.invalidParams,
+      message: "app/navigate target 'lane' requires laneId.",
+    });
+
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
   it("treats requested privileged roles as external without trusted env identity", async () => {
     const { runtime } = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
@@ -3882,7 +3990,7 @@ describe("adeRpcServer", () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { callerId: "agent-1", role: "agent" });
+    await initialize(handler, { callerId: "cto-1", role: "cto" });
 
     const response = await callTool(handler, "commit_changes", {
       laneId: "lane-1",
@@ -4040,6 +4148,7 @@ describe("adeRpcServer", () => {
     const allDomains = await callTool(handler, "list_ade_actions", { domain: "all" });
     expect(allDomains?.isError).toBeUndefined();
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "memory")).toBe(true);
+    expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "ai")).toBe(true);
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "mission")).toBe(true);
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "orchestrator")).toBe(true);
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "orchestrator_core")).toBe(true);
@@ -4056,6 +4165,31 @@ describe("adeRpcServer", () => {
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "layout")).toBe(true);
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "tiling_tree")).toBe(true);
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "graph_state")).toBe(true);
+  });
+
+  it("hides memory tools and actions when the runtime disables memory", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.capabilities = { memory: false };
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-1", role: "agent" });
+
+    const listed = await handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "ade/actions/list",
+      params: {},
+    }) as { actions: Array<{ name: string }> };
+    expect(listed.actions.some((entry) => entry.name.startsWith("memory_"))).toBe(false);
+
+    const memoryCall = await callTool(handler, "memory_add", {
+      content: "Remember this",
+      category: "fact",
+    });
+    expect(memoryCall.isError).toBe(true);
+    expect(String(memoryCall.error?.message ?? "")).toContain("Tool not available");
+
+    const actionList = await callTool(handler, "list_ade_actions", { domain: "all" });
+    expect(actionList.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "memory")).toBe(false);
   });
 
   it("invokes ADE actions dynamically and returns status hints", async () => {
@@ -4089,6 +4223,18 @@ describe("adeRpcServer", () => {
     expect(keybindings?.isError).toBeUndefined();
     expect(fixture.runtime.keybindingsService.get).toHaveBeenCalled();
 
+    const aiStatus = await callTool(handler, "run_ade_action", {
+      domain: "ai",
+      action: "getStatus",
+      args: { refreshOpenCodeInventory: true },
+    });
+    expect(aiStatus?.isError).toBeUndefined();
+    expect(fixture.runtime.aiIntegrationService.getStatus).toHaveBeenCalledWith({
+      force: false,
+      refreshOpenCodeInventory: true,
+    });
+    expect(aiStatus.structuredContent.result.availableModelIds).toContain("openai/gpt-5.5");
+
     const layoutSet = await callTool(handler, "run_ade_action", {
       domain: "layout",
       action: "set",
@@ -4104,6 +4250,27 @@ describe("adeRpcServer", () => {
     });
     expect(layoutGet?.isError).toBeUndefined();
     expect(layoutGet.structuredContent.result).toEqual({ left: 100, right: 0 });
+
+    const delta = await callTool(handler, "run_ade_action", {
+      domain: "session",
+      action: "getDelta",
+      args: { sessionId: "session-1" },
+    });
+    expect(delta?.isError).toBeUndefined();
+    expect(fixture.runtime.sessionDeltaService.getSessionDelta).toHaveBeenCalledWith("session-1");
+    expect(delta.structuredContent.result).toEqual({ sessionId: "session-1", filesChanged: 2 });
+
+    const preview = await callTool(handler, "run_ade_action", {
+      domain: "computer_use_artifacts",
+      action: "readArtifactPreview",
+      args: { uri: ".ade/artifacts/proof.png" },
+    });
+    expect(preview?.isError).toBeUndefined();
+    expect(fixture.runtime.computerUseArtifactBrokerService.readArtifactPreview).toHaveBeenCalledWith({
+      uri: ".ade/artifacts/proof.png",
+    });
+    expect(preview.structuredContent.result).toBe("data:image/png;base64,AAAA");
+
   });
 
   it("binds service method context when invoking dynamic ADE actions", async () => {
@@ -4126,6 +4293,40 @@ describe("adeRpcServer", () => {
     expect(missionService.create).toHaveBeenCalledWith({ prompt: "smoke mission" });
     expect(response.structuredContent.result).toMatchObject({ id: "mission-new", status: "running" });
     expect(response.structuredContent.statusHints.missionId).toBe("mission-new");
+  });
+
+  it("compacts orchestrator ADE action results for runtime transport", async () => {
+    const fixture = createRuntime();
+    const docs = Array.from({ length: 16 }, (_, index) => ({
+      path: index === 0 ? ".ade/internal.md" : `docs/${index}.md`,
+      bytes: index + 1,
+      sha256: `sha-${index}`,
+    }));
+    fixture.runtime.orchestratorService.listRuns.mockReturnValueOnce([
+      {
+        id: "run-compact",
+        missionId: "mission-1",
+        status: "running",
+        metadata: { runtimeCursor: { docs } },
+      },
+    ]);
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-1", role: "agent" });
+
+    const response = await callTool(handler, "run_ade_action", {
+      domain: "orchestrator_core",
+      action: "listRuns",
+      args: { limit: 10 },
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fixture.runtime.orchestratorService.listRuns).toHaveBeenCalledWith({ limit: 10 });
+    const runs = response.structuredContent.result;
+    expect(runs).toHaveLength(1);
+    const cursor = runs[0].metadata.runtimeCursor;
+    expect(cursor.docs).toHaveLength(12);
+    expect(cursor.docs.map((entry: { path: string }) => entry.path)).not.toContain(".ade/internal.md");
+    expect(cursor.docsOmittedCount).toBe(4);
   });
 
   it("does not expose unlisted service methods through dynamic ADE actions", async () => {

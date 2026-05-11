@@ -273,7 +273,7 @@ struct LaneManageSheet: View {
   private func performAction(_ label: String, operation: () async throws -> Void) async {
     guard canRunLiveActions else {
       ADEHaptics.warning()
-      errorMessage = "Reconnect to desktop before you \(label)."
+      errorMessage = "Reconnect to machine before you \(label)."
       return
     }
     do {

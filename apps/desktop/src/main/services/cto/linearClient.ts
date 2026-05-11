@@ -92,6 +92,11 @@ function toNormalizedIssue(node: Record<string, unknown>): NormalizedLinearIssue
   const assignee = isRecord(node.assignee) ? node.assignee : null;
   const owner = isRecord(node.creator) ? node.creator : null;
   const priority = Number(node.priority ?? 0);
+  const metadataRecord = isRecord(node.metadata) ? node.metadata : null;
+  const metadataTagsRaw = metadataRecord && Array.isArray(metadataRecord.tags)
+    ? (metadataRecord.tags as unknown[])
+    : [];
+  const metadataTags = metadataTagsRaw.filter((tag): tag is string => typeof tag === "string");
 
   return {
     id,
@@ -111,7 +116,7 @@ function toNormalizedIssue(node: Record<string, unknown>): NormalizedLinearIssue
     priority: Number.isFinite(priority) ? priority : 0,
     priorityLabel: mapPriorityLabel(Number.isFinite(priority) ? priority : 0),
     labels,
-    metadataTags: [],
+    metadataTags,
     assigneeId: assignee ? asString(assignee.id) : null,
     assigneeName: assignee ? (asString(assignee.displayName) ?? asString(assignee.name)) : null,
     ownerId: owner ? asString(owner.id) : null,

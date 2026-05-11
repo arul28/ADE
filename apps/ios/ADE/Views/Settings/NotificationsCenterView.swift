@@ -141,7 +141,7 @@ struct NotificationsCenterView: View {
           .padding(.top, 20)
           .padding(.bottom, 24)
 
-        Text("Preferences are stored in the shared container and mirrored to your paired Mac.")
+        Text("Preferences are stored in the shared container and mirrored to your paired machine.")
           .font(.caption)
           .foregroundStyle(ADEColor.textSecondary)
           .frame(maxWidth: .infinity, alignment: .leading)
@@ -397,7 +397,7 @@ struct NotificationsCenterView: View {
     .opacity(canSendTestPush ? 1 : 0.45)
     .accessibilityHint(
       canSendTestPush
-        ? "Ask the paired host to send a test notification to this device"
+        ? "Ask the paired machine to send a test notification to this device"
         : "Enable notifications and register this device first"
     )
   }

@@ -72,7 +72,6 @@ const MIRROR_SYNC_EXCLUDES = [
   "/.ade/cto/daily/***",
   "/.ade/cto/sessions.jsonl",
   "/.ade/cto/subordinate-activity.jsonl",
-  "/.ade/cto/openclaw-*.json",
   "/.ade/context/***",
   "/.ade/memory/***",
   "/.ade/history/***",
@@ -277,8 +276,7 @@ function isIgnoredMirrorSyncPath(value: string | Buffer | null | undefined): boo
     || relative === ".ade/cto/MEMORY.md"
     || relative === ".ade/cto/core-memory.json"
     || relative === ".ade/cto/sessions.jsonl"
-    || relative === ".ade/cto/subordinate-activity.jsonl"
-    || /^\.ade\/cto\/openclaw-.*\.json$/.test(relative);
+    || relative === ".ade/cto/subordinate-activity.jsonl";
 }
 
 function readPngDataUrl(filePath: string): string | null {

@@ -4,6 +4,8 @@ App Control is ADE's bridge for driving developer-owned app sessions from inside
 
 App Control is intentionally a *bridge*. Other automation stacks — Playwright, agent-browser, browser-use, Claude's `computer_use` — can attach to the same Electron app and continue to be useful. ADE's job is to keep the launch state, the visible launch terminal, screenshots, DOM/selector packets, source candidates, and chat-attached context coherent across those tools.
 
+App Control runs on the runtime that owns the project. The launch terminal, CDP attachment, screencast frames, screenshots, and source-matching all execute on the runtime host; the renderer just streams the resulting frames and chips. Because Electron apps under inspection live on the runtime host's filesystem, App Control naturally runs on whichever machine has the source tree.
+
 ## Source file map
 
 ### Service (apps/desktop/src/main/services/appControl/)

@@ -14,6 +14,7 @@ export type ParsedPrsRouteState = {
   workflowTab: PrWorkflowTab | null;
   laneId: string | null;
   prId: string | null;
+  prNumber: number | null;
   queueGroupId: string | null;
   eventId: string | null;
   threadId: string | null;
@@ -56,6 +57,13 @@ function parseOptionalId(value: string | null): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function parseOptionalNumber(value: string | null): number | null {
+  const trimmed = parseOptionalId(value);
+  if (!trimmed) return null;
+  const parsed = Number.parseInt(trimmed, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
 export function parsePrsRouteState(args: { search?: string | null; hash?: string | null }): ParsedPrsRouteState {
   const searchParams = parseSearch(args.search ?? "");
   const hashParams = parseHashParams(args.hash ?? "");
@@ -75,6 +83,7 @@ export function parsePrsRouteState(args: { search?: string | null; hash?: string
     workflowTab,
     laneId: pick("laneId"),
     prId: pick("prId"),
+    prNumber: parseOptionalNumber(routeParams.get("pr")),
     queueGroupId: pick("queueGroupId"),
     eventId: pick("eventId"),
     threadId: pick("threadId"),

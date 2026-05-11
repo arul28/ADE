@@ -1,4 +1,5 @@
-import { app, BrowserWindow, dialog, nativeImage, protocol, safeStorage, shell } from "electron";
+import { app, BrowserWindow, dialog, Menu, nativeImage, protocol, safeStorage, shell } from "electron";
+import { AsyncLocalStorage } from "node:async_hooks";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -56,11 +57,21 @@ import {
 } from "./services/projects/projectService";
 import { inspectRecentProject, type RecentProjectInspection } from "./services/projects/recentProjectSummary";
 import { resolveProjectIcon } from "./services/projects/projectIconResolver";
+import { normalizeStartupProjectState, resolveStartupProject } from "./services/projects/startupProjectResolver";
 import { createAdeProjectService } from "./services/projects/adeProjectService";
 import { createConfigReloadService } from "./services/projects/configReloadService";
 import { IPC } from "../shared/ipc";
 import { resolveAdeLayout } from "../shared/adeLayout";
-import type { PortLease, ProjectInfo, SyncMobileProjectSummary, SyncProjectConnectionPayload, SyncProjectSwitchRequestPayload, SyncProjectSwitchResultPayload } from "../shared/types";
+import type {
+  OpenProjectBinding,
+  PortLease,
+  PrEventPayload,
+  ProjectInfo,
+  SyncMobileProjectSummary,
+  SyncProjectConnectionPayload,
+  SyncProjectSwitchRequestPayload,
+  SyncProjectSwitchResultPayload,
+} from "../shared/types";
 import type { AutomationTriggerType } from "../shared/types/config";
 import type { AutomationTriggerLinearIssueContext } from "../shared/types/automations";
 import type { LinearIngressEventRecord } from "../shared/types/linearSync";
@@ -75,6 +86,8 @@ import {
   type AdeRuntimePaths,
 } from "../../../ade-cli/src/bootstrap";
 import { startJsonRpcServer, type JsonRpcTransport } from "../../../ade-cli/src/jsonrpc";
+import { resolveMachineAdeLayout } from "../../../ade-cli/src/services/projects/machineLayout";
+import { normalizeProjectRootPath } from "../../../ade-cli/src/services/projects/projectRoots";
 import { createKeybindingsService } from "./services/keybindings/keybindingsService";
 import { createAgentToolsService } from "./services/agentTools/agentToolsService";
 import { createAdeCliService } from "./services/cli/adeCliService";
@@ -95,6 +108,11 @@ import {
 } from "./services/adeActions/registry";
 import { createUsageTrackingService } from "./services/usage/usageTrackingService";
 import { createBudgetCapService } from "./services/usage/budgetCapService";
+import {
+  markMachineStateMigrationComplete,
+  readMachineRegistryRecentProjects,
+  runMachineStateMigration,
+} from "./services/runtime/machineStateMigration";
 import { createRebaseSuggestionService } from "./services/lanes/rebaseSuggestionService";
 import { createAutoRebaseService } from "./services/lanes/autoRebaseService";
 import { createMissionService } from "./services/missions/missionService";
@@ -135,7 +153,6 @@ import { createLinearCloseoutService } from "./services/cto/linearCloseoutServic
 import { createLinearDispatcherService } from "./services/cto/linearDispatcherService";
 import { createLinearIngressService } from "./services/cto/linearIngressService";
 import { createLinearSyncService } from "./services/cto/linearSyncService";
-import { createOpenclawBridgeService } from "./services/cto/openclawBridgeService";
 import { createOrchestratorService } from "./services/orchestrator/orchestratorService";
 import { createAiOrchestratorService } from "./services/orchestrator/aiOrchestratorService";
 import { createMissionBudgetService } from "./services/orchestrator/missionBudgetService";
@@ -146,6 +163,7 @@ import { createAppControlService } from "./services/appControl/appControlService
 import { createBuiltInBrowserService } from "./services/builtInBrowser/builtInBrowserService";
 import { createMacosVmService } from "./services/macosVm/macosVmService";
 import { configureBuiltInBrowserWebAuthn } from "./services/builtInBrowser/builtInBrowserWebAuthn";
+import { LocalRuntimeConnectionPool } from "./services/localRuntime/localRuntimeConnectionPool";
 import { createSyncService } from "./services/sync/syncService";
 import { ApnsService, ApnsKeyStore } from "./services/notifications/apnsService";
 import {
@@ -161,6 +179,49 @@ import type { Logger } from "./services/logging/logger";
 
 const AUTO_UPDATER_CACHE_DIR_NAME = "ade-desktop-updater";
 const ADE_BROWSER_WEBVIEW_PARTITION = "persist:ade-browser";
+type AdePackageChannel = "alpha" | "beta";
+
+function normalizeAdePackageChannel(value: unknown): AdePackageChannel | null {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return normalized === "alpha" || normalized === "beta" ? normalized : null;
+}
+
+function readBundledAdePackageChannel(): AdePackageChannel | null {
+  const envChannel = normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL);
+  if (envChannel) return envChannel;
+
+  try {
+    const packageJsonPath = path.join(app.getAppPath(), "package.json");
+    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8")) as {
+      adePackageChannel?: unknown;
+      productName?: unknown;
+    };
+    const packageChannel = normalizeAdePackageChannel(packageJson.adePackageChannel);
+    if (packageChannel) return packageChannel;
+    const productName = typeof packageJson.productName === "string" ? packageJson.productName : "";
+    if (/\balpha\b/i.test(productName)) return "alpha";
+    if (/\bbeta\b/i.test(productName)) return "beta";
+  } catch {
+    // Dev builds and older packaged apps do not need channel metadata.
+  }
+
+  const appName = app.getName();
+  if (/\balpha\b/i.test(appName)) return "alpha";
+  if (/\bbeta\b/i.test(appName)) return "beta";
+  return null;
+}
+
+function applyPackagedChannelDefaults(): void {
+  const channel = readBundledAdePackageChannel();
+  if (!channel) return;
+
+  process.env.ADE_PACKAGE_CHANNEL = process.env.ADE_PACKAGE_CHANNEL || channel;
+  process.env.ADE_DESKTOP_APP_NAME = process.env.ADE_DESKTOP_APP_NAME || (channel === "alpha" ? "ADE Alpha" : "ADE Beta");
+  process.env.ADE_HOME = process.env.ADE_HOME || path.join(os.homedir(), `.ade-${channel}`);
+  process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL = process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL || "1";
+}
+
+applyPackagedChannelDefaults();
 
 function resolveAutoUpdaterCacheDir(): string {
   const homeDir = os.homedir();
@@ -201,6 +262,27 @@ function fixElectronShellPath(): void {
 
 // Must run before any service or child process is created.
 fixElectronShellPath();
+
+function installAdeCliForTerminalInBackground(
+  adeCliService: ReturnType<typeof createAdeCliService>,
+  logger: Logger,
+): void {
+  if (process.env.ADE_DISABLE_CLI_AUTO_INSTALL === "1") return;
+  void adeCliService.installForUser()
+    .then((result) => {
+      logger.info("ade_cli.auto_install", {
+        ok: result.ok,
+        command: result.status.command,
+        installTargetPath: result.status.installTargetPath,
+        message: result.message,
+      });
+    })
+    .catch((error) => {
+      logger.warn("ade_cli.auto_install_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+}
 
 const disableHardwareAcceleration =
   process.env.ADE_DISABLE_HARDWARE_ACCEL === "1";
@@ -394,15 +476,22 @@ function isAllowedAdeBrowserWebviewNavigation(rawUrl: string): boolean {
 
 async function createWindow(args: {
   logger?: Logger;
+  onCreated?: (win: BrowserWindow) => void;
   onCloseRequested?: (win: BrowserWindow, event: Electron.Event) => void;
 } = {}): Promise<BrowserWindow> {
-  // Load the app icon from the build directory.
+  // Load the app icon from the build directory. In dev (`npm run dev` sets
+  // VITE_DEV_SERVER_URL) prefer the inverted icon so the dock/window icon makes
+  // it obvious at a glance that this is a dev build, not the installed app.
   const iconDir = path.join(__dirname, "../../build");
   const icoPath = path.join(iconDir, "icon.ico");
   const pngPath = path.join(iconDir, "icon.png");
+  const devPngPath = path.join(iconDir, "icon.dev.png");
   const icnsPath = path.join(iconDir, "icon.icns");
+  const isDev = !!process.env.VITE_DEV_SERVER_URL;
   let icon: Electron.NativeImage;
-  if (process.platform === "win32" && fs.existsSync(icoPath)) {
+  if (isDev && fs.existsSync(devPngPath)) {
+    icon = nativeImage.createFromPath(devPngPath);
+  } else if (process.platform === "win32" && fs.existsSync(icoPath)) {
     icon = nativeImage.createFromPath(icoPath);
   } else if (fs.existsSync(pngPath)) {
     icon = nativeImage.createFromPath(pngPath);
@@ -428,6 +517,8 @@ async function createWindow(args: {
       webviewTag: true,
     },
   });
+
+  args.onCreated?.(win);
 
   win.webContents.on("will-attach-webview", (event, webPreferences, params) => {
     const src = typeof params.src === "string" ? params.src : "";
@@ -685,6 +776,19 @@ protocol.registerSchemesAsPrivileged([
   },
 ]);
 
+let pendingProjectOpenFiles: string[] = [];
+let handleProjectOpenFile: ((filePath: string) => void) | null = null;
+
+app.on("open-file", (event, filePath) => {
+  event.preventDefault();
+  if (!filePath) return;
+  if (handleProjectOpenFile) {
+    handleProjectOpenFile(filePath);
+    return;
+  }
+  pendingProjectOpenFiles.push(filePath);
+});
+
 app.whenReady().then(async () => {
   /** Canonical artifacts dir for the active project; ade-artifact:// only serves under this path. */
   let adeArtifactAllowedDir: string | null = null;
@@ -859,7 +963,7 @@ app.whenReady().then(async () => {
     app.getPath("userData"),
     "ade-project",
   );
-  const normalizeProjectPath = (value: string) => path.resolve(value);
+  const normalizeProjectPath = (value: string) => normalizeProjectRootPath(value);
   const isLikelyRepoRoot = (value: string) => {
     const resolved = normalizeProjectPath(value);
     return (
@@ -870,67 +974,51 @@ app.whenReady().then(async () => {
     );
   };
 
-  const cleanedRecentProjects = (saved.recentProjects ?? []).reduce(
-    (acc, entry) => {
-      const rootPath =
-        typeof entry?.rootPath === "string"
-          ? normalizeProjectPath(entry.rootPath)
-          : "";
-      if (!isLikelyRepoRoot(rootPath)) return acc;
-      if (acc.some((item) => item.rootPath === rootPath)) return acc;
-      const displayName =
-        typeof entry?.displayName === "string" &&
-        entry.displayName.trim().length > 0
-          ? entry.displayName
-          : path.basename(rootPath);
-      const lastOpenedAt =
-        typeof entry?.lastOpenedAt === "string" &&
-        entry.lastOpenedAt.trim().length > 0
-          ? entry.lastOpenedAt
-          : new Date().toISOString();
-      acc.push({ rootPath, displayName, lastOpenedAt });
-      return acc;
-    },
-    [] as Array<{
-      rootPath: string;
-      displayName: string;
-      lastOpenedAt: string;
-    }>,
-  );
-  const hadRecentProjectsChanges =
-    cleanedRecentProjects.length !== (saved.recentProjects ?? []).length;
-  const cleanedLastProjectRoot = saved.lastProjectRoot
-    ? normalizeProjectPath(saved.lastProjectRoot)
-    : "";
-  const validLastProjectRoot =
-    isLikelyRepoRoot(cleanedLastProjectRoot) &&
-    cleanedRecentProjects.some(
-      (project) => project.rootPath === cleanedLastProjectRoot,
-    )
-      ? cleanedLastProjectRoot
-      : "";
-  const hadLastProjectRootChanges =
-    saved.lastProjectRoot !== validLastProjectRoot;
-  const normalizedState = {
-    ...saved,
-    lastProjectRoot: validLastProjectRoot || undefined,
-    recentProjects: cleanedRecentProjects,
-  };
+  const machineAdeLayout = resolveMachineAdeLayout();
+  const startupState = normalizeStartupProjectState({
+    saved,
+    additionalRecentProjects: readMachineRegistryRecentProjects(machineAdeLayout),
+    isLikelyRepoRoot,
+    normalizeProjectPath,
+  });
+  const cleanedRecentProjects = startupState.recentProjects;
+  const validLastProjectRoot = startupState.validLastProjectRoot;
 
-  if (hadRecentProjectsChanges || hadLastProjectRootChanges) {
-    writeGlobalState(globalStatePath, normalizedState);
+  if (startupState.changed) {
+    writeGlobalState(globalStatePath, startupState.state);
   }
 
-  const envRoot = process.env.ADE_PROJECT_ROOT;
-  const devFallbackProject = process.env.VITE_DEV_SERVER_URL
-    ? path.resolve(process.cwd(), "..", "..")
-    : fallbackProjectRoot;
+  const machineStateMigration = runMachineStateMigration({
+    layout: machineAdeLayout,
+    recentProjects: cleanedRecentProjects,
+  });
+  const shouldAttemptRuntimeServiceInstall =
+    machineStateMigration.didRun
+    && app.isPackaged
+    && process.env.NODE_ENV !== "test"
+    && process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL !== "1";
+  const shouldShowRuntimeMigrationNotice =
+    shouldAttemptRuntimeServiceInstall && machineStateMigration.shouldShowNotice;
+  const packagedChannel = normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL);
 
-  const startupUserSelected = Boolean(envRoot && envRoot.trim().length);
-  const initialCandidate =
-    envRoot && envRoot.trim().length
-      ? normalizeProjectPath(envRoot)
-      : devFallbackProject;
+  const envRoot = process.env.ADE_PROJECT_ROOT;
+  const pendingStartupProjectRoot =
+    pendingProjectOpenFiles
+      .map((filePath) => normalizeProjectPath(filePath))
+      .find((filePath) => isLikelyRepoRoot(filePath)) ?? null;
+  if (pendingStartupProjectRoot) {
+    pendingProjectOpenFiles = pendingProjectOpenFiles.filter(
+      (filePath) => normalizeProjectPath(filePath) !== pendingStartupProjectRoot,
+    );
+  }
+  const startupProject = resolveStartupProject({
+    envRoot,
+    pendingStartupProjectRoot,
+    validLastProjectRoot,
+    recentProjects: cleanedRecentProjects,
+    normalizeProjectPath,
+  });
+  const shouldOpenStartupProject = startupProject.rootPath != null;
 
   const broadcast = (channel: string, payload: unknown) => {
     for (const win of BrowserWindow.getAllWindows()) {
@@ -958,20 +1046,105 @@ app.whenReady().then(async () => {
   const projectContexts = new Map<string, AppContext>();
   const projectInitPromises = new Map<string, Promise<AppContext>>();
   const closeContextPromises = new Map<string, Promise<void>>();
+  const windowProjectRoots = new Map<number, string | null>();
+  const windowProjectBindings = new Map<number, OpenProjectBinding & { kind: "remote" }>();
+  const ipcWindowScope = new AsyncLocalStorage<number | null>();
   const rpcSocketCleanupByRoot = new Map<string, () => void>();
   const projectLastActivatedAt = new Map<string, number>();
   const mobileSyncHandoffLeases = new Map<string, number>();
   const mobileSyncHandoffLeaseTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const mobileSyncPreparationPromises = new Map<string, Promise<SyncProjectSwitchResultPayload>>();
+  const localRuntimeLogger = createFileLogger(path.join(app.getPath("userData"), "local-runtime.jsonl"));
+  const localRuntimePool = new LocalRuntimeConnectionPool(app.getVersion(), localRuntimeLogger);
+  if (shouldAttemptRuntimeServiceInstall) {
+    void localRuntimePool.installServiceBestEffort()
+      .then(() => {
+        const status = localRuntimePool.getStatus().serviceInstall;
+        if (status.state === "installed") {
+          markMachineStateMigrationComplete({ layout: machineAdeLayout });
+        }
+      })
+      .catch((error) => {
+        localRuntimeLogger.warn("local_runtime.service_install_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+  } else if (!machineStateMigration.didRun) {
+    localRuntimePool.noteServiceInstallSkipped("Background service migration already completed.");
+  } else if (process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL === "1") {
+    localRuntimePool.noteServiceInstallSkipped("Background service installation is disabled by ADE_DISABLE_RUNTIME_SERVICE_INSTALL.");
+    if (machineStateMigration.didRun && app.isPackaged && packagedChannel) {
+      markMachineStateMigrationComplete({ layout: machineAdeLayout });
+    }
+  } else if (!app.isPackaged) {
+    localRuntimePool.noteServiceInstallSkipped("Background service installation is skipped in dev builds.");
+  } else if (process.env.NODE_ENV === "test") {
+    localRuntimePool.noteServiceInstallSkipped("Background service installation is skipped in tests.");
+  }
   const MAX_WARM_IDLE_PROJECT_CONTEXTS = 1;
   const MOBILE_SYNC_HANDOFF_LEASE_MS = 60_000;
   let activeProjectRoot: string | null = null;
   let mobileSyncSelectedRoot: string | null = null;
   let dormantContext!: AppContext;
   let projectContextRebalancePromise: Promise<void> = Promise.resolve();
+  const closeWindowWithoutQuitPrompt = new Set<number>();
 
-  const emitProjectChanged = (project: ProjectInfo | null): void => {
-    broadcast(IPC.appProjectChanged, project);
+  const currentIpcWindowId = (): number | null =>
+    ipcWindowScope.getStore() ?? null;
+
+  const useInProcessProjectRuntime = (): boolean =>
+    process.env.NODE_ENV === "test"
+    || process.env.ADE_ENABLE_DESKTOP_IN_PROCESS_RUNTIME === "1"
+    || process.env.ADE_DISABLE_LOCAL_RUNTIME_DAEMON === "1"
+    || process.env.ADE_LOCAL_RUNTIME_FALLBACK === "1";
+
+  const projectForRoot = (projectRoot: string | null): ProjectInfo | null => {
+    if (!projectRoot) return null;
+    return projectContexts.get(projectRoot)?.project ?? null;
+  };
+
+  const bindingForLocalProject = (project: ProjectInfo | null): OpenProjectBinding | null =>
+    project
+      ? {
+        kind: "local",
+        key: `local:${project.rootPath}`,
+        rootPath: project.rootPath,
+        displayName: project.displayName,
+      }
+      : null;
+
+  const rootsBoundToWindows = (): Set<string> => {
+    const roots = new Set<string>();
+    for (const root of windowProjectRoots.values()) {
+      if (root) roots.add(root);
+    }
+    return roots;
+  };
+
+  const emitProjectChangedToWindow = (
+    windowId: number | null,
+    project: ProjectInfo | null,
+  ): void => {
+    const win = windowId == null ? null : BrowserWindow.fromId(windowId);
+    if (!win || win.isDestroyed()) return;
+    try {
+      win.webContents.send(IPC.appProjectChanged, project);
+    } catch {
+      // ignore
+    }
+  };
+
+  const emitProjectBindingChangedToWindow = (
+    windowId: number | null,
+    binding: OpenProjectBinding | null,
+  ): void => {
+    const win = windowId == null ? null : BrowserWindow.fromId(windowId);
+    if (!win || win.isDestroyed()) return;
+    try {
+      win.webContents.send(IPC.appProjectBindingChanged, binding);
+    } catch {
+      // ignore
+    }
   };
 
   const firstAvailableRecentProjectRoot = (): string | null => {
@@ -984,10 +1157,16 @@ app.whenReady().then(async () => {
     return null;
   };
 
+  const isDesktopSyncHostEnabled = (): boolean =>
+    process.env.ADE_ENABLE_DESKTOP_SYNC_HOST === "1"
+    && process.env.ADE_DISABLE_SYNC_HOST !== "1";
+
   const getMobileSyncHostRoot = (): string | null =>
-    mobileSyncSelectedRoot
-      ?? activeProjectRoot
-      ?? firstAvailableRecentProjectRoot();
+    isDesktopSyncHostEnabled()
+      ? mobileSyncSelectedRoot
+        ?? activeProjectRoot
+        ?? firstAvailableRecentProjectRoot()
+      : null;
 
   const getMobileSyncService = (): ReturnType<typeof createSyncService> | null => {
     const hostRoot = getMobileSyncHostRoot();
@@ -1024,7 +1203,7 @@ app.whenReady().then(async () => {
     return next;
   };
 
-  const setActiveProject = (projectRoot: string | null): void => {
+  const setForegroundProject = (projectRoot: string | null): void => {
     activeProjectRoot = projectRoot ? normalizeProjectRoot(projectRoot) : null;
     void reconcileSyncHostContexts().then(() => {
       notifyMobileSyncProjectCatalogChanged();
@@ -1046,7 +1225,65 @@ app.whenReady().then(async () => {
     }
   };
 
+  const bindWindowToProject = (
+    windowId: number | null,
+    projectRoot: string | null,
+    options: { emit?: boolean; foreground?: boolean } = {},
+  ): void => {
+    const normalizedRoot = projectRoot ? normalizeProjectRoot(projectRoot) : null;
+    if (windowId != null) {
+      windowProjectRoots.set(windowId, normalizedRoot);
+      windowProjectBindings.delete(windowId);
+    }
+    if (options.foreground ?? true) {
+      setForegroundProject(normalizedRoot);
+    }
+    if (normalizedRoot) {
+      projectLastActivatedAt.set(normalizedRoot, Date.now());
+      const ctx = projectContexts.get(normalizedRoot);
+      if (ctx) {
+        persistRecentProject(ctx.project, { recordLastProject: false, preserveRecentOrder: true });
+      }
+      if (process.env.NODE_ENV !== "test" && process.env.ADE_DISABLE_LOCAL_RUNTIME_DAEMON !== "1") {
+        void localRuntimePool.ensureProject(normalizedRoot).catch((error) => {
+          localRuntimeLogger.warn("local_runtime.project_registration_failed", {
+            rootPath: normalizedRoot,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }
+    }
+    if (options.emit !== false) {
+      const project = projectForRoot(normalizedRoot);
+      emitProjectChangedToWindow(windowId, project);
+      emitProjectBindingChangedToWindow(windowId, bindingForLocalProject(project));
+    }
+  };
+
+  const bindWindowToRemoteProject = (
+    windowId: number | null,
+    binding: OpenProjectBinding & { kind: "remote" },
+  ): void => {
+    if (windowId != null) {
+      windowProjectRoots.set(windowId, null);
+      windowProjectBindings.set(windowId, binding);
+    }
+    setForegroundProject(null);
+    emitProjectChangedToWindow(windowId, null);
+    emitProjectBindingChangedToWindow(windowId, binding);
+  };
+
   const getActiveContext = (): AppContext => {
+    const windowId = currentIpcWindowId();
+    if (windowId != null) {
+      const windowProjectRoot = windowProjectRoots.get(windowId) ?? null;
+      if (windowProjectRoot) {
+        const ctx = projectContexts.get(windowProjectRoot);
+        if (ctx) return ctx;
+        windowProjectRoots.set(windowId, null);
+      }
+      return dormantContext;
+    }
     if (activeProjectRoot) {
       const ctx = projectContexts.get(activeProjectRoot);
       if (ctx) return ctx;
@@ -1060,9 +1297,15 @@ app.whenReady().then(async () => {
     channel: string,
     payload: unknown,
   ): void => {
-    if (!activeProjectRoot) return;
-    if (normalizeProjectRoot(projectRoot) !== activeProjectRoot) return;
-    broadcast(channel, payload);
+    const normalizedRoot = normalizeProjectRoot(projectRoot);
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (windowProjectRoots.get(win.id) !== normalizedRoot) continue;
+      try {
+        win.webContents.send(channel, payload);
+      } catch {
+        // ignore
+      }
+    }
   };
 
   const hasActiveProjectWorkloads = async (
@@ -1082,7 +1325,7 @@ app.whenReady().then(async () => {
     };
 
     try {
-      if (ctx.sessionService.list({ status: "running", limit: 1 }).length > 0) {
+      if (ctx.sessionService?.list({ status: "running", limit: 1 }).length > 0) {
         return true;
       }
     } catch (error) {
@@ -1090,7 +1333,7 @@ app.whenReady().then(async () => {
     }
 
     try {
-      if (ctx.missionService.list({ status: "active", limit: 1 }).length > 0) {
+      if (ctx.missionService?.list({ status: "active", limit: 1 }).length > 0) {
         return true;
       }
     } catch (error) {
@@ -1098,7 +1341,7 @@ app.whenReady().then(async () => {
     }
 
     try {
-      if (ctx.testService.hasActiveRuns()) {
+      if (ctx.testService?.hasActiveRuns()) {
         return true;
       }
     } catch (error) {
@@ -1106,20 +1349,22 @@ app.whenReady().then(async () => {
     }
 
     try {
-      const lanes = await ctx.laneService.list({
-        includeArchived: false,
-        includeStatus: false,
-      });
-      for (const lane of lanes) {
-        if (
-          ctx.processService.listRuntime(lane.id).some((runtime) =>
-            runtime.status === "starting"
-            || runtime.status === "running"
-            || runtime.status === "degraded"
-            || runtime.status === "stopping"
-          )
-        ) {
-          return true;
+      if (ctx.laneService && ctx.processService) {
+        const lanes = await ctx.laneService.list({
+          includeArchived: false,
+          includeStatus: false,
+        });
+        for (const lane of lanes) {
+          if (
+            ctx.processService.listRuntime(lane.id).some((runtime) =>
+              runtime.status === "starting"
+              || runtime.status === "running"
+              || runtime.status === "degraded"
+              || runtime.status === "stopping"
+            )
+          ) {
+            return true;
+          }
         }
       }
     } catch (error) {
@@ -1183,12 +1428,14 @@ app.whenReady().then(async () => {
   };
 
   const rebalanceProjectContexts = async (): Promise<void> => {
-    const currentActiveRoot = activeProjectRoot;
-    if (!currentActiveRoot) return;
+    const activeRoots = rootsBoundToWindows();
+    if (activeProjectRoot) activeRoots.add(activeProjectRoot);
+    if (activeRoots.size === 0) return;
+    const currentActiveRoot = activeProjectRoot ?? [...activeRoots][0] ?? null;
 
     const idleRoots: string[] = [];
     for (const [projectRoot, ctx] of projectContexts.entries()) {
-      if (projectRoot === currentActiveRoot) continue;
+      if (activeRoots.has(projectRoot)) continue;
       if (await hasActiveProjectWorkloads(projectRoot, ctx)) {
         ctx.logger.info("project.context_retained", {
           projectRoot,
@@ -1209,12 +1456,17 @@ app.whenReady().then(async () => {
     );
 
     for (const projectRoot of idleRoots) {
-      if (activeProjectRoot !== currentActiveRoot) {
+      const nextActiveRoots = rootsBoundToWindows();
+      if (activeProjectRoot) nextActiveRoots.add(activeProjectRoot);
+      const stillSameActiveSet =
+        nextActiveRoots.size === activeRoots.size
+        && [...activeRoots].every((root) => nextActiveRoots.has(root));
+      if (!stillSameActiveSet) {
         return;
       }
       const ctx = projectContexts.get(projectRoot);
       if (!ctx) continue;
-      if (projectRoot === activeProjectRoot) continue;
+      if (rootsBoundToWindows().has(projectRoot) || projectRoot === activeProjectRoot) continue;
       if (warmRoots.has(projectRoot)) {
         ctx.logger.info("project.context_retained", {
           projectRoot,
@@ -1362,6 +1614,7 @@ app.whenReady().then(async () => {
       logger,
     });
     adeCliService.applyToProcessEnv();
+    installAdeCliForTerminalInBackground(adeCliService, logger);
     const devToolsService = createDevToolsService({ logger });
 
     const project = toProjectInfo(projectRoot, baseRef);
@@ -1680,6 +1933,7 @@ app.whenReady().then(async () => {
       projectRoot,
       aiIntegrationService,
       githubService,
+      onSubmissionUpdated: (event) => broadcast(IPC.feedbackOnUpdate, event),
     });
 
     const conflictService = createConflictService({
@@ -1849,13 +2103,23 @@ app.whenReady().then(async () => {
       registry?.invalidateApnsToken?.(deviceToken);
     });
 
+    const rpcEventBuffer = createEventBuffer();
+    const emitPrEvent = (event: PrEventPayload): void => {
+      emitProjectEvent(projectRoot, IPC.prsEvent, event);
+      rpcEventBuffer.push({
+        timestamp: new Date().toISOString(),
+        category: "runtime",
+        payload: { type: "pr_event", event },
+      });
+    };
+
     const prPollingService = createPrPollingService({
       logger,
       prService,
       projectConfigService,
       db,
       notificationEventBus,
-      onEvent: (event) => emitProjectEvent(projectRoot, IPC.prsEvent, event),
+      onEvent: emitPrEvent,
       onPullRequestsChanged: async ({ changedPrs, changes }) => {
         if (changedPrs.length > 0) {
           prService.markHotRefresh(changedPrs.map((pr) => pr.id));
@@ -1898,9 +2162,6 @@ app.whenReady().then(async () => {
     let linearDispatcherServiceRef: ReturnType<
       typeof createLinearDispatcherService
     > | null = null;
-    let openclawBridgeServiceRef: ReturnType<
-      typeof createOpenclawBridgeService
-    > | null = null;
     let linearSyncServiceRef: ReturnType<
       typeof createLinearSyncService
     > | null = null;
@@ -1916,7 +2177,7 @@ app.whenReady().then(async () => {
       prService,
       laneService,
       conflictService,
-      emitEvent: (event) => emitProjectEvent(projectRoot, IPC.prsEvent, event),
+      emitEvent: emitPrEvent,
       onStateChanged: (state) => {
         const hotPrIds = new Set<string>();
         const currentEntry = state.entries[state.currentPosition];
@@ -2425,7 +2686,6 @@ app.whenReady().then(async () => {
       getAdeCliAgentEnv: adeCliService.agentEnv,
       onEvent: (event) => {
         aiOrchestratorServiceRef?.onAgentChatEvent(event);
-        openclawBridgeServiceRef?.onAgentChatEvent(event);
         emitProjectEvent(projectRoot, IPC.agentChatEvent, event);
 
         // Capture agent session errors as failure gotchas for the memory system
@@ -2520,7 +2780,6 @@ app.whenReady().then(async () => {
       laneService,
       projectConfigService,
       broadcastEvent: (ev) => {
-        openclawBridgeServiceRef?.onTestEvent(ev);
         emitProjectEvent(projectRoot, IPC.testsEvent, ev);
       },
     });
@@ -2604,7 +2863,6 @@ app.whenReady().then(async () => {
           .catch(() => {});
       },
       onEvent: (event) => {
-        openclawBridgeServiceRef?.onMissionEvent(event);
         emitProjectEvent(projectRoot, IPC.missionsEvent, event);
         if (event.missionId) {
           automationService?.onMissionUpdated({ missionId: event.missionId });
@@ -2759,32 +3017,6 @@ app.whenReady().then(async () => {
       "ADE_ENABLE_PORT_ALLOCATION_RECOVERY",
     );
 
-    const openclawBridgeService = createOpenclawBridgeService({
-      projectRoot,
-      adeDir: adePaths.adeDir,
-      laneService,
-      agentChatService,
-      ctoStateService,
-      workerAgentService,
-      missionService,
-      logger,
-      appVersion: app.getVersion(),
-      onStatusChange: (status) =>
-        emitProjectEvent(projectRoot, IPC.openclawConnectionStatus, status),
-    });
-    openclawBridgeServiceRef = openclawBridgeService;
-    scheduleBackgroundProjectTask(
-      "openclaw_bridge.start",
-      () => openclawBridgeService.start(),
-      (error) => {
-        logger.warn("openclaw_bridge.start_failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      },
-      0,
-      "ADE_ENABLE_OPENCLAW",
-    );
-
     const orchestratorService = createOrchestratorService({
       db,
       projectId,
@@ -2803,7 +3035,6 @@ app.whenReady().then(async () => {
       knowledgeCaptureService,
       onEvent: (event) => {
         aiOrchestratorServiceRef?.onOrchestratorRuntimeEvent(event);
-        openclawBridgeServiceRef?.onOrchestratorEvent(event);
         emitProjectEvent(projectRoot, IPC.orchestratorEvent, event);
       },
     });
@@ -2987,21 +3218,22 @@ app.whenReady().then(async () => {
         emitProjectEvent(projectRoot, IPC.orchestratorDagMutation, event),
     });
     aiOrchestratorServiceRef = aiOrchestratorService;
-    // Phone sync is an app-level feature. A single project context still backs
-    // the project-scoped data stream, but the backing context is selected by the
-    // app-level sync host root rather than the visible project tab alone.
-    // ADE_DISABLE_SYNC_HOST=1 is a global kill switch for tests / CI.
+    // Phone sync is owned by the per-machine ADE service. The desktop
+    // keeps a non-host sync service for legacy viewer state and explicit
+    // diagnostics only; ADE_ENABLE_DESKTOP_SYNC_HOST=1 re-enables the old
+    // in-process host path while debugging migrations.
     const mobileSyncHostRoot = getMobileSyncHostRoot();
     const isMobileSyncHostContext =
       mobileSyncHostRoot != null
       && normalizeProjectRoot(projectRoot) === mobileSyncHostRoot;
-    const syncHostAutoStart =
-      process.env.ADE_DISABLE_SYNC_HOST !== "1" && isMobileSyncHostContext;
+    const syncHostAutoStart = isMobileSyncHostContext;
     const syncService = createSyncService({
       db,
       logger,
       projectRoot,
-      localDeviceIdPath: path.join(app.getPath("userData"), "sync-device-id"),
+      projectId,
+      appVersion: app.getVersion(),
+      localDeviceIdPath: path.join(machineAdeLayout.secretsDir, "sync-device-id"),
       fileService,
       laneService,
       gitService,
@@ -3034,7 +3266,7 @@ app.whenReady().then(async () => {
       getLinearSyncService: () => linearSyncServiceRef,
       processService,
       hostStartupEnabled: syncHostAutoStart,
-      phonePairingStateDir: path.join(app.getPath("userData"), "phone-sync"),
+      phonePairingStateDir: machineAdeLayout.secretsDir,
       hostDiscoveryEnabled: isMobileSyncHostContext,
       forceHostRole: true,
       notificationEventBus,
@@ -3569,7 +3801,6 @@ app.whenReady().then(async () => {
     writeGlobalState(globalStatePath, state);
 
     // ── ADE RPC Socket Server (embedded mode) ─────────────────────
-    const rpcEventBuffer = createEventBuffer();
     const rpcRuntime: AdeRuntime = {
       projectRoot,
       workspaceRoot: projectRoot,
@@ -3617,7 +3848,6 @@ app.whenReady().then(async () => {
       workerHeartbeatService,
       workerTaskSessionService,
       linearCredentialService,
-      openclawBridgeService,
       flowPolicyService,
       linearDispatcherService,
       linearIssueTracker,
@@ -3644,22 +3874,41 @@ app.whenReady().then(async () => {
       budgetCapService,
       sessionDeltaService,
       autoUpdateService,
+      appNavigationService: {
+        navigate: async (request) => {
+          const normalizedRoot = normalizeProjectRoot(projectRoot);
+          let targetWindow = BrowserWindow.getAllWindows()
+            .find((win) => !win.isDestroyed() && windowProjectRoots.get(win.id) === normalizedRoot) ?? null;
+          if (!targetWindow) {
+            const opened = await openAdeWindow({ projectRoot });
+            targetWindow = opened.windowId != null ? BrowserWindow.fromId(opened.windowId) : null;
+          }
+          if (!targetWindow || targetWindow.isDestroyed()) {
+            return {
+              ok: false,
+              mode: "unavailable" as const,
+              message: "No ADE window is available for this project.",
+            };
+          }
+          if (targetWindow.isMinimized()) targetWindow.restore();
+          targetWindow.show();
+          targetWindow.focus();
+          targetWindow.webContents.send(IPC.appNavigate, request);
+          return {
+            ok: true,
+            mode: "desktop" as const,
+            windowId: targetWindow.id,
+          };
+        },
+      },
       issueInventoryService,
       eventBuffer: rpcEventBuffer,
       dispose: () => {}, // desktop manages service lifecycle
     };
 
-    // When ADE_RPC_SOCKET_PATH is set, derive a per-project socket path from
-    // the override so each project context gets its own socket and avoids
-    // EADDRINUSE. The first context uses the env path as-is for compatibility;
-    // subsequent contexts append a project-root hash suffix.
-    const envSocketOverride = process.env.ADE_RPC_SOCKET_PATH?.trim();
-    const rpcSocketPath = envSocketOverride
-      ? projectContexts.size === 0
-        ? envSocketOverride
-        : `${envSocketOverride}.${Buffer.from(normalizeProjectRoot(projectRoot)).toString("base64url").slice(0, 8)}`
-      : adePaths.socketPath;
     const activeRpcConnections = new Set<net.Socket>();
+    let rpcSocketServer: net.Server | undefined;
+    let rpcSocketPath: string | undefined;
 
     const destroyActiveRpcConnections = (): void => {
       for (const conn of activeRpcConnections) {
@@ -3676,66 +3925,93 @@ app.whenReady().then(async () => {
       destroyActiveRpcConnections,
     );
 
-    if (!isAdeMcpNamedPipePath(rpcSocketPath)) {
-      try {
-        fs.unlinkSync(rpcSocketPath);
-      } catch {}
-    }
+    if (process.env.ADE_ENABLE_DESKTOP_RPC_SOCKET === "1") {
+      // Legacy compatibility: the ADE service owns ADE RPC by default.
+      // When explicitly enabled, derive a per-project socket path so multiple
+      // desktop project contexts do not collide on the same override.
+      const envSocketOverride = process.env.ADE_RPC_SOCKET_PATH?.trim();
+      rpcSocketPath = envSocketOverride
+        ? projectContexts.size === 0
+          ? envSocketOverride
+          : `${envSocketOverride}.${Buffer.from(normalizeProjectRoot(projectRoot)).toString("base64url").slice(0, 8)}`
+        : adePaths.socketPath;
 
-    const rpcSocketServer = net.createServer((conn) => {
-      activeRpcConnections.add(conn);
-      let stopped = false;
-      const transport: JsonRpcTransport = {
-        onData(callback) {
-          conn.on("data", callback);
-        },
-        write(data) {
-          conn.write(data);
-        },
-        close() {
-          if (!conn.destroyed) conn.destroy();
-        },
-      };
-      let stop: ReturnType<typeof startJsonRpcServer> | null = null;
-      const rpcHandler = createAdeRpcRequestHandler({
-        runtime: rpcRuntime,
-        serverVersion: app.getVersion(),
-        onActionsListChanged: () => {
-          stop?.notify("ade/actions/list_changed", {});
-        },
-      });
-      stop = startJsonRpcServer(rpcHandler, transport, { nonFatal: true });
-      const removeConnection = (): void => {
-        activeRpcConnections.delete(conn);
-      };
-      conn.once("close", removeConnection);
-      conn.once("end", removeConnection);
-      conn.once("error", removeConnection);
-      conn.on("close", () => {
-        if (!stopped) {
-          stopped = true;
-          stop?.();
-        }
-        rpcHandler.dispose();
-      });
-      conn.on("error", () => {}); // ignore connection errors
-    });
-    await measureProjectInitStep("rpc.socket_server_start", () =>
-      new Promise<void>((resolve, reject) => {
-        const handleListening = () => {
-          rpcSocketServer.off("error", handleError);
-          resolve();
+      if (!isAdeMcpNamedPipePath(rpcSocketPath)) {
+        try {
+          fs.unlinkSync(rpcSocketPath);
+        } catch {}
+      }
+
+      const server = net.createServer((conn) => {
+        activeRpcConnections.add(conn);
+        let stopped = false;
+        const transport: JsonRpcTransport = {
+          onData(callback) {
+            conn.on("data", callback);
+          },
+          write(data) {
+            conn.write(data);
+          },
+          close() {
+            if (!conn.destroyed) conn.destroy();
+          },
         };
-        const handleError = (error: Error) => {
-          rpcSocketServer.off("listening", handleListening);
-          reject(error);
+        let stop: ReturnType<typeof startJsonRpcServer> | null = null;
+        const rpcHandler = createAdeRpcRequestHandler({
+          runtime: rpcRuntime,
+          serverVersion: app.getVersion(),
+          onActionsListChanged: () => {
+            stop?.notify("ade/actions/list_changed", {});
+          },
+        });
+        stop = startJsonRpcServer(rpcHandler, transport, { nonFatal: true });
+        const unsubscribeChatEvents = rpcRuntime.agentChatService?.subscribeToEvents((event) => {
+          stop?.notify("chat/event", event);
+        }) ?? (() => {});
+        let removedConnection = false;
+        const removeConnection = (): void => {
+          if (removedConnection) return;
+          removedConnection = true;
+          activeRpcConnections.delete(conn);
+          unsubscribeChatEvents();
         };
-        rpcSocketServer.once("listening", handleListening);
-        rpcSocketServer.once("error", handleError);
-        rpcSocketServer.listen(rpcSocketPath);
-      }),
-    );
-    logger.info("rpc.socket_server_started", { socketPath: rpcSocketPath });
+        conn.once("close", removeConnection);
+        conn.once("end", removeConnection);
+        conn.once("error", removeConnection);
+        conn.on("close", () => {
+          if (!stopped) {
+            stopped = true;
+            stop?.();
+          }
+          rpcHandler.dispose();
+        });
+        conn.on("error", () => {}); // ignore connection errors
+      });
+      rpcSocketServer = server;
+      await measureProjectInitStep("rpc.socket_server_start", () =>
+        new Promise<void>((resolve, reject) => {
+          const handleListening = () => {
+            server.off("error", handleError);
+            resolve();
+          };
+          const handleError = (error: Error) => {
+            server.off("listening", handleListening);
+            reject(error);
+          };
+          server.once("listening", handleListening);
+          server.once("error", handleError);
+          server.listen(rpcSocketPath);
+        }),
+      );
+      logger.warn("rpc.socket_server_started", {
+        socketPath: rpcSocketPath,
+        mode: "legacy_desktop",
+      });
+    } else {
+      logger.info("rpc.socket_server_skipped", {
+        reason: "runtime_daemon_owns_rpc",
+      });
+    }
 
     // Wire the automation runtime into the shared ADE-action registry so
     // that `ade-action` automation steps can invoke the same domain services
@@ -3892,7 +4168,6 @@ app.whenReady().then(async () => {
       embeddingService,
       embeddingWorkerService,
       ctoStateService,
-      openclawBridgeService,
       workerAgentService,
       adeProjectService,
       workerRevisionService,
@@ -3909,6 +4184,37 @@ app.whenReady().then(async () => {
       rpcSocketServer,
       rpcSocketPath,
     };
+  };
+
+  const initRuntimeBackedProjectContext = async ({
+    projectRoot,
+    baseRef,
+    userSelectedProject,
+  }: {
+    projectRoot: string;
+    baseRef: string;
+    userSelectedProject: boolean;
+  }): Promise<AppContext> => {
+    const adePaths = ensureAdeDirs(projectRoot);
+    const logger = createFileLogger(path.join(adePaths.logsDir, "main.jsonl"));
+    const project = toProjectInfo(projectRoot, baseRef);
+    const runtimeProject = await localRuntimePool.ensureProject(projectRoot);
+    const shellContext = createDormantProjectContext(projectRoot);
+    logger.info("project.runtime_bound", {
+      projectRoot,
+      projectId: runtimeProject.projectId,
+      mode: "local_runtime_daemon",
+    });
+    return {
+      ...shellContext,
+      logger,
+      project,
+      projectId: runtimeProject.projectId,
+      adeDir: adePaths.adeDir,
+      hasUserSelectedProject: userSelectedProject,
+      adeCliService: shellContext.adeCliService,
+      builtInBrowserService,
+    } as AppContext;
   };
 
   const createDormantProjectContext = (projectRoot = ""): AppContext => {
@@ -3936,6 +4242,15 @@ app.whenReady().then(async () => {
       logger,
       githubService: dormantGithubService,
     });
+    const adeCliService = createAdeCliService({
+      isPackaged: app.isPackaged,
+      resourcesPath: process.resourcesPath,
+      userDataPath: app.getPath("userData"),
+      appExecutablePath: process.execPath,
+      logger,
+    });
+    adeCliService.applyToProcessEnv();
+    installAdeCliForTerminalInBackground(adeCliService, logger);
     return {
       db: null,
       logger,
@@ -3947,13 +4262,7 @@ app.whenReady().then(async () => {
       disposeHeadWatcher: () => {},
       keybindingsService: null,
       agentToolsService: null,
-      adeCliService: createAdeCliService({
-        isPackaged: app.isPackaged,
-        resourcesPath: process.resourcesPath,
-        userDataPath: app.getPath("userData"),
-        appExecutablePath: process.execPath,
-        logger,
-      }),
+      adeCliService,
       devToolsService: null,
       onboardingService: null,
       laneService: null,
@@ -4019,7 +4328,6 @@ app.whenReady().then(async () => {
       proceduralLearningService: null,
       skillRegistryService: null,
       ctoStateService: null,
-      openclawBridgeService: null,
       workerAgentService: null,
       adeProjectService: null,
       workerRevisionService: null,
@@ -4153,11 +4461,6 @@ app.whenReady().then(async () => {
       // ignore
     }
     try {
-      await ctx.openclawBridgeService?.stop?.();
-    } catch {
-      // ignore
-    }
-    try {
       await ctx.skillRegistryService?.dispose?.();
     } catch {
       // ignore
@@ -4275,7 +4578,7 @@ app.whenReady().then(async () => {
     for (const root of roots) {
       await closeProjectContext(root);
     }
-    setActiveProject(null);
+    setForegroundProject(null);
   };
 
   async function mobileProjectSummaryForContext(
@@ -4371,7 +4674,7 @@ app.whenReady().then(async () => {
     const existing = projectContexts.get(normalizedRoot);
     if (existing) return existing;
     if (!fs.existsSync(normalizedRoot)) {
-      throw new Error("Project is no longer available on this desktop.");
+      throw new Error("Project is no longer available on this machine.");
     }
 
     let initPromise = projectInitPromises.get(normalizedRoot);
@@ -4429,14 +4732,14 @@ app.whenReady().then(async () => {
     if (!catalogEntry || !catalogEntry.isAvailable) {
       return {
         ok: false,
-        message: "That project is not available from this desktop.",
+        message: "That project is not available from this machine.",
       };
     }
     const targetRoot = catalogEntry.rootPath ? normalizeProjectRoot(catalogEntry.rootPath) : null;
     if (!targetRoot) {
       return {
         ok: false,
-        message: "Choose a desktop project first.",
+        message: "Choose a machine project first.",
       };
     }
 
@@ -4597,12 +4900,11 @@ app.whenReady().then(async () => {
       const existing = projectContexts.get(repoRoot);
       if (existing) {
         existing.hasUserSelectedProject = true;
-        setActiveProject(repoRoot);
         persistRecentProject(existing.project, {
           recordLastProject: true,
           preserveRecentOrder: isKnownRecentProject,
         });
-        emitProjectChanged(existing.project);
+        bindWindowToProject(currentIpcWindowId(), repoRoot, { emit: true, foreground: true });
         scheduleProjectContextRebalance();
         projectOpenLogger.info("project.open.done", {
           selectedPath,
@@ -4625,18 +4927,25 @@ app.whenReady().then(async () => {
             durationMs: Date.now() - baseRefStartedAt,
           });
           const initStartedAt = Date.now();
-          const ctx = await initContextForProjectRoot({
-            projectRoot: repoRoot!,
-            baseRef,
-            ensureExclude: true,
-            recordLastProject: true,
-            recordRecent: true,
-            preserveRecentOrder: isKnownRecentProject,
-            userSelectedProject: true,
-          });
+          const ctx = useInProcessProjectRuntime()
+            ? await initContextForProjectRoot({
+              projectRoot: repoRoot!,
+              baseRef,
+              ensureExclude: true,
+              recordLastProject: true,
+              recordRecent: true,
+              preserveRecentOrder: isKnownRecentProject,
+              userSelectedProject: true,
+            })
+            : await initRuntimeBackedProjectContext({
+              projectRoot: repoRoot!,
+              baseRef,
+              userSelectedProject: true,
+            });
           projectOpenLogger.info("project.open.context_initialized", {
             selectedPath,
             repoRoot,
+            mode: useInProcessProjectRuntime() ? "in_process" : "local_runtime_daemon",
             durationMs: Date.now() - initStartedAt,
           });
           projectContexts.set(repoRoot!, ctx);
@@ -4651,12 +4960,12 @@ app.whenReady().then(async () => {
 
       const ctx = await initPromise;
       ctx.hasUserSelectedProject = true;
-      setActiveProject(repoRoot);
       persistRecentProject(ctx.project, {
         recordLastProject: true,
-        recordRecent: false,
+        recordRecent: true,
+        preserveRecentOrder: isKnownRecentProject,
       });
-      emitProjectChanged(ctx.project);
+      bindWindowToProject(currentIpcWindowId(), repoRoot, { emit: true, foreground: true });
       scheduleProjectContextRebalance();
       projectOpenLogger.info("project.open.done", {
         selectedPath,
@@ -4680,22 +4989,36 @@ app.whenReady().then(async () => {
   const closeProjectByPath = async (projectRoot: string): Promise<void> => {
     const normalizedRoot = normalizeProjectRoot(projectRoot);
     const wasActive = activeProjectRoot === normalizedRoot;
+    for (const [windowId, root] of windowProjectRoots) {
+      if (root === normalizedRoot) {
+        windowProjectRoots.set(windowId, null);
+        windowProjectBindings.delete(windowId);
+        emitProjectChangedToWindow(windowId, null);
+        emitProjectBindingChangedToWindow(windowId, null);
+      }
+    }
     await closeProjectContext(normalizedRoot);
     if (wasActive) {
+      setForegroundProject(firstOpenWindowProjectRoot());
       dormantContext = createDormantProjectContext(normalizedRoot);
-      emitProjectChanged(null);
     }
   };
 
   const closeCurrentProject = async () => {
     const current = getActiveContext();
     const previousRoot = current.project?.rootPath ?? "";
+    const windowId = currentIpcWindowId();
+    if (windowId != null) {
+      bindWindowToProject(windowId, null, { emit: true, foreground: true });
+      dormantContext = createDormantProjectContext(previousRoot);
+      scheduleProjectContextRebalance();
+      return;
+    }
     if (activeProjectRoot) {
       await closeProjectContext(activeProjectRoot);
     }
-    setActiveProject(null);
+    setForegroundProject(null);
     dormantContext = createDormantProjectContext(previousRoot);
-    emitProjectChanged(null);
   };
 
   dormantContext = createDormantProjectContext();
@@ -4843,7 +5166,7 @@ app.whenReady().then(async () => {
       } catch {
         // ignore
       }
-      setActiveProject(null);
+      setForegroundProject(null);
       dormantContext = createDormantProjectContext(previousRoot);
 
       try {
@@ -4861,38 +5184,85 @@ app.whenReady().then(async () => {
     });
   };
 
-  const confirmQuitWarning = (): boolean => {
-    if (quitWarningAcknowledged || shutdownRequested) return true;
-    const options = {
+  const showWindowCloseWarning = (
+    ownerWindow: BrowserWindow | null | undefined,
+    options: {
+      buttons: string[];
+      title: string;
+      message: string;
+      detail: string;
+      rememberQuitAcknowledgement?: boolean;
+    },
+  ): boolean => {
+    if (shutdownRequested) return true;
+    if (options.rememberQuitAcknowledgement && quitWarningAcknowledged) return true;
+    const dialogOptions = {
       type: "warning" as const,
-      buttons: ["Keep ADE open", "Quit ADE"],
+      buttons: options.buttons,
       defaultId: 0,
       cancelId: 0,
       noLink: true,
-      title: "Quit ADE?",
-      message: "Save your work before closing ADE.",
-      detail:
-        "Quitting ADE will end any running agents and stop background processes started by ADE, including OpenCode servers, terminal sessions, and test runs.",
+      title: options.title,
+      message: options.message,
+      detail: options.detail,
     };
-    const parentWindow = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+    const parentWindow =
+      ownerWindow && !ownerWindow.isDestroyed()
+        ? ownerWindow
+        : BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
     const response = parentWindow
-      ? dialog.showMessageBoxSync(parentWindow, options)
-      : dialog.showMessageBoxSync(options);
+      ? dialog.showMessageBoxSync(parentWindow, dialogOptions)
+      : dialog.showMessageBoxSync(dialogOptions);
     if (response !== 1) {
       return false;
     }
-    quitWarningAcknowledged = true;
+    if (options.rememberQuitAcknowledgement) {
+      quitWarningAcknowledged = true;
+    }
     return true;
   };
 
+  const confirmQuitWarning = (ownerWindow?: BrowserWindow | null): boolean =>
+    showWindowCloseWarning(ownerWindow, {
+      buttons: ["Keep ADE open", "Quit ADE"],
+      title: "Quit ADE?",
+      message: "Save your work before closing ADE.",
+      detail:
+        "Quitting ADE will end agents and background processes owned by this desktop session, including OpenCode servers, terminal sessions, and test runs. The ADE service login item keeps running separately when it is installed.",
+      rememberQuitAcknowledgement: true,
+    });
+
+  const confirmCloseWindowWarning = (ownerWindow: BrowserWindow): boolean =>
+    showWindowCloseWarning(ownerWindow, {
+      buttons: ["Keep window open", "Close window"],
+      title: "Close ADE window?",
+      message: "Close this ADE window?",
+      detail:
+        "ADE will keep running in other windows. Active agents and background processes continue unless you quit ADE.",
+      rememberQuitAcknowledgement: false,
+    });
+
+  const closeWindowWithoutPrompt = (win: BrowserWindow): void => {
+    closeWindowWithoutQuitPrompt.add(win.id);
+    win.close();
+    if (!win.isDestroyed()) {
+      closeWindowWithoutQuitPrompt.delete(win.id);
+    }
+  };
+
   const handleMainWindowCloseRequested = (
-    _win: BrowserWindow,
+    win: BrowserWindow,
     event: Electron.Event,
   ): void => {
     if (shutdownRequested) return;
-    if (BrowserWindow.getAllWindows().length > 1) return;
+    if (closeWindowWithoutQuitPrompt.delete(win.id)) return;
     event.preventDefault();
-    if (!confirmQuitWarning()) return;
+    if (BrowserWindow.getAllWindows().filter((openWindow) => !openWindow.isDestroyed()).length > 1) {
+      if (!confirmCloseWindowWarning(win)) return;
+      closeWindowWithoutPrompt(win);
+      return;
+    }
+    if (!confirmQuitWarning(win)) return;
     requestAppShutdown({ reason: "window_close", exitCode: 0 });
   };
 
@@ -4977,6 +5347,177 @@ app.whenReady().then(async () => {
     });
   });
 
+  const firstOpenWindowProjectRoot = (): string | null => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      const root = windowProjectRoots.get(win.id);
+      if (root) return root;
+    }
+    return null;
+  };
+
+  const registerWindowSession = (win: BrowserWindow, projectRoot: string | null = null): void => {
+    windowProjectRoots.set(win.id, projectRoot ? normalizeProjectRoot(projectRoot) : null);
+    windowProjectBindings.delete(win.id);
+    win.on("focus", () => {
+      setForegroundProject(windowProjectRoots.get(win.id) ?? null);
+      builtInBrowserService.attachToWindow(win);
+    });
+    win.on("closed", () => {
+      const previousRoot = windowProjectRoots.get(win.id) ?? null;
+      windowProjectRoots.delete(win.id);
+      windowProjectBindings.delete(win.id);
+      if (activeProjectRoot === previousRoot) {
+        setForegroundProject(firstOpenWindowProjectRoot());
+      }
+      scheduleProjectContextRebalance();
+    });
+  };
+
+  const getWindowSession = (windowId: number | null): { windowId: number | null; project: ProjectInfo | null; binding: OpenProjectBinding | null } => {
+    if (windowId == null) {
+      const project = projectForRoot(activeProjectRoot);
+      return { windowId: null, project, binding: bindingForLocalProject(project) };
+    }
+    const remoteBinding = windowProjectBindings.get(windowId) ?? null;
+    if (remoteBinding) return { windowId, project: null, binding: remoteBinding };
+    const project = projectForRoot(windowProjectRoots.get(windowId) ?? null);
+    return {
+      windowId,
+      project,
+      binding: bindingForLocalProject(project),
+    };
+  };
+
+  const openAdeWindow = async (
+    args: { projectRoot?: string | null } = {},
+  ): Promise<{ windowId: number | null; project: ProjectInfo | null }> => {
+    const win = await createWindow({
+      logger: getActiveContext().logger,
+      onCreated: (createdWindow) => registerWindowSession(createdWindow, null),
+      onCloseRequested: handleMainWindowCloseRequested,
+    });
+    builtInBrowserService.attachToWindow(win);
+    if (args.projectRoot) {
+      await ipcWindowScope.run(win.id, async () => {
+        await switchProjectFromDialog(args.projectRoot!);
+      });
+    } else {
+      emitProjectChangedToWindow(win.id, null);
+      emitProjectBindingChangedToWindow(win.id, null);
+    }
+    return getWindowSession(win.id);
+  };
+
+  const openProjectFileRequest = async (filePath: string): Promise<void> => {
+    const projectRoot = normalizeProjectPath(filePath);
+    if (!isLikelyRepoRoot(projectRoot)) return;
+    const normalizedRoot = normalizeProjectRoot(projectRoot);
+    const existing = BrowserWindow.getAllWindows()
+      .find((win) => !win.isDestroyed() && windowProjectRoots.get(win.id) === normalizedRoot) ?? null;
+    if (existing) {
+      if (existing.isMinimized()) existing.restore();
+      existing.show();
+      existing.focus();
+      return;
+    }
+    await openAdeWindow({ projectRoot: normalizedRoot });
+  };
+
+  handleProjectOpenFile = (filePath) => {
+    void openProjectFileRequest(filePath).catch((error) => {
+      getActiveContext().logger.warn("project.open_file_request_failed", {
+        filePath,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
+
+  for (const filePath of pendingProjectOpenFiles.splice(0)) {
+    handleProjectOpenFile(filePath);
+  }
+
+  const closeAdeWindow = async (windowId: number | null): Promise<{ closed: boolean }> => {
+    if (windowId == null) return { closed: false };
+    const win = BrowserWindow.fromId(windowId);
+    if (!win || win.isDestroyed()) return { closed: false };
+    closeWindowWithoutPrompt(win);
+    return { closed: true };
+  };
+
+  const installApplicationMenu = (): void => {
+    const template: Electron.MenuItemConstructorOptions[] = [
+      ...(process.platform === "darwin"
+        ? [{
+            label: app.name,
+            submenu: [
+              { role: "about" as const },
+              { type: "separator" as const },
+              { role: "hide" as const },
+              { role: "hideOthers" as const },
+              { role: "unhide" as const },
+              { type: "separator" as const },
+              { role: "quit" as const },
+            ],
+          }]
+        : []),
+      {
+        label: "File",
+        submenu: [
+          {
+            label: "New window",
+            accelerator: "CommandOrControl+N",
+            click: () => {
+              void openAdeWindow();
+            },
+          },
+          { type: "separator" },
+          { role: "close" },
+        ],
+      },
+      {
+        label: "Edit",
+        submenu: [
+          { role: "undo" },
+          { role: "redo" },
+          { type: "separator" },
+          { role: "cut" },
+          { role: "copy" },
+          { role: "paste" },
+          { role: "selectAll" },
+        ],
+      },
+      {
+        label: "View",
+        submenu: [
+          { role: "reload" },
+          { role: "toggleDevTools" },
+          { type: "separator" },
+          { role: "resetZoom" },
+          { role: "zoomIn" },
+          { role: "zoomOut" },
+          { type: "separator" },
+          { role: "togglefullscreen" },
+        ],
+      },
+      {
+        label: "Window",
+        submenu: [
+          { role: "minimize" },
+          { role: "zoom" },
+          ...(process.platform === "darwin"
+            ? [
+                { type: "separator" as const },
+                { role: "front" as const },
+              ]
+            : []),
+        ],
+      },
+    ];
+    Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+  };
+
+  installApplicationMenu();
+
   registerIpc({
     getCtx: () => {
       const ctx = getActiveContext();
@@ -4989,6 +5530,13 @@ app.whenReady().then(async () => {
       return getMobileSyncService();
     },
     resolveSyncService: ensureMobileSyncService,
+    runWithIpcWindow: (event, fn) =>
+      ipcWindowScope.run(BrowserWindow.fromWebContents(event.sender)?.id ?? null, fn),
+    getWindowSession,
+    bindRemoteProject: bindWindowToRemoteProject,
+    localRuntimeConnectionPool: localRuntimePool,
+    createWindow: openAdeWindow,
+    closeWindow: closeAdeWindow,
     switchProjectFromDialog,
     closeCurrentProject,
     closeProjectByPath,
@@ -4996,31 +5544,41 @@ app.whenReady().then(async () => {
     builtInBrowserService,
   });
 
-  // Dogfood and other explicit ADE_PROJECT_ROOT launches need the project
-  // context ready before the renderer boots, otherwise the window can paint
-  // the welcome state and swallow project selection into a confusing no-op.
-  if (startupUserSelected) {
+  // Restore the startup project before the renderer boots so packaged launches
+  // do not flash into the welcome state and lose the previous project context.
+  if (shouldOpenStartupProject && startupProject.rootPath) {
     try {
-      await switchProjectFromDialog(initialCandidate);
+      await switchProjectFromDialog(startupProject.rootPath);
     } catch {
-      setActiveProject(null);
+      setForegroundProject(null);
       dormantContext = createDormantProjectContext();
     }
   }
 
+  const initialWindowProjectRoot = shouldOpenStartupProject ? activeProjectRoot : null;
   const initialWindow = await createWindow({
     logger: getActiveContext().logger,
+    onCreated: (createdWindow) => registerWindowSession(createdWindow, initialWindowProjectRoot),
     onCloseRequested: handleMainWindowCloseRequested,
   });
   builtInBrowserService.attachToWindow(initialWindow);
+  if (shouldShowRuntimeMigrationNotice && process.env.NODE_ENV !== "test") {
+    void dialog.showMessageBox(initialWindow, {
+      type: "info",
+      buttons: ["Got it"],
+      defaultId: 0,
+      title: "ADE now runs in the background",
+      message: "ADE now runs in the background",
+      detail: [
+        "Your machine can stay available for mobile pairing and agent work after the app window closes.",
+        "You can remove the background service by running `ade serve --uninstall-service`.",
+      ].join("\n\n"),
+    }).catch(() => {});
+  }
 
   app.on("activate", async () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      const activatedWindow = await createWindow({
-        logger: getActiveContext().logger,
-        onCloseRequested: handleMainWindowCloseRequested,
-      });
-      builtInBrowserService.attachToWindow(activatedWindow);
+      await openAdeWindow();
     }
   });
 

@@ -14,6 +14,7 @@ const pkg = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
 const productName = pkg.build?.productName ?? pkg.productName ?? "ADE";
 const DEFAULT_MAX_APP_ASAR_BYTES = 900 * 1024 * 1024;
 const DEFAULT_MAX_UNPACKED_BYTES = 600 * 1024 * 1024;
+const REMOTE_RUNTIME_TARGETS = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"];
 
 function readFlag(name) {
   const prefix = `${name}=`;
@@ -120,6 +121,16 @@ async function assertPathMissing(targetPath, description) {
   fail(`Unexpected ${description}: ${targetPath}`);
 }
 
+async function assertExecutable(targetPath, description) {
+  if (process.platform === "win32") {
+    return;
+  }
+  const stat = await fsp.stat(targetPath);
+  if ((stat.mode & 0o111) !== 0o111) {
+    fail(`Expected ${description} to be executable: ${targetPath}`);
+  }
+}
+
 function requireFile(relativePath, label) {
   const absolutePath = path.join(desktopRoot, relativePath);
   if (!fs.existsSync(absolutePath)) {
@@ -163,6 +174,15 @@ function validatePreflight() {
 
   if (!hasExtraResource("ade-cli/bin/ade.cmd")) {
     fail("package.json build.extraResources must ship ade-cli/bin/ade.cmd");
+  }
+  if (!hasExtraResource("ade-cli/bootstrap.cjs")) {
+    fail("package.json build.extraResources must ship ade-cli/bootstrap.cjs");
+  }
+  if (!hasExtraResource("ade-cli/adeRpcServer.cjs")) {
+    fail("package.json build.extraResources must ship ade-cli/adeRpcServer.cjs");
+  }
+  if (!hasExtraResource("ade-cli/tuiClient")) {
+    fail("package.json build.extraResources must ship ade-cli/tuiClient");
   }
   if (!hasExtraResource("ade-cli/install-path.cmd")) {
     fail("package.json build.extraResources must ship ade-cli/install-path.cmd");
@@ -312,6 +332,22 @@ function runCommand(command, args, options = {}) {
   });
 }
 
+async function assertRemoteRuntimeBundle(resourcesPath) {
+  const runtimeRoot = path.join(resourcesPath, "runtime");
+  await assertPathExists(runtimeRoot, "remote runtime bundle directory");
+  for (const target of REMOTE_RUNTIME_TARGETS) {
+    const binaryPath = path.join(runtimeRoot, `ade-${target}`);
+    const nativeArchivePath = path.join(runtimeRoot, `ade-${target}.native.tar.gz`);
+    await assertPathExists(binaryPath, `remote runtime binary ${target}`);
+    await assertExecutable(binaryPath, `remote runtime binary ${target}`);
+    await assertPathExists(nativeArchivePath, `remote runtime native dependency archive ${target}`);
+    const { stdout } = await runCommand("tar", ["-tzf", nativeArchivePath]);
+    if (!stdout.split(/\r?\n/).some((entry) => entry.startsWith("./node_modules/"))) {
+      fail(`Remote runtime native archive for ${target} does not contain ./node_modules/: ${nativeArchivePath}`);
+    }
+  }
+}
+
 async function findFirstNodeAddon(rootPath) {
   const entries = await fsp.readdir(rootPath, { withFileTypes: true });
 
@@ -415,6 +451,9 @@ async function validatePackagedRuntime(appDir) {
   const appAsarPath = path.join(resourcesPath, "app.asar");
   const unpackedPath = path.join(resourcesPath, "app.asar.unpacked");
   const adeCliPath = path.join(resourcesPath, "ade-cli", "cli.cjs");
+  const adeCliBootstrapPath = path.join(resourcesPath, "ade-cli", "bootstrap.cjs");
+  const adeCliRpcPath = path.join(resourcesPath, "ade-cli", "adeRpcServer.cjs");
+  const adeCliTuiPath = path.join(resourcesPath, "ade-cli", "tuiClient", "cli.mjs");
   const adeCliBinPath = path.join(resourcesPath, "ade-cli", "bin", "ade.cmd");
   const adeCliInstallerPath = path.join(resourcesPath, "ade-cli", "install-path.cmd");
   const nodeModulesPath = path.join(unpackedPath, "node_modules");
@@ -438,6 +477,9 @@ async function validatePackagedRuntime(appDir) {
   await assertPathExists(appAsarPath, "app.asar payload");
   await assertPathExists(unpackedPath, "app.asar.unpacked runtime payload");
   await assertPathExists(adeCliPath, "bundled ADE CLI entry");
+  await assertPathExists(adeCliBootstrapPath, "bundled ADE CLI bootstrap entry");
+  await assertPathExists(adeCliRpcPath, "bundled ADE CLI RPC entry");
+  await assertPathExists(adeCliTuiPath, "bundled ADE CLI TUI entry");
   await assertPathExists(adeCliBinPath, "bundled ADE CLI wrapper");
   await assertPathExists(adeCliInstallerPath, "bundled ADE CLI PATH installer");
   await assertPathExists(nodePtyModulePath, "unpacked node-pty module");
@@ -447,6 +489,7 @@ async function validatePackagedRuntime(appDir) {
   await assertPathExists(path.join(onnxRuntimeWinPath, "DirectML.dll"), "Windows DirectML DLL");
   await assertPathExists(smokeScriptPath, "unpacked packaged runtime smoke script");
   await assertPathExists(crsqliteDllPath, "unpacked Windows cr-sqlite extension");
+  await assertRemoteRuntimeBundle(resourcesPath);
   await validatePackageHygiene(resourcesPath);
 
   const nodePtyAddon = await findNodePtyAddon(nodePtyModulePath);

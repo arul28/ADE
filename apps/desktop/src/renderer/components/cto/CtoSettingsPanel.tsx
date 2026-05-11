@@ -7,7 +7,6 @@ import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
 import { inputCls, labelCls, textareaCls } from "./shared/designTokens";
 import { SmartTooltip } from "../ui/SmartTooltip";
-import { OpenclawConnectionPanel } from "./OpenclawConnectionPanel";
 import { getCtoPersonalityPreset } from "./identityPresets";
 import { CtoPromptPreview } from "./CtoPromptPreview";
 
@@ -82,12 +81,11 @@ export function CtoSettingsPanel({
     finally { setMemorySaving(false); }
   };
 
-  const [settingsTab, setSettingsTab] = useState<"identity" | "brief" | "integrations">("identity");
+  const [settingsTab, setSettingsTab] = useState<"identity" | "brief">("identity");
 
   const SUB_TABS = [
     { id: "identity" as const, label: "Identity", tooltip: "CTO personality, model, and reasoning configuration." },
     { id: "brief" as const, label: "Brief", tooltip: "Project summary, conventions, and focus areas that persist across sessions." },
-    { id: "integrations" as const, label: "Integrations", tooltip: "OpenClaw bridge configuration." },
   ];
 
   return (
@@ -245,17 +243,6 @@ export function CtoSettingsPanel({
               </div>
             </div>
           </>
-        )}
-
-        {/* ── Integrations sub-tab ── */}
-        {settingsTab === "integrations" && (
-          <div className="space-y-4">
-            {/* OpenClaw Bridge card */}
-            <div className="rounded-xl border border-white/[0.07] bg-[linear-gradient(180deg,rgba(26,24,48,0.7),rgba(18,16,34,0.8))] backdrop-blur-[20px] shadow-card p-4" style={{ borderLeft: "3px solid #FB7185" }}>
-              <div className="text-xs font-semibold text-fg mb-3">OpenClaw Bridge</div>
-              <OpenclawConnectionPanel identity={identity} onSaveIdentity={onSaveIdentity} />
-            </div>
-          </div>
         )}
       </div>
     </div>

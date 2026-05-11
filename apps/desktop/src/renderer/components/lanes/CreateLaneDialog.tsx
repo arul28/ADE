@@ -489,112 +489,112 @@ export function CreateLaneDialog({
 
         {/* Advanced — Linear issue + template */}
         <details open className="group rounded-xl border border-white/[0.06] bg-white/[0.02] open:bg-white/[0.03]">
-            <summary className="flex cursor-pointer select-none items-center justify-between gap-3 rounded-xl px-4 py-2.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-fg/70 transition-colors hover:text-fg [&::-webkit-details-marker]:hidden">
-              <span className="flex items-center gap-2">
-                <CaretDown size={10} weight="bold" className="transition-transform group-open:rotate-0 -rotate-90" />
-                Advanced
-              </span>
-              {onNavigateToTemplates ? (
+          <summary className="flex cursor-pointer select-none items-center justify-between gap-3 rounded-xl px-4 py-2.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-fg/70 transition-colors hover:text-fg [&::-webkit-details-marker]:hidden">
+            <span className="flex items-center gap-2">
+              <CaretDown size={10} weight="bold" className="transition-transform group-open:rotate-0 -rotate-90" />
+              Advanced
+            </span>
+            {onNavigateToTemplates ? (
+              <button
+                type="button"
+                className="text-[10px] font-medium normal-case tracking-normal text-muted-fg/60 transition-colors hover:text-accent"
+                disabled={busy || laneCreated}
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onOpenChange(false);
+                  onNavigateToTemplates();
+                }}
+              >
+                {templates.length > 0 ? "Manage templates" : "Create template"}
+              </button>
+            ) : null}
+          </summary>
+          <div className="space-y-3 px-4 pb-4 pt-1">
+            <div>
+              <span className={LABEL_CLASS_NAME}>Linear issue</span>
+              {selectedLinearIssue ? (
+                <>
+                  <LinearIssueSummaryCard
+                    issue={selectedLinearIssue}
+                    branchName={selectedLinearBranchName}
+                    branchConflict={selectedLinearBranchConflict}
+                    onClear={() => setSelectedLinearIssue(null)}
+                  />
+                  <div className="mt-2 flex justify-end">
+                    <button
+                      type="button"
+                      disabled={busy || laneCreated}
+                      onClick={() => setIssuePickerOpen(true)}
+                      className="inline-flex h-7 items-center gap-1.5 rounded-md border px-2.5 text-[11px] font-medium transition-colors disabled:opacity-50"
+                      style={{
+                        borderColor: LINEAR_BRAND.borderSubtle,
+                        background: LINEAR_BRAND.surface,
+                        color: LINEAR_BRAND.text,
+                      }}
+                    >
+                      <LinearMark size={11} />
+                      Change issue
+                    </button>
+                  </div>
+                </>
+              ) : (
                 <button
                   type="button"
-                  className="text-[10px] font-medium normal-case tracking-normal text-muted-fg/60 transition-colors hover:text-accent"
+                  onClick={() => setIssuePickerOpen(true)}
                   disabled={busy || laneCreated}
-                  onClick={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    onOpenChange(false);
-                    onNavigateToTemplates();
+                  className="mt-2 flex w-full items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+                  style={{
+                    borderColor: LINEAR_BRAND.borderSubtle,
+                    background: LINEAR_BRAND.surface,
                   }}
                 >
-                  {templates.length > 0 ? "Manage templates" : "Create template"}
-                </button>
-              ) : null}
-            </summary>
-            <div className="space-y-3 px-4 pb-4 pt-1">
-              <div>
-                <span className={LABEL_CLASS_NAME}>Linear issue</span>
-                {selectedLinearIssue ? (
-                  <>
-                    <LinearIssueSummaryCard
-                      issue={selectedLinearIssue}
-                      branchName={selectedLinearBranchName}
-                      branchConflict={selectedLinearBranchConflict}
-                      onClear={() => setSelectedLinearIssue(null)}
-                    />
-                    <div className="mt-2 flex justify-end">
-                      <button
-                        type="button"
-                        disabled={busy || laneCreated}
-                        onClick={() => setIssuePickerOpen(true)}
-                        className="inline-flex h-7 items-center gap-1.5 rounded-md border px-2.5 text-[11px] font-medium transition-colors disabled:opacity-50"
-                        style={{
-                          borderColor: LINEAR_BRAND.borderSubtle,
-                          background: LINEAR_BRAND.surface,
-                          color: LINEAR_BRAND.text,
-                        }}
-                      >
-                        <LinearMark size={11} />
-                        Change issue
-                      </button>
-                    </div>
-                  </>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => setIssuePickerOpen(true)}
-                    disabled={busy || laneCreated}
-                    className="mt-2 flex w-full items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60"
-                    style={{
-                      borderColor: LINEAR_BRAND.borderSubtle,
-                      background: LINEAR_BRAND.surface,
-                    }}
+                  <span
+                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md"
+                    style={{ background: LINEAR_BRAND.surfaceHover, color: LINEAR_BRAND.primaryBright }}
                   >
-                    <span
-                      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md"
-                      style={{ background: LINEAR_BRAND.surfaceHover, color: LINEAR_BRAND.primaryBright }}
-                    >
-                      <LinearMark size={15} />
+                    <LinearMark size={15} />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-sm font-semibold text-fg">Connect a Linear issue</span>
+                    <span className="mt-0.5 block text-[11px] text-muted-fg/65">
+                      Auto-names the branch and links the lane to your ticket.
                     </span>
-                    <span className="min-w-0 flex-1">
-                      <span className="block text-sm font-semibold text-fg">Connect a Linear issue</span>
-                      <span className="mt-0.5 block text-[11px] text-muted-fg/65">
-                        Auto-names the branch and links the lane to your ticket.
-                      </span>
-                    </span>
-                    <CaretRight size={14} className="shrink-0" style={{ color: LINEAR_BRAND.textMuted }} />
-                  </button>
-                )}
-              </div>
-              <div>
-                <span className={LABEL_CLASS_NAME}>Template</span>
-                {templates.length > 0 ? (
-                  <>
-                    <select
-                      value={selectedTemplateId}
-                      onChange={(e) => setSelectedTemplateId(e.target.value)}
-                      className={SELECT_CLASS_NAME}
-                      disabled={busy || laneCreated}
-                      aria-label="Template"
-                    >
-                      <option value="">None</option>
-                      {templates.map((t) => (
-                        <option key={t.id} value={t.id}>
-                          {t.name}{t.description ? ` — ${t.description}` : ""}
-                        </option>
-                      ))}
-                    </select>
-                    {selectedTemplate?.description ? (
-                      <div className="mt-1.5 text-[11px] text-muted-fg/60">{selectedTemplate.description}</div>
-                    ) : null}
-                  </>
-                ) : (
-                  <div className="mt-2 text-xs text-muted-fg/50">
-                    No templates yet.
-                  </div>
-                )}
-              </div>
+                  </span>
+                  <CaretRight size={14} className="shrink-0" style={{ color: LINEAR_BRAND.textMuted }} />
+                </button>
+              )}
             </div>
-          </details>
+            <div>
+              <span className={LABEL_CLASS_NAME}>Template</span>
+              {templates.length > 0 ? (
+                <>
+                  <select
+                    value={selectedTemplateId}
+                    onChange={(e) => setSelectedTemplateId(e.target.value)}
+                    className={SELECT_CLASS_NAME}
+                    disabled={busy || laneCreated}
+                    aria-label="Template"
+                  >
+                    <option value="">None</option>
+                    {templates.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name}{t.description ? ` — ${t.description}` : ""}
+                      </option>
+                    ))}
+                  </select>
+                  {selectedTemplate?.description ? (
+                    <div className="mt-1.5 text-[11px] text-muted-fg/60">{selectedTemplate.description}</div>
+                  ) : null}
+                </>
+              ) : (
+                <div className="mt-2 text-xs text-muted-fg/50">
+                  No templates yet.
+                </div>
+              )}
+            </div>
+          </div>
+        </details>
 
         {error ? (
           <div className="rounded-xl border border-red-500/25 bg-red-500/10 px-3 py-2 text-sm text-red-200">

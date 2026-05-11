@@ -9,9 +9,29 @@ This feature sits at the boundary between the filesystem and everything
 else: context packs use it to discover docs, the chat surface links
 back to it for "open this file", and lanes surface files by worktree.
 
+## Where this runs
+
+File listing, atomic writes, the cross-file search index, and the
+chokidar-backed file watcher all run inside the **active runtime**
+for the window's project binding — the local ADE daemon for
+local-bound windows and the SSH-attached remote runtime for
+remote-bound windows. The Monaco editor in the renderer is purely
+client-side; every byte it reads or writes flows through
+`window.ade.files.*` in `apps/desktop/src/preload/preload.ts`, which
+calls `callProjectRuntimeActionIfBound("file", …)` first and only
+falls through to the legacy in-process IPC handlers when no runtime
+is bound. Watcher events arrive over the runtime's event stream
+(category `"runtime"`) and are dispatched into renderer subscribers
+through the same preload pump that powers lane / pty / process
+events. Remote-bound desktop windows therefore browse and edit files
+on the remote machine; the file tree, search results, and watcher
+events all reflect the remote worktree.
+
 ## Source file map
 
-Main process:
+Runtime services back the canonical implementation. The desktop
+`apps/desktop/src/main/services/files/` files below stay as fallback
+targets for the legacy IPC path.
 
 - `apps/desktop/src/main/services/files/fileService.ts` — directory
   listing, atomic writes, quick open, cross-file search, path safety.
@@ -209,9 +229,13 @@ whether a directory should show the "has changes" dot.
 The preload bridge (`apps/desktop/src/preload/preload.ts`) exposes
 `window.ade.files` and `window.ade.diff`; nothing from `node:fs` or
 `node:path` leaks into the renderer. All path resolution for file
-writes and workspace roots happens in the main process through
-`resolvePathWithinRoot`, which refuses `..` escapes, null bytes, and
-`.git` internals.
+writes and workspace roots happens server-side — inside the active
+runtime daemon for runtime-routed calls and inside the desktop main
+process for the fallback IPC path — through `resolvePathWithinRoot`,
+which refuses `..` escapes, null bytes, and `.git` internals. Remote
+runtimes apply the same path-safety primitives on the remote host, so
+the trust boundary still holds when the renderer is browsing files on
+a remote machine.
 
 For deeper detail on the watcher + trust boundary, see
 [file-watcher-and-trust.md](./file-watcher-and-trust.md).

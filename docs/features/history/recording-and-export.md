@@ -6,6 +6,15 @@ through the recording paths, how transcripts are serialised for
 history-adjacent features, and how the export flow converts rows to
 CSV/JSON.
 
+The operationService and gitOperationsService both run inside the
+**active ADE runtime** (local daemon for local-bound windows,
+SSH-attached remote runtime for remote-bound windows). The same source
+files are also loaded by the desktop main process for the legacy
+in-process IPC fallback path. Export-to-disk is split: the runtime
+returns the row payload, then the desktop main process writes the
+file through the native save dialog (the file always lands on the
+user's local machine).
+
 ## Source file map
 
 | Path | Role |

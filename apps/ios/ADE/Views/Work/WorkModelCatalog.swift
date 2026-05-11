@@ -280,14 +280,14 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
         key: "lmstudio",
         displayName: "LM Studio",
         models: [
-          WorkModelOption(id: "opencode/lmstudio/auto", displayName: "LM Studio · Auto", tier: .fast, tagline: "Local LM Studio runtime", provider: "lmstudio"),
+          WorkModelOption(id: "opencode/lmstudio/auto", displayName: "LM Studio · Auto", tier: .fast, tagline: "Local LM Studio provider", provider: "lmstudio"),
         ]
       ),
       WorkModelProvider(
         key: "ollama",
         displayName: "Ollama",
         models: [
-          WorkModelOption(id: "opencode/ollama/auto", displayName: "Ollama · Auto", tier: .fast, tagline: "Local Ollama runtime", provider: "ollama"),
+          WorkModelOption(id: "opencode/ollama/auto", displayName: "Ollama · Auto", tier: .fast, tagline: "Local Ollama provider", provider: "ollama"),
         ]
       )
     ]
@@ -420,7 +420,7 @@ private func workCatalogModelOption(
   } else {
     var parts: [String] = []
     if model.isDefault {
-      parts.append("Default on the paired host")
+      parts.append("Default on the paired machine")
     }
     if model.supportsReasoning == true {
       parts.append("Reasoning")
@@ -428,7 +428,7 @@ private func workCatalogModelOption(
     if model.supportsTools == true {
       parts.append("Tools")
     }
-    tagline = parts.isEmpty ? "Available on the paired host" : parts.joined(separator: " · ")
+    tagline = parts.isEmpty ? "Available on the paired machine" : parts.joined(separator: " · ")
   }
 
   return WorkModelOption(
@@ -754,7 +754,7 @@ private func workDynamicModelOption(
   } else {
     var parts: [String] = []
     if model.isDefault {
-      parts.append("Default on the paired host")
+      parts.append("Default on the paired machine")
     }
     if model.supportsReasoning == true {
       parts.append("Reasoning")
@@ -762,7 +762,7 @@ private func workDynamicModelOption(
     if model.supportsTools == true {
       parts.append("Tools")
     }
-    tagline = parts.isEmpty ? "Available on the paired host" : parts.joined(separator: " · ")
+    tagline = parts.isEmpty ? "Available on the paired machine" : parts.joined(separator: " · ")
   }
 
   return WorkModelOption(
@@ -831,7 +831,7 @@ private func injectCurrentWorkModelIfNeeded(
         id: currentModelId,
         displayName: currentModelId,
         tier: .balanced,
-        tagline: "In use on the paired host",
+        tagline: "In use on the paired machine",
         provider: workModelBrandKey(topLevelProvider: targetGroupKey, providerKey: providerKey)
       )
       if let groupIndex = groups.firstIndex(where: { $0.key == targetGroupKey }) {

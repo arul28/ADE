@@ -2,7 +2,7 @@
 
 The CTO is ADE's persistent, project-level operator identity. One identity per project, not a family of rotating chats or a constantly running daemon. It owns persistent identity, shared project understanding, worker management, Linear dispatch and sync, and the operator-facing chat surface.
 
-The runtime is organized around one contract: the CTO tab should be usable as a daily chat surface without forcing every optional subsystem (Linear, OpenClaw, realtime ingress, budget telemetry) to fully hydrate on mount.
+The runtime is organized around one contract: the CTO tab should be usable as a daily chat surface without forcing every optional subsystem (Linear, realtime ingress, budget telemetry) to fully hydrate on mount.
 
 ## Source file map
 
@@ -14,7 +14,7 @@ The runtime is organized around one contract: the CTO tab should be usable as a 
 - `workerBudgetService.ts` — budget snapshots per worker and CTO org.
 - `workerRevisionService.ts` — worker config revision history.
 - `workerTaskSessionService.ts` — task-scoped worker sessions.
-- `workerAdapterRuntimeService.ts` — adapter lifecycle for claude-local / codex-local / process / openclaw-webhook.
+- `workerAdapterRuntimeService.ts` — adapter lifecycle for the three supported worker adapters: `claude-local`, `codex-local`, and `process`.
 - `linearCredentialService.ts` — personal API key storage, token status.
 - `linearOAuthService.ts` — PKCE loopback OAuth flow on port 19836.
 - `linearClient.ts` — Linear GraphQL client (shared by desktop and headless ADE CLI).
@@ -29,26 +29,24 @@ The runtime is organized around one contract: the CTO tab should be usable as a 
 - `linearDispatcherService.ts` — launches target runs (employee_session, worker_run, mission, pr_resolution, review_gate), tracks run state, emits events.
 - `linearCloseoutService.ts` — success/failure Linear state transitions, comments, proof attachment.
 - `linearOutboundService.ts` — outbound Linear writes (state, comments, assignees).
-- `openclawBridgeService.ts` — optional OpenClaw device pairing and bridge runtime state.
 
-### Headless parity
+### Runtime daemon parity
 
-- `apps/ade-cli/src/headlessLinearServices.ts` — wires the same CTO Linear services (client, tracker, template, workflow file, flow policy, routing, intake, outbound, closeout, dispatcher, sync, ingress) into the headless ADE CLI so `ADE CLI` acts as a drop-in Linear-capable runtime, not a read-only stub.
+- `apps/ade-cli/src/headlessLinearServices.ts` — wires the same CTO Linear services (client, tracker, template, workflow file, flow policy, routing, intake, outbound, closeout, dispatcher, sync, ingress) into the `ade serve` runtime daemon, plus a headless `workerHeartbeatService`, `workerTaskSessionService`, and the supporting `fileService` / `processService` / `prService` / `automationSecretService` instances the dispatcher needs to actually launch targets. The CTO is no longer "desktop-only" — every Linear capability runs identically inside the daemon, so a headless host can intake issues, dispatch worker runs, and close out tickets with the same code path the desktop renderer drives.
 
 ### Renderer (apps/desktop/src/renderer/components/cto/)
 
-- `CtoPage.tsx` — the `/cto` shell. Four tabs: Chat, Team, Workflows, Settings. Lazy-loads history, budget, and external-ADE CLI registry.
+- `CtoPage.tsx` — the `/cto` shell. Four tabs: Chat, Team, Workflows, Settings. Lazy-loads history and budget data.
 - `AgentSidebar.tsx` — memoized worker tree; budget footer isolated so budget refresh does not rerender siblings.
 - `OnboardingBanner.tsx` / `OnboardingWizard.tsx` — minimal first-run flow: personality preset only.
 - `IdentityEditor.tsx` — editable identity surface (personality preset + custom overlay + model). No longer a full identity-prompt editor.
-- `CtoSettingsPanel.tsx` — identity, core memory (project summary / conventions / preferences / focus / notes), external-ADE CLI access policy, onboarding reset.
+- `CtoSettingsPanel.tsx` — identity, core memory (project summary / conventions / preferences / focus / notes), onboarding reset.
 - `CtoPromptPreview.tsx` — three-section prompt preview: doctrine, personality overlay, memory model.
 - `TeamPanel.tsx` — worker editor and detail view.
 - `WorkerCreationWizard.tsx` — two-step wizard: template selection then configure.
 - `WorkerActivityFeed.tsx` — recent worker sessions and runs.
 - `LinearConnectionPanel.tsx` — API key and OAuth connect surface.
 - `LinearSyncPanel.tsx` / `LinearSyncPanel.test.ts` — workflow list, sync dashboard, run timeline, "Watch It Live" monitor.
-- `OpenclawConnectionPanel.tsx` — advanced-only OpenClaw pairing.
 - `identityPresets.ts` — re-exports from `shared/ctoPersonalityPresets`.
 - `shared/designTokens.ts` — CTO-wide class patterns (`cardCls`, `stageCardCls`, `pipelineCanvasCls`, ACCENT palette, `WORKER_TEMPLATES`).
 - `shared/AgentStatusBadge.tsx`, `shared/ConnectionStatusDot.tsx`, `shared/StepWizard.tsx`, `shared/TimelineEntry.tsx` — shared visual building blocks.
@@ -91,12 +89,6 @@ On disk under `.ade/cto/`:
 - `MEMORY.md` — long-term CTO brief (summary, conventions, preferences, active focus, notes).
 - `CURRENT.md` — current working context (recent sessions, worker activity).
 - `daily/YYYY-MM-DD.md` — append-only daily logs via `appendDailyLog`, `readDailyLog`, `listDailyLogs`.
-- `openclaw-device.json` — durable paired-device identity (if OpenClaw connected).
-
-Under `.ade/cache/openclaw/` (runtime, not git-tracked):
-
-- bridge history, outbox, route cache, idempotency data.
-
 Portability rule (Phase 6 W3): identity YAML and the project memory schema are git-tracked; runtime memory files, daily logs, and session state are local or ADE-sync only.
 
 ### Tab model (`CtoPage.tsx`)
@@ -106,7 +98,7 @@ Portability rule (Phase 6 W3): identity YAML and the project memory schema are g
 | Chat | CTO session, subordinate activity summary | Immediate |
 | Team | Agents, revisions, worker core memory, worker runs | On tab activation |
 | Workflows | `LinearSyncPanel` (dashboard + run detail + pipeline) | On tab activation; refresh debounced |
-| Settings | Identity, core memory, session logs, external-ADE CLI registry, OpenClaw | On tab activation |
+| Settings | Identity, core memory, session logs | On tab activation |
 
 The sidebar worker tree is precomputed and memoized. The budget footer is isolated so a budget refresh does not rerender the tree.
 
@@ -152,8 +144,8 @@ The environment knowledge block inside the system prompt teaches intent-to-tool 
 - Linear sync short-circuits when no workflows are enabled and no runs are active.
 - Ingress only auto-starts when realtime config is actually present.
 - Management surfaces (Team, Workflows, Settings) hydrate lazily without weakening persistent identity.
-- OpenClaw is advanced config, not first-run.
-- Headless ADE CLI uses the same Linear services, not a read-only fake.
+- The `ade serve` runtime daemon uses the same Linear services as the desktop renderer; the CTO is not a desktop-only feature.
+- Worker adapter type is one of `claude-local`, `codex-local`, or `process`. There are no other adapter types — anything that needs to wrap an external service does so as a `process` adapter.
 
 ## Gotchas and fragile areas
 
@@ -161,4 +153,3 @@ The environment knowledge block inside the system prompt teaches intent-to-tool 
 - **Identity re-injection after compaction** happens inside `refreshReconstructionContext()` — changes to the doctrine / personality / memory model or capability manifest must keep the preview and runtime in sync. The capability manifest is the single place to keep aligned with tool registrations.
 - **Workflow match precedence** runs by `priority` descending; values inside a trigger group are OR-ed, populated groups are AND-ed. A `watchOnly` route logs a match without launching.
 - **Dynamic employee delegation** — when routing resolves no employee, runs enter `awaiting_delegation` instead of dispatching to an invalid target. Do not assume dispatch always happens.
-- **OpenClaw runtime migration** — legacy repo-visible runtime files are migrated into `.ade/cache/openclaw/` on startup. Keep the bridge service tolerant of missing-but-migratable files.

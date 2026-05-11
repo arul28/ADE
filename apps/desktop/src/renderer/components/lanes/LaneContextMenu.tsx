@@ -1,6 +1,7 @@
 import React from "react";
 import type { LaneSummary } from "../../../shared/types";
 import { revealLabel } from "../../lib/platform";
+import { useAppStore } from "../../state/appStore";
 import { COLORS, MONO_FONT } from "./laneDesignTokens";
 import { LANE_COLOR_PALETTE, colorsInUse } from "./laneColorPalette";
 
@@ -82,6 +83,7 @@ export function LaneContextMenu({
   onBatchManage: (laneIds: string[]) => void;
   onAppearanceChanged?: () => void | Promise<void>;
 }) {
+  const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
   const ctxLane = lanesById.get(laneContextMenu.laneId) ?? null;
   const isInSplit = visibleLaneIds.includes(laneContextMenu.laneId);
   const splitCount = visibleLaneIds.length;
@@ -134,20 +136,26 @@ export function LaneContextMenu({
             dataTour="lanes.manageLane"
             onClick={() => {
               onClose();
+              if (isRemoteProject) {
+                window.ade.app.writeClipboardText(ctxLane.worktreePath).catch(() => {});
+                return;
+              }
               window.ade.app.revealPath(ctxLane.worktreePath).catch(() => {});
             }}
           >
-            {revealLabel}
+            {isRemoteProject ? "Copy Remote Path" : revealLabel}
           </HoverButton>
-          <HoverButton
-            style={menuItemStyle}
-            onClick={() => {
-              onClose();
-              navigator.clipboard.writeText(ctxLane.worktreePath).catch(() => {});
-            }}
-          >
-            Copy Path
-          </HoverButton>
+          {!isRemoteProject ? (
+            <HoverButton
+              style={menuItemStyle}
+              onClick={() => {
+                onClose();
+                window.ade.app.writeClipboardText(ctxLane.worktreePath).catch(() => {});
+              }}
+            >
+              Copy Path
+            </HoverButton>
+          ) : null}
         </>
       ) : null}
 

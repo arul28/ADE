@@ -7,6 +7,30 @@ loaded projects. The same surface (`RunPage`) is also the Run tab,
 because "the project's home" and "the project's execution substrate"
 have converged.
 
+## Where this runs
+
+Project metadata reads (`window.ade.project.*`), process/test
+definitions, runtime queries, and command lifecycle (`start`, `stop`,
+`restart`, `startStack`, `startGroup`, `getLogTail`) all flow through
+`apps/desktop/src/preload/preload.ts`, which calls
+`callProjectRuntimeActionIfBound("process", …)` /
+`callProjectRuntimeActionOr("ade_project", …)` /
+`callProjectRuntimeActionOr("ai", …)` first for the **active runtime**
+(local ADE daemon for local-bound windows, SSH-attached remote runtime
+for remote-bound windows) and falls through to the legacy in-process
+IPC handlers when no runtime is bound. Managed processes therefore
+spawn on whichever machine owns the lane's worktree: the local
+machine for local bindings, the remote host for remote bindings. The
+welcome screen, project icons, recent project list, project browse /
+create / clone flows, and the Add Project chooser still talk to the
+desktop main process directly because they precede a project binding
+(no runtime is connected yet) — they live under `window.ade.project.*`
+and are handled by the desktop's `projectBrowserService`,
+`projectScaffoldService`, `projectDetailService`, and
+`projectIconResolver`. Multi-window: each desktop window has its own
+project context, so the per-lane dashboard for window A reflects
+window A's binding regardless of what is open in window B.
+
 ## Source file map
 
 Renderer:
@@ -49,7 +73,13 @@ Related pages for the broader "home" experience:
   `RunPage` becomes meaningful. See
   [../onboarding-and-settings/first-run.md](../onboarding-and-settings/first-run.md).
 
-Main process (the substrate):
+Backing services. The canonical lifecycle services run inside the
+**active runtime** (local daemon or SSH-attached remote runtime); the
+desktop main process keeps the same files as fallback targets for the
+in-process IPC path. The pre-binding scaffold services
+(`projectBrowserService`, `projectScaffoldService`,
+`projectDetailService`, `projectIconResolver`) only run in the desktop
+main process because they execute before a runtime binding exists.
 
 - `apps/desktop/src/main/services/processes/processService.ts` —
   lifecycle, readiness, restart. See
@@ -65,7 +95,9 @@ Main process (the substrate):
 - `apps/desktop/src/main/services/agentTools/` — detects installed
   agent CLI tools (Claude Code, Codex, Cursor, Aider, Continue).
 - `apps/desktop/src/main/services/projects/projectBrowserService.ts`
-  — serves the Command Palette project browser: expands `~`, handles
+  — desktop-only (runs before any project binding so it stays on the
+  Electron main process). Serves the Command Palette project browser:
+  expands `~`, handles
   platform-appropriate relative / absolute paths, lists matching
   subdirectories with `.git` detection (concurrency-limited, capped at
   `limit` with 500 max), and resolves any exact-directory match up to

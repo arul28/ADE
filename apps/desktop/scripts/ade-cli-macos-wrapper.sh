@@ -13,6 +13,26 @@ done
 
 SCRIPT_DIR=$(CDPATH= cd -P -- "$(dirname -- "$SOURCE")" && pwd)
 CLI_JS=${ADE_CLI_JS:-"$SCRIPT_DIR/../cli.cjs"}
+CLI_NAME=$(basename -- "$SOURCE")
+CHANNEL=${ADE_PACKAGE_CHANNEL:-}
+if [ -z "$CHANNEL" ] && [ -f "$SCRIPT_DIR/../channel" ]; then
+  CHANNEL=$(tr -d '[:space:]' < "$SCRIPT_DIR/../channel")
+fi
+
+case "$CLI_NAME:$CHANNEL" in
+  ade-alpha:*|ade:alpha)
+    export ADE_PACKAGE_CHANNEL=${ADE_PACKAGE_CHANNEL:-alpha}
+    export ADE_HOME=${ADE_HOME:-"$HOME/.ade-alpha"}
+    export ADE_DESKTOP_APP_NAME=${ADE_DESKTOP_APP_NAME:-"ADE Alpha"}
+    export ADE_DISABLE_RUNTIME_SERVICE_INSTALL=${ADE_DISABLE_RUNTIME_SERVICE_INSTALL:-1}
+    ;;
+  ade-beta:*|ade:beta)
+    export ADE_PACKAGE_CHANNEL=${ADE_PACKAGE_CHANNEL:-beta}
+    export ADE_HOME=${ADE_HOME:-"$HOME/.ade-beta"}
+    export ADE_DESKTOP_APP_NAME=${ADE_DESKTOP_APP_NAME:-"ADE Beta"}
+    export ADE_DISABLE_RUNTIME_SERVICE_INSTALL=${ADE_DISABLE_RUNTIME_SERVICE_INSTALL:-1}
+    ;;
+esac
 
 if [ -n "${ADE_CLI_NODE:-}" ]; then
   exec "$ADE_CLI_NODE" "$CLI_JS" "$@"

@@ -97,13 +97,15 @@ and a footer that contains the composer.
 - **File attach picker** opened with the `@` key. Runs a debounced
   `ade.agentChat.fileSearch` and discards stale results.
 - **Slash commands.** Local commands (`/clear`, `/login`) are always
-  available and resolved renderer-side. SDK commands and project-local
-  Claude commands discovered by `claudeSlashCommandDiscovery` (from
-  `.claude/commands/**` and `~/.claude/commands/**`, including
-  `user-invocable: true` skills) merge in through
-  `ade.agentChat.slashCommands`. Only `/clear` with `source: "local"` is
-  intercepted client-side — every other command is sent to the agent
-  verbatim so provider-native commands still flow. The composer also
+  available and resolved renderer-side. SDK commands and project/user
+  Claude commands discovered by `claudeSlashCommandDiscovery` merge in
+  through `ade.agentChat.slashCommands`; discovery walks ancestor
+  `.claude` roots and reads `.claude/commands`, `~/.claude/commands`,
+  `.claude/skills/*/SKILL.md`, and `~/.claude/skills/*/SKILL.md` command
+  metadata so both command files and local skills can appear in the
+  picker. Only `/clear` with `source: "local"` is intercepted client-side
+  — every other command is sent to the agent verbatim so provider-native
+  commands still flow. The composer also
   decides whether a leading-slash draft is a command or just a sentence
   via `isProviderSlashCommandInput` (heuristics in
   `shared/chatSlashCommands.ts`): `"/rebase the lane?"` is treated as

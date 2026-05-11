@@ -20,6 +20,9 @@ struct ConnectionSettingsView: View {
             .environmentObject(syncService)
             .padding(.horizontal, 16)
 
+          SettingsTailscaleHelpSection()
+            .padding(.horizontal, 16)
+
           SettingsNotificationsSection(
             onPreferencesChanged: { prefs in
               syncService.uploadNotificationPrefs(prefs)
@@ -76,14 +79,6 @@ struct ConnectionSettingsView: View {
       .environmentObject(syncService)
       .presentationDetents([.medium, .large])
 
-    case .qr:
-      ScanQRSheet { payload in
-        presentedSheet = nil
-        pinPreset = .qr(payload)
-      }
-      .environmentObject(syncService)
-      .presentationDetents([.large])
-
     case .manual:
       ManualEntrySheet { host, port in
         presentedSheet = nil
@@ -91,6 +86,39 @@ struct ConnectionSettingsView: View {
       }
       .presentationDetents([.medium])
     }
+  }
+}
+
+private struct SettingsTailscaleHelpSection: View {
+  var body: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      HStack(alignment: .center, spacing: 10) {
+        Image(systemName: "network")
+          .font(.system(size: 15, weight: .semibold))
+          .foregroundStyle(ADEColor.purpleAccent)
+          .frame(width: 28, height: 28)
+          .background(ADEColor.purpleAccent.opacity(0.14), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        VStack(alignment: .leading, spacing: 2) {
+          Text("Away from home")
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+          Text("Install Tailscale on this iPhone and your ADE machine. Once both are on the same tailnet, the machine appears here like it does on local Wi-Fi.")
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+      }
+    }
+    .padding(14)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(
+      RoundedRectangle(cornerRadius: 18, style: .continuous)
+        .fill(Color.white.opacity(0.045))
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 18, style: .continuous)
+        .strokeBorder(Color.white.opacity(0.08), lineWidth: 0.8)
+    )
   }
 }
 

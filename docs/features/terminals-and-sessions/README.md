@@ -5,9 +5,25 @@ single `terminal_sessions` row and surfaced in the Work view, lane panels, and
 the Sessions sidebar. The session model is the backbone for transcripts,
 deltas, lane association, and resume flows.
 
-The main-process services for this feature are large and have been repeatedly
-rewritten: `ptyService.ts`, `sessionService.ts`, and `processService.ts`.
-Treat them as fragile and re-read whenever wiring changes.
+PTYs are owned by the **active ADE runtime** for the window's project
+binding. Local-bound windows spawn PTYs through the local ADE daemon
+(`ade serve`); remote-bound windows spawn PTYs on the remote host via
+the SSH-attached runtime, with stdin/stdout bytes streaming over the
+SSH-backed RPC. The renderer's `window.ade.pty.*`, `window.ade.sessions.*`,
+`window.ade.processes.*`, and `window.ade.terminal.*` calls in
+`apps/desktop/src/preload/preload.ts` route through
+`callProjectRuntimeActionIfBound("pty", …)` /
+`callProjectRuntimeActionIfBound("session", …)` /
+`callProjectRuntimeActionIfBound("process", …)` first and fall back to
+the legacy in-process IPC handlers (the desktop's `ptyService.ts`,
+`sessionService.ts`, `processService.ts`) only when no runtime is
+bound. The same source files run on both paths. The macOS VM controls
+(`window.ade.macosVm.*`) are local-only — they require local hardware
+access and are intentionally disabled for remote-bound windows.
+
+These services are large and have been repeatedly rewritten:
+`ptyService.ts`, `sessionService.ts`, and `processService.ts`. Treat
+them as fragile and re-read whenever wiring changes.
 
 `processService` keeps one runtime record per *invocation*, not per
 (lane, process) pair. A single `ProcessDefinition` can have many concurrent
@@ -17,7 +33,8 @@ snapshot (the most recent run) is what lives in the `process_runtime` table.
 
 ## Source file map
 
-Main process:
+Service files. Same sources back both the runtime daemon and the
+desktop fallback IPC path.
 
 - `apps/desktop/src/main/services/pty/ptyService.ts` — PTY lifecycle,
   transcript capture (capped at `MAX_TRANSCRIPT_BYTES = 64 MB`), runtime

@@ -51,8 +51,8 @@ const CLI_TOOLS: Array<{
   {
     cli: "claude",
     label: "Claude Code",
-    description: "Anthropic CLI subscription",
-    loginCmd: "claude auth login",
+    description: "Claude Agent SDK runtime",
+    loginCmd: "claude auth login or set ANTHROPIC_API_KEY",
     installHint: "npm install -g @anthropic-ai/claude-code",
   },
   {

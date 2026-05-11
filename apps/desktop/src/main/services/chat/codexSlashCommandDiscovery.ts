@@ -123,10 +123,24 @@ function resolvePromptFile(promptsDir: string, commandName: string): string | nu
 }
 
 function codexPromptRoots(cwd: string): string[] {
-  return [
-    path.join(os.homedir(), ".codex", "prompts"),
-    path.join(cwd, ".codex", "prompts"),
-  ];
+  const roots: string[] = [path.join(os.homedir(), ".codex", "prompts")];
+  const seen = new Set<string>(roots);
+  const home = os.homedir();
+  let current = path.resolve(cwd);
+  let depth = 0;
+  while (depth < 25) {
+    const candidate = path.join(current, ".codex", "prompts");
+    if (!seen.has(candidate)) {
+      seen.add(candidate);
+      roots.push(candidate);
+    }
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    if (current === home) break;
+    current = parent;
+    depth += 1;
+  }
+  return roots;
 }
 
 export function discoverCodexSlashCommands(cwd: string): DiscoveredCodexSlashCommand[] {

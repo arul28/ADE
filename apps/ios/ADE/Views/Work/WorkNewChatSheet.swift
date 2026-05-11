@@ -78,7 +78,7 @@ struct WorkNewChatSheet: View {
       WorkProviderOption(
         id: "opencode",
         title: "OpenCode",
-        subtitle: "Open runtime workflows and tools",
+        subtitle: "Open workflows and tools",
         icon: providerIcon("opencode"),
         tint: providerTint("opencode")
       ),
@@ -232,12 +232,12 @@ struct WorkNewChatSheet: View {
                 ADEEmptyStateView(
                   symbol: "arrow.triangle.branch",
                   title: "No lanes on this phone yet",
-                  message: "Lanes are created on the ADE host. After the host syncs lane metadata, pull to refresh on Work or tap below."
+                  message: "Lanes are created on the paired machine. After the machine syncs lane metadata, pull to refresh on Work or tap below."
                 )
                 Button {
                   Task { await onRefreshLanes() }
                 } label: {
-                  Label("Refresh lanes from host", systemImage: "arrow.trianglehead.2.clockwise.rotate.90")
+                  Label("Refresh lanes from machine", systemImage: "arrow.trianglehead.2.clockwise.rotate.90")
                     .font(.subheadline.weight(.semibold))
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 10)

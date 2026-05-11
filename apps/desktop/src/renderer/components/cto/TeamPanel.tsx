@@ -51,8 +51,6 @@ export type WorkerEditorDraft = {
   linearAliases: string;
   adapterType: AdapterType;
   model: string;
-  webhookUrl: string;
-  authHeader: string;
   processCommand: string;
   budgetDollars: number;
   heartbeatEnabled: boolean;
@@ -82,11 +80,6 @@ export function workerDraftFromAgent(agent?: AgentIdentity | null): WorkerEditor
     linearAliases: (agent?.linearIdentity?.aliases ?? []).join(", "),
     adapterType: agent?.adapterType ?? "claude-local",
     model: typeof adapterConfig.model === "string" ? adapterConfig.model : "",
-    webhookUrl: typeof adapterConfig.url === "string" ? adapterConfig.url : "",
-    authHeader:
-      typeof (adapterConfig.headers as Record<string, unknown> | undefined)?.Authorization === "string"
-        ? String((adapterConfig.headers as Record<string, unknown>).Authorization)
-        : "",
     processCommand: typeof adapterConfig.command === "string" ? adapterConfig.command : "",
     budgetDollars: (agent?.budgetMonthlyCents ?? 0) / 100,
     heartbeatEnabled: heartbeat?.enabled === true,
@@ -213,7 +206,6 @@ export function WorkerEditorPanel({
           <select className={selectCls} value={draft.adapterType} onChange={(e) => setDraft((d) => ({ ...d, adapterType: e.target.value as AdapterType }))}>
             <option value="claude-local">claude-local</option>
             <option value="codex-local">codex-local</option>
-            <option value="openclaw-webhook">openclaw-webhook</option>
             <option value="process">process</option>
           </select>
         </label>
@@ -222,18 +214,6 @@ export function WorkerEditorPanel({
             <div className={labelCls}>Model</div>
             <input className={inputCls} placeholder="claude-sonnet-4-6" value={draft.model} onChange={(e) => setDraft((d) => ({ ...d, model: e.target.value }))} />
           </label>
-        )}
-        {draft.adapterType === "openclaw-webhook" && (
-          <>
-            <label className="space-y-1">
-              <div className={labelCls}>Webhook URL</div>
-              <input className={inputCls} value={draft.webhookUrl} onChange={(e) => setDraft((d) => ({ ...d, webhookUrl: e.target.value }))} />
-            </label>
-            <label className="space-y-1 col-span-2">
-              <div className={labelCls}>Auth header</div>
-              <input className={inputCls} placeholder="${env:TOKEN}" value={draft.authHeader} onChange={(e) => setDraft((d) => ({ ...d, authHeader: e.target.value }))} />
-            </label>
-          </>
         )}
         {draft.adapterType === "process" && (
           <label className="space-y-1">

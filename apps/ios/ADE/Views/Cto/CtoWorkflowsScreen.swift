@@ -11,7 +11,7 @@ struct CtoWorkflowsScreen: View {
   @State private var isSyncing = false
   @State private var errorMessage: String?
   @State private var syncNotice: String?
-  @State private var showEditOnDesktop = false
+  @State private var showEditOnMachine = false
 
   var body: some View {
     List {
@@ -70,8 +70,8 @@ struct CtoWorkflowsScreen: View {
       guard connection == nil else { return }
       await reload()
     }
-    .sheet(isPresented: $showEditOnDesktop) {
-      EditOnDesktopSheet()
+    .sheet(isPresented: $showEditOnMachine) {
+      EditOnMachineSheet()
         .presentationDetents([.fraction(0.3), .medium])
     }
   }
@@ -136,7 +136,7 @@ struct CtoWorkflowsScreen: View {
 
       if let policy, !policy.workflows.isEmpty {
         ForEach(policy.workflows) { workflow in
-          WorkflowCard(workflow: workflow) { showEditOnDesktop = true }
+          WorkflowCard(workflow: workflow) { showEditOnMachine = true }
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
             .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
@@ -215,7 +215,7 @@ struct CtoWorkflowsScreen: View {
           .foregroundStyle(ADEColor.textPrimary)
         Spacer()
       }
-      Text("Connect from the desktop CTO Workflows tab.")
+      Text("Connect from the ADE machine CTO Workflows tab.")
         .font(.subheadline)
         .foregroundStyle(ADEColor.textSecondary)
         .fixedSize(horizontal: false, vertical: true)
@@ -531,9 +531,9 @@ private struct EventRow: View {
   }
 }
 
-// MARK: - Edit on desktop sheet
+// MARK: - Edit on machine sheet
 
-private struct EditOnDesktopSheet: View {
+private struct EditOnMachineSheet: View {
   @Environment(\.dismiss) private var dismiss
 
   var body: some View {
@@ -542,10 +542,10 @@ private struct EditOnDesktopSheet: View {
         .font(.system(size: 36, weight: .semibold))
         .foregroundStyle(ADEColor.accent)
         .padding(.top, 24)
-      Text("Edit on desktop")
+      Text("Edit on machine")
         .font(.headline)
         .foregroundStyle(ADEColor.textPrimary)
-      Text("Linear workflow authoring is desktop-only for now.")
+      Text("Linear workflow authoring is available from ADE on your machine.")
         .font(.subheadline)
         .foregroundStyle(ADEColor.textSecondary)
         .multilineTextAlignment(.center)

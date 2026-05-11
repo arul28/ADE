@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type {
   ComputerUseArtifactIngestionRequest,
   ComputerUseArtifactIngestionResult,
@@ -60,6 +61,16 @@ type StoredArtifactRow = {
 
 const DEFAULT_REVIEW_STATE: ComputerUseArtifactReviewState = "accepted";
 const DEFAULT_WORKFLOW_STATE: ComputerUseArtifactWorkflowState = "evidence_only";
+const ARTIFACT_PREVIEW_SIZE_CAP = 10 * 1024 * 1024;
+const ARTIFACT_PREVIEW_MIME_BY_EXTENSION: Record<string, string> = {
+  bmp: "image/bmp",
+  gif: "image/gif",
+  jpeg: "image/jpeg",
+  jpg: "image/jpeg",
+  png: "image/png",
+  svg: "image/svg+xml",
+  webp: "image/webp",
+};
 
 type StoredLinkRow = {
   id: string;
@@ -87,6 +98,50 @@ function isAllowedExternalArtifactSource(
       return false;
     }
   });
+}
+
+function resolveRendererArtifactPath(rawPath: string, projectRoot: string): string {
+  let inputPath = rawPath;
+  if (/^ade-artifact:\/\/project(?:\/|$)/i.test(inputPath)) {
+    const parsed = new URL(inputPath);
+    inputPath = decodeURIComponent(parsed.pathname.replace(/^\/+/, ""));
+  }
+  if (/^file:\/\//i.test(inputPath)) {
+    try {
+      inputPath = fileURLToPath(inputPath);
+    } catch {
+      inputPath = decodeURIComponent(inputPath.replace(/^file:\/\//i, ""));
+    }
+  }
+  return path.resolve(path.isAbsolute(inputPath) ? inputPath : path.join(projectRoot, inputPath));
+}
+
+async function readArtifactPreviewDataUrl(args: {
+  uri?: string;
+  projectRoot: string;
+  artifactsDir: string;
+}): Promise<string | null> {
+  const uri = typeof args.uri === "string" ? args.uri.trim() : "";
+  if (!uri) return null;
+  const filePath = resolveRendererArtifactPath(uri, args.projectRoot);
+  const canonical = path.normalize(path.resolve(filePath));
+  try {
+    resolvePathWithinRoot(args.artifactsDir, canonical);
+  } catch {
+    return null;
+  }
+
+  try {
+    const stat = await fs.promises.stat(canonical);
+    if (!stat.isFile() || stat.size > ARTIFACT_PREVIEW_SIZE_CAP) return null;
+    const ext = path.extname(canonical).replace(/^\./, "").toLowerCase();
+    const mime = ARTIFACT_PREVIEW_MIME_BY_EXTENSION[ext];
+    if (!mime) return null;
+    const buf = await fs.promises.readFile(canonical);
+    return `data:${mime};base64,${buf.toString("base64")}`;
+  } catch {
+    return null;
+  }
 }
 
 function secureCopyFromDescriptor(sourcePath: string, targetPath: string): void {
@@ -686,6 +741,14 @@ export function createComputerUseArtifactBrokerService(args: {
           : null,
       });
       return updated;
+    },
+
+    readArtifactPreview(args: { uri?: string }): Promise<string | null> {
+      return readArtifactPreviewDataUrl({
+        uri: args?.uri,
+        projectRoot,
+        artifactsDir: layout.artifactsDir,
+      });
     },
 
     getBackendStatus,

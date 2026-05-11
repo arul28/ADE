@@ -76,7 +76,7 @@ func filesHistoryFallback(
   if entries.isEmpty {
     return FilesSectionFallback(
       title: "No recent history",
-      message: "The host did not return recent commits for this file yet. Reconnect or refresh to try again."
+      message: "The machine did not return recent commits for this file yet. Reconnect or refresh to try again."
     )
   }
   return nil
@@ -121,7 +121,7 @@ func filesTextPreviewLimit(blob: SyncFileBlob) -> FilesPreviewLimit? {
     lineLimit: filesTextPreviewLineLimit,
     byteLimit: filesTextPreviewByteLimit,
     title: "Preview paused",
-    action: "Use desktop ADE or narrow the file before previewing it on iPhone."
+    action: "Use ADE on your machine or narrow the file before previewing it on iPhone."
   )
 }
 
@@ -133,7 +133,7 @@ func filesDiffPreviewLimit(diff: FileDiff) -> FilesPreviewLimit? {
     lineLimit: filesDiffPreviewLineLimit,
     byteLimit: filesDiffPreviewByteLimit,
     title: "Diff preview paused",
-    action: "Open the file on desktop or inspect a smaller diff before rendering it on iPhone."
+    action: "Open the file from ADE on your machine or inspect a smaller diff before rendering it on iPhone."
   )
 }
 
@@ -188,7 +188,7 @@ func filesSearchEmptyMessage(kind: FilesSearchKind, isLive: Bool, needsRepairing
   if !isLive {
     return needsRepairing
       ? "Pair again before using \(label.lowercased())."
-      : "\(label) needs a live host connection."
+      : "\(label) needs a live machine connection."
   }
   if trimmed.isEmpty {
     switch kind {

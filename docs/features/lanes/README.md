@@ -11,9 +11,43 @@ This folder documents the Lanes feature: data model, worktree mechanics,
 stack dependency graphs, the runtime isolation subsystem, and the OAuth
 redirect service that makes multi-lane auth practical.
 
+## Where this runs
+
+Lane lifecycle (create / attach / rename / archive / delete / rebase /
+branch-switch / port + proxy + OAuth + diagnostics) is owned by the **ADE
+runtime daemon** (`ade serve` listening on `~/.ade/sock/ade.sock`), not by
+the Electron main process. The renderer's `window.ade.lanes.*` calls go
+through `apps/desktop/src/preload/preload.ts`, which routes every
+runtime-backed method through `LocalRuntimeConnectionPool` for
+local-bound windows or through `RemoteConnectionPool` (SSH-attached) for
+remote-bound windows. The legacy in-process `laneService.ts` still exists
+on the desktop main process as a fallback target so older callers and
+tests keep working — preload calls the runtime first via
+`callProjectRuntimeActionOr("lane", …)` and only invokes the local IPC
+handler if no runtime is bound. For remote-bound windows the worktree is
+created on the remote machine; the desktop renders the same UX but the
+git operations, file watchers, PTYs, and processes execute on the remote
+host. The desktop main process keeps a thin `laneListSnapshotService.ts`
+helper for assembling per-window lane snapshots that overlay sync
+presence on top of runtime-supplied lane summaries. Multi-window: each
+desktop window has its own project binding, so a lane-creation request
+in window A targets window A's runtime (local or remote) regardless of
+what window B is bound to.
+
 ## Source file map
 
-Core services (`apps/desktop/src/main/services/lanes/`):
+Core services. The canonical lane lifecycle now runs in the **ADE
+runtime daemon**; the desktop main-process services below remain as
+either fallback targets or thin desktop-side helpers.
+
+Runtime services (`apps/ade-cli/src/services/lanes/` and friends):
+
+- `apps/ade-cli/src/services/projects/projectRuntime.ts` exposes the
+  `lane` action domain (CRUD, runtime isolation, branch switching,
+  templates, diagnostics) over JSON-RPC; remote runtimes are reached
+  over the SSH-tunneled equivalent.
+
+Desktop fallback services (`apps/desktop/src/main/services/lanes/`):
 
 | File | Responsibility |
 |------|---------------|
@@ -27,6 +61,7 @@ Core services (`apps/desktop/src/main/services/lanes/`):
 | `oauthRedirectService.ts` | OAuth callback routing for multi-lane (Phase 5 W5) |
 | `runtimeDiagnosticsService.ts` | Aggregate lane health checks, fallback mode (Phase 5 W6) |
 | `laneLaunchContext.ts` | Pure helper: resolves launch cwd/env for terminals and tools |
+| `laneListSnapshotService.ts` | Desktop-side snapshot assembly: takes runtime-supplied lane summaries and decorates them with sync presence (`devicesOpen`), conflict status, rebase suggestions, auto-rebase status, and runtime session bucket counts. Used to build the lane list for the renderer without round-tripping every overlay separately. |
 
 Renderer components:
 
@@ -327,8 +362,13 @@ refusal, duplicate-owner refusal, stale-PR cleanup).
 
 ## IPC surface
 
-Registered in `apps/desktop/src/main/services/ipc/registerIpc.ts` and
-exposed through `apps/desktop/src/preload/preload.ts`.
+Registered as runtime actions on the `lane` domain (served by the local
+or remote ADE runtime daemon) and as legacy in-process IPC handlers in
+`apps/desktop/src/main/services/ipc/registerIpc.ts` for the fallback
+path. Exposed through `apps/desktop/src/preload/preload.ts`, which
+prefers the runtime route. Remote-bound desktop windows execute every
+lane action on the remote machine — including `git worktree add`, the
+delete teardown pipeline, env init, and template apply.
 
 Lane management (selected):
 

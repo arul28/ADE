@@ -31,6 +31,7 @@ type ClaudeV2Session = {
 import { buildClaudeV2Message, inferAttachmentMediaType } from "./buildClaudeV2Message";
 import { discoverClaudeSlashCommands, resolveClaudeSlashCommandInvocation } from "./claudeSlashCommandDiscovery";
 import { discoverCodexSlashCommands, resolveCodexSlashCommandInvocation } from "./codexSlashCommandDiscovery";
+import { classifyAgentCliError } from "../../../../../ade-cli/src/services/agentRegistry";
 import type {
   RuntimeFilePart as FilePart,
   RuntimeImagePart as ImagePart,
@@ -544,7 +545,6 @@ const CLAUDE_BUILT_IN_SLASH_COMMANDS: AgentChatSlashCommand[] = [
   { name: "/hooks", description: "View hook configurations for tool events.", source: "sdk" },
   { name: "/ide", description: "Manage IDE integrations and show status.", source: "sdk" },
   { name: "/init", description: "Initialize project with a CLAUDE.md guide.", source: "sdk" },
-  { name: "/login", description: "Sign in to Claude Code for this chat runtime", source: "sdk" },
   { name: "/logout", description: "Sign out from Anthropic.", source: "sdk" },
   { name: "/mcp", description: "Manage MCP server connections and OAuth authentication.", source: "sdk" },
   { name: "/memory", description: "Edit CLAUDE.md memory files and memory settings.", source: "sdk" },
@@ -566,8 +566,17 @@ const CLAUDE_BUILT_IN_SLASH_COMMANDS: AgentChatSlashCommand[] = [
   { name: "/usage", description: "Show session cost, plan usage limits, and activity stats.", source: "sdk" },
 ];
 
-const CODEX_BUILT_IN_SLASH_COMMAND_NAMES = new Set(CODEX_BUILT_IN_SLASH_COMMANDS.map((command) => command.name));
-const CLAUDE_BUILT_IN_SLASH_COMMAND_NAMES = new Set(CLAUDE_BUILT_IN_SLASH_COMMANDS.map((command) => command.name));
+const CODEX_BUILT_IN_SLASH_COMMAND_NAMES = new Set(CODEX_BUILT_IN_SLASH_COMMANDS.map((command) => slashCommandKey(command.name)));
+const CLAUDE_BUILT_IN_SLASH_COMMAND_NAMES = new Set(CLAUDE_BUILT_IN_SLASH_COMMANDS.map((command) => slashCommandKey(command.name)));
+const CLAUDE_LOGIN_NOT_SDK_COMMAND = "ADE Claude chat is hosted through the Claude Agent SDK, and /login is not an SDK-dispatchable command. Run `claude auth login` in a terminal or configure ANTHROPIC_API_KEY, then refresh AI settings.";
+
+function slashCommandKey(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function isDispatchableClaudeSdkSlashCommand(command: { name: string }): boolean {
+  return command.name !== "/login";
+}
 
 type PendingOpenCodeApproval = {
   category: "bash" | "write";
@@ -6721,21 +6730,49 @@ export function createAgentChatService(args: {
     setSessionPreview(managed, event.text);
   };
 
-  const commitChatEvent = (managed: ManagedChatSession, event: AgentChatEvent): void => {
-    managed.session.lastActivityAt = nowIso();
-    trackSubagentEvent(managed, event);
-    appendRecentConversationEntry(managed, event);
+  const decorateAgentCliError = (
+    managed: ManagedChatSession,
+    event: Extract<AgentChatEvent, { type: "error" }>,
+  ): Extract<AgentChatEvent, { type: "error" }> => {
+    const existingInfo = typeof event.errorInfo === "object" && event.errorInfo ? event.errorInfo : null;
+    if (existingInfo?.agentCli) return event;
 
-    if (event.type === "text") {
-      updatePreviewFromText(managed, event);
-    } else if (event.type === "command") {
-      setSessionPreview(managed, event.output);
-    } else if (event.type === "error") {
-      setSessionPreview(managed, event.message);
-    } else if (event.type === "completion_report") {
-      managed.session.completion = event.report;
-      if (event.report.summary.trim().length > 0) {
-        setSessionPreview(managed, event.report.summary);
+    const match = classifyAgentCliError(`${event.message}\n${event.detail ?? ""}`, managed.session.provider);
+    if (!match) return event;
+
+    return {
+      ...event,
+      errorInfo: {
+        category: match.category === "missing" ? "agent_cli_missing" : "agent_cli_auth",
+        ...(existingInfo?.provider ? { provider: existingInfo.provider } : { provider: match.displayName }),
+        ...(existingInfo?.model ? { model: existingInfo.model } : {}),
+        agentCli: {
+          agent: match.agent,
+          displayName: match.displayName,
+          category: match.category,
+          installCommand: match.installCommand,
+          authCommand: match.authCommand,
+        },
+      },
+    };
+  };
+
+  const commitChatEvent = (managed: ManagedChatSession, event: AgentChatEvent): void => {
+    const storedEvent = event.type === "error" ? decorateAgentCliError(managed, event) : event;
+    managed.session.lastActivityAt = nowIso();
+    trackSubagentEvent(managed, storedEvent);
+    appendRecentConversationEntry(managed, storedEvent);
+
+    if (storedEvent.type === "text") {
+      updatePreviewFromText(managed, storedEvent);
+    } else if (storedEvent.type === "command") {
+      setSessionPreview(managed, storedEvent.output);
+    } else if (storedEvent.type === "error") {
+      setSessionPreview(managed, storedEvent.message);
+    } else if (storedEvent.type === "completion_report") {
+      managed.session.completion = storedEvent.report;
+      if (storedEvent.report.summary.trim().length > 0) {
+        setSessionPreview(managed, storedEvent.report.summary);
       }
     }
 
@@ -6745,7 +6782,7 @@ export function createAgentChatService(args: {
     const envelope: AgentChatEventEnvelope = {
       sessionId: managed.session.id,
       timestamp: nowIso(),
-      event,
+      event: storedEvent,
       sequence: ++managed.eventSequence,
     };
 
@@ -6766,24 +6803,24 @@ export function createAgentChatService(args: {
     const collector = sessionTurnCollectors.get(managed.session.id);
     if (!collector) return;
 
-    if (event.type === "text") {
-      collector.outputText += event.text;
+    if (storedEvent.type === "text") {
+      collector.outputText += storedEvent.text;
       return;
     }
 
-    if (event.type === "error") {
-      collector.lastError = event.message;
+    if (storedEvent.type === "error") {
+      collector.lastError = storedEvent.message;
       return;
     }
 
-    if (event.type === "status" && event.turnStatus === "failed" && event.message) {
-      collector.lastError = event.message;
+    if (storedEvent.type === "status" && storedEvent.turnStatus === "failed" && storedEvent.message) {
+      collector.lastError = storedEvent.message;
       return;
     }
 
-    if (event.type !== "done") return;
+    if (storedEvent.type !== "done") return;
 
-    collector.usage = event.usage;
+    collector.usage = storedEvent.usage;
     if (collector.timeout) {
       clearTimeout(collector.timeout);
     }
@@ -6795,7 +6832,7 @@ export function createAgentChatService(args: {
       ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
       outputText: collector.outputText.trim() || managed.preview?.trim() || "",
       ...(collector.usage ? { usage: collector.usage } : {}),
-      ...(event.turnId ? { turnId: event.turnId } : {}),
+      ...(storedEvent.turnId ? { turnId: storedEvent.turnId } : {}),
       ...(managed.session.threadId ? { threadId: managed.session.threadId } : {}),
       ...(managed.runtime?.kind === "claude" ? { sdkSessionId: managed.runtime.sdkSessionId ?? null } : {}),
     });
@@ -11404,22 +11441,39 @@ export function createAgentChatService(args: {
       };
       const projectSlashCommands = (() => {
         try {
-          return discoverClaudeSlashCommands(managed.laneWorktreePath);
+          return discoverClaudeSlashCommands(managed.laneWorktreePath).filter(isDispatchableClaudeSdkSlashCommand);
         } catch {
           return [];
         }
       })();
+      const projectCommandFiles = projectSlashCommands.filter((cmd) => cmd.source === "command");
+      const projectSkillFiles = projectSlashCommands.filter((cmd) => cmd.source === "skill");
       const slashCommandsSection = projectSlashCommands.length
         ? [
           "",
-          "## Project slash commands",
-          "The user can invoke custom slash commands defined in `.claude/commands/*.md` (project scope) and `~/.claude/commands/*.md` (user scope). When the user sends a message that is exactly `/<name>` or `/<name> <args>`, ADE auto-expands the command body into the message before it reaches you — so in that case you will already see the expanded instructions, not the literal `/<name>`.",
-          "When the user references a command mid-sentence (e.g. \"please run /audit\", \"can you do a /security-review\") the message is not auto-expanded. In that case, read the matching file at `.claude/commands/<name>.md` (prefer project scope; fall back to user scope) and follow its instructions as if the user had run it.",
-          "Available commands in this workspace:",
-          ...projectSlashCommands.map((cmd) => {
-            const desc = cmd.description.trim();
-            return desc.length ? `- ${cmd.name} — ${desc}` : `- ${cmd.name}`;
-          }),
+          "## Project slash commands and skills",
+          "ADE walks up from the lane worktree to discover `.claude/commands/*.md` (slash commands) and `.claude/skills/<name>/SKILL.md` (skills) at every ancestor directory plus `~/.claude/`. The Claude Agent SDK only auto-discovers `<cwd>/.claude/` and `~/.claude/`, so ADE injects the rest here.",
+          "**User-invoked (`/<name>`):** When the user sends a message that is exactly `/<name>` or `/<name> <args>`, ADE pre-expands the file's body (commands take precedence over same-named skills) and substitutes `$ARGUMENTS` before it reaches you. You'll see the expanded instructions, not the literal `/<name>`.",
+          "**Mid-sentence reference:** When the user mentions a command/skill mid-sentence (e.g. \"please /audit this\", \"can you do a /security-review\") the message is NOT auto-expanded. Read the file at the path below and follow it.",
+          "**Autonomous skill use:** If, while working on a task, you decide a discovered skill applies (its description matches the situation), Read its SKILL.md file and follow it as if it had been invoked. Don't ask the user — just use the skill when warranted.",
+          ...(projectCommandFiles.length ? [
+            "",
+            "Commands (file-backed prompts):",
+            ...projectCommandFiles.map((cmd) => {
+              const desc = cmd.description.trim();
+              const head = desc.length ? `- ${cmd.name} — ${desc}` : `- ${cmd.name}`;
+              return `${head}\n  file: ${cmd.filePath}`;
+            }),
+          ] : []),
+          ...(projectSkillFiles.length ? [
+            "",
+            "Skills (autonomously usable when relevant):",
+            ...projectSkillFiles.map((cmd) => {
+              const desc = cmd.description.trim();
+              const head = desc.length ? `- ${cmd.name} — ${desc}` : `- ${cmd.name}`;
+              return `${head}\n  file: ${cmd.filePath}`;
+            }),
+          ] : []),
         ]
         : [];
       opts.systemPrompt = {
@@ -11636,7 +11690,7 @@ export function createAgentChatService(args: {
     runtime: ClaudeRuntime,
     commands: Array<string | { name?: string; description?: string; argumentHint?: string }>,
   ): void => {
-    const existing = new Map(runtime.slashCommands.map((command) => [command.name, command]));
+    const existing = new Map(runtime.slashCommands.map((command) => [slashCommandKey(command.name), command]));
     for (const command of commands
       .map((command) => {
         if (typeof command === "string") {
@@ -11656,12 +11710,13 @@ export function createAgentChatService(args: {
         };
       })
       .filter((command): command is { name: string; description: string; argumentHint?: string } => Boolean(command))) {
-      existing.set(command.name, {
-        ...existing.get(command.name),
+      const key = slashCommandKey(command.name);
+      existing.set(key, {
+        ...existing.get(key),
         ...command,
       });
     }
-    runtime.slashCommands = [...existing.values()].sort((a, b) => a.name.localeCompare(b.name));
+    runtime.slashCommands = [...existing.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
   };
 
   const deliverNextQueuedSteer = async (
@@ -12711,14 +12766,15 @@ export function createAgentChatService(args: {
         );
       }
     });
-    const allowClaudeLoginCommand = managed.session.provider === "claude" && slashCommand === "/login";
+    if (managed.session.provider === "claude" && slashCommand === "/login") {
+      throw new Error(CLAUDE_LOGIN_NOT_SDK_COMMAND);
+    }
     const claudeRuntimeHealth = managed.session.provider === "claude"
       ? getProviderRuntimeHealth("claude")
       : null;
     if (
       managed.session.provider === "claude"
       && claudeRuntimeHealth?.state === "auth-failed"
-      && !allowClaudeLoginCommand
     ) {
       throw new Error(claudeRuntimeHealth.message ?? CLAUDE_RUNTIME_AUTH_ERROR);
     }
@@ -12765,10 +12821,10 @@ export function createAgentChatService(args: {
     const providerHasPersistentGuidance = managed.session.provider === "claude";
     const shouldInjectGuidance = !providerHasPersistentGuidance;
     const claudeRuntimeSlashCommandNames = managed.runtime?.kind === "claude"
-      ? new Set(managed.runtime.slashCommands.map((command) => command.name))
+      ? new Set(managed.runtime.slashCommands.map((command) => slashCommandKey(command.name)))
       : new Set<string>();
     const codexRuntimeSlashCommandNames = managed.runtime?.kind === "codex"
-      ? new Set((managed.runtime as { slashCommands?: Array<{ name: string }> }).slashCommands?.map((command) => command.name) ?? [])
+      ? new Set((managed.runtime as { slashCommands?: Array<{ name: string }> }).slashCommands?.map((command) => slashCommandKey(command.name)) ?? [])
       : new Set<string>();
     const expandedClaudeSlashCommand = providerSlashCommand
       && managed.session.provider === "claude"
@@ -12777,18 +12833,26 @@ export function createAgentChatService(args: {
       && !claudeRuntimeSlashCommandNames.has(slashCommand)
       ? resolveClaudeSlashCommandInvocation(managed.laneWorktreePath, trimmed)
       : null;
+    const expandedClaudeProjectSlashCommandForCodex = providerSlashCommand
+      && managed.session.provider === "codex"
+      && slashCommand != null
+      && !CODEX_BUILT_IN_SLASH_COMMAND_NAMES.has(slashCommand)
+      && !codexRuntimeSlashCommandNames.has(slashCommand)
+      ? resolveClaudeSlashCommandInvocation(managed.laneWorktreePath, trimmed)
+      : null;
     const expandedCodexSlashCommand = providerSlashCommand
       && managed.session.provider === "codex"
       && slashCommand != null
       && !CODEX_BUILT_IN_SLASH_COMMAND_NAMES.has(slashCommand)
       && !codexRuntimeSlashCommandNames.has(slashCommand)
+      && expandedClaudeProjectSlashCommandForCodex == null
       ? resolveCodexSlashCommandInvocation(managed.laneWorktreePath, trimmed)
       : null;
     const contextAttachmentPrompt = providerSlashCommand
       ? ""
       : buildChatContextAttachmentPrompt(publicContextAttachments);
     const promptText = providerSlashCommand
-      ? expandedClaudeSlashCommand?.promptText ?? expandedCodexSlashCommand?.promptText ?? trimmed
+      ? expandedClaudeSlashCommand?.promptText ?? expandedCodexSlashCommand?.promptText ?? expandedClaudeProjectSlashCommandForCodex?.promptText ?? trimmed
       : composeLaunchDirectives(trimmed, [
           shouldInjectLaneDirective
             ? buildLaneWorktreeDirective({
@@ -12805,7 +12869,7 @@ export function createAgentChatService(args: {
           contextAttachmentPrompt || null,
         ]);
     const autoTitleSeed = providerSlashCommand
-      ? expandedClaudeSlashCommand?.promptText ?? expandedCodexSlashCommand?.promptText ?? null
+      ? expandedClaudeSlashCommand?.promptText ?? expandedCodexSlashCommand?.promptText ?? expandedClaudeProjectSlashCommandForCodex?.promptText ?? null
       : visibleText;
     if (!managed.autoTitleSeed && autoTitleSeed) {
       managed.autoTitleSeed = autoTitleSeed;
@@ -17066,7 +17130,7 @@ export function createAgentChatService(args: {
     const providerFromPreference: AgentChatProvider = (() => {
       if (workerIdentity?.adapterType === "claude-local") return "claude";
       if (workerIdentity?.adapterType === "codex-local") return "codex";
-      if (workerIdentity?.adapterType === "openclaw-webhook" || workerIdentity?.adapterType === "process") return "opencode";
+      if (workerIdentity?.adapterType === "process") return "opencode";
       if (preferredProviderRaw.includes("codex") || preferredProviderRaw.includes("openai")) return "codex";
       if (preferredProviderRaw.includes("claude") || preferredProviderRaw.includes("anthropic")) return "claude";
       if (preferredProviderRaw.includes("droid") || preferredProviderRaw.includes("factory")) return "droid";
@@ -18358,26 +18422,30 @@ export function createAgentChatService(args: {
       const merged = new Map<string, AgentChatSlashCommand>();
       for (const group of groups) {
         for (const command of group) {
-          merged.set(command.name, command);
+          merged.set(slashCommandKey(command.name), command);
         }
       }
-      return [...merged.values()].sort((a, b) => a.name.localeCompare(b.name));
+      return [...merged.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
     };
 
     // Claude SDK commands plus filesystem-backed Claude Code commands/skills.
     if (provider === "claude") {
-      const runtimeCommands: AgentChatSlashCommand[] = (managed.runtime?.kind === "claude" ? managed.runtime.slashCommands : []).map((cmd: { name: string; description: string; argumentHint?: string }) => ({
-        name: cmd.name,
-        description: cmd.description,
-        argumentHint: cmd.argumentHint,
-        source: "sdk" as const,
-      }));
-      const projectCommands: AgentChatSlashCommand[] = discoverClaudeSlashCommands(managed.laneWorktreePath).map((cmd: { name: string; description: string; argumentHint?: string }) => ({
-        name: cmd.name,
-        description: cmd.description,
-        argumentHint: cmd.argumentHint,
-        source: "sdk" as const,
-      }));
+      const runtimeCommands: AgentChatSlashCommand[] = (managed.runtime?.kind === "claude" ? managed.runtime.slashCommands : [])
+        .filter(isDispatchableClaudeSdkSlashCommand)
+        .map((cmd: { name: string; description: string; argumentHint?: string }) => ({
+          name: cmd.name,
+          description: cmd.description,
+          argumentHint: cmd.argumentHint,
+          source: "sdk" as const,
+        }));
+      const projectCommands: AgentChatSlashCommand[] = discoverClaudeSlashCommands(managed.laneWorktreePath)
+        .filter(isDispatchableClaudeSdkSlashCommand)
+        .map((cmd: { name: string; description: string; argumentHint?: string }) => ({
+          name: cmd.name,
+          description: cmd.description,
+          argumentHint: cmd.argumentHint,
+          source: "sdk" as const,
+        }));
       return mergeSlashCommands([projectCommands, CLAUDE_BUILT_IN_SLASH_COMMANDS, runtimeCommands]);
     }
 
@@ -18396,7 +18464,15 @@ export function createAgentChatService(args: {
         argumentHint: cmd.argumentHint,
         source: "sdk" as const,
       }));
-      return mergeSlashCommands([promptCommands, CODEX_BUILT_IN_SLASH_COMMANDS, dynamicCommands]);
+      const claudeProjectCommands: AgentChatSlashCommand[] = discoverClaudeSlashCommands(managed.laneWorktreePath)
+        .filter(isDispatchableClaudeSdkSlashCommand)
+        .map((cmd: { name: string; description: string; argumentHint?: string }) => ({
+          name: cmd.name,
+          description: cmd.description,
+          argumentHint: cmd.argumentHint,
+          source: "sdk" as const,
+        }));
+      return mergeSlashCommands([promptCommands, claudeProjectCommands, CODEX_BUILT_IN_SLASH_COMMANDS, dynamicCommands]);
     }
 
     // OpenCode / Cursor — only local commands

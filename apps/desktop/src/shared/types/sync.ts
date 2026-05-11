@@ -267,7 +267,7 @@ export type SyncProjectConnectionPayload = {
   authKind: "bootstrap" | "paired";
   token?: string | null;
   pairedDeviceId?: string | null;
-  hostIdentity: SyncPairingQrPayload["hostIdentity"];
+  hostIdentity: SyncPairingHostIdentity;
   port: number;
   addressCandidates: SyncAddressCandidate[];
 };
@@ -305,25 +305,18 @@ export type SyncAddressCandidate = {
   kind: SyncAddressCandidateKind;
 };
 
-export type SyncPairingQrPayload = {
-  version: 2;
-  hostIdentity: {
-    deviceId: string;
-    siteId: string;
-    name: string;
-    platform: SyncPeerPlatform;
-    deviceType: SyncPeerDeviceType;
-  };
-  port: number;
-  addressCandidates: SyncAddressCandidate[];
+export type SyncPairingHostIdentity = {
+  deviceId: string;
+  siteId: string;
+  name: string;
+  platform: SyncPeerPlatform;
+  deviceType: SyncPeerDeviceType;
 };
 
 export type SyncPairingConnectInfo = {
-  hostIdentity: SyncPairingQrPayload["hostIdentity"];
+  hostIdentity: SyncPairingHostIdentity;
   port: number;
   addressCandidates: SyncAddressCandidate[];
-  qrPayload: SyncPairingQrPayload;
-  qrPayloadText: string;
 };
 
 export type SyncPairingRequestPayload = {
@@ -712,11 +705,14 @@ export type SyncRemoteCommandPolicy = {
 
 export type SyncRemoteCommandDescriptor = {
   action: SyncRemoteCommandAction | (string & {});
+  scope: "runtime" | "project";
   policy: SyncRemoteCommandPolicy;
 };
 
 export type SyncCommandPayload = {
   commandId: string;
+  projectId?: string | null;
+  projectRootPath?: string | null;
   action: SyncRemoteCommandAction | (string & {});
   args: Record<string, unknown>;
 };
@@ -901,6 +897,7 @@ export type SyncInAppNotificationPayload = {
 type SyncEnvelopeBase<TType extends string> = {
   version: SyncProtocolVersion;
   type: TType;
+  projectId?: string | null;
   requestId?: string | null;
 };
 

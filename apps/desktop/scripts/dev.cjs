@@ -195,7 +195,20 @@ function terminateChild(child, signal) {
   }
 }
 
+async function ensureDevIcon() {
+  const generator = path.join(__dirname, "generate-dev-icon.cjs");
+  if (!fs.existsSync(generator)) return;
+  const result = cp.spawnSync(process.execPath, [generator], {
+    cwd: projectRoot,
+    stdio: "inherit",
+  });
+  if (result.status !== 0) {
+    process.stderr.write("[ade] dev icon generation failed; falling back to default icon\n");
+  }
+}
+
 async function main() {
+  await ensureDevIcon();
   const devPort = await choosePort(5173, 32);
   const devServerUrl = `http://localhost:${devPort}`;
   const remoteDebugPortRaw =

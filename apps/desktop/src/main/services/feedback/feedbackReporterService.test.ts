@@ -1,12 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createFeedbackReporterService } from "./feedbackReporterService";
 
-vi.mock("electron", () => ({
-  BrowserWindow: {
-    getAllWindows: () => [],
-  },
-}));
-
 function createDb() {
   const store = new Map<string, unknown>();
   return {
@@ -114,6 +108,7 @@ describe("createFeedbackReporterService", () => {
   it("stores a failed submission when GitHub posting fails", async () => {
     const db = createDb();
     const logger = createLogger();
+    const onSubmissionUpdated = vi.fn();
     const apiRequest = vi.fn(async () => {
       throw new Error("GitHub API unavailable");
     });
@@ -124,6 +119,7 @@ describe("createFeedbackReporterService", () => {
       projectRoot: "/Users/admin/Projects/ADE",
       aiIntegrationService: { executeTask: vi.fn() } as any,
       githubService: { apiRequest } as any,
+      onSubmissionUpdated,
     });
 
     const submission = await service.submitPreparedDraft({
@@ -162,6 +158,7 @@ describe("createFeedbackReporterService", () => {
         error: "Posting failed: GitHub API unavailable",
       }),
     );
+    expect(onSubmissionUpdated).toHaveBeenCalledTimes(2);
   });
 
   it("stores a posted submission after a reviewed draft is submitted", async () => {

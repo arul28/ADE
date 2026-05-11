@@ -14,6 +14,7 @@ const appDir = path.resolve(scriptDir, "..");
 const releaseDir = path.join(appDir, "release");
 const DEFAULT_MAX_APP_ASAR_BYTES = 900 * 1024 * 1024;
 const DEFAULT_MAX_UNPACKED_BYTES = 600 * 1024 * 1024;
+const REMOTE_RUNTIME_TARGETS = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"];
 
 function readFlag(name) {
   const prefix = `${name}=`;
@@ -148,6 +149,22 @@ async function assertExecutable(targetPath, description) {
   const stat = await fs.stat(targetPath);
   if ((stat.mode & 0o111) !== 0o111) {
     throw new Error(`[release:mac] Expected ${description} to be executable: ${targetPath}`);
+  }
+}
+
+async function assertRemoteRuntimeBundle(resourcesPath, description) {
+  const runtimeRoot = path.join(resourcesPath, "runtime");
+  await assertPathExists(runtimeRoot, `remote runtime bundle directory for ${description}`);
+  for (const target of REMOTE_RUNTIME_TARGETS) {
+    const binaryPath = path.join(runtimeRoot, `ade-${target}`);
+    const nativeArchivePath = path.join(runtimeRoot, `ade-${target}.native.tar.gz`);
+    await assertPathExists(binaryPath, `remote runtime binary ${target} for ${description}`);
+    await assertExecutable(binaryPath, `remote runtime binary ${target}`);
+    await assertPathExists(nativeArchivePath, `remote runtime native dependency archive ${target} for ${description}`);
+    const { stdout } = await execFileAsync("tar", ["-tzf", nativeArchivePath]);
+    if (!stdout.split(/\r?\n/).some((entry) => entry.startsWith("./node_modules/"))) {
+      throw new Error(`[release:mac] Remote runtime native archive for ${target} does not contain ./node_modules/: ${nativeArchivePath}`);
+    }
   }
 }
 
@@ -300,6 +317,9 @@ async function validatePackagedRuntime(appPath, description) {
   const appAsarPath = path.join(resourcesPath, "app.asar");
   const unpackedPath = await resolveRuntimeUnpackedPath(resourcesPath);
   const adeCliPath = path.join(resourcesPath, "ade-cli", "cli.cjs");
+  const adeCliBootstrapPath = path.join(resourcesPath, "ade-cli", "bootstrap.cjs");
+  const adeCliRpcPath = path.join(resourcesPath, "ade-cli", "adeRpcServer.cjs");
+  const adeCliTuiPath = path.join(resourcesPath, "ade-cli", "tuiClient", "cli.mjs");
   const adeCliBinPath = path.join(resourcesPath, "ade-cli", "bin", "ade");
   const adeCliInstallerPath = path.join(resourcesPath, "ade-cli", "install-path.sh");
   const iosSimHelperRoot = path.join(resourcesPath, "native", "ios-sim-helpers");
@@ -313,6 +333,9 @@ async function validatePackagedRuntime(appPath, description) {
   await assertPathExists(appAsarPath, "app.asar payload");
   await assertPathExists(unpackedPath, "unpacked runtime payload");
   await assertPathExists(adeCliPath, "bundled ADE CLI entry");
+  await assertPathExists(adeCliBootstrapPath, "bundled ADE CLI bootstrap entry");
+  await assertPathExists(adeCliRpcPath, "bundled ADE CLI RPC entry");
+  await assertPathExists(adeCliTuiPath, "bundled ADE CLI TUI entry");
   await assertPathExists(adeCliBinPath, "bundled ADE CLI wrapper");
   await assertPathExists(adeCliInstallerPath, "bundled ADE CLI PATH installer");
   await assertPathExists(iosSimHelperBuildScript, "bundled iOS simulator helper build script");
@@ -324,6 +347,7 @@ async function validatePackagedRuntime(appPath, description) {
   await assertExecutable(iosSimHelperBuildScript, "bundled iOS simulator helper build script");
   await assertPathExists(nodePtyModulePath, "unpacked node-pty module");
   await assertPathExists(smokeScriptPath, "unpacked packaged runtime smoke script");
+  await assertRemoteRuntimeBundle(resourcesPath, description);
   await validatePackageHygiene(appPath, description);
 
   const nodePtyAddon = await findNodePtyAddon(nodePtyModulePath);

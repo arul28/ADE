@@ -2,17 +2,19 @@
 
 Navigation map for the internal docs. **Start with [PRD.md](./PRD.md).**
 
+The mental model up front: ADE is a **per-machine runtime daemon** (`apps/ade-cli/`, run as `ade serve`) that owns projects, lanes, chats, processes, sync, and proof. The desktop app, the terminal `ade code` client, the iOS app, and SSH-attached desktop windows are all peer **clients** of that runtime. Read the entry-point docs in that order:
+
 ## Reading order
 
-1. [**PRD.md**](./PRD.md) — product scope, concepts, feature index (links to everything).
-2. [**ARCHITECTURE.md**](./ARCHITECTURE.md) — apps, data plane, IPC, services catalog, security, build/test/deploy.
-3. [**features/**](./features/) — per-feature subfolders, each with a `README.md` + detail docs.
+1. [**PRD.md**](./PRD.md) — product scope, runtime + clients model, concepts, feature index.
+2. [**ARCHITECTURE.md**](./ARCHITECTURE.md) — apps, runtime/client topology, data plane, IPC, services catalog, security, build/test/deploy.
+3. [**features/**](./features/) — per-feature subfolders, each with a `README.md` + detail docs. Start with `remote-runtime/`, `ade-code/`, and `sync-and-multi-device/` for the runtime+clients picture.
 4. [**playbooks/**](./playbooks/) — operational workflows agents can follow directly.
 
 ## Layout
 
 ```
-new-docs/
+docs/
 ├── README.md                              # this file
 ├── PRD.md                                 # product entry point
 ├── ARCHITECTURE.md                        # system architecture
@@ -21,6 +23,7 @@ new-docs/
 │   └── ship-lane.md                       # autonomous PR-to-merge driver
 └── features/
     ├── agents/                            # agent identity, tools, personas
+    ├── ade-code/                          # terminal Work chat docs; source lives in apps/ade-cli/src/tuiClient
     ├── automations/                       # rule triggers + actions + guardrails
     ├── chat/                              # multi-provider agent chat
     ├── computer-use/                      # proof control plane, backends, broker
@@ -36,6 +39,7 @@ new-docs/
     ├── onboarding-and-settings/           # first-run, schema, settings tabs
     ├── project-home/                      # welcome + per-lane dashboard
     ├── pull-requests/                     # stacking, queue, conflict simulation
+    ├── remote-runtime/                    # local daemon + SSH remote machines
     ├── sync-and-multi-device/             # cr-sqlite CRDT, iOS, remote commands
     ├── terminals-and-sessions/            # PTY, sessions, processes, UI surfaces
     └── workspace-graph/                   # React Flow canvas + data sources
@@ -53,4 +57,4 @@ new-docs/
 
 `docs.json` at the repo root configures the public-facing Mintlify docs site (`.mdx` files under `./chat/`, `./tools/`, `./missions/`, etc.). That site is user-facing and separate.
 
-**This folder (`new-docs/`) is internal-only** — for engineers and AI agents working on ADE itself.
+**This folder (`docs/`) is internal-only** — for engineers and AI agents working on ADE itself.

@@ -53,7 +53,7 @@ struct CtoTeamScreen: View {
           ADEEmptyStateView(
             symbol: "person.crop.circle.badge.questionmark",
             title: "No workers hired yet",
-            message: "The persistent CTO is available above. Hire specialized workers from the desktop CTO tab."
+            message: "The persistent CTO is available above. Hire specialized workers from ADE on your machine."
           )
           .padding(.horizontal, 16)
         } else {
@@ -95,9 +95,9 @@ struct CtoTeamScreen: View {
       await load(force: true)
     }
     .sheet(isPresented: $showHireSheet) {
-      CtoDesktopOnlyNotice(
+      CtoMachineOnlyNotice(
         title: "Hire worker",
-        message: "Hire worker on the desktop CTO tab — mobile support is coming soon."
+        message: "Hire workers from ADE on your machine. Mobile support is coming soon."
       )
       .presentationDetents([.fraction(0.3), .medium])
     }
@@ -131,7 +131,7 @@ struct CtoTeamScreen: View {
       }
       .buttonStyle(.plain)
       .accessibilityLabel("Hire worker")
-      .accessibilityHint("Opens a sheet explaining hire is desktop-only for now.")
+      .accessibilityHint("Opens a sheet explaining hire is available from ADE on your machine for now.")
     }
   }
 
@@ -591,7 +591,7 @@ private func CtoTeamAsyncResult<T>(_ body: @escaping () async throws -> T) async
   catch { return .failure(error) }
 }
 
-struct CtoDesktopOnlyNotice: View {
+struct CtoMachineOnlyNotice: View {
   let title: String
   let message: String
   @Environment(\.dismiss) private var dismiss

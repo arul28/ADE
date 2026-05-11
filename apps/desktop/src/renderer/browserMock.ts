@@ -58,24 +58,32 @@ const BUILTIN_MOCK_PROJECT = {
   createdAt: new Date().toISOString(),
 };
 
-const adeDbSnapshotByPath = import.meta.glob<any>("./browser-mock-ade-snapshot.generated.json", {
-  eager: true,
-  import: "default",
-});
+const adeDbSnapshotByPath = import.meta.glob<any>(
+  "./browser-mock-ade-snapshot.generated.json",
+  {
+    eager: true,
+    import: "default",
+  },
+);
 
-const ADE_DB_SNAPSHOT = adeDbSnapshotByPath["./browser-mock-ade-snapshot.generated.json"] ?? null;
+const ADE_DB_SNAPSHOT =
+  adeDbSnapshotByPath["./browser-mock-ade-snapshot.generated.json"] ?? null;
 const USE_ADE_DB_SNAPSHOT = Boolean(ADE_DB_SNAPSHOT?.project);
 
-const MOCK_PROJECT = USE_ADE_DB_SNAPSHOT && ADE_DB_SNAPSHOT?.project
-  ? {
-      ...BUILTIN_MOCK_PROJECT,
-      id: ADE_DB_SNAPSHOT.project.id,
-      name: ADE_DB_SNAPSHOT.project.name,
-      rootPath: ADE_DB_SNAPSHOT.project.rootPath,
-      gitDefaultBranch: ADE_DB_SNAPSHOT.project.gitDefaultBranch ?? BUILTIN_MOCK_PROJECT.gitDefaultBranch,
-      createdAt: ADE_DB_SNAPSHOT.project.createdAt ?? BUILTIN_MOCK_PROJECT.createdAt,
-    }
-  : BUILTIN_MOCK_PROJECT;
+const MOCK_PROJECT =
+  USE_ADE_DB_SNAPSHOT && ADE_DB_SNAPSHOT?.project
+    ? {
+        ...BUILTIN_MOCK_PROJECT,
+        id: ADE_DB_SNAPSHOT.project.id,
+        name: ADE_DB_SNAPSHOT.project.name,
+        rootPath: ADE_DB_SNAPSHOT.project.rootPath,
+        gitDefaultBranch:
+          ADE_DB_SNAPSHOT.project.gitDefaultBranch ??
+          BUILTIN_MOCK_PROJECT.gitDefaultBranch,
+        createdAt:
+          ADE_DB_SNAPSHOT.project.createdAt ?? BUILTIN_MOCK_PROJECT.createdAt,
+      }
+    : BUILTIN_MOCK_PROJECT;
 
 // ── Timestamps ────────────────────────────────────────────────
 const now = new Date().toISOString();
@@ -92,10 +100,20 @@ function mockBrowserLaneHealth(laneId: string) {
     fallbackMode: false,
     lastCheckedAt: now,
     issues: [] as Array<{
-      type: "process-dead" | "port-unresponsive" | "proxy-route-missing" | "port-conflict" | "env-init-failed";
+      type:
+        | "process-dead"
+        | "port-unresponsive"
+        | "proxy-route-missing"
+        | "port-conflict"
+        | "env-init-failed";
       message: string;
       actionLabel?: string;
-      actionType?: "reassign-port" | "restart-proxy" | "reinit-env" | "enable-fallback" | "refresh-preview";
+      actionType?:
+        | "reassign-port"
+        | "restart-proxy"
+        | "reinit-env"
+        | "enable-fallback"
+        | "refresh-preview";
     }>,
   };
 }
@@ -433,7 +451,10 @@ const BUILTIN_RUN_PROCESS_DEFINITIONS: any[] = [
     restart: "never",
     gracefulShutdownMs: 10000,
     dependsOn: ["mock-dev"],
-    readiness: { type: "logRegex", pattern: "Local:\\s+http://localhost:[0-9]+" },
+    readiness: {
+      type: "logRegex",
+      pattern: "Local:\\s+http://localhost:[0-9]+",
+    },
   },
 ];
 
@@ -521,7 +542,9 @@ function buildMockLanesFromAdeSnapshot(laneRows: any[]): any[] {
       name: String(raw.name ?? "lane"),
       description: raw.description ?? null,
       laneType:
-        raw.laneType === "primary" || raw.laneType === "worktree" || raw.laneType === "attached"
+        raw.laneType === "primary" ||
+        raw.laneType === "worktree" ||
+        raw.laneType === "attached"
           ? raw.laneType
           : "worktree",
       baseRef: String(raw.baseRef ?? "main"),
@@ -553,52 +576,79 @@ function buildMockLanesFromAdeSnapshot(laneRows: any[]): any[] {
 }
 
 const MOCK_LANES: any[] = USE_ADE_DB_SNAPSHOT
-  ? buildMockLanesFromAdeSnapshot(Array.isArray(ADE_DB_SNAPSHOT?.lanes) ? ADE_DB_SNAPSHOT.lanes : [])
+  ? buildMockLanesFromAdeSnapshot(
+      Array.isArray(ADE_DB_SNAPSHOT?.lanes) ? ADE_DB_SNAPSHOT.lanes : [],
+    )
   : BUILTIN_MOCK_LANES;
 
-const ADE_DB_PR_SNAPSHOTS: any[] = USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_SNAPSHOT?.prSnapshots)
-  ? ADE_DB_SNAPSHOT.prSnapshots
-  : [];
+const ADE_DB_PR_SNAPSHOTS: any[] =
+  USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_SNAPSHOT?.prSnapshots)
+    ? ADE_DB_SNAPSHOT.prSnapshots
+    : [];
 const ADE_DB_PR_SNAPSHOT_BY_ID = new Map<string, any>(
   ADE_DB_PR_SNAPSHOTS.map((snapshot) => [String(snapshot.prId), snapshot]),
 );
-const ADE_DB_OPERATIONS: any[] = USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_SNAPSHOT?.operations)
-  ? ADE_DB_SNAPSHOT.operations
-  : [];
-const ADE_DB_SESSIONS: any[] = USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_SNAPSHOT?.sessions)
-  ? ADE_DB_SNAPSHOT.sessions
-  : [];
+const ADE_DB_OPERATIONS: any[] =
+  USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_SNAPSHOT?.operations)
+    ? ADE_DB_SNAPSHOT.operations
+    : [];
+const ADE_DB_SESSIONS: any[] =
+  USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_SNAPSHOT?.sessions)
+    ? ADE_DB_SNAPSHOT.sessions
+    : [];
 /** Prefer exported DB rows when present; otherwise built-ins so Work is usable without a snapshot file. */
-const MOCK_SESSIONS: any[] = ADE_DB_SESSIONS.length > 0 ? ADE_DB_SESSIONS : BUILTIN_MOCK_SESSIONS;
-const ADE_DB_CHAT_TRANSCRIPTS: Record<string, { events?: any[]; path?: string | null }> =
-  USE_ADE_DB_SNAPSHOT && ADE_DB_SNAPSHOT?.chatTranscripts && typeof ADE_DB_SNAPSHOT.chatTranscripts === "object"
+const MOCK_SESSIONS: any[] =
+  ADE_DB_SESSIONS.length > 0 ? ADE_DB_SESSIONS : BUILTIN_MOCK_SESSIONS;
+const ADE_DB_CHAT_TRANSCRIPTS: Record<
+  string,
+  { events?: any[]; path?: string | null }
+> =
+  USE_ADE_DB_SNAPSHOT &&
+  ADE_DB_SNAPSHOT?.chatTranscripts &&
+  typeof ADE_DB_SNAPSHOT.chatTranscripts === "object"
     ? ADE_DB_SNAPSHOT.chatTranscripts
     : {};
-const ADE_DB_PROCESS_DEFINITIONS: any[] = USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_SNAPSHOT?.processDefinitions)
-  ? ADE_DB_SNAPSHOT.processDefinitions
-  : [];
-const ADE_DB_PROCESS_RUNTIME: any[] = USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_SNAPSHOT?.processRuntime)
-  ? ADE_DB_SNAPSHOT.processRuntime
-  : [];
-const ADE_DB_STACK_BUTTONS: any[] = USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_SNAPSHOT?.stackButtons)
-  ? ADE_DB_SNAPSHOT.stackButtons
-  : [];
-const ADE_DB_PROCESS_GROUPS: any[] = USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_SNAPSHOT?.processGroups)
-  ? ADE_DB_SNAPSHOT.processGroups
-  : [];
+const ADE_DB_PROCESS_DEFINITIONS: any[] =
+  USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_SNAPSHOT?.processDefinitions)
+    ? ADE_DB_SNAPSHOT.processDefinitions
+    : [];
+const ADE_DB_PROCESS_RUNTIME: any[] =
+  USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_SNAPSHOT?.processRuntime)
+    ? ADE_DB_SNAPSHOT.processRuntime
+    : [];
+const ADE_DB_STACK_BUTTONS: any[] =
+  USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_SNAPSHOT?.stackButtons)
+    ? ADE_DB_SNAPSHOT.stackButtons
+    : [];
+const ADE_DB_PROCESS_GROUPS: any[] =
+  USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_SNAPSHOT?.processGroups)
+    ? ADE_DB_SNAPSHOT.processGroups
+    : [];
 
-const usingBuiltinRunDemo = !USE_ADE_DB_SNAPSHOT || ADE_DB_PROCESS_DEFINITIONS.length === 0;
-const MOCK_PROCESS_DEFINITIONS: any[] = usingBuiltinRunDemo ? BUILTIN_RUN_PROCESS_DEFINITIONS : ADE_DB_PROCESS_DEFINITIONS;
-const MOCK_PROCESS_RUNTIME: any[] = usingBuiltinRunDemo ? BUILTIN_RUN_PROCESS_RUNTIME : ADE_DB_PROCESS_RUNTIME;
-const MOCK_STACK_BUTTONS: any[] = usingBuiltinRunDemo ? [] : ADE_DB_STACK_BUTTONS;
-const MOCK_PROCESS_GROUPS: any[] = usingBuiltinRunDemo ? BUILTIN_RUN_PROCESS_GROUPS : ADE_DB_PROCESS_GROUPS;
+const usingBuiltinRunDemo =
+  !USE_ADE_DB_SNAPSHOT || ADE_DB_PROCESS_DEFINITIONS.length === 0;
+const MOCK_PROCESS_DEFINITIONS: any[] = usingBuiltinRunDemo
+  ? BUILTIN_RUN_PROCESS_DEFINITIONS
+  : ADE_DB_PROCESS_DEFINITIONS;
+const MOCK_PROCESS_RUNTIME: any[] = usingBuiltinRunDemo
+  ? BUILTIN_RUN_PROCESS_RUNTIME
+  : ADE_DB_PROCESS_RUNTIME;
+const MOCK_STACK_BUTTONS: any[] = usingBuiltinRunDemo
+  ? []
+  : ADE_DB_STACK_BUTTONS;
+const MOCK_PROCESS_GROUPS: any[] = usingBuiltinRunDemo
+  ? BUILTIN_RUN_PROCESS_GROUPS
+  : ADE_DB_PROCESS_GROUPS;
 
-const ADE_DB_AUTOMATIONS = USE_ADE_DB_SNAPSHOT && ADE_DB_SNAPSHOT?.automations
-  ? ADE_DB_SNAPSHOT.automations
-  : null;
+const ADE_DB_AUTOMATIONS =
+  USE_ADE_DB_SNAPSHOT && ADE_DB_SNAPSHOT?.automations
+    ? ADE_DB_SNAPSHOT.automations
+    : null;
 
 function normalizeBrowserMockRelPath(rel: unknown): string {
-  let s = String(rel ?? "").trim().replace(/\\/g, "/");
+  let s = String(rel ?? "")
+    .trim()
+    .replace(/\\/g, "/");
   while (s.startsWith("./")) s = s.slice(2);
   if (s === "." || s === "/") return "";
   return s.replace(/\/+$/, "");
@@ -609,7 +659,8 @@ function languageIdForBrowserMockPath(relPath: string): string {
   const dot = lower.lastIndexOf(".");
   const ext = dot >= 0 ? lower.slice(dot) : "";
   if (ext === ".ts" || ext === ".tsx") return "typescript";
-  if (ext === ".js" || ext === ".jsx" || ext === ".mjs" || ext === ".cjs") return "javascript";
+  if (ext === ".js" || ext === ".jsx" || ext === ".mjs" || ext === ".cjs")
+    return "javascript";
   if (ext === ".json") return "json";
   if (ext === ".yml" || ext === ".yaml") return "yaml";
   if (ext === ".md") return "markdown";
@@ -621,19 +672,23 @@ function languageIdForBrowserMockPath(relPath: string): string {
 }
 
 /** Depth-1 listTree rows keyed by parent path ("" = workspace root), from `export-browser-mock-ade-snapshot.mjs`. */
-const ADE_DB_FILES_TREE_BY_WORKSPACE: Record<string, Record<string, any[]>> =
-  USE_ADE_DB_SNAPSHOT
-  && ADE_DB_SNAPSHOT?.filesTreeByWorkspace
-  && typeof ADE_DB_SNAPSHOT.filesTreeByWorkspace === "object"
-    ? ADE_DB_SNAPSHOT.filesTreeByWorkspace
-    : {};
+const ADE_DB_FILES_TREE_BY_WORKSPACE: Record<
+  string,
+  Record<string, any[]>
+> = USE_ADE_DB_SNAPSHOT &&
+ADE_DB_SNAPSHOT?.filesTreeByWorkspace &&
+typeof ADE_DB_SNAPSHOT.filesTreeByWorkspace === "object"
+  ? ADE_DB_SNAPSHOT.filesTreeByWorkspace
+  : {};
 
-const ADE_DB_FILES_CONTENTS_BY_WORKSPACE: Record<string, Record<string, any>> =
-  USE_ADE_DB_SNAPSHOT
-  && ADE_DB_SNAPSHOT?.filesContentsByWorkspace
-  && typeof ADE_DB_SNAPSHOT.filesContentsByWorkspace === "object"
-    ? ADE_DB_SNAPSHOT.filesContentsByWorkspace
-    : {};
+const ADE_DB_FILES_CONTENTS_BY_WORKSPACE: Record<
+  string,
+  Record<string, any>
+> = USE_ADE_DB_SNAPSHOT &&
+ADE_DB_SNAPSHOT?.filesContentsByWorkspace &&
+typeof ADE_DB_SNAPSHOT.filesContentsByWorkspace === "object"
+  ? ADE_DB_SNAPSHOT.filesContentsByWorkspace
+  : {};
 
 function makeBuiltinSyntheticFilesTreeIndex(): Record<string, any[]> {
   return {
@@ -654,8 +709,18 @@ function makeBuiltinSyntheticFilesTreeIndex(): Record<string, any[]> {
       },
     ],
     apps: [
-      { name: "desktop", path: "apps/desktop", type: "directory", changeStatus: null },
-      { name: "ade-cli", path: "apps/ade-cli", type: "directory", changeStatus: null },
+      {
+        name: "desktop",
+        path: "apps/desktop",
+        type: "directory",
+        changeStatus: null,
+      },
+      {
+        name: "ade-cli",
+        path: "apps/ade-cli",
+        type: "directory",
+        changeStatus: null,
+      },
     ],
     "apps/desktop": [
       {
@@ -664,7 +729,12 @@ function makeBuiltinSyntheticFilesTreeIndex(): Record<string, any[]> {
         type: "file",
         changeStatus: null,
       },
-      { name: "src", path: "apps/desktop/src", type: "directory", changeStatus: null },
+      {
+        name: "src",
+        path: "apps/desktop/src",
+        type: "directory",
+        changeStatus: null,
+      },
     ],
     "apps/desktop/src": [
       {
@@ -693,22 +763,32 @@ function makeBuiltinSyntheticFilesTreeIndex(): Record<string, any[]> {
   };
 }
 
-const BUILTIN_FILES_TREE_BY_WORKSPACE: Record<string, Record<string, any[]>> = Object.fromEntries(
-  MOCK_LANES.map((lane) => [String(lane.id), makeBuiltinSyntheticFilesTreeIndex()]),
+const BUILTIN_FILES_TREE_BY_WORKSPACE: Record<
+  string,
+  Record<string, any[]>
+> = Object.fromEntries(
+  MOCK_LANES.map((lane) => [
+    String(lane.id),
+    makeBuiltinSyntheticFilesTreeIndex(),
+  ]),
 );
 
 function getBrowserMockFilesWorkspaces(): any[] {
   return [...MOCK_LANES]
     .map((lane) => {
-      const laneType = lane.laneType === "primary" || lane.laneType === "attached" || lane.laneType === "worktree"
-        ? lane.laneType
-        : "worktree";
+      const laneType =
+        lane.laneType === "primary" ||
+        lane.laneType === "attached" ||
+        lane.laneType === "worktree"
+          ? lane.laneType
+          : "worktree";
       return {
         id: String(lane.id),
         kind: laneType,
         laneId: String(lane.id),
         name: String(lane.name ?? lane.id),
-        branchRef: typeof lane.branchRef === "string" ? lane.branchRef : undefined,
+        branchRef:
+          typeof lane.branchRef === "string" ? lane.branchRef : undefined,
         rootPath: String(lane.worktreePath ?? MOCK_PROJECT.rootPath),
         isReadOnlyByDefault: Boolean(lane.isEditProtected),
         mobileReadOnly: true,
@@ -722,7 +802,10 @@ function getBrowserMockFilesWorkspaces(): any[] {
     });
 }
 
-function getBrowserMockListTreeNodes(workspaceId: string, parentPath: string): any[] {
+function getBrowserMockListTreeNodes(
+  workspaceId: string,
+  parentPath: string,
+): any[] {
   const parentKey = normalizeBrowserMockRelPath(parentPath);
   const snapTree = ADE_DB_FILES_TREE_BY_WORKSPACE[workspaceId];
   if (snapTree && Object.prototype.hasOwnProperty.call(snapTree, parentKey)) {
@@ -737,15 +820,20 @@ function getBrowserMockListTreeNodes(workspaceId: string, parentPath: string): a
   return [];
 }
 
-function getBrowserMockReadFilePayload(workspaceId: string, relPath: string): any {
+function getBrowserMockReadFilePayload(
+  workspaceId: string,
+  relPath: string,
+): any {
   const normalized = normalizeBrowserMockRelPath(relPath);
-  const fromSnapshot = ADE_DB_FILES_CONTENTS_BY_WORKSPACE[workspaceId]?.[normalized];
+  const fromSnapshot =
+    ADE_DB_FILES_CONTENTS_BY_WORKSPACE[workspaceId]?.[normalized];
   if (fromSnapshot && typeof fromSnapshot.content === "string") {
     return {
       content: fromSnapshot.content,
       encoding: fromSnapshot.encoding ?? "utf-8",
       size: Number(fromSnapshot.size ?? fromSnapshot.content.length),
-      languageId: fromSnapshot.languageId ?? languageIdForBrowserMockPath(normalized),
+      languageId:
+        fromSnapshot.languageId ?? languageIdForBrowserMockPath(normalized),
       isBinary: Boolean(fromSnapshot.isBinary),
     };
   }
@@ -760,27 +848,39 @@ function getBrowserMockReadFilePayload(workspaceId: string, relPath: string): an
 }
 
 function isMockChatToolType(toolType: unknown): boolean {
-  const normalized = String(toolType ?? "").trim().toLowerCase();
+  const normalized = String(toolType ?? "")
+    .trim()
+    .toLowerCase();
   return Boolean(
-    normalized
-      && (
-        normalized === "codex-chat"
-        || normalized === "claude-chat"
-        || normalized === "opencode-chat"
-        || normalized === "cursor"
-        || normalized === "droid"
-        || normalized === "droid-chat"
-        || normalized.endsWith("-chat")
-      ),
+    normalized &&
+    (normalized === "codex-chat" ||
+      normalized === "claude-chat" ||
+      normalized === "opencode-chat" ||
+      normalized === "cursor" ||
+      normalized === "droid" ||
+      normalized === "droid-chat" ||
+      normalized.endsWith("-chat")),
   );
 }
 
-function inferMockChatProvider(session: any): "claude" | "codex" | "cursor" | "droid" | "opencode" {
-  const metadataProvider = String(session?.resumeMetadata?.provider ?? "").trim().toLowerCase();
-  if (metadataProvider === "claude" || metadataProvider === "codex" || metadataProvider === "cursor" || metadataProvider === "droid" || metadataProvider === "opencode") {
+function inferMockChatProvider(
+  session: any,
+): "claude" | "codex" | "cursor" | "droid" | "opencode" {
+  const metadataProvider = String(session?.resumeMetadata?.provider ?? "")
+    .trim()
+    .toLowerCase();
+  if (
+    metadataProvider === "claude" ||
+    metadataProvider === "codex" ||
+    metadataProvider === "cursor" ||
+    metadataProvider === "droid" ||
+    metadataProvider === "opencode"
+  ) {
     return metadataProvider;
   }
-  const toolType = String(session?.toolType ?? "").trim().toLowerCase();
+  const toolType = String(session?.toolType ?? "")
+    .trim()
+    .toLowerCase();
   if (toolType.startsWith("claude")) return "claude";
   if (toolType.startsWith("codex")) return "codex";
   if (toolType === "cursor" || toolType.startsWith("cursor")) return "cursor";
@@ -790,7 +890,9 @@ function inferMockChatProvider(session: any): "claude" | "codex" | "cursor" | "d
 
 function getMockChatTranscriptEvents(sessionId: string): any[] {
   const events = ADE_DB_CHAT_TRANSCRIPTS[sessionId]?.events;
-  return Array.isArray(events) ? events.filter((entry) => entry?.sessionId === sessionId && entry?.event) : [];
+  return Array.isArray(events)
+    ? events.filter((entry) => entry?.sessionId === sessionId && entry?.event)
+    : [];
 }
 
 function latestMockDoneEvent(events: any[]): any | null {
@@ -801,7 +903,9 @@ function latestMockDoneEvent(events: any[]): any | null {
   return null;
 }
 
-function fallbackMockModelForProvider(provider: "claude" | "codex" | "cursor" | "droid" | "opencode"): string {
+function fallbackMockModelForProvider(
+  provider: "claude" | "codex" | "cursor" | "droid" | "opencode",
+): string {
   if (provider === "claude") return "sonnet";
   if (provider === "codex") return DEFAULT_BROWSER_MOCK_CODEX_MODEL;
   if (provider === "cursor") return "auto";
@@ -809,7 +913,9 @@ function fallbackMockModelForProvider(provider: "claude" | "codex" | "cursor" | 
   return "opencode/mock";
 }
 
-function fallbackMockModelIdForProvider(provider: "claude" | "codex" | "cursor" | "droid" | "opencode"): string {
+function fallbackMockModelIdForProvider(
+  provider: "claude" | "codex" | "cursor" | "droid" | "opencode",
+): string {
   if (provider === "claude") return DEFAULT_BROWSER_MOCK_CLAUDE_MODEL;
   if (provider === "codex") return DEFAULT_BROWSER_MOCK_CODEX_MODEL;
   if (provider === "cursor") return "cursor/auto";
@@ -823,19 +929,20 @@ function mockAgentChatSummaryFromSession(session: any): any | null {
   const events = getMockChatTranscriptEvents(String(session.id));
   const done = latestMockDoneEvent(events);
   const modelId = String(
-    session.resumeMetadata?.modelId
-      ?? session.resumeMetadata?.launch?.modelId
-      ?? done?.modelId
-      ?? fallbackMockModelIdForProvider(provider),
+    session.resumeMetadata?.modelId ??
+      session.resumeMetadata?.launch?.modelId ??
+      done?.modelId ??
+      fallbackMockModelIdForProvider(provider),
   );
   const model = String(
-    session.resumeMetadata?.model
-      ?? session.resumeMetadata?.launch?.model
-      ?? done?.model
-      ?? fallbackMockModelForProvider(provider),
+    session.resumeMetadata?.model ??
+      session.resumeMetadata?.launch?.model ??
+      done?.model ??
+      fallbackMockModelForProvider(provider),
   );
   const endedAt = session.endedAt ?? null;
-  const lastActivityAt = session.lastActivityAt ?? session.endedAt ?? session.startedAt ?? now;
+  const lastActivityAt =
+    session.lastActivityAt ?? session.endedAt ?? session.startedAt ?? now;
   const status = session.status === "running" ? "idle" : "ended";
   return {
     sessionId: String(session.id),
@@ -851,12 +958,16 @@ function mockAgentChatSummaryFromSession(session: any): any | null {
     executionMode: session.resumeMetadata?.executionMode ?? null,
     permissionMode: session.resumeMetadata?.permissionMode ?? null,
     interactionMode: session.resumeMetadata?.interactionMode ?? null,
-    claudePermissionMode: session.resumeMetadata?.claudePermissionMode ?? undefined,
-    codexApprovalPolicy: session.resumeMetadata?.codexApprovalPolicy ?? undefined,
+    claudePermissionMode:
+      session.resumeMetadata?.claudePermissionMode ?? undefined,
+    codexApprovalPolicy:
+      session.resumeMetadata?.codexApprovalPolicy ?? undefined,
     codexSandbox: session.resumeMetadata?.codexSandbox ?? undefined,
     codexConfigSource: session.resumeMetadata?.codexConfigSource ?? undefined,
-    opencodePermissionMode: session.resumeMetadata?.opencodePermissionMode ?? undefined,
-    droidPermissionMode: session.resumeMetadata?.droidPermissionMode ?? undefined,
+    opencodePermissionMode:
+      session.resumeMetadata?.opencodePermissionMode ?? undefined,
+    droidPermissionMode:
+      session.resumeMetadata?.droidPermissionMode ?? undefined,
     cursorModeSnapshot: session.resumeMetadata?.cursorModeSnapshot ?? undefined,
     cursorModeId: session.resumeMetadata?.cursorModeId ?? null,
     cursorConfigValues: session.resumeMetadata?.cursorConfigValues ?? null,
@@ -880,9 +991,9 @@ function mockAgentChatSummaryFromSession(session: any): any | null {
 }
 
 function listMockAgentChatSummaries(args: any = {}): any[] {
-  let rows = MOCK_SESSIONS
-    .map(mockAgentChatSummaryFromSession)
-    .filter((session): session is any => Boolean(session));
+  let rows = MOCK_SESSIONS.map(mockAgentChatSummaryFromSession).filter(
+    (session): session is any => Boolean(session),
+  );
   if (typeof args?.laneId === "string" && args.laneId.trim()) {
     rows = rows.filter((session) => session.laneId === args.laneId.trim());
   }
@@ -1215,7 +1326,9 @@ const INTEGRATION_PRS: any[] = [
 
 // ── All PRs combined ──────────────────────────────────────────
 const ALL_PRS = USE_ADE_DB_SNAPSHOT
-  ? (Array.isArray(ADE_DB_SNAPSHOT?.prs) ? ADE_DB_SNAPSHOT.prs : [])
+  ? Array.isArray(ADE_DB_SNAPSHOT?.prs)
+    ? ADE_DB_SNAPSHOT.prs
+    : []
   : [...NORMAL_PRS, ...QUEUE_PRS, ...INTEGRATION_PRS];
 
 // ── Merge Contexts ────────────────────────────────────────────
@@ -1931,7 +2044,9 @@ const BUILTIN_MOCK_REBASE_NEEDS: any[] = [
 ];
 
 const MOCK_REBASE_NEEDS: any[] = USE_ADE_DB_SNAPSHOT
-  ? (Array.isArray(ADE_DB_SNAPSHOT?.rebaseNeeds) ? ADE_DB_SNAPSHOT.rebaseNeeds : [])
+  ? Array.isArray(ADE_DB_SNAPSHOT?.rebaseNeeds)
+    ? ADE_DB_SNAPSHOT.rebaseNeeds
+    : []
   : BUILTIN_MOCK_REBASE_NEEDS;
 
 // ── Queue Landing State ───────────────────────────────────────
@@ -2044,12 +2159,15 @@ const BUILTIN_MOCK_QUEUE_STATE: Record<string, any> = {
 
 const MOCK_QUEUE_STATE: Record<string, any> = USE_ADE_DB_SNAPSHOT
   ? Object.fromEntries(
-      (Array.isArray(ADE_DB_SNAPSHOT?.queueStates) ? ADE_DB_SNAPSHOT.queueStates : []).flatMap(
-        (state: any) => {
-          const keys = [state?.groupId, state?.queueId].filter(Boolean).map(String);
-          return keys.map((key) => [key, state]);
-        },
-      ),
+      (Array.isArray(ADE_DB_SNAPSHOT?.queueStates)
+        ? ADE_DB_SNAPSHOT.queueStates
+        : []
+      ).flatMap((state: any) => {
+        const keys = [state?.groupId, state?.queueId]
+          .filter(Boolean)
+          .map(String);
+        return keys.map((key) => [key, state]);
+      }),
     )
   : BUILTIN_MOCK_QUEUE_STATE;
 
@@ -2221,7 +2339,9 @@ const BUILTIN_MOCK_INTEGRATION_WORKFLOWS: any[] = [
 ];
 
 const MOCK_INTEGRATION_WORKFLOWS: any[] = USE_ADE_DB_SNAPSHOT
-  ? (Array.isArray(ADE_DB_SNAPSHOT?.integrationWorkflows) ? ADE_DB_SNAPSHOT.integrationWorkflows : [])
+  ? Array.isArray(ADE_DB_SNAPSHOT?.integrationWorkflows)
+    ? ADE_DB_SNAPSHOT.integrationWorkflows
+    : []
   : BUILTIN_MOCK_INTEGRATION_WORKFLOWS;
 
 const BUILTIN_MOCK_GITHUB_SNAPSHOT: any = {
@@ -2311,9 +2431,10 @@ const BUILTIN_MOCK_GITHUB_SNAPSHOT: any = {
   ],
 };
 
-const MOCK_GITHUB_SNAPSHOT: any = USE_ADE_DB_SNAPSHOT && ADE_DB_SNAPSHOT?.githubSnapshot
-  ? ADE_DB_SNAPSHOT.githubSnapshot
-  : BUILTIN_MOCK_GITHUB_SNAPSHOT;
+const MOCK_GITHUB_SNAPSHOT: any =
+  USE_ADE_DB_SNAPSHOT && ADE_DB_SNAPSHOT?.githubSnapshot
+    ? ADE_DB_SNAPSHOT.githubSnapshot
+    : BUILTIN_MOCK_GITHUB_SNAPSHOT;
 
 // ═══════════════════════════════════════════════════════════════
 // Wire it up
@@ -2329,13 +2450,19 @@ const MOCK_GITHUB_SNAPSHOT: any = USE_ADE_DB_SNAPSHOT && ADE_DB_SNAPSHOT?.github
  */
 function shouldInstallBrowserMock(target: Window): boolean {
   const w = target as any;
-  return !(w.ade && !w.__adeBrowserMock && typeof w.ade.sync?.getStatus === "function");
+  return !(
+    w.ade &&
+    !w.__adeBrowserMock &&
+    typeof w.ade.sync?.getStatus === "function"
+  );
 }
 
 if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
   const w = window as any;
   if (w.ade) {
-    console.warn("[ADE] Re-applying full window.ade browser mock (e.g. Vite HMR).");
+    console.warn(
+      "[ADE] Re-applying full window.ade browser mock (e.g. Vite HMR).",
+    );
   } else {
     console.warn(
       "[ADE] Running outside Electron — injecting browser mock for window.ade",
@@ -2437,7 +2564,12 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
 
   const BROWSER_MOCK_AI_STATUS: any = {
     mode: "guest",
-    availableProviders: { claude: false, codex: false, cursor: false, droid: false },
+    availableProviders: {
+      claude: false,
+      codex: false,
+      cursor: false,
+      droid: false,
+    },
     models: { claude: [], codex: [], cursor: [], droid: [] },
     features: [],
     providerConnections: {
@@ -2481,9 +2613,10 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     lastPolledAt: now,
     errors: [],
   };
-  const BROWSER_USAGE_SNAPSHOT: any = USE_ADE_DB_SNAPSHOT && ADE_DB_SNAPSHOT?.usageSnapshot
-    ? ADE_DB_SNAPSHOT.usageSnapshot
-    : BROWSER_MOCK_USAGE_SNAPSHOT;
+  const BROWSER_USAGE_SNAPSHOT: any =
+    USE_ADE_DB_SNAPSHOT && ADE_DB_SNAPSHOT?.usageSnapshot
+      ? ADE_DB_SNAPSHOT.usageSnapshot
+      : BROWSER_MOCK_USAGE_SNAPSHOT;
 
   const BROWSER_MOCK_BUDGET_CONFIG: any = {
     refreshIntervalMin: 15,
@@ -2578,9 +2711,10 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       totalCostUsd: 0,
     },
   };
-  const BROWSER_MISSION_DASHBOARD: any = USE_ADE_DB_SNAPSHOT && ADE_DB_SNAPSHOT?.missionDashboard
-    ? ADE_DB_SNAPSHOT.missionDashboard
-    : BROWSER_MOCK_MISSION_DASHBOARD;
+  const BROWSER_MISSION_DASHBOARD: any =
+    USE_ADE_DB_SNAPSHOT && ADE_DB_SNAPSHOT?.missionDashboard
+      ? ADE_DB_SNAPSHOT.missionDashboard
+      : BROWSER_MOCK_MISSION_DASHBOARD;
 
   const BROWSER_MOCK_EMPTY_FULL_MISSION_VIEW: any = {
     mission: null,
@@ -2641,9 +2775,48 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           v8: "0.0.0-browser",
         },
         env: {},
+        localRuntime: {
+          connectionState: "idle",
+          serviceInstall: {
+            state: "skipped",
+            attempted: false,
+            path: null,
+            message:
+              "Background service installation is not available in the browser mock.",
+            exitCode: null,
+            updatedAt: null,
+          },
+          serviceHealth: {
+            state: "unsupported",
+            installed: null,
+            running: null,
+            path: null,
+            message:
+              "Background service status is not available in the browser mock.",
+            checkedAt: null,
+          },
+        },
       }),
       getProject: resolved(MOCK_PROJECT),
+      getWindowSession: resolved({
+        windowId: 1,
+        project: MOCK_PROJECT,
+        binding: {
+          kind: "local",
+          key: `local:${MOCK_PROJECT.rootPath}`,
+          rootPath: MOCK_PROJECT.rootPath,
+          displayName: MOCK_PROJECT.name,
+        },
+      }),
+      newWindow: resolved({ windowId: 2 }),
+      openProjectInNewWindow: resolvedArg({
+        windowId: 2,
+        project: MOCK_PROJECT,
+      }),
+      closeWindow: resolvedArg({ closed: false }),
       onProjectChanged: () => () => {},
+      onProjectBindingChanged: () => () => {},
+      onNavigate: () => () => {},
       openExternal: resolvedArg(undefined),
       revealPath: resolvedArg(undefined),
       writeClipboardText: resolvedArg(undefined),
@@ -2660,7 +2833,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       chooseDirectory: resolvedArg(null),
       browseDirectories: async (args?: { inputPath?: string }) => {
         const inputPath =
-          typeof args?.inputPath === "string" && args.inputPath.trim().length > 0
+          typeof args?.inputPath === "string" &&
+          args.inputPath.trim().length > 0
             ? args.inputPath
             : "~/";
         return {
@@ -2694,9 +2868,17 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       }),
       listRecent: resolved([]),
       closeCurrent: resolved(undefined),
-      resolveIcon: resolvedArg({ dataUrl: null, sourcePath: null, mimeType: null }),
+      resolveIcon: resolvedArg({
+        dataUrl: null,
+        sourcePath: null,
+        mimeType: null,
+      }),
       chooseIcon: resolvedArg(null),
-      removeIcon: resolvedArg({ dataUrl: null, sourcePath: null, mimeType: null }),
+      removeIcon: resolvedArg({
+        dataUrl: null,
+        sourcePath: null,
+        mimeType: null,
+      }),
       switchToPath: resolvedArg(MOCK_PROJECT),
       forgetRecent: resolvedArg([]),
       reorderRecent: resolvedArg([]),
@@ -2724,6 +2906,160 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       onMissing: noop,
       onStateEvent: noop,
     },
+    remoteRuntime: {
+      listTargets: resolved([]),
+      getConnectionSnapshot: resolved({
+        connections: [],
+        connectedCount: 0,
+        updatedAt: Date.now(),
+      }),
+      onConnectionSnapshotChanged: noop,
+      listDiscoveredMachines: resolved([]),
+      saveTarget: resolvedArg({
+        id: "mock-remote",
+        name: "Mock remote",
+        hostname: "mock.local",
+        sshUser: "ade",
+        port: 22,
+        sshKeyPath: null,
+        lastSeenArch: null,
+        runtimeBinaryVersion: null,
+        lastConnectedAt: null,
+      }),
+      removeTarget: resolvedArg({ removed: true }),
+      connect: resolvedArg({
+        target: {
+          id: "mock-remote",
+          name: "Mock remote",
+          hostname: "mock.local",
+          sshUser: "ade",
+          port: 22,
+          sshKeyPath: null,
+          lastSeenArch: "darwin-arm64",
+          runtimeBinaryVersion: "0.0.0-browser",
+          lastConnectedAt: Date.now(),
+        },
+        arch: "darwin-arm64",
+        version: "0.0.0-browser",
+        projects: [],
+      }),
+      listProjects: resolvedArg([]),
+      addProject: async (_id: string, rootPath: string) => ({
+        projectId: `mock-${
+          rootPath
+            .replace(/[^a-z0-9]+/gi, "-")
+            .replace(/^-|-$/g, "")
+            .toLowerCase() || "project"
+        }`,
+        rootPath,
+        displayName:
+          rootPath.split(/[\\/]/).filter(Boolean).at(-1) || "Mock project",
+        addedAt: Date.now(),
+        lastOpenedAt: Date.now(),
+        gitOriginUrl: null,
+      }),
+      browseDirectories: resolvedArg2({
+        inputPath: "",
+        resolvedPath: "/Users/ade",
+        directoryPath: "/Users/ade",
+        parentPath: "/Users",
+        exactDirectoryPath: "/Users/ade",
+        openableProjectRoot: null,
+        entries: [],
+      }),
+      getProjectDetail: async (_id: string, rootPath: string) => ({
+        rootPath,
+        isGitRepo: true,
+        branchName: "main",
+        dirtyCount: 0,
+        aheadBehind: { ahead: 0, behind: 0 },
+        lastCommit: null,
+        readmeExcerpt: null,
+        languages: [],
+        laneCount: 0,
+        lastOpenedAt: null,
+        subdirectoryCount: 0,
+      }),
+      getDefaultParentDir: resolved("/Users/ade/Projects"),
+      createProject: async (
+        _id: string,
+        input: { name: string; parentDir: string },
+      ) => {
+        const rootPath = `${input.parentDir.replace(/\/+$/g, "")}/${input.name}`;
+        return {
+          projectId: `mock-${input.name}`,
+          rootPath,
+          displayName: input.name,
+          addedAt: Date.now(),
+          lastOpenedAt: Date.now(),
+          gitOriginUrl: null,
+        };
+      },
+      cloneProject: async (
+        _id: string,
+        input: { url: string; parentDir: string; name?: string },
+      ) => {
+        const name =
+          input.name ||
+          input.url
+            .split(/[/:]/)
+            .pop()
+            ?.replace(/\.git$/i, "") ||
+          "repo";
+        const rootPath = `${input.parentDir.replace(/\/+$/g, "")}/${name}`;
+        return {
+          projectId: `mock-${name}`,
+          rootPath,
+          displayName: name,
+          addedAt: Date.now(),
+          lastOpenedAt: Date.now(),
+          gitOriginUrl: input.url,
+        };
+      },
+      listMyGitHubRepos: resolvedArg2({ repos: [] }),
+      openProject: async (id: string, projectId: string) => ({
+        kind: "remote" as const,
+        key: `remote:${id}:${projectId}`,
+        targetId: id,
+        runtimeName: "Mock remote",
+        projectId,
+        rootPath: "/Users/ade/mock-project",
+        displayName: "mock-project",
+      }),
+      callAction: async (
+        _id: string,
+        _projectId: string,
+        request: { domain: string; action: string },
+      ) => ({
+        domain: request.domain,
+        action: request.action,
+        result:
+          request.domain === "lane" && request.action === "list"
+            ? [
+                {
+                  id: "lane-main",
+                  name: "Main",
+                  branchName: "main",
+                  laneType: "primary",
+                },
+              ]
+            : null,
+        statusHints: {},
+      }),
+      streamEvents: resolvedArg({ events: [], nextCursor: 0, hasMore: false }),
+      checkLocalWork: async (_id: string, project: {
+        projectId: string;
+        displayName: string;
+        gitOriginUrl: string | null;
+      }) => ({
+        remoteProjectId: project.projectId,
+        remoteDisplayName: project.displayName,
+        remoteGitOriginUrl: project.gitOriginUrl,
+        matches: [],
+        hasDirtyWork: false,
+      }),
+      disconnect: resolvedArg({ disconnected: true }),
+    },
     keybindings: {
       get: resolved({ definitions: [], overrides: [] }),
       set: resolvedArg({ definitions: [], overrides: [] }),
@@ -2744,6 +3080,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       transferBrainToLocal: resolved(BROWSER_MOCK_SYNC_SNAPSHOT),
       getPin: resolved({ pin: null }),
       setPin: resolvedArg(BROWSER_MOCK_SYNC_SNAPSHOT),
+      generatePin: resolved(BROWSER_MOCK_SYNC_SNAPSHOT),
       clearPin: resolved(BROWSER_MOCK_SYNC_SNAPSHOT),
       setActiveLanePresence: resolvedArg(undefined),
       onEvent: () => () => {},
@@ -2821,14 +3158,17 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           available: false,
           version: null,
           detail: "Browser preview does not run local VM providers.",
-          docsUrl: "https://cua.ai/docs/lume/guide/getting-started/installation",
+          docsUrl:
+            "https://cua.ai/docs/lume/guide/getting-started/installation",
         },
         tools: [],
         laneVm: null,
         vms: [],
         docs: {
-          appleVirtualization: "https://developer.apple.com/documentation/virtualization",
-          appleSharedDirectories: "https://developer.apple.com/documentation/virtualization/vzvirtiofilesystemdeviceconfiguration",
+          appleVirtualization:
+            "https://developer.apple.com/documentation/virtualization",
+          appleSharedDirectories:
+            "https://developer.apple.com/documentation/virtualization/vzvirtiofilesystemdeviceconfiguration",
           lume: "https://cua.ai/docs/lume/guide/fundamentals/vm-management",
         },
       }),
@@ -2963,7 +3303,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       resetTourProgress: resolvedArg(BROWSER_MOCK_TOUR_PROGRESS),
       markTourCompletedVariant: resolvedArg2(BROWSER_MOCK_TOUR_PROGRESS),
       markTourDismissedVariant: resolvedArg2(BROWSER_MOCK_TOUR_PROGRESS),
-      updateTourStepVariant: async (_a: any, _b: any, _c: any) => BROWSER_MOCK_TOUR_PROGRESS,
+      updateTourStepVariant: async (_a: any, _b: any, _c: any) =>
+        BROWSER_MOCK_TOUR_PROGRESS,
       tutorial: {
         start: resolved(BROWSER_MOCK_TOUR_PROGRESS),
         dismiss: resolvedArg(BROWSER_MOCK_TOUR_PROGRESS),
@@ -2975,60 +3316,67 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       },
     },
     automations: {
-      list: resolved(USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_AUTOMATIONS?.rules) ? ADE_DB_AUTOMATIONS.rules : [
-        {
-          id: "auto-session-review",
-          name: "PR follow-up thread",
-          description:
-            "When a pull request changes, send a focused follow-up prompt to an automation-owned chat thread.",
-          enabled: true,
-          mode: "review",
-          triggers: [{ type: "git.pr_updated", branch: "main" }],
-          trigger: { type: "git.pr_updated", branch: "main" },
-          execution: {
-            kind: "agent-session",
-            session: { title: "PR follow-up thread" },
-          },
-          executor: { mode: "automation-bot" },
-          modelConfig: {
-            orchestratorModel: {
-              modelId: "anthropic/claude-sonnet-4-6",
-              thinkingLevel: "medium",
-            },
-          },
-          permissionConfig: {
-            providers: {
-              opencode: "edit",
-              claude: "plan",
-              codexSandbox: "workspace-write",
-              allowedTools: ["git", "github"],
-            },
-          },
-          prompt:
-            "Review the latest PR update and leave a concise follow-up summary with any high-signal next steps.",
-          reviewProfile: "incremental",
-          toolPalette: ["repo", "git", "github", "memory", "mission"],
-          contextSources: [
-            { type: "project-memory" },
-            { type: "automation-memory" },
-          ],
-          memory: { mode: "automation-plus-project" },
-          guardrails: {},
-          outputs: { disposition: "comment-only", createArtifact: true },
-          verification: { verifyBeforePublish: false, mode: "intervention" },
-          billingCode: "auto:session-review",
-          actions: [],
-          running: false,
-          lastRunAt: now,
-          lastRunStatus: "succeeded",
-          confidence: {
-            value: 0.84,
-            label: "high",
-            reason:
-              "Recent runs consistently produced concise PR follow-up notes.",
-          },
-        },
-      ]),
+      list: resolved(
+        USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_AUTOMATIONS?.rules)
+          ? ADE_DB_AUTOMATIONS.rules
+          : [
+              {
+                id: "auto-session-review",
+                name: "PR follow-up thread",
+                description:
+                  "When a pull request changes, send a focused follow-up prompt to an automation-owned chat thread.",
+                enabled: true,
+                mode: "review",
+                triggers: [{ type: "git.pr_updated", branch: "main" }],
+                trigger: { type: "git.pr_updated", branch: "main" },
+                execution: {
+                  kind: "agent-session",
+                  session: { title: "PR follow-up thread" },
+                },
+                executor: { mode: "automation-bot" },
+                modelConfig: {
+                  orchestratorModel: {
+                    modelId: "anthropic/claude-sonnet-4-6",
+                    thinkingLevel: "medium",
+                  },
+                },
+                permissionConfig: {
+                  providers: {
+                    opencode: "edit",
+                    claude: "plan",
+                    codexSandbox: "workspace-write",
+                    allowedTools: ["git", "github"],
+                  },
+                },
+                prompt:
+                  "Review the latest PR update and leave a concise follow-up summary with any high-signal next steps.",
+                reviewProfile: "incremental",
+                toolPalette: ["repo", "git", "github", "memory", "mission"],
+                contextSources: [
+                  { type: "project-memory" },
+                  { type: "automation-memory" },
+                ],
+                memory: { mode: "automation-plus-project" },
+                guardrails: {},
+                outputs: { disposition: "comment-only", createArtifact: true },
+                verification: {
+                  verifyBeforePublish: false,
+                  mode: "intervention",
+                },
+                billingCode: "auto:session-review",
+                actions: [],
+                running: false,
+                lastRunAt: now,
+                lastRunStatus: "succeeded",
+                confidence: {
+                  value: 0.84,
+                  label: "high",
+                  reason:
+                    "Recent runs consistently produced concise PR follow-up notes.",
+                },
+              },
+            ],
+      ),
       toggle: resolvedArg([]),
       triggerManually: resolvedArg({
         id: "run-1",
@@ -3049,32 +3397,36 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         summary: "Manual run completed.",
         billingCode: "auto:session-review",
       }),
-      getHistory: resolvedArg(USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_AUTOMATIONS?.runs) ? ADE_DB_AUTOMATIONS.runs : [
-        {
-          id: "run-1",
-          automationId: "auto-session-review",
-          chatSessionId: "chat-auto-1",
-          missionId: null,
-          triggerType: "git.pr_updated",
-          startedAt: now,
-          endedAt: now,
-          status: "succeeded",
-          executionKind: "agent-session",
-          actionsCompleted: 1,
-          actionsTotal: 1,
-          errorMessage: null,
-          spendUsd: 1.32,
-          confidence: {
-            value: 0.81,
-            label: "high",
-            reason: "Automation summarized the latest PR update clearly.",
-          },
-          triggerMetadata: { repository: "ADE", branch: "main" },
-          summary:
-            "Summarized the latest PR update and suggested next review points.",
-          billingCode: "auto:session-review",
-        },
-      ]),
+      getHistory: resolvedArg(
+        USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_AUTOMATIONS?.runs)
+          ? ADE_DB_AUTOMATIONS.runs
+          : [
+              {
+                id: "run-1",
+                automationId: "auto-session-review",
+                chatSessionId: "chat-auto-1",
+                missionId: null,
+                triggerType: "git.pr_updated",
+                startedAt: now,
+                endedAt: now,
+                status: "succeeded",
+                executionKind: "agent-session",
+                actionsCompleted: 1,
+                actionsTotal: 1,
+                errorMessage: null,
+                spendUsd: 1.32,
+                confidence: {
+                  value: 0.81,
+                  label: "high",
+                  reason: "Automation summarized the latest PR update clearly.",
+                },
+                triggerMetadata: { repository: "ADE", branch: "main" },
+                summary:
+                  "Summarized the latest PR update and suggested next review points.",
+                billingCode: "auto:session-review",
+              },
+            ],
+      ),
       getRunDetail: resolvedArg({
         run: {
           id: "run-1",
@@ -3145,32 +3497,36 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           receivedAt: now,
         },
       }),
-      listRuns: resolvedArg(USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_AUTOMATIONS?.runs) ? ADE_DB_AUTOMATIONS.runs : [
-        {
-          id: "run-1",
-          automationId: "auto-session-review",
-          chatSessionId: "chat-auto-1",
-          missionId: null,
-          triggerType: "git.pr_updated",
-          startedAt: now,
-          endedAt: now,
-          status: "succeeded",
-          executionKind: "agent-session",
-          actionsCompleted: 1,
-          actionsTotal: 1,
-          errorMessage: null,
-          spendUsd: 1.32,
-          confidence: {
-            value: 0.81,
-            label: "high",
-            reason: "Automation summarized the latest PR update clearly.",
-          },
-          triggerMetadata: { repository: "ADE", branch: "main" },
-          summary:
-            "Summarized the latest PR update and suggested next review points.",
-          billingCode: "auto:session-review",
-        },
-      ]),
+      listRuns: resolvedArg(
+        USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_AUTOMATIONS?.runs)
+          ? ADE_DB_AUTOMATIONS.runs
+          : [
+              {
+                id: "run-1",
+                automationId: "auto-session-review",
+                chatSessionId: "chat-auto-1",
+                missionId: null,
+                triggerType: "git.pr_updated",
+                startedAt: now,
+                endedAt: now,
+                status: "succeeded",
+                executionKind: "agent-session",
+                actionsCompleted: 1,
+                actionsTotal: 1,
+                errorMessage: null,
+                spendUsd: 1.32,
+                confidence: {
+                  value: 0.81,
+                  label: "high",
+                  reason: "Automation summarized the latest PR update clearly.",
+                },
+                triggerMetadata: { repository: "ADE", branch: "main" },
+                summary:
+                  "Summarized the latest PR update and suggested next review points.",
+                billingCode: "auto:session-review",
+              },
+            ],
+      ),
       getIngressStatus: resolved({
         githubRelay: {
           configured: true,
@@ -3193,21 +3549,25 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           lastError: null,
         },
       }),
-      listIngressEvents: resolvedArg(USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_AUTOMATIONS?.ingressEvents) ? ADE_DB_AUTOMATIONS.ingressEvents : [
-        {
-          id: "ingress-1",
-          source: "github-relay",
-          eventKey: "delivery-1",
-          automationIds: ["auto-session-review"],
-          triggerType: "git.pr_updated",
-          eventName: "pull_request",
-          status: "dispatched",
-          summary: "PR synchronize event dispatched to matching rules.",
-          errorMessage: null,
-          cursor: "cursor-1",
-          receivedAt: now,
-        },
-      ]),
+      listIngressEvents: resolvedArg(
+        USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_AUTOMATIONS?.ingressEvents)
+          ? ADE_DB_AUTOMATIONS.ingressEvents
+          : [
+              {
+                id: "ingress-1",
+                source: "github-relay",
+                eventKey: "delivery-1",
+                automationIds: ["auto-session-review"],
+                triggerType: "git.pr_updated",
+                eventName: "pull_request",
+                status: "dispatched",
+                summary: "PR synchronize event dispatched to matching rules.",
+                errorMessage: null,
+                cursor: "cursor-1",
+                receivedAt: now,
+              },
+            ],
+      ),
       parseNaturalLanguage: resolvedArg({
         draft: {
           name: "Mock automation",
@@ -3265,22 +3625,25 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           color: lane.color ?? null,
         })),
         recentCommitsByLane: Object.fromEntries(
-          MOCK_LANES.map((lane) => [lane.id, [
-            {
-              sha: "abc1234567890",
-              shortSha: "abc1234",
-              subject: `Recent work on ${lane.name}`,
-              authoredAt: now,
-              pushed: false,
-            },
-            {
-              sha: "def4567890123",
-              shortSha: "def4567",
-              subject: `Follow-up fix on ${lane.name}`,
-              authoredAt: yesterday,
-              pushed: true,
-            },
-          ]]),
+          MOCK_LANES.map((lane) => [
+            lane.id,
+            [
+              {
+                sha: "abc1234567890",
+                shortSha: "abc1234",
+                subject: `Recent work on ${lane.name}`,
+                authoredAt: now,
+                pushed: false,
+              },
+              {
+                sha: "def4567890123",
+                shortSha: "def4567",
+                subject: `Follow-up fix on ${lane.name}`,
+                authoredAt: yesterday,
+                pushed: true,
+              },
+            ],
+          ]),
         ),
         recommendedModelId: DEFAULT_BROWSER_MOCK_CODEX_MODEL,
       }),
@@ -3289,18 +3652,32 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           id: "review-run-1",
           projectId: MOCK_PROJECT.id,
           laneId: MOCK_LANES[1]?.id ?? "lane-auth",
-          target: { mode: "lane_diff", laneId: MOCK_LANES[1]?.id ?? "lane-auth" },
+          target: {
+            mode: "lane_diff",
+            laneId: MOCK_LANES[1]?.id ?? "lane-auth",
+          },
           config: {
             compareAgainst: { kind: "default_branch" },
             selectionMode: "full_diff",
             dirtyOnly: false,
             modelId: DEFAULT_BROWSER_MOCK_CODEX_MODEL,
             reasoningEffort: "medium",
-            budgets: { maxFiles: 60, maxDiffChars: 180000, maxPromptChars: 220000, maxFindings: 12 },
+            budgets: {
+              maxFiles: 60,
+              maxDiffChars: 180000,
+              maxPromptChars: 220000,
+              maxFindings: 12,
+            },
             publishBehavior: "local_only",
           },
           targetLabel: "feature/auth-flow vs main",
-          compareTarget: { kind: "default_branch", label: "main", ref: "main", laneId: null, branchRef: "main" },
+          compareTarget: {
+            kind: "default_branch",
+            label: "main",
+            ref: "main",
+            laneId: null,
+            branchRef: "main",
+          },
           status: "completed",
           summary: "Found two actionable risks in the auth flow changes.",
           errorMessage: null,
@@ -3324,11 +3701,22 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           dirtyOnly: false,
           modelId: DEFAULT_BROWSER_MOCK_CODEX_MODEL,
           reasoningEffort: "medium",
-          budgets: { maxFiles: 60, maxDiffChars: 180000, maxPromptChars: 220000, maxFindings: 12 },
+          budgets: {
+            maxFiles: 60,
+            maxDiffChars: 180000,
+            maxPromptChars: 220000,
+            maxFindings: 12,
+          },
           publishBehavior: "local_only",
         },
         targetLabel: "feature/auth-flow vs main",
-        compareTarget: { kind: "default_branch", label: "main", ref: "main", laneId: null, branchRef: "main" },
+        compareTarget: {
+          kind: "default_branch",
+          label: "main",
+          ref: "main",
+          laneId: null,
+          branchRef: "main",
+        },
         status: "completed",
         summary: "Found two actionable risks in the auth flow changes.",
         errorMessage: null,
@@ -3350,7 +3738,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             evidence: [
               {
                 kind: "diff_hunk",
-                summary: "Session write happens before token exchange success is confirmed.",
+                summary:
+                  "Session write happens before token exchange success is confirmed.",
                 filePath: "src/auth/oauth.ts",
                 line: 128,
                 quote: "saveSession(session);",
@@ -3385,7 +3774,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             artifactType: "diff_bundle",
             title: "Diff bundle",
             mimeType: "text/plain",
-            contentText: "diff --git a/src/auth/oauth.ts b/src/auth/oauth.ts\n@@ ...",
+            contentText:
+              "diff --git a/src/auth/oauth.ts b/src/auth/oauth.ts\n@@ ...",
             metadata: null,
             createdAt: now,
           },
@@ -3405,7 +3795,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           startedAt: yesterday,
           endedAt: now,
           lastActivityAt: now,
-          lastOutputPreview: "Found two actionable risks in the auth flow changes.",
+          lastOutputPreview:
+            "Found two actionable risks in the auth flow changes.",
           summary: "Saved review transcript for local diff review.",
         },
       }),
@@ -3420,7 +3811,12 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           dirtyOnly: false,
           modelId: DEFAULT_BROWSER_MOCK_CODEX_MODEL,
           reasoningEffort: "medium",
-          budgets: { maxFiles: 60, maxDiffChars: 180000, maxPromptChars: 220000, maxFindings: 12 },
+          budgets: {
+            maxFiles: 60,
+            maxDiffChars: 180000,
+            maxPromptChars: 220000,
+            maxFindings: 12,
+          },
           publishBehavior: "local_only",
         },
         targetLabel: "feature/auth-flow review",
@@ -3447,7 +3843,12 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           dirtyOnly: false,
           modelId: DEFAULT_BROWSER_MOCK_CODEX_MODEL,
           reasoningEffort: "medium",
-          budgets: { maxFiles: 60, maxDiffChars: 180000, maxPromptChars: 220000, maxFindings: 12 },
+          budgets: {
+            maxFiles: 60,
+            maxDiffChars: 180000,
+            maxPromptChars: 220000,
+            maxFindings: 12,
+          },
           publishBehavior: "local_only",
         },
         targetLabel: "feature/auth-flow review",
@@ -3489,8 +3890,16 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         recentFeedback: [],
         byClass: [
           { findingClass: "intent_drift" as const, total: 4, addressed: 2 },
-          { findingClass: "incomplete_rollout" as const, total: 5, addressed: 3 },
-          { findingClass: "late_stage_regression" as const, total: 2, addressed: 1 },
+          {
+            findingClass: "incomplete_rollout" as const,
+            total: 5,
+            addressed: 3,
+          },
+          {
+            findingClass: "late_stage_regression" as const,
+            total: 2,
+            addressed: 1,
+          },
         ],
       }),
       onEvent: noop,
@@ -3500,30 +3909,52 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     },
     missions: {
       list: async (args: any = {}) => {
-        const rows = USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_SNAPSHOT?.missions)
-          ? ADE_DB_SNAPSHOT.missions
-          : [];
+        const rows =
+          USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_SNAPSHOT?.missions)
+            ? ADE_DB_SNAPSHOT.missions
+            : [];
         const status = typeof args?.status === "string" ? args.status : null;
         const laneId = typeof args?.laneId === "string" ? args.laneId : null;
         const includeArchived = args?.includeArchived === true;
-        const activeStatuses = new Set(["queued", "planning", "plan_review", "in_progress", "intervention_required"]);
+        const activeStatuses = new Set([
+          "queued",
+          "planning",
+          "plan_review",
+          "in_progress",
+          "intervention_required",
+        ]);
         let filtered = rows;
-        if (!includeArchived) filtered = filtered.filter((mission: any) => !mission.archivedAt);
-        if (laneId) filtered = filtered.filter((mission: any) => mission.laneId === laneId);
+        if (!includeArchived)
+          filtered = filtered.filter((mission: any) => !mission.archivedAt);
+        if (laneId)
+          filtered = filtered.filter(
+            (mission: any) => mission.laneId === laneId,
+          );
         if (status === "active") {
-          filtered = filtered.filter((mission: any) => activeStatuses.has(mission.status));
+          filtered = filtered.filter((mission: any) =>
+            activeStatuses.has(mission.status),
+          );
         } else if (status === "in_progress") {
-          filtered = filtered.filter((mission: any) => mission.status === "in_progress" || mission.status === "plan_review");
+          filtered = filtered.filter(
+            (mission: any) =>
+              mission.status === "in_progress" ||
+              mission.status === "plan_review",
+          );
         } else if (status) {
-          filtered = filtered.filter((mission: any) => mission.status === status);
+          filtered = filtered.filter(
+            (mission: any) => mission.status === status,
+          );
         }
-        const limit = Number.isFinite(args?.limit) ? Math.max(1, Math.floor(args.limit)) : filtered.length;
+        const limit = Number.isFinite(args?.limit)
+          ? Math.max(1, Math.floor(args.limit))
+          : filtered.length;
         return filtered.slice(0, limit);
       },
       get: async (missionId: string) => {
-        const rows = USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_SNAPSHOT?.missions)
-          ? ADE_DB_SNAPSHOT.missions
-          : [];
+        const rows =
+          USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_SNAPSHOT?.missions)
+            ? ADE_DB_SNAPSHOT.missions
+            : [];
         return rows.find((mission: any) => mission.id === missionId) ?? null;
       },
       create: resolvedArg({ id: "mock" }),
@@ -3567,7 +3998,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       getPhaseConfiguration: resolvedArg(null),
       getDashboard: resolved(BROWSER_MISSION_DASHBOARD),
       getFullMissionView: async (missionId: string) =>
-        (USE_ADE_DB_SNAPSHOT && ADE_DB_SNAPSHOT?.missionFullViews?.[missionId])
+        USE_ADE_DB_SNAPSHOT && ADE_DB_SNAPSHOT?.missionFullViews?.[missionId]
           ? ADE_DB_SNAPSHOT.missionFullViews[missionId]
           : BROWSER_MOCK_EMPTY_FULL_MISSION_VIEW,
       preflight: resolvedArg({
@@ -3769,7 +4200,10 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       updateAppearance: resolvedArg(undefined),
       archive: resolvedArg(undefined),
       delete: resolvedArg(undefined),
-      cancelDelete: resolvedArg({ cancelled: false, reason: "no active delete" }),
+      cancelDelete: resolvedArg({
+        cancelled: false,
+        reason: "no active delete",
+      }),
       getDeleteRisk: resolvedArg({
         laneId: "mock",
         branchRef: null,
@@ -3935,7 +4369,9 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         callbackPaths: [],
       }),
       oauthUpdateConfig: resolvedArg(undefined),
-      oauthGenerateRedirectUris: resolvedArg([{ provider: "google", uris: [] as string[], instructions: "" }]),
+      oauthGenerateRedirectUris: resolvedArg([
+        { provider: "google", uris: [] as string[], instructions: "" },
+      ]),
       oauthEncodeState: resolvedArg("ade:mock"),
       oauthDecodeState: resolvedArg(null),
       oauthListSessions: resolved([]),
@@ -3949,9 +4385,13 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         fallbackLanes: [] as string[],
       }),
       diagnosticsGetLaneHealth: async (args: { laneId: string }) =>
-        typeof args?.laneId === "string" ? mockBrowserLaneHealth(args.laneId) : null,
+        typeof args?.laneId === "string"
+          ? mockBrowserLaneHealth(args.laneId)
+          : null,
       diagnosticsRunHealthCheck: async (args: { laneId: string }) =>
-        mockBrowserLaneHealth(typeof args?.laneId === "string" ? args.laneId : "mock"),
+        mockBrowserLaneHealth(
+          typeof args?.laneId === "string" ? args.laneId : "mock",
+        ),
       diagnosticsRunFullCheck: resolved([]),
       diagnosticsActivateFallback: resolvedArg(undefined),
       diagnosticsDeactivateFallback: resolvedArg(undefined),
@@ -3962,12 +4402,18 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       list: async (args: any = {}) => {
         let rows = MOCK_SESSIONS;
         if (typeof args?.laneId === "string" && args.laneId.trim()) {
-          rows = rows.filter((session) => session.laneId === args.laneId.trim());
+          rows = rows.filter(
+            (session) => session.laneId === args.laneId.trim(),
+          );
         }
         if (typeof args?.status === "string" && args.status.trim()) {
-          rows = rows.filter((session) => session.status === args.status.trim());
+          rows = rows.filter(
+            (session) => session.status === args.status.trim(),
+          );
         }
-        const limit = Number.isFinite(args?.limit) ? Math.max(1, Math.floor(args.limit)) : rows.length;
+        const limit = Number.isFinite(args?.limit)
+          ? Math.max(1, Math.floor(args.limit))
+          : rows.length;
         return rows.slice(0, limit);
       },
       get: async (sessionId: string) =>
@@ -3976,10 +4422,16 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       updateMeta: resolvedArg(null),
       readTranscriptTail: async (args: any = {}) => {
         const sessionId = String(args?.sessionId ?? "").trim();
-        const lines = getMockChatTranscriptEvents(sessionId).map((entry) => JSON.stringify(entry));
+        const lines = getMockChatTranscriptEvents(sessionId).map((entry) =>
+          JSON.stringify(entry),
+        );
         const raw = lines.join("\n");
-        const maxBytes = Number.isFinite(args?.maxBytes) ? Math.max(0, Math.floor(args.maxBytes)) : raw.length;
-        return raw.length > maxBytes ? raw.slice(Math.max(0, raw.length - maxBytes)) : raw;
+        const maxBytes = Number.isFinite(args?.maxBytes)
+          ? Math.max(0, Math.floor(args.maxBytes))
+          : raw.length;
+        return raw.length > maxBytes
+          ? raw.slice(Math.max(0, raw.length - maxBytes))
+          : raw;
       },
       getDelta: resolvedArg(null),
       onChanged: noop,
@@ -4002,7 +4454,10 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       steer: resolvedArg(undefined),
       cancelSteer: resolvedArg(undefined),
       editSteer: resolvedArg(undefined),
-      dispatchSteer: resolvedArg({ delivered: false, reason: "Browser mock does not run chat sessions." }),
+      dispatchSteer: resolvedArg({
+        delivered: false,
+        reason: "Browser mock does not run chat sessions.",
+      }),
       cancelDispatchedSteer: resolvedArg({ cancelled: false }),
       interrupt: resolvedArg(undefined),
       resume: resolvedArg({ id: "mock" }),
@@ -4026,10 +4481,14 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         supportsInterrupt: false,
       }),
       saveTempAttachment: resolvedArg({ path: "/tmp/browser-mock-attachment" }),
-      getEventHistory: async (arg: { sessionId: string; maxEvents?: number }) => ({
+      getEventHistory: async (arg: {
+        sessionId: string;
+        maxEvents?: number;
+      }) => ({
         sessionId: typeof arg?.sessionId === "string" ? arg.sessionId : "",
         events: (() => {
-          const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId : "";
+          const sessionId =
+            typeof arg?.sessionId === "string" ? arg.sessionId : "";
           const events = getMockChatTranscriptEvents(sessionId);
           const maxEvents = Number.isFinite(arg?.maxEvents)
             ? Math.max(1, Math.floor(arg.maxEvents!))
@@ -4037,7 +4496,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           return events.length > maxEvents ? events.slice(-maxEvents) : events;
         })(),
         truncated: (() => {
-          const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId : "";
+          const sessionId =
+            typeof arg?.sessionId === "string" ? arg.sessionId : "";
           const events = getMockChatTranscriptEvents(sessionId);
           const maxEvents = Number.isFinite(arg?.maxEvents)
             ? Math.max(1, Math.floor(arg.maxEvents!))
@@ -4337,7 +4797,14 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         fetchedAt: now,
         sdk: {
           packageName: "@linear/sdk",
-          surfaces: ["viewer", "organization", "projects", "teams", "assignedIssues", "issues"],
+          surfaces: [
+            "viewer",
+            "organization",
+            "projects",
+            "teams",
+            "assignedIssues",
+            "issues",
+          ],
         },
       }),
       getLinearIssuePickerData: resolvedArg({
@@ -4403,7 +4870,11 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       }),
     },
     pty: {
-      create: resolvedArg({ ptyId: "mock", sessionId: "mock-session", pid: 1234 }),
+      create: resolvedArg({
+        ptyId: "mock",
+        sessionId: "mock-session",
+        pid: 1234,
+      }),
       write: resolvedArg(undefined),
       resize: resolvedArg(undefined),
       dispose: resolvedArg(undefined),
@@ -4441,8 +4912,12 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       stopWatching: resolvedArg(undefined),
       quickOpen: async (args: any) => {
         const workspaceId = String(args?.workspaceId ?? "");
-        const q = String(args?.query ?? "").trim().toLowerCase();
-        const limit = Number.isFinite(args?.limit) ? Math.max(1, Math.floor(args.limit)) : 25;
+        const q = String(args?.query ?? "")
+          .trim()
+          .toLowerCase();
+        const limit = Number.isFinite(args?.limit)
+          ? Math.max(1, Math.floor(args.limit))
+          : 25;
         const rootNodes = getBrowserMockListTreeNodes(workspaceId, "");
         const flat: { path: string; score: number }[] = [];
         const maxCollect = 400;
@@ -4452,7 +4927,10 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             if (!node?.path) continue;
             const hay = String(node.path).toLowerCase();
             if (!q || hay.includes(q)) {
-              flat.push({ path: node.path, score: prefixScore + (node.name?.length ?? 0) });
+              flat.push({
+                path: node.path,
+                score: prefixScore + (node.name?.length ?? 0),
+              });
             }
             if (node.type === "directory") {
               const kids = getBrowserMockListTreeNodes(workspaceId, node.path);
@@ -4554,7 +5032,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         body: "## Description\n\nMock feedback",
         labels: ["bug"],
         generationMode: "deterministic",
-        generationWarning: "ADE used a deterministic draft because no AI model was selected.",
+        generationWarning:
+          "ADE used a deterministic draft because no AI model was selected.",
       }),
       submitDraft: resolvedArg({
         id: "mock-feedback-1",
@@ -4623,17 +5102,18 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     },
     prs: {
       createFromLane: resolvedArg(
-        USE_ADE_DB_SNAPSHOT ? null : NORMAL_PRS[0] ?? null,
+        USE_ADE_DB_SNAPSHOT ? null : (NORMAL_PRS[0] ?? null),
       ),
       linkToLane: resolvedArg(
-        USE_ADE_DB_SNAPSHOT ? null : NORMAL_PRS[0] ?? null,
+        USE_ADE_DB_SNAPSHOT ? null : (NORMAL_PRS[0] ?? null),
       ),
       getForLane: async (laneId: string) =>
         ALL_PRS.find((pr: any) => pr.laneId === laneId) ?? null,
       listAll: resolved(ALL_PRS),
       refresh: resolved(ALL_PRS),
       getStatus: async (prId: string) =>
-        ADE_DB_PR_SNAPSHOT_BY_ID.get(prId)?.status ?? MOCK_STATUS_BY_PR[prId] ?? {
+        ADE_DB_PR_SNAPSHOT_BY_ID.get(prId)?.status ??
+        MOCK_STATUS_BY_PR[prId] ?? {
           prId,
           state: "open",
           checksStatus: "passing",
@@ -4643,11 +5123,17 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           behindBaseBy: 0,
         },
       getChecks: async (prId: string) =>
-        ADE_DB_PR_SNAPSHOT_BY_ID.get(prId)?.checks ?? MOCK_CHECKS_BY_PR[prId] ?? [],
+        ADE_DB_PR_SNAPSHOT_BY_ID.get(prId)?.checks ??
+        MOCK_CHECKS_BY_PR[prId] ??
+        [],
       getComments: async (prId: string) =>
-        ADE_DB_PR_SNAPSHOT_BY_ID.get(prId)?.comments ?? MOCK_COMMENTS_BY_PR[prId] ?? [],
+        ADE_DB_PR_SNAPSHOT_BY_ID.get(prId)?.comments ??
+        MOCK_COMMENTS_BY_PR[prId] ??
+        [],
       getReviews: async (prId: string) =>
-        ADE_DB_PR_SNAPSHOT_BY_ID.get(prId)?.reviews ?? MOCK_REVIEWS_BY_PR[prId] ?? [],
+        ADE_DB_PR_SNAPSHOT_BY_ID.get(prId)?.reviews ??
+        MOCK_REVIEWS_BY_PR[prId] ??
+        [],
       getReviewThreads: resolvedArg([]),
       updateDescription: resolvedArg(undefined),
       delete: resolvedArg({ deleted: true }),
@@ -4665,7 +5151,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       commitIntegration: resolvedArg({
         groupId: "group-int-mock",
         integrationLaneId: "lane-search",
-        pr: USE_ADE_DB_SNAPSHOT ? null : INTEGRATION_PRS[0] ?? null,
+        pr: USE_ADE_DB_SNAPSHOT ? null : (INTEGRATION_PRS[0] ?? null),
         mergeResults: [],
       }),
       landStackEnhanced: resolvedArg([]),
@@ -4806,7 +5292,10 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       convergenceStateDelete: async (prId: string) => {
         delete MOCK_CONVERGENCE_RUNTIME[prId];
       },
-      pathToMergeStart: async (args: { prId: string; permissionMode?: string | null }) => {
+      pathToMergeStart: async (args: {
+        prId: string;
+        permissionMode?: string | null;
+      }) => {
         const runtime =
           MOCK_CONVERGENCE_RUNTIME[args.prId] ??
           createDefaultConvergenceRuntime(args.prId);
@@ -4820,7 +5309,10 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         MOCK_CONVERGENCE_RUNTIME[args.prId] = runtime;
         return { prId: args.prId, scheduled: true, runtime: { ...runtime } };
       },
-      pathToMergeStop: async (args: { prId: string; reason?: string | null }) => {
+      pathToMergeStop: async (args: {
+        prId: string;
+        reason?: string | null;
+      }) => {
         const runtime = MOCK_CONVERGENCE_RUNTIME[args.prId] ?? null;
         if (runtime) {
           runtime.autoConvergeEnabled = false;
@@ -4920,7 +5412,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       dismissIntegrationCleanup: resolvedArg(
         USE_ADE_DB_SNAPSHOT
           ? undefined
-          : BUILTIN_MOCK_INTEGRATION_WORKFLOWS[1] ?? undefined,
+          : (BUILTIN_MOCK_INTEGRATION_WORKFLOWS[1] ?? undefined),
       ),
       cleanupIntegrationWorkflow: resolvedArg({
         proposalId: "workflow-int-active",
@@ -4952,15 +5444,21 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       listOperations: async (args: any = {}) => {
         let rows = ADE_DB_OPERATIONS;
         if (typeof args?.laneId === "string" && args.laneId.trim()) {
-          rows = rows.filter((operation) => operation.laneId === args.laneId.trim());
+          rows = rows.filter(
+            (operation) => operation.laneId === args.laneId.trim(),
+          );
         }
         if (typeof args?.kind === "string" && args.kind.trim()) {
-          rows = rows.filter((operation) => operation.kind === args.kind.trim());
+          rows = rows.filter(
+            (operation) => operation.kind === args.kind.trim(),
+          );
         }
         if (typeof args?.status === "string" && args.status !== "all") {
           rows = rows.filter((operation) => operation.status === args.status);
         }
-        const limit = Number.isFinite(args?.limit) ? Math.max(1, Math.floor(args.limit)) : rows.length;
+        const limit = Number.isFinite(args?.limit)
+          ? Math.max(1, Math.floor(args.limit))
+          : rows.length;
         return rows.slice(0, limit);
       },
       exportOperations: async (args: any = {}) => ({
@@ -5033,7 +5531,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         installAvailable: false,
         installTargetPath: "~/.local/bin/ade",
         installTargetDirOnPath: false,
-        message: "ADE-launched agents can use ade. Terminal access is not installed yet.",
+        message:
+          "ADE-launched agents can use ade. Terminal access is not installed yet.",
         nextAction: "Run npm link in apps/ade-cli for local development.",
       }),
       installForUser: resolved({
@@ -5053,7 +5552,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           installAvailable: false,
           installTargetPath: "~/.local/bin/ade",
           installTargetDirOnPath: false,
-          message: "ADE-launched agents can use ade. Terminal access is not installed yet.",
+          message:
+            "ADE-launched agents can use ade. Terminal access is not installed yet.",
           nextAction: "Run npm link in apps/ade-cli for local development.",
         },
       }),

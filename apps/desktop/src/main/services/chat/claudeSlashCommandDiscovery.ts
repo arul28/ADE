@@ -7,6 +7,8 @@ export type DiscoveredClaudeSlashCommand = {
   name: string;
   description: string;
   argumentHint?: string;
+  source: "command" | "skill";
+  filePath: string;
 };
 
 export type ResolvedClaudeSlashCommandInvocation = {
@@ -57,8 +59,12 @@ function stripFrontmatter(markdown: string): string {
 }
 
 function normalizeSlashCommandName(value: string): string | null {
-  const name = value.trim().replace(/\.md$/i, "").replace(/[^A-Za-z0-9_:-]+/g, "-").replace(/^-+|-+$/g, "").toLowerCase();
+  const name = value.trim().replace(/\.md$/i, "").replace(/[^A-Za-z0-9_:-]+/g, "-").replace(/^-+|-+$/g, "");
   return name.length ? `/${name}` : null;
+}
+
+function slashCommandKey(value: string): string {
+  return value.trim().toLowerCase();
 }
 
 function maybeString(value: unknown): string | undefined {
@@ -95,8 +101,9 @@ function discoverLegacyCommands(commandsDir: string): DiscoveredClaudeSlashComma
       }
       if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
       const relative = path.relative(commandsDir, entryPath).replace(/\.md$/i, "");
-      const commandPath = relative.split(path.sep).filter(Boolean).join(":");
-      const name = normalizeSlashCommandName(commandPath);
+      const parts = relative.split(path.sep).filter(Boolean);
+      const commandName = parts.join(":");
+      const name = normalizeSlashCommandName(commandName);
       if (!name) continue;
       let content = "";
       try {
@@ -105,10 +112,13 @@ function discoverLegacyCommands(commandsDir: string): DiscoveredClaudeSlashComma
         continue;
       }
       const frontmatter = readFrontmatter(content) as CommandFrontmatter;
+      const description = maybeString(frontmatter.description) ?? firstMarkdownParagraph(content);
       commands.push({
         name,
-        description: maybeString(frontmatter.description) ?? firstMarkdownParagraph(content),
+        description,
         argumentHint: maybeArgumentHint(frontmatter["argument-hint"]) ?? maybeArgumentHint(frontmatter.argumentHint),
+        source: "command",
+        filePath: entryPath,
       });
     }
   };
@@ -133,13 +143,14 @@ function resolveLegacyCommandFile(commandsDir: string, commandName: string): str
     }
   }
   // Slow path: discovery normalizes filenames (lowercase + slugified), so a
-  // file like `My Command.md` is exposed as `/my-command` but the literal
-  // path above won't find it. Walk the directory and match by normalized
-  // name so non-canonical filenames still resolve.
-  const targetName = commandName.toLowerCase();
-  let match: string | null = null;
+  // file like `My Command.md` is exposed as `/My-Command` but the literal
+  // path above won't find it. Unique basename lookup is accepted for older ADE
+  // command references, but duplicate basenames must use their colon path.
+  const targetName = slashCommandKey(commandName);
+  const pathMatches: string[] = [];
+  const baseMatches: string[] = [];
   const visit = (dir: string, prefix: string[], depth: number): void => {
-    if (match || depth > MAX_LEGACY_COMMAND_DEPTH) return;
+    if (depth > MAX_LEGACY_COMMAND_DEPTH) return;
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -147,7 +158,6 @@ function resolveLegacyCommandFile(commandsDir: string, commandName: string): str
       return;
     }
     for (const entry of entries) {
-      if (match) return;
       const entryPath = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         visit(entryPath, [...prefix, entry.name], depth + 1);
@@ -155,15 +165,15 @@ function resolveLegacyCommandFile(commandsDir: string, commandName: string): str
       }
       if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
       const commandPath = [...prefix, entry.name].join(":");
-      const normalized = normalizeSlashCommandName(commandPath);
-      if (normalized && normalized.toLowerCase() === targetName) {
-        match = entryPath;
-        return;
-      }
+      const normalizedPath = normalizeSlashCommandName(commandPath);
+      const normalizedBase = normalizeSlashCommandName(entry.name);
+      if (normalizedPath && slashCommandKey(normalizedPath) === targetName) pathMatches.push(entryPath);
+      if (normalizedBase && slashCommandKey(normalizedBase) === targetName) baseMatches.push(entryPath);
     }
   };
   visit(commandsDir, [], 0);
-  return match;
+  if (pathMatches.length > 0) return pathMatches[0] ?? null;
+  return baseMatches.length === 1 ? baseMatches[0] ?? null : null;
 }
 
 function discoverSkills(skillsDir: string): DiscoveredClaudeSlashCommand[] {
@@ -195,17 +205,54 @@ function discoverSkills(skillsDir: string): DiscoveredClaudeSlashCommand[] {
       name,
       description: maybeString(frontmatter.description) ?? firstMarkdownParagraph(content),
       argumentHint: maybeArgumentHint(frontmatter["argument-hint"]) ?? maybeArgumentHint(frontmatter.argumentHint),
+      source: "skill",
+      filePath: skillPath,
     });
   }
 
   return commands;
 }
 
+function ancestorClaudeRoots(cwd: string): string[] {
+  const roots: string[] = [];
+  const seen = new Set<string>();
+  const home = path.resolve(os.homedir());
+  let current = path.resolve(cwd);
+  let depth = 0;
+  while (depth < 25) {
+    const candidate = path.join(current, ".claude");
+    if (!seen.has(candidate)) {
+      seen.add(candidate);
+      roots.push(candidate);
+    }
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    if (current === home) break;
+    current = parent;
+    depth += 1;
+  }
+  return roots;
+}
+
+function claudeRootsByPrecedence(cwd: string): string[] {
+  const roots: string[] = [];
+  const seen = new Set<string>();
+  const home = path.resolve(os.homedir());
+  const addRoot = (root: string): void => {
+    if (seen.has(root)) return;
+    seen.add(root);
+    roots.push(root);
+  };
+
+  for (const root of ancestorClaudeRoots(cwd)) {
+    addRoot(root);
+  }
+  addRoot(path.join(home, ".claude"));
+  return roots;
+}
+
 export function discoverClaudeSlashCommands(cwd: string): DiscoveredClaudeSlashCommand[] {
-  const roots = [
-    path.join(os.homedir(), ".claude"),
-    path.join(cwd, ".claude"),
-  ];
+  const roots = claudeRootsByPrecedence(cwd);
   const byName = new Map<string, DiscoveredClaudeSlashCommand>();
 
   for (const root of roots) {
@@ -214,11 +261,49 @@ export function discoverClaudeSlashCommands(cwd: string): DiscoveredClaudeSlashC
       ...discoverSkills(path.join(root, "skills")),
     ];
     for (const command of discovered) {
-      byName.set(command.name, command);
+      const key = slashCommandKey(command.name);
+      if (!byName.has(key)) byName.set(key, command);
     }
   }
 
-  return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+  return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+}
+
+function resolveSkillFile(skillsDir: string, commandName: string): string | null {
+  if (!fs.existsSync(skillsDir)) return null;
+  const target = commandName.replace(/^\//, "").toLowerCase();
+  if (!target.length) return null;
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(skillsDir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const skillPath = path.join(skillsDir, entry.name, "SKILL.md");
+    if (!fs.existsSync(skillPath)) continue;
+    let content = "";
+    try {
+      content = fs.readFileSync(skillPath, "utf8");
+    } catch {
+      continue;
+    }
+    const frontmatter = readFrontmatter(content) as { name?: unknown; "user-invocable"?: unknown; userInvocable?: unknown };
+    if (frontmatter["user-invocable"] === false || frontmatter.userInvocable === false) continue;
+    const declaredName = maybeString(frontmatter.name);
+    const candidateNames = new Set<string>();
+    const dirNormalized = normalizeSlashCommandName(entry.name);
+    if (dirNormalized) candidateNames.add(dirNormalized.toLowerCase());
+    if (declaredName) {
+      const fmNormalized = normalizeSlashCommandName(declaredName);
+      if (fmNormalized) candidateNames.add(fmNormalized.toLowerCase());
+    }
+    if (candidateNames.has(`/${target}`) || candidateNames.has(target)) {
+      return skillPath;
+    }
+  }
+  return null;
 }
 
 export function resolveClaudeSlashCommandInvocation(
@@ -229,22 +314,27 @@ export function resolveClaudeSlashCommandInvocation(
   const match = trimmed.match(/^(\/[A-Za-z0-9][A-Za-z0-9_-]*(?::[A-Za-z0-9][A-Za-z0-9_-]*)*)(?:\s+([\s\S]*))?$/);
   if (!match) return null;
 
-  const name = match[1]?.toLowerCase();
+  const name = match[1];
   if (!name) return null;
   const argumentsText = match[2]?.trim() ?? "";
-  const roots = [
-    path.join(os.homedir(), ".claude"),
-    path.join(cwd, ".claude"),
-  ];
+  const roots = claudeRootsByPrecedence(cwd);
 
-  let commandFile: string | null = null;
+  // Prefer command files; fall back to user-invocable skills (SKILL.md).
+  let resolvedFile: string | null = null;
   for (const root of roots) {
-    commandFile = resolveLegacyCommandFile(path.join(root, "commands"), name) ?? commandFile;
+    resolvedFile = resolveLegacyCommandFile(path.join(root, "commands"), name);
+    if (resolvedFile) break;
   }
-  if (!commandFile) return null;
+  if (!resolvedFile) {
+    for (const root of roots) {
+      resolvedFile = resolveSkillFile(path.join(root, "skills"), name);
+      if (resolvedFile) break;
+    }
+  }
+  if (!resolvedFile) return null;
 
   try {
-    const content = fs.readFileSync(commandFile, "utf8");
+    const content = fs.readFileSync(resolvedFile, "utf8");
     const body = stripFrontmatter(content).trim();
     if (!body.length) return null;
     const hasPlaceholder = /\$ARGUMENTS/.test(body);

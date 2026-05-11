@@ -51,7 +51,13 @@ import { initialize as initModelsDevService } from "./modelsDevService";
 import { updateModelPricing } from "../../../shared/modelProfiles";
 import { isRecord } from "../shared/utils";
 import { parseStructuredOutput } from "./utils";
-import { getAllApiKeys, getApiKeyStoreStatus } from "./apiKeyStore";
+import {
+  deleteApiKey as deleteStoredApiKey,
+  getAllApiKeys,
+  getApiKeyStoreStatus,
+  listStoredProviders,
+  storeApiKey as storeStoredApiKey,
+} from "./apiKeyStore";
 import type { createMemoryService } from "../memory/memoryService";
 import { inspectLocalProvider } from "./localModelDiscovery";
 import {
@@ -1798,6 +1804,17 @@ export function createAiIntegrationService(args: {
 
     getAvailability: getAvailabilitySync,
     verifyApiKeyConnection,
+    storeApiKey(provider: string, key: string): void {
+      storeStoredApiKey(provider, key);
+      invalidateProviderReadinessCaches();
+    },
+    deleteApiKey(provider: string): void {
+      deleteStoredApiKey(provider);
+      invalidateProviderReadinessCaches();
+    },
+    listApiKeys(): string[] {
+      return listStoredProviders();
+    },
     listCursorCloudRepositories,
     listCursorCloudAgents,
     listCursorCloudRuns,

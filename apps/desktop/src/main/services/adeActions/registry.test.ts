@@ -1,6 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { LaneListSnapshot, LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import {
   ADE_ACTION_ALLOWLIST,
+  getAdeActionDomainServices,
   isCtoOnlyAdeAction,
   isAllowedAdeAction,
   listAllowedAdeActionNames,
@@ -104,6 +106,13 @@ describe("isCtoOnlyAdeAction", () => {
     expect(isCtoOnlyAdeAction("path_to_merge", "startPathToMerge")).toBe(true);
     expect(isCtoOnlyAdeAction("path_to_merge", "stopPathToMerge")).toBe(true);
   });
+
+  it("keeps AI credential mutations CTO-only", () => {
+    expect(isCtoOnlyAdeAction("ai", "storeApiKey")).toBe(true);
+    expect(isCtoOnlyAdeAction("ai", "deleteApiKey")).toBe(true);
+    expect(isCtoOnlyAdeAction("ai", "listApiKeys")).toBe(false);
+  });
+
 });
 
 describe("ADE_ACTION_ALLOWLIST shape", () => {
@@ -142,6 +151,46 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     }
   });
 
+  it("exposes lane.listSnapshots for runtime-backed lane snapshot parity", () => {
+    const actions = ADE_ACTION_ALLOWLIST.lane ?? [];
+    expect(actions).toContain("listSnapshots");
+  });
+
+  it("exposes ade_project.clearLocalData for runtime-backed cleanup", () => {
+    const actions = ADE_ACTION_ALLOWLIST.ade_project ?? [];
+    expect(actions).toContain("clearLocalData");
+  });
+
+  it("exposes session.getDelta for runtime-backed session delta reads", () => {
+    const actions = ADE_ACTION_ALLOWLIST.session ?? [];
+    expect(actions).toContain("getDelta");
+  });
+
+  it("exposes computer_use_artifacts.readArtifactPreview for runtime-backed proof previews", () => {
+    const actions = ADE_ACTION_ALLOWLIST.computer_use_artifacts ?? [];
+    expect(actions).toContain("readArtifactPreview");
+  });
+
+  it("exposes Linear issue tracker composite reads for runtime-backed CTO views", () => {
+    const actions = ADE_ACTION_ALLOWLIST.linear_issue_tracker ?? [];
+    expect(actions).toContain("getWorkflowCatalog");
+    expect(actions).toContain("getIssuePickerData");
+    expect(actions).toContain("getConnectionStatus");
+    expect(actions).toContain("getQuickView");
+    expect(ADE_ACTION_ALLOWLIST.linear_routing ?? []).toContain("simulateRoute");
+    expect(ADE_ACTION_ALLOWLIST.linear_oauth ?? []).toEqual(expect.arrayContaining([
+      "getSession",
+      "startSession",
+    ]));
+  });
+
+  it("exposes CTO identity session and scan wrappers for runtime-backed CTO views", () => {
+    const chatActions = ADE_ACTION_ALLOWLIST.chat ?? [];
+    expect(chatActions).toContain("ensureCtoSession");
+    expect(chatActions).toContain("ensureAgentIdentitySession");
+    expect(ADE_ACTION_ALLOWLIST.cto_state ?? []).toContain("runProjectScan");
+  });
+
   it("exposes the browser panel and tab control surface", () => {
     const actions = ADE_ACTION_ALLOWLIST.built_in_browser ?? [];
     for (const name of ["showPanel", "navigate", "createTab", "switchTab", "closeTab"]) {
@@ -154,5 +203,696 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     for (const name of ["getStatus", "start", "getAgentGuide", "captureScreenshot", "click", "selectPoint", "typeText"]) {
       expect(actions).toContain(name);
     }
+  });
+});
+
+describe("runtime Linear issue tracker actions", () => {
+  it("builds catalog and picker payloads from tracker reads", async () => {
+    const projects = [{ id: "project-1", name: "ADE" }];
+    const users = [{ id: "user-1", name: "Arul" }];
+    const labels = [{ id: "label-1", name: "Bug" }];
+    const states = [{ id: "state-1", name: "Todo" }];
+    const issues = [
+      { id: "LIN-1", title: "First" },
+      { id: "LIN-2", title: "Second" },
+      { id: "LIN-3", title: "Third" },
+    ];
+    const fetchCandidateIssues = vi.fn(async () => issues);
+    const tracker = {
+      getConnectionStatus: vi.fn(async () => ({
+        connected: true,
+        viewerId: "user-1",
+        viewerName: "Arul",
+        message: null,
+      })),
+      fetchCandidateIssues,
+      listProjects: vi.fn(async () => projects),
+      listUsers: vi.fn(async () => users),
+      listLabels: vi.fn(async () => labels),
+      listWorkflowStates: vi.fn(async () => states),
+    };
+    const runtime = {
+      linearCredentialService: {
+        getStatus: vi.fn(() => ({
+          tokenStored: true,
+          authMode: "oauth",
+          oauthConfigured: true,
+          tokenExpiresAt: null,
+        })),
+      },
+      linearIssueTracker: tracker,
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+    const service = getAdeActionDomainServices(runtime).linear_issue_tracker as {
+      getStatus: () => Promise<unknown>;
+      getWorkflowCatalog: () => Promise<unknown>;
+      getIssuePickerData: () => Promise<unknown>;
+      listIssues: (args?: Record<string, unknown>) => Promise<unknown>;
+    } & Record<string, unknown>;
+
+    expect(listAllowedAdeActionNames("linear_issue_tracker", service)).toContain("getStatus");
+    expect(listAllowedAdeActionNames("linear_issue_tracker", service)).toContain("listIssues");
+    expect(listAllowedAdeActionNames("linear_issue_tracker", service)).toContain("getWorkflowCatalog");
+    expect(listAllowedAdeActionNames("linear_issue_tracker", service)).toContain("getIssuePickerData");
+    await expect(service.getStatus()).resolves.toMatchObject({ connected: true, tokenStored: true });
+    await expect(service.listIssues({ project: "desktop,cli", state: ["open"], limit: 2 })).resolves.toEqual(issues.slice(0, 2));
+    expect(fetchCandidateIssues).toHaveBeenCalledWith({ projectSlugs: ["desktop", "cli"], stateTypes: ["open"] });
+    await expect(service.getWorkflowCatalog()).resolves.toEqual({ users, labels, states });
+    await expect(service.getIssuePickerData()).resolves.toEqual({ projects, users, states });
+  });
+});
+
+describe("runtime Linear OAuth actions", () => {
+  it("adds connection status to completed OAuth sessions", async () => {
+    const start = { sessionId: "linear-oauth-1", authUrl: "https://linear.app/oauth/authorize", redirectUri: "http://127.0.0.1:19836/oauth/callback" };
+    const runtime = {
+      linearOAuthService: {
+        startSession: vi.fn(async () => start),
+        getSession: vi.fn(() => ({ status: "completed" })),
+      },
+      linearCredentialService: {
+        getStatus: vi.fn(() => ({
+          tokenStored: true,
+          authMode: "oauth",
+          oauthConfigured: true,
+          tokenExpiresAt: "2026-05-10T00:00:00.000Z",
+        })),
+      },
+      linearIssueTracker: {
+        getConnectionStatus: vi.fn(async () => ({
+          connected: true,
+          viewerId: "user-1",
+          viewerName: "Arul",
+          message: null,
+        })),
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+    const service = getAdeActionDomainServices(runtime).linear_oauth as {
+      startSession: () => Promise<unknown>;
+      getSession: (sessionId: string) => Promise<unknown>;
+    } & Record<string, unknown>;
+
+    expect(listAllowedAdeActionNames("linear_oauth", service)).toEqual(["getSession", "startSession"]);
+    await expect(service.startSession()).resolves.toEqual(start);
+    await expect(service.getSession("linear-oauth-1")).resolves.toMatchObject({
+      status: "completed",
+      connection: {
+        tokenStored: true,
+        connected: true,
+        viewerId: "user-1",
+        viewerName: "Arul",
+        authMode: "oauth",
+        oauthAvailable: true,
+      },
+    });
+  });
+});
+
+describe("runtime session actions", () => {
+  it("adds getDelta from the runtime session delta service", () => {
+    const delta = { sessionId: "session-1", filesChanged: 2 };
+    const runtime = {
+      sessionService: {
+        get: vi.fn(),
+        list: vi.fn(),
+        readTranscriptTail: vi.fn(),
+      },
+      sessionDeltaService: {
+        getSessionDelta: vi.fn(() => delta),
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+    const sessionService = getAdeActionDomainServices(runtime).session as {
+      getDelta: (args: { sessionId: string }) => unknown;
+    } & Record<string, unknown>;
+
+    expect(listAllowedAdeActionNames("session", sessionService)).toContain("getDelta");
+    expect(sessionService.getDelta({ sessionId: "session-1" })).toEqual(delta);
+    expect(runtime.sessionDeltaService?.getSessionDelta).toHaveBeenCalledWith("session-1");
+  });
+});
+
+describe("runtime computer-use artifact actions", () => {
+  it("exposes artifact preview reads from the broker", async () => {
+    const broker = {
+      getBackendStatus: vi.fn(),
+      ingest: vi.fn(),
+      listArtifacts: vi.fn(),
+      readArtifactPreview: vi.fn(async () => "data:image/png;base64,AAAA"),
+      routeArtifact: vi.fn(),
+      updateArtifactReview: vi.fn(),
+    };
+    const runtime = {
+      computerUseArtifactBrokerService: broker,
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+    const artifactService = getAdeActionDomainServices(runtime).computer_use_artifacts as {
+      readArtifactPreview: (args: { uri: string }) => Promise<string | null>;
+    } & Record<string, unknown>;
+
+    expect(listAllowedAdeActionNames("computer_use_artifacts", artifactService)).toContain("readArtifactPreview");
+    await expect(artifactService.readArtifactPreview({ uri: ".ade/artifacts/a.png" })).resolves.toBe("data:image/png;base64,AAAA");
+    expect(broker.readArtifactPreview).toHaveBeenCalledWith({ uri: ".ade/artifacts/a.png" });
+  });
+});
+
+const TEST_NOW = "2026-05-10T00:00:00.000Z";
+
+function makeLane(overrides: Partial<LaneSummary> & Pick<LaneSummary, "id" | "name">): LaneSummary {
+  return {
+    description: null,
+    laneType: "worktree",
+    baseRef: "main",
+    branchRef: `feature/${overrides.id}`,
+    worktreePath: `/tmp/${overrides.id}`,
+    attachedRootPath: null,
+    parentLaneId: null,
+    childCount: 0,
+    stackDepth: 0,
+    parentStatus: null,
+    isEditProtected: false,
+    status: {
+      dirty: false,
+      ahead: 0,
+      behind: 0,
+      remoteBehind: 0,
+      rebaseInProgress: false,
+    },
+    color: null,
+    icon: null,
+    tags: [],
+    folder: null,
+    missionId: null,
+    laneRole: null,
+    createdAt: TEST_NOW,
+    archivedAt: null,
+    ...overrides,
+  };
+}
+
+function makeSession(
+  overrides: Partial<TerminalSessionSummary> & Pick<TerminalSessionSummary, "id" | "laneId">,
+): TerminalSessionSummary {
+  return {
+    laneName: "Runtime lane",
+    ptyId: null,
+    tracked: true,
+    pinned: false,
+    goal: null,
+    toolType: "codex",
+    title: overrides.id,
+    status: "running",
+    startedAt: TEST_NOW,
+    endedAt: null,
+    exitCode: null,
+    transcriptPath: `/tmp/${overrides.id}.log`,
+    headShaStart: null,
+    headShaEnd: null,
+    lastOutputPreview: null,
+    summary: null,
+    runtimeState: "running",
+    resumeCommand: null,
+    ...overrides,
+  };
+}
+
+describe("runtime lane snapshot actions", () => {
+  it("builds rich lane.listSnapshots results from runtime services", async () => {
+    const lane = makeLane({ id: "lane-runtime", name: "Runtime lane" });
+    const attachedLane = makeLane({
+      id: "lane-attached",
+      name: "Attached lane",
+      laneType: "attached",
+      attachedRootPath: "/external/attached",
+    });
+    const device = { deviceId: "ios-1", displayName: "iPhone", platform: "ios" };
+    const rebaseSuggestion = {
+      laneId: lane.id,
+      parentLaneId: "parent-1",
+      parentHeadSha: "abc1234",
+      behindCount: 3,
+      baseLabel: "main",
+      groupContext: null,
+      lastSuggestedAt: TEST_NOW,
+      deferredUntil: null,
+      dismissedAt: null,
+      hasPr: true,
+    };
+    const autoRebaseStatus = {
+      laneId: lane.id,
+      parentLaneId: "parent-1",
+      parentHeadSha: "def5678",
+      state: "rebaseConflict" as const,
+      updatedAt: TEST_NOW,
+      conflictCount: 2,
+      message: "Rebase needs attention.",
+    };
+    const conflictStatus = {
+      laneId: lane.id,
+      status: "conflict-predicted" as const,
+      overlappingFileCount: 4,
+      peerConflictCount: 1,
+      lastPredictedAt: TEST_NOW,
+    };
+    const stateSnapshot = {
+      laneId: lane.id,
+      agentSummary: { activeAgent: "codex" },
+      missionSummary: { missionId: "mission-1" },
+      updatedAt: TEST_NOW,
+    };
+    const sessions = [
+      makeSession({
+        id: "running-terminal",
+        laneId: lane.id,
+        lastOutputPreview: "running tests",
+      }),
+      makeSession({
+        id: "awaiting-chat",
+        laneId: lane.id,
+        toolType: "codex-chat",
+        lastOutputPreview: "thinking",
+      }),
+      makeSession({
+        id: "ended-terminal",
+        laneId: lane.id,
+        status: "completed",
+        runtimeState: "exited",
+        endedAt: TEST_NOW,
+        exitCode: 0,
+        lastOutputPreview: "done",
+      }),
+      makeSession({
+        id: "attached-running-terminal",
+        laneId: attachedLane.id,
+      }),
+    ];
+    const list = vi.fn(() => [lane, attachedLane]);
+    const listStateSnapshots = vi.fn(() => [stateSnapshot]);
+    const runtime = {
+      laneService: {
+        list,
+        listStateSnapshots,
+      },
+      sessionService: {
+        list: vi.fn(() => sessions),
+      },
+      ptyService: {
+        enrichSessions: vi.fn((entries: TerminalSessionSummary[]) => entries),
+      },
+      agentChatService: {
+        listSessions: vi.fn(async () => [
+          {
+            sessionId: "awaiting-chat",
+            status: "active",
+            awaitingInput: true,
+            identityKey: null,
+          },
+        ]),
+      },
+      rebaseSuggestionService: {
+        listSuggestions: vi.fn(() => [rebaseSuggestion]),
+      },
+      autoRebaseService: {
+        listStatuses: vi.fn(() => [autoRebaseStatus]),
+      },
+      conflictService: {
+        getBatchAssessment: vi.fn(() => ({ lanes: [conflictStatus] })),
+      },
+      syncService: {
+        getHostService: () => ({
+          getLanePresenceSnapshot: () => [{ laneId: lane.id, devicesOpen: [device] }],
+        }),
+      },
+      logger: {
+        info: vi.fn(),
+        warn: vi.fn(),
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+    const laneService = getAdeActionDomainServices(runtime).lane as {
+      listSnapshots?: (args?: unknown) => Promise<LaneListSnapshot[]>;
+    };
+
+    expect(laneService.listSnapshots).toEqual(expect.any(Function));
+    expect(listAllowedAdeActionNames("lane", laneService as Record<string, unknown>)).toContain("listSnapshots");
+
+    const snapshots = await laneService.listSnapshots?.({
+      includeConflictStatus: true,
+      includeRebaseSuggestions: true,
+      includeAutoRebaseStatus: true,
+    });
+
+    expect(list).toHaveBeenCalledWith({
+      includeArchived: false,
+      includeStatus: true,
+    });
+    expect(snapshots).toEqual([
+      {
+        lane: {
+          ...lane,
+          devicesOpen: [device],
+        },
+        runtime: {
+          bucket: "awaiting-input",
+          runningCount: 1,
+          awaitingInputCount: 1,
+          endedCount: 1,
+          sessionCount: 3,
+        },
+        rebaseSuggestion,
+        autoRebaseStatus,
+        conflictStatus,
+        stateSnapshot,
+        adoptableAttached: false,
+      },
+      {
+        lane: attachedLane,
+        runtime: {
+          bucket: "running",
+          runningCount: 1,
+          awaitingInputCount: 0,
+          endedCount: 0,
+          sessionCount: 1,
+        },
+        rebaseSuggestion: null,
+        autoRebaseStatus: null,
+        conflictStatus: null,
+        stateSnapshot: null,
+        adoptableAttached: true,
+      },
+    ]);
+  });
+});
+
+describe("runtime AI actions", () => {
+  it("exposes AI status and key storage actions through the allowlist", () => {
+    const runtime = {
+      aiIntegrationService: {
+        getStatus: vi.fn(),
+        getDailyUsageBatch: vi.fn(() => new Map()),
+        getFeatureFlag: vi.fn(),
+        getDailyBudgetLimit: vi.fn(),
+        verifyApiKeyConnection: vi.fn(),
+        storeApiKey: vi.fn(),
+        deleteApiKey: vi.fn(),
+        listApiKeys: vi.fn(),
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+    const aiService = getAdeActionDomainServices(runtime).ai as Record<string, unknown>;
+
+    for (const action of ["getStatus", "getOpenCodeRuntimeDiagnostics", "storeApiKey", "deleteApiKey", "listApiKeys"]) {
+      expect(aiService[action]).toEqual(expect.any(Function));
+      expect(listAllowedAdeActionNames("ai", aiService)).toContain(action);
+    }
+  });
+
+  it("returns IPC-shaped AI status rows from the runtime AI service", async () => {
+    const featureUsage = new Map([["narratives", 2]]);
+    const getStatus = vi.fn(async () => ({
+      mode: "subscription",
+      availableProviders: { claude: true, codex: false, cursor: false, droid: false },
+      models: { claude: [], codex: [], cursor: [], droid: [] },
+      detectedAuth: [],
+      providerConnections: undefined,
+      runtimeConnections: {},
+      availableModelIds: [],
+      opencodeBinaryInstalled: false,
+      opencodeBinarySource: "missing",
+      opencodeInventoryError: null,
+      opencodeProviders: [],
+      apiKeyStore: {
+        secureStorageAvailable: true,
+        legacyPlaintextDetected: false,
+        decryptionFailed: false,
+      },
+    }));
+    const runtime = {
+      aiIntegrationService: {
+        getStatus,
+        getDailyUsageBatch: vi.fn(() => featureUsage),
+        getFeatureFlag: vi.fn((feature: string) => feature === "narratives"),
+        getDailyBudgetLimit: vi.fn((feature: string) => feature === "narratives" ? 5 : null),
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+    const aiService = getAdeActionDomainServices(runtime).ai as {
+      getStatus(args?: { force?: boolean; refreshOpenCodeInventory?: boolean }): Promise<{
+        features: Array<{ feature: string; enabled: boolean; dailyUsage: number; dailyLimit: number | null }>;
+      }>;
+    };
+
+    const status = await aiService.getStatus({ force: true, refreshOpenCodeInventory: true });
+
+    expect(getStatus).toHaveBeenCalledWith({
+      force: true,
+      refreshOpenCodeInventory: true,
+    });
+    expect(status.features).toContainEqual({
+      feature: "narratives",
+      enabled: true,
+      dailyUsage: 2,
+      dailyLimit: 5,
+    });
+    expect(status.features).toContainEqual({
+      feature: "mission_planning",
+      enabled: false,
+      dailyUsage: 0,
+      dailyLimit: null,
+    });
+  });
+
+  it("delegates AI key mutations to the runtime service", () => {
+    const storeApiKey = vi.fn();
+    const deleteApiKey = vi.fn();
+    const listApiKeys = vi.fn(() => ["cursor"]);
+    const runtime = {
+      aiIntegrationService: {
+        verifyApiKeyConnection: vi.fn(),
+        storeApiKey,
+        deleteApiKey,
+        listApiKeys,
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+    const aiService = getAdeActionDomainServices(runtime).ai as {
+      storeApiKey(args?: { provider?: string; key?: string }): void;
+      deleteApiKey(args?: { provider?: string }): void;
+      listApiKeys(): string[];
+    };
+
+    aiService.storeApiKey({ provider: " Cursor ", key: " key " });
+    aiService.deleteApiKey({ provider: " Cursor " });
+
+    expect(aiService.listApiKeys()).toEqual(["cursor"]);
+    expect(storeApiKey).toHaveBeenCalledWith("Cursor", "key");
+    expect(deleteApiKey).toHaveBeenCalledWith("Cursor");
+  });
+});
+
+describe("runtime GitHub actions", () => {
+  it("allowlists github.detectRepo when the runtime service exposes it", () => {
+    const runtime = {
+      githubService: {
+        getStatus: vi.fn(),
+        setToken: vi.fn(),
+        clearToken: vi.fn(),
+        getRepoOrThrow: vi.fn(),
+        detectRepo: vi.fn(),
+        listRepoLabels: vi.fn(),
+        listRepoCollaborators: vi.fn(),
+        publishCurrentProject: vi.fn(),
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+    const githubService = getAdeActionDomainServices(runtime).github as Record<string, unknown>;
+
+    expect(githubService.detectRepo).toEqual(expect.any(Function));
+    expect(listAllowedAdeActionNames("github", githubService)).toContain("detectRepo");
+    expect(listAllowedAdeActionNames("github", githubService)).toEqual(expect.arrayContaining([
+      "listRepoCollaborators",
+      "listRepoLabels",
+      "publishCurrentProject",
+    ]));
+  });
+
+  it("routes object-shaped GitHub repo picker args to the positional service methods", async () => {
+    const listRepoLabels = vi.fn(async () => [{ name: "bug" }]);
+    const listRepoCollaborators = vi.fn(async () => [{ login: "octocat" }]);
+    const runtime = {
+      githubService: {
+        getStatus: vi.fn(),
+        setToken: vi.fn(),
+        clearToken: vi.fn(),
+        getRepoOrThrow: vi.fn(),
+        detectRepo: vi.fn(),
+        listRepoLabels,
+        listRepoCollaborators,
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+    const githubService = getAdeActionDomainServices(runtime).github as {
+      listRepoLabels(args?: { owner?: string; name?: string }): Promise<unknown>;
+      listRepoCollaborators(args?: { owner?: string; name?: string }): Promise<unknown>;
+    };
+
+    await expect(githubService.listRepoLabels({ owner: " acme ", name: " ade " })).resolves.toEqual([{ name: "bug" }]);
+    await expect(githubService.listRepoCollaborators({ owner: " acme ", name: " ade " })).resolves.toEqual([{ login: "octocat" }]);
+
+    expect(listRepoLabels).toHaveBeenCalledWith("acme", "ade");
+    expect(listRepoCollaborators).toHaveBeenCalledWith("acme", "ade");
+  });
+
+  it("routes object-shaped publish args to the GitHub service", async () => {
+    const publishCurrentProject = vi.fn(async () => ({
+      state: "pushed" as const,
+      htmlUrl: "https://github.com/acme/ade",
+    }));
+    const runtime = {
+      githubService: {
+        getStatus: vi.fn(),
+        setToken: vi.fn(),
+        clearToken: vi.fn(),
+        getRepoOrThrow: vi.fn(),
+        detectRepo: vi.fn(),
+        publishCurrentProject,
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+    const githubService = getAdeActionDomainServices(runtime).github as {
+      publishCurrentProject(args?: { name?: string; description?: string; isPrivate?: boolean }): Promise<unknown>;
+    };
+
+    await expect(githubService.publishCurrentProject({
+      name: " ade ",
+      description: "Local-first agent desk",
+      isPrivate: true,
+    })).resolves.toEqual({
+      state: "pushed",
+      htmlUrl: "https://github.com/acme/ade",
+    });
+    await expect(githubService.publishCurrentProject({ name: "ade" })).rejects.toThrow("Expected 'isPrivate' to be a boolean.");
+
+    expect(publishCurrentProject).toHaveBeenCalledWith({
+      name: "ade",
+      description: "Local-first agent desk",
+      isPrivate: true,
+    });
+  });
+
+  it("returns fresh GitHub status after token mutations", async () => {
+    let tokenStored = false;
+    const setToken = vi.fn((token: string) => {
+      tokenStored = token.length > 0;
+    });
+    const clearToken = vi.fn(() => {
+      tokenStored = false;
+    });
+    const runtime = {
+      githubService: {
+        getStatus: vi.fn(async () => ({
+          tokenStored,
+          tokenDecryptionFailed: false,
+          storageScope: "app",
+          tokenType: tokenStored ? "classic" : "unknown",
+          repo: { owner: "ade", name: "runtime" },
+          hasOrigin: true,
+          userLogin: null,
+          scopes: [],
+          checkedAt: tokenStored ? TEST_NOW : null,
+          repoAccessOk: tokenStored,
+          repoAccessError: tokenStored ? null : "GitHub token missing.",
+          connected: tokenStored,
+        })),
+        setToken,
+        clearToken,
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+
+    const githubService = getAdeActionDomainServices(runtime).github as {
+      setToken(token: string): Promise<{
+        connected: boolean;
+        hasOrigin: boolean;
+        repoAccessError: string | null;
+        repoAccessOk: boolean | null;
+        tokenStored: boolean;
+      }>;
+      clearToken(): Promise<{
+        connected: boolean;
+        hasOrigin: boolean;
+        repoAccessError: string | null;
+        repoAccessOk: boolean | null;
+        tokenStored: boolean;
+      }>;
+    };
+
+    await expect(githubService.setToken("ghp_test")).resolves.toMatchObject({
+      connected: true,
+      hasOrigin: true,
+      repoAccessError: null,
+      repoAccessOk: true,
+      tokenStored: true,
+    });
+    await expect(githubService.clearToken()).resolves.toMatchObject({
+      connected: false,
+      hasOrigin: true,
+      repoAccessError: "GitHub token missing.",
+      repoAccessOk: false,
+      tokenStored: false,
+    });
+    expect(setToken).toHaveBeenCalledWith("ghp_test");
+    expect(clearToken).toHaveBeenCalled();
+  });
+});
+
+describe("runtime file actions", () => {
+  it("uses the runtime client id as the file watcher sender without leaking metadata to file args", async () => {
+    const pushedEvents: unknown[] = [];
+    const watchWorkspace = vi.fn(async (args, callback, senderId) => {
+      callback({
+        workspaceId: "ws-1",
+        type: "modified",
+        path: "src/App.tsx",
+        ts: "2026-05-10T00:00:00.000Z",
+      });
+      return { args, senderId };
+    });
+    const stopWatching = vi.fn();
+    const runtime = {
+      fileService: {
+        watchWorkspace,
+        stopWatching,
+      },
+      eventBuffer: {
+        push(event: unknown) {
+          pushedEvents.push(event);
+        },
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+
+    const fileService = getAdeActionDomainServices(runtime).file as {
+      watchWorkspace(args?: unknown): Promise<{ ok: true }>;
+      stopWatching(args?: unknown): { ok: true };
+    };
+
+    await fileService.watchWorkspace({
+      workspaceId: "ws-1",
+      includeIgnored: true,
+      __adeRuntimeClientId: 42,
+    });
+    fileService.stopWatching({
+      workspaceId: "ws-1",
+      includeIgnored: true,
+      __adeRuntimeClientId: 42,
+    });
+
+    expect(watchWorkspace).toHaveBeenCalledWith(
+      { workspaceId: "ws-1", includeIgnored: true },
+      expect.any(Function),
+      42,
+    );
+    expect(stopWatching).toHaveBeenCalledWith(
+      { workspaceId: "ws-1", includeIgnored: true },
+      42,
+    );
+    expect(pushedEvents).toEqual([
+      expect.objectContaining({
+        category: "runtime",
+        payload: {
+          type: "file_change",
+          event: expect.objectContaining({ path: "src/App.tsx" }),
+        },
+      }),
+    ]);
   });
 });

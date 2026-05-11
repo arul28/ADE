@@ -6,7 +6,11 @@ import * as nodePty from "node-pty";
 import { createFileLogger, type Logger } from "../../desktop/src/main/services/logging/logger";
 import { openKvDb, type AdeDb } from "../../desktop/src/main/services/state/kvDb";
 import { detectDefaultBaseRef, toProjectInfo, upsertProjectRow } from "../../desktop/src/main/services/projects/projectService";
-import { initializeOrRepairAdeProject } from "../../desktop/src/main/services/projects/adeProjectService";
+import {
+  createAdeProjectService,
+  initializeOrRepairAdeProject,
+} from "../../desktop/src/main/services/projects/adeProjectService";
+import { createConfigReloadService } from "../../desktop/src/main/services/projects/configReloadService";
 import { createOperationService } from "../../desktop/src/main/services/history/operationService";
 import { createLaneService } from "../../desktop/src/main/services/lanes/laneService";
 import { createSessionService } from "../../desktop/src/main/services/sessions/sessionService";
@@ -18,22 +22,22 @@ import { createMissionService } from "../../desktop/src/main/services/missions/m
 import type { createMissionPreflightService } from "../../desktop/src/main/services/missions/missionPreflightService";
 import { createPtyService } from "../../desktop/src/main/services/pty/ptyService";
 import { createTestService } from "../../desktop/src/main/services/tests/testService";
-import type { createKeybindingsService } from "../../desktop/src/main/services/keybindings/keybindingsService";
+import { createKeybindingsService } from "../../desktop/src/main/services/keybindings/keybindingsService";
 import type { createAgentToolsService } from "../../desktop/src/main/services/agentTools/agentToolsService";
 import type { createAdeCliService } from "../../desktop/src/main/services/cli/adeCliService";
 import type { createDevToolsService } from "../../desktop/src/main/services/devTools/devToolsService";
-import type { createOnboardingService } from "../../desktop/src/main/services/onboarding/onboardingService";
-import type { createLaneEnvironmentService } from "../../desktop/src/main/services/lanes/laneEnvironmentService";
-import type { createLaneTemplateService } from "../../desktop/src/main/services/lanes/laneTemplateService";
-import type { createPortAllocationService } from "../../desktop/src/main/services/lanes/portAllocationService";
-import type { createLaneProxyService } from "../../desktop/src/main/services/lanes/laneProxyService";
-import type { createOAuthRedirectService } from "../../desktop/src/main/services/lanes/oauthRedirectService";
-import type { createRuntimeDiagnosticsService } from "../../desktop/src/main/services/lanes/runtimeDiagnosticsService";
-import type { createRebaseSuggestionService } from "../../desktop/src/main/services/lanes/rebaseSuggestionService";
-import type { createAutoRebaseService } from "../../desktop/src/main/services/lanes/autoRebaseService";
+import { createOnboardingService } from "../../desktop/src/main/services/onboarding/onboardingService";
+import { createLaneEnvironmentService } from "../../desktop/src/main/services/lanes/laneEnvironmentService";
+import { createLaneTemplateService } from "../../desktop/src/main/services/lanes/laneTemplateService";
+import { createPortAllocationService } from "../../desktop/src/main/services/lanes/portAllocationService";
+import { createLaneProxyService } from "../../desktop/src/main/services/lanes/laneProxyService";
+import { createOAuthRedirectService } from "../../desktop/src/main/services/lanes/oauthRedirectService";
+import { createRuntimeDiagnosticsService } from "../../desktop/src/main/services/lanes/runtimeDiagnosticsService";
+import { createRebaseSuggestionService } from "../../desktop/src/main/services/lanes/rebaseSuggestionService";
+import { createAutoRebaseService } from "../../desktop/src/main/services/lanes/autoRebaseService";
 import { createProcessService } from "../../desktop/src/main/services/processes/processService";
 import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "../../desktop/src/main/services/ai/cliExecutableResolver";
-import type { createAgentChatService } from "../../desktop/src/main/services/chat/agentChatService";
+import { createAgentChatService } from "../../desktop/src/main/services/chat/agentChatService";
 import type { createPrService } from "../../desktop/src/main/services/prs/prService";
 import type { createPrSummaryService } from "../../desktop/src/main/services/prs/prSummaryService";
 import type { createQueueLandingService } from "../../desktop/src/main/services/prs/queueLandingService";
@@ -47,7 +51,7 @@ import type { createWorkerRevisionService } from "../../desktop/src/main/service
 import type { createWorkerHeartbeatService } from "../../desktop/src/main/services/cto/workerHeartbeatService";
 import type { createWorkerTaskSessionService } from "../../desktop/src/main/services/cto/workerTaskSessionService";
 import type { createLinearCredentialService } from "../../desktop/src/main/services/cto/linearCredentialService";
-import type { createOpenclawBridgeService } from "../../desktop/src/main/services/cto/openclawBridgeService";
+import { createLinearOAuthService } from "../../desktop/src/main/services/cto/linearOAuthService";
 import type { createFlowPolicyService } from "../../desktop/src/main/services/cto/flowPolicyService";
 import type { createLinearDispatcherService } from "../../desktop/src/main/services/cto/linearDispatcherService";
 import type { createLinearIssueTracker } from "../../desktop/src/main/services/cto/linearIssueTracker";
@@ -57,15 +61,17 @@ import type { createLinearSyncService } from "../../desktop/src/main/services/ct
 import { createOrchestratorService } from "../../desktop/src/main/services/orchestrator/orchestratorService";
 import { createAiOrchestratorService } from "../../desktop/src/main/services/orchestrator/aiOrchestratorService";
 import { createAiIntegrationService } from "../../desktop/src/main/services/ai/aiIntegrationService";
+import { initApiKeyStore } from "../../desktop/src/main/services/ai/apiKeyStore";
 import { createMissionBudgetService } from "../../desktop/src/main/services/orchestrator/missionBudgetService";
-import type { createSyncService } from "../../desktop/src/main/services/sync/syncService";
-import type { createSyncHostService } from "../../desktop/src/main/services/sync/syncHostService";
+import type { createSyncService } from "./services/sync/syncService";
+import type { createSyncHostService, SyncRuntimeKind } from "./services/sync/syncHostService";
 import type { createAutomationIngressService } from "../../desktop/src/main/services/automations/automationIngressService";
 import type { createGithubService } from "../../desktop/src/main/services/github/githubService";
-import type { createFeedbackReporterService } from "../../desktop/src/main/services/feedback/feedbackReporterService";
+import { createFeedbackReporterService } from "../../desktop/src/main/services/feedback/feedbackReporterService";
 import type { createUsageTrackingService } from "../../desktop/src/main/services/usage/usageTrackingService";
 import type { createBudgetCapService } from "../../desktop/src/main/services/usage/budgetCapService";
-import type { createSessionDeltaService } from "../../desktop/src/main/services/sessions/sessionDeltaService";
+import { createSessionDeltaService } from "../../desktop/src/main/services/sessions/sessionDeltaService";
+import { createReviewService } from "../../desktop/src/main/services/review/reviewService";
 import type { createAutoUpdateService } from "../../desktop/src/main/services/updates/autoUpdateService";
 import {
   createComputerUseArtifactBrokerService,
@@ -82,6 +88,7 @@ import {
 import { createMacosVmService } from "../../desktop/src/main/services/macosVm/macosVmService";
 import type { BuiltInBrowserService } from "../../desktop/src/main/services/builtInBrowser/builtInBrowserService";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
+import type { AppNavigationRequest, AppNavigationResult, PortLease } from "../../desktop/src/shared/types";
 import {
   createAutomationService,
   type AutomationAdeActionRegistry,
@@ -95,6 +102,7 @@ import {
 } from "../../desktop/src/main/services/adeActions/registry";
 import { createLaneWorktreeLockService, type LaneWorktreeLockService } from "../../desktop/src/main/services/lanes/laneWorktreeLockService";
 import { createHeadlessLinearServices } from "./headlessLinearServices";
+import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
 import { createEventBuffer, type BufferedEvent, type EventBuffer } from "./eventBuffer";
 
 export { createEventBuffer, type BufferedEvent, type EventBuffer };
@@ -117,10 +125,27 @@ export type AdeRuntimePaths = {
   missionStateDir: string;
 };
 
+export type AdeRuntimeSyncOptions = {
+  enabled?: boolean;
+  hostStartupEnabled?: boolean;
+  hostDiscoveryEnabled?: boolean;
+  forceHostRole?: boolean;
+  runtimeKind?: SyncRuntimeKind;
+  appVersion?: string;
+  registryProjectId?: string;
+  localDeviceIdPath?: string;
+  phonePairingStateDir?: string;
+  projectCatalogProvider?: Parameters<typeof createSyncService>[0]["projectCatalogProvider"];
+  remoteCommandExecutor?: Parameters<typeof createSyncService>[0]["remoteCommandExecutor"];
+};
+
 export type AdeRuntime = {
   projectRoot: string;
   workspaceRoot: string;
   projectId: string;
+  capabilities?: {
+    memory?: boolean;
+  };
   project: { rootPath: string; displayName: string; baseRef: string };
   paths: AdeRuntimePaths;
   logger: Logger;
@@ -130,6 +155,7 @@ export type AdeRuntime = {
   adeCliService?: ReturnType<typeof createAdeCliService> | null;
   devToolsService?: ReturnType<typeof createDevToolsService> | null;
   onboardingService?: ReturnType<typeof createOnboardingService> | null;
+  adeProjectService?: ReturnType<typeof createAdeProjectService> | null;
   laneService: ReturnType<typeof createLaneService>;
   laneWorktreeLockService?: LaneWorktreeLockService | null;
   laneEnvironmentService?: ReturnType<typeof createLaneEnvironmentService> | null;
@@ -166,7 +192,7 @@ export type AdeRuntime = {
   workerHeartbeatService?: ReturnType<typeof createWorkerHeartbeatService> | null;
   workerTaskSessionService?: ReturnType<typeof createWorkerTaskSessionService> | null;
   linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
-  openclawBridgeService?: ReturnType<typeof createOpenclawBridgeService> | null;
+  linearOAuthService?: ReturnType<typeof createLinearOAuthService> | null;
   flowPolicyService?: ReturnType<typeof createFlowPolicyService> | null;
   linearDispatcherService?: ReturnType<typeof createLinearDispatcherService> | null;
   linearIssueTracker?: ReturnType<typeof createLinearIssueTracker> | null;
@@ -192,7 +218,11 @@ export type AdeRuntime = {
   usageTrackingService?: ReturnType<typeof createUsageTrackingService> | null;
   budgetCapService?: ReturnType<typeof createBudgetCapService> | null;
   sessionDeltaService?: ReturnType<typeof createSessionDeltaService> | null;
+  reviewService?: ReturnType<typeof createReviewService> | null;
   autoUpdateService?: ReturnType<typeof createAutoUpdateService> | null;
+  appNavigationService?: {
+    navigate(args: AppNavigationRequest): Promise<AppNavigationResult>;
+  } | null;
   eventBuffer: EventBuffer;
   dispose: () => void;
 };
@@ -302,12 +332,22 @@ function createHeadlessAdeCliAgentEnv(baseEnv: NodeJS.ProcessEnv = process.env):
   return next;
 }
 
-export async function createAdeRuntime(args: { projectRoot: string; workspaceRoot?: string } | string): Promise<AdeRuntime> {
+export async function createAdeRuntime(args: {
+  projectRoot: string;
+  workspaceRoot?: string;
+  chatRuntime?: "headless-stub" | "agent";
+  runtimeProfile?: "full" | "chat";
+  syncRuntime?: AdeRuntimeSyncOptions;
+  capabilities?: {
+    memory?: boolean;
+  };
+} | string): Promise<AdeRuntime> {
   const resolvedArgs = typeof args === "string"
     ? { projectRoot: args, workspaceRoot: args }
     : args;
   const projectRoot = path.resolve(resolvedArgs.projectRoot);
   const workspaceRoot = path.resolve(resolvedArgs.workspaceRoot ?? resolvedArgs.projectRoot);
+  const chatOnlyRuntime = resolvedArgs.runtimeProfile === "chat";
   if (!fs.existsSync(projectRoot) || !fs.statSync(projectRoot).isDirectory()) {
     throw new Error(`Project root does not exist: ${projectRoot}`);
   }
@@ -315,8 +355,10 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     throw new Error(`Workspace root does not exist: ${workspaceRoot}`);
   }
 
+  const hadAdeDb = fs.existsSync(path.join(projectRoot, ".ade", "ade.db"));
   const baseRef = await detectDefaultBaseRef(projectRoot);
   const paths = ensureAdePaths(projectRoot);
+  initApiKeyStore(projectRoot, { credentialStore: new EncryptedFileCredentialStore() });
   const logger = createFileLogger(path.join(paths.logsDir, "ade-cli.jsonl"));
   const db = await openKvDb(paths.dbPath, logger);
 
@@ -329,6 +371,16 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
   });
 
   const operationService = createOperationService({ db, projectId });
+  const keybindingsService = createKeybindingsService({ db });
+  const eventBuffer = createEventBuffer();
+
+  function pushEvent(category: BufferedEvent["category"], payload: Record<string, unknown>): void {
+    eventBuffer.push({ timestamp: new Date().toISOString(), category, payload });
+  }
+
+  let conflictServiceRef: ReturnType<typeof createConflictService> | null = null;
+  let rebaseSuggestionServiceRef: ReturnType<typeof createRebaseSuggestionService> | null = null;
+  let autoRebaseServiceRef: ReturnType<typeof createAutoRebaseService> | null = null;
 
   const laneService = createLaneService({
     db,
@@ -336,14 +388,36 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     projectId,
     defaultBaseRef: baseRef,
     worktreesDir: paths.worktreesDir,
-    operationService
+    operationService,
+    onHeadChanged: (event) => {
+      pushEvent("runtime", { type: "lane_head_changed", ...event });
+      void rebaseSuggestionServiceRef?.onParentHeadChanged(event).catch(() => {});
+      void autoRebaseServiceRef?.onHeadChanged(event).catch(() => {});
+    },
+    onRebaseEvent: (event) => {
+      pushEvent("runtime", { type: "lane_rebase_event", event });
+      if (event.type === "rebase-run-updated" && event.run.state !== "running") {
+        void conflictServiceRef?.scanRebaseNeeds().catch(() => {});
+      }
+    },
+    onDeleteEvent: (event) => pushEvent("runtime", { type: "lane_delete_event", event }),
+    logger,
   });
   await laneService.ensurePrimaryLane();
 
   const sessionService = createSessionService({ db });
+  sessionService.onChanged((event) => {
+    pushEvent("runtime", { type: "terminal_session_changed", event });
+  });
   sessionService.reconcileStaleRunningSessions({
     status: "disposed",
     excludeToolTypes: ["claude-chat", "codex-chat", "opencode-chat", "cursor", "droid-chat"],
+  });
+  const sessionDeltaService = createSessionDeltaService({
+    db,
+    projectId,
+    laneService,
+    sessionService,
   });
 
   const projectConfigService = createProjectConfigService({
@@ -352,6 +426,85 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     projectId,
     db,
     logger
+  });
+  const onboardingService = createOnboardingService({
+    db,
+    logger,
+    projectRoot,
+    projectId,
+    baseRef,
+    freshProject: !hadAdeDb,
+    laneService,
+    projectConfigService,
+  });
+
+  const laneEnvironmentService = createLaneEnvironmentService({
+    projectRoot,
+    adeDir: paths.adeDir,
+    logger,
+    broadcastEvent: (event) => pushEvent("runtime", { type: "lane_env_event", event }),
+  });
+
+  const laneTemplateService = createLaneTemplateService({
+    projectConfigService,
+    logger,
+  });
+
+  const portAllocationService = createPortAllocationService({
+    logger,
+    broadcastEvent: (event) => pushEvent("runtime", { type: "lane_port_event", event }),
+    persistLeases: (leases) => db.setJson("port_leases", leases),
+    loadLeases: () => db.getJson<PortLease[]>("port_leases") ?? [],
+  });
+  portAllocationService.restore();
+
+  const recoverPortAllocations = async () => {
+    const lanes = await laneService.list({ includeArchived: false, includeStatus: false });
+    const validIds = new Set(lanes.map((lane) => lane.id));
+    portAllocationService.recoverOrphans(validIds);
+    for (const lane of lanes) {
+      const lease = portAllocationService.getLease(lane.id);
+      if (lease?.status === "active") continue;
+      try {
+        portAllocationService.acquire(lane.id);
+      } catch (error) {
+        logger.warn("port_allocation.headless_startup_acquire_failed", {
+          laneId: lane.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    portAllocationService.detectConflicts();
+  };
+  await recoverPortAllocations().catch((error) => {
+    logger.warn("port_allocation.headless_startup_recovery_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
+
+  const laneProxyService = createLaneProxyService({
+    logger,
+    broadcastEvent: (event) => pushEvent("runtime", { type: "lane_proxy_event", event }),
+  });
+
+  const oauthRedirectService = createOAuthRedirectService({
+    logger,
+    broadcastEvent: (event) => pushEvent("runtime", { type: "lane_oauth_event", event }),
+    getRoutes: () => laneProxyService.listRoutes(),
+    getProxyPort: () => laneProxyService.getConfig().proxyPort,
+    getHostnameSuffix: () => laneProxyService.getConfig().hostnameSuffix,
+    forwardToPort: (req, res, port) => laneProxyService.forwardToPort(req, res, port),
+  });
+  laneProxyService.registerInterceptor((req, res) => oauthRedirectService.handleRequest(req, res));
+
+  const runtimeDiagnosticsService = createRuntimeDiagnosticsService({
+    logger,
+    broadcastEvent: (event) => pushEvent("runtime", { type: "lane_diagnostics_event", event }),
+    getPortLease: (laneId) => portAllocationService.getLease(laneId),
+    getPortConflicts: () => portAllocationService.listConflicts(),
+    detectPortConflicts: () => portAllocationService.detectConflicts(),
+    getProxyStatus: () => laneProxyService.getStatus(),
+    getProxyRoute: (laneId) => laneProxyService.getRoute(laneId),
   });
 
   const aiIntegrationService = createAiIntegrationService({
@@ -371,8 +524,30 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     projectConfigService,
     operationService,
     conflictPacksDir: path.join(paths.packsDir, "conflicts"),
-    onEvent: () => {}
+    onEvent: (event) => pushEvent("runtime", { type: "conflict_event", event })
   });
+  conflictServiceRef = conflictService;
+
+  const rebaseSuggestionService = createRebaseSuggestionService({
+    db,
+    logger,
+    projectId,
+    projectRoot,
+    laneService,
+    onEvent: (event) => pushEvent("runtime", { type: "lane_rebase_suggestions_event", event }),
+  });
+  rebaseSuggestionServiceRef = rebaseSuggestionService;
+
+  const autoRebaseService = createAutoRebaseService({
+    db,
+    logger,
+    laneService,
+    conflictService,
+    projectConfigService,
+    onEvent: (event) => pushEvent("runtime", { type: "lane_auto_rebase_event", event }),
+  });
+  autoRebaseServiceRef = autoRebaseService;
+  void autoRebaseService.emit().catch(() => {});
 
   const gitService = createGitOperationsService({
     laneService,
@@ -387,7 +562,7 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
   const missionService = createMissionService({
     db,
     projectId,
-    onEvent: () => {}
+    onEvent: (event) => pushEvent("mission", event as unknown as Record<string, unknown>)
   });
 
   const ptyService = createPtyService({
@@ -396,8 +571,8 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     laneService,
     sessionService,
     logger,
-    broadcastData: () => {},
-    broadcastExit: () => {},
+    broadcastData: (event) => pushEvent("runtime", { type: "pty_data", event }),
+    broadcastExit: (event) => pushEvent("runtime", { type: "pty_exit", event }),
     onSessionEnded: () => {},
     getAdeCliAgentEnv: createHeadlessAdeCliAgentEnv,
     loadPty: () => nodePty
@@ -410,47 +585,23 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     logger,
     laneService,
     projectConfigService,
-    broadcastEvent: () => {}
+    broadcastEvent: (event) => pushEvent("runtime", event as unknown as Record<string, unknown>)
   });
   const issueInventoryService = createIssueInventoryService({ db });
   const laneWorktreeLockService = createLaneWorktreeLockService({ db, logger });
-  const eventBuffer = createEventBuffer();
 
-  function pushEvent(category: BufferedEvent["category"], payload: Record<string, unknown>): void {
-    eventBuffer.push({ timestamp: new Date().toISOString(), category, payload });
-  }
-
-  // Headless lane runtime env. Unlike the desktop path (which leases ports via
-  // portAllocationService and builds collision-safe hostnames via
-  // laneProxyService), headless has no persistent allocator wired in — so we
-  // derive ports and hostname suffix from a stable hash of the laneId. This is
-  // (a) independent of the lane's current list position (archival/reordering
-  // no longer shifts a lane's PORT) and (b) resistant to slug collisions
-  // between lanes whose display names slugify to the same string.
-  // Range matches desktop: basePort=3000, portsPerLane=100, maxPort=9999 → 70 slots.
-  const HEADLESS_BASE_PORT = 3000;
-  const HEADLESS_PORTS_PER_LANE = 100;
-  const HEADLESS_MAX_SLOTS = 70;
+  // Headless lane runtime env uses the same persistent allocator/proxy hostname
+  // services as desktop so a remote runtime presents the same PORT and preview
+  // surface to process definitions.
   const getHeadlessLaneRuntimeEnv = async (laneId: string): Promise<Record<string, string>> => {
     const lanes = await laneService.list({ includeArchived: false, includeStatus: false });
     const lane = lanes.find((entry) => entry.id === laneId);
-    const laneHash = createHash("sha256").update(laneId).digest();
-    const slotIndex = laneHash.readUInt32BE(0) % HEADLESS_MAX_SLOTS;
-    const portStart = HEADLESS_BASE_PORT + slotIndex * HEADLESS_PORTS_PER_LANE;
-    const portEnd = portStart + HEADLESS_PORTS_PER_LANE - 1;
-    const baseSlug = (lane?.name ?? lane?.branchRef ?? laneId)
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "") || "lane";
-    // 6-char suffix from the laneId hash keeps hostnames readable while making
-    // two lanes with identical slugs resolve to distinct hostnames.
-    const idSuffix = laneHash.toString("hex").slice(0, 6);
-    const hostname = `${baseSlug}-${idSuffix}.localhost`;
+    const lease = portAllocationService.getLease(laneId) ?? portAllocationService.acquire(laneId);
+    const hostname = laneProxyService.generateHostname(laneId, lane?.name ?? lane?.branchRef);
     return {
-      PORT: String(portStart),
-      PORT_RANGE_START: String(portStart),
-      PORT_RANGE_END: String(portEnd),
+      PORT: String(lease.rangeStart),
+      PORT_RANGE_START: String(lease.rangeStart),
+      PORT_RANGE_END: String(lease.rangeEnd),
       HOSTNAME: hostname,
       PROXY_HOSTNAME: hostname,
     };
@@ -503,6 +654,15 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     db,
     projectId,
     adeDir: paths.adeDir,
+  });
+  const adeProjectService = createAdeProjectService({
+    projectRoot,
+    db,
+    projectId,
+    logger,
+    projectConfigService,
+    ctoStateService,
+    workerAgentService,
   });
   const workerBudgetService = createWorkerBudgetService({
     db,
@@ -573,53 +733,59 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     orchestratorService,
     logger,
   });
-  const iosSimulatorService = createIosSimulatorService({
-    projectRoot,
-    logger,
-  });
+  const iosSimulatorService = chatOnlyRuntime
+    ? null
+    : createIosSimulatorService({
+        projectRoot,
+        logger,
+      });
   // Late-bound chat session lookup. agentChatService is created after
   // appControlService below, so we capture a holder that the resolveLaneId
   // closure reads at call time. The chat session store lives in agentChatService
   // (getSessionSummary), not in sessionService (which holds terminal sessions).
   const agentChatServiceHolder: { current: ReturnType<typeof createAgentChatService> | null } = { current: null };
-  const appControlService = createAppControlService({
-    projectRoot,
-    logger,
-    ptyService,
-    resolveLaneId: async ({ cwd, projectRoot: requestedProjectRoot, laneId, chatSessionId }) => {
-      const explicitLaneId = laneId?.trim();
-      if (explicitLaneId) return explicitLaneId;
-      const chatId = chatSessionId?.trim();
-      if (chatId && agentChatServiceHolder.current) {
-        const chatSession = await agentChatServiceHolder.current.getSessionSummary(chatId).catch(() => null);
-        if (chatSession?.laneId) return chatSession.laneId;
-      }
-      const targetRoot = path.resolve(cwd || requestedProjectRoot || projectRoot);
-      const lanes = await laneService.list({ includeArchived: false });
-      const matchingLane = lanes.find((lane) => {
-        const worktreePath = path.resolve(lane.worktreePath);
-        const attachedRootPath = lane.attachedRootPath ? path.resolve(lane.attachedRootPath) : null;
-        return (
-          targetRoot === worktreePath
-          || targetRoot.startsWith(`${worktreePath}${path.sep}`)
-          || (attachedRootPath !== null
-            && (targetRoot === attachedRootPath
-              || targetRoot.startsWith(`${attachedRootPath}${path.sep}`)))
-        );
+  const appControlService = chatOnlyRuntime
+    ? null
+    : createAppControlService({
+        projectRoot,
+        logger,
+        ptyService,
+        resolveLaneId: async ({ cwd, projectRoot: requestedProjectRoot, laneId, chatSessionId }) => {
+          const explicitLaneId = laneId?.trim();
+          if (explicitLaneId) return explicitLaneId;
+          const chatId = chatSessionId?.trim();
+          if (chatId && agentChatServiceHolder.current) {
+            const chatSession = await agentChatServiceHolder.current.getSessionSummary(chatId).catch(() => null);
+            if (chatSession?.laneId) return chatSession.laneId;
+          }
+          const targetRoot = path.resolve(cwd || requestedProjectRoot || projectRoot);
+          const lanes = await laneService.list({ includeArchived: false });
+          const matchingLane = lanes.find((lane) => {
+            const worktreePath = path.resolve(lane.worktreePath);
+            const attachedRootPath = lane.attachedRootPath ? path.resolve(lane.attachedRootPath) : null;
+            return (
+              targetRoot === worktreePath
+              || targetRoot.startsWith(`${worktreePath}${path.sep}`)
+              || (attachedRootPath !== null
+                && (targetRoot === attachedRootPath
+                  || targetRoot.startsWith(`${attachedRootPath}${path.sep}`)))
+            );
+          });
+          return matchingLane?.id ?? lanes[0]?.id ?? null;
+        },
       });
-      return matchingLane?.id ?? lanes[0]?.id ?? null;
-    },
-  });
-  const macosVmService = createMacosVmService({
-    projectRoot,
-    logger,
-    resolveLanes: async () => laneService.list({ includeArchived: false }),
-    onEvent: (event) => pushEvent("runtime", {
-      ...(event as unknown as Record<string, unknown>),
-      type: "macos_vm",
-      eventType: event.type,
-    }),
-  });
+  const macosVmService = chatOnlyRuntime
+    ? null
+    : createMacosVmService({
+        projectRoot,
+        logger,
+        resolveLanes: async () => laneService.list({ includeArchived: false }),
+        onEvent: (event) => pushEvent("runtime", {
+          ...(event as unknown as Record<string, unknown>),
+          type: "macos_vm",
+          eventType: event.type,
+        }),
+      });
 
   const aiOrchestratorService = createAiOrchestratorService({
     db,
@@ -656,14 +822,114 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     orchestratorService,
     openExternal: async () => {},
   });
+  const linearOAuthService = createLinearOAuthService({
+    credentials: headlessLinearServices.linearCredentialService as never,
+    logger,
+  });
 
-  const agentChatService = headlessLinearServices.agentChatService as unknown as ReturnType<typeof createAgentChatService> | null;
+  const feedbackReporterService = createFeedbackReporterService({
+    db,
+    logger,
+    projectRoot,
+    aiIntegrationService,
+    githubService: headlessLinearServices.githubService as never,
+    onSubmissionUpdated: (event) => pushEvent("runtime", { type: "feedback_submission_event", event }),
+  });
+
+  let automationServiceRef: ReturnType<typeof createAutomationService> | null = null;
+  let agentChatService = headlessLinearServices.agentChatService as unknown as ReturnType<typeof createAgentChatService> | null;
+  if (resolvedArgs.chatRuntime === "agent") {
+    agentChatService = createAgentChatService({
+      projectRoot,
+      adeDir: paths.adeDir,
+      transcriptsDir: paths.transcriptsDir,
+      projectId,
+      memoryService,
+      fileService: headlessLinearServices.fileService,
+      workerAgentService,
+      workerHeartbeatService: headlessLinearServices.workerHeartbeatService,
+      linearIssueTracker: headlessLinearServices.linearIssueTracker,
+      flowPolicyService: headlessLinearServices.flowPolicyService,
+      getMissionService: () => missionService,
+      getAiOrchestratorService: () => aiOrchestratorService,
+      getLinearDispatcherService: () => headlessLinearServices.linearDispatcherService,
+      linearClient: headlessLinearServices.linearClient,
+      linearCredentials: headlessLinearServices.linearCredentialService as never,
+      prService: headlessLinearServices.prService,
+      issueInventoryService,
+      processService,
+      getTestService: () => testService,
+      ptyService,
+      getAutomationService: () => automationServiceRef,
+      getGitService: () => gitService,
+      conflictService,
+      getWorkerBudgetService: () => workerBudgetService,
+      getMissionBudgetService: () => missionBudgetService,
+      computerUseArtifactBrokerService,
+      laneService,
+      sessionService,
+      projectConfigService,
+      aiIntegrationService,
+      ctoStateService,
+      logger,
+      appVersion: "ade-cli",
+      getAdeCliAgentEnv: createHeadlessAdeCliAgentEnv,
+      onEvent: (event) => {
+        aiOrchestratorService.onAgentChatEvent(event);
+        pushEvent("runtime", event as unknown as Record<string, unknown>);
+      },
+      onSessionEnded: (event) => {
+        pushEvent("runtime", { type: "agent_chat_session_ended", ...event });
+      },
+      getDirtyFileTextForPath: () => undefined,
+    });
+    if (typeof (headlessLinearServices.prService as { setAgentChatService?: (svc: unknown) => void }).setAgentChatService === "function") {
+      (headlessLinearServices.prService as { setAgentChatService: (svc: unknown) => void }).setAgentChatService(agentChatService);
+    }
+  }
   agentChatServiceHolder.current = agentChatService;
+  if (typeof (aiOrchestratorService as { setAgentChatService?: (svc: typeof agentChatService) => void }).setAgentChatService === "function") {
+    (aiOrchestratorService as { setAgentChatService: (svc: typeof agentChatService) => void }).setAgentChatService(agentChatService);
+  }
+  if (resolvedArgs.chatRuntime === "agent" && !agentChatService) {
+    throw new Error("Agent chat runtime was requested but the agent chat service was not initialized.");
+  }
+  if (resolvedArgs.chatRuntime === "agent" && agentChatService) {
+    setImmediate(() => {
+      try {
+        aiOrchestratorService.resumeActiveTeamRuntimes();
+      } catch (error) {
+        logger.warn("bootstrap.resume_active_team_runtimes_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    });
+  }
+  const reviewService = agentChatService
+    ? createReviewService({
+        db,
+        logger,
+        projectId,
+        projectRoot,
+        projectDefaultBranch: baseRef,
+        laneService,
+        gitService,
+        agentChatService,
+        sessionService,
+        sessionDeltaService,
+        testService,
+        issueInventoryService,
+        prService: headlessLinearServices.prService,
+        embeddingService: null,
+        onEvent: (event) => pushEvent("runtime", { type: "review_event", event }),
+      })
+    : null;
+  type PathToMergeAgentChatService = Parameters<typeof createPathToMergeOrchestrator>[0]["agentChatService"];
   const pathToMergeOrchestrator = createPathToMergeOrchestrator({
     logger,
     prService: headlessLinearServices.prService,
     laneService,
-    agentChatService: headlessLinearServices.agentChatService as never,
+    agentChatService: agentChatService as unknown as PathToMergeAgentChatService,
     sessionService,
     issueInventoryService,
     conflictService,
@@ -685,6 +951,24 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     aiOrchestratorService,
     onEvent: (event) => pushEvent("runtime", { ...event, source: "automations" }),
   });
+  automationServiceRef = automationService;
+  const configReloadService = createConfigReloadService({
+    paths: {
+      sharedPath: adeProjectService.paths.sharedConfigPath,
+      localPath: adeProjectService.paths.localConfigPath,
+      secretPath: adeProjectService.paths.secretConfigPath,
+    },
+    projectConfigService,
+    adeProjectService,
+    automationService,
+    logger,
+    onEvent: (event) => pushEvent("runtime", { type: "project_state_event", event }),
+  });
+  void configReloadService.start().catch((error) => {
+    logger.warn("project.config_reload_start_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
   const automationPlannerService = createAutomationPlannerService({
     logger,
     projectRoot,
@@ -693,16 +977,89 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     automationService,
   });
 
+  let syncService: ReturnType<typeof createSyncService> | null = null;
+  if (resolvedArgs.syncRuntime?.enabled && agentChatService) {
+    const { createSyncService } = await import("./services/sync/syncService");
+    syncService = createSyncService({
+      db,
+      logger,
+      projectId: resolvedArgs.syncRuntime.registryProjectId ?? projectId,
+      projectRoot,
+      appVersion: resolvedArgs.syncRuntime.appVersion ?? "ade-cli",
+      runtimeKind: resolvedArgs.syncRuntime.runtimeKind ?? "headless",
+      localDeviceIdPath: resolvedArgs.syncRuntime.localDeviceIdPath,
+      phonePairingStateDir: resolvedArgs.syncRuntime.phonePairingStateDir,
+      fileService: headlessLinearServices.fileService,
+      laneService,
+      gitService,
+      diffService,
+      conflictService,
+      prService: headlessLinearServices.prService,
+      issueInventoryService,
+      pathToMergeOrchestrator,
+      sessionService,
+      ptyService,
+      projectConfigService,
+      portAllocationService,
+      laneEnvironmentService,
+      laneTemplateService,
+      rebaseSuggestionService,
+      autoRebaseService,
+      computerUseArtifactBrokerService,
+      missionService,
+      agentChatService,
+      workerAgentService,
+      workerBudgetService,
+      workerHeartbeatService: headlessLinearServices.workerHeartbeatService,
+      ctoStateService,
+      flowPolicyService: headlessLinearServices.flowPolicyService,
+      getLinearIngressService: () => headlessLinearServices.linearIngressService,
+      getLinearIssueTracker: () => headlessLinearServices.linearIssueTracker,
+      getLinearSyncService: () => headlessLinearServices.linearSyncService,
+      processService,
+      hostStartupEnabled: resolvedArgs.syncRuntime.hostStartupEnabled ?? true,
+      hostDiscoveryEnabled: resolvedArgs.syncRuntime.hostDiscoveryEnabled ?? true,
+      forceHostRole: resolvedArgs.syncRuntime.forceHostRole ?? true,
+      projectCatalogProvider: resolvedArgs.syncRuntime.projectCatalogProvider,
+      remoteCommandExecutor: resolvedArgs.syncRuntime.remoteCommandExecutor,
+      onStatusChanged: (snapshot) => pushEvent("runtime", { type: "sync-status", snapshot }),
+    });
+  }
+
+  if (syncService) {
+    try {
+      await syncService.initialize();
+    } catch (error) {
+      logger.warn("sync.runtime_initialize_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   const runtime: AdeRuntime = {
     projectRoot,
     workspaceRoot,
     projectId,
+    capabilities: {
+      memory: resolvedArgs.capabilities?.memory ?? true,
+    },
     project,
     paths,
     logger,
     db,
+    keybindingsService,
     laneService,
+    laneEnvironmentService,
+    laneTemplateService,
+    portAllocationService,
+    laneProxyService,
+    oauthRedirectService,
+    runtimeDiagnosticsService,
+    rebaseSuggestionService,
+    autoRebaseService,
     sessionService,
+    sessionDeltaService,
+    onboardingService,
     operationService,
     projectConfigService,
     conflictService,
@@ -710,9 +1067,12 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     diffService,
     missionService,
     missionBudgetService,
+    syncService,
+    syncHostService: syncService?.getHostService() ?? null,
     laneWorktreeLockService,
     ptyService,
     testService,
+    reviewService,
     aiIntegrationService,
     agentChatService,
     issueInventoryService,
@@ -720,11 +1080,13 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     memoryService,
     ctoStateService,
     workerAgentService,
+    adeProjectService,
     workerBudgetService,
     githubService: headlessLinearServices.githubService as never,
     workerTaskSessionService: headlessLinearServices.workerTaskSessionService,
     workerHeartbeatService: headlessLinearServices.workerHeartbeatService,
     linearCredentialService: headlessLinearServices.linearCredentialService as never,
+    linearOAuthService,
     prService: headlessLinearServices.prService,
     fileService: headlessLinearServices.fileService,
     flowPolicyService: headlessLinearServices.flowPolicyService,
@@ -734,6 +1096,7 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     linearIngressService: headlessLinearServices.linearIngressService,
     linearRoutingService: headlessLinearServices.linearRoutingService,
     processService,
+    feedbackReporterService,
     automationService,
     automationPlannerService,
     computerUseArtifactBrokerService,
@@ -745,14 +1108,22 @@ export async function createAdeRuntime(args: { projectRoot: string; workspaceRoo
     eventBuffer,
     dispose: () => {
       const swallow = (fn: () => void) => { try { fn(); } catch { /* ignore */ } };
+      void configReloadService.dispose().catch(() => {});
       swallow(() => automationService.dispose());
+      swallow(() => syncService?.dispose());
       swallow(() => pathToMergeOrchestrator.dispose());
       swallow(() => processService.disposeAll());
-      swallow(() => iosSimulatorService.dispose());
-      swallow(() => appControlService.dispose());
-      swallow(() => macosVmService.dispose());
+      swallow(() => runtimeDiagnosticsService.dispose());
+      swallow(() => oauthRedirectService.dispose());
+      void laneProxyService.dispose().catch(() => {});
+      swallow(() => portAllocationService.dispose());
+      swallow(() => iosSimulatorService?.dispose());
+      swallow(() => appControlService?.dispose());
+      swallow(() => macosVmService?.dispose());
+      swallow(() => linearOAuthService.dispose());
       swallow(() => headlessLinearServices.dispose());
       swallow(() => aiOrchestratorService.dispose());
+      swallow(() => agentChatService?.forceDisposeAll?.());
       swallow(() => testService.disposeAll());
       swallow(() => ptyService.disposeAll());
       swallow(() => db.flushNow());

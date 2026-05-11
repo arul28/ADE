@@ -2,15 +2,18 @@
 
 The broker is the normalization layer after external computer-use execution has happened. External tools perform the actual clicks, keystrokes, and captures. The broker ingests their output, stores it canonically, links it to owners (missions, chats, PRs, Linear issues), and tracks review and publication state.
 
+The broker runs inside the runtime daemon (`ade serve`) that owns the project. Artifacts are written to that runtime host's `.ade/artifacts/computer-use/` directory; database rows live in that runtime's `.ade/ade.db`. Renderer reads/writes flow through `window.ade.proof.*` → preload → runtime JSON-RPC → broker; the desktop main process is no longer the owner of this state.
+
 ## Source file map
 
-- `apps/desktop/src/main/services/computerUse/computerUseArtifactBrokerService.ts` — the service. `createComputerUseArtifactBrokerService(args)` is the entry point. ~2000 LOC.
-- `apps/desktop/src/main/services/computerUse/proofObserver.ts` — passive observer that auto-ingests artifacts from chat tool results.
+- `apps/desktop/src/main/services/computerUse/computerUseArtifactBrokerService.ts` — the service. `createComputerUseArtifactBrokerService(args)` is the entry point. Loaded by both the runtime daemon's project scope and the desktop's local-project services.
 - `apps/desktop/src/main/services/computerUse/agentBrowserArtifactAdapter.ts` — payload parser for agent-browser output.
 - `apps/desktop/src/main/services/computerUse/localComputerUse.ts` — storage helpers (`createComputerUseArtifactPath`, `toProjectArtifactUri`).
+- `apps/desktop/src/main/services/computerUse/syntheticToolResult.ts` — Claude-compaction tool-result stubs.
 - `apps/desktop/src/shared/types/computerUseArtifacts.ts` (via `shared/types`) — `ComputerUseArtifactRecord`, `ComputerUseArtifactLink`, `ComputerUseArtifactInput`, `ComputerUseArtifactOwner`, `ComputerUseArtifactReviewState`, `ComputerUseArtifactWorkflowState`, `ComputerUseEventPayload`.
 - `apps/desktop/src/shared/proofArtifacts.ts` — `normalizeComputerUseArtifactKind`, `resolveReportArtifactKind`.
-- `docs/architecture/COMPUTER_USE_ARTIFACT_BROKER.md` — the architectural boundary document.
+
+The passive `proofObserver.ts` was deleted with the rebuild; nothing watches tool results to auto-ingest captures any more. Captures are intentional: an agent or operator runs `ade proof capture/attach` (or the corresponding RPC tool) and the broker ingests once.
 
 ## Canonical record model
 

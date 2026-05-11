@@ -1,17 +1,39 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CaretDown, CaretUp, Folder, FolderOpen, Play, Plus, Stop, Terminal } from "@phosphor-icons/react";
+import {
+  CaretDown,
+  CaretUp,
+  Folder,
+  Play,
+  Plus,
+  Stop,
+  Terminal,
+} from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
-import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
+import {
+  COLORS,
+  LABEL_STYLE,
+  MONO_FONT,
+  SANS_FONT,
+  outlineButton,
+  primaryButton,
+} from "../lanes/laneDesignTokens";
 import { CommandCard } from "./CommandCard";
 import { CommandPalette } from "../app/CommandPalette";
 import { LaneRuntimeBar } from "./LaneRuntimeBar";
-import { AddCommandDialog, type AddCommandInitialValues, type AddCommandSubmitPayload } from "./AddCommandDialog";
+import {
+  AddCommandDialog,
+  type AddCommandInitialValues,
+  type AddCommandSubmitPayload,
+} from "./AddCommandDialog";
 import { RunNetworkPanel } from "./RunNetworkPanel";
 import { commandArrayToLine, parseCommandLine } from "../../lib/shell";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { toRelativeTime } from "../graph/graphHelpers";
 import { isActiveProcessStatus } from "./processUtils";
-import { ChatTerminalDrawer, ChatTerminalToggle } from "../chat/ChatTerminalDrawer";
+import {
+  ChatTerminalDrawer,
+  ChatTerminalToggle,
+} from "../chat/ChatTerminalDrawer";
 import type {
   ConfigProcessDefinition,
   ProcessDefinition,
@@ -21,6 +43,8 @@ import type {
   ProcessRuntime,
   ProjectConfigSnapshot,
   ConfigProcessGroupDefinition,
+  ProjectIcon,
+  RemoteRuntimeConnectionSnapshot,
 } from "../../../shared/types";
 
 function generateId(): string {
@@ -43,7 +67,9 @@ function parseEnvText(text: string): Record<string, string> | undefined {
 
 function envToText(env: Record<string, string> | undefined): string {
   if (!env) return "";
-  return Object.entries(env).map(([key, value]) => `${key}=${value}`).join("\n");
+  return Object.entries(env)
+    .map(([key, value]) => `${key}=${value}`)
+    .join("\n");
 }
 
 function parseGracefulShutdownMs(value: string): number | undefined {
@@ -64,7 +90,8 @@ function normalizeRelativePath(value: string): string {
   const trimmed = value.trim().replace(/\\/g, "/");
   if (!trimmed || trimmed === "." || trimmed === "./") return ".";
   const normalized = trimmed.replace(/\/+$/, "");
-  if (normalized.startsWith("/") || /^[A-Za-z]:\//.test(normalized)) return normalized || ".";
+  if (normalized.startsWith("/") || /^[A-Za-z]:\//.test(normalized))
+    return normalized || ".";
   return normalized.replace(/^\.\/+/, "") || ".";
 }
 
@@ -80,11 +107,15 @@ function trimTrailingSlash(value: string): string {
   return normalized.replace(/\/+$/, "");
 }
 
-function projectRelativeFromAbsolute(projectRoot: string | null, value: string): string | null {
+function projectRelativeFromAbsolute(
+  projectRoot: string | null,
+  value: string,
+): string | null {
   if (!projectRoot || !isAbsoluteConfigPath(value)) return null;
   const root = trimTrailingSlash(projectRoot);
   const candidate = trimTrailingSlash(value);
-  const windowsPath = /^[A-Za-z]:\//.test(root) || /^[A-Za-z]:\//.test(candidate);
+  const windowsPath =
+    /^[A-Za-z]:\//.test(root) || /^[A-Za-z]:\//.test(candidate);
   const rootKey = windowsPath ? root.toLowerCase() : root;
   const candidateKey = windowsPath ? candidate.toLowerCase() : candidate;
   if (candidateKey === rootKey) return ".";
@@ -93,45 +124,70 @@ function projectRelativeFromAbsolute(projectRoot: string | null, value: string):
 }
 
 function relativePathFromProjectDir(fromDir: string, toPath: string): string {
-  const fromParts = normalizeRelativePath(fromDir).split("/").filter((part) => part && part !== ".");
-  const toParts = normalizeRelativePath(toPath).split("/").filter((part) => part && part !== ".");
+  const fromParts = normalizeRelativePath(fromDir)
+    .split("/")
+    .filter((part) => part && part !== ".");
+  const toParts = normalizeRelativePath(toPath)
+    .split("/")
+    .filter((part) => part && part !== ".");
   let idx = 0;
-  while (idx < fromParts.length && idx < toParts.length && fromParts[idx] === toParts[idx]) idx += 1;
+  while (
+    idx < fromParts.length &&
+    idx < toParts.length &&
+    fromParts[idx] === toParts[idx]
+  )
+    idx += 1;
   const up = fromParts.slice(idx).map(() => "..");
   const down = toParts.slice(idx);
   const relative = [...up, ...down].join("/");
   return relative || ".";
 }
 
-function normalizeCwdForConfig(cwd: string, projectRoot: string | null): string | undefined {
+function normalizeCwdForConfig(
+  cwd: string,
+  projectRoot: string | null,
+): string | undefined {
   const normalized = normalizeRelativePath(cwd);
   if (normalized === ".") return undefined;
   return projectRelativeFromAbsolute(projectRoot, normalized) ?? normalized;
 }
 
-function normalizeCommandForConfig(commandLine: string, cwd: string | undefined, projectRoot: string | null): {
+function normalizeCommandForConfig(
+  commandLine: string,
+  cwd: string | undefined,
+  projectRoot: string | null,
+): {
   command: string[];
   localOnly: boolean;
 } {
   const command = parseCommandLine(commandLine);
   const normalizedCwd = cwd ?? ".";
-  const hasOutsideProjectAbsolutePath = command.some((part) =>
-    isAbsoluteConfigPath(part) && projectRelativeFromAbsolute(projectRoot, part) == null
+  const hasOutsideProjectAbsolutePath = command.some(
+    (part) =>
+      isAbsoluteConfigPath(part) &&
+      projectRelativeFromAbsolute(projectRoot, part) == null,
   );
   if (!command[0]) return { command, localOnly: hasOutsideProjectAbsolutePath };
 
-  const executableProjectPath = projectRelativeFromAbsolute(projectRoot, command[0]);
+  const executableProjectPath = projectRelativeFromAbsolute(
+    projectRoot,
+    command[0],
+  );
   if (executableProjectPath == null) {
     return { command, localOnly: hasOutsideProjectAbsolutePath };
   }
 
-  const executableFromCwd = relativePathFromProjectDir(normalizedCwd, executableProjectPath);
-  const executable = executableFromCwd.includes("/") || executableFromCwd.startsWith(".")
-    ? executableFromCwd
-    : `./${executableFromCwd}`;
+  const executableFromCwd = relativePathFromProjectDir(
+    normalizedCwd,
+    executableProjectPath,
+  );
+  const executable =
+    executableFromCwd.includes("/") || executableFromCwd.startsWith(".")
+      ? executableFromCwd
+      : `./${executableFromCwd}`;
   return {
     command: [executable, ...command.slice(1)],
-    localOnly: hasOutsideProjectAbsolutePath
+    localOnly: hasOutsideProjectAbsolutePath,
   };
 }
 
@@ -143,7 +199,9 @@ function buildProcessConfigDefinition(
 ): { process: ConfigProcessDefinition; localOnly: boolean } {
   const cwd = normalizeCwdForConfig(cmd.cwd, projectRoot);
   const command = normalizeCommandForConfig(cmd.command, cwd, projectRoot);
-  const cwdLocalOnly = isAbsoluteConfigPath(cmd.cwd) && projectRelativeFromAbsolute(projectRoot, cmd.cwd) == null;
+  const cwdLocalOnly =
+    isAbsoluteConfigPath(cmd.cwd) &&
+    projectRelativeFromAbsolute(projectRoot, cmd.cwd) == null;
   return {
     process: {
       id: processId,
@@ -152,24 +210,35 @@ function buildProcessConfigDefinition(
       cwd,
       env: parseEnvText(cmd.env),
       autostart: cmd.autostart ? true : undefined,
-      restart: cmd.restart == null || cmd.restart === "never" ? undefined : cmd.restart,
+      restart:
+        cmd.restart == null || cmd.restart === "never"
+          ? undefined
+          : cmd.restart,
       gracefulShutdownMs: parseGracefulShutdownMs(cmd.gracefulShutdownMs),
       dependsOn: parseDependsOnCsv(cmd.dependsOn),
       readiness: { type: "none" },
       groupIds: allGroupIds.length > 0 ? allGroupIds : undefined,
     },
-    localOnly: command.localOnly || cwdLocalOnly
+    localOnly: command.localOnly || cwdLocalOnly,
   };
 }
 
-function upsertProcess(processes: ConfigProcessDefinition[] | undefined, processEntry: ConfigProcessDefinition): ConfigProcessDefinition[] {
+function upsertProcess(
+  processes: ConfigProcessDefinition[] | undefined,
+  processEntry: ConfigProcessDefinition,
+): ConfigProcessDefinition[] {
   const existing = processes ?? [];
   return existing.some((entry) => entry.id === processEntry.id)
-    ? existing.map((entry) => (entry.id === processEntry.id ? processEntry : entry))
+    ? existing.map((entry) =>
+        entry.id === processEntry.id ? processEntry : entry,
+      )
     : [...existing, processEntry];
 }
 
-function removeProcess(processes: ConfigProcessDefinition[] | undefined, processId: string): ConfigProcessDefinition[] {
+function removeProcess(
+  processes: ConfigProcessDefinition[] | undefined,
+  processId: string,
+): ConfigProcessDefinition[] {
   return (processes ?? []).filter((entry) => entry.id !== processId);
 }
 
@@ -186,7 +255,10 @@ function readLaneRuntimeBarOpenFromStorage(): boolean {
 
 function writeLaneRuntimeBarOpenToStorage(open: boolean) {
   try {
-    window.localStorage.setItem(LANE_RUNTIME_BAR_OPEN_KEY, open ? "true" : "false");
+    window.localStorage.setItem(
+      LANE_RUNTIME_BAR_OPEN_KEY,
+      open ? "true" : "false",
+    );
   } catch {
     // ignore persistence failures
   }
@@ -196,7 +268,9 @@ type PersistedRunPageLaneState = {
   commandLaneIds: Record<string, string>;
 };
 
-function readRunPageLaneState(projectRoot: string | null): PersistedRunPageLaneState {
+function readRunPageLaneState(
+  projectRoot: string | null,
+): PersistedRunPageLaneState {
   if (!projectRoot) return { commandLaneIds: {} };
   try {
     const raw = window.localStorage.getItem(RUN_PAGE_LANE_STORAGE_KEY);
@@ -207,7 +281,9 @@ function readRunPageLaneState(projectRoot: string | null): PersistedRunPageLaneS
     const record = state as Record<string, unknown>;
     return {
       commandLaneIds: Object.fromEntries(
-        Object.entries((record.commandLaneIds as Record<string, unknown>) ?? {}).filter(
+        Object.entries(
+          (record.commandLaneIds as Record<string, unknown>) ?? {},
+        ).filter(
           (entry): entry is [string, string] => typeof entry[1] === "string",
         ),
       ),
@@ -217,37 +293,127 @@ function readRunPageLaneState(projectRoot: string | null): PersistedRunPageLaneS
   }
 }
 
-function writeRunPageLaneState(projectRoot: string | null, state: PersistedRunPageLaneState) {
+function writeRunPageLaneState(
+  projectRoot: string | null,
+  state: PersistedRunPageLaneState,
+) {
   if (!projectRoot) return;
   try {
     const raw = window.localStorage.getItem(RUN_PAGE_LANE_STORAGE_KEY);
     const parsed = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
     parsed[projectRoot] = { commandLaneIds: state.commandLaneIds };
-    window.localStorage.setItem(RUN_PAGE_LANE_STORAGE_KEY, JSON.stringify(parsed));
+    window.localStorage.setItem(
+      RUN_PAGE_LANE_STORAGE_KEY,
+      JSON.stringify(parsed),
+    );
   } catch {
     // ignore persistence failures
   }
 }
 
-function runPageLaneStateEqual(left: PersistedRunPageLaneState, right: PersistedRunPageLaneState): boolean {
+function runPageLaneStateEqual(
+  left: PersistedRunPageLaneState,
+  right: PersistedRunPageLaneState,
+): boolean {
   const leftEntries = Object.entries(left.commandLaneIds);
   const rightEntries = Object.entries(right.commandLaneIds);
   if (leftEntries.length !== rightEntries.length) return false;
-  return leftEntries.every(([processId, laneId]) => right.commandLaneIds[processId] === laneId);
+  return leftEntries.every(
+    ([processId, laneId]) => right.commandLaneIds[processId] === laneId,
+  );
+}
+
+function RecentProjectIcon({ rootPath }: { rootPath: string }) {
+  const [icon, setIcon] = useState<ProjectIcon | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setIcon(null);
+    setFailed(false);
+    window.ade.project
+      .resolveIcon(rootPath)
+      .then((nextIcon) => {
+        if (!cancelled) setIcon(nextIcon);
+      })
+      .catch(() => {
+        if (!cancelled) setIcon(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [rootPath]);
+
+  if (icon?.dataUrl && !failed) {
+    return (
+      <img
+        src={icon.dataUrl}
+        alt=""
+        draggable={false}
+        onError={() => setFailed(true)}
+        style={{
+          width: 22,
+          height: 22,
+          borderRadius: 6,
+          objectFit: "contain",
+        }}
+      />
+    );
+  }
+
+  return <Folder size={16} weight="regular" />;
 }
 
 function WelcomeScreen() {
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
   const project = useAppStore((s) => s.project);
   const cancelNewTab = useAppStore((s) => s.cancelNewTab);
-  const [recentProjects, setRecentProjects] = useState<Array<{ rootPath: string; displayName: string; exists: boolean; lastOpenedAt?: string; laneCount?: number }>>([]);
+  const [recentProjects, setRecentProjects] = useState<
+    Array<{
+      rootPath: string;
+      displayName: string;
+      exists: boolean;
+      lastOpenedAt?: string;
+      laneCount?: number;
+    }>
+  >([]);
   const [projectBrowserOpen, setProjectBrowserOpen] = useState(false);
+  const [remoteSnapshot, setRemoteSnapshot] =
+    useState<RemoteRuntimeConnectionSnapshot | null>(null);
 
   useEffect(() => {
-    window.ade.project.listRecent().then(setRecentProjects).catch(() => {});
+    window.ade.project
+      .listRecent()
+      .then(setRecentProjects)
+      .catch(() => {});
   }, []);
 
-  const realProjects = recentProjects.filter((rp) => rp.exists && !rp.rootPath.includes("ade-project"));
+  useEffect(() => {
+    const remoteRuntime = window.ade.remoteRuntime;
+    if (!remoteRuntime?.getConnectionSnapshot) return;
+    let cancelled = false;
+    void remoteRuntime
+      .getConnectionSnapshot()
+      .then((snapshot) => {
+        if (!cancelled) setRemoteSnapshot(snapshot);
+      })
+      .catch(() => {
+        if (!cancelled) setRemoteSnapshot(null);
+      });
+    const unsubscribe =
+      remoteRuntime.onConnectionSnapshotChanged?.((snapshot) => {
+        if (!cancelled) setRemoteSnapshot(snapshot);
+      }) ?? (() => {});
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
+
+  const realProjects = recentProjects.filter(
+    (rp) => rp.exists && !rp.rootPath.includes("ade-project"),
+  );
+  const connectedRemoteCount = remoteSnapshot?.connectedCount ?? 0;
 
   return (
     <div
@@ -269,10 +435,20 @@ function WelcomeScreen() {
             alignItems: "center",
             justifyContent: "center",
             marginBottom: 16,
-            filter: "drop-shadow(0 0 22px color-mix(in srgb, var(--color-accent) 45%, transparent))",
+            filter:
+              "drop-shadow(0 0 22px color-mix(in srgb, var(--color-accent) 45%, transparent))",
           }}
         >
-          <img src="./logo.png" alt="ADE Logo" style={{ width: 420, height: 240, objectFit: "contain", maxWidth: "72vw" }} />
+          <img
+            src="./logo.png"
+            alt="ADE Logo"
+            style={{
+              width: 420,
+              height: 240,
+              objectFit: "contain",
+              maxWidth: "72vw",
+            }}
+          />
         </div>
       </div>
 
@@ -283,26 +459,64 @@ function WelcomeScreen() {
         style={{
           ...primaryButton({ height: 48, padding: "0 32px", fontSize: 14 }),
           gap: 12,
-          boxShadow: `0 4px 20px color-mix(in srgb, var(--color-accent) 40%, transparent)`,
+          border:
+            connectedRemoteCount > 0
+              ? "1px solid rgba(245,158,11,0.72)"
+              : undefined,
+          boxShadow:
+            connectedRemoteCount > 0
+              ? "0 0 0 1px rgba(245,158,11,0.24), 0 6px 28px rgba(245,158,11,0.24)"
+              : `0 4px 20px color-mix(in srgb, var(--color-accent) 40%, transparent)`,
           transition: "transform 0.2s ease, box-shadow 0.2s ease",
           marginTop: -16,
         }}
         onMouseEnter={(event) => {
           event.currentTarget.style.transform = "translateY(-2px)";
-          event.currentTarget.style.boxShadow = `0 6px 24px color-mix(in srgb, var(--color-accent) 60%, transparent)`;
+          event.currentTarget.style.boxShadow =
+            connectedRemoteCount > 0
+              ? "0 0 0 1px rgba(245,158,11,0.38), 0 8px 34px rgba(245,158,11,0.34)"
+              : `0 6px 24px color-mix(in srgb, var(--color-accent) 60%, transparent)`;
         }}
         onMouseLeave={(event) => {
           event.currentTarget.style.transform = "none";
-          event.currentTarget.style.boxShadow = `0 4px 20px color-mix(in srgb, var(--color-accent) 40%, transparent)`;
+          event.currentTarget.style.boxShadow =
+            connectedRemoteCount > 0
+              ? "0 0 0 1px rgba(245,158,11,0.24), 0 6px 28px rgba(245,158,11,0.24)"
+              : `0 4px 20px color-mix(in srgb, var(--color-accent) 40%, transparent)`;
         }}
       >
         <Plus size={20} weight="bold" />
         ADD PROJECT
       </button>
+      {connectedRemoteCount > 0 ? (
+        <div
+          style={{
+            marginTop: -22,
+            fontFamily: MONO_FONT,
+            fontSize: 11,
+            fontWeight: 700,
+            letterSpacing: "0.08em",
+            textTransform: "uppercase",
+            color: "#FBBF24",
+          }}
+        >
+          {connectedRemoteCount} remote device
+          {connectedRemoteCount === 1 ? "" : "s"} available
+        </div>
+      ) : null}
 
       {realProjects.length > 0 ? (
         <div style={{ width: "100%", maxWidth: 440, marginTop: 8 }}>
-          <div style={{ ...LABEL_STYLE, marginBottom: 12, textAlign: "center", color: COLORS.textMuted }}>RECENT PROJECTS</div>
+          <div
+            style={{
+              ...LABEL_STYLE,
+              marginBottom: 12,
+              textAlign: "center",
+              color: COLORS.textMuted,
+            }}
+          >
+            RECENT PROJECTS
+          </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {realProjects.map((rp) => (
               <button
@@ -341,25 +555,47 @@ function WelcomeScreen() {
                     width: 32,
                     height: 32,
                     borderRadius: 8,
-                    background: "color-mix(in srgb, var(--color-accent) 15%, transparent)",
+                    background:
+                      "color-mix(in srgb, var(--color-accent) 15%, transparent)",
                     color: COLORS.accent,
                     flexShrink: 0,
                   }}
                 >
-                  <Folder size={16} weight="regular" />
+                  <RecentProjectIcon rootPath={rp.rootPath} />
                 </div>
                 <div style={{ overflow: "hidden", flex: 1 }}>
-                  <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 2 }}>{rp.displayName}</div>
-                  <div style={{ fontSize: 10, color: COLORS.textDim, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  <div
+                    style={{ fontWeight: 600, fontSize: 13, marginBottom: 2 }}
+                  >
+                    {rp.displayName}
+                  </div>
+                  <div
+                    style={{
+                      fontSize: 10,
+                      color: COLORS.textDim,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
                     {rp.rootPath}
                   </div>
                 </div>
-                <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4, flexShrink: 0 }}>
+                <div
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "flex-end",
+                    gap: 4,
+                    flexShrink: 0,
+                  }}
+                >
                   {rp.laneCount !== undefined ? (
                     <span
                       style={{
                         fontSize: 10,
-                        background: "color-mix(in srgb, var(--color-accent) 20%, transparent)",
+                        background:
+                          "color-mix(in srgb, var(--color-accent) 20%, transparent)",
                         color: COLORS.accent,
                         padding: "2px 6px",
                         borderRadius: 10,
@@ -370,7 +606,9 @@ function WelcomeScreen() {
                     </span>
                   ) : null}
                   {rp.lastOpenedAt ? (
-                    <span style={{ fontSize: 9, color: COLORS.textDim }}>{toRelativeTime(rp.lastOpenedAt)}</span>
+                    <span style={{ fontSize: 9, color: COLORS.textDim }}>
+                      {toRelativeTime(rp.lastOpenedAt)}
+                    </span>
                   ) : null}
                 </div>
               </button>
@@ -379,7 +617,11 @@ function WelcomeScreen() {
         </div>
       ) : null}
 
-      <CommandPalette open={projectBrowserOpen} onOpenChange={setProjectBrowserOpen} intent="project-add" />
+      <CommandPalette
+        open={projectBrowserOpen}
+        onOpenChange={setProjectBrowserOpen}
+        intent="project-add"
+      />
     </div>
   );
 }
@@ -390,7 +632,10 @@ export function RunPage() {
   const showWelcome = useAppStore((s) => s.showWelcome);
 
   const projectRoot = project?.rootPath ?? null;
-  const [persistedLaneState, setPersistedLaneState] = useState<PersistedRunPageLaneState>(() => readRunPageLaneState(projectRoot));
+  const [persistedLaneState, setPersistedLaneState] =
+    useState<PersistedRunPageLaneState>(() =>
+      readRunPageLaneState(projectRoot),
+    );
   const [config, setConfig] = useState<ProjectConfigSnapshot | null>(null);
   const [definitions, setDefinitions] = useState<ProcessDefinition[]>([]);
   const [runtime, setRuntime] = useState<ProcessRuntime[]>([]);
@@ -400,12 +645,18 @@ export function RunPage() {
   const newGroupInputRef = useRef<HTMLInputElement>(null);
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [editingProcess, setEditingProcess] = useState<{ id: string; values: AddCommandInitialValues } | null>(null);
+  const [editingProcess, setEditingProcess] = useState<{
+    id: string;
+    values: AddCommandInitialValues;
+  } | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [networkDrawerOpen, setNetworkDrawerOpen] = useState(false);
-  const [laneRuntimeBarOpen, setLaneRuntimeBarOpen] = useState(readLaneRuntimeBarOpenFromStorage);
+  const [laneRuntimeBarOpen, setLaneRuntimeBarOpen] = useState(
+    readLaneRuntimeBarOpenFromStorage,
+  );
   const [terminalDrawerOpen, setTerminalDrawerOpen] = useState(false);
-  const [terminalCreateRequestNonce, setTerminalCreateRequestNonce] = useState(0);
+  const [terminalCreateRequestNonce, setTerminalCreateRequestNonce] =
+    useState(0);
   const [terminalRevealRequest, setTerminalRevealRequest] = useState<{
     terminalId: string;
     ptyId: string;
@@ -413,14 +664,23 @@ export function RunPage() {
     nonce: number;
   } | null>(null);
   const runtimeRefreshTimerRef = useRef<number | null>(null);
-  const pendingRunLaunchRef = useRef<{ laneId: string; processId: string } | null>(null);
+  const pendingRunLaunchRef = useRef<{
+    laneId: string;
+    processId: string;
+  } | null>(null);
   const terminalRevealNonceRef = useRef(0);
 
   const fallbackRunLaneId = useMemo(
-    () => lanes.find((lane) => lane.laneType === "primary")?.id ?? lanes[0]?.id ?? null,
+    () =>
+      lanes.find((lane) => lane.laneType === "primary")?.id ??
+      lanes[0]?.id ??
+      null,
     [lanes],
   );
-  const groups = useMemo<ProcessGroupDefinition[]>(() => config?.effective.processGroups ?? [], [config?.effective.processGroups]);
+  const groups = useMemo<ProcessGroupDefinition[]>(
+    () => config?.effective.processGroups ?? [],
+    [config?.effective.processGroups],
+  );
 
   const selectedGroup = useMemo(
     () => groups.find((group) => group.id === selectedGroupId) ?? null,
@@ -432,22 +692,35 @@ export function RunPage() {
     const map: Record<string, string> = {};
     for (const definition of definitions) {
       const persistedLaneId = persistedLaneState.commandLaneIds[definition.id];
-      const laneId = persistedLaneId && allowed.has(persistedLaneId)
-        ? persistedLaneId
-        : fallbackRunLaneId;
+      const laneId =
+        persistedLaneId && allowed.has(persistedLaneId)
+          ? persistedLaneId
+          : fallbackRunLaneId;
       if (laneId) map[definition.id] = laneId;
     }
     return map;
-  }, [definitions, fallbackRunLaneId, lanes, persistedLaneState.commandLaneIds]);
+  }, [
+    definitions,
+    fallbackRunLaneId,
+    lanes,
+    persistedLaneState.commandLaneIds,
+  ]);
 
-  const refreshLanePersistence = useCallback((updater: (current: PersistedRunPageLaneState) => PersistedRunPageLaneState) => {
-    setPersistedLaneState((current) => {
-      const next = updater(current);
-      if (runPageLaneStateEqual(current, next)) return current;
-      writeRunPageLaneState(projectRoot, next);
-      return next;
-    });
-  }, [projectRoot]);
+  const refreshLanePersistence = useCallback(
+    (
+      updater: (
+        current: PersistedRunPageLaneState,
+      ) => PersistedRunPageLaneState,
+    ) => {
+      setPersistedLaneState((current) => {
+        const next = updater(current);
+        if (runPageLaneStateEqual(current, next)) return current;
+        writeRunPageLaneState(projectRoot, next);
+        return next;
+      });
+    },
+    [projectRoot],
+  );
 
   useEffect(() => {
     setPersistedLaneState(readRunPageLaneState(projectRoot));
@@ -506,9 +779,11 @@ export function RunPage() {
       return;
     }
     const laneIds = Array.from(
-      new Set([
-        ...Object.values(commandLaneMap),
-      ].filter((value): value is string => Boolean(value))),
+      new Set(
+        [...Object.values(commandLaneMap)].filter((value): value is string =>
+          Boolean(value),
+        ),
+      ),
     );
     if (laneIds.length === 0) {
       setRuntime([]);
@@ -516,7 +791,11 @@ export function RunPage() {
     }
     try {
       const snapshots = await Promise.all(
-        laneIds.map((laneId) => window.ade.processes.listRuntime(laneId).catch(() => [] as ProcessRuntime[])),
+        laneIds.map((laneId) =>
+          window.ade.processes
+            .listRuntime(laneId)
+            .catch(() => [] as ProcessRuntime[]),
+        ),
       );
       const next = snapshots.flat();
       setRuntime(next);
@@ -535,7 +814,10 @@ export function RunPage() {
       if (selectedGroupId !== null) setSelectedGroupId(null);
       return;
     }
-    if (selectedGroupId && !groups.some((group) => group.id === selectedGroupId)) {
+    if (
+      selectedGroupId &&
+      !groups.some((group) => group.id === selectedGroupId)
+    ) {
       setSelectedGroupId(null);
     }
   }, [groups, selectedGroupId]);
@@ -564,7 +846,9 @@ export function RunPage() {
   const upsertRuntime = useCallback((nextRuntime: ProcessRuntime) => {
     setRuntime((current) => {
       const next = [...current];
-      const index = next.findIndex((runtimeItem) => runtimeItem.runId === nextRuntime.runId);
+      const index = next.findIndex(
+        (runtimeItem) => runtimeItem.runId === nextRuntime.runId,
+      );
       if (index >= 0) {
         next[index] = nextRuntime;
       } else {
@@ -574,28 +858,39 @@ export function RunPage() {
     });
   }, []);
 
-  const revealRuntimeTerminal = useCallback((runtimeItem: ProcessRuntime): boolean => {
-    if (!runtimeItem.sessionId || !runtimeItem.ptyId) return false;
-    const definition = definitions.find((item) => item.id === runtimeItem.processId);
-    const lane = lanes.find((item) => item.id === runtimeItem.laneId);
-    terminalRevealNonceRef.current += 1;
-    setTerminalDrawerOpen(true);
-    setTerminalRevealRequest({
-      terminalId: runtimeItem.sessionId,
-      ptyId: runtimeItem.ptyId,
-      label: definition?.name ?? lane?.name ?? "Run command",
-      nonce: terminalRevealNonceRef.current,
-    });
-    return true;
-  }, [definitions, lanes]);
+  const revealRuntimeTerminal = useCallback(
+    (runtimeItem: ProcessRuntime): boolean => {
+      if (!runtimeItem.sessionId || !runtimeItem.ptyId) return false;
+      const definition = definitions.find(
+        (item) => item.id === runtimeItem.processId,
+      );
+      const lane = lanes.find((item) => item.id === runtimeItem.laneId);
+      terminalRevealNonceRef.current += 1;
+      setTerminalDrawerOpen(true);
+      setTerminalRevealRequest({
+        terminalId: runtimeItem.sessionId,
+        ptyId: runtimeItem.ptyId,
+        label: definition?.name ?? lane?.name ?? "Run command",
+        nonce: terminalRevealNonceRef.current,
+      });
+      return true;
+    },
+    [definitions, lanes],
+  );
 
   useEffect(() => {
     const unsubscribe = window.ade.processes.onEvent((event: ProcessEvent) => {
       if (event.type !== "runtime") return;
       upsertRuntime(event.runtime);
       const pending = pendingRunLaunchRef.current;
-      if (pending?.laneId === event.runtime.laneId && pending.processId === event.runtime.processId) {
-        if (revealRuntimeTerminal(event.runtime) || !isActiveProcessStatus(event.runtime.status)) {
+      if (
+        pending?.laneId === event.runtime.laneId &&
+        pending.processId === event.runtime.processId
+      ) {
+        if (
+          revealRuntimeTerminal(event.runtime) ||
+          !isActiveProcessStatus(event.runtime.status)
+        ) {
           pendingRunLaunchRef.current = null;
         }
       }
@@ -603,55 +898,71 @@ export function RunPage() {
     return unsubscribe;
   }, [revealRuntimeTerminal, upsertRuntime]);
 
-  const resolveProcessLaneId = useCallback((processId: string): string | null => {
-    return commandLaneMap[processId] ?? fallbackRunLaneId ?? null;
-  }, [commandLaneMap, fallbackRunLaneId]);
+  const resolveProcessLaneId = useCallback(
+    (processId: string): string | null => {
+      return commandLaneMap[processId] ?? fallbackRunLaneId ?? null;
+    },
+    [commandLaneMap, fallbackRunLaneId],
+  );
 
-  const selectProcessLane = useCallback((processId: string, laneId: string) => {
-    refreshLanePersistence((current) => ({
-      commandLaneIds: {
-        ...current.commandLaneIds,
-        [processId]: laneId,
-      },
-    }));
-  }, [refreshLanePersistence]);
+  const selectProcessLane = useCallback(
+    (processId: string, laneId: string) => {
+      refreshLanePersistence((current) => ({
+        commandLaneIds: {
+          ...current.commandLaneIds,
+          [processId]: laneId,
+        },
+      }));
+    },
+    [refreshLanePersistence],
+  );
 
-  const startProcess = useCallback(async (processId: string, laneId: string, allowTrustRetry = true): Promise<ProcessRuntime> => {
-    try {
-      return await window.ade.processes.start({ laneId, processId });
-    } catch (error) {
-      if (
-        allowTrustRetry
-        && error instanceof Error
-        && error.message.includes("ADE_TRUST_REQUIRED")
-      ) {
-        await window.ade.projectConfig.confirmTrust();
+  const startProcess = useCallback(
+    async (
+      processId: string,
+      laneId: string,
+      allowTrustRetry = true,
+    ): Promise<ProcessRuntime> => {
+      try {
         return await window.ade.processes.start({ laneId, processId });
+      } catch (error) {
+        if (
+          allowTrustRetry &&
+          error instanceof Error &&
+          error.message.includes("ADE_TRUST_REQUIRED")
+        ) {
+          await window.ade.projectConfig.confirmTrust();
+          return await window.ade.processes.start({ laneId, processId });
+        }
+        throw error;
       }
-      throw error;
-    }
-  }, []);
+    },
+    [],
+  );
 
-  const handleRun = useCallback(async (processId: string) => {
-    const laneId = resolveProcessLaneId(processId);
-    if (!laneId) return;
-    pendingRunLaunchRef.current = { laneId, processId };
-    try {
-      setActionError(null);
-      const started = await startProcess(processId, laneId);
-      upsertRuntime(started);
-      if (revealRuntimeTerminal(started)) {
-        pendingRunLaunchRef.current = null;
+  const handleRun = useCallback(
+    async (processId: string) => {
+      const laneId = resolveProcessLaneId(processId);
+      if (!laneId) return;
+      pendingRunLaunchRef.current = { laneId, processId };
+      try {
+        setActionError(null);
+        const started = await startProcess(processId, laneId);
+        upsertRuntime(started);
+        if (revealRuntimeTerminal(started)) {
+          pendingRunLaunchRef.current = null;
+        }
+      } catch (error) {
+        const pending = pendingRunLaunchRef.current;
+        if (pending?.laneId === laneId && pending.processId === processId) {
+          pendingRunLaunchRef.current = null;
+        }
+        setActionError(error instanceof Error ? error.message : String(error));
+        console.error("[RunPage] handleRun failed:", error);
       }
-    } catch (error) {
-      const pending = pendingRunLaunchRef.current;
-      if (pending?.laneId === laneId && pending.processId === processId) {
-        pendingRunLaunchRef.current = null;
-      }
-      setActionError(error instanceof Error ? error.message : String(error));
-      console.error("[RunPage] handleRun failed:", error);
-    }
-  }, [resolveProcessLaneId, revealRuntimeTerminal, startProcess, upsertRuntime]);
+    },
+    [resolveProcessLaneId, revealRuntimeTerminal, startProcess, upsertRuntime],
+  );
 
   const handleKillRuntime = useCallback(async (runtimeItem: ProcessRuntime) => {
     try {
@@ -667,13 +978,19 @@ export function RunPage() {
     }
   }, []);
 
-  const handleOpenRuntimeTerminal = useCallback((runtimeItem: ProcessRuntime) => {
-    setActionError(null);
-    if (revealRuntimeTerminal(runtimeItem)) return;
-    setActionError("This run no longer has a live terminal attached.");
-  }, [revealRuntimeTerminal]);
+  const handleOpenRuntimeTerminal = useCallback(
+    (runtimeItem: ProcessRuntime) => {
+      setActionError(null);
+      if (revealRuntimeTerminal(runtimeItem)) return;
+      setActionError("This run no longer has a live terminal attached.");
+    },
+    [revealRuntimeTerminal],
+  );
 
-  const buildLaneMapForSelectedGroup = useCallback((): Record<string, string> | null => {
+  const buildLaneMapForSelectedGroup = useCallback((): Record<
+    string,
+    string
+  > | null => {
     if (!selectedGroupId) return null;
     const laneByProcessId: Record<string, string> = {};
     for (const definition of definitions) {
@@ -693,13 +1010,20 @@ export function RunPage() {
       setActionError(null);
       await window.ade.processes.startGroup(args);
     } catch (error) {
-      if (error instanceof Error && error.message.includes("ADE_TRUST_REQUIRED")) {
+      if (
+        error instanceof Error &&
+        error.message.includes("ADE_TRUST_REQUIRED")
+      ) {
         try {
           await window.ade.projectConfig.confirmTrust();
           await window.ade.processes.startGroup(args);
           return;
         } catch (retryError) {
-          setActionError(retryError instanceof Error ? retryError.message : String(retryError));
+          setActionError(
+            retryError instanceof Error
+              ? retryError.message
+              : String(retryError),
+          );
           return;
         }
       }
@@ -713,7 +1037,10 @@ export function RunPage() {
     if (!laneByProcessId || Object.keys(laneByProcessId).length === 0) return;
     try {
       setActionError(null);
-      await window.ade.processes.stopGroup({ groupId: selectedGroupId, laneByProcessId });
+      await window.ade.processes.stopGroup({
+        groupId: selectedGroupId,
+        laneByProcessId,
+      });
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
     }
@@ -728,7 +1055,10 @@ export function RunPage() {
     if (!trimmed || !config) return;
     try {
       setActionError(null);
-      const newGroup: ConfigProcessGroupDefinition = { id: generateId(), name: trimmed };
+      const newGroup: ConfigProcessGroupDefinition = {
+        id: generateId(),
+        name: trimmed,
+      };
       const shared = { ...config.shared };
       shared.processGroups = [...(shared.processGroups ?? []), newGroup];
       await window.ade.projectConfig.save({ shared, local: config.local });
@@ -748,116 +1078,183 @@ export function RunPage() {
     setTerminalDrawerOpen(true);
   }, [fallbackRunLaneId]);
 
-  const saveProcessToConfig = useCallback(async (cmd: AddCommandSubmitPayload) => {
-    if (!config) {
-      throw new Error("Run configuration is still loading. Try again in a moment.");
-    }
-    const processId = generateId();
-    const createdGroups: ConfigProcessGroupDefinition[] = cmd.newGroupNames.map((name) => ({
-      id: generateId(),
-      name,
-    }));
-    const allGroupIds = [...cmd.groupIds, ...createdGroups.map((group) => group.id)];
-    const { process: newProcess, localOnly } = buildProcessConfigDefinition(processId, cmd, allGroupIds, projectRoot);
-
-    const shared = { ...config.shared };
-    const local = { ...config.local };
-    if (localOnly) {
-      local.processes = upsertProcess(local.processes, newProcess);
-      local.processGroups = [...(local.processGroups ?? []), ...createdGroups];
-    } else {
-      shared.processes = upsertProcess(shared.processes, newProcess);
-      shared.processGroups = [...(shared.processGroups ?? []), ...createdGroups];
-    }
-
-    await window.ade.projectConfig.save({ shared, local });
-    await Promise.all([refreshDefinitions(), refreshRuntime()]);
-  }, [config, projectRoot, refreshDefinitions, refreshRuntime]);
-
-  const updateProcessInConfig = useCallback(async (processId: string, cmd: AddCommandSubmitPayload & { restart?: ProcessRestartPolicy }) => {
-    if (!config) {
-      throw new Error("Run configuration is still loading. Try again in a moment.");
-    }
-    const shared = { ...config.shared };
-    const local = { ...config.local };
-    const createdGroups: ConfigProcessGroupDefinition[] = cmd.newGroupNames.map((name) => ({
-      id: generateId(),
-      name,
-    }));
-    const allGroupIds = [...cmd.groupIds, ...createdGroups.map((group) => group.id)];
-    const existingProcess =
-      (config.local.processes ?? []).find((entry) => entry.id === processId) ??
-      (config.shared.processes ?? []).find((entry) => entry.id === processId);
-    const cmdForBuild = { ...cmd, restart: cmd.restart ?? existingProcess?.restart };
-    const { process: nextProcess, localOnly } = buildProcessConfigDefinition(processId, cmdForBuild, allGroupIds, projectRoot);
-    const existingLocal = (config.local.processes ?? []).some((entry) => entry.id === processId);
-    const targetLocal = existingLocal || localOnly;
-
-    if (targetLocal) {
-      local.processes = upsertProcess(local.processes, nextProcess);
-      local.processGroups = [...(local.processGroups ?? []), ...createdGroups];
-      if (localOnly) {
-        shared.processes = removeProcess(shared.processes, processId);
+  const saveProcessToConfig = useCallback(
+    async (cmd: AddCommandSubmitPayload) => {
+      if (!config) {
+        throw new Error(
+          "Run configuration is still loading. Try again in a moment.",
+        );
       }
-    } else {
-      shared.processes = upsertProcess(shared.processes, nextProcess);
-      shared.processGroups = [...(shared.processGroups ?? []), ...createdGroups];
-      local.processes = removeProcess(local.processes, processId);
-    }
+      const processId = generateId();
+      const createdGroups: ConfigProcessGroupDefinition[] =
+        cmd.newGroupNames.map((name) => ({
+          id: generateId(),
+          name,
+        }));
+      const allGroupIds = [
+        ...cmd.groupIds,
+        ...createdGroups.map((group) => group.id),
+      ];
+      const { process: newProcess, localOnly } = buildProcessConfigDefinition(
+        processId,
+        cmd,
+        allGroupIds,
+        projectRoot,
+      );
 
-    await window.ade.projectConfig.save({ shared, local });
-    await Promise.all([refreshDefinitions(), refreshRuntime()]);
-  }, [config, projectRoot, refreshDefinitions, refreshRuntime]);
+      const shared = { ...config.shared };
+      const local = { ...config.local };
+      if (localOnly) {
+        local.processes = upsertProcess(local.processes, newProcess);
+        local.processGroups = [
+          ...(local.processGroups ?? []),
+          ...createdGroups,
+        ];
+      } else {
+        shared.processes = upsertProcess(shared.processes, newProcess);
+        shared.processGroups = [
+          ...(shared.processGroups ?? []),
+          ...createdGroups,
+        ];
+      }
 
-  const handleAddProcessToGroup = useCallback(async (processId: string, groupId: string) => {
-    const definition = definitions.find((entry) => entry.id === processId);
-    if (!definition || (definition.groupIds ?? []).includes(groupId)) return;
-    const nextGroupIds = [...new Set([...(definition.groupIds ?? []), groupId])];
-    await updateProcessInConfig(processId, {
-      name: definition.name,
-      command: commandArrayToLine(definition.command),
-      cwd: definition.cwd || ".",
-      env: envToText(definition.env),
-      autostart: definition.autostart,
-      restart: definition.restart,
-      gracefulShutdownMs: String(definition.gracefulShutdownMs ?? 7000),
-      dependsOn: (definition.dependsOn ?? []).join(", "),
-      groupIds: nextGroupIds,
-      newGroupNames: [],
-    });
-  }, [definitions, updateProcessInConfig]);
+      await window.ade.projectConfig.save({ shared, local });
+      await Promise.all([refreshDefinitions(), refreshRuntime()]);
+    },
+    [config, projectRoot, refreshDefinitions, refreshRuntime],
+  );
 
-  const handleDeleteProcess = useCallback(async (processId: string) => {
-    if (!config) return;
-    const shared = { ...config.shared };
-    const local = { ...config.local };
-    shared.processes = (shared.processes ?? []).filter((processEntry) => processEntry.id !== processId);
-    local.processes = (local.processes ?? []).filter((processEntry) => processEntry.id !== processId);
-    await window.ade.projectConfig.save({ shared, local });
-    await Promise.all([refreshDefinitions(), refreshRuntime()]);
-  }, [config, refreshDefinitions, refreshRuntime]);
+  const updateProcessInConfig = useCallback(
+    async (
+      processId: string,
+      cmd: AddCommandSubmitPayload & { restart?: ProcessRestartPolicy },
+    ) => {
+      if (!config) {
+        throw new Error(
+          "Run configuration is still loading. Try again in a moment.",
+        );
+      }
+      const shared = { ...config.shared };
+      const local = { ...config.local };
+      const createdGroups: ConfigProcessGroupDefinition[] =
+        cmd.newGroupNames.map((name) => ({
+          id: generateId(),
+          name,
+        }));
+      const allGroupIds = [
+        ...cmd.groupIds,
+        ...createdGroups.map((group) => group.id),
+      ];
+      const existingProcess =
+        (config.local.processes ?? []).find(
+          (entry) => entry.id === processId,
+        ) ??
+        (config.shared.processes ?? []).find((entry) => entry.id === processId);
+      const cmdForBuild = {
+        ...cmd,
+        restart: cmd.restart ?? existingProcess?.restart,
+      };
+      const { process: nextProcess, localOnly } = buildProcessConfigDefinition(
+        processId,
+        cmdForBuild,
+        allGroupIds,
+        projectRoot,
+      );
+      const existingLocal = (config.local.processes ?? []).some(
+        (entry) => entry.id === processId,
+      );
+      const targetLocal = existingLocal || localOnly;
 
-  const handleEditProcess = useCallback((processId: string) => {
-    const definition = definitions.find((entry) => entry.id === processId);
-    if (!definition) return;
-    setEditingProcess({
-      id: processId,
-      values: {
+      if (targetLocal) {
+        local.processes = upsertProcess(local.processes, nextProcess);
+        local.processGroups = [
+          ...(local.processGroups ?? []),
+          ...createdGroups,
+        ];
+        if (localOnly) {
+          shared.processes = removeProcess(shared.processes, processId);
+        }
+      } else {
+        shared.processes = upsertProcess(shared.processes, nextProcess);
+        shared.processGroups = [
+          ...(shared.processGroups ?? []),
+          ...createdGroups,
+        ];
+        local.processes = removeProcess(local.processes, processId);
+      }
+
+      await window.ade.projectConfig.save({ shared, local });
+      await Promise.all([refreshDefinitions(), refreshRuntime()]);
+    },
+    [config, projectRoot, refreshDefinitions, refreshRuntime],
+  );
+
+  const handleAddProcessToGroup = useCallback(
+    async (processId: string, groupId: string) => {
+      const definition = definitions.find((entry) => entry.id === processId);
+      if (!definition || (definition.groupIds ?? []).includes(groupId)) return;
+      const nextGroupIds = [
+        ...new Set([...(definition.groupIds ?? []), groupId]),
+      ];
+      await updateProcessInConfig(processId, {
         name: definition.name,
         command: commandArrayToLine(definition.command),
         cwd: definition.cwd || ".",
         env: envToText(definition.env),
         autostart: definition.autostart,
+        restart: definition.restart,
         gracefulShutdownMs: String(definition.gracefulShutdownMs ?? 7000),
         dependsOn: (definition.dependsOn ?? []).join(", "),
-        groupIds: definition.groupIds ?? [],
-      },
-    });
-  }, [definitions]);
+        groupIds: nextGroupIds,
+        newGroupNames: [],
+      });
+    },
+    [definitions, updateProcessInConfig],
+  );
+
+  const handleDeleteProcess = useCallback(
+    async (processId: string) => {
+      if (!config) return;
+      const shared = { ...config.shared };
+      const local = { ...config.local };
+      shared.processes = (shared.processes ?? []).filter(
+        (processEntry) => processEntry.id !== processId,
+      );
+      local.processes = (local.processes ?? []).filter(
+        (processEntry) => processEntry.id !== processId,
+      );
+      await window.ade.projectConfig.save({ shared, local });
+      await Promise.all([refreshDefinitions(), refreshRuntime()]);
+    },
+    [config, refreshDefinitions, refreshRuntime],
+  );
+
+  const handleEditProcess = useCallback(
+    (processId: string) => {
+      const definition = definitions.find((entry) => entry.id === processId);
+      if (!definition) return;
+      setEditingProcess({
+        id: processId,
+        values: {
+          name: definition.name,
+          command: commandArrayToLine(definition.command),
+          cwd: definition.cwd || ".",
+          env: envToText(definition.env),
+          autostart: definition.autostart,
+          gracefulShutdownMs: String(definition.gracefulShutdownMs ?? 7000),
+          dependsOn: (definition.dependsOn ?? []).join(", "),
+          groupIds: definition.groupIds ?? [],
+        },
+      });
+    },
+    [definitions],
+  );
 
   const filteredDefinitions = useMemo(() => {
     if (!selectedGroupId) return definitions;
-    return definitions.filter((definition) => (definition.groupIds ?? []).includes(selectedGroupId));
+    return definitions.filter((definition) =>
+      (definition.groupIds ?? []).includes(selectedGroupId),
+    );
   }, [definitions, selectedGroupId]);
 
   const groupCounts = useMemo(() => {
@@ -875,7 +1272,14 @@ export function RunPage() {
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", background: COLORS.pageBg }}>
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        height: "100%",
+        background: COLORS.pageBg,
+      }}
+    >
       <div
         style={{
           display: "flex",
@@ -901,10 +1305,23 @@ export function RunPage() {
 
         {filteredDefinitions.length > 0 ? (
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span style={{ fontFamily: MONO_FONT, fontSize: 12, fontWeight: 700, color: COLORS.textPrimary }}>
+            <span
+              style={{
+                fontFamily: MONO_FONT,
+                fontSize: 12,
+                fontWeight: 700,
+                color: COLORS.textPrimary,
+              }}
+            >
               {selectedGroup?.name ?? "All commands"}
             </span>
-            <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim }}>
+            <span
+              style={{
+                fontFamily: MONO_FONT,
+                fontSize: 10,
+                color: COLORS.textDim,
+              }}
+            >
               ({filteredDefinitions.length})
             </span>
           </div>
@@ -930,12 +1347,19 @@ export function RunPage() {
             gap: 6,
           }}
         >
-          {laneRuntimeBarOpen ? <CaretUp size={14} weight="bold" /> : <CaretDown size={14} weight="bold" />}
+          {laneRuntimeBarOpen ? (
+            <CaretUp size={14} weight="bold" />
+          ) : (
+            <CaretDown size={14} weight="bold" />
+          )}
           Advanced
         </button>
 
         {fallbackRunLaneId ? (
-          <ChatTerminalToggle open={terminalDrawerOpen} onToggle={() => setTerminalDrawerOpen((open) => !open)} />
+          <ChatTerminalToggle
+            open={terminalDrawerOpen}
+            onToggle={() => setTerminalDrawerOpen((open) => !open)}
+          />
         ) : null}
 
         <button
@@ -986,7 +1410,12 @@ export function RunPage() {
           </>
         ) : null}
 
-        <button type="button" data-tour="run.addCommand" onClick={() => setAddDialogOpen(true)} style={outlineButton()}>
+        <button
+          type="button"
+          data-tour="run.addCommand"
+          onClick={() => setAddDialogOpen(true)}
+          style={outlineButton()}
+        >
           <Plus size={14} weight="bold" />
           Add command
         </button>
@@ -1000,7 +1429,10 @@ export function RunPage() {
         style={{ flexShrink: 0 }}
       >
         {laneRuntimeBarOpen ? (
-          <LaneRuntimeBar laneId={fallbackRunLaneId} onOpenPreviewRouting={() => setNetworkDrawerOpen(true)} />
+          <LaneRuntimeBar
+            laneId={fallbackRunLaneId}
+            onOpenPreviewRouting={() => setNetworkDrawerOpen(true)}
+          />
         ) : null}
       </div>
 
@@ -1022,9 +1454,15 @@ export function RunPage() {
           style={{
             height: 28,
             padding: "0 10px",
-            background: selectedGroupId === null ? COLORS.accentSubtle : COLORS.recessedBg,
+            background:
+              selectedGroupId === null
+                ? COLORS.accentSubtle
+                : COLORS.recessedBg,
             border: `1px solid ${selectedGroupId === null ? COLORS.accentBorder : COLORS.outlineBorder}`,
-            color: selectedGroupId === null ? COLORS.textPrimary : COLORS.textSecondary,
+            color:
+              selectedGroupId === null
+                ? COLORS.textPrimary
+                : COLORS.textSecondary,
             cursor: "pointer",
             fontFamily: MONO_FONT,
             fontSize: 10,
@@ -1051,13 +1489,23 @@ export function RunPage() {
           <button
             key={group.id}
             type="button"
-            onClick={() => setSelectedGroupId((current) => (current === group.id ? null : group.id))}
+            onClick={() =>
+              setSelectedGroupId((current) =>
+                current === group.id ? null : group.id,
+              )
+            }
             style={{
               height: 28,
               padding: "0 10px",
-              background: selectedGroupId === group.id ? COLORS.accentSubtle : COLORS.recessedBg,
+              background:
+                selectedGroupId === group.id
+                  ? COLORS.accentSubtle
+                  : COLORS.recessedBg,
               border: `1px solid ${selectedGroupId === group.id ? COLORS.accentBorder : COLORS.outlineBorder}`,
-              color: selectedGroupId === group.id ? COLORS.textPrimary : COLORS.textSecondary,
+              color:
+                selectedGroupId === group.id
+                  ? COLORS.textPrimary
+                  : COLORS.textSecondary,
               cursor: "pointer",
               fontFamily: MONO_FONT,
               fontSize: 10,
@@ -1069,11 +1517,20 @@ export function RunPage() {
             }}
           >
             {group.name}
-            <span style={{ marginLeft: 6, color: COLORS.textDim }}>{groupCounts[group.id] ?? 0}</span>
+            <span style={{ marginLeft: 6, color: COLORS.textDim }}>
+              {groupCounts[group.id] ?? 0}
+            </span>
           </button>
         ))}
         {creatingGroup ? (
-          <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              flexShrink: 0,
+            }}
+          >
             <input
               ref={newGroupInputRef}
               value={newGroupName}
@@ -1103,7 +1560,11 @@ export function RunPage() {
               onClick={() => void handleCreateGroup()}
               disabled={!newGroupName.trim()}
               style={{
-                ...outlineButton({ height: 28, padding: "0 10px", fontSize: 10 }),
+                ...outlineButton({
+                  height: 28,
+                  padding: "0 10px",
+                  fontSize: 10,
+                }),
                 opacity: newGroupName.trim() ? 1 : 0.45,
               }}
             >
@@ -1115,7 +1576,11 @@ export function RunPage() {
                 setCreatingGroup(false);
                 setNewGroupName("");
               }}
-              style={outlineButton({ height: 28, padding: "0 10px", fontSize: 10 })}
+              style={outlineButton({
+                height: 28,
+                padding: "0 10px",
+                fontSize: 10,
+              })}
             >
               Cancel
             </button>
@@ -1138,15 +1603,26 @@ export function RunPage() {
         )}
       </div>
 
-      <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden", position: "relative" }}>
+      <div
+        style={{
+          flex: 1,
+          minWidth: 0,
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
+          position: "relative",
+        }}
+      >
         {actionError ? (
           <div
             style={{
               margin: "20px 20px 0",
               padding: "10px 12px",
-              border: "1px solid color-mix(in srgb, var(--color-error) 40%, transparent)",
+              border:
+                "1px solid color-mix(in srgb, var(--color-error) 40%, transparent)",
               borderLeft: `3px solid ${COLORS.danger}`,
-              background: "color-mix(in srgb, var(--color-error) 12%, transparent)",
+              background:
+                "color-mix(in srgb, var(--color-error) 12%, transparent)",
               color: COLORS.textPrimary,
               fontFamily: MONO_FONT,
               fontSize: 11,
@@ -1159,28 +1635,74 @@ export function RunPage() {
 
         <div style={{ flex: 1, overflowY: "auto", padding: 20 }}>
           {loading && filteredDefinitions.length === 0 ? (
-            <div style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textDim, textAlign: "center", padding: "40px 0" }}>
+            <div
+              style={{
+                fontFamily: MONO_FONT,
+                fontSize: 11,
+                color: COLORS.textDim,
+                textAlign: "center",
+                padding: "40px 0",
+              }}
+            >
               Loading...
             </div>
           ) : filteredDefinitions.length === 0 ? (
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, padding: "60px 20px" }}>
-              <div style={{ fontFamily: MONO_FONT, fontSize: 12, color: COLORS.textMuted, textAlign: "center" }}>
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 12,
+                padding: "60px 20px",
+              }}
+            >
+              <div
+                style={{
+                  fontFamily: MONO_FONT,
+                  fontSize: 12,
+                  color: COLORS.textMuted,
+                  textAlign: "center",
+                }}
+              >
                 No commands in this view
               </div>
-              <div style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textDim, textAlign: "center", maxWidth: 340 }}>
-                Add a command or assign groups. Every Run click opens a fresh terminal session.
+              <div
+                style={{
+                  fontFamily: MONO_FONT,
+                  fontSize: 11,
+                  color: COLORS.textDim,
+                  textAlign: "center",
+                  maxWidth: 340,
+                }}
+              >
+                Add a command or assign groups. Every Run click opens a fresh
+                terminal session.
               </div>
-              <button type="button" onClick={() => setAddDialogOpen(true)} style={primaryButton()}>
+              <button
+                type="button"
+                onClick={() => setAddDialogOpen(true)}
+                style={primaryButton()}
+              >
                 <Plus size={14} weight="bold" />
                 Add command
               </button>
             </div>
           ) : (
-            <div data-tour="run.commandCards" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 12 }}>
+            <div
+              data-tour="run.commandCards"
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
+                gap: 12,
+              }}
+            >
               {filteredDefinitions.map((definition) => {
                 const laneId = resolveProcessLaneId(definition.id);
                 const laneRuntimes = runtime.filter(
-                  (runtimeItem) => runtimeItem.processId === definition.id && runtimeItem.laneId === laneId,
+                  (runtimeItem) =>
+                    runtimeItem.processId === definition.id &&
+                    runtimeItem.laneId === laneId,
                 );
                 return (
                   <CommandCard
@@ -1215,7 +1737,15 @@ export function RunPage() {
               }}
               onClick={() => setNetworkDrawerOpen(false)}
             />
-            <div style={{ position: "absolute", top: 0, right: 0, bottom: 0, zIndex: 91 }}>
+            <div
+              style={{
+                position: "absolute",
+                top: 0,
+                right: 0,
+                bottom: 0,
+                zIndex: 91,
+              }}
+            >
               <RunNetworkPanel onClose={() => setNetworkDrawerOpen(false)} />
             </div>
           </>

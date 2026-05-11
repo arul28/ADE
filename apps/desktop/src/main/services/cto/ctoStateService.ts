@@ -5,7 +5,6 @@ import YAML from "yaml";
 import type {
   CtoCoreMemory,
   CtoIdentity,
-  OpenclawContextPolicy,
   CtoOnboardingState,
   CtoSessionLogEntry,
   CtoSubordinateActivityEntry,
@@ -548,7 +547,6 @@ function normalizeIdentity(input: unknown): CtoIdentity | null {
     source.communicationStyle && typeof source.communicationStyle === "object"
       ? (source.communicationStyle as Record<string, unknown>)
       : {};
-  const openclawContextPolicy = normalizeOpenclawContextPolicy(source.openclawContextPolicy);
   const onboardingState = normalizeOnboardingState(source.onboardingState);
   const personality = normalizePersonalityPreset(source.personality);
   const customPersonality =
@@ -616,21 +614,8 @@ function normalizeIdentity(input: unknown): CtoIdentity | null {
         ? Math.max(1, Math.floor(Number(memoryPolicyRaw.temporalDecayHalfLifeDays)))
         : 30,
     },
-    ...(openclawContextPolicy ? { openclawContextPolicy } : {}),
     ...(onboardingState ? { onboardingState } : {}),
     updatedAt,
-  };
-}
-
-function normalizeOpenclawContextPolicy(value: unknown): OpenclawContextPolicy | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  const source = value as Record<string, unknown>;
-  const blockedCategories = Array.isArray(source.blockedCategories)
-    ? [...new Set(source.blockedCategories.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0))]
-    : [];
-  return {
-    shareMode: source.shareMode === "full" ? "full" : "filtered",
-    blockedCategories,
   };
 }
 
@@ -751,10 +736,6 @@ function makeDefaultIdentity(): CtoIdentity {
       compactionThreshold: 0.7,
       preCompactionFlush: true,
       temporalDecayHalfLifeDays: 30,
-    },
-    openclawContextPolicy: {
-      shareMode: "filtered",
-      blockedCategories: ["secret", "token", "system_prompt"],
     },
     updatedAt: timestamp,
   };
@@ -1367,7 +1348,6 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
       ...patch,
       modelPreferences: { ...current.modelPreferences, ...(patch.modelPreferences ?? {}) },
       memoryPolicy: { ...current.memoryPolicy, ...(patch.memoryPolicy ?? {}) },
-      openclawContextPolicy: normalizeOpenclawContextPolicy(patch.openclawContextPolicy) ?? current.openclawContextPolicy,
       version: current.version + 1,
       updatedAt: timestamp,
     };

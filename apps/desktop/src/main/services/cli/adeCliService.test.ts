@@ -80,6 +80,32 @@ describe("createAdeCliService", () => {
     expect(service.agentEnv({ PATH: "/usr/bin:/bin" }).PATH?.split(path.delimiter)[0]).toBe(packagedBinDir);
   });
 
+  it("uses channel-specific packaged CLI commands and install targets", async () => {
+    const root = makeTempRoot();
+    const home = path.join(root, "home");
+    const resourcesPath = path.join(root, "Resources");
+    const packagedBinDir = path.join(resourcesPath, "ade-cli", "bin");
+    const packagedCommandPath = path.join(packagedBinDir, "ade-alpha");
+    writeExecutable(packagedCommandPath);
+    writeExecutable(path.join(resourcesPath, "ade-cli", "install-path.sh"));
+    fs.writeFileSync(path.join(resourcesPath, "ade-cli", "cli.cjs"), "console.log('ade')\n");
+
+    const service = createAdeCliService({
+      isPackaged: true,
+      resourcesPath,
+      userDataPath: path.join(root, "user-data"),
+      appExecutablePath: path.join(root, "ADE Alpha.app", "Contents", "MacOS", "ADE Alpha"),
+      env: { ADE_PACKAGE_CHANNEL: "alpha", HOME: home, PATH: "/usr/bin:/bin" },
+      logger: logger() as any,
+    });
+
+    const status = await service.getStatus();
+    expect(service.resolved.commandPath).toBe(packagedCommandPath);
+    expect(status.command).toBe("ade-alpha");
+    expect(status.installTargetPath).toBe(path.join(home, ".local", "bin", "ade-alpha"));
+    expect(status.nextAction).toBe("Install the ade-alpha command for Terminal access.");
+  });
+
   it("uses packaged Windows cmd wrappers and Path casing", async () => {
     setPlatform("win32");
     const root = makeTempRoot();
@@ -442,7 +468,7 @@ describe("createAdeCliService", () => {
       logger: logger() as any,
     });
 
-    const shimPath = path.join(userDataPath, "ade-cli", "bin", "ade");
+    const shimPath = path.join(userDataPath, "ade-cli", "bin", "ade-dev");
     expect(service.resolved.source).toBe("dev");
     expect(service.resolved.commandPath).toBe(shimPath);
     expect(fs.existsSync(shimPath)).toBe(true);
@@ -471,7 +497,7 @@ describe("createAdeCliService", () => {
       logger: logger() as any,
     });
 
-    const shimPath = path.join(userDataPath, "ade-cli", "bin", "ade.cmd");
+    const shimPath = path.join(userDataPath, "ade-cli", "bin", "ade-dev.cmd");
     const script = fs.readFileSync(shimPath, "utf8");
 
     expect(service.resolved.source).toBe("dev");
@@ -503,7 +529,7 @@ describe("createAdeCliService", () => {
       logger: logger() as any,
     });
 
-    const shimPath = path.join(userDataPath, "ade-cli", "bin", "ade");
+    const shimPath = path.join(userDataPath, "ade-cli", "bin", "ade-dev");
     const shimScript = fs.readFileSync(shimPath, "utf8");
 
     expect(service.resolved.source).toBe("dev");
@@ -547,7 +573,7 @@ describe("createAdeCliService", () => {
     expect(service.resolved.cliJsPath).toBe(sourceCliPath);
   });
 
-  it("does not run a global installer from dev builds", async () => {
+  it("installs the dev CLI command separately from prod", async () => {
     const root = makeTempRoot();
     vi.spyOn(process, "cwd").mockReturnValue(root);
 
@@ -556,11 +582,13 @@ describe("createAdeCliService", () => {
       resourcesPath: path.join(root, "missing-resources"),
       userDataPath: path.join(root, "user-data"),
       appExecutablePath: "/Applications/ADE.app/Contents/MacOS/ADE",
+      env: { HOME: path.join(root, "home"), PATH: "/usr/bin:/bin" },
       logger: logger() as any,
     });
 
     const result = await service.installForUser();
-    expect(result.ok).toBe(false);
-    expect(result.message).toContain("local development");
+    expect(result.ok).toBe(true);
+    expect(result.status.command).toBe("ade-dev");
+    expect(fs.existsSync(path.join(root, "home", ".local", "bin", "ade-dev"))).toBe(true);
   });
 });

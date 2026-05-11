@@ -7,6 +7,12 @@ import React, {
   type CSSProperties,
 } from "react";
 import { CircleNotch, FolderOpen, Warning } from "@phosphor-icons/react";
+import type {
+  CreateProjectInput,
+  CreateProjectResult,
+  ProjectBrowseInput,
+  ProjectBrowseResult,
+} from "../../../shared/types";
 import { extractError } from "../../lib/format";
 import {
   COLORS,
@@ -20,7 +26,25 @@ import {
 
 export type CreateProjectFormProps = {
   onCancel: () => void;
-  onCreated: (result: { rootPath: string; displayName: string }) => void;
+  onCreated: (result: {
+    rootPath: string;
+    displayName: string;
+    projectId?: string;
+  }) => void;
+  machineName?: string;
+  getDefaultParentDir?: () => Promise<string>;
+  browseDirectories?: (
+    input: ProjectBrowseInput,
+  ) => Promise<ProjectBrowseResult>;
+  chooseDirectory?:
+    | ((args: {
+        title: string;
+        defaultPath?: string;
+      }) => Promise<string | null>)
+    | null;
+  createProject?: (
+    input: CreateProjectInput,
+  ) => Promise<CreateProjectResult & { projectId?: string }>;
 };
 
 type NameValidation = { ok: true } | { ok: false; reason: string };
@@ -28,16 +52,22 @@ type NameValidation = { ok: true } | { ok: false; reason: string };
 function validateName(rawName: string): NameValidation {
   const name = rawName.trim();
   if (name.length === 0) return { ok: false, reason: "Enter a project name" };
-  if (name.length > 100) return { ok: false, reason: "Name must be 100 characters or fewer" };
-  if (name.startsWith(".")) return { ok: false, reason: "Name cannot start with a dot" };
-  if (/[/\\]/.test(name)) return { ok: false, reason: "Name cannot contain / or \\" };
+  if (name.length > 100)
+    return { ok: false, reason: "Name must be 100 characters or fewer" };
+  if (name.startsWith("."))
+    return { ok: false, reason: "Name cannot start with a dot" };
+  if (/[/\\]/.test(name))
+    return { ok: false, reason: "Name cannot contain / or \\" };
   return { ok: true };
 }
 
 function joinPath(parent: string, name: string): string {
   if (!parent) return name;
   const sep = parent.includes("\\") ? "\\" : "/";
-  const trimmed = parent.endsWith("/") || parent.endsWith("\\") ? parent.slice(0, -1) : parent;
+  const trimmed =
+    parent.endsWith("/") || parent.endsWith("\\")
+      ? parent.slice(0, -1)
+      : parent;
   if (!name) return trimmed;
   return `${trimmed}${sep}${name}`;
 }
@@ -56,7 +86,15 @@ const inputStyle: CSSProperties = {
   boxSizing: "border-box",
 };
 
-export function CreateProjectForm({ onCancel, onCreated }: CreateProjectFormProps) {
+export function CreateProjectForm({
+  onCancel,
+  onCreated,
+  machineName,
+  getDefaultParentDir,
+  browseDirectories,
+  chooseDirectory,
+  createProject,
+}: CreateProjectFormProps) {
   const [name, setName] = useState("");
   const [parentDir, setParentDir] = useState<string>("");
   const [parentDirLoading, setParentDirLoading] = useState(true);
@@ -67,11 +105,18 @@ export function CreateProjectForm({ onCancel, onCreated }: CreateProjectFormProp
   const [submitAttempted, setSubmitAttempted] = useState(false);
 
   const checkRequestRef = useRef(0);
+  const loadDefaultParentDir =
+    getDefaultParentDir ?? window.ade.project.getDefaultParentDir;
+  const browse = browseDirectories ?? window.ade.project.browseDirectories;
+  const pickDirectory =
+    chooseDirectory === undefined
+      ? window.ade.project.chooseDirectory
+      : chooseDirectory;
+  const create = createProject ?? window.ade.project.createLocal;
 
   useEffect(() => {
     let cancelled = false;
-    void window.ade.project
-      .getDefaultParentDir()
+    void loadDefaultParentDir()
       .then((value) => {
         if (cancelled) return;
         setParentDir(value);
@@ -86,7 +131,7 @@ export function CreateProjectForm({ onCancel, onCreated }: CreateProjectFormProp
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [loadDefaultParentDir]);
 
   const validation = useMemo(() => validateName(name), [name]);
   const trimmedName = name.trim();
@@ -102,8 +147,7 @@ export function CreateProjectForm({ onCancel, onCreated }: CreateProjectFormProp
     }
     const requestId = ++checkRequestRef.current;
     const timeout = window.setTimeout(() => {
-      void window.ade.project
-        .browseDirectories({ partialPath: previewPath })
+      void browse({ partialPath: previewPath })
         .then((result) => {
           if (checkRequestRef.current !== requestId) return;
           setPathExists(Boolean(result.exactDirectoryPath === previewPath));
@@ -116,18 +160,22 @@ export function CreateProjectForm({ onCancel, onCreated }: CreateProjectFormProp
     return () => {
       window.clearTimeout(timeout);
     };
-  }, [previewPath, validation.ok]);
+  }, [browse, previewPath, validation.ok]);
 
-  const showNameError =
-    !validation.ok && (submitAttempted || name.length > 0);
+  const showNameError = !validation.ok && (submitAttempted || name.length > 0);
   const canSubmit =
-    validation.ok && parentDir.length > 0 && !pathExists && !pending && !parentDirLoading;
+    validation.ok &&
+    parentDir.length > 0 &&
+    !pathExists &&
+    !pending &&
+    !parentDirLoading;
 
   const handleChooseParent = useCallback(async () => {
+    if (!pickDirectory) return;
     setPickerPending(true);
     setError(null);
     try {
-      const selected = await window.ade.project.chooseDirectory({
+      const selected = await pickDirectory({
         title: "Choose parent directory",
         defaultPath: parentDir || undefined,
       });
@@ -139,7 +187,7 @@ export function CreateProjectForm({ onCancel, onCreated }: CreateProjectFormProp
     } finally {
       setPickerPending(false);
     }
-  }, [parentDir]);
+  }, [parentDir, pickDirectory]);
 
   const handleSubmit = useCallback(async () => {
     setSubmitAttempted(true);
@@ -147,17 +195,25 @@ export function CreateProjectForm({ onCancel, onCreated }: CreateProjectFormProp
     setPending(true);
     setError(null);
     try {
-      const result = await window.ade.project.createLocal({
+      const result = await create({
         name: trimmedName,
         parentDir,
       });
-      onCreated({ rootPath: result.rootPath, displayName: trimmedName });
+      const projectId =
+        "projectId" in result && typeof result.projectId === "string"
+          ? result.projectId
+          : undefined;
+      onCreated({
+        rootPath: result.rootPath,
+        displayName: trimmedName,
+        projectId,
+      });
     } catch (err) {
       setError(extractError(err));
     } finally {
       setPending(false);
     }
-  }, [onCreated, parentDir, pathExists, trimmedName, validation.ok]);
+  }, [create, onCreated, parentDir, pathExists, trimmedName, validation.ok]);
 
   return (
     <div
@@ -189,40 +245,44 @@ export function CreateProjectForm({ onCancel, onCreated }: CreateProjectFormProp
         ) : null}
       </Field>
 
+      {machineName ? (
+        <InlineHint tone="muted">Target: {machineName}</InlineHint>
+      ) : null}
+
       <Field label="PARENT DIRECTORY">
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <div
+          <input
+            type="text"
+            value={parentDir}
+            onChange={(event) => setParentDir(event.target.value)}
+            placeholder={parentDirLoading ? "Loading…" : "Parent directory"}
             style={{
               ...inputStyle,
-              display: "flex",
-              alignItems: "center",
               fontFamily: MONO_FONT,
               fontSize: 12,
               color: parentDir ? COLORS.textPrimary : COLORS.textMuted,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
               flex: 1,
             }}
             title={parentDir}
-          >
-            {parentDirLoading ? "Loading…" : parentDir || "No parent directory selected"}
-          </div>
-          <button
-            type="button"
-            style={outlineButton({ minWidth: 44 })}
-            disabled={pickerPending || pending}
-            onClick={() => {
-              void handleChooseParent();
-            }}
-            aria-label="Choose parent directory"
-          >
-            {pickerPending ? (
-              <CircleNotch size={12} weight="bold" className="animate-spin" />
-            ) : (
-              <FolderOpen size={12} weight="regular" />
-            )}
-          </button>
+            disabled={pending || parentDirLoading}
+          />
+          {pickDirectory ? (
+            <button
+              type="button"
+              style={outlineButton({ minWidth: 44 })}
+              disabled={pickerPending || pending}
+              onClick={() => {
+                void handleChooseParent();
+              }}
+              aria-label="Choose parent directory"
+            >
+              {pickerPending ? (
+                <CircleNotch size={12} weight="bold" className="animate-spin" />
+              ) : (
+                <FolderOpen size={12} weight="regular" />
+              )}
+            </button>
+          ) : null}
         </div>
       </Field>
 
@@ -248,7 +308,10 @@ export function CreateProjectForm({ onCancel, onCreated }: CreateProjectFormProp
         </button>
         <button
           type="button"
-          style={primaryButton({ opacity: canSubmit ? 1 : 0.55, cursor: canSubmit ? "pointer" : "not-allowed" })}
+          style={primaryButton({
+            opacity: canSubmit ? 1 : 0.55,
+            cursor: canSubmit ? "pointer" : "not-allowed",
+          })}
           onClick={() => {
             void handleSubmit();
           }}
@@ -268,10 +331,22 @@ export function CreateProjectForm({ onCancel, onCreated }: CreateProjectFormProp
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
   return (
     <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-      <span style={{ ...LABEL_STYLE, letterSpacing: "0.08em", textTransform: "uppercase" }}>
+      <span
+        style={{
+          ...LABEL_STYLE,
+          letterSpacing: "0.08em",
+          textTransform: "uppercase",
+        }}
+      >
         {label}
       </span>
       {children}

@@ -40,6 +40,7 @@ import {
   type GraphPersistedState,
   type LaneLinearIssue,
   type MergeMethod,
+  type AppNavigationRequest,
 } from "../../desktop/src/shared/types";
 import type { PrActionRun, PrCheck, PrComment, PrReviewThread } from "../../desktop/src/shared/types/prs";
 import type { CtoLinearQuickView } from "../../desktop/src/shared/types/cto";
@@ -80,16 +81,27 @@ const LINEAR_ISSUE_TOOL_SCHEMA: Record<string, unknown> = {
     "id",
     "identifier",
     "title",
+    "description",
+    "url",
     "projectId",
     "projectSlug",
+    "projectName",
     "teamId",
     "teamKey",
+    "teamName",
     "stateId",
     "stateName",
     "stateType",
     "priority",
     "priorityLabel",
     "labels",
+    "assigneeId",
+    "assigneeName",
+    "creatorId",
+    "creatorName",
+    "dueDate",
+    "estimate",
+    "branchName",
     "createdAt",
     "updatedAt",
   ],
@@ -2130,6 +2142,12 @@ const ALL_TOOL_SPECS: ToolSpec[] = [
   ...COORDINATOR_TOOL_SPECS,
 ];
 const COORDINATOR_TOOL_NAMES = new Set(COORDINATOR_TOOL_SPECS.map((tool) => tool.name));
+const MEMORY_TOOL_NAMES = new Set([
+  "memory_add",
+  "memory_update_core",
+  "memory_search",
+  "memory_pin",
+]);
 
 const READ_ONLY_TOOLS = new Set([
   "check_conflicts",
@@ -3443,6 +3461,7 @@ function isLocalComputerUseAllowed(callerCtx: CallerContext): boolean {
 
 async function listToolSpecsForSession(runtime: AdeRuntime, session: SessionState): Promise<ToolSpec[]> {
   const callerCtx = await resolveEffectiveCallerContext(runtime, session);
+  const memoryAllowed = runtime.capabilities?.memory !== false;
   const externalComputerUseAvailable = runtime.computerUseArtifactBrokerService
     ?.getBackendStatus()
     ?.backends.some((backend) => backend.available) ?? false;
@@ -3452,6 +3471,7 @@ async function listToolSpecsForSession(runtime: AdeRuntime, session: SessionStat
   const keepVisibleTool = (tool: ToolSpec): boolean => (
     (!shouldHideLocalComputerUse || !LOCAL_COMPUTER_USE_TOOL_NAMES.has(tool.name))
     && (macosVmAllowed || !MACOS_VM_TOOL_NAMES.has(tool.name))
+    && (memoryAllowed || !MEMORY_TOOL_NAMES.has(tool.name))
   );
   const visibleBaseTools = TOOL_SPECS.filter(keepVisibleTool);
   const visibleCoordinatorTools = COORDINATOR_TOOL_SPECS.filter(keepVisibleTool);
@@ -4611,6 +4631,9 @@ async function runTool(args: {
 }): Promise<unknown> {
   const { runtime, session, name, toolArgs } = args;
   const callerCtx = await resolveEffectiveCallerContext(runtime, session);
+  if (runtime.capabilities?.memory === false && MEMORY_TOOL_NAMES.has(name)) {
+    throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Tool not available in this runtime: ${name}`);
+  }
   if (isToolHiddenForStandaloneChat(name, callerCtx)) {
     throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported tool: ${name}`);
   }
@@ -6859,8 +6882,20 @@ async function runTool(args: {
         commandPreviewParts.push("--sandbox", "workspace-write", "--ask-for-approval", "untrusted");
       }
     } else {
-      const claudePermission =
-        permissionMode === "plan" ? "plan" : permissionMode === "full-auto" ? "bypassPermissions" : permissionMode === "edit" ? "acceptEdits" : "default";
+      let claudePermission: string;
+      switch (permissionMode) {
+        case "plan":
+          claudePermission = "plan";
+          break;
+        case "full-auto":
+          claudePermission = "bypassPermissions";
+          break;
+        case "edit":
+          claudePermission = "acceptEdits";
+          break;
+        default:
+          claudePermission = "default";
+      }
       commandArgs.push("--permission-mode", claudePermission);
       commandPreviewParts.push("--permission-mode", previewShellEscapeArg(claudePermission));
 
@@ -7628,6 +7663,69 @@ export function createAdeRpcRequestHandler(args: {
       return { pong: true, at: nowIso() };
     }
 
+    if (method.startsWith("sync.")) {
+      const syncService = runtime.syncService;
+      if (!syncService) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, "Sync service is not available.");
+      }
+      if (method === "sync.getStatus") {
+        return await syncService.getStatus({
+          includeTransferReadiness: params.includeTransferReadiness === true,
+          forceTransferReadiness: params.forceTransferReadiness === true,
+        });
+      }
+      if (method === "sync.refreshDiscovery") {
+        return await syncService.refreshDiscovery();
+      }
+      if (method === "sync.listDevices") {
+        return await syncService.listDevices();
+      }
+      if (method === "sync.updateLocalDevice") {
+        const name = typeof params.name === "string" ? params.name : undefined;
+        const deviceType = typeof params.deviceType === "string" ? params.deviceType : undefined;
+        return await syncService.updateLocalDevice({
+          ...(name !== undefined ? { name } : {}),
+          ...(deviceType !== undefined ? { deviceType: deviceType as never } : {}),
+        });
+      }
+      if (method === "sync.connectToBrain") {
+        return await syncService.connectToBrain(params as Parameters<typeof syncService.connectToBrain>[0]);
+      }
+      if (method === "sync.disconnectFromBrain") {
+        return await syncService.disconnectFromBrain();
+      }
+      if (method === "sync.forgetDevice") {
+        const deviceId = typeof params.deviceId === "string" ? params.deviceId : "";
+        return await syncService.forgetDevice(deviceId);
+      }
+      if (method === "sync.getTransferReadiness") {
+        return await syncService.getTransferReadiness();
+      }
+      if (method === "sync.transferBrainToLocal") {
+        return await syncService.transferBrainToLocal();
+      }
+      if (method === "sync.getPin") {
+        return { pin: syncService.getPin() };
+      }
+      if (method === "sync.setPin") {
+        const pin = typeof params.pin === "string" ? params.pin : "";
+        return await syncService.setPin(pin);
+      }
+      if (method === "sync.generatePin") {
+        return await syncService.generatePin();
+      }
+      if (method === "sync.clearPin") {
+        return await syncService.clearPin();
+      }
+      if (method === "sync.setActiveLanePresence") {
+        const laneIds = Array.isArray(params.laneIds)
+          ? params.laneIds.filter((laneId): laneId is string => typeof laneId === "string")
+          : [];
+        await syncService.setActiveLanePresence(laneIds);
+        return null;
+      }
+    }
+
     if (method === "ade/actions/list") {
       return await listActions();
     }
@@ -7662,6 +7760,48 @@ export function createAdeRpcRequestHandler(args: {
     if (method === "ade/resources/read") {
       const uri = assertNonEmptyString(params.uri, "uri");
       return await readResource(runtime, uri);
+    }
+
+    if (method === "app/navigate") {
+      const target = safeObject(params.target);
+      const kind = asOptionalTrimmedString(target.kind);
+      if (!kind) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "app/navigate requires target.kind.");
+      }
+      if (kind !== "work" && kind !== "chat" && kind !== "lane" && kind !== "pr" && kind !== "route") {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Unsupported app navigation target kind: ${kind}.`);
+      }
+      if (kind === "lane" && !asOptionalTrimmedString(target.laneId)) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "app/navigate target 'lane' requires laneId.");
+      }
+      if (kind === "route" && !asOptionalTrimmedString(target.route)) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "app/navigate target 'route' requires route.");
+      }
+      const normalizedTarget: Record<string, unknown> = { kind };
+      const sessionId = asOptionalTrimmedString(target.sessionId);
+      const laneId = asOptionalTrimmedString(target.laneId);
+      if ((kind === "work" || kind === "chat" || kind === "lane") && sessionId) normalizedTarget.sessionId = sessionId;
+      if ((kind === "work" || kind === "chat" || kind === "lane" || kind === "pr") && laneId) normalizedTarget.laneId = laneId;
+      if (kind === "pr") {
+        const prId = asOptionalTrimmedString(target.prId);
+        if (prId) normalizedTarget.prId = prId;
+        if (typeof target.prNumber === "number") normalizedTarget.prNumber = target.prNumber;
+      }
+      if (kind === "route") {
+        normalizedTarget.route = asOptionalTrimmedString(target.route);
+      }
+      const request = {
+        target: normalizedTarget,
+        source: asOptionalTrimmedString(params.source) ?? "ade-rpc",
+      } as AppNavigationRequest;
+      if (!runtime.appNavigationService) {
+        return {
+          ok: false,
+          mode: "unavailable",
+          message: "Desktop navigation is unavailable in this runtime.",
+        };
+      }
+      return await runtime.appNavigationService.navigate(request);
     }
 
     if (method === "shutdown") {

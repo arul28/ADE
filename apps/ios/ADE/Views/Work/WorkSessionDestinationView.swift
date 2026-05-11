@@ -448,7 +448,7 @@ struct WorkSessionDestinationView: View {
     } catch {
       ADEHaptics.error()
       localEchoMessages.removeAll { $0.id == echo.id }
-      errorMessage = "Opening message did not reach the host. The chat exists; tap Send to retry. \(error.localizedDescription)"
+      errorMessage = "Opening message did not reach the machine. The chat exists; tap Send to retry. \(error.localizedDescription)"
     }
     sending = false
   }
