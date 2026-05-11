@@ -675,6 +675,17 @@ function mergeLaneRefreshRequests(current: LaneRefreshRequest, next: LaneRefresh
   };
 }
 
+function withPreservedLaneStatus(
+  lane: LaneSummary,
+  previousLanesById: Map<string, LaneSummary>,
+  previousSnapshotsById: Map<string, LaneListSnapshot>,
+): LaneSummary {
+  const previousLane = previousLanesById.get(lane.id) ?? previousSnapshotsById.get(lane.id)?.lane;
+  return previousLane
+    ? { ...lane, status: previousLane.status, parentStatus: previousLane.parentStatus }
+    : lane;
+}
+
 function scheduleProjectHydration(get: () => AppState) {
   if (warmupTimer != null) {
     window.clearTimeout(warmupTimer);
@@ -970,8 +981,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         : null;
       const laneSnapshots = rawLaneSnapshots?.map((snapshot) => {
         if (currentRequest.includeStatus) return snapshot;
-        const previousLane = previousLanesById.get(snapshot.lane.id) ?? previousSnapshotsById.get(snapshot.lane.id)?.lane ?? null;
-        return previousLane ? { ...snapshot, lane: { ...snapshot.lane, status: previousLane.status, parentStatus: previousLane.parentStatus } } : snapshot;
+        const lane = withPreservedLaneStatus(snapshot.lane, previousLanesById, previousSnapshotsById);
+        return lane === snapshot.lane ? snapshot : { ...snapshot, lane };
       }) ?? null;
       const rawLanes = laneSnapshots != null
         ? laneSnapshots.map((snapshot) => snapshot.lane)
@@ -981,10 +992,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           });
       const lanes = currentRequest.includeStatus
         ? rawLanes
-        : rawLanes.map((lane) => {
-          const previousLane = previousLanesById.get(lane.id) ?? previousSnapshotsById.get(lane.id)?.lane ?? null;
-          return previousLane ? { ...lane, status: previousLane.status, parentStatus: previousLane.parentStatus } : lane;
-        });
+        : rawLanes.map((lane) => withPreservedLaneStatus(lane, previousLanesById, previousSnapshotsById));
       // Discard stale response: a newer refresh was issued while this one was in-flight
       if (token !== laneRefreshVersion) {
         return;

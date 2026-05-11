@@ -203,5 +203,6 @@ describe("App Work route keep-alive", () => {
       expect(window.location.pathname).toBe("/lanes");
       expect(window.location.hash).toBe("");
     });
+    expect(screen.getByTestId("work-page").getAttribute("data-active")).toBe("false");
   });
 });

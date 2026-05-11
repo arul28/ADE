@@ -238,7 +238,7 @@ describe("selectLanePrTag", () => {
 });
 
 describe("shouldMountGitActionsPane", () => {
-  it("keeps the fullscreen Git Actions pane mounted while suppressing the hidden inline duplicate", () => {
+  it("mounts one Git Actions pane owner when a lane is expanded", () => {
     expect(shouldMountGitActionsPane({
       laneId: "lane-1",
       expandedGitActionsLaneId: "lane-1",
@@ -250,12 +250,16 @@ describe("shouldMountGitActionsPane", () => {
       expandedGitActionsLaneId: "lane-1",
       surface: "git-actions-fullscreen",
     })).toBe(true);
-  });
 
-  it("keeps inline Git Actions mounted for lanes that are not expanded", () => {
     expect(shouldMountGitActionsPane({
       laneId: "lane-2",
       expandedGitActionsLaneId: "lane-1",
+      surface: "inline",
+    })).toBe(true);
+
+    expect(shouldMountGitActionsPane({
+      laneId: "lane-1",
+      expandedGitActionsLaneId: null,
       surface: "inline",
     })).toBe(true);
   });

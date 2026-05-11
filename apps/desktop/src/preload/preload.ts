@@ -1384,15 +1384,11 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
   let nextDelayMs: number | null = null;
   try {
     const binding = await getProjectRuntimeBinding();
-    if (!binding || (binding.kind !== "remote" && binding.kind !== "local")) {
-      remoteRuntimeEventCursor = 0;
-      remoteRuntimeEventBindingKey = null;
-      remoteRuntimeEventGeneration = projectBindingGeneration;
-      remoteRuntimeEventStartedAtMs = 0;
-      resetRemoteRuntimeEventDedup(null);
-      return;
-    }
-    if (binding.kind === "local" && localRuntimeDaemonDisabled) {
+    if (
+      !binding ||
+      (binding.kind !== "remote" && binding.kind !== "local") ||
+      (binding.kind === "local" && localRuntimeDaemonDisabled)
+    ) {
       remoteRuntimeEventCursor = 0;
       remoteRuntimeEventBindingKey = null;
       remoteRuntimeEventGeneration = projectBindingGeneration;

@@ -1771,8 +1771,7 @@ export function registerIpc({
       : getOptionalSyncService();
   const localRuntimeDaemonDisabled = process.env.ADE_DISABLE_LOCAL_RUNTIME_DAEMON === "1";
   const allowLocalRuntimeFallback =
-    process.env.ADE_LOCAL_RUNTIME_FALLBACK === "1" ||
-    localRuntimeDaemonDisabled;
+    process.env.ADE_LOCAL_RUNTIME_FALLBACK === "1";
 
   const buildUnavailableSyncSnapshot = (): SyncRoleSnapshot => {
     const now = new Date().toISOString();

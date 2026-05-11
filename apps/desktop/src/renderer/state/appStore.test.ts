@@ -286,21 +286,7 @@ describe("appStore", () => {
       expect(useAppStore.getState().lanes).toEqual([snapshots[0].lane]);
     });
 
-    it("refreshLanes can request the cheaper snapshot bootstrap path", async () => {
-      const lanes = [{ id: "lane-lite", name: "Lane lite" }] as any[];
-      (window.ade.lanes.list as any).mockResolvedValueOnce(lanes);
-
-      await useAppStore.getState().refreshLanes({ includeStatus: false });
-
-      expect(window.ade.lanes.list).toHaveBeenCalledWith({
-        includeArchived: false,
-        includeStatus: false,
-      });
-      expect(window.ade.lanes.listSnapshots).not.toHaveBeenCalled();
-      expect(useAppStore.getState().lanes).toEqual(lanes);
-    });
-
-    it("refreshLanes preserves prior git status for statusless lane refreshes", async () => {
+    it("refreshLanes can request the cheaper lane-list path while preserving prior git status", async () => {
       useAppStore.setState({
         lanes: [{ id: "lane-lite", name: "Lane lite", status: { dirty: true }, parentStatus: { ahead: 1 } }] as any[],
       });
@@ -312,6 +298,7 @@ describe("appStore", () => {
         includeArchived: false,
         includeStatus: false,
       });
+      expect(window.ade.lanes.listSnapshots).not.toHaveBeenCalled();
       expect(useAppStore.getState().lanes[0]).toEqual(
         expect.objectContaining({
           id: "lane-lite",

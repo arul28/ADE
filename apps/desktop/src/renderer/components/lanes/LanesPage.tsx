@@ -82,12 +82,16 @@ type RebaseScopePromptState = {
 
 type LanePaneSurface = "inline" | "git-actions-fullscreen" | "lane-fullscreen";
 
-export function shouldMountGitActionsPane(args: {
+export function shouldMountGitActionsPane({
+  laneId,
+  expandedGitActionsLaneId,
+  surface,
+}: {
   laneId: string | null;
   expandedGitActionsLaneId: string | null;
   surface: LanePaneSurface;
 }): boolean {
-  return args.surface !== "inline" || !args.laneId || args.expandedGitActionsLaneId !== args.laneId;
+  return surface !== "inline" || !laneId || expandedGitActionsLaneId !== laneId;
 }
 
 type RebasePushReviewState = {
@@ -2224,8 +2228,7 @@ export function LanesPage() {
 
   /* ---- Pane configs ---- */
 
-  const getPaneConfigs = useCallback((laneId: string | null, options?: { surface?: LanePaneSurface }) => {
-    const surface = options?.surface ?? "inline";
+  const getPaneConfigs = useCallback((laneId: string | null, surface: LanePaneSurface = "inline") => {
     const laneDetail = laneId ? lanePaneDetails[laneId] ?? EMPTY_LANE_PANE_DETAIL : EMPTY_LANE_PANE_DETAIL;
     const laneSnapshot = laneId ? laneSnapshotByLaneId.get(laneId) ?? null : null;
     const pendingLinearIssueContext =
@@ -3303,7 +3306,7 @@ export function LanesPage() {
           key={`lanes:single:${gridResetKey}`}
           layoutId={`lanes:tiling:${LANES_TILING_LAYOUT_VERSION}${laneTilingLayoutSuffix}:${visibleLaneIds[0]}`}
           tree={laneTilingTree}
-          panes={getPaneConfigs(visibleLaneIds[0] ?? null, { surface: "inline" })}
+          panes={getPaneConfigs(visibleLaneIds[0] ?? null)}
           className="flex-1 min-h-0"
         />
       ) : (
@@ -3343,7 +3346,7 @@ export function LanesPage() {
                     <PaneTilingLayout
                       layoutId={`lanes:tiling:${LANES_TILING_LAYOUT_VERSION}${laneTilingLayoutSuffix}:${laneId}`}
                       tree={laneTilingTree}
-                      panes={getPaneConfigs(laneId, { surface: "inline" })}
+                      panes={getPaneConfigs(laneId)}
                       className="flex-1 min-h-0"
                     />
                   </div>
@@ -3361,7 +3364,7 @@ export function LanesPage() {
           <PaneTilingLayout
             layoutId={`lanes:git-actions:fullscreen:v1:${expandedGitActionsLaneId}`}
             tree={GIT_ACTIONS_FULLSCREEN_TREE}
-            panes={getPaneConfigs(expandedGitActionsLaneId, { surface: "git-actions-fullscreen" })}
+            panes={getPaneConfigs(expandedGitActionsLaneId, "git-actions-fullscreen")}
             className="flex-1 min-h-0"
           />
         </div>
@@ -3383,7 +3386,7 @@ export function LanesPage() {
           <PaneTilingLayout
             layoutId={`lanes:tiling:${LANES_TILING_LAYOUT_VERSION}${laneTilingLayoutSuffix}:${expandedLaneId}`}
             tree={laneTilingTree}
-            panes={getPaneConfigs(expandedLaneId, { surface: "lane-fullscreen" })}
+            panes={getPaneConfigs(expandedLaneId, "lane-fullscreen")}
             className="flex-1 min-h-0"
           />
         </div>

@@ -10,15 +10,6 @@ import {
   useNavigate
 } from "react-router-dom";
 
-// Use path-based routes on http(s) (Vite in Chrome, Cursor Simple Browser, etc.).
-// Use hash routes for non-http(s) surfaces (e.g. packaged Electron `file://`) where
-// the history API is not tied to a normal origin.
-// Relying only on `__adeBrowserMock` breaks when the flag is not set at module-eval
-// time, which can strand Cursor's embedded browser on a single path.
-const usesBrowserRouter =
-  typeof window !== "undefined" &&
-  (window.location.protocol === "http:" || window.location.protocol === "https:");
-const Router = usesBrowserRouter ? BrowserRouter : HashRouter;
 import { AppShell } from "./AppShell";
 import { RunPage } from "../run/RunPage";
 import { ProjectSetupPage } from "../onboarding/ProjectSetupPage";
@@ -68,6 +59,16 @@ import { getDirtyFileTextForWindow } from "../../lib/dirtyWorkspaceBuffers";
 import { getAiStatusCached } from "../../lib/aiDiscoveryCache";
 import { dispatchWorkSurfaceRevealed } from "../terminals/workSurfaceVisibility";
 import type { AppNavigationRequest } from "../../../shared/types";
+
+// Use path-based routes on http(s) (Vite in Chrome, Cursor Simple Browser, etc.).
+// Use hash routes for non-http(s) surfaces (e.g. packaged Electron `file://`) where
+// the history API is not tied to a normal origin.
+// Relying only on `__adeBrowserMock` breaks when the flag is not set at module-eval
+// time, which can strand Cursor's embedded browser on a single path.
+const usesBrowserRouter =
+  typeof window !== "undefined" &&
+  (window.location.protocol === "http:" || window.location.protocol === "https:");
+const Router = usesBrowserRouter ? BrowserRouter : HashRouter;
 
 const StartupSplashScreen = (
   <div className="flex h-full w-full flex-col items-center justify-center relative overflow-hidden" style={{ background: "var(--color-bg)" }}>
@@ -331,7 +332,6 @@ function BrowserHashRouteBridge() {
   const navigate = useNavigate();
 
   React.useEffect(() => {
-    if (!usesBrowserRouter) return;
     const syncHashRoute = () => {
       const hash = window.location.hash;
       if (!hash.startsWith("#/")) return;
@@ -373,7 +373,7 @@ export function App() {
       <div data-theme={theme} className="h-full bg-bg text-fg font-sans antialiased selection:bg-accent/30">
         <OnboardingBootstrap />
         <AppNavigationBridge />
-        <BrowserHashRouteBridge />
+        {usesBrowserRouter ? <BrowserHashRouteBridge /> : null}
         <Routes>
           <Route path="/startup" element={<Navigate to="/work" replace />} />
           <Route element={<ShellLayout />}>
