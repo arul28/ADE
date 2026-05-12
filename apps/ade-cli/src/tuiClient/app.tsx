@@ -1318,7 +1318,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     ? rightPane.fields[formFieldIndex] ?? rightPane.fields[0] ?? null
     : null;
   const statusLineRows = statusLineText ? Math.min(3, statusLineText.split(/\r?\n/).filter(Boolean).length || 1) : 0;
-  const statusRows = (streaming ? 1 : 0) + statusLineRows;
+  const statusRows = statusLineRows;
   const goalBannerRows = goalBannerText ? 1 : 0;
   const chatRowBudget = Math.max(4, rows - 12 - statusRows - goalBannerRows);
   const providerReadinessRows = useMemo(

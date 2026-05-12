@@ -1628,9 +1628,7 @@ function normalizeCodexTokenBreakdown(value: unknown): CodexTokenUsageBreakdown 
   if (normalized.totalTokens == null) {
     const derivedTotal =
       (normalized.inputTokens ?? 0)
-      + (normalized.outputTokens ?? 0)
-      + (normalized.cacheReadTokens ?? 0)
-      + (normalized.cacheWriteTokens ?? 0);
+      + (normalized.outputTokens ?? 0);
     if (derivedTotal > 0) normalized.totalTokens = derivedTotal;
   }
   return Object.keys(normalized).length ? normalized : undefined;

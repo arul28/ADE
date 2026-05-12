@@ -6419,6 +6419,63 @@ describe("createAgentChatService", () => {
       expect(completedResults).toHaveLength(0);
     });
 
+    it("does not add Codex cache breakdown tokens to derived totals", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Track token usage.",
+      }, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "status" }>;
+        } =>
+          event.event.type === "status"
+          && event.event.turnStatus === "started"
+          && event.event.turnId === "turn-1",
+      );
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "thread/tokenUsage/updated",
+        params: {
+          threadId: "thread-1",
+          tokenUsage: {
+            total: {
+              inputTokens: 1_000,
+              outputTokens: 250,
+              cacheReadTokens: 700,
+              cacheWriteTokens: 50,
+            },
+          },
+        },
+      });
+
+      const usageEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "codex_token_usage" }>;
+        } => event.event.type === "codex_token_usage",
+      );
+      expect(usageEvent.event.usage.total).toEqual(expect.objectContaining({
+        inputTokens: 1_000,
+        outputTokens: 250,
+        cacheReadTokens: 700,
+        cacheWriteTokens: 50,
+        totalTokens: 1_250,
+      }));
+    });
+
     it("switches the Claude SDK session into plan mode before a plan turn", async () => {
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);
       const send = vi.fn().mockResolvedValue(undefined);
