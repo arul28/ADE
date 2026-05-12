@@ -1,5 +1,5 @@
 import { branchNameFromLaneRef } from "../../../shared/laneBaseResolution";
-import type { GitHubPrListItem, LaneSummary, PrSummary } from "../../../shared/types";
+import type { GitHubPrListItem, LaneListSnapshot, LaneSummary, PrSummary } from "../../../shared/types";
 import type { CreateLaneMode } from "./CreateLaneDialog";
 import { mergeUnique } from "./laneUtils";
 
@@ -185,6 +185,40 @@ export function selectLaneTabPrTag(
   if (mappedPr) return toLaneTabPrTagFromPrSummary(mappedPr);
   const githubPr = selectGithubLanePrTag(lane, githubPrs);
   return githubPr ? toLaneTabPrTagFromGithubItem(githubPr, lane.id) : null;
+}
+
+type LaneRuntimeBucket = LaneListSnapshot["runtime"]["bucket"];
+
+export function sortLaneListRows<T extends Pick<LaneSummary, "id" | "laneType">>(args: {
+  lanes: T[];
+  laneRuntimeById: ReadonlyMap<string, Pick<LaneListSnapshot["runtime"], "bucket">>;
+  laneStatusFilter: LaneRuntimeBucket | "all";
+  laneOrderById: ReadonlyMap<string, number>;
+  pinnedLaneIds: ReadonlySet<string>;
+}): T[] {
+  const bucketRank: Record<LaneRuntimeBucket, number> = {
+    "awaiting-input": 0,
+    running: 1,
+    ended: 2,
+    none: 3,
+  };
+  const base = [...args.lanes];
+  if (args.laneStatusFilter !== "all") {
+    return base.filter((lane) => (args.laneRuntimeById.get(lane.id)?.bucket ?? "none") === args.laneStatusFilter);
+  }
+  return base.sort((a, b) => {
+    const aPrimary = a.laneType === "primary" ? 0 : 1;
+    const bPrimary = b.laneType === "primary" ? 0 : 1;
+    if (aPrimary !== bPrimary) return aPrimary - bPrimary;
+    const aPinned = args.pinnedLaneIds.has(a.id) ? 0 : 1;
+    const bPinned = args.pinnedLaneIds.has(b.id) ? 0 : 1;
+    if (aPinned !== bPinned) return aPinned - bPinned;
+    const aBucket = args.laneRuntimeById.get(a.id)?.bucket ?? "none";
+    const bBucket = args.laneRuntimeById.get(b.id)?.bucket ?? "none";
+    const byBucket = bucketRank[aBucket] - bucketRank[bBucket];
+    if (byBucket !== 0) return byBucket;
+    return (args.laneOrderById.get(a.id) ?? 0) - (args.laneOrderById.get(b.id) ?? 0);
+  });
 }
 
 export function resolveLaneDeleteStartSelection(args: {

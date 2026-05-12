@@ -32,6 +32,7 @@ import {
   resolveLaneDeleteStartSelection,
   resolveLaneIdsDeepLinkSelection,
   selectLaneTabPrTag,
+  sortLaneListRows,
   type LaneTabPrTag,
 } from "./lanePageModel";
 import {
@@ -451,28 +452,12 @@ export function LanesPage() {
   }, []);
 
   const filteredLanes = useMemo(() => {
-    const bucketRank: Record<LaneListSnapshot["runtime"]["bucket"], number> = {
-      "awaiting-input": 0,
-      running: 1,
-      ended: 2,
-      none: 3,
-    };
-    const base = [...laneFilterMatchedLanes];
-    if (laneStatusFilter !== "all") {
-      return base.filter((lane) => (laneRuntimeById.get(lane.id)?.bucket ?? "none") === laneStatusFilter);
-    }
-    return base.sort((a, b) => {
-      const aPrimary = a.laneType === "primary" ? 0 : 1;
-      const bPrimary = b.laneType === "primary" ? 0 : 1;
-      if (aPrimary !== bPrimary) return aPrimary - bPrimary;
-      const aPinned = pinnedLaneIds.has(a.id) ? 0 : 1;
-      const bPinned = pinnedLaneIds.has(b.id) ? 0 : 1;
-      if (aPinned !== bPinned) return aPinned - bPinned;
-      const aBucket = laneRuntimeById.get(a.id)?.bucket ?? "none";
-      const bBucket = laneRuntimeById.get(b.id)?.bucket ?? "none";
-      const byBucket = bucketRank[aBucket] - bucketRank[bBucket];
-      if (byBucket !== 0) return byBucket;
-      return (laneOrderById.get(a.id) ?? 0) - (laneOrderById.get(b.id) ?? 0);
+    return sortLaneListRows({
+      lanes: laneFilterMatchedLanes,
+      laneRuntimeById,
+      laneStatusFilter,
+      laneOrderById,
+      pinnedLaneIds,
     });
   }, [laneFilterMatchedLanes, laneRuntimeById, laneStatusFilter, laneOrderById, pinnedLaneIds]);
   const stackGraphLanes = useMemo(() => sortLanesForStackGraph(filteredLanes), [filteredLanes]);
@@ -675,7 +660,7 @@ export function LanesPage() {
     } catch {
       if (requestId !== laneGithubPrTagsRequestRef.current) return;
       if ((useAppStore.getState().project?.rootPath ?? null) !== startedRoot) return;
-      setLaneGithubPrTags([]);
+      // Keep the last usable GitHub snapshot visible on transient refresh failures.
     }
   }, []);
 
@@ -851,11 +836,11 @@ export function LanesPage() {
   }, [refreshIntegrationProposals, project?.rootPath]);
 
   useEffect(() => {
+    lanePrTagsRequestRef.current += 1;
+    laneGithubPrTagsRequestRef.current += 1;
+    setLanePrTags([]);
+    setLaneGithubPrTags([]);
     if (!project?.rootPath) {
-      lanePrTagsRequestRef.current += 1;
-      setLanePrTags([]);
-      laneGithubPrTagsRequestRef.current += 1;
-      setLaneGithubPrTags([]);
       return;
     }
     const timer = window.setTimeout(() => {
@@ -873,6 +858,7 @@ export function LanesPage() {
     return window.ade.prs.onEvent((event) => {
       if (event.type === "prs-updated") {
         setLanePrTags(event.prs);
+        // This event already carries ADE rows; use the cached repo snapshot unless a PR notification asks for a forced refresh.
         void refreshLaneGithubPrTags();
       } else if (event.type === "pr-notification") {
         void refreshLanePrTags();
@@ -2922,11 +2908,11 @@ export function LanesPage() {
             >
               {/* Tab number / merged-PR manage shortcut */}
               <span
-                className="relative inline-flex shrink-0 items-center justify-center"
+                className="group/merged-manage relative inline-flex shrink-0 items-center justify-center"
                 style={{ width: 20, height: 20 }}
               >
                 <span
-                  className={showMergedManageShortcut ? "transition-opacity group-hover:opacity-0" : undefined}
+                  className={showMergedManageShortcut ? "transition-opacity group-hover/merged-manage:opacity-0" : undefined}
                   style={{
                     fontFamily: MONO_FONT,
                     fontSize: 10,
@@ -2941,7 +2927,7 @@ export function LanesPage() {
                   <button
                     type="button"
                     aria-label={`Manage ${lane.name}`}
-                    className="absolute inset-0 inline-flex items-center justify-center rounded-full opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+                    className="absolute inset-0 inline-flex items-center justify-center rounded-full opacity-0 transition-opacity group-hover/merged-manage:opacity-100 focus-visible:opacity-100"
                     style={{
                       border: `1px solid color-mix(in srgb, ${COLORS.danger} 45%, transparent)`,
                       background: `color-mix(in srgb, ${COLORS.danger} 14%, transparent)`,

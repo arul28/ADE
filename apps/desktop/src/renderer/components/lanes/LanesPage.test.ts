@@ -8,6 +8,7 @@ import {
   selectGithubLanePrTag,
   selectLaneTabPrTag,
   selectLanePrTag,
+  sortLaneListRows,
 } from "./lanePageModel";
 import type { GitHubPrListItem, LaneSummary, PrSummary } from "../../../shared/types";
 
@@ -335,5 +336,30 @@ describe("selectLaneTabPrTag", () => {
         makeGitHubPr({ headBranch: "main" }),
       ),
     ).toBe(false);
+  });
+});
+
+describe("sortLaneListRows", () => {
+  it("keeps primary first and promotes pinned lanes before runtime buckets", () => {
+    const lanes = [
+      { id: "primary", laneType: "primary" },
+      { id: "running", laneType: "worktree" },
+      { id: "pinned-ended", laneType: "worktree" },
+      { id: "idle", laneType: "worktree" },
+    ] as const;
+
+    const result = sortLaneListRows({
+      lanes: [...lanes],
+      laneRuntimeById: new Map([
+        ["running", { bucket: "running" }],
+        ["pinned-ended", { bucket: "ended" }],
+        ["idle", { bucket: "none" }],
+      ]),
+      laneStatusFilter: "all",
+      laneOrderById: new Map(lanes.map((lane, index) => [lane.id, index])),
+      pinnedLaneIds: new Set(["pinned-ended"]),
+    });
+
+    expect(result.map((lane) => lane.id)).toEqual(["primary", "pinned-ended", "running", "idle"]);
   });
 });
