@@ -938,7 +938,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       setDetailDeployments([]);
       setDetailAiSummary(null);
     }
-    if (typeof window.ade.prs.listSnapshots === "function") {
+    if (!hasFreshDetailCache && typeof window.ade.prs.listSnapshots === "function") {
       void window.ade.prs.listSnapshots({ prId }).then((snapshots) => {
         if (cancelled || selectedPrIdRef.current !== prId || liveDetailApplied) return;
         const snapshot = snapshots[0];
