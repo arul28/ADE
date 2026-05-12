@@ -838,6 +838,29 @@ describe("AgentChatComposer", () => {
     }
   });
 
+  it("clears the drop highlight when a URL drop is rejected", async () => {
+    const props = renderComposer({
+      turnActive: false,
+      draft: "",
+    });
+    const rejectedUrlDrop = {
+      files: [],
+      types: ["text/uri-list"],
+      getData: vi.fn((type: string) => (
+        type === "text/uri-list" ? "https://example.com/page" : ""
+      )),
+    };
+    const input = screen.getByPlaceholderText("Type to vibecode...");
+
+    fireEvent.dragOver(input, { dataTransfer: rejectedUrlDrop });
+    expect(screen.getByText("Drop files to attach")).toBeTruthy();
+
+    fireEvent.drop(input, { dataTransfer: rejectedUrlDrop });
+
+    await waitFor(() => expect(screen.queryByText("Drop files to attach")).toBeNull());
+    expect(props.onAddAttachment).not.toHaveBeenCalled();
+  });
+
   it("hides native permission controls until a model is selected", () => {
     const props = buildComposerProps({
       modelId: "",

@@ -2333,9 +2333,9 @@ export function AgentChatComposer({
   };
 
   const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    setDragActive(false);
     if (!canAttach || (!event.dataTransfer.files.length && !addImageUrlFromTransfer(event.dataTransfer))) return;
     event.preventDefault();
-    setDragActive(false);
     if (event.dataTransfer.files.length) {
       void addFileAttachments(event.dataTransfer.files);
     }
