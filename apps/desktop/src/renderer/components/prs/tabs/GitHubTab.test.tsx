@@ -441,6 +441,70 @@ describe("GitHubTab", () => {
     });
   });
 
+  it("does not let a superseded open-only snapshot overwrite loaded closed history", async () => {
+    const user = userEvent.setup();
+    const openOnlySnapshot: GitHubPrSnapshot = {
+      ...snapshot,
+      repoPullRequests: [makeGitHubPr()],
+      externalPullRequests: [],
+    };
+    const fullHistorySnapshot: GitHubPrSnapshot = {
+      ...snapshot,
+      repoPullRequests: [
+        makeGitHubPr(),
+        makeGitHubPr({
+          id: "repo-merged",
+          githubPrNumber: 102,
+          title: "Merged PR",
+          state: "merged",
+          linkedPrId: "pr-merged",
+          linkedLaneId: "lane-merged",
+        }),
+      ],
+    };
+    let resolveOpenOnly!: (snapshot: GitHubPrSnapshot) => void;
+    let resolveFullHistory!: (snapshot: GitHubPrSnapshot) => void;
+    const openOnlyRequest = new Promise<GitHubPrSnapshot>((resolve) => {
+      resolveOpenOnly = resolve;
+    });
+    const fullHistoryRequest = new Promise<GitHubPrSnapshot>((resolve) => {
+      resolveFullHistory = resolve;
+    });
+    const getGitHubSnapshot = window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>;
+    getGitHubSnapshot.mockReset();
+    getGitHubSnapshot
+      .mockResolvedValueOnce(openOnlySnapshot)
+      .mockReturnValueOnce(openOnlyRequest)
+      .mockReturnValueOnce(fullHistoryRequest);
+
+    renderTab();
+
+    await waitFor(() => {
+      expect(getGitHubSnapshot).toHaveBeenCalledWith({ force: false });
+    });
+    await screen.findByText("Open PR");
+
+    await user.click(screen.getByRole("button", { name: /^sync$/i }));
+    await waitFor(() => {
+      expect(getGitHubSnapshot).toHaveBeenCalledWith({ force: true });
+    });
+    await user.click(screen.getByRole("button", { name: /^merged/i }));
+    await waitFor(() => {
+      expect(getGitHubSnapshot).toHaveBeenCalledWith({
+        force: false,
+        includeExternalClosed: true,
+      });
+    });
+
+    resolveFullHistory(fullHistorySnapshot);
+    await screen.findByText("Merged PR");
+
+    resolveOpenOnly(openOnlySnapshot);
+    await waitFor(() => {
+      expect(screen.getByText("Merged PR")).toBeTruthy();
+    });
+  });
+
   it("filters by ADE scope showing only linked PRs", async () => {
     const snapshotWithUnlinked: GitHubPrSnapshot = {
       ...snapshot,

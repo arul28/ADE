@@ -633,9 +633,10 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
         /* fall back to single-context hydration below */
       }
     }
-    if (Object.keys(contexts).length === 0) {
+    const missingPrIds = uniquePrIds.filter((prId) => contexts[prId] == null);
+    if (missingPrIds.length > 0) {
       await Promise.all(
-        uniquePrIds.map(async (prId) => {
+        missingPrIds.map(async (prId) => {
           try {
             const ctx = await window.ade.prs.getMergeContext(prId);
             contexts[prId] = ctx;

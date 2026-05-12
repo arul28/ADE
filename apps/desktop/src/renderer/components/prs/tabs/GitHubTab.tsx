@@ -481,8 +481,9 @@ export function GitHubTab({
     })
       .then((next) => {
         if (projectRootRef.current !== requestProjectRoot) return next;
+        if (inFlightSnapshotRef.current?.request !== pending) return next;
         setSnapshot(next);
-        setExternalHistoryLoaded(includeExternalClosed);
+        setExternalHistoryLoaded((prev) => prev || includeExternalClosed);
         lastSnapshotLoadedAtRef.current = Date.now();
         if (next.viewerLogin) {
           setContextViewerLogin?.(next.viewerLogin);

@@ -76,6 +76,16 @@ function DetailHarness() {
   );
 }
 
+function MergeContextHarness() {
+  const { loading, mergeContextByPrId } = usePrs();
+  return (
+    <div>
+      <div data-testid="loading">{loading ? "loading" : "idle"}</div>
+      <div data-testid="contexts">{Object.keys(mergeContextByPrId).sort().join(",")}</div>
+    </div>
+  );
+}
+
 describe("PrsContext refresh", () => {
   beforeEach(() => {
     window.history.replaceState(null, "", "/");
@@ -299,6 +309,48 @@ describe("PrsContext refresh", () => {
       expect(screen.getByTestId("comments-count").textContent).toBe("0");
       expect(screen.getByTestId("status").textContent).toBe("");
     });
+  });
+
+  it("falls back to single merge-context hydration for IDs missing from a batch response", async () => {
+    vi.mocked(window.ade.prs.listWithConflicts).mockResolvedValue([makeFakePr("pr-1"), makeFakePr("pr-2")]);
+    Object.assign(window.ade.prs, {
+      getMergeContexts: vi.fn(async () => ({
+        "pr-1": {
+          prId: "pr-1",
+          groupId: null,
+          groupType: null,
+          sourceLaneIds: ["lane-pr-1"],
+          targetLaneId: null,
+          integrationLaneId: null,
+          members: [],
+        },
+      })),
+      getMergeContext: vi.fn(async (prId: string) => ({
+        prId,
+        groupId: null,
+        groupType: null,
+        sourceLaneIds: [`lane-${prId}`],
+        targetLaneId: null,
+        integrationLaneId: null,
+        members: [],
+      })),
+    });
+
+    render(
+      <PrsProvider>
+        <MergeContextHarness />
+      </PrsProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("loading").textContent).toBe("idle");
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("contexts").textContent).toBe("pr-1,pr-2");
+    });
+    expect(window.ade.prs.getMergeContexts).toHaveBeenCalledWith(["pr-1", "pr-2"]);
+    expect(window.ade.prs.getMergeContext).toHaveBeenCalledTimes(1);
+    expect(window.ade.prs.getMergeContext).toHaveBeenCalledWith("pr-2");
   });
 
   it("hydrates the Rebase/Merge workflow selection from the initial hash route", async () => {
