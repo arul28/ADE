@@ -313,6 +313,88 @@ describe("PrsContext refresh", () => {
     });
   });
 
+  it("clears stale selected PR detail when snapshot cache misses and live detail is pending", async () => {
+    const user = userEvent.setup();
+    vi.mocked(window.ade.prs.listWithConflicts).mockResolvedValue([makeFakePr("pr-1"), makeFakePr("pr-2")]);
+    Object.assign(window.ade.prs, {
+      listSnapshots: vi.fn(async ({ prId }: { prId: string }) => prId === "pr-1"
+        ? [
+            {
+              prId,
+              detail: null,
+              status: { state: "success" },
+              checks: [
+                {
+                  name: "ci",
+                  status: "completed",
+                  conclusion: "success",
+                  detailsUrl: null,
+                  startedAt: null,
+                  completedAt: null,
+                },
+              ],
+              reviews: [
+                {
+                  reviewer: "octocat",
+                  reviewerAvatarUrl: null,
+                  state: "approved",
+                  body: null,
+                  submittedAt: null,
+                },
+              ],
+              comments: [
+                {
+                  id: "comment-1",
+                  author: "octocat",
+                  authorAvatarUrl: null,
+                  body: "looks good",
+                  source: "issue",
+                  url: null,
+                  path: null,
+                  line: null,
+                  createdAt: null,
+                },
+              ],
+              files: [],
+              commits: [],
+              updatedAt: "2026-03-24T12:00:00.000Z",
+            },
+          ]
+        : []),
+      getStatus: vi.fn((_prId: string) => new Promise(() => {})),
+      getChecks: vi.fn((_prId: string) => new Promise(() => {})),
+      getReviews: vi.fn((_prId: string) => new Promise(() => {})),
+      getComments: vi.fn((_prId: string) => new Promise(() => {})),
+    });
+
+    render(
+      <PrsProvider>
+        <DetailHarness />
+      </PrsProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("loading").textContent).toBe("idle");
+    });
+
+    await user.click(screen.getByRole("button", { name: "select pr-1" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("checks-count").textContent).toBe("1");
+      expect(screen.getByTestId("reviews-count").textContent).toBe("1");
+      expect(screen.getByTestId("comments-count").textContent).toBe("1");
+      expect(screen.getByTestId("status").textContent).toBe("success");
+    });
+
+    await user.click(screen.getByRole("button", { name: "select pr-2" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("selected-pr-id").textContent).toBe("pr-2");
+      expect(screen.getByTestId("checks-count").textContent).toBe("0");
+      expect(screen.getByTestId("reviews-count").textContent).toBe("0");
+      expect(screen.getByTestId("comments-count").textContent).toBe("0");
+      expect(screen.getByTestId("status").textContent).toBe("");
+    });
+  });
+
   it("keeps detail busy while snapshot prefill waits for live detail", async () => {
     const user = userEvent.setup();
     vi.mocked(window.ade.prs.listWithConflicts).mockResolvedValue([makeFakePr("pr-1")]);

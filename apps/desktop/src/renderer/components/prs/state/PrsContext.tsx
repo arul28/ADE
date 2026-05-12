@@ -618,6 +618,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
   const selectedPrIdRef = React.useRef<string | null>(initialRouteState.selectedPrId);
   React.useEffect(() => { selectedPrIdRef.current = selectedPrId; }, [selectedPrId]);
   const detailFetchInProgress = React.useRef(false);
+  const detailStatePrIdRef = React.useRef<string | null>(warmCache?.selectedPrId ?? null);
   const detailLoadedAtByPrIdRef = React.useRef<Record<string, number>>(
     warmCache?.selectedPrId ? { [warmCache.selectedPrId]: warmCache.cachedAt } : {},
   );
@@ -852,6 +853,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
         }
 
         // Apply successful results; keep previous value for any that failed
+        detailStatePrIdRef.current = prId;
         if (statusResult.status === "fulfilled") {
           setDetailStatus((prev) => (jsonEqual(prev, statusResult.value) ? prev : statusResult.value));
         } else {
@@ -888,6 +890,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     rateLimitedUntilRef.current = 0;
 
     if (!selectedPrId) {
+      detailStatePrIdRef.current = null;
       setDetailStatus(null);
       setDetailChecks([]);
       setDetailReviews([]);
@@ -904,10 +907,14 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     // URL-derived selections are not cleared before the first refresh completes.
     if (!initialLoadDone.current) return;
     if (!prsRef.current.some((p) => p.id === selectedPrId)) {
+      detailStatePrIdRef.current = null;
       setDetailStatus(null);
       setDetailChecks([]);
       setDetailReviews([]);
       setDetailComments([]);
+      setDetailReviewThreads([]);
+      setDetailDeployments([]);
+      setDetailAiSummary(null);
       setSelectedPrId(null);
       return;
     }
@@ -915,22 +922,34 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     let cancelled = false;
     let liveDetailApplied = false;
     const prId = selectedPrId;
+    const cachedDetailAgeMs = Date.now() - (detailLoadedAtByPrIdRef.current[prId] ?? 0);
+    const hasFreshDetailCache =
+      cachedDetailAgeMs >= 0
+      && cachedDetailAgeMs < PRS_DETAIL_CACHE_TTL_MS
+      && detailStatePrIdRef.current === prId
+      && detailCacheHasDataRef.current;
+    if (!hasFreshDetailCache) {
+      detailStatePrIdRef.current = null;
+      setDetailStatus(null);
+      setDetailChecks([]);
+      setDetailReviews([]);
+      setDetailComments([]);
+      setDetailReviewThreads([]);
+      setDetailDeployments([]);
+      setDetailAiSummary(null);
+    }
     if (typeof window.ade.prs.listSnapshots === "function") {
       void window.ade.prs.listSnapshots({ prId }).then((snapshots) => {
         if (cancelled || selectedPrIdRef.current !== prId || liveDetailApplied) return;
         const snapshot = snapshots[0];
         if (!snapshot) return;
+        detailStatePrIdRef.current = prId;
         setDetailStatus(snapshot.status);
         setDetailChecks(snapshot.checks);
         setDetailReviews(snapshot.reviews);
         setDetailComments(snapshot.comments);
       }).catch(() => {});
     }
-    const cachedDetailAgeMs = Date.now() - (detailLoadedAtByPrIdRef.current[prId] ?? 0);
-    const hasFreshDetailCache =
-      cachedDetailAgeMs >= 0
-      && cachedDetailAgeMs < PRS_DETAIL_CACHE_TTL_MS
-      && detailCacheHasDataRef.current;
     if (hasFreshDetailCache) {
       setDetailBusy(false);
       const intervalId = window.setInterval(() => {
@@ -964,15 +983,20 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
               rateLimitedUntilRef.current = Date.now() + 5 * 60_000;
               console.warn("[PrsContext] GitHub rate limit hit — pausing detail polling for 5 min");
               // Clear stale data on rate limit
+              detailStatePrIdRef.current = null;
               setDetailStatus(null);
               setDetailChecks([]);
               setDetailReviews([]);
               setDetailComments([]);
+              setDetailReviewThreads([]);
+              setDetailDeployments([]);
+              setDetailAiSummary(null);
               return;
             }
           }
         }
 
+        detailStatePrIdRef.current = prId;
         if (statusResult.status === "fulfilled") {
           setDetailStatus(statusResult.value ?? null);
         } else {

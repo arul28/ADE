@@ -462,10 +462,10 @@ describe("GitHubTab", () => {
         }),
       ],
     };
-    let resolveOpenOnly!: (snapshot: GitHubPrSnapshot) => void;
+    let rejectOpenOnly!: (error: Error) => void;
     let resolveFullHistory!: (snapshot: GitHubPrSnapshot) => void;
-    const openOnlyRequest = new Promise<GitHubPrSnapshot>((resolve) => {
-      resolveOpenOnly = resolve;
+    const openOnlyRequest = new Promise<GitHubPrSnapshot>((_resolve, reject) => {
+      rejectOpenOnly = reject;
     });
     const fullHistoryRequest = new Promise<GitHubPrSnapshot>((resolve) => {
       resolveFullHistory = resolve;
@@ -499,9 +499,22 @@ describe("GitHubTab", () => {
     resolveFullHistory(fullHistorySnapshot);
     await screen.findByText("Merged PR");
 
-    resolveOpenOnly(openOnlySnapshot);
+    rejectOpenOnly(new Error("stale open-only failed"));
     await waitFor(() => {
       expect(screen.getByText("Merged PR")).toBeTruthy();
+      expect(screen.queryByText("stale open-only failed")).toBeNull();
+    });
+
+    getGitHubSnapshot.mockClear();
+    getGitHubSnapshot.mockResolvedValue(fullHistorySnapshot);
+    await user.click(screen.getByRole("button", { name: /^open/i }));
+    await user.click(screen.getByRole("button", { name: /^sync$/i }));
+
+    await waitFor(() => {
+      expect(getGitHubSnapshot).toHaveBeenCalledWith({
+        force: true,
+        includeExternalClosed: true,
+      });
     });
   });
 

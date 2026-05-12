@@ -475,13 +475,16 @@ export function GitHubTab({
     setError(null);
     const requestProjectRoot = projectRootRef.current;
     let pending!: Promise<GitHubPrSnapshot>;
+    const isCurrentSnapshotRequest = () =>
+      inFlightSnapshotRef.current?.request === pending
+      && inFlightSnapshotRef.current.includeExternalClosed === includeExternalClosed;
     pending = window.ade.prs.getGitHubSnapshot({
       force: options?.force === true,
       ...(includeExternalClosed ? { includeExternalClosed: true } : {}),
     })
       .then((next) => {
         if (projectRootRef.current !== requestProjectRoot) return next;
-        if (inFlightSnapshotRef.current?.request !== pending) return next;
+        if (!isCurrentSnapshotRequest()) return next;
         setSnapshot(next);
         setExternalHistoryLoaded((prev) => prev || includeExternalClosed);
         lastSnapshotLoadedAtRef.current = Date.now();
@@ -491,17 +494,17 @@ export function GitHubTab({
         return next;
       })
       .catch((err) => {
-        if (projectRootRef.current === requestProjectRoot) {
+        if (projectRootRef.current === requestProjectRoot && isCurrentSnapshotRequest()) {
           setError(err instanceof Error ? err.message : String(err));
         }
         return snapshotRef.current as GitHubPrSnapshot;
       })
       .finally(() => {
-        if (inFlightSnapshotRef.current?.request === pending) {
+        if (isCurrentSnapshotRequest()) {
           inFlightSnapshotRef.current = null;
-        }
-        if (!options?.silent && projectRootRef.current === requestProjectRoot) {
-          setLoading(false);
+          if (!options?.silent && projectRootRef.current === requestProjectRoot) {
+            setLoading(false);
+          }
         }
       });
     inFlightSnapshotRef.current = { request: pending, includeExternalClosed };
