@@ -2536,7 +2536,14 @@ function renderEvent(
     const inferredSeverity = event.severity
       ?? (event.noticeKind === "rate_limit" && /^Claude rate limit allowed warning/i.test(event.message) ? "warning" as const : undefined)
       ?? (event.noticeKind === "rate_limit" && /^Claude rate limit allowed/i.test(event.message) ? "info" as const : undefined)
-      ?? (event.noticeKind === "rate_limit" || event.noticeKind === "error" || event.noticeKind === "thread_error" ? "error" as const : undefined)
+      ?? (
+        event.noticeKind === "rate_limit"
+          || event.noticeKind === "error"
+          || event.noticeKind === "thread_error"
+          || event.noticeKind === "provider_health"
+          ? "error" as const
+          : undefined
+      )
       ?? (event.noticeKind === "warning" ? "warning" as const : "info" as const);
     const kindStyles: Record<string, { border: string; bg: string; text: string; icon: typeof Warning }> = {
       auth: { border: "border-amber-500/18", bg: "bg-amber-500/[0.06]", text: "text-amber-300", icon: Warning },

@@ -539,6 +539,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.getByText("thread error")).toBeTruthy();
     expect(screen.getByText("Claude is taking longer than usual")).toBeTruthy();
     expect(screen.getByText("Codex session is missing thread id")).toBeTruthy();
+    expect(screen.getAllByRole("button")).toHaveLength(2);
   });
 
   it("renders allowed rate-limit telemetry as a compact non-error notice", () => {

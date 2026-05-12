@@ -132,6 +132,24 @@ describe("discoverClaudePlugins", () => {
     ]));
   });
 
+  it("loads manually placed user plugins outside managed Claude plugin dirs", () => {
+    const pluginRoot = path.join(homeRoot, ".claude", "plugins", "personal-review-plugin");
+    fs.mkdirSync(path.join(pluginRoot, ".claude-plugin"), { recursive: true });
+    fs.writeFileSync(path.join(pluginRoot, ".claude-plugin", "plugin.json"), JSON.stringify({
+      name: "personal-review-plugin",
+      description: "Local user helper",
+    }));
+
+    expect(discoverClaudePlugins(tmpRoot)).toEqual([
+      {
+        name: "personal-review-plugin",
+        description: "Local user helper",
+        path: fs.realpathSync(pluginRoot),
+        source: "local",
+      },
+    ]);
+  });
+
   it("loads installed user plugins only when Claude settings enable them", () => {
     const enabledRoot = path.join(
       homeRoot,

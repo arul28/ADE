@@ -1441,7 +1441,7 @@ export function LanesPage() {
         }
       }
       if (errors.length > 0) {
-        setLaneActionError((current) => current ?? errors.join("\n"));
+        setLaneActionError(errors.join("\n"));
       }
     })();
   };

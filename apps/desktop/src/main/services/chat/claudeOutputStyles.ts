@@ -313,7 +313,6 @@ function discoverEnabledInstalledPluginPaths(cwd: string): string[] {
 
 export function discoverClaudePluginPaths(cwd: string): string[] {
   const roots = claudeRootsByPrecedence(cwd);
-  const homeClaudeRoot = path.resolve(os.homedir(), ".claude");
   const pluginPaths: string[] = [];
   const seen = new Set<string>();
   const addPluginPath = (pluginRoot: string): void => {
@@ -324,7 +323,6 @@ export function discoverClaudePluginPaths(cwd: string): string[] {
   };
 
   for (const root of roots) {
-    if (path.resolve(root) === homeClaudeRoot) continue;
     for (const pluginRoot of discoverPluginRoots(path.join(root, "plugins"))) {
       addPluginPath(pluginRoot);
     }
