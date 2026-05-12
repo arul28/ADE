@@ -769,7 +769,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     if (!currentProjectRoot) {
       setAiStatus(null);
       setAiStatusLoaded(false);
-      setGithubStatus(null);
       return;
     }
     setAiStatusLoaded(false);
@@ -785,6 +784,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         setAiStatusLoaded(true);
       });
     }, 1_000);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(aiTimer);
+    };
+  }, [currentProjectRoot]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!currentProjectRoot) {
+      setGithubStatus(null);
+      return;
+    }
     const githubTimer = window.setTimeout(() => {
       void window.ade.github.getStatus().then((status) => {
         if (cancelled) return;
@@ -796,7 +807,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     }, githubBannerDismissed ? GITHUB_STATUS_DISMISSED_BANNER_DELAY_MS : GITHUB_STATUS_STARTUP_DELAY_MS);
     return () => {
       cancelled = true;
-      window.clearTimeout(aiTimer);
       window.clearTimeout(githubTimer);
     };
   }, [currentProjectRoot, githubBannerDismissed]);

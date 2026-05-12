@@ -1401,14 +1401,6 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
       resetRemoteRuntimeEventDedup(null);
       return;
     }
-    if (binding.kind === "local" && localRuntimeDaemonDisabled) {
-      remoteRuntimeEventCursor = 0;
-      remoteRuntimeEventBindingKey = null;
-      remoteRuntimeEventGeneration = projectBindingGeneration;
-      remoteRuntimeEventStartedAtMs = 0;
-      resetRemoteRuntimeEventDedup(null);
-      return;
-    }
 
     if (
       remoteRuntimeEventBindingKey !== binding.key ||

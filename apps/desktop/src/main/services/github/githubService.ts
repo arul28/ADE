@@ -95,7 +95,7 @@ function resolveGitDir(projectRoot: string): string | null {
     const raw = fs.readFileSync(gitPath, "utf8");
     const match = raw.match(/^gitdir:\s*(.+)\s*$/im);
     if (!match?.[1]) return null;
-    return path.resolve(projectRoot, match[1]);
+    return path.resolve(projectRoot, match[1].trim());
   } catch {
     return null;
   }
@@ -537,6 +537,8 @@ export function createGithubService({
       const validated = await validateToken(token);
       let repoAccessOk: boolean | null = null;
       let repoAccessError: string | null = null;
+      // Classic PATs expose scopes in the /user response, so scope validation is
+      // enough. Fine-grained tokens do not expose selected repos and need a repo probe.
       if (repo && validated.tokenType === "fine-grained") {
         const probe = await probeRepoAccess(token, repo);
         repoAccessOk = probe.ok;
