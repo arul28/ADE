@@ -551,6 +551,47 @@ describe("TopBar", () => {
     });
   });
 
+  it("reveals Linear quick view after a later connection refresh", async () => {
+    const disconnected = {
+      tokenStored: true,
+      connected: false,
+      viewerId: null,
+      viewerName: null,
+      checkedAt: "2026-04-22T01:00:00.000Z",
+      authMode: "manual",
+      oauthAvailable: true,
+      tokenExpiresAt: null,
+      message: "Linear connection check is still starting.",
+    };
+    const connected = {
+      ...disconnected,
+      connected: true,
+      viewerId: "user-1",
+      viewerName: "Arul",
+      message: null,
+    };
+    const getLinearConnectionStatus = vi.fn()
+      .mockResolvedValueOnce(disconnected)
+      .mockResolvedValueOnce(connected);
+    globalThis.window.ade.cto = {
+      getLinearConnectionStatus,
+    } as any;
+
+    render(<TopBar />);
+
+    await waitFor(() => {
+      expect(getLinearConnectionStatus).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.queryByRole("button", { name: /linear quick view/i })).toBeNull();
+
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      await Promise.resolve();
+    });
+
+    expect(await screen.findByRole("button", { name: /linear quick view/i })).toBeTruthy();
+  });
+
   it("shows project icon replacement errors", async () => {
     globalThis.window.ade.project.chooseIcon = vi.fn(async () => {
       throw new Error("Failed to set project icon: Project icon must be 10 MB or smaller.");

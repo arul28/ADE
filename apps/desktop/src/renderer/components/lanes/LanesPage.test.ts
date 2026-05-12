@@ -1,12 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
+  githubPrMatchesCurrentBranch,
   lanePrMatchesCurrentBranch,
   resolveLaneDeleteStartSelection,
   resolveCreateLaneRequest,
   resolveLaneIdsDeepLinkSelection,
+  selectGithubLanePrTag,
+  selectLaneTabPrTag,
   selectLanePrTag,
-} from "./LanesPage";
-import type { LaneSummary, PrSummary } from "../../../shared/types";
+  sortLaneListRows,
+} from "./lanePageModel";
+import type { GitHubPrListItem, LaneSummary, PrSummary } from "../../../shared/types";
 
 type LanePrTarget = Pick<LaneSummary, "id" | "laneType" | "branchRef" | "baseRef">;
 
@@ -41,6 +45,36 @@ function makePr(overrides: Partial<PrSummary> = {}): PrSummary {
     lastSyncedAt: null,
     createdAt: "2026-05-01T00:00:00.000Z",
     updatedAt: "2026-05-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function makeGitHubPr(overrides: Partial<GitHubPrListItem> = {}): GitHubPrListItem {
+  return {
+    id: "repo-pr-224",
+    scope: "repo",
+    repoOwner: "arul28",
+    repoName: "ADE",
+    githubPrNumber: 224,
+    githubUrl: "https://github.com/arul28/ADE/pull/224",
+    title: "Show merged PR state",
+    state: "open",
+    isDraft: false,
+    baseBranch: "main",
+    headBranch: "origin/ade/pr-state",
+    author: "arul",
+    createdAt: "2026-05-01T00:00:00.000Z",
+    updatedAt: "2026-05-01T00:00:00.000Z",
+    linkedPrId: null,
+    linkedGroupId: null,
+    linkedLaneId: null,
+    linkedLaneName: null,
+    adeKind: null,
+    workflowDisplayState: null,
+    cleanupState: null,
+    labels: [],
+    isBot: false,
+    commentCount: 0,
     ...overrides,
   };
 }
@@ -233,5 +267,121 @@ describe("selectLanePrTag", () => {
         }),
       ),
     ).toBe(false);
+  });
+});
+
+describe("selectLaneTabPrTag", () => {
+  it("falls back to repo GitHub PRs by lane branch when no ADE PR row is mapped", () => {
+    const githubPr = makeGitHubPr({
+      state: "merged",
+      linkedPrId: null,
+      headBranch: "ade/pr-state",
+    });
+
+    expect(githubPrMatchesCurrentBranch(makeLane(), githubPr)).toBe(true);
+    expect(selectGithubLanePrTag(makeLane(), [githubPr])).toBe(githubPr);
+    expect(selectLaneTabPrTag(makeLane(), [], [githubPr])).toMatchObject({
+      source: "github",
+      linkedPrId: null,
+      githubPrNumber: 224,
+      state: "merged",
+    });
+  });
+
+  it("prefers an ADE-mapped PR over an unlinked GitHub branch match", () => {
+    const mappedPr = makePr({ id: "mapped-pr", state: "closed" });
+    const githubPr = makeGitHubPr({ id: "github-pr", state: "open" });
+
+    expect(selectLaneTabPrTag(makeLane(), [mappedPr], [githubPr])).toMatchObject({
+      source: "ade",
+      id: "mapped-pr",
+      linkedPrId: "mapped-pr",
+      state: "closed",
+    });
+  });
+
+  it("labels GitHub-only draft PRs as draft lane tags", () => {
+    expect(selectLaneTabPrTag(makeLane(), [], [
+      makeGitHubPr({
+        state: "open",
+        isDraft: true,
+      }),
+    ])).toMatchObject({
+      source: "github",
+      state: "draft",
+    });
+  });
+
+  it("does not route a branch-matched GitHub PR through a stale linked lane", () => {
+    const githubPr = makeGitHubPr({
+      linkedPrId: "other-pr",
+      linkedLaneId: "other-lane",
+    });
+
+    expect(selectLaneTabPrTag(makeLane(), [], [githubPr])).toMatchObject({
+      source: "github",
+      linkedPrId: null,
+      githubUrl: "https://github.com/arul28/ADE/pull/224",
+    });
+  });
+
+  it("does not match repo GitHub PRs for primary while primary is on its base branch", () => {
+    expect(
+      githubPrMatchesCurrentBranch(
+        makeLane({
+          laneType: "primary",
+          branchRef: "main",
+          baseRef: "main",
+        }),
+        makeGitHubPr({ headBranch: "main" }),
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("sortLaneListRows", () => {
+  it("keeps primary first and promotes pinned lanes before runtime buckets", () => {
+    const lanes = [
+      { id: "primary", laneType: "primary" },
+      { id: "running", laneType: "worktree" },
+      { id: "pinned-ended", laneType: "worktree" },
+      { id: "idle", laneType: "worktree" },
+    ] as const;
+
+    const result = sortLaneListRows({
+      lanes: [...lanes],
+      laneRuntimeById: new Map([
+        ["running", { bucket: "running" }],
+        ["pinned-ended", { bucket: "ended" }],
+        ["idle", { bucket: "none" }],
+      ]),
+      laneStatusFilter: "all",
+      laneOrderById: new Map(lanes.map((lane, index) => [lane.id, index])),
+      pinnedLaneIds: new Set(["pinned-ended"]),
+    });
+
+    expect(result.map((lane) => lane.id)).toEqual(["primary", "pinned-ended", "running", "idle"]);
+  });
+
+  it("keeps pinned ordering after applying a status filter", () => {
+    const lanes = [
+      { id: "running-a", laneType: "worktree" },
+      { id: "running-pinned", laneType: "worktree" },
+      { id: "ended", laneType: "worktree" },
+    ] as const;
+
+    const result = sortLaneListRows({
+      lanes: [...lanes],
+      laneRuntimeById: new Map([
+        ["running-a", { bucket: "running" }],
+        ["running-pinned", { bucket: "running" }],
+        ["ended", { bucket: "ended" }],
+      ]),
+      laneStatusFilter: "running",
+      laneOrderById: new Map(lanes.map((lane, index) => [lane.id, index])),
+      pinnedLaneIds: new Set(["running-pinned"]),
+    });
+
+    expect(result.map((lane) => lane.id)).toEqual(["running-pinned", "running-a"]);
   });
 });

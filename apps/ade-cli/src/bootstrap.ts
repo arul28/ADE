@@ -68,8 +68,8 @@ import type { createSyncHostService, SyncRuntimeKind } from "./services/sync/syn
 import type { createAutomationIngressService } from "../../desktop/src/main/services/automations/automationIngressService";
 import type { createGithubService } from "../../desktop/src/main/services/github/githubService";
 import { createFeedbackReporterService } from "../../desktop/src/main/services/feedback/feedbackReporterService";
-import type { createUsageTrackingService } from "../../desktop/src/main/services/usage/usageTrackingService";
-import type { createBudgetCapService } from "../../desktop/src/main/services/usage/budgetCapService";
+import { createUsageTrackingService } from "../../desktop/src/main/services/usage/usageTrackingService";
+import { createBudgetCapService } from "../../desktop/src/main/services/usage/budgetCapService";
 import { createSessionDeltaService } from "../../desktop/src/main/services/sessions/sessionDeltaService";
 import { createReviewService } from "../../desktop/src/main/services/review/reviewService";
 import type { createAutoUpdateService } from "../../desktop/src/main/services/updates/autoUpdateService";
@@ -976,6 +976,23 @@ export async function createAdeRuntime(args: {
     laneService,
     automationService,
   });
+  const usageTrackingService = createUsageTrackingService({
+    logger,
+    pollIntervalMs: 120_000,
+    onUpdate: (snapshot) => pushEvent("runtime", { type: "usage", snapshot }),
+  });
+  const budgetCapService = createBudgetCapService({
+    db,
+    logger,
+    projectConfigService,
+    usageTrackingService,
+  });
+  automationService.bindMissionRuntime({
+    missionService,
+    aiOrchestratorService,
+    budgetCapService,
+    workerHeartbeatService: headlessLinearServices.workerHeartbeatService,
+  });
 
   let syncService: ReturnType<typeof createSyncService> | null = null;
   if (resolvedArgs.syncRuntime?.enabled && agentChatService) {
@@ -1097,6 +1114,8 @@ export async function createAdeRuntime(args: {
     linearRoutingService: headlessLinearServices.linearRoutingService,
     processService,
     feedbackReporterService,
+    usageTrackingService,
+    budgetCapService,
     automationService,
     automationPlannerService,
     computerUseArtifactBrokerService,
@@ -1110,6 +1129,7 @@ export async function createAdeRuntime(args: {
       const swallow = (fn: () => void) => { try { fn(); } catch { /* ignore */ } };
       void configReloadService.dispose().catch(() => {});
       swallow(() => automationService.dispose());
+      swallow(() => usageTrackingService.dispose());
       swallow(() => syncService?.dispose());
       swallow(() => pathToMergeOrchestrator.dispose());
       swallow(() => processService.disposeAll());
