@@ -2,7 +2,7 @@
 
 import React from "react";
 import { MemoryRouter } from "react-router-dom";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -271,6 +271,10 @@ function renderPane(args: {
     items: IssueInventoryItem[];
     convergence: { currentRound: number; maxRounds: number; totalNew: number; totalSentToAgent: number; isConverging: boolean };
   };
+  listSnapshots?: ReturnType<typeof vi.fn>;
+  getDetail?: ReturnType<typeof vi.fn>;
+  getFiles?: ReturnType<typeof vi.fn>;
+  getCommits?: ReturnType<typeof vi.fn>;
 }) {
   const laneList = args.lanes ?? [makeLane({
     status: {
@@ -413,7 +417,8 @@ function renderPane(args: {
   Object.assign(window, {
     ade: {
       prs: {
-        getDetail: vi.fn().mockResolvedValue({
+        listSnapshots: args.listSnapshots,
+        getDetail: args.getDetail ?? vi.fn().mockResolvedValue({
           prId: "pr-80",
           body: "This PR improves GitHub PR flows.",
           labels: [],
@@ -424,7 +429,8 @@ function renderPane(args: {
           milestone: null,
           linkedIssues: [],
         }),
-        getFiles: vi.fn().mockResolvedValue([]),
+        getFiles: args.getFiles ?? vi.fn().mockResolvedValue([]),
+        getCommits: args.getCommits,
         getActionRuns,
         getActivity: vi.fn().mockResolvedValue(args.activity ?? []),
         getReviewThreads,
@@ -700,6 +706,80 @@ describe("PrDetailPane issue resolver CTA", () => {
       expect(getActionRuns).toHaveBeenCalledTimes(2);
       expect(screen.getByText("0 passing, 1 pending")).toBeTruthy();
       expect(screen.getByText("Path Filtered CI on PR / build")).toBeTruthy();
+    });
+  });
+
+  it("does not reapply stale snapshot detail during same-PR status refreshes", async () => {
+    const freshDetail = {
+      prId: "pr-80",
+      body: "Fresh live body",
+      labels: [{ name: "fresh-label", color: "22c55e", description: null }],
+      assignees: [],
+      requestedReviewers: [],
+      author: { login: "octocat", avatarUrl: null },
+      isDraft: false,
+      milestone: null,
+      linkedIssues: [],
+    };
+    const staleDetail = {
+      ...freshDetail,
+      body: "Stale cached body",
+      labels: [{ name: "stale-label", color: "ef4444", description: null }],
+    };
+    let resolveSecondDetail!: (value: typeof freshDetail) => void;
+    const secondDetail = new Promise<typeof freshDetail>((resolve) => {
+      resolveSecondDetail = resolve;
+    });
+    const getDetail = vi.fn()
+      .mockResolvedValueOnce(freshDetail)
+      .mockReturnValueOnce(secondDetail);
+    const listSnapshots = vi.fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{
+        prId: "pr-80",
+        detail: staleDetail,
+        status: null,
+        checks: [],
+        reviews: [],
+        comments: [],
+        files: [],
+        commits: [],
+        updatedAt: "2026-03-23T12:01:00.000Z",
+      }]);
+    const { rerenderPane } = renderPane({
+      checks: [],
+      reviewThreads: [],
+      getDetail,
+      listSnapshots,
+      prOverrides: {
+        checksStatus: "none",
+        updatedAt: "2026-03-23T12:00:00.000Z",
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("fresh-label")).toBeTruthy();
+    });
+
+    rerenderPane({
+      checksStatus: "pending",
+      updatedAt: "2026-03-23T12:01:00.000Z",
+    });
+
+    await waitFor(() => {
+      expect(getDetail).toHaveBeenCalledTimes(2);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(listSnapshots).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("fresh-label")).toBeTruthy();
+    expect(screen.queryByText("stale-label")).toBeNull();
+
+    await act(async () => {
+      resolveSecondDetail(freshDetail);
+      await secondDetail;
     });
   });
 

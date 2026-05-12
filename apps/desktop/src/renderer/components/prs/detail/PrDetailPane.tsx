@@ -744,10 +744,10 @@ export function PrDetailPane({
   const detailStatusRefreshKeyRef = React.useRef<string | null>(null);
   const inventoryLoadSeqRef = React.useRef(0);
 
-  const loadDetail = React.useCallback(async () => {
+  const loadDetail = React.useCallback(async (options: { hydrateSnapshot?: boolean } = {}) => {
     const requestId = ++detailLoadSeqRef.current;
     try {
-      if (typeof window.ade.prs.listSnapshots === "function") {
+      if (options.hydrateSnapshot && typeof window.ade.prs.listSnapshots === "function") {
         const cachedSnapshot = (await window.ade.prs.listSnapshots({ prId: pr.id }).catch(() => []))[0];
         if (cachedSnapshot && requestId === detailLoadSeqRef.current) {
           if (cachedSnapshot.detail) setDetail(cachedSnapshot.detail);
@@ -828,7 +828,7 @@ export function PrDetailPane({
         }
       });
 
-    void loadDetail();
+    void loadDetail({ hydrateSnapshot: true });
     return () => {
       detailLoadSeqRef.current += 1;
       inventoryLoadSeqRef.current += 1;

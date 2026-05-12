@@ -5081,7 +5081,10 @@ export function createPrService({
       let inFlight!: { request: Promise<GitHubPrSnapshot>; includeExternalClosed: boolean };
       const request = getGithubSnapshotUncached({ includeExternalClosed: requestIncludeExternalClosed })
         .then((snapshot) => {
-          if (githubSnapshotInFlight === inFlight) {
+          const canPublishSnapshot =
+            githubSnapshotInFlight === inFlight
+            || (!requestIncludeExternalClosed && !cachedGithubSnapshotIncludesExternalClosed);
+          if (canPublishSnapshot) {
             cachedGithubSnapshot = snapshot;
             cachedGithubSnapshotAt = Date.now();
             cachedGithubSnapshotIncludesExternalClosed = requestIncludeExternalClosed;

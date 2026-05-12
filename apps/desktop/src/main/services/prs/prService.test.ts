@@ -492,6 +492,59 @@ describe("prService.getGithubSnapshot", () => {
     expect(repoCalls).toBe(2);
   });
 
+  it("keeps a superseded open-only snapshot cached when a full-history upgrade fails", async () => {
+    let resolveOpenRepo!: (value: unknown) => void;
+    const openRepoRequest = new Promise<unknown>((resolve) => {
+      resolveOpenRepo = resolve;
+    });
+    let repoCalls = 0;
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => ({
+        tokenStored: true,
+        repo: REPO,
+        userLogin: "octocat",
+      })),
+      apiRequest: vi.fn(async (args: { path: string; query?: { q?: string } }) => {
+        if (args.path === `/repos/${REPO.owner}/${REPO.name}/pulls`) {
+          repoCalls += 1;
+          if (repoCalls === 1) return openRepoRequest;
+          throw new Error("full history failed");
+        }
+        return {
+          data: {
+            items: [
+              makeGitHubPull({
+                number: 3,
+                title: args.query?.q?.includes("is:open") ? "Open external" : "Closed external",
+                pull_request: { url: "https://api.github.com/repos/elsewhere/project/pulls/3" },
+                repository_url: "https://api.github.com/repos/elsewhere/project",
+              }),
+            ],
+          },
+        };
+      }),
+    });
+    const { service } = buildService({ githubService, laneService: makeLaneService([]) });
+
+    const openOnly = service.getGithubSnapshot();
+    await flushMicrotasks();
+
+    await expect(service.getGithubSnapshot({ includeExternalClosed: true })).rejects.toThrow("full history failed");
+
+    resolveOpenRepo({ data: [makeGitHubPull({ number: 1, title: "Open-only PR" })] });
+    await expect(openOnly).resolves.toEqual(expect.objectContaining({
+      repoPullRequests: [expect.objectContaining({ title: "Open-only PR" })],
+      externalPullRequests: [expect.objectContaining({ title: "Open external" })],
+    }));
+
+    const apiCallsAfterOpenOnly = githubService.apiRequest.mock.calls.length;
+    const cachedOpenOnly = await service.getGithubSnapshot();
+    expect(cachedOpenOnly.repoPullRequests[0]?.title).toBe("Open-only PR");
+    expect(cachedOpenOnly.externalPullRequests[0]?.title).toBe("Open external");
+    expect(githubService.apiRequest).toHaveBeenCalledTimes(apiCallsAfterOpenOnly);
+    expect(repoCalls).toBe(2);
+  });
+
   it("preserves full-history cache mode during stale open-only revalidation", async () => {
     const initialNow = Date.parse("2026-01-01T00:00:00Z");
     const nowSpy = vi.spyOn(Date, "now").mockReturnValue(initialNow);
