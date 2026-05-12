@@ -189,6 +189,10 @@ describe("TopBar", () => {
           repoAccessError: null,
           connected: false,
         })),
+        getRemoteStatus: vi.fn(async () => ({
+          repo: { owner: "acme", name: "ade" },
+          hasOrigin: true,
+        })),
         onStatusChanged: vi.fn(() => () => {}),
       },
       zoom: {
@@ -299,6 +303,17 @@ describe("TopBar", () => {
     fireEvent.click(await screen.findByTitle("New window"));
 
     expect(globalThis.window.ade.app.newWindow).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not load full GitHub auth status for the publish pill", async () => {
+    useAppStore.setState({ projectHydrated: true, showWelcome: false } as any);
+
+    render(<TopBar />);
+
+    await waitFor(() => {
+      expect(globalThis.window.ade.github.getRemoteStatus).toHaveBeenCalled();
+    });
+    expect(globalThis.window.ade.github.getStatus).not.toHaveBeenCalled();
   });
 
   it("consolidates a cross-window project tab dropped onto the same project", async () => {

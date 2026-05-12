@@ -290,6 +290,7 @@ import type {
   GitStashSummary,
   GitUpstreamSyncStatus,
   GitSyncArgs,
+  GitHubRepoRef,
   GitHubStatus,
   CreatePrFromLaneArgs,
   CreateQueuePrsArgs,
@@ -1907,6 +1908,9 @@ declare global {
       };
       github: {
         getStatus: (opts?: { forceRefresh?: boolean }) => Promise<GitHubStatus>;
+        getRemoteStatus: (opts?: {
+          forceRefresh?: boolean;
+        }) => Promise<{ repo: GitHubRepoRef | null; hasOrigin: boolean }>;
         setToken: (token: string) => Promise<GitHubStatus>;
         clearToken: () => Promise<GitHubStatus>;
         detectRepo: () => Promise<{ owner: string; name: string } | null>;

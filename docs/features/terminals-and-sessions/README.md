@@ -140,6 +140,9 @@ Renderer surfaces:
   `AgentChatPane` listens to. Non-chat sessions disable attachment with
   a banner; lane mismatches between the Work lane and an existing App
   Control / iOS Simulator session also disable attachment with a warning.
+  The tab strip must stay reachable when the Work pane is narrow:
+  labels collapse to accessible icon buttons while preserving stable
+  hit targets and tooltips.
 - `apps/desktop/src/renderer/components/terminals/MacosVmPanel.tsx` —
   Work sidebar panel for the active lane's macOS VM. It shows provider
   readiness, provisioning/start/stop/delete controls, sanitized share
@@ -149,7 +152,9 @@ Renderer surfaces:
   sidebar list with three organization modes (lane / status / time),
   sticky group headers, search/filter. Renders a bulk action bar at the
   bottom when sessions are multi-selected (Close N running / Delete N
-  ended / clear selection).
+  ended / clear selection). The filter panel is width-constrained by
+  the surrounding Work split, so status/group options wrap in an
+  auto-fit grid and the embedded lane selector can fill its parent.
 - `apps/desktop/src/renderer/components/terminals/SessionCard.tsx` —
   per-session card (status dot, title, preview line, tool type, lane,
   delta chips). Surfaces a small amber warning pip next to the title
@@ -241,7 +246,9 @@ Renderer surfaces:
 - `apps/desktop/src/renderer/components/terminals/SessionContextMenu.tsx`
   and `SessionInfoPopover.tsx` — right-click actions and info overlay.
   Ended chat sessions get an additional "Delete chat" action wired to
-  `ade.agentChat.delete`.
+  `ade.agentChat.delete`. Fixed-position context menus measure their
+  rendered size and clamp to the renderer viewport before opening near
+  a pointer edge.
 - `apps/desktop/src/renderer/lib/sessionListCache.ts` — shared renderer
   cache for `ade.sessions.list` calls, keyed by `projectRoot/laneId/status`.
 - `apps/desktop/src/renderer/lib/sessions.ts` — session-label helpers

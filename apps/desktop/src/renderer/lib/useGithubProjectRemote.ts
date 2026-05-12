@@ -34,7 +34,7 @@ export function useGithubProjectRemote(
     let cancelled = false;
     setLoading(true);
     void window.ade.github
-      .getStatus({ forceRefresh: refreshKey > 0 })
+      .getRemoteStatus({ forceRefresh: refreshKey > 0 })
       .then((status) => {
         if (cancelled) return;
         setHasGitHubRemote(status.repo != null);

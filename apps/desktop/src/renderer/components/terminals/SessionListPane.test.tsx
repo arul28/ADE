@@ -163,6 +163,50 @@ describe("SessionListPane", () => {
     expect(screen.getByLabelText("Old running session")).toBeTruthy();
   });
 
+  it("collapses and expands child shell sections under a chat parent", () => {
+    const parent = makeSession({
+      id: "chat-parent",
+      laneId: "lane-known",
+      laneName: "Known Lane",
+      toolType: "codex-chat",
+      title: "Parent chat",
+    });
+    const child = makeSession({
+      id: "child-shell",
+      laneId: "lane-known",
+      laneName: "Known Lane",
+      toolType: "shell",
+      title: "Child shell",
+      ptyId: "pty-child",
+      chatSessionId: parent.id,
+    });
+    const sessionsGroupedByLane = new Map([[parent.laneId, [parent, child]]]);
+    const toggleWorkSectionCollapsed = vi.fn();
+
+    const view = renderPane({
+      runningFiltered: [parent, child],
+      sessionsGroupedByLane,
+      toggleWorkSectionCollapsed,
+    });
+
+    expect(screen.getByText("Child shell")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /1 shell/i }));
+    expect(toggleWorkSectionCollapsed).toHaveBeenCalledWith("chat:chat-parent");
+
+    view.unmount();
+    renderPane({
+      runningFiltered: [parent, child],
+      sessionsGroupedByLane,
+      workCollapsedSectionIds: ["chat:chat-parent"],
+      toggleWorkSectionCollapsed,
+    });
+
+    expect(screen.queryByText("Child shell")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /1 shell/i }));
+    expect(toggleWorkSectionCollapsed).toHaveBeenCalledTimes(2);
+    expect(toggleWorkSectionCollapsed).toHaveBeenLastCalledWith("chat:chat-parent");
+  });
+
   it("reports rendered session order for range selection", () => {
     const onSelectSession = vi.fn();
     const first = makeSession({

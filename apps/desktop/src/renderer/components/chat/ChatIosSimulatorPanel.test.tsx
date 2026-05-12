@@ -1,12 +1,16 @@
 /* @vitest-environment jsdom */
 
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatIosSimulatorPanel } from "./ChatIosSimulatorPanel";
 import type {
   IosSimulatorDevice,
   IosSimulatorEventPayload,
   IosSimulatorLaunchTarget,
+  IosSimulatorPreviewCapability,
+  IosSimulatorPreviewTarget,
+  IosScreenElement,
   IosSimulatorStatus,
   IosSimulatorStreamStatus,
   IosSimulatorWindowState,
@@ -68,6 +72,81 @@ const launchTarget: IosSimulatorLaunchTarget = {
   source: "xcode-project",
 };
 
+const secondLaunchTarget: IosSimulatorLaunchTarget = {
+  ...launchTarget,
+  id: "target-2",
+  name: "Settings",
+  bundleId: "com.example.settings",
+  detail: "Settings",
+  scheme: "Settings",
+  productName: "Settings",
+  appTargetId: "target-2",
+};
+
+const previewCapability: IosSimulatorPreviewCapability = {
+  platform: "darwin",
+  supported: true,
+  docsUrl: "https://developer.apple.com/documentation/xcode/giving-external-agents-access-to-xcode",
+  xcodeVersion: "Xcode 26.0",
+  mcpbridgeAvailable: true,
+  xcodeRunning: true,
+  xcodeWindows: [{
+    tabIdentifier: "tab-1",
+    title: "Example",
+    workspacePath: "/tmp/project/Example.xcodeproj",
+    raw: "Example",
+  }],
+  selectedWindow: {
+    tabIdentifier: "tab-1",
+    title: "Example",
+    workspacePath: "/tmp/project/Example.xcodeproj",
+    raw: "Example",
+  },
+  setupSteps: [],
+  error: null,
+  checkedAt: "2026-04-29T00:00:00.000Z",
+};
+
+const previewTarget: IosSimulatorPreviewTarget = {
+  id: "preview-1",
+  title: "ContentView",
+  sourceFile: "ContentView.swift",
+  sourceFilePath: "apps/ios/ContentView.swift",
+  absoluteSourceFile: "/tmp/project/apps/ios/ContentView.swift",
+  sourceLine: 12,
+  previewDefinitionIndexInFile: 0,
+  kind: "preview-macro",
+  proximity: "project",
+};
+
+const secondPreviewTarget: IosSimulatorPreviewTarget = {
+  ...previewTarget,
+  id: "preview-2",
+  title: "SettingsView",
+  sourceFile: "SettingsView.swift",
+  sourceFilePath: "apps/ios/SettingsView.swift",
+  absoluteSourceFile: "/tmp/project/apps/ios/SettingsView.swift",
+  sourceLine: 20,
+  previewDefinitionIndexInFile: 1,
+};
+
+const inspectElement: IosScreenElement = {
+  id: "element-1",
+  source: "ade-inspector",
+  layer: "app",
+  label: "Continue",
+  value: null,
+  role: "Button",
+  elementType: "Button",
+  identifier: "continueButton",
+  frame: { x: 10, y: 20, width: 80, height: 40 },
+  pixelFrame: { x: 30, y: 60, width: 240, height: 120 },
+  componentId: "ContentView/ContinueButton",
+  sourceFile: "ContentView.swift",
+  sourceLine: 12,
+  metadata: {},
+};
+
 function streamStatus(overrides: Partial<IosSimulatorStreamStatus> = {}): IosSimulatorStreamStatus {
   return {
     deviceUdid: device.udid,
@@ -98,6 +177,11 @@ function installIosSimulatorApi(options: {
   windowSources?: IosSimulatorWindowSource[];
   windowState?: IosSimulatorWindowState;
   getUserMedia?: () => Promise<MediaStream>;
+  launchTargets?: IosSimulatorLaunchTarget[];
+  previewCapability?: IosSimulatorPreviewCapability;
+  previewTargets?: IosSimulatorPreviewTarget[];
+  screenElements?: IosScreenElement[];
+  hitElement?: IosScreenElement | null;
 } = {}) {
   let eventListener: ((event: IosSimulatorEventPayload) => void) | null = null;
   const getUserMedia = vi.fn(options.getUserMedia ?? (() => Promise.resolve({
@@ -114,7 +198,7 @@ function installIosSimulatorApi(options: {
   const api = {
     getStatus: vi.fn().mockResolvedValue(options.status ?? activeStatus),
     listDevices: vi.fn().mockResolvedValue([device]),
-    listLaunchTargets: vi.fn().mockResolvedValue([launchTarget]),
+    listLaunchTargets: vi.fn().mockResolvedValue(options.launchTargets ?? [launchTarget]),
     startStream: vi.fn((args: { backend?: string | null } = {}) => {
       const resolvedBackend = args.backend === "auto"
         ? options.autoBackend ?? "idb-mjpeg"
@@ -163,9 +247,14 @@ function installIosSimulatorApi(options: {
         capturedAt: "2026-04-29T00:00:00.000Z",
       },
       inspectorSnapshot: null,
-      elements: [],
-      hitElement: null,
-      providers: [{ source: "screenshot", available: true, generatedAt: "2026-04-29T00:00:00.000Z" }],
+      elements: options.screenElements ?? [],
+      hitElement: options.hitElement ?? null,
+      providers: [
+        { source: "screenshot", available: true, generatedAt: "2026-04-29T00:00:00.000Z" },
+        ...(options.screenElements?.length
+          ? [{ source: "ade-inspector" as const, available: true, elementCount: options.screenElements.length, generatedAt: "2026-04-29T00:00:00.000Z" }]
+          : []),
+      ],
     }),
     onEvent: vi.fn((listener: (event: IosSimulatorEventPayload) => void) => {
       eventListener = listener;
@@ -178,15 +267,40 @@ function installIosSimulatorApi(options: {
     screenshot: vi.fn(),
     getInspectorSnapshot: vi.fn(),
     inspectPoint: vi.fn(),
-    getPreviewCapability: vi.fn(),
-    listPreviewTargets: vi.fn(),
-    renderPreview: vi.fn(),
+    getPreviewCapability: vi.fn().mockResolvedValue(options.previewCapability ?? previewCapability),
+    listPreviewTargets: vi.fn().mockResolvedValue(options.previewTargets ?? [previewTarget]),
+    renderPreview: vi.fn().mockResolvedValue({
+      ok: true,
+      target: {
+        sourceFilePath: previewTarget.sourceFilePath,
+        previewDefinitionIndexInFile: previewTarget.previewDefinitionIndexInFile,
+        tabIdentifier: previewCapability.selectedWindow?.tabIdentifier ?? null,
+      },
+      previewSnapshotPath: ".ade/artifacts/preview.png",
+      dataUrl: "data:image/png;base64,preview",
+      width: 390,
+      height: 844,
+      renderedAt: "2026-04-29T00:00:00.000Z",
+      capability: options.previewCapability ?? previewCapability,
+      error: null,
+    }),
     openPreviewWorkspace: vi.fn(),
     tap: vi.fn(),
     typeText: vi.fn(),
     drag: vi.fn(),
     swipe: vi.fn(),
-    selectPoint: vi.fn(),
+    selectPoint: vi.fn().mockResolvedValue({
+      item: {
+        kind: "ios_simulator_target",
+        id: "ios:element-1",
+        deviceUdid: device.udid,
+        label: "Continue",
+        source: "ade-inspector",
+        screenshotDataUrl: null,
+        metadata: {},
+      },
+      source: "ade-inspector",
+    }),
   };
   Object.defineProperty(window, "ade", {
     configurable: true,
@@ -194,6 +308,10 @@ function installIosSimulatorApi(options: {
       iosSimulator: api,
       app: {
         writeClipboardText: vi.fn(),
+        openExternal: vi.fn(),
+      },
+      agentChat: {
+        saveTempAttachment: vi.fn().mockResolvedValue({ path: ".ade/artifacts/ios-simulator-screen.png" }),
       },
     },
   });
@@ -212,6 +330,7 @@ describe("ChatIosSimulatorPanel", () => {
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
+    vi.unstubAllGlobals();
     vi.useRealTimers();
   });
 
@@ -273,6 +392,270 @@ describe("ChatIosSimulatorPanel", () => {
 
     await screen.findByText("Best simulator performance");
     expect(screen.getByText("Ready")).toBeTruthy();
+  });
+
+  it("selects launch and preview targets without launching", async () => {
+    const { api } = installIosSimulatorApi({
+      launchTargets: [launchTarget, secondLaunchTarget],
+      previewTargets: [previewTarget, secondPreviewTarget],
+    });
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(api.listLaunchTargets).toHaveBeenCalled());
+
+    const launchTargetSelect = screen.getAllByRole("combobox").find((select) =>
+      Array.from((select as HTMLSelectElement).options).some((option) => option.value === secondLaunchTarget.id)
+    ) as HTMLSelectElement | undefined;
+    expect(launchTargetSelect).toBeTruthy();
+
+    fireEvent.change(launchTargetSelect!, { target: { value: secondLaunchTarget.id } });
+    expect(launchTargetSelect!.value).toBe(secondLaunchTarget.id);
+    expect(api.launch).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    await waitFor(() => expect(api.listPreviewTargets).toHaveBeenCalled());
+
+    const previewTargetSelect = screen.getAllByRole("combobox").find((select) =>
+      Array.from((select as HTMLSelectElement).options).some((option) => option.value === secondPreviewTarget.id)
+    ) as HTMLSelectElement | undefined;
+    expect(previewTargetSelect).toBeTruthy();
+
+    fireEvent.change(previewTargetSelect!, { target: { value: secondPreviewTarget.id } });
+    expect(previewTargetSelect!.value).toBe(secondPreviewTarget.id);
+    expect(api.renderPreview).not.toHaveBeenCalled();
+  });
+
+  it("clears stale launch-target errors after the project root changes and refresh succeeds", async () => {
+    const { api } = installIosSimulatorApi();
+    api.listLaunchTargets.mockRejectedValueOnce(new Error("Project root /missing does not exist."));
+    const onAddContext = vi.fn();
+    const view = render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/missing"
+        onAddContext={onAddContext}
+      />,
+    );
+
+    expect(await screen.findByText(/Project root \/missing does not exist/)).toBeTruthy();
+
+    view.rerender(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={onAddContext}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(api.listLaunchTargets).toHaveBeenLastCalledWith({
+        deviceUdid: device.udid,
+        projectRoot: "/tmp/project",
+      });
+      expect(screen.queryByText(/Project root \/missing does not exist/)).toBeNull();
+    });
+  });
+
+  it("copies a setup install command from the simulator checklist", async () => {
+    const user = userEvent.setup();
+    const originalClipboard = navigator.clipboard;
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    const missingXcodeStatus: IosSimulatorStatus = {
+      ...activeStatus,
+      tools: activeStatus.tools.map((tool) =>
+        tool.name === "xcodebuild"
+          ? { ...tool, available: false, detail: "missing", installHint: "xcode-select --install" }
+          : tool
+      ),
+    };
+    installIosSimulatorApi({ status: missingXcodeStatus });
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText("Set up iOS prerequisites")).toBeTruthy();
+    const installHint = await screen.findByText("xcode-select --install");
+    const copyButton = installHint.parentElement?.querySelector("button");
+    expect(copyButton).toBeTruthy();
+    await user.click(copyButton!);
+
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith("xcode-select --install");
+    });
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: originalClipboard,
+    });
+  });
+
+  it("drafts preview help prompts through the composer", async () => {
+    const onInsertDraft = vi.fn();
+    installIosSimulatorApi({ previewTargets: [previewTarget] });
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+        onInsertDraft={onInsertDraft}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    await screen.findByText("ContentView.swift:12");
+
+    fireEvent.click(screen.getByRole("button", { name: "Ask agent" }));
+
+    await waitFor(() => {
+      expect(onInsertDraft).toHaveBeenCalledWith(expect.stringContaining("Make this iOS SwiftUI surface work well"));
+    });
+  });
+
+  it("drafts an add-preview prompt when Preview Lab finds no targets", async () => {
+    const onInsertDraft = vi.fn();
+    installIosSimulatorApi({ previewTargets: [] });
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+        onInsertDraft={onInsertDraft}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Ask agent to add a #Preview" }));
+
+    await waitFor(() => {
+      expect(onInsertDraft).toHaveBeenCalledWith(expect.stringContaining("No renderable #Preview was found"));
+    });
+  });
+
+  it("switches live simulator modes and starts screenshot capture without sending input", async () => {
+    const { api } = installIosSimulatorApi();
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(document.querySelector('canvas[aria-label="iOS Simulator live stream"]')).toBeTruthy());
+
+    const textInput = screen.getByPlaceholderText("Type into the active simulator app") as HTMLInputElement;
+    fireEvent.change(textInput, { target: { value: "hello simulator" } });
+    expect(textInput.value).toBe("hello simulator");
+    expect(api.typeText).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Inspect" }));
+    expect(await screen.findByAltText("iOS Simulator snapshot")).toBeTruthy();
+
+    const snapshotCalls = api.getScreenSnapshot.mock.calls.length;
+    fireEvent.click(screen.getByTitle("Refresh inspector snapshot"));
+    await waitFor(() => {
+      expect(api.getScreenSnapshot.mock.calls.length).toBeGreaterThan(snapshotCalls);
+    });
+
+    const screenshotButton = screen.getByRole("button", { name: "Screenshot" });
+    fireEvent.click(screenshotButton);
+    await waitFor(() => {
+      expect(screenshotButton.className).toContain("ring-amber-300/30");
+    });
+    expect(document.querySelector(".cursor-crosshair")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Control" }));
+    expect(screen.getByPlaceholderText("Type into the active simulator app")).toBeTruthy();
+  });
+
+  it("selects an inspected simulator element and opens Preview Lab for its matching target", async () => {
+    vi.stubGlobal("PointerEvent", MouseEvent);
+    vi.stubGlobal("Image", class {
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      set src(_value: string) {
+        queueMicrotask(() => this.onerror?.());
+      }
+    });
+    const onAddContext = vi.fn();
+    const { api } = installIosSimulatorApi({
+      screenElements: [inspectElement],
+      previewTargets: [previewTarget],
+    });
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={onAddContext}
+      />,
+    );
+
+    await waitFor(() => expect(document.querySelector('canvas[aria-label="iOS Simulator live stream"]')).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Inspect" }));
+    const image = await screen.findByAltText("iOS Simulator snapshot") as HTMLImageElement;
+    const imageRect = {
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: 393,
+      bottom: 852,
+      width: 393,
+      height: 852,
+      toJSON: () => ({}),
+    } as DOMRect;
+    image.getBoundingClientRect = () => imageRect;
+    if (image.parentElement) {
+      image.parentElement.getBoundingClientRect = () => imageRect;
+    }
+
+    fireEvent.pointerDown(image, { clientX: 50, clientY: 40 });
+
+    await waitFor(() => {
+      expect(api.selectPoint).toHaveBeenCalledWith({
+        deviceUdid: device.udid,
+        projectRoot: "/tmp/project",
+        x: 150,
+        y: 120,
+      });
+    });
+    expect(onAddContext).toHaveBeenCalledWith(expect.objectContaining({
+      label: "Continue",
+      source: "ade-inspector",
+    }));
+    expect(await screen.findByText(/Added ade-inspector element context/)).toBeTruthy();
+
+    fireEvent.click(await screen.findByTitle("Open the source file for the selected element in Preview Lab"));
+
+    await waitFor(() => {
+      expect(api.listPreviewTargets).toHaveBeenCalledWith({
+        projectRoot: "/tmp/project",
+        sourceFile: inspectElement.sourceFile,
+        sourceLine: inspectElement.sourceLine,
+      });
+    });
+    expect(await screen.findByText("ContentView.swift:12")).toBeTruthy();
+    expect(api.renderPreview).not.toHaveBeenCalled();
   });
 
   it("expands and zooms the live simulator view", async () => {

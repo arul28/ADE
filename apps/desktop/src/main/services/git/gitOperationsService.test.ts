@@ -14,7 +14,10 @@ vi.mock("./git", () => ({
 
 import { createGitOperationsService } from "./gitOperationsService";
 
-function createTestGitOperationsService(branchRef = "feature/stash-test") {
+function createTestGitOperationsService(
+  branchRef = "feature/stash-test",
+  overrides: { worktreePath?: string } = {},
+) {
   const mockStart = vi.fn().mockReturnValue({ operationId: "op-1" });
   const mockFinish = vi.fn();
 
@@ -23,7 +26,7 @@ function createTestGitOperationsService(branchRef = "feature/stash-test") {
       getLaneBaseAndBranch: vi.fn().mockReturnValue({
         baseRef: "main",
         branchRef,
-        worktreePath: "/tmp/ade-lane",
+        worktreePath: overrides.worktreePath ?? "/tmp/ade-lane",
         laneType: "worktree",
       }),
     } as any,
@@ -128,7 +131,24 @@ describe("gitOperationsService stash item commands", () => {
     vi.clearAllMocks();
   });
 
-  it("calls git stash pop with the lane worktree path and stash ref", async () => {
+  it("lists stashes with ordinal refs and ISO timestamps", async () => {
+    mockGit.runGitOrThrow.mockResolvedValue("stash@{0}\u001f2026-05-12T02:09:32-04:00\u001fOn main: test\n");
+    const { service } = createTestGitOperationsService();
+
+    await expect(service.listStashes({ laneId: "lane-1" })).resolves.toEqual([
+      {
+        ref: "stash@{0}",
+        createdAt: "2026-05-12T02:09:32-04:00",
+        subject: "On main: test",
+      },
+    ]);
+    expect(mockGit.runGitOrThrow).toHaveBeenCalledWith(
+      ["stash", "list", "--format=%gd%x1f%cI%x1f%gs"],
+      { cwd: "/tmp/ade-lane", timeoutMs: 15_000 },
+    );
+  });
+
+  it("applies then drops a stash when restoring it", async () => {
     mockGit.getHeadSha.mockResolvedValue("abc123");
     mockGit.runGitOrThrow.mockResolvedValue(undefined);
     const { service, mockStart, mockFinish } = createTestGitOperationsService();
@@ -136,9 +156,14 @@ describe("gitOperationsService stash item commands", () => {
     const result = await service.stashPop({ laneId: "lane-1", stashRef: "stash@{1}" });
 
     expect(mockGit.runGitOrThrow).toHaveBeenCalledWith(
-      ["stash", "pop", "stash@{1}"],
+      ["stash", "apply", "stash@{1}"],
       { cwd: "/tmp/ade-lane", timeoutMs: 30_000 },
     );
+    expect(mockGit.runGitOrThrow).toHaveBeenCalledWith(
+      ["stash", "drop", "stash@{1}"],
+      { cwd: "/tmp/ade-lane", timeoutMs: 30_000 },
+    );
+    expect(mockGit.runGitOrThrow).toHaveBeenCalledTimes(2);
     expect(result).toEqual({
       operationId: "op-1",
       preHeadSha: "abc123",
@@ -156,6 +181,20 @@ describe("gitOperationsService stash item commands", () => {
         operationId: "op-1",
         status: "succeeded",
       }),
+    );
+  });
+
+  it("keeps the stash when restore apply fails", async () => {
+    mockGit.getHeadSha.mockResolvedValue("abc123");
+    mockGit.runGitOrThrow.mockRejectedValueOnce(new Error("apply failed"));
+    const { service } = createTestGitOperationsService();
+
+    await expect(service.stashPop({ laneId: "lane-1", stashRef: "stash@{1}" })).rejects.toThrow("apply failed");
+
+    expect(mockGit.runGitOrThrow).toHaveBeenCalledTimes(1);
+    expect(mockGit.runGitOrThrow).toHaveBeenCalledWith(
+      ["stash", "apply", "stash@{1}"],
+      { cwd: "/tmp/ade-lane", timeoutMs: 30_000 },
     );
   });
 
@@ -529,6 +568,21 @@ describe("gitOperationsService cached lane reads", () => {
     expect(first).toEqual(second);
     expect(mockGit.runGitOrThrow).toHaveBeenCalledTimes(1);
     expect(mockGit.runGit).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a missing lane worktree as lane state for commit history", async () => {
+    mockGit.runGitOrThrow.mockRejectedValue(
+      new Error("git working directory not found: /tmp/missing-lane"),
+    );
+
+    const { service } = createTestGitOperationsService("feature/stash-test", {
+      worktreePath: "/tmp/missing-lane",
+    });
+
+    await expect(service.listRecentCommits({ laneId: "lane-1", limit: 20 })).rejects.toThrow(
+      "Lane worktree is missing. Restore or recreate the lane worktree at /tmp/missing-lane before viewing history.",
+    );
+    expect(mockGit.runGit).not.toHaveBeenCalled();
   });
 
   it("parses file history entries for modified and renamed files", async () => {

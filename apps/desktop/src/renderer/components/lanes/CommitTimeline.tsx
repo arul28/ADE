@@ -24,6 +24,16 @@ function formatRelative(ts: string): string {
   return date.toLocaleDateString();
 }
 
+function formatTimelineError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  const message = raw.replace(/^Error invoking remote method '[^']+':\s*/i, "").trim();
+  if (/^Lane worktree is missing\./i.test(message)) return message;
+  if (/git working directory not found:/i.test(message)) {
+    return "Lane worktree is missing. Restore or recreate the lane worktree before viewing history.";
+  }
+  return message || "Unable to load commit history.";
+}
+
 type CommitMeta = {
   fileCount: number | null;
   message: string | null;
@@ -65,7 +75,7 @@ export function CommitTimeline({
       const rows = await window.ade.git.listRecentCommits({ laneId, limit });
       setCommits([...rows].reverse());
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(formatTimelineError(err));
       setCommits([]);
     } finally {
       setLoading(false);

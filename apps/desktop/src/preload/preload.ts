@@ -207,6 +207,7 @@ import type {
   GitStashSummary,
   GitUpstreamSyncStatus,
   GitSyncArgs,
+  GitHubRepoRef,
   GitHubStatus,
   CreatePrFromLaneArgs,
   DeletePrArgs,
@@ -935,6 +936,10 @@ const githubStatusCache = createShortIpcCache<GitHubStatus>(
   () => ipcRenderer.invoke(IPC.githubGetStatus, {}),
   30_000,
 );
+const githubRemoteStatusCache = createShortIpcCache<{
+  repo: GitHubRepoRef | null;
+  hasOrigin: boolean;
+}>(() => ipcRenderer.invoke(IPC.githubGetRemoteStatus), 30_000);
 
 const lanesListCache = createKeyedShortIpcCache<LaneSummary[]>(
   (key) =>
@@ -6635,9 +6640,23 @@ contextBridge.exposeInMainWorld("ade", {
             : githubStatusCache.get(),
       );
     },
+    getRemoteStatus: async (opts?: {
+      forceRefresh?: boolean;
+    }): Promise<{ repo: GitHubRepoRef | null; hasOrigin: boolean }> => {
+      if (opts?.forceRefresh) githubRemoteStatusCache.clear();
+      return opts?.forceRefresh
+        ? clearAround(
+            () => githubRemoteStatusCache.clear(),
+            () => ipcRenderer.invoke(IPC.githubGetRemoteStatus),
+          )
+        : githubRemoteStatusCache.get();
+    },
     setToken: async (token: string): Promise<GitHubStatus> =>
       clearAround(
-        () => githubStatusCache.clear(),
+        () => {
+          githubStatusCache.clear();
+          githubRemoteStatusCache.clear();
+        },
         () =>
           callProjectRuntimeActionOr("github", "setToken", { arg: token }, () =>
             ipcRenderer.invoke(IPC.githubSetToken, { token }),
@@ -6645,7 +6664,10 @@ contextBridge.exposeInMainWorld("ade", {
       ),
     clearToken: async (): Promise<GitHubStatus> =>
       clearAround(
-        () => githubStatusCache.clear(),
+        () => {
+          githubStatusCache.clear();
+          githubRemoteStatusCache.clear();
+        },
         () =>
           callProjectRuntimeActionOr("github", "clearToken", {}, () =>
             ipcRenderer.invoke(IPC.githubClearToken),
@@ -6685,7 +6707,10 @@ contextBridge.exposeInMainWorld("ade", {
       input: PublishProjectInput,
     ): Promise<PublishProjectResult> =>
       clearAround(
-        () => githubStatusCache.clear(),
+        () => {
+          githubStatusCache.clear();
+          githubRemoteStatusCache.clear();
+        },
         () =>
           callProjectRuntimeActionOr(
             "github",
@@ -6700,6 +6725,7 @@ contextBridge.exposeInMainWorld("ade", {
         payload: GitHubStatus,
       ) => {
         githubStatusCache.clear();
+        githubRemoteStatusCache.clear();
         cb(payload);
       };
       ipcRenderer.on(IPC.githubStatusChanged, listener);

@@ -185,7 +185,10 @@ describe("ade rpc --stdio daemon bridge", () => {
     const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
     const cliPath = path.join(packageRoot, "src", "cli.ts");
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-stdio-rpc-"));
-    const projectRoot = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "ade-stdio-rpc-project-")));
+    const projectRoot = fs.realpathSync.native(
+      fs.mkdtempSync(path.join(os.tmpdir(), "ade-stdio-rpc-project-")),
+    );
+    const expectedProjectRoot = projectRoot;
     const socketPath = path.join(adeHome, "sock", "ade.sock");
     const env = {
       ...process.env,
@@ -222,7 +225,7 @@ describe("ade rpc --stdio daemon bridge", () => {
         },
       });
       expect(project).toMatchObject({
-        rootPath: projectRoot,
+        rootPath: expectedProjectRoot,
       });
       expect(Array.isArray(persisted)).toBe(true);
       expect((persisted as Array<{ projectId?: string }>)).toContainEqual(

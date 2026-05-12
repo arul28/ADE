@@ -197,6 +197,7 @@ describe("AgentChatMessageList operator navigation suggestions", () => {
 
     expect(screen.getByTestId("location").textContent).toBe("/missions?missionId=mission-1::null");
   });
+
 });
 
 describe("AgentChatMessageList transcript rendering", () => {
@@ -222,6 +223,33 @@ describe("AgentChatMessageList transcript rendering", () => {
     await waitFor(() => {
       expect(globalThis.window.ade.builtInBrowser.navigate).toHaveBeenCalledWith({
         url: "http://localhost:5173/",
+        newTab: true,
+      });
+    });
+  });
+
+  it("opens cloud PR links in the ADE browser", async () => {
+    const prUrl = "https://github.com/acme/widgets/pull/42";
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "cloud_status",
+          turnId: "turn-1",
+          runId: "cloud-run-1",
+          status: "finished",
+          detail: "Published pull request",
+          prUrl,
+        },
+      },
+    ]);
+
+    fireEvent.click(screen.getByRole("button", { name: "PR" }));
+
+    await waitFor(() => {
+      expect(globalThis.window.ade.builtInBrowser.navigate).toHaveBeenCalledWith({
+        url: prUrl,
         newTab: true,
       });
     });
@@ -272,6 +300,89 @@ describe("AgentChatMessageList transcript rendering", () => {
     await waitFor(() => {
       expect(screen.getByText("what are you doing?")).toBeTruthy();
     });
+  });
+
+  it("copies assistant message text", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "text",
+          text: "Copy this exact answer.",
+          itemId: "text-copy",
+          turnId: "turn-1",
+        },
+      },
+    ]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy message" }));
+
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith("Copy this exact answer.");
+    });
+  });
+
+  it("copies assistant code blocks from the transcript", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "text",
+          text: "Use this:\n\n```ts\nconst answer = 42;\n```",
+          itemId: "text-code-copy",
+          turnId: "turn-1",
+        },
+      },
+    ]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy code" }));
+
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith("const answer = 42;");
+    });
+  });
+
+  it("shows and collapses long grouped tool results", async () => {
+    const longResult = `${"x".repeat(520)}THE_END`;
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "tool_result",
+          tool: "exec_command",
+          itemId: "tool-long",
+          status: "completed",
+          result: longResult,
+          turnId: "turn-1",
+        },
+      },
+    ]);
+
+    fireEvent.click(findButtonByTextContent(/Tool calls/));
+    fireEvent.click(findButtonByTextContent(/shell/));
+
+    expect(screen.queryByText(/THE_END/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: `show all (${longResult.length} chars)` }));
+
+    expect(screen.getByText(/THE_END/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "collapse" }));
+
+    expect(screen.queryByText(/THE_END/)).toBeNull();
   });
 
   it("keeps compact display text while exposing the full user prompt", async () => {
@@ -455,6 +566,85 @@ describe("AgentChatMessageList transcript rendering", () => {
     const table = screen.getByRole("table");
     expect(table.parentElement?.className).toContain("overflow-x-auto");
     expect(screen.getByText("Task progress")).toBeTruthy();
+  });
+
+  it("shows jump-to-latest after manual transcript scroll", async () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "user_message",
+          text: "Start the audit",
+          deliveryState: "delivered",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "text",
+          text: "Working through the inventory.",
+          itemId: "text-1",
+          turnId: "turn-1",
+        },
+      },
+    ]);
+
+    const transcript = document.querySelector(".ade-chat-timeline-pane") as HTMLDivElement;
+    Object.defineProperty(transcript, "scrollHeight", { configurable: true, value: 1_000 });
+    Object.defineProperty(transcript, "clientHeight", { configurable: true, value: 200 });
+    transcript.scrollTop = 100;
+
+    fireEvent.scroll(transcript);
+
+    const jumpButton = await screen.findByRole("button", { name: "Jump to latest message" });
+    fireEvent.click(jumpButton);
+
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Jump to latest message" })).toBeNull();
+    });
+  });
+
+  it("jumps through the user message minimap", () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "user_message",
+          text: "First checkpoint",
+          deliveryState: "delivered",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "text",
+          text: "Acknowledged.",
+          itemId: "text-1",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:02.000Z",
+        event: {
+          type: "user_message",
+          text: "Second checkpoint",
+          deliveryState: "delivered",
+        },
+      },
+    ]);
+
+    const transcript = document.querySelector(".ade-chat-timeline-pane") as HTMLDivElement;
+    Object.defineProperty(transcript, "scrollHeight", { configurable: true, value: 1_000 });
+    Object.defineProperty(transcript, "clientHeight", { configurable: true, value: 200 });
+
+    fireEvent.click(screen.getByRole("button", { name: "User message 2" }));
+
+    expect(transcript.scrollTop).toBeGreaterThan(0);
   });
 
   // "absorbs tool summaries" test removed: tested old ChatWorkLogBlock

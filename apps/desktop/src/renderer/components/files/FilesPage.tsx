@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Warning as AlertTriangle,
   ArrowSquareOut,
@@ -114,6 +114,9 @@ type ContextMenuState = {
   nodePath: string;
   nodeType: "file" | "directory";
 };
+
+const FILES_CONTEXT_MENU_INSET = 8;
+const FILES_CONTEXT_MENU_WIDTH = 200;
 
 type TextPromptState = {
   title: string;
@@ -565,6 +568,8 @@ export function FilesPage({
   const [textPromptError, setTextPromptError] = useState<string | null>(null);
 
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const contextMenuRef = useRef<HTMLDivElement | null>(null);
+  const [contextMenuPosition, setContextMenuPosition] = useState<{ left: number; top: number } | null>(null);
   const [openInMenuOpen, setOpenInMenuOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [editorStatus, setEditorStatus] = useState<"loading" | "ready" | "failed">("loading");
@@ -1487,6 +1492,33 @@ export function FilesPage({
     return () => window.removeEventListener("pointerdown", onWindowPointerDown);
   }, [contextMenu]);
 
+  useLayoutEffect(() => {
+    if (!contextMenu) {
+      setContextMenuPosition(null);
+      return;
+    }
+
+    const clampMenu = () => {
+      const rect = contextMenuRef.current?.getBoundingClientRect();
+      const width = rect?.width ?? FILES_CONTEXT_MENU_WIDTH;
+      const height = rect?.height ?? 0;
+      const maxLeft = Math.max(FILES_CONTEXT_MENU_INSET, window.innerWidth - width - FILES_CONTEXT_MENU_INSET);
+      const maxTop = Math.max(FILES_CONTEXT_MENU_INSET, window.innerHeight - height - FILES_CONTEXT_MENU_INSET);
+      setContextMenuPosition({
+        left: Math.min(Math.max(FILES_CONTEXT_MENU_INSET, contextMenu.x), maxLeft),
+        top: Math.min(Math.max(FILES_CONTEXT_MENU_INSET, contextMenu.y), maxTop),
+      });
+    };
+
+    clampMenu();
+    window.addEventListener("resize", clampMenu);
+    window.addEventListener("scroll", clampMenu, true);
+    return () => {
+      window.removeEventListener("resize", clampMenu);
+      window.removeEventListener("scroll", clampMenu, true);
+    };
+  }, [contextMenu]);
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const isMac = navigator.platform.toLowerCase().includes("mac");
@@ -2361,8 +2393,12 @@ export function FilesPage({
       {/* Static split layout for Files. This intentionally bypasses the shared
           tiling shell while Files-route crashes are under investigation. */}
       <div className="flex-1 min-h-0 p-3">
-        <div className="flex h-full min-h-0 min-w-0 gap-3">
-          <div className="min-h-0 min-w-0 shrink-0" style={{ width: 320, maxWidth: "28vw" }} data-tour="files.explorerPane">
+        <div className={cn("flex h-full min-h-0 min-w-0 gap-3", embedded ? "flex-col" : "flex-row")}>
+          <div
+            className="min-h-0 min-w-0 shrink-0"
+            style={embedded ? { flexBasis: "42%", minHeight: 160 } : { width: 320, maxWidth: "28vw" }}
+            data-tour="files.explorerPane"
+          >
             {renderPane("explorer")}
           </div>
           <div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -2376,8 +2412,16 @@ export function FilesPage({
       {/* Context menu overlay */}
       {contextMenu ? (
         <div
+          ref={contextMenuRef}
           className="ade-liquid-glass-menu fixed z-40"
-          style={{ left: contextMenu.x, top: contextMenu.y, minWidth: 200, padding: "4px 0" }}
+          style={{
+            left: contextMenuPosition?.left ?? contextMenu.x,
+            top: contextMenuPosition?.top ?? contextMenu.y,
+            minWidth: FILES_CONTEXT_MENU_WIDTH,
+            maxHeight: `calc(100vh - ${FILES_CONTEXT_MENU_INSET * 2}px)`,
+            overflowY: "auto",
+            padding: "4px 0",
+          }}
           onPointerDown={(e) => e.stopPropagation()}
         >
           {contextMenu.nodeType === "file" ? (

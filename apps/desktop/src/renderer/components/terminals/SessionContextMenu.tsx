@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useLayoutEffect } from "react";
 import type { TerminalSessionSummary } from "../../../shared/types";
 import { isChatToolType } from "../../lib/sessions";
 import { resolveTrackedCliResumeCommand } from "./cliLaunch";
@@ -41,7 +41,14 @@ export function SessionContextMenu({
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const finalizedRef = useRef(false);
+  const [clampedPosition, setClampedPosition] = useState<{
+    sourceX: number;
+    sourceY: number;
+    left: number;
+    top: number;
+  } | null>(null);
 
   // Reset rename state when menu changes
   useEffect(() => {
@@ -58,9 +65,36 @@ export function SessionContextMenu({
     }
   }, [renaming]);
 
+  useLayoutEffect(() => {
+    if (!menu) return;
+    if (!menuRef.current) return;
+    const { x, y } = menu;
+    const padding = 8;
+    const rect = menuRef.current.getBoundingClientRect();
+    const maxLeft = Math.max(padding, window.innerWidth - rect.width - padding);
+    const maxTop = Math.max(padding, window.innerHeight - rect.height - padding);
+    const left = Math.min(Math.max(padding, x), maxLeft);
+    const top = Math.min(Math.max(padding, y), maxTop);
+    setClampedPosition((prev) => {
+      if (
+        prev?.sourceX === x &&
+        prev.sourceY === y &&
+        Math.abs(prev.left - left) < 0.5 &&
+        Math.abs(prev.top - top) < 0.5
+      ) {
+        return prev;
+      }
+      return { sourceX: x, sourceY: y, left, top };
+    });
+  }, [menu, renaming]);
+
   if (!menu) return null;
 
   const { session, x, y } = menu;
+  const menuPosition =
+    clampedPosition?.sourceX === x && clampedPosition.sourceY === y
+      ? { left: clampedPosition.left, top: clampedPosition.top }
+      : { left: x, top: y };
   const isRunning = session.status === "running";
   const isChat = isChatToolType(session.toolType);
   const resumeCommand = resolveTrackedCliResumeCommand(session);
@@ -83,8 +117,9 @@ export function SessionContextMenu({
 
       {/* Menu */}
       <div
+        ref={menuRef}
         className="ade-liquid-glass-menu fixed z-50 min-w-[180px] py-1"
-        style={{ left: x, top: y }}
+        style={menuPosition}
         onPointerDown={(e) => e.stopPropagation()}
       >
         {renaming && (
