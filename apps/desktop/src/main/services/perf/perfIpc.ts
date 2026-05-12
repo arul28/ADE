@@ -1,7 +1,14 @@
 import { ipcMain } from "electron";
 import { IPC } from "../../../shared/ipc";
 import { aggregate } from "./aggregator";
-import { appendEvent, getActiveRun, isRunActive, type PerfEventKind } from "./perfLog";
+import {
+  appendEvent,
+  finishPerfRun,
+  getActiveRun,
+  isRunActive,
+  type PerfEventKind,
+} from "./perfLog";
+import { stopMetricsSampler } from "./metricsSampler";
 
 export type PerfRunConfigForRenderer = {
   active: boolean;
@@ -22,6 +29,7 @@ export type PerfRecordEventArgs = {
 const PERF_EVENT_KINDS: ReadonlySet<string> = new Set<PerfEventKind>([
   "scenarioStart",
   "scenarioEnd",
+  "manualStep",
   "mark",
   "measure",
   "webVital",
@@ -82,6 +90,7 @@ export function registerPerfIpcHandlers(): void {
   ipcMain.handle(IPC.perfFinalize, () => {
     const run = getActiveRun();
     if (!run) return { ok: false, reason: "no-active-run" };
+    stopMetricsSampler();
     try {
       const summary = aggregate(run.runId);
       return { ok: true, summary };
@@ -91,6 +100,8 @@ export function registerPerfIpcHandlers(): void {
         reason: "aggregate-failed",
         error: error instanceof Error ? error.message : String(error),
       };
+    } finally {
+      finishPerfRun(run.runId);
     }
   });
 }

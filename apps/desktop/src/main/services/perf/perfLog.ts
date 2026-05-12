@@ -5,6 +5,7 @@ import { join } from "node:path";
 export type PerfEventKind =
   | "scenarioStart"
   | "scenarioEnd"
+  | "manualStep"
   | "mark"
   | "measure"
   | "webVital"
@@ -89,6 +90,12 @@ export function getActiveRun(): PerfRunConfig | null {
 
 export function isRunActive(): boolean {
   return active !== null;
+}
+
+export function finishPerfRun(runId: string): void {
+  if (active?.runId === runId) {
+    active = null;
+  }
 }
 
 export function appendEvent(event: PerfEvent): void {

@@ -73,13 +73,14 @@ describe("ChatSubagentsPanel", () => {
 
     fireEvent.click(trigger);
     expect(trigger.getAttribute("aria-expanded")).toBe("true");
-    expect(screen.getByRole("button", { name: /Audit chat renderer/i })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Background/i }));
+    expect(screen.getByTitle("Audit chat renderer")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: /Audit chat renderer/i }));
+    fireEvent.click(screen.getByTitle("Audit chat renderer"));
     expect(screen.getByText("task-1")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: /Back/i }));
-    expect(screen.getByRole("button", { name: /Audit chat renderer/i })).toBeTruthy();
+    expect(screen.getByTitle("Audit chat renderer")).toBeTruthy();
   });
 
   it("shows hidden timeline events and copies the subagent id", () => {
@@ -97,7 +98,8 @@ describe("ChatSubagentsPanel", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: /Subagents/i }));
-    fireEvent.click(screen.getByRole("button", { name: /Audit chat renderer/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Background/i }));
+    fireEvent.click(screen.getByTitle("Audit chat renderer"));
 
     expect(screen.queryByText("Progress 0")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /Show .* earlier events/i }));

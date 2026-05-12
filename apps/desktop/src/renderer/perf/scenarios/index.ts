@@ -149,7 +149,7 @@ export async function runScenario(scenarioId: string): Promise<void> {
   const smokeFailures: string[] = [];
   const ctx = makeContext(smokeFailures);
 
-  window.ade?.perf?.recordEvent({
+  await window.ade?.perf?.recordEvent({
     kind: "scenarioStart",
     ts: Date.now(),
     scenario: scenarioId,

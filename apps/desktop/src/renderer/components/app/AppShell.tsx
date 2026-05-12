@@ -304,6 +304,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const previousProjectRootRef = useRef<string | null | undefined>(undefined);
   const lastRouteSaveProjectRootRef = useRef<string | null | undefined>(undefined);
   const githubStatusProjectRootRef = useRef<string | null>(null);
+  const githubBannerDismissedRef = useRef(false);
+  githubBannerDismissedRef.current = githubBannerDismissed;
   const isOnboardingRoute = location.pathname === "/onboarding";
   const isLanesRoute = location.pathname.startsWith("/lanes");
   const shouldTrackTerminalAttention =
@@ -802,6 +804,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       githubStatusProjectRootRef.current = currentProjectRoot;
       setGithubStatus(null);
     }
+    const delayMs = githubBannerDismissedRef.current
+      ? GITHUB_STATUS_DISMISSED_BANNER_DELAY_MS
+      : GITHUB_STATUS_STARTUP_DELAY_MS;
     const githubTimer = window.setTimeout(() => {
       void window.ade.github.getStatus().then((status) => {
         if (cancelled) return;
@@ -810,12 +815,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         if (cancelled) return;
         setGithubStatus(null);
       });
-    }, githubBannerDismissed ? GITHUB_STATUS_DISMISSED_BANNER_DELAY_MS : GITHUB_STATUS_STARTUP_DELAY_MS);
+    }, delayMs);
     return () => {
       cancelled = true;
       window.clearTimeout(githubTimer);
     };
-  }, [currentProjectRoot, githubBannerDismissed]);
+  }, [currentProjectRoot]);
 
   // Refresh the GitHub banner the moment Settings saves/clears a token, so the
   // shell does not lag behind the Settings UI (the original "banner stays up
