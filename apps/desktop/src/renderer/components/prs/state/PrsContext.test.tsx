@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 
 import React from "react";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AutoRebaseLaneStatus, PrConvergenceState, PrConvergenceStatePatch, PrWithConflicts, RebaseNeed } from "../../../../shared/types";
+import type { AutoRebaseLaneStatus, PrConvergenceState, PrConvergenceStatePatch, PrSnapshotHydration, PrWithConflicts, RebaseNeed } from "../../../../shared/types";
 import { PrsProvider, usePrs } from "./PrsContext";
 
 const originalAde = globalThis.window.ade;
@@ -277,10 +277,10 @@ describe("PrsContext refresh", () => {
               updatedAt: "2026-03-24T12:05:00.000Z",
             },
       ]),
-      getStatus: vi.fn(() => new Promise(() => {})),
-      getChecks: vi.fn(() => new Promise(() => {})),
-      getReviews: vi.fn(() => new Promise(() => {})),
-      getComments: vi.fn(() => new Promise(() => {})),
+      getStatus: vi.fn((_prId: string) => new Promise(() => {})),
+      getChecks: vi.fn((_prId: string) => new Promise(() => {})),
+      getReviews: vi.fn((_prId: string) => new Promise(() => {})),
+      getComments: vi.fn((_prId: string) => new Promise(() => {})),
     });
 
     render(
@@ -311,20 +311,93 @@ describe("PrsContext refresh", () => {
     });
   });
 
+  it("does not let cached snapshot hydration overwrite live detail data", async () => {
+    const user = userEvent.setup();
+    vi.mocked(window.ade.prs.listWithConflicts).mockResolvedValue([makeFakePr("pr-1")]);
+    let resolveSnapshots!: (snapshots: PrSnapshotHydration[]) => void;
+    const snapshotsPromise = new Promise<PrSnapshotHydration[]>((resolve) => {
+      resolveSnapshots = resolve;
+    });
+    Object.assign(window.ade.prs, {
+      listSnapshots: vi.fn((_args: { prId: string }) => snapshotsPromise),
+      getStatus: vi.fn(async (_prId: string) => ({ state: "open" })),
+      getChecks: vi.fn(async (_prId: string) => []),
+      getReviews: vi.fn(async (_prId: string) => []),
+      getComments: vi.fn(async (_prId: string) => []),
+    });
+
+    render(
+      <PrsProvider>
+        <DetailHarness />
+      </PrsProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("loading").textContent).toBe("idle");
+    });
+
+    await user.click(screen.getByRole("button", { name: "select pr-1" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("status").textContent).toBe("open");
+      expect(screen.getByTestId("checks-count").textContent).toBe("0");
+    });
+
+    await act(async () => {
+      resolveSnapshots([
+        {
+          prId: "pr-1",
+          detail: null,
+          status: {
+            prId: "pr-1",
+            state: "closed",
+            checksStatus: "failing",
+            reviewStatus: "changes_requested",
+            isMergeable: false,
+            mergeConflicts: false,
+            behindBaseBy: 0,
+          },
+          checks: [
+            {
+              name: "stale-ci",
+              status: "completed",
+              conclusion: "failure",
+              detailsUrl: null,
+              startedAt: null,
+              completedAt: null,
+            },
+          ],
+          reviews: [],
+          comments: [],
+          files: [],
+          commits: [],
+          updatedAt: "2026-03-24T12:10:00.000Z",
+        },
+      ]);
+      await snapshotsPromise;
+    });
+
+    expect(screen.getByTestId("status").textContent).toBe("open");
+    expect(screen.getByTestId("checks-count").textContent).toBe("0");
+  });
+
   it("falls back to single merge-context hydration for IDs missing from a batch response", async () => {
     vi.mocked(window.ade.prs.listWithConflicts).mockResolvedValue([makeFakePr("pr-1"), makeFakePr("pr-2")]);
     Object.assign(window.ade.prs, {
-      getMergeContexts: vi.fn(async () => ({
-        "pr-1": {
-          prId: "pr-1",
-          groupId: null,
-          groupType: null,
-          sourceLaneIds: ["lane-pr-1"],
-          targetLaneId: null,
-          integrationLaneId: null,
-          members: [],
-        },
-      })),
+      getMergeContexts: vi.fn(async (prIds: string[]) =>
+        Object.fromEntries(
+          prIds
+            .filter((prId) => prId === "pr-1")
+            .map((prId) => [prId, {
+              prId,
+              groupId: null,
+              groupType: null,
+              sourceLaneIds: [`lane-${prId}`],
+              targetLaneId: null,
+              integrationLaneId: null,
+              members: [],
+            }]),
+        ),
+      ),
       getMergeContext: vi.fn(async (prId: string) => ({
         prId,
         groupId: null,

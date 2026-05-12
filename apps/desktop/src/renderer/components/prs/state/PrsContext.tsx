@@ -913,10 +913,11 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     }
 
     let cancelled = false;
+    let liveDetailApplied = false;
     const prId = selectedPrId;
     if (typeof window.ade.prs.listSnapshots === "function") {
       void window.ade.prs.listSnapshots({ prId }).then((snapshots) => {
-        if (cancelled || selectedPrIdRef.current !== prId) return;
+        if (cancelled || selectedPrIdRef.current !== prId || liveDetailApplied) return;
         const snapshot = snapshots[0];
         if (!snapshot) return;
         setDetailStatus(snapshot.status);
@@ -953,6 +954,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     ])
       .then(([statusResult, checksResult, reviewsResult, commentsResult]) => {
         if (cancelled) return;
+        liveDetailApplied = true;
 
         // Check for rate-limit errors in any rejected result
         for (const result of [statusResult, checksResult, reviewsResult, commentsResult]) {
