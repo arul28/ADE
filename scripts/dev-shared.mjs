@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -19,12 +20,45 @@ export function resolveDevSocketPath(rawSocketPath = null) {
   return candidate.startsWith("tcp://") ? candidate : path.resolve(candidate);
 }
 
+export function resolvePrimaryProjectRoot(candidateRoot = repoRoot) {
+  const resolved = path.resolve(candidateRoot);
+  const parts = resolved.split(path.sep);
+  for (let i = parts.length - 1; i >= 0; i -= 1) {
+    if (parts[i] !== ".ade" || parts[i + 1] !== "worktrees" || !parts[i + 2]) continue;
+    const rootParts = parts.slice(0, i);
+    const projectRoot = rootParts.length === 0 ? path.sep : rootParts.join(path.sep);
+    return path.resolve(projectRoot);
+  }
+  return resolved;
+}
+
 export function resolveProjectRoot(rawProjectRoot = null) {
-  return path.resolve(rawProjectRoot?.trim() || process.env.ADE_PROJECT_ROOT?.trim() || repoRoot);
+  const explicit = rawProjectRoot?.trim() || process.env.ADE_PROJECT_ROOT?.trim();
+  if (explicit) return path.resolve(explicit);
+  return resolvePrimaryProjectRoot(repoRoot);
+}
+
+export function resolveWorkspaceRoot(rawWorkspaceRoot = null) {
+  return path.resolve(rawWorkspaceRoot?.trim() || process.env.ADE_WORKSPACE_ROOT?.trim() || repoRoot);
 }
 
 export function cliPath() {
   return path.join(repoRoot, "apps", "ade-cli", "dist", "cli.cjs");
+}
+
+export function resolveDevAppVersion() {
+  const override = process.env.ADE_CLI_VERSION?.trim();
+  if (override) return override;
+  try {
+    const packageJson = JSON.parse(
+      fs.readFileSync(path.join(repoRoot, "apps", "desktop", "package.json"), "utf8"),
+    );
+    const version = typeof packageJson.version === "string" ? packageJson.version.trim() : "";
+    if (version) return version;
+  } catch {
+    // Fall through to the placeholder used by source-only CLI builds.
+  }
+  return "0.0.0";
 }
 
 export function run(command, args, extraEnv = {}) {
@@ -52,7 +86,9 @@ export function run(command, args, extraEnv = {}) {
 export async function buildRuntimeCli(skipRuntimeBuild = false) {
   if (skipRuntimeBuild) return;
   process.stdout.write("[ade] building runtime CLI\n");
-  await run(npmCommand, ["--prefix", "apps/ade-cli", "run", "build"]);
+  await run(npmCommand, ["--prefix", "apps/ade-cli", "run", "build"], {
+    ADE_CLI_VERSION: resolveDevAppVersion(),
+  });
 }
 
 function createSocket(socketPath) {
@@ -101,6 +137,7 @@ export async function ensureRuntime(socketPath) {
     cwd: repoRoot,
     env: {
       ...process.env,
+      ADE_CLI_VERSION: resolveDevAppVersion(),
       ADE_DEV_RUNTIME_SOCKET_PATH: socketPath,
       ADE_RUNTIME_SOCKET_PATH: socketPath,
       ADE_RPC_SOCKET_PATH: socketPath,
@@ -116,6 +153,7 @@ export async function ensureRuntime(socketPath) {
 
 export function devRuntimeEnv(socketPath, projectRoot) {
   return {
+    ADE_CLI_VERSION: resolveDevAppVersion(),
     ADE_DEV_RUNTIME_SOCKET_PATH: socketPath,
     ADE_RUNTIME_SOCKET_PATH: socketPath,
     ADE_RPC_SOCKET_PATH: socketPath,

@@ -325,6 +325,11 @@ The dev scripts are the same runtime daemon, just running from source against a 
 /tmp/ade-runtime-dev.sock
 ```
 
+From an ADE lane checkout under `.ade/worktrees/`, the dev scripts keep using
+that lane's source code, but default the ADE project root back to the primary
+checkout. `npm run dev:code` also passes the lane checkout as the workspace root
+so initial lane selection matches `ade code` launched directly from the lane.
+
 Full matrix:
 
 ```bash

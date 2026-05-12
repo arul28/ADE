@@ -26,6 +26,7 @@ import type {
   AgentChatPermissionMode,
   AgentChatSessionSummary,
   AgentChatSlashCommand,
+  CodexThreadGoal,
 } from "../../../desktop/src/shared/types/chat";
 import type { AiSettingsStatus, OpenCodeRuntimeSnapshot } from "../../../desktop/src/shared/types/config";
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
@@ -43,6 +44,7 @@ import {
   getSlashCommands,
   getStoredApiKeyProviders,
   interruptChat,
+  latestGoal,
   latestTokenStats,
   listClaudePlugins,
   listClaudeOutputStyles,
@@ -53,7 +55,6 @@ import {
   renameChat,
   reloadClaudePlugins,
   respondToInput,
-  resumeChat,
   sendChatMessage,
   setClaudeOutputStyle,
   tagChat,
@@ -73,8 +74,11 @@ import { ModelStatus } from "./components/ModelStatus";
 import { FooterControls } from "./components/FooterControls";
 import { theme } from "./theme";
 import { chooseInitialLane } from "./project";
+import { resolveDrawerChatSelection } from "./drawerSelection";
 import { latestExpandableFailureId, renderObject, summarizeDiffChanges } from "./format";
 import { startTuiHeartbeat, type TuiHeartbeat } from "./heartbeat";
+import { isImageFilePath, latestOpenableImageTarget } from "./imageTargets";
+import { appendReservedTuiEvent, reserveTuiEventDedupKey, syncTuiEventDedupKeys } from "./eventDedup";
 import { loadAdeCodeState, saveAdeCodeState } from "./state";
 import { buildLinearToolRequest } from "./linearCommands";
 import { buildPendingInputAnswers, latestPendingApproval } from "./pendingInput";
@@ -336,11 +340,39 @@ function compactNumber(value: number): string {
 }
 
 function formatTokenSummary(stats: ReturnType<typeof latestTokenStats>): string | null {
+  // Compact last-turn breakdown: `+2.3k/1.1k (450✶)` — input / output (cached marker).
   const parts: string[] = [];
-  if (stats.inputTokens != null) parts.push(`in ${compactNumber(stats.inputTokens)}`);
-  if (stats.outputTokens != null) parts.push(`out ${compactNumber(stats.outputTokens)}`);
+  if (stats.inputTokens != null || stats.outputTokens != null) {
+    const left = stats.inputTokens != null ? `+${compactNumber(stats.inputTokens)}` : "+0";
+    const right = stats.outputTokens != null ? compactNumber(stats.outputTokens) : "0";
+    parts.push(`${left}/${right}`);
+  }
+  if (stats.cacheReadTokens != null && stats.cacheReadTokens > 0) {
+    parts.push(`(${compactNumber(stats.cacheReadTokens)}✶)`);
+  }
   if (stats.costUsd != null) parts.push(`$${stats.costUsd.toFixed(2)}`);
-  return parts.length ? parts.join(" · ") : null;
+  return parts.length ? parts.join(" ") : null;
+}
+
+function formatGoalBannerLine(goal: CodexThreadGoal | null): string | null {
+  if (!goal?.objective) return null;
+  const objective = goal.objective.trim();
+  if (!objective) return null;
+  const right: string[] = [];
+  const used = goal.tokensUsed ?? null;
+  const budget = goal.tokenBudget ?? null;
+  if (used != null && budget != null) {
+    right.push(`${compactNumber(used)}/${compactNumber(budget)}`);
+  } else if (used != null) {
+    right.push(`${compactNumber(used)} tokens`);
+  }
+  if (typeof goal.timeUsedSeconds === "number" && goal.timeUsedSeconds > 0) {
+    const seconds = Math.round(goal.timeUsedSeconds);
+    const mins = Math.floor(seconds / 60);
+    right.push(mins > 0 ? `${mins}m ${seconds % 60}s` : `${seconds}s`);
+  }
+  if (goal.status) right.push(goal.status.replace(/_/g, " "));
+  return right.length ? `◎ ${objective}   ${right.join(" · ")}` : `◎ ${objective}`;
 }
 
 function formatContextUsage(usage: AgentChatContextUsage | null): string {
@@ -547,10 +579,6 @@ function readClaudeVimMode(workspaceRoot: string): boolean {
     }
   }
   return enabled;
-}
-
-function isImageFilePath(filePath: string): boolean {
-  return /\.(png|jpe?g|gif|webp|bmp|svg|ico|tiff?)$/i.test(filePath);
 }
 
 function commandAvailable(command: string): boolean {
@@ -1012,8 +1040,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const [formValues, setFormValues] = useState<Record<string, string>>({});
   const [formFieldIndex, setFormFieldIndex] = useState(0);
   const [rightSelectionIndex, setRightSelectionIndex] = useState(0);
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const [rightOpen, setRightOpen] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(true);
+  const [rightOpen, setRightOpen] = useState(() => columns >= 110);
   const [activePane, setActivePane] = useState<PaneFocus>("chat");
   const [prompt, setPrompt] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -1021,6 +1049,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const [tokenSummary, setTokenSummary] = useState<string | null>(null);
   const [statusLineStats, setStatusLineStats] = useState<TokenStats | null>(null);
   const [statusLineText, setStatusLineText] = useState<string | null>(null);
+  const [currentGoal, setCurrentGoal] = useState<CodexThreadGoal | null>(null);
   const [vimModeEnabled, setVimModeEnabled] = useState(() => readClaudeVimMode(project.workspaceRoot));
   const [vimMode, setVimMode] = useState<"insert" | "normal">("insert");
   const [hideVimModeIndicator, setHideVimModeIndicator] = useState(false);
@@ -1056,6 +1085,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const promptHistoryDraftRef = useRef("");
   const lastLocalSendAtRef = useRef<number>(0);
   const eventCountRef = useRef<number>(0);
+  const eventDedupKeysRef = useRef<Set<string>>(new Set());
+  const eventDedupKeyOrderRef = useRef<string[]>([]);
   const chatScrollOffsetRowsRef = useRef(0);
   const heartbeatRef = useRef<TuiHeartbeat | null>(null);
   const draftSeededFromHistoryRef = useRef(false);
@@ -1093,7 +1124,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   }, [setChatScrollOffset]);
 
   const selectActiveSessionId = useCallback((sessionId: string | null) => {
-    if (activeSessionIdRef.current !== sessionId) setChatScrollOffset(0);
+    if (activeSessionIdRef.current !== sessionId) {
+      setChatScrollOffset(0);
+      setCurrentGoal(null);
+    }
     if (sessionId) {
       draftChatActiveRef.current = false;
       setDraftChatActive(false);
@@ -1282,12 +1316,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       : []
   ), [activeCommandProvider, activePane, prompt, slashCommands]);
   const pendingApproval = useMemo(() => latestPendingApproval(events), [events]);
+  const goalBannerText = useMemo(() => formatGoalBannerLine(currentGoal), [currentGoal]);
   const activeFormField = rightPane.kind === "form"
     ? rightPane.fields[formFieldIndex] ?? rightPane.fields[0] ?? null
     : null;
   const statusLineRows = statusLineText ? Math.min(3, statusLineText.split(/\r?\n/).filter(Boolean).length || 1) : 0;
-  const statusRows = (streaming ? 1 : 0) + statusLineRows;
-  const chatRowBudget = Math.max(4, rows - 12 - statusRows);
+  const statusRows = statusLineRows;
+  const goalBannerRows = goalBannerText ? 1 : 0;
+  const chatRowBudget = Math.max(4, rows - 12 - statusRows - goalBannerRows);
   const providerReadinessRows = useMemo(
     () => buildProviderReadinessRows(aiStatus, storedApiKeyProviders, openCodeDiagnostics),
     [aiStatus, openCodeDiagnostics, storedApiKeyProviders],
@@ -1587,15 +1623,18 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   }, [activeLaneId, drawerLaneId, drawerLaneRows, selectedDrawerLaneAction, selectedDrawerLaneId]);
 
   useEffect(() => {
-    if (selectedDrawerChatAction) return;
-    if (draftChatActive && drawerLaneId === activeLaneId) {
-      setSelectedDrawerChatId(null);
-      setSelectedDrawerChatAction("new-chat");
-      return;
-    }
-    if (selectedDrawerChatId && drawerVisibleLaneSessions.some((session) => session.sessionId === selectedDrawerChatId)) return;
-    const activeChatInDrawer = drawerVisibleLaneSessions.find((session) => session.sessionId === activeSessionId);
-    setSelectedDrawerChatId(activeChatInDrawer?.sessionId ?? drawerVisibleLaneSessions[0]?.sessionId ?? null);
+    const next = resolveDrawerChatSelection({
+      activeLaneId,
+      activeSessionId,
+      draftChatActive,
+      drawerLaneId,
+      drawerVisibleLaneSessions,
+      selectedDrawerChatAction,
+      selectedDrawerChatId,
+    });
+    if (!next) return;
+    setSelectedDrawerChatId(next.selectedDrawerChatId);
+    setSelectedDrawerChatAction(next.selectedDrawerChatAction);
   }, [activeLaneId, activeSessionId, draftChatActive, drawerLaneId, drawerVisibleLaneSessions, selectedDrawerChatAction, selectedDrawerChatId]);
 
   useEffect(() => {
@@ -1723,6 +1762,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     }
     setDraftChatMode(true);
     selectActiveSessionId(null);
+    eventDedupKeysRef.current.clear();
+    eventDedupKeyOrderRef.current = [];
     setEvents([]);
     setClearedAt(null);
     chatDraftRef.current = "";
@@ -1883,6 +1924,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     let nextEvents: AgentChatEventEnvelope[] = [];
     if (nextSessionId) {
       const history = await getChatHistory(conn, nextSessionId);
+      setCurrentGoal(latestGoal(history.events));
       nextEvents = clearedAt
         ? history.events.filter((event) => event.timestamp > clearedAt)
         : history.events;
@@ -1898,6 +1940,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       setContextPercent(null);
       setTokenSummary(null);
       setStatusLineStats(null);
+      setCurrentGoal(null);
       setStreaming(false);
       eventCountRef.current = 0;
     }
@@ -1915,6 +1958,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     setSessions(nextSessions);
     selectActiveLaneId(nextLaneId);
     selectActiveSessionId(nextSessionId);
+    eventDedupKeyOrderRef.current = syncTuiEventDedupKeys(eventDedupKeysRef.current, nextEvents);
     setEvents(nextEvents);
     setSlashCommands(nextCommands);
     setModels(nextModels);
@@ -1984,6 +2028,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         draftSeededFromHistoryRef.current = false;
         setDraftChatMode(true);
         selectActiveSessionId(null);
+        eventDedupKeysRef.current.clear();
+        eventDedupKeyOrderRef.current = [];
         setEvents([]);
         await refreshState();
       } catch (err) {
@@ -2019,12 +2065,26 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         return;
       }
       if (clearedAt && envelope.timestamp <= clearedAt) return;
-      setEvents((prev) => {
-        const key = `${envelope.sequence ?? ""}:${envelope.timestamp}:${envelope.event.type}`;
-        if (prev.some((entry) => `${entry.sequence ?? ""}:${entry.timestamp}:${entry.event.type}` === key)) return prev;
-        return [...prev, envelope].slice(-500);
-      });
       const event = envelope.event as Record<string, unknown>;
+      if (event.type === "codex_goal_updated") {
+        setCurrentGoal((event as { goal?: CodexThreadGoal | null }).goal ?? null);
+      } else if (event.type === "codex_goal_cleared") {
+        setCurrentGoal(null);
+      }
+      const reservedKey = reserveTuiEventDedupKey(envelope, eventDedupKeysRef.current);
+      if (reservedKey !== null) {
+        setEvents((prev) => {
+          const next = appendReservedTuiEvent(
+            prev,
+            envelope,
+            eventDedupKeysRef.current,
+            eventDedupKeyOrderRef.current,
+            reservedKey,
+          );
+          eventDedupKeyOrderRef.current = next.eventKeys;
+          return next.events;
+        });
+      }
       if (event.type === "status" && event.turnStatus === "started") setStreaming(true);
       if (event.type === "done" || (event.type === "status" && event.turnStatus === "completed")) setStreaming(false);
       if (event.type === "subagent_started" || event.type === "subagent.started") {
@@ -2602,16 +2662,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       }
       return;
     }
-    if (name === "/resume") {
-      if (!sessionId) {
-        setRightPane({ kind: "details", title: "Resume", body: "No active chat is selected." });
-        return;
-      }
-      await resumeChat(conn, sessionId);
-      addNotice("Resumed chat.", "success");
-      await refreshState();
-      return;
-    }
     if (name === "/model") {
       if (args) {
         if (!sessionId) {
@@ -2711,6 +2761,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     }
     if (name === "/clear") {
       setClearedAt(new Date().toISOString());
+      eventDedupKeysRef.current.clear();
+      eventDedupKeyOrderRef.current = [];
       setEvents([]);
       setChatScrollOffset(0);
       addNotice("Local transcript view cleared. The durable chat remains in ADE.", "info");
@@ -2936,6 +2988,31 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       await refreshState();
     }
   }, [addNotice, focusAfterDetails, refreshState, selectActiveLaneId, selectActiveSessionId]);
+
+  const openLatestImage = useCallback(() => {
+    const target = latestOpenableImageTarget(events);
+    if (!target) {
+      addNotice("No image to open in the recent history.", "info");
+      return;
+    }
+    const openTarget = target;
+    try {
+      const child = process.platform === "darwin"
+        ? spawn("open", [openTarget], { stdio: "ignore", detached: true })
+        : process.platform === "win32"
+          ? spawn("rundll32.exe", ["url.dll,FileProtocolHandler", openTarget], { stdio: "ignore", detached: true })
+          : spawn("xdg-open", [openTarget], { stdio: "ignore", detached: true });
+      child.once("error", (err) => {
+        addNotice(err instanceof Error ? err.message : String(err), "error");
+      });
+      child.once("spawn", () => {
+        addNotice(`Opening ${path.basename(openTarget)}…`, "info");
+      });
+      child.unref();
+    } catch (err) {
+      addNotice(err instanceof Error ? err.message : String(err), "error");
+    }
+  }, [addNotice, events]);
 
   const submitPrompt = useCallback(async (value: string) => {
     const text = value.trim();
@@ -3327,6 +3404,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     }
     if (action === "app:clear" || action === "chat:clearScreen") {
       setClearedAt(new Date().toISOString());
+      eventDedupKeysRef.current.clear();
+      eventDedupKeyOrderRef.current = [];
       setEvents([]);
       setChatScrollOffset(0);
       addNotice("Cleared local transcript view.", "success");
@@ -3597,7 +3676,22 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     }
 
     if (key.ctrl && input === "o") {
-      focusDrawer();
+      if (drawerOpen && pane === "drawer") {
+        setDrawerOpen(false);
+        focusChat();
+      } else {
+        focusDrawer();
+      }
+      return;
+    }
+
+    if (key.ctrl && input === "l" && pane === "chat") {
+      setClearedAt(new Date().toISOString());
+      eventDedupKeysRef.current.clear();
+      eventDedupKeyOrderRef.current = [];
+      setEvents([]);
+      setChatScrollOffset(0);
+      addNotice("Viewport cleared. Durable chat history is unchanged.", "info");
       return;
     }
 
@@ -4092,6 +4186,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       });
       return;
     }
+    if (
+      pane === "chat"
+      && !prompt.trim()
+      && !pendingApproval
+      && rightPane.kind !== "form"
+      && !slashRows.length
+      && key.ctrl
+      && !key.meta
+      && input === "h"
+    ) {
+      openLatestImage();
+      return;
+    }
     const linePrefix = inputBeforeLineBreak(input);
     if (textInputActive && (key.return || linePrefix != null)) {
       const suffix = linePrefix == null ? "" : printableInput(linePrefix);
@@ -4146,8 +4253,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         projectName={projectName}
         lane={activeLane}
       />
-      {streaming ? (
-        <Text color={PURPLE}>● streaming live{tokenSummary ? ` · ${tokenSummary}` : ""} · ctrl-c interrupts</Text>
+      {goalBannerText ? (
+        <Box paddingX={1} flexShrink={0}>
+          <Text color={theme.color.warning} wrap="truncate-end">{goalBannerText}</Text>
+          {streaming ? <Text color={theme.color.mutedFg} dimColor>{" · streaming"}</Text> : null}
+        </Box>
       ) : null}
       <Box flexGrow={1} minHeight={8}>
         {drawerOpen ? (
@@ -4201,6 +4311,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         <Text color={PURPLE}>› </Text>
         <Text>{prompt}</Text>
         <Text inverse> </Text>
+        {streaming && !goalBannerText ? <Text color={theme.color.mutedFg} dimColor>{"  · streaming"}</Text> : null}
       </Box>
       <ModelStatus
         provider={modelState.provider}

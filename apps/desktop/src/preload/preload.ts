@@ -278,6 +278,8 @@ import type {
   AgentChatApproveArgs,
   AgentChatArchiveArgs,
   AgentChatCreateArgs,
+  AgentChatCodexOpenInCliArgs,
+  AgentChatCodexOpenInCliResult,
   AgentChatDeleteArgs,
   AgentChatSuggestLaneNameArgs,
   AgentChatDisposeArgs,
@@ -5185,6 +5187,12 @@ contextBridge.exposeInMainWorld("ade", {
       return runtime.handled
         ? runtime.result
         : ipcRenderer.invoke(IPC.agentChatGetEventHistory, args);
+    },
+    codex: {
+      openInCli: (
+        args: AgentChatCodexOpenInCliArgs,
+      ): Promise<AgentChatCodexOpenInCliResult> =>
+        ipcRenderer.invoke(IPC.agentChatCodexOpenInCli, args),
     },
   },
   computerUse: {

@@ -130,6 +130,7 @@ async function main(): Promise<void> {
   const pty = await import("node-pty");
   const claude = await import("@anthropic-ai/claude-agent-sdk");
   const claudeExecutablePath = resolveClaudeExecutablePath();
+  const codexExecutable = resolveCodexExecutable();
   const ptyProbe = await probePty();
   const claudeStartup = await probeClaudeStartup();
 
@@ -140,6 +141,8 @@ async function main(): Promise<void> {
     claudeExecutablePath,
     claudeStartup,
     codexExecutable: typeof resolveCodexExecutable,
+    codexExecutablePath: codexExecutable.path,
+    codexExecutableSource: codexExecutable.source,
     ptyProbe,
   }));
 }

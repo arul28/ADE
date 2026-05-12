@@ -243,7 +243,7 @@ function PersistentWorkSurface({ active }: { active: boolean }) {
     }
   }, [active, projectHydrated, hasActiveProject, showWelcome]);
 
-  if (!projectHydrated) {
+  if (!projectHydrated && !hasActiveProject) {
     return active ? GuardLoadingFallback : null;
   }
 

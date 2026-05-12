@@ -143,8 +143,10 @@ import type {
   AgentChatSteerResult,
   AgentChatSendArgs,
   AgentChatRuntime,
+  AgentChatRuntimeMode,
   AgentChatCloudOverrides,
   AgentChatCloudRunStatus,
+  AgentChatPlanStep,
   AgentChatClaudeSessionInfo,
   AgentChatClaudeSessionInfoArgs,
   AgentChatClaudeSessionListArgs,
@@ -155,6 +157,11 @@ import type {
   AgentChatCursorConfigValue,
   AgentChatCursorModeSnapshot,
   AgentChatOpenCodePermissionMode,
+  CodexPlanState,
+  CodexThreadGoal,
+  CodexThreadTokenUsage,
+  CodexTokenUsageBreakdown,
+  CodexWebSearchAction,
   PendingInputQuestion,
   PendingInputRequest,
   PendingInputSource,
@@ -254,7 +261,6 @@ import {
   resolveCursorSdkUserHome,
   runCursorSdkCloudRequest,
   type CursorSdkPooled,
-  type CursorSdkRuntimeMeta,
 } from "./cursorSdkPool";
 import {
   acquireDroidAcpConnection,
@@ -267,7 +273,6 @@ import { discoverDroidCliModelDescriptors } from "./droidModelsDiscovery";
 import {
   mapCursorSdkMessageToChatEvents,
   mapCursorSdkRunResultToDoneEvent,
-  mapTurnEndedTokensToEvent,
 } from "./cursorSdkEventMapper";
 import {
   allowCursorHook,
@@ -391,6 +396,8 @@ type PersistedChatState = {
   awaitingInput?: boolean;
   requestedCwd?: string | null;
   idleSinceAt?: string | null;
+  /** Non-interactive runtime mode (e.g. "print" for one-shot CLI output). Drives initialize handshake opt-outs. */
+  runtimeMode?: AgentChatRuntimeMode;
   /** Recent terminal Codex turn ids, used to suppress late replayed lifecycle events. */
   codexTerminalTurnIds?: string[];
   /** Persisted "Allow for Session" tool approval overrides (Claude runtime). */
@@ -446,6 +453,9 @@ type CodexRuntime = {
   fileDeltaByItemId: Map<string, string>;
   fileChangesByItemId: Map<string, Array<{ path: string; kind: "create" | "modify" | "delete" }>>;
   planTextByItemId: Map<string, string>;
+  manualCompactionItemIds: Set<string>;
+  manualCompactionPending: boolean;
+  webSearchActionsByItemId: Map<string, CodexWebSearchAction[]>;
   activeSubagents: Map<string, { taskId: string; description: string; background: boolean }>;
   interruptedTurnIds: Set<string>;
   ignoredTurnIds: Set<string>;
@@ -469,7 +479,7 @@ type CodexRuntime = {
   request: <T = unknown>(method: string, params?: unknown) => Promise<T>;
   notify: (method: string, params?: unknown) => void;
   sendResponse: (id: string | number, result: unknown) => void;
-  sendError: (id: string | number, message: string) => void;
+  sendError: (id: string | number, message: string, code?: number) => void;
   slashCommands: Array<{ name: string; description: string; argumentHint?: string }>;
   rateLimits: { remaining: number | null; limit: number | null; resetAt: string | null } | null;
   collaborationModes: Set<string> | null;
@@ -534,34 +544,25 @@ const CODEX_BUILT_IN_SLASH_COMMANDS: AgentChatSlashCommand[] = [
   { name: "/permissions", description: "Set what Codex can do without asking first.", source: "sdk" },
   { name: "/sandbox-add-read-dir", description: "Grant sandbox read access to an extra directory.", source: "sdk" },
   { name: "/agent", description: "Switch the active agent thread.", source: "sdk" },
-  { name: "/apps", description: "Browse apps and insert them into your prompt.", source: "sdk" },
-  { name: "/plugins", description: "Browse installed and discoverable plugins.", source: "sdk" },
   { name: "/clear", description: "Clear the terminal and start a fresh chat.", source: "sdk" },
-  { name: "/compact", description: "Summarize the visible conversation to free tokens.", source: "sdk" },
+  { name: "/compact", description: "Summarize the visible conversation to free tokens.", source: "local" },
   { name: "/copy", description: "Copy the latest completed Codex output.", source: "sdk" },
   { name: "/diff", description: "Show the Git diff, including untracked files.", source: "sdk" },
-  { name: "/exit", description: "Exit the CLI.", source: "sdk" },
   { name: "/experimental", description: "Toggle experimental features.", source: "sdk" },
   { name: "/feedback", description: "Send logs to the Codex maintainers.", source: "sdk" },
   { name: "/init", description: "Generate an AGENTS.md scaffold in the current directory.", source: "sdk" },
+  { name: "/goal", description: "Set, show, pause, resume, budget, or clear the thread goal.", source: "local", argumentHint: "[pause|resume|clear|budget <tokens>|<objective>]" },
+  { name: "/inject", description: "Inject context text into Codex thread history.", source: "local", argumentHint: "<context text>" },
   { name: "/logout", description: "Sign out of Codex.", source: "sdk" },
   { name: "/mcp", description: "List configured MCP tools.", source: "sdk" },
-  { name: "/mention", description: "Attach a file to the conversation.", source: "sdk" },
   { name: "/model", description: "Choose the active model and reasoning effort.", source: "sdk" },
-  { name: "/fast", description: "Toggle Fast mode for supported models.", source: "sdk" },
-  { name: "/plan", description: "Switch to plan mode and optionally send a prompt.", source: "sdk" },
+  { name: "/fast", description: "Toggle Fast mode for supported models.", source: "local", argumentHint: "[on|off|status]" },
+  { name: "/plan", description: "Switch to plan mode and optionally send a prompt.", source: "local", argumentHint: "[prompt]" },
   { name: "/personality", description: "Choose a communication style for responses.", source: "sdk" },
-  { name: "/ps", description: "Show experimental background terminals and recent output.", source: "sdk" },
-  { name: "/stop", description: "Stop all background terminals.", source: "sdk" },
-  { name: "/fork", description: "Fork the current conversation into a new thread.", source: "sdk" },
-  { name: "/resume", description: "Resume a saved conversation from your session list.", source: "sdk" },
-  { name: "/new", description: "Start a new conversation inside the same CLI session.", source: "sdk" },
   { name: "/quit", description: "Exit the CLI.", source: "sdk" },
-  { name: "/review", description: "Ask Codex to review your working tree.", source: "sdk" },
+  { name: "/review", description: "Ask Codex to review your working tree, a branch, or a prompt.", source: "local", argumentHint: "[diff|branch <name>|prompt <text>]" },
   { name: "/status", description: "Display session configuration and token usage.", source: "sdk" },
   { name: "/debug-config", description: "Print config layer and requirements diagnostics.", source: "sdk" },
-  { name: "/statusline", description: "Configure TUI status-line fields.", source: "sdk" },
-  { name: "/title", description: "Configure terminal window or tab title fields.", source: "sdk" },
 ];
 
 const CLAUDE_BUILT_IN_SLASH_COMMANDS: AgentChatSlashCommand[] = [
@@ -1597,6 +1598,118 @@ function normalizeUsagePayload(
   return { inputTokens, outputTokens };
 }
 
+function numberOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function stringOrNull(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length ? value.trim() : null;
+}
+
+function codexTimestampOrNull(value: unknown): string | null {
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return stringOrNull(value);
+}
+
+function normalizeCodexTokenBreakdown(value: unknown): CodexTokenUsageBreakdown | undefined {
+  const record = asRecord(value);
+  if (!record) return undefined;
+  const inputTokens = numberOrNull(record.inputTokens ?? record.input_tokens ?? record.promptTokens ?? record.prompt_tokens);
+  const outputTokens = numberOrNull(record.outputTokens ?? record.output_tokens ?? record.completionTokens ?? record.completion_tokens);
+  const cacheReadTokens = numberOrNull(record.cacheReadTokens ?? record.cache_read_tokens ?? record.cachedInputTokens ?? record.cached_input_tokens);
+  const cacheWriteTokens = numberOrNull(record.cacheWriteTokens ?? record.cache_write_tokens ?? record.cacheCreationTokens ?? record.cache_creation_tokens);
+  const totalTokens = numberOrNull(record.totalTokens ?? record.total_tokens ?? record.total);
+  const normalized: CodexTokenUsageBreakdown = {};
+  if (inputTokens != null) normalized.inputTokens = inputTokens;
+  if (outputTokens != null) normalized.outputTokens = outputTokens;
+  if (cacheReadTokens != null) normalized.cacheReadTokens = cacheReadTokens;
+  if (cacheWriteTokens != null) normalized.cacheWriteTokens = cacheWriteTokens;
+  if (totalTokens != null) normalized.totalTokens = totalTokens;
+  if (normalized.totalTokens == null) {
+    const derivedTotal =
+      (normalized.inputTokens ?? 0)
+      + (normalized.outputTokens ?? 0);
+    if (derivedTotal > 0) normalized.totalTokens = derivedTotal;
+  }
+  return Object.keys(normalized).length ? normalized : undefined;
+}
+
+function normalizeCodexThreadTokenUsage(params: Record<string, unknown>): CodexThreadTokenUsage | null {
+  const tokenUsage = asRecord(params.tokenUsage ?? params.token_usage) ?? params;
+  const total = normalizeCodexTokenBreakdown(tokenUsage.total);
+  const last = normalizeCodexTokenBreakdown(tokenUsage.last);
+  const fallback = !total && !last ? normalizeCodexTokenBreakdown(tokenUsage) : undefined;
+  const modelContextWindow = numberOrNull(
+    tokenUsage.modelContextWindow
+    ?? tokenUsage.model_context_window
+    ?? tokenUsage.contextWindow
+    ?? tokenUsage.context_window,
+  );
+  const normalized: CodexThreadTokenUsage = {
+    threadId: extractCodexThreadId(params) ?? null,
+    turnId: extractCodexTurnId(params) ?? null,
+    ...(total || fallback ? { total: total ?? fallback } : {}),
+    ...(last ? { last } : {}),
+    ...(modelContextWindow != null ? { modelContextWindow } : {}),
+  };
+  return normalized.total || normalized.last || normalized.modelContextWindow != null ? normalized : null;
+}
+
+function normalizeCodexGoalPayload(value: unknown): CodexThreadGoal | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  const goalRecord = asRecord(record.goal) ?? record;
+  const statusRaw = stringOrNull(goalRecord.status)?.toLowerCase() ?? null;
+  const status: CodexThreadGoal["status"] =
+    statusRaw === "active" || statusRaw === "paused" || statusRaw === "complete" || statusRaw === "cancelled"
+      ? statusRaw
+      : statusRaw === "budgetlimited" || statusRaw === "budget_limited" || statusRaw === "budget-limited"
+        ? "budget_limited"
+      : statusRaw
+        ? "unknown"
+        : undefined;
+  const normalized: CodexThreadGoal = {
+    objective: stringOrNull(goalRecord.objective ?? goalRecord.text ?? goalRecord.goal),
+    tokenBudget: numberOrNull(goalRecord.tokenBudget ?? goalRecord.token_budget),
+    tokensUsed: numberOrNull(goalRecord.tokensUsed ?? goalRecord.tokens_used),
+    timeUsedSeconds: numberOrNull(goalRecord.timeUsedSeconds ?? goalRecord.time_used_seconds),
+    createdAt: codexTimestampOrNull(goalRecord.createdAt ?? goalRecord.created_at),
+    updatedAt: codexTimestampOrNull(goalRecord.updatedAt ?? goalRecord.updated_at),
+    ...(status ? { status } : {}),
+  };
+  return Object.values(normalized).some((entry) => entry != null) ? normalized : null;
+}
+
+function normalizeCodexWebSearchAction(value: unknown): CodexWebSearchAction | null {
+  if (typeof value === "string") {
+    const action = value.trim();
+    return action.length ? { type: action } : null;
+  }
+  const record = asRecord(value);
+  if (!record) return null;
+  const rawStatus = stringOrNull(record.status)?.toLowerCase();
+  const status: CodexWebSearchAction["status"] =
+    rawStatus === "pending" || rawStatus === "running" || rawStatus === "completed" || rawStatus === "failed"
+      ? rawStatus
+      : undefined;
+  const type = stringOrNull(record.type ?? record.action ?? record.kind) ?? "action";
+  return {
+    type,
+    ...(status ? { status } : {}),
+    ...(stringOrNull(record.query) ? { query: stringOrNull(record.query) as string } : {}),
+    ...(stringOrNull(record.url ?? record.link) ? { url: stringOrNull(record.url ?? record.link) as string } : {}),
+    ...(stringOrNull(record.title) ? { title: stringOrNull(record.title) as string } : {}),
+    ...(stringOrNull(record.snippet ?? record.text) ? { snippet: stringOrNull(record.snippet ?? record.text) as string } : {}),
+  };
+}
+
+function normalizeCodexWebSearchActions(...values: unknown[]): CodexWebSearchAction[] {
+  return values
+    .flatMap((value) => Array.isArray(value) ? value : value == null ? [] : [value])
+    .map((value) => normalizeCodexWebSearchAction(value))
+    .filter((action): action is CodexWebSearchAction => action != null);
+}
+
 const KNOWN_CODEX_EFFORTS = new Set(CODEX_REASONING_EFFORTS.map((e) => e.effort));
 
 const EFFORT_ALIASES: Record<string, Record<string, string>> = {
@@ -2307,6 +2420,13 @@ function buildStreamingUserContent(
 
   for (const attachment of args.attachments) {
     try {
+      if (attachment.type === "image-url") {
+        parts.push({
+          type: "text",
+          text: `\nImage URL: ${attachment.url}`,
+        });
+        continue;
+      }
       const data = readFileWithinRootSecure(attachment._rootPath, attachment._resolvedPath);
       const mediaType = inferAttachmentMediaType(attachment);
 
@@ -4964,6 +5084,27 @@ export function createAgentChatService(args: {
     }
   };
 
+  const getCodexResumeContext = (sessionId: string): {
+    sessionId: string;
+    threadId: string;
+    laneWorktreePath: string;
+    isMission: boolean;
+    provider: AgentChatProvider;
+  } | null => {
+    const managed = managedSessions.get(sessionId);
+    if (!managed) return null;
+    const { session, laneWorktreePath } = managed;
+    const threadId = session.threadId?.trim() ?? "";
+    if (!threadId.length) return null;
+    return {
+      sessionId,
+      threadId,
+      laneWorktreePath,
+      isMission: session.surface === "mission",
+      provider: session.provider,
+    };
+  };
+
   const getChatTranscript = async ({
     sessionId,
     limit = DEFAULT_TRANSCRIPT_READ_LIMIT,
@@ -6425,6 +6566,7 @@ export function createAgentChatService(args: {
       ...(managed.session.capabilityMode ? { capabilityMode: managed.session.capabilityMode } : {}),
       ...(managed.session.completion ? { completion: managed.session.completion } : {}),
       ...(managed.session.threadId ? { threadId: managed.session.threadId } : {}),
+      ...(managed.session.runtimeMode ? { runtimeMode: managed.session.runtimeMode } : {}),
       ...(managed.runtime?.kind === "droid" && managed.runtime.acpSessionId
         ? { acpSessionId: managed.runtime.acpSessionId }
         : {}),
@@ -6712,6 +6854,9 @@ export function createAgentChatService(args: {
             ? { idleSinceAt: null }
             : {}),
         ...(codexTerminalTurnIds?.length ? { codexTerminalTurnIds } : {}),
+        ...(record.runtimeMode === "print" || record.runtimeMode === "interactive"
+          ? { runtimeMode: record.runtimeMode }
+          : {}),
         updatedAt: typeof record.updatedAt === "string" && record.updatedAt.trim().length ? record.updatedAt : nowIso()
       };
       hydrateNativePermissionControls(hydrated as Parameters<typeof hydrateNativePermissionControls>[0]);
@@ -7652,6 +7797,7 @@ export function createAgentChatService(args: {
         status: mapTerminalStatusToChatStatus(row.status),
         idleSinceAt: persisted?.idleSinceAt ?? null,
         ...(persisted?.threadId ? { threadId: persisted.threadId } : {}),
+        ...(persisted?.runtimeMode ? { runtimeMode: persisted.runtimeMode } : {}),
         ...(persisted?.requestedCwd != null && String(persisted.requestedCwd).trim().length
           ? { requestedCwd: String(persisted.requestedCwd).trim() }
           : {}),
@@ -7811,19 +7957,100 @@ export function createAgentChatService(args: {
       });
     }
     const providerSlashCommand = args.providerSlashCommand === true;
-    const autoMemoryPlan = providerSlashCommand
-      ? null
-      : await buildAutoMemoryTurnPlan(managed, userText, attachments);
-    const autoMemoryNotice = autoMemoryPlan ? buildAutoMemorySystemNotice(autoMemoryPlan) : null;
+    const completeInlineCodexSlash = (
+      message?: string,
+      emitBeforeComplete?: (turnId: string) => void,
+    ) => {
+      const slashTurnId = randomUUID();
+      markDispatched();
+      persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
+      markSessionIdleWithFreshCache(managed);
+      emitBeforeComplete?.(slashTurnId);
+      if (message) {
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "info",
+          message,
+          turnId: slashTurnId,
+        });
+      }
+      emitChatEvent(managed, { type: "status", turnStatus: "completed", turnId: slashTurnId });
+      emitChatEvent(managed, {
+        type: "done",
+        turnId: slashTurnId,
+        status: "completed",
+        model: managed.session.model,
+        ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+      });
+      persistChatState(managed);
+    };
+    const completeFailedInlineCodexSlash = (prefix: string, error: unknown) => {
+      completeInlineCodexSlash(`${prefix}: ${error instanceof Error ? error.message : String(error)}`);
+    };
+    const requestInlineCodexSlash = async <T>(
+      method: string,
+      params: Record<string, unknown>,
+      failurePrefix: string,
+    ): Promise<{ ok: true; result: T } | { ok: false }> => {
+      try {
+        return { ok: true, result: await runtime.request<T>(method, params) };
+      } catch (error) {
+        completeFailedInlineCodexSlash(failurePrefix, error);
+        return { ok: false };
+      }
+    };
 
-    // Intercept /review command — route to review/start RPC instead of turn/start
+    // Intercept /review command — route to review/start RPC instead of turn/start.
+    // ReviewTarget variants (per codex-rs/app-server-protocol/schema/typescript/v2/ReviewTarget.ts):
+    //   { type: "uncommittedChanges" }
+    //   { type: "baseBranch", branch }
+    //   { type: "commit", sha, title }
+    //   { type: "custom", instructions }
     if (args.promptText.trim().startsWith("/review")) {
+      const reviewArgs = args.promptText.trim().replace(/^\/review(?:\s+|$)/i, "").trim();
+      // Detect the subcommand keyword first (with or without trailing arg) so
+      // `/review branch` and `/review branch   ` both reject cleanly instead of
+      // falling through to the catch-all "custom" branch.
+      const branchPrefixMatch = /^branch(?:\s+(.*))?$/i.exec(reviewArgs);
+      const promptPrefixMatch = /^prompt(?:\s+(.*))?$/i.exec(reviewArgs);
+      const commitMatch = /^commit\s+(\S+)(?:\s+(.+))?$/i.exec(reviewArgs);
+      const diffMatch = /^(diff|uncommitted|uncommittedChanges)$/i.test(reviewArgs);
+      let target: unknown;
+      let usageError: string | null = null;
+      if (branchPrefixMatch) {
+        const branchName = (branchPrefixMatch[1] ?? "").trim();
+        if (!branchName.length) {
+          usageError = "Usage: /review branch <name>.";
+        } else {
+          target = { type: "baseBranch", branch: branchName };
+        }
+      } else if (promptPrefixMatch) {
+        const promptText = (promptPrefixMatch[1] ?? "").trim();
+        if (!promptText.length) {
+          usageError = "Usage: /review prompt <text>.";
+        } else {
+          target = { type: "custom", instructions: promptText };
+        }
+      } else if (commitMatch) {
+        const sha = commitMatch[1]!.trim();
+        const title = commitMatch[2]?.trim() ?? null;
+        target = { type: "commit", sha, ...(title ? { title } : { title: null }) };
+      } else if (diffMatch || !reviewArgs) {
+        target = { type: "uncommittedChanges" };
+      } else {
+        target = { type: "custom", instructions: reviewArgs };
+      }
+      if (usageError) {
+        runtime.awaitingTurnStart = false;
+        completeInlineCodexSlash(usageError);
+        return;
+      }
       runtime.awaitingTurnStart = true;
       let reviewResult: { turn?: { id?: string } };
       try {
         reviewResult = await runtime.request<{ turn?: { id?: string } }>("review/start", {
           threadId: managed.session.threadId,
-          target: "uncommittedChanges",
+          target,
         });
       } catch (error) {
         runtime.awaitingTurnStart = false;
@@ -7845,9 +8072,223 @@ export function createAgentChatService(args: {
       return;
     }
 
+    const slashText = args.promptText.trim();
+    let effectivePromptText = args.promptText;
+    const planSlashCommand = /^\/plan(?:\s|$)/i.test(slashText);
+
+    if (/^\/fast(?:\s|$)/i.test(slashText)) {
+      const fastArgs = slashText.replace(/^\/fast(?:\s+|$)/i, "").trim().toLowerCase();
+      const supported = sessionSupportsCodexFastMode(managed.session);
+      const current = managed.session.codexFastMode === true && supported;
+      if (!supported) {
+        delete managed.session.codexFastMode;
+        completeInlineCodexSlash("Codex Fast mode is not available for this model.");
+        return;
+      }
+      if (!fastArgs || fastArgs === "toggle") {
+        const enabled = !current;
+        managed.session.codexFastMode = enabled;
+        if (runtime.threadResumed) {
+          runtime.threadResumed = false;
+          runtime.canAttachResumedTurnStart = false;
+        }
+        completeInlineCodexSlash(`Codex Fast mode is ${enabled ? "on" : "off"}.`);
+        return;
+      }
+      if (fastArgs === "status") {
+        completeInlineCodexSlash(`Codex Fast mode is ${current ? "on" : "off"}.`);
+        return;
+      }
+      if (fastArgs === "on" || fastArgs === "off") {
+        const enabled = fastArgs === "on";
+        const changed = current !== enabled;
+        managed.session.codexFastMode = enabled;
+        if (changed && runtime.threadResumed) {
+          runtime.threadResumed = false;
+          runtime.canAttachResumedTurnStart = false;
+        }
+        completeInlineCodexSlash(`Codex Fast mode is ${enabled ? "on" : "off"}.`);
+        return;
+      }
+      completeInlineCodexSlash("Usage: /fast [on|off|status].");
+      return;
+    }
+
+    if (planSlashCommand) {
+      const planPrompt = slashText.replace(/^\/plan(?:\s+|$)/i, "").trim();
+      managed.session.permissionMode = "plan";
+      managed.session.interactionMode = "plan";
+      managed.session.codexConfigSource = "flags";
+      managed.session.codexApprovalPolicy = "on-request";
+      managed.session.codexSandbox = "read-only";
+      persistChatState(managed);
+      if (!planPrompt) {
+        completeInlineCodexSlash("Codex plan mode is on.");
+        return;
+      }
+      effectivePromptText = planPrompt;
+    }
+
+    if (/^\/compact(?:\s|$)/i.test(slashText)) {
+      try {
+        await runtime.request("thread/compact/start", {
+          threadId: managed.session.threadId,
+        });
+        runtime.manualCompactionPending = true;
+        completeInlineCodexSlash("Codex context compaction started.");
+      } catch (error) {
+        runtime.manualCompactionPending = false;
+        completeInlineCodexSlash(
+          `Codex context compaction failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      return;
+    }
+
+    if (/^\/inject(?:\s|$)/i.test(slashText)) {
+      const injectBody = slashText.replace(/^\/inject(?:\s+|$)/i, "");
+      const trimmed = injectBody.trim();
+      if (!trimmed) {
+        completeInlineCodexSlash("Usage: /inject <context text>.");
+        return;
+      }
+      // Codex's ThreadInjectItemsParams expects raw Responses API items
+      // (ResponseItem::Message → `{ type: "message", role, content: [ContentItem::InputText] }`),
+      // not a `{ type: "user_message", text }` shape. Mirror the wire shape used by
+      // codex-rs/tui/src/app/side.rs::side_boundary_prompt_item.
+      const injectResult = await requestInlineCodexSlash("thread/inject_items", {
+        threadId: managed.session.threadId,
+        items: [
+          {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: trimmed }],
+          },
+        ],
+      }, "Codex context injection failed");
+      if (!injectResult.ok) return;
+      const firstLine = trimmed.split(/\r?\n/)[0] ?? trimmed;
+      const preview = firstLine.length > 80 ? `${firstLine.slice(0, 77)}...` : firstLine;
+      completeInlineCodexSlash("Context injected into Codex thread history.", (turnId) => {
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "info",
+          message: `[injected] ${preview}`,
+          turnId,
+        });
+      });
+      return;
+    }
+
+    if (/^\/goal(?:\s|$)/i.test(slashText)) {
+      const goalArgs = slashText.replace(/^\/goal(?:\s+|$)/i, "").trim();
+      if (!goalArgs || /^show$/i.test(goalArgs) || /^status$/i.test(goalArgs)) {
+        const response = await requestInlineCodexSlash<{ goal?: unknown }>("thread/goal/get", {
+          threadId: managed.session.threadId,
+        }, "Codex goal command failed");
+        if (!response.ok) return;
+        const goal = normalizeCodexGoalPayload(response.result);
+        managed.session.codexGoal = goal;
+        emitChatEvent(managed, {
+          type: "codex_goal_updated",
+          goal,
+        });
+        completeInlineCodexSlash(goal?.objective ? "Codex goal is current." : "No active Codex goal.");
+        return;
+      }
+      if (/^(clear|reset|none)$/i.test(goalArgs)) {
+        const response = await requestInlineCodexSlash("thread/goal/clear", {
+          threadId: managed.session.threadId,
+        }, "Codex goal command failed");
+        if (!response.ok) return;
+        managed.session.codexGoal = null;
+        emitChatEvent(managed, { type: "codex_goal_cleared" });
+        completeInlineCodexSlash("Codex goal cleared.");
+        return;
+      }
+      const statusMatch = /^status\s+(active|paused|complete)$/i.exec(goalArgs);
+      const pauseResumeMatch = /^(pause|resume)$/i.exec(goalArgs);
+      if (/^status(?:\s|$)/i.test(goalArgs) && !statusMatch) {
+        completeInlineCodexSlash("Usage: /goal status active|paused|complete.");
+        return;
+      }
+      if (statusMatch || pauseResumeMatch) {
+        const rawStatus = (statusMatch?.[1] ?? pauseResumeMatch?.[1] ?? "active").toLowerCase();
+        const status = rawStatus === "pause" ? "paused" : rawStatus === "resume" ? "active" : rawStatus;
+        const response = await requestInlineCodexSlash<{ goal?: unknown }>("thread/goal/set", {
+          threadId: managed.session.threadId,
+          status,
+        }, "Codex goal command failed");
+        if (!response.ok) return;
+        const goal = normalizeCodexGoalPayload(response.result);
+        managed.session.codexGoal = goal;
+        emitChatEvent(managed, {
+          type: "codex_goal_updated",
+          goal,
+        });
+        completeInlineCodexSlash(`Codex goal ${status === "active" ? "resumed" : status}.`);
+        return;
+      }
+      const budgetMatch = /^budget\s+(.+)$/i.exec(goalArgs);
+      if (/^budget(?:\s|$)/i.test(goalArgs) && !budgetMatch) {
+        completeInlineCodexSlash("Usage: /goal budget <positive tokens>|clear.");
+        return;
+      }
+      if (budgetMatch) {
+        const rawBudget = budgetMatch[1]?.trim() ?? "";
+        const budgetDigits = rawBudget.replace(/_/g, "");
+        const tokenBudget = /^(clear|none|reset)$/i.test(rawBudget)
+          ? null
+          : /^\d+$/.test(budgetDigits)
+            ? Number.parseInt(budgetDigits, 10)
+            : Number.NaN;
+        if (tokenBudget !== null && (!Number.isSafeInteger(tokenBudget) || tokenBudget < 1)) {
+          completeInlineCodexSlash("Usage: /goal budget <positive tokens>|clear.");
+          return;
+        }
+        const response = await requestInlineCodexSlash<{ goal?: unknown }>("thread/goal/set", {
+          threadId: managed.session.threadId,
+          tokenBudget,
+        }, "Codex goal command failed");
+        if (!response.ok) return;
+        const goal = normalizeCodexGoalPayload(response.result);
+        managed.session.codexGoal = goal;
+        emitChatEvent(managed, {
+          type: "codex_goal_updated",
+          goal,
+        });
+        completeInlineCodexSlash(tokenBudget === null ? "Codex goal budget cleared." : `Codex goal budget set to ${tokenBudget}.`);
+        return;
+      }
+      const objective = goalArgs.replace(/^set\s+/i, "").trim();
+      if (!objective) {
+        completeInlineCodexSlash("No Codex goal text was provided.");
+        return;
+      }
+      const response = await requestInlineCodexSlash<{ goal?: unknown }>("thread/goal/set", {
+        threadId: managed.session.threadId,
+        objective,
+      }, "Codex goal command failed");
+      if (!response.ok) return;
+      const goal = normalizeCodexGoalPayload(response.result);
+      managed.session.codexGoal = goal;
+      emitChatEvent(managed, {
+        type: "codex_goal_updated",
+        goal,
+      });
+      completeInlineCodexSlash("Codex goal updated.");
+      return;
+    }
+
+    const suppressTurnContext = providerSlashCommand && !planSlashCommand;
+    const autoMemoryPlan = suppressTurnContext
+      ? null
+      : await buildAutoMemoryTurnPlan(managed, effectivePromptText, attachments);
+    const autoMemoryNotice = autoMemoryPlan ? buildAutoMemorySystemNotice(autoMemoryPlan) : null;
+
     const input: Array<Record<string, unknown>> = [];
 
-    const reconstructionContext = providerSlashCommand ? "" : managed.pendingReconstructionContext?.trim() ?? "";
+    const reconstructionContext = suppressTurnContext ? "" : managed.pendingReconstructionContext?.trim() ?? "";
     if (reconstructionContext.length) {
       input.push({
         type: "text",
@@ -7906,11 +8347,15 @@ export function createAgentChatService(args: {
     }
     input.push({
       type: "text",
-      text: args.promptText,
+      text: effectivePromptText,
       text_elements: []
     });
 
     for (const attachment of resolvedAttachments) {
+      if (attachment.type === "image-url") {
+        input.push({ type: "image", url: attachment.url });
+        continue;
+      }
       const stagedPath = stageAttachmentForCodexInput(attachment);
       if (attachment.type === "image") {
         input.push({ type: "localImage", path: stagedPath });
@@ -7929,8 +8374,6 @@ export function createAgentChatService(args: {
         ...(managed.session.reasoningEffort
           ? {
               effort: managed.session.reasoningEffort,
-              reasoningEffort: managed.session.reasoningEffort,
-              reasoning_effort: managed.session.reasoningEffort,
             }
           : {}),
         ...codexServiceTierArgs(managed.session),
@@ -10002,12 +10445,21 @@ export function createAgentChatService(args: {
       return;
     }
 
-    runtime.sendError(id, `Unsupported server request: ${method || "unknown"}`);
+    if (
+      method === "attestation/generate"
+      || method === "account/chatgptAuthTokens/refresh"
+      || method === "item/tool/call"
+    ) {
+      runtime.sendError(id, `ADE does not provide Codex app-server capability '${method}'.`, -32601);
+      return;
+    }
+
+    runtime.sendError(id, `Unsupported server request: ${method || "unknown"}`, -32601);
   };
 
   const parseCodexPlanPayload = (
     value: unknown,
-  ): { steps: Array<{ text: string; status: "pending" | "in_progress" | "completed" | "failed" }>; explanation: string | null } | null => {
+  ): { steps: AgentChatPlanStep[]; explanation: string | null } | null => {
     const record = (() => {
       if (typeof value !== "string") return asRecord(value);
       try {
@@ -10061,6 +10513,7 @@ export function createAgentChatService(args: {
     runtime: CodexRuntime,
     payload: unknown,
     turnId: string | undefined,
+    options?: { itemId?: string; state?: CodexPlanState; streamingText?: string },
   ): boolean => {
     const normalized = parseCodexPlanPayload(payload);
     if (!normalized) return false;
@@ -10069,6 +10522,9 @@ export function createAgentChatService(args: {
       type: "plan",
       steps: normalized.steps,
       ...(turnId ? { turnId } : {}),
+      ...(options?.itemId ? { itemId: options.itemId } : {}),
+      ...(options?.state ? { state: options.state } : {}),
+      ...(options?.streamingText ? { streamingText: options.streamingText } : {}),
       explanation: normalized.explanation,
     });
 
@@ -10145,6 +10601,22 @@ export function createAgentChatService(args: {
     ?? normalizeCodexPlanText(item.markdown)
     ?? normalizeCodexPlanText(item.content)
     ?? normalizeCodexPlanText(item.description);
+
+  const emitCodexPlanComplete = (
+    managed: ManagedChatSession,
+    planText: string,
+    turnId: string | undefined,
+    itemId: string,
+  ): void => {
+    emitChatEvent(managed, {
+      type: "plan",
+      steps: [],
+      streamingText: planText,
+      state: "complete",
+      turnId,
+      itemId,
+    });
+  };
 
   const emitCodexPlanTextApproval = (
     managed: ManagedChatSession,
@@ -10284,33 +10756,54 @@ export function createAgentChatService(args: {
     })();
 
     if (itemType === "contextCompaction") {
-      // Codex emits contextCompaction via item/started + item/completed.
-      // Emit the boundary event once, on completion, so the UI badge matches
-      // Claude's post-compaction behavior.
-      if (eventKind === "completed") {
+      const compactionTurnId = turnId ?? "";
+      if (eventKind === "started") {
+        if (runtime.manualCompactionPending) {
+          runtime.manualCompactionItemIds.add(itemId);
+          runtime.manualCompactionPending = false;
+        }
+        const trigger = runtime.manualCompactionItemIds.has(itemId) ? "manual" : "auto";
         emitChatEvent(managed, {
-          type: "context_compact",
-          trigger: "auto",
-          turnId,
+          type: "codex_context_compaction",
+          state: "started",
+          trigger,
+          turnId: compactionTurnId,
         });
+        return;
+      }
+      if (eventKind === "completed") {
+        const trigger = runtime.manualCompactionItemIds.has(itemId) ? "manual" : "auto";
+        emitChatEvent(managed, {
+          type: "codex_context_compaction",
+          state: "completed",
+          trigger,
+          turnId: compactionTurnId,
+        });
+        runtime.manualCompactionItemIds.delete(itemId);
       }
       return;
     }
 
     if (itemType === "plan") {
+      if (eventKind === "started") {
+        emitChatEvent(managed, {
+          type: "plan",
+          steps: [],
+          streamingText: "",
+          explanation: null,
+          state: "active",
+          turnId,
+          itemId,
+        });
+        return;
+      }
       if (eventKind === "completed") {
-        const hadStreamingText = runtime.planTextByItemId.has(itemId);
         const planText = readCodexPlanTextFromItem(item) ?? runtime.planTextByItemId.get(itemId) ?? null;
         if (planText) {
-          if (!hadStreamingText) {
-            emitChatEvent(managed, {
-              type: "plan_text",
-              text: planText,
-              turnId,
-              itemId,
-            });
-          }
+          emitCodexPlanComplete(managed, planText, turnId, itemId);
           emitCodexPlanTextApproval(managed, runtime, planText, turnId);
+        } else {
+          emitCodexPlanComplete(managed, "", turnId, itemId);
         }
         runtime.planTextByItemId.delete(itemId);
       }
@@ -10585,12 +11078,65 @@ export function createAgentChatService(args: {
       if (eventKind === "completed") {
         status = String(item.status ?? "completed") === "failed" ? "failed" : "completed";
       }
+      const actions = normalizeCodexWebSearchActions(item.action, item.actions);
+      if (actions.length) {
+        runtime.webSearchActionsByItemId.set(itemId, actions);
+        evictOldestEntries(runtime.webSearchActionsByItemId, MAX_SESSION_MAP_ENTRIES);
+      }
       emitChatEvent(managed, {
         type: "web_search",
         query: String(item.query ?? ""),
-        action: typeof item.action === "string" ? item.action : undefined,
+        action: actions[0]?.type,
+        ...(actions.length ? { actions } : {}),
         itemId,
         turnId,
+        status,
+      });
+      return;
+    }
+
+    if (itemType === "imageGeneration") {
+      const status = eventKind === "completed"
+        ? String(item.status ?? "completed") === "failed" ? "failed" : "completed"
+        : "running";
+      const result = stringOrNull(item.result ?? item.url ?? item.path ?? item.image);
+      // savedPath: only set if Codex reports a local filesystem path (not an http(s)/data URL).
+      const localPathField = stringOrNull(item.path ?? item.savedPath ?? item.saved_path);
+      const looksLikeLocalPath = (value: string | null): boolean => {
+        if (!value) return false;
+        if (/^https?:\/\//i.test(value)) return false;
+        if (/^data:/i.test(value)) return false;
+        return value.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(value) || value.startsWith("~");
+      };
+      const savedPath = looksLikeLocalPath(localPathField)
+        ? localPathField
+        : looksLikeLocalPath(result)
+        ? result
+        : null;
+      emitChatEvent(managed, {
+        type: "codex_image_generation",
+        itemId,
+        turnId,
+        prompt: stringOrNull(item.prompt),
+        revisedPrompt: stringOrNull(item.revisedPrompt ?? item.revised_prompt),
+        result,
+        savedPath,
+        status,
+      });
+      return;
+    }
+
+    if (itemType === "imageView") {
+      const status = eventKind === "completed"
+        ? String(item.status ?? "completed") === "failed" ? "failed" : "completed"
+        : "running";
+      emitChatEvent(managed, {
+        type: "codex_image_view",
+        itemId,
+        turnId,
+        path: stringOrNull(item.path),
+        url: stringOrNull(item.url),
+        title: stringOrNull(item.title ?? item.name),
         status,
       });
       return;
@@ -10762,15 +11308,23 @@ export function createAgentChatService(args: {
       const status = mapCodexTurnStatus(turn?.status);
       if (status === "completed") {
         for (const [planItemId, planText] of runtime.planTextByItemId) {
+          const planTurnId = runtime.itemTurnIdByItemId.get(planItemId) ?? turnId;
+          emitCodexPlanComplete(
+            managed,
+            planText,
+            planTurnId,
+            planItemId,
+          );
           emitCodexPlanTextApproval(
             managed,
             runtime,
             planText,
-            runtime.itemTurnIdByItemId.get(planItemId) ?? turnId,
+            planTurnId,
           );
         }
       }
       runtime.planTextByItemId.clear();
+      runtime.webSearchActionsByItemId.clear();
       runtime.itemTurnIdByItemId.clear();
       runtime.agentMessageScopeByTurn.clear();
       runtime.agentMessageTextByTurn.clear();
@@ -10971,6 +11525,7 @@ export function createAgentChatService(args: {
           explanation: typeof params.explanation === "string" ? params.explanation : null,
         },
         typeof params.turnId === "string" ? params.turnId : runtime.activeTurnId ?? undefined,
+        { state: "updated" },
       );
       return;
     }
@@ -11023,6 +11578,7 @@ export function createAgentChatService(args: {
       runtime.fileDeltaByItemId.clear();
       runtime.fileChangesByItemId.clear();
       runtime.planTextByItemId.clear();
+      runtime.webSearchActionsByItemId.clear();
       runtime.agentMessageScopeByTurn.clear();
       runtime.agentMessageTextByTurn.clear();
       runtime.recentNotificationKeys.clear();
@@ -11055,6 +11611,12 @@ export function createAgentChatService(args: {
 
     if (method === "codex/event/web_search_begin") {
       const query = pickCodexTurnId(params.query, params.searchQuery, params.input) ?? "";
+      const itemId = typeof params.itemId === "string" ? params.itemId : randomUUID();
+      const actions = normalizeCodexWebSearchActions(params.action, params.actions);
+      if (actions.length) {
+        runtime.webSearchActionsByItemId.set(itemId, actions);
+        evictOldestEntries(runtime.webSearchActionsByItemId, MAX_SESSION_MAP_ENTRIES);
+      }
       emitChatEvent(managed, {
         type: "activity",
         activity: "web_searching",
@@ -11064,10 +11626,47 @@ export function createAgentChatService(args: {
       emitChatEvent(managed, {
         type: "web_search",
         query,
-        itemId: typeof params.itemId === "string" ? params.itemId : randomUUID(),
+        itemId,
         turnId: turnIdFromParams ?? runtime.activeTurnId ?? undefined,
+        ...(actions.length ? { actions } : {}),
         status: "running",
       });
+      return;
+    }
+
+    if (method === "thread/tokenUsage/updated") {
+      const usage = normalizeCodexThreadTokenUsage(params);
+      if (usage) {
+        managed.session.codexTokenUsage = usage;
+        emitChatEvent(managed, {
+          type: "codex_token_usage",
+          usage,
+          turnId: usage.turnId ?? turnIdFromParams ?? runtime.activeTurnId ?? undefined,
+        });
+        persistChatState(managed);
+      }
+      return;
+    }
+
+    if (method === "thread/goal/updated") {
+      const goal = normalizeCodexGoalPayload(params);
+      managed.session.codexGoal = goal;
+      emitChatEvent(managed, {
+        type: "codex_goal_updated",
+        goal,
+        turnId: turnIdFromParams ?? runtime.activeTurnId ?? undefined,
+      });
+      persistChatState(managed);
+      return;
+    }
+
+    if (method === "thread/goal/cleared") {
+      managed.session.codexGoal = null;
+      emitChatEvent(managed, {
+        type: "codex_goal_cleared",
+        turnId: turnIdFromParams ?? runtime.activeTurnId ?? undefined,
+      });
+      persistChatState(managed);
       return;
     }
 
@@ -11127,6 +11726,34 @@ export function createAgentChatService(args: {
       return;
     }
 
+    if (method === "deprecationNotice" || method === "warning" || method === "guardianWarning" || method === "configWarning") {
+      const messageText = typeof params.message === "string"
+        ? params.message
+        : typeof params.detail === "string"
+          ? params.detail
+          : "";
+      const trimmed = messageText.trim();
+      if (!trimmed) return;
+      const prefixed = method === "deprecationNotice"
+        ? `⚠ deprecated: ${trimmed}`
+        : method === "warning"
+          ? `⚠ ${trimmed}`
+          : method === "guardianWarning"
+            ? `🛡 guardian: ${trimmed}`
+            : `⚙ config: ${trimmed}`;
+      const noticeKind = method === "guardianWarning"
+        ? "error" as const
+        : method === "configWarning"
+          ? "config" as const
+          : "warning" as const;
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind,
+        message: prefixed,
+      });
+      return;
+    }
+
     if (method === "item/plan/delta") {
       const explicitItemId = typeof params.itemId === "string" && params.itemId.trim().length
         ? params.itemId
@@ -11143,8 +11770,10 @@ export function createAgentChatService(args: {
         return;
       }
       emitChatEvent(managed, {
-        type: "plan_text",
-        text: delta,
+        type: "plan",
+        steps: [],
+        streamingText: next,
+        state: "delta",
         turnId,
         itemId,
       });
@@ -11234,7 +11863,6 @@ export function createAgentChatService(args: {
     }
     if (missionCodexHome) {
       appServerArgs.push("-c", "mcp_servers={}");
-      appServerArgs.push("--disable", "plugins", "--disable", "apps", "--disable", "browser_use", "--disable", "computer_use");
     }
     const invocation = resolveCliSpawnInvocation(codexExecutable, appServerArgs);
     const proc = spawn(invocation.command, invocation.args, {
@@ -11267,6 +11895,9 @@ export function createAgentChatService(args: {
       fileDeltaByItemId: new Map<string, string>(),
       fileChangesByItemId: new Map<string, Array<{ path: string; kind: "create" | "modify" | "delete" }>>(),
       planTextByItemId: new Map<string, string>(),
+      manualCompactionItemIds: new Set<string>(),
+      manualCompactionPending: false,
+      webSearchActionsByItemId: new Map<string, CodexWebSearchAction[]>(),
       activeSubagents: new Map<string, { taskId: string; description: string; background: boolean }>(),
       interruptedTurnIds: new Set<string>(),
       ignoredTurnIds: new Set<string>(),
@@ -11285,7 +11916,6 @@ export function createAgentChatService(args: {
       runtime.nextRequestId += 1;
 
         const payload: JsonRpcEnvelope = {
-          jsonrpc: "2.0",
           id,
           method,
           ...(params !== undefined ? { params } : {})
@@ -11303,7 +11933,6 @@ export function createAgentChatService(args: {
       notify: (method: string, params?: unknown) => {
         if (!proc.stdin.writable) return;
         const payload: JsonRpcEnvelope = {
-          jsonrpc: "2.0",
           method,
           ...(params !== undefined ? { params } : {})
         };
@@ -11311,12 +11940,12 @@ export function createAgentChatService(args: {
       },
       sendResponse: (id: string | number, result: unknown) => {
         if (!proc.stdin.writable) return;
-        proc.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, result })}\n`);
+        proc.stdin.write(`${JSON.stringify({ id, result })}\n`);
       },
-      sendError: (id: string | number, message: string) => {
+      sendError: (id: string | number, message: string, code = -32001) => {
         if (!proc.stdin.writable) return;
         proc.stdin.write(
-          `${JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32001, message } })}\n`
+          `${JSON.stringify({ id, error: { code, message } })}\n`
         );
       }
     };
@@ -11434,14 +12063,23 @@ export function createAgentChatService(args: {
       });
     });
 
+    const optOutNotificationMethods = managed.session.runtimeMode === "print"
+      ? [
+          "item/agentMessage/delta",
+          "item/reasoning/summaryTextDelta",
+          "item/reasoning/textDelta",
+          "item/commandExecution/outputDelta",
+        ]
+      : [];
     await runtime.request("initialize", {
       clientInfo: {
-        name: "ade",
-        title: "ADE",
+        name: "ade_desktop",
+        title: "ADE Desktop",
         version: appVersion
       },
       capabilities: {
-        experimentalApi: true
+        experimentalApi: true,
+        optOutNotificationMethods,
       }
     });
 
@@ -11527,8 +12165,6 @@ export function createAgentChatService(args: {
     const startResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/start", {
       model: managed.session.model,
       cwd: managed.laneWorktreePath,
-      reasoningEffort,
-      reasoning_effort: reasoningEffort,
       effort: reasoningEffort,
       ...codexServiceTierArgs(managed.session),
       ...codexPolicyArgs(codexPolicy),
@@ -12411,12 +13047,19 @@ export function createAgentChatService(args: {
             !!a
             && typeof a === "object"
             && typeof (a as AgentChatFileRef).path === "string"
-            && ((a as AgentChatFileRef).type === "file" || (a as AgentChatFileRef).type === "image"))
+            && ((a as AgentChatFileRef).type === "file" || (a as AgentChatFileRef).type === "image" || (a as AgentChatFileRef).type === "image-url"))
         : [];
       const contextAttachments = normalizeChatContextAttachments(entry.contextAttachments);
       let resolvedAttachments: ResolvedAgentChatFileRef[] = [];
       try {
         resolvedAttachments = attachments.map((attachment) => {
+          if (attachment.type === "image-url") {
+            return {
+              ...attachment,
+              _resolvedPath: attachment.url,
+              _rootPath: projectRoot,
+            };
+          }
           const isAbsolute = path.isAbsolute(attachment.path);
           const root = isAbsolute ? projectRoot : managed.laneWorktreePath;
           return {
@@ -12725,6 +13368,7 @@ export function createAgentChatService(args: {
     automationId,
     automationRunId,
     requestedCwd,
+    runtimeMode,
   }: AgentChatCreateArgs): Promise<AgentChatSession> => {
     const launchContext = resolveLaneLaunchContext({
       laneService,
@@ -12943,6 +13587,7 @@ export function createAgentChatService(args: {
         ...(typeof requestedCwd === "string" && requestedCwd.trim().length
           ? { requestedCwd: requestedCwd.trim() }
           : {}),
+        ...(runtimeMode === "print" ? { runtimeMode: "print" as const } : {}),
       },
       transcriptPath,
       transcriptBytesWritten: fileSizeOrZero(transcriptPath),
@@ -13184,6 +13829,23 @@ export function createAgentChatService(args: {
       const rawPath = attachment.path;
       if (!rawPath.length) {
         throw new Error("Attachment path is required.");
+      }
+      if (attachment.type === "image-url") {
+        try {
+          const parsed = new URL((attachment.url || rawPath).trim());
+          if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+            throw new Error("unsupported protocol");
+          }
+          return {
+            ...attachment,
+            path: rawPath,
+            url: parsed.toString(),
+            _resolvedPath: parsed.toString(),
+            _rootPath: projectRoot,
+          };
+        } catch {
+          throw new Error(`Image URL attachment must be an http(s) URL: ${rawPath}`);
+        }
       }
       const isAbsolute = path.isAbsolute(rawPath);
       const root = isAbsolute ? projectRoot : managed.laneWorktreePath;
@@ -16331,11 +16993,10 @@ export function createAgentChatService(args: {
               threadId: threadIdToResume,
               model: managed.session.model,
               cwd: managed.laneWorktreePath,
-              reasoningEffort: resumeReasoningEffort,
-              reasoning_effort: resumeReasoningEffort,
               effort: resumeReasoningEffort,
               ...codexServiceTierArgs(managed.session),
               ...codexPolicyArgs(codexPolicy),
+              excludeTurns: true,
               persistExtendedHistory: true
             });
             applyCodexEffectiveThreadState(managed, resumeResponse, {
@@ -16745,6 +17406,10 @@ export function createAgentChatService(args: {
         });
       }
       for (const attachment of preparedSteer.resolvedAttachments) {
+        if (attachment.type === "image-url") {
+          input.push({ type: "image", url: attachment.url });
+          continue;
+        }
         const stagedPath = stageAttachmentForCodexInput(attachment);
         if (attachment.type === "image") {
           input.push({ type: "localImage", path: stagedPath });
@@ -17219,11 +17884,10 @@ export function createAgentChatService(args: {
             threadId,
             model: managed.session.model,
             cwd: managed.laneWorktreePath,
-            reasoningEffort: managed.session.reasoningEffort,
-            reasoning_effort: managed.session.reasoningEffort,
             effort: managed.session.reasoningEffort,
             ...codexServiceTierArgs(managed.session),
             ...codexPolicyArgs(codexPolicy),
+            excludeTurns: true,
             persistExtendedHistory: true
           });
           applyCodexEffectiveThreadState(managed, resumeResponse, {
@@ -19784,6 +20448,7 @@ export function createAgentChatService(args: {
     listSessions,
     getSessionSummary,
     getChatTranscript,
+    getCodexResumeContext,
     getChatEventHistory,
     ensureIdentitySession,
     approveToolUse,

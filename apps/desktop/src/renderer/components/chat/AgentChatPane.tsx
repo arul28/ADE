@@ -28,6 +28,8 @@ import {
   type ChatSurfaceProfile,
   type ChatSurfacePresentation,
   type AgentChatSessionSummary,
+  type CodexThreadGoal,
+  type CodexThreadTokenUsage,
   type BuiltInBrowserContextItem,
   type ComputerUseOwnerSnapshot,
   type AppControlContextItem,
@@ -85,6 +87,8 @@ import { ChatAppControlPanel } from "./ChatAppControlPanel";
 import { ChatSubagentsPanel } from "./ChatSubagentsPanel";
 import { ChatTasksPanel } from "./ChatTasksPanel";
 import { ChatFileChangesPanel } from "./ChatFileChangesPanel";
+import { CodexGoalBanner } from "./codex/CodexGoalBanner";
+import { CodexOpenInCliButton } from "./codex/CodexOpenInCliButton";
 import { RewindFilesConfirmDialog, type RewindFilesConfirmDialogState } from "./RewindFilesConfirmDialog";
 import { buildRewindPreviewFiles, deriveRewindDiffSummaries } from "./rewindFilesPreview";
 import { ChatCursorCloudPanel, type ChatCursorCloudPanelHandle } from "./ChatCursorCloudPanel";
@@ -2103,6 +2107,34 @@ export function AgentChatPane({
     };
     return [...displayEvents.slice(0, insertAt), synthetic, ...displayEvents.slice(insertAt)];
   }, [optimisticOutgoingMessage, presentation?.mode, presentation?.rewriteMissionControlTextTools, selectedEvents, selectedSession?.cursorCloudAgentId, selectedSession?.cursorPromotedTurnId, selectedSessionId]);
+  const selectedCodexGoal = useMemo<CodexThreadGoal | null>(() => {
+    let goalFromEvents: CodexThreadGoal | null = null;
+    let sawGoalEvent = false;
+    for (const envelope of selectedEventsForDisplay) {
+      const event = envelope.event;
+      if (event.type === "codex_goal_updated") {
+        goalFromEvents = event.goal;
+        sawGoalEvent = true;
+      }
+      if (event.type === "codex_goal_cleared") {
+        goalFromEvents = null;
+        sawGoalEvent = true;
+      }
+    }
+    return sawGoalEvent ? goalFromEvents : (selectedSession?.codexGoal ?? null);
+  }, [selectedEventsForDisplay, selectedSession?.codexGoal]);
+  const selectedCodexTokenUsage = useMemo<CodexThreadTokenUsage | null>(() => {
+    let usageFromEvents: CodexThreadTokenUsage | null = null;
+    let sawUsageEvent = false;
+    for (const envelope of selectedEventsForDisplay) {
+      const event = envelope.event;
+      if (event.type === "codex_token_usage") {
+        usageFromEvents = event.usage;
+        sawUsageEvent = true;
+      }
+    }
+    return sawUsageEvent ? usageFromEvents : (selectedSession?.codexTokenUsage ?? null);
+  }, [selectedEventsForDisplay, selectedSession?.codexTokenUsage]);
   const selectedSubagentSnapshots = useMemo(() => deriveChatSubagentSnapshots(selectedEvents), [selectedEvents]);
   const selectedSubagentPaneAvailable = selectedSession?.provider === "claude" && selectedSubagentSnapshots.length > 0;
   const selectedTurnDiffSummaries = useMemo(() => deriveTurnDiffSummaries(selectedEvents), [selectedEvents]);
@@ -2110,6 +2142,29 @@ export function AgentChatPane({
   const pendingInput = selectedSessionId ? (pendingInputsBySession[selectedSessionId]?.[0] ?? null) : null;
   const selectedSessionAwaitingInput = Boolean(pendingInput) || selectedSession?.awaitingInput === true;
   const turnActive = selectedSessionId ? (turnActiveBySession[selectedSessionId] ?? false) : false;
+  const sendCodexControlMessage = useCallback(async (sessionId: string, text: string) => {
+    setError(null);
+    try {
+      if (turnActiveBySession[sessionId]) {
+        await window.ade.agentChat.steer({ sessionId, text });
+        return;
+      }
+
+      try {
+        await window.ade.agentChat.send({ sessionId, text });
+      } catch (sendError) {
+        const message = sendError instanceof Error ? sendError.message : String(sendError);
+        if (/turn is already active|already active/i.test(message)) {
+          setError(null);
+          await window.ade.agentChat.steer({ sessionId, text });
+          return;
+        }
+        throw sendError;
+      }
+    } catch (controlError) {
+      setError(controlError instanceof Error ? controlError.message : String(controlError));
+    }
+  }, [turnActiveBySession]);
   const subagentAutoOpenRef = useRef<{ sessionId: string | null; count: number }>({ sessionId: null, count: 0 });
 
   useEffect(() => {
@@ -5517,6 +5572,42 @@ export function AgentChatPane({
             </SmartTooltip>
           ) : null}
           {showWorkspaceChrome && laneId ? <ChatTerminalToggle open={terminalDrawerOpen} onToggle={() => setTerminalDrawerOpen((v) => !v)} /> : null}
+          {selectedSession?.provider === "codex"
+            && selectedSession.surface !== "mission"
+            && selectedSessionId
+            && selectedSession.threadId ? (
+            <CodexOpenInCliButton
+              sessionId={selectedSessionId}
+              onUseAdeTerminal={(args) => {
+                // Open the ADE terminal drawer and write the resume command
+                // into the chat's active terminal pane (plan §D.1). Falls
+                // back to copying the command if the chat doesn't yet have an
+                // active terminal session.
+                setTerminalDrawerOpen(true);
+                const quoted = (parts: string[]) =>
+                  parts.map((p) => `'${p.replace(/'/g, "'\\''")}'`).join(" ");
+                const fullCommand = `cd ${quoted([args.cwd])} && ${quoted([args.binary, ...args.argv])}\r`;
+                void (async () => {
+                  try {
+                    const active = await window.ade.terminal.activeForChat({
+                      chatSessionId: selectedSessionId,
+                    });
+                    if (active?.ptyId) {
+                      await window.ade.terminal.write({
+                        ptyId: active.ptyId,
+                        chatSessionId: selectedSessionId,
+                        data: fullCommand,
+                      });
+                      return;
+                    }
+                  } catch {
+                    // fall through to clipboard
+                  }
+                  await navigator.clipboard.writeText(fullCommand.trimEnd()).catch(() => undefined);
+                })();
+              }}
+            />
+          ) : null}
           {resolvedChips.map((chip) => (
             <span
               key={`${chip.label}:${chip.tone ?? "accent"}`}
@@ -5886,6 +5977,7 @@ export function AgentChatPane({
             availableModelIds={effectiveAvailableModelIds}
             reasoningEffort={reasoningEffort}
             codexFastMode={codexFastMode}
+            codexTokenUsage={selectedCodexTokenUsage}
             draft={draft}
             attachments={attachments}
             contextAttachments={contextAttachments}
@@ -6371,6 +6463,19 @@ export function AgentChatPane({
                       >
                         Live view of Cursor Cloud agent. Replies run in cloud.
                       </div>
+                    ) : null}
+                    {selectedSession?.provider === "codex" && selectedCodexGoal?.objective && selectedSessionId ? (
+                      <CodexGoalBanner
+                        goal={selectedCodexGoal}
+                        onEdit={(next) => {
+                          const objective = next.replace(/\s*[\r\n]+\s*/g, " ").trim();
+                          if (!objective) return;
+                          void sendCodexControlMessage(selectedSessionId, `/goal set ${objective}`);
+                        }}
+                        onClear={() => {
+                          void sendCodexControlMessage(selectedSessionId, "/goal clear");
+                        }}
+                      />
                     ) : null}
                     <AgentChatMessageList
                       key={selectedSessionId ?? "chat-draft"}

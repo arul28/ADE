@@ -261,20 +261,25 @@ describe("CommandPalette", () => {
       entries: [],
     });
 
-	    await waitFor(() => {
-	      expect(switchProjectToPath).toHaveBeenCalledWith(
-	        "/Users/admin/Projects/FreshFolder",
-	      );
-	      expect(switchProjectToPath).toHaveBeenCalledTimes(1);
-	      expect(switchProjectToPath).not.toHaveBeenCalledWith(
-	        "/Users/admin/Projects/StaleRepo",
-	      );
-	      expect(browseDirectories).toHaveBeenCalledWith({
-	        partialPath: "/Users/admin/Projects/FreshFolder/",
-	        cwd: "/Users/admin/Projects/ADE",
-	        limit: 200,
-	      });
-	    });
+    await waitFor(() => {
+      expect(switchProjectToPath).toHaveBeenCalledWith(
+        "/Users/admin/Projects/FreshFolder",
+      );
+      expect(switchProjectToPath).toHaveBeenCalledTimes(1);
+      expect(switchProjectToPath).not.toHaveBeenCalledWith(
+        "/Users/admin/Projects/StaleRepo",
+      );
+      expect(browseDirectories).toHaveBeenCalledWith({
+        partialPath: "/Users/admin/Projects/StaleRepo/",
+        cwd: "/Users/admin/Projects/ADE",
+        limit: 200,
+      });
+      expect(browseDirectories).toHaveBeenCalledWith({
+        partialPath: "/Users/admin/Projects/FreshFolder/",
+        cwd: "/Users/admin/Projects/ADE",
+        limit: 200,
+      });
+    });
   });
 
   it("warns before opening a remote project when matching local work is dirty", async () => {

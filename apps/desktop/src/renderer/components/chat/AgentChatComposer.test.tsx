@@ -919,6 +919,59 @@ describe("AgentChatComposer", () => {
     }
   });
 
+  it("clears the drop highlight when a URL drop is rejected", async () => {
+    const props = renderComposer({
+      turnActive: false,
+      draft: "",
+    });
+    const rejectedUrlDrop = {
+      files: [],
+      types: ["text/uri-list"],
+      getData: vi.fn((type: string) => (
+        type === "text/uri-list" ? "https://example.com/page" : ""
+      )),
+    };
+    const input = screen.getByPlaceholderText("Type to vibecode...");
+
+    fireEvent.dragOver(input, { dataTransfer: rejectedUrlDrop });
+    expect(screen.getByText("Drop files to attach")).toBeTruthy();
+
+    const dropEvent = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(dropEvent, "dataTransfer", {
+      configurable: true,
+      value: rejectedUrlDrop,
+    });
+    fireEvent(input, dropEvent);
+
+    await waitFor(() => expect(screen.queryByText("Drop files to attach")).toBeNull());
+    expect(dropEvent.defaultPrevented).toBe(true);
+    expect(props.onAddAttachment).not.toHaveBeenCalled();
+  });
+
+  it("does not attach URLs whose image extension appears only in query text", () => {
+    const props = renderComposer({
+      turnActive: false,
+      draft: "",
+    });
+    const clipboardData = {
+      files: [],
+      items: [],
+      getData: vi.fn((type: string) => (
+        type === "text/uri-list" || type === "text/plain"
+          ? "https://example.com/api/asset?file=hero.png"
+          : ""
+      )),
+    };
+
+    const pasteAllowed = fireEvent.paste(screen.getByPlaceholderText("Type to vibecode..."), {
+      clipboardData,
+    });
+
+    expect(pasteAllowed).toBe(true);
+    expect(props.onAddAttachment).not.toHaveBeenCalled();
+    expect(screen.queryByText("Image URL attached")).toBeNull();
+  });
+
   it("hides native permission controls until a model is selected", () => {
     const props = buildComposerProps({
       modelId: "",

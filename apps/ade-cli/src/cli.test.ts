@@ -893,6 +893,17 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("rejects --print=value on chat send", () => {
+    expect(() => buildCliPlan([
+      "chat",
+      "send",
+      "chat-1",
+      "--print=true",
+      "--text",
+      "Hello",
+    ])).toThrow(/--print must be set at session creation time/);
+  });
+
   it("builds chat show/status as positional session summary calls", () => {
     const show = buildCliPlan(["chat", "show", "chat-1"]);
     expect(show.kind).toBe("execute");

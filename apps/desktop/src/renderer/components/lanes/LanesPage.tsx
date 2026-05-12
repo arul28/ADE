@@ -209,6 +209,7 @@ export function LanesPage() {
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
   const focusSession = useAppStore((s) => s.focusSession);
   const lanes = useAppStore((s) => s.lanes);
+  const lanesLoading = useAppStore((s) => s.lanesLoading);
 
   const urlLaneDeeplinks = useMemo(() => {
     const p = new URLSearchParams(location.search);
@@ -3190,32 +3191,41 @@ export function LanesPage() {
       {visibleLaneIds.length === 0 ? (
         <div className="flex-1 flex items-center justify-center">
           {sortedLanes.length === 0 ? (
-            <EmptyState
-              title="No lanes created yet"
-              description="Lanes let you work on multiple features in parallel."
-            >
-              <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
-                <Button
-                  size="sm"
-                  variant="primary"
-                  disabled={!canCreateLane}
-                  onClick={() => {
-                    prepareCreateDialog();
-                  }}
-                >
-                  Create Lane
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => {
-                    void useOnboardingStore.getState().startTour("lanes");
-                  }}
-                >
-                  Take the Lanes tour
-                </Button>
-              </div>
-            </EmptyState>
+            lanesLoading ? (
+              <EmptyState
+                title="Loading lanes"
+                description="Reading lane state for this project."
+              >
+                <CircleNotch size={18} className="mt-3 animate-spin text-[#71717A]" />
+              </EmptyState>
+            ) : (
+              <EmptyState
+                title="No lanes created yet"
+                description="Lanes let you work on multiple features in parallel."
+              >
+                <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    disabled={!canCreateLane}
+                    onClick={() => {
+                      prepareCreateDialog();
+                    }}
+                  >
+                    Create Lane
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      void useOnboardingStore.getState().startTour("lanes");
+                    }}
+                  >
+                    Take the Lanes tour
+                  </Button>
+                </div>
+              </EmptyState>
+            )
           ) : (
             <EmptyState
               title={filteredLanes.length === 0 ? "No lanes match" : "No lane selected"}
