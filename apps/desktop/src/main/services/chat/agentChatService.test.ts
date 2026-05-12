@@ -6863,6 +6863,53 @@ describe("createAgentChatService", () => {
       expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(false);
     });
 
+    it("completes Codex /goal slash commands when the app-server RPC fails", async () => {
+      mockState.delayedCodexMethods.add("thread/goal/set");
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => {
+          events.push(event);
+        },
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+
+      const sendPromise = service.sendMessage({
+        sessionId: session.id,
+        text: "/goal budget 5000",
+      }, { awaitDispatch: true });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/goal/set")).toBe(true);
+      });
+      const goalRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/goal/set");
+      expect(goalRequest?.id).toBeTruthy();
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        id: goalRequest?.id,
+        error: { code: -32001, message: "goal RPC failed" },
+      });
+      await sendPromise;
+
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(false);
+      expect(events.some((event) =>
+        event.event.type === "system_notice"
+        && event.event.message === "Codex goal command failed: goal RPC failed"
+      )).toBe(true);
+      expect(events.some((event) =>
+        event.event.type === "status"
+        && event.event.turnStatus === "completed"
+      )).toBe(true);
+      expect(events.some((event) =>
+        event.event.type === "done"
+        && event.event.status === "completed"
+      )).toBe(true);
+    });
+
     it("routes Codex /inject to thread/inject_items and emits a notice", async () => {
       mockState.codexResponseOverrides.set("thread/inject_items", () => ({}));
       const onEvent = vi.fn();
@@ -6898,6 +6945,53 @@ describe("createAgentChatService", () => {
         .map((call) => call[0])
         .find((env: any) => env?.event?.type === "system_notice" && typeof env.event.message === "string" && env.event.message.startsWith("[injected]"));
       expect(injectedNotice?.event.message).toContain("Remember this for the rest of the thread.");
+    });
+
+    it("completes Codex /inject when the app-server RPC fails", async () => {
+      mockState.delayedCodexMethods.add("thread/inject_items");
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => {
+          events.push(event);
+        },
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+
+      const sendPromise = service.sendMessage({
+        sessionId: session.id,
+        text: "/inject Save this context.",
+      }, { awaitDispatch: true });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/inject_items")).toBe(true);
+      });
+      const injectRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/inject_items");
+      expect(injectRequest?.id).toBeTruthy();
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        id: injectRequest?.id,
+        error: { code: -32001, message: "inject RPC failed" },
+      });
+      await sendPromise;
+
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(false);
+      expect(events.some((event) =>
+        event.event.type === "system_notice"
+        && event.event.message === "Codex context injection failed: inject RPC failed"
+      )).toBe(true);
+      expect(events.some((event) =>
+        event.event.type === "status"
+        && event.event.turnStatus === "completed"
+      )).toBe(true);
+      expect(events.some((event) =>
+        event.event.type === "done"
+        && event.event.status === "completed"
+      )).toBe(true);
     });
 
     it("rejects /inject without context body", async () => {

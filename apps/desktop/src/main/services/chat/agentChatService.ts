@@ -7948,6 +7948,21 @@ export function createAgentChatService(args: {
       });
       persistChatState(managed);
     };
+    const completeFailedInlineCodexSlash = (prefix: string, error: unknown) => {
+      completeInlineCodexSlash(`${prefix}: ${error instanceof Error ? error.message : String(error)}`);
+    };
+    const requestInlineCodexSlash = async <T>(
+      method: string,
+      params: Record<string, unknown>,
+      failurePrefix: string,
+    ): Promise<{ ok: true; result: T } | { ok: false }> => {
+      try {
+        return { ok: true, result: await runtime.request<T>(method, params) };
+      } catch (error) {
+        completeFailedInlineCodexSlash(failurePrefix, error);
+        return { ok: false };
+      }
+    };
 
     const slashText = args.promptText.trim();
     let effectivePromptText = args.promptText;
@@ -8032,7 +8047,7 @@ export function createAgentChatService(args: {
       // (ResponseItem::Message → `{ type: "message", role, content: [ContentItem::InputText] }`),
       // not a `{ type: "user_message", text }` shape. Mirror the wire shape used by
       // codex-rs/tui/src/app/side.rs::side_boundary_prompt_item.
-      await runtime.request("thread/inject_items", {
+      const injectResult = await requestInlineCodexSlash("thread/inject_items", {
         threadId: managed.session.threadId,
         items: [
           {
@@ -8041,7 +8056,8 @@ export function createAgentChatService(args: {
             content: [{ type: "input_text", text: trimmed }],
           },
         ],
-      });
+      }, "Codex context injection failed");
+      if (!injectResult.ok) return;
       const firstLine = trimmed.split(/\r?\n/)[0] ?? trimmed;
       const preview = firstLine.length > 80 ? `${firstLine.slice(0, 77)}...` : firstLine;
       emitChatEvent(managed, {
@@ -8056,10 +8072,11 @@ export function createAgentChatService(args: {
     if (/^\/goal(?:\s|$)/i.test(slashText)) {
       const goalArgs = slashText.replace(/^\/goal(?:\s+|$)/i, "").trim();
       if (!goalArgs || /^show$/i.test(goalArgs) || /^status$/i.test(goalArgs)) {
-        const response = await runtime.request<{ goal?: unknown }>("thread/goal/get", {
+        const response = await requestInlineCodexSlash<{ goal?: unknown }>("thread/goal/get", {
           threadId: managed.session.threadId,
-        });
-        const goal = normalizeCodexGoalPayload(response);
+        }, "Codex goal command failed");
+        if (!response.ok) return;
+        const goal = normalizeCodexGoalPayload(response.result);
         managed.session.codexGoal = goal;
         emitChatEvent(managed, {
           type: "codex_goal_updated",
@@ -8069,9 +8086,10 @@ export function createAgentChatService(args: {
         return;
       }
       if (/^(clear|reset|none)$/i.test(goalArgs)) {
-        await runtime.request("thread/goal/clear", {
+        const response = await requestInlineCodexSlash("thread/goal/clear", {
           threadId: managed.session.threadId,
-        });
+        }, "Codex goal command failed");
+        if (!response.ok) return;
         managed.session.codexGoal = null;
         emitChatEvent(managed, { type: "codex_goal_cleared" });
         completeInlineCodexSlash("Codex goal cleared.");
@@ -8086,11 +8104,12 @@ export function createAgentChatService(args: {
       if (statusMatch || pauseResumeMatch) {
         const rawStatus = (statusMatch?.[1] ?? pauseResumeMatch?.[1] ?? "active").toLowerCase();
         const status = rawStatus === "pause" ? "paused" : rawStatus === "resume" ? "active" : rawStatus;
-        const response = await runtime.request<{ goal?: unknown }>("thread/goal/set", {
+        const response = await requestInlineCodexSlash<{ goal?: unknown }>("thread/goal/set", {
           threadId: managed.session.threadId,
           status,
-        });
-        const goal = normalizeCodexGoalPayload(response);
+        }, "Codex goal command failed");
+        if (!response.ok) return;
+        const goal = normalizeCodexGoalPayload(response.result);
         managed.session.codexGoal = goal;
         emitChatEvent(managed, {
           type: "codex_goal_updated",
@@ -8116,11 +8135,12 @@ export function createAgentChatService(args: {
           completeInlineCodexSlash("Usage: /goal budget <positive tokens>|clear.");
           return;
         }
-        const response = await runtime.request<{ goal?: unknown }>("thread/goal/set", {
+        const response = await requestInlineCodexSlash<{ goal?: unknown }>("thread/goal/set", {
           threadId: managed.session.threadId,
           tokenBudget,
-        });
-        const goal = normalizeCodexGoalPayload(response);
+        }, "Codex goal command failed");
+        if (!response.ok) return;
+        const goal = normalizeCodexGoalPayload(response.result);
         managed.session.codexGoal = goal;
         emitChatEvent(managed, {
           type: "codex_goal_updated",
@@ -8134,11 +8154,12 @@ export function createAgentChatService(args: {
         completeInlineCodexSlash("No Codex goal text was provided.");
         return;
       }
-      const response = await runtime.request<{ goal?: unknown }>("thread/goal/set", {
+      const response = await requestInlineCodexSlash<{ goal?: unknown }>("thread/goal/set", {
         threadId: managed.session.threadId,
         objective,
-      });
-      const goal = normalizeCodexGoalPayload(response);
+      }, "Codex goal command failed");
+      if (!response.ok) return;
+      const goal = normalizeCodexGoalPayload(response.result);
       managed.session.codexGoal = goal;
       emitChatEvent(managed, {
         type: "codex_goal_updated",
