@@ -91,6 +91,27 @@ function cmdQuote(arg: string): string {
     .replace(/%/g, "%%")}"`;
 }
 
+function appleScriptStringLiteral(value: string): string {
+  return `"${value
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, "\\\"")
+    .replace(/\r/g, "\\r")
+    .replace(/\n/g, "\\n")}"`;
+}
+
+function terminalShellCommandExpression(binary: string, argv: string[], cwd: string): string {
+  const parts = [
+    `"cd "`,
+    `quoted form of ${appleScriptStringLiteral(cwd)}`,
+    `" && "`,
+    `quoted form of ${appleScriptStringLiteral(binary)}`,
+  ];
+  for (const arg of argv) {
+    parts.push(`" "`, `quoted form of ${appleScriptStringLiteral(arg)}`);
+  }
+  return parts.join(" & ");
+}
+
 export type SpawnNewTerminalOptions = {
   binary: string;
   argv: string[];
@@ -140,7 +161,7 @@ export function spawnInNewTerminalWindow(options: SpawnNewTerminalOptions): void
 
   if (platform === "darwin") {
     // Use osascript so we can set cwd cleanly and `do script` runs an interactive shell.
-    const script = `tell application "Terminal" to do script "${cdCommand.replace(/"/g, "\\\"")} && ${command.replace(/"/g, "\\\"")}"`;
+    const script = `tell application "Terminal" to do script ${terminalShellCommandExpression(options.binary, options.argv, options.cwd)}`;
     spawnDetached("osascript", ["-e", script], { detached: true, stdio: "ignore" });
     return;
   }

@@ -2143,6 +2143,7 @@ export function AgentChatPane({
   const selectedSessionAwaitingInput = Boolean(pendingInput) || selectedSession?.awaitingInput === true;
   const turnActive = selectedSessionId ? (turnActiveBySession[selectedSessionId] ?? false) : false;
   const sendCodexControlMessage = useCallback(async (sessionId: string, text: string) => {
+    setError(null);
     try {
       if (turnActiveBySession[sessionId]) {
         await window.ade.agentChat.steer({ sessionId, text });
@@ -2154,6 +2155,7 @@ export function AgentChatPane({
       } catch (sendError) {
         const message = sendError instanceof Error ? sendError.message : String(sendError);
         if (/turn is already active|already active/i.test(message)) {
+          setError(null);
           await window.ade.agentChat.steer({ sessionId, text });
           return;
         }
@@ -6466,7 +6468,9 @@ export function AgentChatPane({
                       <CodexGoalBanner
                         goal={selectedCodexGoal}
                         onEdit={(next) => {
-                          void sendCodexControlMessage(selectedSessionId, `/goal set ${next}`);
+                          const objective = next.replace(/\s*[\r\n]+\s*/g, " ").trim();
+                          if (!objective) return;
+                          void sendCodexControlMessage(selectedSessionId, `/goal set ${objective}`);
                         }}
                         onClear={() => {
                           void sendCodexControlMessage(selectedSessionId, "/goal clear");

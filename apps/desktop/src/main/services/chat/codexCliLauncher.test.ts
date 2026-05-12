@@ -112,9 +112,9 @@ describe("codexCliLauncher", () => {
       spawnMock.mockReturnValue(fakeChild as never);
 
       spawnInNewTerminalWindow({
-        binary: "/usr/local/bin/codex",
-        argv: ["resume", "abc-123"],
-        cwd: "/tmp/lane",
+        binary: "/usr/local/$BIN`noop`/codex",
+        argv: ["resume", "abc-123", "quote\"slash\\tail"],
+        cwd: "/tmp/$HOME-`touch nope`",
         platform: "darwin",
       });
 
@@ -122,10 +122,13 @@ describe("codexCliLauncher", () => {
       const [bin, args, opts] = spawnMock.mock.calls[0]!;
       expect(bin).toBe("osascript");
       expect(args[0]).toBe("-e");
-      expect(args[1]).toContain("Terminal");
-      expect(args[1]).toContain("/tmp/lane");
-      expect(args[1]).toContain("resume");
-      expect(args[1]).toContain("abc-123");
+      const script = args[1] as string;
+      expect(script).toContain("Terminal");
+      expect(script).toContain('quoted form of "/tmp/$HOME-`touch nope`"');
+      expect(script).toContain('quoted form of "/usr/local/$BIN`noop`/codex"');
+      expect(script).toContain('quoted form of "resume"');
+      expect(script).toContain('quoted form of "abc-123"');
+      expect(script).toContain('quoted form of "quote\\"slash\\\\tail"');
       expect((opts as { detached: boolean }).detached).toBe(true);
       expect(fakeChild.unref).toHaveBeenCalled();
     });
