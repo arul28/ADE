@@ -7967,7 +7967,11 @@ describe("createAgentChatService", () => {
       const injectedNotice = onEvent.mock.calls
         .map((call) => call[0])
         .find((env: any) => env?.event?.type === "system_notice" && typeof env.event.message === "string" && env.event.message.startsWith("[injected]"));
+      const completionNotice = onEvent.mock.calls
+        .map((call) => call[0])
+        .find((env: any) => env?.event?.type === "system_notice" && env.event.message === "Context injected into Codex thread history.");
       expect(injectedNotice?.event.message).toContain("Remember this for the rest of the thread.");
+      expect(injectedNotice?.event.turnId).toBe(completionNotice?.event.turnId);
     });
 
     it("completes Codex /inject when the app-server RPC fails", async () => {

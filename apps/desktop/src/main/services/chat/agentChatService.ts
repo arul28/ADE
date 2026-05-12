@@ -8055,11 +8055,15 @@ export function createAgentChatService(args: {
       return;
     }
 
-    const completeInlineCodexSlash = (message?: string) => {
+    const completeInlineCodexSlash = (
+      message?: string,
+      emitBeforeComplete?: (turnId: string) => void,
+    ) => {
       const slashTurnId = randomUUID();
       markDispatched();
       persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
       markSessionIdleWithFreshCache(managed);
+      emitBeforeComplete?.(slashTurnId);
       if (message) {
         emitChatEvent(managed, {
           type: "system_notice",
@@ -8190,12 +8194,14 @@ export function createAgentChatService(args: {
       if (!injectResult.ok) return;
       const firstLine = trimmed.split(/\r?\n/)[0] ?? trimmed;
       const preview = firstLine.length > 80 ? `${firstLine.slice(0, 77)}...` : firstLine;
-      emitChatEvent(managed, {
-        type: "system_notice",
-        noticeKind: "info",
-        message: `[injected] ${preview}`,
+      completeInlineCodexSlash("Context injected into Codex thread history.", (turnId) => {
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "info",
+          message: `[injected] ${preview}`,
+          turnId,
+        });
       });
-      completeInlineCodexSlash("Context injected into Codex thread history.");
       return;
     }
 

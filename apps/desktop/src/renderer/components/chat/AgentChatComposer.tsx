@@ -56,7 +56,7 @@ const CLIPBOARD_IMAGE_PASTE_FALLBACK_DELAY_MS = 80;
 const ISSUE_CONTEXT_MENU_WIDTH = 256;
 const ISSUE_CONTEXT_MENU_GAP = 8;
 const ISSUE_CONTEXT_MENU_VIEWPORT_GUTTER = 8;
-const IMAGE_URL_EXTENSION_RE = /\.(png|jpe?g|gif|webp|bmp|svg|ico|tiff?)(?:$|[?#])/i;
+const IMAGE_URL_EXTENSION_RE = /\.(png|jpe?g|gif|webp|bmp|svg|ico|tiff?)$/i;
 
 type PasteShortcutEvent = {
   key: string;
@@ -95,7 +95,7 @@ function normalizeImageAttachmentUrl(value: string | null | undefined): string |
   try {
     const parsed = new URL(raw);
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
-    if (!IMAGE_URL_EXTENSION_RE.test(`${parsed.pathname}${parsed.search}${parsed.hash}`)) return null;
+    if (!IMAGE_URL_EXTENSION_RE.test(parsed.pathname)) return null;
     return parsed.toString();
   } catch {
     return null;

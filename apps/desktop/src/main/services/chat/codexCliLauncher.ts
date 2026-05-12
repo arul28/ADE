@@ -52,15 +52,9 @@ export async function detectCodexResumeStrategy(binary: string): Promise<CodexRe
   }
 
   const lower = helpText.toLowerCase();
-  // Prefer the explicit `resume` subcommand (post-0.130 form). Look for it in
-  // a subcommand-list context (e.g. "  resume   Resume a thread" or "Commands:
-  // resume ...") rather than as any English word in the help text.
-  const subcommandPatterns = [
-    /(^|\n)\s+resume(\s|$)/,           // indented list item
-    /commands:[\s\S]*?\bresume\b/,     // anywhere in a "Commands:" section
-    /subcommands:[\s\S]*?\bresume\b/,
-  ];
-  if (subcommandPatterns.some((re) => re.test(lower))) {
+  // Prefer the explicit `resume` subcommand (post-0.130 form). Match command
+  // table entries only (e.g. "  resume   Resume a thread"), not prose.
+  if (/^\s{2,}resume(?:\s{2,}|\t|$)/m.test(lower)) {
     return {
       binary,
       flagForm: { kind: "subcommand", argv: (id) => ["resume", id] },

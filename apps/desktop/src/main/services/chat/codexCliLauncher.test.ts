@@ -64,6 +64,21 @@ describe("codexCliLauncher", () => {
       expect(buildResumeArgv(strategy, "abc-123")).toEqual(["--thread", "abc-123"]);
     });
 
+    it("does not pick the resume subcommand from prose in help text", async () => {
+      stubExecFile([
+        "Usage: codex [OPTIONS]",
+        "",
+        "Commands:",
+        "  run      Start a new session",
+        "",
+        "Use --thread to resume a previous conversation.",
+        "  --thread <id>   Resume a specific thread",
+      ].join("\n"));
+      const strategy = await detectCodexResumeStrategy("/usr/local/bin/codex");
+      expect(strategy.flagForm.kind).toBe("long-flag");
+      expect(buildResumeArgv(strategy, "abc-123")).toEqual(["--thread", "abc-123"]);
+    });
+
     it("falls back to interactive launch + clipboard when neither form exists", async () => {
       stubExecFile("Usage: codex [OPTIONS]\nNo resume support");
       const strategy = await detectCodexResumeStrategy("/usr/local/bin/codex");

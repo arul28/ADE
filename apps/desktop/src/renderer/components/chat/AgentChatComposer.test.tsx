@@ -861,6 +861,30 @@ describe("AgentChatComposer", () => {
     expect(props.onAddAttachment).not.toHaveBeenCalled();
   });
 
+  it("does not attach URLs whose image extension appears only in query text", () => {
+    const props = renderComposer({
+      turnActive: false,
+      draft: "",
+    });
+    const clipboardData = {
+      files: [],
+      items: [],
+      getData: vi.fn((type: string) => (
+        type === "text/uri-list" || type === "text/plain"
+          ? "https://example.com/api/asset?file=hero.png"
+          : ""
+      )),
+    };
+
+    const pasteAllowed = fireEvent.paste(screen.getByPlaceholderText("Type to vibecode..."), {
+      clipboardData,
+    });
+
+    expect(pasteAllowed).toBe(true);
+    expect(props.onAddAttachment).not.toHaveBeenCalled();
+    expect(screen.queryByText("Image URL attached")).toBeNull();
+  });
+
   it("hides native permission controls until a model is selected", () => {
     const props = buildComposerProps({
       modelId: "",
