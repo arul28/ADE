@@ -613,6 +613,76 @@ describe("prService.getGithubSnapshot", () => {
     expect(repoCalls).toBe(3);
   });
 
+  it("does not publish a fallback snapshot from a superseded full-history failure", async () => {
+    let resolveOpenRepo!: (value: unknown) => void;
+    const openRepoRequest = new Promise<unknown>((resolve) => {
+      resolveOpenRepo = resolve;
+    });
+    let rejectSupersededFullRepo!: (reason: unknown) => void;
+    const supersededFullRepoRequest = new Promise<unknown>((_resolve, reject) => {
+      rejectSupersededFullRepo = reject;
+    });
+    let resolveCurrentFullRepo!: (value: unknown) => void;
+    const currentFullRepoRequest = new Promise<unknown>((resolve) => {
+      resolveCurrentFullRepo = resolve;
+    });
+    let repoCalls = 0;
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => ({
+        tokenStored: true,
+        repo: REPO,
+        userLogin: "octocat",
+      })),
+      apiRequest: vi.fn(async (args: { path: string; query?: { q?: string } }) => {
+        if (args.path === `/repos/${REPO.owner}/${REPO.name}/pulls`) {
+          repoCalls += 1;
+          if (repoCalls === 1) return openRepoRequest;
+          if (repoCalls === 2) return supersededFullRepoRequest;
+          return currentFullRepoRequest;
+        }
+        return {
+          data: {
+            items: [
+              makeGitHubPull({
+                number: args.query?.q?.includes("is:open") ? 3 : 4,
+                title: args.query?.q?.includes("is:open") ? "Open external" : "Closed external",
+                pull_request: { url: "https://api.github.com/repos/elsewhere/project/pulls/4" },
+                repository_url: "https://api.github.com/repos/elsewhere/project",
+              }),
+            ],
+          },
+        };
+      }),
+    });
+    const { service } = buildService({ githubService, laneService: makeLaneService([]) });
+
+    const openOnly = service.getGithubSnapshot();
+    await flushMicrotasks();
+    const supersededFullHistory = service.getGithubSnapshot({ includeExternalClosed: true });
+    await flushMicrotasks();
+
+    resolveOpenRepo({ data: [makeGitHubPull({ number: 1, title: "Open-only PR" })] });
+    await expect(openOnly).resolves.toEqual(expect.objectContaining({
+      repoPullRequests: [expect.objectContaining({ title: "Open-only PR" })],
+    }));
+
+    const currentFullHistory = service.getGithubSnapshot({ force: true, includeExternalClosed: true });
+    await flushMicrotasks();
+    rejectSupersededFullRepo(new Error("superseded full history failed"));
+    await expect(supersededFullHistory).rejects.toThrow("superseded full history failed");
+
+    const defaultSnapshot = service.getGithubSnapshot();
+    resolveCurrentFullRepo({ data: [makeGitHubPull({ number: 2, title: "Current full-history PR" })] });
+
+    await expect(currentFullHistory).resolves.toEqual(expect.objectContaining({
+      repoPullRequests: [expect.objectContaining({ title: "Current full-history PR" })],
+    }));
+    await expect(defaultSnapshot).resolves.toEqual(expect.objectContaining({
+      repoPullRequests: [expect.objectContaining({ title: "Current full-history PR" })],
+    }));
+    expect(repoCalls).toBe(3);
+  });
+
   it("preserves full-history cache mode during stale open-only revalidation", async () => {
     const initialNow = Date.parse("2026-01-01T00:00:00Z");
     const nowSpy = vi.spyOn(Date, "now").mockReturnValue(initialNow);

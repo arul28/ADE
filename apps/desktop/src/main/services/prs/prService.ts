@@ -5130,7 +5130,8 @@ export function createPrService({
           return snapshot;
         })
         .catch((error) => {
-          if (requestIncludeExternalClosed && pendingOpenOnlySnapshot) {
+          const isCurrentRequest = githubSnapshotInFlight === inFlight;
+          if (isCurrentRequest && requestIncludeExternalClosed && pendingOpenOnlySnapshot) {
             if (cachedGithubSnapshot === null) {
               publishGithubSnapshot(pendingOpenOnlySnapshot.snapshot, false, pendingOpenOnlySnapshot.capturedAt);
             }
