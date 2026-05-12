@@ -924,7 +924,7 @@ describe("prService.listWithConflicts", () => {
     const laneService = makeLaneService([prLane, peerLane]);
     const { service } = buildService({ db, laneService, conflictService });
 
-    const rows = await service.listWithConflicts();
+    const rows = await service.listWithConflicts({ includeConflictAnalysis: true });
 
     expect(laneService.list).toHaveBeenCalledWith({ includeArchived: false, includeStatus: false });
     expect(conflictService.getBatchAssessment).toHaveBeenCalledWith({ lanes: [prLane, peerLane] });
@@ -964,10 +964,33 @@ describe("prService.listWithConflicts", () => {
       conflictService,
     });
 
-    const rows = await service.listWithConflicts();
+    const rows = await service.listWithConflicts({ includeConflictAnalysis: true });
 
     expect(rows[0]?.conflictAnalysis).toBeNull();
     expect(logger.warn).toHaveBeenCalledWith("prs.batch_conflict_analysis_failed", { error: "batch failed" });
+  });
+
+  it("defaults to listing PRs without conflict analysis", async () => {
+    const db = makeMockDb();
+    db.all.mockImplementation((sql: string) => {
+      if (String(sql).includes("from pull_requests")) {
+        return [makePrRow({ id: "pr-1", lane_id: "lane-pr" })];
+      }
+      return [];
+    });
+    const conflictService = {
+      getBatchAssessment: vi.fn(async () => ({ lanes: [], matrix: [], overlaps: [] })),
+    };
+    const { service } = buildService({
+      db,
+      laneService: makeLaneService([makeFakeLane({ id: "lane-pr" })]),
+      conflictService,
+    });
+
+    const rows = await service.listWithConflicts();
+
+    expect(rows[0]?.conflictAnalysis).toBeNull();
+    expect(conflictService.getBatchAssessment).not.toHaveBeenCalled();
   });
 });
 
@@ -1168,6 +1191,37 @@ describe("prService merge contexts", () => {
       targetLaneId: targetLane.id,
       integrationLaneId: integrationLane.id,
     }));
+  });
+
+  it("returns empty merge contexts for requested PR ids missing from storage", async () => {
+    const db = makeMockDb();
+    db.get.mockReturnValue(null);
+    db.all.mockImplementation((sql: string) => {
+      if (String(sql).includes("from pull_requests")) return [];
+      return [];
+    });
+    const { service } = buildService({ db, laneService: makeLaneService([]) });
+
+    await expect(service.getMergeContext("external-pr")).resolves.toEqual({
+      prId: "external-pr",
+      groupId: null,
+      groupType: null,
+      sourceLaneIds: [],
+      targetLaneId: null,
+      integrationLaneId: null,
+      members: [],
+    });
+    await expect(service.getMergeContexts(["external-pr"])).resolves.toEqual({
+      "external-pr": {
+        prId: "external-pr",
+        groupId: null,
+        groupType: null,
+        sourceLaneIds: [],
+        targetLaneId: null,
+        integrationLaneId: null,
+        members: [],
+      },
+    });
   });
 
   it("chunks bulk merge-context lookups below SQLite's bind parameter limit", async () => {

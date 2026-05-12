@@ -176,6 +176,10 @@ describe("PrsContext refresh", () => {
     });
     expect(window.ade.lanes.list).toHaveBeenCalledWith({ includeStatus: false });
     expect(window.ade.prs.refresh).toHaveBeenCalledTimes(1);
+    await waitFor(() => {
+      expect(vi.mocked(window.ade.rebase.scanNeeds).mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(vi.mocked(window.ade.lanes.listAutoRebaseStatuses).mock.calls.length).toBeGreaterThanOrEqual(2);
+    });
   });
 
   it("runs a GitHub PR refresh for explicit refresh actions", async () => {

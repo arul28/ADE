@@ -8244,7 +8244,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsListWithConflicts, async (_event, arg?: { includeConflictAnalysis?: boolean }) =>
     ensurePrPolling().prService.listWithConflicts({
-      includeConflictAnalysis: arg?.includeConflictAnalysis !== false,
+      includeConflictAnalysis: arg?.includeConflictAnalysis === true,
     })
   );
 

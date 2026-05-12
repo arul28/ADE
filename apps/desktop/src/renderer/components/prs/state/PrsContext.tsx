@@ -780,7 +780,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       warmCacheHydratedAtRef.current = Date.now();
       if (options.githubRefreshMode === "background") {
         void window.ade.prs.refresh()
-          .then(() => applyLocalPrState({ includeWorkflowDiagnostics: false }))
+          .then(() => applyLocalPrState())
           .then(() => {
             warmCacheHydratedAtRef.current = Date.now();
           })

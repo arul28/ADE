@@ -4127,9 +4127,19 @@ export function createPrService({
     });
   };
 
+  const emptyMergeContext = (prId: string): PrMergeContext => ({
+    prId,
+    groupId: null,
+    groupType: null,
+    sourceLaneIds: [],
+    targetLaneId: null,
+    integrationLaneId: null,
+    members: [],
+  });
+
   const getMergeContext = async (prId: string): Promise<PrMergeContext> => {
     const row = getRow(prId);
-    if (!row) throw new Error(`PR not found: ${prId}`);
+    if (!row) return emptyMergeContext(prId);
     const lanes = await laneService.list({ includeArchived: false, includeStatus: false });
     return buildMergeContextForRow(row, lanes);
   };
@@ -4149,7 +4159,7 @@ export function createPrService({
         [projectId, ...chunk],
       ));
     }
-    if (rows.length === 0) return {};
+    if (rows.length === 0) return Object.fromEntries(uniquePrIds.map((prId) => [prId, emptyMergeContext(prId)]));
     const groupRows: Array<PrGroupLookupRow & { pr_id: string }> = [];
     for (const chunk of chunkValues(uniquePrIds)) {
       const rowPlaceholders = chunk.map(() => "?").join(", ");
@@ -4215,6 +4225,9 @@ export function createPrService({
         groupByPrId,
         membersByGroupId,
       });
+    }
+    for (const prId of uniquePrIds) {
+      contexts[prId] ??= emptyMergeContext(prId);
     }
     return contexts;
   };
@@ -5454,7 +5467,7 @@ export function createPrService({
     options: { includeConflictAnalysis?: boolean } = {},
   ): Promise<PrWithConflicts[]> => {
     const rows = listRows();
-    if (options.includeConflictAnalysis === false) {
+    if (options.includeConflictAnalysis !== true) {
       return rows.map((row) => ({
         ...rowToSummary(row),
         conflictAnalysis: null,
