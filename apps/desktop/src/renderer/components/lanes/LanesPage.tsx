@@ -857,6 +857,7 @@ export function LanesPage() {
   useEffect(() => {
     return window.ade.prs.onEvent((event) => {
       if (event.type === "prs-updated") {
+        lanePrTagsRequestRef.current += 1;
         setLanePrTags(event.prs);
         // This event already carries ADE rows; use the cached repo snapshot unless a PR notification asks for a forced refresh.
         void refreshLaneGithubPrTags();

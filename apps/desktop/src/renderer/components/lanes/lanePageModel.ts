@@ -202,10 +202,10 @@ export function sortLaneListRows<T extends Pick<LaneSummary, "id" | "laneType">>
     ended: 2,
     none: 3,
   };
-  const base = [...args.lanes];
-  if (args.laneStatusFilter !== "all") {
-    return base.filter((lane) => (args.laneRuntimeById.get(lane.id)?.bucket ?? "none") === args.laneStatusFilter);
-  }
+  const base =
+    args.laneStatusFilter === "all"
+      ? [...args.lanes]
+      : args.lanes.filter((lane) => (args.laneRuntimeById.get(lane.id)?.bucket ?? "none") === args.laneStatusFilter);
   return base.sort((a, b) => {
     const aPrimary = a.laneType === "primary" ? 0 : 1;
     const bPrimary = b.laneType === "primary" ? 0 : 1;

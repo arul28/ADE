@@ -362,4 +362,26 @@ describe("sortLaneListRows", () => {
 
     expect(result.map((lane) => lane.id)).toEqual(["primary", "pinned-ended", "running", "idle"]);
   });
+
+  it("keeps pinned ordering after applying a status filter", () => {
+    const lanes = [
+      { id: "running-a", laneType: "worktree" },
+      { id: "running-pinned", laneType: "worktree" },
+      { id: "ended", laneType: "worktree" },
+    ] as const;
+
+    const result = sortLaneListRows({
+      lanes: [...lanes],
+      laneRuntimeById: new Map([
+        ["running-a", { bucket: "running" }],
+        ["running-pinned", { bucket: "running" }],
+        ["ended", { bucket: "ended" }],
+      ]),
+      laneStatusFilter: "running",
+      laneOrderById: new Map(lanes.map((lane, index) => [lane.id, index])),
+      pinnedLaneIds: new Set(["running-pinned"]),
+    });
+
+    expect(result.map((lane) => lane.id)).toEqual(["running-pinned", "running-a"]);
+  });
 });
