@@ -272,7 +272,11 @@ export function createGithubService({
     if (configOriginUrl) {
       const repo = parseGitHubRepoFromRemoteUrl(configOriginUrl);
       if (repo) return { repo, hasOrigin: true };
-      return { repo: null, hasOrigin: true };
+      // `git remote get-url` applies url.*.insteadOf rewrites that raw config
+      // parsing cannot see, so fall through once before treating it as non-GitHub.
+      const res = await runGit(["remote", "get-url", "origin"], { cwd: projectRoot, timeoutMs: 8000 });
+      if (res.exitCode !== 0) return { repo: null, hasOrigin: true };
+      return { repo: parseGitHubRepoFromRemoteUrl(res.stdout), hasOrigin: true };
     }
     const res = await runGit(["remote", "get-url", "origin"], { cwd: projectRoot, timeoutMs: 8000 });
     if (res.exitCode !== 0) return { repo: null, hasOrigin: false };

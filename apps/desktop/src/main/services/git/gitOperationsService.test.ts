@@ -150,7 +150,7 @@ describe("gitOperationsService stash item commands", () => {
     );
   });
 
-  it("applies then drops a stash when restoring it", async () => {
+  it("pops a stash when restoring it", async () => {
     mockGit.getHeadSha.mockResolvedValue("abc123");
     mockGit.runGitOrThrow.mockResolvedValue(undefined);
     const { service, mockStart, mockFinish } = createTestGitOperationsService();
@@ -158,14 +158,10 @@ describe("gitOperationsService stash item commands", () => {
     const result = await service.stashPop({ laneId: "lane-1", stashRef: "stash@{1}" });
 
     expect(mockGit.runGitOrThrow).toHaveBeenCalledWith(
-      ["stash", "apply", "stash@{1}"],
+      ["stash", "pop", "stash@{1}"],
       { cwd: "/tmp/ade-lane", timeoutMs: 30_000 },
     );
-    expect(mockGit.runGitOrThrow).toHaveBeenCalledWith(
-      ["stash", "drop", "stash@{1}"],
-      { cwd: "/tmp/ade-lane", timeoutMs: 30_000 },
-    );
-    expect(mockGit.runGitOrThrow).toHaveBeenCalledTimes(2);
+    expect(mockGit.runGitOrThrow).toHaveBeenCalledTimes(1);
     expect(result).toEqual({
       operationId: "op-1",
       preHeadSha: "abc123",
@@ -186,41 +182,17 @@ describe("gitOperationsService stash item commands", () => {
     );
   });
 
-  it("keeps the stash when restore apply fails", async () => {
+  it("surfaces stash pop failures so git keeps the stash for manual recovery", async () => {
     mockGit.getHeadSha.mockResolvedValue("abc123");
-    mockGit.runGitOrThrow.mockRejectedValueOnce(new Error("apply failed"));
+    mockGit.runGitOrThrow.mockRejectedValueOnce(new Error("pop failed"));
     const { service } = createTestGitOperationsService();
 
-    await expect(service.stashPop({ laneId: "lane-1", stashRef: "stash@{1}" })).rejects.toThrow("apply failed");
+    await expect(service.stashPop({ laneId: "lane-1", stashRef: "stash@{1}" })).rejects.toThrow("pop failed");
 
     expect(mockGit.runGitOrThrow).toHaveBeenCalledTimes(1);
     expect(mockGit.runGitOrThrow).toHaveBeenCalledWith(
-      ["stash", "apply", "stash@{1}"],
+      ["stash", "pop", "stash@{1}"],
       { cwd: "/tmp/ade-lane", timeoutMs: 30_000 },
-    );
-  });
-
-  it("does not fail after applying a stash when the drop step fails", async () => {
-    mockGit.getHeadSha.mockResolvedValue("abc123");
-    mockGit.runGitOrThrow
-      .mockResolvedValueOnce(undefined)
-      .mockRejectedValueOnce(new Error("drop failed"));
-    const { service, mockLogger } = createTestGitOperationsService();
-
-    await expect(service.stashPop({ laneId: "lane-1", stashRef: "stash@{1}" })).resolves.toEqual({
-      operationId: "op-1",
-      preHeadSha: "abc123",
-      postHeadSha: "abc123",
-    });
-
-    expect(mockGit.runGitOrThrow).toHaveBeenCalledTimes(2);
-    expect(mockLogger.warn).toHaveBeenCalledWith(
-      "git.stash_pop_drop_failed",
-      expect.objectContaining({
-        laneId: "lane-1",
-        stashRef: "stash@{1}",
-        error: "drop failed",
-      }),
     );
   });
 

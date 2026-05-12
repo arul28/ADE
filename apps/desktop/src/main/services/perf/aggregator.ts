@@ -283,7 +283,7 @@ export function aggregate(runId: string): Summary {
       count: sorted.length,
       p50: Math.round(percentile(sorted, 0.5)),
       p95: Math.round(percentile(sorted, 0.95)),
-      max: Math.round(Math.max(...sorted)),
+      max: Math.round(sorted[sorted.length - 1] ?? 0),
       failedCount: ipcFailed.get(channel) ?? 0,
     };
   });
@@ -311,7 +311,7 @@ export function aggregate(runId: string): Summary {
       count: sorted.length,
       p50: Math.round(percentile(sorted, 0.5)),
       p95: Math.round(percentile(sorted, 0.95)),
-      max: Math.round(Math.max(...sorted)),
+      max: Math.round(sorted[sorted.length - 1] ?? 0),
     };
   });
   marks.sort((a, b) => b.p95 - a.p95);
