@@ -221,6 +221,11 @@ function formatLaneDeleteProgressError(progress: LaneDeleteProgress, laneName: s
   return `${laneName} delete failed.`;
 }
 
+function formatLaneDeleteWarningMessages(messagesByLaneId: Map<string, string>): string | null {
+  const messages = [...messagesByLaneId.values()];
+  return messages.length > 0 ? messages.join("\n") : null;
+}
+
 function laneTilingLayoutIds(laneId: string): string[] {
   return [
     `lanes:tiling:${LANES_TILING_LAYOUT_VERSION}:${laneId}`,
@@ -323,6 +328,7 @@ export function LanesPage() {
   const [laneActionError, setLaneActionError] = useState<string | null>(null);
   const [laneActionKind, setLaneActionKind] = useState<"delete" | "archive" | "adopt" | null>(null);
   const [deleteProgressByLaneId, setDeleteProgressByLaneId] = useState<Record<string, LaneDeleteProgress>>({});
+  const laneDeleteWarningMessagesRef = useRef<Map<string, string>>(new Map());
   const [managedLaneIds, setManagedLaneIds] = useState<string[]>([]);
   const [conflictChipsByLane, setConflictChipsByLane] = useState<Record<string, ConflictChip[]>>({});
   const chipTimersRef = useRef<Map<string, number>>(new Map());
@@ -790,6 +796,7 @@ export function LanesPage() {
         return next;
       });
       if (overallStatus === "failed" || overallStatus === "cancelled") {
+        laneDeleteWarningMessagesRef.current.delete(laneId);
         completedLaneDeleteRefreshesRef.current.delete(laneId);
         const laneName = lanesByIdRef.current?.get(laneId)?.name ?? laneId;
         setLaneActionError(
@@ -815,7 +822,12 @@ export function LanesPage() {
       clearLaneInspectorTab(laneId);
       if (overallStatus === "completed_with_warnings") {
         const laneName = lanesByIdRef.current?.get(laneId)?.name ?? laneId;
-        setLaneActionError(formatLaneDeleteProgressError(event.progress, laneName));
+        laneDeleteWarningMessagesRef.current.set(laneId, formatLaneDeleteProgressError(event.progress, laneName));
+        setLaneActionError(formatLaneDeleteWarningMessages(laneDeleteWarningMessagesRef.current));
+      } else {
+        laneDeleteWarningMessagesRef.current.delete(laneId);
+        const remainingWarnings = formatLaneDeleteWarningMessages(laneDeleteWarningMessagesRef.current);
+        setLaneActionError((current) => remainingWarnings ?? (current && /\bdelet(?:e|ed|ing)\b/i.test(current) ? null : current));
       }
       pendingLaneDeleteRefreshIdsRef.current.add(laneId);
       scheduleLaneDeleteRefresh();
@@ -1418,6 +1430,7 @@ export function LanesPage() {
     setLaneActionBusy(false);
     setLaneActionStatus(null);
     setLaneActionKind(null);
+    laneDeleteWarningMessagesRef.current.clear();
     setLaneActionError(null);
     setDeleteConfirmText("");
     moveAwayFromDeletingLanes(laneIds);
@@ -2663,7 +2676,10 @@ export function LanesPage() {
               type="button"
               className="shrink-0"
               style={{ background: "transparent", border: "none", color: COLORS.danger, cursor: "pointer", padding: 0 }}
-              onClick={() => setLaneActionError(null)}
+              onClick={() => {
+                laneDeleteWarningMessagesRef.current.clear();
+                setLaneActionError(null);
+              }}
               title="Dismiss"
             >
               <X size={11} />

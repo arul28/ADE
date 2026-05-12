@@ -129,9 +129,9 @@ export async function probeClaudeRuntimeHealth(args: {
     const abortController = new AbortController();
     const timeout = setTimeout(() => abortController.abort(), PROBE_TIMEOUT_MS);
     let stream: ReturnType<typeof claudeQuery> | null = null;
+    const claudeExecutable = resolveClaudeCodeExecutable();
 
     try {
-      const claudeExecutable = resolveClaudeCodeExecutable();
       stream = claudeQuery({
         prompt: "System initialization check. Respond with only the word READY.",
         options: {
@@ -154,7 +154,6 @@ export async function probeClaudeRuntimeHealth(args: {
         message: DEFAULT_RUNTIME_FAILURE,
       });
     } catch (error) {
-      const claudeExecutable = resolveClaudeCodeExecutable();
       const missingMessageIsFalseNegative = claudeExecutable.source !== "fallback-command"
         && isExecutablePath(claudeExecutable.path)
         && normalizeErrorMessage(error).toLowerCase().includes("native binary not found");
