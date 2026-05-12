@@ -207,6 +207,10 @@ import { createLinearTools } from "../ai/tools/linearTools";
 import { createCtoOperatorTools, type CtoOperatorToolDeps } from "../ai/tools/ctoOperatorTools";
 import { buildCodingAgentSystemPrompt } from "../ai/tools/systemPrompt";
 import { resolveClaudeCliModel } from "../ai/claudeModelUtils";
+import {
+  isExecutablePath,
+  resolveClaudeCodeExecutable,
+} from "../ai/claudeCodeExecutable";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import {
   getProviderRuntimeHealth,
@@ -7004,6 +7008,18 @@ export function createAgentChatService(args: {
 
     const match = classifyAgentCliError(`${event.message}\n${event.detail ?? ""}`, managed.session.provider);
     if (!match) return event;
+    if (managed.session.provider === "claude" && match.category === "missing") {
+      const resolved = resolveClaudeCodeExecutable();
+      if (resolved.source !== "fallback-command" && isExecutablePath(resolved.path)) {
+        logger.warn("agent_chat.claude_missing_cli_error_suppressed", {
+          sessionId: managed.session.id,
+          resolvedPath: resolved.path,
+          resolvedSource: resolved.source,
+          message: event.message,
+        });
+        return event;
+      }
+    }
 
     return {
       ...event,
@@ -8934,7 +8950,14 @@ export function createAgentChatService(args: {
         if (msg.type === "rate_limit_event") {
           const rateMsg = msg as any;
           const info = rateMsg.rate_limit_info ?? {};
-          const status = typeof info.status === "string" ? info.status.replace(/_/g, " ") : "updated";
+          const rawStatus = typeof info.status === "string" ? info.status : "updated";
+          const status = rawStatus.replace(/_/g, " ");
+          const severity: "info" | "warning" | "error" =
+            rawStatus === "allowed"
+              ? "info"
+              : rawStatus === "allowed_warning"
+                ? "warning"
+                : "error";
           const details: string[] = [];
           if (typeof info.utilization === "number") {
             const percent = info.utilization <= 1
@@ -8950,6 +8973,8 @@ export function createAgentChatService(args: {
           emitChatEvent(managed, {
             type: "system_notice",
             noticeKind: "rate_limit",
+            severity,
+            status: rawStatus,
             message: `Claude rate limit ${status}`,
             detail: details.length ? details.join(" | ") : undefined,
             turnId,
@@ -9417,6 +9442,7 @@ export function createAgentChatService(args: {
           emitChatEvent(managed, {
             type: "system_notice",
             noticeKind: "rate_limit",
+            severity: "error",
             message: `Rate limited${rlMsg.retry_after ? `. Retrying in ${rlMsg.retry_after}s...` : ". Retrying..."}`,
             turnId,
           });
@@ -9602,7 +9628,11 @@ export function createAgentChatService(args: {
         // If resume failed, clear sessionId and the caller can retry fresh
         const isStaleSessionError = (err: unknown): boolean => {
           const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
-          return msg.includes("session not found") || msg.includes("invalid session") || msg.includes("stale session") || msg.includes("session expired");
+          return msg.includes("session not found")
+            || msg.includes("no conversation found with session id")
+            || msg.includes("invalid session")
+            || msg.includes("stale session")
+            || msg.includes("session expired");
         };
         if (runtime.sdkSessionId && isStaleSessionError(effectiveError)) {
           logger.warn("agent_chat.claude_sdk_session_error", {
@@ -11703,6 +11733,7 @@ export function createAgentChatService(args: {
           emitChatEvent(managed, {
             type: "system_notice",
             noticeKind: "rate_limit",
+            severity: "warning",
             message: `Codex rate limit: ${rateLimits.remaining}/${rateLimits.limit} remaining${rateLimits.resetAt ? ` (resets ${rateLimits.resetAt})` : ""}`,
             turnId: typeof params.turnId === "string" ? params.turnId : undefined,
           });
@@ -12452,6 +12483,7 @@ export function createAgentChatService(args: {
     managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
     const lightweight = isLightweightSession(managed.session);
     const claudeEnv = buildAgentRuntimeEnv(managed);
+    const claudeExecutable = resolveClaudeCodeExecutable({ env: claudeEnv });
     const outputStyle = resolveManagedClaudeOutputStyle(managed);
     const pluginPaths = discoverClaudePluginPaths(managed.laneWorktreePath);
     const mcpServers = lightweight
@@ -12465,6 +12497,7 @@ export function createAgentChatService(args: {
     const opts: ClaudeSDKOptions = {
       cwd: managed.laneWorktreePath,
       env: claudeEnv,
+      pathToClaudeCodeExecutable: claudeExecutable.path,
       settings: { outputStyle },
       ...(pluginPaths.length ? { plugins: pluginPaths.map((pluginPath) => ({ type: "local" as const, path: pluginPath })) } : {}),
       ...(Object.keys(mcpServers).length ? { mcpServers } : {}),
@@ -12485,6 +12518,11 @@ export function createAgentChatService(args: {
         cwd: managed.laneWorktreePath,
       }),
     };
+    logger.debug("agent_chat.claude_executable_resolved", {
+      sessionId: managed.session.id,
+      source: claudeExecutable.source,
+      path: claudeExecutable.path,
+    });
     if (!lightweight) {
       opts.toolConfig = {
         askUserQuestion: {

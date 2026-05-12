@@ -1,7 +1,4 @@
 import { randomUUID } from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
-import { createRequire } from "node:module";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { createProjectConfigService } from "../config/projectConfigService";
@@ -75,8 +72,7 @@ import { buildProviderConnections } from "./providerConnectionStatus";
 import { getProviderRuntimeHealthVersion, resetProviderRuntimeHealth } from "./providerRuntimeHealth";
 import { probeClaudeRuntimeHealth, resetClaudeRuntimeProbeCache } from "./claudeRuntimeProbe";
 import { runProviderTask } from "./providerTaskRunner";
-
-const requireFromHere = createRequire(import.meta.url);
+import { resolveClaudeCodeExecutable } from "./claudeCodeExecutable";
 
 export type AiTaskType =
   | "planning"
@@ -373,32 +369,11 @@ function detectClaudeAuthModeFromConnection(
   return "none";
 }
 
-function getClaudeNativeBinaryPackageName(): string | null {
-  const platform = process.platform;
-  const arch = process.arch;
-  if (platform === "darwin" && arch === "arm64") return "@anthropic-ai/claude-agent-sdk-darwin-arm64";
-  if (platform === "darwin" && arch === "x64") return "@anthropic-ai/claude-agent-sdk-darwin-x64";
-  if (platform === "linux" && arch === "arm64") return "@anthropic-ai/claude-agent-sdk-linux-arm64";
-  if (platform === "linux" && arch === "x64") return "@anthropic-ai/claude-agent-sdk-linux-x64";
-  if (platform === "win32" && arch === "x64") return "@anthropic-ai/claude-agent-sdk-win32-x64";
-  return null;
-}
-
 function resolveBundledClaudeBinary(): Pick<AiClaudeAvailability["binary"], "present" | "source" | "path"> {
-  const packageName = getClaudeNativeBinaryPackageName();
-  if (!packageName) {
-    return { present: false, source: "missing", path: null };
-  }
-  try {
-    const packageJsonPath = requireFromHere.resolve(`${packageName}/package.json`);
-    const binaryPath = path.join(path.dirname(packageJsonPath), process.platform === "win32" ? "claude.exe" : "claude");
-    if (fs.existsSync(binaryPath)) {
-      return { present: true, source: "bundled", path: binaryPath };
-    }
-  } catch {
-    // Optional native package was not installed for this platform.
-  }
-  return { present: false, source: "missing", path: null };
+  const resolved = resolveClaudeCodeExecutable({ env: { PATH: "" } });
+  return resolved.source === "bundled"
+    ? { present: true, source: "bundled", path: resolved.path }
+    : { present: false, source: "missing", path: null };
 }
 
 function buildClaudeAvailabilityFromConnection(

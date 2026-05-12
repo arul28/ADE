@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { query, startup } from "@anthropic-ai/claude-agent-sdk";
+import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { buildOpenCodePromptParts, startOpenCodeSession } from "../opencode/openCodeRuntime";
 import {
   clearOpenCodeInventoryCache,
@@ -421,6 +422,7 @@ vi.mock("../ai/claudeRuntimeProbe", () => ({
 }));
 
 vi.mock("../ai/claudeCodeExecutable", () => ({
+  isExecutablePath: vi.fn(() => true),
   resolveClaudeCodeExecutable: vi.fn(() => ({ path: "/usr/local/bin/claude", source: "path" })),
 }));
 
@@ -602,6 +604,7 @@ import {
 // Helpers
 // ---------------------------------------------------------------------------
 
+let tmpHomeRoot: string;
 let tmpRoot: string;
 
 function makeDefaultClaudeSession() {
@@ -1254,14 +1257,16 @@ function makeLaneLinearIssue(overrides: Partial<LaneLinearIssue> = {}): LaneLine
 // ---------------------------------------------------------------------------
 
 beforeEach(() => {
-  tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-chat-svc-test-"));
+  tmpHomeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-chat-svc-home-"));
+  tmpRoot = path.join(tmpHomeRoot, "project");
+  fs.mkdirSync(tmpRoot, { recursive: true });
   // Ensure .ade directories exist
   fs.mkdirSync(path.join(tmpRoot, ".ade", "cache", "chat-sessions"), { recursive: true });
   fs.mkdirSync(path.join(tmpRoot, ".ade", "transcripts", "chat"), { recursive: true });
-  // Pin os.homedir() to tmpRoot so user-scope slash command discovery
+  // Pin os.homedir() to an isolated temp root so user-scope slash command discovery
   // (~/.claude/commands, ~/.codex/prompts) doesn't leak the developer's real
-  // home dir into tests.
-  vi.spyOn(os, "homedir").mockReturnValue(tmpRoot);
+  // home dir into tests, while project-local .claude roots remain distinct.
+  vi.spyOn(os, "homedir").mockReturnValue(tmpHomeRoot);
   mockState.sessions.clear();
   mockState.uuidCounter = 0;
   mockState.codexThreadCounter = 0;
@@ -1296,6 +1301,8 @@ beforeEach(() => {
   vi.mocked(query).mockReset();
   vi.mocked(startup).mockReset();
   installClaudeSdkCompatMocks();
+  vi.mocked(resolveClaudeCodeExecutable).mockClear();
+  vi.mocked(resolveClaudeCodeExecutable).mockReturnValue({ path: "/usr/local/bin/claude", source: "path" });
   vi.mocked(detectAllAuth).mockResolvedValue([]);
   vi.mocked(parseAgentChatTranscript).mockReturnValue([]);
   vi.mocked(clearOpenCodeInventoryCache).mockClear();
@@ -1319,7 +1326,7 @@ afterEach(() => {
     process.env.CURSOR_API_KEY = ORIGINAL_CURSOR_API_KEY;
   }
   try {
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    fs.rmSync(tmpHomeRoot, { recursive: true, force: true });
   } catch { /* ignore */ }
 });
 
@@ -3524,10 +3531,15 @@ describe("createAgentChatService", () => {
       expect(rateLimitNotices[0].event).toMatchObject({
         type: "system_notice",
         noticeKind: "rate_limit",
+        severity: "warning",
+        status: "allowed_warning",
         message: "Claude rate limit allowed warning",
       });
       expect(rateLimitNotices[0].event.detail).toContain("82% utilized");
       expect(rateLimitNotices[0].event.detail).toContain("resets");
+      expect(claudeSdkCreateSessionCompat.mock.calls.some(([options]) =>
+        options?.pathToClaudeCodeExecutable === "/usr/local/bin/claude",
+      )).toBe(true);
     });
 
     it("registers a PreCompact hook on non-lightweight Claude sessions", async () => {
