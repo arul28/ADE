@@ -7957,10 +7957,6 @@ export function createAgentChatService(args: {
       });
     }
     const providerSlashCommand = args.providerSlashCommand === true;
-    const autoMemoryPlan = providerSlashCommand
-      ? null
-      : await buildAutoMemoryTurnPlan(managed, userText, attachments);
-    const autoMemoryNotice = autoMemoryPlan ? buildAutoMemorySystemNotice(autoMemoryPlan) : null;
 
     // Intercept /review command — route to review/start RPC instead of turn/start.
     // ReviewTarget variants (per codex-rs/app-server-protocol/schema/typescript/v2/ReviewTarget.ts):
@@ -8100,6 +8096,7 @@ export function createAgentChatService(args: {
 
     const slashText = args.promptText.trim();
     let effectivePromptText = args.promptText;
+    const planSlashCommand = /^\/plan(?:\s|$)/i.test(slashText);
 
     if (/^\/fast(?:\s|$)/i.test(slashText)) {
       const fastArgs = slashText.replace(/^\/fast(?:\s+|$)/i, "").trim().toLowerCase();
@@ -8139,7 +8136,7 @@ export function createAgentChatService(args: {
       return;
     }
 
-    if (/^\/plan(?:\s|$)/i.test(slashText)) {
+    if (planSlashCommand) {
       const planPrompt = slashText.replace(/^\/plan(?:\s+|$)/i, "").trim();
       managed.session.permissionMode = "plan";
       managed.session.interactionMode = "plan";
@@ -8305,9 +8302,15 @@ export function createAgentChatService(args: {
       return;
     }
 
+    const suppressTurnContext = providerSlashCommand && !planSlashCommand;
+    const autoMemoryPlan = suppressTurnContext
+      ? null
+      : await buildAutoMemoryTurnPlan(managed, effectivePromptText, attachments);
+    const autoMemoryNotice = autoMemoryPlan ? buildAutoMemorySystemNotice(autoMemoryPlan) : null;
+
     const input: Array<Record<string, unknown>> = [];
 
-    const reconstructionContext = providerSlashCommand ? "" : managed.pendingReconstructionContext?.trim() ?? "";
+    const reconstructionContext = suppressTurnContext ? "" : managed.pendingReconstructionContext?.trim() ?? "";
     if (reconstructionContext.length) {
       input.push({
         type: "text",

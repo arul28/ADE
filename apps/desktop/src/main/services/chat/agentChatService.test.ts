@@ -7664,7 +7664,10 @@ describe("createAgentChatService", () => {
     });
 
     it("handles Codex /plan prompts inline and sends the next app-server turn in plan mode", async () => {
-      const { service } = createService();
+      const memoryService = {
+        search: vi.fn(async () => []),
+      } as any;
+      const { service } = createService({ memoryService });
       const session = await service.createSession({
         laneId: "lane-1",
         provider: "codex",
@@ -7673,7 +7676,7 @@ describe("createAgentChatService", () => {
 
       await service.sendMessage({
         sessionId: session.id,
-        text: "/plan Inspect the repo first.",
+        text: "/plan Please plan the renderer refactor before editing app.tsx.",
       });
 
       await vi.waitFor(() => {
@@ -7694,11 +7697,15 @@ describe("createAgentChatService", () => {
         input?: Array<{ text?: unknown }>;
       } | undefined;
       const textInput = params?.input?.map((entry) => String(entry.text ?? "")).join("\n") ?? "";
-      expect(textInput).toContain("Inspect the repo first.");
+      expect(textInput).toContain("Please plan the renderer refactor before editing app.tsx.");
       expect(textInput).not.toContain("/plan");
       expect(params?.approvalPolicy).toBe("on-request");
       expect(params?.sandboxPolicy?.type).toBe("readOnly");
       expect(params?.collaborationMode?.mode).toBe("plan");
+      expect(memoryService.search).toHaveBeenCalled();
+      const memoryQueries = memoryService.search.mock.calls.map(([payload]: [Record<string, unknown>]) => String(payload.query ?? ""));
+      expect(memoryQueries.every((query: string) => !query.startsWith("/plan"))).toBe(true);
+      expect(memoryQueries[0]).toContain("Please plan the renderer refactor");
     });
 
     it("sends fast service tier for supported Codex models when enabled", async () => {
