@@ -177,7 +177,7 @@ export function spawnInNewTerminalWindow(options: SpawnNewTerminalOptions): void
   const candidates: Array<{ bin: string; argv: (script: string) => string[] }> = [
     { bin: "gnome-terminal", argv: (s) => ["--", "bash", "-c", s] },
     { bin: "konsole", argv: (s) => ["-e", "bash", "-c", s] },
-    { bin: "xfce4-terminal", argv: (s) => ["-e", `bash -c ${shellQuote(s)}`] },
+    { bin: "xfce4-terminal", argv: (s) => ["--execute", "bash", "-lc", s] },
     { bin: "xterm", argv: (s) => ["-e", "bash", "-c", s] },
   ];
   const innerScript = `${cdCommand} && ${command}; exec bash`;

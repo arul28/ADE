@@ -77,7 +77,7 @@ import { chooseInitialLane } from "./project";
 import { resolveDrawerChatSelection } from "./drawerSelection";
 import { latestExpandableFailureId, renderObject, summarizeDiffChanges } from "./format";
 import { startTuiHeartbeat, type TuiHeartbeat } from "./heartbeat";
-import { isImageFilePath, normalizeOpenableImageTarget } from "./imageTargets";
+import { isImageFilePath, latestOpenableImageTarget } from "./imageTargets";
 import { loadAdeCodeState, saveAdeCodeState } from "./state";
 import { buildLinearToolRequest } from "./linearCommands";
 import { buildPendingInputAnswers, latestPendingApproval } from "./pendingInput";
@@ -1048,6 +1048,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const [tokenSummary, setTokenSummary] = useState<string | null>(null);
   const [statusLineStats, setStatusLineStats] = useState<TokenStats | null>(null);
   const [statusLineText, setStatusLineText] = useState<string | null>(null);
+  const [currentGoal, setCurrentGoal] = useState<CodexThreadGoal | null>(null);
   const [vimModeEnabled, setVimModeEnabled] = useState(() => readClaudeVimMode(project.workspaceRoot));
   const [vimMode, setVimMode] = useState<"insert" | "normal">("insert");
   const [hideVimModeIndicator, setHideVimModeIndicator] = useState(false);
@@ -1120,7 +1121,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   }, [setChatScrollOffset]);
 
   const selectActiveSessionId = useCallback((sessionId: string | null) => {
-    if (activeSessionIdRef.current !== sessionId) setChatScrollOffset(0);
+    if (activeSessionIdRef.current !== sessionId) {
+      setChatScrollOffset(0);
+      setCurrentGoal(null);
+    }
     if (sessionId) {
       draftChatActiveRef.current = false;
       setDraftChatActive(false);
@@ -1309,7 +1313,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       : []
   ), [activeCommandProvider, activePane, prompt, slashCommands]);
   const pendingApproval = useMemo(() => latestPendingApproval(events), [events]);
-  const currentGoal = useMemo(() => latestGoal(events), [events]);
   const goalBannerText = useMemo(() => formatGoalBannerLine(currentGoal), [currentGoal]);
   const activeFormField = rightPane.kind === "form"
     ? rightPane.fields[formFieldIndex] ?? rightPane.fields[0] ?? null
@@ -1916,6 +1919,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     let nextEvents: AgentChatEventEnvelope[] = [];
     if (nextSessionId) {
       const history = await getChatHistory(conn, nextSessionId);
+      setCurrentGoal(latestGoal(history.events));
       nextEvents = clearedAt
         ? history.events.filter((event) => event.timestamp > clearedAt)
         : history.events;
@@ -1931,6 +1935,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       setContextPercent(null);
       setTokenSummary(null);
       setStatusLineStats(null);
+      setCurrentGoal(null);
       setStreaming(false);
       eventCountRef.current = 0;
     }
@@ -2052,12 +2057,17 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         return;
       }
       if (clearedAt && envelope.timestamp <= clearedAt) return;
+      const event = envelope.event as Record<string, unknown>;
+      if (event.type === "codex_goal_updated") {
+        setCurrentGoal((event as { goal?: CodexThreadGoal | null }).goal ?? null);
+      } else if (event.type === "codex_goal_cleared") {
+        setCurrentGoal(null);
+      }
       setEvents((prev) => {
         const key = `${envelope.sequence ?? ""}:${envelope.timestamp}:${envelope.event.type}`;
         if (prev.some((entry) => `${entry.sequence ?? ""}:${entry.timestamp}:${entry.event.type}` === key)) return prev;
         return [...prev, envelope].slice(-500);
       });
-      const event = envelope.event as Record<string, unknown>;
       if (event.type === "status" && event.turnStatus === "started") setStreaming(true);
       if (event.type === "done" || (event.type === "status" && event.turnStatus === "completed")) setStreaming(false);
       if (event.type === "subagent_started" || event.type === "subagent.started") {
@@ -2961,27 +2971,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   }, [addNotice, focusAfterDetails, refreshState, selectActiveLaneId, selectActiveSessionId]);
 
   const openLatestImage = useCallback(() => {
-    let target: string | null = null;
-    const acceptTarget = (candidate: string) => {
-      const normalized = normalizeOpenableImageTarget(candidate);
-      if (!normalized) return false;
-      target = normalized;
-      return true;
-    };
-    for (let index = events.length - 1; index >= 0; index -= 1) {
-      const event = events[index]?.event as Record<string, unknown> | undefined;
-      if (!event) continue;
-      if (event.type === "codex_image_generation") {
-        const candidate = (event as { result?: unknown }).result;
-        if (typeof candidate === "string" && acceptTarget(candidate)) break;
-      }
-      if (event.type === "codex_image_view") {
-        const local = (event as { path?: unknown }).path;
-        const remote = (event as { url?: unknown }).url;
-        if (typeof local === "string" && acceptTarget(local)) break;
-        if (typeof remote === "string" && acceptTarget(remote)) break;
-      }
-    }
+    const target = latestOpenableImageTarget(events);
     if (!target) {
       addNotice("No image to open in the recent history.", "info");
       return;

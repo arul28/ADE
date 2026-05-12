@@ -192,6 +192,30 @@ describe("codexCliLauncher", () => {
       expect(bin).toBe("xterm");
     });
 
+    it("passes xfce4-terminal an argv-style command", () => {
+      const spawnMock = mocked.__spawnMock;
+      spawnMock.mockReset();
+      const fakeChild = { once: vi.fn(), unref: vi.fn() };
+      spawnMock.mockReturnValue(fakeChild as never);
+
+      spawnInNewTerminalWindow({
+        binary: "/usr/local/bin/codex",
+        argv: ["resume", "abc-123"],
+        cwd: "/tmp/lane with spaces",
+        platform: "linux",
+        isExecutableOnPath: (binary) => binary === "xfce4-terminal",
+      });
+
+      const [bin, args] = spawnMock.mock.calls[0]!;
+      expect(bin).toBe("xfce4-terminal");
+      expect(args).toEqual([
+        "--execute",
+        "bash",
+        "-lc",
+        "cd '/tmp/lane with spaces' && '/usr/local/bin/codex' 'resume' 'abc-123'; exec bash",
+      ]);
+    });
+
     it("throws when no linux terminal candidate is available", () => {
       expect(() => spawnInNewTerminalWindow({
         binary: "/usr/local/bin/codex",
