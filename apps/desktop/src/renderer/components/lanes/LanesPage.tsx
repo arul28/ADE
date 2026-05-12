@@ -816,8 +816,6 @@ export function LanesPage() {
       if (overallStatus === "completed_with_warnings") {
         const laneName = lanesByIdRef.current?.get(laneId)?.name ?? laneId;
         setLaneActionError(formatLaneDeleteProgressError(event.progress, laneName));
-      } else {
-        setLaneActionError(null);
       }
       pendingLaneDeleteRefreshIdsRef.current.add(laneId);
       scheduleLaneDeleteRefresh();

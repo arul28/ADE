@@ -422,6 +422,7 @@ vi.mock("../ai/claudeRuntimeProbe", () => ({
 }));
 
 vi.mock("../ai/claudeCodeExecutable", () => ({
+  isExecutablePath: vi.fn(() => true),
   resolveClaudeCodeExecutable: vi.fn(() => ({ path: "/usr/local/bin/claude", source: "path" })),
 }));
 
