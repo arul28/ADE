@@ -2334,9 +2334,12 @@ export function AgentChatComposer({
 
   const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
     setDragActive(false);
-    if (!canAttach || (!event.dataTransfer.files.length && !addImageUrlFromTransfer(event.dataTransfer))) return;
+    const hasFiles = event.dataTransfer.files.length > 0;
+    const hasUriList = event.dataTransfer.types.includes("text/uri-list");
+    if (!canAttach || (!hasFiles && !hasUriList)) return;
     event.preventDefault();
-    if (event.dataTransfer.files.length) {
+    if (!hasFiles && !addImageUrlFromTransfer(event.dataTransfer)) return;
+    if (hasFiles) {
       void addFileAttachments(event.dataTransfer.files);
     }
   };

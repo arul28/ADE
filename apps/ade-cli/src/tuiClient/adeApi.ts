@@ -266,10 +266,6 @@ export async function interruptChat(connection: AdeCodeConnection, sessionId: st
   await connection.action("chat", "interrupt", { sessionId });
 }
 
-export async function resumeChat(connection: AdeCodeConnection, sessionId: string): Promise<AgentChatSession> {
-  return await connection.action("chat", "resumeSession", { sessionId });
-}
-
 export async function renameChat(connection: AdeCodeConnection, sessionId: string, title: string): Promise<AgentChatSession> {
   return await connection.action("chat", "updateSession", {
     sessionId,

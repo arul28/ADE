@@ -936,9 +936,15 @@ describe("AgentChatComposer", () => {
     fireEvent.dragOver(input, { dataTransfer: rejectedUrlDrop });
     expect(screen.getByText("Drop files to attach")).toBeTruthy();
 
-    fireEvent.drop(input, { dataTransfer: rejectedUrlDrop });
+    const dropEvent = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(dropEvent, "dataTransfer", {
+      configurable: true,
+      value: rejectedUrlDrop,
+    });
+    fireEvent(input, dropEvent);
 
     await waitFor(() => expect(screen.queryByText("Drop files to attach")).toBeNull());
+    expect(dropEvent.defaultPrevented).toBe(true);
     expect(props.onAddAttachment).not.toHaveBeenCalled();
   });
 

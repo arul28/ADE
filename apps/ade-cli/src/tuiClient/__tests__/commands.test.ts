@@ -84,7 +84,7 @@ describe("commands", () => {
     expect(rows).toContainEqual(expect.objectContaining({
       name: "/compact",
       source: "ade",
-      description: "Compact Claude context through the active SDK session",
+      description: "Compact the active chat context",
     }));
   });
 
@@ -109,12 +109,24 @@ describe("commands", () => {
     }
     expect(rows).toContainEqual(expect.objectContaining({
       name: "/compact",
-      description: "Compact the Codex thread context",
+      description: "Compact the active chat context",
     }));
     expect(rows).toContainEqual(expect.objectContaining({
       name: "/goal",
-      description: "Set, clear, or inspect the Codex thread goal",
+      description: "Set, clear, or inspect the active chat goal",
     }));
+  });
+
+  it("shows one provider-gated row for shared Claude and Codex chat commands", () => {
+    const rows = paletteCommands("/");
+    const compactRows = rows.filter((row) => row.name === "/compact");
+    const goalRows = rows.filter((row) => row.name === "/goal");
+    expect(compactRows).toEqual([
+      expect.objectContaining({ description: "Compact the active chat context" }),
+    ]);
+    expect(goalRows).toEqual([
+      expect.objectContaining({ description: "Set, clear, or inspect the active chat goal" }),
+    ]);
   });
 
   it("filters Claude-only ADE commands outside Claude chats", () => {
