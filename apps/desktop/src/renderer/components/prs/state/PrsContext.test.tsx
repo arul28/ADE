@@ -408,7 +408,7 @@ describe("PrsContext refresh", () => {
     });
   });
 
-  it("keeps detail busy while snapshot prefill waits for live detail", async () => {
+  it("marks detail idle when snapshot prefill is available while live detail waits", async () => {
     const user = userEvent.setup();
     vi.mocked(window.ade.prs.listWithConflicts).mockResolvedValue([makeFakePr("pr-1")]);
     Object.assign(window.ade.prs, {
@@ -461,7 +461,7 @@ describe("PrsContext refresh", () => {
     await user.click(screen.getByRole("button", { name: "select pr-1" }));
     await waitFor(() => {
       expect(screen.getByTestId("checks-count").textContent).toBe("1");
-      expect(screen.getByTestId("detail-busy").textContent).toBe("busy");
+      expect(screen.getByTestId("detail-busy").textContent).toBe("idle");
     });
   });
 

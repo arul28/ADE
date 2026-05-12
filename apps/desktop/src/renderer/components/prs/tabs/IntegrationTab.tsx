@@ -506,6 +506,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
     detailChecks,
     detailReviews,
     detailComments,
+    detailSnapshot,
     detailLiveDataPrId,
     detailBusy,
     rebaseNeeds,
@@ -1995,6 +1996,8 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
               checks={detailChecks}
               reviews={detailReviews}
               comments={detailComments}
+              snapshotHydration={detailSnapshot?.prId === selectedPr.id ? detailSnapshot : null}
+              snapshotHydrationOwnedByContext
               liveDetailReady={detailLiveDataPrId === selectedPr.id}
               detailBusy={detailBusy}
               lanes={lanes}

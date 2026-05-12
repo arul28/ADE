@@ -407,6 +407,7 @@ export function GitHubTab({
     detailChecks,
     detailReviews,
     detailComments,
+    detailSnapshot,
     detailLiveDataPrId,
     detailBusy,
     loading: prsContextLoading,
@@ -1051,6 +1052,8 @@ export function GitHubTab({
               checks={detailChecks}
               reviews={detailReviews}
               comments={detailComments}
+              snapshotHydration={detailSnapshot?.prId === selectedLinkedPr.id ? detailSnapshot : null}
+              snapshotHydrationOwnedByContext
               liveDetailReady={detailLiveDataPrId === selectedLinkedPr.id}
               detailBusy={detailBusy}
               lanes={lanes}

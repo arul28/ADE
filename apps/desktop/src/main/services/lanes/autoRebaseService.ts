@@ -127,6 +127,12 @@ function blockedMessage(
   return `Pending: ancestor lane '${laneId}' has unresolved rebase conflicts. Open the Rebase/Merge tab to continue.`;
 }
 
+function isAncestorBlockedStatus(status: StoredStatus): boolean {
+  return status.state === "rebasePending"
+    && typeof status.message === "string"
+    && status.message.startsWith("Pending: ancestor lane ");
+}
+
 function resolveAffectedChainLaneId(
   laneId: string,
   laneById: Map<string, LaneSummary>,
@@ -297,6 +303,7 @@ export function createAutoRebaseService(args: {
         hasFreshLaneStatus
         && lane.status.behind <= 0
         && status.source !== "manual"
+        && !isAncestorBlockedStatus(status)
         && !preserveLaneIds.has(lane.id)
       ) {
         clearStatus(lane.id);

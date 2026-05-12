@@ -28,6 +28,7 @@ import type {
   PrReviewThread,
   PrDeployment,
   PrAiSummary,
+  PrSnapshotHydration,
   PrAgentPermissionMode,
 } from "../../../../shared/types";
 import type { PrTimelineFilters } from "../shared/PrTimeline";
@@ -68,6 +69,7 @@ type PrsState = {
   detailReviewThreads: PrReviewThread[];
   detailDeployments: PrDeployment[];
   detailAiSummary: PrAiSummary | null;
+  detailSnapshot: PrSnapshotHydration | null;
   detailLiveDataPrId: string | null;
   detailBusy: boolean;
 
@@ -413,10 +415,13 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
   );
   const [detailDeployments, setDetailDeployments] = useState<PrDeployment[]>(() => warmCache?.detailDeployments ?? []);
   const [detailAiSummary, setDetailAiSummary] = useState<PrAiSummary | null>(() => warmCache?.detailAiSummary ?? null);
+  const [detailSnapshot, setDetailSnapshot] = useState<PrSnapshotHydration | null>(null);
   const [detailLiveDataPrId, setDetailLiveDataPrId] = useState<string | null>(null);
   const [detailBusy, setDetailBusy] = useState(false);
   const [viewerLogin, setViewerLogin] = useState<string | null>(() => warmCache?.viewerLogin ?? null);
   const detailCacheHasDataRef = React.useRef(false);
+  const detailSnapshotLoadedAtByPrIdRef = React.useRef<Record<string, number>>({});
+  const detailSnapshotStatePrIdRef = React.useRef<string | null>(null);
   React.useEffect(() => {
     detailCacheHasDataRef.current =
       detailStatus !== null
@@ -923,6 +928,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       setDetailReviewThreads([]);
       setDetailDeployments([]);
       setDetailAiSummary(null);
+      setDetailSnapshot(null);
       setDetailLiveDataPrId(null);
       return;
     }
@@ -941,6 +947,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       setDetailReviewThreads([]);
       setDetailDeployments([]);
       setDetailAiSummary(null);
+      setDetailSnapshot(null);
       setDetailLiveDataPrId(null);
       setSelectedPrId(null);
       return;
@@ -955,8 +962,16 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       && cachedDetailAgeMs < PRS_DETAIL_CACHE_TTL_MS
       && detailStatePrIdRef.current === prId
       && detailCacheHasDataRef.current;
-    if (!hasFreshDetailCache) {
+    const cachedSnapshotAgeMs = Date.now() - (detailSnapshotLoadedAtByPrIdRef.current[prId] ?? 0);
+    const hasFreshSnapshotPrefill =
+      cachedSnapshotAgeMs >= 0
+      && cachedSnapshotAgeMs < PRS_DETAIL_CACHE_TTL_MS
+      && detailSnapshotStatePrIdRef.current === prId
+      && detailCacheHasDataRef.current;
+    if (!hasFreshDetailCache && !hasFreshSnapshotPrefill) {
       detailStatePrIdRef.current = null;
+      detailSnapshotStatePrIdRef.current = null;
+      setDetailSnapshot(null);
       setDetailLiveDataPrId(null);
       setDetailStatus(null);
       setDetailChecks([]);
@@ -966,15 +981,19 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       setDetailDeployments([]);
       setDetailAiSummary(null);
     }
-    if (!hasFreshDetailCache && typeof window.ade.prs.listSnapshots === "function") {
+    if (!hasFreshDetailCache && !hasFreshSnapshotPrefill && typeof window.ade.prs.listSnapshots === "function") {
       void window.ade.prs.listSnapshots({ prId }).then((snapshots) => {
         if (cancelled || selectedPrIdRef.current !== prId || liveDetailApplied) return;
         const snapshot = snapshots[0];
         if (!snapshot) return;
+        detailSnapshotStatePrIdRef.current = prId;
+        detailSnapshotLoadedAtByPrIdRef.current[prId] = Date.now();
+        setDetailSnapshot(snapshot);
         setDetailStatus(snapshot.status);
         setDetailChecks(snapshot.checks);
         setDetailReviews(snapshot.reviews);
         setDetailComments(snapshot.comments);
+        setDetailBusy(false);
       }).catch(() => {});
     }
     if (hasFreshDetailCache) {
@@ -1020,6 +1039,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
               setDetailReviewThreads([]);
               setDetailDeployments([]);
               setDetailAiSummary(null);
+              setDetailSnapshot(null);
               return;
             }
           }
@@ -1345,6 +1365,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       detailReviewThreads,
       detailDeployments,
       detailAiSummary,
+      detailSnapshot,
       detailLiveDataPrId,
       detailBusy,
       rebaseNeeds,
@@ -1404,6 +1425,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       detailReviewThreads,
       detailDeployments,
       detailAiSummary,
+      detailSnapshot,
       detailLiveDataPrId,
       detailBusy,
       rebaseNeeds,

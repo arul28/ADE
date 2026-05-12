@@ -18,6 +18,7 @@ import type {
   PipelineSettings,
   PrConvergenceState,
   PrConvergenceStatePatch,
+  PrSnapshotHydration,
 } from "../../../../shared/types";
 import { DEFAULT_PR_TIMELINE_FILTERS, type PrTimelineFilters } from "../shared/PrTimeline";
 import type { PaletteKind } from "../shared/PrCommandPalettes";
@@ -420,6 +421,8 @@ type PrDetailPaneProps = {
   checks: PrCheck[];
   reviews: PrReview[];
   comments: PrComment[];
+  snapshotHydration?: PrSnapshotHydration | null;
+  snapshotHydrationOwnedByContext?: boolean;
   liveDetailReady?: boolean;
   detailBusy: boolean;
   lanes: LaneSummary[];
@@ -440,6 +443,8 @@ export function PrDetailPane({
   checks: liveChecks,
   reviews: liveReviews,
   comments: liveComments,
+  snapshotHydration = null,
+  snapshotHydrationOwnedByContext = false,
   liveDetailReady = false,
   detailBusy,
   lanes,
@@ -490,10 +495,15 @@ export function PrDetailPane({
   const [activity, setActivity] = React.useState<PrActivityEvent[]>([]);
   const [reviewThreads, setReviewThreads] = React.useState<PrReviewThread[]>([]);
   const timelineRailsRef = React.useRef<PrDetailTimelineRailsRef | null>(null);
-  const status = liveDetailReady ? liveStatus : (liveStatus ?? snapshotStatus);
-  const checks = liveDetailReady ? liveChecks : (liveChecks.length > 0 ? liveChecks : snapshotChecks);
-  const reviews = liveDetailReady ? liveReviews : (liveReviews.length > 0 ? liveReviews : snapshotReviews);
-  const comments = liveDetailReady ? liveComments : (liveComments.length > 0 ? liveComments : snapshotComments);
+  const hasSnapshotDetail =
+    snapshotStatus !== null
+    || snapshotChecks.length > 0
+    || snapshotReviews.length > 0
+    || snapshotComments.length > 0;
+  const status = liveDetailReady ? liveStatus : (hasSnapshotDetail ? snapshotStatus : liveStatus);
+  const checks = liveDetailReady ? liveChecks : (hasSnapshotDetail ? snapshotChecks : liveChecks);
+  const reviews = liveDetailReady ? liveReviews : (hasSnapshotDetail ? snapshotReviews : liveReviews);
+  const comments = liveDetailReady ? liveComments : (hasSnapshotDetail ? snapshotComments : liveComments);
 
   const setActiveTab = React.useCallback((tab: DetailTab) => {
     setActiveTabState(tab);
@@ -757,20 +767,35 @@ export function PrDetailPane({
   const detailLoadSeqRef = React.useRef(0);
   const detailStatusRefreshKeyRef = React.useRef<string | null>(null);
   const inventoryLoadSeqRef = React.useRef(0);
+  const snapshotHydrationRef = React.useRef<PrSnapshotHydration | null>(snapshotHydration);
+
+  const applySnapshotHydration = React.useCallback((cachedSnapshot: PrSnapshotHydration) => {
+    if (cachedSnapshot.detail) setDetail(cachedSnapshot.detail);
+    if (cachedSnapshot.status) setSnapshotStatus(cachedSnapshot.status);
+    if (cachedSnapshot.checks.length > 0) setSnapshotChecks(cachedSnapshot.checks);
+    if (cachedSnapshot.reviews.length > 0) setSnapshotReviews(cachedSnapshot.reviews);
+    if (cachedSnapshot.comments.length > 0) setSnapshotComments(cachedSnapshot.comments);
+    if (cachedSnapshot.files.length > 0) setFiles(cachedSnapshot.files);
+    if (cachedSnapshot.commits.length > 0) setCommits(cachedSnapshot.commits);
+  }, []);
+
+  React.useEffect(() => {
+    snapshotHydrationRef.current = snapshotHydration;
+    if (snapshotHydration?.prId === pr.id) {
+      applySnapshotHydration(snapshotHydration);
+    }
+  }, [applySnapshotHydration, pr.id, snapshotHydration]);
 
   const loadDetail = React.useCallback(async (options: { hydrateSnapshot?: boolean } = {}) => {
     const requestId = ++detailLoadSeqRef.current;
     try {
-      if (options.hydrateSnapshot && typeof window.ade.prs.listSnapshots === "function") {
-        const cachedSnapshot = (await window.ade.prs.listSnapshots({ prId: pr.id }).catch(() => []))[0];
+      if (options.hydrateSnapshot) {
+        const contextSnapshot = snapshotHydrationRef.current?.prId === pr.id ? snapshotHydrationRef.current : null;
+        const cachedSnapshot = contextSnapshot ?? (!snapshotHydrationOwnedByContext && typeof window.ade.prs.listSnapshots === "function"
+          ? (await window.ade.prs.listSnapshots({ prId: pr.id }).catch(() => []))[0]
+          : null);
         if (cachedSnapshot && requestId === detailLoadSeqRef.current) {
-          if (cachedSnapshot.detail) setDetail(cachedSnapshot.detail);
-          if (cachedSnapshot.status) setSnapshotStatus(cachedSnapshot.status);
-          if (cachedSnapshot.checks.length > 0) setSnapshotChecks(cachedSnapshot.checks);
-          if (cachedSnapshot.reviews.length > 0) setSnapshotReviews(cachedSnapshot.reviews);
-          if (cachedSnapshot.comments.length > 0) setSnapshotComments(cachedSnapshot.comments);
-          if (cachedSnapshot.files.length > 0) setFiles(cachedSnapshot.files);
-          if (cachedSnapshot.commits.length > 0) setCommits(cachedSnapshot.commits);
+          applySnapshotHydration(cachedSnapshot);
         }
       }
       const [d, f, c, a, act] = await Promise.all([
@@ -789,7 +814,7 @@ export function PrDetailPane({
     } catch {
       // silently fail - basic data still available from context
     }
-  }, [pr.id]);
+  }, [applySnapshotHydration, pr.id, snapshotHydrationOwnedByContext]);
 
   const refreshReviewThreads = React.useCallback(async () => {
     const requestId = detailLoadSeqRef.current;

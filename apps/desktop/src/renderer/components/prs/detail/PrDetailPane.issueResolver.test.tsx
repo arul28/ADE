@@ -18,6 +18,7 @@ import type {
   PrConvergenceStatePatch,
   PrReview,
   PrReviewThread,
+  PrSnapshotHydration,
   PrStatus,
   PrWithConflicts,
   TerminalSessionStatus,
@@ -305,6 +306,8 @@ function renderPane(args: {
   getDetail?: ReturnType<typeof vi.fn>;
   getFiles?: ReturnType<typeof vi.fn>;
   getCommits?: ReturnType<typeof vi.fn>;
+  snapshotHydration?: PrSnapshotHydration | null;
+  snapshotHydrationOwnedByContext?: boolean;
   liveDetailReady?: boolean;
 }) {
   const laneList = args.lanes ?? [makeLane({
@@ -531,6 +534,8 @@ function renderPane(args: {
         checks={args.checks}
         reviews={[]}
         comments={[]}
+        snapshotHydration={args.snapshotHydration}
+        snapshotHydrationOwnedByContext={args.snapshotHydrationOwnedByContext}
         liveDetailReady={args.liveDetailReady}
         detailBusy={false}
         lanes={laneList}
@@ -730,6 +735,36 @@ describe("PrDetailPane issue resolver CTA", () => {
       expect(screen.getByText("Cached comment body")).toBeTruthy();
       expect(screen.getByText("Cached review body")).toBeTruthy();
     });
+  });
+
+  it("uses context-owned snapshot hydration without a duplicate snapshot IPC", async () => {
+    const user = userEvent.setup();
+    const snapshot: PrSnapshotHydration = {
+      prId: "pr-80",
+      detail: null,
+      status: makeStatus({ checksStatus: "passing", reviewStatus: "approved" }),
+      checks: [makeCheck({ name: "Context snapshot check", conclusion: "success" })],
+      reviews: [makeReview({ body: "Context review body" })],
+      comments: [makeComment({ body: "Context comment body" })],
+      files: [],
+      commits: [],
+      updatedAt: "2026-03-23T12:01:00.000Z",
+    };
+    const listSnapshots = vi.fn().mockResolvedValue([snapshot]);
+    renderPane({
+      status: null,
+      checks: [],
+      reviewThreads: [],
+      listSnapshots,
+      snapshotHydration: snapshot,
+      snapshotHydrationOwnedByContext: true,
+    });
+
+    await user.click(screen.getByRole("button", { name: /ci \/ checks/i }));
+    await waitFor(() => {
+      expect(screen.getByText("Context snapshot check")).toBeTruthy();
+    });
+    expect(listSnapshots).not.toHaveBeenCalled();
   });
 
   it("prefers authoritative empty live detail over cached snapshot data", async () => {

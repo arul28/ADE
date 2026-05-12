@@ -456,6 +456,32 @@ describe("autoRebaseService", () => {
       expect(statuses[0].laneId).toBe("lane-a");
       expect(statuses[0].state).toBe("rebasePending");
     });
+
+    it("keeps ancestor-blocked status even when the lane itself is not behind", async () => {
+      const service = createService();
+
+      const root = makeLane("root");
+      const child = makeLane("lane-a", {
+        parentLaneId: "root",
+        status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
+      });
+      laneList = [root, child];
+
+      db.setJson("auto_rebase:status:lane-a", {
+        laneId: "lane-a",
+        parentLaneId: "root",
+        parentHeadSha: null,
+        state: "rebasePending",
+        updatedAt: "2026-03-25T11:00:00.000Z",
+        conflictCount: 0,
+        message: "Pending: ancestor lane 'root' has unresolved rebase conflicts. Open the Rebase/Merge tab to continue.",
+      });
+
+      const statuses = await service.listStatuses();
+      expect(statuses).toHaveLength(1);
+      expect(statuses[0].laneId).toBe("lane-a");
+      expect(statuses[0].state).toBe("rebasePending");
+    });
   });
 
   // ---------------------------------------------------------------------------
