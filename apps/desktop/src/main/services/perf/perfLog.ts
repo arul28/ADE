@@ -41,6 +41,7 @@ function readEnvRunId(): string | null {
     .trim()
     .replace(/[^A-Za-z0-9._-]/g, "_")
     .replace(/^\.+/, "")
+    .replace(/\.\.+/g, ".")
     .slice(0, 120);
   return sanitized.length > 0 ? sanitized : null;
 }
