@@ -69,8 +69,11 @@ describe("getPermissionOptions", () => {
 
   it("returns anthropic CLI options for CLI-wrapped anthropic", () => {
     const options = getPermissionOptions({ family: "anthropic", isCliWrapped: true });
-    expect(options).toHaveLength(4);
-    expect(options.map((o) => o.value)).toEqual(["default", "edit", "plan", "full-auto"]);
+    expect(options).toHaveLength(5);
+    expect(options.map((o) => o.value)).toEqual(["default", "auto", "edit", "plan", "full-auto"]);
+    expect(options.find((o) => o.value === "auto")?.detail).toBe(
+      "Claude judges each tool call. Uses a model classifier instead of asking you.",
+    );
   });
 
   it("returns openai CLI options for CLI-wrapped openai", () => {

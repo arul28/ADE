@@ -1,10 +1,14 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import { createRequire } from "node:module";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { AgentModelDescriptor, AgentProvider, ExecutorOpts } from "./agentExecutor";
 import type {
   AiApiKeyVerificationResult,
+  AiClaudeAvailability,
   AiLocalProviderConfigs,
   AiProviderConnections,
   AiRuntimeConnections,
@@ -72,6 +76,8 @@ import { getProviderRuntimeHealthVersion, resetProviderRuntimeHealth } from "./p
 import { probeClaudeRuntimeHealth, resetClaudeRuntimeProbeCache } from "./claudeRuntimeProbe";
 import { runProviderTask } from "./providerTaskRunner";
 
+const requireFromHere = createRequire(import.meta.url);
+
 export type AiTaskType =
   | "planning"
   | "implementation"
@@ -106,7 +112,7 @@ export type AiProviderMode = "guest" | "subscription";
 export type AiIntegrationStatus = {
   mode: AiProviderMode;
   availableProviders: {
-    claude: boolean;
+    claude: AiClaudeAvailability;
     codex: boolean;
     cursor: boolean;
     droid: boolean;
@@ -350,14 +356,136 @@ function extractConfiguredLocalProviders(
   return out;
 }
 
+function detectClaudeAuthModeFromEntries(auth: DetectedAuth[]): AiClaudeAvailability["auth"]["mode"] {
+  if (auth.some((entry) => entry.type === "api-key" && entry.provider === "anthropic")) return "api_key";
+  if (auth.some((entry) => entry.type === "cli-subscription" && entry.cli === "claude")) return "oauth";
+  return "none";
+}
+
+function detectClaudeAuthModeFromConnection(
+  connection: AiProviderConnections["claude"],
+): AiClaudeAvailability["auth"]["mode"] {
+  const localCredentials = connection.sources.find((source) => source.kind === "local-credentials" && source.detected);
+  if (localCredentials?.source === "claude-credentials-file" || localCredentials?.source === "macos-keychain") return "oauth";
+  if (localCredentials) return "api_key";
+  const cli = connection.sources.find((source) => source.kind === "cli" && source.detected);
+  if (cli || connection.authAvailable) return "oauth";
+  return "none";
+}
+
+function getClaudeNativeBinaryPackageName(): string | null {
+  const platform = process.platform;
+  const arch = process.arch;
+  if (platform === "darwin" && arch === "arm64") return "@anthropic-ai/claude-agent-sdk-darwin-arm64";
+  if (platform === "darwin" && arch === "x64") return "@anthropic-ai/claude-agent-sdk-darwin-x64";
+  if (platform === "linux" && arch === "arm64") return "@anthropic-ai/claude-agent-sdk-linux-arm64";
+  if (platform === "linux" && arch === "x64") return "@anthropic-ai/claude-agent-sdk-linux-x64";
+  if (platform === "win32" && arch === "x64") return "@anthropic-ai/claude-agent-sdk-win32-x64";
+  return null;
+}
+
+function resolveBundledClaudeBinary(): Pick<AiClaudeAvailability["binary"], "present" | "source" | "path"> {
+  const packageName = getClaudeNativeBinaryPackageName();
+  if (!packageName) {
+    return { present: false, source: "missing", path: null };
+  }
+  try {
+    const packageJsonPath = requireFromHere.resolve(`${packageName}/package.json`);
+    const binaryPath = path.join(path.dirname(packageJsonPath), process.platform === "win32" ? "claude.exe" : "claude");
+    if (fs.existsSync(binaryPath)) {
+      return { present: true, source: "bundled", path: binaryPath };
+    }
+  } catch {
+    // Optional native package was not installed for this platform.
+  }
+  return { present: false, source: "missing", path: null };
+}
+
+function buildClaudeAvailabilityFromConnection(
+  connection: AiProviderConnections["claude"],
+): AiClaudeAvailability {
+  const bundledBinary = resolveBundledClaudeBinary();
+  const binary = bundledBinary.present
+    ? bundledBinary
+    : {
+        present: connection.runtimeDetected,
+        source: connection.runtimeDetected ? "path" as const : "missing" as const,
+        path: connection.path,
+      };
+  const authMode = detectClaudeAuthModeFromConnection(connection);
+  const binaryOnlyBlockers = [
+    "could not find the claude cli",
+    "cli not found",
+    "claude cli is installed",
+    "add that bin directory",
+  ];
+  const normalizedBlocker = connection.blocker?.toLowerCase() ?? "";
+  const blockerIsOnlyAboutPath = binary.source === "bundled"
+    && binaryOnlyBlockers.some((needle) => normalizedBlocker.includes(needle));
+  const ready = binary.present
+    && connection.authAvailable
+    && (connection.runtimeAvailable || blockerIsOnlyAboutPath || !connection.blocker);
+  return {
+    binary,
+    auth: {
+      ready,
+      mode: ready ? authMode : "none",
+      detail: ready ? null : connection.blocker,
+    },
+  };
+}
+
+function buildClaudeAvailabilityFromCliStatus(status: CliAuthStatus | null): AiClaudeAvailability {
+  const bundledBinary = resolveBundledClaudeBinary();
+  const installed = Boolean(status?.installed);
+  const ready = Boolean(status?.installed && (status.authenticated || !status.verified));
+  const binary = bundledBinary.present
+    ? bundledBinary
+    : {
+        present: installed,
+        source: installed ? "path" as const : "missing" as const,
+        path: status?.path ?? null,
+      };
+  return {
+    binary,
+    auth: {
+      ready: binary.present && ready,
+      mode: binary.present && ready ? "oauth" : "none",
+      detail: binary.present && ready ? null : installed ? "Claude CLI is installed but no active login was detected." : "Claude authentication was not detected.",
+    },
+  };
+}
+
 function toCliAvailability(auth: DetectedAuth[]): {
-  claude: boolean;
+  claude: AiClaudeAvailability;
   codex: boolean;
   cursor: boolean;
   droid: boolean;
 } {
+  const bundledBinary = resolveBundledClaudeBinary();
+  const cliAuth = auth.find((entry) => entry.type === "cli-subscription" && entry.cli === "claude") as
+    | Extract<DetectedAuth, { type: "cli-subscription" }>
+    | undefined;
+  const claudeBinary = bundledBinary.present
+    ? bundledBinary
+    : {
+        present: Boolean(cliAuth),
+        source: cliAuth ? "path" as const : "missing" as const,
+        path: cliAuth?.path ?? null,
+      };
+  const claudeAuthReady = auth.some((entry) =>
+    (entry.type === "cli-subscription" && entry.cli === "claude")
+    || (entry.type === "api-key" && entry.provider === "anthropic")
+  );
   return {
-    claude: auth.some((entry) => entry.type === "cli-subscription" && entry.cli === "claude"),
+    claude: {
+      binary: claudeBinary,
+      auth: {
+        ready: claudeBinary.present && claudeAuthReady,
+        mode: claudeBinary.present && claudeAuthReady ? detectClaudeAuthModeFromEntries(auth) : "none",
+        detail: claudeBinary.present && claudeAuthReady ? null : "Claude authentication was not detected.",
+      },
+    },
     codex: auth.some((entry) => entry.type === "cli-subscription" && entry.cli === "codex"),
     cursor: auth.some((entry) => entry.type === "api-key" && entry.provider === "cursor"),
     droid: auth.some((entry) => entry.type === "cli-subscription" && entry.cli === "droid"),
@@ -785,7 +913,7 @@ function buildStatusModelLists(
   availability: AiIntegrationStatus["availableProviders"],
 ): AiIntegrationStatus["models"] {
   return {
-    claude: availability.claude ? agentModelsFromAvailable(available, "anthropic") : [],
+    claude: availability.claude.auth.ready ? agentModelsFromAvailable(available, "anthropic") : [],
     codex: availability.codex ? agentModelsFromAvailable(available, "openai") : [],
     cursor: availability.cursor ? agentModelsFromAvailable(available, "cursor") : [],
     droid: availability.droid ? agentModelsFromAvailable(available, "factory") : [],
@@ -881,7 +1009,7 @@ export function createAiIntegrationService(args: {
       // API key store may not be initialized yet
     }
     return {
-      claude: Boolean(claude?.installed && (claude.authenticated || !claude.verified)),
+      claude: buildClaudeAvailabilityFromCliStatus(claude ?? null),
       codex: Boolean(codex?.installed && (codex.authenticated || !codex.verified)),
       cursor: Boolean(process.env.CURSOR_API_KEY?.trim() || cursorStoredAuth),
       droid: Boolean(droid?.installed && (droid.authenticated || !droid.verified)),
@@ -1667,15 +1795,15 @@ export function createAiIntegrationService(args: {
             auth,
             providerConnections,
           }));
-          const availability = {
-            claude: providerConnections.claude.runtimeAvailable,
+          const availability: AiIntegrationStatus["availableProviders"] = {
+            claude: buildClaudeAvailabilityFromConnection(providerConnections.claude),
             codex: providerConnections.codex.runtimeAvailable,
             cursor: providerConnections.cursor.runtimeAvailable,
             droid: providerConnections.droid.runtimeAvailable,
           };
           const runtimeFilteredAvailable = timeSyncPhase("filter_available_models", () => available.filter((descriptor) => {
             if (!descriptor.isCliWrapped) return true;
-            if (descriptor.family === "anthropic") return providerConnections.claude.runtimeAvailable;
+            if (descriptor.family === "anthropic") return availability.claude.auth.ready;
             if (descriptor.family === "openai") return providerConnections.codex.runtimeAvailable;
             if (descriptor.family === "cursor") return providerConnections.cursor.runtimeAvailable;
             if (descriptor.family === "factory") return providerConnections.droid.runtimeAvailable;

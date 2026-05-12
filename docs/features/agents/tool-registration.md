@@ -30,8 +30,8 @@ directly from `universalTools.ts`, `workflowTools.ts`,
 `ctoOperatorTools.ts`, and `linearTools.ts`, then hands them to the
 provider adapter:
 
-- **Claude V2:** the Claude Agent SDK's `unstable_v2_createSession`
-  accepts the tools as `Record<string, ExecutableTool>`.
+- **Claude Agent SDK:** the SDK `query()` stream receives ADE tools as
+  SDK tool definitions alongside the runtime options for that session.
 - **Codex app-server:** native provider tools are registered with the
   Codex app-server. ADE workflow actions are available through the
   `ade` CLI.

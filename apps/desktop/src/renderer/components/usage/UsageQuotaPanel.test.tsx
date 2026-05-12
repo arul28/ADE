@@ -89,7 +89,10 @@ function makeAiStatus(providerConnections: Partial<AiProviderConnections> = {}):
   return {
     mode: "guest",
     availableProviders: {
-      claude: false,
+      claude: {
+        binary: { present: false, source: "missing", path: null },
+        auth: { ready: false, mode: "none", detail: null },
+      },
       codex: false,
       cursor: false,
       droid: false,

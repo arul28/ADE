@@ -301,10 +301,11 @@ async function summarizeChatSessionForRemote(
     reasoningEffort: session.reasoningEffort ?? null,
     codexFastMode: session.codexFastMode === true,
     executionMode: session.executionMode ?? null,
-    ...(session.permissionMode ? { permissionMode: session.permissionMode } : {}),
-    ...(session.interactionMode !== undefined ? { interactionMode: session.interactionMode } : {}),
-    ...(session.claudePermissionMode ? { claudePermissionMode: session.claudePermissionMode } : {}),
-    ...(session.codexApprovalPolicy ? { codexApprovalPolicy: session.codexApprovalPolicy } : {}),
+	    ...(session.permissionMode ? { permissionMode: session.permissionMode } : {}),
+	    ...(session.interactionMode !== undefined ? { interactionMode: session.interactionMode } : {}),
+	    ...(session.claudePermissionMode ? { claudePermissionMode: session.claudePermissionMode } : {}),
+	    ...(session.claudeOutputStyle ? { claudeOutputStyle: session.claudeOutputStyle } : {}),
+	    ...(session.codexApprovalPolicy ? { codexApprovalPolicy: session.codexApprovalPolicy } : {}),
     ...(session.codexSandbox ? { codexSandbox: session.codexSandbox } : {}),
     ...(session.codexConfigSource ? { codexConfigSource: session.codexConfigSource } : {}),
     ...(session.opencodePermissionMode ? { opencodePermissionMode: session.opencodePermissionMode } : {}),
@@ -621,6 +622,7 @@ function parseAgentChatCreateArgs(value: Record<string, unknown>): AgentChatCrea
   if ("permissionMode" in value) parsed.permissionMode = value.permissionMode == null ? undefined : asTrimmedString(value.permissionMode) as AgentChatCreateArgs["permissionMode"];
   if ("interactionMode" in value) parsed.interactionMode = value.interactionMode == null ? null : asTrimmedString(value.interactionMode) as AgentChatCreateArgs["interactionMode"];
   if ("claudePermissionMode" in value) parsed.claudePermissionMode = value.claudePermissionMode == null ? undefined : asTrimmedString(value.claudePermissionMode) as AgentChatCreateArgs["claudePermissionMode"];
+  if ("claudeOutputStyle" in value) parsed.claudeOutputStyle = value.claudeOutputStyle == null ? null : asTrimmedString(value.claudeOutputStyle) ?? null;
   if ("codexApprovalPolicy" in value) parsed.codexApprovalPolicy = value.codexApprovalPolicy == null ? undefined : asTrimmedString(value.codexApprovalPolicy) as AgentChatCreateArgs["codexApprovalPolicy"];
   if ("codexSandbox" in value) parsed.codexSandbox = value.codexSandbox == null ? undefined : asTrimmedString(value.codexSandbox) as AgentChatCreateArgs["codexSandbox"];
   if ("codexConfigSource" in value) parsed.codexConfigSource = value.codexConfigSource == null ? undefined : asTrimmedString(value.codexConfigSource) as AgentChatCreateArgs["codexConfigSource"];

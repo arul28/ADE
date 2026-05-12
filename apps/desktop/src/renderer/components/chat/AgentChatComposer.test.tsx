@@ -242,9 +242,28 @@ describe("AgentChatComposer", () => {
 
     expect(screen.getByRole("listbox", { name: "Claude permission mode" })).toBeTruthy();
     expect(screen.getByRole("option", { name: /Ask permissions/ })).toBeTruthy();
+    expect(screen.getByRole("option", { name: /Auto/ })).toBeTruthy();
     expect(screen.getByRole("option", { name: /Accept edits/ })).toBeTruthy();
     expect(screen.getByRole("option", { name: /Plan mode/ })).toBeTruthy();
     expect(screen.getByRole("option", { name: /Bypass permissions/ })).toBeTruthy();
+  });
+
+  it("routes Claude auto through the native permission callback", () => {
+    const onInteractionModeChange = vi.fn();
+    const onClaudePermissionModeChange = vi.fn();
+    renderComposer({
+      sessionProvider: "claude",
+      modelId: "anthropic/claude-sonnet-4-6",
+      availableModelIds: ["anthropic/claude-sonnet-4-6"],
+      onInteractionModeChange,
+      onClaudePermissionModeChange,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Claude permission mode" }));
+    fireEvent.click(screen.getByRole("option", { name: /Auto/ }));
+
+    expect(onInteractionModeChange).toHaveBeenCalledWith("default");
+    expect(onClaudePermissionModeChange).toHaveBeenCalledWith("auto");
   });
 
   it("routes Claude plan through both interaction and permission callbacks", () => {

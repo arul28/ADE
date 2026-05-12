@@ -1031,6 +1031,22 @@ function migrate(db: MigrationDb) {
   try { db.run("alter table terminal_sessions add column chat_session_id text"); } catch {}
   try { db.run("create index if not exists idx_terminal_sessions_chat_session_id on terminal_sessions(chat_session_id)"); } catch {}
 
+  db.run(`
+    create table if not exists claude_sessions (
+      session_id text primary key,
+      lane_id text not null,
+      chat_session_id text unique,
+      title text,
+      tags_json text,
+      created_at text not null,
+      updated_at text not null,
+      foreign key(lane_id) references lanes(id),
+      foreign key(chat_session_id) references terminal_sessions(id) on delete set null
+    )
+  `);
+  db.run("create index if not exists idx_claude_sessions_lane_id on claude_sessions(lane_id)");
+  db.run("create index if not exists idx_claude_sessions_updated_at on claude_sessions(updated_at desc)");
+
   // Phase 2 process/test config and history tables.
   db.run(`
     create table if not exists process_definitions (

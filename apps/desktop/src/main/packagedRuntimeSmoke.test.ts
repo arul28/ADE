@@ -1,39 +1,49 @@
 import { describe, expect, it } from "vitest";
-import { classifyClaudeStartupFailure } from "./packagedRuntimeSmokeShared";
+import {
+  classifyClaudeStartupFailure,
+  getClaudeNativeBinaryFileName,
+  getClaudeNativeBinaryPackageName,
+} from "./packagedRuntimeSmokeShared";
 
 describe("packagedRuntimeSmoke", () => {
-  it("treats a missing native Claude binary as non-fatal for fallback command resolution", () => {
+  it("classifies a missing bundled Claude binary distinctly", () => {
     expect(
       classifyClaudeStartupFailure(
-        "Claude Code native binary not found at claude. Please ensure Claude Code is installed via native installer or specify a valid path with options.pathToClaudeCodeExecutable.",
-        "fallback-command",
+        "Native CLI binary for darwin-arm64 not found. Reinstall @anthropic-ai/claude-agent-sdk without --omit=optional.",
       ),
     ).toEqual({
       state: "binary-missing",
       message:
-        "Claude Code native binary not found at claude. Please ensure Claude Code is installed via native installer or specify a valid path with options.pathToClaudeCodeExecutable.",
+        "Native CLI binary for darwin-arm64 not found. Reinstall @anthropic-ai/claude-agent-sdk without --omit=optional.",
     });
   });
 
-  it("keeps explicit Claude path failures fatal", () => {
+  it("keeps non-binary startup failures fatal", () => {
     expect(
       classifyClaudeStartupFailure(
-        "Claude Code native binary not found at /custom/bin/claude. Please ensure Claude Code is installed via native installer or specify a valid path with options.pathToClaudeCodeExecutable.",
-        "env",
+        "Claude startup probe returned an error result.",
       ),
     ).toEqual({
       state: "runtime-failed",
-      message:
-        "Claude Code native binary not found at /custom/bin/claude. Please ensure Claude Code is installed via native installer or specify a valid path with options.pathToClaudeCodeExecutable.",
+      message: "Claude startup probe returned an error result.",
     });
   });
 
   it("still classifies auth failures distinctly", () => {
     expect(
-      classifyClaudeStartupFailure("API Error: 401 invalid authentication credentials", "fallback-command"),
+      classifyClaudeStartupFailure("API Error: 401 invalid authentication credentials"),
     ).toEqual({
       state: "auth-failed",
       message: "API Error: 401 invalid authentication credentials",
     });
+  });
+
+  it("maps supported platforms to Claude Agent SDK native binary packages", () => {
+    expect(getClaudeNativeBinaryPackageName("win32", "x64")).toBe("@anthropic-ai/claude-agent-sdk-win32-x64");
+    expect(getClaudeNativeBinaryPackageName("darwin", "arm64")).toBe("@anthropic-ai/claude-agent-sdk-darwin-arm64");
+    expect(getClaudeNativeBinaryPackageName("linux", "x64")).toBe("@anthropic-ai/claude-agent-sdk-linux-x64");
+    expect(getClaudeNativeBinaryPackageName("freebsd", "x64")).toBeNull();
+    expect(getClaudeNativeBinaryFileName("win32")).toBe("claude.exe");
+    expect(getClaudeNativeBinaryFileName("darwin")).toBe("claude");
   });
 });

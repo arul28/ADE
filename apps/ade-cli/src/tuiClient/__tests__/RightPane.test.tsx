@@ -89,3 +89,27 @@ describe("RightPane model-setup", () => {
     expect(frame).toMatch(/◇ Codex.*active/);
   });
 });
+
+describe("RightPane subagents", () => {
+  it("renders subagent tabs and active rows", () => {
+    const frame = render(
+      <RightPane
+        content={{
+          kind: "subagents",
+          tab: "subagents",
+          snapshots: [
+            { id: "a1", name: "research-explorer", kind: "subagent", status: "running", summary: "checking files", tokens: 2300, durationMs: 14000 },
+            { id: "b1", name: "reviewer", kind: "background", status: "completed", summary: "done" },
+          ],
+        }}
+        focused
+      />,
+    ).lastFrame() ?? "";
+
+    expect(frame).toContain("[Subagents]");
+    expect(frame).toContain("Teammates");
+    expect(frame).toContain("Background");
+    expect(frame).toContain("research-explorer");
+    expect(frame).not.toContain("reviewer");
+  });
+});

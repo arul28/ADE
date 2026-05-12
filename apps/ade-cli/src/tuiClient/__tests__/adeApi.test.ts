@@ -58,8 +58,11 @@ describe("latestTokenStats", () => {
       streaming: false,
       inputTokens: 2_100,
       outputTokens: 700,
-      cachedInputTokens: null,
+      cacheReadTokens: null,
+      cacheCreationTokens: null,
+      contextWindow: 10_000,
       costUsd: 0.42,
+      rateLimit: null,
     });
   });
 
@@ -80,8 +83,11 @@ describe("latestTokenStats", () => {
       streaming: false,
       inputTokens: 40_000,
       outputTokens: 10_000,
-      cachedInputTokens: null,
+      cacheReadTokens: null,
+      cacheCreationTokens: null,
+      contextWindow: 200_000,
       costUsd: 0.12,
+      rateLimit: null,
     });
   });
 
@@ -116,7 +122,7 @@ describe("latestTokenStats", () => {
       } as AgentChatEventEnvelope["event"]),
     ];
     const stats = latestTokenStats(events);
-    expect(stats.cachedInputTokens).toBe(600);
+    expect(stats.cacheReadTokens).toBe(600);
     expect(stats.inputTokens).toBe(2_300);
     expect(stats.outputTokens).toBe(1_100);
   });
@@ -131,7 +137,7 @@ describe("latestTokenStats", () => {
       } as AgentChatEventEnvelope["event"]),
     ];
     const stats = latestTokenStats(events);
-    expect(stats.cachedInputTokens).toBe(350);
+    expect(stats.cacheReadTokens).toBe(350);
   });
 });
 

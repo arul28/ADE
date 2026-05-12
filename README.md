@@ -33,7 +33,7 @@
   <img src="assets/readme/hero-iphone.png" alt="ADE on iOS" width="180" />
 </p>
 
-ADE runs **Claude Code, Codex, Cursor, opencode** — every major AI coding agent — inside one native workspace. Every task is its own git worktree, so agents ship features in parallel. Review and merge PRs in-app. Approve a diff from your phone while another agent tests on your Mac.
+ADE runs **Claude Code, Codex, Cursor, opencode** — every major AI coding agent — inside one native workspace. Claude runs through the bundled Claude Agent SDK, while desktop and `ade code` share the same lane-scoped chat runtime. Every task is its own git worktree, so agents ship features in parallel. Review and merge PRs in-app. Approve a diff from your phone while another agent tests on your Mac.
 
 Free, open source, local-first. Bring your own keys or subs.
 

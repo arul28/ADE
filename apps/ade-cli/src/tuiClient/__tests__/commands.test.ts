@@ -83,9 +83,65 @@ describe("commands", () => {
     ]);
     expect(rows).toContainEqual(expect.objectContaining({
       name: "/compact",
-      source: "user",
-      description: "Free up context by summarizing",
+      source: "ade",
+      description: "Compact Claude context through the active SDK session",
     }));
+  });
+
+  it("includes Phase 4 Claude parity builtins", () => {
+    const rows = paletteCommands("/", [], { provider: "claude" });
+    for (const name of ["/agents", "/skills", "/init"]) {
+      expect(rows).toContainEqual(expect.objectContaining({ name, source: "ade" }));
+      const parsed = parseCommand(`${name} arg`, []);
+      expect(parsed?.spec?.placement).toBe("right");
+    }
+    for (const name of ["/compact", "/usage", "/insights", "/fast", "/goal"]) {
+      expect(rows).toContainEqual(expect.objectContaining({ name, source: "ade" }));
+      const parsed = parseCommand(`${name} arg`, []);
+      expect(parsed?.spec?.placement).toBe("chat");
+    }
+  });
+
+  it("filters Phase 4 Claude-only builtins outside Claude chats", () => {
+    const rows = paletteCommands("/", [], { provider: "codex" });
+    for (const name of ["/agents", "/skills", "/init", "/usage", "/insights", "/fast"]) {
+      expect(rows).not.toContainEqual(expect.objectContaining({ name }));
+    }
+    expect(rows).toContainEqual(expect.objectContaining({
+      name: "/compact",
+      description: "Compact the Codex thread context",
+    }));
+    expect(rows).toContainEqual(expect.objectContaining({
+      name: "/goal",
+      description: "Set, clear, or inspect the Codex thread goal",
+    }));
+  });
+
+  it("filters Claude-only ADE commands outside Claude chats", () => {
+    expect(paletteCommands("/context", [], { provider: "codex" })).not.toContainEqual(
+      expect.objectContaining({ name: "/context" }),
+    );
+    expect(paletteCommands("/output-style", [], { provider: "codex" })).not.toContainEqual(
+      expect.objectContaining({ name: "/output-style" }),
+    );
+    expect(paletteCommands("/mcp", [], { provider: "codex" })).not.toContainEqual(
+      expect.objectContaining({ name: "/mcp" }),
+    );
+    expect(paletteCommands("/plugin", [], { provider: "codex" })).not.toContainEqual(
+      expect.objectContaining({ name: "/plugin" }),
+    );
+    expect(paletteCommands("/context", [], { provider: "claude" })).toContainEqual(
+      expect.objectContaining({ name: "/context" }),
+    );
+    expect(paletteCommands("/output-style", [], { provider: "claude" })).toContainEqual(
+      expect.objectContaining({ name: "/output-style" }),
+    );
+    expect(paletteCommands("/mcp", [], { provider: "claude" })).toContainEqual(
+      expect.objectContaining({ name: "/mcp" }),
+    );
+    expect(paletteCommands("/plugin", [], { provider: "claude" })).toContainEqual(
+      expect.objectContaining({ name: "/plugin" }),
+    );
   });
 
   it("keeps ADE-owned inline commands aligned with dispatch when deduping", () => {

@@ -623,7 +623,7 @@ These are separate comments (not a single body) so each bot handler parses its o
 Agent-CLI-agnostic guidance. Pick the right primitive for the harness:
 
 - **Claude Code CLI** maps this to `ScheduleWakeup` (CLI scheduler re-invokes the command later).
-- **Claude Agent SDK v2** (e.g. ADE Work chats using `unstable_v2_createSession`) has **no scheduled-wakeup primitive**. `SDKSession` only advances when the host calls `send(...)`, which fires on a fresh user message. `run_in_background` bash `task_notification` events are queued in the SDK message stream until the next user turn — they will not start an autonomous turn. In an SDK chat, either poll synchronously inside the current turn (foreground bash with one bounded `until ... ; do sleep N; done`) or stop with `status: running` written to the state file and ask the user to re-invoke the command.
+- **Claude Agent SDK in ADE Work chats** runs through the SDK `query()` stream and advances when ADE feeds a fresh user turn into its async input pump. Background task notifications are surfaced in the stream, but they are still not a durable scheduler by themselves. In an SDK chat, either poll synchronously inside the current turn (foreground bash with one bounded `until ... ; do sleep N; done`) or stop with `status: running` written to the state file and ask the user or an external runner to re-invoke the playbook.
 - **Codex in a terminal** should usually use shell `sleep ... && <one-shot checks>`.
 - **Other CLIs** map this to their native sleep/resume.
 

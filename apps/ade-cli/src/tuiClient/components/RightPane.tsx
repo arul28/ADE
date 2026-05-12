@@ -1,6 +1,6 @@
 import React from "react";
 import { Box, Text } from "ink";
-import type { ProviderReadinessRow, RightPaneContent } from "../types";
+import type { ProviderReadinessRow, RightPaneContent, SubagentPaneTab, SubagentSnapshot } from "../types";
 import { theme } from "../theme";
 
 const STATUS_DOT: Record<ProviderReadinessRow["status"], string> = {
@@ -25,6 +25,51 @@ function statusColor(status: ProviderReadinessRow["status"]): string {
 function tailTruncate(value: string, max: number): string {
   if (value.length <= max) return value;
   return `…${value.slice(value.length - (max - 1))}`;
+}
+
+function subagentStatusGlyph(status: SubagentSnapshot["status"]): string {
+  if (status === "running") return "●";
+  if (status === "completed") return "✓";
+  if (status === "failed") return "!";
+  return "○";
+}
+
+function subagentRuntime(snapshot: SubagentSnapshot): string {
+  const parts = [];
+  if (snapshot.tokens != null) parts.push(`${snapshot.tokens >= 1000 ? `${(snapshot.tokens / 1000).toFixed(1)}k` : snapshot.tokens} tok`);
+  if (snapshot.durationMs != null) parts.push(`${Math.max(1, Math.round(snapshot.durationMs / 1000))}s`);
+  return parts.join(" · ") || snapshot.status;
+}
+
+function SubagentsPane({ tab, snapshots }: { tab: SubagentPaneTab; snapshots: SubagentSnapshot[] }) {
+  const rows = snapshots.filter((snapshot) => {
+    if (tab === "background") return snapshot.kind === "background";
+    if (tab === "teammates") return snapshot.kind === "teammate";
+    return snapshot.kind === "subagent";
+  });
+  const tabs: Array<[SubagentPaneTab, string]> = [["subagents", "Subagents"], ["teammates", "Teammates"], ["background", "Background"]];
+  return (
+    <Box flexDirection="column">
+      <Text bold>Subagents</Text>
+      <Text>
+        {tabs.map(([key, label], index) => (
+          <Text key={key} color={key === tab ? theme.color.accent : undefined}>
+            {index ? "  " : ""}{key === tab ? `[${label}]` : label}
+          </Text>
+        ))}
+      </Text>
+      {rows.length ? rows.map((snapshot) => (
+        <Box key={snapshot.id} flexDirection="column" marginTop={1}>
+          <Text>
+            {subagentStatusGlyph(snapshot.status)} {tailTruncate(snapshot.name, 18)} <Text dimColor>{snapshot.kind}</Text>
+          </Text>
+          <Text dimColor>  {subagentRuntime(snapshot)}{snapshot.lastToolName ? ` · ${snapshot.lastToolName}` : ""}</Text>
+          {snapshot.summary ? <Text dimColor>  {tailTruncate(snapshot.summary, 30)}</Text> : null}
+        </Box>
+      )) : <Text dimColor>{tab === "teammates" ? "No teammate sessions." : tab === "background" ? "No background sessions." : "No subagents in this chat."}</Text>}
+      <Text dimColor>tab cycles tabs</Text>
+    </Box>
+  );
 }
 
 function HelpPane() {
@@ -168,6 +213,9 @@ export function RightPane({
           ))}
           <Text dimColor>arrows move · enter applies</Text>
         </Box>
+      ) : null}
+      {content.kind === "subagents" ? (
+        <SubagentsPane tab={content.tab} snapshots={content.snapshots} />
       ) : null}
       {content.kind === "new-chat-setup" ? (
         <Box flexDirection="column">

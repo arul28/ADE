@@ -606,7 +606,15 @@ describe("runtime AI actions", () => {
     const featureUsage = new Map([["narratives", 2]]);
     const getStatus = vi.fn(async () => ({
       mode: "subscription",
-      availableProviders: { claude: true, codex: false, cursor: false, droid: false },
+      availableProviders: {
+        claude: {
+          binary: { present: true, source: "path", path: "/usr/local/bin/claude" },
+          auth: { ready: true, mode: "oauth", detail: null },
+        },
+        codex: false,
+        cursor: false,
+        droid: false,
+      },
       models: { claude: [], codex: [], cursor: [], droid: [] },
       detectedAuth: [],
       providerConnections: undefined,

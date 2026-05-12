@@ -20,7 +20,9 @@ It is a client. The runtime, lanes, chats, transcripts, PRs, processes, and proo
 | `apps/ade-cli/src/tuiClient/theme.ts` | Shared Ink color and status tokens used by the header, model setup pane, transcript, and controls. |
 | `apps/ade-cli/src/tuiClient/types.ts` | `AdeCodeConnection`, `ProjectLaunchContext`, navigation DTOs aligned with `apps/desktop/src/shared/types`. |
 | `apps/ade-cli/src/tuiClient/components/` | `AdeWordmark`, `Drawer`, `ChatView`, `Header`, `RightPane`, `SlashPalette`, `MentionPalette`, `ApprovalPrompt`, `ModelStatus`, `FooterControls`. |
-| `apps/desktop/src/shared/types/chat.ts` | Canonical chat DTOs (`AgentChatEventEnvelope`, sessions, pending input). Imported per-module so ade-cli typecheck stays scoped. |
+| `apps/ade-cli/src/tuiClient/keybindings/index.ts` | Verbatim `~/.claude/keybindings.json` reader and TUI action dispatcher (chord support, vim namespace, clipboard-image paste hooks). Resolves `defaultKeybindingsPath()`, parses the Claude keybindings schema, and maps key sequences onto TUI actions. |
+| `apps/ade-cli/src/tuiClient/statusline/index.ts` | Claude-compatible status line config reader and runner. Reads the `~/.claude/statusline.json` contract, executes the configured status command, and exposes the rendered lines to `ModelStatus`. |
+| `apps/desktop/src/shared/types/chat.ts` | Canonical chat DTOs (`AgentChatEventEnvelope`, sessions, pending input, `AgentChatContextUsage`, `AgentChatClaudeMcpServerStatus`, `AgentChatClaudeOutputStyle`, `AgentChatClaudePlugin`, subagent kinds). Imported per-module so ade-cli typecheck stays scoped. |
 | `apps/desktop/src/shared/modelRegistry.ts` | Default model selection for new sessions (`getDefaultModelDescriptor`). |
 | `apps/desktop/src/shared/adeLayout.ts` | Resolves project-scoped `.ade` paths. |
 
@@ -96,6 +98,14 @@ Right pane (open the contextual drawer):
 | `/new lane` | Lane creation form. |
 | `/new chat [title]` | New chat in the active lane. |
 | `/rename [title]` | Rename the active chat. |
+| `/tag <tag\|clear>` | Tag the active Claude chat (Claude only). |
+| `/output-style [style]` | List or select the active Claude output style (Claude only). |
+| `/plugin [reload\|native args]` | List, reload, or manage Claude plugins (Claude only). |
+| `/agents` | List Claude agents from user/project config (Claude only). |
+| `/skills` | List Claude skills from user/project config (Claude only). |
+| `/mcp` | Show Claude MCP server status (Claude only). |
+| `/context` | Show Claude context usage breakdown (Claude only). |
+| `/init` | Generate AGENTS.md and Claude pointer files (Claude only). |
 | `/status` | Project, lane, runtime state summary. |
 | `/diff` | Active lane diff (file list with summarized hunks). |
 | `/log` | Recent commits. |
@@ -106,9 +116,24 @@ Right pane (open the contextual drawer):
 | `/switch [lane\|chat]` | Switcher palette. |
 | `/resume` | Resume the active ended chat. |
 | `/help` | Keymap and command help. |
+| `/keybindings` | Show Claude-compatible keybinding config diagnostics. |
+| `/statusline` | Show Claude-compatible status line config. |
+| `/doctor` | Show ADE Code and Claude-compat diagnostics. |
 | `/model`, `/effort` | Model and reasoning-effort pickers. |
 | `/system` | System and runtime details. |
 | `/ade <domain.action> [json]` | Run an allowlisted ADE action; shows result in RightPane. |
+
+Inline chat commands (run through the active Claude SDK session, Claude only):
+
+| Command | Effect |
+| --- | --- |
+| `/compact [instructions]` | Compact the Claude context window through the active SDK session. |
+| `/usage` | Show Claude usage / rate-limit window through the active SDK session. |
+| `/insights` | Generate Claude session insights through the active SDK session. |
+| `/fast [on\|off]` | Toggle Claude fast mode through the active SDK session. |
+| `/goal [condition\|clear]` | Set or clear the Claude completion goal. |
+
+Claude-only commands only appear in the slash palette when the active chat's provider is `claude`. The palette filters built-in entries by their `providers` whitelist so a Codex / OpenCode / Cursor chat does not show parity affordances that have no backing call.
 
 Several slash commands forward to a desktop route when issued from `ade code`:
 
@@ -148,6 +173,18 @@ ade --socket /tmp/ade-runtime-dev.sock code
 ```
 
 After local changes, run `npm run build` inside `apps/ade-cli` so both `dist/cli.cjs` and `dist/tuiClient/cli.mjs` exist for packaged and linked use. During repo development, `npm run dev:code` runs the source TUI against the shared dev runtime at `/tmp/ade-runtime-dev.sock`.
+
+## Claude Code 2.1.x parity
+
+`ade code` ships verbatim compatibility with the Claude Code 2.1.x terminal contracts so users coming from Claude Code keep their existing config and muscle memory:
+
+- **Keybindings.** `tuiClient/keybindings/index.ts` reads `~/.claude/keybindings.json` (resolved through `defaultKeybindingsPath()`, with `CLAUDE_HOME` and `XDG_CONFIG_HOME` overrides). The full Claude schema is honored — chord sequences, modifier syntax, and the `vim` namespace — and dispatched onto TUI actions through `dispatchKeybinding()`. `/keybindings` surfaces a diagnostics view; `openKeybindingsFile()` opens the config in the user's editor.
+- **Status line.** `tuiClient/statusline/index.ts` reads `~/.claude/statusline.json`, executes the configured command, and feeds the rendered lines into `ModelStatus`. `/statusline` shows the contract and the most recent stdout/stderr. When a status command produces output, the status panel hides the default token/context meter for the same row.
+- **Vim namespace.** When vim mode is active, the model-status row exposes the current `insert`/`normal` mode tag and the keybindings dispatcher routes `vim.*` actions.
+- **Clipboard image paste.** Cross-platform clipboard-image paste is wired into the composer (Linux via `xclip`/`wl-paste`, macOS via `pngpaste`/AppleScript, Windows via PowerShell), so pasting a screenshot uploads it as a Claude attachment alongside text.
+- **`auto` permission mode.** The Claude permission picker accepts `auto` (mapped onto the SDK `permissionMode: "auto"`) in addition to `default`, `plan`, `acceptEdits`, and `bypassPermissions`.
+- **Subagent panel.** The right pane's subagent surface is re-keyed on `agentId` + `parentToolUseId` and split across three tabs — Subagents, Teammates, Background — so spawned Claude agents and background runs are distinguished. Snapshots are reconstructed live from `subagent_*` envelopes via `subagentSnapshotsFromEvents()`.
+- **Context, MCP, output styles, plugins.** `/context`, `/mcp`, `/output-style`, and `/plugin` call `chat.getContextUsage`, `chat.getClaudeMcpStatus`, `chat.listClaudeOutputStyles` / `chat.setClaudeOutputStyle`, and `chat.listClaudePlugins` / `chat.reloadClaudePlugins` against the same Claude SDK runtime the desktop chat uses.
 
 ## Chat setup
 

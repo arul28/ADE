@@ -92,6 +92,17 @@ export type TerminalSessionDetail = TerminalSessionSummary & {
   // Reserved for future expansion (goal/tool templates, derived deltas, etc.)
 };
 
+export type ClaudeSessionPointer = {
+  sessionId: string;
+  laneId: string;
+  laneName: string;
+  chatSessionId: string | null;
+  title: string | null;
+  tags: string[];
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type PtyCreateArgs = {
   sessionId?: string;
   /** Allow callers to pre-assign a new session id instead of only resuming an existing tracked session. */

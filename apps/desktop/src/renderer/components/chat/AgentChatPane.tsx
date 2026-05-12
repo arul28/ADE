@@ -1,13 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
-import {
-  Cube,
-  Desktop,
-  DeviceMobile,
-  Lightning,
-  Plus,
-} from "@phosphor-icons/react";
+import { Cube, Desktop, DeviceMobile, Lightning, Plus, TreeStructure } from "@phosphor-icons/react";
 import {
   inferAttachmentType,
   PARALLEL_CHAT_MAX_ATTACHMENTS,
@@ -95,6 +89,8 @@ import { ChatTasksPanel } from "./ChatTasksPanel";
 import { ChatFileChangesPanel } from "./ChatFileChangesPanel";
 import { CodexGoalBanner } from "./codex/CodexGoalBanner";
 import { CodexOpenInCliButton } from "./codex/CodexOpenInCliButton";
+import { RewindFilesConfirmDialog, type RewindFilesConfirmDialogState } from "./RewindFilesConfirmDialog";
+import { buildRewindPreviewFiles, deriveRewindDiffSummaries } from "./rewindFilesPreview";
 import { ChatCursorCloudPanel, type ChatCursorCloudPanelHandle } from "./ChatCursorCloudPanel";
 import { CursorCloudInlineLaunch, type CursorCloudInlineLaunchHandle } from "./CursorCloudInlineLaunch";
 import { ChatGitToolbar } from "./ChatGitToolbar";
@@ -1010,6 +1006,7 @@ function clampHandoffReasoningToModel(current: string | null, descriptor: ModelD
 const HANDOFF_CLAUDE_MODES: Array<{ value: AgentChatClaudePermissionMode; label: string }> = [
   { value: "default", label: "Ask permissions" },
   { value: "acceptEdits", label: "Accept edits" },
+  { value: "auto", label: "Auto" },
   { value: "plan", label: "Plan" },
   { value: "bypassPermissions", label: "Bypass" },
 ];
@@ -1792,9 +1789,12 @@ export function AgentChatPane({
   const [iosSimulatorDrawerModeRequest, setIosSimulatorDrawerModeRequest] = useState<{ mode: IosSimulatorDrawerMode; nonce: number } | null>(null);
   const [iosSimulatorAvailable, setIosSimulatorAvailable] = useState(isLikelyMacRenderer);
   const [cursorCloudPaneOpen, setCursorCloudPaneOpen] = useState(false);
+  const [subagentPaneOpen, setSubagentPaneOpen] = useState(false);
+  const [rewindConfirmDialog, setRewindConfirmDialog] = useState<RewindFilesConfirmDialogState | null>(null);
   const [cursorCloudLaunchModeOpen, setCursorCloudLaunchModeOpen] = useState(false);
   const cursorCloudPanelRef = useRef<ChatCursorCloudPanelHandle | null>(null);
   const cursorCloudInlineLaunchRef = useRef<CursorCloudInlineLaunchHandle | null>(null);
+  const rewindConfirmResolveRef = useRef<((confirmed: boolean) => void) | null>(null);
   const [laneGitRemote, setLaneGitRemote] = useState<string | null>(null);
   const [laneGitBranch, setLaneGitBranch] = useState<string | null>(null);
   const [iosElementContextItems, setIosElementContextItems] = useState<IosElementContextItem[]>([]);
@@ -2074,9 +2074,10 @@ export function AgentChatPane({
     const baseEvents = optimisticOutgoingMessage && optimisticOutgoingMessage.sessionId === selectedSessionId
       ? [...selectedEvents, optimisticOutgoingMessage.envelope]
       : selectedEvents;
+    const renderableEvents = baseEvents.filter((envelope) => !envelope.event.type.startsWith("subagent."));
     const displayEvents = presentation?.rewriteMissionControlTextTools === true || presentation?.mode === "mission-thread"
-      ? rewriteMissionControlTextToolEvents(baseEvents)
-      : baseEvents;
+      ? rewriteMissionControlTextToolEvents(renderableEvents)
+      : renderableEvents;
     const promotedTurnId = selectedSession?.cursorPromotedTurnId;
     const cloudAgentId = selectedSession?.cursorCloudAgentId;
     if (!promotedTurnId || !cloudAgentId) return displayEvents;
@@ -2135,6 +2136,7 @@ export function AgentChatPane({
     return sawUsageEvent ? usageFromEvents : (selectedSession?.codexTokenUsage ?? null);
   }, [selectedEventsForDisplay, selectedSession?.codexTokenUsage]);
   const selectedSubagentSnapshots = useMemo(() => deriveChatSubagentSnapshots(selectedEvents), [selectedEvents]);
+  const selectedSubagentPaneAvailable = selectedSession?.provider === "claude" && selectedSubagentSnapshots.length > 0;
   const selectedTurnDiffSummaries = useMemo(() => deriveTurnDiffSummaries(selectedEvents), [selectedEvents]);
   const selectedTodoItems = useMemo(() => deriveTodoItems(selectedEvents), [selectedEvents]);
   const pendingInput = selectedSessionId ? (pendingInputsBySession[selectedSessionId]?.[0] ?? null) : null;
@@ -2161,6 +2163,30 @@ export function AgentChatPane({
       setError(controlError instanceof Error ? controlError.message : String(controlError));
     }
   }, [turnActiveBySession]);
+  const subagentAutoOpenRef = useRef<{ sessionId: string | null; count: number }>({ sessionId: null, count: 0 });
+
+  useEffect(() => {
+    if (!selectedSessionId || selectedSession?.provider !== "claude") {
+      subagentAutoOpenRef.current = { sessionId: selectedSessionId ?? null, count: 0 };
+      if (subagentPaneOpen) setSubagentPaneOpen(false);
+      return;
+    }
+    const previous = subagentAutoOpenRef.current.sessionId === selectedSessionId
+      ? subagentAutoOpenRef.current.count
+      : selectedSubagentSnapshots.length;
+    if (
+      subagentAutoOpenRef.current.sessionId === selectedSessionId
+      && selectedSubagentSnapshots.length > previous
+      && !subagentPaneOpen
+    ) {
+      setProofDrawerOpen(false);
+      setIosSimulatorOpen(false);
+      setAppControlOpen(false);
+      setCursorCloudPaneOpen(false);
+      setSubagentPaneOpen(true);
+    }
+    subagentAutoOpenRef.current = { sessionId: selectedSessionId, count: selectedSubagentSnapshots.length };
+  }, [selectedSession?.provider, selectedSessionId, selectedSubagentSnapshots.length, subagentPaneOpen]);
 
   const persistParallelLaunchState = useCallback(async (state: AgentChatParallelLaunchState | null) => {
     if (!projectRoot || !laneId) return;
@@ -3445,6 +3471,7 @@ export function AgentChatPane({
       setProofDrawerOpen(false);
       setAppControlOpen(false);
       setCursorCloudPaneOpen(false);
+      setSubagentPaneOpen(false);
       setIosSimulatorOpen(true);
       setIosSimulatorDrawerModeRequest({ mode: event.mode, nonce: Date.now() });
     });
@@ -3792,6 +3819,7 @@ export function AgentChatPane({
   useEffect(() => {
     if (!selectedSessionId) {
       setProofDrawerOpen(false);
+      setSubagentPaneOpen(false);
     }
   }, [selectedSessionId]);
 
@@ -4240,7 +4268,7 @@ export function AgentChatPane({
     }
   }, [buildNativeControlPayload, codexFastMode, currentNativeControls, iosSimulatorOpen, laneId, modelId, notifySessionCreated, reasoningEffort, refreshSessions, touchSession]);
 
-  const handoffSession = useCallback(async () => {
+  const handoffSession = useCallback(async (mode: "brief" | "fork" = "brief") => {
     if (!canShowHandoff || !selectedSessionId || !handoffModelId || handoffBlocked) return;
     setError(null);
     setHandoffBusy(true);
@@ -4249,6 +4277,7 @@ export function AgentChatPane({
       const result = await window.ade.agentChat.handoff({
         sourceSessionId: selectedSessionId,
         targetModelId: handoffModelId,
+        mode,
         reasoningEffort: handoffReasoningEffort,
         ...(handoffTargetProvider === "codex" ? { codexFastMode: handoffCodexFastMode } : {}),
         claudePermissionMode: handoffClaudePermissionMode,
@@ -4649,7 +4678,58 @@ export function AgentChatPane({
         return;
       }
     }
-    const draftSnapshot = draft;
+	    if (
+	      text === "/context"
+	      && selectedSessionId
+	      && sessionProvider === "claude"
+	      && !attachments.length
+      && !contextAttachmentsSnapshot.length
+      && !visualContextPrefix.length
+    ) {
+      setBusy(true);
+      setError(null);
+      setDraft("");
+      draftsPerSessionRef.current.delete(selectedSessionId);
+      try {
+        touchSession(selectedSessionId);
+        await window.ade.agentChat.getContextUsage({ sessionId: selectedSessionId });
+      } catch (contextError) {
+        setDraft((current) => (current.trim().length ? current : draft));
+        setError(contextError instanceof Error ? contextError.message : String(contextError));
+      } finally {
+        setBusy(false);
+	      }
+	      return;
+	    }
+	    if (
+	      /^\/output-style(?:\s+[\s\S]+)?$/i.test(text)
+	      && selectedSessionId
+	      && sessionProvider === "claude"
+	      && !attachments.length
+	      && !contextAttachmentsSnapshot.length
+	      && !visualContextPrefix.length
+	    ) {
+	      setBusy(true);
+	      setError(null);
+	      setDraft("");
+	      draftsPerSessionRef.current.delete(selectedSessionId);
+	      try {
+	        touchSession(selectedSessionId);
+	        await window.ade.agentChat.send({
+	          sessionId: selectedSessionId,
+	          text,
+	          displayText: text,
+	        });
+	        void refreshSessions().catch(() => {});
+	      } catch (outputStyleError) {
+	        setDraft((current) => (current.trim().length ? current : draft));
+	        setError(outputStyleError instanceof Error ? outputStyleError.message : String(outputStyleError));
+	      } finally {
+	        setBusy(false);
+	      }
+	      return;
+	    }
+	    const draftSnapshot = draft;
     const attachmentsSnapshot = attachments;
     const isLiteralSlashCommand = isProviderSlashCommandInput(text);
 
@@ -4855,6 +4935,67 @@ export function AgentChatPane({
     builtInBrowserContextItems,
     macosVmContextItems,
   ]);
+
+  const openRewindConfirmDialog = useCallback((state: RewindFilesConfirmDialogState): Promise<boolean> => {
+    rewindConfirmResolveRef.current?.(false);
+    return new Promise<boolean>((resolve) => {
+      rewindConfirmResolveRef.current = resolve;
+      setRewindConfirmDialog(state);
+    });
+  }, []);
+
+  const closeRewindConfirmDialog = useCallback(() => {
+    rewindConfirmResolveRef.current?.(false);
+    rewindConfirmResolveRef.current = null;
+    setRewindConfirmDialog(null);
+  }, []);
+
+  const confirmRewindDialog = useCallback(() => {
+    rewindConfirmResolveRef.current?.(true);
+    rewindConfirmResolveRef.current = null;
+    setRewindConfirmDialog(null);
+  }, []);
+
+  const rewindFilesFromMessage = useCallback(async (request: { messageId: string; timestamp: string; text: string }) => {
+    if (!selectedSessionId) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const preview = await window.ade.agentChat.rewindFiles({
+        sessionId: selectedSessionId,
+        userMessageId: request.messageId,
+        dryRun: true,
+      });
+      if (!preview.canRewind) {
+        setError(preview.error ?? "No file checkpoint is available for that message.");
+        return;
+      }
+      const rewindSummaries = deriveRewindDiffSummaries(selectedEvents, request);
+      const files = buildRewindPreviewFiles(preview, rewindSummaries);
+      setBusy(false);
+      const confirmed = await openRewindConfirmDialog({
+        request,
+        preview,
+        files,
+      });
+      if (!confirmed) return;
+      setBusy(true);
+      const result = await window.ade.agentChat.rewindFiles({
+        sessionId: selectedSessionId,
+        userMessageId: request.messageId,
+        dryRun: false,
+      });
+      if (!result.canRewind) {
+        setError(result.error ?? "File rewind failed.");
+        return;
+      }
+      await refreshSessions().catch(() => {});
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }, [openRewindConfirmDialog, refreshSessions, selectedEvents, selectedSessionId]);
 
   const interrupt = useCallback(async () => {
     if (!selectedSessionId) return;
@@ -5152,6 +5293,15 @@ export function AgentChatPane({
       </div>
     </>
   );
+  const subagentPanelContent = selectedSubagentPaneAvailable ? (
+    <ChatSubagentsPanel
+      snapshots={selectedSubagentSnapshots}
+      events={selectedEvents}
+      onInterruptTurn={turnActive ? () => { void interrupt(); } : undefined}
+      variant="pane"
+      onClose={() => setSubagentPaneOpen(false)}
+    />
+  ) : null;
   const cursorCloudPanelContent = (
     <ChatCursorCloudPanel
       ref={cursorCloudPanelRef}
@@ -5279,6 +5429,7 @@ export function AgentChatPane({
                       setProofDrawerOpen(false);
                       setAppControlOpen(false);
                       setCursorCloudPaneOpen(false);
+                      setSubagentPaneOpen(false);
                     }
                     return next;
                   });
@@ -5319,6 +5470,7 @@ export function AgentChatPane({
                     if (next) {
                       setProofDrawerOpen(false);
                       setIosSimulatorOpen(false);
+                      setSubagentPaneOpen(false);
                     }
                     return next;
                   });
@@ -5360,6 +5512,7 @@ export function AgentChatPane({
                       setIosSimulatorOpen(false);
                       setCursorCloudPaneOpen(false);
                       setAppControlOpen(false);
+                      setSubagentPaneOpen(false);
                     }
                     return next;
                   });
@@ -5374,6 +5527,45 @@ export function AgentChatPane({
                     {proofArtifactCount}
                   </span>
                 ) : null}
+              </button>
+            </SmartTooltip>
+          ) : null}
+          {selectedSubagentPaneAvailable ? (
+            <SmartTooltip
+              content={{
+                label: subagentPaneOpen ? "Close subagents" : "Open subagents",
+                description: "Inspect active and completed Claude subagents for this chat.",
+                effect: `${selectedSubagentSnapshots.length} subagent${selectedSubagentSnapshots.length === 1 ? "" : "s"} tracked.`,
+              }}
+            >
+              <button
+                type="button"
+                className={cn(
+                  "relative inline-flex h-7 w-7 items-center justify-center rounded-md border transition-colors",
+                  subagentPaneOpen
+                    ? "border-amber-300/22 bg-amber-500/10 text-amber-100/80"
+                    : "border-white/[0.06] bg-white/[0.02] text-muted-fg/40 hover:border-white/[0.10] hover:text-fg/65",
+                )}
+                onClick={() => {
+                  setSubagentPaneOpen((current) => {
+                    const next = !current;
+                    if (next) {
+                      setProofDrawerOpen(false);
+                      setIosSimulatorOpen(false);
+                      setAppControlOpen(false);
+                      setCursorCloudPaneOpen(false);
+                    }
+                    return next;
+                  });
+                }}
+                title={subagentPaneOpen ? "Close subagents panel" : "Open subagents panel"}
+                aria-label={subagentPaneOpen ? "Close subagents panel" : "Open subagents panel"}
+                aria-pressed={subagentPaneOpen}
+              >
+                <TreeStructure size={13} weight={subagentPaneOpen ? "fill" : "regular"} />
+                <span className="absolute -right-1 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-amber-400/85 px-0.5 font-mono text-[8px] font-bold text-black">
+                  {selectedSubagentSnapshots.length}
+                </span>
               </button>
             </SmartTooltip>
           ) : null}
@@ -5444,7 +5636,9 @@ export function AgentChatPane({
                   <div className="space-y-1">
                     <div className="font-sans text-[12px] font-semibold text-fg/82">Start a sibling chat on another model</div>
                     <div className="text-[11px] leading-5 text-fg/54">
-                      ADE will create a new work chat, inject a handoff summary from this session, and route you into the new tab.
+                      {handoffTargetProvider === "claude"
+                        ? "ADE can fork Claude with full SDK history, or start a brief handoff that sends a compact summary."
+                        : "ADE will create a new work chat, inject a handoff summary from this session, and route you into the new tab."}
                     </div>
                     {laneId ? (
                       <div className="text-[10px] leading-4 text-fg/40">
@@ -5573,7 +5767,9 @@ export function AgentChatPane({
                     </div>
                   ) : null}
                   <div className="mt-3 rounded-md border border-white/[0.05] bg-white/[0.025] px-2.5 py-2 text-[10px] leading-4 text-fg/44">
-                    Create opens the new work chat and sends the handoff summary as its first message.
+                    {handoffTargetProvider === "claude"
+                      ? "Fork keeps the complete Claude transcript through the SDK. Brief sends a summary as the first message."
+                      : "Create opens the new work chat and sends the handoff summary as its first message."}
                   </div>
                   <div className="mt-3 flex items-center justify-end gap-2">
                     <button
@@ -5583,16 +5779,41 @@ export function AgentChatPane({
                     >
                       Cancel
                     </button>
-                    <button
-                      type="button"
-                      className="rounded-md border border-[color:color-mix(in_srgb,var(--chat-accent)_24%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_14%,transparent)] px-2.5 py-1 font-sans text-[11px] font-medium text-fg/86 transition-colors hover:border-[color:color-mix(in_srgb,var(--chat-accent)_34%,transparent)] disabled:cursor-not-allowed disabled:opacity-40"
-                      onClick={() => {
-                        void handoffSession();
-                      }}
-                      disabled={!handoffModelId || handoffBusy}
-                    >
-                      {handoffBusy ? "Starting..." : "Create handoff chat"}
-                    </button>
+                    {handoffTargetProvider === "claude" ? (
+                      <>
+                        <button
+                          type="button"
+                          className="rounded-md border border-white/[0.08] bg-white/[0.035] px-2.5 py-1 font-sans text-[11px] font-medium text-fg/72 transition-colors hover:border-white/[0.14] hover:text-fg disabled:cursor-not-allowed disabled:opacity-40"
+                          onClick={() => {
+                            void handoffSession("brief");
+                          }}
+                          disabled={!handoffModelId || handoffBusy}
+                        >
+                          {handoffBusy ? "Starting..." : "Brief handoff"}
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded-md border border-[color:color-mix(in_srgb,var(--chat-accent)_24%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_14%,transparent)] px-2.5 py-1 font-sans text-[11px] font-medium text-fg/86 transition-colors hover:border-[color:color-mix(in_srgb,var(--chat-accent)_34%,transparent)] disabled:cursor-not-allowed disabled:opacity-40"
+                          onClick={() => {
+                            void handoffSession("fork");
+                          }}
+                          disabled={!handoffModelId || handoffBusy}
+                        >
+                          {handoffBusy ? "Starting..." : "Fork full history"}
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        type="button"
+                        className="rounded-md border border-[color:color-mix(in_srgb,var(--chat-accent)_24%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_14%,transparent)] px-2.5 py-1 font-sans text-[11px] font-medium text-fg/86 transition-colors hover:border-[color:color-mix(in_srgb,var(--chat-accent)_34%,transparent)] disabled:cursor-not-allowed disabled:opacity-40"
+                        onClick={() => {
+                          void handoffSession();
+                        }}
+                        disabled={!handoffModelId || handoffBusy}
+                      >
+                        {handoffBusy ? "Starting..." : "Create handoff chat"}
+                      </button>
+                    )}
                   </div>
                 </div>
               ) : null}
@@ -5950,6 +6171,7 @@ export function AgentChatPane({
                   setProofDrawerOpen(false);
                   setCursorCloudPaneOpen(false);
                   setAppControlOpen(false);
+                  setSubagentPaneOpen(false);
                 }
                 return next;
               });
@@ -5963,6 +6185,7 @@ export function AgentChatPane({
                   setProofDrawerOpen(false);
                   setIosSimulatorOpen(false);
                   setCursorCloudPaneOpen(false);
+                  setSubagentPaneOpen(false);
                 }
                 return next;
               });
@@ -5994,12 +6217,14 @@ export function AgentChatPane({
             onOpenCloudLaunchMode={() => {
               setCursorCloudLaunchModeOpen(true);
               setCursorCloudPaneOpen(false);
+              setSubagentPaneOpen(false);
             }}
             onCloseCloudLaunchMode={() => setCursorCloudLaunchModeOpen(false)}
             onOpenCloudBringToLocal={() => {
               setCursorCloudLaunchModeOpen(false);
               setProofDrawerOpen(false);
               setIosSimulatorOpen(false);
+              setSubagentPaneOpen(false);
               setCursorCloudPaneOpen(true);
             }}
             onSubmitToCloud={async (promptText) => {
@@ -6104,7 +6329,9 @@ export function AgentChatPane({
   // App Control) host their own input affordances, so the empty-state layout
   // shrinks the hero and moves the composer below.
   const appPanelOpen = effectiveIosSimulatorOpen || effectiveAppControlOpen;
-  const rightPaneOpen = proofDrawerOpen || appPanelOpen;
+  const effectiveSubagentPaneOpen = subagentPaneOpen && selectedSubagentPaneAvailable;
+  const effectiveCursorCloudPaneOpen = cursorCloudPaneOpen && cursorCloudAvailable;
+  const rightPaneOpen = proofDrawerOpen || appPanelOpen || effectiveSubagentPaneOpen || effectiveCursorCloudPaneOpen;
   const supportsSplit = layoutVariant !== "grid-tile";
   const splitChatColStyle: React.CSSProperties | undefined =
     rightPaneOpen && supportsSplit ? { flexGrow: 100 - rightPaneSplit } : undefined;
@@ -6264,6 +6491,7 @@ export function AgentChatPane({
                         setTerminalDrawerOpen(true);
                         setTerminalRevealRequest({ ...terminal, nonce: ++terminalRevealNonceRef.current });
                       }}
+                      onRewindFiles={selectedSession?.provider === "claude" ? rewindFilesFromMessage : undefined}
                       onApproval={(itemId, decision, responseText, answers) => {
                         void handleApproval(itemId, decision, responseText, answers);
                       }}
@@ -6277,7 +6505,7 @@ export function AgentChatPane({
                     {selectedTodoItems.length ? (
                       <ChatTasksPanel items={selectedTodoItems} />
                     ) : null}
-                    {selectedSubagentSnapshots.length ? (
+                    {selectedSession?.provider === "claude" && selectedSubagentSnapshots.length && !effectiveSubagentPaneOpen ? (
                       <ChatSubagentsPanel
                         snapshots={selectedSubagentSnapshots}
                         events={selectedEvents}
@@ -6308,9 +6536,10 @@ export function AgentChatPane({
 
                   {rightPaneDivider}
                   {proofDrawerOpen ? renderRightPane(proofPanelContent) : null}
+                  {effectiveSubagentPaneOpen && subagentPanelContent ? renderRightPane(subagentPanelContent) : null}
                   {effectiveIosSimulatorOpen ? renderRightPane(iosSimulatorPanelContent) : null}
                   {effectiveAppControlOpen ? renderRightPane(appControlPanelContent) : null}
-                  {cursorCloudPaneOpen && cursorCloudAvailable ? renderRightPane(cursorCloudPanelContent) : null}
+                  {effectiveCursorCloudPaneOpen ? renderRightPane(cursorCloudPanelContent) : null}
                 </motion.div>
               ) : (
                 <motion.div
@@ -6406,13 +6635,19 @@ export function AgentChatPane({
                   {rightPaneDivider}
                   {effectiveIosSimulatorOpen ? renderRightPane(iosSimulatorPanelContent) : null}
                   {effectiveAppControlOpen ? renderRightPane(appControlPanelContent) : null}
-                  {cursorCloudPaneOpen && cursorCloudAvailable ? renderRightPane(cursorCloudPanelContent) : null}
+                  {effectiveCursorCloudPaneOpen ? renderRightPane(cursorCloudPanelContent) : null}
                 </motion.div>
               )}
             </AnimatePresence>
           )}
         </div>
       </ChatSurfaceShell>
+      <RewindFilesConfirmDialog
+        state={rewindConfirmDialog}
+        sessionId={selectedSessionId}
+        onCancel={closeRewindConfirmDialog}
+        onConfirm={confirmRewindDialog}
+      />
       <ConfirmDialog state={archiveConfirm.state} onClose={archiveConfirm.close} />
     </>
   );

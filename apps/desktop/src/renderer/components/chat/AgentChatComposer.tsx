@@ -358,7 +358,7 @@ function buildSlashCommands(
   return result;
 }
 
-type ClaudeModeTone = "green" | "blue" | "purple" | "red";
+type ClaudeModeTone = "green" | "amber" | "blue" | "purple" | "red";
 
 type ClaudeModeOption = {
   value: AgentChatClaudePermissionMode;
@@ -369,6 +369,7 @@ type ClaudeModeOption = {
 
 const CLAUDE_MODE_OPTIONS: ClaudeModeOption[] = [
   { value: "default", label: "Ask permissions", detail: "Claude asks before edits, Bash, and other sensitive tools.", tone: "green" },
+  { value: "auto", label: "Auto", detail: "Claude judges each tool call. Uses a model classifier instead of asking you.", tone: "amber" },
   { value: "acceptEdits", label: "Accept edits", detail: "File edits are auto-approved; higher-risk actions still prompt.", tone: "blue" },
   { value: "plan", label: "Plan mode", detail: "Read-only Claude turns for analysis and implementation planning.", tone: "purple" },
   { value: "bypassPermissions", label: "Bypass permissions", detail: "Skip every Claude permission prompt for this chat.", tone: "red" },
@@ -390,6 +391,13 @@ const CLAUDE_MODE_TONE_STYLES: Record<
     activeBorder: "border-emerald-500/35",
     dot: "bg-emerald-400",
     hoverBg: "hover:bg-emerald-500/10 hover:text-emerald-100",
+  },
+  amber: {
+    activeBg: "bg-amber-500/12",
+    activeText: "text-amber-200",
+    activeBorder: "border-amber-500/35",
+    dot: "bg-amber-400",
+    hoverBg: "hover:bg-amber-500/10 hover:text-amber-100",
   },
   blue: {
     activeBg: "bg-sky-500/14",

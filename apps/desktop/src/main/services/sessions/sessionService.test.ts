@@ -461,4 +461,98 @@ describe("sessionService resume metadata", () => {
 
     activeDisposers.push(async () => db.close());
   });
+
+  it("mirrors Claude SDK session pointers by lane and owning chat", async () => {
+    const projectRoot = makeProjectRoot("ade-session-service-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+
+    service.create({
+      sessionId: "chat-1",
+      laneId: "lane-1",
+      ptyId: null,
+      tracked: true,
+      title: "Claude chat",
+      startedAt: "2026-03-17T00:10:00.000Z",
+      transcriptPath: "/tmp/chat-1.log",
+      toolType: "claude-chat",
+    });
+
+    const created = service.upsertClaudeSessionPointer({
+      sessionId: "sdk-1",
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+      title: "Claude chat",
+      tags: ["review", "review", "ade-31"],
+      createdAt: "2026-03-17T00:11:00.000Z",
+      updatedAt: "2026-03-17T00:12:00.000Z",
+    });
+
+    expect(created).toEqual(expect.objectContaining({
+      sessionId: "sdk-1",
+      laneId: "lane-1",
+      laneName: "Lane 1",
+      chatSessionId: "chat-1",
+      title: "Claude chat",
+      tags: ["review", "ade-31"],
+      createdAt: "2026-03-17T00:11:00.000Z",
+      updatedAt: "2026-03-17T00:12:00.000Z",
+    }));
+    expect(service.getClaudeSessionPointerByChatSessionId("chat-1")?.sessionId).toBe("sdk-1");
+    expect(service.listClaudeSessionPointers({ laneId: "lane-1" }).map((row) => row.sessionId)).toEqual(["sdk-1"]);
+
+    const updated = service.updateClaudeSessionPointerMeta({
+      sessionId: "sdk-1",
+      title: "Renamed Claude chat",
+      tags: ["done"],
+      updatedAt: "2026-03-17T00:13:00.000Z",
+    });
+
+    expect(updated).toEqual(expect.objectContaining({
+      title: "Renamed Claude chat",
+      tags: ["done"],
+      updatedAt: "2026-03-17T00:13:00.000Z",
+    }));
+
+    activeDisposers.push(async () => db.close());
+  });
+
+  it("keeps a chat bound to only one Claude SDK session pointer", async () => {
+    const projectRoot = makeProjectRoot("ade-session-service-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+
+    service.create({
+      sessionId: "chat-reused",
+      laneId: "lane-1",
+      ptyId: null,
+      tracked: true,
+      title: "Claude chat",
+      startedAt: "2026-03-17T00:10:00.000Z",
+      transcriptPath: "/tmp/chat-reused.log",
+      toolType: "claude-chat",
+    });
+
+    service.upsertClaudeSessionPointer({
+      sessionId: "sdk-old",
+      laneId: "lane-1",
+      chatSessionId: "chat-reused",
+      updatedAt: "2026-03-17T00:11:00.000Z",
+    });
+    service.upsertClaudeSessionPointer({
+      sessionId: "sdk-new",
+      laneId: "lane-1",
+      chatSessionId: "chat-reused",
+      updatedAt: "2026-03-17T00:12:00.000Z",
+    });
+
+    expect(service.getClaudeSessionPointerByChatSessionId("chat-reused")?.sessionId).toBe("sdk-new");
+    expect(service.getClaudeSessionPointer("sdk-old")?.chatSessionId).toBeNull();
+
+    activeDisposers.push(async () => db.close());
+  });
 });

@@ -723,7 +723,15 @@ function createMockAiIntegrationService(overrides: {
   executeTask?: (...args: any[]) => Promise<any>;
 } = {}) {
   return {
-    getAvailability: () => ({ claude: true, codex: true, cursor: false, droid: false }),
+    getAvailability: () => ({
+      claude: {
+        binary: { present: true, source: "path", path: "/usr/local/bin/claude" },
+        auth: { ready: true, mode: "oauth", detail: null },
+      },
+      codex: true,
+      cursor: false,
+      droid: false,
+    }),
     getMode: () => "subscription",
     getFeatureFlag: () => true,
     getDailyBudgetLimit: () => null,

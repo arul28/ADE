@@ -1165,10 +1165,24 @@ export type AiRuntimeConnectionStatus = {
 
 export type AiRuntimeConnections = Record<string, AiRuntimeConnectionStatus>;
 
+export type AiClaudeAvailability = {
+  binary: {
+    present: boolean;
+    version?: string;
+    source: "bundled" | "path" | "missing";
+    path?: string | null;
+  };
+  auth: {
+    ready: boolean;
+    mode: "api_key" | "oauth" | "bedrock" | "vertex" | "foundry" | "none";
+    detail?: string | null;
+  };
+};
+
 export type AiSettingsStatus = {
   mode: "guest" | "subscription";
   availableProviders: {
-    claude: boolean;
+    claude: AiClaudeAvailability;
     codex: boolean;
     cursor: boolean;
     droid: boolean;
@@ -1311,7 +1325,7 @@ export type AiChatConfig = {
   /** Reasoning effort for auto-title generation */
   autoTitleReasoningEffort?: string | null;
   codexSandbox?: "read-only" | "workspace-write" | "danger-full-access";
-  claudePermissionMode?: "default" | "plan" | "acceptEdits" | "bypassPermissions";
+  claudePermissionMode?: "default" | "auto" | "plan" | "acceptEdits" | "bypassPermissions";
   sessionBudgetUsd?: number;
   /** Default permission mode for new OpenCode/API-model chat sessions */
   opencodePermissionMode?: AiInProcessPermissionMode;
@@ -1382,7 +1396,7 @@ export type ProjectIdentityConfig = {
 export type AiIntegrationStatus = {
   mode: ProviderMode;
   availableProviders: {
-    claude: boolean;
+    claude: AiClaudeAvailability;
     codex: boolean;
     cursor: boolean;
     droid: boolean;
