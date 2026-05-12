@@ -288,14 +288,26 @@ describe("selectLaneTabPrTag", () => {
   });
 
   it("prefers an ADE-mapped PR over an unlinked GitHub branch match", () => {
-    const mappedPr = makePr({ id: "mapped-pr", state: "open" });
-    const githubPr = makeGitHubPr({ id: "github-pr", state: "merged" });
+    const mappedPr = makePr({ id: "mapped-pr", state: "closed" });
+    const githubPr = makeGitHubPr({ id: "github-pr", state: "open" });
 
     expect(selectLaneTabPrTag(makeLane(), [mappedPr], [githubPr])).toMatchObject({
       source: "ade",
       id: "mapped-pr",
       linkedPrId: "mapped-pr",
-      state: "open",
+      state: "closed",
+    });
+  });
+
+  it("labels GitHub-only draft PRs as draft lane tags", () => {
+    expect(selectLaneTabPrTag(makeLane(), [], [
+      makeGitHubPr({
+        state: "open",
+        isDraft: true,
+      }),
+    ])).toMatchObject({
+      source: "github",
+      state: "draft",
     });
   });
 

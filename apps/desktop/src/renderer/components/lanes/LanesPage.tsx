@@ -144,6 +144,15 @@ function lanePrTagColor(state: PrSummary["state"]): string {
   return COLORS.accent;
 }
 
+function isTrustedGitHubUrl(rawUrl: string): boolean {
+  try {
+    const url = new URL(rawUrl);
+    return url.protocol === "https:" && url.hostname === "github.com";
+  } catch {
+    return false;
+  }
+}
+
 export function isLaneDeleteProgressActive(progress: LaneDeleteProgress | null | undefined): boolean {
   return progress?.overallStatus === "running" || progress?.overallStatus === "completed";
 }
@@ -3022,7 +3031,7 @@ export function LanesPage() {
                       })}`);
                       return;
                     }
-                    if (lanePr.githubUrl) {
+                    if (lanePr.githubUrl && isTrustedGitHubUrl(lanePr.githubUrl)) {
                       void window.ade?.app?.openExternal?.(lanePr.githubUrl);
                     }
                   }}

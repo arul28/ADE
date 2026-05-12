@@ -87,7 +87,13 @@ function prStateRank(state: PrSummary["state"]): number {
   return 2;
 }
 
-function compareLanePrTags(a: PrSummary, b: PrSummary): number {
+type PrTagComparable = {
+  state: PrSummary["state"];
+  updatedAt: string;
+  githubPrNumber: number;
+};
+
+function comparePrTags(a: PrTagComparable, b: PrTagComparable): number {
   const byState = prStateRank(a.state) - prStateRank(b.state);
   if (byState !== 0) return byState;
   const aUpdated = Date.parse(a.updatedAt);
@@ -119,7 +125,7 @@ export function selectLanePrTag(
 ): PrSummary | null {
   return prs
     .filter((pr) => lanePrMatchesCurrentBranch(lane, pr))
-    .sort(compareLanePrTags)[0] ?? null;
+    .sort(comparePrTags)[0] ?? null;
 }
 
 export function githubPrMatchesCurrentBranch(
@@ -136,24 +142,13 @@ export function githubPrMatchesCurrentBranch(
   return true;
 }
 
-function compareGithubLanePrTags(a: GitHubPrListItem, b: GitHubPrListItem): number {
-  const byState = prStateRank(a.state) - prStateRank(b.state);
-  if (byState !== 0) return byState;
-  const aUpdated = Date.parse(a.updatedAt);
-  const bUpdated = Date.parse(b.updatedAt);
-  if (!Number.isNaN(aUpdated) && !Number.isNaN(bUpdated) && aUpdated !== bUpdated) {
-    return bUpdated - aUpdated;
-  }
-  return b.githubPrNumber - a.githubPrNumber;
-}
-
 export function selectGithubLanePrTag(
   lane: Pick<LaneSummary, "laneType" | "branchRef" | "baseRef">,
   prs: GitHubPrListItem[],
 ): GitHubPrListItem | null {
   return prs
     .filter((pr) => pr.scope === "repo" && githubPrMatchesCurrentBranch(lane, pr))
-    .sort(compareGithubLanePrTags)[0] ?? null;
+    .sort(comparePrTags)[0] ?? null;
 }
 
 function toLaneTabPrTagFromPrSummary(pr: PrSummary): LaneTabPrTag {
@@ -177,7 +172,7 @@ function toLaneTabPrTagFromGithubItem(pr: GitHubPrListItem, laneId: string): Lan
     githubPrNumber: pr.githubPrNumber,
     githubUrl: pr.githubUrl,
     title: pr.title,
-    state: pr.state,
+    state: pr.isDraft ? "draft" : pr.state,
   };
 }
 
