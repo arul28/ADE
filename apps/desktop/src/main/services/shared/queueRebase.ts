@@ -242,6 +242,11 @@ export async function fetchQueueTargetTrackingBranches(args: {
     const cacheKey = `${args.projectRoot}\0${args.projectId}\0${branch}`;
     const attemptedAt = queueTargetFetchAttemptedAt.get(cacheKey) ?? 0;
     if (now - attemptedAt < QUEUE_TARGET_FETCH_TTL_MS) continue;
+    const attemptStartedAt = Date.now();
+    queueTargetFetchAttemptedAt.set(cacheKey, attemptStartedAt);
+    if (queueTargetFetchAttemptedAt.size > QUEUE_TARGET_FETCH_MAX_ENTRIES) {
+      pruneQueueTargetFetchAttempts(attemptStartedAt);
+    }
     const fetched = await fetchRemoteTrackingBranch({
       projectRoot: args.projectRoot,
       targetBranch: branch,
@@ -250,11 +255,6 @@ export async function fetchQueueTargetTrackingBranches(args: {
       // Best-effort refresh only. Rebase scans can still proceed against the
       // existing local tracking ref if fetch is unavailable.
       continue;
-    }
-    const completedAt = Date.now();
-    queueTargetFetchAttemptedAt.set(cacheKey, completedAt);
-    if (queueTargetFetchAttemptedAt.size > QUEUE_TARGET_FETCH_MAX_ENTRIES) {
-      pruneQueueTargetFetchAttempts(completedAt);
     }
   }
 }

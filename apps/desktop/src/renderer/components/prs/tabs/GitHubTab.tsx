@@ -441,6 +441,7 @@ export function GitHubTab({
   const hotRefreshUntilRef = React.useRef(0);
   const hotRefreshTimerRef = React.useRef<number | null>(null);
   const inFlightSnapshotRef = React.useRef<{ request: Promise<GitHubPrSnapshot>; includeExternalClosed: boolean } | null>(null);
+  const loadingSnapshotRequestCountRef = React.useRef(0);
   const lastSnapshotLoadedAtRef = React.useRef(initialWarmCacheRef.current?.cachedAt ?? 0);
   const filterRef = React.useRef(filter);
   const externalHistoryLoadedRef = React.useRef(externalHistoryLoaded);
@@ -469,8 +470,10 @@ export function GitHubTab({
     if (inFlightSnapshot && (!includeExternalClosed || inFlightSnapshot.includeExternalClosed)) {
       return inFlightSnapshot.request;
     }
-    if (!options?.silent) {
-      setLoading((prev) => options?.force || snapshotRef.current == null ? true : prev);
+    const shouldShowLoading = !options?.silent && (options?.force === true || snapshotRef.current == null);
+    if (shouldShowLoading) {
+      loadingSnapshotRequestCountRef.current += 1;
+      setLoading(true);
     }
     setError(null);
     const requestProjectRoot = projectRootRef.current;
@@ -502,7 +505,10 @@ export function GitHubTab({
       .finally(() => {
         if (isCurrentSnapshotRequest()) {
           inFlightSnapshotRef.current = null;
-          if (!options?.silent && projectRootRef.current === requestProjectRoot) {
+        }
+        if (shouldShowLoading) {
+          loadingSnapshotRequestCountRef.current = Math.max(0, loadingSnapshotRequestCountRef.current - 1);
+          if (loadingSnapshotRequestCountRef.current === 0 && projectRootRef.current === requestProjectRoot) {
             setLoading(false);
           }
         }
@@ -515,6 +521,7 @@ export function GitHubTab({
     if (projectRootRef.current === projectRoot) return;
     projectRootRef.current = projectRoot;
     inFlightSnapshotRef.current = null;
+    loadingSnapshotRequestCountRef.current = 0;
     const warmCache = readGitHubTabWarmCache(projectRoot);
     initialWarmCacheRef.current = warmCache;
     setSnapshot(warmCache?.snapshot ?? null);
@@ -590,7 +597,7 @@ export function GitHubTab({
       includeExternalClosed: true,
       silent: snapshotRef.current != null,
     });
-  }, [externalHistoryLoaded, filter, loadSnapshot, snapshot]);
+  }, [externalHistoryLoaded, filter, loadSnapshot]);
 
   React.useEffect(() => {
     if (prsContextLoading && prs.length === 0) return;

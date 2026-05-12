@@ -90,7 +90,7 @@ describe("fetchQueueTargetTrackingBranches", () => {
     expect(mockGit.runGitOrThrow).toHaveBeenCalledTimes(1);
   });
 
-  it("does not cache failed queue target fetch attempts", async () => {
+  it("throttles failed queue target fetch attempts", async () => {
     mockGit.runGitOrThrow
       .mockRejectedValueOnce(new Error("fetch failed"))
       .mockResolvedValueOnce(undefined);
@@ -111,6 +111,6 @@ describe("fetchQueueTargetTrackingBranches", () => {
       projectRoot: "/tmp/ade-fail",
     });
 
-    expect(mockGit.runGitOrThrow).toHaveBeenCalledTimes(1);
+    expect(mockGit.runGitOrThrow).not.toHaveBeenCalled();
   });
 });
