@@ -38,6 +38,7 @@ type LaneComboboxProps = {
    * Rounded-full trigger; matches chat empty-state lane control styling.
    */
   variant?: "default" | "pill";
+  fullWidth?: boolean;
   "aria-label"?: string;
 };
 
@@ -50,6 +51,7 @@ export function LaneCombobox({
   placeholder = "Select lane...",
   compact = false,
   variant = "default",
+  fullWidth = false,
   "aria-label": ariaLabel = "Select lane",
 }: LaneComboboxProps) {
   const [open, setOpen] = useState(false);
@@ -230,6 +232,7 @@ export function LaneCombobox({
           fontWeight: 500,
           cursor: "pointer",
           minWidth: 0,
+          width: fullWidth ? "100%" : undefined,
           maxWidth: 320,
           transition: "border-color 100ms ease, background 100ms ease, box-shadow 100ms ease",
         }
@@ -264,6 +267,7 @@ export function LaneCombobox({
           fontWeight: 400,
           cursor: "pointer",
           minWidth: 0,
+          width: fullWidth ? "100%" : undefined,
           maxWidth: 200,
           transition: "border-color 100ms ease, background 100ms ease, box-shadow 100ms ease",
         };

@@ -10,6 +10,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { spawn } from "node:child_process";
+import { createInterface } from "node:readline";
 import type { Logger } from "../logging/logger";
 import type {
   UsageProvider,
@@ -42,6 +43,9 @@ const MAX_POLL_INTERVAL_MS = 15 * 60_000;     // 15 min
 const COST_CACHE_TTL_MS = 60_000;             // 60s
 const CODEX_TOKEN_REFRESH_DAYS = 8;
 const CODEX_CLI_RPC_TIMEOUT_MS = 10_000;
+const LOCAL_COST_SCAN_MAX_FILES = 200;
+const LOCAL_COST_SCAN_MAX_FILE_BYTES = 8 * 1024 * 1024;
+const LOCAL_COST_SCAN_MAX_ENTRIES = 20_000;
 
 function isBenignStdinCloseError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
@@ -690,8 +694,7 @@ async function scanClaudeLogs(): Promise<TokenEntry[]> {
 
   for (const filePath of jsonlFiles) {
     try {
-      const content = await fs.promises.readFile(filePath, "utf8");
-      for (const line of content.split("\n")) {
+      for await (const line of readJsonlLines(filePath)) {
         if (!line.trim()) continue;
         const record = safeJsonParse<Record<string, unknown>>(line, {});
         if (record.type !== "assistant") continue;
@@ -722,6 +725,7 @@ async function scanClaudeLogs(): Promise<TokenEntry[]> {
           timestamp: typeof record.timestamp === "number" ? record.timestamp :
                      typeof record.timestamp === "string" ? new Date(record.timestamp).getTime() : Date.now(),
         });
+        if (entries.length >= LOCAL_COST_SCAN_MAX_ENTRIES) return entries;
       }
     } catch {
       // Skip unreadable files
@@ -747,8 +751,7 @@ async function scanCodexLogs(): Promise<TokenEntry[]> {
 
   for (const filePath of jsonlFiles) {
     try {
-      const content = await fs.promises.readFile(filePath, "utf8");
-      for (const line of content.split("\n")) {
+      for await (const line of readJsonlLines(filePath)) {
         if (!line.trim()) continue;
         const record = safeJsonParse<Record<string, unknown>>(line, {});
 
@@ -788,6 +791,7 @@ async function scanCodexLogs(): Promise<TokenEntry[]> {
           timestamp: typeof record.timestamp === "number" ? record.timestamp :
                      typeof record.timestamp === "string" ? new Date(record.timestamp).getTime() : Date.now(),
         });
+        if (entries.length >= LOCAL_COST_SCAN_MAX_ENTRIES) return entries;
       }
     } catch {
       // Skip unreadable files
@@ -799,7 +803,7 @@ async function scanCodexLogs(): Promise<TokenEntry[]> {
 
 async function findJsonlFiles(dir: string, maxAgeDays: number): Promise<string[]> {
   const cutoff = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
-  const files: string[] = [];
+  const files: Array<{ path: string; mtimeMs: number }> = [];
 
   async function walk(current: string, depth: number) {
     if (depth > 6) return; // Prevent deep traversal
@@ -814,8 +818,8 @@ async function findJsonlFiles(dir: string, maxAgeDays: number): Promise<string[]
         } else if (entry.name.endsWith(".jsonl")) {
           fileStatPromises.push(
             fs.promises.stat(fullPath).then((stat) => {
-              if (stat.mtimeMs >= cutoff) {
-                files.push(fullPath);
+              if (stat.mtimeMs >= cutoff && stat.size <= LOCAL_COST_SCAN_MAX_FILE_BYTES) {
+                files.push({ path: fullPath, mtimeMs: stat.mtimeMs });
               }
             }).catch(() => {
               // Skip files we can't stat
@@ -830,7 +834,23 @@ async function findJsonlFiles(dir: string, maxAgeDays: number): Promise<string[]
   }
 
   await walk(dir, 0);
-  return files;
+  return files
+    .sort((a, b) => b.mtimeMs - a.mtimeMs)
+    .slice(0, LOCAL_COST_SCAN_MAX_FILES)
+    .map((file) => file.path);
+}
+
+async function* readJsonlLines(filePath: string): AsyncGenerator<string> {
+  const stream = fs.createReadStream(filePath, { encoding: "utf8" });
+  const lines = createInterface({ input: stream, crlfDelay: Infinity });
+  try {
+    for await (const line of lines) {
+      yield line;
+    }
+  } finally {
+    lines.close();
+    stream.destroy();
+  }
 }
 
 function aggregateCosts(

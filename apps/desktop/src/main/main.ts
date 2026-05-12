@@ -8,6 +8,9 @@ type NodePtyType = typeof NodePty;
 import { isAdeMcpNamedPipePath } from "../shared/adeMcpIpc";
 import { registerIpc } from "./services/ipc/registerIpc";
 import { createFileLogger } from "./services/logging/logger";
+import { initPerfRunFromEnv } from "./services/perf/perfLog";
+import { startMetricsSampler } from "./services/perf/metricsSampler";
+import { registerPerfIpcHandlers } from "./services/perf/perfIpc";
 import { openKvDb } from "./services/state/kvDb";
 import { ensureAdeDirs } from "./services/state/projectState";
 import {
@@ -816,6 +819,12 @@ app.on("open-file", (event, filePath) => {
 });
 
 app.whenReady().then(async () => {
+  // Perf run init — must come first so subsequent IPC + sampler hooks can see the active run.
+  const perfRun = initPerfRunFromEnv();
+  if (perfRun) {
+    startMetricsSampler();
+  }
+
   /** Canonical artifacts dir for the active project; ade-artifact:// only serves under this path. */
   let adeArtifactAllowedDir: string | null = null;
 
@@ -5569,6 +5578,11 @@ app.whenReady().then(async () => {
 
   // Explicit project launches still bind a project before the renderer boots;
   // normal launches stay on the welcome/recent-project surface.
+
+  registerPerfIpcHandlers();
+
+  // Restore the startup project before the renderer boots so packaged launches
+  // do not flash into the welcome state and lose the previous project context.
   if (shouldOpenStartupProject && startupProject.rootPath) {
     try {
       await switchProjectFromDialog(startupProject.rootPath);

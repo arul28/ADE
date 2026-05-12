@@ -517,7 +517,7 @@ function normalizeTerminalPreferences(value: unknown): TerminalPreferences {
 /** Session-scoped banner dismissals keyed by project root. Not persisted — "dismiss for this session" only. */
 export type SessionDismissMap = Record<string, true>;
 
-type AppState = {
+export type AppState = {
   project: ProjectInfo | null;
   projectBinding: OpenProjectBinding | null;
   projectHydrated: boolean;
@@ -618,6 +618,7 @@ type AppState = {
   refreshProject: () => Promise<void>;
   refreshLanes: (options?: {
     includeStatus?: boolean;
+    includeSnapshots?: boolean;
     includeConflictStatus?: boolean;
     includeRebaseSuggestions?: boolean;
     includeAutoRebaseStatus?: boolean;
@@ -632,6 +633,7 @@ export type LaneInspectorTab = "terminals" | "context" | "stack" | "merge";
 
 type LaneRefreshRequest = {
   includeStatus: boolean;
+  includeSnapshots: boolean;
   includeConflictStatus: boolean;
   includeRebaseSuggestions: boolean;
   includeAutoRebaseStatus: boolean;
@@ -647,26 +649,41 @@ let pendingLaneRefreshRequest: LaneRefreshRequest | null = null;
 
 function normalizeLaneRefreshRequest(options?: {
   includeStatus?: boolean;
+  includeSnapshots?: boolean;
   includeConflictStatus?: boolean;
   includeRebaseSuggestions?: boolean;
   includeAutoRebaseStatus?: boolean;
 }): LaneRefreshRequest {
   const includeStatus = options?.includeStatus ?? true;
+  const includeSnapshots = options?.includeSnapshots ?? includeStatus;
   return {
     includeStatus,
-    includeConflictStatus: includeStatus && (options?.includeConflictStatus ?? true),
-    includeRebaseSuggestions: includeStatus && (options?.includeRebaseSuggestions ?? true),
-    includeAutoRebaseStatus: includeStatus && (options?.includeAutoRebaseStatus ?? true),
+    includeSnapshots,
+    includeConflictStatus: includeSnapshots && (options?.includeConflictStatus ?? true),
+    includeRebaseSuggestions: includeSnapshots && (options?.includeRebaseSuggestions ?? true),
+    includeAutoRebaseStatus: includeSnapshots && (options?.includeAutoRebaseStatus ?? true),
   };
 }
 
 function mergeLaneRefreshRequests(current: LaneRefreshRequest, next: LaneRefreshRequest): LaneRefreshRequest {
   return {
     includeStatus: current.includeStatus || next.includeStatus,
+    includeSnapshots: current.includeSnapshots || next.includeSnapshots,
     includeConflictStatus: current.includeConflictStatus || next.includeConflictStatus,
     includeRebaseSuggestions: current.includeRebaseSuggestions || next.includeRebaseSuggestions,
     includeAutoRebaseStatus: current.includeAutoRebaseStatus || next.includeAutoRebaseStatus,
   };
+}
+
+function withPreservedLaneStatus(
+  lane: LaneSummary,
+  previousLanesById: Map<string, LaneSummary>,
+  previousSnapshotsById: Map<string, LaneListSnapshot>,
+): LaneSummary {
+  const previousLane = previousLanesById.get(lane.id) ?? previousSnapshotsById.get(lane.id)?.lane;
+  return previousLane
+    ? { ...lane, status: previousLane.status, parentStatus: previousLane.parentStatus }
+    : lane;
 }
 
 function scheduleProjectHydration(get: () => AppState) {
@@ -951,21 +968,31 @@ export const useAppStore = create<AppState>((set, get) => ({
     const runRefresh = async (currentRequest: LaneRefreshRequest) => {
       const requestedProjectKey = normalizeProjectKey(get().project?.rootPath);
       const token = ++laneRefreshVersion;
-      const laneSnapshots = currentRequest.includeStatus
+      const previousLanesById = new Map(get().lanes.map((lane) => [lane.id, lane] as const));
+      const previousSnapshotsById = new Map(get().laneSnapshots.map((snapshot) => [snapshot.lane.id, snapshot] as const));
+      const rawLaneSnapshots = currentRequest.includeSnapshots
         ? await window.ade.lanes.listSnapshots({
           includeArchived: false,
-          includeStatus: true,
+          includeStatus: currentRequest.includeStatus,
           includeConflictStatus: currentRequest.includeConflictStatus,
           includeRebaseSuggestions: currentRequest.includeRebaseSuggestions,
           includeAutoRebaseStatus: currentRequest.includeAutoRebaseStatus,
         })
         : null;
-      const lanes = laneSnapshots != null
+      const laneSnapshots = rawLaneSnapshots?.map((snapshot) => {
+        if (currentRequest.includeStatus) return snapshot;
+        const lane = withPreservedLaneStatus(snapshot.lane, previousLanesById, previousSnapshotsById);
+        return lane === snapshot.lane ? snapshot : { ...snapshot, lane };
+      }) ?? null;
+      const rawLanes = laneSnapshots != null
         ? laneSnapshots.map((snapshot) => snapshot.lane)
         : await window.ade.lanes.list({
             includeArchived: false,
-            includeStatus: false,
+            includeStatus: currentRequest.includeStatus,
           });
+      const lanes = laneSnapshots != null || currentRequest.includeStatus
+        ? rawLanes
+        : rawLanes.map((lane) => withPreservedLaneStatus(lane, previousLanesById, previousSnapshotsById));
       // Discard stale response: a newer refresh was issued while this one was in-flight
       if (token !== laneRefreshVersion) {
         return;
@@ -993,9 +1020,15 @@ export const useAppStore = create<AppState>((set, get) => ({
             nextLaneWorkViews[scopeKey] = viewState;
           }
         }
+        const lanesById = new Map(lanes.map((lane) => [lane.id, lane] as const));
         const nextSnapshots: LaneListSnapshot[] =
           laneSnapshots ??
-          prev.laneSnapshots.filter((snapshot) => allowed.has(snapshot.lane.id));
+          prev.laneSnapshots
+            .filter((snapshot) => allowed.has(snapshot.lane.id))
+            .map((snapshot) => {
+              const nextLane = lanesById.get(snapshot.lane.id);
+              return nextLane ? { ...snapshot, lane: nextLane } : snapshot;
+            });
         persistWorkViewState({
           workViewByProject: prev.workViewByProject,
           laneWorkViewByScope: nextLaneWorkViews,
@@ -1015,6 +1048,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const activeSatisfies =
         activeRequest != null
         && (activeRequest.includeStatus || !request.includeStatus)
+        && (activeRequest.includeSnapshots || !request.includeSnapshots)
         && (activeRequest.includeConflictStatus || !request.includeConflictStatus)
         && (activeRequest.includeRebaseSuggestions || !request.includeRebaseSuggestions)
         && (activeRequest.includeAutoRebaseStatus || !request.includeAutoRebaseStatus);

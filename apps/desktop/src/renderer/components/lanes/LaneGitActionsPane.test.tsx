@@ -322,11 +322,75 @@ describe("LaneGitActionsPane rescue action", () => {
       });
     });
     await waitFor(() => {
+      expect(mockStoreState.refreshLanes).toHaveBeenCalledWith({
+        includeStatus: true,
+        includeSnapshots: true,
+      });
+    });
+    await waitFor(() => {
       expect(screen.queryByText(".claude/worktrees/fix-session-auto-naming")).toBeNull();
     });
   });
 
+  it("labels and invokes per-file stage and unstage controls", async () => {
+    const user = userEvent.setup();
+
+    renderPane();
+
+    const stageButton = await screen.findByRole("button", { name: "Stage src/file.ts" });
+    expect(stageButton.getAttribute("title")).toBe("Stage src/file.ts");
+    await user.click(stageButton);
+
+    await waitFor(() => {
+      expect(window.ade.git.stageFile).toHaveBeenCalledWith({
+        laneId: "lane-1",
+        path: "src/file.ts",
+      });
+    });
+
+    cleanup();
+    mockChangesByLaneId["lane-1"] = {
+      staged: [{ path: "src/file.ts", kind: "modified" }],
+      unstaged: [],
+    };
+    renderPane();
+
+    const unstageButton = await screen.findByRole("button", { name: "Unstage src/file.ts" });
+    expect(unstageButton.getAttribute("title")).toBe("Unstage src/file.ts");
+    await user.click(unstageButton);
+
+    await waitFor(() => {
+      expect(window.ade.git.unstageFile).toHaveBeenCalledWith({
+        laneId: "lane-1",
+        path: "src/file.ts",
+      });
+    });
+  });
+
+  it("includes untracked files when saving changes to a stash", async () => {
+    const user = userEvent.setup();
+    mockChangesByLaneId["lane-1"] = {
+      staged: [],
+      unstaged: [{ path: "scratch-note.txt", kind: "untracked" }],
+    };
+
+    renderPane();
+
+    await user.click(await screen.findByRole("button", { name: "SAVE CHANGES" }));
+    await user.type(await screen.findByPlaceholderText("Optional note"), "stash untracked audit");
+    await user.click(screen.getByRole("button", { name: "SAVE STASH" }));
+
+    await waitFor(() => {
+      expect(window.ade.git.stashPush).toHaveBeenCalledWith({
+        laneId: "lane-1",
+        message: "stash untracked audit",
+        includeUntracked: true,
+      });
+    });
+  });
+
   it("bounds rendered change rows for large file lists", async () => {
+    const user = userEvent.setup();
     mockChangesByLaneId["lane-1"] = {
       staged: [],
       unstaged: Array.from({ length: 305 }, (_, index) => ({
@@ -341,6 +405,32 @@ describe("LaneGitActionsPane rescue action", () => {
     expect(screen.getByText("src/generated/file-0.ts")).toBeTruthy();
     expect(screen.getByText("Showing first 300 of 305 unstaged files.")).toBeTruthy();
     expect(screen.queryByText("src/generated/file-300.ts")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Show all" }));
+
+    expect(screen.getByText("src/generated/file-300.ts")).toBeTruthy();
+  });
+
+  it("shows all staged change rows on request", async () => {
+    const user = userEvent.setup();
+    mockChangesByLaneId["lane-1"] = {
+      staged: Array.from({ length: 305 }, (_, index) => ({
+        path: `src/staged/file-${index}.ts`,
+        kind: "modified" as const,
+      })),
+      unstaged: [],
+    };
+
+    renderPane();
+
+    expect(await screen.findByText("STAGED (305)")).toBeTruthy();
+    expect(screen.getByText("src/staged/file-0.ts")).toBeTruthy();
+    expect(screen.getByText("Showing first 300 of 305 staged files.")).toBeTruthy();
+    expect(screen.queryByText("src/staged/file-300.ts")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Show all" }));
+
+    expect(screen.getByText("src/staged/file-300.ts")).toBeTruthy();
   });
 
   it("disables the rescue button during an in-progress merge or rebase", async () => {

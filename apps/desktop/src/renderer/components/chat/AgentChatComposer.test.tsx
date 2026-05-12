@@ -182,6 +182,87 @@ describe("AgentChatComposer", () => {
     expect(props.onInterrupt).not.toHaveBeenCalled();
   });
 
+  it("edits a queued steer message", () => {
+    const onEditSteer = vi.fn();
+    renderComposer({
+      pendingSteers: [{ steerId: "steer-1", text: "Queued one" }],
+      onEditSteer,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit queued message" }));
+    fireEvent.change(screen.getByDisplayValue("Queued one"), {
+      target: { value: "Queued one, revised" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /save/i }));
+
+    expect(onEditSteer).toHaveBeenCalledWith("steer-1", "Queued one, revised");
+  });
+
+  it("removes a queued steer message", () => {
+    const onCancelSteer = vi.fn();
+    renderComposer({
+      pendingSteers: [{ steerId: "steer-1", text: "Queued one" }],
+      onCancelSteer,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove queued message" }));
+
+    expect(onCancelSteer).toHaveBeenCalledWith("steer-1");
+  });
+
+  it("accepts the prompt suggestion with Tab", () => {
+    const onDraftChange = vi.fn();
+    renderComposer({
+      turnActive: false,
+      draft: "",
+      promptSuggestion: "Audit the Work tab",
+      onDraftChange,
+    });
+
+    fireEvent.keyDown(screen.getByRole("textbox"), { key: "Tab" });
+
+    expect(onDraftChange).toHaveBeenCalledWith("Audit the Work tab");
+  });
+
+  it("selects a slash command from the command picker", async () => {
+    const onDraftChange = vi.fn();
+    renderComposer({
+      turnActive: false,
+      draft: "",
+      onDraftChange,
+      sdkSlashCommands: [{
+        name: "status",
+        description: "Summarize current state",
+        source: "sdk",
+      }],
+    });
+
+    fireEvent.click(screen.getByLabelText("Open command picker"));
+    fireEvent.click(await screen.findByText("/status"));
+
+    expect(onDraftChange).toHaveBeenCalledWith("/status ");
+  });
+
+  it("dismisses an attachment error from the composer preview row", async () => {
+    const view = renderComposer({
+      turnActive: false,
+      draft: "",
+    });
+    const uploadInput = view.container.querySelector('input[type="file"]') as HTMLInputElement | null;
+    expect(uploadInput).toBeTruthy();
+
+    const oversized = new File(["too large"], "oversized.txt", { type: "text/plain" });
+    Object.defineProperty(oversized, "size", { value: 11 * 1024 * 1024 });
+    fireEvent.change(uploadInput!, { target: { files: [oversized] } });
+
+    expect(await screen.findByText(/Maximum allowed size is 10 MB/)).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Dismiss error"));
+
+    await waitFor(() => {
+      expect(screen.queryByText(/Maximum allowed size is 10 MB/)).toBeNull();
+    });
+  });
+
   it("stop only interrupts the active turn", () => {
     const props = renderComposer();
 

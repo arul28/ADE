@@ -59,6 +59,8 @@ function primaryTabPath(pathname: string): string {
 }
 
 const PROJECT_ROUTE_STORAGE_PREFIX = "ade:project-route:";
+const GITHUB_STATUS_STARTUP_DELAY_MS = 12_000;
+const GITHUB_STATUS_DISMISSED_BANNER_DELAY_MS = 30_000;
 
 function projectRouteStorageKey(projectRoot: string): string {
   return `${PROJECT_ROUTE_STORAGE_PREFIX}${projectRoot}`;
@@ -290,10 +292,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const dismissedGithubBannerRoots = useAppStore((s) => s.dismissedGithubBannerRoots);
   const dismissMissingAiBanner = useAppStore((s) => s.dismissMissingAiBanner);
   const dismissGithubBanner = useAppStore((s) => s.dismissGithubBanner);
+  const currentProjectRoot = project?.rootPath ?? null;
+  const missingAiBannerDismissed = Boolean(
+    currentProjectRoot && dismissedMissingAiBannerRoots[currentProjectRoot],
+  );
+  const githubBannerDismissed = Boolean(
+    currentProjectRoot && dismissedGithubBannerRoots[currentProjectRoot],
+  );
   const [projectMissing, setProjectMissing] = useState(false);
   const [feedbackGenerating, setFeedbackGenerating] = useState(false);
   const previousProjectRootRef = useRef<string | null | undefined>(undefined);
   const lastRouteSaveProjectRootRef = useRef<string | null | undefined>(undefined);
+  const githubStatusProjectRootRef = useRef<string | null>(null);
+  const githubBannerDismissedRef = useRef(false);
+  githubBannerDismissedRef.current = githubBannerDismissed;
   const isOnboardingRoute = location.pathname === "/onboarding";
   const isLanesRoute = location.pathname.startsWith("/lanes");
   const shouldTrackTerminalAttention =
@@ -757,10 +769,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
-    if (!project?.rootPath) {
+    if (!currentProjectRoot) {
       setAiStatus(null);
       setAiStatusLoaded(false);
-      setGithubStatus(null);
       return;
     }
     setAiStatusLoaded(false);
@@ -776,6 +787,26 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         setAiStatusLoaded(true);
       });
     }, 1_000);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(aiTimer);
+    };
+  }, [currentProjectRoot]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!currentProjectRoot) {
+      githubStatusProjectRootRef.current = null;
+      setGithubStatus(null);
+      return;
+    }
+    if (githubStatusProjectRootRef.current !== currentProjectRoot) {
+      githubStatusProjectRootRef.current = currentProjectRoot;
+      setGithubStatus(null);
+    }
+    const delayMs = githubBannerDismissedRef.current
+      ? GITHUB_STATUS_DISMISSED_BANNER_DELAY_MS
+      : GITHUB_STATUS_STARTUP_DELAY_MS;
     const githubTimer = window.setTimeout(() => {
       void window.ade.github.getStatus().then((status) => {
         if (cancelled) return;
@@ -784,13 +815,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         if (cancelled) return;
         setGithubStatus(null);
       });
-    }, 4_000);
+    }, delayMs);
     return () => {
       cancelled = true;
-      window.clearTimeout(aiTimer);
       window.clearTimeout(githubTimer);
     };
-  }, [project?.rootPath]);
+  }, [currentProjectRoot]);
 
   // Refresh the GitHub banner the moment Settings saves/clears a token, so the
   // shell does not lag behind the Settings UI (the original "banner stays up
@@ -848,13 +878,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return Boolean(runtimeOrLocal || (aiStatus.detectedAuth?.length ?? 0) > 0);
   }, [aiStatus]);
 
-  const currentProjectRoot = project?.rootPath ?? null;
-  const missingAiBannerDismissed = Boolean(
-    currentProjectRoot && dismissedMissingAiBannerRoots[currentProjectRoot],
-  );
-  const githubBannerDismissed = Boolean(
-    currentProjectRoot && dismissedGithubBannerRoots[currentProjectRoot],
-  );
   const commandPaletteBinding = useMemo(
     () => getEffectiveBinding(keybindings, "commandPalette.open", "Mod+K"),
     [keybindings],

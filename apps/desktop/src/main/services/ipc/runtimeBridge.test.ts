@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IPC } from "../../../shared/ipc";
 import type {
   OpenProjectBinding,
@@ -22,14 +22,39 @@ const remoteCallMachineForTargetMock = vi.hoisted(() => vi.fn());
 const remoteDisconnectMock = vi.hoisted(() => vi.fn());
 
 vi.mock("electron", () => ({
+  app: {
+    getPath: vi.fn(() => "/tmp"),
+    getVersion: vi.fn(() => "1.0.0"),
+    isPackaged: false,
+  },
   BrowserWindow: {
     fromWebContents: browserWindowFromWebContents,
     getAllWindows: browserWindowGetAllWindows,
+  },
+  clipboard: {
+    readImage: vi.fn(() => ({ isEmpty: () => true })),
+    readText: vi.fn(() => ""),
+    writeText: vi.fn(),
+  },
+  desktopCapturer: {
+    getSources: vi.fn(async () => []),
+  },
+  dialog: {
+    showOpenDialog: vi.fn(),
   },
   ipcMain: {
     handle: vi.fn((channel: string, handler: (...args: any[]) => unknown) => {
       ipcHandlers.set(channel, handler);
     }),
+    on: vi.fn(),
+  },
+  nativeImage: {
+    createFromPath: vi.fn(() => ({ isEmpty: () => true })),
+  },
+  shell: {
+    openExternal: vi.fn(),
+    openPath: vi.fn(),
+    showItemInFolder: vi.fn(),
   },
 }));
 
@@ -62,6 +87,7 @@ vi.mock("../git/git", () => ({
 }));
 
 import { registerRuntimeBridge } from "./runtimeBridge";
+import { registerIpc } from "./registerIpc";
 
 const target: RemoteRuntimeTarget = {
   id: "target-1",
@@ -99,6 +125,7 @@ function localBinding(rootPath = "/repo"): OpenProjectBinding {
 
 describe("registerRuntimeBridge", () => {
   beforeEach(() => {
+    delete process.env.ADE_DISABLE_LOCAL_RUNTIME_DAEMON;
     ipcHandlers.clear();
     browserWindowFromWebContents.mockReset();
     browserWindowGetAllWindows.mockReset().mockReturnValue([]);
@@ -371,5 +398,119 @@ describe("registerRuntimeBridge", () => {
       },
       { retryOnConnectionError: false },
     );
+  });
+});
+
+describe("registerIpc sync bridge", () => {
+  beforeEach(() => {
+    delete process.env.ADE_DISABLE_LOCAL_RUNTIME_DAEMON;
+    ipcHandlers.clear();
+    browserWindowFromWebContents.mockReset().mockReturnValue({ id: 7 });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("returns an unavailable sync snapshot without probing local runtime when the daemon is disabled", async () => {
+    process.env.ADE_DISABLE_LOCAL_RUNTIME_DAEMON = "1";
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-11T12:00:00.000Z"));
+    const localRuntimeConnectionPool = {
+      syncStatusForRoot: vi.fn(),
+      callSyncForRoot: vi.fn(),
+    };
+    registerIpc({
+      getCtx: () => ({
+        syncService: null,
+      }) as any,
+      getWindowSession: () => ({
+        windowId: 7,
+        project: { rootPath: "/repo", displayName: "Repo" } as any,
+        binding: localBinding("/repo"),
+      }),
+      localRuntimeConnectionPool: localRuntimeConnectionPool as any,
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    const snapshot = await ipcHandlers.get(IPC.syncGetStatus)?.(
+      eventForSender(),
+      { includeTransferReadiness: true },
+    ) as any;
+    vi.setSystemTime(new Date("2026-05-11T12:00:05.000Z"));
+    const secondSnapshot = await ipcHandlers.get(IPC.syncGetStatus)?.(
+      eventForSender(),
+      { includeTransferReadiness: true },
+    ) as any;
+    const devices = await ipcHandlers.get(IPC.syncListDevices)?.(
+      eventForSender(),
+    ) as any[];
+    const readiness = await ipcHandlers.get(IPC.syncGetTransferReadiness)?.(
+      eventForSender(),
+    ) as any;
+    const pin = await ipcHandlers.get(IPC.syncGetPin)?.(eventForSender()) as any;
+
+    expect(localRuntimeConnectionPool.syncStatusForRoot).not.toHaveBeenCalled();
+    expect(secondSnapshot).not.toBe(snapshot);
+    expect(snapshot.mode).toBe("standalone");
+    expect(snapshot.localDevice.createdAt).toBe("2026-05-11T12:00:00.000Z");
+    expect(secondSnapshot.localDevice.updatedAt).toBe("2026-05-11T12:00:05.000Z");
+    expect(secondSnapshot.localDevice.lastSeenAt).toBe("2026-05-11T12:00:05.000Z");
+    expect(snapshot.localDevice.metadata).toEqual({
+      unavailableReason: "local_runtime_daemon_disabled",
+    });
+    expect(snapshot.transferReadiness.ready).toBe(false);
+    expect(snapshot.transferReadiness.blockers[0]).toEqual({
+      kind: "managed_process",
+      id: "local-runtime-disabled",
+      label: "Sync unavailable",
+      detail: "Sync service unavailable in local runtime disabled mode.",
+    });
+    expect(snapshot.client.message).toBe("Sync service unavailable in local runtime disabled mode.");
+    expect(devices[0]).toMatchObject({
+      deviceId: "local-runtime-disabled",
+      isLocal: true,
+      isBrain: false,
+      connectionState: "disconnected",
+    });
+    expect(readiness).toEqual(snapshot.transferReadiness);
+    expect(pin).toEqual({ pin: null });
+  });
+
+  it("drops active lane presence updates instead of probing unavailable sync services when the daemon is disabled", async () => {
+    process.env.ADE_DISABLE_LOCAL_RUNTIME_DAEMON = "1";
+    const localRuntimeConnectionPool = {
+      callSyncForRoot: vi.fn(),
+    };
+    const resolveSyncService = vi.fn(async () => null);
+    registerIpc({
+      getCtx: () => ({
+        syncService: null,
+      }) as any,
+      resolveSyncService,
+      getWindowSession: () => ({
+        windowId: 7,
+        project: { rootPath: "/repo", displayName: "Repo" } as any,
+        binding: localBinding("/repo"),
+      }),
+      localRuntimeConnectionPool: localRuntimeConnectionPool as any,
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.syncSetActiveLanePresence)?.(
+        eventForSender(),
+        { laneIds: ["lane-1"] },
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(localRuntimeConnectionPool.callSyncForRoot).not.toHaveBeenCalled();
+    expect(resolveSyncService).toHaveBeenCalledTimes(1);
   });
 });

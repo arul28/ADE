@@ -18,7 +18,9 @@ The wire transport is the same JSON-RPC the local daemon answers. The remote-run
   confirmation dialog before opening a remote project, surfaces local matches
   with uncommitted changes.
 - `apps/desktop/src/preload/preload.ts` — routes runtime-backed renderer APIs to
-  local or remote JSON-RPC actions based on the active project binding.
+  local or remote JSON-RPC actions based on the active project binding. When
+  `ADE_DISABLE_LOCAL_RUNTIME_DAEMON=1`, local-bound windows skip local runtime
+  actions and event polling and use guarded Electron IPC fallbacks.
 - `apps/ade-cli/src/multiProjectRpcServer.ts` — runtime-level project catalog
   and sync methods plus project-scoped action dispatch.
 - `apps/ade-cli/src/services/projects/` — machine project registry and
@@ -91,7 +93,7 @@ After install, the headless machine can already serve clients. Desktop ADE on a 
 
 Remote project bindings route lanes, agent chat, PTYs, terminal IO, file operations, file-watch notifications, git actions, PR actions, PR queue automation, PR AI conflict-resolution sessions, PR issue-resolution launch flows, Path to Merge orchestration, AI PR summaries, issue inventory, and event streaming through the remote runtime. Agent CLI failures (Claude / Codex / Cursor / Droid not installed or not authenticated) surface as inline `AgentCliAuthCard` cards in chat; the install / login buttons open a tracked terminal in the active runtime, so a remote project runs the install or login command on the remote machine.
 
-Local project bindings prefer the local `ade serve` daemon for the same surfaces — agent chat, session history, PTYs, terminal reads/writes, file operations and watchers, diffs, lanes, PRs, PR queues, PR issue-resolution launch flows, Path to Merge, PR AI conflict-resolution sessions, issue inventory, tests, processes, project config, and most git operations. The legacy in-process Electron services remain only as a guarded fallback while the last IPC surfaces are migrated.
+Local project bindings prefer the local `ade serve` daemon for the same surfaces — agent chat, session history, PTYs, terminal reads/writes, file operations and watchers, diffs, lanes, PRs, PR queues, PR issue-resolution launch flows, Path to Merge, PR AI conflict-resolution sessions, issue inventory, tests, processes, project config, and most git operations. The legacy in-process Electron services remain only as a guarded fallback while the last IPC surfaces are migrated. Setting `ADE_DISABLE_LOCAL_RUNTIME_DAEMON=1` disables that local daemon path for development/diagnostics: preload avoids local runtime action calls and the event pump, and desktop sync IPC reports a standalone unavailable snapshot instead of starting the daemon.
 
 Memory and embedding features are disabled for remote runtimes in v1. The static remote runtime does not bundle `onnxruntime-node`.
 
@@ -99,7 +101,7 @@ Memory and embedding features are disabled for remote runtimes in v1. The static
 
 iOS does not SSH into a machine. The phone connects to the runtime daemon's sync WebSocket advertised on the LAN or over a Tailscale tailnet. Install Tailscale on the phone and the ADE machine when they are not on the same local network.
 
-On desktop, phone pairing and sync status are managed by the local `ade serve` daemon. The legacy in-process desktop sync host is disabled by default and can be re-enabled only for diagnostics with `ADE_ENABLE_DESKTOP_SYNC_HOST=1`.
+On desktop, phone pairing and sync status are managed by the local `ade serve` daemon. If the local daemon is disabled with `ADE_DISABLE_LOCAL_RUNTIME_DAEMON=1`, sync status remains visible as a standalone unavailable snapshot and lane-presence updates no-op. The legacy in-process desktop sync host is disabled by default and can be re-enabled only for diagnostics with `ADE_ENABLE_DESKTOP_SYNC_HOST=1`.
 
 ## Troubleshooting
 

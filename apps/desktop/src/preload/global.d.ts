@@ -290,6 +290,7 @@ import type {
   GitStashSummary,
   GitUpstreamSyncStatus,
   GitSyncArgs,
+  GitHubRepoRef,
   GitHubStatus,
   CreatePrFromLaneArgs,
   CreateQueuePrsArgs,
@@ -787,7 +788,7 @@ declare global {
         ) => void;
       };
       project: {
-        openRepo: () => Promise<ProjectInfo | null>;
+        openRepo: (args?: { rootPath?: string }) => Promise<ProjectInfo | null>;
         chooseDirectory: (args?: {
           title?: string;
           defaultPath?: string;
@@ -1907,6 +1908,9 @@ declare global {
       };
       github: {
         getStatus: (opts?: { forceRefresh?: boolean }) => Promise<GitHubStatus>;
+        getRemoteStatus: (opts?: {
+          forceRefresh?: boolean;
+        }) => Promise<{ repo: GitHubRepoRef | null; hasOrigin: boolean }>;
         setToken: (token: string) => Promise<GitHubStatus>;
         clearToken: () => Promise<GitHubStatus>;
         detectRepo: () => Promise<{ owner: string; name: string } | null>;
@@ -2395,6 +2399,28 @@ declare global {
       updateQuitAndInstall: () => Promise<boolean>;
       updateDismissInstalledNotice: () => Promise<void>;
       onUpdateEvent: (cb: (snapshot: AutoUpdateSnapshot) => void) => () => void;
+      perf: {
+        getConfig: () => Promise<{
+          active: boolean;
+          runId: string | null;
+          scenario: string | null;
+          initialRoute: string | null;
+          projectRoot: string | null;
+          allowClaude: boolean;
+          modelOverride: string | null;
+        }>;
+        recordEvent: (event: {
+          kind: string;
+          ts?: number;
+          [key: string]: unknown;
+        }) => Promise<{ ok: boolean; reason?: string }>;
+        scenarioComplete: (args: {
+          scenario: string;
+          ok: boolean;
+          smokeFailures?: string[];
+        }) => Promise<{ ok: boolean; reason?: string }>;
+        finalize: () => Promise<{ ok: boolean; reason?: string; summary?: unknown }>;
+      };
     };
   }
 }

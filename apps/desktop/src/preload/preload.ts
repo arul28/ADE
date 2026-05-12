@@ -207,6 +207,7 @@ import type {
   GitStashSummary,
   GitUpstreamSyncStatus,
   GitSyncArgs,
+  GitHubRepoRef,
   GitHubStatus,
   CreatePrFromLaneArgs,
   DeletePrArgs,
@@ -778,8 +779,10 @@ function createShortIpcCache<T>(
 
       const req = loader()
         .then((next) => {
-          value = next;
-          expiresAt = Date.now() + ttlMs;
+          if (promise === req) {
+            value = next;
+            expiresAt = Date.now() + ttlMs;
+          }
           return next;
         })
         .finally(() => {
@@ -935,6 +938,10 @@ const githubStatusCache = createShortIpcCache<GitHubStatus>(
   () => ipcRenderer.invoke(IPC.githubGetStatus, {}),
   30_000,
 );
+const githubRemoteStatusCache = createShortIpcCache<{
+  repo: GitHubRepoRef | null;
+  hasOrigin: boolean;
+}>(() => ipcRenderer.invoke(IPC.githubGetRemoteStatus), 30_000);
 
 const lanesListCache = createKeyedShortIpcCache<LaneSummary[]>(
   (key) =>
@@ -1049,11 +1056,14 @@ const gitBranchesCache = createKeyedShortIpcCache<GitBranchSummary[]>(
   2_000,
 );
 
+const localRuntimeDaemonDisabled =
+  process.env.ADE_DISABLE_LOCAL_RUNTIME_DAEMON === "1";
+
 const allowLocalRuntimeFallback =
   process.env.ADE_LOCAL_RUNTIME_FALLBACK !== "0" &&
   (
     process.env.ADE_LOCAL_RUNTIME_FALLBACK === "1" ||
-    process.env.ADE_DISABLE_LOCAL_RUNTIME_DAEMON === "1" ||
+    localRuntimeDaemonDisabled ||
     process.env.ADE_PACKAGE_CHANNEL === "alpha"
   );
 
@@ -1082,7 +1092,10 @@ function rememberProjectBinding(binding: OpenProjectBinding | null): void {
     projectBindingGeneration += 1;
     resetRemoteRuntimeEventDedup(nextKey);
   }
-  if (binding?.kind === "remote" || binding?.kind === "local") {
+  if (
+    binding?.kind === "remote" ||
+    (binding?.kind === "local" && !localRuntimeDaemonDisabled)
+  ) {
     ensureRemoteRuntimeEventPump();
   }
 }
@@ -1148,6 +1161,7 @@ async function callLocalProjectActionIfBound<T>(
   action: string,
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
 ): Promise<{ handled: true; result: T } | { handled: false }> {
+  if (localRuntimeDaemonDisabled) return { handled: false };
   const binding = await getLocalProjectBinding();
   if (!binding) return { handled: false };
   try {
@@ -1214,6 +1228,7 @@ async function callLocalProjectSyncIfBound<T>(
   method: string,
   params: Record<string, unknown> = {},
 ): Promise<{ handled: true; result: T } | { handled: false }> {
+  if (localRuntimeDaemonDisabled) return { handled: false };
   const binding = await getLocalProjectBinding();
   if (!binding) return { handled: false };
   try {
@@ -1396,7 +1411,11 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
   let nextDelayMs: number | null = null;
   try {
     const binding = await getProjectRuntimeBinding();
-    if (!binding || (binding.kind !== "remote" && binding.kind !== "local")) {
+    if (
+      !binding ||
+      (binding.kind !== "remote" && binding.kind !== "local") ||
+      (binding.kind === "local" && localRuntimeDaemonDisabled)
+    ) {
       remoteRuntimeEventCursor = 0;
       remoteRuntimeEventBindingKey = null;
       remoteRuntimeEventGeneration = projectBindingGeneration;
@@ -2247,6 +2266,8 @@ function clearGitReadCaches(): void {
 
 function clearProjectScopedReadCaches(): void {
   clearGitReadCaches();
+  githubStatusCache.clear();
+  githubRemoteStatusCache.clear();
   projectConfigSnapshotCache.clear();
   agentChatSummaryCache.clear();
   computerUseOwnerSnapshotCache.clear();
@@ -2443,10 +2464,10 @@ contextBridge.exposeInMainWorld("ade", {
     ): void => ipcRenderer.send(IPC.appLogDebugEvent, { event, payload }),
   },
   project: {
-    openRepo: async (): Promise<ProjectInfo | null> =>
+    openRepo: async (args?: { rootPath?: string }): Promise<ProjectInfo | null> =>
       clearAround(
         () => clearProjectScopedReadCaches(),
-        () => ipcRenderer.invoke(IPC.projectOpenRepo),
+        () => ipcRenderer.invoke(IPC.projectOpenRepo, args ?? {}),
       ),
     chooseDirectory: async (
       args: { title?: string; defaultPath?: string } = {},
@@ -6623,9 +6644,28 @@ contextBridge.exposeInMainWorld("ade", {
             : githubStatusCache.get(),
       );
     },
+    getRemoteStatus: async (opts?: {
+      forceRefresh?: boolean;
+    }): Promise<{ repo: GitHubRepoRef | null; hasOrigin: boolean }> => {
+      return callProjectRuntimeActionOr(
+        "github",
+        "getRemoteStatus",
+        { args: opts ?? {} },
+        () =>
+          opts?.forceRefresh
+            ? clearAround(
+                () => githubRemoteStatusCache.clear(),
+                () => ipcRenderer.invoke(IPC.githubGetRemoteStatus, opts ?? {}),
+              )
+            : githubRemoteStatusCache.get(),
+      );
+    },
     setToken: async (token: string): Promise<GitHubStatus> =>
       clearAround(
-        () => githubStatusCache.clear(),
+        () => {
+          githubStatusCache.clear();
+          githubRemoteStatusCache.clear();
+        },
         () =>
           callProjectRuntimeActionOr("github", "setToken", { arg: token }, () =>
             ipcRenderer.invoke(IPC.githubSetToken, { token }),
@@ -6633,7 +6673,10 @@ contextBridge.exposeInMainWorld("ade", {
       ),
     clearToken: async (): Promise<GitHubStatus> =>
       clearAround(
-        () => githubStatusCache.clear(),
+        () => {
+          githubStatusCache.clear();
+          githubRemoteStatusCache.clear();
+        },
         () =>
           callProjectRuntimeActionOr("github", "clearToken", {}, () =>
             ipcRenderer.invoke(IPC.githubClearToken),
@@ -6673,7 +6716,10 @@ contextBridge.exposeInMainWorld("ade", {
       input: PublishProjectInput,
     ): Promise<PublishProjectResult> =>
       clearAround(
-        () => githubStatusCache.clear(),
+        () => {
+          githubStatusCache.clear();
+          githubRemoteStatusCache.clear();
+        },
         () =>
           callProjectRuntimeActionOr(
             "github",
@@ -6688,6 +6734,7 @@ contextBridge.exposeInMainWorld("ade", {
         payload: GitHubStatus,
       ) => {
         githubStatusCache.clear();
+        githubRemoteStatusCache.clear();
         cb(payload);
       };
       ipcRenderer.on(IPC.githubStatusChanged, listener);
@@ -8397,5 +8444,16 @@ contextBridge.exposeInMainWorld("ade", {
     ) => cb(payload);
     ipcRenderer.on(IPC.updateEvent, listener);
     return () => ipcRenderer.removeListener(IPC.updateEvent, listener);
+  },
+  perf: {
+    getConfig: () => ipcRenderer.invoke(IPC.perfGetConfig),
+    recordEvent: (event: { kind: string; ts?: number; [k: string]: unknown }) =>
+      ipcRenderer.invoke(IPC.perfRecordEvent, event),
+    scenarioComplete: (args: {
+      scenario: string;
+      ok: boolean;
+      smokeFailures?: string[];
+    }) => ipcRenderer.invoke(IPC.perfScenarioComplete, args),
+    finalize: () => ipcRenderer.invoke(IPC.perfFinalize),
   },
 });
