@@ -447,13 +447,20 @@ describe("registerIpc sync bridge", () => {
     ) as any;
 
     expect(localRuntimeConnectionPool.syncStatusForRoot).not.toHaveBeenCalled();
-    expect(secondSnapshot).toBe(snapshot);
+    expect(secondSnapshot).not.toBe(snapshot);
     expect(snapshot.mode).toBe("standalone");
     expect(snapshot.localDevice.createdAt).toBe("2026-05-11T12:00:00.000Z");
-    expect(secondSnapshot.localDevice.updatedAt).toBe(snapshot.localDevice.updatedAt);
-    expect(secondSnapshot.localDevice.lastSeenAt).toBe(snapshot.localDevice.lastSeenAt);
+    expect(secondSnapshot.localDevice.updatedAt).toBe("2026-05-11T12:00:05.000Z");
+    expect(secondSnapshot.localDevice.lastSeenAt).toBe("2026-05-11T12:00:05.000Z");
     expect(snapshot.localDevice.metadata).toEqual({
       unavailableReason: "local_runtime_daemon_disabled",
+    });
+    expect(snapshot.transferReadiness.ready).toBe(false);
+    expect(snapshot.transferReadiness.blockers[0]).toEqual({
+      kind: "managed_process",
+      id: "local-runtime-disabled",
+      label: "Sync unavailable",
+      detail: "Sync service unavailable in local runtime disabled mode.",
     });
     expect(snapshot.client.message).toBe("Sync service unavailable in local runtime disabled mode.");
   });
