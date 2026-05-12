@@ -2567,7 +2567,7 @@ function renderEvent(
       return <MinimalMemoryNotice message={event.message} detail={event.detail} />;
     }
 
-    if (hasDetail && inferredSeverity !== "error") {
+    if (hasDetail && event.noticeKind === "rate_limit" && inferredSeverity !== "error") {
       const detail = typeof event.detail === "string"
         ? event.detail
         : typeof event.detail === "object" && event.detail && "summary" in event.detail && typeof event.detail.summary === "string"

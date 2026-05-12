@@ -564,6 +564,25 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.queryByRole("button")).toBeNull();
   });
 
+  it("keeps non-rate-limit notice details in collapsible cards", () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "system_notice",
+          noticeKind: "warning",
+          message: "Hook stderr captured",
+          detail: "Long hook output remains behind a disclosure.",
+        },
+      },
+    ]);
+
+    expect(screen.getByText("warning")).toBeTruthy();
+    expect(screen.getByText("Hook stderr captured")).toBeTruthy();
+    expect(screen.getByRole("button")).toBeTruthy();
+  });
+
   // Work-log grouping, file-change grouping, and overflow-expand tests
   // removed: they tested old ChatWorkLogBlock rendering (Show N earlier,
   // specific label text) which changes with every UI iteration.
