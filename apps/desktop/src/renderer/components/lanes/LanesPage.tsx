@@ -1389,14 +1389,13 @@ export function LanesPage() {
 
     void (async () => {
       const errors: string[] = [];
-      const deleteLaneById = new Map(actionable.map((lane) => [lane.id, lane] as const));
       const blockedLaneIds = new Set<string>();
       const hasBlockedSelectedDescendant = (laneId: string): boolean => {
         for (const blockedLaneId of blockedLaneIds) {
-          let cursor = deleteLaneById.get(blockedLaneId) ?? null;
+          let cursor = lanesById.get(blockedLaneId) ?? null;
           while (cursor?.parentLaneId) {
             if (cursor.parentLaneId === laneId) return true;
-            cursor = deleteLaneById.get(cursor.parentLaneId) ?? null;
+            cursor = lanesById.get(cursor.parentLaneId) ?? null;
           }
         }
         return false;

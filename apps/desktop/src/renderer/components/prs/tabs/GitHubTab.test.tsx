@@ -413,6 +413,34 @@ describe("GitHubTab", () => {
     expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps loaded closed history during manual sync after returning to the open filter", async () => {
+    const user = userEvent.setup();
+    renderTab();
+
+    await waitFor(() => {
+      expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: false });
+    });
+
+    await user.click(screen.getByRole("button", { name: /^merged/i }));
+    await waitFor(() => {
+      expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({
+        force: false,
+        includeExternalClosed: true,
+      });
+    });
+
+    (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockClear();
+    await user.click(screen.getByRole("button", { name: /^open/i }));
+    await user.click(screen.getByRole("button", { name: /^sync$/i }));
+
+    await waitFor(() => {
+      expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({
+        force: true,
+        includeExternalClosed: true,
+      });
+    });
+  });
+
   it("filters by ADE scope showing only linked PRs", async () => {
     const snapshotWithUnlinked: GitHubPrSnapshot = {
       ...snapshot,

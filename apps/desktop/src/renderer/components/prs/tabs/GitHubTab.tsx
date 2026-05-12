@@ -36,6 +36,7 @@ type GitHubFilter = "open" | "closed" | "merged" | "all";
 type ScopeFilter = "all" | "ade" | "external";
 
 type GitHubTabWarmCache = {
+  projectRoot: string;
   snapshot: GitHubPrSnapshot | null;
   filter: GitHubFilter;
   selectedItemId: string | null;
@@ -47,13 +48,16 @@ type GitHubTabWarmCache = {
 
 let githubTabWarmCache: GitHubTabWarmCache | null = null;
 
-function readGitHubTabWarmCache(): GitHubTabWarmCache | null {
+function readGitHubTabWarmCache(projectRoot: string | null): GitHubTabWarmCache | null {
   if (GITHUB_TAB_CACHE_DISABLED) return null;
+  if (!projectRoot) return null;
+  if (githubTabWarmCache?.projectRoot !== projectRoot) return null;
   return githubTabWarmCache;
 }
 
 function writeGitHubTabWarmCache(cache: GitHubTabWarmCache): void {
   if (GITHUB_TAB_CACHE_DISABLED) return;
+  if (!cache.projectRoot) return;
   githubTabWarmCache = cache;
 }
 
@@ -407,8 +411,9 @@ export function GitHubTab({
     loading: prsContextLoading,
     setViewerLogin: setContextViewerLogin,
   } = usePrs();
+  const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
 
-  const initialWarmCacheRef = React.useRef<GitHubTabWarmCache | null>(readGitHubTabWarmCache());
+  const initialWarmCacheRef = React.useRef<GitHubTabWarmCache | null>(readGitHubTabWarmCache(projectRoot));
   const [snapshot, setSnapshot] = React.useState<GitHubPrSnapshot | null>(
     () => initialWarmCacheRef.current?.snapshot ?? null,
   );
@@ -435,10 +440,11 @@ export function GitHubTab({
   const lastPrFingerprintRef = React.useRef<string>("");
   const hotRefreshUntilRef = React.useRef(0);
   const hotRefreshTimerRef = React.useRef<number | null>(null);
-  const inFlightSnapshotRef = React.useRef<Promise<GitHubPrSnapshot> | null>(null);
+  const inFlightSnapshotRef = React.useRef<{ request: Promise<GitHubPrSnapshot>; includeExternalClosed: boolean } | null>(null);
   const lastSnapshotLoadedAtRef = React.useRef(initialWarmCacheRef.current?.cachedAt ?? 0);
   const filterRef = React.useRef(filter);
   const externalHistoryLoadedRef = React.useRef(externalHistoryLoaded);
+  const projectRootRef = React.useRef(projectRoot);
   const listRef = React.useRef<HTMLDivElement | null>(null);
   snapshotRef.current = snapshot;
   filterRef.current = filter;
@@ -458,21 +464,25 @@ export function GitHubTab({
     silent?: boolean;
     includeExternalClosed?: boolean;
   }) => {
-    if (inFlightSnapshotRef.current) return inFlightSnapshotRef.current;
+    const includeExternalClosed = options?.includeExternalClosed === true;
+    const inFlightSnapshot = inFlightSnapshotRef.current;
+    if (inFlightSnapshot && (!includeExternalClosed || inFlightSnapshot.includeExternalClosed)) {
+      return inFlightSnapshot.request;
+    }
     if (!options?.silent) {
       setLoading((prev) => options?.force || snapshotRef.current == null ? true : prev);
     }
     setError(null);
-    const includeExternalClosed = options?.includeExternalClosed === true;
-    const pending = window.ade.prs.getGitHubSnapshot({
+    const requestProjectRoot = projectRootRef.current;
+    let pending!: Promise<GitHubPrSnapshot>;
+    pending = window.ade.prs.getGitHubSnapshot({
       force: options?.force === true,
       ...(includeExternalClosed ? { includeExternalClosed: true } : {}),
     })
       .then((next) => {
+        if (projectRootRef.current !== requestProjectRoot) return next;
         setSnapshot(next);
-        if (includeExternalClosed) {
-          setExternalHistoryLoaded(true);
-        }
+        setExternalHistoryLoaded(includeExternalClosed);
         lastSnapshotLoadedAtRef.current = Date.now();
         if (next.viewerLogin) {
           setContextViewerLogin?.(next.viewerLogin);
@@ -480,18 +490,42 @@ export function GitHubTab({
         return next;
       })
       .catch((err) => {
-        setError(err instanceof Error ? err.message : String(err));
+        if (projectRootRef.current === requestProjectRoot) {
+          setError(err instanceof Error ? err.message : String(err));
+        }
         return snapshotRef.current as GitHubPrSnapshot;
       })
       .finally(() => {
-        inFlightSnapshotRef.current = null;
-        if (!options?.silent) {
+        if (inFlightSnapshotRef.current?.request === pending) {
+          inFlightSnapshotRef.current = null;
+        }
+        if (!options?.silent && projectRootRef.current === requestProjectRoot) {
           setLoading(false);
         }
       });
-    inFlightSnapshotRef.current = pending;
+    inFlightSnapshotRef.current = { request: pending, includeExternalClosed };
     return pending;
   }, [setContextViewerLogin]);
+
+  React.useEffect(() => {
+    if (projectRootRef.current === projectRoot) return;
+    projectRootRef.current = projectRoot;
+    inFlightSnapshotRef.current = null;
+    const warmCache = readGitHubTabWarmCache(projectRoot);
+    initialWarmCacheRef.current = warmCache;
+    setSnapshot(warmCache?.snapshot ?? null);
+    setLoading(!warmCache?.snapshot);
+    setError(null);
+    setFilter(warmCache?.filter ?? "open");
+    setSelectedItemId(warmCache?.selectedItemId ?? null);
+    setScopeFilter(warmCache?.scopeFilter ?? "all");
+    setSearchQuery(warmCache?.searchQuery ?? "");
+    setExternalHistoryLoaded(warmCache?.externalHistoryLoaded ?? false);
+    lastSnapshotLoadedAtRef.current = warmCache?.cachedAt ?? 0;
+    if (!warmCache?.snapshot) {
+      void loadSnapshot({ silent: false });
+    }
+  }, [loadSnapshot, projectRoot]);
 
   React.useEffect(() => {
     if (snapshot?.viewerLogin) {
@@ -533,7 +567,9 @@ export function GitHubTab({
   }, [loadSnapshot]);
 
   React.useEffect(() => {
+    if (!projectRoot) return;
     writeGitHubTabWarmCache({
+      projectRoot,
       snapshot,
       filter,
       selectedItemId,
@@ -542,7 +578,7 @@ export function GitHubTab({
       externalHistoryLoaded,
       cachedAt: Date.now(),
     });
-  }, [externalHistoryLoaded, filter, scopeFilter, searchQuery, selectedItemId, snapshot]);
+  }, [externalHistoryLoaded, filter, projectRoot, scopeFilter, searchQuery, selectedItemId, snapshot]);
 
   React.useEffect(() => {
     if (filter === "open" || externalHistoryLoaded) return;
@@ -572,7 +608,13 @@ export function GitHubTab({
     lastPrFingerprintRef.current = nextFingerprint;
     if (Date.now() - lastSnapshotLoadedAtRef.current < GITHUB_TAB_SNAPSHOT_FRESH_MS) return;
     startHotRefreshWindow();
-    void loadSnapshot({ force: true, silent: true });
+    const includeExternalClosed =
+      externalHistoryLoadedRef.current || filterRef.current !== "open";
+    void loadSnapshot({
+      force: true,
+      silent: true,
+      ...(includeExternalClosed ? { includeExternalClosed: true } : {}),
+    });
   }, [loadSnapshot, prs, prsContextLoading, startHotRefreshWindow]);
 
   const matchesSearch = React.useCallback((item: GitHubPrListItem) => {
@@ -687,14 +729,19 @@ export function GitHubTab({
     setSyncing(true);
     startHotRefreshWindow();
     try {
+      const includeExternalClosed =
+        externalHistoryLoadedRef.current || filterRef.current !== "open";
       await Promise.all([
         onRefreshAll().catch(() => {}),
-        loadSnapshot({ force: true, includeExternalClosed: filter !== "open" }),
+        loadSnapshot({
+          force: true,
+          ...(includeExternalClosed ? { includeExternalClosed: true } : {}),
+        }),
       ]);
     } finally {
       setSyncing(false);
     }
-  }, [filter, loadSnapshot, onRefreshAll, startHotRefreshWindow]);
+  }, [loadSnapshot, onRefreshAll, startHotRefreshWindow]);
 
   const handleSelectItem = React.useCallback((item: GitHubPrListItem) => {
     hasInitializedSelectionRef.current = true;

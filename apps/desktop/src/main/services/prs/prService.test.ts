@@ -192,6 +192,7 @@ function buildService(opts: BuildServiceOpts = {}) {
   const db = opts.db ?? makeMockDb();
   const githubService = opts.githubService ?? makeGithubService();
   const laneService = opts.laneService ?? makeLaneService();
+  const logger = makeLogger();
 
   mockGit.runGit.mockImplementation(async (args: unknown[]) => {
     const command = Array.isArray(args) ? args[0] : null;
@@ -209,7 +210,7 @@ function buildService(opts: BuildServiceOpts = {}) {
 
   const service = createPrService({
     db,
-    logger: makeLogger(),
+    logger,
     projectId: "proj-1",
     projectRoot: "/tmp/test-project",
     laneService,
@@ -220,7 +221,7 @@ function buildService(opts: BuildServiceOpts = {}) {
     openExternal: vi.fn(async () => {}),
   });
 
-  return { service, db, githubService, laneService };
+  return { service, db, githubService, laneService, logger };
 }
 
 // ---------------------------------------------------------------------------
@@ -439,6 +440,58 @@ describe("prService.getGithubSnapshot", () => {
     expect(fullHistoryExternalCall?.[0].query.q).not.toContain("is:open");
   });
 
+  it("does not reuse or overwrite full-history snapshots with narrower in-flight requests", async () => {
+    let resolveOpenRepo!: (value: unknown) => void;
+    const openRepoRequest = new Promise<unknown>((resolve) => {
+      resolveOpenRepo = resolve;
+    });
+    let repoCalls = 0;
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => ({
+        tokenStored: true,
+        repo: REPO,
+        userLogin: "octocat",
+      })),
+      apiRequest: vi.fn(async (args: { path: string; query?: { q?: string } }) => {
+        if (args.path === `/repos/${REPO.owner}/${REPO.name}/pulls`) {
+          repoCalls += 1;
+          if (repoCalls === 1) return openRepoRequest;
+          return { data: [makeGitHubPull({ number: 2, title: "Full history PR" })] };
+        }
+        return {
+          data: {
+            items: [
+              makeGitHubPull({
+                number: args.query?.q?.includes("is:open") ? 3 : 4,
+                title: args.query?.q?.includes("is:open") ? "Open external" : "Closed external",
+                pull_request: { url: "https://api.github.com/repos/elsewhere/project/pulls/4" },
+                repository_url: "https://api.github.com/repos/elsewhere/project",
+              }),
+            ],
+          },
+        };
+      }),
+    });
+    const { service } = buildService({ githubService, laneService: makeLaneService([]) });
+
+    const openOnly = service.getGithubSnapshot();
+    await flushMicrotasks();
+
+    const fullHistory = await service.getGithubSnapshot({ includeExternalClosed: true });
+    expect(fullHistory.repoPullRequests[0]?.title).toBe("Full history PR");
+    expect(fullHistory.externalPullRequests[0]?.title).toBe("Closed external");
+
+    resolveOpenRepo({ data: [makeGitHubPull({ number: 1, title: "Open-only PR" })] });
+    await expect(openOnly).resolves.toEqual(expect.objectContaining({
+      repoPullRequests: [expect.objectContaining({ title: "Open-only PR" })],
+    }));
+
+    const cachedFullHistory = await service.getGithubSnapshot({ includeExternalClosed: true });
+    expect(cachedFullHistory.repoPullRequests[0]?.title).toBe("Full history PR");
+    expect(cachedFullHistory.externalPullRequests[0]?.title).toBe("Closed external");
+    expect(repoCalls).toBe(2);
+  });
+
   it("backfills a lane PR row from GitHub when the head branch matches an active lane", async () => {
     const githubService = makeGithubService({
       getStatus: vi.fn(async () => ({
@@ -587,6 +640,62 @@ describe("prService.listWithConflicts", () => {
         },
       ],
     }));
+  });
+
+  it("logs when batched conflict analysis falls back to null results", async () => {
+    const db = makeMockDb();
+    db.all.mockImplementation((sql: string) => {
+      if (String(sql).includes("from pull_requests")) {
+        return [makePrRow({ id: "pr-1", lane_id: "lane-pr" })];
+      }
+      return [];
+    });
+    const conflictService = {
+      getBatchAssessment: vi.fn(async () => {
+        throw new Error("batch failed");
+      }),
+    };
+    const { service, logger } = buildService({
+      db,
+      laneService: makeLaneService([makeFakeLane({ id: "lane-pr" })]),
+      conflictService,
+    });
+
+    const rows = await service.listWithConflicts();
+
+    expect(rows[0]?.conflictAnalysis).toBeNull();
+    expect(logger.warn).toHaveBeenCalledWith("prs.batch_conflict_analysis_failed", { error: "batch failed" });
+  });
+});
+
+describe("prService merge contexts", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("resolves target lanes by branch name when lane refs include refs/heads prefixes", async () => {
+    const sourceLane = makeFakeLane({ id: "lane-feature", branchRef: "refs/heads/feature/pr" });
+    const targetLane = makeFakeLane({ id: "lane-main", branchRef: "refs/heads/main", name: "Main" });
+    const row = makePrRow({ id: "pr-1", lane_id: sourceLane.id, base_branch: "main", head_branch: "feature/pr" });
+    const db = makeMockDb();
+    db.get.mockImplementation((sql: string) => {
+      const text = String(sql);
+      if (text.includes("from pull_requests")) return row;
+      if (text.includes("from pr_group_members")) return null;
+      return null;
+    });
+    db.all.mockImplementation((sql: string) => {
+      if (String(sql).includes("from pull_requests")) return [row];
+      return [];
+    });
+    const { service } = buildService({ db, laneService: makeLaneService([sourceLane, targetLane]) });
+
+    await expect(service.getMergeContext("pr-1")).resolves.toEqual(expect.objectContaining({
+      targetLaneId: "lane-main",
+    }));
+    await expect(service.getMergeContexts(["pr-1"])).resolves.toEqual({
+      "pr-1": expect.objectContaining({ targetLaneId: "lane-main" }),
+    });
   });
 });
 

@@ -3979,7 +3979,7 @@ export function createPrService({
     const findLaneIdByBranch = (rawBranch: string): string | null => {
       const normalized = normalizeBranchName(rawBranch);
       if (!normalized) return null;
-      const byBranch = lanes.find((lane) => normalizeBranchName(lane.branchRef) === normalized);
+      const byBranch = lanes.find((lane) => normalizeBranchName(branchNameFromRef(lane.branchRef)) === normalized);
       return byBranch?.id ?? null;
     };
 
@@ -4083,7 +4083,7 @@ export function createPrService({
     const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
     const laneIdByBranch = new Map(
       lanes
-        .map((lane) => [normalizeBranchName(lane.branchRef), lane.id] as const)
+        .map((lane) => [normalizeBranchName(branchNameFromRef(lane.branchRef)), lane.id] as const)
         .filter(([branch]) => Boolean(branch)),
     );
     const rowPlaceholders = uniquePrIds.map(() => "?").join(", ");
@@ -4925,7 +4925,7 @@ export function createPrService({
   let cachedGithubSnapshot: GitHubPrSnapshot | null = null;
   let cachedGithubSnapshotAt = 0;
   let cachedGithubSnapshotIncludesExternalClosed = false;
-  let githubSnapshotInFlight: Promise<GitHubPrSnapshot> | null = null;
+  let githubSnapshotInFlight: { request: Promise<GitHubPrSnapshot>; includeExternalClosed: boolean } | null = null;
 
   const getGithubSnapshotUncached = async (options: GithubSnapshotOptions = {}): Promise<GitHubPrSnapshot> => {
     const githubStatus = await githubService.getStatus();
@@ -5073,11 +5073,14 @@ export function createPrService({
       && (!includeExternalClosed || cachedGithubSnapshotIncludesExternalClosed);
     const startSnapshotRequest = (allowStaleOnError: boolean): Promise<GitHubPrSnapshot> => {
       const staleFallback = cachedGithubSnapshot;
+      let inFlight!: { request: Promise<GitHubPrSnapshot>; includeExternalClosed: boolean };
       const request = getGithubSnapshotUncached({ includeExternalClosed })
         .then((snapshot) => {
-          cachedGithubSnapshot = snapshot;
-          cachedGithubSnapshotAt = Date.now();
-          cachedGithubSnapshotIncludesExternalClosed = includeExternalClosed;
+          if (githubSnapshotInFlight === inFlight) {
+            cachedGithubSnapshot = snapshot;
+            cachedGithubSnapshotAt = Date.now();
+            cachedGithubSnapshotIncludesExternalClosed = includeExternalClosed;
+          }
           return snapshot;
         })
         .catch((error) => {
@@ -5090,11 +5093,12 @@ export function createPrService({
           throw error;
         })
         .finally(() => {
-          if (githubSnapshotInFlight === request) {
+          if (githubSnapshotInFlight === inFlight) {
             githubSnapshotInFlight = null;
           }
         });
-      githubSnapshotInFlight = request;
+      inFlight = { request, includeExternalClosed };
+      githubSnapshotInFlight = inFlight;
       return request;
     };
 
@@ -5105,13 +5109,17 @@ export function createPrService({
       if (ageMs < GITHUB_SNAPSHOT_TTL_MS) {
         return cachedSnapshot;
       }
-      if (!githubSnapshotInFlight) {
+      if (!githubSnapshotInFlight || (includeExternalClosed && !githubSnapshotInFlight.includeExternalClosed)) {
         void startSnapshotRequest(true).catch(() => {});
       }
       return cachedSnapshot;
     }
-    if (!force && githubSnapshotInFlight) {
-      return githubSnapshotInFlight;
+    if (
+      !force
+      && githubSnapshotInFlight
+      && (!includeExternalClosed || githubSnapshotInFlight.includeExternalClosed)
+    ) {
+      return githubSnapshotInFlight.request;
     }
 
     return startSnapshotRequest(false);
@@ -5369,7 +5377,10 @@ export function createPrService({
         });
       }
       return results;
-    } catch {
+    } catch (error) {
+      logger.warn("prs.batch_conflict_analysis_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
       return results;
     }
   };

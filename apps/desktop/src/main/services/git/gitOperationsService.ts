@@ -978,7 +978,16 @@ export function createGitOperationsService({
         metadata: { stashRef },
         fn: async (lane) => {
           await runGitOrThrow(["stash", "apply", stashRef], { cwd: lane.worktreePath, timeoutMs: 30_000 });
-          await runGitOrThrow(["stash", "drop", stashRef], { cwd: lane.worktreePath, timeoutMs: 30_000 });
+          try {
+            await runGitOrThrow(["stash", "drop", stashRef], { cwd: lane.worktreePath, timeoutMs: 30_000 });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            logger.warn("git.stash_pop_drop_failed", {
+              laneId: args.laneId,
+              stashRef,
+              error: message,
+            });
+          }
         }
       });
       return action;

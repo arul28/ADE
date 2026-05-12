@@ -918,26 +918,11 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
         if (cancelled || selectedPrIdRef.current !== prId) return;
         const snapshot = snapshots[0];
         if (!snapshot) return;
-        let hydrated = false;
-        if (snapshot.status) {
-          setDetailStatus(snapshot.status);
-          hydrated = true;
-        }
-        if (snapshot.checks.length > 0) {
-          setDetailChecks(snapshot.checks);
-          hydrated = true;
-        }
-        if (snapshot.reviews.length > 0) {
-          setDetailReviews(snapshot.reviews);
-          hydrated = true;
-        }
-        if (snapshot.comments.length > 0) {
-          setDetailComments(snapshot.comments);
-          hydrated = true;
-        }
-        if (hydrated) {
-          setDetailBusy(false);
-        }
+        setDetailStatus(snapshot.status);
+        setDetailChecks(snapshot.checks);
+        setDetailReviews(snapshot.reviews);
+        setDetailComments(snapshot.comments);
+        setDetailBusy(false);
       }).catch(() => {});
     }
     const cachedDetailAgeMs = Date.now() - (detailLoadedAtByPrIdRef.current[prId] ?? 0);

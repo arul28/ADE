@@ -48,6 +48,34 @@ function TabSwitchHarness() {
   );
 }
 
+function DetailHarness() {
+  const {
+    detailChecks,
+    detailReviews,
+    detailComments,
+    detailStatus,
+    loading,
+    selectedPrId,
+    setSelectedPrId,
+  } = usePrs();
+  return (
+    <div>
+      <button type="button" onClick={() => setSelectedPrId("pr-1")}>
+        select pr-1
+      </button>
+      <button type="button" onClick={() => setSelectedPrId("pr-2")}>
+        select pr-2
+      </button>
+      <div data-testid="loading">{loading ? "loading" : "idle"}</div>
+      <div data-testid="selected-pr-id">{selectedPrId ?? ""}</div>
+      <div data-testid="status">{detailStatus?.state ?? ""}</div>
+      <div data-testid="checks-count">{detailChecks.length}</div>
+      <div data-testid="reviews-count">{detailReviews.length}</div>
+      <div data-testid="comments-count">{detailComments.length}</div>
+    </div>
+  );
+}
+
 describe("PrsContext refresh", () => {
   beforeEach(() => {
     window.history.replaceState(null, "", "/");
@@ -179,6 +207,98 @@ describe("PrsContext refresh", () => {
       expect(screen.getByTestId("active-tab").textContent).toBe("queue");
     });
     expect(window.ade.prs.refresh).not.toHaveBeenCalled();
+  });
+
+  it("clears stale selected PR detail arrays when a cached snapshot has empty arrays", async () => {
+    const user = userEvent.setup();
+    vi.mocked(window.ade.prs.listWithConflicts).mockResolvedValue([makeFakePr("pr-1"), makeFakePr("pr-2")]);
+    Object.assign(window.ade.prs, {
+      listSnapshots: vi.fn(async ({ prId }: { prId: string }) => [
+        prId === "pr-1"
+          ? {
+              prId,
+              detail: null,
+              status: { state: "success" },
+              checks: [
+                {
+                  name: "ci",
+                  status: "completed",
+                  conclusion: "success",
+                  detailsUrl: null,
+                  startedAt: null,
+                  completedAt: null,
+                },
+              ],
+              reviews: [
+                {
+                  reviewer: "octocat",
+                  reviewerAvatarUrl: null,
+                  state: "approved",
+                  body: null,
+                  submittedAt: null,
+                },
+              ],
+              comments: [
+                {
+                  id: "comment-1",
+                  author: "octocat",
+                  authorAvatarUrl: null,
+                  body: "looks good",
+                  source: "issue",
+                  url: null,
+                  path: null,
+                  line: null,
+                  createdAt: null,
+                },
+              ],
+              files: [],
+              commits: [],
+              updatedAt: "2026-03-24T12:00:00.000Z",
+            }
+          : {
+              prId,
+              detail: null,
+              status: null,
+              checks: [],
+              reviews: [],
+              comments: [],
+              files: [],
+              commits: [],
+              updatedAt: "2026-03-24T12:05:00.000Z",
+            },
+      ]),
+      getStatus: vi.fn(() => new Promise(() => {})),
+      getChecks: vi.fn(() => new Promise(() => {})),
+      getReviews: vi.fn(() => new Promise(() => {})),
+      getComments: vi.fn(() => new Promise(() => {})),
+    });
+
+    render(
+      <PrsProvider>
+        <DetailHarness />
+      </PrsProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("loading").textContent).toBe("idle");
+    });
+
+    await user.click(screen.getByRole("button", { name: "select pr-1" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("checks-count").textContent).toBe("1");
+      expect(screen.getByTestId("reviews-count").textContent).toBe("1");
+      expect(screen.getByTestId("comments-count").textContent).toBe("1");
+      expect(screen.getByTestId("status").textContent).toBe("success");
+    });
+
+    await user.click(screen.getByRole("button", { name: "select pr-2" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("selected-pr-id").textContent).toBe("pr-2");
+      expect(screen.getByTestId("checks-count").textContent).toBe("0");
+      expect(screen.getByTestId("reviews-count").textContent).toBe("0");
+      expect(screen.getByTestId("comments-count").textContent).toBe("0");
+      expect(screen.getByTestId("status").textContent).toBe("");
+    });
   });
 
   it("hydrates the Rebase/Merge workflow selection from the initial hash route", async () => {

@@ -80,7 +80,7 @@ or Git operations until the visible surface needs them.
 
 ## Proven PRs patterns
 
-### Keep GitHub first open open-only and local-first
+### Keep GitHub first open-only and local-first
 
 - **Why it helped**: The original PRs open path spent seconds fetching external
   GitHub history and doing local workflow work before the list felt usable.
