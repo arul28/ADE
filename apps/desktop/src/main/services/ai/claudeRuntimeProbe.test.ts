@@ -67,6 +67,7 @@ describe("claudeRuntimeProbe", () => {
     expect(mockState.query).toHaveBeenCalledWith(expect.objectContaining({
       options: expect.objectContaining({
         tools: [],
+        pathToClaudeCodeExecutable: expect.any(String),
       }),
     }));
     expect(mockState.reportProviderRuntimeAuthFailure).toHaveBeenCalledTimes(1);

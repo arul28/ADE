@@ -2,6 +2,10 @@ import { query as claudeQuery, type SDKMessage } from "@anthropic-ai/claude-agen
 import type { Logger } from "../logging/logger";
 import { getErrorMessage } from "../shared/utils";
 import {
+  isExecutablePath,
+  resolveClaudeCodeExecutable,
+} from "./claudeCodeExecutable";
+import {
   reportProviderRuntimeAuthFailure,
   reportProviderRuntimeFailure,
   reportProviderRuntimeReady,
@@ -125,6 +129,7 @@ export async function probeClaudeRuntimeHealth(args: {
     const abortController = new AbortController();
     const timeout = setTimeout(() => abortController.abort(), PROBE_TIMEOUT_MS);
     let stream: ReturnType<typeof claudeQuery> | null = null;
+    const claudeExecutable = resolveClaudeCodeExecutable();
 
     try {
       stream = claudeQuery({
@@ -134,6 +139,7 @@ export async function probeClaudeRuntimeHealth(args: {
           permissionMode: "plan",
           tools: [],
           abortController,
+          pathToClaudeCodeExecutable: claudeExecutable.path,
         },
       });
 
@@ -148,11 +154,16 @@ export async function probeClaudeRuntimeHealth(args: {
         message: DEFAULT_RUNTIME_FAILURE,
       });
     } catch (error) {
+      const missingMessageIsFalseNegative = claudeExecutable.source !== "fallback-command"
+        && isExecutablePath(claudeExecutable.path)
+        && normalizeErrorMessage(error).toLowerCase().includes("native binary not found");
       const result = isClaudeRuntimeAuthError(error)
         ? { state: "auth-failed", message: CLAUDE_RUNTIME_AUTH_ERROR } satisfies ClaudeRuntimeProbeResult
         : {
             state: "runtime-failed",
-            message: normalizeErrorMessage(error),
+            message: missingMessageIsFalseNegative
+              ? `Claude runtime failed to spawn resolved executable ${claudeExecutable.path}: ${normalizeErrorMessage(error)}`
+              : normalizeErrorMessage(error),
           } satisfies ClaudeRuntimeProbeResult;
       return cacheResult(projectRoot, result);
     } finally {

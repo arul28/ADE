@@ -110,4 +110,98 @@ describe("discoverClaudePlugins", () => {
       },
     ]);
   });
+
+  it("ignores plugins that are only present in the user marketplace cache", () => {
+    const pluginRoot = path.join(
+      homeRoot,
+      ".claude",
+      "plugins",
+      "marketplaces",
+      "claude-plugins-official",
+      "external_plugins",
+      "serena",
+    );
+    fs.mkdirSync(path.join(pluginRoot, ".claude-plugin"), { recursive: true });
+    fs.writeFileSync(path.join(pluginRoot, ".claude-plugin", "plugin.json"), JSON.stringify({
+      name: "serena",
+      description: "Marketplace source copy",
+    }));
+
+    expect(discoverClaudePlugins(tmpRoot)).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "serena" }),
+    ]));
+  });
+
+  it("loads manually placed user plugins outside managed Claude plugin dirs", () => {
+    const pluginRoot = path.join(homeRoot, ".claude", "plugins", "personal-review-plugin");
+    fs.mkdirSync(path.join(pluginRoot, ".claude-plugin"), { recursive: true });
+    fs.writeFileSync(path.join(pluginRoot, ".claude-plugin", "plugin.json"), JSON.stringify({
+      name: "personal-review-plugin",
+      description: "Local user helper",
+    }));
+
+    expect(discoverClaudePlugins(tmpRoot)).toEqual([
+      {
+        name: "personal-review-plugin",
+        description: "Local user helper",
+        path: fs.realpathSync(pluginRoot),
+        source: "local",
+      },
+    ]);
+  });
+
+  it("loads installed user plugins only when Claude settings enable them", () => {
+    const enabledRoot = path.join(
+      homeRoot,
+      ".claude",
+      "plugins",
+      "cache",
+      "claude-plugins-official",
+      "code-simplifier",
+      "1.0.0",
+    );
+    const disabledRoot = path.join(
+      homeRoot,
+      ".claude",
+      "plugins",
+      "cache",
+      "claude-plugins-official",
+      "serena",
+      "1.0.0",
+    );
+    fs.mkdirSync(path.join(enabledRoot, ".claude-plugin"), { recursive: true });
+    fs.mkdirSync(path.join(disabledRoot, ".claude-plugin"), { recursive: true });
+    fs.writeFileSync(path.join(enabledRoot, ".claude-plugin", "plugin.json"), JSON.stringify({
+      name: "code-simplifier",
+    }));
+    fs.writeFileSync(path.join(disabledRoot, ".claude-plugin", "plugin.json"), JSON.stringify({
+      name: "serena",
+    }));
+    fs.mkdirSync(path.join(homeRoot, ".claude", "plugins"), { recursive: true });
+    fs.writeFileSync(path.join(homeRoot, ".claude", "settings.json"), JSON.stringify({
+      enabledPlugins: {
+        "code-simplifier@claude-plugins-official": true,
+        "serena@claude-plugins-official": false,
+      },
+    }));
+    fs.writeFileSync(path.join(homeRoot, ".claude", "plugins", "installed_plugins.json"), JSON.stringify({
+      version: 2,
+      plugins: {
+        "code-simplifier@claude-plugins-official": [
+          { scope: "user", installPath: enabledRoot },
+        ],
+        "serena@claude-plugins-official": [
+          { scope: "user", installPath: disabledRoot },
+        ],
+      },
+    }));
+
+    expect(discoverClaudePlugins(tmpRoot)).toEqual([
+      {
+        name: "code-simplifier",
+        path: fs.realpathSync(enabledRoot),
+        source: "local",
+      },
+    ]);
+  });
 });

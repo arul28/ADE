@@ -532,15 +532,18 @@ export function renderChatLines(args: {
       continue;
     }
     if (event.type === "system_notice") {
-      // Surface the severity-bearing noticeKinds with an error tone so the TUI
-      // colorizes them distinctively. Guardian warnings, rate limits, thread
-      // errors, and provider health issues map to `tone: "error"`; warnings and
-      // config issues keep the default notice tone.
+      // Surface severity-bearing notices with an error tone while keeping
+      // non-blocking telemetry, including allowed Claude rate-limit events,
+      // in the normal notice channel.
       const noticeKind = (event as { noticeKind?: string }).noticeKind;
-      const tone: "notice" | "error" = noticeKind === "error"
-        || noticeKind === "rate_limit"
-        || noticeKind === "thread_error"
-        || noticeKind === "provider_health"
+      const severity = (event as { severity?: string }).severity;
+      const tone: "notice" | "error" = severity === "error"
+        || (!severity && (
+          noticeKind === "error"
+          || noticeKind === "thread_error"
+          || noticeKind === "provider_health"
+          || noticeKind === "rate_limit"
+        ))
         ? "error"
         : "notice";
       lines.push({

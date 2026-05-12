@@ -539,6 +539,48 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.getByText("thread error")).toBeTruthy();
     expect(screen.getByText("Claude is taking longer than usual")).toBeTruthy();
     expect(screen.getByText("Codex session is missing thread id")).toBeTruthy();
+    expect(screen.getAllByRole("button")).toHaveLength(2);
+  });
+
+  it("renders allowed rate-limit telemetry as a compact non-error notice", () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "system_notice",
+          noticeKind: "rate_limit",
+          severity: "info",
+          status: "allowed",
+          message: "Claude rate limit allowed",
+          detail: "resets 2026-05-12T20:30:00.000Z",
+        },
+      },
+    ]);
+
+    expect(screen.getByText("rate limit")).toBeTruthy();
+    expect(screen.getByText("Claude rate limit allowed")).toBeTruthy();
+    expect(screen.getByText("resets 2026-05-12T20:30:00.000Z")).toBeTruthy();
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  it("keeps non-rate-limit notice details in collapsible cards", () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "system_notice",
+          noticeKind: "warning",
+          message: "Hook stderr captured",
+          detail: "Long hook output remains behind a disclosure.",
+        },
+      },
+    ]);
+
+    expect(screen.getByText("warning")).toBeTruthy();
+    expect(screen.getByText("Hook stderr captured")).toBeTruthy();
+    expect(screen.getByRole("button")).toBeTruthy();
   });
 
   // Work-log grouping, file-change grouping, and overflow-expand tests

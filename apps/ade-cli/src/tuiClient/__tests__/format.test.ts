@@ -511,15 +511,22 @@ describe("renderChatLines", () => {
           sessionId: "s1",
           timestamp: "2026-01-01T12:00:03.000Z",
           sequence: 4,
-          event: { type: "system_notice", noticeKind: "rate_limit", message: "rate limit hit" } as never,
+          event: { type: "system_notice", noticeKind: "rate_limit", severity: "error", message: "rate limit hit" } as never,
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:04.000Z",
+          sequence: 5,
+          event: { type: "system_notice", noticeKind: "rate_limit", severity: "info", message: "Claude rate limit allowed" } as never,
         },
       ],
     });
-    expect(lines).toHaveLength(4);
+    expect(lines).toHaveLength(5);
     expect(lines[0]?.tone).toBe("error"); // error noticeKind
     expect(lines[1]?.tone).toBe("notice"); // warning is informational
     expect(lines[2]?.tone).toBe("notice"); // config is informational
-    expect(lines[3]?.tone).toBe("error"); // rate_limit is severity-bearing
+    expect(lines[3]?.tone).toBe("error"); // blocking rate_limit is severity-bearing
+    expect(lines[4]?.tone).toBe("notice"); // allowed rate_limit is telemetry
   });
 
   it("summarizes command pass and fail counts when present", () => {

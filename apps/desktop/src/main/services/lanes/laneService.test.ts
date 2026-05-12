@@ -2717,6 +2717,39 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     expect(wtStep?.status).toBe("completed");
   });
 
+  it("deletes the lane locally when optional remote branch cleanup fails", async () => {
+    const events: any[] = [];
+    const fake = makeFakeServices();
+    const { service, db } = await setupWithLane({ teardown: fake, events, createWorktree: false });
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
+      if (args[0] === "show-ref") return { exitCode: 0, stdout: "", stderr: "" } as any;
+      if (args[0] === "remote" && args[1] === "get-url") return { exitCode: 0, stdout: "git@example.test/repo.git\n", stderr: "" } as any;
+      if (args[0] === "ls-remote") return { exitCode: 0, stdout: "abc\trefs/heads/feature/child\n", stderr: "" } as any;
+      return { exitCode: 0, stdout: "", stderr: "" } as any;
+    });
+    vi.mocked(runGitOrThrow).mockImplementation(async (args: string[]) => {
+      if (args[0] === "push") throw new Error("remote rejected delete");
+      return { exitCode: 0, stdout: "", stderr: "" } as any;
+    });
+
+    await service.delete({
+      laneId: "lane-child",
+      deleteBranch: true,
+      deleteRemoteBranch: true,
+      remoteName: "origin",
+    });
+
+    const last = events[events.length - 1];
+    expect(last.progress.overallStatus).toBe("completed_with_warnings");
+    expect(last.progress.steps.find((s: any) => s.name === "git_branch_delete")?.status).toBe("completed");
+    const remoteStep = last.progress.steps.find((s: any) => s.name === "git_remote_branch_delete");
+    expect(remoteStep?.status).toBe("warning");
+    expect(remoteStep?.errorMessage).toContain("remote rejected delete");
+    expect(db.get<{ id: string }>("select id from lanes where id = ?", ["lane-child"])).toBeNull();
+  });
+
   it("cleans lane-owned database state when deleting a lane", async () => {
     const events: any[] = [];
     const fake = makeFakeServices();
