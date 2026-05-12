@@ -733,6 +733,94 @@ describe("prService.listWithConflicts", () => {
   });
 });
 
+describe("prService.refresh", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function makeRefreshDb(rows: ReturnType<typeof makePrRow>[]) {
+    const db = makeMockDb();
+    db.get.mockImplementation((sql: string, params: unknown[]) => {
+      const text = String(sql);
+      if (text.includes("from pull_requests") && text.includes("where id = ?")) {
+        return rows.find((row) => row.id === params[0]) ?? null;
+      }
+      return null;
+    });
+    return db;
+  }
+
+  function makeRefreshGithubService(failingPrNumbers = new Set<number>()) {
+    return makeGithubService({
+      apiRequest: vi.fn(async (args: { path: string }) => {
+        const path = args.path;
+        const prMatch = path.match(/\/pulls\/(\d+)$/);
+        if (prMatch) {
+          const prNumber = Number(prMatch[1]);
+          if (failingPrNumbers.has(prNumber)) {
+            throw new Error(`refresh failed for #${prNumber}`);
+          }
+          return {
+            data: makeGitHubPull({
+              number: prNumber,
+              title: `Fresh #${prNumber}`,
+              head: { ref: `feature/pr-${prNumber}`, sha: `sha-${prNumber}` },
+              additions: 10,
+              deletions: 2,
+            }),
+          };
+        }
+        if (/\/commits\/sha-\d+\/status$/.test(path)) {
+          return { data: { state: "success", statuses: [] } };
+        }
+        if (/\/commits\/sha-\d+\/check-runs$/.test(path)) {
+          return { data: { check_runs: [] } };
+        }
+        if (/\/pulls\/\d+\/reviews$/.test(path)) {
+          return { data: [] };
+        }
+        throw new Error(`Unexpected GitHub API path: ${path}`);
+      }),
+    });
+  }
+
+  it("keeps successful explicit PR refreshes when a sibling fails", async () => {
+    const okRow = makePrRow({ id: "pr-ok", github_pr_number: 90 });
+    const failingRow = makePrRow({ id: "pr-bad", github_pr_number: 91 });
+    const { service, logger } = buildService({
+      db: makeRefreshDb([okRow, failingRow]),
+      githubService: makeRefreshGithubService(new Set([91])),
+    });
+
+    const refreshed = await service.refresh({ prIds: ["pr-ok", "pr-bad"] });
+
+    expect(refreshed).toHaveLength(1);
+    expect(refreshed[0]).toEqual(expect.objectContaining({
+      id: "pr-ok",
+      githubPrNumber: 90,
+      title: "Fresh #90",
+    }));
+    expect(logger.warn).toHaveBeenCalledWith("prs.refresh_failed", {
+      prId: "pr-bad",
+      error: "refresh failed for #91",
+    });
+  });
+
+  it("still rejects explicit single-PR refresh failures", async () => {
+    const failingRow = makePrRow({ id: "pr-bad", github_pr_number: 91 });
+    const { service, logger } = buildService({
+      db: makeRefreshDb([failingRow]),
+      githubService: makeRefreshGithubService(new Set([91])),
+    });
+
+    await expect(service.refresh({ prId: "pr-bad" })).rejects.toThrow("refresh failed for #91");
+    expect(logger.warn).toHaveBeenCalledWith("prs.refresh_failed", {
+      prId: "pr-bad",
+      error: "refresh failed for #91",
+    });
+  });
+});
+
 describe("prService merge contexts", () => {
   beforeEach(() => {
     vi.clearAllMocks();

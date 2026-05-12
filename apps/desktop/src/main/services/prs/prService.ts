@@ -2268,8 +2268,22 @@ export function createPrService({
   const refreshPrIds = async (prIds: string[]): Promise<PrSummary[]> => {
     const uniquePrIds = [...new Set(prIds.map((prId) => String(prId ?? "").trim()).filter(Boolean))];
     const refreshed: PrSummary[] = [];
+    const failures: Array<{ prId: string; reason: unknown }> = [];
     for (let i = 0; i < uniquePrIds.length; i += REFRESH_CONCURRENCY) {
-      refreshed.push(...await Promise.all(uniquePrIds.slice(i, i + REFRESH_CONCURRENCY).map((prId) => refreshOne(prId))));
+      const batchPrIds = uniquePrIds.slice(i, i + REFRESH_CONCURRENCY);
+      const results = await Promise.allSettled(batchPrIds.map((prId) => refreshOne(prId)));
+      results.forEach((result, index) => {
+        const prId = batchPrIds[index] ?? "";
+        if (result.status === "fulfilled") {
+          refreshed.push(result.value);
+          return;
+        }
+        failures.push({ prId, reason: result.reason });
+        logger.warn("prs.refresh_failed", { prId, error: getErrorMessage(result.reason) });
+      });
+    }
+    if (uniquePrIds.length === 1 && failures[0]) {
+      throw failures[0].reason;
     }
     return refreshed;
   };
@@ -2286,7 +2300,7 @@ export function createPrService({
         try {
           await refreshOne(row.id);
         } catch (error) {
-          logger.warn("prs.refresh_failed", { prId: row.id, error: error instanceof Error ? error.message : String(error) });
+          logger.warn("prs.refresh_failed", { prId: row.id, error: getErrorMessage(error) });
         }
       }));
     }
