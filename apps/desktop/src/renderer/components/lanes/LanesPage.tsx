@@ -27,6 +27,15 @@ import { HelpChip } from "../onboarding/HelpChip";
 import { useOnboardingStore } from "../../state/onboardingStore";
 import { useDialogBus } from "../../lib/useDialogBus";
 import {
+  parseLaneIdsParam,
+  resolveCreateLaneRequest,
+  resolveLaneDeleteStartSelection,
+  resolveLaneIdsDeepLinkSelection,
+  selectLaneTabPrTag,
+  sortLaneListRows,
+  type LaneTabPrTag,
+} from "./lanePageModel";
+import {
   sortLanesForTabs,
   sortLanesForStackGraph,
   mergeUnique,
@@ -50,13 +59,13 @@ import { buildPrsRouteSearch } from "../prs/prsRouteState";
 import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
 import { getProjectConfigCached } from "../../lib/projectConfigCache";
 import { logRendererDebugEvent } from "../../lib/debugLog";
-import { branchNameFromLaneRef } from "../../../shared/laneBaseResolution";
 import { linearIssueBranchName, linearIssueLaneName } from "../../../shared/linearIssueBranch";
 import type {
   BranchPullRequest,
   ConflictChip,
   DeleteLaneArgs,
   GitCommitSummary,
+  GitHubPrListItem,
   LaneEnvInitEvent,
   LaneEnvInitProgress,
   LaneBranchActiveWorkItem,
@@ -98,11 +107,6 @@ function getDevicePresenceTitle(devicesOpen: LaneSummary["devicesOpen"]): string
   return `Open on ${names.length} devices: ${names.join(", ")}`;
 }
 
-type CreateLaneRequest =
-  | { kind: "child"; args: { name: string; parentLaneId: string } }
-  | { kind: "root"; args: { name: string; baseBranch: string } }
-  | { kind: "import"; args: { branchRef: string; name: string; baseBranch?: string } };
-
 function DeferredLanePane({
   cacheKey,
   label,
@@ -134,70 +138,6 @@ function DeferredLanePane({
   );
 }
 
-export function resolveCreateLaneRequest(args: {
-  name: string;
-  createMode: CreateLaneMode;
-  createParentLaneId: string;
-  createBaseBranch: string;
-  createImportBranch: string;
-}): CreateLaneRequest {
-  if (args.createMode === "child") {
-    return {
-      kind: "child",
-      args: {
-        name: args.name,
-        parentLaneId: args.createParentLaneId,
-      },
-    };
-  }
-
-  if (args.createMode === "existing") {
-    return {
-      kind: "import",
-      args: {
-        branchRef: args.createImportBranch,
-        name: args.name,
-      },
-    };
-  }
-
-  return {
-    kind: "root",
-    args: {
-      name: args.name,
-      baseBranch: args.createBaseBranch,
-    },
-  };
-}
-
-function parseLaneIdsParam(value: string | null): string[] {
-  return (value ?? "")
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter(Boolean);
-}
-
-function normalizeLanePrBranch(ref: string | null | undefined): string {
-  return branchNameFromLaneRef(ref).trim();
-}
-
-function prStateRank(state: PrSummary["state"]): number {
-  if (state === "open" || state === "draft") return 0;
-  if (state === "merged") return 1;
-  return 2;
-}
-
-function compareLanePrTags(a: PrSummary, b: PrSummary): number {
-  const byState = prStateRank(a.state) - prStateRank(b.state);
-  if (byState !== 0) return byState;
-  const aUpdated = Date.parse(a.updatedAt);
-  const bUpdated = Date.parse(b.updatedAt);
-  if (!Number.isNaN(aUpdated) && !Number.isNaN(bUpdated) && aUpdated !== bUpdated) {
-    return bUpdated - aUpdated;
-  }
-  return b.githubPrNumber - a.githubPrNumber;
-}
-
 function lanePrTagColor(state: PrSummary["state"]): string {
   if (state === "merged") return COLORS.success;
   if (state === "closed") return COLORS.danger;
@@ -205,41 +145,13 @@ function lanePrTagColor(state: PrSummary["state"]): string {
   return COLORS.accent;
 }
 
-export function lanePrMatchesCurrentBranch(
-  lane: Pick<LaneSummary, "id" | "laneType" | "branchRef" | "baseRef">,
-  pr: Pick<PrSummary, "laneId" | "headBranch">,
-): boolean {
-  if (pr.laneId !== lane.id) return false;
-  const laneBranch = normalizeLanePrBranch(lane.branchRef);
-  const prHeadBranch = normalizeLanePrBranch(pr.headBranch);
-  if (!laneBranch || !prHeadBranch || laneBranch !== prHeadBranch) return false;
-  if (lane.laneType === "primary") {
-    const baseBranch = normalizeLanePrBranch(lane.baseRef);
-    if (laneBranch && baseBranch && laneBranch === baseBranch) return false;
+function isTrustedGitHubUrl(rawUrl: string): boolean {
+  try {
+    const url = new URL(rawUrl);
+    return url.protocol === "https:" && url.hostname === "github.com";
+  } catch {
+    return false;
   }
-  return true;
-}
-
-export function selectLanePrTag(lane: Pick<LaneSummary, "id" | "laneType" | "branchRef" | "baseRef">, prs: PrSummary[]): PrSummary | null {
-  return prs
-    .filter((pr) => lanePrMatchesCurrentBranch(lane, pr))
-    .sort(compareLanePrTags)[0] ?? null;
-}
-
-export function resolveLaneIdsDeepLinkSelection(args: {
-  laneIdsRaw: string | null;
-  inspectorTabParam?: string | null;
-  availableLaneIds: Iterable<string>;
-  consumedSignature: string | null;
-}): { laneIds: string[]; signature: string } | null {
-  const parsed = parseLaneIdsParam(args.laneIdsRaw);
-  if (parsed.length === 0) return null;
-  const signature = `${parsed.join(",")}::${args.inspectorTabParam ?? ""}`;
-  if (signature === args.consumedSignature) return null;
-  const available = new Set(args.availableLaneIds);
-  const laneIds = parsed.filter((laneId) => available.has(laneId));
-  if (laneIds.length !== parsed.length) return null;
-  return { laneIds, signature };
 }
 
 export function isLaneDeleteProgressActive(progress: LaneDeleteProgress | null | undefined): boolean {
@@ -258,35 +170,6 @@ function createPendingDeleteProgress(laneId: string): LaneDeleteProgress {
 
 function getLaneDeleteStatusLabel(progress: LaneDeleteProgress | null | undefined): string {
   return progress?.overallStatus === "completed" ? "Deleted" : "Deleting";
-}
-
-export function resolveLaneDeleteStartSelection(args: {
-  deletingLaneIds: Iterable<string>;
-  selectedLaneId: string | null;
-  activeLaneIds: string[];
-  pinnedLaneIds: Iterable<string>;
-  filteredLaneIds: string[];
-  sortedLaneIds: string[];
-}): { selectedLaneId: string | null; activeLaneIds: string[]; pinnedLaneIds: Set<string> } {
-  const deleting = new Set(args.deletingLaneIds);
-  const isAvailable = (laneId: string | null | undefined): laneId is string =>
-    Boolean(laneId && !deleting.has(laneId));
-  const pinnedLaneIds = new Set(Array.from(args.pinnedLaneIds).filter((laneId) => !deleting.has(laneId)));
-  const nextSelectedLaneId = isAvailable(args.selectedLaneId)
-    ? args.selectedLaneId
-    : args.filteredLaneIds.find((laneId) => !deleting.has(laneId))
-      ?? args.sortedLaneIds.find((laneId) => !deleting.has(laneId))
-      ?? null;
-  const preservedActiveLaneIds = args.activeLaneIds.filter((laneId) => !deleting.has(laneId) && laneId !== nextSelectedLaneId);
-  return {
-    selectedLaneId: nextSelectedLaneId,
-    activeLaneIds: mergeUnique(
-      nextSelectedLaneId ? [nextSelectedLaneId] : [],
-      preservedActiveLaneIds,
-      Array.from(pinnedLaneIds),
-    ),
-    pinnedLaneIds,
-  };
 }
 
 function laneTilingLayoutIds(laneId: string): string[] {
@@ -394,6 +277,7 @@ export function LanesPage() {
   const [conflictChipsByLane, setConflictChipsByLane] = useState<Record<string, ConflictChip[]>>({});
   const chipTimersRef = useRef<Map<string, number>>(new Map());
   const lanePrTagsRequestRef = useRef(0);
+  const laneGithubPrTagsRequestRef = useRef(0);
   const hasActiveLaneRuntimeRef = useRef(false);
   const [autoRebaseEnabled, setAutoRebaseEnabled] = useState(false);
   const [rebaseSuggestionError, setRebaseSuggestionError] = useState<string | null>(null);
@@ -445,6 +329,7 @@ export function LanesPage() {
   const [expandedGitActionsLaneId, setExpandedGitActionsLaneId] = useState<string | null>(null);
   const [integrationProposals, setIntegrationProposals] = useState<IntegrationProposal[]>([]);
   const [lanePrTags, setLanePrTags] = useState<PrSummary[]>([]);
+  const [laneGithubPrTags, setLaneGithubPrTags] = useState<GitHubPrListItem[]>([]);
   const [linearIssueChatContextRequest, setLinearIssueChatContextRequest] = useState<{
     laneId: string;
     issue: LaneLinearIssue;
@@ -503,13 +388,13 @@ export function LanesPage() {
     [integrationProposals, lanesById],
   );
   const lanePrByLaneId = useMemo(() => {
-    const map = new Map<string, PrSummary>();
+    const map = new Map<string, LaneTabPrTag>();
     for (const lane of sortedLanes) {
-      const pr = selectLanePrTag(lane, lanePrTags);
+      const pr = selectLaneTabPrTag(lane, lanePrTags, laneGithubPrTags);
       if (pr) map.set(lane.id, pr);
     }
     return map;
-  }, [sortedLanes, lanePrTags]);
+  }, [sortedLanes, lanePrTags, laneGithubPrTags]);
 
   const laneRuntimeById = useMemo(() => {
     const summaryByLane = new Map<string, LaneListSnapshot["runtime"]>();
@@ -567,27 +452,14 @@ export function LanesPage() {
   }, []);
 
   const filteredLanes = useMemo(() => {
-    const bucketRank: Record<LaneListSnapshot["runtime"]["bucket"], number> = {
-      "awaiting-input": 0,
-      running: 1,
-      ended: 2,
-      none: 3,
-    };
-    const base = [...laneFilterMatchedLanes];
-    if (laneStatusFilter !== "all") {
-      return base.filter((lane) => (laneRuntimeById.get(lane.id)?.bucket ?? "none") === laneStatusFilter);
-    }
-    return base.sort((a, b) => {
-      const aPrimary = a.laneType === "primary" ? 0 : 1;
-      const bPrimary = b.laneType === "primary" ? 0 : 1;
-      if (aPrimary !== bPrimary) return aPrimary - bPrimary;
-      const aBucket = laneRuntimeById.get(a.id)?.bucket ?? "none";
-      const bBucket = laneRuntimeById.get(b.id)?.bucket ?? "none";
-      const byBucket = bucketRank[aBucket] - bucketRank[bBucket];
-      if (byBucket !== 0) return byBucket;
-      return (laneOrderById.get(a.id) ?? 0) - (laneOrderById.get(b.id) ?? 0);
+    return sortLaneListRows({
+      lanes: laneFilterMatchedLanes,
+      laneRuntimeById,
+      laneStatusFilter,
+      laneOrderById,
+      pinnedLaneIds,
     });
-  }, [laneFilterMatchedLanes, laneRuntimeById, laneStatusFilter, laneOrderById]);
+  }, [laneFilterMatchedLanes, laneRuntimeById, laneStatusFilter, laneOrderById, pinnedLaneIds]);
   const stackGraphLanes = useMemo(() => sortLanesForStackGraph(filteredLanes), [filteredLanes]);
 
   const filteredLaneIds = useMemo(() => filteredLanes.map((lane) => lane.id), [filteredLanes]);
@@ -777,6 +649,21 @@ export function LanesPage() {
     }
   }, []);
 
+  const refreshLaneGithubPrTags = useCallback(async (options?: { force?: boolean }) => {
+    const requestId = ++laneGithubPrTagsRequestRef.current;
+    const startedRoot = useAppStore.getState().project?.rootPath ?? null;
+    try {
+      const snapshot = await window.ade.prs.getGitHubSnapshot({ force: options?.force === true });
+      if (requestId !== laneGithubPrTagsRequestRef.current) return;
+      if ((useAppStore.getState().project?.rootPath ?? null) !== startedRoot) return;
+      setLaneGithubPrTags(snapshot.repoPullRequests);
+    } catch {
+      if (requestId !== laneGithubPrTagsRequestRef.current) return;
+      if ((useAppStore.getState().project?.rootPath ?? null) !== startedRoot) return;
+      // Keep the last usable GitHub snapshot visible on transient refresh failures.
+    }
+  }, []);
+
   const pushConflictChips = useCallback((chips: ConflictChip[]) => {
     if (chips.length === 0) return;
     setConflictChipsByLane((prev) => {
@@ -949,29 +836,37 @@ export function LanesPage() {
   }, [refreshIntegrationProposals, project?.rootPath]);
 
   useEffect(() => {
+    lanePrTagsRequestRef.current += 1;
+    laneGithubPrTagsRequestRef.current += 1;
+    setLanePrTags([]);
+    setLaneGithubPrTags([]);
     if (!project?.rootPath) {
-      lanePrTagsRequestRef.current += 1;
-      setLanePrTags([]);
       return;
     }
     const timer = window.setTimeout(() => {
       void refreshLanePrTags();
+      void refreshLaneGithubPrTags();
     }, 160);
     return () => {
       lanePrTagsRequestRef.current += 1;
+      laneGithubPrTagsRequestRef.current += 1;
       window.clearTimeout(timer);
     };
-  }, [refreshLanePrTags, project?.rootPath]);
+  }, [refreshLanePrTags, refreshLaneGithubPrTags, project?.rootPath]);
 
   useEffect(() => {
     return window.ade.prs.onEvent((event) => {
       if (event.type === "prs-updated") {
+        lanePrTagsRequestRef.current += 1;
         setLanePrTags(event.prs);
+        // This event already carries ADE rows; use the cached repo snapshot unless a PR notification asks for a forced refresh.
+        void refreshLaneGithubPrTags();
       } else if (event.type === "pr-notification") {
         void refreshLanePrTags();
+        void refreshLaneGithubPrTags({ force: true });
       }
     });
-  }, [refreshLanePrTags]);
+  }, [refreshLanePrTags, refreshLaneGithubPrTags]);
 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -2964,6 +2859,7 @@ export function LanesPage() {
           const lanePr = lanePrByLaneId.get(lane.id) ?? null;
           const deleteProgress = deleteProgressByLaneId[lane.id] ?? null;
           const isDeleting = isLaneDeleteProgressActive(deleteProgress);
+          const showMergedManageShortcut = !isDeleting && !isPrimary && lanePr?.state === "merged";
 
           return (
             <div
@@ -3011,11 +2907,45 @@ export function LanesPage() {
                 if (!isSelected) e.currentTarget.style.background = isInSplit ? "rgba(167,139,250,0.06)" : "transparent";
               }}
             >
-              {/* Tab number */}
-              <span style={{
-                fontFamily: MONO_FONT, fontSize: 10, fontWeight: 600, letterSpacing: "1px",
-                color: isSelected ? COLORS.accent : COLORS.textDim,
-              }}>{tabNumber}</span>
+              {/* Tab number / merged-PR manage shortcut */}
+              <span
+                className="group/merged-manage relative inline-flex shrink-0 items-center justify-center"
+                style={{ width: 20, height: 20 }}
+              >
+                <span
+                  className={showMergedManageShortcut ? "transition-opacity group-hover/merged-manage:opacity-0" : undefined}
+                  style={{
+                    fontFamily: MONO_FONT,
+                    fontSize: 10,
+                    fontWeight: 600,
+                    letterSpacing: "1px",
+                    color: isSelected ? COLORS.accent : COLORS.textDim,
+                  }}
+                >
+                  {tabNumber}
+                </span>
+                {showMergedManageShortcut ? (
+                  <button
+                    type="button"
+                    aria-label={`Manage ${lane.name}`}
+                    className="absolute inset-0 inline-flex items-center justify-center rounded-full opacity-0 transition-opacity group-hover/merged-manage:opacity-100 focus-visible:opacity-100"
+                    style={{
+                      border: `1px solid color-mix(in srgb, ${COLORS.danger} 45%, transparent)`,
+                      background: `color-mix(in srgb, ${COLORS.danger} 14%, transparent)`,
+                      color: COLORS.danger,
+                      cursor: "pointer",
+                    }}
+                    title="PR merged. Manage lane"
+                    onMouseDown={(event) => event.stopPropagation()}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      openManageDialog(lane.id);
+                    }}
+                  >
+                    <X size={11} weight="bold" />
+                  </button>
+                ) : null}
+              </span>
               {/* Primary: house icon; Non-primary: conflict status dot */}
               {isPrimary ? (
                 <House size={12} className="shrink-0" style={{ color: COLORS.accent }} />
@@ -3079,12 +3009,18 @@ export function LanesPage() {
                   title={`${formatPrBadgeLabel(lanePr)}: ${lanePr.title}`}
                   onClick={(event) => {
                     event.stopPropagation();
-                    navigate(`/prs${buildPrsRouteSearch({
-                      activeTab: "normal",
-                      selectedPrId: lanePr.id,
-                      selectedQueueGroupId: null,
-                      selectedRebaseItemId: null,
-                    })}`);
+                    if (lanePr.linkedPrId) {
+                      navigate(`/prs${buildPrsRouteSearch({
+                        activeTab: "normal",
+                        selectedPrId: lanePr.linkedPrId,
+                        selectedQueueGroupId: null,
+                        selectedRebaseItemId: null,
+                      })}`);
+                      return;
+                    }
+                    if (lanePr.githubUrl && isTrustedGitHubUrl(lanePr.githubUrl)) {
+                      void window.ade?.app?.openExternal?.(lanePr.githubUrl);
+                    }
                   }}
                   onMouseDown={(event) => event.stopPropagation()}
                 >
@@ -3122,14 +3058,6 @@ export function LanesPage() {
                 }} title={`Behind ${rebaseSuggestion.baseLabel?.trim() || "base"} by ${rebaseSuggestion.behindCount} commit(s)`}>
                   ↑{rebaseSuggestion.behindCount}
                 </span>
-              ) : null}
-              {/* Pinned badge */}
-              {!isDeleting && !isPrimary && isPinned ? (
-                <span style={{
-                  display: "inline-flex", alignItems: "center", padding: "2px 6px", borderRadius: 6,
-                  fontFamily: MONO_FONT, fontSize: 9, fontWeight: 700,
-                  color: COLORS.textMuted, background: "rgba(255,255,255,0.04)", border: `1px solid ${COLORS.border}`,
-                }}>PINNED</span>
               ) : null}
               {/* Auto-rebase status badges */}
               {!isDeleting && autoRebaseStatus?.state === "autoRebased" ? (
@@ -3170,13 +3098,13 @@ export function LanesPage() {
               {!isDeleting && !isPrimary ? (
                 <button
                   type="button"
-                  className="shrink-0 transition-opacity"
+                  className={`shrink-0 rounded transition-opacity ${isPinned ? "" : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100"}`}
                   style={{
                     display: "inline-flex", width: 16, height: 16, alignItems: "center", justifyContent: "center",
-                    background: isPinned ? "color-mix(in srgb, var(--color-warning) 25%, transparent)" : "transparent",
-                    color: isPinned ? COLORS.warning : COLORS.textDim,
-                    border: "none", cursor: "pointer",
-                    opacity: isPinned ? 1 : 0,
+                    background: isPinned ? `color-mix(in srgb, ${COLORS.warning} 18%, transparent)` : "transparent",
+                    color: COLORS.warning,
+                    border: isPinned ? `1px solid color-mix(in srgb, ${COLORS.warning} 42%, transparent)` : "1px solid transparent",
+                    cursor: "pointer",
                   }}
                   onClick={(event) => {
                     event.stopPropagation();
@@ -3184,7 +3112,7 @@ export function LanesPage() {
                   }}
                   title={isPinned ? "Unpin lane" : "Pin lane"}
                 >
-                  <PushPin size={10} />
+                  <PushPin size={11} weight={isPinned ? "fill" : "regular"} />
                 </button>
               ) : null}
               {/* Close from split — appears on hover */}

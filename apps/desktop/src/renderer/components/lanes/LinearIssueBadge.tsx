@@ -110,14 +110,17 @@ export function LinearIssueBadge({
         {!compact ? issue.identifier : null}
       </span>
       <span
-        className="pointer-events-none invisible absolute left-1/2 top-full z-[80] mt-2 w-[280px] -translate-x-1/2 overflow-hidden rounded-xl border opacity-0 shadow-xl transition-opacity group-hover:pointer-events-auto group-hover:visible group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:visible group-focus-within:opacity-100"
-        style={{
-          borderColor: LINEAR_BRAND.borderSubtle,
-          background: COLORS.cardBg,
-          color: COLORS.textSecondary,
-          backdropFilter: "blur(20px)",
-        }}
+        className="pointer-events-none invisible absolute left-1/2 top-full z-[80] w-[280px] -translate-x-1/2 pt-2 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:visible group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:visible group-focus-within:opacity-100"
       >
+        <span
+          className="block overflow-hidden rounded-xl border shadow-xl"
+          style={{
+            borderColor: LINEAR_BRAND.borderSubtle,
+            background: COLORS.cardBg,
+            color: COLORS.textSecondary,
+            backdropFilter: "blur(20px)",
+          }}
+        >
         {/* Linear-branded header strip */}
         <span
           className="flex items-center gap-2 border-b px-3 py-2"
@@ -260,6 +263,7 @@ export function LinearIssueBadge({
             ) : null}
           </span>
         ) : null}
+        </span>
       </span>
     </span>
   );
