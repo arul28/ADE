@@ -322,6 +322,12 @@ describe("LaneGitActionsPane rescue action", () => {
       });
     });
     await waitFor(() => {
+      expect(mockStoreState.refreshLanes).toHaveBeenCalledWith({
+        includeStatus: true,
+        includeSnapshots: true,
+      });
+    });
+    await waitFor(() => {
       expect(screen.queryByText(".claude/worktrees/fix-session-auto-naming")).toBeNull();
     });
   });

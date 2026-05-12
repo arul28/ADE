@@ -1029,11 +1029,14 @@ const gitBranchesCache = createKeyedShortIpcCache<GitBranchSummary[]>(
   2_000,
 );
 
+const localRuntimeDaemonDisabled =
+  process.env.ADE_DISABLE_LOCAL_RUNTIME_DAEMON === "1";
+
 const allowLocalRuntimeFallback =
   process.env.ADE_LOCAL_RUNTIME_FALLBACK !== "0" &&
   (
     process.env.ADE_LOCAL_RUNTIME_FALLBACK === "1" ||
-    process.env.ADE_DISABLE_LOCAL_RUNTIME_DAEMON === "1" ||
+    localRuntimeDaemonDisabled ||
     process.env.ADE_PACKAGE_CHANNEL === "alpha"
   );
 
@@ -1062,7 +1065,10 @@ function rememberProjectBinding(binding: OpenProjectBinding | null): void {
     projectBindingGeneration += 1;
     resetRemoteRuntimeEventDedup(nextKey);
   }
-  if (binding?.kind === "remote" || binding?.kind === "local") {
+  if (
+    binding?.kind === "remote" ||
+    (binding?.kind === "local" && !localRuntimeDaemonDisabled)
+  ) {
     ensureRemoteRuntimeEventPump();
   }
 }
@@ -1128,6 +1134,7 @@ async function callLocalProjectActionIfBound<T>(
   action: string,
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
 ): Promise<{ handled: true; result: T } | { handled: false }> {
+  if (localRuntimeDaemonDisabled) return { handled: false };
   const binding = await getLocalProjectBinding();
   if (!binding) return { handled: false };
   try {
@@ -1194,6 +1201,7 @@ async function callLocalProjectSyncIfBound<T>(
   method: string,
   params: Record<string, unknown> = {},
 ): Promise<{ handled: true; result: T } | { handled: false }> {
+  if (localRuntimeDaemonDisabled) return { handled: false };
   const binding = await getLocalProjectBinding();
   if (!binding) return { handled: false };
   try {
@@ -1376,7 +1384,11 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
   let nextDelayMs: number | null = null;
   try {
     const binding = await getProjectRuntimeBinding();
-    if (!binding || (binding.kind !== "remote" && binding.kind !== "local")) {
+    if (
+      !binding ||
+      (binding.kind !== "remote" && binding.kind !== "local") ||
+      (binding.kind === "local" && localRuntimeDaemonDisabled)
+    ) {
       remoteRuntimeEventCursor = 0;
       remoteRuntimeEventBindingKey = null;
       remoteRuntimeEventGeneration = projectBindingGeneration;
