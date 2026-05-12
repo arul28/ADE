@@ -6,7 +6,6 @@ import {
   reportProviderRuntimeFailure,
   reportProviderRuntimeReady,
 } from "./providerRuntimeHealth";
-import { resolveClaudeCodeExecutable } from "./claudeCodeExecutable";
 
 const PROBE_TIMEOUT_MS = 20_000;
 const PROBE_CACHE_TTL_MS = 30_000;
@@ -122,23 +121,18 @@ export async function probeClaudeRuntimeHealth(args: {
     return;
   }
 
-  let claudeExecutablePath: string | null = null;
-
   const probe = (async (): Promise<ClaudeRuntimeProbeResult> => {
     const abortController = new AbortController();
     const timeout = setTimeout(() => abortController.abort(), PROBE_TIMEOUT_MS);
     let stream: ReturnType<typeof claudeQuery> | null = null;
 
     try {
-      const claudeExecutable = resolveClaudeCodeExecutable();
-      claudeExecutablePath = claudeExecutable.path;
       stream = claudeQuery({
         prompt: "System initialization check. Respond with only the word READY.",
         options: {
           cwd: projectRoot,
           permissionMode: "plan",
           tools: [],
-          pathToClaudeCodeExecutable: claudeExecutable.path,
           abortController,
         },
       });
@@ -182,7 +176,6 @@ export async function probeClaudeRuntimeHealth(args: {
         projectRoot,
         state: result.state,
         message: result.message,
-        claudeExecutablePath,
       });
     }
   } finally {

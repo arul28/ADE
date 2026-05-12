@@ -3,6 +3,7 @@ import type {
   AgentChatEventEnvelope,
   AiConfig,
   AiApiKeyVerificationResult,
+  AiClaudeAvailability,
   AiProviderConnectionStatus,
   AiRuntimeConnectionStatus,
   AiSettingsStatus,
@@ -165,6 +166,22 @@ function getStatusTone(connection: AiProviderConnectionStatus | null | undefined
   if (connection?.runtimeAvailable) return { color: COLORS.success, label: "Connected" };
   if (connection?.runtimeDetected || connection?.authAvailable) return { color: COLORS.warning, label: "Sign-In Required" };
   return { color: COLORS.textDim, label: "Not Detected" };
+}
+
+function getClaudeAvailabilityTone(availability: AiClaudeAvailability | null | undefined): { color: string; label: string } {
+  if (availability?.binary.present && availability.auth.ready) return { color: COLORS.success, label: "Ready" };
+  if (availability?.binary.present) return { color: COLORS.warning, label: "Sign-In Required" };
+  return { color: COLORS.textDim, label: "Binary Missing" };
+}
+
+function buildClaudeAvailabilityMessage(availability: AiClaudeAvailability | null | undefined): string {
+  if (!availability?.binary.present) {
+    return "Claude unavailable (binary missing; should not happen with bundled install; run /doctor).";
+  }
+  if (!availability.auth.ready) {
+    return availability.auth.detail || "Sign in to use Claude";
+  }
+  return "Ready";
 }
 
 function describeCredentialSource(connection: AiProviderConnectionStatus | null | undefined): string | null {
@@ -676,9 +693,16 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
       {(() => {
         const tool = CLI_TOOLS.find((t) => t.cli === "claude")!;
         const connection = providerConnections?.[tool.cli] ?? null;
+        const availability = status?.availableProviders?.claude ?? null;
         const credentialSourceDesc = describeCredentialSource(connection);
-        const tone = isInitialCheckInFlight ? { color: COLORS.info, label: "Checking" } : getStatusTone(connection);
-        const message = isInitialCheckInFlight ? "Checking CLI availability and login status." : buildCliMessage(tool, connection);
+        const tone = isInitialCheckInFlight ? { color: COLORS.info, label: "Checking" } : getClaudeAvailabilityTone(availability);
+        const message = isInitialCheckInFlight ? "Checking Claude SDK binary and login status." : buildClaudeAvailabilityMessage(availability);
+        const binaryPath = availability?.binary.path ?? connection?.path ?? null;
+        const binaryLabel = availability?.binary.source === "bundled"
+          ? "Bundled Claude Agent SDK runtime"
+          : availability?.binary.source === "path"
+            ? "Claude runtime from PATH"
+            : "Claude Agent SDK runtime";
         return (
           <section style={{ ...cardStyle(), borderLeft: `3px solid ${tone.color}` }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
@@ -687,18 +711,18 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
                 <div>
                   <div style={{ fontSize: 13, fontFamily: SANS_FONT, fontWeight: 700, color: COLORS.textPrimary }}>Claude</div>
                   <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.35 }}>
-                    Anthropic native runtime via Claude Code CLI
+                    {binaryLabel}
                   </div>
                 </div>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 4, color: tone.color }}>
-                {isInitialCheckInFlight ? <Info size={14} weight="fill" /> : connection?.runtimeAvailable ? <CheckCircle size={14} weight="fill" /> : connection?.authAvailable || connection?.runtimeDetected ? <WarningCircle size={14} weight="fill" /> : <XCircle size={14} weight="fill" />}
+                {isInitialCheckInFlight ? <Info size={14} weight="fill" /> : availability?.auth.ready ? <CheckCircle size={14} weight="fill" /> : availability?.binary.present ? <WarningCircle size={14} weight="fill" /> : <XCircle size={14} weight="fill" />}
                 <span style={{ fontSize: 9, fontFamily: MONO_FONT, textTransform: "uppercase", letterSpacing: "1px" }}>{tone.label}</span>
               </div>
             </div>
             <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5, marginTop: 10 }}>{message}</div>
-            {credentialSourceDesc && !connection?.runtimeAvailable && !isInitialCheckInFlight ? <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.info, marginTop: 4 }}>{credentialSourceDesc}</div> : null}
-            {connection?.path && !isInitialCheckInFlight ? <code style={{ display: "block", marginTop: 6, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textSecondary, background: "color-mix(in srgb, var(--color-muted-fg) 12%, transparent)", border: `1px solid ${COLORS.border}`, padding: "6px 8px", overflowWrap: "anywhere", wordBreak: "break-all" }}>{connection.path}</code> : null}
+            {credentialSourceDesc && !availability?.auth.ready && !isInitialCheckInFlight ? <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.info, marginTop: 4 }}>{credentialSourceDesc}</div> : null}
+            {binaryPath && !isInitialCheckInFlight ? <code style={{ display: "block", marginTop: 6, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textSecondary, background: "color-mix(in srgb, var(--color-muted-fg) 12%, transparent)", border: `1px solid ${COLORS.border}`, padding: "6px 8px", overflowWrap: "anywhere", wordBreak: "break-all" }}>{binaryPath}</code> : null}
           </section>
         );
       })()}

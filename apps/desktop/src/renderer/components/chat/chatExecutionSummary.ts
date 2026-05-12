@@ -2,11 +2,15 @@ import type { AgentChatEventEnvelope, TurnDiffSummary } from "../../../shared/ty
 
 export type ChatSubagentSnapshot = {
   taskId: string;
+  agentId?: string;
+  agentType?: string;
+  parentToolUseId?: string | null;
   description: string;
   status: "running" | "completed" | "failed" | "stopped";
   startedAt: string;
   updatedAt: string;
   summary: string | null;
+  finalSummary?: string | null;
   lastToolName?: string;
   background?: boolean;
   usage?: {
@@ -26,14 +30,20 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
   for (const envelope of events) {
     const event = envelope.event;
     if (event.type === "subagent_started") {
-      const existing = snapshots.get(event.taskId);
-      snapshots.set(event.taskId, {
-        taskId: event.taskId,
+      const key = event.agentId ?? event.taskId;
+      const existing = snapshots.get(key) ?? snapshots.get(event.taskId);
+      if (key !== event.taskId) snapshots.delete(event.taskId);
+      snapshots.set(key, {
+        taskId: existing?.taskId ?? event.taskId,
+        agentId: event.agentId ?? existing?.agentId,
+        agentType: event.agentType ?? existing?.agentType,
+        parentToolUseId: event.parentToolUseId ?? existing?.parentToolUseId ?? null,
         description: event.description.trim() || existing?.description || "Subagent task",
         status: "running",
         startedAt: existing?.startedAt ?? envelope.timestamp,
         updatedAt: envelope.timestamp,
         summary: existing?.summary ?? null,
+        finalSummary: existing?.finalSummary ?? null,
         lastToolName: existing?.lastToolName,
         background: event.background ?? existing?.background ?? false,
         usage: existing?.usage,
@@ -42,30 +52,44 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
     }
 
     if (event.type === "subagent_progress") {
-      const existing = snapshots.get(event.taskId);
-      snapshots.set(event.taskId, {
-        taskId: event.taskId,
+      const key = event.agentId ?? event.taskId;
+      const existing = snapshots.get(key) ?? snapshots.get(event.taskId);
+      if (key !== event.taskId) snapshots.delete(event.taskId);
+      snapshots.set(key, {
+        taskId: existing?.taskId ?? event.taskId,
+        agentId: event.agentId ?? existing?.agentId,
+        agentType: event.agentType ?? existing?.agentType,
+        parentToolUseId: event.parentToolUseId ?? existing?.parentToolUseId ?? null,
         description: event.description?.trim() || existing?.description || "Subagent task",
         status: "running",
         startedAt: existing?.startedAt ?? envelope.timestamp,
         updatedAt: envelope.timestamp,
         summary: event.summary?.trim() || existing?.summary || null,
+        finalSummary: existing?.finalSummary ?? null,
         lastToolName: event.lastToolName ?? existing?.lastToolName,
+        background: existing?.background ?? false,
         usage: event.usage ? { ...(existing?.usage ?? {}), ...event.usage } : existing?.usage,
       });
       continue;
     }
 
     if (event.type === "subagent_result") {
-      const existing = snapshots.get(event.taskId);
-      snapshots.set(event.taskId, {
+      const key = event.agentId ?? event.taskId;
+      const existing = snapshots.get(key) ?? snapshots.get(event.taskId);
+      if (key !== event.taskId) snapshots.delete(event.taskId);
+      snapshots.set(key, {
         taskId: event.taskId,
+        agentId: event.agentId ?? existing?.agentId,
+        agentType: event.agentType ?? existing?.agentType,
+        parentToolUseId: event.parentToolUseId ?? existing?.parentToolUseId ?? null,
         description: existing?.description ?? "Subagent task",
         status: event.status,
         startedAt: existing?.startedAt ?? envelope.timestamp,
         updatedAt: envelope.timestamp,
         summary: event.summary?.trim() || existing?.summary || null,
+        finalSummary: event.finalSummary?.trim() || event.summary?.trim() || existing?.finalSummary || null,
         lastToolName: existing?.lastToolName,
+        background: existing?.background ?? false,
         usage: event.usage ? { ...(existing?.usage ?? {}), ...event.usage } : existing?.usage,
       });
     }

@@ -1082,7 +1082,15 @@ describe("AgentChatPane submit recovery", () => {
     window.ade.projectConfig.get = vi.fn().mockReturnValue(projectConfig) as any;
     window.ade.ai.getStatus = vi.fn().mockResolvedValue({
       mode: "subscription",
-      availableProviders: { claude: false, codex: true, cursor: true, droid: false },
+      availableProviders: {
+        claude: {
+          binary: { present: false, source: "missing", path: null },
+          auth: { ready: false, mode: "none", detail: null },
+        },
+        codex: true,
+        cursor: true,
+        droid: false,
+      },
       models: { claude: [], codex: [], cursor: [], droid: [] },
       features: [],
       detectedAuth: [
@@ -1140,7 +1148,15 @@ describe("AgentChatPane submit recovery", () => {
     });
     window.ade.ai.getStatus = vi.fn().mockResolvedValue({
       mode: "subscription",
-      availableProviders: { claude: false, codex: true, cursor: true, droid: false },
+      availableProviders: {
+        claude: {
+          binary: { present: false, source: "missing", path: null },
+          auth: { ready: false, mode: "none", detail: null },
+        },
+        codex: true,
+        cursor: true,
+        droid: false,
+      },
       models: { claude: [], codex: [], cursor: [], droid: [] },
       features: [],
       detectedAuth: [
@@ -1378,6 +1394,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(handoff).toHaveBeenCalledWith(expect.objectContaining({
         sourceSessionId: session.sessionId,
         targetModelId: "openai/gpt-5.4-mini",
+        mode: "brief",
         reasoningEffort: "xhigh",
         permissionMode: "default",
         claudePermissionMode: "default",
@@ -1421,18 +1438,57 @@ describe("AgentChatPane submit recovery", () => {
     const claudeLabel = getModelById("anthropic/claude-sonnet-4-6")?.displayName ?? "Claude Sonnet 4.6";
     fireEvent.click(await screen.findByRole("button", { name: /^Claude$/i }));
     await clickEnabledModelOption(new RegExp(escapeRegExp(claudeLabel), "i"));
-    expect(screen.getByText("Create opens the new work chat and sends the handoff summary as its first message.")).toBeTruthy();
+    expect(screen.getByText("Fork keeps the complete Claude transcript through the SDK. Brief sends a summary as the first message.")).toBeTruthy();
 
     const permissionSelect = await screen.findByLabelText("Claude permission mode for handoff") as HTMLSelectElement;
+    expect(within(permissionSelect).getByRole("option", { name: "Auto" })).toBeTruthy();
     fireEvent.change(permissionSelect, { target: { value: "plan" } });
-    fireEvent.click(await screen.findByRole("button", { name: "Create handoff chat" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Brief handoff" }));
 
     await waitFor(() => {
       expect(handoff).toHaveBeenCalledWith(expect.objectContaining({
         sourceSessionId: session.sessionId,
         targetModelId: "anthropic/claude-sonnet-4-6",
+        mode: "brief",
         claudePermissionMode: "plan",
         permissionMode: "plan",
+      }));
+    });
+  });
+
+  it("can fork a Claude handoff with full SDK history", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    const { handoff } = installAdeMocks({
+      includeClaudeModel: true,
+      handoffResult: {
+        session: buildCreatedSession("session-2", {
+          provider: "claude",
+          model: "sonnet",
+          modelId: "anthropic/claude-sonnet-4-6",
+        }),
+        usedFallbackSummary: false,
+      },
+    });
+
+    renderPane(session);
+
+    const handoffBtn = await screen.findByRole("button", { name: "Handoff" }) as HTMLButtonElement;
+    await waitFor(() => expect(handoffBtn.disabled).toBe(false));
+    fireEvent.click(handoffBtn);
+
+    const handoffMenu = (await screen.findByText("Start a sibling chat on another model")).closest("[data-chat-handoff-menu='true']");
+    expect(handoffMenu).toBeTruthy();
+    fireEvent.click(within(handoffMenu as HTMLElement).getByRole("button", { name: "Select model" }));
+    const claudeLabel = getModelById("anthropic/claude-sonnet-4-6")?.displayName ?? "Claude Sonnet 4.6";
+    fireEvent.click(await screen.findByRole("button", { name: /^Claude$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(claudeLabel), "i"));
+    fireEvent.click(await screen.findByRole("button", { name: "Fork full history" }));
+
+    await waitFor(() => {
+      expect(handoff).toHaveBeenCalledWith(expect.objectContaining({
+        sourceSessionId: session.sessionId,
+        targetModelId: "anthropic/claude-sonnet-4-6",
+        mode: "fork",
       }));
     });
   });

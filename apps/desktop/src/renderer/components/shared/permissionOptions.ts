@@ -96,6 +96,15 @@ export function getPermissionOptions(opts: {
         safety: "safe",
       },
       {
+        value: "auto",
+        label: "Auto",
+        shortDesc: "Claude judges each tool call",
+        detail: "Claude judges each tool call. Uses a model classifier instead of asking you.",
+        allows: ["Claude-classified safe tool calls"],
+        gates: ["Tool calls Claude classifies as needing review"],
+        safety: "semi-auto",
+      },
+      {
         value: "edit",
         label: "Accept Edits",
         shortDesc: "File ops auto-approved; shell still gates",

@@ -74,14 +74,14 @@ Two helpers summarise a parsed stream:
 | `plan` | Final plan payload (steps + explanation); replaces any earlier `plan_text` rows for that turn. |
 | `plan_text` | Streaming plan fragments; merged via `shouldMergePlanTextRows()`. |
 | `approval_request` | Legacy approval; newer code emits an embedded `PendingInputRequest` via `detail`. |
-| `structured_question` | Claude V2 `AskUserQuestion` tool surface. |
+| `structured_question` | Claude SDK `AskUserQuestion` tool surface. |
 | `pending_input_resolved` | Hidden row; consumed by pending-input derivation to clear UI state. |
 | `status` | Turn-level lifecycle: `started`, `completed`, `interrupted`, `failed`. |
 | `done` | Final turn marker with model, model id, usage, cost. Also clears non-question pending inputs when status is not `completed`. |
 | `activity` | Ephemeral UI hint (thinking, searching, running_command). Hidden from the transcript. |
 | `todo_update` | Task-list snapshot; consumed by `ChatTasksPanel`. |
-| `subagent_started` / `subagent_progress` / `subagent_result` | Claude background subagent lifecycle. |
-| `tool_use_start` / `tool_use_complete` / `tool_use_summary` | Claude V2 tool lifecycle tracking (see [Claude tool-use tracking](#claude-tool-use-tracking)). |
+| `subagent_started` / `subagent_progress` / `subagent_result` | Legacy Claude background subagent lifecycle. The service also emits canonical `subagent.started` / `subagent.progress` / `subagent.completed` rows from `runtimeEvents.ts` so all runtimes can converge on the same envelope. |
+| `tool_use_start` / `tool_use_complete` / `tool_use_summary` | Claude SDK tool lifecycle tracking (see [Claude tool-use tracking](#claude-tool-use-tracking)). |
 | `step_boundary` | Mission step boundary marker. |
 | `system_notice` | Non-transcript chrome: auth errors, rate limits, memory notices, file persistence hints. |
 | `completion_report` | Structured closeout produced by the `reportCompletion` workflow tool. |
@@ -91,6 +91,22 @@ Two helpers summarise a parsed stream:
 | `web_search` | Web-search tool lifecycle; renderers group these with other tool calls instead of showing them as standalone event cards. |
 | `auto_approval_review` | When auto-approval policy kicks in, this event carries the review text. |
 | `prompt_suggestion` | Suggested follow-up prompts for the user. |
+
+## Canonical runtime events
+
+`apps/desktop/src/main/services/chat/runtimeEvents.ts` defines the
+provider-neutral event vocabulary that runtime adapters should emit
+internally: `turn.started`, `content.delta`, `tool.started`,
+`tool.completed`, `tool.failed`, `subagent.started`,
+`subagent.progress`, `subagent.completed`, `teammate.idle`,
+`task.completed`, `turn.completed`, and `compact.boundary`.
+
+The current migration is additive. Claude still emits the legacy
+underscore subagent rows used by older renderer paths, then
+`buildCanonicalAgentChatRuntimeEvent()` writes the canonical dotted
+subagent row beside it. `AgentChatPane` filters the dotted rows from
+the transcript display because they are coordination data, while
+subagent-specific panels can consume either shape during the transition.
 
 ## Render pipeline
 
@@ -159,7 +175,7 @@ tool invocations into a single summary line with task-progress counts.
 
 ## Claude tool-use tracking
 
-The Claude V2 runtime tracks individual tool invocations via the SDK's
+The Claude SDK runtime tracks individual tool invocations via the SDK's
 `toolUseID`:
 
 1. On `tool_use_start` the service records the invocation as

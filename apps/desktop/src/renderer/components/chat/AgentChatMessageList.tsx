@@ -1925,6 +1925,7 @@ function renderEvent(
     sessionId?: string | null;
     runtimeName?: string | null;
     onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
+    onRewindFiles?: (request: { messageId: string; timestamp: string; text: string }) => void;
   }
 ) {
   const event = envelope.event;
@@ -1960,7 +1961,22 @@ function renderEvent(
               {deliveryChip.label}
             </span>
           ) : null}
-          <div className="absolute right-2 top-1.5 opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100">
+          <div className="absolute right-2 top-1.5 flex items-center gap-1 opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100">
+            {event.messageId && options?.onRewindFiles ? (
+              <button
+                type="button"
+                className="inline-flex h-5 w-5 items-center justify-center rounded text-white/45 transition-colors hover:bg-amber-300/12 hover:text-amber-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-300/45"
+                title="Undo the file changes the agent made after this message. Conversation stays intact."
+                aria-label="Undo file changes after this message"
+                onClick={() => options.onRewindFiles?.({
+                  messageId: event.messageId!,
+                  timestamp: envelope.timestamp,
+                  text: event.displayText?.trim() || event.text,
+                })}
+              >
+                <span aria-hidden>↶</span>
+              </button>
+            ) : null}
             <MessageCopyButton value={event.text} />
           </div>
           {(() => {
@@ -2454,6 +2470,49 @@ function renderEvent(
           </span>
         </div>
         <div className="h-px flex-1 bg-gradient-to-r from-transparent via-amber-400/15 to-transparent" />
+      </div>
+    );
+  }
+
+  /* ── Context Usage ── */
+  if (event.type === "context_usage") {
+    const usage = event.usage;
+    const totalLabel = formatTokenCount(usage.totalTokens) ?? "0";
+    const maxLabel = formatTokenCount(usage.maxTokens) ?? "0";
+    const percent = Math.max(0, Math.min(100, usage.percentage));
+    const categories = usage.categories.length ? usage.categories : [];
+    return (
+      <div className="w-fit max-w-[min(100%,42rem)] rounded-lg border border-cyan-300/14 bg-cyan-500/[0.035] px-3.5 py-3 font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-cyan-50/78">
+        <div className="flex flex-wrap items-center gap-2">
+          <Brain size={13} weight="regular" className="text-cyan-200/70" />
+          <span className="font-medium text-cyan-50/90">Context usage</span>
+          <span className="font-mono text-[length:calc(var(--chat-font-size)*10/14)] text-cyan-100/50">
+            {totalLabel} / {maxLabel} tokens · {percent.toFixed(0)}%
+          </span>
+          {usage.model ? <span className="rounded-md border border-cyan-200/10 px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-cyan-100/45">{usage.model}</span> : null}
+        </div>
+        <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-black/25">
+          <div className="h-full rounded-full bg-cyan-300/65" style={{ width: `${percent}%` }} />
+        </div>
+        <div className="mt-3 space-y-1.5">
+          {categories.map((category) => {
+            const categoryPercent = Math.max(0, Math.min(100, category.percentage));
+            return (
+              <div key={`${category.name}:${category.tokens}`} className="grid grid-cols-[minmax(8rem,1fr)_auto_4rem] items-center gap-3">
+                <span className="truncate text-cyan-50/74" title={category.name}>{category.name}</span>
+                <span className="font-mono text-cyan-100/50">{formatTokenCount(category.tokens) ?? "0"}</span>
+                <span className="text-right font-mono text-cyan-100/42">{categoryPercent.toFixed(categoryPercent < 10 && categoryPercent > 0 ? 1 : 0)}%</span>
+              </div>
+            );
+          })}
+        </div>
+        {(usage.memoryFiles?.length || usage.mcpTools?.length) ? (
+          <div className="mt-3 border-t border-cyan-100/10 pt-2 font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-cyan-100/40">
+            {usage.memoryFiles?.length ? <span>{usage.memoryFiles.length} memory file{usage.memoryFiles.length === 1 ? "" : "s"}</span> : null}
+            {usage.memoryFiles?.length && usage.mcpTools?.length ? <span> · </span> : null}
+            {usage.mcpTools?.length ? <span>{usage.mcpTools.length} MCP tool{usage.mcpTools.length === 1 ? "" : "s"}</span> : null}
+          </div>
+        ) : null}
       </div>
     );
   }
@@ -3328,6 +3387,7 @@ type EventRowProps = {
   onReviewChanges?: () => void;
   onInsertDraft?: (text: string) => void;
   onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
+  onRewindFiles?: (request: { messageId: string; timestamp: string; text: string }) => void;
   respondingApprovalIds?: Set<string>;
   pendingApprovalIds?: Set<string>;
   resolvedInputStates?: Map<string, PendingInputResolution>;
@@ -3353,6 +3413,7 @@ const EventRow = React.memo(function EventRow({
   onReviewChanges,
   onInsertDraft,
   onRevealChatTerminal,
+  onRewindFiles,
   respondingApprovalIds,
   pendingApprovalIds,
   resolvedInputStates,
@@ -3410,6 +3471,7 @@ const EventRow = React.memo(function EventRow({
             sessionId,
             runtimeName,
             onRevealChatTerminal,
+            onRewindFiles,
           })}
     </div>
   );
@@ -3570,6 +3632,7 @@ export function AgentChatMessageList({
   sessionId,
   onInsertDraft,
   onRevealChatTerminal,
+  onRewindFiles,
   sessionEnded = false,
 }: {
   events: AgentChatEventEnvelope[];
@@ -3582,6 +3645,7 @@ export function AgentChatMessageList({
   onOpenWorkspacePath?: (path: string, laneId?: string | null) => void;
   onInsertDraft?: (text: string) => void;
   onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
+  onRewindFiles?: (request: { messageId: string; timestamp: string; text: string }) => void;
   respondingApprovalIds?: Set<string>;
   pendingApprovalIds?: Set<string>;
   laneId?: string | null;
@@ -3995,6 +4059,7 @@ export function AgentChatMessageList({
           onReviewChanges={handleReviewChanges}
           onInsertDraft={onInsertDraft}
           onRevealChatTerminal={onRevealChatTerminal}
+          onRewindFiles={onRewindFiles}
           respondingApprovalIds={respondingApprovalIds}
           pendingApprovalIds={pendingApprovalIds}
           resolvedInputStates={resolvedInputStates}
@@ -4024,6 +4089,7 @@ export function AgentChatMessageList({
         onReviewChanges={handleReviewChanges}
         onInsertDraft={onInsertDraft}
         onRevealChatTerminal={onRevealChatTerminal}
+        onRewindFiles={onRewindFiles}
         respondingApprovalIds={respondingApprovalIds}
         pendingApprovalIds={pendingApprovalIds}
         resolvedInputStates={resolvedInputStates}
@@ -4032,7 +4098,7 @@ export function AgentChatMessageList({
         runtimeName={runtimeName}
       />
     );
-  }, [activeTurnId, assistantLabel, surfaceMode, surfaceProfile, groupedRows, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onInsertDraft, onRevealChatTerminal, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, laneId, sessionId, sessionEnded, runtimeName]);
+  }, [activeTurnId, assistantLabel, surfaceMode, surfaceProfile, groupedRows, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onInsertDraft, onRevealChatTerminal, onRewindFiles, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, laneId, sessionId, sessionEnded, runtimeName]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {

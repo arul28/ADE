@@ -88,6 +88,26 @@ import type {
   AgentChatSetParallelLaunchStateArgs,
   AgentChatSlashCommand,
   AgentChatSlashCommandsArgs,
+  AgentChatClaudeOutputStyle,
+  AgentChatClaudeOutputStylesArgs,
+  AgentChatSetClaudeOutputStyleArgs,
+  AgentChatClaudePlugin,
+  AgentChatClaudePluginsArgs,
+  AgentChatClaudeMcpReconnectArgs,
+  AgentChatClaudeMcpServerStatus,
+  AgentChatClaudeMcpStatusArgs,
+  AgentChatClaudeMcpToggleArgs,
+  AgentChatReloadClaudePluginsArgs,
+  AgentChatReloadClaudePluginsResult,
+  AgentChatClaudeSessionInfo,
+  AgentChatClaudeSessionInfoArgs,
+  AgentChatClaudeSessionListArgs,
+  AgentChatClaudeSessionMessage,
+  AgentChatClaudeSessionMessagesArgs,
+  AgentChatContextUsage,
+  AgentChatContextUsageArgs,
+  AgentChatRewindFilesArgs,
+  AgentChatRewindFilesResult,
   AgentChatFileSearchArgs,
   AgentChatFileSearchResult,
   AgentChatGetTurnFileDiffArgs,
@@ -1461,6 +1481,42 @@ declare global {
         slashCommands: (
           args: AgentChatSlashCommandsArgs,
         ) => Promise<AgentChatSlashCommand[]>;
+        getClaudeMcpStatus: (
+          args: AgentChatClaudeMcpStatusArgs,
+        ) => Promise<AgentChatClaudeMcpServerStatus[]>;
+        reconnectClaudeMcpServer: (
+          args: AgentChatClaudeMcpReconnectArgs,
+        ) => Promise<AgentChatClaudeMcpServerStatus[]>;
+        toggleClaudeMcpServer: (
+          args: AgentChatClaudeMcpToggleArgs,
+        ) => Promise<AgentChatClaudeMcpServerStatus[]>;
+        listClaudePlugins: (
+          args?: AgentChatClaudePluginsArgs,
+        ) => Promise<AgentChatClaudePlugin[]>;
+        reloadClaudePlugins: (
+          args: AgentChatReloadClaudePluginsArgs,
+        ) => Promise<AgentChatReloadClaudePluginsResult>;
+        listClaudeOutputStyles: (
+          args?: AgentChatClaudeOutputStylesArgs,
+        ) => Promise<AgentChatClaudeOutputStyle[]>;
+        setClaudeOutputStyle: (
+          args: AgentChatSetClaudeOutputStyleArgs,
+        ) => Promise<AgentChatSession>;
+        listClaudeSessions: (
+          args?: AgentChatClaudeSessionListArgs,
+        ) => Promise<AgentChatClaudeSessionInfo[]>;
+        getClaudeSessionInfo: (
+          args: AgentChatClaudeSessionInfoArgs,
+        ) => Promise<AgentChatClaudeSessionInfo | null>;
+        getClaudeSessionMessages: (
+          args: AgentChatClaudeSessionMessagesArgs,
+        ) => Promise<AgentChatClaudeSessionMessage[]>;
+        getContextUsage: (
+          args: AgentChatContextUsageArgs,
+        ) => Promise<AgentChatContextUsage | null>;
+        rewindFiles: (
+          args: AgentChatRewindFilesArgs,
+        ) => Promise<AgentChatRewindFilesResult>;
         fileSearch: (
           args: AgentChatFileSearchArgs,
         ) => Promise<AgentChatFileSearchResult[]>;

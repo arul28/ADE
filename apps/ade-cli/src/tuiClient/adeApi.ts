@@ -6,10 +6,15 @@ import {
   type ModelProviderGroup,
 } from "../../../desktop/src/shared/modelRegistry";
 import type {
+  AgentChatClaudeOutputStyle,
+  AgentChatClaudePlugin,
+  AgentChatReloadClaudePluginsResult,
+  AgentChatClaudeMcpServerStatus,
   AgentChatClaudePermissionMode,
   AgentChatCodexApprovalPolicy,
   AgentChatCodexConfigSource,
   AgentChatCodexSandbox,
+  AgentChatContextUsage,
   AgentChatCursorConfigValue,
   AgentChatDroidPermissionMode,
   AgentChatEventEnvelope,
@@ -60,6 +65,49 @@ export async function getSlashCommands(
 ): Promise<AgentChatSlashCommand[]> {
   if (!sessionId) return [];
   return await connection.action<AgentChatSlashCommand[]>("chat", "getSlashCommands", { sessionId });
+}
+
+export async function getContextUsage(
+  connection: AdeCodeConnection,
+  sessionId: string,
+): Promise<AgentChatContextUsage | null> {
+  return await connection.action<AgentChatContextUsage | null>("chat", "getContextUsage", { sessionId });
+}
+
+export async function getClaudeMcpStatus(
+  connection: AdeCodeConnection,
+  sessionId: string,
+): Promise<AgentChatClaudeMcpServerStatus[]> {
+  return await connection.action<AgentChatClaudeMcpServerStatus[]>("chat", "getClaudeMcpStatus", { sessionId });
+}
+
+export async function listClaudePlugins(
+  connection: AdeCodeConnection,
+  sessionId: string,
+): Promise<AgentChatClaudePlugin[]> {
+  return await connection.action<AgentChatClaudePlugin[]>("chat", "listClaudePlugins", { sessionId });
+}
+
+export async function reloadClaudePlugins(
+  connection: AdeCodeConnection,
+  sessionId: string,
+): Promise<AgentChatReloadClaudePluginsResult> {
+  return await connection.action<AgentChatReloadClaudePluginsResult>("chat", "reloadClaudePlugins", { sessionId });
+}
+
+export async function listClaudeOutputStyles(
+  connection: AdeCodeConnection,
+  sessionId: string,
+): Promise<AgentChatClaudeOutputStyle[]> {
+  return await connection.action<AgentChatClaudeOutputStyle[]>("chat", "listClaudeOutputStyles", { sessionId });
+}
+
+export async function setClaudeOutputStyle(
+  connection: AdeCodeConnection,
+  sessionId: string,
+  outputStyle: string,
+): Promise<AgentChatSession> {
+  return await connection.action<AgentChatSession>("chat", "setClaudeOutputStyle", { sessionId, outputStyle });
 }
 
 function slashCommandKey(value: string): string {
@@ -229,6 +277,13 @@ export async function renameChat(connection: AdeCodeConnection, sessionId: strin
   });
 }
 
+export async function tagChat(connection: AdeCodeConnection, sessionId: string, tag: string | null): Promise<AgentChatSession> {
+  return await connection.action("chat", "updateSession", {
+    sessionId,
+    tag,
+  });
+}
+
 export async function updateChatModel(args: {
   connection: AdeCodeConnection;
   sessionId: string;
@@ -280,7 +335,14 @@ export type TokenStats = {
   streaming: boolean;
   inputTokens: number | null;
   outputTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheCreationTokens: number | null;
+  contextWindow: number | null;
   costUsd: number | null;
+  rateLimit: {
+    usedPercentage: number | null;
+    resetsAt: number | null;
+  } | null;
 };
 
 export function latestTokenStats(
@@ -291,8 +353,11 @@ export function latestTokenStats(
   let streaming = false;
   let inputTokens: number | null = null;
   let outputTokens: number | null = null;
+  let cacheReadTokens: number | null = null;
+  let cacheCreationTokens: number | null = null;
   let costUsd: number | null = null;
   let eventLimit: number | null = null;
+  let rateLimit: TokenStats["rateLimit"] = null;
   for (const envelope of events) {
     const event = envelope.event as Record<string, unknown>;
     if (event.type === "status" && event.turnStatus === "started") streaming = true;
@@ -300,13 +365,27 @@ export function latestTokenStats(
     if (event.type === "tokens") {
       inputTokens = typeof event.inputTokens === "number" ? event.inputTokens : inputTokens;
       outputTokens = typeof event.outputTokens === "number" ? event.outputTokens : outputTokens;
+      cacheReadTokens = typeof event.cacheReadTokens === "number" ? event.cacheReadTokens : cacheReadTokens;
+      cacheCreationTokens = typeof event.cacheWriteTokens === "number" ? event.cacheWriteTokens : cacheCreationTokens;
       if (typeof event.contextWindow === "number") eventLimit = event.contextWindow;
     }
     if (event.type === "done") {
       const usage = event.usage && typeof event.usage === "object" ? event.usage as Record<string, unknown> : null;
       inputTokens = typeof usage?.inputTokens === "number" ? usage.inputTokens : inputTokens;
       outputTokens = typeof usage?.outputTokens === "number" ? usage.outputTokens : outputTokens;
+      cacheReadTokens = typeof usage?.cacheReadTokens === "number" ? usage.cacheReadTokens : cacheReadTokens;
+      cacheCreationTokens = typeof usage?.cacheCreationTokens === "number" ? usage.cacheCreationTokens : cacheCreationTokens;
       costUsd = typeof event.costUsd === "number" ? event.costUsd : costUsd;
+    }
+    if (event.type === "system_notice" && event.noticeKind === "rate_limit") {
+      const detail = typeof event.detail === "string" ? event.detail : "";
+      const pct = detail.match(/(\d+(?:\.\d+)?)%\s+utilized/i);
+      const reset = detail.match(/resets\s+([0-9TZ:.-]+)/i);
+      const resetMs = reset?.[1] ? Date.parse(reset[1]) : Number.NaN;
+      rateLimit = {
+        usedPercentage: pct?.[1] ? Number(pct[1]) : null,
+        resetsAt: Number.isFinite(resetMs) ? Math.round(resetMs / 1000) : null,
+      };
     }
   }
   const used = inputTokens != null || outputTokens != null ? (inputTokens ?? 0) + (outputTokens ?? 0) : null;
@@ -314,5 +393,5 @@ export function latestTokenStats(
   if (used != null && limit != null && limit > 0) {
     percent = Math.max(0, Math.min(100, Math.round((used / limit) * 100)));
   }
-  return { percent, streaming, inputTokens, outputTokens, costUsd };
+  return { percent, streaming, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, contextWindow: limit, costUsd, rateLimit };
 }

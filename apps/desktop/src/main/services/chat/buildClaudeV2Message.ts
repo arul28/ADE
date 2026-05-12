@@ -75,7 +75,7 @@ export type SDKUserMessagePartial = {
 };
 
 /**
- * Build the message payload for a Claude V2 session turn.
+ * Build the message payload for a Claude SDK session turn.
  * When image attachments are present, returns a streaming-input-format
  * SDKUserMessage with image content blocks (per Agent SDK docs).
  * Otherwise returns a plain string.

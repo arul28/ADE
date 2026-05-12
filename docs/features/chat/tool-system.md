@@ -34,7 +34,7 @@ Built by `createUniversalToolSet()` in `universalTools.ts`.
 | `grep`, `glob` | Search tools backed by `grepSearch.ts` / `globSearch.ts`. | Read-only. |
 | `memorySearch`, `memoryAdd`, `memoryPin`, `memoryUpdateCore` | Memory tools. See [Memory tools](#memory-tools). | Always allowed; `memoryUpdateCore` only exposed to CTO/worker identity sessions. |
 | `webFetch`, `webSearch` | Web tools; backed by `webFetch.ts` and `webSearch.ts`. | Always allowed. |
-| `askUser` (universal form) | Legacy ask-user helper. Claude V2 uses its native `AskUserQuestion` tool instead; see [ask-user](#ask-user-handling). | Always allowed. |
+| `askUser` (universal form) | Legacy ask-user helper. Claude SDK sessions use their native `AskUserQuestion` tool instead; see [ask-user](#ask-user-handling). | Always allowed. |
 | `TodoWrite`, `TodoRead` | Session-state todo list. Writes emit `todo_update` events. | Always allowed. |
 
 ### Memory tools
@@ -101,7 +101,7 @@ callback. `agentChatService` implements it by:
 4. Awaiting the user's response via `ade.agentChat.respondToInput`.
 5. Returning the answer string to the tool caller.
 
-Claude V2 uses its native `AskUserQuestion` SDK tool, which is plumbed
+Claude SDK sessions use the native `AskUserQuestion` SDK tool, which is plumbed
 through the same pending-input abstraction (see
 [transcript-and-turns](transcript-and-turns.md)).
 
@@ -222,7 +222,7 @@ Additional exposure rules:
   through `STRICT_WRITE_CATEGORIES` (`convention`, `pattern`, `gotcha`,
   `decision`) at write time. Agents that request strict writes for
   other categories silently fall back to `default`.
-- **Ask-user input schema.** Claude V2 `AskUserQuestion` inputs are
+- **Ask-user input schema.** Claude SDK `AskUserQuestion` inputs are
   coerced to `AskUserToolInput` shape inside `agentChatService`. Codex
   elicitations arrive through the `codex app-server` JSON-RPC stream
   and are normalized inline in the Codex adapter -- do not assume a

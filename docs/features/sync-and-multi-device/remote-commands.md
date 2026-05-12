@@ -138,7 +138,7 @@ Listed in order of appearance in the registry:
   `dispatchSteer`, `cancelDispatchedSteer`, `approve`, `respondToInput`
 - `resume`, `updateSession`, `dispose`, `models`
 
-`chat.dispatchSteer` (Claude V2 only) takes
+`chat.dispatchSteer` (Claude SDK only) takes
 `{ sessionId, steerId, mode: "inline" | "interrupt" }` and either folds
 a queued steer into the active turn or interrupts the active turn so
 the queued message runs next; it returns `{ ok, dispatchedAt }`.
