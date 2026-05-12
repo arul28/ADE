@@ -1093,6 +1093,8 @@ describe("prService merge contexts", () => {
     const bulk = await service.getMergeContexts(["pr-1"]);
 
     expect(bulk["pr-1"]).toEqual(single);
+    const allDbCalls = db.all.mock.calls as Array<[unknown, ...unknown[]]>;
+    expect(allDbCalls.some(([sql]) => String(sql).includes("row_number() over"))).toBe(true);
     expect(single).toEqual(expect.objectContaining({
       groupId: group.group_id,
       groupType: "integration",

@@ -851,6 +851,9 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
             }
           }
         }
+        if (![statusResult, checksResult, reviewsResult, commentsResult].some((result) => result.status === "fulfilled")) {
+          return;
+        }
 
         // Apply successful results; keep previous value for any that failed
         detailStatePrIdRef.current = prId;
@@ -943,7 +946,6 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
         if (cancelled || selectedPrIdRef.current !== prId || liveDetailApplied) return;
         const snapshot = snapshots[0];
         if (!snapshot) return;
-        detailStatePrIdRef.current = prId;
         setDetailStatus(snapshot.status);
         setDetailChecks(snapshot.checks);
         setDetailReviews(snapshot.reviews);

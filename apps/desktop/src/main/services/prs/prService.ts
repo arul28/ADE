@@ -4155,14 +4155,18 @@ export function createPrService({
       const rowPlaceholders = chunk.map(() => "?").join(", ");
       groupRows.push(...db.all<PrGroupLookupRow & { pr_id: string }>(
         `
-          select
-            m.pr_id as pr_id,
-            g.id as group_id,
-            g.group_type as group_type
-          from pr_group_members m
-          join pr_groups g on g.id = m.group_id
-          where g.project_id = ? and m.pr_id in (${rowPlaceholders})
-          order by g.created_at desc
+          select pr_id, group_id, group_type
+          from (
+            select
+              m.pr_id as pr_id,
+              g.id as group_id,
+              g.group_type as group_type,
+              row_number() over (partition by m.pr_id order by g.created_at desc) as group_rank
+            from pr_group_members m
+            join pr_groups g on g.id = m.group_id
+            where g.project_id = ? and m.pr_id in (${rowPlaceholders})
+          )
+          where group_rank = 1
         `,
         [projectId, ...chunk],
       ));
