@@ -30,9 +30,9 @@ function stripFileUrlPrefix(value: string | null): string | null {
   if (!/^file:\/\//i.test(value)) return value;
   const raw = value.replace(/^file:\/\//i, "");
   try {
-    return decodeURIComponent(raw);
+    return decodeURIComponent(raw).replace(/^\/([a-z]:[\\/])/i, "$1");
   } catch {
-    return raw;
+    return raw.replace(/^\/([a-z]:[\\/])/i, "$1");
   }
 }
 

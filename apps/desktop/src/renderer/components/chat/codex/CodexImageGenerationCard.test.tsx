@@ -74,6 +74,18 @@ describe("CodexImageGenerationCard", () => {
     expect(screen.getByText("bird.png")).toBeTruthy();
   });
 
+  it("normalizes Windows file URLs before opening saved images", () => {
+    render(
+      <CodexImageGenerationCard
+        event={{ ...baseEvent, savedPath: "file:///C:/Users/ADE/image%20one.png" }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /open/i }));
+
+    expect(openPath).toHaveBeenCalledWith("C:/Users/ADE/image one.png");
+  });
+
   it("keeps the revised prompt hidden by default and reveals it when clicked", () => {
     render(<CodexImageGenerationCard event={baseEvent} />);
     expect(screen.queryByText(/soaring across an indigo sunset/)).toBeNull();
