@@ -134,7 +134,7 @@ describe("PrsContext refresh", () => {
       expect(screen.getByTestId("needs-count").textContent).toBe("1");
       expect(screen.getByTestId("auto-count").textContent).toBe("1");
     });
-    expect(window.ade.lanes.list).toHaveBeenCalledWith({ includeStatus: true });
+    expect(window.ade.lanes.list).toHaveBeenCalledWith({ includeStatus: false });
     expect(window.ade.prs.refresh).toHaveBeenCalledTimes(1);
   });
 

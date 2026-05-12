@@ -28,6 +28,7 @@ import { useOnboardingStore } from "../../state/onboardingStore";
 import { useDialogBus } from "../../lib/useDialogBus";
 import {
   parseLaneIdsParam,
+  planLaneDeleteBatches,
   resolveCreateLaneRequest,
   resolveLaneDeleteStartSelection,
   resolveLaneIdsDeepLinkSelection,
@@ -178,7 +179,7 @@ function createPendingDeleteProgress(laneId: string): LaneDeleteProgress {
     steps: [],
     startedAt: new Date().toISOString(),
     overallStatus: "running",
-    cancellable: true,
+    cancellable: false,
   };
 }
 
@@ -717,7 +718,7 @@ export function LanesPage() {
       pendingLaneDeleteRefreshIdsRef.current.clear();
       if (laneIds.length === 0) return;
 
-      void refreshLanes()
+      void refreshLanes({ includeStatus: false })
         .then(() => {
           const selectedId = selectedLaneIdRef.current;
           const managedIds = managedLaneIdsRef.current;
@@ -1387,19 +1388,52 @@ export function LanesPage() {
 
     void (async () => {
       const errors: string[] = [];
-      for (const lane of actionable) {
-        try {
-          const args = deleteArgsByLaneId.get(lane.id);
-          if (!args) continue;
-          await window.ade.lanes.delete(args);
-        } catch (err) {
-          errors.push(`${lane.name}: ${err instanceof Error ? err.message : String(err)}`);
+      const deleteLaneById = new Map(actionable.map((lane) => [lane.id, lane] as const));
+      const blockedLaneIds = new Set<string>();
+      const hasBlockedSelectedDescendant = (laneId: string): boolean => {
+        for (const blockedLaneId of blockedLaneIds) {
+          let cursor = deleteLaneById.get(blockedLaneId) ?? null;
+          while (cursor?.parentLaneId) {
+            if (cursor.parentLaneId === laneId) return true;
+            cursor = deleteLaneById.get(cursor.parentLaneId) ?? null;
+          }
+        }
+        return false;
+      };
+
+      for (const batch of planLaneDeleteBatches(actionable)) {
+        const runnable = batch.filter((lane) => {
+          if (!hasBlockedSelectedDescendant(lane.id)) return true;
+          blockedLaneIds.add(lane.id);
+          errors.push(`${lane.name}: skipped because a selected child lane did not delete.`);
           setDeleteProgressByLaneId((prev) => {
             const next = { ...prev };
             delete next[lane.id];
             return next;
           });
-        }
+          return false;
+        });
+        if (runnable.length === 0) continue;
+
+        const results = await Promise.allSettled(
+          runnable.map(async (lane) => {
+            const args = deleteArgsByLaneId.get(lane.id);
+            if (!args) return;
+            await window.ade.lanes.delete(args);
+          }),
+        );
+        results.forEach((result, index) => {
+          if (result.status === "fulfilled") return;
+          const lane = runnable[index];
+          if (!lane) return;
+          blockedLaneIds.add(lane.id);
+          errors.push(`${lane.name}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`);
+          setDeleteProgressByLaneId((prev) => {
+            const next = { ...prev };
+            delete next[lane.id];
+            return next;
+          });
+        });
       }
       if (errors.length > 0) {
         setLaneActionError(errors.join("\n"));

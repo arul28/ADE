@@ -144,6 +144,18 @@ export type GitHubPrSnapshot = {
   syncedAt: string;
 };
 
+export type PrSnapshotHydration = {
+  prId: string;
+  detail: PrDetail | null;
+  status: PrStatus | null;
+  checks: PrCheck[];
+  reviews: PrReview[];
+  comments: PrComment[];
+  files: PrFile[];
+  commits: PrCommit[];
+  updatedAt: string | null;
+};
+
 export type PrEventPayload =
   | {
       type: "prs-updated";

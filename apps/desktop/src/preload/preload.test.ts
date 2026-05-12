@@ -940,6 +940,60 @@ describe("preload OAuth bridge", () => {
     expect(invoke).not.toHaveBeenCalledWith(IPC.prsCreateFromLane, expect.anything());
   });
 
+  it("routes bulk PR merge context hydration with positional runtime args", async () => {
+    const binding = {
+      kind: "remote",
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      runtimeName: "Remote",
+      projectId: "project-1",
+      rootPath: "/remote/project",
+      displayName: "Project",
+    };
+    const contexts = { "pr-1": { prId: "pr-1", members: [] } };
+    const invoke = vi.fn(async (channel: string, payload?: unknown) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding };
+      }
+      if (channel === IPC.remoteRuntimeCallAction) {
+        const request = (payload as { request?: { domain?: string; action?: string } } | undefined)?.request;
+        return { ok: true, domain: request?.domain, action: request?.action, result: contexts, statusHints: {} };
+      }
+      return undefined;
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.prs.getMergeContexts(["pr-1", "pr-2"])).resolves.toEqual(contexts);
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: "target-1",
+      projectId: "project-1",
+      request: {
+        domain: "pr",
+        action: "getMergeContexts",
+        argsList: [["pr-1", "pr-2"]],
+      },
+    });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.prsGetMergeContexts, expect.anything());
+  });
+
   it("routes GitHub repo metadata through a remote project runtime when bound", async () => {
     const binding = {
       kind: "remote",

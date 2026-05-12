@@ -25,6 +25,9 @@ type QueueLandingEntryState = {
   state: string;
 };
 
+const QUEUE_TARGET_FETCH_TTL_MS = 5 * 60_000;
+const queueTargetFetchAttemptedAt = new Map<string, number>();
+
 export type QueueRebaseOverride = {
   comparisonRef: string;
   displayBaseBranch: string;
@@ -217,7 +220,12 @@ export async function fetchQueueTargetTrackingBranches(args: {
     if (branch) branches.add(branch);
   }
 
+  const now = Date.now();
   for (const branch of branches) {
+    const cacheKey = `${args.projectRoot}\0${args.projectId}\0${branch}`;
+    const attemptedAt = queueTargetFetchAttemptedAt.get(cacheKey) ?? 0;
+    if (now - attemptedAt < QUEUE_TARGET_FETCH_TTL_MS) continue;
+    queueTargetFetchAttemptedAt.set(cacheKey, now);
     await fetchRemoteTrackingBranch({
       projectRoot: args.projectRoot,
       targetBranch: branch,

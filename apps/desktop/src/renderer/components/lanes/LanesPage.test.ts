@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   githubPrMatchesCurrentBranch,
   lanePrMatchesCurrentBranch,
+  planLaneDeleteBatches,
   resolveLaneDeleteStartSelection,
   resolveCreateLaneRequest,
   resolveLaneIdsDeepLinkSelection,
@@ -165,6 +166,33 @@ describe("resolveLaneIdsDeepLinkSelection", () => {
       availableLaneIds: ["lane-a"],
       consumedSignature: null,
     })).toBeNull();
+  });
+});
+
+describe("planLaneDeleteBatches", () => {
+  it("runs independent lanes in the same delete batch", () => {
+    const batches = planLaneDeleteBatches([
+      { id: "lane-a", parentLaneId: null },
+      { id: "lane-b", parentLaneId: null },
+      { id: "lane-c", parentLaneId: "lane-x" },
+    ]);
+
+    expect(batches.map((batch) => batch.map((lane) => lane.id))).toEqual([["lane-a", "lane-b", "lane-c"]]);
+  });
+
+  it("deletes selected child lanes before their selected parents", () => {
+    const batches = planLaneDeleteBatches([
+      { id: "lane-parent", parentLaneId: null },
+      { id: "lane-child", parentLaneId: "lane-parent" },
+      { id: "lane-grandchild", parentLaneId: "lane-child" },
+      { id: "lane-sibling", parentLaneId: "lane-parent" },
+    ]);
+
+    expect(batches.map((batch) => batch.map((lane) => lane.id))).toEqual([
+      ["lane-grandchild", "lane-sibling"],
+      ["lane-child"],
+      ["lane-parent"],
+    ]);
   });
 });
 

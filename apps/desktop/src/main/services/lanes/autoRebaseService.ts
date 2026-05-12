@@ -263,7 +263,10 @@ export function createAutoRebaseService(args: {
 
   const listStatuses = async (options?: ListStatusesOptions): Promise<AutoRebaseLaneStatus[]> => {
     void maybeSweepRoots("listStatuses");
-    const lanes = options?.lanes ?? await laneService.list({ includeArchived: false });
+    const lanes = options?.lanes ?? await laneService.list({
+      includeArchived: false,
+      includeStatus: options?.includeAll ? false : true,
+    });
     if (disposed) return [];
     // When a caller-supplied lane subset is provided, laneById is no longer
     // authoritative for the full active-lane set, so we cannot infer "parent

@@ -626,16 +626,25 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     const uniquePrIds = [...new Set(prIds.map((id) => String(id ?? "").trim()).filter(Boolean))];
     if (uniquePrIds.length === 0) return;
     const contexts: Record<string, PrMergeContext> = {};
-    await Promise.all(
-      uniquePrIds.map(async (prId) => {
-        try {
-          const ctx = await window.ade.prs.getMergeContext(prId);
-          contexts[prId] = ctx;
-        } catch {
-          /* skip failures */
-        }
-      }),
-    );
+    if (typeof window.ade.prs.getMergeContexts === "function") {
+      try {
+        Object.assign(contexts, await window.ade.prs.getMergeContexts(uniquePrIds));
+      } catch {
+        /* fall back to single-context hydration below */
+      }
+    }
+    if (Object.keys(contexts).length === 0) {
+      await Promise.all(
+        uniquePrIds.map(async (prId) => {
+          try {
+            const ctx = await window.ade.prs.getMergeContext(prId);
+            contexts[prId] = ctx;
+          } catch {
+            /* skip failures */
+          }
+        }),
+      );
+    }
     setMergeContextByPrId((prev) => {
       const allowed = new Set(prsRef.current.map((pr) => pr.id));
       const next = Object.fromEntries(
@@ -672,12 +681,13 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
   // If a refresh is requested while one is already in flight, we set a
   // pending flag so that once the current flight completes it immediately
   // kicks off another refresh instead of silently dropping the request.
-  const applyLocalPrState = useCallback(async () => {
+  const applyLocalPrState = useCallback(async (options: { includeWorkflowDiagnostics?: boolean } = {}) => {
     const shouldLoadWorkflowState = activeTabRef.current !== "normal";
-    const shouldLoadRebaseState = shouldLoadWorkflowState || selectedPrIdRef.current !== null;
+    const shouldLoadRebaseState = (options.includeWorkflowDiagnostics ?? true)
+      && (shouldLoadWorkflowState || selectedPrIdRef.current !== null);
     const [prList, laneList, queueStateList, refreshedRebaseNeeds, refreshedAutoRebaseStatuses] = await Promise.all([
-      window.ade.prs.listWithConflicts(),
-      window.ade.lanes.list({ includeStatus: shouldLoadRebaseState }),
+      window.ade.prs.listWithConflicts({ includeConflictAnalysis: shouldLoadWorkflowState }),
+      window.ade.lanes.list({ includeStatus: false }),
       shouldLoadWorkflowState
         ? window.ade.prs.listQueueStates({ includeCompleted: true, limit: 50 })
         : Promise.resolve([] as QueueLandingState[]),
@@ -688,7 +698,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
           })
         : Promise.resolve(rebaseNeedsRef.current),
       shouldLoadRebaseState
-        ? window.ade.lanes.listAutoRebaseStatuses().catch((err) => {
+        ? window.ade.lanes.listAutoRebaseStatuses({ includeAll: true }).catch((err) => {
             console.warn("[PrsContext] Failed to refresh auto-rebase statuses:", err);
             return autoRebaseStatusesRef.current;
           })
@@ -700,8 +710,10 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     // to avoid unnecessary re-render cascades in child components.
     setPrs((prev) => (jsonEqual(prev, prList) ? prev : prList));
     setLanes((prev) => (jsonEqual(prev, laneList) ? prev : laneList));
-    setRebaseNeeds((prev) => (jsonEqual(prev, refreshedRebaseNeeds) ? prev : refreshedRebaseNeeds));
-    setAutoRebaseStatuses((prev) => (jsonEqual(prev, refreshedAutoRebaseStatuses) ? prev : refreshedAutoRebaseStatuses));
+    if (shouldLoadRebaseState) {
+      setRebaseNeeds((prev) => (jsonEqual(prev, refreshedRebaseNeeds) ? prev : refreshedRebaseNeeds));
+      setAutoRebaseStatuses((prev) => (jsonEqual(prev, refreshedAutoRebaseStatuses) ? prev : refreshedAutoRebaseStatuses));
+    }
     if (shouldLoadWorkflowState) {
       setQueueStates((prev) => {
         const next = Object.fromEntries(queueStateList.map((state) => [state.groupId, state] as const));
@@ -766,7 +778,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       warmCacheHydratedAtRef.current = Date.now();
       if (options.githubRefreshMode === "background") {
         void window.ade.prs.refresh()
-          .then(() => applyLocalPrState())
+          .then(() => applyLocalPrState({ includeWorkflowDiagnostics: false }))
           .then(() => {
             warmCacheHydratedAtRef.current = Date.now();
           })
@@ -901,6 +913,33 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
 
     let cancelled = false;
     const prId = selectedPrId;
+    if (typeof window.ade.prs.listSnapshots === "function") {
+      void window.ade.prs.listSnapshots({ prId }).then((snapshots) => {
+        if (cancelled || selectedPrIdRef.current !== prId) return;
+        const snapshot = snapshots[0];
+        if (!snapshot) return;
+        let hydrated = false;
+        if (snapshot.status) {
+          setDetailStatus(snapshot.status);
+          hydrated = true;
+        }
+        if (snapshot.checks.length > 0) {
+          setDetailChecks(snapshot.checks);
+          hydrated = true;
+        }
+        if (snapshot.reviews.length > 0) {
+          setDetailReviews(snapshot.reviews);
+          hydrated = true;
+        }
+        if (snapshot.comments.length > 0) {
+          setDetailComments(snapshot.comments);
+          hydrated = true;
+        }
+        if (hydrated) {
+          setDetailBusy(false);
+        }
+      }).catch(() => {});
+    }
     const cachedDetailAgeMs = Date.now() - (detailLoadedAtByPrIdRef.current[prId] ?? 0);
     const hasFreshDetailCache =
       cachedDetailAgeMs >= 0
@@ -1175,7 +1214,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (activeTab === "normal" && selectedPrId == null) return;
     let cancelled = false;
-    window.ade.lanes.listAutoRebaseStatuses().then((statuses) => {
+    window.ade.lanes.listAutoRebaseStatuses({ includeAll: true }).then((statuses) => {
       if (!cancelled) setAutoRebaseStatuses(statuses);
     }).catch((err) => {
       console.warn("[PrsContext] Failed to list auto-rebase statuses:", err);

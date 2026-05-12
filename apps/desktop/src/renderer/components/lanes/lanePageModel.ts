@@ -61,6 +61,28 @@ export function parseLaneIdsParam(value: string | null): string[] {
     .filter(Boolean);
 }
 
+export function planLaneDeleteBatches<T extends Pick<LaneSummary, "id" | "parentLaneId">>(lanes: T[]): T[][] {
+  const lanesById = new Map(lanes.map((lane) => [lane.id, lane] as const));
+  const remaining = new Set(lanesById.keys());
+  const batches: T[][] = [];
+
+  while (remaining.size > 0) {
+    const leafIds = Array.from(remaining).filter((laneId) => {
+      for (const candidateId of remaining) {
+        if (lanesById.get(candidateId)?.parentLaneId === laneId) return false;
+      }
+      return true;
+    });
+    const batchIds = leafIds.length > 0 ? leafIds : [remaining.values().next().value as string];
+    batches.push(batchIds.map((laneId) => lanesById.get(laneId)).filter((lane): lane is T => lane != null));
+    for (const laneId of batchIds) {
+      remaining.delete(laneId);
+    }
+  }
+
+  return batches;
+}
+
 export function resolveLaneIdsDeepLinkSelection(args: {
   laneIdsRaw: string | null;
   inspectorTabParam?: string | null;

@@ -352,6 +352,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getGithubSnapshot",
     "getIntegrationResolutionState",
     "getMergeContext",
+    "getMergeContexts",
     "getMobileSnapshot",
     "getPrHealth",
     "getQueueState",
@@ -370,6 +371,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "listIntegrationProposals",
     "listIntegrationWorkflows",
     "listOpenPullRequests",
+    "listSnapshots",
     "listWithConflicts",
     "postReviewComment",
     "reactToComment",
@@ -2202,7 +2204,8 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
       runtime.conflictService?.deferRebase(laneId, until);
       await runtime.rebaseSuggestionService?.defer({ laneId, minutes });
     },
-    listAutoRebaseStatuses: () => runtime.autoRebaseService?.listStatuses() ?? [],
+    listAutoRebaseStatuses: (args?: { includeAll?: boolean }) =>
+      runtime.autoRebaseService?.listStatuses({ includeAll: args?.includeAll === true }) ?? [],
     dismissAutoRebaseStatus: async (args?: { laneId?: string }) => {
       const laneId = requireNonEmptyString(args?.laneId, "laneId");
       await runtime.autoRebaseService?.dismissStatus({ laneId });

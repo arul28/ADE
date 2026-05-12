@@ -169,15 +169,6 @@ export function ManageLaneDialog({
   const confirmMatch = !requiresTypeConfirm || deleteConfirmText.trim().toLowerCase() === deletePhrase.toLowerCase();
   const showStaticBusy = laneActionBusy && !deleteProgress;
 
-  const handleCancelDelete = async (): Promise<void> => {
-    if (!singleLane) return;
-    try {
-      await window.ade.lanes.cancelDelete({ laneId: singleLane.id });
-    } catch {
-      // Cancellation is best-effort — surfaced via the next progress event if honored.
-    }
-  };
-
   return (
     <LaneDialogShell
       open={open}
@@ -389,19 +380,6 @@ export function ManageLaneDialog({
                     ? `Delete ${lanes.length} lanes`
                     : "Delete lane"}
               </Button>
-
-              {/* Cancel — visible only while a streaming delete is running */}
-              {deleteProgress?.overallStatus === "running" ? (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={!deleteProgress?.cancellable}
-                  title={deleteProgress?.cancellable ? "Cancel pending delete" : "Past the point of no return"}
-                  onClick={() => { void handleCancelDelete(); }}
-                >
-                  {deleteProgress?.cancellable ? "Cancel" : "Cancel (unavailable)"}
-                </Button>
-              ) : null}
             </div>
           </section>
         </div>

@@ -5683,10 +5683,10 @@ export function registerIpc({
     await ctx.rebaseSuggestionService.defer({ laneId: arg.laneId, minutes: arg.minutes });
   });
 
-  ipcMain.handle(IPC.lanesListAutoRebaseStatuses, async (): Promise<AutoRebaseLaneStatus[]> => {
+  ipcMain.handle(IPC.lanesListAutoRebaseStatuses, async (_event, arg?: { includeAll?: boolean }): Promise<AutoRebaseLaneStatus[]> => {
     const ctx = getCtx();
     if (!ctx.autoRebaseService) return [];
-    return await ctx.autoRebaseService.listStatuses();
+    return await ctx.autoRebaseService.listStatuses({ includeAll: arg?.includeAll === true });
   });
 
   ipcMain.handle(IPC.lanesDismissAutoRebaseStatus, async (_event, arg: { laneId: string }): Promise<void> => {
@@ -8048,10 +8048,25 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsGetMergeContext, async (_event, arg: { prId: string }): Promise<PrMergeContext> => getCtx().prService.getMergeContext(arg.prId));
 
-  ipcMain.handle(IPC.prsListWithConflicts, async () => ensurePrPolling().prService.listWithConflicts());
+  ipcMain.handle(IPC.prsGetMergeContexts, async (_event, arg: { prIds?: string[] }): Promise<Record<string, PrMergeContext>> =>
+    getCtx().prService.getMergeContexts(Array.isArray(arg?.prIds) ? arg.prIds : [])
+  );
 
-  ipcMain.handle(IPC.prsGetGitHubSnapshot, async (_event, arg?: { force?: boolean }): Promise<GitHubPrSnapshot> =>
-    await ensurePrPolling().prService.getGithubSnapshot({ force: arg?.force === true })
+  ipcMain.handle(IPC.prsListWithConflicts, async (_event, arg?: { includeConflictAnalysis?: boolean }) =>
+    ensurePrPolling().prService.listWithConflicts({
+      includeConflictAnalysis: arg?.includeConflictAnalysis !== false,
+    })
+  );
+
+  ipcMain.handle(IPC.prsListSnapshots, async (_event, arg?: { prId?: string }) =>
+    getCtx().prService.listSnapshots({ prId: typeof arg?.prId === "string" ? arg.prId : undefined })
+  );
+
+  ipcMain.handle(IPC.prsGetGitHubSnapshot, async (_event, arg?: { force?: boolean; includeExternalClosed?: boolean }): Promise<GitHubPrSnapshot> =>
+    await ensurePrPolling().prService.getGithubSnapshot({
+      force: arg?.force === true,
+      includeExternalClosed: arg?.includeExternalClosed === true,
+    })
   );
 
   ipcMain.handle(IPC.prsCreateQueue, async (_event, arg: CreateQueuePrsArgs): Promise<CreateQueuePrsResult> => {

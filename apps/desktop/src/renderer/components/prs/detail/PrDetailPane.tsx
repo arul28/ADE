@@ -747,6 +747,14 @@ export function PrDetailPane({
   const loadDetail = React.useCallback(async () => {
     const requestId = ++detailLoadSeqRef.current;
     try {
+      if (typeof window.ade.prs.listSnapshots === "function") {
+        const cachedSnapshot = (await window.ade.prs.listSnapshots({ prId: pr.id }).catch(() => []))[0];
+        if (cachedSnapshot && requestId === detailLoadSeqRef.current) {
+          if (cachedSnapshot.detail) setDetail(cachedSnapshot.detail);
+          if (cachedSnapshot.files.length > 0) setFiles(cachedSnapshot.files);
+          if (cachedSnapshot.commits.length > 0) setCommits(cachedSnapshot.commits);
+        }
+      }
       const [d, f, c, a, act] = await Promise.all([
         window.ade.prs.getDetail(pr.id).catch(() => null),
         window.ade.prs.getFiles(pr.id).catch(() => []),
