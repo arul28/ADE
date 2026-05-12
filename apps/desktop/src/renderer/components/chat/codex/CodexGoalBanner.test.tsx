@@ -41,6 +41,28 @@ describe("CodexGoalBanner", () => {
     expect(onClear).toHaveBeenCalledTimes(1);
   });
 
+  it("does not submit an edit when clearing during edit mode", () => {
+    const onEdit = vi.fn();
+    const onClear = vi.fn();
+    render(
+      <CodexGoalBanner
+        goal={{ objective: "Refactor auth", status: "active" }}
+        onEdit={onEdit}
+        onClear={onClear}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Refactor auth"));
+    const input = screen.getByLabelText("Edit goal objective");
+    fireEvent.change(input, { target: { value: "Temporary draft" } });
+    const clearButton = screen.getByLabelText("Clear goal");
+    fireEvent.mouseDown(clearButton);
+    fireEvent.click(clearButton);
+
+    expect(onClear).toHaveBeenCalledTimes(1);
+    expect(onEdit).not.toHaveBeenCalled();
+  });
+
   it("does not invoke onEdit when Escape cancels the edit", () => {
     const onEdit = vi.fn();
     render(

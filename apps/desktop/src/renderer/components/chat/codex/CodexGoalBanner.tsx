@@ -91,6 +91,12 @@ export function CodexGoalBanner({ goal, onEdit, onClear }: CodexGoalBannerProps)
     setDraft(objective);
   };
 
+  const clearGoal = () => {
+    setEditing(false);
+    setDraft(objective);
+    onClear?.();
+  };
+
   return (
     <div
       role="status"
@@ -159,10 +165,13 @@ export function CodexGoalBanner({ goal, onEdit, onClear }: CodexGoalBannerProps)
             <span aria-hidden className="text-[13px] leading-none">{"✎"}</span>
           </button>
         ) : null}
-        {onClear && !editing ? (
+        {onClear ? (
           <button
             type="button"
-            onClick={onClear}
+            onMouseDown={(e) => {
+              if (editing) e.preventDefault();
+            }}
+            onClick={clearGoal}
             className="shrink-0 rounded p-1 text-amber-200/55 transition-colors hover:bg-amber-500/10 hover:text-amber-100"
             aria-label="Clear goal"
             title="Clear goal"

@@ -525,7 +525,7 @@ export function renderChatLines(args: {
       continue;
     }
     if (event.type === "delegation_state") {
-      const label = event.message ?? event.contract.status ?? event.contract.workerIntent ?? "state";
+      const label = event.message ?? event.contract?.status ?? event.contract?.workerIntent ?? "state";
       lines.push({ id, tone: "notice", body: `[delegation] ${singleLine(label, 160)}` });
       continue;
     }

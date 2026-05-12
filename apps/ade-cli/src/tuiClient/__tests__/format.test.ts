@@ -403,6 +403,12 @@ describe("renderChatLines", () => {
             contract: { status: "active", workerIntent: "implement" } as never,
           } as never,
         },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:08.000Z",
+          sequence: 9,
+          event: { type: "delegation_state" } as never,
+        },
       ],
     });
 
@@ -416,6 +422,7 @@ describe("renderChatLines", () => {
     expect(body).toMatch(/\[auto-approval\] started/);
     expect(body).toContain("[tools] ran 4 tools");
     expect(body).toContain("[delegation] handoff to worker-a");
+    expect(body).toContain("[delegation] state");
   });
 
   it("suppresses pending_input_resolved and tokens events from the chat transcript", () => {
