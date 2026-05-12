@@ -20,6 +20,7 @@ stream plus session metadata.
 | `ChatCommandMenu.tsx` | Popover for slash commands and `@`-prefixed file search. |
 | `ChatTasksPanel.tsx` | Todo list rendered from `todo_update` events. |
 | `ChatFileChangesPanel.tsx` | Turn-level file change summary with lazy diff expansion. |
+| `RewindFilesConfirmDialog.tsx`, `rewindFilesPreview.ts` | Claude-only undo confirmation. Builds a message-scoped file list from SDK dry-run output plus turn diff summaries, then renders per-file expandable diffs before applying `rewindFiles`. |
 | `ChatSubagentsPanel.tsx`, `ChatSubagentStrip.tsx` | Claude background subagent panels. |
 | `ChatComputerUsePanel.tsx` | Computer-use backend status. |
 | `ChatAppControlPanel.tsx` | App Control panel for Electron apps. Two mount points: under the chat composer (chat-scoped, `sessionId` set) and inside the Work right-edge sidebar (lane-scoped, `sessionId={null}`). Two modes: **Control** (live screencast frames + launch/connect form + click/type input + quick `terminal write` / `terminal signal` actions) and **Inspect** (hit-test crosshair on the screenshot; commits selections as `AppControlContextItem`s with screenshot, DOM packet, and source-file candidates). Persists panel state under `sessionStorage["ade.chat.appControlPanel.<key>"]`, where the key is `chat:<sessionId>` for the chat mount and `lane:<laneId>:<projectRoot>` for the sidebar mount. Connect/launch calls forward `laneId` so the resulting `AppControlSession` records its launching lane. See [App Control](../computer-use/app-control.md). |
@@ -179,7 +180,7 @@ and a footer that contains the composer.
   per-message controls. Each `PendingSteerItem` displays a "Sends after
   turn" badge plus the message text. Hover-revealed actions per
   entry: edit (inline textarea → `ade.agentChat.editSteer`), cancel
-  (`ade.agentChat.cancelSteer`), and — for Claude V2 sessions only —
+  (`ade.agentChat.cancelSteer`), and — for Claude SDK sessions only —
   **send now** (`ArrowBendDownRight`) and **send & interrupt**
   (`Lightning`). **Send now** dispatches the queued message into the
   active turn via `ade.agentChat.dispatchSteer({ mode: "inline" })`;
@@ -283,6 +284,25 @@ session using `aggregateFiles(summaries)`:
 - Clicking a file lazily fetches the diff via
   `ade.agentChat.getTurnFileDiff` and shows it in `AdeDiffViewer`
   (compact toolbar hidden).
+
+## Rewind files confirmation
+
+Claude user messages expose an undo affordance when the SDK provides a
+file checkpoint. The pane first calls
+`ade.agentChat.rewindFiles({ dryRun: true })`; if the checkpoint can be
+restored, `rewindFilesPreview.ts` filters turn diff summaries after the
+selected user message and pairs each reported file with the earliest
+`beforeSha` and latest `afterSha` it can prove. The confirmation dialog
+then shows:
+
+- The user message being rewound to and its sent time.
+- Aggregate insertion/deletion counts from the SDK dry run.
+- One expandable row per file, including status and per-file stats when
+  a turn diff summary is available.
+- Lazy `AdeDiffViewer` previews via `ade.agentChat.getTurnFileDiff`.
+
+Confirming calls `rewindFiles` without `dryRun`. Conversation history is
+left untouched; only files are restored.
 
 ## Subagents panel
 

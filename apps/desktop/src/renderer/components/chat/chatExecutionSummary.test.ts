@@ -146,6 +146,87 @@ describe("deriveChatSubagentSnapshots", () => {
       }),
     ]);
   });
+
+  it("preserves SDK agent ids, types, and final summaries", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-10T12:00:00.000Z",
+        event: {
+          type: "subagent_started",
+          taskId: "agent-1",
+          agentId: "agent-1",
+          agentType: "code-reviewer",
+          parentToolUseId: null,
+          description: "code-reviewer",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-10T12:00:04.000Z",
+        event: {
+          type: "subagent_result",
+          taskId: "agent-1",
+          agentId: "agent-1",
+          agentType: "code-reviewer",
+          parentToolUseId: null,
+          status: "completed",
+          summary: "Checked the service layer.",
+          finalSummary: "No regressions found.",
+        },
+      },
+    ];
+
+    expect(deriveChatSubagentSnapshots(events)).toEqual([
+      expect.objectContaining({
+        taskId: "agent-1",
+        agentId: "agent-1",
+        agentType: "code-reviewer",
+        parentToolUseId: null,
+        finalSummary: "No regressions found.",
+      }),
+    ]);
+  });
+
+  it("keys Claude snapshots by SDK agent id and preserves background state", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-10T12:00:00.000Z",
+        event: {
+          type: "subagent_started",
+          taskId: "tool-use-1",
+          agentId: "agent-bg-1",
+          agentType: "researcher",
+          parentToolUseId: "tool-use-1",
+          description: "Scan docs",
+          background: true,
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-10T12:00:02.000Z",
+        event: {
+          type: "subagent_progress",
+          taskId: "legacy-alias",
+          agentId: "agent-bg-1",
+          agentType: "researcher",
+          parentToolUseId: "tool-use-1",
+          summary: "Found the relevant guide.",
+        },
+      },
+    ];
+
+    expect(deriveChatSubagentSnapshots(events)).toEqual([
+      expect.objectContaining({
+        taskId: "tool-use-1",
+        agentId: "agent-bg-1",
+        parentToolUseId: "tool-use-1",
+        background: true,
+        summary: "Found the relevant guide.",
+      }),
+    ]);
+  });
 });
 
 describe("deriveTodoItems", () => {

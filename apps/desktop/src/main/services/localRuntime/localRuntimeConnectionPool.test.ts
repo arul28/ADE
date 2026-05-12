@@ -305,7 +305,8 @@ describe("local runtime connection pool", () => {
     expect(fs.existsSync(tsxLoaderPath)).toBe(true);
 
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-"));
-    const projectRoot = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-project-")));
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-project-"));
+    const expectedProjectRoot = fs.realpathSync.native(projectRoot);
     const socketPath = path.join(adeHome, "sock", "ade.sock");
     const originalEnv = {
       ADE_CLI_JS: process.env.ADE_CLI_JS,
@@ -336,10 +337,10 @@ describe("local runtime connection pool", () => {
       secondPool = new LocalRuntimeConnectionPool("1.2.3", logger as never, { disableSync: true });
       const projects = await secondPool.projects();
 
-      expect(registered.rootPath).toBe(projectRoot);
+      expect(registered.rootPath).toBe(expectedProjectRoot);
       expect(projects).toContainEqual(expect.objectContaining({
         projectId: registered.projectId,
-        rootPath: projectRoot,
+        rootPath: expectedProjectRoot,
       }));
     } finally {
       firstPool?.dispose();
@@ -364,7 +365,8 @@ describe("local runtime connection pool", () => {
     expect(fs.existsSync(tsxLoaderPath)).toBe(true);
 
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-version-"));
-    const projectRoot = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-version-project-")));
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-version-project-"));
+    const expectedProjectRoot = fs.realpathSync.native(projectRoot);
     const socketPath = path.join(adeHome, "sock", "ade.sock");
     const originalEnv = {
       ADE_CLI_JS: process.env.ADE_CLI_JS,
@@ -405,7 +407,7 @@ describe("local runtime connection pool", () => {
       pool = new LocalRuntimeConnectionPool("2.0.0", logger as never, { disableSync: true });
       const registered = await pool.ensureProject(projectRoot);
 
-      expect(registered.rootPath).toBe(projectRoot);
+      expect(registered.rootPath).toBe(expectedProjectRoot);
       expect(logger.info).toHaveBeenCalledWith("local_runtime.version_mismatch_restart", expect.objectContaining({
         runtimeVersion: "1.0.0",
         appVersion: "2.0.0",
@@ -450,7 +452,8 @@ describe("local runtime connection pool", () => {
     expect(fs.existsSync(tsxLoaderPath)).toBe(true);
 
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-build-"));
-    const projectRoot = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-build-project-")));
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-build-project-"));
+    const expectedProjectRoot = fs.realpathSync.native(projectRoot);
     const socketPath = path.join(adeHome, "sock", "ade.sock");
     const originalEnv = {
       ADE_CLI_JS: process.env.ADE_CLI_JS,
@@ -494,7 +497,7 @@ describe("local runtime connection pool", () => {
       pool = new LocalRuntimeConnectionPool("1.0.0", logger as never, { disableSync: true });
       const registered = await pool.ensureProject(projectRoot);
 
-      expect(registered.rootPath).toBe(projectRoot);
+      expect(registered.rootPath).toBe(expectedProjectRoot);
       expect(logger.info).toHaveBeenCalledWith("local_runtime.build_mismatch_restart", expect.objectContaining({
         runtimeBuildHash: "old-build",
         expectedBuildHash,

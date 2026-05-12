@@ -228,6 +228,21 @@ import type {
   ExportHistoryResult,
   AgentChatApproveArgs,
   AgentChatArchiveArgs,
+  AgentChatClaudeSessionInfo,
+  AgentChatClaudeSessionInfoArgs,
+  AgentChatClaudeSessionListArgs,
+  AgentChatClaudeSessionMessage,
+  AgentChatClaudeSessionMessagesArgs,
+  AgentChatClaudeOutputStyle,
+  AgentChatClaudeOutputStylesArgs,
+  AgentChatClaudePlugin,
+  AgentChatClaudePluginsArgs,
+  AgentChatClaudeMcpReconnectArgs,
+  AgentChatClaudeMcpServerStatus,
+  AgentChatClaudeMcpStatusArgs,
+  AgentChatClaudeMcpToggleArgs,
+  AgentChatReloadClaudePluginsArgs,
+  AgentChatReloadClaudePluginsResult,
   AgentChatClaudePermissionMode,
   AgentChatCreateArgs,
   AgentChatDeleteArgs,
@@ -264,8 +279,13 @@ import type {
   AgentChatCancelDispatchedSteerResult,
   AgentChatOpenCodePermissionMode,
   AgentChatUpdateSessionArgs,
+  AgentChatSetClaudeOutputStyleArgs,
   AgentChatSlashCommand,
   AgentChatSlashCommandsArgs,
+  AgentChatContextUsage,
+  AgentChatContextUsageArgs,
+  AgentChatRewindFilesArgs,
+  AgentChatRewindFilesResult,
   AgentChatFileSearchArgs,
   AgentChatFileSearchResult,
   AgentChatGetTurnFileDiffArgs,
@@ -830,7 +850,18 @@ function getUnavailableAiStatus(): AiSettingsStatus {
   return {
     mode: "guest",
     availableProviders: {
-      claude: false,
+      claude: {
+        binary: {
+          present: false,
+          source: "missing",
+          path: null,
+        },
+        auth: {
+          ready: false,
+          mode: "none",
+          detail: "AI integration service unavailable.",
+        },
+      },
       codex: false,
       cursor: false,
       droid: false,
@@ -6407,6 +6438,66 @@ export function registerIpc({
   ipcMain.handle(IPC.agentChatSlashCommands, async (_event, arg: AgentChatSlashCommandsArgs): Promise<AgentChatSlashCommand[]> => {
     const ctx = getCtx();
     return ctx.agentChatService.getSlashCommands(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatClaudeMcpStatus, async (_event, arg: AgentChatClaudeMcpStatusArgs): Promise<AgentChatClaudeMcpServerStatus[]> => {
+    const ctx = getCtx();
+    return ctx.agentChatService.getClaudeMcpStatus(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatClaudeMcpReconnect, async (_event, arg: AgentChatClaudeMcpReconnectArgs): Promise<AgentChatClaudeMcpServerStatus[]> => {
+    const ctx = getCtx();
+    return ctx.agentChatService.reconnectClaudeMcpServer(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatClaudeMcpToggle, async (_event, arg: AgentChatClaudeMcpToggleArgs): Promise<AgentChatClaudeMcpServerStatus[]> => {
+    const ctx = getCtx();
+    return ctx.agentChatService.toggleClaudeMcpServer(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatListClaudePlugins, async (_event, arg: AgentChatClaudePluginsArgs = {}): Promise<AgentChatClaudePlugin[]> => {
+    const ctx = getCtx();
+    return ctx.agentChatService.listClaudePlugins(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatReloadClaudePlugins, async (_event, arg: AgentChatReloadClaudePluginsArgs): Promise<AgentChatReloadClaudePluginsResult> => {
+    const ctx = getCtx();
+    return ctx.agentChatService.reloadClaudePlugins(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatListClaudeOutputStyles, async (_event, arg: AgentChatClaudeOutputStylesArgs = {}): Promise<AgentChatClaudeOutputStyle[]> => {
+    const ctx = getCtx();
+    return ctx.agentChatService.listClaudeOutputStyles(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatSetClaudeOutputStyle, async (_event, arg: AgentChatSetClaudeOutputStyleArgs): Promise<AgentChatSession> => {
+    const ctx = getCtx();
+    return await ctx.agentChatService.setClaudeOutputStyle(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatListClaudeSessions, async (_event, arg: AgentChatClaudeSessionListArgs = {}): Promise<AgentChatClaudeSessionInfo[]> => {
+    const ctx = getCtx();
+    return ctx.agentChatService.listClaudeSessions(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatGetClaudeSessionInfo, async (_event, arg: AgentChatClaudeSessionInfoArgs): Promise<AgentChatClaudeSessionInfo | null> => {
+    const ctx = getCtx();
+    return ctx.agentChatService.getClaudeSessionInfo(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatGetClaudeSessionMessages, async (_event, arg: AgentChatClaudeSessionMessagesArgs): Promise<AgentChatClaudeSessionMessage[]> => {
+    const ctx = getCtx();
+    return ctx.agentChatService.getClaudeSessionMessages(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatGetContextUsage, async (_event, arg: AgentChatContextUsageArgs): Promise<AgentChatContextUsage | null> => {
+    const ctx = getCtx();
+    return ctx.agentChatService.getContextUsage(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatRewindFiles, async (_event, arg: AgentChatRewindFilesArgs): Promise<AgentChatRewindFilesResult> => {
+    const ctx = getCtx();
+    return ctx.agentChatService.rewindFiles(arg);
   });
 
   ipcMain.handle(IPC.agentChatFileSearch, async (_event, arg: AgentChatFileSearchArgs): Promise<AgentChatFileSearchResult[]> => {

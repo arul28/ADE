@@ -1,4 +1,5 @@
-import { resolveClaudeCodeExecutable, type ClaudeCodeExecutableResolution } from "./services/ai/claudeCodeExecutable";
+import os from "node:os";
+import type { Query } from "@anthropic-ai/claude-agent-sdk";
 import { resolveCodexExecutable } from "./services/ai/codexExecutable";
 import {
   classifyClaudeStartupFailure,
@@ -47,24 +48,28 @@ async function probePty(): Promise<{ ok: true; output: string }> {
   });
 }
 
-async function probeClaudeStartup(
-  claudeExecutable: ClaudeCodeExecutableResolution,
-): Promise<ClaudeStartupProbeResult> {
+async function probeClaudeStartup(): Promise<ClaudeStartupProbeResult> {
   const claude = await import("@anthropic-ai/claude-agent-sdk");
   const abortController = new AbortController();
-  const timeout = setTimeout(() => abortController.abort(), CLAUDE_PROBE_TIMEOUT_MS);
-  const stream = claude.query({
-    prompt: "System initialization check. Respond with only the word READY.",
-    options: {
-      cwd: process.cwd(),
-      permissionMode: "plan",
-      tools: [],
-      pathToClaudeCodeExecutable: claudeExecutable.path,
-      abortController,
-    },
-  });
+  let didTimeout = false;
+  const timeout = setTimeout(() => {
+    didTimeout = true;
+    abortController.abort();
+  }, CLAUDE_PROBE_TIMEOUT_MS);
+  timeout.unref?.();
+  let stream: Query | null = null;
 
   try {
+    stream = claude.query({
+      prompt: "System initialization check. Respond with only the word READY.",
+      options: {
+        cwd: os.tmpdir(),
+        permissionMode: "plan",
+        tools: [],
+        abortController,
+      },
+    });
+
     for await (const message of stream) {
       if (message.type === "auth_status" && message.error) {
         return { state: "auth-failed", message: message.error };
@@ -73,14 +78,11 @@ async function probeClaudeStartup(
         return { state: "auth-failed", message: "authentication_failed" };
       }
       if (message.type !== "result") continue;
-      if (!message.is_error) {
+      if (message.subtype === "success") {
         return { state: "ready", message: null };
       }
-      const errors =
-        "errors" in message && Array.isArray(message.errors)
-          ? message.errors.filter(Boolean).join(" ")
-          : "";
-      return classifyClaudeStartupFailure(errors || "Claude startup probe returned an error result.", claudeExecutable.source);
+      const errors = message.errors.filter(Boolean).join(" ");
+      return classifyClaudeStartupFailure(errors || "Claude startup probe returned an error result.");
     }
 
     return {
@@ -88,11 +90,17 @@ async function probeClaudeStartup(
       message: "Claude startup probe completed without a terminal result.",
     };
   } catch (error) {
-    return classifyClaudeStartupFailure(error, claudeExecutable.source);
+    if (didTimeout) {
+      return {
+        state: "runtime-failed",
+        message: `Claude startup probe timed out after ${CLAUDE_PROBE_TIMEOUT_MS}ms.`,
+      };
+    }
+    return classifyClaudeStartupFailure(error);
   } finally {
     clearTimeout(timeout);
     try {
-      stream.close();
+      stream?.close();
     } catch {
       // ignore best-effort cleanup
     }
@@ -102,16 +110,13 @@ async function probeClaudeStartup(
 async function main(): Promise<void> {
   const pty = await import("node-pty");
   const claude = await import("@anthropic-ai/claude-agent-sdk");
-  const claudeExecutable = resolveClaudeCodeExecutable();
   const ptyProbe = await probePty();
-  const claudeStartup = await probeClaudeStartup(claudeExecutable);
+  const claudeStartup = await probeClaudeStartup();
 
   process.stdout.write(JSON.stringify({
     ok: true,
     nodePty: typeof pty.spawn,
     claudeQuery: typeof claude.query,
-    claudeExecutablePath: claudeExecutable.path,
-    claudeExecutableSource: claudeExecutable.source,
     claudeStartup,
     codexExecutable: typeof resolveCodexExecutable,
     ptyProbe,

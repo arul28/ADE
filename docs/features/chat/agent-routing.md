@@ -15,7 +15,7 @@ where the machinery lives.
 | `apps/desktop/src/main/services/ai/providerRuntimeHealth.ts` | Tracks provider readiness/auth/network failures so the UI can surface degraded states. |
 | `apps/desktop/src/main/services/ai/providerOptions.ts` | Normalises provider-native options (Claude permission mode, Codex approval + sandbox, OpenCode permission). |
 | `apps/desktop/src/main/services/ai/authDetector.ts` | Discovers available credentials (CLI, API key, OAuth) and reports auth status. |
-| `apps/desktop/src/main/services/ai/claudeCodeExecutable.ts` / `codexExecutable.ts` / `droidExecutable.ts` | CLI resolution (looks on PATH, in the app bundle, then in configured install paths where supported). Cursor no longer needs a CLI resolver — it runs through the embedded `@cursor/sdk`. |
+| `apps/desktop/src/main/services/ai/codexExecutable.ts` / `droidExecutable.ts` | CLI resolution for runtimes that still need an external binary (looks on PATH, in the app bundle, then in configured install paths where supported). Claude uses the bundled Claude Agent SDK binary; Cursor runs through the embedded `@cursor/sdk`. |
 | `apps/desktop/src/main/services/ai/tools/systemPrompt.ts` | Adjusts the system prompt per mode (`chat`, `coding`, `planning`) and permission mode. |
 
 ## Supported providers
@@ -26,7 +26,7 @@ for vendored runtimes without changing the union.
 
 | Provider | Runtime | Adapter location |
 |---|---|---|
-| `claude` | `@anthropic-ai/claude-agent-sdk` V2 (`unstable_v2_createSession`). Persistent subprocess + ADE CLI stay alive between turns. Resolves `claude` executable via `claudeCodeExecutable.ts`. | `agentChatService.ts` (inline; the file carries the full Claude adapter). |
+| `claude` | `@anthropic-ai/claude-agent-sdk` `query()` stream with an ADE async input pump, `startup()` warmup, bundled Claude Code binary, upfront MCP servers, SDK sessions, hooks, output styles, plugins, context usage, rewind, and slash-command dispatch. | `agentChatService.ts` (inline; the file carries the full Claude adapter). |
 | `codex` | `codex app-server` subprocess, JSON-RPC protocol. Spawn failures surface as error events. | `agentChatService.ts` (Codex adapter); config via `codexAppServerConfig.ts`. |
 | `opencode` | OpenCode server runtime: Anthropic/OpenAI/Google/Mistral/DeepSeek/xAI/Groq/Together AI API keys, OpenRouter, and local (Ollama, LM Studio, vLLM). | `agentChatService.ts` (OpenCode adapter); model discovery in `localModelDiscovery.ts` and `modelsDevService.ts`. |
 | `cursor` | Official `@cursor/sdk` running in a Node worker pool. ADE owns permissions, hooks, and the system prompt; the SDK owns the model + tool execution. | `cursorSdkPool.ts`, `cursorSdkWorker.ts`, `cursorSdkProtocol.ts`, `cursorSdkPolicy.ts`, `cursorSdkSystemPrompt.ts`, `cursorSdkEventMapper.ts`. |
@@ -217,7 +217,7 @@ options.
 `providerOptions.ts` exposes `mapPermissionModeToNativeFields()`, which
 translates the abstract value into the correct provider-native fields:
 
-- `claude`: `claudePermissionMode = "default" | "plan" | "acceptEdits" | "bypassPermissions"`.
+- `claude`: `claudePermissionMode = "default" | "auto" | "plan" | "acceptEdits" | "bypassPermissions"`. The `auto` mode hands permission decisions to the SDK's automatic gate and surfaces in the desktop and `ade code` permission pickers alongside the existing modes.
 - `codex`: `codexApprovalPolicy` + `codexSandbox` pair.
 - `opencode`: `opencodePermissionMode = "plan" | "edit" | "full-auto"`.
 - `droid`: `droidPermissionMode = "read-only" | "auto-low" | "auto-medium" | "auto-high"`.
@@ -275,15 +275,27 @@ builds the app-server startup options.
 - `filterChatModelIdsForSession(ids, session)` filters the model picker
   to the models the user may switch to without triggering a handoff.
 
-Changing families triggers a **handoff** (`handoffSession`):
+Changing models triggers a **handoff** (`handoffSession`), which splits
+into two strategies depending on whether the source and target both run
+on the Claude Agent SDK:
 
-1. Summarize the current session.
-2. End it gracefully.
-3. Create a new session with the target model.
-4. Inject the summary as a continuity message.
-
-The `AgentChatHandoffResult` reports whether a fallback summary was used
-(in case the summarization call failed).
+1. **Fork (Claude → Claude).** When both ends are Claude runtimes, the
+   service pins the source `sdkSessionId` as the new session's
+   `forkFromSdkSessionId` and starts the next `query()` with
+   `options.forkSession = true`. The SDK forks the SDK session graph
+   server-side so the new chat keeps the full conversation, MCP state,
+   and tool history without a summary round-trip. `forkFromSdkSessionId`
+   is persisted through `PersistedChatState` and re-applied on resume so
+   forked descendants survive app restart.
+2. **Brief (cross-runtime).** When the target leaves the Claude family
+   (or the source is non-Claude), the service falls back to a
+   12-message handoff brief built by `generateHandoffBrief()`:
+   summarize the current session, end it gracefully, create a new
+   session with the target model, and inject the brief as a continuity
+   message. `buildDeterministicHandoffBrief()` provides a deterministic
+   fallback when the LLM summarization call fails or no eligible
+   summarizer is available; `AgentChatHandoffResult.usedFallbackSummary`
+   surfaces which path was taken.
 
 ## Auto-title generation
 
@@ -334,11 +346,10 @@ through `AgentCoreMemory` (same five fields) and the
   from `contextContract.ts`. If the contract can't be resolved (e.g.
   missing lane context), the handoff falls back to a minimal summary
   and sets `fallbackUsed: true`.
-- **CLI resolution fallback chain.** `claudeCodeExecutable.ts` looks in
-  (1) a configured path, (2) the app bundle, (3) PATH. Packaged
-  releases may bundle the CLI; dev builds rely on PATH. Missing this
-  chain surfaces as `CLAUDE_RUNTIME_AUTH_ERROR` after the SDK fails
-  spawn.
+- **Claude runtime readiness.** `claudeRuntimeProbe.ts` verifies the
+  bundled Claude Agent SDK binary and auth state before chat launch.
+  Missing binary/auth readiness surfaces as `CLAUDE_RUNTIME_AUTH_ERROR`
+  before the SDK `query()` stream is allowed to start.
 - **Permission mapping is asymmetric.** `mapPermissionModeToNativeFields`
   only handles the abstract-to-native direction. The reverse
   (native-to-abstract) requires provider-specific logic; switching a

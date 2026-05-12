@@ -1,5 +1,3 @@
-import type { ClaudeCodeExecutableResolution } from "./services/ai/claudeCodeExecutable";
-
 const AUTH_FAILURE_PATTERNS = [
   "not authenticated",
   "not logged in",
@@ -20,7 +18,9 @@ const AUTH_FAILURE_PATTERNS = [
 
 const BINARY_MISSING_PATTERNS = [
   "claude code native binary not found",
+  "native cli binary",
   "native binary not found",
+  "without --omit=optional",
   "spawn enoent",
   "enoent",
   "no such file or directory",
@@ -48,7 +48,6 @@ export function isClaudeBinaryMissingMessage(input: unknown): boolean {
 
 export function classifyClaudeStartupFailure(
   input: unknown,
-  executableSource: ClaudeCodeExecutableResolution["source"],
 ): Exclude<ClaudeStartupProbeResult, { state: "ready"; message: null }> {
   const message = errorMessage(input).trim() || "Claude startup probe returned an error result.";
   if (isClaudeAuthFailureMessage(message)) {
@@ -57,7 +56,7 @@ export function classifyClaudeStartupFailure(
       message,
     };
   }
-  if (executableSource === "fallback-command" && isClaudeBinaryMissingMessage(message)) {
+  if (isClaudeBinaryMissingMessage(message)) {
     return {
       state: "binary-missing",
       message,

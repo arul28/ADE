@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import type { AdeDb } from "../state/kvDb";
 import type {
+  ClaudeSessionPointer,
   TerminalSessionDetail,
   TerminalSessionChangedEvent,
   TerminalResumeMetadata,
@@ -47,6 +48,17 @@ type SessionRow = {
   chatSessionId: string | null;
 };
 
+type ClaudeSessionRow = {
+  sessionId: string;
+  laneId: string;
+  laneName: string;
+  chatSessionId: string | null;
+  title: string | null;
+  tagsJson: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
 const SESSION_COLUMNS = `
   s.id as id,
   s.lane_id as laneId,
@@ -71,6 +83,17 @@ const SESSION_COLUMNS = `
   s.resume_command as resumeCommand,
   s.resume_metadata_json as resumeMetadataJson,
   s.chat_session_id as chatSessionId
+`;
+
+const CLAUDE_SESSION_COLUMNS = `
+  c.session_id as sessionId,
+  c.lane_id as laneId,
+  l.name as laneName,
+  c.chat_session_id as chatSessionId,
+  c.title as title,
+  c.tags_json as tagsJson,
+  c.created_at as createdAt,
+  c.updated_at as updatedAt
 `;
 
 function isResumeProvider(value: unknown): value is TerminalResumeProvider {
@@ -147,6 +170,33 @@ function parseLaunchMetadataFromCurrentSession(
     targetId: null,
     launch: {},
   };
+}
+
+function normalizeClaudeTags(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const tags: string[] = [];
+  for (const entry of value) {
+    const tag = typeof entry === "string" ? entry.trim() : "";
+    if (!tag || seen.has(tag)) continue;
+    seen.add(tag);
+    tags.push(tag);
+  }
+  return tags;
+}
+
+function parseClaudeTags(raw: string | null): string[] {
+  if (!raw) return [];
+  try {
+    return normalizeClaudeTags(JSON.parse(raw));
+  } catch {
+    return [];
+  }
+}
+
+function serializeClaudeTags(tags: string[]): string | null {
+  const normalized = normalizeClaudeTags(tags);
+  return normalized.length ? JSON.stringify(normalized) : null;
 }
 
 export function createSessionService({ db }: { db: AdeDb }) {
@@ -238,6 +288,17 @@ export function createSessionService({ db }: { db: AdeDb }) {
     };
   };
 
+  const mapClaudeSessionRow = (row: ClaudeSessionRow): ClaudeSessionPointer => ({
+    sessionId: row.sessionId,
+    laneId: row.laneId,
+    laneName: row.laneName,
+    chatSessionId: row.chatSessionId ?? null,
+    title: row.title ?? null,
+    tags: parseClaudeTags(row.tagsJson),
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  });
+
   const list =({ laneId, status, limit }: { laneId?: string; status?: TerminalSessionStatus; limit?: number } = {}) => {
     const where: string[] = [];
     const params: (string | number | null)[] = [];
@@ -272,6 +333,143 @@ export function createSessionService({ db }: { db: AdeDb }) {
 
   return {
     list,
+
+    upsertClaudeSessionPointer(args: {
+      sessionId: string;
+      laneId: string;
+      chatSessionId?: string | null;
+      title?: string | null;
+      tags?: string[] | null;
+      createdAt?: string;
+      updatedAt?: string;
+    }): ClaudeSessionPointer | null {
+      const sessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
+      const laneId = typeof args.laneId === "string" ? args.laneId.trim() : "";
+      if (!sessionId || !laneId) return null;
+
+      const existing = this.getClaudeSessionPointer(sessionId);
+      const now = args.updatedAt ?? new Date().toISOString();
+      const createdAt = existing?.createdAt ?? args.createdAt ?? now;
+      const chatSessionId = args.chatSessionId !== undefined
+        ? (typeof args.chatSessionId === "string" && args.chatSessionId.trim().length ? args.chatSessionId.trim() : null)
+        : existing?.chatSessionId ?? null;
+      const title = args.title !== undefined
+        ? (typeof args.title === "string" && args.title.trim().length ? args.title.trim() : null)
+        : existing?.title ?? null;
+      const tags = args.tags !== undefined
+        ? normalizeClaudeTags(args.tags ?? [])
+        : existing?.tags ?? [];
+
+      if (chatSessionId) {
+        db.run(
+          "update claude_sessions set chat_session_id = null, updated_at = ? where chat_session_id = ? and session_id <> ?",
+          [now, chatSessionId, sessionId],
+        );
+      }
+
+      db.run(
+        `
+          insert into claude_sessions(session_id, lane_id, chat_session_id, title, tags_json, created_at, updated_at)
+          values (?, ?, ?, ?, ?, ?, ?)
+          on conflict(session_id) do update set
+            lane_id = excluded.lane_id,
+            chat_session_id = excluded.chat_session_id,
+            title = excluded.title,
+            tags_json = excluded.tags_json,
+            updated_at = excluded.updated_at
+        `,
+        [sessionId, laneId, chatSessionId, title, serializeClaudeTags(tags), createdAt, now],
+      );
+
+      return this.getClaudeSessionPointer(sessionId);
+    },
+
+    getClaudeSessionPointer(sessionId: string): ClaudeSessionPointer | null {
+      const trimmed = typeof sessionId === "string" ? sessionId.trim() : "";
+      if (!trimmed) return null;
+      const row = db.get<ClaudeSessionRow>(
+        `
+          select ${CLAUDE_SESSION_COLUMNS}
+          from claude_sessions c
+          join lanes l on l.id = c.lane_id
+          where c.session_id = ?
+          limit 1
+        `,
+        [trimmed],
+      );
+      return row ? mapClaudeSessionRow(row) : null;
+    },
+
+    getClaudeSessionPointerByChatSessionId(chatSessionId: string): ClaudeSessionPointer | null {
+      const trimmed = typeof chatSessionId === "string" ? chatSessionId.trim() : "";
+      if (!trimmed) return null;
+      const row = db.get<ClaudeSessionRow>(
+        `
+          select ${CLAUDE_SESSION_COLUMNS}
+          from claude_sessions c
+          join lanes l on l.id = c.lane_id
+          where c.chat_session_id = ?
+          order by c.updated_at desc
+          limit 1
+        `,
+        [trimmed],
+      );
+      return row ? mapClaudeSessionRow(row) : null;
+    },
+
+    listClaudeSessionPointers(args: { laneId?: string; limit?: number } = {}): ClaudeSessionPointer[] {
+      const params: Array<string | number | null> = [];
+      const where: string[] = [];
+      const laneId = typeof args.laneId === "string" ? args.laneId.trim() : "";
+      if (laneId) {
+        where.push("c.lane_id = ?");
+        params.push(laneId);
+      }
+      const limit = typeof args.limit === "number" && Number.isFinite(args.limit) && args.limit > 0
+        ? Math.min(Math.trunc(args.limit), 500)
+        : 200;
+      params.push(limit);
+      const rows = db.all<ClaudeSessionRow>(
+        `
+          select ${CLAUDE_SESSION_COLUMNS}
+          from claude_sessions c
+          join lanes l on l.id = c.lane_id
+          ${where.length ? `where ${where.join(" and ")}` : ""}
+          order by c.updated_at desc
+          limit ?
+        `,
+        params,
+      );
+      return rows.map(mapClaudeSessionRow);
+    },
+
+    updateClaudeSessionPointerMeta(args: {
+      sessionId: string;
+      title?: string | null;
+      tags?: string[] | null;
+      updatedAt?: string;
+    }): ClaudeSessionPointer | null {
+      const sessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
+      if (!sessionId) return null;
+      const existing = this.getClaudeSessionPointer(sessionId);
+      if (!existing) return null;
+      const sets: string[] = [];
+      const params: Array<string | number | null> = [];
+      if (args.title !== undefined) {
+        sets.push("title = ?");
+        params.push(typeof args.title === "string" && args.title.trim().length ? args.title.trim() : null);
+      }
+      if (args.tags !== undefined) {
+        sets.push("tags_json = ?");
+        params.push(serializeClaudeTags(normalizeClaudeTags(args.tags ?? [])));
+      }
+      if (!sets.length) return existing;
+      sets.push("updated_at = ?");
+      params.push(args.updatedAt ?? new Date().toISOString());
+      params.push(sessionId);
+      db.run(`update claude_sessions set ${sets.join(", ")} where session_id = ?`, params);
+      return this.getClaudeSessionPointer(sessionId);
+    },
 
     onChanged(listener: (event: TerminalSessionChangedEvent) => void): () => void {
       changeListeners.add(listener);

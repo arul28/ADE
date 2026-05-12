@@ -58,7 +58,11 @@ describe("latestTokenStats", () => {
       streaming: false,
       inputTokens: 2_100,
       outputTokens: 700,
+      cacheReadTokens: null,
+      cacheCreationTokens: null,
+      contextWindow: 10_000,
       costUsd: 0.42,
+      rateLimit: null,
     });
   });
 
@@ -79,7 +83,11 @@ describe("latestTokenStats", () => {
       streaming: false,
       inputTokens: 40_000,
       outputTokens: 10_000,
+      cacheReadTokens: null,
+      cacheCreationTokens: null,
+      contextWindow: 200_000,
       costUsd: 0.12,
+      rateLimit: null,
     });
   });
 

@@ -2,7 +2,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { runOpenCodeTextPrompt } from "../opencode/openCodeRuntime";
-import { unstable_v2_createSession, unstable_v2_resumeSession } from "@anthropic-ai/claude-agent-sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@opencode-ai/sdk", () => ({
@@ -80,9 +79,13 @@ vi.mock("node:readline", () => ({
 
 
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
+  getSessionInfo: vi.fn(),
+  getSessionMessages: vi.fn(),
+  listSessions: vi.fn(),
   query: vi.fn(),
-  unstable_v2_createSession: vi.fn(),
-  unstable_v2_resumeSession: vi.fn(),
+  renameSession: vi.fn(async () => undefined),
+  startup: vi.fn(),
+  tagSession: vi.fn(async () => undefined),
 }));
 
 vi.mock("@modelcontextprotocol/sdk/client/index.js", () => {

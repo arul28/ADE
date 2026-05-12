@@ -189,7 +189,15 @@ describe("preload OAuth bridge", () => {
   it("clears the AI status bridge cache after API key verification", async () => {
     const status = {
       mode: "guest",
-      availableProviders: { claude: false, codex: false, cursor: false, droid: false },
+      availableProviders: {
+        claude: {
+          binary: { present: false, source: "missing", path: null },
+          auth: { ready: false, mode: "none", detail: null },
+        },
+        codex: false,
+        cursor: false,
+        droid: false,
+      },
       models: { claude: [], codex: [], cursor: [], droid: [] },
       features: [],
     };
