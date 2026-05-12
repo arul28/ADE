@@ -50,6 +50,7 @@ function TabSwitchHarness() {
 
 function DetailHarness() {
   const {
+    detailBusy,
     detailChecks,
     detailReviews,
     detailComments,
@@ -67,6 +68,7 @@ function DetailHarness() {
         select pr-2
       </button>
       <div data-testid="loading">{loading ? "loading" : "idle"}</div>
+      <div data-testid="detail-busy">{detailBusy ? "busy" : "idle"}</div>
       <div data-testid="selected-pr-id">{selectedPrId ?? ""}</div>
       <div data-testid="status">{detailStatus?.state ?? ""}</div>
       <div data-testid="checks-count">{detailChecks.length}</div>
@@ -308,6 +310,63 @@ describe("PrsContext refresh", () => {
       expect(screen.getByTestId("reviews-count").textContent).toBe("0");
       expect(screen.getByTestId("comments-count").textContent).toBe("0");
       expect(screen.getByTestId("status").textContent).toBe("");
+    });
+  });
+
+  it("keeps detail busy while snapshot prefill waits for live detail", async () => {
+    const user = userEvent.setup();
+    vi.mocked(window.ade.prs.listWithConflicts).mockResolvedValue([makeFakePr("pr-1")]);
+    Object.assign(window.ade.prs, {
+      listSnapshots: vi.fn(async ({ prId }: { prId: string }) => [
+        {
+          prId,
+          detail: null,
+          status: {
+            prId,
+            state: "open",
+            checksStatus: "passing",
+            reviewStatus: "approved",
+            isMergeable: true,
+            mergeConflicts: false,
+            behindBaseBy: 0,
+          },
+          checks: [
+            {
+              name: "cached-ci",
+              status: "completed",
+              conclusion: "success",
+              detailsUrl: null,
+              startedAt: null,
+              completedAt: null,
+            },
+          ],
+          reviews: [],
+          comments: [],
+          files: [],
+          commits: [],
+          updatedAt: "2026-03-24T12:00:00.000Z",
+        },
+      ]),
+      getStatus: vi.fn((_prId: string) => new Promise(() => {})),
+      getChecks: vi.fn((_prId: string) => new Promise(() => {})),
+      getReviews: vi.fn((_prId: string) => new Promise(() => {})),
+      getComments: vi.fn((_prId: string) => new Promise(() => {})),
+    });
+
+    render(
+      <PrsProvider>
+        <DetailHarness />
+      </PrsProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("loading").textContent).toBe("idle");
+    });
+
+    await user.click(screen.getByRole("button", { name: "select pr-1" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("checks-count").textContent).toBe("1");
+      expect(screen.getByTestId("detail-busy").textContent).toBe("busy");
     });
   });
 

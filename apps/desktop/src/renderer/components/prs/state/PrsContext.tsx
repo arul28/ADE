@@ -924,7 +924,6 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
         setDetailChecks(snapshot.checks);
         setDetailReviews(snapshot.reviews);
         setDetailComments(snapshot.comments);
-        setDetailBusy(false);
       }).catch(() => {});
     }
     const cachedDetailAgeMs = Date.now() - (detailLoadedAtByPrIdRef.current[prId] ?? 0);
@@ -933,6 +932,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       && cachedDetailAgeMs < PRS_DETAIL_CACHE_TTL_MS
       && detailCacheHasDataRef.current;
     if (hasFreshDetailCache) {
+      setDetailBusy(false);
       const intervalId = window.setInterval(() => {
         refreshDetailSilently(prId);
       }, 60_000);
