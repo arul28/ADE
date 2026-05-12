@@ -426,9 +426,11 @@ export function renderChatLines(args: {
     }
     if (event.type === "done") {
       const usage = event.usage ?? {};
+      const inputTokens = compactTokenCount(usage.inputTokens);
+      const outputTokens = compactTokenCount(usage.outputTokens);
       const parts = [
-        compactTokenCount(usage.inputTokens) ? `in ${compactTokenCount(usage.inputTokens)}` : null,
-        compactTokenCount(usage.outputTokens) ? `out ${compactTokenCount(usage.outputTokens)}` : null,
+        inputTokens ? `in ${inputTokens}` : null,
+        outputTokens ? `out ${outputTokens}` : null,
         typeof event.costUsd === "number" ? `$${event.costUsd.toFixed(2)}` : null,
       ].filter(Boolean);
       lines.push({

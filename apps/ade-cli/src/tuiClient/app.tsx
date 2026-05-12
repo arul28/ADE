@@ -78,6 +78,7 @@ import { resolveDrawerChatSelection } from "./drawerSelection";
 import { latestExpandableFailureId, renderObject, summarizeDiffChanges } from "./format";
 import { startTuiHeartbeat, type TuiHeartbeat } from "./heartbeat";
 import { isImageFilePath, latestOpenableImageTarget } from "./imageTargets";
+import { tuiEventDedupKey } from "./eventDedup";
 import { loadAdeCodeState, saveAdeCodeState } from "./state";
 import { buildLinearToolRequest } from "./linearCommands";
 import { buildPendingInputAnswers, latestPendingApproval } from "./pendingInput";
@@ -2064,8 +2065,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         setCurrentGoal(null);
       }
       setEvents((prev) => {
-        const key = `${envelope.sequence ?? ""}:${envelope.timestamp}:${envelope.event.type}`;
-        if (prev.some((entry) => `${entry.sequence ?? ""}:${entry.timestamp}:${entry.event.type}` === key)) return prev;
+        const key = tuiEventDedupKey(envelope);
+        if (prev.some((entry) => tuiEventDedupKey(entry) === key)) return prev;
         return [...prev, envelope].slice(-500);
       });
       if (event.type === "status" && event.turnStatus === "started") setStreaming(true);
