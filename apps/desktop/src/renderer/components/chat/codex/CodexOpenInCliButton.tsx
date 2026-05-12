@@ -50,6 +50,12 @@ export function CodexOpenInCliButton({ sessionId, onUseAdeTerminal }: CodexOpenI
     return () => window.clearTimeout(t);
   }, [toast]);
 
+  useEffect(() => {
+    if (!error) return;
+    const t = window.setTimeout(() => setError(null), 4000);
+    return () => window.clearTimeout(t);
+  }, [error]);
+
   const handleNewWindow = useCallback(async () => {
     setOpen(false);
     setError(null);

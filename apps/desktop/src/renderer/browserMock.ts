@@ -4482,7 +4482,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       }),
       saveTempAttachment: resolvedArg({ path: "/tmp/browser-mock-attachment" }),
       codex: {
-        openInCli: async () => ({
+        openInCli: async (_args: any) => ({
           binary: "/usr/local/bin/codex",
           argv: [] as string[],
           cwd: "/tmp/browser-mock-lane",

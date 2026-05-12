@@ -81,10 +81,11 @@ describe("codexCliLauncher", () => {
   });
 
   describe("shellQuote", () => {
-    it("wraps in double quotes and escapes embedded quotes", () => {
-      expect(shellQuote("simple")).toBe("\"simple\"");
-      expect(shellQuote("with space")).toBe("\"with space\"");
-      expect(shellQuote("it's \"tricky\"")).toBe("\"it's \\\"tricky\\\"\"");
+    it("wraps in single quotes and escapes embedded quotes", () => {
+      expect(shellQuote("simple")).toBe("'simple'");
+      expect(shellQuote("with space")).toBe("'with space'");
+      expect(shellQuote("it's \"tricky\"")).toBe("'it'\\''s \"tricky\"'");
+      expect(shellQuote("$(touch x)`boom`!")).toBe("'$(touch x)`boom`!'");
     });
   });
 
@@ -92,7 +93,7 @@ describe("codexCliLauncher", () => {
     it("uses osascript on darwin", () => {
       const spawnMock = mocked.__spawnMock;
       spawnMock.mockReset();
-      const fakeChild = { unref: vi.fn() };
+      const fakeChild = { once: vi.fn(), unref: vi.fn() };
       spawnMock.mockReturnValue(fakeChild as never);
 
       spawnInNewTerminalWindow({
@@ -117,7 +118,7 @@ describe("codexCliLauncher", () => {
     it("uses cmd /C start cmd /K on win32", () => {
       const spawnMock = mocked.__spawnMock;
       spawnMock.mockReset();
-      const fakeChild = { unref: vi.fn() };
+      const fakeChild = { once: vi.fn(), unref: vi.fn() };
       spawnMock.mockReturnValue(fakeChild as never);
 
       spawnInNewTerminalWindow({
@@ -140,7 +141,7 @@ describe("codexCliLauncher", () => {
     it("falls through to gnome-terminal on linux", () => {
       const spawnMock = mocked.__spawnMock;
       spawnMock.mockReset();
-      const fakeChild = { unref: vi.fn() };
+      const fakeChild = { once: vi.fn(), unref: vi.fn() };
       spawnMock.mockReturnValue(fakeChild as never);
 
       spawnInNewTerminalWindow({
@@ -148,10 +149,39 @@ describe("codexCliLauncher", () => {
         argv: ["resume", "abc-123"],
         cwd: "/tmp/lane",
         platform: "linux",
+        isExecutableOnPath: (binary) => binary === "gnome-terminal",
       });
 
       const [bin] = spawnMock.mock.calls[0]!;
       expect(bin).toBe("gnome-terminal");
+    });
+
+    it("skips unavailable linux terminal candidates", () => {
+      const spawnMock = mocked.__spawnMock;
+      spawnMock.mockReset();
+      const fakeChild = { once: vi.fn(), unref: vi.fn() };
+      spawnMock.mockReturnValue(fakeChild as never);
+
+      spawnInNewTerminalWindow({
+        binary: "/usr/local/bin/codex",
+        argv: ["resume", "abc-123"],
+        cwd: "/tmp/lane",
+        platform: "linux",
+        isExecutableOnPath: (binary) => binary === "xterm",
+      });
+
+      const [bin] = spawnMock.mock.calls[0]!;
+      expect(bin).toBe("xterm");
+    });
+
+    it("throws when no linux terminal candidate is available", () => {
+      expect(() => spawnInNewTerminalWindow({
+        binary: "/usr/local/bin/codex",
+        argv: ["resume", "abc-123"],
+        cwd: "/tmp/lane",
+        platform: "linux",
+        isExecutableOnPath: () => false,
+      })).toThrow(/no supported terminal emulator/);
     });
   });
 });

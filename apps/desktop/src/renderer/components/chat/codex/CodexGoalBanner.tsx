@@ -121,18 +121,22 @@ export function CodexGoalBanner({ goal, onEdit, onClear }: CodexGoalBannerProps)
             className="min-w-0 flex-1 rounded border border-amber-400/30 bg-amber-950/30 px-2 py-0.5 text-[length:calc(var(--chat-font-size)*12/14)] font-medium leading-tight text-amber-50 outline-none focus:border-amber-300/60"
             aria-label="Edit goal objective"
           />
-        ) : (
+        ) : onEdit ? (
           <button
             type="button"
-            onClick={() => onEdit && setEditing(true)}
+            onClick={() => setEditing(true)}
             title={objective}
-            className={cn(
-              "min-w-0 flex-1 truncate rounded text-left text-[length:calc(var(--chat-font-size)*12.5/14)] font-medium leading-tight text-amber-50",
-              onEdit ? "cursor-text hover:text-amber-200" : "cursor-default",
-            )}
+            className="min-w-0 flex-1 cursor-text truncate rounded text-left text-[length:calc(var(--chat-font-size)*12.5/14)] font-medium leading-tight text-amber-50 hover:text-amber-200"
           >
             {objective}
           </button>
+        ) : (
+          <span
+            title={objective}
+            className="min-w-0 flex-1 truncate text-[length:calc(var(--chat-font-size)*12.5/14)] font-medium leading-tight text-amber-50"
+          >
+            {objective}
+          </span>
         )}
 
         <span

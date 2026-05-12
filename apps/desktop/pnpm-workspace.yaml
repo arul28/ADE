@@ -1,11 +1,11 @@
 allowBuilds:
-  cpu-features: set this to true or false
-  electron: set this to true or false
-  electron-winstaller: set this to true or false
-  esbuild: set this to true or false
-  node-pty: set this to true or false
-  onnxruntime-node: set this to true or false
-  protobufjs: set this to true or false
-  sharp: set this to true or false
-  sqlite3: set this to true or false
-  ssh2: set this to true or false
+  cpu-features: true
+  electron: true
+  electron-winstaller: true
+  esbuild: true
+  node-pty: true
+  onnxruntime-node: true
+  protobufjs: true
+  sharp: true
+  sqlite3: true
+  ssh2: true

@@ -32,7 +32,12 @@ function deriveDisplayName(event: ImageViewEvent): string {
 function stripFileUrlPrefix(value: string | null): string | null {
   if (!value) return value;
   if (!/^file:\/\//i.test(value)) return value;
-  return value.replace(/^file:\/\//i, "");
+  const raw = value.replace(/^file:\/\//i, "");
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
 }
 
 export function CodexImageViewLine({ event }: CodexImageViewLineProps) {
@@ -40,9 +45,11 @@ export function CodexImageViewLine({ event }: CodexImageViewLineProps) {
   // Codex may pass a local path either in `event.path` or as a `file://` URL
   // in `event.url`. Normalize both into a real OS path before handing off to
   // `window.ade.app.openPath` (see plan §B.4).
-  const localPath = stripFileUrlPrefix(event.path?.trim() || null)
-    ?? (event.url && /^file:\/\//i.test(event.url) ? stripFileUrlPrefix(event.url.trim()) : null);
-  const url = event.url?.trim() && !/^file:\/\//i.test(event.url.trim()) ? event.url.trim() : null;
+  const trimmedPath = event.path?.trim() || null;
+  const trimmedUrl = event.url?.trim() || null;
+  const localPath = stripFileUrlPrefix(trimmedPath)
+    ?? (trimmedUrl && /^file:\/\//i.test(trimmedUrl) ? stripFileUrlPrefix(trimmedUrl) : null);
+  const url = trimmedUrl && !/^file:\/\//i.test(trimmedUrl) ? trimmedUrl : null;
   const canOpen = Boolean(localPath || url);
 
   const handleOpen = () => {

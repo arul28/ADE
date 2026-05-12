@@ -114,6 +114,7 @@ async function main(): Promise<void> {
     claudeExecutablePath: claudeExecutable.path,
     claudeExecutableSource: claudeExecutable.source,
     claudeStartup,
+    codexExecutable: typeof resolveCodexExecutable,
     codexExecutablePath: codexExecutable.path,
     codexExecutableSource: codexExecutable.source,
     ptyProbe,

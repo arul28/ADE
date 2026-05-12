@@ -8007,10 +8007,17 @@ export function createAgentChatService(args: {
 
     if (/^\/compact(?:\s|$)/i.test(slashText)) {
       runtime.manualCompactionPending = true;
-      await runtime.request("thread/compact/start", {
-        threadId: managed.session.threadId,
-      });
-      completeInlineCodexSlash("Codex context compaction started.");
+      try {
+        await runtime.request("thread/compact/start", {
+          threadId: managed.session.threadId,
+        });
+        completeInlineCodexSlash("Codex context compaction started.");
+      } catch (error) {
+        runtime.manualCompactionPending = false;
+        completeInlineCodexSlash(
+          `Codex context compaction failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
       return;
     }
 

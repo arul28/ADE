@@ -24,6 +24,7 @@ describe("CodexGoalBanner", () => {
     fireEvent.keyDown(input, { key: "Enter" });
 
     expect(onEdit).toHaveBeenCalledWith("Refactor auth for compliance");
+    expect(onEdit).toHaveBeenCalledTimes(1);
   });
 
   it("invokes onClear when the clear button is clicked", () => {

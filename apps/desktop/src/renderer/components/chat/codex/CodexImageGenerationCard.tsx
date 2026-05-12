@@ -28,7 +28,12 @@ function isHttpOrDataUrl(value: string | null | undefined): boolean {
 function stripFileUrlPrefix(value: string | null): string | null {
   if (!value) return value;
   if (!/^file:\/\//i.test(value)) return value;
-  return value.replace(/^file:\/\//i, "");
+  const raw = value.replace(/^file:\/\//i, "");
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
 }
 
 export function CodexImageGenerationCard({ event }: CodexImageGenerationCardProps) {

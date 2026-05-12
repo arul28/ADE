@@ -1,4 +1,6 @@
 import { execFile, spawn } from "node:child_process";
+import { accessSync, constants } from "node:fs";
+import path from "node:path";
 
 function execFileAsync(
   binary: string,
@@ -84,11 +86,15 @@ export function buildResumeArgv(strategy: CodexResumeStrategy, threadId: string)
   return strategy.flagForm.argv(threadId);
 }
 
-/** Quote a single arg for an interactive shell command. Wraps in double-quotes
- *  and escapes embedded backslashes/double-quotes. Suitable for `cmd /K` on
- *  Windows and POSIX shells alike. */
+/** Quote a single arg for an interactive shell command. */
 export function shellQuote(arg: string): string {
-  return `"${arg.replace(/\\/g, "\\\\").replace(/"/g, "\\\"")}"`;
+  return `'${arg.replace(/'/g, "'\\''")}'`;
+}
+
+function cmdQuote(arg: string): string {
+  return `"${arg
+    .replace(/(["^&|<>])/g, "^$1")
+    .replace(/%/g, "%%")}"`;
 }
 
 export type SpawnNewTerminalOptions = {
@@ -96,7 +102,36 @@ export type SpawnNewTerminalOptions = {
   argv: string[];
   cwd: string;
   platform?: NodeJS.Platform;
+  isExecutableOnPath?: (binary: string) => boolean;
 };
+
+function isExecutableOnPath(binary: string): boolean {
+  if (binary.includes("/") || binary.includes("\\")) {
+    try {
+      accessSync(binary, constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  for (const dir of (process.env.PATH ?? "").split(path.delimiter)) {
+    if (!dir) continue;
+    try {
+      accessSync(path.join(dir, binary), constants.X_OK);
+      return true;
+    } catch {
+      // keep scanning PATH
+    }
+  }
+  return false;
+}
+
+function spawnDetached(binary: string, args: string[], options: Parameters<typeof spawn>[2]): void {
+  const child = spawn(binary, args, options);
+  child.once("error", () => undefined);
+  child.unref();
+}
 
 /**
  * Launch the user's default terminal with `codex <argv>` running inside, cd'd
@@ -104,22 +139,22 @@ export type SpawnNewTerminalOptions = {
  */
 export function spawnInNewTerminalWindow(options: SpawnNewTerminalOptions): void {
   const platform = options.platform ?? process.platform;
-  const command = [options.binary, ...options.argv].map(shellQuote).join(" ");
-  const cdCommand = `cd ${shellQuote(options.cwd)}`;
+  const quote = platform === "win32" ? cmdQuote : shellQuote;
+  const command = [options.binary, ...options.argv].map(quote).join(" ");
+  const cdCommand = platform === "win32" ? `cd /d ${quote(options.cwd)}` : `cd ${quote(options.cwd)}`;
+  const executableAvailable = options.isExecutableOnPath ?? isExecutableOnPath;
 
   if (platform === "darwin") {
     // Use osascript so we can set cwd cleanly and `do script` runs an interactive shell.
     const script = `tell application "Terminal" to do script "${cdCommand.replace(/"/g, "\\\"")} && ${command.replace(/"/g, "\\\"")}"`;
-    const child = spawn("osascript", ["-e", script], { detached: true, stdio: "ignore" });
-    child.unref();
+    spawnDetached("osascript", ["-e", script], { detached: true, stdio: "ignore" });
     return;
   }
 
   if (platform === "win32") {
     // `start cmd /K "<cd> && <command>"` opens a new console window that stays open after the command exits.
     const inner = `${cdCommand} && ${command}`;
-    const child = spawn("cmd.exe", ["/C", "start", "cmd", "/K", inner], { detached: true, stdio: "ignore", windowsHide: false });
-    child.unref();
+    spawnDetached("cmd.exe", ["/C", "start", "cmd", "/K", inner], { detached: true, stdio: "ignore", windowsHide: false });
     return;
   }
 
@@ -132,15 +167,14 @@ export function spawnInNewTerminalWindow(options: SpawnNewTerminalOptions): void
   ];
   const innerScript = `${cdCommand} && ${command}; exec bash`;
   for (const candidate of candidates) {
-    try {
-      const child = spawn(candidate.bin, candidate.argv(innerScript), { detached: true, stdio: "ignore" });
-      child.unref();
-      return;
-    } catch {
-      // try next
-    }
+    if (!executableAvailable(candidate.bin)) continue;
+    spawnDetached(candidate.bin, candidate.argv(innerScript), { detached: true, stdio: "ignore" });
+    return;
   }
   // Last resort: xdg-terminal (often a shim on modern desktops).
-  const child = spawn("xdg-terminal", [`${cdCommand} && ${command}`], { detached: true, stdio: "ignore" });
-  child.unref();
+  if (executableAvailable("xdg-terminal")) {
+    spawnDetached("xdg-terminal", [`${cdCommand} && ${command}`], { detached: true, stdio: "ignore" });
+    return;
+  }
+  throw new Error("Failed to spawn terminal: no supported terminal emulator found");
 }

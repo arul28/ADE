@@ -6518,9 +6518,14 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.agentChatCodexOpenInCli, async (
-    _event,
+    event,
     arg: AgentChatCodexOpenInCliArgs,
   ): Promise<AgentChatCodexOpenInCliResult> => {
+    assertTrustedAppControlSender(event, IPC.agentChatCodexOpenInCli);
+    if (arg?.mode === "new-window") {
+      assertAppControlRateLimit(event, IPC.agentChatCodexOpenInCli, { windowMs: 10_000, max: 10 });
+    }
+
     const ctx = getCtx();
     const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId.trim() : "";
     const mode = arg?.mode === "new-window" ? "new-window" : "ade-terminal";

@@ -297,6 +297,14 @@ export function latestTokenStats(
   let cachedInputTokens: number | null = null;
   let costUsd: number | null = null;
   let eventLimit: number | null = null;
+  const readCachedInputTokens = (bucket: Record<string, unknown> | null): number | null => {
+    if (!bucket) return null;
+    if (typeof bucket.cacheReadTokens === "number") return bucket.cacheReadTokens;
+    if (typeof (bucket as { cachedInputTokens?: unknown }).cachedInputTokens === "number") {
+      return (bucket as { cachedInputTokens: number }).cachedInputTokens;
+    }
+    return null;
+  };
   for (const envelope of events) {
     const event = envelope.event as Record<string, unknown>;
     if (event.type === "status" && event.turnStatus === "started") streaming = true;
@@ -320,22 +328,14 @@ export function latestTokenStats(
       // Codex passes cached read tokens as either cacheReadTokens (camelCase) or
       // cachedInputTokens (snake-cased upstream variant aliased through). Prefer
       // last-turn reading over total.
-      const readFromBucket = (bucket: Record<string, unknown> | null): number | null => {
-        if (!bucket) return null;
-        if (typeof bucket.cacheReadTokens === "number") return bucket.cacheReadTokens;
-        if (typeof (bucket as { cachedInputTokens?: unknown }).cachedInputTokens === "number") {
-          return (bucket as { cachedInputTokens: number }).cachedInputTokens;
-        }
-        return null;
-      };
-      cachedInputTokens = readFromBucket(last) ?? readFromBucket(total) ?? cachedInputTokens;
+      cachedInputTokens = readCachedInputTokens(last) ?? readCachedInputTokens(total) ?? cachedInputTokens;
       if (typeof usage?.modelContextWindow === "number") eventLimit = usage.modelContextWindow;
     }
     if (event.type === "done") {
       const usage = event.usage && typeof event.usage === "object" ? event.usage as Record<string, unknown> : null;
       inputTokens = typeof usage?.inputTokens === "number" ? usage.inputTokens : inputTokens;
       outputTokens = typeof usage?.outputTokens === "number" ? usage.outputTokens : outputTokens;
-      if (typeof usage?.cacheReadTokens === "number") cachedInputTokens = usage.cacheReadTokens;
+      cachedInputTokens = readCachedInputTokens(usage) ?? cachedInputTokens;
       costUsd = typeof event.costUsd === "number" ? event.costUsd : costUsd;
     }
   }

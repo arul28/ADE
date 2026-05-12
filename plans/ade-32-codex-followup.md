@@ -48,7 +48,7 @@ Update the test that codifies the regression: `agentChatService.test.ts:2125-213
 
 Today the `Plan` item is only normalized on `eventKind === "completed"`. Plan §5.1 says emit a `plan` event with `state: "active"` on `item/started` too, so the renderer's plan card mounts immediately. Fix: add an `item/started` branch that emits `{ type: "plan", state: "active", explanation: null, steps: [], streamingText: "" }`.
 
-Also align state literals to plan-spec `"active" | "complete"` (currently `"started" | "updated" | "completed"`). Pick one set; update `chat.ts` union and renderers.
+Also align state literals. The implemented union in `chat.ts` uses `"active" | "delta" | "updated" | "complete"` to distinguish streaming deltas from structured updates; keep renderers exhaustive across all four states, or narrow the union only if Codex no longer needs those intermediate states.
 
 ### A.3 Distinct `codex_context_compaction` variant
 **Files**: `apps/desktop/src/shared/types/chat.ts`, `agentChatService.ts:10579-10585`

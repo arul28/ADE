@@ -679,7 +679,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const [formFieldIndex, setFormFieldIndex] = useState(0);
   const [rightSelectionIndex, setRightSelectionIndex] = useState(0);
   const [drawerOpen, setDrawerOpen] = useState(true);
-  const [rightOpen, setRightOpen] = useState(true);
+  const [rightOpen, setRightOpen] = useState(() => columns >= 110);
   const [activePane, setActivePane] = useState<PaneFocus>("chat");
   const [prompt, setPrompt] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -2232,17 +2232,27 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
 
   const openLatestImage = useCallback(() => {
     let target: string | null = null;
-    for (const envelope of events) {
-      const event = envelope.event as Record<string, unknown>;
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index]?.event as Record<string, unknown> | undefined;
+      if (!event) continue;
       if (event.type === "codex_image_generation") {
         const candidate = (event as { result?: unknown }).result;
-        if (typeof candidate === "string" && candidate && !/^https?:|^data:/i.test(candidate)) {
+        if (typeof candidate === "string" && candidate && !/^data:/i.test(candidate)) {
           target = candidate;
+          break;
         }
       }
       if (event.type === "codex_image_view") {
         const local = (event as { path?: unknown }).path;
-        if (typeof local === "string" && local) target = local;
+        const remote = (event as { url?: unknown }).url;
+        if (typeof local === "string" && local) {
+          target = local;
+          break;
+        }
+        if (typeof remote === "string" && remote && !/^data:/i.test(remote)) {
+          target = remote;
+          break;
+        }
       }
     }
     if (!target) {
@@ -2250,14 +2260,18 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       return;
     }
     try {
-      if (process.platform === "darwin") {
-        spawn("open", [target], { stdio: "ignore", detached: true }).unref();
-      } else if (process.platform === "win32") {
-        spawn("cmd", ["/c", "start", "", target], { stdio: "ignore", detached: true }).unref();
-      } else {
-        spawn("xdg-open", [target], { stdio: "ignore", detached: true }).unref();
-      }
-      addNotice(`Opening ${path.basename(target)}…`, "info");
+      const child = process.platform === "darwin"
+        ? spawn("open", [target], { stdio: "ignore", detached: true })
+        : process.platform === "win32"
+          ? spawn("cmd", ["/c", "start", "", target], { stdio: "ignore", detached: true })
+          : spawn("xdg-open", [target], { stdio: "ignore", detached: true });
+      child.once("error", (err) => {
+        addNotice(err instanceof Error ? err.message : String(err), "error");
+      });
+      child.once("spawn", () => {
+        addNotice(`Opening ${path.basename(target)}…`, "info");
+      });
+      child.unref();
     } catch (err) {
       addNotice(err instanceof Error ? err.message : String(err), "error");
     }
@@ -3019,7 +3033,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       && !pendingApproval
       && rightPane.kind !== "form"
       && !slashRows.length
-      && !key.ctrl
+      && key.ctrl
       && !key.meta
       && input === "h"
     ) {

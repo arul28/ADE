@@ -63,7 +63,9 @@ function parseArgs(argv) {
       continue;
     }
     if (arg.startsWith("--project-root=")) {
-      options.projectRoot = arg.slice("--project-root=".length);
+      const value = arg.slice("--project-root=".length).trim();
+      if (!value) throw new Error("--project-root requires a path.");
+      options.projectRoot = value;
       continue;
     }
     if (arg === "--workspace-root") {
@@ -72,7 +74,9 @@ function parseArgs(argv) {
       continue;
     }
     if (arg.startsWith("--workspace-root=")) {
-      options.workspaceRoot = arg.slice("--workspace-root=".length);
+      const value = arg.slice("--workspace-root=".length).trim();
+      if (!value) throw new Error("--workspace-root requires a path.");
+      options.workspaceRoot = value;
       continue;
     }
     if (arg === "--socket") {

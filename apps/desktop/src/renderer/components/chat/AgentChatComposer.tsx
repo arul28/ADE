@@ -2313,8 +2313,7 @@ export function AgentChatComposer({
   };
 
   const handleDragOver = (event: React.DragEvent<HTMLDivElement>) => {
-    const hasImageUrl = event.dataTransfer.types.includes("text/uri-list")
-      || event.dataTransfer.types.includes("text/plain");
+    const hasImageUrl = event.dataTransfer.types.includes("text/uri-list");
     if (!canAttach || (!event.dataTransfer.files.length && !hasImageUrl)) return;
     event.preventDefault();
     setDragActive(true);

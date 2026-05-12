@@ -2107,21 +2107,32 @@ export function AgentChatPane({
     return [...displayEvents.slice(0, insertAt), synthetic, ...displayEvents.slice(insertAt)];
   }, [optimisticOutgoingMessage, presentation?.mode, presentation?.rewriteMissionControlTextTools, selectedEvents, selectedSession?.cursorCloudAgentId, selectedSession?.cursorPromotedTurnId, selectedSessionId]);
   const selectedCodexGoal = useMemo<CodexThreadGoal | null>(() => {
-    let goal = selectedSession?.codexGoal ?? null;
+    let goalFromEvents: CodexThreadGoal | null = null;
+    let sawGoalEvent = false;
     for (const envelope of selectedEventsForDisplay) {
       const event = envelope.event;
-      if (event.type === "codex_goal_updated") goal = event.goal;
-      if (event.type === "codex_goal_cleared") goal = null;
+      if (event.type === "codex_goal_updated") {
+        goalFromEvents = event.goal;
+        sawGoalEvent = true;
+      }
+      if (event.type === "codex_goal_cleared") {
+        goalFromEvents = null;
+        sawGoalEvent = true;
+      }
     }
-    return goal;
+    return sawGoalEvent ? goalFromEvents : (selectedSession?.codexGoal ?? null);
   }, [selectedEventsForDisplay, selectedSession?.codexGoal]);
   const selectedCodexTokenUsage = useMemo<CodexThreadTokenUsage | null>(() => {
-    let usage = selectedSession?.codexTokenUsage ?? null;
+    let usageFromEvents: CodexThreadTokenUsage | null = null;
+    let sawUsageEvent = false;
     for (const envelope of selectedEventsForDisplay) {
       const event = envelope.event;
-      if (event.type === "codex_token_usage") usage = event.usage;
+      if (event.type === "codex_token_usage") {
+        usageFromEvents = event.usage;
+        sawUsageEvent = true;
+      }
     }
-    return usage;
+    return sawUsageEvent ? usageFromEvents : (selectedSession?.codexTokenUsage ?? null);
   }, [selectedEventsForDisplay, selectedSession?.codexTokenUsage]);
   const selectedSubagentSnapshots = useMemo(() => deriveChatSubagentSnapshots(selectedEvents), [selectedEvents]);
   const selectedTurnDiffSummaries = useMemo(() => deriveTurnDiffSummaries(selectedEvents), [selectedEvents]);
@@ -2129,6 +2140,27 @@ export function AgentChatPane({
   const pendingInput = selectedSessionId ? (pendingInputsBySession[selectedSessionId]?.[0] ?? null) : null;
   const selectedSessionAwaitingInput = Boolean(pendingInput) || selectedSession?.awaitingInput === true;
   const turnActive = selectedSessionId ? (turnActiveBySession[selectedSessionId] ?? false) : false;
+  const sendCodexControlMessage = useCallback(async (sessionId: string, text: string) => {
+    try {
+      if (turnActiveBySession[sessionId]) {
+        await window.ade.agentChat.steer({ sessionId, text });
+        return;
+      }
+
+      try {
+        await window.ade.agentChat.send({ sessionId, text });
+      } catch (sendError) {
+        const message = sendError instanceof Error ? sendError.message : String(sendError);
+        if (/turn is already active|already active/i.test(message)) {
+          await window.ade.agentChat.steer({ sessionId, text });
+          return;
+        }
+        throw sendError;
+      }
+    } catch (controlError) {
+      setError(controlError instanceof Error ? controlError.message : String(controlError));
+    }
+  }, [turnActiveBySession]);
 
   const persistParallelLaunchState = useCallback(async (state: AgentChatParallelLaunchState | null) => {
     if (!projectRoot || !laneId) return;
@@ -6207,14 +6239,10 @@ export function AgentChatPane({
                       <CodexGoalBanner
                         goal={selectedCodexGoal}
                         onEdit={(next) => {
-                          void window.ade.agentChat
-                            .send({ sessionId: selectedSessionId, text: `/goal ${next}` })
-                            .catch(() => undefined);
+                          void sendCodexControlMessage(selectedSessionId, `/goal ${next}`);
                         }}
                         onClear={() => {
-                          void window.ade.agentChat
-                            .send({ sessionId: selectedSessionId, text: "/goal clear" })
-                            .catch(() => undefined);
+                          void sendCodexControlMessage(selectedSessionId, "/goal clear");
                         }}
                       />
                     ) : null}

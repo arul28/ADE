@@ -7128,12 +7128,14 @@ describe("createAgentChatService", () => {
       const initializeRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "initialize");
       const capabilities = (initializeRequest?.params as { capabilities?: { optOutNotificationMethods?: string[] } })
         ?.capabilities;
-      expect(capabilities?.optOutNotificationMethods).toEqual([
+      const expectedOptOut = [
         "item/agentMessage/delta",
         "item/reasoning/summaryTextDelta",
         "item/reasoning/textDelta",
         "item/commandExecution/outputDelta",
-      ]);
+      ];
+      expect(capabilities?.optOutNotificationMethods).toEqual(expect.arrayContaining(expectedOptOut));
+      expect(capabilities?.optOutNotificationMethods).toHaveLength(expectedOptOut.length);
     });
 
     it("sends an empty optOutNotificationMethods list when runtimeMode is undefined (default interactive)", async () => {

@@ -120,6 +120,19 @@ describe("latestTokenStats", () => {
     expect(stats.inputTokens).toBe(2_300);
     expect(stats.outputTokens).toBe(1_100);
   });
+
+  it("reads cachedInputTokens from done usage events", () => {
+    const events = [
+      envelope(1, {
+        type: "done",
+        turnId: "turn-1",
+        status: "completed",
+        usage: { inputTokens: 1_000, outputTokens: 200, cachedInputTokens: 350 },
+      } as AgentChatEventEnvelope["event"]),
+    ];
+    const stats = latestTokenStats(events);
+    expect(stats.cachedInputTokens).toBe(350);
+  });
 });
 
 describe("latestGoal", () => {

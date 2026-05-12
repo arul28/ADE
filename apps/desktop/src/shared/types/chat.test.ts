@@ -109,7 +109,7 @@ describe("mergeAttachments", () => {
     expect(result.map((a) => a.path)).toEqual(["/first.ts", "/second.ts", "/third.ts"]);
   });
 
-  it("deduplicates image URL attachments by URL path", () => {
+  it("deduplicates image-url attachments by path field", () => {
     const current: AgentChatFileRef[] = [
       { path: "https://example.com/old.png", type: "image-url", url: "https://example.com/old.png" },
     ];

@@ -170,7 +170,7 @@ This is the biggest UX piece. Codex CLI's `/resume` UX is what we're matching.
 
 Methods we'll add:
 
-- `thread/list { searchTerm?, cursor?, sortKey?, sortDirection?, cwd?, sourceKinds?, archived?, modelProviders? }` returns `{ items: [...], nextCursor, backwardsCursor }`. Items include name, lastActivityAt, turn count, cwd, archived.
+- `thread/list { searchTerm?, cursor?, limit?, sortKey?, sortDirection?, cwd?, sourceKinds?, archived?, modelProviders? }` returns `{ items: [...], nextCursor, backwardsCursor }`. Items include name, lastActivityAt, turn count, cwd, archived.
 - `thread/read { threadId, includeTurns: boolean }` returns metadata + (optionally) all turns. Used for read-only preview before resuming.
 - `thread/fork { threadId, ephemeral?: boolean }` — branch into new thread.
 - `thread/unarchive { threadId }` — restore.

@@ -5143,7 +5143,8 @@ function buildChatPlan(args: string[]): CliPlan {
     // initialize handshake runs once per session, so setting it per-message
     // would be a silent no-op. Reject explicitly so users move it to
     // `ade chat create --print`.
-    if (readFlag(args, ["--print"])) {
+    const hasPrintFlag = args.some((token) => token === "--print" || token.startsWith("--print="));
+    if (hasPrintFlag) {
       throw new CliUsageError(
         "--print must be set at session creation time. Use `ade chat create --print ...`.",
       );
