@@ -5764,10 +5764,10 @@ export function registerIpc({
     await ctx.rebaseSuggestionService.defer({ laneId: arg.laneId, minutes: arg.minutes });
   });
 
-  ipcMain.handle(IPC.lanesListAutoRebaseStatuses, async (_event, arg?: { includeAll?: boolean }): Promise<AutoRebaseLaneStatus[]> => {
+  ipcMain.handle(IPC.lanesListAutoRebaseStatuses, async (): Promise<AutoRebaseLaneStatus[]> => {
     const ctx = getCtx();
     if (!ctx.autoRebaseService) return [];
-    return await ctx.autoRebaseService.listStatuses({ includeAll: arg?.includeAll === true });
+    return await ctx.autoRebaseService.listStatuses();
   });
 
   ipcMain.handle(IPC.lanesDismissAutoRebaseStatus, async (_event, arg: { laneId: string }): Promise<void> => {

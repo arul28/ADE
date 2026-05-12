@@ -13,8 +13,10 @@ import type {
   PrAiResolutionEventPayload,
   PrActionRun,
   PrCheck,
+  PrComment,
   PrConvergenceState,
   PrConvergenceStatePatch,
+  PrReview,
   PrReviewThread,
   PrStatus,
   PrWithConflicts,
@@ -65,6 +67,33 @@ function makeActionRun(overrides: Partial<PrActionRun> = {}): PrActionRun {
     createdAt: "2026-05-01T05:15:24.000Z",
     updatedAt: "2026-05-01T05:24:41.000Z",
     jobs: [],
+    ...overrides,
+  };
+}
+
+function makeComment(overrides: Partial<PrComment> = {}): PrComment {
+  return {
+    id: "comment-1",
+    author: "reviewer",
+    authorAvatarUrl: null,
+    body: "Cached comment body",
+    source: "issue",
+    url: null,
+    path: "src/prs.ts",
+    line: 18,
+    createdAt: "2026-03-23T12:00:00.000Z",
+    updatedAt: "2026-03-23T12:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function makeReview(overrides: Partial<PrReview> = {}): PrReview {
+  return {
+    reviewer: "reviewer",
+    reviewerAvatarUrl: null,
+    state: "approved",
+    body: "Cached review body",
+    submittedAt: "2026-03-23T12:05:00.000Z",
     ...overrides,
   };
 }
@@ -262,6 +291,7 @@ function renderPane(args: {
   prOverrides?: Partial<PrWithConflicts>;
   onNavigate?: (path: string) => void;
   activity?: PrActivityEvent[];
+  status?: PrStatus | null;
   statusOverrides?: Partial<PrStatus>;
   mergeMethod?: "merge" | "squash" | "rebase";
   convergenceState?: PrConvergenceState | null;
@@ -496,7 +526,7 @@ function renderPane(args: {
     <MemoryRouter>
       <PrDetailPane
         pr={makePr(prOverrides)}
-        status={makeStatus(args.statusOverrides)}
+        status={args.status === undefined ? makeStatus(args.statusOverrides) : args.status}
         checks={args.checks}
         reviews={[]}
         comments={[]}
@@ -661,6 +691,42 @@ describe("PrDetailPane issue resolver CTA", () => {
       expect(screen.getByText("All 3 checks passing")).toBeTruthy();
       expect(screen.queryByText("Fast Checks (Lint, Type, Unit)")).toBeNull();
       expect(screen.queryByText("Coverage Report")).toBeNull();
+    });
+  });
+
+  it("hydrates checks and activity data from a cached snapshot", async () => {
+    const user = userEvent.setup();
+    const listSnapshots = vi.fn().mockResolvedValue([{
+      prId: "pr-80",
+      detail: null,
+      status: makeStatus({ checksStatus: "passing", reviewStatus: "approved" }),
+      checks: [makeCheck({ name: "Cached snapshot check", conclusion: "success" })],
+      reviews: [makeReview({ body: "Cached review body" })],
+      comments: [makeComment({ body: "Cached comment body" })],
+      files: [],
+      commits: [],
+      updatedAt: "2026-03-23T12:01:00.000Z",
+    }]);
+    renderPane({
+      status: null,
+      checks: [],
+      reviewThreads: [],
+      listSnapshots,
+    });
+
+    await waitFor(() => {
+      expect(listSnapshots).toHaveBeenCalledWith({ prId: "pr-80" });
+    });
+
+    await user.click(screen.getByRole("button", { name: /ci \/ checks/i }));
+    await waitFor(() => {
+      expect(screen.getByText("Cached snapshot check")).toBeTruthy();
+    });
+
+    await user.click(screen.getByRole("button", { name: /activity/i }));
+    await waitFor(() => {
+      expect(screen.getByText("Cached comment body")).toBeTruthy();
+      expect(screen.getByText("Cached review body")).toBeTruthy();
     });
   });
 

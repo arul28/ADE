@@ -700,7 +700,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
           })
         : Promise.resolve(rebaseNeedsRef.current),
       shouldLoadRebaseState
-        ? window.ade.lanes.listAutoRebaseStatuses({ includeAll: true }).catch((err) => {
+        ? window.ade.lanes.listAutoRebaseStatuses().catch((err) => {
             console.warn("[PrsContext] Failed to refresh auto-rebase statuses:", err);
             return autoRebaseStatusesRef.current;
           })
@@ -1228,7 +1228,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (activeTab === "normal" && selectedPrId == null) return;
     let cancelled = false;
-    window.ade.lanes.listAutoRebaseStatuses({ includeAll: true }).then((statuses) => {
+    window.ade.lanes.listAutoRebaseStatuses().then((statuses) => {
       if (!cancelled) setAutoRebaseStatuses(statuses);
     }).catch((err) => {
       console.warn("[PrsContext] Failed to list auto-rebase statuses:", err);

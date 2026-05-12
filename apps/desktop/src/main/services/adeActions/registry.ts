@@ -2216,8 +2216,8 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
       runtime.conflictService?.deferRebase(laneId, until);
       await runtime.rebaseSuggestionService?.defer({ laneId, minutes });
     },
-    listAutoRebaseStatuses: (args?: { includeAll?: boolean }) =>
-      runtime.autoRebaseService?.listStatuses({ includeAll: args?.includeAll === true }) ?? [],
+    listAutoRebaseStatuses: () =>
+      runtime.autoRebaseService?.listStatuses() ?? [],
     dismissAutoRebaseStatus: async (args?: { laneId?: string }) => {
       const laneId = requireNonEmptyString(args?.laneId, "laneId");
       await runtime.autoRebaseService?.dismissStatus({ laneId });

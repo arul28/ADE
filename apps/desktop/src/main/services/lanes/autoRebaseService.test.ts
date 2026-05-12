@@ -405,7 +405,7 @@ describe("autoRebaseService", () => {
       expect(statuses).toHaveLength(0);
     });
 
-    it("clears stale non-autoRebased status during includeAll listings", async () => {
+    it("clears stale non-autoRebased status during listings", async () => {
       const service = createService();
 
       laneList = [makeLane("lane-a", {
@@ -423,7 +423,7 @@ describe("autoRebaseService", () => {
         message: null,
       });
 
-      const statuses = await service.listStatuses({ includeAll: true });
+      const statuses = await service.listStatuses();
       expect(statuses).toHaveLength(0);
       expect(laneService.list).toHaveBeenCalledWith({
         includeArchived: false,

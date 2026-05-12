@@ -435,10 +435,10 @@ type PrDetailPaneProps = {
 
 export function PrDetailPane({
   pr,
-  status,
-  checks,
-  reviews,
-  comments,
+  status: liveStatus,
+  checks: liveChecks,
+  reviews: liveReviews,
+  comments: liveComments,
   detailBusy,
   lanes,
   mergeMethod,
@@ -480,10 +480,18 @@ export function PrDetailPane({
   const [detail, setDetail] = React.useState<PrDetail | null>(null);
   const [files, setFiles] = React.useState<PrFile[]>([]);
   const [commits, setCommits] = React.useState<PrCommit[]>([]);
+  const [snapshotStatus, setSnapshotStatus] = React.useState<PrStatus | null>(null);
+  const [snapshotChecks, setSnapshotChecks] = React.useState<PrCheck[]>([]);
+  const [snapshotReviews, setSnapshotReviews] = React.useState<PrReview[]>([]);
+  const [snapshotComments, setSnapshotComments] = React.useState<PrComment[]>([]);
   const [actionRuns, setActionRuns] = React.useState<PrActionRun[]>([]);
   const [activity, setActivity] = React.useState<PrActivityEvent[]>([]);
   const [reviewThreads, setReviewThreads] = React.useState<PrReviewThread[]>([]);
   const timelineRailsRef = React.useRef<PrDetailTimelineRailsRef | null>(null);
+  const status = liveStatus ?? snapshotStatus;
+  const checks = liveChecks.length > 0 ? liveChecks : snapshotChecks;
+  const reviews = liveReviews.length > 0 ? liveReviews : snapshotReviews;
+  const comments = liveComments.length > 0 ? liveComments : snapshotComments;
 
   const setActiveTab = React.useCallback((tab: DetailTab) => {
     setActiveTabState(tab);
@@ -494,6 +502,10 @@ export function PrDetailPane({
   React.useEffect(() => {
     const next = initialDetailTab ?? readStoredDetailTab(pr.id) ?? "overview";
     setActiveTabState(next);
+    setSnapshotStatus(null);
+    setSnapshotChecks([]);
+    setSnapshotReviews([]);
+    setSnapshotComments([]);
     if (initialDetailTab) {
       writeStoredDetailTab(pr.id, initialDetailTab);
     }
@@ -751,6 +763,10 @@ export function PrDetailPane({
         const cachedSnapshot = (await window.ade.prs.listSnapshots({ prId: pr.id }).catch(() => []))[0];
         if (cachedSnapshot && requestId === detailLoadSeqRef.current) {
           if (cachedSnapshot.detail) setDetail(cachedSnapshot.detail);
+          if (cachedSnapshot.status) setSnapshotStatus(cachedSnapshot.status);
+          if (cachedSnapshot.checks.length > 0) setSnapshotChecks(cachedSnapshot.checks);
+          if (cachedSnapshot.reviews.length > 0) setSnapshotReviews(cachedSnapshot.reviews);
+          if (cachedSnapshot.comments.length > 0) setSnapshotComments(cachedSnapshot.comments);
           if (cachedSnapshot.files.length > 0) setFiles(cachedSnapshot.files);
           if (cachedSnapshot.commits.length > 0) setCommits(cachedSnapshot.commits);
         }

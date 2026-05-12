@@ -4405,9 +4405,9 @@ contextBridge.exposeInMainWorld("ade", {
         ipcRenderer.removeListener(IPC.lanesRebaseSuggestionsEvent, listener);
       };
     },
-    listAutoRebaseStatuses: async (options?: { includeAll?: boolean }): Promise<AutoRebaseLaneStatus[]> =>
-      callProjectRuntimeActionOr("lane", "listAutoRebaseStatuses", { args: options ?? {} }, () =>
-        ipcRenderer.invoke(IPC.lanesListAutoRebaseStatuses, options ?? {}),
+    listAutoRebaseStatuses: async (): Promise<AutoRebaseLaneStatus[]> =>
+      callProjectRuntimeActionOr("lane", "listAutoRebaseStatuses", { args: {} }, () =>
+        ipcRenderer.invoke(IPC.lanesListAutoRebaseStatuses),
       ),
     dismissAutoRebaseStatus: async (args: {
       laneId: string;

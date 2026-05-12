@@ -18,7 +18,6 @@ type StoredDismissal = {
   dismissedAt: string;
 };
 type ListStatusesOptions = {
-  includeAll?: boolean;
   lanes?: LaneSummary[];
   preserveLaneIds?: string[];
 };
@@ -399,7 +398,7 @@ export function createAutoRebaseService(args: {
   const recordAttentionStatus = async (status: AttentionStatusInput): Promise<void> => {
     setStatus(status);
     if (disposed) return;
-    await emit({ includeAll: true, preserveLaneIds: [status.laneId] });
+    await emit({ preserveLaneIds: [status.laneId] });
   };
 
   const dismissStatus = async (args: { laneId: string }): Promise<void> => {
@@ -413,7 +412,7 @@ export function createAutoRebaseService(args: {
       dismissedAt: nowIso(),
     });
     if (disposed) return;
-    void emit({ includeAll: true });
+    void emit();
   };
 
   const collectDescendantsDepthFirst = (rootLaneId: string, lanes: LaneSummary[]): string[] => {
@@ -663,13 +662,13 @@ export function createAutoRebaseService(args: {
         state.pending = false;
         await processRoot(rootLaneId, state.reason);
         if (disposed) return;
-        await emit({ includeAll: true });
+        await emit();
         if (disposed) return;
       }
     } catch (error) {
       logger.warn("autoRebase.run_failed", { rootLaneId, error: String(error) });
       if (disposed) return;
-      await emit({ includeAll: true });
+      await emit();
     } finally {
       state.running = false;
       if (state.pending && !disposed) {

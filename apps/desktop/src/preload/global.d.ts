@@ -1353,7 +1353,7 @@ declare global {
         onRebaseSuggestionsEvent: (
           cb: (ev: RebaseSuggestionsEventPayload) => void,
         ) => () => void;
-        listAutoRebaseStatuses: (options?: { includeAll?: boolean }) => Promise<AutoRebaseLaneStatus[]>;
+        listAutoRebaseStatuses: () => Promise<AutoRebaseLaneStatus[]>;
         dismissAutoRebaseStatus: (args: { laneId: string }) => Promise<void>;
         onAutoRebaseEvent: (
           cb: (ev: AutoRebaseEventPayload) => void,
