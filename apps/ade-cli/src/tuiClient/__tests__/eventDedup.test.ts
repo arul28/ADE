@@ -11,7 +11,7 @@ describe("tuiEventDedupKey", () => {
       event: { type: "text", text: "hello" },
     } as AgentChatEventEnvelope;
 
-    expect(tuiEventDedupKey(event)).toBe("seq:42");
+    expect(tuiEventDedupKey(event)).toContain("seq:42");
   });
 
   it("keeps same-millisecond payload variants distinct when sequence is absent", () => {
@@ -29,6 +29,23 @@ describe("tuiEventDedupKey", () => {
     } as AgentChatEventEnvelope;
 
     expect(tuiEventDedupKey(first)).not.toBe(tuiEventDedupKey(second));
+  });
+
+  it("keeps rebuilt events distinct when sequence restarts", () => {
+    const first = {
+      sessionId: "session-1",
+      sequence: 1,
+      timestamp: "2026-01-01T00:00:00.000Z",
+      event: { type: "text", text: "old" },
+    } as AgentChatEventEnvelope;
+    const rebuilt = {
+      sessionId: "session-1",
+      sequence: 1,
+      timestamp: "2026-01-01T00:00:01.000Z",
+      event: { type: "text", text: "new" },
+    } as AgentChatEventEnvelope;
+
+    expect(tuiEventDedupKey(first)).not.toBe(tuiEventDedupKey(rebuilt));
   });
 
   it("dedupes exact fallback event replays", () => {
