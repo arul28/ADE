@@ -37,12 +37,14 @@ export function appendReservedTuiEvent(
   keys: Set<string>,
   limit = 500,
 ): AgentChatEventEnvelope[] {
-  const nextEvents = previousEvents.length >= limit
-    ? [...previousEvents.slice(previousEvents.length - limit + 1), envelope]
+  const normalizedLimit = Math.max(1, limit);
+  const trimmedCount = Math.max(0, previousEvents.length - normalizedLimit + 1);
+  const nextEvents = trimmedCount > 0
+    ? [...previousEvents.slice(trimmedCount), envelope]
     : [...previousEvents, envelope];
 
-  if (nextEvents.length !== previousEvents.length + 1) {
-    syncTuiEventDedupKeys(keys, nextEvents);
+  for (const trimmedEvent of previousEvents.slice(0, trimmedCount)) {
+    keys.delete(tuiEventDedupKey(trimmedEvent));
   }
 
   return nextEvents;

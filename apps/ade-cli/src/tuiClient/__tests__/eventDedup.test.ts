@@ -108,4 +108,50 @@ describe("tuiEventDedupKey", () => {
 
     expect(reserveTuiEventDedupKey(first, keys)).toBeNull();
   });
+
+  it("keeps pending reserved keys when trimming old events", () => {
+    const oldFirst = {
+      sessionId: "session-1",
+      sequence: 1,
+      timestamp: "2026-01-01T00:00:00.000Z",
+      event: { type: "text", text: "old first" },
+    } as AgentChatEventEnvelope;
+    const oldSecond = {
+      sessionId: "session-1",
+      sequence: 2,
+      timestamp: "2026-01-01T00:00:01.000Z",
+      event: { type: "text", text: "old second" },
+    } as AgentChatEventEnvelope;
+    const incomingFirst = {
+      sessionId: "session-1",
+      sequence: 3,
+      timestamp: "2026-01-01T00:00:02.000Z",
+      event: { type: "text", text: "new first" },
+    } as AgentChatEventEnvelope;
+    const incomingSecond = {
+      sessionId: "session-1",
+      sequence: 4,
+      timestamp: "2026-01-01T00:00:03.000Z",
+      event: { type: "text", text: "new second" },
+    } as AgentChatEventEnvelope;
+    const keys = new Set<string>();
+    syncTuiEventDedupKeys(keys, [oldFirst, oldSecond]);
+
+    expect(reserveTuiEventDedupKey(incomingFirst, keys)).not.toBeNull();
+    expect(reserveTuiEventDedupKey(incomingSecond, keys)).not.toBeNull();
+
+    const afterFirstAppend = appendReservedTuiEvent([oldFirst, oldSecond], incomingFirst, keys, 2);
+
+    expect(afterFirstAppend).toEqual([oldSecond, incomingFirst]);
+    expect(keys.has(tuiEventDedupKey(oldFirst))).toBe(false);
+    expect(keys.has(tuiEventDedupKey(incomingSecond))).toBe(true);
+    expect(reserveTuiEventDedupKey(incomingSecond, keys)).toBeNull();
+
+    const afterSecondAppend = appendReservedTuiEvent(afterFirstAppend, incomingSecond, keys, 2);
+
+    expect(afterSecondAppend).toEqual([incomingFirst, incomingSecond]);
+    expect(keys.has(tuiEventDedupKey(oldSecond))).toBe(false);
+    expect(keys.has(tuiEventDedupKey(incomingFirst))).toBe(true);
+    expect(keys.has(tuiEventDedupKey(incomingSecond))).toBe(true);
+  });
 });

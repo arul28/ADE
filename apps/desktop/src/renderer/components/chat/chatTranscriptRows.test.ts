@@ -1059,6 +1059,44 @@ describe("chatTranscriptRows edge cases", () => {
     expect(rows[0]!.event.streamingText).toBe("Streaming the next detail");
   });
 
+  it("clears live plan text when structured plan steps arrive", () => {
+    const rows = collapseChatTranscriptEvents([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "plan",
+          turnId: "turn-1",
+          itemId: "plan-1",
+          state: "delta",
+          streamingText: "Drafting the plan",
+          steps: [],
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "plan",
+          turnId: "turn-1",
+          itemId: "plan-1",
+          state: "updated",
+          explanation: "Implementation plan",
+          steps: [{ text: "Wire the command", status: "completed" }],
+        },
+      },
+    ]);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.event.type).toBe("plan");
+    if (rows[0]!.event.type !== "plan") {
+      throw new Error("Expected merged plan row");
+    }
+    expect(rows[0]!.event.steps).toEqual([{ text: "Wire the command", status: "completed" }]);
+    expect(rows[0]!.event.explanation).toBe("Implementation plan");
+    expect(rows[0]!.event.streamingText).toBeUndefined();
+  });
+
   it("filters standalone whitespace-only assistant text chunks", () => {
     const rows = collapseChatTranscriptEvents([
       {
