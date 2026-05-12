@@ -1,0 +1,126 @@
+/* @vitest-environment jsdom */
+
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
+import { useAppStore } from "../../state/appStore";
+import { ChatGitToolbar } from "./ChatGitToolbar";
+
+const originalAde = globalThis.window.ade;
+
+function installAdeMocks() {
+  globalThis.window.ade = {
+    git: {
+      listBranches: vi.fn().mockResolvedValue([]),
+      push: vi.fn().mockResolvedValue(undefined),
+      stageAll: vi.fn().mockResolvedValue(undefined),
+      commit: vi.fn().mockResolvedValue(undefined),
+      generateCommitMessage: vi.fn().mockResolvedValue({ message: "Commit changes" }),
+      getActionRuntime: vi.fn().mockResolvedValue(null),
+      onActionRuntimeEvent: vi.fn().mockImplementation(() => () => undefined),
+    },
+    diff: {
+      getChanges: vi.fn().mockResolvedValue({
+        staged: [],
+        unstaged: [],
+      }),
+    },
+    prs: {
+      getForLane: vi.fn().mockResolvedValue(null),
+    },
+    projectConfig: {
+      get: vi.fn().mockResolvedValue({
+        effective: {
+          processes: [],
+          processGroups: [],
+        },
+      }),
+      confirmTrust: vi.fn().mockResolvedValue(undefined),
+    },
+    processes: {
+      startAll: vi.fn().mockResolvedValue(undefined),
+      stopAll: vi.fn().mockResolvedValue(undefined),
+      startGroup: vi.fn().mockResolvedValue(undefined),
+      stopGroup: vi.fn().mockResolvedValue(undefined),
+      restartGroup: vi.fn().mockResolvedValue(undefined),
+    },
+  } as any;
+}
+
+function resetStore() {
+  useAppStore.setState({
+    lanes: [{
+      id: "lane-1",
+      name: "UI audit lane",
+      color: "#22c55e",
+      laneType: "worktree",
+      branchRef: "refs/heads/ui-audit",
+      worktreePath: "/tmp/project/.ade/worktrees/ui-audit",
+    } as any],
+    selectedLaneId: null,
+  });
+}
+
+function LocationProbe() {
+  const location = useLocation();
+  return <div data-testid="location">{`${location.pathname}${location.search}`}</div>;
+}
+
+function renderToolbar() {
+  return render(
+    <MemoryRouter initialEntries={["/work"]}>
+      <Routes>
+        <Route path="*" element={(
+          <>
+            <ChatGitToolbar laneId="lane-1" />
+            <LocationProbe />
+          </>
+        )}
+        />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
+describe("ChatGitToolbar", () => {
+  beforeEach(() => {
+    vi.stubGlobal("PointerEvent", MouseEvent);
+    installAdeMocks();
+    resetStore();
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+    if (originalAde === undefined) {
+      delete (globalThis.window as any).ade;
+    } else {
+      globalThis.window.ade = originalAde;
+    }
+  });
+
+  it("opens the current lane from the chat Git toolbar", async () => {
+    renderToolbar();
+
+    fireEvent.click(await screen.findByRole("button", { name: /UI audit lane/i }));
+
+    expect(screen.getByTestId("location").textContent).toBe("/lanes/lane-1");
+  });
+
+  it("opens the Run menu from the chat Git toolbar without starting commands", async () => {
+    renderToolbar();
+
+    const runButton = await screen.findByRole("button", { name: /Run/i });
+    fireEvent.pointerDown(runButton, { button: 0, ctrlKey: false, pointerId: 1 });
+    fireEvent.pointerUp(runButton, { button: 0, ctrlKey: false, pointerId: 1 });
+
+    expect(await screen.findByText("Lane runtime")).toBeTruthy();
+    expect(screen.getByText("Open Run tab")).toBeTruthy();
+    expect(screen.getByText("Open shell in Work")).toBeTruthy();
+    await waitFor(() => {
+      expect(window.ade.projectConfig.get).toHaveBeenCalled();
+    });
+    expect(window.ade.processes.startAll).not.toHaveBeenCalled();
+    expect(window.ade.processes.stopAll).not.toHaveBeenCalled();
+  });
+});

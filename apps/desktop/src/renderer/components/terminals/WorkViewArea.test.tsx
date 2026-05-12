@@ -1,11 +1,12 @@
 /* @vitest-environment jsdom */
 
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import type * as ReactNamespace from "react";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TerminalSessionSummary } from "../../../shared/types";
 import { collectLeafIds } from "../ui/paneTreeOps";
+import { FloatingPane } from "../ui/FloatingPane";
 import { isChatToolType } from "../../lib/sessions";
 import { WorkViewArea } from "./WorkViewArea";
 
@@ -206,6 +207,124 @@ describe("WorkViewArea", () => {
 
     expect(screen.getByTestId("work-start-surface")).toBeTruthy();
     expect(screen.queryByText("Session ended")).toBeNull();
+  });
+
+  it("minimizes and expands through embedded floating-pane chrome", () => {
+    const session = makeSession();
+
+    function EmbeddedWorkPane() {
+      const [minimized, setMinimized] = useState(false);
+      return (
+        <FloatingPane
+          id="work-pane"
+          title="Work"
+          minimized={minimized}
+          onMinimizeToggle={() => setMinimized((current) => !current)}
+          hideHeaderWhenExpanded
+        >
+          <WorkViewArea
+            gridLayoutId="work:grid:test"
+            lanes={[{
+              id: "lane-1",
+              name: "Lane 1",
+              laneType: "worktree",
+              baseRef: "main",
+              branchRef: "lane-1",
+              worktreePath: "/tmp/lane-1",
+              parentLaneId: null,
+              childCount: 0,
+              stackDepth: 0,
+              parentStatus: null,
+              isEditProtected: false,
+              status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
+              color: null,
+              icon: null,
+              tags: [],
+              createdAt: "2026-04-06T12:00:00.000Z",
+            }]}
+            sessions={[session]}
+            visibleSessions={[session]}
+            tabGroups={[]}
+            tabVisibleSessionIds={[session.id]}
+            activeItemId={null}
+            viewMode="tabs"
+            draftKind="chat"
+            setViewMode={() => {}}
+            onSelectItem={() => {}}
+            onCloseItem={() => {}}
+            onOpenChatSession={() => {}}
+            onLaunchPtySession={async () => ({})}
+            onShowDraftKind={() => {}}
+            onToggleTabGroupCollapsed={() => {}}
+            closingPtyIds={new Set()}
+          />
+        </FloatingPane>
+      );
+    }
+
+    const view = render(<EmbeddedWorkPane />);
+    const local = within(view.container);
+    const pane = () => view.container.querySelector('[data-pane-id="work-pane"]') as HTMLElement;
+
+    expect(local.getByTestId("work-start-surface")).toBeTruthy();
+    fireEvent.click(local.getByLabelText("Minimize pane"));
+
+    expect(pane().className).toContain("minimized");
+    fireEvent.click(local.getByLabelText("Expand pane"));
+
+    expect(pane().className).not.toContain("minimized");
+    expect(local.getByTestId("work-start-surface")).toBeTruthy();
+    expect(local.getByLabelText("Minimize pane")).toBeTruthy();
+  });
+
+  it("closes an ended work tab from the tab strip", () => {
+    const session = makeSession();
+    const onCloseItem = vi.fn();
+
+    render(
+      <WorkViewArea
+        gridLayoutId="work:grid:test"
+        lanes={[{
+          id: "lane-1",
+          name: "Lane 1",
+          laneType: "worktree",
+          baseRef: "main",
+          branchRef: "lane-1",
+          worktreePath: "/tmp/lane-1",
+          parentLaneId: null,
+          childCount: 0,
+          stackDepth: 0,
+          parentStatus: null,
+          isEditProtected: false,
+          status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
+          color: null,
+          icon: null,
+          tags: [],
+          createdAt: "2026-04-06T12:00:00.000Z",
+        }]}
+        sessions={[session]}
+        visibleSessions={[session]}
+        tabGroups={[]}
+        tabVisibleSessionIds={[session.id]}
+        activeItemId={session.id}
+        viewMode="tabs"
+        draftKind="chat"
+        setViewMode={() => {}}
+        onSelectItem={() => {}}
+        onCloseItem={onCloseItem}
+        onOpenChatSession={() => {}}
+        onLaunchPtySession={async () => ({})}
+        onShowDraftKind={() => {}}
+        onToggleTabGroupCollapsed={() => {}}
+        closingPtyIds={new Set()}
+      />,
+    );
+
+    for (const closeTab of screen.getAllByTitle("Close tab")) {
+      fireEvent.click(closeTab);
+    }
+
+    expect(onCloseItem).toHaveBeenCalledWith("session-1");
   });
 
   it("keeps every running terminal tile mounted in grid mode", () => {

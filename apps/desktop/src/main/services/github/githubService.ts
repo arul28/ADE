@@ -64,6 +64,66 @@ export function parseGitHubRepoFromRemoteUrl(remoteUrlRaw: string): GitHubRepoRe
   return null;
 }
 
+function readOriginUrlFromConfig(configPath: string): string | null {
+  try {
+    if (!fs.existsSync(configPath)) return null;
+    const raw = fs.readFileSync(configPath, "utf8");
+    let inOriginSection = false;
+    for (const line of raw.split(/\r?\n/)) {
+      const section = line.match(/^\s*\[([^\]]+)\]\s*$/);
+      if (section) {
+        inOriginSection = /^remote\s+"origin"$/i.test(section[1]?.trim() ?? "");
+        continue;
+      }
+      if (!inOriginSection) continue;
+      const url = line.match(/^\s*url\s*=\s*(.+?)\s*$/);
+      if (url?.[1]?.trim()) return url[1].trim();
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function resolveGitDir(projectRoot: string): string | null {
+  try {
+    const gitPath = path.join(projectRoot, ".git");
+    if (!fs.existsSync(gitPath)) return null;
+    const stat = fs.statSync(gitPath);
+    if (stat.isDirectory()) return gitPath;
+    if (!stat.isFile()) return null;
+    const raw = fs.readFileSync(gitPath, "utf8");
+    const match = raw.match(/^gitdir:\s*(.+)\s*$/im);
+    if (!match?.[1]) return null;
+    return path.resolve(projectRoot, match[1]);
+  } catch {
+    return null;
+  }
+}
+
+function resolveCommonGitDir(gitDir: string): string {
+  try {
+    const commonDirPath = path.join(gitDir, "commondir");
+    if (!fs.existsSync(commonDirPath)) return gitDir;
+    const raw = fs.readFileSync(commonDirPath, "utf8").trim();
+    if (!raw) return gitDir;
+    return path.resolve(gitDir, raw);
+  } catch {
+    return gitDir;
+  }
+}
+
+function readOriginUrlFromGitConfig(projectRoot: string): string | null {
+  const gitDir = resolveGitDir(projectRoot);
+  if (!gitDir) return null;
+  const commonGitDir = resolveCommonGitDir(gitDir);
+  return (
+    readOriginUrlFromConfig(path.join(gitDir, "config.worktree")) ??
+    readOriginUrlFromConfig(path.join(commonGitDir, "config")) ??
+    readOriginUrlFromConfig(path.join(gitDir, "config"))
+  );
+}
+
 export function parseNextLink(linkHeader: string | null): string | null {
   if (!linkHeader) return null;
   for (const part of linkHeader.split(",")) {
@@ -193,6 +253,8 @@ export function createGithubService({
   };
 
   const detectRepo = async (): Promise<GitHubRepoRef | null> => {
+    const configOriginUrl = readOriginUrlFromGitConfig(projectRoot);
+    if (configOriginUrl) return parseGitHubRepoFromRemoteUrl(configOriginUrl);
     const res = await runGit(["remote", "get-url", "origin"], { cwd: projectRoot, timeoutMs: 8000 });
     if (res.exitCode !== 0) return null;
     return parseGitHubRepoFromRemoteUrl(res.stdout);
@@ -203,6 +265,10 @@ export function createGithubService({
   // only when origin parses as GitHub. Callers use `hasOrigin` to hide the
   // Publish-to-GitHub CTA on projects with non-GitHub remotes.
   const detectOrigin = async (): Promise<{ repo: GitHubRepoRef | null; hasOrigin: boolean }> => {
+    const configOriginUrl = readOriginUrlFromGitConfig(projectRoot);
+    if (configOriginUrl) {
+      return { repo: parseGitHubRepoFromRemoteUrl(configOriginUrl), hasOrigin: true };
+    }
     const res = await runGit(["remote", "get-url", "origin"], { cwd: projectRoot, timeoutMs: 8000 });
     if (res.exitCode !== 0) return { repo: null, hasOrigin: false };
     const url = res.stdout.trim();
@@ -471,7 +537,7 @@ export function createGithubService({
       const validated = await validateToken(token);
       let repoAccessOk: boolean | null = null;
       let repoAccessError: string | null = null;
-      if (repo) {
+      if (repo && validated.tokenType === "fine-grained") {
         const probe = await probeRepoAccess(token, repo);
         repoAccessOk = probe.ok;
         repoAccessError = probe.error;
@@ -819,6 +885,8 @@ export function createGithubService({
   };
 
   return {
+    getRemoteStatus: detectOrigin,
+
     getStatus,
 
     setToken(token: string): void {

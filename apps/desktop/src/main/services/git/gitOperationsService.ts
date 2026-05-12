@@ -932,7 +932,7 @@ export function createGitOperationsService({
       const laneId = args.laneId.trim();
       return readLaneCached(`stashes:${laneId}:default`, 1_500, async () => {
         const lane = laneService.getLaneBaseAndBranch(laneId);
-        const out = await runGitOrThrow(["stash", "list", "--date=iso-strict", "--format=%gd%x1f%ci%x1f%gs"], {
+        const out = await runGitOrThrow(["stash", "list", "--format=%gd%x1f%cI%x1f%gs"], {
           cwd: lane.worktreePath,
           timeoutMs: 15_000
         });
@@ -977,7 +977,8 @@ export function createGitOperationsService({
         reason: "stash_pop",
         metadata: { stashRef },
         fn: async (lane) => {
-          await runGitOrThrow(["stash", "pop", stashRef], { cwd: lane.worktreePath, timeoutMs: 30_000 });
+          await runGitOrThrow(["stash", "apply", stashRef], { cwd: lane.worktreePath, timeoutMs: 30_000 });
+          await runGitOrThrow(["stash", "drop", stashRef], { cwd: lane.worktreePath, timeoutMs: 30_000 });
         }
       });
       return action;

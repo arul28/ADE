@@ -144,6 +144,7 @@ import type {
   GitStashRefArgs,
   GitStashSummary,
   GitSyncArgs,
+  GitHubRepoRef,
   GitHubStatus,
   CreatePrFromLaneArgs,
   CreateIntegrationPrArgs,
@@ -7795,6 +7796,11 @@ export function registerIpc({
   ipcMain.handle(IPC.githubGetStatus, async (_event, arg?: { forceRefresh?: boolean }): Promise<GitHubStatus> => {
     const ctx = getCtx();
     return await ctx.githubService.getStatus({ forceRefresh: Boolean(arg?.forceRefresh) });
+  });
+
+  ipcMain.handle(IPC.githubGetRemoteStatus, async (): Promise<{ repo: GitHubRepoRef | null; hasOrigin: boolean }> => {
+    const ctx = getCtx();
+    return await ctx.githubService.getRemoteStatus();
   });
 
   ipcMain.handle(IPC.githubSetToken, async (_event, arg: { token: string }): Promise<GitHubStatus> => {

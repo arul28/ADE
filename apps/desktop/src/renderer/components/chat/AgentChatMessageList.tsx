@@ -79,6 +79,7 @@ import {
 } from "./chatTranscriptRows";
 import { ChatUserMinimap } from "./ChatUserMinimap";
 import { AgentCliAuthCard, type AgentCliAuthCardInfo } from "./AgentCliAuthCard";
+import { HighlightedCode } from "./CodeHighlighter";
 import {
   CHAT_TIMELINE_ROW_GAP_PX,
   buildMinimapDisplayEntries,
@@ -873,19 +874,18 @@ const MarkdownBlock = React.memo(function MarkdownBlock({
             </td>
           ),
           pre: ({ children }) => (
-            <pre className={cn("my-3 max-h-80", RECESSED_BLOCK_CLASS)}>
-              {children}
-            </pre>
+            <>{children}</>
           ),
           code: ({ className, children }) => {
             const text = String(children ?? "");
             const isBlock = /\n/.test(text) || (typeof className === "string" && className.length > 0);
             const workspacePath = !isBlock ? parseWorkspacePathLocation(text) : null;
             const pathIsClickable = Boolean(workspacePath && looksLikeWorkspacePath(text));
+            const language = typeof className === "string"
+              ? (className.match(/language-([^\s]+)/)?.[1] ?? "text")
+              : "text";
             return isBlock ? (
-              <code className={neu ? "font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-white/84" : "font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/82"}>
-                {children}
-              </code>
+              <HighlightedCode code={text} language={language} />
             ) : pathIsClickable ? (
               <span
                 role="button"

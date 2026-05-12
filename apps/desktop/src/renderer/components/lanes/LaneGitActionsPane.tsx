@@ -589,6 +589,7 @@ export function LaneGitActionsPane({
   const stagedCount = changes.staged.length;
   const hasStaged = stagedCount > 0;
   const hasUnstaged = changes.unstaged.length > 0;
+  const hasUntrackedChanges = changes.unstaged.some((file) => file.kind === "untracked");
   const [showAllStagedChanges, setShowAllStagedChanges] = useState(false);
   const [showAllUnstagedChanges, setShowAllUnstagedChanges] = useState(false);
   const [collapsedChangeFolders, setCollapsedChangeFolders] = useState<Set<string>>(() => new Set());
@@ -1333,6 +1334,7 @@ export function LaneGitActionsPane({
     const alsoStaged = mode === "unstaged" && stagedPathSet.has(file.path);
     const alsoUnstaged = mode === "staged" && unstagedPathSet.has(file.path);
     const kindColor = getFileKindColor(file.kind);
+    const stageToggleLabel = mode === "staged" ? `Unstage ${file.path}` : `Stage ${file.path}`;
 
     return (
       <div
@@ -1367,6 +1369,8 @@ export function LaneGitActionsPane({
         }}>
           <button
             type="button"
+            aria-label={stageToggleLabel}
+            title={stageToggleLabel}
             className="shrink-0 flex items-center justify-center"
             style={{
               width: 16,
@@ -2557,9 +2561,9 @@ export function LaneGitActionsPane({
                   <SmartTooltip content={{
                     label: "Save Changes",
                     description: "Save your current staged and unstaged changes to a stash without committing. You can restore them later.",
-                    gitCommand: "git stash push",
+                    gitCommand: hasUntrackedChanges ? "git stash push -u" : "git stash push",
                     effect: hasStaged || hasUnstaged
-                      ? `Stash ${changedFileCount} changed file${changedFileCount === 1 ? "" : "s"}`
+                      ? `Stash ${changedFileCount} changed file${changedFileCount === 1 ? "" : "s"}${hasUntrackedChanges ? ", including untracked files" : ""}`
                       : "No changes to save",
                   }}>
                     <button
@@ -2575,7 +2579,7 @@ export function LaneGitActionsPane({
                             confirmLabel: "Save stash",
                           });
                           if (msg == null) throw new Error("__ade_cancelled__");
-                          await window.ade.git.stashPush({ laneId, message: msg || undefined });
+                          await window.ade.git.stashPush({ laneId, message: msg || undefined, includeUntracked: hasUntrackedChanges });
                         });
                       }}
                     >

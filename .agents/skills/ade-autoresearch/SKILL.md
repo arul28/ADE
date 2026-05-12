@@ -25,12 +25,12 @@ A Karpathy-style autoresearch loop for ADE perf. You (the agent) ARE the loop ru
 
 ## Real UI audit is the primary loop
 
-The job is to find what a person actually feels in the tab. Fixed canned
-scenario suites are optional guardrails, not the contract and not a constraint on
-the run. Build the measurement plan from the live UI, source, and perf-pass repo;
-then create whatever repeatable probes, scripts, seeded repo states, or tests are
-needed to show load-time, CPU, heap, IPC, render, and interaction deltas for the
-surfaces the user actually exercises.
+The job is to find what a person actually feels in the tab. Do not predefine a
+fixed deterministic scenario suite and mistake that for the audit. Build the
+measurement plan from the live UI, source, and perf-pass repo; then create
+whatever repeatable probes, scripts, seeded repo states, or tests are needed to
+show load-time, CPU, heap, IPC, render, and interaction deltas for the surfaces
+the user actually exercises.
 
 Use this order:
 
@@ -44,6 +44,19 @@ Use this order:
 2. **Build an action inventory from the visible UI and source.** Start with the tab's actual first screen, then cover every safe user action, subpane, menu, picker, dialog, mode switch, list interaction, empty state, error/preflight state, expand/minimize/fullscreen state, keyboard/search/filter path, and tab-specific destructive/external preflight. For destructive or externally visible actions, open and measure the prompt/preflight unless the user has explicitly allowed final execution.
 
    The inventory must be tab-derived. For example, a Work pass should cover Work sidebar/session list, chat/CLI/shell start surfaces, session tabs/grid/layout controls, running/ended session actions, model/attachment/command/parallel pickers, terminal/chat panes, context menus, filters/search, and ADE tools drawers because those are Work-tab surfaces. A Lanes pass should cover lane list, stack graph, lane dialogs, Git Actions, and lane Work panes because those are Lanes-tab surfaces.
+
+   Do not claim complete coverage until the inventory itself says every row is
+   measured, prompt-only, external-skip, or explicitly deferred with a reason.
+   A handful of representative clicks is a partial smoke pass, not an audit. If
+   an action matrix already exists for the tab, update that matrix as evidence
+   arrives instead of replacing it with narrative notes.
+
+   Treat the matrix as the work queue. Pick the next unresolved action/state,
+   drive that exact UI path, record evidence, then either promote the row or
+   mark why it needs a fixture, sandbox, prompt, or external dependency. When a
+   row exposes slowness, churn, overflow, broken behavior, or missing
+   accessibility, make one targeted product change, re-drive that same row, and
+   only then move to the next row.
 
 3. **Mark each UI segment in the perf log** before and after exercising it:
    ```ts
@@ -66,8 +79,9 @@ Use this order:
 1. **Read prior wins** at `.agents/skills/ade-perf-<tab>/SKILL.md` if it exists. These are optional best-practice notes from earlier audits, not prerequisites. If no per-tab skill exists, derive the checklist from the tab UI and source and create the per-tab skill only during codification after you have measured real behavior.
 2. **Inspect existing perf probes** under `apps/desktop/src/renderer/perf/scenarios/`,
    scripts, and tab tests. Reuse what matches the tab, but do not treat missing or
-   incomplete scenarios as a blocker. It is acceptable to add new tab-specific
-   scenarios/probes when they help quantify a real UI workflow.
+   incomplete scenarios as a blocker and do not let scenario availability define
+   the work. It is acceptable to add new tab-specific scenarios/probes when they
+   help quantify a real UI workflow.
 3. **Verify perf-pass repo** exists, has a seed tag, and can exercise real GitHub paths when needed:
    ```bash
    scripts/reset-perf-pass.sh
@@ -136,7 +150,7 @@ For each iteration:
 
 ### 2. Propose ONE change
 
-Legal moves (examples — not exhaustive):
+Legal moves (examples, not a complete list):
 - Memoize a hot selector with `useMemo` / `useCallback`
 - Batch IPC calls (collapse N independent invokes into one)
 - Debounce / throttle a poller
@@ -214,6 +228,26 @@ When stop condition hits:
    kept bottleneck, and list of kept commits (sha + message + metric delta).
 2. Suggest the user merge the working branch into main via PR.
 3. Proceed to codification (next section).
+
+## Completion and handoff discipline
+
+Do not describe the run as "done", "complete", or "covered" while the tab
+inventory still has unresolved rows (`source`, `fixture-needed`, `sandbox-only`,
+or unvisited `prompt-only` / `external-skip`) unless the user explicitly narrowed
+the objective. Open rows mean the run is still in progress.
+
+If there is a feasible next measured iteration and the user has not asked you to
+stop, continue the loop instead of ending with a future-work summary. If you must
+pause because the user asked for a handoff, the environment needs cleanup, or a
+blocking decision is required, do all of the following before the final response:
+
+- Stop any perf/dev/Electron processes you started and record the latest run id.
+- Update the tab audit matrix with what is measured, invalid, skipped, and next.
+- Update the per-tab perf skill with any measured win that future agents must
+  preserve.
+- State clearly that the audit is incomplete and name the next concrete loop.
+- Include a ready-to-run follow-up prompt that points to the matrix, run ids,
+  current bottleneck, validation commands, and "do not claim full coverage" rule.
 
 ## Codify (after the run ends)
 
