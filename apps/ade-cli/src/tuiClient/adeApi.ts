@@ -22,6 +22,7 @@ import type {
   AgentChatSession,
   AgentChatSessionSummary,
   AgentChatSlashCommand,
+  CodexThreadGoal,
 } from "../../../desktop/src/shared/types/chat";
 import type { AiSettingsStatus, OpenCodeRuntimeSnapshot } from "../../../desktop/src/shared/types/config";
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
@@ -280,6 +281,8 @@ export type TokenStats = {
   streaming: boolean;
   inputTokens: number | null;
   outputTokens: number | null;
+  /** Last-turn input tokens read from cache (Codex `cachedInputTokens` / `cacheReadTokens`). */
+  cachedInputTokens: number | null;
   costUsd: number | null;
 };
 
@@ -291,6 +294,7 @@ export function latestTokenStats(
   let streaming = false;
   let inputTokens: number | null = null;
   let outputTokens: number | null = null;
+  let cachedInputTokens: number | null = null;
   let costUsd: number | null = null;
   let eventLimit: number | null = null;
   for (const envelope of events) {
@@ -300,12 +304,38 @@ export function latestTokenStats(
     if (event.type === "tokens") {
       inputTokens = typeof event.inputTokens === "number" ? event.inputTokens : inputTokens;
       outputTokens = typeof event.outputTokens === "number" ? event.outputTokens : outputTokens;
+      if (typeof event.cacheReadTokens === "number") cachedInputTokens = event.cacheReadTokens;
       if (typeof event.contextWindow === "number") eventLimit = event.contextWindow;
+    }
+    if (event.type === "codex_token_usage") {
+      const usage = event.usage && typeof event.usage === "object" ? event.usage as Record<string, unknown> : null;
+      const total = usage?.total && typeof usage.total === "object" ? usage.total as Record<string, unknown> : null;
+      const last = usage?.last && typeof usage.last === "object" ? usage.last as Record<string, unknown> : null;
+      inputTokens = typeof last?.inputTokens === "number"
+        ? last.inputTokens
+        : typeof total?.inputTokens === "number" ? total.inputTokens : inputTokens;
+      outputTokens = typeof last?.outputTokens === "number"
+        ? last.outputTokens
+        : typeof total?.outputTokens === "number" ? total.outputTokens : outputTokens;
+      // Codex passes cached read tokens as either cacheReadTokens (camelCase) or
+      // cachedInputTokens (snake-cased upstream variant aliased through). Prefer
+      // last-turn reading over total.
+      const readFromBucket = (bucket: Record<string, unknown> | null): number | null => {
+        if (!bucket) return null;
+        if (typeof bucket.cacheReadTokens === "number") return bucket.cacheReadTokens;
+        if (typeof (bucket as { cachedInputTokens?: unknown }).cachedInputTokens === "number") {
+          return (bucket as { cachedInputTokens: number }).cachedInputTokens;
+        }
+        return null;
+      };
+      cachedInputTokens = readFromBucket(last) ?? readFromBucket(total) ?? cachedInputTokens;
+      if (typeof usage?.modelContextWindow === "number") eventLimit = usage.modelContextWindow;
     }
     if (event.type === "done") {
       const usage = event.usage && typeof event.usage === "object" ? event.usage as Record<string, unknown> : null;
       inputTokens = typeof usage?.inputTokens === "number" ? usage.inputTokens : inputTokens;
       outputTokens = typeof usage?.outputTokens === "number" ? usage.outputTokens : outputTokens;
+      if (typeof usage?.cacheReadTokens === "number") cachedInputTokens = usage.cacheReadTokens;
       costUsd = typeof event.costUsd === "number" ? event.costUsd : costUsd;
     }
   }
@@ -314,5 +344,23 @@ export function latestTokenStats(
   if (used != null && limit != null && limit > 0) {
     percent = Math.max(0, Math.min(100, Math.round((used / limit) * 100)));
   }
-  return { percent, streaming, inputTokens, outputTokens, costUsd };
+  return { percent, streaming, inputTokens, outputTokens, cachedInputTokens, costUsd };
+}
+
+/**
+ * Walk the event stream and return the most recently observed Codex goal.
+ * Returns `null` when no goal has been set or the latest event is a clear.
+ */
+export function latestGoal(events: AgentChatEventEnvelope[]): CodexThreadGoal | null {
+  let goal: CodexThreadGoal | null = null;
+  for (const envelope of events) {
+    const event = envelope.event as Record<string, unknown>;
+    if (event.type === "codex_goal_updated") {
+      const next = (event as { goal?: CodexThreadGoal | null }).goal ?? null;
+      goal = next ?? null;
+    } else if (event.type === "codex_goal_cleared") {
+      goal = null;
+    }
+  }
+  return goal;
 }

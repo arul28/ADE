@@ -142,14 +142,32 @@ describe("App Work route keep-alive", () => {
     expect(workLifecycle.unmounts).toBe(0);
   });
 
-  it("does not mount the Work page when the project is not yet hydrated", async () => {
+  it("does not mount the Work page when hydration has not found a project yet", async () => {
     appStoreState.projectHydrated = false;
+    appStoreState.project = { rootPath: "" };
     const { App } = await import("./App");
 
     render(<App />);
 
     expect(screen.queryByTestId("work-page")).toBeNull();
     expect(workLifecycle.mounts).toBe(0);
+  });
+
+  it("keeps the Work page mounted during a same-project hydration refresh", async () => {
+    const { App } = await import("./App");
+
+    const { rerender } = render(<App />);
+
+    await screen.findByTestId("work-page");
+    expect(workLifecycle.mounts).toBe(1);
+    expect(workLifecycle.unmounts).toBe(0);
+
+    appStoreState.projectHydrated = false;
+    rerender(<App />);
+
+    expect(screen.getByTestId("work-page")).toBeTruthy();
+    expect(workLifecycle.mounts).toBe(1);
+    expect(workLifecycle.unmounts).toBe(0);
   });
 
   it("redirects to /project when there is no active project on the Work route", async () => {

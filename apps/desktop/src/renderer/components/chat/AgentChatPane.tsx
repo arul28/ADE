@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
-import { Cube, Desktop, DeviceMobile, Lightning, Plus } from "@phosphor-icons/react";
+import {
+  Cube,
+  Desktop,
+  DeviceMobile,
+  Lightning,
+  Plus,
+} from "@phosphor-icons/react";
 import {
   inferAttachmentType,
   PARALLEL_CHAT_MAX_ATTACHMENTS,
@@ -28,6 +34,8 @@ import {
   type ChatSurfaceProfile,
   type ChatSurfacePresentation,
   type AgentChatSessionSummary,
+  type CodexThreadGoal,
+  type CodexThreadTokenUsage,
   type BuiltInBrowserContextItem,
   type ComputerUseOwnerSnapshot,
   type AppControlContextItem,
@@ -85,6 +93,8 @@ import { ChatAppControlPanel } from "./ChatAppControlPanel";
 import { ChatSubagentsPanel } from "./ChatSubagentsPanel";
 import { ChatTasksPanel } from "./ChatTasksPanel";
 import { ChatFileChangesPanel } from "./ChatFileChangesPanel";
+import { CodexGoalBanner } from "./codex/CodexGoalBanner";
+import { CodexOpenInCliButton } from "./codex/CodexOpenInCliButton";
 import { ChatCursorCloudPanel, type ChatCursorCloudPanelHandle } from "./ChatCursorCloudPanel";
 import { CursorCloudInlineLaunch, type CursorCloudInlineLaunchHandle } from "./CursorCloudInlineLaunch";
 import { ChatGitToolbar } from "./ChatGitToolbar";
@@ -2096,6 +2106,23 @@ export function AgentChatPane({
     };
     return [...displayEvents.slice(0, insertAt), synthetic, ...displayEvents.slice(insertAt)];
   }, [optimisticOutgoingMessage, presentation?.mode, presentation?.rewriteMissionControlTextTools, selectedEvents, selectedSession?.cursorCloudAgentId, selectedSession?.cursorPromotedTurnId, selectedSessionId]);
+  const selectedCodexGoal = useMemo<CodexThreadGoal | null>(() => {
+    let goal = selectedSession?.codexGoal ?? null;
+    for (const envelope of selectedEventsForDisplay) {
+      const event = envelope.event;
+      if (event.type === "codex_goal_updated") goal = event.goal;
+      if (event.type === "codex_goal_cleared") goal = null;
+    }
+    return goal;
+  }, [selectedEventsForDisplay, selectedSession?.codexGoal]);
+  const selectedCodexTokenUsage = useMemo<CodexThreadTokenUsage | null>(() => {
+    let usage = selectedSession?.codexTokenUsage ?? null;
+    for (const envelope of selectedEventsForDisplay) {
+      const event = envelope.event;
+      if (event.type === "codex_token_usage") usage = event.usage;
+    }
+    return usage;
+  }, [selectedEventsForDisplay, selectedSession?.codexTokenUsage]);
   const selectedSubagentSnapshots = useMemo(() => deriveChatSubagentSnapshots(selectedEvents), [selectedEvents]);
   const selectedTurnDiffSummaries = useMemo(() => deriveTurnDiffSummaries(selectedEvents), [selectedEvents]);
   const selectedTodoItems = useMemo(() => deriveTodoItems(selectedEvents), [selectedEvents]);
@@ -5319,6 +5346,42 @@ export function AgentChatPane({
             </SmartTooltip>
           ) : null}
           {showWorkspaceChrome && laneId ? <ChatTerminalToggle open={terminalDrawerOpen} onToggle={() => setTerminalDrawerOpen((v) => !v)} /> : null}
+          {selectedSession?.provider === "codex"
+            && selectedSession.surface !== "mission"
+            && selectedSessionId
+            && selectedSession.threadId ? (
+            <CodexOpenInCliButton
+              sessionId={selectedSessionId}
+              onUseAdeTerminal={(args) => {
+                // Open the ADE terminal drawer and write the resume command
+                // into the chat's active terminal pane (plan §D.1). Falls
+                // back to copying the command if the chat doesn't yet have an
+                // active terminal session.
+                setTerminalDrawerOpen(true);
+                const quoted = (parts: string[]) =>
+                  parts.map((p) => `'${p.replace(/'/g, "'\\''")}'`).join(" ");
+                const fullCommand = `cd ${quoted([args.cwd])} && ${quoted([args.binary, ...args.argv])}\r`;
+                void (async () => {
+                  try {
+                    const active = await window.ade.terminal.activeForChat({
+                      chatSessionId: selectedSessionId,
+                    });
+                    if (active?.ptyId) {
+                      await window.ade.terminal.write({
+                        ptyId: active.ptyId,
+                        chatSessionId: selectedSessionId,
+                        data: fullCommand,
+                      });
+                      return;
+                    }
+                  } catch {
+                    // fall through to clipboard
+                  }
+                  await navigator.clipboard.writeText(fullCommand.trimEnd()).catch(() => undefined);
+                })();
+              }}
+            />
+          ) : null}
           {resolvedChips.map((chip) => (
             <span
               key={`${chip.label}:${chip.tone ?? "accent"}`}
@@ -5659,6 +5722,7 @@ export function AgentChatPane({
             availableModelIds={effectiveAvailableModelIds}
             reasoningEffort={reasoningEffort}
             codexFastMode={codexFastMode}
+            codexTokenUsage={selectedCodexTokenUsage}
             draft={draft}
             attachments={attachments}
             contextAttachments={contextAttachments}
@@ -6138,6 +6202,21 @@ export function AgentChatPane({
                       >
                         Live view of Cursor Cloud agent. Replies run in cloud.
                       </div>
+                    ) : null}
+                    {selectedSession?.provider === "codex" && selectedCodexGoal?.objective && selectedSessionId ? (
+                      <CodexGoalBanner
+                        goal={selectedCodexGoal}
+                        onEdit={(next) => {
+                          void window.ade.agentChat
+                            .send({ sessionId: selectedSessionId, text: `/goal ${next}` })
+                            .catch(() => undefined);
+                        }}
+                        onClear={() => {
+                          void window.ade.agentChat
+                            .send({ sessionId: selectedSessionId, text: "/goal clear" })
+                            .catch(() => undefined);
+                        }}
+                      />
                     ) : null}
                     <AgentChatMessageList
                       key={selectedSessionId ?? "chat-draft"}

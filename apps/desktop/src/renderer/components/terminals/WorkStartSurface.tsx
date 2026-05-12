@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Terminal,
   ArrowRight,
+  CircleNotch,
 } from "@phosphor-icons/react";
 import type { AgentChatPermissionMode, AgentChatSession, LaneLinearIssue, LaneSummary } from "../../../shared/types";
 import type { WorkDraftKind } from "../../state/appStore";
@@ -67,6 +68,7 @@ export function WorkStartSurface({
   onInitialLinearIssueContextConsumed,
 }: WorkStartSurfaceProps) {
   const globallySelectedLaneId = useAppStore((s) => s.selectedLaneId);
+  const lanesLoading = useAppStore((s) => s.lanesLoading);
   const selectLaneGlobal = useAppStore((s) => s.selectLane);
   const [selectedLaneId, setSelectedLaneId] = useState<string>(() => {
     if (globallySelectedLaneId && lanes.some((lane) => lane.id === globallySelectedLaneId)) {
@@ -180,9 +182,16 @@ export function WorkStartSurface({
     return (
       <div className="flex h-full items-center justify-center px-6" style={{ background: "var(--color-bg)" }}>
         <div className="ade-liquid-glass ade-liquid-glass-menu rounded-lg p-5 text-center">
-          <div className="text-[12px] font-medium text-fg">No lanes available</div>
+          {lanesLoading ? (
+            <CircleNotch size={18} className="mx-auto mb-2 animate-spin text-muted-fg" />
+          ) : null}
+          <div className="text-[12px] font-medium text-fg">
+            {lanesLoading ? "Loading lanes" : "No lanes available"}
+          </div>
           <div className="mt-1.5 text-[11px] text-muted-fg">
-            Create or reopen a lane before starting work.
+            {lanesLoading
+              ? "Reading lane state for this project."
+              : "Create or reopen a lane before starting work."}
           </div>
         </div>
       </div>

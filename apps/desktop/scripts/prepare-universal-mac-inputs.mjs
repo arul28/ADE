@@ -210,6 +210,12 @@ async function copyFromAppBundle(x64AppPath, sourceRelativePath, targetRelativeP
 async function seedFromAppBundle(x64AppPath) {
   await copyFromAppBundle(
     x64AppPath,
+    "Contents/Resources/app.asar.unpacked/node_modules/@openai/codex-darwin-x64",
+    "node_modules/@openai/codex-darwin-x64",
+    "Codex x64 package",
+  );
+  await copyFromAppBundle(
+    x64AppPath,
     "Contents/Resources/app.asar.unpacked/node_modules/@img/sharp-darwin-x64",
     "node_modules/@img/sharp-darwin-x64",
     "sharp x64 package",
@@ -232,6 +238,12 @@ async function seedFromLockfileAndPinnedArtifacts() {
   const packageLock = await loadPackageLock();
   await seedPackageFromResolvedUrl(
     packageLock,
+    "node_modules/@openai/codex-darwin-x64",
+    "node_modules/@openai/codex-darwin-x64",
+    "Codex x64 package",
+  );
+  await seedPackageFromResolvedUrl(
+    packageLock,
     "node_modules/@img/sharp-darwin-x64",
     "node_modules/@img/sharp-darwin-x64",
     "sharp x64 package",
@@ -246,6 +258,19 @@ async function seedFromLockfileAndPinnedArtifacts() {
 }
 
 async function assertUniversalInputsReady() {
+  await assertPathExists(
+    path.join(
+      appDir,
+      "node_modules",
+      "@openai",
+      "codex-darwin-x64",
+      "vendor",
+      "x86_64-apple-darwin",
+      "codex",
+      "codex",
+    ),
+    "x64 Codex CLI binary",
+  );
   await assertPathExists(
     path.join(appDir, "node_modules", "@img", "sharp-darwin-x64", "lib", "sharp-darwin-x64.node"),
     "x64 sharp native module",

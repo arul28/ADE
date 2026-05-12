@@ -2039,7 +2039,10 @@ describe("createAgentChatService", () => {
       );
 
       const startPayload = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/start");
-      expect((startPayload?.params as { reasoningEffort?: unknown } | undefined)?.reasoningEffort).toBe("low");
+      const startParams = startPayload?.params as { effort?: unknown; reasoningEffort?: unknown; reasoning_effort?: unknown } | undefined;
+      expect(startParams?.effort).toBe("low");
+      expect(startParams?.reasoningEffort).toBeUndefined();
+      expect(startParams?.reasoning_effort).toBeUndefined();
     });
 
     it("starts mission Codex app-server sessions without global MCP servers", async () => {
@@ -2072,20 +2075,17 @@ describe("createAgentChatService", () => {
           "model_reasoning_effort=\"low\"",
           "-c",
           "mcp_servers={}",
-          "--disable",
-          "plugins",
-          "--disable",
-          "apps",
-          "--disable",
-          "browser_use",
-          "--disable",
-          "computer_use",
         ],
         expect.any(Object),
       );
       const spawnCall = vi.mocked(spawn).mock.calls.find((call) =>
         call[0] === "codex" && Array.isArray(call[1]) && call[1].includes("app-server")
       );
+      const spawnArgs = spawnCall?.[1] as string[] | undefined;
+      expect(spawnArgs).toBeDefined();
+      expect(spawnArgs).not.toContain("--disable");
+      expect(spawnArgs).not.toContain("browser_use");
+      expect(spawnArgs).not.toContain("computer_use");
       const spawnOptions = spawnCall?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
       const codexHome = spawnOptions?.env?.CODEX_HOME;
       expect(codexHome).toContain("ade-mission-codex-home");
@@ -2134,6 +2134,14 @@ describe("createAgentChatService", () => {
           }),
         }),
       );
+      const spawnCall = vi.mocked(spawn).mock.calls.find((call) =>
+        call[0] === "codex" && Array.isArray(call[1]) && call[1].includes("app-server")
+      );
+      const spawnArgs = spawnCall?.[1] as string[] | undefined;
+      expect(spawnArgs).toBeDefined();
+      expect(spawnArgs).not.toContain("--disable");
+      expect(spawnArgs).not.toContain("browser_use");
+      expect(spawnArgs).not.toContain("computer_use");
     });
   });
 
@@ -3140,6 +3148,38 @@ describe("createAgentChatService", () => {
       expect(loginCmd).toBeUndefined();
     });
 
+    it("removes dead-listed Codex slash commands from the palette", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+
+      const commands = service.getSlashCommands({ sessionId: session.id });
+      const names = commands.map((c) => c.name);
+      // §A.6 leftovers (removed handlers/IPC)
+      expect(names).not.toContain("/fork");
+      expect(names).not.toContain("/resume");
+      expect(names).not.toContain("/rollback");
+      expect(names).not.toContain("/unarchive");
+      // Codex-CLI-only surfaces with no ADE consumer
+      expect(names).not.toContain("/apps");
+      expect(names).not.toContain("/plugins");
+      expect(names).not.toContain("/ps");
+      expect(names).not.toContain("/stop");
+      // Duplicate ADE composer/lane flows
+      expect(names).not.toContain("/mention");
+      expect(names).not.toContain("/new");
+      // TUI-only configuration
+      expect(names).not.toContain("/statusline");
+      expect(names).not.toContain("/title");
+      // Destructive runtime side-effect; ADE owns /quit
+      expect(names).not.toContain("/exit");
+      // /inject was added by F.2
+      expect(names).toContain("/inject");
+    });
+
     it("includes project Claude Code command files before SDK init completes", async () => {
       const commandsDir = path.join(tmpRoot, ".claude", "commands");
       fs.mkdirSync(commandsDir, { recursive: true });
@@ -3227,6 +3267,34 @@ describe("createAgentChatService", () => {
           name: "/audit",
           description: "Audit recent work.",
           source: "sdk",
+        }),
+      ]));
+    });
+
+    it("advertises Codex CLI parity slash command hints for Codex sessions", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+
+      const commands = service.getSlashCommands({ sessionId: session.id });
+      expect(commands).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          name: "/fast",
+          argumentHint: "[on|off|status]",
+          source: "local",
+        }),
+        expect.objectContaining({
+          name: "/plan",
+          argumentHint: "[prompt]",
+          source: "local",
+        }),
+        expect.objectContaining({
+          name: "/goal",
+          argumentHint: "[pause|resume|clear|budget <tokens>|<objective>]",
+          source: "local",
         }),
       ]));
     });
@@ -6348,11 +6416,11 @@ describe("createAgentChatService", () => {
       await waitForEvent(
         events,
         (event): event is AgentChatEventEnvelope & {
-          event: Extract<AgentChatEventEnvelope["event"], { type: "plan_text" }>;
+          event: Extract<AgentChatEventEnvelope["event"], { type: "plan" }>;
         } =>
-          event.event.type === "plan_text"
+          event.event.type === "plan"
           && event.event.itemId === "codex-plan-1"
-          && event.event.text.includes("Inspect the app-server wiring"),
+          && (event.event.streamingText ?? "").includes("Inspect the app-server wiring"),
       );
       const approvalEvent = await waitForEvent(
         events,
@@ -6435,11 +6503,11 @@ describe("createAgentChatService", () => {
       await waitForEvent(
         events,
         (event): event is AgentChatEventEnvelope & {
-          event: Extract<AgentChatEventEnvelope["event"], { type: "plan_text" }>;
+          event: Extract<AgentChatEventEnvelope["event"], { type: "plan" }>;
         } =>
-          event.event.type === "plan_text"
+          event.event.type === "plan"
           && event.event.itemId === `codex-plan:${session.id}:turn-1`
-          && event.event.text.includes("Patch the handoff"),
+          && (event.event.streamingText ?? "").includes("Patch the handoff"),
       );
 
       mockState.emitCodexPayload({
@@ -6497,8 +6565,8 @@ describe("createAgentChatService", () => {
       await waitForEvent(
         events,
         (event): event is AgentChatEventEnvelope & {
-          event: Extract<AgentChatEventEnvelope["event"], { type: "plan_text" }>;
-        } => event.event.type === "plan_text" && event.event.itemId === "codex-plan-failed",
+          event: Extract<AgentChatEventEnvelope["event"], { type: "plan" }>;
+        } => event.event.type === "plan" && event.event.itemId === "codex-plan-failed",
       );
 
       mockState.emitCodexPayload({
@@ -6572,6 +6640,44 @@ describe("createAgentChatService", () => {
       expect(collaborationMode?.settings?.developer_instructions).toBeNull();
     });
 
+    it("handles Codex /plan prompts inline and sends the next app-server turn in plan mode", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "/plan Inspect the repo first.",
+      });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+
+      const summary = await service.getSessionSummary(session.id);
+      expect(summary?.permissionMode).toBe("plan");
+      expect(summary?.interactionMode).toBe("plan");
+      expect(summary?.codexApprovalPolicy).toBe("on-request");
+      expect(summary?.codexSandbox).toBe("read-only");
+
+      const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
+      const params = turnStartRequest?.params as {
+        approvalPolicy?: unknown;
+        sandboxPolicy?: { type?: unknown };
+        collaborationMode?: { mode?: unknown };
+        input?: Array<{ text?: unknown }>;
+      } | undefined;
+      const textInput = params?.input?.map((entry) => String(entry.text ?? "")).join("\n") ?? "";
+      expect(textInput).toContain("Inspect the repo first.");
+      expect(textInput).not.toContain("/plan");
+      expect(params?.approvalPolicy).toBe("on-request");
+      expect(params?.sandboxPolicy?.type).toBe("readOnly");
+      expect(params?.collaborationMode?.mode).toBe("plan");
+    });
+
     it("sends fast service tier for supported Codex models when enabled", async () => {
       const { service } = createService();
       const session = await service.createSession({
@@ -6599,6 +6705,43 @@ describe("createAgentChatService", () => {
 
       expect((await service.getSessionSummary(session.id))?.codexFastMode).toBe(true);
       expect(readPersistedChatState(session.id).codexFastMode).toBe(true);
+    });
+
+    it("handles Codex /fast commands inline and applies fast tier to the next app-server turn", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "/fast on",
+      }, { awaitDispatch: true });
+
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(false);
+      expect((await service.getSessionSummary(session.id))?.codexFastMode).toBe(true);
+      expect(readPersistedChatState(session.id).codexFastMode).toBe(true);
+      expect(events.some((event) =>
+        event.event.type === "system_notice"
+        && event.event.message === "Codex Fast mode is on."
+      )).toBe(true);
+
+      mockState.codexRequestPayloads = [];
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Use fast mode now.",
+      });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+      const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
+      expect((turnStartRequest?.params as { serviceTier?: unknown } | undefined)?.serviceTier).toBe("fast");
     });
 
     it("explicitly clears Codex service tier when fast mode is off", async () => {
@@ -6648,6 +6791,419 @@ describe("createAgentChatService", () => {
       const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
       expect((turnStartRequest?.params as { serviceTier?: unknown } | undefined)?.serviceTier).toBeNull();
       expect((await service.getSessionSummary(session.id))?.codexFastMode).toBe(true);
+    });
+
+    it("routes Codex /goal pause, resume, and budget commands to app-server goal RPCs", async () => {
+      mockState.codexResponseOverrides.set("thread/goal/set", (payload) => {
+        const params = payload.params as Record<string, unknown>;
+        return {
+          goal: {
+            objective: "Ship CLI parity",
+            status: params.status ?? "active",
+            tokenBudget: Object.prototype.hasOwnProperty.call(params, "tokenBudget") ? params.tokenBudget : 5000,
+            tokensUsed: 25,
+            timeUsedSeconds: 60,
+            createdAt: 1_760_000_000,
+            updatedAt: 1_760_000_001,
+          },
+        };
+      });
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "/goal pause",
+      }, { awaitDispatch: true });
+
+      const pauseRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/goal/set");
+      expect(pauseRequest?.params).toMatchObject({
+        threadId: expect.any(String),
+        status: "paused",
+      });
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(false);
+
+      mockState.codexRequestPayloads = [];
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "/goal resume",
+      }, { awaitDispatch: true });
+      expect(mockState.codexRequestPayloads.find((payload) => payload.method === "thread/goal/set")?.params).toMatchObject({
+        status: "active",
+      });
+
+      mockState.codexRequestPayloads = [];
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "/goal budget 5_000",
+      }, { awaitDispatch: true });
+      expect(mockState.codexRequestPayloads.find((payload) => payload.method === "thread/goal/set")?.params).toMatchObject({
+        tokenBudget: 5000,
+      });
+
+      mockState.codexRequestPayloads = [];
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "/goal budget clear",
+      }, { awaitDispatch: true });
+      expect(mockState.codexRequestPayloads.find((payload) => payload.method === "thread/goal/set")?.params).toMatchObject({
+        tokenBudget: null,
+      });
+
+      mockState.codexRequestPayloads = [];
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "/goal budget 5k",
+      }, { awaitDispatch: true });
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/goal/set")).toBe(false);
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(false);
+    });
+
+    it("routes Codex /inject to thread/inject_items and emits a notice", async () => {
+      mockState.codexResponseOverrides.set("thread/inject_items", () => ({}));
+      const onEvent = vi.fn();
+      const { service } = createService({ onEvent });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "/inject Remember this for the rest of the thread.\nSecond line here.",
+      }, { awaitDispatch: true });
+
+      const injectRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/inject_items");
+      // ThreadInjectItemsParams.items takes raw Responses API items
+      // (ResponseItem::Message), not a synthetic { type: "user_message" } shape.
+      expect(injectRequest?.params).toMatchObject({
+        threadId: expect.any(String),
+        items: [
+          {
+            type: "message",
+            role: "user",
+            content: [
+              { type: "input_text", text: "Remember this for the rest of the thread.\nSecond line here." },
+            ],
+          },
+        ],
+      });
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(false);
+      const injectedNotice = onEvent.mock.calls
+        .map((call) => call[0])
+        .find((env: any) => env?.event?.type === "system_notice" && typeof env.event.message === "string" && env.event.message.startsWith("[injected]"));
+      expect(injectedNotice?.event.message).toContain("Remember this for the rest of the thread.");
+    });
+
+    it("rejects /inject without context body", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "/inject   ",
+      }, { awaitDispatch: true });
+
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/inject_items")).toBe(false);
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(false);
+    });
+
+    it("routes /review with no args to review/start with target type=uncommittedChanges", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "/review",
+      }, { awaitDispatch: true });
+
+      // ReviewTarget union (codex v2 protocol): uncommittedChanges | baseBranch | commit | custom.
+      const reviewRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "review/start");
+      expect(reviewRequest?.params).toMatchObject({
+        threadId: expect.any(String),
+        target: { type: "uncommittedChanges" },
+      });
+    });
+
+    it("routes /review branch <name> to review/start with target type=baseBranch", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "/review branch feature/foo",
+      }, { awaitDispatch: true });
+
+      const reviewRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "review/start");
+      expect(reviewRequest?.params).toMatchObject({
+        target: { type: "baseBranch", branch: "feature/foo" },
+      });
+    });
+
+    it("routes /review prompt <text> to review/start with target type=custom", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "/review prompt audit the auth middleware",
+      }, { awaitDispatch: true });
+
+      const reviewRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "review/start");
+      expect(reviewRequest?.params).toMatchObject({
+        target: { type: "custom", instructions: "audit the auth middleware" },
+      });
+    });
+
+    it("rejects /review branch with no name and does not call review/start", async () => {
+      const onEvent = vi.fn();
+      const { service } = createService({ onEvent });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "/review branch   ",
+      }, { awaitDispatch: true });
+
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "review/start")).toBe(false);
+      const usageNotice = onEvent.mock.calls
+        .map((call) => call[0])
+        .find((env: any) => env?.event?.type === "system_notice"
+          && typeof env.event.message === "string"
+          && env.event.message.includes("/review branch"));
+      expect(usageNotice).toBeDefined();
+    });
+
+    it("rejects /review prompt with no text and does not call review/start", async () => {
+      const onEvent = vi.fn();
+      const { service } = createService({ onEvent });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "/review prompt   ",
+      }, { awaitDispatch: true });
+
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "review/start")).toBe(false);
+      const usageNotice = onEvent.mock.calls
+        .map((call) => call[0])
+        .find((env: any) => env?.event?.type === "system_notice"
+          && typeof env.event.message === "string"
+          && env.event.message.includes("/review prompt"));
+      expect(usageNotice).toBeDefined();
+    });
+
+    it("routes /review diff to target.uncommittedChanges", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "/review diff",
+      }, { awaitDispatch: true });
+
+      const reviewRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "review/start");
+      expect(reviewRequest?.params).toMatchObject({
+        target: { type: "uncommittedChanges" },
+      });
+    });
+
+    it("surfaces Codex deprecation/warning/guardian/config notifications as system_notice rows", async () => {
+      const onEvent = vi.fn();
+      const { service } = createService({ onEvent });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Kick off codex.",
+      });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start")).toBe(true);
+      });
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "deprecationNotice",
+        params: { message: "old feature gone" },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "warning",
+        params: { message: "watch out" },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "guardianWarning",
+        params: { message: "sandbox tripped" },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "configWarning",
+        params: { message: "config layer stale" },
+      });
+
+      await vi.waitFor(() => {
+        const notices = onEvent.mock.calls
+          .map((call) => call[0])
+          .filter((env: any) => env?.event?.type === "system_notice");
+        const messages = notices.map((env: any) => env.event.message);
+        expect(messages).toEqual(expect.arrayContaining([
+          "⚠ deprecated: old feature gone",
+          "⚠ watch out",
+          "🛡 guardian: sandbox tripped",
+          "⚙ config: config layer stale",
+        ]));
+      });
+
+      const guardianNotice = onEvent.mock.calls
+        .map((call) => call[0])
+        .find((env: any) => env?.event?.type === "system_notice" && env.event.message.startsWith("🛡 guardian:"));
+      expect(guardianNotice?.event.noticeKind).toBe("error");
+
+      const deprecationNotice = onEvent.mock.calls
+        .map((call) => call[0])
+        .find((env: any) => env?.event?.type === "system_notice" && env.event.message.startsWith("⚠ deprecated:"));
+      expect(deprecationNotice?.event.noticeKind).toBe("warning");
+
+      const configNotice = onEvent.mock.calls
+        .map((call) => call[0])
+        .find((env: any) => env?.event?.type === "system_notice" && env.event.message.startsWith("⚙ config:"));
+      expect(configNotice?.event.noticeKind).toBe("config");
+    });
+
+    it("populates optOutNotificationMethods in initialize when runtimeMode is 'print'", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        runtimeMode: "print",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Hello.",
+      });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "initialize")).toBe(true);
+      });
+
+      const initializeRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "initialize");
+      const capabilities = (initializeRequest?.params as { capabilities?: { optOutNotificationMethods?: string[] } })
+        ?.capabilities;
+      expect(capabilities?.optOutNotificationMethods).toEqual([
+        "item/agentMessage/delta",
+        "item/reasoning/summaryTextDelta",
+        "item/reasoning/textDelta",
+        "item/commandExecution/outputDelta",
+      ]);
+    });
+
+    it("sends an empty optOutNotificationMethods list when runtimeMode is undefined (default interactive)", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Hello.",
+      });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "initialize")).toBe(true);
+      });
+
+      const initializeRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "initialize");
+      const capabilities = (initializeRequest?.params as { capabilities?: { optOutNotificationMethods?: string[] } })
+        ?.capabilities;
+      expect(capabilities?.optOutNotificationMethods).toEqual([]);
+    });
+
+    it("ignores deprecation/warning notifications with missing or empty message", async () => {
+      const onEvent = vi.fn();
+      const { service } = createService({ onEvent });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Kick off codex.",
+      });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start")).toBe(true);
+      });
+
+      const beforeNoticeCount = onEvent.mock.calls
+        .map((call) => call[0])
+        .filter((env: any) => env?.event?.type === "system_notice").length;
+
+      // Missing payload entirely.
+      mockState.emitCodexPayload({ jsonrpc: "2.0", method: "deprecationNotice" });
+      // Empty params.
+      mockState.emitCodexPayload({ jsonrpc: "2.0", method: "warning", params: {} });
+      // Wrong field name (handler should silently no-op).
+      mockState.emitCodexPayload({ jsonrpc: "2.0", method: "configWarning", params: { note: "ignored" } });
+      // Whitespace-only.
+      mockState.emitCodexPayload({ jsonrpc: "2.0", method: "guardianWarning", params: { message: "   " } });
+
+      // Settle: emit a real notice so vi.waitFor has something to wait on.
+      mockState.emitCodexPayload({ jsonrpc: "2.0", method: "warning", params: { message: "real one" } });
+      await vi.waitFor(() => {
+        const messages = onEvent.mock.calls
+          .map((call) => call[0])
+          .filter((env: any) => env?.event?.type === "system_notice")
+          .map((env: any) => env.event.message);
+        expect(messages).toContain("⚠ real one");
+      });
+
+      const afterMessages = onEvent.mock.calls
+        .map((call) => call[0])
+        .filter((env: any) => env?.event?.type === "system_notice")
+        .map((env: any) => env.event.message);
+      // Only the real notice should have been added beyond the baseline.
+      expect(afterMessages.length).toBe(beforeNoticeCount + 1);
     });
 
     it("clears fast mode when switching a session away from Codex", async () => {
@@ -6783,9 +7339,9 @@ describe("createAgentChatService", () => {
       } | undefined;
       expect(params?.approvalPolicy).toBe("never");
       expect(params?.sandbox).toBe("danger-full-access");
-      expect(params?.reasoningEffort).toBe("medium");
-      expect(params?.reasoning_effort).toBe("medium");
       expect(params?.effort).toBe("medium");
+      expect(params?.reasoningEffort).toBeUndefined();
+      expect(params?.reasoning_effort).toBeUndefined();
 
       const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
       const turnStartParams = turnStartRequest?.params as {
@@ -6798,8 +7354,8 @@ describe("createAgentChatService", () => {
       expect(turnStartParams?.approvalPolicy).toBe("never");
       expect(turnStartParams?.sandboxPolicy?.type).toBe("dangerFullAccess");
       expect(turnStartParams?.effort).toBe("medium");
-      expect(turnStartParams?.reasoningEffort).toBe("medium");
-      expect(turnStartParams?.reasoning_effort).toBe("medium");
+      expect(turnStartParams?.reasoningEffort).toBeUndefined();
+      expect(turnStartParams?.reasoning_effort).toBeUndefined();
     });
 
     it("serializes every Codex permission mode to the app-server wire shapes", async () => {
@@ -6915,9 +7471,10 @@ describe("createAgentChatService", () => {
       });
 
       const threadStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/start");
-      expect((threadStartRequest?.params as { reasoningEffort?: unknown; reasoning_effort?: unknown; effort?: unknown } | undefined)?.reasoningEffort).toBe("xhigh");
-      expect((threadStartRequest?.params as { reasoningEffort?: unknown; reasoning_effort?: unknown; effort?: unknown } | undefined)?.reasoning_effort).toBe("xhigh");
-      expect((threadStartRequest?.params as { reasoningEffort?: unknown; reasoning_effort?: unknown; effort?: unknown } | undefined)?.effort).toBe("xhigh");
+      const threadStartParams = threadStartRequest?.params as { reasoningEffort?: unknown; reasoning_effort?: unknown; effort?: unknown } | undefined;
+      expect(threadStartParams?.effort).toBe("xhigh");
+      expect(threadStartParams?.reasoningEffort).toBeUndefined();
+      expect(threadStartParams?.reasoning_effort).toBeUndefined();
       const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
       const turnStartParams = turnStartRequest?.params as {
         approvalPolicy?: unknown;
@@ -6929,8 +7486,8 @@ describe("createAgentChatService", () => {
       expect(turnStartParams?.approvalPolicy).toBe("on-failure");
       expect(turnStartParams?.sandboxPolicy?.type).toBe("workspaceWrite");
       expect(turnStartParams?.effort).toBe("xhigh");
-      expect(turnStartParams?.reasoningEffort).toBe("xhigh");
-      expect(turnStartParams?.reasoning_effort).toBe("xhigh");
+      expect(turnStartParams?.reasoningEffort).toBeUndefined();
+      expect(turnStartParams?.reasoning_effort).toBeUndefined();
 
       const summary = await service.getSessionSummary(session.id);
       expect(summary?.codexApprovalPolicy).toBe("on-failure");
@@ -7012,8 +7569,8 @@ describe("createAgentChatService", () => {
       } | undefined;
       expect(params?.approvalPolicy).toBe("never");
       expect(params?.sandbox).toBe("danger-full-access");
-      expect(params?.reasoningEffort).toBe("medium");
       expect(params?.effort).toBe("medium");
+      expect(params?.reasoningEffort).toBeUndefined();
 
       const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
       const turnStartParams = turnStartRequest?.params as {
@@ -7304,9 +7861,10 @@ describe("createAgentChatService", () => {
       const resumed = await service.resumeSession({ sessionId: session.id });
 
       const resumeRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/resume");
-      expect((resumeRequest?.params as { reasoningEffort?: unknown; reasoning_effort?: unknown; effort?: unknown } | undefined)?.reasoningEffort).toBe("xhigh");
-      expect((resumeRequest?.params as { reasoningEffort?: unknown; reasoning_effort?: unknown; effort?: unknown } | undefined)?.reasoning_effort).toBe("xhigh");
-      expect((resumeRequest?.params as { reasoningEffort?: unknown; reasoning_effort?: unknown; effort?: unknown } | undefined)?.effort).toBe("xhigh");
+      const resumeParams = resumeRequest?.params as { reasoningEffort?: unknown; reasoning_effort?: unknown; effort?: unknown } | undefined;
+      expect(resumeParams?.effort).toBe("xhigh");
+      expect(resumeParams?.reasoningEffort).toBeUndefined();
+      expect(resumeParams?.reasoning_effort).toBeUndefined();
       expect(resumed.codexApprovalPolicy).toBe("on-failure");
       expect(resumed.codexSandbox).toBe("workspace-write");
       expect(resumed.permissionMode).toBe("default");
@@ -10271,7 +10829,6 @@ describe("createAgentChatService", () => {
     expect(
       mockState.codexRequestPayloads.find((payload) => payload.id === "native-request-1"),
     ).toMatchObject({
-      jsonrpc: "2.0",
       id: "native-request-1",
       result: {
         answers: {},

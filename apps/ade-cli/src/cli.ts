@@ -173,10 +173,13 @@ type ReadinessCheck = {
 
 declare const __ADE_VERSION__: string | undefined;
 
+const BUNDLED_VERSION =
+  typeof __ADE_VERSION__ === "string" ? __ADE_VERSION__.trim() : "";
+const ENV_VERSION = process.env.ADE_CLI_VERSION?.trim() ?? "";
 const VERSION =
-  typeof __ADE_VERSION__ === "string" && __ADE_VERSION__.trim()
-    ? __ADE_VERSION__
-    : process.env.ADE_CLI_VERSION?.trim() || "0.0.0";
+  BUNDLED_VERSION && BUNDLED_VERSION !== "0.0.0"
+    ? BUNDLED_VERSION
+    : ENV_VERSION || BUNDLED_VERSION || "0.0.0";
 const PROTOCOL_VERSION = "2025-06-18";
 const SOURCE_FALLBACK_ENV = "ADE_CLI_SOURCE_FALLBACK_ACTIVE";
 const CLI_ENTRY_PATH =
@@ -5099,6 +5102,10 @@ function buildChatPlan(args: string[]): CliPlan {
       : standardRequested
         ? false
         : undefined;
+    // `--print` opts the session's app-server initialize handshake into
+    // print-mode (suppresses delta notification streams). Must be set at create
+    // time because the handshake runs once when the runtime starts.
+    const createRuntimeMode = readFlag(args, ["--print"]) ? "print" : undefined;
     return {
       kind: "execute",
       label: "chat create",
@@ -5124,12 +5131,27 @@ function buildChatPlan(args: string[]): CliPlan {
             title: readValue(args, ["--title"]),
             surface: readValue(args, ["--surface"]) ?? "work",
             ...(codexFastMode !== undefined ? { codexFastMode } : {}),
+            ...(createRuntimeMode ? { runtimeMode: createRuntimeMode } : {}),
           }),
         ),
       ],
     };
   }
-  if (sub === "send")
+  if (sub === "send") {
+    const imageUrl = readValue(args, ["--image-url"]);
+    // `--print` is honored at session create time only — the app-server
+    // initialize handshake runs once per session, so setting it per-message
+    // would be a silent no-op. Reject explicitly so users move it to
+    // `ade chat create --print`.
+    if (readFlag(args, ["--print"])) {
+      throw new CliUsageError(
+        "--print must be set at session creation time. Use `ade chat create --print ...`.",
+      );
+    }
+    const sendText = requireValue(
+      readValue(args, ["--text", "--message"]) ?? args.join(" "),
+      "message text",
+    );
     return {
       kind: "execute",
       label: "chat send",
@@ -5140,14 +5162,13 @@ function buildChatPlan(args: string[]): CliPlan {
           "sendMessage",
           withSession({
             sessionId: requireValue(sessionId, "sessionId"),
-            text: requireValue(
-              readValue(args, ["--text", "--message"]) ?? args.join(" "),
-              "message text",
-            ),
+            text: sendText,
+            ...(imageUrl ? { attachments: [{ type: "image-url", url: imageUrl, path: imageUrl }] } : {}),
           }),
         ),
       ],
     };
+  }
   if (sub === "interrupt")
     return {
       kind: "execute",

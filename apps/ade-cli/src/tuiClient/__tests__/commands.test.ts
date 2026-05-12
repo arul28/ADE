@@ -24,6 +24,16 @@ describe("commands", () => {
     expect(parsed ? commandPlacement(parsed) : null).toBe("chat");
   });
 
+  it("routes Codex /fast arguments to chat", () => {
+    const parsed = parseCommand("/fast on", [
+      { name: "/fast", description: "Toggle Fast mode for supported models", source: "sdk", argumentHint: "[on|off|status]" },
+    ]);
+    expect(parsed?.name).toBe("/fast");
+    expect(parsed?.args).toBe("on");
+    expect(parsed?.userCommand?.name).toBe("/fast");
+    expect(parsed ? commandPlacement(parsed) : null).toBe("chat");
+  });
+
   it("lets runtime commands override single-word ADE built-ins on exact name", () => {
     const parsed = parseCommand("/status please", [
       { name: "/status", description: "Runtime status", source: "sdk" },
@@ -126,5 +136,25 @@ describe("commands", () => {
       { name: "/something-compact-related", description: "Other", source: "sdk" },
     ]);
     expect(rows[0]?.name).toBe("/compact");
+  });
+
+  it("registers /compact and /goal as chat-placement builtins", () => {
+    const compact = parseCommand("/compact");
+    expect(compact?.spec?.name).toBe("/compact");
+    expect(compact ? commandPlacement(compact) : null).toBe("chat");
+
+    const goal = parseCommand("/goal Ship the migration");
+    expect(goal?.spec?.name).toBe("/goal");
+    expect(goal?.args).toBe("Ship the migration");
+    expect(goal ? commandPlacement(goal) : null).toBe("chat");
+
+    const goalBudget = parseCommand("/goal budget 50000");
+    expect(goalBudget?.spec?.name).toBe("/goal");
+    expect(goalBudget?.args).toBe("budget 50000");
+  });
+
+  it("drops the legacy /resume builtin", () => {
+    const rows = paletteCommands("/resume", []);
+    expect(rows.find((row) => row.name === "/resume" && row.source === "ade")).toBeUndefined();
   });
 });

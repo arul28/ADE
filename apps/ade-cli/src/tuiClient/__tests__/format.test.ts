@@ -153,6 +153,368 @@ describe("renderChatLines", () => {
     ]);
   });
 
+  it("renders Codex plan, web, and image events and suppresses goal/token chat rows", () => {
+    const lines = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:00.000Z",
+          sequence: 1,
+          event: {
+            type: "plan",
+            steps: [{ text: "Inspect protocol", status: "completed" }],
+            state: "updated",
+          },
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:01.000Z",
+          sequence: 2,
+          event: {
+            type: "web_search",
+            query: "Codex app server",
+            itemId: "web-1",
+            status: "completed",
+            actions: [
+              { type: "search", query: "Codex app server" },
+              { type: "openPage", url: "https://example.com/codex" },
+            ],
+          },
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:02.000Z",
+          sequence: 3,
+          event: { type: "codex_goal_updated", goal: { objective: "Ship the migration", status: "active" } },
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:03.000Z",
+          sequence: 4,
+          event: {
+            type: "codex_image_generation",
+            itemId: "img-1",
+            prompt: "diagram",
+            status: "completed",
+          },
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:04.000Z",
+          sequence: 5,
+          event: {
+            type: "codex_token_usage",
+            usage: { total: { totalTokens: 1200 }, last: { totalTokens: 120 }, modelContextWindow: 200000 },
+          },
+        },
+      ],
+    });
+
+    const body = lines.map((line) => line.body).join("\n");
+    expect(body).toContain("plan");
+    // Plan glyphs are unicode now (◐/○/●), not ASCII.
+    expect(body).toContain("● Inspect protocol");
+    // Web search renders actions per-line, not joined with ` · `.
+    expect(body).toContain("web Codex app server");
+    expect(body).toMatch(/search\s+Codex app server/);
+    expect(body).toMatch(/openPage\s+https:\/\/example\.com\/codex/);
+    expect(body).toContain("image generated");
+    // Goal/token-usage events are suppressed in the chat transcript.
+    expect(body).not.toContain("goal active");
+    expect(body).not.toContain("tokens · last");
+  });
+
+  it("renders the new event variants (status, error, done, todo, subagent, completion_report, turn_diff_summary, codex_context_compaction)", () => {
+    const lines = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:00.000Z",
+          sequence: 1,
+          event: { type: "status", turnStatus: "completed" } as never,
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:01.000Z",
+          sequence: 2,
+          event: { type: "error", message: "rate limited" } as never,
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:02.000Z",
+          sequence: 3,
+          event: {
+            type: "done",
+            turnId: "t1",
+            status: "completed",
+            usage: { inputTokens: 1200, outputTokens: 500 },
+            costUsd: 0.13,
+          } as never,
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:03.000Z",
+          sequence: 4,
+          event: {
+            type: "todo_update",
+            items: [
+              { id: "1", description: "Read", status: "completed" },
+              { id: "2", description: "Write", status: "in_progress" },
+            ],
+          } as never,
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:04.000Z",
+          sequence: 5,
+          event: { type: "subagent_started", taskId: "ag", description: "do thing" } as never,
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:05.000Z",
+          sequence: 6,
+          event: {
+            type: "completion_report",
+            report: { timestamp: "x", summary: "shipped it", status: "completed", artifacts: [] },
+          } as never,
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:06.000Z",
+          sequence: 7,
+          event: {
+            type: "turn_diff_summary",
+            turnId: "t",
+            beforeSha: "a",
+            afterSha: "b",
+            files: [{ path: "x" }, { path: "y" }] as never,
+            totalAdditions: 12,
+            totalDeletions: 4,
+          } as never,
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:07.000Z",
+          sequence: 8,
+          event: {
+            type: "codex_context_compaction",
+            turnId: "t",
+            state: "started",
+            trigger: "manual",
+          } as never,
+        },
+      ],
+    });
+
+    const body = lines.map((line) => line.body).join("\n");
+    expect(body).toContain("[status] completed");
+    expect(body).toContain("[error] rate limited");
+    expect(body).toMatch(/\[done\] completed/);
+    expect(body).toContain("todos");
+    expect(body).toContain("● Read");
+    expect(body).toContain("◐ Write");
+    expect(body).toContain("[agent] do thing (started)");
+    expect(body).toContain("[done] turn summary: shipped it");
+    expect(body).toContain("[diff] +12/-4 across 2 files");
+    expect(body).toContain("⟳ compacting · manual");
+  });
+
+  it("renders cloud, step_boundary, structured_question, prompt_suggestion, auto_approval_review, tool_use_summary, and delegation_state lines", () => {
+    const lines = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:00.000Z",
+          sequence: 1,
+          event: {
+            type: "cloud_artifact",
+            turnId: "t",
+            itemId: "i",
+            agentId: "a",
+            runId: "r",
+            path: "/tmp/out.txt",
+            lanePath: "/tmp/lane",
+          } as never,
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:01.000Z",
+          sequence: 2,
+          event: {
+            type: "cloud_status",
+            turnId: "t",
+            runId: "r",
+            status: "running",
+            detail: "spinning up",
+          } as never,
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:02.000Z",
+          sequence: 3,
+          event: { type: "step_boundary", stepNumber: 3 } as never,
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:03.000Z",
+          sequence: 4,
+          event: {
+            type: "structured_question",
+            question: "Approve refactor?",
+            itemId: "q1",
+          } as never,
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:04.000Z",
+          sequence: 5,
+          event: { type: "prompt_suggestion", suggestion: "try /compact" } as never,
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:05.000Z",
+          sequence: 6,
+          event: {
+            type: "auto_approval_review",
+            targetItemId: "x",
+            reviewStatus: "started",
+            action: "shell",
+          } as never,
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:06.000Z",
+          sequence: 7,
+          event: { type: "tool_use_summary", summary: "ran 4 tools", toolUseIds: [] } as never,
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:07.000Z",
+          sequence: 8,
+          event: {
+            type: "delegation_state",
+            message: "handoff to worker-a",
+            contract: { status: "active", workerIntent: "implement" } as never,
+          } as never,
+        },
+      ],
+    });
+
+    const body = lines.map((line) => line.body).join("\n");
+    expect(body).toContain("[cloud] artifact");
+    expect(body).toContain("out.txt");
+    expect(body).toContain("[cloud] running");
+    expect(body).toContain("── step 3 ──");
+    expect(body).toContain("[?] Approve refactor?");
+    expect(body).toContain("💡 try /compact");
+    expect(body).toMatch(/\[auto-approval\] started/);
+    expect(body).toContain("[tools] ran 4 tools");
+    expect(body).toContain("[delegation] handoff to worker-a");
+  });
+
+  it("suppresses pending_input_resolved and tokens events from the chat transcript", () => {
+    const lines = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:00.000Z",
+          sequence: 1,
+          event: {
+            type: "pending_input_resolved",
+            itemId: "q1",
+            resolution: "accepted",
+          } as never,
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:01.000Z",
+          sequence: 2,
+          event: {
+            type: "tokens",
+            turnId: "t",
+            inputTokens: 100,
+            outputTokens: 50,
+            contextWindow: 10_000,
+          } as never,
+        },
+      ],
+    });
+    expect(lines).toHaveLength(0);
+  });
+
+  it("fixes the system_notice continue regression (does not duplicate subsequent rows)", () => {
+    const lines = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:00.000Z",
+          sequence: 1,
+          event: { type: "system_notice", noticeKind: "info", message: "hi" } as never,
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:01.000Z",
+          sequence: 2,
+          event: { type: "text", text: "after notice" },
+        },
+      ],
+    });
+    // Without the `continue;` fix the loop would fall through and a duplicate
+    // empty/error row could be appended. Assert the two-event input → two-line
+    // output, with the notice first and the text second.
+    expect(lines).toHaveLength(2);
+    expect(lines[0]?.tone).toBe("notice");
+    expect(lines[1]?.tone).toBe("assistant");
+  });
+
+  it("routes severity-bearing system_notice variants to tone=error in the TUI", () => {
+    const lines = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:00.000Z",
+          sequence: 1,
+          event: { type: "system_notice", noticeKind: "error", message: "🛡 guardian: sandbox tripped" } as never,
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:01.000Z",
+          sequence: 2,
+          event: { type: "system_notice", noticeKind: "warning", message: "⚠ deprecated: old method" } as never,
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:02.000Z",
+          sequence: 3,
+          event: { type: "system_notice", noticeKind: "config", message: "⚙ config: stale layer" } as never,
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:03.000Z",
+          sequence: 4,
+          event: { type: "system_notice", noticeKind: "rate_limit", message: "rate limit hit" } as never,
+        },
+      ],
+    });
+    expect(lines).toHaveLength(4);
+    expect(lines[0]?.tone).toBe("error"); // error noticeKind
+    expect(lines[1]?.tone).toBe("notice"); // warning is informational
+    expect(lines[2]?.tone).toBe("notice"); // config is informational
+    expect(lines[3]?.tone).toBe("error"); // rate_limit is severity-bearing
+  });
+
   it("summarizes command pass and fail counts when present", () => {
     const events = [{
       sessionId: "s1",

@@ -2,6 +2,7 @@ import path from "node:path";
 import { getModelById } from "../../../desktop/src/shared/modelRegistry";
 import type { AgentChatEventEnvelope, AgentChatProvider, AgentChatSessionSummary } from "../../../desktop/src/shared/types/chat";
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
+import { glyphFor } from "./theme";
 import type { LocalNotice } from "./types";
 
 function timeLabel(value: string): string {
@@ -36,6 +37,13 @@ function summarizeCommandOutput(output: unknown): string {
     ].filter(Boolean).join(" · ");
   }
   return text;
+}
+
+function compactTokenCount(value: number | null | undefined): string | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return null;
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
+  return String(Math.round(value));
 }
 
 export function compactPath(value: string, max = 42): string {
@@ -321,6 +329,60 @@ export function renderChatLines(args: {
       });
       continue;
     }
+    if (event.type === "plan") {
+      const completed = event.steps.filter((step) => step.status === "completed").length;
+      const header = event.streamingText
+        ? `plan ${event.state ?? "updated"}  ${singleLine(event.streamingText, 110)}`
+        : `plan ${completed}/${event.steps.length} complete`;
+      const steps = event.steps
+        .slice(0, 8)
+        .map((step) => `${glyphFor(step.status)} ${step.text}`)
+        .join("\n");
+      lines.push({
+        id,
+        tone: "notice",
+        body: steps ? `${header}\n${steps}` : header,
+      });
+      continue;
+    }
+    if (event.type === "web_search") {
+      const statusGlyph = event.status === "running" ? "…" : event.status === "failed" ? "x" : "✓";
+      const head = `${statusGlyph} web ${singleLine(event.query, 96)}`;
+      const actionLines = event.actions?.length
+        ? event.actions.map((action) => {
+          const kind = action.type || "action";
+          const detail = action.title ?? action.url ?? action.query ?? "";
+          return `   ${kind.padEnd(12, " ")} ${singleLine(detail, 96)}`.trimEnd();
+        })
+        : event.action ? [`   ${event.action}`] : [];
+      lines.push({
+        id,
+        tone: event.status === "failed" ? "error" : "tool",
+        body: actionLines.length ? `${head}\n${actionLines.join("\n")}` : head,
+      });
+      continue;
+    }
+    if (event.type === "codex_image_generation" || event.type === "codex_image_view") {
+      const isGeneration = event.type === "codex_image_generation";
+      const title = isGeneration
+        ? event.revisedPrompt ?? event.prompt ?? "image"
+        : event.title ?? event.url ?? event.path ?? "image";
+      lines.push({
+        id,
+        tone: event.status === "failed" ? "error" : "tool",
+        body: `${event.status === "running" ? "…" : event.status === "failed" ? "x" : "✓"} ${isGeneration ? "image generated" : "image"}  ${singleLine(title, 120)}`,
+      });
+      continue;
+    }
+    // codex_goal_updated / codex_goal_cleared: rendered as amber banner above
+    // chat by app.tsx — suppress here. codex_token_usage: rendered in
+    // ContextMeter footer — suppress here too.
+    if (event.type === "codex_goal_updated" || event.type === "codex_goal_cleared") {
+      continue;
+    }
+    if (event.type === "codex_token_usage") {
+      continue;
+    }
     if (event.type === "approval_request") {
       const record = event as unknown as Record<string, unknown>;
       const files = Array.isArray(record.files) ? record.files : [];
@@ -342,13 +404,150 @@ export function renderChatLines(args: {
       });
       continue;
     }
-    if (event.type === "system_notice") {
+    if (event.type === "codex_context_compaction") {
+      const verb = event.state === "started" ? "compacting" : "compacted";
       lines.push({
         id,
         tone: "notice",
+        body: `⟳ ${verb} · ${event.trigger}`,
+      });
+      continue;
+    }
+    if (event.type === "status") {
+      const tone = event.turnStatus === "failed"
+        ? "error" as const
+        : event.turnStatus === "interrupted" ? "error" as const : "notice" as const;
+      lines.push({ id, tone, body: `[status] ${event.turnStatus}${event.message ? ` · ${singleLine(event.message, 120)}` : ""}` });
+      continue;
+    }
+    if (event.type === "error") {
+      lines.push({ id, tone: "error", body: `[error] ${singleLine(event.message, 160)}` });
+      continue;
+    }
+    if (event.type === "done") {
+      const usage = event.usage ?? {};
+      const parts = [
+        compactTokenCount(usage.inputTokens) ? `in ${compactTokenCount(usage.inputTokens)}` : null,
+        compactTokenCount(usage.outputTokens) ? `out ${compactTokenCount(usage.outputTokens)}` : null,
+        typeof event.costUsd === "number" ? `$${event.costUsd.toFixed(2)}` : null,
+      ].filter(Boolean);
+      lines.push({
+        id,
+        tone: "notice",
+        body: `[done] ${event.status}${parts.length ? ` · ${parts.join(" · ")}` : ""}`,
+      });
+      continue;
+    }
+    if (event.type === "activity") {
+      lines.push({ id, tone: "notice", body: `· ${event.activity}${event.detail ? ` ${singleLine(event.detail, 96)}` : ""}` });
+      continue;
+    }
+    if (event.type === "tokens") {
+      // Tokens drive the ContextMeter footer; do not render in chat.
+      continue;
+    }
+    if (event.type === "cloud_artifact") {
+      lines.push({ id, tone: "notice", body: `[cloud] artifact · ${compactPath(event.path)}` });
+      continue;
+    }
+    if (event.type === "cloud_status") {
+      lines.push({
+        id,
+        tone: event.status === "error" ? "error" : "notice",
+        body: `[cloud] ${event.status}${event.detail ? ` · ${singleLine(event.detail, 96)}` : ""}`,
+      });
+      continue;
+    }
+    if (event.type === "step_boundary") {
+      lines.push({ id, tone: "notice", body: `── step ${event.stepNumber} ──` });
+      continue;
+    }
+    if (event.type === "todo_update") {
+      const todoLines = event.items
+        .slice(0, 12)
+        .map((todo) => `${glyphFor(todo.status)} ${todo.description}`);
+      lines.push({ id, tone: "notice", body: `todos\n${todoLines.join("\n")}` });
+      continue;
+    }
+    if (event.type === "subagent_started") {
+      lines.push({ id, tone: "notice", body: `[agent] ${singleLine(event.description, 96)} (started)` });
+      continue;
+    }
+    if (event.type === "subagent_progress") {
+      lines.push({
+        id,
+        tone: "notice",
+        body: `[agent] ${singleLine(event.description ?? event.summary, 80)} (working)`,
+      });
+      continue;
+    }
+    if (event.type === "subagent_result") {
+      lines.push({
+        id,
+        tone: event.status === "failed" ? "error" : "notice",
+        body: `[agent] ${singleLine(event.summary, 96)} (${event.status})`,
+      });
+      continue;
+    }
+    if (event.type === "structured_question") {
+      lines.push({ id, tone: "approval", body: `[?] ${singleLine(event.question, 160)}` });
+      continue;
+    }
+    if (event.type === "tool_use_summary") {
+      lines.push({ id, tone: "notice", body: `[tools] ${singleLine(event.summary, 160)}` });
+      continue;
+    }
+    if (event.type === "completion_report") {
+      lines.push({ id, tone: "notice", body: `[done] turn summary: ${singleLine(event.report.summary, 160)}` });
+      continue;
+    }
+    if (event.type === "auto_approval_review") {
+      lines.push({
+        id,
+        tone: "notice",
+        body: `[auto-approval] ${event.reviewStatus}${event.action ? ` · ${event.action}` : ""}`,
+      });
+      continue;
+    }
+    if (event.type === "prompt_suggestion") {
+      lines.push({ id, tone: "notice", body: `💡 ${singleLine(event.suggestion, 160)}` });
+      continue;
+    }
+    if (event.type === "turn_diff_summary") {
+      lines.push({
+        id,
+        tone: "notice",
+        body: `[diff] +${event.totalAdditions}/-${event.totalDeletions} across ${event.files.length} file${event.files.length === 1 ? "" : "s"}`,
+      });
+      continue;
+    }
+    if (event.type === "pending_input_resolved") {
+      continue;
+    }
+    if (event.type === "delegation_state") {
+      const label = event.message ?? event.contract.status ?? event.contract.workerIntent ?? "state";
+      lines.push({ id, tone: "notice", body: `[delegation] ${singleLine(label, 160)}` });
+      continue;
+    }
+    if (event.type === "system_notice") {
+      // Surface the severity-bearing noticeKinds with an error tone so the TUI
+      // colorizes them distinctively. Guardian warnings, rate limits, thread
+      // errors, and provider health issues map to `tone: "error"`; warnings and
+      // config issues keep the default notice tone.
+      const noticeKind = (event as { noticeKind?: string }).noticeKind;
+      const tone: "notice" | "error" = noticeKind === "error"
+        || noticeKind === "rate_limit"
+        || noticeKind === "thread_error"
+        || noticeKind === "provider_health"
+        ? "error"
+        : "notice";
+      lines.push({
+        id,
+        tone,
         header: `${providerEventLabel(args.activeSession?.provider)} · ${timeLabel(envelope.timestamp)}`,
         body: singleLine((event as { message?: unknown }).message, 160),
       });
+      continue;
     }
   }
   return coalesceLines(lines).slice(-(args.maxLines ?? 80));

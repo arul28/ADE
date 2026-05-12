@@ -21,7 +21,7 @@ function usage() {
     "Options:",
     "  --auto                     Use dev socket and let desktop create runtime if missing. Default.",
     "  --attach                   Require an existing dev runtime before launching desktop.",
-    "  --project-root <path>      Project to auto-open. Defaults to this checkout.",
+    "  --project-root <path>      Project to auto-open. Defaults to the primary checkout for ADE worktrees.",
     "  --socket <path>            Dev runtime socket. Defaults to /tmp/ade-runtime-dev.sock.",
     "  --clean                    Use desktop dev:clean instead of dev.",
     "  --skip-runtime-build       Launch without rebuilding apps/ade-cli.",

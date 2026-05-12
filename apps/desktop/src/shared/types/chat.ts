@@ -76,10 +76,18 @@ export type AgentChatNoticeDetail = {
   permissionModeTransition?: "entered_plan_mode" | "exited_plan_mode";
 };
 
-export type AgentChatFileRef = {
+export type AgentChatLocalFileRef = {
   path: string;
   type: "file" | "image";
 };
+
+export type AgentChatImageUrlRef = {
+  path: string;
+  type: "image-url";
+  url: string;
+};
+
+export type AgentChatFileRef = AgentChatLocalFileRef | AgentChatImageUrlRef;
 
 export type AgentChatLinearIssueContextAttachment = {
   type: "linear_issue";
@@ -97,7 +105,7 @@ export const PARALLEL_CHAT_MAX_ATTACHMENTS = 12;
 export function inferAttachmentType(
   filePath: string,
   mimeType?: string | null,
-): AgentChatFileRef["type"] {
+): AgentChatLocalFileRef["type"] {
   if (mimeType?.startsWith("image/")) return "image";
   return /\.(png|jpe?g|gif|webp|bmp|svg|ico|tiff?)$/i.test(filePath) ? "image" : "file";
 }
@@ -119,6 +127,45 @@ export function mergeAttachments(
 export type AgentChatPlanStep = {
   text: string;
   status: "pending" | "in_progress" | "completed" | "failed";
+};
+
+export type CodexPlanState = "active" | "delta" | "updated" | "complete";
+
+export type CodexWebSearchAction = {
+  type: string;
+  status?: "pending" | "running" | "completed" | "failed";
+  query?: string;
+  url?: string;
+  title?: string;
+  snippet?: string;
+};
+
+export type CodexTokenUsageBreakdown = {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  totalTokens?: number;
+};
+
+export type CodexThreadTokenUsage = {
+  threadId?: string | null;
+  turnId?: string | null;
+  total?: CodexTokenUsageBreakdown;
+  last?: CodexTokenUsageBreakdown;
+  modelContextWindow?: number | null;
+};
+
+export type CodexThreadGoalStatus = "active" | "paused" | "budget_limited" | "complete" | "cancelled" | "unknown";
+
+export type CodexThreadGoal = {
+  objective?: string | null;
+  tokenBudget?: number | null;
+  status?: CodexThreadGoalStatus;
+  tokensUsed?: number | null;
+  timeUsedSeconds?: number | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
 };
 
 export type AgentChatCompletionArtifact = {
@@ -217,6 +264,9 @@ export type AgentChatEvent =
       steps: AgentChatPlanStep[];
       turnId?: string;
       explanation?: string | null;
+      itemId?: string;
+      state?: CodexPlanState;
+      streamingText?: string;
     }
   | {
       type: "reasoning";
@@ -395,8 +445,14 @@ export type AgentChatEvent =
       turnId?: string;
     }
   | {
+      type: "codex_context_compaction";
+      turnId: string;
+      state: "started" | "completed";
+      trigger: "manual" | "auto";
+    }
+  | {
       type: "system_notice";
-      noticeKind: "auth" | "rate_limit" | "hook" | "file_persist" | "info" | "memory" | "provider_health" | "thread_error";
+      noticeKind: "auth" | "rate_limit" | "hook" | "file_persist" | "info" | "memory" | "provider_health" | "thread_error" | "warning" | "error" | "config";
       message: string;
       detail?: string | AgentChatNoticeDetail;
       steerId?: string;
@@ -411,6 +467,7 @@ export type AgentChatEvent =
       type: "web_search";
       query: string;
       action?: string;
+      actions?: CodexWebSearchAction[];
       itemId: string;
       logicalItemId?: string;
       turnId?: string;
@@ -430,10 +487,38 @@ export type AgentChatEvent =
       turnId?: string;
     }
   | {
-      type: "plan_text";
-      text: string;
+      type: "codex_image_generation";
+      itemId: string;
       turnId?: string;
-      itemId?: string;
+      prompt?: string | null;
+      revisedPrompt?: string | null;
+      result?: string | null;
+      /** Local filesystem path if Codex saved the image to disk; null when the result is purely a URL/data URI. */
+      savedPath?: string | null;
+      status: "running" | "completed" | "failed";
+    }
+  | {
+      type: "codex_image_view";
+      itemId: string;
+      turnId?: string;
+      path?: string | null;
+      url?: string | null;
+      title?: string | null;
+      status: "running" | "completed" | "failed";
+    }
+  | {
+      type: "codex_token_usage";
+      usage: CodexThreadTokenUsage;
+      turnId?: string;
+    }
+  | {
+      type: "codex_goal_updated";
+      goal: CodexThreadGoal | null;
+      turnId?: string;
+    }
+  | {
+      type: "codex_goal_cleared";
+      turnId?: string;
     }
   | {
       type: "turn_diff_summary";
@@ -568,6 +653,9 @@ export type AgentChatSession = {
   automationRunId?: string | null;
   capabilityMode?: CtoCapabilityMode;
   completion?: AgentChatCompletionReport | null;
+  codexGoal?: CodexThreadGoal | null;
+  codexTokenUsage?: CodexThreadTokenUsage | null;
+  runtimeMode?: AgentChatRuntimeMode;
   status: AgentChatSessionStatus;
   idleSinceAt?: string | null;
   archivedAt?: string | null;
@@ -610,6 +698,8 @@ export type AgentChatSessionSummary = {
   automationRunId?: string | null;
   capabilityMode?: CtoCapabilityMode;
   completion?: AgentChatCompletionReport | null;
+  codexGoal?: CodexThreadGoal | null;
+  codexTokenUsage?: CodexThreadTokenUsage | null;
   status: AgentChatSessionStatus;
   idleSinceAt?: string | null;
   startedAt: string;
@@ -738,7 +828,10 @@ export type AgentChatCreateArgs = {
   automationRunId?: string | null;
   openInUi?: boolean;
   requestedCwd?: string;
+  runtimeMode?: AgentChatRuntimeMode;
 };
+
+export type AgentChatRuntimeMode = "interactive" | "print";
 
 export type AgentChatHandoffArgs = {
   sourceSessionId: string;
@@ -980,3 +1073,25 @@ export type AgentChatGetTurnFileDiffArgs = {
 };
 
 export type AgentChatTurnFileDiff = FileDiff;
+
+export type AgentChatCodexOpenInCliMode = "ade-terminal" | "new-window";
+
+export type AgentChatCodexOpenInCliArgs = {
+  sessionId: string;
+  mode: AgentChatCodexOpenInCliMode;
+};
+
+export type AgentChatCodexOpenInCliResult = {
+  /** Absolute path to the codex binary to invoke (the bundled one by default). */
+  binary: string;
+  /** Argument vector to pass to the binary. Empty when no resume-flag exists. */
+  argv: string[];
+  /** Lane worktree path to `cd` into before invoking. */
+  cwd: string;
+  /** Codex thread to resume. */
+  threadId: string;
+  /** True when no `resume`/`--thread` form was detected; the renderer should copy threadId to clipboard and show a toast. */
+  copyThreadIdToClipboard: boolean;
+  /** Set when mode === "new-window" and a terminal launcher was spawned. */
+  spawnedNewWindow?: boolean;
+};

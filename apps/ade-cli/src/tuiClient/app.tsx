@@ -20,6 +20,7 @@ import type {
   AgentChatPermissionMode,
   AgentChatSessionSummary,
   AgentChatSlashCommand,
+  CodexThreadGoal,
 } from "../../../desktop/src/shared/types/chat";
 import type { AiSettingsStatus, OpenCodeRuntimeSnapshot } from "../../../desktop/src/shared/types/config";
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
@@ -35,6 +36,7 @@ import {
   getSlashCommands,
   getStoredApiKeyProviders,
   interruptChat,
+  latestGoal,
   latestTokenStats,
   listChatSessions,
   listLanes,
@@ -42,7 +44,6 @@ import {
   newestSession,
   renameChat,
   respondToInput,
-  resumeChat,
   sendChatMessage,
   updateChatModel,
 } from "./adeApi";
@@ -59,6 +60,7 @@ import { ModelStatus } from "./components/ModelStatus";
 import { FooterControls } from "./components/FooterControls";
 import { theme } from "./theme";
 import { chooseInitialLane } from "./project";
+import { resolveDrawerChatSelection } from "./drawerSelection";
 import { latestExpandableFailureId, renderObject, summarizeDiffChanges } from "./format";
 import { startTuiHeartbeat, type TuiHeartbeat } from "./heartbeat";
 import { loadAdeCodeState, saveAdeCodeState } from "./state";
@@ -317,11 +319,39 @@ function compactNumber(value: number): string {
 }
 
 function formatTokenSummary(stats: ReturnType<typeof latestTokenStats>): string | null {
+  // Compact last-turn breakdown: `+2.3k/1.1k (450✶)` — input / output (cached marker).
   const parts: string[] = [];
-  if (stats.inputTokens != null) parts.push(`in ${compactNumber(stats.inputTokens)}`);
-  if (stats.outputTokens != null) parts.push(`out ${compactNumber(stats.outputTokens)}`);
+  if (stats.inputTokens != null || stats.outputTokens != null) {
+    const left = stats.inputTokens != null ? `+${compactNumber(stats.inputTokens)}` : "+0";
+    const right = stats.outputTokens != null ? compactNumber(stats.outputTokens) : "0";
+    parts.push(`${left}/${right}`);
+  }
+  if (stats.cachedInputTokens != null && stats.cachedInputTokens > 0) {
+    parts.push(`(${compactNumber(stats.cachedInputTokens)}✶)`);
+  }
   if (stats.costUsd != null) parts.push(`$${stats.costUsd.toFixed(2)}`);
-  return parts.length ? parts.join(" · ") : null;
+  return parts.length ? parts.join(" ") : null;
+}
+
+function formatGoalBannerLine(goal: CodexThreadGoal | null): string | null {
+  if (!goal?.objective) return null;
+  const objective = goal.objective.trim();
+  if (!objective) return null;
+  const right: string[] = [];
+  const used = goal.tokensUsed ?? null;
+  const budget = goal.tokenBudget ?? null;
+  if (used != null && budget != null) {
+    right.push(`${compactNumber(used)}/${compactNumber(budget)}`);
+  } else if (used != null) {
+    right.push(`${compactNumber(used)} tokens`);
+  }
+  if (typeof goal.timeUsedSeconds === "number" && goal.timeUsedSeconds > 0) {
+    const seconds = Math.round(goal.timeUsedSeconds);
+    const mins = Math.floor(seconds / 60);
+    right.push(mins > 0 ? `${mins}m ${seconds % 60}s` : `${seconds}s`);
+  }
+  if (goal.status) right.push(goal.status.replace(/_/g, " "));
+  return right.length ? `◎ ${objective}   ${right.join(" · ")}` : `◎ ${objective}`;
 }
 
 function buildSetupRows(args: {
@@ -648,8 +678,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const [formValues, setFormValues] = useState<Record<string, string>>({});
   const [formFieldIndex, setFormFieldIndex] = useState(0);
   const [rightSelectionIndex, setRightSelectionIndex] = useState(0);
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const [rightOpen, setRightOpen] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(true);
+  const [rightOpen, setRightOpen] = useState(true);
   const [activePane, setActivePane] = useState<PaneFocus>("chat");
   const [prompt, setPrompt] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -1065,15 +1095,18 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   }, [activeLaneId, drawerLaneId, drawerLaneRows, selectedDrawerLaneAction, selectedDrawerLaneId]);
 
   useEffect(() => {
-    if (selectedDrawerChatAction) return;
-    if (draftChatActive && drawerLaneId === activeLaneId) {
-      setSelectedDrawerChatId(null);
-      setSelectedDrawerChatAction("new-chat");
-      return;
-    }
-    if (selectedDrawerChatId && drawerVisibleLaneSessions.some((session) => session.sessionId === selectedDrawerChatId)) return;
-    const activeChatInDrawer = drawerVisibleLaneSessions.find((session) => session.sessionId === activeSessionId);
-    setSelectedDrawerChatId(activeChatInDrawer?.sessionId ?? drawerVisibleLaneSessions[0]?.sessionId ?? null);
+    const next = resolveDrawerChatSelection({
+      activeLaneId,
+      activeSessionId,
+      draftChatActive,
+      drawerLaneId,
+      drawerVisibleLaneSessions,
+      selectedDrawerChatAction,
+      selectedDrawerChatId,
+    });
+    if (!next) return;
+    setSelectedDrawerChatId(next.selectedDrawerChatId);
+    setSelectedDrawerChatAction(next.selectedDrawerChatAction);
   }, [activeLaneId, activeSessionId, draftChatActive, drawerLaneId, drawerVisibleLaneSessions, selectedDrawerChatAction, selectedDrawerChatId]);
 
   useEffect(() => {
@@ -1872,16 +1905,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       }
       return;
     }
-    if (name === "/resume") {
-      if (!sessionId) {
-        setRightPane({ kind: "details", title: "Resume", body: "No active chat is selected." });
-        return;
-      }
-      await resumeChat(conn, sessionId);
-      addNotice("Resumed chat.", "success");
-      await refreshState();
-      return;
-    }
     if (name === "/model") {
       if (args) {
         if (!sessionId) {
@@ -2207,6 +2230,39 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     }
   }, [addNotice, focusAfterDetails, refreshState, selectActiveLaneId, selectActiveSessionId]);
 
+  const openLatestImage = useCallback(() => {
+    let target: string | null = null;
+    for (const envelope of events) {
+      const event = envelope.event as Record<string, unknown>;
+      if (event.type === "codex_image_generation") {
+        const candidate = (event as { result?: unknown }).result;
+        if (typeof candidate === "string" && candidate && !/^https?:|^data:/i.test(candidate)) {
+          target = candidate;
+        }
+      }
+      if (event.type === "codex_image_view") {
+        const local = (event as { path?: unknown }).path;
+        if (typeof local === "string" && local) target = local;
+      }
+    }
+    if (!target) {
+      addNotice("No image to open in the recent history.", "info");
+      return;
+    }
+    try {
+      if (process.platform === "darwin") {
+        spawn("open", [target], { stdio: "ignore", detached: true }).unref();
+      } else if (process.platform === "win32") {
+        spawn("cmd", ["/c", "start", "", target], { stdio: "ignore", detached: true }).unref();
+      } else {
+        spawn("xdg-open", [target], { stdio: "ignore", detached: true }).unref();
+      }
+      addNotice(`Opening ${path.basename(target)}…`, "info");
+    } catch (err) {
+      addNotice(err instanceof Error ? err.message : String(err), "error");
+    }
+  }, [addNotice, events]);
+
   const submitPrompt = useCallback(async (value: string) => {
     const text = value.trim();
     if (!text && rightPane.kind !== "form") return;
@@ -2509,7 +2565,20 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     }
 
     if (key.ctrl && input === "o") {
-      focusDrawer();
+      if (drawerOpen && pane === "drawer") {
+        setDrawerOpen(false);
+        focusChat();
+      } else {
+        focusDrawer();
+      }
+      return;
+    }
+
+    if (key.ctrl && input === "l" && pane === "chat") {
+      setClearedAt(new Date().toISOString());
+      setEvents([]);
+      setChatScrollOffset(0);
+      addNotice("Viewport cleared. Durable chat history is unchanged.", "info");
       return;
     }
 
@@ -2944,6 +3013,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       });
       return;
     }
+    if (
+      pane === "chat"
+      && !prompt.trim()
+      && !pendingApproval
+      && rightPane.kind !== "form"
+      && !slashRows.length
+      && !key.ctrl
+      && !key.meta
+      && input === "h"
+    ) {
+      openLatestImage();
+      return;
+    }
     const linePrefix = inputBeforeLineBreak(input);
     if (textInputActive && (key.return || linePrefix != null)) {
       const suffix = linePrefix == null ? "" : printableInput(linePrefix);
@@ -2982,8 +3064,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const promptFocused = (activePane === "chat" && footerControl == null) || (activePane === "details" && rightPane.kind === "form");
   const drawerFooterSelected = footerControl === "drawer";
   const detailsFooterSelected = footerControl === "details";
-  const statusRows = streaming ? 1 : 0;
-  const chatRowBudget = Math.max(4, rows - 12 - statusRows);
+  const currentGoal = useMemo(() => latestGoal(events), [events]);
+  const goalBannerText = useMemo(() => formatGoalBannerLine(currentGoal), [currentGoal]);
+  // Overhead: Header 1 + GoalBanner (0–1) + ModelStatus 1 + FooterControls 1 +
+  // prompt-box border 3 + flex padding 2 ≈ 8. Streaming annotation sits inside
+  // the prompt-box, so it costs 0 rows. Mention/slash palettes add their own
+  // rows when active; ChatView clamps via maxRows.
+  const goalBannerRows = goalBannerText ? 1 : 0;
+  const chatRowBudget = Math.max(4, rows - 10 - goalBannerRows);
 
   if (error && !connection) {
     return (
@@ -3000,8 +3088,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         projectName={projectName}
         lane={activeLane}
       />
-      {streaming ? (
-        <Text color={PURPLE}>● streaming live{tokenSummary ? ` · ${tokenSummary}` : ""} · ctrl-c interrupts</Text>
+      {goalBannerText ? (
+        <Box paddingX={1} flexShrink={0}>
+          <Text color={theme.color.warning} wrap="truncate-end">{goalBannerText}</Text>
+        </Box>
       ) : null}
       <Box flexGrow={1} minHeight={8}>
         {drawerOpen ? (
@@ -3055,6 +3145,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         <Text color={PURPLE}>› </Text>
         <Text>{prompt}</Text>
         <Text inverse> </Text>
+        {streaming ? <Text color={theme.color.mutedFg} dimColor>{"  · streaming"}</Text> : null}
       </Box>
       <ModelStatus
         provider={modelState.provider}

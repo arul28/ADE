@@ -1,0 +1,124 @@
+import { useState } from "react";
+import { motion } from "motion/react";
+import type { AgentChatEvent, AgentChatPlanStep } from "../../../../shared/types";
+import { cn } from "../../ui/cn";
+
+type PlanEvent = Extract<AgentChatEvent, { type: "plan" }>;
+
+type CodexPlanCardProps = {
+  event: PlanEvent;
+};
+
+const VIOLET = "#A78BFA";
+
+function PlanGlyph({ status }: { status: AgentChatPlanStep["status"] }) {
+  if (status === "in_progress") {
+    return (
+      <span aria-hidden className="font-semibold text-violet-300" style={{ color: VIOLET }}>
+        {"◐"}
+      </span>
+    );
+  }
+  if (status === "completed") {
+    return (
+      <span aria-hidden className="text-emerald-300/85">{"●"}</span>
+    );
+  }
+  if (status === "failed") {
+    return (
+      <span aria-hidden className="text-red-300/85">{"✕"}</span>
+    );
+  }
+  return (
+    <span aria-hidden className="text-fg/30">{"○"}</span>
+  );
+}
+
+export function CodexPlanCard({ event }: CodexPlanCardProps) {
+  const [liveOpen, setLiveOpen] = useState(false);
+  const hasStreaming = Boolean(event.streamingText && event.streamingText.trim().length);
+  const stateLabel = event.state === "complete"
+    ? "Plan ready"
+    : event.state === "active" || event.state === "delta"
+      ? "Planning"
+      : "Plan";
+  const streamingTrimmed = (event.streamingText ?? "").trim();
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 2 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.14, ease: "easeOut" }}
+      className="relative overflow-hidden rounded-xl border border-violet-400/15 bg-violet-500/[0.025]"
+      style={{ boxShadow: "inset 3px 0 0 0 rgba(167,139,250,0.55)" }}
+    >
+      <div className="flex items-baseline justify-between gap-3 px-4 pb-1 pt-3">
+        <h3 className="text-[length:calc(var(--chat-font-size)*13/14)] font-semibold tracking-[-0.005em] text-violet-100">
+          {stateLabel}
+        </h3>
+        {event.steps.length ? (
+          <span className="text-[length:calc(var(--chat-font-size)*11/14)] text-violet-200/45">
+            {event.steps.filter((s) => s.status === "completed").length}
+            /
+            {event.steps.length}
+          </span>
+        ) : null}
+      </div>
+
+      {event.explanation ? (
+        <p className="px-4 pb-2 text-[length:calc(var(--chat-font-size)*12/14)] leading-[1.5] text-fg/72">
+          {event.explanation}
+        </p>
+      ) : null}
+
+      {event.steps.length ? (
+        <ul className="space-y-1 px-4 pb-3 pt-1">
+          {event.steps.map((step, idx) => {
+            const isActive = step.status === "in_progress";
+            const isComplete = step.status === "completed";
+            return (
+              <li
+                key={`${step.text}:${idx}`}
+                className={cn(
+                  "flex items-start gap-2.5 text-[length:calc(var(--chat-font-size)*12/14)] leading-[1.45]",
+                  isActive ? "text-violet-100" : isComplete ? "text-fg/40 line-through decoration-fg/15" : "text-fg/72",
+                )}
+              >
+                <span className="mt-[1px] inline-flex w-3 shrink-0 justify-center text-[13px] leading-none">
+                  <PlanGlyph status={step.status} />
+                </span>
+                <span className="min-w-0 flex-1">{step.text}</span>
+              </li>
+            );
+          })}
+        </ul>
+      ) : !hasStreaming ? (
+        <div className="px-4 pb-3 text-[length:calc(var(--chat-font-size)*11/14)] italic text-fg/35">
+          Drafting steps…
+        </div>
+      ) : null}
+
+      {hasStreaming ? (
+        <div className="flex items-center justify-end gap-2 border-t border-violet-400/10 px-4 py-1.5">
+          <button
+            type="button"
+            onClick={() => setLiveOpen((v) => !v)}
+            className="inline-flex items-center gap-1 rounded text-[length:calc(var(--chat-font-size)*10/14)] text-violet-200/55 transition-colors hover:text-violet-100"
+            aria-expanded={liveOpen}
+          >
+            <span aria-hidden>{liveOpen ? "▾" : "▸"}</span>
+            <span>live</span>
+          </button>
+        </div>
+      ) : null}
+
+      {hasStreaming && liveOpen ? (
+        <div className="border-t border-violet-400/10 bg-violet-950/15 px-4 py-2 text-[length:calc(var(--chat-font-size)*11/14)] leading-[1.5] text-fg/55">
+          {streamingTrimmed}
+        </div>
+      ) : null}
+    </motion.div>
+  );
+}
+
+export default CodexPlanCard;

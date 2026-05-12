@@ -205,6 +205,7 @@ export const IPC = {
   agentChatGetSessionCapabilities: "ade.agentChat.getSessionCapabilities",
   agentChatGetTurnFileDiff: "ade.agentChat.getTurnFileDiff",
   agentChatGetEventHistory: "ade.agentChat.getEventHistory",
+  agentChatCodexOpenInCli: "ade.agentChat.codex.openInCli",
   computerUseListArtifacts: "ade.computerUse.listArtifacts",
   computerUseGetOwnerSnapshot: "ade.computerUse.getOwnerSnapshot",
   computerUseRouteArtifact: "ade.computerUse.routeArtifact",

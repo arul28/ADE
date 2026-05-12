@@ -19,6 +19,7 @@ import {
   type AgentChatInteractionMode,
   type AgentChatOpenCodePermissionMode,
   type AgentChatSlashCommand,
+  type CodexThreadTokenUsage,
   type ComputerUseOwnerSnapshot,
   type ChatSurfaceMode,
   type AppControlContextItem,
@@ -36,6 +37,7 @@ import { getModelById, modelSupportsFastMode } from "../../../shared/modelRegist
 import { cn } from "../ui/cn";
 import { ProviderModelSelector } from "../shared/ProviderModelSelector";
 import { getPermissionOptions, safetyColors } from "../shared/permissionOptions";
+import { CodexTokenInline } from "./codex/CodexTokenInline";
 import { ChatAttachmentTray } from "./ChatAttachmentTray";
 import { ChatComposerShell } from "./ChatComposerShell";
 import { LaneDialogShell } from "../lanes/LaneDialogShell";
@@ -54,6 +56,7 @@ const CLIPBOARD_IMAGE_PASTE_FALLBACK_DELAY_MS = 80;
 const ISSUE_CONTEXT_MENU_WIDTH = 256;
 const ISSUE_CONTEXT_MENU_GAP = 8;
 const ISSUE_CONTEXT_MENU_VIEWPORT_GUTTER = 8;
+const IMAGE_URL_EXTENSION_RE = /\.(png|jpe?g|gif|webp|bmp|svg|ico|tiff?)(?:$|[?#])/i;
 
 type PasteShortcutEvent = {
   key: string;
@@ -76,6 +79,27 @@ function isMacPasteShortcut(event: PasteShortcutEvent): boolean {
     && !event.altKey
     && !event.shiftKey
   );
+}
+
+/**
+ * Returns the normalized image URL only when `value` is *exactly* a URL with no
+ * other text around it (whitespace ok). We never want a paste to be silently
+ * swallowed if the user actually intended to paste a paragraph of text that
+ * happens to start with a URL.
+ */
+function normalizeImageAttachmentUrl(value: string | null | undefined): string | null {
+  const raw = value?.trim();
+  if (!raw) return null;
+  // Reject if there are any embedded newlines or whitespace — must be a single token.
+  if (/\s/.test(raw)) return null;
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    if (!IMAGE_URL_EXTENSION_RE.test(`${parsed.pathname}${parsed.search}${parsed.hash}`)) return null;
+    return parsed.toString();
+  } catch {
+    return null;
+  }
 }
 
 function getIssueContextMenuStyle(trigger: HTMLButtonElement): React.CSSProperties {
@@ -683,6 +707,7 @@ export function AgentChatComposer({
   availableModelIds,
   reasoningEffort,
   codexFastMode = false,
+  codexTokenUsage = null,
   draft,
   attachments,
   contextAttachments = [],
@@ -798,6 +823,7 @@ export function AgentChatComposer({
   availableModelIds?: string[];
   reasoningEffort: string | null;
   codexFastMode?: boolean;
+  codexTokenUsage?: CodexThreadTokenUsage | null;
   draft: string;
   attachments: AgentChatFileRef[];
   contextAttachments?: AgentChatContextAttachment[];
@@ -921,6 +947,13 @@ export function AgentChatComposer({
   const [attachmentResults, setAttachmentResults] = useState<AgentChatFileRef[]>([]);
   const [attachmentCursor, setAttachmentCursor] = useState(0);
   const [attachError, setAttachError] = useState<string | null>(null);
+  const [attachNotice, setAttachNotice] = useState<{ message: string; undoPath: string } | null>(null);
+
+  useEffect(() => {
+    if (!attachNotice) return;
+    const timer = window.setTimeout(() => setAttachNotice(null), 5000);
+    return () => window.clearTimeout(timer);
+  }, [attachNotice]);
   const [issueContextMenuOpen, setIssueContextMenuOpen] = useState(false);
   const [linearIssuePickerOpen, setLinearIssuePickerOpen] = useState(false);
   const [selectedIosContextId, setSelectedIosContextId] = useState<string | null>(null);
@@ -1149,6 +1182,31 @@ export function AgentChatComposer({
       fileAddInProgressRef.current = false;
     }
   };
+
+  const addImageUrlAttachment = useCallback((url: string): boolean => {
+    if (!canAttach) return false;
+    if (parallelChatMode && attachments.length >= PARALLEL_CHAT_MAX_ATTACHMENTS) {
+      setAttachError(`You can attach up to ${PARALLEL_CHAT_MAX_ATTACHMENTS} files for parallel launch.`);
+      return false;
+    }
+    setAttachError(null);
+    onAddAttachment({ path: url, type: "image-url", url });
+    return true;
+  }, [attachments.length, canAttach, onAddAttachment, parallelChatMode]);
+
+  const addImageUrlFromTransfer = useCallback((
+    data: DataTransfer | React.ClipboardEvent<HTMLElement>["clipboardData"],
+    options?: { showNotice?: boolean },
+  ): boolean => {
+    const url = normalizeImageAttachmentUrl(data.getData("text/uri-list"))
+      ?? normalizeImageAttachmentUrl(data.getData("text/plain"));
+    if (!url) return false;
+    const attached = addImageUrlAttachment(url);
+    if (attached && options?.showNotice) {
+      setAttachNotice({ message: "Image URL attached", undoPath: url });
+    }
+    return attached;
+  }, [addImageUrlAttachment]);
 
   const captureRichSelection = useCallback(() => {
     const editor = richEditorRef.current;
@@ -2239,6 +2297,10 @@ export function AgentChatComposer({
         if (fallbackAlreadyAttached) return;
         clipboardImagePasteHandledRef.current += 1;
         void addNativeClipboardImageAttachment();
+        return;
+      }
+      if (addImageUrlFromTransfer(event.clipboardData, { showNotice: true })) {
+        event.preventDefault();
       }
       return;
     }
@@ -2251,7 +2313,9 @@ export function AgentChatComposer({
   };
 
   const handleDragOver = (event: React.DragEvent<HTMLDivElement>) => {
-    if (!canAttach || !event.dataTransfer.files.length) return;
+    const hasImageUrl = event.dataTransfer.types.includes("text/uri-list")
+      || event.dataTransfer.types.includes("text/plain");
+    if (!canAttach || (!event.dataTransfer.files.length && !hasImageUrl)) return;
     event.preventDefault();
     setDragActive(true);
   };
@@ -2262,10 +2326,12 @@ export function AgentChatComposer({
   };
 
   const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
-    if (!canAttach || !event.dataTransfer.files.length) return;
+    if (!canAttach || (!event.dataTransfer.files.length && !addImageUrlFromTransfer(event.dataTransfer))) return;
     event.preventDefault();
     setDragActive(false);
-    void addFileAttachments(event.dataTransfer.files);
+    if (event.dataTransfer.files.length) {
+      void addFileAttachments(event.dataTransfer.files);
+    }
   };
 
   const handleCommandMenuSelect = useCallback((item: ChatCommandMenuItem) => {
@@ -2590,7 +2656,7 @@ export function AgentChatComposer({
         )
       ) : undefined}
       trays={
-        attachments.length || contextAttachmentCount || attachError || selectedIosContext || selectedAppControlContext || selectedBuiltInBrowserContext || selectedMacosVmContext ? (
+        attachments.length || contextAttachmentCount || attachError || attachNotice || selectedIosContext || selectedAppControlContext || selectedBuiltInBrowserContext || selectedMacosVmContext ? (
           <div className="space-y-2 px-1 py-2">
             {selectedMacosVmContext ? (
               <div className="relative mx-3 grid grid-cols-[72px_minmax(0,1fr)] gap-2 rounded-md border border-violet-300/12 bg-black/20 p-2 pr-6">
@@ -2828,6 +2894,31 @@ export function AgentChatComposer({
                   aria-label="Dismiss error"
                   className="shrink-0 rounded p-0.5 text-red-300/60 hover:text-red-200/80 transition-colors"
                   onClick={() => setAttachError(null)}
+                >
+                  <X size={10} weight="bold" />
+                </button>
+              </div>
+            ) : null}
+            {attachNotice ? (
+              <div className="flex items-center gap-2 px-3" role="status">
+                <span className="text-[length:calc(var(--chat-font-size)*10/14)] text-sky-200/85">
+                  {attachNotice.message}
+                </span>
+                <button
+                  type="button"
+                  className="rounded px-1.5 py-0.5 text-[length:calc(var(--chat-font-size)*10/14)] text-sky-200/65 underline-offset-2 transition-colors hover:text-sky-100 hover:underline"
+                  onClick={() => {
+                    onRemoveAttachment(attachNotice.undoPath);
+                    setAttachNotice(null);
+                  }}
+                >
+                  undo
+                </button>
+                <button
+                  type="button"
+                  aria-label="Dismiss"
+                  className="ml-auto shrink-0 rounded p-0.5 text-sky-200/55 hover:text-sky-100 transition-colors"
+                  onClick={() => setAttachNotice(null)}
                 >
                   <X size={10} weight="bold" />
                 </button>
@@ -3107,6 +3198,9 @@ export function AgentChatComposer({
             ) : null}
           </div>
 
+          {!parallelChatMode && sessionProvider === "codex" && codexTokenUsage ? (
+            <CodexTokenInline usage={codexTokenUsage} />
+          ) : null}
 
           {/* Right: attachment, commands, proof, context, send */}
           <div className="ml-auto flex max-w-full shrink-0 items-center gap-0.5 sm:gap-1">

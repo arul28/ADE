@@ -156,6 +156,12 @@ npm run dev
 
 That aliases to `npm run dev:desktop`: it rebuilds `apps/ade-cli`, launches the Electron desktop app, and points it at the dev runtime socket `/tmp/ade-runtime-dev.sock`. If no dev runtime is listening, desktop is allowed to create it. This is the normal desktop-dev flow.
 
+When these commands are run from an ADE lane worktree under `.ade/worktrees/`,
+they still run code from that lane checkout, but they open the primary checkout's
+project data by default. For example, running from
+`/path/to/ADE/.ade/worktrees/my-lane` opens `/path/to/ADE` as the ADE project
+and uses the lane path as the workspace root for `dev:code`.
+
 Dev command matrix:
 
 ```bash

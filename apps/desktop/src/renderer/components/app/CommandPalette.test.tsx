@@ -266,7 +266,19 @@ describe("CommandPalette", () => {
         "/Users/admin/Projects/FreshFolder",
       );
       expect(switchProjectToPath).toHaveBeenCalledTimes(1);
-      expect(browseDirectories).toHaveBeenCalledTimes(3);
+      expect(switchProjectToPath).not.toHaveBeenCalledWith(
+        "/Users/admin/Projects/StaleRepo",
+      );
+      expect(browseDirectories).toHaveBeenCalledWith({
+        partialPath: "/Users/admin/Projects/StaleRepo/",
+        cwd: "/Users/admin/Projects/ADE",
+        limit: 200,
+      });
+      expect(browseDirectories).toHaveBeenCalledWith({
+        partialPath: "/Users/admin/Projects/FreshFolder/",
+        cwd: "/Users/admin/Projects/ADE",
+        limit: 200,
+      });
     });
   });
 

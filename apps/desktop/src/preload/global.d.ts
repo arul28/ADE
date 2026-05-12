@@ -68,6 +68,8 @@ import type {
   AgentTool,
   AgentChatApproveArgs,
   AgentChatArchiveArgs,
+  AgentChatCodexOpenInCliArgs,
+  AgentChatCodexOpenInCliResult,
   AgentChatCreateArgs,
   AgentChatDeleteArgs,
   AgentChatSuggestLaneNameArgs,
@@ -1485,6 +1487,11 @@ declare global {
           events: AgentChatEventEnvelope[];
           truncated: boolean;
         }>;
+        codex: {
+          openInCli: (
+            args: AgentChatCodexOpenInCliArgs,
+          ) => Promise<AgentChatCodexOpenInCliResult>;
+        };
       };
       computerUse: {
         listArtifacts: (

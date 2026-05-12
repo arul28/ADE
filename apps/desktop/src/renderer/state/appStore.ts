@@ -534,6 +534,7 @@ type AppState = {
   isNewTabOpen: boolean;
   laneSnapshots: LaneListSnapshot[];
   lanes: LaneSummary[];
+  lanesLoading: boolean;
   selectedLaneId: string | null;
   focusedSessionId: string | null;
   projectRevision: number;
@@ -642,6 +643,7 @@ let warmupTimer: number | null = null;
  *  Slower responses whose token doesn't match the latest value are discarded. */
 let laneRefreshVersion = 0;
 let laneRefreshInFlight: Promise<void> | null = null;
+let activeLaneRefreshProjectKey: string | null = null;
 let activeLaneRefreshRequest: LaneRefreshRequest | null = null;
 let pendingLaneRefreshRequest: LaneRefreshRequest | null = null;
 
@@ -715,6 +717,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   isNewTabOpen: false,
   laneSnapshots: [],
   lanes: [],
+  lanesLoading: false,
   selectedLaneId: null,
   focusedSessionId: null,
   projectRevision: 0,
@@ -764,7 +767,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setProjectHydrated: (projectHydrated) => set({ projectHydrated }),
   setShowWelcome: (showWelcome) => set({ showWelcome }),
   clearProjectTransitionError: () => set({ projectTransitionError: null }),
-  setLanes: (lanes) => set({ lanes }),
+  setLanes: (lanes) => set({ lanes, lanesLoading: false }),
   selectLane: (laneId) => set({ selectedLaneId: laneId }),
   setLaneInspectorTab: (laneId, tab) =>
     set((prev) => ({
@@ -950,6 +953,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const request = normalizeLaneRefreshRequest(options);
     const runRefresh = async (currentRequest: LaneRefreshRequest) => {
       const requestedProjectKey = normalizeProjectKey(get().project?.rootPath);
+      activeLaneRefreshProjectKey = requestedProjectKey;
       const token = ++laneRefreshVersion;
       const laneSnapshots = currentRequest.includeStatus
         ? await window.ade.lanes.listSnapshots({
@@ -1003,6 +1007,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         return {
           laneSnapshots: nextSnapshots,
           lanes,
+          lanesLoading: false,
           selectedLaneId: nextSelected,
           laneInspectorTabs: nextTabs,
           laneWorkViewByScope: nextLaneWorkViews,
@@ -1010,10 +1015,15 @@ export const useAppStore = create<AppState>((set, get) => ({
       });
     };
 
+    set({ lanesLoading: true });
+
     if (laneRefreshInFlight) {
       const activeRequest = activeLaneRefreshRequest;
+      const activeProjectKey = activeLaneRefreshProjectKey;
+      const requestProjectKey = normalizeProjectKey(get().project?.rootPath);
       const activeSatisfies =
         activeRequest != null
+        && activeProjectKey === requestProjectKey
         && (activeRequest.includeStatus || !request.includeStatus)
         && (activeRequest.includeConflictStatus || !request.includeConflictStatus)
         && (activeRequest.includeRebaseSuggestions || !request.includeRebaseSuggestions)
@@ -1037,8 +1047,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     })().finally(() => {
       laneRefreshInFlight = null;
+      activeLaneRefreshProjectKey = null;
       activeLaneRefreshRequest = null;
       pendingLaneRefreshRequest = null;
+      set({ lanesLoading: false });
     });
 
     await laneRefreshInFlight;
@@ -1098,7 +1110,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const project = await window.ade.project.openRepo();
       if (!project) {
-        set({ projectTransition: null });
+        set({ projectTransition: null, lanesLoading: false });
         return null;
       }
       get().setProject(project);
@@ -1110,6 +1122,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         isNewTabOpen: false,
         laneSnapshots: [],
         lanes: [],
+        lanesLoading: true,
         selectedLaneId: null,
         focusedSessionId: null,
         laneInspectorTabs: {},
@@ -1129,6 +1142,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch (error) {
       set({
         projectTransition: null,
+        lanesLoading: false,
         projectTransitionError: formatProjectTransitionError("opening", error),
       });
       throw error;
@@ -1160,6 +1174,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         isNewTabOpen: false,
         laneSnapshots: [],
         lanes: [],
+        lanesLoading: true,
         selectedLaneId: null,
         focusedSessionId: null,
         laneInspectorTabs: {},
@@ -1205,6 +1220,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch (error) {
       set({
         projectTransition: null,
+        lanesLoading: false,
         projectTransitionError: formatProjectTransitionError("switching", error),
       });
       throw error;
@@ -1238,6 +1254,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         isNewTabOpen: false,
         laneSnapshots: [],
         lanes: [],
+        lanesLoading: true,
         selectedLaneId: null,
         focusedSessionId: null,
         laneInspectorTabs: {},
@@ -1249,6 +1266,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch (error) {
       set({
         projectTransition: null,
+        lanesLoading: false,
         projectTransitionError: formatProjectTransitionError("switching", error),
       });
       throw error;
@@ -1257,6 +1275,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   closeProject: async () => {
     const closingProjectRoot = get().project?.rootPath ?? null;
+    ++laneRefreshVersion;
     set({
       projectTransition: {
         kind: "closing",
@@ -1278,6 +1297,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         isNewTabOpen: false,
         laneSnapshots: [],
         lanes: [],
+        lanesLoading: false,
         selectedLaneId: null,
         focusedSessionId: null,
         laneInspectorTabs: {},
@@ -1290,6 +1310,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch (error) {
       set({
         projectTransition: null,
+        lanesLoading: false,
         projectTransitionError: formatProjectTransitionError("closing", error),
       });
       throw error;

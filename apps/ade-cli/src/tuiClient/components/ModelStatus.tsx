@@ -17,10 +17,10 @@ function ContextMeter({ percent, summary }: { percent: number; summary: string |
   const color = meterColor(percent);
   return (
     <Text>
-      <Text dimColor>{percent}% </Text>
-      <Text color={color}>{"█".repeat(filled)}</Text>
+      <Text color={color}>{"▓".repeat(filled)}</Text>
       <Text color={theme.color.border} dimColor>{"░".repeat(empty)}</Text>
-      {summary ? <Text dimColor>{` · ${summary}`}</Text> : null}
+      <Text dimColor>{` ${percent}%`}</Text>
+      {summary ? <Text dimColor>{`  ${summary}`}</Text> : null}
     </Text>
   );
 }

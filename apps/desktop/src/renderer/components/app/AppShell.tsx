@@ -296,10 +296,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const lastRouteSaveProjectRootRef = useRef<string | null | undefined>(undefined);
   const isOnboardingRoute = location.pathname === "/onboarding";
   const isLanesRoute = location.pathname.startsWith("/lanes");
+  const isLanesRouteRef = useRef(isLanesRoute);
   const shouldTrackTerminalAttention =
     Boolean(project?.rootPath) &&
     !showWelcome &&
     (location.pathname === "/work" || location.pathname === "/lanes");
+
+  useEffect(() => {
+    isLanesRouteRef.current = isLanesRoute;
+  }, [isLanesRoute]);
 
   useEffect(() => {
     logRendererDebugEvent("renderer.route_change", {
@@ -423,11 +428,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         laneRefreshTimer = window.setTimeout(() => {
           laneRefreshTimer = null;
           if (cancelled) return;
-          const includeDecoratedLaneSnapshots = isLanesRoute;
+          const includeDecoratedLaneSnapshots = isLanesRouteRef.current;
           void refreshLanes({
             includeStatus: includeDecoratedLaneSnapshots,
             includeConflictStatus: includeDecoratedLaneSnapshots,
-            includeRebaseSuggestions: isLanesRoute,
+            includeRebaseSuggestions: includeDecoratedLaneSnapshots,
             includeAutoRebaseStatus: includeDecoratedLaneSnapshots,
           });
         }, 1_200);
@@ -501,7 +506,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     refreshProviderMode,
     refreshKeybindings,
     setShowWelcome,
-    isLanesRoute,
   ]);
 
   useEffect(() => {
