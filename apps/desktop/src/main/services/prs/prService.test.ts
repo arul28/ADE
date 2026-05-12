@@ -553,6 +553,66 @@ describe("prService.getGithubSnapshot", () => {
     expect(repoCalls).toBe(2);
   });
 
+  it("keeps the existing open-only cache when a superseded refresh and full-history upgrade fail", async () => {
+    let resolveOpenRepo!: (value: unknown) => void;
+    const openRepoRequest = new Promise<unknown>((resolve) => {
+      resolveOpenRepo = resolve;
+    });
+    let rejectFullRepo!: (reason: unknown) => void;
+    const fullRepoRequest = new Promise<unknown>((_resolve, reject) => {
+      rejectFullRepo = reject;
+    });
+    let repoCalls = 0;
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => ({
+        tokenStored: true,
+        repo: REPO,
+        userLogin: "octocat",
+      })),
+      apiRequest: vi.fn(async (args: { path: string; query?: { q?: string } }) => {
+        if (args.path === `/repos/${REPO.owner}/${REPO.name}/pulls`) {
+          repoCalls += 1;
+          if (repoCalls === 1) return { data: [makeGitHubPull({ number: 1, title: "Cached open-only PR" })] };
+          if (repoCalls === 2) return openRepoRequest;
+          return fullRepoRequest;
+        }
+        return {
+          data: {
+            items: [
+              makeGitHubPull({
+                number: args.query?.q?.includes("is:open") ? 3 : 4,
+                title: args.query?.q?.includes("is:open") ? "Open external" : "Closed external",
+                pull_request: { url: "https://api.github.com/repos/elsewhere/project/pulls/4" },
+                repository_url: "https://api.github.com/repos/elsewhere/project",
+              }),
+            ],
+          },
+        };
+      }),
+    });
+    const { service } = buildService({ githubService, laneService: makeLaneService([]) });
+    const cached = await service.getGithubSnapshot({ force: true });
+    expect(cached.repoPullRequests[0]?.title).toBe("Cached open-only PR");
+
+    const openOnlyRefresh = service.getGithubSnapshot({ force: true });
+    await flushMicrotasks();
+    const fullHistory = service.getGithubSnapshot({ includeExternalClosed: true });
+    await flushMicrotasks();
+
+    resolveOpenRepo({ data: [makeGitHubPull({ number: 2, title: "Superseded open-only PR" })] });
+    await expect(openOnlyRefresh).resolves.toEqual(expect.objectContaining({
+      repoPullRequests: [expect.objectContaining({ title: "Superseded open-only PR" })],
+    }));
+    rejectFullRepo(new Error("full history failed"));
+    await expect(fullHistory).rejects.toThrow("full history failed");
+
+    const apiCallsAfterFailure = githubService.apiRequest.mock.calls.length;
+    const cachedOpenOnly = await service.getGithubSnapshot();
+    expect(cachedOpenOnly.repoPullRequests[0]?.title).toBe("Cached open-only PR");
+    expect(githubService.apiRequest).toHaveBeenCalledTimes(apiCallsAfterFailure);
+    expect(repoCalls).toBe(3);
+  });
+
   it("preserves full-history cache mode during stale open-only revalidation", async () => {
     const initialNow = Date.parse("2026-01-01T00:00:00Z");
     const nowSpy = vi.spyOn(Date, "now").mockReturnValue(initialNow);
@@ -970,6 +1030,60 @@ describe("prService merge contexts", () => {
       targetLaneId: targetLane.id,
       integrationLaneId: integrationLane.id,
     }));
+  });
+
+  it("chunks bulk merge-context lookups below SQLite's bind parameter limit", async () => {
+    const prIds = Array.from({ length: 1_005 }, (_value, index) => `pr-${index}`);
+    const rowsById = new Map(prIds.map((id, index) => [
+      id,
+      makePrRow({
+        id,
+        lane_id: `lane-${index}`,
+        github_pr_number: index + 1,
+        head_branch: `feature/${index}`,
+      }),
+    ] as const));
+    const paramCounts = {
+      pullRequests: [] as number[],
+      groupLookups: [] as number[],
+      memberLookups: [] as number[],
+    };
+    const db = makeMockDb();
+    db.all.mockImplementation((sql: string, params: unknown[] = []) => {
+      const text = String(sql);
+      if (text.includes("from pull_requests")) {
+        paramCounts.pullRequests.push(params.length);
+        return params.slice(1).map((id) => rowsById.get(String(id))).filter(Boolean);
+      }
+      if (text.includes("from pr_group_members") && text.includes("join pr_groups")) {
+        paramCounts.groupLookups.push(params.length);
+        return params.slice(1).map((id) => ({
+          pr_id: String(id),
+          group_id: `group-${String(id)}`,
+          group_type: "queue" as const,
+        }));
+      }
+      if (text.includes("from pr_group_members")) {
+        paramCounts.memberLookups.push(params.length);
+        return [];
+      }
+      return [];
+    });
+    const { service } = buildService({ db, laneService: makeLaneService([]) });
+
+    const contexts = await service.getMergeContexts(prIds);
+
+    expect(Object.keys(contexts)).toHaveLength(prIds.length);
+    expect(paramCounts.pullRequests).toHaveLength(2);
+    expect(paramCounts.groupLookups).toHaveLength(2);
+    expect(paramCounts.memberLookups).toHaveLength(2);
+    for (const count of [
+      ...paramCounts.pullRequests,
+      ...paramCounts.groupLookups,
+      ...paramCounts.memberLookups,
+    ]) {
+      expect(count).toBeLessThanOrEqual(902);
+    }
   });
 });
 

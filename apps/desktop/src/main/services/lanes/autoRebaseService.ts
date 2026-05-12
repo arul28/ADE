@@ -273,6 +273,7 @@ export function createAutoRebaseService(args: {
     // was deleted" from "parent missing from this slice" — skip the
     // missing-parent prune in that case.
     const hasAuthoritativeLaneSet = !options?.lanes;
+    const hasFreshLaneStatus = !options?.includeAll && !options?.lanes;
     const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
     const nowMs = Date.now();
 
@@ -290,7 +291,7 @@ export function createAutoRebaseService(args: {
           clearStatus(lane.id);
           continue;
         }
-      } else if (!options?.includeAll && lane.status.behind <= 0 && status.source !== "manual") {
+      } else if (hasFreshLaneStatus && lane.status.behind <= 0 && status.source !== "manual") {
         clearStatus(lane.id);
         continue;
       } else if (hasAuthoritativeLaneSet && status.parentLaneId && !laneById.has(status.parentLaneId)) {

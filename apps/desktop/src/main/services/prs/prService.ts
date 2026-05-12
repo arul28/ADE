@@ -177,6 +177,16 @@ type LanePrLookupRow = {
   archived_at: string | null;
 };
 
+const SQL_IN_CLAUSE_CHUNK_SIZE = 900;
+
+function chunkValues<T>(values: readonly T[], size = SQL_IN_CLAUSE_CHUNK_SIZE): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < values.length; index += size) {
+    chunks.push(values.slice(index, index + size));
+  }
+  return chunks;
+}
+
 function isActivePrState(state: string | null | undefined): boolean {
   return state === "open" || state === "draft";
 }
@@ -4129,27 +4139,34 @@ export function createPrService({
     if (uniquePrIds.length === 0) return {};
     const lanes = await laneService.list({ includeArchived: false, includeStatus: false });
     const { laneById, laneIdByBranch } = buildMergeContextLaneLookups(lanes);
-    const rowPlaceholders = uniquePrIds.map(() => "?").join(", ");
-    const rows = db.all<PullRequestRow>(
-      `select ${PR_COLUMNS}
-         from pull_requests
-        where project_id = ? and id in (${rowPlaceholders})`,
-      [projectId, ...uniquePrIds],
-    );
+    const rows: PullRequestRow[] = [];
+    for (const chunk of chunkValues(uniquePrIds)) {
+      const rowPlaceholders = chunk.map(() => "?").join(", ");
+      rows.push(...db.all<PullRequestRow>(
+        `select ${PR_COLUMNS}
+           from pull_requests
+          where project_id = ? and id in (${rowPlaceholders})`,
+        [projectId, ...chunk],
+      ));
+    }
     if (rows.length === 0) return {};
-    const groupRows = db.all<PrGroupLookupRow & { pr_id: string }>(
-      `
-        select
-          m.pr_id as pr_id,
-          g.id as group_id,
-          g.group_type as group_type
-        from pr_group_members m
-        join pr_groups g on g.id = m.group_id
-        where g.project_id = ? and m.pr_id in (${rowPlaceholders})
-        order by g.created_at desc
-      `,
-      [projectId, ...uniquePrIds],
-    );
+    const groupRows: Array<PrGroupLookupRow & { pr_id: string }> = [];
+    for (const chunk of chunkValues(uniquePrIds)) {
+      const rowPlaceholders = chunk.map(() => "?").join(", ");
+      groupRows.push(...db.all<PrGroupLookupRow & { pr_id: string }>(
+        `
+          select
+            m.pr_id as pr_id,
+            g.id as group_id,
+            g.group_type as group_type
+          from pr_group_members m
+          join pr_groups g on g.id = m.group_id
+          where g.project_id = ? and m.pr_id in (${rowPlaceholders})
+          order by g.created_at desc
+        `,
+        [projectId, ...chunk],
+      ));
+    }
     const groupByPrId = new Map<string, PrGroupLookupRow>();
     for (const group of groupRows) {
       if (!groupByPrId.has(group.pr_id)) {
@@ -4159,29 +4176,31 @@ export function createPrService({
     const groupIds = [...new Set(groupRows.map((group) => group.group_id))];
     const membersByGroupId = new Map<string, PrMergeContext["members"]>();
     if (groupIds.length > 0) {
-      const groupPlaceholders = groupIds.map(() => "?").join(", ");
-      const memberRows = db.all<PrGroupMemberLookupRow>(
-        `
-          select
-            m.group_id as group_id,
-            m.pr_id as pr_id,
-            m.lane_id as lane_id,
-            m.position as position,
-            m.role as role,
-            l.name as lane_name,
-            p.github_pr_number as pr_number
-          from pr_group_members m
-          left join lanes l on l.id = m.lane_id and l.project_id = ?
-          left join pull_requests p on p.id = m.pr_id and p.project_id = ?
-          where m.group_id in (${groupPlaceholders})
-          order by m.group_id asc, m.position asc
-        `,
-        [projectId, projectId, ...groupIds],
-      );
-      for (const member of memberRows) {
-        const members = membersByGroupId.get(member.group_id) ?? [];
-        members.push(mapMergeContextMember(member, laneById));
-        membersByGroupId.set(member.group_id, members);
+      for (const chunk of chunkValues(groupIds)) {
+        const groupPlaceholders = chunk.map(() => "?").join(", ");
+        const memberRows = db.all<PrGroupMemberLookupRow>(
+          `
+            select
+              m.group_id as group_id,
+              m.pr_id as pr_id,
+              m.lane_id as lane_id,
+              m.position as position,
+              m.role as role,
+              l.name as lane_name,
+              p.github_pr_number as pr_number
+            from pr_group_members m
+            left join lanes l on l.id = m.lane_id and l.project_id = ?
+            left join pull_requests p on p.id = m.pr_id and p.project_id = ?
+            where m.group_id in (${groupPlaceholders})
+            order by m.group_id asc, m.position asc
+          `,
+          [projectId, projectId, ...chunk],
+        );
+        for (const member of memberRows) {
+          const members = membersByGroupId.get(member.group_id) ?? [];
+          members.push(mapMergeContextMember(member, laneById));
+          membersByGroupId.set(member.group_id, members);
+        }
       }
     }
     const contexts: Record<string, PrMergeContext> = {};
@@ -5105,14 +5124,16 @@ export function createPrService({
             || (!requestIncludeExternalClosed && !cachedGithubSnapshotIncludesExternalClosed && !hasWiderRequestInFlight);
           if (canPublishSnapshot) {
             publishGithubSnapshot(snapshot, requestIncludeExternalClosed, capturedAt);
-          } else if (!requestIncludeExternalClosed && !cachedGithubSnapshotIncludesExternalClosed) {
+          } else if (!requestIncludeExternalClosed && cachedGithubSnapshot === null) {
             pendingOpenOnlySnapshot = { snapshot, capturedAt };
           }
           return snapshot;
         })
         .catch((error) => {
-          if (requestIncludeExternalClosed && pendingOpenOnlySnapshot && !cachedGithubSnapshotIncludesExternalClosed) {
-            publishGithubSnapshot(pendingOpenOnlySnapshot.snapshot, false, pendingOpenOnlySnapshot.capturedAt);
+          if (requestIncludeExternalClosed && pendingOpenOnlySnapshot) {
+            if (cachedGithubSnapshot === null) {
+              publishGithubSnapshot(pendingOpenOnlySnapshot.snapshot, false, pendingOpenOnlySnapshot.capturedAt);
+            }
             pendingOpenOnlySnapshot = null;
           }
           if (allowStaleOnError && staleFallback) {

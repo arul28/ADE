@@ -247,6 +247,32 @@ describe("autoRebaseService", () => {
     });
   });
 
+  describe("listStatuses — caller-supplied lanes", () => {
+    it("does not clear auto statuses from lanes whose git status may be a lightweight stub", async () => {
+      const service = createService();
+      laneList = [makeLane("lane-a", {
+        parentLaneId: "root",
+        status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
+      })];
+      db.setJson("auto_rebase:status:lane-a", {
+        laneId: "lane-a",
+        parentLaneId: "root",
+        parentHeadSha: "abc",
+        state: "rebasePending",
+        updatedAt: "2026-03-25T11:59:00.000Z",
+        conflictCount: 0,
+        message: null,
+        source: "auto",
+      });
+
+      const statuses = await service.listStatuses({ lanes: laneList });
+
+      expect(statuses).toHaveLength(1);
+      expect(db.getJson("auto_rebase:status:lane-a")).not.toBeNull();
+      expect(laneService.list).not.toHaveBeenCalled();
+    });
+  });
+
   // ---------------------------------------------------------------------------
   // Lanes without parent remain eligible for status display
   // ---------------------------------------------------------------------------
