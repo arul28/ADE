@@ -480,6 +480,7 @@ export const IPC = {
   adeCliInstallForUser: "ade.adeCli.installForUser",
   devToolsDetect: "ade.devTools.detect",
   githubGetStatus: "ade.github.getStatus",
+  githubGetRemoteStatus: "ade.github.getRemoteStatus",
   githubSetToken: "ade.github.setToken",
   githubClearToken: "ade.github.clearToken",
   githubStatusChanged: "ade.github.statusChanged",

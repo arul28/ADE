@@ -144,6 +144,7 @@ import type {
   GitStashRefArgs,
   GitStashSummary,
   GitSyncArgs,
+  GitHubRepoRef,
   GitHubStatus,
   CreatePrFromLaneArgs,
   CreateIntegrationPrArgs,
@@ -1769,9 +1770,11 @@ export function registerIpc({
     resolveSyncService
       ? (await resolveSyncService()) ?? null
       : getOptionalSyncService();
-  const localRuntimeDaemonDisabled = process.env.ADE_DISABLE_LOCAL_RUNTIME_DAEMON === "1";
+  const localRuntimeDaemonDisabled =
+    process.env.ADE_DISABLE_LOCAL_RUNTIME_DAEMON === "1";
   const allowLocalRuntimeFallback =
-    process.env.ADE_LOCAL_RUNTIME_FALLBACK === "1";
+    process.env.ADE_LOCAL_RUNTIME_FALLBACK === "1" ||
+    localRuntimeDaemonDisabled;
 
   const unavailableSyncSnapshotCreatedAt = new Date().toISOString();
   const unavailableSyncPlatform =
@@ -7793,6 +7796,11 @@ export function registerIpc({
   ipcMain.handle(IPC.githubGetStatus, async (_event, arg?: { forceRefresh?: boolean }): Promise<GitHubStatus> => {
     const ctx = getCtx();
     return await ctx.githubService.getStatus({ forceRefresh: Boolean(arg?.forceRefresh) });
+  });
+
+  ipcMain.handle(IPC.githubGetRemoteStatus, async (): Promise<{ repo: GitHubRepoRef | null; hasOrigin: boolean }> => {
+    const ctx = getCtx();
+    return await ctx.githubService.getRemoteStatus();
   });
 
   ipcMain.handle(IPC.githubSetToken, async (_event, arg: { token: string }): Promise<GitHubStatus> => {

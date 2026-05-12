@@ -897,4 +897,17 @@ describe("findJsonlFiles", () => {
 
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
+
+  it("skips oversized jsonl files before scanning costs", async () => {
+    const tmpDir = makeTmpDir();
+    const smallPath = path.join(tmpDir, "small.jsonl");
+    const bigPath = path.join(tmpDir, "large.jsonl");
+    fs.writeFileSync(smallPath, '{"test": true}\n');
+    fs.writeFileSync(bigPath, Buffer.alloc(9 * 1024 * 1024, "x"));
+
+    const files = await _testing.findJsonlFiles(tmpDir, 30);
+
+    expect(files).toEqual([smallPath]);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
 });

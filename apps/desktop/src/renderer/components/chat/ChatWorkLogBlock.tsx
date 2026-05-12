@@ -17,6 +17,7 @@ import { replaceInternalToolNames } from "./toolPresentation";
 import { openUrlInAdeBrowser } from "../../lib/openExternal";
 
 const NAVIGATION_SURFACES = new Set(["work", "missions", "lanes", "cto"]);
+const WORK_LOG_DETAIL_TRUNCATE_LIMIT = 500;
 
 function readOperatorNavigationSuggestion(value: unknown): OperatorNavigationSuggestion | null {
   const record = readRecord(value);
@@ -314,6 +315,7 @@ function ToolCallRow({
     [entry.result],
   );
   const [open, setOpen] = useState(entry.status === "failed" || navigationSuggestions.length > 0);
+  const [detailExpanded, setDetailExpanded] = useState(false);
 
   useEffect(() => {
     if (navigationSuggestions.length > 0) setOpen(true);
@@ -324,6 +326,10 @@ function ToolCallRow({
   const kindTone = workLogEntryKindToneClass(entry);
 
   const detailBody = useMemo(() => buildEntryDetail(entry), [entry]);
+  const detailIsTruncated = Boolean(detailBody && detailBody.length > WORK_LOG_DETAIL_TRUNCATE_LIMIT);
+  const visibleDetailBody = detailBody && detailIsTruncated && !detailExpanded
+    ? `${detailBody.slice(0, WORK_LOG_DETAIL_TRUNCATE_LIMIT)}...`
+    : detailBody;
 
   return (
     <div className="min-w-0 max-w-full overflow-hidden">
@@ -355,7 +361,20 @@ function ToolCallRow({
           ))}
         </div>
       ) : null}
-      {open && detailBody ? <FlatPre>{detailBody}</FlatPre> : null}
+      {open && visibleDetailBody ? (
+        <>
+          <FlatPre>{visibleDetailBody}</FlatPre>
+          {detailIsTruncated ? (
+            <button
+              type="button"
+              className="mt-1 ml-[18px] font-mono text-[length:calc(var(--chat-font-size)*10/14)] text-accent/60 hover:text-accent"
+              onClick={() => setDetailExpanded((current) => !current)}
+            >
+              {detailExpanded ? "collapse" : `show all (${detailBody!.length} chars)`}
+            </button>
+          ) : null}
+        </>
+      ) : null}
     </div>
   );
 }

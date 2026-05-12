@@ -315,6 +315,11 @@ function previewStatusLabel(capability: IosSimulatorPreviewCapability | null, ta
   return "Preview Lab ready";
 }
 
+function isLaunchTargetErrorMessage(message: string | null): boolean {
+  if (!message) return false;
+  return message.includes("ade.iosSimulator.listLaunchTargets") || /Project root .* does not exist/u.test(message);
+}
+
 function frameArea(element: IosScreenElement): number {
   return Math.max(1, element.pixelFrame.width) * Math.max(1, element.pixelFrame.height);
 }
@@ -1261,6 +1266,7 @@ export function ChatIosSimulatorPanel({
         ? current
         : nextTargets[0]?.id ?? null
     ));
+    setMessage((current) => (isLaunchTargetErrorMessage(current) ? null : current));
   }, [projectRoot]);
 
   const refreshPreviewLab = useCallback(async () => {

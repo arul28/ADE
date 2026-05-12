@@ -18,6 +18,8 @@ const STATUS_FILTER_OPTIONS: Array<{ value: WorkStatusFilter; label: string; des
   { value: "awaiting-input", label: "Awaiting", description: "Show sessions waiting for a response or approval." },
   { value: "ended", label: "Ended", description: "Show sessions that have finished." },
 ];
+const FILTER_OPTION_GRID_CLASS = "grid min-w-0 flex-1 gap-0.5 [grid-template-columns:repeat(auto-fit,minmax(2.4rem,1fr))]";
+const FILTER_OPTION_BUTTON_CLASS = "ade-chat-drawer-row min-w-0 truncate rounded-md px-1.5 py-1 text-center text-[10px] font-medium";
 
 function bucketByTime(sessions: TerminalSessionSummary[]) {
   const now = new Date();
@@ -632,9 +634,9 @@ export const SessionListPane = React.memo(function SessionListPane({
         {/* Expandable filter panel */}
         {filterOpen ? (
           <div className="ade-chat-drawer-glass space-y-1.5 p-2">
-            <div className="flex items-center gap-1">
-              <span className="text-[9px] font-medium text-muted-fg/50 uppercase tracking-wider shrink-0 w-10">Status</span>
-              <div className="flex items-center gap-0.5 flex-1">
+            <div className="flex items-start gap-1">
+              <span className="w-10 shrink-0 pt-1.5 text-[9px] font-medium uppercase tracking-wider text-muted-fg/50">Status</span>
+              <div className={FILTER_OPTION_GRID_CLASS}>
                 {STATUS_FILTER_OPTIONS.map((opt) => (
                   <SmartTooltip
                     key={opt.value}
@@ -642,7 +644,7 @@ export const SessionListPane = React.memo(function SessionListPane({
                   >
                     <button
                       type="button"
-                      className="ade-chat-drawer-row flex-1 rounded-md px-2 py-1 text-[10px] font-medium"
+                      className={FILTER_OPTION_BUTTON_CLASS}
                       data-active={filterStatus === opt.value ? "true" : undefined}
                       style={{
                         color: filterStatus === opt.value ? "var(--color-fg)" : "var(--color-muted-fg)",
@@ -655,9 +657,9 @@ export const SessionListPane = React.memo(function SessionListPane({
                 ))}
               </div>
             </div>
-            <div className="flex items-center gap-1">
-              <span className="text-[9px] font-medium text-muted-fg/50 uppercase tracking-wider shrink-0 w-10">Group</span>
-              <div className="flex items-center gap-0.5 flex-1">
+            <div className="flex items-start gap-1">
+              <span className="w-10 shrink-0 pt-1.5 text-[9px] font-medium uppercase tracking-wider text-muted-fg/50">Group</span>
+              <div className={FILTER_OPTION_GRID_CLASS}>
                 {([
                   { key: "by-lane" as const, label: "Lane" },
                   { key: "all-lanes-by-status" as const, label: "Status" },
@@ -677,7 +679,7 @@ export const SessionListPane = React.memo(function SessionListPane({
                   >
                     <button
                       type="button"
-                      className="ade-chat-drawer-row flex-1 rounded-md px-2 py-1 text-[10px] font-medium"
+                      className={FILTER_OPTION_BUTTON_CLASS}
                       data-active={sessionListOrganization === opt.key ? "true" : undefined}
                       style={{
                         color: sessionListOrganization === opt.key ? "var(--color-fg)" : "var(--color-muted-fg)",
@@ -690,14 +692,15 @@ export const SessionListPane = React.memo(function SessionListPane({
                 ))}
               </div>
             </div>
-            <div className="flex items-center gap-1">
-              <span className="text-[9px] font-medium text-muted-fg/50 uppercase tracking-wider shrink-0 w-10">Lane</span>
-              <div className="flex-1">
+            <div className="flex items-start gap-1">
+              <span className="w-10 shrink-0 pt-1.5 text-[9px] font-medium uppercase tracking-wider text-muted-fg/50">Lane</span>
+              <div className="min-w-0 flex-1">
                 <LaneCombobox
                   lanes={orderedLanes}
                   value={filterLaneId}
                   onChange={setFilterLaneId}
                   showAllOption
+                  fullWidth
                 />
               </div>
             </div>

@@ -490,7 +490,8 @@ Most services described here live under `apps/desktop/src/main/services/<domain>
 | `notifications/` | `apnsService.ts`, `notificationMapper.ts`, `notificationEventBus.ts` | APNs HTTP/2 client (ES256 JWT, encrypted `.p8`), pure domain-event → `MappedNotification` mapping (13 categories / 4 families), event bus routing to APNs alert pushes + Live Activity update pushes + in-app WS delivery, filtered by per-device `NotificationPreferences`. |
 | `tests/` | `testService.ts` | Test-suite execution + run history. |
 | `updates/` | `autoUpdateService.ts` | Electron auto-update wrapper around `electron-updater`. Owns the renderer-visible `AutoUpdateSnapshot` (`idle | checking | downloading | ready | installing | error`), uses `compareUpdateVersions` (SemVer-aware) to dedupe / supersede staged installers and to reconcile `pendingInstallUpdate` against the running version on next boot. `quitAndInstall()` is async: it re-runs `checkForUpdates({ allowReady: true })` to confirm the staged build is still latest, and only then flips to `installing` and calls `updater.quitAndInstall(false, true)`. |
-| `usage/` | `usageTrackingService.ts`, `budgetCapService.ts` | Token/cost accounting, budget enforcement. |
+| `usage/` | `usageTrackingService.ts`, `budgetCapService.ts` | Token/cost accounting, budget enforcement. Local cost scans stream bounded recent Claude/Codex JSONL files instead of loading the whole history into memory. |
+| `perf/` | `perfLog.ts`, `perfIpc.ts`, `metricsSampler.ts`, `aggregator.ts` | Opt-in local performance harness. `ADE_PERF_RUN_ID` opens a JSONL event log, samples Electron process metrics, records IPC durations, accepts renderer perf marks/web-vitals, and aggregates each run into `summary.json`. |
 
 Startup sequencing: every background service goes through `scheduleBackgroundProjectTask()` in `main.ts`, which provides explicit labels, `ADE_ENABLE_*` env gates, `project.startup_task_begin`/`_done`/`_enabled`/`_skipped` telemetry, and per-task delays. Integrations stay **dormant-until-configured**.
 
@@ -1026,6 +1027,7 @@ Post-packaging hardening (`apps/desktop/scripts/`):
 - **Renderer lifecycle** — `renderer.route_change`, `renderer.tab_change`, `renderer.window_error`, `renderer.unhandled_rejection`, `renderer.event_loop_stall`. Mandatory for new surfaces that introduce novel lifecycle transitions.
 - **Startup tasks** — `project.startup_task_enabled`, `project.startup_task_skipped`, `project.startup_task_begin`, `project.startup_task_done` with durations.
 - **Usage tracking** — `usageTrackingService.ts` + `budgetCapService.ts` account for tokens and cost per provider/model/call-type; surfaced in Missions UI and the top-bar Usage popup (`HeaderUsageControl` → `UsageQuotaPanel` + collapsible `BudgetCapEditor`).
+- **Local perf runs** — `scripts/perf-launch.mjs` / `scripts/run-perf-scenario.mjs` launch ADE with a run id, feed renderer scenarios, and collect JSONL events plus `summary.json` under `~/.ade/perf-runs/<runId>/`. This is local-only diagnostics, not external telemetry.
 - **No external telemetry** — ADE does not ship analytics to any cloud service. All telemetry is local.
 
 ### 15.3 Error surfaces
