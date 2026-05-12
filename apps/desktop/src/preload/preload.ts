@@ -779,8 +779,10 @@ function createShortIpcCache<T>(
 
       const req = loader()
         .then((next) => {
-          value = next;
-          expiresAt = Date.now() + ttlMs;
+          if (promise === req) {
+            value = next;
+            expiresAt = Date.now() + ttlMs;
+          }
           return next;
         })
         .finally(() => {
@@ -2460,10 +2462,10 @@ contextBridge.exposeInMainWorld("ade", {
     ): void => ipcRenderer.send(IPC.appLogDebugEvent, { event, payload }),
   },
   project: {
-    openRepo: async (): Promise<ProjectInfo | null> =>
+    openRepo: async (args?: { rootPath?: string }): Promise<ProjectInfo | null> =>
       clearAround(
         () => clearProjectScopedReadCaches(),
-        () => ipcRenderer.invoke(IPC.projectOpenRepo),
+        () => ipcRenderer.invoke(IPC.projectOpenRepo, args ?? {}),
       ),
     chooseDirectory: async (
       args: { title?: string; defaultPath?: string } = {},

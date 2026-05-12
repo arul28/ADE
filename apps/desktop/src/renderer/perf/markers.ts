@@ -44,11 +44,19 @@ export function perfMeasure(name: string, startMark: string, endMark?: string): 
   }
 }
 
+let memorySamplingUnavailableLogged = false;
+
 const memoryReader = () => {
   const perf = performance as Performance & {
     memory?: { usedJSHeapSize?: number; totalJSHeapSize?: number };
   };
-  if (!perf.memory) return null;
+  if (!perf.memory) {
+    if (!memorySamplingUnavailableLogged) {
+      memorySamplingUnavailableLogged = true;
+      console.warn("[perf] performance.memory unavailable; renderer memory samples disabled");
+    }
+    return null;
+  }
   return {
     usedMB: Math.round((perf.memory.usedJSHeapSize ?? 0) / 1024 / 1024),
     totalMB: Math.round((perf.memory.totalJSHeapSize ?? 0) / 1024 / 1024),

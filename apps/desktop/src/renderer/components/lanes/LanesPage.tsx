@@ -2231,7 +2231,7 @@ export function LanesPage() {
   /* ---- Render ---- */
 
   return (
-    <div className="flex h-full min-w-0 flex-col" style={{ background: COLORS.pageBg }}>
+    <div data-route="lanes" className="flex h-full min-w-0 flex-col" style={{ background: COLORS.pageBg }}>
       {/* Header bar */}
       <div style={{ padding: "0 24px", height: 64, display: "flex", alignItems: "center", gap: 24, background: COLORS.cardBg, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderBottom: `1px solid ${COLORS.border}`, position: "relative", zIndex: 50, overflow: "visible" }}>
         {/* Numbered title group */}

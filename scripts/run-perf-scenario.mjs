@@ -12,7 +12,8 @@
  *   scripts/run-perf-scenario.mjs lanes.stress-poll my-baseline
  */
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, rmSync, mkdirSync, mkdtempSync } from "node:fs";
+import { existsSync, readFileSync, mkdirSync, mkdtempSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -29,22 +30,35 @@ if (!scenarioId) {
   console.error("Usage: run-perf-scenario.mjs <scenarioId> [runId] [--no-project] [--route=/path]");
   process.exit(2);
 }
-const runId = positional[1] ?? `run-${Date.now()}`;
+
+function sanitizeRunId(value) {
+  return String(value)
+    .trim()
+    .replace(/[^A-Za-z0-9._-]/g, "_")
+    .replace(/^\.+/, "")
+    .slice(0, 120);
+}
+
+const runId = sanitizeRunId(positional[1] ?? `run-${Date.now()}`);
+if (!runId) {
+  console.error("Usage: run id must contain at least one safe filename character");
+  process.exit(2);
+}
 const dir = join(homedir(), ".ade", "perf-runs", runId);
 const summaryPath = join(dir, "summary.json");
 const timeoutMs = Number(process.env.ADE_PERF_TIMEOUT_MS ?? 300_000);
 
 mkdirSync(dir, { recursive: true });
-if (existsSync(summaryPath)) rmSync(summaryPath);
+if (existsSync(summaryPath)) {
+  await rm(summaryPath, { force: true });
+}
 
 console.log(`[perf] scenario=${scenarioId} runId=${runId}`);
 console.log(`[perf] events → ${join(dir, "events.jsonl")}`);
 console.log(`[perf] summary → ${summaryPath}`);
 
-const defaultPerfPass = "/Users/admin/Projects/perf pass";
-const perfPassDir = noProject
-  ? mkdtempSync(join(tmpdir(), "ade-perf-no-project-"))
-  : (process.env.ADE_PERF_PASS_DIR ?? defaultPerfPass);
+const tempPerfPassDir = noProject ? mkdtempSync(join(tmpdir(), "ade-perf-no-project-")) : null;
+const perfPassDir = tempPerfPassDir ?? process.env.ADE_PERF_PASS_DIR ?? join(homedir(), "Projects", "perf pass");
 
 const env = {
   ...process.env,
@@ -67,23 +81,58 @@ const child = spawn(
   }
 );
 
+const waitForChildExit = (timeoutMs) => {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), timeoutMs);
+    child.once("exit", () => {
+      clearTimeout(timer);
+      resolve(true);
+    });
+  });
+};
+
+const cleanupTempPerfPassDir = async () => {
+  if (!tempPerfPassDir) return;
+  await rm(tempPerfPassDir, { recursive: true, force: true }).catch(() => {});
+};
+
+let cleaningUp = false;
 const deadline = Date.now() + timeoutMs;
-const cleanup = (code) => {
+const cleanup = async (code) => {
+  if (cleaningUp) return;
+  cleaningUp = true;
   try {
-    if (!child.killed) {
+    if (child.exitCode === null && child.signalCode === null) {
       child.kill("SIGTERM");
-      setTimeout(() => {
-        if (!child.killed) child.kill("SIGKILL");
-      }, 5_000).unref();
+      const exited = await waitForChildExit(5_000);
+      if (!exited && child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGKILL");
+        await waitForChildExit(1_000);
+      }
     }
   } catch {
     // ignore
   }
+  await cleanupTempPerfPassDir();
   process.exit(code);
 };
 
-process.on("SIGINT", () => cleanup(130));
-process.on("SIGTERM", () => cleanup(143));
+process.on("SIGINT", () => { void cleanup(130); });
+process.on("SIGTERM", () => { void cleanup(143); });
+process.on("uncaughtException", (err) => {
+  console.error(`[perf] uncaught error: ${err instanceof Error ? err.message : String(err)}`);
+  void cleanup(1);
+});
+process.on("unhandledRejection", (err) => {
+  console.error(`[perf] unhandled rejection: ${err instanceof Error ? err.message : String(err)}`);
+  void cleanup(1);
+});
+child.on("exit", (code) => {
+  if (!cleaningUp) {
+    void cleanupTempPerfPassDir().finally(() => process.exit(code ?? 1));
+  }
+});
 
 (async function pollForSummary() {
   while (Date.now() < deadline) {
@@ -93,16 +142,16 @@ process.on("SIGTERM", () => cleanup(143));
         const summary = JSON.parse(text);
         console.log("\n[perf] summary:");
         console.log(JSON.stringify(summary, null, 2));
-        cleanup(0);
+        await cleanup(0);
         return;
       } catch (err) {
         console.error(`[perf] failed to parse summary: ${err.message}`);
-        cleanup(1);
+        await cleanup(1);
         return;
       }
     }
     await new Promise((r) => setTimeout(r, 1_000));
   }
   console.error(`[perf] timed out waiting for ${summaryPath}`);
-  cleanup(1);
+  await cleanup(1);
 })();

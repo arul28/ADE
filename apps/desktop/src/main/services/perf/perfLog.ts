@@ -35,7 +35,13 @@ let active: PerfRunConfig | null = null;
 
 function readEnvRunId(): string | null {
   const raw = process.env.ADE_PERF_RUN_ID;
-  return raw && raw.length > 0 ? raw : null;
+  if (!raw || raw.length === 0) return null;
+  const sanitized = raw
+    .trim()
+    .replace(/[^A-Za-z0-9._-]/g, "_")
+    .replace(/^\.+/, "")
+    .slice(0, 120);
+  return sanitized.length > 0 ? sanitized : null;
 }
 
 function readEnvScenario(): string | null {

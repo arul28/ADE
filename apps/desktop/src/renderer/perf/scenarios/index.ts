@@ -107,17 +107,31 @@ async function loadScenarioModule(scenarioId: string): Promise<void> {
   }
 }
 
+async function finalizePerfRun(): Promise<void> {
+  try {
+    await window.ade?.perf?.finalize();
+  } catch {
+    // ignore
+  }
+}
+
 export async function runScenario(scenarioId: string): Promise<void> {
   await loadScenarioModule(scenarioId);
 
   const scenario = getScenario(scenarioId);
   if (!scenario) {
-    window.ade?.perf?.recordEvent({
+    await window.ade?.perf?.recordEvent({
       kind: "note",
       ts: Date.now(),
       note: "scenarioNotFound",
       scenario: scenarioId,
     });
+    await window.ade?.perf?.scenarioComplete({
+      scenario: scenarioId,
+      ok: false,
+      smokeFailures: ["scenario not found"],
+    });
+    await finalizePerfRun();
     return;
   }
 
@@ -128,6 +142,7 @@ export async function runScenario(scenarioId: string): Promise<void> {
       ok: false,
       smokeFailures: ["requiresClaude but ADE_PERF_ALLOW_CLAUDE not set"],
     });
+    await finalizePerfRun();
     return;
   }
 
@@ -156,9 +171,5 @@ export async function runScenario(scenarioId: string): Promise<void> {
   });
 
   // Auto-finalize so the harness script can detect summary.json appearing.
-  try {
-    await window.ade?.perf?.finalize();
-  } catch {
-    // ignore
-  }
+  await finalizePerfRun();
 }

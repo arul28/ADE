@@ -332,10 +332,33 @@ function BrowserHashRouteBridge() {
   const navigate = useNavigate();
 
   React.useEffect(() => {
+    const normalizeHashRoute = (hash: string): string | null => {
+      if (!hash.startsWith("#/")) return null;
+      try {
+        const raw = hash.slice(1);
+        if (!raw.startsWith("/") || raw.startsWith("//") || raw.includes("\0")) return null;
+        const queryIndex = raw.indexOf("?");
+        const fragmentIndex = raw.indexOf("#");
+        const suffixIndex = [queryIndex, fragmentIndex].filter((index) => index >= 0).sort((a, b) => a - b)[0] ?? raw.length;
+        const pathname = raw.slice(0, suffixIndex);
+        const suffix = raw.slice(suffixIndex);
+        const segments = pathname.split("/").filter(Boolean);
+        if (segments.some((segment) => {
+          const decoded = decodeURIComponent(segment);
+          return decoded === "." || decoded === "..";
+        })) {
+          return null;
+        }
+        return `/${segments.join("/")}${suffix}`;
+      } catch {
+        return null;
+      }
+    };
+
     const syncHashRoute = () => {
-      const hash = window.location.hash;
-      if (!hash.startsWith("#/")) return;
-      navigate(hash.slice(1), { replace: true });
+      const route = normalizeHashRoute(window.location.hash);
+      if (!route) return;
+      navigate(route, { replace: true });
     };
     syncHashRoute();
     window.addEventListener("hashchange", syncHashRoute);

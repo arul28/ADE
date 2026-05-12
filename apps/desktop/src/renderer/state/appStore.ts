@@ -517,7 +517,7 @@ function normalizeTerminalPreferences(value: unknown): TerminalPreferences {
 /** Session-scoped banner dismissals keyed by project root. Not persisted — "dismiss for this session" only. */
 export type SessionDismissMap = Record<string, true>;
 
-type AppState = {
+export type AppState = {
   project: ProjectInfo | null;
   projectBinding: OpenProjectBinding | null;
   projectHydrated: boolean;

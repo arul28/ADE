@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { closeSync, existsSync, openSync, readSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -104,32 +104,46 @@ function percentile(sorted: number[], p: number): number {
   return sorted[idx]!;
 }
 
-function readEvents(path: string): Event[] {
-  if (!existsSync(path)) return [];
-  const text = readFileSync(path, "utf8");
-  const out: Event[] = [];
-  for (const line of text.split("\n")) {
-    if (!line.trim()) continue;
+function visitJsonlEvents(path: string, visit: (event: Event) => void): number {
+  if (!existsSync(path)) return 0;
+  const fd = openSync(path, "r");
+  const buffer = Buffer.allocUnsafe(64 * 1024);
+  let pending = "";
+  let count = 0;
+
+  const parseLine = (line: string) => {
+    if (!line.trim()) return;
     try {
-      out.push(JSON.parse(line) as Event);
+      visit(JSON.parse(line) as Event);
+      count += 1;
     } catch {
       // skip malformed line
     }
+  };
+
+  try {
+    while (true) {
+      const bytesRead = readSync(fd, buffer, 0, buffer.length, null);
+      if (bytesRead === 0) break;
+      pending += buffer.toString("utf8", 0, bytesRead);
+      let newlineIndex = pending.indexOf("\n");
+      while (newlineIndex >= 0) {
+        parseLine(pending.slice(0, newlineIndex));
+        pending = pending.slice(newlineIndex + 1);
+        newlineIndex = pending.indexOf("\n");
+      }
+    }
+    parseLine(pending);
+  } finally {
+    closeSync(fd);
   }
-  return out;
+
+  return count;
 }
 
 export function aggregate(runId: string): Summary {
   const dir = join(homedir(), ".ade", "perf-runs", runId);
   const eventsPath = join(dir, "events.jsonl");
-  const events = readEvents(eventsPath);
-
-  if (events.length === 0) {
-    throw new Error(`No events found at ${eventsPath}`);
-  }
-
-  const startedAt = events[0]!.ts;
-  const endedAt = events[events.length - 1]!.ts;
 
   // Group scenarios.
   type ScenarioState = {
@@ -148,7 +162,13 @@ export function aggregate(runId: string): Summary {
   const ipcCalls: IpcSample[] = [];
   const measures: MeasureSample[] = [];
 
-  for (const ev of events) {
+  let startedAt = Number.POSITIVE_INFINITY;
+  let endedAt = Number.NEGATIVE_INFINITY;
+  const eventCount = visitJsonlEvents(eventsPath, (ev) => {
+    if (Number.isFinite(ev.ts)) {
+      startedAt = Math.min(startedAt, ev.ts);
+      endedAt = Math.max(endedAt, ev.ts);
+    }
     switch (ev.kind) {
       case "scenarioStart": {
         const name = String(ev.scenario ?? "unknown");
@@ -221,6 +241,10 @@ export function aggregate(runId: string): Summary {
       default:
         break;
     }
+  });
+
+  if (eventCount === 0 || !Number.isFinite(startedAt) || !Number.isFinite(endedAt)) {
+    throw new Error(`No events found at ${eventsPath}`);
   }
 
   // IPC per-channel stats.

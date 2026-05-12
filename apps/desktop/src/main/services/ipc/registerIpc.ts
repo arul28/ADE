@@ -1807,7 +1807,6 @@ export function registerIpc({
     process.env.ADE_LOCAL_RUNTIME_FALLBACK === "1" ||
     localRuntimeDaemonDisabled;
 
-  const unavailableSyncSnapshotCreatedAt = new Date().toISOString();
   const unavailableSyncPlatform =
     process.platform === "darwin"
       ? "macOS"
@@ -1816,66 +1815,73 @@ export function registerIpc({
         : process.platform === "linux"
           ? "linux"
           : "unknown";
-  const unavailableSyncDevice: SyncDeviceRecord = {
-    deviceId: "local-runtime-disabled",
-    siteId: "local-runtime-disabled",
-    name: "Local desktop",
-    platform: unavailableSyncPlatform,
-    deviceType: "desktop",
-    createdAt: unavailableSyncSnapshotCreatedAt,
-    updatedAt: unavailableSyncSnapshotCreatedAt,
-    lastSeenAt: unavailableSyncSnapshotCreatedAt,
-    lastHost: null,
-    lastPort: null,
-    tailscaleIp: null,
-    ipAddresses: [],
-    metadata: { unavailableReason: "local_runtime_daemon_disabled" },
+  const buildUnavailableSyncSnapshot = (): SyncRoleSnapshot => {
+    const now = new Date().toISOString();
+    const unavailableSyncDevice: SyncDeviceRecord = {
+      deviceId: "local-runtime-disabled",
+      siteId: "local-runtime-disabled",
+      name: "Local desktop",
+      platform: unavailableSyncPlatform,
+      deviceType: "desktop",
+      createdAt: now,
+      updatedAt: now,
+      lastSeenAt: now,
+      lastHost: null,
+      lastPort: null,
+      tailscaleIp: null,
+      ipAddresses: [],
+      metadata: { unavailableReason: "local_runtime_daemon_disabled" },
+    };
+    const unavailableMessage = "Sync service unavailable in local runtime disabled mode.";
+    return {
+      mode: "standalone",
+      role: "brain",
+      localDevice: unavailableSyncDevice,
+      currentBrain: unavailableSyncDevice,
+      clusterState: null,
+      bootstrapToken: null,
+      pairingPin: null,
+      pairingPinConfigured: false,
+      pairingConnectInfo: null,
+      connectedPeers: [],
+      tailnetDiscovery: {
+        state: "disabled",
+        serviceName: "ade-sync",
+        servicePort: 0,
+        target: null,
+        updatedAt: now,
+        error: unavailableMessage,
+        stderr: null,
+      },
+      client: {
+        state: "disconnected",
+        host: null,
+        port: null,
+        connectedAt: null,
+        lastSeenAt: null,
+        latencyMs: null,
+        syncLag: null,
+        lastRemoteDbVersion: 0,
+        brainDeviceId: unavailableSyncDevice.deviceId,
+        hostName: unavailableSyncDevice.name,
+        error: unavailableMessage,
+        message: unavailableMessage,
+        savedDraft: null,
+      },
+      transferReadiness: {
+        ready: false,
+        blockers: [{
+          kind: "managed_process",
+          id: "local-runtime-disabled",
+          label: "Sync unavailable",
+          detail: unavailableMessage,
+        }],
+        survivableState: [],
+      },
+      survivableStateText: "",
+      blockingStateText: unavailableMessage,
+    };
   };
-  const unavailableSyncSnapshot: SyncRoleSnapshot = {
-    mode: "standalone",
-    role: "brain",
-    localDevice: unavailableSyncDevice,
-    currentBrain: unavailableSyncDevice,
-    clusterState: null,
-    bootstrapToken: null,
-    pairingPin: null,
-    pairingPinConfigured: false,
-    pairingConnectInfo: null,
-    connectedPeers: [],
-    tailnetDiscovery: {
-      state: "disabled",
-      serviceName: "ade-sync",
-      servicePort: 0,
-      target: null,
-      updatedAt: null,
-      error: null,
-      stderr: null,
-    },
-    client: {
-      state: "disconnected",
-      host: null,
-      port: null,
-      connectedAt: null,
-      lastSeenAt: null,
-      latencyMs: null,
-      syncLag: null,
-      lastRemoteDbVersion: 0,
-      brainDeviceId: unavailableSyncDevice.deviceId,
-      hostName: unavailableSyncDevice.name,
-      error: null,
-      message: "Sync service unavailable in local runtime disabled mode.",
-      savedDraft: null,
-    },
-    transferReadiness: {
-      ready: true,
-      blockers: [],
-      survivableState: [],
-    },
-    survivableStateText: "Sync service unavailable in local runtime disabled mode.",
-    blockingStateText: "",
-  };
-
-  const buildUnavailableSyncSnapshot = (): SyncRoleSnapshot => unavailableSyncSnapshot;
 
   const requireSyncService = async (): Promise<ReturnType<typeof createSyncService>> => {
     const service = await resolveOptionalSyncService();
@@ -1968,7 +1974,7 @@ export function registerIpc({
     }
   };
 
-  const traceIpcInvokes = !app.isPackaged || process.env.ADE_TRACE_IPC === "1" || process.env.ADE_TRACE_IPC === "verbose";
+  const traceIpcInvokes = isPerfRunActive() || !app.isPackaged || process.env.ADE_TRACE_IPC === "1" || process.env.ADE_TRACE_IPC === "verbose";
   const traceEveryIpcInvoke = process.env.ADE_TRACE_IPC === "verbose";
   let ipcInvokeSeq = 0;
 
@@ -2150,14 +2156,18 @@ export function registerIpc({
     failed: boolean;
   }) => {
     if (isPerfRunActive()) {
-      perfAppend({
-        ts: Date.now(),
-        kind: "ipcInvoke",
-        channel: input.channel,
-        winId: input.winId,
-        durationMs: input.durationMs,
-        failed: input.failed,
-      });
+      try {
+        perfAppend({
+          ts: Date.now(),
+          kind: "ipcInvoke",
+          channel: input.channel,
+          winId: input.winId,
+          durationMs: input.durationMs,
+          failed: input.failed,
+        });
+      } catch {
+        // Perf telemetry is best-effort and must not change IPC behavior.
+      }
     }
     const key = `${input.winId ?? "none"}:${input.channel}`;
     const existing = ipcInvokeAggregates.get(key) ?? {
@@ -3633,7 +3643,11 @@ export function registerIpc({
     };
   });
 
-  ipcMain.handle(IPC.projectOpenRepo, async (event): Promise<ProjectInfo | null> => {
+  ipcMain.handle(IPC.projectOpenRepo, async (event, args: { rootPath?: string } = {}): Promise<ProjectInfo | null> => {
+    const requestedRoot = args.rootPath?.trim();
+    if (requestedRoot) {
+      return await switchProjectFromDialog(requestedRoot);
+    }
     const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
     const options: Electron.OpenDialogOptions = {
       title: "Open repository",

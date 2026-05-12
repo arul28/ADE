@@ -303,6 +303,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [feedbackGenerating, setFeedbackGenerating] = useState(false);
   const previousProjectRootRef = useRef<string | null | undefined>(undefined);
   const lastRouteSaveProjectRootRef = useRef<string | null | undefined>(undefined);
+  const githubStatusProjectRootRef = useRef<string | null>(null);
   const isOnboardingRoute = location.pathname === "/onboarding";
   const isLanesRoute = location.pathname.startsWith("/lanes");
   const shouldTrackTerminalAttention =
@@ -793,8 +794,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     let cancelled = false;
     if (!currentProjectRoot) {
+      githubStatusProjectRootRef.current = null;
       setGithubStatus(null);
       return;
+    }
+    if (githubStatusProjectRootRef.current !== currentProjectRoot) {
+      githubStatusProjectRootRef.current = currentProjectRoot;
+      setGithubStatus(null);
     }
     const githubTimer = window.setTimeout(() => {
       void window.ade.github.getStatus().then((status) => {

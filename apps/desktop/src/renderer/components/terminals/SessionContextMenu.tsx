@@ -86,7 +86,7 @@ export function SessionContextMenu({
       }
       return { sourceX: x, sourceY: y, left, top };
     });
-  }, [menu, renaming]);
+  }, [menu]);
 
   if (!menu) return null;
 

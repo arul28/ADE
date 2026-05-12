@@ -788,7 +788,7 @@ declare global {
         ) => void;
       };
       project: {
-        openRepo: () => Promise<ProjectInfo | null>;
+        openRepo: (args?: { rootPath?: string }) => Promise<ProjectInfo | null>;
         chooseDirectory: (args?: {
           title?: string;
           defaultPath?: string;
@@ -2405,6 +2405,7 @@ declare global {
           runId: string | null;
           scenario: string | null;
           initialRoute: string | null;
+          projectRoot: string | null;
           allowClaude: boolean;
           modelOverride: string | null;
         }>;

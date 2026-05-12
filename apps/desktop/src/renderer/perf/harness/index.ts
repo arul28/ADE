@@ -34,7 +34,17 @@ export async function initPerfRuntime(): Promise<void> {
 
   // Defer scenario kick-off until after first paint so we measure realistic cold flows.
   const start = () => {
-    setTimeout(() => runScenario(cfg.scenario as string), 1500);
+    setTimeout(() => {
+      void runScenario(cfg.scenario as string).catch((error) => {
+        window.ade?.perf?.recordEvent({
+          kind: "note",
+          ts: Date.now(),
+          note: "scenarioRunnerFailed",
+          scenario: cfg.scenario,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }, 1500);
   };
   if (document.readyState === "complete") {
     start();

@@ -194,10 +194,12 @@ describe("ChatBuiltInBrowserPanel", () => {
       capturedAt: "2026-05-12T00:00:00.000Z",
     });
 
-    render(<ChatBuiltInBrowserPanel sessionId="chat-1" onAddContext={vi.fn()} />);
+    const onAddContext = vi.fn();
+    render(<ChatBuiltInBrowserPanel sessionId="chat-1" onAddContext={onAddContext} />);
 
     fireEvent.click(await screen.findByText("Screenshot"));
 
+    await waitFor(() => expect(api.captureScreenshot).toHaveBeenCalled());
     expect(await screen.findByText("Drag a browser region to attach the screenshot crop and nearby page context.")).toBeTruthy();
     expect(screen.getByText("Cancel screenshot")).toBeTruthy();
 
@@ -205,6 +207,7 @@ describe("ChatBuiltInBrowserPanel", () => {
 
     expect(await screen.findByText("Browser screenshot capture cancelled.")).toBeTruthy();
     expect(screen.getByText("Screenshot")).toBeTruthy();
+    expect(onAddContext).not.toHaveBeenCalled();
   });
 
   it("attaches the selected browser element through the visible Attach control", async () => {
