@@ -8066,6 +8066,53 @@ describe("createAgentChatService", () => {
       expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(false);
     });
 
+    it("does not classify compaction items as manual before /compact is accepted", async () => {
+      mockState.delayedCodexMethods.add("thread/compact/start");
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+
+      const sendPromise = service.sendMessage({
+        sessionId: session.id,
+        text: "/compact",
+      }, { awaitDispatch: true });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/compact/start")).toBe(true);
+      });
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/started",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "compact-before-ack",
+            type: "contextCompaction",
+          },
+        },
+      });
+
+      const compactionEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "codex_context_compaction" }>;
+        } =>
+          event.event.type === "codex_context_compaction"
+          && event.event.state === "started",
+      );
+      expect(compactionEvent.event.trigger).toBe("auto");
+
+      mockState.flushCodexResponses();
+      await sendPromise;
+    });
+
     it("routes /review with no args to review/start with target type=uncommittedChanges", async () => {
       const { service } = createService();
       const session = await service.createSession({

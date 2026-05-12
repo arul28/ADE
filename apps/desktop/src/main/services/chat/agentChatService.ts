@@ -7957,100 +7957,6 @@ export function createAgentChatService(args: {
       });
     }
     const providerSlashCommand = args.providerSlashCommand === true;
-
-    // Intercept /review command — route to review/start RPC instead of turn/start.
-    // ReviewTarget variants (per codex-rs/app-server-protocol/schema/typescript/v2/ReviewTarget.ts):
-    //   { type: "uncommittedChanges" }
-    //   { type: "baseBranch", branch }
-    //   { type: "commit", sha, title }
-    //   { type: "custom", instructions }
-    if (args.promptText.trim().startsWith("/review")) {
-      const reviewArgs = args.promptText.trim().replace(/^\/review(?:\s+|$)/i, "").trim();
-      // Detect the subcommand keyword first (with or without trailing arg) so
-      // `/review branch` and `/review branch   ` both reject cleanly instead of
-      // falling through to the catch-all "custom" branch.
-      const branchPrefixMatch = /^branch(?:\s+(.*))?$/i.exec(reviewArgs);
-      const promptPrefixMatch = /^prompt(?:\s+(.*))?$/i.exec(reviewArgs);
-      const commitMatch = /^commit\s+(\S+)(?:\s+(.+))?$/i.exec(reviewArgs);
-      const diffMatch = /^(diff|uncommitted|uncommittedChanges)$/i.test(reviewArgs);
-      let target: unknown;
-      let usageError: string | null = null;
-      if (branchPrefixMatch) {
-        const branchName = (branchPrefixMatch[1] ?? "").trim();
-        if (!branchName.length) {
-          usageError = "Usage: /review branch <name>.";
-        } else {
-          target = { type: "baseBranch", branch: branchName };
-        }
-      } else if (promptPrefixMatch) {
-        const promptText = (promptPrefixMatch[1] ?? "").trim();
-        if (!promptText.length) {
-          usageError = "Usage: /review prompt <text>.";
-        } else {
-          target = { type: "custom", instructions: promptText };
-        }
-      } else if (commitMatch) {
-        const sha = commitMatch[1]!.trim();
-        const title = commitMatch[2]?.trim() ?? null;
-        target = { type: "commit", sha, ...(title ? { title } : { title: null }) };
-      } else if (diffMatch || !reviewArgs) {
-        target = { type: "uncommittedChanges" };
-      } else {
-        target = { type: "custom", instructions: reviewArgs };
-      }
-      if (usageError) {
-        // Reject malformed /review usage gracefully. We cannot call
-        // completeInlineCodexSlash here because that helper is declared further
-        // down in this function (const TDZ), so inline the equivalent emission.
-        runtime.awaitingTurnStart = false;
-        const usageTurnId = randomUUID();
-        markDispatched();
-        persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
-        markSessionIdleWithFreshCache(managed);
-        emitChatEvent(managed, {
-          type: "system_notice",
-          noticeKind: "info",
-          message: usageError,
-          turnId: usageTurnId,
-        });
-        emitChatEvent(managed, { type: "status", turnStatus: "completed", turnId: usageTurnId });
-        emitChatEvent(managed, {
-          type: "done",
-          turnId: usageTurnId,
-          status: "completed",
-          model: managed.session.model,
-          ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
-        });
-        persistChatState(managed);
-        return;
-      }
-      runtime.awaitingTurnStart = true;
-      let reviewResult: { turn?: { id?: string } };
-      try {
-        reviewResult = await runtime.request<{ turn?: { id?: string } }>("review/start", {
-          threadId: managed.session.threadId,
-          target,
-        });
-      } catch (error) {
-        runtime.awaitingTurnStart = false;
-        throw error;
-      }
-      markDispatched();
-      persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
-      const reviewTurnId = typeof reviewResult.turn?.id === "string" ? reviewResult.turn.id : null;
-      if (reviewTurnId) {
-        runtime.awaitingTurnStart = false;
-        if (isTerminalCodexTurn(runtime, reviewTurnId, managed)) {
-          runtime.activeTurnId = null;
-          runtime.startedTurnId = null;
-          persistChatState(managed);
-          return;
-        }
-        runtime.activeTurnId = reviewTurnId;
-      }
-      return;
-    }
-
     const completeInlineCodexSlash = (
       message?: string,
       emitBeforeComplete?: (turnId: string) => void,
@@ -8093,6 +7999,78 @@ export function createAgentChatService(args: {
         return { ok: false };
       }
     };
+
+    // Intercept /review command — route to review/start RPC instead of turn/start.
+    // ReviewTarget variants (per codex-rs/app-server-protocol/schema/typescript/v2/ReviewTarget.ts):
+    //   { type: "uncommittedChanges" }
+    //   { type: "baseBranch", branch }
+    //   { type: "commit", sha, title }
+    //   { type: "custom", instructions }
+    if (args.promptText.trim().startsWith("/review")) {
+      const reviewArgs = args.promptText.trim().replace(/^\/review(?:\s+|$)/i, "").trim();
+      // Detect the subcommand keyword first (with or without trailing arg) so
+      // `/review branch` and `/review branch   ` both reject cleanly instead of
+      // falling through to the catch-all "custom" branch.
+      const branchPrefixMatch = /^branch(?:\s+(.*))?$/i.exec(reviewArgs);
+      const promptPrefixMatch = /^prompt(?:\s+(.*))?$/i.exec(reviewArgs);
+      const commitMatch = /^commit\s+(\S+)(?:\s+(.+))?$/i.exec(reviewArgs);
+      const diffMatch = /^(diff|uncommitted|uncommittedChanges)$/i.test(reviewArgs);
+      let target: unknown;
+      let usageError: string | null = null;
+      if (branchPrefixMatch) {
+        const branchName = (branchPrefixMatch[1] ?? "").trim();
+        if (!branchName.length) {
+          usageError = "Usage: /review branch <name>.";
+        } else {
+          target = { type: "baseBranch", branch: branchName };
+        }
+      } else if (promptPrefixMatch) {
+        const promptText = (promptPrefixMatch[1] ?? "").trim();
+        if (!promptText.length) {
+          usageError = "Usage: /review prompt <text>.";
+        } else {
+          target = { type: "custom", instructions: promptText };
+        }
+      } else if (commitMatch) {
+        const sha = commitMatch[1]!.trim();
+        const title = commitMatch[2]?.trim() ?? null;
+        target = { type: "commit", sha, ...(title ? { title } : { title: null }) };
+      } else if (diffMatch || !reviewArgs) {
+        target = { type: "uncommittedChanges" };
+      } else {
+        target = { type: "custom", instructions: reviewArgs };
+      }
+      if (usageError) {
+        runtime.awaitingTurnStart = false;
+        completeInlineCodexSlash(usageError);
+        return;
+      }
+      runtime.awaitingTurnStart = true;
+      let reviewResult: { turn?: { id?: string } };
+      try {
+        reviewResult = await runtime.request<{ turn?: { id?: string } }>("review/start", {
+          threadId: managed.session.threadId,
+          target,
+        });
+      } catch (error) {
+        runtime.awaitingTurnStart = false;
+        throw error;
+      }
+      markDispatched();
+      persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
+      const reviewTurnId = typeof reviewResult.turn?.id === "string" ? reviewResult.turn.id : null;
+      if (reviewTurnId) {
+        runtime.awaitingTurnStart = false;
+        if (isTerminalCodexTurn(runtime, reviewTurnId, managed)) {
+          runtime.activeTurnId = null;
+          runtime.startedTurnId = null;
+          persistChatState(managed);
+          return;
+        }
+        runtime.activeTurnId = reviewTurnId;
+      }
+      return;
+    }
 
     const slashText = args.promptText.trim();
     let effectivePromptText = args.promptText;
@@ -8152,11 +8130,11 @@ export function createAgentChatService(args: {
     }
 
     if (/^\/compact(?:\s|$)/i.test(slashText)) {
-      runtime.manualCompactionPending = true;
       try {
         await runtime.request("thread/compact/start", {
           threadId: managed.session.threadId,
         });
+        runtime.manualCompactionPending = true;
         completeInlineCodexSlash("Codex context compaction started.");
       } catch (error) {
         runtime.manualCompactionPending = false;

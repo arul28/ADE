@@ -95,6 +95,18 @@ export type ChatTranscriptGroupedEnvelope = {
   event: ChatTranscriptRenderEvent | ChatWorkLogGroupEvent;
 };
 
+type PlanTranscriptEvent = Extract<AgentChatEvent, { type: "plan" }>;
+
+function mergePlanTranscriptEvent(previous: PlanTranscriptEvent, incoming: PlanTranscriptEvent): PlanTranscriptEvent {
+  return {
+    ...previous,
+    ...incoming,
+    steps: incoming.steps.length > 0 ? incoming.steps : previous.steps,
+    explanation: incoming.explanation ?? previous.explanation,
+    streamingText: incoming.streamingText ?? previous.streamingText,
+  };
+}
+
 export function summarizeInlineText(value: string, maxChars = 120): string {
   const text = value.replace(/\s+/g, " ").trim();
   if (!text.length) return "";
@@ -701,7 +713,7 @@ export function appendCollapsedChatTranscriptEvent(
         rows[actualIndex] = {
           ...rows[actualIndex]!,
           timestamp: envelope.timestamp,
-          event,
+          event: mergePlanTranscriptEvent(rows[actualIndex]!.event as PlanTranscriptEvent, event),
         };
         return;
       }
