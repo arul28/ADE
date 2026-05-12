@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   githubPrMatchesCurrentBranch,
+  laneHasAncestor,
   lanePrMatchesCurrentBranch,
   planLaneDeleteBatches,
   resolveLaneDeleteStartSelection,
@@ -193,6 +194,20 @@ describe("planLaneDeleteBatches", () => {
       ["lane-child"],
       ["lane-parent"],
     ]);
+  });
+});
+
+describe("laneHasAncestor", () => {
+  it("walks the full lane graph without hanging on corrupted cycles", () => {
+    const lanes = [
+      { id: "child", parentLaneId: "middle" },
+      { id: "middle", parentLaneId: "child" },
+      { id: "root", parentLaneId: null },
+    ];
+    const lanesById = new Map(lanes.map((lane) => [lane.id, lane] as const));
+
+    expect(laneHasAncestor("child", "middle", lanesById)).toBe(true);
+    expect(laneHasAncestor("child", "root", lanesById)).toBe(false);
   });
 });
 

@@ -28,6 +28,7 @@ import { useOnboardingStore } from "../../state/onboardingStore";
 import { useDialogBus } from "../../lib/useDialogBus";
 import {
   parseLaneIdsParam,
+  laneHasAncestor,
   planLaneDeleteBatches,
   resolveCreateLaneRequest,
   resolveLaneDeleteStartSelection,
@@ -1441,11 +1442,7 @@ export function LanesPage() {
       const blockedLaneIds = new Set<string>();
       const hasBlockedSelectedDescendant = (laneId: string): boolean => {
         for (const blockedLaneId of blockedLaneIds) {
-          let cursor = lanesById.get(blockedLaneId) ?? null;
-          while (cursor?.parentLaneId) {
-            if (cursor.parentLaneId === laneId) return true;
-            cursor = lanesById.get(cursor.parentLaneId) ?? null;
-          }
+          if (laneHasAncestor(blockedLaneId, laneId, lanesById)) return true;
         }
         return false;
       };

@@ -497,6 +497,10 @@ describe("prService.getGithubSnapshot", () => {
     const openRepoRequest = new Promise<unknown>((resolve) => {
       resolveOpenRepo = resolve;
     });
+    let rejectFullRepo!: (reason: unknown) => void;
+    const fullRepoRequest = new Promise<unknown>((_resolve, reject) => {
+      rejectFullRepo = reject;
+    });
     let repoCalls = 0;
     const githubService = makeGithubService({
       getStatus: vi.fn(async () => ({
@@ -508,7 +512,7 @@ describe("prService.getGithubSnapshot", () => {
         if (args.path === `/repos/${REPO.owner}/${REPO.name}/pulls`) {
           repoCalls += 1;
           if (repoCalls === 1) return openRepoRequest;
-          throw new Error("full history failed");
+          return fullRepoRequest;
         }
         return {
           data: {
@@ -529,13 +533,17 @@ describe("prService.getGithubSnapshot", () => {
     const openOnly = service.getGithubSnapshot();
     await flushMicrotasks();
 
-    await expect(service.getGithubSnapshot({ includeExternalClosed: true })).rejects.toThrow("full history failed");
+    const fullHistory = service.getGithubSnapshot({ includeExternalClosed: true });
+    await flushMicrotasks();
 
     resolveOpenRepo({ data: [makeGitHubPull({ number: 1, title: "Open-only PR" })] });
     await expect(openOnly).resolves.toEqual(expect.objectContaining({
       repoPullRequests: [expect.objectContaining({ title: "Open-only PR" })],
       externalPullRequests: [expect.objectContaining({ title: "Open external" })],
     }));
+
+    rejectFullRepo(new Error("full history failed"));
+    await expect(fullHistory).rejects.toThrow("full history failed");
 
     const apiCallsAfterOpenOnly = githubService.apiRequest.mock.calls.length;
     const cachedOpenOnly = await service.getGithubSnapshot();

@@ -83,6 +83,23 @@ export function planLaneDeleteBatches<T extends Pick<LaneSummary, "id" | "parent
   return batches;
 }
 
+export function laneHasAncestor<T extends Pick<LaneSummary, "id" | "parentLaneId">>(
+  laneId: string,
+  ancestorLaneId: string,
+  lanesById: ReadonlyMap<string, T>,
+): boolean {
+  const visited = new Set<string>([laneId]);
+  let cursor = lanesById.get(laneId) ?? null;
+  while (cursor?.parentLaneId) {
+    const parentLaneId = cursor.parentLaneId;
+    if (parentLaneId === ancestorLaneId) return true;
+    if (visited.has(parentLaneId)) return false;
+    visited.add(parentLaneId);
+    cursor = lanesById.get(parentLaneId) ?? null;
+  }
+  return false;
+}
+
 export function resolveLaneIdsDeepLinkSelection(args: {
   laneIdsRaw: string | null;
   inspectorTabParam?: string | null;
