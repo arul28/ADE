@@ -445,6 +445,13 @@ describe("registerIpc sync bridge", () => {
       eventForSender(),
       { includeTransferReadiness: true },
     ) as any;
+    const devices = await ipcHandlers.get(IPC.syncListDevices)?.(
+      eventForSender(),
+    ) as any[];
+    const readiness = await ipcHandlers.get(IPC.syncGetTransferReadiness)?.(
+      eventForSender(),
+    ) as any;
+    const pin = await ipcHandlers.get(IPC.syncGetPin)?.(eventForSender()) as any;
 
     expect(localRuntimeConnectionPool.syncStatusForRoot).not.toHaveBeenCalled();
     expect(secondSnapshot).not.toBe(snapshot);
@@ -463,6 +470,14 @@ describe("registerIpc sync bridge", () => {
       detail: "Sync service unavailable in local runtime disabled mode.",
     });
     expect(snapshot.client.message).toBe("Sync service unavailable in local runtime disabled mode.");
+    expect(devices[0]).toMatchObject({
+      deviceId: "local-runtime-disabled",
+      isLocal: true,
+      isBrain: false,
+      connectionState: "disconnected",
+    });
+    expect(readiness).toEqual(snapshot.transferReadiness);
+    expect(pin).toEqual({ pin: null });
   });
 
   it("drops active lane presence updates instead of probing unavailable sync services when the daemon is disabled", async () => {

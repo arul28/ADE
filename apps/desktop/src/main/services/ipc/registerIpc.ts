@@ -1883,6 +1883,22 @@ export function registerIpc({
     };
   };
 
+  const buildUnavailableSyncRuntimeDevice = (): SyncDeviceRuntimeState => {
+    const snapshot = buildUnavailableSyncSnapshot();
+    return {
+      ...snapshot.localDevice,
+      isLocal: true,
+      isBrain: false,
+      connectionState: "disconnected",
+      connectedAt: null,
+      lastAppliedAt: null,
+      remoteAddress: null,
+      remotePort: null,
+      latencyMs: null,
+      syncLag: null,
+    };
+  };
+
   const requireSyncService = async (): Promise<ReturnType<typeof createSyncService>> => {
     const service = await resolveOptionalSyncService();
     if (!service) {
@@ -4213,6 +4229,7 @@ export function registerIpc({
       pool.refreshSyncDiscoveryForRoot(rootPath)
     );
     if (runtimeStatus) return runtimeStatus;
+    if (localRuntimeDaemonDisabled) return buildUnavailableSyncSnapshot();
     return await (await requireSyncService()).refreshDiscovery();
   });
 
@@ -4221,6 +4238,7 @@ export function registerIpc({
       pool.syncDevicesForRoot(rootPath)
     );
     if (runtimeDevices) return runtimeDevices;
+    if (localRuntimeDaemonDisabled) return [buildUnavailableSyncRuntimeDevice()];
     return await (await requireSyncService()).listDevices();
   });
 
@@ -4237,6 +4255,7 @@ export function registerIpc({
         })
       );
       if (runtimeDevice) return runtimeDevice;
+      if (localRuntimeDaemonDisabled) return buildUnavailableSyncSnapshot().localDevice;
       return await (await requireSyncService()).updateLocalDevice({
         name: typeof arg?.name === "string" ? arg.name : undefined,
         deviceType: arg?.deviceType,
@@ -4255,6 +4274,7 @@ export function registerIpc({
         )
       );
       if (runtimeStatus) return runtimeStatus;
+      if (localRuntimeDaemonDisabled) return buildUnavailableSyncSnapshot();
       return await (await requireSyncService()).connectToBrain(arg);
     },
   );
@@ -4264,6 +4284,7 @@ export function registerIpc({
       pool.callSyncForRoot<SyncRoleSnapshot>(rootPath, "sync.disconnectFromBrain")
     );
     if (runtimeStatus) return runtimeStatus;
+    if (localRuntimeDaemonDisabled) return buildUnavailableSyncSnapshot();
     return await (await requireSyncService()).disconnectFromBrain();
   });
 
@@ -4273,6 +4294,7 @@ export function registerIpc({
       pool.forgetSyncDeviceForRoot(rootPath, deviceId)
     );
     if (runtimeStatus) return runtimeStatus;
+    if (localRuntimeDaemonDisabled) return buildUnavailableSyncSnapshot();
     return await (await requireSyncService()).forgetDevice(deviceId);
   });
 
@@ -4281,6 +4303,7 @@ export function registerIpc({
       pool.callSyncForRoot<SyncTransferReadiness>(rootPath, "sync.getTransferReadiness")
     );
     if (runtimeReadiness) return runtimeReadiness;
+    if (localRuntimeDaemonDisabled) return buildUnavailableSyncSnapshot().transferReadiness;
     return await (await requireSyncService()).getTransferReadiness();
   });
 
@@ -4289,6 +4312,7 @@ export function registerIpc({
       pool.callSyncForRoot<SyncRoleSnapshot>(rootPath, "sync.transferBrainToLocal")
     );
     if (runtimeStatus) return runtimeStatus;
+    if (localRuntimeDaemonDisabled) return buildUnavailableSyncSnapshot();
     return await (await requireSyncService()).transferBrainToLocal();
   });
 
@@ -4297,6 +4321,7 @@ export function registerIpc({
       pool.syncPinForRoot(rootPath)
     );
     if (runtimePin) return runtimePin;
+    if (localRuntimeDaemonDisabled) return { pin: null };
     return { pin: (await requireSyncService()).getPin() };
   });
 
@@ -4306,6 +4331,7 @@ export function registerIpc({
       pool.setSyncPinForRoot(rootPath, normalizedPin)
     );
     if (runtimeStatus) return runtimeStatus;
+    if (localRuntimeDaemonDisabled) return buildUnavailableSyncSnapshot();
     return await (await requireSyncService()).setPin(normalizedPin);
   });
 
@@ -4314,6 +4340,7 @@ export function registerIpc({
       pool.generateSyncPinForRoot(rootPath)
     );
     if (runtimeStatus) return runtimeStatus;
+    if (localRuntimeDaemonDisabled) return buildUnavailableSyncSnapshot();
     return await (await requireSyncService()).generatePin();
   });
 
@@ -4322,6 +4349,7 @@ export function registerIpc({
       pool.clearSyncPinForRoot(rootPath)
     );
     if (runtimeStatus) return runtimeStatus;
+    if (localRuntimeDaemonDisabled) return buildUnavailableSyncSnapshot();
     return await (await requireSyncService()).clearPin();
   });
 

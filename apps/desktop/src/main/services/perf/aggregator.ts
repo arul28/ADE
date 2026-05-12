@@ -142,6 +142,9 @@ function visitJsonlEvents(path: string, visit: (event: Event) => void): number {
 }
 
 export function aggregate(runId: string): Summary {
+  if (!/^[A-Za-z0-9._-]+$/.test(runId) || runId.includes("..")) {
+    throw new Error(`Invalid perf run id: ${runId}`);
+  }
   const dir = join(homedir(), ".ade", "perf-runs", runId);
   const eventsPath = join(dir, "events.jsonl");
 
@@ -195,7 +198,24 @@ export function aggregate(runId: string): Summary {
         break;
       }
       case "processMetrics": {
-        processSamples.push(ev as unknown as ProcessMetricSample);
+        if (!Array.isArray(ev.processes)) {
+          break;
+        }
+        processSamples.push({
+          ts: ev.ts,
+          processes: ev.processes
+            .filter((sample): sample is Record<string, unknown> =>
+              Boolean(sample) && typeof sample === "object"
+            )
+            .map((sample) => ({
+              pid: Number(sample.pid ?? 0),
+              type: String(sample.type ?? "unknown"),
+              cpuPercent: Number(sample.cpuPercent ?? 0),
+              workingSetSizeKb: Number(sample.workingSetSizeKb ?? 0),
+            })),
+          mainRss: Number(ev.mainRss ?? 0),
+          mainHeapUsed: Number(ev.mainHeapUsed ?? 0),
+        });
         break;
       }
       case "rendererMemory": {

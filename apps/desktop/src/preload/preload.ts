@@ -2266,6 +2266,8 @@ function clearGitReadCaches(): void {
 
 function clearProjectScopedReadCaches(): void {
   clearGitReadCaches();
+  githubStatusCache.clear();
+  githubRemoteStatusCache.clear();
   projectConfigSnapshotCache.clear();
   agentChatSummaryCache.clear();
   computerUseOwnerSnapshotCache.clear();
@@ -6645,13 +6647,18 @@ contextBridge.exposeInMainWorld("ade", {
     getRemoteStatus: async (opts?: {
       forceRefresh?: boolean;
     }): Promise<{ repo: GitHubRepoRef | null; hasOrigin: boolean }> => {
-      if (opts?.forceRefresh) githubRemoteStatusCache.clear();
-      return opts?.forceRefresh
-        ? clearAround(
-            () => githubRemoteStatusCache.clear(),
-            () => ipcRenderer.invoke(IPC.githubGetRemoteStatus),
-          )
-        : githubRemoteStatusCache.get();
+      return callProjectRuntimeActionOr(
+        "github",
+        "getRemoteStatus",
+        { args: opts ?? {} },
+        () =>
+          opts?.forceRefresh
+            ? clearAround(
+                () => githubRemoteStatusCache.clear(),
+                () => ipcRenderer.invoke(IPC.githubGetRemoteStatus, opts ?? {}),
+              )
+            : githubRemoteStatusCache.get(),
+      );
     },
     setToken: async (token: string): Promise<GitHubStatus> =>
       clearAround(
