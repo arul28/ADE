@@ -603,6 +603,7 @@ import {
 // Helpers
 // ---------------------------------------------------------------------------
 
+let tmpHomeRoot: string;
 let tmpRoot: string;
 
 function makeDefaultClaudeSession() {
@@ -1255,14 +1256,16 @@ function makeLaneLinearIssue(overrides: Partial<LaneLinearIssue> = {}): LaneLine
 // ---------------------------------------------------------------------------
 
 beforeEach(() => {
-  tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-chat-svc-test-"));
+  tmpHomeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-chat-svc-home-"));
+  tmpRoot = path.join(tmpHomeRoot, "project");
+  fs.mkdirSync(tmpRoot, { recursive: true });
   // Ensure .ade directories exist
   fs.mkdirSync(path.join(tmpRoot, ".ade", "cache", "chat-sessions"), { recursive: true });
   fs.mkdirSync(path.join(tmpRoot, ".ade", "transcripts", "chat"), { recursive: true });
-  // Pin os.homedir() to tmpRoot so user-scope slash command discovery
+  // Pin os.homedir() to an isolated temp root so user-scope slash command discovery
   // (~/.claude/commands, ~/.codex/prompts) doesn't leak the developer's real
-  // home dir into tests.
-  vi.spyOn(os, "homedir").mockReturnValue(tmpRoot);
+  // home dir into tests, while project-local .claude roots remain distinct.
+  vi.spyOn(os, "homedir").mockReturnValue(tmpHomeRoot);
   mockState.sessions.clear();
   mockState.uuidCounter = 0;
   mockState.codexThreadCounter = 0;
@@ -1322,7 +1325,7 @@ afterEach(() => {
     process.env.CURSOR_API_KEY = ORIGINAL_CURSOR_API_KEY;
   }
   try {
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    fs.rmSync(tmpHomeRoot, { recursive: true, force: true });
   } catch { /* ignore */ }
 });
 
