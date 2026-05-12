@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { classifyClaudeStartupFailure } from "./packagedRuntimeSmokeShared";
+import {
+  classifyClaudeStartupFailure,
+  getClaudeNativeBinaryFileName,
+  getClaudeNativeBinaryPackageName,
+} from "./packagedRuntimeSmokeShared";
 
 describe("packagedRuntimeSmoke", () => {
   it("classifies a missing bundled Claude binary distinctly", () => {
@@ -32,5 +36,14 @@ describe("packagedRuntimeSmoke", () => {
       state: "auth-failed",
       message: "API Error: 401 invalid authentication credentials",
     });
+  });
+
+  it("maps supported platforms to Claude Agent SDK native binary packages", () => {
+    expect(getClaudeNativeBinaryPackageName("win32", "x64")).toBe("@anthropic-ai/claude-agent-sdk-win32-x64");
+    expect(getClaudeNativeBinaryPackageName("darwin", "arm64")).toBe("@anthropic-ai/claude-agent-sdk-darwin-arm64");
+    expect(getClaudeNativeBinaryPackageName("linux", "x64")).toBe("@anthropic-ai/claude-agent-sdk-linux-x64");
+    expect(getClaudeNativeBinaryPackageName("freebsd", "x64")).toBeNull();
+    expect(getClaudeNativeBinaryFileName("win32")).toBe("claude.exe");
+    expect(getClaudeNativeBinaryFileName("darwin")).toBe("claude");
   });
 });

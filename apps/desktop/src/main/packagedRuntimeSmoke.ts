@@ -1,13 +1,19 @@
+import fs from "node:fs";
 import os from "node:os";
+import path from "node:path";
+import { createRequire } from "node:module";
 import type { Query } from "@anthropic-ai/claude-agent-sdk";
 import { resolveCodexExecutable } from "./services/ai/codexExecutable";
 import {
   classifyClaudeStartupFailure,
+  getClaudeNativeBinaryFileName,
+  getClaudeNativeBinaryPackageName,
   type ClaudeStartupProbeResult,
 } from "./packagedRuntimeSmokeShared";
 
 const PTY_PROBE_TIMEOUT_MS = 4_000;
 const CLAUDE_PROBE_TIMEOUT_MS = 20_000;
+const requireFromHere = createRequire(__filename);
 
 async function probePty(): Promise<{ ok: true; output: string }> {
   const pty = await import("node-pty");
@@ -107,9 +113,23 @@ async function probeClaudeStartup(): Promise<ClaudeStartupProbeResult> {
   }
 }
 
+function resolveClaudeExecutablePath(): string | null {
+  const packageName = getClaudeNativeBinaryPackageName();
+  if (!packageName) return null;
+
+  try {
+    const packageJsonPath = requireFromHere.resolve(`${packageName}/package.json`);
+    const binaryPath = path.join(path.dirname(packageJsonPath), getClaudeNativeBinaryFileName());
+    return fs.existsSync(binaryPath) ? binaryPath : null;
+  } catch {
+    return null;
+  }
+}
+
 async function main(): Promise<void> {
   const pty = await import("node-pty");
   const claude = await import("@anthropic-ai/claude-agent-sdk");
+  const claudeExecutablePath = resolveClaudeExecutablePath();
   const ptyProbe = await probePty();
   const claudeStartup = await probeClaudeStartup();
 
@@ -117,6 +137,7 @@ async function main(): Promise<void> {
     ok: true,
     nodePty: typeof pty.spawn,
     claudeQuery: typeof claude.query,
+    claudeExecutablePath,
     claudeStartup,
     codexExecutable: typeof resolveCodexExecutable,
     ptyProbe,

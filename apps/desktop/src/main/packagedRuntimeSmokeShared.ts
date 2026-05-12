@@ -36,6 +36,23 @@ export type ClaudeStartupProbeResult =
   | { state: "binary-missing"; message: string }
   | { state: "runtime-failed"; message: string };
 
+export function getClaudeNativeBinaryPackageName(
+  platform: NodeJS.Platform = process.platform,
+  arch: string = process.arch,
+): string | null {
+  if (platform === "darwin" && arch === "arm64") return "@anthropic-ai/claude-agent-sdk-darwin-arm64";
+  if (platform === "darwin" && arch === "x64") return "@anthropic-ai/claude-agent-sdk-darwin-x64";
+  if (platform === "linux" && arch === "arm64") return "@anthropic-ai/claude-agent-sdk-linux-arm64";
+  if (platform === "linux" && arch === "x64") return "@anthropic-ai/claude-agent-sdk-linux-x64";
+  if (platform === "win32" && arch === "x64") return "@anthropic-ai/claude-agent-sdk-win32-x64";
+  if (platform === "win32" && arch === "arm64") return "@anthropic-ai/claude-agent-sdk-win32-arm64";
+  return null;
+}
+
+export function getClaudeNativeBinaryFileName(platform: NodeJS.Platform = process.platform): string {
+  return platform === "win32" ? "claude.exe" : "claude";
+}
+
 export function isClaudeAuthFailureMessage(input: unknown): boolean {
   const lower = errorMessage(input).toLowerCase();
   return AUTH_FAILURE_PATTERNS.some((pattern) => lower.includes(pattern));
