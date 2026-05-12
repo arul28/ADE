@@ -10,6 +10,7 @@ describe("preload OAuth bridge", () => {
   afterEach(() => {
     vi.resetModules();
     vi.doUnmock("electron");
+    delete process.env.ADE_DISABLE_LOCAL_RUNTIME_DAEMON;
     delete (globalThis as any).__adeBridge;
   });
 
@@ -323,6 +324,51 @@ describe("preload OAuth bridge", () => {
 
     expect(invoke).toHaveBeenCalledWith(IPC.appGetWindowSession);
     expect(invoke).toHaveBeenCalledWith(IPC.lanesOpenFolder, { laneId: "lane-1" });
+  });
+
+  it("skips local runtime IPC when the local runtime daemon is disabled", async () => {
+    process.env.ADE_DISABLE_LOCAL_RUNTIME_DAEMON = "1";
+    const binding = {
+      kind: "local",
+      key: "local:/repo",
+      rootPath: "/repo",
+      displayName: "Project",
+    };
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: { rootPath: "/repo", displayName: "Project" }, binding };
+      }
+      if (channel === IPC.lanesList) return [];
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.lanes.list()).resolves.toEqual([]);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.appGetWindowSession);
+    expect(invoke).toHaveBeenCalledWith(IPC.lanesList, {});
+    expect(invoke).not.toHaveBeenCalledWith(
+      IPC.localRuntimeCallAction,
+      expect.anything(),
+    );
   });
 
   it("routes project local-data cleanup through a remote project runtime when bound", async () => {

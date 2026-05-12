@@ -10,6 +10,7 @@ import {
   selectLanePrTag,
   sortLaneListRows,
 } from "./lanePageModel";
+import { shouldMountGitActionsPane } from "./LanesPage";
 import type { GitHubPrListItem, LaneSummary, PrSummary } from "../../../shared/types";
 
 type LanePrTarget = Pick<LaneSummary, "id" | "laneType" | "branchRef" | "baseRef">;
@@ -383,5 +384,33 @@ describe("sortLaneListRows", () => {
     });
 
     expect(result.map((lane) => lane.id)).toEqual(["running-pinned", "running-a"]);
+  });
+});
+
+describe("shouldMountGitActionsPane", () => {
+  it("mounts one Git Actions pane owner when a lane is expanded", () => {
+    expect(shouldMountGitActionsPane({
+      laneId: "lane-1",
+      expandedGitActionsLaneId: "lane-1",
+      surface: "inline",
+    })).toBe(false);
+
+    expect(shouldMountGitActionsPane({
+      laneId: "lane-1",
+      expandedGitActionsLaneId: "lane-1",
+      surface: "git-actions-fullscreen",
+    })).toBe(true);
+
+    expect(shouldMountGitActionsPane({
+      laneId: "lane-2",
+      expandedGitActionsLaneId: "lane-1",
+      surface: "inline",
+    })).toBe(true);
+
+    expect(shouldMountGitActionsPane({
+      laneId: "lane-1",
+      expandedGitActionsLaneId: null,
+      surface: "inline",
+    })).toBe(true);
   });
 });
