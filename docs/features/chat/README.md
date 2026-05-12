@@ -11,7 +11,7 @@ machinery layered on top.
 
 | Path | Role |
 |---|---|
-| `apps/desktop/src/main/services/chat/agentChatService.ts` | Main service: session lifecycle, turn dispatch, event emission, provider adapters, steer queue, handoff, auto-title, and prompt-derived lane-name suggestions for parallel launch. Tracks Codex Fast Mode (`codexFastMode: boolean`) per session and forwards it as `serviceTier: "fast" \| null` on every Codex `thread/start` and `turn/start` JSON-RPC call (see [Agent Routing](agent-routing.md#codex-service-tiers-fast-mode)). Spawns Claude/Codex agent runtimes with `buildAgentRuntimeEnv(managed)` so every agent process inherits `ADE_CHAT_SESSION_ID`, `ADE_LANE_ID`, `ADE_PROJECT_ROOT`, and `ADE_WORKSPACE_ROOT` (used by the agent guidance to call `ade --socket app-control logs` / `terminal read --chat-session "$ADE_CHAT_SESSION_ID"` without resolving the chat ID itself). Large orchestrator file. |
+| `apps/desktop/src/main/services/chat/agentChatService.ts` | Main service: session lifecycle, turn dispatch, event emission, provider adapters, steer queue, handoff, auto-title, and prompt-derived lane-name suggestions for parallel launch. Tracks Codex Fast Mode (`codexFastMode: boolean`) per session and forwards it as `serviceTier: "fast" \| null` on every Codex `thread/start` and `turn/start` JSON-RPC call (see [Agent Routing](agent-routing.md#codex-service-tiers-fast-mode)). Spawns Claude/Codex agent runtimes with `buildAgentRuntimeEnv(managed)` so every agent process inherits `ADE_CHAT_SESSION_ID`, `ADE_LANE_ID`, `ADE_PROJECT_ROOT`, and `ADE_WORKSPACE_ROOT` (used by the agent guidance to call `ade --socket app-control logs` / `terminal read --chat-session "$ADE_CHAT_SESSION_ID"` without resolving the chat ID itself). Claude SDK sessions also resolve the executable through `claudeCodeExecutable.ts` and pass `pathToClaudeCodeExecutable` so packaged builds can prefer the bundled native binary before PATH/auth fallbacks. Large orchestrator file. |
 | `apps/desktop/src/main/services/chat/runtimeEvents.ts` | Canonical cross-runtime event vocabulary (`turn.*`, `content.delta`, `tool.*`, `subagent.*`, teammate/task events, compaction boundaries) plus shims between legacy `AgentChatEvent` rows and the canonical runtime envelope. Claude emits canonical subagent events alongside the legacy rows while the other adapters migrate. |
 | `apps/ade-cli/src/tuiClient/` | Terminal **Work** chat TUI (Ink + React): same action/RPC contracts as desktop, **attached** (socket) or **embedded** (headless runtime via `ade-cli`). See [ADE Code](../ade-code/README.md). |
 | `apps/desktop/src/main/services/builtInBrowser/builtInBrowserService.ts` | Main-process broker for the in-app web browser. Owns a single `persist:ade-browser` partition, multiple `WebContentsView` tabs (cap 10), bounds + visibility against the renderer-supplied frame, debugger-protocol attachment for inspect-mode hit tests, screenshot capture, and emission of `BuiltInBrowserContextItem`s for selected page elements. Spoofs a desktop Chrome `User-Agent` and the matching `Sec-CH-UA*` client hints on every request through `webRequest.onBeforeSendHeaders` so external sign-in flows (Google, etc.) treat the embedded view as a normal desktop Chrome instead of refusing to load — the previous "open Google sign-in in the system browser" branch was removed because the spoofed UA stops Google from blocking the page in the first place. Window-open requests are forwarded into a fresh tab with `openPanel: true` so the Work sidebar Browser tab pops automatically. Backs the `ade.builtInBrowser.*` IPC surface and is consumed by both `ChatBuiltInBrowserPanel` (sidebar Browser tab) and `openExternal.ts` (links inside the renderer route through the built-in browser when the protocol is `http`/`https`/`about:blank`). |
@@ -20,7 +20,7 @@ machinery layered on top.
 | `apps/desktop/src/main/services/chat/claudeInputPump.ts` | Async iterable input pump that feeds live user turns into the Claude Agent SDK `query()` stream. |
 | `apps/desktop/src/main/services/chat/claudeSubprocessReaper.ts` | Tracks Claude SDK subprocesses and tears them down on runtime shutdown. |
 | `apps/desktop/src/main/services/chat/claudeMcpServers.ts` | Builds upfront Claude MCP server configuration from ADE built-ins and `.mcp.json`. |
-| `apps/desktop/src/main/services/chat/claudeOutputStyles.ts` | Discovers Claude output styles and local plugins from user/project/plugin roots. |
+| `apps/desktop/src/main/services/chat/claudeOutputStyles.ts` | Discovers Claude output styles and plugins from project/user roots. Project roots are walked directly, while user-installed marketplace plugins are loaded only from Claude's installed-plugin registry when enabled in settings, so cache/source copies do not leak into ADE sessions. |
 | `apps/desktop/src/main/services/chat/claudeSlashCommandDiscovery.ts` | Discovers project and user Claude slash surfaces by walking ancestor `.claude` roots, reading `.claude/commands/**/*.md`, `~/.claude/commands/**/*.md`, and `.claude/skills/*/SKILL.md` / `~/.claude/skills/*/SKILL.md` entries with command frontmatter. Consumed by `agentChatService` to enrich both the `chat.slashCommands` response and Claude system prompt with local command/skill metadata. |
 | `apps/desktop/src/main/services/chat/chatTextBatching.ts` | Batches streaming assistant text fragments (100 ms) before emission to reduce renderer re-renders. |
 | `apps/desktop/src/main/services/chat/sessionRecovery.ts` | Version-2 persisted-state reconstruction when sessions resume from disk. |
@@ -77,11 +77,13 @@ render them, but neither one *runs* them.
   and plugins are discovered by `claudeOutputStyles.ts`, slash commands
   by `claudeSlashCommandDiscovery.ts`, and every spawned subprocess is
   tracked by `claudeSubprocessReaper.ts` so runtime shutdown reaps
-  child processes. The SDK's bundled Claude Code binary is trusted —
-  `pathToClaudeCodeExecutable` is no longer threaded through. Context
-  usage, rewindFiles, forkSession, MCP toggling, and output-style
-  selection all run through the SDK control channel surfaced on the
-  active `Query` handle.
+  child processes. Claude executable resolution prefers an explicit
+  `CLAUDE_CODE_EXECUTABLE_PATH`, then the packaged bundled native
+  binary, then detected auth/PATH/common locations, and the resolved
+  path is passed through `pathToClaudeCodeExecutable`. Context usage,
+  rewindFiles, forkSession, MCP toggling, and output-style selection
+  all run through the SDK control channel surfaced on the active
+  `Query` handle.
 - **Provider-agnostic sessions.** `AgentChatProvider` is one of `claude`,
   `codex`, `opencode`, `cursor`, or a free-form string reserved for local
   providers. The service owns a pluggable adapter per provider (Claude Agent

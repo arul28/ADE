@@ -169,7 +169,9 @@ function isTrustedGitHubUrl(rawUrl: string): boolean {
 }
 
 export function isLaneDeleteProgressActive(progress: LaneDeleteProgress | null | undefined): boolean {
-  return progress?.overallStatus === "running" || progress?.overallStatus === "completed";
+  return progress?.overallStatus === "running"
+    || progress?.overallStatus === "completed"
+    || progress?.overallStatus === "completed_with_warnings";
 }
 
 function createPendingDeleteProgress(laneId: string): LaneDeleteProgress {
@@ -183,7 +185,40 @@ function createPendingDeleteProgress(laneId: string): LaneDeleteProgress {
 }
 
 function getLaneDeleteStatusLabel(progress: LaneDeleteProgress | null | undefined): string {
+  if (progress?.overallStatus === "completed_with_warnings") return "Deleted with warnings";
   return progress?.overallStatus === "completed" ? "Deleted" : "Deleting";
+}
+
+const LANE_DELETE_STEP_LABELS: Record<string, string> = {
+  git_status: "dirty-state check",
+  cancel_auto_rebase: "auto-rebase cancellation",
+  stop_processes: "process shutdown",
+  stop_ptys: "terminal shutdown",
+  stop_watchers: "file watcher shutdown",
+  cleanup_env: "environment cleanup",
+  git_worktree_remove: "worktree removal",
+  git_branch_delete: "local branch delete",
+  git_remote_branch_delete: "remote branch delete",
+  pack_dir_remove: "pack folder cleanup",
+  database_cleanup: "database cleanup",
+};
+
+function formatLaneDeleteProgressError(progress: LaneDeleteProgress, laneName: string): string {
+  const failedStep = progress.steps.find((step) => step.status === "failed");
+  const warningSteps = progress.steps.filter((step) => step.status === "warning");
+  if (failedStep) {
+    const label = LANE_DELETE_STEP_LABELS[failedStep.name] ?? failedStep.name;
+    const detail = failedStep.errorMessage ? `: ${failedStep.errorMessage}` : "";
+    return `${laneName} delete failed during ${label}${detail}`;
+  }
+  if (warningSteps.length > 0) {
+    const first = warningSteps[0]!;
+    const label = LANE_DELETE_STEP_LABELS[first.name] ?? first.name;
+    const detail = first.errorMessage ? `: ${first.errorMessage}` : "";
+    const extra = warningSteps.length > 1 ? ` (+${warningSteps.length - 1} more)` : "";
+    return `${laneName} was deleted, but ${label} needs attention${detail}${extra}`;
+  }
+  return `${laneName} delete failed.`;
 }
 
 function laneTilingLayoutIds(laneId: string): string[] {
@@ -756,17 +791,15 @@ export function LanesPage() {
       });
       if (overallStatus === "failed" || overallStatus === "cancelled") {
         completedLaneDeleteRefreshesRef.current.delete(laneId);
-        const failedStep = event.progress.steps.find((step) => step.status === "failed");
         const laneName = lanesByIdRef.current?.get(laneId)?.name ?? laneId;
-        const detail = failedStep?.errorMessage ? `: ${failedStep.errorMessage}` : "";
         setLaneActionError(
           overallStatus === "cancelled"
             ? `${laneName} delete was cancelled.`
-            : `${laneName} delete failed${detail}`,
+            : formatLaneDeleteProgressError(event.progress, laneName),
         );
         return;
       }
-      if (overallStatus !== "completed") return;
+      if (overallStatus !== "completed" && overallStatus !== "completed_with_warnings") return;
       if (completedLaneDeleteRefreshesRef.current.has(laneId)) return;
       completedLaneDeleteRefreshesRef.current.add(laneId);
 
@@ -780,7 +813,12 @@ export function LanesPage() {
       });
       setManagedLaneIds((prev) => prev.filter((id) => id !== laneId));
       clearLaneInspectorTab(laneId);
-      setLaneActionError(null);
+      if (overallStatus === "completed_with_warnings") {
+        const laneName = lanesByIdRef.current?.get(laneId)?.name ?? laneId;
+        setLaneActionError(formatLaneDeleteProgressError(event.progress, laneName));
+      } else {
+        setLaneActionError(null);
+      }
       pendingLaneDeleteRefreshIdsRef.current.add(laneId);
       scheduleLaneDeleteRefresh();
     });
@@ -1403,7 +1441,7 @@ export function LanesPage() {
         }
       }
       if (errors.length > 0) {
-        setLaneActionError(errors.join("\n"));
+        setLaneActionError((current) => current ?? errors.join("\n"));
       }
     })();
   };
@@ -2612,7 +2650,7 @@ export function LanesPage() {
         </div>
         {laneActionError ? (
           <div
-            className="inline-flex max-w-[260px] shrink-0 items-center gap-2 rounded-md border px-2 py-1"
+            className="inline-flex max-w-[420px] shrink-0 items-center gap-2 rounded-md border px-2 py-1"
             style={{
               borderColor: "color-mix(in srgb, var(--color-error) 30%, transparent)",
               background: "color-mix(in srgb, var(--color-error) 12%, transparent)",
@@ -2622,7 +2660,7 @@ export function LanesPage() {
             }}
             title={laneActionError}
           >
-            <span className="truncate">Lane action failed</span>
+            <span className="truncate">{laneActionError.split(/\r?\n/)[0]?.trim() || "Lane action failed"}</span>
             <button
               type="button"
               className="shrink-0"

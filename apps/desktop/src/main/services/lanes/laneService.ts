@@ -3543,13 +3543,16 @@ export function createLaneService({
 
       const token: DeleteToken = { cancelled: false, cancellable: true };
       deleteTokens.set(laneId, token);
+      const nonFatalFailures: Array<{ step: LaneDeleteStepName; message: string }> = [];
 
       const runStep = async (
         name: LaneDeleteStepName,
-        work: () => Promise<{ detail?: string } | void>
+        work: () => Promise<{ detail?: string } | void>,
+        options?: { fatal?: boolean },
       ): Promise<void> => {
         const step = findStep(name);
         if (!step) return;
+        const fatal = options?.fatal !== false;
         step.status = "running";
         step.startedAt = new Date().toISOString();
         broadcastDeleteEvent(progress);
@@ -3560,12 +3563,18 @@ export function createLaneService({
           step.detail = result?.detail;
           step.status = "completed";
         } catch (error) {
-          step.status = "failed";
-          step.errorMessage = error instanceof Error ? error.message : String(error);
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          step.status = fatal ? "failed" : "warning";
+          step.errorMessage = errorMessage;
           step.completedAt = new Date().toISOString();
           step.durationMs = Date.now() - t0;
+          if (!fatal) {
+            nonFatalFailures.push({ step: name, message: errorMessage });
+            logger.warn("lane.delete.non_fatal_step_failed", { laneId, step: name, error: errorMessage });
+          }
           broadcastDeleteEvent(progress);
-          throw error;
+          if (fatal) throw error;
+          return;
         }
         step.completedAt = new Date().toISOString();
         step.durationMs = Date.now() - t0;
@@ -3576,6 +3585,11 @@ export function createLaneService({
       };
 
       const finalize = (status: LaneDeleteProgress["overallStatus"]): void => {
+        if (status === "failed" || status === "cancelled") {
+          for (const step of progress.steps) {
+            if (step.status === "pending") step.status = "skipped";
+          }
+        }
         progress.overallStatus = status;
         progress.completedAt = new Date().toISOString();
         progress.cancellable = false;
@@ -3713,7 +3727,7 @@ export function createLaneService({
             if (refCheck.exitCode !== 0) return { detail: "ref not found" };
             await runGitOrThrow(["branch", "-D", row.branch_ref], { cwd: projectRoot, timeoutMs: 30_000 });
             return { detail: row.branch_ref };
-          });
+          }, { fatal: false });
         }
 
         if (deleteRemoteBranch && row.branch_ref) {
@@ -3732,7 +3746,7 @@ export function createLaneService({
             }
             await runGitOrThrow(["push", remote, "--delete", row.branch_ref], { cwd: projectRoot, timeoutMs: 45_000 });
             return { detail: `${remote}/${row.branch_ref}` };
-          });
+          }, { fatal: false });
         }
 
         await runStep("pack_dir_remove", async () => {
@@ -3767,7 +3781,7 @@ export function createLaneService({
         });
 
         invalidateLaneListCache();
-        finalize("completed");
+        finalize(nonFatalFailures.length > 0 ? "completed_with_warnings" : "completed");
         const totalMs = Date.now() - new Date(progress.startedAt).getTime();
         if (totalMs >= 1_000) {
           logger.info("lane.delete.completed", {
@@ -3776,6 +3790,7 @@ export function createLaneService({
             deleteBranch,
             deleteRemoteBranch,
             force,
+            warnings: nonFatalFailures,
             durationMs: totalMs
           });
         }

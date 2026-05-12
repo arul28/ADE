@@ -300,6 +300,7 @@ export type LaneDeleteStepStatus =
   | "pending"
   | "running"
   | "completed"
+  | "warning"
   | "failed"
   | "skipped";
 
@@ -313,7 +314,7 @@ export type LaneDeleteStep = {
   errorMessage?: string;
 };
 
-export type LaneDeleteOverallStatus = "running" | "completed" | "failed" | "cancelled";
+export type LaneDeleteOverallStatus = "running" | "completed" | "completed_with_warnings" | "failed" | "cancelled";
 
 export type LaneDeleteProgress = {
   laneId: string;

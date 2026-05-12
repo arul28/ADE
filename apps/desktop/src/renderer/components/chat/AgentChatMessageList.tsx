@@ -2533,6 +2533,11 @@ function renderEvent(
         </div>
       );
     }
+    const inferredSeverity = event.severity
+      ?? (event.noticeKind === "rate_limit" && /^Claude rate limit allowed warning/i.test(event.message) ? "warning" as const : undefined)
+      ?? (event.noticeKind === "rate_limit" && /^Claude rate limit allowed/i.test(event.message) ? "info" as const : undefined)
+      ?? (event.noticeKind === "rate_limit" || event.noticeKind === "error" || event.noticeKind === "thread_error" ? "error" as const : undefined)
+      ?? (event.noticeKind === "warning" ? "warning" as const : "info" as const);
     const kindStyles: Record<string, { border: string; bg: string; text: string; icon: typeof Warning }> = {
       auth: { border: "border-amber-500/18", bg: "bg-amber-500/[0.06]", text: "text-amber-300", icon: Warning },
       rate_limit: { border: "border-red-500/18", bg: "bg-red-500/[0.06]", text: "text-red-300", icon: Warning },
@@ -2544,12 +2549,36 @@ function renderEvent(
       error: { border: "border-red-500/18", bg: "bg-red-500/[0.06]", text: "text-red-300", icon: Warning },
       config: { border: "border-border/14", bg: "bg-surface-recessed/70", text: "text-muted-fg/55", icon: Note },
     };
-    const style = kindStyles[event.noticeKind] ?? kindStyles.info!;
+    const styleKey = event.noticeKind === "rate_limit" && inferredSeverity !== "error"
+      ? inferredSeverity
+      : event.noticeKind;
+    const style = kindStyles[styleKey] ?? kindStyles.info!;
     const NoticeIcon = style.icon;
     const hasDetail = hasNoticeDetail(event.detail);
 
     if (hasDetail && event.noticeKind === "memory" && event.detail) {
       return <MinimalMemoryNotice message={event.message} detail={event.detail} />;
+    }
+
+    if (hasDetail && inferredSeverity !== "error") {
+      const detail = typeof event.detail === "string"
+        ? event.detail
+        : typeof event.detail === "object" && event.detail && "summary" in event.detail && typeof event.detail.summary === "string"
+          ? event.detail.summary
+          : null;
+      return (
+        <div className={cn(
+          "inline-flex max-w-[min(100%,70ch)] flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10/14)]",
+          style.border,
+          style.bg,
+          style.text,
+        )}>
+          <NoticeIcon size={11} weight="bold" />
+          <span className="text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em]">{event.noticeKind.replace("_", " ")}</span>
+          <span className="normal-case tracking-normal text-fg/55">{event.message}</span>
+          {detail ? <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-fg/42">{detail}</span> : null}
+        </div>
+      );
     }
 
     if (hasDetail) {

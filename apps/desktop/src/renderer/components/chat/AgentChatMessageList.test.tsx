@@ -541,6 +541,28 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.getByText("Codex session is missing thread id")).toBeTruthy();
   });
 
+  it("renders allowed rate-limit telemetry as a compact non-error notice", () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "system_notice",
+          noticeKind: "rate_limit",
+          severity: "info",
+          status: "allowed",
+          message: "Claude rate limit allowed",
+          detail: "resets 2026-05-12T20:30:00.000Z",
+        },
+      },
+    ]);
+
+    expect(screen.getByText("rate limit")).toBeTruthy();
+    expect(screen.getByText("Claude rate limit allowed")).toBeTruthy();
+    expect(screen.getByText("resets 2026-05-12T20:30:00.000Z")).toBeTruthy();
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+
   // Work-log grouping, file-change grouping, and overflow-expand tests
   // removed: they tested old ChatWorkLogBlock rendering (Show N earlier,
   // specific label text) which changes with every UI iteration.

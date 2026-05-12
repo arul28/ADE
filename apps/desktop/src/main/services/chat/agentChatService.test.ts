@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { query, startup } from "@anthropic-ai/claude-agent-sdk";
+import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { buildOpenCodePromptParts, startOpenCodeSession } from "../opencode/openCodeRuntime";
 import {
   clearOpenCodeInventoryCache,
@@ -1296,6 +1297,8 @@ beforeEach(() => {
   vi.mocked(query).mockReset();
   vi.mocked(startup).mockReset();
   installClaudeSdkCompatMocks();
+  vi.mocked(resolveClaudeCodeExecutable).mockClear();
+  vi.mocked(resolveClaudeCodeExecutable).mockReturnValue({ path: "/usr/local/bin/claude", source: "path" });
   vi.mocked(detectAllAuth).mockResolvedValue([]);
   vi.mocked(parseAgentChatTranscript).mockReturnValue([]);
   vi.mocked(clearOpenCodeInventoryCache).mockClear();
@@ -3524,10 +3527,15 @@ describe("createAgentChatService", () => {
       expect(rateLimitNotices[0].event).toMatchObject({
         type: "system_notice",
         noticeKind: "rate_limit",
+        severity: "warning",
+        status: "allowed_warning",
         message: "Claude rate limit allowed warning",
       });
       expect(rateLimitNotices[0].event.detail).toContain("82% utilized");
       expect(rateLimitNotices[0].event.detail).toContain("resets");
+      expect(claudeSdkCreateSessionCompat.mock.calls.some(([options]) =>
+        options?.pathToClaudeCodeExecutable === "/usr/local/bin/claude",
+      )).toBe(true);
     });
 
     it("registers a PreCompact hook on non-lightweight Claude sessions", async () => {

@@ -504,6 +504,9 @@ function DeleteProgressStrip({ progress }: { progress: LaneDeleteProgress }) {
     case "completed":
       tone = "border-emerald-500/15 bg-emerald-500/[0.04]";
       break;
+    case "completed_with_warnings":
+      tone = "border-amber-500/15 bg-amber-500/[0.04]";
+      break;
     case "failed":
       tone = "border-red-500/15 bg-red-500/[0.06]";
       break;
@@ -527,6 +530,9 @@ function DeleteProgressStrip({ progress }: { progress: LaneDeleteProgress }) {
       {progress.overallStatus === "completed" ? (
         <div className="mt-2 text-[11px] text-emerald-300">Delete completed. Refreshing lane list...</div>
       ) : null}
+      {progress.overallStatus === "completed_with_warnings" ? (
+        <div className="mt-2 text-[11px] text-amber-300">Lane deleted. Some branch cleanup needs attention.</div>
+      ) : null}
     </div>
   );
 }
@@ -539,6 +545,10 @@ function ProgressStepRow({ step }: { step: LaneDeleteStep }) {
     case "completed":
       icon = <CheckCircle size={12} className="text-emerald-400" weight="fill" />;
       textTone = "text-fg/85";
+      break;
+    case "warning":
+      icon = <WarningCircle size={12} className="text-amber-400" weight="fill" />;
+      textTone = "text-amber-300";
       break;
     case "failed":
       icon = <X size={12} className="text-red-400" weight="bold" />;
@@ -562,6 +572,14 @@ function ProgressStepRow({ step }: { step: LaneDeleteStep }) {
     <div className="flex items-center gap-2 text-xs">
       <span className="flex h-3 w-3 items-center justify-center">{icon}</span>
       <span className={`flex-1 ${textTone}`}>{label}</span>
+      {step.errorMessage ? (
+        <span
+          className={`max-w-[50%] truncate text-[11px] ${step.status === "warning" ? "text-amber-300/80" : "text-red-300/80"}`}
+          title={step.errorMessage}
+        >
+          {step.errorMessage}
+        </span>
+      ) : null}
       {step.detail ? <span className="text-[11px] text-muted-fg/60">{step.detail}</span> : null}
       {duration ? <span className="text-[11px] text-muted-fg/50 tabular-nums">{duration}</span> : null}
     </div>
