@@ -89,6 +89,20 @@ type RebaseScopePromptState = {
   resolve: (scope: RebaseScope | null) => void;
 };
 
+type LanePaneSurface = "inline" | "git-actions-fullscreen" | "lane-fullscreen";
+
+export function shouldMountGitActionsPane({
+  laneId,
+  expandedGitActionsLaneId,
+  surface,
+}: {
+  laneId: string | null;
+  expandedGitActionsLaneId: string | null;
+  surface: LanePaneSurface;
+}): boolean {
+  return surface !== "inline" || !laneId || expandedGitActionsLaneId !== laneId;
+}
+
 type RebasePushReviewState = {
   runId: string;
   lanes: Array<{ laneId: string; laneName: string; selected: boolean }>;
@@ -872,7 +886,8 @@ export function LanesPage() {
     let timer: ReturnType<typeof setTimeout> | null = null;
     const refreshRuntimeOnly = () =>
       refreshLanes({
-        includeStatus: true,
+        includeStatus: false,
+        includeSnapshots: true,
         includeConflictStatus: false,
         includeRebaseSuggestions: false,
         includeAutoRebaseStatus: false,
@@ -2108,13 +2123,18 @@ export function LanesPage() {
 
   /* ---- Pane configs ---- */
 
-  const getPaneConfigs = useCallback((laneId: string | null) => {
+  const getPaneConfigs = useCallback((laneId: string | null, surface: LanePaneSurface = "inline") => {
     const laneDetail = laneId ? lanePaneDetails[laneId] ?? EMPTY_LANE_PANE_DETAIL : EMPTY_LANE_PANE_DETAIL;
     const laneSnapshot = laneId ? laneSnapshotByLaneId.get(laneId) ?? null : null;
     const pendingLinearIssueContext =
       laneId && linearIssueChatContextRequest?.laneId === laneId
         ? linearIssueChatContextRequest
         : null;
+    const mountGitActionsPane = shouldMountGitActionsPane({
+      laneId,
+      expandedGitActionsLaneId,
+      surface,
+    });
     return {
       "git-actions": {
         title: "Git Actions",
@@ -2143,7 +2163,7 @@ export function LanesPage() {
           </>
         ),
         bodyClassName: "overflow-hidden",
-        children: (
+        children: mountGitActionsPane ? (
           <DeferredLanePane cacheKey={`git:${laneId ?? "none"}`} label="git actions">
             <LaneGitActionsPane
               laneId={laneId}
@@ -2163,7 +2183,7 @@ export function LanesPage() {
               onClearDiffSelection={laneId ? () => handleClearLanePaneDetailSelection(laneId) : undefined}
             />
           </DeferredLanePane>
-        )
+        ) : null
       },
       "work": {
         title: "Work",
@@ -3272,7 +3292,7 @@ export function LanesPage() {
           <PaneTilingLayout
             layoutId={`lanes:git-actions:fullscreen:v1:${expandedGitActionsLaneId}`}
             tree={GIT_ACTIONS_FULLSCREEN_TREE}
-            panes={getPaneConfigs(expandedGitActionsLaneId)}
+            panes={getPaneConfigs(expandedGitActionsLaneId, "git-actions-fullscreen")}
             className="flex-1 min-h-0"
           />
         </div>
@@ -3294,7 +3314,7 @@ export function LanesPage() {
           <PaneTilingLayout
             layoutId={`lanes:tiling:${LANES_TILING_LAYOUT_VERSION}${laneTilingLayoutSuffix}:${expandedLaneId}`}
             tree={laneTilingTree}
-            panes={getPaneConfigs(expandedLaneId)}
+            panes={getPaneConfigs(expandedLaneId, "lane-fullscreen")}
             className="flex-1 min-h-0"
           />
         </div>
@@ -3328,7 +3348,7 @@ export function LanesPage() {
             setActiveLaneIds(allIds);
           }}
           onBatchManage={openBatchManage}
-          onAppearanceChanged={() => refreshLanes().catch(() => {})}
+          onAppearanceChanged={() => refreshLanes({ includeStatus: false }).catch(() => {})}
         />
       ) : null}
 
@@ -3359,7 +3379,7 @@ export function LanesPage() {
         }}
         onArchive={() => { archiveManagedLanes().catch(() => {}); }}
         onDelete={() => { deleteManagedLanes().catch(() => {}); }}
-        onAppearanceChanged={() => refreshLanes().catch(() => {})}
+        onAppearanceChanged={() => refreshLanes({ includeStatus: false }).catch(() => {})}
       />
 
 

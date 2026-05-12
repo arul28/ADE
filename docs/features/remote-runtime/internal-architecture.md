@@ -6,7 +6,7 @@ Remote runtime support is built on the same JSON-RPC runtime the local `ade serv
 
 `OpenProjectBinding` records the active runtime for a window:
 
-- `kind: "local"` — actions go through `LocalRuntimeConnectionPool`, which connects to the machine socket (`~/.ade/sock/ade.sock`) and spawns `ade serve` if it is not running.
+- `kind: "local"` — actions normally go through `LocalRuntimeConnectionPool`, which connects to the machine socket (`~/.ade/sock/ade.sock`) and spawns `ade serve` if it is not running. With `ADE_DISABLE_LOCAL_RUNTIME_DAEMON=1`, preload treats the local runtime route as unavailable and falls back to Electron IPC without spawning or polling the daemon.
 - `kind: "remote"` — actions go through `RemoteConnectionPool` keyed by `{ targetId, projectId }`.
 
 The binding is established when a project is opened. Local bindings are created from the current desktop project (the desktop calls `LocalRuntimeConnectionPool.ensureProject(rootPath)` to register the project with the daemon and capture its `projectId`). Remote bindings are created by `remoteRuntimeOpenProject` after the selected target is connected and the remote project record is confirmed.
@@ -33,7 +33,7 @@ Project-scoped operations are routed through `ade/actions/call` and carry `param
 
 `ade/initialize` advertises `runtimeInfo.multiProject: true` and `capabilities.projects: true`. Clients use that to decide whether to send `projectId` per request (multi-project runtime) or treat the runtime as already bound to one project (embedded `ade code --embedded`). `validateRemoteRuntimeInitializeResult` enforces both flags on the remote side and rejects mismatched runtime versions.
 
-Runtime event streaming uses `ade/actions/call` with `name: "stream_events"` for one-shot pulls, and `runtimeEvents.subscribe` (with `runtime/event` notifications) for live streaming. For remote bindings the desktop reconnects the SSH transport before re-subscribing, matching normal remote action behavior after disconnects. For local bindings, preload polls the local daemon through `localRuntimeStreamEvents` so daemon-owned chat, terminal, pty, lane, file-watch, process, and test events are delivered through the same renderer fanout used by remote projects.
+Runtime event streaming uses `ade/actions/call` with `name: "stream_events"` for one-shot pulls, and `runtimeEvents.subscribe` (with `runtime/event` notifications) for live streaming. For remote bindings the desktop reconnects the SSH transport before re-subscribing, matching normal remote action behavior after disconnects. For local bindings, preload polls the local daemon through `localRuntimeStreamEvents` so daemon-owned chat, terminal, pty, lane, file-watch, process, and test events are delivered through the same renderer fanout used by remote projects. The local event pump is not started when `ADE_DISABLE_LOCAL_RUNTIME_DAEMON=1`.
 
 ## SSH transport
 
@@ -72,13 +72,13 @@ Before opening a remote project, `remoteRuntimeCheckLocalWork` compares the remo
 
 The sync WebSocket host is owned by the `ade serve` daemon in normal desktop operation. `ProjectScopeRegistry.ensureSyncHost` elects the most-recently-opened registered project as the active sync host and re-elects when projects are added or removed.
 
-Desktop sync Settings IPC first talks to the local runtime daemon for status, discovery, device registry, and PIN operations, then falls back to the legacy in-process sync service only when the daemon route is unavailable. The old desktop-host path is guarded by `ADE_ENABLE_DESKTOP_SYNC_HOST=1` for diagnostics and migration debugging.
+Desktop sync Settings IPC first talks to the local runtime daemon for status, discovery, device registry, and PIN operations, then falls back to the legacy in-process sync service only when the daemon route is unavailable. When `ADE_DISABLE_LOCAL_RUNTIME_DAEMON=1`, IPC skips the daemon route; if no in-process sync service is available, status returns a standalone unavailable snapshot and `sync.setActiveLanePresence` no-ops. The old desktop-host path is guarded by `ADE_ENABLE_DESKTOP_SYNC_HOST=1` for diagnostics and migration debugging.
 
 The sync command registry labels descriptors as `runtime` or `project` scope. Project-bound hosts reject project-scoped commands that arrive without a matching `projectId`, while runtime-scoped commands operate on the daemon as a whole. This keeps mobile/controller commands explicit in the multi-project runtime.
 
 ## Local daemon routing
 
-Local desktop windows go through the runtime binding before falling back to legacy Electron-hosted handlers. `callProjectRuntimeActionOr` and `callProjectRuntimeSyncOr` in `apps/desktop/src/preload/preload.ts` try the runtime path first and fall back to the in-process IPC only on a safe local-runtime fallback error.
+Local desktop windows go through the runtime binding before falling back to legacy Electron-hosted handlers. `callProjectRuntimeActionOr` and `callProjectRuntimeSyncOr` in `apps/desktop/src/preload/preload.ts` try the runtime path first and fall back to the in-process IPC only on a safe local-runtime fallback error. The exception is `ADE_DISABLE_LOCAL_RUNTIME_DAEMON=1`: preload returns "not handled" for local runtime calls immediately, so local windows use the fallback handlers directly.
 
 The runtime path covers:
 

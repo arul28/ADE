@@ -94,6 +94,10 @@ vi.mock("../files/FilesPage", async () => {
   };
 });
 
+vi.mock("../lanes/LanesPage", () => ({
+  LanesPage: () => <div data-testid="lanes-page" />,
+}));
+
 describe("App Work route keep-alive", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -186,5 +190,19 @@ describe("App Work route keep-alive", () => {
     await screen.findByTestId("project-page");
     expect(screen.queryByTestId("work-page")).toBeNull();
     expect(workLifecycle.mounts).toBe(0);
+  });
+
+  it("converts legacy hash app routes into BrowserRouter paths", async () => {
+    window.history.replaceState({}, "", "/work#/lanes");
+    const { App } = await import("./App");
+
+    render(<App />);
+
+    await screen.findByTestId("lanes-page");
+    await waitFor(() => {
+      expect(window.location.pathname).toBe("/lanes");
+      expect(window.location.hash).toBe("");
+    });
+    expect(screen.getByTestId("work-page").getAttribute("data-active")).toBe("false");
   });
 });

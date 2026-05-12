@@ -1765,14 +1765,86 @@ export function registerIpc({
     if (getSyncService) return getSyncService() ?? null;
     return getCtx().syncService ?? null;
   };
+  const resolveOptionalSyncService = async (): Promise<ReturnType<typeof createSyncService> | null> =>
+    resolveSyncService
+      ? (await resolveSyncService()) ?? null
+      : getOptionalSyncService();
+  const localRuntimeDaemonDisabled = process.env.ADE_DISABLE_LOCAL_RUNTIME_DAEMON === "1";
   const allowLocalRuntimeFallback =
-    process.env.ADE_LOCAL_RUNTIME_FALLBACK === "1" ||
-    process.env.ADE_DISABLE_LOCAL_RUNTIME_DAEMON === "1";
+    process.env.ADE_LOCAL_RUNTIME_FALLBACK === "1";
+
+  const unavailableSyncSnapshotCreatedAt = new Date().toISOString();
+  const unavailableSyncPlatform =
+    process.platform === "darwin"
+      ? "macOS"
+      : process.platform === "win32"
+        ? "windows"
+        : process.platform === "linux"
+          ? "linux"
+          : "unknown";
+  const unavailableSyncDevice: SyncDeviceRecord = {
+    deviceId: "local-runtime-disabled",
+    siteId: "local-runtime-disabled",
+    name: "Local desktop",
+    platform: unavailableSyncPlatform,
+    deviceType: "desktop",
+    createdAt: unavailableSyncSnapshotCreatedAt,
+    updatedAt: unavailableSyncSnapshotCreatedAt,
+    lastSeenAt: unavailableSyncSnapshotCreatedAt,
+    lastHost: null,
+    lastPort: null,
+    tailscaleIp: null,
+    ipAddresses: [],
+    metadata: { unavailableReason: "local_runtime_daemon_disabled" },
+  };
+  const unavailableSyncSnapshot: SyncRoleSnapshot = {
+    mode: "standalone",
+    role: "brain",
+    localDevice: unavailableSyncDevice,
+    currentBrain: unavailableSyncDevice,
+    clusterState: null,
+    bootstrapToken: null,
+    pairingPin: null,
+    pairingPinConfigured: false,
+    pairingConnectInfo: null,
+    connectedPeers: [],
+    tailnetDiscovery: {
+      state: "disabled",
+      serviceName: "ade-sync",
+      servicePort: 0,
+      target: null,
+      updatedAt: null,
+      error: null,
+      stderr: null,
+    },
+    client: {
+      state: "disconnected",
+      host: null,
+      port: null,
+      connectedAt: null,
+      lastSeenAt: null,
+      latencyMs: null,
+      syncLag: null,
+      lastRemoteDbVersion: 0,
+      brainDeviceId: unavailableSyncDevice.deviceId,
+      hostName: unavailableSyncDevice.name,
+      error: null,
+      message: "Sync service unavailable in local runtime disabled mode.",
+      savedDraft: null,
+    },
+    transferReadiness: {
+      ready: true,
+      blockers: [],
+      survivableState: [],
+    },
+    survivableStateText: "Sync service unavailable in local runtime disabled mode.",
+    blockingStateText: "",
+  };
+
+  const buildUnavailableSyncSnapshot = (): SyncRoleSnapshot => unavailableSyncSnapshot;
 
   const requireSyncService = async (): Promise<ReturnType<typeof createSyncService>> => {
-    const service = resolveSyncService
-      ? await resolveSyncService()
-      : getOptionalSyncService();
+    const service = await resolveOptionalSyncService();
     if (!service) {
       throw new Error("Sync service is not available.");
     }
@@ -1792,6 +1864,7 @@ export function registerIpc({
     event: { sender: Electron.WebContents },
     action: (pool: LocalRuntimeConnectionPool, rootPath: string) => Promise<T>,
   ): Promise<T | null> => {
+    if (localRuntimeDaemonDisabled) return null;
     if (!localRuntimeConnectionPool) return null;
     const rootPath = getLocalRuntimeRootForEvent(event);
     if (!rootPath) return null;
@@ -4076,7 +4149,12 @@ export function registerIpc({
       pool.syncStatusForRoot(rootPath, arg ?? {})
     );
     if (runtimeStatus) return runtimeStatus;
-    return await (await requireSyncService()).getStatus({
+    const service = await resolveOptionalSyncService();
+    if (!service) {
+      if (localRuntimeDaemonDisabled) return buildUnavailableSyncSnapshot();
+      throw new Error("Sync service is not available.");
+    }
+    return await service.getStatus({
       includeTransferReadiness: arg?.includeTransferReadiness,
       forceTransferReadiness: arg?.forceTransferReadiness,
     });
@@ -4204,7 +4282,7 @@ export function registerIpc({
     async (event, arg: { laneIds?: string[] | null }): Promise<void> => {
       const laneIds = Array.isArray(arg?.laneIds) ? arg.laneIds : [];
       const rootPath = getLocalRuntimeRootForEvent(event);
-      if (localRuntimeConnectionPool && rootPath) {
+      if (!localRuntimeDaemonDisabled && localRuntimeConnectionPool && rootPath) {
         try {
           await localRuntimeConnectionPool.callSyncForRoot(rootPath, "sync.setActiveLanePresence", { laneIds });
           return;
@@ -4214,9 +4292,12 @@ export function registerIpc({
           }
         }
       }
-      await (await requireSyncService()).setActiveLanePresence(
-        laneIds,
-      );
+      const service = await resolveOptionalSyncService();
+      if (!service) {
+        if (localRuntimeDaemonDisabled) return;
+        throw new Error("Sync service is not available.");
+      }
+      await service.setActiveLanePresence(laneIds);
     },
   );
 
