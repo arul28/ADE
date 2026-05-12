@@ -119,7 +119,7 @@ The desktop app is a **client of the runtime**. It owns a trusted main process, 
 | Directory | Role |
 |-----------|------|
 | `apps/desktop/src/main/` | Node process with full OS access. Hosts windows, registers IPC handlers, routes runtime-backed APIs through local/remote runtime pools, spawns the local runtime daemon when needed, and runs the legacy in-process services that have not yet been migrated to the runtime. Entry: `main.ts`. |
-| `apps/desktop/src/preload/` | Typed bridge. Entry: `preload.ts`. Uses `contextBridge.exposeInMainWorld("ade", { ... })`. Runtime-backed APIs route through `LocalRuntimeConnectionPool` (local) or `RemoteConnectionPool` (SSH-bound window). |
+| `apps/desktop/src/preload/` | Typed bridge. Entry: `preload.ts`. Uses `contextBridge.exposeInMainWorld("ade", { ... })`. Runtime-backed APIs route through `LocalRuntimeConnectionPool` (local) or `RemoteConnectionPool` (SSH-bound window); when `ADE_DISABLE_LOCAL_RUNTIME_DAEMON=1`, local-bound windows skip the daemon/event pump and use guarded in-process IPC fallbacks. |
 | `apps/desktop/src/renderer/` | React 18 SPA. No Node access, no filesystem access, no direct process/network. Everything goes through `window.ade`. Entry: `main.tsx`. |
 | `apps/desktop/src/shared/` | Types, IPC channel constants (`ipc.ts`), model registry (`modelRegistry.ts`), keybindings, and other DTOs. Imported by both desktop and `apps/ade-cli`. New runtime-facing types live in `shared/types/remoteRuntime.ts` and `shared/types/core.ts`. |
 | `apps/desktop/src/generated/` | Build-time generated code (e.g., bootstrap SQL snapshots). |
@@ -130,7 +130,7 @@ The desktop app is a **client of the runtime**. It owns a trusted main process, 
 
 **Runtime binding pools.**
 
-- `apps/desktop/src/main/services/localRuntime/localRuntimeConnectionPool.ts` — desktop-side client for the local `ade serve` daemon. Spawns or attaches to the machine socket, registers local projects with `projects.add`, dispatches local runtime actions, and best-effort installs the background service in packaged builds.
+- `apps/desktop/src/main/services/localRuntime/localRuntimeConnectionPool.ts` — desktop-side client for the local `ade serve` daemon. Spawns or attaches to the machine socket, registers local projects with `projects.add`, dispatches local runtime actions, and best-effort installs the background service in packaged builds. `ADE_DISABLE_LOCAL_RUNTIME_DAEMON=1` is a development/diagnostic escape hatch: preload does not pump local runtime events or issue local runtime actions, and main-process sync IPC returns a standalone unavailable snapshot or no-ops lane-presence updates instead of spawning the daemon.
 - `apps/desktop/src/main/services/remoteRuntime/` — SSH-bound runtime pool. `remoteTargetRegistry.ts` stores saved machines under `~/.ade/secrets/remote-machines.json`; `sshTransport.ts` handles ssh-agent / key based transport; `remoteBootstrap.ts` does first-connect runtime upload + version negotiation against the bundled `ade-<platform-arch>` binary; `remoteConnectionPool.ts` keeps the per-window remote runtime binding alive with reconnect / eviction; `runtimeRpcClient.ts` is the JSON-RPC client; `runtimeDiscovery.ts` discovers reachable runtimes on the network.
 
 Build outputs (configured in `apps/desktop/tsup.config.ts`):
@@ -522,13 +522,14 @@ On startup the main process also invokes `recoverManagedOpenCodeOrphans({ force:
 | Pane layouts | `react-resizable-panels`, in-house `PaneTilingLayout` |
 | Virtualization | `@tanstack/react-virtual` |
 
-Electron renderer runtime does **not** wrap the app in `React.StrictMode`. Browser-mock development (outside Electron) still uses Strict Mode.
+Electron renderer runtime does **not** wrap the app in `React.StrictMode`. Browser-mock development (outside Electron) still uses Strict Mode. The app uses `BrowserRouter` on normal `http(s)` origins and `HashRouter` inside Electron/file-like contexts; `App.tsx` also bridges legacy `#/route` fragments into BrowserRouter paths so old ADE deep links keep working in the browser-hosted dev shell.
 
 ### 7.2 Global store
 
-`apps/desktop/src/renderer/state/appStore.ts` (~868 lines) — Zustand store holding project, lanes, selected lane, theme, provider mode, keybindings, per-project work-view state. Patterns:
+`apps/desktop/src/renderer/state/appStore.ts` (~1,325 lines) — Zustand store holding project, lanes, selected lane, theme, provider mode, keybindings, per-project work-view state. Patterns:
 
 - Narrow selectors on components to minimize re-renders.
+- `refreshLanes` accepts independent lane-status and lane-snapshot flags. Callers can refresh cheap runtime snapshot decorations without recomputing git status, or update git status without rebuilding conflict/rebase/auto-rebase overlays; statusless refreshes preserve the previous `LaneStatus`/`parentStatus` in store so the UI does not flicker to unknown git state.
 - Per-project work-view state keyed by project root (`WorkProjectViewState`). Includes the right-edge Work sidebar fields `workSidebarOpen`, `workSidebarTab` (`"git" | "files" | "ios" | "app-control" | "browser"`), and `workSidebarWidthPct` (clamped 26–55) — persisted alongside the rest of the work-view state under `ade.workViewState.v1`. The sidebar consolidates lane-scoped tools that were previously split across separate floating panes; per-chat iOS / App Control drawers still exist on `AgentChatPane` but are suppressed when the chat is mounted as a Work tile so the sidebar owns those surfaces at lane scope. The `browser` tab is the only sidebar tab that is not lane-scoped — the built-in browser is one shared instance per app.
 - Store-owned event subscriptions for high-frequency streams (e.g., missions).
 - `projectRevision` is a monotonically incrementing counter bumped inside `setProject` whenever the active project root actually changes. Long-lived renderer-side caches (most notably the module-level xterm runtime cache in `TerminalView.tsx`) subscribe to it and tear down any entries whose `projectRoot`/`projectRevision` no longer match, so PTYs never bleed between projects. All project-transition paths (`refreshProject`, `openRepo`, `switchProjectToPath`, `closeProject`) go through `setProject` to keep the counter honest.

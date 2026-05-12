@@ -185,8 +185,10 @@ describe("ade rpc --stdio daemon bridge", () => {
     const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
     const cliPath = path.join(packageRoot, "src", "cli.ts");
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-stdio-rpc-"));
-    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-stdio-rpc-project-"));
-    const expectedProjectRoot = fs.realpathSync.native(projectRoot);
+    const projectRoot = fs.realpathSync.native(
+      fs.mkdtempSync(path.join(os.tmpdir(), "ade-stdio-rpc-project-")),
+    );
+    const expectedProjectRoot = projectRoot;
     const socketPath = path.join(adeHome, "sock", "ade.sock");
     const env = {
       ...process.env,

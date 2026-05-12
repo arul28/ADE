@@ -5,6 +5,7 @@ import {
   resolveCreateLaneRequest,
   resolveLaneIdsDeepLinkSelection,
   selectLanePrTag,
+  shouldMountGitActionsPane,
 } from "./LanesPage";
 import type { LaneSummary, PrSummary } from "../../../shared/types";
 
@@ -233,5 +234,33 @@ describe("selectLanePrTag", () => {
         }),
       ),
     ).toBe(false);
+  });
+});
+
+describe("shouldMountGitActionsPane", () => {
+  it("mounts one Git Actions pane owner when a lane is expanded", () => {
+    expect(shouldMountGitActionsPane({
+      laneId: "lane-1",
+      expandedGitActionsLaneId: "lane-1",
+      surface: "inline",
+    })).toBe(false);
+
+    expect(shouldMountGitActionsPane({
+      laneId: "lane-1",
+      expandedGitActionsLaneId: "lane-1",
+      surface: "git-actions-fullscreen",
+    })).toBe(true);
+
+    expect(shouldMountGitActionsPane({
+      laneId: "lane-2",
+      expandedGitActionsLaneId: "lane-1",
+      surface: "inline",
+    })).toBe(true);
+
+    expect(shouldMountGitActionsPane({
+      laneId: "lane-1",
+      expandedGitActionsLaneId: null,
+      surface: "inline",
+    })).toBe(true);
   });
 });

@@ -718,6 +718,14 @@ export function LaneGitActionsPane({
     }
   };
 
+  const refreshLaneGitState = useCallback(async (targetLaneId: string | null) => {
+    await Promise.all([
+      refreshChanges(targetLaneId),
+      refreshLanes({ includeStatus: true, includeSnapshots: true }),
+      refreshGitMeta(targetLaneId),
+    ]);
+  }, [refreshChanges, refreshGitMeta, refreshLanes]);
+
   const refreshAll = async (options?: { fetchRemote?: boolean }, targetLaneId: string | null = laneId) => {
     if (targetLaneId && options?.fetchRemote) {
       try {
@@ -726,7 +734,7 @@ export function LaneGitActionsPane({
         // best effort
       }
     }
-    await Promise.all([refreshChanges(targetLaneId), refreshLanes(), refreshGitMeta(targetLaneId)]);
+    await refreshLaneGitState(targetLaneId);
     if (isViewingLane(targetLaneId)) {
       setCommitTimelineKey((prev) => prev + 1);
     }
@@ -844,13 +852,13 @@ export function LaneGitActionsPane({
   };
 
   const completeCommitRefresh = useCallback(async (targetLaneId: string) => {
-    await Promise.all([refreshChanges(targetLaneId), refreshLanes(), refreshGitMeta(targetLaneId)]);
+    await refreshLaneGitState(targetLaneId);
     if (isViewingLane(targetLaneId)) {
       setCommitTimelineKey((prev) => prev + 1);
       setCommitMessage("");
       setAmendCommit(false);
     }
-  }, [isViewingLane, refreshChanges, refreshGitMeta, refreshLanes]);
+  }, [isViewingLane, refreshLaneGitState]);
 
   const submitCommit = useCallback(async () => {
     if (!laneId || (!hasStaged && !amendCommit) || busyAction != null) return;

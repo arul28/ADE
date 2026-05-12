@@ -9,9 +9,10 @@ import { ProjectScopeRegistry } from "./services/projects/projectScope";
 
 function createRegistry() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-multi-project-rpc-"));
-  const projectRoot = path.join(root, "project");
-  fs.mkdirSync(projectRoot, { recursive: true });
-  const expectedProjectRoot = fs.realpathSync.native(projectRoot);
+  const rawProjectRoot = path.join(root, "project");
+  fs.mkdirSync(rawProjectRoot, { recursive: true });
+  const projectRoot = fs.realpathSync.native(rawProjectRoot);
+  const expectedProjectRoot = projectRoot;
   const registry = new ProjectRegistry({
     adeDir: path.join(root, "home"),
     projectsPath: path.join(root, "home", "projects.json"),

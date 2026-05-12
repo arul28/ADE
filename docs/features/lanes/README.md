@@ -24,15 +24,17 @@ remote-bound windows. The legacy in-process `laneService.ts` still exists
 on the desktop main process as a fallback target so older callers and
 tests keep working — preload calls the runtime first via
 `callProjectRuntimeActionOr("lane", …)` and only invokes the local IPC
-handler if no runtime is bound. For remote-bound windows the worktree is
-created on the remote machine; the desktop renders the same UX but the
-git operations, file watchers, PTYs, and processes execute on the remote
-host. The desktop main process keeps a thin `laneListSnapshotService.ts`
-helper for assembling per-window lane snapshots that overlay sync
-presence on top of runtime-supplied lane summaries. Multi-window: each
-desktop window has its own project binding, so a lane-creation request
-in window A targets window A's runtime (local or remote) regardless of
-what window B is bound to.
+handler if no runtime is bound. When `ADE_DISABLE_LOCAL_RUNTIME_DAEMON=1`
+is set for local development/diagnostics, preload skips the local daemon
+route entirely and goes straight to those in-process IPC fallbacks. For
+remote-bound windows the worktree is created on the remote machine; the
+desktop renders the same UX but the git operations, file watchers, PTYs,
+and processes execute on the remote host. The desktop main process keeps
+a thin `laneListSnapshotService.ts` helper for assembling per-window lane
+snapshots that overlay sync presence on top of runtime-supplied lane
+summaries. Multi-window: each desktop window has its own project binding,
+so a lane-creation request in window A targets window A's runtime (local
+or remote) regardless of what window B is bound to.
 
 ## Source file map
 
@@ -67,7 +69,7 @@ Renderer components:
 
 | File | Responsibility |
 |------|---------------|
-| `renderer/components/lanes/LanesPage.tsx` | 3-pane cockpit, tab management, dialog coordination. Each lane row in the lane list optionally renders a state-aware PR tag (`PR #N` / `DRAFT #N` / `MERGED #N` / `CLOSED #N`) when the lane's current branch matches an existing PR; the row uses `selectLanePrTag` (open/draft → merged → closed, then most recent) and falls back through the same branch-equality rules as `prService.getDisplayRowForCurrentLaneBranch`, so the badge stays attached to the lane even after the PR merges. Lane delete kicks off optimistically: the page subscribes to `lanes.delete.event`, tracks per-lane `LaneDeleteProgress` in `deleteProgressByLaneId`, immediately closes the manage dialog, and excludes deleting lanes from the selectable lane id sets used by keyboard navigation (`selectableFilteredLaneIds`, `sortedSelectableLaneIds`). Lane tabs for deleting lanes render a non-interactive overlay with a spinning `CircleNotch` and a `Deleting` / `Deleted` label; selection / pinning / context menu / split / git-actions surfaces are all suppressed for those rows. `resolveLaneDeleteStartSelection` (also used by tests) computes a fallback selection so the user is moved to the next available lane the moment delete starts, and a top-bar "Lane action failed" chip surfaces any failure or cancellation through `laneActionError`. |
+| `renderer/components/lanes/LanesPage.tsx` | 3-pane cockpit, tab management, dialog coordination. Each lane row in the lane list optionally renders a state-aware PR tag (`PR #N` / `DRAFT #N` / `MERGED #N` / `CLOSED #N`) when the lane's current branch matches an existing PR; the row uses `selectLanePrTag` (open/draft → merged → closed, then most recent) and falls back through the same branch-equality rules as `prService.getDisplayRowForCurrentLaneBranch`, so the badge stays attached to the lane even after the PR merges. Runtime activity refreshes use `refreshLanes({ includeStatus: false, includeSnapshots: true, ... })` so PTY/chat/process buckets update without recomputing git status. Expanding Git Actions suppresses the hidden inline duplicate pane via `shouldMountGitActionsPane` while keeping the fullscreen pane mounted. Lane delete kicks off optimistically: the page subscribes to `lanes.delete.event`, tracks per-lane `LaneDeleteProgress` in `deleteProgressByLaneId`, immediately closes the manage dialog, and excludes deleting lanes from the selectable lane id sets used by keyboard navigation (`selectableFilteredLaneIds`, `sortedSelectableLaneIds`). Lane tabs for deleting lanes render a non-interactive overlay with a spinning `CircleNotch` and a `Deleting` / `Deleted` label; selection / pinning / context menu / split / git-actions surfaces are all suppressed for those rows. `resolveLaneDeleteStartSelection` (also used by tests) computes a fallback selection so the user is moved to the next available lane the moment delete starts, and a top-bar "Lane action failed" chip surfaces any failure or cancellation through `laneActionError`. |
 | `renderer/components/lanes/laneUtils.ts` | Pure lane list/filter helpers plus default pane trees, including the work-focused tiling tree used by parallel chat launch deep links. |
 | `renderer/components/lanes/laneColorPalette.ts` | Curated 12-swatch lane color palette (`LANE_COLOR_PALETTE`) plus helpers (`getLaneAccent`, `colorsInUse`, `nextAvailableColor`, `laneColorName`). The first 8 hexes form `LANE_FALLBACK_COLORS`, the legacy index-based fallback used for lanes that don't have an explicit color assigned. |
 | `renderer/components/lanes/LaneAccentDot.tsx` | Tiny accent dot used everywhere a lane is mentioned (lane list, tabs, PR rows, AppShell PR toasts). Resolves color via `getLaneAccent` so a lane without an explicit color falls back to a deterministic fallback hex. |
@@ -75,7 +77,7 @@ Renderer components:
 | `renderer/components/lanes/LaneContextMenu.tsx` | Right-click menu on the lane list. Hosts the inline color swatch row that calls `lanes.updateAppearance` directly, "Reveal/Copy path", manage/adopt/open-in-Run actions, split-tab actions, and batch manage. |
 | `renderer/components/lanes/LaneStackPane.tsx` | Stack graph sidebar, integration source chips, canvas jump |
 | `renderer/components/lanes/LaneDiffPane.tsx` | Lane diff list + per-file stage/unstage/discard; file content uses shared `AdeDiffViewer` (commit comparisons read-only; working-tree file can be editable when unstaged) |
-| `renderer/components/lanes/LaneGitActionsPane.tsx` | Commit, stash, fetch, sync, push, recent commits. Stashing includes untracked files when the unstaged set contains untracked paths, and stash restore uses the ordinal `stash@{N}` ref returned by `git stash list`. Seeds its `autoRebaseStatus` from the `autoRebaseStatusSnapshot` prop that `LanesPage` passes from the lane list (`laneSnapshot.autoRebaseStatus`), so opening a lane does not trigger a per-lane probe. A fallback `refreshAutoRebaseStatus` runs only when the snapshot is `undefined`, after a 3.5 s delay, and only while the document is visible. |
+| `renderer/components/lanes/LaneGitActionsPane.tsx` | Commit, stash, fetch, sync, push, recent commits. Stashing includes untracked files when the unstaged set contains untracked paths, and stash restore uses the ordinal `stash@{N}` ref returned by `git stash list`. After commit/stash operations it refreshes changes, lane git status, and git metadata while skipping snapshot decorations (`refreshLanes({ includeStatus: true, includeSnapshots: false })`). Seeds its `autoRebaseStatus` from the `autoRebaseStatusSnapshot` prop that `LanesPage` passes from the lane list (`laneSnapshot.autoRebaseStatus`), so opening a lane does not trigger a per-lane probe. A fallback `refreshAutoRebaseStatus` runs only when the snapshot is `undefined`, after a 3.5 s delay, and only while the document is visible. |
 | `renderer/components/lanes/LaneWorkPane.tsx` | Terminal/chat toggle work surface |
 | `renderer/components/lanes/LaneRebaseBanner.tsx` | Inline banner driven by `rebaseSuggestionService` |
 | `renderer/components/lanes/LaneEnvInitProgress.tsx` | Env init step progress inside create dialog |
@@ -413,7 +415,10 @@ open lanes; primary lanes render with a home icon.
   (`LaneTerminalsPanel`) and an agent chat view (`AgentChatPane`).
   Chat sessions inherit `cwd = lane.worktreePath`.
 - The Lanes page reads pane overlay data from `appStore` (`lanes`,
-  `refreshLanes`) and from the per-lane `useLaneWorkSessions` hook.
+  `laneSnapshots`, `refreshLanes`) and from the per-lane
+  `useLaneWorkSessions` hook. `refreshLanes` can refresh lane rows,
+  git status, and snapshot overlays independently; statusless refreshes
+  preserve the previous git status in store.
 - `LaneRuntimeBar` (Run page) renders lane runtime state: health dot,
   proxy/preview status, OAuth callback URL, active processes. It
   parallelizes six IPC calls and debounces via an in-flight sequence
