@@ -29,15 +29,22 @@ export function LinearQuickViewButton() {
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const popoverRef = useRef<HTMLDivElement | null>(null);
 
+  const loadVisibility = useCallback(async (): Promise<boolean> => {
+    if (!project?.rootPath || !window.ade.cto?.getLinearConnectionStatus) {
+      return false;
+    }
+    const status = await window.ade.cto.getLinearConnectionStatus();
+    return status.connected === true;
+  }, [project?.rootPath]);
+
   useEffect(() => {
     let cancelled = false;
     setVisible(false);
     setOpen(false);
     setQuickView(null);
-    if (!project?.rootPath || !window.ade.cto?.getLinearConnectionStatus) return;
-    void window.ade.cto.getLinearConnectionStatus()
-      .then((status) => {
-        if (!cancelled) setVisible(status.connected === true);
+    void loadVisibility()
+      .then((nextVisible) => {
+        if (!cancelled) setVisible(nextVisible);
       })
       .catch(() => {
         if (!cancelled) setVisible(false);
@@ -45,7 +52,28 @@ export function LinearQuickViewButton() {
     return () => {
       cancelled = true;
     };
-  }, [project?.rootPath]);
+  }, [loadVisibility, project?.rootPath]);
+
+  useEffect(() => {
+    if (!project?.rootPath) return;
+    let cancelled = false;
+    const refresh = () => {
+      void loadVisibility()
+        .then((nextVisible) => {
+          if (!cancelled) setVisible(nextVisible);
+        })
+        .catch(() => {
+          if (!cancelled) setVisible(false);
+        });
+    };
+    window.addEventListener("focus", refresh);
+    const retryTimer = visible ? null : window.setInterval(refresh, 15_000);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", refresh);
+      if (retryTimer != null) window.clearInterval(retryTimer);
+    };
+  }, [loadVisibility, project?.rootPath, visible]);
 
   const openAtButton = useCallback(() => {
     const el = buttonRef.current;
