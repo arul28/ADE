@@ -9,7 +9,7 @@ const selectLane = vi.fn();
 
 vi.mock("../../state/appStore", () => ({
   useAppStore: <T,>(selector: (state: AppState) => T): T =>
-    selector({ selectedLaneId: null, selectLane } as unknown as AppState),
+    selector({ selectedLaneId: null, selectLane, lanesLoading: false } as unknown as AppState),
 }));
 
 vi.mock("../chat/AgentChatPane", () => ({

@@ -44,7 +44,7 @@ Service files (`apps/desktop/src/main/services/prs/`):
 
 | File | Responsibility |
 |------|---------------|
-| `prService.ts` | PR CRUD, GitHub sync, merge context, draft descriptions, check/review/comment hydration, commit snapshots (`getCommits`), integration proposals, merge-into-existing-lane adoption, merge bypass, post-merge cleanup, standalone PR branch cleanup (`cleanupBranch`), deployment listing, review-thread reply/resolve/react mutations for the timeline, the aggregate `getMobileSnapshot` that powers the iOS PRs tab, and `listOpenPullRequests` — a paginated `/repos/{owner}/{name}/pulls?state=open` fetch returning `BranchPullRequest[]` for the lane-creation branch picker. `getForLane(laneId)` resolves through `getDisplayRowForCurrentLaneBranch`: it returns the most recently updated PR whose head branch matches the lane's current branch ref, ranked open/draft → merged → closed, so a freshly merged PR still shows in lane-scoped UI instead of disappearing the moment GitHub flips the state. |
+| `prService.ts` | PR CRUD, GitHub sync, merge context, draft descriptions, check/review/comment hydration, cached detail snapshots (`listSnapshots`), commit snapshots (`getCommits`), integration proposals, merge-into-existing-lane adoption, merge bypass, post-merge cleanup, standalone PR branch cleanup (`cleanupBranch`), deployment listing, review-thread reply/resolve/react mutations for the timeline, the aggregate `getMobileSnapshot` that powers the iOS PRs tab, and `listOpenPullRequests` — a paginated `/repos/{owner}/{name}/pulls?state=open` fetch returning `BranchPullRequest[]` for the lane-creation branch picker. `getForLane(laneId)` resolves through `getDisplayRowForCurrentLaneBranch`: it returns the most recently updated PR whose head branch matches the lane's current branch ref, ranked open/draft → merged → closed, so a freshly merged PR still shows in lane-scoped UI instead of disappearing the moment GitHub flips the state. |
 | `prService.mobileSnapshot.test.ts` | Coverage for the mobile snapshot builder: stack chaining, capability gates, per-lane create eligibility, workflow-card aggregation |
 | `prService.mergeInto.test.ts` | Coverage for integration proposals that preview or adopt an existing merge target lane, including dirty-worktree handling and drift metadata. |
 | `prPollingService.ts` | 60 s polling loop, fingerprint-based change detection, notification emission. Writes `last_polled_at` per PR so callers can run delta polls on the next tick |
@@ -146,7 +146,7 @@ Selected channels exposed through `preload.ts`:
 - `ade.prs.listAll`, `ade.prs.listProposals`, `ade.prs.listQueueStates`
 - `ade.prs.listOpenForRepo` — flat list of open PRs in the project's GitHub repo as `BranchPullRequest[]` (branch / number / title / state / url / author / updatedAt). Independent of `pull_requests` cache so the lane-creation branch picker can attach PR pills to branches that have no lane yet. See [features/lanes/README.md](../lanes/README.md) for the consumer.
 - `ade.prs.land`, `ade.prs.landStack`, `ade.prs.landStackEnhanced`, `ade.prs.landQueueNext`
-- `ade.prs.getMergeContext`, `ade.prs.getStatus`, `ade.prs.getChecks`, `ade.prs.getReviews`, `ade.prs.getComments`, `ade.prs.getFiles`, `ade.prs.getCommits`
+- `ade.prs.getMergeContext`, `ade.prs.getMergeContexts`, `ade.prs.listSnapshots`, `ade.prs.getStatus`, `ade.prs.getChecks`, `ade.prs.getReviews`, `ade.prs.getComments`, `ade.prs.getFiles`, `ade.prs.getCommits`
 - `ade.prs.cleanupBranch` — delete a merged/closed PR's local and/or remote branch without touching the lane (protected against deleting any primary-lane branch)
 - `ade.prs.updateDescription`, `ade.prs.updateTitle`, `ade.prs.updateBody`, `ade.prs.setLabels`, `ade.prs.requestReviewers`, `ade.prs.submitReview`, `ade.prs.close`, `ade.prs.reopen`
 - `ade.prs.getReviewThreads`, `ade.prs.replyToReviewThread`, `ade.prs.resolveReviewThread`
@@ -160,7 +160,7 @@ Selected channels exposed through `preload.ts`:
 - `ade.prs.pathToMerge.start`, `ade.prs.pathToMerge.stop` — drive the Path-to-Merge orchestrator (see [`path-to-merge.md`](./path-to-merge.md))
 - `ade.prs.retargetBase` — re-point a PR's base branch (used by Queue Automate Merging when stacking the chain bases before PtM picks them up)
 - `ade.prs.pipelineSettingsGet`, `ade.prs.pipelineSettingsSave`, `ade.prs.pipelineSettingsDelete`
-- `ade.prs.getGitHubSnapshot` — merged repo + external PR snapshot
+- `ade.prs.getGitHubSnapshot` — merged repo + external PR snapshot. The default fetch includes open external PRs only; closed/merged external history is opt-in with `includeExternalClosed`.
 - `ade.prs.simulateIntegration`, `ade.prs.createIntegrationLaneForProposal`, `ade.prs.commitIntegration`, `ade.prs.cleanupIntegrationWorkflow`
 
 Integration merge-into flow uses these existing channels with widened
@@ -192,10 +192,16 @@ Caching layers:
 1. **Runtime cache** — GitHub snapshot is cached for a short TTL
    inside `prService` on the active runtime (local daemon or
    remote-attached); repeated in-flight snapshot requests are
-   deduplicated.
+   deduplicated. The default snapshot fetches open external PRs only;
+   closed/merged external history is requested after the user switches
+   to a history filter or explicitly refreshes that view.
 2. **Renderer cache** — `PrsContext` holds the last snapshot so
-   revisiting the tab renders immediately.
-3. **Manual sync** — a "Refresh" action forces a fresh pull.
+   revisiting the tab renders immediately. Selected PR detail panes
+   hydrate from `listSnapshots({ prId })` before live status, check,
+   review, and comment requests run in the background.
+3. **Manual sync** — a "Refresh" action forces a fresh pull. Explicit
+   multi-PR refreshes run with bounded parallelism instead of refreshing
+   each PR serially.
 
 Snapshot contents include `labels` (name, color, description),
 `isBot`, and `commentCount` fields so filters can run locally.
@@ -557,7 +563,8 @@ best-effort — failures log a warning and do not abort the tick.
 - `PRsPage` parses URL state via `parsePrsRouteState` and writes it
   back with `buildPrsRouteSearch`. Active tab, workflow sub-tab,
   selected PR, queue group, lane, and rebase item are all encoded.
-- `PrsContext` mounts cheaply on the plain GitHub PR list. The initial `refreshCore` only kicks a background GitHub refresh when the active tab is a workflow tab (`queue` / `integration` / `rebase`) or a PR is selected; otherwise `githubRefreshMode` is left undefined so the renderer paints from the existing snapshot. `applyLocalPrState` calls `lanes.list({ includeStatus: false })` and skips `rebase.scanNeeds` / `lanes.listAutoRebaseStatuses` on the plain list — those legs hydrate the moment a workflow tab opens or a PR is selected, and the periodic 60 s rebase scan + auto-rebase listener also no-op while the user is on the plain list.
+- `PrsContext` mounts cheaply on the plain GitHub PR list. The initial `refreshCore` only kicks a background GitHub refresh when the active tab is a workflow tab (`queue` / `integration` / `rebase`) or a PR is selected; otherwise `githubRefreshMode` is left undefined so the renderer paints from the existing snapshot. `applyLocalPrState` calls `prs.listWithConflicts({ includeConflictAnalysis: false })` and `lanes.list({ includeStatus: false })` for the plain list, then enables conflict analysis, rebase-needs scans, and auto-rebase status reads only when a workflow tab or selected PR needs them.
+- Workflow surfaces batch PR merge context through `prs.getMergeContexts(prIds)` instead of fanning out one `getMergeContext(prId)` call per card. The service builds the batch from metadata-only lane rows so queue/integration/rebase views do not pay full git status cost on render. Conflict analysis also runs as one batch over metadata-only active lanes, preserving overlap warnings against non-PR peer lanes without per-PR conflict calls.
 - `PrsContext` owns PR list, queue states, rebase needs, proposals,
   convergence runtime state, and the Timeline+Rails UI state
   (`prsTimelineRailsEnabled`, `timelineFiltersByPrId`,
@@ -572,7 +579,9 @@ best-effort — failures log a warning and do not abort the tick.
   (`PrCiRunningIndicator`), merge readiness with bypass checkbox,
   PR markdown rendered with `rehype-sanitize` after `rehype-raw`.
 - `GitHubTab` renders the unified repo+external list; filter tab
-  counts respect the active scope.
+  counts respect the active scope. Open views load open external PRs
+  first; switching to Closed, Merged, or All asks the runtime for the
+  closed external history snapshot.
 
 ## CTO operator tools
 

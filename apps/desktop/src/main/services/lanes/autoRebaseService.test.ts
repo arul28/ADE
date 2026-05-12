@@ -247,6 +247,32 @@ describe("autoRebaseService", () => {
     });
   });
 
+  describe("listStatuses — caller-supplied lanes", () => {
+    it("does not clear auto statuses from lanes whose git status may be a lightweight stub", async () => {
+      const service = createService();
+      laneList = [makeLane("lane-a", {
+        parentLaneId: "root",
+        status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
+      })];
+      db.setJson("auto_rebase:status:lane-a", {
+        laneId: "lane-a",
+        parentLaneId: "root",
+        parentHeadSha: "abc",
+        state: "rebasePending",
+        updatedAt: "2026-03-25T11:59:00.000Z",
+        conflictCount: 0,
+        message: null,
+        source: "auto",
+      });
+
+      const statuses = await service.listStatuses({ lanes: laneList });
+
+      expect(statuses).toHaveLength(1);
+      expect(db.getJson("auto_rebase:status:lane-a")).not.toBeNull();
+      expect(laneService.list).not.toHaveBeenCalled();
+    });
+  });
+
   // ---------------------------------------------------------------------------
   // Lanes without parent remain eligible for status display
   // ---------------------------------------------------------------------------
@@ -379,6 +405,32 @@ describe("autoRebaseService", () => {
       expect(statuses).toHaveLength(0);
     });
 
+    it("clears stale non-autoRebased status during listings", async () => {
+      const service = createService();
+
+      laneList = [makeLane("lane-a", {
+        parentLaneId: "root",
+        status: { dirty: false, ahead: 1, behind: 0, remoteBehind: 0, rebaseInProgress: false },
+      })];
+
+      db.setJson("auto_rebase:status:lane-a", {
+        laneId: "lane-a",
+        parentLaneId: "root",
+        parentHeadSha: "abc",
+        state: "rebasePending",
+        updatedAt: "2026-03-25T11:00:00.000Z",
+        conflictCount: 0,
+        message: null,
+      });
+
+      const statuses = await service.listStatuses();
+      expect(statuses).toHaveLength(0);
+      expect(laneService.list).toHaveBeenCalledWith({
+        includeArchived: false,
+        includeStatus: true,
+      });
+    });
+
     it("keeps non-autoRebased status when lane is behind its parent", async () => {
       const service = createService();
 
@@ -397,6 +449,32 @@ describe("autoRebaseService", () => {
         updatedAt: "2026-03-25T11:00:00.000Z",
         conflictCount: 0,
         message: "Pending.",
+      });
+
+      const statuses = await service.listStatuses();
+      expect(statuses).toHaveLength(1);
+      expect(statuses[0].laneId).toBe("lane-a");
+      expect(statuses[0].state).toBe("rebasePending");
+    });
+
+    it("keeps ancestor-blocked status even when the lane itself is not behind", async () => {
+      const service = createService();
+
+      const root = makeLane("root");
+      const child = makeLane("lane-a", {
+        parentLaneId: "root",
+        status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
+      });
+      laneList = [root, child];
+
+      db.setJson("auto_rebase:status:lane-a", {
+        laneId: "lane-a",
+        parentLaneId: "root",
+        parentHeadSha: null,
+        state: "rebasePending",
+        updatedAt: "2026-03-25T11:00:00.000Z",
+        conflictCount: 0,
+        message: "Pending: ancestor lane 'root' has unresolved rebase conflicts. Open the Rebase/Merge tab to continue.",
       });
 
       const statuses = await service.listStatuses();

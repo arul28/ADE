@@ -57,6 +57,7 @@ import type {
   PrState,
   PrStatus,
   PrSummary,
+  PrSnapshotHydration,
   PrWithConflicts,
   PrActionCapabilities,
   PrCreateCapabilities,
@@ -176,21 +177,19 @@ type LanePrLookupRow = {
   archived_at: string | null;
 };
 
+const SQL_IN_CLAUSE_CHUNK_SIZE = 900;
+
+function chunkValues<T>(values: readonly T[], size = SQL_IN_CLAUSE_CHUNK_SIZE): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < values.length; index += size) {
+    chunks.push(values.slice(index, index + size));
+  }
+  return chunks;
+}
+
 function isActivePrState(state: string | null | undefined): boolean {
   return state === "open" || state === "draft";
 }
-
-type PullRequestSnapshotHydration = {
-  prId: string;
-  detail: PrDetail | null;
-  status: PrStatus | null;
-  checks: PrCheck[];
-  reviews: PrReview[];
-  comments: PrComment[];
-  files: PrFile[];
-  commits: PrCommit[];
-  updatedAt: string | null;
-};
 
 type IntegrationProposalRow = {
   id: string;
@@ -550,6 +549,7 @@ function rowToSummary(row: PullRequestRow): PrSummary {
 }
 
 const BACKGROUND_REFRESH_MAX_PRS = 4;
+const REFRESH_CONCURRENCY = 4;
 const BACKGROUND_REFRESH_MIN_STALE_MS = 2 * 60_000;
 const BACKGROUND_REFRESH_CLOSED_STALE_MS = 15 * 60_000;
 
@@ -1362,7 +1362,7 @@ export function createPrService({
     }
   };
 
-  const listSnapshotRows = (args: { prId?: string } = {}): PullRequestSnapshotHydration[] => {
+  const listSnapshotRows = (args: { prId?: string } = {}): PrSnapshotHydration[] => {
     const rows = db.all<{
       pr_id: string;
       detail_json: string | null;
@@ -2273,6 +2273,47 @@ export function createPrService({
     }
 
     return updated;
+  };
+
+  const refreshPrIds = async (prIds: string[]): Promise<PrSummary[]> => {
+    const uniquePrIds = [...new Set(prIds.map((prId) => String(prId ?? "").trim()).filter(Boolean))];
+    const refreshed: PrSummary[] = [];
+    const failures: Array<{ prId: string; reason: unknown }> = [];
+    for (let i = 0; i < uniquePrIds.length; i += REFRESH_CONCURRENCY) {
+      const batchPrIds = uniquePrIds.slice(i, i + REFRESH_CONCURRENCY);
+      const results = await Promise.allSettled(batchPrIds.map((prId) => refreshOne(prId)));
+      results.forEach((result, index) => {
+        const prId = batchPrIds[index] ?? "";
+        if (result.status === "fulfilled") {
+          refreshed.push(result.value);
+          return;
+        }
+        failures.push({ prId, reason: result.reason });
+        logger.warn("prs.refresh_failed", { prId, error: getErrorMessage(result.reason) });
+      });
+    }
+    if (failures[0] && refreshed.length === 0) {
+      throw failures[0].reason;
+    }
+    return refreshed;
+  };
+
+  const refreshRowsBestEffort = async (rows: PullRequestRow[]): Promise<void> => {
+    const seen = new Set<string>();
+    const uniqueRows = rows.filter((row) => {
+      if (seen.has(row.id)) return false;
+      seen.add(row.id);
+      return true;
+    });
+    for (let i = 0; i < uniqueRows.length; i += REFRESH_CONCURRENCY) {
+      await Promise.all(uniqueRows.slice(i, i + REFRESH_CONCURRENCY).map(async (row) => {
+        try {
+          await refreshOne(row.id);
+        } catch (error) {
+          logger.warn("prs.refresh_failed", { prId: row.id, error: getErrorMessage(error) });
+        }
+      }));
+    }
   };
 
   const computeStatus = async (summary: PrSummary): Promise<PrStatus> => {
@@ -3954,20 +3995,39 @@ export function createPrService({
     };
   };
 
-  const getMergeContext = async (prId: string): Promise<PrMergeContext> => {
-    const row = getRow(prId);
-    if (!row) throw new Error(`PR not found: ${prId}`);
-
-    const lanes = await laneService.list({ includeArchived: false });
+  const buildMergeContextLaneLookups = (lanes: LaneSummary[]) => {
     const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
-    const findLaneIdByBranch = (rawBranch: string): string | null => {
-      const normalized = normalizeBranchName(rawBranch);
-      if (!normalized) return null;
-      const byBranch = lanes.find((lane) => normalizeBranchName(lane.branchRef) === normalized);
-      return byBranch?.id ?? null;
-    };
+    const laneIdByBranch = new Map(
+      lanes
+        .map((lane) => [normalizeBranchName(branchNameFromRef(lane.branchRef)), lane.id] as const)
+        .filter(([branch]) => Boolean(branch)),
+    );
+    return { laneById, laneIdByBranch };
+  };
 
-    const fallbackTargetLaneId = findLaneIdByBranch(row.base_branch);
+  const mapMergeContextMember = (
+    member: PrGroupMemberLookupRow,
+    laneById: Map<string, LaneSummary>,
+  ): PrMergeContext["members"][number] => ({
+    prId: member.pr_id,
+    laneId: member.lane_id,
+    laneName: member.lane_name ?? laneById.get(member.lane_id)?.name ?? member.lane_id,
+    prNumber: Number.isFinite(Number(member.pr_number)) ? Number(member.pr_number) : null,
+    position: Number(member.position),
+    role: normalizeGroupMemberRole(String(member.role ?? "source")),
+  });
+
+  const buildMergeContextFromLookups = (
+    row: PullRequestRow,
+    lookups: {
+      laneById: Map<string, LaneSummary>;
+      laneIdByBranch: Map<string, string>;
+      groupByPrId: Map<string, PrGroupLookupRow>;
+      membersByGroupId: Map<string, PrMergeContext["members"]>;
+    },
+  ): PrMergeContext => {
+    const { laneById, laneIdByBranch, groupByPrId, membersByGroupId } = lookups;
+    const fallbackTargetLaneId = laneIdByBranch.get(normalizeBranchName(row.base_branch)) ?? null;
     const fallbackSourceLaneId = row.lane_id;
     const fallbackMembers: PrMergeContext["members"] = [
       {
@@ -3980,22 +4040,9 @@ export function createPrService({
       }
     ];
 
-    const group = db.get<PrGroupLookupRow>(
-      `
-        select
-          g.id as group_id,
-          g.group_type as group_type
-        from pr_group_members m
-        join pr_groups g on g.id = m.group_id
-        where g.project_id = ? and m.pr_id = ?
-        order by g.created_at desc
-        limit 1
-      `,
-      [projectId, prId]
-    );
-
+    const group = groupByPrId.get(row.id) ?? null;
     const baseMergeContext: PrMergeContext = {
-      prId,
+      prId: row.id,
       groupId: group?.group_id ?? null,
       groupType: null,
       sourceLaneIds: [fallbackSourceLaneId],
@@ -4008,34 +4055,7 @@ export function createPrService({
       return baseMergeContext;
     }
 
-    const members = db
-      .all<PrGroupMemberLookupRow>(
-        `
-          select
-            m.group_id as group_id,
-            m.pr_id as pr_id,
-            m.lane_id as lane_id,
-            m.position as position,
-            m.role as role,
-            l.name as lane_name,
-            p.github_pr_number as pr_number
-          from pr_group_members m
-          left join lanes l on l.id = m.lane_id and l.project_id = ?
-          left join pull_requests p on p.id = m.pr_id and p.project_id = ?
-          where m.group_id = ?
-          order by m.position asc
-        `,
-        [projectId, projectId, group.group_id]
-      )
-      .map((member) => ({
-        prId: member.pr_id,
-        laneId: member.lane_id,
-        laneName: member.lane_name ?? laneById.get(member.lane_id)?.name ?? member.lane_id,
-        prNumber: Number.isFinite(Number(member.pr_number)) ? Number(member.pr_number) : null,
-        position: Number(member.position),
-        role: normalizeGroupMemberRole(String(member.role ?? "source"))
-      }));
-
+    const members = membersByGroupId.get(group.group_id) ?? [];
     const groupType = group.group_type === "integration" ? "integration" : "queue";
     const sourceLaneIds = members
       .filter((member) => member.role === "source")
@@ -4051,6 +4071,165 @@ export function createPrService({
       integrationLaneId,
       members: members.length > 0 ? members : fallbackMembers
     };
+  };
+
+  const buildMergeContextForRow = (
+    row: PullRequestRow,
+    lanes: LaneSummary[],
+  ): PrMergeContext => {
+    const { laneById, laneIdByBranch } = buildMergeContextLaneLookups(lanes);
+    const group = db.get<PrGroupLookupRow>(
+      `
+        select
+          g.id as group_id,
+          g.group_type as group_type
+        from pr_group_members m
+        join pr_groups g on g.id = m.group_id
+        where g.project_id = ? and m.pr_id = ?
+        order by g.created_at desc
+        limit 1
+      `,
+      [projectId, row.id]
+    );
+
+    const groupByPrId = new Map<string, PrGroupLookupRow>();
+    const membersByGroupId = new Map<string, PrMergeContext["members"]>();
+    if (group) {
+      groupByPrId.set(row.id, group);
+      const members = db
+        .all<PrGroupMemberLookupRow>(
+          `
+            select
+              m.group_id as group_id,
+              m.pr_id as pr_id,
+              m.lane_id as lane_id,
+              m.position as position,
+              m.role as role,
+              l.name as lane_name,
+              p.github_pr_number as pr_number
+            from pr_group_members m
+            left join lanes l on l.id = m.lane_id and l.project_id = ?
+            left join pull_requests p on p.id = m.pr_id and p.project_id = ?
+            where m.group_id = ?
+            order by m.position asc
+          `,
+          [projectId, projectId, group.group_id]
+        )
+        .map((member) => mapMergeContextMember(member, laneById));
+      membersByGroupId.set(group.group_id, members);
+    }
+
+    return buildMergeContextFromLookups(row, {
+      laneById,
+      laneIdByBranch,
+      groupByPrId,
+      membersByGroupId,
+    });
+  };
+
+  const emptyMergeContext = (prId: string): PrMergeContext => ({
+    prId,
+    groupId: null,
+    groupType: null,
+    sourceLaneIds: [],
+    targetLaneId: null,
+    integrationLaneId: null,
+    members: [],
+  });
+
+  const getMergeContext = async (prId: string): Promise<PrMergeContext> => {
+    const row = getRow(prId);
+    if (!row) return emptyMergeContext(prId);
+    const lanes = await laneService.list({ includeArchived: false, includeStatus: false });
+    return buildMergeContextForRow(row, lanes);
+  };
+
+  const getMergeContexts = async (prIds: string[]): Promise<Record<string, PrMergeContext>> => {
+    const uniquePrIds = [...new Set(prIds.map((id) => String(id ?? "").trim()).filter(Boolean))];
+    if (uniquePrIds.length === 0) return {};
+    const lanes = await laneService.list({ includeArchived: false, includeStatus: false });
+    const { laneById, laneIdByBranch } = buildMergeContextLaneLookups(lanes);
+    const rows: PullRequestRow[] = [];
+    for (const chunk of chunkValues(uniquePrIds)) {
+      const rowPlaceholders = chunk.map(() => "?").join(", ");
+      rows.push(...db.all<PullRequestRow>(
+        `select ${PR_COLUMNS}
+           from pull_requests
+          where project_id = ? and id in (${rowPlaceholders})`,
+        [projectId, ...chunk],
+      ));
+    }
+    if (rows.length === 0) return Object.fromEntries(uniquePrIds.map((prId) => [prId, emptyMergeContext(prId)]));
+    const groupRows: Array<PrGroupLookupRow & { pr_id: string }> = [];
+    for (const chunk of chunkValues(uniquePrIds)) {
+      const rowPlaceholders = chunk.map(() => "?").join(", ");
+      groupRows.push(...db.all<PrGroupLookupRow & { pr_id: string }>(
+        `
+          select pr_id, group_id, group_type
+          from (
+            select
+              m.pr_id as pr_id,
+              g.id as group_id,
+              g.group_type as group_type,
+              row_number() over (partition by m.pr_id order by g.created_at desc) as group_rank
+            from pr_group_members m
+            join pr_groups g on g.id = m.group_id
+            where g.project_id = ? and m.pr_id in (${rowPlaceholders})
+          )
+          where group_rank = 1
+        `,
+        [projectId, ...chunk],
+      ));
+    }
+    const groupByPrId = new Map<string, PrGroupLookupRow>();
+    for (const group of groupRows) {
+      if (!groupByPrId.has(group.pr_id)) {
+        groupByPrId.set(group.pr_id, group);
+      }
+    }
+    const groupIds = [...new Set(groupRows.map((group) => group.group_id))];
+    const membersByGroupId = new Map<string, PrMergeContext["members"]>();
+    if (groupIds.length > 0) {
+      for (const chunk of chunkValues(groupIds)) {
+        const groupPlaceholders = chunk.map(() => "?").join(", ");
+        const memberRows = db.all<PrGroupMemberLookupRow>(
+          `
+            select
+              m.group_id as group_id,
+              m.pr_id as pr_id,
+              m.lane_id as lane_id,
+              m.position as position,
+              m.role as role,
+              l.name as lane_name,
+              p.github_pr_number as pr_number
+            from pr_group_members m
+            left join lanes l on l.id = m.lane_id and l.project_id = ?
+            left join pull_requests p on p.id = m.pr_id and p.project_id = ?
+            where m.group_id in (${groupPlaceholders})
+            order by m.group_id asc, m.position asc
+          `,
+          [projectId, projectId, ...chunk],
+        );
+        for (const member of memberRows) {
+          const members = membersByGroupId.get(member.group_id) ?? [];
+          members.push(mapMergeContextMember(member, laneById));
+          membersByGroupId.set(member.group_id, members);
+        }
+      }
+    }
+    const contexts: Record<string, PrMergeContext> = {};
+    for (const row of rows) {
+      contexts[row.id] = buildMergeContextFromLookups(row, {
+        laneById,
+        laneIdByBranch,
+        groupByPrId,
+        membersByGroupId,
+      });
+    }
+    for (const prId of uniquePrIds) {
+      contexts[prId] ??= emptyMergeContext(prId);
+    }
+    return contexts;
   };
 
   const extractConflictDetail = async (
@@ -4778,12 +4957,29 @@ export function createPrService({
     return result;
   };
 
+  type GithubSnapshotOptions = { force?: boolean; includeExternalClosed?: boolean };
+
   const GITHUB_SNAPSHOT_TTL_MS = 120_000;
   let cachedGithubSnapshot: GitHubPrSnapshot | null = null;
   let cachedGithubSnapshotAt = 0;
-  let githubSnapshotInFlight: Promise<GitHubPrSnapshot> | null = null;
+  let cachedGithubSnapshotIncludesExternalClosed = false;
+  let githubSnapshotInFlight: { request: Promise<GitHubPrSnapshot>; includeExternalClosed: boolean } | null = null;
+  let pendingOpenOnlySnapshot: { snapshot: GitHubPrSnapshot; capturedAt: number } | null = null;
 
-  const getGithubSnapshotUncached = async (): Promise<GitHubPrSnapshot> => {
+  const publishGithubSnapshot = (
+    snapshot: GitHubPrSnapshot,
+    includesExternalClosed: boolean,
+    capturedAt = Date.now(),
+  ): void => {
+    cachedGithubSnapshot = snapshot;
+    cachedGithubSnapshotAt = capturedAt;
+    cachedGithubSnapshotIncludesExternalClosed = includesExternalClosed;
+    if (includesExternalClosed) {
+      pendingOpenOnlySnapshot = null;
+    }
+  };
+
+  const getGithubSnapshotUncached = async (options: GithubSnapshotOptions = {}): Promise<GitHubPrSnapshot> => {
     const githubStatus = await githubService.getStatus();
     if (!githubStatus.tokenStored) {
       throw new Error("GitHub token missing. Set it in Settings to sync pull requests.");
@@ -4896,11 +5092,13 @@ export function createPrService({
       );
     }
 
+    const includeExternalClosed = options.includeExternalClosed === true;
+    const externalQueryState = includeExternalClosed ? "" : "is:open ";
     const externalPullRequestsRaw = githubStatus.userLogin
       ? await fetchAllPages<any>({
           path: "/search/issues",
           query: {
-            q: `is:pr involves:${githubStatus.userLogin} archived:false -repo:${repo.owner}/${repo.name}`,
+            q: `is:pr ${externalQueryState}involves:${githubStatus.userLogin} archived:false -repo:${repo.owner}/${repo.name}`,
             sort: "updated",
             order: "desc",
           },
@@ -4919,17 +5117,48 @@ export function createPrService({
     };
   };
 
-  const getGithubSnapshot = async (options?: { force?: boolean }): Promise<GitHubPrSnapshot> => {
+  const getGithubSnapshot = async (options: GithubSnapshotOptions = {}): Promise<GitHubPrSnapshot> => {
     const force = options?.force === true;
-    const startSnapshotRequest = (allowStaleOnError: boolean): Promise<GitHubPrSnapshot> => {
+    const includeExternalClosed = options?.includeExternalClosed === true;
+    const cachedSnapshotSatisfiesRequest =
+      cachedGithubSnapshot != null
+      && (!includeExternalClosed || cachedGithubSnapshotIncludesExternalClosed);
+    const startSnapshotRequest = (
+      allowStaleOnError: boolean,
+      requestIncludeExternalClosed = includeExternalClosed,
+    ): Promise<GitHubPrSnapshot> => {
       const staleFallback = cachedGithubSnapshot;
-      const request = getGithubSnapshotUncached()
+      let inFlight!: { request: Promise<GitHubPrSnapshot>; includeExternalClosed: boolean };
+      const request = getGithubSnapshotUncached({ includeExternalClosed: requestIncludeExternalClosed })
         .then((snapshot) => {
-          cachedGithubSnapshot = snapshot;
-          cachedGithubSnapshotAt = Date.now();
+          const capturedAt = Date.now();
+          const hasWiderRequestInFlight =
+            githubSnapshotInFlight !== null
+            && githubSnapshotInFlight !== inFlight
+            && githubSnapshotInFlight.includeExternalClosed;
+          const canPublishSnapshot =
+            githubSnapshotInFlight === inFlight
+            || (
+              !requestIncludeExternalClosed
+              && cachedGithubSnapshot === null
+              && !cachedGithubSnapshotIncludesExternalClosed
+              && !hasWiderRequestInFlight
+            );
+          if (canPublishSnapshot) {
+            publishGithubSnapshot(snapshot, requestIncludeExternalClosed, capturedAt);
+          } else if (!requestIncludeExternalClosed && cachedGithubSnapshot === null) {
+            pendingOpenOnlySnapshot = { snapshot, capturedAt };
+          }
           return snapshot;
         })
         .catch((error) => {
+          const isCurrentRequest = githubSnapshotInFlight === inFlight;
+          if (isCurrentRequest && requestIncludeExternalClosed && pendingOpenOnlySnapshot) {
+            if (cachedGithubSnapshot === null) {
+              publishGithubSnapshot(pendingOpenOnlySnapshot.snapshot, false, pendingOpenOnlySnapshot.capturedAt);
+            }
+            pendingOpenOnlySnapshot = null;
+          }
           if (allowStaleOnError && staleFallback) {
             logger.warn("prs.github_snapshot_refresh_failed_stale_returned", {
               error: error instanceof Error ? error.message : String(error),
@@ -4939,26 +5168,36 @@ export function createPrService({
           throw error;
         })
         .finally(() => {
-          if (githubSnapshotInFlight === request) {
+          if (githubSnapshotInFlight === inFlight) {
             githubSnapshotInFlight = null;
           }
         });
-      githubSnapshotInFlight = request;
+      inFlight = { request, includeExternalClosed: requestIncludeExternalClosed };
+      githubSnapshotInFlight = inFlight;
       return request;
     };
 
-    if (!force && cachedGithubSnapshot) {
+    if (!force && cachedSnapshotSatisfiesRequest) {
+      const cachedSnapshot = cachedGithubSnapshot;
+      if (!cachedSnapshot) return startSnapshotRequest(false);
       const ageMs = Date.now() - cachedGithubSnapshotAt;
       if (ageMs < GITHUB_SNAPSHOT_TTL_MS) {
-        return cachedGithubSnapshot;
+        return cachedSnapshot;
       }
-      if (!githubSnapshotInFlight) {
-        void startSnapshotRequest(true).catch(() => {});
+      const refreshIncludeExternalClosed = includeExternalClosed || cachedGithubSnapshotIncludesExternalClosed;
+      if (!githubSnapshotInFlight || (refreshIncludeExternalClosed && !githubSnapshotInFlight.includeExternalClosed)) {
+        void startSnapshotRequest(true, refreshIncludeExternalClosed).catch(() => {});
+      } else if (includeExternalClosed && githubSnapshotInFlight.includeExternalClosed) {
+        return githubSnapshotInFlight.request;
       }
-      return cachedGithubSnapshot;
+      return cachedSnapshot;
     }
-    if (!force && githubSnapshotInFlight) {
-      return githubSnapshotInFlight;
+    if (
+      !force
+      && githubSnapshotInFlight
+      && (!includeExternalClosed || githubSnapshotInFlight.includeExternalClosed)
+    ) {
+      return githubSnapshotInFlight.request;
     }
 
     return startSnapshotRequest(false);
@@ -5144,20 +5383,101 @@ export function createPrService({
     }
   };
 
-  const listWithConflicts = async (): Promise<PrWithConflicts[]> => {
-    const rows = listRows();
-    const results: PrWithConflicts[] = [];
-    for (const row of rows) {
-      const summary = rowToSummary(row);
-      let conflictAnalysis: PrConflictAnalysis | null = null;
-      try {
-        conflictAnalysis = await getConflictAnalysis(row.id);
-      } catch {
-        // Conflict analysis may fail for archived lanes; skip gracefully.
+  const buildConflictAnalysesForRows = async (
+    rows: PullRequestRow[],
+  ): Promise<Map<string, PrConflictAnalysis | null>> => {
+    const results = new Map<string, PrConflictAnalysis | null>();
+    if (rows.length === 0) return results;
+    if (!conflictService) {
+      for (const row of rows) {
+        results.set(row.id, {
+          prId: row.id,
+          laneId: row.lane_id,
+          riskLevel: "none",
+          overlapCount: 0,
+          conflictPredicted: false,
+          peerConflicts: [],
+          analyzedAt: nowIso(),
+        });
       }
-      results.push({ ...summary, conflictAnalysis });
+      return results;
     }
-    return results;
+
+    try {
+      const lanes = await laneService.list({ includeArchived: false, includeStatus: false });
+      const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
+      const assessment = await conflictService.getBatchAssessment({ lanes });
+      const statusByLaneId = new Map(assessment.lanes.map((status) => [status.laneId, status] as const));
+      const overlapFilesByPair = new Map<string, string[]>();
+      for (const overlap of assessment.overlaps) {
+        const key = [overlap.laneAId, overlap.laneBId].sort().join("\0");
+        overlapFilesByPair.set(key, overlap.files);
+      }
+      const riskLevels = ["none", "low", "medium", "high"] as const;
+      const analyzedAt = nowIso();
+
+      for (const row of rows) {
+        if (!laneById.has(row.lane_id)) {
+          results.set(row.id, null);
+          continue;
+        }
+        const status = statusByLaneId.get(row.lane_id);
+        if (!status) {
+          results.set(row.id, null);
+          continue;
+        }
+        const peerConflicts: PrConflictAnalysis["peerConflicts"] = assessment.matrix
+          .filter((entry) => entry.laneAId !== entry.laneBId)
+          .filter((entry) => entry.laneAId === row.lane_id || entry.laneBId === row.lane_id)
+          .filter((entry) => entry.overlapCount > 0 || entry.riskLevel !== "none")
+          .map((entry) => {
+            const peerId = entry.laneAId === row.lane_id ? entry.laneBId : entry.laneAId;
+            const overlapFiles = overlapFilesByPair.get([row.lane_id, peerId].sort().join("\0")) ?? [];
+            return {
+              peerId,
+              peerName: laneById.get(peerId)?.name ?? peerId,
+              riskLevel: entry.riskLevel,
+              overlapFiles,
+            };
+          });
+        const highestRisk = peerConflicts.reduce<PrConflictAnalysis["riskLevel"]>(
+          (max, pc) => riskLevels.indexOf(pc.riskLevel) > riskLevels.indexOf(max) ? pc.riskLevel : max,
+          status.status === "conflict-predicted" || status.status === "conflict-active" ? "high" : "none",
+        );
+        results.set(row.id, {
+          prId: row.id,
+          laneId: row.lane_id,
+          riskLevel: highestRisk,
+          overlapCount: status.overlappingFileCount,
+          conflictPredicted: status.status === "conflict-predicted" || status.status === "conflict-active",
+          peerConflicts,
+          analyzedAt,
+        });
+      }
+      return results;
+    } catch (error) {
+      logger.warn("prs.batch_conflict_analysis_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return results;
+    }
+  };
+
+  const listWithConflicts = async (
+    options: { includeConflictAnalysis?: boolean } = {},
+  ): Promise<PrWithConflicts[]> => {
+    const rows = listRows();
+    if (options.includeConflictAnalysis !== true) {
+      return rows.map((row) => ({
+        ...rowToSummary(row),
+        conflictAnalysis: null,
+      }));
+    }
+    const analyses = await buildConflictAnalysesForRows(rows);
+    return rows.map((row) => ({
+      ...rowToSummary(row),
+      conflictAnalysis: analyses.get(row.id) ?? null,
+    }));
   };
 
   const listIntegrationProposals = async (): Promise<IntegrationProposal[]> => {
@@ -5787,11 +6107,7 @@ export function createPrService({
         ...((args.prIds ?? []).map((prId) => String(prId ?? "").trim()).filter(Boolean)),
       ];
       if (requestedPrIds.length > 0) {
-        const refreshed: PrSummary[] = [];
-        for (const prId of [...new Set(requestedPrIds)]) {
-          refreshed.push(await refreshOne(prId));
-        }
-        return refreshed;
+        return await refreshPrIds(requestedPrIds);
       }
 
       const rows = listRows();
@@ -5805,16 +6121,7 @@ export function createPrService({
         .filter((row) => hotPrIds.has(row.id))
         .sort(compareBackgroundRefreshPriority);
       const candidates = [...hotCandidates, ...staleCandidates];
-      const seenCandidateIds = new Set<string>();
-      for (const row of candidates) {
-        if (seenCandidateIds.has(row.id)) continue;
-        seenCandidateIds.add(row.id);
-        try {
-          await refreshOne(row.id);
-        } catch (error) {
-          logger.warn("prs.refresh_failed", { prId: row.id, error: error instanceof Error ? error.message : String(error) });
-        }
-      }
+      await refreshRowsBestEffort(candidates);
 
       return listRows().map(rowToSummary);
     },
@@ -5984,11 +6291,15 @@ export function createPrService({
       return await getMergeContext(prId);
     },
 
-    async listWithConflicts(): Promise<PrWithConflicts[]> {
-      return await listWithConflicts();
+    async getMergeContexts(prIds: string[]): Promise<Record<string, PrMergeContext>> {
+      return await getMergeContexts(prIds);
     },
 
-    async getGithubSnapshot(options?: { force?: boolean }): Promise<GitHubPrSnapshot> {
+    async listWithConflicts(options?: { includeConflictAnalysis?: boolean }): Promise<PrWithConflicts[]> {
+      return await listWithConflicts(options);
+    },
+
+    async getGithubSnapshot(options?: GithubSnapshotOptions): Promise<GitHubPrSnapshot> {
       return await getGithubSnapshot(options);
     },
 
@@ -6053,7 +6364,7 @@ export function createPrService({
       return { refreshedCount: rows.length };
     },
 
-    listSnapshots(args: { prId?: string } = {}): PullRequestSnapshotHydration[] {
+    listSnapshots(args: { prId?: string } = {}): PrSnapshotHydration[] {
       return listSnapshotRows(args);
     },
 

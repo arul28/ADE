@@ -25,6 +25,10 @@ type QueueLandingEntryState = {
   state: string;
 };
 
+const QUEUE_TARGET_FETCH_TTL_MS = 5 * 60_000;
+const QUEUE_TARGET_FETCH_MAX_ENTRIES = 256;
+const queueTargetFetchAttemptedAt = new Map<string, number>();
+
 export type QueueRebaseOverride = {
   comparisonRef: string;
   displayBaseBranch: string;
@@ -56,6 +60,21 @@ function parseLandingEntries(raw: string | null | undefined): QueueLandingEntryS
 function isQueueMemberCompleted(args: { prState: string | null; queueEntryState: string | null }): boolean {
   if (args.queueEntryState === "landed" || args.queueEntryState === "skipped") return true;
   return args.prState === "merged";
+}
+
+function pruneQueueTargetFetchAttempts(now: number): void {
+  for (const [cacheKey, attemptedAt] of queueTargetFetchAttemptedAt) {
+    if (now - attemptedAt >= QUEUE_TARGET_FETCH_TTL_MS) {
+      queueTargetFetchAttemptedAt.delete(cacheKey);
+    }
+  }
+  if (queueTargetFetchAttemptedAt.size <= QUEUE_TARGET_FETCH_MAX_ENTRIES) return;
+  const staleEntries = [...queueTargetFetchAttemptedAt.entries()]
+    .sort(([, left], [, right]) => left - right);
+  const removeCount = queueTargetFetchAttemptedAt.size - QUEUE_TARGET_FETCH_MAX_ENTRIES;
+  for (const [cacheKey] of staleEntries.slice(0, removeCount)) {
+    queueTargetFetchAttemptedAt.delete(cacheKey);
+  }
 }
 
 async function resolveRemoteAwareTargetRef(args: {
@@ -183,11 +202,11 @@ export async function fetchRemoteTrackingBranch(args: {
     );
     return true;
   } catch {
-    const fallback = await runGit(["fetch", "--prune", "origin"], {
+    await runGit(["fetch", "--prune", "origin"], {
       cwd: args.projectRoot,
       timeoutMs: 120_000,
     });
-    return fallback.exitCode === 0;
+    return false;
   }
 }
 
@@ -217,13 +236,25 @@ export async function fetchQueueTargetTrackingBranches(args: {
     if (branch) branches.add(branch);
   }
 
+  const now = Date.now();
+  pruneQueueTargetFetchAttempts(now);
   for (const branch of branches) {
-    await fetchRemoteTrackingBranch({
+    const cacheKey = `${args.projectRoot}\0${args.projectId}\0${branch}`;
+    const attemptedAt = queueTargetFetchAttemptedAt.get(cacheKey) ?? 0;
+    if (now - attemptedAt < QUEUE_TARGET_FETCH_TTL_MS) continue;
+    const attemptStartedAt = Date.now();
+    queueTargetFetchAttemptedAt.set(cacheKey, attemptStartedAt);
+    if (queueTargetFetchAttemptedAt.size > QUEUE_TARGET_FETCH_MAX_ENTRIES) {
+      pruneQueueTargetFetchAttempts(attemptStartedAt);
+    }
+    const fetched = await fetchRemoteTrackingBranch({
       projectRoot: args.projectRoot,
       targetBranch: branch,
-    }).catch(() => {
+    }).catch(() => false);
+    if (!fetched) {
       // Best-effort refresh only. Rebase scans can still proceed against the
       // existing local tracking ref if fetch is unavailable.
-    });
+      continue;
+    }
   }
 }

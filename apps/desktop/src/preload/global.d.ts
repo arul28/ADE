@@ -367,6 +367,7 @@ import type {
   PrReview,
   PrReviewThread,
   PrReviewThreadComment,
+  PrSnapshotHydration,
   PrStatus,
   PrSummary,
   PrWithConflicts,
@@ -2038,9 +2039,18 @@ declare global {
         }) => Promise<QueueLandingState[]>;
         getConflictAnalysis: (prId: string) => Promise<PrConflictAnalysis>;
         getMergeContext: (prId: string) => Promise<PrMergeContext>;
-        listWithConflicts: () => Promise<PrWithConflicts[]>;
+        getMergeContexts: (
+          prIds: string[],
+        ) => Promise<Record<string, PrMergeContext>>;
+        listWithConflicts: (args?: {
+          includeConflictAnalysis?: boolean;
+        }) => Promise<PrWithConflicts[]>;
+        listSnapshots: (args?: {
+          prId?: string;
+        }) => Promise<PrSnapshotHydration[]>;
         getGitHubSnapshot: (args?: {
           force?: boolean;
+          includeExternalClosed?: boolean;
         }) => Promise<GitHubPrSnapshot>;
         listIntegrationWorkflows: (
           args?: ListIntegrationWorkflowsArgs,

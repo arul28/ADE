@@ -1861,9 +1861,6 @@ export function createLaneService({
     return false;
   };
 
-  type DeleteToken = { cancelled: boolean; cancellable: boolean };
-  const deleteTokens = new Map<string, DeleteToken>();
-
   const broadcastDeleteEvent = (progress: LaneDeleteProgress): void => {
     if (!onDeleteEvent) return;
     try {
@@ -3536,13 +3533,11 @@ export function createLaneService({
         steps: stepNames.map((name): LaneDeleteStep => ({ name, status: "pending" })),
         startedAt: new Date().toISOString(),
         overallStatus: "running",
-        cancellable: true
+        cancellable: false
       };
       const findStep = (name: LaneDeleteStepName): LaneDeleteStep | undefined =>
         progress.steps.find((s) => s.name === name);
 
-      const token: DeleteToken = { cancelled: false, cancellable: true };
-      deleteTokens.set(laneId, token);
       const nonFatalFailures: Array<{ step: LaneDeleteStepName; message: string }> = [];
 
       const runStep = async (
@@ -3596,15 +3591,6 @@ export function createLaneService({
         broadcastDeleteEvent(progress);
       };
 
-      const checkpoint = (): boolean => {
-        if (!token.cancelled) return false;
-        for (const step of progress.steps) {
-          if (step.status === "pending") step.status = "skipped";
-        }
-        finalize("cancelled");
-        return true;
-      };
-
       broadcastDeleteEvent(progress);
 
       try {
@@ -3617,7 +3603,6 @@ export function createLaneService({
             }
             return { detail: dirty ? "dirty (force enabled)" : "clean" };
           });
-          if (checkpoint()) return;
         }
 
         await runStep("cancel_auto_rebase", async () => {
@@ -3628,7 +3613,6 @@ export function createLaneService({
             // ignore
           }
         });
-        if (checkpoint()) return;
 
         await runStep("stop_processes", async () => {
           const svc = teardownDeps?.processService;
@@ -3642,7 +3626,6 @@ export function createLaneService({
           }
           return { detail: `stopped ${active.length} ${active.length === 1 ? "process" : "processes"}` };
         });
-        if (checkpoint()) return;
 
         await runStep("stop_ptys", async () => {
           const svc = teardownDeps?.ptyService;
@@ -3652,7 +3635,6 @@ export function createLaneService({
           const disposed = svc.disposeForLane(laneId);
           return { detail: `closed ${disposed} ${disposed === 1 ? "session" : "sessions"}` };
         });
-        if (checkpoint()) return;
 
         await runStep("stop_watchers", async () => {
           const svc = teardownDeps?.fileWatcherService;
@@ -3662,7 +3644,6 @@ export function createLaneService({
           if (before === 0 && stopped === 0) return { detail: "none active" };
           return { detail: `stopped ${stopped} ${stopped === 1 ? "watcher" : "watchers"}` };
         });
-        if (checkpoint()) return;
 
         await runStep("cleanup_env", async () => {
           if (!runtimeOpts?.teardownEnv) return { detail: "no env to clean" };
@@ -3674,18 +3655,10 @@ export function createLaneService({
             return { detail: `warning: ${err instanceof Error ? err.message : String(err)}` };
           }
         });
-        if (checkpoint()) return;
 
         // Brief grace period so kernel-level handle releases settle on macOS before
         // git tries to unlink the worktree directory.
         await new Promise((resolve) => setTimeout(resolve, 250));
-        if (checkpoint()) return;
-
-        // Past the point of no return: any further failure leaves partial state,
-        // so cancellation is no longer honored.
-        token.cancellable = false;
-        progress.cancellable = false;
-        broadcastDeleteEvent(progress);
 
         if (hasWorktree) {
           await runStep("git_worktree_remove", async () => {
@@ -3797,17 +3770,11 @@ export function createLaneService({
       } catch (error) {
         finalize("failed");
         throw error;
-      } finally {
-        deleteTokens.delete(laneId);
       }
     },
 
     cancelDelete(laneId: string): { cancelled: boolean; reason?: string } {
-      const token = deleteTokens.get(laneId);
-      if (!token) return { cancelled: false, reason: "no active delete" };
-      if (!token.cancellable) return { cancelled: false, reason: "past cancellation window" };
-      token.cancelled = true;
-      return { cancelled: true };
+      return { cancelled: false, reason: `Lane deletes run to completion once started: ${laneId}` };
     },
 
     async getDeleteRisk(laneId: string): Promise<LaneDeleteRisk> {

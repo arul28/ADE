@@ -28,6 +28,7 @@ import type {
   PrReviewThread,
   PrDeployment,
   PrAiSummary,
+  PrSnapshotHydration,
   PrAgentPermissionMode,
 } from "../../../../shared/types";
 import type { PrTimelineFilters } from "../shared/PrTimeline";
@@ -68,6 +69,8 @@ type PrsState = {
   detailReviewThreads: PrReviewThread[];
   detailDeployments: PrDeployment[];
   detailAiSummary: PrAiSummary | null;
+  detailSnapshot: PrSnapshotHydration | null;
+  detailLiveDataPrId: string | null;
   detailBusy: boolean;
 
   // Rebase state
@@ -322,6 +325,18 @@ function readInitialRouteState(fallback?: PrsContextWarmCache | null): {
   };
 }
 
+function currentRouteRequestsPrDiagnostics(): boolean {
+  try {
+    const route = parsePrsRouteState({
+      search: window.location.search,
+      hash: window.location.hash,
+    });
+    return resolvePrsActiveTab(route).isWorkflowRoute || route.prId !== null;
+  } catch {
+    return false;
+  }
+}
+
 function requirePrId(prId: string): string {
   const normalized = String(prId ?? "").trim();
   if (!normalized) throw new Error("PR id is required.");
@@ -400,9 +415,13 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
   );
   const [detailDeployments, setDetailDeployments] = useState<PrDeployment[]>(() => warmCache?.detailDeployments ?? []);
   const [detailAiSummary, setDetailAiSummary] = useState<PrAiSummary | null>(() => warmCache?.detailAiSummary ?? null);
+  const [detailSnapshot, setDetailSnapshot] = useState<PrSnapshotHydration | null>(null);
+  const [detailLiveDataPrId, setDetailLiveDataPrId] = useState<string | null>(null);
   const [detailBusy, setDetailBusy] = useState(false);
   const [viewerLogin, setViewerLogin] = useState<string | null>(() => warmCache?.viewerLogin ?? null);
   const detailCacheHasDataRef = React.useRef(false);
+  const detailSnapshotLoadedAtByPrIdRef = React.useRef<Record<string, number>>({});
+  const detailSnapshotStatePrIdRef = React.useRef<string | null>(null);
   React.useEffect(() => {
     detailCacheHasDataRef.current =
       detailStatus !== null
@@ -618,6 +637,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
   const selectedPrIdRef = React.useRef<string | null>(initialRouteState.selectedPrId);
   React.useEffect(() => { selectedPrIdRef.current = selectedPrId; }, [selectedPrId]);
   const detailFetchInProgress = React.useRef(false);
+  const detailStatePrIdRef = React.useRef<string | null>(warmCache?.selectedPrId ?? null);
   const detailLoadedAtByPrIdRef = React.useRef<Record<string, number>>(
     warmCache?.selectedPrId ? { [warmCache.selectedPrId]: warmCache.cachedAt } : {},
   );
@@ -626,16 +646,26 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     const uniquePrIds = [...new Set(prIds.map((id) => String(id ?? "").trim()).filter(Boolean))];
     if (uniquePrIds.length === 0) return;
     const contexts: Record<string, PrMergeContext> = {};
-    await Promise.all(
-      uniquePrIds.map(async (prId) => {
-        try {
-          const ctx = await window.ade.prs.getMergeContext(prId);
-          contexts[prId] = ctx;
-        } catch {
-          /* skip failures */
-        }
-      }),
-    );
+    if (typeof window.ade.prs.getMergeContexts === "function") {
+      try {
+        Object.assign(contexts, await window.ade.prs.getMergeContexts(uniquePrIds));
+      } catch {
+        /* fall back to single-context hydration below */
+      }
+    }
+    const missingPrIds = uniquePrIds.filter((prId) => contexts[prId] == null);
+    if (missingPrIds.length > 0) {
+      await Promise.all(
+        missingPrIds.map(async (prId) => {
+          try {
+            const ctx = await window.ade.prs.getMergeContext(prId);
+            contexts[prId] = ctx;
+          } catch {
+            /* skip failures */
+          }
+        }),
+      );
+    }
     setMergeContextByPrId((prev) => {
       const allowed = new Set(prsRef.current.map((pr) => pr.id));
       const next = Object.fromEntries(
@@ -672,12 +702,16 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
   // If a refresh is requested while one is already in flight, we set a
   // pending flag so that once the current flight completes it immediately
   // kicks off another refresh instead of silently dropping the request.
-  const applyLocalPrState = useCallback(async () => {
+  const applyLocalPrState = useCallback(async (options: {
+    includeWorkflowDiagnostics?: boolean;
+    forceRebaseDiagnostics?: boolean;
+  } = {}) => {
     const shouldLoadWorkflowState = activeTabRef.current !== "normal";
-    const shouldLoadRebaseState = shouldLoadWorkflowState || selectedPrIdRef.current !== null;
+    const shouldLoadRebaseState = (options.includeWorkflowDiagnostics ?? true)
+      && (options.forceRebaseDiagnostics === true || shouldLoadWorkflowState || selectedPrIdRef.current !== null);
     const [prList, laneList, queueStateList, refreshedRebaseNeeds, refreshedAutoRebaseStatuses] = await Promise.all([
-      window.ade.prs.listWithConflicts(),
-      window.ade.lanes.list({ includeStatus: shouldLoadRebaseState }),
+      window.ade.prs.listWithConflicts({ includeConflictAnalysis: shouldLoadWorkflowState }),
+      window.ade.lanes.list({ includeStatus: false }),
       shouldLoadWorkflowState
         ? window.ade.prs.listQueueStates({ includeCompleted: true, limit: 50 })
         : Promise.resolve([] as QueueLandingState[]),
@@ -700,8 +734,10 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     // to avoid unnecessary re-render cascades in child components.
     setPrs((prev) => (jsonEqual(prev, prList) ? prev : prList));
     setLanes((prev) => (jsonEqual(prev, laneList) ? prev : laneList));
-    setRebaseNeeds((prev) => (jsonEqual(prev, refreshedRebaseNeeds) ? prev : refreshedRebaseNeeds));
-    setAutoRebaseStatuses((prev) => (jsonEqual(prev, refreshedAutoRebaseStatuses) ? prev : refreshedAutoRebaseStatuses));
+    if (shouldLoadRebaseState) {
+      setRebaseNeeds((prev) => (jsonEqual(prev, refreshedRebaseNeeds) ? prev : refreshedRebaseNeeds));
+      setAutoRebaseStatuses((prev) => (jsonEqual(prev, refreshedAutoRebaseStatuses) ? prev : refreshedAutoRebaseStatuses));
+    }
     if (shouldLoadWorkflowState) {
       setQueueStates((prev) => {
         const next = Object.fromEntries(queueStateList.map((state) => [state.groupId, state] as const));
@@ -762,11 +798,13 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       if (options.githubRefreshMode === "await") {
         await window.ade.prs.refresh().catch(() => {});
       }
-      await applyLocalPrState();
+      const shouldLoadWorkflowDiagnostics =
+        activeTabRef.current !== "normal" || selectedPrIdRef.current !== null || currentRouteRequestsPrDiagnostics();
+      await applyLocalPrState({ forceRebaseDiagnostics: shouldLoadWorkflowDiagnostics });
       warmCacheHydratedAtRef.current = Date.now();
       if (options.githubRefreshMode === "background") {
         void window.ade.prs.refresh()
-          .then(() => applyLocalPrState())
+          .then(() => applyLocalPrState({ forceRebaseDiagnostics: shouldLoadWorkflowDiagnostics }))
           .then(() => {
             warmCacheHydratedAtRef.current = Date.now();
           })
@@ -837,8 +875,12 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
             }
           }
         }
+        if (![statusResult, checksResult, reviewsResult, commentsResult].some((result) => result.status === "fulfilled")) {
+          return;
+        }
 
         // Apply successful results; keep previous value for any that failed
+        detailStatePrIdRef.current = prId;
         if (statusResult.status === "fulfilled") {
           setDetailStatus((prev) => (jsonEqual(prev, statusResult.value) ? prev : statusResult.value));
         } else {
@@ -859,6 +901,9 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
         } else {
           console.warn("[PrsContext] Failed to refresh PR comments:", commentsResult.reason);
         }
+        if ([statusResult, checksResult, reviewsResult, commentsResult].every((result) => result.status === "fulfilled")) {
+          setDetailLiveDataPrId(prId);
+        }
         detailLoadedAtByPrIdRef.current[prId] = Date.now();
       })
       .finally(() => {
@@ -875,6 +920,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     rateLimitedUntilRef.current = 0;
 
     if (!selectedPrId) {
+      detailStatePrIdRef.current = null;
       setDetailStatus(null);
       setDetailChecks([]);
       setDetailReviews([]);
@@ -882,6 +928,8 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       setDetailReviewThreads([]);
       setDetailDeployments([]);
       setDetailAiSummary(null);
+      setDetailSnapshot(null);
+      setDetailLiveDataPrId(null);
       return;
     }
 
@@ -891,22 +939,66 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     // URL-derived selections are not cleared before the first refresh completes.
     if (!initialLoadDone.current) return;
     if (!prsRef.current.some((p) => p.id === selectedPrId)) {
+      detailStatePrIdRef.current = null;
       setDetailStatus(null);
       setDetailChecks([]);
       setDetailReviews([]);
       setDetailComments([]);
+      setDetailReviewThreads([]);
+      setDetailDeployments([]);
+      setDetailAiSummary(null);
+      setDetailSnapshot(null);
+      setDetailLiveDataPrId(null);
       setSelectedPrId(null);
       return;
     }
 
     let cancelled = false;
+    let liveDetailApplied = false;
     const prId = selectedPrId;
     const cachedDetailAgeMs = Date.now() - (detailLoadedAtByPrIdRef.current[prId] ?? 0);
     const hasFreshDetailCache =
       cachedDetailAgeMs >= 0
       && cachedDetailAgeMs < PRS_DETAIL_CACHE_TTL_MS
+      && detailStatePrIdRef.current === prId
       && detailCacheHasDataRef.current;
+    const cachedSnapshotAgeMs = Date.now() - (detailSnapshotLoadedAtByPrIdRef.current[prId] ?? 0);
+    const hasFreshSnapshotPrefill =
+      cachedSnapshotAgeMs >= 0
+      && cachedSnapshotAgeMs < PRS_DETAIL_CACHE_TTL_MS
+      && detailSnapshotStatePrIdRef.current === prId
+      && detailCacheHasDataRef.current;
+    if (!hasFreshDetailCache && !hasFreshSnapshotPrefill) {
+      detailStatePrIdRef.current = null;
+      detailSnapshotStatePrIdRef.current = null;
+      setDetailSnapshot(null);
+      setDetailLiveDataPrId(null);
+      setDetailStatus(null);
+      setDetailChecks([]);
+      setDetailReviews([]);
+      setDetailComments([]);
+      setDetailReviewThreads([]);
+      setDetailDeployments([]);
+      setDetailAiSummary(null);
+    }
+    if (!hasFreshDetailCache && !hasFreshSnapshotPrefill && typeof window.ade.prs.listSnapshots === "function") {
+      void window.ade.prs.listSnapshots({ prId }).then((snapshots) => {
+        if (cancelled || selectedPrIdRef.current !== prId || liveDetailApplied) return;
+        const snapshot = snapshots[0];
+        if (!snapshot) return;
+        detailSnapshotStatePrIdRef.current = prId;
+        detailSnapshotLoadedAtByPrIdRef.current[prId] = Date.now();
+        setDetailSnapshot(snapshot);
+        setDetailStatus(snapshot.status);
+        setDetailChecks(snapshot.checks);
+        setDetailReviews(snapshot.reviews);
+        setDetailComments(snapshot.comments);
+        setDetailBusy(false);
+      }).catch(() => {});
+    }
     if (hasFreshDetailCache) {
+      setDetailLiveDataPrId(prId);
+      setDetailBusy(false);
       const intervalId = window.setInterval(() => {
         refreshDetailSilently(prId);
       }, 60_000);
@@ -928,6 +1020,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     ])
       .then(([statusResult, checksResult, reviewsResult, commentsResult]) => {
         if (cancelled) return;
+        liveDetailApplied = true;
 
         // Check for rate-limit errors in any rejected result
         for (const result of [statusResult, checksResult, reviewsResult, commentsResult]) {
@@ -937,15 +1030,22 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
               rateLimitedUntilRef.current = Date.now() + 5 * 60_000;
               console.warn("[PrsContext] GitHub rate limit hit — pausing detail polling for 5 min");
               // Clear stale data on rate limit
+              detailStatePrIdRef.current = null;
+              setDetailLiveDataPrId(null);
               setDetailStatus(null);
               setDetailChecks([]);
               setDetailReviews([]);
               setDetailComments([]);
+              setDetailReviewThreads([]);
+              setDetailDeployments([]);
+              setDetailAiSummary(null);
+              setDetailSnapshot(null);
               return;
             }
           }
         }
 
+        detailStatePrIdRef.current = prId;
         if (statusResult.status === "fulfilled") {
           setDetailStatus(statusResult.value ?? null);
         } else {
@@ -969,6 +1069,11 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
         } else {
           console.warn("[PrsContext] Failed to load PR comments:", commentsResult.reason);
           setDetailComments([]);
+        }
+        if ([statusResult, checksResult, reviewsResult, commentsResult].every((result) => result.status === "fulfilled")) {
+          setDetailLiveDataPrId(prId);
+        } else {
+          setDetailLiveDataPrId(null);
         }
         detailLoadedAtByPrIdRef.current[prId] = Date.now();
       })
@@ -1260,6 +1365,8 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       detailReviewThreads,
       detailDeployments,
       detailAiSummary,
+      detailSnapshot,
+      detailLiveDataPrId,
       detailBusy,
       rebaseNeeds,
       autoRebaseStatuses,
@@ -1318,6 +1425,8 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       detailReviewThreads,
       detailDeployments,
       detailAiSummary,
+      detailSnapshot,
+      detailLiveDataPrId,
       detailBusy,
       rebaseNeeds,
       autoRebaseStatuses,

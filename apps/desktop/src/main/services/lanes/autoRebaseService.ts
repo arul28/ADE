@@ -18,8 +18,8 @@ type StoredDismissal = {
   dismissedAt: string;
 };
 type ListStatusesOptions = {
-  includeAll?: boolean;
   lanes?: LaneSummary[];
+  preserveLaneIds?: string[];
 };
 type AttentionStatusInput = {
   laneId: string;
@@ -125,6 +125,12 @@ function blockedMessage(
     return `Pending: ancestor lane '${laneId}' failed automatic rebase. Open the Rebase/Merge tab to retry.`;
   }
   return `Pending: ancestor lane '${laneId}' has unresolved rebase conflicts. Open the Rebase/Merge tab to continue.`;
+}
+
+function isAncestorBlockedStatus(status: StoredStatus): boolean {
+  return status.state === "rebasePending"
+    && typeof status.message === "string"
+    && status.message.startsWith("Pending: ancestor lane ");
 }
 
 function resolveAffectedChainLaneId(
@@ -263,13 +269,19 @@ export function createAutoRebaseService(args: {
 
   const listStatuses = async (options?: ListStatusesOptions): Promise<AutoRebaseLaneStatus[]> => {
     void maybeSweepRoots("listStatuses");
-    const lanes = options?.lanes ?? await laneService.list({ includeArchived: false });
+    const shouldLoadFreshLaneStatus = !options?.lanes;
+    const lanes = options?.lanes ?? await laneService.list({
+      includeArchived: false,
+      includeStatus: shouldLoadFreshLaneStatus,
+    });
     if (disposed) return [];
     // When a caller-supplied lane subset is provided, laneById is no longer
     // authoritative for the full active-lane set, so we cannot infer "parent
     // was deleted" from "parent missing from this slice" — skip the
     // missing-parent prune in that case.
     const hasAuthoritativeLaneSet = !options?.lanes;
+    const hasFreshLaneStatus = shouldLoadFreshLaneStatus;
+    const preserveLaneIds = new Set((options?.preserveLaneIds ?? []).map((laneId) => laneId.trim()).filter(Boolean));
     const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
     const nowMs = Date.now();
 
@@ -287,7 +299,13 @@ export function createAutoRebaseService(args: {
           clearStatus(lane.id);
           continue;
         }
-      } else if (!options?.includeAll && lane.status.behind <= 0 && status.source !== "manual") {
+      } else if (
+        hasFreshLaneStatus
+        && lane.status.behind <= 0
+        && status.source !== "manual"
+        && !isAncestorBlockedStatus(status)
+        && !preserveLaneIds.has(lane.id)
+      ) {
         clearStatus(lane.id);
         continue;
       } else if (hasAuthoritativeLaneSet && status.parentLaneId && !laneById.has(status.parentLaneId)) {
@@ -387,7 +405,7 @@ export function createAutoRebaseService(args: {
   const recordAttentionStatus = async (status: AttentionStatusInput): Promise<void> => {
     setStatus(status);
     if (disposed) return;
-    await emit({ includeAll: true });
+    await emit({ preserveLaneIds: [status.laneId] });
   };
 
   const dismissStatus = async (args: { laneId: string }): Promise<void> => {
@@ -401,7 +419,7 @@ export function createAutoRebaseService(args: {
       dismissedAt: nowIso(),
     });
     if (disposed) return;
-    void emit({ includeAll: true });
+    void emit();
   };
 
   const collectDescendantsDepthFirst = (rootLaneId: string, lanes: LaneSummary[]): string[] => {
@@ -651,13 +669,13 @@ export function createAutoRebaseService(args: {
         state.pending = false;
         await processRoot(rootLaneId, state.reason);
         if (disposed) return;
-        await emit({ includeAll: true });
+        await emit();
         if (disposed) return;
       }
     } catch (error) {
       logger.warn("autoRebase.run_failed", { rootLaneId, error: String(error) });
       if (disposed) return;
-      await emit({ includeAll: true });
+      await emit();
     } finally {
       state.running = false;
       if (state.pending && !disposed) {

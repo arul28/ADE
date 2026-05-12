@@ -185,12 +185,14 @@ interface BuildServiceOpts {
   githubService?: any;
   laneService?: any;
   db?: any;
+  conflictService?: any;
 }
 
 function buildService(opts: BuildServiceOpts = {}) {
   const db = opts.db ?? makeMockDb();
   const githubService = opts.githubService ?? makeGithubService();
   const laneService = opts.laneService ?? makeLaneService();
+  const logger = makeLogger();
 
   mockGit.runGit.mockImplementation(async (args: unknown[]) => {
     const command = Array.isArray(args) ? args[0] : null;
@@ -208,17 +210,18 @@ function buildService(opts: BuildServiceOpts = {}) {
 
   const service = createPrService({
     db,
-    logger: makeLogger(),
+    logger,
     projectId: "proj-1",
     projectRoot: "/tmp/test-project",
     laneService,
     operationService: makeOperationService(),
     githubService,
+    conflictService: opts.conflictService,
     projectConfigService: makeProjectConfigService(),
     openExternal: vi.fn(async () => {}),
   });
 
-  return { service, db, githubService, laneService };
+  return { service, db, githubService, laneService, logger };
 }
 
 // ---------------------------------------------------------------------------
@@ -400,7 +403,7 @@ describe("prService.getGithubSnapshot", () => {
       nowSpy.mockReturnValue(Date.parse("2026-01-01T00:00:00Z") + GITHUB_SNAPSHOT_TTL_MS_FOR_TEST + 1);
       const stale = await service.getGithubSnapshot();
       expect(stale.repoPullRequests[0]?.title).toBe("Cached PR");
-      await flushMicrotasks();
+      await flushMicrotasks(30);
       expect(githubService.apiRequest).toHaveBeenCalledTimes(3);
 
       resolveRevalidation({ data: [makeGitHubPull({ title: "Fresh PR", updated_at: "2026-01-01T00:05:00Z" })] });
@@ -409,6 +412,384 @@ describe("prService.getGithubSnapshot", () => {
       const fresh = await service.getGithubSnapshot();
       expect(fresh.repoPullRequests[0]?.title).toBe("Fresh PR");
       expect(githubService.apiRequest).toHaveBeenCalledTimes(4);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it("fetches open external PRs by default and only includes closed external history when requested", async () => {
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => ({
+        tokenStored: true,
+        repo: REPO,
+        userLogin: "octocat",
+      })),
+      apiRequest: vi.fn(async (args: { path: string }) => ({
+        data: args.path === "/search/issues" ? { items: [] } : [],
+      })),
+    });
+    const { service } = buildService({ githubService, laneService: makeLaneService([]) });
+
+    await service.getGithubSnapshot({ force: true });
+    const defaultExternalCall = githubService.apiRequest.mock.calls.find(([args]: [{ path: string }]) => args.path === "/search/issues");
+    expect(defaultExternalCall?.[0].query.q).toContain("is:open");
+
+    githubService.apiRequest.mockClear();
+    await service.getGithubSnapshot({ force: true, includeExternalClosed: true });
+    const fullHistoryExternalCall = githubService.apiRequest.mock.calls.find(([args]: [{ path: string }]) => args.path === "/search/issues");
+    expect(fullHistoryExternalCall?.[0].query.q).not.toContain("is:open");
+  });
+
+  it("does not reuse or overwrite full-history snapshots with narrower in-flight requests", async () => {
+    let resolveOpenRepo!: (value: unknown) => void;
+    const openRepoRequest = new Promise<unknown>((resolve) => {
+      resolveOpenRepo = resolve;
+    });
+    let repoCalls = 0;
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => ({
+        tokenStored: true,
+        repo: REPO,
+        userLogin: "octocat",
+      })),
+      apiRequest: vi.fn(async (args: { path: string; query?: { q?: string } }) => {
+        if (args.path === `/repos/${REPO.owner}/${REPO.name}/pulls`) {
+          repoCalls += 1;
+          if (repoCalls === 1) return openRepoRequest;
+          return { data: [makeGitHubPull({ number: 2, title: "Full history PR" })] };
+        }
+        return {
+          data: {
+            items: [
+              makeGitHubPull({
+                number: args.query?.q?.includes("is:open") ? 3 : 4,
+                title: args.query?.q?.includes("is:open") ? "Open external" : "Closed external",
+                pull_request: { url: "https://api.github.com/repos/elsewhere/project/pulls/4" },
+                repository_url: "https://api.github.com/repos/elsewhere/project",
+              }),
+            ],
+          },
+        };
+      }),
+    });
+    const { service } = buildService({ githubService, laneService: makeLaneService([]) });
+
+    const openOnly = service.getGithubSnapshot();
+    await flushMicrotasks();
+
+    const fullHistory = await service.getGithubSnapshot({ includeExternalClosed: true });
+    expect(fullHistory.repoPullRequests[0]?.title).toBe("Full history PR");
+    expect(fullHistory.externalPullRequests[0]?.title).toBe("Closed external");
+
+    resolveOpenRepo({ data: [makeGitHubPull({ number: 1, title: "Open-only PR" })] });
+    await expect(openOnly).resolves.toEqual(expect.objectContaining({
+      repoPullRequests: [expect.objectContaining({ title: "Open-only PR" })],
+    }));
+
+    const cachedFullHistory = await service.getGithubSnapshot({ includeExternalClosed: true });
+    expect(cachedFullHistory.repoPullRequests[0]?.title).toBe("Full history PR");
+    expect(cachedFullHistory.externalPullRequests[0]?.title).toBe("Closed external");
+    expect(repoCalls).toBe(2);
+  });
+
+  it("keeps a superseded open-only snapshot cached when a full-history upgrade fails", async () => {
+    let resolveOpenRepo!: (value: unknown) => void;
+    const openRepoRequest = new Promise<unknown>((resolve) => {
+      resolveOpenRepo = resolve;
+    });
+    let rejectFullRepo!: (reason: unknown) => void;
+    const fullRepoRequest = new Promise<unknown>((_resolve, reject) => {
+      rejectFullRepo = reject;
+    });
+    let repoCalls = 0;
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => ({
+        tokenStored: true,
+        repo: REPO,
+        userLogin: "octocat",
+      })),
+      apiRequest: vi.fn(async (args: { path: string; query?: { q?: string } }) => {
+        if (args.path === `/repos/${REPO.owner}/${REPO.name}/pulls`) {
+          repoCalls += 1;
+          if (repoCalls === 1) return openRepoRequest;
+          return fullRepoRequest;
+        }
+        return {
+          data: {
+            items: [
+              makeGitHubPull({
+                number: 3,
+                title: args.query?.q?.includes("is:open") ? "Open external" : "Closed external",
+                pull_request: { url: "https://api.github.com/repos/elsewhere/project/pulls/3" },
+                repository_url: "https://api.github.com/repos/elsewhere/project",
+              }),
+            ],
+          },
+        };
+      }),
+    });
+    const { service } = buildService({ githubService, laneService: makeLaneService([]) });
+
+    const openOnly = service.getGithubSnapshot();
+    await flushMicrotasks();
+
+    const fullHistory = service.getGithubSnapshot({ includeExternalClosed: true });
+    await flushMicrotasks();
+
+    resolveOpenRepo({ data: [makeGitHubPull({ number: 1, title: "Open-only PR" })] });
+    await expect(openOnly).resolves.toEqual(expect.objectContaining({
+      repoPullRequests: [expect.objectContaining({ title: "Open-only PR" })],
+      externalPullRequests: [expect.objectContaining({ title: "Open external" })],
+    }));
+
+    rejectFullRepo(new Error("full history failed"));
+    await expect(fullHistory).rejects.toThrow("full history failed");
+
+    const apiCallsAfterOpenOnly = githubService.apiRequest.mock.calls.length;
+    const cachedOpenOnly = await service.getGithubSnapshot();
+    expect(cachedOpenOnly.repoPullRequests[0]?.title).toBe("Open-only PR");
+    expect(cachedOpenOnly.externalPullRequests[0]?.title).toBe("Open external");
+    expect(githubService.apiRequest).toHaveBeenCalledTimes(apiCallsAfterOpenOnly);
+    expect(repoCalls).toBe(2);
+  });
+
+  it("keeps the existing open-only cache when a superseded refresh and full-history upgrade fail", async () => {
+    let resolveOpenRepo!: (value: unknown) => void;
+    const openRepoRequest = new Promise<unknown>((resolve) => {
+      resolveOpenRepo = resolve;
+    });
+    let rejectFullRepo!: (reason: unknown) => void;
+    const fullRepoRequest = new Promise<unknown>((_resolve, reject) => {
+      rejectFullRepo = reject;
+    });
+    let repoCalls = 0;
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => ({
+        tokenStored: true,
+        repo: REPO,
+        userLogin: "octocat",
+      })),
+      apiRequest: vi.fn(async (args: { path: string; query?: { q?: string } }) => {
+        if (args.path === `/repos/${REPO.owner}/${REPO.name}/pulls`) {
+          repoCalls += 1;
+          if (repoCalls === 1) return { data: [makeGitHubPull({ number: 1, title: "Cached open-only PR" })] };
+          if (repoCalls === 2) return openRepoRequest;
+          return fullRepoRequest;
+        }
+        return {
+          data: {
+            items: [
+              makeGitHubPull({
+                number: args.query?.q?.includes("is:open") ? 3 : 4,
+                title: args.query?.q?.includes("is:open") ? "Open external" : "Closed external",
+                pull_request: { url: "https://api.github.com/repos/elsewhere/project/pulls/4" },
+                repository_url: "https://api.github.com/repos/elsewhere/project",
+              }),
+            ],
+          },
+        };
+      }),
+    });
+    const { service } = buildService({ githubService, laneService: makeLaneService([]) });
+    const cached = await service.getGithubSnapshot({ force: true });
+    expect(cached.repoPullRequests[0]?.title).toBe("Cached open-only PR");
+
+    const openOnlyRefresh = service.getGithubSnapshot({ force: true });
+    await flushMicrotasks();
+    const fullHistory = service.getGithubSnapshot({ includeExternalClosed: true });
+    await flushMicrotasks();
+
+    resolveOpenRepo({ data: [makeGitHubPull({ number: 2, title: "Superseded open-only PR" })] });
+    await expect(openOnlyRefresh).resolves.toEqual(expect.objectContaining({
+      repoPullRequests: [expect.objectContaining({ title: "Superseded open-only PR" })],
+    }));
+    rejectFullRepo(new Error("full history failed"));
+    await expect(fullHistory).rejects.toThrow("full history failed");
+
+    const apiCallsAfterFailure = githubService.apiRequest.mock.calls.length;
+    const cachedOpenOnly = await service.getGithubSnapshot();
+    expect(cachedOpenOnly.repoPullRequests[0]?.title).toBe("Cached open-only PR");
+    expect(githubService.apiRequest).toHaveBeenCalledTimes(apiCallsAfterFailure);
+    expect(repoCalls).toBe(3);
+  });
+
+  it("does not publish a fallback snapshot from a superseded full-history failure", async () => {
+    let resolveOpenRepo!: (value: unknown) => void;
+    const openRepoRequest = new Promise<unknown>((resolve) => {
+      resolveOpenRepo = resolve;
+    });
+    let rejectSupersededFullRepo!: (reason: unknown) => void;
+    const supersededFullRepoRequest = new Promise<unknown>((_resolve, reject) => {
+      rejectSupersededFullRepo = reject;
+    });
+    let resolveCurrentFullRepo!: (value: unknown) => void;
+    const currentFullRepoRequest = new Promise<unknown>((resolve) => {
+      resolveCurrentFullRepo = resolve;
+    });
+    let repoCalls = 0;
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => ({
+        tokenStored: true,
+        repo: REPO,
+        userLogin: "octocat",
+      })),
+      apiRequest: vi.fn(async (args: { path: string; query?: { q?: string } }) => {
+        if (args.path === `/repos/${REPO.owner}/${REPO.name}/pulls`) {
+          repoCalls += 1;
+          if (repoCalls === 1) return openRepoRequest;
+          if (repoCalls === 2) return supersededFullRepoRequest;
+          return currentFullRepoRequest;
+        }
+        return {
+          data: {
+            items: [
+              makeGitHubPull({
+                number: args.query?.q?.includes("is:open") ? 3 : 4,
+                title: args.query?.q?.includes("is:open") ? "Open external" : "Closed external",
+                pull_request: { url: "https://api.github.com/repos/elsewhere/project/pulls/4" },
+                repository_url: "https://api.github.com/repos/elsewhere/project",
+              }),
+            ],
+          },
+        };
+      }),
+    });
+    const { service } = buildService({ githubService, laneService: makeLaneService([]) });
+
+    const openOnly = service.getGithubSnapshot();
+    await flushMicrotasks();
+    const supersededFullHistory = service.getGithubSnapshot({ includeExternalClosed: true });
+    await flushMicrotasks();
+
+    resolveOpenRepo({ data: [makeGitHubPull({ number: 1, title: "Open-only PR" })] });
+    await expect(openOnly).resolves.toEqual(expect.objectContaining({
+      repoPullRequests: [expect.objectContaining({ title: "Open-only PR" })],
+    }));
+
+    const currentFullHistory = service.getGithubSnapshot({ force: true, includeExternalClosed: true });
+    await flushMicrotasks();
+    rejectSupersededFullRepo(new Error("superseded full history failed"));
+    await expect(supersededFullHistory).rejects.toThrow("superseded full history failed");
+
+    const defaultSnapshot = service.getGithubSnapshot();
+    resolveCurrentFullRepo({ data: [makeGitHubPull({ number: 2, title: "Current full-history PR" })] });
+
+    await expect(currentFullHistory).resolves.toEqual(expect.objectContaining({
+      repoPullRequests: [expect.objectContaining({ title: "Current full-history PR" })],
+    }));
+    await expect(defaultSnapshot).resolves.toEqual(expect.objectContaining({
+      repoPullRequests: [expect.objectContaining({ title: "Current full-history PR" })],
+    }));
+    expect(repoCalls).toBe(3);
+  });
+
+  it("does not let a superseded open-only snapshot overwrite a fresher cache", async () => {
+    let resolveStaleRepo!: (value: unknown) => void;
+    const staleRepoRequest = new Promise<unknown>((resolve) => {
+      resolveStaleRepo = resolve;
+    });
+    let resolveFreshRepo!: (value: unknown) => void;
+    const freshRepoRequest = new Promise<unknown>((resolve) => {
+      resolveFreshRepo = resolve;
+    });
+    let repoCalls = 0;
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => ({
+        tokenStored: true,
+        repo: REPO,
+        userLogin: "octocat",
+      })),
+      apiRequest: vi.fn(async (args: { path: string }) => {
+        if (args.path === `/repos/${REPO.owner}/${REPO.name}/pulls`) {
+          repoCalls += 1;
+          if (repoCalls === 1) return staleRepoRequest;
+          return freshRepoRequest;
+        }
+        return { data: { items: [] } };
+      }),
+    });
+    const { service } = buildService({ githubService, laneService: makeLaneService([]) });
+
+    const staleRequest = service.getGithubSnapshot({ force: true });
+    await flushMicrotasks();
+    const freshRequest = service.getGithubSnapshot({ force: true });
+    await flushMicrotasks();
+
+    resolveFreshRepo({ data: [makeGitHubPull({ number: 2, title: "Fresh open-only PR" })] });
+    await expect(freshRequest).resolves.toEqual(expect.objectContaining({
+      repoPullRequests: [expect.objectContaining({ title: "Fresh open-only PR" })],
+    }));
+
+    resolveStaleRepo({ data: [makeGitHubPull({ number: 1, title: "Stale open-only PR" })] });
+    await expect(staleRequest).resolves.toEqual(expect.objectContaining({
+      repoPullRequests: [expect.objectContaining({ title: "Stale open-only PR" })],
+    }));
+
+    const cachedSnapshot = await service.getGithubSnapshot();
+    expect(cachedSnapshot.repoPullRequests[0]?.title).toBe("Fresh open-only PR");
+    expect(repoCalls).toBe(2);
+  });
+
+  it("preserves full-history cache mode during stale open-only revalidation", async () => {
+    const initialNow = Date.parse("2026-01-01T00:00:00Z");
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(initialNow);
+    let repoCalls = 0;
+    const externalQueries: string[] = [];
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => ({
+        tokenStored: true,
+        repo: REPO,
+        userLogin: "octocat",
+      })),
+      apiRequest: vi.fn(async (args: { path: string; query?: { q?: string } }) => {
+        if (args.path === `/repos/${REPO.owner}/${REPO.name}/pulls`) {
+          repoCalls += 1;
+          return {
+            data: [
+              makeGitHubPull({
+                number: repoCalls,
+                title: repoCalls === 1 ? "Cached full history" : "Fresh full history",
+              }),
+            ],
+          };
+        }
+        externalQueries.push(args.query?.q ?? "");
+        return {
+          data: {
+            items: [
+              makeGitHubPull({
+                number: externalQueries.length === 1 ? 10 : 11,
+                title: externalQueries.length === 1 ? "Cached closed external" : "Fresh closed external",
+                state: "closed",
+                pull_request: { url: "https://api.github.com/repos/elsewhere/project/pulls/11" },
+                repository_url: "https://api.github.com/repos/elsewhere/project",
+              }),
+            ],
+          },
+        };
+      }),
+    });
+    const { service } = buildService({ githubService, laneService: makeLaneService([]) });
+
+    try {
+      const fullHistory = await service.getGithubSnapshot({ includeExternalClosed: true });
+      expect(fullHistory.externalPullRequests[0]?.title).toBe("Cached closed external");
+      expect(externalQueries[0]).not.toContain("is:open");
+
+      nowSpy.mockReturnValue(Date.parse("2030-01-01T00:00:00Z"));
+      const staleOpenOnly = await service.getGithubSnapshot();
+      expect(staleOpenOnly.repoPullRequests[0]?.title).toBe("Cached full history");
+
+      const refreshedFullHistory = await service.getGithubSnapshot({ includeExternalClosed: true });
+      expect(externalQueries[1]).not.toContain("is:open");
+      expect(refreshedFullHistory.repoPullRequests[0]?.title).toBe("Fresh full history");
+      expect(refreshedFullHistory.externalPullRequests[0]?.title).toBe("Fresh closed external");
+
+      const cachedFullHistory = await service.getGithubSnapshot({ includeExternalClosed: true });
+      expect(cachedFullHistory.repoPullRequests[0]?.title).toBe("Fresh full history");
+      expect(cachedFullHistory.externalPullRequests[0]?.title).toBe("Fresh closed external");
+      expect(repoCalls).toBe(2);
+      expect(externalQueries).toHaveLength(2);
     } finally {
       nowSpy.mockRestore();
     }
@@ -508,6 +889,393 @@ describe("prService.getGithubSnapshot", () => {
       expect.stringContaining("insert into pull_requests("),
       expect.anything(),
     );
+  });
+});
+
+describe("prService.listWithConflicts", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("batches conflict analysis against all active lanes, including non-PR peers", async () => {
+    const prLane = makeFakeLane({ id: "lane-pr", name: "PR lane" });
+    const peerLane = makeFakeLane({ id: "lane-peer", name: "Peer lane" });
+    const db = makeMockDb();
+    db.all.mockImplementation((sql: string) => {
+      if (String(sql).includes("from pull_requests")) {
+        return [makePrRow({ id: "pr-1", lane_id: "lane-pr" })];
+      }
+      return [];
+    });
+    const conflictService = {
+      getBatchAssessment: vi.fn(async () => ({
+        lanes: [
+          { laneId: "lane-pr", status: "conflict-predicted", overlappingFileCount: 1 },
+          { laneId: "lane-peer", status: "clean", overlappingFileCount: 1 },
+        ],
+        matrix: [
+          { laneAId: "lane-pr", laneBId: "lane-peer", riskLevel: "high", overlapCount: 1 },
+        ],
+        overlaps: [
+          { laneAId: "lane-pr", laneBId: "lane-peer", files: ["src/shared.ts"] },
+        ],
+      })),
+    };
+    const laneService = makeLaneService([prLane, peerLane]);
+    const { service } = buildService({ db, laneService, conflictService });
+
+    const rows = await service.listWithConflicts({ includeConflictAnalysis: true });
+
+    expect(laneService.list).toHaveBeenCalledWith({ includeArchived: false, includeStatus: false });
+    expect(conflictService.getBatchAssessment).toHaveBeenCalledWith({ lanes: [prLane, peerLane] });
+    expect(rows[0]?.conflictAnalysis).toEqual(expect.objectContaining({
+      prId: "pr-1",
+      laneId: "lane-pr",
+      riskLevel: "high",
+      overlapCount: 1,
+      conflictPredicted: true,
+      peerConflicts: [
+        {
+          peerId: "lane-peer",
+          peerName: "Peer lane",
+          riskLevel: "high",
+          overlapFiles: ["src/shared.ts"],
+        },
+      ],
+    }));
+  });
+
+  it("logs when batched conflict analysis falls back to null results", async () => {
+    const db = makeMockDb();
+    db.all.mockImplementation((sql: string) => {
+      if (String(sql).includes("from pull_requests")) {
+        return [makePrRow({ id: "pr-1", lane_id: "lane-pr" })];
+      }
+      return [];
+    });
+    const conflictService = {
+      getBatchAssessment: vi.fn(async () => {
+        throw new Error("batch failed");
+      }),
+    };
+    const { service, logger } = buildService({
+      db,
+      laneService: makeLaneService([makeFakeLane({ id: "lane-pr" })]),
+      conflictService,
+    });
+
+    const rows = await service.listWithConflicts({ includeConflictAnalysis: true });
+
+    expect(rows[0]?.conflictAnalysis).toBeNull();
+    expect(logger.warn).toHaveBeenCalledWith("prs.batch_conflict_analysis_failed", { error: "batch failed" });
+  });
+
+  it("defaults to listing PRs without conflict analysis", async () => {
+    const db = makeMockDb();
+    db.all.mockImplementation((sql: string) => {
+      if (String(sql).includes("from pull_requests")) {
+        return [makePrRow({ id: "pr-1", lane_id: "lane-pr" })];
+      }
+      return [];
+    });
+    const conflictService = {
+      getBatchAssessment: vi.fn(async () => ({ lanes: [], matrix: [], overlaps: [] })),
+    };
+    const { service } = buildService({
+      db,
+      laneService: makeLaneService([makeFakeLane({ id: "lane-pr" })]),
+      conflictService,
+    });
+
+    const rows = await service.listWithConflicts();
+
+    expect(rows[0]?.conflictAnalysis).toBeNull();
+    expect(conflictService.getBatchAssessment).not.toHaveBeenCalled();
+  });
+});
+
+describe("prService.refresh", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function makeRefreshDb(rows: ReturnType<typeof makePrRow>[]) {
+    const db = makeMockDb();
+    db.get.mockImplementation((sql: string, params: unknown[]) => {
+      const text = String(sql);
+      if (text.includes("from pull_requests") && text.includes("where id = ?")) {
+        return rows.find((row) => row.id === params[0]) ?? null;
+      }
+      return null;
+    });
+    return db;
+  }
+
+  function makeRefreshGithubService(failingPrNumbers = new Set<number>()) {
+    return makeGithubService({
+      apiRequest: vi.fn(async (args: { path: string }) => {
+        const path = args.path;
+        const prMatch = path.match(/\/pulls\/(\d+)$/);
+        if (prMatch) {
+          const prNumber = Number(prMatch[1]);
+          if (failingPrNumbers.has(prNumber)) {
+            throw new Error(`refresh failed for #${prNumber}`);
+          }
+          return {
+            data: makeGitHubPull({
+              number: prNumber,
+              title: `Fresh #${prNumber}`,
+              head: { ref: `feature/pr-${prNumber}`, sha: `sha-${prNumber}` },
+              additions: 10,
+              deletions: 2,
+            }),
+          };
+        }
+        if (/\/commits\/sha-\d+\/status$/.test(path)) {
+          return { data: { state: "success", statuses: [] } };
+        }
+        if (/\/commits\/sha-\d+\/check-runs$/.test(path)) {
+          return { data: { check_runs: [] } };
+        }
+        if (/\/pulls\/\d+\/reviews$/.test(path)) {
+          return { data: [] };
+        }
+        throw new Error(`Unexpected GitHub API path: ${path}`);
+      }),
+    });
+  }
+
+  it("keeps successful explicit PR refreshes when a sibling fails", async () => {
+    const okRow = makePrRow({ id: "pr-ok", github_pr_number: 90 });
+    const failingRow = makePrRow({ id: "pr-bad", github_pr_number: 91 });
+    const { service, logger } = buildService({
+      db: makeRefreshDb([okRow, failingRow]),
+      githubService: makeRefreshGithubService(new Set([91])),
+    });
+
+    const refreshed = await service.refresh({ prIds: ["pr-ok", "pr-bad"] });
+
+    expect(refreshed).toHaveLength(1);
+    expect(refreshed[0]).toEqual(expect.objectContaining({
+      id: "pr-ok",
+      githubPrNumber: 90,
+      title: "Fresh #90",
+    }));
+    expect(logger.warn).toHaveBeenCalledWith("prs.refresh_failed", {
+      prId: "pr-bad",
+      error: "refresh failed for #91",
+    });
+  });
+
+  it("rejects explicit multi-PR refreshes when every PR fails", async () => {
+    const firstRow = makePrRow({ id: "pr-bad-1", github_pr_number: 91 });
+    const secondRow = makePrRow({ id: "pr-bad-2", github_pr_number: 92 });
+    const { service, logger } = buildService({
+      db: makeRefreshDb([firstRow, secondRow]),
+      githubService: makeRefreshGithubService(new Set([91, 92])),
+    });
+
+    await expect(service.refresh({ prIds: ["pr-bad-1", "pr-bad-2"] })).rejects.toThrow("refresh failed for #91");
+    expect(logger.warn).toHaveBeenCalledWith("prs.refresh_failed", {
+      prId: "pr-bad-1",
+      error: "refresh failed for #91",
+    });
+    expect(logger.warn).toHaveBeenCalledWith("prs.refresh_failed", {
+      prId: "pr-bad-2",
+      error: "refresh failed for #92",
+    });
+  });
+
+  it("still rejects explicit single-PR refresh failures", async () => {
+    const failingRow = makePrRow({ id: "pr-bad", github_pr_number: 91 });
+    const { service, logger } = buildService({
+      db: makeRefreshDb([failingRow]),
+      githubService: makeRefreshGithubService(new Set([91])),
+    });
+
+    await expect(service.refresh({ prId: "pr-bad" })).rejects.toThrow("refresh failed for #91");
+    expect(logger.warn).toHaveBeenCalledWith("prs.refresh_failed", {
+      prId: "pr-bad",
+      error: "refresh failed for #91",
+    });
+  });
+});
+
+describe("prService merge contexts", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("resolves target lanes by branch name when lane refs include refs/heads prefixes", async () => {
+    const sourceLane = makeFakeLane({ id: "lane-feature", branchRef: "refs/heads/feature/pr" });
+    const targetLane = makeFakeLane({ id: "lane-main", branchRef: "refs/heads/main", name: "Main" });
+    const row = makePrRow({ id: "pr-1", lane_id: sourceLane.id, base_branch: "main", head_branch: "feature/pr" });
+    const db = makeMockDb();
+    db.get.mockImplementation((sql: string) => {
+      const text = String(sql);
+      if (text.includes("from pull_requests")) return row;
+      if (text.includes("from pr_group_members")) return null;
+      return null;
+    });
+    db.all.mockImplementation((sql: string) => {
+      if (String(sql).includes("from pull_requests")) return [row];
+      return [];
+    });
+    const { service } = buildService({ db, laneService: makeLaneService([sourceLane, targetLane]) });
+
+    await expect(service.getMergeContext("pr-1")).resolves.toEqual(expect.objectContaining({
+      targetLaneId: "lane-main",
+    }));
+    await expect(service.getMergeContexts(["pr-1"])).resolves.toEqual({
+      "pr-1": expect.objectContaining({ targetLaneId: "lane-main" }),
+    });
+  });
+
+  it("uses the same group assembly for single and bulk merge-context reads", async () => {
+    const sourceLane = makeFakeLane({ id: "lane-source", branchRef: "refs/heads/feature/pr", name: "Feature" });
+    const integrationLane = makeFakeLane({ id: "lane-integration", branchRef: "refs/heads/integration/pr", name: "Integration" });
+    const targetLane = makeFakeLane({ id: "lane-main", branchRef: "refs/heads/main", name: "Main" });
+    const row = makePrRow({ id: "pr-1", lane_id: sourceLane.id, base_branch: "main", head_branch: "feature/pr" });
+    const group = { group_id: "group-1", group_type: "integration" as const };
+    const memberRows = [
+      {
+        group_id: group.group_id,
+        pr_id: "pr-1",
+        lane_id: sourceLane.id,
+        position: 0,
+        role: "source",
+        lane_name: sourceLane.name,
+        pr_number: 90,
+      },
+      {
+        group_id: group.group_id,
+        pr_id: "pr-integration",
+        lane_id: integrationLane.id,
+        position: 1,
+        role: "integration",
+        lane_name: integrationLane.name,
+        pr_number: 91,
+      },
+    ];
+    const db = makeMockDb();
+    db.get.mockImplementation((sql: string) => {
+      const text = String(sql);
+      if (text.includes("from pull_requests")) return row;
+      if (text.includes("from pr_group_members")) return group;
+      return null;
+    });
+    db.all.mockImplementation((sql: string) => {
+      const text = String(sql);
+      if (text.includes("from pull_requests")) return [row];
+      if (text.includes("from pr_group_members") && text.includes("join pr_groups")) {
+        return [{ ...group, pr_id: row.id }];
+      }
+      if (text.includes("from pr_group_members")) return memberRows;
+      return [];
+    });
+    const { service } = buildService({
+      db,
+      laneService: makeLaneService([sourceLane, integrationLane, targetLane]),
+    });
+
+    const single = await service.getMergeContext("pr-1");
+    const bulk = await service.getMergeContexts(["pr-1"]);
+
+    expect(bulk["pr-1"]).toEqual(single);
+    const allDbCalls = db.all.mock.calls as Array<[unknown, ...unknown[]]>;
+    expect(allDbCalls.some(([sql]) => String(sql).includes("row_number() over"))).toBe(true);
+    expect(single).toEqual(expect.objectContaining({
+      groupId: group.group_id,
+      groupType: "integration",
+      sourceLaneIds: [sourceLane.id],
+      targetLaneId: targetLane.id,
+      integrationLaneId: integrationLane.id,
+    }));
+  });
+
+  it("returns empty merge contexts for requested PR ids missing from storage", async () => {
+    const db = makeMockDb();
+    db.get.mockReturnValue(null);
+    db.all.mockImplementation((sql: string) => {
+      if (String(sql).includes("from pull_requests")) return [];
+      return [];
+    });
+    const { service } = buildService({ db, laneService: makeLaneService([]) });
+
+    await expect(service.getMergeContext("external-pr")).resolves.toEqual({
+      prId: "external-pr",
+      groupId: null,
+      groupType: null,
+      sourceLaneIds: [],
+      targetLaneId: null,
+      integrationLaneId: null,
+      members: [],
+    });
+    await expect(service.getMergeContexts(["external-pr"])).resolves.toEqual({
+      "external-pr": {
+        prId: "external-pr",
+        groupId: null,
+        groupType: null,
+        sourceLaneIds: [],
+        targetLaneId: null,
+        integrationLaneId: null,
+        members: [],
+      },
+    });
+  });
+
+  it("chunks bulk merge-context lookups below SQLite's bind parameter limit", async () => {
+    const prIds = Array.from({ length: 1_005 }, (_value, index) => `pr-${index}`);
+    const rowsById = new Map(prIds.map((id, index) => [
+      id,
+      makePrRow({
+        id,
+        lane_id: `lane-${index}`,
+        github_pr_number: index + 1,
+        head_branch: `feature/${index}`,
+      }),
+    ] as const));
+    const paramCounts = {
+      pullRequests: [] as number[],
+      groupLookups: [] as number[],
+      memberLookups: [] as number[],
+    };
+    const db = makeMockDb();
+    db.all.mockImplementation((sql: string, params: unknown[] = []) => {
+      const text = String(sql);
+      if (text.includes("from pull_requests")) {
+        paramCounts.pullRequests.push(params.length);
+        return params.slice(1).map((id) => rowsById.get(String(id))).filter(Boolean);
+      }
+      if (text.includes("from pr_group_members") && text.includes("join pr_groups")) {
+        paramCounts.groupLookups.push(params.length);
+        return params.slice(1).map((id) => ({
+          pr_id: String(id),
+          group_id: `group-${String(id)}`,
+          group_type: "queue" as const,
+        }));
+      }
+      if (text.includes("from pr_group_members")) {
+        paramCounts.memberLookups.push(params.length);
+        return [];
+      }
+      return [];
+    });
+    const { service } = buildService({ db, laneService: makeLaneService([]) });
+
+    const contexts = await service.getMergeContexts(prIds);
+
+    expect(Object.keys(contexts)).toHaveLength(prIds.length);
+    expect(paramCounts.pullRequests).toHaveLength(2);
+    expect(paramCounts.groupLookups).toHaveLength(2);
+    expect(paramCounts.memberLookups).toHaveLength(2);
+    for (const count of [
+      ...paramCounts.pullRequests,
+      ...paramCounts.groupLookups,
+      ...paramCounts.memberLookups,
+    ]) {
+      expect(count).toBeLessThanOrEqual(902);
+    }
   });
 });
 

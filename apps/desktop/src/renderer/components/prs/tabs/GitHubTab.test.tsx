@@ -413,6 +413,111 @@ describe("GitHubTab", () => {
     expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps loaded closed history during manual sync after returning to the open filter", async () => {
+    const user = userEvent.setup();
+    renderTab();
+
+    await waitFor(() => {
+      expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: false });
+    });
+
+    await user.click(screen.getByRole("button", { name: /^merged/i }));
+    await waitFor(() => {
+      expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({
+        force: false,
+        includeExternalClosed: true,
+      });
+    });
+
+    (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockClear();
+    await user.click(screen.getByRole("button", { name: /^open/i }));
+    await user.click(screen.getByRole("button", { name: /^sync$/i }));
+
+    await waitFor(() => {
+      expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({
+        force: true,
+        includeExternalClosed: true,
+      });
+    });
+  });
+
+  it("does not let a superseded open-only snapshot overwrite loaded closed history", async () => {
+    const user = userEvent.setup();
+    const openOnlySnapshot: GitHubPrSnapshot = {
+      ...snapshot,
+      repoPullRequests: [makeGitHubPr()],
+      externalPullRequests: [],
+    };
+    const fullHistorySnapshot: GitHubPrSnapshot = {
+      ...snapshot,
+      repoPullRequests: [
+        makeGitHubPr(),
+        makeGitHubPr({
+          id: "repo-merged",
+          githubPrNumber: 102,
+          title: "Merged PR",
+          state: "merged",
+          linkedPrId: "pr-merged",
+          linkedLaneId: "lane-merged",
+        }),
+      ],
+    };
+    let rejectOpenOnly!: (error: Error) => void;
+    let resolveFullHistory!: (snapshot: GitHubPrSnapshot) => void;
+    const openOnlyRequest = new Promise<GitHubPrSnapshot>((_resolve, reject) => {
+      rejectOpenOnly = reject;
+    });
+    const fullHistoryRequest = new Promise<GitHubPrSnapshot>((resolve) => {
+      resolveFullHistory = resolve;
+    });
+    const getGitHubSnapshot = window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>;
+    getGitHubSnapshot.mockReset();
+    getGitHubSnapshot
+      .mockResolvedValueOnce(openOnlySnapshot)
+      .mockReturnValueOnce(openOnlyRequest)
+      .mockReturnValueOnce(fullHistoryRequest);
+
+    renderTab();
+
+    await waitFor(() => {
+      expect(getGitHubSnapshot).toHaveBeenCalledWith({ force: false });
+    });
+    await screen.findByText("Open PR");
+
+    await user.click(screen.getByRole("button", { name: /^sync$/i }));
+    await waitFor(() => {
+      expect(getGitHubSnapshot).toHaveBeenCalledWith({ force: true });
+    });
+    await user.click(screen.getByRole("button", { name: /^merged/i }));
+    await waitFor(() => {
+      expect(getGitHubSnapshot).toHaveBeenCalledWith({
+        force: false,
+        includeExternalClosed: true,
+      });
+    });
+
+    resolveFullHistory(fullHistorySnapshot);
+    await screen.findByText("Merged PR");
+
+    rejectOpenOnly(new Error("stale open-only failed"));
+    await waitFor(() => {
+      expect(screen.getByText("Merged PR")).toBeTruthy();
+      expect(screen.queryByText("stale open-only failed")).toBeNull();
+    });
+
+    getGitHubSnapshot.mockClear();
+    getGitHubSnapshot.mockResolvedValue(fullHistorySnapshot);
+    await user.click(screen.getByRole("button", { name: /^open/i }));
+    await user.click(screen.getByRole("button", { name: /^sync$/i }));
+
+    await waitFor(() => {
+      expect(getGitHubSnapshot).toHaveBeenCalledWith({
+        force: true,
+        includeExternalClosed: true,
+      });
+    });
+  });
+
   it("filters by ADE scope showing only linked PRs", async () => {
     const snapshotWithUnlinked: GitHubPrSnapshot = {
       ...snapshot,

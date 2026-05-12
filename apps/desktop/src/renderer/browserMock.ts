@@ -5265,7 +5265,23 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           integrationLaneId: null,
           members: [],
         },
+      getMergeContexts: async (prIds: string[]) =>
+        Object.fromEntries(
+          prIds.map((prId) => [
+            prId,
+            MOCK_MERGE_CONTEXTS[prId] ?? {
+              prId,
+              groupId: null,
+              groupType: null,
+              sourceLaneIds: [],
+              targetLaneId: null,
+              integrationLaneId: null,
+              members: [],
+            },
+          ]),
+        ),
       listWithConflicts: resolved(ALL_PRS),
+      listSnapshots: async () => [],
       getGitHubSnapshot: resolvedArg(MOCK_GITHUB_SNAPSHOT),
       listIntegrationWorkflows: resolved(MOCK_INTEGRATION_WORKFLOWS),
       aiResolutionStart: async () => ({

@@ -642,7 +642,24 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
     action: "getGithubSnapshot",
     label: "Get GitHub PR snapshot",
     description: "Return the cached list of GitHub PRs visible to the viewer.",
-    params: [{ name: "force", type: "boolean", description: "Force refresh from GitHub." }],
+    params: [
+      { name: "force", type: "boolean", description: "Force refresh from GitHub." },
+      { name: "includeExternalClosed", type: "boolean", description: "Include closed PRs outside the active repository." },
+    ],
+  },
+  {
+    domain: "pr",
+    action: "getMergeContexts",
+    label: "Get PR merge contexts",
+    description: "Return merge workflow context for a batch of PR ids.",
+    params: [{ name: "prIds", type: "string-array", description: "PR ids to hydrate." }],
+  },
+  {
+    domain: "pr",
+    action: "listSnapshots",
+    label: "List PR snapshots",
+    description: "Return locally cached PR detail snapshots.",
+    params: [{ name: "prId", type: "string", description: "Optional PR id to hydrate." }],
   },
   {
     domain: "pr",

@@ -2945,10 +2945,9 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     expect(db.get<{ lane_id: string | null }>("select lane_id from orchestrator_chat_messages where id = ?", ["message-child"])?.lane_id).toBeNull();
   });
 
-  it("honors cancelDelete before git_worktree_remove and skips destructive steps", async () => {
+  it("does not cancel a lane delete after it starts", async () => {
     const events: any[] = [];
     const fake = makeFakeServices();
-    // Make stop_processes slow so cancelDelete races in before the worktree remove.
     fake.processService.stopAll.mockImplementation(async () => {
       await new Promise((r) => setTimeout(r, 50));
     });
@@ -2960,15 +2959,15 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     });
 
     const deletePromise = service.delete({ laneId: "lane-child", deleteBranch: false });
-    // Cancel during the slow stop_processes step.
     await new Promise((r) => setTimeout(r, 5));
     const cancelResult = service.cancelDelete("lane-child");
-    expect(cancelResult.cancelled).toBe(true);
+    expect(cancelResult.cancelled).toBe(false);
     await deletePromise;
 
     const last = events[events.length - 1];
-    expect(last.progress.overallStatus).toBe("cancelled");
-    expect(fake.calls).not.toContain("git_worktree_remove");
+    expect(last.progress.overallStatus).toBe("completed");
+    expect(last.progress.cancellable).toBe(false);
+    expect(last.progress.steps.find((step: any) => step.name === "git_worktree_remove")?.status).toBe("completed");
   });
 
   it("getDeleteRisk reports running processes, ptys, watchers, and unpushed commits", async () => {

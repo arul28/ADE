@@ -440,6 +440,7 @@ import type {
   PrConflictAnalysis,
   PrMergeContext,
   PrHealth,
+  PrSnapshotHydration,
   PrWithConflicts,
   RebaseNeed,
   RebaseLaneArgs,
@@ -4405,7 +4406,7 @@ contextBridge.exposeInMainWorld("ade", {
       };
     },
     listAutoRebaseStatuses: async (): Promise<AutoRebaseLaneStatus[]> =>
-      callProjectRuntimeActionOr("lane", "listAutoRebaseStatuses", {}, () =>
+      callProjectRuntimeActionOr("lane", "listAutoRebaseStatuses", { args: {} }, () =>
         ipcRenderer.invoke(IPC.lanesListAutoRebaseStatuses),
       ),
     dismissAutoRebaseStatus: async (args: {
@@ -6957,12 +6958,27 @@ contextBridge.exposeInMainWorld("ade", {
       callProjectRuntimeActionOr("pr", "getMergeContext", { arg: prId }, () =>
         ipcRenderer.invoke(IPC.prsGetMergeContext, { prId }),
       ),
-    listWithConflicts: (): Promise<PrWithConflicts[]> =>
-      callProjectRuntimeActionOr("pr", "listWithConflicts", {}, () =>
-        ipcRenderer.invoke(IPC.prsListWithConflicts),
+    getMergeContexts: (prIds: string[]): Promise<Record<string, PrMergeContext>> =>
+      callProjectRuntimeActionOr(
+        "pr",
+        "getMergeContexts",
+        { argsList: [prIds] },
+        () => ipcRenderer.invoke(IPC.prsGetMergeContexts, { prIds }),
+      ),
+    listWithConflicts: (args: { includeConflictAnalysis?: boolean } = {}): Promise<PrWithConflicts[]> =>
+      callProjectRuntimeActionOr("pr", "listWithConflicts", { args }, () =>
+        ipcRenderer.invoke(IPC.prsListWithConflicts, args),
+      ),
+    listSnapshots: (args: { prId?: string } = {}): Promise<PrSnapshotHydration[]> =>
+      callProjectRuntimeActionOr(
+        "pr",
+        "listSnapshots",
+        { args },
+        () => ipcRenderer.invoke(IPC.prsListSnapshots, args),
       ),
     getGitHubSnapshot: (args?: {
       force?: boolean;
+      includeExternalClosed?: boolean;
     }): Promise<GitHubPrSnapshot> =>
       callProjectRuntimeActionOr(
         "pr",

@@ -2,7 +2,7 @@
 
 import React from "react";
 import { MemoryRouter } from "react-router-dom";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -13,9 +13,12 @@ import type {
   PrAiResolutionEventPayload,
   PrActionRun,
   PrCheck,
+  PrComment,
   PrConvergenceState,
   PrConvergenceStatePatch,
+  PrReview,
   PrReviewThread,
+  PrSnapshotHydration,
   PrStatus,
   PrWithConflicts,
   TerminalSessionStatus,
@@ -65,6 +68,33 @@ function makeActionRun(overrides: Partial<PrActionRun> = {}): PrActionRun {
     createdAt: "2026-05-01T05:15:24.000Z",
     updatedAt: "2026-05-01T05:24:41.000Z",
     jobs: [],
+    ...overrides,
+  };
+}
+
+function makeComment(overrides: Partial<PrComment> = {}): PrComment {
+  return {
+    id: "comment-1",
+    author: "reviewer",
+    authorAvatarUrl: null,
+    body: "Cached comment body",
+    source: "issue",
+    url: null,
+    path: "src/prs.ts",
+    line: 18,
+    createdAt: "2026-03-23T12:00:00.000Z",
+    updatedAt: "2026-03-23T12:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function makeReview(overrides: Partial<PrReview> = {}): PrReview {
+  return {
+    reviewer: "reviewer",
+    reviewerAvatarUrl: null,
+    state: "approved",
+    body: "Cached review body",
+    submittedAt: "2026-03-23T12:05:00.000Z",
     ...overrides,
   };
 }
@@ -262,6 +292,7 @@ function renderPane(args: {
   prOverrides?: Partial<PrWithConflicts>;
   onNavigate?: (path: string) => void;
   activity?: PrActivityEvent[];
+  status?: PrStatus | null;
   statusOverrides?: Partial<PrStatus>;
   mergeMethod?: "merge" | "squash" | "rebase";
   convergenceState?: PrConvergenceState | null;
@@ -271,6 +302,13 @@ function renderPane(args: {
     items: IssueInventoryItem[];
     convergence: { currentRound: number; maxRounds: number; totalNew: number; totalSentToAgent: number; isConverging: boolean };
   };
+  listSnapshots?: ReturnType<typeof vi.fn>;
+  getDetail?: ReturnType<typeof vi.fn>;
+  getFiles?: ReturnType<typeof vi.fn>;
+  getCommits?: ReturnType<typeof vi.fn>;
+  snapshotHydration?: PrSnapshotHydration | null;
+  snapshotHydrationOwnedByContext?: boolean;
+  liveDetailReady?: boolean;
 }) {
   const laneList = args.lanes ?? [makeLane({
     status: {
@@ -413,7 +451,8 @@ function renderPane(args: {
   Object.assign(window, {
     ade: {
       prs: {
-        getDetail: vi.fn().mockResolvedValue({
+        listSnapshots: args.listSnapshots,
+        getDetail: args.getDetail ?? vi.fn().mockResolvedValue({
           prId: "pr-80",
           body: "This PR improves GitHub PR flows.",
           labels: [],
@@ -424,7 +463,8 @@ function renderPane(args: {
           milestone: null,
           linkedIssues: [],
         }),
-        getFiles: vi.fn().mockResolvedValue([]),
+        getFiles: args.getFiles ?? vi.fn().mockResolvedValue([]),
+        getCommits: args.getCommits,
         getActionRuns,
         getActivity: vi.fn().mockResolvedValue(args.activity ?? []),
         getReviewThreads,
@@ -490,10 +530,13 @@ function renderPane(args: {
     <MemoryRouter>
       <PrDetailPane
         pr={makePr(prOverrides)}
-        status={makeStatus(args.statusOverrides)}
+        status={args.status === undefined ? makeStatus(args.statusOverrides) : args.status}
         checks={args.checks}
         reviews={[]}
         comments={[]}
+        snapshotHydration={args.snapshotHydration}
+        snapshotHydrationOwnedByContext={args.snapshotHydrationOwnedByContext}
+        liveDetailReady={args.liveDetailReady}
         detailBusy={false}
         lanes={laneList}
         mergeMethod={args.mergeMethod ?? "squash"}
@@ -658,6 +701,105 @@ describe("PrDetailPane issue resolver CTA", () => {
     });
   });
 
+  it("hydrates checks and activity data from a cached snapshot", async () => {
+    const user = userEvent.setup();
+    const listSnapshots = vi.fn().mockResolvedValue([{
+      prId: "pr-80",
+      detail: null,
+      status: makeStatus({ checksStatus: "passing", reviewStatus: "approved" }),
+      checks: [makeCheck({ name: "Cached snapshot check", conclusion: "success" })],
+      reviews: [makeReview({ body: "Cached review body" })],
+      comments: [makeComment({ body: "Cached comment body" })],
+      files: [],
+      commits: [],
+      updatedAt: "2026-03-23T12:01:00.000Z",
+    }]);
+    renderPane({
+      status: null,
+      checks: [],
+      reviewThreads: [],
+      listSnapshots,
+    });
+
+    await waitFor(() => {
+      expect(listSnapshots).toHaveBeenCalledWith({ prId: "pr-80" });
+    });
+
+    await user.click(screen.getByRole("button", { name: /ci \/ checks/i }));
+    await waitFor(() => {
+      expect(screen.getByText("Cached snapshot check")).toBeTruthy();
+    });
+
+    await user.click(screen.getByRole("button", { name: /activity/i }));
+    await waitFor(() => {
+      expect(screen.getByText("Cached comment body")).toBeTruthy();
+      expect(screen.getByText("Cached review body")).toBeTruthy();
+    });
+  });
+
+  it("uses context-owned snapshot hydration without a duplicate snapshot IPC", async () => {
+    const user = userEvent.setup();
+    const snapshot: PrSnapshotHydration = {
+      prId: "pr-80",
+      detail: null,
+      status: makeStatus({ checksStatus: "passing", reviewStatus: "approved" }),
+      checks: [makeCheck({ name: "Context snapshot check", conclusion: "success" })],
+      reviews: [makeReview({ body: "Context review body" })],
+      comments: [makeComment({ body: "Context comment body" })],
+      files: [],
+      commits: [],
+      updatedAt: "2026-03-23T12:01:00.000Z",
+    };
+    const listSnapshots = vi.fn().mockResolvedValue([snapshot]);
+    renderPane({
+      status: null,
+      checks: [],
+      reviewThreads: [],
+      listSnapshots,
+      snapshotHydration: snapshot,
+      snapshotHydrationOwnedByContext: true,
+    });
+
+    await user.click(screen.getByRole("button", { name: /ci \/ checks/i }));
+    await waitFor(() => {
+      expect(screen.getByText("Context snapshot check")).toBeTruthy();
+    });
+    expect(listSnapshots).not.toHaveBeenCalled();
+  });
+
+  it("prefers authoritative empty live detail over cached snapshot data", async () => {
+    const user = userEvent.setup();
+    const listSnapshots = vi.fn().mockResolvedValue([{
+      prId: "pr-80",
+      detail: null,
+      status: makeStatus({ checksStatus: "passing", reviewStatus: "approved" }),
+      checks: [makeCheck({ name: "Cached snapshot check", conclusion: "success" })],
+      reviews: [makeReview({ body: "Cached review body" })],
+      comments: [makeComment({ body: "Cached comment body" })],
+      files: [],
+      commits: [],
+      updatedAt: "2026-03-23T12:01:00.000Z",
+    }]);
+    renderPane({
+      status: null,
+      checks: [],
+      reviewThreads: [],
+      listSnapshots,
+      liveDetailReady: true,
+    });
+
+    await waitFor(() => {
+      expect(listSnapshots).toHaveBeenCalledWith({ prId: "pr-80" });
+    });
+
+    await user.click(screen.getByRole("button", { name: /ci \/ checks/i }));
+    expect(screen.queryByText("Cached snapshot check")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: /activity/i }));
+    expect(screen.queryByText("Cached comment body")).toBeNull();
+    expect(screen.queryByText("Cached review body")).toBeNull();
+  });
+
   it("refreshes detail-side action runs when the selected PR status changes", async () => {
     const user = userEvent.setup();
     const { getActionRuns, rerenderPane } = renderPane({
@@ -700,6 +842,80 @@ describe("PrDetailPane issue resolver CTA", () => {
       expect(getActionRuns).toHaveBeenCalledTimes(2);
       expect(screen.getByText("0 passing, 1 pending")).toBeTruthy();
       expect(screen.getByText("Path Filtered CI on PR / build")).toBeTruthy();
+    });
+  });
+
+  it("does not reapply stale snapshot detail during same-PR status refreshes", async () => {
+    const freshDetail = {
+      prId: "pr-80",
+      body: "Fresh live body",
+      labels: [{ name: "fresh-label", color: "22c55e", description: null }],
+      assignees: [],
+      requestedReviewers: [],
+      author: { login: "octocat", avatarUrl: null },
+      isDraft: false,
+      milestone: null,
+      linkedIssues: [],
+    };
+    const staleDetail = {
+      ...freshDetail,
+      body: "Stale cached body",
+      labels: [{ name: "stale-label", color: "ef4444", description: null }],
+    };
+    let resolveSecondDetail!: (value: typeof freshDetail) => void;
+    const secondDetail = new Promise<typeof freshDetail>((resolve) => {
+      resolveSecondDetail = resolve;
+    });
+    const getDetail = vi.fn()
+      .mockResolvedValueOnce(freshDetail)
+      .mockReturnValueOnce(secondDetail);
+    const listSnapshots = vi.fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{
+        prId: "pr-80",
+        detail: staleDetail,
+        status: null,
+        checks: [],
+        reviews: [],
+        comments: [],
+        files: [],
+        commits: [],
+        updatedAt: "2026-03-23T12:01:00.000Z",
+      }]);
+    const { rerenderPane } = renderPane({
+      checks: [],
+      reviewThreads: [],
+      getDetail,
+      listSnapshots,
+      prOverrides: {
+        checksStatus: "none",
+        updatedAt: "2026-03-23T12:00:00.000Z",
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("fresh-label")).toBeTruthy();
+    });
+
+    rerenderPane({
+      checksStatus: "pending",
+      updatedAt: "2026-03-23T12:01:00.000Z",
+    });
+
+    await waitFor(() => {
+      expect(getDetail).toHaveBeenCalledTimes(2);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(listSnapshots).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("fresh-label")).toBeTruthy();
+    expect(screen.queryByText("stale-label")).toBeNull();
+
+    await act(async () => {
+      resolveSecondDetail(freshDetail);
+      await secondDetail;
     });
   });
 
