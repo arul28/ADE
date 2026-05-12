@@ -3971,19 +3971,39 @@ export function createPrService({
     };
   };
 
-  const buildMergeContextForRow = (
-    row: PullRequestRow,
-    lanes: LaneSummary[],
-  ): PrMergeContext => {
+  const buildMergeContextLaneLookups = (lanes: LaneSummary[]) => {
     const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
-    const findLaneIdByBranch = (rawBranch: string): string | null => {
-      const normalized = normalizeBranchName(rawBranch);
-      if (!normalized) return null;
-      const byBranch = lanes.find((lane) => normalizeBranchName(branchNameFromRef(lane.branchRef)) === normalized);
-      return byBranch?.id ?? null;
-    };
+    const laneIdByBranch = new Map(
+      lanes
+        .map((lane) => [normalizeBranchName(branchNameFromRef(lane.branchRef)), lane.id] as const)
+        .filter(([branch]) => Boolean(branch)),
+    );
+    return { laneById, laneIdByBranch };
+  };
 
-    const fallbackTargetLaneId = findLaneIdByBranch(row.base_branch);
+  const mapMergeContextMember = (
+    member: PrGroupMemberLookupRow,
+    laneById: Map<string, LaneSummary>,
+  ): PrMergeContext["members"][number] => ({
+    prId: member.pr_id,
+    laneId: member.lane_id,
+    laneName: member.lane_name ?? laneById.get(member.lane_id)?.name ?? member.lane_id,
+    prNumber: Number.isFinite(Number(member.pr_number)) ? Number(member.pr_number) : null,
+    position: Number(member.position),
+    role: normalizeGroupMemberRole(String(member.role ?? "source")),
+  });
+
+  const buildMergeContextFromLookups = (
+    row: PullRequestRow,
+    lookups: {
+      laneById: Map<string, LaneSummary>;
+      laneIdByBranch: Map<string, string>;
+      groupByPrId: Map<string, PrGroupLookupRow>;
+      membersByGroupId: Map<string, PrMergeContext["members"]>;
+    },
+  ): PrMergeContext => {
+    const { laneById, laneIdByBranch, groupByPrId, membersByGroupId } = lookups;
+    const fallbackTargetLaneId = laneIdByBranch.get(normalizeBranchName(row.base_branch)) ?? null;
     const fallbackSourceLaneId = row.lane_id;
     const fallbackMembers: PrMergeContext["members"] = [
       {
@@ -3996,20 +4016,7 @@ export function createPrService({
       }
     ];
 
-    const group = db.get<PrGroupLookupRow>(
-      `
-        select
-          g.id as group_id,
-          g.group_type as group_type
-        from pr_group_members m
-        join pr_groups g on g.id = m.group_id
-        where g.project_id = ? and m.pr_id = ?
-        order by g.created_at desc
-        limit 1
-      `,
-      [projectId, row.id]
-    );
-
+    const group = groupByPrId.get(row.id) ?? null;
     const baseMergeContext: PrMergeContext = {
       prId: row.id,
       groupId: group?.group_id ?? null,
@@ -4024,34 +4031,7 @@ export function createPrService({
       return baseMergeContext;
     }
 
-    const members = db
-      .all<PrGroupMemberLookupRow>(
-        `
-          select
-            m.group_id as group_id,
-            m.pr_id as pr_id,
-            m.lane_id as lane_id,
-            m.position as position,
-            m.role as role,
-            l.name as lane_name,
-            p.github_pr_number as pr_number
-          from pr_group_members m
-          left join lanes l on l.id = m.lane_id and l.project_id = ?
-          left join pull_requests p on p.id = m.pr_id and p.project_id = ?
-          where m.group_id = ?
-          order by m.position asc
-        `,
-        [projectId, projectId, group.group_id]
-      )
-      .map((member) => ({
-        prId: member.pr_id,
-        laneId: member.lane_id,
-        laneName: member.lane_name ?? laneById.get(member.lane_id)?.name ?? member.lane_id,
-        prNumber: Number.isFinite(Number(member.pr_number)) ? Number(member.pr_number) : null,
-        position: Number(member.position),
-        role: normalizeGroupMemberRole(String(member.role ?? "source"))
-      }));
-
+    const members = membersByGroupId.get(group.group_id) ?? [];
     const groupType = group.group_type === "integration" ? "integration" : "queue";
     const sourceLaneIds = members
       .filter((member) => member.role === "source")
@@ -4069,6 +4049,60 @@ export function createPrService({
     };
   };
 
+  const buildMergeContextForRow = (
+    row: PullRequestRow,
+    lanes: LaneSummary[],
+  ): PrMergeContext => {
+    const { laneById, laneIdByBranch } = buildMergeContextLaneLookups(lanes);
+    const group = db.get<PrGroupLookupRow>(
+      `
+        select
+          g.id as group_id,
+          g.group_type as group_type
+        from pr_group_members m
+        join pr_groups g on g.id = m.group_id
+        where g.project_id = ? and m.pr_id = ?
+        order by g.created_at desc
+        limit 1
+      `,
+      [projectId, row.id]
+    );
+
+    const groupByPrId = new Map<string, PrGroupLookupRow>();
+    const membersByGroupId = new Map<string, PrMergeContext["members"]>();
+    if (group) {
+      groupByPrId.set(row.id, group);
+      const members = db
+        .all<PrGroupMemberLookupRow>(
+          `
+            select
+              m.group_id as group_id,
+              m.pr_id as pr_id,
+              m.lane_id as lane_id,
+              m.position as position,
+              m.role as role,
+              l.name as lane_name,
+              p.github_pr_number as pr_number
+            from pr_group_members m
+            left join lanes l on l.id = m.lane_id and l.project_id = ?
+            left join pull_requests p on p.id = m.pr_id and p.project_id = ?
+            where m.group_id = ?
+            order by m.position asc
+          `,
+          [projectId, projectId, group.group_id]
+        )
+        .map((member) => mapMergeContextMember(member, laneById));
+      membersByGroupId.set(group.group_id, members);
+    }
+
+    return buildMergeContextFromLookups(row, {
+      laneById,
+      laneIdByBranch,
+      groupByPrId,
+      membersByGroupId,
+    });
+  };
+
   const getMergeContext = async (prId: string): Promise<PrMergeContext> => {
     const row = getRow(prId);
     if (!row) throw new Error(`PR not found: ${prId}`);
@@ -4080,12 +4114,7 @@ export function createPrService({
     const uniquePrIds = [...new Set(prIds.map((id) => String(id ?? "").trim()).filter(Boolean))];
     if (uniquePrIds.length === 0) return {};
     const lanes = await laneService.list({ includeArchived: false, includeStatus: false });
-    const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
-    const laneIdByBranch = new Map(
-      lanes
-        .map((lane) => [normalizeBranchName(branchNameFromRef(lane.branchRef)), lane.id] as const)
-        .filter(([branch]) => Boolean(branch)),
-    );
+    const { laneById, laneIdByBranch } = buildMergeContextLaneLookups(lanes);
     const rowPlaceholders = uniquePrIds.map(() => "?").join(", ");
     const rows = db.all<PullRequestRow>(
       `select ${PR_COLUMNS}
@@ -4137,59 +4166,18 @@ export function createPrService({
       );
       for (const member of memberRows) {
         const members = membersByGroupId.get(member.group_id) ?? [];
-        members.push({
-          prId: member.pr_id,
-          laneId: member.lane_id,
-          laneName: member.lane_name ?? laneById.get(member.lane_id)?.name ?? member.lane_id,
-          prNumber: Number.isFinite(Number(member.pr_number)) ? Number(member.pr_number) : null,
-          position: Number(member.position),
-          role: normalizeGroupMemberRole(String(member.role ?? "source")),
-        });
+        members.push(mapMergeContextMember(member, laneById));
         membersByGroupId.set(member.group_id, members);
       }
     }
     const contexts: Record<string, PrMergeContext> = {};
     for (const row of rows) {
-      const fallbackTargetLaneId = laneIdByBranch.get(normalizeBranchName(row.base_branch)) ?? null;
-      const fallbackSourceLaneId = row.lane_id;
-      const fallbackMembers: PrMergeContext["members"] = [
-        {
-          prId: row.id,
-          laneId: row.lane_id,
-          laneName: laneById.get(row.lane_id)?.name ?? row.lane_id,
-          prNumber: Number.isFinite(Number(row.github_pr_number)) ? Number(row.github_pr_number) : null,
-          position: 0,
-          role: "source",
-        },
-      ];
-      const group = groupByPrId.get(row.id) ?? null;
-      const baseMergeContext: PrMergeContext = {
-        prId: row.id,
-        groupId: group?.group_id ?? null,
-        groupType: null,
-        sourceLaneIds: [fallbackSourceLaneId],
-        targetLaneId: fallbackTargetLaneId,
-        integrationLaneId: null,
-        members: fallbackMembers,
-      };
-      if (!group) {
-        contexts[row.id] = baseMergeContext;
-        continue;
-      }
-      const members = membersByGroupId.get(group.group_id) ?? [];
-      const groupType = group.group_type === "integration" ? "integration" : "queue";
-      const sourceLaneIds = members
-        .filter((member) => member.role === "source")
-        .map((member) => member.laneId);
-      const integrationLaneId =
-        groupType === "integration" ? (members.find((member) => member.role === "integration")?.laneId ?? null) : null;
-      contexts[row.id] = {
-        ...baseMergeContext,
-        groupType,
-        sourceLaneIds: sourceLaneIds.length > 0 ? sourceLaneIds : [fallbackSourceLaneId],
-        integrationLaneId,
-        members: members.length > 0 ? members : fallbackMembers,
-      };
+      contexts[row.id] = buildMergeContextFromLookups(row, {
+        laneById,
+        laneIdByBranch,
+        groupByPrId,
+        membersByGroupId,
+      });
     }
     return contexts;
   };
@@ -5071,15 +5059,18 @@ export function createPrService({
     const cachedSnapshotSatisfiesRequest =
       cachedGithubSnapshot != null
       && (!includeExternalClosed || cachedGithubSnapshotIncludesExternalClosed);
-    const startSnapshotRequest = (allowStaleOnError: boolean): Promise<GitHubPrSnapshot> => {
+    const startSnapshotRequest = (
+      allowStaleOnError: boolean,
+      requestIncludeExternalClosed = includeExternalClosed,
+    ): Promise<GitHubPrSnapshot> => {
       const staleFallback = cachedGithubSnapshot;
       let inFlight!: { request: Promise<GitHubPrSnapshot>; includeExternalClosed: boolean };
-      const request = getGithubSnapshotUncached({ includeExternalClosed })
+      const request = getGithubSnapshotUncached({ includeExternalClosed: requestIncludeExternalClosed })
         .then((snapshot) => {
           if (githubSnapshotInFlight === inFlight) {
             cachedGithubSnapshot = snapshot;
             cachedGithubSnapshotAt = Date.now();
-            cachedGithubSnapshotIncludesExternalClosed = includeExternalClosed;
+            cachedGithubSnapshotIncludesExternalClosed = requestIncludeExternalClosed;
           }
           return snapshot;
         })
@@ -5097,7 +5088,7 @@ export function createPrService({
             githubSnapshotInFlight = null;
           }
         });
-      inFlight = { request, includeExternalClosed };
+      inFlight = { request, includeExternalClosed: requestIncludeExternalClosed };
       githubSnapshotInFlight = inFlight;
       return request;
     };
@@ -5109,8 +5100,11 @@ export function createPrService({
       if (ageMs < GITHUB_SNAPSHOT_TTL_MS) {
         return cachedSnapshot;
       }
-      if (!githubSnapshotInFlight || (includeExternalClosed && !githubSnapshotInFlight.includeExternalClosed)) {
-        void startSnapshotRequest(true).catch(() => {});
+      const refreshIncludeExternalClosed = includeExternalClosed || cachedGithubSnapshotIncludesExternalClosed;
+      if (!githubSnapshotInFlight || (refreshIncludeExternalClosed && !githubSnapshotInFlight.includeExternalClosed)) {
+        void startSnapshotRequest(true, refreshIncludeExternalClosed).catch(() => {});
+      } else if (includeExternalClosed && githubSnapshotInFlight.includeExternalClosed) {
+        return githubSnapshotInFlight.request;
       }
       return cachedSnapshot;
     }

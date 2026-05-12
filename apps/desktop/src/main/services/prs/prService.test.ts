@@ -403,7 +403,7 @@ describe("prService.getGithubSnapshot", () => {
       nowSpy.mockReturnValue(Date.parse("2026-01-01T00:00:00Z") + GITHUB_SNAPSHOT_TTL_MS_FOR_TEST + 1);
       const stale = await service.getGithubSnapshot();
       expect(stale.repoPullRequests[0]?.title).toBe("Cached PR");
-      await flushMicrotasks();
+      await flushMicrotasks(30);
       expect(githubService.apiRequest).toHaveBeenCalledTimes(3);
 
       resolveRevalidation({ data: [makeGitHubPull({ title: "Fresh PR", updated_at: "2026-01-01T00:05:00Z" })] });
@@ -490,6 +490,71 @@ describe("prService.getGithubSnapshot", () => {
     expect(cachedFullHistory.repoPullRequests[0]?.title).toBe("Full history PR");
     expect(cachedFullHistory.externalPullRequests[0]?.title).toBe("Closed external");
     expect(repoCalls).toBe(2);
+  });
+
+  it("preserves full-history cache mode during stale open-only revalidation", async () => {
+    const initialNow = Date.parse("2026-01-01T00:00:00Z");
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(initialNow);
+    let repoCalls = 0;
+    const externalQueries: string[] = [];
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => ({
+        tokenStored: true,
+        repo: REPO,
+        userLogin: "octocat",
+      })),
+      apiRequest: vi.fn(async (args: { path: string; query?: { q?: string } }) => {
+        if (args.path === `/repos/${REPO.owner}/${REPO.name}/pulls`) {
+          repoCalls += 1;
+          return {
+            data: [
+              makeGitHubPull({
+                number: repoCalls,
+                title: repoCalls === 1 ? "Cached full history" : "Fresh full history",
+              }),
+            ],
+          };
+        }
+        externalQueries.push(args.query?.q ?? "");
+        return {
+          data: {
+            items: [
+              makeGitHubPull({
+                number: externalQueries.length === 1 ? 10 : 11,
+                title: externalQueries.length === 1 ? "Cached closed external" : "Fresh closed external",
+                state: "closed",
+                pull_request: { url: "https://api.github.com/repos/elsewhere/project/pulls/11" },
+                repository_url: "https://api.github.com/repos/elsewhere/project",
+              }),
+            ],
+          },
+        };
+      }),
+    });
+    const { service } = buildService({ githubService, laneService: makeLaneService([]) });
+
+    try {
+      const fullHistory = await service.getGithubSnapshot({ includeExternalClosed: true });
+      expect(fullHistory.externalPullRequests[0]?.title).toBe("Cached closed external");
+      expect(externalQueries[0]).not.toContain("is:open");
+
+      nowSpy.mockReturnValue(Date.parse("2030-01-01T00:00:00Z"));
+      const staleOpenOnly = await service.getGithubSnapshot();
+      expect(staleOpenOnly.repoPullRequests[0]?.title).toBe("Cached full history");
+
+      const refreshedFullHistory = await service.getGithubSnapshot({ includeExternalClosed: true });
+      expect(externalQueries[1]).not.toContain("is:open");
+      expect(refreshedFullHistory.repoPullRequests[0]?.title).toBe("Fresh full history");
+      expect(refreshedFullHistory.externalPullRequests[0]?.title).toBe("Fresh closed external");
+
+      const cachedFullHistory = await service.getGithubSnapshot({ includeExternalClosed: true });
+      expect(cachedFullHistory.repoPullRequests[0]?.title).toBe("Fresh full history");
+      expect(cachedFullHistory.externalPullRequests[0]?.title).toBe("Fresh closed external");
+      expect(repoCalls).toBe(2);
+      expect(externalQueries).toHaveLength(2);
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 
   it("backfills a lane PR row from GitHub when the head branch matches an active lane", async () => {
@@ -696,6 +761,66 @@ describe("prService merge contexts", () => {
     await expect(service.getMergeContexts(["pr-1"])).resolves.toEqual({
       "pr-1": expect.objectContaining({ targetLaneId: "lane-main" }),
     });
+  });
+
+  it("uses the same group assembly for single and bulk merge-context reads", async () => {
+    const sourceLane = makeFakeLane({ id: "lane-source", branchRef: "refs/heads/feature/pr", name: "Feature" });
+    const integrationLane = makeFakeLane({ id: "lane-integration", branchRef: "refs/heads/integration/pr", name: "Integration" });
+    const targetLane = makeFakeLane({ id: "lane-main", branchRef: "refs/heads/main", name: "Main" });
+    const row = makePrRow({ id: "pr-1", lane_id: sourceLane.id, base_branch: "main", head_branch: "feature/pr" });
+    const group = { group_id: "group-1", group_type: "integration" as const };
+    const memberRows = [
+      {
+        group_id: group.group_id,
+        pr_id: "pr-1",
+        lane_id: sourceLane.id,
+        position: 0,
+        role: "source",
+        lane_name: sourceLane.name,
+        pr_number: 90,
+      },
+      {
+        group_id: group.group_id,
+        pr_id: "pr-integration",
+        lane_id: integrationLane.id,
+        position: 1,
+        role: "integration",
+        lane_name: integrationLane.name,
+        pr_number: 91,
+      },
+    ];
+    const db = makeMockDb();
+    db.get.mockImplementation((sql: string) => {
+      const text = String(sql);
+      if (text.includes("from pull_requests")) return row;
+      if (text.includes("from pr_group_members")) return group;
+      return null;
+    });
+    db.all.mockImplementation((sql: string) => {
+      const text = String(sql);
+      if (text.includes("from pull_requests")) return [row];
+      if (text.includes("from pr_group_members") && text.includes("join pr_groups")) {
+        return [{ ...group, pr_id: row.id }];
+      }
+      if (text.includes("from pr_group_members")) return memberRows;
+      return [];
+    });
+    const { service } = buildService({
+      db,
+      laneService: makeLaneService([sourceLane, integrationLane, targetLane]),
+    });
+
+    const single = await service.getMergeContext("pr-1");
+    const bulk = await service.getMergeContexts(["pr-1"]);
+
+    expect(bulk["pr-1"]).toEqual(single);
+    expect(single).toEqual(expect.objectContaining({
+      groupId: group.group_id,
+      groupType: "integration",
+      sourceLaneIds: [sourceLane.id],
+      targetLaneId: targetLane.id,
+      integrationLaneId: integrationLane.id,
+    }));
   });
 });
 
