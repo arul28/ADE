@@ -233,8 +233,10 @@ export function discoverClaudeOutputStyles(cwd: string): AgentChatClaudeOutputSt
 
   const roots = claudeRootsByPrecedence(cwd);
   const homeClaudeRoot = path.resolve(os.homedir(), ".claude");
+  const cwdClaudeRoot = path.resolve(cwd, ".claude");
   for (const root of roots) {
-    const source = path.resolve(root) === homeClaudeRoot ? "user" : "project";
+    const resolvedRoot = path.resolve(root);
+    const source = resolvedRoot === cwdClaudeRoot ? "project" : resolvedRoot === homeClaudeRoot ? "user" : "project";
     for (const style of discoverOutputStyleFiles(path.join(root, "output-styles"), source)) add(style);
   }
 
