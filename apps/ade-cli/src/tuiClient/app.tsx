@@ -1086,6 +1086,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const lastLocalSendAtRef = useRef<number>(0);
   const eventCountRef = useRef<number>(0);
   const eventDedupKeysRef = useRef<Set<string>>(new Set());
+  const eventDedupKeyOrderRef = useRef<string[]>([]);
   const chatScrollOffsetRowsRef = useRef(0);
   const heartbeatRef = useRef<TuiHeartbeat | null>(null);
   const draftSeededFromHistoryRef = useRef(false);
@@ -1762,6 +1763,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     setDraftChatMode(true);
     selectActiveSessionId(null);
     eventDedupKeysRef.current.clear();
+    eventDedupKeyOrderRef.current = [];
     setEvents([]);
     setClearedAt(null);
     chatDraftRef.current = "";
@@ -1956,7 +1958,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     setSessions(nextSessions);
     selectActiveLaneId(nextLaneId);
     selectActiveSessionId(nextSessionId);
-    syncTuiEventDedupKeys(eventDedupKeysRef.current, nextEvents);
+    eventDedupKeyOrderRef.current = syncTuiEventDedupKeys(eventDedupKeysRef.current, nextEvents);
     setEvents(nextEvents);
     setSlashCommands(nextCommands);
     setModels(nextModels);
@@ -2027,6 +2029,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         setDraftChatMode(true);
         selectActiveSessionId(null);
         eventDedupKeysRef.current.clear();
+        eventDedupKeyOrderRef.current = [];
         setEvents([]);
         await refreshState();
       } catch (err) {
@@ -2068,8 +2071,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       } else if (event.type === "codex_goal_cleared") {
         setCurrentGoal(null);
       }
-      if (reserveTuiEventDedupKey(envelope, eventDedupKeysRef.current) !== null) {
-        setEvents((prev) => appendReservedTuiEvent(prev, envelope, eventDedupKeysRef.current));
+      const reservedKey = reserveTuiEventDedupKey(envelope, eventDedupKeysRef.current);
+      if (reservedKey !== null) {
+        setEvents((prev) => {
+          const next = appendReservedTuiEvent(
+            prev,
+            envelope,
+            eventDedupKeysRef.current,
+            eventDedupKeyOrderRef.current,
+            reservedKey,
+          );
+          eventDedupKeyOrderRef.current = next.eventKeys;
+          return next.events;
+        });
       }
       if (event.type === "status" && event.turnStatus === "started") setStreaming(true);
       if (event.type === "done" || (event.type === "status" && event.turnStatus === "completed")) setStreaming(false);
@@ -2748,6 +2762,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     if (name === "/clear") {
       setClearedAt(new Date().toISOString());
       eventDedupKeysRef.current.clear();
+      eventDedupKeyOrderRef.current = [];
       setEvents([]);
       setChatScrollOffset(0);
       addNotice("Local transcript view cleared. The durable chat remains in ADE.", "info");
@@ -3390,6 +3405,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     if (action === "app:clear" || action === "chat:clearScreen") {
       setClearedAt(new Date().toISOString());
       eventDedupKeysRef.current.clear();
+      eventDedupKeyOrderRef.current = [];
       setEvents([]);
       setChatScrollOffset(0);
       addNotice("Cleared local transcript view.", "success");
@@ -3672,6 +3688,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     if (key.ctrl && input === "l" && pane === "chat") {
       setClearedAt(new Date().toISOString());
       eventDedupKeysRef.current.clear();
+      eventDedupKeyOrderRef.current = [];
       setEvents([]);
       setChatScrollOffset(0);
       addNotice("Viewport cleared. Durable chat history is unchanged.", "info");

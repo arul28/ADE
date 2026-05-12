@@ -87,14 +87,16 @@ describe("tuiEventDedupKey", () => {
       timestamp: "2026-01-01T00:00:01.000Z",
       event: { type: "text", text: "new" },
     } as AgentChatEventEnvelope;
-    const keys = new Set<string>(["precomputed-previous-key"]);
+    const previousKey = "precomputed-previous-key";
+    const keys = new Set<string>([previousKey]);
 
     const key = reserveTuiEventDedupKey(incoming, keys);
     expect(key).not.toBeNull();
-    const next = appendReservedTuiEvent([previous], incoming, keys);
+    const next = appendReservedTuiEvent([previous], incoming, keys, [previousKey], key!);
 
-    expect(next).toEqual([previous, incoming]);
-    expect(keys.has(tuiEventDedupKey(incoming))).toBe(true);
+    expect(next.events).toEqual([previous, incoming]);
+    expect(next.eventKeys).toEqual([previousKey, key]);
+    expect(keys.has(key!)).toBe(true);
   });
 
   it("uses cached keys to reject replays", () => {
@@ -135,23 +137,71 @@ describe("tuiEventDedupKey", () => {
       event: { type: "text", text: "new second" },
     } as AgentChatEventEnvelope;
     const keys = new Set<string>();
-    syncTuiEventDedupKeys(keys, [oldFirst, oldSecond]);
+    const oldKeys = syncTuiEventDedupKeys(keys, [oldFirst, oldSecond]);
 
-    expect(reserveTuiEventDedupKey(incomingFirst, keys)).not.toBeNull();
-    expect(reserveTuiEventDedupKey(incomingSecond, keys)).not.toBeNull();
+    const firstKey = reserveTuiEventDedupKey(incomingFirst, keys);
+    const secondKey = reserveTuiEventDedupKey(incomingSecond, keys);
+    expect(firstKey).not.toBeNull();
+    expect(secondKey).not.toBeNull();
 
-    const afterFirstAppend = appendReservedTuiEvent([oldFirst, oldSecond], incomingFirst, keys, 2);
+    const afterFirstAppend = appendReservedTuiEvent([oldFirst, oldSecond], incomingFirst, keys, oldKeys, firstKey!, 2);
 
-    expect(afterFirstAppend).toEqual([oldSecond, incomingFirst]);
-    expect(keys.has(tuiEventDedupKey(oldFirst))).toBe(false);
-    expect(keys.has(tuiEventDedupKey(incomingSecond))).toBe(true);
+    expect(afterFirstAppend.events).toEqual([oldSecond, incomingFirst]);
+    expect(keys.has(oldKeys[0]!)).toBe(false);
+    expect(keys.has(secondKey!)).toBe(true);
     expect(reserveTuiEventDedupKey(incomingSecond, keys)).toBeNull();
 
-    const afterSecondAppend = appendReservedTuiEvent(afterFirstAppend, incomingSecond, keys, 2);
+    const afterSecondAppend = appendReservedTuiEvent(
+      afterFirstAppend.events,
+      incomingSecond,
+      keys,
+      afterFirstAppend.eventKeys,
+      secondKey!,
+      2,
+    );
 
-    expect(afterSecondAppend).toEqual([incomingFirst, incomingSecond]);
-    expect(keys.has(tuiEventDedupKey(oldSecond))).toBe(false);
-    expect(keys.has(tuiEventDedupKey(incomingFirst))).toBe(true);
-    expect(keys.has(tuiEventDedupKey(incomingSecond))).toBe(true);
+    expect(afterSecondAppend.events).toEqual([incomingFirst, incomingSecond]);
+    expect(keys.has(oldKeys[1]!)).toBe(false);
+    expect(keys.has(firstKey!)).toBe(true);
+    expect(keys.has(secondKey!)).toBe(true);
+  });
+
+  it("evicts cached keys without re-stringifying trimmed events", () => {
+    const oldFirst = {
+      sessionId: "session-1",
+      sequence: 1,
+      timestamp: "2026-01-01T00:00:00.000Z",
+      event: {
+        type: "text",
+        text: "old first",
+        toJSON() {
+          return { type: "text", text: "old first" };
+        },
+      },
+    } as unknown as AgentChatEventEnvelope;
+    const oldSecond = {
+      sessionId: "session-1",
+      sequence: 2,
+      timestamp: "2026-01-01T00:00:01.000Z",
+      event: { type: "text", text: "old second" },
+    } as AgentChatEventEnvelope;
+    const incoming = {
+      sessionId: "session-1",
+      sequence: 3,
+      timestamp: "2026-01-01T00:00:02.000Z",
+      event: { type: "text", text: "new" },
+    } as AgentChatEventEnvelope;
+    const keys = new Set<string>();
+    const oldKeys = syncTuiEventDedupKeys(keys, [oldFirst, oldSecond]);
+    (oldFirst.event as { toJSON?: () => unknown }).toJSON = () => {
+      throw new Error("trimmed event should not be stringified again");
+    };
+
+    const incomingKey = reserveTuiEventDedupKey(incoming, keys);
+    expect(incomingKey).not.toBeNull();
+    const next = appendReservedTuiEvent([oldFirst, oldSecond], incoming, keys, oldKeys, incomingKey!, 2);
+
+    expect(next.events).toEqual([oldSecond, incoming]);
+    expect(keys.has(oldKeys[0]!)).toBe(false);
   });
 });

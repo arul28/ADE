@@ -14,13 +14,20 @@ export function resolveDrawerChatSelection(args: {
   selectedDrawerChatAction: "new-chat" | null;
   selectedDrawerChatId: string | null;
 }): DrawerChatSelection | null {
-  if (args.selectedDrawerChatAction) return null;
-  if (
+  const selectedChatIsVisible = Boolean(
     args.selectedDrawerChatId
-    && args.drawerVisibleLaneSessions.some((session) => session.sessionId === args.selectedDrawerChatId)
-  ) {
+    && args.drawerVisibleLaneSessions.some((session) => session.sessionId === args.selectedDrawerChatId),
+  );
+  if (selectedChatIsVisible) {
     return null;
   }
+
+  const selectedNewChatIsValid = args.selectedDrawerChatAction === "new-chat"
+    && args.selectedDrawerChatId == null
+    && args.draftChatActive
+    && args.drawerLaneId === args.activeLaneId;
+  if (selectedNewChatIsValid) return null;
+
   if (args.draftChatActive && args.drawerLaneId === args.activeLaneId) {
     return { selectedDrawerChatId: null, selectedDrawerChatAction: "new-chat" };
   }

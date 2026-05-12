@@ -98,11 +98,16 @@ export type ChatTranscriptGroupedEnvelope = {
 type PlanTranscriptEvent = Extract<AgentChatEvent, { type: "plan" }>;
 
 function mergePlanTranscriptEvent(previous: PlanTranscriptEvent, incoming: PlanTranscriptEvent): PlanTranscriptEvent {
-  const preserveStreamingText = incoming.state === "delta" && incoming.streamingText == null;
+  const hasIncomingSteps = incoming.steps.length > 0;
+  const nextState = incoming.state ?? (hasIncomingSteps ? "updated" : previous.state);
+  const preserveStreamingText = nextState === "delta" && !hasIncomingSteps && incoming.streamingText == null;
   return {
     ...previous,
     ...incoming,
-    steps: incoming.steps.length > 0 ? incoming.steps : previous.steps,
+    turnId: incoming.turnId ?? previous.turnId,
+    itemId: incoming.itemId ?? previous.itemId,
+    state: nextState,
+    steps: hasIncomingSteps ? incoming.steps : previous.steps,
     explanation: incoming.explanation ?? previous.explanation,
     streamingText: preserveStreamingText ? previous.streamingText : incoming.streamingText,
   };

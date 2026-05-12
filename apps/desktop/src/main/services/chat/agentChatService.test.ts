@@ -7487,6 +7487,134 @@ describe("createAgentChatService", () => {
       expect((await service.getSessionSummary(session.id))?.permissionMode).toBe("edit");
     });
 
+    it("emits a terminal event when a streamed native Codex plan item completes", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        codexApprovalPolicy: "untrusted",
+        codexSandbox: "read-only",
+        codexConfigSource: "flags",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Plan with a streamed native plan item.",
+      }, { awaitDispatch: true });
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/plan/delta",
+        params: {
+          turnId: "turn-1",
+          itemId: "codex-plan-streamed",
+          delta: "1. Inspect the streamed plan.",
+        },
+      });
+
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "plan" }>;
+        } =>
+          event.event.type === "plan"
+          && event.event.itemId === "codex-plan-streamed"
+          && event.event.state === "delta",
+      );
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/completed",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "codex-plan-streamed",
+            type: "plan",
+          },
+        },
+      });
+
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "plan" }>;
+        } =>
+          event.event.type === "plan"
+          && event.event.itemId === "codex-plan-streamed"
+          && event.event.state === "complete"
+          && (event.event.streamingText ?? "").includes("Inspect the streamed plan"),
+      );
+    });
+
+    it("emits a terminal event when a native Codex plan item completes without text", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        codexApprovalPolicy: "untrusted",
+        codexSandbox: "read-only",
+        codexConfigSource: "flags",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Plan with an empty native plan item.",
+      }, { awaitDispatch: true });
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/started",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "codex-plan-empty",
+            type: "plan",
+          },
+        },
+      });
+
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "plan" }>;
+        } =>
+          event.event.type === "plan"
+          && event.event.itemId === "codex-plan-empty"
+          && event.event.state === "active",
+      );
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/completed",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "codex-plan-empty",
+            type: "plan",
+          },
+        },
+      });
+
+      const completeEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "plan" }>;
+        } =>
+          event.event.type === "plan"
+          && event.event.itemId === "codex-plan-empty"
+          && event.event.state === "complete",
+      );
+      expect(completeEvent.event.streamingText).toBe("");
+    });
+
     it("keeps native Codex plan deltas under a stable fallback item id", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({
@@ -7543,6 +7671,17 @@ describe("createAgentChatService", () => {
           },
         },
       });
+
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "plan" }>;
+        } =>
+          event.event.type === "plan"
+          && event.event.itemId === `codex-plan:${session.id}:turn-1`
+          && event.event.state === "complete"
+          && (event.event.streamingText ?? "").includes("Patch the handoff"),
+      );
 
       const approvalEvent = await waitForEvent(
         events,

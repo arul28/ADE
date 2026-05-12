@@ -10602,6 +10602,22 @@ export function createAgentChatService(args: {
     ?? normalizeCodexPlanText(item.content)
     ?? normalizeCodexPlanText(item.description);
 
+  const emitCodexPlanComplete = (
+    managed: ManagedChatSession,
+    planText: string,
+    turnId: string | undefined,
+    itemId: string,
+  ): void => {
+    emitChatEvent(managed, {
+      type: "plan",
+      steps: [],
+      streamingText: planText,
+      state: "complete",
+      turnId,
+      itemId,
+    });
+  };
+
   const emitCodexPlanTextApproval = (
     managed: ManagedChatSession,
     runtime: CodexRuntime,
@@ -10782,20 +10798,12 @@ export function createAgentChatService(args: {
         return;
       }
       if (eventKind === "completed") {
-        const hadStreamingText = runtime.planTextByItemId.has(itemId);
         const planText = readCodexPlanTextFromItem(item) ?? runtime.planTextByItemId.get(itemId) ?? null;
         if (planText) {
-          if (!hadStreamingText) {
-            emitChatEvent(managed, {
-              type: "plan",
-              steps: [],
-              streamingText: planText,
-              state: "complete",
-              turnId,
-              itemId,
-            });
-          }
+          emitCodexPlanComplete(managed, planText, turnId, itemId);
           emitCodexPlanTextApproval(managed, runtime, planText, turnId);
+        } else {
+          emitCodexPlanComplete(managed, "", turnId, itemId);
         }
         runtime.planTextByItemId.delete(itemId);
       }
@@ -11300,11 +11308,18 @@ export function createAgentChatService(args: {
       const status = mapCodexTurnStatus(turn?.status);
       if (status === "completed") {
         for (const [planItemId, planText] of runtime.planTextByItemId) {
+          const planTurnId = runtime.itemTurnIdByItemId.get(planItemId) ?? turnId;
+          emitCodexPlanComplete(
+            managed,
+            planText,
+            planTurnId,
+            planItemId,
+          );
           emitCodexPlanTextApproval(
             managed,
             runtime,
             planText,
-            runtime.itemTurnIdByItemId.get(planItemId) ?? turnId,
+            planTurnId,
           );
         }
       }
