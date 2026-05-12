@@ -12,10 +12,15 @@ machinery layered on top.
 | Path | Role |
 |---|---|
 | `apps/desktop/src/main/services/chat/agentChatService.ts` | Main service: session lifecycle, turn dispatch, event emission, provider adapters, steer queue, handoff, auto-title, and prompt-derived lane-name suggestions for parallel launch. Tracks Codex Fast Mode (`codexFastMode: boolean`) per session and forwards it as `serviceTier: "fast" \| null` on every Codex `thread/start` and `turn/start` JSON-RPC call (see [Agent Routing](agent-routing.md#codex-service-tiers-fast-mode)). Spawns Claude/Codex agent runtimes with `buildAgentRuntimeEnv(managed)` so every agent process inherits `ADE_CHAT_SESSION_ID`, `ADE_LANE_ID`, `ADE_PROJECT_ROOT`, and `ADE_WORKSPACE_ROOT` (used by the agent guidance to call `ade --socket app-control logs` / `terminal read --chat-session "$ADE_CHAT_SESSION_ID"` without resolving the chat ID itself). Large orchestrator file. |
+| `apps/desktop/src/main/services/chat/runtimeEvents.ts` | Canonical cross-runtime event vocabulary (`turn.*`, `content.delta`, `tool.*`, `subagent.*`, teammate/task events, compaction boundaries) plus shims between legacy `AgentChatEvent` rows and the canonical runtime envelope. Claude emits canonical subagent events alongside the legacy rows while the other adapters migrate. |
 | `apps/ade-cli/src/tuiClient/` | Terminal **Work** chat TUI (Ink + React): same action/RPC contracts as desktop, **attached** (socket) or **embedded** (headless runtime via `ade-cli`). See [ADE Code](../ade-code/README.md). |
 | `apps/desktop/src/main/services/builtInBrowser/builtInBrowserService.ts` | Main-process broker for the in-app web browser. Owns a single `persist:ade-browser` partition, multiple `WebContentsView` tabs (cap 10), bounds + visibility against the renderer-supplied frame, debugger-protocol attachment for inspect-mode hit tests, screenshot capture, and emission of `BuiltInBrowserContextItem`s for selected page elements. Spoofs a desktop Chrome `User-Agent` and the matching `Sec-CH-UA*` client hints on every request through `webRequest.onBeforeSendHeaders` so external sign-in flows (Google, etc.) treat the embedded view as a normal desktop Chrome instead of refusing to load — the previous "open Google sign-in in the system browser" branch was removed because the spoofed UA stops Google from blocking the page in the first place. Window-open requests are forwarded into a fresh tab with `openPanel: true` so the Work sidebar Browser tab pops automatically. Backs the `ade.builtInBrowser.*` IPC surface and is consumed by both `ChatBuiltInBrowserPanel` (sidebar Browser tab) and `openExternal.ts` (links inside the renderer route through the built-in browser when the protocol is `http`/`https`/`about:blank`). |
 | `apps/desktop/src/shared/types/builtInBrowser.ts` | Cross-process types for the built-in browser: `BuiltInBrowserStatus`, `BuiltInBrowserTab`, `BuiltInBrowserContextItem` (`kind: "built_in_browser_element" | "built_in_browser_capture"`), `BuiltInBrowserSelectResult`, `BuiltInBrowserScreenshot`, `BuiltInBrowserOpenPanelArgs`, and the `BuiltInBrowserEventPayload` union (`status`, `open-request`, `selection`, `selection-cleared`, `error`). Navigate / create-tab / switch-tab args carry an optional `openPanel: boolean` so callers can ask for the Work sidebar Browser tab to flip open atomically with the navigation. |
-| `apps/desktop/src/main/services/chat/buildClaudeV2Message.ts` | Builds the message payload the Claude Agent SDK V2 session consumes. Handles base64 image content blocks and MIME inference. |
+| `apps/desktop/src/main/services/chat/buildClaudeV2Message.ts` | Builds Claude SDK user messages for the `query()` input stream. Handles base64 image content blocks and MIME inference. |
+| `apps/desktop/src/main/services/chat/claudeInputPump.ts` | Async iterable input pump that feeds live user turns into the Claude Agent SDK `query()` stream. |
+| `apps/desktop/src/main/services/chat/claudeSubprocessReaper.ts` | Tracks Claude SDK subprocesses and tears them down on runtime shutdown. |
+| `apps/desktop/src/main/services/chat/claudeMcpServers.ts` | Builds upfront Claude MCP server configuration from ADE built-ins and `.mcp.json`. |
+| `apps/desktop/src/main/services/chat/claudeOutputStyles.ts` | Discovers Claude output styles and local plugins from user/project/plugin roots. |
 | `apps/desktop/src/main/services/chat/claudeSlashCommandDiscovery.ts` | Discovers project and user Claude slash surfaces by walking ancestor `.claude` roots, reading `.claude/commands/**/*.md`, `~/.claude/commands/**/*.md`, and `.claude/skills/*/SKILL.md` / `~/.claude/skills/*/SKILL.md` entries with command frontmatter. Consumed by `agentChatService` to enrich both the `chat.slashCommands` response and Claude system prompt with local command/skill metadata. |
 | `apps/desktop/src/main/services/chat/chatTextBatching.ts` | Batches streaming assistant text fragments (100 ms) before emission to reduce renderer re-renders. |
 | `apps/desktop/src/main/services/chat/sessionRecovery.ts` | Version-2 persisted-state reconstruction when sessions resume from disk. |
@@ -28,6 +33,7 @@ machinery layered on top.
 | `apps/desktop/src/shared/chatTranscript.ts` | Pure JSON-lines parser for `AgentChatEventEnvelope` values. Used by both the main process and the renderer. |
 | `apps/desktop/src/shared/types/chat.ts` | All chat types: `AgentChatSession`, `AgentChatEvent` union, permission modes, pending input, completion reports, `PARALLEL_CHAT_MAX_ATTACHMENTS`, and parallel launch state DTOs. |
 | `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx` | Top-level renderer surface: state derivation, IPC wiring, composer mount, message-list mount, End/Delete chat controls in the header, parallel multi-model lane launch orchestration, transient-lane cleanup, and multi-lane deep-link navigation. Mounts `AgentQuestionModal` when the active pending input is a question/structured-question. Resolves the surface accent colour through `providerChatAccent(provider)` so Claude/Codex/Cursor stay visually consistent regardless of model variant. On macOS, polls `ade.iosSimulator.getStatus` and renders the iOS Simulator drawer toggle in the header when the platform is supported (see [iOS Simulator feature](../ios-simulator/README.md)); selecting elements inside the drawer flows back through the pane as `IosElementContextItem` chips on the composer. Polls `ade.appControl.getStatus` and exposes the App Control drawer toggle when the platform is supported, mounting `ChatAppControlPanel`; selections become `AppControlContextItem` chips + attachments on the composer. See [App Control](../computer-use/app-control.md). When mounted as a Work tile (`SessionSurface` passes `hideLaneToolDrawers={true}`) the iOS / App Control toggles are suppressed because the Work right-edge sidebar owns those drawers at lane scope; the pane still listens on `ade:agent-chat:add-attachment` / `add-ios-context` / `add-app-control-context` / `add-builtin-browser-context` / `insert-draft` window events so selections from the sidebar flow into the active chat composer when the sidebar's `attachChatSessionId` matches. Proof remains chat-scoped and stays on the chat header. |
+| `apps/desktop/src/renderer/components/chat/RewindFilesConfirmDialog.tsx`, `rewindFilesPreview.ts` | Claude file-rewind confirmation surface. `rewindFilesPreview.ts` maps the selected user message to turn diff summaries and per-file SHA ranges; the dialog lists every restored file, expands rows into `AdeDiffViewer`, and confirms the SDK `rewindFiles` call without using browser-native confirm UI. |
 | `apps/desktop/src/renderer/components/chat/ChatBuiltInBrowserPanel.tsx` | Renderer panel for the in-app browser. Renders the address bar, tabs strip, navigation controls, an inspect/select toolbar, and a `BuiltInBrowserStatus`-derived empty/error state, then asks the main process to position the underlying `WebContentsView` over the panel's bounding rect through `ade.builtInBrowser.setBounds`. Mounted by `WorkSidebar` under the `browser` tab and (indirectly) by any renderer code that calls `openUrlInAdeBrowser()` — the helper opens the sidebar Browser tab and dispatches the URL into a fresh tab. Selections committed through inspect-mode hit-testing fan out via the `onAddContext` callback as `BuiltInBrowserContextItem` payloads. |
 | `apps/desktop/src/renderer/lib/openExternal.ts` | Renderer-side router for outbound URLs. Defines the `ADE_OPEN_BUILT_IN_BROWSER_EVENT` window event plus `openUrlInAdeBrowser(url)` and `openExternalUrl(url)`. `openUrlInAdeBrowser` dispatches the event (so any open `WorkSidebar` can flip to its Browser tab), then calls `window.ade.builtInBrowser.navigate({ url, newTab: true })`. Anything that is not a normal `http`/`https`/`about:blank` URL falls through to `window.ade.app.openExternal` (system browser). All in-renderer URL clicks (markdown links, lane-runtime open buttons, etc.) go through this helper so the user stays inside ADE. |
 | `apps/desktop/src/renderer/components/chat/AgentChatComposer.tsx` | Composer UI: single-session prompt entry, attachments, model/permission controls, slash commands, pending input answering, and parallel launch slot configuration. |
@@ -62,10 +68,24 @@ render them, but neither one *runs* them.
 
 ## Key concepts
 
+- **Claude Agent SDK pipeline.** The Claude adapter is built on the
+  stable `query()` API (SDK 0.2.139): every chat owns a `ClaudeQuery`,
+  fed by a `ClaudeInputPump` (`claudeInputPump.ts`) async iterable that
+  hands live user turns to `query.streamInput`. Warmup goes through the
+  SDK `startup()` hook, MCP servers are built upfront by
+  `claudeMcpServers.ts` (ADE built-ins plus `.mcp.json`), output styles
+  and plugins are discovered by `claudeOutputStyles.ts`, slash commands
+  by `claudeSlashCommandDiscovery.ts`, and every spawned subprocess is
+  tracked by `claudeSubprocessReaper.ts` so runtime shutdown reaps
+  child processes. The SDK's bundled Claude Code binary is trusted —
+  `pathToClaudeCodeExecutable` is no longer threaded through. Context
+  usage, rewindFiles, forkSession, MCP toggling, and output-style
+  selection all run through the SDK control channel surfaced on the
+  active `Query` handle.
 - **Provider-agnostic sessions.** `AgentChatProvider` is one of `claude`,
   `codex`, `opencode`, `cursor`, or a free-form string reserved for local
-  providers. The service owns a pluggable adapter per provider (Claude V2
-  SDK, Codex JSON-RPC app-server, OpenCode runtime, Cursor SDK pool via
+  providers. The service owns a pluggable adapter per provider (Claude Agent
+  SDK query stream, Codex JSON-RPC app-server, OpenCode runtime, Cursor SDK pool via
   `cursorSdkPool.ts`). The Cursor adapter runs the official `@cursor/sdk`
   in a Node worker (`cursorSdkWorker.ts`) over the JSON line protocol
   defined in `cursorSdkProtocol.ts`; permissions, hooks, and the system
@@ -85,7 +105,7 @@ render them, but neither one *runs* them.
   `derivePendingInputRequests()`.
 - **Steer queue.** Follow-up user messages during an active turn are
   queued (cap 10) with per-entry edit/cancel/dispatch. Default delivery
-  happens on turn boundaries; for Claude V2 sessions the user can also
+  happens on turn boundaries; for Claude SDK sessions the user can also
   **send-now** (inline-dispatch the queued message into the active
   turn — the SDK appends it with `shouldQuery: false` and the model
   picks it up at the next thinking step) or **send & interrupt**
@@ -161,10 +181,10 @@ See the detail docs for the specifics:
 1. `createSession({ laneId, provider, model, modelId?, permissionMode?,
    ...})` via `ade.agentChat.create` creates an `AgentChatSession`,
    persists it, and emits `status: "started"`.
-2. Sessions warm up in the background. Claude V2 has a 20 s warmup
-   watchdog; if the Claude SDK's `unstable_v2_createSession` does not
-   return within that window the stale session is discarded and recreated
-   on the next turn.
+2. Sessions warm up in the background. Claude SDK sessions have a 20 s
+   warmup watchdog around the SDK `startup()` readiness probe; if warmup
+   does not complete within that window the stale runtime is discarded and
+   recreated on the next turn.
 3. `sendMessage({ sessionId, text, attachments? })` via
    `ade.agentChat.send` dispatches a turn. Each turn has a 5 min
    turn-level timeout enforced by the abort machinery.
@@ -211,10 +231,10 @@ free the underlying server sooner). Teardown routes through
 ones (`idle_ttl`, `budget_eviction`, `pool_compaction`, `paused_run`,
 `project_close`, `shutdown`). For Claude runtimes only, a non-terminal
 teardown preserves resume state: the service pins
-`runtime.sdkSessionId` to the last known V2 session id before releasing
+`runtime.sdkSessionId` to the last known Claude SDK session id before releasing
 the session, persists chat state immediately, and skips the usual
 `runtimeInvalidated = true` + `clearLaneDirectiveKey` cleanup. The next
-turn on that chat can therefore rehydrate the same Claude V2 session
+turn on that chat can therefore rehydrate the same Claude SDK session
 instead of creating a fresh one, even though the SDK process was
 released to reclaim budget or compact the pool. Terminal closes still
 run the full invalidation path so "End chat" and explicit model
@@ -251,11 +271,17 @@ handlers live in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
 | `ade.agentChat.dispose` | invoke | End the runtime and persist final state ("End chat"). The row stays in `terminal_sessions` as `ended` so it remains resumable. |
 | `ade.agentChat.delete` | invoke | Permanently remove a chat session: disposes the runtime if still running, cancels any pending turn collector, resolves outstanding input waiters, removes the persisted JSON + transcript, and deletes the `terminal_sessions` row. Renderer surfaces this as "Delete chat" on ended sessions. |
 | `ade.agentChat.updateSession` | invoke | Mutate permission modes, `manuallyNamed`, capability mode, and the `codexFastMode` toggle. |
-| `ade.agentChat.warmupModel` | invoke | Preload a Claude V2 session for an eventual turn. |
+| `ade.agentChat.warmupModel` | invoke | Preload a Claude SDK runtime for an eventual turn. |
 | `ade.agentChat.slashCommands` | invoke | List provider + local slash commands. |
+| `ade.agentChat.getContextUsage` | invoke | Claude-only: return the SDK control-channel context usage breakdown (`AgentChatContextUsage`) for the `/context` panel. |
+| `ade.agentChat.rewindFiles` | invoke | Claude-only: dry-run and apply SDK file rewind for a selected user message. The renderer dry-run opens a rich confirmation dialog with the message context, aggregate stats, per-file rows, and lazy diff previews; the apply call restores files without modifying conversation history. |
+| `ade.agentChat.claudeMcp.status` / `.reconnect` / `.toggle` | invoke | Claude-only: read the upfront MCP server connection status and reconnect/toggle individual servers. Backs the `/mcp` panel. |
+| `ade.agentChat.claudePlugins.list` / `.reload` | invoke | Claude-only: enumerate discovered Claude plugins and force a plugin reload. Backs `/plugin`. |
+| `ade.agentChat.claudeOutputStyles.list` / `.set` | invoke | Claude-only: list and select discovered output styles (user + project + plugin roots). Backs `/output-style`. |
+| `ade.agentChat.claudeSessions.list` / `.info` / `.messages` | invoke | Claude-only: enumerate SDK sessions, fetch session info, and stream messages for `forkSession` handoff and resume flows. |
 | `ade.agentChat.fileSearch` | invoke | Debounced attachment picker backend. |
 | `ade.agentChat.saveTempAttachment` | invoke | Write pasted/dropped image bytes to a temp file (10 MB cap). |
-| `ade.agentChat.listSubagents` | invoke | Claude subagent snapshot list. |
+| `ade.agentChat.listSubagents` | invoke | Claude subagent snapshot list. Snapshots are re-keyed on `agentId + parentToolUseId` (not just `taskId`) so multiple subagents spawned from the same parent tool call don't collide, and the renderer panel separates them into three tabs: Subagents, Teammates, and Background. |
 | `ade.agentChat.models` | invoke | `{ provider, activateRuntime? }`. For OpenCode `activateRuntime: true` is required to *launch* a probe server; otherwise the main process only returns the cached inventory (via `peekOpenCodeInventoryCache`) and an empty list until a real probe has been run. The renderer cache (`aiDiscoveryCache.ts`) keys on `(projectRoot, provider, activateRuntime)` so passive and active reads don't collide. |
 | `ade.agentChat.getSessionCapabilities` | invoke | Discover supported subagent/review features. |
 | `ade.agentChat.getTurnFileDiff` | invoke | Lazy diff expansion for a turn-file-summary row. |

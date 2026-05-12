@@ -109,10 +109,10 @@ describe("buildCodingAgentSystemPrompt", () => {
       expect(result).toContain("No autonomous wake from ADE");
     });
 
-    it("describes the Claude Agent SDK v2 runtime with wake-up caveat", () => {
-      const result = buildCodingAgentSystemPrompt({ cwd: "/x", runtime: "claude-agent-sdk-v2" });
+    it("describes the Claude Agent SDK query runtime with wake-up caveat", () => {
+      const result = buildCodingAgentSystemPrompt({ cwd: "/x", runtime: "claude-agent-sdk-query" });
       expect(result).toContain("## Runtime Environment");
-      expect(result).toContain("Claude Agent SDK v2");
+      expect(result).toContain("Claude Agent SDK stable `query()`");
       expect(result).toContain("ScheduleWakeup");
       expect(result).toContain("not honored");
       expect(result).toContain("never re-invokes");

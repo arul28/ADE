@@ -1,6 +1,6 @@
 import React from "react";
 import { Box, Text } from "ink";
-import type { AgentChatSlashCommand } from "../../../../desktop/src/shared/types/chat";
+import type { AgentChatProvider, AgentChatSlashCommand } from "../../../../desktop/src/shared/types/chat";
 import { paletteCommands } from "../commands";
 
 const VISIBLE_ROWS = 9;
@@ -9,12 +9,14 @@ export function SlashPalette({
   query,
   userCommands,
   selectedIndex,
+  provider,
 }: {
   query: string;
   userCommands: AgentChatSlashCommand[];
   selectedIndex: number;
+  provider?: AgentChatProvider | null;
 }) {
-  const rows = paletteCommands(query, userCommands);
+  const rows = paletteCommands(query, userCommands, { provider });
   if (!query.startsWith("/") || !rows.length) return null;
   const total = rows.length;
   const safeIndex = Math.max(0, Math.min(selectedIndex, total - 1));

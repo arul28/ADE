@@ -278,6 +278,8 @@ import type {
   AgentChatApproveArgs,
   AgentChatArchiveArgs,
   AgentChatCreateArgs,
+  AgentChatCodexOpenInCliArgs,
+  AgentChatCodexOpenInCliResult,
   AgentChatDeleteArgs,
   AgentChatSuggestLaneNameArgs,
   AgentChatDisposeArgs,
@@ -297,6 +299,26 @@ import type {
   AgentChatSetParallelLaunchStateArgs,
   AgentChatSlashCommand,
   AgentChatSlashCommandsArgs,
+  AgentChatClaudeOutputStyle,
+  AgentChatClaudeOutputStylesArgs,
+  AgentChatSetClaudeOutputStyleArgs,
+  AgentChatClaudePlugin,
+  AgentChatClaudePluginsArgs,
+  AgentChatClaudeMcpReconnectArgs,
+  AgentChatClaudeMcpServerStatus,
+  AgentChatClaudeMcpStatusArgs,
+  AgentChatClaudeMcpToggleArgs,
+  AgentChatReloadClaudePluginsArgs,
+  AgentChatReloadClaudePluginsResult,
+  AgentChatClaudeSessionInfo,
+  AgentChatClaudeSessionInfoArgs,
+  AgentChatClaudeSessionListArgs,
+  AgentChatClaudeSessionMessage,
+  AgentChatClaudeSessionMessagesArgs,
+  AgentChatContextUsage,
+  AgentChatContextUsageArgs,
+  AgentChatRewindFilesArgs,
+  AgentChatRewindFilesResult,
   AgentChatFileSearchArgs,
   AgentChatFileSearchResult,
   AgentChatGetTurnFileDiffArgs,
@@ -760,8 +782,10 @@ function createShortIpcCache<T>(
 
       const req = loader()
         .then((next) => {
-          value = next;
-          expiresAt = Date.now() + ttlMs;
+          if (promise === req) {
+            value = next;
+            expiresAt = Date.now() + ttlMs;
+          }
           return next;
         })
         .finally(() => {
@@ -2245,6 +2269,8 @@ function clearGitReadCaches(): void {
 
 function clearProjectScopedReadCaches(): void {
   clearGitReadCaches();
+  githubStatusCache.clear();
+  githubRemoteStatusCache.clear();
   projectConfigSnapshotCache.clear();
   agentChatSummaryCache.clear();
   computerUseOwnerSnapshotCache.clear();
@@ -2441,10 +2467,10 @@ contextBridge.exposeInMainWorld("ade", {
     ): void => ipcRenderer.send(IPC.appLogDebugEvent, { event, payload }),
   },
   project: {
-    openRepo: async (): Promise<ProjectInfo | null> =>
+    openRepo: async (args?: { rootPath?: string }): Promise<ProjectInfo | null> =>
       clearAround(
         () => clearProjectScopedReadCaches(),
-        () => ipcRenderer.invoke(IPC.projectOpenRepo),
+        () => ipcRenderer.invoke(IPC.projectOpenRepo, args ?? {}),
       ),
     chooseDirectory: async (
       args: { title?: string; defaultPath?: string } = {},
@@ -5034,6 +5060,82 @@ contextBridge.exposeInMainWorld("ade", {
         ? runtime.result
         : ipcRenderer.invoke(IPC.agentChatSlashCommands, args);
     },
+    getClaudeMcpStatus: async (
+      args: AgentChatClaudeMcpStatusArgs,
+    ): Promise<AgentChatClaudeMcpServerStatus[]> =>
+      callProjectRuntimeActionOr("chat", "getClaudeMcpStatus", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatClaudeMcpStatus, args),
+      ),
+    reconnectClaudeMcpServer: async (
+      args: AgentChatClaudeMcpReconnectArgs,
+    ): Promise<AgentChatClaudeMcpServerStatus[]> =>
+      callProjectRuntimeActionOr("chat", "reconnectClaudeMcpServer", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatClaudeMcpReconnect, args),
+      ),
+    toggleClaudeMcpServer: async (
+      args: AgentChatClaudeMcpToggleArgs,
+    ): Promise<AgentChatClaudeMcpServerStatus[]> =>
+      callProjectRuntimeActionOr("chat", "toggleClaudeMcpServer", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatClaudeMcpToggle, args),
+      ),
+    listClaudePlugins: async (
+      args: AgentChatClaudePluginsArgs = {},
+    ): Promise<AgentChatClaudePlugin[]> =>
+      callProjectRuntimeActionOr("chat", "listClaudePlugins", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatListClaudePlugins, args),
+      ),
+    reloadClaudePlugins: async (
+      args: AgentChatReloadClaudePluginsArgs,
+    ): Promise<AgentChatReloadClaudePluginsResult> =>
+      callProjectRuntimeActionOr("chat", "reloadClaudePlugins", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatReloadClaudePlugins, args),
+      ),
+    listClaudeOutputStyles: async (
+      args: AgentChatClaudeOutputStylesArgs = {},
+    ): Promise<AgentChatClaudeOutputStyle[]> =>
+      callProjectRuntimeActionOr("chat", "listClaudeOutputStyles", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatListClaudeOutputStyles, args),
+      ),
+    setClaudeOutputStyle: async (
+      args: AgentChatSetClaudeOutputStyleArgs,
+    ): Promise<AgentChatSession> => {
+      agentChatSummaryCache.clear();
+      const session = await callProjectRuntimeActionOr("chat", "setClaudeOutputStyle", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatSetClaudeOutputStyle, args),
+      );
+      agentChatSummaryCache.clear();
+      return session as AgentChatSession;
+    },
+    listClaudeSessions: async (
+      args: AgentChatClaudeSessionListArgs = {},
+    ): Promise<AgentChatClaudeSessionInfo[]> =>
+      callProjectRuntimeActionOr("chat", "listClaudeSessions", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatListClaudeSessions, args),
+      ),
+    getClaudeSessionInfo: async (
+      args: AgentChatClaudeSessionInfoArgs,
+    ): Promise<AgentChatClaudeSessionInfo | null> =>
+      callProjectRuntimeActionOr("chat", "getClaudeSessionInfo", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatGetClaudeSessionInfo, args),
+      ),
+    getClaudeSessionMessages: async (
+      args: AgentChatClaudeSessionMessagesArgs,
+    ): Promise<AgentChatClaudeSessionMessage[]> =>
+      callProjectRuntimeActionOr("chat", "getClaudeSessionMessages", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatGetClaudeSessionMessages, args),
+      ),
+    getContextUsage: async (
+      args: AgentChatContextUsageArgs,
+    ): Promise<AgentChatContextUsage | null> =>
+      callProjectRuntimeActionOr("chat", "getContextUsage", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatGetContextUsage, args),
+      ),
+    rewindFiles: async (
+      args: AgentChatRewindFilesArgs,
+    ): Promise<AgentChatRewindFilesResult> =>
+      callProjectRuntimeActionOr("chat", "rewindFiles", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatRewindFiles, args),
+      ),
     fileSearch: async (
       args: AgentChatFileSearchArgs,
     ): Promise<AgentChatFileSearchResult[]> =>
@@ -5086,6 +5188,12 @@ contextBridge.exposeInMainWorld("ade", {
       return runtime.handled
         ? runtime.result
         : ipcRenderer.invoke(IPC.agentChatGetEventHistory, args);
+    },
+    codex: {
+      openInCli: (
+        args: AgentChatCodexOpenInCliArgs,
+      ): Promise<AgentChatCodexOpenInCliResult> =>
+        ipcRenderer.invoke(IPC.agentChatCodexOpenInCli, args),
     },
   },
   computerUse: {
@@ -6548,13 +6656,18 @@ contextBridge.exposeInMainWorld("ade", {
     getRemoteStatus: async (opts?: {
       forceRefresh?: boolean;
     }): Promise<{ repo: GitHubRepoRef | null; hasOrigin: boolean }> => {
-      if (opts?.forceRefresh) githubRemoteStatusCache.clear();
-      return opts?.forceRefresh
-        ? clearAround(
-            () => githubRemoteStatusCache.clear(),
-            () => ipcRenderer.invoke(IPC.githubGetRemoteStatus),
-          )
-        : githubRemoteStatusCache.get();
+      return callProjectRuntimeActionOr(
+        "github",
+        "getRemoteStatus",
+        { args: opts ?? {} },
+        () =>
+          opts?.forceRefresh
+            ? clearAround(
+                () => githubRemoteStatusCache.clear(),
+                () => ipcRenderer.invoke(IPC.githubGetRemoteStatus, opts ?? {}),
+              )
+            : githubRemoteStatusCache.get(),
+      );
     },
     setToken: async (token: string): Promise<GitHubStatus> =>
       clearAround(

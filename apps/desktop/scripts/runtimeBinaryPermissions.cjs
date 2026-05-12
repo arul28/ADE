@@ -70,12 +70,14 @@ function collectDesktopRuntimeExecutableCandidates(rootPath) {
   }
 
   for (const packageDir of listDirectories(path.join(rootPath, "node_modules", "@openai"))) {
-    if (!path.basename(packageDir).startsWith("codex-darwin-")) continue;
+    if (!path.basename(packageDir).startsWith("codex-")) continue;
     for (const vendorDir of listDirectories(path.join(packageDir, "vendor"))) {
-      candidates.push({
-        filePath: path.join(vendorDir, "codex", "codex"),
-        label: "Codex CLI binary",
-      });
+      for (const binaryName of ["codex", "codex.exe"]) {
+        candidates.push({
+          filePath: path.join(vendorDir, "codex", binaryName),
+          label: "Codex CLI binary",
+        });
+      }
       candidates.push({
         filePath: path.join(vendorDir, "path", "rg"),
         label: "Codex ripgrep helper",

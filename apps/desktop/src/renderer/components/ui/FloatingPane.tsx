@@ -153,6 +153,7 @@ export function FloatingPane({
   return (
     <div
       data-pane-id={id}
+      data-minimized={minimized ? "true" : "false"}
       data-tour={dataTour}
       style={laneAccentStyle}
       className={cn(

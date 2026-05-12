@@ -771,6 +771,7 @@ export function WorkViewArea({
                     <span
                       role="button"
                       tabIndex={0}
+                      data-close-tab-session-id={session.id}
                       title={isBusy ? "Closing..." : "Close tab"}
                       className="inline-flex items-center justify-center opacity-0 group-hover/tab:opacity-100 transition-opacity"
                       style={{
@@ -962,6 +963,7 @@ export function WorkViewArea({
                                 <span
                                   role="button"
                                   tabIndex={0}
+                                  data-close-tab-session-id={session.id}
                                   title={isBusy ? "Closing..." : "Close tab"}
                                   className="inline-flex items-center justify-center opacity-0 transition-opacity group-hover/tab:opacity-100"
                                   style={{

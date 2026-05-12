@@ -305,10 +305,8 @@ describe("local runtime connection pool", () => {
     expect(fs.existsSync(tsxLoaderPath)).toBe(true);
 
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-"));
-    const projectRoot = fs.realpathSync.native(
-      fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-project-")),
-    );
-    const expectedProjectRoot = projectRoot;
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-project-"));
+    const expectedProjectRoot = fs.realpathSync.native(projectRoot);
     const socketPath = path.join(adeHome, "sock", "ade.sock");
     const originalEnv = {
       ADE_CLI_JS: process.env.ADE_CLI_JS,
@@ -367,10 +365,8 @@ describe("local runtime connection pool", () => {
     expect(fs.existsSync(tsxLoaderPath)).toBe(true);
 
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-version-"));
-    const projectRoot = fs.realpathSync.native(
-      fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-version-project-")),
-    );
-    const expectedProjectRoot = projectRoot;
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-version-project-"));
+    const expectedProjectRoot = fs.realpathSync.native(projectRoot);
     const socketPath = path.join(adeHome, "sock", "ade.sock");
     const originalEnv = {
       ADE_CLI_JS: process.env.ADE_CLI_JS,
@@ -456,10 +452,8 @@ describe("local runtime connection pool", () => {
     expect(fs.existsSync(tsxLoaderPath)).toBe(true);
 
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-build-"));
-    const projectRoot = fs.realpathSync.native(
-      fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-build-project-")),
-    );
-    const expectedProjectRoot = projectRoot;
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-build-project-"));
+    const expectedProjectRoot = fs.realpathSync.native(projectRoot);
     const socketPath = path.join(adeHome, "sock", "ade.sock");
     const originalEnv = {
       ADE_CLI_JS: process.env.ADE_CLI_JS,

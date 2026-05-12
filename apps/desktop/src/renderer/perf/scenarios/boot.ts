@@ -1,4 +1,5 @@
 import { registerScenario } from "./index";
+import type { RemoteRuntimeTarget } from "../../../shared/types";
 
 /**
  * Boot-tab scenarios. These exercise the "main ADE screen" — cold launch,
@@ -36,15 +37,19 @@ registerScenario({
   id: "boot.open-project",
   description: "Times opening the perf-pass project via IPC openRepo.",
   run: async (ctx) => {
-    const perfPass = "/Users/admin/Projects/perf pass";
+    const cfg = await window.ade?.perf?.getConfig?.();
+    const perfPass = cfg?.projectRoot?.trim();
+    if (!perfPass) {
+      window.ade?.perf?.recordEvent({
+        kind: "note",
+        ts: Date.now(),
+        note: "boot.open-project skipped: no ADE_PERF_PASS_DIR configured",
+      });
+      return;
+    }
     ctx.mark("openRepo.start");
     try {
-      // openRepo opens a directory chooser in some flows; we call with a path arg if supported,
-      // otherwise the IPC errors and we record that.
-      // The renderer-side preload signature varies; record what we got.
-      const result = await (window.ade?.project as unknown as {
-        openRepo?: (args?: { rootPath?: string }) => Promise<unknown>;
-      })?.openRepo?.({ rootPath: perfPass });
+      const result = await window.ade?.project?.openRepo?.({ rootPath: perfPass });
       ctx.mark("openRepo.done");
       ctx.measure("openRepo", "openRepo.start", "openRepo.done");
       ctx.assert(result !== undefined, "openRepo returned undefined");
@@ -64,7 +69,7 @@ registerScenario({
     ctx.mark("remote.list.start");
     try {
       const targets = await (window.ade as unknown as {
-        remoteRuntime?: { listTargets?: () => Promise<unknown[]> };
+        remoteRuntime?: { listTargets?: () => Promise<RemoteRuntimeTarget[]> };
       }).remoteRuntime?.listTargets?.();
       ctx.mark("remote.list.done");
       ctx.measure("remote.list", "remote.list.start", "remote.list.done");

@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { Box, Text, useApp, useInput } from "ink";
 import {
@@ -14,12 +16,17 @@ import type {
   AgentChatCodexApprovalPolicy,
   AgentChatCodexConfigSource,
   AgentChatCodexSandbox,
+  AgentChatClaudeMcpServerStatus,
+  AgentChatClaudePlugin,
+  AgentChatReloadClaudePluginsResult,
+  AgentChatContextUsage,
   AgentChatEventEnvelope,
   AgentChatFileRef,
   AgentChatModelInfo,
   AgentChatPermissionMode,
   AgentChatSessionSummary,
   AgentChatSlashCommand,
+  CodexThreadGoal,
 } from "../../../desktop/src/shared/types/chat";
 import type { AiSettingsStatus, OpenCodeRuntimeSnapshot } from "../../../desktop/src/shared/types/config";
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
@@ -31,20 +38,28 @@ import {
   getAvailableModels,
   getAiSettingsStatus,
   getChatHistory,
+  getClaudeMcpStatus,
+  getContextUsage,
   getOpenCodeRuntimeDiagnostics,
   getSlashCommands,
   getStoredApiKeyProviders,
   interruptChat,
+  latestGoal,
   latestTokenStats,
+  listClaudePlugins,
+  listClaudeOutputStyles,
   listChatSessions,
   listLanes,
   navigateDesktop,
   newestSession,
   renameChat,
+  reloadClaudePlugins,
   respondToInput,
-  resumeChat,
   sendChatMessage,
+  setClaudeOutputStyle,
+  tagChat,
   updateChatModel,
+  type TokenStats,
 } from "./adeApi";
 import { paletteCommands, parseCommand } from "./commands";
 import { connectToAde } from "./connection";
@@ -59,11 +74,16 @@ import { ModelStatus } from "./components/ModelStatus";
 import { FooterControls } from "./components/FooterControls";
 import { theme } from "./theme";
 import { chooseInitialLane } from "./project";
+import { resolveDrawerChatSelection } from "./drawerSelection";
 import { latestExpandableFailureId, renderObject, summarizeDiffChanges } from "./format";
 import { startTuiHeartbeat, type TuiHeartbeat } from "./heartbeat";
+import { isImageFilePath, latestOpenableImageTarget } from "./imageTargets";
+import { appendReservedTuiEvent, reserveTuiEventDedupKey, syncTuiEventDedupKeys } from "./eventDedup";
 import { loadAdeCodeState, saveAdeCodeState } from "./state";
 import { buildLinearToolRequest } from "./linearCommands";
 import { buildPendingInputAnswers, latestPendingApproval } from "./pendingInput";
+import { claudeHomePath, defaultKeybindingsPath, dispatchKeybinding, openKeybindingsFile, readClaudeKeybindingsFile, type KeybindingDispatchState, type TuiKeybindingAction } from "./keybindings";
+import { readClaudeStatusLineConfig, runClaudeStatusLineCommand } from "./statusline";
 import type {
   AdeCodeConnection,
   AdeCodeProvider,
@@ -75,6 +95,7 @@ import type {
   ProjectLaunchContext,
   RightPaneContent,
   SetupPaneRow,
+  SubagentSnapshot,
   RuntimeMode,
 } from "./types";
 
@@ -89,7 +110,7 @@ const PROVIDER_OPTIONS: Array<{ value: AdeCodeProvider; label: string }> = [
 ];
 const PROVIDERS = new Set<AdeCodeProvider>(PROVIDER_OPTIONS.map((provider) => provider.value));
 const CODEX_PRESETS = ["default", "plan", "full-auto", "config-toml"] as const;
-const CLAUDE_PERMISSION_OPTIONS = ["default", "plan", "acceptEdits", "bypassPermissions"] as const;
+const CLAUDE_PERMISSION_OPTIONS = ["default", "auto", "plan", "acceptEdits", "bypassPermissions"] as const;
 const OPENCODE_PERMISSION_OPTIONS = ["plan", "edit", "full-auto"] as const;
 const DROID_PERMISSION_OPTIONS = ["read-only", "auto-low", "auto-medium", "auto-high"] as const;
 const SETTINGS_AI_ROUTE = "/settings?tab=ai#ai-providers";
@@ -259,6 +280,7 @@ function permissionSummary(modelState: AdeCodeModelState): string {
   if (modelState.provider === "codex") return resolveCodexPreset(modelState);
   if (modelState.provider === "claude") {
     if (modelState.interactionMode === "plan" || modelState.claudePermissionMode === "plan") return "plan";
+    if (modelState.claudePermissionMode === "auto") return "auto";
     if (modelState.claudePermissionMode === "acceptEdits") return "accept edits";
     if (modelState.claudePermissionMode === "bypassPermissions") return "bypass";
     return "default";
@@ -277,6 +299,7 @@ function applyProviderPermissionMode(modelState: AdeCodeModelState): Partial<Ade
     if (modelState.interactionMode === "plan" || modelState.claudePermissionMode === "plan") {
       return { permissionMode: "plan", interactionMode: "plan", claudePermissionMode: "plan" };
     }
+    if (modelState.claudePermissionMode === "auto") return { permissionMode: "auto", interactionMode: "default" };
     if (modelState.claudePermissionMode === "acceptEdits") return { permissionMode: "edit", interactionMode: "default" };
     if (modelState.claudePermissionMode === "bypassPermissions") return { permissionMode: "full-auto", interactionMode: "default" };
     return { permissionMode: "default", interactionMode: "default" };
@@ -317,11 +340,379 @@ function compactNumber(value: number): string {
 }
 
 function formatTokenSummary(stats: ReturnType<typeof latestTokenStats>): string | null {
+  // Compact last-turn breakdown: `+2.3k/1.1k (450✶)` — input / output (cached marker).
   const parts: string[] = [];
-  if (stats.inputTokens != null) parts.push(`in ${compactNumber(stats.inputTokens)}`);
-  if (stats.outputTokens != null) parts.push(`out ${compactNumber(stats.outputTokens)}`);
+  if (stats.inputTokens != null || stats.outputTokens != null) {
+    const left = stats.inputTokens != null ? `+${compactNumber(stats.inputTokens)}` : "+0";
+    const right = stats.outputTokens != null ? compactNumber(stats.outputTokens) : "0";
+    parts.push(`${left}/${right}`);
+  }
+  if (stats.cacheReadTokens != null && stats.cacheReadTokens > 0) {
+    parts.push(`(${compactNumber(stats.cacheReadTokens)}✶)`);
+  }
   if (stats.costUsd != null) parts.push(`$${stats.costUsd.toFixed(2)}`);
-  return parts.length ? parts.join(" · ") : null;
+  return parts.length ? parts.join(" ") : null;
+}
+
+function formatGoalBannerLine(goal: CodexThreadGoal | null): string | null {
+  if (!goal?.objective) return null;
+  const objective = goal.objective.trim();
+  if (!objective) return null;
+  const right: string[] = [];
+  const used = goal.tokensUsed ?? null;
+  const budget = goal.tokenBudget ?? null;
+  if (used != null && budget != null) {
+    right.push(`${compactNumber(used)}/${compactNumber(budget)}`);
+  } else if (used != null) {
+    right.push(`${compactNumber(used)} tokens`);
+  }
+  if (typeof goal.timeUsedSeconds === "number" && goal.timeUsedSeconds > 0) {
+    const seconds = Math.round(goal.timeUsedSeconds);
+    const mins = Math.floor(seconds / 60);
+    right.push(mins > 0 ? `${mins}m ${seconds % 60}s` : `${seconds}s`);
+  }
+  if (goal.status) right.push(goal.status.replace(/_/g, " "));
+  return right.length ? `◎ ${objective}   ${right.join(" · ")}` : `◎ ${objective}`;
+}
+
+function formatContextUsage(usage: AgentChatContextUsage | null): string {
+  if (!usage) return "Context usage is not available for this session yet.";
+  const total = compactNumber(usage.totalTokens);
+  const max = compactNumber(usage.maxTokens);
+  const header = `Context usage: ${total} / ${max} tokens (${usage.percentage.toFixed(0)}%)`;
+  const rows = usage.categories.map((category) => {
+    const pct = category.percentage < 10 && category.percentage > 0
+      ? category.percentage.toFixed(1)
+      : category.percentage.toFixed(0);
+    return `${category.name.padEnd(22)} ${compactNumber(category.tokens).padStart(7)}  ${pct.padStart(5)}%`;
+  });
+  const extras: string[] = [];
+  if (usage.memoryFiles?.length) extras.push(`${usage.memoryFiles.length} memory file${usage.memoryFiles.length === 1 ? "" : "s"}`);
+  if (usage.mcpTools?.length) extras.push(`${usage.mcpTools.length} MCP tool${usage.mcpTools.length === 1 ? "" : "s"}`);
+  return [header, usage.model ? `Model: ${usage.model}` : null, "", ...rows, extras.length ? `\n${extras.join(" · ")}` : null]
+    .filter((line): line is string => line != null)
+    .join("\n");
+}
+
+function subagentSnapshotsFromEvents(events: AgentChatEventEnvelope[]): SubagentSnapshot[] {
+  const snapshots = new Map<string, SubagentSnapshot>();
+  for (const envelope of events) {
+    const event = envelope.event as Record<string, unknown>;
+    const type = typeof event.type === "string" ? event.type : "";
+    const id = typeof event.taskId === "string"
+      ? event.taskId
+      : typeof event.agentId === "string"
+        ? event.agentId
+        : null;
+    if (!id || !type.startsWith("subagent")) continue;
+    const existing = snapshots.get(id);
+    const agentType = typeof event.agentType === "string" ? event.agentType : "subagent";
+    const usage = event.usage && typeof event.usage === "object" ? event.usage as Record<string, unknown> : {};
+    const background = event.background === true || existing?.kind === "background";
+    const summary = typeof event.summary === "string"
+      ? event.summary
+      : typeof event.finalSummary === "string"
+        ? event.finalSummary
+        : typeof event.text === "string"
+          ? event.text
+          : typeof event.description === "string"
+            ? event.description
+            : existing?.summary ?? "";
+    const base: SubagentSnapshot = {
+      id,
+      name: typeof event.description === "string" ? event.description : existing?.name ?? agentType,
+      kind: background ? "background" : "subagent",
+      status: existing?.status ?? "running",
+      summary,
+      tokens: typeof usage.totalTokens === "number" ? usage.totalTokens : typeof event.tokens === "number" ? event.tokens : existing?.tokens,
+      durationMs: typeof usage.durationMs === "number" ? usage.durationMs : existing?.durationMs,
+      lastToolName: typeof event.lastToolName === "string" ? event.lastToolName : existing?.lastToolName,
+    };
+    if (type === "subagent_result" || type === "subagent.completed") {
+      const status = event.status === "failed" || event.status === "stopped" || event.status === "completed" ? event.status : "completed";
+      snapshots.set(id, { ...base, status });
+    } else {
+      snapshots.set(id, { ...base, status: "running" });
+    }
+  }
+  return [...snapshots.values()];
+}
+
+function formatOutputStyles(styles: Awaited<ReturnType<typeof listClaudeOutputStyles>>, activeStyle?: string | null): string {
+  if (!styles.length) return "No Claude output styles were found.";
+  const activeKey = activeStyle?.trim().toLowerCase() ?? "";
+  return [
+    "Claude output styles:",
+    "",
+    ...styles.map((style) => {
+      const marker = style.name.trim().toLowerCase() === activeKey ? "*" : "-";
+      const description = style.description ? ` - ${style.description}` : "";
+      return `${marker} ${style.name} (${style.source})${description}`;
+    }),
+  ].join("\n");
+}
+
+function formatMcpStatus(statuses: AgentChatClaudeMcpServerStatus[]): string {
+  if (!statuses.length) return "No MCP servers are configured for this Claude chat yet.";
+  return [
+    "Claude MCP servers:",
+    "",
+    ...statuses.map((server) => {
+      const scope = server.scope ? ` · ${server.scope}` : "";
+      const toolCount = server.tools?.length ? ` · ${server.tools.length} tool${server.tools.length === 1 ? "" : "s"}` : "";
+      const target = server.config?.url ?? server.config?.command ?? "";
+      const detail = server.error ?? target;
+      return [
+        `${server.name}: ${server.status}${scope}${toolCount}`,
+        detail ? `  ${detail}` : null,
+      ].filter((line): line is string => Boolean(line)).join("\n");
+    }),
+  ].join("\n");
+}
+
+function formatClaudePlugins(plugins: AgentChatClaudePlugin[]): string {
+  if (!plugins.length) return "No local Claude plugins were discovered for this chat.";
+  return [
+    "Claude plugins:",
+    "",
+    ...plugins.map((plugin) => {
+      const suffix = [plugin.version, plugin.description].filter(Boolean).join(" - ");
+      return `- ${plugin.name}${suffix ? ` (${suffix})` : ""}\n  ${plugin.path}`;
+    }),
+  ].join("\n");
+}
+
+function formatPluginReload(result: AgentChatReloadClaudePluginsResult): string {
+  return [
+    `Reloaded ${result.plugins.length} plugin${result.plugins.length === 1 ? "" : "s"} with ${result.errorCount} error${result.errorCount === 1 ? "" : "s"}.`,
+    result.commands.length ? `${result.commands.length} command${result.commands.length === 1 ? "" : "s"}` : null,
+    result.agents.length ? `${result.agents.length} agent${result.agents.length === 1 ? "" : "s"}` : null,
+    result.mcpServers.length ? `${result.mcpServers.length} MCP server${result.mcpServers.length === 1 ? "" : "s"}` : null,
+    "",
+    ...result.plugins.map((plugin) => `- ${plugin.name}\n  ${plugin.path}`),
+  ].filter((line): line is string => line != null).join("\n");
+}
+
+function titleFromMarkdown(filePath: string, fallback: string): string {
+  try {
+    const text = fs.readFileSync(filePath, "utf8");
+    const heading = text.split(/\r?\n/).find((line) => line.startsWith("# "));
+    return heading?.replace(/^#\s+/, "").trim() || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function listClaudeCompatMarkdownEntries(workspaceRoot: string, kind: "agents" | "skills"): string {
+  const roots = kind === "agents"
+    ? [
+        { label: "project", dir: path.join(workspaceRoot, ".claude", "agents") },
+        { label: "user", dir: claudeHomePath("agents") },
+      ]
+    : [
+        { label: "project", dir: path.join(workspaceRoot, ".claude", "skills") },
+        { label: "ADE", dir: path.join(workspaceRoot, ".ade", "skills") },
+        { label: "user", dir: claudeHomePath("skills") },
+      ];
+  const rows: string[] = [];
+  for (const root of roots) {
+    if (!fs.existsSync(root.dir)) continue;
+    for (const entry of fs.readdirSync(root.dir, { withFileTypes: true })) {
+      const filePath = entry.isDirectory()
+        ? path.join(root.dir, entry.name, "SKILL.md")
+        : path.join(root.dir, entry.name);
+      if (!filePath.endsWith(".md") || !fs.existsSync(filePath)) continue;
+      const name = entry.isDirectory() ? entry.name : entry.name.replace(/\.md$/i, "");
+      const title = titleFromMarkdown(filePath, name);
+      rows.push(`- ${title} (${root.label})\n  ${filePath}`);
+    }
+  }
+  if (!rows.length) return `No Claude ${kind} were found in project or user config.`;
+  return [`Claude ${kind}:`, "", ...rows].join("\n");
+}
+
+function ensureClaudeInitFiles(workspaceRoot: string): string {
+  fs.mkdirSync(workspaceRoot, { recursive: true });
+  const agentsPath = path.join(workspaceRoot, "AGENTS.md");
+  const claudePath = path.join(workspaceRoot, "CLAUDE.md");
+  const rows: string[] = [];
+  if (!fs.existsSync(agentsPath)) {
+    fs.writeFileSync(
+      agentsPath,
+      [
+        "# Project instructions",
+        "",
+        "Add coding-agent instructions for this project here. ADE, Claude Code, and other agent runtimes can use this file as the canonical project guide.",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    rows.push(`created ${agentsPath}`);
+  } else {
+    rows.push(`kept existing ${agentsPath}`);
+  }
+  if (!fs.existsSync(claudePath)) {
+    fs.writeFileSync(claudePath, "@include AGENTS.md\n", "utf8");
+    rows.push(`created ${claudePath}`);
+  } else {
+    rows.push(`kept existing ${claudePath}`);
+  }
+  return ["Initialized Claude-compatible project files:", "", ...rows].join("\n");
+}
+
+function readClaudeVimMode(workspaceRoot: string): boolean {
+  const candidates = [
+    claudeHomePath("settings.json"),
+    path.join(workspaceRoot, ".claude", "settings.json"),
+    path.join(workspaceRoot, ".claude", "settings.local.json"),
+  ];
+  let enabled = false;
+  for (const filePath of candidates) {
+    if (!fs.existsSync(filePath)) continue;
+    try {
+      const value = JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
+      if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+      const vimMode = (value as { vimMode?: unknown }).vimMode;
+      if (typeof vimMode === "boolean") enabled = vimMode;
+    } catch {
+      // Invalid Claude settings are reported by /doctor; keep input usable.
+    }
+  }
+  return enabled;
+}
+
+function commandAvailable(command: string): boolean {
+  const result = spawnSync(process.platform === "win32" ? "where" : "command", process.platform === "win32" ? [command] : ["-v", command], {
+    shell: process.platform !== "win32",
+    stdio: "ignore",
+  });
+  return result.status === 0;
+}
+
+function clipboardImageTarget(workspaceRoot: string, extension = "png"): string {
+  const dir = path.join(workspaceRoot, ".ade", "cache", "ade-code-clipboard");
+  fs.mkdirSync(dir, { recursive: true });
+  return path.join(dir, `clipboard-${Date.now()}.${extension}`);
+}
+
+function powershellQuoted(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+function nonEmptyFile(filePath: string): boolean {
+  try {
+    return fs.statSync(filePath).size > 0;
+  } catch {
+    return false;
+  }
+}
+
+function readClipboardText(): string | null {
+  const candidates = process.platform === "darwin"
+    ? [["pbpaste"]]
+    : process.platform === "win32"
+      ? [["powershell", "-NoProfile", "-Command", "Get-Clipboard"]]
+      : [["wl-paste", "--no-newline"], ["xclip", "-selection", "clipboard", "-o"]];
+  for (const [command, ...args] of candidates) {
+    if (!commandAvailable(command)) continue;
+    const result = spawnSync(command, args, { encoding: "utf8", maxBuffer: 1024 * 1024 });
+    if (result.status === 0 && result.stdout.trim()) return result.stdout.trim();
+  }
+  return null;
+}
+
+function readClipboardImageAttachment(workspaceRoot: string): AgentChatFileRef | null {
+  if (process.platform === "darwin" && commandAvailable("pngpaste")) {
+    const target = clipboardImageTarget(workspaceRoot);
+    const result = spawnSync("pngpaste", [target], { stdio: "ignore" });
+    if (result.status === 0 && nonEmptyFile(target)) return { path: target, type: "image" };
+  }
+  if (process.platform === "darwin" && commandAvailable("pbpaste")) {
+    const target = clipboardImageTarget(workspaceRoot);
+    const result = spawnSync("pbpaste", ["-Prefer", "image"], { encoding: "buffer", maxBuffer: 30 * 1024 * 1024 });
+    if (result.status === 0 && result.stdout.length) {
+      fs.writeFileSync(target, result.stdout);
+      if (nonEmptyFile(target)) return { path: target, type: "image" };
+    }
+  }
+  if (process.platform === "win32" && commandAvailable("powershell")) {
+    const target = clipboardImageTarget(workspaceRoot);
+    const command = [
+      "Add-Type -AssemblyName System.Windows.Forms;",
+      "Add-Type -AssemblyName System.Drawing;",
+      "$image = [System.Windows.Forms.Clipboard]::GetImage();",
+      `if ($image -ne $null) { $image.Save(${powershellQuoted(target)}, [System.Drawing.Imaging.ImageFormat]::Png) }`,
+    ].join(" ");
+    const result = spawnSync("powershell", ["-NoProfile", "-Command", command], { stdio: "ignore" });
+    if (result.status === 0 && nonEmptyFile(target)) return { path: target, type: "image" };
+  }
+  if (process.platform === "linux") {
+    const target = clipboardImageTarget(workspaceRoot);
+    const commands = commandAvailable("wl-paste")
+      ? [["wl-paste", "-t", "image/png"]]
+      : commandAvailable("xclip")
+        ? [["xclip", "-selection", "clipboard", "-t", "image/png", "-o"]]
+        : [];
+    for (const [command, ...args] of commands) {
+      const result = spawnSync(command, args, { encoding: "buffer", maxBuffer: 30 * 1024 * 1024 });
+      if (result.status === 0 && result.stdout.length) {
+        fs.writeFileSync(target, result.stdout);
+        if (nonEmptyFile(target)) return { path: target, type: "image" };
+      }
+    }
+  }
+  const clipboardText = readClipboardText();
+  const clipboardPath = clipboardText?.split(/\r?\n/).map((line) => line.trim()).find((line) => line && fs.existsSync(line));
+  if (clipboardPath && isImageFilePath(clipboardPath)) return { path: clipboardPath, type: "image" };
+  return null;
+}
+
+function editPromptInExternalEditor(initialText: string): string | null {
+  const editor = process.env.VISUAL || process.env.EDITOR || "vi";
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-prompt-"));
+  const filePath = path.join(dir, "prompt.md");
+  try {
+    fs.writeFileSync(filePath, initialText, "utf8");
+    const result = spawnSync(editor, [filePath], {
+      stdio: "inherit",
+      shell: true,
+      env: process.env,
+    });
+    if (result.error || (typeof result.status === "number" && result.status !== 0)) {
+      return null;
+    }
+    return fs.readFileSync(filePath, "utf8").replace(/\r?\n$/, "");
+  } finally {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // Best-effort temp cleanup.
+    }
+  }
+}
+
+function formatClaudeStatusLineConfig(workspaceRoot: string): string {
+  return readClaudeStatusLineConfig(workspaceRoot).diagnostics;
+}
+
+function formatDoctorReport(args: {
+  workspaceRoot: string;
+  activeProvider?: string | null;
+  pluginCount: number | null;
+  mcpCount: number | null;
+}): string {
+  const keybindings = readClaudeKeybindingsFile({ create: false });
+  const statusLine = formatClaudeStatusLineConfig(args.workspaceRoot);
+  return [
+    "ADE Code doctor:",
+    "",
+    `provider: ${args.activeProvider ?? "none"}`,
+    `keybindings: ${keybindings.warnings.length ? `${keybindings.warnings.length} warning${keybindings.warnings.length === 1 ? "" : "s"}` : "ok"}`,
+    args.pluginCount == null ? "plugins: not checked" : `plugins: ${args.pluginCount}`,
+    args.mcpCount == null ? "MCP servers: not checked" : `MCP servers: ${args.mcpCount}`,
+    "",
+    statusLine,
+  ].join("\n");
 }
 
 function buildSetupRows(args: {
@@ -637,6 +1028,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const [events, setEvents] = useState<AgentChatEventEnvelope[]>([]);
   const [notices, setNotices] = useState<LocalNotice[]>([]);
   const [slashCommands, setSlashCommands] = useState<AgentChatSlashCommand[]>([]);
+  const [keybindings, setKeybindings] = useState(() => readClaudeKeybindingsFile({ create: false }).bindings);
   const [models, setModels] = useState<AgentChatModelInfo[]>([]);
   const [modelState, setModelState] = useState<AdeCodeModelState>(initialModelState);
   const [draftChatActive, setDraftChatActive] = useState(false);
@@ -648,13 +1040,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const [formValues, setFormValues] = useState<Record<string, string>>({});
   const [formFieldIndex, setFormFieldIndex] = useState(0);
   const [rightSelectionIndex, setRightSelectionIndex] = useState(0);
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const [rightOpen, setRightOpen] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(true);
+  const [rightOpen, setRightOpen] = useState(() => columns >= 110);
   const [activePane, setActivePane] = useState<PaneFocus>("chat");
   const [prompt, setPrompt] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [contextPercent, setContextPercent] = useState<number | null>(null);
   const [tokenSummary, setTokenSummary] = useState<string | null>(null);
+  const [statusLineStats, setStatusLineStats] = useState<TokenStats | null>(null);
+  const [statusLineText, setStatusLineText] = useState<string | null>(null);
+  const [currentGoal, setCurrentGoal] = useState<CodexThreadGoal | null>(null);
+  const [vimModeEnabled, setVimModeEnabled] = useState(() => readClaudeVimMode(project.workspaceRoot));
+  const [vimMode, setVimMode] = useState<"insert" | "normal">("insert");
+  const [hideVimModeIndicator, setHideVimModeIndicator] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [clearedAt, setClearedAt] = useState<string | null>(null);
   const [expandedLineIds, setExpandedLineIds] = useState<Set<string>>(() => new Set());
@@ -677,12 +1075,18 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const activeSessionIdRef = useRef<string | null>(null);
   const draftChatActiveRef = useRef(false);
   const activePaneRef = useRef<PaneFocus>("chat");
+  const keybindingDispatchStateRef = useRef<KeybindingDispatchState>({ prefix: null, prefixAt: 0 });
   const footerControlRef = useRef<FooterControl | null>(null);
   const paneBeforeDetailsRef = useRef<PaneFocus>("chat");
   const chatDraftRef = useRef("");
   const promptRef = useRef("");
+  const promptHistoryRef = useRef<string[]>([]);
+  const promptHistoryIndexRef = useRef<number | null>(null);
+  const promptHistoryDraftRef = useRef("");
   const lastLocalSendAtRef = useRef<number>(0);
   const eventCountRef = useRef<number>(0);
+  const eventDedupKeysRef = useRef<Set<string>>(new Set());
+  const eventDedupKeyOrderRef = useRef<string[]>([]);
   const chatScrollOffsetRowsRef = useRef(0);
   const heartbeatRef = useRef<TuiHeartbeat | null>(null);
   const draftSeededFromHistoryRef = useRef(false);
@@ -720,7 +1124,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   }, [setChatScrollOffset]);
 
   const selectActiveSessionId = useCallback((sessionId: string | null) => {
-    if (activeSessionIdRef.current !== sessionId) setChatScrollOffset(0);
+    if (activeSessionIdRef.current !== sessionId) {
+      setChatScrollOffset(0);
+      setCurrentGoal(null);
+    }
     if (sessionId) {
       draftChatActiveRef.current = false;
       setDraftChatActive(false);
@@ -858,7 +1265,23 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     () => sessions.find((session) => session.sessionId === activeSessionId) ?? null,
     [activeSessionId, sessions],
   );
+  const activeCommandProvider = activeSession?.provider ?? modelState.provider;
   const latestFailedLineId = useMemo(() => latestExpandableFailureId(events), [events]);
+  const subagentSnapshots = useMemo(() => subagentSnapshotsFromEvents(events), [events]);
+  const promptHistory = useMemo(() => events
+    .map((envelope) => envelope.event)
+    .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "user_message" }> => event.type === "user_message")
+    .map((event) => (event.displayText || event.text || "").trim())
+    .filter(Boolean)
+    .slice(-200), [events]);
+  useEffect(() => {
+    promptHistoryRef.current = promptHistory;
+    promptHistoryIndexRef.current = null;
+  }, [promptHistory]);
+  useEffect(() => {
+    setVimModeEnabled(readClaudeVimMode(project.workspaceRoot));
+    setVimMode("insert");
+  }, [project.workspaceRoot]);
   const drawerLaneRows = useMemo(
     () => lanes.slice(0, visibleDrawerLaneCount(rows, lanes.length)),
     [lanes, rows],
@@ -888,12 +1311,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     activePane === "chat" ? activeMention(prompt) : null
   ), [activePane, prompt]);
   const slashRows = useMemo(() => (
-    activePane === "chat" && prompt.startsWith("/") ? paletteCommands(prompt, slashCommands) : []
-  ), [activePane, prompt, slashCommands]);
+    activePane === "chat" && prompt.startsWith("/")
+      ? paletteCommands(prompt, slashCommands, { provider: activeCommandProvider })
+      : []
+  ), [activeCommandProvider, activePane, prompt, slashCommands]);
   const pendingApproval = useMemo(() => latestPendingApproval(events), [events]);
+  const goalBannerText = useMemo(() => formatGoalBannerLine(currentGoal), [currentGoal]);
   const activeFormField = rightPane.kind === "form"
     ? rightPane.fields[formFieldIndex] ?? rightPane.fields[0] ?? null
     : null;
+  const statusLineRows = statusLineText ? Math.min(3, statusLineText.split(/\r?\n/).filter(Boolean).length || 1) : 0;
+  const statusRows = statusLineRows;
+  const goalBannerRows = goalBannerText ? 1 : 0;
+  const chatRowBudget = Math.max(4, rows - 12 - statusRows - goalBannerRows);
   const providerReadinessRows = useMemo(
     () => buildProviderReadinessRows(aiStatus, storedApiKeyProviders, openCodeDiagnostics),
     [aiStatus, openCodeDiagnostics, storedApiKeyProviders],
@@ -936,8 +1366,136 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
             desktopAttached: mode === "attached",
           }
         : prev);
+    } else if (rightPane.kind === "subagents") {
+      setRightPane((prev) => prev.kind === "subagents" ? { ...prev, snapshots: subagentSnapshots } : prev);
     }
-  }, [activeLane?.name, activeLaneId, aiStatusCheckedAt, mode, modelSetupRows, modelState.provider, newChatSetupRows, providerReadinessRows, rightPane.kind]);
+  }, [activeLane?.name, activeLaneId, aiStatusCheckedAt, mode, modelSetupRows, modelState.provider, newChatSetupRows, providerReadinessRows, rightPane.kind, subagentSnapshots]);
+
+  useEffect(() => {
+    const { config } = readClaudeStatusLineConfig(project.workspaceRoot);
+    if (!config) {
+      setStatusLineText(null);
+      setHideVimModeIndicator(false);
+      return;
+    }
+    setHideVimModeIndicator(config.hideVimModeIndicator);
+    let cancelled = false;
+    const refresh = async () => {
+      const totalInputTokens = statusLineStats?.inputTokens ?? null;
+      const totalOutputTokens = statusLineStats?.outputTokens ?? null;
+      const cacheCreationTokens = statusLineStats?.cacheCreationTokens ?? null;
+      const cacheReadTokens = statusLineStats?.cacheReadTokens ?? null;
+      const contextWindowSize = statusLineStats?.contextWindow ?? null;
+      const contextUsed = totalInputTokens != null || totalOutputTokens != null
+        ? (totalInputTokens ?? 0) + (totalOutputTokens ?? 0)
+        : null;
+      const contextUsedPercentage = contextPercent ?? (
+        contextUsed != null && contextWindowSize != null && contextWindowSize > 0
+          ? Math.round((contextUsed / contextWindowSize) * 100)
+          : null
+      );
+      const rateLimitWindow = statusLineStats?.rateLimit
+        ? {
+            used_percentage: statusLineStats.rateLimit.usedPercentage,
+            resets_at: statusLineStats.rateLimit.resetsAt,
+          }
+        : null;
+      const result = await runClaudeStatusLineCommand(config, {
+        cwd: project.workspaceRoot,
+        workspaceRoot: project.workspaceRoot,
+        projectRoot: project.projectRoot,
+        model: {
+          id: modelState.modelId,
+          displayName: modelState.displayName,
+          display_name: modelState.displayName,
+          provider: modelState.provider,
+          fastMode: modelState.codexFastMode,
+          supportsEffort: modelReasoningEfforts(modelState, models).length > 0,
+        },
+        workspace: {
+          current_dir: project.workspaceRoot,
+          project_dir: project.projectRoot,
+          added_dirs: [],
+          git_worktree: activeLane?.branchRef ?? null,
+          gitBranch: activeLane?.branchRef ?? null,
+        },
+        session: {
+          id: activeSession?.sessionId ?? activeSessionId,
+          title: activeSession?.title ?? null,
+        },
+        session_id: activeSession?.sessionId ?? activeSessionId,
+        session_name: activeSession?.title ?? null,
+        lane: activeLane?.name ?? activeLaneId,
+        permission_mode: modelState.provider === "claude"
+          ? modelState.claudePermissionMode
+          : modelState.permissionMode,
+        context: {
+          percent: contextUsedPercentage,
+          tokenSummary,
+        },
+        context_window: {
+          used: contextUsed,
+          total: contextWindowSize,
+          percentage: contextUsedPercentage,
+          used_percentage: contextUsedPercentage,
+          remaining_percentage: contextUsedPercentage == null ? null : Math.max(0, 100 - contextUsedPercentage),
+          total_input_tokens: totalInputTokens,
+          total_output_tokens: totalOutputTokens,
+          context_window_size: contextWindowSize,
+          current_usage: {
+            input_tokens: totalInputTokens,
+            output_tokens: totalOutputTokens,
+            cache_creation_input_tokens: cacheCreationTokens,
+            cache_read_input_tokens: cacheReadTokens,
+          },
+        },
+        rate_limits: rateLimitWindow
+          ? {
+              reset_at: rateLimitWindow.resets_at ? new Date(rateLimitWindow.resets_at * 1000).toISOString() : null,
+              remaining: rateLimitWindow.used_percentage == null ? null : Math.max(0, 100 - rateLimitWindow.used_percentage),
+              five_hour: rateLimitWindow,
+              seven_day: rateLimitWindow,
+            }
+          : { five_hour: null, seven_day: null, reset_at: null, remaining: null },
+        cost: {
+          total_cost_usd: statusLineStats?.costUsd ?? null,
+          total_duration_ms: null,
+          total_api_duration_ms: null,
+          total_lines_added: null,
+          total_lines_removed: null,
+        },
+        output_style: {
+          name: activeSession?.claudeOutputStyle ?? null,
+        },
+        effort: {
+          level: activeSession?.reasoningEffort ?? modelState.reasoningEffort ?? null,
+        },
+        thinking: {
+          enabled: Boolean(activeSession?.reasoningEffort ?? modelState.reasoningEffort),
+        },
+        vim: {
+          mode: vimModeEnabled ? (vimMode === "normal" ? "NORMAL" : "INSERT") : "INSERT",
+        },
+        transcript_path: null,
+        version: "ade-code",
+      });
+      if (cancelled) return;
+      const padding = " ".repeat(config.padding);
+      setStatusLineText(result.ok && result.text
+        ? result.text.split(/\r?\n/).map((line) => `${padding}${line}`).join("\n")
+        : null);
+    };
+    void refresh();
+    const timer = config.refreshIntervalSeconds == null
+      ? null
+      : setInterval(() => {
+          void refresh();
+        }, config.refreshIntervalSeconds * 1000);
+    return () => {
+      cancelled = true;
+      if (timer) clearInterval(timer);
+    };
+  }, [activeLane?.branchRef, activeLane?.name, activeLaneId, activeSession?.claudeOutputStyle, activeSession?.reasoningEffort, activeSession?.sessionId, activeSession?.title, activeSessionId, contextPercent, modelState, models, project.projectRoot, project.workspaceRoot, statusLineStats, tokenSummary, vimMode, vimModeEnabled]);
 
   useEffect(() => {
     if (activePane !== "details" || !rightOpen) return;
@@ -1065,15 +1623,18 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   }, [activeLaneId, drawerLaneId, drawerLaneRows, selectedDrawerLaneAction, selectedDrawerLaneId]);
 
   useEffect(() => {
-    if (selectedDrawerChatAction) return;
-    if (draftChatActive && drawerLaneId === activeLaneId) {
-      setSelectedDrawerChatId(null);
-      setSelectedDrawerChatAction("new-chat");
-      return;
-    }
-    if (selectedDrawerChatId && drawerVisibleLaneSessions.some((session) => session.sessionId === selectedDrawerChatId)) return;
-    const activeChatInDrawer = drawerVisibleLaneSessions.find((session) => session.sessionId === activeSessionId);
-    setSelectedDrawerChatId(activeChatInDrawer?.sessionId ?? drawerVisibleLaneSessions[0]?.sessionId ?? null);
+    const next = resolveDrawerChatSelection({
+      activeLaneId,
+      activeSessionId,
+      draftChatActive,
+      drawerLaneId,
+      drawerVisibleLaneSessions,
+      selectedDrawerChatAction,
+      selectedDrawerChatId,
+    });
+    if (!next) return;
+    setSelectedDrawerChatId(next.selectedDrawerChatId);
+    setSelectedDrawerChatAction(next.selectedDrawerChatAction);
   }, [activeLaneId, activeSessionId, draftChatActive, drawerLaneId, drawerVisibleLaneSessions, selectedDrawerChatAction, selectedDrawerChatId]);
 
   useEffect(() => {
@@ -1086,6 +1647,43 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       { id: noticeId(), timestamp: new Date().toISOString(), text, tone },
     ]);
   }, []);
+
+  const reloadKeybindings = useCallback((announce = false) => {
+    const diagnostics = readClaudeKeybindingsFile({ create: false });
+    setKeybindings(diagnostics.bindings);
+    if (announce) {
+      addNotice(
+        diagnostics.warnings.length
+          ? `Keybindings reloaded with ${diagnostics.warnings.length} warning${diagnostics.warnings.length === 1 ? "" : "s"}.`
+          : "Keybindings reloaded.",
+        diagnostics.warnings.length ? "error" : "success",
+      );
+    }
+  }, [addNotice]);
+
+  useEffect(() => {
+    const filePath = defaultKeybindingsPath();
+    const dir = path.dirname(filePath);
+    let timer: NodeJS.Timeout | null = null;
+    let watcher: fs.FSWatcher | null = null;
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      watcher = fs.watch(dir, (_event, filename) => {
+        if (filename && filename.toString() !== path.basename(filePath)) return;
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => {
+          timer = null;
+          reloadKeybindings(true);
+        }, 150);
+      });
+    } catch {
+      return undefined;
+    }
+    return () => {
+      if (timer) clearTimeout(timer);
+      watcher?.close();
+    };
+  }, [reloadKeybindings]);
 
   const refreshAiSetupStatus = useCallback(async (options: { force?: boolean } = {}) => {
     const conn = connectionRef.current;
@@ -1164,6 +1762,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     }
     setDraftChatMode(true);
     selectActiveSessionId(null);
+    eventDedupKeysRef.current.clear();
+    eventDedupKeyOrderRef.current = [];
     setEvents([]);
     setClearedAt(null);
     chatDraftRef.current = "";
@@ -1324,6 +1924,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     let nextEvents: AgentChatEventEnvelope[] = [];
     if (nextSessionId) {
       const history = await getChatHistory(conn, nextSessionId);
+      setCurrentGoal(latestGoal(history.events));
       nextEvents = clearedAt
         ? history.events.filter((event) => event.timestamp > clearedAt)
         : history.events;
@@ -1332,11 +1933,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       const stats = latestTokenStats(history.events, fallbackContext);
       setContextPercent(stats.percent);
       setTokenSummary(formatTokenSummary(stats));
+      setStatusLineStats(stats);
       setStreaming(nextSession?.status === "active");
       eventCountRef.current = history.events.length;
     } else {
       setContextPercent(null);
       setTokenSummary(null);
+      setStatusLineStats(null);
+      setCurrentGoal(null);
       setStreaming(false);
       eventCountRef.current = 0;
     }
@@ -1354,6 +1958,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     setSessions(nextSessions);
     selectActiveLaneId(nextLaneId);
     selectActiveSessionId(nextSessionId);
+    eventDedupKeyOrderRef.current = syncTuiEventDedupKeys(eventDedupKeysRef.current, nextEvents);
     setEvents(nextEvents);
     setSlashCommands(nextCommands);
     setModels(nextModels);
@@ -1423,6 +2028,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         draftSeededFromHistoryRef.current = false;
         setDraftChatMode(true);
         selectActiveSessionId(null);
+        eventDedupKeysRef.current.clear();
+        eventDedupKeyOrderRef.current = [];
         setEvents([]);
         await refreshState();
       } catch (err) {
@@ -1458,16 +2065,35 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         return;
       }
       if (clearedAt && envelope.timestamp <= clearedAt) return;
-      setEvents((prev) => {
-        const key = `${envelope.sequence ?? ""}:${envelope.timestamp}:${envelope.event.type}`;
-        if (prev.some((entry) => `${entry.sequence ?? ""}:${entry.timestamp}:${entry.event.type}` === key)) return prev;
-        return [...prev, envelope].slice(-500);
-      });
       const event = envelope.event as Record<string, unknown>;
+      if (event.type === "codex_goal_updated") {
+        setCurrentGoal((event as { goal?: CodexThreadGoal | null }).goal ?? null);
+      } else if (event.type === "codex_goal_cleared") {
+        setCurrentGoal(null);
+      }
+      const reservedKey = reserveTuiEventDedupKey(envelope, eventDedupKeysRef.current);
+      if (reservedKey !== null) {
+        setEvents((prev) => {
+          const next = appendReservedTuiEvent(
+            prev,
+            envelope,
+            eventDedupKeysRef.current,
+            eventDedupKeyOrderRef.current,
+            reservedKey,
+          );
+          eventDedupKeyOrderRef.current = next.eventKeys;
+          return next.events;
+        });
+      }
       if (event.type === "status" && event.turnStatus === "started") setStreaming(true);
       if (event.type === "done" || (event.type === "status" && event.turnStatus === "completed")) setStreaming(false);
+      if (event.type === "subagent_started" || event.type === "subagent.started") {
+        setRightOpen(true);
+        setRightPane((prev) => prev.kind === "subagents" ? prev : { kind: "subagents", tab: "subagents", snapshots: [] });
+        setPaneFocus("details");
+      }
     });
-  }, [clearedAt, connection, refreshState]);
+  }, [clearedAt, connection, refreshState, setPaneFocus]);
 
   useEffect(() => {
     if (!connection) return;
@@ -1604,6 +2230,49 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       setRightPane({ kind: "help", title: "Help" });
       return;
     }
+    if (name === "/keybindings") {
+      const keybindings = readClaudeKeybindingsFile({ create: true });
+      setKeybindings(keybindings.bindings);
+      try {
+        openKeybindingsFile(keybindings.filePath);
+        addNotice("Opening Claude keybindings config.", "info");
+      } catch (error) {
+        addNotice(error instanceof Error ? error.message : String(error), "error");
+      }
+      setRightPane({ kind: "details", title: "Keybindings", body: keybindings.body });
+      return;
+    }
+    if (name === "/statusline") {
+      setRightPane({ kind: "details", title: "Status line", body: formatClaudeStatusLineConfig(project.workspaceRoot) });
+      return;
+    }
+    if (name === "/doctor") {
+      let pluginCount: number | null = null;
+      let mcpCount: number | null = null;
+      if (sessionId && activeSession?.provider === "claude") {
+        try {
+          pluginCount = (await listClaudePlugins(conn, sessionId)).length;
+        } catch {
+          pluginCount = null;
+        }
+        try {
+          mcpCount = (await getClaudeMcpStatus(conn, sessionId)).length;
+        } catch {
+          mcpCount = null;
+        }
+      }
+      setRightPane({
+        kind: "details",
+        title: "Doctor",
+        body: formatDoctorReport({
+          workspaceRoot: project.workspaceRoot,
+          activeProvider: activeSession?.provider ?? modelState.provider,
+          pluginCount,
+          mcpCount,
+        }),
+      });
+      return;
+    }
     if (name === "/status") {
       setRightPane({
         kind: "status",
@@ -1615,6 +2284,106 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           ["ADE", "ready"],
         ],
       });
+      return;
+    }
+    if (name === "/context") {
+      if (!sessionId) {
+        setRightPane({ kind: "details", title: "Context", body: "No active chat is selected." });
+        return;
+      }
+      if (activeSession?.provider !== "claude") {
+        setRightPane({ kind: "details", title: "Context", body: "/context is only available for Claude chats." });
+        return;
+      }
+      const usage = await getContextUsage(conn, sessionId);
+      setRightPane({ kind: "details", title: "Context", body: formatContextUsage(usage) });
+      return;
+    }
+    if (name === "/agents") {
+      if (activeSession?.provider !== "claude") {
+        setRightPane({ kind: "details", title: "Agents", body: "/agents is only available for Claude chats." });
+        return;
+      }
+      setRightPane({ kind: "details", title: "Agents", body: listClaudeCompatMarkdownEntries(project.workspaceRoot, "agents") });
+      return;
+    }
+    if (name === "/skills") {
+      if (activeSession?.provider !== "claude") {
+        setRightPane({ kind: "details", title: "Skills", body: "/skills is only available for Claude chats." });
+        return;
+      }
+      setRightPane({ kind: "details", title: "Skills", body: listClaudeCompatMarkdownEntries(project.workspaceRoot, "skills") });
+      return;
+    }
+    if (name === "/init") {
+      try {
+        const body = ensureClaudeInitFiles(project.workspaceRoot);
+        setRightPane({ kind: "details", title: "Init", body });
+        addNotice("Initialized Claude-compatible project files.", "success");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setRightPane({ kind: "details", title: "Init", body: message });
+        addNotice(message, "error");
+      }
+      return;
+    }
+    if (name === "/mcp") {
+      if (!sessionId) {
+        setRightPane({ kind: "details", title: "MCP", body: "No active chat is selected." });
+        return;
+      }
+      if (activeSession?.provider !== "claude") {
+        setRightPane({ kind: "details", title: "MCP", body: "/mcp is only available for Claude chats." });
+        return;
+      }
+      const statuses = await getClaudeMcpStatus(conn, sessionId);
+      setRightPane({ kind: "details", title: "MCP", body: formatMcpStatus(statuses) });
+      return;
+    }
+    if (name === "/output-style") {
+      if (!sessionId) {
+        setRightPane({ kind: "details", title: "Output style", body: "No active chat is selected." });
+        return;
+      }
+      if (activeSession?.provider !== "claude") {
+        setRightPane({ kind: "details", title: "Output style", body: "/output-style is only available for Claude chats." });
+        return;
+      }
+      if (!args.trim()) {
+        const styles = await listClaudeOutputStyles(conn, sessionId);
+        setRightPane({ kind: "details", title: "Output style", body: formatOutputStyles(styles, activeSession?.claudeOutputStyle) });
+        return;
+      }
+      const updated = await setClaudeOutputStyle(conn, sessionId, args.trim());
+      addNotice(`Claude output style set to ${updated.claudeOutputStyle ?? args.trim()}.`, "success");
+      await refreshState();
+      return;
+    }
+    if (name === "/plugin") {
+      if (!sessionId) {
+        setRightPane({ kind: "details", title: "Plugins", body: "No active chat is selected." });
+        return;
+      }
+      if (activeSession?.provider !== "claude") {
+        setRightPane({ kind: "details", title: "Plugins", body: "/plugin is only available for Claude chats." });
+        return;
+      }
+      if (args.trim().toLowerCase() === "reload") {
+        const result = await reloadClaudePlugins(conn, sessionId);
+        setRightPane({ kind: "details", title: "Plugins", body: formatPluginReload(result) });
+        return;
+      }
+      if (args.trim()) {
+        const command = `/plugin ${args.trim()}`;
+        setRightPane({ kind: "details", title: "Plugins", body: `Running ${command} in the active Claude session.` });
+        lastLocalSendAtRef.current = Date.now();
+        setStreaming(true);
+        await sendChatMessage(conn, sessionId, command);
+        await refreshState();
+        return;
+      }
+      const plugins = await listClaudePlugins(conn, sessionId);
+      setRightPane({ kind: "details", title: "Plugins", body: formatClaudePlugins(plugins) });
       return;
     }
     if (name === "/new chat") {
@@ -1664,6 +2433,27 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       }
       await renameChat(conn, sessionId, args);
       addNotice(`Renamed chat to "${args}".`, "success");
+      await refreshState();
+      return;
+    }
+    if (name === "/tag") {
+      if (!sessionId) {
+        setRightPane({ kind: "details", title: "Tag chat", body: "No active chat is selected." });
+        return;
+      }
+      if (activeSession?.provider !== "claude") {
+        setRightPane({ kind: "details", title: "Tag chat", body: "/tag is only available for Claude chats." });
+        return;
+      }
+      if (!args) {
+        setRightPane({ kind: "details", title: "Tag chat", body: "Usage: /tag <tag|clear>" });
+        return;
+      }
+      const normalizedTag = ["clear", "none", "null", "remove"].includes(args.trim().toLowerCase())
+        ? null
+        : args.trim();
+      await tagChat(conn, sessionId, normalizedTag);
+      addNotice(normalizedTag ? `Tagged chat "${normalizedTag}".` : "Cleared chat tag.", "success");
       await refreshState();
       return;
     }
@@ -1872,16 +2662,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       }
       return;
     }
-    if (name === "/resume") {
-      if (!sessionId) {
-        setRightPane({ kind: "details", title: "Resume", body: "No active chat is selected." });
-        return;
-      }
-      await resumeChat(conn, sessionId);
-      addNotice("Resumed chat.", "success");
-      await refreshState();
-      return;
-    }
     if (name === "/model") {
       if (args) {
         if (!sessionId) {
@@ -1968,7 +2748,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         : result;
       setRightPane({ kind: "details", title: `ADE ${domain}.${action}`, body: renderObject(body, 24) });
     }
-  }, [activeLane?.name, activeSession?.sessionId, activeSession?.title, addNotice, ensureActiveSession, focusDetails, lanes, mode, modelState.modelId, models, openForm, openModelSetup, openNewChatSetup, openNewLaneForm, project, refreshState, selectActiveLaneId, selectActiveSessionId, sessions, setChatScrollOffset]);
+  }, [activeLane?.name, activeSession?.provider, activeSession?.sessionId, activeSession?.title, addNotice, ensureActiveSession, focusDetails, lanes, mode, modelState.modelId, models, openForm, openModelSetup, openNewChatSetup, openNewLaneForm, project, refreshState, selectActiveLaneId, selectActiveSessionId, sessions, setChatScrollOffset]);
 
   const runInlineCommand = useCallback(async (name: string, args: string) => {
     const conn = connectionRef.current;
@@ -1981,6 +2761,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     }
     if (name === "/clear") {
       setClearedAt(new Date().toISOString());
+      eventDedupKeysRef.current.clear();
+      eventDedupKeyOrderRef.current = [];
       setEvents([]);
       setChatScrollOffset(0);
       addNotice("Local transcript view cleared. The durable chat remains in ADE.", "info");
@@ -2207,6 +2989,31 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     }
   }, [addNotice, focusAfterDetails, refreshState, selectActiveLaneId, selectActiveSessionId]);
 
+  const openLatestImage = useCallback(() => {
+    const target = latestOpenableImageTarget(events);
+    if (!target) {
+      addNotice("No image to open in the recent history.", "info");
+      return;
+    }
+    const openTarget = target;
+    try {
+      const child = process.platform === "darwin"
+        ? spawn("open", [openTarget], { stdio: "ignore", detached: true })
+        : process.platform === "win32"
+          ? spawn("rundll32.exe", ["url.dll,FileProtocolHandler", openTarget], { stdio: "ignore", detached: true })
+          : spawn("xdg-open", [openTarget], { stdio: "ignore", detached: true });
+      child.once("error", (err) => {
+        addNotice(err instanceof Error ? err.message : String(err), "error");
+      });
+      child.once("spawn", () => {
+        addNotice(`Opening ${path.basename(openTarget)}…`, "info");
+      });
+      child.unref();
+    } catch (err) {
+      addNotice(err instanceof Error ? err.message : String(err), "error");
+    }
+  }, [addNotice, events]);
+
   const submitPrompt = useCallback(async (value: string) => {
     const text = value.trim();
     if (!text && rightPane.kind !== "form") return;
@@ -2253,6 +3060,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         return;
       }
       const parsed = parseCommand(text, slashCommands);
+      if (parsed?.spec?.providers?.length && !parsed.spec.providers.includes(activeCommandProvider)) {
+        addNotice(`${parsed.name} is only available for ${parsed.spec.providers.join(", ")} chats.`, "error");
+        return;
+      }
       if (text.startsWith("/") && parsed && !parsed.spec && !parsed.userCommand && slashRows.length) {
         const selected = slashRows[slashIndex] ?? slashRows[0];
         if (selected) {
@@ -2304,7 +3115,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       lastLocalSendAtRef.current = Date.now();
       const attachments: AgentChatFileRef[] = selectedMentions
         .filter((mention) => mention.kind === "file" && mention.filePath && text.includes(mention.insertText))
-        .map((mention) => ({ type: "file", path: mention.filePath! }));
+        .map((mention) => ({ type: isImageFilePath(mention.filePath!) ? "image" : "file", path: mention.filePath! }));
       setStreaming(true);
       await sendChatMessage(conn, sessionId, text, attachments);
       await refreshState();
@@ -2314,7 +3125,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       setError(message);
       addNotice(message, "error");
     }
-  }, [activeFormField, addNotice, answerPendingInput, ensureActiveSession, formValues, pendingApproval, refreshState, resolvePendingApproval, rightPane, runInlineCommand, runRightCommand, selectedMentions, setChatScrollOffset, slashCommands, slashIndex, slashRows, streaming, submitRightForm]);
+  }, [activeCommandProvider, activeFormField, addNotice, answerPendingInput, ensureActiveSession, formValues, pendingApproval, refreshState, resolvePendingApproval, rightPane, runInlineCommand, runRightCommand, selectedMentions, setChatScrollOffset, slashCommands, slashIndex, slashRows, streaming, submitRightForm]);
 
   const insertMention = useCallback((suggestion: MentionSuggestion) => {
     const range = activeMention(prompt);
@@ -2407,11 +3218,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         claudePermissionMode: next,
         permissionMode: next === "plan"
           ? "plan"
-          : next === "acceptEdits"
-            ? "edit"
-            : next === "bypassPermissions"
-              ? "full-auto"
-              : "default",
+          : next === "auto"
+            ? "auto"
+            : next === "acceptEdits"
+              ? "edit"
+              : next === "bypassPermissions"
+                ? "full-auto"
+                : "default",
       }));
       return;
     }
@@ -2488,8 +3301,362 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     }
   }, [activeLane?.name, addNotice, applyModelState, cycleModel, cyclePermission, cycleProvider, cycleReasoning, focusChat, refreshAiSetupStatus]);
 
+  const recallPromptHistory = useCallback((direction: "previous" | "next"): boolean => {
+    const history = promptHistoryRef.current;
+    if (!history.length) {
+      addNotice("No prompt history in this chat yet.", "info");
+      return true;
+    }
+    if (activePaneRef.current !== "chat") {
+      focusChat();
+    }
+    let index = promptHistoryIndexRef.current;
+    if (index == null) {
+      promptHistoryDraftRef.current = promptRef.current || chatDraftRef.current;
+      index = history.length;
+    }
+    const nextIndex = direction === "previous"
+      ? Math.max(0, index - 1)
+      : Math.min(history.length, index + 1);
+    promptHistoryIndexRef.current = nextIndex >= history.length ? null : nextIndex;
+    const nextPrompt = nextIndex >= history.length ? promptHistoryDraftRef.current : history[nextIndex] ?? "";
+    chatDraftRef.current = nextPrompt;
+    promptRef.current = nextPrompt;
+    setPrompt(nextPrompt);
+    if (vimModeEnabled) setVimMode("insert");
+    return true;
+  }, [addNotice, focusChat, vimModeEnabled]);
+
+  const openHistorySearch = useCallback(() => {
+    const query = (promptRef.current || chatDraftRef.current).trim().toLowerCase();
+    const rows = [...promptHistoryRef.current]
+      .reverse()
+      .filter((entry) => !query || entry.toLowerCase().includes(query))
+      .slice(0, 20)
+      .map((entry) => {
+        const compact = entry.replace(/\s+/g, " ");
+        return compact.length > 34 ? `${compact.slice(0, 33)}…` : compact;
+      });
+    setRightPane({
+      kind: "list",
+      title: "History search",
+      rows,
+      emptyText: query ? `No prompt history matched "${query}".` : "No prompt history in this chat yet.",
+    });
+    setRightOpen(true);
+    setPaneFocus("details");
+  }, [setPaneFocus]);
+
+  const attachClipboardImage = useCallback((): boolean => {
+    const attachment = readClipboardImageAttachment(project.workspaceRoot);
+    if (!attachment) {
+      addNotice("No clipboard image was found. On macOS, copy an image or image file path; ADE Code checks pngpaste and pbpaste.", "error");
+      return true;
+    }
+    if (activePaneRef.current !== "chat") {
+      focusChat();
+    }
+    const insertText = `@${path.basename(attachment.path)}`;
+    const current = promptRef.current || chatDraftRef.current;
+    const nextPrompt = current.trim() ? `${current} ${insertText}` : insertText;
+    setSelectedMentions((prev) => {
+      if (prev.some((entry) => entry.filePath === attachment.path)) return prev;
+      return [...prev, {
+        kind: "file" as const,
+        label: path.basename(attachment.path),
+        insertText,
+        detail: attachment.path,
+        filePath: attachment.path,
+      }].slice(-12);
+    });
+    chatDraftRef.current = nextPrompt;
+    promptRef.current = nextPrompt;
+    setPrompt(nextPrompt);
+    addNotice("Attached clipboard image.", "success");
+    return true;
+  }, [addNotice, focusChat, project.workspaceRoot]);
+
+  const runKeybindingAction = useCallback((action: TuiKeybindingAction): boolean => {
+    const reportUnavailable = (label = action): true => {
+      addNotice(`${label} is recognized, but there is no active ADE Code control for it right now.`, "info");
+      return true;
+    };
+    if (action === "app:interrupt") {
+      const conn = connectionRef.current;
+      const sessionId = activeSessionIdRef.current;
+      if (streaming && conn && sessionId) {
+        void interruptChat(conn, sessionId)
+          .then(() => addNotice("Interrupted chat.", "info"))
+          .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
+      } else {
+        addNotice("No active response to interrupt.", "info");
+      }
+      return true;
+    }
+    if (action === "app:help") {
+      setRightPane({ kind: "help", title: "Help" });
+      focusDetails();
+      return true;
+    }
+    if (action === "app:redraw") {
+      void refreshState().catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
+      return true;
+    }
+    if (action === "app:clear" || action === "chat:clearScreen") {
+      setClearedAt(new Date().toISOString());
+      eventDedupKeysRef.current.clear();
+      eventDedupKeyOrderRef.current = [];
+      setEvents([]);
+      setChatScrollOffset(0);
+      addNotice("Cleared local transcript view.", "success");
+      return true;
+    }
+    if (action === "app:toggleTodos" || action === "app:toggleTranscript") {
+      toggleDetailsPane();
+      return true;
+    }
+    if (action === "app:quit" || action === "app:exit") {
+      exit();
+      return true;
+    }
+    if (action === "chat:submit") {
+      void submitPrompt(prompt);
+      return true;
+    }
+    if (action === "chat:cancel" || action === "chat:clearInput") {
+      handlePromptChange("");
+      return true;
+    }
+    if (action === "chat:killAgents") {
+      return reportUnavailable("chat:killAgents");
+    }
+    if (action === "chat:cycleMode" || action === "confirm:cycleMode") {
+      cyclePermission(1);
+      return true;
+    }
+    if (action === "chat:modelPicker") {
+      openModelSetup();
+      return true;
+    }
+    if (action === "chat:fastMode") {
+      if (modelState.provider === "codex") {
+        applyModelState((prev) => ({ ...prev, codexFastMode: !prev.codexFastMode }));
+      } else if (modelState.provider === "claude") {
+        void submitPrompt("/fast");
+      } else {
+        addNotice("Fast mode is not available for the active provider.", "info");
+      }
+      return true;
+    }
+    if (action === "chat:thinkingToggle" || action === "modelPicker:increaseEffort") {
+      cycleReasoning(1);
+      return true;
+    }
+    if (action === "modelPicker:decreaseEffort") {
+      cycleReasoning(-1);
+      return true;
+    }
+    if (action === "chat:new-line" || action === "chat:newline") {
+      const nextPrompt = `${prompt}\n`;
+      setFormDiscardArmed(false);
+      if (activePaneRef.current === "chat") chatDraftRef.current = nextPrompt;
+      setPrompt(nextPrompt);
+      return true;
+    }
+    if (action === "chat:paste-image" || action === "chat:imagePaste") {
+      return attachClipboardImage();
+    }
+    if (action === "chat:open-editor" || action === "chat:externalEditor") {
+      const edited = editPromptInExternalEditor(prompt);
+      if (edited == null) {
+        addNotice("External editor exited without updating the prompt.", "error");
+        return true;
+      }
+      handlePromptChange(edited);
+      focusChat();
+      addNotice("Loaded prompt from external editor.", "success");
+      return true;
+    }
+    if (action === "chat:undo") {
+      return reportUnavailable("chat:undo");
+    }
+    if (action === "chat:stash") {
+      const current = prompt.trim();
+      if (current) {
+        promptHistoryRef.current = [...promptHistoryRef.current, current].slice(-100);
+        handlePromptChange("");
+        addNotice("Stashed prompt in local history.", "success");
+      }
+      return true;
+    }
+    if (action === "history:previous" || action === "history:next") {
+      return recallPromptHistory(action === "history:previous" ? "previous" : "next");
+    }
+    if (action === "history:search" || action === "historySearch:next") {
+      openHistorySearch();
+      return true;
+    }
+    if (action === "historySearch:accept" || action === "historySearch:cancel" || action === "historySearch:execute") {
+      focusChat();
+      return true;
+    }
+    if (action === "historySearch:cycleScope") {
+      addNotice("History search scope cycling is not available yet.", "info");
+      return true;
+    }
+    if (action === "pane:toggle") {
+      toggleDetailsPane();
+      return true;
+    }
+    if (action === "pane:close") {
+      if (rightOpen) {
+        setRightOpen(false);
+        setRightPane((prev) => prev.kind === "form" ? { kind: "empty" } : prev);
+        focusAfterDetails();
+      } else if (drawerOpen) {
+        setDrawerOpen(false);
+        focusChat();
+      }
+      return true;
+    }
+    if (
+      action === "autocomplete:accept"
+      || action === "confirm:yes"
+      || action === "messageSelector:select"
+      || action === "select:accept"
+      || action === "footer:openSelected"
+      || action === "diff:viewDetails"
+    ) {
+      return reportUnavailable();
+    }
+    if (
+      action === "autocomplete:dismiss"
+      || action === "confirm:no"
+      || action === "select:cancel"
+      || action === "help:dismiss"
+      || action === "transcript:exit"
+      || action === "diff:dismiss"
+      || action === "attachments:exit"
+      || action === "footer:clearSelection"
+      || action === "settings:close"
+    ) {
+      if (rightOpen) setRightOpen(false);
+      if (drawerOpen) setDrawerOpen(false);
+      selectFooterControl(null);
+      focusChat();
+      return true;
+    }
+    if (action === "tabs:next" || action === "footer:next") {
+      cyclePaneFocus();
+      return true;
+    }
+    if (action === "tabs:previous" || action === "footer:previous") {
+      cyclePaneFocus();
+      return true;
+    }
+    if (action === "footer:up" || action === "footer:down") {
+      selectFooterControl(action === "footer:up" ? null : (footerControlRef.current ?? "drawer"));
+      return true;
+    }
+    if (
+      action === "autocomplete:previous"
+      || action === "confirm:previous"
+      || action === "messageSelector:up"
+      || action === "select:previous"
+      || action === "attachments:previous"
+      || action === "diff:previousFile"
+    ) {
+      setChatScrollOffset((offset) => offset + 1);
+      return true;
+    }
+    if (
+      action === "autocomplete:next"
+      || action === "confirm:next"
+      || action === "messageSelector:down"
+      || action === "select:next"
+      || action === "attachments:next"
+      || action === "diff:nextFile"
+    ) {
+      setChatScrollOffset((offset) => offset - 1);
+      return true;
+    }
+    if (action === "confirm:nextField" || action === "confirm:previousField" || action === "confirm:toggle" || action === "confirm:toggleExplanation" || action === "permission:toggleDebug") {
+      return reportUnavailable();
+    }
+    if (action === "transcript:toggleShowAll") {
+      toggleDetailsPane();
+      return true;
+    }
+    if (action === "task:background" || action === "theme:toggleSyntaxHighlighting") {
+      return reportUnavailable();
+    }
+    if (action === "attachments:remove") {
+      return reportUnavailable();
+    }
+    if (action === "messageSelector:top") {
+      setChatScrollOffset(Number.MAX_SAFE_INTEGER);
+      return true;
+    }
+    if (action === "messageSelector:bottom") {
+      setChatScrollOffset(0);
+      return true;
+    }
+    if (action === "diff:previousSource" || action === "diff:nextSource" || action === "diff:back") {
+      return reportUnavailable();
+    }
+    if (action === "plugin:toggle" || action === "plugin:install" || action === "plugin:favorite" || action === "settings:search" || action === "settings:retry" || action === "doctor:fix" || action === "voice:pushToTalk") {
+      return reportUnavailable();
+    }
+    if (action === "scroll:up" || action === "scroll:lineUp") {
+      setChatScrollOffset((offset) => offset + 1);
+      return true;
+    }
+    if (action === "scroll:down" || action === "scroll:lineDown") {
+      setChatScrollOffset((offset) => offset - 1);
+      return true;
+    }
+    if (action === "scroll:pageUp" || action === "scroll:halfPageUp") {
+      setChatScrollOffset((offset) => offset + Math.max(1, chatRowBudget - 2));
+      return true;
+    }
+    if (action === "scroll:pageDown" || action === "scroll:halfPageDown") {
+      setChatScrollOffset((offset) => offset - Math.max(1, chatRowBudget - 2));
+      return true;
+    }
+    if (action === "scroll:fullPageUp") {
+      setChatScrollOffset((offset) => offset + Math.max(1, chatRowBudget));
+      return true;
+    }
+    if (action === "scroll:fullPageDown") {
+      setChatScrollOffset((offset) => offset - Math.max(1, chatRowBudget));
+      return true;
+    }
+    if (action === "scroll:top") {
+      setChatScrollOffset(Number.MAX_SAFE_INTEGER);
+      return true;
+    }
+    if (action === "scroll:bottom") {
+      setChatScrollOffset(0);
+      return true;
+    }
+    if (action.startsWith("selection:")) {
+      return reportUnavailable();
+    }
+    return reportUnavailable();
+  }, [addNotice, applyModelState, attachClipboardImage, chatRowBudget, cyclePaneFocus, cyclePermission, cycleReasoning, drawerOpen, exit, focusAfterDetails, focusChat, focusDetails, modelState.provider, openHistorySearch, openModelSetup, prompt, recallPromptHistory, refreshState, rightOpen, selectFooterControl, setChatScrollOffset, submitPrompt, toggleDetailsPane]);
+
   useInput((input, key) => {
     const pane = activePaneRef.current;
+    const keybindingContext = pane === "details"
+      ? rightPane.kind === "help" ? "Help" : "Select"
+      : pane === "drawer" ? "Tabs" : "Chat";
+    const keybindingAction = dispatchKeybinding(keybindings, keybindingContext, input, key, keybindingDispatchStateRef.current);
+    if (keybindingAction === null) {
+      return;
+    }
+    if (keybindingAction !== undefined && runKeybindingAction(keybindingAction)) {
+      return;
+    }
     const detailsFormActive = pane === "details" && rightOpen && rightPane.kind === "form";
     const footerActive = footerControlRef.current != null;
     const textInputActive = (pane === "chat" && !footerActive) || detailsFormActive;
@@ -2509,7 +3676,22 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     }
 
     if (key.ctrl && input === "o") {
-      focusDrawer();
+      if (drawerOpen && pane === "drawer") {
+        setDrawerOpen(false);
+        focusChat();
+      } else {
+        focusDrawer();
+      }
+      return;
+    }
+
+    if (key.ctrl && input === "l" && pane === "chat") {
+      setClearedAt(new Date().toISOString());
+      eventDedupKeysRef.current.clear();
+      eventDedupKeyOrderRef.current = [];
+      setEvents([]);
+      setChatScrollOffset(0);
+      addNotice("Viewport cleared. Durable chat history is unchanged.", "info");
       return;
     }
 
@@ -2545,6 +3727,59 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         if (suffix) {
           selectFooterControl(null);
           handlePromptChange(`${prompt}${suffix}`);
+        }
+        return;
+      }
+    }
+
+    if (pane === "chat" && textInputActive && key.ctrl && input === "r") {
+      openHistorySearch();
+      return;
+    }
+
+    if (pane === "chat" && textInputActive && key.ctrl && input === "v") {
+      attachClipboardImage();
+      return;
+    }
+
+    if (pane === "chat" && textInputActive && key.ctrl && input === "g") {
+      const edited = editPromptInExternalEditor(prompt);
+      if (edited == null) {
+        addNotice("External editor exited without updating the prompt.", "error");
+      } else {
+        handlePromptChange(edited);
+        focusChat();
+        addNotice("Loaded prompt from external editor.", "success");
+      }
+      return;
+    }
+
+    if (pane === "chat" && textInputActive && vimModeEnabled && !key.ctrl && !key.meta) {
+      if (key.escape) {
+        setVimMode("normal");
+        return;
+      }
+      if (vimMode === "normal") {
+        if (input === "i" || input === "a") {
+          setVimMode("insert");
+          return;
+        }
+        if (input === ":" || input === "/") {
+          handlePromptChange("/");
+          setVimMode("insert");
+          return;
+        }
+        if (input === "k" || key.upArrow) {
+          recallPromptHistory("previous");
+          return;
+        }
+        if (input === "j" || key.downArrow) {
+          recallPromptHistory("next");
+          return;
+        }
+        if (key.return) {
+          void submitPrompt(prompt);
+          return;
         }
         return;
       }
@@ -2616,6 +3851,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       setFormValues(nextValues);
       setFormFieldIndex(nextIndex);
       setPrompt(fields[nextIndex] ? nextValues[fields[nextIndex]!.name] ?? "" : "");
+      return;
+    }
+
+    if (pane === "details" && rightOpen && rightPane.kind === "subagents" && key.tab) {
+      const tabs = ["subagents", "teammates", "background"] as const;
+      const index = tabs.indexOf(rightPane.tab);
+      setRightPane({ ...rightPane, tab: tabs[(index + 1) % tabs.length] ?? "subagents" });
       return;
     }
 
@@ -2944,6 +4186,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       });
       return;
     }
+    if (
+      pane === "chat"
+      && !prompt.trim()
+      && !pendingApproval
+      && rightPane.kind !== "form"
+      && !slashRows.length
+      && key.ctrl
+      && !key.meta
+      && input === "h"
+    ) {
+      openLatestImage();
+      return;
+    }
     const linePrefix = inputBeforeLineBreak(input);
     if (textInputActive && (key.return || linePrefix != null)) {
       const suffix = linePrefix == null ? "" : printableInput(linePrefix);
@@ -2982,8 +4237,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const promptFocused = (activePane === "chat" && footerControl == null) || (activePane === "details" && rightPane.kind === "form");
   const drawerFooterSelected = footerControl === "drawer";
   const detailsFooterSelected = footerControl === "details";
-  const statusRows = streaming ? 1 : 0;
-  const chatRowBudget = Math.max(4, rows - 12 - statusRows);
 
   if (error && !connection) {
     return (
@@ -3000,8 +4253,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         projectName={projectName}
         lane={activeLane}
       />
-      {streaming ? (
-        <Text color={PURPLE}>● streaming live{tokenSummary ? ` · ${tokenSummary}` : ""} · ctrl-c interrupts</Text>
+      {goalBannerText ? (
+        <Box paddingX={1} flexShrink={0}>
+          <Text color={theme.color.warning} wrap="truncate-end">{goalBannerText}</Text>
+          {streaming ? <Text color={theme.color.mutedFg} dimColor>{" · streaming"}</Text> : null}
+        </Box>
       ) : null}
       <Box flexGrow={1} minHeight={8}>
         {drawerOpen ? (
@@ -3049,12 +4305,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         ) : null}
       </Box>
       <MentionPalette suggestions={mentionSuggestions} selectedIndex={mentionIndex} />
-      <SlashPalette query={prompt} userCommands={slashCommands} selectedIndex={slashIndex} />
+      <SlashPalette query={prompt} userCommands={slashCommands} selectedIndex={slashIndex} provider={activeCommandProvider} />
       {error ? <Text color="red">{error}</Text> : null}
       <Box borderStyle="round" borderColor={promptFocused ? PURPLE : theme.color.border} paddingX={1} flexShrink={0}>
         <Text color={PURPLE}>› </Text>
         <Text>{prompt}</Text>
         <Text inverse> </Text>
+        {streaming && !goalBannerText ? <Text color={theme.color.mutedFg} dimColor>{"  · streaming"}</Text> : null}
       </Box>
       <ModelStatus
         provider={modelState.provider}
@@ -3065,6 +4322,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         draftChatActive={draftChatActive}
         contextPercent={contextPercent}
         tokenSummary={tokenSummary}
+        statusLineText={statusLineText}
+        vimMode={vimModeEnabled && !hideVimModeIndicator ? vimMode : null}
       />
       <FooterControls
         drawerOpen={drawerOpen}

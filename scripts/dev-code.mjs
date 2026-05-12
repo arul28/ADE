@@ -8,6 +8,7 @@ import {
   ensureRuntime,
   resolveDevSocketPath,
   resolveProjectRoot,
+  resolveWorkspaceRoot,
   run,
 } from "./dev-shared.mjs";
 
@@ -21,7 +22,8 @@ function usage() {
     "Options:",
     "  --auto                     Start dev runtime if missing. Default.",
     "  --attach                   Require an existing dev runtime.",
-    "  --project-root <path>      Project root. Defaults to this checkout.",
+    "  --project-root <path>      ADE project data root. Defaults to the primary checkout for ADE worktrees.",
+    "  --workspace-root <path>    Source checkout/workspace root. Defaults to this checkout.",
     "  --socket <path>            Dev runtime socket. Defaults to /tmp/ade-runtime-dev.sock.",
     "  --skip-runtime-build       Launch without rebuilding apps/ade-cli.",
     "  -h, --help                 Show this help.",
@@ -32,6 +34,7 @@ function parseArgs(argv) {
   const options = {
     mode: "auto",
     projectRoot: null,
+    workspaceRoot: null,
     socketPath: null,
     skipRuntimeBuild: false,
     rest: [],
@@ -60,7 +63,20 @@ function parseArgs(argv) {
       continue;
     }
     if (arg.startsWith("--project-root=")) {
-      options.projectRoot = arg.slice("--project-root=".length);
+      const value = arg.slice("--project-root=".length).trim();
+      if (!value) throw new Error("--project-root requires a path.");
+      options.projectRoot = value;
+      continue;
+    }
+    if (arg === "--workspace-root") {
+      options.workspaceRoot = argv[++i] ?? null;
+      if (!options.workspaceRoot) throw new Error("--workspace-root requires a path.");
+      continue;
+    }
+    if (arg.startsWith("--workspace-root=")) {
+      const value = arg.slice("--workspace-root=".length).trim();
+      if (!value) throw new Error("--workspace-root requires a path.");
+      options.workspaceRoot = value;
       continue;
     }
     if (arg === "--socket") {
@@ -81,6 +97,7 @@ function parseArgs(argv) {
   return {
     ...options,
     projectRoot: resolveProjectRoot(options.projectRoot),
+    workspaceRoot: resolveWorkspaceRoot(options.workspaceRoot),
     socketPath: resolveDevSocketPath(options.socketPath),
   };
 }
@@ -89,6 +106,7 @@ async function main() {
   const options = parseArgs(process.argv.slice(2));
   process.stdout.write(`[ade] code mode: ${options.mode}\n`);
   process.stdout.write(`[ade] project root: ${options.projectRoot}\n`);
+  process.stdout.write(`[ade] workspace root: ${options.workspaceRoot}\n`);
   process.stdout.write(`[ade] runtime socket: ${options.socketPath}\n`);
   await buildRuntimeCli(options.skipRuntimeBuild);
   if (options.mode === "attach") {
@@ -106,7 +124,7 @@ async function main() {
       "--project-root",
       options.projectRoot,
       "--workspace-root",
-      options.projectRoot,
+      options.workspaceRoot,
       "--socket",
       options.socketPath,
       "--require-socket",

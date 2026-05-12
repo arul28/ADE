@@ -4,12 +4,40 @@ async function navigateToLanes(ctx: ScenarioContext): Promise<void> {
   ctx.mark("nav.lanes.start");
   await ctx.navigate("/lanes");
   const present = await ctx.waitFor(
-    () => document.querySelector("[data-route='lanes'], main") !== null,
+    () => document.querySelector("[data-route='lanes']") !== null,
     8_000
   );
   ctx.mark("nav.lanes.done");
   ctx.measure("nav.lanes", "nav.lanes.start", "nav.lanes.done");
   ctx.assert(present, "lanes route did not render main content");
+}
+
+function isScrollableElement(element: HTMLElement): boolean {
+  const style = window.getComputedStyle(element);
+  const overflowY = `${style.overflowY} ${style.overflow}`;
+  return /(auto|scroll)/.test(overflowY) && element.scrollHeight > element.clientHeight;
+}
+
+function findLanesScrollable(): HTMLElement | null {
+  const candidates = [
+    ...document.querySelectorAll<HTMLElement>(
+      "[data-scrollable], [data-route='lanes'] [class*='overflow'], main [class*='overflow']",
+    ),
+  ];
+  for (const candidate of candidates) {
+    if (isScrollableElement(candidate)) return candidate;
+  }
+
+  let current = document.querySelector<HTMLElement>("[data-route='lanes']") ?? document.querySelector<HTMLElement>("main");
+  while (current) {
+    if (isScrollableElement(current)) return current;
+    current = current.parentElement;
+  }
+
+  const scrollingElement = document.scrollingElement;
+  return scrollingElement instanceof HTMLElement && isScrollableElement(scrollingElement)
+    ? scrollingElement
+    : null;
 }
 
 registerScenario({
@@ -34,7 +62,10 @@ registerScenario({
       const tag = route.replace(/\W+/g, "_") + "_" + i;
       ctx.mark(`switch.${tag}.start`);
       await ctx.navigate(route);
-      await ctx.waitFor(() => document.querySelector("main") !== null, 5_000);
+      await ctx.waitFor(
+        () => document.querySelector(route === "/lanes" ? "[data-route='lanes']" : "main") !== null,
+        5_000,
+      );
       ctx.mark(`switch.${tag}.done`);
       ctx.measure(`switch.${tag}`, `switch.${tag}.start`, `switch.${tag}.done`);
       await ctx.idle(300);
@@ -76,9 +107,7 @@ registerScenario({
   run: async (ctx) => {
     await navigateToLanes(ctx);
     await ctx.idle(2_000);
-    const scrollable =
-      document.querySelector<HTMLElement>("[data-scrollable], main [class*='overflow']") ||
-      document.querySelector<HTMLElement>("main");
+    const scrollable = findLanesScrollable();
     if (!scrollable) {
       ctx.assert(false, "no scrollable container found in lanes");
       return;

@@ -15,7 +15,15 @@ import {
 function makeStatus(overrides: Partial<AiSettingsStatus> & Record<string, unknown> = {}): AiSettingsStatus {
   return {
     mode: "guest",
-    availableProviders: { claude: false, codex: false, cursor: false, droid: false },
+    availableProviders: {
+      claude: {
+        binary: { present: false, source: "missing", path: null },
+        auth: { ready: false, mode: "none", detail: null },
+      },
+      codex: false,
+      cursor: false,
+      droid: false,
+    },
     models: { claude: [], codex: [], cursor: [], droid: [] },
     features: [],
     detectedAuth: [],

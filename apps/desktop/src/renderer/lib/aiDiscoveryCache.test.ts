@@ -3,6 +3,14 @@ import { getAgentChatModelsCached, getAiStatusCached, invalidateAiDiscoveryCache
 
 const getStatusMock = vi.fn();
 const modelsMock = vi.fn();
+const CLAUDE_READY = {
+  binary: { present: true, source: "path" as const, path: "/usr/local/bin/claude" },
+  auth: { ready: true, mode: "oauth" as const, detail: null },
+};
+const CLAUDE_UNAVAILABLE = {
+  binary: { present: false, source: "missing" as const, path: null },
+  auth: { ready: false, mode: "none", detail: null },
+};
 
 describe("aiDiscoveryCache", () => {
   beforeEach(() => {
@@ -35,7 +43,7 @@ describe("aiDiscoveryCache", () => {
 
     const first = getAiStatusCached({ projectRoot: "/project/a" });
     const second = getAiStatusCached({ projectRoot: "/project/a" });
-    resolveStatus({ mode: "subscription", availableProviders: { claude: true, codex: true, cursor: false }, models: { claude: [], codex: [], cursor: [] }, features: [] });
+    resolveStatus({ mode: "subscription", availableProviders: { claude: CLAUDE_READY, codex: true, cursor: false }, models: { claude: [], codex: [], cursor: [] }, features: [] });
 
     await expect(first).resolves.toMatchObject({ mode: "subscription" });
     await expect(second).resolves.toMatchObject({ mode: "subscription" });
@@ -44,8 +52,8 @@ describe("aiDiscoveryCache", () => {
 
   it("keeps ai status cache entries isolated per project", async () => {
     getStatusMock
-      .mockResolvedValueOnce({ mode: "guest", availableProviders: { claude: false, codex: false, cursor: false }, models: { claude: [], codex: [], cursor: [] }, features: [] })
-      .mockResolvedValueOnce({ mode: "subscription", availableProviders: { claude: true, codex: false, cursor: false }, models: { claude: [], codex: [], cursor: [] }, features: [] });
+      .mockResolvedValueOnce({ mode: "guest", availableProviders: { claude: CLAUDE_UNAVAILABLE, codex: false, cursor: false }, models: { claude: [], codex: [], cursor: [] }, features: [] })
+      .mockResolvedValueOnce({ mode: "subscription", availableProviders: { claude: CLAUDE_READY, codex: false, cursor: false }, models: { claude: [], codex: [], cursor: [] }, features: [] });
 
     const projectA = await getAiStatusCached({ projectRoot: "/project/a" });
     const projectB = await getAiStatusCached({ projectRoot: "/project/b" });
@@ -71,7 +79,7 @@ describe("aiDiscoveryCache", () => {
   it("forwards explicit OpenCode inventory refresh requests", async () => {
     getStatusMock.mockResolvedValueOnce({
       mode: "subscription",
-      availableProviders: { claude: true, codex: true, cursor: false },
+      availableProviders: { claude: CLAUDE_READY, codex: true, cursor: false },
       models: { claude: [], codex: [], cursor: [] },
       features: [],
     });
@@ -92,7 +100,7 @@ describe("aiDiscoveryCache", () => {
 
     getStatusMock.mockResolvedValueOnce({
       mode: "subscription",
-      availableProviders: { claude: true, codex: false, cursor: false },
+      availableProviders: { claude: CLAUDE_READY, codex: false, cursor: false },
       models: { claude: [], codex: [], cursor: [] },
       features: [],
     });
@@ -109,7 +117,7 @@ describe("aiDiscoveryCache", () => {
   it("peekAiStatusCached still returns the previous value while a refresh is in flight", async () => {
     getStatusMock.mockResolvedValueOnce({
       mode: "guest",
-      availableProviders: { claude: false, codex: false, cursor: false },
+      availableProviders: { claude: CLAUDE_UNAVAILABLE, codex: false, cursor: false },
       models: { claude: [], codex: [], cursor: [] },
       features: [],
     });
@@ -131,7 +139,7 @@ describe("aiDiscoveryCache", () => {
 
     resolveNext({
       mode: "subscription",
-      availableProviders: { claude: true, codex: false, cursor: false },
+      availableProviders: { claude: CLAUDE_READY, codex: false, cursor: false },
       models: { claude: [], codex: [], cursor: [] },
       features: [],
     });
@@ -143,13 +151,13 @@ describe("aiDiscoveryCache", () => {
     getStatusMock
       .mockResolvedValueOnce({
         mode: "subscription",
-        availableProviders: { claude: true, codex: true, cursor: false },
+        availableProviders: { claude: CLAUDE_READY, codex: true, cursor: false },
         models: { claude: [], codex: [], cursor: [] },
         features: [],
       })
       .mockResolvedValueOnce({
         mode: "subscription",
-        availableProviders: { claude: true, codex: true, cursor: false },
+        availableProviders: { claude: CLAUDE_READY, codex: true, cursor: false },
         models: { claude: [], codex: [], cursor: [] },
         features: [],
         opencodeProviders: [{ id: "openai", name: "OpenAI", connected: true, modelCount: 1 }],

@@ -51,6 +51,7 @@ function resetStore() {
     projectTransitionError: null,
     laneSnapshots: [],
     lanes: [],
+    lanesLoading: false,
     selectedLaneId: null,
     focusedSessionId: null,
     theme: "dark",
@@ -321,6 +322,25 @@ describe("appStore", () => {
       });
       expect(window.ade.lanes.listSnapshots).not.toHaveBeenCalled();
       expect(useAppStore.getState().lanes).toEqual(lanes);
+    });
+
+    it("refreshLanes tracks loading while lane state is pending", async () => {
+      const lanes = [{ id: "lane-loading", name: "Lane loading" }] as any[];
+      let resolveLanes: (value: any[]) => void = () => {};
+      const pendingLanes = new Promise<any[]>((resolve) => {
+        resolveLanes = resolve;
+      });
+      (window.ade.lanes.list as any).mockReturnValueOnce(pendingLanes);
+
+      const refresh = useAppStore.getState().refreshLanes({ includeStatus: false });
+
+      expect(useAppStore.getState().lanesLoading).toBe(true);
+
+      resolveLanes(lanes);
+      await refresh;
+
+      expect(useAppStore.getState().lanes).toEqual(lanes);
+      expect(useAppStore.getState().lanesLoading).toBe(false);
     });
 
     it("refreshLanes can update runtime snapshots without recomputing lane git status", async () => {

@@ -229,7 +229,10 @@ function createRuntime() {
       getStatus: vi.fn(async () => ({
         mode: "subscription",
         availableProviders: {
-          claude: true,
+          claude: {
+            binary: { present: true, source: "path", path: "/usr/local/bin/claude" },
+            auth: { ready: true, mode: "oauth", detail: null },
+          },
           codex: true,
           cursor: false,
           droid: false,

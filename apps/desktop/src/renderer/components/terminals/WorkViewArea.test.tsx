@@ -269,10 +269,10 @@ describe("WorkViewArea", () => {
     expect(local.getByTestId("work-start-surface")).toBeTruthy();
     fireEvent.click(local.getByLabelText("Minimize pane"));
 
-    expect(pane().className).toContain("minimized");
+    expect(pane().getAttribute("data-minimized")).toBe("true");
     fireEvent.click(local.getByLabelText("Expand pane"));
 
-    expect(pane().className).not.toContain("minimized");
+    expect(pane().getAttribute("data-minimized")).toBe("false");
     expect(local.getByTestId("work-start-surface")).toBeTruthy();
     expect(local.getByLabelText("Minimize pane")).toBeTruthy();
   });
@@ -320,10 +320,14 @@ describe("WorkViewArea", () => {
       />,
     );
 
-    for (const closeTab of screen.getAllByTitle("Close tab")) {
-      fireEvent.click(closeTab);
-    }
+    const closeTabs = Array.from(
+      document.querySelectorAll<HTMLElement>('[data-close-tab-session-id="session-1"]'),
+    );
+    expect(closeTabs.length).toBeGreaterThan(0);
+    const closeTab = closeTabs.find((node) => node.closest('[role="tab"]')) ?? closeTabs[closeTabs.length - 1]!;
+    fireEvent.click(closeTab);
 
+    expect(onCloseItem).toHaveBeenCalledTimes(1);
     expect(onCloseItem).toHaveBeenCalledWith("session-1");
   });
 

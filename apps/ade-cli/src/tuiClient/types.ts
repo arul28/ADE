@@ -103,6 +103,19 @@ export type SetupPaneRow = {
   cyclable?: boolean;
 };
 
+export type SubagentPaneTab = "subagents" | "teammates" | "background";
+
+export type SubagentSnapshot = {
+  id: string;
+  name: string;
+  kind: "subagent" | "teammate" | "background";
+  status: "running" | "completed" | "failed" | "stopped";
+  summary: string;
+  tokens?: number;
+  durationMs?: number;
+  lastToolName?: string;
+};
+
 export type RightPaneContent =
   | { kind: "empty" }
   | { kind: "help"; title: string }
@@ -121,6 +134,7 @@ export type RightPaneContent =
   | { kind: "diff"; title: string; files: Array<{ path: string; additions?: number; deletions?: number; body?: string }> }
   | { kind: "models"; models: AgentChatModelInfo[]; activeModelId: string | null }
   | { kind: "effort"; efforts: string[]; activeEffort: string | null }
+  | { kind: "subagents"; tab: SubagentPaneTab; snapshots: SubagentSnapshot[] }
   | {
       kind: "new-chat-setup";
       laneId: string;

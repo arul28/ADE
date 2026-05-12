@@ -30,7 +30,18 @@ export function getUnavailableAiStatus(): AiSettingsStatus {
   return {
     mode: "guest",
     availableProviders: {
-      claude: false,
+      claude: {
+        binary: {
+          present: false,
+          source: "missing",
+          path: null,
+        },
+        auth: {
+          ready: false,
+          mode: "none",
+          detail: "AI integration service unavailable.",
+        },
+      },
       codex: false,
       cursor: false,
       droid: false,

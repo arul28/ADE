@@ -1,7 +1,7 @@
 /**
- * Synthetic tool_result generation for the Claude V2 SDK streaming path.
+ * Synthetic tool_result generation for the Claude SDK streaming path.
  *
- * The Claude V2 SDK executes tools internally and only surfaces `assistant`
+ * The Claude SDK executes tools internally and only surfaces `assistant`
  * messages in the stream — tool results are opaque. The proof observer relies
  * on `tool_result` events to auto-ingest screenshots and other artifacts into
  * the proof drawer.

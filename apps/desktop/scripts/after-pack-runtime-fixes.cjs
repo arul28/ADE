@@ -81,20 +81,35 @@ function removeIfPresent(rootPath, relativePath) {
   return true;
 }
 
+function claudeNativePackagesToPrune(platform) {
+  const byPlatform = {
+    darwin: [
+      path.join("node_modules", "@anthropic-ai", "claude-agent-sdk-darwin-arm64"),
+      path.join("node_modules", "@anthropic-ai", "claude-agent-sdk-darwin-x64"),
+    ],
+    linux: [
+      path.join("node_modules", "@anthropic-ai", "claude-agent-sdk-linux-arm64"),
+      path.join("node_modules", "@anthropic-ai", "claude-agent-sdk-linux-arm64-musl"),
+      path.join("node_modules", "@anthropic-ai", "claude-agent-sdk-linux-x64"),
+      path.join("node_modules", "@anthropic-ai", "claude-agent-sdk-linux-x64-musl"),
+    ],
+    win32: [
+      path.join("node_modules", "@anthropic-ai", "claude-agent-sdk-win32-arm64"),
+      path.join("node_modules", "@anthropic-ai", "claude-agent-sdk-win32-x64"),
+    ],
+  };
+  return Object.entries(byPlatform)
+    .filter(([targetPlatform]) => targetPlatform !== platform)
+    .flatMap(([, packages]) => packages);
+}
+
 function pruneUnneededRuntimePayload(runtimeRoot, platform) {
   // afterPack runs per-arch on darwin; pruning here would race the
   // electron-universal merge and ENOENT on deleted paths. Skip on darwin
   // until a post-merge prune step exists.
   if (platform === "darwin") return;
   const commonNonRuntimePayload = [
-    path.join("node_modules", "@anthropic-ai", "claude-agent-sdk-darwin-arm64"),
-    path.join("node_modules", "@anthropic-ai", "claude-agent-sdk-darwin-x64"),
-    path.join("node_modules", "@anthropic-ai", "claude-agent-sdk-linux-arm64"),
-    path.join("node_modules", "@anthropic-ai", "claude-agent-sdk-linux-arm64-musl"),
-    path.join("node_modules", "@anthropic-ai", "claude-agent-sdk-linux-x64"),
-    path.join("node_modules", "@anthropic-ai", "claude-agent-sdk-linux-x64-musl"),
-    path.join("node_modules", "@anthropic-ai", "claude-agent-sdk-win32-arm64"),
-    path.join("node_modules", "@anthropic-ai", "claude-agent-sdk-win32-x64"),
+    ...claudeNativePackagesToPrune(platform),
     path.join("node_modules", "node-pty", "deps"),
     path.join("node_modules", "node-pty", "src"),
   ];

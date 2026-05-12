@@ -5,6 +5,7 @@ import { join } from "node:path";
 export type PerfEventKind =
   | "scenarioStart"
   | "scenarioEnd"
+  | "manualStep"
   | "mark"
   | "measure"
   | "webVital"
@@ -35,7 +36,14 @@ let active: PerfRunConfig | null = null;
 
 function readEnvRunId(): string | null {
   const raw = process.env.ADE_PERF_RUN_ID;
-  return raw && raw.length > 0 ? raw : null;
+  if (!raw || raw.length === 0) return null;
+  const sanitized = raw
+    .trim()
+    .replace(/[^A-Za-z0-9._-]/g, "_")
+    .replace(/^\.+/, "")
+    .replace(/\.\.+/g, ".")
+    .slice(0, 120);
+  return sanitized.length > 0 ? sanitized : null;
 }
 
 function readEnvScenario(): string | null {
@@ -83,6 +91,12 @@ export function getActiveRun(): PerfRunConfig | null {
 
 export function isRunActive(): boolean {
   return active !== null;
+}
+
+export function finishPerfRun(runId: string): void {
+  if (active?.runId === runId) {
+    active = null;
+  }
 }
 
 export function appendEvent(event: PerfEvent): void {

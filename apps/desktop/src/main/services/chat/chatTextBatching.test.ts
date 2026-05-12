@@ -332,14 +332,6 @@ describe("chatTextBatching", () => {
       })).toBe(false);
     });
 
-    it("does not flush for plan_text events", () => {
-      expect(shouldFlushBufferedAssistantTextForEvent({
-        type: "plan_text",
-        text: "- step one",
-        turnId: "turn-1",
-      })).toBe(false);
-    });
-
     it("does not flush for subagent lifecycle events", () => {
       expect(shouldFlushBufferedAssistantTextForEvent({
         type: "subagent_started",
@@ -442,6 +434,35 @@ describe("chatTextBatching", () => {
       expect(shouldFlushBufferedAssistantTextForEvent({
         type: "error",
         message: "Something failed",
+        turnId: "turn-1",
+      } as any)).toBe(true);
+    });
+
+    it("does not flush for plan events that carry streaming text", () => {
+      expect(shouldFlushBufferedAssistantTextForEvent({
+        type: "plan",
+        steps: [],
+        streamingText: "partial",
+        state: "delta",
+        turnId: "turn-1",
+      } as any)).toBe(false);
+    });
+
+    it("does not flush for plan item/started events with empty streaming text", () => {
+      expect(shouldFlushBufferedAssistantTextForEvent({
+        type: "plan",
+        steps: [],
+        streamingText: "",
+        state: "active",
+        turnId: "turn-1",
+      } as any)).toBe(false);
+    });
+
+    it("flushes for structured plan updates without streaming text", () => {
+      expect(shouldFlushBufferedAssistantTextForEvent({
+        type: "plan",
+        steps: [{ text: "step", status: "pending" }],
+        state: "updated",
         turnId: "turn-1",
       } as any)).toBe(true);
     });

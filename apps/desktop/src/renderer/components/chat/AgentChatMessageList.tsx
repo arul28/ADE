@@ -22,7 +22,6 @@ import {
   Note,
   ChatCircleText,
   Info,
-  Lightning,
   MagnifyingGlass,
   Globe,
   ShieldCheck,
@@ -91,6 +90,10 @@ import {
 } from "./chatUserMinimap.logic";
 import { readPendingInputRequest, buildLegacyPendingInputFromApprovalEvent } from "./pendingInput";
 import type { PendingInputQuestion, PendingInputRequest } from "../../../shared/types";
+import { CodexPlanCard } from "./codex/CodexPlanCard";
+import { CodexImageGenerationCard } from "./codex/CodexImageGenerationCard";
+import { CodexImageViewLine } from "./codex/CodexImageViewLine";
+import { CodexContextCompactionChip } from "./codex/CodexContextCompactionChip";
 
 const NAVIGATION_SURFACES = new Set(["work", "missions", "lanes", "cto"]);
 type PendingInputResolution = Extract<AgentChatEvent, { type: "pending_input_resolved" }>["resolution"];
@@ -695,6 +698,53 @@ function chatMarkdownUrlTransform(value: string): string {
     return value;
   }
   return defaultUrlTransform(value);
+}
+
+type WebSearchActionListProps = {
+  actions: NonNullable<Extract<AgentChatEvent, { type: "web_search" }>["actions"]>;
+  isFailed: boolean;
+};
+
+function WebSearchActionList({ actions, isFailed }: WebSearchActionListProps) {
+  const [expanded, setExpanded] = useState(false);
+  const HEAD = 8;
+  const showAll = expanded || actions.length <= HEAD;
+  const visible = showAll ? actions : actions.slice(0, HEAD);
+  const hiddenCount = showAll ? 0 : actions.length - visible.length;
+  return (
+    <div className="mt-2 flex flex-wrap gap-1.5">
+      {visible.map((action, index) => (
+        <span
+          key={`${action.type}:${action.url ?? action.query ?? index}`}
+          className={cn(
+            "inline-flex max-w-full items-center gap-1 rounded-md border px-2 py-1 text-[length:calc(var(--chat-font-size)*12/14)] leading-tight",
+            isFailed
+              ? "border-red-400/15 bg-red-500/[0.06] text-red-100/75"
+              : "border-cyan-400/15 bg-cyan-500/[0.05] text-cyan-100/80",
+          )}
+          title={action.url ?? action.query ?? action.title ?? action.type}
+        >
+          <span className={cn("shrink-0", isFailed ? "text-red-200/55" : "text-cyan-200/65")}>
+            {action.type}
+          </span>
+          {action.title || action.url || action.query ? (
+            <span className="truncate text-fg/72">
+              {action.title ?? action.url ?? action.query}
+            </span>
+          ) : null}
+        </span>
+      ))}
+      {hiddenCount > 0 ? (
+        <button
+          type="button"
+          onClick={() => setExpanded(true)}
+          className="inline-flex items-center rounded-md border border-cyan-400/15 bg-cyan-500/[0.04] px-2 py-1 text-[length:calc(var(--chat-font-size)*12/14)] leading-tight text-cyan-100/70 transition-colors hover:bg-cyan-500/[0.08]"
+        >
+          +{hiddenCount} more
+        </button>
+      ) : null}
+    </div>
+  );
 }
 
 function InlineDisclosureRow({
@@ -1925,6 +1975,7 @@ function renderEvent(
     sessionId?: string | null;
     runtimeName?: string | null;
     onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
+    onRewindFiles?: (request: { messageId: string; timestamp: string; text: string }) => void;
   }
 ) {
   const event = envelope.event;
@@ -1960,7 +2011,22 @@ function renderEvent(
               {deliveryChip.label}
             </span>
           ) : null}
-          <div className="absolute right-2 top-1.5 opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100">
+          <div className="absolute right-2 top-1.5 flex items-center gap-1 opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100">
+            {event.messageId && options?.onRewindFiles ? (
+              <button
+                type="button"
+                className="inline-flex h-5 w-5 items-center justify-center rounded text-white/45 transition-colors hover:bg-amber-300/12 hover:text-amber-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-300/45"
+                title="Undo the file changes the agent made after this message. Conversation stays intact."
+                aria-label="Undo file changes after this message"
+                onClick={() => options.onRewindFiles?.({
+                  messageId: event.messageId!,
+                  timestamp: envelope.timestamp,
+                  text: event.displayText?.trim() || event.text,
+                })}
+              >
+                <span aria-hidden>↶</span>
+              </button>
+            ) : null}
             <MessageCopyButton value={event.text} />
           </div>
           {(() => {
@@ -2066,43 +2132,7 @@ function renderEvent(
 
   /* ── Plan ── */
   if (event.type === "plan") {
-    const completedCount = event.steps.filter((step) => step.status === "completed").length;
-    return (
-      <InlineDisclosureRow
-        summary={
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/52">
-            <span className="inline-flex h-1.5 w-1.5 rounded-full bg-violet-400/80" />
-            <ListChecks size={11} weight="regular" className="text-fg/34" />
-            <span className="font-medium text-fg/62">Plan updated</span>
-            <span className="text-fg/76">{completedCount}/{event.steps.length || 0} complete</span>
-            {event.steps[0]?.text ? <span className="truncate text-[length:calc(var(--chat-font-size)*10/14)] text-fg/34">{summarizeInlineText(event.steps[0].text, 96)}</span> : null}
-          </div>
-        }
-      >
-        <div className="space-y-1.5">
-          {event.steps.length ? (
-            event.steps.map((step, index) => (
-              <div key={`${step.text}:${index}`} className="flex items-start gap-2.5 px-1 py-1">
-                <div className="mt-0.5 flex-shrink-0">
-                  <PlanStepIcon status={step.status} />
-                </div>
-                <div className={cn(
-                  "flex-1 text-[length:calc(var(--chat-font-size)*12/14)]",
-                  step.status === "completed" ? "text-fg/45 line-through decoration-fg/15" : "text-fg/80"
-                )}>
-                  {step.text}
-                </div>
-              </div>
-            ))
-          ) : (
-            <div className="font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-muted-fg/40">No plan steps yet.</div>
-          )}
-        </div>
-        {event.explanation ? (
-          <div className="mt-2 border-t border-white/[0.05] pt-2 text-[length:calc(var(--chat-font-size)*11/14)] text-muted-fg/50">{event.explanation}</div>
-        ) : null}
-      </InlineDisclosureRow>
-    );
+    return <CodexPlanCard event={event} />;
   }
 
   /* ── TODO Update ── */
@@ -2220,10 +2250,21 @@ function renderEvent(
               <MagnifyingGlass size={12} weight="bold" className="mr-1.5 inline text-fg/30" />
               {event.query}
             </div>
+            {event.actions?.length ? (
+              <WebSearchActionList actions={event.actions} isFailed={isFailed} />
+            ) : null}
           </div>
         </div>
       </motion.div>
     );
+  }
+
+  if (event.type === "codex_image_generation") {
+    return <CodexImageGenerationCard event={event} />;
+  }
+
+  if (event.type === "codex_image_view") {
+    return <CodexImageViewLine event={event} />;
   }
 
   /* ── Auto Approval Review (Guardian) ── */
@@ -2245,26 +2286,6 @@ function renderEvent(
         {event.review ? (
           <span className="flex-1 truncate text-[length:calc(var(--chat-font-size)*11/14)] text-fg/45">{event.review}</span>
         ) : null}
-      </div>
-    );
-  }
-
-  /* ── Plan Text (streaming plan delta) ── */
-  if (event.type === "plan_text") {
-    return (
-      <div className="relative overflow-hidden rounded-xl border border-amber-500/8 bg-gradient-to-br from-amber-950/15 via-[#0d0d10] to-[#0d0d10]">
-        <div className="h-px w-full bg-gradient-to-r from-transparent via-amber-400/20 to-transparent" />
-        <div className="px-4 py-3">
-          <div className="mb-2 flex items-center gap-2">
-            <ListChecks size={13} weight="bold" className="text-amber-400/50" />
-            <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.18em] text-amber-300/45">
-              Plan
-            </span>
-          </div>
-          <div className="prose prose-invert prose-sm min-w-0 max-w-full text-[length:calc(var(--chat-font-size)*12/14)] leading-relaxed text-fg/70">
-            <MarkdownBlock markdown={event.text} onOpenWorkspacePath={options?.onOpenWorkspacePath} />
-          </div>
-        </div>
       </div>
     );
   }
@@ -2426,34 +2447,65 @@ function renderEvent(
     );
   }
 
-  /* ── Context Compact ── */
+  /* ── Context Compaction (new variant) ── */
+  if (event.type === "codex_context_compaction") {
+    return <CodexContextCompactionChip event={event} timestamp={envelope.timestamp} />;
+  }
+
+  /* ── Legacy Context Compact (kept for any pre-A.3 transcripts) ── */
   if (event.type === "context_compact") {
-    const isAuto = event.trigger === "auto";
-    const freedLabel = event.preTokens != null ? `~${formatTokenCount(event.preTokens)} tokens freed` : null;
     return (
-      <div className="my-2 flex items-center gap-3 py-1">
-        <div className="h-px flex-1 bg-gradient-to-r from-transparent via-amber-400/15 to-transparent" />
-        <div className="inline-flex items-center gap-2 rounded-lg border border-amber-400/12 bg-amber-500/[0.04] px-3 py-1.5 shadow-[0_0_12px_-4px_rgba(245,158,11,0.08)]">
-          <div className="flex h-4 w-4 items-center justify-center rounded-full bg-amber-400/10">
-            <Lightning size={9} weight="fill" className="text-amber-400/70" />
-          </div>
-          <span className="font-mono text-[length:calc(var(--chat-font-size)*10/14)] font-medium tracking-wide text-amber-300/60">
-            Context compacted
+      <CodexContextCompactionChip
+        event={{
+          type: "codex_context_compaction",
+          turnId: event.turnId ?? "",
+          state: "completed",
+          trigger: event.trigger,
+        }}
+        timestamp={envelope.timestamp}
+      />
+    );
+  }
+
+  /* ── Context Usage ── */
+  if (event.type === "context_usage") {
+    const usage = event.usage;
+    const totalLabel = formatTokenCount(usage.totalTokens) ?? "0";
+    const maxLabel = formatTokenCount(usage.maxTokens) ?? "0";
+    const percent = Math.max(0, Math.min(100, usage.percentage));
+    const categories = usage.categories.length ? usage.categories : [];
+    return (
+      <div className="w-fit max-w-[min(100%,42rem)] rounded-lg border border-cyan-300/14 bg-cyan-500/[0.035] px-3.5 py-3 font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-cyan-50/78">
+        <div className="flex flex-wrap items-center gap-2">
+          <Brain size={13} weight="regular" className="text-cyan-200/70" />
+          <span className="font-medium text-cyan-50/90">Context usage</span>
+          <span className="font-mono text-[length:calc(var(--chat-font-size)*10/14)] text-cyan-100/50">
+            {totalLabel} / {maxLabel} tokens · {percent.toFixed(0)}%
           </span>
-          {freedLabel ? (
-            <>
-              <span className="text-amber-400/20">&middot;</span>
-              <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-amber-300/40">{freedLabel}</span>
-            </>
-          ) : null}
-          <span className={cn(
-            "rounded-md px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*8/14)] font-bold uppercase tracking-widest",
-            isAuto ? "bg-amber-500/8 text-amber-300/35" : "bg-violet-500/8 text-violet-300/40",
-          )}>
-            {isAuto ? "auto" : "manual"}
-          </span>
+          {usage.model ? <span className="rounded-md border border-cyan-200/10 px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-cyan-100/45">{usage.model}</span> : null}
         </div>
-        <div className="h-px flex-1 bg-gradient-to-r from-transparent via-amber-400/15 to-transparent" />
+        <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-black/25">
+          <div className="h-full rounded-full bg-cyan-300/65" style={{ width: `${percent}%` }} />
+        </div>
+        <div className="mt-3 space-y-1.5">
+          {categories.map((category) => {
+            const categoryPercent = Math.max(0, Math.min(100, category.percentage));
+            return (
+              <div key={`${category.name}:${category.tokens}`} className="grid grid-cols-[minmax(8rem,1fr)_auto_4rem] items-center gap-3">
+                <span className="truncate text-cyan-50/74" title={category.name}>{category.name}</span>
+                <span className="font-mono text-cyan-100/50">{formatTokenCount(category.tokens) ?? "0"}</span>
+                <span className="text-right font-mono text-cyan-100/42">{categoryPercent.toFixed(categoryPercent < 10 && categoryPercent > 0 ? 1 : 0)}%</span>
+              </div>
+            );
+          })}
+        </div>
+        {(usage.memoryFiles?.length || usage.mcpTools?.length) ? (
+          <div className="mt-3 border-t border-cyan-100/10 pt-2 font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-cyan-100/40">
+            {usage.memoryFiles?.length ? <span>{usage.memoryFiles.length} memory file{usage.memoryFiles.length === 1 ? "" : "s"}</span> : null}
+            {usage.memoryFiles?.length && usage.mcpTools?.length ? <span> · </span> : null}
+            {usage.mcpTools?.length ? <span>{usage.mcpTools.length} MCP tool{usage.mcpTools.length === 1 ? "" : "s"}</span> : null}
+          </div>
+        ) : null}
       </div>
     );
   }
@@ -2488,6 +2540,9 @@ function renderEvent(
       file_persist: { border: "border-emerald-500/18", bg: "bg-emerald-500/[0.06]", text: "text-emerald-300", icon: Note },
       memory: { border: "border-cyan-500/18", bg: "bg-cyan-500/[0.06]", text: "text-cyan-300", icon: MagnifyingGlass },
       info: { border: "border-border/14", bg: "bg-surface-recessed/70", text: "text-muted-fg/55", icon: Note },
+      warning: { border: "border-amber-500/18", bg: "bg-amber-500/[0.06]", text: "text-amber-300", icon: Warning },
+      error: { border: "border-red-500/18", bg: "bg-red-500/[0.06]", text: "text-red-300", icon: Warning },
+      config: { border: "border-border/14", bg: "bg-surface-recessed/70", text: "text-muted-fg/55", icon: Note },
     };
     const style = kindStyles[event.noticeKind] ?? kindStyles.info!;
     const NoticeIcon = style.icon;
@@ -3328,6 +3383,7 @@ type EventRowProps = {
   onReviewChanges?: () => void;
   onInsertDraft?: (text: string) => void;
   onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
+  onRewindFiles?: (request: { messageId: string; timestamp: string; text: string }) => void;
   respondingApprovalIds?: Set<string>;
   pendingApprovalIds?: Set<string>;
   resolvedInputStates?: Map<string, PendingInputResolution>;
@@ -3353,6 +3409,7 @@ const EventRow = React.memo(function EventRow({
   onReviewChanges,
   onInsertDraft,
   onRevealChatTerminal,
+  onRewindFiles,
   respondingApprovalIds,
   pendingApprovalIds,
   resolvedInputStates,
@@ -3410,6 +3467,7 @@ const EventRow = React.memo(function EventRow({
             sessionId,
             runtimeName,
             onRevealChatTerminal,
+            onRewindFiles,
           })}
     </div>
   );
@@ -3570,6 +3628,7 @@ export function AgentChatMessageList({
   sessionId,
   onInsertDraft,
   onRevealChatTerminal,
+  onRewindFiles,
   sessionEnded = false,
 }: {
   events: AgentChatEventEnvelope[];
@@ -3582,6 +3641,7 @@ export function AgentChatMessageList({
   onOpenWorkspacePath?: (path: string, laneId?: string | null) => void;
   onInsertDraft?: (text: string) => void;
   onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
+  onRewindFiles?: (request: { messageId: string; timestamp: string; text: string }) => void;
   respondingApprovalIds?: Set<string>;
   pendingApprovalIds?: Set<string>;
   laneId?: string | null;
@@ -3995,6 +4055,7 @@ export function AgentChatMessageList({
           onReviewChanges={handleReviewChanges}
           onInsertDraft={onInsertDraft}
           onRevealChatTerminal={onRevealChatTerminal}
+          onRewindFiles={onRewindFiles}
           respondingApprovalIds={respondingApprovalIds}
           pendingApprovalIds={pendingApprovalIds}
           resolvedInputStates={resolvedInputStates}
@@ -4024,6 +4085,7 @@ export function AgentChatMessageList({
         onReviewChanges={handleReviewChanges}
         onInsertDraft={onInsertDraft}
         onRevealChatTerminal={onRevealChatTerminal}
+        onRewindFiles={onRewindFiles}
         respondingApprovalIds={respondingApprovalIds}
         pendingApprovalIds={pendingApprovalIds}
         resolvedInputStates={resolvedInputStates}
@@ -4032,7 +4094,7 @@ export function AgentChatMessageList({
         runtimeName={runtimeName}
       />
     );
-  }, [activeTurnId, assistantLabel, surfaceMode, surfaceProfile, groupedRows, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onInsertDraft, onRevealChatTerminal, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, laneId, sessionId, sessionEnded, runtimeName]);
+  }, [activeTurnId, assistantLabel, surfaceMode, surfaceProfile, groupedRows, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onInsertDraft, onRevealChatTerminal, onRewindFiles, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, laneId, sessionId, sessionEnded, runtimeName]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {

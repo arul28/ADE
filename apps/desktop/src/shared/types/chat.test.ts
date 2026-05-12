@@ -108,4 +108,17 @@ describe("mergeAttachments", () => {
     const result = mergeAttachments(current, incoming);
     expect(result.map((a) => a.path)).toEqual(["/first.ts", "/second.ts", "/third.ts"]);
   });
+
+  it("deduplicates image-url attachments by path field", () => {
+    const current: AgentChatFileRef[] = [
+      { path: "https://example.com/old.png", type: "image-url", url: "https://example.com/old.png" },
+    ];
+    const incoming: AgentChatFileRef[] = [
+      { path: "https://example.com/old.png", type: "image-url", url: "https://example.com/old.png?cache=1" },
+    ];
+
+    const result = mergeAttachments(current, incoming);
+    expect(result).toHaveLength(1);
+    expect(result[0]).toEqual(incoming[0]);
+  });
 });

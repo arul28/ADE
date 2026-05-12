@@ -40,12 +40,16 @@ function buildStatus(
   claudeRuntimeAvailable: boolean,
   localModels: string[] = [],
   options?: {
+    claudeBinaryPresent?: boolean;
+    claudeAuthReady?: boolean;
     localRuntimeDetected?: boolean;
     localRuntimeAvailable?: boolean;
     localRuntimeHealth?: "ready" | "reachable" | "reachable_no_models" | "not_configured" | "unreachable";
     localRuntimeBlocker?: string | null;
   },
 ): AiSettingsStatus {
+  const claudeBinaryPresent = options?.claudeBinaryPresent ?? claudeRuntimeAvailable;
+  const claudeAuthReady = options?.claudeAuthReady ?? claudeRuntimeAvailable;
   const localRuntimeDetected = options?.localRuntimeDetected ?? localModels.length > 0;
   const localRuntimeAvailable = options?.localRuntimeAvailable ?? localModels.length > 0;
   const localRuntimeHealth =
@@ -62,7 +66,18 @@ function buildStatus(
   return {
     mode: "subscription",
     availableProviders: {
-      claude: claudeRuntimeAvailable,
+      claude: {
+        binary: {
+          present: claudeBinaryPresent,
+          source: claudeBinaryPresent ? "bundled" : "missing",
+          path: claudeBinaryPresent ? "/Users/arul/ADE/apps/desktop/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude" : null,
+        },
+        auth: {
+          ready: claudeAuthReady,
+          mode: claudeAuthReady ? "oauth" : "none",
+          detail: claudeAuthReady ? null : "Sign in to use Claude",
+        },
+      },
       codex: true,
       cursor: false,
       droid: false,
@@ -173,7 +188,10 @@ describe("ProvidersSection", () => {
       ai: {
         getStatus: vi.fn()
           .mockResolvedValueOnce(buildStatus(true, ["lmstudio/meta-llama-3.1-70b-instruct", "lmstudio/qwen2.5-coder:32b"]))
-          .mockResolvedValueOnce(buildStatus(false, ["lmstudio/meta-llama-3.1-70b-instruct", "lmstudio/qwen2.5-coder:32b"])),
+          .mockResolvedValueOnce(buildStatus(false, ["lmstudio/meta-llama-3.1-70b-instruct", "lmstudio/qwen2.5-coder:32b"], {
+            claudeBinaryPresent: true,
+            claudeAuthReady: false,
+          })),
         listApiKeys: vi.fn().mockResolvedValue([]),
         storeApiKey: vi.fn().mockResolvedValue(undefined),
         deleteApiKey: vi.fn().mockResolvedValue(undefined),
@@ -224,7 +242,7 @@ describe("ProvidersSection", () => {
       refreshOpenCodeInventory: false,
     });
 
-    expect((await screen.findAllByText("/Users/arul/.local/bin/claude")).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText("/Users/arul/ADE/apps/desktop/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude")).length).toBeGreaterThan(0);
 
     act(() => {
       emitChatEvent?.({
@@ -243,10 +261,11 @@ describe("ProvidersSection", () => {
     }, { timeout: 2_000 });
 
     expect(await screen.findByText("Sign-In Required")).toBeTruthy();
-    expect(screen.getAllByText("/Users/arul/.local/bin/claude").length).toBeGreaterThan(0);
+    expect(screen.getByText("Sign in to use Claude")).toBeTruthy();
+    expect(screen.getAllByText("/Users/arul/ADE/apps/desktop/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude").length).toBeGreaterThan(0);
   });
 
-  it("shows Connected while the provider runtime is launchable", async () => {
+  it("shows Ready while the bundled Claude runtime is authenticated", async () => {
     render(<ProvidersSection />);
 
     await waitFor(() => {
@@ -254,8 +273,28 @@ describe("ProvidersSection", () => {
       expect(window.ade.ai.listApiKeys).toHaveBeenCalledTimes(1);
     });
 
-    expect((await screen.findAllByText("Connected")).length).toBeGreaterThan(0);
-    expect(screen.getAllByText("/Users/arul/.local/bin/claude").length).toBeGreaterThan(0);
+    expect((await screen.findAllByText("Ready")).length).toBeGreaterThan(0);
+    expect(screen.getByText("Bundled Claude Agent SDK runtime")).toBeTruthy();
+    expect(screen.getAllByText("/Users/arul/ADE/apps/desktop/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude").length).toBeGreaterThan(0);
+  });
+
+  it("shows Binary Missing when the Claude SDK native binary is unavailable", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(false, [], {
+      claudeBinaryPresent: false,
+      claudeAuthReady: false,
+    }));
+
+    render(<ProvidersSection />);
+
+    await waitFor(() => {
+      expect(window.ade.ai.getStatus).toHaveBeenCalledTimes(1);
+      expect(window.ade.ai.listApiKeys).toHaveBeenCalledTimes(1);
+    });
+
+    expect(await screen.findByText("Binary Missing")).toBeTruthy();
+    expect(screen.getByText("Claude unavailable (binary missing; should not happen with bundled install; run /doctor).")).toBeTruthy();
   });
 
   it("renders local runtime details and loaded local models", async () => {
@@ -295,7 +334,7 @@ describe("ProvidersSection", () => {
 
     expect(await current.findByText("Load a model")).toBeTruthy();
     expect(current.getByText("LM Studio is reachable, but no models are currently loaded.")).toBeTruthy();
-    expect(current.queryByText("Ready")).toBeNull();
+    expect(current.queryByText("LM Studio is reachable at http://localhost:1234. ADE can use 2 loaded models from this runtime (ready).")).toBeNull();
   });
 
   it("keeps Cursor API key setup in the Cursor runtime card and verifies on save", async () => {

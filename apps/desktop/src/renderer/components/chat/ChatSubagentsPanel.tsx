@@ -4,6 +4,7 @@ import {
   CheckCircle,
   ClockCounterClockwise,
   Copy,
+  X,
   XCircle,
   TreeStructure,
 } from "@phosphor-icons/react";
@@ -30,10 +31,14 @@ function formatDurationMs(value: number | null | undefined): string | null {
 }
 
 function summarizeRuntime(snapshot: ChatSubagentSnapshot): string | null {
+  const elapsedMs = snapshot.usage?.durationMs
+    ?? Math.max(0, Date.parse(snapshot.updatedAt) - Date.parse(snapshot.startedAt));
+  const tokenText = formatTokenCount(snapshot.usage?.totalTokens);
+  const durationText = formatDurationMs(elapsedMs);
   const parts = [
-    formatDurationMs(snapshot.usage?.durationMs),
+    tokenText ? `${tokenText} tok` : null,
+    durationText,
     snapshot.usage?.toolUses ? `${snapshot.usage.toolUses} tool${snapshot.usage.toolUses === 1 ? "" : "s"}` : null,
-    formatTokenCount(snapshot.usage?.totalTokens),
   ].filter((part): part is string => Boolean(part));
   return parts.length ? parts.join(" \u00b7 ") : null;
 }
@@ -100,17 +105,18 @@ function SubagentDetailView({
   const runtimeSummary = summarizeRuntime(snapshot);
   const [showAll, setShowAll] = useState(false);
   const [copied, setCopied] = useState(false);
+  const copyId = snapshot.agentId ?? snapshot.taskId;
 
   const visibleTimeline = showAll ? timeline : timeline.slice(-MAX_VISIBLE_TIMELINE);
   const hiddenCount = timeline.length - visibleTimeline.length;
 
   const handleCopy = useCallback(() => {
     if (typeof navigator !== "undefined" && navigator.clipboard) {
-      void navigator.clipboard.writeText(snapshot.taskId);
+      void navigator.clipboard.writeText(copyId);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     }
-  }, [snapshot.taskId]);
+  }, [copyId]);
 
   return (
     <div className="flex flex-col">
@@ -136,8 +142,13 @@ function SubagentDetailView({
       </div>
 
       {/* Runtime stats */}
-      {runtimeSummary || snapshot.background ? (
+      {runtimeSummary || snapshot.background || snapshot.agentType ? (
         <div className="flex items-center gap-2 px-3 py-1.5">
+          {snapshot.agentType ? (
+            <span className="rounded border border-white/[0.06] bg-white/[0.03] px-1.5 py-0.5 font-mono text-[9px] text-fg/35">
+              {snapshot.agentType}
+            </span>
+          ) : null}
           {snapshot.background ? (
             <span className="rounded border border-sky-400/12 bg-sky-500/[0.06] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-sky-300/55">
               bg
@@ -146,6 +157,12 @@ function SubagentDetailView({
           {runtimeSummary ? (
             <span className="text-[11px] text-fg/40">{runtimeSummary}</span>
           ) : null}
+        </div>
+      ) : null}
+
+      {snapshot.finalSummary ? (
+        <div className="mx-3 mt-2 rounded-md border border-emerald-400/10 bg-emerald-500/[0.035] px-2.5 py-2 text-[12px] text-emerald-100/65">
+          {snapshot.finalSummary}
         </div>
       ) : null}
 
@@ -214,7 +231,7 @@ function SubagentDetailView({
 
       {/* Footer */}
       <div className="flex items-center gap-2 border-t border-white/[0.06] px-3 py-1.5">
-        <span className="select-all font-mono text-[10px] text-fg/20">{snapshot.taskId}</span>
+        <span className="select-all font-mono text-[10px] text-fg/20">{copyId}</span>
         <div className="ml-auto flex items-center gap-1.5">
           <button
             type="button"
@@ -243,21 +260,35 @@ function SubagentDetailView({
 
 /* ── Main component ── */
 
+type SubagentPanelTab = "subagents" | "teammates" | "background";
+
+function tabLabel(tab: SubagentPanelTab): string {
+  if (tab === "subagents") return "Subagents";
+  if (tab === "teammates") return "Teammates";
+  if (tab === "background") return "Background";
+  return "Subagents";
+}
+
 export function ChatSubagentsPanel({
   snapshots,
   events,
   onInterruptTurn,
   className,
+  variant = "drawer",
+  onClose,
 }: {
   snapshots: ChatSubagentSnapshot[];
   events: AgentChatEventEnvelope[];
   onInterruptTurn?: () => void;
   className?: string;
+  variant?: "drawer" | "pane";
+  onClose?: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [view, setView] = useState<{ mode: "list" } | { mode: "detail"; taskId: string }>({ mode: "list" });
+  const [selectedTab, setSelectedTab] = useState<SubagentPanelTab>("subagents");
 
-  const { activeCount, completedCount, failedCount, stoppedCount, backgroundRunningCount } = useMemo(() => {
+  const { activeCount, completedCount, failedCount, stoppedCount, backgroundRunningCount, tabCounts } = useMemo(() => {
     let active = 0;
     let completed = 0;
     let failed = 0;
@@ -271,7 +302,18 @@ export function ChatSubagentsPanel({
       else if (s.status === "stopped") stopped++;
       else if (s.status === "failed") failed++;
     }
-    return { activeCount: active, completedCount: completed, failedCount: failed, stoppedCount: stopped, backgroundRunningCount: bgRunning };
+    return {
+      activeCount: active,
+      completedCount: completed,
+      failedCount: failed,
+      stoppedCount: stopped,
+      backgroundRunningCount: bgRunning,
+      tabCounts: {
+        subagents: snapshots.filter((s) => !s.background).length,
+        teammates: 0,
+        background: snapshots.filter((s) => s.background).length,
+      },
+    };
   }, [snapshots]);
 
   const summaryText = useMemo(() => {
@@ -296,6 +338,158 @@ export function ChatSubagentsPanel({
 
   if (!snapshots.length) return null;
 
+  const activeTab = selectedTab;
+  const visibleSnapshots = snapshots.filter((snapshot) => {
+    if (activeTab === "subagents") return !snapshot.background;
+    if (activeTab === "teammates") return false;
+    if (activeTab === "background") return snapshot.background === true;
+    return true;
+  });
+
+  const tabs: SubagentPanelTab[] = ["subagents", "teammates", "background"];
+  const tabControls = (
+    <div className="flex shrink-0 items-center gap-1 border-b border-white/[0.06] px-2 py-1.5">
+      {tabs.map((tab) => (
+        <button
+          key={tab}
+          type="button"
+          className={cn(
+            "inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[11px] font-medium transition-colors",
+            activeTab === tab
+              ? "bg-white/[0.075] text-fg/78"
+              : "text-fg/35 hover:bg-white/[0.04] hover:text-fg/58",
+          )}
+          onClick={() => {
+            setSelectedTab(tab);
+            setView({ mode: "list" });
+          }}
+        >
+          <span>{tabLabel(tab)}</span>
+          <span className={cn(
+            "rounded-full px-1.5 py-px font-mono text-[9px]",
+            activeTab === tab ? "bg-black/20 text-fg/55" : "bg-white/[0.04] text-fg/28",
+          )}>
+            {tabCounts[tab]}
+          </span>
+        </button>
+      ))}
+    </div>
+  );
+
+  const listContent = (
+    <div className={cn(
+      "space-y-1.5 px-1.5 py-1.5",
+      variant === "pane" && "min-h-0 flex-1 overflow-y-auto px-2.5 py-2.5",
+    )}>
+      {visibleSnapshots.length ? visibleSnapshots.map((snapshot) => {
+        const meta = statusMeta(snapshot.status);
+        const runtimeSummary = summarizeRuntime(snapshot);
+        const agentName = snapshot.agentType || snapshot.agentId || snapshot.taskId;
+        const description = snapshot.description && snapshot.description !== agentName ? snapshot.description : null;
+
+        return (
+          <button
+            key={snapshot.taskId}
+            type="button"
+            className={cn(
+              "ade-chat-subagent-card group flex w-full items-center gap-2.5 rounded-xl px-3.5 py-3 text-left",
+              snapshot.status === "running" && "ade-chat-subagent-card-active",
+            )}
+            onClick={() => setView({ mode: "detail", taskId: snapshot.taskId })}
+            title={snapshot.description}
+          >
+            <span className="flex h-4 w-4 shrink-0 items-center justify-center">
+              {meta.icon}
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-[13px] text-fg/65 group-hover:text-fg/85">
+                {agentName}
+              </span>
+              {description ? (
+                <span className="mt-0.5 block truncate text-[11px] text-fg/35">
+                  {description}
+                </span>
+              ) : null}
+              {snapshot.finalSummary ? (
+                <span className="mt-1 block truncate text-[11px] text-emerald-200/55">
+                  ┊ {snapshot.finalSummary}
+                </span>
+              ) : snapshot.summary ? (
+                <span className="mt-1 block truncate text-[11px] text-fg/32">
+                  ▎ {snapshot.summary}
+                </span>
+              ) : null}
+            </span>
+            {snapshot.agentType ? (
+              <span className="rounded border border-white/[0.06] bg-white/[0.03] px-1.5 py-0.5 font-mono text-[9px] text-fg/35">
+                {snapshot.agentType}
+              </span>
+            ) : null}
+            {snapshot.background ? (
+              <span className="rounded border border-sky-400/12 bg-sky-500/[0.06] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-sky-300/55">
+                bg
+              </span>
+            ) : null}
+            {runtimeSummary ? (
+              <span className="text-[11px] text-fg/40 group-hover:text-fg/50">
+                {runtimeSummary}
+              </span>
+            ) : null}
+            <span className={cn("ade-chat-status-pill rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider", meta.chipClassName)}>
+              {meta.label}
+            </span>
+          </button>
+        );
+      }) : (
+        <div className="flex h-24 items-center justify-center rounded-lg border border-white/[0.05] bg-white/[0.02] text-[12px] text-fg/28">
+          {activeTab === "teammates" ? "No team active" : `No ${tabLabel(activeTab).toLowerCase()} subagents`}
+        </div>
+      )}
+    </div>
+  );
+
+  const body = view.mode === "detail" && detailSnapshot ? (
+    <SubagentDetailView
+      snapshot={detailSnapshot}
+      timeline={detailTimeline}
+      onBack={() => setView({ mode: "list" })}
+      onInterruptTurn={detailSnapshot.status === "running" ? onInterruptTurn : undefined}
+    />
+  ) : (
+    <>
+      {tabControls}
+      {listContent}
+    </>
+  );
+
+  if (variant === "pane") {
+    return (
+      <div className={cn("flex h-full min-h-0 flex-col", className)}>
+        <div className="flex shrink-0 items-center gap-3 border-b border-white/[0.06] px-4 py-2.5">
+          <TreeStructure size={14} className="text-fg/45" />
+          <div className="min-w-0 flex-1">
+            <div className="font-sans text-[12px] font-medium text-fg/80">Subagents</div>
+            <div className="truncate text-[10px] text-fg/32">{summaryText}</div>
+          </div>
+          {onClose ? (
+            <button
+              type="button"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-white/[0.06] bg-white/[0.03] text-fg/45 transition-colors hover:text-fg/80"
+              onClick={onClose}
+              title="Close subagents panel"
+              aria-label="Close subagents panel"
+            >
+              <X size={12} weight="bold" />
+            </button>
+          ) : null}
+        </div>
+        <div className="flex min-h-0 flex-1 flex-col">
+          {body}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <BottomDrawerSection
       label="Subagents"
@@ -308,54 +502,7 @@ export function ChatSubagentsPanel({
       }}
       className={className}
     >
-      {view.mode === "detail" && detailSnapshot ? (
-        <SubagentDetailView
-          snapshot={detailSnapshot}
-          timeline={detailTimeline}
-          onBack={() => setView({ mode: "list" })}
-          onInterruptTurn={detailSnapshot.status === "running" ? onInterruptTurn : undefined}
-        />
-      ) : (
-        <div className="space-y-1.5 px-1.5 py-1.5">
-          {snapshots.map((snapshot) => {
-            const meta = statusMeta(snapshot.status);
-            const runtimeSummary = summarizeRuntime(snapshot);
-
-            return (
-              <button
-                key={snapshot.taskId}
-                type="button"
-                className={cn(
-                  "ade-chat-subagent-card group flex w-full items-center gap-2.5 rounded-xl px-3.5 py-3 text-left",
-                  snapshot.status === "running" && "ade-chat-subagent-card-active",
-                )}
-                onClick={() => setView({ mode: "detail", taskId: snapshot.taskId })}
-                title={snapshot.description}
-              >
-                <span className="flex h-4 w-4 shrink-0 items-center justify-center">
-                  {meta.icon}
-                </span>
-                <span className="min-w-0 flex-1 truncate text-[13px] text-fg/65 group-hover:text-fg/85">
-                  {snapshot.description}
-                </span>
-                {snapshot.background ? (
-                  <span className="rounded border border-sky-400/12 bg-sky-500/[0.06] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-sky-300/55">
-                    bg
-                  </span>
-                ) : null}
-                {runtimeSummary ? (
-                  <span className="text-[11px] text-fg/40 group-hover:text-fg/50">
-                    {runtimeSummary}
-                  </span>
-                ) : null}
-                <span className={cn("ade-chat-status-pill rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider", meta.chipClassName)}>
-                  {meta.label}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      )}
+      {body}
     </BottomDrawerSection>
   );
 }

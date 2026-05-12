@@ -303,12 +303,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [feedbackGenerating, setFeedbackGenerating] = useState(false);
   const previousProjectRootRef = useRef<string | null | undefined>(undefined);
   const lastRouteSaveProjectRootRef = useRef<string | null | undefined>(undefined);
+  const githubStatusProjectRootRef = useRef<string | null>(null);
+  const githubBannerDismissedRef = useRef(false);
+  githubBannerDismissedRef.current = githubBannerDismissed;
   const isOnboardingRoute = location.pathname === "/onboarding";
   const isLanesRoute = location.pathname.startsWith("/lanes");
+  const isLanesRouteRef = useRef(isLanesRoute);
   const shouldTrackTerminalAttention =
     Boolean(project?.rootPath) &&
     !showWelcome &&
     (location.pathname === "/work" || location.pathname === "/lanes");
+
+  useEffect(() => {
+    isLanesRouteRef.current = isLanesRoute;
+  }, [isLanesRoute]);
 
   useEffect(() => {
     logRendererDebugEvent("renderer.route_change", {
@@ -432,11 +440,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         laneRefreshTimer = window.setTimeout(() => {
           laneRefreshTimer = null;
           if (cancelled) return;
-          const includeDecoratedLaneSnapshots = isLanesRoute;
+          const includeDecoratedLaneSnapshots = isLanesRouteRef.current;
           void refreshLanes({
             includeStatus: includeDecoratedLaneSnapshots,
             includeConflictStatus: includeDecoratedLaneSnapshots,
-            includeRebaseSuggestions: isLanesRoute,
+            includeRebaseSuggestions: includeDecoratedLaneSnapshots,
             includeAutoRebaseStatus: includeDecoratedLaneSnapshots,
           });
         }, 1_200);
@@ -510,7 +518,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     refreshProviderMode,
     refreshKeybindings,
     setShowWelcome,
-    isLanesRoute,
   ]);
 
   useEffect(() => {
@@ -793,9 +800,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     let cancelled = false;
     if (!currentProjectRoot) {
+      githubStatusProjectRootRef.current = null;
       setGithubStatus(null);
       return;
     }
+    if (githubStatusProjectRootRef.current !== currentProjectRoot) {
+      githubStatusProjectRootRef.current = currentProjectRoot;
+      setGithubStatus(null);
+    }
+    const delayMs = githubBannerDismissedRef.current
+      ? GITHUB_STATUS_DISMISSED_BANNER_DELAY_MS
+      : GITHUB_STATUS_STARTUP_DELAY_MS;
     const githubTimer = window.setTimeout(() => {
       void window.ade.github.getStatus().then((status) => {
         if (cancelled) return;
@@ -804,12 +819,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         if (cancelled) return;
         setGithubStatus(null);
       });
-    }, githubBannerDismissed ? GITHUB_STATUS_DISMISSED_BANNER_DELAY_MS : GITHUB_STATUS_STARTUP_DELAY_MS);
+    }, delayMs);
     return () => {
       cancelled = true;
       window.clearTimeout(githubTimer);
     };
-  }, [currentProjectRoot, githubBannerDismissed]);
+  }, [currentProjectRoot]);
 
   // Refresh the GitHub banner the moment Settings saves/clears a token, so the
   // shell does not lag behind the Settings UI (the original "banner stays up

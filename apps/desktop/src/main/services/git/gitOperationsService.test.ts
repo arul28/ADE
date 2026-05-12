@@ -20,6 +20,12 @@ function createTestGitOperationsService(
 ) {
   const mockStart = vi.fn().mockReturnValue({ operationId: "op-1" });
   const mockFinish = vi.fn();
+  const mockLogger = {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+  };
 
   const service = createGitOperationsService({
     laneService: {
@@ -42,18 +48,14 @@ function createTestGitOperationsService(
       getStatus: vi.fn(async () => ({ availableModelIds: [] })),
       generateCommitMessage: vi.fn(),
     } as any,
-    logger: {
-      info: vi.fn(),
-      warn: vi.fn(),
-      error: vi.fn(),
-      debug: vi.fn(),
-    } as any,
+    logger: mockLogger as any,
   });
 
   return {
     service,
     mockStart,
     mockFinish,
+    mockLogger,
   };
 }
 

@@ -50,7 +50,36 @@ export type ChatSurfacePresentation = {
 };
 
 export type AgentChatApprovalDecision = "accept" | "accept_for_session" | "decline" | "cancel";
-export type AgentChatClaudePermissionMode = "default" | "plan" | "acceptEdits" | "bypassPermissions";
+export type AgentChatClaudePermissionMode = "default" | "auto" | "plan" | "acceptEdits" | "bypassPermissions";
+export type AgentChatClaudeOutputStyleSource = "builtin" | "user" | "project" | "plugin";
+export type AgentChatClaudeOutputStyle = {
+  name: string;
+  description?: string;
+  source: AgentChatClaudeOutputStyleSource;
+  filePath?: string;
+  pluginPath?: string;
+};
+export type AgentChatClaudePlugin = {
+  name: string;
+  path: string;
+  source: "local";
+  description?: string;
+  version?: string;
+};
+export type AgentChatClaudePluginsArgs = {
+  sessionId?: string;
+  laneId?: string;
+};
+export type AgentChatReloadClaudePluginsArgs = {
+  sessionId: string;
+};
+export type AgentChatReloadClaudePluginsResult = {
+  plugins: AgentChatClaudePlugin[];
+  commands: Array<{ name: string; description?: string }>;
+  agents: Array<{ name: string; description?: string }>;
+  mcpServers: AgentChatClaudeMcpServerStatus[];
+  errorCount: number;
+};
 export type AgentChatCodexApprovalPolicy = "untrusted" | "on-request" | "on-failure" | "never";
 export type AgentChatCodexSandbox = "read-only" | "workspace-write" | "danger-full-access";
 export type AgentChatCodexConfigSource = "flags" | "config-toml";
@@ -76,10 +105,18 @@ export type AgentChatNoticeDetail = {
   permissionModeTransition?: "entered_plan_mode" | "exited_plan_mode";
 };
 
-export type AgentChatFileRef = {
+export type AgentChatLocalFileRef = {
   path: string;
   type: "file" | "image";
 };
+
+export type AgentChatImageUrlRef = {
+  path: string;
+  type: "image-url";
+  url: string;
+};
+
+export type AgentChatFileRef = AgentChatLocalFileRef | AgentChatImageUrlRef;
 
 export type AgentChatLinearIssueContextAttachment = {
   type: "linear_issue";
@@ -97,7 +134,7 @@ export const PARALLEL_CHAT_MAX_ATTACHMENTS = 12;
 export function inferAttachmentType(
   filePath: string,
   mimeType?: string | null,
-): AgentChatFileRef["type"] {
+): AgentChatLocalFileRef["type"] {
   if (mimeType?.startsWith("image/")) return "image";
   return /\.(png|jpe?g|gif|webp|bmp|svg|ico|tiff?)$/i.test(filePath) ? "image" : "file";
 }
@@ -119,6 +156,45 @@ export function mergeAttachments(
 export type AgentChatPlanStep = {
   text: string;
   status: "pending" | "in_progress" | "completed" | "failed";
+};
+
+export type CodexPlanState = "active" | "delta" | "updated" | "complete";
+
+export type CodexWebSearchAction = {
+  type: string;
+  status?: "pending" | "running" | "completed" | "failed";
+  query?: string;
+  url?: string;
+  title?: string;
+  snippet?: string;
+};
+
+export type CodexTokenUsageBreakdown = {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  totalTokens?: number;
+};
+
+export type CodexThreadTokenUsage = {
+  threadId?: string | null;
+  turnId?: string | null;
+  total?: CodexTokenUsageBreakdown;
+  last?: CodexTokenUsageBreakdown;
+  modelContextWindow?: number | null;
+};
+
+export type CodexThreadGoalStatus = "active" | "paused" | "budget_limited" | "complete" | "cancelled" | "unknown";
+
+export type CodexThreadGoal = {
+  objective?: string | null;
+  tokenBudget?: number | null;
+  status?: CodexThreadGoalStatus;
+  tokensUsed?: number | null;
+  timeUsedSeconds?: number | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
 };
 
 export type AgentChatCompletionArtifact = {
@@ -152,6 +228,7 @@ export type AgentChatEvent =
       type: "user_message";
       text: string;
       displayText?: string;
+      messageId?: string;
       attachments?: AgentChatFileRef[];
       contextAttachments?: AgentChatContextAttachment[];
       turnId?: string;
@@ -217,6 +294,9 @@ export type AgentChatEvent =
       steps: AgentChatPlanStep[];
       turnId?: string;
       explanation?: string | null;
+      itemId?: string;
+      state?: CodexPlanState;
+      streamingText?: string;
     }
   | {
       type: "reasoning";
@@ -346,6 +426,9 @@ export type AgentChatEvent =
   | {
       type: "subagent_started";
       taskId: string;
+      agentId?: string;
+      agentType?: string;
+      parentToolUseId?: string | null;
       description: string;
       background?: boolean;
       turnId?: string;
@@ -353,6 +436,9 @@ export type AgentChatEvent =
   | {
       type: "subagent_progress";
       taskId: string;
+      agentId?: string;
+      agentType?: string;
+      parentToolUseId?: string | null;
       description?: string;
       summary: string;
       usage?: {
@@ -366,8 +452,45 @@ export type AgentChatEvent =
   | {
       type: "subagent_result";
       taskId: string;
+      agentId?: string;
+      agentType?: string;
+      parentToolUseId?: string | null;
       status: "completed" | "failed" | "stopped";
       summary: string;
+      finalSummary?: string;
+      usage?: {
+        totalTokens?: number;
+        toolUses?: number;
+        durationMs?: number;
+      };
+      turnId?: string;
+    }
+  | {
+      type: "subagent.started";
+      agentId: string;
+      parentToolUseId?: string | null;
+      agentType?: string;
+      description?: string;
+      background?: boolean;
+      turnId?: string;
+    }
+  | {
+      type: "subagent.progress";
+      agentId: string;
+      parentToolUseId?: string | null;
+      agentType?: string;
+      text?: string;
+      tokens?: number;
+      lastToolName?: string;
+      turnId?: string;
+    }
+  | {
+      type: "subagent.completed";
+      agentId: string;
+      parentToolUseId?: string | null;
+      agentType?: string;
+      summary: string;
+      status?: "completed" | "failed" | "stopped";
       usage?: {
         totalTokens?: number;
         toolUses?: number;
@@ -395,8 +518,19 @@ export type AgentChatEvent =
       turnId?: string;
     }
   | {
+      type: "codex_context_compaction";
+      turnId: string;
+      state: "started" | "completed";
+      trigger: "manual" | "auto";
+    }
+  | {
+      type: "context_usage";
+      usage: AgentChatContextUsage;
+      turnId?: string;
+    }
+  | {
       type: "system_notice";
-      noticeKind: "auth" | "rate_limit" | "hook" | "file_persist" | "info" | "memory" | "provider_health" | "thread_error";
+      noticeKind: "auth" | "rate_limit" | "hook" | "file_persist" | "info" | "memory" | "provider_health" | "thread_error" | "warning" | "error" | "config";
       message: string;
       detail?: string | AgentChatNoticeDetail;
       steerId?: string;
@@ -411,6 +545,7 @@ export type AgentChatEvent =
       type: "web_search";
       query: string;
       action?: string;
+      actions?: CodexWebSearchAction[];
       itemId: string;
       logicalItemId?: string;
       turnId?: string;
@@ -430,10 +565,38 @@ export type AgentChatEvent =
       turnId?: string;
     }
   | {
-      type: "plan_text";
-      text: string;
+      type: "codex_image_generation";
+      itemId: string;
       turnId?: string;
-      itemId?: string;
+      prompt?: string | null;
+      revisedPrompt?: string | null;
+      result?: string | null;
+      /** Local filesystem path if Codex saved the image to disk; null when the result is purely a URL/data URI. */
+      savedPath?: string | null;
+      status: "running" | "completed" | "failed";
+    }
+  | {
+      type: "codex_image_view";
+      itemId: string;
+      turnId?: string;
+      path?: string | null;
+      url?: string | null;
+      title?: string | null;
+      status: "running" | "completed" | "failed";
+    }
+  | {
+      type: "codex_token_usage";
+      usage: CodexThreadTokenUsage;
+      turnId?: string;
+    }
+  | {
+      type: "codex_goal_updated";
+      goal: CodexThreadGoal | null;
+      turnId?: string;
+    }
+  | {
+      type: "codex_goal_cleared";
+      turnId?: string;
     }
   | {
       type: "turn_diff_summary";
@@ -463,7 +626,7 @@ export type AgentChatEventEnvelope = {
   };
 };
 
-export type AgentChatPermissionMode = "default" | "plan" | "edit" | "full-auto" | "config-toml";
+export type AgentChatPermissionMode = "default" | "auto" | "plan" | "edit" | "full-auto" | "config-toml";
 export type AgentChatExecutionMode = "focused" | "parallel" | "subagents" | "teams";
 export type AgentChatInteractionMode = "default" | "plan";
 export type AgentChatIdentityKey = "cto" | `agent:${string}`;
@@ -548,6 +711,7 @@ export type AgentChatSession = {
   permissionMode?: AgentChatPermissionMode;
   interactionMode?: AgentChatInteractionMode | null;
   claudePermissionMode?: AgentChatClaudePermissionMode;
+  claudeOutputStyle?: string | null;
   codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
   codexSandbox?: AgentChatCodexSandbox;
   codexConfigSource?: AgentChatCodexConfigSource;
@@ -568,6 +732,9 @@ export type AgentChatSession = {
   automationRunId?: string | null;
   capabilityMode?: CtoCapabilityMode;
   completion?: AgentChatCompletionReport | null;
+  codexGoal?: CodexThreadGoal | null;
+  codexTokenUsage?: CodexThreadTokenUsage | null;
+  runtimeMode?: AgentChatRuntimeMode;
   status: AgentChatSessionStatus;
   idleSinceAt?: string | null;
   archivedAt?: string | null;
@@ -593,6 +760,7 @@ export type AgentChatSessionSummary = {
   permissionMode?: AgentChatPermissionMode;
   interactionMode?: AgentChatInteractionMode | null;
   claudePermissionMode?: AgentChatClaudePermissionMode;
+  claudeOutputStyle?: string | null;
   codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
   codexSandbox?: AgentChatCodexSandbox;
   codexConfigSource?: AgentChatCodexConfigSource;
@@ -610,6 +778,8 @@ export type AgentChatSessionSummary = {
   automationRunId?: string | null;
   capabilityMode?: CtoCapabilityMode;
   completion?: AgentChatCompletionReport | null;
+  codexGoal?: CodexThreadGoal | null;
+  codexTokenUsage?: CodexThreadTokenUsage | null;
   status: AgentChatSessionStatus;
   idleSinceAt?: string | null;
   startedAt: string;
@@ -633,13 +803,18 @@ export type AgentChatTranscriptEntry = {
 
 export type AgentChatSubagentSnapshot = {
   taskId: string;
+  agentId?: string;
+  agentType?: string;
+  parentToolUseId?: string | null;
   description: string;
   status: "running" | "completed" | "failed" | "stopped";
   turnId?: string;
   startTimestamp?: string;
   endTimestamp?: string;
   summary?: string;
+  finalSummary?: string;
   lastToolName?: string;
+  background?: boolean;
   usage?: {
     totalTokens?: number;
     toolUses?: number;
@@ -659,6 +834,136 @@ export type AgentChatSessionCapabilities = {
 
 export type AgentChatSessionCapabilitiesArgs = {
   sessionId: string;
+};
+
+export type AgentChatContextUsageCategory = {
+  name: string;
+  tokens: number;
+  percentage: number;
+  color?: string;
+  isDeferred?: boolean;
+};
+
+export type AgentChatContextUsage = {
+  categories: AgentChatContextUsageCategory[];
+  totalTokens: number;
+  maxTokens: number;
+  rawMaxTokens?: number;
+  percentage: number;
+  model?: string;
+  memoryFiles?: Array<{
+    path: string;
+    type?: string;
+    tokens: number;
+  }>;
+  mcpTools?: Array<{
+    name: string;
+    serverName: string;
+    tokens: number;
+    isLoaded?: boolean;
+  }>;
+};
+
+export type AgentChatContextUsageArgs = {
+  sessionId: string;
+};
+
+export type AgentChatClaudeMcpServerStatusValue = "connected" | "failed" | "needs-auth" | "pending" | "disabled" | (string & {});
+
+export type AgentChatClaudeMcpServerStatus = {
+  name: string;
+  status: AgentChatClaudeMcpServerStatusValue;
+  error?: string;
+  scope?: string;
+  config?: {
+    type?: string;
+    command?: string;
+    args?: string[];
+    url?: string;
+  };
+  tools?: Array<{
+    name: string;
+    description?: string;
+    readOnly?: boolean;
+    destructive?: boolean;
+    openWorld?: boolean;
+  }>;
+};
+
+export type AgentChatClaudeMcpStatusArgs = {
+  sessionId: string;
+};
+
+export type AgentChatClaudeMcpReconnectArgs = {
+  sessionId: string;
+  serverName: string;
+};
+
+export type AgentChatClaudeMcpToggleArgs = {
+  sessionId: string;
+  serverName: string;
+  enabled: boolean;
+};
+
+export type AgentChatRewindFilesArgs = {
+  sessionId: string;
+  userMessageId: string;
+  dryRun?: boolean;
+};
+
+export type AgentChatRewindFilesResult = {
+  canRewind: boolean;
+  error?: string;
+  filesChanged: string[];
+  insertions: number;
+  deletions: number;
+  dryRun: boolean;
+};
+
+export type AgentChatClaudeSessionListArgs = {
+  laneId?: string | null;
+  limit?: number | null;
+  offset?: number | null;
+  includeWorktrees?: boolean | null;
+};
+
+export type AgentChatClaudeSessionInfoArgs = {
+  sessionId: string;
+  laneId?: string | null;
+};
+
+export type AgentChatClaudeSessionMessagesArgs = {
+  sessionId: string;
+  laneId?: string | null;
+  limit?: number | null;
+  offset?: number | null;
+  includeSystemMessages?: boolean | null;
+};
+
+export type AgentChatClaudeSessionInfo = {
+  sessionId: string;
+  laneId: string | null;
+  laneName: string | null;
+  chatSessionId: string | null;
+  summary: string;
+  title: string | null;
+  customTitle?: string | null;
+  firstPrompt?: string | null;
+  tag?: string | null;
+  cwd?: string | null;
+  gitBranch?: string | null;
+  createdAt?: string | null;
+  lastModifiedAt: string | null;
+  fileSize?: number | null;
+};
+
+export type AgentChatClaudeSessionMessage = {
+  type: "user" | "assistant" | "system";
+  uuid: string;
+  sessionId: string;
+  parentToolUseId: string | null;
+  message: unknown;
+  text?: string | null;
 };
 
 export type AgentChatModelInfo = {
@@ -725,6 +1030,7 @@ export type AgentChatCreateArgs = {
   permissionMode?: AgentChatPermissionMode;
   interactionMode?: AgentChatInteractionMode | null;
   claudePermissionMode?: AgentChatClaudePermissionMode;
+  claudeOutputStyle?: string | null;
   codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
   codexSandbox?: AgentChatCodexSandbox;
   codexConfigSource?: AgentChatCodexConfigSource;
@@ -738,11 +1044,15 @@ export type AgentChatCreateArgs = {
   automationRunId?: string | null;
   openInUi?: boolean;
   requestedCwd?: string;
+  runtimeMode?: AgentChatRuntimeMode;
 };
+
+export type AgentChatRuntimeMode = "interactive" | "print";
 
 export type AgentChatHandoffArgs = {
   sourceSessionId: string;
   targetModelId: ModelId;
+  mode?: "brief" | "fork";
   /**
    * When set (including `null` for "no extra reasoning"), combined with the target
    * model to pick a valid reasoning tier. When omitted, inherits from the source
@@ -919,6 +1229,7 @@ export type AgentChatArchiveArgs = {
 export type AgentChatUpdateSessionArgs = {
   sessionId: string;
   title?: string | null;
+  tag?: string | null;
   manuallyNamed?: boolean;
   modelId?: ModelId;
   reasoningEffort?: string | null;
@@ -944,6 +1255,16 @@ export type AgentChatSlashCommand = {
 
 export type AgentChatSlashCommandsArgs = {
   sessionId: string;
+};
+
+export type AgentChatClaudeOutputStylesArgs = {
+  sessionId?: string;
+  laneId?: string;
+};
+
+export type AgentChatSetClaudeOutputStyleArgs = {
+  sessionId: string;
+  outputStyle: string;
 };
 
 export type AgentChatFileSearchArgs = {
@@ -980,3 +1301,25 @@ export type AgentChatGetTurnFileDiffArgs = {
 };
 
 export type AgentChatTurnFileDiff = FileDiff;
+
+export type AgentChatCodexOpenInCliMode = "ade-terminal" | "new-window";
+
+export type AgentChatCodexOpenInCliArgs = {
+  sessionId: string;
+  mode: AgentChatCodexOpenInCliMode;
+};
+
+export type AgentChatCodexOpenInCliResult = {
+  /** Absolute path to the codex binary to invoke (the bundled one by default). */
+  binary: string;
+  /** Argument vector to pass to the binary. Empty when no resume-flag exists. */
+  argv: string[];
+  /** Lane worktree path to `cd` into before invoking. */
+  cwd: string;
+  /** Codex thread to resume. */
+  threadId: string;
+  /** True when no `resume`/`--thread` form was detected; the renderer should copy threadId to clipboard and show a toast. */
+  copyThreadIdToClipboard: boolean;
+  /** Set when mode === "new-window" and a terminal launcher was spawned. */
+  spawnedNewWindow?: boolean;
+};

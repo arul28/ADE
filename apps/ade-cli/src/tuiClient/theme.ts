@@ -52,12 +52,26 @@ const PROVIDER_THEME: Record<AdeCodeProvider, ProviderTheme> = {
 
 const FALLBACK_PROVIDER: ProviderTheme = { glyph: "•", color: MUTED_FG, label: "Agent" };
 
+export type PlanStepStatus = "pending" | "in_progress" | "completed" | "failed";
+
+const PLAN_STEP_GLYPH: Record<PlanStepStatus, string> = {
+  in_progress: "◐",
+  pending: "○",
+  completed: "●",
+  failed: "✕",
+};
+
+export function glyphFor(status: string | null | undefined): string {
+  return PLAN_STEP_GLYPH[status as PlanStepStatus] ?? "○";
+}
+
 export const theme = {
   color: {
     accent: ACCENT,
     accentDim: ACCENT_DIM,
     fg: FG,
     mutedFg: MUTED_FG,
+    notice: NOTICE,
     border: MUTED_FG,
     borderFocused: ACCENT,
     success: SUCCESS,
@@ -75,4 +89,5 @@ export const theme = {
   lane(lane: LaneSummary | null | undefined): string {
     return lane?.color || ACCENT;
   },
+  glyphFor,
 } as const;

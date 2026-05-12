@@ -1,4 +1,4 @@
-import type { AgentChatSlashCommand } from "../../../desktop/src/shared/types/chat";
+import type { AgentChatProvider, AgentChatSlashCommand } from "../../../desktop/src/shared/types/chat";
 
 export type CommandPlacement = "inline" | "right" | "overlay" | "chat";
 
@@ -7,6 +7,7 @@ export type BuiltinCommand = {
   description: string;
   placement: CommandPlacement;
   argumentHint?: string;
+  providers?: AgentChatProvider[];
 };
 
 export const BUILTIN_COMMANDS: BuiltinCommand[] = [
@@ -23,7 +24,20 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/new lane", description: "Create a new lane", placement: "right" },
   { name: "/new chat", description: "Create a new chat", placement: "right", argumentHint: "[title]" },
   { name: "/rename", description: "Rename the active chat", placement: "right", argumentHint: "[title]" },
+  { name: "/tag", description: "Tag the active Claude chat", placement: "right", argumentHint: "<tag|clear>", providers: ["claude"] },
+  { name: "/output-style", description: "List or select the active Claude output style", placement: "right", argumentHint: "[style]", providers: ["claude"] },
+  { name: "/plugin", description: "List, reload, or manage Claude plugins", placement: "right", argumentHint: "[reload|native args]", providers: ["claude"] },
   { name: "/status", description: "Show project, lane, and runtime state", placement: "right" },
+  { name: "/context", description: "Show Claude context usage", placement: "right", providers: ["claude"] },
+  { name: "/agents", description: "List Claude agents from user and project config", placement: "right", providers: ["claude"] },
+  { name: "/skills", description: "List Claude skills from user and project config", placement: "right", providers: ["claude"] },
+  { name: "/mcp", description: "Show Claude MCP server status", placement: "right", providers: ["claude"] },
+  { name: "/compact", description: "Compact the active chat context", placement: "chat", argumentHint: "[instructions]", providers: ["claude", "codex"] },
+  { name: "/init", description: "Generate AGENTS.md and Claude pointer files", placement: "right", providers: ["claude"] },
+  { name: "/usage", description: "Show Claude usage through the active SDK session", placement: "chat", providers: ["claude"] },
+  { name: "/insights", description: "Generate Claude session insights through the active SDK session", placement: "chat", providers: ["claude"] },
+  { name: "/fast", description: "Toggle Claude fast mode through the active SDK session", placement: "chat", argumentHint: "[on|off]", providers: ["claude"] },
+  { name: "/goal", description: "Set, clear, or inspect the active chat goal", placement: "chat", argumentHint: "[<text>|clear|status active|paused|complete|budget <n>|budget clear]", providers: ["claude", "codex"] },
   { name: "/diff", description: "Show active lane diff", placement: "right" },
   { name: "/log", description: "Show recent commits", placement: "right" },
   { name: "/pr", description: "Show pull request state", placement: "right" },
@@ -45,8 +59,10 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/forget", description: "Open memory management", placement: "right" },
   { name: "/chats", description: "List chats in the active lane", placement: "right" },
   { name: "/switch", description: "Switch lane or chat", placement: "right", argumentHint: "[lane|chat]" },
-  { name: "/resume", description: "Resume the active ended chat", placement: "right" },
   { name: "/help", description: "Show keymap and command help", placement: "right" },
+  { name: "/keybindings", description: "Show Claude-compatible keybinding config diagnostics", placement: "right" },
+  { name: "/statusline", description: "Show Claude-compatible status line config", placement: "right" },
+  { name: "/doctor", description: "Show ADE Code and Claude-compat diagnostics", placement: "right" },
   { name: "/model", description: "Pick the active chat model", placement: "right" },
   { name: "/effort", description: "Pick reasoning effort", placement: "right" },
   { name: "/system", description: "Show system and runtime details", placement: "right" },
@@ -58,6 +74,17 @@ const ADE_OWNED_SINGLE_WORD_COMMANDS = new Set(
     .filter((command) => command.placement === "inline" && !command.name.includes(" "))
     .map((command) => command.name.toLowerCase()),
 );
+
+const ADE_OWNED_CLAUDE_PARITY_COMMANDS = new Set([
+  "/agents",
+  "/skills",
+  "/compact",
+  "/init",
+  "/usage",
+  "/insights",
+  "/fast",
+  "/goal",
+]);
 
 export type ParsedCommand = {
   name: string;
@@ -151,15 +178,18 @@ export function parseCommand(input: string, userCommands: AgentChatSlashCommand[
 export function paletteCommands(
   query: string,
   userCommands: AgentChatSlashCommand[] = [],
+  options: { provider?: AgentChatProvider | null } = {},
 ): Array<{ name: string; description: string; source: "ade" | "user"; argumentHint?: string }> {
   const normalizedQuery = query.trim().toLowerCase();
   const queryToken = normalizedQuery.replace(/^\//, "");
-  const builtins = BUILTIN_COMMANDS.map((command) => ({
-    name: command.name,
-    description: command.description,
-    source: "ade" as const,
-    argumentHint: command.argumentHint,
-  }));
+  const builtins = BUILTIN_COMMANDS
+    .filter((command) => !command.providers?.length || (options.provider ? command.providers.includes(options.provider) : true))
+    .map((command) => ({
+      name: command.name,
+      description: command.description,
+      source: "ade" as const,
+      argumentHint: command.argumentHint,
+    }));
   const users = userCommands.map((command) => ({
     name: command.name,
     description: command.description,
@@ -169,10 +199,14 @@ export function paletteCommands(
   // Dedupe by name. Most runtime/user commands win over ADE built-ins, but
   // ADE-owned inline terminal controls must match parseCommand dispatch.
   const byName = new Map<string, { name: string; description: string; source: "ade" | "user"; argumentHint?: string }>();
-  for (const command of builtins) byName.set(slashCommandKey(command.name), command);
+  for (const command of builtins) {
+    const key = slashCommandKey(command.name);
+    if (!byName.has(key)) byName.set(key, command);
+  }
   for (const command of users) {
     const key = slashCommandKey(command.name);
     if (ADE_OWNED_SINGLE_WORD_COMMANDS.has(key)) continue;
+    if (ADE_OWNED_CLAUDE_PARITY_COMMANDS.has(key)) continue;
     byName.set(key, command);
   }
   const merged = [...byName.values()];
@@ -190,7 +224,7 @@ export function paletteCommands(
     }
     return a.name.localeCompare(b.name);
   });
-  return filtered.slice(0, 30);
+  return filtered.slice(0, 60);
 }
 
 export function commandPlacement(command: ParsedCommand): CommandPlacement {

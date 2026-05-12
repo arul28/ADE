@@ -1124,7 +1124,7 @@ app.whenReady().then(async () => {
   const currentIpcWindowId = (): number | null =>
     ipcWindowScope.getStore() ?? null;
 
-  const useInProcessProjectRuntime = (): boolean =>
+  const shouldUseInProcessProjectRuntime = (): boolean =>
     process.env.NODE_ENV === "test"
     || process.env.ADE_ENABLE_DESKTOP_IN_PROCESS_RUNTIME === "1"
     || process.env.ADE_DISABLE_LOCAL_RUNTIME_DAEMON === "1"
@@ -1136,7 +1136,7 @@ app.whenReady().then(async () => {
   };
 
   const bindingForLocalProject = (project: ProjectInfo | null): OpenProjectBinding | null =>
-    project
+    project && !shouldUseInProcessProjectRuntime()
       ? {
         kind: "local",
         key: `local:${project.rootPath}`,
@@ -4959,7 +4959,7 @@ app.whenReady().then(async () => {
             durationMs: Date.now() - baseRefStartedAt,
           });
           const initStartedAt = Date.now();
-          const ctx = useInProcessProjectRuntime()
+          const ctx = shouldUseInProcessProjectRuntime()
             ? await initContextForProjectRoot({
               projectRoot: repoRoot!,
               baseRef,
@@ -4977,7 +4977,7 @@ app.whenReady().then(async () => {
           projectOpenLogger.info("project.open.context_initialized", {
             selectedPath,
             repoRoot,
-            mode: useInProcessProjectRuntime() ? "in_process" : "local_runtime_daemon",
+            mode: shouldUseInProcessProjectRuntime() ? "in_process" : "local_runtime_daemon",
             durationMs: Date.now() - initStartedAt,
           });
           projectContexts.set(repoRoot!, ctx);
@@ -5566,7 +5566,9 @@ app.whenReady().then(async () => {
       ipcWindowScope.run(BrowserWindow.fromWebContents(event.sender)?.id ?? null, fn),
     getWindowSession,
     bindRemoteProject: bindWindowToRemoteProject,
-    localRuntimeConnectionPool: localRuntimePool,
+    localRuntimeConnectionPool: shouldUseInProcessProjectRuntime()
+      ? null
+      : localRuntimePool,
     createWindow: openAdeWindow,
     closeWindow: closeAdeWindow,
     switchProjectFromDialog,

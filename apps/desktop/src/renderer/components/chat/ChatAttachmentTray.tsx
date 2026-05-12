@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { createPortal } from "react-dom";
-import { Copy, File, Image, X } from "@phosphor-icons/react";
+import { Copy, File, Globe, Image, X } from "@phosphor-icons/react";
 import type { AgentChatContextAttachment, AgentChatFileRef, ChatSurfaceMode } from "../../../shared/types";
 import { chatContextAttachmentKey } from "../../../shared/chatContextAttachments";
 import { cn } from "../ui/cn";
@@ -212,6 +212,58 @@ function ImageAttachmentPreview({
   );
 }
 
+function ImageUrlAttachmentChip({
+  path,
+  url,
+  label,
+  toneClassName,
+  onRemove,
+}: {
+  path: string;
+  url: string;
+  label: string;
+  toneClassName: string;
+  onRemove?: (path: string) => void;
+}) {
+  const [imageFailed, setImageFailed] = useState(false);
+  return (
+    <span
+      className={cn(
+        "ade-liquid-glass-pill group inline-flex max-w-full items-center gap-2 rounded-[var(--chat-radius-pill)] px-2 py-1 transition-colors",
+        toneClassName,
+      )}
+      title={url}
+    >
+      {imageFailed ? (
+        <Globe size={12} weight="bold" />
+      ) : (
+        <img
+          src={url}
+          alt={label}
+          loading="lazy"
+          draggable={false}
+          onError={() => setImageFailed(true)}
+          className="h-8 w-8 shrink-0 rounded-sm border border-white/10 bg-black/30 object-cover"
+        />
+      )}
+      <span className="flex min-w-0 flex-col leading-tight">
+        <span className="max-w-[220px] truncate text-[11px] font-medium">{label}</span>
+      </span>
+      {onRemove ? (
+        <button
+          type="button"
+          className="rounded-full text-current/45 transition-colors hover:bg-white/[0.06] hover:text-current"
+          title={`Remove ${label}`}
+          aria-label={`Remove ${label}`}
+          onClick={() => onRemove(path)}
+        >
+          <X size={10} weight="bold" />
+        </button>
+      ) : null}
+    </span>
+  );
+}
+
 function ImageLightbox({
   name,
   dataUrl,
@@ -354,6 +406,26 @@ export function ChatAttachmentTray({
         />
       ))}
       {attachments.map((attachment) => {
+        if (attachment.type === "image-url") {
+          const label = (() => {
+            try {
+              const parsed = new URL(attachment.url);
+              return parsed.hostname || attachment.url;
+            } catch {
+              return attachmentName(attachment.url);
+            }
+          })();
+          return (
+            <ImageUrlAttachmentChip
+              key={attachment.path}
+              path={attachment.path}
+              url={attachment.url}
+              label={label}
+              toneClassName={chipTone}
+              onRemove={onRemove}
+            />
+          );
+        }
         if (attachment.type === "image") {
           return (
             <ImageAttachmentPreview

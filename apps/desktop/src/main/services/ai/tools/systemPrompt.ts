@@ -10,7 +10,7 @@ type HarnessPermissionMode = "plan" | "edit" | "full-auto";
  * wake-ups are possible.
  */
 export type AdeRuntimeKind =
-  | "claude-agent-sdk-v2"
+  | "claude-agent-sdk-query"
   | "codex-cli"
   | "cursor-sdk"
   | "droid-acp"
@@ -18,10 +18,10 @@ export type AdeRuntimeKind =
 
 function describeRuntime(runtime: AdeRuntimeKind): string[] {
   switch (runtime) {
-    case "claude-agent-sdk-v2":
+    case "claude-agent-sdk-query":
       return [
-        "**Runtime:** ADE Work chat hosted on the Claude Agent SDK v2 (`unstable_v2_createSession` / `SDKSession`).",
-        "**Wake-up semantics:** The session only advances when the host calls `session.send(...)`, which fires on a fresh user message. There is no autonomous wake. `ScheduleWakeup` is **not honored** in this harness — the host accepts the call but never re-invokes you. `Bash run_in_background: true` task notifications are queued in the SDK message stream and only flushed on the next user turn; they do not start an autonomous turn either.",
+        "**Runtime:** ADE Work chat hosted on the Claude Agent SDK stable `query()` streaming-input API.",
+        "**Wake-up semantics:** The session only advances when ADE streams a fresh user message into the SDK query. There is no autonomous wake. `ScheduleWakeup` is **not honored** in this harness — the host accepts the call but never re-invokes you. `Bash run_in_background: true` task notifications are queued in the SDK message stream and only flushed on the next user turn; they do not start an autonomous turn either.",
         "**To wait:** Either poll synchronously inside the active turn (foreground bash with one bounded `until ... ; do sleep N; done`) or stop the turn cleanly and ask the user to re-ping when ready. Do not run a background poller and claim it will wake you — it will not.",
       ];
     case "codex-cli":

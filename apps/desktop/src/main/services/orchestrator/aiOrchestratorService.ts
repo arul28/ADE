@@ -7634,7 +7634,7 @@ Check all worker statuses and continue managing the mission from here. Read work
     const availableProviders: CoordinatorAvailableProvider[] = [];
     const availability = aiIntegrationService?.getAvailability?.();
     if (availability) {
-      if (availability.claude) availableProviders.push({ name: "claude", available: true });
+      if (availability.claude.auth.ready) availableProviders.push({ name: "claude", available: true });
       if (availability.codex) availableProviders.push({ name: "codex", available: true });
     }
     if (aiIntegrationService) {

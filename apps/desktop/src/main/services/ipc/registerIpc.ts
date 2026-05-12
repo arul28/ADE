@@ -230,6 +230,23 @@ import type {
   ExportHistoryResult,
   AgentChatApproveArgs,
   AgentChatArchiveArgs,
+  AgentChatCodexOpenInCliArgs,
+  AgentChatCodexOpenInCliResult,
+  AgentChatClaudeSessionInfo,
+  AgentChatClaudeSessionInfoArgs,
+  AgentChatClaudeSessionListArgs,
+  AgentChatClaudeSessionMessage,
+  AgentChatClaudeSessionMessagesArgs,
+  AgentChatClaudeOutputStyle,
+  AgentChatClaudeOutputStylesArgs,
+  AgentChatClaudePlugin,
+  AgentChatClaudePluginsArgs,
+  AgentChatClaudeMcpReconnectArgs,
+  AgentChatClaudeMcpServerStatus,
+  AgentChatClaudeMcpStatusArgs,
+  AgentChatClaudeMcpToggleArgs,
+  AgentChatReloadClaudePluginsArgs,
+  AgentChatReloadClaudePluginsResult,
   AgentChatClaudePermissionMode,
   AgentChatCreateArgs,
   AgentChatDeleteArgs,
@@ -266,8 +283,13 @@ import type {
   AgentChatCancelDispatchedSteerResult,
   AgentChatOpenCodePermissionMode,
   AgentChatUpdateSessionArgs,
+  AgentChatSetClaudeOutputStyleArgs,
   AgentChatSlashCommand,
   AgentChatSlashCommandsArgs,
+  AgentChatContextUsage,
+  AgentChatContextUsageArgs,
+  AgentChatRewindFilesArgs,
+  AgentChatRewindFilesResult,
   AgentChatFileSearchArgs,
   AgentChatFileSearchResult,
   AgentChatGetTurnFileDiffArgs,
@@ -689,6 +711,12 @@ import type { createProjectScaffoldService } from "../projects/projectScaffoldSe
 import type { createAdeCliService } from "../cli/adeCliService";
 import { getErrorMessage, isRecord, nowIso, resolvePathWithinRoot, toMemoryEntryDto } from "../shared/utils";
 import { quoteWindowsCmdArg } from "../shared/processExecution";
+import { resolveCodexExecutable } from "../ai/codexExecutable";
+import {
+  buildResumeArgv,
+  detectCodexResumeStrategy,
+  spawnInNewTerminalWindow,
+} from "../chat/codexCliLauncher";
 
 export type AppContext = {
   db: AdeDb;
@@ -832,7 +860,18 @@ function getUnavailableAiStatus(): AiSettingsStatus {
   return {
     mode: "guest",
     availableProviders: {
-      claude: false,
+      claude: {
+        binary: {
+          present: false,
+          source: "missing",
+          path: null,
+        },
+        auth: {
+          ready: false,
+          mode: "none",
+          detail: "AI integration service unavailable.",
+        },
+      },
       codex: false,
       cursor: false,
       droid: false,
@@ -1776,7 +1815,6 @@ export function registerIpc({
     process.env.ADE_LOCAL_RUNTIME_FALLBACK === "1" ||
     localRuntimeDaemonDisabled;
 
-  const unavailableSyncSnapshotCreatedAt = new Date().toISOString();
   const unavailableSyncPlatform =
     process.platform === "darwin"
       ? "macOS"
@@ -1785,66 +1823,89 @@ export function registerIpc({
         : process.platform === "linux"
           ? "linux"
           : "unknown";
-  const unavailableSyncDevice: SyncDeviceRecord = {
-    deviceId: "local-runtime-disabled",
-    siteId: "local-runtime-disabled",
-    name: "Local desktop",
-    platform: unavailableSyncPlatform,
-    deviceType: "desktop",
-    createdAt: unavailableSyncSnapshotCreatedAt,
-    updatedAt: unavailableSyncSnapshotCreatedAt,
-    lastSeenAt: unavailableSyncSnapshotCreatedAt,
-    lastHost: null,
-    lastPort: null,
-    tailscaleIp: null,
-    ipAddresses: [],
-    metadata: { unavailableReason: "local_runtime_daemon_disabled" },
-  };
-  const unavailableSyncSnapshot: SyncRoleSnapshot = {
-    mode: "standalone",
-    role: "brain",
-    localDevice: unavailableSyncDevice,
-    currentBrain: unavailableSyncDevice,
-    clusterState: null,
-    bootstrapToken: null,
-    pairingPin: null,
-    pairingPinConfigured: false,
-    pairingConnectInfo: null,
-    connectedPeers: [],
-    tailnetDiscovery: {
-      state: "disabled",
-      serviceName: "ade-sync",
-      servicePort: 0,
-      target: null,
-      updatedAt: null,
-      error: null,
-      stderr: null,
-    },
-    client: {
-      state: "disconnected",
-      host: null,
-      port: null,
-      connectedAt: null,
-      lastSeenAt: null,
-      latencyMs: null,
-      syncLag: null,
-      lastRemoteDbVersion: 0,
-      brainDeviceId: unavailableSyncDevice.deviceId,
-      hostName: unavailableSyncDevice.name,
-      error: null,
-      message: "Sync service unavailable in local runtime disabled mode.",
-      savedDraft: null,
-    },
-    transferReadiness: {
-      ready: true,
-      blockers: [],
-      survivableState: [],
-    },
-    survivableStateText: "Sync service unavailable in local runtime disabled mode.",
-    blockingStateText: "",
+  const buildUnavailableSyncSnapshot = (): SyncRoleSnapshot => {
+    const now = new Date().toISOString();
+    const unavailableSyncDevice: SyncDeviceRecord = {
+      deviceId: "local-runtime-disabled",
+      siteId: "local-runtime-disabled",
+      name: "Local desktop",
+      platform: unavailableSyncPlatform,
+      deviceType: "desktop",
+      createdAt: now,
+      updatedAt: now,
+      lastSeenAt: now,
+      lastHost: null,
+      lastPort: null,
+      tailscaleIp: null,
+      ipAddresses: [],
+      metadata: { unavailableReason: "local_runtime_daemon_disabled" },
+    };
+    const unavailableMessage = "Sync service unavailable in local runtime disabled mode.";
+    return {
+      mode: "standalone",
+      role: "brain",
+      localDevice: unavailableSyncDevice,
+      currentBrain: unavailableSyncDevice,
+      clusterState: null,
+      bootstrapToken: null,
+      pairingPin: null,
+      pairingPinConfigured: false,
+      pairingConnectInfo: null,
+      connectedPeers: [],
+      tailnetDiscovery: {
+        state: "disabled",
+        serviceName: "ade-sync",
+        servicePort: 0,
+        target: null,
+        updatedAt: now,
+        error: unavailableMessage,
+        stderr: null,
+      },
+      client: {
+        state: "disconnected",
+        host: null,
+        port: null,
+        connectedAt: null,
+        lastSeenAt: null,
+        latencyMs: null,
+        syncLag: null,
+        lastRemoteDbVersion: 0,
+        brainDeviceId: unavailableSyncDevice.deviceId,
+        hostName: unavailableSyncDevice.name,
+        error: unavailableMessage,
+        message: unavailableMessage,
+        savedDraft: null,
+      },
+      transferReadiness: {
+        ready: false,
+        blockers: [{
+          kind: "managed_process",
+          id: "local-runtime-disabled",
+          label: "Sync unavailable",
+          detail: unavailableMessage,
+        }],
+        survivableState: [],
+      },
+      survivableStateText: "",
+      blockingStateText: unavailableMessage,
+    };
   };
 
-  const buildUnavailableSyncSnapshot = (): SyncRoleSnapshot => unavailableSyncSnapshot;
+  const buildUnavailableSyncRuntimeDevice = (): SyncDeviceRuntimeState => {
+    const snapshot = buildUnavailableSyncSnapshot();
+    return {
+      ...snapshot.localDevice,
+      isLocal: true,
+      isBrain: false,
+      connectionState: "disconnected",
+      connectedAt: null,
+      lastAppliedAt: null,
+      remoteAddress: null,
+      remotePort: null,
+      latencyMs: null,
+      syncLag: null,
+    };
+  };
 
   const requireSyncService = async (): Promise<ReturnType<typeof createSyncService>> => {
     const service = await resolveOptionalSyncService();
@@ -1937,7 +1998,7 @@ export function registerIpc({
     }
   };
 
-  const traceIpcInvokes = !app.isPackaged || process.env.ADE_TRACE_IPC === "1" || process.env.ADE_TRACE_IPC === "verbose";
+  const traceIpcInvokes = isPerfRunActive() || !app.isPackaged || process.env.ADE_TRACE_IPC === "1" || process.env.ADE_TRACE_IPC === "verbose";
   const traceEveryIpcInvoke = process.env.ADE_TRACE_IPC === "verbose";
   let ipcInvokeSeq = 0;
 
@@ -2119,14 +2180,18 @@ export function registerIpc({
     failed: boolean;
   }) => {
     if (isPerfRunActive()) {
-      perfAppend({
-        ts: Date.now(),
-        kind: "ipcInvoke",
-        channel: input.channel,
-        winId: input.winId,
-        durationMs: input.durationMs,
-        failed: input.failed,
-      });
+      try {
+        perfAppend({
+          ts: Date.now(),
+          kind: "ipcInvoke",
+          channel: input.channel,
+          winId: input.winId,
+          durationMs: input.durationMs,
+          failed: input.failed,
+        });
+      } catch {
+        // Perf telemetry is best-effort and must not change IPC behavior.
+      }
     }
     const key = `${input.winId ?? "none"}:${input.channel}`;
     const existing = ipcInvokeAggregates.get(key) ?? {
@@ -3602,7 +3667,11 @@ export function registerIpc({
     };
   });
 
-  ipcMain.handle(IPC.projectOpenRepo, async (event): Promise<ProjectInfo | null> => {
+  ipcMain.handle(IPC.projectOpenRepo, async (event, args: { rootPath?: string } = {}): Promise<ProjectInfo | null> => {
+    const requestedRoot = args.rootPath?.trim();
+    if (requestedRoot) {
+      return await switchProjectFromDialog(requestedRoot);
+    }
     const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
     const options: Electron.OpenDialogOptions = {
       title: "Open repository",
@@ -4168,6 +4237,7 @@ export function registerIpc({
       pool.refreshSyncDiscoveryForRoot(rootPath)
     );
     if (runtimeStatus) return runtimeStatus;
+    if (localRuntimeDaemonDisabled) return buildUnavailableSyncSnapshot();
     return await (await requireSyncService()).refreshDiscovery();
   });
 
@@ -4176,6 +4246,7 @@ export function registerIpc({
       pool.syncDevicesForRoot(rootPath)
     );
     if (runtimeDevices) return runtimeDevices;
+    if (localRuntimeDaemonDisabled) return [buildUnavailableSyncRuntimeDevice()];
     return await (await requireSyncService()).listDevices();
   });
 
@@ -4192,6 +4263,7 @@ export function registerIpc({
         })
       );
       if (runtimeDevice) return runtimeDevice;
+      if (localRuntimeDaemonDisabled) return buildUnavailableSyncSnapshot().localDevice;
       return await (await requireSyncService()).updateLocalDevice({
         name: typeof arg?.name === "string" ? arg.name : undefined,
         deviceType: arg?.deviceType,
@@ -4210,6 +4282,7 @@ export function registerIpc({
         )
       );
       if (runtimeStatus) return runtimeStatus;
+      if (localRuntimeDaemonDisabled) return buildUnavailableSyncSnapshot();
       return await (await requireSyncService()).connectToBrain(arg);
     },
   );
@@ -4219,6 +4292,7 @@ export function registerIpc({
       pool.callSyncForRoot<SyncRoleSnapshot>(rootPath, "sync.disconnectFromBrain")
     );
     if (runtimeStatus) return runtimeStatus;
+    if (localRuntimeDaemonDisabled) return buildUnavailableSyncSnapshot();
     return await (await requireSyncService()).disconnectFromBrain();
   });
 
@@ -4228,6 +4302,7 @@ export function registerIpc({
       pool.forgetSyncDeviceForRoot(rootPath, deviceId)
     );
     if (runtimeStatus) return runtimeStatus;
+    if (localRuntimeDaemonDisabled) return buildUnavailableSyncSnapshot();
     return await (await requireSyncService()).forgetDevice(deviceId);
   });
 
@@ -4236,6 +4311,7 @@ export function registerIpc({
       pool.callSyncForRoot<SyncTransferReadiness>(rootPath, "sync.getTransferReadiness")
     );
     if (runtimeReadiness) return runtimeReadiness;
+    if (localRuntimeDaemonDisabled) return buildUnavailableSyncSnapshot().transferReadiness;
     return await (await requireSyncService()).getTransferReadiness();
   });
 
@@ -4244,6 +4320,7 @@ export function registerIpc({
       pool.callSyncForRoot<SyncRoleSnapshot>(rootPath, "sync.transferBrainToLocal")
     );
     if (runtimeStatus) return runtimeStatus;
+    if (localRuntimeDaemonDisabled) return buildUnavailableSyncSnapshot();
     return await (await requireSyncService()).transferBrainToLocal();
   });
 
@@ -4252,6 +4329,7 @@ export function registerIpc({
       pool.syncPinForRoot(rootPath)
     );
     if (runtimePin) return runtimePin;
+    if (localRuntimeDaemonDisabled) return { pin: null };
     return { pin: (await requireSyncService()).getPin() };
   });
 
@@ -4261,6 +4339,7 @@ export function registerIpc({
       pool.setSyncPinForRoot(rootPath, normalizedPin)
     );
     if (runtimeStatus) return runtimeStatus;
+    if (localRuntimeDaemonDisabled) return buildUnavailableSyncSnapshot();
     return await (await requireSyncService()).setPin(normalizedPin);
   });
 
@@ -4269,6 +4348,7 @@ export function registerIpc({
       pool.generateSyncPinForRoot(rootPath)
     );
     if (runtimeStatus) return runtimeStatus;
+    if (localRuntimeDaemonDisabled) return buildUnavailableSyncSnapshot();
     return await (await requireSyncService()).generatePin();
   });
 
@@ -4277,6 +4357,7 @@ export function registerIpc({
       pool.clearSyncPinForRoot(rootPath)
     );
     if (runtimeStatus) return runtimeStatus;
+    if (localRuntimeDaemonDisabled) return buildUnavailableSyncSnapshot();
     return await (await requireSyncService()).clearPin();
   });
 
@@ -6504,6 +6585,66 @@ export function registerIpc({
     return ctx.agentChatService.getSlashCommands(arg);
   });
 
+  ipcMain.handle(IPC.agentChatClaudeMcpStatus, async (_event, arg: AgentChatClaudeMcpStatusArgs): Promise<AgentChatClaudeMcpServerStatus[]> => {
+    const ctx = getCtx();
+    return ctx.agentChatService.getClaudeMcpStatus(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatClaudeMcpReconnect, async (_event, arg: AgentChatClaudeMcpReconnectArgs): Promise<AgentChatClaudeMcpServerStatus[]> => {
+    const ctx = getCtx();
+    return ctx.agentChatService.reconnectClaudeMcpServer(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatClaudeMcpToggle, async (_event, arg: AgentChatClaudeMcpToggleArgs): Promise<AgentChatClaudeMcpServerStatus[]> => {
+    const ctx = getCtx();
+    return ctx.agentChatService.toggleClaudeMcpServer(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatListClaudePlugins, async (_event, arg: AgentChatClaudePluginsArgs = {}): Promise<AgentChatClaudePlugin[]> => {
+    const ctx = getCtx();
+    return ctx.agentChatService.listClaudePlugins(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatReloadClaudePlugins, async (_event, arg: AgentChatReloadClaudePluginsArgs): Promise<AgentChatReloadClaudePluginsResult> => {
+    const ctx = getCtx();
+    return ctx.agentChatService.reloadClaudePlugins(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatListClaudeOutputStyles, async (_event, arg: AgentChatClaudeOutputStylesArgs = {}): Promise<AgentChatClaudeOutputStyle[]> => {
+    const ctx = getCtx();
+    return ctx.agentChatService.listClaudeOutputStyles(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatSetClaudeOutputStyle, async (_event, arg: AgentChatSetClaudeOutputStyleArgs): Promise<AgentChatSession> => {
+    const ctx = getCtx();
+    return await ctx.agentChatService.setClaudeOutputStyle(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatListClaudeSessions, async (_event, arg: AgentChatClaudeSessionListArgs = {}): Promise<AgentChatClaudeSessionInfo[]> => {
+    const ctx = getCtx();
+    return ctx.agentChatService.listClaudeSessions(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatGetClaudeSessionInfo, async (_event, arg: AgentChatClaudeSessionInfoArgs): Promise<AgentChatClaudeSessionInfo | null> => {
+    const ctx = getCtx();
+    return ctx.agentChatService.getClaudeSessionInfo(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatGetClaudeSessionMessages, async (_event, arg: AgentChatClaudeSessionMessagesArgs): Promise<AgentChatClaudeSessionMessage[]> => {
+    const ctx = getCtx();
+    return ctx.agentChatService.getClaudeSessionMessages(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatGetContextUsage, async (_event, arg: AgentChatContextUsageArgs): Promise<AgentChatContextUsage | null> => {
+    const ctx = getCtx();
+    return ctx.agentChatService.getContextUsage(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatRewindFiles, async (_event, arg: AgentChatRewindFilesArgs): Promise<AgentChatRewindFilesResult> => {
+    const ctx = getCtx();
+    return ctx.agentChatService.rewindFiles(arg);
+  });
+
   ipcMain.handle(IPC.agentChatFileSearch, async (_event, arg: AgentChatFileSearchArgs): Promise<AgentChatFileSearchResult[]> => {
     const ctx = getCtx();
     const session = (await ctx.agentChatService.listSessions()).find((entry) => entry.sessionId === arg.sessionId);
@@ -6602,6 +6743,55 @@ export function registerIpc({
         ? rawMaxEvents
         : undefined;
     return ctx.agentChatService.getChatEventHistory(sessionId, maxEvents != null ? { maxEvents } : undefined);
+  });
+
+  ipcMain.handle(IPC.agentChatCodexOpenInCli, async (
+    event,
+    arg: AgentChatCodexOpenInCliArgs,
+  ): Promise<AgentChatCodexOpenInCliResult> => {
+    assertTrustedAppControlSender(event, IPC.agentChatCodexOpenInCli);
+    if (arg?.mode === "new-window") {
+      assertAppControlRateLimit(event, IPC.agentChatCodexOpenInCli, { windowMs: 10_000, max: 10 });
+    }
+
+    const ctx = getCtx();
+    const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId.trim() : "";
+    const mode = arg?.mode === "new-window" ? "new-window" : "ade-terminal";
+    if (!sessionId) {
+      throw new Error("agentChat.codex.openInCli requires a sessionId");
+    }
+    if (!ctx.agentChatService) {
+      throw new Error("Open in Codex CLI is unavailable until a project is loaded in this window.");
+    }
+    const resumeCtx = ctx.agentChatService.getCodexResumeContext(sessionId);
+    if (!resumeCtx) {
+      throw new Error(`No resumable Codex thread for session ${sessionId}`);
+    }
+    if (resumeCtx.provider !== "codex") {
+      throw new Error("Open-in-CLI is only supported for Codex sessions");
+    }
+    if (resumeCtx.isMission) {
+      throw new Error("Mission sessions cannot be resumed in Codex CLI (ephemeral CODEX_HOME)");
+    }
+    const resolved = resolveCodexExecutable();
+    const strategy = await detectCodexResumeStrategy(resolved.path);
+    const argv = buildResumeArgv(strategy, resumeCtx.threadId);
+    const result: AgentChatCodexOpenInCliResult = {
+      binary: resolved.path,
+      argv,
+      cwd: resumeCtx.laneWorktreePath,
+      threadId: resumeCtx.threadId,
+      copyThreadIdToClipboard: strategy.copyThreadIdToClipboard,
+    };
+    if (mode === "new-window") {
+      spawnInNewTerminalWindow({
+        binary: resolved.path,
+        argv,
+        cwd: resumeCtx.laneWorktreePath,
+      });
+      result.spawnedNewWindow = true;
+    }
+    return result;
   });
 
   ipcMain.handle(IPC.computerUseListArtifacts, async (_event, arg: ComputerUseArtifactListArgs = {}): Promise<ComputerUseArtifactView[]> => {

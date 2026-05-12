@@ -2,13 +2,14 @@
 
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { AppState } from "../../state/appStore";
 import { WorkStartSurface } from "./WorkStartSurface";
 
 const selectLane = vi.fn();
 
 vi.mock("../../state/appStore", () => ({
-  useAppStore: (selector: (state: { selectedLaneId: string | null; selectLane: typeof selectLane }) => unknown) =>
-    selector({ selectedLaneId: null, selectLane }),
+  useAppStore: <T,>(selector: (state: AppState) => T): T =>
+    selector({ selectedLaneId: null, selectLane, lanesLoading: false } as unknown as AppState),
 }));
 
 vi.mock("../chat/AgentChatPane", () => ({

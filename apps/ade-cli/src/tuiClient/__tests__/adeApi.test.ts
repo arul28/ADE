@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope } from "../../../../desktop/src/shared/types/chat";
-import { createChatSession, DEFAULT_CODEX_REASONING_EFFORT, discoverProjectSlashCommands, latestTokenStats, sendChatMessage } from "../adeApi";
+import { createChatSession, DEFAULT_CODEX_REASONING_EFFORT, discoverProjectSlashCommands, latestGoal, latestTokenStats, sendChatMessage } from "../adeApi";
 import type { AdeCodeConnection } from "../types";
 
 const tmpPaths: string[] = [];
@@ -58,7 +58,11 @@ describe("latestTokenStats", () => {
       streaming: false,
       inputTokens: 2_100,
       outputTokens: 700,
+      cacheReadTokens: null,
+      cacheCreationTokens: null,
+      contextWindow: 10_000,
       costUsd: 0.42,
+      rateLimit: null,
     });
   });
 
@@ -79,7 +83,11 @@ describe("latestTokenStats", () => {
       streaming: false,
       inputTokens: 40_000,
       outputTokens: 10_000,
+      cacheReadTokens: null,
+      cacheCreationTokens: null,
+      contextWindow: 200_000,
       costUsd: 0.12,
+      rateLimit: null,
     });
   });
 
@@ -93,6 +101,62 @@ describe("latestTokenStats", () => {
       }),
     ];
     expect(latestTokenStats(events).percent).toBeNull();
+  });
+
+  it("reads cachedInputTokens / cacheReadTokens from both tokens and codex_token_usage events", () => {
+    const events = [
+      envelope(1, {
+        type: "tokens",
+        turnId: "turn-1",
+        inputTokens: 1_000,
+        outputTokens: 500,
+        cacheReadTokens: 450,
+        contextWindow: 10_000,
+      } as AgentChatEventEnvelope["event"]),
+      envelope(2, {
+        type: "codex_token_usage",
+        usage: {
+          last: { inputTokens: 2_300, outputTokens: 1_100, cacheReadTokens: 600 },
+          modelContextWindow: 10_000,
+        },
+      } as AgentChatEventEnvelope["event"]),
+    ];
+    const stats = latestTokenStats(events);
+    expect(stats.cacheReadTokens).toBe(600);
+    expect(stats.inputTokens).toBe(2_300);
+    expect(stats.outputTokens).toBe(1_100);
+  });
+
+  it("reads cachedInputTokens from done usage events", () => {
+    const events = [
+      envelope(1, {
+        type: "done",
+        turnId: "turn-1",
+        status: "completed",
+        usage: { inputTokens: 1_000, outputTokens: 200, cachedInputTokens: 350 },
+      } as AgentChatEventEnvelope["event"]),
+    ];
+    const stats = latestTokenStats(events);
+    expect(stats.cacheReadTokens).toBe(350);
+  });
+});
+
+describe("latestGoal", () => {
+  it("tracks the most recent updated goal and respects clears", () => {
+    expect(latestGoal([
+      envelope(1, {
+        type: "codex_goal_updated",
+        goal: { objective: "Refactor middleware", status: "active", tokensUsed: 100, tokenBudget: 5_000 },
+      } as AgentChatEventEnvelope["event"]),
+    ])?.objective).toBe("Refactor middleware");
+
+    expect(latestGoal([
+      envelope(1, {
+        type: "codex_goal_updated",
+        goal: { objective: "Old goal", status: "active" },
+      } as AgentChatEventEnvelope["event"]),
+      envelope(2, { type: "codex_goal_cleared" } as AgentChatEventEnvelope["event"]),
+    ])).toBeNull();
   });
 });
 

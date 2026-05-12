@@ -2565,7 +2565,18 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
   const BROWSER_MOCK_AI_STATUS: any = {
     mode: "guest",
     availableProviders: {
-      claude: false,
+      claude: {
+        binary: {
+          present: false,
+          source: "missing",
+          path: null,
+        },
+        auth: {
+          ready: false,
+          mode: "none",
+          detail: null,
+        },
+      },
       codex: false,
       cursor: false,
       droid: false,
@@ -4469,9 +4480,32 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       unarchive: resolvedArg(undefined),
       delete: resolvedArg(undefined),
       updateSession: resolvedArg({ id: "mock" }),
-      warmupModel: resolvedArg(undefined),
-      onEvent: noop,
-      slashCommands: resolvedArg([]),
+	      warmupModel: resolvedArg(undefined),
+	      onEvent: noop,
+	      slashCommands: resolvedArg([]),
+	      getClaudeMcpStatus: resolvedArg([]),
+	      reconnectClaudeMcpServer: resolvedArg([]),
+	      toggleClaudeMcpServer: resolvedArg([]),
+	      listClaudePlugins: resolvedArg([]),
+	      reloadClaudePlugins: resolvedArg({ plugins: [], commands: [], agents: [], mcpServers: [], errorCount: 0 }),
+	      listClaudeOutputStyles: resolvedArg([
+	        { name: "Default", source: "builtin" },
+	        { name: "Proactive", source: "builtin" },
+	        { name: "Explanatory", source: "builtin" },
+	        { name: "Learning", source: "builtin" },
+	      ]),
+	      setClaudeOutputStyle: resolvedArg({ id: "mock", provider: "claude", claudeOutputStyle: "Default" }),
+	      listClaudeSessions: resolvedArg([]),
+      getClaudeSessionInfo: resolvedArg(null),
+      getClaudeSessionMessages: resolvedArg([]),
+      getContextUsage: resolvedArg(null),
+      rewindFiles: resolvedArg({
+        canRewind: false,
+        filesChanged: [],
+        insertions: 0,
+        deletions: 0,
+        dryRun: true,
+      }),
       fileSearch: resolvedArg([]),
       getTurnFileDiff: resolvedArg(null),
       listSubagents: resolvedArg([]),
@@ -4481,6 +4515,15 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         supportsInterrupt: false,
       }),
       saveTempAttachment: resolvedArg({ path: "/tmp/browser-mock-attachment" }),
+      codex: {
+        openInCli: async (_args: any) => ({
+          binary: "/usr/local/bin/codex",
+          argv: [] as string[],
+          cwd: "/tmp/browser-mock-lane",
+          threadId: "browser-mock-thread",
+          copyThreadIdToClipboard: true,
+        }),
+      },
       getEventHistory: async (arg: {
         sessionId: string;
         maxEvents?: number;

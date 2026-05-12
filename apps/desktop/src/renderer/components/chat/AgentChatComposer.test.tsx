@@ -323,9 +323,28 @@ describe("AgentChatComposer", () => {
 
     expect(screen.getByRole("listbox", { name: "Claude permission mode" })).toBeTruthy();
     expect(screen.getByRole("option", { name: /Ask permissions/ })).toBeTruthy();
+    expect(screen.getByRole("option", { name: /Auto/ })).toBeTruthy();
     expect(screen.getByRole("option", { name: /Accept edits/ })).toBeTruthy();
     expect(screen.getByRole("option", { name: /Plan mode/ })).toBeTruthy();
     expect(screen.getByRole("option", { name: /Bypass permissions/ })).toBeTruthy();
+  });
+
+  it("routes Claude auto through the native permission callback", () => {
+    const onInteractionModeChange = vi.fn();
+    const onClaudePermissionModeChange = vi.fn();
+    renderComposer({
+      sessionProvider: "claude",
+      modelId: "anthropic/claude-sonnet-4-6",
+      availableModelIds: ["anthropic/claude-sonnet-4-6"],
+      onInteractionModeChange,
+      onClaudePermissionModeChange,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Claude permission mode" }));
+    fireEvent.click(screen.getByRole("option", { name: /Auto/ }));
+
+    expect(onInteractionModeChange).toHaveBeenCalledWith("default");
+    expect(onClaudePermissionModeChange).toHaveBeenCalledWith("auto");
   });
 
   it("routes Claude plan through both interaction and permission callbacks", () => {
@@ -898,6 +917,59 @@ describe("AgentChatComposer", () => {
         value: originalPlatform,
       });
     }
+  });
+
+  it("clears the drop highlight when a URL drop is rejected", async () => {
+    const props = renderComposer({
+      turnActive: false,
+      draft: "",
+    });
+    const rejectedUrlDrop = {
+      files: [],
+      types: ["text/uri-list"],
+      getData: vi.fn((type: string) => (
+        type === "text/uri-list" ? "https://example.com/page" : ""
+      )),
+    };
+    const input = screen.getByPlaceholderText("Type to vibecode...");
+
+    fireEvent.dragOver(input, { dataTransfer: rejectedUrlDrop });
+    expect(screen.getByText("Drop files to attach")).toBeTruthy();
+
+    const dropEvent = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(dropEvent, "dataTransfer", {
+      configurable: true,
+      value: rejectedUrlDrop,
+    });
+    fireEvent(input, dropEvent);
+
+    await waitFor(() => expect(screen.queryByText("Drop files to attach")).toBeNull());
+    expect(dropEvent.defaultPrevented).toBe(true);
+    expect(props.onAddAttachment).not.toHaveBeenCalled();
+  });
+
+  it("does not attach URLs whose image extension appears only in query text", () => {
+    const props = renderComposer({
+      turnActive: false,
+      draft: "",
+    });
+    const clipboardData = {
+      files: [],
+      items: [],
+      getData: vi.fn((type: string) => (
+        type === "text/uri-list" || type === "text/plain"
+          ? "https://example.com/api/asset?file=hero.png"
+          : ""
+      )),
+    };
+
+    const pasteAllowed = fireEvent.paste(screen.getByPlaceholderText("Type to vibecode..."), {
+      clipboardData,
+    });
+
+    expect(pasteAllowed).toBe(true);
+    expect(props.onAddAttachment).not.toHaveBeenCalled();
+    expect(screen.queryByText("Image URL attached")).toBeNull();
   });
 
   it("hides native permission controls until a model is selected", () => {

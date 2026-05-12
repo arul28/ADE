@@ -51,7 +51,12 @@ type HiddenTranscriptEvent =
   | Extract<AgentChatEvent, { type: "file_change" }>
   | Extract<AgentChatEvent, { type: "web_search" }>
   | Extract<AgentChatEvent, { type: "reasoning" }>
-  | Extract<AgentChatEvent, { type: "pending_input_resolved" }>;
+  | Extract<AgentChatEvent, { type: "pending_input_resolved" }>
+  // Goal and token-usage events drive the pinned goal banner and chat-column-bottom
+  // token footer; the inline transcript rows would be duplicate noise.
+  | Extract<AgentChatEvent, { type: "codex_goal_updated" }>
+  | Extract<AgentChatEvent, { type: "codex_goal_cleared" }>
+  | Extract<AgentChatEvent, { type: "codex_token_usage" }>;
 
 type ChatTranscriptVisibleEvent = Exclude<AgentChatEvent, HiddenTranscriptEvent>;
 
@@ -89,6 +94,24 @@ export type ChatTranscriptGroupedEnvelope = {
   timestamp: string;
   event: ChatTranscriptRenderEvent | ChatWorkLogGroupEvent;
 };
+
+type PlanTranscriptEvent = Extract<AgentChatEvent, { type: "plan" }>;
+
+function mergePlanTranscriptEvent(previous: PlanTranscriptEvent, incoming: PlanTranscriptEvent): PlanTranscriptEvent {
+  const hasIncomingSteps = incoming.steps.length > 0;
+  const nextState = incoming.state ?? (hasIncomingSteps ? "updated" : previous.state);
+  const preserveStreamingText = nextState === "delta" && !hasIncomingSteps && incoming.streamingText == null;
+  return {
+    ...previous,
+    ...incoming,
+    turnId: incoming.turnId ?? previous.turnId,
+    itemId: incoming.itemId ?? previous.itemId,
+    state: nextState,
+    steps: hasIncomingSteps ? incoming.steps : previous.steps,
+    explanation: incoming.explanation ?? previous.explanation,
+    streamingText: preserveStreamingText ? previous.streamingText : incoming.streamingText,
+  };
+}
 
 export function summarizeInlineText(value: string, maxChars = 120): string {
   const text = value.replace(/\s+/g, " ").trim();
@@ -283,14 +306,6 @@ function shouldMergeTextRows(
   if (turnAndItemMatch(previous, next)) return true;
 
   return !previous.turnId && !next.turnId && !previous.itemId && !next.itemId;
-}
-
-function shouldMergePlanTextRows(
-  previous: Extract<AgentChatEvent, { type: "plan_text" }>,
-  next: Extract<AgentChatEvent, { type: "plan_text" }>,
-): boolean {
-  return turnAndItemMatch(previous, next)
-    || (!previous.turnId && !next.turnId && !previous.itemId && !next.itemId);
 }
 
 function buildCollapseKey(
@@ -542,6 +557,16 @@ export function appendCollapsedChatTranscriptEvent(
     return;
   }
 
+  // Codex goal + token usage events drive the pinned goal banner / chat-bottom
+  // token footer; inline transcript rows would be duplicate noise.
+  if (
+    event.type === "codex_goal_updated"
+    || event.type === "codex_goal_cleared"
+    || event.type === "codex_token_usage"
+  ) {
+    return;
+  }
+
   if (event.type === "status") {
     const normalizedMessage = summarizeInlineText(event.message ?? "", 120).toLowerCase();
     const keepStatus =
@@ -640,24 +665,6 @@ export function appendCollapsedChatTranscriptEvent(
     }
   }
 
-  if (event.type === "plan_text") {
-    if (!event.text.trim().length) return;
-    const previous = rows[rows.length - 1];
-    if (previous?.event.type === "plan_text" && shouldMergePlanTextRows(previous.event, event)) {
-      rows[rows.length - 1] = {
-        ...previous,
-        timestamp: envelope.timestamp,
-        event: {
-          ...previous.event,
-          text: mergeStreamingText(previous.event.text, event.text),
-          ...(event.turnId && !previous.event.turnId ? { turnId: event.turnId } : {}),
-          ...(event.itemId && !previous.event.itemId ? { itemId: event.itemId } : {}),
-        },
-      };
-      return;
-    }
-  }
-
   if (event.type === "system_notice") {
     const previous = rows[rows.length - 1];
     if (
@@ -701,16 +708,6 @@ export function appendCollapsedChatTranscriptEvent(
   if (event.type === "plan") {
     const nextTurn = event.turnId ?? null;
     if (nextTurn !== null) {
-      for (let index = rows.length - 1; index >= 0; index -= 1) {
-        const candidate = rows[index];
-        if (
-          candidate?.event.type === "plan_text"
-          && (candidate.event.turnId ?? null) === nextTurn
-        ) {
-          rows.splice(index, 1);
-        }
-      }
-
       const matchIndex = [...rows]
         .reverse()
         .findIndex((candidate) =>
@@ -722,7 +719,7 @@ export function appendCollapsedChatTranscriptEvent(
         rows[actualIndex] = {
           ...rows[actualIndex]!,
           timestamp: envelope.timestamp,
-          event,
+          event: mergePlanTranscriptEvent(rows[actualIndex]!.event as PlanTranscriptEvent, event),
         };
         return;
       }

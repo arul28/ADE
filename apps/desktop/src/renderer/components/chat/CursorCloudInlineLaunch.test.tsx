@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CursorCloudInlineLaunch } from "./CursorCloudInlineLaunch";
 
@@ -59,8 +59,6 @@ describe("CursorCloudInlineLaunch", () => {
     fireEvent.click(screen.getByRole("button", { name: "Cancel cloud send" }));
 
     expect(onClose).toHaveBeenCalledTimes(1);
-    await waitFor(() => {
-      expect(window.ade.ai.cursorCloudCreateRun).not.toHaveBeenCalled();
-    });
+    expect(window.ade.ai.cursorCloudCreateRun).not.toHaveBeenCalled();
   });
 });

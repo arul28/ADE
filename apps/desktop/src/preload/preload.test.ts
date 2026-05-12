@@ -190,7 +190,15 @@ describe("preload OAuth bridge", () => {
   it("clears the AI status bridge cache after API key verification", async () => {
     const status = {
       mode: "guest",
-      availableProviders: { claude: false, codex: false, cursor: false, droid: false },
+      availableProviders: {
+        claude: {
+          binary: { present: false, source: "missing", path: null },
+          auth: { ready: false, mode: "none", detail: null },
+        },
+        codex: false,
+        cursor: false,
+        droid: false,
+      },
       models: { claude: [], codex: [], cursor: [], droid: [] },
       features: [],
     };
@@ -1006,6 +1014,7 @@ describe("preload OAuth bridge", () => {
     };
     const labels = [{ name: "bug", color: "d73a4a" }];
     const collaborators = [{ login: "octocat", avatarUrl: "https://example.test/octocat.png" }];
+    const remoteStatus = { repo: { owner: "acme", name: "repo" }, hasOrigin: true };
     const invoke = vi.fn(async (channel: string, payload?: unknown) => {
       if (channel === IPC.appGetWindowSession) {
         return { windowId: 1, project: null, binding };
@@ -1021,6 +1030,15 @@ describe("preload OAuth bridge", () => {
             domain: "github",
             action: "listRepoCollaborators",
             result: collaborators,
+            statusHints: {},
+          };
+        }
+        if (request?.action === "getRemoteStatus") {
+          return {
+            ok: true,
+            domain: "github",
+            action: "getRemoteStatus",
+            result: remoteStatus,
             statusHints: {},
           };
         }
@@ -1049,6 +1067,7 @@ describe("preload OAuth bridge", () => {
     const bridge = (globalThis as any).__adeBridge;
     await expect(bridge.github.listRepoLabels({ owner: "acme", name: "repo" })).resolves.toEqual(labels);
     await expect(bridge.github.listRepoCollaborators({ owner: "acme", name: "repo" })).resolves.toEqual(collaborators);
+    await expect(bridge.github.getRemoteStatus({ forceRefresh: true })).resolves.toEqual(remoteStatus);
 
     expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
       id: "target-1",
@@ -1068,8 +1087,18 @@ describe("preload OAuth bridge", () => {
         args: { owner: "acme", name: "repo" },
       },
     });
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: "target-1",
+      projectId: "project-1",
+      request: {
+        domain: "github",
+        action: "getRemoteStatus",
+        args: { forceRefresh: true },
+      },
+    });
     expect(invoke).not.toHaveBeenCalledWith(IPC.githubListRepoLabels, { owner: "acme", name: "repo" });
     expect(invoke).not.toHaveBeenCalledWith(IPC.githubListRepoCollaborators, { owner: "acme", name: "repo" });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.githubGetRemoteStatus, expect.anything());
   });
 
   it("routes GitHub publish through a remote project runtime when bound", async () => {

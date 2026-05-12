@@ -58,11 +58,12 @@ export function shouldFlushBufferedAssistantTextForEvent(event: AgentChatEvent):
     case "text":
     case "reasoning":
     case "activity":
-    case "plan_text":
     case "subagent_started":
     case "subagent_progress":
     case "subagent_result":
       return false;
+    case "plan":
+      return event.streamingText === undefined;
     default:
       return true;
   }

@@ -12,6 +12,7 @@
  */
 import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -43,13 +44,23 @@ if (!route) {
   process.exit(2);
 }
 
-const runId = args.runId ?? `warm-${Date.now()}`;
+function sanitizeRunId(value) {
+  return String(value)
+    .trim()
+    .replace(/[^A-Za-z0-9._-]/g, "_")
+    .replace(/^\.+/, "")
+    .slice(0, 120);
+}
+
+const runId = sanitizeRunId(args.runId ?? `warm-${Date.now()}`);
+if (!runId) {
+  console.error("perf-launch: run id must contain at least one safe filename character");
+  process.exit(2);
+}
 mkdirSync(join(homedir(), ".ade", "perf-runs", runId), { recursive: true });
 
-const defaultPerfPass = "/Users/admin/Projects/perf pass";
-const projectRoot = args.noProject
-  ? mkdtempSync(join(tmpdir(), "ade-perf-no-project-"))
-  : (args.projectRoot ?? process.env.ADE_PERF_PASS_DIR ?? defaultPerfPass);
+const tempProjectRoot = args.noProject ? mkdtempSync(join(tmpdir(), "ade-perf-no-project-")) : null;
+const projectRoot = tempProjectRoot ?? args.projectRoot ?? process.env.ADE_PERF_PASS_DIR ?? process.cwd();
 
 console.log(`[perf-launch] tab=${args.tab ?? "(route)"} route=${route} runId=${runId}`);
 console.log(`[perf-launch] project=${projectRoot}${args.noProject ? " (no-project mode)" : ""}`);
@@ -77,20 +88,46 @@ const child = spawn(
   }
 );
 
-const stop = (code) => {
+const waitForChildExit = (timeoutMs) => {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), timeoutMs);
+    child.once("exit", () => {
+      clearTimeout(timer);
+      resolve(true);
+    });
+  });
+};
+
+let stopping = false;
+const cleanupTempProjectRoot = async () => {
+  if (!tempProjectRoot) return;
+  await rm(tempProjectRoot, { recursive: true, force: true }).catch(() => {});
+};
+
+const stop = async (code) => {
+  if (stopping) return;
+  stopping = true;
   try {
-    if (!child.killed) {
+    if (child.exitCode === null && child.signalCode === null) {
       child.kill("SIGTERM");
-      setTimeout(() => {
-        if (!child.killed) child.kill("SIGKILL");
-      }, 5_000).unref();
+      const exited = await waitForChildExit(5_000);
+      if (!exited && child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGKILL");
+        await waitForChildExit(1_000);
+      }
     }
   } catch {
     // ignore
   }
+  await cleanupTempProjectRoot();
   process.exit(code);
 };
 
-process.on("SIGINT", () => stop(130));
-process.on("SIGTERM", () => stop(143));
-child.on("exit", (code) => process.exit(code ?? 0));
+process.on("SIGINT", () => { void stop(130); });
+process.on("SIGTERM", () => { void stop(143); });
+child.on("exit", (code) => {
+  if (!stopping) {
+    void cleanupTempProjectRoot().finally(() => process.exit(code ?? 0));
+  }
+});

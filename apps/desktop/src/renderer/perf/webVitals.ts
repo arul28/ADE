@@ -3,6 +3,7 @@ import { isPerfActive } from "./markers";
 const LONG_TASK_THRESHOLD_MS = 50;
 
 let installed = false;
+let cumulativeLayoutShift = 0;
 
 function send(kind: string, payload: Record<string, unknown>): void {
   if (!isPerfActive()) return;
@@ -57,13 +58,12 @@ export function installWebVitalsObservers(): void {
   });
 
   observe("layout-shift", (entries) => {
-    let total = 0;
     for (const entry of entries as unknown as Array<PerformanceEntry & { value: number; hadRecentInput: boolean }>) {
       if (entry.hadRecentInput) continue;
-      total += entry.value;
+      cumulativeLayoutShift += entry.value;
     }
-    if (total > 0) {
-      send("webVital", { metric: "CLS", value: total });
+    if (cumulativeLayoutShift > 0) {
+      send("webVital", { metric: "CLS", value: cumulativeLayoutShift });
     }
   });
 

@@ -109,6 +109,24 @@ describe("ChatAttachmentTray", () => {
     expect(screen.queryByRole("button", { name: "Open context.txt" })).toBeNull();
   });
 
+  it("renders image URL attachments as URL chips without loading a local preview", () => {
+    const onRemove = vi.fn();
+
+    render(
+      <ChatAttachmentTray
+        attachments={[{ path: "https://example.com/diagram.png", type: "image-url", url: "https://example.com/diagram.png" }]}
+        mode="standard"
+        onRemove={onRemove}
+      />,
+    );
+
+    expect(screen.getByText("example.com")).toBeTruthy();
+    expect(getImageDataUrl).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove example.com" }));
+    expect(onRemove).toHaveBeenCalledWith("https://example.com/diagram.png");
+  });
+
   it("renders removable Linear issue context chips", () => {
     const onRemoveContext = vi.fn();
     const contextAttachment = makeLinearIssueContextAttachment(makeIssue(), "manual");
