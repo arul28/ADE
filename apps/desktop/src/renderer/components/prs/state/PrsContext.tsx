@@ -68,6 +68,7 @@ type PrsState = {
   detailReviewThreads: PrReviewThread[];
   detailDeployments: PrDeployment[];
   detailAiSummary: PrAiSummary | null;
+  detailLiveDataPrId: string | null;
   detailBusy: boolean;
 
   // Rebase state
@@ -322,6 +323,18 @@ function readInitialRouteState(fallback?: PrsContextWarmCache | null): {
   };
 }
 
+function currentRouteRequestsPrDiagnostics(): boolean {
+  try {
+    const route = parsePrsRouteState({
+      search: window.location.search,
+      hash: window.location.hash,
+    });
+    return resolvePrsActiveTab(route).isWorkflowRoute || route.prId !== null;
+  } catch {
+    return false;
+  }
+}
+
 function requirePrId(prId: string): string {
   const normalized = String(prId ?? "").trim();
   if (!normalized) throw new Error("PR id is required.");
@@ -400,6 +413,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
   );
   const [detailDeployments, setDetailDeployments] = useState<PrDeployment[]>(() => warmCache?.detailDeployments ?? []);
   const [detailAiSummary, setDetailAiSummary] = useState<PrAiSummary | null>(() => warmCache?.detailAiSummary ?? null);
+  const [detailLiveDataPrId, setDetailLiveDataPrId] = useState<string | null>(null);
   const [detailBusy, setDetailBusy] = useState(false);
   const [viewerLogin, setViewerLogin] = useState<string | null>(() => warmCache?.viewerLogin ?? null);
   const detailCacheHasDataRef = React.useRef(false);
@@ -683,10 +697,13 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
   // If a refresh is requested while one is already in flight, we set a
   // pending flag so that once the current flight completes it immediately
   // kicks off another refresh instead of silently dropping the request.
-  const applyLocalPrState = useCallback(async (options: { includeWorkflowDiagnostics?: boolean } = {}) => {
+  const applyLocalPrState = useCallback(async (options: {
+    includeWorkflowDiagnostics?: boolean;
+    forceRebaseDiagnostics?: boolean;
+  } = {}) => {
     const shouldLoadWorkflowState = activeTabRef.current !== "normal";
     const shouldLoadRebaseState = (options.includeWorkflowDiagnostics ?? true)
-      && (shouldLoadWorkflowState || selectedPrIdRef.current !== null);
+      && (options.forceRebaseDiagnostics === true || shouldLoadWorkflowState || selectedPrIdRef.current !== null);
     const [prList, laneList, queueStateList, refreshedRebaseNeeds, refreshedAutoRebaseStatuses] = await Promise.all([
       window.ade.prs.listWithConflicts({ includeConflictAnalysis: shouldLoadWorkflowState }),
       window.ade.lanes.list({ includeStatus: false }),
@@ -776,11 +793,13 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       if (options.githubRefreshMode === "await") {
         await window.ade.prs.refresh().catch(() => {});
       }
-      await applyLocalPrState();
+      const shouldLoadWorkflowDiagnostics =
+        activeTabRef.current !== "normal" || selectedPrIdRef.current !== null || currentRouteRequestsPrDiagnostics();
+      await applyLocalPrState({ forceRebaseDiagnostics: shouldLoadWorkflowDiagnostics });
       warmCacheHydratedAtRef.current = Date.now();
       if (options.githubRefreshMode === "background") {
         void window.ade.prs.refresh()
-          .then(() => applyLocalPrState())
+          .then(() => applyLocalPrState({ forceRebaseDiagnostics: shouldLoadWorkflowDiagnostics }))
           .then(() => {
             warmCacheHydratedAtRef.current = Date.now();
           })
@@ -877,6 +896,9 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
         } else {
           console.warn("[PrsContext] Failed to refresh PR comments:", commentsResult.reason);
         }
+        if ([statusResult, checksResult, reviewsResult, commentsResult].every((result) => result.status === "fulfilled")) {
+          setDetailLiveDataPrId(prId);
+        }
         detailLoadedAtByPrIdRef.current[prId] = Date.now();
       })
       .finally(() => {
@@ -901,6 +923,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       setDetailReviewThreads([]);
       setDetailDeployments([]);
       setDetailAiSummary(null);
+      setDetailLiveDataPrId(null);
       return;
     }
 
@@ -918,6 +941,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       setDetailReviewThreads([]);
       setDetailDeployments([]);
       setDetailAiSummary(null);
+      setDetailLiveDataPrId(null);
       setSelectedPrId(null);
       return;
     }
@@ -933,6 +957,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       && detailCacheHasDataRef.current;
     if (!hasFreshDetailCache) {
       detailStatePrIdRef.current = null;
+      setDetailLiveDataPrId(null);
       setDetailStatus(null);
       setDetailChecks([]);
       setDetailReviews([]);
@@ -953,6 +978,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       }).catch(() => {});
     }
     if (hasFreshDetailCache) {
+      setDetailLiveDataPrId(prId);
       setDetailBusy(false);
       const intervalId = window.setInterval(() => {
         refreshDetailSilently(prId);
@@ -986,6 +1012,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
               console.warn("[PrsContext] GitHub rate limit hit — pausing detail polling for 5 min");
               // Clear stale data on rate limit
               detailStatePrIdRef.current = null;
+              setDetailLiveDataPrId(null);
               setDetailStatus(null);
               setDetailChecks([]);
               setDetailReviews([]);
@@ -1022,6 +1049,11 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
         } else {
           console.warn("[PrsContext] Failed to load PR comments:", commentsResult.reason);
           setDetailComments([]);
+        }
+        if ([statusResult, checksResult, reviewsResult, commentsResult].every((result) => result.status === "fulfilled")) {
+          setDetailLiveDataPrId(prId);
+        } else {
+          setDetailLiveDataPrId(null);
         }
         detailLoadedAtByPrIdRef.current[prId] = Date.now();
       })
@@ -1313,6 +1345,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       detailReviewThreads,
       detailDeployments,
       detailAiSummary,
+      detailLiveDataPrId,
       detailBusy,
       rebaseNeeds,
       autoRebaseStatuses,
@@ -1371,6 +1404,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       detailReviewThreads,
       detailDeployments,
       detailAiSummary,
+      detailLiveDataPrId,
       detailBusy,
       rebaseNeeds,
       autoRebaseStatuses,

@@ -420,6 +420,7 @@ type PrDetailPaneProps = {
   checks: PrCheck[];
   reviews: PrReview[];
   comments: PrComment[];
+  liveDetailReady?: boolean;
   detailBusy: boolean;
   lanes: LaneSummary[];
   mergeMethod: MergeMethod;
@@ -439,6 +440,7 @@ export function PrDetailPane({
   checks: liveChecks,
   reviews: liveReviews,
   comments: liveComments,
+  liveDetailReady = false,
   detailBusy,
   lanes,
   mergeMethod,
@@ -488,10 +490,10 @@ export function PrDetailPane({
   const [activity, setActivity] = React.useState<PrActivityEvent[]>([]);
   const [reviewThreads, setReviewThreads] = React.useState<PrReviewThread[]>([]);
   const timelineRailsRef = React.useRef<PrDetailTimelineRailsRef | null>(null);
-  const status = liveStatus ?? snapshotStatus;
-  const checks = liveChecks.length > 0 ? liveChecks : snapshotChecks;
-  const reviews = liveReviews.length > 0 ? liveReviews : snapshotReviews;
-  const comments = liveComments.length > 0 ? liveComments : snapshotComments;
+  const status = liveDetailReady ? liveStatus : (liveStatus ?? snapshotStatus);
+  const checks = liveDetailReady ? liveChecks : (liveChecks.length > 0 ? liveChecks : snapshotChecks);
+  const reviews = liveDetailReady ? liveReviews : (liveReviews.length > 0 ? liveReviews : snapshotReviews);
+  const comments = liveDetailReady ? liveComments : (liveComments.length > 0 ? liveComments : snapshotComments);
 
   const setActiveTab = React.useCallback((tab: DetailTab) => {
     setActiveTabState(tab);

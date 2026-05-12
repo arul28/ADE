@@ -407,6 +407,7 @@ export function GitHubTab({
     detailChecks,
     detailReviews,
     detailComments,
+    detailLiveDataPrId,
     detailBusy,
     loading: prsContextLoading,
     setViewerLogin: setContextViewerLogin,
@@ -1050,6 +1051,7 @@ export function GitHubTab({
               checks={detailChecks}
               reviews={detailReviews}
               comments={detailComments}
+              liveDetailReady={detailLiveDataPrId === selectedLinkedPr.id}
               detailBusy={detailBusy}
               lanes={lanes}
               mergeMethod={mergeMethod}

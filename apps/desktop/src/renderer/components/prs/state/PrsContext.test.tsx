@@ -159,6 +159,10 @@ describe("PrsContext refresh", () => {
 
   it("refreshes rebase needs and auto-rebase statuses for workflow routes without waiting for events", async () => {
     window.location.hash = "#/prs?tab=workflows&workflow=rebase&laneId=lane-1";
+    let resolveRefresh!: () => void;
+    vi.mocked(window.ade.prs.refresh).mockReturnValueOnce(new Promise((resolve) => {
+      resolveRefresh = () => resolve([]);
+    }));
 
     render(
       <PrsProvider>
@@ -176,9 +180,14 @@ describe("PrsContext refresh", () => {
     });
     expect(window.ade.lanes.list).toHaveBeenCalledWith({ includeStatus: false });
     expect(window.ade.prs.refresh).toHaveBeenCalledTimes(1);
+    const initialRebaseScanCount = vi.mocked(window.ade.rebase.scanNeeds).mock.calls.length;
+    const initialAutoStatusCount = vi.mocked(window.ade.lanes.listAutoRebaseStatuses).mock.calls.length;
+    expect(initialRebaseScanCount).toBeGreaterThanOrEqual(1);
+    expect(initialAutoStatusCount).toBeGreaterThanOrEqual(1);
+    resolveRefresh();
     await waitFor(() => {
-      expect(vi.mocked(window.ade.rebase.scanNeeds).mock.calls.length).toBeGreaterThanOrEqual(2);
-      expect(vi.mocked(window.ade.lanes.listAutoRebaseStatuses).mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(vi.mocked(window.ade.rebase.scanNeeds).mock.calls.length).toBeGreaterThan(initialRebaseScanCount);
+      expect(vi.mocked(window.ade.lanes.listAutoRebaseStatuses).mock.calls.length).toBeGreaterThan(initialAutoStatusCount);
     });
   });
 

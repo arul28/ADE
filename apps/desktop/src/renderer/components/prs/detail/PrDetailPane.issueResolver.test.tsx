@@ -305,6 +305,7 @@ function renderPane(args: {
   getDetail?: ReturnType<typeof vi.fn>;
   getFiles?: ReturnType<typeof vi.fn>;
   getCommits?: ReturnType<typeof vi.fn>;
+  liveDetailReady?: boolean;
 }) {
   const laneList = args.lanes ?? [makeLane({
     status: {
@@ -530,6 +531,7 @@ function renderPane(args: {
         checks={args.checks}
         reviews={[]}
         comments={[]}
+        liveDetailReady={args.liveDetailReady}
         detailBusy={false}
         lanes={laneList}
         mergeMethod={args.mergeMethod ?? "squash"}
@@ -728,6 +730,39 @@ describe("PrDetailPane issue resolver CTA", () => {
       expect(screen.getByText("Cached comment body")).toBeTruthy();
       expect(screen.getByText("Cached review body")).toBeTruthy();
     });
+  });
+
+  it("prefers authoritative empty live detail over cached snapshot data", async () => {
+    const user = userEvent.setup();
+    const listSnapshots = vi.fn().mockResolvedValue([{
+      prId: "pr-80",
+      detail: null,
+      status: makeStatus({ checksStatus: "passing", reviewStatus: "approved" }),
+      checks: [makeCheck({ name: "Cached snapshot check", conclusion: "success" })],
+      reviews: [makeReview({ body: "Cached review body" })],
+      comments: [makeComment({ body: "Cached comment body" })],
+      files: [],
+      commits: [],
+      updatedAt: "2026-03-23T12:01:00.000Z",
+    }]);
+    renderPane({
+      status: null,
+      checks: [],
+      reviewThreads: [],
+      listSnapshots,
+      liveDetailReady: true,
+    });
+
+    await waitFor(() => {
+      expect(listSnapshots).toHaveBeenCalledWith({ prId: "pr-80" });
+    });
+
+    await user.click(screen.getByRole("button", { name: /ci \/ checks/i }));
+    expect(screen.queryByText("Cached snapshot check")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: /activity/i }));
+    expect(screen.queryByText("Cached comment body")).toBeNull();
+    expect(screen.queryByText("Cached review body")).toBeNull();
   });
 
   it("refreshes detail-side action runs when the selected PR status changes", async () => {
