@@ -104,6 +104,8 @@ export function WorkSidebar({
   const [selectedCommit, setSelectedCommit] = useState<GitCommitSummary | null>(null);
   const [appControlSession, setAppControlSession] = useState<AppControlSession | null>(null);
   const [iosSession, setIosSession] = useState<IosSimulatorSession | null>(null);
+  const sidebarRef = useRef<HTMLElement | null>(null);
+  const [compactTabs, setCompactTabs] = useState(false);
 
   const activeLane = useMemo(
     () => (laneId ? lanes.find((lane) => lane.id === laneId) ?? null : null),
@@ -116,6 +118,19 @@ export function WorkSidebar({
     setSelectedMode(null);
     setSelectedCommit(null);
   }, [laneId]);
+
+  useEffect(() => {
+    const el = sidebarRef.current;
+    if (!el) return undefined;
+    const update = () => {
+      setCompactTabs(el.getBoundingClientRect().width < 460);
+    };
+    update();
+    if (typeof ResizeObserver === "undefined") return undefined;
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   const previousBrowserTabRef = useRef(tab === "browser");
   useEffect(() => {
@@ -357,7 +372,10 @@ export function WorkSidebar({
     : activeLane?.name ?? "No active session";
 
   return (
-    <aside className="flex h-full min-h-0 min-w-[280px] flex-col border-l border-white/[0.08] bg-surface/85">
+    <aside
+      ref={sidebarRef}
+      className="flex h-full min-h-0 min-w-[280px] flex-col border-l border-white/[0.08] bg-surface/85"
+    >
       <div className="flex min-h-[42px] shrink-0 items-center gap-2 border-b border-white/[0.08] px-2 py-1.5">
         <div className="ade-liquid-glass-pill flex min-w-0 flex-1 items-center gap-0.5 rounded-full p-0.5">
           {WORK_SIDEBAR_TABS.map(({ id, label, Icon }) => {
@@ -373,7 +391,8 @@ export function WorkSidebar({
                 <button
                   type="button"
                   className={cn(
-                    "inline-flex h-7 min-w-0 shrink-0 cursor-pointer items-center gap-1.5 rounded-full border-none bg-transparent px-2 text-[10px] font-medium transition-all",
+                    "inline-flex h-7 min-w-0 shrink-0 cursor-pointer items-center rounded-full border-none bg-transparent text-[10px] font-medium transition-all",
+                    compactTabs ? "w-8 justify-center px-0" : "gap-1.5 px-2",
                     active ? "ade-work-tab-active text-fg" : "text-muted-fg",
                   )}
                   onClick={() => {
@@ -381,9 +400,11 @@ export function WorkSidebar({
                     onTabChange(id);
                   }}
                   aria-pressed={active}
+                  aria-label={label}
+                  title={label}
                 >
                   <Icon size={12} weight={active ? "fill" : "regular"} className="shrink-0" />
-                  <span className="truncate">{label}</span>
+                  <span className={compactTabs ? "sr-only" : "truncate"}>{label}</span>
                 </button>
               </SmartTooltip>
             );

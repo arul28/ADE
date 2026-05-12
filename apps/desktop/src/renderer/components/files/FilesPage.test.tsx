@@ -458,6 +458,26 @@ describe("FilesPage", () => {
     expect(await screen.findByText(".ade/notes/project.md")).toBeTruthy();
   });
 
+  it("copies a file path from the tree context menu", async () => {
+    renderFilesPage({
+      openFilePath: "src/index.ts",
+      preferPrimaryWorkspace: true,
+    });
+
+    await waitForEditorText("value = 1");
+    fireEvent.click(await screen.findByTitle("src"));
+
+    fireEvent.contextMenu(await screen.findByTitle("src/index.ts"), {
+      clientX: 100,
+      clientY: 100,
+    });
+    fireEvent.click(await screen.findByText("COPY PATH"));
+
+    await waitFor(() => {
+      expect(window.ade.app.writeClipboardText).toHaveBeenCalledWith("src/index.ts");
+    });
+  });
+
   it("renders image files inline without starting the code editor", async () => {
     fileReadOverrides["assets/logo.png"] = {
       content: "iVBORw0KGgo=",
@@ -948,6 +968,44 @@ describe("FilesPage", () => {
 
     await waitFor(() => {
       expect(screen.getByTestId("lanes-nav").textContent).toBe("/lanes");
+    });
+  });
+
+  it("toggles primary workspace edit allowance from the non-embedded chrome", async () => {
+    vi.mocked(window.ade.files.listWorkspaces).mockResolvedValue([
+      {
+        id: "primary",
+        kind: "primary",
+        laneId: null,
+        name: "ADE",
+        branchRef: "refs/heads/main",
+        rootPath: projectRoot,
+        isReadOnlyByDefault: true,
+      },
+    ]);
+
+    renderFilesPage({
+      openFilePath: "src/index.ts",
+      preferPrimaryWorkspace: true,
+    });
+
+    await waitForEditorText("value = 1");
+    expect(screen.getByText("READ-ONLY")).toBeTruthy();
+    expect(latestMockEditor?.updateOptions).toHaveBeenCalledWith(expect.objectContaining({ readOnly: true }));
+
+    fireEvent.click(screen.getByRole("button", { name: "TRUST & EDIT" }));
+
+    expect(screen.getByRole("button", { name: "DISABLE EDITS" })).toBeTruthy();
+    expect(screen.queryByText("READ-ONLY")).toBeNull();
+    await waitFor(() => {
+      expect(latestMockEditor?.updateOptions).toHaveBeenCalledWith(expect.objectContaining({ readOnly: false }));
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "DISABLE EDITS" }));
+
+    expect(screen.getByRole("button", { name: "TRUST & EDIT" })).toBeTruthy();
+    await waitFor(() => {
+      expect(latestMockEditor?.updateOptions).toHaveBeenCalledWith(expect.objectContaining({ readOnly: true }));
     });
   });
 

@@ -3,7 +3,7 @@
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { ChatTerminalDrawer } from "./ChatTerminalDrawer";
+import { ChatTerminalDrawer, ChatTerminalToggle } from "./ChatTerminalDrawer";
 
 vi.mock("../terminals/TerminalView", () => {
   const ReactMod = require("react") as typeof import("react");
@@ -43,6 +43,10 @@ describe("ChatTerminalDrawer", () => {
   beforeEach(() => {
     installAdeMocks();
     window.sessionStorage.clear();
+    Object.defineProperty(window, "innerHeight", {
+      configurable: true,
+      value: 800,
+    });
   });
 
   afterEach(() => {
@@ -80,5 +84,76 @@ describe("ChatTerminalDrawer", () => {
     });
     expect(screen.queryByText(/^Terminal \d+$/)).toBeNull();
     expect(screen.getByTestId("terminal-view").textContent).toBe("terminal-race-1:pty-race-1");
+  });
+
+  it("toggles the terminal drawer open and closed", () => {
+    const onToggle = vi.fn();
+    const view = render(<ChatTerminalToggle open={false} onToggle={onToggle} />);
+
+    fireEvent.click(screen.getByTitle("Open terminal"));
+    expect(onToggle).toHaveBeenCalledTimes(1);
+
+    view.rerender(<ChatTerminalToggle open onToggle={onToggle} />);
+    fireEvent.click(screen.getByTitle("Close terminal"));
+    expect(onToggle).toHaveBeenCalledTimes(2);
+  });
+
+  it("switches restored terminal tabs", async () => {
+    vi.mocked(window.ade.terminal.list).mockResolvedValueOnce([
+      {
+        terminalId: "terminal-1",
+        ptyId: "pty-1",
+        title: "First terminal",
+        status: "running",
+      },
+      {
+        terminalId: "terminal-2",
+        ptyId: "pty-2",
+        title: "Second terminal",
+        status: "running",
+      },
+    ] as any);
+
+    render(
+      <ChatTerminalDrawer
+        open
+        onToggle={vi.fn()}
+        laneId="lane-1"
+        chatSessionId="chat-1"
+        autoCreateOnOpen={false}
+      />,
+    );
+
+    expect(await screen.findByText("First terminal")).toBeTruthy();
+    expect(await screen.findByText("Second terminal")).toBeTruthy();
+    expect(screen.getByTestId("terminal-view").textContent).toBe("terminal-1:pty-1");
+
+    fireEvent.click(screen.getByRole("button", { name: "Second terminal" }));
+
+    expect(screen.getByTestId("terminal-view").textContent).toBe("terminal-2:pty-2");
+  });
+
+  it("resizes the drawer by dragging the resize handle", async () => {
+    const view = render(
+      <ChatTerminalDrawer
+        open
+        onToggle={vi.fn()}
+        laneId="lane-1"
+        chatSessionId="chat-1"
+        autoCreateOnOpen={false}
+      />,
+    );
+
+    await waitFor(() => expect(window.ade.terminal.list).toHaveBeenCalled());
+    const drawer = view.container.firstElementChild as HTMLElement;
+    const handle = view.container.querySelector(".cursor-row-resize");
+    expect(handle).toBeTruthy();
+    expect(drawer.style.height).toBe("300px");
+
+    fireEvent.mouseDown(handle!, { clientY: 300 });
+    fireEvent.mouseMove(document, { clientY: 200 });
+    fireEvent.mouseUp(document);
+
+    expect(drawer.style.height).toBe("400px");
   });
 });

@@ -63,6 +63,12 @@ function makeLogger() {
   } as any;
 }
 
+function resetMocks() {
+  vi.clearAllMocks();
+  mockFetch.mockReset();
+  runGitMock.mockReset();
+}
+
 function makeService() {
   return createGithubService({
     logger: makeLogger(),
@@ -92,7 +98,7 @@ function jsonResponse(
 
 describe("githubService.apiRequest", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    resetMocks();
     // Tests assume no ambient token; CI/agents often inject GITHUB_TOKEN globally.
     delete process.env.GITHUB_TOKEN;
     delete process.env.ADE_GITHUB_TOKEN;
@@ -219,7 +225,7 @@ describe("githubService.apiRequest", () => {
 
 describe("githubService issue-domain helpers", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    resetMocks();
     process.env.GITHUB_TOKEN = "ghp_env_token";
   });
 
@@ -483,7 +489,7 @@ describe("githubService issue-domain helpers", () => {
 
 describe("githubService.getStatus", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    resetMocks();
     delete process.env.GITHUB_TOKEN;
     delete process.env.ADE_GITHUB_TOKEN;
   });
@@ -503,16 +509,15 @@ describe("githubService.getStatus", () => {
     mockFetch.mockResolvedValueOnce(
       jsonResponse(200, { login: "alice" }, { "x-oauth-scopes": "repo, workflow" }),
     );
-    // Repo probe still runs and we still mock it; the response just decorates the status.
-    mockFetch.mockResolvedValueOnce(jsonResponse(200, { full_name: "acme/ade" }));
-
     const status = await makeService().getStatus();
 
     expect(status.tokenStored).toBe(true);
     expect(status.tokenType).toBe("classic");
     expect(status.userLogin).toBe("alice");
     expect(status.scopes).toEqual(["repo", "workflow"]);
+    expect(status.repoAccessOk).toBeNull();
     expect(status.connected).toBe(true);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
   });
 
   it("fine-grained token that authenticates but cannot read the repo is NOT connected", async () => {
@@ -553,12 +558,12 @@ describe("githubService.getStatus", () => {
     mockFetch.mockResolvedValueOnce(
       jsonResponse(200, { login: "alice" }, { "x-oauth-scopes": "read:user" }),
     );
-    mockFetch.mockResolvedValueOnce(jsonResponse(200, { full_name: "acme/ade" }));
-
     const status = await makeService().getStatus();
 
     expect(status.scopes).toEqual(["read:user"]);
     expect(status.connected).toBe(false);
+    expect(status.repoAccessOk).toBeNull();
+    expect(mockFetch).toHaveBeenCalledTimes(1);
   });
 
   it("missing token returns not-connected status with all the new fields populated", async () => {
@@ -618,7 +623,7 @@ describe("githubService.getStatus", () => {
 
 describe("githubService.createRepository", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    resetMocks();
     process.env.GITHUB_TOKEN = "ghp_env_token";
   });
 
@@ -698,7 +703,7 @@ describe("githubService.createRepository", () => {
 
 describe("githubService.publishCurrentProject", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    resetMocks();
     process.env.GITHUB_TOKEN = "ghp_env_token";
   });
 

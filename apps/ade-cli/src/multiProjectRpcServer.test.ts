@@ -12,6 +12,7 @@ function createRegistry() {
   const rawProjectRoot = path.join(root, "project");
   fs.mkdirSync(rawProjectRoot, { recursive: true });
   const projectRoot = fs.realpathSync.native(rawProjectRoot);
+  const expectedProjectRoot = projectRoot;
   const registry = new ProjectRegistry({
     adeDir: path.join(root, "home"),
     projectsPath: path.join(root, "home", "projects.json"),
@@ -21,7 +22,7 @@ function createRegistry() {
     binDir: path.join(root, "home", "bin"),
     runtimeDir: path.join(root, "home", "runtime"),
   });
-  return { root, projectRoot, registry };
+  return { root, projectRoot, expectedProjectRoot, registry };
 }
 
 function makeRuntime(label: string) {
@@ -43,7 +44,7 @@ function makeRuntime(label: string) {
 
 describe("multi-project RPC server", () => {
   it("exposes runtime-scoped project registry methods", async () => {
-    const { projectRoot, registry } = createRegistry();
+    const { projectRoot, expectedProjectRoot, registry } = createRegistry();
     const handler = createMultiProjectRpcRequestHandler({
       serverVersion: "test",
       projectRegistry: registry,
@@ -63,7 +64,7 @@ describe("multi-project RPC server", () => {
       params: { rootPath: projectRoot },
     });
     expect(added).toMatchObject({
-      rootPath: projectRoot,
+      rootPath: expectedProjectRoot,
       displayName: "project",
       gitOriginUrl: null,
     });

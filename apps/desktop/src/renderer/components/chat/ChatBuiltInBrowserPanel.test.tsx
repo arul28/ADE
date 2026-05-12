@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 
-import { cleanup, render, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatBuiltInBrowserPanel } from "./ChatBuiltInBrowserPanel";
 import {
@@ -183,5 +183,63 @@ describe("ChatBuiltInBrowserPanel", () => {
         visible: true,
       }));
     });
+  });
+
+  it("starts and cancels screenshot crop mode when chat context is available", async () => {
+    const { api } = installBrowserApi();
+    api.captureScreenshot.mockResolvedValue({
+      dataUrl: "data:image/png;base64,iVBORw0KGgo=",
+      width: 640,
+      height: 360,
+      capturedAt: "2026-05-12T00:00:00.000Z",
+    });
+
+    const onAddContext = vi.fn();
+    render(<ChatBuiltInBrowserPanel sessionId="chat-1" onAddContext={onAddContext} />);
+
+    fireEvent.click(await screen.findByText("Screenshot"));
+
+    await waitFor(() => expect(api.captureScreenshot).toHaveBeenCalled());
+    expect(await screen.findByText("Drag a browser region to attach the screenshot crop and nearby page context.")).toBeTruthy();
+    expect(screen.getByText("Cancel screenshot")).toBeTruthy();
+
+    fireEvent.click(screen.getByText("Cancel screenshot"));
+
+    expect(await screen.findByText("Browser screenshot capture cancelled.")).toBeTruthy();
+    expect(screen.getByText("Screenshot")).toBeTruthy();
+    expect(onAddContext).not.toHaveBeenCalled();
+  });
+
+  it("attaches the selected browser element through the visible Attach control", async () => {
+    const { api } = installBrowserApi();
+    const onAddContext = vi.fn();
+    const selectedItem = {
+      kind: "built_in_browser_element",
+      id: "browser-selection-1",
+      sessionId: "chat-1",
+      label: "Submit button",
+      text: "Submit",
+      role: "button",
+      tagName: "button",
+      selector: "button.submit",
+      frame: { x: 10, y: 20, width: 80, height: 24 },
+      metadata: {},
+      selectedAt: "2026-05-12T00:00:00.000Z",
+    };
+    api.getStatus.mockResolvedValue({ ...browserStatus, selectedItem });
+    api.selectCurrent.mockResolvedValue({ item: selectedItem });
+
+    render(<ChatBuiltInBrowserPanel sessionId="chat-1" onAddContext={onAddContext} />);
+
+    expect(await screen.findByText("Submit")).toBeTruthy();
+    fireEvent.click(screen.getByTitle("Attach the selected browser element as chat context"));
+
+    await waitFor(() => {
+      expect(api.selectCurrent).toHaveBeenCalled();
+    });
+    expect(onAddContext).toHaveBeenCalledWith(expect.objectContaining({
+      id: "browser-selection-1",
+      selector: "button.submit",
+    }));
   });
 });

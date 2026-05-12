@@ -215,6 +215,13 @@ tree, tab bar, and editor pack into a narrow column. All IPC calls and
 modes are identical to the standalone Files tab — there is no separate
 code path for the embedded view.
 
+The embedded mount is responsive to the Work sidebar width. At narrow
+sizes the explorer/editor split stacks vertically instead of preserving
+the standalone Files tab's fixed explorer column, so editor controls
+remain reachable. File-tree context menus measure their rendered size
+and clamp to the renderer viewport on both axes before opening; do the
+same for any new Files context menu surface.
+
 ## Keyboard shortcuts
 
 Registered through the global keybinding service
