@@ -20,6 +20,7 @@ type StoredDismissal = {
 type ListStatusesOptions = {
   includeAll?: boolean;
   lanes?: LaneSummary[];
+  preserveLaneIds?: string[];
 };
 type AttentionStatusInput = {
   laneId: string;
@@ -263,9 +264,10 @@ export function createAutoRebaseService(args: {
 
   const listStatuses = async (options?: ListStatusesOptions): Promise<AutoRebaseLaneStatus[]> => {
     void maybeSweepRoots("listStatuses");
+    const shouldLoadFreshLaneStatus = !options?.lanes;
     const lanes = options?.lanes ?? await laneService.list({
       includeArchived: false,
-      includeStatus: options?.includeAll ? false : true,
+      includeStatus: shouldLoadFreshLaneStatus,
     });
     if (disposed) return [];
     // When a caller-supplied lane subset is provided, laneById is no longer
@@ -273,7 +275,8 @@ export function createAutoRebaseService(args: {
     // was deleted" from "parent missing from this slice" — skip the
     // missing-parent prune in that case.
     const hasAuthoritativeLaneSet = !options?.lanes;
-    const hasFreshLaneStatus = !options?.includeAll && !options?.lanes;
+    const hasFreshLaneStatus = shouldLoadFreshLaneStatus;
+    const preserveLaneIds = new Set((options?.preserveLaneIds ?? []).map((laneId) => laneId.trim()).filter(Boolean));
     const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
     const nowMs = Date.now();
 
@@ -291,7 +294,12 @@ export function createAutoRebaseService(args: {
           clearStatus(lane.id);
           continue;
         }
-      } else if (hasFreshLaneStatus && lane.status.behind <= 0 && status.source !== "manual") {
+      } else if (
+        hasFreshLaneStatus
+        && lane.status.behind <= 0
+        && status.source !== "manual"
+        && !preserveLaneIds.has(lane.id)
+      ) {
         clearStatus(lane.id);
         continue;
       } else if (hasAuthoritativeLaneSet && status.parentLaneId && !laneById.has(status.parentLaneId)) {
@@ -391,7 +399,7 @@ export function createAutoRebaseService(args: {
   const recordAttentionStatus = async (status: AttentionStatusInput): Promise<void> => {
     setStatus(status);
     if (disposed) return;
-    await emit({ includeAll: true });
+    await emit({ includeAll: true, preserveLaneIds: [status.laneId] });
   };
 
   const dismissStatus = async (args: { laneId: string }): Promise<void> => {

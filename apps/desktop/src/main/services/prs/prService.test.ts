@@ -1044,6 +1044,25 @@ describe("prService.refresh", () => {
     });
   });
 
+  it("rejects explicit multi-PR refreshes when every PR fails", async () => {
+    const firstRow = makePrRow({ id: "pr-bad-1", github_pr_number: 91 });
+    const secondRow = makePrRow({ id: "pr-bad-2", github_pr_number: 92 });
+    const { service, logger } = buildService({
+      db: makeRefreshDb([firstRow, secondRow]),
+      githubService: makeRefreshGithubService(new Set([91, 92])),
+    });
+
+    await expect(service.refresh({ prIds: ["pr-bad-1", "pr-bad-2"] })).rejects.toThrow("refresh failed for #91");
+    expect(logger.warn).toHaveBeenCalledWith("prs.refresh_failed", {
+      prId: "pr-bad-1",
+      error: "refresh failed for #91",
+    });
+    expect(logger.warn).toHaveBeenCalledWith("prs.refresh_failed", {
+      prId: "pr-bad-2",
+      error: "refresh failed for #92",
+    });
+  });
+
   it("still rejects explicit single-PR refresh failures", async () => {
     const failingRow = makePrRow({ id: "pr-bad", github_pr_number: 91 });
     const { service, logger } = buildService({

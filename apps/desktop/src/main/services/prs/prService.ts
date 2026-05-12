@@ -2292,7 +2292,7 @@ export function createPrService({
         logger.warn("prs.refresh_failed", { prId, error: getErrorMessage(result.reason) });
       });
     }
-    if (uniquePrIds.length === 1 && failures[0]) {
+    if (failures[0] && refreshed.length === 0) {
       throw failures[0].reason;
     }
     return refreshed;

@@ -405,6 +405,32 @@ describe("autoRebaseService", () => {
       expect(statuses).toHaveLength(0);
     });
 
+    it("clears stale non-autoRebased status during includeAll listings", async () => {
+      const service = createService();
+
+      laneList = [makeLane("lane-a", {
+        parentLaneId: "root",
+        status: { dirty: false, ahead: 1, behind: 0, remoteBehind: 0, rebaseInProgress: false },
+      })];
+
+      db.setJson("auto_rebase:status:lane-a", {
+        laneId: "lane-a",
+        parentLaneId: "root",
+        parentHeadSha: "abc",
+        state: "rebasePending",
+        updatedAt: "2026-03-25T11:00:00.000Z",
+        conflictCount: 0,
+        message: null,
+      });
+
+      const statuses = await service.listStatuses({ includeAll: true });
+      expect(statuses).toHaveLength(0);
+      expect(laneService.list).toHaveBeenCalledWith({
+        includeArchived: false,
+        includeStatus: true,
+      });
+    });
+
     it("keeps non-autoRebased status when lane is behind its parent", async () => {
       const service = createService();
 
