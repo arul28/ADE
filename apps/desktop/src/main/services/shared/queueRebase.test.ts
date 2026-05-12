@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdeDb } from "../state/kvDb";
-import { fetchQueueTargetTrackingBranches } from "./queueRebase";
+import { fetchQueueTargetTrackingBranches, fetchRemoteTrackingBranch } from "./queueRebase";
 
 const mockGit = vi.hoisted(() => ({
   runGit: vi.fn(),
@@ -112,5 +112,20 @@ describe("fetchQueueTargetTrackingBranches", () => {
     });
 
     expect(mockGit.runGitOrThrow).not.toHaveBeenCalled();
+  });
+
+  it("reports a miss when only the broad fallback fetch succeeds", async () => {
+    mockGit.runGitOrThrow.mockRejectedValueOnce(new Error("branch refspec failed"));
+    mockGit.runGit.mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" });
+
+    await expect(fetchRemoteTrackingBranch({
+      projectRoot: "/tmp/ade-fallback",
+      targetBranch: "queue-fallback",
+    })).resolves.toBe(false);
+
+    expect(mockGit.runGit).toHaveBeenCalledWith(
+      ["fetch", "--prune", "origin"],
+      { cwd: "/tmp/ade-fallback", timeoutMs: 120_000 },
+    );
   });
 });

@@ -683,6 +683,53 @@ describe("prService.getGithubSnapshot", () => {
     expect(repoCalls).toBe(3);
   });
 
+  it("does not let a superseded open-only snapshot overwrite a fresher cache", async () => {
+    let resolveStaleRepo!: (value: unknown) => void;
+    const staleRepoRequest = new Promise<unknown>((resolve) => {
+      resolveStaleRepo = resolve;
+    });
+    let resolveFreshRepo!: (value: unknown) => void;
+    const freshRepoRequest = new Promise<unknown>((resolve) => {
+      resolveFreshRepo = resolve;
+    });
+    let repoCalls = 0;
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => ({
+        tokenStored: true,
+        repo: REPO,
+        userLogin: "octocat",
+      })),
+      apiRequest: vi.fn(async (args: { path: string }) => {
+        if (args.path === `/repos/${REPO.owner}/${REPO.name}/pulls`) {
+          repoCalls += 1;
+          if (repoCalls === 1) return staleRepoRequest;
+          return freshRepoRequest;
+        }
+        return { data: { items: [] } };
+      }),
+    });
+    const { service } = buildService({ githubService, laneService: makeLaneService([]) });
+
+    const staleRequest = service.getGithubSnapshot({ force: true });
+    await flushMicrotasks();
+    const freshRequest = service.getGithubSnapshot({ force: true });
+    await flushMicrotasks();
+
+    resolveFreshRepo({ data: [makeGitHubPull({ number: 2, title: "Fresh open-only PR" })] });
+    await expect(freshRequest).resolves.toEqual(expect.objectContaining({
+      repoPullRequests: [expect.objectContaining({ title: "Fresh open-only PR" })],
+    }));
+
+    resolveStaleRepo({ data: [makeGitHubPull({ number: 1, title: "Stale open-only PR" })] });
+    await expect(staleRequest).resolves.toEqual(expect.objectContaining({
+      repoPullRequests: [expect.objectContaining({ title: "Stale open-only PR" })],
+    }));
+
+    const cachedSnapshot = await service.getGithubSnapshot();
+    expect(cachedSnapshot.repoPullRequests[0]?.title).toBe("Fresh open-only PR");
+    expect(repoCalls).toBe(2);
+  });
+
   it("preserves full-history cache mode during stale open-only revalidation", async () => {
     const initialNow = Date.parse("2026-01-01T00:00:00Z");
     const nowSpy = vi.spyOn(Date, "now").mockReturnValue(initialNow);

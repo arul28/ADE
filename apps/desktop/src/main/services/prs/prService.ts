@@ -5125,7 +5125,12 @@ export function createPrService({
             && githubSnapshotInFlight.includeExternalClosed;
           const canPublishSnapshot =
             githubSnapshotInFlight === inFlight
-            || (!requestIncludeExternalClosed && !cachedGithubSnapshotIncludesExternalClosed && !hasWiderRequestInFlight);
+            || (
+              !requestIncludeExternalClosed
+              && cachedGithubSnapshot === null
+              && !cachedGithubSnapshotIncludesExternalClosed
+              && !hasWiderRequestInFlight
+            );
           if (canPublishSnapshot) {
             publishGithubSnapshot(snapshot, requestIncludeExternalClosed, capturedAt);
           } else if (!requestIncludeExternalClosed && cachedGithubSnapshot === null) {

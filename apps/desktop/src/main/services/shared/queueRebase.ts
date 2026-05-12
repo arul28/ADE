@@ -202,11 +202,11 @@ export async function fetchRemoteTrackingBranch(args: {
     );
     return true;
   } catch {
-    const fallback = await runGit(["fetch", "--prune", "origin"], {
+    await runGit(["fetch", "--prune", "origin"], {
       cwd: args.projectRoot,
       timeoutMs: 120_000,
     });
-    return fallback.exitCode === 0;
+    return false;
   }
 }
 
