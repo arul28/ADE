@@ -7886,6 +7886,27 @@ describe("createAgentChatService", () => {
       expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(false);
     });
 
+    it("treats /goal set reserved words as objective text", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "/goal set clear",
+      }, { awaitDispatch: true });
+
+      expect(mockState.codexRequestPayloads.find((payload) => payload.method === "thread/goal/set")?.params).toMatchObject({
+        threadId: expect.any(String),
+        objective: "clear",
+      });
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/goal/clear")).toBe(false);
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(false);
+    });
+
     it("completes Codex /goal slash commands when the app-server RPC fails", async () => {
       mockState.delayedCodexMethods.add("thread/goal/set");
       const events: AgentChatEventEnvelope[] = [];

@@ -77,6 +77,7 @@ import { chooseInitialLane } from "./project";
 import { resolveDrawerChatSelection } from "./drawerSelection";
 import { latestExpandableFailureId, renderObject, summarizeDiffChanges } from "./format";
 import { startTuiHeartbeat, type TuiHeartbeat } from "./heartbeat";
+import { isImageFilePath, normalizeOpenableImageTarget } from "./imageTargets";
 import { loadAdeCodeState, saveAdeCodeState } from "./state";
 import { buildLinearToolRequest } from "./linearCommands";
 import { buildPendingInputAnswers, latestPendingApproval } from "./pendingInput";
@@ -577,10 +578,6 @@ function readClaudeVimMode(workspaceRoot: string): boolean {
     }
   }
   return enabled;
-}
-
-function isImageFilePath(filePath: string): boolean {
-  return /\.(png|jpe?g|gif|webp|bmp|svg|ico|tiff?)$/i.test(filePath);
 }
 
 function commandAvailable(command: string): boolean {
@@ -2965,44 +2962,42 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
 
   const openLatestImage = useCallback(() => {
     let target: string | null = null;
+    const acceptTarget = (candidate: string) => {
+      const normalized = normalizeOpenableImageTarget(candidate);
+      if (!normalized) return false;
+      target = normalized;
+      return true;
+    };
     for (let index = events.length - 1; index >= 0; index -= 1) {
       const event = events[index]?.event as Record<string, unknown> | undefined;
       if (!event) continue;
       if (event.type === "codex_image_generation") {
         const candidate = (event as { result?: unknown }).result;
-        if (typeof candidate === "string" && candidate && !/^data:/i.test(candidate)) {
-          target = candidate;
-          break;
-        }
+        if (typeof candidate === "string" && acceptTarget(candidate)) break;
       }
       if (event.type === "codex_image_view") {
         const local = (event as { path?: unknown }).path;
         const remote = (event as { url?: unknown }).url;
-        if (typeof local === "string" && local) {
-          target = local;
-          break;
-        }
-        if (typeof remote === "string" && remote && !/^data:/i.test(remote)) {
-          target = remote;
-          break;
-        }
+        if (typeof local === "string" && acceptTarget(local)) break;
+        if (typeof remote === "string" && acceptTarget(remote)) break;
       }
     }
     if (!target) {
       addNotice("No image to open in the recent history.", "info");
       return;
     }
+    const openTarget = target;
     try {
       const child = process.platform === "darwin"
-        ? spawn("open", [target], { stdio: "ignore", detached: true })
+        ? spawn("open", [openTarget], { stdio: "ignore", detached: true })
         : process.platform === "win32"
-          ? spawn("cmd", ["/c", "start", "", target], { stdio: "ignore", detached: true })
-          : spawn("xdg-open", [target], { stdio: "ignore", detached: true });
+          ? spawn("rundll32.exe", ["url.dll,FileProtocolHandler", openTarget], { stdio: "ignore", detached: true })
+          : spawn("xdg-open", [openTarget], { stdio: "ignore", detached: true });
       child.once("error", (err) => {
         addNotice(err instanceof Error ? err.message : String(err), "error");
       });
       child.once("spawn", () => {
-        addNotice(`Opening ${path.basename(target)}…`, "info");
+        addNotice(`Opening ${path.basename(openTarget)}…`, "info");
       });
       child.unref();
     } catch (err) {
@@ -4248,6 +4243,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       {goalBannerText ? (
         <Box paddingX={1} flexShrink={0}>
           <Text color={theme.color.warning} wrap="truncate-end">{goalBannerText}</Text>
+          {streaming ? <Text color={theme.color.mutedFg} dimColor>{" · streaming"}</Text> : null}
         </Box>
       ) : null}
       <Box flexGrow={1} minHeight={8}>
@@ -4302,7 +4298,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         <Text color={PURPLE}>› </Text>
         <Text>{prompt}</Text>
         <Text inverse> </Text>
-        {streaming ? <Text color={theme.color.mutedFg} dimColor>{"  · streaming"}</Text> : null}
+        {streaming && !goalBannerText ? <Text color={theme.color.mutedFg} dimColor>{"  · streaming"}</Text> : null}
       </Box>
       <ModelStatus
         provider={modelState.provider}

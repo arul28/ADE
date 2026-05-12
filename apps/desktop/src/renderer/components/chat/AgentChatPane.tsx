@@ -6466,7 +6466,7 @@ export function AgentChatPane({
                       <CodexGoalBanner
                         goal={selectedCodexGoal}
                         onEdit={(next) => {
-                          void sendCodexControlMessage(selectedSessionId, `/goal ${next}`);
+                          void sendCodexControlMessage(selectedSessionId, `/goal set ${next}`);
                         }}
                         onClear={() => {
                           void sendCodexControlMessage(selectedSessionId, "/goal clear");
