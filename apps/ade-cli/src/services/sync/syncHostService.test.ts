@@ -204,6 +204,27 @@ function publishedAnnouncements(): BonjourPublishArgs[] {
   return publishMock.mock.calls.map(([payload]) => payload as BonjourPublishArgs);
 }
 
+type NativeDiscoveryProcess = {
+  child: {
+    kill: ReturnType<typeof vi.fn>;
+    once: ReturnType<typeof vi.fn<[string, (...args: unknown[]) => void], NativeDiscoveryProcess["child"]>>;
+    unref: ReturnType<typeof vi.fn>;
+  };
+  handlers: Map<string, (...args: unknown[]) => void>;
+};
+
+function createNativeDiscoveryProcess(): NativeDiscoveryProcess {
+  const handlers = new Map<string, (...args: unknown[]) => void>();
+  const child = {} as NativeDiscoveryProcess["child"];
+  child.kill = vi.fn();
+  child.once = vi.fn<[string, (...args: unknown[]) => void], NativeDiscoveryProcess["child"]>((event, handler) => {
+    handlers.set(event, handler);
+    return child;
+  });
+  child.unref = vi.fn();
+  return { child, handlers };
+}
+
 function createHostArgs(projectRoot: string, projects: SyncMobileProjectSummary[]) {
   return {
     db: {
@@ -456,5 +477,45 @@ describe("createSyncHostService LAN discovery", () => {
       cleanup();
     }
     expect(nativeProcesses.at(-1)?.kill).toHaveBeenCalledWith("SIGTERM");
+  });
+
+  it("falls back to Bonjour when the native dns-sd publisher exits", async () => {
+    Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+    Object.defineProperty(process.versions, "electron", {
+      value: "35.0.0",
+      configurable: true,
+    });
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const nativeProcesses: ReturnType<typeof createNativeDiscoveryProcess>[] = [];
+    spawnMock.mockImplementation(() => {
+      const nativeProcess = createNativeDiscoveryProcess();
+      nativeProcesses.push(nativeProcess);
+      return nativeProcess.child;
+    });
+    const host = createSyncHostService(
+      createHostArgs(projectRoot, [createDiscoveryProject({ id: "project-1" })]) as unknown as Parameters<
+        typeof createSyncHostService
+      >[0],
+    );
+
+    try {
+      await host.waitUntilListening();
+      await vi.waitFor(() => {
+        expect(spawnMock.mock.calls.some(([, args]) => Array.isArray(args) && args.includes("projectCount=1"))).toBe(true);
+      });
+
+      const nativeSpawnCount = spawnMock.mock.calls.length;
+      publishMock.mockClear();
+      nativeProcesses.at(-1)?.handlers.get("exit")?.(1, null);
+
+      await vi.waitFor(() => {
+        expect(publishMock).toHaveBeenCalledTimes(1);
+      }, { timeout: 2_000 });
+      expect(spawnMock).toHaveBeenCalledTimes(nativeSpawnCount);
+      expect(publishedAnnouncements()[0]?.txt.projectCount).toBe("1");
+    } finally {
+      await host.dispose();
+      cleanup();
+    }
   });
 });

@@ -105,6 +105,8 @@ const DEFAULT_SYNC_HEARTBEAT_MISS_LIMIT = 2;
 const MOBILE_SYNC_HEARTBEAT_MISS_LIMIT = 6;
 const DEFAULT_SYNC_POLL_INTERVAL_MS = 400;
 const DEFAULT_BRAIN_STATUS_INTERVAL_MS = 5_000;
+const NATIVE_LAN_DISCOVERY_RECOVERY_DELAY_MS = 1_000;
+const NATIVE_LAN_DISCOVERY_FALLBACK_MS = 30_000;
 const DEFAULT_TERMINAL_SNAPSHOT_BYTES = 220_000;
 const PEER_BACKPRESSURE_BYTES = 4 * 1024 * 1024;
 const MOBILE_COMMAND_RESULT_CACHE_TTL_MS = 30 * 60 * 1000;
@@ -1105,6 +1107,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   let bonjourInstance: Bonjour | null = null;
   let bonjourAnnouncement: BonjourService | null = null;
   let nativeBonjourProcess: ChildProcess | null = null;
+  let nativeBonjourRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
+  let nativeLanDiscoveryFallbackUntilMs = 0;
   let bonjourPort: number | null = null;
   let bonjourSignature: string | null = null;
   let bonjourProjectTxt: { projects: string; projectNames: string; projectCount: string } = {
@@ -1257,7 +1261,30 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     });
   });
 
+  const clearNativeLanDiscoveryRecovery = (): void => {
+    if (!nativeBonjourRecoveryTimer) return;
+    clearTimeout(nativeBonjourRecoveryTimer);
+    nativeBonjourRecoveryTimer = null;
+  };
+
+  const scheduleNativeLanDiscoveryRecovery = (port: number): void => {
+    clearNativeLanDiscoveryRecovery();
+    if (disposed || !discoveryEnabled || bonjourPort !== port) return;
+    nativeBonjourRecoveryTimer = setTimeout(() => {
+      nativeBonjourRecoveryTimer = null;
+      if (disposed || !discoveryEnabled || bonjourPort !== port) return;
+      publishLanDiscovery(port, { force: true });
+    }, NATIVE_LAN_DISCOVERY_RECOVERY_DELAY_MS);
+    if (
+      typeof nativeBonjourRecoveryTimer === "object"
+      && typeof (nativeBonjourRecoveryTimer as { unref?: unknown }).unref === "function"
+    ) {
+      (nativeBonjourRecoveryTimer as { unref: () => void }).unref();
+    }
+  };
+
   const stopNativeLanDiscovery = (): void => {
+    clearNativeLanDiscoveryRecovery();
     const child = nativeBonjourProcess;
     if (!child) return;
     nativeBonjourProcess = null;
@@ -1283,6 +1310,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     port: number,
     txt: Record<string, string>,
   ): void => {
+    clearNativeLanDiscoveryRecovery();
     stopNativeLanDiscovery();
     const child = spawn("dns-sd", [
       "-R",
@@ -1297,20 +1325,27 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     nativeBonjourProcess = child;
     child.unref();
     child.once("error", (error) => {
-      if (nativeBonjourProcess === child) nativeBonjourProcess = null;
+      if (nativeBonjourProcess !== child) return;
+      nativeBonjourProcess = null;
+      nativeLanDiscoveryFallbackUntilMs = Date.now() + NATIVE_LAN_DISCOVERY_FALLBACK_MS;
       args.logger.warn("sync_host.discovery_native_publish_failed", {
         error: error instanceof Error ? error.message : String(error),
       });
+      scheduleNativeLanDiscoveryRecovery(port);
     });
     child.once("exit", (code, signal) => {
       if (nativeBonjourProcess !== child) return;
       nativeBonjourProcess = null;
+      nativeLanDiscoveryFallbackUntilMs = Date.now() + NATIVE_LAN_DISCOVERY_FALLBACK_MS;
       args.logger.warn("sync_host.discovery_native_exited", { code, signal });
+      scheduleNativeLanDiscoveryRecovery(port);
     });
   };
 
   const shouldUseNativeLanDiscovery = (): boolean =>
-    process.platform === "darwin" && typeof process.versions.electron === "string";
+    process.platform === "darwin"
+    && typeof process.versions.electron === "string"
+    && Date.now() >= nativeLanDiscoveryFallbackUntilMs;
 
   const publishLanDiscovery = (port: number, options?: { force?: boolean }): void => {
     if (disposed) return;

@@ -178,7 +178,6 @@ const AGGREGATED_TYPES = new Set<AgentChatEvent["type"]>([
   "done",
   "user_message",
   "text",
-  "activity",
   "approval_request",
   "error",
   "tokens",
@@ -226,9 +225,14 @@ type SteerLifecycleNotice = Extract<AgentChatEvent, { type: "system_notice" }> &
 };
 
 function isSteerLifecycleNotice(event: AgentChatEvent): event is SteerLifecycleNotice {
+  const message = event.type === "system_notice" ? event.message.trim().toLowerCase() : "";
   return event.type === "system_notice"
     && Boolean(event.steerId)
-    && /message queued|cancelled|delivering/i.test(event.message);
+    && (
+      message === "message queued"
+      || message === "delivering queued message"
+      || message === "queued message cancelled"
+    );
 }
 
 export function derivePendingSteers(events: AgentChatEventEnvelope[]): PendingSteer[] {
@@ -247,7 +251,7 @@ export function derivePendingSteers(events: AgentChatEventEnvelope[]): PendingSt
       }
       continue;
     }
-    if (isSteerLifecycleNotice(event) && !/message queued/i.test(event.message)) {
+    if (isSteerLifecycleNotice(event) && event.message.trim().toLowerCase() !== "message queued") {
       steerMap.delete(event.steerId);
       resolvedSteerIds.add(event.steerId);
     }
@@ -457,6 +461,10 @@ export function aggregateChatBlocks(args: {
     if (isSteerLifecycleNotice(event)) {
       continue;
     }
+    if (event.type === "activity") {
+      // Activity rows are low-signal transcript metadata; keep the main chat quiet.
+      continue;
+    }
     if (event.type === "approval_request") {
       passthrough(id, "approval");
       continue;
@@ -504,7 +512,7 @@ export function aggregateChatBlocks(args: {
       // Already handled above or intentionally skipped (tokens, codex_*).
       continue;
     }
-    // Everything else (status, activity, todo_update, cloud_*, etc.) becomes a notice.
+    // Everything else (todo_update, cloud_*, etc.) becomes a notice.
     const line = linesById.get(id);
     if (!line) continue;
     blocks.push({

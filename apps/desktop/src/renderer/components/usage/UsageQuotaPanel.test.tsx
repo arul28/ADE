@@ -148,6 +148,28 @@ describe("UsageQuotaPanel", () => {
     expect(screen.queryByText("37.0% remaining")).toBeNull();
   });
 
+  it("renders weekly and monthly windows as separate meters", async () => {
+    const snapshot = makeSnapshot();
+    snapshot.windows = [
+      ...snapshot.windows,
+      {
+        provider: "codex",
+        windowType: "monthly",
+        percentUsed: 44,
+        resetsAt: "2099-06-01T07:00:00.000Z",
+        resetsInMs: 7 * 86_400_000,
+      },
+    ];
+    vi.mocked(window.ade.usage.getSnapshot).mockResolvedValue(snapshot);
+    vi.mocked(window.ade.usage.refresh).mockResolvedValue(snapshot);
+
+    render(<UsageQuotaPanel />);
+
+    expect((await screen.findAllByText("Weekly")).length).toBeGreaterThan(0);
+    expect(await screen.findByText("Monthly")).toBeTruthy();
+    expect(await screen.findByText("44.0% used")).toBeTruthy();
+  });
+
   it("auto-refreshes once on mount so the drawer never shows stale data", async () => {
     render(<UsageQuotaPanel />);
 

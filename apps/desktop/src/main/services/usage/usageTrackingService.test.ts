@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { UsageWindow } from "../../../shared/types";
 
 const mockState = vi.hoisted(() => ({
   spawn: vi.fn(),
@@ -461,9 +462,14 @@ describe("parseCodexRateLimitWindows", () => {
 
 describe("detectThresholdCrossings", () => {
   const weeklyReset = "2099-05-15T07:00:00.000Z";
-  const makeWindow = (provider: "claude" | "codex", percent: number, resetsAt = weeklyReset) => ({
+  const makeWindow = (
+    provider: "claude" | "codex",
+    percent: number,
+    resetsAt = weeklyReset,
+    windowType: UsageWindow["windowType"] = "weekly",
+  ): UsageWindow => ({
     provider,
-    windowType: "weekly" as const,
+    windowType,
     percentUsed: percent,
     resetsAt,
     resetsInMs: 86_400_000,
@@ -476,6 +482,21 @@ describe("detectThresholdCrossings", () => {
     );
     expect(events.map((e) => e.threshold)).toEqual([25]);
     expect(nextState.claude?.firedThresholds).toEqual([25]);
+  });
+
+  it("uses the weekly window before monthly so threshold state is stable", () => {
+    const monthlyReset = "2099-06-01T07:00:00.000Z";
+    const prev = { claude: { resetsAt: weeklyReset, firedThresholds: [25, 50] } };
+    const { events, nextState } = detectThresholdCrossings(
+      [
+        makeWindow("claude", 90, monthlyReset, "monthly"),
+        makeWindow("claude", 60, weeklyReset, "weekly"),
+      ],
+      prev,
+    );
+    expect(events).toEqual([]);
+    expect(nextState.claude?.resetsAt).toBe(weeklyReset);
+    expect(nextState.claude?.firedThresholds).toEqual([25, 50]);
   });
 
   it("fires every threshold that has been crossed at once on a cold start", () => {

@@ -935,16 +935,16 @@ function detectThresholdCrossings(
   const nextState: ThresholdState = { ...prevState };
   const events: UsageThresholdEvent[] = [];
   for (const provider of TRACKED_PROVIDERS) {
-    const weekly = windows.find(
-      (w) => w.provider === provider && (w.windowType === "weekly" || w.windowType === "monthly"),
-    );
-    if (!weekly || !weekly.resetsAt) continue;
+    const primaryWindow =
+      windows.find((w) => w.provider === provider && w.windowType === "weekly") ??
+      windows.find((w) => w.provider === provider && w.windowType === "monthly");
+    if (!primaryWindow || !primaryWindow.resetsAt) continue;
 
     const prev = prevState[provider];
-    const cycleChanged = !prev || prev.resetsAt !== weekly.resetsAt;
+    const cycleChanged = !prev || prev.resetsAt !== primaryWindow.resetsAt;
     const firedThresholds = cycleChanged ? [] : [...(prev?.firedThresholds ?? [])];
 
-    const percent = Math.max(0, Math.min(100, weekly.percentUsed));
+    const percent = Math.max(0, Math.min(100, primaryWindow.percentUsed));
     for (const threshold of USAGE_THRESHOLDS) {
       if (percent >= threshold && !firedThresholds.includes(threshold)) {
         firedThresholds.push(threshold);
@@ -952,12 +952,12 @@ function detectThresholdCrossings(
           provider,
           threshold,
           percent,
-          resetsAt: weekly.resetsAt,
+          resetsAt: primaryWindow.resetsAt,
           firedAt: nowIso(),
         });
       }
     }
-    nextState[provider] = { resetsAt: weekly.resetsAt, firedThresholds };
+    nextState[provider] = { resetsAt: primaryWindow.resetsAt, firedThresholds };
   }
   return { events, nextState };
 }

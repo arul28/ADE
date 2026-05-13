@@ -317,12 +317,12 @@ function ProviderUsageCard({
     );
   }
 
-  const weeklyWindow = windows.find(
-    (w) => w.windowType === "weekly" || w.windowType === "monthly",
-  );
+  const weeklyWindow = windows.find((w) => w.windowType === "weekly");
+  const monthlyWindow = windows.find((w) => w.windowType === "monthly");
+  const trendWindow = weeklyWindow ?? monthlyWindow;
   const fiveHourWindow = windows.find((w) => w.windowType === "five_hour");
   const otherWindows = windows.filter(
-    (w) => w !== weeklyWindow && w !== fiveHourWindow,
+    (w) => w !== weeklyWindow && w !== monthlyWindow && w !== fiveHourWindow,
   );
 
   return (
@@ -349,18 +349,17 @@ function ProviderUsageCard({
               toneColor={meta.color}
             />
           ) : null}
-          {weeklyWindow ? (
-            <div className="space-y-1">
+          {[weeklyWindow, monthlyWindow].map((window) => window ? (
+            <div className="space-y-1" key={`${provider}-${window.windowType}`}>
               <UsageMeter
-                key={`${provider}-${weeklyWindow.windowType}`}
-                label={windowLabel(weeklyWindow)}
-                percent={displayPercent(weeklyWindow, nowMs)}
-                sublabel={formatResetSublabel(weeklyWindow.resetsAt, nowMs)}
-                modelBreakdown={weeklyWindow.modelBreakdown}
+                label={windowLabel(window)}
+                percent={displayPercent(window, nowMs)}
+                sublabel={formatResetSublabel(window.resetsAt, nowMs)}
+                modelBreakdown={window.modelBreakdown}
                 mode="used"
                 toneColor={meta.color}
               />
-              {dailyUsage7d && dailyUsage7d.some((value) => value > 0) ? (
+              {window === trendWindow && dailyUsage7d && dailyUsage7d.some((value) => value > 0) ? (
                 <div
                   className="flex items-center gap-2"
                   title="Daily token usage over the last 7 days (oldest → today)"
@@ -374,7 +373,7 @@ function ProviderUsageCard({
                 </div>
               ) : null}
             </div>
-          ) : null}
+          ) : null)}
           {otherWindows.map((window) => (
             <UsageMeter
               key={`${provider}-${window.windowType}`}

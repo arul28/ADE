@@ -8,12 +8,12 @@ export function workEventItemId(event: AgentChatEvent): string | null {
   if (event.type !== "tool_call" && event.type !== "tool_result" && event.type !== "command" && event.type !== "file_change") {
     return null;
   }
-  return textField((event as { itemId?: unknown }).itemId);
+  return textField(event.itemId);
 }
 
 export function workEventParentItemId(event: AgentChatEvent): string | null {
-  if (event.type !== "tool_call" && event.type !== "tool_result" && event.type !== "command" && event.type !== "file_change") {
+  if (event.type !== "tool_call" && event.type !== "tool_result") {
     return null;
   }
-  return textField((event as { parentItemId?: unknown }).parentItemId);
+  return textField(event.parentItemId);
 }
