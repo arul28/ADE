@@ -1273,7 +1273,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     nativeBonjourRecoveryTimer = setTimeout(() => {
       nativeBonjourRecoveryTimer = null;
       if (disposed || !discoveryEnabled || bonjourPort !== port) return;
-      publishLanDiscovery(port, { force: true });
+      publishLanDiscovery(port);
     }, NATIVE_LAN_DISCOVERY_RECOVERY_DELAY_MS);
     if (
       typeof nativeBonjourRecoveryTimer === "object"

@@ -167,7 +167,9 @@ function findLastBlock<K extends AggregatedBlock["kind"]>(
   return null;
 }
 
-const AGGREGATED_TYPES = new Set<AgentChatEvent["type"]>([
+// Event types that have already contributed to aggregate-level blocks or are
+// intentionally hidden. Keep unmatched system_notice events visible.
+const SILENCED_EVENT_TYPES = new Set<AgentChatEvent["type"]>([
   "tool_call",
   "tool_result",
   "command",
@@ -507,7 +509,7 @@ export function aggregateChatBlocks(args: {
       }
       continue;
     }
-    if (AGGREGATED_TYPES.has(event.type)) {
+    if (SILENCED_EVENT_TYPES.has(event.type)) {
       // Already handled above or intentionally skipped (tokens, codex_*).
       continue;
     }
