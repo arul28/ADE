@@ -6,13 +6,16 @@ import { isCrsqliteAvailable } from "../state/crsqliteExtension";
 import { openKvDb } from "../state/kvDb";
 import { createSyncService } from "./syncService";
 
-const { createSyncHostServiceMock } = vi.hoisted(() => ({
+const { createSyncHostServiceMock, syncHostServiceMockState } = vi.hoisted(() => ({
+  syncHostServiceMockState: {
+    port: 8787,
+  },
   createSyncHostServiceMock: vi.fn(() => ({
     async waitUntilListening() {
-      return 8787;
+      return syncHostServiceMockState.port;
     },
     getPort() {
-      return 8787;
+      return syncHostServiceMockState.port;
     },
     getBootstrapToken() {
       return "test-bootstrap-token";
@@ -107,6 +110,7 @@ const activeDisposers: Array<() => Promise<void>> = [];
 
 beforeEach(() => {
   createSyncHostServiceMock.mockClear();
+  syncHostServiceMockState.port = 8787;
 });
 
 afterEach(async () => {
@@ -504,6 +508,47 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
 
     expect(status.pairingConnectInfo?.hostIdentity.deviceId).toBe(localDeviceId);
     expect(addressCandidates.some((c) => c.kind === "loopback" && c.host === "127.0.0.1")).toBe(true);
+  }, 30_000);
+
+  it("reports the live host port in pairing info when the sync host falls back", async () => {
+    syncHostServiceMockState.port = 8788;
+    const projectRoot = makeProjectRoot("ade-sync-service-fallback-port-");
+    const db = await openKvDb(
+      path.join(projectRoot, ".ade", "ade.db"),
+      createLogger() as any,
+    );
+
+    const service = createSyncService({
+      db,
+      logger: createLogger() as any,
+      projectRoot,
+      fileService: { dispose: () => {} } as any,
+      laneService: {
+        list: async () => [],
+        create: async () => ({}),
+        archive: async () => {},
+      } as any,
+      prService: {} as any,
+      sessionService: { list: () => [] } as any,
+      ptyService: {} as any,
+      computerUseArtifactBrokerService: {} as any,
+      missionService: { list: () => [] } as any,
+      agentChatService: { listSessions: async () => [] } as any,
+      processService: { listRuntime: () => [] } as any,
+      forceHostRole: true,
+      hostStartupEnabled: true,
+    });
+
+    activeDisposers.push(async () => {
+      await service.dispose();
+      db.close();
+    });
+
+    await service.initialize();
+    const status = await service.getStatus();
+    expect(status.localDevice.lastPort).toBe(8788);
+    expect(status.currentBrain?.lastPort).toBe(8788);
+    expect(status.pairingConnectInfo?.port).toBe(8788);
   }, 30_000);
 
   it("does not start the sync host or expose pairing details when host startup is disabled", async () => {

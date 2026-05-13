@@ -259,7 +259,12 @@ final class ADETests: XCTestCase {
 
   func testSyncRequestTimeoutUsesThirtySecondFriendlyReconnectMessage() {
     XCTAssertEqual(SyncRequestTimeout.defaultTimeoutNanoseconds, 30_000_000_000)
+    XCTAssertEqual(SyncRequestTimeout.chatSendTimeoutNanoseconds, 120_000_000_000)
     XCTAssertEqual(SyncRequestTimeout.error().localizedDescription, "The machine took too long to respond. Reconnecting now.")
+    XCTAssertEqual(
+      SyncRequestTimeout.error(message: SyncRequestTimeout.chatSendMessage).localizedDescription,
+      "The machine is still starting this chat turn. Live updates will keep syncing."
+    )
   }
 
   func testSyncRequestTimeoutOnlyReconnectsAfterSocketSilence() {
@@ -442,6 +447,22 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(host.projectNames.isEmpty)
     XCTAssertNil(host.projectCount)
     XCTAssertTrue(host.addresses.isEmpty)
+  }
+
+  func testBonjourHostUsesServiceHostnameWhenTxtAndResolvedAddressesLag() {
+    let host = syncDiscoveredHostFromBonjour(
+      serviceKey: "local|_ade-sync._tcp.|ADE Sync studio 8787",
+      serviceName: "ADE Sync studio 8787",
+      serviceHostName: "studio.local.",
+      servicePort: -1,
+      txtRecord: [:],
+      resolvedAddresses: [],
+      lastResolvedAt: "2026-05-10T10:00:00.000Z"
+    )
+
+    XCTAssertEqual(host.hostName, "studio.local.")
+    XCTAssertEqual(host.port, 8787)
+    XCTAssertEqual(host.addresses, ["studio.local"])
   }
 
   func testSavedDiscoveredHostsDisplayLiveRuntimeMetadata() {
@@ -672,6 +693,20 @@ final class ADETests: XCTestCase {
         poorSampleCount: 1
       )
     )
+  }
+
+  func testSyncLoadSampleDoesNotTreatBacklogAsWeakConnection() {
+    let catchUp = syncConnectionLoadSample(latencyMs: 1, syncLag: 250_000)
+    XCTAssertFalse(catchUp.isPoor)
+    XCTAssertFalse(catchUp.isHealthy)
+
+    let slowTransport = syncConnectionLoadSample(latencyMs: 950, syncLag: 0)
+    XCTAssertTrue(slowTransport.isPoor)
+    XCTAssertFalse(slowTransport.isHealthy)
+
+    let caughtUp = syncConnectionLoadSample(latencyMs: 1, syncLag: 0)
+    XCTAssertFalse(caughtUp.isPoor)
+    XCTAssertTrue(caughtUp.isHealthy)
   }
 
   @MainActor
@@ -1946,6 +1981,101 @@ final class ADETests: XCTestCase {
     XCTAssertNil(service.activeProjectRootPath)
     XCTAssertTrue(service.shouldShowProjectHome)
     XCTAssertTrue(service.projects.contains { $0.id == "project-1" })
+
+    database.close()
+  }
+
+  @MainActor
+  func testSyncServiceAdoptsRuntimeProjectIdForCachedRootOnSameMachine() throws {
+    let activeProjectIdKey = "ade.sync.activeProjectId"
+    let activeProjectRootPathKey = "ade.sync.activeProjectRootPath"
+    let activeProjectHostIdentityKey = "ade.sync.activeProjectHostIdentity"
+    UserDefaults.standard.set("old-project", forKey: activeProjectIdKey)
+    UserDefaults.standard.set("/tmp/project-one", forKey: activeProjectRootPathKey)
+    UserDefaults.standard.set("host-1", forKey: activeProjectHostIdentityKey)
+    defer {
+      UserDefaults.standard.removeObject(forKey: activeProjectIdKey)
+      UserDefaults.standard.removeObject(forKey: activeProjectRootPathKey)
+      UserDefaults.standard.removeObject(forKey: activeProjectHostIdentityKey)
+    }
+
+    let database = makeControllerHydrationDatabase(baseURL: makeTemporaryDirectory())
+    try database.executeSqlForTesting("""
+      insert into projects (
+        id, root_path, display_name, default_base_ref, created_at, last_opened_at
+      ) values
+        ('old-project', '/tmp/project-one', 'Project One', 'main', '2026-04-22T00:00:00.000Z', '2026-04-22T01:00:00.000Z');
+    """)
+    let service = SyncService(database: database)
+    XCTAssertEqual(service.activeProjectId, "old-project")
+
+    try service.applyHelloPayloadForTesting([
+      "brain": [
+        "deviceId": "host-1",
+        "deviceName": "Mac Studio",
+      ],
+      "features": [
+        "projectCatalog": true,
+      ],
+      "projects": [[
+        "id": "runtime-project",
+        "displayName": "Project One",
+        "rootPath": "/tmp/project-one/",
+        "defaultBaseRef": "main",
+        "lastOpenedAt": "2026-04-22T02:00:00.000Z",
+        "laneCount": 2,
+        "isAvailable": true,
+        "isCached": false,
+      ]],
+    ])
+
+    XCTAssertEqual(service.activeProjectId, "runtime-project")
+    XCTAssertEqual(service.activeProjectRootPath, "/tmp/project-one")
+    XCTAssertEqual(database.currentProjectId(), "runtime-project")
+    XCTAssertEqual(service.projects.map(\.id), ["runtime-project"])
+    XCTAssertFalse(service.shouldShowProjectHome)
+
+    database.close()
+  }
+
+  @MainActor
+  func testSyncServiceSeedsRuntimeProjectRowBeforeHydration() throws {
+    let activeProjectIdKey = "ade.sync.activeProjectId"
+    let activeProjectRootPathKey = "ade.sync.activeProjectRootPath"
+    UserDefaults.standard.removeObject(forKey: activeProjectIdKey)
+    UserDefaults.standard.removeObject(forKey: activeProjectRootPathKey)
+    defer {
+      UserDefaults.standard.removeObject(forKey: activeProjectIdKey)
+      UserDefaults.standard.removeObject(forKey: activeProjectRootPathKey)
+    }
+
+    let database = makeControllerHydrationDatabase(baseURL: makeTemporaryDirectory())
+    XCTAssertNil(database.initializationError)
+    let service = SyncService(database: database)
+    service.setActiveProjectForTesting(projectId: "runtime-project", rootPath: "/tmp/project-one/")
+    service.seedRemoteProjectCatalogForTesting([
+      MobileProjectSummary(
+        id: "runtime-project",
+        displayName: "Project One",
+        rootPath: "/tmp/project-one/",
+        defaultBaseRef: "main",
+        lastOpenedAt: "2026-04-22T02:00:00.000Z",
+        laneCount: 2,
+        isAvailable: true,
+        isCached: false
+      ),
+    ])
+
+    XCTAssertFalse(database.hasProject(id: "runtime-project"))
+    XCTAssertEqual(database.currentDbVersion(), 0)
+
+    try service.ensureActiveProjectCacheRowForTesting()
+
+    XCTAssertTrue(database.hasProject(id: "runtime-project"))
+    XCTAssertEqual(database.currentDbVersion(), 0)
+    XCTAssertEqual(database.listMobileProjects().first?.rootPath, "/tmp/project-one")
+    XCTAssertEqual(service.projects.first?.id, "runtime-project")
+    XCTAssertTrue(service.projects.first?.isCached == true)
 
     database.close()
   }

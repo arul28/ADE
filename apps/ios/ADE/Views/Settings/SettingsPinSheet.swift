@@ -35,9 +35,9 @@ struct SettingsPinSheet: View {
         .accessibilityLabel("Pairing PIN")
         .accessibilityValue(pin.isEmpty ? "No digits entered" : "\(pin.count) of 6 digits entered")
 
-        Text("Shown in ADE Sync settings or by `ade sync pin get`.")
-          .font(.footnote)
-          .foregroundStyle(ADEColor.textSecondary)
+          Text("Set or regenerate it in ADE Sync settings or with `ade sync pin generate`.")
+            .font(.footnote)
+            .foregroundStyle(ADEColor.textSecondary)
 
         PinKeypad(
           isDisabled: isSubmitting,
@@ -126,14 +126,16 @@ struct SettingsPinSheet: View {
     Task { @MainActor in
       switch preset {
       case .discover(let host):
+        let selectedHost = latestDiscoveredHost(matching: host)
+        let routeCandidates = syncPinRouteCandidates(for: selectedHost)
         await syncService.pairAndConnect(
-          host: host.addresses.first ?? host.hostName,
-          port: host.port,
+          host: routeCandidates.first ?? selectedHost.hostName,
+          port: selectedHost.port,
           code: code,
-          hostIdentity: host.hostIdentity,
-          hostName: host.hostName,
-          candidateAddresses: host.addresses,
-          tailscaleAddress: host.tailscaleAddress
+          hostIdentity: selectedHost.hostIdentity,
+          hostName: selectedHost.hostName,
+          candidateAddresses: routeCandidates,
+          tailscaleAddress: selectedHost.tailscaleAddress
         )
 
       case .manual(let host, let port):
@@ -162,6 +164,39 @@ struct SettingsPinSheet: View {
       }
     }
   }
+
+  private func latestDiscoveredHost(matching host: DiscoveredSyncHost) -> DiscoveredSyncHost {
+    syncService.discoveredHosts.first { candidate in
+      if let identity = syncPinTrimmedNonEmpty(host.hostIdentity),
+         let candidateIdentity = syncPinTrimmedNonEmpty(candidate.hostIdentity),
+         identity == candidateIdentity {
+        return true
+      }
+      if candidate.id == host.id || candidate.serviceName == host.serviceName {
+        return true
+      }
+      return candidate.hostName.localizedCaseInsensitiveCompare(host.hostName) == .orderedSame
+        || candidate.serviceName.localizedCaseInsensitiveCompare(host.hostName) == .orderedSame
+    } ?? host
+  }
+}
+
+private func syncPinRouteCandidates(for host: DiscoveredSyncHost) -> [String] {
+  syncPinUniqueNonEmpty(host.addresses + (host.tailscaleAddress.map { [$0] } ?? []))
+}
+
+private func syncPinTrimmedNonEmpty(_ value: String?) -> String? {
+  guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+    return nil
+  }
+  return value
+}
+
+private func syncPinUniqueNonEmpty(_ values: [String]) -> [String] {
+  var seen = Set<String>()
+  return values
+    .compactMap(syncPinTrimmedNonEmpty)
+    .filter { seen.insert($0).inserted }
 }
 
 private struct PinDigitBox: View {

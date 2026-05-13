@@ -17,9 +17,29 @@ export function laneIconGlyph(icon: LaneIcon | null | undefined): string {
   return LANE_ICON_GLYPH[icon] ?? "▎";
 }
 
-export function Header({ projectName, lane }: { projectName: string; lane: LaneSummary | null }) {
+export function Header({
+  projectName,
+  lane,
+  chatTitle,
+}: {
+  projectName: string;
+  lane: LaneSummary | null;
+  chatTitle?: string | null;
+}) {
   const laneColor = theme.lane(lane);
-  const showProject = projectName.trim() && projectName.trim().toLowerCase() !== "ade";
+  const normalizedProject = projectName.trim().toLowerCase();
+  const branchRef = lane?.branchRef?.trim() ?? "";
+  const worktreeName = lane?.worktreePath?.split(/[\\/]/).filter(Boolean).pop()?.toLowerCase() ?? "";
+  const projectRepeatsBranch = Boolean(
+    normalizedProject
+    && lane
+    && (
+      branchRef.toLowerCase().endsWith(normalizedProject)
+      || worktreeName === normalizedProject
+    ),
+  );
+  const showProject = Boolean(normalizedProject && normalizedProject !== "ade" && !projectRepeatsBranch);
+  const chatLabel = chatTitle?.trim() || null;
   return (
     <Box
       paddingX={1}
@@ -29,25 +49,38 @@ export function Header({ projectName, lane }: { projectName: string; lane: LaneS
       borderTop={false}
       borderLeft={false}
       borderRight={false}
+      flexDirection="row"
+      justifyContent="space-between"
     >
-      <Text wrap="truncate">
+      <Text wrap="truncate-end">
         <Text color={theme.color.accent} inverse bold>{" ADE "}</Text>
         {showProject ? (
           <>
-            <Text>{"   "}</Text>
+            <Text color={theme.color.t4}>{"  │  "}</Text>
             <Text color={theme.color.fg}>{projectName}</Text>
           </>
         ) : null}
         {lane ? (
           <>
-            <Text>{"   "}</Text>
-            <Text color={laneColor}>{laneIconGlyph(lane.icon)} {formatLaneLabel(lane)}</Text>
+            <Text color={theme.color.t4}>{"  │  "}</Text>
+            <Text color={theme.color.t4}>lane </Text>
+            <Text color={laneColor} bold>{laneIconGlyph(lane.icon)}</Text>
+            <Text> </Text>
+            <Text color={laneColor}>{formatLaneLabel(lane)}</Text>
           </>
         ) : null}
         {lane?.branchRef ? (
           <>
             <Text>{"    "}</Text>
-            <Text dimColor>⎇ {lane.branchRef}</Text>
+            <Text color={theme.color.t4}>branch </Text>
+            <Text color={theme.color.t3}>{lane.branchRef}</Text>
+          </>
+        ) : null}
+        {chatLabel ? (
+          <>
+            <Text>{"    "}</Text>
+            <Text color={theme.color.t4}>chat </Text>
+            <Text color={theme.color.fg}>{chatLabel}</Text>
           </>
         ) : null}
       </Text>

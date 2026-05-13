@@ -15,7 +15,7 @@ The runtime is organized around one contract: the CTO tab should be usable as a 
 - `workerRevisionService.ts` — worker config revision history.
 - `workerTaskSessionService.ts` — task-scoped worker sessions.
 - `workerAdapterRuntimeService.ts` — adapter lifecycle for the three supported worker adapters: `claude-local`, `codex-local`, and `process`.
-- `linearCredentialService.ts` — personal API key storage, token status.
+- `linearCredentialService.ts` — personal API key + OAuth client + auth-mode storage and token status. Backed by the per-machine credential store (`~/.ade/secrets/`) when injected, with a one-time migration from the legacy project-scoped files. See [Linear integration](../linear-integration/README.md#source-file-map).
 - `linearOAuthService.ts` — PKCE loopback OAuth flow on port 19836.
 - `linearClient.ts` — Linear GraphQL client (shared by desktop and headless ADE CLI).
 - `linearIssueTracker.ts` / `issueTracker.ts` — Linear issue cache and change detection.

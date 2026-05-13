@@ -20,6 +20,7 @@ import {
   parseTrackedCliLaunchConfig,
   parseTrackedCliResumeCommand,
   providerFromTool,
+  sanitizeResumeTargetId,
 } from "../../utils/terminalSessionSignals";
 
 type SessionRow = {
@@ -106,7 +107,8 @@ function normalizeResumeMetadata(raw: unknown): TerminalResumeMetadata | null {
   const provider = isResumeProvider(record.provider) ? record.provider : null;
   const targetKind = record.targetKind === "session" || record.targetKind === "thread" ? record.targetKind : null;
   const legacyTarget = typeof record.target === "string" ? record.target.trim() : "";
-  const targetId = typeof record.targetId === "string" ? record.targetId.trim() : legacyTarget;
+  const rawTargetId = typeof record.targetId === "string" ? record.targetId.trim() : legacyTarget;
+  const targetId = sanitizeResumeTargetId(rawTargetId);
   const launchRecord = record.launch != null && typeof record.launch === "object" && !Array.isArray(record.launch)
     ? (record.launch as Record<string, unknown>)
     : {};
@@ -125,7 +127,7 @@ function normalizeResumeMetadata(raw: unknown): TerminalResumeMetadata | null {
   return {
     provider,
     targetKind,
-    targetId: targetId.length ? targetId : null,
+    targetId,
     launch: {
       ...(permissionMode ? { permissionMode } : {}),
       ...(claudePermissionMode ? { claudePermissionMode: claudePermissionMode as TerminalResumeMetadata["launch"]["claudePermissionMode"] } : {}),

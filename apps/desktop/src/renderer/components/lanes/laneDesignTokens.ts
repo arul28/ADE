@@ -86,6 +86,7 @@ export function inlineBadge(color: string, overrides?: CSSProperties): CSSProper
 export function laneSurfaceTint(
   color: string | null | undefined,
   strength: "soft" | "default" = "default",
+  alpha?: number,
 ): {
   background: string;
   border: string;
@@ -101,7 +102,9 @@ export function laneSurfaceTint(
     };
   }
   const c = String(color).trim();
-  const p = strength === "soft" ? 10 : 16;
+  const p = alpha != null && Number.isFinite(alpha)
+    ? Math.max(0, Math.min(100, Math.round(alpha * 100)))
+    : strength === "soft" ? 10 : 16;
   return {
     background: `color-mix(in srgb, ${c} ${p}%, rgba(10, 10, 12, 0.65))`,
     border: `1px solid color-mix(in srgb, ${c} 28%, rgba(255, 255, 255, 0.06))`,

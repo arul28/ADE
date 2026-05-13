@@ -12,12 +12,18 @@ import type { SyncPinStore } from "./syncPinStore";
 import { encodeSyncEnvelope, parseSyncEnvelope } from "./syncProtocol";
 import type { ParsedSyncEnvelope } from "./syncProtocol";
 
-const { execFileMock } = vi.hoisted(() => ({
+const { execFileMock, spawnMock } = vi.hoisted(() => ({
   execFileMock: vi.fn(),
+  spawnMock: vi.fn(() => ({
+    kill: vi.fn(),
+    once: vi.fn(),
+    unref: vi.fn(),
+  })),
 }));
 
 vi.mock("node:child_process", () => ({
   execFile: execFileMock,
+  spawn: spawnMock,
 }));
 
 function createStubPinStore(initialPin: string | null = null): SyncPinStore {

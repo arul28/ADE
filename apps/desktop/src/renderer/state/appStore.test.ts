@@ -703,7 +703,6 @@ describe("appStore", () => {
     it("tracks project switching progress and clears it on success", async () => {
       const nextProject = { rootPath: "/tmp/next", displayName: "Next", baseRef: "main" } as any;
       (window.ade.project.switchToPath as any).mockResolvedValueOnce(nextProject);
-      (window.ade.project.listRecent as any).mockResolvedValueOnce([{ rootPath: "/tmp/next" }]);
 
       const pending = useAppStore.getState().switchProjectToPath("/tmp/next");
       expect(useAppStore.getState().projectTransition).toEqual(
@@ -735,32 +734,48 @@ describe("appStore", () => {
       );
     });
 
-    it("prunes banner-dismiss maps to the new project on switch", async () => {
+    it("prunes banner-dismiss maps to the new project after switch settles", async () => {
+      const originalWindowSetTimeout = window.setTimeout;
+      vi.useFakeTimers();
+      window.setTimeout = globalThis.setTimeout as typeof window.setTimeout;
       // Seed dismissals for three projects, then switch to one of them with a
       // listRecent that only includes two. The third should be dropped.
-      useAppStore.setState({
-        dismissedMissingAiBannerRoots: { "/p/a": true, "/p/b": true, "/p/c": true },
-        dismissedGithubBannerRoots: { "/p/a": true, "/p/b": true },
-      } as any);
+      try {
+        useAppStore.setState({
+          dismissedMissingAiBannerRoots: { "/p/a": true, "/p/b": true, "/p/c": true },
+          dismissedGithubBannerRoots: { "/p/a": true, "/p/b": true },
+        } as any);
 
-      const nextProject = { rootPath: "/p/a", displayName: "A", baseRef: "main" } as any;
-      (window.ade.project.switchToPath as any).mockResolvedValueOnce(nextProject);
-      (window.ade.project.listRecent as any).mockResolvedValueOnce([
-        { rootPath: "/p/a" },
-        { rootPath: "/p/b" },
-      ]);
+        const nextProject = { rootPath: "/p/a", displayName: "A", baseRef: "main" } as any;
+        (window.ade.project.switchToPath as any).mockResolvedValueOnce(nextProject);
+        (window.ade.project.listRecent as any).mockResolvedValueOnce([
+          { rootPath: "/p/a" },
+          { rootPath: "/p/b" },
+        ]);
 
-      await useAppStore.getState().switchProjectToPath("/p/a");
+        await useAppStore.getState().switchProjectToPath("/p/a");
 
-      // `/p/c` was neither active nor in recents → pruned from all banner maps.
-      expect(useAppStore.getState().dismissedMissingAiBannerRoots).toEqual({
-        "/p/a": true,
-        "/p/b": true,
-      });
-      expect(useAppStore.getState().dismissedGithubBannerRoots).toEqual({
-        "/p/a": true,
-        "/p/b": true,
-      });
+        expect(useAppStore.getState().dismissedMissingAiBannerRoots).toEqual({
+          "/p/a": true,
+          "/p/b": true,
+          "/p/c": true,
+        });
+
+        await vi.advanceTimersByTimeAsync(750);
+
+        // `/p/c` was neither active nor in recents → pruned from all banner maps.
+        expect(useAppStore.getState().dismissedMissingAiBannerRoots).toEqual({
+          "/p/a": true,
+          "/p/b": true,
+        });
+        expect(useAppStore.getState().dismissedGithubBannerRoots).toEqual({
+          "/p/a": true,
+          "/p/b": true,
+        });
+      } finally {
+        window.setTimeout = originalWindowSetTimeout;
+        vi.useRealTimers();
+      }
     });
 
     it("clears all banner-dismiss maps when the project is closed", async () => {

@@ -906,12 +906,23 @@ export function createSyncService(args: SyncServiceArgs) {
     },
 
     async getStatus(options?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> {
-      const localDevice = deviceRegistryService.ensureLocalDevice();
+      let localDevice = deviceRegistryService.ensureLocalDevice();
+      const activeHostPort = hostService?.getPort() ?? null;
+      if (activeHostPort != null && localDevice.lastPort !== activeHostPort) {
+        localDevice = deviceRegistryService.touchLocalDevice({
+          lastSeenAt: nowIso(),
+          lastHost: localDevice.ipAddresses[0] ?? localDevice.tailscaleIp ?? localDevice.lastHost,
+          lastPort: activeHostPort,
+        });
+      }
       const cluster = deviceRegistryService.getClusterState();
       const savedDraft = readSavedDraft();
-      const currentBrain = cluster
+      const rawCurrentBrain = cluster
         ? deviceRegistryService.getDevice(cluster.brainDeviceId)
         : localDevice;
+      const currentBrain = rawCurrentBrain?.deviceId === localDevice.deviceId
+        ? localDevice
+        : rawCurrentBrain;
       const isLocalBrain = forceHostRole || (cluster
         ? cluster.brainDeviceId === localDevice.deviceId
         : !savedDraft && !syncPeerService.isConnected());
@@ -969,7 +980,7 @@ export function createSyncService(args: SyncServiceArgs) {
     },
 
     async refreshDiscovery(): Promise<SyncRoleSnapshot> {
-      hostService?.refreshLanDiscovery?.({ forceTailnet: true });
+      hostService?.refreshLanDiscovery?.({ forceLan: true, forceTailnet: true });
       const snapshot = await this.getStatus();
       args.onStatusChanged?.(snapshot);
       return snapshot;

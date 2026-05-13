@@ -687,6 +687,7 @@ export const IPC = {
   usageGetBudgetConfig: "ade.usage.getBudgetConfig",
   usageSaveBudgetConfig: "ade.usage.saveBudgetConfig",
   usageEvent: "ade.usage.event",
+  usageThresholdEvent: "ade.usage.thresholdEvent",
   memoryAdd: "ade.memory.add",
   memoryPin: "ade.memory.pin",
   memoryUpdateCore: "ade.memory.updateCore",

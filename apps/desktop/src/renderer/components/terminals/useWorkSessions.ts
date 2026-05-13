@@ -41,6 +41,8 @@ const DEFAULT_PROJECT_WORK_STATE: WorkProjectViewState = {
   workSidebarOpen: false,
   workSidebarTab: "git",
   workSidebarWidthPct: 36,
+  laneSessionOrder: {},
+  pinnedSessionIds: [],
 };
 
 type WorkTabGroupKind = "lane" | "status" | "time";
@@ -119,11 +121,15 @@ export function buildWorkTabGroupModel(args: {
   lanes: WorkTabGroupLane[];
   organization: WorkSessionListOrganization;
   collapsedGroupIds: string[];
+  laneSessionOrder?: Record<string, string[]>;
+  pinnedSessionIds?: string[];
 }): WorkTabGroupModel {
   const orderedSessions = [...args.sessions].sort((left, right) => (
     new Date(right.startedAt).getTime() - new Date(left.startedAt).getTime()
   ));
   const collapseSet = new Set(args.collapsedGroupIds);
+  const pinnedSet = new Set(args.pinnedSessionIds ?? []);
+  const laneOrderMap = args.laneSessionOrder ?? {};
 
   if (args.organization === "by-lane") {
     const laneOrder = new Map(sortLanesForTabs(args.lanes).map((lane, index) => [lane.id, index] as const));
@@ -154,15 +160,44 @@ export function buildWorkTabGroupModel(args: {
       const laneId = group.id.startsWith("lane:") ? group.id.slice("lane:".length) : null;
       const lane = laneId ? args.lanes.find((l) => l.id === laneId) : null;
       const collapsed = collapseSet.has(group.id);
-      if (!collapsed) visibleSessions.push(...group.sessions);
+
+      const customOrder = laneId ? laneOrderMap[laneId] : undefined;
+      let arranged = group.sessions;
+      if (customOrder && customOrder.length > 0) {
+        const sessionById = new Map(group.sessions.map((s) => [s.id, s] as const));
+        const used = new Set<string>();
+        const ordered: TerminalSessionSummary[] = [];
+        for (const id of customOrder) {
+          const s = sessionById.get(id);
+          if (s && !used.has(id)) {
+            ordered.push(s);
+            used.add(id);
+          }
+        }
+        for (const s of group.sessions) {
+          if (!used.has(s.id)) ordered.push(s);
+        }
+        arranged = ordered;
+      }
+      if (pinnedSet.size > 0) {
+        const pinned: TerminalSessionSummary[] = [];
+        const others: TerminalSessionSummary[] = [];
+        for (const s of arranged) {
+          if (pinnedSet.has(s.id)) pinned.push(s);
+          else others.push(s);
+        }
+        arranged = [...pinned, ...others];
+      }
+
+      if (!collapsed) visibleSessions.push(...arranged);
       return {
         id: group.id,
         label: group.label,
         kind: group.kind,
         laneColor: group.kind === "lane" ? (lane?.color ?? null) : null,
         collapsed,
-        sessionIds: group.sessions.map((session) => session.id),
-        sessions: group.sessions,
+        sessionIds: arranged.map((session) => session.id),
+        sessions: arranged,
       } satisfies WorkTabGroup;
     });
     return { groups: finalGroups, sessionIds: visibleSessions.map((session) => session.id), visibleSessions };
@@ -252,6 +287,34 @@ function arraysEqual(a: string[], b: string[]): boolean {
     if (a[i] !== b[i]) return false;
   }
   return true;
+}
+
+export function reorderLaneSessionIdsForDisplay(args: {
+  baseOrder: string[];
+  pinnedSessionIds: string[];
+  movedSessionId: string;
+  targetSessionId: string;
+  edge: "before" | "after";
+}): string[] | null {
+  if (!args.movedSessionId || !args.targetSessionId || args.movedSessionId === args.targetSessionId) {
+    return null;
+  }
+  const pinned = new Set(args.pinnedSessionIds);
+  const displayedOrder = [
+    ...args.baseOrder.filter((id) => pinned.has(id)),
+    ...args.baseOrder.filter((id) => !pinned.has(id)),
+  ];
+  const fromIndex = displayedOrder.indexOf(args.movedSessionId);
+  const targetIndex = displayedOrder.indexOf(args.targetSessionId);
+  if (fromIndex < 0 || targetIndex < 0) return null;
+
+  const next = [...displayedOrder];
+  const [moved] = next.splice(fromIndex, 1);
+  if (!moved) return null;
+  const targetAfterRemoval = next.indexOf(args.targetSessionId);
+  if (targetAfterRemoval < 0) return null;
+  next.splice(args.edge === "after" ? targetAfterRemoval + 1 : targetAfterRemoval, 0, moved);
+  return arraysEqual(args.baseOrder, next) ? null : next;
 }
 
 function mapUrlStatusFilter(statusParamRaw: string): WorkStatusFilter | null {
@@ -344,6 +407,8 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const workSidebarOpen = projectViewState.workSidebarOpen ?? false;
   const workSidebarTab = projectViewState.workSidebarTab ?? "git";
   const workSidebarWidthPct = projectViewState.workSidebarWidthPct ?? 36;
+  const laneSessionOrder = projectViewState.laneSessionOrder ?? {};
+  const pinnedSessionIds = projectViewState.pinnedSessionIds ?? [];
   const sessionsById = useMemo(() => {
     const map = new Map<string, TerminalSessionSummary>();
     for (const session of sessions) map.set(session.id, session);
@@ -377,8 +442,10 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       lanes,
       organization: sessionListOrganization,
       collapsedGroupIds: workCollapsedTabGroupIds,
+      laneSessionOrder,
+      pinnedSessionIds,
     }),
-    [lanes, openSessions, sessionListOrganization, workCollapsedTabGroupIds],
+    [lanes, openSessions, sessionListOrganization, workCollapsedTabGroupIds, laneSessionOrder, pinnedSessionIds],
   );
 
   const visibleSessions = openSessions;
@@ -449,6 +516,59 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const toggleWorkSectionCollapsed = useMemo(
     () => makeCollapsedToggle("workCollapsedSectionIds"),
     [makeCollapsedToggle],
+  );
+
+  const reorderLaneSessions = useCallback(
+    (laneId: string, movedSessionId: string, targetSessionId: string, edge: "before" | "after") => {
+      if (!laneId || !movedSessionId || !targetSessionId || movedSessionId === targetSessionId) return;
+      setProjectViewState((prev) => {
+        const sessionsInLane = prev.openItemIds
+          .map((id) => sessionsById.get(id))
+          .filter((s): s is TerminalSessionSummary => s != null && s.laneId === laneId);
+        if (sessionsInLane.length === 0) return prev;
+
+        const existing = prev.laneSessionOrder?.[laneId];
+        const baseOrder = existing && existing.length > 0
+          ? [
+              ...existing.filter((id) => sessionsInLane.some((s) => s.id === id)),
+              ...sessionsInLane.filter((s) => !existing.includes(s.id)).map((s) => s.id),
+            ]
+          : sessionsInLane.map((s) => s.id);
+
+        const next = reorderLaneSessionIdsForDisplay({
+          baseOrder,
+          pinnedSessionIds: prev.pinnedSessionIds ?? [],
+          movedSessionId,
+          targetSessionId,
+          edge,
+        });
+        if (!next) return prev;
+
+        return {
+          ...prev,
+          laneSessionOrder: {
+            ...(prev.laneSessionOrder ?? {}),
+            [laneId]: next,
+          },
+        };
+      });
+    },
+    [sessionsById, setProjectViewState],
+  );
+
+  const togglePinnedSession = useCallback(
+    (sessionId: string) => {
+      if (!sessionId) return;
+      setProjectViewState((prev) => {
+        const cur = prev.pinnedSessionIds ?? [];
+        const has = cur.includes(sessionId);
+        return {
+          ...prev,
+          pinnedSessionIds: has ? cur.filter((id) => id !== sessionId) : [...cur, sessionId],
+        };
+      });
+    },
+    [setProjectViewState],
   );
 
   const setWorkFocusSessionsHidden = useCallback(
@@ -688,7 +808,8 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
 
   useEffect(() => {
     if (!projectRoot || !isWorkRoute) return;
-    refresh({ showLoading: true, force: true }).catch(() => {});
+    const isInitialLoad = !hasLoadedOnceRef.current;
+    refresh({ showLoading: isInitialLoad, force: isInitialLoad }).catch(() => {});
   }, [isWorkRoute, projectRoot, refresh]);
 
   useEffect(() => {
@@ -1213,6 +1334,10 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     sessionsGroupedByLane,
     tabGroups: tabGroupModel.groups,
     tabVisibleSessionIds,
+    laneSessionOrder,
+    pinnedSessionIds,
+    reorderLaneSessions,
+    togglePinnedSession,
 
     workFocusSessionsHidden,
     setWorkFocusSessionsHidden,

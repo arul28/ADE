@@ -24,8 +24,7 @@ export function resolveDrawerChatSelection(args: {
 
   const selectedNewChatIsValid = args.selectedDrawerChatAction === "new-chat"
     && args.selectedDrawerChatId == null
-    && args.draftChatActive
-    && args.drawerLaneId === args.activeLaneId;
+    && args.drawerLaneId != null;
   if (selectedNewChatIsValid) return null;
 
   if (args.draftChatActive && args.drawerLaneId === args.activeLaneId) {

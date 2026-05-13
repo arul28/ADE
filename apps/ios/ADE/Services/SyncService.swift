@@ -217,7 +217,9 @@ enum InitialHydrationGate {
 
 enum SyncRequestTimeout {
   static let defaultTimeoutNanoseconds: UInt64 = 30_000_000_000
+  static let chatSendTimeoutNanoseconds: UInt64 = 120_000_000_000
   static let message = "The machine took too long to respond. Reconnecting now."
+  static let chatSendMessage = "The machine is still starting this chat turn. Live updates will keep syncing."
 
   static func error(message: String = Self.message, underlyingError: Error? = nil) -> NSError {
     var userInfo: [String: Any] = [NSLocalizedDescriptionKey: message]
@@ -549,6 +551,30 @@ func syncShouldUseReducedNetworkLoad(
   if poorSampleCount > 0 { return true }
   if healthySampleCount >= 3 { return false }
   return initialPreference
+}
+
+struct SyncConnectionLoadSample: Equatable {
+  let isPoor: Bool
+  let isHealthy: Bool
+}
+
+func syncConnectionLoadSample(
+  latencyMs: Int? = nil,
+  syncLag: Int? = nil,
+  roundTripSeconds: TimeInterval? = nil
+) -> SyncConnectionLoadSample {
+  let latencyPoor = latencyMs.map { $0 >= 900 } ?? false
+  let latencyHealthy = latencyMs.map { $0 <= 250 } ?? false
+  let lagHealthy = syncLag.map { $0 <= 10 } ?? true
+  let roundTripPoor = roundTripSeconds.map { $0 >= 5.0 } ?? false
+  let roundTripHealthy = roundTripSeconds.map { $0 <= 0.9 } ?? false
+
+  // A high server sync lag usually means the phone is catching up on a large
+  // CRDT backlog. That is sync work, not proof that the transport is weak.
+  return SyncConnectionLoadSample(
+    isPoor: latencyPoor || roundTripPoor,
+    isHealthy: (latencyHealthy || roundTripHealthy) && lagHealthy
+  )
 }
 
 enum SyncUserFacingError {
@@ -1014,8 +1040,13 @@ final class SyncService: ObservableObject {
   }
 
   func isActiveProject(_ project: MobileProjectSummary) -> Bool {
-    if let activeProjectId, project.id == activeProjectId {
-      return true
+    if let activeProjectId {
+      if project.id == activeProjectId {
+        return true
+      }
+      if projects.contains(where: { $0.id == activeProjectId }) {
+        return false
+      }
     }
     guard let activeProjectRootPath,
           let projectRoot = normalizedProjectRoot(project.rootPath)
@@ -1121,16 +1152,22 @@ final class SyncService: ObservableObject {
         return normalizedProjectRoot(left) == normalizedProjectRoot(right)
       }) {
         var existing = match.value
-        mergedById.removeValue(forKey: match.key)
-        existing.id = cachedProject.id
-        existing.displayName = cachedProject.displayName
+        let keepRemoteIdentity = preferRemoteSelection
+          && activeProjectId != nil
+          && activeProjectRootPath != nil
+          && normalizedProjectRoot(existing.rootPath) == activeProjectRootPath
+        if !keepRemoteIdentity {
+          mergedById.removeValue(forKey: match.key)
+          existing.id = cachedProject.id
+        }
+        existing.displayName = keepRemoteIdentity ? existing.displayName : cachedProject.displayName
         existing.defaultBaseRef = cachedProject.defaultBaseRef ?? existing.defaultBaseRef
         existing.lastOpenedAt = cachedProject.lastOpenedAt ?? existing.lastOpenedAt
         existing.iconDataUrl = cachedProject.iconDataUrl ?? existing.iconDataUrl
-        existing.laneCount = cachedProject.laneCount
-        existing.isCached = true
+        existing.laneCount = keepRemoteIdentity ? existing.laneCount : cachedProject.laneCount
+        existing.isCached = keepRemoteIdentity ? (existing.isCached || database.hasProject(id: existing.id)) : true
         existing.isAvailable = existing.isAvailable || cachedProject.isAvailable
-        mergedById[cachedProject.id] = existing
+        mergedById[existing.id] = existing
       } else if !hasRemoteCatalog {
         mergedById[cachedProject.id] = cachedProject
       }
@@ -1141,7 +1178,9 @@ final class SyncService: ObservableObject {
        let match = mergedById.first(where: { entry in
          normalizedProjectRoot(entry.value.rootPath) == activeProjectRootPath
        }) {
-      if match.value.isCached {
+      if preferRemoteSelection {
+        setActiveProjectId(match.value.id, rootPath: match.value.rootPath)
+      } else if match.value.isCached {
         setActiveProjectId(match.value.id, rootPath: match.value.rootPath)
       } else {
         var existing = match.value
@@ -1150,14 +1189,16 @@ final class SyncService: ObservableObject {
         mergedById[activeProjectId] = existing
       }
     }
-    projects = mergedById.values.sorted { left, right in
-      if isActiveProject(left) { return true }
-      if isActiveProject(right) { return false }
+    let sortedProjects = mergedById.values.sorted { left, right in
+      let leftActive = activeProjectId != nil && left.id == activeProjectId
+      let rightActive = activeProjectId != nil && right.id == activeProjectId
+      if leftActive != rightActive { return leftActive }
       let leftOpen = left.isOpen ?? true
       let rightOpen = right.isOpen ?? true
       if leftOpen != rightOpen { return leftOpen }
       return (left.lastOpenedAt ?? "") > (right.lastOpenedAt ?? "")
     }
+    projects = preferRemoteSelection ? deduplicateProjectListByRoot(sortedProjects) : sortedProjects
     if preferRemoteSelection {
       preferActiveProjectFromRemoteCatalogIfNeeded()
     }
@@ -1165,6 +1206,7 @@ final class SyncService: ObservableObject {
   }
 
   private func preferActiveProjectFromRemoteCatalogIfNeeded() {
+    guard activeProjectId != nil else { return }
     let remoteProjects = deduplicatedRemoteProjectCatalog()
     guard !remoteProjects.isEmpty else { return }
     if let activeProjectId,
@@ -1175,13 +1217,6 @@ final class SyncService: ObservableObject {
        let matchingProject = remoteProjects.first(where: { normalizedProjectRoot($0.rootPath) == activeProjectRootPath }) {
       setActiveProjectId(matchingProject.id, rootPath: matchingProject.rootPath)
       return
-    }
-    let preferred = remoteProjects.sorted { left, right in
-      if left.isAvailable != right.isAvailable { return left.isAvailable }
-      return (left.lastOpenedAt ?? "") > (right.lastOpenedAt ?? "")
-    }.first
-    if let preferred {
-      setActiveProjectId(preferred.id, rootPath: preferred.rootPath)
     }
   }
 
@@ -1224,9 +1259,42 @@ final class SyncService: ObservableObject {
     return (candidate.lastOpenedAt ?? "") > (existing.lastOpenedAt ?? "")
   }
 
-  private func applyRemoteProjectCatalog(_ catalog: MobileProjectCatalogPayload) {
+  private func deduplicateProjectListByRoot(_ candidates: [MobileProjectSummary]) -> [MobileProjectSummary] {
+    var seenRoots = Set<String>()
+    return candidates.filter { project in
+      guard let root = normalizedProjectRoot(project.rootPath) else { return true }
+      return seenRoots.insert(root).inserted
+    }
+  }
+
+  private func activeProjectCatalogEntryForHydration() -> MobileProjectSummary? {
+    guard let activeProjectId else { return nil }
+    let candidates = projects + remoteProjectCatalog
+    if let match = candidates.first(where: { $0.id == activeProjectId }) {
+      return match
+    }
+    guard let activeProjectRootPath else { return nil }
+    return candidates.first { normalizedProjectRoot($0.rootPath) == activeProjectRootPath }
+  }
+
+  private func ensureActiveProjectCacheRowForHydration() throws {
+    guard let activeProjectId else { return }
+    if database.hasProject(id: activeProjectId) {
+      return
+    }
+    guard let project = activeProjectCatalogEntryForHydration() else {
+      return
+    }
+    try database.upsertMobileProjectCache(project)
+    refreshProjectCatalog(preferRemoteSelection: true)
+  }
+
+  private func applyRemoteProjectCatalog(
+    _ catalog: MobileProjectCatalogPayload,
+    preferRemoteSelection: Bool = true
+  ) {
     remoteProjectCatalog = catalog.projects
-    refreshProjectCatalog()
+    refreshProjectCatalog(preferRemoteSelection: preferRemoteSelection)
   }
 
   private func applyRemoteProjectCatalogChunk(
@@ -2080,21 +2148,16 @@ final class SyncService: ObservableObject {
   }
 
   private func recordConnectionLoadSample(latencyMs: Int? = nil, syncLag: Int? = nil, roundTripSeconds: TimeInterval? = nil) {
-    let latencyPoor = latencyMs.map { $0 >= 900 } ?? false
-    let latencyHealthy = latencyMs.map { $0 <= 250 } ?? false
-    let lagPoor = syncLag.map { $0 >= 100 } ?? false
-    let lagHealthy = syncLag.map { $0 <= 10 } ?? true
-    let roundTripPoor = roundTripSeconds.map { $0 >= 5.0 } ?? false
-    let roundTripHealthy = roundTripSeconds.map { $0 <= 0.9 } ?? false
+    let sample = syncConnectionLoadSample(latencyMs: latencyMs, syncLag: syncLag, roundTripSeconds: roundTripSeconds)
 
-    if latencyPoor || lagPoor || roundTripPoor {
+    if sample.isPoor {
       poorConnectionSampleCount = min(poorConnectionSampleCount + 1, 3)
       healthyConnectionSampleCount = 0
       refreshReducedSyncLoad()
       return
     }
 
-    if (latencyHealthy || roundTripHealthy) && lagHealthy {
+    if sample.isHealthy {
       healthyConnectionSampleCount = min(healthyConnectionSampleCount + 1, 5)
       if healthyConnectionSampleCount >= 2 {
         poorConnectionSampleCount = 0
@@ -2231,6 +2294,7 @@ final class SyncService: ObservableObject {
         }
         if let hostName, !hostName.isEmpty {
           return discovered.hostName.localizedCaseInsensitiveCompare(hostName) == .orderedSame
+            || discovered.serviceName.localizedCaseInsensitiveCompare(hostName) == .orderedSame
         }
         return false
       }
@@ -3686,7 +3750,13 @@ final class SyncService: ObservableObject {
 
   @discardableResult
   func sendChatMessage(sessionId: String, text: String) async throws -> SyncChatMessageDelivery {
-    let response = try await sendCommand(action: "chat.send", args: ["sessionId": sessionId, "text": text])
+    let response = try await sendCommand(
+      action: "chat.send",
+      args: ["sessionId": sessionId, "text": text],
+      disconnectOnTimeout: false,
+      timeoutMessage: SyncRequestTimeout.chatSendMessage,
+      timeoutNanoseconds: SyncRequestTimeout.chatSendTimeoutNanoseconds
+    )
     if let response = response as? [String: Any], response["queued"] as? Bool == true {
       return .queued
     }
@@ -5496,6 +5566,10 @@ final class SyncService: ObservableObject {
     resetOutboundCursorStateForActiveProject()
   }
 
+  func ensureActiveProjectCacheRowForTesting() throws {
+    try ensureActiveProjectCacheRowForHydration()
+  }
+
   func outboundLocalDbVersionForTesting() -> Int {
     outboundLocalDbVersion
   }
@@ -5632,6 +5706,13 @@ final class SyncService: ObservableObject {
       applyRemoteProjectCatalog(catalog)
     } else {
       refreshProjectCatalog()
+    }
+    if activeProjectId != nil, let incomingHostIdentity {
+      activeProjectHostIdentity = incomingHostIdentity
+      UserDefaults.standard.set(incomingHostIdentity, forKey: activeProjectHostIdentityKey)
+    }
+    if activeProject != nil {
+      projectHomePresented = false
     }
 
     reconnectState.reset()
@@ -6483,7 +6564,8 @@ final class SyncService: ObservableObject {
     args: [String: Any],
     commandId: String? = nil,
     disconnectOnTimeout: Bool = true,
-    timeoutMessage: String = SyncRequestTimeout.message
+    timeoutMessage: String = SyncRequestTimeout.message,
+    timeoutNanoseconds: UInt64 = SyncRequestTimeout.defaultTimeoutNanoseconds
   ) async throws -> Any {
     guard canSendLiveRequests() else {
       throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: "The machine is offline."])
@@ -6492,7 +6574,8 @@ final class SyncService: ObservableObject {
     let raw = try await awaitResponse(
       requestId: requestId,
       disconnectOnTimeout: disconnectOnTimeout,
-      timeoutMessage: timeoutMessage
+      timeoutMessage: timeoutMessage,
+      timeoutNanoseconds: timeoutNanoseconds
     ) {
       self.sendEnvelope(
         type: "command",
@@ -6509,11 +6592,24 @@ final class SyncService: ObservableObject {
     return try unwrapSyncCommandResponse(raw)
   }
 
-  private func sendCommand(action: String, args: [String: Any]) async throws -> Any {
+  private func sendCommand(
+    action: String,
+    args: [String: Any],
+    disconnectOnTimeout: Bool = true,
+    timeoutMessage: String = SyncRequestTimeout.message,
+    timeoutNanoseconds: UInt64 = SyncRequestTimeout.defaultTimeoutNanoseconds
+  ) async throws -> Any {
     let commandId = makeRequestId()
     if canSendLiveRequests() {
       do {
-        return try await performCommandRequest(action: action, args: args, commandId: commandId)
+        return try await performCommandRequest(
+          action: action,
+          args: args,
+          commandId: commandId,
+          disconnectOnTimeout: disconnectOnTimeout,
+          timeoutMessage: timeoutMessage,
+          timeoutNanoseconds: timeoutNanoseconds
+        )
       } catch {
         if !isRemoteCommandApplicationError(error),
            !canSendLiveRequests(),
@@ -6711,6 +6807,7 @@ final class SyncService: ObservableObject {
     setDomainStatus(SyncDomain.allCases, phase: .syncingInitialData)
 
     do {
+      try ensureActiveProjectCacheRowForHydration()
       try await InitialHydrationGate.waitForProjectRow(
         currentProjectId: {
           guard let activeProjectId = self.activeProjectId else {
@@ -7380,15 +7477,21 @@ func syncDiscoveredHostFromBonjour(
 ) -> DiscoveredSyncHost {
   let preferredHost = txtRecord["host"]?
     .trimmingCharacters(in: .whitespacesAndNewlines)
+  let fallbackServiceHost = serviceHostName
+    .flatMap(syncEndpointHost)?
+    .trimmingCharacters(in: CharacterSet(charactersIn: ".").union(.whitespacesAndNewlines))
   let announcedAddresses = txtRecord["addresses"]?
     .split(separator: ",")
     .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
     .filter { !$0.isEmpty } ?? []
-  let addresses = ([preferredHost]
+  let announcedRouteAddresses = ([preferredHost]
     .compactMap { $0 }
     .filter { !$0.isEmpty })
     + resolvedAddresses.filter { !$0.isEmpty }
     + announcedAddresses
+  let addresses = announcedRouteAddresses.isEmpty
+    ? ([fallbackServiceHost].compactMap { $0 }.filter { !$0.isEmpty })
+    : announcedRouteAddresses
   let port = servicePort > 0 ? servicePort : Int(txtRecord["port"] ?? "") ?? 8787
   let hostName = [txtRecord["deviceName"], serviceHostName, serviceName]
     .compactMap(syncNormalizedCommandScopeValue)
@@ -7632,6 +7735,9 @@ private final class SyncBonjourBrowser: NSObject, NetServiceBrowserDelegate, Net
     let key = serviceKey(for: service)
     guard let host = makeHost(from: service) else { return }
     hosts[key] = host
+    if host.addresses.isEmpty && host.tailscaleAddress == nil {
+      scheduleResolveRetry(for: service)
+    }
     publish()
   }
 

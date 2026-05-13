@@ -18,6 +18,7 @@ import type {
   LinearWorkflowRunStep,
   LinearWorkflowStep,
   LinearWorkflowTargetStatus,
+  LaneLinearIssue,
   NormalizedLinearIssue,
 } from "../../../shared/types";
 import type { AdeDb } from "../state/kvDb";
@@ -71,6 +72,36 @@ type RunRow = {
   created_at: string;
   updated_at: string;
 };
+
+function toLaneLinearIssue(issue: NormalizedLinearIssue): LaneLinearIssue {
+  return {
+    id: issue.id,
+    identifier: issue.identifier,
+    title: issue.title,
+    description: issue.description,
+    url: issue.url,
+    projectId: issue.projectId,
+    projectSlug: issue.projectSlug,
+    projectName: issue.projectName ?? null,
+    teamId: issue.teamId,
+    teamKey: issue.teamKey,
+    teamName: issue.teamName ?? null,
+    stateId: issue.stateId,
+    stateName: issue.stateName,
+    stateType: issue.stateType,
+    priority: issue.priority,
+    priorityLabel: issue.priorityLabel,
+    labels: issue.labels,
+    assigneeId: issue.assigneeId,
+    assigneeName: issue.assigneeName,
+    creatorId: issue.creatorId ?? issue.ownerId ?? null,
+    creatorName: issue.creatorName ?? null,
+    dueDate: issue.dueDate ?? null,
+    estimate: issue.estimate ?? null,
+    createdAt: issue.createdAt,
+    updatedAt: issue.updatedAt,
+  };
+}
 
 type StepRow = {
   id: string;
@@ -981,6 +1012,7 @@ export function createLinearDispatcherService(args: {
       name: (target.freshLaneName?.trim() || `${issue.identifier} ${issue.title}`).slice(0, 72),
       description: `Linear workflow ${workflow.name} for ${issue.identifier}`,
       parentLaneId: preferredPrimary.id,
+      linearIssue: toLaneLinearIssue(issue),
     });
     appendEvent(run.id, "run.lane_created", "completed", `Created dedicated lane '${lane.name}'.`, {
       laneId: lane.id,

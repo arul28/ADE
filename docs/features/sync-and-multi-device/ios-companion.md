@@ -320,7 +320,13 @@ turns a raw response dict into either the `result` value or throws an
 
 `SyncRequestTimeout.defaultTimeoutNanoseconds = 30_000_000_000` (30s).
 Timed-out requests throw with the message *"The host took too long to
-respond. Reconnecting now."*
+respond. Reconnecting now."* Chat send commands (`chat.send` and the
+mobile CLI launchers) use an extended budget
+`SyncRequestTimeout.chatSendTimeoutNanoseconds = 120_000_000_000` (120s)
+with the friendlier message *"The machine is still starting this chat
+turn. Live updates will keep syncing."* because warmup-heavy turns
+routinely outlast the 30 s default without indicating a transport
+failure.
 
 A request timeout no longer unconditionally drops the socket. Inbound
 traffic on the WebSocket is timestamped via `lastInboundMessageAt`
@@ -594,6 +600,19 @@ when the host's `projectIconResolver` found a favicon for the project,
 falling back to the brand glyph otherwise. The host pre-renders icons
 to a 64×64 PNG via Electron `nativeImage` before they reach the phone,
 so the iOS side can decode them with stock UIImage.
+
+When a phone is connected, the remote catalog wins identity ties:
+`SyncService.mergeCachedProjects` keeps the remote `projectId` on the
+currently active project even when the local cache row carries a
+different id (the older `mergedById.removeValue` path was demoting the
+remote selection back to the cached id, which broke active-project
+detection after a project switch). `Database.upsertMobileProjectCache`
+persists each `MobileProjectSummary` into the phone's `projects` table
+without capturing local CRR changes (`shouldCaptureLocalChanges =
+false`) and normalises the `rootPath` (trim, drop trailing `/`) so
+catalog rows from different OS reports of the same path don't
+duplicate. Project list dedup runs as a final pass
+(`deduplicateProjectListByRoot`) keyed on the normalised root path.
 
 ### Shipped
 

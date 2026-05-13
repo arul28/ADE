@@ -91,6 +91,7 @@ import {
 import { startJsonRpcServer, type JsonRpcTransport } from "../../../ade-cli/src/jsonrpc";
 import { resolveMachineAdeLayout } from "../../../ade-cli/src/services/projects/machineLayout";
 import { normalizeProjectRootPath } from "../../../ade-cli/src/services/projects/projectRoots";
+import { EncryptedFileCredentialStore } from "../../../ade-cli/src/services/credentials/credentialStore";
 import { createKeybindingsService } from "./services/keybindings/keybindingsService";
 import { createAgentToolsService } from "./services/agentTools/agentToolsService";
 import { createAdeCliService } from "./services/cli/adeCliService";
@@ -145,7 +146,7 @@ import { createWorkerHeartbeatService } from "./services/cto/workerHeartbeatServ
 import { createLinearCredentialService } from "./services/cto/linearCredentialService";
 import { buildRendererCspPolicy } from "./rendererCsp";
 import { createLinearClient } from "./services/cto/linearClient";
-import { createLinearIssueTracker } from "./services/cto/linearIssueTracker";
+import { createLinearIssueTracker, type LinearIssueTracker } from "./services/cto/linearIssueTracker";
 import { createLinearTemplateService } from "./services/cto/linearTemplateService";
 import { createFlowPolicyService } from "./services/cto/flowPolicyService";
 import { createLinearWorkflowFileService } from "./services/cto/linearWorkflowFileService";
@@ -154,6 +155,7 @@ import { createLinearIntakeService } from "./services/cto/linearIntakeService";
 import { createLinearOutboundService } from "./services/cto/linearOutboundService";
 import { createLinearCloseoutService } from "./services/cto/linearCloseoutService";
 import { createLinearDispatcherService } from "./services/cto/linearDispatcherService";
+import { publishLinearLaneCard } from "./services/cto/linearLaneCardService";
 import { createLinearIngressService } from "./services/cto/linearIngressService";
 import { createLinearSyncService } from "./services/cto/linearSyncService";
 import { createOrchestratorService } from "./services/orchestrator/orchestratorService";
@@ -1587,7 +1589,11 @@ app.whenReady().then(async () => {
     const hadAdeDir = fs.existsSync(path.join(projectRoot, ".ade", "ade.db"));
     const adePaths = ensureAdeDirs(projectRoot);
     const { initApiKeyStore } = await import("./services/ai/apiKeyStore");
-    initApiKeyStore(projectRoot);
+    initApiKeyStore(projectRoot, {
+      credentialStore: new EncryptedFileCredentialStore({
+        secretsDir: machineAdeLayout.secretsDir,
+      }),
+    });
     const logger = createFileLogger(path.join(adePaths.logsDir, "main.jsonl"));
     const packagedFirstOpenStabilityMode =
       app.isPackaged
@@ -1681,6 +1687,7 @@ app.whenReady().then(async () => {
     let missionBudgetServiceRef: ReturnType<
       typeof createMissionBudgetService
     > | null = null;
+    let linearIssueTrackerRef: LinearIssueTracker | null = null;
 
     const lastHeadByLaneId = new Map<string, string>();
 
@@ -1765,6 +1772,24 @@ app.whenReady().then(async () => {
         }
       },
       onDeleteEvent: (event) => emitProjectEvent(projectRoot, IPC.lanesDeleteEvent, event),
+      onLinearIssueLinked: ({ lane, issue, linkedAt }) => {
+        const tracker = linearIssueTrackerRef;
+        if (!tracker) return;
+        void publishLinearLaneCard({
+          issueTracker: tracker,
+          lane,
+          issue,
+          projectRoot,
+          linkedAt,
+        }).catch((error) => {
+          logger.warn("linear.lane_card_publish_failed", {
+            laneId: lane.id,
+            issueId: issue.id,
+            issueIdentifier: issue.identifier,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      },
       teardownDeps: laneTeardownDeps,
       logger,
     });
@@ -2328,6 +2353,10 @@ app.whenReady().then(async () => {
       onSessionEnded: onTrackedSessionEnded,
       onSessionRuntimeSignal: (signal) => {
         aiOrchestratorServiceRef?.onSessionRuntimeSignal(signal);
+        emitProjectEvent(projectRoot, IPC.sessionsChanged, {
+          sessionId: signal.sessionId,
+          reason: "meta-updated",
+        });
       },
       loadPty,
     });
@@ -2645,6 +2674,9 @@ app.whenReady().then(async () => {
     const linearCredentialService = createLinearCredentialService({
       adeDir: adePaths.adeDir,
       logger,
+      credentialStore: new EncryptedFileCredentialStore({
+        secretsDir: machineAdeLayout.secretsDir,
+      }),
     });
     const linearClient = createLinearClient({
       credentials: linearCredentialService,
@@ -2653,6 +2685,7 @@ app.whenReady().then(async () => {
     const linearIssueTracker = createLinearIssueTracker({
       client: linearClient,
     });
+    linearIssueTrackerRef = linearIssueTracker;
     const linearTemplateService = createLinearTemplateService({
       adeDir: adePaths.adeDir,
     });
@@ -3535,6 +3568,9 @@ app.whenReady().then(async () => {
       onUpdate: (snapshot) => {
         emitProjectEvent(projectRoot, IPC.usageEvent, snapshot);
       },
+      onThresholdEvent: (event) => {
+        emitProjectEvent(projectRoot, IPC.usageThresholdEvent, event);
+      },
     });
     scheduleBackgroundProjectTask(
       "usage.start",
@@ -3544,7 +3580,7 @@ app.whenReady().then(async () => {
           error: error instanceof Error ? error.message : String(error),
         });
       },
-      20_000,
+      1_000,
       "ADE_ENABLE_USAGE_TRACKING",
     );
 

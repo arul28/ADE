@@ -368,6 +368,55 @@ jobs:
           cp apps/ade-cli/scripts/install-runtime.sh release-assets/runtime/install.sh
           chmod 755 release-assets/runtime/install.sh
 
+      - name: Validate publish asset manifest
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          require_file() {
+            local file="$1"
+            local label="${2:-$1}"
+            if [ ! -s "$file" ]; then
+              echo "::error::Missing or empty $label: $file"
+              exit 1
+            fi
+          }
+
+          require_glob() {
+            local pattern="$1"
+            local label="${2:-$1}"
+            mapfile -t matches < <(compgen -G "$pattern" || true)
+            if [ "${#matches[@]}" -eq 0 ]; then
+              echo "::error::Missing $label matching $pattern"
+              exit 1
+            fi
+            for file in "${matches[@]}"; do
+              require_file "$file" "$label"
+            done
+          }
+
+          require_glob 'release-assets/mac/*.dmg' 'macOS DMG'
+          require_glob 'release-assets/mac/*.zip' 'macOS zip'
+          require_glob 'release-assets/mac/*-mac.zip.blockmap' 'macOS blockmap'
+          require_file 'release-assets/mac/latest-mac.yml' 'macOS auto-update metadata'
+          require_glob 'release-assets/win/*.exe' 'Windows installer'
+          require_glob 'release-assets/win/*.exe.blockmap' 'Windows blockmap'
+          require_file 'release-assets/win/latest.yml' 'Windows auto-update metadata'
+          require_file 'release-assets/runtime/install.sh' 'standalone runtime installer'
+          if [ ! -x 'release-assets/runtime/install.sh' ]; then
+            echo "::error::Standalone runtime installer is not executable."
+            exit 1
+          fi
+
+          for target in darwin-arm64 darwin-x64 linux-arm64 linux-x64; do
+            require_file "release-assets/runtime/ade-$target" "ADE runtime binary for $target"
+            require_file "release-assets/runtime/ade-$target.native.tar.gz" "ADE native dependency archive for $target"
+            tar -tzf "release-assets/runtime/ade-$target.native.tar.gz" | grep -q '^\./node_modules/' || {
+              echo "::error::ADE native dependency archive for $target is missing node_modules."
+              exit 1
+            }
+          done
+
       - name: Create or update draft GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

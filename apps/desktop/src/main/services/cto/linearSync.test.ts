@@ -1830,6 +1830,14 @@ describe("linearDispatcherService (file group)", () => {
       await dispatcher.advanceRun(run.id, policy);
 
       expect(createLane).toHaveBeenCalledTimes(1);
+      expect(createLane).toHaveBeenCalledWith(expect.objectContaining({
+        linearIssue: expect.objectContaining({
+          id: issueFixture.id,
+          identifier: issueFixture.identifier,
+          title: issueFixture.title,
+          url: issueFixture.url,
+        }),
+      }));
       expect(ensureIdentitySession).toHaveBeenCalledWith(expect.objectContaining({
         identityKey: "cto",
         laneId: "lane-2",

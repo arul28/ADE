@@ -64,13 +64,34 @@ function isChatToolType(toolType: string | null | undefined): boolean {
   return t === "cursor" || t.endsWith("-chat");
 }
 
+const IDLE_ATTENTION_TOOL_TYPES = new Set([
+  "claude",
+  "codex",
+  "cursor-cli",
+  "droid",
+  "opencode",
+  "claude-orchestrated",
+  "codex-orchestrated",
+  "opencode-orchestrated",
+  "aider",
+  "continue",
+]);
+
+function idleRuntimeNeedsAttention(toolType: string | null | undefined): boolean {
+  if (isChatToolType(toolType)) return true;
+  if (!toolType) return false;
+  return IDLE_ATTENTION_TOOL_TYPES.has(toolType.trim().toLowerCase());
+}
+
 function sessionStatusBucket(args: {
   status: string;
   lastOutputPreview: string | null | undefined;
   runtimeState?: string | null;
+  toolType?: string | null;
 }): "running" | "awaiting-input" | "ended" {
   if (args.status === "running") {
     if (args.runtimeState === "waiting-input") return "awaiting-input";
+    if (args.runtimeState === "idle" && idleRuntimeNeedsAttention(args.toolType)) return "awaiting-input";
     const preview = args.lastOutputPreview ?? "";
     if (/\b(?:waiting|awaiting)\b.{0,28}\b(?:input|confirmation|response|prompt)\b/i.test(preview)) {
       return "awaiting-input";
@@ -90,6 +111,7 @@ function summarizeLaneRuntime(
     status: string;
     lastOutputPreview: string | null;
     runtimeState?: string | null;
+    toolType?: string | null;
   }>,
 ): LaneRuntimeSummary {
   let runningCount = 0;

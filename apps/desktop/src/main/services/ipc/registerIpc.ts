@@ -717,6 +717,7 @@ import {
   detectCodexResumeStrategy,
   spawnInNewTerminalWindow,
 } from "../chat/codexCliLauncher";
+import { sanitizeResumeTargetId } from "../../utils/terminalSessionSignals";
 
 export type AppContext = {
   db: AdeDb;
@@ -1587,7 +1588,7 @@ function sessionNeedsResumeTargetHydration(session: {
   resumeMetadata?: { targetId?: string | null } | null;
 }): boolean {
   if (!session.tracked || session.status === "running") return false;
-  if (session.resumeMetadata?.targetId?.trim()) return false;
+  if (sanitizeResumeTargetId(session.resumeMetadata?.targetId ?? null)) return false;
   return (
     session.toolType === "claude"
     || session.toolType === "codex"

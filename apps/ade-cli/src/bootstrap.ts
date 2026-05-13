@@ -980,6 +980,7 @@ export async function createAdeRuntime(args: {
     logger,
     pollIntervalMs: 120_000,
     onUpdate: (snapshot) => pushEvent("runtime", { type: "usage", snapshot }),
+    onThresholdEvent: (event) => pushEvent("runtime", { type: "usage_threshold", event }),
   });
   const budgetCapService = createBudgetCapService({
     db,

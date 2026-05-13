@@ -174,7 +174,7 @@ queued
 Core Linear services on desktop
 (`apps/desktop/src/main/services/cto/`):
 
-- `linearCredentialService.ts` — token storage + health check
+- `linearCredentialService.ts` — token + OAuth client + auth mode storage and health check. Reads/writes through the per-machine `SyncCredentialStore` (`~/.ade/secrets/`) when one is passed in, with a one-time migration from the legacy project-local `linear-token.v1.bin` / `linear-oauth-client.v1.bin` files; falls back to the legacy project-scoped path when the machine store is unavailable. Environment overrides (`ADE_LINEAR_API`, `LINEAR_API_KEY`, `ADE_LINEAR_TOKEN`, `LINEAR_TOKEN`) still take precedence.
 - `linearOAuthService.ts` — OAuth authorization flow
 - `linearClient.ts` — GraphQL client wrapper
 - `linearIssueTracker.ts` — normalization into `NormalizedLinearIssue`

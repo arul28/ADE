@@ -1220,6 +1220,25 @@ async function waitForSessionTitle(sessionService: ReturnType<typeof createMockS
   }, { timeout: 1_000 });
 }
 
+function automaticMacosVmContextText(userText: string): string {
+  return [
+    "ADE macOS VM capability for this lane (automatic context).",
+    "Use this capability only when the user asks to use the ADE VM, needs isolated macOS GUI validation, or asks for VM-backed computer use. Query fresh state before acting; do not assume this snapshot is current.",
+    "- Lane id: lane-1",
+    "- Provider: lume 0.3.9",
+    "- Current lane VM: not provisioned yet",
+    "- Host lane path: current ADE lane worktree",
+    "- Guest lane path: /Volumes/My Shared Files",
+    "- Guest SSH command: not configured yet",
+    "- Sanitized VNC URL: available after the VM is running",
+    "- ADE RPC tools: macos_vm_status, macos_vm_start, macos_vm_focus, macos_vm_screenshot, macos_vm_select, macos_vm_click, macos_vm_type.",
+    "- ADE CLI examples: ade macos-vm status --lane lane-1 --text; ade macos-vm start --lane lane-1 --create --no-display; ade macos-vm screenshot --lane lane-1 --text.",
+    "- GUI control goes through ADE's direct headless VNC bridge when available, then falls back to a visible VM viewer. Do not target the host ADE window when the task is to control the lane VM.",
+    "- The VM is not running; start it only if the user asked for VM use or the task clearly needs isolated macOS GUI validation.",
+    `- Keep VM-side edits inside the mounted guest lane path so the host lane and guest stay aligned.${userText}`,
+  ].join("\n");
+}
+
 function makeLaneLinearIssue(overrides: Partial<LaneLinearIssue> = {}): LaneLinearIssue {
   return {
     id: "issue-1",
@@ -1558,7 +1577,52 @@ describe("createAgentChatService", () => {
       expect(opts?.systemPrompt?.append).toContain("clean up old, stale, or finished processes");
     });
 
-    it("keeps Claude SDK project/user setting sources and skills enabled", async () => {
+    it("keeps ADE tooling guidance out of Claude SDK user turns", async () => {
+      const send = vi.fn().mockResolvedValue(undefined);
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream: vi.fn(() => (async function* () {
+          yield {
+            type: "result",
+            subtype: "success",
+            is_error: false,
+            session_id: "sdk-session-user-guidance",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+        })()),
+        close: vi.fn(),
+        sessionId: "sdk-session-user-guidance",
+        query: {
+          setPermissionMode: vi.fn(async () => undefined),
+          supportedCommands: vi.fn(async () => []),
+        },
+      } as any);
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Inspect the repo and report the chat wiring.",
+        timeoutMs: 15_000,
+      });
+
+      const userTurnPayload = send.mock.calls
+        .map((call) => String(call[0] ?? ""))
+        .find((payload) => payload.includes("Inspect the repo and report the chat wiring."));
+
+      expect(userTurnPayload).toContain("[ADE launch directive]");
+      expect(userTurnPayload).not.toContain("only normal reason to skip ADE CLI");
+      expect(userTurnPayload).not.toContain("ade actions list --text");
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as { systemPrompt?: { append?: string } } | undefined;
+      expect(opts?.systemPrompt?.append).toContain("only normal reason to skip ADE CLI");
+    });
+
+    it("keeps Claude SDK setting sources and skills enabled without output-style plugins", async () => {
       vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
         send: vi.fn(),
         stream: vi.fn(async function* () {
@@ -1579,9 +1643,27 @@ describe("createAgentChatService", () => {
         expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
       });
 
-      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as { settingSources?: string[]; skills?: string } | undefined;
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
+        promptSuggestions?: boolean;
+        settingSources?: string[];
+        settings?: {
+          enabledPlugins?: Record<string, boolean>;
+          outputStyle?: string;
+        };
+        skills?: string;
+      } | undefined;
       expect(opts?.settingSources).toEqual(expect.arrayContaining(["user", "project"]));
       expect(opts?.skills).toBe("all");
+      expect(opts?.promptSuggestions).toBe(false);
+      expect(opts?.settings).toEqual(expect.objectContaining({
+        outputStyle: "Default",
+        enabledPlugins: expect.objectContaining({
+          "learning-output-style@claude-code-plugins": false,
+          "learning-output-style@claude-plugins-official": false,
+          "explanatory-output-style@claude-code-plugins": false,
+          "explanatory-output-style@claude-plugins-official": false,
+        }),
+      }));
     });
 
     it("passes discovered local Claude plugins to SDK sessions", async () => {
@@ -1589,6 +1671,9 @@ describe("createAgentChatService", () => {
       fs.mkdirSync(path.join(pluginRoot, ".claude-plugin"), { recursive: true });
       fs.writeFileSync(path.join(pluginRoot, ".claude-plugin", "plugin.json"), JSON.stringify({
         name: "review-pack",
+      }));
+      fs.writeFileSync(path.join(tmpRoot, ".claude", "settings.json"), JSON.stringify({
+        enabledPlugins: { "review-pack@local": true },
       }));
       vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
         send: vi.fn(),
@@ -2521,13 +2606,21 @@ describe("createAgentChatService", () => {
       });
 
       const startPayload = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/start");
-      expect(startPayload?.params).toMatchObject({ cwd: expect.stringContaining("lane-2") });
+      expect(startPayload?.params).toMatchObject({
+        cwd: expect.stringContaining("lane-2"),
+        developerInstructions: "system prompt",
+      });
 
       const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
-      const turnParams = turnStartRequest?.params as { input?: Array<{ text?: unknown }> } | undefined;
+      const turnParams = turnStartRequest?.params as {
+        input?: Array<{ text?: unknown }>;
+        collaborationMode?: { settings?: { developer_instructions?: unknown } };
+      } | undefined;
       const textInput = turnParams?.input?.map((entry) => String(entry.text ?? "")).join("\n") ?? "";
-      expect(textInput).toContain("only normal reason to skip ADE CLI");
-      expect(textInput).toContain("ade actions list --text");
+      expect(turnParams?.collaborationMode?.settings?.developer_instructions).toBe("system prompt");
+      expect(textInput).not.toContain("only normal reason to skip ADE CLI");
+      expect(textInput).not.toContain("ade actions list --text");
+      expect(textInput).toContain("Inspect the repo and fix the lane launch bug.");
     });
 
     it("passes the selected Codex reasoning effort into app-server config", async () => {
@@ -3861,6 +3954,55 @@ describe("createAgentChatService", () => {
       expect(commands).toEqual([]);
     });
 
+    it("returns Claude commands for a draft lane before a chat session exists", async () => {
+      const commandsDir = path.join(tmpRoot, ".claude", "commands");
+      fs.mkdirSync(commandsDir, { recursive: true });
+      fs.writeFileSync(path.join(commandsDir, "shipLane.md"), [
+        "---",
+        "description: Ship the active lane",
+        "---",
+        "",
+        "Ship lane.",
+        "",
+      ].join("\n"));
+      const { service } = createService();
+
+      const commands = service.getSlashCommands({ laneId: "lane-1", provider: "claude" });
+      const names = commands.map((command) => command.name);
+
+      expect(names).toContain("/agents");
+      expect(names).toContain("/output-style");
+      expect(commands).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          name: "/shipLane",
+          description: "Ship the active lane",
+          source: "sdk",
+        }),
+      ]));
+      expect(names).not.toContain("/login");
+    });
+
+    it("returns Codex commands for a draft lane before a chat session exists", async () => {
+      const promptsDir = path.join(tmpRoot, ".codex", "prompts");
+      fs.mkdirSync(promptsDir, { recursive: true });
+      fs.writeFileSync(path.join(promptsDir, "audit.md"), "Audit recent work.");
+      const { service } = createService();
+
+      const commands = service.getSlashCommands({ laneId: "lane-1", provider: "codex" });
+      const names = commands.map((command) => command.name);
+
+      expect(names).toContain("/permissions");
+      expect(names).toContain("/review");
+      expect(commands).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          name: "/audit",
+          description: "Audit recent work.",
+          source: "sdk",
+        }),
+      ]));
+      expect(names).not.toContain("/apps");
+    });
+
     it("returns local commands for a opencode session", async () => {
       const { service } = createService();
       const session = await service.createSession({
@@ -4240,12 +4382,15 @@ describe("createAgentChatService", () => {
   describe("Claude plugins", () => {
 	    it("lists discovered local Claude plugins", async () => {
 	      const pluginRoot = path.join(tmpRoot, ".claude", "plugins", "team-tools", "review-plugin");
-	      fs.mkdirSync(path.join(pluginRoot, ".claude-plugin"), { recursive: true });
-	      fs.writeFileSync(path.join(pluginRoot, ".claude-plugin", "plugin.json"), JSON.stringify({
-	        name: "review-plugin",
-	        description: "Review helpers",
-	      }));
-	      const { service } = createService();
+		      fs.mkdirSync(path.join(pluginRoot, ".claude-plugin"), { recursive: true });
+		      fs.writeFileSync(path.join(pluginRoot, ".claude-plugin", "plugin.json"), JSON.stringify({
+		        name: "review-plugin",
+		        description: "Review helpers",
+		      }));
+		      fs.writeFileSync(path.join(tmpRoot, ".claude", "settings.json"), JSON.stringify({
+		        enabledPlugins: { "review-plugin@local": true },
+		      }));
+		      const { service } = createService();
 	      const session = await service.createSession({
 	        laneId: "lane-1",
 	        provider: "claude",
@@ -5457,6 +5602,151 @@ describe("createAgentChatService", () => {
       const textInput = turnParams?.input?.map((entry) => String(entry.text ?? "")).join("\n") ?? "";
       expect(textInput).toContain("Attached issue context");
       expect(textInput).toContain("Use the attached issue context.");
+    });
+
+    it("strips repeated automatic macOS VM context from Codex follow-up prompts", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => {
+          events.push(event);
+        },
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: automaticMacosVmContextText("First task."),
+        displayText: "First task.",
+      });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start")).toHaveLength(1);
+      });
+      const firstTurnStart = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
+      const firstTurnParams = firstTurnStart?.params as { input?: Array<{ text?: unknown }> } | undefined;
+      const firstInput = firstTurnParams?.input?.map((entry) => String(entry.text ?? "")).join("\n") ?? "";
+      expect(firstInput).toContain("ADE macOS VM capability for this lane");
+      expect(firstInput).toContain("macos_vm_status");
+      expect(firstInput).toContain("First task.");
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/started",
+        params: { turn: { id: "turn-1", status: "inProgress" } },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: { turn: { id: "turn-1", status: "completed" } },
+      });
+
+      mockState.codexRequestPayloads = [];
+      await service.sendMessage({
+        sessionId: session.id,
+        text: automaticMacosVmContextText("Second task."),
+        displayText: "Second task.",
+      });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start")).toHaveLength(1);
+      });
+      const secondTurnStart = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
+      const secondTurnParams = secondTurnStart?.params as { input?: Array<{ text?: unknown }> } | undefined;
+      const secondInput = secondTurnParams?.input?.map((entry) => String(entry.text ?? "")).join("\n") ?? "";
+      expect(secondInput).not.toContain("ADE macOS VM capability for this lane");
+      expect(secondInput).not.toContain("macos_vm_status");
+      expect(secondInput).toContain("Second task.");
+
+      const userMessages = events.filter((event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "user_message" }>;
+      } => event.event.type === "user_message");
+      expect(userMessages[0]?.event.text).toContain("ADE macOS VM capability for this lane");
+      expect(userMessages[1]?.event.text).toBe("Second task.");
+    });
+
+    it("strips repeated automatic macOS VM context from Claude follow-up prompts", async () => {
+      const send = vi.fn(async (_message: unknown) => undefined);
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        ...makeDefaultClaudeSession(),
+        send,
+      });
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => {
+          events.push(event);
+        },
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: automaticMacosVmContextText("First Claude task."),
+        displayText: "First Claude task.",
+      });
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: automaticMacosVmContextText("Second Claude task."),
+        displayText: automaticMacosVmContextText("Second Claude task."),
+      });
+
+      const sentPrompts = send.mock.calls.map(([message]) => String(message));
+      const firstPrompt = sentPrompts.find((message) => message.includes("First Claude task.")) ?? "";
+      const secondPrompt = sentPrompts.find((message) => message.includes("Second Claude task.")) ?? "";
+      expect(firstPrompt).toContain("ADE macOS VM capability for this lane");
+      expect(firstPrompt).toContain("macos_vm_status");
+      expect(secondPrompt).not.toContain("ADE macOS VM capability for this lane");
+      expect(secondPrompt).not.toContain("macos_vm_status");
+      expect(secondPrompt).toContain("Second Claude task.");
+
+      const userMessages = events.filter((event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "user_message" }>;
+      } => event.event.type === "user_message");
+      expect(userMessages[1]?.event.text).toBe("Second Claude task.");
+    });
+
+    it("strips repeated automatic macOS VM context from Cursor SDK follow-up prompts", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => {
+          events.push(event);
+        },
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: automaticMacosVmContextText("First Cursor task."),
+        displayText: "First Cursor task.",
+      });
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: automaticMacosVmContextText("Second Cursor task."),
+        displayText: automaticMacosVmContextText("Second Cursor task."),
+      });
+
+      const firstPrompt = String(mockState.cursorSdkSendCalls[0]?.promptText ?? "");
+      const secondPrompt = String(mockState.cursorSdkSendCalls[1]?.promptText ?? "");
+      expect(firstPrompt).toContain("ADE macOS VM capability for this lane");
+      expect(firstPrompt).toContain("macos_vm_status");
+      expect(secondPrompt).not.toContain("ADE macOS VM capability for this lane");
+      expect(secondPrompt).not.toContain("macos_vm_status");
+      expect(secondPrompt).toContain("Second Cursor task.");
+
+      const userMessages = events.filter((event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "user_message" }>;
+      } => event.event.type === "user_message");
+      expect(userMessages[1]?.event.text).toBe("Second Cursor task.");
     });
 
     it("prefers the canonical turn-scoped Codex text stream when item-scoped deltas also arrive", async () => {
@@ -7359,17 +7649,18 @@ describe("createAgentChatService", () => {
       expect(collaborationMode?.mode).toBe("plan");
       expect(collaborationMode?.settings?.model).toBe("gpt-5.4");
       expect(collaborationMode?.settings?.reasoning_effort).toBe("medium");
-      expect(collaborationMode?.settings?.developer_instructions).toBeNull();
-      expect(textInputs.at(-2)?.text).toContain("System context (ADE runtime guidance");
-      expect(textInputs.at(-2)?.text).toContain("system prompt");
+      expect(collaborationMode?.settings?.developer_instructions).toBe("system prompt");
+      expect(textInputs).toHaveLength(1);
       expect(textInputs.at(-1)?.text).toContain("User request:");
       expect(textInputs.at(-1)?.text).toContain("Ask one planning question before coding.");
+      expect(textInputs.at(-1)?.text).not.toContain("System context (ADE runtime guidance");
       expect(vi.mocked(buildCodingAgentSystemPrompt)).toHaveBeenCalledWith(
         expect.objectContaining({
           cwd: expect.stringContaining(path.basename(tmpRoot)),
           mode: "planning",
           permissionMode: "plan",
           interactive: true,
+          runtime: "codex-app-server",
         }),
       );
     });
@@ -7811,7 +8102,7 @@ describe("createAgentChatService", () => {
       expect(params?.sandboxPolicy?.type).toBe("workspaceWrite");
       expect(params?.effort).toBe("medium");
       expect(collaborationMode?.mode).toBe("default");
-      expect(collaborationMode?.settings?.developer_instructions).toBeNull();
+      expect(collaborationMode?.settings?.developer_instructions).toBe("system prompt");
     });
 
     it("handles Codex /plan prompts inline and sends the next app-server turn in plan mode", async () => {

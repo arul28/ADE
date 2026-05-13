@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope } from "../../../../desktop/src/shared/types/chat";
-import { createChatSession, DEFAULT_CODEX_REASONING_EFFORT, discoverProjectSlashCommands, latestGoal, latestTokenStats, sendChatMessage } from "../adeApi";
+import { cancelSteerMessage, createChatSession, DEFAULT_CODEX_REASONING_EFFORT, dispatchSteerMessage, discoverProjectSlashCommands, editSteerMessage, latestGoal, latestTokenStats, listLaneDiffStats, listPrsByLane, sendChatMessage, steerChatMessage } from "../adeApi";
 import type { AdeCodeConnection } from "../types";
 
 const tmpPaths: string[] = [];
@@ -32,6 +32,29 @@ function envelope(
     event,
   };
 }
+
+describe("listLaneDiffStats", () => {
+  it("calls the bulk diff stats ADE action with lane ids", async () => {
+    const calls: Array<{ domain: string; action: string; args: Record<string, unknown> | undefined }> = [];
+    const connection = {
+      action: async (domain: string, action: string, args?: Record<string, unknown>) => {
+        calls.push({ domain, action, args });
+        return { "lane-1": { additions: 12, deletions: 4, files: 3 } };
+      },
+    } as unknown as AdeCodeConnection;
+
+    const result = await listLaneDiffStats(connection, ["lane-1"]);
+
+    expect(calls).toEqual([
+      {
+        domain: "diff",
+        action: "listLaneDiffStats",
+        args: { laneIds: ["lane-1"] },
+      },
+    ]);
+    expect(result["lane-1"]).toEqual({ additions: 12, deletions: 4, files: 3 });
+  });
+});
 
 describe("latestTokenStats", () => {
   it("tracks streaming state, context percentage, token counts, and cost", () => {
@@ -290,8 +313,40 @@ describe("createChatSession", () => {
   });
 });
 
+describe("listPrsByLane", () => {
+  it("passes through the bulk PR lane action", async () => {
+    const calls: Array<{ domain: string; action: string; args?: Record<string, unknown> }> = [];
+    const connection = {
+      action: async (domain: string, action: string, args?: Record<string, unknown>) => {
+        calls.push({ domain, action, args });
+        return [
+          {
+            laneId: "lane-1",
+            number: 168,
+            state: "open",
+            checksPassed: 4,
+            checksTotal: 6,
+          },
+        ];
+      },
+    } as unknown as AdeCodeConnection;
+
+    await expect(listPrsByLane(connection)).resolves.toEqual([
+      {
+        laneId: "lane-1",
+        number: 168,
+        state: "open",
+        checksPassed: 4,
+        checksTotal: 6,
+      },
+    ]);
+
+    expect(calls).toEqual([{ domain: "pr", action: "listPrsByLane", args: {} }]);
+  });
+});
+
 describe("sendChatMessage", () => {
-  it("waits until the runtime has accepted the turn", async () => {
+  it("forwards chat text unchanged and waits until the shared runtime has accepted the turn", async () => {
     const calls: Array<{ domain: string; action: string; argsList: unknown[] }> = [];
     const connection = {
       actionList: async (domain: string, action: string, argsList: unknown[]) => {
@@ -310,6 +365,34 @@ describe("sendChatMessage", () => {
           { awaitDispatch: true },
         ],
       },
+    ]);
+    expect(JSON.stringify(calls)).not.toContain("only normal reason to skip ADE CLI");
+    expect(JSON.stringify(calls)).not.toContain("ade actions list --text");
+  });
+});
+
+describe("steer helpers", () => {
+  it("routes steer, edit, cancel, and dispatch actions through the shared chat domain", async () => {
+    const calls: Array<{ domain: string; action: string; args: Record<string, unknown> }> = [];
+    const connection = {
+      action: async (domain: string, action: string, args: Record<string, unknown>) => {
+        calls.push({ domain, action, args });
+        if (action === "steer") return { steerId: "steer-1", queued: true };
+        if (action === "dispatchSteer") return { dispatchedAt: 123 };
+        return undefined;
+      },
+    } as unknown as AdeCodeConnection;
+
+    await expect(steerChatMessage(connection, "chat-1", "while busy")).resolves.toEqual({ steerId: "steer-1", queued: true });
+    await editSteerMessage(connection, "chat-1", "steer-1", "updated");
+    await cancelSteerMessage(connection, "chat-1", "steer-1");
+    await expect(dispatchSteerMessage(connection, "chat-1", "steer-1", "inline")).resolves.toEqual({ dispatchedAt: 123 });
+
+    expect(calls).toEqual([
+      { domain: "chat", action: "steer", args: { sessionId: "chat-1", text: "while busy" } },
+      { domain: "chat", action: "editSteer", args: { sessionId: "chat-1", steerId: "steer-1", text: "updated" } },
+      { domain: "chat", action: "cancelSteer", args: { sessionId: "chat-1", steerId: "steer-1" } },
+      { domain: "chat", action: "dispatchSteer", args: { sessionId: "chat-1", steerId: "steer-1", mode: "inline" } },
     ]);
   });
 });

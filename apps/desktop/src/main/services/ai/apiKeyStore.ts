@@ -61,6 +61,8 @@ const ENV_KEY_PROVIDERS: Record<string, string> = {
 const MACOS_SECURITY_BIN = "/usr/bin/security";
 const MACOS_KEYCHAIN_SERVICE = "com.ade.desktop.api-keys.v1";
 const MACOS_KEYCHAIN_PROVIDER_INDEX_ACCOUNT = "__ade_provider_index__";
+const CREDENTIAL_LEGACY_KEYCHAIN_MIGRATED_KEY = "ai.credentials.legacy_keychain_migrated.v1";
+const CREDENTIAL_LEGACY_PROJECTS_MIGRATED_KEY = "ai.credentials.legacy_projects_migrated.v1";
 const MACOS_KEYCHAIN_MISSING_PATTERNS = [
   /could not be found/i,
   /item could not be found/i,
@@ -71,6 +73,7 @@ const CREDENTIAL_PROVIDER_INDEX_KEY = "ai.api_key.index.v1";
 
 let storePath: string | null = null;
 let legacyStorePath: string | null = null;
+let projectRootPath: string | null = null;
 let credentialStore: ApiKeyCredentialStore | null = null;
 let cache: StoredKeys | null = null;
 let decryptionFailed = false;
@@ -294,6 +297,35 @@ function writeCredentialProviderIndex(providers: Iterable<string>): void {
   writeCredentialSecret(CREDENTIAL_PROVIDER_INDEX_KEY, JSON.stringify(normalizeProviderList(Array.from(providers))));
 }
 
+function readCredentialLegacyMigratedProjectRoots(): Set<string> {
+  const raw = readCredentialSecret(CREDENTIAL_LEGACY_PROJECTS_MIGRATED_KEY);
+  if (!raw) return new Set();
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return new Set();
+    const roots = parsed
+      .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+      .map((entry) => path.resolve(entry));
+    return new Set(roots);
+  } catch {
+    decryptionFailed = true;
+    return new Set();
+  }
+}
+
+function writeCredentialLegacyMigratedProjectRoots(projectRoots: Iterable<string>): void {
+  const normalized = Array.from(new Set(Array.from(projectRoots).map((entry) => path.resolve(entry)))).sort();
+  writeCredentialSecret(CREDENTIAL_LEGACY_PROJECTS_MIGRATED_KEY, JSON.stringify(normalized));
+}
+
+function isCredentialLegacyKeychainMigrated(): boolean {
+  return Boolean(readCredentialSecret(CREDENTIAL_LEGACY_KEYCHAIN_MIGRATED_KEY));
+}
+
+function markCredentialLegacyKeychainMigrated(): void {
+  writeCredentialSecret(CREDENTIAL_LEGACY_KEYCHAIN_MIGRATED_KEY, new Date().toISOString());
+}
+
 function readCredentialStore(providerCandidates: Iterable<string>): StoredKeys {
   const out: StoredKeys = {};
   for (const provider of providerCandidates) {
@@ -303,6 +335,76 @@ function readCredentialStore(providerCandidates: Iterable<string>): StoredKeys {
     if (value) out[normalizedProvider] = value;
   }
   return out;
+}
+
+function mergeLegacyValuesIntoCredentialStore(
+  currentStore: StoredKeys,
+  legacyStore: StoredKeys,
+): StoredKeys {
+  const nextStore = { ...currentStore };
+  const changedProviders = new Set<string>();
+  for (const [provider, rawValue] of Object.entries(legacyStore)) {
+    const normalizedProvider = normalizeProvider(provider);
+    const value = rawValue.trim();
+    if (!normalizedProvider.length || !value.length || nextStore[normalizedProvider]) continue;
+    writeCredentialSecret(credentialProviderKey(normalizedProvider), value);
+    nextStore[normalizedProvider] = value;
+    changedProviders.add(normalizedProvider);
+  }
+  if (changedProviders.size) {
+    const index = readCredentialProviderIndex();
+    writeCredentialProviderIndex(new Set([...index.providers, ...Object.keys(nextStore)]));
+  }
+  return nextStore;
+}
+
+function migrateLegacyProjectStoreIntoCredentialStore(currentStore: StoredKeys): StoredKeys {
+  if (!projectRootPath) return currentStore;
+  const migratedProjectRoots = readCredentialLegacyMigratedProjectRoots();
+  const normalizedProjectRoot = path.resolve(projectRootPath);
+  if (migratedProjectRoots.has(normalizedProjectRoot)) return currentStore;
+
+  const hadEncryptedStore = Boolean(storePath && fs.existsSync(storePath));
+  const legacyStore = loadEncryptedStore();
+  const migrationComplete = !hadEncryptedStore || !decryptionFailed;
+  const nextStore = mergeLegacyValuesIntoCredentialStore(currentStore, legacyStore);
+
+  if (migrationComplete) {
+    migratedProjectRoots.add(normalizedProjectRoot);
+    writeCredentialLegacyMigratedProjectRoots(migratedProjectRoots);
+  }
+  return nextStore;
+}
+
+function migrateLegacyKeychainIntoCredentialStore(currentStore: StoredKeys): StoredKeys {
+  if (isCredentialLegacyKeychainMigrated()) return currentStore;
+  if (!isMacosKeychainAvailable()) return currentStore;
+
+  const index = readMacosKeychainProviderIndex();
+  const providerCandidates = new Set([
+    ...index.providers,
+    ...Object.keys(ENV_KEY_PROVIDERS),
+  ]);
+  const keychainStore = readMacosKeychainStore(providerCandidates);
+  const nextStore = mergeLegacyValuesIntoCredentialStore(currentStore, keychainStore);
+  markCredentialLegacyKeychainMigrated();
+  return nextStore;
+}
+
+function migrateLegacyStoresIntoCredentialStore(currentStore: StoredKeys): StoredKeys {
+  let nextStore = currentStore;
+  try {
+    nextStore = migrateLegacyKeychainIntoCredentialStore(nextStore);
+  } catch {
+    // Keep the machine credential store usable even if a legacy Keychain read
+    // or write is blocked. The legacy copy remains available for a later retry.
+  }
+  try {
+    nextStore = migrateLegacyProjectStoreIntoCredentialStore(nextStore);
+  } catch {
+    // Best effort. A failed migration must not block app or runtime startup.
+  }
+  return nextStore;
 }
 
 function readMacosKeychainProviderIndex(): { exists: boolean; providers: string[] } {
@@ -402,7 +504,8 @@ function ensureStore(): StoredKeys {
 
   if (credentialStore) {
     const index = readCredentialProviderIndex();
-    cache = index.exists ? readCredentialStore(index.providers) : {};
+    const credentialValues = index.exists ? readCredentialStore(index.providers) : {};
+    cache = migrateLegacyStoresIntoCredentialStore(credentialValues);
     return cache;
   }
 
@@ -452,6 +555,7 @@ function persistEncryptedStore(nextStore: StoredKeys = cache ?? {}): void {
 
 export function initApiKeyStore(projectRoot: string, options: InitApiKeyStoreOptions = {}): void {
   const layout = resolveAdeLayout(projectRoot);
+  projectRootPath = path.resolve(projectRoot);
   storePath = layout.apiKeysPath;
   legacyStorePath = layout.legacyApiKeysPath;
   credentialStore = options.credentialStore ?? null;
@@ -531,7 +635,9 @@ export function getApiKey(provider: string): string | null {
     }
     missingCredentialProviders.add(normalizedProvider);
   }
-  if (isMacosKeychainAvailable() && !missingMacosKeychainProviders.has(normalizedProvider)) {
+  const allowLegacyKeychainFallback =
+    !credentialStore || !isCredentialLegacyKeychainMigrated();
+  if (allowLegacyKeychainFallback && isMacosKeychainAvailable() && !missingMacosKeychainProviders.has(normalizedProvider)) {
     const keychainValue = readMacosKeychainSecret(normalizedProvider);
     if (keychainValue) {
       store[normalizedProvider] = keychainValue;

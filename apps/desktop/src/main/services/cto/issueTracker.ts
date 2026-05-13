@@ -37,6 +37,30 @@ export type IssueTrackerWorkpadResult = {
   commentId: string;
 };
 
+export type IssueTrackerAttachmentAttribute = {
+  name: string;
+  value: string;
+};
+
+export type IssueTrackerAttachmentMessage = {
+  subject?: string;
+  body?: string;
+  timestamp?: string;
+};
+
+export type IssueTrackerIssueAttachmentInput = {
+  issueId: string;
+  title: string;
+  url: string;
+  subtitle?: string | null;
+  iconUrl?: string | null;
+  metadata?: Record<string, unknown> & {
+    title?: string;
+    attributes?: IssueTrackerAttachmentAttribute[];
+    messages?: IssueTrackerAttachmentMessage[];
+  };
+};
+
 export type IssueTrackerWorkflowState = {
   id: string;
   name: string;
@@ -62,6 +86,7 @@ export type IssueTracker = {
   updateComment(commentId: string, body: string): Promise<void>;
   addLabel(issueId: string, labelName: string): Promise<void>;
   uploadAttachment(args: { issueId: string; filePath: string; title?: string }): Promise<{ url: string; id?: string }>;
+  createIssueAttachment(args: IssueTrackerIssueAttachmentInput): Promise<{ url: string; id?: string }>;
   getConnectionStatus(): Promise<{
     connected: boolean;
     viewerId: string | null;

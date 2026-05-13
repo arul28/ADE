@@ -25,7 +25,7 @@ describe("renderChatLines", () => {
     ]);
   });
 
-  it("renders compact rule-separated chat turns", () => {
+  it("renders compact chat turns without speaker metadata spam", () => {
     const lines = renderChatLines({
       activeSession: null,
       notices: [],
@@ -45,8 +45,7 @@ describe("renderChatLines", () => {
       ],
     });
     expect(lines.map((line) => line.tone)).toEqual(["user", "assistant"]);
-    expect(lines[0]?.header).toContain("you");
-    expect(lines[1]?.header).toContain("ADE");
+    expect(lines.map((line) => line.header)).toEqual([undefined, undefined]);
   });
 
   it("orders local notices and chat events by timestamp", () => {
@@ -77,9 +76,10 @@ describe("renderChatLines", () => {
     });
 
     expect(lines.map((line) => line.body)).toEqual(["hello", "Auth completed.", "hi"]);
+    expect(lines.map((line) => line.header)).toEqual([undefined, undefined, undefined]);
   });
 
-  it("keeps terminal formatting artifacts out of model labels", () => {
+  it("omits assistant model labels from normal text", () => {
     const lines = renderChatLines({
       activeSession: {
         sessionId: "s1",
@@ -104,7 +104,8 @@ describe("renderChatLines", () => {
       ],
     });
 
-    expect(lines[0]?.header).toMatch(/^Claude · .* · claude-opus-4-7$/);
+    expect(lines[0]?.header).toBeUndefined();
+    expect(lines[0]?.body).toBe("hi");
   });
 
   it("renders non-JSON-safe objects without throwing", () => {
@@ -484,6 +485,64 @@ describe("renderChatLines", () => {
     expect(lines[1]?.tone).toBe("assistant");
   });
 
+  it("suppresses low-value startup system notices and keeps auth failures concise", () => {
+    const lines = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:00.000Z",
+          sequence: 1,
+          event: { type: "system_notice", noticeKind: "info", message: "Session ready" } as never,
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:01.000Z",
+          sequence: 2,
+          event: { type: "system_notice", noticeKind: "hook", message: "Hook: SessionStart:startup started" } as never,
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:02.000Z",
+          sequence: 3,
+          event: { type: "system_notice", noticeKind: "auth", message: "Failed to authenticate. API Error: 401 Invalid authentication credentials" } as never,
+        },
+      ],
+    });
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toEqual(expect.objectContaining({
+      tone: "error",
+      body: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+    }));
+    expect(lines[0]?.header).toBeUndefined();
+  });
+
+  it("deduplicates consecutive identical notice rows", () => {
+    const lines = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:00.000Z",
+          sequence: 1,
+          event: { type: "system_notice", noticeKind: "info", message: "Refreshing provider status." } as never,
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:01.000Z",
+          sequence: 2,
+          event: { type: "system_notice", noticeKind: "info", message: "Refreshing provider status." } as never,
+        },
+      ],
+    });
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0]?.body).toBe("Refreshing provider status.");
+  });
+
   it("routes severity-bearing system_notice variants to tone=error in the TUI", () => {
     const lines = renderChatLines({
       activeSession: null,
@@ -602,7 +661,7 @@ describe("renderChatLines", () => {
     expect(lines[0]?.blocks).toEqual([
       { kind: "paragraph", text: "I'm Codex, running as a GPT-5 based software engineering agent." },
     ]);
-    expect(lines[0]?.header).toMatch(/^Codex /);
+    expect(lines[0]?.header).toBeUndefined();
   });
 
   it("does not coalesce assistant text across a tool call", () => {
@@ -645,7 +704,7 @@ describe("renderChatLines", () => {
     expect(lines.map((line) => line.tone)).toEqual(["assistant", "tool", "assistant"]);
     expect(lines[0]?.body).toBe("I'll check the branch.");
     expect(lines[2]?.body).toBe("We're on main.");
-    expect(lines[2]?.header).toMatch(/^Codex /);
+    expect(lines[2]?.header).toBeUndefined();
   });
 
   it("renders expanded failed tool output when requested", () => {

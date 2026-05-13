@@ -1256,7 +1256,9 @@ export type AgentChatSlashCommand = {
 };
 
 export type AgentChatSlashCommandsArgs = {
-  sessionId: string;
+  sessionId?: string;
+  laneId?: string | null;
+  provider?: AgentChatProvider | null;
 };
 
 export type AgentChatClaudeOutputStylesArgs = {

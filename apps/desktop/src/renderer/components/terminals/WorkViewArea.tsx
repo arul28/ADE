@@ -1,6 +1,7 @@
 import { useMemo, useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import {
+  ArrowSquareOut,
   CaretDown,
   CaretRight,
   Chats,
@@ -8,7 +9,9 @@ import {
   Clipboard,
   Code,
   Columns,
+  Crosshair,
   DotsSixVertical,
+  Funnel,
   GitBranch,
   GridFour,
   List,
@@ -23,10 +26,11 @@ import type { AgentChatSession, LaneLinearIssue, LaneSummary, TerminalSessionSum
 import type { WorkDraftKind, WorkViewMode } from "../../state/appStore";
 import { TerminalView } from "./TerminalView";
 import { ToolLogo } from "./ToolLogos";
+import { LaneChip } from "./LaneChip";
 import { AgentChatPane } from "../chat/AgentChatPane";
 import { WorkStartSurface } from "./WorkStartSurface";
 import { isChatToolType, primarySessionLabel, truncateSessionLabel, formatToolTypeLabel } from "../../lib/sessions";
-import { sessionStatusDot } from "../../lib/terminalAttention";
+import { sessionStatusBucket, sessionStatusDot } from "../../lib/terminalAttention";
 import type { WorkTabGroup } from "./useWorkSessions";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { useFloatingPaneEmbeddedChrome, type FloatingPaneEmbeddedChrome } from "../ui/FloatingPane";
@@ -35,6 +39,15 @@ import { cn } from "../ui/cn";
 import { resolveTrackedCliResumeCommand, type LaunchProfile } from "./cliLaunch";
 import { buildWorkSessionTilingTree, type TilingPreset } from "./workSessionTiling";
 import { laneSurfaceTint } from "../lanes/laneDesignTokens";
+
+function isSessionAwaitingInput(session: TerminalSessionSummary): boolean {
+  return sessionStatusBucket({
+    status: session.status,
+    lastOutputPreview: session.lastOutputPreview,
+    runtimeState: session.runtimeState,
+    toolType: session.toolType,
+  }) === "awaiting-input";
+}
 
 function isRunningPtySession(
   session: TerminalSessionSummary | null | undefined,
@@ -50,6 +63,7 @@ function isRunningPtySession(
 function SessionSurface({
   session,
   isActive,
+  pageActive = true,
   shouldAutofocus = false,
   layoutVariant = "standard",
   terminalVisible = isActive,
@@ -58,6 +72,7 @@ function SessionSurface({
 }: {
   session: TerminalSessionSummary;
   isActive: boolean;
+  pageActive?: boolean;
   shouldAutofocus?: boolean;
   layoutVariant?: "standard" | "grid-tile";
   terminalVisible?: boolean;
@@ -65,6 +80,8 @@ function SessionSurface({
   onResume?: (session: TerminalSessionSummary) => void;
 }) {
   const isChat = isChatToolType(session.toolType);
+  const surfaceActive = pageActive && isActive;
+  const surfaceVisible = pageActive && (layoutVariant === "grid-tile" ? true : isActive);
   if (isChat) {
     return (
       <AgentChatPane
@@ -75,9 +92,9 @@ function SessionSurface({
         hideLaneToolDrawers
         onSessionCreated={onOpenChatSession}
         layoutVariant={layoutVariant}
-        isTileActive={isActive}
-        isTileVisible={layoutVariant === "grid-tile" ? true : isActive}
-        shouldAutofocusComposer={shouldAutofocus}
+        isTileActive={surfaceActive}
+        isTileVisible={surfaceVisible}
+        shouldAutofocusComposer={surfaceActive && shouldAutofocus}
       />
     );
   }
@@ -87,8 +104,8 @@ function SessionSurface({
         key={session.id}
         ptyId={session.ptyId}
         sessionId={session.id}
-        isActive={isActive}
-        isVisible={terminalVisible}
+        isActive={surfaceActive}
+        isVisible={pageActive && terminalVisible}
         className="h-full w-full"
       />
     );
@@ -409,7 +426,150 @@ function WorkSidebarToggle({
   );
 }
 
+type WorkTabProps = {
+  session: TerminalSessionSummary;
+  isActive: boolean;
+  isBusy: boolean;
+  laneColor: string | null;
+  grouped?: boolean;
+  awaiting: boolean;
+  dropEdge?: "before" | "after" | null;
+  onSelect: () => void;
+  onClose: () => void;
+  onContextMenu: (e: React.MouseEvent) => void;
+  dragProps?: {
+    draggable: boolean;
+    onDragStart: (e: React.DragEvent) => void;
+    onDragEnter: (e: React.DragEvent) => void;
+    onDragOver: (e: React.DragEvent) => void;
+    onDragLeave: (e: React.DragEvent) => void;
+    onDrop: (e: React.DragEvent) => void;
+    onDragEnd: (e: React.DragEvent) => void;
+  };
+};
+
+function WorkTab({
+  session,
+  isActive,
+  isBusy,
+  laneColor,
+  grouped = false,
+  awaiting,
+  dropEdge = null,
+  onSelect,
+  onClose,
+  onContextMenu,
+  dragProps,
+}: WorkTabProps) {
+  const dot = sessionStatusDot(session);
+  const primary = primarySessionLabel(session);
+  const trimmedLaneColor = laneColor?.trim() || null;
+  const tabTint = trimmedLaneColor
+    ? `color-mix(in srgb, ${trimmedLaneColor} ${isActive ? 22 : 8}%, transparent)`
+    : "transparent";
+  const ring = trimmedLaneColor
+    ? `color-mix(in srgb, ${trimmedLaneColor} ${isActive ? 40 : 24}%, transparent)`
+    : "color-mix(in srgb, var(--color-fg) 18%, transparent)";
+  const cssVars = {
+    "--lane-tab-tint": tabTint,
+    "--lane-tab-active-ring": ring,
+    "--lane-drop-indicator": trimmedLaneColor ?? "color-mix(in srgb, var(--color-fg) 60%, transparent)",
+  } as React.CSSProperties;
+  return (
+    <SmartTooltip
+      content={{
+        label: truncateSessionLabel(primary, 28),
+        description: `Switch to this ${formatToolTypeLabel(session.toolType)} work tab.`,
+        effect: dot.label,
+      }}
+    >
+      <div
+        className={cn(
+          "group/tab ade-work-tab",
+          grouped && "ade-work-tab--grouped",
+          isActive && "ade-work-tab--active",
+          awaiting && "ade-work-tab--awaiting",
+          dropEdge === "before" && "ade-work-tab--drop-before",
+          dropEdge === "after" && "ade-work-tab--drop-after",
+        )}
+        style={cssVars}
+        onContextMenu={onContextMenu}
+        draggable={dragProps?.draggable ?? false}
+        onDragStart={dragProps?.onDragStart}
+        onDragEnter={dragProps?.onDragEnter}
+        onDragOver={dragProps?.onDragOver}
+        onDragLeave={dragProps?.onDragLeave}
+        onDrop={dragProps?.onDrop}
+        onDragEnd={dragProps?.onDragEnd}
+      >
+        <button
+          type="button"
+          role="tab"
+          tabIndex={0}
+          aria-selected={isActive}
+          onClick={onSelect}
+          onKeyDown={(e) => {
+            if (e.key !== "Enter" && e.key !== " ") return;
+            e.preventDefault();
+            onSelect();
+          }}
+          style={{
+            all: "unset",
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 8,
+            minWidth: 0,
+            flex: 1,
+            height: "100%",
+            cursor: "pointer",
+          }}
+        >
+          <ToolLogo toolType={session.toolType} size={18} />
+          <span className="max-w-[160px] truncate">
+            {truncateSessionLabel(primary, 24)}
+          </span>
+          <span
+            title={dot.label}
+            className={`${dot.cls} h-1.5 w-1.5 shrink-0${dot.spinning ? " animate-spin" : ""}`}
+          />
+        </button>
+        <button
+          type="button"
+          data-close-tab-session-id={session.id}
+          title={isBusy ? "Closing..." : "Close tab"}
+          className="inline-flex items-center justify-center opacity-0 group-hover/tab:opacity-100 transition-opacity"
+          style={{
+            width: 14,
+            height: 14,
+            padding: 0,
+            border: 0,
+            background: "transparent",
+            cursor: isBusy ? "default" : "pointer",
+            color: "var(--color-muted-fg)",
+          }}
+          onClick={(e) => {
+            e.stopPropagation();
+            if (isBusy) return;
+            onClose();
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              e.stopPropagation();
+              if (isBusy) return;
+              onClose();
+            }
+          }}
+        >
+          <X size={9} />
+        </button>
+      </div>
+    </SmartTooltip>
+  );
+}
+
 export function WorkViewArea({
+  pageActive = true,
   gridLayoutId,
   lanes,
   sessions,
@@ -438,7 +598,11 @@ export function WorkViewArea({
   onToggleWorkSidebar,
   initialLinearIssueContext = null,
   onInitialLinearIssueContextConsumed,
+  onReorderLaneSessions,
+  onOpenSessionInTabsView,
+  onGoToLane,
 }: {
+  pageActive?: boolean;
   gridLayoutId: string;
   lanes: LaneSummary[];
   sessions: TerminalSessionSummary[];
@@ -467,6 +631,9 @@ export function WorkViewArea({
   closingPtyIds: Set<string>;
   onContextMenu?: (session: TerminalSessionSummary, e: React.MouseEvent) => void;
   onResumeSession?: (session: TerminalSessionSummary) => void;
+  onReorderLaneSessions?: (laneId: string, movedSessionId: string, targetSessionId: string, edge: "before" | "after") => void;
+  onOpenSessionInTabsView?: (sessionId: string) => void;
+  onGoToLane?: (laneId: string) => void;
   /** When the work sessions list pane is collapsed, show expand control in the work header. */
   sessionsPaneCollapsed?: boolean;
   onExpandSessionsPane?: () => void;
@@ -541,19 +708,55 @@ export function WorkViewArea({
       const isActive = activeItemId === session.id;
       const rawLaneColor = laneColorById.get(session.laneId) ?? null;
       const laneAccentColor = rawLaneColor?.trim() ? rawLaneColor.trim() : null;
+      const openInTabs = () => onOpenSessionInTabsView?.(session.id);
+      const gotoLane = () => onGoToLane?.(session.laneId);
       return [session.id, {
         title: truncateSessionLabel(primarySessionLabel(session)),
-        meta: session.laneName,
+        meta: (
+          <span className="inline-flex items-center gap-2">
+            <ToolLogo toolType={session.toolType} size={18} />
+          </span>
+        ),
         minimizable: false,
         laneAccentColor,
         className: cn("h-full ade-work-glass-tile", isActive && "ade-work-glass-tile-active"),
         bodyClassName: "overflow-hidden",
         headerActions: (
           <>
+            <LaneChip
+              laneName={session.laneName}
+              laneColor={laneAccentColor}
+              maxWidth={120}
+              onClick={gotoLane}
+            />
             <span
               title={dot.label}
               className={`${dot.cls} h-2 w-2 shrink-0${dot.spinning ? " animate-spin" : ""}`}
             />
+            <SmartTooltip content={{ label: "Open in Tabs view", description: "Switch to the single-pane tab view focused on this session." }}>
+              <button
+                type="button"
+                onClick={openInTabs}
+                onMouseDown={(e) => e.stopPropagation()}
+                aria-label="Open in Tabs view"
+                className="inline-flex h-5 w-5 items-center justify-center text-muted-fg/55 transition-colors hover:text-fg"
+                style={{ border: "none", background: "transparent", cursor: "pointer" }}
+              >
+                <ArrowSquareOut size={11} />
+              </button>
+            </SmartTooltip>
+            <SmartTooltip content={{ label: "Go to lane", description: "Switch the active lane to this session's lane." }}>
+              <button
+                type="button"
+                onClick={gotoLane}
+                onMouseDown={(e) => e.stopPropagation()}
+                aria-label="Go to lane"
+                className="inline-flex h-5 w-5 items-center justify-center text-muted-fg/55 transition-colors hover:text-fg"
+                style={{ border: "none", background: "transparent", cursor: "pointer" }}
+              >
+                <Crosshair size={11} />
+              </button>
+            </SmartTooltip>
             <button
               type="button"
               onClick={() => onCloseItem(session.id)}
@@ -579,6 +782,7 @@ export function WorkViewArea({
             <SessionSurface
               session={session}
               isActive={isActive}
+              pageActive={pageActive}
               shouldAutofocus={isActive}
               terminalVisible
               layoutVariant="grid-tile"
@@ -589,10 +793,62 @@ export function WorkViewArea({
         ),
       } satisfies PaneConfig];
     }),
-  ), [activeItemId, closingPtyIds, handleContextMenu, laneColorById, onCloseItem, onOpenChatSession, onResumeSession, onSelectItem, visibleSessions]);
+  ), [activeItemId, closingPtyIds, handleContextMenu, laneColorById, onCloseItem, onGoToLane, onOpenChatSession, onOpenSessionInTabsView, onResumeSession, onSelectItem, pageActive, visibleSessions]);
   const resolvedTabGroups = tabGroups ?? [];
   const hasGroupedTabs = resolvedTabGroups.length > 0;
   const toggleTabGroupCollapsed = onToggleTabGroupCollapsed ?? (() => {});
+
+  const [dragState, setDragState] = useState<{
+    laneId: string;
+    sessionId: string;
+    overIndex: number | null;
+    overEdge: "before" | "after" | null;
+  } | null>(null);
+
+  const buildLaneDragProps = useCallback((args: {
+    laneId: string;
+    sessionId: string;
+    index: number;
+  }): WorkTabProps["dragProps"] => {
+    if (!onReorderLaneSessions) return undefined;
+    return {
+      draggable: true,
+      onDragStart: (e) => {
+        try { e.dataTransfer.setData("text/x-ade-work-tab", args.sessionId); } catch { /* ignore */ }
+        e.dataTransfer.effectAllowed = "move";
+        setDragState({ laneId: args.laneId, sessionId: args.sessionId, overIndex: null, overEdge: null });
+      },
+      onDragEnter: (e) => {
+        if (!dragState || dragState.laneId !== args.laneId) return;
+        e.preventDefault();
+      },
+      onDragOver: (e) => {
+        if (!dragState || dragState.laneId !== args.laneId) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+        const edge: "before" | "after" = e.clientX < rect.left + rect.width / 2 ? "before" : "after";
+        setDragState((prev) => (
+          prev && prev.laneId === args.laneId && (prev.overIndex !== args.index || prev.overEdge !== edge)
+            ? { ...prev, overIndex: args.index, overEdge: edge }
+            : prev
+        ));
+      },
+      onDragLeave: () => {
+        setDragState((prev) => (
+          prev && prev.overIndex === args.index ? { ...prev, overIndex: null, overEdge: null } : prev
+        ));
+      },
+      onDrop: (e) => {
+        e.preventDefault();
+        if (!dragState || dragState.laneId !== args.laneId || dragState.sessionId === args.sessionId) return;
+        const targetEdge = dragState.overEdge ?? "before";
+        onReorderLaneSessions(args.laneId, dragState.sessionId, args.sessionId, targetEdge);
+        setDragState(null);
+      },
+      onDragEnd: () => setDragState(null),
+    };
+  }, [dragState, onReorderLaneSessions]);
 
   if (viewMode === "grid") {
     return (
@@ -666,14 +922,15 @@ export function WorkViewArea({
                 key={runningTerminalSession.id}
                 ptyId={runningTerminalSession.ptyId}
                 sessionId={runningTerminalSession.id}
-                isActive={isActive}
-                isVisible={isActive}
+                isActive={pageActive && isActive}
+                isVisible={pageActive && isActive}
                 className="h-full w-full"
               />
             ) : (
               <SessionSurface
                 session={session}
                 isActive={isActive}
+                pageActive={pageActive}
                 terminalVisible={isActive}
                 onOpenChatSession={onOpenChatSession}
                 onResume={onResumeSession}
@@ -723,81 +980,32 @@ export function WorkViewArea({
             <ViewModeToggle viewMode={viewMode} setViewMode={setViewMode} />
           </div>
           <div className="ade-work-tab-strip-scroll min-h-0 min-w-0 flex-1 overflow-x-auto overflow-y-hidden">
-            <div className="flex w-max min-w-0 flex-nowrap items-center gap-0">
-            {visibleSessions.map((session) => {
+            <div className="ade-work-tab-strip-roomy w-max min-w-0">
+            {visibleSessions.map((session, index) => {
               const isActive = activeSession?.id === session.id;
-              const dot = sessionStatusDot(session);
               const isBusy = session.ptyId ? closingPtyIds.has(session.ptyId) : false;
-              const primary = primarySessionLabel(session);
+              const laneColor = laneColorById.get(session.laneId) ?? null;
+              const awaiting = isSessionAwaitingInput(session);
+              const dropEdge = dragState
+                && dragState.laneId === session.laneId
+                && dragState.overIndex === index
+                && dragState.sessionId !== session.id
+                ? dragState.overEdge
+                : null;
               return (
-                <SmartTooltip
+                <WorkTab
                   key={session.id}
-                  content={{
-                    label: truncateSessionLabel(primary, 28),
-                    description: `Switch to this ${formatToolTypeLabel(session.toolType)} work tab.`,
-                    effect: dot.label,
-                  }}
-                >
-                  <button
-                    type="button"
-                    className="group/tab inline-flex shrink-0 items-center gap-1.5 transition-colors"
-                    style={{
-                      padding: "0 8px",
-                      minHeight: 36,
-                      height: 36,
-                      fontSize: 11,
-                      fontWeight: isActive ? 500 : 400,
-                      background: "transparent",
-                      color: isActive ? "var(--color-fg)" : "var(--color-muted-fg)",
-                      cursor: "pointer",
-                      border: "none",
-                      borderBottom: isActive
-                        ? "2px solid color-mix(in srgb, var(--color-fg) 42%, transparent)"
-                        : "2px solid transparent",
-                      borderRadius: "0",
-                      opacity: isActive ? 1 : 0.65,
-                    }}
-                    onClick={() => onSelectItem(session.id)}
-                    onContextMenu={(e) => handleContextMenu(session, e)}
-                  >
-                    <ToolLogo toolType={session.toolType} size={10} />
-                    <span className="max-w-[120px] truncate">
-                      {truncateSessionLabel(primary, 20)}
-                    </span>
-                    <span
-                      title={dot.label}
-                      className={`${dot.cls} h-1.5 w-1.5 shrink-0${dot.spinning ? " animate-spin" : ""}`}
-                    />
-                    <span
-                      role="button"
-                      tabIndex={0}
-                      data-close-tab-session-id={session.id}
-                      title={isBusy ? "Closing..." : "Close tab"}
-                      className="inline-flex items-center justify-center opacity-0 group-hover/tab:opacity-100 transition-opacity"
-                      style={{
-                        width: 14,
-                        height: 14,
-                        cursor: isBusy ? "default" : "pointer",
-                        color: "var(--color-muted-fg)",
-                      }}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (isBusy) return;
-                        onCloseItem(session.id);
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          if (isBusy) return;
-                          onCloseItem(session.id);
-                        }
-                      }}
-                    >
-                      <X size={8} />
-                    </span>
-                  </button>
-                </SmartTooltip>
+                  session={session}
+                  isActive={isActive}
+                  isBusy={isBusy}
+                  laneColor={laneColor}
+                  awaiting={awaiting}
+                  dropEdge={dropEdge}
+                  onSelect={() => onSelectItem(session.id)}
+                  onClose={() => onCloseItem(session.id)}
+                  onContextMenu={(e) => handleContextMenu(session, e)}
+                  dragProps={buildLaneDragProps({ laneId: session.laneId, sessionId: session.id, index })}
+                />
               );
             })}
             <SmartTooltip content={{ label: "New Chat", description: "Start a new AI chat session in the current lane." }}>
@@ -805,8 +1013,8 @@ export function WorkViewArea({
                 type="button"
                 className="ade-work-new-chat-btn inline-flex shrink-0 items-center justify-center"
                 style={{
-                  width: 22,
-                  height: 22,
+                  width: 24,
+                  height: 24,
                   marginLeft: 4,
                   cursor: "pointer",
                 }}
@@ -830,171 +1038,144 @@ export function WorkViewArea({
     <div className="flex h-full min-w-0 flex-col">
       <div
         className={cn(
-          "ade-work-glass-header flex min-h-10 w-full min-w-0 max-w-full shrink-0 items-center gap-1.5 px-2 py-1.5",
+          "ade-work-glass-header flex w-full min-w-0 max-w-full shrink-0 items-start gap-1.5 px-2 py-2",
           workEmbeddedChrome?.dragHandleProps?.draggable && "cursor-grab active:cursor-grabbing"
         )}
-        style={{ minHeight: 40, maxHeight: 44 }}
+        style={{ minHeight: 40 }}
         {...glassHeaderDragProps}
       >
         <SessionsPaneExpandAffordance {...expandSessionsProps} />
         <WorkPaneEmbeddedChromeLeading chrome={workEmbeddedChrome} />
-        <div className="shrink-0">
+        <div className="shrink-0 mt-0.5">
           <ViewModeToggle viewMode={viewMode} setViewMode={setViewMode} />
         </div>
         <div className="ade-work-tab-strip-scroll min-w-0 flex-1 self-stretch overflow-x-auto overflow-y-hidden">
-          <div className="flex h-full min-w-0 w-max flex-nowrap items-center gap-1.5">
+          <div className="flex min-w-0 w-max flex-row items-end gap-3 py-1">
             {resolvedTabGroups.map((group) => {
               const hasActive = group.sessionIds.includes(activeSession?.id ?? "");
-              const groupTint = group.kind === "lane" && group.laneColor
-                ? laneSurfaceTint(group.laneColor, "default")
-                : null;
+              const isLaneGroup = group.kind === "lane";
+              const laneId = isLaneGroup && group.id.startsWith("lane:") ? group.id.slice("lane:".length) : null;
+              const laneColor = group.laneColor;
+              const someAwaiting = group.sessions.some(isSessionAwaitingInput);
+              const bandColor = laneColor?.trim() || null;
+              const bandTint = bandColor
+                ? laneSurfaceTint(bandColor, "default", 0.08)
+                : laneSurfaceTint(null);
+              const bandCssVars = {
+                "--lane-band-color": bandColor ?? "color-mix(in srgb, var(--color-fg) 28%, transparent)",
+                "--lane-band-bg": bandTint.background,
+                "--lane-band-header-bg": bandColor
+                  ? `color-mix(in srgb, ${bandColor} 12%, transparent)`
+                  : "transparent",
+              } as React.CSSProperties;
+              const GroupIcon = isLaneGroup ? GitBranch : Funnel;
+              if (group.collapsed) {
+                return (
+                  <SmartTooltip
+                    key={group.id}
+                    content={{
+                      label: `Expand ${group.label}`,
+                      description: "Show the work tabs in this group.",
+                      effect: `${group.sessions.length} session${group.sessions.length === 1 ? "" : "s"} in this group.`,
+                    }}
+                  >
+                    <button
+                      type="button"
+                      aria-expanded={false}
+                      aria-controls={`tab-group-${group.id}`}
+                      className={cn(
+                        "ade-work-lane-band ade-work-lane-band--collapsed",
+                        someAwaiting && "ade-work-lane-band--awaiting",
+                        hasActive && "ade-work-lane-band--active",
+                      )}
+                      style={bandCssVars}
+                      onClick={() => toggleTabGroupCollapsed(group.id)}
+                    >
+                      <GroupIcon size={16} weight="regular" />
+                      <span className="ade-work-lane-band-collapsed-label">
+                        {group.label}
+                      </span>
+                      <span className="ade-work-lane-band-collapsed-count tabular-nums">
+                        {group.sessions.length}
+                      </span>
+                    </button>
+                  </SmartTooltip>
+                );
+              }
               return (
                 <div
                   key={group.id}
-                  className={cn(
-                    "ade-work-glass-group",
-                    hasActive && "ade-work-glass-group-active",
-                    "flex h-full min-h-8 max-w-full items-stretch overflow-hidden",
-                    group.collapsed
-                      ? "inline-flex w-auto shrink-0 grow-0 rounded-full"
-                      : "inline-flex min-w-0 shrink-0 rounded-[13px]",
-                  )}
+                  className="ade-work-lane-band"
+                  style={bandCssVars}
                 >
-                  <div className="flex h-full min-w-0 max-w-full flex-row items-stretch">
-                    <SmartTooltip
-                      content={{
-                        label: group.collapsed ? `Expand ${group.label}` : `Collapse ${group.label}`,
-                        description: "Show or hide the work tabs in this group.",
-                        effect: `${group.sessions.length} session${group.sessions.length === 1 ? "" : "s"} in this group.`,
+                  <SmartTooltip
+                    content={{
+                      label: `Collapse ${group.label}`,
+                      description: "Hide the work tabs in this group.",
+                      effect: `${group.sessions.length} session${group.sessions.length === 1 ? "" : "s"} in this group.`,
+                    }}
+                  >
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      aria-expanded
+                      aria-controls={`tab-group-${group.id}`}
+                      className={cn(
+                        "ade-work-lane-band-header",
+                        hasActive && "text-fg",
+                      )}
+                      onClick={() => toggleTabGroupCollapsed(group.id)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          toggleTabGroupCollapsed(group.id);
+                        }
                       }}
                     >
-                      <button
-                        type="button"
-                        aria-expanded={!group.collapsed}
-                        aria-controls={`tab-group-${group.id}`}
-                        className="inline-flex shrink-0 items-center gap-1.5 px-2.5 text-left text-[11px] font-medium transition-colors"
-                        style={{
-                          minHeight: 32,
-                          color: hasActive ? "var(--color-fg)" : "var(--color-muted-fg)",
-                          cursor: "pointer",
-                          border: "none",
-                          ...(groupTint?.text
-                            ? {
-                              background: groupTint.background,
-                              boxShadow: `inset 0 0 0 1px color-mix(in srgb, ${groupTint.text} 16%, transparent)`,
-                            }
-                            : { background: "transparent" }),
-                          borderRadius: group.collapsed ? 9999 : "12px 0 0 12px",
-                        }}
-                        onClick={() => toggleTabGroupCollapsed(group.id)}
-                      >
-                        {group.kind === "lane" ? (
-                          <GitBranch
-                            size={10}
-                            className="shrink-0"
-                            style={groupTint?.text ? { color: groupTint.text, opacity: 0.9 } : { color: "var(--color-muted-fg)", opacity: 0.6 }}
-                            weight="regular"
+                      <span className="max-w-[220px] truncate">
+                        {group.label}
+                      </span>
+                      <span className="tabular-nums opacity-55">
+                        {group.sessions.length}
+                      </span>
+                      <span className="inline-flex items-center opacity-55">
+                        <CaretDown size={9} weight="bold" />
+                      </span>
+                    </div>
+                  </SmartTooltip>
+                  <div
+                    id={`tab-group-${group.id}`}
+                    role="tablist"
+                    className="ade-work-lane-band-tabs"
+                  >
+                      {group.sessions.map((session, index) => {
+                        const isActive = activeSession?.id === session.id;
+                        const isBusy = session.ptyId ? closingPtyIds.has(session.ptyId) : false;
+                        const awaiting = isSessionAwaitingInput(session);
+                        const dropEdge = dragState
+                          && laneId
+                          && dragState.laneId === laneId
+                          && dragState.overIndex === index
+                          && dragState.sessionId !== session.id
+                          ? dragState.overEdge
+                          : null;
+                        return (
+                          <WorkTab
+                            key={session.id}
+                            session={session}
+                            isActive={isActive}
+                            isBusy={isBusy}
+                            laneColor={laneColor}
+                            grouped
+                            awaiting={awaiting}
+                            dropEdge={dropEdge}
+                            onSelect={() => onSelectItem(session.id)}
+                            onClose={() => onCloseItem(session.id)}
+                            onContextMenu={(e) => handleContextMenu(session, e)}
+                            dragProps={laneId ? buildLaneDragProps({ laneId, sessionId: session.id, index }) : undefined}
                           />
-                        ) : null}
-                        <span className="max-w-[130px] truncate">{group.label}</span>
-                        <span className="rounded-full bg-white/[0.06] px-1.5 py-0.5 text-[9px] text-muted-fg/40">
-                          {group.sessions.length}
-                        </span>
-                        {group.collapsed ? (
-                          <CaretRight size={10} className="shrink-0 text-muted-fg/35" />
-                        ) : (
-                          <CaretDown size={10} className="shrink-0 text-muted-fg/35" />
-                        )}
-                      </button>
-                    </SmartTooltip>
-                    {!group.collapsed ? (
-                      <div
-                        id={`tab-group-${group.id}`}
-                        className="ade-work-tab-strip-scroll flex min-h-8 min-w-0 items-center overflow-x-auto overflow-y-hidden py-0.5 pr-0.5 pl-0.5"
-                        role="tablist"
-                      >
-                        <div className="flex w-max min-w-0 flex-nowrap items-center gap-0.5">
-                        {group.sessions.map((session) => {
-                          const isActive = activeSession?.id === session.id;
-                          const dot = sessionStatusDot(session);
-                          const isBusy = session.ptyId ? closingPtyIds.has(session.ptyId) : false;
-                          const primary = primarySessionLabel(session);
-                          return (
-                            <SmartTooltip
-                              key={session.id}
-                              content={{
-                                label: truncateSessionLabel(primary, 28),
-                                description: `Switch to this ${formatToolTypeLabel(session.toolType)} work tab.`,
-                                effect: dot.label,
-                              }}
-                            >
-                              <button
-                                type="button"
-                                className={cn(
-                                  "group/tab inline-flex shrink-0 items-center gap-1.5 transition-all",
-                                  isActive && "ade-work-tab-active",
-                                )}
-                                style={{
-                                  padding: "0 8px",
-                                  minHeight: 32,
-                                  height: 32,
-                                  fontSize: 11,
-                                  fontWeight: isActive ? 500 : 400,
-                                  background: isActive ? undefined : "transparent",
-                                  color: isActive ? "var(--color-fg)" : "var(--color-muted-fg)",
-                                  cursor: "pointer",
-                                  border: "none",
-                                  borderRadius: 6,
-                                  opacity: isActive ? 1 : 0.7,
-                                }}
-                                onClick={() => onSelectItem(session.id)}
-                                onContextMenu={(e) => handleContextMenu(session, e)}
-                                role="tab"
-                                aria-selected={isActive}
-                              >
-                                <ToolLogo toolType={session.toolType} size={10} />
-                                <span className="max-w-[120px] truncate">
-                                  {truncateSessionLabel(primary, 20)}
-                                </span>
-                                <span
-                                  title={dot.label}
-                                  className={`${dot.cls} h-1.5 w-1.5 shrink-0${dot.spinning ? " animate-spin" : ""}`}
-                                />
-                                <span
-                                  role="button"
-                                  tabIndex={0}
-                                  data-close-tab-session-id={session.id}
-                                  title={isBusy ? "Closing..." : "Close tab"}
-                                  className="inline-flex items-center justify-center opacity-0 transition-opacity group-hover/tab:opacity-100"
-                                  style={{
-                                    width: 14,
-                                    height: 14,
-                                    cursor: isBusy ? "default" : "pointer",
-                                    color: "var(--color-muted-fg)",
-                                  }}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    if (isBusy) return;
-                                    onCloseItem(session.id);
-                                  }}
-                                  onKeyDown={(e) => {
-                                    if (e.key === "Enter" || e.key === " ") {
-                                      e.preventDefault();
-                                      e.stopPropagation();
-                                      if (isBusy) return;
-                                      onCloseItem(session.id);
-                                    }
-                                  }}
-                                >
-                                  <X size={8} />
-                                </span>
-                              </button>
-                            </SmartTooltip>
-                          );
-                        })}
-                        </div>
-                      </div>
-                    ) : null}
+                        );
+                      })}
                   </div>
                 </div>
               );
@@ -1004,14 +1185,15 @@ export function WorkViewArea({
                 type="button"
                 className="ade-work-new-chat-btn inline-flex shrink-0 items-center justify-center"
                 style={{
-                  width: 24,
-                  height: 24,
+                  width: 28,
+                  height: 28,
+                  marginLeft: 4,
                   cursor: "pointer",
                 }}
                 onClick={() => onShowDraftKind("chat")}
                 aria-label="Start a new chat"
               >
-                <Plus size={11} weight="bold" />
+                <Plus size={12} weight="bold" />
               </button>
             </SmartTooltip>
           </div>

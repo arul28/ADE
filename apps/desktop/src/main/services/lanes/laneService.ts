@@ -685,6 +685,7 @@ export function createLaneService({
   onHeadChanged,
   onRebaseEvent,
   onDeleteEvent,
+  onLinearIssueLinked,
   teardownDeps,
   logger: injectedLogger
 }: {
@@ -697,6 +698,7 @@ export function createLaneService({
   onHeadChanged?: (args: { laneId: string; reason: string; preHeadSha: string | null; postHeadSha: string | null }) => void;
   onRebaseEvent?: (event: RebaseRunEventPayload) => void;
   onDeleteEvent?: (event: LaneDeleteEvent) => void;
+  onLinearIssueLinked?: (args: { lane: LaneSummary; issue: LaneLinearIssue; linkedAt: string }) => void | Promise<void>;
   teardownDeps?: LaneDeleteTeardownDeps;
   logger?: Logger;
 }) {
@@ -705,6 +707,25 @@ export function createLaneService({
     info: () => {},
     warn: (event, meta) => console.warn(event, meta ?? ""),
     error: (event, meta) => console.error(event, meta ?? ""),
+  };
+
+  const notifyLinearIssueLinked = (lane: LaneSummary, issue: LaneLinearIssue): void => {
+    if (!onLinearIssueLinked) return;
+    const logFailure = (error: unknown): void => {
+      logger.warn("laneService.linear_issue_link_notify_failed", {
+        laneId: lane.id,
+        issueId: issue.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    };
+    try {
+      const result = onLinearIssueLinked({ lane, issue, linkedAt: lane.createdAt });
+      if (result && typeof (result as Promise<void>).catch === "function") {
+        void (result as Promise<void>).catch(logFailure);
+      }
+    } catch (error) {
+      logFailure(error);
+    }
   };
 
   const linkExistingDependencyInstalls = (worktreePath: string): void => {
@@ -1776,7 +1797,7 @@ export function createLaneService({
       })()
       : null;
 
-    return toLaneSummary({
+    const summary = toLaneSummary({
       row,
       status,
       parentStatus,
@@ -1785,6 +1806,8 @@ export function createLaneService({
       activeBranchProfile: ensureBranchProfileForRow(row),
       linearIssue,
     });
+    if (linearIssue) notifyLinearIssueLinked(summary, linearIssue);
+    return summary;
   };
 
   const getRowsById = (includeArchived = true): Map<string, LaneRow> =>

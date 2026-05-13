@@ -19,6 +19,14 @@ export type TrackedCliLaunchCommand = {
 export const LAUNCH_PROFILES = ["claude", "codex", "cursor", "droid", "opencode", "shell"] as const satisfies readonly LaunchProfile[];
 export const TRACKED_CLI_PERMISSION_MODES = ["default", "plan", "edit", "full-auto", "config-toml"] as const satisfies readonly AgentChatPermissionMode[];
 
+export function sanitizeTrackedCliResumeTargetId(value: string | null | undefined): string | null {
+  const target = String(value ?? "").trim();
+  if (!target) return null;
+  if (/[\x00-\x1F\x7F]/.test(target)) return null;
+  if (target.startsWith("-")) return null;
+  return target;
+}
+
 /** Maps a `launchPtySession` profile to the `TerminalToolType` recorded on the session. */
 export const LAUNCH_PROFILE_TOOL_TYPE: Record<LaunchProfile, TerminalToolType> = {
   claude: "claude",
@@ -314,7 +322,7 @@ function buildOpenCodeCommandParts(args: {
 export function buildTrackedCliResumeCommand(metadata: TerminalResumeMetadata): string {
   validateLaunchProfilePermissionMode(metadata.provider, metadata.launch.permissionMode);
 
-  const targetId = metadata.targetId?.trim() ?? "";
+  const targetId = sanitizeTrackedCliResumeTargetId(metadata.targetId) ?? "";
   if (metadata.provider === "claude") {
     const parts = ["claude", ...permissionModeToClaudeFlag(metadata.launch.permissionMode)];
     parts.push("--resume");

@@ -3,7 +3,7 @@ import path from "node:path";
 import type { createLaneService } from "../lanes/laneService";
 import { runGit } from "../git/git";
 import { resolvePathWithinRoot } from "../shared/utils";
-import type { DiffChanges, DiffMode, FileDiff, FileChange, FilePatch } from "../../../shared/types";
+import type { DiffChanges, DiffLineStats, DiffMode, FileDiff, FileChange, FilePatch } from "../../../shared/types";
 
 export const MAX_DIFF_SIDE_TEXT_BYTES = 192 * 1024;
 export const MAX_DIFF_PATCH_BYTES = 512 * 1024;
@@ -115,6 +115,44 @@ function applyNumstat(changes: FileChange[], stdout: string): void {
     if (Number.isFinite(deletions)) change.deletions = deletions;
     if (addRaw === "-" || delRaw === "-") change.isBinary = true;
   }
+}
+
+function emptyDiffLineStats(): DiffLineStats {
+  return { additions: 0, deletions: 0, files: 0 };
+}
+
+function parseShortstat(stdout: string): DiffLineStats {
+  const text = stdout.trim();
+  if (!text) return emptyDiffLineStats();
+
+  const parseCount = (pattern: RegExp): number =>
+    Number.parseInt(text.match(pattern)?.[1] ?? "0", 10);
+
+  return {
+    additions: parseCount(/(\d+)\s+insertions?\(\+\)/i),
+    deletions: parseCount(/(\d+)\s+deletions?\(-\)/i),
+    files: parseCount(/(\d+)\s+files?\s+changed/i),
+  };
+}
+
+function readLaneCompareRef(baseRef: string): string | null {
+  const ref = baseRef.trim();
+  if (!ref || ref.startsWith("-")) return null;
+  return `${ref}...HEAD`;
+}
+
+function readLaneIdArg(value: string | { laneId?: string } | null | undefined): string {
+  let laneId = "";
+  if (typeof value === "string") {
+    laneId = value;
+  } else if (typeof value?.laneId === "string") {
+    laneId = value.laneId;
+  }
+  const trimmed = laneId.trim();
+  if (!trimmed) {
+    throw new Error("laneId is required");
+  }
+  return trimmed;
 }
 
 function detectBinary(buf: Buffer): boolean {
@@ -252,7 +290,40 @@ function resolveGitFilePath(worktreePath: string, filePath: string): { absPath: 
 }
 
 export function createDiffService({ laneService }: { laneService: ReturnType<typeof createLaneService> }) {
+  const getLaneDiffStats = async (laneIdArg: string | { laneId?: string } | null | undefined): Promise<DiffLineStats> => {
+    const laneId = readLaneIdArg(laneIdArg);
+    const { baseRef, worktreePath } = laneService.getLaneBaseAndBranch(laneId);
+    const compareRef = readLaneCompareRef(baseRef);
+    if (!compareRef) return emptyDiffLineStats();
+
+    const res = await runGit(["diff", "--shortstat", "--find-renames", compareRef], {
+      cwd: worktreePath,
+      env: { LANG: "C", LC_ALL: "C" },
+      timeoutMs: 12_000,
+      maxOutputBytes: 64 * 1024,
+    });
+    if (res.exitCode !== 0) return emptyDiffLineStats();
+    return parseShortstat(res.stdout);
+  };
+
   return {
+    getLaneDiffStats,
+
+    async listLaneDiffStats(args: { laneIds?: string[] } = {}): Promise<Record<string, DiffLineStats>> {
+      const requested = new Set((args.laneIds ?? []).map((id) => id.trim()).filter(Boolean));
+      const lanes = await laneService.list({ includeArchived: false });
+      const eligible = lanes.filter((lane) => requested.size === 0 || requested.has(lane.id));
+      const entries = await Promise.all(eligible.map(async (lane) => {
+        try {
+          const stats = await getLaneDiffStats(lane.id);
+          return [lane.id, stats] as const;
+        } catch {
+          return [lane.id, emptyDiffLineStats()] as const;
+        }
+      }));
+      return Object.fromEntries(entries);
+    },
+
     async getChanges(laneId: string): Promise<DiffChanges> {
       const { worktreePath } = laneService.getLaneBaseAndBranch(laneId);
       const res = await runGit(["status", "--porcelain=v1", "-z"], { cwd: worktreePath, timeoutMs: 12_000 });

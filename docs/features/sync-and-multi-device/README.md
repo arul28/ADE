@@ -383,7 +383,13 @@ is not supported.
   hydrates the full project catalog over the paired WebSocket. The host
   keeps a signature of `{ hostName, port, txt }` and re-publishes the
   announcement only when the signature changes, to avoid churn while IP
-  addresses fluctuate.
+  addresses fluctuate. On macOS the host also forks a `dns-sd -R
+  <serviceName> _ade-sync._tcp local <port> ...` child
+  (`publishNativeLanDiscovery`) so the native mDNSResponder advertises
+  the service alongside the Node-side `bonjour-service` registration —
+  iOS Bonjour browsers see the host even when the userland advertiser
+  is throttled. The native child is killed on shutdown
+  (`stopNativeLanDiscovery`).
 - **Machine-scoped pairing state**: phone pairing files live under the
   machine ADE home (`~/.ade/secrets/`): `sync-device-id`,
   `sync-bootstrap-token`, `sync-pin.json`, and

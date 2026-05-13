@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { execFile } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1104,6 +1104,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   let startupError: Error | null = null;
   let bonjourInstance: Bonjour | null = null;
   let bonjourAnnouncement: BonjourService | null = null;
+  let nativeBonjourProcess: ChildProcess | null = null;
   let bonjourPort: number | null = null;
   let bonjourSignature: string | null = null;
   let bonjourProjectTxt: { projects: string; projectNames: string; projectCount: string } = {
@@ -1256,7 +1257,62 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     });
   });
 
-  const publishLanDiscovery = (port: number): void => {
+  const stopNativeLanDiscovery = (): void => {
+    const child = nativeBonjourProcess;
+    if (!child) return;
+    nativeBonjourProcess = null;
+    try {
+      child.kill("SIGTERM");
+    } catch {
+      // ignore cleanup failures
+    }
+  };
+
+  const stopBonjourAnnouncement = (): void => {
+    if (!bonjourAnnouncement) return;
+    try {
+      bonjourAnnouncement.stop?.();
+    } catch {
+      // ignore cleanup failures
+    }
+    bonjourAnnouncement = null;
+  };
+
+  const publishNativeLanDiscovery = (
+    serviceName: string,
+    port: number,
+    txt: Record<string, string>,
+  ): void => {
+    stopNativeLanDiscovery();
+    const child = spawn("dns-sd", [
+      "-R",
+      serviceName,
+      "_ade-sync._tcp",
+      "local",
+      String(port),
+      ...Object.entries(txt).map(([key, value]) => `${key}=${value}`),
+    ], {
+      stdio: "ignore",
+    });
+    nativeBonjourProcess = child;
+    child.unref();
+    child.once("error", (error) => {
+      if (nativeBonjourProcess === child) nativeBonjourProcess = null;
+      args.logger.warn("sync_host.discovery_native_publish_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+    child.once("exit", (code, signal) => {
+      if (nativeBonjourProcess !== child) return;
+      nativeBonjourProcess = null;
+      args.logger.warn("sync_host.discovery_native_exited", { code, signal });
+    });
+  };
+
+  const shouldUseNativeLanDiscovery = (): boolean =>
+    process.platform === "darwin" && typeof process.versions.electron === "string";
+
+  const publishLanDiscovery = (port: number, options?: { force?: boolean }): void => {
     if (disposed) return;
     if (!discoveryEnabled) {
       unpublishLanDiscovery();
@@ -1291,7 +1347,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       tailscaleDnsName: tailscaleDnsName.endsWith(".ts.net") ? tailscaleDnsName : "",
     };
     const signature = JSON.stringify({ hostName, port, txt });
-    if (bonjourAnnouncement && bonjourPort === port && bonjourSignature === signature) return;
+    const alreadyPublished = bonjourPort === port && bonjourSignature === signature;
+    if (!options?.force && alreadyPublished && (bonjourAnnouncement || nativeBonjourProcess)) return;
+    const serviceName = `ADE Sync ${hostName} ${port}`;
+    if (shouldUseNativeLanDiscovery()) {
+      stopBonjourAnnouncement();
+      bonjourPort = port;
+      bonjourSignature = signature;
+      publishNativeLanDiscovery(serviceName, port, txt);
+      refreshLanDiscoveryProjects(port);
+      return;
+    }
+    stopNativeLanDiscovery();
     if (!bonjourInstance) {
       bonjourInstance = new Bonjour(undefined, (error: unknown) => {
         args.logger.warn("sync_host.discovery_error", {
@@ -1299,18 +1366,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         });
       });
     }
-    if (bonjourAnnouncement) {
-      try {
-        bonjourAnnouncement.stop?.();
-      } catch {
-        // ignore cleanup failures
-      }
-      bonjourAnnouncement = null;
-    }
+    stopBonjourAnnouncement();
     bonjourPort = port;
     bonjourSignature = signature;
     bonjourAnnouncement = bonjourInstance.publish({
-      name: `ADE Sync ${hostName} ${port}`,
+      name: serviceName,
       type: SYNC_MDNS_SERVICE_TYPE,
       protocol: "tcp",
       port,
@@ -1367,13 +1427,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   };
 
   const unpublishLanDiscovery = (): void => {
-    if (!bonjourAnnouncement) return;
-    try {
-      bonjourAnnouncement.stop?.();
-    } catch {
-      // ignore cleanup failures
-    }
-    bonjourAnnouncement = null;
+    stopNativeLanDiscovery();
+    stopBonjourAnnouncement();
     bonjourPort = null;
     bonjourSignature = null;
   };
@@ -3055,10 +3110,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       setLocalActiveLanePresence(laneIds);
     },
 
-    refreshLanDiscovery(options?: { forceTailnet?: boolean }): void {
+    refreshLanDiscovery(options?: { forceLan?: boolean; forceTailnet?: boolean }): void {
       const address = server.address();
       if (typeof address === "object" && address) {
-        publishLanDiscovery(address.port);
+        publishLanDiscovery(address.port, { force: options?.forceLan });
         publishTailnetDiscovery(address.port, { force: options?.forceTailnet });
       }
     },
@@ -3082,7 +3137,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         return;
       }
       if (typeof address === "object" && address) {
-        publishLanDiscovery(address.port);
+        publishLanDiscovery(address.port, { force: true });
         publishTailnetDiscovery(address.port, { force: true });
       }
     },

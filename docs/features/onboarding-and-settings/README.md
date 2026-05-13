@@ -208,11 +208,19 @@ Renderer — settings:
   forget paired phones.
 - `apps/desktop/src/renderer/components/usage/HeaderUsageControl.tsx`
   and `UsageQuotaPanel.tsx` — header usage popup. Live provider quotas
-  for Claude / Codex / Cursor and the automation budget guardrails are
-  now consolidated here; Settings no longer has a Usage tab. The popup
-  hydrates from `ade.usage.getSnapshot` and re-fetches via the explicit
-  Refresh control. Budget caps round-trip through
-  `ade.usage.getBudgetConfig` / `saveBudgetConfig`.
+  for Claude and Codex (tracked providers) and the automation budget
+  guardrails are now consolidated here; Settings no longer has a
+  Usage tab. The header shows weekly-window peaks per tracked
+  provider with green/amber/red thresholds at 75% / 100%; the panel
+  drills down into all reset windows, last-poll status, and per-
+  provider error chips. Cursor usage polling was removed (it required
+  a team-admin API key that desktop users almost never have); only
+  `claude` and `codex` are tracked in `TRACKED_PROVIDERS`. The popup
+  hydrates from `ade.usage.getSnapshot` and re-fetches via the
+  explicit Refresh control. Budget caps round-trip through
+  `ade.usage.getBudgetConfig` / `saveBudgetConfig`. Threshold
+  crossings (25 / 50 / 75 / 100 %) emit `UsageThresholdEvent`s the
+  notification bus turns into APNs alerts.
 - `apps/desktop/src/renderer/components/settings/ProxyAndPreviewSection.tsx`
   — proxy/preview configuration UI.
 - `apps/desktop/src/renderer/components/settings/DiagnosticsDashboardSection.tsx`

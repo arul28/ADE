@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createDiffService } from "./diffService";
 
 function git(cwd: string, args: string[]): string {
@@ -18,6 +18,100 @@ function createLaneServiceStub(rootPath: string) {
 }
 
 describe("diffService", () => {
+  it("returns lane line stats against the lane base ref", async () => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-diff-service-line-stats-"));
+    const service = createDiffService({
+      laneService: {
+        getLaneBaseAndBranch: () => ({
+          baseRef: "main",
+          worktreePath: rootPath,
+        }),
+        list: vi.fn(),
+      } as any,
+    });
+
+    try {
+      git(rootPath, ["init"]);
+      git(rootPath, ["config", "user.email", "ade@example.com"]);
+      git(rootPath, ["config", "user.name", "ADE"]);
+      git(rootPath, ["branch", "-M", "main"]);
+      fs.writeFileSync(path.join(rootPath, "alpha.txt"), "one\ntwo\n", "utf8");
+      fs.writeFileSync(path.join(rootPath, "beta.txt"), "same\n", "utf8");
+      git(rootPath, ["add", "."]);
+      git(rootPath, ["commit", "-m", "base"]);
+
+      git(rootPath, ["checkout", "-b", "feature"]);
+      fs.writeFileSync(path.join(rootPath, "alpha.txt"), "one\ntwo\nthree\n", "utf8");
+      fs.writeFileSync(path.join(rootPath, "beta.txt"), "changed\n", "utf8");
+      git(rootPath, ["add", "."]);
+      git(rootPath, ["commit", "-m", "feature"]);
+
+      await expect(service.getLaneDiffStats("lane-1")).resolves.toEqual({
+        additions: 2,
+        deletions: 1,
+        files: 2,
+      });
+    } finally {
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects missing lane id for line stats with a clear error", async () => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-diff-service-line-stats-missing-id-"));
+    const service = createDiffService({
+      laneService: {
+        getLaneBaseAndBranch: vi.fn(),
+        list: vi.fn(),
+      } as any,
+    });
+
+    try {
+      await expect(service.getLaneDiffStats(undefined)).rejects.toThrow("laneId is required");
+      await expect(service.getLaneDiffStats({ laneId: "  " })).rejects.toThrow("laneId is required");
+    } finally {
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
+  it("lists line stats only from non-archived lanes returned by the lane service", async () => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-diff-service-line-stats-list-"));
+    const list = vi.fn(async () => [
+      { id: "lane-1" },
+    ]);
+    const service = createDiffService({
+      laneService: {
+        getLaneBaseAndBranch: () => ({
+          baseRef: "main",
+          worktreePath: rootPath,
+        }),
+        list,
+      } as any,
+    });
+
+    try {
+      git(rootPath, ["init"]);
+      git(rootPath, ["config", "user.email", "ade@example.com"]);
+      git(rootPath, ["config", "user.name", "ADE"]);
+      git(rootPath, ["branch", "-M", "main"]);
+      fs.writeFileSync(path.join(rootPath, "alpha.txt"), "one\n", "utf8");
+      git(rootPath, ["add", "."]);
+      git(rootPath, ["commit", "-m", "base"]);
+      git(rootPath, ["checkout", "-b", "feature"]);
+      fs.writeFileSync(path.join(rootPath, "alpha.txt"), "one\ntwo\n", "utf8");
+      git(rootPath, ["add", "."]);
+      git(rootPath, ["commit", "-m", "feature"]);
+
+      const stats = await service.listLaneDiffStats();
+
+      expect(list).toHaveBeenCalledWith({ includeArchived: false });
+      expect(stats).toEqual({
+        "lane-1": { additions: 1, deletions: 0, files: 1 },
+      });
+    } finally {
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
   it("returns change stats and rename metadata for staged and unstaged files", async () => {
     const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-diff-service-status-"));
     const service = createDiffService({ laneService: createLaneServiceStub(rootPath) });

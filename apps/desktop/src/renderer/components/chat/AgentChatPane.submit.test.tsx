@@ -412,6 +412,40 @@ function expectSessionTabOrder(expectedTitles: string[]) {
 }
 
 describe("AgentChatPane submit recovery", () => {
+  it("loads Claude slash commands for a draft chat before session creation", async () => {
+    installAdeMocks({ sessions: [], includeClaudeModel: true });
+    vi.mocked(window.ade.agentChat.slashCommands).mockImplementation(async (args) => {
+      if (args.provider === "claude") {
+        return [{
+          name: "/agents",
+          description: "Manage agent configurations.",
+          source: "sdk",
+        }];
+      }
+      return [];
+    });
+
+    renderParallelDraftPane({
+      availableModelIdsOverride: ["anthropic/claude-sonnet-4-6"],
+    });
+
+    const modelTrigger = await screen.findByRole("button", { name: "Select model" });
+    fireEvent.click(modelTrigger);
+    fireEvent.click(await screen.findByRole("button", { name: /^Claude$/i }));
+    await clickEnabledModelOption(/Claude Sonnet 4\.6/i);
+
+    await waitFor(() => {
+      expect(window.ade.agentChat.slashCommands).toHaveBeenCalledWith({
+        laneId: "lane-1",
+        provider: "claude",
+      });
+    });
+
+    fireEvent.click(await screen.findByLabelText("Open command picker"));
+
+    expect(await screen.findByText("/agents")).toBeTruthy();
+  });
+
   it("opens the chat terminal drawer when a CLI-created terminal belongs to the active chat", async () => {
     const session = buildSession("session-1", { status: "idle" });
     const { emitSessionChanged } = installAdeMocks({ sessions: [session] });

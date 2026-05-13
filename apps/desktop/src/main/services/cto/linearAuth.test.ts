@@ -29,6 +29,34 @@ function createLogger() {
   } as any;
 }
 
+class MemoryCredentialStore {
+  readonly values = new Map<string, string>();
+
+  async get(key: string): Promise<string | null> {
+    return this.getSync(key);
+  }
+
+  async set(key: string, value: string): Promise<void> {
+    this.setSync(key, value);
+  }
+
+  async delete(key: string): Promise<void> {
+    this.deleteSync(key);
+  }
+
+  getSync(key: string): string | null {
+    return this.values.get(key) ?? null;
+  }
+
+  setSync(key: string, value: string): void {
+    this.values.set(key, value);
+  }
+
+  deleteSync(key: string): void {
+    this.values.delete(key);
+  }
+}
+
 // =====================================================================
 // linearCredentialService
 // =====================================================================
@@ -116,6 +144,82 @@ describe("linearCredentialService", () => {
     const sentinelPath = path.join(adeDir, "secrets", "linear-token.imported.v1");
     expect(fs.existsSync(sentinelPath)).toBe(true);
     expect(fs.readFileSync(sentinelPath, "utf8")).toContain("imported");
+  });
+
+  it("migrates project-local Linear credentials into the machine credential store once", () => {
+    const previousAdeLinearApi = process.env.ADE_LINEAR_API;
+    const previousLinearApiKey = process.env.LINEAR_API_KEY;
+    const previousAdeLinearToken = process.env.ADE_LINEAR_TOKEN;
+    const previousLinearToken = process.env.LINEAR_TOKEN;
+    try {
+      delete process.env.ADE_LINEAR_API;
+      delete process.env.LINEAR_API_KEY;
+      delete process.env.ADE_LINEAR_TOKEN;
+      delete process.env.LINEAR_TOKEN;
+
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-machine-migrate-"));
+      const adeDir = path.join(root, ".ade");
+      const secretsDir = path.join(adeDir, "secrets");
+      fs.mkdirSync(secretsDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(secretsDir, "linear-token.v1.bin"),
+        Buffer.from("enc:" + JSON.stringify({
+          token: "lin_project_token",
+          authMode: "oauth",
+          refreshToken: "refresh-project",
+          expiresAt: "2026-05-13T12:00:00.000Z",
+        })),
+      );
+      fs.writeFileSync(
+        path.join(secretsDir, "linear-oauth-client.v1.bin"),
+        Buffer.from("enc:" + JSON.stringify({
+          clientId: "client-project",
+          clientSecret: "secret-project",
+        })),
+      );
+      const credentialStore = new MemoryCredentialStore();
+      const service = createLinearCredentialService({
+        adeDir,
+        logger: createLogger(),
+        credentialStore,
+      });
+
+      expect(service.getToken()).toBe("lin_project_token");
+      expect(service.getStatus()).toMatchObject({
+        authMode: "oauth",
+        refreshTokenStored: true,
+        tokenExpiresAt: "2026-05-13T12:00:00.000Z",
+      });
+      expect(service.getOAuthClientCredentials()).toEqual({
+        clientId: "client-project",
+        clientSecret: "secret-project",
+      });
+      expect(credentialStore.values.get("linear.token.v1")).toBe("lin_project_token");
+      expect(credentialStore.values.get("linear.refreshToken.v1")).toBe("refresh-project");
+      expect(JSON.parse(credentialStore.values.get("linear.oauthClient.v1") ?? "{}")).toEqual({
+        clientId: "client-project",
+        clientSecret: "secret-project",
+      });
+
+      service.clearToken();
+      const reloaded = createLinearCredentialService({
+        adeDir,
+        logger: createLogger(),
+        credentialStore,
+      });
+
+      expect(reloaded.getToken()).toBeNull();
+      expect(credentialStore.values.has("linear.token.v1")).toBe(false);
+    } finally {
+      if (previousAdeLinearApi === undefined) delete process.env.ADE_LINEAR_API;
+      else process.env.ADE_LINEAR_API = previousAdeLinearApi;
+      if (previousLinearApiKey === undefined) delete process.env.LINEAR_API_KEY;
+      else process.env.LINEAR_API_KEY = previousLinearApiKey;
+      if (previousAdeLinearToken === undefined) delete process.env.ADE_LINEAR_TOKEN;
+      else process.env.ADE_LINEAR_TOKEN = previousAdeLinearToken;
+      if (previousLinearToken === undefined) delete process.env.LINEAR_TOKEN;
+      else process.env.LINEAR_TOKEN = previousLinearToken;
+    }
   });
 
   it("reads Linear OAuth client credentials from .ade/secrets", () => {
@@ -674,6 +778,95 @@ describe("linearClient", () => {
       organizationUrlKey: "acme",
       organizationLogoUrl: "https://linear.app/acme/logo.png",
     });
+  });
+
+  it("creates rich issue attachments", async () => {
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { query?: string; variables?: Record<string, unknown> };
+      expect(init?.headers).toMatchObject({ authorization: "Bearer test-token" });
+      expect(body.query).toContain("mutation CreateIssueAttachment");
+      expect(body.variables).toMatchObject({
+        issueId: "issue-1",
+        title: "ADE lane: ABC-42",
+        url: "https://linear.app/acme/issue/ABC-42#ade-lane-lane-1",
+        subtitle: "abc-42 - linked {linkedAt__since}",
+        iconUrl: null,
+        metadata: {
+          title: "ADE lane linked",
+          linkedAt: "2026-05-12T20:05:00.000Z",
+          attributes: [{ name: "Lane", value: "ABC-42" }],
+        },
+      });
+      return new Response(
+        JSON.stringify({
+          data: {
+            attachmentCreate: {
+              success: true,
+              attachment: {
+                id: "attachment-1",
+                url: "https://linear.app/acme/issue/ABC-42#ade-lane-lane-1",
+              },
+            },
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    });
+
+    const client = createLinearClient({
+      credentials: {
+        getTokenOrThrow: () => "Bearer test-token",
+        getStatus: () => ({ authMode: "oauth" }),
+      } as any,
+      fetchImpl: fetchImpl as any,
+      logger: null,
+    });
+
+    await expect(client.createIssueAttachment({
+      issueId: "issue-1",
+      title: "ADE lane: ABC-42",
+      url: "https://linear.app/acme/issue/ABC-42#ade-lane-lane-1",
+      subtitle: "abc-42 - linked {linkedAt__since}",
+      metadata: {
+        title: "ADE lane linked",
+        linkedAt: "2026-05-12T20:05:00.000Z",
+        attributes: [{ name: "Lane", value: "ABC-42" }],
+      },
+    })).resolves.toEqual({
+      id: "attachment-1",
+      url: "https://linear.app/acme/issue/ABC-42#ade-lane-lane-1",
+    });
+  });
+
+  it("rejects failed rich issue attachment mutations", async () => {
+    const fetchImpl = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          data: {
+            attachmentCreate: {
+              success: false,
+              attachment: null,
+            },
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+
+    const client = createLinearClient({
+      credentials: {
+        getTokenOrThrow: () => "Bearer test-token",
+        getStatus: () => ({ authMode: "oauth" }),
+      } as any,
+      fetchImpl: fetchImpl as any,
+      logger: null,
+    });
+
+    await expect(client.createIssueAttachment({
+      issueId: "issue-1",
+      title: "ADE lane: ABC-42",
+      url: "https://linear.app/acme/issue/ABC-42#ade-lane-lane-1",
+    })).rejects.toThrow("attachmentCreate");
   });
 
   it("lists projects with their owning team names", async () => {

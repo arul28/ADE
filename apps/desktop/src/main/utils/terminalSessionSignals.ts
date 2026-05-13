@@ -22,6 +22,14 @@ function commandArrayToLine(parts: string[]): string {
   return parts.map(shellQuote).join(" ");
 }
 
+export function sanitizeResumeTargetId(value: string | null | undefined): string | null {
+  const target = String(value ?? "").trim();
+  if (!target) return null;
+  if (/[\x00-\x1F\x7F]/.test(target)) return null;
+  if (target.startsWith("-")) return null;
+  return target;
+}
+
 function normalizeCommand(raw: string): string {
   return raw
     .trim()
@@ -289,17 +297,23 @@ function extractWrappedProviderCommand(command: string, binary: string): string 
 function parseProviderResumeTarget(provider: TerminalResumeProvider, command: string): string | null | undefined {
   if (provider === "claude") {
     const match = command.match(/^claude(?:(?:\s+--[^\s]+)(?:\s+[^\s]+)?)*\s+(?:--resume|-r|resume)(?:\s+([^\s]+))?(?:\s|$)/i);
-    return match ? match[1] ?? null : undefined;
+    if (!match) return undefined;
+    if (match[1] == null) return null;
+    return sanitizeResumeTargetId(match[1]) ?? undefined;
   }
 
   if (provider === "codex") {
     const match = command.match(/^codex(?:(?:\s+--no-alt-screen)|(?:\s+--full-auto)|(?:\s+--dangerously-bypass-approvals-and-sandbox)|(?:\s+--yolo)|(?:\s+--sandbox\s+[^\s]+)|(?:\s+-s\s+[^\s]+)|(?:\s+--ask-for-approval\s+[^\s]+)|(?:\s+-a\s+[^\s]+)|(?:\s+-c\s+[^\s]+))*\s+resume(?:\s+([^\s]+))?(?:\s|$)/i);
-    return match ? match[1] ?? null : undefined;
+    if (!match) return undefined;
+    if (match[1] == null) return null;
+    return sanitizeResumeTargetId(match[1]) ?? undefined;
   }
 
   if (provider === "cursor") {
     const match = command.match(/^cursor-agent\b.*?(?:--resume(?:=|\s+)([^\s]+)|--continue\b|\bresume\b)(?:\s|$)/i);
-    return match ? match[1] ?? null : undefined;
+    if (!match) return undefined;
+    if (match[1] == null) return null;
+    return sanitizeResumeTargetId(match[1]) ?? undefined;
   }
 
   if (provider === "droid") {
@@ -307,11 +321,17 @@ function parseProviderResumeTarget(provider: TerminalResumeProvider, command: st
     const match = droidCommand.match(
       /^droid\b.*?(?:--resume(?:=|\s+)?([^;\s]+)?|-r\s+([^;\s]+)|\bexec\b.*?(?:--session-id|-s)\s+([^;\s]+))(?=\s*(?:[;&]|$))/i,
     );
-    return match ? match[1] ?? match[2] ?? match[3] ?? null : undefined;
+    if (!match) return undefined;
+    const raw = match[1] ?? match[2] ?? match[3];
+    if (raw == null) return null;
+    return sanitizeResumeTargetId(raw) ?? undefined;
   }
 
   const match = command.match(/^opencode\b.*?(?:--session(?:=|\s+)([^\s]+)|-s\s+([^\s]+)|--continue\b|-c\b)(?:\s|$)/i);
-  return match ? match[1] ?? match[2] ?? null : undefined;
+  if (!match) return undefined;
+  const raw = match[1] ?? match[2];
+  if (raw == null) return null;
+  return sanitizeResumeTargetId(raw) ?? undefined;
 }
 
 export function parseTrackedCliResumeCommand(
@@ -335,7 +355,7 @@ export function buildTrackedCliResumeCommand(metadata: TerminalResumeMetadata | 
   if (!metadata) return null;
   const provider = metadata.provider;
   const permissionMode = metadata.launch.permissionMode ?? null;
-  const targetId = typeof metadata.targetId === "string" ? metadata.targetId.trim() : "";
+  const targetId = sanitizeResumeTargetId(metadata.targetId) ?? "";
 
   if (provider === "claude") {
     const parts = ["claude", ...permissionModeToClaudeFlag(permissionMode)];
@@ -410,7 +430,7 @@ export function defaultResumeCommandForTool(toolType: TerminalToolType | null | 
 
 /** Strip ANSI escape codes so resume-command regexes can match TUI output. */
 function stripAnsiCodes(text: string): string {
-  return text.replace(/\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][A-Z0-9]|\x1b\[[\d;]*m/g, "");
+  return text.replace(/\x1b\[[0-9;?=><]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][A-Z0-9]/g, "");
 }
 
 export function extractResumeCommandFromOutput(

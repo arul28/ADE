@@ -51,6 +51,7 @@ import type {
   PrCreationStrategy,
   PrGroupMemberRole,
   PrHealth,
+  PrLaneSummary,
   PrMergeContext,
   PrReview,
   PrReviewStatus,
@@ -1022,6 +1023,17 @@ export function createPrService({
       `select ${PR_COLUMNS} from pull_requests where project_id = ? order by updated_at desc`,
       [projectId]
     );
+
+  const rowToLanePrSummary = (row: PullRequestRow, checks: PrCheck[] = []): PrLaneSummary => {
+    const state: PrLaneSummary["state"] = row.state === "merged" || row.state === "closed" ? row.state : "open";
+    return {
+      laneId: row.lane_id,
+      number: Number(row.github_pr_number),
+      state,
+      checksPassed: checks.filter((check) => check.status === "completed" && check.conclusion === "success").length,
+      checksTotal: checks.length,
+    };
+  };
 
   const HOT_REFRESH_PHASE_ONE_MS = 60_000;
   const HOT_REFRESH_PHASE_TWO_MS = 3 * 60_000;
@@ -6065,6 +6077,15 @@ export function createPrService({
       const laneId = String(args.laneId ?? "").trim();
       const summaries = listRows().map(rowToSummary);
       return laneId ? summaries.filter((pr) => pr.laneId === laneId) : summaries;
+    },
+
+    async listPrsByLane(): Promise<PrLaneSummary[]> {
+      const laneIds = Array.from(new Set(listRows().map((row) => row.lane_id).filter(Boolean)));
+      const rows = laneIds
+        .map((laneId) => getDisplayRowForCurrentLaneBranch(laneId))
+        .filter((row): row is PullRequestRow => row != null);
+      const checksByPrId = new Map(listSnapshotRows().map((snapshot) => [snapshot.prId, snapshot.checks] as const));
+      return rows.map((row) => rowToLanePrSummary(row, isActivePrState(row.state) ? checksByPrId.get(row.id) ?? [] : []));
     },
 
     /**

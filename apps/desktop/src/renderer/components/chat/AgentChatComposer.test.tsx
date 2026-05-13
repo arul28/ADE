@@ -226,7 +226,7 @@ describe("AgentChatComposer", () => {
 
   it("selects a slash command from the command picker", async () => {
     const onDraftChange = vi.fn();
-    renderComposer({
+    const { container } = renderComposer({
       turnActive: false,
       draft: "",
       onDraftChange,
@@ -238,9 +238,76 @@ describe("AgentChatComposer", () => {
     });
 
     fireEvent.click(screen.getByLabelText("Open command picker"));
-    fireEvent.click(await screen.findByText("/status"));
+    const statusCommand = await screen.findByText("/status");
+    const menu = statusCommand.closest(".ade-chat-drawer-glass");
+    const composerShell = container.querySelector("[data-chat-composer-mode]");
+    expect(menu?.className).toContain("fixed");
+    expect(menu?.parentElement).toBe(document.body);
+    expect(composerShell?.contains(menu)).toBe(false);
+    expect((menu as HTMLElement | null)?.style.width).toBe("420px");
+    fireEvent.click(statusCommand);
 
     expect(onDraftChange).toHaveBeenCalledWith("/status ");
+  });
+
+  it("shows slash commands when typing a leading slash", async () => {
+    renderComposer({
+      turnActive: false,
+      draft: "",
+      sdkSlashCommands: [{
+        name: "status",
+        description: "Summarize current state",
+        source: "sdk",
+      }],
+    });
+
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "/st", selectionStart: 3 },
+    });
+
+    expect(await screen.findByText("/status")).toBeTruthy();
+  });
+
+  it("shows a slash command hint for a bare slash before commands are available", async () => {
+    const { container } = renderComposer({
+      turnActive: false,
+      draft: "",
+      sdkSlashCommands: [],
+    });
+
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "/", selectionStart: 1 },
+    });
+
+    const hint = await screen.findByText("Type to search commands");
+    const menu = hint.closest(".ade-chat-drawer-glass");
+    const composerShell = container.querySelector("[data-chat-composer-mode]");
+    expect(menu?.parentElement).toBe(document.body);
+    expect(composerShell?.contains(menu)).toBe(false);
+  });
+
+  it("shows file matches when typing an at-command", async () => {
+    const fileSearch = vi.fn().mockResolvedValue([{ path: "src/App.tsx" }]);
+    (window as any).ade = {
+      agentChat: {
+        fileSearch,
+      },
+    };
+
+    renderComposer({
+      turnActive: false,
+      draft: "",
+      sessionId: "session-1",
+    });
+
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "@src", selectionStart: 4 },
+    });
+
+    await waitFor(() => {
+      expect(fileSearch).toHaveBeenCalledWith({ sessionId: "session-1", query: "src" });
+    });
+    expect(await screen.findByText("App.tsx")).toBeTruthy();
   });
 
   it("dismisses an attachment error from the composer preview row", async () => {

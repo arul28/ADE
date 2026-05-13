@@ -1117,8 +1117,12 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
     domain: "chat",
     action: "getSlashCommands",
     label: "Get slash commands",
-    description: "Return the slash commands available in a chat session.",
-    params: [{ name: "sessionId", type: "string", required: true }],
+    description: "Return the slash commands available in a chat session or draft lane/provider.",
+    params: [
+      { name: "sessionId", type: "string" },
+      { name: "laneId", type: "string" },
+      { name: "provider", type: "string" },
+    ],
   },
   {
     domain: "chat",

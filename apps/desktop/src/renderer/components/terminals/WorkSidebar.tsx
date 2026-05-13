@@ -80,6 +80,7 @@ function WarningBanner({ message }: { message: string }) {
 }
 
 export function WorkSidebar({
+  active = true,
   laneId,
   lanes,
   activeSession,
@@ -89,6 +90,7 @@ export function WorkSidebar({
   attachChatSessionId,
   attachDisabledReason,
 }: {
+  active?: boolean;
   laneId: string | null;
   lanes: LaneSummary[];
   activeSession: TerminalSessionSummary | null;
@@ -135,15 +137,16 @@ export function WorkSidebar({
   const previousBrowserTabRef = useRef(tab === "browser");
   useEffect(() => {
     const wasBrowser = previousBrowserTabRef.current;
-    const isBrowser = tab === "browser";
+    const isBrowser = active && tab === "browser";
     if (wasBrowser && !isBrowser) hideBuiltInBrowserView();
     previousBrowserTabRef.current = isBrowser;
     return () => {
       if (previousBrowserTabRef.current) hideBuiltInBrowserView();
     };
-  }, [tab]);
+  }, [active, tab]);
 
   useEffect(() => {
+    if (!active) return undefined;
     if (tab !== "app-control") return undefined;
     let cancelled = false;
     void window.ade.appControl.getStatus()
@@ -164,9 +167,10 @@ export function WorkSidebar({
       cancelled = true;
       unsubscribe();
     };
-  }, [tab]);
+  }, [active, tab]);
 
   useEffect(() => {
+    if (!active) return undefined;
     if (tab !== "ios") return undefined;
     let cancelled = false;
     void window.ade.iosSimulator.getStatus()
@@ -187,7 +191,7 @@ export function WorkSidebar({
       cancelled = true;
       unsubscribe();
     };
-  }, [tab]);
+  }, [active, tab]);
 
   function resolveLaneMismatchReason(): string | null {
     if (!laneId) return null;
@@ -233,6 +237,7 @@ export function WorkSidebar({
   }, [dispatchToChat]);
 
   const content = useMemo(() => {
+    if (!active) return null;
     if (tab === "browser") {
       return (
         <div className="flex h-full min-h-0 flex-col">
@@ -364,6 +369,7 @@ export function WorkSidebar({
     selectedCommit,
     selectedMode,
     selectedPath,
+    active,
     tab,
   ]);
 
