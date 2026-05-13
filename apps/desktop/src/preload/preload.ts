@@ -619,6 +619,7 @@ import type {
   GetAggregatedUsageArgs,
   AggregatedUsageStats,
   UsageSnapshot,
+  UsageThresholdEvent,
   BudgetCheckResult,
   BudgetCapScope,
   BudgetCapProvider,
@@ -3397,6 +3398,14 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.on(IPC.usageEvent, listener);
       return () => ipcRenderer.removeListener(IPC.usageEvent, listener);
     },
+    onThreshold: (cb: (event: UsageThresholdEvent) => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        thresholdEvent: UsageThresholdEvent,
+      ) => cb(thresholdEvent);
+      ipcRenderer.on(IPC.usageThresholdEvent, listener);
+      return () => ipcRenderer.removeListener(IPC.usageThresholdEvent, listener);
+    },
   },
   missions: {
     list: async (args: ListMissionsArgs = {}): Promise<MissionSummary[]> =>
@@ -5056,9 +5065,11 @@ contextBridge.exposeInMainWorld("ade", {
       const runtime = await callProjectRuntimeActionIfBound<
         AgentChatSlashCommand[]
       >("chat", "getSlashCommands", { args });
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.agentChatSlashCommands, args);
+      if (runtime.handled) {
+        const result = Array.isArray(runtime.result) ? runtime.result : [];
+        if (result.length > 0 || args.sessionId || !args.provider) return result;
+      }
+      return ipcRenderer.invoke(IPC.agentChatSlashCommands, args);
     },
     getClaudeMcpStatus: async (
       args: AgentChatClaudeMcpStatusArgs,

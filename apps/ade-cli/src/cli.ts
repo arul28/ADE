@@ -10543,9 +10543,11 @@ async function spawnMachineRuntimeDaemon(
 async function connectMachineRuntimeDaemon(
   options: GlobalOptions,
   socketPathOverride?: string | null,
+  connectOptions: { allowSpawn?: boolean } = {},
 ): Promise<SocketJsonRpcClient> {
   const socketPath = await resolveMachineRuntimeSocketPath(socketPathOverride);
   const label = "ADE runtime daemon socket";
+  const allowSpawn = connectOptions.allowSpawn ?? !options.requireSocket;
   try {
     const client = await SocketJsonRpcClient.connect(
       socketPath,
@@ -10557,6 +10559,12 @@ async function connectMachineRuntimeDaemon(
       options,
     );
     if (runtimeVersion && runtimeVersion !== VERSION) {
+      if (!allowSpawn) {
+        client.close();
+        throw new Error(
+          `ADE runtime daemon version ${runtimeVersion} does not match CLI version ${VERSION}.`,
+        );
+      }
       await shutdownMachineRuntimeDaemon(client);
       const spawned = await spawnMachineRuntimeDaemon(socketPath, options);
       if (!spawned) {
@@ -10583,6 +10591,7 @@ async function connectMachineRuntimeDaemon(
     }
     return client;
   } catch (firstError) {
+    if (!allowSpawn) throw firstError;
     const spawned = await spawnMachineRuntimeDaemon(socketPath, options);
     if (!spawned) throw firstError;
     try {
@@ -10658,7 +10667,9 @@ async function runRuntimeCommand(
   }
 
   if (sub === "start") {
-    const client = await connectMachineRuntimeDaemon(options, socketOverride);
+    const client = await connectMachineRuntimeDaemon(options, socketOverride, {
+      allowSpawn: true,
+    });
     try {
       const runtimeVersion = await initializeMachineRuntimeDaemon(
         client,

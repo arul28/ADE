@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { UsageWindow } from "../../../shared/types";
 
 const mockState = vi.hoisted(() => ({
   spawn: vi.fn(),
@@ -23,6 +24,7 @@ import { createUsageTrackingService, _testing } from "./usageTrackingService";
 
 const {
   aggregateCosts,
+  bucketDaily7d,
   calculatePacing,
   MIN_POLL_INTERVAL_MS,
   MAX_POLL_INTERVAL_MS,
@@ -30,9 +32,8 @@ const {
   isTokenExpiredOrExpiring,
   parseClaudeWindows,
   parseCodexRateLimitWindows,
-  parseCursorSpendUsage,
-  pollCursorUsage,
   calculatePacingByProvider,
+  detectThresholdCrossings,
   pollCodexViaCliRpc,
   resolveTokenPrice,
 } = _testing;
@@ -459,111 +460,71 @@ describe("parseCodexRateLimitWindows", () => {
   });
 });
 
-describe("parseCursorSpendUsage", () => {
-  it("normalizes Cursor team spend into a monthly used-percent window", () => {
-    const cycleStart = Date.UTC(2026, 4, 1);
-    const result = parseCursorSpendUsage({
-      subscriptionCycleStart: cycleStart,
-      teamMemberSpend: [
-        { spendCents: 2500, hardLimitOverrideDollars: 100, fastPremiumRequests: 50 },
-        { spendCents: 500, hardLimitOverrideDollars: 50, fastPremiumRequests: 20 },
+describe("detectThresholdCrossings", () => {
+  const weeklyReset = "2099-05-15T07:00:00.000Z";
+  const makeWindow = (
+    provider: "claude" | "codex",
+    percent: number,
+    resetsAt = weeklyReset,
+    windowType: UsageWindow["windowType"] = "weekly",
+  ): UsageWindow => ({
+    provider,
+    windowType,
+    percentUsed: percent,
+    resetsAt,
+    resetsInMs: 86_400_000,
+  });
+
+  it("fires the lowest crossed thresholds for a fresh cycle", () => {
+    const { events, nextState } = detectThresholdCrossings(
+      [makeWindow("claude", 30)],
+      {},
+    );
+    expect(events.map((e) => e.threshold)).toEqual([25]);
+    expect(nextState.claude?.firedThresholds).toEqual([25]);
+  });
+
+  it("uses the weekly window before monthly so threshold state is stable", () => {
+    const monthlyReset = "2099-06-01T07:00:00.000Z";
+    const prev = { claude: { resetsAt: weeklyReset, firedThresholds: [25, 50] } };
+    const { events, nextState } = detectThresholdCrossings(
+      [
+        makeWindow("claude", 90, monthlyReset, "monthly"),
+        makeWindow("claude", 60, weeklyReset, "weekly"),
       ],
-    });
-
-    expect(result.windows).toHaveLength(1);
-    expect(result.windows[0]?.provider).toBe("cursor");
-    expect(result.windows[0]?.windowType).toBe("monthly");
-    expect(result.windows[0]?.percentUsed).toBe(20);
-    expect(result.windows[0]?.windowDurationMs).toBeGreaterThan(0);
-    expect(result.extraUsage?.usedCreditsUsd).toBe(30);
-    expect(result.extraUsage?.monthlyLimitUsd).toBe(150);
-    expect(result.extraUsage?.utilization).toBe(20);
+      prev,
+    );
+    expect(events).toEqual([]);
+    expect(nextState.claude?.resetsAt).toBe(weeklyReset);
+    expect(nextState.claude?.firedThresholds).toEqual([25, 50]);
   });
 
-  it("keeps Cursor spend as extra usage when no monthly limit is configured", () => {
-    const result = parseCursorSpendUsage({
-      teamMemberSpend: [
-        { spendCents: 1250, hardLimitOverrideDollars: 0, fastPremiumRequests: 10 },
-      ],
-    });
-
-    expect(result.windows).toEqual([]);
-    expect(result.extraUsage?.provider).toBe("cursor");
-    expect(result.extraUsage?.usedCreditsUsd).toBe(12.5);
-    expect(result.extraUsage?.monthlyLimitUsd).toBe(0);
-    expect(result.extraUsage?.utilization).toBeNull();
+  it("fires every threshold that has been crossed at once on a cold start", () => {
+    const { events } = detectThresholdCrossings(
+      [makeWindow("claude", 80)],
+      {},
+    );
+    expect(events.map((e) => e.threshold)).toEqual([25, 50, 75]);
   });
 
-  it("prefers overallSpendCents over on-demand spendCents when both are present", () => {
-    const cycleStart = Date.UTC(2026, 4, 1);
-    const result = parseCursorSpendUsage({
-      subscriptionCycleStart: cycleStart,
-      teamMemberSpend: [
-        { spendCents: 1000, overallSpendCents: 5000, hardLimitOverrideDollars: 100 },
-      ],
-    });
-
-    expect(result.extraUsage?.usedCreditsUsd).toBe(50);
-    expect(result.windows[0]?.percentUsed).toBe(50);
+  it("does not refire thresholds already recorded for the same cycle", () => {
+    const prev = { claude: { resetsAt: weeklyReset, firedThresholds: [25, 50] } };
+    const { events, nextState } = detectThresholdCrossings(
+      [makeWindow("claude", 60)],
+      prev,
+    );
+    expect(events).toEqual([]);
+    expect(nextState.claude?.firedThresholds).toEqual([25, 50]);
   });
 
-  it("falls back to monthlyLimitDollars when no hard-limit override is set", () => {
-    const cycleStart = Date.UTC(2026, 4, 1);
-    const result = parseCursorSpendUsage({
-      subscriptionCycleStart: cycleStart,
-      teamMemberSpend: [
-        { overallSpendCents: 2500, monthlyLimitDollars: 100 },
-        { overallSpendCents: 0, monthlyLimitDollars: 100 },
-      ],
-    });
-
-    expect(result.extraUsage?.monthlyLimitUsd).toBe(200);
-    expect(result.extraUsage?.usedCreditsUsd).toBe(25);
-    expect(result.windows[0]?.percentUsed).toBe(12.5);
-  });
-
-  it("allows quota-only Cursor member responses without spend data", async () => {
-    const originalFetch = globalThis.fetch;
-    const prevAdminKey = process.env.CURSOR_ADMIN_API_KEY;
-    process.env.CURSOR_ADMIN_API_KEY = "key_cursor_admin_test";
-    globalThis.fetch = vi.fn(async () => ({
-      ok: true,
-      status: 200,
-      json: async () => ({
-        teamMemberSpend: [
-          { fastPremiumRequests: 250, spendCents: 0, overallSpendCents: 0 },
-        ],
-      }),
-    } as Response));
-    try {
-      const result = await pollCursorUsage();
-      expect(result.windows).toEqual([]);
-      expect(result.extraUsage).toBeNull();
-      expect(result.errors).toEqual([]);
-    } finally {
-      globalThis.fetch = originalFetch;
-      if (prevAdminKey === undefined) delete process.env.CURSOR_ADMIN_API_KEY;
-      else process.env.CURSOR_ADMIN_API_KEY = prevAdminKey;
-    }
-  });
-
-  it("reports malformed Cursor spend responses with no member array", async () => {
-    const originalFetch = globalThis.fetch;
-    const prevAdminKey = process.env.CURSOR_ADMIN_API_KEY;
-    process.env.CURSOR_ADMIN_API_KEY = "key_cursor_admin_test";
-    globalThis.fetch = vi.fn(async () => ({
-      ok: true,
-      status: 200,
-      json: async () => ({ subscriptionCycleStart: Date.UTC(2026, 4, 1) }),
-    } as Response));
-    try {
-      const result = await pollCursorUsage();
-      expect(result.errors).toEqual(["cursor: usage response contained no recognized spend data"]);
-    } finally {
-      globalThis.fetch = originalFetch;
-      if (prevAdminKey === undefined) delete process.env.CURSOR_ADMIN_API_KEY;
-      else process.env.CURSOR_ADMIN_API_KEY = prevAdminKey;
-    }
+  it("resets fired thresholds when the cycle reset date changes", () => {
+    const prev = { claude: { resetsAt: "2099-05-08T07:00:00.000Z", firedThresholds: [25, 50, 75] } };
+    const { events, nextState } = detectThresholdCrossings(
+      [makeWindow("claude", 30, weeklyReset)],
+      prev,
+    );
+    expect(events.map((e) => e.threshold)).toEqual([25]);
+    expect(nextState.claude?.firedThresholds).toEqual([25]);
   });
 });
 
@@ -709,14 +670,23 @@ describe("createUsageTrackingService", () => {
   const createFastDependencies = () => ({
     pollClaudeUsage: vi.fn(async () => ({ windows: [] as never[], extraUsage: null, errors: [] as never[] })),
     pollCodexUsage: vi.fn(async () => ({ windows: [] as never[], errors: [] as never[] })),
-    pollCursorUsage: vi.fn(async () => ({ windows: [] as never[], extraUsage: null, errors: [] as never[] })),
     scanClaudeLogs: vi.fn(async () => [] as never[]),
     scanCodexLogs: vi.fn(async () => [] as never[]),
   });
 
+  const createInMemoryThresholdStore = () => {
+    let state: Record<string, unknown> = {};
+    return {
+      load: () => ({ ...state }),
+      save: (next: Record<string, unknown>) => {
+        state = { ...next };
+      },
+    };
+  };
+
   it("returns an empty snapshot before polling", () => {
     const logger = createLogger();
-    const service = createUsageTrackingService({ logger });
+    const service = createUsageTrackingService({ logger, thresholdStore: createInMemoryThresholdStore() });
 
     const snapshot = service.getUsageSnapshot();
     expect(snapshot.windows).toEqual([]);
@@ -733,12 +703,12 @@ describe("createUsageTrackingService", () => {
     const dependencies = createFastDependencies();
     const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
 
-    const service1 = createUsageTrackingService({ logger, pollIntervalMs: 100, dependencies });
+    const service1 = createUsageTrackingService({ logger, pollIntervalMs: 100, dependencies, thresholdStore: createInMemoryThresholdStore() });
     service1.start();
     expect(setIntervalSpy).toHaveBeenLastCalledWith(expect.any(Function), MIN_POLL_INTERVAL_MS);
     service1.dispose();
 
-    const service2 = createUsageTrackingService({ logger, pollIntervalMs: 60 * 60 * 1000, dependencies });
+    const service2 = createUsageTrackingService({ logger, pollIntervalMs: 60 * 60 * 1000, dependencies, thresholdStore: createInMemoryThresholdStore() });
     service2.start();
     expect(setIntervalSpy).toHaveBeenLastCalledWith(expect.any(Function), MAX_POLL_INTERVAL_MS);
     service2.dispose();
@@ -753,6 +723,7 @@ describe("createUsageTrackingService", () => {
       logger,
       onUpdate,
       dependencies: createFastDependencies(),
+      thresholdStore: createInMemoryThresholdStore(),
     });
 
     const snapshot = await service.poll();
@@ -764,29 +735,25 @@ describe("createUsageTrackingService", () => {
     service.dispose();
   });
 
-  it("calculates pacing separately for Claude, Codex, and Cursor windows", async () => {
+  it("calculates pacing separately for Claude and Codex windows", async () => {
     const now = Date.now();
     const weeklyResetMs = 3.5 * 24 * 60 * 60 * 1000;
-    const monthlyResetMs = 24 * 24 * 60 * 60 * 1000;
     const weeklyReset = new Date(now + weeklyResetMs).toISOString();
-    const monthlyReset = new Date(now + monthlyResetMs).toISOString();
     const windows = [
       { provider: "claude" as const, windowType: "weekly" as const, percentUsed: 40, resetsAt: weeklyReset, resetsInMs: weeklyResetMs },
       { provider: "codex" as const, windowType: "weekly" as const, percentUsed: 65, resetsAt: weeklyReset, resetsInMs: weeklyResetMs },
-      { provider: "cursor" as const, windowType: "monthly" as const, percentUsed: 15, resetsAt: monthlyReset, resetsInMs: monthlyResetMs, windowDurationMs: 30 * 24 * 60 * 60 * 1000 },
     ];
 
     const pacing = calculatePacingByProvider(windows);
 
     expect(pacing?.claude?.status).toBe("behind");
     expect(pacing?.codex?.status).toBe("far-ahead");
-    expect(pacing?.cursor?.status).toBe("slightly-behind");
   });
 
   it("forceRefresh invalidates cost cache and re-polls", async () => {
     const logger = createLogger();
     const dependencies = createFastDependencies();
-    const service = createUsageTrackingService({ logger, dependencies });
+    const service = createUsageTrackingService({ logger, dependencies, thresholdStore: createInMemoryThresholdStore() });
 
     const s1 = await service.forceRefresh();
     expect(s1).toBeDefined();
@@ -806,6 +773,7 @@ describe("createUsageTrackingService", () => {
       logger,
       onUpdate,
       dependencies: createFastDependencies(),
+      thresholdStore: createInMemoryThresholdStore(),
     });
 
     // Should not throw
@@ -820,6 +788,7 @@ describe("createUsageTrackingService", () => {
     const service = createUsageTrackingService({
       logger,
       dependencies: createFastDependencies(),
+      thresholdStore: createInMemoryThresholdStore(),
     });
 
     // Fire two polls concurrently

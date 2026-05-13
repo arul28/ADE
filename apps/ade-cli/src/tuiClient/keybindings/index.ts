@@ -115,6 +115,7 @@ const SUPPORTED_ACTION_VALUES = [
   "plugin:install",
   "plugin:favorite",
   "pane:toggle",
+  "pane:agents",
   "pane:close",
   "settings:search",
   "settings:retry",

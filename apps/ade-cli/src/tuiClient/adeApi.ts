@@ -16,6 +16,8 @@ import type {
   AgentChatCodexSandbox,
   AgentChatContextUsage,
   AgentChatCursorConfigValue,
+  AgentChatDispatchSteerMode,
+  AgentChatDispatchSteerResult,
   AgentChatDroidPermissionMode,
   AgentChatEventEnvelope,
   AgentChatFileRef,
@@ -27,10 +29,14 @@ import type {
   AgentChatSession,
   AgentChatSessionSummary,
   AgentChatSlashCommand,
+  AgentChatSlashCommandsArgs,
+  AgentChatSteerResult,
   CodexThreadGoal,
 } from "../../../desktop/src/shared/types/chat";
 import type { AiSettingsStatus, OpenCodeRuntimeSnapshot } from "../../../desktop/src/shared/types/config";
+import type { DiffLineStats } from "../../../desktop/src/shared/types/git";
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
+import type { PrLaneSummary } from "../../../desktop/src/shared/types/prs";
 import { discoverClaudeSlashCommands } from "../../../desktop/src/main/services/chat/claudeSlashCommandDiscovery";
 import { discoverCodexSlashCommands } from "../../../desktop/src/main/services/chat/codexSlashCommandDiscovery";
 import type { AdeCodeConnection, ChatHistorySnapshot, CreatedChat, NavigateRequest, NavigateResult } from "./types";
@@ -44,12 +50,25 @@ export async function listLanes(connection: AdeCodeConnection): Promise<LaneSumm
   });
 }
 
+export async function listLaneDiffStats(
+  connection: AdeCodeConnection,
+  laneIds?: string[],
+): Promise<Record<string, DiffLineStats>> {
+  return await connection.action<Record<string, DiffLineStats>>("diff", "listLaneDiffStats", {
+    ...(laneIds ? { laneIds } : {}),
+  });
+}
+
 export async function listChatSessions(
   connection: AdeCodeConnection,
   laneId?: string | null,
 ): Promise<AgentChatSessionSummary[]> {
   const argsList = laneId ? [laneId] : [];
   return await connection.actionList<AgentChatSessionSummary[]>("chat", "listSessions", argsList);
+}
+
+export async function listPrsByLane(connection: AdeCodeConnection): Promise<PrLaneSummary[]> {
+  return await connection.action<PrLaneSummary[]>("pr", "listPrsByLane", {});
 }
 
 export async function getChatHistory(
@@ -62,10 +81,12 @@ export async function getChatHistory(
 
 export async function getSlashCommands(
   connection: AdeCodeConnection,
-  sessionId: string | null,
+  args: string | null | AgentChatSlashCommandsArgs,
 ): Promise<AgentChatSlashCommand[]> {
-  if (!sessionId) return [];
-  return await connection.action<AgentChatSlashCommand[]>("chat", "getSlashCommands", { sessionId });
+  if (!args) return [];
+  const requestArgs = typeof args === "string" ? { sessionId: args } : args;
+  if (!requestArgs.sessionId && !requestArgs.laneId) return [];
+  return await connection.action<AgentChatSlashCommand[]>("chat", "getSlashCommands", requestArgs);
 }
 
 export async function getContextUsage(
@@ -228,6 +249,45 @@ export async function sendChatMessage(
     },
     { awaitDispatch: true },
   ]);
+}
+
+export async function steerChatMessage(
+  connection: AdeCodeConnection,
+  sessionId: string,
+  text: string,
+  attachments: AgentChatFileRef[] = [],
+): Promise<AgentChatSteerResult> {
+  return await connection.action<AgentChatSteerResult>("chat", "steer", {
+    sessionId,
+    text,
+    ...(attachments.length ? { attachments } : {}),
+  });
+}
+
+export async function cancelSteerMessage(
+  connection: AdeCodeConnection,
+  sessionId: string,
+  steerId: string,
+): Promise<void> {
+  await connection.action("chat", "cancelSteer", { sessionId, steerId });
+}
+
+export async function editSteerMessage(
+  connection: AdeCodeConnection,
+  sessionId: string,
+  steerId: string,
+  text: string,
+): Promise<void> {
+  await connection.action("chat", "editSteer", { sessionId, steerId, text });
+}
+
+export async function dispatchSteerMessage(
+  connection: AdeCodeConnection,
+  sessionId: string,
+  steerId: string,
+  mode: AgentChatDispatchSteerMode,
+): Promise<AgentChatDispatchSteerResult> {
+  return await connection.action<AgentChatDispatchSteerResult>("chat", "dispatchSteer", { sessionId, steerId, mode });
 }
 
 export async function approveToolUse(args: {

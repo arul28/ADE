@@ -452,6 +452,16 @@ describe("aiIntegrationService", () => {
     expect(status.availableModelIds).toContain("opencode/openai/gpt-5.4-mini");
   });
 
+  it("keeps forced status refresh non-interactive for Claude", async () => {
+    const { service } = makeService({
+      availability: { claude: true, codex: false, cursor: false, droid: false },
+    });
+
+    await service.getStatus({ force: true });
+
+    expect(mockState.probeClaudeRuntimeHealth).not.toHaveBeenCalled();
+  });
+
   it("invalidates provider readiness caches after API key verification", async () => {
     const { service } = makeService({
       providerMode: "guest",

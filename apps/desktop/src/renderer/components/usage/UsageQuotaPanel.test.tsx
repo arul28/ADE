@@ -105,8 +105,9 @@ function makeAiStatus(providerConnections: Partial<AiProviderConnections> = {}):
     },
     features: [],
     providerConnections: {
-      claude: makeProviderConnection("claude"),
-      codex: makeProviderConnection("codex"),
+      // Both CLIs detected by default so the panel renders both cards.
+      claude: makeProviderConnection("claude", { runtimeDetected: true, authAvailable: true }),
+      codex: makeProviderConnection("codex", { runtimeDetected: true, authAvailable: true }),
       cursor: makeProviderConnection("cursor"),
       droid: makeProviderConnection("droid"),
       ...providerConnections,
@@ -139,12 +140,42 @@ describe("UsageQuotaPanel", () => {
     globalThis.window.ade = originalAde;
   });
 
-  it("shows Codex as percent used, not percent remaining", async () => {
+  it("renders the weekly used percent for each authed provider", async () => {
     render(<UsageQuotaPanel />);
 
     expect((await screen.findAllByText("Codex")).length).toBeGreaterThan(0);
     expect(await screen.findByText("63.0% used")).toBeTruthy();
     expect(screen.queryByText("37.0% remaining")).toBeNull();
+  });
+
+  it("renders weekly and monthly windows as separate meters", async () => {
+    const snapshot = makeSnapshot();
+    snapshot.windows = [
+      ...snapshot.windows,
+      {
+        provider: "codex",
+        windowType: "monthly",
+        percentUsed: 44,
+        resetsAt: "2099-06-01T07:00:00.000Z",
+        resetsInMs: 7 * 86_400_000,
+      },
+    ];
+    vi.mocked(window.ade.usage.getSnapshot).mockResolvedValue(snapshot);
+    vi.mocked(window.ade.usage.refresh).mockResolvedValue(snapshot);
+
+    render(<UsageQuotaPanel />);
+
+    expect((await screen.findAllByText("Weekly")).length).toBeGreaterThan(0);
+    expect(await screen.findByText("Monthly")).toBeTruthy();
+    expect(await screen.findByText("44.0% used")).toBeTruthy();
+  });
+
+  it("auto-refreshes once on mount so the drawer never shows stale data", async () => {
+    render(<UsageQuotaPanel />);
+
+    await waitFor(() => {
+      expect(window.ade.usage.refresh).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("keeps live provider polling available through the manual refresh button", async () => {
@@ -155,72 +186,50 @@ describe("UsageQuotaPanel", () => {
       expect(refreshButton.disabled).toBe(false);
     });
 
+    const baseline = vi.mocked(window.ade.usage.refresh).mock.calls.length;
     fireEvent.click(screen.getByRole("button", { name: /refresh/i }));
 
     await waitFor(() => {
-      expect(window.ade.usage.refresh).toHaveBeenCalledTimes(1);
+      expect(window.ade.usage.refresh).toHaveBeenCalledTimes(baseline + 1);
     });
   });
 
-  it("labels Cursor Admin API-only auth as usage auth", async () => {
-    vi.mocked(window.ade.ai.getStatus).mockResolvedValue(makeAiStatus({
-      cursor: makeProviderConnection("cursor", {
-          authAvailable: true,
-          runtimeDetected: true,
-          runtimeAvailable: false,
-          usageAvailable: true,
+  it("hides providers whose CLI is not detected on this machine", async () => {
+    vi.mocked(window.ade.ai.getStatus).mockResolvedValue(
+      makeAiStatus({
+        claude: makeProviderConnection("claude", { runtimeDetected: false, authAvailable: false }),
       }),
-    }));
+    );
 
     render(<UsageQuotaPanel />);
 
-    expect(await screen.findByText("usage auth only")).toBeTruthy();
-    expect(screen.queryByText("sign-in required")).toBeNull();
+    // Codex card stays visible.
+    expect((await screen.findAllByText("Codex")).length).toBeGreaterThan(0);
+    // Claude card is hidden when the CLI is not installed.
+    expect(screen.queryByText("Claude")).toBeNull();
   });
 
-  it("keeps the empty-window warning hidden when Cursor extra usage exists", async () => {
-    const snapshot: UsageSnapshot = {
-      ...makeSnapshot(),
-      windows: [],
-      extraUsage: [{
-        provider: "cursor",
-        isEnabled: true,
-        usedCreditsUsd: 12.5,
-        monthlyLimitUsd: 0,
-        utilization: null,
-        currency: "usd",
-      }],
-    };
-    vi.mocked(window.ade.usage.getSnapshot).mockResolvedValue(snapshot);
-    vi.mocked(window.ade.ai.getStatus).mockResolvedValue(makeAiStatus({
-      cursor: makeProviderConnection("cursor", {
-          authAvailable: true,
-          runtimeDetected: true,
-          runtimeAvailable: false,
-          usageAvailable: true,
+  it("dims the provider card when the CLI is installed but not signed in", async () => {
+    vi.mocked(window.ade.ai.getStatus).mockResolvedValue(
+      makeAiStatus({
+        claude: makeProviderConnection("claude", { runtimeDetected: true, authAvailable: false }),
       }),
-    }));
+    );
 
     render(<UsageQuotaPanel />);
 
-    expect(await screen.findByText("Cursor monthly spend")).toBeTruthy();
-    expect(screen.queryByText(/Restart ADE/)).toBeNull();
+    expect(await screen.findByText("Not signed in")).toBeTruthy();
+    // The weekly bar is not rendered for the unauthed provider.
+    expect(screen.queryByText("20.0% used")).toBeNull();
   });
 
-  it("keeps sign-in copy for non-Cursor auth failures", async () => {
-    vi.mocked(window.ade.ai.getStatus).mockResolvedValue(makeAiStatus({
-      claude: makeProviderConnection("claude", {
-          authAvailable: true,
-          runtimeDetected: true,
-          runtimeAvailable: false,
-          usageAvailable: false,
-          blocker: "Claude runtime reported that login is still required.",
-      }),
-    }));
-
+  it("never renders a Cursor section", async () => {
     render(<UsageQuotaPanel />);
 
-    expect(await screen.findByText("sign-in required")).toBeTruthy();
-    expect(screen.queryByText("usage auth only")).toBeNull();
+    await waitFor(() => {
+      expect(window.ade.usage.refresh).toHaveBeenCalled();
+    });
+    expect(screen.queryByText("Cursor")).toBeNull();
+    expect(screen.queryByText(/Cursor not detected/i)).toBeNull();
   });
 });

@@ -11,6 +11,7 @@ type HarnessPermissionMode = "plan" | "edit" | "full-auto";
  */
 export type AdeRuntimeKind =
   | "claude-agent-sdk-query"
+  | "codex-app-server"
   | "codex-cli"
   | "cursor-sdk"
   | "droid-acp"
@@ -27,6 +28,11 @@ function describeRuntime(runtime: AdeRuntimeKind): string[] {
     case "codex-cli":
       return [
         "**Runtime:** ADE Work chat wrapping the Codex CLI as a subprocess. Your turns are driven through the Codex agent loop, but the orchestration host is ADE — slash commands, attachments, and lane scoping come from ADE.",
+        "**Wake-up semantics:** No autonomous wake from ADE. If you need to wait, prefer `sleep ... && <one-shot command>` so the shell holds the wait without burning model tokens, then resume reasoning when the command produces output.",
+      ];
+    case "codex-app-server":
+      return [
+        "**Runtime:** ADE Work chat hosted on the Codex app-server protocol. Your turns are driven through Codex app-server JSON-RPC, while the orchestration host is ADE — slash commands, attachments, and lane scoping come from ADE.",
         "**Wake-up semantics:** No autonomous wake from ADE. If you need to wait, prefer `sleep ... && <one-shot command>` so the shell holds the wait without burning model tokens, then resume reasoning when the command produces output.",
       ];
     case "cursor-sdk":
@@ -146,7 +152,7 @@ export function buildCodingAgentSystemPrompt(args: {
       ? `Available tools: ${toolNames.join(", ")}.`
       : "Use the available tools deliberately and only when they move the task forward.",
     ...(guardedLocalReadOnly
-      ? runtime === "codex-cli"
+      ? runtime === "codex-cli" || runtime === "codex-app-server"
         ? [
             interactive
               ? "Native Codex Plan Mode controls planning and approval. Preserve that built-in flow: stay read-only, use request_user_input for important clarifications when needed, and publish the final plan through Codex's proposed-plan mechanism."

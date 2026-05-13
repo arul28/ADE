@@ -1,15 +1,8 @@
 import path from "node:path";
-import { getModelById } from "../../../desktop/src/shared/modelRegistry";
-import type { AgentChatEventEnvelope, AgentChatProvider, AgentChatSessionSummary } from "../../../desktop/src/shared/types/chat";
+import type { AgentChatEventEnvelope, AgentChatSessionSummary } from "../../../desktop/src/shared/types/chat";
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
 import { glyphFor } from "./theme";
 import type { LocalNotice } from "./types";
-
-function timeLabel(value: string): string {
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "--:--";
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
 
 function singleLine(value: unknown, max = 96): string {
   const text = (() => {
@@ -72,7 +65,48 @@ export type AssistantMarkdownBlock =
   | { kind: "numbered"; number: string; text: string }
   | { kind: "quote"; text: string }
   | { kind: "code"; language?: string; lines: string[] }
+  | { kind: "table"; headers: string[]; rows: string[][] }
   | { kind: "hr" };
+
+export type InlineRun = {
+  text: string;
+  bold?: boolean;
+  italic?: boolean;
+  code?: boolean;
+  link?: boolean;
+  color?: string;
+  dim?: boolean;
+};
+
+const INLINE_TOKEN_RE = /(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|(__[^_\n]+__)|(\*[^*\s][^*\n]*\*)|(_[^_\s][^_\n]*_)|(\[[^\]\n]+\]\([^)\n]+\))/;
+
+export function parseInlineRuns(text: string): InlineRun[] {
+  const runs: InlineRun[] = [];
+  let remaining = text;
+  while (remaining.length) {
+    const match = INLINE_TOKEN_RE.exec(remaining);
+    if (!match) {
+      runs.push({ text: remaining });
+      break;
+    }
+    const start = match.index;
+    if (start > 0) runs.push({ text: remaining.slice(0, start) });
+    const token = match[0];
+    if (match[1]) {
+      runs.push({ text: token.slice(1, -1), code: true });
+    } else if (match[2] || match[3]) {
+      runs.push({ text: token.slice(2, -2), bold: true });
+    } else if (match[4] || match[5]) {
+      runs.push({ text: token.slice(1, -1), italic: true });
+    } else if (match[6]) {
+      const linkMatch = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(token);
+      runs.push({ text: linkMatch?.[1] ?? token, link: true });
+    }
+    remaining = remaining.slice(start + token.length);
+  }
+  if (!runs.length) runs.push({ text });
+  return runs;
+}
 
 export function chatEventLineId(envelope: AgentChatEventEnvelope, index = 0): string {
   return `${envelope.sequence ?? index}:${envelope.event.type}:${envelope.timestamp}`;
@@ -86,26 +120,10 @@ function isFailedExpandableEvent(envelope: AgentChatEventEnvelope): boolean {
   return false;
 }
 
-function providerEventLabel(provider: AgentChatProvider | null | undefined): string {
-  if (provider === "claude") return "Claude";
-  if (provider === "codex") return "Codex";
-  if (provider === "opencode") return "OpenCode";
-  if (provider === "cursor") return "Cursor";
-  if (provider === "droid") return "Droid";
-  return "ADE";
-}
-
-function stripTerminalCodes(value: string): string {
-  return value
-    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/\[[0-9;]*m\]?/g, "")
-    .trim();
-}
-
-function sessionModelLabel(session: AgentChatSessionSummary | null): string {
-  const descriptor = session?.modelId ? getModelById(session.modelId) : undefined;
-  if (descriptor) return descriptor.displayName;
-  return stripTerminalCodes(session?.model ?? "") || "model";
+function statusGlyph(status: string | undefined): string {
+  if (status === "running") return "…";
+  if (status === "failed") return "x";
+  return "✓";
 }
 
 function multiLine(value: unknown, maxLines = 18): string {
@@ -166,6 +184,31 @@ export function parseAssistantMarkdown(text: string): AssistantMarkdownBlock[] {
       flushParagraph();
       blocks.push({ kind: "heading", level: heading[1]?.length ?? 1, text: heading[2]?.trim() ?? "" });
       continue;
+    }
+
+    if (trimmed.startsWith("|") && trimmed.endsWith("|")) {
+      const next = sourceLines[index + 1]?.trim() ?? "";
+      const isSeparator = /^\|[\s:|-]+\|$/.test(next) && /-/.test(next);
+      if (isSeparator) {
+        const parseRow = (raw: string): string[] => raw
+          .replace(/^\|/, "")
+          .replace(/\|$/, "")
+          .split("|")
+          .map((cell) => cell.trim());
+        const headers = parseRow(trimmed);
+        const bodyRows: string[][] = [];
+        index += 2;
+        while (index < sourceLines.length) {
+          const candidate = sourceLines[index]?.trim() ?? "";
+          if (!candidate.startsWith("|") || !candidate.endsWith("|")) break;
+          bodyRows.push(parseRow(candidate));
+          index += 1;
+        }
+        index -= 1;
+        flushParagraph();
+        blocks.push({ kind: "table", headers, rows: bodyRows });
+        continue;
+      }
     }
 
     if (/^([-*_])(?:\s*\1){2,}\s*$/.test(trimmed)) {
@@ -247,13 +290,25 @@ export function renderChatLines(args: {
     return a.index - b.index;
   });
 
+  const pushLine = (line: RenderedChatLine): void => {
+    const last = lines[lines.length - 1];
+    if (
+      last
+      && last.tone === line.tone
+      && last.body === line.body
+      && (last.header ?? null) === (line.header ?? null)
+    ) {
+      return;
+    }
+    lines.push(line);
+  };
+
   for (const entry of timeline) {
     if (entry.kind === "notice") {
       const notice = entry.notice;
-      lines.push({
+      pushLine({
         id: notice.id,
         tone: notice.tone === "error" ? "error" : "notice",
-        header: `ADE Code · ${timeLabel(notice.timestamp)}`,
         body: notice.text,
       });
       continue;
@@ -267,7 +322,6 @@ export function renderChatLines(args: {
       lines.push({
         id,
         tone: "user",
-        header: `you · ${timeLabel(envelope.timestamp)}`,
         body: event.displayText ?? event.text,
       });
       continue;
@@ -276,7 +330,6 @@ export function renderChatLines(args: {
       lines.push({
         id,
         tone: "assistant",
-        header: `${providerEventLabel(args.activeSession?.provider)} · ${timeLabel(envelope.timestamp)} · ${sessionModelLabel(args.activeSession)}`,
         body: event.text,
         blocks: parseAssistantMarkdown(event.text),
       });
@@ -346,8 +399,7 @@ export function renderChatLines(args: {
       continue;
     }
     if (event.type === "web_search") {
-      const statusGlyph = event.status === "running" ? "…" : event.status === "failed" ? "x" : "✓";
-      const head = `${statusGlyph} web ${singleLine(event.query, 96)}`;
+      const head = `${statusGlyph(event.status)} web ${singleLine(event.query, 96)}`;
       const actionLines = event.actions?.length
         ? event.actions.map((action) => {
           const kind = action.type || "action";
@@ -370,7 +422,7 @@ export function renderChatLines(args: {
       lines.push({
         id,
         tone: event.status === "failed" ? "error" : "tool",
-        body: `${event.status === "running" ? "…" : event.status === "failed" ? "x" : "✓"} ${isGeneration ? "image generated" : "image"}  ${singleLine(title, 120)}`,
+        body: `${statusGlyph(event.status)} ${isGeneration ? "image generated" : "image"}  ${singleLine(title, 120)}`,
       });
       continue;
     }
@@ -414,9 +466,9 @@ export function renderChatLines(args: {
       continue;
     }
     if (event.type === "status") {
-      const tone = event.turnStatus === "failed"
-        ? "error" as const
-        : event.turnStatus === "interrupted" ? "error" as const : "notice" as const;
+      const tone: "error" | "notice" = event.turnStatus === "failed" || event.turnStatus === "interrupted"
+        ? "error"
+        : "notice";
       lines.push({ id, tone, body: `[status] ${event.turnStatus}${event.message ? ` · ${singleLine(event.message, 120)}` : ""}` });
       continue;
     }
@@ -532,25 +584,32 @@ export function renderChatLines(args: {
       continue;
     }
     if (event.type === "system_notice") {
-      // Surface severity-bearing notices with an error tone while keeping
-      // non-blocking telemetry, including allowed Claude rate-limit events,
-      // in the normal notice channel.
       const noticeKind = (event as { noticeKind?: string }).noticeKind;
       const severity = (event as { severity?: string }).severity;
+      const message = singleLine((event as { message?: unknown }).message, 160);
+      const normalizedMessage = message.trim().toLowerCase();
+      if (!normalizedMessage) continue;
+      if (noticeKind === "info" && normalizedMessage === "session ready") continue;
+      if (noticeKind === "hook" && /^hook:\s+.+\s+started$/i.test(message)) continue;
+
+      // Surface the severity-bearing noticeKinds with an error tone so the TUI
+      // colorizes them distinctively. Guardian warnings, rate limits, thread
+      // errors, and provider health issues map to `tone: "error"`; warnings and
+      // config issues keep the default notice tone.
       const tone: "notice" | "error" = severity === "error"
         || (!severity && (
           noticeKind === "error"
+          || noticeKind === "rate_limit"
           || noticeKind === "thread_error"
           || noticeKind === "provider_health"
-          || noticeKind === "rate_limit"
+          || (noticeKind === "auth" && /\b(?:fail|failed|error|invalid|expired|denied)\b/i.test(message))
         ))
         ? "error"
         : "notice";
-      lines.push({
+      pushLine({
         id,
         tone,
-        header: `${providerEventLabel(args.activeSession?.provider)} · ${timeLabel(envelope.timestamp)}`,
-        body: singleLine((event as { message?: unknown }).message, 160),
+        body: message,
       });
       continue;
     }

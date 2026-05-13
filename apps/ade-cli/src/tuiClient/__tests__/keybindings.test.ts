@@ -36,13 +36,14 @@ describe("keybindings", () => {
   it("dispatches context bindings with Global fallback", () => {
     const diagnostics = validateClaudeKeybindingsConfig({
       bindings: [
-        { context: "Global", bindings: { "ctrl+p": "pane:toggle" } },
+        { context: "Global", bindings: { "ctrl+p": "pane:toggle", "ctrl+a": "pane:agents" } },
         { context: "Chat", bindings: { "up": "history:previous", "ctrl+g": "chat:externalEditor" } },
       ],
     });
 
     expect(dispatchKeybinding(diagnostics.bindings, "Chat", "", { upArrow: true })).toBe("history:previous");
     expect(dispatchKeybinding(diagnostics.bindings, "Chat", "p", { ctrl: true })).toBe("pane:toggle");
+    expect(dispatchKeybinding(diagnostics.bindings, "Chat", "a", { ctrl: true })).toBe("pane:agents");
     expect(dispatchKeybinding(diagnostics.bindings, "Chat", "g", { ctrl: true })).toBe("chat:externalEditor");
     expect(dispatchKeybinding(diagnostics.bindings, "Help", "", { upArrow: true })).toBeUndefined();
   });

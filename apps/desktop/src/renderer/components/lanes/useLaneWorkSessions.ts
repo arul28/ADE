@@ -29,6 +29,8 @@ const EMPTY_WORK_STATE: WorkProjectViewState = {
   workSidebarOpen: false,
   workSidebarTab: "git",
   workSidebarWidthPct: 36,
+  laneSessionOrder: {},
+  pinnedSessionIds: [],
 };
 
 type QueuedRefresh = {

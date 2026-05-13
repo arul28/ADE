@@ -57,6 +57,18 @@ describe("resolveDrawerChatSelection", () => {
     })).toBeNull();
   });
 
+  it("keeps the selected new-chat row as a preview before a draft starts", () => {
+    expect(resolveDrawerChatSelection({
+      activeLaneId: "lane-1",
+      activeSessionId: null,
+      draftChatActive: false,
+      drawerLaneId: "lane-1",
+      drawerVisibleLaneSessions: [session("chat-1")],
+      selectedDrawerChatAction: "new-chat",
+      selectedDrawerChatId: null,
+    })).toBeNull();
+  });
+
   it("snaps stale new-chat selection back to the active visible chat", () => {
     expect(resolveDrawerChatSelection({
       activeLaneId: "lane-1",

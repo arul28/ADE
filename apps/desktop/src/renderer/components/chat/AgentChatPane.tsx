@@ -3594,15 +3594,19 @@ export function AgentChatPane({
     optimisticOutgoingMessageRef.current = optimisticOutgoingMessage;
   }, [optimisticOutgoingMessage]);
 
-  // Fetch SDK slash commands when session changes
+  // Fetch provider slash commands when session, lane, or draft provider changes.
   useEffect(() => {
-    if (!selectedSessionId || !isTileActive) { setSdkSlashCommands([]); return; }
+    if (!isTileActive) { setSdkSlashCommands([]); return; }
+    if (!selectedSessionId && !laneId) { setSdkSlashCommands([]); return; }
     let cancelled = false;
-    window.ade.agentChat.slashCommands({ sessionId: selectedSessionId })
+    const args = selectedSessionId
+      ? { sessionId: selectedSessionId }
+      : { laneId, provider: sessionProvider };
+    window.ade.agentChat.slashCommands(args)
       .then((cmds) => { if (!cancelled) setSdkSlashCommands(cmds); })
       .catch(() => { if (!cancelled) setSdkSlashCommands([]); });
     return () => { cancelled = true; };
-  }, [isTileActive, selectedSessionId]);
+  }, [isTileActive, laneId, selectedSessionId, sessionProvider]);
 
   // Fetch git diff stats when the session changes or a turn completes
   useEffect(() => {

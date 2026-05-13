@@ -1,0 +1,271 @@
+import React from "react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { render } from "ink-testing-library";
+import type { AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
+import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
+import { Drawer } from "../components/Drawer";
+
+function stripAnsi(text: string): string {
+  return text.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
+}
+
+function lane(id: string, name: string, branchRef: string, createdAt: string, ahead = 0, behind = 0, laneType: LaneSummary["laneType"] = "worktree"): LaneSummary {
+  return {
+    id,
+    name,
+    laneType,
+    baseRef: "main",
+    branchRef,
+    worktreePath: `/tmp/${id}`,
+    parentLaneId: null,
+    childCount: 0,
+    stackDepth: 0,
+    parentStatus: null,
+    isEditProtected: false,
+    status: {
+      dirty: ahead > 0 || behind > 0,
+      ahead,
+      behind,
+      remoteBehind: 0,
+      rebaseInProgress: false,
+    },
+    color: null,
+    icon: null,
+    tags: [],
+    createdAt,
+  };
+}
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+describe("Drawer diff stats", () => {
+  it("renders per-lane diff stats from line stats, not ahead/behind commits", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-12T12:00:00.000Z"));
+
+    const frame = stripAnsi(render(
+      <Drawer
+        lanes={[
+          lane("lane-1", "TUI", "feat", "2026-05-12T11:55:00.000Z", 99, 88),
+          lane("lane-2", "Drawer", "draw", "2026-05-12T11:57:00.000Z", 42, 24),
+        ]}
+        sessions={[]}
+        activeLaneId="lane-1"
+        activeSessionId={null}
+        browsingLaneId="lane-1"
+        selectedLaneIndex={0}
+        selectedChatIndex={-1}
+        panelHeight={30}
+        diffByLaneId={{
+          "lane-1": { additions: 64, deletions: 18, files: 5 },
+          "lane-2": { additions: 428, deletions: 112, files: 6 },
+        }}
+      />,
+    ).lastFrame() ?? "");
+
+    expect(frame).toContain("+64");
+    expect(frame).toContain("−18");
+    expect(frame).toContain("5m");
+    expect(frame).toContain("+428");
+    expect(frame).toContain("−112");
+    expect(frame).not.toContain("+492");
+    expect(frame).not.toContain("−130");
+    expect(frame).not.toContain("+141 / −112");
+    expect(frame).not.toContain("-18");
+  });
+});
+
+describe("Drawer lane and chat navigation layout", () => {
+  it("puts the primary lane first and removes old header/footer controls", () => {
+    const frame = stripAnsi(render(
+      <Drawer
+        lanes={[
+          lane("lane-2", "Work lane", "feature/work", "2026-05-12T11:57:00.000Z"),
+          lane("primary", "Primary", "main", "2026-05-12T11:50:00.000Z", 0, 0, "primary"),
+        ]}
+        sessions={[]}
+        activeLaneId="primary"
+        activeSessionId={null}
+        browsingLaneId="primary"
+        selectedLaneIndex={0}
+        selectedChatIndex={-1}
+        panelHeight={30}
+      />,
+    ).lastFrame() ?? "");
+
+    expect(frame.indexOf("Primary")).toBeLessThan(frame.indexOf("Work lane"));
+    expect(frame).not.toContain("new / filter");
+    expect(frame).not.toContain(" run ");
+    expect(frame).not.toContain(" wait ");
+    expect(frame).not.toContain("↑↓ view");
+    expect(frame).not.toContain("↵ open");
+    expect(frame).toContain("+ new lane");
+  });
+
+  it("shows an indented chat group with new chat at the bottom only in chat mode", () => {
+    const sessions: AgentChatSessionSummary[] = [
+      {
+        sessionId: "chat-1",
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        title: "First chat",
+        status: "idle",
+        startedAt: "2026-05-12T11:30:00.000Z",
+        endedAt: null,
+        lastActivityAt: "2026-05-12T11:31:00.000Z",
+        lastOutputPreview: null,
+        summary: null,
+      },
+    ];
+
+    const baseProps = {
+      lanes: [lane("lane-1", "Feature", "feature/chat-nav", "2026-05-12T11:55:00.000Z")],
+      sessions,
+      activeLaneId: "lane-1",
+      activeSessionId: "chat-1",
+      browsingLaneId: "lane-1",
+      selectedLaneIndex: 0,
+      panelHeight: 30,
+    };
+
+    const laneModeFrame = stripAnsi(render(
+      <Drawer {...baseProps} selectedChatIndex={-1} mode="lanes" focused />,
+    ).lastFrame() ?? "");
+    const chatModeFrame = stripAnsi(render(
+      <Drawer {...baseProps} selectedLaneIndex={-1} selectedChatIndex={1} mode="chats" focused />,
+    ).lastFrame() ?? "");
+
+    expect(laneModeFrame).not.toContain("First chat");
+    expect(chatModeFrame).toContain("CHATS · 1");
+    expect(chatModeFrame.indexOf("First chat")).toBeLessThan(chatModeFrame.indexOf("+ new chat"));
+    expect(chatModeFrame).not.toContain("^N");
+    expect(chatModeFrame).toContain("Esc back to lanes");
+  });
+
+  it("does not offer a new chat action for a missing lane worktree", () => {
+    const frame = stripAnsi(render(
+      <Drawer
+        lanes={[lane("missing", "ui audit lane 1", "ade/ui-audit-lane-1", "2026-05-12T11:55:00.000Z")]}
+        sessions={[]}
+        activeLaneId="missing"
+        activeSessionId={null}
+        browsingLaneId="missing"
+        selectedLaneIndex={0}
+        selectedChatIndex={0}
+        panelHeight={30}
+        mode="chats"
+        focused
+        unavailableLaneIds={new Set(["missing"])}
+      />,
+    ).lastFrame() ?? "");
+
+    expect(frame).toContain("miss");
+    expect(frame).toContain("CHATS · unavailable");
+    expect(frame).toContain("worktree missing");
+    expect(frame).toContain("lane unavailable");
+    expect(frame).not.toContain("+ new chat");
+  });
+});
+
+describe("Drawer PR pill", () => {
+  it("renders open PR number and check counts inline", () => {
+    const frame = stripAnsi(render(
+      <Drawer
+        lanes={[lane("lane-1", "opt prs tab", "ade/opt-prs-tab", "2026-05-12T11:55:00.000Z")]}
+        sessions={[]}
+        activeLaneId={null}
+        activeSessionId={null}
+        browsingLaneId={null}
+        selectedLaneIndex={0}
+        selectedChatIndex={-1}
+        panelHeight={20}
+        prByLaneId={{
+          "lane-1": { number: 168, state: "open", checksPassed: 4, checksTotal: 6 },
+        }}
+      />,
+    ).lastFrame() ?? "");
+
+    expect(frame).toContain("[#168 ·4/6]");
+  });
+
+  it("does not render closed or merged PR pills", () => {
+    for (const state of ["closed", "merged"] as const) {
+      const frame = stripAnsi(render(
+        <Drawer
+          lanes={[lane("lane-1", "opt prs tab", "ade/opt-prs-tab", "2026-05-12T11:55:00.000Z")]}
+          sessions={[]}
+          activeLaneId={null}
+          activeSessionId={null}
+          browsingLaneId={null}
+          selectedLaneIndex={0}
+          selectedChatIndex={-1}
+          panelHeight={20}
+          prByLaneId={{
+            "lane-1": { number: 168, state, checksPassed: 4, checksTotal: 6 },
+          }}
+        />,
+      ).lastFrame() ?? "");
+
+      expect(frame).not.toContain("[#168");
+    }
+  });
+
+  it("skips the pill in mini drawer density", () => {
+    const frame = stripAnsi(render(
+      <Drawer
+        lanes={[lane("lane-1", "opt prs tab", "ade/opt-prs-tab", "2026-05-12T11:55:00.000Z")]}
+        sessions={[]}
+        activeLaneId={null}
+        activeSessionId={null}
+        browsingLaneId={null}
+        selectedLaneIndex={0}
+        selectedChatIndex={-1}
+        panelHeight={20}
+        density="mini"
+        prByLaneId={{
+          "lane-1": { number: 168, state: "open", checksPassed: 4, checksTotal: 6 },
+        }}
+      />,
+    ).lastFrame() ?? "");
+
+    expect(frame).not.toContain("[#168");
+  });
+});
+
+describe("Drawer active chat indicator", () => {
+  it("uses a spinning frame for active chats", () => {
+    const activeSession: AgentChatSessionSummary = {
+      sessionId: "chat-1",
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.5",
+      title: "Implement polish",
+      status: "active",
+      startedAt: "2026-05-12T12:00:00.000Z",
+      endedAt: null,
+      lastActivityAt: "2026-05-12T12:00:00.000Z",
+      lastOutputPreview: null,
+      summary: null,
+    };
+
+    const frame = stripAnsi(render(
+      <Drawer
+        lanes={[lane("lane-1", "feature", "feature/spinner", "2026-05-12T12:00:00.000Z")]}
+        sessions={[activeSession]}
+        activeLaneId="lane-1"
+        activeSessionId="chat-1"
+        browsingLaneId="lane-1"
+        selectedLaneIndex={0}
+        selectedChatIndex={0}
+        panelHeight={40}
+        mode="chats"
+        focused
+      />,
+    ).lastFrame() ?? "");
+
+    expect(frame).toMatch(/[◐◓◑◒] now/);
+  });
+});

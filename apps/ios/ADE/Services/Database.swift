@@ -2828,6 +2828,42 @@ final class DatabaseService {
     ) ?? false
   }
 
+  func upsertMobileProjectCache(_ project: MobileProjectSummary) throws {
+    guard db != nil else { return }
+    guard let rootPath = normalizedProjectCacheRoot(project.rootPath) else {
+      throw sqliteError(SyncHydrationMessaging.waitingForProjectData)
+    }
+
+    let now = ISO8601DateFormatter().string(from: Date())
+    let displayName = nonEmpty(project.displayName)
+      ?? rootPath.split(separator: "/").last.map(String.init)
+      ?? "Project"
+    let defaultBaseRef = nonEmpty(project.defaultBaseRef) ?? "main"
+    let lastOpenedAt = nonEmpty(project.lastOpenedAt) ?? now
+
+    shouldCaptureLocalChanges = false
+    defer { shouldCaptureLocalChanges = true }
+
+    _ = try execute("""
+      insert into projects (
+        id, root_path, display_name, default_base_ref, created_at, last_opened_at
+      ) values (?, ?, ?, ?, ?, ?)
+      on conflict(id) do update set
+        root_path = excluded.root_path,
+        display_name = excluded.display_name,
+        default_base_ref = excluded.default_base_ref,
+        last_opened_at = excluded.last_opened_at
+    """) { statement in
+      try bindText(project.id, to: statement, index: 1)
+      try bindText(rootPath, to: statement, index: 2)
+      try bindText(displayName, to: statement, index: 3)
+      try bindText(defaultBaseRef, to: statement, index: 4)
+      try bindText(now, to: statement, index: 5)
+      try bindText(lastOpenedAt, to: statement, index: 6)
+    }
+    notifyDidChange()
+  }
+
   func listMobileProjects() -> [MobileProjectSummary] {
     guard hasTable(named: "projects") else { return [] }
 
@@ -2875,6 +2911,21 @@ final class DatabaseService {
 
   private func projectCount() -> Int {
     Int(queryInt64("select count(*) from projects") ?? 0)
+  }
+
+  private func nonEmpty(_ value: String?) -> String? {
+    guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !trimmed.isEmpty
+    else { return nil }
+    return trimmed
+  }
+
+  private func normalizedProjectCacheRoot(_ rootPath: String?) -> String? {
+    guard var root = nonEmpty(rootPath) else { return nil }
+    while root.count > 1, root.hasSuffix("/") {
+      root.removeLast()
+    }
+    return root
   }
 
   private func hasTable(named tableName: String) -> Bool {

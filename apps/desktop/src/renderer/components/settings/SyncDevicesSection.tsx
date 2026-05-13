@@ -270,7 +270,11 @@ export function SyncDevicesSection() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-      <StatusBar connected={peerCount > 0} peerCount={peerCount} />
+      <StatusBar
+        connected={peerCount > 0}
+        peerCount={peerCount}
+        ready={isPhoneSyncReady(status)}
+      />
 
       {isLocalHost ? (
         <PairPhoneCard
@@ -334,11 +338,31 @@ export function SyncDevicesSection() {
   );
 }
 
-function StatusBar({ connected, peerCount }: { connected: boolean; peerCount: number }) {
-  const dotColor = connected ? COLORS.accent : COLORS.textMuted;
+function isPhoneSyncReady(status: SyncRoleSnapshot): boolean {
+  const unavailableReason = typeof status.localDevice.metadata?.unavailableReason === "string"
+    ? status.localDevice.metadata.unavailableReason
+    : null;
+  if (
+    unavailableReason === "local_runtime_daemon_disabled"
+    || status.localDevice.deviceId === "local-runtime-disabled"
+  ) {
+    return false;
+  }
+  return status.role === "brain" && Boolean(status.pairingConnectInfo);
+}
+
+function StatusBar({ connected, peerCount, ready }: { connected: boolean; peerCount: number; ready: boolean }) {
+  let dotColor: string;
+  if (connected) {
+    dotColor = COLORS.accent;
+  } else if (ready) {
+    dotColor = COLORS.textMuted;
+  } else {
+    dotColor = COLORS.warning;
+  }
   let label: string;
   if (!connected) {
-    label = "offline - no phones connected";
+    label = ready ? "Ready - no phones connected" : "Unavailable";
   } else if (peerCount === 1) {
     label = "Connected";
   } else {
@@ -560,10 +584,18 @@ function PairPhoneCard({
         Pair a phone
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(240px, 1.15fr) minmax(220px, 0.85fr)", gap: 18, alignItems: "start" }}>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "minmax(0, 1fr)",
+          gap: 16,
+          alignItems: "start",
+          minWidth: 0,
+        }}
+      >
         <div style={{ ...panelStyle, gap: 10 }}>
           <div style={LABEL_STYLE}>Runtime address</div>
-          <div style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT, fontSize: 15, overflowWrap: "anywhere" }}>
+          <div style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT, fontSize: 15, overflowWrap: "break-word" }}>
             {primaryEndpoint}
           </div>
           <div style={helperTextStyle}>
@@ -638,7 +670,7 @@ function EndpointList({ connectInfo }: { connectInfo: SyncPairingConnectInfo | n
           <span style={tagStyle(candidate.kind === "tailscale" ? COLORS.success : COLORS.textMuted)}>
             {addressKindLabel(candidate.kind)}
           </span>
-          <span style={{ ...codeValueStyle, overflowWrap: "anywhere" }}>
+          <span style={{ ...codeValueStyle, overflowWrap: "break-word" }}>
             {formatEndpoint(candidate.host, connectInfo?.port ?? 8787)}
           </span>
         </div>

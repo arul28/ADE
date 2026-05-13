@@ -7,7 +7,7 @@ import { writeTextAtomic } from "../shared/utils";
 
 const MAX_ANCESTOR_DEPTH = 25;
 const MAX_PLUGIN_DEPTH = 6;
-const CLAUDE_MANAGED_PLUGIN_DIRS = new Set(["cache", "marketplaces"]);
+const CLAUDE_MANAGED_PLUGIN_DIRS = new Set(["cache", "data", "marketplaces"]);
 
 export const CLAUDE_BUILT_IN_OUTPUT_STYLES: AgentChatClaudeOutputStyle[] = [
   {
@@ -44,8 +44,8 @@ type ClaudePluginManifest = {
 };
 
 type ClaudeSettingsLocal = Record<string, unknown> & {
-  enabledPlugins?: unknown;
   outputStyle?: unknown;
+  enabledPlugins?: unknown;
 };
 
 type ClaudeInstalledPluginEntry = Record<string, unknown> & {
@@ -73,19 +73,8 @@ function maybeString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
-function maybeRecord(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : undefined;
-}
-
-function readJsonObject(filePath: string): Record<string, unknown> {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
-    return maybeRecord(parsed) ?? {};
-  } catch {
-    return {};
-  }
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function styleKey(value: string): string {
@@ -105,15 +94,95 @@ function realpathOrResolve(targetPath: string): string {
   }
 }
 
-function isSamePathOrDescendant(candidatePath: string, ancestorPath: string): boolean {
-  const relative = path.relative(ancestorPath, candidatePath);
-  return relative === "" || (!!relative && !relative.startsWith("..") && !path.isAbsolute(relative));
+function readJsonObject(filePath: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
-function pathsOverlap(firstPath: string, secondPath: string): boolean {
-  const first = realpathOrResolve(firstPath);
-  const second = realpathOrResolve(secondPath);
-  return isSamePathOrDescendant(first, second) || isSamePathOrDescendant(second, first);
+function isEnabledPluginSetting(value: unknown): boolean {
+  if (value === false || value === null || value === undefined) return false;
+  if (isRecord(value) && value.enabled === false) return false;
+  return true;
+}
+
+function pluginKeyName(pluginKey: string): string {
+  return pluginKey.split("@", 1)[0]?.trim().toLowerCase() ?? "";
+}
+
+function enabledPluginStateFromFile(filePath: string): Map<string, boolean> {
+  const parsed = readJsonObject(filePath);
+  const enabledPlugins = isRecord(parsed?.enabledPlugins) ? parsed.enabledPlugins : null;
+  const states = new Map<string, boolean>();
+  if (!enabledPlugins) return states;
+  for (const [key, value] of Object.entries(enabledPlugins)) {
+    states.set(key, isEnabledPluginSetting(value));
+  }
+  return states;
+}
+
+function enabledPluginKeysForRoots(roots: string[]): Set<string> {
+  const states = new Map<string, boolean>();
+  for (const root of [...roots].reverse()) {
+    for (const fileName of ["settings.json", "settings.local.json"]) {
+      for (const [key, enabled] of enabledPluginStateFromFile(path.join(root, fileName))) {
+        states.set(key, enabled);
+      }
+    }
+  }
+  return new Set([...states.entries()]
+    .filter(([, enabled]) => enabled)
+    .map(([key]) => key));
+}
+
+function enabledPluginNames(keys: Set<string>): Set<string> {
+  return new Set([...keys].map(pluginKeyName).filter(Boolean));
+}
+
+function readPluginManifest(pluginRoot: string): ClaudePluginManifest {
+  const parsed = readJsonObject(path.join(pluginRoot, ".claude-plugin", "plugin.json"));
+  return parsed ?? {};
+}
+
+function pathsOverlap(left: string, right: string): boolean {
+  const leftPath = realpathOrResolve(left);
+  const rightPath = realpathOrResolve(right);
+  return (
+    leftPath === rightPath
+    || leftPath.startsWith(`${rightPath}${path.sep}`)
+    || rightPath.startsWith(`${leftPath}${path.sep}`)
+  );
+}
+
+function installedClaudePluginPaths(cwd: string, enabledKeys: Set<string>, enabledNames: Set<string>): string[] {
+  const registry = readJsonObject(path.join(os.homedir(), ".claude", "plugins", "installed_plugins.json"));
+  const plugins = isRecord(registry?.plugins) ? registry.plugins : null;
+  if (!plugins) return [];
+
+  const paths: string[] = [];
+  for (const [pluginKey, records] of Object.entries(plugins)) {
+    if (!enabledKeys.has(pluginKey) && !enabledNames.has(pluginKeyName(pluginKey))) continue;
+    if (!Array.isArray(records)) continue;
+    for (const record of records) {
+      if (!isRecord(record)) continue;
+      const entry = record as ClaudeInstalledPluginEntry;
+      const installPath = maybeString(entry.installPath) ?? maybeString(entry.path);
+      if (!installPath) continue;
+      const scope = maybeString(entry.scope) ?? "user";
+      const projectPath = maybeString(entry.projectPath);
+      const applies = scope === "user"
+        || !projectPath
+        || pathsOverlap(cwd, projectPath);
+      if (!applies) continue;
+      if (fs.existsSync(path.join(installPath, ".claude-plugin", "plugin.json"))) {
+        paths.push(realpathOrResolve(installPath));
+      }
+    }
+  }
+  return paths;
 }
 
 function ancestorClaudeRoots(cwd: string): string[] {
@@ -223,98 +292,13 @@ function discoverPluginRoots(pluginsDir: string): string[] {
   return roots;
 }
 
-function isEnabledPluginSetting(value: unknown): boolean {
-  if (value === false || value === null || value === undefined) return false;
-  if (maybeRecord(value)?.enabled === false) return false;
-  return true;
-}
-
-function claudeSettingsFilesByPrecedence(cwd: string): string[] {
-  const homeClaudeRoot = path.resolve(os.homedir(), ".claude");
-  const projectRoots = ancestorClaudeRoots(cwd)
-    .map((root) => path.resolve(root))
-    .filter((root) => root !== homeClaudeRoot)
-    .reverse();
-
-  return [
-    path.join(homeClaudeRoot, "settings.json"),
-    ...projectRoots.flatMap((root) => [
-      path.join(root, "settings.json"),
-      path.join(root, "settings.local.json"),
-    ]),
-  ];
-}
-
-function discoverEnabledClaudePluginIds(cwd: string): Set<string> {
-  const enabledByPluginId = new Map<string, boolean>();
-  for (const settingsPath of claudeSettingsFilesByPrecedence(cwd)) {
-    const enabledPlugins = maybeRecord(readJsonObject(settingsPath).enabledPlugins);
-    if (!enabledPlugins) continue;
-    for (const [pluginId, enabled] of Object.entries(enabledPlugins)) {
-      enabledByPluginId.set(pluginId, isEnabledPluginSetting(enabled));
-    }
-  }
-  return new Set(
-    [...enabledByPluginId.entries()]
-      .filter(([, enabled]) => enabled)
-      .map(([pluginId]) => pluginId),
-  );
-}
-
-function readClaudeInstalledPluginEntries(homeClaudeRoot: string): Map<string, ClaudeInstalledPluginEntry[]> {
-  const registry = readJsonObject(path.join(homeClaudeRoot, "plugins", "installed_plugins.json"));
-  const rawPlugins = maybeRecord(registry.plugins);
-  const entriesByPluginId = new Map<string, ClaudeInstalledPluginEntry[]>();
-  if (!rawPlugins) return entriesByPluginId;
-
-  for (const [pluginId, rawEntries] of Object.entries(rawPlugins)) {
-    const rawEntryList = Array.isArray(rawEntries) ? rawEntries : [rawEntries];
-    const entries = rawEntryList
-      .map((entry) => maybeRecord(entry))
-      .filter((entry): entry is ClaudeInstalledPluginEntry => !!entry);
-    if (entries.length) entriesByPluginId.set(pluginId, entries);
-  }
-
-  return entriesByPluginId;
-}
-
-function installedPluginEntryAppliesToCwd(entry: ClaudeInstalledPluginEntry, cwd: string): boolean {
-  const scope = maybeString(entry.scope);
-  if (!scope || scope === "user" || scope === "global") return true;
-
-  const projectPath = maybeString(entry.projectPath);
-  if (!projectPath) return false;
-  return pathsOverlap(cwd, projectPath);
-}
-
-function discoverEnabledInstalledPluginPaths(cwd: string): string[] {
-  const enabledPluginIds = discoverEnabledClaudePluginIds(cwd);
-  if (!enabledPluginIds.size) return [];
-
-  const homeClaudeRoot = path.resolve(os.homedir(), ".claude");
-  const installedPluginEntries = readClaudeInstalledPluginEntries(homeClaudeRoot);
-  const pluginPaths: string[] = [];
-  const seen = new Set<string>();
-
-  for (const pluginId of enabledPluginIds) {
-    for (const entry of installedPluginEntries.get(pluginId) ?? []) {
-      if (!installedPluginEntryAppliesToCwd(entry, cwd)) continue;
-      const installPath = maybeString(entry.installPath) ?? maybeString(entry.path);
-      if (!installPath || !fs.existsSync(path.join(installPath, ".claude-plugin", "plugin.json"))) continue;
-      const resolved = realpathOrResolve(installPath);
-      if (seen.has(resolved)) continue;
-      seen.add(resolved);
-      pluginPaths.push(resolved);
-    }
-  }
-
-  return pluginPaths;
-}
-
 export function discoverClaudePluginPaths(cwd: string): string[] {
   const roots = claudeRootsByPrecedence(cwd);
+  const enabledKeys = enabledPluginKeysForRoots(roots);
+  const enabledNames = enabledPluginNames(enabledKeys);
   const pluginPaths: string[] = [];
   const seen = new Set<string>();
+
   const addPluginPath = (pluginRoot: string): void => {
     const resolved = realpathOrResolve(pluginRoot);
     if (seen.has(resolved)) return;
@@ -322,24 +306,22 @@ export function discoverClaudePluginPaths(cwd: string): string[] {
     pluginPaths.push(resolved);
   };
 
+  for (const pluginRoot of installedClaudePluginPaths(cwd, enabledKeys, enabledNames)) {
+    addPluginPath(pluginRoot);
+  }
+
   for (const root of roots) {
     for (const pluginRoot of discoverPluginRoots(path.join(root, "plugins"))) {
       addPluginPath(pluginRoot);
     }
   }
-  for (const pluginRoot of discoverEnabledInstalledPluginPaths(cwd)) addPluginPath(pluginRoot);
+
   return pluginPaths;
 }
 
 export function discoverClaudePlugins(cwd: string): AgentChatClaudePlugin[] {
   return discoverClaudePluginPaths(cwd).map((pluginPath) => {
-    const manifestPath = path.join(pluginPath, ".claude-plugin", "plugin.json");
-    let manifest: ClaudePluginManifest = {};
-    try {
-      manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as ClaudePluginManifest;
-    } catch {
-      manifest = {};
-    }
+    const manifest = readPluginManifest(pluginPath);
     return {
       name: maybeString(manifest.name) ?? path.basename(pluginPath),
       path: pluginPath,

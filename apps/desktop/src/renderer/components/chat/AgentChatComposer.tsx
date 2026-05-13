@@ -136,6 +136,18 @@ type SlashCommandEntry = {
   source: "sdk" | "local";
 };
 
+type CommandMenuAnchor = { top: number; left: number; bottom: number };
+
+function getCommandMenuAnchor(element: HTMLElement | null): CommandMenuAnchor | null {
+  if (!element) return null;
+  const rect = element.getBoundingClientRect();
+  return {
+    top: rect.top,
+    bottom: rect.bottom,
+    left: rect.left + 16,
+  };
+}
+
 function iosMetadataRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
@@ -978,7 +990,7 @@ export function AgentChatComposer({
   const issueContextButtonRef = useRef<HTMLButtonElement | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const [commandMenuTrigger, setCommandMenuTrigger] = useState<{ type: "at" | "slash"; query: string; cursorIndex: number } | null>(null);
-  const [commandMenuAnchor, setCommandMenuAnchor] = useState<{ top: number; left: number } | null>(null);
+  const [commandMenuAnchor, setCommandMenuAnchor] = useState<CommandMenuAnchor | null>(null);
   const commandMenuRef = useRef<ChatCommandMenuHandle | null>(null);
 
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
@@ -2382,14 +2394,14 @@ export function AgentChatComposer({
     if (!editor) return;
     const val = serializeRichEditor();
     onDraftChange(val);
-    const rect = editor.getBoundingClientRect();
+    const anchor = getCommandMenuAnchor(editor);
 
     if (val.startsWith("/") && !val.slice(1).includes("\n")) {
       const afterSlash = val.slice(1);
       if (!/\s/.test(afterSlash)) {
         const query = afterSlash.match(/^[^\s/]*/)?.[0] ?? "";
         setCommandMenuTrigger({ type: "slash", query, cursorIndex: 0 });
-        setCommandMenuAnchor({ top: rect.top - 8, left: rect.left + 16 });
+        if (anchor) setCommandMenuAnchor(anchor);
         captureRichSelection();
         return;
       }
@@ -2403,7 +2415,7 @@ export function AgentChatComposer({
     const atMatch = textBeforeCursor.match(/@([^\s@]*)$/);
     if (atMatch) {
       setCommandMenuTrigger({ type: "at", query: atMatch[1], cursorIndex: cursorPos - atMatch[0].length });
-      setCommandMenuAnchor({ top: rect.top - 8, left: rect.left + 16 });
+      if (anchor) setCommandMenuAnchor(anchor);
     } else {
       setCommandMenuTrigger(null);
     }
@@ -3296,13 +3308,13 @@ export function AgentChatComposer({
                   const currentDraft = useRichComposer ? serializeRichEditor() : el?.value ?? "";
                   if (!currentDraft.length) onDraftChange("/");
                   if (useRichComposer && !currentDraft.length) setRichEditorText("/");
-                  const rect = (useRichComposer ? richEl : el)?.getBoundingClientRect();
                   setCommandMenuTrigger({
                     type: "slash",
                     query: currentDraft.startsWith("/") ? currentDraft.slice(1).match(/^[^\s/]*/)?.[0] ?? "" : "",
                     cursorIndex: 0,
                   });
-                  if (rect) setCommandMenuAnchor({ top: rect.top - 8, left: rect.left + 16 });
+                  const anchor = getCommandMenuAnchor(useRichComposer ? richEl : el);
+                  if (anchor) setCommandMenuAnchor(anchor);
                   (useRichComposer ? richEl : el)?.focus();
                 }}
                 aria-label="Open command picker"
@@ -3667,7 +3679,7 @@ export function AgentChatComposer({
                 const val = event.target.value;
                 onDraftChange(val);
                 lastPlainSelectionRef.current = event.target.selectionStart ?? val.length;
-                const rect = event.target.getBoundingClientRect();
+                const anchor = getCommandMenuAnchor(event.currentTarget);
 
                 if (val.startsWith("/") && !val.slice(1).includes("\n")) {
                   // Once the user types a space after the command name they have
@@ -3678,7 +3690,7 @@ export function AgentChatComposer({
                   if (!/\s/.test(afterSlash)) {
                     const query = afterSlash.match(/^[^\s/]*/)?.[0] ?? "";
                     setCommandMenuTrigger({ type: "slash", query, cursorIndex: 0 });
-                    setCommandMenuAnchor({ top: rect.top - 8, left: rect.left + 16 });
+                    if (anchor) setCommandMenuAnchor(anchor);
                     return;
                   }
                   setCommandMenuTrigger(null);
@@ -3691,7 +3703,7 @@ export function AgentChatComposer({
                 const atMatch = textBeforeCursor.match(/@([^\s@]*)$/);
                 if (atMatch) {
                   setCommandMenuTrigger({ type: "at", query: atMatch[1], cursorIndex: cursorPos - atMatch[0].length });
-                  setCommandMenuAnchor({ top: rect.top - 8, left: rect.left + 16 });
+                  if (anchor) setCommandMenuAnchor(anchor);
                 } else {
                   setCommandMenuTrigger(null);
                 }

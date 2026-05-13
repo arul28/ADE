@@ -22,6 +22,10 @@ vi.mock("../onboarding/HelpMenu", () => ({
   HelpMenu: () => null,
 }));
 
+vi.mock("../usage/HeaderUsageControl", () => ({
+  HeaderUsageControl: () => null,
+}));
+
 vi.mock("../../lib/sessions", () => ({
   isRunOwnedSession: () => false,
 }));
@@ -401,6 +405,25 @@ describe("TopBar", () => {
     });
 
     expect(await screen.findByText("1 phone connected to ADE Desktop")).toBeTruthy();
+  });
+
+  it("labels disabled local runtime sync as unavailable", async () => {
+    const snapshot = makeSyncSnapshot();
+    globalThis.window.ade.sync.getStatus = vi.fn(async () => makeSyncSnapshot({
+      connectedPeers: [],
+      pairingConnectInfo: null,
+      localDevice: {
+        ...snapshot.localDevice,
+        deviceId: "local-runtime-disabled",
+        siteId: "local-runtime-disabled",
+        metadata: { unavailableReason: "local_runtime_daemon_disabled" },
+      },
+    })) as any;
+
+    render(<TopBar />);
+
+    expect(await screen.findByText("Phone sync unavailable")).toBeTruthy();
+    expect(screen.queryByText("Phone sync ready")).toBeNull();
   });
 
   it("does not refresh phone sync status on an idle interval", async () => {

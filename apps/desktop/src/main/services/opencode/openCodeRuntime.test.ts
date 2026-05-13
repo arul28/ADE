@@ -129,7 +129,7 @@ describe("openCodeRuntime", () => {
       config: expect.objectContaining({
         agent: expect.objectContaining({
           "ade-plan": expect.objectContaining({
-            tools: expect.objectContaining({ task: false }),
+            tools: expect.objectContaining({ code_search: false, web_search: false }),
           }),
         }),
       }),

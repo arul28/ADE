@@ -68,6 +68,10 @@ export function createLinearIssueTracker(args: { client: LinearClient }): IssueT
       return args.client.uploadAttachment(params);
     },
 
+    createIssueAttachment(params) {
+      return args.client.createIssueAttachment(params);
+    },
+
     async getConnectionStatus() {
       try {
         const identity = await args.client.getConnectionIdentity();

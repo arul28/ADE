@@ -33,7 +33,10 @@ import type {
   ProjectInfo,
   OpenProjectBinding,
   TerminalSessionSummary,
+  UsageThresholdEvent,
 } from "../../../shared/types";
+import { ClaudeLogo, CodexLogo } from "../terminals/ToolLogos";
+import { OPEN_USAGE_EVENT } from "../usage/HeaderUsageControl";
 import {
   eventMatchesBinding,
   getEffectiveBinding,
@@ -139,6 +142,37 @@ function shortId(id: string): string {
   const trimmed = (id ?? "").trim();
   if (!trimmed) return "";
   return trimmed.length <= 8 ? trimmed : trimmed.slice(0, 8);
+}
+
+function usageThresholdToneColor(threshold: number): string {
+  if (threshold >= 100) return "#EF4444";
+  if (threshold >= 75) return "#F59E0B";
+  return "#22C55E";
+}
+
+function usageProviderLabel(provider: UsageThresholdEvent["provider"]): string {
+  switch (provider) {
+    case "claude": return "Claude";
+    case "codex": return "Codex";
+    default: return provider;
+  }
+}
+
+function usageProviderIcon(provider: UsageThresholdEvent["provider"]): typeof ClaudeLogo | null {
+  switch (provider) {
+    case "claude": return ClaudeLogo;
+    case "codex": return CodexLogo;
+    default: return null;
+  }
+}
+
+function formatUsageResetCountdown(resetsAt: string, nowMs: number): string {
+  const resetMs = Math.max(0, new Date(resetsAt).getTime() - nowMs);
+  if (resetMs <= 0) return "resets now";
+  const days = Math.floor(resetMs / 86_400_000);
+  const hours = Math.floor((resetMs % 86_400_000) / 3_600_000);
+  if (days > 0) return `${days}d ${hours}h until reset`;
+  return `${hours}h until reset`;
 }
 
 function describeGithubBanner(status: GitHubStatus): { message: string; linkLabel: string } {
@@ -273,6 +307,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     LinearWorkflowToast[]
   >([]);
   const linearToastTimersRef = useRef<Map<string, number>>(new Map());
+  const [usageThresholdToasts, setUsageThresholdToasts] = useState<
+    Array<{ id: string; event: UsageThresholdEvent }>
+  >([]);
+  const usageToastTimersRef = useRef<Map<string, number>>(new Map());
+  const dismissUsageToast = (id: string) => {
+    setUsageThresholdToasts((prev) => prev.filter((t) => t.id !== id));
+    const timer = usageToastTimersRef.current.get(id);
+    if (timer != null) window.clearTimeout(timer);
+    usageToastTimersRef.current.delete(id);
+  };
   const [staleCliNotice, setStaleCliNotice] =
     useState<StaleCliNotice | null>(null);
   const dismissedStaleCliNoticeKeyRef = useRef<string | null>(null);
@@ -700,7 +744,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [location.pathname, project?.rootPath, showWelcome]);
+  }, [project?.rootPath, showWelcome]);
 
   useEffect(() => {
     const handler = (event: Event) => {
@@ -969,6 +1013,26 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
+  useEffect(() => {
+    const onThreshold = window.ade?.usage?.onThreshold;
+    if (typeof onThreshold !== "function") return;
+    const unsub = onThreshold((event) => {
+      const id = globalThis.crypto?.randomUUID
+        ? globalThis.crypto.randomUUID()
+        : `${Date.now()}-${Math.random()}`;
+      setUsageThresholdToasts((prev) => [{ id, event }, ...prev].slice(0, 4));
+      const timer = window.setTimeout(() => dismissUsageToast(id), 6_000);
+      usageToastTimersRef.current.set(id, timer);
+    });
+    return () => {
+      unsub();
+      for (const timer of usageToastTimersRef.current.values()) {
+        window.clearTimeout(timer);
+      }
+      usageToastTimersRef.current.clear();
+    };
+  }, []);
+
   const tintClass = useMemo(() => {
     const tintMap: Record<string, string> = {
       "/project": "tab-tint-project",
@@ -1184,7 +1248,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               children
             )}
           </div>
-          {staleCliNotice || prToasts.length > 0 ? (
+          {staleCliNotice || prToasts.length > 0 || usageThresholdToasts.length > 0 ? (
             <div className="pointer-events-none absolute bottom-2 right-2 z-[95] flex w-[min(380px,calc(100vw-20px))] flex-col gap-1.5">
               {staleCliNotice ? (
                 <div className="pointer-events-auto overflow-hidden rounded-xl border border-amber-500/25 bg-card/95 px-3 py-3 shadow-float backdrop-blur">
@@ -1383,6 +1447,60 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                           >
                             <ArrowSquareOut size={12} />
                             Open on GitHub
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+              {usageThresholdToasts.map(({ id, event }) => {
+                const tone = usageThresholdToneColor(event.threshold);
+                const providerLabel = usageProviderLabel(event.provider);
+                const ProviderIcon = usageProviderIcon(event.provider);
+                const countdown = formatUsageResetCountdown(event.resetsAt, Date.now());
+                return (
+                  <div
+                    key={id}
+                    className="pointer-events-auto overflow-hidden rounded-xl border bg-card/95 px-3 py-3 shadow-float backdrop-blur"
+                    style={{ borderColor: `${tone}55` }}
+                  >
+                    <div className="flex items-start gap-3">
+                      <div
+                        className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg"
+                        style={{ background: `${tone}1f`, color: tone }}
+                      >
+                        {ProviderIcon ? <ProviderIcon size={16} /> : null}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-start justify-between gap-2">
+                          <div
+                            className="text-[13px] font-semibold leading-tight text-fg"
+                            style={{ color: tone }}
+                          >
+                            {providerLabel} at {event.threshold}% weekly
+                          </div>
+                          <button
+                            type="button"
+                            className="shrink-0 rounded p-1 text-muted-fg transition-colors hover:bg-fg/[0.05] hover:text-fg"
+                            onClick={() => dismissUsageToast(id)}
+                            aria-label="Dismiss usage threshold toast"
+                            title="Dismiss"
+                          >
+                            ×
+                          </button>
+                        </div>
+                        <div className="mt-1 text-[12px] text-muted-fg">{countdown}</div>
+                        <div className="mt-2 flex justify-end">
+                          <button
+                            type="button"
+                            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border/60 px-2.5 text-[11px] font-medium text-fg/85 transition-colors hover:border-fg/20 hover:bg-fg/[0.04] hover:text-fg"
+                            onClick={() => {
+                              window.dispatchEvent(new CustomEvent(OPEN_USAGE_EVENT));
+                              dismissUsageToast(id);
+                            }}
+                          >
+                            Open usage
                           </button>
                         </div>
                       </div>

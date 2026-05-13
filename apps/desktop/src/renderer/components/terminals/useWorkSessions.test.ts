@@ -97,7 +97,7 @@ vi.mock("../../state/appStore", () => ({
 // ---------------------------------------------------------------------------
 // Import the hook under test (after mocks are declared)
 // ---------------------------------------------------------------------------
-import { buildWorkTabGroupModel, useWorkSessions } from "./useWorkSessions";
+import { buildWorkTabGroupModel, reorderLaneSessionIdsForDisplay, useWorkSessions } from "./useWorkSessions";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
 import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
 
@@ -347,6 +347,32 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       expect(result.current.sessions).toHaveLength(1);
       expect(selectLaneSpy).toHaveBeenCalledWith("lane-a");
     });
+  });
+
+  it("re-enters the Work route without forcing a blocking session-list refresh after the first load", async () => {
+    const session = makeSession("session-a", "lane-a");
+    listSessionsCachedMock.mockResolvedValue([session]);
+
+    const { rerender, result } = renderHook(
+      ({ active }: { active: boolean }) => useWorkSessions({ active }),
+      { initialProps: { active: true } },
+    );
+
+    await waitFor(() => {
+      expect(result.current.sessions).toHaveLength(1);
+    });
+
+    listSessionsCachedMock.mockClear();
+    rerender({ active: false });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    rerender({ active: true });
+
+    await waitFor(() => {
+      expect(listSessionsCachedMock).toHaveBeenCalled();
+    });
+    expect(listSessionsCachedMock).toHaveBeenLastCalledWith({ limit: 500 }, undefined);
   });
 
   it("setActiveItemId leaves the selected lane alone in grid mode", async () => {
@@ -1271,5 +1297,15 @@ describe("useWorkSessions — grouping defaults and derived tab order", () => {
     });
     expect(byTime.groups.map((group) => group.id)).toEqual(["time:today", "time:yesterday", "time:older"]);
     expect(byTime.sessionIds).toEqual(["session-a1", "session-a2", "session-b1", "session-c1"]);
+  });
+
+  it("reorders from the displayed pinned tab order", () => {
+    expect(reorderLaneSessionIdsForDisplay({
+      baseOrder: ["unpinned-a", "pinned-b", "unpinned-c"],
+      pinnedSessionIds: ["pinned-b"],
+      movedSessionId: "pinned-b",
+      targetSessionId: "unpinned-c",
+      edge: "after",
+    })).toEqual(["unpinned-a", "unpinned-c", "pinned-b"]);
   });
 });

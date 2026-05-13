@@ -22,6 +22,9 @@ type SessionContextMenuProps = {
   onGoToLane: (session: TerminalSessionSummary) => void;
   onCopySessionId: (id: string) => void;
   onRename: (session: TerminalSessionSummary, newTitle: string) => void;
+  onCopySessionDeepLink?: (session: TerminalSessionSummary) => void;
+  onTogglePinned?: (session: TerminalSessionSummary) => void;
+  pinnedSessionIds?: string[];
 };
 
 export function SessionContextMenu({
@@ -37,6 +40,9 @@ export function SessionContextMenu({
   onGoToLane,
   onCopySessionId,
   onRename,
+  onCopySessionDeepLink,
+  onTogglePinned,
+  pinnedSessionIds,
 }: SessionContextMenuProps) {
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState("");
@@ -221,6 +227,24 @@ export function SessionContextMenu({
         >
           Copy session ID
         </button>
+
+        {onCopySessionDeepLink ? (
+          <button
+            className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs hover:bg-muted/40 transition-colors"
+            onClick={() => { onCopySessionDeepLink(session); onClose(); }}
+          >
+            Copy session deep link
+          </button>
+        ) : null}
+
+        {onTogglePinned ? (
+          <button
+            className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs hover:bg-muted/40 transition-colors"
+            onClick={() => { onTogglePinned(session); onClose(); }}
+          >
+            {(pinnedSessionIds ?? []).includes(session.id) ? "Unpin from front" : "Pin to front"}
+          </button>
+        ) : null}
       </div>
     </>
   );

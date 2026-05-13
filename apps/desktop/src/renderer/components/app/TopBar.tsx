@@ -65,7 +65,49 @@ const PROJECT_ICON_CACHE_MAX = 24;
 const projectIconCache = new Map<string, ProjectIcon>();
 const PROJECT_ICON_ACCENT_CACHE_MAX = 48;
 const projectIconAccentCache = new Map<string, string | null>();
+const RECENT_PROJECTS_CACHE_TTL_MS = 2_500;
+let recentProjectsCache:
+  | { rows: RecentProjectSummary[]; fetchedAtMs: number }
+  | null = null;
+let recentProjectsInFlight: Promise<RecentProjectSummary[]> | null = null;
+let recentProjectsCacheSource:
+  | (() => Promise<RecentProjectSummary[]>)
+  | null = null;
 type RemoteProjectTab = Extract<OpenProjectBinding, { kind: "remote" }>;
+
+function rememberRecentProjects(rows: RecentProjectSummary[]): void {
+  recentProjectsCache = { rows, fetchedAtMs: Date.now() };
+}
+
+function listRecentProjectsCached(options?: {
+  force?: boolean;
+}): Promise<RecentProjectSummary[]> {
+  const source = window.ade.project.listRecent;
+  if (recentProjectsCacheSource !== source) {
+    recentProjectsCacheSource = source;
+    recentProjectsCache = null;
+    recentProjectsInFlight = null;
+  }
+  const now = Date.now();
+  if (
+    !options?.force &&
+    recentProjectsCache &&
+    now - recentProjectsCache.fetchedAtMs < RECENT_PROJECTS_CACHE_TTL_MS
+  ) {
+    return Promise.resolve(recentProjectsCache.rows);
+  }
+  if (!options?.force && recentProjectsInFlight) return recentProjectsInFlight;
+  recentProjectsInFlight = window.ade.project
+    .listRecent()
+    .then((rows) => {
+      rememberRecentProjects(rows);
+      return rows;
+    })
+    .finally(() => {
+      recentProjectsInFlight = null;
+    });
+  return recentProjectsInFlight;
+}
 function getProjectIconFromCache(rootPath: string): ProjectIcon | undefined {
   const cached = projectIconCache.get(rootPath);
   if (cached === undefined) return undefined;
@@ -243,6 +285,15 @@ function confirmProjectTabRemoval(projectName: string): boolean {
 
 function deriveSyncLabel(snapshot: SyncRoleSnapshot | null): string | null {
   if (!snapshot) return null;
+  const unavailableReason = typeof snapshot.localDevice.metadata?.unavailableReason === "string"
+    ? snapshot.localDevice.metadata.unavailableReason
+    : null;
+  if (
+    unavailableReason === "local_runtime_daemon_disabled"
+    || snapshot.localDevice.deviceId === "local-runtime-disabled"
+  ) {
+    return "Phone sync unavailable";
+  }
   if (snapshot.client.state === "error") return "Phone sync error";
   if (snapshot.role === "brain") {
     const count = snapshot.connectedPeers.length;
@@ -650,15 +701,14 @@ export function TopBar() {
   const zoomIn = useCallback(() => applyZoom(zoom + 10), [applyZoom, zoom]);
   const zoomOut = useCallback(() => applyZoom(zoom - 10), [applyZoom, zoom]);
 
-  const fetchRecent = useCallback(() => {
-    window.ade.project
-      .listRecent()
+  const fetchRecent = useCallback((options?: { force?: boolean }) => {
+    listRecentProjectsCached(options)
       .then((rows) => setRecentProjects(rows))
       .catch(() => {});
   }, []);
 
   useEffect(() => {
-    fetchRecent();
+    fetchRecent({ force: true });
   }, [project?.rootPath, fetchRecent]);
 
   useEffect(() => {
@@ -795,7 +845,7 @@ export function TopBar() {
 
   // Re-fetch when the main process reports a missing project.
   useEffect(() => {
-    const unsub = window.ade.project.onMissing(() => fetchRecent());
+    const unsub = window.ade.project.onMissing(() => fetchRecent({ force: true }));
     return unsub;
   }, [fetchRecent]);
 
@@ -1056,7 +1106,10 @@ export function TopBar() {
         const nextRows = await window.ade.project
           .forgetRecent(oldPath)
           .catch(() => null);
-        if (nextRows) setRecentProjects(nextRows);
+        if (nextRows) {
+          rememberRecentProjects(nextRows);
+          setRecentProjects(nextRows);
+        }
       })()
         .catch(() => {})
         .finally(() => setRelocatingPath(null));
@@ -1735,6 +1788,9 @@ export function TopBar() {
         </div>
       ) : null}
 
+      {/* Trailing groups: status · actions · view, gap-6 between, gap-2 within */}
+      <div className="flex items-center gap-6 shrink-0">
+      <div className="flex items-center gap-2">
       <LinearQuickViewButton />
 
       <button
@@ -1804,6 +1860,72 @@ export function TopBar() {
         </button>
       ) : null}
 
+      <HeaderUsageControl />
+      </div>
+      {/* /status group */}
+
+      <div className="flex items-center gap-2">
+      <AutoUpdateControl />
+
+      <HelpMenu />
+
+      <button
+        type="button"
+        className={cn(
+          "ade-shell-control inline-flex h-[20px] w-[20px] items-center justify-center",
+          "transition-[background-color,color,border-color,box-shadow] duration-150",
+        )}
+        onClick={() => setFeedbackOpen(true)}
+        title="Report bug or suggest feature"
+        style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+      >
+        <ChatCircleDots size={12} weight="regular" />
+      </button>
+      </div>
+      {/* /actions group */}
+
+      {/* Zoom controls (view group) */}
+      <div
+        className="shrink-0 inline-flex items-center gap-0"
+        style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+      >
+        <button
+          type="button"
+          className={cn(
+            "ade-shell-control inline-flex h-[20px] w-[20px] items-center justify-center",
+            "transition-[background-color,color,border-color,box-shadow] duration-150",
+          )}
+          onClick={zoomOut}
+          title="Zoom out"
+        >
+          <Minus size={12} weight="bold" />
+        </button>
+        <span
+          className={cn(
+            "ade-shell-control-kbd inline-flex h-[20px] items-center justify-center border-x-0 px-1.5",
+            "text-[10px] font-mono select-none",
+            "min-w-[36px] text-center",
+          )}
+        >
+          {zoom}%
+        </span>
+        <button
+          type="button"
+          className={cn(
+            "ade-shell-control inline-flex h-[20px] w-[20px] items-center justify-center",
+            "transition-[background-color,color,border-color,box-shadow] duration-150",
+          )}
+          onClick={zoomIn}
+          title="Zoom in"
+        >
+          <Plus size={12} weight="bold" />
+        </button>
+      </div>
+      </div>
+      {/* /trailing groups */}
+
+      {/* Overlay panels & modals — kept outside the gap-6 wrapper so they
+          never participate in flex gap accounting when toggled open. */}
       {remotePanelOpen ? (
         <div
           className="fixed inset-0 z-[80]"
@@ -1914,25 +2036,6 @@ export function TopBar() {
         </div>
       ) : null}
 
-      <HeaderUsageControl />
-
-      <AutoUpdateControl />
-
-      <HelpMenu />
-
-      <button
-        type="button"
-        className={cn(
-          "ade-shell-control inline-flex h-[20px] w-[20px] items-center justify-center",
-          "transition-[background-color,color,border-color,box-shadow] duration-150",
-        )}
-        onClick={() => setFeedbackOpen(true)}
-        title="Report bug or suggest feature"
-        style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-      >
-        <ChatCircleDots size={12} weight="regular" />
-      </button>
-
       <FeedbackReporterModal
         open={feedbackOpen}
         onOpenChange={setFeedbackOpen}
@@ -1946,44 +2049,6 @@ export function TopBar() {
           refreshRemote();
         }}
       />
-
-      {/* Zoom controls */}
-      <div
-        className="shrink-0 inline-flex items-center gap-0"
-        style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-      >
-        <button
-          type="button"
-          className={cn(
-            "ade-shell-control inline-flex h-[20px] w-[20px] items-center justify-center",
-            "transition-[background-color,color,border-color,box-shadow] duration-150",
-          )}
-          onClick={zoomOut}
-          title="Zoom out"
-        >
-          <Minus size={12} weight="bold" />
-        </button>
-        <span
-          className={cn(
-            "ade-shell-control-kbd inline-flex h-[20px] items-center justify-center border-x-0 px-1.5",
-            "text-[10px] font-mono select-none",
-            "min-w-[36px] text-center",
-          )}
-        >
-          {zoom}%
-        </span>
-        <button
-          type="button"
-          className={cn(
-            "ade-shell-control inline-flex h-[20px] w-[20px] items-center justify-center",
-            "transition-[background-color,color,border-color,box-shadow] duration-150",
-          )}
-          onClick={zoomIn}
-          title="Zoom in"
-        >
-          <Plus size={12} weight="bold" />
-        </button>
-      </div>
     </header>
   );
 }

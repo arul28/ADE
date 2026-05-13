@@ -43,6 +43,14 @@ export type PrSummary = {
   creationStrategy?: PrCreationStrategy | null;
 };
 
+export type PrLaneSummary = {
+  laneId: string;
+  number: number;
+  state: "open" | "merged" | "closed";
+  checksPassed: number;
+  checksTotal: number;
+};
+
 export type PrStatus = {
   prId: string;
   state: PrState;

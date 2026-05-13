@@ -156,6 +156,11 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     expect(actions).toContain("listSnapshots");
   });
 
+  it("exposes pr.listPrsByLane for runtime-backed drawer PR pills", () => {
+    const actions = ADE_ACTION_ALLOWLIST.pr ?? [];
+    expect(actions).toContain("listPrsByLane");
+  });
+
   it("exposes ade_project.clearLocalData for runtime-backed cleanup", () => {
     const actions = ADE_ACTION_ALLOWLIST.ade_project ?? [];
     expect(actions).toContain("clearLocalData");
@@ -696,6 +701,7 @@ describe("runtime GitHub actions", () => {
     const runtime = {
       githubService: {
         getStatus: vi.fn(),
+        getRemoteStatus: vi.fn(),
         setToken: vi.fn(),
         clearToken: vi.fn(),
         getRepoOrThrow: vi.fn(),
@@ -712,6 +718,7 @@ describe("runtime GitHub actions", () => {
     expect(listAllowedAdeActionNames("github", githubService)).toEqual(expect.arrayContaining([
       "listRepoCollaborators",
       "listRepoLabels",
+      "getRemoteStatus",
       "publishCurrentProject",
     ]));
   });

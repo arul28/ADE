@@ -72,6 +72,13 @@ export const SessionCard = React.memo(function SessionCard({
     ? "1px solid rgba(255,255,255,0.08)"
     : "1px solid transparent";
   const laneAccent = lane?.color ?? null;
+  const useLaneGlow = Boolean(isHighlighted && laneAccent);
+  const laneTint = useLaneGlow
+    ? `color-mix(in srgb, ${laneAccent} 14%, transparent)`
+    : null;
+  const laneRing = useLaneGlow
+    ? `color-mix(in srgb, ${laneAccent} 32%, transparent)`
+    : null;
   const showClaudeCacheTimer = shouldShowClaudeCacheTtl({
     provider: session.toolType === "claude-chat" ? "claude" : null,
     status: session.runtimeState === "idle" ? "idle" : "active",
@@ -85,15 +92,24 @@ export const SessionCard = React.memo(function SessionCard({
         type="button"
         className={cn(
           "relative w-full overflow-hidden text-left transition-all duration-100 rounded-lg border-l-2",
-          isHighlighted
-            ? "border-l-accent bg-white/[0.06] hover:bg-white/[0.07]"
-            : "border-l-transparent bg-transparent hover:bg-white/[0.03]",
+          useLaneGlow
+            ? "border-l-transparent"
+            : isHighlighted
+              ? "border-l-accent bg-white/[0.06] hover:bg-white/[0.07]"
+              : "border-l-transparent bg-transparent hover:bg-white/[0.03]",
           isMultiSelected && "ring-1 ring-accent/35",
         )}
         style={{
           borderTop: highlightedBorder,
           borderRight: highlightedBorder,
           borderBottom: highlightedBorder,
+          ...(useLaneGlow
+            ? {
+                background: laneTint ?? undefined,
+                boxShadow: `inset 0 0 0 1px ${laneRing}`,
+                borderLeftColor: laneAccent ?? undefined,
+              }
+            : {}),
         }}
         onClick={(event) => onSelect(session.id, event)}
       >

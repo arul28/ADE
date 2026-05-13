@@ -116,6 +116,10 @@ export type HeadlessGitHubService = {
   getStatus: (opts?: {
     forceRefresh?: boolean;
   }) => Promise<HeadlessGitHubStatus>;
+  getRemoteStatus: () => Promise<{
+    repo: { owner: string; name: string } | null;
+    hasOrigin: boolean;
+  }>;
   detectRepo: () => Promise<{ owner: string; name: string } | null>;
   getRepoOrThrow: () => Promise<{ owner: string; name: string }>;
   getTokenOrThrow: () => string;
@@ -769,6 +773,12 @@ export function createHeadlessGitHubService(
         cachedAt = now;
         return status;
       }
+    },
+    async getRemoteStatus() {
+      return {
+        repo: detectGitHubRepo(projectRoot),
+        hasOrigin: Boolean(readGitOrigin(projectRoot)),
+      };
     },
     async detectRepo() {
       return detectGitHubRepo(projectRoot);

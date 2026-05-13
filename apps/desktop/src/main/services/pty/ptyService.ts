@@ -39,7 +39,8 @@ import {
   defaultResumeCommandForTool,
   extractResumeCommandFromOutput,
   parseTrackedCliLaunchConfig,
-  runtimeStateFromOsc133Chunk
+  runtimeStateFromOsc133Chunk,
+  sanitizeResumeTargetId,
 } from "../../utils/terminalSessionSignals";
 
 /** Delay before auto-generating a title from CLI output; keep in sync with tests. */
@@ -63,10 +64,18 @@ function shouldScheduleOutputSnippetTitle(tool: TerminalToolType | null): boolea
 const CLI_USER_TITLE_SEED_MIN_LEN = 3;
 const CLI_USER_TITLE_SEED_MAX_LEN = 180;
 const CLI_USER_TITLE_FALLBACK_MAX_LEN = 72;
+const CODEX_ADE_GUIDANCE_SCAN_BYTES = 160 * 1024;
+const CODEX_THREAD_NAME_SCAN_BYTES = 512 * 1024;
 const PTY_DATA_BATCH_INTERVAL_MS = 16;
 const PTY_DATA_BATCH_MAX_CHARS = 64 * 1024;
 const PTY_DATA_SUMMARY_INTERVAL_MS = 10_000;
 const DEFAULT_TERMINAL_READ_MAX_BYTES = 220_000;
+
+type CodexStorageSessionMatch = {
+  id: string;
+  filePath: string;
+  threadName: string | null;
+};
 
 function hasEnvValue(env: NodeJS.ProcessEnv, key: string): boolean {
   return typeof env[key] === "string" && env[key]!.trim().length > 0;
@@ -674,6 +683,24 @@ export function createPtyService({
       current.state = "idle";
       current.updatedAt = Date.now();
       current.idleTimer = null;
+      const live = Array.from(ptys.values()).find((entry) => entry.sessionId === sessionId && !entry.disposed) ?? null;
+      if (live?.tracked && onSessionRuntimeSignal) {
+        const at = new Date(current.updatedAt).toISOString();
+        live.lastRuntimeSignalAt = current.updatedAt;
+        live.lastRuntimeSignalState = "idle";
+        live.lastRuntimeSignalPreview = live.latestPreviewLine ?? live.lastPreviewWritten ?? null;
+        try {
+          onSessionRuntimeSignal({
+            laneId: live.laneId,
+            sessionId: live.sessionId,
+            runtimeState: "idle",
+            lastOutputPreview: live.lastRuntimeSignalPreview,
+            at,
+          });
+        } catch {
+          // ignore callback failures
+        }
+      }
     }, 12_500);
   };
 
@@ -940,19 +967,118 @@ export function createPtyService({
     }
   }
 
+  function readFileSuffix(filePath: string, maxBytes = 512 * 1024): string | null {
+    let fd: number | null = null;
+    try {
+      const size = Math.max(0, Number(fs.statSync(filePath).size) || 0);
+      const readBytes = Math.min(maxBytes, size);
+      if (readBytes <= 0) return null;
+      fd = fs.openSync(filePath, "r");
+      const buf = Buffer.alloc(readBytes);
+      const bytesRead = fs.readSync(fd, buf, 0, readBytes, Math.max(0, size - readBytes));
+      if (bytesRead <= 0) return null;
+      return buf.subarray(0, bytesRead).toString("utf8");
+    } catch {
+      return null;
+    } finally {
+      if (fd !== null) {
+        try {
+          fs.closeSync(fd);
+        } catch {
+          // Ignore close errors while scanning best-effort session metadata.
+        }
+      }
+    }
+  }
+
+  function sanitizeCodexRuntimeThreadName(raw: unknown): string | null {
+    const title = sanitizeGeneratedCliTitle(typeof raw === "string" ? raw : "");
+    if (!title) return null;
+    const normalized = title.toLowerCase().replace(/[^\p{L}\p{N}_-]+/gu, "").trim();
+    if (/^ade-[a-z0-9_-]+$/iu.test(normalized)) return null;
+    return title;
+  }
+
+  function threadNameFromCodexRecord(record: unknown, codexSessionId: string): string | null {
+    if (!record || typeof record !== "object") return null;
+    const obj = record as Record<string, unknown>;
+    const payload = obj.payload && typeof obj.payload === "object" ? obj.payload as Record<string, unknown> : obj;
+    const type = typeof payload.type === "string" ? payload.type : typeof obj.type === "string" ? obj.type : "";
+    const method = typeof obj.method === "string" ? obj.method : typeof payload.method === "string" ? payload.method : "";
+    const params = payload.params && typeof payload.params === "object" ? payload.params as Record<string, unknown> : payload;
+    const threadId = typeof params.thread_id === "string"
+      ? params.thread_id
+      : typeof params.threadId === "string"
+        ? params.threadId
+        : "";
+    const isNameUpdate =
+      type === "thread_name_updated"
+      || type === "thread_updated"
+      || method === "thread/name/updated"
+      || method === "thread/updated";
+    if (!isNameUpdate) return null;
+    if (threadId && threadId !== codexSessionId) return null;
+    return sanitizeCodexRuntimeThreadName(
+      params.thread_name
+      ?? params.threadName
+      ?? params.name
+      ?? params.title,
+    );
+  }
+
+  function readCodexThreadNameFromSessionFile(filePath: string, codexSessionId: string): string | null {
+    const prefix = readFilePrefix(filePath, CODEX_THREAD_NAME_SCAN_BYTES) ?? "";
+    const suffix = readFileSuffix(filePath, CODEX_THREAD_NAME_SCAN_BYTES) ?? "";
+    const text = prefix && suffix && prefix !== suffix ? `${prefix}\n${suffix}` : (suffix || prefix);
+    if (!text) return null;
+    const lines = text.split(/\r?\n/).filter(Boolean);
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      try {
+        const title = threadNameFromCodexRecord(JSON.parse(lines[i]!), codexSessionId);
+        if (title) return title;
+      } catch {
+        // Ignore malformed or partial JSONL fragments from prefix/suffix reads.
+      }
+    }
+    return null;
+  }
+
+  function readCodexThreadNameFromIndex(codexSessionId: string): string | null {
+    const indexPath = path.join(os.homedir(), ".codex", "session_index.jsonl");
+    const text = readFileSuffix(indexPath, CODEX_THREAD_NAME_SCAN_BYTES);
+    if (!text) return null;
+    const lines = text.split(/\r?\n/).filter(Boolean);
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      try {
+        const entry = JSON.parse(lines[i]!) as Record<string, unknown>;
+        if (entry.id !== codexSessionId) continue;
+        const title = sanitizeCodexRuntimeThreadName(entry.thread_name ?? entry.threadName ?? entry.name);
+        if (title) return title;
+      } catch {
+        // Ignore malformed or partial JSONL fragments.
+      }
+    }
+    return null;
+  }
+
+  function readCodexRuntimeThreadName(filePath: string, codexSessionId: string): string | null {
+    return readCodexThreadNameFromIndex(codexSessionId)
+      ?? readCodexThreadNameFromSessionFile(filePath, codexSessionId);
+  }
+
   /**
    * Try to find the Codex session ID from Codex's local storage.
    * Codex stores sessions at ~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl.
    * Each JSONL starts with a session_meta event containing `payload.id` and `payload.cwd`.
    * We score recent candidates by cwd match and closeness to ADE's session startedAt.
    */
-  const resolveCodexSessionIdFromStorage = (args: {
+  const resolveCodexSessionFromStorage = (args: {
     cwd: string;
     startedAt?: string | null;
     maxStartDeltaMs?: number;
     notBeforeMs?: number;
     requiredText?: string;
-  }): string | null => {
+  }): CodexStorageSessionMatch | null => {
     try {
       const sessionsBase = path.join(os.homedir(), ".codex", "sessions");
       if (!fs.existsSync(sessionsBase)) return null;
@@ -980,7 +1106,7 @@ export function createPtyService({
       if (!candidates.length) return null;
       candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
 
-      let bestMatch: { id: string; score: number; mtimeMs: number } | null = null;
+      let bestMatch: { id: string; filePath: string; score: number; mtimeMs: number } | null = null;
       for (const candidate of candidates.slice(0, 80)) {
         const firstLine = readJsonlFirstLine(candidate.filePath);
         if (!firstLine) continue;
@@ -996,14 +1122,20 @@ export function createPtyService({
         const cwd = typeof payload?.cwd === "string" ? payload.cwd.trim() : "";
         if (type !== "session_meta" || !id || cwd !== args.cwd) continue;
         if (args.requiredText) {
-          // The Codex session_meta record sits at the very top of the JSONL,
-          // so 16 KB is more than enough to scan for the marker without
-          // pulling half a megabyte off disk per candidate inside the poll.
-          const prefix = readFilePrefix(candidate.filePath, 16 * 1024);
+          // ADE's injected session guidance can land after a large session_meta
+          // line plus restored context, so scan beyond the first few KB while
+          // still keeping the live poll bounded.
+          const prefix = readFilePrefix(candidate.filePath, CODEX_ADE_GUIDANCE_SCAN_BYTES);
           if (!prefix?.includes(args.requiredText)) continue;
         }
 
-        if (!hasStartedAt) return id;
+        if (!hasStartedAt) {
+          return {
+            id,
+            filePath: candidate.filePath,
+            threadName: readCodexRuntimeThreadName(candidate.filePath, id),
+          };
+        }
 
         const payloadTimestamp = typeof payload?.timestamp === "string" ? payload.timestamp : "";
         const payloadTimestampMs = Date.parse(payloadTimestamp);
@@ -1012,10 +1144,16 @@ export function createPtyService({
         const score = Math.abs(referenceMs - requestedStartedAtMs);
         if (typeof args.maxStartDeltaMs === "number" && score > args.maxStartDeltaMs) continue;
         if (!bestMatch || score < bestMatch.score || (score === bestMatch.score && candidate.mtimeMs > bestMatch.mtimeMs)) {
-          bestMatch = { id, score, mtimeMs: candidate.mtimeMs };
+          bestMatch = { id, filePath: candidate.filePath, score, mtimeMs: candidate.mtimeMs };
         }
       }
-      return bestMatch?.id ?? null;
+      return bestMatch
+        ? {
+            id: bestMatch.id,
+            filePath: bestMatch.filePath,
+            threadName: readCodexRuntimeThreadName(bestMatch.filePath, bestMatch.id),
+          }
+        : null;
     } catch {
       return null;
     }
@@ -1132,7 +1270,7 @@ export function createPtyService({
     if (!session?.tracked) return false;
     const effectiveToolType = preferredToolType ?? session.toolType ?? null;
     if (!isTrackedCliToolType(effectiveToolType)) return false;
-    if (session.resumeMetadata?.targetId?.trim()) return true;
+    if (sanitizeResumeTargetId(session.resumeMetadata?.targetId ?? null)) return true;
     const recentMissing = missingResumeTargetBackfillFailures.get(sessionId);
     if (
       reason === "session-list"
@@ -1166,22 +1304,23 @@ export function createPtyService({
       }
     }
 
-    // The session-list path NEEDS this Codex storage fallback: it's how we
-    // backfill resume targets for older sessions whose transcripts no longer
-    // contain an explicit resume command. Only resume-launch is excluded —
-    // that flow already has the live capture poll for fresh sessions, and
-    // running the storage scan inline would slow launch.
-    if ((effectiveToolType === "codex" || effectiveToolType === "codex-orchestrated") && cwd && reason !== "resume-launch") {
-      const codexSessionId = resolveCodexSessionIdFromStorage({
+    // The session-list and resume-launch paths both need this Codex storage
+    // fallback. Fresh launches still use the live capture watcher below; this
+    // path handles existing tracked sessions whose transcript did not yield a
+    // usable Codex thread id before the user presses Resume.
+    if ((effectiveToolType === "codex" || effectiveToolType === "codex-orchestrated") && cwd) {
+      const codexSession = resolveCodexSessionFromStorage({
         cwd,
         startedAt: session.startedAt,
         maxStartDeltaMs: 10 * 60_000,
       });
-      if (codexSessionId) {
-        const resumeCmd = `codex resume ${codexSessionId}`;
+      if (codexSession) {
+        const resumeCmd = `codex resume ${codexSession.id}`;
         missingResumeTargetBackfillFailures.delete(sessionId);
         sessionService.setResumeCommand(sessionId, resumeCmd);
-        logger.info("pty.resume_target_backfilled", { sessionId, toolType: effectiveToolType, reason, source: "codex-storage", codexSessionId });
+        adoptCodexRuntimeThreadName(sessionId, codexSession.threadName, "codex-storage-backfill");
+        scheduleCodexRuntimeTitleCaptureBestEffort(sessionId, codexSession.id, codexSession.filePath);
+        logger.info("pty.resume_target_backfilled", { sessionId, toolType: effectiveToolType, reason, source: "codex-storage", codexSessionId: codexSession.id });
         return true;
       }
     }
@@ -1246,48 +1385,57 @@ export function createPtyService({
   // Cadence is intentionally aggressive at the start (codex usually writes session_meta within
   // ~1 s) and falls off so a slow startup doesn't keep timers alive forever.
   const CODEX_FALLBACK_POLL_DELAYS_MS = [500, 2_000, 5_000, 12_000, 30_000];
+  const CODEX_TITLE_POLL_DELAYS_MS = [2_000, 5_000, 12_000, 30_000, 60_000];
   const CODEX_LIVE_CAPTURE_HARD_TIMEOUT_MS = 60_000;
   const CODEX_WATCH_DEBOUNCE_MS = 200;
 
-  /**
-   * Stable thread name we register against the freshly-discovered codex UUID. From this point
-   * forward, `codex resume ade-<id>` resolves through `~/.codex/session_index.jsonl` regardless
-   * of where the rollout file ends up on disk. We control this name space (`ade-*`) so it never
-   * collides with user-chosen names.
-   */
-  const buildCodexAdeName = (sessionId: string): string => {
-    const stripped = sessionId.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 24);
-    return `ade-${stripped || "session"}`;
+  const adoptCodexRuntimeThreadName = (
+    sessionId: string,
+    rawTitle: string | null | undefined,
+    source: string,
+  ): boolean => {
+    const title = sanitizeCodexRuntimeThreadName(rawTitle ?? "");
+    if (!title) return false;
+    if (isSessionManuallyNamed(sessionService, sessionId)) {
+      logger.info("pty.codex_runtime_title_skipped_user_renamed", { sessionId, source });
+      return true;
+    }
+    const session = sessionService.get(sessionId);
+    if (!session) return true;
+    if (session.title?.trim() === title) return true;
+    sessionService.updateMeta({ sessionId, title, manuallyNamed: false });
+    logger.info("pty.codex_runtime_title_adopted", {
+      sessionId,
+      source,
+      titleLength: title.length,
+    });
+    return true;
   };
 
-  /**
-   * Append `{id, thread_name, updated_at}` to ~/.codex/session_index.jsonl so codex's resume
-   * picker can find the session by our chosen name. Codex normally writes this file from its
-   * `SetThreadName` op, but the format is a public on-disk contract — appending one line with
-   * an atomic write is well under PIPE_BUF and safe vs. concurrent codex writers. Returns true
-   * on successful write.
-   */
-  const registerCodexThreadNameInIndex = (uuid: string, threadName: string): boolean => {
-    if (typeof (fs as { appendFileSync?: unknown }).appendFileSync !== "function") return false;
-    try {
-      const indexPath = path.join(os.homedir(), ".codex", "session_index.jsonl");
-      const line = JSON.stringify({
-        id: uuid,
-        thread_name: threadName,
-        updated_at: new Date().toISOString(),
-      }) + "\n";
-      fs.appendFileSync(indexPath, line, { encoding: "utf8" });
-      return true;
-    } catch {
-      return false;
+  const scheduleCodexRuntimeTitleCaptureBestEffort = (
+    sessionId: string,
+    codexSessionId: string,
+    filePath: string,
+  ): void => {
+    const tryTitle = (source: string): boolean => {
+      const title = readCodexRuntimeThreadName(filePath, codexSessionId);
+      return adoptCodexRuntimeThreadName(sessionId, title, source);
+    };
+
+    if (tryTitle("codex-storage-initial")) return;
+    for (let i = 0; i < CODEX_TITLE_POLL_DELAYS_MS.length; i += 1) {
+      const timer = setTimeout(() => {
+        tryTitle(`codex-storage-poll-${i}`);
+      }, CODEX_TITLE_POLL_DELAYS_MS[i]);
+      timer.unref?.();
     }
   };
 
   // Codex CLI has no pre-assigned session ID flag (unlike Claude's --session-id), so the
-  // rollout JSONL is the only handle on the session's UUID. We watch the day directory for the
-  // file's appearance, then claim a stable `ade-<id>` thread name so future resumes don't
-  // depend on filesystem heuristics. A staggered poll covers environments where fs.watch is
-  // missing/unreliable (network mounts, Linux on some FSes, the test harness).
+  // rollout JSONL is the only handle on the session's UUID. We watch the day directory for
+  // the file's appearance, then store the UUID directly for resume and separately adopt any
+  // runtime-generated thread name Codex writes. A staggered poll covers environments where
+  // fs.watch is missing/unreliable (network mounts, Linux on some FSes, the test harness).
   const scheduleCodexSessionIdCaptureBestEffort = (
     sessionId: string,
     cwd: string,
@@ -1328,28 +1476,27 @@ export function createPtyService({
         cleanup();
         return true;
       }
-      if (session.resumeMetadata?.targetId?.trim()) {
+      if (sanitizeResumeTargetId(session.resumeMetadata?.targetId ?? null)) {
         cleanup();
         return true;
       }
-      const codexUuid = resolveCodexSessionIdFromStorage({
+      const codexSession = resolveCodexSessionFromStorage({
         cwd,
         startedAt,
         maxStartDeltaMs: 5 * 60_000,
         ...(startedAtFinite !== null ? { notBeforeMs: startedAtFinite - 1_000 } : {}),
         requiredText: "ADE session guidance",
       });
-      if (!codexUuid) return false;
+      if (!codexSession) return false;
 
       captured = true;
-      const adeName = buildCodexAdeName(sessionId);
-      const indexed = registerCodexThreadNameInIndex(codexUuid, adeName);
-      const resumeCmd = indexed ? `codex resume ${adeName}` : `codex resume ${codexUuid}`;
+      const resumeCmd = `codex resume ${codexSession.id}`;
       sessionService.setResumeCommand(sessionId, resumeCmd);
+      adoptCodexRuntimeThreadName(sessionId, codexSession.threadName, "codex-storage-live");
+      scheduleCodexRuntimeTitleCaptureBestEffort(sessionId, codexSession.id, codexSession.filePath);
       logger.info("pty.codex_session_id_captured_live", {
         sessionId,
-        codexSessionId: codexUuid,
-        adeName: indexed ? adeName : null,
+        codexSessionId: codexSession.id,
         source,
         attempt,
       });
@@ -1832,7 +1979,7 @@ export function createPtyService({
       const shouldBackfillResumeTarget =
         existingSession
         && isTrackedCliToolType(toolTypeHint)
-        && !existingSession.resumeMetadata?.targetId?.trim();
+        && !sanitizeResumeTargetId(existingSession.resumeMetadata?.targetId ?? null);
       if (shouldBackfillResumeTarget) {
         const backfilled = await tryBackfillResumeTarget(sessionId, toolTypeHint, "resume-launch", cwd);
         const updatedSession = backfilled ? sessionService.get(sessionId) : null;
@@ -2023,7 +2170,10 @@ export function createPtyService({
         enqueuePtyData(entry, { ptyId, sessionId, data });
 
         const prevState = runtimeStates.get(sessionId)?.state ?? "running";
-        const runtimeState = runtimeStateFromOsc133Chunk(data, prevState);
+        const markerState = runtimeStateFromOsc133Chunk(data, prevState);
+        const runtimeState = markerState === prevState && prevState === "idle" && data.length > 0
+          ? "running"
+          : markerState;
         setRuntimeState(sessionId, runtimeState);
         if (runtimeState === "running") {
           scheduleIdleTransition(sessionId);

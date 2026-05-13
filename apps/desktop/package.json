@@ -88,6 +88,7 @@
     "geist": "^1.7.0",
     "lottie-react": "^2.4.1",
     "lucide-react": "^0.563.0",
+    "mdast-util-find-and-replace": "^3.0.2",
     "monaco-editor": "^0.55.1",
     "motion": "^12.34.2",
     "node-cron": "^3.0.3",

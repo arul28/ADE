@@ -36,6 +36,36 @@ function defaultLaneBranchGitStub(args: string[]): { exitCode: number; stdout: s
   return null;
 }
 
+function makeLinearIssue() {
+  return {
+    id: "issue-1",
+    identifier: "ABC-42",
+    title: "Fix flaky sync run",
+    description: "Occasional sync failure under load.",
+    url: "https://linear.app/acme/issue/ABC-42/fix-flaky-sync-run",
+    projectId: "project-1",
+    projectSlug: "acme-platform",
+    projectName: "Acme Platform",
+    teamId: "team-1",
+    teamKey: "ABC",
+    teamName: "Platform",
+    stateId: "state-1",
+    stateName: "In Progress",
+    stateType: "started",
+    priority: 2,
+    priorityLabel: "high" as const,
+    labels: ["bug"],
+    assigneeId: "user-1",
+    assigneeName: "Taylor",
+    creatorId: "creator-1",
+    creatorName: "Alex",
+    dueDate: null,
+    estimate: null,
+    createdAt: "2026-05-11T20:00:00.000Z",
+    updatedAt: "2026-05-12T19:00:00.000Z",
+  };
+}
+
 async function seedProjectAndStack(db: any, args: { projectId: string; repoRoot: string }) {
   const now = "2026-03-11T12:00:00.000Z";
   db.run(
@@ -119,6 +149,53 @@ describe("laneService createFromUnstaged", () => {
     const activePrimary = lanes.find((lane) => lane.laneType === "primary" && lane.archivedAt == null);
     expect(activePrimary).toBeTruthy();
     expect(lanes.filter((lane) => lane.laneType === "primary")).toHaveLength(2);
+  });
+
+  it("notifies when a new lane is linked to a Linear issue", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-linear-card-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    const now = "2026-05-12T20:00:00.000Z";
+    db.run(
+      "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+      ["proj-linear-card", repoRoot, "demo", "main", now, now],
+    );
+
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
+      if (args[0] === "rev-parse" && args[1] === "main") return { exitCode: 0, stdout: "sha-main\n", stderr: "" };
+      if (args[0] === "show-ref" && args[1] === "--verify" && args[2] === "--quiet") return { exitCode: 1, stdout: "", stderr: "" };
+      if (args[0] === "ls-remote") return { exitCode: 0, stdout: "", stderr: "" };
+      if (args[0] === "push") return { exitCode: 0, stdout: "", stderr: "" };
+      if (args[0] === "status") return { exitCode: 0, stdout: "", stderr: "" };
+      if (args[0] === "rev-list" && args[1] === "--left-right") return { exitCode: 0, stdout: "0\t0\n", stderr: "" };
+      if (args[0] === "rev-parse" && args.includes("@{upstream}")) return { exitCode: 1, stdout: "", stderr: "" };
+      if (args[0] === "rev-parse" && args.includes("--git-dir")) return { exitCode: 1, stdout: "", stderr: "" };
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+    vi.mocked(runGitOrThrow).mockResolvedValue("");
+
+    const onLinearIssueLinked = vi.fn();
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-linear-card",
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, "worktrees"),
+      onLinearIssueLinked,
+    });
+
+    const lane = await service.create({
+      name: "ABC-42 Fix flaky sync run",
+      linearIssue: makeLinearIssue(),
+    });
+
+    expect(lane.linearIssue?.identifier).toBe("ABC-42");
+    expect(onLinearIssueLinked).toHaveBeenCalledWith(expect.objectContaining({
+      lane: expect.objectContaining({ id: lane.id, name: "ABC-42 Fix flaky sync run" }),
+      issue: expect.objectContaining({ id: "issue-1", identifier: "ABC-42" }),
+      linkedAt: lane.createdAt,
+    }));
   });
 
   it("moves unstaged and untracked changes into a new child lane", async () => {

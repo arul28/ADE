@@ -143,6 +143,10 @@ export type WorkProjectViewState = {
   workSidebarOpen: boolean;
   workSidebarTab: WorkSidebarTab;
   workSidebarWidthPct: number;
+  /** Per-lane custom tab ordering for the grouped Work tab strip. */
+  laneSessionOrder: Record<string, string[]>;
+  /** Session ids pinned to the front of their lane's tab group. */
+  pinnedSessionIds: string[];
 };
 export type TerminalAttentionSnapshot = {
   runningCount: number;
@@ -187,6 +191,8 @@ function createDefaultWorkProjectViewState(): WorkProjectViewState {
     workSidebarOpen: false,
     workSidebarTab: "git",
     workSidebarWidthPct: 36,
+    laneSessionOrder: {},
+    pinnedSessionIds: [],
   };
 }
 
@@ -247,7 +253,21 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
     workSidebarOpen: candidate.workSidebarOpen === true,
     workSidebarTab: normalizeWorkSidebarTab(candidate.workSidebarTab),
     workSidebarWidthPct: normalizeWorkSidebarWidthPct(candidate.workSidebarWidthPct),
+    laneSessionOrder: normalizeLaneSessionOrder(candidate.laneSessionOrder),
+    pinnedSessionIds: normalizeStringArray(candidate.pinnedSessionIds),
   };
+}
+
+function normalizeLaneSessionOrder(value: unknown): Record<string, string[]> {
+  if (!value || typeof value !== "object") return {};
+  const out: Record<string, string[]> = {};
+  for (const [laneId, ids] of Object.entries(value as Record<string, unknown>)) {
+    const trimmedLaneId = typeof laneId === "string" ? laneId.trim() : "";
+    if (!trimmedLaneId) continue;
+    const list = normalizeStringArray(ids);
+    if (list.length > 0) out[trimmedLaneId] = list;
+  }
+  return out;
 }
 
 function readPersistedWorkViewState(): {
@@ -1223,34 +1243,41 @@ export const useAppStore = create<AppState>((set, get) => ({
       ]);
       scheduleProjectHydration(get);
 
-      // Prune stale view state for projects no longer in recent list
-      const recentRoots = new Set(
-        (await window.ade.project.listRecent().catch(() => [])).map((r: { rootPath: string }) => r.rootPath)
-      );
-      const activeRoot = get().project?.rootPath ?? null;
-      const retainedRoots = [activeRoot, ...recentRoots];
-      set((prev) => {
-        const nextWorkViews: Record<string, WorkProjectViewState> = {};
-        const nextLaneWorkViews: Record<string, WorkProjectViewState> = {};
-        for (const [key, value] of Object.entries(prev.workViewByProject)) {
-          if (key === activeRoot || recentRoots.has(key)) nextWorkViews[key] = value;
-        }
-        for (const [scopeKey, value] of Object.entries(prev.laneWorkViewByScope)) {
-          const projectKey = scopeKey.split("::")[0];
-          if (projectKey === activeRoot || recentRoots.has(projectKey)) nextLaneWorkViews[scopeKey] = value;
-        }
-        persistWorkViewState({
-          workViewByProject: nextWorkViews,
-          laneWorkViewByScope: nextLaneWorkViews,
-        });
-        return {
-          projectTransition: null,
-          workViewByProject: nextWorkViews,
-          laneWorkViewByScope: nextLaneWorkViews,
-          dismissedMissingAiBannerRoots: pickDismissMapForRoots(prev.dismissedMissingAiBannerRoots, retainedRoots),
-          dismissedGithubBannerRoots: pickDismissMapForRoots(prev.dismissedGithubBannerRoots, retainedRoots),
-        };
-      });
+      const hasProjectScopedStateToPrune =
+        Object.keys(get().workViewByProject).length > 1 ||
+        Object.keys(get().laneWorkViewByScope).length > 0 ||
+        Object.keys(get().dismissedMissingAiBannerRoots).length > 1 ||
+        Object.keys(get().dismissedGithubBannerRoots).length > 1;
+      if (!hasProjectScopedStateToPrune) return;
+
+      window.setTimeout(() => {
+        void window.ade.project.listRecent().then((recentRows) => {
+          const recentRoots = new Set(recentRows.map((r: { rootPath: string }) => r.rootPath));
+          const activeRoot = get().project?.rootPath ?? null;
+          const retainedRoots = [activeRoot, ...recentRoots];
+          set((prev) => {
+            const nextWorkViews: Record<string, WorkProjectViewState> = {};
+            const nextLaneWorkViews: Record<string, WorkProjectViewState> = {};
+            for (const [key, value] of Object.entries(prev.workViewByProject)) {
+              if (key === activeRoot || recentRoots.has(key)) nextWorkViews[key] = value;
+            }
+            for (const [scopeKey, value] of Object.entries(prev.laneWorkViewByScope)) {
+              const projectKey = scopeKey.split("::")[0];
+              if (projectKey === activeRoot || recentRoots.has(projectKey)) nextLaneWorkViews[scopeKey] = value;
+            }
+            persistWorkViewState({
+              workViewByProject: nextWorkViews,
+              laneWorkViewByScope: nextLaneWorkViews,
+            });
+            return {
+              workViewByProject: nextWorkViews,
+              laneWorkViewByScope: nextLaneWorkViews,
+              dismissedMissingAiBannerRoots: pickDismissMapForRoots(prev.dismissedMissingAiBannerRoots, retainedRoots),
+              dismissedGithubBannerRoots: pickDismissMapForRoots(prev.dismissedGithubBannerRoots, retainedRoots),
+            };
+          });
+        }).catch(() => {});
+      }, 750);
     } catch (error) {
       set({
         projectTransition: null,

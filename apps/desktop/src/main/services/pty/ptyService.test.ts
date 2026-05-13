@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import os from "node:os";
 import path from "node:path";
 import type { IPty } from "node-pty";
+import type * as TerminalSessionSignals from "../../utils/terminalSessionSignals";
 
 // ---------------------------------------------------------------------------
 // Hoisted mocks
@@ -162,7 +163,7 @@ vi.mock("../../utils/terminalPreview", () => ({
 }));
 
 vi.mock("../../utils/terminalSessionSignals", async () => {
-  const actual = await vi.importActual<typeof import("../../utils/terminalSessionSignals")>(
+  const actual = await vi.importActual<typeof TerminalSessionSignals>(
     "../../utils/terminalSessionSignals",
   );
   return {
@@ -989,6 +990,78 @@ describe("ptyService", () => {
       expect(mockPty.write).toHaveBeenCalledWith("claude --resume claude-session-123\r");
     });
 
+    it("backfills a missing Codex storage target before launching the resumed PTY", async () => {
+      vi.useFakeTimers();
+      try {
+        const fakeNow = new Date("2026-04-15T22:00:00.000Z");
+        vi.setSystemTime(fakeNow);
+
+        const homedir = os.homedir();
+        const sessionsBase = path.join(homedir, ".codex", "sessions");
+        const dirPath = path.join(sessionsBase, "2026", "04", "15");
+        const filePath = path.join(dirPath, "rollout-2026-04-15T21-30-00-thread-resume.jsonl");
+        const startedAt = "2026-04-15T21:30:00.000Z";
+        const firstLine = JSON.stringify({
+          timestamp: startedAt,
+          type: "session_meta",
+          payload: {
+            id: "thread-resume",
+            timestamp: startedAt,
+            cwd: "/tmp/test-worktree",
+          },
+        });
+
+        mocks.existsSyncResults.set(sessionsBase, true);
+        mocks.existsSyncResults.set(dirPath, true);
+        mocks.dirEntries.set(dirPath, [path.basename(filePath)]);
+        mocks.fileContents.set(filePath, `${firstLine}\n`);
+        mocks.fileStats.set(filePath, { size: firstLine.length, mtimeMs: fakeNow.getTime() - 30_000, isDirectory: false });
+
+        const { service, sessionService, mockPty } = createHarness();
+        sessionService.create({
+          sessionId: "session-codex-picker",
+          laneId: "lane-1",
+          ptyId: null,
+          tracked: true,
+          title: "Codex CLI",
+          startedAt,
+          transcriptPath: "/tmp/test-worktree/.ade/transcripts/session-codex-picker.log",
+          toolType: "codex",
+          resumeCommand: "codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox resume '\u001b[>7u'",
+          resumeMetadata: {
+            provider: "codex",
+            targetKind: "thread",
+            targetId: "\u001b[>7u",
+            launch: { permissionMode: "full-auto" },
+          },
+        });
+        sessionService.end({
+          sessionId: "session-codex-picker",
+          endedAt: "2026-04-15T21:40:00.000Z",
+          exitCode: 0,
+          status: "completed",
+        });
+
+        await service.create({
+          sessionId: "session-codex-picker",
+          laneId: "lane-1",
+          title: "Codex CLI",
+          cols: 80,
+          rows: 24,
+          toolType: "codex",
+          startupCommand: "codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox resume",
+        });
+
+        expect(sessionService.setResumeCommand).toHaveBeenCalledWith(
+          "session-codex-picker",
+          "codex resume thread-resume",
+        );
+        expect(mockPty.write).toHaveBeenCalledWith("codex resume thread-resume\r");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("preserves the strict resume path when a requested session id does not exist", async () => {
       const { service } = createHarness();
 
@@ -1569,6 +1642,53 @@ describe("ptyService", () => {
       expect(state).toBe("running");
     });
 
+    it("emits an idle runtime signal when a live CLI session stops outputting", async () => {
+      vi.useFakeTimers();
+      try {
+        const { service, mockPty, onSessionRuntimeSignal } = createHarness();
+        const { sessionId } = await service.create({
+          laneId: "lane-1",
+          title: "Claude CLI",
+          cols: 80,
+          rows: 24,
+          toolType: "claude",
+        });
+
+        mockPty._emitter.emit("data", "working...\n");
+        onSessionRuntimeSignal.mockClear();
+
+        await vi.advanceTimersByTimeAsync(12_499);
+        expect(onSessionRuntimeSignal).not.toHaveBeenCalledWith(
+          expect.objectContaining({ sessionId, runtimeState: "idle" }),
+        );
+
+        await vi.advanceTimersByTimeAsync(1);
+
+        expect(service.getRuntimeState(sessionId, "running")).toBe("idle");
+        expect(onSessionRuntimeSignal).toHaveBeenCalledWith(
+          expect.objectContaining({
+            laneId: "lane-1",
+            sessionId,
+            runtimeState: "idle",
+          }),
+        );
+
+        onSessionRuntimeSignal.mockClear();
+        mockPty._emitter.emit("data", "more work\n");
+
+        expect(service.getRuntimeState(sessionId, "running")).toBe("running");
+        expect(onSessionRuntimeSignal).toHaveBeenCalledWith(
+          expect.objectContaining({
+            laneId: "lane-1",
+            sessionId,
+            runtimeState: "running",
+          }),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("derives state from fallback status for unknown sessions", () => {
       const { service } = createHarness();
       expect(service.getRuntimeState("unknown-session", "completed")).toBe("exited");
@@ -1895,10 +2015,8 @@ describe("ptyService", () => {
     it("backfills Codex storage resume targets during session-list hydration", async () => {
       // The session-list path is how older sessions (whose transcripts no
       // longer contain an explicit resume command) get their resume target
-      // backfilled. Excluding `session-list` from the Codex storage fallback
-      // breaks resumption of those sessions, so the fallback must run here.
-      // Only `resume-launch` is excluded — that flow uses the live capture
-      // poll for fresh sessions and the storage scan would slow launch.
+      // backfilled. The same storage fallback also runs from resume-launch so
+      // pressing Resume does not fall through to Codex's picker.
       vi.useFakeTimers();
       try {
         const fakeNow = new Date("2026-04-15T22:00:00.000Z");
@@ -2019,9 +2137,15 @@ describe("ptyService", () => {
         mocks.existsSyncResults.set(dirPath, true);
         mocks.dirEntries.set(dirPath, [path.basename(stalePath), path.basename(freshPath)]);
         mocks.fileContents.set(stalePath, `${staleFirstLine}\n`);
-        mocks.fileContents.set(freshPath, `${freshFirstLine}\n{"timestamp":"2026-04-15T22:00:01.500Z","type":"event_msg","payload":{"type":"user_message","message":"ADE session guidance"}}\n`);
+        const freshContent = [
+          freshFirstLine,
+          JSON.stringify({ timestamp: "2026-04-15T22:00:01.200Z", type: "response_item", payload: { type: "message", role: "developer", content: "x".repeat(70_000) } }),
+          JSON.stringify({ timestamp: "2026-04-15T22:00:01.500Z", type: "event_msg", payload: { type: "user_message", message: "ADE session guidance" } }),
+          JSON.stringify({ timestamp: "2026-04-15T22:00:03.000Z", type: "event_msg", payload: { type: "thread_name_updated", thread_id: "thread-fresh", thread_name: "Runtime title from Codex" } }),
+        ].join("\n") + "\n";
+        mocks.fileContents.set(freshPath, freshContent);
         mocks.fileStats.set(stalePath, { size: staleFirstLine.length, mtimeMs: fakeNow.getTime() - 30 * 60_000, isDirectory: false });
-        mocks.fileStats.set(freshPath, { size: freshFirstLine.length, mtimeMs: fakeNow.getTime() + 1_000, isDirectory: false });
+        mocks.fileStats.set(freshPath, { size: freshContent.length, mtimeMs: fakeNow.getTime() + 1_000, isDirectory: false });
 
         const { service, sessionService } = createHarness();
         const created = await service.create({
@@ -2037,6 +2161,14 @@ describe("ptyService", () => {
 
         expect(sessionService.setResumeCommand).toHaveBeenCalledWith(created.sessionId, "codex resume thread-fresh");
         expect(sessionService.setResumeCommand).not.toHaveBeenCalledWith(created.sessionId, "codex resume thread-stale");
+        expect(sessionService.updateMeta).toHaveBeenCalledWith(
+          expect.objectContaining({
+            sessionId: created.sessionId,
+            title: "Runtime title from Codex",
+            manuallyNamed: false,
+          }),
+        );
+        expect(sessionService.get(created.sessionId)?.title).toBe("Runtime title from Codex");
       } finally {
         vi.useRealTimers();
       }

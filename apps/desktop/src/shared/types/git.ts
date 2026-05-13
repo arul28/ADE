@@ -151,6 +151,12 @@ export type DiffChanges = {
   staged: FileChange[];
 };
 
+export type DiffLineStats = {
+  additions: number;
+  deletions: number;
+  files: number;
+};
+
 export type GetDiffChangesArgs = {
   laneId: string;
 };

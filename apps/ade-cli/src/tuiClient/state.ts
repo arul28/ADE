@@ -4,6 +4,7 @@ import path from "node:path";
 
 export type AdeCodeState = {
   lastChatByLane: Record<string, string>;
+  lastLaneId: string | null;
 };
 
 const STATE_DIR = path.join(os.homedir(), ".ade");
@@ -21,9 +22,12 @@ export function loadAdeCodeState(): AdeCodeState {
         }
       }
     }
-    return { lastChatByLane };
+    return {
+      lastChatByLane,
+      lastLaneId: typeof parsed.lastLaneId === "string" ? parsed.lastLaneId : null,
+    };
   } catch {
-    return { lastChatByLane: {} };
+    return { lastChatByLane: {}, lastLaneId: null };
   }
 }
 

@@ -102,7 +102,7 @@ private struct SettingsTailscaleHelpSection: View {
           Text("Away from home")
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(ADEColor.textPrimary)
-          Text("Install Tailscale on this iPhone and your ADE machine. Once both are on the same tailnet, the machine appears here like it does on local Wi-Fi.")
+          Text("Install Tailscale on this iPhone and your ADE machine. Pair once on local Wi-Fi or enter the machine's Tailscale address, then reconnect from the saved machine when you are away.")
             .font(.caption)
             .foregroundStyle(ADEColor.textSecondary)
             .fixedSize(horizontal: false, vertical: true)

@@ -1,7 +1,7 @@
 /**
  * usageTrackingService.ts
  *
- * Polls live usage data from Claude, Codex, and Cursor providers.
+ * Polls live usage data from Claude and Codex providers.
  * Scans local JSONL logs for cost/token aggregation.
  * Computes pacing relative to provider reset windows.
  */
@@ -19,6 +19,7 @@ import type {
   CostSnapshot,
   ExtraUsage,
   UsageSnapshot,
+  UsageThresholdEvent,
 } from "../../../shared/types";
 import { isRecord, nowIso, getErrorMessage, safeJsonParse } from "../shared/utils";
 import {
@@ -30,8 +31,6 @@ import {
   readCodexCredentials,
   refreshClaudeCredentials,
 } from "../ai/providerCredentialSources";
-import { getAllApiKeys } from "../ai/apiKeyStore";
-import { isCursorAdminApiKey } from "../ai/utils";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
 import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/processExecution";
 
@@ -55,7 +54,9 @@ function isBenignStdinCloseError(error: unknown): boolean {
 
 const CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 const CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
-const CURSOR_SPEND_URL = "https://api.cursor.com/teams/spend";
+
+const USAGE_THRESHOLDS = [25, 50, 75, 100] as const;
+const TRACKED_PROVIDERS: UsageProvider[] = ["claude", "codex"];
 
 // Per-million token prices for cost estimation
 const TOKEN_PRICES: Record<string, { input: number; output: number }> = {
@@ -260,153 +261,10 @@ function parseCodexRateLimitWindows(data: Record<string, unknown>): UsageWindow[
   return windows;
 }
 
-// ── Cursor Usage Polling ─────────────────────────────────────────
-
-type CursorSpendMember = {
-  spendCents?: number;
-  overallSpendCents?: number;
-  fastPremiumRequests?: number;
-  hardLimitOverrideDollars?: number;
-  monthlyLimitDollars?: number;
-};
-
-type CursorSpendResponse = {
-  teamMemberSpend?: CursorSpendMember[];
-  subscriptionCycleStart?: number;
-};
-
-function getCursorApiKey(): { key: string; source: "cursor-admin-env" | "cursor-env" | "cursor-api-key-store" } | null {
-  const adminEnvKey = process.env.CURSOR_ADMIN_API_KEY?.trim();
-  if (isCursorAdminApiKey(adminEnvKey)) return { key: adminEnvKey!, source: "cursor-admin-env" };
-  const envKey = process.env.CURSOR_API_KEY?.trim();
-  if (isCursorAdminApiKey(envKey)) return { key: envKey!, source: "cursor-env" };
-  try {
-    const stored = getAllApiKeys().cursor?.trim();
-    if (isCursorAdminApiKey(stored)) return { key: stored!, source: "cursor-api-key-store" };
-  } catch {
-    // The API key store can be unavailable during early startup. Treat this as
-    // "no key" for usage polling; provider status surfaces the store issue.
-  }
-  return null;
-}
-
-function finiteOrZero(value: unknown): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
-}
-
-function addOneMonth(timestampMs: number): number {
-  const next = new Date(timestampMs);
-  if (!Number.isFinite(next.getTime())) return 0;
-  next.setMonth(next.getMonth() + 1);
-  return next.getTime();
-}
-
-function parseCursorSpendUsage(data: CursorSpendResponse): {
-  windows: UsageWindow[];
-  extraUsage: ExtraUsage | null;
-} {
-  const members = Array.isArray(data.teamMemberSpend) ? data.teamMemberSpend : [];
-  if (members.length === 0) return { windows: [], extraUsage: null };
-
-  // overallSpendCents = on-demand + included usage (the real total spend);
-  // spendCents alone captures only on-demand pay-as-you-go.
-  const memberSpendCents = (member: CursorSpendMember): number => {
-    if (typeof member.overallSpendCents === "number" && Number.isFinite(member.overallSpendCents)) {
-      return member.overallSpendCents;
-    }
-    return finiteOrZero(member.spendCents);
-  };
-  // hardLimitOverrideDollars is the per-user override; fall back to the
-  // per-member default monthlyLimitDollars when no override is configured.
-  const memberLimitCents = (member: CursorSpendMember): number => {
-    const overrideDollars = finiteOrZero(member.hardLimitOverrideDollars);
-    if (overrideDollars > 0) return overrideDollars * 100;
-    const monthlyDollars = finiteOrZero(member.monthlyLimitDollars);
-    return monthlyDollars > 0 ? monthlyDollars * 100 : 0;
-  };
-
-  const totalSpendCents = members.reduce((sum, member) => sum + memberSpendCents(member), 0);
-  const totalLimitCents = members.reduce((sum, member) => sum + memberLimitCents(member), 0);
-
-  // Cursor documents subscriptionCycleStart as epoch milliseconds.
-  const cycleStartMs = finiteOrZero(data.subscriptionCycleStart);
-  const resetMs = cycleStartMs > 0 ? addOneMonth(cycleStartMs) : 0;
-  const resetsAt = resetMs > 0 ? new Date(resetMs).toISOString() : "";
-  const windowDurationMs = resetMs > 0 ? Math.max(0, resetMs - cycleStartMs) : undefined;
-
-  const windows: UsageWindow[] = [];
-  const utilization = totalLimitCents > 0 ? Math.min(100, (totalSpendCents / totalLimitCents) * 100) : null;
-  if (utilization != null) {
-    windows.push({
-      provider: "cursor",
-      windowType: "monthly",
-      percentUsed: Math.round(utilization * 10) / 10,
-      resetsAt,
-      resetsInMs: computeResetsInMs(resetsAt),
-      ...(windowDurationMs ? { windowDurationMs } : {}),
-    });
-  }
-
-  const extraUsage: ExtraUsage | null =
-    totalSpendCents > 0 || totalLimitCents > 0
-      ? {
-          provider: "cursor",
-          isEnabled: true,
-          usedCreditsUsd: Math.round(totalSpendCents) / 100,
-          monthlyLimitUsd: Math.round(totalLimitCents) / 100,
-          utilization,
-          currency: "usd",
-        }
-      : null;
-
-  return { windows, extraUsage };
-}
-
-async function pollCursorUsage(): Promise<{ windows: UsageWindow[]; extraUsage: ExtraUsage | null; errors: string[] }> {
-  const credential = getCursorApiKey();
-  if (!credential) {
-    return { windows: [], extraUsage: null, errors: [] };
-  }
-
-  try {
-    const auth = Buffer.from(`${credential.key}:`, "utf8").toString("base64");
-    const result = await fetchJson(
-      CURSOR_SPEND_URL,
-      {
-        Authorization: `Basic ${auth}`,
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
-      15_000,
-      { method: "POST", body: JSON.stringify({ pageSize: 100 }) },
-    );
-
-    if (!result.ok) {
-      return {
-        windows: [],
-        extraUsage: null,
-        errors: [`cursor: Admin API returned ${result.status}`],
-      };
-    }
-
-    const response = result.data as CursorSpendResponse;
-    if (!Array.isArray(response.teamMemberSpend)) {
-      return {
-        windows: [],
-        extraUsage: null,
-        errors: ["cursor: usage response contained no recognized spend data"],
-      };
-    }
-    const parsed = parseCursorSpendUsage(response);
-    return { ...parsed, errors: [] };
-  } catch (err) {
-    return {
-      windows: [],
-      extraUsage: null,
-      errors: [`cursor: ${getErrorMessage(err)}`],
-    };
-  }
-}
+// Cursor usage polling was removed in 2026-05 — Cursor only exposes
+// team-admin endpoints (/teams/spend, /teams/filtered-usage-events,
+// /teams/daily-usage-data) with no personal-user surface, so the per-user
+// drawer state could never be meaningful for the typical ADE user.
 
 async function pollClaudeUsage(logger: Logger): Promise<{ windows: UsageWindow[]; extraUsage: ExtraUsage | null; errors: string[] }> {
   const windows: UsageWindow[] = [];
@@ -853,6 +711,22 @@ async function* readJsonlLines(filePath: string): AsyncGenerator<string> {
   }
 }
 
+function bucketDaily7d(entries: TokenEntry[], nowMs: number): number[] {
+  const buckets = new Array<number>(7).fill(0);
+  const todayStart = new Date(nowMs);
+  todayStart.setHours(0, 0, 0, 0);
+  const todayStartMs = todayStart.getTime();
+  const oldestStart = todayStartMs - 6 * 86_400_000;
+  for (const entry of entries) {
+    if (entry.timestamp < oldestStart) continue;
+    if (entry.timestamp > nowMs) continue;
+    const dayIndex = Math.floor((entry.timestamp - oldestStart) / 86_400_000);
+    const bucketIndex = Math.min(6, Math.max(0, dayIndex));
+    buckets[bucketIndex] += entry.inputTokens + entry.outputTokens;
+  }
+  return buckets;
+}
+
 function aggregateCosts(
   entries: TokenEntry[],
   provider: UsageProvider
@@ -1021,20 +895,88 @@ export type UsageTrackingService = ReturnType<typeof createUsageTrackingService>
 type UsageTrackingDependencies = {
   pollClaudeUsage?: () => Promise<{ windows: UsageWindow[]; extraUsage: ExtraUsage | null; errors: string[] }>;
   pollCodexUsage?: () => Promise<{ windows: UsageWindow[]; errors: string[] }>;
-  pollCursorUsage?: () => Promise<{ windows: UsageWindow[]; extraUsage: ExtraUsage | null; errors: string[] }>;
   scanClaudeLogs?: () => Promise<TokenEntry[]>;
   scanCodexLogs?: () => Promise<TokenEntry[]>;
 };
+
+type ThresholdState = Partial<Record<UsageProvider, { resetsAt: string; firedThresholds: number[] }>>;
+
+type ThresholdStore = {
+  load: () => ThresholdState;
+  save: (state: ThresholdState) => void;
+};
+
+function createFileThresholdStore(filePath: string, logger: Logger): ThresholdStore {
+  return {
+    load: () => {
+      try {
+        const raw = fs.readFileSync(filePath, "utf8");
+        const parsed = safeJsonParse<ThresholdState>(raw, {});
+        return parsed;
+      } catch {
+        return {};
+      }
+    },
+    save: (state) => {
+      try {
+        fs.mkdirSync(path.dirname(filePath), { recursive: true });
+        fs.writeFileSync(filePath, JSON.stringify(state), "utf8");
+      } catch (err) {
+        logger.warn("usage.threshold_persist_failed", { error: getErrorMessage(err) });
+      }
+    },
+  };
+}
+
+function detectThresholdCrossings(
+  windows: UsageWindow[],
+  prevState: ThresholdState,
+): { events: UsageThresholdEvent[]; nextState: ThresholdState } {
+  const nextState: ThresholdState = { ...prevState };
+  const events: UsageThresholdEvent[] = [];
+  for (const provider of TRACKED_PROVIDERS) {
+    const primaryWindow =
+      windows.find((w) => w.provider === provider && w.windowType === "weekly") ??
+      windows.find((w) => w.provider === provider && w.windowType === "monthly");
+    if (!primaryWindow || !primaryWindow.resetsAt) continue;
+
+    const prev = prevState[provider];
+    const cycleChanged = !prev || prev.resetsAt !== primaryWindow.resetsAt;
+    const firedThresholds = cycleChanged ? [] : [...(prev?.firedThresholds ?? [])];
+
+    const percent = Math.max(0, Math.min(100, primaryWindow.percentUsed));
+    for (const threshold of USAGE_THRESHOLDS) {
+      if (percent >= threshold && !firedThresholds.includes(threshold)) {
+        firedThresholds.push(threshold);
+        events.push({
+          provider,
+          threshold,
+          percent,
+          resetsAt: primaryWindow.resetsAt,
+          firedAt: nowIso(),
+        });
+      }
+    }
+    nextState[provider] = { resetsAt: primaryWindow.resetsAt, firedThresholds };
+  }
+  return { events, nextState };
+}
 
 export function createUsageTrackingService({
   logger,
   pollIntervalMs: configuredInterval,
   onUpdate,
+  onThresholdEvent,
+  thresholdStatePath,
+  thresholdStore,
   dependencies,
 }: {
   logger: Logger;
   pollIntervalMs?: number;
   onUpdate?: (snapshot: UsageSnapshot) => void;
+  onThresholdEvent?: (event: UsageThresholdEvent) => void;
+  thresholdStatePath?: string;
+  thresholdStore?: ThresholdStore;
   dependencies?: UsageTrackingDependencies;
 }) {
   const pollIntervalMs = Math.max(
@@ -1045,13 +987,21 @@ export function createUsageTrackingService({
   let lastSnapshot: UsageSnapshot | null = null;
   let costCacheTimestamp = 0;
   let cachedCosts: CostSnapshot[] = [];
+  let cachedDaily7d: Partial<Record<UsageProvider, number[]>> = {};
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let inFlightPoll: Promise<UsageSnapshot> | null = null;
   const runClaudeUsagePoll = dependencies?.pollClaudeUsage ?? (() => pollClaudeUsage(logger));
   const runCodexUsagePoll = dependencies?.pollCodexUsage ?? (() => pollCodexUsage(logger));
-  const runCursorUsagePoll = dependencies?.pollCursorUsage ?? pollCursorUsage;
   const scanClaudeCostLogs = dependencies?.scanClaudeLogs ?? scanClaudeLogs;
   const scanCodexCostLogs = dependencies?.scanCodexLogs ?? scanCodexLogs;
+
+  const resolvedThresholdStore: ThresholdStore =
+    thresholdStore ??
+    createFileThresholdStore(
+      thresholdStatePath ?? path.join(os.homedir(), ".ade", "usage-thresholds.json"),
+      logger,
+    );
+  let thresholdState: ThresholdState = resolvedThresholdStore.load();
 
   const emptySnapshot = (): UsageSnapshot => ({
     windows: [],
@@ -1084,7 +1034,12 @@ export function createUsageTrackingService({
     if (claudeEntries.length > 0) costs.push(aggregateCosts(claudeEntries, "claude"));
     if (codexEntries.length > 0) costs.push(aggregateCosts(codexEntries, "codex"));
 
+    const daily7d: Partial<Record<UsageProvider, number[]>> = {};
+    if (claudeEntries.length > 0) daily7d.claude = bucketDaily7d(claudeEntries, now);
+    if (codexEntries.length > 0) daily7d.codex = bucketDaily7d(codexEntries, now);
+
     cachedCosts = costs;
+    cachedDaily7d = daily7d;
     costCacheTimestamp = now;
     return costs;
   }
@@ -1099,7 +1054,7 @@ export function createUsageTrackingService({
       let allWindows: UsageWindow[] = [];
 
       try {
-        const [claudeResult, codexResult, cursorResult, costs] = await Promise.all([
+        const [claudeResult, codexResult, costs] = await Promise.all([
           runClaudeUsagePoll().catch((err) => {
             const msg = `claude: poll failed: ${getErrorMessage(err)}`;
             logger.warn("usage.poll.claude_failed", { error: msg });
@@ -1110,22 +1065,16 @@ export function createUsageTrackingService({
             logger.warn("usage.poll.codex_failed", { error: msg });
             return { windows: [] as UsageWindow[], errors: [msg] };
           }),
-          runCursorUsagePoll().catch((err) => {
-            const msg = `cursor: poll failed: ${getErrorMessage(err)}`;
-            logger.warn("usage.poll.cursor_failed", { error: msg });
-            return { windows: [] as UsageWindow[], extraUsage: null as ExtraUsage | null, errors: [msg] };
-          }),
           pollCosts(),
         ]);
 
-        allWindows = [...claudeResult.windows, ...codexResult.windows, ...cursorResult.windows];
-        errors.push(...claudeResult.errors, ...codexResult.errors, ...cursorResult.errors);
+        allWindows = [...claudeResult.windows, ...codexResult.windows];
+        errors.push(...claudeResult.errors, ...codexResult.errors);
 
         const pacing = calculatePacing(allWindows);
         const pacingByProvider = calculatePacingByProvider(allWindows);
         const extraUsage: ExtraUsage[] = [];
         if (claudeResult.extraUsage) extraUsage.push(claudeResult.extraUsage);
-        if (cursorResult.extraUsage) extraUsage.push(cursorResult.extraUsage);
 
         const snapshot: UsageSnapshot = {
           windows: allWindows,
@@ -1133,11 +1082,29 @@ export function createUsageTrackingService({
           pacingByProvider,
           costs,
           extraUsage,
+          dailyUsage7d: { ...cachedDaily7d },
           lastPolledAt: nowIso(),
           errors,
         };
 
         lastSnapshot = snapshot;
+
+        try {
+          const { events, nextState } = detectThresholdCrossings(allWindows, thresholdState);
+          if (events.length > 0 || JSON.stringify(nextState) !== JSON.stringify(thresholdState)) {
+            thresholdState = nextState;
+            resolvedThresholdStore.save(nextState);
+          }
+          for (const event of events) {
+            try {
+              onThresholdEvent?.(event);
+            } catch {
+              // Never crash on listener error
+            }
+          }
+        } catch (err) {
+          logger.warn("usage.threshold_detection_failed", { error: getErrorMessage(err) });
+        }
 
         try {
           onUpdate?.(snapshot);
@@ -1209,6 +1176,7 @@ export function createUsageTrackingService({
 export const _testing = {
   MIN_POLL_INTERVAL_MS,
   MAX_POLL_INTERVAL_MS,
+  USAGE_THRESHOLDS,
   readClaudeCredentials,
   readCodexCredentials,
   isCodexTokenStale,
@@ -1217,13 +1185,12 @@ export const _testing = {
   refreshClaudeCredentials,
   parseClaudeWindows,
   parseCodexRateLimitWindows,
-  parseCursorSpendUsage,
   pollClaudeUsage,
   pollCodexUsage,
-  pollCursorUsage,
   scanClaudeLogs,
   scanCodexLogs,
   aggregateCosts,
+  bucketDaily7d,
   calculatePacing,
   calculatePacingByProvider,
   calculatePacingForWindow,
@@ -1231,4 +1198,5 @@ export const _testing = {
   findJsonlFiles,
   resolveTokenPrice,
   pollCodexViaCliRpc,
+  detectThresholdCrossings,
 };

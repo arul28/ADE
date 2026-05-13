@@ -4,6 +4,7 @@ import YAML from "yaml";
 import { safeStorage } from "electron";
 import type { Logger } from "../logging/logger";
 import { isRecord, getErrorMessage, isEnoentError } from "../shared/utils";
+import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 
 // Bundled OAuth client ID — ships with ADE so users get "Sign in with Linear"
 // out of the box without configuring their own OAuth app.
@@ -14,6 +15,12 @@ const BUNDLED_LINEAR_OAUTH_CLIENT_ID: string | null =
 const TOKEN_FILE = "linear-token.v1.bin";
 const OAUTH_CLIENT_FILE = "linear-oauth-client.v1.bin";
 const IMPORT_SENTINEL = "linear-token.imported.v1";
+const MACHINE_TOKEN_KEY = "linear.token.v1";
+const MACHINE_AUTH_MODE_KEY = "linear.authMode.v1";
+const MACHINE_TOKEN_EXPIRES_AT_KEY = "linear.tokenExpiresAt.v1";
+const MACHINE_REFRESH_TOKEN_KEY = "linear.refreshToken.v1";
+const MACHINE_OAUTH_CLIENT_KEY = "linear.oauthClient.v1";
+const MACHINE_LEGACY_PROJECTS_MIGRATED_KEY = "linear.legacy_projects_migrated.v1";
 const OAUTH_CONFIG_FILES = [
   "linear-oauth.v1.json",
   "linear-oauth.json",
@@ -26,6 +33,7 @@ const ENV_LINEAR_TOKEN_KEYS = ["ADE_LINEAR_API", "LINEAR_API_KEY", "ADE_LINEAR_T
 type LinearCredentialServiceArgs = {
   adeDir: string;
   logger?: Logger | null;
+  credentialStore?: SyncCredentialStore | null;
 };
 
 type StoredLinearToken = {
@@ -63,6 +71,7 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
   const tokenPath = path.join(secretsDir, TOKEN_FILE);
   const oauthClientPath = path.join(secretsDir, OAUTH_CLIENT_FILE);
   const importSentinelPath = path.join(secretsDir, IMPORT_SENTINEL);
+  const credentialStore = args.credentialStore ?? null;
 
   const readEnvToken = (): string | null => {
     for (const key of ENV_LINEAR_TOKEN_KEYS) {
@@ -144,7 +153,166 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
     }
   };
 
+  const readMachineCredential = (key: string): string | null => {
+    if (!credentialStore) return null;
+    try {
+      return credentialStore.getSync(key)?.trim() || null;
+    } catch (error: unknown) {
+      args.logger?.warn("linear_sync.machine_credential_read_failed", {
+        key,
+        error: getErrorMessage(error),
+      });
+      return null;
+    }
+  };
+
+  const writeMachineCredential = (key: string, value: string | null | undefined): void => {
+    if (!credentialStore) return;
+    try {
+      if (value?.trim()) {
+        credentialStore.setSync(key, value.trim());
+      } else {
+        credentialStore.deleteSync(key);
+      }
+    } catch (error: unknown) {
+      args.logger?.warn("linear_sync.machine_credential_write_failed", {
+        key,
+        error: getErrorMessage(error),
+      });
+      throw error;
+    }
+  };
+
+  const readMachineToken = (): StoredLinearToken | null => {
+    const token = readMachineCredential(MACHINE_TOKEN_KEY);
+    if (!token) return null;
+    const authMode = readMachineCredential(MACHINE_AUTH_MODE_KEY);
+    return {
+      token,
+      authMode: authMode === "oauth" ? "oauth" : "manual",
+      refreshToken: readMachineCredential(MACHINE_REFRESH_TOKEN_KEY),
+      expiresAt: readMachineCredential(MACHINE_TOKEN_EXPIRES_AT_KEY),
+    };
+  };
+
+  const readMachineOAuthClientCredentials = (): LinearOAuthClientCredentials | null => {
+    const raw = readMachineCredential(MACHINE_OAUTH_CLIENT_KEY);
+    if (!raw) return null;
+    try {
+      return normalizeOAuthClientCredentials(JSON.parse(raw));
+    } catch {
+      return null;
+    }
+  };
+
+  const readMigratedProjectRoots = (): Set<string> => {
+    const raw = readMachineCredential(MACHINE_LEGACY_PROJECTS_MIGRATED_KEY);
+    if (!raw) return new Set();
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (!Array.isArray(parsed)) return new Set();
+      return new Set(
+        parsed
+          .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+          .map((entry) => path.resolve(entry)),
+      );
+    } catch {
+      return new Set();
+    }
+  };
+
+  const markProjectMigrated = (): void => {
+    if (!credentialStore) return;
+    const roots = readMigratedProjectRoots();
+    roots.add(path.resolve(path.dirname(args.adeDir)));
+    writeMachineCredential(MACHINE_LEGACY_PROJECTS_MIGRATED_KEY, JSON.stringify(Array.from(roots).sort()));
+  };
+
+  const readOAuthConfigFileCredentials = (): LinearOAuthClientCredentials | null => {
+    for (const filename of OAUTH_CONFIG_FILES) {
+      const configPath = path.join(secretsDir, filename);
+      try {
+        const raw = fs.readFileSync(configPath, "utf8");
+        const parsed = filename.endsWith(".json") ? JSON.parse(raw) : YAML.parse(raw);
+        const credentials = normalizeOAuthClientCredentials(parsed);
+        if (credentials) return credentials;
+      } catch (error: unknown) {
+        if (isEnoentError(error)) {
+          continue;
+        }
+        args.logger?.warn("linear_sync.oauth_config_read_failed", {
+          filename,
+          error: getErrorMessage(error),
+        });
+      }
+    }
+    return null;
+  };
+
+  const persistMachineToken = (record: StoredLinearToken | null): void => {
+    writeMachineCredential(MACHINE_TOKEN_KEY, record?.token ?? null);
+    writeMachineCredential(MACHINE_AUTH_MODE_KEY, record?.authMode ?? null);
+    writeMachineCredential(MACHINE_REFRESH_TOKEN_KEY, record?.refreshToken ?? null);
+    writeMachineCredential(MACHINE_TOKEN_EXPIRES_AT_KEY, record?.expiresAt ?? null);
+  };
+
+  const persistMachineOAuthClientCredentials = (record: LinearOAuthClientCredentials | null): void => {
+    if (!record?.clientId?.trim()) {
+      writeMachineCredential(MACHINE_OAUTH_CLIENT_KEY, null);
+      return;
+    }
+    writeMachineCredential(MACHINE_OAUTH_CLIENT_KEY, JSON.stringify({
+      clientId: record.clientId.trim(),
+      clientSecret: record.clientSecret?.trim() || null,
+    }));
+  };
+
+  const migrateLegacyProjectCredentialsIfNeeded = (): void => {
+    if (!credentialStore) return;
+    const projectRoot = path.resolve(path.dirname(args.adeDir));
+    const migratedRoots = readMigratedProjectRoots();
+    if (migratedRoots.has(projectRoot)) return;
+    const hadEncryptedLegacyStore = fs.existsSync(tokenPath) || fs.existsSync(oauthClientPath);
+
+    if (!readMachineToken()) {
+      const legacyToken = readEncryptedToken();
+      if (legacyToken) {
+        persistMachineToken(legacyToken);
+      } else {
+        const legacyPath = path.join(args.adeDir, "local.secret.yaml");
+        try {
+          const raw = fs.readFileSync(legacyPath, "utf8");
+          const token = extractLegacyToken(raw);
+          if (token) {
+            persistMachineToken({ token, authMode: "manual" });
+          }
+        } catch (error: unknown) {
+          if (!isEnoentError(error)) {
+            args.logger?.warn("linear_sync.token_import_failed", {
+              legacyPath,
+              error: getErrorMessage(error),
+            });
+          }
+        }
+      }
+    }
+
+    if (!readMachineOAuthClientCredentials()) {
+      const legacyOAuth = readStoredOAuthClientCredentials() ?? readOAuthConfigFileCredentials();
+      if (legacyOAuth) persistMachineOAuthClientCredentials(legacyOAuth);
+    }
+
+    if (!hadEncryptedLegacyStore || safeStorage.isEncryptionAvailable()) {
+      markProjectMigrated();
+    }
+  };
+
   const persistToken = (record: StoredLinearToken | null): void => {
+    if (credentialStore) {
+      persistMachineToken(record);
+      return;
+    }
+
     const token = record?.token?.trim() ?? "";
     if (!token.length) {
       try {
@@ -175,6 +343,11 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
   };
 
   const persistOAuthClientCredentials = (record: LinearOAuthClientCredentials | null): void => {
+    if (credentialStore) {
+      persistMachineOAuthClientCredentials(record);
+      return;
+    }
+
     const clientId = record?.clientId?.trim() ?? "";
     if (!clientId.length) {
       try {
@@ -247,6 +420,17 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
 
   const getStoredToken = (): StoredLinearToken | null => {
     if (cachedToken !== undefined) return cachedToken;
+    if (credentialStore) {
+      migrateLegacyProjectCredentialsIfNeeded();
+      cachedToken = readMachineToken();
+      if (!cachedToken) {
+        const envToken = readEnvToken();
+        if (envToken) {
+          cachedToken = { token: envToken, authMode: "manual" };
+        }
+      }
+      return cachedToken;
+    }
     importLegacyTokenIfNeeded();
     cachedToken = readEncryptedToken();
     if (!cachedToken) {
@@ -265,6 +449,25 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
 
   const readOAuthClientCredentials = (): LinearOAuthClientCredentials | null => {
     if (cachedOAuthCreds !== undefined) return cachedOAuthCreds;
+    if (credentialStore) {
+      migrateLegacyProjectCredentialsIfNeeded();
+      const stored = readMachineOAuthClientCredentials();
+      if (stored) {
+        cachedOAuthCreds = stored;
+        return cachedOAuthCreds;
+      }
+      const configFileCredentials = readOAuthConfigFileCredentials();
+      if (configFileCredentials) {
+        cachedOAuthCreds = configFileCredentials;
+        return cachedOAuthCreds;
+      }
+      if (BUNDLED_LINEAR_OAUTH_CLIENT_ID) {
+        cachedOAuthCreds = { clientId: BUNDLED_LINEAR_OAUTH_CLIENT_ID, clientSecret: null };
+        return cachedOAuthCreds;
+      }
+      cachedOAuthCreds = null;
+      return null;
+    }
     // Priority 1: User-configured credentials (encrypted store)
     const stored = readStoredOAuthClientCredentials();
     if (stored) {
@@ -272,25 +475,10 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
       return cachedOAuthCreds;
     }
     // Priority 2: Config files in secrets dir
-    for (const filename of OAUTH_CONFIG_FILES) {
-      const configPath = path.join(secretsDir, filename);
-      try {
-        const raw = fs.readFileSync(configPath, "utf8");
-        const parsed = filename.endsWith(".json") ? JSON.parse(raw) : YAML.parse(raw);
-        const credentials = normalizeOAuthClientCredentials(parsed);
-        if (credentials) {
-          cachedOAuthCreds = credentials;
-          return cachedOAuthCreds;
-        }
-      } catch (error: unknown) {
-        if (isEnoentError(error)) {
-          continue;
-        }
-        args.logger?.warn("linear_sync.oauth_config_read_failed", {
-          filename,
-          error: getErrorMessage(error),
-        });
-      }
+    const configFileCredentials = readOAuthConfigFileCredentials();
+    if (configFileCredentials) {
+      cachedOAuthCreds = configFileCredentials;
+      return cachedOAuthCreds;
     }
     // Priority 3: Bundled client ID (ships with ADE, no secret — uses PKCE)
     if (BUNDLED_LINEAR_OAUTH_CLIENT_ID) {

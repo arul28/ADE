@@ -1751,15 +1751,10 @@ export function createAiIntegrationService(args: {
           // detectAuth -> detectAllAuth already called detectCliAuthStatuses() and
           // populated the cache, so this reads instantly from cache:
           const cliStatuses = timeSyncPhase("read_cli_auth_cache", () => getCachedCliAuthStatuses());
-          const claudeCli = cliStatuses.find((entry) => entry.cli === "claude");
-          if (claudeCli?.installed && options?.force) {
-            await timePhase("probe_claude_runtime", () => probeClaudeRuntimeHealth({
-              projectRoot,
-              logger,
-              force: true,
-            }));
-            runtimeHealthVersion = getProviderRuntimeHealthVersion();
-          }
+          // Keep AI status refresh non-interactive. Starting a throwaway Claude
+          // Agent SDK runtime here can trigger Claude's OAuth/API-key bootstrap
+          // in the browser, even though the user only asked to refresh status.
+          // Real Claude chat sessions report runtime health when they start.
           const providerConnections = await timePhase("build_provider_connections", () => buildProviderConnections(cliStatuses));
           const configuredLocalProviders = timeSyncPhase(
             "read_local_provider_config",

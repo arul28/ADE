@@ -14,7 +14,7 @@ import type {
   NormalizedLinearIssue,
 } from "../../../shared/types";
 import type { LinearCredentialService } from "./linearCredentialService";
-import type { IssueTrackerIssueSearchQuery, IssueTrackerIssueSearchResult } from "./issueTracker";
+import type { IssueTrackerIssueAttachmentInput, IssueTrackerIssueSearchQuery, IssueTrackerIssueSearchResult } from "./issueTracker";
 import { isRecord, toOptionalString as asString, asArray, sleep, getErrorMessage } from "../shared/utils";
 
 const LINEAR_GRAPHQL_URL = "https://api.linear.app/graphql";
@@ -44,12 +44,6 @@ function toSdkTokenValue(token: string): string {
 
 function priorityIsValid(value: number | null | undefined): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 4;
-}
-
-function toIsoString(value: unknown): string | null {
-  if (value instanceof Date) return value.toISOString();
-  if (typeof value === "string" && value.trim().length > 0) return value;
-  return null;
 }
 
 function toNormalizedIssue(node: Record<string, unknown>): NormalizedLinearIssue | null {
@@ -607,89 +601,6 @@ export function createLinearClient(args: LinearClientArgs) {
     return data.issue && isRecord(data.issue) ? toNormalizedIssue(data.issue) : null;
   };
 
-  const normalizeSdkIssue = async (issue: Record<string, unknown>): Promise<NormalizedLinearIssue | null> => {
-    const [project, team, state, assignee, creator, labelsConnection, childrenConnection] = await Promise.all([
-      typeof issue.project === "object" ? issue.project : Promise.resolve(null),
-      typeof issue.team === "object" ? issue.team : Promise.resolve(null),
-      typeof issue.state === "object" ? issue.state : Promise.resolve(null),
-      typeof issue.assignee === "object" ? issue.assignee : Promise.resolve(null),
-      typeof issue.creator === "object" ? issue.creator : Promise.resolve(null),
-      typeof issue.labels === "function"
-        ? (issue.labels as (args: { first: number }) => Promise<{ nodes?: unknown[] }>)({ first: 8 }).catch(() => null)
-        : typeof issue.labels === "object"
-          ? issue.labels
-          : Promise.resolve(null),
-      typeof issue.children === "function"
-        ? (issue.children as (args: { first: number }) => Promise<{ nodes?: unknown[] }>)({ first: 20 }).catch(() => null)
-        : typeof issue.children === "object"
-          ? issue.children
-          : Promise.resolve(null),
-    ]);
-    const childNodes = await Promise.all(
-      asArray(isRecord(childrenConnection) ? childrenConnection.nodes : [])
-        .filter(isRecord)
-        .map(async (child) => {
-          const childState = typeof child.state === "object"
-            ? await Promise.resolve(child.state).catch(() => null)
-            : null;
-          return {
-            id: child.id,
-            state: isRecord(childState) ? { type: childState.type } : null,
-          };
-        }),
-    );
-
-    const raw = {
-      id: issue.id,
-      identifier: issue.identifier,
-      title: issue.title,
-      description: issue.description,
-      url: issue.url,
-      priority: issue.priority,
-      createdAt: toIsoString(issue.createdAt),
-      updatedAt: toIsoString(issue.updatedAt),
-      dueDate: issue.dueDate,
-      estimate: issue.estimate,
-      archivedAt: toIsoString(issue.archivedAt),
-      completedAt: toIsoString(issue.completedAt),
-      canceledAt: toIsoString(issue.canceledAt),
-      startedAt: toIsoString(issue.startedAt),
-      project: isRecord(project) ? {
-        id: project.id,
-        name: project.name,
-        slug: project.slugId ?? project.slug,
-      } : null,
-      team: isRecord(team) ? {
-        id: team.id,
-        key: team.key,
-        name: team.name,
-      } : null,
-      state: isRecord(state) ? {
-        id: state.id,
-        name: state.name,
-        type: state.type,
-      } : null,
-      assignee: isRecord(assignee) ? {
-        id: assignee.id,
-        name: assignee.name,
-        displayName: assignee.displayName,
-      } : null,
-      creator: isRecord(creator) ? {
-        id: creator.id,
-        name: creator.name,
-        displayName: creator.displayName,
-      } : null,
-      labels: {
-        nodes: asArray(isRecord(labelsConnection) ? labelsConnection.nodes : [])
-          .filter(isRecord)
-          .map((label) => ({ id: label.id, name: label.name })),
-      },
-      children: { nodes: childNodes },
-    };
-
-    return toNormalizedIssue(raw);
-  };
-
   const getQuickView = async (connection: CtoLinearQuickView["connection"]): Promise<CtoLinearQuickView> => {
     const sdk = createSdkClient();
     // Recent issues fetched via raw GraphQL (single request with ISSUE_FIELDS_FRAGMENT)
@@ -1158,6 +1069,61 @@ export function createLinearClient(args: LinearClientArgs) {
     };
   };
 
+  const createIssueAttachment = async (params: IssueTrackerIssueAttachmentInput): Promise<{ url: string; id?: string }> => {
+    const subtitle = params.subtitle?.trim() ? params.subtitle.trim() : null;
+    const iconUrl = params.iconUrl?.trim() ? params.iconUrl.trim() : null;
+    const attachment = await request<{
+      attachmentCreate?: {
+        success?: boolean;
+        attachment?: { id?: string; url?: string };
+      };
+    }>({
+      query: `
+        mutation CreateIssueAttachment(
+          $issueId: String!,
+          $title: String!,
+          $url: String!,
+          $subtitle: String,
+          $iconUrl: String,
+          $metadata: JSONObject
+        ) {
+          attachmentCreate(input: {
+            issueId: $issueId,
+            title: $title,
+            url: $url,
+            subtitle: $subtitle,
+            iconUrl: $iconUrl,
+            metadata: $metadata
+          }) {
+            success
+            attachment { id url }
+          }
+        }
+      `,
+      variables: {
+        issueId: params.issueId,
+        title: params.title,
+        url: params.url,
+        subtitle,
+        iconUrl,
+        metadata: params.metadata ?? null,
+      },
+      maxRetries: 1,
+    });
+
+    const created = attachment.attachmentCreate;
+    const createdUrl = asString(created?.attachment?.url);
+    const createdId = asString(created?.attachment?.id);
+    if (created?.success === false || !createdUrl) {
+      throw new Error("linear: attachmentCreate did not return a created attachment");
+    }
+
+    return {
+      url: createdUrl,
+      id: createdId ?? undefined,
+    };
+  };
+
   const listWebhooks = async (): Promise<LinearWebhookSummary[]> => {
     const data = await request<{
       webhooks?: {
@@ -1290,6 +1256,7 @@ export function createLinearClient(args: LinearClientArgs) {
     updateComment,
     addLabel,
     uploadAttachment,
+    createIssueAttachment,
   };
 }
 

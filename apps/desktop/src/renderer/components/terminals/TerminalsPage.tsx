@@ -542,6 +542,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const workViewArea = useMemo(
     () => (
       <WorkViewArea
+        pageActive={active}
         gridLayoutId={work.gridLayoutId}
         lanes={sortedLanes}
         sessions={work.sessions}
@@ -568,10 +569,18 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         sessionsListLoading={work.loading}
         workSidebarOpen={work.workSidebarOpen}
         onToggleWorkSidebar={toggleWorkSidebar}
+        onReorderLaneSessions={work.reorderLaneSessions}
+        onOpenSessionInTabsView={(sessionId) => {
+          work.setViewMode("tabs");
+          work.openSessionTab(sessionId);
+          work.setActiveItemId(sessionId);
+        }}
+        onGoToLane={work.selectLane}
       />
     ),
     [
       sortedLanes,
+      active,
       work.gridLayoutId,
       work.sessions,
       work.visibleSessions,
@@ -597,6 +606,9 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       handleOpenChatSession,
       handleResumeSession,
       handleContextMenu,
+      work.reorderLaneSessions,
+      work.openSessionTab,
+      work.selectLane,
     ],
   );
 
@@ -624,6 +636,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
               style={{ flexGrow: work.workSidebarWidthPct, maxWidth: "55%" }}
             >
               <WorkSidebar
+                active={active}
                 laneId={activeLaneId}
                 lanes={sortedLanes}
                 activeSession={activeWorkSession}
@@ -641,6 +654,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     [
       activeLaneId,
       activeWorkSession,
+      active,
       attachChatSessionId,
       attachDisabledReason,
       handleWorkSidebarResizeMouseDown,
@@ -804,6 +818,12 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         onCopyResumeCommand={(cmd) => navigator.clipboard.writeText(cmd).catch(() => {})}
         onGoToLane={handleGoToLane}
         onCopySessionId={(id) => navigator.clipboard.writeText(id).catch(() => {})}
+        onCopySessionDeepLink={(session) => {
+          const href = `/work?laneId=${encodeURIComponent(session.laneId)}&sessionId=${encodeURIComponent(session.id)}`;
+          navigator.clipboard.writeText(href).catch(() => {});
+        }}
+        onTogglePinned={(session) => work.togglePinnedSession(session.id)}
+        pinnedSessionIds={work.pinnedSessionIds}
         onRename={(session, newTitle) => {
           setSessionActionError(null);
           const renamePromise = isChatToolType(session.toolType)

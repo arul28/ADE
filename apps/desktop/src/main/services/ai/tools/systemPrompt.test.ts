@@ -47,7 +47,7 @@ describe("buildCodingAgentSystemPrompt", () => {
     const result = buildCodingAgentSystemPrompt({
       cwd: "/x",
       permissionMode: "plan",
-      runtime: "codex-cli",
+      runtime: "codex-app-server",
     });
 
     expect(result).toContain("Native Codex Plan Mode controls planning and approval");
@@ -59,7 +59,7 @@ describe("buildCodingAgentSystemPrompt", () => {
     const result = buildCodingAgentSystemPrompt({
       cwd: "/x",
       permissionMode: "plan",
-      runtime: "codex-cli",
+      runtime: "codex-app-server",
       interactive: false,
     });
 
@@ -106,6 +106,14 @@ describe("buildCodingAgentSystemPrompt", () => {
       const result = buildCodingAgentSystemPrompt({ cwd: "/x", runtime: "codex-cli" });
       expect(result).toContain("## Runtime Environment");
       expect(result).toContain("Codex CLI");
+      expect(result).toContain("No autonomous wake from ADE");
+    });
+
+    it("describes the Codex app-server runtime", () => {
+      const result = buildCodingAgentSystemPrompt({ cwd: "/x", runtime: "codex-app-server" });
+      expect(result).toContain("## Runtime Environment");
+      expect(result).toContain("Codex app-server protocol");
+      expect(result).toContain("JSON-RPC");
       expect(result).toContain("No autonomous wake from ADE");
     });
 

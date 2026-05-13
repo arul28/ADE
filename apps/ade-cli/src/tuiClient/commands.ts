@@ -16,11 +16,17 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/pull", description: "Pull the active lane branch", placement: "inline" },
   { name: "/stage all", description: "Stage all changes in the active lane", placement: "inline" },
   { name: "/clear", description: "Clear the local terminal transcript view", placement: "inline" },
+  { name: "/copy", description: "Copy the visible chat transcript", placement: "inline" },
   { name: "/end", description: "End the active chat runtime", placement: "inline" },
   { name: "/login", description: "Sign in to the active CLI-backed provider from this terminal", placement: "inline" },
   { name: "/open", description: "Open this ADE context in desktop", placement: "inline" },
   { name: "/quit", description: "Exit ade code", placement: "inline" },
   { name: "/remember", description: "Write durable ADE memory", placement: "inline", argumentHint: "<fact>" },
+  { name: "/steer cancel", description: "Remove the latest staged steer message", placement: "inline" },
+  { name: "/steer edit", description: "Edit the latest staged steer message", placement: "inline", argumentHint: "<text>" },
+  { name: "/steer send", description: "Send the latest staged steer into a Claude turn", placement: "inline", providers: ["claude"] },
+  { name: "/steer interrupt", description: "Interrupt Claude and run the latest staged steer", placement: "inline", providers: ["claude"] },
+  { name: "/steer", description: "Show staged steer messages", placement: "right" },
   { name: "/new lane", description: "Create a new lane", placement: "right" },
   { name: "/new chat", description: "Create a new chat", placement: "right", argumentHint: "[title]" },
   { name: "/rename", description: "Rename the active chat", placement: "right", argumentHint: "[title]" },
@@ -224,7 +230,7 @@ export function paletteCommands(
     }
     return a.name.localeCompare(b.name);
   });
-  return filtered.slice(0, 60);
+  return filtered.slice(0, 80);
 }
 
 export function commandPlacement(command: ParsedCommand): CommandPlacement {

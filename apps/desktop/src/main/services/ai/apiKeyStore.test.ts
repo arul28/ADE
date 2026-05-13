@@ -305,6 +305,51 @@ describe("apiKeyStore", () => {
     expect(securityAccountsFor("add-generic-password")).toContain("__ade_provider_index__");
   });
 
+  it("migrates legacy safeStorage API keys into a provided credential store once", async () => {
+    delete process.env.OPENAI_API_KEY;
+    const secretsDir = path.join(tempRoot, ".ade", "secrets");
+    fs.mkdirSync(secretsDir, { recursive: true });
+    fs.writeFileSync(path.join(secretsDir, "api-keys.v1.bin"), Buffer.from("old-encrypted"));
+    safeStorageState.available = true;
+    safeStorageState.decrypted = JSON.stringify({
+      cursor: "crsr_old_key",
+      openai: "openai_old_key",
+    });
+    const credentialStore = new MemoryCredentialStore();
+    const store = await loadStoreModule();
+
+    store.initApiKeyStore(tempRoot, { credentialStore });
+
+    expect(store.getApiKey("cursor")).toBe("crsr_old_key");
+    expect(store.getApiKey("openai")).toBe("openai_old_key");
+    expect(credentialStore.values.get("ai.api_key.cursor.v1")).toBe("crsr_old_key");
+    expect(credentialStore.values.get("ai.api_key.openai.v1")).toBe("openai_old_key");
+
+    store.deleteApiKey("openai");
+    store.initApiKeyStore(tempRoot, { credentialStore });
+
+    expect(store.getApiKey("openai")).toBeNull();
+    expect(store.listStoredProviders()).toEqual(["cursor"]);
+  });
+
+  it("migrates legacy Keychain API keys into a provided credential store", async () => {
+    keychain.set("__ade_provider_index__", JSON.stringify(["cursor"]));
+    keychain.set("cursor", "crsr_keychain_key");
+    const credentialStore = new MemoryCredentialStore();
+    const store = await loadStoreModule();
+
+    store.initApiKeyStore(tempRoot, { credentialStore });
+
+    expect(store.getApiKey("cursor")).toBe("crsr_keychain_key");
+    expect(credentialStore.values.get("ai.api_key.cursor.v1")).toBe("crsr_keychain_key");
+    expect(JSON.parse(credentialStore.values.get("ai.api_key.index.v1") ?? "[]")).toEqual(["cursor"]);
+
+    store.deleteApiKey("cursor");
+    store.initApiKeyStore(tempRoot, { credentialStore });
+
+    expect(store.getApiKey("cursor")).toBeNull();
+  });
+
   it("stores, lists, returns, and deletes API keys through a provided credential store", async () => {
     delete process.env.OPENAI_API_KEY;
     const credentialStore = new MemoryCredentialStore();
@@ -332,6 +377,21 @@ describe("apiKeyStore", () => {
     expect(store.listStoredProviders()).toEqual(["cursor"]);
     expect(credentialStore.values.has("ai.api_key.openai.v1")).toBe(false);
     expect(JSON.parse(credentialStore.values.get("ai.api_key.index.v1") ?? "[]")).toEqual(["cursor"]);
+  });
+
+  it("does not treat malformed credential migration metadata as a decryption failure", async () => {
+    const credentialStore = new MemoryCredentialStore();
+    credentialStore.setSync("ai.api_key.index.v1", JSON.stringify(["cursor"]));
+    credentialStore.setSync("ai.api_key.cursor.v1", "crsr_test_key");
+    credentialStore.setSync("ai.credentials.legacy_projects_migrated.v1", "{broken-json");
+    const store = await loadStoreModule();
+
+    store.initApiKeyStore(tempRoot, { credentialStore });
+
+    expect(store.getApiKey("cursor")).toBe("crsr_test_key");
+    expect(store.getApiKeyStoreStatus()).toMatchObject({
+      decryptionFailed: false,
+    });
   });
 
   it("reads an unindexed credential-store provider on demand and updates the index", async () => {

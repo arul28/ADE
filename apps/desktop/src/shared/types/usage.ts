@@ -130,8 +130,18 @@ export type UsageSnapshot = {
   pacingByProvider?: UsagePacingByProvider;
   costs: CostSnapshot[];
   extraUsage: ExtraUsage[];
+  /** Per-provider daily token usage for the last 7 calendar days, oldest first. */
+  dailyUsage7d?: Partial<Record<UsageProvider, number[]>>;
   lastPolledAt: string;
   errors: string[];
+};
+
+export type UsageThresholdEvent = {
+  provider: UsageProvider;
+  threshold: 25 | 50 | 75 | 100;
+  percent: number;
+  resetsAt: string;
+  firedAt: string;
 };
 
 // ---------------------------------------------------------------------------

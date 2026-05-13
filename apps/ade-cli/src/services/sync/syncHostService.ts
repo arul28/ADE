@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { execFile } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -105,6 +105,8 @@ const DEFAULT_SYNC_HEARTBEAT_MISS_LIMIT = 2;
 const MOBILE_SYNC_HEARTBEAT_MISS_LIMIT = 6;
 const DEFAULT_SYNC_POLL_INTERVAL_MS = 400;
 const DEFAULT_BRAIN_STATUS_INTERVAL_MS = 5_000;
+const NATIVE_LAN_DISCOVERY_RECOVERY_DELAY_MS = 1_000;
+const NATIVE_LAN_DISCOVERY_FALLBACK_MS = 30_000;
 const DEFAULT_TERMINAL_SNAPSHOT_BYTES = 220_000;
 const PEER_BACKPRESSURE_BYTES = 4 * 1024 * 1024;
 const MOBILE_COMMAND_RESULT_CACHE_TTL_MS = 30 * 60 * 1000;
@@ -1104,6 +1106,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   let startupError: Error | null = null;
   let bonjourInstance: Bonjour | null = null;
   let bonjourAnnouncement: BonjourService | null = null;
+  let nativeBonjourProcess: ChildProcess | null = null;
+  let nativeBonjourRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
+  let nativeLanDiscoveryFallbackUntilMs = 0;
   let bonjourPort: number | null = null;
   let bonjourSignature: string | null = null;
   let bonjourProjectTxt: { projects: string; projectNames: string; projectCount: string } = {
@@ -1256,7 +1261,93 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     });
   });
 
-  const publishLanDiscovery = (port: number): void => {
+  const clearNativeLanDiscoveryRecovery = (): void => {
+    if (!nativeBonjourRecoveryTimer) return;
+    clearTimeout(nativeBonjourRecoveryTimer);
+    nativeBonjourRecoveryTimer = null;
+  };
+
+  const scheduleNativeLanDiscoveryRecovery = (port: number): void => {
+    clearNativeLanDiscoveryRecovery();
+    if (disposed || !discoveryEnabled || bonjourPort !== port) return;
+    nativeBonjourRecoveryTimer = setTimeout(() => {
+      nativeBonjourRecoveryTimer = null;
+      if (disposed || !discoveryEnabled || bonjourPort !== port) return;
+      publishLanDiscovery(port);
+    }, NATIVE_LAN_DISCOVERY_RECOVERY_DELAY_MS);
+    if (
+      typeof nativeBonjourRecoveryTimer === "object"
+      && typeof (nativeBonjourRecoveryTimer as { unref?: unknown }).unref === "function"
+    ) {
+      (nativeBonjourRecoveryTimer as { unref: () => void }).unref();
+    }
+  };
+
+  const stopNativeLanDiscovery = (): void => {
+    clearNativeLanDiscoveryRecovery();
+    const child = nativeBonjourProcess;
+    if (!child) return;
+    nativeBonjourProcess = null;
+    try {
+      child.kill("SIGTERM");
+    } catch {
+      // ignore cleanup failures
+    }
+  };
+
+  const stopBonjourAnnouncement = (): void => {
+    if (!bonjourAnnouncement) return;
+    try {
+      bonjourAnnouncement.stop?.();
+    } catch {
+      // ignore cleanup failures
+    }
+    bonjourAnnouncement = null;
+  };
+
+  const publishNativeLanDiscovery = (
+    serviceName: string,
+    port: number,
+    txt: Record<string, string>,
+  ): void => {
+    clearNativeLanDiscoveryRecovery();
+    stopNativeLanDiscovery();
+    const child = spawn("dns-sd", [
+      "-R",
+      serviceName,
+      "_ade-sync._tcp",
+      "local",
+      String(port),
+      ...Object.entries(txt).map(([key, value]) => `${key}=${value}`),
+    ], {
+      stdio: "ignore",
+    });
+    nativeBonjourProcess = child;
+    child.unref();
+    child.once("error", (error) => {
+      if (nativeBonjourProcess !== child) return;
+      nativeBonjourProcess = null;
+      nativeLanDiscoveryFallbackUntilMs = Date.now() + NATIVE_LAN_DISCOVERY_FALLBACK_MS;
+      args.logger.warn("sync_host.discovery_native_publish_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      scheduleNativeLanDiscoveryRecovery(port);
+    });
+    child.once("exit", (code, signal) => {
+      if (nativeBonjourProcess !== child) return;
+      nativeBonjourProcess = null;
+      nativeLanDiscoveryFallbackUntilMs = Date.now() + NATIVE_LAN_DISCOVERY_FALLBACK_MS;
+      args.logger.warn("sync_host.discovery_native_exited", { code, signal });
+      scheduleNativeLanDiscoveryRecovery(port);
+    });
+  };
+
+  const shouldUseNativeLanDiscovery = (): boolean =>
+    process.platform === "darwin"
+    && typeof process.versions.electron === "string"
+    && Date.now() >= nativeLanDiscoveryFallbackUntilMs;
+
+  const publishLanDiscovery = (port: number, options?: { force?: boolean }): void => {
     if (disposed) return;
     if (!discoveryEnabled) {
       unpublishLanDiscovery();
@@ -1291,7 +1382,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       tailscaleDnsName: tailscaleDnsName.endsWith(".ts.net") ? tailscaleDnsName : "",
     };
     const signature = JSON.stringify({ hostName, port, txt });
-    if (bonjourAnnouncement && bonjourPort === port && bonjourSignature === signature) return;
+    const alreadyPublished = bonjourPort === port && bonjourSignature === signature;
+    if (!options?.force && alreadyPublished && (bonjourAnnouncement || nativeBonjourProcess)) return;
+    const serviceName = `ADE Sync ${hostName} ${port}`;
+    if (shouldUseNativeLanDiscovery()) {
+      stopBonjourAnnouncement();
+      bonjourPort = port;
+      bonjourSignature = signature;
+      publishNativeLanDiscovery(serviceName, port, txt);
+      refreshLanDiscoveryProjects(port);
+      return;
+    }
+    stopNativeLanDiscovery();
     if (!bonjourInstance) {
       bonjourInstance = new Bonjour(undefined, (error: unknown) => {
         args.logger.warn("sync_host.discovery_error", {
@@ -1299,18 +1401,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         });
       });
     }
-    if (bonjourAnnouncement) {
-      try {
-        bonjourAnnouncement.stop?.();
-      } catch {
-        // ignore cleanup failures
-      }
-      bonjourAnnouncement = null;
-    }
+    stopBonjourAnnouncement();
     bonjourPort = port;
     bonjourSignature = signature;
     bonjourAnnouncement = bonjourInstance.publish({
-      name: `ADE Sync ${hostName} ${port}`,
+      name: serviceName,
       type: SYNC_MDNS_SERVICE_TYPE,
       protocol: "tcp",
       port,
@@ -1367,13 +1462,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   };
 
   const unpublishLanDiscovery = (): void => {
-    if (!bonjourAnnouncement) return;
-    try {
-      bonjourAnnouncement.stop?.();
-    } catch {
-      // ignore cleanup failures
-    }
-    bonjourAnnouncement = null;
+    stopNativeLanDiscovery();
+    stopBonjourAnnouncement();
     bonjourPort = null;
     bonjourSignature = null;
   };
@@ -3055,10 +3145,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       setLocalActiveLanePresence(laneIds);
     },
 
-    refreshLanDiscovery(options?: { forceTailnet?: boolean }): void {
+    refreshLanDiscovery(options?: { forceLan?: boolean; forceTailnet?: boolean }): void {
       const address = server.address();
       if (typeof address === "object" && address) {
-        publishLanDiscovery(address.port);
+        publishLanDiscovery(address.port, { force: options?.forceLan });
         publishTailnetDiscovery(address.port, { force: options?.forceTailnet });
       }
     },
@@ -3082,7 +3172,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         return;
       }
       if (typeof address === "object" && address) {
-        publishLanDiscovery(address.port);
+        publishLanDiscovery(address.port, { force: true });
         publishTailnetDiscovery(address.port, { force: true });
       }
     },

@@ -66,6 +66,7 @@ function extractTextContent(message: unknown): string[] {
 export type CursorSdkEventMapperMeta = {
   turnId: string;
   cwd: string;
+  taskStatusMap: Map<string, string>;
   runtime?: AgentChatRuntime;
   runId?: string;
 };
@@ -73,6 +74,22 @@ export type CursorSdkEventMapperMeta = {
 function tagRuntime<T>(event: T, runtime?: AgentChatRuntime): T {
   if (!runtime || runtime === "local") return event;
   return { ...event, runtime } as T;
+}
+
+function isCursorTaskTerminalStatus(status: string): boolean {
+  const lower = status.toLowerCase();
+  return lower === "completed"
+    || lower === "failed"
+    || lower === "stopped"
+    || lower === "cancelled"
+    || lower === "error";
+}
+
+function cursorTaskResultStatus(status: string): "completed" | "failed" | "stopped" {
+  const lower = status.toLowerCase();
+  if (lower === "completed") return "completed";
+  if (lower === "stopped" || lower === "cancelled") return "stopped";
+  return "failed";
 }
 
 function normalizeCloudStatus(raw: string | null): AgentChatCloudRunStatus | null {
@@ -157,13 +174,57 @@ export function mapCursorSdkMessageToChatEvents(
     }
     case "task": {
       const text = readString(record.text);
-      if (!text) return [];
-      return [tagRuntime({
-        type: "activity" as const,
-        activity: "spawning_agent" as const,
-        detail: text,
-        turnId,
-      }, runtime)];
+      const runId = readString(record.run_id);
+      const agentId = readString(record.agent_id);
+      const status = readString(record.status);
+      const out: AgentChatEvent[] = [];
+
+      const makeResultEvent = (terminalStatus: string): AgentChatEvent => {
+        const resultStatus = cursorTaskResultStatus(terminalStatus);
+        return tagRuntime({
+          type: "subagent_result" as const,
+          taskId: runId!,
+          ...(agentId ? { agentId } : {}),
+          parentToolUseId: null,
+          status: resultStatus,
+          summary: text ?? `subagent ${resultStatus}`,
+          turnId,
+        }, runtime);
+      };
+
+      if (runId) {
+        const prevStatus = meta.taskStatusMap.get(runId) ?? null;
+        if (prevStatus === null) {
+          if (status && isCursorTaskTerminalStatus(status)) {
+            out.push(makeResultEvent(status));
+          } else {
+            meta.taskStatusMap.set(runId, status ?? "started");
+            out.push(tagRuntime({
+              type: "subagent_started" as const,
+              taskId: runId,
+              ...(agentId ? { agentId } : {}),
+              parentToolUseId: null,
+              description: text ?? "subagent",
+              turnId,
+            }, runtime));
+          }
+        } else if (status && status !== prevStatus) {
+          meta.taskStatusMap.set(runId, status);
+          if (isCursorTaskTerminalStatus(status)) {
+            out.push(makeResultEvent(status));
+            meta.taskStatusMap.delete(runId);
+          }
+        }
+      }
+      if (text) {
+        out.push(tagRuntime({
+          type: "activity" as const,
+          activity: "spawning_agent" as const,
+          detail: text,
+          turnId,
+        }, runtime));
+      }
+      return out;
     }
     case "status": {
       const statusText = readString(record.status);

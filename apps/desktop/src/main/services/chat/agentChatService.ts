@@ -617,6 +617,12 @@ const CLAUDE_BUILT_IN_SLASH_COMMANDS: AgentChatSlashCommand[] = [
 const CODEX_BUILT_IN_SLASH_COMMAND_NAMES = new Set(CODEX_BUILT_IN_SLASH_COMMANDS.map((command) => slashCommandKey(command.name)));
 const CLAUDE_BUILT_IN_SLASH_COMMAND_NAMES = new Set(CLAUDE_BUILT_IN_SLASH_COMMANDS.map((command) => slashCommandKey(command.name)));
 const CLAUDE_LOGIN_NOT_SDK_COMMAND = "ADE Claude chat is hosted through the Claude Agent SDK, and /login is not an SDK-dispatchable command. Run `claude auth login` in a terminal or configure ANTHROPIC_API_KEY, then refresh AI settings.";
+const CLAUDE_SESSION_DISABLED_PLUGINS: Record<string, boolean> = {
+  "learning-output-style@claude-code-plugins": false,
+  "learning-output-style@claude-plugins-official": false,
+  "explanatory-output-style@claude-code-plugins": false,
+  "explanatory-output-style@claude-plugins-official": false,
+};
 
 function slashCommandKey(value: string): string {
   return value.trim().toLowerCase();
@@ -646,6 +652,8 @@ type OpenCodeRuntime = {
   textByPartId: Map<string, string>;
   reasoningByPartId: Map<string, string>;
   toolStateByPartId: Map<string, string>;
+  /** IDs of OpenCode child sessions already announced as subagents this run. */
+  subagentSessionIds: Set<string>;
 };
 
 type CursorPermissionWaiter =
@@ -696,6 +704,8 @@ type CursorRuntime = {
   cloudRuns: Map<string, CursorCloudActiveRun>;
   /** RunId attached to the currently active cloud turn, when runtime === "cloud". */
   activeCloudRunId: string | null;
+  /** Last observed Cursor task status by run_id for subagent lifecycle mapping. */
+  cursorTaskStatusByRunId: Map<string, string>;
 };
 
 type DroidRuntime = {
@@ -1294,6 +1304,11 @@ const DEFAULT_TRANSCRIPT_READ_LIMIT = 20;
 const MAX_TRANSCRIPT_READ_LIMIT = 100;
 const DEFAULT_TRANSCRIPT_READ_CHARS = 8_000;
 const MAX_TRANSCRIPT_READ_CHARS = 40_000;
+const AUTOMATIC_MACOS_VM_CONTEXT_HEADER = "ADE macOS VM capability for this lane (automatic context).";
+const AUTOMATIC_MACOS_VM_CONTEXT_ENDINGS = [
+  "- This lane uses a sanitized mirror for the VM share; ADE syncs code while excluding secrets, runtime databases, caches, transcripts, generated local history, and .git.",
+  "- Keep VM-side edits inside the mounted guest lane path so the host lane and guest stay aligned.",
+] as const;
 const AUTO_TITLE_MAX_CHARS = 48;
 const REASONING_ACTIVITY_DETAIL = "Thinking through the answer";
 const WORKING_ACTIVITY_DETAIL = "Preparing response";
@@ -3220,23 +3235,17 @@ function buildCodexDeveloperInstructions(args: {
     mode: promptMode,
     permissionMode: toHarnessPermissionMode(args.session.permissionMode),
     interactive: true,
-    runtime: "codex-cli",
+    runtime: "codex-app-server",
   });
 }
 
-function buildCodexAdeContextInput(args: {
-  laneWorktreePath: string;
-  session: Pick<AgentChatSession, "permissionMode" | "interactionMode">;
-  collaborationMode: "default" | "plan";
-}): Record<string, unknown> {
-  return {
-    type: "text",
-    text: [
-      "System context (ADE runtime guidance, do not echo verbatim):",
-      buildCodexDeveloperInstructions(args),
-    ].join("\n\n"),
-    text_elements: [],
-  };
+function resolveCodexInstructionCollaborationMode(
+  session: Pick<AgentChatSession, "permissionMode" | "interactionMode" | "surface">,
+): "default" | "plan" {
+  return (session.interactionMode === "plan" || session.permissionMode === "plan")
+    && session.surface !== "mission"
+    ? "plan"
+    : "default";
 }
 
 function buildCodexCollaborationMode(
@@ -3245,13 +3254,11 @@ function buildCodexCollaborationMode(
     "provider" | "permissionMode" | "interactionMode" | "model" | "reasoningEffort" | "codexConfigSource" | "surface"
   >,
   supportedModes: Set<string> | null,
+  laneWorktreePath: string,
 ): CodexCollaborationModePayload | null {
   if (session.provider !== "codex") return null;
   if (resolveSessionCodexConfigSource(session) === "config-toml") return null;
-  const requestedMode = (session.interactionMode === "plan" || session.permissionMode === "plan")
-    && session.surface !== "mission"
-    ? "plan"
-    : "default";
+  const requestedMode = resolveCodexInstructionCollaborationMode(session);
   const mode = (() => {
     if (!supportedModes || supportedModes.size === 0) return requestedMode;
     if (supportedModes.has(requestedMode)) return requestedMode;
@@ -3264,7 +3271,11 @@ function buildCodexCollaborationMode(
     settings: {
       model: session.model,
       reasoning_effort: session.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
-      developer_instructions: null,
+      developer_instructions: buildCodexDeveloperInstructions({
+        laneWorktreePath,
+        session,
+        collaborationMode: mode,
+      }),
     },
   };
 }
@@ -3277,10 +3288,7 @@ function resolveRequestedCodexCollaborationMode(
 ): "default" | "plan" | null {
   if (session.provider !== "codex") return null;
   if (resolveSessionCodexConfigSource(session) === "config-toml") return null;
-  return (session.interactionMode === "plan" || session.permissionMode === "plan")
-    && session.surface !== "mission"
-    ? "plan"
-    : "default";
+  return resolveCodexInstructionCollaborationMode(session);
 }
 
 function parseCodexCollaborationModes(value: unknown): Set<string> | null {
@@ -5183,6 +5191,27 @@ export function createAgentChatService(args: {
     }
   };
 
+  const isAutomaticMacosVmContextUserMessage = (entry: AgentChatEventEnvelope): boolean =>
+    entry.event.type === "user_message"
+    && entry.event.text.trimStart().startsWith(AUTOMATIC_MACOS_VM_CONTEXT_HEADER);
+
+  const hasAutomaticMacosVmContextInTranscript = (managed: ManagedChatSession): boolean =>
+    (eventHistoryBySession.get(managed.session.id) ?? []).some(isAutomaticMacosVmContextUserMessage)
+    || readTranscriptEnvelopes(managed).some(isAutomaticMacosVmContextUserMessage);
+
+  const stripAutomaticMacosVmContextPrefix = (text: string): string | null => {
+    const leadingTrimmed = text.trimStart();
+    if (!leadingTrimmed.startsWith(AUTOMATIC_MACOS_VM_CONTEXT_HEADER)) return null;
+    const leadingWhitespaceLength = text.length - leadingTrimmed.length;
+    const contextStart = leadingWhitespaceLength;
+    for (const ending of AUTOMATIC_MACOS_VM_CONTEXT_ENDINGS) {
+      const endingIndex = text.indexOf(ending, contextStart);
+      if (endingIndex === -1) continue;
+      return text.slice(endingIndex + ending.length).trimStart();
+    }
+    return null;
+  };
+
   // Read the full on-disk transcript for a session without requiring an active
   // ManagedChatSession. Used by getChatEventHistory to hydrate the in-memory
   // ring buffer on first read, even for sessions that haven't been resumed yet
@@ -6070,6 +6099,7 @@ export function createAgentChatService(args: {
       textByPartId: new Map(),
       reasoningByPartId: new Map(),
       toolStateByPartId: new Map(),
+      subagentSessionIds: new Set(),
     };
     handle.setEvictionHandler((reason) => {
       if (managed.runtime?.kind === "opencode" && managed.runtime.handle === handle) {
@@ -8339,6 +8369,7 @@ export function createAgentChatService(args: {
     const collaborationMode = buildCodexCollaborationMode(
       managed.session,
       runtime.collaborationModes,
+      managed.laneWorktreePath,
     );
     if (
       requestedCollaborationMode === "plan"
@@ -8353,13 +8384,6 @@ export function createAgentChatService(args: {
       runtime.planModeFallbackNotified = true;
     } else if (collaborationMode?.mode === "plan") {
       runtime.planModeFallbackNotified = false;
-    }
-    if (collaborationMode) {
-      input.push(buildCodexAdeContextInput({
-        laneWorktreePath: managed.laneWorktreePath,
-        session: managed.session,
-        collaborationMode: collaborationMode.mode,
-      }));
     }
     input.push({
       type: "text",
@@ -9842,6 +9866,73 @@ export function createAgentChatService(args: {
               return null;
           }
         };
+
+        // Surface OpenCode child sessions (spawned via the `task` subagent
+        // tool) as subagent lifecycle events. Child sessions carry a
+        // `parentID` pointing at this runtime's primary session.
+        if (
+          event.type === "session.created"
+          || event.type === "session.updated"
+          || event.type === "session.deleted"
+        ) {
+          const childInfo = event.properties.info;
+          if (
+            childInfo.parentID
+            && childInfo.parentID === runtime.handle.sessionId
+            && childInfo.id !== runtime.handle.sessionId
+          ) {
+            const childKey = childInfo.id;
+            const childDescription = (childInfo.title && childInfo.title.length)
+              ? childInfo.title
+              : "subagent";
+            const formatSummary = (): string => {
+              const summary = childInfo.summary;
+              return summary
+                ? `+${summary.additions} −${summary.deletions} · ${summary.files} files`
+                : childDescription;
+            };
+            const ensureSubagentStarted = (): void => {
+              if (runtime.subagentSessionIds.has(childKey)) return;
+              runtime.subagentSessionIds.add(childKey);
+              emitChatEvent(managed, {
+                type: "subagent_started",
+                taskId: childKey,
+                parentToolUseId: null,
+                description: childDescription,
+                agentType: "opencode-subagent",
+                turnId,
+              });
+            };
+
+            if (event.type === "session.created") {
+              ensureSubagentStarted();
+            } else if (event.type === "session.updated") {
+              // Synthesize started first if we missed the created event so the
+              // panel has a row to update.
+              ensureSubagentStarted();
+              emitChatEvent(managed, {
+                type: "subagent_progress",
+                taskId: childKey,
+                parentToolUseId: null,
+                description: childDescription,
+                summary: formatSummary(),
+                turnId,
+              });
+            } else {
+              // session.deleted
+              emitChatEvent(managed, {
+                type: "subagent_result",
+                taskId: childKey,
+                parentToolUseId: null,
+                status: "completed",
+                summary: formatSummary(),
+                turnId,
+              });
+              runtime.subagentSessionIds.delete(childKey);
+            }
+            continue;
+          }
+        }
 
         if (resolveSessionId() !== runtime.handle.sessionId) {
           continue;
@@ -12197,6 +12288,11 @@ export function createAgentChatService(args: {
       model: managed.session.model,
       cwd: managed.laneWorktreePath,
       effort: reasoningEffort,
+      developerInstructions: buildCodexDeveloperInstructions({
+        laneWorktreePath: managed.laneWorktreePath,
+        session: managed.session,
+        collaborationMode: resolveCodexInstructionCollaborationMode(managed.session),
+      }),
       ...codexServiceTierArgs(managed.session),
       ...codexPolicyArgs(codexPolicy),
       experimentalRawEvents: false,
@@ -12498,14 +12594,17 @@ export function createAgentChatService(args: {
       cwd: managed.laneWorktreePath,
       env: claudeEnv,
       pathToClaudeCodeExecutable: claudeExecutable.path,
-      settings: { outputStyle },
+      settings: {
+        outputStyle,
+        enabledPlugins: CLAUDE_SESSION_DISABLED_PLUGINS,
+      },
       ...(pluginPaths.length ? { plugins: pluginPaths.map((pluginPath) => ({ type: "local" as const, path: pluginPath })) } : {}),
       ...(Object.keys(mcpServers).length ? { mcpServers } : {}),
       permissionMode: claudePermissionMode as any,
       ...(claudePermissionMode === "bypassPermissions" ? { allowDangerouslySkipPermissions: true } as any : {}),
       includePartialMessages: true,
       agentProgressSummaries: true,
-      promptSuggestions: true,
+      promptSuggestions: false,
       forwardSubagentText: true,
       enableFileCheckpointing: true,
       skills: "all",
@@ -13844,17 +13943,27 @@ export function createAgentChatService(args: {
     cloudOverrides,
     allowActiveSession = false,
   }: AgentChatSendArgs & { allowActiveSession?: boolean }): PreparedSendMessage | null => {
+    const managed = ensureManagedSession(sessionId);
     const publicContextAttachments = normalizeChatContextAttachments(contextAttachments);
-    const trimmedText = text.trim();
+    const strippedSubmittedText = stripAutomaticMacosVmContextPrefix(text);
+    const stripRepeatedAutomaticContext = strippedSubmittedText != null
+      && hasAutomaticMacosVmContextInTranscript(managed);
+    const submittedRawText = stripRepeatedAutomaticContext
+      ? strippedSubmittedText
+      : text;
+    const trimmedText = submittedRawText.trim();
     const trimmed = trimmedText.length || !publicContextAttachments.length
       ? trimmedText
       : "Use the attached issue context.";
     if (!trimmed.length) return null;
     const slashCommand = extractLeadingSlashCommand(trimmed);
     const providerSlashCommand = isProviderSlashCommandInput(trimmed);
-    const visibleText = displayText?.trim().length ? displayText.trim() : trimmed;
+    const rawDisplayText = displayText?.trim().length ? displayText : undefined;
+    const cleanedDisplayText = stripRepeatedAutomaticContext && rawDisplayText
+      ? stripAutomaticMacosVmContextPrefix(rawDisplayText) ?? rawDisplayText
+      : rawDisplayText;
+    const visibleText = cleanedDisplayText?.trim().length ? cleanedDisplayText.trim() : trimmed;
 
-    const managed = ensureManagedSession(sessionId);
     if (hasLivePendingInput(managed)) {
       throw new Error(PENDING_INPUT_SEND_BLOCKED_MESSAGE);
     }
@@ -13949,13 +14058,13 @@ export function createAgentChatService(args: {
     const laneDirectiveKey = executionContext.laneDirectiveKey;
     const shouldInjectLaneDirective = laneDirectiveKey != null && managed.lastLaneDirectiveKey !== laneDirectiveKey;
     // Guidance injection is capability-based, not session-state-based:
-    // Claude sessions already receive ADE_CLI_AGENT_GUIDANCE in their
-    // persistent system prompt (see buildClaudeQueryOptions), so we skip the
-    // first-user-message copy there. Every other provider (Codex, OpenCode,
-    // Cursor…) has no persistent system prompt, so the guidance must be
-    // prepended even on resumed sessions where `shouldInjectLaneDirective` is
-    // false (review 3134504183 / 3134403060).
-    const providerHasPersistentGuidance = managed.session.provider === "claude";
+    // Claude sessions receive ADE_CLI_AGENT_GUIDANCE in their persistent system
+    // prompt, and native Codex app-server sessions receive ADE guidance through
+    // developerInstructions/collaborationMode settings. Providers without a
+    // trusted instruction channel still need the guidance in the user prompt,
+    // including on resumed sessions where `shouldInjectLaneDirective` is false.
+    const providerHasPersistentGuidance = managed.session.provider === "claude"
+      || managed.session.provider === "codex";
     const shouldInjectGuidance = !providerHasPersistentGuidance;
     const claudeRuntimeSlashCommandNames = managed.runtime?.kind === "claude"
       ? new Set(managed.runtime.slashCommands.map((command) => slashCommandKey(command.name)))
@@ -15314,6 +15423,7 @@ export function createAgentChatService(args: {
       const events = mapCursorSdkMessageToChatEvents(event, {
         turnId,
         cwd: managed.laneWorktreePath,
+        taskStatusMap: runtime.cursorTaskStatusByRunId,
         runtime: isCloud ? "cloud" : "local",
         ...(meta?.runId ? { runId: meta.runId } : {}),
       });
@@ -15467,6 +15577,7 @@ export function createAgentChatService(args: {
       configOptions: [],
       cloudRuns: new Map(),
       activeCloudRunId: null,
+      cursorTaskStatusByRunId: new Map(),
     };
     managed.runtime = rt;
     wireCursorSdkBridgeHandlers(managed, rt);
@@ -17032,6 +17143,11 @@ export function createAgentChatService(args: {
               model: managed.session.model,
               cwd: managed.laneWorktreePath,
               effort: resumeReasoningEffort,
+              developerInstructions: buildCodexDeveloperInstructions({
+                laneWorktreePath: managed.laneWorktreePath,
+                session: managed.session,
+                collaborationMode: resolveCodexInstructionCollaborationMode(managed.session),
+              }),
               ...codexServiceTierArgs(managed.session),
               ...codexPolicyArgs(codexPolicy),
               excludeTurns: true,
@@ -19535,10 +19651,28 @@ export function createAgentChatService(args: {
     return deriveSessionCapabilities(managed);
   };
 
-  const getSlashCommands = ({ sessionId }: AgentChatSlashCommandsArgs): AgentChatSlashCommand[] => {
-    const managed = managedSessions.get(sessionId);
-    if (!managed) return [];
-    const provider = managed.session.provider;
+  const getSlashCommands = (args: AgentChatSlashCommandsArgs): AgentChatSlashCommand[] => {
+    const requestedSessionId = args.sessionId?.trim() ?? "";
+    const managed = requestedSessionId.length ? managedSessions.get(requestedSessionId) ?? null : null;
+    if (requestedSessionId.length && !managed && !args.provider) return [];
+    const provider = managed?.session.provider ?? args.provider ?? null;
+    if (!provider) return [];
+
+    function resolveLaneWorktreePath(): string {
+      if (managed) return managed.laneWorktreePath;
+      const laneId = args.laneId?.trim() ?? "";
+      if (!laneId.length) return projectRoot;
+      try {
+        return resolveLaneLaunchContext({
+          laneService,
+          laneId,
+          purpose: "list slash commands",
+        }).laneWorktreePath;
+      } catch {
+        return projectRoot;
+      }
+    }
+    const laneWorktreePath = resolveLaneWorktreePath();
 
     const localCommands: AgentChatSlashCommand[] = provider === "claude" || provider === "codex"
       ? []
@@ -19556,7 +19690,7 @@ export function createAgentChatService(args: {
 
     // Claude SDK commands plus filesystem-backed Claude Code commands/skills.
     if (provider === "claude") {
-      const runtimeCommands: AgentChatSlashCommand[] = (managed.runtime?.kind === "claude" ? managed.runtime.slashCommands : [])
+      const runtimeCommands: AgentChatSlashCommand[] = (managed?.runtime?.kind === "claude" ? managed.runtime.slashCommands : [])
         .filter(isDispatchableClaudeSdkSlashCommand)
         .map((cmd: { name: string; description: string; argumentHint?: string }) => ({
           name: cmd.name,
@@ -19564,7 +19698,7 @@ export function createAgentChatService(args: {
           argumentHint: cmd.argumentHint,
           source: "sdk" as const,
         }));
-      const projectCommands: AgentChatSlashCommand[] = discoverClaudeSlashCommands(managed.laneWorktreePath)
+      const projectCommands: AgentChatSlashCommand[] = discoverClaudeSlashCommands(laneWorktreePath)
         .filter(isDispatchableClaudeSdkSlashCommand)
         .map((cmd: { name: string; description: string; argumentHint?: string }) => ({
           name: cmd.name,
@@ -19577,20 +19711,20 @@ export function createAgentChatService(args: {
 
     // Codex SDK commands
     if (provider === "codex") {
-      const rt = managed.runtime?.kind === "codex" ? managed.runtime : null;
+      const rt = managed?.runtime?.kind === "codex" ? managed.runtime : null;
       const dynamicCommands: AgentChatSlashCommand[] = (rt?.slashCommands ?? []).map((cmd: { name: string; description: string; argumentHint?: string }) => ({
         name: cmd.name,
         description: cmd.description,
         argumentHint: cmd.argumentHint,
         source: "sdk" as const,
       }));
-      const promptCommands: AgentChatSlashCommand[] = discoverCodexSlashCommands(managed.laneWorktreePath).map((cmd: { name: string; description: string; argumentHint?: string }) => ({
+      const promptCommands: AgentChatSlashCommand[] = discoverCodexSlashCommands(laneWorktreePath).map((cmd: { name: string; description: string; argumentHint?: string }) => ({
         name: cmd.name,
         description: cmd.description,
         argumentHint: cmd.argumentHint,
         source: "sdk" as const,
       }));
-      const claudeProjectCommands: AgentChatSlashCommand[] = discoverClaudeSlashCommands(managed.laneWorktreePath)
+      const claudeProjectCommands: AgentChatSlashCommand[] = discoverClaudeSlashCommands(laneWorktreePath)
         .filter(isDispatchableClaudeSdkSlashCommand)
         .map((cmd: { name: string; description: string; argumentHint?: string }) => ({
           name: cmd.name,

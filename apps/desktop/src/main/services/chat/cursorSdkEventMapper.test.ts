@@ -1,9 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
+  type CursorSdkEventMapperMeta,
   mapCursorSdkMessageToChatEvents,
   mapCursorSdkRunResultToDoneEvent,
   mapTurnEndedTokensToEvent,
 } from "./cursorSdkEventMapper";
+
+function mapperMeta(overrides: Partial<CursorSdkEventMapperMeta> = {}): CursorSdkEventMapperMeta {
+  return {
+    turnId: "turn-1",
+    cwd: "/repo",
+    taskStatusMap: new Map<string, string>(),
+    ...overrides,
+  };
+}
 
 describe("Cursor SDK event mapper", () => {
   it("maps assistant text content to chat text events", () => {
@@ -15,7 +25,7 @@ describe("Cursor SDK event mapper", () => {
           { type: "text", text: "world" },
         ],
       },
-    }, { turnId: "turn-1", cwd: "/repo" });
+    }, mapperMeta());
 
     expect(events).toEqual([
       { type: "text", text: "hello", turnId: "turn-1" },
@@ -31,7 +41,7 @@ describe("Cursor SDK event mapper", () => {
       status: "completed",
       args: { command: "npm test", cwd: "/repo" },
       result: { exitCode: 0, output: "ok" },
-    }, { turnId: "turn-1", cwd: "/fallback" });
+    }, mapperMeta({ cwd: "/fallback" }));
 
     expect(events).toEqual([{
       type: "command",
@@ -52,7 +62,7 @@ describe("Cursor SDK event mapper", () => {
       name: "mystery",
       status: "running",
       args: { value: 1 },
-    }, { turnId: "turn-1", cwd: "/repo" })).toEqual([{
+    }, mapperMeta())).toEqual([{
       type: "tool_call",
       tool: "mystery",
       args: { value: 1 },
@@ -79,7 +89,7 @@ describe("Cursor SDK event mapper", () => {
     const events = mapCursorSdkMessageToChatEvents({
       type: "assistant",
       message: { content: [{ type: "text", text: "hi" }] },
-    }, { turnId: "turn-1", cwd: "/repo", runtime: "cloud" });
+    }, mapperMeta({ runtime: "cloud" }));
     expect(events).toEqual([
       { type: "text", text: "hi", turnId: "turn-1", runtime: "cloud" },
     ]);
@@ -89,7 +99,7 @@ describe("Cursor SDK event mapper", () => {
     const events = mapCursorSdkMessageToChatEvents({
       type: "assistant",
       message: { content: [{ type: "text", text: "hi" }] },
-    }, { turnId: "turn-1", cwd: "/repo" });
+    }, mapperMeta());
     expect(events[0]).not.toHaveProperty("runtime");
   });
 
@@ -99,7 +109,7 @@ describe("Cursor SDK event mapper", () => {
       status: "RUNNING",
       message: "VM provisioned",
       run_id: "run-7",
-    }, { turnId: "turn-1", cwd: "/repo", runtime: "cloud", runId: "run-7" });
+    }, mapperMeta({ runtime: "cloud", runId: "run-7" }));
     expect(events).toEqual([{
       type: "cloud_status",
       turnId: "turn-1",
@@ -115,7 +125,7 @@ describe("Cursor SDK event mapper", () => {
       status: "FINISHED",
       run_id: "run-9",
       git: { branch: "feat/foo", prUrl: "https://github.com/x/y/pull/12" },
-    }, { turnId: "turn-1", cwd: "/repo", runtime: "cloud", runId: "run-9" });
+    }, mapperMeta({ runtime: "cloud", runId: "run-9" }));
     expect(events[0]).toMatchObject({
       type: "cloud_status",
       status: "finished",
@@ -128,7 +138,7 @@ describe("Cursor SDK event mapper", () => {
     const events = mapCursorSdkMessageToChatEvents({
       type: "status",
       status: "wat",
-    }, { turnId: "turn-1", cwd: "/repo", runtime: "cloud" });
+    }, mapperMeta({ runtime: "cloud" }));
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
       type: "activity",
@@ -143,13 +153,122 @@ describe("Cursor SDK event mapper", () => {
       type: "status",
       status: "RUNNING",
       message: "going",
-    }, { turnId: "turn-1", cwd: "/repo" });
+    }, mapperMeta());
     expect(events).toEqual([{
       type: "activity",
       activity: "working",
       detail: "going",
       turnId: "turn-1",
     }]);
+  });
+
+  it("uses the provided task status map for task lifecycle transitions", () => {
+    const taskStatusMap = new Map<string, string>();
+    const started = mapCursorSdkMessageToChatEvents({
+      type: "task",
+      run_id: "task-1",
+      agent_id: "agent-1",
+      status: "running",
+      text: "Investigate issue",
+    }, mapperMeta({ taskStatusMap }));
+
+    expect(started).toEqual([
+      {
+        type: "subagent_started",
+        taskId: "task-1",
+        agentId: "agent-1",
+        parentToolUseId: null,
+        description: "Investigate issue",
+        turnId: "turn-1",
+      },
+      {
+        type: "activity",
+        activity: "spawning_agent",
+        detail: "Investigate issue",
+        turnId: "turn-1",
+      },
+    ]);
+    expect(taskStatusMap.get("task-1")).toBe("running");
+
+    const completed = mapCursorSdkMessageToChatEvents({
+      type: "task",
+      run_id: "task-1",
+      agent_id: "agent-1",
+      status: "completed",
+      text: "Investigation done",
+    }, mapperMeta({ taskStatusMap }));
+
+    expect(completed).toEqual([
+      {
+        type: "subagent_result",
+        taskId: "task-1",
+        agentId: "agent-1",
+        parentToolUseId: null,
+        status: "completed",
+        summary: "Investigation done",
+        turnId: "turn-1",
+      },
+      {
+        type: "activity",
+        activity: "spawning_agent",
+        detail: "Investigation done",
+        turnId: "turn-1",
+      },
+    ]);
+    expect(taskStatusMap.has("task-1")).toBe(false);
+  });
+
+  it("emits terminal task results when the first observed task event is already terminal", () => {
+    const taskStatusMap = new Map<string, string>();
+    const events = mapCursorSdkMessageToChatEvents({
+      type: "task",
+      run_id: "task-1",
+      agent_id: "agent-1",
+      status: "failed",
+      text: "Investigation failed",
+    }, mapperMeta({ taskStatusMap }));
+
+    expect(events).toEqual([
+      {
+        type: "subagent_result",
+        taskId: "task-1",
+        agentId: "agent-1",
+        parentToolUseId: null,
+        status: "failed",
+        summary: "Investigation failed",
+        turnId: "turn-1",
+      },
+      {
+        type: "activity",
+        activity: "spawning_agent",
+        detail: "Investigation failed",
+        turnId: "turn-1",
+      },
+    ]);
+    expect(taskStatusMap.has("task-1")).toBe(false);
+  });
+
+  it("does not share task status across mapper meta maps", () => {
+    const firstMap = new Map<string, string>();
+    const secondMap = new Map<string, string>();
+
+    const first = mapCursorSdkMessageToChatEvents({
+      type: "task",
+      run_id: "task-1",
+      status: "running",
+      text: "Start task",
+    }, mapperMeta({ taskStatusMap: firstMap }));
+    const second = mapCursorSdkMessageToChatEvents({
+      type: "task",
+      run_id: "task-1",
+      status: "running",
+      text: "Start task",
+    }, mapperMeta({ taskStatusMap: secondMap }));
+
+    expect(first[0]).toMatchObject({ type: "subagent_started", taskId: "task-1" });
+    expect(second[0]).toMatchObject({ type: "subagent_started", taskId: "task-1" });
+    expect(firstMap.get("task-1")).toBe("running");
+    expect(secondMap.get("task-1")).toBe("running");
   });
 
   it("maps TurnEnded usage updates to a tokens event", () => {

@@ -90,6 +90,7 @@ export type SetupPaneRowKind =
   | "reasoning"
   | "permission"
   | "codex-fast"
+  | "output-style"
   | "refresh-status"
   | "open-settings"
   | "apply";
@@ -103,14 +104,19 @@ export type SetupPaneRow = {
   cyclable?: boolean;
 };
 
-export type SubagentPaneTab = "subagents" | "teammates" | "background";
+export type SubagentPaneTab = "subagents" | "teammates";
 
 export type SubagentSnapshot = {
   id: string;
   name: string;
-  kind: "subagent" | "teammate" | "background";
+  kind: "subagent" | "teammate";
   status: "running" | "completed" | "failed" | "stopped";
   summary: string;
+  parentToolUseId?: string | null;
+  turnId?: string | null;
+  background?: boolean;
+  startedAt?: string | null;
+  endedAt?: string | null;
   tokens?: number;
   durationMs?: number;
   lastToolName?: string;
@@ -134,7 +140,7 @@ export type RightPaneContent =
   | { kind: "diff"; title: string; files: Array<{ path: string; additions?: number; deletions?: number; body?: string }> }
   | { kind: "models"; models: AgentChatModelInfo[]; activeModelId: string | null }
   | { kind: "effort"; efforts: string[]; activeEffort: string | null }
-  | { kind: "subagents"; tab: SubagentPaneTab; snapshots: SubagentSnapshot[] }
+  | { kind: "subagents"; tab: SubagentPaneTab; snapshots: SubagentSnapshot[]; provider: AdeCodeProvider }
   | {
       kind: "new-chat-setup";
       laneId: string;
@@ -164,11 +170,28 @@ export type RightPaneContent =
   | {
       kind: "lane-details";
       lane: LaneSummary;
-      git: { staged: number; unstaged: number; total: number; ahead: number; behind: number; remote: string | null };
+      git: {
+        staged: number;
+        unstaged: number;
+        total: number;
+        ahead: number;
+        behind: number;
+        remote: string | null;
+        additions: number;
+        deletions: number;
+      };
       files: { path: string; status: "M" | "A" | "D" | "?"; staged: boolean }[];
       pr: { number: number; state: "open" | "closed" | "merged"; url: string; checksPassed: number; checksTotal: number } | null;
+      run?: {
+        status: "running" | "idle";
+        provider: AdeCodeProvider;
+        elapsedMs: number | null;
+        tokenSummary: string | null;
+        toolSummary: string | null;
+      } | null;
       showFiles: boolean;
       selectedActionIndex: number;
+      worktreeAvailable?: boolean;
     };
 
 export type LocalNotice = {
@@ -184,6 +207,7 @@ export type MentionSuggestion = {
   insertText: string;
   detail?: string;
   filePath?: string;
+  attachment?: boolean;
 };
 
 export type PendingApproval = {
@@ -209,6 +233,9 @@ export type ShellData = {
   rightPane: RightPaneContent;
   contextPercent: number | null;
   streaming: boolean;
+  liveAgentCount: number;
+  highlightedDrawerLaneId: string | null;
+  drawerMode: "chats" | "lanes";
 };
 
 export type CreatedChat = AgentChatSession;

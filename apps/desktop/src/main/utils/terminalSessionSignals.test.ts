@@ -20,6 +20,14 @@ describe("terminalSessionSignals", () => {
     expect(extractResumeCommandFromOutput(chunk, "codex")).toBe("codex resume session_abc123 --last");
   });
 
+  it("does not treat terminal CSI replies as Codex resume targets", () => {
+    const chunk = "codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox resume \u001b[>7u";
+    expect(parseTrackedCliResumeCommand(chunk, "codex")).toBeNull();
+    expect(extractResumeCommandFromOutput(chunk, "codex")).toBe(
+      "codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox resume",
+    );
+  });
+
   it("respects preferred tool when both tools appear", () => {
     const chunk = [
       "claude --resume abc",
