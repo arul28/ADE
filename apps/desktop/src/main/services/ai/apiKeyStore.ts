@@ -288,7 +288,6 @@ function readCredentialProviderIndex(): { exists: boolean; providers: string[] }
   try {
     return { exists: true, providers: normalizeProviderList(JSON.parse(raw)) };
   } catch {
-    decryptionFailed = true;
     return { exists: true, providers: [] };
   }
 }
@@ -308,7 +307,6 @@ function readCredentialLegacyMigratedProjectRoots(): Set<string> {
       .map((entry) => path.resolve(entry));
     return new Set(roots);
   } catch {
-    decryptionFailed = true;
     return new Set();
   }
 }

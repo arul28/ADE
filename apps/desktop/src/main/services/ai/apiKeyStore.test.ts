@@ -379,6 +379,21 @@ describe("apiKeyStore", () => {
     expect(JSON.parse(credentialStore.values.get("ai.api_key.index.v1") ?? "[]")).toEqual(["cursor"]);
   });
 
+  it("does not treat malformed credential migration metadata as a decryption failure", async () => {
+    const credentialStore = new MemoryCredentialStore();
+    credentialStore.setSync("ai.api_key.index.v1", JSON.stringify(["cursor"]));
+    credentialStore.setSync("ai.api_key.cursor.v1", "crsr_test_key");
+    credentialStore.setSync("ai.credentials.legacy_projects_migrated.v1", "{broken-json");
+    const store = await loadStoreModule();
+
+    store.initApiKeyStore(tempRoot, { credentialStore });
+
+    expect(store.getApiKey("cursor")).toBe("crsr_test_key");
+    expect(store.getApiKeyStoreStatus()).toMatchObject({
+      decryptionFailed: false,
+    });
+  });
+
   it("reads an unindexed credential-store provider on demand and updates the index", async () => {
     const credentialStore = new MemoryCredentialStore();
     credentialStore.setSync("ai.api_key.openai.v1", "sk-unindexed-key");

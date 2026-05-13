@@ -40,7 +40,6 @@ export type AggregatedBlock =
   | { kind: "compaction"; id: string; turnId: string | null; trigger: "manual" | "auto"; live: boolean; preTokens?: number }
   | { kind: "queued-steer"; id: string; turnId: string | null; steerId: string; text: string }
   | { kind: "plan"; id: string; turnId: string | null; steps: PlanStep[]; current: number; total: number; live: boolean }
-  | { kind: "turn-footer"; id: string; turnId: string; durationMs?: number; tokens?: number; cost?: number }
   | { kind: "approval"; id: string; line: RenderedChatLine }
   | { kind: "error"; id: string; line: RenderedChatLine }
   | { kind: "notice"; id: string; line: RenderedChatLine };

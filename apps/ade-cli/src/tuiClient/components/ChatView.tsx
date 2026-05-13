@@ -512,13 +512,6 @@ function formatDurationMs(ms: number | undefined): string | null {
   return `${minutes}m ${remSeconds}s`;
 }
 
-function compactTokens(value: number | undefined): string | null {
-  if (!value || !Number.isFinite(value) || value <= 0) return null;
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M tok`;
-  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k tok`;
-  return `${value} tok`;
-}
-
 function workBlockRows(
   block: Extract<AggregatedBlock, { kind: "work-block" }>,
   width: number,
@@ -680,39 +673,6 @@ function planRows(block: Extract<AggregatedBlock, { kind: "plan" }>, spinFrame: 
   return out;
 }
 
-function turnFooterRows(block: Extract<AggregatedBlock, { kind: "turn-footer" }>, width: number): RenderedChatRow[] {
-  const parts: string[] = [];
-  const dur = formatDurationMs(block.durationMs);
-  if (dur) parts.push(dur);
-  const tokens = compactTokens(block.tokens);
-  if (tokens) parts.push(tokens);
-  if (typeof block.cost === "number" && block.cost > 0) parts.push(`$${block.cost.toFixed(2)}`);
-  const label = parts.join(" · ");
-  const totalWidth = Math.max(8, width - 4);
-  if (!label.length) {
-    return [{
-      id: block.id,
-      tone: "footer",
-      text: repeat("─", totalWidth),
-      color: theme.color.borderSoft,
-      dim: true,
-      rail: null,
-    }];
-  }
-  const padded = ` ${label} `;
-  const sideLen = Math.max(2, Math.floor((totalWidth - textWidth(padded)) / 2));
-  const left = repeat("─", sideLen);
-  const right = repeat("─", Math.max(2, totalWidth - sideLen - textWidth(padded)));
-  return [{
-    id: block.id,
-    tone: "footer",
-    text: `${left}${padded}${right}`,
-    color: theme.color.t4,
-    dim: true,
-    rail: null,
-  }];
-}
-
 function modelWorkingRows(dots: string): RenderedChatRow[] {
   return [{
     id: "model-working",
@@ -805,8 +765,6 @@ function rowsForBlock(
       return queuedSteerRows(block, width);
     case "plan":
       return planRows(block, spinFrame);
-    case "turn-footer":
-      return turnFooterRows(block, width);
     default:
       return [];
   }
@@ -832,7 +790,6 @@ function rowsForBlocks(
 
 function shouldInsertSpacer(prev: AggregatedBlock["kind"], next: AggregatedBlock["kind"]): boolean {
   if (prev === next) return false;
-  if (prev === "turn-footer" || next === "turn-footer") return false;
   return true;
 }
 
