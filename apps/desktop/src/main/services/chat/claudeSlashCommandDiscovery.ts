@@ -277,6 +277,12 @@ function bundledSkillRoots(): string[] {
   if (process.resourcesPath) {
     candidates.push(path.join(process.resourcesPath, "agent-skills"));
   }
+  candidates.push(path.resolve(process.cwd(), "resources", "agent-skills"));
+  candidates.push(path.resolve(process.cwd(), "apps", "desktop", "resources", "agent-skills"));
+  for (let depth = 0; depth < 8; depth += 1) {
+    candidates.push(path.resolve(__dirname, ...Array(depth).fill(".."), "resources", "agent-skills"));
+    candidates.push(path.resolve(__dirname, ...Array(depth).fill(".."), "apps", "desktop", "resources", "agent-skills"));
+  }
   return candidates;
 }
 
@@ -318,7 +324,10 @@ export function discoverClaudeSlashCommands(cwd: string): DiscoveredClaudeSlashC
     }
   }
 
-  return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+  return [...byName.values()].sort((a, b) => {
+    if (a.source !== b.source) return a.source === "command" ? -1 : 1;
+    return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+  });
 }
 
 function resolveSkillFile(skillsDir: string, commandName: string): string | null {
