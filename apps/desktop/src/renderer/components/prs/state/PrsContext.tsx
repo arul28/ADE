@@ -114,7 +114,7 @@ type PrsContextValue = PrsState & {
   loadConvergenceState: (prId: string, options?: { force?: boolean }) => Promise<PrConvergenceState>;
   saveConvergenceState: (prId: string, state: PrConvergenceStatePatch) => Promise<PrConvergenceState>;
   resetConvergenceState: (prId: string) => Promise<void>;
-  refresh: () => Promise<void>;
+  refresh: (args?: { prId?: string; prIds?: string[] }) => Promise<void>;
 
   // Timeline + rails controls
   setPrsTimelineRailsEnabled: (enabled: boolean) => void;
@@ -772,6 +772,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
   const refreshCore = useCallback(async (options: {
     skipFreshWarmCache?: boolean;
     githubRefreshMode?: "await" | "background";
+    githubRefreshArgs?: { prId?: string; prIds?: string[] };
   } = {}) => {
     if (refreshInFlight.current) {
       refreshPending.current = true;
@@ -796,7 +797,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     setError(null);
     try {
       if (options.githubRefreshMode === "await") {
-        await window.ade.prs.refresh().catch(() => {});
+        await window.ade.prs.refresh(options.githubRefreshArgs).catch(() => {});
       }
       const shouldLoadWorkflowDiagnostics =
         activeTabRef.current !== "normal" || selectedPrIdRef.current !== null || currentRouteRequestsPrDiagnostics();
@@ -827,8 +828,17 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     }
   }, [applyLocalPrState]);
 
-  const refresh = useCallback(async () => {
-    await refreshCore({ githubRefreshMode: "await" });
+  const refresh = useCallback(async (args: { prId?: string; prIds?: string[] } = {}) => {
+    const prIds = [
+      ...(args.prId ? [args.prId] : []),
+      ...(args.prIds ?? []),
+    ].map((prId) => String(prId ?? "").trim()).filter(Boolean);
+    const githubRefreshArgs = prIds.length === 1
+      ? { prId: prIds[0] }
+      : prIds.length > 1
+        ? { prIds }
+        : undefined;
+    await refreshCore({ githubRefreshMode: "await", githubRefreshArgs });
   }, [refreshCore]);
 
   // Initial load
@@ -1020,8 +1030,6 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     ])
       .then(([statusResult, checksResult, reviewsResult, commentsResult]) => {
         if (cancelled) return;
-        liveDetailApplied = true;
-
         // Check for rate-limit errors in any rejected result
         for (const result of [statusResult, checksResult, reviewsResult, commentsResult]) {
           if (result.status === "rejected") {
@@ -1029,22 +1037,14 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
             if (msg.includes("rate limit") || msg.includes("API rate")) {
               rateLimitedUntilRef.current = Date.now() + 5 * 60_000;
               console.warn("[PrsContext] GitHub rate limit hit — pausing detail polling for 5 min");
-              // Clear stale data on rate limit
-              detailStatePrIdRef.current = null;
+              // Keep cached snapshot/detail data visible while GitHub is degraded.
               setDetailLiveDataPrId(null);
-              setDetailStatus(null);
-              setDetailChecks([]);
-              setDetailReviews([]);
-              setDetailComments([]);
-              setDetailReviewThreads([]);
-              setDetailDeployments([]);
-              setDetailAiSummary(null);
-              setDetailSnapshot(null);
               return;
             }
           }
         }
 
+        liveDetailApplied = true;
         detailStatePrIdRef.current = prId;
         if (statusResult.status === "fulfilled") {
           setDetailStatus(statusResult.value ?? null);

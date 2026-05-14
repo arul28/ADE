@@ -1101,6 +1101,83 @@ describe("prService.refresh", () => {
   });
 });
 
+describe("prService.getActionRuns", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("bounds action run history and only hydrates jobs for the newest runs", async () => {
+    const row = makePrRow({ id: "pr-actions", github_pr_number: 90 });
+    const db = makeMockDb();
+    db.get.mockImplementation((sql: string, params: unknown[]) => {
+      const text = String(sql);
+      if (text.includes("from pull_requests") && text.includes("where id = ?")) {
+        return params[0] === row.id ? row : null;
+      }
+      return null;
+    });
+    const workflowRuns = Array.from({ length: 20 }, (_, index) => ({
+      id: index + 1,
+      name: `run-${index + 1}`,
+      status: "completed",
+      conclusion: "success",
+      html_url: `https://github.com/test-owner/test-repo/actions/runs/${index + 1}`,
+      created_at: `2026-01-01T00:${String(index).padStart(2, "0")}:00Z`,
+      updated_at: `2026-01-01T00:${String(index).padStart(2, "0")}:30Z`,
+    })).reverse();
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async (args: { path: string }) => {
+        if (args.path === "/repos/test-owner/test-repo/pulls/90") {
+          return { data: makeGitHubPull({ number: 90, head: { ref: "my-feature", sha: "head-sha" } }) };
+        }
+        if (args.path === "/repos/test-owner/test-repo/actions/runs") {
+          return { data: { workflow_runs: workflowRuns } };
+        }
+        const jobMatch = args.path.match(/\/actions\/runs\/(\d+)\/jobs$/);
+        if (jobMatch) {
+          const runId = Number(jobMatch[1]);
+          return {
+            data: {
+              jobs: [{
+                id: runId * 100,
+                name: `job-${runId}`,
+                status: "completed",
+                conclusion: "success",
+                steps: [],
+              }],
+            },
+          };
+        }
+        throw new Error(`Unexpected GitHub API path: ${args.path}`);
+      }),
+    });
+    const { service } = buildService({ db, githubService });
+
+    const runs = await service.getActionRuns("pr-actions");
+
+    expect(runs).toHaveLength(12);
+    expect(runs[0]?.jobs).toHaveLength(1);
+    expect(runs[5]?.jobs).toHaveLength(1);
+    expect(runs[6]?.jobs).toHaveLength(0);
+    const calls: Array<{ path: string; query?: Record<string, unknown> }> =
+      (githubService.apiRequest as ReturnType<typeof vi.fn>).mock.calls.map((call: unknown[]) =>
+        call[0] as { path: string; query?: Record<string, unknown> }
+      );
+    expect(calls.find((call) => call.path === "/repos/test-owner/test-repo/actions/runs")?.query).toEqual({
+      head_sha: "head-sha",
+      per_page: 12,
+    });
+    expect(calls.filter((call) => /\/actions\/runs\/\d+\/jobs$/.test(call.path)).map((call) => call.path)).toEqual([
+      "/repos/test-owner/test-repo/actions/runs/20/jobs",
+      "/repos/test-owner/test-repo/actions/runs/19/jobs",
+      "/repos/test-owner/test-repo/actions/runs/18/jobs",
+      "/repos/test-owner/test-repo/actions/runs/17/jobs",
+      "/repos/test-owner/test-repo/actions/runs/16/jobs",
+      "/repos/test-owner/test-repo/actions/runs/15/jobs",
+    ]);
+  });
+});
+
 describe("prService merge contexts", () => {
   beforeEach(() => {
     vi.clearAllMocks();

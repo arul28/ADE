@@ -267,6 +267,13 @@ type PersistedRunPageLaneState = {
   commandLaneIds: Record<string, string>;
 };
 
+type PendingRunLaunch = {
+  targets: Array<{
+    laneId: string;
+    processId: string;
+  }>;
+};
+
 function readRunPageLaneState(
   projectRoot: string | null,
 ): PersistedRunPageLaneState {
@@ -663,10 +670,7 @@ export function RunPage() {
     nonce: number;
   } | null>(null);
   const runtimeRefreshTimerRef = useRef<number | null>(null);
-  const pendingRunLaunchRef = useRef<{
-    laneId: string;
-    processId: string;
-  } | null>(null);
+  const pendingRunLaunchRef = useRef<PendingRunLaunch | null>(null);
   const terminalRevealNonceRef = useRef(0);
 
   const fallbackRunLaneId = useMemo(
@@ -882,20 +886,56 @@ export function RunPage() {
       if (event.type !== "runtime") return;
       upsertRuntime(event.runtime);
       const pending = pendingRunLaunchRef.current;
-      if (
-        pending?.laneId === event.runtime.laneId &&
-        pending.processId === event.runtime.processId
-      ) {
-        if (
-          revealRuntimeTerminal(event.runtime) ||
-          !isActiveProcessStatus(event.runtime.status)
-        ) {
-          pendingRunLaunchRef.current = null;
-        }
+      if (!pending) return;
+      const targetIndex = pending.targets.findIndex(
+        (target) =>
+          target.laneId === event.runtime.laneId &&
+          target.processId === event.runtime.processId,
+      );
+      if (targetIndex < 0) return;
+      if (revealRuntimeTerminal(event.runtime)) {
+        pendingRunLaunchRef.current = null;
+        return;
+      }
+      if (!isActiveProcessStatus(event.runtime.status)) {
+        const nextTargets = pending.targets.filter(
+          (_, index) => index !== targetIndex,
+        );
+        pendingRunLaunchRef.current =
+          nextTargets.length > 0 ? { targets: nextTargets } : null;
       }
     });
     return unsubscribe;
   }, [revealRuntimeTerminal, upsertRuntime]);
+
+  const clearPendingRunLaunchTarget = useCallback(
+    (laneId: string, processId: string) => {
+      const pending = pendingRunLaunchRef.current;
+      if (!pending) return;
+      const nextTargets = pending.targets.filter(
+        (target) => target.laneId !== laneId || target.processId !== processId,
+      );
+      pendingRunLaunchRef.current =
+        nextTargets.length > 0 ? { targets: nextTargets } : null;
+    },
+    [],
+  );
+
+  const clearPendingRunLaunchTargets = useCallback(
+    (targets: PendingRunLaunch["targets"]) => {
+      const pending = pendingRunLaunchRef.current;
+      if (!pending) return;
+      const keys = new Set(
+        targets.map((target) => `${target.laneId}\u0000${target.processId}`),
+      );
+      const nextTargets = pending.targets.filter(
+        (target) => !keys.has(`${target.laneId}\u0000${target.processId}`),
+      );
+      pendingRunLaunchRef.current =
+        nextTargets.length > 0 ? { targets: nextTargets } : null;
+    },
+    [],
+  );
 
   const resolveProcessLaneId = useCallback(
     (processId: string): string | null => {
@@ -943,7 +983,7 @@ export function RunPage() {
     async (processId: string) => {
       const laneId = resolveProcessLaneId(processId);
       if (!laneId) return;
-      pendingRunLaunchRef.current = { laneId, processId };
+      pendingRunLaunchRef.current = { targets: [{ laneId, processId }] };
       try {
         setActionError(null);
         const started = await startProcess(processId, laneId);
@@ -952,15 +992,12 @@ export function RunPage() {
           pendingRunLaunchRef.current = null;
         }
       } catch (error) {
-        const pending = pendingRunLaunchRef.current;
-        if (pending?.laneId === laneId && pending.processId === processId) {
-          pendingRunLaunchRef.current = null;
-        }
+        clearPendingRunLaunchTarget(laneId, processId);
         setActionError(error instanceof Error ? error.message : String(error));
         console.error("[RunPage] handleRun failed:", error);
       }
     },
-    [resolveProcessLaneId, revealRuntimeTerminal, startProcess, upsertRuntime],
+    [clearPendingRunLaunchTarget, resolveProcessLaneId, revealRuntimeTerminal, startProcess, upsertRuntime],
   );
 
   const handleKillRuntime = useCallback(async (runtimeItem: ProcessRuntime) => {
@@ -1004,7 +1041,18 @@ export function RunPage() {
     if (!selectedGroupId) return;
     const laneByProcessId = buildLaneMapForSelectedGroup();
     if (!laneByProcessId || Object.keys(laneByProcessId).length === 0) return;
+    const launchTargets = definitions
+      .filter((definition) =>
+        (definition.groupIds ?? []).includes(selectedGroupId),
+      )
+      .map((definition) => {
+        const laneId = laneByProcessId[definition.id];
+        return laneId ? { laneId, processId: definition.id } : null;
+      })
+      .filter((target): target is PendingRunLaunch["targets"][number] => target != null);
+    if (launchTargets.length === 0) return;
     const args = { groupId: selectedGroupId, laneByProcessId };
+    pendingRunLaunchRef.current = { targets: launchTargets };
     try {
       setActionError(null);
       await window.ade.processes.startGroup(args);
@@ -1018,6 +1066,7 @@ export function RunPage() {
           await window.ade.processes.startGroup(args);
           return;
         } catch (retryError) {
+          clearPendingRunLaunchTargets(launchTargets);
           setActionError(
             retryError instanceof Error
               ? retryError.message
@@ -1026,9 +1075,15 @@ export function RunPage() {
           return;
         }
       }
+      clearPendingRunLaunchTargets(launchTargets);
       setActionError(error instanceof Error ? error.message : String(error));
     }
-  }, [buildLaneMapForSelectedGroup, selectedGroupId]);
+  }, [
+    buildLaneMapForSelectedGroup,
+    clearPendingRunLaunchTargets,
+    definitions,
+    selectedGroupId,
+  ]);
 
   const handleStopGroupAll = useCallback(async () => {
     if (!selectedGroupId) return;

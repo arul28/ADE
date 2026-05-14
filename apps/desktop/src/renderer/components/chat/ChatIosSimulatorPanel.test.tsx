@@ -587,6 +587,78 @@ describe("ChatIosSimulatorPanel", () => {
     expect(screen.getByPlaceholderText("Type into the active simulator app")).toBeTruthy();
   });
 
+  it("keeps another-lane simulator sessions read-only", async () => {
+    const { api } = installIosSimulatorApi();
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        laneId="lane-2"
+        projectRoot="/tmp/project"
+        controlDisabledReason="This iOS Simulator view is attached to Lane 1, not Lane 2."
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    const launchButton = await screen.findByRole("button", { name: "Launch" }) as HTMLButtonElement;
+    expect(launchButton.disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
+    expect(screen.queryByPlaceholderText("Type into the active simulator app")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Inspect" }));
+    const refreshButton = await screen.findByTitle("Refresh inspector snapshot") as HTMLButtonElement;
+    expect(refreshButton.disabled).toBe(true);
+
+    expect(api.launch).not.toHaveBeenCalled();
+    expect(api.shutdown).not.toHaveBeenCalled();
+    expect(api.typeText).not.toHaveBeenCalled();
+    expect(api.tap).not.toHaveBeenCalled();
+  });
+
+  it("blocks live simulator input when another chat owns the controls", async () => {
+    const { api } = installIosSimulatorApi({
+      status: {
+        ...activeStatus,
+        activeSession: {
+          ...activeStatus.activeSession!,
+          chatSessionId: "chat-2",
+        },
+      },
+    });
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    const canvas = await screen.findByLabelText("iOS Simulator live stream") as HTMLCanvasElement;
+    const mediaRect = {
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: 393,
+      bottom: 852,
+      width: 393,
+      height: 852,
+      toJSON: () => ({}),
+    } as DOMRect;
+    canvas.getBoundingClientRect = () => mediaRect;
+    const liveSurface = canvas.closest("[tabindex]") as HTMLDivElement;
+
+    fireEvent.keyDown(liveSurface, { key: "a" });
+    fireEvent.pointerDown(liveSurface, { clientX: 50, clientY: 40, pointerId: 1 });
+    fireEvent.pointerUp(liveSurface, { clientX: 50, clientY: 40, pointerId: 1 });
+
+    expect(await screen.findByText("Another chat is already connected to the simulator. Use Take over to claim it.")).toBeTruthy();
+    expect(api.typeText).not.toHaveBeenCalled();
+    expect(api.tap).not.toHaveBeenCalled();
+    expect(api.drag).not.toHaveBeenCalled();
+  });
+
   it("selects an inspected simulator element and opens Preview Lab for its matching target", async () => {
     vi.stubGlobal("PointerEvent", MouseEvent);
     vi.stubGlobal("Image", class {

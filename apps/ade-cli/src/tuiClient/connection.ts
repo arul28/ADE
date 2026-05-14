@@ -279,6 +279,20 @@ function isMultiProjectRuntime(result: InitializeResult): boolean {
   );
 }
 
+function isAgentChatEventEnvelope(value: unknown): value is AgentChatEventEnvelope {
+  if (!isRecord(value)) return false;
+  if (typeof value.sessionId !== "string" || typeof value.timestamp !== "string") {
+    return false;
+  }
+  const event = value.event;
+  return isRecord(event) && typeof event.type === "string";
+}
+
+function runtimeChatEnvelope(event: BufferedEvent): AgentChatEventEnvelope | null {
+  if (event.category !== "runtime") return null;
+  return isAgentChatEventEnvelope(event.payload) ? event.payload : null;
+}
+
 function withProjectId(
   method: string,
   params: unknown,
@@ -356,7 +370,8 @@ async function connectAttachedSocket(args: {
       "ADE RPC socket did not finish initialization.",
     );
     let request = rawRequest;
-    if (isMultiProjectRuntime(initializeResult)) {
+    const multiProjectRuntime = isMultiProjectRuntime(initializeResult);
+    if (multiProjectRuntime) {
       const project = await rawRequest<ProjectRecord>("projects.add", {
         rootPath: args.project.projectRoot,
       });
@@ -382,10 +397,54 @@ async function connectAttachedSocket(args: {
       socketPath: args.socketPath,
       request,
       ...createAdeActionHelpers(request),
-      onChatEvent: (callback: (event: AgentChatEventEnvelope) => void) =>
-        attachedClient.onNotification("chat/event", (params) =>
+      onChatEvent: (callback: (event: AgentChatEventEnvelope) => void) => {
+        const stopChatNotification = attachedClient.onNotification("chat/event", (params) =>
           callback(params as AgentChatEventEnvelope),
-        ),
+        );
+        if (!multiProjectRuntime) return stopChatNotification;
+
+        let disposed = false;
+        let subscriptionId: string | null = null;
+        const pending: RuntimeEventNotification[] = [];
+        const stopRuntimeNotification = attachedClient.onNotification("runtime/event", (params) => {
+          const payload = params as RuntimeEventNotification;
+          if (!isBufferedEvent(payload.event)) return;
+          if (!subscriptionId) {
+            pending.push(payload);
+            return;
+          }
+          if (payload.subscriptionId !== subscriptionId) return;
+          const envelope = runtimeChatEnvelope(payload.event);
+          if (envelope) callback(envelope);
+        });
+        request<{ subscriptionId: string }>("runtimeEvents.subscribe", {
+          category: "runtime",
+          cursor: 0,
+          limit: 100,
+          replay: false,
+        }).then((response) => {
+          if (disposed) {
+            request("runtimeEvents.unsubscribe", { subscriptionId: response.subscriptionId }).catch(() => {});
+            return;
+          }
+          subscriptionId = response.subscriptionId;
+          for (const payload of pending.splice(0)) {
+            if (payload.subscriptionId !== subscriptionId || !isBufferedEvent(payload.event)) continue;
+            const envelope = runtimeChatEnvelope(payload.event);
+            if (envelope) callback(envelope);
+          }
+        }).catch(() => {
+          stopRuntimeNotification();
+        });
+        return () => {
+          disposed = true;
+          stopChatNotification();
+          stopRuntimeNotification();
+          if (subscriptionId) {
+            request("runtimeEvents.unsubscribe", { subscriptionId }).catch(() => {});
+          }
+        };
+      },
       subscribeRuntimeEvents: async (subscriptionArgs, callback) => {
         let subscriptionId: string | null = null;
         const pending: PendingRuntimeEvent[] = [];
@@ -403,6 +462,7 @@ async function connectAttachedSocket(args: {
             category: subscriptionArgs.category ?? "runtime",
             cursor: subscriptionArgs.cursor ?? 0,
             limit: subscriptionArgs.limit ?? 100,
+            replay: subscriptionArgs.replay,
           });
           subscriptionId = response.subscriptionId;
           for (const payload of pending) {
@@ -596,7 +656,7 @@ export async function connectToAde(args: {
       const eventBuffer = runtime.eventBuffer;
       if (!eventBuffer) return () => {};
       const shouldForward = (event: BufferedEvent) => !category || event.category === category;
-      const replay = typeof eventBuffer.drain === "function"
+      const replay = subscriptionArgs.replay !== false && typeof eventBuffer.drain === "function"
         ? eventBuffer.drain(subscriptionArgs.cursor ?? 0, subscriptionArgs.limit ?? 100)
         : { events: [] };
       for (const event of replay.events) {

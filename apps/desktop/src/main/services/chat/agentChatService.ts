@@ -1152,6 +1152,8 @@ type ClaudeDaemonResponse = {
   present?: boolean;
 };
 
+const MAX_CLAUDE_DAEMON_RESPONSE_BYTES = 1024 * 1024;
+
 function sleepMs(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -1271,8 +1273,17 @@ function extractClaudeBackgroundTranscriptText(state: ClaudeBackgroundJobState |
   const configRoot = path.resolve(claudeConfigDir());
   if (!resolvedPath.startsWith(`${configRoot}${path.sep}`)) return "";
   if (!fs.existsSync(resolvedPath)) return "";
+  let realPath = resolvedPath;
+  let realConfigRoot = configRoot;
   try {
-    const text = readFileTailUtf8(resolvedPath);
+    realPath = fs.realpathSync(resolvedPath);
+    realConfigRoot = fs.realpathSync(configRoot);
+  } catch {
+    return "";
+  }
+  if (!realPath.startsWith(`${realConfigRoot}${path.sep}`)) return "";
+  try {
+    const text = readFileTailUtf8(realPath);
     let latest = "";
     for (const line of text.split(/\n+/)) {
       if (!line.trim()) continue;
@@ -1330,6 +1341,10 @@ async function sendClaudeDaemonRequest(
       socket.write(`${JSON.stringify({ proto: 1, ...request })}\n`);
     });
     socket.on("data", (chunk) => {
+      if (Buffer.byteLength(buffer, "utf8") + chunk.length > MAX_CLAUDE_DAEMON_RESPONSE_BYTES) {
+        finish(() => reject(new Error("Claude daemon response exceeded the 1MB limit.")));
+        return;
+      }
       buffer += chunk.toString("utf8");
       const newline = buffer.indexOf("\n");
       const raw = (newline >= 0 ? buffer.slice(0, newline) : buffer).trim();
@@ -1548,6 +1563,8 @@ type ResolvedChatConfig = {
 };
 
 const MAX_PENDING_STEERS = 10;
+const MAX_INJECTED_PROJECT_COMMANDS = 20;
+const MAX_INJECTED_PROJECT_SKILLS = 20;
 const CURSOR_SDK_AGENT_PROTOCOL_VERSION = 2;
 const CLAUDE_WARMUP_WAIT_TIMEOUT_MS = 20_000;
 
@@ -5276,8 +5293,9 @@ export function createAgentChatService(args: {
 
   const readTranscriptConversationEntries = (managed: ManagedChatSession): string[] => {
     try {
-      flushQueuedTranscriptWrite(managed.transcriptPath);
-      const raw = fs.readFileSync(managed.transcriptPath, "utf8");
+      const transcriptPath = resolveReadableChatPath(managed.transcriptPath, "agent_chat.transcript_read_skipped_path_outside_ade");
+      if (!transcriptPath) return [];
+      const raw = fs.readFileSync(transcriptPath, "utf8");
       return parseAgentChatTranscript(raw)
         .filter((entry) => entry.sessionId === managed.session.id)
         .flatMap((entry) => {
@@ -5298,8 +5316,9 @@ export function createAgentChatService(args: {
 
   const readTranscriptEntries = (managed: ManagedChatSession): AgentChatTranscriptEntry[] => {
     try {
-      flushQueuedTranscriptWrite(managed.transcriptPath);
-      const raw = fs.readFileSync(managed.transcriptPath, "utf8");
+      const transcriptPath = resolveReadableChatPath(managed.transcriptPath, "agent_chat.transcript_read_skipped_path_outside_ade");
+      if (!transcriptPath) return [];
+      const raw = fs.readFileSync(transcriptPath, "utf8");
       const entries: AgentChatTranscriptEntry[] = [];
       for (const entry of parseAgentChatTranscript(raw)) {
         if (entry.sessionId !== managed.session.id) continue;
@@ -5339,8 +5358,9 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
   ): Extract<AgentChatEvent, { type: "todo_update" }>["items"] => {
     try {
-      flushQueuedTranscriptWrite(managed.transcriptPath);
-      const raw = fs.readFileSync(managed.transcriptPath, "utf8");
+      const transcriptPath = resolveReadableChatPath(managed.transcriptPath, "agent_chat.transcript_read_skipped_path_outside_ade");
+      if (!transcriptPath) return [];
+      const raw = fs.readFileSync(transcriptPath, "utf8");
       let latest: Extract<AgentChatEvent, { type: "todo_update" }>["items"] = [];
       for (const entry of parseAgentChatTranscript(raw)) {
         if (entry.sessionId !== managed.session.id) continue;
@@ -5441,8 +5461,9 @@ export function createAgentChatService(args: {
 
   const readTranscriptEnvelopes = (managed: ManagedChatSession): AgentChatEventEnvelope[] => {
     try {
-      flushQueuedTranscriptWrite(managed.transcriptPath);
-      return parseAgentChatTranscript(fs.readFileSync(managed.transcriptPath, "utf8"))
+      const transcriptPath = resolveReadableChatPath(managed.transcriptPath, "agent_chat.transcript_read_skipped_path_outside_ade");
+      if (!transcriptPath) return [];
+      return parseAgentChatTranscript(fs.readFileSync(transcriptPath, "utf8"))
         .filter((entry) => entry.sessionId === managed.session.id);
     } catch {
       return [];
@@ -5478,8 +5499,9 @@ export function createAgentChatService(args: {
     const managed = managedSessions.get(sessionId);
     if (managed?.transcriptPath) {
       try {
-        flushQueuedTranscriptWrite(managed.transcriptPath);
-        return parseAgentChatTranscript(fs.readFileSync(managed.transcriptPath, "utf8"))
+        const transcriptPath = resolveReadableChatPath(managed.transcriptPath, "agent_chat.transcript_read_skipped_path_outside_ade");
+        if (!transcriptPath) return [];
+        return parseAgentChatTranscript(fs.readFileSync(transcriptPath, "utf8"))
           .filter((entry) => entry.sessionId === sessionId);
       } catch {
         return [];
@@ -5494,9 +5516,9 @@ export function createAgentChatService(args: {
     ];
     for (const candidatePath of candidates) {
       try {
-        flushQueuedTranscriptWrite(candidatePath);
-        if (!fs.existsSync(candidatePath)) continue;
-        const raw = fs.readFileSync(candidatePath, "utf8");
+        const transcriptPath = resolveReadableChatPath(candidatePath, "agent_chat.transcript_read_skipped_path_outside_ade");
+        if (!transcriptPath) continue;
+        const raw = fs.readFileSync(transcriptPath, "utf8");
         return parseAgentChatTranscript(raw).filter((entry) => entry.sessionId === sessionId);
       } catch {
         // try next candidate
@@ -6742,32 +6764,57 @@ export function createAgentChatService(args: {
 
   const metadataPathFor = (sessionId: string): string => path.join(chatSessionsDir, `${sessionId}.json`);
 
-  const deletePersistedChatFile = (filePath: string | null | undefined): void => {
+  const safeRealpath = (p: string): string | null => {
+    try { return fs.realpathSync(p); } catch { return null; }
+  };
+
+  const isWithinRoot = (target: string, root: string | null): boolean => {
+    if (!root) return false;
+    const rel = path.relative(root, target);
+    return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+  };
+
+  const resolveContainedChatPath = (
+    filePath: string | null | undefined,
+    warnEvent = "agent_chat.chat_file_skipped_path_outside_ade",
+    allowMissing = false,
+  ): string | null => {
     const trimmed = typeof filePath === "string" ? filePath.trim() : "";
-    if (!trimmed.length) return;
+    if (!trimmed.length) return null;
     const resolvedPath = path.resolve(trimmed);
-    // Resolve symlinks on the target and both roots before comparing, so a
-    // symlink placed inside the chat dir cannot redirect rmSync outside.
-    const safeRealpath = (p: string): string | null => {
-      try { return fs.realpathSync(p); } catch { return null; }
-    };
+    const resolvedAdeDir = path.resolve(layout.adeDir);
+    const resolvedTranscriptRoot = path.resolve(transcriptsDir);
+    if (!isWithinRoot(resolvedPath, resolvedAdeDir) && !isWithinRoot(resolvedPath, resolvedTranscriptRoot)) {
+      logger.warn(warnEvent, { filePath: resolvedPath });
+      return null;
+    }
     const realTarget = safeRealpath(resolvedPath);
-    // Missing target is safe to skip — nothing to delete.
-    if (!realTarget) return;
+    if (!realTarget) return allowMissing ? resolvedPath : null;
     const realAdeDir = safeRealpath(layout.adeDir);
     const realTranscriptRoot = safeRealpath(path.resolve(transcriptsDir));
-    const isWithin = (root: string | null): boolean => {
-      if (!root) return false;
-      const rel = path.relative(root, realTarget);
-      return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
-    };
-    if (!isWithin(realAdeDir) && !isWithin(realTranscriptRoot)) {
-      logger.warn("agent_chat.delete_skipped_path_outside_ade", {
+    if (!isWithinRoot(realTarget, realAdeDir) && !isWithinRoot(realTarget, realTranscriptRoot)) {
+      logger.warn(warnEvent, {
         filePath: resolvedPath,
         realTarget,
       });
-      return;
+      return null;
     }
+    return realTarget;
+  };
+
+  const resolveReadableChatPath = (
+    filePath: string | null | undefined,
+    warnEvent = "agent_chat.transcript_read_skipped_path_outside_ade",
+  ): string | null => {
+    if (!resolveContainedChatPath(filePath, warnEvent, true)) return null;
+    const trimmed = typeof filePath === "string" ? filePath.trim() : "";
+    flushQueuedTranscriptWrite(path.resolve(trimmed));
+    return resolveContainedChatPath(filePath, warnEvent);
+  };
+
+  const deletePersistedChatFile = (filePath: string | null | undefined): void => {
+    const realTarget = resolveContainedChatPath(filePath, "agent_chat.delete_skipped_path_outside_ade");
+    if (!realTarget) return;
     try {
       fs.rmSync(realTarget, { force: true });
     } catch (error) {
@@ -9162,16 +9209,28 @@ export function createAgentChatService(args: {
         bumpClaudeIdleDeadline();
         markFirstStreamEvent(msg.type);
 
-        // Capture session_id from any message
-        if (!runtime.sdkSessionId && (msg as any).session_id) {
-          runtime.sdkSessionId = (msg as any).session_id;
+        // Capture the provider's canonical session_id from any message. The
+        // SDK can replace a stale/resume-rejected id when ADE starts fresh.
+        const messageSessionId = typeof (msg as any).session_id === "string"
+          ? (msg as any).session_id.trim()
+          : "";
+        if (messageSessionId.length > 0 && runtime.sdkSessionId !== messageSessionId) {
+          runtime.sdkSessionId = messageSessionId;
+          mirrorClaudeSessionPointer(managed, runtime.sdkSessionId);
           persistChatState(managed);
         }
 
         // system:init — capture data silently (no UI emission)
         if (msg.type === "system" && (msg as any).subtype === "init") {
           const initMsg = msg as any;
-          runtime.sdkSessionId = initMsg.session_id ?? runtime.sdkSessionId;
+          const initSessionId = typeof initMsg.session_id === "string"
+            ? initMsg.session_id.trim()
+            : "";
+          if (initSessionId.length > 0 && runtime.sdkSessionId !== initSessionId) {
+            runtime.sdkSessionId = initSessionId;
+            mirrorClaudeSessionPointer(managed, runtime.sdkSessionId);
+            persistChatState(managed);
+          }
           reportedInitModel = normalizeReportedModelName(initMsg.model) ?? reportedInitModel;
           if (Array.isArray(initMsg.slash_commands)) {
             applyClaudeSlashCommands(runtime, initMsg.slash_commands);
@@ -10090,7 +10149,7 @@ export function createAgentChatService(args: {
       ? [
           "",
           "## Project slash commands and skills",
-          "ADE walks up from the lane worktree to discover `.claude/commands/*.md` (slash commands) and `.claude/skills/<name>/SKILL.md` (skills) at every ancestor directory plus `~/.claude/`. Claude Code itself may discover some of these, but ADE also tells you about the full project-visible set here.",
+          "ADE walks up from the lane worktree to discover `.claude/commands/*.md` plus `.claude/skills/<name>/SKILL.md`, `.agents/skills/<name>/SKILL.md`, `.ade/skills/<name>/SKILL.md`, user skill roots, and ADE bundled skills. Claude Code itself may discover some of these, but ADE also tells you about the full project-visible set here.",
           "**User-invoked (`/<name>`):** When the user sends a message that is exactly `/<name>` or `/<name> <args>`, ADE may pre-expand the file's body and substitute `$ARGUMENTS` before it reaches you. You'll see the expanded instructions, not necessarily the literal `/<name>`.",
           "**Mid-sentence reference:** When the user mentions a command/skill mid-sentence, read the file at the path below and follow it.",
           "**Autonomous skill use:** If, while working on a task, you decide a discovered skill applies, read its SKILL.md file and follow it as if it had been invoked.",
@@ -10337,8 +10396,15 @@ export function createAgentChatService(args: {
       emitChatEvent(managed, { type: "text", text: stateText, turnId });
       persistChatState(managed);
     };
+    const isManagedSessionStopped = (): boolean =>
+      managed.closed
+      || managed.session.status !== "active"
+      || (managed.runtime?.kind === "claude" && managed.runtime.interrupted);
 
     while (Date.now() - start < maxDurationMs) {
+      if (isManagedSessionStopped()) {
+        return { status: "interrupted", assistantText, state: lastState };
+      }
       lastState = readClaudeBackgroundJobState(short);
       if (lastState) {
         rememberClaudeBackgroundJob(managed, short, lastState);
@@ -10519,7 +10585,8 @@ export function createAgentChatService(args: {
     },
   ): Promise<void> => {
     const runtimeKind = managed.runtime?.kind;
-    if (runtimeKind === "claude") {
+    if (runtimeKind === "claude" || managed.session.provider === "claude") {
+      ensureClaudeSessionRuntime(managed);
       return runClaudeTurn(managed, args);
     }
     if (runtimeKind !== "opencode") {
@@ -13555,31 +13622,34 @@ export function createAgentChatService(args: {
       })();
       const projectCommandFiles = projectSlashCommands.filter((cmd) => cmd.source === "command");
       const projectSkillFiles = projectSlashCommands.filter((cmd) => cmd.source === "skill");
+      const visibleProjectCommandFiles = projectCommandFiles.slice(0, MAX_INJECTED_PROJECT_COMMANDS);
+      const visibleProjectSkillFiles = projectSkillFiles.slice(0, MAX_INJECTED_PROJECT_SKILLS);
+      const hiddenProjectCommandCount = projectCommandFiles.length - visibleProjectCommandFiles.length;
+      const hiddenProjectSkillCount = projectSkillFiles.length - visibleProjectSkillFiles.length;
+      const formatDiscoveredCommand = (cmd: (typeof projectSlashCommands)[number]): string => {
+        const desc = cmd.description.trim();
+        const head = desc.length ? `- ${cmd.name} — ${desc}` : `- ${cmd.name}`;
+        return `${head}\n  file: ${cmd.filePath}`;
+      };
       const slashCommandsSection = projectSlashCommands.length
         ? [
           "",
           "## Project slash commands and skills",
-          "ADE walks up from the lane worktree to discover `.claude/commands/*.md` (slash commands) and `.claude/skills/<name>/SKILL.md` (skills) at every ancestor directory plus `~/.claude/`. The Claude Agent SDK only auto-discovers `<cwd>/.claude/` and `~/.claude/`, so ADE injects the rest here.",
+          "ADE walks up from the lane worktree to discover `.claude/commands/*.md` plus `.claude/skills/<name>/SKILL.md`, `.agents/skills/<name>/SKILL.md`, `.ade/skills/<name>/SKILL.md`, user skill roots, and ADE bundled skills. The Claude Agent SDK only auto-discovers `<cwd>/.claude/` and `~/.claude/`, so ADE injects the rest here.",
           "**User-invoked (`/<name>`):** When the user sends a message that is exactly `/<name>` or `/<name> <args>`, ADE pre-expands the file's body (commands take precedence over same-named skills) and substitutes `$ARGUMENTS` before it reaches you. You'll see the expanded instructions, not the literal `/<name>`.",
           "**Mid-sentence reference:** When the user mentions a command/skill mid-sentence (e.g. \"please /audit this\", \"can you do a /security-review\") the message is NOT auto-expanded. Read the file at the path below and follow it.",
           "**Autonomous skill use:** If, while working on a task, you decide a discovered skill applies (its description matches the situation), Read its SKILL.md file and follow it as if it had been invoked. Don't ask the user — just use the skill when warranted.",
           ...(projectCommandFiles.length ? [
             "",
             "Commands (file-backed prompts):",
-            ...projectCommandFiles.map((cmd) => {
-              const desc = cmd.description.trim();
-              const head = desc.length ? `- ${cmd.name} — ${desc}` : `- ${cmd.name}`;
-              return `${head}\n  file: ${cmd.filePath}`;
-            }),
+            ...visibleProjectCommandFiles.map(formatDiscoveredCommand),
+            ...(hiddenProjectCommandCount > 0 ? [`- ${hiddenProjectCommandCount} more command(s) hidden to keep startup context lean. Use slash command search or inspect project command folders if needed.`] : []),
           ] : []),
           ...(projectSkillFiles.length ? [
             "",
             "Skills (autonomously usable when relevant):",
-            ...projectSkillFiles.map((cmd) => {
-              const desc = cmd.description.trim();
-              const head = desc.length ? `- ${cmd.name} — ${desc}` : `- ${cmd.name}`;
-              return `${head}\n  file: ${cmd.filePath}`;
-            }),
+            ...visibleProjectSkillFiles.map(formatDiscoveredCommand),
+            ...(hiddenProjectSkillCount > 0 ? [`- ${hiddenProjectSkillCount} more skill(s) hidden to keep startup context lean. Use slash command search or inspect skill roots if needed.`] : []),
           ] : []),
         ]
         : [];
@@ -14152,9 +14222,7 @@ export function createAgentChatService(args: {
     });
     const claudePointer = getClaudeSessionPointerForChat(managed.session.id);
     const laneScopedClaudePointer = claudePointer?.laneId === managed.session.laneId ? claudePointer : null;
-    const sdkSessionId = currentLaneDirectiveKey != null && persisted?.lastLaneDirectiveKey === currentLaneDirectiveKey
-      ? persisted?.sdkSessionId ?? laneScopedClaudePointer?.sessionId ?? null
-      : laneScopedClaudePointer?.sessionId ?? null;
+    const sdkSessionId = persisted?.sdkSessionId ?? laneScopedClaudePointer?.sessionId ?? null;
     const forkFromSdkSessionId = currentLaneDirectiveKey != null && persisted?.lastLaneDirectiveKey === currentLaneDirectiveKey
       ? persisted?.forkFromSdkSessionId ?? null
       : null;
@@ -14814,13 +14882,13 @@ export function createAgentChatService(args: {
     const createdManaged = ensureManagedSession(created.id);
     createdManaged.session.executionMode = managed.session.executionMode ?? sourceSession.executionMode ?? null;
     if (handoffMode === "fork") {
-      if (createdManaged.runtime?.kind !== "claude") {
-        throw new Error("Full-history fork can only target Claude chats.");
+      createdManaged.claudeBackgroundResumeSessionId = sourceSdkSessionId;
+      mirrorClaudeSessionPointer(createdManaged, sourceSdkSessionId);
+      if (createdManaged.runtime?.kind === "claude") {
+        resetClaudeQuerySession(createdManaged, createdManaged.runtime, "session_reset", { clearSdkSessionId: true });
+        createdManaged.runtime.forkFromSdkSessionId = sourceSdkSessionId;
+        prewarmClaudeQuery(createdManaged);
       }
-      resetClaudeQuerySession(createdManaged, createdManaged.runtime, "session_reset", { clearSdkSessionId: true });
-      createdManaged.runtime.sdkSessionId = randomUUID();
-      createdManaged.runtime.forkFromSdkSessionId = sourceSdkSessionId ?? null;
-      prewarmClaudeQuery(createdManaged);
     }
     const inheritedGoal = trimLine(sourceSession.goal)
       ?? trimLine(sourceSession.summary)
@@ -18284,7 +18352,7 @@ export function createAgentChatService(args: {
     // OpenCode runtime steer
     if (managed.runtime?.kind === "opencode") {
       const runtime = managed.runtime;
-      if (runtime.busy) {
+      if (runtime.busy || managed.session.status === "active") {
         const preparedSteer = prepareSendMessage({
           sessionId,
           text: trimmed,
@@ -18522,19 +18590,23 @@ export function createAgentChatService(args: {
     if (!preparedSteer) {
       return { steerId, queued: false };
     }
-    const runtime = ensureClaudeSessionRuntime(managed);
-    if (runtime.busy) {
-      enqueueSteerOrDrop(
-        managed,
-        runtime,
-        sessionId,
-        steerId,
-        preparedSteer.visibleText,
-        preparedSteer.attachments,
-        preparedSteer.contextAttachments,
-        preparedSteer.resolvedAttachments,
-      );
-      return { steerId, queued: true };
+    if (managed.session.provider === "claude") {
+      const runtime = ensureClaudeSessionRuntime(managed);
+      if (runtime.busy || managed.session.status === "active") {
+        enqueueSteerOrDrop(
+          managed,
+          runtime,
+          sessionId,
+          steerId,
+          preparedSteer.visibleText,
+          preparedSteer.attachments,
+          preparedSteer.contextAttachments,
+          preparedSteer.resolvedAttachments,
+        );
+        return { steerId, queued: true };
+      }
+      await executePreparedSendMessage(preparedSteer);
+      return { steerId, queued: false };
     }
     await executePreparedSendMessage(preparedSteer);
     return { steerId, queued: false };
@@ -18860,6 +18932,22 @@ export function createAgentChatService(args: {
         turnId: runtime.activeTurnId
       });
       stopActiveCodexSubagents(managed, runtime, runtime.activeTurnId ?? undefined, "Interrupted by user");
+      return;
+    }
+
+    if (managed.session.provider === "claude" && managed.claudeBackgroundJobShort && managed.runtime?.kind !== "claude") {
+      const short = managed.claudeBackgroundJobShort;
+      if (short) {
+        await runClaudeBackgroundCliCommand(managed, ["stop", short], 15_000).catch((error) => {
+          logger.warn("agent_chat.claude_background_stop_failed", {
+            sessionId,
+            short,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }
+      markSessionIdleWithFreshCache(managed);
+      persistChatState(managed);
       return;
     }
 
@@ -20564,12 +20652,14 @@ export function createAgentChatService(args: {
       return;
     }
 
-    // Only prewarm if the session is idle (not mid-turn) and not already warmed
-    if (managed.runtime?.kind === "claude" && (managed.runtime.query || managed.runtime.warmQuery || managed.runtime.warmupDone)) return;
-
-    // Ensure a Claude runtime exists and kick off pre-warming
-    ensureClaudeSessionRuntime(managed);
+    if (managed.session.provider !== "claude") return;
+    if (managed.session.modelId !== descriptor.id) return;
+    if (managed.session.status === "active") return;
+    const runtime = ensureClaudeSessionRuntime(managed);
+    if (runtime.busy) return;
+    if (runtime.query || runtime.warmQuery || runtime.warmupDone) return;
     prewarmClaudeQuery(managed);
+    persistChatState(managed);
   };
 
   const listSubagents = ({ sessionId }: AgentChatSubagentListArgs): AgentChatSubagentSnapshot[] => {

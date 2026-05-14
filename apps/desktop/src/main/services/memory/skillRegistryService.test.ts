@@ -125,6 +125,68 @@ describe("skillRegistryService", () => {
     expect(markExportedSkill).toHaveBeenCalledWith("proc-1", exported.path);
   });
 
+  it("quotes exported skill descriptions so trigger punctuation cannot break frontmatter", async () => {
+    const fixture = await createFixture();
+    const service = createSkillRegistryService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      projectRoot: fixture.projectRoot,
+      memoryService: fixture.memoryService,
+      proceduralLearningService: {
+        getProcedureDetail: () => ({
+          memory: {
+            id: "proc-yaml",
+            scope: "project",
+            scopeOwnerId: null,
+            tier: 2,
+            pinned: false,
+            category: "procedure",
+            content: "Trigger: fixing quoted branch names",
+            importance: "high",
+            createdAt: "2026-03-11T12:00:00.000Z",
+            updatedAt: "2026-03-11T12:00:00.000Z",
+            lastAccessedAt: "2026-03-11T12:00:00.000Z",
+            accessCount: 0,
+            observationCount: 1,
+            status: "promoted",
+            confidence: 0.8,
+            embedded: false,
+            sourceRunId: null,
+            sourceType: "system",
+            sourceId: null,
+            fileScopePattern: null,
+          },
+          procedural: {
+            id: "proc-yaml",
+            trigger: "fixing \"critical\" bugs: branch main\nwithout breaking YAML",
+            procedure: "## Recommended Procedure\n1. Keep frontmatter valid.",
+            confidence: 0.8,
+            successCount: 1,
+            failureCount: 0,
+            sourceEpisodeIds: [],
+            lastUsed: null,
+            createdAt: "2026-03-11T12:00:00.000Z",
+          },
+          exportedSkillPath: null,
+          exportedAt: null,
+          supersededByMemoryId: null,
+          sourceEpisodes: [],
+          confidenceHistory: [],
+        }),
+        markExportedSkill: vi.fn(),
+        markProcedureSuperseded: vi.fn(),
+      },
+    });
+
+    const exported = await service.exportProcedureSkill({ id: "proc-yaml", name: "YAML Skill" });
+    if (!exported) throw new Error("Expected exported skill");
+
+    const content = fs.readFileSync(exported.path, "utf8");
+    expect(content).toContain(
+      'description: "Use this skill when fixing \\"critical\\" bugs: branch main\\nwithout breaking YAML."',
+    );
+  });
+
   it("supersedes near-duplicate system procedures when importing user skills", async () => {
     const fixture = await createFixture();
     const skillPath = path.join(fixture.projectRoot, ".claude", "skills", "testing-guide.md");
@@ -173,5 +235,31 @@ describe("skillRegistryService", () => {
     expect(imported.memoryId).not.toBe(duplicateSystemProcedure.id);
     expect(superseded?.supersededByMemoryId).toBe(imported.memoryId);
     expect(duplicateMemory?.status).toBe("archived");
+  });
+
+  it("indexes AGENTS.md as a root doc instead of importing it as a procedure", async () => {
+    const fixture = await createFixture();
+    const rootDocPath = path.join(fixture.projectRoot, "AGENTS.md");
+    fs.writeFileSync(rootDocPath, "# Project agent instructions\n\nKeep release checks honest.\n", "utf8");
+
+    const service = createSkillRegistryService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      projectRoot: fixture.projectRoot,
+      memoryService: fixture.memoryService,
+      proceduralLearningService: fixture.proceduralLearningService,
+    });
+
+    const indexed = await service.reindexSkills({ paths: [rootDocPath] });
+    const rootDoc = indexed.find((entry) => entry.path === rootDocPath);
+
+    expect(rootDoc?.kind).toBe("root_doc");
+    expect(rootDoc?.memoryId).toBeNull();
+    expect(fixture.memoryService.listMemories({
+      projectId: fixture.projectId,
+      scope: "project",
+      categories: ["procedure"],
+      limit: 10,
+    })).toHaveLength(0);
   });
 });

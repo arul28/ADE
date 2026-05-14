@@ -1,6 +1,6 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { chooseInitialLane, chooseMostRecentSessionLane, chooseTuiLaunchLane, resolveTuiChatRefreshTarget } from "../project";
+import { chooseInitialLane, chooseMostRecentSessionLane, chooseTuiLaunchLane, detectProjectLaunchContext, resolveTuiChatRefreshTarget } from "../project";
 import type { AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
 import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
 
@@ -42,6 +42,17 @@ function chat(sessionId: string, laneId: string, lastActivityAt: string): AgentC
 }
 
 describe("chooseInitialLane", () => {
+  it("accepts an explicit lane hint from the CLI launch context", () => {
+    const context = detectProjectLaunchContext({
+      cwd: "/tmp",
+      projectRoot: "/tmp",
+      workspaceRoot: "/tmp",
+      laneHint: "feature-a",
+    });
+
+    expect(context.laneHint).toBe("feature-a");
+  });
+
   it("prefers the ADE worktree lane hint", () => {
     const lanes = [
       lane({ id: "main", name: "main", laneType: "primary", worktreePath: "/repo" }),

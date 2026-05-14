@@ -449,6 +449,50 @@ describe("RemoteConnectionPool", () => {
     });
   });
 
+  it("retries project-scoped sync reads once when the connection closes during the request", async () => {
+    const firstClient = createClient();
+    const firstSsh = createSsh();
+    firstClient.call.mockRejectedValueOnce(
+      new Error("Remote ADE service connection closed."),
+    );
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client: firstClient,
+      ssh: firstSsh,
+      result: connectResult("1.0.0"),
+    });
+    const secondClient = createClient();
+    secondClient.call.mockResolvedValueOnce({
+      pairingPin: "654321",
+      connectedPeers: [{ id: "phone-1" }],
+    });
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client: secondClient,
+      ssh: createSsh(),
+      result: connectResult("1.0.1"),
+    });
+    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+
+    await expect(
+      pool.callSyncForTarget(target, "project-1", "sync.getStatus", {
+        includeTransferReadiness: true,
+      }),
+    ).resolves.toEqual({
+      pairingPin: "654321",
+      connectedPeers: [{ id: "phone-1" }],
+    });
+
+    expect(firstSsh.end).toHaveBeenCalledTimes(1);
+    expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);
+    expect(firstClient.call).toHaveBeenCalledWith("sync.getStatus", {
+      projectId: "project-1",
+      includeTransferReadiness: true,
+    });
+    expect(secondClient.call).toHaveBeenCalledWith("sync.getStatus", {
+      projectId: "project-1",
+      includeTransferReadiness: true,
+    });
+  });
+
   it("subscribes to runtime event notifications and unsubscribes on cleanup", async () => {
     const client = createClient();
     client.call.mockImplementation(async (method: string) => {

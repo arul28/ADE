@@ -1806,7 +1806,7 @@ describe("createAgentChatService", () => {
       expect(opts?.systemPrompt?.append).toContain("/ship-lane — Drive a lane through CI + review");
     });
 
-    it("omits the project slash commands section when no commands exist in the lane", async () => {
+    it("lists bundled ADE skills when no lane command files exist", async () => {
       vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
         send: vi.fn(),
         stream: vi.fn(async function* () {
@@ -1829,7 +1829,50 @@ describe("createAgentChatService", () => {
 
       const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as { systemPrompt?: { append?: string } } | undefined;
       expect(opts?.systemPrompt?.append).toBeTruthy();
-      expect(opts?.systemPrompt?.append).not.toContain("## Project slash commands");
+      expect(opts?.systemPrompt?.append).toContain("## Project slash commands and skills");
+      expect(opts?.systemPrompt?.append).toContain("/ade-cli-control-plane");
+      expect(opts?.systemPrompt?.append).not.toContain("Commands (file-backed prompts):");
+    });
+
+    it("caps discovered command listings in the injected Claude prompt", async () => {
+      const commandsDir = path.join(tmpRoot, ".claude", "commands");
+      fs.mkdirSync(commandsDir, { recursive: true });
+      for (let index = 0; index < 25; index += 1) {
+        fs.writeFileSync(path.join(commandsDir, `cmd-${String(index).padStart(2, "0")}.md`), [
+          "---",
+          `description: Command ${index}`,
+          "---",
+          "",
+          `Run command ${index}.`,
+          "",
+        ].join("\n"));
+      }
+
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn(),
+        stream: vi.fn(async function* () {
+          return;
+        }),
+        close: vi.fn(),
+        sessionId: "sdk-session-many-slash-commands",
+      } as any);
+
+      const { service } = createService();
+      await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await vi.waitFor(() => {
+        expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+      });
+
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as { systemPrompt?: { append?: string } } | undefined;
+      expect(opts?.systemPrompt?.append).toContain("/cmd-00 — Command 0");
+      expect(opts?.systemPrompt?.append).toContain("/cmd-19 — Command 19");
+      expect(opts?.systemPrompt?.append).not.toContain("/cmd-24 — Command 24");
+      expect(opts?.systemPrompt?.append).toContain("5 more command(s) hidden to keep startup context lean");
     });
 
     it("does not attach ADE-owned tool definitions to Claude SDK sessions", async () => {
@@ -3035,13 +3078,15 @@ describe("createAgentChatService", () => {
           usage: { input_tokens: 1, output_tokens: 1 },
         };
       })());
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+      const sdkHandle = {
         send,
         stream,
         close: vi.fn(),
         sessionId: "sdk-session-1",
         setPermissionMode,
-      } as any);
+      } as any;
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(sdkHandle);
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(sdkHandle);
 
       const { service } = createService();
       const session = await service.createSession({
@@ -3114,13 +3159,15 @@ describe("createAgentChatService", () => {
           usage: { input_tokens: 1, output_tokens: 1 },
         };
       })());
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+      const sdkHandle = {
         send,
         stream,
         close: vi.fn(),
         sessionId: "sdk-session-non-identity",
         setPermissionMode,
-      } as any);
+      } as any;
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(sdkHandle);
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(sdkHandle);
 
       const { service } = createService();
       const session = await service.createSession({
@@ -3200,6 +3247,7 @@ describe("createAgentChatService", () => {
       });
       const persistedAfterPrime = readPersistedChatState(session.id);
       expect(persistedAfterPrime.lastLaneDirectiveKey).toBeTruthy();
+      await service.dispose({ sessionId: session.id });
 
       writePersistedChatState(session.id, {
         ...persistedAfterPrime,
@@ -3253,7 +3301,10 @@ describe("createAgentChatService", () => {
       });
 
       expect(result.outputText).toContain("Recovered");
-      expect(claudeSdkResumeSessionCompat).toHaveBeenCalledWith("sdk-stale", expect.any(Object));
+      expect(claudeSdkResumeSessionCompat).toHaveBeenCalledWith(
+        "sdk-stale",
+        expect.objectContaining({ resume: "sdk-stale" }),
+      );
       expect(claudeSdkCreateSessionCompat).toHaveBeenCalledWith(expect.objectContaining({
         permissionMode: "bypassPermissions",
         allowDangerouslySkipPermissions: true,
@@ -5213,6 +5264,28 @@ describe("createAgentChatService", () => {
       expect(sessionService.end).toHaveBeenCalledWith(
         expect.objectContaining({ sessionId: session.id }),
       );
+      expect(sessionService.deleteSession).toHaveBeenCalledWith(session.id);
+    });
+
+    it("does not follow transcript symlinks outside ADE during purge", async () => {
+      const { service, sessionService } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/anthropic/claude-sonnet-4-6",
+      });
+
+      const mainTranscriptPath = sessionService.get(session.id)?.transcriptPath ?? "";
+      const outsideTranscriptPath = path.join(tmpHomeRoot, "outside-transcript.jsonl");
+      fs.writeFileSync(outsideTranscriptPath, "{\"event\":\"done\"}\n", "utf8");
+      fs.mkdirSync(path.dirname(mainTranscriptPath), { recursive: true });
+      fs.rmSync(mainTranscriptPath, { force: true });
+      fs.symlinkSync(outsideTranscriptPath, mainTranscriptPath);
+
+      await service.deleteSession({ sessionId: session.id });
+
+      expect(fs.existsSync(outsideTranscriptPath)).toBe(true);
       expect(sessionService.deleteSession).toHaveBeenCalledWith(session.id);
     });
   });
@@ -7459,6 +7532,33 @@ describe("createAgentChatService", () => {
         "fragment-a",
         "fragment-b",
       ]);
+    });
+
+    it("does not hydrate transcript symlinks that resolve outside ADE", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      const envelope: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: new Date().toISOString(),
+        event: { type: "text", text: "outside-transcript" },
+        sequence: 1,
+      };
+      const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+      const outsideTranscriptPath = path.join(tmpHomeRoot, "outside-transcript.jsonl");
+      fs.writeFileSync(outsideTranscriptPath, `${JSON.stringify(envelope)}\n`, "utf8");
+      fs.rmSync(transcriptFile, { force: true });
+      fs.symlinkSync(outsideTranscriptPath, transcriptFile);
+      vi.mocked(parseAgentChatTranscript).mockReturnValue([envelope]);
+
+      const history = service.getChatEventHistory(session.id);
+
+      expect(history.events).toEqual([]);
+      expect(parseAgentChatTranscript).not.toHaveBeenCalled();
     });
 
     it("drops history when the underlying session is deleted", async () => {

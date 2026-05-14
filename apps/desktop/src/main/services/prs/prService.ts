@@ -179,6 +179,8 @@ type LanePrLookupRow = {
 };
 
 const SQL_IN_CLAUSE_CHUNK_SIZE = 900;
+const PR_ACTION_RUNS_LIMIT = 12;
+const PR_ACTION_RUN_JOBS_LIMIT = 6;
 
 function chunkValues<T>(values: readonly T[], size = SQL_IN_CLAUSE_CHUNK_SIZE): T[][] {
   const chunks: T[][] = [];
@@ -6421,40 +6423,45 @@ export function createPrService({
       const { data: runsData } = await githubService.apiRequest<any>({
         method: "GET",
         path: `/repos/${repo.owner}/${repo.name}/actions/runs`,
-        query: { head_sha: headSha, per_page: 100 }
+        query: { head_sha: headSha, per_page: PR_ACTION_RUNS_LIMIT }
       });
-      const rawRuns: any[] = Array.isArray(runsData?.workflow_runs) ? runsData.workflow_runs : [];
+      const rawRuns: any[] = Array.isArray(runsData?.workflow_runs)
+        ? runsData.workflow_runs.slice(0, PR_ACTION_RUNS_LIMIT)
+        : [];
 
       const runs: PrActionRun[] = await Promise.all(
-        rawRuns.map(async (run: any): Promise<PrActionRun> => {
+        rawRuns.map(async (run: any, index): Promise<PrActionRun> => {
           const runId = Number(run?.id);
           let jobs: PrActionJob[] = [];
-          try {
-            const { data: jobsData } = await githubService.apiRequest<any>({
-              method: "GET",
-              path: `/repos/${repo.owner}/${repo.name}/actions/runs/${runId}/jobs`
-            });
-            const rawJobs: any[] = Array.isArray(jobsData?.jobs) ? jobsData.jobs : [];
-            jobs = rawJobs.map((j: any): PrActionJob => ({
-              id: Number(j?.id) || 0,
-              name: asString(j?.name) || "",
-              status: toJobStatus(j?.status),
-              conclusion: toJobConclusion(j?.conclusion),
-              startedAt: asString(j?.started_at) || null,
-              completedAt: asString(j?.completed_at) || null,
-              steps: Array.isArray(j?.steps)
-                ? j.steps.map((st: any): PrActionStep => ({
-                    name: asString(st?.name) || "",
-                    status: toJobStatus(st?.status),
-                    conclusion: toJobConclusion(st?.conclusion),
-                    number: Number(st?.number) || 0,
-                    startedAt: asString(st?.started_at) || null,
-                    completedAt: asString(st?.completed_at) || null
-                  }))
-                : []
-            }));
-          } catch {
-            // Jobs fetch failed; return empty jobs array
+          if (runId > 0 && index < PR_ACTION_RUN_JOBS_LIMIT) {
+            try {
+              const { data: jobsData } = await githubService.apiRequest<any>({
+                method: "GET",
+                path: `/repos/${repo.owner}/${repo.name}/actions/runs/${runId}/jobs`,
+                query: { per_page: 100 }
+              });
+              const rawJobs: any[] = Array.isArray(jobsData?.jobs) ? jobsData.jobs : [];
+              jobs = rawJobs.map((j: any): PrActionJob => ({
+                id: Number(j?.id) || 0,
+                name: asString(j?.name) || "",
+                status: toJobStatus(j?.status),
+                conclusion: toJobConclusion(j?.conclusion),
+                startedAt: asString(j?.started_at) || null,
+                completedAt: asString(j?.completed_at) || null,
+                steps: Array.isArray(j?.steps)
+                  ? j.steps.map((st: any): PrActionStep => ({
+                      name: asString(st?.name) || "",
+                      status: toJobStatus(st?.status),
+                      conclusion: toJobConclusion(st?.conclusion),
+                      number: Number(st?.number) || 0,
+                      startedAt: asString(st?.started_at) || null,
+                      completedAt: asString(st?.completed_at) || null
+                    }))
+                  : []
+              }));
+            } catch {
+              // Jobs fetch failed; return empty jobs array
+            }
           }
           return {
             id: runId,

@@ -456,6 +456,7 @@ async function validatePackagedRuntime(appDir) {
   const adeCliTuiPath = path.join(resourcesPath, "ade-cli", "tuiClient", "cli.mjs");
   const adeCliBinPath = path.join(resourcesPath, "ade-cli", "bin", "ade.cmd");
   const adeCliInstallerPath = path.join(resourcesPath, "ade-cli", "install-path.cmd");
+  const bundledAgentSkillsPath = path.join(resourcesPath, "agent-skills", "ade-cli-control-plane", "SKILL.md");
   const nodeModulesPath = path.join(unpackedPath, "node_modules");
   const nodePtyModulePath = path.join(nodeModulesPath, "node-pty");
   const sqlJsModulePath = path.join(nodeModulesPath, "sql.js");
@@ -482,6 +483,7 @@ async function validatePackagedRuntime(appDir) {
   await assertPathExists(adeCliTuiPath, "bundled ADE CLI TUI entry");
   await assertPathExists(adeCliBinPath, "bundled ADE CLI wrapper");
   await assertPathExists(adeCliInstallerPath, "bundled ADE CLI PATH installer");
+  await assertPathExists(bundledAgentSkillsPath, "bundled ADE agent skills");
   await assertPathExists(nodePtyModulePath, "unpacked node-pty module");
   await assertPathExists(sqlJsModulePath, "unpacked sql.js module");
   await assertPathExists(path.join(onnxRuntimeWinPath, "onnxruntime_binding.node"), "Windows ONNX Runtime native addon");

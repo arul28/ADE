@@ -19,10 +19,15 @@ vi.mock("../chat/ChatIosSimulatorPanel", async () => {
   return {
     ChatIosSimulatorPanel: (props: {
       sessionId: string | null;
+      controlDisabledReason?: string | null;
       onAddAttachment?: (attachment: { path: string; type: "image" }) => void;
       onAddContext?: (item: IosElementContextItem) => void;
       onInsertDraft?: (text: string) => void;
-    }) => React.createElement("div", { "data-testid": "ios-panel", "data-session-id": props.sessionId ?? "" }, [
+    }) => React.createElement("div", {
+      "data-testid": "ios-panel",
+      "data-session-id": props.sessionId ?? "",
+      "data-control-disabled": props.controlDisabledReason ?? "",
+    }, [
       React.createElement("button", {
         key: "context",
         type: "button",
@@ -50,8 +55,13 @@ vi.mock("../chat/ChatAppControlPanel", async () => {
   return {
     ChatAppControlPanel: (props: {
       sessionId: string | null;
+      controlDisabledReason?: string | null;
       onAddContext?: (item: AppControlContextItem) => void;
-    }) => React.createElement("div", { "data-testid": "app-control-panel", "data-session-id": props.sessionId ?? "" },
+    }) => React.createElement("div", {
+      "data-testid": "app-control-panel",
+      "data-session-id": props.sessionId ?? "",
+      "data-control-disabled": props.controlDisabledReason ?? "",
+    },
       React.createElement("button", {
         type: "button",
         disabled: !props.onAddContext,
@@ -418,6 +428,7 @@ describe("WorkSidebar context targets", () => {
     });
 
     expect(await screen.findByText(/This App Control view is attached to Lane 2, not Lane 1/)).toBeTruthy();
+    expect(screen.getByTestId("app-control-panel").getAttribute("data-control-disabled")).toMatch(/Lane 2/);
     expect((screen.getByText("Add App Control context") as HTMLButtonElement).disabled).toBe(true);
   });
 
@@ -431,6 +442,7 @@ describe("WorkSidebar context targets", () => {
     });
 
     expect(await screen.findByText(/This iOS Simulator view is attached to Lane 2, not Lane 1/)).toBeTruthy();
+    expect(screen.getByTestId("ios-panel").getAttribute("data-control-disabled")).toMatch(/Lane 2/);
     expect((screen.getByText("Add iOS context") as HTMLButtonElement).disabled).toBe(true);
   });
 
